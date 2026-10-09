@@ -42,6 +42,15 @@
 instrumentation is this test's protection against the historical RAM runaway."
 #endif
 
+/* The scratch tree this selftest writes beneath: its memstick, unified and legacy
+ * filesystem roots, sysreg, OSK and fbcap scratch. The Makefile passes the caller's
+ * BUILD_ROOT as -DSR_SELFTEST_BUILD_ROOT, so a suite run writes beneath its own scratch
+ * tree rather than the checkout's build/. A bare compile keeps the historical "build". */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+#define HLE_BUILD_ROOT SR_SELFTEST_BUILD_ROOT
+
 #include "ge_shared.h"
 #include "gpu_sdl3vk/ge_gpu.h"   /* GeGpuFbDescriptor: header-only, no Vulkan */
 #include "sched.c" /* white-box fixture setup and observable TCB state */
@@ -1907,11 +1916,11 @@ static void test_runtime_placed_modules(void) {
         char saved_memstick[512] = "";
         int had_memstick = old_memstick != NULL;
         if (old_memstick) snprintf(saved_memstick, sizeof(saved_memstick), "%s", old_memstick);
-        CreateDirectoryA("build", NULL);
-        CreateDirectoryA("build/hle_fd_namespace_ms", NULL);
-        CreateDirectoryA("build/hle_fd_namespace_ms/NKRT", NULL);
-        SetEnvironmentVariableA("SR_MEMSTICK", "build/hle_fd_namespace_ms");
-        _putenv_s("SR_MEMSTICK", "build/hle_fd_namespace_ms");
+        CreateDirectoryA(HLE_BUILD_ROOT, NULL);
+        CreateDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms", NULL);
+        CreateDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms/NKRT", NULL);
+        SetEnvironmentVariableA("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
+        _putenv_s("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
         fd_host_path(host, sizeof(host), alpha_guest);
         FILE *marker = fopen(host, "wb");
         if (marker) {
@@ -2221,7 +2230,7 @@ static void fd_host_path(char *out, size_t capacity, const char *guest) {
     char root[256];
     const char *env = getenv("SR_MEMSTICK");
     if (env && env[0]) snprintf(root, sizeof root, "%s", env);
-    else snprintf(root, sizeof root, "%s", "build/hle_fd_namespace_ms");
+    else snprintf(root, sizeof root, "%s", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
     const char *rel = guest ? guest : "";
     size_t at = 0;
     if (!out || capacity == 0) return;
@@ -2647,10 +2656,10 @@ static void test_fd_namespace(void) {
 
     fd_host_path(result_host, sizeof(result_host), result_guest);
     DeleteFileA(result_host);
-    CreateDirectoryA("build", NULL);
-    CreateDirectoryA("build/hle_fd_namespace_ms", NULL);
-    SetEnvironmentVariableA("SR_MEMSTICK", "build/hle_fd_namespace_ms");
-    _putenv_s("SR_MEMSTICK", "build/hle_fd_namespace_ms");
+    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
+    CreateDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms", NULL);
+    SetEnvironmentVariableA("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
+    _putenv_s("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
 
     /* sr_hle_init performs the real runtime descriptor-table initialization. */
     sr_hle_init();
@@ -2848,7 +2857,7 @@ static void test_fd_namespace(void) {
     /* An actual empty overlay directory is successful and immediately at end
      * of directory; ERROR_FILE_NOT_FOUND from its wildcard is not a missing
      * directory. Lives under the unified Memory Stick root (issue #334). */
-    CreateDirectoryA("build/hle_fd_namespace_ms/empty", NULL);
+    CreateDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms/empty", NULL);
     memset(&cpu, 0, sizeof cpu);
     fd_guest_copy(path_addr, "ms0:/empty", sizeof "ms0:/empty");
     cpu.r[4] = path_addr;
@@ -2864,7 +2873,7 @@ static void test_fd_namespace(void) {
     cpu.r[4] = empty_dir_fd;
     expect(sr_hle_test_io_dclose(&cpu) == 0u,
            "the empty overlay directory descriptor closes cleanly");
-    RemoveDirectoryA("build/hle_fd_namespace_ms/empty");
+    RemoveDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms/empty");
 
     /* Whence validation on valid open file */
     memset(&cpu, 0, sizeof(cpu));
@@ -3112,7 +3121,7 @@ static void test_fd_namespace(void) {
     DeleteFileA(rename_dst_host);
 
     DeleteFileA(result_host);
-    RemoveDirectoryA("build/hle_fd_namespace_ms");
+    RemoveDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms");
     if (old_root) SetEnvironmentVariableA("SR_MEMSTICK", old_root);
     else SetEnvironmentVariableA("SR_MEMSTICK", NULL);
     if (old_root) _putenv_s("SR_MEMSTICK", old_root);
@@ -3133,8 +3142,8 @@ static void test_ms0_unified_namespace(void) {
         PATH2_ADDR = 0x09030100u,
         STAT_ADDR  = 0x09030200u
     };
-    static const char ms_root[] = "build/hle_ms0_unified";
-    static const char legacy_root[] = "build/hle_ms0_legacy_fs";
+    static const char ms_root[] = HLE_BUILD_ROOT "/hle_ms0_unified";
+    static const char legacy_root[] = HLE_BUILD_ROOT "/hle_ms0_legacy_fs";
     static const uint8_t payload[] = "MS0_UNIFIED_OK\n";
     CpuState cpu;
     char host[512];
@@ -3145,7 +3154,7 @@ static void test_ms0_unified_namespace(void) {
     if (save_ms) memcpy(save_ms, old_ms, strlen(old_ms) + 1u);
     if (save_fs) memcpy(save_fs, old_fs, strlen(old_fs) + 1u);
 
-    CreateDirectoryA("build", NULL);
+    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
     CreateDirectoryA(ms_root, NULL);
     CreateDirectoryA(legacy_root, NULL);
     SetEnvironmentVariableA("SR_MEMSTICK", ms_root);
@@ -3492,7 +3501,7 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
 /* sceReg virtual system registry (src/rt/hle.c): guest scratch lives in the arena at 0x08b00000,
  * and the per-user overlay is redirected for the whole run to a build-scoped file (main sets
  * SR_SYSTEM_REGISTRY), so no test reads or writes the developer's own registry overlay. */
-#define SYSREG_SCRATCH_DIR "build/hle_sysreg"
+#define SYSREG_SCRATCH_DIR HLE_BUILD_ROOT "/hle_sysreg"
 #define SYSREG_SCRATCH_FILE SYSREG_SCRATCH_DIR "/system.json"
 #define SYSREG_PARAM 0x08b00000u
 #define SYSREG_OUT 0x08b00400u
@@ -3630,7 +3639,7 @@ static void sysreg_env(const char *value) {
 }
 
 static void sysreg_scratch_clean(void) {
-    CreateDirectoryA("build", NULL);
+    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
     CreateDirectoryA(SYSREG_SCRATCH_DIR, NULL);
     DeleteFileA(SYSREG_SCRATCH_FILE);
     DeleteFileA(SYSREG_SCRATCH_FILE ".tmp");
@@ -4495,7 +4504,7 @@ int sr_osk_input(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int 
 #define OSK_DESC_ADDR   0x09030200u
 #define OSK_IN_ADDR     0x09030280u
 #define OSK_OUT_ADDR    0x09030300u
-#define OSK_SCRIPT_PATH "build/hle_osk_script_selftest.txt"
+#define OSK_SCRIPT_PATH HLE_BUILD_ROOT "/hle_osk_script_selftest.txt"
 #define NID_OSK_INIT     0xf6269b82u
 #define NID_OSK_STATUS  0xf3f76017u
 #define NID_OSK_SHUTDOWN 0x3dfaeba9u
@@ -4548,7 +4557,7 @@ static void osk_env(const char *name, const char *value) {
 }
 
 static int osk_write_script(const char *const *lines, int count) {
-    CreateDirectoryA("build", NULL);
+    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
     FILE *f = fopen(OSK_SCRIPT_PATH, "w");
     if (!f) return 0;
     for (int i = 0; i < count; i++) fprintf(f, "%s\n", lines[i]);
@@ -4749,10 +4758,10 @@ static void test_io_devctl_memory_stick(void) {
         return;
     }
 
-    CreateDirectoryA("build", NULL);
-    CreateDirectoryA("build/hle_fd_namespace_ms", NULL);
-    expect(SetEnvironmentVariableA("SR_MEMSTICK", "build/hle_fd_namespace_ms") &&
-               _putenv_s("SR_MEMSTICK", "build/hle_fd_namespace_ms") == 0,
+    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
+    CreateDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms", NULL);
+    expect(SetEnvironmentVariableA("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms") &&
+               _putenv_s("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms") == 0,
            "sceIoDevctl test selects the synthetic ordinary-I/O memory-stick root");
     fd_guest_copy(device_addr, ms0, sizeof(ms0));
     fd_guest_copy(second_device_addr, fatms0, sizeof(fatms0));
@@ -6850,7 +6859,7 @@ static int hle_make_directory(const char *path) {
 static int hle_archive_fixture_make(char *root, size_t root_capacity) {
     char cwd[MAX_PATH];
     if (!GetCurrentDirectoryA(MAX_PATH, cwd)) return 0;
-    hle_make_directory("build");
+    hle_make_directory(HLE_BUILD_ROOT);
     _snprintf(root, root_capacity, "%s\\build\\archive_vfs_%lu", cwd,
               (unsigned long)GetCurrentProcessId());
     if (!hle_make_directory(root)) return 0;
@@ -6987,7 +6996,7 @@ static void test_direct_xb_malformed_archive_fails_closed(void) {
     reset_fixture();
     sr_hle_init();
     expect(GetCurrentDirectoryA(MAX_PATH, cwd) != 0, "the malformed XB fixture has a working directory");
-    hle_make_directory("build");
+    hle_make_directory(HLE_BUILD_ROOT);
     _snprintf(root, sizeof(root), "%s\\build\\archive_vfs_bad_%lu", cwd,
               (unsigned long)GetCurrentProcessId());
     expect(hle_make_directory(root), "the malformed XB fixture root was created");
@@ -7016,7 +7025,7 @@ static void test_direct_xb_many_members_skip_loose_walk(void) {
     reset_fixture();
     sr_hle_init();
     expect(GetCurrentDirectoryA(MAX_PATH, cwd) != 0, "the large XB fixture has a working directory");
-    hle_make_directory("build");
+    hle_make_directory(HLE_BUILD_ROOT);
     _snprintf(root, sizeof(root), "%s\\build\\archive_vfs_many_%lu", cwd,
               (unsigned long)GetCurrentProcessId());
     expect(hle_make_directory(root), "the large XB fixture root was created");
@@ -7231,7 +7240,7 @@ static void test_host_data_scan_scaling(void) {
         expect(0, "the synthetic host-data benchmark has a working directory");
         return;
     }
-    if (!hle_make_directory("build")) {
+    if (!hle_make_directory(HLE_BUILD_ROOT)) {
         expect(0, "the synthetic host-data benchmark build directory exists");
         return;
     }
@@ -7325,7 +7334,7 @@ typedef struct {
 static int hle_archive_route_fixture_make(HleArchiveRouteFixture *fixture) {
     char cwd[MAX_PATH];
     if (!fixture || !GetCurrentDirectoryA(MAX_PATH, cwd)) return 0;
-    hle_make_directory("build");
+    hle_make_directory(HLE_BUILD_ROOT);
     _snprintf(fixture->root, sizeof(fixture->root), "%s\\build\\archive_route_%lu_%llu",
               cwd, (unsigned long)GetCurrentProcessId(),
               (unsigned long long)GetTickCount64());
@@ -7764,7 +7773,7 @@ static void test_archive_mode_preserves_loose_routes(void) {
 static int prewarm_make_fixture(int with_asset) {
     char cwd[MAX_PATH];
     if (!GetCurrentDirectoryA(MAX_PATH, cwd)) return 0;
-    CreateDirectoryA("build", NULL);
+    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
     snprintf(s_prewarm_root, sizeof s_prewarm_root, "%s\\build\\data_prewarm_%lu",
              cwd, (unsigned long)GetCurrentProcessId());
     /* A stale fixture from an earlier run must not inflate the counts. */
@@ -7859,9 +7868,9 @@ static void test_extracted_data_prepares_before_guest_and_lookup_never_builds(vo
     const char *old_fs_value = getenv("SR_FSDIR");
     char *old_fs = old_fs_value ? (char *)malloc(strlen(old_fs_value) + 1u) : NULL;
     if (old_fs) memcpy(old_fs, old_fs_value, strlen(old_fs_value) + 1u);
-    SetEnvironmentVariableA("SR_FSDIR", "build/hle_dopen_vfs_fs");
-    CreateDirectoryA("build", NULL);
-    CreateDirectoryA("build/hle_dopen_vfs_fs", NULL);
+    SetEnvironmentVariableA("SR_FSDIR", HLE_BUILD_ROOT "/hle_dopen_vfs_fs");
+    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
+    CreateDirectoryA(HLE_BUILD_ROOT "/hle_dopen_vfs_fs", NULL);
     static const uint32_t dir_path_addr = 0x09101000u;
     static const uint32_t dirent_addr = 0x09102000u;
     static const char dir_path[] = "disc0:/data/menu/text";
@@ -7896,7 +7905,7 @@ static void test_extracted_data_prepares_before_guest_and_lookup_never_builds(vo
     expect(sr_hle_test_io_dclose(&cpu) == 0u,
            "the full disc0 indexed directory descriptor closes cleanly");
     SetEnvironmentVariableA("SR_FSDIR", old_fs ? old_fs : NULL);
-    RemoveDirectoryA("build/hle_dopen_vfs_fs");
+    RemoveDirectoryA(HLE_BUILD_ROOT "/hle_dopen_vfs_fs");
     free(old_fs);
 
     prewarm_env_restore();
@@ -7935,7 +7944,7 @@ static char s_disc_route_root[MAX_PATH];
 static int disc_route_make_fixture(void) {
     char cwd[MAX_PATH];
     if (!GetCurrentDirectoryA(MAX_PATH, cwd)) return 0;
-    CreateDirectoryA("build", NULL);
+    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
     snprintf(s_disc_route_root, sizeof s_disc_route_root,
              "%s\\build\\disc_route_%lu", cwd, (unsigned long)GetCurrentProcessId());
 
@@ -8090,7 +8099,7 @@ static void test_primary_extracted_archive_duplicates_match_main(void) {
 
     reset_fixture();
     sr_hle_init();
-    int root_ok = hle_make_directory("build");
+    int root_ok = hle_make_directory(HLE_BUILD_ROOT);
     char cwd[MAX_PATH];
     if (!GetCurrentDirectoryA(MAX_PATH, cwd)) root_ok = 0;
     if (root_ok) {

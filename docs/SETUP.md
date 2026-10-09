@@ -611,6 +611,13 @@ without touching your real `build/` and `logs/`. An overridden `BUILD_ROOT` must
 repository root, an ancestor of it, or any other directory inside the checkout before anything is
 created or deleted.
 
+An overridden `BUILD_DIR` (`make clean BUILD_DIR=<x>` deletes `<x>`) gets the same scope rule: it
+must be a directory beneath the checkout's `build/` tree or one outside the checkout. `BUILD_DIR=.`,
+`BUILD_DIR=src` and the checkout root are refused while Make parses. The default `BUILD_DIR` derives
+from `BUILD_ROOT`, so it needs no separate check. Every Makefile output is derived from `BUILD_ROOT`
+(the native test binaries, the player executables, the platform-ladder and display-smoke trees), so
+one scratch `BUILD_ROOT` redirects every write a Make run makes.
+
 ### Checkout path and `BUILD_DIR`
 
 The repository may be cloned under a path that contains spaces (`C:/path/with spaces/nakagawa`): a

@@ -203,8 +203,14 @@ LOG_DIR    ?= logs
 # parent directory is spaced too, and naming it must report "an ancestor of the
 # repository root", not only that Make cannot spell it. The value travels to Python as
 # one quoted argument, so a space in it cannot split it.
+# The checkout-scope check, shared by BUILD_ROOT and an overridden BUILD_DIR. It prints
+# `ok`, or the reason the tree reaches the checkout. The tree travels to Python as one
+# quoted argument, so a space in it cannot split it. It is only ever run for a value the
+# caller supplied (or the non-default root), so an ordinary invocation starts no extra
+# interpreter.
+_CHECKOUT_SCOPE_PY := import sys; from pathlib import Path; repo = Path.cwd().resolve(); root = Path(sys.argv[1]).resolve(); print('the repository root or one of its ancestors' if repo.is_relative_to(root) else 'inside the checkout but outside its build tree' if root.is_relative_to(repo) and not root.is_relative_to(repo / 'build') else 'ok')
 ifneq ($(BUILD_ROOT),build)
-_BUILD_ROOT_SCOPE := $(strip $(shell "$(PYTHON)" -c "import sys; from pathlib import Path; repo = Path.cwd().resolve(); root = Path(sys.argv[1]).resolve(); print('the repository root or one of its ancestors' if repo.is_relative_to(root) else 'inside the checkout but outside its build/ tree' if root.is_relative_to(repo) and not root.is_relative_to(repo / 'build') else 'ok')" "$(BUILD_ROOT)"))
+_BUILD_ROOT_SCOPE := $(strip $(shell "$(PYTHON)" -c "$(_CHECKOUT_SCOPE_PY)" "$(BUILD_ROOT)"))
 ifneq ($(_BUILD_ROOT_SCOPE),ok)
 $(error BUILD_ROOT '$(BUILD_ROOT)' is $(or $(_BUILD_ROOT_SCOPE),uncheckable (the scope check printed nothing)); build outputs are created and clean-fixtures and clean-all delete beneath it, so it must be the checkout's build/ tree (the default), a directory beneath it, or a directory outside the checkout)
 endif
@@ -212,6 +218,10 @@ endif
 ifneq ($(subst $(SPACE),,$(BUILD_ROOT)),$(BUILD_ROOT))
 $(error BUILD_ROOT '$(BUILD_ROOT)' contains a space, which GNU Make cannot represent in a target or prerequisite name. Use a BUILD_ROOT without spaces (the default is build))
 endif
+# How a recipe runs a native test binary built beneath BUILD_ROOT. The default keeps
+# the `./build/...` spelling; an absolute or drive-letter root is run as given, since
+# `./C:/...` names no file.
+BUILD_ROOT_RUN := $(if $(filter /%,$(BUILD_ROOT))$(findstring :,$(BUILD_ROOT)),$(BUILD_ROOT),./$(BUILD_ROOT))
 
 # SDL3 dependency discovery and isolation (issue #331).
 # An explicit SDL3_DIR overrides discovery; otherwise the supported provider is
@@ -283,6 +293,17 @@ endif
 LIBS       ?= -lSDL3 $(VULKAN_LIB_NAME) $(WIN_ONLY_LIBS) $(POSIX_RUNTIME_LIBS)
 
 BUILD_DIR  ?= $(BUILD_ROOT)/$(GAME_NAME)
+# An overridden BUILD_DIR gets the BUILD_ROOT scope refusal. `make clean` deletes it and
+# every build writes its outputs into it, so `BUILD_DIR=.` or `BUILD_DIR=src` must stop
+# the run while Make parses, before any recipe runs. The default derives from the
+# BUILD_ROOT checked above, so it needs no second interpreter. Like BUILD_ROOT, a
+# directory outside the checkout is the caller's explicit choice.
+ifneq ($(origin BUILD_DIR),file)
+_BUILD_DIR_SCOPE := $(strip $(shell "$(PYTHON)" -c "$(_CHECKOUT_SCOPE_PY)" "$(BUILD_DIR)"))
+ifneq ($(_BUILD_DIR_SCOPE),ok)
+$(error BUILD_DIR '$(BUILD_DIR)' is $(or $(_BUILD_DIR_SCOPE),uncheckable (the scope check printed nothing)); clean deletes it and every build writes its outputs into it, so it must be a directory beneath the checkout's build/ tree or a directory outside the checkout)
+endif
+endif
 # Refuse a BUILD_DIR GNU Make cannot represent, before any target name is derived
 # from it and before the parse-time mkdir below runs. Make splits a target or
 # prerequisite name on whitespace, so a BUILD_DIR containing a space silently
@@ -388,7 +409,7 @@ PRODUCTION_SMOKE_MAP       := $(PRODUCTION_SMOKE_DIR)/production_smoke.map
 # launched from the native player. Keep these three strings equal to the "id"
 # field of assets/titles/display-smoke.json.
 DISPLAY_SMOKE_NAME      := display-smoke-v1
-DISPLAY_SMOKE_DIR       := build/$(DISPLAY_SMOKE_NAME)
+DISPLAY_SMOKE_DIR       := $(BUILD_ROOT)/$(DISPLAY_SMOKE_NAME)
 DISPLAY_SMOKE_FIXTURE   := $(DISPLAY_SMOKE_DIR)/fixture
 DISPLAY_SMOKE_GENERATOR := fixtures/display_smoke/generate.py
 DISPLAY_SMOKE_PRX       := $(DISPLAY_SMOKE_FIXTURE)/guest.prx
@@ -1364,7 +1385,7 @@ perf-benchmark:
 # included, is an ordinary PASS; the Title-2 unsupported-NID control must exit
 # through the production fatal boundary.
 # ---------------------------------------------------------------------------
-PLATFORM_LADDER_DIR       := build/platform-ladder
+PLATFORM_LADDER_DIR       := $(BUILD_ROOT)/platform-ladder
 PLATFORM_LADDER_GENERATOR := fixtures/platform_ladder/generate.py
 
 PL_ZERO_BASE   := 0x08940000
@@ -1708,8 +1729,8 @@ endif
 sdl3-check:
 	@$(PYTHON) -c "import sys; sys.exit(sys.argv[1] or None)" "$(SDL3_ERROR)"
 
-PLAYER_EXE ?= build/nakagawa_player$(EXE_EXT)
-PLAYER_UI_TEST_EXE ?= build/nakagawa_player_ui_test$(EXE_EXT)
+PLAYER_EXE ?= $(BUILD_ROOT)/nakagawa_player$(EXE_EXT)
+PLAYER_UI_TEST_EXE ?= $(BUILD_ROOT)/nakagawa_player_ui_test$(EXE_EXT)
 PLAYER_CORE_SOURCES := src/core/nk_font.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/nk_psp_crypto.c src/core/nk_psp_keystore.c src/core/nk_psp_aes.c src/core/nk_psp_sha1.c src/core/nk_psp_ec.c src/core/nk_psp_kirk.c src/core/nk_psp_prx.c src/core/nk_psp_kle.c src/core/nk_psp_inflate.c src/core/nk_psp_container.c src/core/generated/nk_title_catalog.c
 PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
 PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/input_settings.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c src/player/package_builder.c $(PLAYER_CORE_SRCS)
@@ -1718,7 +1739,7 @@ PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated $(SDL3_INC_FLAGS
 $(PLAYER_EXE): | player-vulkan-check sdl3-check
 
 $(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/package_builder.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
-	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
+	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
 # Stage the SDL3/SDL3_ttf runtime DLL closure and its licence notices beside
@@ -1731,7 +1752,7 @@ player: $(PLAYER_EXE)
 $(PLAYER_UI_TEST_EXE): | player-vulkan-check sdl3-check
 
 $(PLAYER_UI_TEST_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/package_builder.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
-	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
+	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) $(RUNTIME_OPT) -Wall -Wextra -DNK_PLAYER_UI_REGRESSION_TEST $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
 .PHONY: player-ui-regressions
@@ -2120,7 +2141,9 @@ native-core-tests: ge-raster-ref-selftest
 # issue #88 interrupt-context conformance matrix in src/rt/intr_conformance.h); the --psp-oracle
 # sub-mode below
 # remains available when only one scalar production-HLE stream is needed.
-HLE_SELFTEST_DEFINES := -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST -DSR_SCHED_LIVENESS_TEST
+# The selftest's scratch tree is the caller's BUILD_ROOT (src/rt/hle_thread_selftest.c,
+# SR_SELFTEST_BUILD_ROOT), so a run from a scratch root never writes the checkout's build/.
+HLE_SELFTEST_DEFINES := -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST -DSR_SCHED_LIVENESS_TEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\"
 # hle.c includes atrac3p_bridge.h and calls into the PR-B decode bridge, so any
 # target that compiles it needs the same include paths and bridge/decoder
 # sources the $(BUILD_DIR)/hle.o rule and `compile` already use. Without the
@@ -2187,7 +2210,7 @@ audio-selftest:
 	$(BUILD_DIR)/audio_selftest$(EXE_EXT)
 
 hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nested_frames.c src/rt/nested_frames.h src/rt/stale_code.c src/rt/stale_code.h src/rt/guest_interp.c src/rt/cpu_lle.c
-	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST -DSR_SCHED_LIVENESS_TEST \
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST -DSR_SCHED_LIVENESS_TEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
@@ -2595,81 +2618,81 @@ shader-repro-verify:
 # Native Product Core Tests
 # -----------------------------------------------------------------------------
 player-state-test-bin:
-	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
+	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra -DNK_TITLE_MANIFEST_TEST_SEAMS -Isrc/core -Isrc/core/generated -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c src/player/player_state.c src/player/iso_reader.c src/player/package_builder.c src/player/setup_staging.c \
-		tests/native/native_test_isolation.c tests/native/test_player_state.c $(PLAYER_EXTRA_LIBS) -o build/test_player_state$(EXE_EXT)
+		tests/native/native_test_isolation.c tests/native/test_player_state.c $(PLAYER_EXTRA_LIBS) -o $(BUILD_ROOT)/test_player_state$(EXE_EXT)
 
 input-settings-test-bin:
-	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
+	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c \
-		tests/native/native_test_isolation.c tests/native/test_input_settings.c $(PLAYER_PLATFORM_LIBS) -o build/test_input_settings$(EXE_EXT)
+		tests/native/native_test_isolation.c tests/native/test_input_settings.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_input_settings$(EXE_EXT)
 
 package-builder-test-bin:
-	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
+	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/package_builder.c \
-		tests/native/native_test_isolation.c tests/native/test_package_builder.c $(PLAYER_EXTRA_LIBS) -o build/test_package_builder$(EXE_EXT)
+		tests/native/native_test_isolation.c tests/native/test_package_builder.c $(PLAYER_EXTRA_LIBS) -o $(BUILD_ROOT)/test_package_builder$(EXE_EXT)
 
 # Player UI tests link SDL3 (software renderer, no window), so they run where the
 # player itself builds rather than in the SDL-free native-core-tests set.
 player-ui-tests:
-	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
+	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) tests/native/test_ui_clip.c -lSDL3 \
-		-o build/test_ui_clip$(EXE_EXT)
-	./build/test_ui_clip$(EXE_EXT)
+		-o $(BUILD_ROOT)/test_ui_clip$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_ui_clip$(EXE_EXT)
 
 native-core-tests: cpu-lle-selftest domain-mode-selftest
 	$(CC) -std=c99 -Wall -Wextra -Isrc/rt src/rt/pgf_public.c \
-		tests/native/test_pgf_public.c -o build/test_pgf_public$(EXE_EXT)
-	./build/test_pgf_public$(EXE_EXT)
+		tests/native/test_pgf_public.c -o $(BUILD_ROOT)/test_pgf_public$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_pgf_public$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/native_test_isolation.c tests/native/test_core_catalog.c $(PLAYER_PLATFORM_LIBS) -o build/test_core_catalog$(EXE_EXT)
-	./build/test_core_catalog$(EXE_EXT)
+		tests/native/native_test_isolation.c tests/native/test_core_catalog.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_core_catalog$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_core_catalog$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/native_test_isolation.c tests/native/test_parsers_hostile.c $(PLAYER_PLATFORM_LIBS) -o build/test_parsers_hostile$(EXE_EXT)
-	./build/test_parsers_hostile$(EXE_EXT)
+		tests/native/native_test_isolation.c tests/native/test_parsers_hostile.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_parsers_hostile$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_parsers_hostile$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/test_manifest_parser.c $(PLAYER_PLATFORM_LIBS) -o build/test_manifest_parser$(EXE_EXT)
-	./build/test_manifest_parser$(EXE_EXT) --check
+		tests/native/test_manifest_parser.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_manifest_parser$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_manifest_parser$(EXE_EXT) --check
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/native_test_isolation.c tests/native/test_launch_resolution.c $(PLAYER_PLATFORM_LIBS) -o build/test_launch_resolution$(EXE_EXT)
-	./build/test_launch_resolution$(EXE_EXT)
+		tests/native/native_test_isolation.c tests/native/test_launch_resolution.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_launch_resolution$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_launch_resolution$(EXE_EXT)
 	$(MAKE) --no-print-directory player-state-test-bin
-	./build/test_player_state$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_player_state$(EXE_EXT)
 	$(MAKE) --no-print-directory input-settings-test-bin
-	./build/test_input_settings$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_input_settings$(EXE_EXT)
 	$(MAKE) --no-print-directory package-builder-test-bin
-	./build/test_package_builder$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_package_builder$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt -Isrc/player \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/setup_staging.c src/rt/archive_vfs.c \
-		tests/native/native_test_isolation.c tests/native/test_xb_parser.c $(PLAYER_PLATFORM_LIBS) -o build/test_xb_parser$(EXE_EXT)
-	./build/test_xb_parser$(EXE_EXT)
+		tests/native/native_test_isolation.c tests/native/test_xb_parser.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_xb_parser$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_xb_parser$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
-		tests/native/test_fuzz_parsers.c $(PLAYER_PLATFORM_LIBS) -o build/test_fuzz_parsers$(EXE_EXT)
-	./build/test_fuzz_parsers$(EXE_EXT) --iters 100
+		tests/native/test_fuzz_parsers.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_fuzz_parsers$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_fuzz_parsers$(EXE_EXT) --iters 100
 	$(MAKE) --no-print-directory psmf-producer-selftest PSMF_FUZZ_ITERS=100
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/test_input_profile.c $(PLAYER_PLATFORM_LIBS) -o build/test_input_profile$(EXE_EXT)
-	./build/test_input_profile$(EXE_EXT)
+		tests/native/test_input_profile.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_input_profile$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_input_profile$(EXE_EXT)
 ifeq ($(OS),Windows_NT)
-	$(CC) -std=c99 -Wall -Wextra tests/native/argv_echo_helper.c -lshell32 -o build/argv_echo_helper$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra tests/native/argv_echo_helper.c -lshell32 -o $(BUILD_ROOT)/argv_echo_helper$(EXE_EXT)
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/test_win32_process.c $(PLAYER_PLATFORM_LIBS) -o build/test_win32_process$(EXE_EXT)
-	./build/test_win32_process$(EXE_EXT)
+		tests/native/test_win32_process.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_win32_process$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_win32_process$(EXE_EXT)
 else
 	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/test_posix_process.c $(PLAYER_PLATFORM_LIBS) -o build/test_posix_process$(EXE_EXT)
-	./build/test_posix_process$(EXE_EXT)
+		tests/native/test_posix_process.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_posix_process$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_posix_process$(EXE_EXT)
 endif
 
 FUZZ_ITERS ?= 5000
@@ -2680,11 +2703,11 @@ FUZZ_SAN_FLAGS := -fsanitize=address,undefined -fno-sanitize-recover=all
 endif
 
 fuzz-parsers:
-	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
+	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra $(FUZZ_SAN_FLAGS) -Isrc/core -Isrc/core/generated -Isrc/rt \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
-		tests/native/test_fuzz_parsers.c $(PLAYER_PLATFORM_LIBS) -o build/test_fuzz_parsers$(EXE_EXT)
-	./build/test_fuzz_parsers$(EXE_EXT) --iters $(FUZZ_ITERS)
+		tests/native/test_fuzz_parsers.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_fuzz_parsers$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_fuzz_parsers$(EXE_EXT) --iters $(FUZZ_ITERS)
 	$(MAKE) --no-print-directory psmf-producer-selftest \
 		PSMF_FUZZ_ITERS=$(FUZZ_ITERS) FUZZ_SAN_FLAGS="$(FUZZ_SAN_FLAGS)"
 	$(MAKE) --no-print-directory psmf-media-selftest \

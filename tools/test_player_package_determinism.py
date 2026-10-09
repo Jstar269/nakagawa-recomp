@@ -76,6 +76,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 import publication_policy  # noqa: E402
+from test_build_truth import _class_scratch_build_root  # noqa: E402
 from test_player_package_route import (  # noqa: E402
     DISC_ID,
     FRAMES,
@@ -371,7 +372,8 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
             raise unittest.SkipTest(
                 "the player package route requires " + ", ".join(missing) + " on PATH")
         make_name = "mingw32-make" if os.name == "nt" else "make"
-        probe = subprocess.run([make_name, "--no-print-directory", "sdl3-check"],
+        probe = subprocess.run([make_name, "--no-print-directory", "sdl3-check",
+                                f"BUILD_ROOT={cls.binary_dir.as_posix()}"],
                                cwd=ROOT, capture_output=True, text=True)
         output = probe.stdout + probe.stderr
         if probe.returncode != 0 and "sdl3 dependency is missing" in output.lower():
@@ -379,7 +381,7 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
                           if "sdl3 dependency is missing" in line.lower())
             raise unittest.SkipTest(reason.strip())
         suffix = ".exe" if os.name == "nt" else ""
-        required = [ROOT / "build" / name for name in
+        required = [cls.binary_dir / name for name in
                     (f"test_package_builder{suffix}", f"test_player_state{suffix}",
                      f"nakagawa_player{suffix}")]
         cls.harness, cls.validator, cls.player = required
@@ -387,7 +389,7 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
             return
         built = subprocess.run(
             [make_name, "--no-print-directory", "player", "player-state-test-bin",
-             "package-builder-test-bin"],
+             "package-builder-test-bin", f"BUILD_ROOT={cls.binary_dir.as_posix()}"],
             cwd=ROOT, capture_output=True, text=True,
         )
         if all(binary.is_file() for binary in required):
@@ -405,6 +407,9 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
         cls.addClassCleanup(cls.temporary.cleanup)
         cls.workspace = Path(cls.temporary.name)
         cls.before = cls.repo_status()
+        # The probe's binaries are built into a scratch BUILD_ROOT for the class, which the
+        # package planner's Make runs inherit; the checkout's build/ is never written.
+        cls.binary_dir = _class_scratch_build_root(cls, "player-determinism")
         cls.probe_toolchain()
         # Roots A and B receive byte-identical inputs; root C receives the same
         # guest bound to the analyzer-generated manifest variant.
