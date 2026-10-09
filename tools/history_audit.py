@@ -133,9 +133,15 @@ def _git(cmd: list[str], repo_root: Path = ROOT) -> str:
     return res.stdout.decode("utf-8", errors="replace")
 
 
-def get_repository_baseline(repo_root: Path = ROOT) -> dict:
+def _object_listing(repo_root: Path) -> list[str]:
+    """Every reachable object as a ``<sha> <path>`` line, from one ``rev-list``."""
+    return _git(["rev-list", "--objects", "--all"], repo_root=repo_root).splitlines()
+
+
+def get_repository_baseline(repo_root: Path = ROOT, raw_objects: list[str] | None = None) -> dict:
     commit_count = int(_git(["rev-list", "--count", "--all"], repo_root=repo_root).strip())
-    raw_objects = _git(["rev-list", "--objects", "--all"], repo_root=repo_root).splitlines()
+    if raw_objects is None:
+        raw_objects = _object_listing(repo_root)
     ref_list = _git(["for-each-ref"], repo_root=repo_root).splitlines()
     try:
         main_sha = _git(["rev-parse", "origin/main"], repo_root=repo_root).strip()
@@ -168,10 +174,12 @@ def _path_finding_id(obj_sha: str, repo_root: Path) -> str:
     return "blob:" + obj_sha[:12] if kind == "blob" else obj_sha[:8]
 
 
-def audit_history_tree_paths(repo_root: Path = ROOT) -> list[HistoryFinding]:
+def audit_history_tree_paths(repo_root: Path = ROOT,
+                             raw_objects: list[str] | None = None) -> list[HistoryFinding]:
     """Pass 1: Audit all historical tree entry paths across every reachable commit."""
     findings: list[HistoryFinding] = []
-    raw_objects = _git(["rev-list", "--objects", "--all"], repo_root=repo_root).splitlines()
+    if raw_objects is None:
+        raw_objects = _object_listing(repo_root)
 
     for line in raw_objects:
         parts = line.strip().split(None, 1)
@@ -220,9 +228,11 @@ def audit_history_tree_paths(repo_root: Path = ROOT) -> list[HistoryFinding]:
     return findings
 
 
-def _reachable_blob_ids(repo_root: Path) -> dict[str, str]:
+def _reachable_blob_ids(repo_root: Path,
+                        raw_objects: list[str] | None = None) -> dict[str, str]:
     """Return each reachable blob object exactly once, with one observed path."""
-    raw_objects = _git(["rev-list", "--objects", "--all"], repo_root=repo_root).splitlines()
+    if raw_objects is None:
+        raw_objects = _object_listing(repo_root)
     candidates: dict[str, str] = {}
     for line in raw_objects:
         parts = line.strip().split(None, 1)
@@ -262,10 +272,11 @@ def _binary_magic(data: bytes) -> str | None:
     return None
 
 
-def audit_history_blob_contents(repo_root: Path = ROOT) -> list[HistoryFinding]:
+def audit_history_blob_contents(repo_root: Path = ROOT,
+                                raw_objects: list[str] | None = None) -> list[HistoryFinding]:
     """Pass 2: scan every reachable blob's content once, not just its path."""
     findings: list[HistoryFinding] = []
-    blobs = _reachable_blob_ids(repo_root)
+    blobs = _reachable_blob_ids(repo_root, raw_objects)
     if not blobs:
         return findings
     proc = subprocess.Popen(
@@ -386,10 +397,12 @@ def audit_history_commit_metadata(repo_root: Path = ROOT,
     return findings
 
 
-def audit_large_blobs(repo_root: Path = ROOT, size_threshold: int = 500 * 1024) -> list[dict]:
+def audit_large_blobs(repo_root: Path = ROOT, size_threshold: int = 500 * 1024,
+                      raw_objects: list[str] | None = None) -> list[dict]:
     """Pass 3: Inventory large objects in history packfiles."""
     large_blobs: list[dict] = []
-    raw_objects = _git(["rev-list", "--objects", "--all"], repo_root=repo_root).splitlines()
+    if raw_objects is None:
+        raw_objects = _object_listing(repo_root)
 
     # Map sha to path
     sha_to_path: dict[str, str] = {}
@@ -473,11 +486,14 @@ def _is_reviewed(finding: HistoryFinding, reviewed: list[dict]) -> dict | None:
 
 def generate_full_history_audit_report(repo_root: Path = ROOT,
                                        reviewed_path: Path = REVIEWED_FINDINGS_PATH) -> dict:
-    baseline = get_repository_baseline(repo_root)
-    tree_findings = audit_history_tree_paths(repo_root)
+    # One object listing serves every pass: the report reads one consistent
+    # snapshot of history instead of four separate rev-list runs.
+    raw_objects = _object_listing(repo_root)
+    baseline = get_repository_baseline(repo_root, raw_objects)
+    tree_findings = audit_history_tree_paths(repo_root, raw_objects)
     metadata_findings = audit_history_commit_metadata(repo_root)
-    blob_findings = audit_history_blob_contents(repo_root)
-    large_blobs = audit_large_blobs(repo_root)
+    blob_findings = audit_history_blob_contents(repo_root, raw_objects)
+    large_blobs = audit_large_blobs(repo_root, raw_objects=raw_objects)
     reviewed = load_reviewed_findings(reviewed_path)
 
     all_findings: list[HistoryFinding] = []

@@ -128,6 +128,54 @@ class TestHistoryAudit(unittest.TestCase):
         self.assertTrue(secrets(pem + "\t\r\n"), "tab, CR and LF are ordinary text")
         self.assertEqual(secrets(pem + "\x0b"), [], "a vertical tab marks the blob binary")
 
+    def test_one_object_listing_serves_every_pass_and_changes_no_finding(self):
+        # Fast path: the report lists history once and shares that listing with
+        # every pass. Slow path: each pass lists history itself (raw_objects=None).
+        # Both must agree on every pass, and the fixture must produce findings on
+        # both paths so the comparison is not vacuous.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_git(("init", "-q"), cwd=root, check=True, capture_output=True)
+            begin = "-----BE" + "GIN RSA PRIVATE KEY-----"
+            end = "-----E" + "ND RSA PRIVATE KEY-----"
+            body = "MIIEowIBAAKCAQEAx7Vq9kZ3mQ8Jf2pL0sYtWn4cB6dHgR1uEvXaTzKmNpQrSuVw"
+            (root / "notes.md").write_text(begin + "\n" + body + "\n" + end + "\n", encoding="utf-8")
+            (root / "oracle").mkdir()
+            (root / "oracle" / "dump.txt").write_text("synthetic\n", encoding="utf-8")
+            run_git(["add", "-A"], cwd=root, check=True)
+            run_git(["commit", "-qm", "fixture"], cwd=root, check=True)
+
+            real_git = history_audit._git
+            issued: list[list[str]] = []
+
+            def recording(cmd, repo_root=history_audit.ROOT):
+                issued.append(list(cmd))
+                return real_git(cmd, repo_root=repo_root)
+
+            with mock.patch.object(history_audit, "_git", side_effect=recording):
+                shared = history_audit.generate_full_history_audit_report(root, root / "absent.json")
+            listings = [cmd for cmd in issued if cmd[:2] == ["rev-list", "--objects"]]
+            self.assertEqual(len(listings), 1, "the report must list history exactly once")
+            self.assertGreater(shared["summary"]["total_findings"], 0)
+
+            listing = history_audit._object_listing(root)
+            self.assertEqual(
+                [f.to_dict() for f in history_audit.audit_history_tree_paths(root, listing)],
+                [f.to_dict() for f in history_audit.audit_history_tree_paths(root)],
+            )
+            self.assertEqual(
+                [f.to_dict() for f in history_audit.audit_history_blob_contents(root, listing)],
+                [f.to_dict() for f in history_audit.audit_history_blob_contents(root)],
+            )
+            self.assertEqual(
+                history_audit.audit_large_blobs(root, raw_objects=listing),
+                history_audit.audit_large_blobs(root),
+            )
+            self.assertEqual(
+                history_audit.get_repository_baseline(root, listing),
+                history_audit.get_repository_baseline(root),
+            )
+
     def test_ancestor_only_sensitive_blob_is_scanned(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
