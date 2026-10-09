@@ -96,8 +96,8 @@ Enabled with `SR_GPU_GE=1`. Implementation:
 ## Files
 
 - `sdl3vk.h` — C ABI used by `gui.c` (`-DSR_SDL3VK`); also exports the shared Vulkan
-  device handles (`sdl3vk_get_vk`) and the present-capture API
-  (`sdl3vk_capture_arm/result/cancel/source_label`).
+  device handles (`sdl3vk_get_vk`). Frame capture is armed and reported through the
+  presenter-neutral `src/rt/fbcap.h`, not through this header.
 - `sdl3vk.c` — Phase 0: window, device, swapchain, upload/blit presenter, SDL input,
   validation messenger, and the present-truthful frame capture.
 - `ge_gpu.h` / `ge_gpu.c` — Phase 1+2: capture, batching, pipeline/texture caches,
@@ -111,20 +111,27 @@ Enabled with `SR_GPU_GE=1`. Implementation:
 The old `sdl3vk_capture_swapchain_ppm` was an invalid acquisition: it could read a stale or
 UNDEFINED-layout image and published a PPM under a `.png` name. It is gone. In its place:
 
-- `sdl3vk_capture_arm(path)` arms a capture for the *next* present. The recorded `VkBuffer` is
-  created from its own `VkBufferMemoryRequirements` (HOST_VISIBLE+HOST_COHERENT with a
-  non-coherent fallback) and released by `sdl3vk_shutdown`.
-- `cap_record` runs inside the presenting command buffer, immediately after the blit, so the
-  buffer content is exactly what was presented — no extra acquire, no layout discard, tight
-  `w*4` pitch, no UNDEFINED transitions anywhere on the capture path.
-- `sdl3vk_capture_result()`/`sdl3vk_capture_cancel()`/`sdl3vk_capture_source_label()` expose the
-  outcome; `cap_write_file` publishes an exact P6 `.ppm` (verified header, atomic temp+rename).
+- Capture state and the P6 publisher are presenter-neutral and live in `src/rt/fbcap.{h,c}`:
+  `sr_capture_arm(path)` arms a capture for the *next* present, `sr_capture_result()`,
+  `sr_capture_cancel()` and `sr_capture_source_label()` expose and resolve the outcome, and the
+  publisher writes an exact P6 `.ppm` (verified header, atomic temp+rename). The offscreen and
+  GDI presenters in `gui.c` publish their converted frame through the same service, so a
+  capture means the same thing whichever presenter showed the frame.
+- This presenter's part is the readback. When a capture is armed, `cap_record` runs inside the
+  presenting command buffer, immediately after the blit, so the buffer content is exactly what
+  was presented — no extra acquire, no layout discard, tight `w*4` pitch, no UNDEFINED
+  transitions anywhere on the capture path. The `VkBuffer` is created from its own
+  `VkBufferMemoryRequirements` (HOST_VISIBLE+HOST_COHERENT with a non-coherent fallback) and
+  released by `sdl3vk_shutdown`. Once the frame is known to have reached the presentation
+  engine, the readback is handed to `fbcap.c` with its source label (`cpu-framebuffer` or
+  `gpu-render-target`) and byte order.
 - Slot policy (which env var owns the next present, paths, FBDUMP exit status) lives in
   `src/rt/fbcap_policy.{h,c}`; the hle.c integration is `fbcap_arm_for_present`.
 - `sdl3vk_capture_selftest()` (standalone binary via the Makefile `gpu-capture-selftest` target)
   exercises policy, CPU- and GPU-source captures, cancel, scale, and byte-checks the published
   PPMs; under `SR_VULKAN_VALIDATION=1` it also asserts zero validation-layer errors. Exit 77
-  means SKIP (Vulkan unavailable).
+  means SKIP (Vulkan unavailable). `fbcap-selftest` covers the presenter-neutral service itself
+  without a GPU.
 
 ## Environment variables
 

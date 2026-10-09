@@ -305,6 +305,7 @@ class TrackedMachinePathTests(unittest.TestCase):
     #: Exact normalised tokens that name no machine location, by reason.
     ALLOWED_DRIVE_TOKENS = {
         "c:\\": "bare drive root named by detectors and comment examples",
+        "c:/": "bare drive root (forward-slash form) named by path-handling code and comments",
         "c:/x": "hostile drive-rooted input in the VFS containment selftest (src/rt/vfs_selftest.c)",
         "c:\\foo": "hostile device-path input in the VFS containment selftest (src/rt/vfs_selftest.c)",
         "c:\\extracted": "SR_DATAROOT comment example, an absolute data root (src/rt/hle.c)",

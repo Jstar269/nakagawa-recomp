@@ -354,7 +354,13 @@ class CpuStateAbiProfileTests(unittest.TestCase):
 
 SDL3VK_C = "src/rt/gpu_sdl3vk/sdl3vk.c"
 FBCAP_C = "src/rt/fbcap_policy.c"
+CAPTURE_C = "src/rt/fbcap.c"
 SDL3VK_VAR = "$(SDL3VK_SRCS)"
+
+
+def _supplies_capture(text: str) -> bool:
+    """True when a Makefile statement links the capture policy AND service."""
+    return SDL3VK_VAR in text or (FBCAP_C in text and CAPTURE_C in text)
 
 
 def _logical_lines(makefile: str) -> list[tuple[int, str]]:
@@ -382,8 +388,9 @@ def _logical_lines(makefile: str) -> list[tuple[int, str]]:
 
 
 class Sdl3vkLinkDependencyTests(unittest.TestCase):
-    """sdl3vk.c calls into fbcap_policy.c, so every recipe that compiles the
-    backend must also supply the policy.  Issue #57 added the call sites and
+    """sdl3vk.c calls into fbcap_policy.c and the presenter-neutral capture
+    service fbcap.c, so every recipe that compiles the backend must also supply
+    both.  Issue #57 added the policy call sites and
     updated RT_SRCS plus gpu-capture-selftest, but not gpu-coherence-selftest
     or ge-replay -- both failed to link on `undefined reference to
     sr_fbcap_owner`.  --gc-sections does not save an omitting recipe, because
@@ -400,6 +407,13 @@ class Sdl3vkLinkDependencyTests(unittest.TestCase):
         for symbol in ("sr_fbcap_owner", "sr_fbcap_path", "sr_fbcap_exit_status"):
             definition = re.compile(rf"^\w[\w \t*]*\b{symbol}\s*\(", re.MULTILINE)
             self.assertRegex(source, definition, msg=symbol)
+        service = (ROOT / "src" / "rt" / "fbcap.c").read_text(encoding="utf-8")
+        backend = (ROOT / "src" / "rt" / "gpu_sdl3vk" / "sdl3vk.c").read_text(encoding="utf-8")
+        called = sorted(set(re.findall(r"\b(sr_capture_\w+)\s*\(", backend)))
+        self.assertNotEqual(called, [], "sdl3vk.c no longer calls the capture service")
+        for symbol in called:
+            definition = re.compile(rf"^\w[\w \t*]*\b{symbol}\s*\(", re.MULTILINE)
+            self.assertRegex(service, definition, msg=symbol)
 
     def test_sdl3vk_srcs_bundles_the_backend_with_its_policy(self) -> None:
         definitions = [
@@ -408,6 +422,7 @@ class Sdl3vkLinkDependencyTests(unittest.TestCase):
         self.assertEqual(len(definitions), 1, self.lines)
         self.assertIn(SDL3VK_C, definitions[0])
         self.assertIn(FBCAP_C, definitions[0])
+        self.assertIn(CAPTURE_C, definitions[0])
 
     def test_every_user_of_the_backend_also_supplies_the_capture_policy(self) -> None:
         backend = (ROOT / "src" / "rt" / "gpu_sdl3vk" / "sdl3vk.c").read_text(encoding="utf-8")
@@ -429,14 +444,13 @@ class Sdl3vkLinkDependencyTests(unittest.TestCase):
         offenders = []
         for number, text in self.lines:
             uses_backend = SDL3VK_C in text or SDL3VK_VAR in text
-            supplies_policy = FBCAP_C in text or SDL3VK_VAR in text
-            if uses_backend and not supplies_policy:
+            if uses_backend and not _supplies_capture(text):
                 offenders.append(f"Makefile:{number}: {text.strip()}")
         self.assertEqual(
             offenders,
             [],
             "these Makefile statements compile "
-            f"{SDL3VK_C} without {FBCAP_C}; sdl3vk.c calls "
+            f"{SDL3VK_C} without {FBCAP_C} and {CAPTURE_C}; sdl3vk.c calls "
             f"{', '.join(s.rstrip('(').strip() for s in referenced)}, so the link "
             f"will fail. Use {SDL3VK_VAR}:\n" + "\n".join(offenders),
         )
@@ -459,10 +473,14 @@ class Sdl3vkLinkDependencyTests(unittest.TestCase):
         offenders = [
             number
             for number, text in regressed
-            if (SDL3VK_C in text or SDL3VK_VAR in text)
-            and not (FBCAP_C in text or SDL3VK_VAR in text)
+            if (SDL3VK_C in text or SDL3VK_VAR in text) and not _supplies_capture(text)
         ]
         self.assertEqual(offenders, [2])
+        # Supplying the policy without the capture service is the same link failure.
+        policy_only = _logical_lines(
+            f"ge-replay:\n\t$(CC) -o out.exe {SDL3VK_C} {FBCAP_C} $(LIBS)\n"
+        )
+        self.assertFalse(_supplies_capture(policy_only[1][1]))
 
 
 class FlightRecorderLinkDependencyTests(unittest.TestCase):
