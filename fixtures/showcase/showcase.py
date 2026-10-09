@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import struct
 import subprocess
@@ -51,6 +52,11 @@ PSP_PRX_ELF_TYPE = 0xFFA0
 # progress fails instead of hanging CI.
 SMOKE_EXIT_VBLANK = 3 * WINDOW_VBLANKS
 SMOKE_TIMEOUT_SECONDS = 15
+# Scripted presses as SR_PADSCRIPT rows: (vblank, button mask, width in vblanks).
+# Cross plays each demo's tone; Start saves and exits Breakout's savedata run.
+CROSS_PRESS = (12, 0x4000, 4)
+START_PRESS = (240, 0x0008, 4)
+SAVE_START_PRESS = (120, 0x0008, 4)
 
 DEMOS = (
     {
@@ -471,6 +477,38 @@ def first_frame_checkpoint(demo: dict[str, object], output: str, package_dir: Pa
     return checkpoint, ppm
 
 
+def _padscript(*presses: tuple[int, int, int]) -> str:
+    return "".join(f"{vblank} {mask:04x} {width}\n" for vblank, mask, width in presses)
+
+
+def scripted_press_note(output: str, press: tuple[int, int, int]) -> str:
+    """Name the host lateness that delayed or skipped a scripted press, or return "".
+
+    A pad-script row holds its press while the VCOUNT seen at each serviced vblank is
+    inside [vblank, vblank + width). A host that falls behind services several elapsed
+    periods at once at the batch's final VCOUNT, so the press can be latched late, on
+    fewer samples, or not at all, and a guest that reads only the latest sample can then
+    miss it. That limit belongs to scripted input on a slow host, not to the guest or
+    the HLE, and the failure message says so.
+    """
+    vblank, mask, width = press
+    facts = []
+    latched = re.search(rf"ctrl_latch: vcount=(\d+) buttons 0x[0-9a-f]{{4}} -> 0x{mask:04x}\b",
+                        output)
+    if latched is None:
+        facts.append(f"no controller sample latched the scripted press due at vblanks "
+                     f"{vblank}-{vblank + width - 1}: the host stepped VCOUNT past it")
+    elif int(latched.group(1)) > vblank:
+        first = int(latched.group(1))
+        facts.append(f"the scripted press due at vblank {vblank} was first latched at vblank "
+                     f"{first}: the host fell {first - vblank} display periods behind")
+    flip = re.search(r"BOOT_EVENT phase=display_flip vcount=(\d+)", output)
+    if flip and int(flip.group(1)) >= vblank + width:
+        facts.append(f"the guest presented its first frame at vblank {flip.group(1)}, "
+                     f"after the press window")
+    return f" ({'; '.join(facts)})" if facts else ""
+
+
 def _run_runtime(command: list[str], env: dict[str, str], cwd: Path,
                  log_path: Path, label: str) -> str:
     """Run one bounded runtime smoke and keep its complete log, then return the output.
@@ -508,15 +546,19 @@ def smoke_all() -> None:
         disc_id = str(demo["disc_id"])
         smoke_dir = padscript_root / disc_id
         smoke_dir.mkdir(parents=True, exist_ok=True)
-        (smoke_dir / "padscript.txt").write_text("12 4000 4\n240 0008 4\n", encoding="ascii")
+        (smoke_dir / "padscript.txt").write_text(_padscript(CROSS_PRESS, START_PRESS),
+                                                 encoding="ascii")
         command, env, package_dir = _runtime_command(demo, smoke_dir / "padscript.txt")
         log_path = smoke_dir / "runtime.log"
         output = _run_runtime(command, env, package_dir, log_path, f"{disc_id} runtime")
         checkpoint, ppm = first_frame_checkpoint(demo, output, package_dir, log_path)
-        if "-> 0x4000" not in output:
-            raise ShowcaseError(f"{disc_id} missed the scripted Cross input sample; see {log_path}")
+        press_note = scripted_press_note(output, CROSS_PRESS)
+        if f"-> 0x{CROSS_PRESS[1]:04x}" not in output:
+            raise ShowcaseError(
+                f"{disc_id} missed the scripted Cross input sample{press_note}; see {log_path}")
         if "AUDIOSTAT_HOST:" not in output or "pushed=0" in output:
-            raise ShowcaseError(f"{disc_id} missed audio-submission telemetry; see {log_path}")
+            raise ShowcaseError(
+                f"{disc_id} missed audio-submission telemetry{press_note}; see {log_path}")
         color_count, foreground_pixels = _ppm_metrics(ppm, bytes((16, 24, 32)))
         # A flat-colour 2D frame legitimately has only a handful of colours; this
         # catches an empty or single-colour frame, and the screenshots are reviewed.
@@ -532,11 +574,17 @@ def smoke_all() -> None:
             raise ShowcaseError(f"could not convert {ppm} to PNG: {converted.stderr.strip()}")
         if disc_id == "TEST00008":
             save_padscript = smoke_dir / "padscript-save.txt"
-            save_padscript.write_text("12 4000 4\n120 0008 4\n", encoding="ascii")
+            save_padscript.write_text(_padscript(CROSS_PRESS, SAVE_START_PRESS), encoding="ascii")
             save_command, save_env, save_package_dir = _runtime_command(demo, save_padscript)
             save_env.pop("SR_EXIT_AT_VBLANK", None)
-            _run_runtime(save_command, save_env, save_package_dir,
-                         smoke_dir / "runtime-save.log", f"{disc_id} savedata smoke")
+            save_log_path = smoke_dir / "runtime-save.log"
+            try:
+                _run_runtime(save_command, save_env, save_package_dir, save_log_path,
+                             f"{disc_id} savedata smoke")
+            except ShowcaseError as exc:
+                # The savedata run ends only when the guest sees its scripted Start.
+                save_log = save_log_path.read_text(encoding="utf-8", errors="replace")
+                raise ShowcaseError(f"{exc}{scripted_press_note(save_log, SAVE_START_PRESS)}") from exc
             save_root = Path(env["SR_MEMSTICK"])
             if not save_root.exists() or not any(path.is_file() for path in save_root.rglob("*")):
                 raise ShowcaseError(f"Breakout did not create savedata under {save_root}")

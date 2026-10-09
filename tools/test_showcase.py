@@ -109,6 +109,43 @@ class ShowcaseFirstFrameCheckpointTests(unittest.TestCase):
         self.assertEqual(BREAKOUT["frame_counters"], ("spr2d", "px2d"))
 
 
+class ShowcaseScriptedPressTests(unittest.TestCase):
+    """Input failures caused by a host that fell behind say so instead of looking random."""
+
+    def test_pad_script_rows_match_the_runtime_format(self) -> None:
+        self.assertEqual(showcase._padscript(showcase.CROSS_PRESS, showcase.START_PRESS),
+                         "12 4000 4\n240 0008 4\n")
+
+    def test_on_time_press_adds_nothing(self) -> None:
+        log = "ctrl_latch: vcount=12 buttons 0x0000 -> 0x4000 lx=128 ly=128\n"
+        self.assertEqual(showcase.scripted_press_note(log, showcase.CROSS_PRESS), "")
+
+    def test_late_press_names_how_far_the_host_fell_behind(self) -> None:
+        log = ("ctrl_latch: vcount=15 buttons 0x0000 -> 0x4000 lx=128 ly=128\n"
+               "ctrl_latch: vcount=16 buttons 0x4000 -> 0x0000 lx=128 ly=128\n")
+        self.assertEqual(
+            showcase.scripted_press_note(log, showcase.CROSS_PRESS),
+            " (the scripted press due at vblank 12 was first latched at vblank 15: "
+            "the host fell 3 display periods behind)")
+
+    def test_press_before_the_guest_presented_says_so(self) -> None:
+        # A starved host booted the guest so late that its first flip came after the
+        # press window: the press was latched on time but nothing was reading it yet.
+        log = ("ctrl_latch: vcount=14 buttons 0x0000 -> 0x4000 lx=128 ly=128\n"
+               "BOOT_EVENT phase=display_flip vcount=55 buffer=0x04088000 stride=512 format=3\n")
+        self.assertEqual(
+            showcase.scripted_press_note(log, showcase.CROSS_PRESS),
+            " (the scripted press due at vblank 12 was first latched at vblank 14: the host fell "
+            "2 display periods behind; the guest presented its first frame at vblank 55, "
+            "after the press window)")
+
+    def test_skipped_press_names_the_stepped_over_window(self) -> None:
+        self.assertEqual(
+            showcase.scripted_press_note("GESTAT f=60 tri3d=1\n", showcase.SAVE_START_PRESS),
+            " (no controller sample latched the scripted press due at vblanks 120-123: "
+            "the host stepped VCOUNT past it)")
+
+
 class ShowcaseRuntimeRunTests(unittest.TestCase):
     def test_timeout_keeps_the_partial_log_and_names_it(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

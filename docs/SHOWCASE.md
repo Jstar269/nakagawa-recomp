@@ -73,7 +73,10 @@ guest later, so the checkpoint may land in a later window. The framebuffer captu
 judged is the one named for that window. Every run writes its log (`runtime.log`,
 or `runtime-save.log` for the savedata run) under
 `build/showcase/smoke/<disc id>/`, even on a timeout. Linux CI uploads those logs
-and captures when the smoke fails.
+and captures when the smoke fails. The scripted Cross and Start presses are still
+timed in vblanks, so a host that falls far behind can deliver one late or skip it.
+When an input, audio, or savedata check fails that way, its message names the
+late or skipped press.
 
 In the 3D scene, the analog stick rotates the lit, checker-textured cube, Cross
 plays a short tone, and Start exits. Breakout uses the analog stick or d-pad to
