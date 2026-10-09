@@ -22,7 +22,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import prx_reloc_model as model
 from test_prx_loader_cleanroom import (
-    ET_PSP,
     PT_REL_A,
     PT_REL_B,
     Module,
