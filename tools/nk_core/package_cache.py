@@ -1220,58 +1220,80 @@ def write_completion_manifest(
     return destination
 
 
+# Failure classes of a completion check, so a caller can name why a record was refused
+# without parsing its message.
+_COMPLETION_OK = ""
+_COMPLETION_MISSING = "missing"
+_COMPLETION_INVALID = "invalid"
+_COMPLETION_KEY = "key"
+_COMPLETION_ARTIFACT = "artifact"
+_COMPLETION_UNCOVERED = "uncovered"
+
+
 def validate_completion_manifest(
     package_dir: Path,
     *,
     expected_key: Mapping[str, Any] | None = None,
     required_paths: set[str] | None = None,
 ) -> tuple[bool, str, dict[str, Any] | None]:
+    failure, reason, document = _check_completion_manifest(
+        package_dir, expected_key=expected_key, required_paths=required_paths
+    )
+    return failure == _COMPLETION_OK, reason, document
+
+
+def _check_completion_manifest(
+    package_dir: Path,
+    *,
+    expected_key: Mapping[str, Any] | None = None,
+    required_paths: set[str] | None = None,
+) -> tuple[str, str, dict[str, Any] | None]:
     package_dir = package_dir.resolve(strict=False)
     path = package_dir / COMPLETION_MANIFEST
     if not path.is_file() or path.is_symlink():
-        return False, "completion manifest is missing or not a regular file", None
+        return _COMPLETION_MISSING, "completion manifest is missing or not a regular file", None
     try:
         document = _read_json(path)
     except (OSError, ValueError) as exc:
-        return False, f"completion manifest is unreadable: {exc}", None  # includes BoundedJsonError
+        return _COMPLETION_INVALID, f"completion manifest is unreadable: {exc}", None  # includes BoundedJsonError
     if not isinstance(document, dict):
-        return False, "completion manifest must be a JSON object", None
+        return _COMPLETION_INVALID, "completion manifest must be a JSON object", None
     allowed = {"format", "schema_version", "status", "cache_key", "title_input_identity", "artifacts", "backends", "limits"}
     required = {"format", "schema_version", "status", "cache_key", "title_input_identity", "artifacts"}
     doc_keys = set(document)
     if not required.issubset(doc_keys) or not doc_keys.issubset(allowed):
-        return False, "completion manifest fields do not match the cache contract", None
+        return _COMPLETION_INVALID, "completion manifest fields do not match the cache contract", None
     if document["format"] != COMPLETION_FORMAT or document["schema_version"] != COMPLETION_SCHEMA_VERSION:
-        return False, "completion manifest format or schema is unsupported", None
+        return _COMPLETION_INVALID, "completion manifest format or schema is unsupported", None
     if document["status"] != "complete":
-        return False, "completion manifest does not mark a complete build", None
+        return _COMPLETION_INVALID, "completion manifest does not mark a complete build", None
     key = document["cache_key"]
     if not isinstance(key, dict):
-        return False, "completion manifest cache key is missing", None
+        return _COMPLETION_INVALID, "completion manifest cache key is missing", None
     try:
         _key_components(key, "aot")
         _key_components(key, "native")
     except PackageCacheError as exc:
-        return False, str(exc), None
+        return _COMPLETION_INVALID, str(exc), None
     if expected_key is not None and key != expected_key:
-        return False, "completion manifest cache key does not match the package", None
+        return _COMPLETION_KEY, "completion manifest cache key does not match the package", None
     try:
         identity = validate_title_input_identity(document["title_input_identity"])
     except PackageCacheError as exc:
-        return False, str(exc), None
+        return _COMPLETION_INVALID, str(exc), None
     try:
         aot_components, _ = _key_components(key, "aot")
     except PackageCacheError as exc:
-        return False, str(exc), None
+        return _COMPLETION_INVALID, str(exc), None
     if aot_components.get("title_input_identity_sha256") != title_input_identity_digest(identity):
-        return False, "completion manifest title input identity does not match the cache key", None
+        return _COMPLETION_INVALID, "completion manifest title input identity does not match the cache key", None
     artifacts = document["artifacts"]
     if not isinstance(artifacts, list) or not artifacts:
-        return False, "completion manifest artifact list is empty", None
+        return _COMPLETION_INVALID, "completion manifest artifact list is empty", None
     seen: set[str] = set()
     for record in artifacts:
         if not isinstance(record, dict) or set(record) != {"path", "sha256"}:
-            return False, "completion manifest artifact record is invalid", None
+            return _COMPLETION_INVALID, "completion manifest artifact record is invalid", None
         try:
             relative = _safe_relative(record["path"])
             digest = record["sha256"]
@@ -1279,24 +1301,24 @@ def validate_completion_manifest(
                 raise PackageCacheError("artifact digest is invalid")
             resolved = _resolve_within(package_dir, relative)
         except PackageCacheError as exc:
-            return False, str(exc), None
+            return _COMPLETION_INVALID, str(exc), None
         if relative in seen:
-            return False, f"completion manifest repeats artifact {relative}", None
+            return _COMPLETION_INVALID, f"completion manifest repeats artifact {relative}", None
         seen.add(relative)
         if not resolved.is_file() or resolved.is_symlink():
-            return False, f"completion artifact is missing: {relative}", None
+            return _COMPLETION_ARTIFACT, f"completion artifact is missing: {relative}", None
         if sha256_file(resolved) != digest:
-            return False, f"completion artifact digest mismatch: {relative}", None
-    for relative in required_paths or set():
+            return _COMPLETION_ARTIFACT, f"completion artifact digest mismatch: {relative}", None
+    for relative in sorted(required_paths or set()):
         if relative not in seen:
-            return False, f"completion manifest does not cover {relative}", None
+            return _COMPLETION_UNCOVERED, f"completion manifest does not cover {relative}", None
     try:
         actual = {record["path"] for record in _artifact_records(package_dir)}
     except PackageCacheError as exc:
-        return False, str(exc), None
+        return _COMPLETION_ARTIFACT, str(exc), None
     if actual != seen:
-        return False, "completion manifest artifact set does not match the package", None
-    return True, "", document
+        return _COMPLETION_ARTIFACT, "completion manifest artifact set does not match the package", None
+    return _COMPLETION_OK, "", document
 
 
 def package_cache_key(package_dir: Path) -> Mapping[str, Any] | None:
@@ -1447,3 +1469,100 @@ def validate_package_cache(
     if completion is None or completion.get("title_input_identity") != identity:
         return False, "completion manifest title input identity does not match package.json"
     return True, ""
+
+
+# A generated-code stage is AOT output (generated C, its runtime image and import table)
+# written by one planner run and handed to a later package build of the same inputs, so
+# the package compiles it instead of generating it again. It carries the completion
+# record a package carries, written last, and the later build accepts it only after the
+# checks the native-only reuse of a package's generated C performs: the record is
+# complete and every byte it names is intact, and its cache key's generated-code
+# components equal the build's own. Every refusal is named, and a refused stage is
+# regenerated from source, never compiled.
+AOT_STAGE_ACCEPTED = "AOT_STAGE_ACCEPTED"
+AOT_STAGE_RECORD_MISSING = "AOT_STAGE_RECORD_MISSING"
+AOT_STAGE_RECORD_INVALID = "AOT_STAGE_RECORD_INVALID"
+AOT_STAGE_ARTIFACT_MISMATCH = "AOT_STAGE_ARTIFACT_MISMATCH"
+AOT_STAGE_INCOMPLETE = "AOT_STAGE_INCOMPLETE"
+AOT_STAGE_INPUT_CHANGED = "AOT_STAGE_INPUT_CHANGED"
+AOT_STAGE_GENERATOR_CHANGED = "AOT_STAGE_GENERATOR_CHANGED"
+AOT_STAGE_OPTIONS_CHANGED = "AOT_STAGE_OPTIONS_CHANGED"
+AOT_STAGE_REFUSAL_CODES = (
+    AOT_STAGE_RECORD_MISSING,
+    AOT_STAGE_RECORD_INVALID,
+    AOT_STAGE_ARTIFACT_MISMATCH,
+    AOT_STAGE_INCOMPLETE,
+    AOT_STAGE_INPUT_CHANGED,
+    AOT_STAGE_GENERATOR_CHANGED,
+    AOT_STAGE_OPTIONS_CHANGED,
+)
+_AOT_STAGE_COMPLETION_CODES = {
+    _COMPLETION_MISSING: AOT_STAGE_RECORD_MISSING,
+    _COMPLETION_INVALID: AOT_STAGE_RECORD_INVALID,
+    _COMPLETION_KEY: AOT_STAGE_RECORD_INVALID,
+    _COMPLETION_ARTIFACT: AOT_STAGE_ARTIFACT_MISMATCH,
+    _COMPLETION_UNCOVERED: AOT_STAGE_INCOMPLETE,
+}
+# The generated-code key components, grouped by what changed. A refusal names the
+# first group that changed, in this order, and lists every changed component.
+_AOT_STAGE_KEY_GROUPS = (
+    (AOT_STAGE_INPUT_CHANGED, frozenset({
+        "aot:executable_sha256", "aot:manifest_sha256", "aot:modules_sha256",
+        "aot:title_input_identity_sha256", "aot:psp_header_sha256",
+    })),
+    (AOT_STAGE_GENERATOR_CHANGED, frozenset({
+        "aot:analyzer_codegen_epoch", "aot:analyzer_sha256", "aot:codegen_sha256",
+        "aot:generated_code_abi_epoch", "aot:runtime_abi_epoch",
+    })),
+    (AOT_STAGE_OPTIONS_CHANGED, frozenset({"aot:codegen_options_sha256"})),
+)
+
+
+@dataclass(frozen=True)
+class AotStageDecision:
+    """Whether a generated-code stage may be compiled in place of regenerating it."""
+
+    accepted: bool
+    code: str
+    reasons: tuple[str, ...]
+    artifacts: Mapping[str, str]
+
+    @property
+    def detail(self) -> str:
+        return ", ".join(self.reasons)
+
+
+def _refused_stage(code: str, *reasons: str) -> AotStageDecision:
+    return AotStageDecision(False, code, tuple(reason for reason in reasons if reason), {})
+
+
+def evaluate_aot_stage(
+    stage_dir: Path,
+    current_key: Mapping[str, Any],
+    *,
+    required_paths: set[str],
+) -> AotStageDecision:
+    """Decide whether ``stage_dir`` holds generated code reusable under ``current_key``.
+
+    ``required_paths`` names the outputs a complete stage must record. An accepted
+    decision carries the SHA-256 of every recorded artifact, so the caller verifies the
+    bytes it copies against the record rather than against a second read of the stage.
+    """
+    stage = Path(stage_dir)
+    if stage.is_symlink() or not stage.is_dir():
+        return _refused_stage(AOT_STAGE_RECORD_MISSING, "generated-code stage directory is missing")
+    failure, reason, document = _check_completion_manifest(stage, required_paths=required_paths)
+    if failure != _COMPLETION_OK or document is None:
+        return _refused_stage(
+            _AOT_STAGE_COMPLETION_CODES.get(failure, AOT_STAGE_RECORD_INVALID), reason
+        )
+    decision = compare_cache_keys(document["cache_key"], current_key)
+    if not decision.generated_c_reusable:
+        changed = set(decision.reasons)
+        code = next(
+            (group for group, components in _AOT_STAGE_KEY_GROUPS if changed & components),
+            AOT_STAGE_RECORD_INVALID,
+        )
+        return _refused_stage(code, *(decision.reasons or ("cache key mismatch",)))
+    artifacts = {record["path"]: record["sha256"] for record in document["artifacts"]}
+    return AotStageDecision(True, AOT_STAGE_ACCEPTED, (), artifacts)
