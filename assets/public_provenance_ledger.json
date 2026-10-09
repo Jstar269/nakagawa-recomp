@@ -6691,7 +6691,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8b987b5e7701cc640257273ed57727261da3b34ad42695e40813ed2f6b7f86ae"
+      "sha256": "b152470025287b470f5e68454a0976980ec9a303b838af289381ba1b730be247"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -6799,7 +6799,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "40a0c645b117eb28c989e3e5b57424e4f3c7a3e41a4bfee1a4736bd6031ffb52"
+      "sha256": "b45d2f0dc3c34a3b19e4582e335775ba9e009501548312f1adb6db7cdaf83c99"
     },
     {
       "path": "tools/nk_core/prep_engine.py",
@@ -8736,7 +8736,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "72e5bc248a9b27d63ecb5ee0870bafd089ae0b47e249fe73e321701a59a2f267"
+      "sha256": "f68aeb3d30a3c6a89fd4500afbaa0f872d67016480d32737c5fe71cb0686f19b"
     },
     {
       "path": "tools/test_package_notices.py",
@@ -9925,7 +9925,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "29438836cdef9f8279a3f5021f1af83186496c47eb5106758547004f8a40a64e"
+      "sha256": "1100892f4b6fadc828759b516a6703d18ab0adf7a146ad5e6204403ef2b6c358"
     },
     {
       "path": "tools/title_manager_plan.ps1",
