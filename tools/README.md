@@ -165,6 +165,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `flight_diff.py` | Compare two source-safe flight-recorder bundles. |
 | `ge_transition_diff.py` | Offline diff for the narrow GE transition trace. |
 | `ge_replay_metrics.py` | Strict parsers for aggregate GE replay CPU-profile summaries. |
+| `ge_stat_windows.py` | Read the runtime's `SR_GESTAT` windows by the vblank that closed them, for gates such as the showcase smoke. |
 | `perf_summary_diff.py` | Compare two runtime performance summaries within a tolerance. |
 | `pgf_writer.py` | Deterministic PGF writer for project-generated glyph bitmaps (a fixture generator, never an authenticity claim). |
 | `ttf2pgf.py` | Deterministic OpenType/TTF to PGF converter for pinned public fixtures; behaviour contract and independence record in `docs/cleanroom/PGF_CONVERTER_SPEC.md` (issue #313). |
@@ -443,6 +444,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_gate_exit_resolution.py` | Shared exit-stub discovery and trace helpers used by the correctness gates. |
 | `test_ge_capture.py` | GE capture route regressions. |
 | `test_ge_nonfinite_vertex.py` | Tests for the GE's fail-closed handling of a non-finite vertex. |
+| `test_ge_stat_windows.py` | `SR_GESTAT` windows close once per VCOUNT boundary crossing, and the window parser that reads them. |
 | `test_ge_transition_trace.py` | Tests for the narrow GE transition trace and its offline diff. |
 | `test_hardware_runner_protocol.py` | Executable conformance suite for the hardware runner autonomy design. |
 | `test_incident_regression_private.py` | Exact-incident regression against preserved private evidence. |
