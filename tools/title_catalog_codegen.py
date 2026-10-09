@@ -659,7 +659,9 @@ def generate_source(digest: str, titles: List[Dict[str, Any]]) -> str:
             lines.append(f"static const NkModuleDefinition s_modules_title_{idx}[] = {{")
             for m in modules:
                 req_str = "true" if m.get("required") else "false"
-                lines.append(f'    {{ "{m["name"]}", 0x{m["load_address"]:08x}U, {req_str} }},')
+                # A runtime-placed module has no manifest address and records 0; a
+                # fixed guest-module base always lies in user RAM, so 0 is unambiguous.
+                lines.append(f'    {{ "{m["name"]}", 0x{m.get("load_address", 0):08x}U, {req_str} }},')
             lines.append("};")
             lines.append("")
 

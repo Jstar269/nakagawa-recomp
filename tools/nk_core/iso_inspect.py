@@ -34,9 +34,6 @@ MAX_CFW_EBOOT_SCAN_BYTES = 256 * 1024
 EXPERIMENTAL_PROFILE_SCHEMA_VERSION = 1
 PSP_DEFAULT_MAIN_LOAD_ADDRESS = 0x08804000
 PSP_CONVENTIONAL_USER_MEMORY_TOP = 0x0A000000
-PSP_MODULE_ADDRESS_TOP = 0x09EF0000
-PSP_MODULE_ADDRESS_ALIGNMENT = 0x00010000
-PSP_MODULE_HEAP_RESERVE = 0x00100000
 SFO_FMT_UTF8_SPECIAL = 0x0004
 SFO_FMT_UTF8 = 0x0204
 SFO_FMT_UINT32 = 0x0404
@@ -333,43 +330,49 @@ def _elf32_load_span(path: Path | str) -> tuple[int, int, int]:
     return e_type, low, high
 
 
-def plan_provisional_module_bindings(
+def plan_guest_module_bindings(
     main_elf: Path | str,
     module_inputs: Sequence[tuple[str, Path | str, str]],
 ) -> list[dict]:
-    """Place relocatable modules below the conventional partition top.
+    """Declare each translated guest module placed by the guest allocator at run time.
 
-    The lowest address leaves at least 1 MiB after the main image (including
-    PT_LOAD BSS) for the initial user heap. Modules then occupy ascending,
-    64-KiB-aligned ranges in filename order, below 0x09EF0000. That ceiling is
-    the runtime's VBlank-stack base; the 64-KiB VBlank stack and the 1-MiB
-    nested-call frame arena above it remain reserved. The HLE allocator
-    reserves the exact manifest address when each module is loaded; provisional
-    evidence records that this deterministic layout is a project policy, not a
-    measured firmware placement.
+    The PSP kernel's loader takes a module's memory from the user partition when the
+    game loads it, so the build reserves nothing: modules need not fit together, and a
+    load that finds no room fails at run time with the status the kernel reports
+    (#704). Each declared module is translated position-independently (``placement:
+    runtime``). Only what is fixed before the game runs is checked here: the main image
+    must lie inside user memory (GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE).
 
-    Only modules that run as translated guest code are placed. Each module's
-    export table is compared, NID by NID, with the NIDs the runtime registers
+    Only modules that run as translated guest code are declared. Each module's export
+    table is compared, NID by NID, with the NIDs the runtime registers
     (runtime_registered_nids):
 
     * a module the runtime replaces completely (runtime_serves_module) is not
-      placed: the runtime answers every function it exports;
-    * a kernel-mode module is never placed, because the runtime does not run
-      PSP kernel-mode code. It stops planning with
-      GUEST_MODULE_FORMAT_UNSUPPORTED only when the main executable imports
-      one of its user-callable functions that neither the runtime registers
-      nor a placed module exports: the title's own program then depends on
-      kernel code nothing provides. Without such an import (for example a
-      firmware driver that only another firmware library calls) the module
-      is left out, and a call into it from a library that does run fails
+      declared and not translated: the runtime answers every function it exports;
+    * a kernel-mode module is never declared, because the runtime does not run PSP
+      kernel-mode code. It stops planning with GUEST_MODULE_FORMAT_UNSUPPORTED only
+      when the main executable imports one of its user-callable functions that
+      neither the runtime registers nor a declared module exports: the title's own
+      program then depends on kernel code nothing provides. Without such an import
+      (for example a firmware driver that only another firmware library calls) the
+      module is left out, and a call into it from a library that does run fails
       closed at the call as a named unimplemented NID;
-    * every other module is placed.
+    * every other module is declared. A relocatable module (ELF type 0xFFA0 or 3)
+      goes wherever the allocator puts it. A fixed-address module (ELF type 2) can
+      load only at its link address, so that range must lie inside user memory
+      without overlapping the main image (GUEST_MODULE_LOAD_BINDING_REQUIRED
+      otherwise). Two fixed-address modules may share addresses: only modules loaded
+      at the same time compete for memory, and the allocator decides that when the
+      game loads them.
+
+    Modules are listed by case-insensitive filename.
     """
-    main_type, _main_low, main_high = _elf32_load_span(main_elf)
+    main_type, main_low, main_high = _elf32_load_span(main_elf)
     if main_type in (3, 0xFFA0):
+        main_start = PSP_DEFAULT_MAIN_LOAD_ADDRESS + main_low
         main_end = PSP_DEFAULT_MAIN_LOAD_ADDRESS + main_high
     elif main_type == 2:
-        main_end = main_high
+        main_start, main_end = main_low, main_high
     else:
         raise IsoInspectionError(
             "main executable type has no supported guest-module layout",
@@ -381,20 +384,7 @@ def plan_provisional_module_bindings(
             boundary_code="GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE",
         )
 
-    floor_unaligned = max(
-        main_end + PSP_MODULE_HEAP_RESERVE,
-        title_manifest.GUEST_MODULE_RAM_LO,
-    )
-    alignment = PSP_MODULE_ADDRESS_ALIGNMENT
-    floor = (floor_unaligned + alignment - 1) & ~(alignment - 1)
-    if floor < floor_unaligned or floor >= PSP_MODULE_ADDRESS_TOP:
-        raise IsoInspectionError(
-            "main image leaves no safe guest-module address range",
-            boundary_code="GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE",
-        )
-
-    fixed_modules: list[dict] = []
-    reloc_modules: list[tuple[str, str, int]] = []
+    modules: list[dict] = []
     kernel_modules: list[tuple[str, GuestModuleInterface]] = []
     placed_exports: set[int] = set()
     folded_names: set[str] = set()
@@ -421,33 +411,29 @@ def plan_provisional_module_bindings(
             continue
         placed_exports.update(interface.callable_nids)
         module_type, module_low, module_high = _elf32_load_span(module_path)
-        span = module_high - module_low
-        if module_type in (3, 0xFFA0) and module_low == 0:
-            reloc_modules.append((name, guest_path, span))
-        elif module_type == 2 or (module_type in (3, 0xFFA0) and module_low != 0):
+        if module_type == 2:
             if (
                 module_low < title_manifest.GUEST_MODULE_RAM_LO
-                or module_high > PSP_MODULE_ADDRESS_TOP
-                or module_low < main_end
+                or module_high > PSP_CONVENTIONAL_USER_MEMORY_TOP
+                or (module_low < main_end and main_start < module_high)
             ):
                 raise IsoInspectionError(
-                    f"guest module has fixed load address 0x{module_low:08x} that collides with layout: {name}",
+                    f"guest module has fixed load address 0x{module_low:08x} that collides "
+                    f"with layout: {name}",
                     boundary_code="GUEST_MODULE_LOAD_BINDING_REQUIRED",
                 )
-            fixed_modules.append({
-                "name": name,
-                "load_address": module_low,
-                "end": module_high,
-                "required": True,
-                "role": "guest-prx",
-                "guest_path": guest_path,
-                "load_address_evidence": "fixed-address",
-            })
-        else:
+        elif module_type not in (3, 0xFFA0):
             raise IsoInspectionError(
                 f"guest module is not a supported ELF/PRX: {name}",
                 boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
             )
+        modules.append({
+            "name": name,
+            "required": True,
+            "role": "guest-prx",
+            "placement": "runtime",
+            "guest_path": guest_path,
+        })
 
     if any(interface.callable_nids for _name, interface in kernel_modules):
         main_imports = _main_executable_imported_nids(main_elf)
@@ -464,46 +450,7 @@ def plan_provisional_module_bindings(
                     boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
                 )
 
-    fixed_modules.sort(key=lambda m: m["load_address"])
-    for i in range(len(fixed_modules) - 1):
-        if fixed_modules[i]["end"] > fixed_modules[i + 1]["load_address"]:
-            raise IsoInspectionError(
-                f"fixed guest modules collide: {fixed_modules[i]['name']} and {fixed_modules[i + 1]['name']}",
-                boundary_code="GUEST_MODULE_LOAD_BINDING_REQUIRED",
-            )
-
-    cursor = floor
-    placed: list[dict] = []
-    for name, guest_path, span in sorted(reloc_modules, key=lambda item: item[0].casefold()):
-        address = (cursor + alignment - 1) & ~(alignment - 1)
-        end = address + span
-        for fm in fixed_modules:
-            if not (end <= fm["load_address"] or address >= fm["end"]):
-                address = (fm["end"] + alignment - 1) & ~(alignment - 1)
-                end = address + span
-        if address < cursor or end < address or end > PSP_MODULE_ADDRESS_TOP:
-            raise IsoInspectionError(
-                "guest modules do not fit above the main-image heap reserve",
-                boundary_code="GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE",
-            )
-        placed.append({
-            "name": name,
-            "load_address": address,
-            "required": True,
-            "role": "guest-prx",
-            "guest_path": guest_path,
-            "load_address_evidence": "provisional",
-        })
-        cursor = end
-
-    all_placed = []
-    for fm in fixed_modules:
-        entry = dict(fm)
-        del entry["end"]
-        all_placed.append(entry)
-    all_placed.extend(placed)
-    all_placed.sort(key=lambda item: item["name"].casefold())
-    return all_placed
+    return sorted(modules, key=lambda module: module["name"].casefold())
 
 
 _IDENTITY_KEYS = frozenset({"DISC_ID", "TITLE", "DISC_VERSION"})

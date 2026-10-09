@@ -65,7 +65,7 @@ from nk_core.iso_inspect import (  # noqa: E402
     _has_cfw_or_kernel_only_imports,
     decrypted_module_dir,
     inspect_compatibility_preflight,
-    plan_provisional_module_bindings,
+    plan_guest_module_bindings,
     walk_disc_module_entries,
     write_experimental_profile,
 )
@@ -1207,6 +1207,8 @@ def _current_package_cache_key(
     public_safe: bool | None = None,
     instruction_trace: bool = False,
 ) -> dict:
+    import title_codegen_plan
+
     if public_safe is None:
         public_safe = not _has_private_backends()
     selected_modules = [
@@ -1222,7 +1224,9 @@ def _current_package_cache_key(
             raise PackageBuildError(f"Required guest PRX {module['name']} is unavailable for cache identity.")
         module_hashes.append({
             "name": module["name"],
-            "load_address": f"0x{int(module['load_address']):08x}",
+            # The planner's spelling (an address, or "runtime" for a module the guest
+            # allocator places), so both routes derive one cache key.
+            "load_address": title_codegen_plan._module_placement_text(module),
             "sha256": package_cache.sha256_file(module_path),
         })
     input_hashes = {
@@ -3166,7 +3170,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                         )
                         for candidate, _source, _folder_copy in module_sources
                     ]
-                    module_bindings = plan_provisional_module_bindings(
+                    module_bindings = plan_guest_module_bindings(
                         selected_elf, module_inputs
                     )
                 except (IsoInspectionError, OSError) as exc:
@@ -3392,6 +3396,13 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         env = os.environ.copy()
         env.pop("SR_DATAROOT", None)
         env.pop("SR_LOOSE_CONTENT_ROOTS", None)
+        # The package ships the guest modules it was compiled against in
+        # <package>/modules; the runtime loads them from SR_MODULE_DIR, as a
+        # player launch of the same package does. Without it the runtime falls
+        # back to its development path and every module load fails.
+        env.pop("SR_MODULE_DIR", None)
+        if (package_dir / "modules").is_dir():
+            env["SR_MODULE_DIR"] = str(package_dir / "modules")
         # The same order the launcher resolves SR_DATAROOT in: the staged
         # copy of the disc first, then the source tree.
         declared_data_root = manifest["filesystem"]["data_root"]

@@ -771,6 +771,11 @@ static void sr_test_guest_fn_reset(void) {
 }
 
 RecompFn sr_lookup(uint32_t addr) {
+    /* As recomp.c's sr_lookup: a bound guest-placed module image is the only authority
+     * for its range (the production registry in guest_interp.c is linked in). */
+    int in_bound_module = 0;
+    RecompFn module_fn = sr_module_code_lookup(addr, &in_bound_module);
+    if (in_bound_module) return module_fn;
     for (int i = 0; i < s_num_test_guest_fns; i++) {
         if (s_test_guest_fns[i].addr == addr) {
             return s_test_guest_fns[i].fn;
@@ -1364,6 +1369,731 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     remove(path);
 }
 
+/* ---- Guest-placed modules (#704) ----
+ * A source-owned relocatable module (ELF type 0xFFA0) laid out in its link space at base
+ * 0: one loadable segment of 0x200 file bytes and 0x100 bytes of BSS, a module-info
+ * block, a system library exporting module_start/module_stop, one named library with
+ * one function, and format-A R_MIPS_32 relocations on every pointer -- so the image is
+ * only correct where the loader relocated it. The module's "translation" is a
+ * descriptor over three C bodies, registered exactly as generated code registers one. */
+enum {
+    RT_START = 0x000u, RT_STOP = 0x040u, RT_QUERY = 0x080u, RT_TEXT_END = 0x0C0u,
+    RT_MODINFO = 0x100u, RT_LIBENT = 0x140u, RT_LIBENT_END = 0x160u,
+    RT_SYSLIB_TABLE = 0x180u, RT_LIB_TABLE = 0x1A0u, RT_LIBNAME = 0x1C0u,
+    RT_DATA_PTR = 0x1E0u, RT_FILE_SPAN = 0x200u, RT_BSS_MARK = 0x240u,
+    RT_GP_LINK = 0x280u, RT_MEM_SPAN = 0x300u,
+    RT_SEG_OFFSET = 0x80u, RT_RELOC_COUNT = 12u
+};
+#define RT_EXPORT_NID 0x704C0DE1u
+#define RT_START_MARK 0x5157A27Du
+#define RT_STOP_STATUS 0x0000570Bu
+#define RT_PATH_ADDR 0x08906000u
+#define RT_ARG_ADDR 0x08906080u
+#define RT_STATUS_ADDR 0x089060C0u
+#define RT_OPTION_ADDR 0x08906100u
+
+static void fd_host_path(char *out, size_t capacity, const char *guest);
+
+static uint32_t s_rt_alpha_base;
+static uint32_t s_rt_delta_base;
+static unsigned s_rt_start_calls, s_rt_stop_calls;
+static uint32_t s_rt_start_gp, s_rt_start_a0, s_rt_start_a1;
+
+static void rt_alpha_start(CpuState *s) {
+    s_rt_start_calls++;
+    s_rt_start_gp = s->r[28];
+    s_rt_start_a0 = s->r[4];
+    s_rt_start_a1 = s->r[5];
+    MEM_W32(s_rt_alpha_base + RT_BSS_MARK, RT_START_MARK);
+    s->r[2] = 0u;
+}
+
+static void rt_alpha_stop(CpuState *s) {
+    s_rt_stop_calls++;
+    s->r[2] = RT_STOP_STATUS;
+}
+
+static void rt_alpha_query(CpuState *s) {
+    s->r[2] = s->r[4] + MEM_R32(s_rt_alpha_base + RT_BSS_MARK);
+}
+
+static const SrModuleFunc s_rt_alpha_funcs[] = {
+    {RT_START, 2u, rt_alpha_start},
+    {RT_STOP, 2u, rt_alpha_stop},
+    {RT_QUERY, 2u, rt_alpha_query},
+};
+static const SrModuleSpan s_rt_alpha_spans[] = {{RT_START, RT_TEXT_END}};
+static SrModuleCode s_rt_alpha_code = {
+    "rt-alpha.prx", 0u, 0u, 0u, RT_MEM_SPAN, 0x40u, 1u, NULL, &s_rt_alpha_base,
+    s_rt_alpha_funcs, 3u, s_rt_alpha_spans, 1u,
+};
+/* A library module with no start routine; its stop body is the alpha one. */
+static uint32_t s_rt_nostart_base;
+static const SrModuleFunc s_rt_nostart_funcs[] = {
+    {RT_STOP, 2u, rt_alpha_stop},
+    {RT_QUERY, 2u, rt_alpha_query},
+};
+static SrModuleCode s_rt_nostart_code = {
+    "rt-nostart.prx", 0u, 0u, 0u, RT_MEM_SPAN, 0x40u, 1u, NULL, &s_rt_nostart_base,
+    s_rt_nostart_funcs, 2u, s_rt_alpha_spans, 1u,
+};
+static SrModuleCode s_rt_delta_code = {
+    "rt-delta.prx", 0u, 0u, 0u, RT_MEM_SPAN, 0x40u, 1u,
+    "relocation type 7 (GPREL16) at link 0x00000010 is not supported", &s_rt_delta_base,
+    NULL, 0u, NULL, 0u,
+};
+
+/* A fixed-address module (ELF type 2) links at absolute addresses and carries no
+ * relocations; its translation binds only at base 0, and the loader must take exactly
+ * its link range from the partition. Bodies and descriptor are filled at run time,
+ * once the test has chosen a free link address. */
+static uint32_t s_rt_fixed_base;
+static uint32_t s_rt_fixed_link;
+static unsigned s_rt_fixed_start_calls;
+
+static void rt_fixed_start(CpuState *s) {
+    s_rt_fixed_start_calls++;
+    s->r[2] = 0u;
+}
+
+static void rt_fixed_stop(CpuState *s) {
+    s->r[2] = 0u;
+}
+
+static void rt_fixed_query(CpuState *s) {
+    s->r[2] = s->r[4] + 7u;
+}
+
+static SrModuleFunc s_rt_fixed_funcs[3];
+static SrModuleSpan s_rt_fixed_spans[1];
+static SrModuleCode s_rt_fixed_code = {
+    "rt-fixed.prx", 0u, 0u, 0u, 0u, 0x40u, 0u, NULL, &s_rt_fixed_base,
+    s_rt_fixed_funcs, 3u, s_rt_fixed_spans, 1u,
+};
+
+static int write_fixed_module_prx(const char *path, uint32_t link) {
+    enum { PHOFF = 0x34u, SIZE = RT_SEG_OFFSET + RT_FILE_SPAN };
+    uint8_t image[SIZE];
+    uint8_t *seg = image + RT_SEG_OFFSET;
+    memset(image, 0, sizeof(image));
+    {
+        static const uint8_t magic[8] = {0x7f, 'E', 'L', 'F', 1, 1, 1, 0};
+        memcpy(image, magic, sizeof(magic));
+    }
+    fixture_wr16(image + 16, 2);                       /* ET_EXEC: fixed address */
+    fixture_wr16(image + 18, 8);
+    fixture_wr32(image + 20, 1);
+    fixture_wr32(image + 24, link + RT_START);
+    fixture_wr32(image + 28, PHOFF);
+    fixture_wr16(image + 40, 52);
+    fixture_wr16(image + 42, 32);
+    fixture_wr16(image + 44, 1);
+    uint8_t *ph = image + PHOFF;
+    fixture_wr32(ph + 0, 1);
+    fixture_wr32(ph + 4, RT_SEG_OFFSET);
+    fixture_wr32(ph + 8, link);
+    fixture_wr32(ph + 12, RT_SEG_OFFSET + RT_MODINFO);
+    fixture_wr32(ph + 16, RT_FILE_SPAN);
+    fixture_wr32(ph + 20, RT_MEM_SPAN);
+    fixture_wr32(ph + 24, 7);
+    fixture_wr32(ph + 28, 0x40);
+    for (uint32_t word = RT_START; word < RT_TEXT_END; word += 0x40u) {
+        fixture_wr32(seg + word, 0x03E00008u);
+        fixture_wr32(seg + word + 4u, 0x24020000u | word);
+    }
+    seg[RT_MODINFO + 2] = 1;
+    seg[RT_MODINFO + 3] = 1;
+    memcpy(seg + RT_MODINFO + 4, "rtfixed", 8);
+    fixture_wr32(seg + RT_MODINFO + 32, link + RT_GP_LINK);
+    fixture_wr32(seg + RT_MODINFO + 36, link + RT_LIBENT);
+    fixture_wr32(seg + RT_MODINFO + 40, link + RT_LIBENT_END);
+    fixture_wr32(seg + RT_MODINFO + 44, link + RT_LIBENT_END);
+    fixture_wr32(seg + RT_MODINFO + 48, link + RT_LIBENT_END);
+    fixture_wr16(seg + RT_LIBENT + 6, 0x8000);
+    seg[RT_LIBENT + 8] = 4;
+    fixture_wr16(seg + RT_LIBENT + 10, 2);
+    fixture_wr32(seg + RT_LIBENT + 12, link + RT_SYSLIB_TABLE);
+    fixture_wr32(seg + RT_LIBENT + 16, link + RT_LIBNAME);
+    fixture_wr16(seg + RT_LIBENT + 20, 0x0011);
+    fixture_wr16(seg + RT_LIBENT + 22, 0x0001);
+    seg[RT_LIBENT + 24] = 4;
+    fixture_wr16(seg + RT_LIBENT + 26, 1);
+    fixture_wr32(seg + RT_LIBENT + 28, link + RT_LIB_TABLE);
+    fixture_wr32(seg + RT_SYSLIB_TABLE + 0, 0xD632ACDBu);
+    fixture_wr32(seg + RT_SYSLIB_TABLE + 4, 0xCEE05613u);
+    fixture_wr32(seg + RT_SYSLIB_TABLE + 8, link + RT_START);
+    fixture_wr32(seg + RT_SYSLIB_TABLE + 12, link + RT_STOP);
+    fixture_wr32(seg + RT_LIB_TABLE + 0, RT_EXPORT_NID + 1u);
+    fixture_wr32(seg + RT_LIB_TABLE + 4, link + RT_QUERY);
+    memcpy(seg + RT_LIBNAME, "RtFixedLib", 11);
+    fixture_wr32(seg + RT_DATA_PTR, link + RT_QUERY);
+
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    size_t written = fwrite(image, 1, sizeof(image), f);
+    int close_result = fclose(f);
+    return written == sizeof(image) && close_result == 0;
+}
+
+static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start);
+
+static int write_runtime_module_prx(const char *path, uint8_t flavour) {
+    return write_runtime_module_prx_entry(path, flavour, 1);
+}
+
+/* with_start == 0 writes a library module with no start routine: the system library
+ * exports only module_stop and the ELF entry is 0xFFFFFFFF. */
+static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start) {
+    enum { PHOFF = 0x34u, RELOC_OFFSET = RT_SEG_OFFSET + RT_FILE_SPAN,
+           SIZE = RELOC_OFFSET + RT_RELOC_COUNT * 8u };
+    /* A start-less module's single system-library address sits at table + 4. */
+    const uint32_t sites[RT_RELOC_COUNT] = {
+        RT_MODINFO + 32u, RT_MODINFO + 36u, RT_MODINFO + 40u, RT_MODINFO + 44u,
+        RT_MODINFO + 48u, RT_LIBENT + 12u, RT_LIBENT + 16u, RT_LIBENT + 28u,
+        with_start ? RT_SYSLIB_TABLE + 8u : RT_SYSLIB_TABLE + 4u, RT_SYSLIB_TABLE + 12u,
+        RT_LIB_TABLE + 4u, RT_DATA_PTR,
+    };
+    uint8_t image[SIZE];
+    uint8_t *seg = image + RT_SEG_OFFSET;
+    memset(image, 0, sizeof(image));
+    {
+        static const uint8_t magic[8] = {0x7f, 'E', 'L', 'F', 1, 1, 1, 0};
+        memcpy(image, magic, sizeof(magic));
+    }
+    fixture_wr16(image + 16, 0xFFA0);
+    fixture_wr16(image + 18, 8);
+    fixture_wr32(image + 20, 1);
+    fixture_wr32(image + 24, with_start ? RT_START : 0xFFFFFFFFu);
+    fixture_wr32(image + 28, PHOFF);
+    fixture_wr16(image + 40, 52);
+    fixture_wr16(image + 42, 32);
+    fixture_wr16(image + 44, 2);
+    uint8_t *ph = image + PHOFF;
+    fixture_wr32(ph + 0, 1);                          /* PT_LOAD */
+    fixture_wr32(ph + 4, RT_SEG_OFFSET);
+    fixture_wr32(ph + 8, 0);
+    fixture_wr32(ph + 12, RT_SEG_OFFSET + RT_MODINFO); /* module info, as a file offset */
+    fixture_wr32(ph + 16, RT_FILE_SPAN);
+    fixture_wr32(ph + 20, RT_MEM_SPAN);
+    fixture_wr32(ph + 24, 7);
+    fixture_wr32(ph + 28, 0x40);
+    ph += 32;
+    fixture_wr32(ph + 0, 0x700000A0u);                 /* format-A relocations */
+    fixture_wr32(ph + 4, RELOC_OFFSET);
+    fixture_wr32(ph + 16, RT_RELOC_COUNT * 8u);
+
+    for (uint32_t word = RT_START; word < RT_TEXT_END; word += 0x40u) {
+        fixture_wr32(seg + word, 0x03E00008u);         /* jr ra */
+        fixture_wr32(seg + word + 4u, 0x24020000u | word | flavour); /* addiu v0, zero, n */
+    }
+    fixture_wr16(seg + RT_MODINFO + 0, 0);
+    seg[RT_MODINFO + 2] = 1;
+    seg[RT_MODINFO + 3] = 1;
+    memcpy(seg + RT_MODINFO + 4, "rtplaced", 9);
+    fixture_wr32(seg + RT_MODINFO + 32, RT_GP_LINK);
+    fixture_wr32(seg + RT_MODINFO + 36, RT_LIBENT);
+    fixture_wr32(seg + RT_MODINFO + 40, RT_LIBENT_END);
+    fixture_wr32(seg + RT_MODINFO + 44, RT_LIBENT_END);
+    fixture_wr32(seg + RT_MODINFO + 48, RT_LIBENT_END);
+    /* System library: {name 0, version 0, attr 0x8000, 4 words, 0 vars, 2 funcs}. */
+    fixture_wr16(seg + RT_LIBENT + 6, 0x8000);
+    seg[RT_LIBENT + 8] = 4;
+    fixture_wr16(seg + RT_LIBENT + 10, 2);
+    fixture_wr32(seg + RT_LIBENT + 12, RT_SYSLIB_TABLE);
+    /* Named library "RtPlacedLib": one function. */
+    fixture_wr32(seg + RT_LIBENT + 16, RT_LIBNAME);
+    fixture_wr16(seg + RT_LIBENT + 20, 0x0011);
+    fixture_wr16(seg + RT_LIBENT + 22, 0x0001);
+    seg[RT_LIBENT + 24] = 4;
+    fixture_wr16(seg + RT_LIBENT + 26, 1);
+    fixture_wr32(seg + RT_LIBENT + 28, RT_LIB_TABLE);
+    if (with_start) {
+        fixture_wr32(seg + RT_SYSLIB_TABLE + 0, 0xD632ACDBu);
+        fixture_wr32(seg + RT_SYSLIB_TABLE + 4, 0xCEE05613u);
+        fixture_wr32(seg + RT_SYSLIB_TABLE + 8, RT_START);
+        fixture_wr32(seg + RT_SYSLIB_TABLE + 12, RT_STOP);
+    } else {
+        /* One function: module_stop. The table is NIDs then addresses, so the second
+         * word is the (relocated) stop address; the fourth word stays relocated but
+         * unused. */
+        fixture_wr16(seg + RT_LIBENT + 10, 1);
+        fixture_wr32(seg + RT_SYSLIB_TABLE + 0, 0xCEE05613u);
+        fixture_wr32(seg + RT_SYSLIB_TABLE + 4, RT_STOP);
+        fixture_wr32(seg + RT_SYSLIB_TABLE + 12, RT_STOP);
+    }
+    fixture_wr32(seg + RT_LIB_TABLE + 0, RT_EXPORT_NID);
+    fixture_wr32(seg + RT_LIB_TABLE + 4, RT_QUERY);
+    memcpy(seg + RT_LIBNAME, "RtPlacedLib", 12);
+    fixture_wr32(seg + RT_DATA_PTR, RT_QUERY);
+    for (uint32_t i = 0; i < RT_RELOC_COUNT; i++) {
+        fixture_wr32(image + RELOC_OFFSET + 8u * i, sites[i]);
+        fixture_wr32(image + RELOC_OFFSET + 8u * i + 4u, 2u);   /* R_MIPS_32, segments 0/0 */
+    }
+
+    FILE *f = fopen(path, "wb");
+    if (!f) return 0;
+    size_t written = fwrite(image, 1, sizeof(image), f);
+    int close_result = fclose(f);
+    return written == sizeof(image) && close_result == 0;
+}
+
+/* Record the identity of the bytes on disk in a descriptor, as codegen records the
+ * identity of the file it translated. */
+static int runtime_module_identity(const char *path, SrModuleCode *code) {
+    uint8_t bytes[0x400];
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    size_t n = fread(bytes, 1, sizeof(bytes), f);
+    fclose(f);
+    if (n == 0 || n == sizeof(bytes)) return 0;
+    code->file_size = (uint32_t)n;
+    code->file_fnv1a64 = sr_module_code_fnv1a64(bytes, n);
+    return 1;
+}
+
+static void runtime_module_path(char *out, size_t size, const char *file) {
+    const char *root = getenv("SR_MODULE_DIR");
+    snprintf(out, size, "%s/%s", root ? root : "", file);
+}
+
+static int s_rt_capture_fd = -1;
+static FILE *s_rt_capture;
+static char s_rt_output[8192];
+
+static void rt_capture_begin(void) {
+    s_rt_output[0] = '\0';
+    if (!hle_data_stderr_capture_begin(&s_rt_capture, &s_rt_capture_fd)) s_rt_capture = NULL;
+}
+
+static const char *rt_capture_end(void) {
+    if (s_rt_capture) {
+        hle_data_stderr_capture_end(s_rt_capture, s_rt_capture_fd, s_rt_output,
+                                    sizeof(s_rt_output));
+        fputs(s_rt_output, stderr);
+    }
+    s_rt_capture = NULL;
+    s_rt_capture_fd = -1;
+    return s_rt_output;
+}
+
+static uint32_t rt_load(const char *guest_path, uint32_t option) {
+    CpuState cpu;
+    title_hle_write_cstr(RT_PATH_ADDR, guest_path);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = RT_PATH_ADDR;
+    cpu.r[6] = option;
+    return sr_hle_test_load_module(&cpu);
+}
+
+static uint32_t rt_lifecycle(uint32_t (*handler)(CpuState *), uint32_t uid,
+                             uint32_t arglen, uint32_t argp, uint32_t status) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    cpu.r[5] = arglen;
+    cpu.r[6] = argp;
+    cpu.r[7] = status;
+    return handler(&cpu);
+}
+
+static void test_runtime_placed_modules(void) {
+    extern void sr_hle_test_partition_reset(void);
+    extern uint32_t sr_hle_test_partition_heap_ptr(void);
+    extern uint32_t sr_hle_test_partition_top(void);
+    static const char alpha_guest[] = "ms0:/NKRT/RT_ALPHA.PRX";
+    static const char beta_guest[] = "disc0:/PSP_GAME/USRDIR/rt-beta.prx";
+    static const char gamma_guest[] = "disc0:/PSP_GAME/USRDIR/rt-gamma.prx";
+    static const char delta_guest[] = "disc0:/PSP_GAME/USRDIR/rt-delta.prx";
+    char alpha_path[1024], gamma_path[1024], delta_path[1024];
+    const char *out;
+    uint32_t base = 0;
+
+    {
+        const char *name = NULL, *guest = NULL;
+        SrGuestModulePlacement placement = SR_GUEST_MODULE_FIXED;
+        expect(sr_title_config_guest_module(alpha_guest, &name, NULL, NULL, &placement) &&
+                   name && strcmp(name, "rt-alpha.prx") == 0 &&
+                   placement == SR_GUEST_MODULE_RUNTIME,
+               "runtime placement: the manifest places rt-alpha.prx at run time");
+        expect(sr_title_config_guest_module_at(1, &name, &guest, NULL, NULL, &placement) &&
+                   placement == SR_GUEST_MODULE_RUNTIME && guest &&
+                   strcmp(guest, beta_guest) == 0,
+               "runtime placement: the optional module is declared runtime-placed");
+    }
+    runtime_module_path(alpha_path, sizeof(alpha_path), "rt-alpha.prx");
+    runtime_module_path(gamma_path, sizeof(gamma_path), "rt-gamma.prx");
+    runtime_module_path(delta_path, sizeof(delta_path), "rt-delta.prx");
+    expect(write_runtime_module_prx(alpha_path, 1u) && write_runtime_module_prx(gamma_path, 3u) &&
+               write_runtime_module_prx(delta_path, 4u),
+           "runtime placement: source-owned module fixtures are written outside the repository");
+    expect(runtime_module_identity(alpha_path, &s_rt_alpha_code) &&
+               runtime_module_identity(delta_path, &s_rt_delta_code),
+           "runtime placement: descriptors record the fixture identities");
+
+    _putenv("SR_REAL_MODULE_START=");
+    sr_hle_test_module_reset();
+    sr_hle_test_partition_reset();
+    sr_module_code_reset();
+    sr_module_code_register(&s_rt_alpha_code);
+    sr_module_code_register(&s_rt_delta_code);
+    s_rt_start_calls = 0;
+    s_rt_stop_calls = 0;
+
+    /* Load: the lowest free user-partition range, relocated there, BSS cleared. */
+    uint32_t predicted = (sr_hle_test_partition_heap_ptr() + 0xFFu) & ~0xFFu;
+    for (uint32_t off = 0; off < RT_MEM_SPAN; off += 4u) MEM_W32(predicted + off, 0xA5A5A5A5u);
+    rt_capture_begin();
+    uint32_t uid = rt_load(alpha_guest, 0u);
+    out = rt_capture_end();
+    expect(uid != 0u && (uid & 0x80000000u) == 0u,
+           "runtime placement: LoadModule returns a module uid");
+    expect(strstr(out, "GUEST_MODULE_PLACED: rt-alpha.prx uid=0x") != NULL,
+           "runtime placement: the load names the placed image");
+    expect(sr_module_code_is_bound(&s_rt_alpha_code, &base) && base == predicted &&
+               s_rt_alpha_base == predicted,
+           "runtime placement: the translation is bound at the lowest free partition address");
+    expect(MEM_R32(base + RT_DATA_PTR) == base + RT_QUERY &&
+               MEM_R32(base + RT_SYSLIB_TABLE + 12u) == base + RT_STOP,
+           "runtime placement: the loader relocated the image to the allocated base");
+    expect(MEM_R32(base + RT_BSS_MARK) == 0u && MEM_R32(base + RT_MEM_SPAN - 4u) == 0u,
+           "runtime placement: the image's BSS is cleared");
+    expect(sr_lookup(base + RT_QUERY) == rt_alpha_query &&
+               sr_lookup(base + RT_START) == rt_alpha_start,
+           "runtime placement: dispatch reaches the module's bodies at the placed address");
+    expect(sr_hle_resolve_late_import(RT_EXPORT_NID) == base + RT_QUERY &&
+               sr_hle_test_started_export(RT_EXPORT_NID) == 0u,
+           "runtime placement: exports resolve at the placed address, not linked before start");
+
+    /* One translation binds one image: a second instance is a named boundary. */
+    uint32_t heap_before = sr_hle_test_partition_heap_ptr();
+    unsigned modules_before = sr_hle_test_module_count();
+    rt_capture_begin();
+    uint32_t second = rt_load(alpha_guest, 0u);
+    out = rt_capture_end();
+    expect(second == SCE_KERNEL_ERROR_NOT_IMPLEMENTED &&
+               strstr(out, "GUEST_MODULE_BOUNDARY: guest-module-second-instance "
+                           "module=rt-alpha.prx") != NULL,
+           "runtime placement: a second live instance fails closed by name");
+    expect(sr_hle_test_partition_heap_ptr() == heap_before &&
+               sr_hle_test_module_count() == modules_before,
+           "runtime placement: the refused instance reserves nothing");
+
+    /* Start: module_start runs by default, with the module's own $gp. */
+    MEM_W32(RT_STATUS_ADDR, 0xFFFFFFFFu);
+    expect(rt_lifecycle(sr_hle_test_start_module, uid, 8u, RT_ARG_ADDR, RT_STATUS_ADDR) == 0u &&
+               s_rt_start_calls == 1u,
+           "runtime placement: StartModule runs the translated module_start by default");
+    expect(s_rt_start_gp == base + RT_GP_LINK,
+           "runtime placement: module_start runs with the module's relocated $gp");
+    expect(s_rt_start_a0 == 8u && s_rt_start_a1 == RT_ARG_ADDR && MEM_R32(RT_STATUS_ADDR) == 0u,
+           "runtime placement: module_start gets the start arguments and reports its status");
+    expect(sr_hle_test_started_export(RT_EXPORT_NID) == base + RT_QUERY,
+           "runtime placement: the export links once the module has started");
+    {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = 5u;
+        expect(sr_syscall(&cpu, RT_EXPORT_NID) == 5u + RT_START_MARK,
+               "runtime placement: an import of the export runs the module's body");
+    }
+
+    /* Stop, then unload: the image, its exports, its dispatch and its memory go. */
+    MEM_W32(RT_STATUS_ADDR, 0u);
+    expect(rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, RT_STATUS_ADDR) == 0u &&
+               s_rt_stop_calls == 1u && MEM_R32(RT_STATUS_ADDR) == RT_STOP_STATUS,
+           "runtime placement: StopModule runs module_stop and reports its status");
+    rt_capture_begin();
+    uint32_t unloaded = rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u);
+    out = rt_capture_end();
+    expect(unloaded == 0u && strstr(out, "GUEST_MODULE_UNLOADED: rt-alpha.prx uid=0x") != NULL,
+           "runtime placement: UnloadModule names the retired image");
+    expect(!sr_module_code_is_bound(&s_rt_alpha_code, NULL) &&
+               sr_lookup(base + RT_QUERY) != rt_alpha_query,
+           "runtime placement: unload retires the translation's dispatch authority");
+    expect(sr_hle_resolve_late_import(RT_EXPORT_NID) == 0u &&
+               sr_hle_test_started_export(RT_EXPORT_NID) == 0u,
+           "runtime placement: unload retires the module's exports");
+    expect(sr_hle_test_partition_heap_ptr() == base && sr_hle_test_image_count() == 0u,
+           "runtime placement: unload returns the module's memory to the partition");
+
+    /* Reload: the same memory again, laid out afresh (the old BSS mark does not survive). */
+    expect(MEM_R32(base + RT_BSS_MARK) == RT_START_MARK,
+           "runtime placement: unload leaves guest bytes as they were");
+    uid = rt_load(alpha_guest, 0u);
+    expect(uid != 0u && sr_module_code_is_bound(&s_rt_alpha_code, &base) && base == predicted &&
+               MEM_R32(base + RT_BSS_MARK) == 0u && MEM_R32(base + RT_DATA_PTR) == base + RT_QUERY,
+           "runtime placement: a reload reuses the released range and re-lays the image out");
+    expect(rt_lifecycle(sr_hle_test_start_module, uid, 0u, 0u, 0u) == 0u &&
+               s_rt_start_calls == 2u &&
+               rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, 0u) == 0u &&
+               rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u,
+           "runtime placement: the reloaded module runs a full lifecycle");
+
+    /* The load option: user partition, Low placement; anything else is named. */
+    MEM_W32(RT_OPTION_ADDR + 0u, 20u);
+    MEM_W32(RT_OPTION_ADDR + 4u, 5u);
+    MEM_W32(RT_OPTION_ADDR + 8u, 2u);
+    MEM_W32(RT_OPTION_ADDR + 12u, 0u);
+    MEM_W32(RT_OPTION_ADDR + 16u, 0u);
+    rt_capture_begin();
+    uint32_t refused = rt_load(alpha_guest, RT_OPTION_ADDR);
+    out = rt_capture_end();
+    expect(refused == SCE_KERNEL_ERROR_NOT_IMPLEMENTED &&
+               strstr(out, "guest-module-partition-unsupported module=rt-alpha.prx") != NULL,
+           "runtime placement: a partition other than the user partition fails closed by name");
+    MEM_W32(RT_OPTION_ADDR + 4u, 2u);
+    MEM_W8(RT_OPTION_ADDR + 16u, 1u);
+    rt_capture_begin();
+    refused = rt_load(alpha_guest, RT_OPTION_ADDR);
+    out = rt_capture_end();
+    expect(refused == SCE_KERNEL_ERROR_NOT_IMPLEMENTED &&
+               strstr(out, "guest-module-placement-unsupported module=rt-alpha.prx") != NULL,
+           "runtime placement: High placement fails closed by name");
+    MEM_W32(RT_OPTION_ADDR + 0u, 16u);   /* `position` lies past the declared size */
+    uid = rt_load(alpha_guest, RT_OPTION_ADDR);
+    expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+               rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u,
+           "runtime placement: option fields past the declared size take their defaults");
+    uid = rt_load(alpha_guest, 0xFFFFFF00u);
+    expect(uid == SCE_KERNEL_ERROR_ILLEGAL_ADDR && !sr_module_code_is_bound(&s_rt_alpha_code, NULL),
+           "runtime placement: an unreadable option block is an illegal address");
+    if (uid != SCE_KERNEL_ERROR_ILLEGAL_ADDR && (uid & 0x80000000u) == 0u)
+        (void)rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u);
+
+    /* An optional module that is not staged is host-served, as a fixed one is. */
+    rt_capture_begin();
+    uint32_t beta = rt_load(beta_guest, 0u);
+    out = rt_capture_end();
+    expect(beta != 0u && (beta & 0x80000000u) == 0u &&
+               strstr(out, "GUEST_MODULE_HOST_SERVED: optional module rt-beta.prx") != NULL,
+           "runtime placement: an absent optional module loads as host-served");
+    expect(rt_lifecycle(sr_hle_test_start_module, beta, 0u, 0u, 0u) == 0u &&
+               rt_lifecycle(sr_hle_test_stop_module, beta, 0u, 0u, 0u) == 0u &&
+               rt_lifecycle(sr_hle_test_unload_module, beta, 0u, 0u, 0u) == 0u &&
+               sr_hle_test_module_count() == 0u,
+           "runtime placement: a host-served module's lifecycle runs no guest code");
+
+    /* What the build did not translate, or could not, is named, never laid out. */
+    rt_capture_begin();
+    refused = rt_load(gamma_guest, 0u);
+    out = rt_capture_end();
+    expect(refused == SCE_KERNEL_ERROR_NOT_IMPLEMENTED &&
+               strstr(out, "guest-module-untranslated module=rt-gamma.prx") != NULL,
+           "runtime placement: a module the build did not translate fails closed by name");
+    rt_capture_begin();
+    refused = rt_load(delta_guest, 0u);
+    out = rt_capture_end();
+    expect(refused == SCE_KERNEL_ERROR_NOT_IMPLEMENTED &&
+               strstr(out, "guest-module-translation-unsupported module=rt-delta.prx: "
+                           "relocation type 7") != NULL,
+           "runtime placement: a module codegen could not translate fails closed by name");
+    expect(write_runtime_module_prx(alpha_path, 2u),
+           "runtime placement: the alpha fixture is replaced by different bytes");
+    rt_capture_begin();
+    refused = rt_load(alpha_guest, 0u);
+    out = rt_capture_end();
+    expect(refused == SCE_KERNEL_ERROR_NOT_IMPLEMENTED &&
+               strstr(out, "guest-module-identity-mismatch module=rt-alpha.prx") != NULL &&
+               !sr_module_code_is_bound(&s_rt_alpha_code, NULL),
+           "runtime placement: a file that is not the translated one fails closed by name");
+    expect(write_runtime_module_prx(alpha_path, 1u),
+           "runtime placement: the translated alpha fixture is restored");
+
+    /* LoadModuleByID: the descriptor's path names the module. */
+    {
+        extern uint32_t sr_hle_test_load_module_by_id(CpuState *s);
+        char host[512];
+        const char *old_memstick = getenv("SR_MEMSTICK");
+        char saved_memstick[512] = "";
+        int had_memstick = old_memstick != NULL;
+        if (old_memstick) snprintf(saved_memstick, sizeof(saved_memstick), "%s", old_memstick);
+        CreateDirectoryA("build", NULL);
+        CreateDirectoryA("build/hle_fd_namespace_ms", NULL);
+        CreateDirectoryA("build/hle_fd_namespace_ms/NKRT", NULL);
+        SetEnvironmentVariableA("SR_MEMSTICK", "build/hle_fd_namespace_ms");
+        _putenv_s("SR_MEMSTICK", "build/hle_fd_namespace_ms");
+        fd_host_path(host, sizeof(host), alpha_guest);
+        FILE *marker = fopen(host, "wb");
+        if (marker) {
+            fputs("opened by path", marker);
+            fclose(marker);
+        }
+        CpuState cpu;
+        title_hle_write_cstr(RT_PATH_ADDR, alpha_guest);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = RT_PATH_ADDR;
+        cpu.r[5] = 1u;   /* PSP_O_RDONLY */
+        uint32_t fd = sr_hle_test_io_open(&cpu);
+        expect(marker != NULL && fd < 64u, "runtime placement: the module path opens as a file");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd;
+        uid = sr_hle_test_load_module_by_id(&cpu);
+        expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+                   sr_module_code_is_bound(&s_rt_alpha_code, &base) && base == predicted,
+               "runtime placement: LoadModuleByID places the module its descriptor names");
+        expect(rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u,
+               "runtime placement: the module LoadModuleByID placed unloads");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd;
+        (void)sr_hle_test_io_close(&cpu);
+        remove(host);
+
+        /* A module the manifest does not declare (a firmware module a disc ships, for
+         * example) gets a record its start can find, as sceKernelLoadModule gives it:
+         * the host serves it, and StartModule succeeds instead of reporting a bad id. */
+        static const char undeclared_guest[] = "ms0:/NKRT/UNDECLARED.PRX";
+        fd_host_path(host, sizeof(host), undeclared_guest);
+        marker = fopen(host, "wb");
+        if (marker) {
+            fputs("undeclared module", marker);
+            fclose(marker);
+        }
+        title_hle_write_cstr(RT_PATH_ADDR, undeclared_guest);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = RT_PATH_ADDR;
+        cpu.r[5] = 1u;
+        fd = sr_hle_test_io_open(&cpu);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd;
+        uid = sr_hle_test_load_module_by_id(&cpu);
+        unsigned modules_after_load = sr_hle_test_module_count();
+        expect(marker != NULL && fd < 64u && uid != 0u && (uid & 0x80000000u) == 0u &&
+                   modules_after_load == 1u,
+               "runtime placement: LoadModuleByID of an undeclared path records the module");
+        expect(rt_lifecycle(sr_hle_test_start_module, uid, 0u, 0u, 0u) == 0u &&
+                   rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, 0u) == 0u &&
+                   rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u &&
+                   sr_hle_test_module_count() == 0u,
+               "runtime placement: an undeclared module loaded by descriptor starts host-served");
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = fd;
+        (void)sr_hle_test_io_close(&cpu);
+        remove(host);
+        SetEnvironmentVariableA("SR_MEMSTICK", had_memstick ? saved_memstick : NULL);
+        _putenv_s("SR_MEMSTICK", had_memstick ? saved_memstick : "");
+    }
+
+    /* A library module that declares no start routine starts by linking its exports. */
+    {
+        static const char nostart_guest[] = "disc0:/PSP_GAME/USRDIR/rt-nostart.prx";
+        char nostart_path[1024];
+        runtime_module_path(nostart_path, sizeof(nostart_path), "rt-nostart.prx");
+        s_rt_nostart_code.link_high = RT_MEM_SPAN;
+        expect(write_runtime_module_prx_entry(nostart_path, 5u, 0) &&
+                   runtime_module_identity(nostart_path, &s_rt_nostart_code),
+               "runtime placement: the start-less module fixture is written");
+        sr_module_code_register(&s_rt_nostart_code);
+        unsigned starts = s_rt_start_calls;
+        unsigned stops = s_rt_stop_calls;
+        uid = rt_load(nostart_guest, 0u);
+        uint32_t nostart_base = 0;
+        expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+                   sr_module_code_is_bound(&s_rt_nostart_code, &nostart_base),
+               "runtime placement: a module without a start routine loads");
+        rt_capture_begin();
+        uint32_t started = rt_lifecycle(sr_hle_test_start_module, uid, 0u, 0u, 0u);
+        out = rt_capture_end();
+        expect(started == 0u && s_rt_start_calls == starts &&
+                   strstr(out, "GUEST_MODULE_BOUNDARY") == NULL &&
+                   sr_hle_test_started_export(RT_EXPORT_NID) == nostart_base + RT_QUERY,
+               "runtime placement: a start-less module starts by linking its exports, running nothing");
+        expect(rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, 0u) == 0u &&
+                   s_rt_stop_calls == stops + 1u &&
+                   rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u,
+               "runtime placement: a start-less module still runs its module_stop");
+        remove(nostart_path);
+    }
+
+    /* A fixed-address module: exactly its link range, bound at base 0. */
+    {
+        static const char fixed_guest[] = "disc0:/PSP_GAME/USRDIR/rt-fixed.prx";
+        char fixed_path[1024];
+        runtime_module_path(fixed_path, sizeof(fixed_path), "rt-fixed.prx");
+        s_rt_fixed_link = ((sr_hle_test_partition_heap_ptr() + 0xFFFFu) & ~0xFFFFu) + 0x10000u;
+        const uint32_t link = s_rt_fixed_link;
+        s_rt_fixed_funcs[0] = (SrModuleFunc){link + RT_START, 2u, rt_fixed_start};
+        s_rt_fixed_funcs[1] = (SrModuleFunc){link + RT_STOP, 2u, rt_fixed_stop};
+        s_rt_fixed_funcs[2] = (SrModuleFunc){link + RT_QUERY, 2u, rt_fixed_query};
+        s_rt_fixed_spans[0] = (SrModuleSpan){link + RT_START, link + RT_TEXT_END};
+        s_rt_fixed_code.link_low = link;
+        s_rt_fixed_code.link_high = link + RT_MEM_SPAN;
+        expect(write_fixed_module_prx(fixed_path, link) &&
+                   runtime_module_identity(fixed_path, &s_rt_fixed_code),
+               "runtime placement: the fixed-address module fixture is written");
+        sr_module_code_register(&s_rt_fixed_code);
+        s_rt_fixed_start_calls = 0;
+
+        uint32_t blocker = sr_alloc_block_at(link + 0x100u, 0x100u, "blocker");
+        expect(blocker != 0xFFFFFFFFu, "runtime placement: part of the fixed link range is taken");
+        rt_capture_begin();
+        refused = rt_load(fixed_guest, 0u);
+        out = rt_capture_end();
+        expect(refused == 0x80020190u &&
+                   strstr(out, "GUEST_MODULE_LOAD_NO_MEMORY: rt-fixed.prx needs 0x300 bytes at "
+                               "its fixed link address") != NULL &&
+                   !sr_module_code_is_bound(&s_rt_fixed_code, NULL),
+               "runtime placement: a fixed-address module never moves off its occupied range");
+        {
+            CpuState cpu;
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = blocker;
+            expect(sr_syscall(&cpu, 0xb6d61d02u) == 0u,   /* sceKernelFreePartitionMemory */
+                   "runtime placement: the blocking block is released");
+        }
+
+        uid = rt_load(fixed_guest, 0u);
+        uint32_t fixed_base = 0xFFFFFFFFu;
+        expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+                   sr_module_code_is_bound(&s_rt_fixed_code, &fixed_base) && fixed_base == 0u,
+               "runtime placement: a fixed-address module binds at base 0");
+        expect(MEM_R32(link + RT_DATA_PTR) == link + RT_QUERY && MEM_R32(link + RT_BSS_MARK) == 0u &&
+                   sr_lookup(link + RT_QUERY) == rt_fixed_query &&
+                   sr_hle_resolve_late_import(RT_EXPORT_NID + 1u) == link + RT_QUERY,
+               "runtime placement: a fixed-address module is laid out at its link address");
+        expect(sr_alloc_block_at(link, 0x100u, "overlap") == 0xFFFFFFFFu,
+               "runtime placement: the fixed module owns its link range in the partition");
+        expect(rt_lifecycle(sr_hle_test_start_module, uid, 0u, 0u, 0u) == 0u &&
+                   s_rt_fixed_start_calls == 1u &&
+                   rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, 0u) == 0u &&
+                   rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u &&
+                   !sr_module_code_is_bound(&s_rt_fixed_code, NULL),
+               "runtime placement: a fixed-address module runs its lifecycle and unbinds");
+        uint32_t reclaimed = sr_alloc_block_at(link, RT_MEM_SPAN, "reclaimed");
+        expect(reclaimed != 0xFFFFFFFFu,
+               "runtime placement: unloading a fixed-address module frees its link range");
+        if (reclaimed != 0xFFFFFFFFu) {
+            CpuState cpu;
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = reclaimed;
+            (void)sr_syscall(&cpu, 0xb6d61d02u);           /* sceKernelFreePartitionMemory */
+        }
+        remove(fixed_path);
+    }
+
+    /* A partition that cannot hold the image: SCE_KERNEL_ERROR_NO_MEMORY, nothing bound. */
+    {
+        uint32_t floor = (sr_hle_test_partition_heap_ptr() + 0xFFu) & ~0xFFu;
+        uint32_t top = sr_hle_test_partition_top();
+        expect(sr_alloc_block_at(floor, top - floor, "fill") != 0xFFFFFFFFu,
+               "runtime placement: the rest of the partition is reserved");
+        rt_capture_begin();
+        refused = rt_load(alpha_guest, 0u);
+        out = rt_capture_end();
+        expect(refused == 0x80020190u &&
+                   strstr(out, "GUEST_MODULE_LOAD_NO_MEMORY: rt-alpha.prx") != NULL &&
+                   !sr_module_code_is_bound(&s_rt_alpha_code, NULL) &&
+                   sr_hle_test_module_count() == 0u,
+               "runtime placement: a full partition refuses the load with NO_MEMORY");
+    }
+
+    sr_hle_test_module_reset();
+    sr_hle_test_partition_reset();
+    sr_module_code_reset();
+    remove(alpha_path);
+    remove(gamma_path);
+    remove(delta_path);
+}
+
 static void test_guest_module_load_binding(void) {
     const char *mode = getenv("SR_TEST_GUEST_MODULE_LOAD");
     if (!mode || !mode[0]) return;
@@ -1371,8 +2101,12 @@ static void test_guest_module_load_binding(void) {
     const char *name = NULL, *guest_path = NULL;
     uint32_t base = 0;
     int required = 0;
-    expect(sr_title_config_guest_module_at(0, &name, &guest_path, &base, &required),
+    expect(sr_title_config_guest_module_at(0, &name, &guest_path, &base, &required, NULL),
            "synthetic manifest exposes a guest-module load binding");
+    if (strcmp(mode, "runtime-placement") == 0) {
+        test_runtime_placed_modules();
+        return;
+    }
     if (strcmp(mode, "libfont-startup") == 0) {
         if (name && guest_path)
             test_synthetic_libfont_startup(name, guest_path, base, required);

@@ -397,6 +397,55 @@ class TitleManifestParityTests(unittest.TestCase):
                 self.assertFalse(py_ok, f"Python accepted hostile mutation ({label}): {py_err}")
                 self.assertFalse(c_ok, f"Native accepted hostile mutation ({label}): {c_err}")
 
+    def test_runtime_placement_parity(self):
+        """Both parsers accept a runtime-placed module without an address, up to the
+        256-module discovery cap, and refuse every malformed placement alike."""
+        def manifest(modules):
+            return {
+                "schema_version": 1, "id": "parity-placement", "display_name": "Placement",
+                "kind": "synthetic",
+                "executable": {"base": 0x08804000, "entry": 0x08804000,
+                               "bss_metadata_source": "elf", "extra_executable_spans": []},
+                "modules": modules,
+                "filesystem": {"data_root": "data", "memory_stick_root": "ms",
+                               "device_prefixes": ["host0:"]},
+                "hle_profile": "standard", "feature_requirements": ["allegrex"],
+                "verification_profile": "smoke",
+            }
+
+        def runtime(name, **extra):
+            module = {"name": name, "required": True, "role": "guest-prx", "placement": "runtime",
+                      "guest_path": f"disc0:/PSP_GAME/USRDIR/{name}"}
+            module.update(extra)
+            return module
+
+        accepted = [
+            ("runtime module", [runtime("level01.prx")]),
+            ("fixed and runtime together", [
+                runtime("level01.prx"),
+                {"name": "libfont.prx", "load_address": 0x09EC7F00, "required": True,
+                 "role": "guest-prx", "placement": "fixed"},
+            ]),
+            ("discovery cap", [runtime(f"o{i:03d}.prx") for i in range(256)]),
+        ]
+        refused = [
+            ("runtime with address", [runtime("a.prx", load_address=0x08900000)]),
+            ("runtime with evidence", [runtime("a.prx", load_address_evidence="provisional")]),
+            ("runtime capability", [runtime("a.prx", role="hle-capability")]),
+            ("unknown placement", [runtime("a.prx", placement="anywhere")]),
+            ("fixed without address", [runtime("a.prx", placement="fixed")]),
+            ("over the cap", [runtime(f"o{i:03d}.prx") for i in range(257)]),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for index, (label, modules) in enumerate(accepted + refused):
+                path = Path(tmpdir) / f"placement_{index}.json"
+                path.write_text(json.dumps(manifest(modules)), encoding="utf-8")
+                py_ok, py_msg = self._run_python(path)
+                c_ok, c_msg = self._run_native(path)
+                expected = index < len(accepted)
+                self.assertEqual(py_ok, expected, f"Python {label}: {py_msg}")
+                self.assertEqual(c_ok, expected, f"Native {label}: {c_msg}")
+
     def test_duplicate_json_keys_parity(self):
         """Both parsers must reject duplicate JSON object keys."""
         raw_dup_json = '{"schema_version": 1, "id": "foo", "id": "bar", "display_name": "T", "kind": "synthetic", "executable": {"base": 0, "entry": 0, "bss_metadata_source": "none", "extra_executable_spans": []}, "modules": [], "filesystem": {"data_root": "d", "memory_stick_root": "m", "device_prefixes": ["host0:"]}, "hle_profile": "s", "feature_requirements": [], "verification_profile": "v"}'

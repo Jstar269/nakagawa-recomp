@@ -1517,8 +1517,24 @@ class MakefileSpanBindingTests(unittest.TestCase):
         self.assertNotIn("HST_EXTRA_SPANS", self.makefile)
 
     def test_span_participates_in_the_codegen_profile_hash(self) -> None:
-        # Changing the span must invalidate previously generated code.
-        self.assertIn('--entry "EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)"', self.makefile)
+        # Changing the span must invalidate previously generated code. The codegen
+        # profile's entries are NK_CODEGEN_PROFILE_ENTRIES; the span is one of them,
+        # the parse-time hash reads them through profile_hash and the record recipe
+        # from its environment.
+        export_line = next(
+            line for line in self.makefile.splitlines()
+            if line.startswith("export NK_CODEGEN_PROFILE_ENTRIES :=")
+        )
+        self.assertIn("EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)", export_line)
+        hash_line = next(
+            line for line in self.makefile.splitlines()
+            if line.startswith("CODEGEN_PROFILE_HASH :=")
+        )
+        self.assertIn("$(call profile_hash,NK_CODEGEN_PROFILE_ENTRIES,", hash_line)
+        record_line = next(
+            line for line in self.makefile.splitlines() if "--section codegen" in line
+        )
+        self.assertIn("--entries-env NK_CODEGEN_PROFILE_ENTRIES", record_line)
 
 
 if __name__ == "__main__":

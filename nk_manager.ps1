@@ -410,7 +410,10 @@ try {
             $modules = @($script:TitleManagerPlan.required_guest_modules)
             $extra = ""
             if ($modules.Count -gt 0) {
-                $extra = @($modules | ForEach-Object { "$ModuleDirForMake/$($_.name)@0x$('{0:x8}' -f [uint64]$_.load_address)" }) -join ' '
+                $extra = @($modules | ForEach-Object {
+                    if ($_.PSObject.Properties.Name -contains 'placement') { "$ModuleDirForMake/$($_.name)@runtime" }
+                    else { "$ModuleDirForMake/$($_.name)@0x$('{0:x8}' -f [uint64]$_.load_address)" }
+                }) -join ' '
             }
             $mArgs = @(
                 "GAME_NAME=$($script:TitleManagerPlan.make.game_name)",

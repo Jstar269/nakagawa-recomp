@@ -115,7 +115,9 @@ does not, callers use the entry address as the start routine [C4].
    offset relative to that segment, so its guest address is `segment 0 address +
    (p_paddr − p_offset(0))` [C3], [C4]. When a section named `.rodata.sceModuleInfo`
    exists, its address must agree; disagreement fails (project decision: two
-   sources that disagree mean a malformed module).
+   sources that disagree mean a malformed module). Every section's file range must
+   lie inside the input, except a section of type `SHT_NOBITS` (8), such as
+   `.bss`, which occupies no file bytes (project decision).
 2. Block layout [C4]: attribute (16 bits), version (2 bytes), name (28 bytes,
    NUL-padded), `gp` value, export table start and end, import (stub) table start and
    end — pointers are guest addresses **after** relocation.

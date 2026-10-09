@@ -239,10 +239,11 @@ static void hle_note_success_exception(HleEntry *e) {
  * Track A owns that table; this registry only publishes stable NID classifications/guest
  * targets. 0 means unresolved, UINT32_MAX-1 means a built-in HLE NID (call sr_syscall), and
  * every other result is a runtime-loaded guest export address (call dispatch on that target). */
-#define LATE_IMPORT_CAP 256
+/* The table grows with the exports of the resident modules: a title loads and unloads
+ * modules over its lifetime, so the registry invents no count of its own. */
 typedef struct { uint32_t nid, target; } LateImportEntry;
-static LateImportEntry s_late_imports[LATE_IMPORT_CAP];
-static unsigned s_late_import_n;
+static LateImportEntry *s_late_imports;
+static unsigned s_late_import_n, s_late_import_cap;
 static atomic_flag s_hle_lock = ATOMIC_FLAG_INIT;
 static atomic_int s_hle_init_state;
 
@@ -290,7 +291,15 @@ int sr_hle_register_late_import(uint32_t nid, uint32_t target) {
             hle_unlock();
             return 1;
     }
-    if (s_late_import_n == LATE_IMPORT_CAP) { hle_unlock(); return 0; }
+    if (s_late_import_n == s_late_import_cap) {
+        unsigned cap = s_late_import_cap ? s_late_import_cap * 2u : 256u;
+        LateImportEntry *grown = cap > s_late_import_cap
+            ? (LateImportEntry *)realloc(s_late_imports, (size_t)cap * sizeof(*grown))
+            : NULL;
+        if (!grown) { hle_unlock(); return 0; }
+        s_late_imports = grown;
+        s_late_import_cap = cap;
+    }
     memmove(&s_late_imports[lo + 1], &s_late_imports[lo],
             (s_late_import_n - lo) * sizeof(s_late_imports[0]));
     s_late_imports[lo] = (LateImportEntry){nid, target};
@@ -4041,6 +4050,8 @@ static uint32_t find_module_info(FILE *f, const SrElfPhdr *ph, unsigned phnum,
 
 /* Forward declaration for nested-frame guest execution. */
 static uint32_t ge_call_guest_rv(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2);
+static uint32_t ge_call_guest_gp_rv(CpuState *s, uint32_t fn, uint32_t gp,
+                                    uint32_t a0, uint32_t a1, uint32_t a2);
 
 /* TD-26 runtime gate: real module_start / module_stop execution. */
 static int real_module_start_enabled(void) {
@@ -4053,7 +4064,8 @@ static int real_module_start_enabled(void) {
  * and therefore has to cover every module, libfont included:
  *   "1"    - translated/real module_start may run for any module.
  *   unset  - translated libfont module_start runs, so the guest owns its own
- *             readiness; every other module keeps the host bypass in h_StartModule.
+ *             readiness, and so does a guest-placed module's unless host HLE serves
+ *             its exports; every other module keeps the host bypass in h_StartModule.
  *   "0"    - no module_start runs for any module; libfont reports a named refusal
  *             instead of synthesizing guest readiness.
  * Any other value is refused rather than guessed, and the refusal is named once. */
@@ -4072,7 +4084,7 @@ static ModuleStartPolicy module_start_policy(void) {
     if (!s_logged_bad_value) {
         s_logged_bad_value = 1;
         fprintf(stderr, "SR_REAL_MODULE_START: unsupported value \"%s\"; using the default "
-                        "(translated libfont startup only)\n", e);
+                        "(translated libfont and guest-placed module startup)\n", e);
     }
     return MODULE_START_LIBFONT_ONLY;
 }
@@ -4111,10 +4123,33 @@ typedef struct {
     int start_entry_ran;
     LoadedModuleState state;
     int in_use;
+    /* A guest-placed module: laid out by the guest allocator when the game loaded it
+     * and bound to its position-independent translation (`code`, NULL when the module
+     * is optional and absent, so host HLE serves it). Its entry points run with its own
+     * $gp, as the kernel starts a module, and `host_served` records that host HLE
+     * implements one of its named exports. */
+    int runtime_placed;
+    int host_served;
+    uint32_t gp;
+    const SrModuleCode *code;
 } LoadedModule;
 
-static LoadedModule s_loaded_modules[16];
+/* Live module records and resident images. Guest-placed modules are bound in the
+ * dispatch registry, which holds SR_MODULE_CODE_MAX_BOUND images at once; the loader's
+ * own tables are sized to match it. */
+#define HLE_MAX_LOADED_MODULES SR_MODULE_CODE_MAX_BOUND
+static LoadedModule s_loaded_modules[HLE_MAX_LOADED_MODULES];
 static int s_nloaded_modules = 0;
+
+/* Run a module entry (module_start/module_stop) as a nested guest call with the entry
+ * ABI (args length, args pointer). A guest-placed module's entries run with its own
+ * $gp; the fixed-address path keeps the caller's, as it always has. */
+static uint32_t module_entry_call(CpuState *s, const LoadedModule *mod, uint32_t entry,
+                                  uint32_t arglen, uint32_t argp) {
+    if (mod->runtime_placed && mod->code)
+        return ge_call_guest_gp_rv(s, entry, mod->gp, arglen, argp, 0);
+    return ge_call_guest_rv(s, entry, arglen, argp, 0);
+}
 
 static LoadedModule *find_loaded_module(uint32_t uid) {
     for (int i = 0; i < s_nloaded_modules; i++) {
@@ -4351,8 +4386,13 @@ int sr_prx_guest_write(uint32_t guest_addr, const void *src, uint32_t n) {
  * owns, retained so unload can release precisely that range and nothing else (#280).
  * A released slot is compacted out of the table, so repeated load/unload cycles cannot
  * exhaust the fixed image table. */
-typedef struct { uint32_t base, end; uint32_t alloc_uid; int started; } PrxImage;
-static PrxImage s_prx_images[16];
+typedef struct {
+    uint32_t base, end;
+    uint32_t alloc_uid;
+    int started;
+    const SrModuleCode *code;   /* translation bound at base (guest-placed images only) */
+} PrxImage;
+static PrxImage s_prx_images[HLE_MAX_LOADED_MODULES];
 static unsigned s_prx_image_count;
 static atomic_int s_prx_started_count;
 
@@ -4388,6 +4428,10 @@ static void unload_prx_image(uint32_t base) {
             img.started = 0;
             atomic_fetch_sub_explicit(&s_prx_started_count, 1, memory_order_release);
         }
+        /* Unbinding first retires the translation's dispatch and fetch authority and
+         * its stale-code records, so nothing placed here later can reach this module's
+         * bodies; then the exports and the memory go. */
+        if (img.code) sr_module_code_unbind(img.code);
         sr_hle_unregister_late_imports_in_range(img.base, img.end);
         if (img.alloc_uid != 0u && img.alloc_uid != 0xFFFFFFFFu) free_block(img.alloc_uid);
         for (unsigned j = i + 1; j < s_prx_image_count; j++) s_prx_images[j - 1] = s_prx_images[j];
@@ -4445,7 +4489,7 @@ static int load_prx_image(const char *host_path, uint32_t base, const char *name
     } else {
         memcpy(SR_HOST(base), s_prx_stage, s_prx_stage_len);
         if (size > s_prx_stage_len) memset(SR_HOST(base + s_prx_stage_len), 0, size - s_prx_stage_len);
-        s_prx_images[s_prx_image_count++] = (PrxImage){base, base + size, alloc_uid, 0};
+        s_prx_images[s_prx_image_count++] = (PrxImage){base, base + size, alloc_uid, 0, NULL};
         s_last_prx_base = base;
         fprintf(stderr, "PRX image: %s -> [0x%08x,0x%08x) %u exports, %u import stubs\n",
                 img.modname, base, base + size, img.nexp, img.nimp);
@@ -4485,17 +4529,316 @@ static int populate_guest_module(const char *file, uint32_t base, int required) 
     return 1;
 }
 
-/* guest_path is the path the game passed to sceKernelLoadModule; only modules the title
- * manifest declares (by guest_path) are statically recompiled, so anything else is 0. */
-static int populate_known_module(const char *guest_path) {
+/* ---- Guest-placed modules (#704) ----
+ * A module the title manifest places at run time was translated ahead of time without a
+ * load address (tools/codegen.py, position-independent in its link space). When the game
+ * loads it, the module gets memory from the user partition by the Low policy the
+ * kernel's loader uses by default, the project's PRX loader (prx_loader.c) relocates the
+ * image to that address, and the translation is bound there (sr_module_code_bind).
+ * Unload unbinds it and returns the memory, so overlays that never fit together run one
+ * after another.
+ *
+ * What this loader cannot reproduce faithfully is refused by name and fails closed with
+ * SCE_KERNEL_ERROR_NOTIMP: a module the build did not translate, a file that is not the
+ * one that was translated, a second live instance of one translation, and a placement
+ * request outside the user partition's Low policy. */
+
+/* SceKernelLMOption, from the public PSPSDK pspmodulemgr.h: size, mpidtext, mpiddata,
+ * flags, position, access, reserved[2]. Fields past `size` are absent and default. */
+#define GUEST_MODULE_OPTION_BYTES 20u
+#define GUEST_MODULE_PARTITION_USER 2u
+#define GUEST_MODULE_POSITION_LOW 0u
+/* The user partition hands out 256-byte slots (alloc_block). */
+#define GUEST_MODULE_PARTITION_GRANULE 0x100u
+
+typedef struct {
+    uint32_t mpidtext;
+    uint32_t mpiddata;
+    uint32_t position;
+} GuestModuleLoadOption;
+
+static uint32_t guest_module_boundary(const char *boundary, const char *file, const char *detail) {
+    fprintf(stderr, "GUEST_MODULE_BOUNDARY: %s module=%s: %s; in the works (#704)\n",
+            boundary, file, detail);
+    return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+}
+
+static uint32_t read_guest_module_option(uint32_t option, GuestModuleLoadOption *out) {
+    memset(out, 0, sizeof(*out));
+    if (!option) return 0;
+    if (!sr_guest_span_readable(option, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    uint32_t declared = MEM_R32(option);
+    uint32_t span = declared < GUEST_MODULE_OPTION_BYTES ? declared : GUEST_MODULE_OPTION_BYTES;
+    if (span > 4u && !sr_guest_span_readable(option, span)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (span >= 8u) out->mpidtext = MEM_R32(option + 4u);
+    if (span >= 12u) out->mpiddata = MEM_R32(option + 8u);
+    if (span >= 17u) out->position = MEM_R8(option + 16u);
+    return 0;
+}
+
+/* Read a staged module file whole. Returns 0 when it is absent; a file that exists but
+ * cannot be read completely is reported through *unreadable. */
+static unsigned char *read_guest_module_file(const char *path, size_t *size_out, int *unreadable) {
+    *size_out = 0;
+    *unreadable = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    unsigned char *bytes = NULL;
+    long length = -1;
+    if (fseek(f, 0, SEEK_END) == 0) length = ftell(f);
+    if (length <= 0 || (uint64_t)length > 0x04000000u || fseek(f, 0, SEEK_SET) != 0 ||
+        !(bytes = (unsigned char *)malloc((size_t)length)) ||
+        fread(bytes, 1, (size_t)length, f) != (size_t)length) {
+        free(bytes);
+        fclose(f);
+        *unreadable = 1;
+        return NULL;
+    }
+    fclose(f);
+    *size_out = (size_t)length;
+    return bytes;
+}
+
+/* Lay a guest-placed module out and bind its translation. On success `mod` holds the
+ * module's entry points, image and $gp, and 0 is returned; otherwise the guest-visible
+ * error is returned and nothing the attempt reserved stays reserved. */
+static uint32_t load_guest_placed_module(const char *file, int required, uint32_t option,
+                                         LoadedModule *mod) {
+    char detail[192];
+    GuestModuleLoadOption opt;
+    uint32_t error = read_guest_module_option(option, &opt);
+    if (error) return error;
+    if ((opt.mpidtext && opt.mpidtext != GUEST_MODULE_PARTITION_USER) ||
+        (opt.mpiddata && opt.mpiddata != GUEST_MODULE_PARTITION_USER)) {
+        snprintf(detail, sizeof(detail), "requested partitions text=%u data=%u; only the user "
+                 "partition is modelled", opt.mpidtext, opt.mpiddata);
+        return guest_module_boundary("guest-module-partition-unsupported", file, detail);
+    }
+    if (opt.position != GUEST_MODULE_POSITION_LOW) {
+        snprintf(detail, sizeof(detail), "requested placement position %u; only Low placement "
+                 "is modelled", opt.position);
+        return guest_module_boundary("guest-module-placement-unsupported", file, detail);
+    }
+
+    char image_path[1024];
+    int written = snprintf(image_path, sizeof(image_path), "%s/%s", guest_module_root(), file);
+    if (written <= 0 || (size_t)written >= sizeof(image_path))
+        return guest_module_boundary("guest-module-path-too-long", file,
+                                     "the staged module path exceeds the runtime limit");
+    size_t size = 0;
+    int unreadable = 0;
+    unsigned char *bytes = read_guest_module_file(image_path, &size, &unreadable);
+    if (!bytes && !unreadable) {
+        if (required) {
+            fprintf(stderr, "GUEST_MODULE_INPUT_MISSING: required module %s is absent from "
+                            "SR_MODULE_DIR; refusing load (#296)\n", file);
+            return 0x80020190u;  /* SCE_KERNEL_ERROR_NO_MEMORY, as the fixed-address path */
+        }
+        /* An optional module that is not staged is served by host HLE, as an optional
+         * fixed-address module is: the record exists, no image and no translation. */
+        mod->runtime_placed = 1;
+        fprintf(stderr, "GUEST_MODULE_HOST_SERVED: optional module %s is not staged; host "
+                        "HLE serves its imports\n", file);
+        return 0;
+    }
+    if (!bytes)
+        return guest_module_boundary("guest-module-input-unreadable", file,
+                                     "the staged module file could not be read");
+
+    const SrModuleCode *code = sr_module_code_find(file);
+    uint32_t base = 0;
+    if (!code) {
+        free(bytes);
+        return guest_module_boundary("guest-module-untranslated", file,
+                                     "the build did not translate this module");
+    }
+    uint64_t digest = sr_module_code_fnv1a64(bytes, size);
+    if ((uint64_t)size != code->file_size || digest != code->file_fnv1a64) {
+        free(bytes);
+        snprintf(detail, sizeof(detail), "the staged file (0x%x bytes, FNV-1a 0x%016llx) is "
+                 "not the file the build translated (0x%x bytes, FNV-1a 0x%016llx)",
+                 (unsigned)size, (unsigned long long)digest,
+                 code->file_size, (unsigned long long)code->file_fnv1a64);
+        return guest_module_boundary("guest-module-identity-mismatch", file, detail);
+    }
+    if (code->unsupported_reason) {
+        free(bytes);
+        return guest_module_boundary("guest-module-translation-unsupported", file,
+                                     code->unsupported_reason);
+    }
+    if (sr_module_code_is_bound(code, &base)) {
+        free(bytes);
+        snprintf(detail, sizeof(detail), "one instance is already live at 0x%08x; each "
+                 "translation binds one image", base + code->link_low);
+        return guest_module_boundary("guest-module-second-instance", file, detail);
+    }
+    uint32_t span = code->link_high - code->link_low;
+    uint32_t align = code->alignment > GUEST_MODULE_PARTITION_GRANULE
+                         ? code->alignment : GUEST_MODULE_PARTITION_GRANULE;
+    if (code->link_high <= code->link_low || (align & (align - 1u)) != 0u ||
+        span > UINT32_MAX - (align - GUEST_MODULE_PARTITION_GRANULE)) {
+        free(bytes);
+        snprintf(detail, sizeof(detail), "image extent [0x%08x,0x%08x) alignment 0x%x",
+                 code->link_low, code->link_high, code->alignment);
+        return guest_module_boundary("guest-module-layout-unsupported", file, detail);
+    }
+    if (s_prx_image_count >= sizeof(s_prx_images) / sizeof(s_prx_images[0])) {
+        free(bytes);
+        return guest_module_boundary("guest-module-table-full", file,
+                                     "every resident-image slot is live");
+    }
+
+    /* Memory, as the kernel's loader takes it: the lowest free user-partition range that
+     * holds the whole image (PSP_SMEM_Low). A relocatable image is aligned inside its
+     * block, which carries the slack an alignment above the partition granule needs; a
+     * fixed-address image owns exactly its link range. The status the guest sees when the
+     * partition cannot hold the image is SCE_KERNEL_ERROR_NO_MEMORY (unmeasured). */
+    uint32_t alloc_uid;
+    uint32_t image = 0;
+    if (code->relocatable) {
+        alloc_uid = alloc_block(span + (align - GUEST_MODULE_PARTITION_GRANULE));
+        if (alloc_uid != 0xFFFFFFFFu) {
+            uint32_t block = block_addr(alloc_uid);
+            image = (block + align - 1u) & ~(align - 1u);
+            base = image - code->link_low;
+        }
+    } else {
+        alloc_uid = sr_alloc_block_at(code->link_low, span, file);
+        image = code->link_low;
+        base = 0;
+    }
+    if (alloc_uid == 0xFFFFFFFFu) {
+        free(bytes);
+        fprintf(stderr, "GUEST_MODULE_LOAD_NO_MEMORY: %s needs 0x%x bytes%s; the user "
+                        "partition cannot hold it now\n", file, span,
+                code->relocatable ? "" : " at its fixed link address");
+        return 0x80020190u;  /* SCE_KERNEL_ERROR_NO_MEMORY */
+    }
+
+    /* Relocate into the host staging buffer; guest memory is written only once the
+     * loader has accepted the whole image. */
+    SrPrxImage img;
+    char err[160] = "";
+    memset(&img, 0, sizeof(img));
+    if (s_prx_stage && s_prx_stage_cap) memset(s_prx_stage, 0, s_prx_stage_cap);
+    s_prx_stage_base = image;
+    s_prx_stage_len = 0;
+    s_prx_staging = 1;
+    int rc = sr_prx_load_from_memory(bytes, size, base, &img, err, sizeof(err));
+    s_prx_staging = 0;
+    free(bytes);
+    const char *refusal = NULL;
+    if (rc != 0) {
+        refusal = err;
+    } else if (img.start != image || img.end > image + span || s_prx_stage_len > span) {
+        snprintf(detail, sizeof(detail), "the loader laid the image out at [0x%08x,0x%08x), "
+                 "not inside [0x%08x,0x%08x)", img.start, img.end, image, image + span);
+        refusal = detail;
+    } else if (!sr_guest_span_writable(image, span)) {
+        refusal = "the allocated range is not writable guest memory";
+    }
+    if (refusal) {
+        char reason[192];
+        snprintf(reason, sizeof(reason), "%s", refusal);
+        sr_prx_image_free(&img);
+        free_block(alloc_uid);
+        return guest_module_boundary("guest-module-image-refused", file, reason);
+    }
+    memcpy(SR_HOST(image), s_prx_stage, s_prx_stage_len);
+    if (span > s_prx_stage_len) memset(SR_HOST(image + s_prx_stage_len), 0, span - s_prx_stage_len);
+
+    SrModuleBindDetail bind_detail;
+    SrModuleBindResult bound = sr_module_code_bind(code, base, &bind_detail);
+    if (bound != SR_MODULE_BIND_OK) {
+        snprintf(detail, sizeof(detail), "%s at 0x%08x", sr_module_bind_result_name(bound),
+                 bind_detail.address);
+        sr_prx_image_free(&img);
+        free_block(alloc_uid);
+        return guest_module_boundary("guest-module-bind-refused", file, detail);
+    }
+    s_prx_images[s_prx_image_count++] = (PrxImage){image, image + span, alloc_uid, 0, code};
+
+    /* Exports: the named libraries' functions become link targets for importers once the
+     * module has started (started_module_export); the system library supplies the stop
+     * entry. A named export host HLE also implements marks the module host-served. */
+    uint32_t module_stop = 0;
+    unsigned exported = 0;
+    for (uint32_t i = 0; i < img.nexp; i++) {
+        const SrPrxExport *e = &img.exps[i];
+        if (!e->is_func) continue;
+        if (e->lib[0] == '\0') {
+            if (e->nid == 0xCEE05613u) module_stop = e->addr;
+            continue;
+        }
+        if (sr_hle_register_late_import(e->nid, e->addr)) exported++;
+        if (hle_find(e->nid)) mod->host_served = 1;
+    }
+    mod->runtime_placed = 1;
+    mod->code = code;
+    mod->gp = img.gp;
+    /* The start routine is the system library's module_start, else the ELF entry -- when
+     * that lies in the image. A library module that declares neither (an entry of
+     * 0xFFFFFFFF, which the loader reports one byte below the image) has no start
+     * routine at all: 0. */
+    if (img.has_mod_start)
+        mod->module_start = img.mod_start;
+    else if (img.entry >= image && img.entry < image + span)
+        mod->module_start = img.entry;
+    else
+        mod->module_start = 0;
+    mod->module_stop = module_stop;
+    mod->image_base = image;
+    sr_flight_prx_load(image, 0u, mod->module_start, img.nimp, exported);
+    sr_prx_image_free(&img);
+    return 0;
+}
+
+/* sceKernelLoadModule's work for one guest path. Only modules the title manifest
+ * declares (by guest_path) were translated; any other path gets a record whose start
+ * the host bypass serves. */
+static uint32_t load_module_by_guest_path(const char *path, uint32_t option) {
     const char *file = NULL;
     uint32_t base = 0;
     int required = 0;
+    SrGuestModulePlacement placement = SR_GUEST_MODULE_FIXED;
+    int declared = sr_title_config_guest_module(path, &file, &base, &required, &placement);
+    LoadedModule *mod = alloc_loaded_module_slot();
+    if (!mod) return 0x80020190u;  /* SCE_KERNEL_ERROR_NO_MEMORY */
     s_last_prx_entry = 0;
     s_last_prx_stop = 0;
     s_last_prx_base = 0;
-    if (!sr_title_config_guest_module(guest_path, &file, &base, &required)) return 0;
-    return populate_guest_module(file, base, required) ? 1 : -1;
+    if (declared && placement == SR_GUEST_MODULE_RUNTIME) {
+        uint32_t error = load_guest_placed_module(file, required, option, mod);
+        if (error) {
+            retire_loaded_module(mod);
+            fprintf(stderr, "sceKernelLoadModule(\"%s\") -> 0x%08x\n", path, error);
+            return error;
+        }
+    } else if (declared && !populate_guest_module(file, base, required)) {
+        retire_loaded_module(mod);
+        fprintf(stderr,
+                "sceKernelLoadModule(\"%s\") failed closed at its manifest address\n",
+                path);
+        return 0x80020190u;  /* SCE_KERNEL_ERROR_NO_MEMORY */
+    } else {
+        mod->module_start = s_last_prx_entry;
+        mod->module_stop = s_last_prx_stop;
+        mod->image_base = s_last_prx_base;
+    }
+    uint32_t uid = sr_alloc_uid();
+    fprintf(stderr, "sceKernelLoadModule(\"%s\") -> uid=0x%x\n", path, uid);
+    mod->uid = uid;
+    snprintf(mod->path, sizeof(mod->path), "%s", path);
+    mod->state = MODULE_STATE_LOADED;
+    if (mod->code) {
+        fprintf(stderr, "GUEST_MODULE_PLACED: %s uid=0x%x image=[0x%08x,0x%08x) gp=0x%08x "
+                        "start=0x%08x stop=0x%08x%s\n",
+                file, uid, mod->image_base,
+                mod->image_base + (mod->code->link_high - mod->code->link_low), mod->gp,
+                mod->module_start, mod->module_stop,
+                mod->host_served ? " host-served" : "");
+    }
+    return uid;
 }
 
 /* sceUtility */
@@ -5518,8 +5861,8 @@ static uint32_t h_StopModule_Trace(CpuState *s) {
     uint32_t modid = A0;
     LoadedModule *mod = find_loaded_module(modid);
     if (!real_module_start_enabled() &&
-        (!mod || (mod->state == MODULE_STATE_STARTED && mod->start_entry_ran &&
-                  mod->module_stop != 0))) {
+        (!mod || (!mod->runtime_placed && mod->state == MODULE_STATE_STARTED &&
+                  mod->start_entry_ran && mod->module_stop != 0))) {
         uint32_t uid = sched_current_uid();
         fprintf(stderr, "TRACE_STOPMODULE: uid=0x%x pc=0x%08x ra=0x%08x modid=0x%08x\n",
                 uid, s->pc, s->r[31], s->r[4]);
@@ -5580,7 +5923,7 @@ static uint32_t h_StopModule_Trace(CpuState *s) {
     mod->state = MODULE_STATE_STOPPING;
     fprintf(stderr, "sceKernelStopModule(uid=0x%x, path='%s', stop=0x%08x): executing module_stop\n",
             modid, mod->path, mod->module_stop);
-    uint32_t rv = ge_call_guest_rv(s, mod->module_stop, arglen, argp, 0);
+    uint32_t rv = module_entry_call(s, mod, mod->module_stop, arglen, argp);
     if (status_ptr && sr_guest_span_writable(status_ptr, 4u)) {
         MEM_W32(status_ptr, rv);
     }
@@ -5637,6 +5980,11 @@ static uint32_t h_UnloadModule_Trace(CpuState *s) {
         return SCE_ERROR_MODULE_BAD_ID;
     }
     mod->state = MODULE_STATE_UNLOADED;
+    if (mod->code) {
+        fprintf(stderr, "GUEST_MODULE_UNLOADED: %s uid=0x%x image=[0x%08x,0x%08x)\n",
+                mod->code->name, modid, mod->image_base,
+                mod->image_base + (mod->code->link_high - mod->code->link_low));
+    }
     /* The kernel unlinks a module's exports and releases its memory here, and this is
      * the only point at which a stopped module's export authority is retired. Stop
      * deliberately leaves the image resident: a stopped module is still loaded and can
@@ -10094,40 +10442,34 @@ extern void f_32200000(CpuState *s);
 extern void f_32280000(CpuState *s);
 extern void f_322f8868(CpuState *s);
 
+/* sceKernelLoadModule(path, flags, option). */
 static uint32_t h_LoadModule(CpuState *s) {
     char path[256];
     if (!guest_cstr(A0, path, sizeof(path)))
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
-    LoadedModule *mod = alloc_loaded_module_slot();
-    if (!mod) return 0x80020190u;  /* SCE_KERNEL_ERROR_NO_MEMORY */
-    if (populate_known_module(path) < 0) {
-        retire_loaded_module(mod);
-        fprintf(stderr,
-                "sceKernelLoadModule(\"%s\") failed closed at its manifest address\n",
-                path);
-        return 0x80020190u;  /* SCE_KERNEL_ERROR_NO_MEMORY */
-    }
-    uint32_t uid = sr_alloc_uid();
-    fprintf(stderr, "sceKernelLoadModule(\"%s\") -> uid=0x%x\n", path, uid);
-    mod->uid = uid;
-    snprintf(mod->path, sizeof(mod->path), "%s", path);
-    mod->module_start = s_last_prx_entry;
-    mod->module_stop = s_last_prx_stop;
-    mod->image_base = s_last_prx_base;
-    mod->state = MODULE_STATE_LOADED;
-    return uid;
+    return load_module_by_guest_path(path, A2);
 }
 
-/* LoadModuleByID receives an already-open file UID, so the original path is not part of this
- * ABI call. Populate every manifest-declared guest module idempotently; the
- * sorted registry replaces duplicate NIDs and therefore remains safe across repeated loads. */
+static const char *hle_fd_guest_path(uint32_t fd);
+
+/* sceKernelLoadModuleByID(fd, flags, option). The file was opened by path, and that path
+ * names the module: it loads exactly as sceKernelLoadModule loads the same path, with a
+ * module record its start/stop/unload can find -- guest-placed, fixed-address, or
+ * (undeclared) host-served. Only a descriptor without a recorded path keeps the older
+ * behaviour: every fixed-address manifest module is populated idempotently (the sorted
+ * registry replaces duplicate NIDs, so repeated loads stay safe). */
 static uint32_t h_LoadModuleByID(CpuState *s) {
-    (void)s;
+    const char *opened = hle_fd_guest_path(A0);
+    if (opened) return load_module_by_guest_path(opened, A2);
     for (unsigned i = 0; i < sr_title_config_guest_module_count(); i++) {
         const char *file = NULL;
         uint32_t base = 0;
         int required = 0;
-        if (sr_title_config_guest_module_at(i, &file, NULL, &base, &required) &&
+        SrGuestModulePlacement placement = SR_GUEST_MODULE_FIXED;
+        /* A runtime-placed module is never bulk-populated: it is laid out only when the
+         * game loads it, wherever the guest allocator places it. */
+        if (sr_title_config_guest_module_at(i, &file, NULL, &base, &required, &placement) &&
+            placement == SR_GUEST_MODULE_FIXED &&
             !populate_guest_module(file, base, required)) {
             return 0x80020190u;  /* SCE_KERNEL_ERROR_NO_MEMORY */
         }
@@ -10179,8 +10521,13 @@ static uint32_t h_StartModule(CpuState *s) {
 
     int is_libfont = module_path_is(path, "libfont.prx");
     ModuleStartPolicy policy = module_start_policy();
+    /* A guest-placed module is the game's own code laid out by the guest allocator: its
+     * module_start runs by default, as libfont's does, unless host HLE implements one of
+     * its exports -- then the host keeps serving them and the guest init is bypassed
+     * like every other host-served module's. */
+    int guest_owned_start = is_libfont || (mod->runtime_placed && mod->code && !mod->host_served);
     int allow_entry = policy == MODULE_START_ALLOW_ALL ||
-                      (policy == MODULE_START_LIBFONT_ONLY && is_libfont);
+                      (policy == MODULE_START_LIBFONT_ONLY && guest_owned_start);
     /* A libfont module under the kill switch does not return here: startup is
      * unavailable, so it reaches the fail-closed startup boundary below. */
     int refuse_unavailable_libfont = policy == MODULE_START_NONE && is_libfont;
@@ -10198,6 +10545,9 @@ static uint32_t h_StartModule(CpuState *s) {
             fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> "
                             "SR_REAL_MODULE_START=0, module_start not executed\n",
                     uid, path ? path : "");
+        } else if (mod->runtime_placed) {
+            fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> host HLE serves "
+                            "this module's exports; module_start not executed\n", uid, path);
         } else if (path) {
             if (strstr(path, "psmf.prx")) {
                 fprintf(stderr, "sceKernelStartModule: recognized psmf.prx (module_start not executed; sceMpeg* is fully host-HLE'd)\n");
@@ -10213,11 +10563,33 @@ static uint32_t h_StartModule(CpuState *s) {
         return 0;
     }
 
+    if (allow_entry && mod->runtime_placed && mod->code && mod->module_start == 0) {
+        /* A guest-placed module that declares no start routine starts by making its
+         * exports linkable; no guest code runs. Its stop entry, if any, runs at stop. */
+        fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> module declares no "
+                        "start routine; exports linked\n", uid, mod->path);
+        mark_module_started(mod->image_base);
+        mod->start_entry_ran = 1;
+        mod->state = MODULE_STATE_STARTED;
+        return 0;
+    }
+
+    if (allow_entry && mod->runtime_placed && mod->code &&
+        sr_lookup(mod->module_start) == NULL) {
+        /* The translation was bound, so an entry it has no body for is a build gap, not
+         * a module without startup: refuse it rather than report a start that never ran. */
+        char detail[96];
+        snprintf(detail, sizeof(detail), "module_start 0x%08x has no translated body",
+                 mod->module_start);
+        mod->state = previous_state;
+        return guest_module_boundary("guest-module-start-untranslated", mod->code->name, detail);
+    }
+
     if (allow_entry && mod->module_start != 0 && sr_lookup(mod->module_start) != NULL) {
         mod->state = MODULE_STATE_STARTING;
         fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s', entry=0x%08x): executing module_start\n",
                 uid, mod->path, mod->module_start);
-        uint32_t rv = ge_call_guest_rv(s, mod->module_start, arglen, argp, 0);
+        uint32_t rv = module_entry_call(s, mod, mod->module_start, arglen, argp);
         mark_module_started(mod->module_start);
         if (status_ptr && sr_guest_span_writable(status_ptr, 4u)) {
             MEM_W32(status_ptr, rv);
@@ -10266,6 +10638,7 @@ static uint32_t h_StartModule(CpuState *s) {
 #ifdef SR_HLE_THREAD_SELFTEST
 /* Test-build-only call-throughs to the production handlers. */
 uint32_t sr_hle_test_load_module(CpuState *s) { return h_LoadModule(s); }
+uint32_t sr_hle_test_load_module_by_id(CpuState *s) { return h_LoadModuleByID(s); }
 uint32_t sr_hle_test_start_module(CpuState *s) { return h_StartModule(s); }
 uint32_t sr_hle_test_stop_module(CpuState *s) { return h_StopModule_Trace(s); }
 uint32_t sr_hle_test_unload_module(CpuState *s) { return h_UnloadModule_Trace(s); }
@@ -10402,6 +10775,7 @@ typedef struct {
     SrArchiveVfs *archive_vfs;
     size_t archive_mount;
     size_t archive_entry;
+    char guest_path[256];        /* the path the guest opened it with ("" if too long) */
 } Fd;
 static Fd s_fds[64];
 static int64_t s_closed_res[64];
@@ -12464,6 +12838,8 @@ static uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot
     if (slot < 0) return SCE_ERROR_KERNEL_TOO_MANY_OPEN_FILES;  /* too many open files */
     memset(&s_fds[slot], 0, sizeof(s_fds[slot]));
     s_fds[slot].kind = FD_KIND_FILE;
+    if (strlen(path) < sizeof(s_fds[slot].guest_path))
+        memcpy(s_fds[slot].guest_path, path, strlen(path) + 1u);
     s_closed_res[slot] = 0;
     s_closed_async_state[slot] = IO_ASYNC_IDLE;
 
@@ -12605,6 +12981,13 @@ from_iso:
     s_fds[slot].lba = lba; s_fds[slot].size = size; s_fds[slot].off = 0;
     return (uint32_t)slot;
 }
+static const char *hle_fd_guest_path(uint32_t fd) {
+    if (fd >= (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) || !s_fds[fd].used ||
+        s_fds[fd].kind != FD_KIND_FILE || !s_fds[fd].guest_path[0])
+        return NULL;
+    return s_fds[fd].guest_path;
+}
+
 static uint32_t h_IoOpen(CpuState *s) {
     char path[512];
     uint32_t rc = io_guest_path(A0, path, sizeof(path));
@@ -17245,7 +17628,16 @@ static void ge_call_guest(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, ui
 /* Like ge_call_guest but returns the guest function's v0 (r2). Used by HLE
  * stubs that must extract a value from a guest constructor (e.g. the guest
  * malloc f_00000bcc returns the allocated block in r2). */
+static uint32_t ge_call_guest_gp_rv(CpuState *s, uint32_t fn, uint32_t gp,
+                                    uint32_t a0, uint32_t a1, uint32_t a2);
 static uint32_t ge_call_guest_rv(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2) {
+    return ge_call_guest_gp_rv(s, fn, s->r[28], a0, a1, a2);
+}
+
+/* The same nested call with the callee's $gp named explicitly: a module's entry points
+ * run with the module's own $gp, as the kernel starts a module, not the caller's. */
+static uint32_t ge_call_guest_gp_rv(CpuState *s, uint32_t fn, uint32_t gp,
+                                    uint32_t a0, uint32_t a1, uint32_t a2) {
     uint32_t frame_sp = 0;
     int frame = -1;
     if (!fn) { fprintf(stderr, "GE_CALL_GUEST_RV: fn=0x0 (null, skipping)\n"); return 0; }
@@ -17264,7 +17656,7 @@ static uint32_t ge_call_guest_rv(CpuState *s, uint32_t fn, uint32_t a0, uint32_t
     s->r[4] = a0;
     s->r[5] = a1;
     s->r[6] = a2;
-    s->r[28] = save.r[28];
+    s->r[28] = gp;
     s->r[29] = frame_sp;
     s->r[31] = 0;
     s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;

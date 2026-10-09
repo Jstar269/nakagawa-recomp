@@ -1302,6 +1302,12 @@ void sr_register(uint32_t addr, RecompFn fn) {
 uint32_t sr_register_count(void) { return s_register_count; }
 
 RecompFn sr_lookup(uint32_t addr) {
+    /* A bound runtime-placed module is the only authority for its image range
+     * (src/rt/guest_interp.c): a static registration at the same address belongs
+     * to some other image and must never run there. */
+    int in_bound_module = 0;
+    RecompFn module_fn = sr_module_code_lookup(addr, &in_bound_module);
+    if (in_bound_module) return module_fn;
     RecompFn fn = (RecompFn)sr_dtab_lookup(&g_dtab, addr);
     return fn && sr_exec_span_owns_fetch(addr) ? fn : NULL;
 }

@@ -46,6 +46,7 @@
 #define SR_PRX_MAX_ENTRIES 65536u
 #define SR_PRX_MAX_FILE_BYTES (256u * 1024u * 1024u)
 #define SR_PRX_MAX_IMAGE_BYTES (64u * 1024u * 1024u)
+#define SR_PRX_SHT_NOBITS 8u      /* ELF section type: occupies no file bytes */
 
 static void set_err(char *err, size_t errlen, const char *msg) {
     size_t i;
@@ -1053,12 +1054,16 @@ static int do_load(const unsigned char *data, size_t size, uint32_t base,
         for (si = 0; si < shnum; si++) {
             const unsigned char *sh = data + e_shoff + (size_t)si * shentsize;
             uint32_t shname = rd32le(sh);
+            uint32_t shtype = rd32le(sh + 4);
             uint32_t shaddr = rd32le(sh + 12);
             uint32_t shoff = rd32le(sh + 16);
             uint32_t shsize = rd32le(sh + 20);
             size_t k;
             int match = 0;
-            if ((uint64_t)shoff + (uint64_t)shsize > (uint64_t)size) {
+            /* SHT_NOBITS (.bss) describes memory, not file bytes: its offset plus
+             * size may run past the input, as it does in ordinary toolchain output. */
+            if (shtype != SR_PRX_SHT_NOBITS &&
+                (uint64_t)shoff + (uint64_t)shsize > (uint64_t)size) {
                 set_err(err, errlen, "section data exceeds input size");
                 goto fail_scratch;
             }

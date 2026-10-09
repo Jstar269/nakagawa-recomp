@@ -255,6 +255,16 @@ def resolve_list(env_var: str, *, use_env: bool = False, cli_values: list[str] |
     return [item for item in (line.strip() for line in raw.split(LIST_SEPARATOR)) if item]
 
 
+def read_entries_file(path: Path) -> list[str]:
+    """The entries of an --entries-file: the same newline-separated KEY=VALUE text an
+    --entries-env variable carries, split and stripped the same way."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise BuildInputError(f"--entries-file {path} could not be read: {exc}") from exc
+    return [item for item in (line.strip() for line in raw.split(LIST_SEPARATOR)) if item]
+
+
 def identity_of(path: str) -> str:
     """Return a stable identity line for one input file.
 
@@ -327,6 +337,15 @@ def parse_args() -> argparse.Namespace:
                  "contain quotes or spaces travel this way so no byte of the "
                  "value reaches a command interpreter as syntax",
         )
+        command.add_argument(
+            "--entries-file",
+            metavar="PATH",
+            type=Path,
+            help="read the same newline-separated entries from a file (as Make's "
+                 "$(file ...) writes them); GNU Make before 4.4 does not hand "
+                 "exported variables to $(shell ...), so a parse-time hash reads "
+                 "its entries this way",
+        )
         command.add_argument("--file", action="append", default=[], metavar="PATH")
         if action == "record":
             command.add_argument("--output", type=Path, required=True)
@@ -369,16 +388,24 @@ def main() -> int:
         activate_stamp(args.output, args.stale_glob, args.value, invalidate=args.invalidate)
         return 0
     try:
-        entries = (
-            resolve_list(
-                args.entries_env,
-                use_env=True,
-                cli_values=args.entry,
-                flag="--entries-env",
+        if args.entries_file is not None:
+            if args.entries_env or args.entry:
+                raise BuildInputError(
+                    "conflicting sources for the profile entries: --entries-file was "
+                    "supplied with --entries-env or --entry. Pass exactly one."
+                )
+            entries = read_entries_file(args.entries_file)
+        else:
+            entries = (
+                resolve_list(
+                    args.entries_env,
+                    use_env=True,
+                    cli_values=args.entry,
+                    flag="--entries-env",
+                )
+                if args.entries_env
+                else list(args.entry)
             )
-            if args.entries_env
-            else list(args.entry)
-        )
     except BuildInputError as exc:
         sys.stderr.write(f"build_profile: {exc}\n")
         return 2

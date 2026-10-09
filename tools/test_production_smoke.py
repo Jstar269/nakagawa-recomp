@@ -1761,6 +1761,8 @@ class TestSanitizedBringup(unittest.TestCase):
         user_decrypted_modules: dict[str, bytes] | None = None,
         catalog_manifest: dict | None = None,
         forbid_iso_executable: bool = False,
+        package_modules: bool = False,
+        launch_envs: list | None = None,
         user_manifest: dict | None = None,
         native_stager=None,
     ):
@@ -1808,6 +1810,8 @@ class TestSanitizedBringup(unittest.TestCase):
             package_dir = build_args.user_data_root / "packages" / "ULUS99998"
             package_dir.mkdir(parents=True, exist_ok=True)
             (package_dir / "runtime.exe").write_bytes(b"synthetic runtime")
+            if package_modules:
+                (package_dir / "modules").mkdir(exist_ok=True)
             (package_dir / "runtime_image.bin").write_bytes(b"synthetic runtime image")
             (package_dir / "package.json").write_text(
                 json.dumps({
@@ -1821,6 +1825,8 @@ class TestSanitizedBringup(unittest.TestCase):
             return 0
 
         def fake_popen(_command, **kwargs):
+            if launch_envs is not None:
+                launch_envs.append(dict(kwargs["env"]))
             self.last_launch_env = dict(kwargs["env"])
             Path(kwargs["env"]["SR_FLIGHT_OUTPUT"]).write_text(json.dumps({
                 "recorder": {"dropped": 0},
@@ -1873,7 +1879,7 @@ class TestSanitizedBringup(unittest.TestCase):
                     report_path.read_text(encoding="utf-8")
                 )
 
-    def test_multi_module_iso_gets_provisional_non_overlapping_bindings(self):
+    def test_multi_module_iso_modules_are_placed_by_the_guest_allocator(self):
         work_root = self.root / "multi-module-case"
         work_root.mkdir(parents=True)
         module_bytes = build_synthetic_decrypted_prx()
@@ -1910,10 +1916,11 @@ class TestSanitizedBringup(unittest.TestCase):
         profile = json.loads((profile_dir / "profile.json").read_text(encoding="utf-8"))
         modules = profile["manifest"]["modules"]
         self.assertEqual([module["name"] for module in modules], ["alpha.prx", "beta.elf"])
-        self.assertTrue(all(module["load_address_evidence"] == "provisional" for module in modules))
+        # No build-time address: each module is translated position-independently and
+        # laid out by the guest allocator when the game loads it (#704).
+        self.assertTrue(all(module["placement"] == "runtime" for module in modules))
+        self.assertTrue(all("load_address" not in module for module in modules))
         self.assertTrue(all(module["required"] and module["role"] == "guest-prx" for module in modules))
-        self.assertNotEqual(modules[0]["load_address"], modules[1]["load_address"])
-        self.assertTrue(all(module["load_address"] % 0x10000 == 0 for module in modules))
         nk_cli.validate_bringup_report(report)
 
     def test_disc_whose_modules_the_runtime_serves_translates_no_guest_module(self):
@@ -2123,13 +2130,77 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(executable["base"], 0x08804000)
         self.assertEqual(executable["entry"], 0x08804000)
 
-    def test_module_placement_without_safe_runtime_range_is_named(self):
+    def test_launch_points_the_runtime_at_the_packaged_modules(self):
+        # The package ships its guest modules in <package>/modules; the bring-up
+        # launch must hand the runtime that directory (as a player launch does),
+        # never an inherited or development path.
+        work_root = self.root / "packaged-modules-case"
+        work_root.mkdir(parents=True)
+        iso_path = work_root / "packaged-modules.iso"
+        create_test_iso_with_modules(
+            iso_path,
+            bytes(build_synthetic_iso_elf()),
+            sysdir_modules={"alpha.prx": build_synthetic_decrypted_prx()},
+            usrdir_modules={},
+            disc_id="ULUS99998",
+            title="Synthetic Packaged Modules",
+        )
+        launch_envs: list = []
+        with mock.patch.dict(os.environ, {"SR_MODULE_DIR": str(work_root / "inherited")}):
+            status, report = self._run_module_fixture(
+                iso_path, work_root, package_modules=True, launch_envs=launch_envs)
+        self.assertEqual(status, 0, report)
+        self.assertEqual(len(launch_envs), 1)
+        package_dir = work_root / "work" / "user-data" / "packages" / "ULUS99998"
+        self.assertEqual(launch_envs[0]["SR_MODULE_DIR"], str(package_dir / "modules"))
+
+        launch_envs.clear()
+        other_root = self.root / "unpackaged-modules-case"
+        other_root.mkdir(parents=True)
+        with mock.patch.dict(os.environ, {"SR_MODULE_DIR": str(other_root / "inherited")}):
+            status, report = self._run_module_fixture(
+                iso_path, other_root, launch_envs=launch_envs)
+        self.assertEqual(status, 0, report)
+        self.assertNotIn("SR_MODULE_DIR", launch_envs[0])
+
+    def test_main_image_leaving_little_memory_still_plans_its_modules(self):
+        # Nothing is reserved at build time: a main image that leaves little user
+        # memory gets its modules planned, and whether one fits is the guest
+        # allocator's answer when the game loads it (#704).
+        work_root = self.root / "little-memory-case"
+        work_root.mkdir(parents=True)
+        iso_path = work_root / "little-memory.iso"
+        create_test_iso_with_modules(
+            iso_path,
+            build_plain_mips_elf(e_type=2, vaddr=0x09E00000, memsz=0x10000),
+            sysdir_modules={
+                "module.prx": build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x100),
+            },
+            usrdir_modules={},
+            disc_id="ULUS99998",
+            title="Synthetic Little Memory",
+        )
+        status, report = self._run_module_fixture(iso_path, work_root)
+
+        self.assertNotEqual(report["failure_class"], "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE")
+        self.assertEqual(report["stages"]["prepare_import"]["status"], "PASS", report)
+        profile = json.loads(
+            (work_root / "work" / "user-data" / "experimental" / "ULUS99998" / "profile.json")
+            .read_text(encoding="utf-8")
+        )
+        self.assertEqual(profile["manifest"]["modules"], [{
+            "name": "module.prx", "required": True, "role": "guest-prx",
+            "placement": "runtime", "guest_path": "disc0:/PSP_GAME/SYSDIR/module.prx",
+        }])
+        nk_cli.validate_bringup_report(report)
+
+    def test_main_image_past_user_memory_is_named(self):
         work_root = self.root / "no-module-range-case"
         work_root.mkdir(parents=True)
         iso_path = work_root / "no-module-range.iso"
         create_test_iso_with_modules(
             iso_path,
-            build_plain_mips_elf(e_type=2, vaddr=0x09E00000, memsz=0x10000),
+            build_plain_mips_elf(e_type=2, vaddr=0x09FF0000, memsz=0x20000),
             sysdir_modules={
                 "module.prx": build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x100),
             },

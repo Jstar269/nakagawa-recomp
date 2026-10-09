@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 typedef struct SrExecSpan {
     uint32_t start;
@@ -73,10 +74,18 @@ int sr_exec_span_register(uint32_t start, uint32_t end) {
 /* Authority tier: the PC is 4-byte aligned and one registered span covers its
  * complete fetch slot. This is the predicate sr_lookup() applies before
  * entering a native body; whether the arena can actually supply those bytes
- * matters only when the interpreter itself must fetch them. */
+ * matters only when the interpreter itself must fetch them.
+ *
+ * A bound runtime-placed module (below) is the only authority for its own
+ * image range: a static span that happens to cover those addresses (another
+ * module translated at a fixed base that is not loaded) grants nothing there. */
 int sr_exec_span_owns_fetch(uint32_t pc) {
     if ((pc & 3u) != 0u) {
         return 0;
+    }
+    int module_authority = sr_module_code_fetch_authority(pc);
+    if (module_authority >= 0) {
+        return module_authority;
     }
     for (size_t i = 0; i < s_exec_span_count; i++) {
         const SrExecSpan *span = &s_exec_spans[i];
@@ -85,6 +94,266 @@ int sr_exec_span_owns_fetch(uint32_t pc) {
         }
     }
     return 0;
+}
+
+/* ---- Runtime-placed guest modules (issue #704) ------------------------------
+ *
+ * Executable authority for a module the game loads at run time. The generated
+ * program registers one SrModuleCode descriptor per runtime-placed module at
+ * startup (sr_register_all); the descriptor owns no guest addresses until the
+ * module loader, having checked the file's identity and laid the image out,
+ * binds it at the base the guest allocator chose. A binding makes
+ * [base + link_low, base + link_high) dispatch to the module's translated bodies
+ * and grants fetch authority to its analyzer-owned spans; unbinding withdraws
+ * both and forgets the module's stale-code expectations, so a different module
+ * later placed at the same addresses never meets this one's translations.
+ *
+ * Bindings are published with release stores and read with acquire loads, the
+ * contract src/rt/dispatch_table.h uses for its own lock-free readers; binding
+ * and unbinding themselves happen one at a time from the module loader. */
+
+static const SrModuleCode **s_module_codes;
+static size_t s_module_code_count;
+static size_t s_module_code_capacity;
+
+typedef struct SrModuleBinding {
+    const SrModuleCode *code;
+    uint32_t base;
+    uint32_t start;   /* guest image range [start, end) */
+    uint32_t end;
+} SrModuleBinding;
+
+static SrModuleBinding s_module_bindings[SR_MODULE_CODE_MAX_BOUND];
+static _Atomic(uint32_t) s_module_binding_live[SR_MODULE_CODE_MAX_BOUND];
+static _Atomic(uint32_t) s_module_bound_count;
+
+static int module_name_equal(const char *a, const char *b) {
+    for (; *a && *b; a++, b++) {
+        char x = *a, y = *b;
+        if (x >= 'A' && x <= 'Z') x = (char)(x - 'A' + 'a');
+        if (y >= 'A' && y <= 'Z') y = (char)(y - 'A' + 'a');
+        if (x != y) return 0;
+    }
+    return *a == *b;
+}
+
+void sr_module_code_register(const SrModuleCode *code) {
+    if (!code || !code->name || !code->name[0] || !code->base) {
+        fprintf(stderr, "sr_module_code_register: malformed generated module descriptor\n");
+        abort();
+    }
+    for (size_t i = 0; i < s_module_code_count; i++) {
+        if (s_module_codes[i] == code) return;
+        if (module_name_equal(s_module_codes[i]->name, code->name)) {
+            fprintf(stderr, "sr_module_code_register: two translated modules are named %s\n",
+                    code->name);
+            abort();
+        }
+    }
+    if (s_module_code_count == s_module_code_capacity) {
+        size_t next = s_module_code_capacity ? s_module_code_capacity * 2u : 8u;
+        const SrModuleCode **grown = realloc((void *)s_module_codes, next * sizeof(*grown));
+        if (!grown) {
+            fprintf(stderr, "sr_module_code_register: out of memory\n");
+            abort();
+        }
+        s_module_codes = grown;
+        s_module_code_capacity = next;
+    }
+    s_module_codes[s_module_code_count++] = code;
+}
+
+const SrModuleCode *sr_module_code_find(const char *name) {
+    if (!name) return NULL;
+    for (size_t i = 0; i < s_module_code_count; i++) {
+        if (module_name_equal(s_module_codes[i]->name, name)) return s_module_codes[i];
+    }
+    return NULL;
+}
+
+unsigned sr_module_code_count(void) { return (unsigned)s_module_code_count; }
+
+const SrModuleCode *sr_module_code_at(unsigned index) {
+    return index < s_module_code_count ? s_module_codes[index] : NULL;
+}
+
+/* FNV-1a over bytes, 64-bit. tools/codegen.py records the same digest of each
+ * translated module file; the shared vectors are pinned by both test suites. */
+uint64_t sr_module_code_fnv1a64(const void *bytes, size_t size) {
+    const unsigned char *p = (const unsigned char *)bytes;
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (size_t i = 0; i < size; i++) {
+        h ^= p[i];
+        h *= 0x100000001b3ull;
+    }
+    return h;
+}
+
+const char *sr_module_bind_result_name(SrModuleBindResult result) {
+    switch (result) {
+    case SR_MODULE_BIND_OK: return "bound";
+    case SR_MODULE_BIND_UNSUPPORTED: return "translation-unavailable";
+    case SR_MODULE_BIND_ALREADY_BOUND: return "second-instance";
+    case SR_MODULE_BIND_BAD_BASE: return "invalid-base";
+    case SR_MODULE_BIND_OVERLAP: return "image-overlap";
+    case SR_MODULE_BIND_IMAGE_UNREADABLE: return "image-not-guest-memory";
+    case SR_MODULE_BIND_TABLE_FULL: return "binding-table-full";
+    default: return "unknown";
+    }
+}
+
+static int module_binding_slot(const SrModuleCode *code) {
+    for (unsigned i = 0; i < SR_MODULE_CODE_MAX_BOUND; i++) {
+        if (atomic_load_explicit(&s_module_binding_live[i], memory_order_acquire) &&
+            s_module_bindings[i].code == code) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static uint32_t module_live_word(uint32_t address) {
+    uint32_t word;
+    memcpy(&word, SR_HOST(address), sizeof(word));
+    return word;
+}
+
+SrModuleBindResult sr_module_code_bind(const SrModuleCode *code, uint32_t base,
+                                       SrModuleBindDetail *detail) {
+    SrModuleBindDetail scratch;
+    if (!detail) detail = &scratch;
+    memset(detail, 0, sizeof(*detail));
+    if (!code || code->unsupported_reason) return SR_MODULE_BIND_UNSUPPORTED;
+    if (module_binding_slot(code) >= 0) return SR_MODULE_BIND_ALREADY_BOUND;
+    if (!code->relocatable && base != 0u) {
+        detail->address = base;
+        return SR_MODULE_BIND_BAD_BASE;
+    }
+    uint64_t start = (uint64_t)base + code->link_low;
+    uint64_t end = (uint64_t)base + code->link_high;
+    if (code->link_high <= code->link_low || end > 0x100000000ull) {
+        detail->address = base;
+        return SR_MODULE_BIND_BAD_BASE;
+    }
+    if (!sr_guest_span_readable((uint32_t)start, (uint32_t)(end - start))) {
+        detail->address = (uint32_t)start;
+        return SR_MODULE_BIND_IMAGE_UNREADABLE;
+    }
+    int free_slot = -1;
+    for (unsigned i = 0; i < SR_MODULE_CODE_MAX_BOUND; i++) {
+        if (!atomic_load_explicit(&s_module_binding_live[i], memory_order_acquire)) {
+            if (free_slot < 0) free_slot = (int)i;
+            continue;
+        }
+        const SrModuleBinding *other = &s_module_bindings[i];
+        if (start < other->end && other->start < end) {
+            detail->address = other->start;
+            return SR_MODULE_BIND_OVERLAP;
+        }
+    }
+    if (free_slot < 0) return SR_MODULE_BIND_TABLE_FULL;
+
+    *code->base = base;
+    SrModuleBinding *binding = &s_module_bindings[free_slot];
+    binding->code = code;
+    binding->base = base;
+    binding->start = (uint32_t)start;
+    binding->end = (uint32_t)end;
+    /* The translation now names exactly these guest words. Under SR_STALE_DETECT,
+     * record each translated run as it was loaded, so a later overwrite of this
+     * module's code is detected at cache maintenance like the primary image's. */
+    if (sr_stale_enabled()) {
+        for (uint32_t i = 0; i < code->nfuncs; i++) {
+            const SrModuleFunc *f = &code->funcs[i];
+            uint64_t f_end = (uint64_t)f->offset + (uint64_t)f->nwords * 4u;
+            if (f->nwords == 0u || f->offset < code->link_low || f_end > code->link_high)
+                continue;
+            uint32_t at = base + f->offset;
+            uint32_t *words = (uint32_t *)malloc((size_t)f->nwords * sizeof(uint32_t));
+            if (!words) break;
+            for (uint32_t w = 0; w < f->nwords; w++) words[w] = module_live_word(at + 4u * w);
+            sr_stale_register_block(at, f->nwords, sr_stale_fnv1a(words, f->nwords));
+            free(words);
+        }
+    }
+    atomic_store_explicit(&s_module_binding_live[free_slot], 1u, memory_order_release);
+    atomic_fetch_add_explicit(&s_module_bound_count, 1u, memory_order_release);
+    return SR_MODULE_BIND_OK;
+}
+
+void sr_module_code_unbind(const SrModuleCode *code) {
+    int slot = module_binding_slot(code);
+    if (slot < 0) return;
+    SrModuleBinding binding = s_module_bindings[slot];
+    atomic_store_explicit(&s_module_binding_live[slot], 0u, memory_order_release);
+    atomic_fetch_sub_explicit(&s_module_bound_count, 1u, memory_order_release);
+    sr_stale_forget_range(binding.start, binding.end - binding.start);
+    memset(&s_module_bindings[slot], 0, sizeof(s_module_bindings[slot]));
+}
+
+int sr_module_code_is_bound(const SrModuleCode *code, uint32_t *base_out) {
+    int slot = module_binding_slot(code);
+    if (slot < 0) return 0;
+    if (base_out) *base_out = s_module_bindings[slot].base;
+    return 1;
+}
+
+static const SrModuleBinding *module_binding_for(uint32_t pc) {
+    if (atomic_load_explicit(&s_module_bound_count, memory_order_acquire) == 0u) return NULL;
+    for (unsigned i = 0; i < SR_MODULE_CODE_MAX_BOUND; i++) {
+        if (!atomic_load_explicit(&s_module_binding_live[i], memory_order_acquire)) continue;
+        const SrModuleBinding *binding = &s_module_bindings[i];
+        if (pc >= binding->start && pc < binding->end) return binding;
+    }
+    return NULL;
+}
+
+static int module_span_owns(const SrModuleCode *code, uint32_t link_pc) {
+    for (uint32_t i = 0; i < code->nspans; i++) {
+        const SrModuleSpan *span = &code->spans[i];
+        if (link_pc >= span->start && link_pc < span->end && span->end - link_pc >= 4u)
+            return 1;
+    }
+    return 0;
+}
+
+RecompFn sr_module_code_lookup(uint32_t pc, int *in_bound_image) {
+    const SrModuleBinding *binding = module_binding_for(pc);
+    if (in_bound_image) *in_bound_image = binding != NULL;
+    if (!binding || (pc & 3u) != 0u) return NULL;
+    const SrModuleCode *code = binding->code;
+    uint32_t link_pc = pc - binding->base;
+    if (!module_span_owns(code, link_pc)) return NULL;
+    uint32_t lo = 0, hi = code->nfuncs;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2u;
+        if (code->funcs[mid].offset < link_pc) lo = mid + 1u;
+        else hi = mid;
+    }
+    return lo < code->nfuncs && code->funcs[lo].offset == link_pc ? code->funcs[lo].fn : NULL;
+}
+
+int sr_module_code_fetch_authority(uint32_t pc) {
+    const SrModuleBinding *binding = module_binding_for(pc);
+    if (!binding) return -1;
+    if ((pc & 3u) != 0u) return 0;
+    return module_span_owns(binding->code, pc - binding->base);
+}
+
+void sr_module_code_reset(void) {
+    for (unsigned i = 0; i < SR_MODULE_CODE_MAX_BOUND; i++) {
+        if (atomic_load_explicit(&s_module_binding_live[i], memory_order_acquire)) {
+            const SrModuleBinding *binding = &s_module_bindings[i];
+            sr_stale_forget_range(binding->start, binding->end - binding->start);
+        }
+        atomic_store_explicit(&s_module_binding_live[i], 0u, memory_order_release);
+        memset(&s_module_bindings[i], 0, sizeof(s_module_bindings[i]));
+    }
+    atomic_store_explicit(&s_module_bound_count, 0u, memory_order_release);
+    free((void *)s_module_codes);
+    s_module_codes = NULL;
+    s_module_code_count = 0;
+    s_module_code_capacity = 0;
 }
 
 static void set_fault(

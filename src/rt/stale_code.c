@@ -119,6 +119,34 @@ void sr_stale_register_block(uint32_t addr, uint32_t nwords, uint32_t expected_h
     s_block_count++;
 }
 
+void sr_stale_forget_range(uint32_t addr, uint32_t size) {
+    uint64_t lo = addr;
+    uint64_t hi = (uint64_t)addr + size;
+    size_t i, kept;
+    if (size == 0u || hi > 0x100000000ull) {
+        return;
+    }
+    kept = 0;
+    for (i = 0; i < s_word_count; i++) {
+        uint64_t w_lo = s_words[i].addr;
+        if (w_lo + 4u > lo && w_lo < hi) {
+            continue;
+        }
+        s_words[kept++] = s_words[i];
+    }
+    s_word_count = kept;
+    kept = 0;
+    for (i = 0; i < s_block_count; i++) {
+        uint64_t b_lo = s_blocks[i].addr;
+        uint64_t b_hi = b_lo + (uint64_t)s_blocks[i].nwords * 4u;
+        if (b_hi > lo && b_lo < hi) {
+            continue;
+        }
+        s_blocks[kept++] = s_blocks[i];
+    }
+    s_block_count = kept;
+}
+
 uint32_t sr_stale_entry_count(void) {
     return (uint32_t)(s_word_count + s_block_count);
 }

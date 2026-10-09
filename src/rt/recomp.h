@@ -591,6 +591,92 @@ void     sr_exec_span_reset(void);
 int      sr_exec_span_register(uint32_t start, uint32_t end);
 int      sr_exec_span_owns_fetch(uint32_t pc);
 
+/* ---- Runtime-placed guest modules (issue #704) -------------------------------
+ * A guest module translated with `tools/codegen.py --extra-elf=<module>@runtime` is
+ * position independent: its generated code names every guest address of its own
+ * image as `*code->base + <link address>`. An instruction whose 16-bit immediate the
+ * module loader relocates (tools/prx_reloc_model.py identifies them) reads that
+ * immediate from the loaded image itself, so the translation agrees with the runtime
+ * loader by construction; a relocated jump is translated to its link-space target,
+ * which the loader moves by exactly the base (tools/test_prx_reloc_model.py pins the
+ * model to src/rt/prx_loader.c). The loader checks the module file's identity against
+ * the descriptor before laying it out. Nothing of the module is registered at startup
+ * beyond this descriptor. When the game loads the module, the runtime lays the image
+ * out wherever the guest allocator placed it and binds the descriptor at that base;
+ * from then until the module is unloaded, the image's range dispatches to the
+ * module's functions and grants executable authority to its analyzer-owned spans,
+ * and to nothing else. Unbinding retires both, so a later module placed at the same
+ * addresses never meets this module's translations.
+ *
+ * Link space: a relocatable module's link addresses are its ELF addresses with the
+ * image laid out at base 0, and a guest address is base + link address. A
+ * fixed-address module (ELF type 2) links at its absolute addresses and binds only
+ * at base 0. Implemented in src/rt/guest_interp.c beside the span registry above,
+ * which owns executable authority. */
+typedef struct SrModuleFunc {
+    uint32_t offset;   /* link address of the function's entry */
+    uint32_t nwords;   /* contiguous translated words from the entry (stale tracking) */
+    RecompFn fn;
+} SrModuleFunc;
+
+typedef struct SrModuleSpan {
+    uint32_t start;    /* end-exclusive link-space executable span */
+    uint32_t end;
+} SrModuleSpan;
+
+typedef struct SrModuleCode {
+    const char *name;                 /* module file name, as the title manifest names it */
+    uint32_t file_size;               /* identity of the exact bytes that were translated */
+    uint64_t file_fnv1a64;
+    uint32_t link_low;                /* image extent in link space: [link_low, link_high) */
+    uint32_t link_high;
+    uint32_t alignment;               /* largest PT_LOAD alignment */
+    uint32_t relocatable;             /* 1: any base; 0: fixed-address image, base 0 only */
+    const char *unsupported_reason;   /* non-NULL: the build could not translate it */
+    uint32_t *base;                   /* the generated code's base variable */
+    const SrModuleFunc *funcs;        /* sorted by offset */
+    uint32_t nfuncs;
+    const SrModuleSpan *spans;
+    uint32_t nspans;
+} SrModuleCode;
+
+typedef enum SrModuleBindResult {
+    SR_MODULE_BIND_OK = 0,
+    SR_MODULE_BIND_UNSUPPORTED,           /* code->unsupported_reason is set */
+    SR_MODULE_BIND_ALREADY_BOUND,         /* one live instance per translation */
+    SR_MODULE_BIND_BAD_BASE,              /* fixed image off its link address, or range overflow */
+    SR_MODULE_BIND_OVERLAP,               /* another bound image owns part of the range */
+    SR_MODULE_BIND_IMAGE_UNREADABLE,      /* the image range is not guest memory */
+    SR_MODULE_BIND_TABLE_FULL
+} SrModuleBindResult;
+
+typedef struct SrModuleBindDetail {
+    uint32_t address;    /* the conflicting or unreadable address */
+} SrModuleBindDetail;
+
+#define SR_MODULE_CODE_MAX_BOUND 64u
+
+void sr_module_code_register(const SrModuleCode *code);   /* from generated sr_register_all() */
+const SrModuleCode *sr_module_code_find(const char *name); /* case-insensitive file name */
+unsigned sr_module_code_count(void);
+const SrModuleCode *sr_module_code_at(unsigned index);
+/* Identity digest of a module file (FNV-1a, 64-bit), as tools/codegen.py records it. */
+uint64_t sr_module_code_fnv1a64(const void *bytes, size_t size);
+const char *sr_module_bind_result_name(SrModuleBindResult result);
+/* Bind `code` with its image already laid out in guest memory at `base`. */
+SrModuleBindResult sr_module_code_bind(const SrModuleCode *code, uint32_t base,
+                                       SrModuleBindDetail *detail);
+void sr_module_code_unbind(const SrModuleCode *code);
+int  sr_module_code_is_bound(const SrModuleCode *code, uint32_t *base_out);
+/* Dispatch: the native body for pc when a bound image owns pc. *in_bound_image is set
+ * whenever pc lies in a bound image, so the caller treats that image as the only
+ * authority for its range even when no body exists there. */
+RecompFn sr_module_code_lookup(uint32_t pc, int *in_bound_image);
+/* Fetch authority: -1 when no bound image owns pc, else 1/0 for whether one of the
+ * owning image's executable spans covers pc's complete fetch slot. */
+int  sr_module_code_fetch_authority(uint32_t pc);
+void sr_module_code_reset(void);   /* drop every registration and binding (fixtures) */
+
 #if defined(SR_STACK_CENSUS_ENABLED)
 /* Opt-in dynamic check of guest stack preservation at generated callable
  * boundaries. Codegen supplies its sorted callable-entry set. Resume entries

@@ -1130,11 +1130,13 @@ class GenericRuntimeCarriesNoTitleAddress(unittest.TestCase):
 
     def test_makefile_binds_the_configuration_into_the_runtime_profile(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        # The parse-time hash reads the exported entries through profile_hash, which
+        # writes them to a file because Make < 4.4 does not export to $(shell ...).
         hash_line = next(
             line for line in makefile.splitlines()
             if line.startswith("RUNTIME_PROFILE_HASH :=")
         )
-        self.assertIn("--entries-env NK_RUNTIME_PROFILE_ENTRIES", hash_line)
+        self.assertIn("$(call profile_hash,NK_RUNTIME_PROFILE_ENTRIES,", hash_line)
         record_line = next(
             line for line in makefile.splitlines()
             if "--section runtime" in line
@@ -1818,9 +1820,29 @@ class GuestModuleList(unittest.TestCase):
         }]
         header = title_runtime_config.render_header(config)
         self.assertIn("#define SR_TITLE_CONFIG_GUEST_MODULE_COUNT 1", header)
-        self.assertIn('SR_TITLE_CFG_GUEST_MODULE("a.prx", "disc0:/m/a.prx", 0x09ec7f00u, 1u)', header)
+        self.assertIn('SR_TITLE_CFG_GUEST_MODULE("a.prx", "disc0:/m/a.prx", 0x09ec7f00u, 1u, 0u)', header)
         other = dict(config, guest_modules=[dict(config["guest_modules"][0], load_address=0x09EC8000)])
         self.assertNotEqual(title_runtime_config.config_digest(config), title_runtime_config.config_digest(other))
+
+    def test_runtime_placed_module_renders_without_a_base(self) -> None:
+        manifest = title_manifest.load_manifest(ROOT / "assets" / "titles" / "synthetic.json")
+        manifest["modules"] = [{
+            "name": "level01.prx", "required": True, "role": "guest-prx", "placement": "runtime",
+            "guest_path": "disc0:/PSP_GAME/USRDIR/level01.prx",
+        }]
+        config = title_runtime_config.bindings_from_manifest(manifest)
+        self.assertEqual(config["guest_modules"], [{
+            "name": "level01.prx", "load_address": 0, "guest_path": "disc0:/PSP_GAME/USRDIR/level01.prx",
+            "required": True, "placement": "runtime",
+        }])
+        header = title_runtime_config.render_header(config)
+        self.assertIn('SR_TITLE_CFG_GUEST_MODULE("level01.prx", "disc0:/PSP_GAME/USRDIR/level01.prx", '
+                      '0x00000000u, 1u, 1u)', header)
+        fixed = title_runtime_config.bindings_from_manifest(
+            title_manifest.load_manifest(ROOT / "assets" / "titles" / "synthetic.json"))
+        self.assertEqual(fixed["guest_modules"][0]["placement"], "fixed")
+        self.assertNotEqual(title_runtime_config.config_digest(config),
+                            title_runtime_config.config_digest(fixed))
 
     def test_unembeddable_strings_are_refused(self) -> None:
         config = title_runtime_config.bindings_from_manifest(None)
