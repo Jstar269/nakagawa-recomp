@@ -365,6 +365,17 @@ bool player_merge_readded_game(const GameRecord *existing, GameRecord *incoming)
 size_t player_bitmap_glyph(const char *in, char out[3]);
 size_t player_text_for_bitmap_font(const char *in, char *out, size_t out_size);
 
+/* Privacy: the user's profile folder is shown as "~" wherever text is drawn, so
+ * a screenshot or screen share does not show the account name. Only whole path
+ * components match (the profile "name" does not match "name2"), Windows matching
+ * ignores case and accepts either separator, and the rewrite never grows the text.
+ * player_display_text_with_home takes the profile folder explicitly;
+ * player_display_text uses the current user's profile (USERPROFILE on Windows,
+ * HOME elsewhere). Stored paths never change. */
+size_t player_display_text_with_home(const char *in, const char *home,
+                                     char *out, size_t out_size);
+size_t player_display_text(const char *in, char *out, size_t out_size);
+
 bool player_app_remove_game(PlayerApp *app, int game_index);
 void player_app_set_view(PlayerApp *app, PlayerView view);
 void player_app_set_error(PlayerApp *app, const char *code, const char *title, const char *msg, const char *recovery_label, PlayerView return_view);

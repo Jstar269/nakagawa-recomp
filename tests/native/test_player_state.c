@@ -1535,11 +1535,66 @@ static void test_bitmap_font_text_fallback(void) {
     printf("[PLAYER_STATE_TEST] bitmap font text fallback PASS\n");
 }
 
+/* Paths under the user's profile are shown with the profile folder replaced by
+ * "~" (the stored path is untouched). The profile folder is matched on whole
+ * path components only, so a profile name that is a prefix of another folder
+ * name is left alone. */
+static void test_display_path_hides_profile_folder(void) {
+    char out[160];
+    const char *home = "C:\\Users\\synthetic-user";
+
+    /* The saves root from the Settings screen. */
+    size_t n = player_display_text_with_home(
+        "C:\\Users\\synthetic-user\\AppData\\Local\\Nakagawa\\saves", home, out, sizeof(out));
+    assert(strcmp(out, "~\\AppData\\Local\\Nakagawa\\saves") == 0);
+    assert(n == strlen(out));
+
+    /* Exactly the profile folder, a trailing separator on the profile, and a
+     * path embedded in a sentence. */
+    player_display_text_with_home("C:\\Users\\synthetic-user", home, out, sizeof(out));
+    assert(strcmp(out, "~") == 0);
+    player_display_text_with_home("C:\\Users\\synthetic-user\\Games\\disc.iso",
+                                  "C:\\Users\\synthetic-user\\", out, sizeof(out));
+    assert(strcmp(out, "~\\Games\\disc.iso") == 0);
+    player_display_text_with_home("Promoted to C:\\Users\\synthetic-user\\AppData, done.",
+                                  home, out, sizeof(out));
+    assert(strcmp(out, "Promoted to ~\\AppData, done.") == 0);
+
+    /* A sibling folder whose name only starts with the profile name is untouched,
+     * and so is a path outside the profile. */
+    player_display_text_with_home("C:\\Users\\synthetic-user2\\Games", home, out, sizeof(out));
+    assert(strcmp(out, "C:\\Users\\synthetic-user2\\Games") == 0);
+    player_display_text_with_home("D:\\Games\\disc.iso", home, out, sizeof(out));
+    assert(strcmp(out, "D:\\Games\\disc.iso") == 0);
+
+    /* No profile known: nothing is rewritten. */
+    player_display_text_with_home("C:\\Users\\synthetic-user\\x", "", out, sizeof(out));
+    assert(strcmp(out, "C:\\Users\\synthetic-user\\x") == 0);
+    player_display_text_with_home("C:\\Users\\synthetic-user\\x", NULL, out, sizeof(out));
+    assert(strcmp(out, "C:\\Users\\synthetic-user\\x") == 0);
+
+    /* The buffer bound holds: the cut is never past the end. */
+    char tiny[6];
+    player_display_text_with_home("C:\\Users\\synthetic-user\\AppData", home, tiny, sizeof(tiny));
+    assert(strlen(tiny) < sizeof(tiny));
+    assert(strcmp(tiny, "~\\App") == 0);
+
+#if defined(_WIN32) || defined(_WIN64)
+    /* Windows paths compare case-insensitively and accept either separator. */
+    player_display_text_with_home("c:/users/SYNTHETIC-USER/Games/disc.iso", home,
+                                  out, sizeof(out));
+    assert(strcmp(out, "~/Games/disc.iso") == 0);
+#endif
+
+    printf("[PLAYER_STATE_TEST] display path hides the profile folder PASS\n");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
     }
     test_bitmap_font_text_fallback();
+    test_display_path_hides_profile_folder();
     if (argc == 7 && strcmp(argv[1], "--validate-package") == 0) {
         char *end = NULL;
         unsigned long experimental = strtoul(argv[5], &end, 10);

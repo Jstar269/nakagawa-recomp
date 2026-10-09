@@ -587,6 +587,90 @@ bool player_app_discover_showcase(PlayerApp *app, const char *executable_directo
     return app->showcase_count > 0;
 }
 
+#if defined(_WIN32) || defined(_WIN64)
+static bool player_display_path_char_equal(char a, char b) {
+    if (a == '/') a = '\\';
+    if (b == '/') b = '\\';
+    return tolower((unsigned char)a) == tolower((unsigned char)b);
+}
+static bool player_display_is_separator(char c) {
+    return c == '\\' || c == '/';
+}
+#else
+static bool player_display_path_char_equal(char a, char b) {
+    return a == b;
+}
+static bool player_display_is_separator(char c) {
+    return c == '/';
+}
+#endif
+
+/* The profile folder without trailing separators; 0 when it is empty. */
+static size_t player_display_home_length(const char *home) {
+    size_t n = strlen(home);
+    while (n > 0 && player_display_is_separator(home[n - 1])) n--;
+    return n;
+}
+
+/* True when the profile folder occurs at `at` as whole path components: what
+ * follows it ends the text, or is a separator, white space, quote or bracket. */
+static bool player_display_home_matches(const char *at, const char *home, size_t home_len) {
+    for (size_t i = 0; i < home_len; i++) {
+        if (at[i] == '\0' || !player_display_path_char_equal(at[i], home[i])) return false;
+    }
+    char next = at[home_len];
+    return next == '\0' || player_display_is_separator(next) ||
+           isspace((unsigned char)next) || next == '"' || next == '\'' ||
+           next == ')' || next == ']' || next == ',';
+}
+
+size_t player_display_text_with_home(const char *in, const char *home,
+                                     char *out, size_t out_size) {
+    if (!out || out_size == 0) return 0;
+    out[0] = '\0';
+    if (!in) return 0;
+    size_t home_len = home ? player_display_home_length(home) : 0;
+    size_t used = 0;
+    const char *p = in;
+    while (*p) {
+        bool hit = false;
+        if (home_len > 0) {
+            /* A match must start a path component, not continue a name. */
+            bool at_boundary = p == in ||
+                !(isalnum((unsigned char)p[-1]) || p[-1] == '_' ||
+                  p[-1] == '.' || p[-1] == '-');
+            hit = at_boundary && player_display_home_matches(p, home, home_len);
+        }
+        if (hit) {
+            if (used + 2 > out_size) break;
+            out[used++] = '~';
+            p += home_len;
+            continue;
+        }
+        if (used + 2 > out_size) break;
+        out[used++] = *p++;
+    }
+    out[used] = '\0';
+    return used;
+}
+
+size_t player_display_text(const char *in, char *out, size_t out_size) {
+    static char home[MAX_PATH_LEN];
+    static bool home_ready;
+    if (!home_ready) {
+        const char *value = NULL;
+#if defined(_WIN32) || defined(_WIN64)
+        value = getenv("USERPROFILE");
+#else
+        value = getenv("HOME");
+#endif
+        if (value) snprintf(home, sizeof(home), "%s", value);
+        else home[0] = '\0';
+        home_ready = true;
+    }
+    return player_display_text_with_home(in, home, out, out_size);
+}
+
 size_t player_bitmap_glyph(const char *in, char out[3]) {
     unsigned char lead = (unsigned char)in[0];
     if (lead < 0x80) {

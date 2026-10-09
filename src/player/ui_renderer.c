@@ -1099,17 +1099,26 @@ static bool ui_font_draw_cached(SDL_Renderer *ren, float x, float y, const char 
 
 static void draw_text(SDL_Renderer *ren, float x, float y, const char *str, float scale, SDL_Color c) {
     if (!str || !*str) return;
-    if (ui_font_draw_cached(ren, x, y, str, scale, c)) return;
-    /* The bitmap fallback draws ASCII only. The rewrite never grows its input,
-     * so a buffer of strlen + 1 always holds the result. */
+    /* Every string drawn passes through the display rules: the profile folder
+     * shows as "~", and the bitmap fallback gets ASCII only. Both rewrites
+     * never grow their input, so strlen + 1 bytes always hold the result. */
     size_t len = strlen(str);
     char *shown = (char *)malloc(len + 1);
     if (!shown) return;
-    player_text_for_bitmap_font(str, shown, len + 1);
-    set_draw_color(ren, c);
-    SDL_SetRenderScale(ren, scale, scale);
-    SDL_RenderDebugText(ren, x / scale, y / scale, shown);
-    SDL_SetRenderScale(ren, 1.0f, 1.0f);
+    player_display_text(str, shown, len + 1);
+    if (ui_font_draw_cached(ren, x, y, shown, scale, c)) {
+        free(shown);
+        return;
+    }
+    char *ascii = (char *)malloc(len + 1);
+    if (ascii) {
+        player_text_for_bitmap_font(shown, ascii, len + 1);
+        set_draw_color(ren, c);
+        SDL_SetRenderScale(ren, scale, scale);
+        SDL_RenderDebugText(ren, x / scale, y / scale, ascii);
+        SDL_SetRenderScale(ren, 1.0f, 1.0f);
+        free(ascii);
+    }
     free(shown);
 }
 
