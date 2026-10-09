@@ -45,7 +45,7 @@ from test_iso_parity import (  # noqa: E402
 from test_import_name_safety import build_synthetic_import_prx  # noqa: E402
 from import_fixtures import SYSLIB_EXPORT, build_module_elf  # noqa: E402
 from nk_core import package_cache  # noqa: E402
-from nk_core.iso_inspect import runtime_registered_nids  # noqa: E402
+from nk_core.iso_inspect import PBP_BOUNDARY_CODES, runtime_registered_nids  # noqa: E402
 from nk_core.types import TitleProfile  # noqa: E402
 
 
@@ -1566,15 +1566,11 @@ class TestSanitizedBringup(unittest.TestCase):
         # INVALID_ISO, which hides the named refusal from every downstream reader.
         schema = json.loads(nk_cli.BRINGUP_SCHEMA_PATH.read_text(encoding="utf-8"))
         enumerated = set(schema["properties"]["failure_class"]["enum"])
-        identify_codes = (
-            "PBP_PACKAGE_UNSUPPORTED",
-            "PBP_HEADER_TRUNCATED",
-            "PBP_OFFSETS_INVALID",
-            "PBP_SFO_INVALID",
-        )
-        for code in identify_codes:
+        # The expected set is the emitter's own registry, never a copy of it here.
+        self.assertTrue(PBP_BOUNDARY_CODES)
+        self.assertEqual(set(PBP_BOUNDARY_CODES) - enumerated, set())
+        for code in PBP_BOUNDARY_CODES:
             with self.subTest(code=code):
-                self.assertIn(code, enumerated)
                 report = nk_cli._new_bringup_report()
                 report["reached_stage"] = "inspect"
                 report["stages"]["inspect"] = {"status": "FAIL", "duration_ms": 0}
