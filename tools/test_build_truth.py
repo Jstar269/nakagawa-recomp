@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import build_profile
 import codegen
+import title_codegen_plan
 
 
 _MTIME_MARGIN_NS = 2_000_000_000
@@ -57,6 +58,26 @@ def _set_mtime_before(path: Path) -> None:
     os.utime(path, ns=(target, target))
 
 
+def _make_safe_temp_dir(prefix: str) -> Path:
+    """A new temporary directory whose path GNU Make can name (no whitespace).
+
+    On a Windows profile whose name contains a space the temporary directory does
+    too; its 8.3 short form is used then. Without one the calling test is skipped
+    with the remedy instead of failing on the Makefile's space guard.
+    """
+    created = Path(tempfile.mkdtemp(prefix=prefix))
+    if not any(char.isspace() for char in created.as_posix()):
+        return created
+    short = title_codegen_plan._windows_short_path(created)
+    if short is not None and not any(char.isspace() for char in short.as_posix()):
+        return short
+    shutil.rmtree(created, ignore_errors=True)
+    raise unittest.SkipTest(
+        f"the temporary directory {created} contains whitespace GNU Make cannot name and "
+        "has no 8.3 short form; point TMP/TEMP at a folder without spaces"
+    )
+
+
 def _make_safe_fixture_dir(name: str) -> Path:
     """A BUILD_DIR a lifecycle test may hand to Make.
 
@@ -69,7 +90,65 @@ def _make_safe_fixture_dir(name: str) -> Path:
     such a BUILD_DIR outright; these tests must therefore pass a path Make can
     represent, and a temporary directory is also the right place for a fixture.
     """
-    return Path(tempfile.mkdtemp(prefix=f"nakagawa-lifecycle-{name}-")) / "build"
+    return _make_safe_temp_dir(f"nakagawa-lifecycle-{name}-") / "build"
+
+
+#: Make goals that delete files. A test may run one only against scratch roots.
+DESTRUCTIVE_MAKE_GOALS = frozenset({"clean", "clean-fixtures", "distclean", "tidy", "clean-all"})
+
+#: The ephemeral logs distclean and clean-all remove from LOG_DIR; any other log stays.
+EPHEMERAL_LOG_NAMES = (
+    "build_out_recomp.log", "build_err_recomp.log", "recomp_err.log", "obj_err.log",
+    "link_err.log", "stdout_run.log", "stderr_run.log",
+)
+
+
+def _scratch_build_root(test: unittest.TestCase, name: str) -> Path:
+    """A Make-safe scratch BUILD_ROOT, removed when ``test`` finishes.
+
+    Any goal other than `help` writes beneath BUILD_ROOT while Make parses (the
+    per-title BUILD_DIR, its profile stamps, the SDL3 discovery cache), and a
+    changed profile stamp invalidates the objects already there. A probe that
+    only wants a printed value therefore still runs against a scratch root, so
+    it cannot rewrite or invalidate a developer's real build tree.
+    """
+    build_root = _make_safe_fixture_dir(name)
+    test.addCleanup(shutil.rmtree, build_root.parent, True)
+    return build_root
+
+
+def _reaches_checkout(path: Path) -> bool:
+    """True when ``path`` is the repository checkout, lies inside it, or contains it."""
+    resolved = path.resolve()
+    return resolved.is_relative_to(ROOT) or ROOT.is_relative_to(resolved)
+
+
+def _run_scratch_make(
+    make: str, *arguments: str, build_root: Path, log_dir: Path
+) -> subprocess.CompletedProcess:
+    """Run the REAL repository Makefile with BUILD_ROOT and LOG_DIR on a scratch tree.
+
+    Every lifecycle goal deletes beneath those two roots, and every parse-time write
+    a goal makes (the per-title BUILD_DIR, profile stamps, the SDL3 discovery cache)
+    lands beneath BUILD_ROOT. Pointing both away from the checkout is what keeps a
+    suite run from emptying a developer's real build/ (private title builds,
+    packages) and logs/. A root that would reach the checkout is refused before
+    Make starts.
+    """
+    for variable, root in (("BUILD_ROOT", build_root), ("LOG_DIR", log_dir)):
+        if _reaches_checkout(root):
+            raise AssertionError(
+                f"{variable}={root} reaches the repository checkout; a test may only "
+                "run a destructive Make goal against a scratch tree"
+            )
+    return subprocess.run(
+        [make, "--no-print-directory", *arguments,
+         f"BUILD_ROOT={build_root.as_posix()}", f"LOG_DIR={log_dir.as_posix()}"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 class BuildTruthTests(unittest.TestCase):
@@ -863,7 +942,8 @@ class Atrac3pBuildPortabilityTests(unittest.TestCase):
 
             # 1. Clean serial build for atrac3p-objects
             proc = subprocess.run(
-                [self.make, "--no-print-directory", f"BUILD_DIR={build_dir.as_posix()}", "atrac3p-objects"],
+                [self.make, "--no-print-directory", f"BUILD_DIR={build_dir.as_posix()}",
+                 f"BUILD_ROOT={Path(temp_dir).as_posix()}", "atrac3p-objects"],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
@@ -885,7 +965,8 @@ class Atrac3pBuildPortabilityTests(unittest.TestCase):
 
             # 2. Idempotent second build
             proc_idem = subprocess.run(
-                [self.make, "--no-print-directory", f"BUILD_DIR={build_dir.as_posix()}", "atrac3p-objects"],
+                [self.make, "--no-print-directory", f"BUILD_DIR={build_dir.as_posix()}",
+                 f"BUILD_ROOT={Path(temp_dir).as_posix()}", "atrac3p-objects"],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
@@ -900,7 +981,8 @@ class Atrac3pBuildPortabilityTests(unittest.TestCase):
             # 3. Clean parallel build (-j4)
             shutil.rmtree(build_dir)
             proc_par = subprocess.run(
-                [self.make, "-j4", "--no-print-directory", f"BUILD_DIR={build_dir.as_posix()}", "atrac3p-objects"],
+                [self.make, "-j4", "--no-print-directory", f"BUILD_DIR={build_dir.as_posix()}",
+                 f"BUILD_ROOT={Path(temp_dir).as_posix()}", "atrac3p-objects"],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
@@ -933,6 +1015,7 @@ class OptimizationProfileContractTests(unittest.TestCase):
             self.make,
             "--no-print-directory",
             f"BUILD_DIR={self.build_dir.as_posix()}",
+            f"BUILD_ROOT={self.build_dir.as_posix()}",
             "compiler-info",
             *extra_args,
         ]
@@ -995,6 +1078,7 @@ class OptimizationProfileContractTests(unittest.TestCase):
                 self.make,
                 "--no-print-directory",
                 f"BUILD_DIR={hst_dir.as_posix()}",
+                f"BUILD_ROOT={self.build_dir.as_posix()}",
                 "GAME_NAME=hst",
                 "RUNTIME_OPT=-O2",
                 "RECOMP_OPT=-O1",
@@ -1014,7 +1098,8 @@ class OptimizationProfileContractTests(unittest.TestCase):
 
         generic_dir = self.build_dir / "generic_default"
         subprocess.run(
-            [self.make, "--no-print-directory", f"BUILD_DIR={generic_dir.as_posix()}", "GAME_NAME=mygame", "compiler-info"],
+            [self.make, "--no-print-directory", f"BUILD_DIR={generic_dir.as_posix()}",
+             f"BUILD_ROOT={self.build_dir.as_posix()}", "GAME_NAME=mygame", "compiler-info"],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -1031,6 +1116,7 @@ class OptimizationProfileContractTests(unittest.TestCase):
                 self.make,
                 "--no-print-directory",
                 f"BUILD_DIR={override_dir.as_posix()}",
+                f"BUILD_ROOT={self.build_dir.as_posix()}",
                 "GAME_NAME=hst",
                 "RUNTIME_OPT=-O0",
                 "RECOMP_OPT=-O0",
@@ -1121,14 +1207,11 @@ class GuestInputTransportTests(unittest.TestCase):
         self.make = shutil.which("mingw32-make") or shutil.which("make")
         if not self.make:
             self.skipTest("GNU Make is required")
-        self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-guest-input-")
-        self.root = Path(self.temp.name)
-        self.builds: list[Path] = []
-
-    def tearDown(self) -> None:
-        for b in self.builds:
-            shutil.rmtree(b, ignore_errors=True)
-        self.temp.cleanup()
+        self.root = _make_safe_temp_dir("nakagawa-guest-input-")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        # The scratch BUILD_ROOT every build here lands under. Nothing is written to
+        # the checkout's own build/, so a developer's title builds are never touched.
+        self.build_root = self.root / "build"
 
     # -- helpers ---------------------------------------------------------
 
@@ -1150,19 +1233,16 @@ class GuestInputTransportTests(unittest.TestCase):
         path.write_bytes(blob)
 
     def _build_dir(self, name: str) -> Path:
-        d = ROOT / "build" / name
-        self.builds.append(d)
-        shutil.rmtree(d, ignore_errors=True)
-        return d
+        return self.build_root / name
 
-    def _make(self, game_name: str, elf_rel: str, *, makefile: Path | None = None,
+    def _make(self, game_name: str, elf: str, *, makefile: Path | None = None,
               target: str | None = None, extra: tuple[str, ...] = ()) -> subprocess.CompletedProcess:
-        tgt = target or f"build/{game_name}/{game_name}_image.bin"
+        tgt = target or f"{self._build_dir(game_name).as_posix()}/{game_name}_image.bin"
         cmd = [self.make, "--no-print-directory"]
         if makefile is not None:
             cmd += ["-f", str(makefile)]
-        cmd += [tgt, f"GAME_NAME={game_name}", f"GAME_ELF={elf_rel}",
-                "GAME_BASE=0x08804000", "GAME_ENTRY=0x08804000", *extra]
+        cmd += [tgt, f"BUILD_ROOT={self.build_root.as_posix()}", f"GAME_NAME={game_name}",
+                f"GAME_ELF={elf}", "GAME_BASE=0x08804000", "GAME_ENTRY=0x08804000", *extra]
         return subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
                               encoding="utf-8", errors="replace", check=False)
 
@@ -1189,10 +1269,10 @@ class GuestInputTransportTests(unittest.TestCase):
     def test_metacharacter_pathname_reaches_no_command_interpreter(self) -> None:
         """A legal pathname containing `&` must not be dispatched as a command."""
         build = self._build_dir("test_gi_split")
-        elf_rel = f"build/test_gi_split/{self.SPLIT_NAME}"
-        self._write_minimal_elf(ROOT / elf_rel)
+        elf = build / self.SPLIT_NAME
+        self._write_minimal_elf(elf)
 
-        proc = self._make("test_gi_split", elf_rel)
+        proc = self._make("test_gi_split", elf.as_posix())
         blob = self._blob(proc)
         self.assertEqual(
             self._injection_evidence(blob), [],
@@ -1204,9 +1284,8 @@ class GuestInputTransportTests(unittest.TestCase):
         """M1: restoring raw $(GAME_ELF) in the recipe must make the above test fail."""
         if sys.platform != "win32":
             self.skipTest("cmd.exe command splitting is the Windows failure mode")
-        self._build_dir("test_gi_m1")
-        elf_rel = f"build/test_gi_m1/{self.SPLIT_NAME}"
-        self._write_minimal_elf(ROOT / elf_rel)
+        elf = self._build_dir("test_gi_m1") / self.SPLIT_NAME
+        self._write_minimal_elf(elf)
 
         mutant = self._mutate_makefile(
             ("$(BUILD_DIR)/$(GAME_NAME)_image.bin: $(GAME_INPUT_PREREQ) tools/prxload.py\n"
@@ -1214,7 +1293,7 @@ class GuestInputTransportTests(unittest.TestCase):
              "$(BUILD_DIR)/$(GAME_NAME)_image.bin: tools/prxload.py\n"
              "\t$(PYTHON) tools/prxload.py $(GAME_ELF) $(GAME_BASE)"),
         )
-        blob = self._blob(self._make("test_gi_m1", elf_rel, makefile=mutant))
+        blob = self._blob(self._make("test_gi_m1", elf.as_posix(), makefile=mutant))
         self.assertTrue(
             self._injection_evidence(blob),
             "mutation did not reproduce the pre-fix command execution; this "
@@ -1223,13 +1302,14 @@ class GuestInputTransportTests(unittest.TestCase):
 
     def test_M1b_sibling_inputs_are_transported_too(self) -> None:
         """GAME_PSP_HEADER shares the recipe, and so must share the transport."""
-        self._build_dir("test_gi_hdr")
-        elf_rel = "build/test_gi_hdr/plain.elf"
-        self._write_minimal_elf(ROOT / elf_rel)
-        hdr_rel = "build/test_gi_hdr/hdr&ver&tail.BIN"
-        (ROOT / hdr_rel).write_bytes(b"\x00" * 64)
+        build = self._build_dir("test_gi_hdr")
+        elf = build / "plain.elf"
+        self._write_minimal_elf(elf)
+        hdr = build / "hdr&ver&tail.BIN"
+        hdr.write_bytes(b"\x00" * 64)
 
-        proc = self._make("test_gi_hdr", elf_rel, extra=(f"GAME_PSP_HEADER={hdr_rel}",))
+        proc = self._make("test_gi_hdr", elf.as_posix(),
+                          extra=(f"GAME_PSP_HEADER={hdr.as_posix()}",))
         blob = self._blob(proc)
         self.assertEqual(
             self._injection_evidence(blob), [],
@@ -1237,10 +1317,9 @@ class GuestInputTransportTests(unittest.TestCase):
 
     # -- D: freshness is preserved, not dropped --------------------------
 
-    def _first_build(self, game: str, elf_rel: str) -> Path:
-        elf = ROOT / elf_rel
+    def _first_build(self, game: str, elf: Path) -> Path:
         self._write_minimal_elf(elf)
-        proc = self._make(game, elf_rel)
+        proc = self._make(game, elf.as_posix())
         self.assertEqual(proc.returncode, 0, self._blob(proc))
         return elf
 
@@ -1263,8 +1342,7 @@ class GuestInputTransportTests(unittest.TestCase):
             with self.subTest(shape=key):
                 game = f"test_gi_d_{key}"
                 build = self._build_dir(game)
-                elf_rel = f"build/{game}/{base}"
-                elf = self._first_build(game, elf_rel)
+                elf = self._first_build(game, build / base)
                 image = build / f"{game}_image.bin"
                 self.assertTrue(image.is_file())
 
@@ -1275,7 +1353,7 @@ class GuestInputTransportTests(unittest.TestCase):
                 # keeps the assertion about the dependency edge deterministic.
                 _set_mtime_before(image)
                 _set_mtime_after(elf, image)
-                proc = self._make(game, elf_rel)
+                proc = self._make(game, elf.as_posix())
                 self.assertEqual(proc.returncode, 0, self._blob(proc))
                 self.assertGreater(
                     image.stat().st_mtime_ns, before,
@@ -1287,20 +1365,19 @@ class GuestInputTransportTests(unittest.TestCase):
         """M2: removing the stamp prerequisite must make the freshness test fail."""
         game = "test_gi_m2"
         build = self._build_dir(game)
-        elf_rel = f"build/{game}/plain.elf"
+        elf = build / "plain.elf"
         mutant = self._mutate_makefile(
             ("$(BUILD_DIR)/$(GAME_NAME)_image.bin: $(GAME_INPUT_PREREQ) tools/prxload.py",
              "$(BUILD_DIR)/$(GAME_NAME)_image.bin: tools/prxload.py"),
         )
-        elf = ROOT / elf_rel
         self._write_minimal_elf(elf)
-        proc = self._make(game, elf_rel, makefile=mutant)
+        proc = self._make(game, elf.as_posix(), makefile=mutant)
         self.assertEqual(proc.returncode, 0, self._blob(proc))
         image = build / f"{game}_image.bin"
         before = image.stat().st_mtime_ns
 
         _set_mtime_after(elf, image)
-        self._make(game, elf_rel, makefile=mutant)
+        self._make(game, elf.as_posix(), makefile=mutant)
         self.assertEqual(
             image.stat().st_mtime_ns, before,
             "mutation did not drop the dependency edge; the freshness regression "
@@ -1318,17 +1395,16 @@ class GuestInputTransportTests(unittest.TestCase):
         """
         game = "test_gi_e"
         build = self._build_dir(game)
-        elf_rel = f"build/{game}/plain.elf"
-        elf = self._first_build(game, elf_rel)
+        elf = self._first_build(game, build / "plain.elf")
         image = build / f"{game}_image.bin"
         self.assertTrue(image.is_file())
 
         # Confirm the target really is considered up to date before deleting.
-        proc = self._make(game, elf_rel)
+        proc = self._make(game, elf.as_posix())
         self.assertEqual(proc.returncode, 0, self._blob(proc))
 
         elf.unlink()
-        proc = self._make(game, elf_rel)
+        proc = self._make(game, elf.as_posix())
         self.assertNotEqual(
             proc.returncode, 0,
             "build succeeded with its guest input deleted, reusing stale output:\n"
@@ -1340,15 +1416,14 @@ class GuestInputTransportTests(unittest.TestCase):
     def test_invalid_values_fail_closed(self) -> None:
         """Empty, whitespace-only, and directory values must not build."""
         game = "test_gi_invalid"
-        self._build_dir(game)
-        elf_rel = f"build/{game}/plain.elf"
-        self._first_build(game, elf_rel)
+        build = self._build_dir(game)
+        self._first_build(game, build / "plain.elf")
 
         for label, value, expect in (
             ("empty", "", "empty or whitespace-only"),
             ("whitespace", "   ", "empty or whitespace-only"),
-            ("missing", "build/does/not/exist.elf", "does not exist"),
-            ("directory", f"build/{game}", "is a directory"),
+            ("missing", (self.build_root / "does" / "not" / "exist.elf").as_posix(), "does not exist"),
+            ("directory", build.as_posix(), "is a directory"),
         ):
             with self.subTest(value=label):
                 proc = self._make(game, value)
@@ -1367,7 +1442,8 @@ class GuestInputTransportTests(unittest.TestCase):
         game = "test_gi_public"
         build = self._build_dir(game)
         build.mkdir(parents=True, exist_ok=True)
-        base = [self.make, "--no-print-directory", f"GAME_NAME={game}", f"BUILD_DIR=build/{game}"]
+        base = [self.make, "--no-print-directory", f"GAME_NAME={game}",
+                f"BUILD_ROOT={self.build_root.as_posix()}", f"BUILD_DIR={build.as_posix()}"]
 
         # Settle the profile stamps first. CI creates them in earlier steps, so by the
         # time it hand-writes <game>_recomp.c that file is the newest prerequisite and
@@ -1384,7 +1460,7 @@ class GuestInputTransportTests(unittest.TestCase):
         _set_mtime_after(build / f"{game}_recomp.c", *generated_inputs)
         _set_mtime_after(build / f"{game}_recomp_funcs.h", build / f"{game}_recomp.c")
 
-        proc = subprocess.run(base + [f"build/{game}/{game}_recomp.c"], cwd=ROOT,
+        proc = subprocess.run(base + [f"{build.as_posix()}/{game}_recomp.c"], cwd=ROOT,
                               capture_output=True, text=True,
                               encoding="utf-8", errors="replace", check=False)
         blob = (proc.stdout or "") + (proc.stderr or "")
@@ -1411,7 +1487,8 @@ class GuestInputTransportTests(unittest.TestCase):
         probe = ("--eval=probe-guest-env: ; @$(PYTHON) -c "
                  "\"import os; print('GAME_ELF_IN_ENV=' + str(os.environ.get('GAME_ELF')))\"")
         proc = subprocess.run(
-            [self.make, "--no-print-directory", probe, "probe-guest-env"],
+            [self.make, "--no-print-directory", f"BUILD_ROOT={self.build_root.as_posix()}",
+             probe, "probe-guest-env"],
             cwd=ROOT, capture_output=True, text=True,
             encoding="utf-8", errors="replace", check=False)
         blob = self._blob(proc)
@@ -1443,17 +1520,16 @@ class GuestInputTransportTests(unittest.TestCase):
         """
         game = "test_gi_m5"
         build = self._build_dir(game)
-        base = "dol$lar.elf"
-        elf_rel = f"build/{game}/{base}"
-        self._write_minimal_elf(ROOT / elf_rel)
+        elf = build / "dol$lar.elf"
+        self._write_minimal_elf(elf)
 
-        proc = self._make(game, elf_rel)
+        proc = self._make(game, elf.as_posix())
         blob = self._blob(proc)
         self.assertNotEqual(proc.returncode, 0, "Make no longer eats `$`; re-derive this case")
-        self.assertIn("does not exist: build/test_gi_m5/dolar.elf", blob,
+        self.assertIn(f"does not exist: {build.as_posix()}/dolar.elf", blob,
                       "Make's `$` expansion changed shape:\n" + blob)
 
-        escaped = self._make(game, elf_rel.replace("$", "$$"))
+        escaped = self._make(game, elf.as_posix().replace("$", "$$"))
         self.assertEqual(escaped.returncode, 0,
                          "the documented `$$` escape no longer works:\n" + self._blob(escaped))
         self.assertTrue((build / f"{game}_image.bin").is_file())
@@ -1636,6 +1712,7 @@ class ShellPortabilityAndRecipeTruthTests(unittest.TestCase):
                         "--no-print-directory",
                         target,
                         f"{override_var}=nonexistent_manifest_fixture.json",
+                        f"BUILD_ROOT={_scratch_build_root(self, 'matrix').as_posix()}",
                     ],
                     cwd=ROOT,
                     capture_output=True,
@@ -1650,12 +1727,37 @@ class ShellPortabilityAndRecipeTruthTests(unittest.TestCase):
 
 
 class BuildArtifactLifecycleTests(unittest.TestCase):
-    """Structural and functional tests for clean, clean-fixtures, distclean, tidy, and clean-all targets."""
+    """Structural and functional tests for clean, clean-fixtures, distclean, tidy, and clean-all targets.
+
+    Every destructive goal runs through `_run_scratch_make` against a per-test scratch
+    BUILD_ROOT and LOG_DIR, never against the checkout's own build/ and logs/. A
+    developer's checkout holds private title builds, packages and run logs there, and
+    an earlier revision of these tests ran `clean-all` against the checkout itself, so
+    every suite run emptied that build/ tree.
+    """
 
     @classmethod
     def setUpClass(cls) -> None:
         cls.make = shutil.which("mingw32-make") or shutil.which("make")
         cls.makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
+
+    def setUp(self) -> None:
+        self.build_root = _scratch_build_root(self, "lifecycle")
+        self.scratch = self.build_root.parent
+        self.log_dir = self.scratch / "logs"
+
+    def _lifecycle_make(self, *arguments: str) -> subprocess.CompletedProcess:
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        return _run_scratch_make(
+            self.make, *arguments, build_root=self.build_root, log_dir=self.log_dir
+        )
+
+    @staticmethod
+    def _plant(path: Path, text: str = "artifact") -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
 
     def test_makefile_declares_lifecycle_phony_targets(self) -> None:
         """Verify that clean-fixtures, tidy, and clean-all are declared as phony targets."""
@@ -1672,8 +1774,14 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
         )
         self.assertIsNotNone(catalog_match, "No PUBLIC_TARGETS catalog found in Makefile")
         public_targets = set(catalog_match.group("targets").replace("\\", "").split())
-        for target in ("clean", "clean-fixtures", "tidy", "distclean", "clean-all"):
+        for target in sorted(DESTRUCTIVE_MAKE_GOALS):
             self.assertIn(target, public_targets, f"Target {target} missing from PUBLIC_TARGETS")
+
+    def test_default_roots_are_the_checkout_build_and_logs_trees(self) -> None:
+        """Without overrides the lifecycle roots are the checkout's own build/ and logs/."""
+        self.assertRegex(self.makefile_text, r"(?m)^BUILD_ROOT \?= build$")
+        self.assertRegex(self.makefile_text, r"(?m)^LOG_DIR +\?= logs$")
+        self.assertRegex(self.makefile_text, r"(?m)^BUILD_DIR +\?= \$\(BUILD_ROOT\)/\$\(GAME_NAME\)$")
 
     def test_platform_ladder_fs_negative_waits_for_positive_image(self) -> None:
         match = re.search(
@@ -1684,115 +1792,172 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
         self.assertIsNotNone(match, "Filesystem negative ladder target is missing")
         self.assertIn("platform-ladder-fs", match.group("prerequisites").split())
 
+    def test_every_destructive_goal_deletes_only_beneath_the_named_roots(self) -> None:
+        """Each lifecycle recipe must take every path it deletes from BUILD_ROOT, LOG_DIR or BUILD_DIR.
+
+        A recipe that spells `build` or `logs/...` itself deletes the checkout's own
+        tree whatever roots its caller names. That is how `clean-all` and
+        `clean-fixtures` emptied a developer's real build/ and `tidy` removed their
+        run logs whenever this suite ran. A dry run prints each recipe without
+        executing it, so this pins the property for every goal at once.
+        """
+        build_dir = self.build_root / "title"
+        prefix = self.scratch.as_posix()
+        default_root = re.compile(r"(?<![\w./-])(?:build|logs)(?![\w.-])")
+        for goal in sorted(DESTRUCTIVE_MAKE_GOALS):
+            with self.subTest(goal=goal):
+                proc = self._lifecycle_make("-n", goal, f"BUILD_DIR={build_dir.as_posix()}")
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                deletions = [line for line in proc.stdout.splitlines()
+                             if "unlink" in line or "rmtree" in line]
+                self.assertTrue(deletions, f"{goal} printed no deletion step:\n{proc.stdout}")
+                for line in deletions:
+                    self.assertIn(prefix, line, f"{goal} deletes outside the named roots: {line}")
+                    stray = default_root.findall(line.replace(prefix, ""))
+                    self.assertEqual(
+                        stray, [],
+                        f"{goal} names the checkout's own build/ or logs/ tree: {line}",
+                    )
+
+    def test_build_root_that_reaches_the_checkout_is_refused(self) -> None:
+        """An overridden BUILD_ROOT may not be the checkout, an ancestor, or a non-build/ subtree.
+
+        clean-all empties BUILD_ROOT, so a typo such as `BUILD_ROOT=.` or
+        `BUILD_ROOT=src` would otherwise wipe sources or private inputs. The refusal
+        happens at parse time, so it is probed with the information-only `help` goal:
+        were the guard ever lost, the probe still deletes and creates nothing.
+        """
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        refused = {
+            ".": "the repository root or one of its ancestors",
+            ROOT.parent.as_posix(): "the repository root or one of its ancestors",
+            "src": "inside the checkout but outside its build/ tree",
+            "place_game_here": "inside the checkout but outside its build/ tree",
+        }
+        for value, reason in refused.items():
+            with self.subTest(build_root=value):
+                proc = subprocess.run(
+                    [self.make, "--no-print-directory", "help", f"BUILD_ROOT={value}"],
+                    cwd=ROOT, capture_output=True, text=True, check=False,
+                )
+                self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertIn(reason, proc.stderr)
+        for value in ("build/nested", self.build_root.as_posix()):
+            with self.subTest(build_root=value):
+                proc = subprocess.run(
+                    [self.make, "--no-print-directory", "help", f"BUILD_ROOT={value}"],
+                    cwd=ROOT, capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_build_root_with_a_space_fails_closed(self) -> None:
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        proc = subprocess.run(
+            [self.make, "--no-print-directory", "help",
+             f"BUILD_ROOT={self.build_root.as_posix()} extra"],
+            cwd=ROOT, capture_output=True, text=True, check=False,
+        )
+        self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("BUILD_ROOT", proc.stderr)
+        self.assertIn("contains a space", proc.stderr)
+
+    def test_checkout_scope_refusal_outranks_the_space_refusal(self) -> None:
+        """A spaced root that reaches the checkout is refused for the checkout, not the space.
+
+        A checkout may live under a path with spaces, so its parent -- the root a
+        typo most plausibly names -- is spaced too. When the space refusal ran first
+        it hid the safety reason, which is how the relocated-clone check failed. The
+        spellings below carry a space wherever the checkout lives, so the order is
+        pinned in every checkout; tools/test_relocated_clone.py repeats it from a
+        genuinely spaced checkout. A spaced root inside build/ or outside the
+        checkout is still refused for its space.
+        """
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        cases = {
+            "x y/..": "the repository root or one of its ancestors",
+            "src/x y": "inside the checkout but outside its build/ tree",
+            "build/x y": "contains a space",
+            f"{self.scratch.as_posix()}/x y": "contains a space",
+        }
+        for value, reason in cases.items():
+            with self.subTest(build_root=value):
+                proc = subprocess.run(
+                    [self.make, "--no-print-directory", "help", f"BUILD_ROOT={value}"],
+                    cwd=ROOT, capture_output=True, text=True, check=False,
+                )
+                self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertIn(reason, proc.stderr)
+                if reason != "contains a space":
+                    self.assertNotIn("contains a space", proc.stderr)
+
     def test_clean_removes_specified_build_dir(self) -> None:
         """make clean BUILD_DIR=<target> must remove the specified directory without touching other paths."""
-        if not self.make:
-            self.skipTest("GNU Make is required")
-        target_dir = _make_safe_fixture_dir("clean")
-        target_dir.mkdir(parents=True, exist_ok=True)
-        sentinel = target_dir / "sample_artifact.o"
-        sentinel.write_text("dummy", encoding="utf-8")
-        self.assertTrue(sentinel.is_file())
+        target_dir = self.build_root / "clean-target"
+        self._plant(target_dir / "sample_artifact.o", "dummy")
+        sibling = self._plant(self.build_root / "other-title" / "keep.o")
 
-        proc = subprocess.run(
-            [self.make, "--no-print-directory", "clean", f"BUILD_DIR={target_dir.as_posix()}"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        proc = self._lifecycle_make("clean", f"BUILD_DIR={target_dir.as_posix()}")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertFalse(target_dir.exists(), f"Target dir {target_dir} was not cleaned")
+        self.assertTrue(sibling.is_file(), "clean removed another title's build tree")
 
     def test_clean_fixtures_removes_fixture_subdirs(self) -> None:
-        """make clean-fixtures must remove smoke, cosim, and oracle artifact directories under build/."""
-        if not self.make:
-            self.skipTest("GNU Make is required")
+        """make clean-fixtures must remove the smoke, cosim, oracle and verify trees under BUILD_ROOT."""
         fixture_dirs = [
-            ROOT / "build" / "production-smoke",
-            ROOT / "build" / "production-smoke-gap",
-            ROOT / "build" / "cosim",
-            ROOT / "build" / "nakagawa_psp_oracle",
-            ROOT / "build" / "vfpu_oracle",
+            self.build_root / name
+            for name in ("production-smoke", "production-smoke-gap", "cosim",
+                         "nakagawa_psp_oracle", "vfpu_oracle", "portable-core",
+                         "verify", "link")
         ]
         for fdir in fixture_dirs:
-            fdir.mkdir(parents=True, exist_ok=True)
-            (fdir / "artifact.tmp").write_text("tmp", encoding="utf-8")
+            self._plant(fdir / "artifact.tmp", "tmp")
+        title_build = self._plant(self.build_root / "private-title" / "title.exe")
 
-        proc = subprocess.run(
-            [self.make, "--no-print-directory", "clean-fixtures"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        proc = self._lifecycle_make("clean-fixtures")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         for fdir in fixture_dirs:
             self.assertFalse(fdir.exists(), f"Fixture directory {fdir} was not cleaned")
+        self.assertTrue(title_build.is_file(), "clean-fixtures removed a title build tree")
 
     def test_distclean_and_tidy_preserve_binaries_while_cleaning_objects_and_ephemeral_logs(self) -> None:
         """distclean and tidy must preserve .exe and .pdb while removing .o, .d, and ephemeral logs."""
-        if not self.make:
-            self.skipTest("GNU Make is required")
-        test_dir = _make_safe_fixture_dir("distclean")
-        test_dir.mkdir(parents=True, exist_ok=True)
-        exe_file = test_dir / "mygame.exe"
-        pdb_file = test_dir / "mygame.pdb"
-        obj_file = test_dir / "mygame.o"
-        dep_file = test_dir / "mygame.d"
-        exe_file.write_text("binary", encoding="utf-8")
-        pdb_file.write_text("symbols", encoding="utf-8")
-        obj_file.write_text("object", encoding="utf-8")
-        dep_file.write_text("deps", encoding="utf-8")
+        for goal in ("distclean", "tidy"):
+            with self.subTest(goal=goal):
+                test_dir = self.build_root / goal
+                exe_file = self._plant(test_dir / "mygame.exe", "binary")
+                pdb_file = self._plant(test_dir / "mygame.pdb", "symbols")
+                obj_file = self._plant(test_dir / "mygame.o", "object")
+                dep_file = self._plant(test_dir / "mygame.d", "deps")
+                ephemeral_logs = [self._plant(self.log_dir / name, "ephemeral log")
+                                  for name in EPHEMERAL_LOG_NAMES]
+                evidence_log = self._plant(self.log_dir / "oracle_run.log", "evidence")
 
-        log_dir = ROOT / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        ephemeral_log = log_dir / "build_out_recomp.log"
-        ephemeral_log.write_text("ephemeral log", encoding="utf-8")
-
-        proc = subprocess.run(
-            [self.make, "--no-print-directory", "tidy", f"BUILD_DIR={test_dir.as_posix()}"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertTrue(exe_file.is_file(), "distclean deleted .exe")
-        self.assertTrue(pdb_file.is_file(), "distclean deleted .pdb")
-        self.assertFalse(obj_file.exists(), "distclean did not delete .o")
-        self.assertFalse(dep_file.exists(), "distclean did not delete .d")
-        self.assertFalse(ephemeral_log.exists(), "distclean did not clean ephemeral log")
-
-        # Cleanup test dir
-        shutil.rmtree(test_dir, ignore_errors=True)
+                proc = self._lifecycle_make(goal, f"BUILD_DIR={test_dir.as_posix()}")
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertTrue(exe_file.is_file(), f"{goal} deleted .exe")
+                self.assertTrue(pdb_file.is_file(), f"{goal} deleted .pdb")
+                self.assertFalse(obj_file.exists(), f"{goal} did not delete .o")
+                self.assertFalse(dep_file.exists(), f"{goal} did not delete .d")
+                for log in ephemeral_logs:
+                    self.assertFalse(log.exists(), f"{goal} did not clean ephemeral log {log.name}")
+                self.assertTrue(evidence_log.is_file(), f"{goal} deleted a non-ephemeral log")
 
     def test_clean_all_cleans_all_build_subdirs_and_ephemeral_logs(self) -> None:
-        """clean-all must remove all subdirectories under build/ and ephemeral build logs."""
-        if not self.make:
-            self.skipTest("GNU Make is required")
-        sub_a = ROOT / "build" / "test_sub_a"
-        sub_b = ROOT / "build" / "test_sub_b"
-        sub_a.mkdir(parents=True, exist_ok=True)
-        sub_b.mkdir(parents=True, exist_ok=True)
-        (sub_a / "test.bin").write_text("a", encoding="utf-8")
-        (sub_b / "test.bin").write_text("b", encoding="utf-8")
+        """clean-all must remove everything under BUILD_ROOT and the ephemeral build logs."""
+        sub_a = self._plant(self.build_root / "test_sub_a" / "test.bin", "a").parent
+        sub_b = self._plant(self.build_root / "test_sub_b" / "test.bin", "b").parent
+        loose = self._plant(self.build_root / "loose.bin")
+        recomp_log = self._plant(self.log_dir / "recomp_err.log", "err")
 
-        log_dir = ROOT / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        recomp_log = log_dir / "recomp_err.log"
-        recomp_log.write_text("err", encoding="utf-8")
-
-        proc = subprocess.run(
-            [self.make, "--no-print-directory", "clean-all"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        proc = self._lifecycle_make("clean-all")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertFalse(sub_a.exists(), f"Subdir {sub_a} was not cleaned by clean-all")
         self.assertFalse(sub_b.exists(), f"Subdir {sub_b} was not cleaned by clean-all")
+        self.assertFalse(loose.exists(), f"File {loose} was not cleaned by clean-all")
+        self.assertEqual(list(self.build_root.iterdir()), [], "clean-all left BUILD_ROOT populated")
         self.assertFalse(recomp_log.exists(), f"Log {recomp_log} was not cleaned by clean-all")
 
     def test_build_dir_with_a_space_fails_closed_before_any_recipe_runs(self) -> None:
@@ -1803,20 +1968,10 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
         a directory the caller never named -- and the parse-time mkdir created
         directories named after the remaining fragments in the repository root.
         """
-        if not self.make:
-            self.skipTest("GNU Make is required")
-        victim = _make_safe_fixture_dir("guard-victim")
-        victim.mkdir(parents=True, exist_ok=True)
-        keep = victim / "keep.o"
-        keep.write_text("object", encoding="utf-8")
-        spaced = str(victim) + " extra"
-        proc = subprocess.run(
-            [self.make, "--no-print-directory", "clean", f"BUILD_DIR={spaced}"],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        victim = self.build_root / "guard-victim"
+        keep = self._plant(victim / "keep.o", "object")
+        spaced = victim.as_posix() + " extra"
+        proc = self._lifecycle_make("clean", f"BUILD_DIR={spaced}")
         self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("contains a space", proc.stdout + proc.stderr)
         self.assertIn("NK_BUILD_ROOT", proc.stdout + proc.stderr)
@@ -1826,7 +1981,6 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
             (ROOT / "spaces").exists(),
             "a refused BUILD_DIR created a spaces/ tree in the repository root",
         )
-        shutil.rmtree(victim.parent, ignore_errors=True)
 
     def test_clean_targets_never_delete_protected_paths(self) -> None:
         protected_dirs = [
@@ -1839,25 +1993,13 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
         for pdir in protected_dirs:
             self.assertTrue(pdir.is_dir(), f"Protected directory {pdir} must exist")
 
-        # Create non-ephemeral log file and verify it is not deleted by clean targets
-        log_dir = ROOT / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        evidence_log = log_dir / "evidence_run_test.log"
-        evidence_log.write_text("evidence data", encoding="utf-8")
+        # A non-ephemeral log beside the ephemeral ones must survive every clean target.
+        evidence_log = self._plant(self.log_dir / "evidence_run_test.log", "evidence data")
 
-        if self.make:
-            proc = subprocess.run(
-                [self.make, "--no-print-directory", "clean-all"],
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        proc = self._lifecycle_make("clean-all")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
         self.assertTrue(evidence_log.is_file(), "clean-all deleted non-ephemeral evidence log")
-        evidence_log.unlink(missing_ok=True)
-
         for pdir in protected_dirs:
             self.assertTrue(pdir.is_dir(), f"Protected directory {pdir} was compromised")
 
@@ -1874,7 +2016,8 @@ class MachinePortabilityTests(unittest.TestCase):
         if not self.make:
             self.skipTest("GNU Make is required")
         proc = subprocess.run(
-            [self.make, "--no-print-directory", "compiler-info"],
+            [self.make, "--no-print-directory", "compiler-info",
+             f"BUILD_ROOT={_scratch_build_root(self, 'vulkan-info').as_posix()}"],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -1906,7 +2049,8 @@ class MachinePortabilityTests(unittest.TestCase):
         if not self.make:
             self.skipTest("GNU Make is required")
         proc = subprocess.run(
-            [self.make, "--no-print-directory", "compiler-info"],
+            [self.make, "--no-print-directory", "compiler-info",
+             f"BUILD_ROOT={_scratch_build_root(self, 'sdl3-info').as_posix()}"],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -1970,7 +2114,8 @@ class MachinePortabilityTests(unittest.TestCase):
         self.assertRegex(makefile_text, r"(?m)^compile:.*\| sdl3-check$")
         self.assertRegex(makefile_text, r"(?m)^\$\(PLAYER_EXE\): \| player-vulkan-check sdl3-check$")
         proc = subprocess.run(
-            [self.make, "--no-print-directory", "sdl3-check", "SDL3_DIR=C:/nonexistent_sdl3_repro_test"],
+            [self.make, "--no-print-directory", "sdl3-check", "SDL3_DIR=C:/nonexistent_sdl3_repro_test",
+             f"BUILD_ROOT={_scratch_build_root(self, 'sdl3-absent').as_posix()}"],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -2123,7 +2268,8 @@ class MachinePortabilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_build = Path(tmpdir) / "build_test"
             proc = subprocess.run(
-                [self.make, "--no-print-directory", f"BUILD_DIR={tmp_build.as_posix()}", "compiler-info"],
+                [self.make, "--no-print-directory", f"BUILD_DIR={tmp_build.as_posix()}",
+                 f"BUILD_ROOT={Path(tmpdir).as_posix()}", "compiler-info"],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
@@ -2406,6 +2552,343 @@ class ToolsModuleImportPathTests(unittest.TestCase):
             [],
             f"Test modules under tools/ import siblings without sys.path idiom: {missing}",
         )
+
+
+#: Module-level functions that delete the path passed as their first argument.
+_DELETING_FUNCTIONS = frozenset({
+    ("shutil", "rmtree"), ("os", "remove"), ("os", "unlink"), ("os", "rmdir"), ("os", "removedirs"),
+})
+#: Path methods that delete the path they are called on.
+_DELETING_METHODS = frozenset({"unlink", "rmdir"})
+_MAKE_PROGRAMS = frozenset({"make", "mingw32-make", "gmake"})
+_SCRATCH_ROOT_VARIABLES = ("BUILD_ROOT", "LOG_DIR")
+
+
+def _suite_test_files() -> list[Path]:
+    """Every Python test module the suite discovers under tools/ and tests/."""
+    return sorted((ROOT / "tools").glob("test_*.py")) + sorted((ROOT / "tests").rglob("test_*.py"))
+
+
+def _instance_attribute(node: ast.AST) -> str | None:
+    """`self.x` / `cls.x` as `@x`, so instance state is tracked apart from locals."""
+    if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+            and node.value.id in ("self", "cls")):
+        return "@" + node.attr
+    return None
+
+
+#: Path methods and properties whose result is still a path at or under the receiver.
+_PATH_DERIVING_ATTRIBUTES = frozenset({
+    "absolute", "expanduser", "glob", "iterdir", "joinpath", "parent", "parents",
+    "resolve", "rglob", "walk", "with_name", "with_stem", "with_suffix",
+})
+#: Callables that turn a path argument into a path (or its string spelling).
+_PATH_CONSTRUCTORS = frozenset({
+    "Path", "PurePath", "PosixPath", "WindowsPath", "str", "fspath",
+    "join", "abspath", "realpath", "normpath", "dirname",
+})
+
+
+def _is_anchored(node: ast.AST, anchored: set[str]) -> bool:
+    """True when ``node`` evaluates to a path derived from an anchored name.
+
+    Only path-preserving operations carry the anchor (`/`, `.parent`, `.resolve()`,
+    `.glob()`, `Path(...)`, `os.path.join(...)`, f-strings, containers), so data
+    read from a checkout file (`json.loads((ROOT / "x.json").read_text())`) does
+    not make everything computed from it look like a checkout path.
+    """
+    attribute = _instance_attribute(node)
+    if attribute is not None:
+        return attribute in anchored
+    if isinstance(node, ast.Name):
+        return node.id in anchored
+    if isinstance(node, ast.Attribute):
+        return node.attr in _PATH_DERIVING_ATTRIBUTES and _is_anchored(node.value, anchored)
+    if isinstance(node, ast.Subscript):
+        return _is_anchored(node.value, anchored)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Div, ast.Add)):
+        return _is_anchored(node.left, anchored)
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr in _PATH_DERIVING_ATTRIBUTES:
+            return _is_anchored(func.value, anchored)
+        name = func.id if isinstance(func, ast.Name) else (
+            func.attr if isinstance(func, ast.Attribute) else None)
+        return name in _PATH_CONSTRUCTORS and any(
+            _is_anchored(argument, anchored) for argument in node.args)
+    if isinstance(node, ast.IfExp):
+        return _is_anchored(node.body, anchored) or _is_anchored(node.orelse, anchored)
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return any(_is_anchored(element, anchored) for element in node.elts)
+    if isinstance(node, (ast.Starred, ast.FormattedValue, ast.NamedExpr)):
+        return _is_anchored(node.value, anchored)
+    if isinstance(node, ast.JoinedStr):
+        return any(_is_anchored(value, anchored) for value in node.values)
+    return False
+
+
+def _bound_names(target: ast.AST) -> list[str]:
+    """Names a binding target rebinds; item or attribute stores rebind nothing."""
+    attribute = _instance_attribute(target)
+    if attribute is not None:
+        return [attribute]
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, ast.Starred):
+        return _bound_names(target.value)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return [name for element in target.elts for name in _bound_names(element)]
+    return []
+
+
+def _assignments(scope: ast.AST) -> list[tuple[list[str], ast.AST]]:
+    """(bound names, value) for every assignment and for-loop binding in ``scope``."""
+    bindings: list[tuple[list[str], ast.AST]] = []
+    for node in ast.walk(scope):
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)) and node.value is not None:
+            targets, value = [node.target], node.value
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            targets, value = [node.target], node.iter
+        elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+            targets, value = [node.optional_vars], node.context_expr
+        else:
+            continue
+        names = [name for target in targets for name in _bound_names(target)]
+        if names:
+            bindings.append((names, value))
+    return bindings
+
+
+def _propagate(bindings: list[tuple[list[str], ast.AST]], anchored: set[str]) -> set[str]:
+    """Close ``anchored`` over ``bindings``: a name bound from an anchored value is anchored."""
+    anchored = set(anchored)
+    changed = True
+    while changed:
+        changed = False
+        for names, value in bindings:
+            if not set(names) <= anchored and _is_anchored(value, anchored):
+                anchored.update(names)
+                changed = True
+    return anchored
+
+
+def _is_make_program(node: ast.AST) -> bool:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return Path(node.value).stem.lower() in _MAKE_PROGRAMS
+    if isinstance(node, ast.Name):
+        return node.id.lower() == "make"
+    return isinstance(node, ast.Attribute) and node.attr.lower() == "make"
+
+
+def _literal_prefix(node: ast.AST) -> str:
+    """The constant text an argv element starts with (an f-string's leading literal)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr) and node.values:
+        first = node.values[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            return first.value
+    return ""
+
+
+def _scan_for_checkout_deletions(source: str, label: str) -> list[str]:
+    """Report deletions and destructive Make goals that could reach the real checkout.
+
+    A path is *checkout-anchored* when it is computed from `__file__` (the usual
+    `ROOT = Path(__file__).resolve().parents[1]`), from a module-level name derived
+    from it (`ROOT`, `TOOLS`, `ROOT / "build"` ...), or from a local or `self`/`cls`
+    attribute bound to such a value. The scan reports:
+
+    * `shutil.rmtree`, `os.remove`/`unlink`/`rmdir`, `Path.unlink`/`rmdir` (called
+      directly or registered with `addCleanup`) on a checkout-anchored path;
+    * a Make command line naming a destructive goal (clean, clean-fixtures,
+      distclean, tidy, clean-all) without scratch `BUILD_ROOT=` and `LOG_DIR=`
+      overrides that are themselves not checkout-anchored;
+    * a Make command line naming a title (`GAME_NAME=`) without a scratch
+      `BUILD_ROOT=` or `BUILD_DIR=`: parsing alone rewrites that title's profile
+      stamps under the checkout's build/ and invalidates the objects there.
+
+    It is deliberately conservative about what it can see (a goal held in a variable
+    is invisible to it); `_run_scratch_make` refuses checkout roots at run time.
+    """
+    tree = ast.parse(source, label)
+    module_level = [node for node in tree.body if not isinstance(
+        node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+    module_bindings: list[tuple[list[str], ast.AST]] = []
+    for node in module_level:
+        module_bindings.extend(_assignments(node))
+    anchored_module = _propagate(module_bindings, {"__file__"})
+
+    # Attributes a class binds from anchored values in any of its methods. Each
+    # method's locals stay its own; only `self.x` / `cls.x` flow between methods.
+    class_attrs: dict[ast.ClassDef, set[str]] = {}
+    for cls in (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)):
+        methods = [n for n in cls.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        attrs: set[str] = set()
+        while True:
+            found = set(attrs)
+            for method in methods:
+                found |= {name for name in _propagate(_assignments(method), anchored_module | attrs)
+                          if name.startswith("@")}
+            if found == attrs:
+                break
+            attrs = found
+        class_attrs[cls] = attrs
+
+    owner: dict[ast.AST, ast.ClassDef] = {}
+    for cls in class_attrs:
+        for child in ast.walk(cls):
+            owner.setdefault(child, cls)
+
+    findings: list[tuple[int, str]] = []
+
+    def report(node: ast.AST, message: str) -> None:
+        findings.append((node.lineno, message))
+
+    def check_scope(scope: ast.AST, anchored: set[str]) -> None:
+        def is_anchored(expr: ast.AST) -> bool:
+            return _is_anchored(expr, anchored)
+
+        for node in ast.walk(scope):
+            if isinstance(node, ast.Call):
+                func = node.func
+                target = None
+                if (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)
+                        and (func.value.id, func.attr) in _DELETING_FUNCTIONS):
+                    target = node.args[0] if node.args else None
+                elif isinstance(func, ast.Name) and func.id == "rmtree":
+                    target = node.args[0] if node.args else None
+                elif isinstance(func, ast.Attribute) and func.attr in _DELETING_METHODS:
+                    target = func.value
+                elif (isinstance(func, ast.Attribute)
+                      and func.attr in ("addCleanup", "addClassCleanup") and node.args):
+                    callback = node.args[0]
+                    if (isinstance(callback, ast.Attribute) and isinstance(callback.value, ast.Name)
+                            and (callback.value.id, callback.attr) in _DELETING_FUNCTIONS) or (
+                            isinstance(callback, ast.Name) and callback.id == "rmtree"):
+                        target = node.args[1] if len(node.args) > 1 else None
+                    elif isinstance(callback, ast.Attribute) and callback.attr in _DELETING_METHODS:
+                        target = callback.value
+                if target is not None and is_anchored(target):
+                    report(node, f"deletes a path inside the repository checkout: "
+                                 f"{ast.unparse(target)}")
+            elif isinstance(node, (ast.List, ast.Tuple)):
+                elements = node.elts
+                if not any(_is_make_program(e) for e in elements):
+                    continue
+                if any(_literal_prefix(e).startswith("GAME_NAME=") for e in elements):
+                    relocations = [e for e in elements if _literal_prefix(e).startswith(
+                        ("BUILD_ROOT=", "BUILD_DIR="))]
+                    if not relocations or any(is_anchored(e) for e in relocations):
+                        report(node, "runs Make for a named title without a scratch BUILD_ROOT= "
+                                     "or BUILD_DIR=; parsing alone rewrites that title's real "
+                                     "build tree and invalidates its objects")
+                goals = sorted({e.value for e in elements if isinstance(e, ast.Constant)
+                                and e.value in DESTRUCTIVE_MAKE_GOALS})
+                if not goals:
+                    continue
+                for variable in _SCRATCH_ROOT_VARIABLES:
+                    overrides = [e for e in elements
+                                 if _literal_prefix(e).startswith(variable + "=")]
+                    if not overrides:
+                        report(node, f"runs destructive Make goal(s) {goals} without a scratch "
+                                     f"{variable}=; use _run_scratch_make")
+                    elif any(is_anchored(e) for e in overrides):
+                        report(node, f"runs destructive Make goal(s) {goals} with {variable} "
+                                     f"inside the repository checkout")
+
+    functions = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    nested = {child for fn in functions for child in ast.walk(fn) if child is not fn
+              and isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    for fn in functions:
+        if fn in nested:
+            continue  # scanned with its enclosing function, whose bindings it closes over
+        anchored = set(anchored_module)
+        cls = owner.get(fn)
+        if cls is not None:
+            anchored |= class_attrs[cls]
+        check_scope(fn, _propagate(_assignments(fn), anchored))
+    for node in module_level:
+        check_scope(node, anchored_module)
+    findings.sort(key=lambda finding: finding[0])
+    return [f"{label}:{line}: {message}" for line, message in findings]
+
+
+class CheckoutDeletionGuardTests(unittest.TestCase):
+    """No test may delete from, or run a destructive Make goal against, the real checkout.
+
+    A developer's checkout keeps private title builds and packages under build/ and
+    run logs under logs/. A test that cleans those trees, rather than a scratch copy,
+    destroys them on every suite run; tools/test_build_truth.py once ran `clean-all`
+    against the checkout itself. This scan keeps that class of test from returning.
+    """
+
+    def test_no_test_deletes_from_the_real_checkout(self) -> None:
+        findings: list[str] = []
+        for path in _suite_test_files():
+            findings.extend(_scan_for_checkout_deletions(
+                path.read_text(encoding="utf-8"), path.relative_to(ROOT).as_posix()))
+        self.assertEqual(
+            findings, [],
+            "tests delete from or clean the real repository checkout; point them at a "
+            "scratch tree (tempfile, _run_scratch_make with BUILD_ROOT/LOG_DIR):\n"
+            + "\n".join(findings),
+        )
+
+    def test_scan_reports_each_destructive_shape(self) -> None:
+        source = textwrap.dedent('''
+            import os, shutil, subprocess
+            from pathlib import Path
+            ROOT = Path(__file__).resolve().parents[1]
+            BUILD = ROOT / "build"
+
+            class Case:
+                def setUp(self):
+                    self.logs = ROOT / "logs"
+
+                def test_offenders(self):
+                    subprocess.run([self.make, "--no-print-directory", "clean-all"], cwd=ROOT)
+                    subprocess.run([self.make, "tidy", f"BUILD_ROOT={BUILD}", "LOG_DIR=/x"], cwd=ROOT)
+                    shutil.rmtree(BUILD / "sub")
+                    doomed = ROOT / "build" / "title"
+                    shutil.rmtree(doomed, ignore_errors=True)
+                    (self.logs / "recomp_err.log").unlink()
+                    self.addCleanup(shutil.rmtree, doomed, True)
+                    os.remove(self.logs / "stdout_run.log")
+                    subprocess.run([self.make, "GAME_NAME=hst", "--eval", "v: ; @echo", "v"], cwd=ROOT)
+        ''')
+        findings = _scan_for_checkout_deletions(source, "case.py")
+        self.assertEqual(
+            [int(finding.split(":")[1]) for finding in findings],
+            [12, 12, 13, 14, 16, 17, 18, 19, 20],
+            "\n".join(findings),
+        )
+        self.assertIn("without a scratch BUILD_ROOT=", findings[0])
+        self.assertIn("without a scratch LOG_DIR=", findings[1])
+        self.assertIn("BUILD_ROOT inside the repository checkout", findings[2])
+        self.assertIn("named title without a scratch BUILD_ROOT=", findings[8])
+
+    def test_scan_accepts_scratch_trees_and_read_only_checkout_use(self) -> None:
+        source = textwrap.dedent('''
+            import shutil, subprocess, tempfile
+            from pathlib import Path
+            ROOT = Path(__file__).resolve().parents[1]
+
+            class Case:
+                def test_scratch(self):
+                    scratch = Path(tempfile.mkdtemp())
+                    self.addCleanup(shutil.rmtree, scratch, True)
+                    subprocess.run([self.make, "clean-all", f"BUILD_ROOT={scratch / 'b'}",
+                                    f"LOG_DIR={scratch / 'l'}"], cwd=ROOT)
+                    (scratch / "x.o").unlink()
+                    text = (ROOT / "Makefile").read_text()
+                    targets = ("clean", "clean-all")
+                    subprocess.run([self.make, "help"], cwd=ROOT)
+                    subprocess.run([self.make, "GAME_NAME=hst", f"BUILD_ROOT={scratch}", "v"], cwd=ROOT)
+        ''')
+        self.assertEqual(_scan_for_checkout_deletions(source, "case.py"), [])
 
 
 if __name__ == "__main__":
