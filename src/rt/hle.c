@@ -3499,7 +3499,16 @@ static uint32_t load_guest_placed_module(const char *file, int required, uint32_
     mod->runtime_placed = 1;
     mod->code = code;
     mod->gp = img.gp;
-    mod->module_start = img.has_mod_start ? img.mod_start : img.entry;
+    /* The start routine is the system library's module_start, else the ELF entry -- when
+     * that lies in the image. A library module that declares neither (an entry of
+     * 0xFFFFFFFF, which the loader reports one byte below the image) has no start
+     * routine at all: 0. */
+    if (img.has_mod_start)
+        mod->module_start = img.mod_start;
+    else if (img.entry >= image && img.entry < image + span)
+        mod->module_start = img.entry;
+    else
+        mod->module_start = 0;
     mod->module_stop = module_stop;
     mod->image_base = image;
     sr_flight_prx_load(image, 0u, mod->module_start, img.nimp, exported);
@@ -9277,8 +9286,19 @@ static uint32_t h_StartModule(CpuState *s) {
         return 0;
     }
 
+    if (allow_entry && mod->runtime_placed && mod->code && mod->module_start == 0) {
+        /* A guest-placed module that declares no start routine starts by making its
+         * exports linkable; no guest code runs. Its stop entry, if any, runs at stop. */
+        fprintf(stderr, "sceKernelStartModule(uid=0x%x, path='%s') -> module declares no "
+                        "start routine; exports linked\n", uid, mod->path);
+        mark_module_started(mod->image_base);
+        mod->start_entry_ran = 1;
+        mod->state = MODULE_STATE_STARTED;
+        return 0;
+    }
+
     if (allow_entry && mod->runtime_placed && mod->code &&
-        (mod->module_start == 0 || sr_lookup(mod->module_start) == NULL)) {
+        sr_lookup(mod->module_start) == NULL) {
         /* The translation was bound, so an entry it has no body for is a build gap, not
          * a module without startup: refuse it rather than report a start that never ran. */
         char detail[96];

@@ -1403,6 +1403,16 @@ static SrModuleCode s_rt_alpha_code = {
     "rt-alpha.prx", 0u, 0u, 0u, RT_MEM_SPAN, 0x40u, 1u, NULL, &s_rt_alpha_base,
     s_rt_alpha_funcs, 3u, s_rt_alpha_spans, 1u,
 };
+/* A library module with no start routine; its stop body is the alpha one. */
+static uint32_t s_rt_nostart_base;
+static const SrModuleFunc s_rt_nostart_funcs[] = {
+    {RT_STOP, 2u, rt_alpha_stop},
+    {RT_QUERY, 2u, rt_alpha_query},
+};
+static SrModuleCode s_rt_nostart_code = {
+    "rt-nostart.prx", 0u, 0u, 0u, RT_MEM_SPAN, 0x40u, 1u, NULL, &s_rt_nostart_base,
+    s_rt_nostart_funcs, 2u, s_rt_alpha_spans, 1u,
+};
 static SrModuleCode s_rt_delta_code = {
     "rt-delta.prx", 0u, 0u, 0u, RT_MEM_SPAN, 0x40u, 1u,
     "relocation type 7 (GPREL16) at link 0x00000010 is not supported", &s_rt_delta_base,
@@ -1501,13 +1511,23 @@ static int write_fixed_module_prx(const char *path, uint32_t link) {
     return written == sizeof(image) && close_result == 0;
 }
 
+static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start);
+
 static int write_runtime_module_prx(const char *path, uint8_t flavour) {
+    return write_runtime_module_prx_entry(path, flavour, 1);
+}
+
+/* with_start == 0 writes a library module with no start routine: the system library
+ * exports only module_stop and the ELF entry is 0xFFFFFFFF. */
+static int write_runtime_module_prx_entry(const char *path, uint8_t flavour, int with_start) {
     enum { PHOFF = 0x34u, RELOC_OFFSET = RT_SEG_OFFSET + RT_FILE_SPAN,
            SIZE = RELOC_OFFSET + RT_RELOC_COUNT * 8u };
-    static const uint32_t sites[RT_RELOC_COUNT] = {
+    /* A start-less module's single system-library address sits at table + 4. */
+    const uint32_t sites[RT_RELOC_COUNT] = {
         RT_MODINFO + 32u, RT_MODINFO + 36u, RT_MODINFO + 40u, RT_MODINFO + 44u,
         RT_MODINFO + 48u, RT_LIBENT + 12u, RT_LIBENT + 16u, RT_LIBENT + 28u,
-        RT_SYSLIB_TABLE + 8u, RT_SYSLIB_TABLE + 12u, RT_LIB_TABLE + 4u, RT_DATA_PTR,
+        with_start ? RT_SYSLIB_TABLE + 8u : RT_SYSLIB_TABLE + 4u, RT_SYSLIB_TABLE + 12u,
+        RT_LIB_TABLE + 4u, RT_DATA_PTR,
     };
     uint8_t image[SIZE];
     uint8_t *seg = image + RT_SEG_OFFSET;
@@ -1519,7 +1539,7 @@ static int write_runtime_module_prx(const char *path, uint8_t flavour) {
     fixture_wr16(image + 16, 0xFFA0);
     fixture_wr16(image + 18, 8);
     fixture_wr32(image + 20, 1);
-    fixture_wr32(image + 24, RT_START);
+    fixture_wr32(image + 24, with_start ? RT_START : 0xFFFFFFFFu);
     fixture_wr32(image + 28, PHOFF);
     fixture_wr16(image + 40, 52);
     fixture_wr16(image + 42, 32);
@@ -1563,10 +1583,20 @@ static int write_runtime_module_prx(const char *path, uint8_t flavour) {
     seg[RT_LIBENT + 24] = 4;
     fixture_wr16(seg + RT_LIBENT + 26, 1);
     fixture_wr32(seg + RT_LIBENT + 28, RT_LIB_TABLE);
-    fixture_wr32(seg + RT_SYSLIB_TABLE + 0, 0xD632ACDBu);
-    fixture_wr32(seg + RT_SYSLIB_TABLE + 4, 0xCEE05613u);
-    fixture_wr32(seg + RT_SYSLIB_TABLE + 8, RT_START);
-    fixture_wr32(seg + RT_SYSLIB_TABLE + 12, RT_STOP);
+    if (with_start) {
+        fixture_wr32(seg + RT_SYSLIB_TABLE + 0, 0xD632ACDBu);
+        fixture_wr32(seg + RT_SYSLIB_TABLE + 4, 0xCEE05613u);
+        fixture_wr32(seg + RT_SYSLIB_TABLE + 8, RT_START);
+        fixture_wr32(seg + RT_SYSLIB_TABLE + 12, RT_STOP);
+    } else {
+        /* One function: module_stop. The table is NIDs then addresses, so the second
+         * word is the (relocated) stop address; the fourth word stays relocated but
+         * unused. */
+        fixture_wr16(seg + RT_LIBENT + 10, 1);
+        fixture_wr32(seg + RT_SYSLIB_TABLE + 0, 0xCEE05613u);
+        fixture_wr32(seg + RT_SYSLIB_TABLE + 4, RT_STOP);
+        fixture_wr32(seg + RT_SYSLIB_TABLE + 12, RT_STOP);
+    }
     fixture_wr32(seg + RT_LIB_TABLE + 0, RT_EXPORT_NID);
     fixture_wr32(seg + RT_LIB_TABLE + 4, RT_QUERY);
     memcpy(seg + RT_LIBNAME, "RtPlacedLib", 12);
@@ -1917,6 +1947,37 @@ static void test_runtime_placed_modules(void) {
         remove(host);
         SetEnvironmentVariableA("SR_MEMSTICK", had_memstick ? saved_memstick : NULL);
         _putenv_s("SR_MEMSTICK", had_memstick ? saved_memstick : "");
+    }
+
+    /* A library module that declares no start routine starts by linking its exports. */
+    {
+        static const char nostart_guest[] = "disc0:/PSP_GAME/USRDIR/rt-nostart.prx";
+        char nostart_path[1024];
+        runtime_module_path(nostart_path, sizeof(nostart_path), "rt-nostart.prx");
+        s_rt_nostart_code.link_high = RT_MEM_SPAN;
+        expect(write_runtime_module_prx_entry(nostart_path, 5u, 0) &&
+                   runtime_module_identity(nostart_path, &s_rt_nostart_code),
+               "runtime placement: the start-less module fixture is written");
+        sr_module_code_register(&s_rt_nostart_code);
+        unsigned starts = s_rt_start_calls;
+        unsigned stops = s_rt_stop_calls;
+        uid = rt_load(nostart_guest, 0u);
+        uint32_t nostart_base = 0;
+        expect(uid != 0u && (uid & 0x80000000u) == 0u &&
+                   sr_module_code_is_bound(&s_rt_nostart_code, &nostart_base),
+               "runtime placement: a module without a start routine loads");
+        rt_capture_begin();
+        uint32_t started = rt_lifecycle(sr_hle_test_start_module, uid, 0u, 0u, 0u);
+        out = rt_capture_end();
+        expect(started == 0u && s_rt_start_calls == starts &&
+                   strstr(out, "GUEST_MODULE_BOUNDARY") == NULL &&
+                   sr_hle_test_started_export(RT_EXPORT_NID) == nostart_base + RT_QUERY,
+               "runtime placement: a start-less module starts by linking its exports, running nothing");
+        expect(rt_lifecycle(sr_hle_test_stop_module, uid, 0u, 0u, 0u) == 0u &&
+                   s_rt_stop_calls == stops + 1u &&
+                   rt_lifecycle(sr_hle_test_unload_module, uid, 0u, 0u, 0u) == 0u,
+               "runtime placement: a start-less module still runs its module_stop");
+        remove(nostart_path);
     }
 
     /* A fixed-address module: exactly its link range, bound at base 0. */
