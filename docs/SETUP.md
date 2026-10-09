@@ -289,60 +289,52 @@ Authentic in-game typography requires PSP system fonts in Sony's PlayStation Gly
 
 #### What the user supplies
 
-From your own PSP console or firmware dump, supply genuine PGF font files:
+From your own PSP, copy its PGF font files to a folder on a USB drive, a memory stick, or your PC. The import reads every `.pgf` file directly in the folder you choose, whatever its name, and checks each one with the same native reader the player uses. Each accepted file is used for the slot its glyphs cover:
 
-- `jpn0.pgf`: Japanese and baseline font required by the runtime font manager.
-- Optional Latin and regional fonts: `kr0.pgf` and `ltn0.pgf` through `ltn15.pgf`.
+- Japanese: covers kana (U+3042 or U+30A2).
+- Korean: covers Hangul (U+AC00 or U+D55C).
+- Latin: covers the Latin letters (U+0041 and U+0061) and neither of the above.
 
-Fonts must come only from your own device; the project provides no download links or third-party repositories.
+A file that covers both kana and Hangul, or neither, names no slot and is skipped. Files over 16 MiB are refused. If two files name the same slot, the import imports neither until you choose one with `--choose <slot>=<file>`; the player asks you to keep one file per slot.
+
+Fonts must come only from your own device. The project provides no download links or third-party repositories. The import makes no network request, uses no key, and does no decryption, and it never uploads anything.
 
 #### Importing fonts
 
-Import dumped firmware fonts using `tools/nk_cli.py`:
-
 ```powershell
 python tools/nk_cli.py fonts import <folder>
+python tools/nk_cli.py fonts status
+python tools/nk_cli.py fonts remove --all
 ```
-
-The `<folder>` argument can point directly to the directory containing your `.pgf` files, or to a dump directory containing `font/`, `FONT/`, `flash0/font/`, or `flash0/FONT/` subdirectories.
 
 Available options:
 
+- `--choose <slot>=<file>`: Pick the file for a slot that several files name (`japanese`, `latin`, or `korean`).
 - `--user-data-root <path>`: Override the target per-user data directory (default: `%LOCALAPPDATA%`, then `%APPDATA%`, under `Nakagawa\data` on Windows; `~/Library/Application Support/NakagawaRecomp/data` on macOS; `$XDG_DATA_HOME/nakagawa-recomp` or `~/.local/share/nakagawa-recomp` on other POSIX systems).
-- `--json`: Emit a machine-readable JSON report of the imported files, sizes, and SHA-256 digests.
+- `--json`: Emit a machine-readable report of the outcome for each file, and of each slot's status.
 
-The import command scans the source directory, performs structural validation on every PGF candidate (verifying header size, little-endian offsets, the `PGF0` magic signature at `header_offset + 4`, non-negative revision and version fields, and `first_glyph <= last_glyph` index order), and stages validated fonts into the versioned cache directory:
+The import copies each chosen file into the per-user cache as that slot's file, and writes `manifest.json` with `schema_version: 2`, an ISO 8601 UTC `import_time`, and for each slot its `slot`, `size`, `sha256`, `source: "user"`, and `reader_version`. The originals are not touched. Re-importing is idempotent, and a slot the new run does not change keeps its entry:
 
 ```text
-<user data>/fonts/v1/
+<user data>/fonts/v2/
 ├── manifest.json
-├── jpn0.pgf
-└── ltn0.pgf
+├── nkjpn.pgf   (Japanese slot)
+├── nkltn.pgf   (Latin slot)
+└── nkkr.pgf    (Korean slot)
 ```
 
-Along with the `.pgf` files, the command writes a validated `manifest.json` recording `schema_version: 1`, an ISO 8601 UTC `import_time`, and each file's size and SHA-256 hash. Re-import is idempotent. If any font file in the source folder fails validation, the import fails closed immediately, leaving the previous cache intact.
+A slot is served from the first source that checks: your imported font, then the project font at `<project>/font/<slot file>`, then a named refusal, which the game sees as a missing slot. There is no substitution between slots. `fonts remove` deletes only these slot files and their manifest entries. An import from an earlier cache version is not read; run the import again.
+
+> [!NOTE]
+> The runtime's in-game font loader still reads its own firmware file names until the flash0 font device lands (#300). Until then, an imported font is listed as present by the import, the status command, and the player's preflight, and the in-game font path does not read it yet.
 
 #### Verification and player status
 
-To verify that system fonts are correctly installed:
+To verify that system fonts are in place:
 
-1. **CLI verification:** Run `python tools/nk_cli.py inspect <iso>` (or add `--root <user_data>`). Under the compatibility preflight checklist, verify the `SYSTEM_FONTS` check:
-
-   ```text
-   OK: User-supplied PSP system font jpn0.pgf is available.
-   ```
-
-2. **Player preflight checklist:** In `build/nakagawa_player.exe`, select your game card. The preflight checklist reports:
-   - `OK` with `"User-supplied PSP system font jpn0.pgf is available."` when the cache is valid and contains `jpn0.pgf`.
-   - `MISSING` with `"PSP font jpn0.pgf missing; run fonts import <folder> (#300)."` when no font cache or fallback font is detected.
-   - `INVALID` with a specific diagnostic (e.g. `"PSP font cache manifest is unreadable or malformed..."` or checksum mismatch) when the cache or any declared font file is corrupted.
-3. **Player setup wizard:** During first-time launch setup, the **System & Open-Source Typography** step displays typography settings, noting that open-source defaults (SIL Open Font License) are used for desktop UI while optional user-owned PSP fonts (`jpn0.pgf`) are loaded from the font cache for in-game rendering.
-
-#### In the works
-
-- **Automated in-player font provisioning:** Providing a direct in-app font import wizard in the player so command-line execution is not required.
-- **#313 (Clean-room open-font to PGF converter):** Designing and implementing an independent, deterministic converter from permissively licensed open fonts (SIL OFL) to PSP PGF format, providing an authentic-proportioned public font route that eliminates the proprietary firmware dependency for public builds.
-- **#299 (Guest libfont module startup):** Translated `libfont.prx` startup runs through the guest entry, and readiness belongs to guest code. If startup is unavailable (an untranslated entry, no recorded entry, or `SR_REAL_MODULE_START=0`), `LIBFONT_STARTUP_UNAVAILABLE` names the boundary, `sceKernelStartModule` fails closed, and the runtime leaves guest readiness unchanged. Manifests that still set `libfont_ready_flag_addr` fail with `LIBFONT_READY_FLAG_RETIRED`; remove the field. Real-title readiness and its thread, callback, heap and font-file dependencies still need private-route validation.
+1. **CLI:** `python tools/nk_cli.py fonts status` prints one line per slot, such as `Japanese: imported from your PSP.`, `Latin: project font.`, or `Korean: missing. Import a font from your PSP or install the project font.`
+2. **Player preflight:** the `SYSTEM_FONTS` check is `OK` when every slot is covered by an imported or a project font. It is `MISSING` when a slot is uncovered, and its message names the slots. It is `INVALID` (issue #313) when the manifest is malformed or a listed file fails its check.
+3. **Player setup wizard:** the **Fonts & System** step shows the source of each slot and has **IMPORT FONTS FOLDER** and **REMOVE IMPORTED FONTS** buttons. Import and removal report their outcome on that step.
 
 ## 3. Build
 
@@ -746,7 +738,7 @@ outside the published repository.
 - **`PUBLIC_SAFE=1` active:** when building in a public tree where the private backends are absent, the runtime compiles with `PUBLIC_SAFE=1`. This mode links the public replacements — `iso_public.c` for ISO9660 lookups driven by `PSP_ISO`, `pgf_public.c` for fonts, and the SDL3 audio backend — plus `pgd_unavailable.c`. Disc routes keep working; PGD-protected data is refused in this mode, and the runtime still refuses encrypted `~PSP` executables because decryption happens earlier, in the player/CLI boundary that requires your own key file ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)).
 - **Missing ISO or missing extracted assets:** `place_game_here/ISO/<game>.iso` must be present, and `place_game_here/EXTRACTED/PSP_GAME/USRDIR/xbdata_extracted` (or configured `SR_DATAROOT`) must be populated. `SR_DATAROOT` may instead hold the read-only `<archive>.xb` archives; the runtime mounts those directly ([#298](https://github.com/Jstar269/nakagawa-recomp/issues/298)).
 - **No late PRX exports / asset lookups fail:** restore the required `place_game_here/EXTRACTED/` layout (decrypted `libfont.prx`, `scePsmf_library.prx`, `scePsmfP_library.prx`).
-- **PSP font missing or text not rendering:** Run `python tools/nk_cli.py fonts import <folder>` pointing to your dumped PSP firmware fonts. Verify that `<user data>/fonts/v1/manifest.json` and `jpn0.pgf` exist. See [System fonts](#system-fonts).
+- **PSP font missing or text not rendering:** Run `python tools/nk_cli.py fonts status` to see each slot's source, and `python tools/nk_cli.py fonts import <folder>` for any slot that is missing. Your imported fonts are in `<user data>/fonts/v2/` with a `manifest.json`. See [System fonts](#system-fonts).
 - **Clean build omits chunks:** use the unchanged two-process `all` target; do not rewrite it as `all: pipeline compile`.
 - **Watchdog fires:** `SR_WATCHDOG_EXIT` counts vblanks since the last newly
   presented frame, not seconds or frame count. The no-frame watchdog is a
