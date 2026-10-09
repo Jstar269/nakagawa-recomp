@@ -373,10 +373,25 @@ jobs:
           grep -Fq "Usage: nakagawa_player" <<<"$help_output"
 
       - name: Build and run the Linux showcase headlessly
+        id: showcase
         run: |
           export NK_SHOWCASE_BUILD_ROOT="$RUNNER_TEMP/showcase-build"
           export NK_SHOWCASE_DEMO_ROOT="$RUNNER_TEMP/showcase-demo"
           make CC=gcc showcase-linux
+
+      # A failed smoke names runtime.log; keep it (and the window captures) so the
+      # failure can be diagnosed from the run instead of reproduced.
+      - name: Upload the Linux showcase smoke evidence on failure
+        if: failure() && steps.showcase.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: showcase-smoke-linux-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/showcase-build/smoke/
+            ${{ runner.temp }}/showcase-build/screenshots/
+            ${{ runner.temp }}/showcase-demo/packages/*/snap_f*.ppm
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Smoke the CMake Linux player headlessly
         run: |
