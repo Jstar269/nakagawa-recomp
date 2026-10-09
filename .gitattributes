@@ -5,20 +5,9 @@
 # silently corrupt the loader/runtime or any accidentally-committed game data.
 # =============================================================================
 
-# Source / text: enforce LF on checkout and in the repo.
+# Source / text: enforce LF on checkout and in the repo. Content detection
+# already classifies every tracked source, script, and document as text.
 *                 text=auto eol=lf
-*.c               text eol=lf
-*.h               text eol=lf
-*.cpp             text eol=lf
-*.hpp             text eol=lf
-*.py              text eol=lf
-*.ps1             text eol=lf
-*.md              text eol=lf
-*.toml            text eol=lf
-*.json            text eol=lf
-*.yml             text eol=lf
-*.yaml            text eol=lf
-Makefile          text eol=lf
 
 # Binaries: never touch line endings.
 *.dll             binary
@@ -32,14 +21,10 @@ Makefile          text eol=lf
 *.chd             binary
 *.dax             binary
 *.jso             binary
-*.PBP             binary
-*.pbp             binary
-*.prx             binary
-*.PRX             binary
-*.VAG             binary
-*.vag             binary
-*.AT3             binary
-*.at3             binary
+*.[pP][bB][pP]    binary
+*.[pP][rR][xX]    binary
+*.[vV][aA][gG]    binary
+*.[aA][tT]3       binary
 *.pgf             binary
 *.ppm             binary
 *.png             binary

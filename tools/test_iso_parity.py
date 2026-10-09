@@ -266,11 +266,12 @@ def create_test_iso_with_modules(
 
 
 def create_test_iso_with_module_tree(
-    path: Path, modules: dict[str, bytes]
+    path: Path, modules: dict[str, bytes], *,
+    disc_id: str = "TEST00001", title: str = "Synthetic Module Tree",
 ) -> dict[tuple[str, ...], int]:
-    """Build a source-owned ISO carrying modules at arbitrary PSP_GAME paths."""
+    """Build a source-owned ISO carrying files at arbitrary SYSDIR/USRDIR paths."""
     sector_size = 2048
-    sfo = build_param_sfo("TEST00001", "Synthetic Module Tree")
+    sfo = build_param_sfo(disc_id, title)
     directories: set[tuple[str, ...]] = {
         (), ("PSP_GAME",), ("PSP_GAME", "SYSDIR"), ("PSP_GAME", "USRDIR"),
     }
@@ -313,8 +314,6 @@ def create_test_iso_with_module_tree(
         if directory:
             directory_children[directory[:-1]].append((directory[-1], directory, True))
     for file_path in files:
-        if file_path == ("PSP_GAME", "PARAM.SFO"):
-            continue
         directory_children[file_path[:-1]].append((file_path[-1], file_path, False))
 
     directory_sizes: dict[tuple[str, ...], int] = {}
@@ -386,6 +385,58 @@ def create_test_iso_with_module_tree(
     path.write_bytes(data)
     return directory_lbas
 
+
+
+def archive_title_manifest(disc_id: str, title_id: str) -> dict:
+    """A user title manifest for a synthetic disc whose data ships in XB archives.
+
+    The whole USRDIR is the title's loose-content root and ``xbdata`` its data
+    root: the archive layout the native staging transaction extracts.
+    """
+    return {
+        "schema_version": 1,
+        "id": title_id,
+        "display_name": "Synthetic archive title",
+        "kind": "retail",
+        "disc": {"id": disc_id, "region": "NA", "revision_policy": "exact-disc-id"},
+        "executable": {
+            "base": 0,
+            "entry": 0,
+            "bss_metadata_source": "none",
+            "extra_executable_spans": [],
+        },
+        "modules": [],
+        "filesystem": {
+            "data_root": "xbdata",
+            "memory_stick_root": "memstick",
+            "device_prefixes": ["host0:", "ms0:"],
+            "loose_content_roots": [
+                {"root": ".", "mount": "", "precedence": 0, "skip_primary_root": True},
+            ],
+        },
+        "hle_profile": "generic",
+        "codegen_profile": "none",
+        "feature_requirements": [],
+        "verification_profile": "experimental-unverified",
+    }
+
+
+def create_archive_title_iso(
+    path: Path, *, disc_id: str, title: str, executable: bytes
+) -> None:
+    """Build a source-owned disc whose game data is an XB archive below USRDIR/xbdata."""
+    from test_xb_probe import _make_archive
+    from xb_probe import XBCompression
+
+    archive = _make_archive([
+        ("data/raw.bin", b"synthetic archive member", XBCompression.NONE),
+        ("data/sound/theme.sgd", b"synthetic sound member", XBCompression.LZS),
+    ])
+    create_test_iso_with_module_tree(path, {
+        "PSP_GAME/SYSDIR/EBOOT.BIN": executable,
+        "PSP_GAME/USRDIR/xbdata/menu/assets.xb": archive,
+        "PSP_GAME/USRDIR/readme.txt": b"synthetic loose file\n",
+    }, disc_id=disc_id, title=title)
 
 def build_plain_mips_elf(
     e_type: int = 2, *, vaddr: int = 0x08800000, memsz: int = 4,
@@ -1169,18 +1220,18 @@ int main(int argc, char **argv) {{
         update_sfo = build_param_sfo("MSTKUPDATE", "PSP Update ver 2.71")
         create_test_iso(
             iso_file,
-            disc_id="NPUH10028",
-            title="Super Pocket Tennis",
+            disc_id="TEST80003",
+            title="Synthetic PSN Fixture",
             volume_id="TYPE_0",
             update_sfo_bytes=update_sfo,
         )
 
         py_meta = inspect_iso(iso_file)
         c_meta = self._run_native_inspect(iso_file)
-        self.assertEqual(py_meta.disc_id, "NPUH10028")
-        self.assertEqual(py_meta.title, "Super Pocket Tennis")
-        self.assertEqual(c_meta.get("DISC_ID"), "NPUH10028")
-        self.assertEqual(c_meta.get("TITLE"), "Super Pocket Tennis")
+        self.assertEqual(py_meta.disc_id, "TEST80003")
+        self.assertEqual(py_meta.title, "Synthetic PSN Fixture")
+        self.assertEqual(c_meta.get("DISC_ID"), "TEST80003")
+        self.assertEqual(c_meta.get("TITLE"), "Synthetic PSN Fixture")
 
     def test_sfo_disc_id_and_utf8_title_override_volume_fallback(self) -> None:
         iso_file = self.temp_dir / "utf8-identity.iso"
@@ -1210,8 +1261,8 @@ int main(int argc, char **argv) {{
         update_sfo = build_param_sfo("MSTKUPDATE", "PSP Update ver 6.20")
         create_test_iso(
             iso_file,
-            disc_id="NPUH10028",
-            title="Super Pocket Tennis",
+            disc_id="TEST80003",
+            title="Synthetic PSN Fixture",
             volume_id="TYPE_0",
             update_sfo_bytes=update_sfo,
         )
@@ -1219,7 +1270,7 @@ int main(int argc, char **argv) {{
         registry.register(TitleProfile(
             id="psn-fixture-v1",
             name="PSN Fixture",
-            disc_ids=["NPUH10028"],
+            disc_ids=["TEST80003"],
             regions=["NA"],
         ))
 
@@ -2483,7 +2534,7 @@ int main(int argc, char **argv) {{
         # 1. Conflicting keys: Python and Native C must reject
         sfo_conflict = build_custom_param_sfo([
             ("DISC_ID", 0x0204, b"UCUS98701\0"),
-            ("DISC_ID", 0x0204, b"ULUS10001\0"),
+            ("DISC_ID", 0x0204, b"TEST80004\0"),
             ("TITLE", 0x0204, b"Test Conflict\0"),
         ])
         iso_conflict = self.temp_dir / "conflict.iso"

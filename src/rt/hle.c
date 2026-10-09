@@ -4473,7 +4473,7 @@ static int populate_guest_module(const char *file, uint32_t base, int required) 
         if (required) {
             fprintf(stderr,
                     "GUEST_MODULE_INPUT_MISSING: required module is absent from SR_MODULE_DIR; "
-                    "refusing load at its manifest address (#296)\n");
+                    "refusing load at its manifest address\n");
             return 0;
         }
     } else {

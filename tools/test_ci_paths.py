@@ -838,6 +838,52 @@ class PublicationCoverageInvariantTests(unittest.TestCase):
         self.assertIn("--provenance-self-consistency", config)
         self.assertIn("tools/policy_sync.py", config)
 
+    PUBLICATION_HOOKS = (
+        "documentation-freshness",
+        "publication-policy-sync",
+        "publication-audit",
+        "modified-file-notice-audit",
+        "provenance-record-gap-check",
+    )
+
+    @staticmethod
+    def _hook_stages(config: str, hook_id: str) -> list[str] | None:
+        """Return a hook's declared stages, or None when it runs at every stage."""
+        match = re.search(
+            rf"(?ms)^[ \t]*- id: {re.escape(hook_id)}[ \t]*\n(.*?)(?=^[ \t]*- (?:id|repo): |\Z)",
+            config,
+        )
+        assert match is not None, f"hook {hook_id} is missing from .pre-commit-config.yaml"
+        stages = re.search(r"(?m)^[ \t]*stages:[ \t]*\[([^\]]*)\]", match.group(1))
+        if stages is None:
+            return None
+        return [stage.strip() for stage in stages.group(1).split(",") if stage.strip()]
+
+    def test_publication_hooks_run_in_the_hosted_run_and_at_commit_time(self) -> None:
+        """Moving a publication hook off the commit stage must not silently drop it.
+
+        Hosted CI's hygiene job runs ``pre-commit run --all-files``, which runs the
+        commit stage only; a hook declared ``stages: [pre-push]`` would vanish from
+        CI while this file still names it. The commit stage is also the only local
+        point that audits every commit: the push stage audits the index, not each
+        pushed commit, and branch commits are public once pushed.
+        """
+        root = Path(__file__).resolve().parents[1]
+        config = (root / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+        workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+        hosted = re.findall(r"pre-commit run --all-files[^\n]*", workflow)
+        self.assertTrue(hosted, "the hygiene job no longer runs the shared pre-commit hooks")
+        hosted_stages = {
+            (re.search(r"--hook-stage[ =](\S+)", line) or [None, "pre-commit"])[1]
+            for line in hosted
+        }
+        for hook_id in self.PUBLICATION_HOOKS:
+            stages = self._hook_stages(config, hook_id)
+            with self.subTest(hook=hook_id):
+                if stages is not None:
+                    self.assertIn("pre-commit", stages)
+                    self.assertTrue(hosted_stages & set(stages), (hook_id, stages, hosted_stages))
+
 
 class PrecommitPathCoverageTests(unittest.TestCase):
     def test_global_exclusion_preserves_public_hook_inputs(self) -> None:
