@@ -2719,10 +2719,6 @@ typedef enum {
     PLAYER_DECRYPTED_EBOOT_PATH_INVALID
 } PlayerDecryptedEbootState;
 
-static uint16_t player_read_le16(const unsigned char *bytes) {
-    return (uint16_t)((uint16_t)bytes[0] | ((uint16_t)bytes[1] << 8));
-}
-
 static uint32_t player_read_le32(const unsigned char *bytes) {
     return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
            ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
@@ -2758,21 +2754,18 @@ static bool player_decrypted_eboot_paths(const char *runtime_root,
     return written >= 0 && (size_t)written < elf_path_size;
 }
 
-/* The ELF32/MIPS usability decision after the header and program-header
- * walks (issue #729).  Mirrors _elf32_mips_usable in tools/nk_core/iso_inspect.py:
- * an executable (or any non-PRX) image needs e_entry inside an executable
- * PT_LOAD, while a guest module that is a PSP PRX (e_type 0xFFA0) needs an
- * executable PT_LOAD with code bytes, because its e_entry is not its start
- * routine (module_start comes from the module info, commonly 0xFFFFFFFF). */
-static bool player_elf32_usable_decision(uint16_t e_type, bool module,
-                                         bool have_load, bool entry_executable,
-                                         bool code_segment) {
-    if (module && e_type == 0xffa0) return have_load && code_segment;
-    return have_load && entry_executable;
+/* The shared PSP ELF32/MIPS layout rule (nk_iso.c) read from a file. */
+static bool player_file_image_read(void *context, uint64_t offset, void *dst,
+                                   uint32_t bytes) {
+    FILE *file = (FILE *)context;
+    if (offset > (uint64_t)LONG_MAX ||
+        fseek(file, (long)offset, SEEK_SET) != 0) {
+        return false;
+    }
+    return fread(dst, 1, bytes, file) == bytes;
 }
 
 static bool player_is_usable_mips_elf32(const char *path, bool module) {
-    unsigned char header[52];
     FILE *file = nk_fopen_utf8(path, "rb");
     if (!file) return false;
     if (fseek(file, 0, SEEK_END) != 0) {
@@ -2780,78 +2773,14 @@ static bool player_is_usable_mips_elf32(const char *path, bool module) {
         return false;
     }
     long file_size = ftell(file);
-    if (file_size < (long)sizeof(header) || file_size > 512L * 1024L * 1024L ||
-        fseek(file, 0, SEEK_SET) != 0 ||
-        fread(header, 1, sizeof(header), file) != sizeof(header)) {
+    if (file_size < 0 || file_size > 512L * 1024L * 1024L) {
         fclose(file);
         return false;
     }
-    uint16_t e_type = player_read_le16(header + 16);
-    uint16_t machine = player_read_le16(header + 18);
-    uint32_t version = player_read_le32(header + 20);
-    uint32_t entry = player_read_le32(header + 24);
-    uint32_t phoff = player_read_le32(header + 28);
-    uint32_t shoff = player_read_le32(header + 32);
-    uint16_t ehsize = player_read_le16(header + 40);
-    uint16_t phentsize = player_read_le16(header + 42);
-    uint16_t phnum = player_read_le16(header + 44);
-    uint16_t shentsize = player_read_le16(header + 46);
-    uint16_t shnum = player_read_le16(header + 48);
-    bool valid = memcmp(header, "\x7f" "ELF", 4) == 0 &&
-                 header[4] == 1 && header[5] == 1 && header[6] == 1 &&
-                 (e_type == 1 || e_type == 2 || e_type == 3 || e_type == 0xffa0) &&
-                 machine == 8 && version == 1 && ehsize == sizeof(header) &&
-                 phentsize == 32 && phnum >= 1 && phnum <= 128 &&
-                 phoff >= ehsize &&
-                 (uint64_t)phoff + (uint64_t)phentsize * phnum <= (uint64_t)file_size;
-    if (valid && shnum != 0) {
-        valid = shentsize == 40 && shoff >= ehsize &&
-                (uint64_t)shoff + (uint64_t)shentsize * shnum <= (uint64_t)file_size;
-    } else if (valid && shoff != 0) {
-        valid = false;
-    }
-
-    bool have_load = false;
-    bool entry_executable = false;
-    bool code_segment = false;
-    for (uint16_t i = 0; valid && i < phnum; i++) {
-        unsigned char ph[32];
-        uint64_t offset = (uint64_t)phoff + (uint64_t)i * phentsize;
-        if (fseek(file, (long)offset, SEEK_SET) != 0 ||
-            fread(ph, 1, sizeof(ph), file) != sizeof(ph)) {
-            valid = false;
-            break;
-        }
-        uint32_t type = player_read_le32(ph);
-        uint32_t p_offset = player_read_le32(ph + 4);
-        uint32_t vaddr = player_read_le32(ph + 8);
-        uint32_t filesz = player_read_le32(ph + 16);
-        uint32_t memsz = player_read_le32(ph + 20);
-        uint32_t flags = player_read_le32(ph + 24);
-        uint32_t align = player_read_le32(ph + 28);
-        uint64_t memory_end = (uint64_t)vaddr + memsz;
-        if ((uint64_t)p_offset + filesz > (uint64_t)file_size) {
-            valid = false;
-            break;
-        }
-        if (type != 1) continue;
-        if (memsz < filesz || memory_end > 0x100000000ULL ||
-            (align > 1 && ((align & (align - 1u)) != 0 ||
-                           p_offset % align != vaddr % align))) {
-            valid = false;
-            break;
-        }
-        have_load = true;
-        if ((flags & 1u) != 0 && vaddr <= entry && (uint64_t)entry < memory_end) {
-            entry_executable = true;
-        }
-        if ((flags & 1u) != 0 && filesz > 0) {
-            code_segment = true;
-        }
-    }
+    bool usable = nk_elf32_mips_layout_violation(
+                      player_file_image_read, file, (uint64_t)file_size, module) == NULL;
     fclose(file);
-    return valid && player_elf32_usable_decision(e_type, module, have_load,
-                                                 entry_executable, code_segment);
+    return usable;
 }
 
 static PlayerDecryptedEbootState player_find_decrypted_eboot(
@@ -3099,81 +3028,10 @@ static bool player_prx_header_supported(const unsigned char *header,
     return total <= 64u * 1024u * 1024u;
 }
 
-/* The bounded MIPS ELF32 envelope check for a module still inside the ISO. */
+/* The shared PSP ELF32/MIPS layout rule (nk_iso.c) for a module still inside the ISO. */
 static bool player_iso_elf32_mips_usable(NkIsoReader *reader, uint32_t lba,
                                          uint32_t size, bool module) {
-    unsigned char header[52];
-    unsigned char ph[32];
-    if (size < sizeof(header) ||
-        nk_iso_reader_read(reader, lba, 0, header, sizeof(header)) !=
-            (int)sizeof(header)) {
-        return false;
-    }
-    if (memcmp(header, "\x7f" "ELF", 4) != 0 ||
-        header[4] != 1 || header[5] != 1 || header[6] != 1) {
-        return false;
-    }
-    uint16_t e_type = player_read_le16(header + 16);
-    uint16_t machine = player_read_le16(header + 18);
-    uint32_t version = player_read_le32(header + 20);
-    uint32_t entry = player_read_le32(header + 24);
-    uint32_t phoff = player_read_le32(header + 28);
-    uint32_t shoff = player_read_le32(header + 32);
-    uint16_t ehsize = player_read_le16(header + 40);
-    uint16_t phentsize = player_read_le16(header + 42);
-    uint16_t phnum = player_read_le16(header + 44);
-    uint16_t shentsize = player_read_le16(header + 46);
-    uint16_t shnum = player_read_le16(header + 48);
-    bool valid = (e_type == 1 || e_type == 2 || e_type == 3 || e_type == 0xffa0) &&
-                 machine == 8 && version == 1 && ehsize == sizeof(header) &&
-                 phentsize == 32 && phnum >= 1 && phnum <= 128 &&
-                 phoff >= ehsize &&
-                 (uint64_t)phoff + (uint64_t)phentsize * phnum <= (uint64_t)size;
-    if (valid && shnum != 0) {
-        valid = shentsize == 40 && shoff >= ehsize &&
-                (uint64_t)shoff + (uint64_t)shentsize * shnum <= (uint64_t)size;
-    } else if (valid && shoff != 0) {
-        valid = false;
-    }
-    bool have_load = false;
-    bool entry_executable = false;
-    bool code_segment = false;
-    for (uint16_t i = 0; valid && i < phnum; i++) {
-        uint64_t offset = (uint64_t)phoff + (uint64_t)i * phentsize;
-        if (nk_iso_reader_read(reader, lba, offset, ph, sizeof(ph)) !=
-            (int)sizeof(ph)) {
-            valid = false;
-            break;
-        }
-        uint32_t type = player_read_le32(ph);
-        uint32_t p_offset = player_read_le32(ph + 4);
-        uint32_t vaddr = player_read_le32(ph + 8);
-        uint32_t filesz = player_read_le32(ph + 16);
-        uint32_t memsz = player_read_le32(ph + 20);
-        uint32_t flags = player_read_le32(ph + 24);
-        uint32_t align = player_read_le32(ph + 28);
-        uint64_t memory_end = (uint64_t)vaddr + memsz;
-        if ((uint64_t)p_offset + filesz > (uint64_t)size) {
-            valid = false;
-            break;
-        }
-        if (type != 1) continue;
-        if (memsz < filesz || memory_end > 0x100000000ULL ||
-            (align > 1 && ((align & (align - 1u)) != 0 ||
-                           p_offset % align != vaddr % align))) {
-            valid = false;
-            break;
-        }
-        have_load = true;
-        if ((flags & 1u) != 0 && vaddr <= entry && (uint64_t)entry < memory_end) {
-            entry_executable = true;
-        }
-        if ((flags & 1u) != 0 && filesz > 0) {
-            code_segment = true;
-        }
-    }
-    return valid && player_elf32_usable_decision(e_type, module, have_load,
-                                                 entry_executable, code_segment);
+    return nk_iso_elf32_mips_layout_usable(reader, lba, size, module);
 }
 
 typedef struct {
