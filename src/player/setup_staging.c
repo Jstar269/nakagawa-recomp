@@ -930,11 +930,15 @@ static bool stage_rename_directory(const char *from, const char *to) {
 #endif
 }
 
-static bool stage_data_root_comes_from_disc(const PlayerStageTitleRequest *request) {
-    if (!request->data_root || !request->data_root[0]) return false;
+bool player_stage_title_takes_data_from_disc(const PlayerStageTitleRequest *request) {
+    if (!request || !request->data_root || !request->data_root[0] ||
+        (request->loose_content_root_count != 0 && !request->loose_content_roots)) {
+        return false;
+    }
     size_t data_length = strlen(request->data_root);
     for (size_t i = 0; i < request->loose_content_root_count; i++) {
         const char *root = request->loose_content_roots[i];
+        if (!root) continue;
         if (strcmp(root, ".") == 0) return true;
         size_t root_length = strlen(root);
         if (data_length >= root_length &&
@@ -960,7 +964,7 @@ static const char *stage_tree_missing_entry(const char *tree,
         if (!stage_title_join(path, sizeof(path), tree, root) ||
             !nk_platform_dir_exists(path)) return root;
     }
-    if (stage_data_root_comes_from_disc(request) &&
+    if (player_stage_title_takes_data_from_disc(request) &&
         (!stage_title_join(path, sizeof(path), tree, request->data_root) ||
          !nk_platform_dir_exists(path))) {
         return request->data_root;

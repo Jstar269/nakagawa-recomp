@@ -1669,21 +1669,6 @@ static bool copy_bounded_text(char *destination, size_t destination_size,
     return true;
 }
 
-/* Everything one staging run needs, taken from the title's manifest. The
- * request points into the plan's own storage, so a plan is built in place and
- * never copied. It owns its strings because the wizard's worker thread reads
- * it while the UI thread keeps running. */
-typedef struct {
-    char iso_path[NK_MAX_PATH];
-    char disc_id[NK_MAX_DISC_ID_LEN];
-    char disc_version[16];
-    char user_data_root[NK_MAX_PATH];
-    char data_root[257];
-    char root_storage[NK_TITLE_MAX_LOOSE_CONTENT_ROOTS][241];
-    const char *roots[NK_TITLE_MAX_LOOSE_CONTENT_ROOTS];
-    PlayerStageTitleRequest request;
-} PlayerStagePlan;
-
 typedef struct {
     SDL_Thread *thread;
     SDL_Mutex *mutex;
@@ -1705,81 +1690,6 @@ typedef struct {
 #define PLAYER_STAGE_PROFILE_UNAVAILABLE \
     "[STAGE_PROFILE_UNAVAILABLE] This game's title settings could not be read, " \
     "so its files were not set up. Add the disc again from the library."
-
-static bool player_plan_take_entry(PlayerStagePlan *plan, const NkTitleEntry *entry) {
-    if (!entry || entry->loose_content_root_count < 0 ||
-        entry->loose_content_root_count > NK_TITLE_MAX_LOOSE_CONTENT_ROOTS ||
-        (entry->loose_content_root_count != 0 && !entry->loose_content_roots)) return false;
-    if (entry->data_root &&
-        !copy_bounded_text(plan->data_root, sizeof(plan->data_root), entry->data_root)) {
-        return false;
-    }
-    for (int i = 0; i < entry->loose_content_root_count; i++) {
-        const NkLooseContentRoot *binding = &entry->loose_content_roots[i];
-        if (!binding->root ||
-            !copy_bounded_text(plan->root_storage[i], sizeof(plan->root_storage[i]),
-                               binding->root)) return false;
-        plan->roots[i] = plan->root_storage[i];
-        plan->request.loose_content_root_count++;
-    }
-    return true;
-}
-
-/* Fill the one staging request every route uses (the wizard's worker,
- * --stage-only, --launch-now) from the game's catalog or experimental
- * profile entry. */
-static bool player_build_stage_plan(const GameRecord *game, PlayerStagePlan *plan) {
-    if (!game || !plan) return false;
-    memset(plan, 0, sizeof(*plan));
-    if (!copy_bounded_text(plan->iso_path, sizeof(plan->iso_path), game->iso_path) ||
-        !copy_bounded_text(plan->disc_id, sizeof(plan->disc_id), game->disc_id) ||
-        !copy_bounded_text(plan->disc_version, sizeof(plan->disc_version),
-                           game->disc_version) ||
-        !nk_platform_get_app_data_dir(plan->user_data_root,
-                                      sizeof(plan->user_data_root))) return false;
-    plan->request.iso_path = plan->iso_path;
-    plan->request.user_data_root = plan->user_data_root;
-    plan->request.disc_id = plan->disc_id;
-    plan->request.disc_version = plan->disc_version;
-    plan->request.loose_content_roots = plan->roots;
-    plan->request.data_root = plan->data_root;
-
-    bool valid;
-    if (game->is_experimental) {
-        char profile_hash[65];
-        char error[256];
-        NkTitleEntrySnapshot snapshot = {0};
-        valid = nk_title_manifest_read_experimental_profile(
-                    plan->user_data_root, game->disc_id, game->title_id,
-                    game->selected_executable, &snapshot, profile_hash, error,
-                    sizeof(error)) &&
-                snapshot.entry.id && strcmp(snapshot.entry.id, game->title_id) == 0 &&
-                snapshot.entry.primary_disc_id &&
-                strcmp(snapshot.entry.primary_disc_id, game->disc_id) == 0 &&
-                player_plan_take_entry(plan, &snapshot.entry);
-        nk_title_catalog_snapshot_release(&snapshot);
-    } else {
-        nk_title_catalog_lock();
-        const NkTitleEntry *by_disc = game->disc_id[0]
-            ? nk_title_catalog_find_by_disc_id_locked(game->disc_id) : NULL;
-        const NkTitleEntry *by_id = game->title_id[0]
-            ? nk_title_catalog_find_by_id_locked(game->title_id) : NULL;
-        if (!by_disc) {
-            /* Not catalogued by disc: only the executable is staged. */
-            valid = true;
-        } else if (game->title_id[0] && (!by_id || strcmp(by_disc->id, by_id->id) != 0)) {
-            valid = false;
-        } else {
-            valid = player_plan_take_entry(plan, by_disc);
-        }
-        nk_title_catalog_unlock();
-    }
-    if (!valid) {
-        plan->request.loose_content_root_count = 0;
-        plan->data_root[0] = '\0';
-    }
-    return valid;
-}
 
 /* Record a finished staging run on the inspected game. */
 static bool player_take_staged_title(PlayerApp *app, const char *prepared_root,
@@ -1886,7 +1796,7 @@ static bool start_staging_job(PlayerApp *app, PlayerStagingJob **job_slot) {
                                             "Could not allocate the staging worker.");
         return false;
     }
-    if (!player_build_stage_plan(&app->inspecting_game, &job->plan)) {
+    if (!player_app_build_stage_plan(&app->inspecting_game, &job->plan)) {
         free(job);
         player_app_wizard_finish_extraction(app, NK_ERROR_UNSUPPORTED_TITLE,
                                             PLAYER_STAGE_PROFILE_UNAVAILABLE);
@@ -1998,7 +1908,7 @@ static int player_stage_inspected_title(PlayerApp *app) {
         fprintf(stderr, "[PLAYER] Not enough memory to set up this game's files.\n");
         return 3;
     }
-    if (!player_build_stage_plan(&app->inspecting_game, plan)) {
+    if (!player_app_build_stage_plan(&app->inspecting_game, plan)) {
         free(plan);
         player_app_wizard_finish_extraction(app, NK_ERROR_UNSUPPORTED_TITLE,
                                             PLAYER_STAGE_PROFILE_UNAVAILABLE);
@@ -2645,10 +2555,7 @@ int main(int argc, char *argv[]) {
                 if (stage_only) {
                     return player_stage_inspected_title(&app);
                 }
-                app.wizard.is_extracting = true;
-                app.wizard.extraction_requested = true;
-                snprintf(app.wizard.status_message, sizeof(app.wizard.status_message),
-                         "Extracting game assets into local application data...");
+                player_app_wizard_begin_extraction(&app);
             } else {
             /* Catalogued titles and structurally identified experimental discs
                are offered on their card. The card's ADD TO LIBRARY stores them,

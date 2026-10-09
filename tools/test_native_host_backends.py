@@ -43,6 +43,7 @@ CORE_SOURCES = [
     "src/core/nk_library.c",
     "src/core/nk_launch.c",
     "src/core/nk_title_manifest.c",
+    "src/core/nk_xb.c",
     "src/core/nk_json.c",
     "src/core/nk_font.c",
     "src/core/nk_input_profile.c",
@@ -154,6 +155,9 @@ class NativeHostBackendTests(unittest.TestCase):
         cls._objects["src/player/package_builder.c"] = _compile_object(
             cls, "src/player/package_builder.c", "package_builder.o", ("-Isrc/player",)
         )
+        cls._objects["src/player/setup_staging.c"] = _compile_object(
+            cls, "src/player/setup_staging.c", "setup_staging.o", ("-Isrc/player",)
+        )
         cls._objects["src/rt/pgf_public.c"] = _compile_object(
             cls, "src/rt/pgf_public.c", "pgf_public.o", ("-Isrc/rt",)
         )
@@ -193,6 +197,7 @@ class NativeHostBackendTests(unittest.TestCase):
                 "src/player/input_settings.c",
                 "src/player/iso_reader.c",
                 "src/player/package_builder.c",
+                "src/player/setup_staging.c",
             ),
         )
         self.assertIn("ALL PLAYER STATE TESTS PASSED", stdout)

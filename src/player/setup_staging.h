@@ -83,6 +83,12 @@ typedef struct {
     const char *data_root;
 } PlayerStageTitleRequest;
 
+/* True when the title's data root lies under one of its loose-content roots,
+ * so its data can only come from the disc and the title needs staging before
+ * it can start. A title whose data root is resolved elsewhere (or has none)
+ * needs only its executable. */
+bool player_stage_title_takes_data_from_disc(const PlayerStageTitleRequest *request);
+
 typedef enum {
     /* The disc's files were extracted now and moved into place. */
     PLAYER_STAGE_TITLE_STAGED = 0,
