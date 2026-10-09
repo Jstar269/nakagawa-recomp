@@ -4119,6 +4119,71 @@ static void test_sysreg_write_model(void) {
 
 /* Persistence: a flush writes the overlay atomically, a restart loads it, a flush after reads
  * writes nothing, and values equal to their defaults are not recorded. */
+/* sceUtilityGetSystemParamString (0x34b78343), nickname id 1: the value is the registry's
+ * /CONFIG/SYSTEM/owner_name. The default is the neutral empty string; the test writes a fixture
+ * value through the registry (a test value, not a user's name) to show the source, then restores
+ * the default. Covers the copy and its NUL, truncation to len - 1, the unknown-id, null-buffer and
+ * zero-length failures (PSPSDK PSP_SYSTEMPARAM_RETVAL_FAIL 0x80110103). */
+#define NID_SYSPARAM_STRING 0x34b78343u
+#define SYSPARAM_STR_OUT    0x00241c00u
+#define SYSPARAM_FAIL_ERR   0x80110103u
+
+static uint32_t sysparam_string(uint32_t id, uint32_t out, uint32_t len) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = id; cpu.r[5] = out; cpu.r[6] = len;
+    return sr_syscall(&cpu, NID_SYSPARAM_STRING);
+}
+
+static void test_sysparam_nickname_string(void) {
+    static const uint8_t fixture_value[8] = { 'f', 'i', 'x', 't', 'u', 'r', 'e', 0 };
+    static const uint8_t neutral[1] = { 0 };
+    uint32_t r = 0u, reg2, cat3;
+
+    reset_fixture();
+    sr_hle_init();
+    sysreg_scratch_clean();
+    sysreg_restart();
+
+    /* Default: the neutral empty string, a single NUL and nothing more. */
+    for (uint32_t i = 0u; i < 16u; i++) MEM_W8(SYSPARAM_STR_OUT + i, 0xaau);
+    expect(sysparam_string(1u, SYSPARAM_STR_OUT, 16u) == 0u,
+           "sceUtilityGetSystemParamString(nickname) succeeds on the default registry");
+    expect(MEM_R8(SYSPARAM_STR_OUT) == 0u && MEM_R8(SYSPARAM_STR_OUT + 1u) == 0xaau,
+           "the default nickname writes only its NUL terminator");
+
+    /* A registry write is what the utility reports. */
+    reg2 = sysreg_open_registry(2u, &r);
+    cat3 = sysreg_open_category(reg2, "/CONFIG/SYSTEM", 2u, &r);
+    expect(r == 0u && cat3 != 0u, "owner_name test: /CONFIG/SYSTEM opens for writing");
+    expect(sysreg_set(cat3, "owner_name", fixture_value, 8u) == 0u,
+           "owner_name test: a fixture value is written through sceRegSetKeyValue");
+    for (uint32_t i = 0u; i < 16u; i++) MEM_W8(SYSPARAM_STR_OUT + i, 0xaau);
+    expect(sysparam_string(1u, SYSPARAM_STR_OUT, 64u) == 0u &&
+               MEM_R8(SYSPARAM_STR_OUT + 6u) == 'e' && MEM_R8(SYSPARAM_STR_OUT + 7u) == 0u &&
+               MEM_R8(SYSPARAM_STR_OUT + 8u) == 0xaau,
+           "the nickname reports the registry value and its NUL");
+
+    /* Truncation: len 4 holds three bytes and the terminator. */
+    for (uint32_t i = 0u; i < 16u; i++) MEM_W8(SYSPARAM_STR_OUT + i, 0xaau);
+    expect(sysparam_string(1u, SYSPARAM_STR_OUT, 4u) == 0u &&
+               MEM_R8(SYSPARAM_STR_OUT) == 'f' && MEM_R8(SYSPARAM_STR_OUT + 2u) == 'x' &&
+               MEM_R8(SYSPARAM_STR_OUT + 3u) == 0u && MEM_R8(SYSPARAM_STR_OUT + 4u) == 0xaau,
+           "a short buffer gets len - 1 bytes and a NUL terminator");
+
+    expect(sysparam_string(2u, SYSPARAM_STR_OUT, 16u) == SYSPARAM_FAIL_ERR,
+           "an unmodelled string id fails with PSP_SYSTEMPARAM_RETVAL_FAIL");
+    expect(sysparam_string(1u, 0u, 16u) == SYSPARAM_FAIL_ERR,
+           "a null buffer fails with PSP_SYSTEMPARAM_RETVAL_FAIL");
+    expect(sysparam_string(1u, SYSPARAM_STR_OUT, 0u) == SYSPARAM_FAIL_ERR,
+           "a zero-length buffer fails with PSP_SYSTEMPARAM_RETVAL_FAIL");
+
+    /* Restore the neutral default so later registry tests see it. */
+    expect(sysreg_set(cat3, "owner_name", neutral, 1u) == 0u,
+           "owner_name test: the neutral empty string is restored");
+    sysreg_restart();
+}
+
 static void test_sysreg_persistence_round_trip(void) {
     static const uint8_t abc[4] = { 'a', 'b', 'c', 0 };
     static const uint8_t ann[4] = { 'A', 'n', 'n', 0 };
@@ -25465,6 +25530,7 @@ int main(int argc, char **argv) {
     test_kernel_import_sweep_explicit_refusals();
     test_sysreg_virtual_registry();
     test_sysreg_write_model();
+    test_sysparam_nickname_string();
     test_sysreg_persistence_round_trip();
     test_sysreg_corrupt_overlay();
     test_sysreg_flush_failure();

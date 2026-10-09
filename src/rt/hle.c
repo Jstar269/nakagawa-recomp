@@ -2140,22 +2140,27 @@ static uint32_t sreg_refuse_read_only(const char *caller) {
     return SREG_ERR_ACCES;
 }
 
+/* The first read of a placeholder (a default whose value is neither measured nor modeled) names
+ * the key on stderr, once per key. Shared by every registry read path that serves a value. */
+static void sreg_note_placeholder_read(int node, const char *caller) {
+    SregNode *n = &s_sreg_nodes[node];
+    char path[SREG_PATH_BYTES];
+    if ((n->flags & (SREG_NODE_PLACEHOLDER | SREG_NODE_LOGGED)) != SREG_NODE_PLACEHOLDER) return;
+    n->flags |= SREG_NODE_LOGGED;
+    if (!sreg_node_path(n->parent, path, sizeof(path))) path[0] = '\0';
+    fprintf(stderr, "%s: %s/%s has no measured or modeled value; serving the neutral default "
+                    "(%s)\n", caller, path, n->name,
+            n->type == SREG_TYPE_INT ? "0" : n->type == SREG_TYPE_STR ? "an empty string" : "zero bytes");
+}
+
 /* Copy a value key into a guest buffer of buf_size bytes; a buffer smaller than the value is
- * refused, and a string value includes whatever NUL it was stored with. The first read of a
- * placeholder (a default whose value is neither measured nor modeled) names the key. */
+ * refused, and a string value includes whatever NUL it was stored with. */
 static uint32_t sreg_copy_out(int node, uint32_t buf, uint32_t buf_size, const char *caller) {
     SregNode *n = &s_sreg_nodes[node];
     if (n->type == SREG_TYPE_DIR) return SREG_ERR_FTYPE;
     if (buf_size < n->size) return SREG_ERR_INVAL;
     if (!buf || !sr_guest_span_writable(buf, n->size)) return SREG_ERR_ILLEGAL_ADDR;
-    if ((n->flags & (SREG_NODE_PLACEHOLDER | SREG_NODE_LOGGED)) == SREG_NODE_PLACEHOLDER) {
-        char path[SREG_PATH_BYTES];
-        n->flags |= SREG_NODE_LOGGED;
-        if (!sreg_node_path(n->parent, path, sizeof(path))) path[0] = '\0';
-        fprintf(stderr, "%s: %s/%s has no measured or modeled value; serving the neutral default "
-                        "(%s)\n", caller, path, n->name,
-                n->type == SREG_TYPE_INT ? "0" : n->type == SREG_TYPE_STR ? "an empty string" : "zero bytes");
-    }
+    sreg_note_placeholder_read(node, caller);
     for (uint32_t i = 0; i < n->size; i++) MEM_W8(buf + i, n->value[i]);
     return 0;
 }
@@ -2171,6 +2176,35 @@ static uint32_t sreg_systemparam_int(uint32_t id) {
             return sreg_get_le32(n->value);
     }
     return systemparam_int_value(id);
+}
+
+/* sceUtilityGetSystemParamString(int id, char *str, int len) (PSPSDK psputility_sysparam.h): 0 on
+ * success, PSP_SYSTEMPARAM_RETVAL_FAIL (0x80110103) on failure. The nickname is id 1 and reads the
+ * registry's /CONFIG/SYSTEM/owner_name value, so it is the neutral empty string unless a game
+ * wrote one; no user name is modelled or invented. len is the buffer length (PSPSDK): the copy
+ * holds at most len - 1 bytes and is NUL-terminated. The truncation and the terminator are project
+ * choices, UNMEASURED. Other string ids, a null buffer and len <= 0 fail. */
+#define SYSPARAM_RETVAL_FAIL 0x80110103u
+#define SYSPARAM_STRING_NICKNAME 1u
+static uint32_t h_GetSystemParamString(CpuState *s) {
+    uint32_t id = A0, out = A1;
+    int32_t len = (int32_t)A2;
+    uint32_t count = 0u, cap;
+    int node;
+    SregNode *n;
+    if (id != SYSPARAM_STRING_NICKNAME || !out || len <= 0) return SYSPARAM_RETVAL_FAIL;
+    sreg_ensure_loaded();
+    node = sreg_find_path("/CONFIG/SYSTEM/owner_name");
+    if (node < 0) return SYSPARAM_RETVAL_FAIL;
+    n = &s_sreg_nodes[node];
+    if (n->type != SREG_TYPE_STR) return SYSPARAM_RETVAL_FAIL;
+    cap = (uint32_t)len - 1u;
+    while (count < n->size && count < cap && n->value[count]) count++;
+    if (!sr_guest_span_writable(out, count + 1u)) return SYSPARAM_RETVAL_FAIL;
+    sreg_note_placeholder_read(node, "sceUtilityGetSystemParamString");
+    for (uint32_t i = 0; i < count; i++) MEM_W8(out + i, n->value[i]);
+    MEM_W8(out + count, 0u);
+    return 0u;
 }
 
 #ifdef SR_HLE_THREAD_SELFTEST
@@ -2486,7 +2520,6 @@ static uint32_t h_ImposeGetLanguageMode(CpuState *s) {
                 s_impose_language, s_impose_button);
     return 0;
 }
-/* sceUtilityGetSystemParamString(id, char *out, int len): nickname etc. Write a short ASCII name. */
 /* Retained controller sampling state (TD-24 batch 4): the Set calls store
  * their arguments and the getter below reports the stored pair. Public
  * behaviour reference: PSPSDK pspctrl.h (sceCtrlSetSamplingMode/Cycle/
@@ -21914,6 +21947,7 @@ static void hle_register_psmf_player_handlers(void) {
  * model never performs) stay unregistered, so a call is a visible dispatch miss. */
 static void hle_register_sysreg_handlers(void) {
     sr_hle_register(0xa5da2406, "sceUtilityGetSystemParamInt", h_GetSystemParamInt);
+    sr_hle_register(0x34b78343, "sceUtilityGetSystemParamString", h_GetSystemParamString);
     sr_hle_register(0x92e41280, "sceRegOpenRegistry", h_RegOpenRegistry);
     sr_hle_register(0xfa8a5739, "sceRegCloseRegistry", h_RegCloseRegistry);
     sr_hle_register(0x39461b4d, "sceRegFlushRegistry", h_RegFlushRegistry);
