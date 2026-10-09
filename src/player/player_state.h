@@ -8,6 +8,7 @@
 #include "nk_iso.h"
 #include "nk_library.h"
 #include "nk_launch.h"
+#include "nk_font.h"
 #include "input_settings.h"
 #include "package_builder.h"
 #include "setup_staging.h"
@@ -248,6 +249,10 @@ typedef struct {
     char extraction_error[256];
     char staging_root[MAX_PATH_LEN];
     PlayerCompatibilityPreflight preflight;
+    /* The Fonts & System step's status: one line per PSP font slot (imported, project, or
+       missing), refreshed from the cache, and the outcome of the last import or removal. */
+    char font_slot_detail[NK_FONT_SLOT_COUNT][NK_FONT_TEXT_MAX];
+    char font_message[NK_FONT_TEXT_MAX];
 } SetupWizardState;
 
 typedef struct {
@@ -304,6 +309,9 @@ typedef struct {
        renderer has no SDL_Window and must stay free of platform dialog calls,
        so it raises this and the event loop in main.c consumes it. */
     bool request_file_picker;
+    /* The Fonts & System step requests the host folder dialog for PSP font import through
+       this flag; the event loop in main.c opens it. */
+    bool request_font_folder_picker;
     /* The library card requests a package-status worker retry through this
        flag; worker creation and queue ownership stay on the main event loop. */
     bool request_package_status_retry;
@@ -612,6 +620,12 @@ void player_app_wizard_finish_extraction(PlayerApp *app, NkResult result,
 void player_app_build_compatibility_preflight(
     PlayerApp *app, bool disc_readable, bool param_sfo_parsed,
     const NkIsoExecutableReport *executables);
+/* PSP system fonts: the Fonts & System step's import and removal. Each refreshes the
+   per-slot status and the message. Import reads the folder's .pgf files once each, checks
+   them with the native reader, and copies each slot's file into the per-user cache. */
+bool player_app_fonts_import_folder(PlayerApp *app, const char *folder);
+bool player_app_fonts_remove_imports(PlayerApp *app);
+void player_app_refresh_font_status(PlayerApp *app);
 
 /* Package build actions */
 bool player_app_start_package_build(PlayerApp *app, int game_index);

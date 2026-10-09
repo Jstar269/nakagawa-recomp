@@ -4342,7 +4342,8 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
         }
 
         case WIZARD_STEP_SYSTEM_FONTS: {
-            draw_text(ren, card_x + 32.0f, content_y, "System & Open-Source Typography", 2.0f, COLOR_TEXT_WHITE);
+            draw_text(ren, card_x + 32.0f, content_y, "PSP System Fonts", 2.0f, COLOR_TEXT_WHITE);
+            if (app->wizard.font_slot_detail[0][0] == '\0') player_app_refresh_font_status(app);
 
             float spec_y = content_y + 36.0f;
             float spec_h = 170.0f;
@@ -4360,15 +4361,18 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                      app->settings.controller_connected ? "Connected" : "Ready");
             draw_text(ren, card_x + 48.0f, spec_y + 38.0f, ctrl_txt, 1.0f, COLOR_LIME);
 
-            draw_text(ren, card_x + 48.0f, spec_y + 66.0f, "Open-Source Typography Defaults (SIL Open Font License):", 1.0f, COLOR_TEXT_DIM);
-            draw_text(ren, card_x + 48.0f, spec_y + 88.0f,
-                      " • In-Game UI: M PLUS Rounded 1c / Rubik defaults", 1.0f, COLOR_TEXT_MUTED);
-            draw_text(ren, card_x + 48.0f, spec_y + 108.0f,
-                      " • Native Menus & Setup: Inter / Roboto Flex / Rubik", 1.0f, COLOR_TEXT_MUTED);
-            draw_text(ren, card_x + 48.0f, spec_y + 128.0f,
-                      " • Japanese Kana/Kanji: Kosugi Maru / Zen Maru Gothic", 1.0f, COLOR_TEXT_MUTED);
+            draw_text(ren, card_x + 48.0f, spec_y + 66.0f,
+                      "Font source for each PSP slot (your PSP font, the project font, or missing):",
+                      1.0f, COLOR_TEXT_DIM);
+            for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
+                draw_text(ren, card_x + 48.0f, spec_y + 88.0f + 20.0f * (float)slot,
+                          app->wizard.font_slot_detail[slot], 1.0f, COLOR_TEXT_MUTED);
+            }
             draw_text(ren, card_x + 48.0f, spec_y + 148.0f,
-                      " • Optional user-owned PSP font (jpn0.pgf): Loaded from font/ if installed", 0.9f, COLOR_AMBER);
+                      app->wizard.font_message[0]
+                          ? app->wizard.font_message
+                          : "Import reads .pgf files from a folder you choose. Nothing is uploaded.",
+                      0.9f, COLOR_AMBER);
 
             bool accept_foc = (app->focus_index == focus++);
             if (draw_button_focused(ren, card_x + 32.0f, btn_y, 200.0f, 44.0f, "ACCEPT & CONTINUE", true, in, accept_foc)) {
@@ -4386,6 +4390,18 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
             bool cancel_foc = (app->focus_index == focus++);
             if (draw_button_focused(ren, card_x + 560.0f, btn_y, 90.0f, 44.0f, "CANCEL", false, in, cancel_foc)) {
                 player_app_wizard_cancel(app);
+            }
+
+            float fonts_btn_y = spec_y + spec_h + 14.0f;
+            bool import_foc = (app->focus_index == focus++);
+            if (draw_button_focused(ren, card_x + 32.0f, fonts_btn_y, 220.0f, 40.0f,
+                                    "IMPORT FONTS FOLDER", false, in, import_foc)) {
+                app->request_font_folder_picker = true;
+            }
+            bool remove_foc = (app->focus_index == focus++);
+            if (draw_button_focused(ren, card_x + 268.0f, fonts_btn_y, 220.0f, 40.0f,
+                                    "REMOVE IMPORTED FONTS", false, in, remove_foc)) {
+                player_app_fonts_remove_imports(app);
             }
             break;
         }
