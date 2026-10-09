@@ -534,6 +534,12 @@ def _file_backed_exec_ranges(elf):
     return cached
 
 
+def _import_stub_is_file_executable(addr, file_exec_ranges):
+    """True when an import stub's two words are both file-backed executable bytes."""
+    return ((addr & 3) == 0 and in_ranges(addr, file_exec_ranges)
+            and in_ranges(addr + 4, file_exec_ranges))
+
+
 def trace_function(elf, start, ranges, covered, calls, hc):
     # Recursive descent over one function's intra-procedural control flow from `start`.
     # Adds every instruction address reached to `covered`, and every direct-call (jal) target
@@ -2554,6 +2560,18 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
             impmap = parse_imports(elf)
             for a in impmap.keys():
                 if in_ranges(a, ranges) and (a & 3) == 0:
+                    hc.add(a)
+                elif _import_stub_is_file_executable(a, file_exec_ranges):
+                    # A retail import stub lives in executable PT_LOAD bytes outside the
+                    # named code sections (.text, .sceStub.text), so `ranges` never holds
+                    # it. The late discovery passes (tail promotion and gap fill) keep a
+                    # callee only when it is inside `ranges`, so a stub that was reached
+                    # only through a direct call from an orphan function was dropped
+                    # there. Codegen then emitted no body, and the call dispatched to the
+                    # image's `jr $ra; nop` placeholder, which returns a stale $v0 with no
+                    # HLE event. Seeding the stub as an entry here makes it a traced
+                    # function that owns its two words before the gap-fill safety nets
+                    # run. Stubs that are not file-backed executable bytes are not seeded.
                     hc.add(a)
         except Exception as e:
             from imports import ImportTableError
