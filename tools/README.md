@@ -359,6 +359,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_native_driver_hardening.py` | Malformed-input regression tests for the native runtime driver. |
 | `test_native_gate_stub_link.py` | Keep the headless gate link surface synchronized with the runtime. |
 | `test_native_host_backends.py` | Run the host-backend native tests from the Python gate. |
+| `test_flash0_font.py` | The read-only flash0: font device selftest, through the built runtime. |
 | `test_platform_ladder.py` | Regressions for the source-owned second-platform workload ladder. |
 | `test_prx_loader_cleanroom.py` | Clean-room black-box tests for the PRX loader. |
 | `test_prx_reloc_model.py` | Pins the relocation model to the runtime PRX loader byte for byte at several bases. |
