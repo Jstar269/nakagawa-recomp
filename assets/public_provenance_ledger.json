@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2f525668339f7a529f6a8bc5d5b25ab0ca47aca38c36ebcd3cd8963ad07c970e"
+      "sha256": "9f90a88b1a4c8da45cf12d1256680e44aa1d9a11650b55e1093d31e50eb57f36"
     },
     {
       "path": "NOTICE.md",
@@ -667,7 +667,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "bf22f2a803cffd4697117d29a1ec23c2517a010db0dd8baaadc01f3183b03603"
+      "sha256": "92c6c3e57ac388f3868cf436c61b61710f3f7dc6001f0b603e370e0ef347f6c4"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1084,7 +1084,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f92bd775b2b952e9d3c1a7afdc5dd6c92b3cae66ab29e2857f218803d6fe6bbf"
+      "sha256": "3be203ac51660b988f49a035e3d2a6e502365b5464795fd6719ee53c3478712b"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -2480,18 +2480,6 @@
         "upstream_attribution": null
       },
       "sha256": "12da62e65c0cacf3920a1fca037832c8ffa4d058cdd9e596c004b775d6710126"
-    },
-    {
-      "path": "src/core/nk_font_slots.h",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "font-slot-layout-header",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "c750ec8c8e4c4359dc7707c8fdc9c1a29dddb429486b003f724b3736da7e6f59"
     },
     {
       "path": "src/core/nk_input_profile.c",
@@ -4091,7 +4079,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "14f4ce5e97338fd42a0edbc2aea575bc74afd080afa4a819b4dfd3d54aab1624"
+      "sha256": "a08fabde02063d3cb2a6d0685cc3810503408338555f84fa92da18f42dfa5a4d"
     },
     {
       "path": "src/rt/cpu_lle.c",
@@ -4335,30 +4323,6 @@
         "upstream_attribution": null
       },
       "sha256": "3555995dbb0f6156a5611e4885dbdd181ee50742f25d17d57e1c4292ab8e346e"
-    },
-    {
-      "path": "src/rt/flash0_font.c",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "flash0-font-device",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "f681bf6cec1085140b103e37530bfa70e519a3ea93fd53faf4092b36c21001a8"
-    },
-    {
-      "path": "src/rt/flash0_font.h",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "flash0-font-device",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "49fed89c6f4b660e47637c40263032390d0ea34a99aa0db5e0b7a0cfbe8812e4"
     },
     {
       "path": "src/rt/flight_recorder.c",
@@ -4878,7 +4842,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0df412eaf2c85f493c56f6b197f0812f46b37a0be99e21c3d140ac5b2def189a"
+      "sha256": "d01c89dac4d3fd4a18baafb4660347f0e74a216ad9b7a5b6f789ac9a06fb85be"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4916,7 +4880,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "264b0d4768a446ab3f4a277e3db5afc55418ebfbe4ef57927187b0824b0330e9"
+      "sha256": "137d9ebd417006c7e4b1071d78fdbd0dbaaf4ab27faa7f0273704e1b939e4627"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -5938,7 +5902,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ac8857f472f625e2be0b73e7bdc8f0873216b378be18ab9f7398ad6ac4682c39"
+      "sha256": "7c54cc7afd5536dc9a101013e4a86d6c8907e4fe3794c9dbe44dc717ea99386b"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -8136,18 +8100,6 @@
         "upstream_attribution": null
       },
       "sha256": "02ae49e9df461ce915e66b21187ef48bb5877efa96b19ec4671aaa08605c1539"
-    },
-    {
-      "path": "tools/test_flash0_font.py",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "flash0-font-device-test",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "091c88fd238d8777b55b20d0e69018c59a0a00253faa407a5f78764a53b9be99"
     },
     {
       "path": "tools/test_flight_build_identity.py",

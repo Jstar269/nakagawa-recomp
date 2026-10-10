@@ -17022,6 +17022,58 @@ static void test_sas_core_mix_preserves_caller_pcm(void) {
            "__sceSasCoreWithMix output is neither the caller PCM nor the voice alone");
 }
 
+/* SAS mix at unity gain must saturate, not wrap. Twenty full-scale PCM voices at full volume
+ * sum to 655340 before the gain stage, and 655340 * 4096 is past INT32_MAX: the signed product
+ * wrapped negative, so loud multi-voice passages came out as inverted samples instead of
+ * clipping at +32767. The envelope reaches full level after 64 samples, so the check starts
+ * there and the grain is 256 (SAS_TEST_GRAIN is too short for the attack). */
+#define NID_SAS_SET_VOICE_PCM  0xe1cd9561u
+static void test_sas_mix_saturates_without_wrapping(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_sas_reset();   /* earlier SAS cases leave a core initialised */
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[29] = 0x09012000u;
+    const uint32_t sat_core = 0x08030000u, sat_out = 0x08010000u, sat_pcm = 0x08040000u;
+    const uint32_t sat_grain = 256u, sat_voices = 20u, sat_pcm_samples = 512u;
+
+    cpu.r[4] = sat_core; cpu.r[5] = sat_grain; cpu.r[6] = 32; cpu.r[7] = 0; cpu.r[8] = 44100;
+    expect(sr_syscall(&cpu, NID_SAS_INIT) == 0, "__sceSasInit accepts the 256-sample grain");
+    for (uint32_t i = 0; i < sat_pcm_samples; i++) MEM_W16(sat_pcm + i * 2u, 0x7fffu);
+
+    for (uint32_t v = 0; v < sat_voices; v++) {
+        /* __sceSasSetVoicePCM(core, voice, addr, samples, loopStart); loopStart is the fifth
+         * argument, which stack_arg(0) reads from $t0. -1 means no loop. */
+        cpu.r[4] = sat_core; cpu.r[5] = v; cpu.r[6] = sat_pcm; cpu.r[7] = sat_pcm_samples; cpu.r[8] = 0xffffffffu;
+        expect(sr_syscall(&cpu, NID_SAS_SET_VOICE_PCM) == 0, "__sceSasSetVoicePCM accepts a full-scale stream");
+        cpu.r[4] = sat_core; cpu.r[5] = v; cpu.r[6] = 0x1000; cpu.r[7] = 0x1000; cpu.r[8] = 0x1000; cpu.r[9] = 0x1000;
+        expect(sr_syscall(&cpu, NID_SAS_SET_VOLUME) == 0, "__sceSasSetVolume accepts full volume");
+        cpu.r[4] = sat_core; cpu.r[5] = v;
+        expect(sr_syscall(&cpu, NID_SAS_SET_KEY_ON) == 0, "__sceSasSetKeyOn keys the sat_pcm voice on");
+    }
+
+    int16_t zero[256 * 2];
+    memset(zero, 0, sizeof(zero));
+    sas_write_pcm(sat_out, zero, sat_grain);
+    cpu.r[4] = sat_core; cpu.r[5] = sat_out; cpu.r[6] = 0x1000; cpu.r[7] = 0x1000;
+    expect(sr_syscall(&cpu, NID_SAS_CORE_WITH_MIX) == 0, "__sceSasCoreWithMix returns success");
+
+    int16_t got[256 * 2];
+    sas_read_pcm(sat_out, got, sat_grain);
+    uint32_t wrong = 0, negative = 0;
+    for (uint32_t i = 64; i < sat_grain; i++)
+        for (uint32_t c = 0; c < 2u; c++) {
+            if (got[i * 2 + c] != 32767) wrong++;
+            if (got[i * 2 + c] < 0) negative++;
+        }
+    expect(negative == 0,
+           "__sceSasCoreWithMix at unity gain never inverts a sample when the voice sum overflows int32");
+    expect(wrong == 0,
+           "__sceSasCoreWithMix saturates twenty full-scale voices at +32767 once every envelope is up");
+}
+
 /* Production-dispatch SAS state regressions.  Each case uses only synthetic
  * guest data and starts from a fresh core so one voice cannot mask another. */
 static void sas_test_init(CpuState *cpu, uint32_t core, uint32_t output_mode) {
@@ -26648,6 +26700,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_td24d_hle_batch();
     test_impose_language_mode_pair();
     test_sas_core_mix_preserves_caller_pcm();
+    test_sas_mix_saturates_without_wrapping();
     test_sas_state_contracts();
     test_sas_end_flags_refresh_per_cycle();
     test_msgpipe_safety();
