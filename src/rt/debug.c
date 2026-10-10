@@ -406,6 +406,25 @@ static int sr_nan_trap_budget(void) {
     return 1;
 }
 
+/* SR_NAN_TRAP_CONTEXT=1: after each report, the registers a reader needs to find the
+ * instruction's inputs in guest memory (return address, value and argument registers,
+ * two saved registers, f12) and the four words each of v0 and a0..a3 points at when that
+ * span is readable. A quaternion slerp whose vasin reports a NaN, for example, has its
+ * two input quaternions behind a1 and v0 at that point. Off by default; the probe reads
+ * the scheduler's current CpuState, so a report from outside guest execution prints
+ * nothing. */
+static int s_nan_trap_ctx = -1;
+void (*sr_nan_trap_context_hook)(void) = NULL;   /* set by sr_mem_init (recomp.c) */
+static void sr_nan_trap_context(void) {
+    if (s_nan_trap_ctx < 0) {
+        const char *p = getenv("SR_NAN_TRAP_CONTEXT");
+        s_nan_trap_ctx = (p && p[0] && strcmp(p, "0") != 0) ? 1 : 0;
+    }
+    /* The dump itself lives with the runtime (it reads the scheduler's current CpuState and
+     * guest memory); this file also links alone in the trap harness tests. */
+    if (s_nan_trap_ctx && sr_nan_trap_context_hook) sr_nan_trap_context_hook();
+}
+
 void sr_nan_trap_note(uint32_t pc, const char *op, uint32_t fd,
                       float out, const float *in, int nin) {
     if (!sr_nan_trap_nonfinite(out)) return;
@@ -419,6 +438,7 @@ void sr_nan_trap_note(uint32_t pc, const char *op, uint32_t fd,
     fputs("] out=[", stderr);
     sr_nan_trap_print(stderr, out1, 1);
     fputs("]\n", stderr);
+    sr_nan_trap_context();
 }
 
 void sr_nan_trap_note_v(uint32_t pc, const char *op, uint32_t vd,
@@ -441,5 +461,6 @@ void sr_nan_trap_note_v(uint32_t pc, const char *op, uint32_t vd,
     fputs("] out=[", stderr);
     sr_nan_trap_print(stderr, out, nout);
     fputs("]\n", stderr);
+    sr_nan_trap_context();
 }
 #endif /* SR_NAN_TRAP */
