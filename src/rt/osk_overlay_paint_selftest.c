@@ -195,7 +195,6 @@ static void run_creation_failure(int surfaces, int renderers, const char *expect
     CHECK(capturing, "stderr can be captured for the failure line");
     osk_overlay_paint(sr_osk_overlay_view(), s_frame, W, H);
     if (capturing) n = capture_end(capture, saved, captured, sizeof captured);
-    osk_overlay_paint_test_fail_next(0, 0);
 
     for (size_t i = 0; i < n; i++)
         if (captured[i] == '\n') lines++;
@@ -208,6 +207,7 @@ static void run_creation_failure(int surfaces, int renderers, const char *expect
     CHECK(lines == 1, "a refused creation writes exactly one stderr line");
     CHECK(strstr(captured, expect) != NULL, "the stderr line names the SDL error");
 
+    osk_overlay_paint_test_fail_next(0, 0); /* disarm whatever the painter did not consume */
     sr_osk_overlay_abandon();
     sr_osk_overlay_set_host(0);
 }

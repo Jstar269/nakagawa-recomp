@@ -47,13 +47,13 @@ int osk_overlay_paint_available(void) {
 
 /* Test seam, declared by osk_overlay_paint_selftest.c and never called by the runtime: the next
  * `surfaces` surface creations and `renderers` renderer creations fail as if SDL refused them.
- * It also clears the cached probe, so the next paint probes again. */
+ * Arming clears the cached probe, so the next paint probes again; (0, 0) only disarms. */
 static int s_fail_surfaces;
 static int s_fail_renderers;
 void osk_overlay_paint_test_fail_next(int surfaces, int renderers) {
     s_fail_surfaces = surfaces;
     s_fail_renderers = renderers;
-    s_probe = -1;
+    if (surfaces > 0 || renderers > 0) s_probe = -1;
 }
 
 static SDL_Surface *paint_make_surface(uint32_t *px, int w, int h) {
@@ -72,6 +72,20 @@ static SDL_Renderer *paint_make_renderer(SDL_Surface *surface) {
         return NULL;
     }
     return SDL_CreateSoftwareRenderer(surface);
+}
+
+/* SDL refused a surface or renderer after the probe passed, so the keyboard cannot be drawn on
+ * this host any more. Fail closed: one stderr line names the SDL error, the painter reports
+ * itself unavailable and the presenter's host goes with it, and the open request is dropped.
+ * The next poll then answers through the native input path (osk_text_entry.c), and the title's
+ * pad is no longer masked by a keyboard nobody can see. Called before anything is drawn, so the
+ * caller's frame is untouched and it must not read the session after this returns. */
+static void paint_fail_closed(const char *what) {
+    fprintf(stderr, "osk: the in-window keyboard cannot be drawn (%s: %s); the field falls back "
+                    "to the native input path\n", what, SDL_GetError());
+    s_probe = 0;
+    sr_osk_overlay_set_host(0);
+    sr_osk_overlay_abandon();
 }
 
 static void fill(SDL_Renderer *r, float x, float y, float w, float h, Uint8 R, Uint8 G, Uint8 B,
@@ -122,9 +136,14 @@ void osk_overlay_paint(const OskOverlay *o, uint32_t *px, int w, int h) {
     if (!o || !px || o->status != OSK_OVERLAY_OPEN) return;
     if (!osk_overlay_paint_available()) return;
     SDL_Surface *surface = paint_make_surface(px, w, h);
-    if (!surface) return;
+    if (!surface) {
+        paint_fail_closed("SDL_CreateSurfaceFrom");
+        return;
+    }
     SDL_Renderer *r = paint_make_renderer(surface);
     if (!r) {
+        /* Named before the surface is destroyed, so SDL_GetError still holds the refusal. */
+        paint_fail_closed("SDL_CreateSoftwareRenderer");
         SDL_DestroySurface(surface);
         return;
     }

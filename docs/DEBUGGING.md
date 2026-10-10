@@ -422,7 +422,10 @@ it takes counts as read by the route. `SR_OSK_TEXT` and `SR_OSK_SCRIPT` are not 
 `SR_WINDOW_HIDDEN=1` runs the same presenter with a hidden window, so a headless route keeps the
 window's keyboard and its frame capture without a visible window. Under the offscreen presenter
 the overlay is not drawn, and the variables below still answer. Where the presenter cannot draw
-the keyboard, the native input box is the fallback.
+the keyboard, the native input box is the fallback. If SDL refuses the frame's surface or its
+renderer after a request opened, the request is dropped, one stderr line names the SDL error,
+and the field falls back to the native input path (the Windows input box) for the rest of the
+run.
 
 ### Scripted keyboard answers
 
