@@ -300,7 +300,7 @@ HANDLER_METADATA = {
     # documented invalid-state error instead of fabricating success.
     "h_SasUnsupportedVoice": {
         "status": "controlled_unsupported",
-        "description": "SAS waveform/ATRAC3 voice entry points without implemented codecs; returns invalid state error 0x80420002.",
+        "description": "SAS waveform/ATRAC3 voice entry points without implemented codecs; returns PSP_SAS_ERROR_INVALID_STATE (0x80420016, pspsascore.h).",
     },
     # sceDmacMemcpy / sceDmacTryMemcpy. The measured contract is implemented and
     # regression-tested through production dispatch: the illegal-size and
