@@ -647,6 +647,11 @@ _register_campaign_probe(
      "vtimer-refer-size-0x08": 18, "vtimer-delete-running": 1,
      "vtimer-refer-after-delete": 18, "vtimer-delete-again": 1},
 )
+# hle-power-clock: the scePower getters return the clock, so for the Int and bare
+# getters the record's result IS the value (the frequency) and out0 repeats it. For
+# the Float getters result is the IEEE-754 bit pattern and out0 the truncated integer
+# part (all ones when out of range or NaN). The contract checks field shape only, so
+# result is never read here as a return code.
 _register_campaign_probe(
     "hle-power-clock", "PSP-HLE-POWER-001",
     ("pll-clock-int", "pll-clock-float", "cpu-clock-int", "cpu-clock-float",
@@ -730,6 +735,10 @@ def validate_hle_edram_restore(text: str) -> None:
         return
     if any(results[case].status == "SKIP" for case in width_cases + ["edram-width-restore"]):
         raise ProtocolError("PSP-HLE-GE-EDRAM-001: a restorable width cell was skipped")
+    # The restore record's `result` holds the pre-restore width (the value its
+    # SetAddrTranslation call returned) and its `out0` the post-restore width (the
+    # value its query returned), exactly as the probe records them. The check below
+    # reads out0 against the original width.
     restore = dict(results["edram-width-restore"].values)
     if int(restore["out0"], 0) != initial:
         raise ProtocolError(
