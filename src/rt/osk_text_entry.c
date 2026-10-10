@@ -23,6 +23,7 @@
 #endif
 
 #include "osk_text_entry.h"
+#include "osk_overlay.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -130,10 +131,15 @@ static void entry_reap_worker(void) {
     s_worker = NULL;
 }
 
-int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap) {
+int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap,
+                           uint32_t input_type) {
     if (!out || cap < 2) return 0;
     if (cap > OSK_TEXT_UNITS) cap = OSK_TEXT_UNITS;
     if (osk_text_entry_unanswerable()) return SR_OSK_TEXT_PENDING;
+    /* The presenter draws the keyboard in the game window: no box, nothing to wait on.
+     * input_type is enforced only by that in-window keyboard; the native input box below takes
+     * no input type and accepts any text. */
+    if (sr_osk_overlay_host()) return sr_osk_overlay_poll(desc, initial, out, cap, input_type);
     switch (entry_state()) {
     case ENTRY_OPEN:
         return SR_OSK_TEXT_PENDING;
@@ -168,6 +174,7 @@ int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t 
 }
 
 void sr_osk_text_entry_abandon(void) {
+    sr_osk_overlay_abandon();
     if (InterlockedCompareExchange(&s_state, ENTRY_ABANDONED, ENTRY_OPEN) == ENTRY_OPEN) {
         entry_close_box(InterlockedCompareExchangePointer(&s_box, NULL, NULL));
         return;
@@ -179,13 +186,17 @@ void sr_osk_text_entry_abandon(void) {
 
 /* No native input box exists on this host: sr_osk_input answers cancelled at once without
  * waiting, so asking it from the scheduler thread cannot stop guest time. */
-int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap) {
+int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap,
+                           uint32_t input_type) {
     if (!out || cap < 2) return 0;
     if (osk_text_entry_unanswerable()) return SR_OSK_TEXT_PENDING;
+    if (sr_osk_overlay_host()) return sr_osk_overlay_poll(desc, initial, out, cap, input_type);
+    /* input_type is enforced only by the in-window keyboard; this native box fallback takes none. */
     return sr_osk_input(desc, initial, out, cap) == 1;
 }
 
 void sr_osk_text_entry_abandon(void) {
+    sr_osk_overlay_abandon();
 }
 
 #endif /* _WIN32 */

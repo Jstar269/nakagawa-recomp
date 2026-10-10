@@ -822,6 +822,10 @@ void     gui_init(const char *title);
 int      gui_on(void);
 uint32_t gui_buttons(void);
 void     gui_consume_button_pulses(void);          /* after one PSP VBLANK sample */
+/* Gamepad buttons that went down since the last call, as PSP button bits: the on-screen
+ * keyboard's pad input (osk_overlay.h). Taken every VBLANK whether or not it is open. Returns 0
+ * when no SDL3 presenter is up (the GDI and offscreen presenters have no SDL3 gamepad). */
+uint32_t gui_pad_pulses_take(void);
 void     gui_analog(uint8_t *lx, uint8_t *ly);   /* live left-stick (0..255, 128=centre) */
 int      gui_pad_present(void);                  /* 1 when a game controller is connected */
 /* Returns 1 only when the selected presenter accepted the validated frame. */

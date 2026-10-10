@@ -9,7 +9,7 @@
  * scheduler thread, so the keyboard must never wait on host UI. The HLE keyboard polls the
  * open request instead: each call either reports it pending or hands over the answer.
  *
- *   sr_osk_text_entry_poll(desc, initial, out, cap)
+ *   sr_osk_text_entry_poll(desc, initial, out, cap, input_type)
  *     With no request open, opens one for this field (desc and initial are copied) and
  *     returns SR_OSK_TEXT_PENDING without waiting for it. While it is open it returns
  *     SR_OSK_TEXT_PENDING (the arguments are not read again). Once the person answered it
@@ -22,23 +22,31 @@
  *     new one): its host UI is closed and a late answer is discarded. A request opened
  *     afterwards waits until the abandoned one's host UI is gone.
  *
+ *   input_type is SceUtilityOskData.inputtype: the Latin categories it allows (osk_overlay.h).
+ *
  * Who can answer:
- *   - Windows with an interactive presenter: a person, in the native input box
- *     (src/rt/osk_win.c), shown on a worker thread so guest time keeps running.
+ *   - a presenter that can draw the keyboard (the SDL3/Vulkan window, sr_osk_overlay_host):
+ *     a person, on the in-window keyboard (src/rt/osk_overlay.c, drawn by the presenter).
+ *     Nothing waits: the request is polled once per frame like the rest of the keyboard.
+ *   - Windows without such a presenter: a person, in the native input box (src/rt/osk_win.c),
+ *     shown on a worker thread so guest time keeps running. This is the fallback where the
+ *     overlay cannot draw.
  *   - the offscreen presenter (SR_VIDEO=offscreen): nobody. Headless bring-up has no person
  *     and opens no window, so the request stays pending and the keyboard stays open, as on a
  *     PSP nobody is typing at; an automated route answers it with SR_OSK_SCRIPT/SR_OSK_TEXT.
- *   - a host without a native input box: the field is answered cancelled at once, the
- *     runtime's existing no-dialog result.
+ *   - a host without a native input box and without the overlay: the field is answered
+ *     cancelled at once, the runtime's existing no-dialog result.
  */
 #ifndef SR_OSK_TEXT_ENTRY_H
 #define SR_OSK_TEXT_ENTRY_H
 
+#include <stdint.h>
 #include <wchar.h>
 
 #define SR_OSK_TEXT_PENDING (-1)
 
-int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap);
+int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap,
+                           uint32_t input_type);
 void sr_osk_text_entry_abandon(void);
 
 /* The native input box (src/rt/osk_win.c): blocks the calling thread until the person
