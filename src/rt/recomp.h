@@ -787,6 +787,9 @@ uint32_t sr_alloc_uid(void);
 
 /* sceGe display-list GPU (src/rt/ge.c): execute a GE command list, rasterising into VRAM. */
 uint32_t ge_run_list(uint32_t addr, int resume);
+/* SR_GE_TRANSITION_TRACE late-write check (issue #69): re-hash the vertex and index bytes of
+ * every weighted draw recorded since the last check; a no-op unless the trace is armed. */
+void ge_transition_trace_check(const char *why, uint32_t vcount);
 extern uint32_t g_ge_stall_addr;
 uint32_t ge_framebuffer(void);
 /* Last word written for GE command `cmd` (0..0xFF). Callers validate the index first
