@@ -438,20 +438,22 @@ can actually vouch for each other. The CLI verdicts map to exit codes
   on either side (the ring slides, so a divergence inside the dropped window
   is invisible).
 - **Divergent (DIVERGENCE):** the first differing event (sequence or class
-  alignment), then the terminal reason/sequence/kind/arg0. Same retained
-  events with a different terminal outcome is a divergence, not a MATCH. A
-  terminal difference is never an incomparability: a `running` terminal is a
-  mid-run cut rather than a ring overflow, so over a complete window it hides
-  no events and stays an ordinary compared value.
+  alignment), then the terminal reason/sequence/kind/arg0, then, for schema 5,
+  the refusal block's count, first_nid, first_pc, first_sequence and nids. Same
+  retained events with a different terminal outcome or refusal block is a
+  divergence, not a MATCH. A terminal difference is never an incomparability: a
+  `running` terminal is a mid-run cut rather than a ring overflow, so over a
+  complete window it hides no events and stays an ordinary compared value.
 - **Malformed (error):** a bundle that fails schema validation, sanitization,
   or the recorder truncation invariants (retained sequences exactly
   `dropped+1..recorded`, `dropped == recorded - min(recorded, limit)`) exits 2
   on stderr as before.
 
 MATCH is a statement about the capture, never about the whole program. It
-certifies exactly two things: that the two runs agree on every event retained
-for the enabled classes over a complete window that dropped nothing, and that
-both reached the same terminal outcome. It does not certify behaviour outside
+certifies exactly these things: that the two runs agree on every event retained
+for the enabled classes over a complete window that dropped nothing, that both
+reached the same terminal outcome, and, for schema 5, that both recorded the
+same refusal block. It does not certify behaviour outside
 the enabled classes, where a class one side never recorded is silence rather
 than agreement; behaviour before the recorded window; or behaviour the recorder
 does not model at all. Two builds that MATCH here can still differ anywhere the
