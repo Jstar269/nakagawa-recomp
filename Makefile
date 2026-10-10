@@ -892,6 +892,8 @@ PUBLIC_TARGETS := \
 	display-smoke-gui \
 	display-smoke-player \
 	display-smoke-clean \
+	title-qualification \
+	title-qualification-smoke \
 	production-smoke-gap-clean \
 	platform-ladder \
 	platform-ladder-zero \
@@ -1011,6 +1013,8 @@ HELP_DESCRIPTION_display-smoke-run := run display smoke and compare its GE/prese
 HELP_DESCRIPTION_display-smoke-gui := run the display smoke with its GUI
 HELP_DESCRIPTION_display-smoke-player := build the player and run display smoke
 HELP_DESCRIPTION_display-smoke-clean := remove display smoke artifacts
+HELP_DESCRIPTION_title-qualification := validate public title manifests, input profiles and staging declarations
+HELP_DESCRIPTION_title-qualification-smoke := launch the public display fixture through the native player and write its bring-up report
 HELP_DESCRIPTION_production-smoke-gap-clean := remove AOT-gap smoke artifacts
 HELP_DESCRIPTION_platform-ladder := run the complete public platform ladder
 HELP_DESCRIPTION_platform-ladder-zero := run the zero-base platform fixture
@@ -1369,6 +1373,17 @@ display-smoke-player: player display-smoke-run
 
 display-smoke-clean:
 	$(MAKE) BUILD_DIR=$(DISPLAY_SMOKE_DIR) clean
+
+# Public title qualification (issue #699). title-qualification validates the checked-in
+# public manifests, input profiles and staging declarations without building or launching.
+# title-qualification-smoke builds the source-owned display fixture and the native player,
+# then launches the fixture through the player in a sandboxed user-data root and writes a
+# bring-up-schema report under build/<title id>/title-qualification/.
+title-qualification:
+	$(PYTHON) tools/title_qualification.py validate
+
+title-qualification-smoke: display-smoke player
+	$(PYTHON) tools/title_qualification.py smoke --manifest assets/titles/display-smoke.json
 
 # AOT-gap mode of the same fixture: the helper is omitted from native emission
 # (build-time codegen choice), so region A reaches it through the typed production

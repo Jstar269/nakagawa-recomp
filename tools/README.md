@@ -208,6 +208,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `hst_test_fixtures.py` | Small source-owned ELF, PSP-header and ISO envelope fixtures for the doctor tests. |
 | `nk_clean.py` | Preview-first workspace cleaner for allowlisted output roots. |
 | `title_manifest.py` | Validate and deterministically normalize public title manifests. |
+| `title_qualification.py` | Qualify public titles: validate manifests, input profiles and bring-up reports, and smoke-launch a public title through the native player in a sandbox. |
 | `title_codegen_plan.py` | Build a deterministic code-generation plan or AOT package from a title manifest. |
 | `title_catalog_codegen.py` | Deterministic C generator for the native public title catalog. |
 | `title_runtime_config.py` | Emit the build-local runtime title configuration consumed by the runtime. |
@@ -422,6 +423,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_title_manager_plan.py` | Bounded manager plan fields, generic profile and fail-closed conflicts. |
 | `test_title_manifest.py` | Manifest schema, canonicalization, native identity and guest module bases. |
 | `test_title_manifest_parity.py` | Differential parity between the Python manifest tool and the native C validator. |
+| `test_title_qualification.py` | Title qualification: validation refusals, the sandboxed smoke launch, exit codes and report shape. |
 | `test_title_protected_digest.py` | Contract tests for the protected title-manifest digest. |
 | `test_title_pspdev_phase5.py` | A second wholly source-owned title must prove multi-title planning. |
 | `test_title_runtime_config.py` | Tests for the runtime title configuration path. |
