@@ -229,6 +229,10 @@ extern int sr_hle_test_audio_state(uint32_t ch, int *reserved,
                                    uint32_t *frames, int *format);
 extern int sr_hle_test_audio_volume(uint32_t ch, uint32_t *left, uint32_t *right);
 extern void sr_hle_test_power_reset(void);
+extern void sr_hle_test_hprm_set_remote(int attached);
+extern void sr_hle_test_hprm_set_headphone(int attached);
+extern void sr_hle_test_hprm_set_microphone(int attached);
+extern void sr_hle_test_power_set_low_battery(int low);
 extern uint32_t sr_vblank_handler(void);
 
 #define NID_SCE_KERNEL_EXIT_THREAD 0xaa73c935u
@@ -335,6 +339,7 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define NID_SCE_KERNEL_RELEASE_SUBINTR 0xd61e6961u
 #define NID_SCE_POWER_SET_CLOCK 0x737486f2u
 #define NID_SCE_POWER_SET_CLOCK_350 0xebd177d6u
+#define NID_SCE_POWER_GET_PLL_INT 0x34f9c463u
 #define NID_SCE_POWER_GET_CPU_INT 0xfdb5bfe9u
 #define NID_SCE_POWER_GET_BUS_INT 0x478fe6f5u
 #define NID_SCE_KERNEL_SUSPEND_DISPATCH_THREAD 0x3ad58b8cu
@@ -3794,6 +3799,11 @@ static void test_sysreg_virtual_registry(void) {
     hk_lang = hk;
     expect(sysreg_get_int(cat, "button_assign") == 1u && sysreg_sysparam_int(9u) == 1u,
            "button_assign is the measured 1 in the registry and in sceUtilityGetSystemParamInt");
+    expect(sysreg_sysparam_int(10u) == 9u, "the parental level (id 10) is the measured 9");
+    MEM_W32(SYSREG_VAL2, 0xdeadbeefu);
+    expect(!sysreg_sysparam_int_check(0u, SYSREG_VAL2) && !sysreg_sysparam_int_check(64u, SYSREG_VAL2) &&
+               MEM_R32(SYSREG_VAL2) == 0xdeadbeefu,
+           "unknown int ids 0 and 64 fail and leave the output word untouched (measured 0x80110103)");
     MEM_W32(SYSREG_TYPE, 0u);
     MEM_W32(SYSREG_SIZE, 0u);
     title_hle_write_cstr(SYSREG_NAME2, "button_assign");
@@ -4133,6 +4143,139 @@ static void test_sysreg_write_model(void) {
 
 /* Persistence: a flush writes the overlay atomically, a restart loads it, a flush after reads
  * writes nothing, and values equal to their defaults are not recorded. */
+/* Named refusals for three NIDs whose contract is not established from the sources in this tree.
+ * Each one returns its named error and does not stop the title, so the run continues past it:
+ *  - sceNetInit (0x39af39a6): the offline network policy (sceNetGetLocalEtherAddr's 0x80010086);
+ *  - scePower_469989ad (0x469989ad): no public name, refused under its synthetic name;
+ *  - sceKernelReferSystemStatus (0x627e6f3a): status and vfpuSwitchCount meanings undocumented.
+ * The test pins the codes, so a later measured handler has to replace them deliberately. */
+#define NID_REFUSE_NET_INIT                0x39af39a6u
+#define NID_REFUSE_POWER_469989AD          0x469989adu
+#define NID_REFUSE_REFER_SYSTEM_STATUS     0x627e6f3au
+#define REFUSE_NET_CODE                    0x80010086u
+#define REFUSE_UNSUPPORTED_CODE            0x80020002u
+
+static uint32_t refuse_call(uint32_t nid) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = 0u; cpu.r[5] = 0u; cpu.r[6] = 0u; cpu.r[7] = 0u;
+    return sr_syscall(&cpu, nid);
+}
+
+static void test_named_refusals(void) {
+    reset_fixture();
+    sr_hle_init();
+    expect(refuse_call(NID_REFUSE_NET_INIT) == REFUSE_NET_CODE,
+           "sceNetInit refuses with the offline network code 0x80010086");
+    expect(refuse_call(NID_REFUSE_POWER_469989AD) == REFUSE_UNSUPPORTED_CODE,
+           "scePower_469989ad is a named refusal (0x80020002), not a guessed handler");
+    expect(refuse_call(NID_REFUSE_REFER_SYSTEM_STATUS) == REFUSE_UNSUPPORTED_CODE,
+           "sceKernelReferSystemStatus is a named refusal (0x80020002) until its fields are measured");
+    expect(refuse_call(0xf9d8eb63u) == REFUSE_NET_CODE,
+           "sceHttpsEnd refuses with the offline HTTP code 0x80010086, as sceHttpEnd does");
+    expect(refuse_call(0x011f03c1u) == REFUSE_UNSUPPORTED_CODE,
+           "sceRtcGetAccumulativeTime is a named refusal (0x80020002): not in the PSPSDK RTC header");
+    expect(refuse_call(0x191cdeffu) == REFUSE_NET_CODE,
+           "sceSslEnd refuses with the offline network code 0x80010086 (no SSL or network stack)");
+    expect(refuse_call(0x5963991bu) == REFUSE_NET_CODE,
+           "sceNetApctlDelHandler refuses with the offline network code 0x80010086");
+}
+
+/* sceGeEdramSetAddrTranslation (0xb77905ea): PSPSDK pspge.h. Measured on PSP-3000 (2026-10-10):
+ * every call, width 0 included, sets the width and returns the previous one; the boot width is
+ * 1024. An unsupported width fails and leaves the setting alone; that code is the project choice
+ * noted in hle.c (unmeasured). */
+#define NID_GE_EDRAM_SET_TRANSLATION 0xb77905eau
+#define GE_EDRAM_BAD_WIDTH_ERR       0x80000107u
+void sr_hle_test_ge_edram_reset(void);
+
+static uint32_t ge_edram_translation(uint32_t width) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = width;
+    return sr_syscall(&cpu, NID_GE_EDRAM_SET_TRANSLATION);
+}
+
+static void test_ge_edram_addr_translation(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ge_edram_reset();
+    expect(ge_edram_translation(0u) == 1024u, "width 0 is a set like any other: it returns the boot width 1024 (measured)");
+    expect(ge_edram_translation(512u) == 0u, "setting 512 returns the 0 the previous call set (measured)");
+    expect(ge_edram_translation(0u) == 512u, "width 0 returns the previous width 512 and sets 0 (measured)");
+    expect(ge_edram_translation(1024u) == 0u, "setting 1024 returns the 0 the previous call set");
+    expect(ge_edram_translation(333u) == GE_EDRAM_BAD_WIDTH_ERR,
+           "an unsupported width (333) fails with the project's code (unmeasured)");
+    expect(ge_edram_translation(2048u) == 1024u, "a failed set leaves the width at 1024");
+    sr_hle_test_ge_edram_reset();
+}
+
+/* sceUtilityGetSystemParamString (0x34b78343), nickname id 1: the value is the registry's
+ * /CONFIG/SYSTEM/owner_name. The default is the neutral empty string; the test writes a fixture
+ * value through the registry (a test value, not a user's name) to show the source, then restores
+ * the default. Covers the copy and its NUL, the short-buffer failure, the unknown-id, null-buffer and
+ * zero-length failures (PSPSDK PSP_SYSTEMPARAM_RETVAL_FAIL 0x80110103). */
+#define NID_SYSPARAM_STRING 0x34b78343u
+#define SYSPARAM_STR_OUT    0x00241c00u
+#define SYSPARAM_FAIL_ERR   0x80110103u
+
+static uint32_t sysparam_string(uint32_t id, uint32_t out, uint32_t len) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = id; cpu.r[5] = out; cpu.r[6] = len;
+    return sr_syscall(&cpu, NID_SYSPARAM_STRING);
+}
+
+static void test_sysparam_nickname_string(void) {
+    static const uint8_t fixture_value[8] = { 'f', 'i', 'x', 't', 'u', 'r', 'e', 0 };
+    static const uint8_t neutral[1] = { 0 };
+    uint32_t r = 0u, reg2, cat3;
+
+    reset_fixture();
+    sr_hle_init();
+    sysreg_scratch_clean();
+    sysreg_restart();
+
+    /* Default: the neutral empty string, a single NUL and nothing more. */
+    for (uint32_t i = 0u; i < 16u; i++) MEM_W8(SYSPARAM_STR_OUT + i, 0xaau);
+    expect(sysparam_string(1u, SYSPARAM_STR_OUT, 16u) == 0u,
+           "sceUtilityGetSystemParamString(nickname) succeeds on the default registry");
+    expect(MEM_R8(SYSPARAM_STR_OUT) == 0u && MEM_R8(SYSPARAM_STR_OUT + 1u) == 0xaau,
+           "the default nickname writes only its NUL terminator");
+
+    /* A registry write is what the utility reports. */
+    reg2 = sysreg_open_registry(2u, &r);
+    cat3 = sysreg_open_category(reg2, "/CONFIG/SYSTEM", 2u, &r);
+    expect(r == 0u && cat3 != 0u, "owner_name test: /CONFIG/SYSTEM opens for writing");
+    expect(sysreg_set(cat3, "owner_name", fixture_value, 8u) == 0u,
+           "owner_name test: a fixture value is written through sceRegSetKeyValue");
+    for (uint32_t i = 0u; i < 16u; i++) MEM_W8(SYSPARAM_STR_OUT + i, 0xaau);
+    expect(sysparam_string(1u, SYSPARAM_STR_OUT, 64u) == 0u &&
+               MEM_R8(SYSPARAM_STR_OUT + 6u) == 'e' && MEM_R8(SYSPARAM_STR_OUT + 7u) == 0u &&
+               MEM_R8(SYSPARAM_STR_OUT + 8u) == 0xaau,
+           "the nickname reports the registry value and its NUL");
+
+    /* A buffer that cannot hold the string and its NUL fails and writes nothing (measured on PSP-3000). */
+    for (uint32_t i = 0u; i < 16u; i++) MEM_W8(SYSPARAM_STR_OUT + i, 0xaau);
+    expect(sysparam_string(1u, SYSPARAM_STR_OUT, 4u) == 0x80110102u && MEM_R8(SYSPARAM_STR_OUT) == 0xaau,
+           "a short buffer fails with 0x80110102 and nothing is written (measured)");
+    expect(sysparam_string(1u, SYSPARAM_STR_OUT, 8u) == 0u && MEM_R8(SYSPARAM_STR_OUT + 7u) == 0u &&
+               MEM_R8(SYSPARAM_STR_OUT + 8u) == 0xaau,
+           "a buffer of exactly the string and its NUL succeeds");
+
+    expect(sysparam_string(2u, SYSPARAM_STR_OUT, 16u) == SYSPARAM_FAIL_ERR,
+           "an unmodelled string id fails with PSP_SYSTEMPARAM_RETVAL_FAIL");
+    expect(sysparam_string(1u, 0u, 16u) == SYSPARAM_FAIL_ERR,
+           "a null buffer fails with PSP_SYSTEMPARAM_RETVAL_FAIL");
+    expect(sysparam_string(1u, SYSPARAM_STR_OUT, 0u) == SYSPARAM_FAIL_ERR,
+           "a zero-length buffer fails with PSP_SYSTEMPARAM_RETVAL_FAIL");
+
+    /* Restore the neutral default so later registry tests see it. */
+    expect(sysreg_set(cat3, "owner_name", neutral, 1u) == 0u,
+           "owner_name test: the neutral empty string is restored");
+    sysreg_restart();
+}
+
 static void test_sysreg_persistence_round_trip(void) {
     static const uint8_t abc[4] = { 'a', 'b', 'c', 0 };
     static const uint8_t ann[4] = { 'A', 'n', 'n', 0 };
@@ -10790,6 +10933,107 @@ static uint32_t fpl_call(uint32_t nid, uint32_t uid, uint32_t outptr) {
     return sr_syscall(&cpu, nid);
 }
 
+/* sceKernelReferFplStatus (0xd8199e4c): SceKernelFplInfo is 56 bytes -- size(0), name[32](4),
+ * attr(36), blockSize(40), numBlocks(44), freeBlocks(48), numWaitThreads(52). The field order is
+ * the public PSPSDK one; the partial-write rule is the sema family's measured one. Covers the
+ * fresh pool, freeBlocks after allocations and a free, a caller size of 40 (bytes 40..55 kept),
+ * a caller size of 0, the unknown-UID code and a null info pointer. */
+#define NID_RFS_REFER_FPL  0xd8199e4cu
+#define RFS_INFO           0x00241a00u
+#define RFS_NAME           0x00241a80u
+#define RFS_UNKNOWN_UID    0x0badf00du
+#define RFS_ILLEGAL_ADDR   0x80000103u   /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
+
+static uint32_t rfs_refer(uint32_t uid, uint32_t info) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = uid; cpu.r[5] = info;
+    return sr_syscall(&cpu, NID_RFS_REFER_FPL);
+}
+
+/* name[32] at RFS_INFO+4 holds `want` followed by NUL bytes out to 32. */
+static int rfs_name_is(const char *want) {
+    size_t n = strlen(want);
+    for (uint32_t i = 0; i < 32u; i++) {
+        uint8_t expected = i < n ? (uint8_t)want[i] : 0u;
+        if (MEM_R8(RFS_INFO + 4u + i) != expected) return 0;
+    }
+    return 1;
+}
+
+static int rfs_bytes_are(uint32_t from, uint32_t to, uint8_t value) {
+    for (uint32_t i = from; i < to; i++)
+        if (MEM_R8(RFS_INFO + i) != value) return 0;
+    return 1;
+}
+
+static void test_fpl_refer_status(void) {
+    static const char rfs_name[] = "rfs-fpl";
+    for (size_t i = 0; i < sizeof(rfs_name); i++) MEM_W8(RFS_NAME + (uint32_t)i, (uint8_t)rfs_name[i]);
+
+    CpuState setup;
+    memset(&setup, 0, sizeof setup);
+    setup.r[4] = RFS_NAME; setup.r[5] = 0; setup.r[6] = 0x100u; setup.r[7] = FPL_BSIZE;
+    setup.r[8] = (uint32_t)FPL_NBLOCKS;     /* numBlocks, read via stack_arg(0) */
+    uint32_t fpl = sr_syscall(&setup, NID_FPL_CREATE);
+    expect((int32_t)fpl > 0, "ReferFplStatus: test pool created (16 x 0x100, attr 0x100, name rfs-fpl)");
+
+    /* Fresh pool, full caller size: every field is stored and the sentinel is overwritten. */
+    MEM_W32(RFS_INFO, 56u);
+    for (uint32_t i = 4u; i < 56u; i++) MEM_W8(RFS_INFO + i, 0xa5u);
+    expect(rfs_refer(fpl, RFS_INFO) == 0u, "ReferFplStatus succeeds on a live pool");
+    expect(MEM_R32(RFS_INFO) == 56u, "ReferFplStatus writes the struct size (56) into the size word");
+    expect(rfs_name_is(rfs_name), "ReferFplStatus copies the create-time name and zero-fills name[32]");
+    expect(MEM_R32(RFS_INFO + 36u) == 0x100u, "ReferFplStatus reports the create-time attr");
+    expect(MEM_R32(RFS_INFO + 40u) == FPL_BSIZE, "ReferFplStatus reports blockSize");
+    expect(MEM_R32(RFS_INFO + 44u) == FPL_NBLOCKS, "ReferFplStatus reports numBlocks");
+    expect(MEM_R32(RFS_INFO + 48u) == FPL_NBLOCKS, "ReferFplStatus reports all blocks free on a fresh pool");
+    expect(MEM_R32(RFS_INFO + 52u) == 0u, "ReferFplStatus reports zero waiting threads with no waiter");
+
+    /* One block handed out: freeBlocks drops by one (bump-region accounting). */
+    expect(fpl_call(NID_FPL_TRY_ALLOCATE, fpl, FPL_OUTPTR) == 0u, "ReferFplStatus: first TryAllocate succeeds");
+    expect(rfs_refer(fpl, RFS_INFO) == 0u, "ReferFplStatus succeeds after one allocation");
+    expect(MEM_R32(RFS_INFO + 48u) == FPL_NBLOCKS - 1u, "ReferFplStatus freeBlocks is 15 after one allocation");
+
+    /* Every block out: freeBlocks reaches zero. */
+    for (uint32_t i = 1u; i < FPL_NBLOCKS; i++)
+        expect(fpl_call(NID_FPL_TRY_ALLOCATE, fpl, FPL_OUTPTR) == 0u, "ReferFplStatus: TryAllocate fills the pool");
+    expect(rfs_refer(fpl, RFS_INFO) == 0u, "ReferFplStatus succeeds on an exhausted pool");
+    expect(MEM_R32(RFS_INFO + 48u) == 0u, "ReferFplStatus freeBlocks is 0 when the pool is exhausted");
+
+    /* Free the last block handed out: the free list is now the only free source. */
+    uint32_t last = MEM_R32(FPL_OUTPTR);
+    CpuState freec;
+    memset(&freec, 0, sizeof freec);
+    freec.r[4] = fpl; freec.r[5] = last;
+    expect(sr_syscall(&freec, NID_FPL_FREE) == 0u, "ReferFplStatus: FreeFpl of the last block succeeds");
+    expect(rfs_refer(fpl, RFS_INFO) == 0u, "ReferFplStatus succeeds after a free");
+    expect(MEM_R32(RFS_INFO + 48u) == 1u, "ReferFplStatus freeBlocks is 1 after one free");
+
+    /* Caller size 40: bytes 0..39 are written; bytes 40..55 keep the sentinel. */
+    for (uint32_t i = 0u; i < 56u; i++) MEM_W8(RFS_INFO + i, 0xa5u);
+    MEM_W32(RFS_INFO, 40u);
+    expect(rfs_refer(fpl, RFS_INFO) == 0u, "ReferFplStatus succeeds with caller size 40");
+    expect(MEM_R32(RFS_INFO) == 56u, "ReferFplStatus with caller size 40 writes the struct size word");
+    expect(rfs_name_is(rfs_name), "ReferFplStatus with caller size 40 writes the name");
+    expect(rfs_bytes_are(40u, 56u, 0xa5u),
+           "ReferFplStatus with caller size 40 leaves bytes 40..55 untouched");
+
+    /* Caller size 0: nothing is written and the call succeeds. */
+    for (uint32_t i = 0u; i < 56u; i++) MEM_W8(RFS_INFO + i, 0x5au);
+    MEM_W32(RFS_INFO, 0u);
+    expect(rfs_refer(fpl, RFS_INFO) == 0u, "ReferFplStatus with caller size 0 returns 0");
+    expect(MEM_R32(RFS_INFO) == 0u && rfs_bytes_are(4u, 56u, 0x5au),
+           "ReferFplStatus with caller size 0 writes nothing");
+
+    expect(rfs_refer(RFS_UNKNOWN_UID, RFS_INFO) == FPL_BAD_ID_ERR,
+           "ReferFplStatus with an unknown UID returns FPL_BAD_ID (0x800200d3)");
+    expect(rfs_refer(fpl, 0u) == RFS_ILLEGAL_ADDR,
+           "ReferFplStatus with a null info pointer returns ILLEGAL_ADDR");
+
+    fpl_free_pool(fpl);
+}
+
 static void test_allocate_fpl_context_precedence(void) {
     char msg[160];
 
@@ -11225,26 +11469,75 @@ static void test_td24b_cheap_hle_batch(void) {
     reset_fixture();
     sr_hle_init();
     sr_hle_test_power_reset();
-    expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 333u,
-           "CPU clock reads the 333 MHz default");
-    expect(td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 166u,
-           "bus clock reads the 166 MHz default");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 222u,
+           "CPU clock reads the 222 MHz default (measured on PSP-3000)");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 111u,
+           "bus clock reads the 111 MHz default (measured on PSP-3000)");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_PLL_INT, 0u, 0u, 0u, 0u) == 222u,
+           "PLL clock reads the 222 MHz default measured on PSP-3000");
     expect(td24b_dispatch4(NID_SCE_POWER_SET_CLOCK, 222u, 111u, 55u, 0u) == 0u,
            "scePowerSetClockFrequency answers success");
     expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 111u,
            "CPU clock reflects the last Set request, not the old fixed value");
     expect(td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 55u,
            "bus clock reflects the last Set request, not the old fixed value");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_PLL_INT, 0u, 0u, 0u, 0u) == 222u,
+           "PLL clock reflects the last Set request's pllfreq");
     expect(td24b_dispatch4(NID_SCE_POWER_SET_CLOCK_350, 333u, 300u, 150u, 0u) == 0u,
            "scePowerSetClockFrequency350 answers success");
     expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 300u,
            "CPU clock reflects the 350-variant Set request through shared state");
     expect(td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 150u,
            "bus clock reflects the 350-variant Set request through shared state");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_PLL_INT, 0u, 0u, 0u, 0u) == 333u,
+           "PLL clock reflects the 350-variant Set request's pllfreq (333, not the earlier 222)");
     sr_hle_test_power_reset();
-    expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 333u &&
-               td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 166u,
-           "the power reset restores the 333/166 defaults for later fixtures");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 222u &&
+               td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 111u &&
+               td24b_dispatch4(NID_SCE_POWER_GET_PLL_INT, 0u, 0u, 0u, 0u) == 222u,
+           "the power reset restores the 222 PLL / 222 CPU / 111 bus defaults for later fixtures");
+
+    /* sceHprmIsRemoteExist (0x208db1bd): PSPSDK psphprm.h returns 1 when the infrared remote is
+     * plugged in. The runtime models no remote accessory, so the call answers 0 and the title
+     * is not stopped at it. */
+    expect(td24b_dispatch4(0x208db1bdu, 0u, 0u, 0u, 0u) == 0u,
+           "sceHprmIsRemoteExist reports no remote (the runtime models no remote accessory)");
+    sr_hle_test_hprm_set_remote(1);
+    expect(td24b_dispatch4(0x208db1bdu, 0u, 0u, 0u, 0u) == 1u,
+           "sceHprmIsRemoteExist follows a modeled attached remote");
+    sr_hle_test_hprm_set_remote(0);
+    expect(td24b_dispatch4(0x208db1bdu, 0u, 0u, 0u, 0u) == 0u,
+           "sceHprmIsRemoteExist returns to no remote when the model detaches it");
+
+    /* sceHprmIsHeadphoneExist (0x7e69eda4): PSPSDK psphprm.h, 1 when headphones are plugged in. The
+     * runtime models them as absent by default, and the answer follows the modeled state. */
+    expect(td24b_dispatch4(0x7e69eda4u, 0u, 0u, 0u, 0u) == 0u,
+           "sceHprmIsHeadphoneExist reports no headphones (the runtime models no headphone accessory)");
+    sr_hle_test_hprm_set_headphone(1);
+    expect(td24b_dispatch4(0x7e69eda4u, 0u, 0u, 0u, 0u) == 1u,
+           "sceHprmIsHeadphoneExist follows a modeled attached headset");
+    sr_hle_test_hprm_set_headphone(0);
+    expect(td24b_dispatch4(0x7e69eda4u, 0u, 0u, 0u, 0u) == 0u,
+           "sceHprmIsHeadphoneExist returns to no headphones when the model detaches it");
+
+    /* sceHprmIsMicrophoneExist (0x219c58f1): PSPSDK psphprm.h, 1 when the microphone is plugged in. */
+    expect(td24b_dispatch4(0x219c58f1u, 0u, 0u, 0u, 0u) == 1u,
+           "sceHprmIsMicrophoneExist reports the built-in microphone (measured 1 on PSP-3000)");
+    sr_hle_test_hprm_set_microphone(0);
+    expect(td24b_dispatch4(0x219c58f1u, 0u, 0u, 0u, 0u) == 0u,
+           "sceHprmIsMicrophoneExist follows a modeled detached microphone");
+    sr_hle_test_hprm_set_microphone(1);
+    expect(td24b_dispatch4(0x219c58f1u, 0u, 0u, 0u, 0u) == 1u,
+           "sceHprmIsMicrophoneExist returns to the measured default when the model reattaches it");
+
+    /* scePowerIsLowBattery (0xd3075926): the modeled battery is full, so the default is not low (0);
+     * the answer follows the battery model. The PSPSDK header leaves the return encoding undocumented. */
+    expect(td24b_dispatch4(0xd3075926u, 0u, 0u, 0u, 0u) == 0u,
+           "scePowerIsLowBattery reports not low while the modeled battery is full");
+    sr_hle_test_power_set_low_battery(1);
+    expect(td24b_dispatch4(0xd3075926u, 0u, 0u, 0u, 0u) == 1u,
+           "scePowerIsLowBattery follows a modeled low battery");
+    sr_hle_test_power_set_low_battery(0);
 
     /* ---- 6. sceAtracGetMaxSample (0xd6a5f2f7) ---- */
     reset_fixture();
@@ -13280,6 +13573,73 @@ static void test_ctrl_read_buffer_contract(void) {
 
     ctrl_env("1", "", "", "");
     ctrl_drain(&cpu);
+}
+
+/* sceCtrlReadLatch (0x0b588501): PSPSDK pspctrl.h. uiMake and uiBreak are the transitions to
+ * pressed and to released across the sampling cycles since the previous latch read; uiPress is the
+ * pressed state and uiRelease its complement; the return is the cycles since that read. The test
+ * drives the sample ring directly (a test push, not the scripted input) and covers no new samples,
+ * a press, a held button, a release, two transitions inside one read, the return count, and a null
+ * latch pointer. */
+#define NID_CTRL_READ_LATCH 0x0b588501u
+#define CTRL_LATCH_OUT      0x00241d00u
+#define PSP_CTRL_CROSS_BIT  0x00004000u
+#define PSP_CTRL_CIRCLE_BIT 0x00002000u
+#define SCE_KERNEL_ILLEGAL_ADDR_ERR 0x80000103u
+extern void sr_hle_test_ctrl_push_sample(uint32_t buttons);
+extern void sr_hle_test_ctrl_latch_reset(void);
+
+static uint32_t ctrl_read_latch(uint32_t out) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = out;
+    return sr_syscall(&cpu, NID_CTRL_READ_LATCH);
+}
+
+static void test_ctrl_read_latch(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ctrl_latch_reset();
+
+    for (uint32_t i = 0u; i < 16u; i++) MEM_W8(CTRL_LATCH_OUT + i, 0xa5u);
+    expect(ctrl_read_latch(CTRL_LATCH_OUT) == 0u,
+           "sceCtrlReadLatch with no new sampling cycle returns 0");
+    expect(MEM_R32(CTRL_LATCH_OUT) == 0u && MEM_R32(CTRL_LATCH_OUT + 4u) == 0u &&
+               MEM_R32(CTRL_LATCH_OUT + 8u) == 0u && MEM_R32(CTRL_LATCH_OUT + 12u) == 0xffffffffu,
+           "with nothing pressed the latch reports no transitions and all buttons released");
+
+    sr_hle_test_ctrl_push_sample(PSP_CTRL_CROSS_BIT);
+    expect(ctrl_read_latch(CTRL_LATCH_OUT) == 1u,
+           "one sampling cycle since the last read returns 1");
+    expect(MEM_R32(CTRL_LATCH_OUT) == PSP_CTRL_CROSS_BIT && MEM_R32(CTRL_LATCH_OUT + 4u) == 0u &&
+               MEM_R32(CTRL_LATCH_OUT + 8u) == PSP_CTRL_CROSS_BIT &&
+               MEM_R32(CTRL_LATCH_OUT + 12u) == ~PSP_CTRL_CROSS_BIT,
+           "a press reports uiMake and uiPress for CROSS, and uiRelease is its complement");
+
+    sr_hle_test_ctrl_push_sample(PSP_CTRL_CROSS_BIT);
+    expect(ctrl_read_latch(CTRL_LATCH_OUT) == 1u && MEM_R32(CTRL_LATCH_OUT) == 0u &&
+               MEM_R32(CTRL_LATCH_OUT + 4u) == 0u && MEM_R32(CTRL_LATCH_OUT + 8u) == PSP_CTRL_CROSS_BIT,
+           "a held button is pressed but reports no new transition");
+
+    sr_hle_test_ctrl_push_sample(0u);
+    expect(ctrl_read_latch(CTRL_LATCH_OUT) == 1u && MEM_R32(CTRL_LATCH_OUT) == 0u &&
+               MEM_R32(CTRL_LATCH_OUT + 4u) == PSP_CTRL_CROSS_BIT && MEM_R32(CTRL_LATCH_OUT + 8u) == 0u,
+           "a release reports uiBreak for CROSS and no pressed buttons");
+
+    sr_hle_test_ctrl_push_sample(PSP_CTRL_CIRCLE_BIT);
+    sr_hle_test_ctrl_push_sample(0u);
+    expect(ctrl_read_latch(CTRL_LATCH_OUT) == 2u &&
+               MEM_R32(CTRL_LATCH_OUT) == PSP_CTRL_CIRCLE_BIT &&
+               MEM_R32(CTRL_LATCH_OUT + 4u) == PSP_CTRL_CIRCLE_BIT && MEM_R32(CTRL_LATCH_OUT + 8u) == 0u,
+           "two cycles between reads report both CIRCLE transitions and return 2");
+
+    expect(ctrl_read_latch(CTRL_LATCH_OUT) == 0u && MEM_R32(CTRL_LATCH_OUT) == 0u &&
+               MEM_R32(CTRL_LATCH_OUT + 4u) == 0u,
+           "the next read after the latch was drained reports nothing new");
+
+    expect(ctrl_read_latch(0u) == SCE_KERNEL_ILLEGAL_ADDR_ERR,
+           "a null latch pointer returns ILLEGAL_ADDR");
+    sr_hle_test_ctrl_latch_reset();
 }
 
 static void test_ctrl_sample_timestamp_microsecond_contract(void) {
@@ -25820,6 +26180,10 @@ static int hle_selftest_main(int argc, char **argv) {
     test_kernel_import_sweep_explicit_refusals();
     test_sysreg_virtual_registry();
     test_sysreg_write_model();
+    test_sysparam_nickname_string();
+    test_ge_edram_addr_translation();
+    test_named_refusals();
+    test_ctrl_read_latch();
     test_sysreg_persistence_round_trip();
     test_sysreg_corrupt_overlay();
     test_sysreg_flush_failure();
@@ -25926,6 +26290,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_can_not_wait_semantics();
     test_sema_hardware_codes();
     test_sema_refer_status();
+    test_fpl_refer_status();
     test_lwmutex_hardware_codes();
     test_evf_hardware_codes();
     test_wait_sema_count_validation();
