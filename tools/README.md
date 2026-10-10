@@ -162,6 +162,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `import_audit.py` | Classify a PSP ELF's imports against the HLE registration manifest. |
 | `import_audit_gate.py` | Public CI gate for import coverage and fake-success regressions. |
 | `import_fixtures.py` | Synthetic PSP ELF fixtures for the import-coverage audit gate. |
+| `import_stub_census.py` | Import-stub census: every import-table stub of an image is owned, bodied and reaches the HLE (or a named refusal). |
 | `psp_import_table.py` | Defensive PSP ELF import-table parser for the import-coverage gate. |
 | `flight_diff.py` | Compare two source-safe flight-recorder bundles. |
 | `ge_transition_diff.py` | Offline diff for the narrow GE transition trace. |
@@ -335,6 +336,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_hle_umd_wakeup.py` | The ready signal must wake only UMD waiters; a plain wait creates no drive event. |
 | `test_import_audit.py` | Tests for the import-table parser, classifier and CI gate. |
 | `test_import_name_safety.py` | Synthetic regressions for untrusted PSP import-library metadata. |
+| `test_import_stub_census.py` | The import-stub census over synthetic images, including the late-pass regression guard. |
 | `test_imports.py` | Tests for the trusted code-generation import-map compatibility path. |
 | `test_nid_name_proof.py` | Tests for the independent NID-name verifier. |
 | `test_nidseq.py` | Fail-closed import-sequence extraction and oracle comparison. |
