@@ -16,6 +16,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import random
 import shutil
 from contextlib import redirect_stderr
 from pathlib import Path
@@ -375,10 +376,10 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
 
         original_trace = analyze.trace_function
 
-        def trace_and_record_calls(elf, start, ranges, covered, calls, hc):
+        def trace_and_record_calls(elf, start, ranges, covered, calls, hc, walked=None):
             if tracked_calls[0] is None:
                 tracked_calls[0] = calls
-            return original_trace(elf, start, ranges, covered, calls, hc)
+            return original_trace(elf, start, ranges, covered, calls, hc, walked=walked)
 
         with redirect_stderr(io.StringIO()), \
              mock.patch.object(analyze, "set", counted_set, create=True), \
@@ -1535,6 +1536,225 @@ class MakefileSpanBindingTests(unittest.TestCase):
             line for line in self.makefile.splitlines() if "--section codegen" in line
         )
         self.assertIn("--entries-env NK_CODEGEN_PROFILE_ENTRIES", record_line)
+
+
+MIPS_JR_RA = 0x03E00008
+MIPS_NOP = 0x00000000
+MIPS_ADDU_T0 = 0x01094021  # addu $t0, $t0, $t1
+MIPS_PROLOGUE = 0x27BDFFF0  # addiu $sp, $sp, -16
+RANDOM_CODE_IMAGES = 48
+
+
+def write_words_elf(path: Path, words, *, base: int = PRIMARY_BASE, entry: int | None = None,
+                    text_words: int | None = None) -> None:
+    """Fabricate a little-endian ET_EXEC whose one executable PT_LOAD holds `words`.
+
+    The section table names .text over the first `text_words` words only, so the words after
+    it are executable file bytes outside the named code section. That is the case which gives
+    a trace merged ranges.
+    """
+    if text_words is None:
+        text_words = len(words)
+    payload_off = 52 + 32
+    filesz = len(words) * 4
+    shstr = b"\x00.text\x00.shstrtab\x00"
+    shstr_off = payload_off + filesz
+    shoff = shstr_off + len(shstr)
+    blob = bytearray(shoff + 3 * 40)
+    blob[:8] = b"\x7fELF\x01\x01\x01\x00"
+    struct.pack_into(
+        "<HHIIIIIHHHHHH", blob, 16,
+        2, 8, 1, base if entry is None else entry, 52, shoff, 0, 52, 32, 1, 40, 3, 2,
+    )
+    struct.pack_into("<8I", blob, 52, 1, payload_off, base, base, filesz, filesz, 5, 4)
+    for index, word in enumerate(words):
+        struct.pack_into("<I", blob, payload_off + index * 4, word & 0xFFFFFFFF)
+    blob[shstr_off:shstr_off + len(shstr)] = shstr
+    struct.pack_into(
+        "<10I", blob, shoff + 40,
+        1, 1, 6, base, payload_off, text_words * 4, 0, 0, 4, 0,
+    )
+    struct.pack_into(
+        "<10I", blob, shoff + 80,
+        7, 3, 0, 0, shstr_off, len(shstr), 0, 0, 1, 0,
+    )
+    path.write_bytes(blob)
+
+
+def random_code_words(rng: random.Random, base: int, count: int) -> list[int]:
+    """Words drawn from the shapes the trace branches on, with targets around the image."""
+
+    def target() -> int:
+        # Mostly inside the image, sometimes just past it.
+        return base + 4 * rng.randrange(0, count + 16)
+
+    words: list[int] = []
+    while len(words) < count:
+        pick = rng.random()
+        if pick < 0.14:
+            words.append(0x0C000000 | ((target() >> 2) & 0x03FFFFFF))  # jal
+        elif pick < 0.24:
+            words.append(0x08000000 | ((target() >> 2) & 0x03FFFFFF))  # j
+        elif pick < 0.36:
+            if rng.random() < 0.25:
+                words.append(0x10000000 | (rng.randrange(-24, 25) & 0xFFFF))  # b
+            else:
+                op = rng.choice((0x04, 0x05, 0x06, 0x07))  # beq, bne, blez, bgtz
+                rs, rt = rng.randrange(4), rng.randrange(4)
+                words.append((op << 26) | (rs << 21) | (rt << 16)
+                             | (rng.randrange(-24, 25) & 0xFFFF))
+        elif pick < 0.40:
+            rt = rng.choice((0x00, 0x01, 0x10, 0x11))  # bltz, bgez, bltzal, bgezal
+            words.append((0x01 << 26) | (rt << 16) | (rng.randrange(-24, 25) & 0xFFFF))
+        elif pick < 0.50:
+            words.append(rng.choice((MIPS_JR_RA, 0x03200008, 0x0040F809)))  # jr $ra, jr $t9, jalr
+        elif pick < 0.62:
+            words.append(0x27BD0000 | ((-8 * rng.randrange(1, 17)) & 0xFFFF))  # addiu $sp, -N
+        elif pick < 0.70:
+            words.append(MIPS_NOP)
+        elif pick < 0.80:
+            reg = rng.randrange(1, 8)
+            address = target()
+            words.append(0x3C000000 | (reg << 16) | (address >> 16))  # lui
+            words.append(0x24000000 | (reg << 21) | (reg << 16) | (address & 0xFFFF))  # addiu
+        else:
+            words.append(rng.getrandbits(32))
+    return words[:count]
+
+
+class TraceMemoTests(unittest.TestCase):
+    """The memoized trace walk reproduces the uncached walk, and expands each word once."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-trace-memo-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def _walk(self, image_bytes: bytes, *, trace_memo: bool) -> dict:
+        """Every trace's start, owned ranges and call results, plus the analysis outputs."""
+        image = analyze.Elf(image_bytes, base=0)
+        steps = []
+        final: dict = {}
+        original = analyze.trace_function
+
+        def recording_trace(elf, start, ranges, covered, calls, hc, walked=None):
+            new_calls = original(elf, start, ranges, covered, calls, hc, walked=walked)
+            steps.append((start, tuple(ranges), tuple(new_calls)))
+            final["covered"] = covered
+            final["calls"] = calls
+            return new_calls
+
+        with redirect_stderr(io.StringIO()), \
+             mock.patch.object(analyze, "trace_function", recording_trace):
+            starts, ranges = analyze.analyze(image, trace_memo=trace_memo)
+        return {
+            "steps": steps,
+            "covered": sorted(final.get("covered", ())),
+            "calls": sorted(final.get("calls", ())),
+            "starts": sorted(starts),
+            "ranges": list(ranges),
+        }
+
+    def test_memoized_walk_matches_uncached_walk_on_fixtures(self) -> None:
+        for writer in (
+            write_elf_with_called_code_outside_text,
+            write_elf_with_entry_outside_text,
+            write_elf_with_segment_start_trampoline,
+            write_elf_with_unusual_section_code_pointer,
+            write_elf_with_data_jal_in_text_to_rodata,
+        ):
+            path = self.root / f"{writer.__name__}.elf"
+            writer(path)
+            image_bytes = path.read_bytes()
+            with self.subTest(fixture=writer.__name__):
+                self.assertEqual(
+                    self._walk(image_bytes, trace_memo=True),
+                    self._walk(image_bytes, trace_memo=False),
+                )
+
+    def test_memoized_walk_matches_uncached_walk_on_random_code(self) -> None:
+        merged_steps = 0
+        for seed in range(RANDOM_CODE_IMAGES):
+            rng = random.Random(seed)
+            count = rng.randrange(40, 129)
+            words = random_code_words(rng, PRIMARY_BASE, count)
+            path = self.root / f"random-{seed}.elf"
+            write_words_elf(path, words, text_words=rng.randrange(count // 2, count + 1))
+            image_bytes = path.read_bytes()
+            with self.subTest(seed=seed):
+                memoized = self._walk(image_bytes, trace_memo=True)
+                self.assertEqual(memoized, self._walk(image_bytes, trace_memo=False))
+                primary = tuple(analyze.exec_ranges(analyze.Elf(image_bytes, base=0)))
+                merged_steps += sum(1 for _start, ranges, _calls in memoized["steps"]
+                                    if ranges != primary)
+        # The corpus must exercise traces over merged ranges, not only the primary ones.
+        self.assertGreater(merged_steps, 0)
+
+    def test_shared_tail_is_expanded_once_across_starts(self) -> None:
+        """Every function jumps into one shared tail; the tail is walked once, not per function."""
+        shared_words = 256
+        functions = 32
+        shared = PRIMARY_BASE
+        words = [MIPS_ADDU_T0] * shared_words + [MIPS_JR_RA, MIPS_NOP]
+        function_starts = []
+        for _ in range(functions):
+            function_starts.append(PRIMARY_BASE + 4 * len(words))
+            words += [MIPS_PROLOGUE, 0x08000000 | ((shared >> 2) & 0x03FFFFFF), MIPS_NOP]
+        path = self.root / "shared-tail.elf"
+        write_words_elf(path, words, entry=function_starts[0])
+        image = analyze.Elf(str(path), base=0)
+        reads = 0
+        read_word = image.read_at_vaddr
+
+        def counting_read(vaddr, n):
+            nonlocal reads
+            reads += 1
+            return read_word(vaddr, n)
+
+        image.read_at_vaddr = counting_read
+        with redirect_stderr(io.StringIO()):
+            starts, _ranges = analyze.analyze(image)
+        for function_start in function_starts:
+            self.assertIn(function_start, starts)
+        self.assertLessEqual(
+            reads, 4 * (shared_words + 3 * functions) + 64,
+            "a shared tail must be expanded once, not once per function",
+        )
+
+
+class SpanIndexMembershipTests(unittest.TestCase):
+    """The trace's indexed membership answers exactly as the linear in_ranges scan."""
+
+    CASES = (
+        [],
+        [(0, 0)],
+        [(16, 16), (20, 12)],
+        [(0x100, 0x110)],
+        [(0x100, 0x110), (0x110, 0x120)],
+        [(0x100, 0x140), (0x120, 0x130), (0x200, 0x204)],
+        [(0x200, 0x204), (0x100, 0x110), (0x108, 0x104)],
+        [(0x100, 0x110), (0x100, 0x110)],
+        [(0x0, 0x8), (0x8, 0x10), (0x18, 0x20)],
+    )
+
+    def test_membership_matches_in_ranges_at_every_boundary(self) -> None:
+        for ranges in self.CASES:
+            index = analyze._SpanIndex(ranges)
+            probes = {-1, 0, 0xFFFFFFFF + 1}
+            for lo, hi in ranges:
+                probes.update({lo - 1, lo, lo + 1, hi - 1, hi, hi + 1})
+            for addr in sorted(probes):
+                with self.subTest(ranges=ranges, addr=addr):
+                    self.assertEqual(
+                        addr in index,
+                        analyze.in_ranges(addr, ranges),
+                    )
+
+    def test_in_ranges_accepts_an_index_as_its_range_set(self) -> None:
+        ranges = [(0x100, 0x110), (0x200, 0x204)]
+        index = analyze._SpanIndex(ranges)
+        for addr in (0xFF, 0x100, 0x10F, 0x110, 0x200, 0x204):
+            self.assertEqual(analyze.in_ranges(addr, index), analyze.in_ranges(addr, ranges))
 
 
 if __name__ == "__main__":

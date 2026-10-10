@@ -20,6 +20,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import traceback
 import time
 import zlib
 
@@ -58,6 +59,7 @@ from nk_core.iso_inspect import (  # noqa: E402
     MAX_MODULE_CANDIDATES,
     IsoInspectionError,
     IsoDirectoryEntry,
+    _elf32_mips_iso_violation,
     _elf32_mips_usable,
     _lookup_iso_file,
     _read_iso_extent,
@@ -65,12 +67,11 @@ from nk_core.iso_inspect import (  # noqa: E402
     _has_cfw_or_kernel_only_imports,
     decrypted_module_dir,
     inspect_compatibility_preflight,
-    plan_guest_module_bindings,
+    plan_guest_module_layout,
     walk_disc_module_entries,
     write_experimental_profile,
 )
 import title_manifest  # noqa: E402
-import stage_runtime_dlls as _runtime_dlls  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -335,6 +336,22 @@ def _require_child(root: Path, child: Path, label: str) -> Path:
     return resolved
 
 
+def _run_codegen_step(command, *, cwd, env, log_path: Path) -> int:
+    """Run one codegen step and keep its output in a private log, so a failure always
+    has its cause on disk. Returns the exit code."""
+    completed = subprocess.run(
+        command, cwd=cwd, env=env, capture_output=True,
+        encoding="utf-8", errors="replace", check=False,
+    )
+    text = (
+        f"exit {completed.returncode}\n"
+        f"--- stdout ---\n{completed.stdout}"
+        f"\n--- stderr ---\n{completed.stderr}\n"
+    )
+    _write_private_file(log_path, text.encode("utf-8", errors="replace"))
+    return completed.returncode
+
+
 def _write_private_file(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary_path: Path | None = None
@@ -493,6 +510,23 @@ def _source_media_identity(iso_path: Path, selected: str,
     }
 
 
+def _unusable_elf_module_reason(stream, file_size: int, entry: IsoDirectoryEntry) -> str:
+    """Name the shared PSP layout rule an ELF32/MIPS module candidate breaks."""
+    rule = _elf32_mips_iso_violation(
+        stream, file_size, entry.lba, entry.size, module=True
+    )
+    return f"its ELF32/MIPS image breaks the PSP layout rule {rule or 'unknown'}"
+
+
+def _unready_module_lines(candidates: list[dict]) -> list[str]:
+    """One named line per candidate that prevents the import from starting."""
+    return [
+        f"MODULE {candidate['name']}: not ready "
+        f"({candidate.get('reason') or candidate['kind']})"
+        for candidate in candidates
+    ]
+
+
 def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]:
     """Find bounded ELF/PRX candidates below the title's module roots."""
     file_size = iso_path.stat().st_size
@@ -503,12 +537,15 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
             continue
         if entry.name.casefold() in {selected_name, "boot.bin", "eboot.old"}:
             continue
+        reason: str | None = None
         if not title_manifest.FILENAME_RE.fullmatch(entry.name) or \
                 entry.name.endswith(".") or \
                 entry.name.split(".", 1)[0].upper() in title_manifest.WINDOWS_RESERVED:
             kind = "unsupported"
+            reason = "its file name is not a supported module name"
         elif entry.multi_extent or entry.size <= 0 or entry.size > MAX_GUEST_MODULE_BYTES:
             kind = "unsupported"
+            reason = "it is multi-extent, empty, or larger than the module size limit"
         else:
             header_size = min(entry.size, 0x64)
             with iso_path.open("rb") as stream:
@@ -520,12 +557,14 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
                         stream, file_size, entry.lba, entry.size, module=True
                     ):
                         kind = "unsupported"
+                        reason = _unusable_elf_module_reason(stream, file_size, entry)
                     else:
                         module_bytes = _read_iso_extent(
                             stream, file_size, entry.lba, entry.size, 0, entry.size
                         )
                         if len(module_bytes) != entry.size:
                             kind = "unsupported"
+                            reason = "its image could not be read in full"
                         elif _has_cfw_or_kernel_only_imports(module_bytes):
                             continue
                         else:
@@ -536,13 +575,17 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
                     kind = "encrypted-prx" if _encrypted_prx_header_supported(
                         header
                     ) else "unsupported"
+                    if kind == "unsupported":
+                        reason = "its encrypted-container header is not one the boundary supports"
                 else:
                     kind = "unsupported"
+                    reason = "its header is neither ELF32/MIPS, ~SCE nor ~PSP"
         candidates.append({
             "name": entry.name,
             "directory": directory,
             "entry": entry,
             "kind": kind,
+            "reason": reason,
         })
         if len(candidates) > MAX_GUEST_MODULES:
             raise PackageBuildError(
@@ -1115,6 +1158,33 @@ def _find_configured_runtime_dll(filename: str) -> Path | None:
     return next((candidate for candidate in candidates if candidate.is_file()), None)
 
 
+def _runtime_dll_stager():
+    """The runtime DLL stager module, imported on first use.
+
+    Importing it loads the third-party notice inventory and the codegen planner, which only
+    a package build needs, so the CLI's other commands never pay for it. A notice inventory
+    the stager cannot load is a named package-build failure, not a traceback.
+    """
+    module = globals().get("_runtime_dlls")
+    if module is None:
+        from title_codegen_plan import PackageRouteError
+        try:
+            import stage_runtime_dlls as module
+        except PackageRouteError as exc:
+            raise PackageBuildError(
+                f"the runtime DLL stager could not load the notice inventory: {exc}"
+            ) from exc
+        globals()["_runtime_dlls"] = module
+    return module
+
+
+def __getattr__(name: str):
+    """``nk_cli._runtime_dlls`` is the stager module, resolved on first access (tests patch it there)."""
+    if name == "_runtime_dlls":
+        return _runtime_dll_stager()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 def _stage_runtime_assets(package_dir: Path) -> None:
     vfpu_source = ROOT / "assets" / "vfpu"
     if vfpu_source.is_dir():
@@ -1148,9 +1218,10 @@ def _stage_runtime_assets(package_dir: Path) -> None:
         # step the Makefile's player target uses. The prerequisite installer
         # (#324) does not provide it yet, so a package without it still builds:
         # the player then draws with its bitmap fallback and logs why.
+        stager = _runtime_dll_stager()
         try:
-            _runtime_dlls.stage_runtime_dlls(package_dir, roots=("SDL3_ttf.dll",), notices=False)
-        except _runtime_dlls.StageError as exc:
+            stager.stage_runtime_dlls(package_dir, roots=("SDL3_ttf.dll",), notices=False)
+        except stager.StageError as exc:
             print(f"warning: the readable UI font runtime was not staged: {exc}. "
                   "The player will use its bitmap fallback font.", file=sys.stderr)
 
@@ -1173,7 +1244,7 @@ def _package_codegen_options(manifest: dict, environment: dict[str, str]) -> dic
         title_extra_spans = ",".join(
             f"0x{int(span['start']):08x},0x{int(span['end']):08x}" for span in spans
         )
-    return {
+    options = {
         "base": f"0x{int(executable['base']):08x}",
         "entry": f"0x{int(executable['entry']):08x}",
         "title_extra_spans": title_extra_spans,
@@ -1190,6 +1261,11 @@ def _package_codegen_options(manifest: dict, environment: dict[str, str]) -> dic
         # The planner writes this into the package's cache metadata, so the key must carry it too.
         "planner_sha256": package_cache.sha256_file(ROOT / "tools" / "title_codegen_plan.py"),
     }
+    # `make NAN_TRAP=1` adds --nan-trap to codegen inside the Makefile, out of sight of
+    # CODEGEN_USER_ARGS above. Named only when on, so untrapped keys are unchanged.
+    if package_cache.nan_trap_enabled(environment):
+        options["nan_trap"] = True
+    return options
 
 
 def _has_private_backends(root: Path = ROOT) -> bool:
@@ -1249,7 +1325,7 @@ def _current_package_cache_key(
         compiler=package_cache.compiler_identity(
             environment.get("CC", "gcc"), repository_root=ROOT, environment=environment
         ),
-        target=package_cache.compiler_target(environment),
+        target=package_cache.compiler_target(environment, repository_root=ROOT),
         runtime_source_digest=package_cache.source_tree_digest(ROOT),
         compile_flags=package_cache.native_compile_flags(
             public_safe=public_safe, environment=environment
@@ -2523,6 +2599,9 @@ def _bringup_human_summary(report: dict) -> str:
         detail = " (the runtime exited zero before PSP display framebuffer setup)"
     elif report["failure_class"] == "GUEST_ACTIVITY_UNVERIFIED":
         detail = " (runtime telemetry did not verify a PSP kernel import)"
+    elif report["failure_class"] == "RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP":
+        detail = (" (the run budget ended while the guest was still running, before PSP display "
+                  "framebuffer setup; the runtime did not exit on its own)")
     elif report["failure_class"] == "DISPLAY_PROGRESS_UNVERIFIED":
         detail = " (runtime telemetry did not verify PSP display framebuffer setup)"
     elif report["failure_class"] == "DISC_FILES_STAGE_FAILED":
@@ -2794,6 +2873,54 @@ def _set_bringup_presentation(report: dict, output: str) -> bool:
         "backend": backend,
     }
     return evidence_ok
+
+
+# The runtime's own record of the SR_EXIT_AT_VBLANK run budget (src/rt/hle.c). The budget
+# exit is a clean process exit with status 0 in the middle of a live guest.
+_RUNTIME_RUN_BUDGET_END = re.compile(
+    r"^BOOT_EVENT phase=exit_at_vblank vblanks=\d+ \(SR_EXIT_AT_VBLANK=\d+\)\s*$",
+    re.MULTILINE,
+)
+
+
+def _runtime_run_budget_ended(launch_output: str | None) -> bool:
+    """True when the runtime stopped at its vblank run budget, not at a guest exit."""
+    return bool(_RUNTIME_RUN_BUDGET_END.search(launch_output or ""))
+
+
+BRINGUP_LAUNCH_LOG_NAME = "bringup-launch.log"
+BRINGUP_LAUNCH_LOG_MAX_BYTES = 4 * 1024 * 1024
+
+
+def _bounded_launch_output(text: str | None, limit: int) -> bytes:
+    """Return the launch output within `limit` bytes: its head and tail, with the middle elided.
+
+    The start of a run (how it came up) and its last events (where it stopped) are what
+    triage reads, so both ends are kept and the elided span is named in the middle.
+    """
+    data = (text or "").encode("utf-8", errors="replace")
+    if len(data) <= limit:
+        return data
+    reserve = 128  # room for the elision marker, which is always shorter
+    keep = limit - reserve
+    head = keep // 4
+    tail = keep - head
+    dropped = len(data) - head - tail
+    marker = b"\n[... %d bytes elided to keep the launch log bounded ...]\n" % dropped
+    return data[:head] + marker + data[len(data) - tail:]
+
+
+def _write_bringup_launch_log(work_dir: Path, launch_output: str | None) -> None:
+    """Keep the launched runtime's stdout and stderr in the work dir, bounded.
+
+    A failure to write the log is reported and does not change the launch result.
+    """
+    try:
+        (work_dir / BRINGUP_LAUNCH_LOG_NAME).write_bytes(
+            _bounded_launch_output(launch_output, BRINGUP_LAUNCH_LOG_MAX_BYTES)
+        )
+    except OSError as exc:
+        print(f"bring-up: could not keep the launch log: {exc}", file=sys.stderr)
 
 
 def _flight_has_hle_import(path: Path | None) -> bool | None:
@@ -3132,6 +3259,13 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 print(_bringup_human_summary(report))
                 return 1
             if unready:
+                unready_lines = _unready_module_lines(unready)
+                for line in unready_lines:
+                    print(line)
+                _write_private_file(
+                    work_dir / "bringup-module-layout.log",
+                    ("\n".join(unready_lines) + "\n").encode("utf-8"),
+                )
                 fail_stage(
                     report, "prepare_import", "GUEST_MODULE_FORMAT_UNSUPPORTED",
                     [308], int((time.perf_counter() - started) * 1000),
@@ -3170,9 +3304,20 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                         )
                         for candidate, _source, _folder_copy in module_sources
                     ]
-                    module_bindings = plan_guest_module_bindings(
+                    module_bindings, deferred_modules = plan_guest_module_layout(
                         selected_elf, module_inputs
                     )
+                    if deferred_modules:
+                        deferred_lines = [
+                            f"DEFERRED_MODULE {item['name']}: {item['reason']}"
+                            for item in deferred_modules
+                        ]
+                        for line in deferred_lines:
+                            print(line)
+                        _write_private_file(
+                            work_dir / "bringup-module-deferred.log",
+                            ("\n".join(deferred_lines) + "\n").encode("utf-8"),
+                        )
                 except (IsoInspectionError, OSError) as exc:
                     boundary_code = (
                         getattr(exc, "boundary_code", None)
@@ -3322,20 +3467,25 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         command = list(plan["commands"]["codegen"])
         if command and command[0] == "python":
             command[0] = sys.executable
-        completed = subprocess.run(
-            command, cwd=ROOT, env=env, capture_output=True, text=True,
-            check=False,
+        returncode = _run_codegen_step(
+            command, cwd=ROOT, env=env, log_path=work_dir / "bringup-codegen.log"
         )
         report["counts"]["unsupported_opcodes"] = _count_unsupported_opcodes(
             codegen_dir / f"{game_name}_recomp_stubs.txt", sources
         )
-        if completed.returncode != 0:
+        if returncode != 0:
             fail_stage(report, "codegen", "CODEGEN_FAILED", [308],
                           int((time.perf_counter() - started) * 1000))
             _write_bringup_report(report, report_path)
             print(_bringup_human_summary(report))
             return 1
     except Exception:
+        _write_private_file(
+            work_dir / "bringup-codegen.log",
+            ("codegen stage raised:\n" + traceback.format_exc()).encode(
+                "utf-8", errors="replace"
+            ),
+        )
         fail_stage(report, "codegen", "CODEGEN_FAILED", [308],
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
@@ -3480,18 +3630,28 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         )
         try:
             launch_output, _ = process.communicate(timeout=timeout)
+            _write_bringup_launch_log(work_dir, launch_output)
             presentation_evidence_ok = _set_bringup_presentation(report, launch_output)
             report["runtime_imports"] = _runtime_import_rows(launch_output, unsupported_imports)
             report["runtime_output_kind"] = _runtime_output_kind(
                 launch_output, report["runtime_imports"]
             )
             report["process_exit_code"] = process.returncode
-            report["exit_classification"] = "EXITED_ZERO" if process.returncode == 0 else "EXITED_NONZERO"
+            budget_ended = _runtime_run_budget_ended(launch_output)
+            if process.returncode != 0:
+                report["exit_classification"] = "EXITED_NONZERO"
+            elif budget_ended:
+                report["exit_classification"] = "RUN_BUDGET_ENDED"
+            else:
+                report["exit_classification"] = "EXITED_ZERO"
             if process.returncode == 0:
                 hle_observed = _flight_has_hle_import(flight_output)
                 if hle_observed is False:
+                    # A run the budget ended is a live guest, not an exit: name the budget.
+                    failure = ("RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP" if budget_ended
+                               else "EXITED_ZERO_BEFORE_HLE")
                     fail_stage(
-                        report, "launch", "EXITED_ZERO_BEFORE_HLE", [308],
+                        report, "launch", failure, [308],
                         int((time.perf_counter() - started) * 1000),
                     )
                 elif hle_observed is None:
@@ -3504,6 +3664,8 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                     if framebuffer_observed is False:
                         if _flight_has_module_self_unload(flight_output) is True:
                             failure, issues = "MODULE_SELF_UNLOAD_BEFORE_FRAMEBUFFER_SETUP", [280, 308]
+                        elif budget_ended:
+                            failure, issues = "RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP", [308]
                         else:
                             failure, issues = "EXITED_ZERO_BEFORE_FRAMEBUFFER_SETUP", [308]
                         fail_stage(report, "launch", failure, issues,
@@ -3554,6 +3716,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         except subprocess.TimeoutExpired:
             process.kill()
             launch_output, _ = process.communicate()
+            _write_bringup_launch_log(work_dir, launch_output)
             _set_bringup_presentation(report, launch_output)
             report["exit_classification"] = "TIMED_OUT"
             fail_stage(report, "launch", "LAUNCH_TIMEOUT", [308],

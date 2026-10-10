@@ -11,12 +11,11 @@ import json
 import math
 import os
 from pathlib import Path, PurePosixPath
-import platform
 import re
 import shutil
-import sysconfig
+import subprocess
 import tempfile
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 CACHE_FORMAT = "nakagawa-aot-cache"
 COMPLETION_FORMAT = "nakagawa-aot-cache-completion"
@@ -818,6 +817,24 @@ def source_tree_digest(
     return digest.hexdigest()
 
 
+def _compiler_executable(
+    selected: str,
+    env: Mapping[str, str],
+    repository_root: Path | str | None,
+) -> str | None:
+    """The file a compiler name resolves to: PATH first, then a repository-relative path.
+
+    The identity and the target of the native objects must name the same compiler, so
+    both resolve ``CC`` through this one helper.
+    """
+    executable = shutil.which(selected, path=env.get("PATH"))
+    if executable is None and repository_root is not None:
+        candidate = Path(repository_root) / selected
+        if candidate.is_file():
+            executable = str(candidate)
+    return executable
+
+
 def compiler_identity(
     command: str | None = None,
     *,
@@ -826,11 +843,7 @@ def compiler_identity(
 ) -> str:
     env = os.environ if environment is None else environment
     selected = command or env.get("CC") or "gcc"
-    executable = shutil.which(selected, path=env.get("PATH"))
-    if executable is None and repository_root is not None:
-        candidate = Path(repository_root) / selected
-        if candidate.is_file():
-            executable = str(candidate)
+    executable = _compiler_executable(selected, env, repository_root)
     if executable is None:
         return f"{selected}:unavailable"
     path = Path(executable)
@@ -839,12 +852,44 @@ def compiler_identity(
     return f"{path.name}:{sha256_file(path)}"
 
 
-def compiler_target(environment: Mapping[str, str] | None = None) -> str:
+def compiler_target(
+    environment: Mapping[str, str] | None = None,
+    *,
+    repository_root: Path | str | None = None,
+) -> str:
+    """The machine triple the C compiler builds the native objects for.
+
+    The key names the target of the objects ``CC`` produces, so it is read from that
+    compiler (``-dumpmachine``) and never from the Python interpreter that plans the
+    build. Two interpreters on one machine report different platforms for the same
+    gcc (python.org: ``win-amd64``; MSYS2: ``mingw_x86_64_ucrt_gnu``), so an
+    interpreter-derived target changed the key between two builds of the same inputs.
+    ``NK_TARGET_TRIPLE`` or ``CC_TARGET`` still overrides it. ``repository_root`` lets a
+    relative ``CC`` resolve exactly as :func:`compiler_identity` resolves it.
+    """
     env = os.environ if environment is None else environment
     explicit = env.get("NK_TARGET_TRIPLE") or env.get("CC_TARGET")
     if explicit:
         return explicit
-    return f"{platform.machine()}-{sysconfig.get_platform()}"
+    selected = env.get("CC") or "gcc"
+    executable = _compiler_executable(selected, env, repository_root)
+    if executable is None:
+        return f"{selected}:unavailable"
+    try:
+        completed = subprocess.run(
+            [executable, "-dumpmachine"],
+            env=dict(env),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return f"{selected}:unavailable"
+    machine = completed.stdout.strip()
+    if completed.returncode != 0 or not machine:
+        return f"{selected}:unavailable"
+    return machine
 
 
 def native_compile_flags(
@@ -865,7 +910,22 @@ def native_compile_flags(
         env.get("STALE_CODE_POLICY", env.get("SR_STALE_POLICY", "")),
         "PUBLIC_SAFE=1" if public_safe else "PUBLIC_SAFE=0",
     )
-    return "|".join(values)
+    flags = "|".join(values)
+    # The NaN trap adds -DSR_NAN_TRAP inside the Makefile, where CFLAGS above cannot see it.
+    # It is appended only when on, so every untrapped key stays exactly what it was.
+    return flags + "|NAN_TRAP=1" if nan_trap_enabled(env) else flags
+
+
+def nan_trap_enabled(environment: Mapping[str, str] | None = None) -> bool:
+    """Whether a Make build in this environment turns on the NaN trap (issue #69).
+
+    `make NAN_TRAP=1` turns on both halves at once, `--nan-trap` codegen and `-DSR_NAN_TRAP`,
+    and it does so inside the Makefile (`ifeq ($(NAN_TRAP),1)`). So neither
+    CODEGEN_USER_ARGS nor CFLAGS in the environment shows it, and the cache key has to ask
+    for it by name: a trapped and an untrapped build must never share a cache entry.
+    """
+    env = os.environ if environment is None else environment
+    return env.get("NAN_TRAP", "").strip() == "1"
 
 
 def _input_sha(value: Any, label: str) -> str:
@@ -1087,9 +1147,26 @@ def compare_cache_keys(
     return CacheDecision("native-recompile", True, False, tuple(reasons))
 
 
-def _artifact_records(package_dir: Path) -> list[dict[str, str]]:
-    records: list[dict[str, str]] = []
-    for path in sorted(package_dir.rglob("*")):
+# A profile stamp is named by a hash over its entries, and the entries carry CFLAGS, which
+# carry the build directory (-DSR_BUILD_DIR). Two output roots that build the same inputs
+# therefore name the stamp differently, and a raw name sort would move the stamp relative
+# to its siblings with each root. Records are ordered by the name with that hash removed,
+# and by the full name only to break a tie between two stamps of one kind.
+_PROFILE_STAMP_HASH_RE = re.compile(
+    r"(\.(?:runtime-profile|codegen-profile|recomp-profile|title-config))-[0-9a-f]{4,}"
+)
+
+
+def _record_order(relative: str) -> tuple[str, str]:
+    return (_PROFILE_STAMP_HASH_RE.sub(r"\1", relative), relative)
+
+
+def _artifact_candidates(package_dir: Path) -> Iterator[tuple[str, Path]]:
+    """Yield (raw relative path, file) for each artifact in record order, without reading any bytes."""
+    for path in sorted(
+        package_dir.rglob("*"),
+        key=lambda item: _record_order(item.relative_to(package_dir).as_posix()),
+    ):
         if path.is_symlink():
             raise PackageCacheError("package contains a symlink artifact")
         if not path.is_file():
@@ -1097,6 +1174,12 @@ def _artifact_records(package_dir: Path) -> list[dict[str, str]]:
         relative = path.relative_to(package_dir).as_posix()
         if relative == COMPLETION_MANIFEST:
             continue
+        yield relative, path
+
+
+def _artifact_records(package_dir: Path) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    for relative, path in _artifact_candidates(package_dir):
         records.append({"path": _safe_relative(relative), "sha256": sha256_file(path)})
     return records
 
@@ -1158,12 +1241,32 @@ def write_completion_manifest(
     return destination
 
 
+def _digest_once(path: Path, digests: dict[Path, str] | None) -> str:
+    """Digest of one resolved package file, reusing a digest already taken in this validation."""
+    if digests is None:
+        return sha256_file(path)
+    digest = digests.get(path)
+    if digest is None:
+        digest = digests[path] = sha256_file(path)
+    return digest
+
+
 def validate_completion_manifest(
     package_dir: Path,
     *,
     expected_key: Mapping[str, Any] | None = None,
     required_paths: set[str] | None = None,
+    file_digests: dict[Path, str] | None = None,
 ) -> tuple[bool, str, dict[str, Any] | None]:
+    """Validate the completion manifest.
+
+    ``file_digests`` maps resolved artifact paths to digests computed earlier in the same
+    validation. Each listed artifact is still compared against its manifest digest; only
+    the second read of a file that was already digested is skipped.
+    The comparison therefore reflects the bytes as that validation read them: a file
+    rewritten between the package-level check and this one, inside the same call, is
+    not read a second time. A caller that wants a fresh read passes no digests.
+    """
     package_dir = package_dir.resolve(strict=False)
     path = package_dir / COMPLETION_MANIFEST
     if not path.is_file() or path.is_symlink():
@@ -1223,13 +1326,16 @@ def validate_completion_manifest(
         seen.add(relative)
         if not resolved.is_file() or resolved.is_symlink():
             return False, f"completion artifact is missing: {relative}", None
-        if sha256_file(resolved) != digest:
+        if _digest_once(resolved, file_digests) != digest:
             return False, f"completion artifact digest mismatch: {relative}", None
     for relative in required_paths or set():
         if relative not in seen:
             return False, f"completion manifest does not cover {relative}", None
+    # Only the path set is compared here. The digests of unlisted files were
+    # computed and discarded, so enumerating without reading them keeps the
+    # same set check while removing a full second read of the package.
     try:
-        actual = {record["path"] for record in _artifact_records(package_dir)}
+        actual = {_safe_relative(relative) for relative, _ in _artifact_candidates(package_dir)}
     except PackageCacheError as exc:
         return False, str(exc), None
     if actual != seen:
@@ -1345,11 +1451,14 @@ def validate_package_cache(
     executable_path = executable.get("path") if isinstance(executable, dict) else None
     if not isinstance(executable_path, str):
         return False, "package executable path is missing"
+    # Each executable and generated object is digested once here; the completion
+    # check below reuses these digests rather than reading the same bytes again.
+    file_digests: dict[Path, str] = {}
     try:
         executable_file = _resolve_within(package_dir, executable_path)
     except PackageCacheError as exc:
         return False, str(exc)
-    if not executable_file.is_file() or sha256_file(executable_file) != executable.get("sha256"):
+    if not executable_file.is_file() or _digest_once(executable_file, file_digests) != executable.get("sha256"):
         return False, "package executable digest is stale"
     image_path = str(Path(executable_path).with_name(
         f"{Path(executable_path).stem}_image.bin"
@@ -1372,13 +1481,14 @@ def validate_package_cache(
             object_file = _resolve_within(package_dir, object_path)
         except PackageCacheError as exc:
             return False, str(exc)
-        if not object_file.is_file() or sha256_file(object_file) != item.get("sha256"):
+        if not object_file.is_file() or _digest_once(object_file, file_digests) != item.get("sha256"):
             return False, f"package generated object digest is stale: {object_path}"
         required.add(object_path)
     valid, reason, completion = validate_completion_manifest(
         package_dir,
         expected_key=expected_key,
         required_paths=required,
+        file_digests=file_digests,
     )
     if not valid:
         return False, reason

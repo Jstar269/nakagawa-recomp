@@ -78,6 +78,58 @@ PRIVATE_OPERATIONAL_VOCABULARY = re.compile(
     re.IGNORECASE,
 )
 SUSPICIOUS_ENCODED = re.compile(r"^[A-Za-z0-9+/]{256,}={0,2}$")
+# A C0 control character other than TAB, LF and CR marks a blob as binary. One
+# search per blob replaces a Python-level scan of every character of every text blob.
+BINARY_CONTROL_CHARACTER = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+# Literal prefilters for the content signatures. Each helper returns exactly the verdict
+# of the regex it names: the literal it checks is part of every possible match, so a text
+# without it cannot match and the regex is skipped. A case-insensitive pattern is checked
+# against the lowercased text. No case-insensitive literal contains an i, because the dotless
+# i does not lowercase to i, and the long s (U+017F) is spelled out where a word needs it,
+# so no match is ever lost. The API-token literals are case-sensitive, so they are checked
+# as written.
+def _has_api_token(text: str) -> bool:
+    if "ghp_" not in text and "github_pat_" not in text and "sk_live_" not in text and "AKIA" not in text:
+        return False
+    return API_TOKEN_PATTERN.search(text) is not None
+
+
+def _has_windows_user_path(text: str) -> bool:
+    if ":\\" not in text:  # every match has a drive colon and then a backslash
+        return False
+    return WINDOWS_USER_PATH.search(text) is not None
+
+
+def _has_onedrive_path(text: str, lowered: str) -> bool:
+    if "onedr" not in lowered:  # every match contains "OneDr" in some letter case
+        return False
+    return ONEDRIVE_PATH.search(text) is not None
+
+
+def _has_temp_path(text: str, lowered: str) -> bool:
+    # Matches are "/tmp/", "/var/tmp/" or a drive path that ends in a Temp directory.
+    if "tmp/" not in lowered and not ("temp\\" in lowered and ":\\" in text):
+        return False
+    return TEMP_PATH.search(text) is not None
+
+
+def _has_private_repo_url(text: str) -> bool:
+    if "269/" not in text:  # every match contains the account number and a slash
+        return False
+    return PRIVATE_REPO_URL.search(text) is not None
+
+
+def _has_private_operational_vocabulary(text: str, lowered: str) -> bool:
+    # HST_PGD_VKEY contains "pgd_v". "private" followed by a separator and save, trace or
+    # dump contains "vate", the separator and the word, with the long s written as U+017F.
+    if "pgd_v" not in lowered and not any(
+        "vate" + separator + word in lowered
+        for separator in "_ -" for word in ("trace", "dump", "save", "\u017fave")
+    ):
+        return False
+    return PRIVATE_OPERATIONAL_VOCABULARY.search(text) is not None
 
 FORBIDDEN_EXTENSIONS = {
     ".at3", ".bin", ".chd", ".cso", ".dax", ".dmp", ".edat", ".elf", ".gim",
@@ -130,9 +182,15 @@ def _git(cmd: list[str], repo_root: Path = ROOT) -> str:
     return res.stdout.decode("utf-8", errors="replace")
 
 
-def get_repository_baseline(repo_root: Path = ROOT) -> dict:
+def _object_listing(repo_root: Path) -> list[str]:
+    """Every reachable object as a ``<sha> <path>`` line, from one ``rev-list``."""
+    return _git(["rev-list", "--objects", "--all"], repo_root=repo_root).splitlines()
+
+
+def get_repository_baseline(repo_root: Path = ROOT, raw_objects: list[str] | None = None) -> dict:
     commit_count = int(_git(["rev-list", "--count", "--all"], repo_root=repo_root).strip())
-    raw_objects = _git(["rev-list", "--objects", "--all"], repo_root=repo_root).splitlines()
+    if raw_objects is None:
+        raw_objects = _object_listing(repo_root)
     ref_list = _git(["for-each-ref"], repo_root=repo_root).splitlines()
     try:
         main_sha = _git(["rev-parse", "origin/main"], repo_root=repo_root).strip()
@@ -165,10 +223,12 @@ def _path_finding_id(obj_sha: str, repo_root: Path) -> str:
     return "blob:" + obj_sha[:12] if kind == "blob" else obj_sha[:8]
 
 
-def audit_history_tree_paths(repo_root: Path = ROOT) -> list[HistoryFinding]:
+def audit_history_tree_paths(repo_root: Path = ROOT,
+                             raw_objects: list[str] | None = None) -> list[HistoryFinding]:
     """Pass 1: Audit all historical tree entry paths across every reachable commit."""
     findings: list[HistoryFinding] = []
-    raw_objects = _git(["rev-list", "--objects", "--all"], repo_root=repo_root).splitlines()
+    if raw_objects is None:
+        raw_objects = _object_listing(repo_root)
 
     for line in raw_objects:
         parts = line.strip().split(None, 1)
@@ -217,9 +277,11 @@ def audit_history_tree_paths(repo_root: Path = ROOT) -> list[HistoryFinding]:
     return findings
 
 
-def _reachable_blob_ids(repo_root: Path) -> dict[str, str]:
+def _reachable_blob_ids(repo_root: Path,
+                        raw_objects: list[str] | None = None) -> dict[str, str]:
     """Return each reachable blob object exactly once, with one observed path."""
-    raw_objects = _git(["rev-list", "--objects", "--all"], repo_root=repo_root).splitlines()
+    if raw_objects is None:
+        raw_objects = _object_listing(repo_root)
     candidates: dict[str, str] = {}
     for line in raw_objects:
         parts = line.strip().split(None, 1)
@@ -259,10 +321,11 @@ def _binary_magic(data: bytes) -> str | None:
     return None
 
 
-def audit_history_blob_contents(repo_root: Path = ROOT) -> list[HistoryFinding]:
+def audit_history_blob_contents(repo_root: Path = ROOT,
+                                raw_objects: list[str] | None = None) -> list[HistoryFinding]:
     """Pass 2: scan every reachable blob's content once, not just its path."""
     findings: list[HistoryFinding] = []
-    blobs = _reachable_blob_ids(repo_root)
+    blobs = _reachable_blob_ids(repo_root, raw_objects)
     if not blobs:
         return findings
     proc = subprocess.Popen(
@@ -296,20 +359,21 @@ def audit_history_blob_contents(repo_root: Path = ROOT) -> list[HistoryFinding]:
             text = None
         if text is not None and (
             b"\0" in data
-            or any(ord(ch) < 32 and ch not in "\t\r\n" for ch in text)
+            or BINARY_CONTROL_CHARACTER.search(text) is not None
         ):
             text = None
 
-        if text is not None and (PEM_KEY_MATERIAL.search(text) or API_TOKEN_PATTERN.search(text)):
+        lowered = text.lower() if text is not None else ""
+        if text is not None and (PEM_KEY_MATERIAL.search(text) or _has_api_token(text)):
             findings.append(HistoryFinding("DEFINITE_SECRET", "HISTORICAL_BLOB_SECRET", commit, path,
                                            "reachable blob contains a private-key or API-token signature [REDACTED]"))
-        if text is not None and (WINDOWS_USER_PATH.search(text) or POSIX_USER_PATH.search(text) or MAC_USER_PATH.search(text) or WSL_USER_PATH.search(text) or UNC_PATH.search(text) or ONEDRIVE_PATH.search(text) or TEMP_PATH.search(text)):
+        if text is not None and (_has_windows_user_path(text) or POSIX_USER_PATH.search(text) or MAC_USER_PATH.search(text) or WSL_USER_PATH.search(text) or UNC_PATH.search(text) or _has_onedrive_path(text, lowered) or _has_temp_path(text, lowered)):
             findings.append(HistoryFinding("PRIVACY_METADATA", "HISTORICAL_BLOB_LOCAL_PATH", commit, path,
                                            "reachable blob contains a private local path [REDACTED]"))
-        if text is not None and PRIVATE_REPO_URL.search(text):
+        if text is not None and _has_private_repo_url(text):
             findings.append(HistoryFinding("PRIVACY_METADATA", "HISTORICAL_BLOB_PRIVATE_REPO", commit, path,
                                            "reachable blob names a private repository [REDACTED]"))
-        if text is not None and PRIVATE_OPERATIONAL_VOCABULARY.search(text):
+        if text is not None and _has_private_operational_vocabulary(text, lowered):
             findings.append(HistoryFinding("PROPRIETARY_ARTIFACT", "HISTORICAL_BLOB_PRIVATE_VOCABULARY", commit, path,
                                            "reachable blob contains private/game-derived operational vocabulary [REDACTED]"))
         magic = _binary_magic(data)
@@ -383,10 +447,12 @@ def audit_history_commit_metadata(repo_root: Path = ROOT,
     return findings
 
 
-def audit_large_blobs(repo_root: Path = ROOT, size_threshold: int = 500 * 1024) -> list[dict]:
+def audit_large_blobs(repo_root: Path = ROOT, size_threshold: int = 500 * 1024,
+                      raw_objects: list[str] | None = None) -> list[dict]:
     """Pass 3: Inventory large objects in history packfiles."""
     large_blobs: list[dict] = []
-    raw_objects = _git(["rev-list", "--objects", "--all"], repo_root=repo_root).splitlines()
+    if raw_objects is None:
+        raw_objects = _object_listing(repo_root)
 
     # Map sha to path
     sha_to_path: dict[str, str] = {}
@@ -470,11 +536,14 @@ def _is_reviewed(finding: HistoryFinding, reviewed: list[dict]) -> dict | None:
 
 def generate_full_history_audit_report(repo_root: Path = ROOT,
                                        reviewed_path: Path = REVIEWED_FINDINGS_PATH) -> dict:
-    baseline = get_repository_baseline(repo_root)
-    tree_findings = audit_history_tree_paths(repo_root)
+    # One object listing serves every pass: the report reads one consistent
+    # snapshot of history instead of four separate rev-list runs.
+    raw_objects = _object_listing(repo_root)
+    baseline = get_repository_baseline(repo_root, raw_objects)
+    tree_findings = audit_history_tree_paths(repo_root, raw_objects)
     metadata_findings = audit_history_commit_metadata(repo_root)
-    blob_findings = audit_history_blob_contents(repo_root)
-    large_blobs = audit_large_blobs(repo_root)
+    blob_findings = audit_history_blob_contents(repo_root, raw_objects)
+    large_blobs = audit_large_blobs(repo_root, raw_objects=raw_objects)
     reviewed = load_reviewed_findings(reviewed_path)
 
     all_findings: list[HistoryFinding] = []

@@ -990,7 +990,9 @@ def _cache_codegen_options(
     selected_optional: set[str],
     funcs_per_chunk: int,
 ) -> dict[str, Any]:
-    return {
+    from nk_core import package_cache
+
+    options = {
         "base": plan["environment"]["GAME_BASE"],
         "entry": plan["environment"]["GAME_ENTRY"],
         "title_extra_spans": plan["environment"]["TITLE_EXTRA_SPANS"],
@@ -1005,6 +1007,11 @@ def _cache_codegen_options(
         ),
         "chunk_target_bytes": os.environ.get("CHUNK_TARGET_BYTES", ""),
     }
+    # Mirrors nk_cli._package_codegen_options: the Makefile adds --nan-trap itself, so the
+    # options name it only when it is on, leaving untrapped keys unchanged.
+    if package_cache.nan_trap_enabled(os.environ):
+        options["nan_trap"] = True
+    return options
 
 
 def _copy_reusable_aot(source: Path, destination: Path, game_name: str) -> None:
@@ -1066,7 +1073,7 @@ def _cache_key_for_build(
         analyzer_sha256=package_cache.sha256_file(ROOT / "tools" / "analyze.py"),
         codegen_sha256=package_cache.sha256_file(ROOT / "tools" / "codegen.py"),
         compiler=package_cache.compiler_identity(compiler_name, repository_root=ROOT),
-        target=package_cache.compiler_target(),
+        target=package_cache.compiler_target(repository_root=ROOT),
         runtime_source_digest=package_cache.source_tree_digest(ROOT),
         compile_flags=package_cache.native_compile_flags(public_safe=public_safe),
         link_flags=os.environ.get("LDFLAGS", ""),

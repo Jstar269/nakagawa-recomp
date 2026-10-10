@@ -31,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -151,6 +152,30 @@ class ConversionDeterminismTests(unittest.TestCase):
             self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
             self.assertEqual(image.read_bytes(), image_bytes)
             self.assertEqual(manifest.read_bytes(), manifest_bytes_first)
+
+    def test_cli_manifest_is_byte_identical_across_output_directories(self) -> None:
+        """The same build run from two host directories records the same manifest (plan 6.2)."""
+        manifests = []
+        with tempfile.TemporaryDirectory(prefix="ttf2pgf_host_a_") as first_dir, \
+                tempfile.TemporaryDirectory(prefix="ttf2pgf_host_b_") as second_dir:
+            for directory in (first_dir, second_dir):
+                image = Path(directory) / "gudea.pgf"
+                manifest = Path(directory) / "gudea.json"
+                result = _cli(image, FONT, "--pin", PIN, "--manifest", manifest, "--ppem", PPEM_SHAPE)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                manifests.append(manifest.read_bytes())
+        self.assertEqual(manifests[0], manifests[1], "the manifest must not embed the output directory")
+
+    def test_manifest_paths_are_basenames_under_either_host_separator(self) -> None:
+        posix = self._convert(
+            input_path="/srv/build/ofl/Gudea-Regular.ttf", output_path="/srv/build/out/gudea.pgf",
+        )
+        windows = self._convert(
+            input_path="C:\\Work\\ofl\\Gudea-Regular.ttf", output_path="D:\\out\\gudea.pgf",
+        )
+        self.assertEqual(manifest_bytes(posix.manifest), manifest_bytes(windows.manifest))
+        self.assertEqual(posix.manifest["input"]["path"], "Gudea-Regular.ttf")
+        self.assertEqual(posix.manifest["output"]["path"], "gudea.pgf")
 
     def test_manifest_carries_digests_coverage_and_full_licence_material(self) -> None:
         conversion = self._convert()
@@ -355,13 +380,42 @@ class RefusalTests(CliRefusalMixin, unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_camouflage_font_name_is_refused(self) -> None:
-        result = _cli(self.output, FONT, "--font-name", "FTT-NewRodin Pro Latin")
+        result = _cli(self.output, FONT, "--font-name", _joined("F", "TT-", "New", "Rodin Pro Latin"))
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("refused: camouflage-font-name:", result.stderr)
         self.assertFalse(self.output.exists())
 
     def test_adobe_reserved_font_name_source_is_refused(self) -> None:
         result = _cli(self.output, FONT, "--font-name", "Source Compatible")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("refused: reserved-font-name:", result.stderr)
+        self.assertFalse(self.output.exists())
+
+    def test_codepoints_and_codes_are_mutually_exclusive(self) -> None:
+        points = self._write("one.txt", b"0x41\n")
+        result = _cli(self.output, FONT, "--codes", "0x41", "--codepoints", points)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("not allowed with", result.stderr)
+        self.assertFalse(self.output.exists())
+
+    def test_unsorted_or_repeated_codepoints_are_refused(self) -> None:
+        for name, text in (("unsorted.txt", "0x48\n0x41\n"), ("repeated.txt", "0x41\n0x41\n")):
+            with self.subTest(name=name):
+                path = self._write(name, text.encode("ascii"))
+                self.assert_cli_refused("codepoints-unsorted", self.output, FONT, "--codepoints", path)
+
+    def test_malformed_or_empty_codepoint_list_is_refused(self) -> None:
+        path = self._write("garbage.txt", b"0x41\nnot-a-code\n")
+        self.assert_cli_refused("bad-codepoint-list", self.output, FONT, "--codepoints", path)
+        path = self._write("empty.txt", b"# no code points\n\n")
+        self.assert_cli_refused("empty-codepoint-set", self.output, FONT, "--codepoints", path)
+
+    def test_listed_code_point_without_a_glyph_is_refused(self) -> None:
+        path = self._write("unmapped.txt", b"0x01\n0x41\n")
+        self.assert_cli_refused("missing-code-point", self.output, FONT, "--codepoints", path)
+
+    def test_vendor_marker_in_the_font_name_is_refused_before_writing(self) -> None:
+        result = _cli(self.output, FONT, "--font-name", "No" "to Sans")
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("refused: reserved-font-name:", result.stderr)
         self.assertFalse(self.output.exists())
@@ -613,6 +667,63 @@ class MetricTargetTests(unittest.TestCase):
 
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
+class CodePointSetTests(unittest.TestCase):
+    """--codepoints converts exactly the listed code points, and a sparse set is written sparse."""
+
+    SET = (0x41, 0x48, 0x67, 0x7E)
+
+    def setUp(self) -> None:
+        self.data = FONT.read_bytes()
+        self.pin = load_pin(PIN, self.data)
+        self._tmp = tempfile.TemporaryDirectory(prefix="ttf2pgf_codepoints_")
+        self.addCleanup(self._tmp.cleanup)
+        self.points = Path(self._tmp.name) / "points.txt"
+        self.points.write_text("".join(f"0x{code:04X}\n" for code in self.SET), encoding="ascii")
+
+    def _convert(self, ppem: int = PPEM_SHAPE):
+        code_points = ttf2pgf.load_code_points(self.points)
+        return convert(
+            self.data,
+            input_path=str(FONT),
+            output_path="sparse.pgf",
+            code_points=code_points,
+            ppem=ppem,
+            pin=self.pin,
+        )
+
+    def test_listed_codes_only_are_converted_and_the_map_is_sparse(self) -> None:
+        conversion = self._convert()
+        image = conversion.image
+        self.assertEqual(sorted(glyph.code for glyph in conversion.glyphs), list(self.SET))
+        self.assertEqual(struct.unpack_from("<HH", image, 0xB6), (0x41, 0x7E))
+        self.assertEqual(struct.unpack_from("<I", image, 0x10)[0], 0x7E - 0x41 + 1)
+        self.assertEqual(struct.unpack_from("<I", image, 0x14)[0], len(self.SET))
+        validate_pgf_data(image, "sparse.pgf")
+
+    def test_manifest_records_the_point_list_by_digest_and_leaf_name(self) -> None:
+        conversion = self._convert()
+        points = conversion.manifest["code_points"]
+        self.assertEqual(points["sha256"], hashlib.sha256(self.points.read_bytes()).hexdigest())
+        self.assertEqual(points["count"], len(self.SET))
+        self.assertEqual(points["path"], "points.txt")
+        self.assertEqual(conversion.manifest["coverage"]["count"], len(self.SET))
+        self.assertEqual(conversion.manifest["coverage"]["span"], 0x7E - 0x41 + 1)
+        self.assertEqual(manifest_bytes(conversion.manifest), manifest_bytes(self._convert().manifest))
+
+    def test_nominal_size_is_the_em_size_at_the_chosen_ppem_not_the_extrema(self) -> None:
+        conversion = self._convert(ppem=16)
+        image = conversion.image
+        self.assertEqual(struct.unpack_from("<i", image, 0x24)[0], 16 * 64)
+        self.assertEqual(struct.unpack_from("<i", image, 0x28)[0], 16 * 64)
+        self.assertEqual(conversion.manifest["parameters"]["nominal_em_26_6"], 16 * 64)
+        self.assertEqual(conversion.manifest["output"]["horizontal_size_26_6"], 16 * 64)
+        self.assertNotEqual(
+            conversion.manifest["output"]["max_advance_26_6"],
+            16 * 64,
+            "the fixture's advance extremum must differ from the nominal size for this check to mean anything",
+        )
+
+
 class ReaderRoundTripTests(unittest.TestCase):
     """Layer 1: the generated font opens through the production reader path."""
 
@@ -746,6 +857,154 @@ class ReaderRoundTripTests(unittest.TestCase):
         first = self._read_back(conversion.image, codes)
         second = self._read_back(conversion.image, codes)
         self.assertEqual(first, second)
+
+    def test_sparse_codepoint_set_round_trips_and_absent_codes_are_misses(self) -> None:
+        codes = CodePointSetTests.SET
+        points = Path(self.tmp) / "set.txt"
+        points.write_text("".join(f"0x{code:04X}\n" for code in codes), encoding="ascii")
+        data = FONT.read_bytes()
+        conversion = convert(
+            data,
+            input_path=str(FONT),
+            output_path="converted.pgf",
+            code_points=ttf2pgf.load_code_points(points),
+            ppem=PPEM_SHAPE,
+            pin=load_pin(PIN, data),
+        )
+        glyphs = _glyph_map(conversion.glyphs)
+        probe = [0x41, 0x42, 0x48, 0x7E]  # U+0042 is outside the set
+        lines = self._read_back(conversion.image, probe)
+        self.assertEqual(lines[0], "open ok")
+        font = bytes.fromhex(lines[1].removeprefix("font "))
+        self.assertEqual(struct.unpack_from("<I", font, 0x54)[0], 0x7E - 0x41 + 1)
+        records = lines[2:]
+        for index, code in enumerate(probe):
+            char_line = records[index * 2].split(" ")
+            draw_line = records[index * 2 + 1].split(" ")
+            self.assertEqual(char_line[:2], ["char", str(code)])
+            if code not in glyphs:
+                self.assertEqual(char_line[2], "0", f"U+{code:04X} is outside the set")
+                self.assertEqual(draw_line[:3], ["draw", str(code), "none"])
+                continue
+            self.assertEqual(char_line[2], "1", f"U+{code:04X} presence")
+            self.assertEqual(list(bytes.fromhex(draw_line[4])), list(glyphs[code].samples))
+
+
+def _joined(*parts: str) -> str:
+    """A name assembled from literal pieces, so this file never holds a vendor name whole."""
+    return "".join(parts)
+
+
+class NameDenylistTests(unittest.TestCase):
+    """Output names: vendor camouflage and reserved or trademark names are refused by name."""
+
+    def test_vendor_camouflage_names_are_refused(self) -> None:
+        names = (
+            _joined("F", "TT-", "New", "Rodin Pro Latin"),
+            _joined("f", "tt-", "new", "rodin"),
+            _joined("Asia", "NHH", "(512Johab)"),
+            _joined("Asia", "KNHH", "-", "SO", "NY", "-uni"),
+            _joined("Font", "works", " Latin"),
+            _joined("SO", "NY", " Latin"),
+        )
+        for name in names:
+            with self.subTest(name=name):
+                with self.assertRaises(TtfConvertError) as caught:
+                    ttf2pgf.validate_output_name(name, None)
+                self.assertEqual(caught.exception.reason, "camouflage-font-name")
+
+    def test_reserved_and_trademark_names_are_refused(self) -> None:
+        names = (
+            "Noto Sans JP", "Lato Display", "Atkinson Hyperlegible Next", "Nanum Gothic",
+            "Sawarabi Gothic", "Gowun Dodum", "M PLUS 1p", "Ume Hy Gothic", "Source Han Sans",
+        )
+        for name in names:
+            with self.subTest(name=name):
+                with self.assertRaises(TtfConvertError) as caught:
+                    ttf2pgf.validate_output_name(name, None)
+                self.assertEqual(caught.exception.reason, "reserved-font-name")
+
+    def test_project_names_and_ordinary_words_are_accepted(self) -> None:
+        for name in ("Nakagawa Open Japanese", "Nakagawa Open Latin", "Nakagawa Open Korean",
+                     "Platonic Serif", "Volume Mono", "Sonyx Latin"):
+            with self.subTest(name=name):
+                ttf2pgf.validate_output_name(name, None)  # must not raise
+
+
+class VendorFontNameScanTests(unittest.TestCase):
+    """Publication scan: no tracked source file names a vendor font.
+
+    The scan covers every tracked file except Markdown and binary files. Markdown is the
+    provenance record (docs/provenance/FONT_ORIGINS.md) that documents where each name was
+    found, so it names the vendor fonts on purpose.
+
+    The marker set is this class's own literal list, not read from the converter's
+    denylist, so weakening that denylist cannot hide a name from this scan. It is narrower
+    than the denylist on one point, deliberately: the console maker's name is not a
+    whole-word marker here. That name is the platform's own identity and appears
+    legitimately across tracked source (the PSP's device identifiers, the non-affiliation
+    notice, third-party attribution), so a whole-word match would fail on those lines.
+    Consequently a maker-branded font name in tracked source passes this scan; the
+    converter's denylist refuses it at output instead.
+    Each name is split across literals so this file does not contain it whole.
+    """
+
+    PATTERN = re.compile(
+        "|".join(
+            re.escape(part)
+            for part in (_joined("New", "Rodin"), _joined("Asia", "KNHH"),
+                         _joined("Asia", "NHH"), _joined("Font", "works"))
+        )
+        + r"|(?<![0-9A-Za-z])" + re.escape(_joined("F", "TT")) + r"(?![0-9A-Za-z])",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _hit_lines(cls, text: str) -> list[int]:
+        """1-based numbers of the lines in ``text`` that the scan flags."""
+        return [number for number, line in enumerate(text.splitlines(), start=1)
+                if cls.PATTERN.search(line)]
+
+    def test_scan_catches_each_listed_marker(self) -> None:
+        # The tree test passes vacuously if the pattern is broken, so prove it fires.
+        markers = (
+            _joined("New", "Rodin"), _joined("Asia", "KNHH"), _joined("Asia", "NHH"),
+            _joined("Font", "works"), _joined("F", "TT"),
+        )
+        for marker in markers:
+            with self.subTest(marker=marker):
+                self.assertEqual(self._hit_lines("font = '" + marker + "'\n"), [1])
+
+    def test_whole_word_marker_needs_a_word_boundary(self) -> None:
+        self.assertEqual(self._hit_lines("x = 'X" + _joined("F", "TT") + "Y'\n"), [])
+
+    def test_platform_prose_naming_the_console_maker_is_not_flagged(self) -> None:
+        # The maker's name is deliberately not a marker here (see the class docstring).
+        prose = "# Not affiliated with " + _joined("SO", "NY") + " Interactive Entertainment.\n"
+        self.assertEqual(self._hit_lines(prose), [])
+
+    def test_tracked_source_names_no_vendor_font(self) -> None:
+        if shutil.which("git") is None:
+            self.skipTest("git is required to enumerate the tracked tree")
+        listing = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-files", "-z"], capture_output=True, text=True, check=True,
+        ).stdout
+        offenders = []
+        for entry in sorted(filter(None, listing.split("\0"))):
+            if entry.lower().endswith(".md"):
+                continue
+            try:
+                data = (ROOT / entry).read_bytes()
+            except OSError:
+                continue
+            if b"\0" in data:
+                continue
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            offenders.extend(f"{entry}:{number}" for number in self._hit_lines(text))
+        self.assertEqual(offenders, [], "tracked source names a vendor font; use a project-owned name")
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ import imports as imports_tool  # noqa: E402
 import nk_cli  # noqa: E402
 import prxload  # noqa: E402
 import title_codegen_plan  # noqa: E402
+from test_build_truth import _class_scratch_build_root  # noqa: E402
 from test_iso_parity import (  # noqa: E402
     build_plain_mips_elf,
     build_psp_container,
@@ -45,7 +46,7 @@ from test_iso_parity import (  # noqa: E402
 from test_import_name_safety import build_synthetic_import_prx  # noqa: E402
 from import_fixtures import SYSLIB_EXPORT, build_module_elf  # noqa: E402
 from nk_core import package_cache  # noqa: E402
-from nk_core.iso_inspect import runtime_registered_nids  # noqa: E402
+from nk_core.iso_inspect import PBP_BOUNDARY_CODES, runtime_registered_nids  # noqa: E402
 from nk_core.types import TitleProfile  # noqa: E402
 
 
@@ -612,6 +613,12 @@ class TestStagedRunFailClosed(unittest.TestCase):
 
 
 class TestProductionSmokePackage(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Probes and the packaging route build into one scratch BUILD_ROOT for the class
+        # (exported to the package planner's Make runs too), never the checkout's build/.
+        cls.binary_dir = _class_scratch_build_root(cls, "production-smoke-package")
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="nk-package-smoke-")
         self.addCleanup(self.temporary.cleanup)
@@ -677,7 +684,8 @@ class TestProductionSmokePackage(unittest.TestCase):
         """
         make_name = "mingw32-make" if os.name == "nt" else "make"
         probe = subprocess.run(
-            [make_name, "--no-print-directory", "sdl3-check"],
+            [make_name, "--no-print-directory", "sdl3-check",
+             f"BUILD_ROOT={self.binary_dir.as_posix()}"],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -998,11 +1006,12 @@ class TestProductionSmokePackage(unittest.TestCase):
         if ucrt_bin.is_dir():
             player_env["PATH"] = str(ucrt_bin) + os.pathsep + player_env.get("PATH", "")
         native_build = subprocess.run(
-            ["mingw32-make", "--no-print-directory", "player-state-test-bin"],
+            ["mingw32-make", "--no-print-directory", "player-state-test-bin",
+             f"BUILD_ROOT={self.binary_dir.as_posix()}"],
             cwd=ROOT, env=player_env, capture_output=True, text=True,
         )
         self.assertEqual(native_build.returncode, 0, native_build.stdout + native_build.stderr)
-        validator = ROOT / "build" / "test_player_state.exe"
+        validator = self.binary_dir / "test_player_state.exe"
         args = [str(validator), "--validate-package", str(user_root),
                 "ULUS99998", self.manifest["id"], "1", "EBOOT.BIN"]
         accepted = subprocess.run(args, cwd=ROOT, capture_output=True, text=True)
@@ -1535,6 +1544,48 @@ class TestSanitizedBringup(unittest.TestCase):
                 self.assertEqual(report["failure_class"], "EXECUTABLE_UNSUPPORTED")
                 self.assertEqual(report["issue_numbers"], [308])
 
+    def test_pbp_package_keeps_its_named_boundary_in_the_report(self):
+        from test_iso_parity import build_pbp_package
+
+        case_root = self.root / "pbp-package"
+        package = case_root / "store-package.iso"
+        case_root.mkdir(parents=True)
+        build_pbp_package(package, disc_id="ULUS99997", title="Store Package")
+        report_path = case_root / "bringup.json"
+        args = argparse.Namespace(
+            iso=str(package),
+            work_dir=str(case_root / "work"),
+            report=str(report_path),
+            launch_timeout=1,
+            instruction_trace=False,
+        )
+        with mock.patch("builtins.print"):
+            status = nk_cli.cmd_bringup(args)
+
+        self.assertEqual(status, 1)
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        nk_cli.validate_bringup_report(report)
+        self.assertEqual(report["reached_stage"], "inspect")
+        self.assertEqual(report["stages"]["inspect"]["status"], "FAIL")
+        self.assertEqual(report["failure_class"], "PBP_PACKAGE_UNSUPPORTED")
+
+    def test_every_identify_boundary_code_is_a_schema_failure_class(self):
+        # The sweep and the bring-up report only carry failure classes the schema
+        # enumerates; an unlisted identify boundary is silently replaced by
+        # INVALID_ISO, which hides the named refusal from every downstream reader.
+        schema = json.loads(nk_cli.BRINGUP_SCHEMA_PATH.read_text(encoding="utf-8"))
+        enumerated = set(schema["properties"]["failure_class"]["enum"])
+        # The expected set is the emitter's own registry, never a copy of it here.
+        self.assertTrue(PBP_BOUNDARY_CODES)
+        self.assertEqual(set(PBP_BOUNDARY_CODES) - enumerated, set())
+        for code in PBP_BOUNDARY_CODES:
+            with self.subTest(code=code):
+                report = nk_cli._new_bringup_report()
+                report["reached_stage"] = "inspect"
+                report["stages"]["inspect"] = {"status": "FAIL", "duration_ms": 0}
+                report["failure_class"] = code
+                nk_cli.validate_bringup_report(report)
+
     def test_sanitized_report_preserves_offscreen_backend_with_perf_timestamp(self):
         output = (
             "BOOT_EVENT phase=window_ready backend=offscreen t_ns=100\n"
@@ -1696,6 +1747,77 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertIn("related support is in the works", summary)
         self.assertNotRegex(summary, r"#[0-9]+")
         nk_cli.validate_bringup_report(report)
+
+    def test_run_budget_detection_needs_the_runtime_budget_event(self):
+        self.assertTrue(nk_cli._runtime_run_budget_ended(
+            "BOOT_EVENT phase=window_ready backend=offscreen\n"
+            "BOOT_EVENT phase=exit_at_vblank vblanks=6700 (SR_EXIT_AT_VBLANK=6700)\n"))
+        self.assertFalse(nk_cli._runtime_run_budget_ended(
+            "note: BOOT_EVENT phase=exit_at_vblank vblanks=6700 (SR_EXIT_AT_VBLANK=6700)"))
+        self.assertFalse(nk_cli._runtime_run_budget_ended(""))
+        self.assertFalse(nk_cli._runtime_run_budget_ended(None))
+
+    def test_budget_ended_live_guest_is_not_labelled_as_an_exit(self):
+        status, report = self._run_case(
+            flight_events=[{"class": "hle", "kind": 1, "arg0": 0x446D8DE6}],
+            launch_output=(
+                "BOOT_EVENT phase=window_ready backend=offscreen\n"
+                "BOOT_EVENT phase=exit_at_vblank vblanks=6700 (SR_EXIT_AT_VBLANK=6700)\n"
+            ),
+        )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP")
+        self.assertEqual(report["exit_classification"], "RUN_BUDGET_ENDED")
+        self.assertEqual(report["stages"]["launch"]["status"], "FAIL")
+        self.assertEqual(report["issue_numbers"], [308])
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn("run budget ended", summary)
+        self.assertNotIn("exited zero", summary.casefold())
+        nk_cli.validate_bringup_report(report)
+
+    def test_budget_ended_before_any_hle_is_not_labelled_as_an_exit(self):
+        status, report = self._run_case(
+            flight_events=[],
+            launch_output="BOOT_EVENT phase=exit_at_vblank vblanks=6700 (SR_EXIT_AT_VBLANK=6700)\n",
+        )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP")
+        self.assertEqual(report["exit_classification"], "RUN_BUDGET_ENDED")
+        nk_cli.validate_bringup_report(report)
+
+    def test_bounded_launch_output_keeps_both_ends_and_names_the_elision(self):
+        text = "HEAD" + ("x" * 1000) + "TAIL"
+        bounded = nk_cli._bounded_launch_output(text, 300)
+
+        self.assertLessEqual(len(bounded), 300)
+        self.assertTrue(bounded.startswith(b"HEAD"))
+        self.assertTrue(bounded.endswith(b"TAIL"))
+        self.assertIn(b"bytes elided", bounded)
+        short = nk_cli._bounded_launch_output("small\n", 300)
+        self.assertEqual(short, b"small\n")
+
+    def test_bringup_keeps_the_launch_log_in_the_work_dir(self):
+        self._run_case(launch_output="LAUNCH-LOG-MARKER\n")
+
+        log = self.root / "success" / "work" / nk_cli.BRINGUP_LAUNCH_LOG_NAME
+        self.assertIn(b"LAUNCH-LOG-MARKER", log.read_bytes())
+
+    def test_bringup_launch_log_is_bounded(self):
+        with mock.patch.object(nk_cli, "BRINGUP_LAUNCH_LOG_MAX_BYTES", 512):
+            self._run_case(launch_output="y" * 4000 + "LAUNCH-LOG-END\n")
+
+        log = self.root / "success" / "work" / nk_cli.BRINGUP_LAUNCH_LOG_NAME
+        data = log.read_bytes()
+        self.assertLessEqual(len(data), 512)
+        self.assertIn(b"LAUNCH-LOG-END", data)
+
+    def test_timed_out_launch_still_keeps_its_output(self):
+        self._run_case(timeout=True, launch_output="TIMEOUT-LOG-MARKER\n")
+
+        log = self.root / "success" / "work" / nk_cli.BRINGUP_LAUNCH_LOG_NAME
+        self.assertIn(b"TIMEOUT-LOG-MARKER", log.read_bytes())
 
     def test_zero_exit_with_dropped_flight_events_is_unverified(self):
         status, report = self._run_case(flight_events=[], flight_dropped=1)
