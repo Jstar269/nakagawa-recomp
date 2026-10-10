@@ -50,6 +50,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 import nk_cli  # noqa: E402
+from test_build_truth import _class_scratch_build_root  # noqa: E402
 from nk_core import package_cache  # noqa: E402
 from import_fixtures import BASE_VADDR, _elf  # noqa: E402
 from test_iso_parity import (  # noqa: E402
@@ -385,6 +386,13 @@ class TestSourceMediaIdentity(unittest.TestCase):
 
 
 class TestPlayerPackageRoute(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # The route's player and test binaries are built into one scratch BUILD_ROOT for
+        # the class (and the package planner's Make runs inherit it), never the checkout's
+        # build/ where a developer's private builds live.
+        cls.binary_dir = _class_scratch_build_root(cls, "player-route")
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="nk-player-route-")
         self.addCleanup(self.temporary.cleanup)
@@ -395,11 +403,11 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.sandbox = self.root / "sandbox"
         for directory in (self.user_root, self.local_appdata, self.sandbox):
             directory.mkdir(parents=True)
-        self.player = ROOT / "build" / ("nakagawa_player.exe" if os.name == "nt" else "nakagawa_player")
-        self.harness = ROOT / "build" / (
+        self.player = self.binary_dir / ("nakagawa_player.exe" if os.name == "nt" else "nakagawa_player")
+        self.harness = self.binary_dir / (
             "test_package_builder.exe" if os.name == "nt" else "test_package_builder"
         )
-        self.validator = ROOT / "build" / (
+        self.validator = self.binary_dir / (
             "test_player_state.exe" if os.name == "nt" else "test_player_state"
         )
         self.manifest = self.generate_fixture()
@@ -504,7 +512,8 @@ class TestPlayerPackageRoute(unittest.TestCase):
         # is a SKIP carrying the Makefile's own remedy, not a failed route.
         make_name = "mingw32-make" if os.name == "nt" else "make"
         probe = subprocess.run(
-            [make_name, "--no-print-directory", "sdl3-check"],
+            [make_name, "--no-print-directory", "sdl3-check",
+             f"BUILD_ROOT={self.binary_dir.as_posix()}"],
             cwd=ROOT, capture_output=True, text=True,
         )
         self.skip_if_toolchain_unusable(probe)
@@ -512,7 +521,7 @@ class TestPlayerPackageRoute(unittest.TestCase):
             if not binary.is_file():
                 built = subprocess.run(
                     [make_name, "--no-print-directory", "player", "player-state-test-bin",
-                     "package-builder-test-bin"],
+                     "package-builder-test-bin", f"BUILD_ROOT={self.binary_dir.as_posix()}"],
                     cwd=ROOT, capture_output=True, text=True,
                 )
                 self.skip_if_toolchain_unusable(built)

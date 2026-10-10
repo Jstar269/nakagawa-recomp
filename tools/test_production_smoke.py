@@ -36,6 +36,7 @@ import imports as imports_tool  # noqa: E402
 import nk_cli  # noqa: E402
 import prxload  # noqa: E402
 import title_codegen_plan  # noqa: E402
+from test_build_truth import _class_scratch_build_root  # noqa: E402
 from test_iso_parity import (  # noqa: E402
     build_plain_mips_elf,
     build_psp_container,
@@ -612,6 +613,12 @@ class TestStagedRunFailClosed(unittest.TestCase):
 
 
 class TestProductionSmokePackage(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Probes and the packaging route build into one scratch BUILD_ROOT for the class
+        # (exported to the package planner's Make runs too), never the checkout's build/.
+        cls.binary_dir = _class_scratch_build_root(cls, "production-smoke-package")
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="nk-package-smoke-")
         self.addCleanup(self.temporary.cleanup)
@@ -677,7 +684,8 @@ class TestProductionSmokePackage(unittest.TestCase):
         """
         make_name = "mingw32-make" if os.name == "nt" else "make"
         probe = subprocess.run(
-            [make_name, "--no-print-directory", "sdl3-check"],
+            [make_name, "--no-print-directory", "sdl3-check",
+             f"BUILD_ROOT={self.binary_dir.as_posix()}"],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -998,11 +1006,12 @@ class TestProductionSmokePackage(unittest.TestCase):
         if ucrt_bin.is_dir():
             player_env["PATH"] = str(ucrt_bin) + os.pathsep + player_env.get("PATH", "")
         native_build = subprocess.run(
-            ["mingw32-make", "--no-print-directory", "player-state-test-bin"],
+            ["mingw32-make", "--no-print-directory", "player-state-test-bin",
+             f"BUILD_ROOT={self.binary_dir.as_posix()}"],
             cwd=ROOT, env=player_env, capture_output=True, text=True,
         )
         self.assertEqual(native_build.returncode, 0, native_build.stdout + native_build.stderr)
-        validator = ROOT / "build" / "test_player_state.exe"
+        validator = self.binary_dir / "test_player_state.exe"
         args = [str(validator), "--validate-package", str(user_root),
                 "ULUS99998", self.manifest["id"], "1", "EBOOT.BIN"]
         accepted = subprocess.run(args, cwd=ROOT, capture_output=True, text=True)
