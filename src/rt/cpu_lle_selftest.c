@@ -22,10 +22,19 @@
 
 #include <stdlib.h>
 #include <string.h>
+
+/* Scratch root for the files this test writes: the checkout's build/ by default, or
+ * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
+ * touches the checkout. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
 #ifdef _WIN32
+#include <direct.h>
 #include <windows.h>
 #include <wchar.h>
 #else
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -1717,7 +1726,15 @@ static void test_interp_flow_trace(void) {
     MEM_W32_PC(TEST_BASE + 0u, enc_mtc0(5u, SR_CP0_EPC), TEST_BASE);
     s.pc = TEST_BASE;
 
-    const char *trace_path = "build/mygame/test_interp_trace.txt";
+    /* The trace folder beneath the scratch root, created here since nothing else makes it. The
+     * Makefile creates the root itself; an existing folder is fine, and a folder that could
+     * not be made fails sr_trace_open below. */
+#ifdef _WIN32
+    (void)_mkdir(SR_SELFTEST_BUILD_ROOT "/mygame");
+#else
+    (void)mkdir(SR_SELFTEST_BUILD_ROOT "/mygame", 0755);
+#endif
+    const char *trace_path = SR_SELFTEST_BUILD_ROOT "/mygame/test_interp_trace.txt";
     CHECK(sr_trace_open(trace_path, "test", TEST_BASE) == 0, "sr_trace_open must succeed");
     SrGuestInterpResult r = sr_guest_interp_run(&s, TEST_BASE, &fault);
     sr_trace_close();

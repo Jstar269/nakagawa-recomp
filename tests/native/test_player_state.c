@@ -47,6 +47,13 @@
 #include <string.h>
 #include <stdint.h>
 
+/* Scratch root for the files this test writes: the checkout's build/ by default, or
+ * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
+ * touches the checkout. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+
 #if defined(_WIN32) || defined(_WIN64)
 #include <direct.h>
 #include <process.h>
@@ -2074,7 +2081,7 @@ int main(int argc, char **argv) {
          * Makefile target runs from the source tree, where build/ is the
          * conventional scratch directory. */
         const char *scratch_dir = getenv("NK_TEST_SCRATCH_DIR");
-        if (scratch_dir == NULL || scratch_dir[0] == '\0') scratch_dir = "build";
+        if (scratch_dir == NULL || scratch_dir[0] == '\0') scratch_dir = SR_SELFTEST_BUILD_ROOT;
         char global_profile[NK_MAX_PATH];
         snprintf(global_profile, sizeof(global_profile),
                  "%s/test_launch_global_profile.json", scratch_dir);
