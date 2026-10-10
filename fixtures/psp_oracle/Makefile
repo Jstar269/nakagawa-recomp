@@ -158,6 +158,8 @@ else ifeq ($(CASE),registry-readonly)
 CASE_ID = 66
 else ifeq ($(CASE),kernel-misc)
 CASE_ID = 67
+else ifeq ($(CASE),vfpu-compare)
+CASE_ID = 68
 # 90-96: the H-oracle HLE measurement families (probe_hle_measure.c). They are
 # numbered apart from the sequential 1-67 probe.c cases so that new sequential
 # cases cannot collide with them.

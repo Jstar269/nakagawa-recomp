@@ -119,6 +119,7 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_REFER_STATUS_SIZE 65
 #define PSP_ORACLE_CASE_REGISTRY_READONLY 66
 #define PSP_ORACLE_CASE_KERNEL_MISC 67
+#define PSP_ORACLE_CASE_VFPU_COMPARE 68
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -158,9 +159,11 @@ int sceKernelReferMutexStatus(SceUID mutexid, SceKernelMutexInfo *info);
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY
 PSP_MAIN_THREAD_PARAMS(0x20, 32, THREAD_ATTR_USER);
-#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \
+      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE
 /* vadd.s/vmul.s run on the main thread; without the VFPU attribute the first
- * VFPU instruction traps (measured on PSP-3001 6.6.1: the thread stops after META). */
+ * VFPU instruction traps (measured on PSP-3001 6.6.1: the thread stops after META).
+ * The VFPU compare case runs vscmp.s/vsge.s/vslt.s there for the same reason. */
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
 #else
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
@@ -278,6 +281,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/registry_readonly_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_KERNEL_MISC
 #define PROBE_HOST0_LOG "host0:/kernel_misc_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE
+#define PROBE_HOST0_LOG "host0:/vfpu_compare_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SMOKE
 #define PROBE_HOST0_LOG "host0:/smoke_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_EXIT_DELETE
@@ -3587,6 +3592,141 @@ static void run_fpu_vector(int emulated, uint32_t boot_fcr31) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE
+/* VFPU compare results (main thread only, no threads created). vscmp.s, vsge.s
+   and vslt.s each write one lane: S000 and S001 hold the operands and S002 the
+   result. Operands and results move as raw u32 words (mtv/mfv), so every record
+   carries exact bit patterns and no libc float formatting. Each cell loads a
+   sentinel into S002 first, so a compare that did not write its destination
+   cannot pass as a measured word.
+
+   The expected words are the project's model, not console behaviour. They
+   follow src/rt/vfpu_interp.c (VFPU3 sub-ops 5, 6 and 7, PPSSPP's Int_Vscmp,
+   Int_Vsge and Int_Vslt): vscmp.s yields -1.0, 0.0 or +1.0, vsge.s and vslt.s
+   yield 1.0 or 0.0, and a NaN operand compares false and yields 0.0. The
+   console's NaN results are UNMEASURED. Every record carries result = the
+   observed word, out0 = the model word, and out1/out2 = the operands; whether
+   the console agrees with the model is result against out0. The status does
+   not judge that, as in the fpu-vector family: the campaign runner accepts a
+   capture only when every record is PASS, so a disagreement must not fail the
+   record that measured it. PASS means the compare wrote S002 (the sentinel is
+   gone); FAIL means S002 still held the sentinel, so the cell measured
+   nothing.
+
+   FCR31 is cleared to traps-off before the first cell, so no IEEE trap enable
+   from the boot state can fire on a signalling NaN; the boot value is never
+   restored. Results are computed into a table and emitted after the last cell,
+   so no host0 I/O runs between VFPU operations. */
+#define VFPU_COMPARE_SENTINEL 0x7a5a5a5au
+#define VFPU_COMPARE_OPS 3u
+#define VFPU_COMPARE_PAIRS 15u
+#define VFPU_COMPARE_CELLS (VFPU_COMPARE_OPS * VFPU_COMPARE_PAIRS)
+#define VFPU_COMPARE_ONE 0x3f800000u
+#define VFPU_COMPARE_MINUS_ONE 0xbf800000u
+
+struct vfpu_compare_pair {
+    const char *name;
+    uint32_t a;
+    uint32_t b;
+    uint32_t expect[VFPU_COMPARE_OPS]; /* model word per op: vscmp.s, vsge.s, vslt.s */
+};
+
+static const struct vfpu_compare_pair s_vfpu_compare_pairs[VFPU_COMPARE_PAIRS] = {
+    {"lt", 0x3fc00000u, 0x40200000u, {VFPU_COMPARE_MINUS_ONE, 0u, VFPU_COMPARE_ONE}},
+    {"eq", 0x3fc00000u, 0x3fc00000u, {0u, VFPU_COMPARE_ONE, 0u}},
+    {"gt", 0x40200000u, 0x3fc00000u, {VFPU_COMPARE_ONE, VFPU_COMPARE_ONE, 0u}},
+    {"zero-pos-neg", 0x00000000u, 0x80000000u, {0u, VFPU_COMPARE_ONE, 0u}},
+    {"zero-neg-pos", 0x80000000u, 0x00000000u, {0u, VFPU_COMPARE_ONE, 0u}},
+    {"nan-left-quiet", 0x7fc00000u, 0x3fc00000u, {0u, 0u, 0u}},
+    {"nan-right-quiet", 0x3fc00000u, 0x7fc00000u, {0u, 0u, 0u}},
+    {"nan-left-signal", 0x7f800001u, 0x3fc00000u, {0u, 0u, 0u}},
+    {"nan-right-signal", 0x3fc00000u, 0x7f800001u, {0u, 0u, 0u}},
+    {"nan-left-negative", 0xffc00000u, 0x3fc00000u, {0u, 0u, 0u}},
+    {"inf-pos-neg", 0x7f800000u, 0xff800000u, {VFPU_COMPARE_ONE, VFPU_COMPARE_ONE, 0u}},
+    {"inf-neg-pos", 0xff800000u, 0x7f800000u, {VFPU_COMPARE_MINUS_ONE, 0u, VFPU_COMPARE_ONE}},
+    {"inf-pos-pos", 0x7f800000u, 0x7f800000u, {0u, VFPU_COMPARE_ONE, 0u}},
+    {"inf-neg-neg", 0xff800000u, 0xff800000u, {0u, VFPU_COMPARE_ONE, 0u}},
+    {"inf-pos-finite", 0x7f800000u, 0x3fc00000u, {VFPU_COMPARE_ONE, VFPU_COMPARE_ONE, 0u}},
+};
+
+static uint32_t vfpu_compare_vscmp(uint32_t a, uint32_t b) {
+    const uint32_t sentinel = VFPU_COMPARE_SENTINEL;
+    uint32_t result;
+    __asm__ volatile(
+        "mtv %2, S002\n"
+        "mtv %1, S000\n"
+        "mtv %3, S001\n"
+        "vscmp.s S002, S000, S001\n"
+        "mfv %0, S002\n"
+        : "=r"(result) : "r"(a), "r"(sentinel), "r"(b) : "memory");
+    return result;
+}
+
+static uint32_t vfpu_compare_vsge(uint32_t a, uint32_t b) {
+    const uint32_t sentinel = VFPU_COMPARE_SENTINEL;
+    uint32_t result;
+    __asm__ volatile(
+        "mtv %2, S002\n"
+        "mtv %1, S000\n"
+        "mtv %3, S001\n"
+        "vsge.s S002, S000, S001\n"
+        "mfv %0, S002\n"
+        : "=r"(result) : "r"(a), "r"(sentinel), "r"(b) : "memory");
+    return result;
+}
+
+static uint32_t vfpu_compare_vslt(uint32_t a, uint32_t b) {
+    const uint32_t sentinel = VFPU_COMPARE_SENTINEL;
+    uint32_t result;
+    __asm__ volatile(
+        "mtv %2, S002\n"
+        "mtv %1, S000\n"
+        "mtv %3, S001\n"
+        "vslt.s S002, S000, S001\n"
+        "mfv %0, S002\n"
+        : "=r"(result) : "r"(a), "r"(sentinel), "r"(b) : "memory");
+    return result;
+}
+
+static void run_vfpu_compare(int emulated) {
+    static const char *const op_names[VFPU_COMPARE_OPS] = {"vscmp", "vsge", "vslt"};
+    uint32_t observed[VFPU_COMPARE_CELLS];
+
+    __asm__ volatile("ctc1 $0, $31" ::: "memory");
+    probe_step(emulated, "vfpu-compare", "cells");
+    for (uint32_t op = 0; op < VFPU_COMPARE_OPS; op++) {
+        for (uint32_t p = 0; p < VFPU_COMPARE_PAIRS; p++) {
+            const struct vfpu_compare_pair *pair = &s_vfpu_compare_pairs[p];
+            uint32_t word;
+            if (op == 0) {
+                word = vfpu_compare_vscmp(pair->a, pair->b);
+            } else if (op == 1) {
+                word = vfpu_compare_vsge(pair->a, pair->b);
+            } else {
+                word = vfpu_compare_vslt(pair->a, pair->b);
+            }
+            observed[op * VFPU_COMPARE_PAIRS + p] = word;
+        }
+    }
+    for (uint32_t op = 0; op < VFPU_COMPARE_OPS; op++) {
+        for (uint32_t p = 0; p < VFPU_COMPARE_PAIRS; p++) {
+            const struct vfpu_compare_pair *pair = &s_vfpu_compare_pairs[p];
+            const uint32_t index = op * VFPU_COMPARE_PAIRS + p;
+            const uint32_t expect = pair->expect[op];
+            const uint32_t out[] = {expect, pair->a, pair->b};
+            char case_id[40];
+            snprintf(case_id, sizeof(case_id), "%s-%s", op_names[op], pair->name);
+            emit_record_extended(emulated, "PSP-VFPU-CMP-001", case_id,
+                                 observed[index] == VFPU_COMPARE_SENTINEL ? "FAIL" : "PASS",
+                                 observed[index], out, 3);
+        }
+    }
+    uint32_t done = VFPU_COMPARE_CELLS;
+    emit_record_extended(emulated, "PSP-VFPU-CMP-001", "vfpu-compare-done",
+                         "PASS", 0, &done, 1);
+}
+#endif
+
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_TEARDOWN_TEST
 /* Retired diagnostic: self-deleting main bypassed the CRT stop handshake.
    Keep the case name buildable while reporting the unsupported experiment. */
@@ -6810,6 +6950,8 @@ int main(int argc, char *argv[]) {
     run_ctrl_clock(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR
     run_fpu_vector(emulated, boot_fcr31);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE
+    run_vfpu_compare(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_TEARDOWN_TEST
     run_teardown_test(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_IO_MATRIX
