@@ -3772,6 +3772,36 @@ int main(int argc, char **argv) {
                    sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
         assert(cached_info.validation_cache_hit);
 
+        /* A complete, self-consistent package built for the previous CpuState
+           ABI: the player refuses it by name through the same validation route
+           it uses before a launch, never from the validation cache, and leaves
+           no launchable paths behind. Nothing but the recorded ABI version
+           differs from the accepted fixture, so the refusal can only come from
+           the runtime ABI check. */
+        write_runtime_package_fixture(validation_root, cached_disc_id,
+                                      "synthetic-allegrex-v1",
+                                      SR_CPUSTATE_ABI_VERSION - 1u,
+                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
+        NkRuntimePackageInfo previous_abi_info;
+        memset(&previous_abi_info, 0xA5, sizeof(previous_abi_info));
+        reason[0] = '\0';
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &previous_abi_info, reason,
+                   sizeof(reason)) == NK_RUNTIME_PACKAGE_INCOMPATIBLE);
+        assert(!previous_abi_info.validation_cache_hit);
+        assert(strstr(reason, "runtime ABI is incompatible with this player build") != NULL);
+        assert(previous_abi_info.package_root[0] == '\0');
+        assert(previous_abi_info.executable_path[0] == '\0');
+        assert(previous_abi_info.image_path[0] == '\0');
+        write_runtime_package_fixture(validation_root, cached_disc_id,
+                                      "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
+                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
+        refreshed_status = nk_launch_validate_runtime_package(
+            validation_root, &game, &refreshed_info, reason, sizeof(reason));
+        assert_repaired_validation(validation_root, &game, identity_before,
+                                   refreshed_status,
+                                   &refreshed_info);
+
         assert(nk_launch_runtime_package_cache_identity(
             validation_root, &game, identity_before));
         /* A mutation the identity cannot miss: size is compared before the
