@@ -39,6 +39,7 @@ if SPEC is None or SPEC.loader is None:
     raise RuntimeError(f"cannot load {GENERATOR_PATH}")
 generator = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(generator)
+from test_build_truth import _make_safe_temp_dir  # noqa: E402
 
 
 EXPECTED_PRX_SHA256 = {
@@ -63,6 +64,22 @@ EXPECTED_OVERLAY_SHA256 = {
 # Cross-platform differential: prxload output for ladder-zero is byte-identical
 # between Windows (mingw32 host) and Linux (gcc-13/WSL2) toolchains.
 L0_IMAGE_SHA256 = "98c138cfa96989cf9ef0093d10014f59b0530f2a70bf58261feb67aa0eb145a9"
+
+
+#: The ladder builds its workloads beneath one module-scoped scratch BUILD_ROOT, made in
+#: setUpModule and removed in tearDownModule. A run therefore never writes the checkout's
+#: build/ (a developer's private title builds live there); the tests and the Make target
+#: that builds each workload read the same tree.
+WORKLOAD_BUILD_ROOT: Path = Path()
+WORKLOADS: Path = Path()
+
+
+def setUpModule() -> None:
+    global WORKLOAD_BUILD_ROOT, WORKLOADS
+    scratch = _make_safe_temp_dir("nakagawa-platform-ladder-")
+    WORKLOAD_BUILD_ROOT = scratch / "build"
+    WORKLOADS = WORKLOAD_BUILD_ROOT / "platform-ladder"
+    unittest.addModuleCleanup(shutil.rmtree, scratch, True)
 
 
 def _find_make() -> str | None:
@@ -122,7 +139,7 @@ def _ensure_workload(
         test.skipTest(f"cannot build {target}: C compiler (gcc, cc, or clang) is not installed")
 
     proc = subprocess.run(
-        [make, "--no-print-directory", target],
+        [make, "--no-print-directory", target, f"BUILD_ROOT={WORKLOAD_BUILD_ROOT.as_posix()}"],
         cwd=str(ROOT),
         capture_output=True,
         text=True,
@@ -325,7 +342,7 @@ class HostileEnvironmentTests(unittest.TestCase):
         return env
 
     def test_zero_runs_with_empty_dataroot_and_wrong_cwd(self):
-        workloads_dir = ROOT / "build" / "platform-ladder" / "ladder-zero"
+        workloads_dir = WORKLOADS / "ladder-zero"
         exe = workloads_dir / "pl_zero.exe"
         image = workloads_dir / "pl_zero_image.bin"
         _ensure_workload(self, "platform-ladder-zero", lambda: exe.is_file() and image.is_file())
@@ -349,7 +366,7 @@ class HostileEnvironmentTests(unittest.TestCase):
             self.assertNotIn(forbidden, combined)
 
     def test_generator_ignores_ambient_runtime_output_controls(self):
-        workloads_dir = ROOT / "build" / "platform-ladder" / "ladder-zero"
+        workloads_dir = WORKLOADS / "ladder-zero"
         exe = workloads_dir / "pl_zero.exe"
         image = workloads_dir / "pl_zero_image.bin"
         _ensure_workload(self, "platform-ladder-zero", lambda: exe.is_file() and image.is_file())
@@ -536,7 +553,7 @@ class MutationKillTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.workloads = ROOT / "build" / "platform-ladder"
+        cls.workloads = WORKLOADS
 
     def _exe_ready(self, name: str) -> bool:
         return (self.workloads / name / f"{name.split('/')[-1]}.exe").is_file()
@@ -722,7 +739,7 @@ class Title2ContractTests(unittest.TestCase):
     def test_title2_negative_acceptance_kills_h_ok_mutant(self):
         """Replacing the unsupported stub with h_ok semantics cannot pass the gate."""
         plan = generator.PLANS["ladder-title2-negative"]
-        build_dir = ROOT / "build" / "platform-ladder" / plan.name
+        build_dir = WORKLOADS / plan.name
         _ensure_workload(
             self,
             "platform-ladder-title2-negative",
