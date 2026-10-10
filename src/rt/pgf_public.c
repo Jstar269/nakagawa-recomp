@@ -166,6 +166,8 @@ static int pgf_map_entry(const PGF *p, uint32_t char_code, uint32_t *glyph_id) {
     int valid;
 
     if (index < 0 || (uint64_t)index >= p->char_map_count) return 0;
+    /* The map value is a glyph index: the all-ones sentinel, and any value at or above
+       the glyph (pointer) count, are lookup misses (PGF_SPEC.md 3.2). */
     value = pgf_get_bits(p->image + p->char_map_offset,
                          p->size - p->char_map_offset,
                          (uint64_t)index * p->char_map_bits,
@@ -408,8 +410,12 @@ static int pgf_parse_directory(PGF *p) {
         shadow_count > PGF_MAX_COUNT) {
         return 0;
     }
-    glyph_count = last - first + 1u;
-    if (glyph_count > PGF_MAX_COUNT || pointer_count != glyph_count ||
+    /* The character-pointer count is the glyph count. The inclusive code span
+       first..last may be wider than it: a sparse character map leaves codes absent,
+       so the span is not compared with the pointer count (PGF_SPEC.md 3.1, O-15). A
+       font with no pointers has no glyph to draw and is refused. */
+    glyph_count = pointer_count;
+    if (glyph_count == 0u || glyph_count > PGF_MAX_COUNT ||
         (shadow_count == 0u ? (shadow_bits != 0u && shadow_bits != 16u)
                             : shadow_bits != 16u)) {
         return 0;

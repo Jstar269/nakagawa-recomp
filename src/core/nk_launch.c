@@ -723,10 +723,10 @@ NkResult nk_launch_validate_staged_executable(const NkGameEntry *game,
             goto staged_elf_cleanup;
         }
         uint64_t memory_end = (uint64_t)virtual_address + memory_size;
+        /* Segment bytes are copied from source_offset, so the offset and the
+           virtual address need not be congruent modulo the alignment. */
         if (memory_end > (uint64_t)UINT32_MAX ||
-            (alignment > 1 && (alignment & (alignment - 1u)) != 0) ||
-            (alignment > 1 && ((uint64_t)source_offset % alignment) !=
-                              ((uint64_t)virtual_address % alignment))) {
+            (alignment > 1 && (alignment & (alignment - 1u)) != 0)) {
             launch_error(error_message, error_message_size,
                          "staged ELF PT_LOAD has invalid address or alignment geometry");
             goto staged_elf_cleanup;

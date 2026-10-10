@@ -41,6 +41,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Scratch root for the files this test writes: the checkout's build/ by default, or
+ * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
+ * touches the checkout. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+
 /* Concurrency coverage uses C11 threads when the toolchain provides them,
  * and Win32 threads on Windows hosts that lack <threads.h> (the canonical
  * MinGW UCRT64 build) -- the race must be exercised where it matters most. */
@@ -270,7 +277,7 @@ static int setup_temp_root(void) {
 
 static void test_loader_rejects_corrupt_roots(void) {
     CHECK(sr_rcp_lut == NULL, "globals must not be published before any load");
-    snprintf(g_root, sizeof g_root, "build/vfpu_selftest_tmp_%d", (int)SR_GETPID());
+    snprintf(g_root, sizeof g_root, SR_SELFTEST_BUILD_ROOT "/vfpu_selftest_tmp_%d", (int)SR_GETPID());
     wipe_tree(g_root);
     CHECK(setup_temp_root() == 0, "could not stage genuine tables into %s", g_root);
     if (sr_rcp_lut != NULL) return;
@@ -283,7 +290,7 @@ static void test_loader_rejects_corrupt_roots(void) {
     /* Absent root. */
     {
         char missing[512];
-        CHECK((size_t)snprintf(missing, sizeof missing, "build/vfpu_selftest_missing_%d", (int)SR_GETPID()) < sizeof missing, "root name truncation");
+        CHECK((size_t)snprintf(missing, sizeof missing, SR_SELFTEST_BUILD_ROOT "/vfpu_selftest_missing_%d", (int)SR_GETPID()) < sizeof missing, "root name truncation");
         wipe_tree(missing);
         int rc = sr_vfpu_tables_load(missing, &agg, err, sizeof err);
         CHECK(rc != 0, "absent root must fail");

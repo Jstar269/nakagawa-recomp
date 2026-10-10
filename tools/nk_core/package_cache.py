@@ -910,7 +910,22 @@ def native_compile_flags(
         env.get("STALE_CODE_POLICY", env.get("SR_STALE_POLICY", "")),
         "PUBLIC_SAFE=1" if public_safe else "PUBLIC_SAFE=0",
     )
-    return "|".join(values)
+    flags = "|".join(values)
+    # The NaN trap adds -DSR_NAN_TRAP inside the Makefile, where CFLAGS above cannot see it.
+    # It is appended only when on, so every untrapped key stays exactly what it was.
+    return flags + "|NAN_TRAP=1" if nan_trap_enabled(env) else flags
+
+
+def nan_trap_enabled(environment: Mapping[str, str] | None = None) -> bool:
+    """Whether a Make build in this environment turns on the NaN trap (issue #69).
+
+    `make NAN_TRAP=1` turns on both halves at once, `--nan-trap` codegen and `-DSR_NAN_TRAP`,
+    and it does so inside the Makefile (`ifeq ($(NAN_TRAP),1)`). So neither
+    CODEGEN_USER_ARGS nor CFLAGS in the environment shows it, and the cache key has to ask
+    for it by name: a trapped and an untrapped build must never share a cache entry.
+    """
+    env = os.environ if environment is None else environment
+    return env.get("NAN_TRAP", "").strip() == "1"
 
 
 def _input_sha(value: Any, label: str) -> str:
@@ -1226,12 +1241,32 @@ def write_completion_manifest(
     return destination
 
 
+def _digest_once(path: Path, digests: dict[Path, str] | None) -> str:
+    """Digest of one resolved package file, reusing a digest already taken in this validation."""
+    if digests is None:
+        return sha256_file(path)
+    digest = digests.get(path)
+    if digest is None:
+        digest = digests[path] = sha256_file(path)
+    return digest
+
+
 def validate_completion_manifest(
     package_dir: Path,
     *,
     expected_key: Mapping[str, Any] | None = None,
     required_paths: set[str] | None = None,
+    file_digests: dict[Path, str] | None = None,
 ) -> tuple[bool, str, dict[str, Any] | None]:
+    """Validate the completion manifest.
+
+    ``file_digests`` maps resolved artifact paths to digests computed earlier in the same
+    validation. Each listed artifact is still compared against its manifest digest; only
+    the second read of a file that was already digested is skipped.
+    The comparison therefore reflects the bytes as that validation read them: a file
+    rewritten between the package-level check and this one, inside the same call, is
+    not read a second time. A caller that wants a fresh read passes no digests.
+    """
     package_dir = package_dir.resolve(strict=False)
     path = package_dir / COMPLETION_MANIFEST
     if not path.is_file() or path.is_symlink():
@@ -1291,7 +1326,7 @@ def validate_completion_manifest(
         seen.add(relative)
         if not resolved.is_file() or resolved.is_symlink():
             return False, f"completion artifact is missing: {relative}", None
-        if sha256_file(resolved) != digest:
+        if _digest_once(resolved, file_digests) != digest:
             return False, f"completion artifact digest mismatch: {relative}", None
     for relative in required_paths or set():
         if relative not in seen:
@@ -1416,11 +1451,14 @@ def validate_package_cache(
     executable_path = executable.get("path") if isinstance(executable, dict) else None
     if not isinstance(executable_path, str):
         return False, "package executable path is missing"
+    # Each executable and generated object is digested once here; the completion
+    # check below reuses these digests rather than reading the same bytes again.
+    file_digests: dict[Path, str] = {}
     try:
         executable_file = _resolve_within(package_dir, executable_path)
     except PackageCacheError as exc:
         return False, str(exc)
-    if not executable_file.is_file() or sha256_file(executable_file) != executable.get("sha256"):
+    if not executable_file.is_file() or _digest_once(executable_file, file_digests) != executable.get("sha256"):
         return False, "package executable digest is stale"
     image_path = str(Path(executable_path).with_name(
         f"{Path(executable_path).stem}_image.bin"
@@ -1443,13 +1481,14 @@ def validate_package_cache(
             object_file = _resolve_within(package_dir, object_path)
         except PackageCacheError as exc:
             return False, str(exc)
-        if not object_file.is_file() or sha256_file(object_file) != item.get("sha256"):
+        if not object_file.is_file() or _digest_once(object_file, file_digests) != item.get("sha256"):
             return False, f"package generated object digest is stale: {object_path}"
         required.add(object_path)
     valid, reason, completion = validate_completion_manifest(
         package_dir,
         expected_key=expected_key,
         required_paths=required,
+        file_digests=file_digests,
     )
     if not valid:
         return False, reason
