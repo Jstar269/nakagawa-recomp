@@ -125,6 +125,7 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_REGISTRY_FONT 68
 #define PSP_ORACLE_CASE_FONT_FILES 69
 #define PSP_ORACLE_CASE_UMD_IO 70
+#define PSP_ORACLE_CASE_FONT_LIST 71
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -290,6 +291,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/font_files_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_UMD_IO
 #define PROBE_HOST0_LOG "host0:/umd_io_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_LIST
+#define PROBE_HOST0_LOG "host0:/font_list_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SMOKE
 #define PROBE_HOST0_LOG "host0:/smoke_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_EXIT_DELETE
@@ -6574,6 +6577,38 @@ static void run_umd_io(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_LIST
+/* The system font list as the console's own font library reports it (PSP-FONTLIST-001).
+ * The calls, the arena allocator and the record format live in font_list.h, which a host
+ * harness also runs against a fake library (tools/test_psp_oracle.py). The five sceLibFont
+ * stubs come from libfont_imports.S; the build-time gate refuses any sceReg import in this
+ * case, so the probe itself cannot open or create a registry category. Records and step
+ * markers go through the durable host0 writer. */
+#include "font_list.h"
+
+static int s_font_list_emulated;
+
+static void font_list_emit(void *ctx, const char *line, size_t length) {
+    (void)ctx;
+    probe_emit_durable(s_font_list_emulated, line, length);
+}
+
+static void font_list_step(void *ctx, const char *step) {
+    (void)ctx;
+    probe_step(s_font_list_emulated, "font-list", step);
+}
+
+static FontList s_font_list;
+
+static void run_font_list(int emulated) {
+    s_font_list_emulated = emulated;
+    memset(&s_font_list, 0, sizeof(s_font_list));
+    s_font_list.emit = font_list_emit;
+    s_font_list.step = font_list_step;
+    fontlist_run(&s_font_list);
+}
+#endif
+
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE
 static void emit_ge_control(int emulated, const char *case_id, const char *status,
                             uint32_t result, const uint32_t *out, size_t count) {
@@ -6969,6 +7004,8 @@ int main(int argc, char *argv[]) {
     run_font_files(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_UMD_IO
     run_umd_io(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_LIST
+    run_font_list(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

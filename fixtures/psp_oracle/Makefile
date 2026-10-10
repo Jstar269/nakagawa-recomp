@@ -164,6 +164,8 @@ else ifeq ($(CASE),font-files)
 CASE_ID = 69
 else ifeq ($(CASE),umd-io)
 CASE_ID = 70
+else ifeq ($(CASE),font-list)
+CASE_ID = 71
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -328,6 +330,14 @@ ifeq ($(CASE),umd-io)
 LIBS += -lpspumd
 USER_MODE_IMPORT_GATE_ARGS += --exact-library sceUmdUser=0x46EBB729,0x6B4A146C
 endif
+# The font-list case asks the console's own font library for the system font list. It links
+# the hand-authored sceLibFont stubs (libfont_imports.S) and may import exactly those five
+# calls; it may import nothing from sceReg, so the probe itself can neither open nor create a
+# registry category (the only registry reads are the library's own).
+ifeq ($(CASE),font-list)
+OBJS += $(BUILD_DIR)/libfont_imports.o
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceLibFont=0x67F17ED7,0x574B6FBC,0x27F6E642,0xBC75D85B,0x5333322D --forbid-library sceReg
+endif
 ifeq ($(CASE),kernel-misc)
 OBJS += $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/display_user_imports.o
 LIBS += -lpspctrl
@@ -363,7 +373,7 @@ FIXUP = bash -c 'out=$$(psp-fixup-imports "$$1" 2>&1); rc=$$?; test -n "$$out" &
 # The SDK's generic `%.o: %.c` rule expects source and object to share a
 # directory. Keep the source at the fixture root while placing all generated
 # objects under the ignored build directory.
-$(BUILD_DIR)/probe.o: probe.c registry_walk.h font_files.h umd_io.h
+$(BUILD_DIR)/probe.o: probe.c registry_walk.h font_files.h umd_io.h font_list.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/probe_exports.exp: Makefile
@@ -378,6 +388,9 @@ $(BUILD_DIR)/threadman_user_imports.o: threadman_user_imports.S
 	$(CC) $(ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/display_user_imports.o: display_user_imports.S
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/libfont_imports.o: libfont_imports.S
 	$(CC) $(ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/probe_exception_a1.o: probe_exception_a1.c

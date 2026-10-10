@@ -26,12 +26,17 @@ mode, may therefore import only the eight read-only sceReg calls listed in
 REGISTRY_READ_NIDS; any other sceReg NID (set, create, remove, flush, exit or
 an unknown one) fails the gate. ``--exact-library LIB=NID[,NID...]`` further
 requires a module's imports from LIB to be exactly that set (the registry
-cases pin their sceReg imports this way).
+cases pin their sceReg imports this way). ``--forbid-library LIB`` requires a
+module to import nothing at all from LIB (the font-list case forbids every
+sceReg import, read-only or not, so the probe itself can never open a
+registry category).
 
-Usage: user_mode_imports.py [--exact-library LIB=NID,...] MODULE [MODULE ...]
+Usage: user_mode_imports.py [--exact-library LIB=NID,...] [--forbid-library LIB]
+       MODULE [MODULE ...]
 Exit status: 0 when every module passes, 1 when a user-mode module imports a
 kernel-only library or an unattributed stub, any module imports a registry
-call outside the read-only set, or an --exact-library set differs, 2 when a
+call outside the read-only set, an --exact-library set differs, or a
+--forbid-library library is imported at all, 2 when a
 module cannot be read, its import table is malformed, or the arguments are
 malformed.
 """
@@ -135,9 +140,11 @@ def registry_call_name(nid: int) -> str:
 
 
 def check_import_table(
-    table: ImportTable, exact_libraries: dict[str, frozenset[int]] | None = None
+    table: ImportTable,
+    exact_libraries: dict[str, frozenset[int]] | None = None,
+    forbidden_libraries: frozenset[str] = frozenset(),
 ) -> GateResult:
-    """Apply the user-mode, read-only registry and exact-library rules to one table."""
+    """Apply the user-mode, read-only registry, exact-library and forbidden-library rules."""
     libraries = tuple(dict.fromkeys(func.library for func in table.funcs))
     nids_by_library: dict[str, list[int]] = {}
     for func in table.funcs:
@@ -172,14 +179,22 @@ def check_import_table(
         violations.append(LibraryViolation(
             library, f"imports differ from the --exact-library set ({'; '.join(parts)})",
             tuple(extra) or tuple(missing)))
+    for library in sorted(forbidden_libraries):
+        found = nids_by_library.get(library)
+        if found:
+            violations.append(LibraryViolation(
+                library, "imports from a library this case forbids (--forbid-library)",
+                tuple(found)))
     return GateResult(table.module_attributes, libraries, tuple(violations))
 
 
 def check_module(
-    data: bytes, exact_libraries: dict[str, frozenset[int]] | None = None
+    data: bytes,
+    exact_libraries: dict[str, frozenset[int]] | None = None,
+    forbidden_libraries: frozenset[str] = frozenset(),
 ) -> GateResult:
     """Parse a linked PSP ELF/PRX image and apply the import rules."""
-    return check_import_table(parse_import_table(data), exact_libraries)
+    return check_import_table(parse_import_table(data), exact_libraries, forbidden_libraries)
 
 
 def parse_exact_library(value: str) -> tuple[str, frozenset[int]]:
@@ -225,9 +240,16 @@ def format_result(name: str, result: GateResult) -> str:
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     exact: dict[str, frozenset[int]] = {}
+    forbidden: set[str] = set()
     modules: list[str] = []
     while args:
         arg = args.pop(0)
+        if arg == "--forbid-library":
+            if not args or not args[0] or args[0].startswith("--"):
+                print("user-mode import gate: --forbid-library needs LIB", file=sys.stderr)
+                return EXIT_UNREADABLE
+            forbidden.add(args.pop(0))
+            continue
         if arg != "--exact-library":
             modules.append(arg)
             continue
@@ -246,14 +268,14 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_UNREADABLE
         exact[library] = nids
     if not modules:
-        print("usage: user_mode_imports.py [--exact-library LIB=NID,...] MODULE [MODULE ...]",
-              file=sys.stderr)
+        print("usage: user_mode_imports.py [--exact-library LIB=NID,...] "
+              "[--forbid-library LIB] MODULE [MODULE ...]", file=sys.stderr)
         return EXIT_UNREADABLE
     status = EXIT_OK
     for arg in modules:
         try:
             data = Path(arg).read_bytes()
-            result = check_module(data, exact)
+            result = check_module(data, exact, frozenset(forbidden))
         except (OSError, ImportTableError) as exc:
             print(f"user-mode import gate: FAILED: {arg}: cannot read import table: {exc}",
                   file=sys.stderr)

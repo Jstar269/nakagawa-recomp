@@ -1286,6 +1286,185 @@ def parse_font_files_output(text: str, *, require_complete: bool = True) -> Font
 
 
 # ---------------------------------------------------------------------------
+# PSP-FONTLIST-001 the system font list as the console's own font library reports
+# it (fixtures/psp_oracle/font_list.h)
+#
+# font-list-newlib, then (when the library opened) font-list-count, and when the
+# count is positive font-list-list, font-list-entry-NNNN for every requested
+# index, font-info-NNNN for the same indices, then font-list-donelib and
+# font-list-done. Entries carry the raw style bytes as raw_hex with words 0-7
+# and 40-41 as out0-out9. The parser checks the order, the field sets, each
+# record's own consistency and the counts; it never decides what fonts a console
+# should hold. Names inside the entries are console strings and stay private.
+# ---------------------------------------------------------------------------
+
+FONT_LIST_TEST_ID = "PSP-FONTLIST-001"
+FONT_LIST_HOST0_LOG = "host0:/font_list_log.txt"
+FONT_LIST_ENTRIES_MAX = 64
+FONT_LIST_STYLE_BYTES = 168
+FONT_LIST_UNTOUCHED = 0xA5A5A5A5
+_FONT_LIST_WORD_FIELDS = frozenset(f"out{i}" for i in range(10))
+_FONT_LIST_RAW_RE = re.compile(r"(?:[0-9a-f]{2}){168}")
+
+
+@dataclass(frozen=True)
+class FontListEntry:
+    index: int
+    words: tuple[int, ...]
+    raw: bytes
+    ok: bool
+    result: int
+
+
+@dataclass(frozen=True)
+class FontListReport:
+    parsed: object
+    complete: bool
+    library: int
+    library_ok: bool
+    count: int | None
+    requested: int
+    entries: tuple[FontListEntry, ...]
+    infos: tuple[FontListEntry, ...]
+    failures: int | None
+
+
+def _font_list_error_clean(error: int) -> bool:
+    """An error word the library wrote as 0, or never wrote (the probe's untouched marker)."""
+    return error in (0, FONT_LIST_UNTOUCHED)
+
+
+def _font_list_entry(tid: str, record, prefix: str, index: int) -> FontListEntry:
+    expected_id = f"{prefix}{index:04d}"
+    if record.case_id != expected_id:
+        raise ProtocolError(f"{tid}: {record.case_id} is out of sequence; expected {expected_id}")
+    values = _io_fields(tid, record, {"result", "raw_hex", *_FONT_LIST_WORD_FIELDS}, {"raw_hex"})
+    raw_hex = str(values["raw_hex"])
+    if not _FONT_LIST_RAW_RE.fullmatch(raw_hex):
+        raise ProtocolError(f"{tid}: {record.case_id} raw_hex is not {FONT_LIST_STYLE_BYTES} bytes")
+    raw = bytes.fromhex(raw_hex)
+    words = tuple(values[f"out{i}"] for i in range(10))
+    expected = tuple(int.from_bytes(raw[4 * i:4 * i + 4], "little") for i in range(8)) + (
+        int.from_bytes(raw[0xA0:0xA4], "little"), int.from_bytes(raw[0xA4:0xA8], "little"))
+    if words != expected:
+        raise ProtocolError(f"{tid}: {record.case_id} out words disagree with raw_hex")
+    return FontListEntry(index, words, raw, record.status == "PASS", values["result"])
+
+
+def parse_font_list_output(text: str, *, require_complete: bool = True) -> FontListReport:
+    """Validate the font-library list stream."""
+
+    tid = FONT_LIST_TEST_ID
+    parsed = parse_output(text)
+    records = list(parsed.results)
+    if not records:
+        raise ProtocolError(f"{tid}: empty font-list stream")
+    if any(record.test_id != tid for record in records):
+        raise ProtocolError(f"{tid}: foreign test_id in font-list stream")
+    if records[0].case_id != "font-list-newlib":
+        raise ProtocolError(f"{tid}: stream must start with font-list-newlib")
+    newlib = _io_fields(tid, records[0], {"result", "out0", "out1", "out2", "out3", "out4"}, set())
+    library = newlib["result"]
+    library_ok = library != 0 and _font_list_error_clean(newlib["out0"])
+    if (records[0].status == "PASS") != library_ok:
+        raise ProtocolError(f"{tid}: font-list-newlib status disagrees")
+    terminal = len(records) > 1 and records[-1].case_id == "font-list-done"
+    body = records[1:-1] if terminal else records[1:]
+    failures = 0 if library_ok else 1
+    count: int | None = None
+    requested = 0
+    entries: list[FontListEntry] = []
+    infos: list[FontListEntry] = []
+    donelib_seen = False
+    position = 0
+    if library == 0:
+        if body:
+            raise ProtocolError(f"{tid}: records after a library that did not open")
+    else:
+        if position < len(body):
+            record = body[position]
+            position += 1
+            if record.case_id != "font-list-count":
+                raise ProtocolError(f"{tid}: font-list-count must follow font-list-newlib")
+            values = _io_fields(tid, record, {"result", "out0", "out1"}, set())
+            count = _s32(values["result"])
+            requested = values["out1"]
+            count_ok = 0 <= count <= FONT_LIST_ENTRIES_MAX and _font_list_error_clean(values["out0"])
+            if (record.status == "PASS") != count_ok:
+                raise ProtocolError(f"{tid}: font-list-count status disagrees")
+            if requested != min(max(count, 0), FONT_LIST_ENTRIES_MAX):
+                raise ProtocolError(f"{tid}: font-list-count requested count disagrees with the count")
+            if not count_ok:
+                failures += 1
+        elif require_complete:
+            raise ProtocolError(f"{tid}: stream is missing font-list-count")
+        if requested > 0 and position < len(body):
+            record = body[position]
+            position += 1
+            if record.case_id != "font-list-list":
+                raise ProtocolError(f"{tid}: font-list-list must follow font-list-count")
+            values = _io_fields(tid, record, {"result", "out0"}, set())
+            if values["out0"] != requested:
+                raise ProtocolError(f"{tid}: font-list-list requested count disagrees")
+            list_ok = _s32(values["result"]) >= 0
+            if (record.status == "PASS") != list_ok:
+                raise ProtocolError(f"{tid}: font-list-list status disagrees")
+            if not list_ok:
+                failures += 1
+            for index in range(requested):
+                if position >= len(body):
+                    break
+                entry = _font_list_entry(tid, body[position], "font-list-entry-", index)
+                position += 1
+                if entry.ok != list_ok or entry.result != 0:
+                    raise ProtocolError(f"{tid}: {body[position - 1].case_id} disagrees with font-list-list")
+                entries.append(entry)
+            for index in range(requested):
+                if position >= len(body):
+                    break
+                info = _font_list_entry(tid, body[position], "font-info-", index)
+                position += 1
+                if info.ok != (info.result == 0):
+                    raise ProtocolError(f"{tid}: {body[position - 1].case_id} status disagrees")
+                if not info.ok:
+                    failures += 1
+                infos.append(info)
+        if position < len(body):
+            record = body[position]
+            position += 1
+            if record.case_id != "font-list-donelib":
+                raise ProtocolError(f"{tid}: {record.case_id} is out of sequence; expected font-list-donelib")
+            values = _io_fields(tid, record, {"result", "out0", "out1"}, set())
+            donelib_ok = values["result"] == 0
+            if (record.status == "PASS") != donelib_ok:
+                raise ProtocolError(f"{tid}: font-list-donelib status disagrees")
+            if not donelib_ok:
+                failures += 1
+            donelib_seen = True
+        if position < len(body):
+            raise ProtocolError(f"{tid}: unexpected record {body[position].case_id}")
+    done_failures: int | None = None
+    if terminal:
+        values = _io_fields(tid, records[-1],
+                            {"result", "out0", "out1", "out2", "out3", "out4", "out5", "out6"}, set())
+        if library != 0 and not donelib_seen:
+            raise ProtocolError(f"{tid}: font-list-done before font-list-donelib")
+        if len(entries) != requested or len(infos) != requested:
+            raise ProtocolError(f"{tid}: entries or infos incomplete before font-list-done")
+        if values["out0"] != len(entries) or values["out1"] != sum(1 for info in infos if info.ok):
+            raise ProtocolError(f"{tid}: font-list-done counts disagree")
+        if values["out6"] != failures:
+            raise ProtocolError(f"{tid}: font-list-done failure count disagrees")
+        if (records[-1].status == "PASS") != (failures == 0):
+            raise ProtocolError(f"{tid}: font-list-done status disagrees")
+        done_failures = values["out6"]
+    elif require_complete:
+        raise ProtocolError(f"{tid}: stream is missing font-list-done")
+    return FontListReport(parsed, terminal, library, library_ok, count, requested,
+                          tuple(entries), tuple(infos), done_failures)
+
+
+# ---------------------------------------------------------------------------
 # PSP-UMDIO-001 bare-device and disc open results (fixtures/psp_oracle/umd_io.h)
 #
 # umd-state-before, io-open-NNNN for each fixed open, io-dopen-NNNN for each

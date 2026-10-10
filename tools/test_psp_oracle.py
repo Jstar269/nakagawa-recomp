@@ -81,6 +81,7 @@ from psp_oracle.parse_golden import (
     parse_dmac_cells_output,
     parse_dmac_invalid_tail_output,
     parse_font_files_output,
+    parse_font_list_output,
     parse_ge_nan_output,
     parse_registry_font_output,
     parse_registry_readonly_output,
@@ -2215,12 +2216,12 @@ class PspOracleBuildRouteTests(unittest.TestCase):
             self.makefile,
             re.MULTILINE,
         )
-        self.assertEqual(len(routes), 70)
+        self.assertEqual(len(routes), 71)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(ids), set(range(1, 71)))
+        self.assertEqual(set(ids), set(range(1, 72)))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -4179,3 +4180,243 @@ class IoCasesSourceTests(unittest.TestCase):
                 with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
                     status = user_mode_imports.main([*pin, str(module)])
             self.assertEqual(status, expected, err.getvalue())
+
+
+FONT_LIST_NIDS = [0x67F17ED7, 0x574B6FBC, 0x27F6E642, 0xBC75D85B, 0x5333322D]
+
+
+def _font_style_hex(*, h: float = 10.0, v: float = 10.0, hres: float = 128.0, vres: float = 128.0,
+                    weight: float = 0.0, family: int = 1, style: int = 1, sub: int = 0,
+                    language: int = 2, region: int = 0, country: int = 0, name: str = "FONT",
+                    file: str = "font.pgf", attributes: int = 0, expire: int = 0) -> str:
+    """168 style bytes in the public layout, as the fake library serves them."""
+    import struct
+
+    raw = struct.pack("<5f6H", h, v, hres, vres, weight, family, style, sub, language, region,
+                      country)
+    raw += name.encode("ascii").ljust(64, b"\0") + file.encode("ascii").ljust(64, b"\0")
+    raw += struct.pack("<II", attributes, expire)
+    assert len(raw) == 168
+    return raw.hex()
+
+
+@unittest.skipIf(_HOST_CC is None, "no host C compiler for the font-list harness")
+class FontListHostTests(unittest.TestCase):
+    """font_list.h against io_cases_host.c's fake font library: call order, bounds and records."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.root = Path(__file__).resolve().parents[1]
+        cls.fixture = cls.root / "fixtures" / "psp_oracle"
+        cls.tmp = tempfile.mkdtemp(prefix="font_list_host_")
+        cls.exe = str(Path(cls.tmp) / "io_cases_host.exe")
+        result = subprocess.run(
+            [_HOST_CC, "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
+             f"-I{cls.fixture}", "-o", cls.exe, str(cls.fixture / "io_cases_host.c")],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode != 0:
+            raise AssertionError("io_cases_host.c did not compile:\n" + result.stderr)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _run(self, lines: list[str]) -> SimpleNamespace:
+        result = subprocess.run([self.exe, "fontlist"], input="\n".join(lines) + "\n",
+                                capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = result.stdout.splitlines()
+        self.assertEqual(out[-1], "SUMMARY open_fds=0")
+        calls = [line.split()[1] for line in out if line.startswith("CALL ")]
+        allocs = [line for line in out if line.startswith("ALLOC ")]
+        steps = [line[5:] for line in out if line.startswith("STEP ")]
+        emitted = "".join(line[5:] + "\n" for line in out if line.startswith("EMIT "))
+        stream = META.format(source="psp", model="PSP-3000", firmware="6.6.1",
+                             binary=MEASURED_SHA, commit=MEASURED_COMMIT) + emitted
+        return SimpleNamespace(lines=out, calls=calls, allocs=allocs, steps=steps, stream=stream)
+
+    def test_three_fonts_are_listed_with_their_raw_bytes_and_nothing_else_is_called(self) -> None:
+        styles = [_font_style_hex(name=f"F{i}", file=f"f{i}.pgf", language=i + 1, family=i)
+                  for i in range(3)]
+        lines = ["fontlib 0x1234 0 2 4096", "fontcount 3 0"]
+        lines += [f"fontentry {i} {style}" for i, style in enumerate(styles)]
+        run = self._run(lines)
+        self.assertEqual(run.calls, ["sceFontNewLib", "sceFontGetNumFontList", "sceFontGetFontList",
+                                     "sceFontGetFontInfoByIndexNumber",
+                                     "sceFontGetFontInfoByIndexNumber",
+                                     "sceFontGetFontInfoByIndexNumber", "sceFontDoneLib"])
+        self.assertEqual(run.steps, ["newlib", "count", "list", "info:0000", "info:0001",
+                                     "info:0002", "donelib"])
+        self.assertIn("CALL sceFontNewLib numFonts=1 alloc=1 free=1 open=0 close=0 read=0 seek=0",
+                      run.lines)
+        report = parse_font_list_output(run.stream)
+        self.assertTrue(report.complete)
+        self.assertTrue(report.library_ok)
+        self.assertEqual((report.library, report.count, report.requested, report.failures),
+                         (0x1234, 3, 3, 0))
+        self.assertEqual([entry.raw.hex() for entry in report.entries], styles)
+        self.assertEqual([info.raw.hex() for info in report.infos], styles)
+        # word 5 packs family (low half) and style (high half): entry 2 was built with family 2.
+        self.assertEqual(report.entries[2].words[5], (1 << 16) | 2)
+        # The library allocated twice through the arena and freed both blocks in DoneLib.
+        self.assertEqual(len(run.allocs), 2)
+        done = dict(report.parsed.results[-1].values)
+        self.assertEqual([int(done[f"out{i}"], 0) for i in range(7)], [3, 3, 8192, 2, 2, 0, 0])
+
+    def test_a_library_that_does_not_open_ends_the_case_after_one_record(self) -> None:
+        run = self._run(["fontlib 0 0x80460001 1 4096", "fontcount 3 0"])
+        self.assertEqual(run.calls, ["sceFontNewLib"])
+        self.assertEqual(run.steps, ["newlib"])
+        report = parse_font_list_output(run.stream)
+        self.assertFalse(report.library_ok)
+        self.assertEqual((report.library, report.count, report.requested, report.failures),
+                         (0, None, 0, 1))
+        self.assertEqual(int(dict(report.parsed.results[0].values)["out0"], 0), 0x80460001)
+
+    def test_an_allocation_the_arena_cannot_hold_is_refused_not_grown(self) -> None:
+        too_large = 512 * 1024 + 16
+        run = self._run([f"fontlib 0x1234 0 1 {too_large}", "fontcount 3 0"])
+        self.assertEqual(run.calls, ["sceFontNewLib"])
+        self.assertIn(f"ALLOC bytes={too_large} ok=0", run.lines)
+        report = parse_font_list_output(run.stream)
+        self.assertEqual(report.library, 0)
+        newlib = dict(report.parsed.results[0].values)
+        self.assertEqual((int(newlib["out3"], 0), int(newlib["out4"], 0)), (1, 1))
+
+    def test_a_count_above_the_bound_is_recorded_and_the_listing_is_clamped(self) -> None:
+        styles = [_font_style_hex(name=f"F{i}") for i in range(70)]
+        lines = ["fontlib 0x1234 0 1 4096", "fontcount 70 0"]
+        lines += [f"fontentry {i} {style}" for i, style in enumerate(styles)]
+        run = self._run(lines)
+        report = parse_font_list_output(run.stream)
+        self.assertEqual((report.count, report.requested, report.failures), (70, 64, 1))
+        self.assertEqual(len(report.entries), 64)
+        self.assertEqual(len(report.infos), 64)
+        self.assertEqual(run.calls.count("sceFontGetFontInfoByIndexNumber"), 64)
+
+    def test_an_info_error_is_a_failed_record_and_the_case_still_closes_the_library(self) -> None:
+        styles = [_font_style_hex(name=f"F{i}") for i in range(2)]
+        lines = ["fontlib 0x1234 - 1 4096", "fontcount 2 -", "fontinfo-rc 1 0x80460006"]
+        lines += [f"fontentry {i} {style}" for i, style in enumerate(styles)]
+        run = self._run(lines)
+        report = parse_font_list_output(run.stream)
+        self.assertTrue(report.library_ok)  # error words the library never wrote stay clean
+        self.assertEqual([info.ok for info in report.infos], [True, False])
+        self.assertEqual(report.failures, 1)
+        self.assertEqual(run.calls[-1], "sceFontDoneLib")
+
+    def test_a_zero_count_skips_the_list_and_still_closes_the_library(self) -> None:
+        run = self._run(["fontlib 0x1234 0 1 4096", "fontcount 0 0"])
+        self.assertEqual(run.calls, ["sceFontNewLib", "sceFontGetNumFontList", "sceFontDoneLib"])
+        report = parse_font_list_output(run.stream)
+        self.assertEqual((report.count, report.requested, report.failures), (0, 0, 0))
+
+    def test_parser_refuses_truncated_or_reordered_streams(self) -> None:
+        styles = [_font_style_hex(name=f"F{i}") for i in range(2)]
+        lines = ["fontlib 0x1234 0 1 4096", "fontcount 2 0"]
+        lines += [f"fontentry {i} {style}" for i, style in enumerate(styles)]
+        body = self._run(lines).stream.splitlines()
+        done = [line for line in body if "case_id=font-list-done " in line]
+        self.assertEqual(len(done), 1)
+        truncated = "\n".join(line for line in body if line != done[0]) + "\n"
+        with self.assertRaisesRegex(ProtocolError, "missing font-list-done"):
+            parse_font_list_output(truncated)
+        self.assertFalse(parse_font_list_output(truncated, require_complete=False).complete)
+        entries = [line for line in body if "case_id=font-list-entry-" in line]
+        swapped = []
+        for line in body:
+            if line == entries[0]:
+                swapped.append(entries[1])
+            elif line == entries[1]:
+                swapped.append(entries[0])
+            else:
+                swapped.append(line)
+        with self.assertRaisesRegex(ProtocolError, "out of sequence"):
+            parse_font_list_output("\n".join(swapped) + "\n")
+        bad_raw = "\n".join(line.replace(" raw_hex=", " raw_hex=00", 1) if line == entries[0] else line
+                            for line in body) + "\n"
+        with self.assertRaisesRegex(ProtocolError, "raw_hex"):
+            parse_font_list_output(bad_raw)
+
+
+class FontListImportGateTests(unittest.TestCase):
+    """The font-list case may import exactly five sceLibFont calls and nothing from sceReg."""
+
+    PIN = ["--exact-library", "sceLibFont=0x67F17ED7,0x574B6FBC,0x27F6E642,0xBC75D85B,0x5333322D",
+           "--forbid-library", "sceReg"]
+
+    def _main(self, args: list[str], data: bytes) -> tuple[int, str, str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            module = Path(tmp) / "probe.elf"
+            module.write_bytes(data)
+            out = io.StringIO()
+            err = io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                status = user_mode_imports.main([*args, str(module)])
+        return status, out.getvalue(), err.getvalue()
+
+    def test_forbid_library_refuses_even_a_read_only_registry_import(self) -> None:
+        data = build_import_elf([("sceLibFont", FONT_LIST_NIDS), ("sceReg", [0x92E41280])])
+        self.assertTrue(user_mode_imports.check_module(data).passed)
+        result = user_mode_imports.check_module(data, None, frozenset({"sceReg"}))
+        self.assertFalse(result.passed)
+        self.assertEqual([(v.library, v.nids) for v in result.violations],
+                         [("sceReg", (0x92E41280,))])
+        self.assertIn("--forbid-library", result.violations[0].reason)
+        status, out, err = self._main(["--forbid-library", "sceReg"], data)
+        self.assertEqual(status, user_mode_imports.EXIT_KERNEL_IMPORT)
+        self.assertEqual(out, "")
+        self.assertIn("sceReg (imports from a library this case forbids", err)
+
+    def test_the_font_list_pin_accepts_exactly_the_five_calls(self) -> None:
+        exact = build_import_elf([("sceLibFont", FONT_LIST_NIDS)])
+        status, out, err = self._main(self.PIN, exact)
+        self.assertEqual(status, user_mode_imports.EXIT_OK, err)
+        self.assertIn("OK", out)
+        extra = build_import_elf([("sceLibFont", FONT_LIST_NIDS + [0x099EF33C])])
+        status, _out, err = self._main(self.PIN, extra)
+        self.assertEqual(status, user_mode_imports.EXIT_KERNEL_IMPORT)
+        self.assertIn("unexpected 0x099EF33C", err)
+        with_registry = build_import_elf([("sceLibFont", FONT_LIST_NIDS), ("sceReg", [0x1D8A762E])])
+        status, _out, err = self._main(self.PIN, with_registry)
+        self.assertEqual(status, user_mode_imports.EXIT_KERNEL_IMPORT)
+        self.assertIn("sceReg", err)
+
+    def test_forbid_library_needs_a_library_name(self) -> None:
+        with redirect_stderr(io.StringIO()):
+            self.assertEqual(user_mode_imports.main(["--forbid-library"]),
+                             user_mode_imports.EXIT_UNREADABLE)
+            self.assertEqual(user_mode_imports.main(["--forbid-library", "--exact-library"]),
+                             user_mode_imports.EXIT_UNREADABLE)
+
+    def test_makefile_pins_the_font_list_imports_and_forbids_the_registry(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        fixture = root / "fixtures" / "psp_oracle"
+        makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        # The leading newline skips the `else ifeq` line of the case-id table.
+        block = makefile.split("\nifeq ($(CASE),font-list)\n", 1)[1].split("endif", 1)[0]
+        self.assertIn("OBJS += $(BUILD_DIR)/libfont_imports.o", block)
+        self.assertIn("--exact-library sceLibFont=" + ",".join(f"0x{nid:08X}" for nid in FONT_LIST_NIDS),
+                      block)
+        self.assertIn("--forbid-library sceReg", block)
+        self.assertIn("else ifeq ($(CASE),font-list)\nCASE_ID = 71\n", makefile)
+        stubs = (fixture / "libfont_imports.S").read_text(encoding="utf-8")
+        declared = [int(nid, 16) for nid in re.findall(r'IMPORT_FUNC\s+"sceLibFont",\s*(0x[0-9A-Fa-f]{8})', stubs)]
+        self.assertEqual(declared, FONT_LIST_NIDS)
+        self.assertEqual(stubs.count("IMPORT_START"), 1)
+        probe = (fixture / "probe.c").read_text(encoding="utf-8")
+        self.assertIn("#define PSP_ORACLE_CASE_FONT_LIST 71", probe)
+        self.assertIn('#define PROBE_HOST0_LOG "host0:/font_list_log.txt"', probe)
+
+    def test_font_list_header_makes_no_registry_or_file_call(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        header = (root / "fixtures" / "psp_oracle" / "font_list.h").read_text(encoding="utf-8")
+        code = "\n".join(line for line in header.splitlines()
+                         if not line.lstrip().startswith(("*", "/*", "//")))
+        self.assertNotRegex(code, r"\bsceReg\w*\s*\(")
+        self.assertNotRegex(code, r"\bsceIo\w*\s*\(")
+        self.assertNotRegex(code, r"\bsceKernel\w*\s*\(")
+        for name in ("sceFontNewLib", "sceFontGetNumFontList", "sceFontGetFontList",
+                     "sceFontGetFontInfoByIndexNumber", "sceFontDoneLib"):
+            self.assertIn(f"{name}(", code)

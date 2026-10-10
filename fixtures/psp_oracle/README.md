@@ -554,6 +554,20 @@ Nothing writes to `flash0:`. The copies and digests are the maintainer's private
 evidence and are never committed. `io_cases_host.c` runs both cases against a
 fake file system for the tests in `tools/test_psp_oracle.py`.
 
+The font-list case (`font-list`, `PSP-FONTLIST-001`, `font_list.h`) is not in the
+campaign queue; it runs only on the maintainer's request, with the firmware's own
+`sceLibFont` module resident (loaded through PSPLink before the launch). It asks
+that library for the system font list the way a title does: `sceFontNewLib` with a
+static arena allocator and no file callbacks, `sceFontGetNumFontList`,
+`sceFontGetFontList`, one `sceFontGetFontInfoByIndexNumber` per index (at most 64),
+then `sceFontDoneLib`. Each entry's 168 raw bytes are recorded as `raw_hex` with
+words 0-7 and 40-41 as `out0`-`out9`. The probe imports exactly the five
+`sceLibFont` calls and nothing from `sceReg` (the import gate fails the build
+otherwise), opens no font and no file, and writes only its host0 log. Font names
+and file names inside the entries are console strings and stay in that private
+log. `io_cases_host.c` (mode `fontlist`) runs the case against a fake font library
+for the tests in `tools/test_psp_oracle.py`.
+
 The host campaign plan requires one staged PRX for each queued case. It launches
 one PRX per boot and issues a PSPLink soft reset between completed cases. The
 queue starts with `transport-write`, then runs the nine new cases in the table

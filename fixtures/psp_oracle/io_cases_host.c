@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 the Nakagawa Recomp authors
 
-/* Host harness for font_files.h (case font-files) and umd_io.h (case umd-io): runs the probe's
- * code against a fake file system and logs every call, so tools/test_psp_oracle.py can check
- * the cases' safety rules without a PSP.
+/* Host harness for font_files.h (case font-files), umd_io.h (case umd-io) and font_list.h (case
+ * font-list): runs the probe's code against a fake file system and a fake font library and logs
+ * every call, so tools/test_psp_oracle.py can check the cases' safety rules without a PSP.
  *
- * usage: io_cases_host fonts|umd < scenario
+ * usage: io_cases_host fonts|umd|fontlist < scenario
  *
  * Only the calls the two cases may make exist here (sceIoDopen, sceIoDread, sceIoDclose,
  * sceIoOpen, sceIoRead, sceIoWrite, sceIoClose, sceIoMkdir, sceUmdCheckMedium,
@@ -28,6 +28,16 @@
  *   open <path-hex> <rc>             sceIoOpen of a device path returns <rc> (>= 0 opens)
  *   dopen <path-hex> <rc>            sceIoDopen of a device path returns <rc> (>= 0 opens)
  *   umd <medium> <drive-stat>        sceUmdCheckMedium / sceUmdGetDriveStat results
+ *   fontlib <handle> <err|-> <allocs> <bytes>
+ *                                    sceFontNewLib: the handle it returns, the error word it
+ *                                    writes (- leaves it untouched), and how many blocks of
+ *                                    <bytes> it allocates through the case's callback first;
+ *                                    a refused allocation makes it fail (handle 0)
+ *   fontcount <count> <err|->        sceFontGetNumFontList result and error word
+ *   fontlist-rc <rc>                 sceFontGetFontList returns <rc> and copies nothing
+ *   fontentry <index> <hex168>       the 168 style bytes served for <index> (list and info)
+ *   fontinfo-rc <index> <rc>         sceFontGetFontInfoByIndexNumber(<index>) returns <rc>
+ *   fontdone-rc <rc>                 sceFontDoneLib result
  * Unlisted device paths answer 0x80010002. Numbers accept 0x prefixes; names are literal.
  * Output: CALL, EMIT, STEP and HOST0 lines, then a SUMMARY line. */
 
@@ -72,6 +82,7 @@ int sceUmdGetDriveStat(void);
 
 #include "font_files.h"
 #include "umd_io.h"
+#include "font_list.h"
 
 #define FAKE_ENTRIES 128
 #define FAKE_DEVICES 64
@@ -133,6 +144,99 @@ static int s_dread_count;
 static int s_umd_medium;
 static int s_umd_drive;
 static int s_listing_cursor;
+
+/* ---- fake sceLibFont (mode fontlist) ------------------------------------------------------
+ * Serves scenario-defined 168-byte style records, allocates through the case's own callbacks
+ * (so the arena accounting is exercised), frees every block in DoneLib, and logs each call. */
+#define FAKE_FONTS 80
+#define FAKE_LIB_BLOCKS 64
+static uint32_t s_fontlib_handle = 0x1234u;
+static int s_fontlib_error_set = 1;
+static uint32_t s_fontlib_error;
+static int s_fontlib_allocs = 1;
+static uint32_t s_fontlib_alloc_bytes = 4096u;
+static int s_fontcount;
+static int s_fontcount_error_set = 1;
+static uint32_t s_fontcount_error;
+static int s_fontlist_rc_set;
+static int s_fontlist_rc;
+static int s_fontdone_rc;
+static uint8_t s_fake_styles[FAKE_FONTS][FONTLIST_STYLE_BYTES];
+static int s_fontinfo_rc[FAKE_FONTS];
+static FontListNewLibParams *s_fontlib_params;
+static void *s_fontlib_blocks[FAKE_LIB_BLOCKS];
+static int s_fontlib_block_count;
+
+static int hex_bytes(const char *hex, uint8_t *out, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        unsigned int byte = 0;
+        if (sscanf(hex + 2u * i, "%2x", &byte) != 1) return 0;
+        out[i] = (uint8_t)byte;
+    }
+    return 1;
+}
+
+uint32_t sceFontNewLib(FontListNewLibParams *params, uint32_t *errorCode) {
+    printf("CALL sceFontNewLib numFonts=%u alloc=%d free=%d open=%d close=%d read=%d seek=%d\n",
+           (unsigned int)params->numFonts, params->allocFuncAddr != NULL,
+           params->freeFuncAddr != NULL, params->openFuncAddr != NULL,
+           params->closeFuncAddr != NULL, params->readFuncAddr != NULL,
+           params->seekFuncAddr != NULL);
+    s_fontlib_params = params;
+    s_fontlib_block_count = 0;
+    for (int i = 0; i < s_fontlib_allocs && i < FAKE_LIB_BLOCKS; i++) {
+        void *block = params->allocFuncAddr
+            ? params->allocFuncAddr(params->userDataAddr, s_fontlib_alloc_bytes) : NULL;
+        printf("ALLOC bytes=%u ok=%d\n", (unsigned int)s_fontlib_alloc_bytes, block != NULL);
+        if (block == NULL) {
+            if (errorCode) *errorCode = 0x80460002u;
+            return 0u;
+        }
+        memset(block, 0x11, s_fontlib_alloc_bytes);
+        s_fontlib_blocks[s_fontlib_block_count++] = block;
+    }
+    if (s_fontlib_error_set && errorCode) *errorCode = s_fontlib_error;
+    return s_fontlib_handle;
+}
+
+int sceFontDoneLib(uint32_t libHandle) {
+    printf("CALL sceFontDoneLib handle=0x%08x\n", (unsigned int)libHandle);
+    if (s_fontlib_params && s_fontlib_params->freeFuncAddr) {
+        for (int i = 0; i < s_fontlib_block_count; i++) {
+            s_fontlib_params->freeFuncAddr(s_fontlib_params->userDataAddr, s_fontlib_blocks[i]);
+        }
+    }
+    s_fontlib_block_count = 0;
+    return s_fontdone_rc;
+}
+
+int sceFontGetNumFontList(uint32_t libHandle, uint32_t *errorCode) {
+    printf("CALL sceFontGetNumFontList handle=0x%08x\n", (unsigned int)libHandle);
+    if (s_fontcount_error_set && errorCode) *errorCode = s_fontcount_error;
+    return s_fontcount;
+}
+
+int sceFontGetFontList(uint32_t libHandle, void *fontStyles, int numFonts) {
+    printf("CALL sceFontGetFontList handle=0x%08x numFonts=%d\n", (unsigned int)libHandle,
+           numFonts);
+    if (s_fontlist_rc_set) return s_fontlist_rc;
+    int copied = 0;
+    for (int i = 0; i < numFonts && i < FAKE_FONTS; i++) {
+        memcpy((uint8_t *)fontStyles + (size_t)i * FONTLIST_STYLE_BYTES, s_fake_styles[i],
+               FONTLIST_STYLE_BYTES);
+        copied++;
+    }
+    return copied;
+}
+
+int sceFontGetFontInfoByIndexNumber(uint32_t libHandle, void *fontStyle, int fontIndex) {
+    printf("CALL sceFontGetFontInfoByIndexNumber handle=0x%08x index=%d\n",
+           (unsigned int)libHandle, fontIndex);
+    if (fontIndex < 0 || fontIndex >= FAKE_FONTS) return (int)0x80460006;
+    if (s_fontinfo_rc[fontIndex] != 0) return s_fontinfo_rc[fontIndex];
+    memcpy(fontStyle, s_fake_styles[fontIndex], FONTLIST_STYLE_BYTES);
+    return 0;
+}
 
 static uint8_t fake_byte(const FakeEntry *e, uint32_t i, int generation) {
     uint8_t value = (uint8_t)(((i * 31u) + e->seed) ^ (i >> 7));
@@ -397,6 +501,15 @@ static int load_scenario(FILE *input) {
         char w[8][160];
         line[strcspn(line, "\r\n")] = '\0';
         if (line[0] == '\0' || line[0] == '#') continue;
+        if (strncmp(line, "fontentry ", 10) == 0) {
+            /* The style bytes do not fit the %159s words below: parse this line on its own. */
+            static char hex[512];
+            unsigned int index = 0;
+            if (sscanf(line, "fontentry %u %511s", &index, hex) != 2) return 0;
+            if (index >= FAKE_FONTS || strlen(hex) != 2u * FONTLIST_STYLE_BYTES) return 0;
+            if (!hex_bytes(hex, s_fake_styles[index], FONTLIST_STYLE_BYTES)) return 0;
+            continue;
+        }
         int n = sscanf(line, "%159s %159s %159s %159s %159s %159s %159s %159s",
                        w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
         if (strcmp(w[0], "fontdir") == 0 && n == 3) {
@@ -452,6 +565,25 @@ static int load_scenario(FILE *input) {
         } else if (strcmp(w[0], "umd") == 0 && n == 3) {
             s_umd_medium = (int)number(w[1]);
             s_umd_drive = (int)number(w[2]);
+        } else if (strcmp(w[0], "fontlib") == 0 && n == 5) {
+            s_fontlib_handle = (uint32_t)number(w[1]);
+            s_fontlib_error_set = strcmp(w[2], "-") != 0;
+            if (s_fontlib_error_set) s_fontlib_error = (uint32_t)number(w[2]);
+            s_fontlib_allocs = (int)number(w[3]);
+            s_fontlib_alloc_bytes = (uint32_t)number(w[4]);
+        } else if (strcmp(w[0], "fontcount") == 0 && n == 3) {
+            s_fontcount = (int)number(w[1]);
+            s_fontcount_error_set = strcmp(w[2], "-") != 0;
+            if (s_fontcount_error_set) s_fontcount_error = (uint32_t)number(w[2]);
+        } else if (strcmp(w[0], "fontlist-rc") == 0 && n == 2) {
+            s_fontlist_rc_set = 1;
+            s_fontlist_rc = (int)number(w[1]);
+        } else if (strcmp(w[0], "fontinfo-rc") == 0 && n == 3) {
+            long index = number(w[1]);
+            if (index < 0 || index >= FAKE_FONTS) return 0;
+            s_fontinfo_rc[index] = (int)number(w[2]);
+        } else if (strcmp(w[0], "fontdone-rc") == 0 && n == 2) {
+            s_fontdone_rc = (int)number(w[1]);
         } else {
             return 0;
         }
@@ -460,9 +592,11 @@ static int load_scenario(FILE *input) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 2 || (strcmp(argv[1], "fonts") != 0 && strcmp(argv[1], "umd") != 0) ||
+    if (argc != 2 ||
+        (strcmp(argv[1], "fonts") != 0 && strcmp(argv[1], "umd") != 0 &&
+         strcmp(argv[1], "fontlist") != 0) ||
         !load_scenario(stdin)) {
-        fprintf(stderr, "io_cases_host: usage: io_cases_host fonts|umd < scenario\n");
+        fprintf(stderr, "io_cases_host: usage: io_cases_host fonts|umd|fontlist < scenario\n");
         return 2;
     }
     if (strcmp(argv[1], "fonts") == 0) {
@@ -471,12 +605,18 @@ int main(int argc, char **argv) {
         fonts.emit = harness_emit;
         fonts.step = harness_step;
         fontfiles_run(&fonts);
-    } else {
+    } else if (strcmp(argv[1], "umd") == 0) {
         static UmdIo umd;
         memset(&umd, 0, sizeof(umd));
         umd.emit = harness_emit;
         umd.step = harness_step;
         umdio_run(&umd);
+    } else {
+        static FontList fontlist;
+        memset(&fontlist, 0, sizeof(fontlist));
+        fontlist.emit = harness_emit;
+        fontlist.step = harness_step;
+        fontlist_run(&fontlist);
     }
     for (int i = 0; i < s_entry_count; i++) {
         const FakeEntry *e = &s_entries[i];
