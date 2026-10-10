@@ -42,6 +42,15 @@
 instrumentation is this test's protection against the historical RAM runaway."
 #endif
 
+/* The scratch tree this selftest writes beneath: its memstick, unified and legacy
+ * filesystem roots, sysreg, OSK and fbcap scratch. The Makefile passes the caller's
+ * BUILD_ROOT as -DSR_SELFTEST_BUILD_ROOT, so a suite run writes beneath its own scratch
+ * tree rather than the checkout's build/. A bare compile keeps the historical "build". */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+#define HLE_BUILD_ROOT SR_SELFTEST_BUILD_ROOT
+
 #include "ge_shared.h"
 #include "gpu_sdl3vk/ge_gpu.h"   /* GeGpuFbDescriptor: header-only, no Vulkan */
 #include "sched.c" /* white-box fixture setup and observable TCB state */
@@ -1908,11 +1917,11 @@ static void test_runtime_placed_modules(void) {
         char saved_memstick[512] = "";
         int had_memstick = old_memstick != NULL;
         if (old_memstick) snprintf(saved_memstick, sizeof(saved_memstick), "%s", old_memstick);
-        CreateDirectoryA("build", NULL);
-        CreateDirectoryA("build/hle_fd_namespace_ms", NULL);
-        CreateDirectoryA("build/hle_fd_namespace_ms/NKRT", NULL);
-        SetEnvironmentVariableA("SR_MEMSTICK", "build/hle_fd_namespace_ms");
-        _putenv_s("SR_MEMSTICK", "build/hle_fd_namespace_ms");
+        CreateDirectoryA(HLE_BUILD_ROOT, NULL);
+        CreateDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms", NULL);
+        CreateDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms/NKRT", NULL);
+        SetEnvironmentVariableA("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
+        _putenv_s("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
         fd_host_path(host, sizeof(host), alpha_guest);
         FILE *marker = fopen(host, "wb");
         if (marker) {
@@ -2164,7 +2173,7 @@ static void test_guest_module_load_binding(void) {
 }
 
 static void test_prx_export_relocation_behavior(void) {
-    const char *path = "hle_prx_export_fixture.bin";
+    const char *path = HLE_BUILD_ROOT "/hle_prx_export_fixture.bin";
     const uint32_t base = 0x30000000u;
     const uint32_t nid_zero = 0x11111111u;
     const uint32_t nid_nonzero = 0x22222222u;
@@ -2222,7 +2231,7 @@ static void fd_host_path(char *out, size_t capacity, const char *guest) {
     char root[256];
     const char *env = getenv("SR_MEMSTICK");
     if (env && env[0]) snprintf(root, sizeof root, "%s", env);
-    else snprintf(root, sizeof root, "%s", "build/hle_fd_namespace_ms");
+    else snprintf(root, sizeof root, "%s", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
     const char *rel = guest ? guest : "";
     size_t at = 0;
     if (!out || capacity == 0) return;
@@ -2648,10 +2657,10 @@ static void test_fd_namespace(void) {
 
     fd_host_path(result_host, sizeof(result_host), result_guest);
     DeleteFileA(result_host);
-    CreateDirectoryA("build", NULL);
-    CreateDirectoryA("build/hle_fd_namespace_ms", NULL);
-    SetEnvironmentVariableA("SR_MEMSTICK", "build/hle_fd_namespace_ms");
-    _putenv_s("SR_MEMSTICK", "build/hle_fd_namespace_ms");
+    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
+    CreateDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms", NULL);
+    SetEnvironmentVariableA("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
+    _putenv_s("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms");
 
     /* sr_hle_init performs the real runtime descriptor-table initialization. */
     sr_hle_init();
@@ -2849,7 +2858,7 @@ static void test_fd_namespace(void) {
     /* An actual empty overlay directory is successful and immediately at end
      * of directory; ERROR_FILE_NOT_FOUND from its wildcard is not a missing
      * directory. Lives under the unified Memory Stick root (issue #334). */
-    CreateDirectoryA("build/hle_fd_namespace_ms/empty", NULL);
+    CreateDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms/empty", NULL);
     memset(&cpu, 0, sizeof cpu);
     fd_guest_copy(path_addr, "ms0:/empty", sizeof "ms0:/empty");
     cpu.r[4] = path_addr;
@@ -2865,7 +2874,7 @@ static void test_fd_namespace(void) {
     cpu.r[4] = empty_dir_fd;
     expect(sr_hle_test_io_dclose(&cpu) == 0u,
            "the empty overlay directory descriptor closes cleanly");
-    RemoveDirectoryA("build/hle_fd_namespace_ms/empty");
+    RemoveDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms/empty");
 
     /* Whence validation on valid open file */
     memset(&cpu, 0, sizeof(cpu));
@@ -3113,7 +3122,7 @@ static void test_fd_namespace(void) {
     DeleteFileA(rename_dst_host);
 
     DeleteFileA(result_host);
-    RemoveDirectoryA("build/hle_fd_namespace_ms");
+    RemoveDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms");
     if (old_root) SetEnvironmentVariableA("SR_MEMSTICK", old_root);
     else SetEnvironmentVariableA("SR_MEMSTICK", NULL);
     if (old_root) _putenv_s("SR_MEMSTICK", old_root);
@@ -3134,8 +3143,8 @@ static void test_ms0_unified_namespace(void) {
         PATH2_ADDR = 0x09030100u,
         STAT_ADDR  = 0x09030200u
     };
-    static const char ms_root[] = "build/hle_ms0_unified";
-    static const char legacy_root[] = "build/hle_ms0_legacy_fs";
+    static const char ms_root[] = HLE_BUILD_ROOT "/hle_ms0_unified";
+    static const char legacy_root[] = HLE_BUILD_ROOT "/hle_ms0_legacy_fs";
     static const uint8_t payload[] = "MS0_UNIFIED_OK\n";
     CpuState cpu;
     char host[512];
@@ -3146,7 +3155,7 @@ static void test_ms0_unified_namespace(void) {
     if (save_ms) memcpy(save_ms, old_ms, strlen(old_ms) + 1u);
     if (save_fs) memcpy(save_fs, old_fs, strlen(old_fs) + 1u);
 
-    CreateDirectoryA("build", NULL);
+    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
     CreateDirectoryA(ms_root, NULL);
     CreateDirectoryA(legacy_root, NULL);
     SetEnvironmentVariableA("SR_MEMSTICK", ms_root);
@@ -3493,7 +3502,7 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
 /* sceReg virtual system registry (src/rt/hle.c): guest scratch lives in the arena at 0x08b00000,
  * and the per-user overlay is redirected for the whole run to a build-scoped file (main sets
  * SR_SYSTEM_REGISTRY), so no test reads or writes the developer's own registry overlay. */
-#define SYSREG_SCRATCH_DIR "build/hle_sysreg"
+#define SYSREG_SCRATCH_DIR HLE_BUILD_ROOT "/hle_sysreg"
 #define SYSREG_SCRATCH_FILE SYSREG_SCRATCH_DIR "/system.json"
 #define SYSREG_PARAM 0x08b00000u
 #define SYSREG_OUT 0x08b00400u
@@ -3631,7 +3640,7 @@ static void sysreg_env(const char *value) {
 }
 
 static void sysreg_scratch_clean(void) {
-    CreateDirectoryA("build", NULL);
+    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
     CreateDirectoryA(SYSREG_SCRATCH_DIR, NULL);
     DeleteFileA(SYSREG_SCRATCH_FILE);
     DeleteFileA(SYSREG_SCRATCH_FILE ".tmp");
@@ -4533,7 +4542,7 @@ static void osk_person_reset(void) {
 #define OSK_DESC_ADDR   0x09030200u
 #define OSK_IN_ADDR     0x09030280u
 #define OSK_OUT_ADDR    0x09030300u
-#define OSK_SCRIPT_PATH "build/hle_osk_script_selftest.txt"
+#define OSK_SCRIPT_PATH HLE_BUILD_ROOT "/hle_osk_script_selftest.txt"
 #define NID_OSK_INIT     0xf6269b82u
 #define NID_OSK_STATUS  0xf3f76017u
 #define NID_OSK_SHUTDOWN 0x3dfaeba9u
@@ -4595,7 +4604,7 @@ static void osk_env(const char *name, const char *value) {
 }
 
 static int osk_write_script(const char *const *lines, int count) {
-    CreateDirectoryA("build", NULL);
+    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
     FILE *f = fopen(OSK_SCRIPT_PATH, "w");
     if (!f) return 0;
     for (int i = 0; i < count; i++) fprintf(f, "%s\n", lines[i]);
@@ -4908,10 +4917,10 @@ static void test_io_devctl_memory_stick(void) {
         return;
     }
 
-    CreateDirectoryA("build", NULL);
-    CreateDirectoryA("build/hle_fd_namespace_ms", NULL);
-    expect(SetEnvironmentVariableA("SR_MEMSTICK", "build/hle_fd_namespace_ms") &&
-               _putenv_s("SR_MEMSTICK", "build/hle_fd_namespace_ms") == 0,
+    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
+    CreateDirectoryA(HLE_BUILD_ROOT "/hle_fd_namespace_ms", NULL);
+    expect(SetEnvironmentVariableA("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms") &&
+               _putenv_s("SR_MEMSTICK", HLE_BUILD_ROOT "/hle_fd_namespace_ms") == 0,
            "sceIoDevctl test selects the synthetic ordinary-I/O memory-stick root");
     fd_guest_copy(device_addr, ms0, sizeof(ms0));
     fd_guest_copy(second_device_addr, fatms0, sizeof(fatms0));
@@ -7006,11 +7015,25 @@ static int hle_make_directory(const char *path) {
     return CreateDirectoryA(path, NULL) || GetLastError() == ERROR_ALREADY_EXISTS;
 }
 
+/* The absolute form of HLE_BUILD_ROOT, for the fixtures below that build a path from it.
+ * GetFullPathNameA resolves a relative root (the default "build") against the working
+ * directory and leaves an absolute one alone, so a BUILD_ROOT=<scratch> run stays in its
+ * scratch tree. Separators are normalised and trailing ones stripped. Returns 0 when the
+ * root cannot be resolved or does not fit in the buffer. */
+static int hle_scratch_root(char *out, size_t capacity) {
+    DWORD length = GetFullPathNameA(HLE_BUILD_ROOT, (DWORD)capacity, out, NULL);
+    if (length == 0 || length >= capacity) return 0;
+    while (length > 3u && (out[length - 1u] == '\\' || out[length - 1u] == '/')) {
+        out[--length] = '\0';
+    }
+    return 1;
+}
+
 static int hle_archive_fixture_make(char *root, size_t root_capacity) {
-    char cwd[MAX_PATH];
-    if (!GetCurrentDirectoryA(MAX_PATH, cwd)) return 0;
-    hle_make_directory("build");
-    _snprintf(root, root_capacity, "%s\\build\\archive_vfs_%lu", cwd,
+    char scratch[MAX_PATH];
+    if (!hle_scratch_root(scratch, sizeof(scratch))) return 0;
+    hle_make_directory(HLE_BUILD_ROOT);
+    _snprintf(root, root_capacity, "%s\\archive_vfs_%lu", scratch,
               (unsigned long)GetCurrentProcessId());
     if (!hle_make_directory(root)) return 0;
     char dir[3][MAX_PATH];
@@ -7142,12 +7165,12 @@ static void test_direct_xb_read_precedence_and_listing(void) {
 
 static void test_direct_xb_malformed_archive_fails_closed(void) {
     char root[MAX_PATH];
-    char cwd[MAX_PATH];
+    char scratch[MAX_PATH];
     reset_fixture();
     sr_hle_init();
-    expect(GetCurrentDirectoryA(MAX_PATH, cwd) != 0, "the malformed XB fixture has a working directory");
-    hle_make_directory("build");
-    _snprintf(root, sizeof(root), "%s\\build\\archive_vfs_bad_%lu", cwd,
+    expect(hle_scratch_root(scratch, sizeof(scratch)), "the malformed XB fixture has a scratch root");
+    hle_make_directory(HLE_BUILD_ROOT);
+    _snprintf(root, sizeof(root), "%s\\archive_vfs_bad_%lu", scratch,
               (unsigned long)GetCurrentProcessId());
     expect(hle_make_directory(root), "the malformed XB fixture root was created");
     char archive_path[MAX_PATH];
@@ -7171,12 +7194,12 @@ static void test_direct_xb_malformed_archive_fails_closed(void) {
 static void test_direct_xb_many_members_skip_loose_walk(void) {
     const size_t count = 2048u;
     char root[MAX_PATH];
-    char cwd[MAX_PATH];
+    char scratch[MAX_PATH];
     reset_fixture();
     sr_hle_init();
-    expect(GetCurrentDirectoryA(MAX_PATH, cwd) != 0, "the large XB fixture has a working directory");
-    hle_make_directory("build");
-    _snprintf(root, sizeof(root), "%s\\build\\archive_vfs_many_%lu", cwd,
+    expect(hle_scratch_root(scratch, sizeof(scratch)), "the large XB fixture has a scratch root");
+    hle_make_directory(HLE_BUILD_ROOT);
+    _snprintf(root, sizeof(root), "%s\\archive_vfs_many_%lu", scratch,
               (unsigned long)GetCurrentProcessId());
     expect(hle_make_directory(root), "the large XB fixture root was created");
     HleXbEntry *entries = (HleXbEntry *)calloc(count, sizeof(*entries));
@@ -7385,12 +7408,12 @@ static void test_host_data_scan_scaling(void) {
     unsigned long long probes[sizeof(counts) / sizeof(counts[0])] = { 0 };
     unsigned long dirs[sizeof(counts) / sizeof(counts[0])] = { 0 };
     unsigned long skeleton[sizeof(counts) / sizeof(counts[0])] = { 0 };
-    char cwd[MAX_PATH];
-    if (!GetCurrentDirectoryA(MAX_PATH, cwd)) {
+    char scratch[MAX_PATH];
+    if (!hle_scratch_root(scratch, sizeof(scratch))) {
         expect(0, "the synthetic host-data benchmark has a working directory");
         return;
     }
-    if (!hle_make_directory("build")) {
+    if (!hle_make_directory(HLE_BUILD_ROOT)) {
         expect(0, "the synthetic host-data benchmark build directory exists");
         return;
     }
@@ -7399,8 +7422,8 @@ static void test_host_data_scan_scaling(void) {
         char dataroot[MAX_PATH];
         size_t dirs_created = 0;
         root[0] = '\0';
-        int n = snprintf(root, sizeof(root), "%s\\build\\host_data_scan_%lu_%llu",
-                         cwd, (unsigned long)GetCurrentProcessId(),
+        int n = snprintf(root, sizeof(root), "%s\\host_data_scan_%lu_%llu",
+                         scratch, (unsigned long)GetCurrentProcessId(),
                          (unsigned long long)GetTickCount64());
         int root_path_ok = n >= 0 && (size_t)n < sizeof(root);
         int tree_ok = root_path_ok &&
@@ -7482,11 +7505,11 @@ typedef struct {
 } HleArchiveRouteFixture;
 
 static int hle_archive_route_fixture_make(HleArchiveRouteFixture *fixture) {
-    char cwd[MAX_PATH];
-    if (!fixture || !GetCurrentDirectoryA(MAX_PATH, cwd)) return 0;
-    hle_make_directory("build");
-    _snprintf(fixture->root, sizeof(fixture->root), "%s\\build\\archive_route_%lu_%llu",
-              cwd, (unsigned long)GetCurrentProcessId(),
+    char scratch[MAX_PATH];
+    if (!fixture || !hle_scratch_root(scratch, sizeof(scratch))) return 0;
+    hle_make_directory(HLE_BUILD_ROOT);
+    _snprintf(fixture->root, sizeof(fixture->root), "%s\\archive_route_%lu_%llu",
+              scratch, (unsigned long)GetCurrentProcessId(),
               (unsigned long long)GetTickCount64());
     _snprintf(fixture->dataroot, sizeof(fixture->dataroot), "%s\\USRDIR\\primary",
              fixture->root);
@@ -7921,11 +7944,11 @@ static void test_archive_mode_preserves_loose_routes(void) {
 }
 
 static int prewarm_make_fixture(int with_asset) {
-    char cwd[MAX_PATH];
-    if (!GetCurrentDirectoryA(MAX_PATH, cwd)) return 0;
-    CreateDirectoryA("build", NULL);
-    snprintf(s_prewarm_root, sizeof s_prewarm_root, "%s\\build\\data_prewarm_%lu",
-             cwd, (unsigned long)GetCurrentProcessId());
+    char scratch[MAX_PATH];
+    if (!hle_scratch_root(scratch, sizeof(scratch))) return 0;
+    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
+    snprintf(s_prewarm_root, sizeof s_prewarm_root, "%s\\data_prewarm_%lu",
+             scratch, (unsigned long)GetCurrentProcessId());
     /* A stale fixture from an earlier run must not inflate the counts. */
     char clean_root[MAX_PATH];
     snprintf(clean_root, sizeof clean_root, "\\\\?\\%s", s_prewarm_root);
@@ -8018,9 +8041,9 @@ static void test_extracted_data_prepares_before_guest_and_lookup_never_builds(vo
     const char *old_fs_value = getenv("SR_FSDIR");
     char *old_fs = old_fs_value ? (char *)malloc(strlen(old_fs_value) + 1u) : NULL;
     if (old_fs) memcpy(old_fs, old_fs_value, strlen(old_fs_value) + 1u);
-    SetEnvironmentVariableA("SR_FSDIR", "build/hle_dopen_vfs_fs");
-    CreateDirectoryA("build", NULL);
-    CreateDirectoryA("build/hle_dopen_vfs_fs", NULL);
+    SetEnvironmentVariableA("SR_FSDIR", HLE_BUILD_ROOT "/hle_dopen_vfs_fs");
+    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
+    CreateDirectoryA(HLE_BUILD_ROOT "/hle_dopen_vfs_fs", NULL);
     static const uint32_t dir_path_addr = 0x09101000u;
     static const uint32_t dirent_addr = 0x09102000u;
     static const char dir_path[] = "disc0:/data/menu/text";
@@ -8055,7 +8078,7 @@ static void test_extracted_data_prepares_before_guest_and_lookup_never_builds(vo
     expect(sr_hle_test_io_dclose(&cpu) == 0u,
            "the full disc0 indexed directory descriptor closes cleanly");
     SetEnvironmentVariableA("SR_FSDIR", old_fs ? old_fs : NULL);
-    RemoveDirectoryA("build/hle_dopen_vfs_fs");
+    RemoveDirectoryA(HLE_BUILD_ROOT "/hle_dopen_vfs_fs");
     free(old_fs);
 
     prewarm_env_restore();
@@ -8092,11 +8115,11 @@ static void test_unprepared_route_lookup_fails_closed_without_building(void) {
 static char s_disc_route_root[MAX_PATH];
 
 static int disc_route_make_fixture(void) {
-    char cwd[MAX_PATH];
-    if (!GetCurrentDirectoryA(MAX_PATH, cwd)) return 0;
-    CreateDirectoryA("build", NULL);
+    char scratch[MAX_PATH];
+    if (!hle_scratch_root(scratch, sizeof(scratch))) return 0;
+    CreateDirectoryA(HLE_BUILD_ROOT, NULL);
     snprintf(s_disc_route_root, sizeof s_disc_route_root,
-             "%s\\build\\disc_route_%lu", cwd, (unsigned long)GetCurrentProcessId());
+             "%s\\disc_route_%lu", scratch, (unsigned long)GetCurrentProcessId());
 
     /* CreateDirectoryA makes ONE directory; every intermediate is listed so the
      * fixture cannot depend on an earlier test having left a parent behind. */
@@ -8249,12 +8272,12 @@ static void test_primary_extracted_archive_duplicates_match_main(void) {
 
     reset_fixture();
     sr_hle_init();
-    int root_ok = hle_make_directory("build");
-    char cwd[MAX_PATH];
-    if (!GetCurrentDirectoryA(MAX_PATH, cwd)) root_ok = 0;
+    int root_ok = hle_make_directory(HLE_BUILD_ROOT);
+    char scratch[MAX_PATH];
+    if (!hle_scratch_root(scratch, sizeof(scratch))) root_ok = 0;
     if (root_ok) {
-        int length = snprintf(root, sizeof(root), "%s\\build\\primary_archive_dupes_%lu_%llu",
-                              cwd, (unsigned long)GetCurrentProcessId(),
+        int length = snprintf(root, sizeof(root), "%s\\primary_archive_dupes_%lu_%llu",
+                              scratch, (unsigned long)GetCurrentProcessId(),
                               (unsigned long long)GetTickCount64());
         root_ok = length >= 0 && (size_t)length < sizeof(root);
     }
@@ -8393,7 +8416,7 @@ static void test_missing_root_fails_once_and_stays_failed(void) {
     reset_fixture();
     sr_hle_init();
     char missing[MAX_PATH];
-    snprintf(missing, sizeof missing, "%s\\build\\data_prewarm_missing_%lu",
+    snprintf(missing, sizeof missing, "%s\\absent\\data_prewarm_missing_%lu",
              s_prewarm_root, (unsigned long)GetCurrentProcessId());
     SetEnvironmentVariableA("SR_DATAROOT", missing);
     sr_hle_test_data_reset(0);
@@ -22624,7 +22647,8 @@ static uint32_t rt_frame(uint32_t v, const uint8_t *sig) {
     return keys;
 }
 
-#define RT_PATH "route_selftest_tmp.pad"
+/* Beneath the scratch root, not the working directory (the checkout root in a default run). */
+#define RT_PATH HLE_BUILD_ROOT "/route_selftest_tmp.pad"
 
 static void rt_write(const char *body) {
     FILE *fp = fopen(RT_PATH, "wb");
@@ -24417,8 +24441,8 @@ static int write_lifecycle_prx(const char *path, uint32_t payload) {
 }
 
 static void test_late_prx_unload_reload_lifecycle(void) {
-    const char *path_a = "hle_lifecycle_a.prx";
-    const char *path_b = "hle_lifecycle_b.prx";
+    const char *path_a = HLE_BUILD_ROOT "/hle_lifecycle_a.prx";
+    const char *path_b = HLE_BUILD_ROOT "/hle_lifecycle_b.prx";
     const uint32_t marker_1 = 0x1111aaaa;
     const uint32_t marker_2 = 0x2222bbbb;
     CpuState cpu;
@@ -24703,7 +24727,7 @@ static void test_late_prx_unload_reload_lifecycle(void) {
 }
 
 static void test_host_skipped_start_stop_unload_reload(void) {
-    const char *path = "hle_lifecycle_host_skipped.prx";
+    const char *path = HLE_BUILD_ROOT "/hle_lifecycle_host_skipped.prx";
     CpuState cpu;
     uint32_t uid;
 
@@ -24779,7 +24803,7 @@ static void test_host_skipped_start_stop_unload_reload(void) {
  * not free that range out from under the survivor. Retiring on the last reference
  * instead is what keeps the survivor's module_start/module_stop valid. */
 static void test_late_prx_duplicate_base_last_reference(void) {
-    const char *path = "hle_lifecycle_dup.prx";
+    const char *path = HLE_BUILD_ROOT "/hle_lifecycle_dup.prx";
     CpuState cpu;
     uint32_t owner, survivor;
 
@@ -24878,7 +24902,7 @@ static int stderr_capture_begin(void) {
     fflush(stderr);
     s_stderr_saved_fd = _dup(_fileno(stderr));
     if (s_stderr_saved_fd < 0) return 0;
-    return freopen("psmf_boundary_capture.txt", "w+", stderr) != NULL;
+    return freopen(HLE_BUILD_ROOT "/psmf_boundary_capture.txt", "w+", stderr) != NULL;
 }
 static size_t stderr_capture_end(char *out, size_t capacity) {
     fflush(stderr);
@@ -24891,7 +24915,7 @@ static size_t stderr_capture_end(char *out, size_t capacity) {
         _close(s_stderr_saved_fd);
         s_stderr_saved_fd = -1;
     }
-    remove("psmf_boundary_capture.txt");
+    remove(HLE_BUILD_ROOT "/psmf_boundary_capture.txt");
     return n;
 }
 static int count_occurrences(const char *haystack, const char *needle) {
@@ -25720,7 +25744,49 @@ static void test_issue339_wait_nids_production_dispatch(void) {
     test_issue339_vblank_cb_wait_requires_a_current_thread();
 }
 
+static int hle_selftest_main(int argc, char **argv);
+
+/* The selftest runs from a scratch working directory beneath HLE_BUILD_ROOT. The production
+ * capture publisher names its snapshots relative to the working directory (snap_<n>.ppm, the
+ * FBSNAP build/snapshots tree, the framebuffer dumps), so a checkout-root working directory
+ * would receive them, and the original is restored on every return. The modes that take path
+ * arguments (--psp-oracle, --exit-game-poisoned) keep the caller's working directory. */
 int main(int argc, char **argv) {
+    if (argc > 1 && (strcmp(argv[1], "--psp-oracle") == 0 ||
+                     strcmp(argv[1], "--exit-game-poisoned") == 0))
+        return hle_selftest_main(argc, argv);
+    static const char scratch_rel[] = HLE_BUILD_ROOT "/hle_selftest_cwd";
+    char original[MAX_PATH];
+    if (!GetCurrentDirectoryA((DWORD)sizeof(original), original)) {
+        fprintf(stderr, "hle_thread_selftest: cannot read the working directory\n");
+        return 2;
+    }
+    /* argv[0] names this binary for the exit-game respawn, and a relative spelling
+     * (build/mygame/hle_thread_selftest.exe, as the Makefile starts it) resolves against the
+     * working directory. Resolve it while that is still the caller's directory. */
+    static char s_abs_argv0[MAX_PATH];
+    if (argc > 0 && argv[0]) {
+        DWORD n = GetFullPathNameA(argv[0], (DWORD)sizeof(s_abs_argv0), s_abs_argv0, NULL);
+        if (n == 0 || n >= sizeof(s_abs_argv0)) {
+            fprintf(stderr, "hle_thread_selftest: cannot resolve argv[0] '%s'\n", argv[0]);
+            return 2;
+        }
+        argv[0] = s_abs_argv0;
+    }
+    hle_make_directory(HLE_BUILD_ROOT);
+    if (!hle_make_directory(scratch_rel) || !SetCurrentDirectoryA(scratch_rel)) {
+        fprintf(stderr, "hle_thread_selftest: cannot enter scratch directory '%s'\n", scratch_rel);
+        return 2;
+    }
+    int rc = hle_selftest_main(argc, argv);
+    if (!SetCurrentDirectoryA(original)) {
+        fprintf(stderr, "hle_thread_selftest: cannot restore the working directory\n");
+        return 2;
+    }
+    return rc;
+}
+
+static int hle_selftest_main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--psp-oracle") == 0)
         return run_psp_oracle(argc, argv);
     if (argc > 1 && strcmp(argv[1], "--exit-game-poisoned") == 0)

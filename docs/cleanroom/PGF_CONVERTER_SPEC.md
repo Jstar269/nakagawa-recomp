@@ -23,7 +23,8 @@ The converter turns one pinned TrueType-outline font plus a metric-target
 policy into a public-safe PGF fixture:
 
 - **In scope.** sfnt parsing of static `glyf` fonts; cmap lookup for a
-  contiguous 16-bit code range; unhinted rasterization to 4-bit alpha;
+  contiguous 16-bit code range, or an explicit ascending code-point set that
+  yields a sparse character map; unhinted rasterization to 4-bit alpha;
   26.6 metric derivation; honest output naming; a machine-readable conversion
   manifest; refusal of every malformed, unsupported, or policy-violating
   input named in section 3.
@@ -91,14 +92,25 @@ scaling.
 | `malformed-font` / `malformed-head` / `malformed-maxp` / `malformed-hhea` / `malformed-hmtx` / `malformed-loca` / `malformed-cmap` / `malformed-glyph` | Bounds or invariant violation in that section. |
 | `missing-code-point` | A requested code has no glyph. |
 | `bad-code-range` | `--codes` is unparseable, inverted, or outside 16 bits. |
+| `bad-codepoint-list` | A `--codepoints` file is unreadable, not ASCII, holds a line that is not a code point, or leaves 16 bits. |
+| `codepoints-unsorted` | A `--codepoints` file repeats a code or is not in ascending order. |
+| `empty-codepoint-set` | A `--codepoints` file lists no code point. |
 | `ppem-out-of-range` | Size outside 1..128. |
 | `glyph-too-large` | A raster exceeds the writer's 7-bit record fields (127 px). |
 | `composite-too-deep` / `composite-too-many-components` | Composite expansion bounds. |
 | `metric-targets-invalid` / `metric-target-unreachable` | Policy document is malformed / no size satisfies it. |
-| `conflicting-parameters` | `--ppem` together with `--metric-targets`. |
+| `conflicting-parameters` | `--ppem` together with `--metric-targets`. (`--codes` and `--codepoints` are mutually exclusive at the CLI.) |
 | `pin-invalid` / `pin-digest-mismatch` / `pin-size-mismatch` / `pin-license-mismatch` | Source pin does not bind the exact input and licence bytes. |
 | `reserved-font-name` / `camouflage-font-name` | Output name policy violation (section 6). |
-| writer reasons (`font-field-invalid`, `non-contiguous-code-points`, `metric-table-overflow`, ...) | Re-raised unchanged from `pgf_writer.py`. |
+| writer reasons (`font-field-invalid`, `nominal-size-out-of-range`, `metric-table-overflow`, ...) | Re-raised unchanged from `pgf_writer.py`. |
+
+`--codepoints FILE` supplies the code points instead of `--codes`. The file lists
+one code point per line as `0x41`, `U+0041`, or decimal; `#` starts a comment.
+Codes must be strictly ascending, so a set has exactly one reading, and every
+listed code needs a glyph (`missing-code-point` otherwise). The file's SHA-256
+and leaf name go into the manifest. The writer then emits a sparse character map
+over the span from the smallest to the largest code, and codes outside the set
+are misses.
 
 A refusal means no byte is written: the CLI builds the complete image and
 manifest in memory first and writes only after every stage succeeds.
@@ -161,7 +173,10 @@ For a glyph whose raster box is `left, bottom, right, top` in whole pixels
 
 Header extrema are then whatever `pgf_writer` derives from those records:
 `ascender = max(y_base)`, `descender = min(y_base - dimension_height)`, and
-the maxima of dimension, advance, and pixel size. A glyph with no covered
+the maxima of dimension, advance, and pixel size. The header's horizontal and
+vertical size fields (`0x24`, `0x28`) are not extrema: they carry the nominal
+em size, `ppem * 64` in 26.6 units, so a game reads the chosen size rather than
+the largest advance. A glyph with no covered
 pixel (a space) is emitted as a zero-area record with only its advance, which
 the reader reports as present-but-unmapped exactly like `PGF_SPEC.md`
 section 3.9 describes.
@@ -197,9 +212,10 @@ mutually exclusive.
 The container is written entirely by `tools/pgf_writer.py`: revision 2, the
 392-byte base header, direct character map only, no shadow records, no
 subcharmap tables - the subset `PGF_SPEC.md` documents for revision 2 and the
-writer's own contract (contiguous code range, at most 255 entries per metric
-table). Kerning beyond per-glyph advances does not exist in PGF and none is
-fabricated (`PGF_SPEC.md` section 3.10).
+writer's own contract (a code span with a sparse character map when the code
+set has gaps, at most 255 entries per metric table). Kerning beyond per-glyph
+advances does not exist in PGF and none is fabricated (`PGF_SPEC.md` section
+3.10).
 
 The default output name is `Nakagawa Open Latin` / `Regular`. Before anything
 is written the converter refuses:
@@ -239,11 +255,12 @@ Generated PGFs are fixtures, never an authenticity claim.
 | --- | --- |
 | `converter` | Name, version, and this specification's path. |
 | `input` | File name (no directory), SHA-256, size, `unitsPerEm`, glyph count, outline format, tables used. |
-| `output` | File name (no directory), SHA-256, size, font name/type, revision, first/last glyph, and the header extrema read back from the emitted bytes. |
-| `coverage` | First/last code, count, and `U+XXXX..U+YYYY` range. |
+| `output` | File name (no directory), SHA-256, size, font name/type, revision, first/last glyph, the header size fields and extrema read back from the emitted bytes. |
+| `coverage` | First/last code, converted code count, code span, and `U+XXXX..U+YYYY` range. |
+| `code_points` | For `--codepoints`: the file's leaf name, count, and SHA-256; `null` for a range. |
 | `glyphs` | Count, zero-area codes, maximum pixel dimensions. |
 | `metric_targets` | The policy, the chosen ppem, and achieved 26.6 values - or `null`. |
-| `parameters` | ppem, supersample, coverage bits, rounding formulas, hinting mode. |
+| `parameters` | ppem, nominal em size (26.6), supersample, coverage bits, rounding formulas, hinting mode. |
 | `license` | SPDX id, copyright line, reserved font names, the **full licence text**, its digest, and the source pin's provenance record - or `null` without a pin. |
 
 ## 8. Independence and provenance record
@@ -287,5 +304,7 @@ Generated PGFs are fixtures, never an authenticity claim.
 | Pin binds exact input and licence bytes | `SourcePinTests` |
 | Reader round trip, drawn samples, `H` shape, zero-area space, composites | `ReaderRoundTripTests` |
 | Metric targets land header extrema in tolerance | `MetricTargetTests` |
+| Code-point set converts only the listed codes, sparse map, digest in manifest, nominal size | `CodePointSetTests` |
+| Sparse code-point set reads back through the reader; absent codes are misses | `ReaderRoundTripTests` |
 | Every named refusal writes nothing | `RefusalTests`, `CompositeRefusalTests` |
 | Independent structural validation | `nk_core.fonts.validate_pgf_data` on the output |

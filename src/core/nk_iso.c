@@ -1241,15 +1241,24 @@ static bool nk_iso_read_extent_exact(NkIsoReader *reader, uint32_t lba,
     return nk_iso_reader_read(reader, lba, offset, dst, bytes) == (int)bytes;
 }
 
-static bool nk_iso_elf32_mips_usable(NkIsoReader *reader, uint32_t lba,
-                                     uint32_t size) {
+/* The PSP ELF32/MIPS image layout rule, shared by every reader in this tree.
+ * Python mirrors it in tools/nk_core/iso_inspect.py (_elf32_mips_layout_violation);
+ * tests/parity keep the two in step. Returns NULL when the image is usable, or
+ * the name of the first rule it breaks. Segment bytes are copied from the file
+ * offset, so p_offset and p_vaddr need not be congruent modulo p_align. */
+typedef struct {
+    uint64_t start;
+    uint64_t end;
+} NkElfLoadSpan;
+
+const char *nk_elf32_mips_layout_violation(NkElfImageRead read, void *context,
+                                           uint64_t image_size, bool module) {
     uint8_t header[52];
-    if (size < sizeof(header) ||
-        !nk_iso_read_extent_exact(reader, lba, size, 0, header, sizeof(header))) {
-        return false;
-    }
+    if (!read) return "image-read-failed";
+    if (image_size < sizeof(header)) return "header-truncated";
+    if (!read(context, 0, header, sizeof(header))) return "image-read-failed";
     if (memcmp(header, "\x7f" "ELF", 4) != 0 || header[4] != 1 ||
-        header[5] != 1 || header[6] != 1) return false;
+        header[5] != 1 || header[6] != 1) return "header-magic";
 
     uint16_t type = read_le16(header + 16);
     uint16_t machine = read_le16(header + 18);
@@ -1262,37 +1271,45 @@ static bool nk_iso_elf32_mips_usable(NkIsoReader *reader, uint32_t lba,
     uint16_t phnum = read_le16(header + 44);
     uint16_t shentsize = read_le16(header + 46);
     uint16_t shnum = read_le16(header + 48);
-    uint64_t phbytes = (uint64_t)phentsize * phnum;
-    uint64_t phend = 0;
 
     /* The analyzer takes relocatable (1), executable (2), shared (3) and the
        PSP PRX format (0xFFA0); many retail BOOT.BIN images are PRX-format. */
     if ((type != 1 && type != 2 && type != 3 && type != 0xFFA0u) ||
-        machine != 8 || version != 1 ||
-        ehsize != sizeof(header) || phentsize != 32 || phnum == 0 ||
-        phnum > NK_ISO_MAX_ELF_PROGRAM_HEADERS || phoff < ehsize ||
-        !nk_iso_checked_add_u64(phoff, phbytes, &phend) || phend > size) {
-        return false;
+        machine != 8 || version != 1 || ehsize != sizeof(header)) {
+        return "header-fields";
+    }
+    if (phentsize != 32 || phnum == 0 || phnum > NK_ISO_MAX_ELF_PROGRAM_HEADERS ||
+        phoff < ehsize) {
+        return "program-table-fields";
+    }
+    uint64_t phend = 0;
+    if (!nk_iso_checked_add_u64(phoff, (uint64_t)phentsize * phnum, &phend) ||
+        phend > image_size) {
+        return "program-table-bounds";
     }
     if (shnum != 0) {
-        uint64_t shbytes = (uint64_t)shentsize * shnum;
         uint64_t shend = 0;
         if (shentsize != 40 || shoff < ehsize ||
-            !nk_iso_checked_add_u64(shoff, shbytes, &shend) || shend > size) {
-            return false;
+            !nk_iso_checked_add_u64(shoff, (uint64_t)shentsize * shnum, &shend) ||
+            shend > image_size) {
+            return "section-table-bounds";
         }
     } else if (shoff != 0) {
-        return false;
+        return "section-table-bounds";
     }
 
     uint8_t program_headers[NK_ISO_MAX_ELF_PROGRAM_HEADERS * 32u];
-    if (!nk_iso_read_extent_exact(reader, lba, size, phoff, program_headers,
-                                  (uint32_t)phbytes)) return false;
+    if (!read(context, phoff, program_headers, (uint32_t)phentsize * phnum)) {
+        return "image-read-failed";
+    }
 
     bool have_load = false;
     bool entry_executable = false;
+    bool code_segment = false;
+    NkElfLoadSpan spans[NK_ISO_MAX_ELF_PROGRAM_HEADERS];
+    uint32_t span_count = 0;
     for (uint16_t i = 0; i < phnum; i++) {
-        const uint8_t *ph = program_headers + (size_t)i * phentsize;
+        const uint8_t *ph = program_headers + (size_t)i * 32u;
         uint32_t p_type = read_le32(ph + 0);
         uint32_t p_offset = read_le32(ph + 4);
         uint32_t p_vaddr = read_le32(ph + 8);
@@ -1300,23 +1317,70 @@ static bool nk_iso_elf32_mips_usable(NkIsoReader *reader, uint32_t lba,
         uint32_t p_memsz = read_le32(ph + 20);
         uint32_t p_flags = read_le32(ph + 24);
         uint32_t p_align = read_le32(ph + 28);
-        uint64_t file_end = 0;
-        uint64_t memory_end = 0;
 
-        if (!nk_iso_checked_add_u64(p_offset, p_filesz, &file_end) ||
-            file_end > size) return false;
+        if ((uint64_t)p_offset + p_filesz > image_size) return "segment-file-range";
         if (p_type != 1) continue;
-        if (p_memsz < p_filesz ||
-            !nk_iso_checked_add_u64(p_vaddr, p_memsz, &memory_end) ||
-            memory_end > (uint64_t)UINT32_MAX + 1u) return false;
-        if (p_align > 1 &&
-            ((p_align & (p_align - 1u)) != 0 ||
-             (p_offset % p_align) != (p_vaddr % p_align))) return false;
+        if (p_memsz < p_filesz) return "segment-memory-below-file";
+        uint64_t memory_end = (uint64_t)p_vaddr + p_memsz;
+        if (memory_end > (uint64_t)UINT32_MAX + 1u) return "segment-memory-range";
+        if (p_align > 1 && (p_align & (p_align - 1u)) != 0) {
+            return "segment-alignment";
+        }
+        spans[span_count].start = p_vaddr;
+        spans[span_count].end = memory_end;
+        span_count++;
         have_load = true;
-        if ((p_flags & 1u) != 0 && entry >= p_vaddr &&
-            (uint64_t)entry < memory_end) entry_executable = true;
+        bool executable = (p_flags & 1u) != 0;
+        if (executable && entry >= p_vaddr && (uint64_t)entry < memory_end) {
+            entry_executable = true;
+        }
+        if (executable && p_filesz > 0) code_segment = true;
     }
-    return have_load && entry_executable;
+    if (!have_load) return "no-load-segment";
+
+    /* Loadable segments must not overlap: sorted by (start, end), any overlap
+       shows between neighbours. Insertion sort keeps the bounded array simple. */
+    for (uint32_t i = 1; i < span_count; i++) {
+        NkElfLoadSpan current = spans[i];
+        uint32_t j = i;
+        while (j > 0 && (spans[j - 1].start > current.start ||
+                         (spans[j - 1].start == current.start &&
+                          spans[j - 1].end > current.end))) {
+            spans[j] = spans[j - 1];
+            j--;
+        }
+        spans[j] = current;
+    }
+    for (uint32_t i = 0; i + 1 < span_count; i++) {
+        if (spans[i].end > spans[i + 1].start) return "segment-overlap";
+    }
+
+    if (module && type == 0xFFA0u) return code_segment ? NULL : "no-code-segment";
+    return entry_executable ? NULL : "entry-not-executable";
+}
+
+typedef struct {
+    NkIsoReader *reader;
+    uint32_t lba;
+    uint32_t size;
+} NkIsoElfImage;
+
+static bool nk_iso_elf_image_read(void *context, uint64_t offset, void *dst,
+                                  uint32_t bytes) {
+    const NkIsoElfImage *image = (const NkIsoElfImage *)context;
+    return nk_iso_read_extent_exact(image->reader, image->lba, image->size,
+                                    offset, dst, bytes);
+}
+
+const char *nk_iso_elf32_mips_layout_violation(NkIsoReader *reader, uint32_t lba,
+                                               uint32_t size, bool module) {
+    NkIsoElfImage image = { reader, lba, size };
+    return nk_elf32_mips_layout_violation(nk_iso_elf_image_read, &image, size, module);
+}
+
+bool nk_iso_elf32_mips_layout_usable(NkIsoReader *reader, uint32_t lba,
+                                     uint32_t size, bool module) {
+    return nk_iso_elf32_mips_layout_violation(reader, lba, size, module) == NULL;
 }
 
 static bool nk_iso_extent_is_zero_filled(NkIsoReader *reader, uint32_t lba,
@@ -1362,7 +1426,7 @@ static void nk_iso_classify_executable(NkIsoReader *reader, const char *path,
     header_size = size < sizeof(header) ? size : (uint32_t)sizeof(header);
     if (!nk_iso_read_extent_exact(reader, lba, size, 0, header, header_size)) return;
     if (header_size >= 4 && memcmp(header, "\x7f" "ELF", 4) == 0) {
-        if (nk_iso_elf32_mips_usable(reader, lba, size)) {
+        if (nk_iso_elf32_mips_layout_usable(reader, lba, size, false)) {
             out->kind = NK_ISO_EXEC_MIPS_ELF32;
         }
         return;

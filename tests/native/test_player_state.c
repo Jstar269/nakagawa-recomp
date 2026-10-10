@@ -46,6 +46,13 @@
 #include <string.h>
 #include <stdint.h>
 
+/* Scratch root for the files this test writes: the checkout's build/ by default, or
+ * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
+ * touches the checkout. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+
 #if defined(_WIN32) || defined(_WIN64)
 #include <direct.h>
 #include <process.h>
@@ -2093,7 +2100,7 @@ int main(int argc, char **argv) {
          * Makefile target runs from the source tree, where build/ is the
          * conventional scratch directory. */
         const char *scratch_dir = getenv("NK_TEST_SCRATCH_DIR");
-        if (scratch_dir == NULL || scratch_dir[0] == '\0') scratch_dir = "build";
+        if (scratch_dir == NULL || scratch_dir[0] == '\0') scratch_dir = SR_SELFTEST_BUILD_ROOT;
         char global_profile[NK_MAX_PATH];
         snprintf(global_profile, sizeof(global_profile),
                  "%s/test_launch_global_profile.json", scratch_dir);
@@ -2724,6 +2731,24 @@ int main(int argc, char **argv) {
             module_check = find_preflight_check(&wiz->wizard.preflight, "GUEST_MODULES");
             assert(module_check && module_check->status == PREFLIGHT_OK);
             assert(strstr(module_check->message, "Guest modules: 1 of 1 ready.") != NULL);
+
+            /* A valid PRX whose PT_LOAD file offset (84) and address (0) differ
+               modulo p_align 0x10 is ready: segment bytes are copied from the file
+               offset, so the layout rule has no congruence term. */
+            {
+                unsigned char offset_prx[88];
+                build_synthetic_guest_prx(offset_prx);
+                offset_prx[80] = 0x10; /* p_align */
+                write_guest_module_iso(module_iso_path, "libfont.prx", offset_prx,
+                                       sizeof(offset_prx));
+                remove(module_copy);
+                player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+                module_check = find_preflight_check(&wiz->wizard.preflight, "GUEST_MODULES");
+                assert(module_check && module_check->status == PREFLIGHT_OK);
+                assert(strstr(module_check->message, "Guest modules: 1 of 1 ready.") != NULL);
+                write_guest_module_iso(module_iso_path, "libfont.prx", prx_bytes,
+                                       sizeof(prx_bytes));
+            }
 
             /* A user-supplied decrypted copy that is a valid PRX is ready. */
             write_synthetic_guest_prx(module_copy, sizeof(prx_bytes));
