@@ -1039,7 +1039,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fbf9f676d5d5a5b598980e3a8b46d578af43449de77dfd42211bb1c2b4609fef"
+      "sha256": "8e9a9fafa5ac35a3335146b037805858af36f53fb5225e078dd2e1672321f59f"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -1327,7 +1327,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "bfc650d89713af4efea113e9f895396f032966bd4ef59816814bc5ae3f4717df"
+      "sha256": "74d44da8631aa28da564d3d5c63c2a1ddc4eeaa457fb38cf0580816e6abf52ef"
     },
     {
       "path": "docs/SETUP.md",
@@ -2933,7 +2933,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "361bdd654897745f55eaf5b2f71ae3cdc1fc1c39ad732d07941c3a4a61a8f871"
+      "sha256": "b91e3671ac73b4e35c8ad149f0781adb18fb0b2917dc349058a346e3f8823efc"
     },
     {
       "path": "src/core/nk_types.h",
@@ -5729,7 +5729,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "73b48e6d1f6a7afa766823c45827d3e1e4927c90b5ad0b9ea6c0034e525d6c9c"
+      "sha256": "6f85284d1544b7fdc694c731eaaa5d92f31d21e1d5b756ecd49c9ebb5879a1ae"
     },
     {
       "path": "tests/native/test_input_profile.c",
@@ -5837,7 +5837,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "16418eac389826b21de4e8c94d3f7dac128c2005c3cc1dde71d772880883129e"
+      "sha256": "bc2a8679234e39e5e97ca9a372d5957479d5e786a4efee4bd327f553c8a2105e"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -5849,7 +5849,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "57b5a7cd85a163ac918b54a027f4ebb7b1d9f201eaf3bb67260ff25c0094711e"
+      "sha256": "4d6db297f1e025b6cb18818fd003b66cc1c82ef21ff6eb32c81950ea83c0e140"
     },
     {
       "path": "tests/native/test_posix_process.c",
@@ -6871,7 +6871,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2ddf9ed7ed3009fb56aeb5cacd379dcd9ad7848b7a76c7e9305b591379148530"
+      "sha256": "c96f2f386a38ada5136e8235c23f029545759d83be552cff54a8fe703557278d"
     },
     {
       "path": "tools/nk_core/prep_engine.py",
@@ -8820,7 +8820,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7730d17ad4df67f925244c4b24694ab83e4754f3cf99d2b67d4ac7023bb300be"
+      "sha256": "735d383b21611e19810eec653c75ab1096f3776df11805897cb622268e447a75"
     },
     {
       "path": "tools/test_package_notices.py",
