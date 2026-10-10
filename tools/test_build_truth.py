@@ -19,6 +19,7 @@ import tempfile
 import textwrap
 import time
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -114,6 +115,23 @@ def _scratch_build_root(test: unittest.TestCase, name: str) -> Path:
     """
     build_root = _make_safe_fixture_dir(name)
     test.addCleanup(shutil.rmtree, build_root.parent, True)
+    return build_root
+
+
+def _class_scratch_build_root(cls: type[unittest.TestCase], name: str) -> Path:
+    """A scratch BUILD_ROOT shared by one test class, exported to its environment.
+
+    The package planner (tools/title_codegen_plan.py) runs its own Make with the
+    caller's environment, so a class that packages a title cannot pass BUILD_ROOT on a
+    command line it never builds. Exporting it for the class (and restoring the
+    environment afterwards) sends those runs to the scratch tree too. The directory is
+    removed when the class finishes.
+    """
+    build_root = _make_safe_fixture_dir(name)
+    cls.addClassCleanup(shutil.rmtree, build_root.parent, True)
+    patcher = mock.patch.dict(os.environ, {"BUILD_ROOT": build_root.as_posix()})
+    patcher.start()
+    cls.addClassCleanup(patcher.stop)
     return build_root
 
 
@@ -466,6 +484,32 @@ def _logical_lines(makefile: str) -> list[tuple[int, str]]:
     return logical
 
 
+#: A link that names a response file (`@$(BUILD_DIR)/x.rsp`) and the `$(file >...)` statement
+#: that writes it.
+_RESPONSE_FILE_REF = re.compile(r"@\$\(BUILD_DIR\)/([\w.-]+\.rsp)\b")
+_RESPONSE_FILE_WRITE = re.compile(r"^\$\(file >\$\(BUILD_DIR\)/([\w.-]+\.rsp),(.*)\)\s*$")
+
+
+def _with_response_file_inputs(logical: list[tuple[int, str]]) -> list[tuple[int, str]]:
+    """Each statement with the words of any response file it names appended.
+
+    A link may take its object list from `@$(BUILD_DIR)/x.rsp`, which make writes from an
+    earlier `$(file >$(BUILD_DIR)/x.rsp,<words>)` statement: a long BUILD_ROOT would push the
+    list past the shell's line limit. The link's inputs are those words, so these scans read
+    them as part of the link statement. The checks themselves are unchanged.
+    """
+    written: dict[str, str] = {}
+    for _, text in logical:
+        match = _RESPONSE_FILE_WRITE.match(text.strip())
+        if match:
+            written[match.group(1)] = match.group(2)
+    result: list[tuple[int, str]] = []
+    for number, text in logical:
+        words = [written[name] for name in _RESPONSE_FILE_REF.findall(text) if name in written]
+        result.append((number, " ".join([text, *words])))
+    return result
+
+
 class Sdl3vkLinkDependencyTests(unittest.TestCase):
     """sdl3vk.c calls into fbcap_policy.c and the presenter-neutral capture
     service fbcap.c, so every recipe that compiles the backend must also supply
@@ -571,7 +615,7 @@ class FlightRecorderLinkDependencyTests(unittest.TestCase):
 
     def test_psmf_media_selftest_links_the_recorder_implementation(self) -> None:
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-        logical = _logical_lines(makefile)
+        logical = _with_response_file_inputs(_logical_lines(makefile))
         selftest = (ROOT / "src" / "rt" / "psmf_media_selftest.c").read_text(encoding="utf-8")
         mpeg = (ROOT / "src" / "rt" / "mpeg.c").read_text(encoding="utf-8")
         recomp = (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8")
@@ -652,7 +696,7 @@ def _hle_link_supplies_h264_backends(link: str, makefile: str) -> bool:
 
 def _hle_link_h264_offenders(makefile: str) -> list[str]:
     """Find Makefile link commands that compile HLE without its PSMF backends."""
-    logical = _logical_lines(makefile)
+    logical = _with_response_file_inputs(_logical_lines(makefile))
     hle_links = [
         (number, text)
         for number, text in logical
@@ -844,7 +888,7 @@ class NestedFramesLinkDependencyTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-        self.lines = _logical_lines(self.makefile)
+        self.lines = _with_response_file_inputs(_logical_lines(self.makefile))
 
     def test_module_defines_the_symbols_its_callers_use(self) -> None:
         module = (ROOT / NESTED_FRAMES_C).read_text(encoding="utf-8")
@@ -1180,7 +1224,8 @@ class CodegenProfileTransportTests(unittest.TestCase):
         assignments = [f"{key}={value}" for key, value in extra.items()]
         completed = subprocess.run(
             [self.make, "--no-print-directory", "GAME_NAME=probe",
-             f"BUILD_DIR={Path(self.temp.name).as_posix()}",
+             f"BUILD_ROOT={Path(self.temp.name).as_posix()}",
+            f"BUILD_DIR={Path(self.temp.name).as_posix()}",
              f"GAME_EXTRA_ELFS={' '.join(modules)}", *assignments,
              "--eval", "nkprobe: ; @echo CODEGEN_PROFILE_HASH=$(CODEGEN_PROFILE_HASH)",
              "nkprobe"],
@@ -1217,7 +1262,8 @@ class CodegenProfileTransportTests(unittest.TestCase):
         )
         completed = subprocess.run(
             [self.make, "--no-print-directory", "GAME_NAME=probe",
-             f"BUILD_DIR={Path(self.temp.name).as_posix()}",
+             f"BUILD_ROOT={Path(self.temp.name).as_posix()}",
+            f"BUILD_DIR={Path(self.temp.name).as_posix()}",
              "GAME_EXTRA_ELFS=fixtures/a.prx@runtime fixtures/b.prx@0x08900000",
              "CHUNK_TARGET_BYTES=65536",
              "--eval", f"nkprobe: ; @echo NEW=$(CODEGEN_PROFILE_HASH) OLD={former}",
@@ -1899,8 +1945,8 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
         refused = {
             ".": "the repository root or one of its ancestors",
             ROOT.parent.as_posix(): "the repository root or one of its ancestors",
-            "src": "inside the checkout but outside its build/ tree",
-            "place_game_here": "inside the checkout but outside its build/ tree",
+            "src": "inside the checkout but outside its build tree",
+            "place_game_here": "inside the checkout but outside its build tree",
         }
         for value, reason in refused.items():
             with self.subTest(build_root=value):
@@ -1917,6 +1963,134 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
                     cwd=ROOT, capture_output=True, text=True, check=False,
                 )
                 self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_build_dir_that_reaches_the_checkout_is_refused(self) -> None:
+        """An overridden BUILD_DIR may not be the checkout, an ancestor, or a non-build/ subtree.
+
+        `make clean BUILD_DIR=<x>` deletes <x>, so `BUILD_DIR=.` or `BUILD_DIR=src` would
+        wipe sources or private inputs exactly as `BUILD_ROOT=.` would. The probe is
+        `-n clean`: the refusal happens while Make parses, before the profile records
+        are written, so a held guard writes nothing at all. Were it lost, the dry run
+        would still delete nothing (it prints the deletion), though the parse would
+        write profile entries into the named directory.
+        """
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        refused = {
+            ".": "the repository root or one of its ancestors",
+            ROOT.as_posix(): "the repository root or one of its ancestors",
+            "src": "inside the checkout but outside its build tree",
+            "place_game_here": "inside the checkout but outside its build tree",
+        }
+        for value, reason in refused.items():
+            with self.subTest(build_dir=value):
+                proc = self._lifecycle_make("-n", "clean", f"BUILD_DIR={value}")
+                self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertIn(f"BUILD_DIR '{value}' is {reason}", proc.stderr)
+                self.assertNotIn("rmtree", proc.stdout)
+
+    def _build_dir_refusal(self, goal: str, build_dir: str) -> subprocess.CompletedProcess:
+        """A dry run of ``goal`` whose BUILD_DIR names the whole build root.
+
+        NK_INFO_ONLY=1 keeps the parse from writing anything: no parse-time mkdir and no
+        profile stamp. The spellings of the checkout's build/ tree would otherwise be
+        written into while the probe runs, were the guard ever lost. The refusal itself
+        happens at parse time and needs none of those writes.
+        """
+        return _run_scratch_make(
+            self.make, "-n", goal, "NK_INFO_ONLY=1", f"BUILD_DIR={build_dir}",
+            build_root=self.build_root, log_dir=self.log_dir,
+        )
+
+    def test_clean_refuses_every_spelling_of_the_checkout_build_root(self) -> None:
+        """`clean` and `clean-all` refuse a BUILD_DIR that is the checkout's whole build/ tree.
+
+        The default build root is the checkout's build/, and a scratch BUILD_ROOT leaves
+        it in place, so `make clean BUILD_DIR=build` would delete every title's build
+        whatever BUILD_ROOT names. Each spelling is compared as a normalized path, and the
+        refusal names BUILD_DIR as the variable to change.
+        """
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        spellings = [
+            "build", "build/", "./build", "build\\", ".\\build",
+            (ROOT / "build").as_posix(), (ROOT / "build").as_posix() + "/", str(ROOT / "build"),
+        ]
+        if os.name == "nt":
+            spellings.append((ROOT / "build").as_posix().upper())
+        for goal in ("clean", "clean-all"):
+            for value in spellings:
+                with self.subTest(goal=goal, build_dir=value):
+                    proc = self._build_dir_refusal(goal, value)
+                    self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                    self.assertIn(f"BUILD_DIR '{value}' is the whole build root", proc.stderr)
+                    self.assertNotIn("rmtree", proc.stdout)
+
+    def test_clean_refuses_every_spelling_of_the_build_root_it_names(self) -> None:
+        """A BUILD_DIR equal to an overridden BUILD_ROOT is the whole root, so it is refused.
+
+        `make clean BUILD_DIR=$(BUILD_ROOT)` deletes the root and every title beneath it,
+        whichever way the caller spells the path.
+        """
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        root = self.build_root.as_posix()
+        spellings = [root, root + "/", root + "/.", root + "/sub/..", str(self.build_root)]
+        if os.name == "nt":
+            spellings.append(root.upper())
+        for goal in ("clean", "clean-all"):
+            for value in spellings:
+                with self.subTest(goal=goal, build_dir=value):
+                    proc = self._build_dir_refusal(goal, value)
+                    self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                    self.assertIn(f"BUILD_DIR '{value}' is the whole build root", proc.stderr)
+                    self.assertNotIn("rmtree", proc.stdout)
+
+    def test_clean_still_cleans_a_per_title_build_dir_beneath_the_root(self) -> None:
+        """A per-title BUILD_DIR beneath BUILD_ROOT is not the root and still cleans."""
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        title = self.build_root / "title"
+        self._plant(title / "title.o", "object")
+        sibling = self._plant(self.build_root / "other-title" / "keep.o")
+
+        proc = self._lifecycle_make("clean", f"BUILD_DIR={self.build_root.as_posix()}/./title/")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertFalse(title.exists(), "clean did not remove the per-title build directory")
+        self.assertTrue(sibling.is_file(), "clean removed another title's build tree")
+        self.assertTrue(self.build_root.is_dir(), "clean removed the build root itself")
+
+    def test_clean_still_cleans_a_scratch_build_root_and_its_own_title_dir(self) -> None:
+        """A scratch BUILD_ROOT is accepted as the root, and its default title directory cleans."""
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        other = self.scratch / "other-root"
+        title = other / "scratchgame"
+        self._plant(title / "title.o", "object")
+        sibling = self._plant(other / "other-title" / "keep.o")
+
+        proc = _run_scratch_make(
+            self.make, "clean", "GAME_NAME=scratchgame",
+            build_root=other, log_dir=self.log_dir,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertFalse(title.exists(), "clean did not remove the scratch root's title directory")
+        self.assertTrue(sibling.is_file(), "clean removed another title's build tree")
+        self.assertTrue(other.is_dir(), "clean removed the scratch build root itself")
+
+    def test_build_dir_outside_the_checkout_is_accepted(self) -> None:
+        """A BUILD_DIR outside the checkout passes the scope check and is the one named.
+
+        Only a scratch path is probed. A BUILD_DIR accepted beneath the checkout's build/
+        is not run here: the parse would write its profile entries into the checkout's
+        build/ tree, which is exactly what this suite must not do.
+        """
+        if not self.make:
+            self.skipTest("GNU Make is required")
+        outside = self.build_root / "outside-title"
+        proc = self._lifecycle_make("-n", "clean", f"BUILD_DIR={outside.as_posix()}")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn(outside.as_posix(), proc.stdout)
 
     def test_build_root_with_a_space_fails_closed(self) -> None:
         if not self.make:
@@ -1945,7 +2119,7 @@ class BuildArtifactLifecycleTests(unittest.TestCase):
             self.skipTest("GNU Make is required")
         cases = {
             "x y/..": "the repository root or one of its ancestors",
-            "src/x y": "inside the checkout but outside its build/ tree",
+            "src/x y": "inside the checkout but outside its build tree",
             "build/x y": "contains a space",
             f"{self.scratch.as_posix()}/x y": "contains a space",
         }
@@ -2659,7 +2833,17 @@ _DELETING_FUNCTIONS = frozenset({
 #: Path methods that delete the path they are called on.
 _DELETING_METHODS = frozenset({"unlink", "rmdir"})
 _MAKE_PROGRAMS = frozenset({"make", "mingw32-make", "gmake"})
+#: A variable named for a make program (`make`, `make_name`, `self.make`).
+_MAKE_PROGRAM_NAME = re.compile(r"(?:^|_)g?make(?:_|$)")
 _SCRATCH_ROOT_VARIABLES = ("BUILD_ROOT", "LOG_DIR")
+#: Calls that launch the process whose argv list is their first argument.
+_PROCESS_LAUNCHERS = frozenset({"run", "Popen", "check_output", "check_call", "call"})
+#: Make options that run another directory's Makefile, so the run builds in that tree.
+_OTHER_TREE_MAKE_OPTIONS = frozenset({"-C", "--directory"})
+#: A Make variable bound to a checkout build/ path literal, such as PLAYER_EXE=build/x.exe.
+_BUILD_PATH_BINDING = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(?:\./)?build[/\\]")
+#: A Makefile line naming the checkout's build/ tree literally (not derived from BUILD_ROOT).
+_LITERAL_BUILD_PATH = re.compile(r"(?<![\w$./\\-])build[/\\]|Path\(\s*['\"]build['\"]\s*\)")
 
 
 def _suite_test_files() -> list[Path]:
@@ -2776,8 +2960,8 @@ def _is_make_program(node: ast.AST) -> bool:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return Path(node.value).stem.lower() in _MAKE_PROGRAMS
     if isinstance(node, ast.Name):
-        return node.id.lower() == "make"
-    return isinstance(node, ast.Attribute) and node.attr.lower() == "make"
+        return _MAKE_PROGRAM_NAME.search(node.id.lower()) is not None
+    return isinstance(node, ast.Attribute) and _MAKE_PROGRAM_NAME.search(node.attr.lower()) is not None
 
 
 def _literal_prefix(node: ast.AST) -> str:
@@ -2791,27 +2975,58 @@ def _literal_prefix(node: ast.AST) -> str:
     return ""
 
 
-def _scan_for_checkout_deletions(source: str, label: str) -> list[str]:
-    """Report deletions and destructive Make goals that could reach the real checkout.
+def _literal_text(node: ast.AST) -> str | None:
+    """The text of a constant argv element, or None when it is not a constant string."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _is_goal_like(node: ast.AST) -> bool:
+    """True for an argv element that may name a Make goal rather than an option or NAME=value."""
+    if isinstance(node, ast.Starred):
+        return True
+    text = _literal_text(node)
+    if text is not None:
+        return bool(text) and not text.startswith("-") and "=" not in text
+    prefix = _literal_prefix(node)
+    return "=" not in prefix and not prefix.startswith("-")
+
+
+def _call_name(call: ast.Call) -> str | None:
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return None
+
+
+def _argv_extensions(scope: ast.AST, name: str) -> list[ast.AST]:
+    """Elements added to the argv list ``name`` by `name += [...]`, `.append(x)` or `.extend(xs)`."""
+    added: list[ast.AST] = []
+    for node in ast.walk(scope):
+        if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name) \
+                and node.target.id == name:
+            added.extend(node.value.elts if isinstance(node.value, ast.List) else [node.value])
+        elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+              and node.func.attr in ("append", "extend") and isinstance(node.func.value, ast.Name)
+              and node.func.value.id == name):
+            for argument in node.args:
+                if node.func.attr == "extend" and isinstance(argument, ast.List):
+                    added.extend(argument.elts)
+                else:
+                    added.append(argument)
+    return added
+
+
+def _checkout_scopes(tree: ast.Module) -> list[tuple[ast.AST, set[str]]]:
+    """Each function and module-level statement, with the names anchored to the checkout there.
 
     A path is *checkout-anchored* when it is computed from `__file__` (the usual
     `ROOT = Path(__file__).resolve().parents[1]`), from a module-level name derived
     from it (`ROOT`, `TOOLS`, `ROOT / "build"` ...), or from a local or `self`/`cls`
-    attribute bound to such a value. The scan reports:
-
-    * `shutil.rmtree`, `os.remove`/`unlink`/`rmdir`, `Path.unlink`/`rmdir` (called
-      directly or registered with `addCleanup`) on a checkout-anchored path;
-    * a Make command line naming a destructive goal (clean, clean-fixtures,
-      distclean, tidy, clean-all) without scratch `BUILD_ROOT=` and `LOG_DIR=`
-      overrides that are themselves not checkout-anchored;
-    * a Make command line naming a title (`GAME_NAME=`) without a scratch
-      `BUILD_ROOT=` or `BUILD_DIR=`: parsing alone rewrites that title's profile
-      stamps under the checkout's build/ and invalidates the objects there.
-
-    It is deliberately conservative about what it can see (a goal held in a variable
-    is invisible to it); `_run_scratch_make` refuses checkout roots at run time.
+    attribute bound to such a value.
     """
-    tree = ast.parse(source, label)
     module_level = [node for node in tree.body if not isinstance(
         node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
     module_bindings: list[tuple[list[str], ast.AST]] = []
@@ -2840,13 +3055,105 @@ def _scan_for_checkout_deletions(source: str, label: str) -> list[str]:
         for child in ast.walk(cls):
             owner.setdefault(child, cls)
 
+    functions = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    nested = {child for fn in functions for child in ast.walk(fn) if child is not fn
+              and isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    scopes: list[tuple[ast.AST, set[str]]] = []
+    for fn in functions:
+        if fn in nested:
+            continue  # scanned with its enclosing function, whose bindings it closes over
+        anchored = set(anchored_module)
+        cls = owner.get(fn)
+        if cls is not None:
+            anchored |= class_attrs[cls]
+        scopes.append((fn, _propagate(_assignments(fn), anchored)))
+    scopes.extend((node, anchored_module) for node in module_level)
+    return scopes
+
+
+def _scan_for_checkout_damage(source: str, label: str) -> list[str]:
+    """Report deletions and Make runs that could damage the real checkout's build/ or logs/.
+
+    * `shutil.rmtree`, `os.remove`/`unlink`/`rmdir`, `Path.unlink`/`rmdir` (called
+      directly or registered with `addCleanup`) on a checkout-anchored path;
+    * a destructive Make goal (clean, clean-fixtures, distclean, tidy, clean-all)
+      without scratch `BUILD_ROOT=` and `LOG_DIR=` overrides that are not
+      checkout-anchored;
+    * any other Make run -- a list starting with make that is passed straight to a
+      process launcher or assigned to a name -- for a goal other than `help` without
+      a scratch `BUILD_ROOT=`. Parsing a Makefile writes beneath BUILD_ROOT even for
+      a dry run: the SDL3 discovery fragment, and a named title's profile stamps and
+      the objects they invalidate;
+    * a Make run that binds a variable to a checkout build/ path literal, such as
+      `PLAYER_EXE=build/x.exe`.
+
+    A run is not checked when it names another tree with `-C`, or when its `cwd=`
+    is given and is not checkout-anchored (it then builds in that tree). Lists that
+    are assertion arguments, dictionary values or arguments to other helpers are
+    not runs and are not followed. A goal held in a variable is invisible to the
+    scan; `_run_scratch_make` refuses checkout roots at run time.
+    """
+    tree = ast.parse(source, label)
+    parents = {child: parent for parent in ast.walk(tree)
+               for child in ast.iter_child_nodes(parent)}
     findings: list[tuple[int, str]] = []
 
     def report(node: ast.AST, message: str) -> None:
         findings.append((node.lineno, message))
 
-    def check_scope(scope: ast.AST, anchored: set[str]) -> None:
-        def is_anchored(expr: ast.AST) -> bool:
+    def check_make_run(node: ast.List, scope: ast.AST, is_anchored) -> None:
+        elements = list(node.elts)
+        if not elements or not _is_make_program(elements[0]):
+            return
+        parent = parents.get(node)
+        foreign_tree = False
+        if isinstance(parent, (ast.Assign, ast.AnnAssign, ast.AugAssign)) and parent.value is node:
+            # A run assembled in a variable: its later `name += [...]`, `name.append(x)`
+            # and `name.extend(xs)` elements belong to the same argv.
+            targets = parent.targets if isinstance(parent, ast.Assign) else [parent.target]
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    elements.extend(_argv_extensions(scope, target.id))
+        elif (isinstance(parent, ast.Call) and parent.args[:1] == [node]
+              and _call_name(parent) in _PROCESS_LAUNCHERS):
+            cwd = next((kw.value for kw in parent.keywords if kw.arg == "cwd"), None)
+            foreign_tree = cwd is not None and not is_anchored(cwd)
+        else:
+            return  # data, an assertion's expected argv, or an argument to another helper
+
+        for element in elements:
+            argument = _literal_prefix(element)
+            if _BUILD_PATH_BINDING.match(argument):
+                report(node, f"passes {argument.partition('=')[0]}= a checkout build/ path "
+                             f"({argument}); the run writes its output into the real build/ tree")
+
+        destructive = sorted({e.value for e in elements if _literal_text(e) in DESTRUCTIVE_MAKE_GOALS})
+        if destructive:
+            for variable in _SCRATCH_ROOT_VARIABLES:
+                overrides = [e for e in elements if _literal_prefix(e).startswith(variable + "=")]
+                if not overrides:
+                    report(node, f"runs destructive Make goal(s) {destructive} without a scratch "
+                                 f"{variable}=; use _run_scratch_make")
+                elif any(is_anchored(e) for e in overrides):
+                    report(node, f"runs destructive Make goal(s) {destructive} with {variable} "
+                                 f"inside the repository checkout")
+            return
+        if foreign_tree or any(_literal_text(e) in _OTHER_TREE_MAKE_OPTIONS for e in elements):
+            return
+        goal_like = [e for e in elements[1:] if _is_goal_like(e)]
+        if not goal_like or all(_literal_text(e) == "help" for e in goal_like):
+            return
+        goals = [e.value for e in goal_like if _literal_text(e)] or ["the default goal"]
+        relocations = [e for e in elements if _literal_prefix(e).startswith("BUILD_ROOT=")]
+        if not relocations:
+            report(node, f"runs Make for {goals} without a scratch BUILD_ROOT=; parsing writes the "
+                         "checkout's build/ (the SDL3 discovery fragment, and a named title's "
+                         "profile stamps and objects)")
+        elif all(is_anchored(e) for e in relocations):
+            report(node, f"runs Make for {goals} with BUILD_ROOT inside the repository checkout")
+
+    for scope, anchored in _checkout_scopes(tree):
+        def is_anchored(expr: ast.AST, anchored: set[str] = anchored) -> bool:
             return _is_anchored(expr, anchored)
 
         for node in ast.walk(scope):
@@ -2872,67 +3179,235 @@ def _scan_for_checkout_deletions(source: str, label: str) -> list[str]:
                 if target is not None and is_anchored(target):
                     report(node, f"deletes a path inside the repository checkout: "
                                  f"{ast.unparse(target)}")
-            elif isinstance(node, (ast.List, ast.Tuple)):
-                elements = node.elts
-                if not any(_is_make_program(e) for e in elements):
-                    continue
-                if any(_literal_prefix(e).startswith("GAME_NAME=") for e in elements):
-                    relocations = [e for e in elements if _literal_prefix(e).startswith(
-                        ("BUILD_ROOT=", "BUILD_DIR="))]
-                    if not relocations or any(is_anchored(e) for e in relocations):
-                        report(node, "runs Make for a named title without a scratch BUILD_ROOT= "
-                                     "or BUILD_DIR=; parsing alone rewrites that title's real "
-                                     "build tree and invalidates its objects")
-                goals = sorted({e.value for e in elements if isinstance(e, ast.Constant)
-                                and e.value in DESTRUCTIVE_MAKE_GOALS})
-                if not goals:
-                    continue
-                for variable in _SCRATCH_ROOT_VARIABLES:
-                    overrides = [e for e in elements
-                                 if _literal_prefix(e).startswith(variable + "=")]
-                    if not overrides:
-                        report(node, f"runs destructive Make goal(s) {goals} without a scratch "
-                                     f"{variable}=; use _run_scratch_make")
-                    elif any(is_anchored(e) for e in overrides):
-                        report(node, f"runs destructive Make goal(s) {goals} with {variable} "
-                                     f"inside the repository checkout")
-
-    functions = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
-    nested = {child for fn in functions for child in ast.walk(fn) if child is not fn
-              and isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))}
-    for fn in functions:
-        if fn in nested:
-            continue  # scanned with its enclosing function, whose bindings it closes over
-        anchored = set(anchored_module)
-        cls = owner.get(fn)
-        if cls is not None:
-            anchored |= class_attrs[cls]
-        check_scope(fn, _propagate(_assignments(fn), anchored))
-    for node in module_level:
-        check_scope(node, anchored_module)
+            elif isinstance(node, ast.List):
+                check_make_run(node, scope, is_anchored)
     findings.sort(key=lambda finding: finding[0])
     return [f"{label}:{line}: {message}" for line, message in findings]
 
 
+def _makefile_literal_build_paths(text: str, label: str) -> list[str]:
+    """Makefile lines that name the checkout's build/ tree literally.
+
+    Every output a recipe or variable makes must derive from BUILD_ROOT, so a default
+    run writes beneath build/ and an overridden run writes beneath the caller's root.
+    Comments, help text and the error messages that describe the default are not
+    recipes and are skipped; `fixtures/.../build/` is a source fixture, not an output.
+    """
+    findings: list[str] = []
+    for number, line in enumerate(text.splitlines(), 1):
+        stripped = line.lstrip()
+        if (stripped.startswith("#") or stripped.startswith("HELP_DESCRIPTION_")
+                or "$(error" in line or "$(warning" in line):
+            continue
+        if _LITERAL_BUILD_PATH.search(line):
+            findings.append(f"{label}:{number}: {line.strip()}")
+    return findings
+
+
+#: sdl3vk.c holds product code and the GPU capture selftest in one file. Its test-only
+#: section runs from the selftest banner to the first product function after it, so the
+#: scan covers that span and nothing else.
+_SDL3VK_C = "src/rt/gpu_sdl3vk/sdl3vk.c"
+_SDL3VK_SELFTEST_BEGIN = "/* ---- capture selftest (issue #57)"
+_SDL3VK_SELFTEST_END = "void sdl3vk_shutdown(void) {"
+#: One C comment, string literal or character literal. Literals are matched whole, so a
+#: `//` or `/*` inside a string is never taken for a comment.
+_C_LEXEME = re.compile(r"//[^\n]*|/\*.*?\*/|\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*'", re.S)
+#: A string literal, as its raw C spelling, that names the checkout's build/ tree: exactly
+#: `build`, or a `build` segment that starts the literal or follows a space, `>`, `=`, `:`,
+#: a slash or a backslash and is followed by a separator. That covers `build/x`, `build\\x`,
+#: the cwd-relative `%s\\build\\name` form the HLE selftest used, and a shell `> build/x`.
+#: A build segment glued to a format conversion (`%s%cbuild%c`) is not matched: those are
+#: built under a temporary root by the tests that use them.
+_C_BUILD_LITERAL = re.compile(r"^build$|(?:^|[\s>=:/\\])build(?:/|\\\\)")
+#: The macro's own default is the one place the scan allows the bare build root.
+_C_BUILD_ROOT_DEFAULT = re.compile(r"^\s*#\s*define\s+SR_SELFTEST_BUILD_ROOT\b")
+#: Literal spellings a test keeps on purpose, each with its reason. Every entry must still
+#: occur in its file, so a stale entry fails instead of quietly allowing a new write.
+_C_KEPT_BUILD_LITERALS: dict[tuple[str, str], str] = {
+    (_SDL3VK_C, "build/snapshots/frame_0012.ppm"):
+        "product default compared against sr_fbcap_path(): a string check, nothing is written",
+    (_SDL3VK_C, "build/snapshots"):
+        "product FBSNAP directory, cwd-relative: sdl3vk_capture_selftest runs in a scratch "
+        "working directory beneath SR_SELFTEST_BUILD_ROOT, so it resolves only there",
+    (_SDL3VK_C, "build/snapshots/selftest_frame.ppm"):
+        "FBSNAP publication target, cwd-relative inside the same scratch working directory",
+    (_SDL3VK_C, "build"):
+        "cwd-relative removal (cap_test_rmdir), acting only inside the same scratch working "
+        "directory, never the checkout's build/",
+    ("tests/native/test_launch_resolution.c", "build"):
+        "strstr() over the product's resolved executable path: a string read, nothing is written",
+}
+
+
+def _test_only_c_sources() -> list[tuple[str, str, int]]:
+    """(repo-relative label, source text, first line) for each test-only C source."""
+    sources: list[tuple[str, str, int]] = []
+    for path in (sorted((ROOT / "tests" / "native").glob("*.c"))
+                 + sorted((ROOT / "src" / "rt").glob("*selftest*.c"))):
+        sources.append((path.relative_to(ROOT).as_posix(), path.read_text(encoding="utf-8"), 1))
+    sdl3vk = (ROOT / _SDL3VK_C).read_text(encoding="utf-8")
+    begin = sdl3vk.index(_SDL3VK_SELFTEST_BEGIN)
+    end = sdl3vk.index(_SDL3VK_SELFTEST_END, begin)
+    sources.append((_SDL3VK_C, sdl3vk[begin:end], sdl3vk.count("\n", 0, begin) + 1))
+    return sources
+
+
+def _c_build_literal_hits(source: str, first_line: int = 1) -> list[tuple[int, str, str]]:
+    """(line, raw spelling, physical line) for each string literal naming the build/ tree.
+
+    Comments and character literals are skipped; the literal is taken as spelled in the
+    source, so `"build\\\\x"` is reported as `build\\\\x`.
+    """
+    lines = source.splitlines()
+    hits: list[tuple[int, str, str]] = []
+    for match in _C_LEXEME.finditer(source):
+        lexeme = match.group(0)
+        if not lexeme.startswith('"'):
+            continue
+        raw = lexeme[1:-1]
+        if not _C_BUILD_LITERAL.search(raw):
+            continue
+        offset = source.count("\n", 0, match.start())
+        hits.append((offset + first_line, raw, lines[offset]))
+    return hits
+
+
+def _c_build_literal_findings(source: str, label: str, first_line: int = 1) -> list[str]:
+    """Literals that write under the checkout's build/ tree, not counting reasoned keeps."""
+    findings: list[str] = []
+    for number, raw, line in _c_build_literal_hits(source, first_line):
+        if _C_BUILD_ROOT_DEFAULT.match(line) or (label, raw) in _C_KEPT_BUILD_LITERALS:
+            continue
+        findings.append(f"{label}:{number}: {line.strip()}")
+    return findings
+
+
 class CheckoutDeletionGuardTests(unittest.TestCase):
-    """No test may delete from, or run a destructive Make goal against, the real checkout.
+    """No test may delete from, or build into, the real checkout's build/ or logs/ trees.
 
     A developer's checkout keeps private title builds and packages under build/ and
-    run logs under logs/. A test that cleans those trees, rather than a scratch copy,
-    destroys them on every suite run; tools/test_build_truth.py once ran `clean-all`
-    against the checkout itself. This scan keeps that class of test from returning.
+    run logs under logs/. A test that cleans those trees, or runs a Make probe that
+    writes there, destroys or invalidates them on every suite run; tools/test_build_truth.py
+    once ran `clean-all` against the checkout itself, and several probes parsed the
+    Makefile with the checkout's BUILD_ROOT. These scans keep that class of test from
+    returning, and keep the Makefile's own outputs under BUILD_ROOT.
     """
 
-    def test_no_test_deletes_from_the_real_checkout(self) -> None:
+    def test_no_test_deletes_from_or_builds_into_the_real_checkout(self) -> None:
         findings: list[str] = []
         for path in _suite_test_files():
-            findings.extend(_scan_for_checkout_deletions(
+            findings.extend(_scan_for_checkout_damage(
                 path.read_text(encoding="utf-8"), path.relative_to(ROOT).as_posix()))
         self.assertEqual(
             findings, [],
-            "tests delete from or clean the real repository checkout; point them at a "
-            "scratch tree (tempfile, _run_scratch_make with BUILD_ROOT/LOG_DIR):\n"
-            + "\n".join(findings),
+            "tests delete from or build into the real repository checkout; point them at a "
+            "scratch tree (tempfile, _run_scratch_make, or BUILD_ROOT=<scratch> on every "
+            "Make run):\n" + "\n".join(findings),
+        )
+
+    def test_makefile_writes_only_beneath_build_root(self) -> None:
+        findings: list[str] = []
+        for path in [ROOT / "Makefile", *sorted((ROOT / "mk").glob("*.mk"))]:
+            findings.extend(_makefile_literal_build_paths(
+                path.read_text(encoding="utf-8"), path.relative_to(ROOT).as_posix()))
+        self.assertEqual(
+            findings, [],
+            "Makefile outputs name the checkout's build/ tree literally; derive them from "
+            "$(BUILD_ROOT) so a scratch BUILD_ROOT redirects every write:\n" + "\n".join(findings),
+        )
+
+    def test_makefile_literal_scan_names_each_hardcoded_build_path(self) -> None:
+        makefile = textwrap.dedent('''\
+            BUILD_ROOT ?= build
+            PLAYER_EXE ?= build/nakagawa_player$(EXE_EXT)
+            ASSET := fixtures/psp_oracle/build/nakagawa_psp_oracle.elf
+            OUT := $(BUILD_ROOT)/x
+            # build/comment is documentation
+            $(error the checkout's build/ tree is refused)
+            mk: ; $(PYTHON) -c "from pathlib import Path; Path('build').mkdir()"
+        ''')
+        findings = _makefile_literal_build_paths(makefile, "case.mk")
+        self.assertEqual([int(f.split(":")[1]) for f in findings], [2, 7], "\n".join(findings))
+
+    def test_test_only_c_writes_only_beneath_selftest_build_root(self) -> None:
+        """Test-only C writes go through SR_SELFTEST_BUILD_ROOT, never a literal build/.
+
+        A scratch run (BUILD_ROOT=<scratch>) must not create, modify or delete anything in the
+        checkout. The Makefile passes -DSR_SELFTEST_BUILD_ROOT=$(BUILD_ROOT) to each of these
+        binaries; a literal build/ path would silently ignore that and write into the checkout.
+        """
+        findings: list[str] = []
+        for label, source, first_line in _test_only_c_sources():
+            findings.extend(_c_build_literal_findings(source, label, first_line))
+        self.assertEqual(
+            findings, [],
+            "test-only C sources name the checkout's build/ tree literally; build each scratch "
+            "path from SR_SELFTEST_BUILD_ROOT (for example SR_SELFTEST_BUILD_ROOT \"/name\"), or "
+            "run a product default from a scratch working directory:\n" + "\n".join(findings),
+        )
+
+    def test_c_build_literal_allowlist_entries_still_occur(self) -> None:
+        present = {
+            (label, raw)
+            for label, source, first_line in _test_only_c_sources()
+            for _, raw, _ in _c_build_literal_hits(source, first_line)
+        }
+        stale = sorted(f"{label} {raw!r}" for label, raw in _C_KEPT_BUILD_LITERALS
+                       if (label, raw) not in present)
+        self.assertEqual(stale, [], "kept build/ literals no longer occur; drop them from "
+                         "_C_KEPT_BUILD_LITERALS:\n" + "\n".join(stale))
+
+    def test_test_only_compiles_pass_the_selftest_build_root(self) -> None:
+        """Each Makefile compile of a test-only source passes -DSR_SELFTEST_BUILD_ROOT.
+
+        The C scan proves no source names build/ literally; this proves the Makefile feeds
+        the macro. Without the define a scratch run would silently fall back to "build".
+        """
+        source_names = ("vfpu_tables_selftest.c", "fbcap_selftest.c", "cpu_lle_selftest.c",
+                        "gpu_coherence_selftest.c", "gpu_capture_selftest.c")
+        native = re.compile(r"tests/native/test_(?!ui_clip\.c)\w+\.c")
+        define = r'-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\"'
+        checked: list[str] = []
+        missing: list[str] = []
+        for number, command in _logical_lines(ROOT.joinpath("Makefile").read_text(encoding="utf-8")):
+            if "$(CC)" not in command:
+                continue
+            if not (native.search(command) or any(name in command for name in source_names)):
+                continue
+            checked.append(command)
+            if define not in command:
+                missing.append(f"Makefile:{number}: {command.strip()}")
+        # Vacuity guard: the scan must actually reach the selftest and native test compiles.
+        self.assertTrue(any("vfpu_tables_selftest.c" in c for c in checked), "no vfpu compile seen")
+        self.assertTrue(any("tests/native/test_xb_parser.c" in c for c in checked),
+                        "no native test compile seen")
+        self.assertEqual(missing, [], "test-only compile commands without " + define + ":\n"
+                         + "\n".join(missing))
+
+    def test_c_build_literal_scan_names_each_hardcoded_path(self) -> None:
+        source = textwrap.dedent(r'''
+            #ifndef SR_SELFTEST_BUILD_ROOT
+            #define SR_SELFTEST_BUILD_ROOT "build"
+            #endif
+            /* "build/in a comment is documentation" */
+            // "build/in a line comment"
+            static const char *a = "build/x.json";
+            static const char *b = "build\\argv_echo_helper.exe";
+            static const char *c = "build";
+            static const wchar_t *d = L"build/wide.bin";
+            static const char *e = SR_SELFTEST_BUILD_ROOT "/fine.json";
+            static const char *f = "builder/x";
+            static const char *g = "mybuild/x";
+            static const char h = '"';
+            static const char *i = "%s\\build\\archive_vfs_%lu";
+            static const char *j = "%s%cbuild%cdisplay-smoke";
+        ''')
+        findings = _c_build_literal_findings(source, "case.c")
+        self.assertEqual(
+            [int(finding.split(":")[1]) for finding in findings],
+            [7, 8, 9, 10, 15],
+            "\n".join(findings),
         )
 
     def test_scan_reports_each_destructive_shape(self) -> None:
@@ -2957,7 +3432,7 @@ class CheckoutDeletionGuardTests(unittest.TestCase):
                     os.remove(self.logs / "stdout_run.log")
                     subprocess.run([self.make, "GAME_NAME=hst", "--eval", "v: ; @echo", "v"], cwd=ROOT)
         ''')
-        findings = _scan_for_checkout_deletions(source, "case.py")
+        findings = _scan_for_checkout_damage(source, "case.py")
         self.assertEqual(
             [int(finding.split(":")[1]) for finding in findings],
             [12, 12, 13, 14, 16, 17, 18, 19, 20],
@@ -2966,7 +3441,36 @@ class CheckoutDeletionGuardTests(unittest.TestCase):
         self.assertIn("without a scratch BUILD_ROOT=", findings[0])
         self.assertIn("without a scratch LOG_DIR=", findings[1])
         self.assertIn("BUILD_ROOT inside the repository checkout", findings[2])
-        self.assertIn("named title without a scratch BUILD_ROOT=", findings[8])
+        self.assertIn("without a scratch BUILD_ROOT=", findings[8])
+
+    def test_scan_reports_each_unscratched_make_run(self) -> None:
+        source = textwrap.dedent('''
+            import subprocess, tempfile
+            from pathlib import Path
+            ROOT = Path(__file__).resolve().parents[1]
+
+            class Case:
+                def test_probes(self):
+                    subprocess.run([self.make, "--no-print-directory", "player"], cwd=ROOT)
+                    subprocess.run([self.make, "help"], cwd=ROOT)
+                    subprocess.run([self.make, "-n", "player", f"BUILD_ROOT={ROOT / 'build'}"], cwd=ROOT)
+                    scratch = Path(tempfile.mkdtemp())
+                    subprocess.run([self.make, "player", f"BUILD_ROOT={scratch}"], cwd=ROOT)
+                    subprocess.run([self.make, "player", f"BUILD_ROOT={scratch}", "PLAYER_EXE=build/x.exe"], cwd=ROOT)
+                    subprocess.run([self.make, "-C", str(ROOT / "fixtures"), "all"], cwd=ROOT)
+                    subprocess.run([self.make, "all"], cwd=scratch)
+                    argv = [self.make, "--no-print-directory", "gpu-selftest-status"]
+                    self.assertEqual(argv, [self.make, "all"])
+        ''')
+        findings = _scan_for_checkout_damage(source, "case.py")
+        self.assertEqual(
+            [int(finding.split(":")[1]) for finding in findings],
+            [8, 10, 13, 16],
+            "\n".join(findings),
+        )
+        self.assertIn("without a scratch BUILD_ROOT=", findings[0])
+        self.assertIn("with BUILD_ROOT inside the repository checkout", findings[1])
+        self.assertIn("passes PLAYER_EXE= a checkout build/ path", findings[2])
 
     def test_scan_accepts_scratch_trees_and_read_only_checkout_use(self) -> None:
         source = textwrap.dedent('''
@@ -2985,8 +3489,9 @@ class CheckoutDeletionGuardTests(unittest.TestCase):
                     targets = ("clean", "clean-all")
                     subprocess.run([self.make, "help"], cwd=ROOT)
                     subprocess.run([self.make, "GAME_NAME=hst", f"BUILD_ROOT={scratch}", "v"], cwd=ROOT)
+                    subprocess.run([self.make, "--no-print-directory", "player"], cwd=self.clone)
         ''')
-        self.assertEqual(_scan_for_checkout_deletions(source, "case.py"), [])
+        self.assertEqual(_scan_for_checkout_damage(source, "case.py"), [])
 
 
 if __name__ == "__main__":
