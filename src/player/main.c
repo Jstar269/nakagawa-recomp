@@ -175,6 +175,20 @@ static void trigger_file_picker(SDL_Window *window, PlayerApp *app) {
     SDL_ShowOpenFileDialog(on_file_dialog_callback, app, window, filters, 2, NULL, false);
 }
 
+/* The Fonts & System step's folder choice. A cancelled dialog arrives with no entry and
+   changes nothing; a chosen folder is read once by the font import. */
+static void on_font_folder_dialog_callback(void *userdata, const char *const *filelist, int filter) {
+    PlayerApp *app = (PlayerApp *)userdata;
+    (void)filter;
+    if (!app) return;
+    if (!filelist || !filelist[0]) return;
+    (void)player_app_fonts_import_folder(app, filelist[0]);
+}
+
+static void trigger_font_folder_picker(SDL_Window *window, PlayerApp *app) {
+    SDL_ShowOpenFolderDialog(on_font_folder_dialog_callback, app, window, NULL, false);
+}
+
 #define PLAYER_UI_LOGICAL_WIDTH 1280
 #define PLAYER_UI_LOGICAL_HEIGHT 720
 #define PLAYER_WINDOW_MIN_LOGICAL_WIDTH 960
@@ -3559,6 +3573,16 @@ int main(int argc, char *argv[]) {
 #endif
             app.request_file_picker = false;
             trigger_file_picker(window, &app);
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+            }
+#endif
+        }
+        if (app.request_font_folder_picker) {
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+            if (!ui_test_mode) {
+#endif
+            app.request_font_folder_picker = false;
+            trigger_font_folder_picker(window, &app);
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
             }
 #endif

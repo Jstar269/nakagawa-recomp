@@ -358,7 +358,7 @@ static int pgf_checked_glyph(const PGF *p, uint32_t glyph_id, PgfGlyph *glyph,
     return pgf_resolve_composite(p, glyph);
 }
 
-static int pgf_parse_directory(PGF *p) {
+static int pgf_parse_directory(PGF *p, PgfRefusal *refusal) {
     const uint8_t *h = p->image;
     int32_t revision;
     int32_t version;
@@ -378,20 +378,40 @@ static int pgf_parse_directory(PGF *p) {
     unsigned i;
     size_t table_offset;
 
-    if (p->size < PGF_BASE_HEADER_SIZE || p->size > PGF_MAX_IMAGE_SIZE ||
-        pgf_u16(h) != 0u || memcmp(h + 4u, "PGF0", 4u) != 0) {
+    /* The checks run in this order; tools/nk_core/fonts.py mirrors it. */
+    if (p->size > PGF_MAX_IMAGE_SIZE) {
+        *refusal = PGF_REFUSE_TOO_LARGE;
+        return 0;
+    }
+    if (p->size < PGF_BASE_HEADER_SIZE) {
+        *refusal = PGF_REFUSE_TRUNCATED;
+        return 0;
+    }
+    if (pgf_u16(h) != 0u) {
+        *refusal = PGF_REFUSE_HEADER_OFFSET;
+        return 0;
+    }
+    if (memcmp(h + 4u, "PGF0", 4u) != 0) {
+        *refusal = PGF_REFUSE_MAGIC;
         return 0;
     }
     header_size = pgf_u16(h + 2u);
     revision = pgf_i32(h + 8u);
     version = pgf_i32(h + 12u);
-    if (revision < 0 || revision > 3 || version < 0) return 0;
+    if (revision < 0 || revision > 3 || version < 0) {
+        *refusal = PGF_REFUSE_REVISION;
+        return 0;
+    }
     /* The revision-3 extension is identified by the declared header size, not by
        the revision value, so a revision-3 file with no extension decodes on the
        ordinary path while a 412-byte header still requires revision 3. */
     if ((header_size != PGF_BASE_HEADER_SIZE && header_size != PGF_REV3_HEADER_SIZE) ||
-        (header_size == PGF_REV3_HEADER_SIZE && revision != 3) ||
-        p->size < header_size) {
+        (header_size == PGF_REV3_HEADER_SIZE && revision != 3)) {
+        *refusal = PGF_REFUSE_HEADER_SIZE;
+        return 0;
+    }
+    if (p->size < header_size) {
+        *refusal = PGF_REFUSE_TRUNCATED;
         return 0;
     }
 
@@ -404,10 +424,15 @@ static int pgf_parse_directory(PGF *p) {
     last = pgf_u16(h + 0xb8u);
     shadow_count = pgf_u32(h + 0x16cu);
     shadow_bits = pgf_u32(h + 0x170u);
-    if (first > last || char_map_bits == 0u || char_map_bits > 32u ||
+    if (first > last) {
+        *refusal = PGF_REFUSE_GLYPH_RANGE;
+        return 0;
+    }
+    if (char_map_bits == 0u || char_map_bits > 32u ||
         pointer_bits == 0u || pointer_bits > 32u ||
         p->char_map_count > PGF_MAX_COUNT || pointer_count > PGF_MAX_COUNT ||
         shadow_count > PGF_MAX_COUNT) {
+        *refusal = PGF_REFUSE_COUNTS;
         return 0;
     }
     /* The character-pointer count is the glyph count. The inclusive code span
@@ -415,9 +440,14 @@ static int pgf_parse_directory(PGF *p) {
        so the span is not compared with the pointer count (PGF_SPEC.md 3.1, O-15). A
        font with no pointers has no glyph to draw and is refused. */
     glyph_count = pointer_count;
-    if (glyph_count == 0u || glyph_count > PGF_MAX_COUNT ||
+    if (glyph_count == 0u) {
+        *refusal = PGF_REFUSE_NO_GLYPHS;
+        return 0;
+    }
+    if (glyph_count > PGF_MAX_COUNT ||
         (shadow_count == 0u ? (shadow_bits != 0u && shadow_bits != 16u)
                             : shadow_bits != 16u)) {
+        *refusal = PGF_REFUSE_COUNTS;
         return 0;
     }
     p->first_glyph = first;
@@ -436,12 +466,14 @@ static int pgf_parse_directory(PGF *p) {
     for (i = 0; i < PGF_TABLE_COUNT; ++i) {
         if (!pgf_add_section(&cursor, (uint64_t)p->metric_counts[i] * 8u,
                              p->size, &table_offset)) {
+            *refusal = PGF_REFUSE_TRUNCATED;
             return 0;
         }
         p->metric_offsets[i] = table_offset;
     }
     if (!pgf_packed_size(shadow_count, shadow_bits, &length) ||
         !pgf_add_section(&cursor, length, p->size, &p->shadow_map_offset)) {
+        *refusal = PGF_REFUSE_TRUNCATED;
         return 0;
     }
     if (header_size == PGF_REV3_HEADER_SIZE) {
@@ -449,25 +481,44 @@ static int pgf_parse_directory(PGF *p) {
                              p->size, &table_offset) ||
             !pgf_add_section(&cursor, (uint64_t)rev3_count_b * 4u,
                              p->size, &table_offset)) {
+            *refusal = PGF_REFUSE_TRUNCATED;
             return 0;
         }
     }
     if (!pgf_packed_size(p->char_map_count, char_map_bits, &length) ||
         !pgf_add_section(&cursor, length, p->size, &p->char_map_offset)) {
+        *refusal = PGF_REFUSE_TRUNCATED;
         return 0;
     }
     if (!pgf_packed_size(pointer_count, pointer_bits, &length) ||
         !pgf_add_section(&cursor, length, p->size, &p->char_pointer_offset)) {
+        *refusal = PGF_REFUSE_TRUNCATED;
         return 0;
     }
     p->glyph_data_offset = cursor;
     return 1;
 }
 
+/* Every rule the reader applies to an image, in order: the directory, then each glyph
+ * record with its shadow and composite references. Open and validation both run this, so
+ * a validator verdict is the reader's verdict. */
+static int pgf_check_image(PGF *p, PgfRefusal *refusal) {
+    uint32_t i;
+    *refusal = PGF_REFUSE_NONE;
+    if (!pgf_parse_directory(p, refusal)) return 0;
+    for (i = 0; i < p->glyph_count; ++i) {
+        PgfGlyph glyph;
+        if (!pgf_checked_glyph(p, i, &glyph, 1)) {
+            *refusal = PGF_REFUSE_GLYPH;
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static PGF *pgf_open_owned(uint8_t *image, size_t size, const uint8_t *name,
                            size_t name_length) {
     PGF *p;
-    uint32_t i;
     if (!image || size < PGF_BASE_HEADER_SIZE || size > PGF_MAX_IMAGE_SIZE) {
         free(image);
         return NULL;
@@ -485,10 +536,9 @@ static PGF *pgf_open_owned(uint8_t *image, size_t size, const uint8_t *name,
         }
         memcpy(p->file_name, name, name_length);
     }
-    if (!pgf_parse_directory(p)) goto fail;
-    for (i = 0; i < p->glyph_count; ++i) {
-        PgfGlyph glyph;
-        if (!pgf_checked_glyph(p, i, &glyph, 1)) goto fail;
+    {
+        PgfRefusal refusal;
+        if (!pgf_check_image(p, &refusal)) goto fail;
     }
     return p;
 
@@ -695,6 +745,52 @@ int pgf_has_char(const PGF *p, int char_code) {
     PgfGlyph glyph;
     if (!pgf_lookup(p, char_code, 0, 0, &glyph)) return 0;
     return glyph.width != 0u && glyph.height != 0u;
+}
+
+/* Coverage probes for the font-slot classification (see nk_font.c). Codes only. */
+static int pgf_probe_latin(const PGF *p) {
+    return pgf_has_char(p, 0x41) && pgf_has_char(p, 0x61);
+}
+
+static int pgf_probe_kana(const PGF *p) {
+    return pgf_has_char(p, 0x3042) || pgf_has_char(p, 0x30a2);
+}
+
+static int pgf_probe_hangul(const PGF *p) {
+    return pgf_has_char(p, 0xac00) || pgf_has_char(p, 0xd55c);
+}
+
+int pgf_validate_memory(const void *data, size_t size, PgfVerdict *verdict) {
+    PGF probe;
+    PgfRefusal refusal = PGF_REFUSE_NONE;
+    const uint8_t *bytes = (const uint8_t *)data;
+    if (!verdict) return 0;
+    memset(verdict, 0, sizeof(*verdict));
+    if (!bytes) {
+        verdict->refusal = PGF_REFUSE_TRUNCATED;
+        return 0;
+    }
+    /* The probe borrows the caller's bytes; the reader's parse functions only read them. */
+    memset(&probe, 0, sizeof(probe));
+    probe.image = (uint8_t *)bytes;
+    probe.size = size;
+    if (!pgf_check_image(&probe, &refusal)) {
+        verdict->refusal = refusal;
+        return 0;
+    }
+    verdict->refusal = PGF_REFUSE_NONE;
+    verdict->revision = probe.revision;
+    verdict->header_size = pgf_u16(bytes + 2u);
+    verdict->first_glyph = probe.first_glyph;
+    verdict->last_glyph = pgf_u16(bytes + 0xb8u);
+    verdict->glyph_count = probe.glyph_count;
+    verdict->char_map_count = probe.char_map_count;
+    verdict->nominal_h = pgf_i32(bytes + 0x24u);
+    verdict->nominal_v = pgf_i32(bytes + 0x28u);
+    verdict->has_latin = pgf_probe_latin(&probe) ? 1u : 0u;
+    verdict->has_kana = pgf_probe_kana(&probe) ? 1u : 0u;
+    verdict->has_hangul = pgf_probe_hangul(&probe) ? 1u : 0u;
+    return 1;
 }
 
 static uint32_t pgf_fixed_binary32(int32_t value) {
