@@ -945,7 +945,7 @@ int player_app_focus_count(const PlayerApp *app) {
                     if (app->wizard.is_extracting) return 1;
                     return 3;
                 case WIZARD_STEP_SYSTEM_FONTS:
-                    return 4;
+                    return 6;
                 case WIZARD_STEP_READY_LAUNCH:
                     return 3;
                 default:
@@ -3356,6 +3356,85 @@ static void player_check_guest_modules(PlayerApp *app,
     free(modules);
 }
 
+/* Append text to a bounded buffer, never past its end. */
+static void player_font_append(char *out, size_t out_len, const char *text) {
+    size_t used;
+    size_t room;
+    if (!out || out_len == 0 || !text) return;
+    used = strlen(out);
+    if (used >= out_len - 1u) return;
+    room = out_len - 1u - used;
+    strncpy(out + used, text, room);
+    out[used + room] = '\0';
+}
+
+void player_app_refresh_font_status(PlayerApp *app) {
+    NkFontSlotState states[NK_FONT_SLOT_COUNT];
+    if (!app) return;
+    nk_font_slot_states(app->runtime_root, app->runtime_root, states);
+    for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
+        snprintf(app->wizard.font_slot_detail[slot], sizeof(app->wizard.font_slot_detail[slot]),
+                 "%s", states[slot].detail);
+    }
+}
+
+bool player_app_fonts_import_folder(PlayerApp *app, const char *folder) {
+    NkFontImportResult result;
+    char error[NK_FONT_DETAIL_MAX] = "";
+    if (!app) return false;
+    if (!folder || !*folder) {
+        snprintf(app->wizard.font_message, sizeof(app->wizard.font_message), "No folder was chosen.");
+        return false;
+    }
+    if (!nk_font_import_folder(app->runtime_root, folder, NULL, &result, error, sizeof(error))) {
+        snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
+                 "Import stopped: %s.", error);
+        player_app_refresh_font_status(app);
+        return false;
+    }
+    if (result.imported_count == 0) {
+        /* Say why, from the first file that was not used: a refusal, or several files for one slot. */
+        const char *reason = "no .pgf file names a PSP font slot";
+        for (int i = 0; i < result.file_count; i++) {
+            if (result.files[i].detail[0] != '\0' && strstr(result.files[i].detail, "not imported") != NULL) {
+                reason = result.files[i].detail;
+                break;
+            }
+            if (result.files[i].detail[0] != '\0' && strncmp(result.files[i].detail, "refused", 7) == 0) {
+                reason = result.files[i].detail;
+            }
+        }
+        snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
+                 "No font was imported: %.400s.", reason);
+    } else {
+        snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
+                 "Imported %d PSP font slot(s) into the player's font cache.", result.imported_count);
+    }
+    player_app_refresh_font_status(app);
+    return result.imported_count > 0;
+}
+
+bool player_app_fonts_remove_imports(PlayerApp *app) {
+    bool remove[NK_FONT_SLOT_COUNT];
+    char error[NK_FONT_DETAIL_MAX] = "";
+    int removed;
+    if (!app) return false;
+    for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) remove[slot] = true;
+    removed = nk_font_remove_imports(app->runtime_root, remove, error, sizeof(error));
+    if (removed < 0) {
+        snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
+                 "Could not remove the imported fonts: %s.", error);
+    } else if (removed == 0) {
+        snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
+                 "No imported PSP font to remove.");
+    } else {
+        snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
+                 "Removed %d imported PSP font file(s). Project fonts, if any, are unchanged.", removed);
+    }
+    player_app_refresh_font_status(app);
+    return removed >= 0;
+}
+
 void player_app_build_compatibility_preflight(
     PlayerApp *app, bool disc_readable, bool param_sfo_parsed,
     const NkIsoExecutableReport *executables) {
@@ -3524,21 +3603,25 @@ void player_app_build_compatibility_preflight(
     }
 
     static const unsigned int font_issues[] = { 313 };
-    char font_message[512] = "";
-    NkFontStatus font_status = nk_font_check_cache(runtime_root, runtime_root,
-                                                   font_message, sizeof(font_message));
-    if (font_status == NK_FONT_STATUS_OK) {
-        player_preflight_add(preflight, "SYSTEM_FONTS", PREFLIGHT_OK,
-                             font_message[0] ? font_message : "User-supplied PSP system font jpn0.pgf is available.",
-                             NULL, 0);
-    } else if (font_status == NK_FONT_STATUS_INVALID) {
+    char font_message[NK_FONT_TEXT_MAX] = "";
+    NkFontStatus font_status = nk_font_check_cache(runtime_root, font_message, sizeof(font_message));
+    if (font_status == NK_FONT_STATUS_INVALID) {
         player_preflight_add(preflight, "SYSTEM_FONTS", PREFLIGHT_INVALID,
                              font_message[0] ? font_message : "PSP font cache is invalid; run fonts import <folder>.",
                              font_issues, 1);
     } else {
-        player_preflight_add(preflight, "SYSTEM_FONTS", PREFLIGHT_MISSING,
-                             font_message[0] ? font_message : "PSP font jpn0.pgf missing; run fonts import <folder>.",
-                             font_issues, 1);
+        NkFontSlotState states[NK_FONT_SLOT_COUNT];
+        char summary[2048] = "";
+        bool every_slot = true;
+        nk_font_slot_states(runtime_root, runtime_root, states);
+        for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
+            if (states[slot].source == NK_FONT_SOURCE_NONE) every_slot = false;
+            player_font_append(summary, sizeof(summary), states[slot].detail);
+            player_font_append(summary, sizeof(summary), " ");
+        }
+        player_preflight_add(preflight, "SYSTEM_FONTS",
+                             every_slot ? PREFLIGHT_OK : PREFLIGHT_MISSING,
+                             summary, font_issues, every_slot ? 0 : 1);
     }
 
     /* The public runtime drives the default device through SDL3 (#301). Whether a

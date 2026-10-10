@@ -1954,6 +1954,97 @@ static void test_deterministic_mutations(void) {
     CHECK(composite_accepted != 0u && composite_rejected != 0u);
 }
 
+/* The validator verdict: dense and sparse images are accepted with their header facts, and
+   each refusal names the rule the reader applies first. */
+static void test_validate_memory_verdicts(void) {
+    TestConfig config;
+    TestFont dense;
+    TestFont sparse;
+    TestFont mutated;
+    PgfVerdict verdict;
+    uint8_t *huge;
+    const size_t max_image = 16u * 1024u * 1024u;
+
+    test_default_config(&config);
+    CHECK(test_build_font(&dense, &config));
+    memset(&verdict, 0, sizeof(verdict));
+    CHECK(pgf_validate_memory(dense.bytes, dense.size, &verdict) == 1);
+    CHECK(verdict.refusal == PGF_REFUSE_NONE);
+    CHECK(verdict.revision == 2u);
+    CHECK(verdict.header_size == 392u);
+    CHECK(verdict.first_glyph == 65u && verdict.last_glyph == 67u);
+    CHECK(verdict.glyph_count == 3u && verdict.char_map_count == 3u);
+    CHECK(verdict.has_latin == 0u && verdict.has_kana == 0u && verdict.has_hangul == 0u);
+
+    /* 'A'..'Z' over three glyph records: a sparse character map. */
+    test_default_config(&config);
+    config.char_map_bits = 5u;
+    config.code_span = 26u;
+    config.char_map_count = 26u;
+    for (unsigned code = 0; code < 26u; ++code) config.map_values[code] = 31u;
+    config.map_values[0] = 0u;
+    config.map_values[2] = 1u;
+    config.map_values[25] = 2u;
+    config.glyphs[0].bitmap[0] = 0x50u;
+    config.glyphs[1].bitmap[0] = 0x70u;
+    config.glyphs[2].bitmap[0] = 0x30u;
+    CHECK(test_build_font(&sparse, &config));
+    memset(&verdict, 0, sizeof(verdict));
+    CHECK(pgf_validate_memory(sparse.bytes, sparse.size, &verdict) == 1);
+    CHECK(verdict.refusal == PGF_REFUSE_NONE);
+    CHECK(verdict.glyph_count == 3u);
+    CHECK(verdict.char_map_count == 26u);
+    CHECK(verdict.char_map_count > verdict.glyph_count);
+
+    /* Each refusal is named by its first rule. */
+    memset(&verdict, 0, sizeof(verdict));
+    CHECK(pgf_validate_memory(dense.bytes, 100u, &verdict) == 0);
+    CHECK(verdict.refusal == PGF_REFUSE_TRUNCATED);
+
+    memcpy(mutated.bytes, dense.bytes, dense.size);
+    mutated.bytes[4] = 'B'; mutated.bytes[5] = 'A'; mutated.bytes[6] = 'D'; mutated.bytes[7] = '0';
+    CHECK(pgf_validate_memory(mutated.bytes, dense.size, &verdict) == 0);
+    CHECK(verdict.refusal == PGF_REFUSE_MAGIC);
+
+    memcpy(mutated.bytes, dense.bytes, dense.size);
+    test_put_u16(mutated.bytes + 0xb6u, 70u);
+    CHECK(pgf_validate_memory(mutated.bytes, dense.size, &verdict) == 0);
+    CHECK(verdict.refusal == PGF_REFUSE_GLYPH_RANGE);
+
+    memcpy(mutated.bytes, dense.bytes, dense.size);
+    test_put_u32(mutated.bytes + 0x08u, 4u);
+    CHECK(pgf_validate_memory(mutated.bytes, dense.size, &verdict) == 0);
+    CHECK(verdict.refusal == PGF_REFUSE_REVISION);
+
+    memcpy(mutated.bytes, dense.bytes, dense.size);
+    test_put_u16(mutated.bytes + 0x02u, 412u);
+    CHECK(pgf_validate_memory(mutated.bytes, dense.size, &verdict) == 0);
+    CHECK(verdict.refusal == PGF_REFUSE_HEADER_SIZE);
+
+    memcpy(mutated.bytes, dense.bytes, dense.size);
+    test_put_u32(mutated.bytes + 0x14u, 0u);
+    CHECK(pgf_validate_memory(mutated.bytes, dense.size, &verdict) == 0);
+    CHECK(verdict.refusal == PGF_REFUSE_NO_GLYPHS);
+
+    memcpy(mutated.bytes, dense.bytes, dense.size);
+    mutated.bytes[dense.char_pointer_offset] = 0xffu;
+    mutated.bytes[dense.char_pointer_offset + 1u] = 0xffu;
+    mutated.bytes[dense.char_pointer_offset + 2u] = 0xffu;
+    CHECK(pgf_validate_memory(mutated.bytes, dense.size, &verdict) == 0);
+    CHECK(verdict.refusal == PGF_REFUSE_GLYPH);
+
+    huge = (uint8_t *)calloc(1u, max_image + 1u);
+    CHECK(huge != NULL);
+    if (huge) {
+        memcpy(huge, dense.bytes, dense.size);
+        memset(&verdict, 0, sizeof(verdict));
+        CHECK(pgf_validate_memory(huge, max_image + 1u, &verdict) == 0);
+        CHECK(verdict.refusal == PGF_REFUSE_TOO_LARGE);
+        CHECK(pgf_validate_memory(huge, max_image, &verdict) == 1 || verdict.refusal != PGF_REFUSE_TOO_LARGE);
+        free(huge);
+    }
+}
+
 int main(int argc, char **argv) {
     if (argc == 3 && strcmp(argv[1], "--write-base") == 0) {
         TestConfig config;
@@ -1986,6 +2077,7 @@ int main(int argc, char **argv) {
     test_fallback_and_guest_boundaries();
     test_production_file_path_metrics_and_render();
     test_deterministic_mutations();
+    test_validate_memory_verdicts();
     free(g_mem);
     if (failures != 0) {
         fprintf(stderr, "%d PGF public tests failed\n", failures);
