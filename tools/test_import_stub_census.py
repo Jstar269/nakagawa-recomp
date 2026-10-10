@@ -8,9 +8,11 @@ the analyzer owns it as an entry and that codegen emits a body for it. These tes
 it over synthetic images only (tools/import_fixtures); no game bytes are involved.
 
 The regression guard is the one the umd-io triage found: an import stub in executable
-bytes after .text was dropped by the late discovery passes. Disabling the seed that
-keeps such stubs (analyze._import_stub_is_file_executable) must make the census name
-every stub as dropped by a late pass, so a regression can never drop stubs silently.
+bytes after .text was dropped by the late discovery passes. A late pass that drops such
+a stub must make the census name every stub as dropped by a late pass, so a regression
+can never drop stubs silently (the injected drop below). Disabling the seed that marks
+such stubs (analyze._import_stub_is_file_executable) does not change that: the callee
+rule of the late passes keeps a directly called stub, so the census stays clean.
 """
 
 import json
@@ -279,8 +281,30 @@ class CensusGateAndReporting(unittest.TestCase):
         self.assertIn("0x11000001", text)
 
 
+def _write_title(root, modules):
+    """Write a title under root (an EBOOT, one PSP module file per name) and its manifest.
+
+    modules maps each module file name to its manifest entry; the name is added here.
+    Returns (title directory, manifest path).
+    """
+    title_dir = os.path.join(root, "title")
+    os.makedirs(title_dir)
+    eboot, _stubs = import_fixtures.build_text_stub_run_elf(2)
+    with open(os.path.join(title_dir, "EBOOT.elf"), "wb") as fh:
+        fh.write(eboot)
+    module = import_fixtures.build_module_elf([], imports=[("SynthLib", [0x22000001])])
+    for name in modules:
+        with open(os.path.join(title_dir, name), "wb") as fh:
+            fh.write(module)
+    manifest_path = os.path.join(root, "title.json")
+    with open(manifest_path, "w", encoding="utf-8") as fh:
+        json.dump({"disc": {"id": "TESTDISC"},
+                   "modules": [dict(entry, name=name) for name, entry in modules.items()]}, fh)
+    return title_dir, manifest_path
+
+
 class ManifestImages(unittest.TestCase):
-    """An archive-format title: the EBOOT takes its manifest span; modules their load addresses."""
+    """An archive-format title: the EBOOT takes its manifest span; modules their placement."""
 
     def test_manifest_images_apply_the_eboot_span_and_each_module_load_address(self):
         with tempfile.TemporaryDirectory() as root:
@@ -311,6 +335,46 @@ class ManifestImages(unittest.TestCase):
         rec = census.unlocated_record(images[2][1], "guest module file not found")
         self.assertEqual([m["reason"] for m in rec["missing"]], [census.REASON_OTHER])
         self.assertEqual(census.check_failures([rec]), [rec])
+
+    def test_a_runtime_placed_module_is_censused_in_link_space_and_named(self):
+        # The runtime chooses a runtime-placed module's address when the game loads it, so the
+        # manifest gives none: the census reads it in link space and names its placement.
+        with tempfile.TemporaryDirectory() as root:
+            title_dir, manifest_path = _write_title(root, {
+                "fixed.prx": {"load_address": 0x08900000},
+                "runtime.prx": {"placement": "runtime"},
+            })
+            images = census.manifest_images(manifest_path, title_dir)
+            records = [census.census_image(path, base, label=label, extra_spans=spans)
+                       for path, label, base, spans in images[1:]]
+        self.assertEqual(images[1][2], 0x08900000)
+        self.assertEqual(images[2][2], 0, "a runtime-placed module has no load address to read")
+        for rec in records:
+            self.assertEqual(rec["status"], "ok", rec)
+            self.assertEqual(rec["stubs"], 1, rec)
+            self.assertEqual(rec["missing"], [], rec["missing"])
+        self.assertEqual(records[0]["image"], "TESTDISC/fixed.prx")
+        self.assertIn("runtime-placed", records[1]["image"])
+        self.assertEqual(census.check_failures(records), [])
+
+    def test_a_malformed_module_placement_is_refused_not_analyzed(self):
+        # title_manifest refuses these entries, so the census must not analyze them at some
+        # other address: a fixed module needs its load address, and a runtime-placed module
+        # has none and takes no address field.
+        cases = (
+            ("fixed without a load address", {"placement": "fixed"}, KeyError),
+            ("runtime with a load address", {"placement": "runtime", "load_address": 0x08900000},
+             ValueError),
+            ("runtime with load address evidence",
+             {"placement": "runtime", "load_address_evidence": "provisional"}, ValueError),
+            ("unknown placement", {"placement": "Runtime", "load_address": 0x08900000},
+             ValueError),
+        )
+        for label, entry, error in cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as root:
+                title_dir, manifest_path = _write_title(root, {"lib.prx": entry})
+                with self.assertRaises(error):
+                    census.manifest_images(manifest_path, title_dir)
 
 
 if __name__ == "__main__":
