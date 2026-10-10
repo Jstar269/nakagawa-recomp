@@ -1455,6 +1455,17 @@ int sdl3vk_wait_image(void *vk_image) {
 
 /* ---- capture selftest (issue #57) ---------------------------------------------------- */
 
+/* Scratch root for the files the capture selftest writes (see sdl3vk_capture_selftest). The
+ * Makefile passes -DSR_SELFTEST_BUILD_ROOT=$(BUILD_ROOT); a bare compile keeps "build". */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+#ifdef _WIN32
+#define SDL3VK_TEST_CHDIR(path) _chdir(path)
+#else
+#define SDL3VK_TEST_CHDIR(path) chdir(path)
+#endif
+
 static int cap_test_pattern(int x, int y, int ch) {
     /* Deterministic per-channel pattern across the whole 8-bit range; every channel
      * varies on both axes, so row-pitch shears and channel-order mistakes change bytes. */
@@ -1662,6 +1673,8 @@ static int cap_test_image_upload(CapTestImage *t) {
     return 1;
 }
 
+/* Its fixture names are relative: sdl3vk_capture_selftest runs this from the scratch working
+ * directory beneath SR_SELFTEST_BUILD_ROOT, so the files never land in the checkout. */
 int sdl3vk_input_profile_selftest(void) {
     int ok = 1;
 
@@ -1804,7 +1817,7 @@ int sdl3vk_input_profile_selftest(void) {
 
     /* ---- 5(c) Invalid profile fallback + diagnostic; missing file fallback ---- */
     {
-        const char *tmp_invalid = "build/selftest_invalid_profile.json";
+        const char *tmp_invalid = "selftest_invalid_profile.json";
         FILE *f = fopen(tmp_invalid, "w");
         if (f) {
             fputs("{\n  \"schema_version\": 999,\n  \"deadzone_inner\": -100\n}\n", f);
@@ -1823,7 +1836,7 @@ int sdl3vk_input_profile_selftest(void) {
         }
         remove(tmp_invalid);
 
-        profile_test_setenv("NK_INPUT_PROFILE", "build/selftest_nonexistent_profile_12345.json");
+        profile_test_setenv("NK_INPUT_PROFILE", "selftest_nonexistent_profile_12345.json");
         sdl3vk_reset_input_profile();
         sdl3vk_init_input_profile();
         prof = sdl3vk_get_input_profile();
@@ -1838,7 +1851,7 @@ int sdl3vk_input_profile_selftest(void) {
 
     /* ---- 5(d) SR_PADSCRIPT still wins ---- */
     {
-        const char *tmp_custom = "build/selftest_custom_profile.json";
+        const char *tmp_custom = "selftest_custom_profile.json";
         NkInputProfile custom;
         nk_input_profile_init_default(&custom);
         custom.psp_buttons[NK_PSP_BTN_CROSS].primary.index = NK_HOST_BUTTON_NORTH;
@@ -1867,7 +1880,7 @@ int sdl3vk_input_profile_selftest(void) {
     return ok;
 }
 
-int sdl3vk_capture_selftest(void) {
+static int sdl3vk_capture_selftest_body(void) {
     int ok = 1;
 
     /* ---- pure framebuffer-capture policy (fbcap_policy.h); no Vulkan needed --------- */
@@ -2340,6 +2353,33 @@ int sdl3vk_capture_selftest(void) {
     if (!ok) return 1;
     puts("gpu capture selftest: OK");
     return 0;
+}
+
+/* Runs the body from a scratch working directory beneath SR_SELFTEST_BUILD_ROOT. Its relative
+ * paths (the FBSNAP default build/snapshots, the selftest_*.ppm frames, the input-profile
+ * fixtures) resolve against the working directory, so they land in scratch, never in the
+ * checkout's build/ or its root. The original working directory is restored on every path. */
+int sdl3vk_capture_selftest(void) {
+    static const char scratch_rel[] = SR_SELFTEST_BUILD_ROOT "/gpu_capture_selftest";
+    char original[1024];
+    char scratch[1024];
+    if (!nk_platform_absolute_path(".", original, sizeof original) ||
+        !nk_platform_mkdir_p(scratch_rel) ||
+        !nk_platform_absolute_path(scratch_rel, scratch, sizeof scratch)) {
+        fprintf(stderr, "gpu capture selftest: cannot prepare scratch directory '%s'\n",
+                scratch_rel);
+        return 1;
+    }
+    if (SDL3VK_TEST_CHDIR(scratch) != 0) {
+        fprintf(stderr, "gpu capture selftest: cannot enter scratch directory '%s'\n", scratch);
+        return 1;
+    }
+    int rc = sdl3vk_capture_selftest_body();
+    if (SDL3VK_TEST_CHDIR(original) != 0) {
+        fprintf(stderr, "gpu capture selftest: cannot restore working directory '%s'\n", original);
+        return 1;
+    }
+    return rc;
 }
 
 void sdl3vk_shutdown(void) {
