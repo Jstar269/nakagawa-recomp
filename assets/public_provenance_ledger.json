@@ -264,7 +264,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "69c47afe82c780732431d4bbad49ceca60295d4c61d871511ad5c2256fced2c7"
+      "sha256": "bbe6e0b3acba2297f5c5712eb87f29b1ff30d3b34f72cb1e20bf562dee030083"
     },
     {
       "path": "CREDITS.md",
@@ -1096,7 +1096,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c4dd894c46be5f8f15e401484cb5245fb144668376ca814fe22128526ede033a"
+      "sha256": "138830a42e9179460b3cfa129bafd33ca795b4951a1034d16b4d84e595f14155"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -1153,7 +1153,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6f67ab66790eda81533089661155f0be9455c279703ac7810c9c1338a485ff7d"
+      "sha256": "d48b47c054b0fae69dadfa9dbbd17686cc8b800972f27ed77d22c7de5b6701e2"
     },
     {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",
@@ -1171,7 +1171,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4c3a6a8d8900f2616763c3dfb673c1a5192dcfc406453217e6b68098446e4db3"
+      "sha256": "160d85cc12e6a12e65e41d22fd035ff1cef067cfd921cfaa5546276a2d39afd9"
     },
     {
       "path": "docs/LLE_FIDELITY_ARCHITECTURE.md",
@@ -1348,7 +1348,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1863433dc292c4bd61978284441f3642d0d49bb5a30239567aab98093e0a8675"
+      "sha256": "de449d10eda823b9010497ce2b5e3fe5b3955285a2e1e424019e87474e69e3eb"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -9192,7 +9192,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "965a734930a638c14b3b843d8cc87074d237821c9427b29f81309acfd57ae9cc"
+      "sha256": "1e9fdca720948a8168f8aa19877a3f5af247e51a14b69dae190efe3c628f7ac8"
     },
     {
       "path": "tools/test_profile_zero_e2e.py",
