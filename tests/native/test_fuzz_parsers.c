@@ -34,6 +34,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Scratch root for the files this test writes: the checkout's build/ by default, or
+ * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
+ * touches the checkout. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+
 /* Bounded mock guest arena for PRX loader relocations and segment writes */
 static uint8_t s_guest_arena[512 * 1024];
 
@@ -402,7 +409,7 @@ static void test_fuzz_iso(unsigned iters) {
     assert(seed && mutated);
 
     size_t seed_size = build_fuzz_iso(seed, cap);
-    const char *iso_path = "build/fuzz_test_temp.iso";
+    const char *iso_path = SR_SELFTEST_BUILD_ROOT "/fuzz_test_temp.iso";
 
     write_file_bytes(iso_path, seed, seed_size);
 
@@ -548,7 +555,7 @@ static void test_fuzz_elf_classifier(unsigned iters) {
     assert(iso_seed && iso_mutated);
 
     build_fuzz_classifier_iso(iso_seed, iso_size, elf_seed, elf_size);
-    const char *iso_path = "build/fuzz_classifier_temp.iso";
+    const char *iso_path = SR_SELFTEST_BUILD_ROOT "/fuzz_classifier_temp.iso";
     write_file_bytes(iso_path, iso_seed, iso_size);
     NkIsoExecutableReport report;
     assert(nk_iso_classify_executables(iso_path, &report) == NK_OK);
@@ -1151,7 +1158,7 @@ static void test_fuzz_input_profile(unsigned iters) {
     printf("[FUZZ] Testing per-game input profile parser (%u iterations)...\n", iters);
     fflush(stdout);
 
-    const char *profile_path = "build/fuzz_input_profile_temp.json";
+    const char *profile_path = SR_SELFTEST_BUILD_ROOT "/fuzz_input_profile_temp.json";
     size_t seed_size = strlen(s_valid_input_profile_json);
     size_t cap = seed_size * 2u + 64u;
     char err[256];
@@ -1320,7 +1327,7 @@ static void test_fuzz_package(unsigned iters) {
     static const char disc_id[] = "TEST00001";
     static const char title_id[] = "synthetic-allegrex-v1";
     static const char executable_name[] = "synthetic-allegrex-v1.exe";
-    const char *root = "build/fuzz_package_root";
+    const char *root = SR_SELFTEST_BUILD_ROOT "/fuzz_package_root";
     char package_dir[512], package_path[640], report_path[640];
     char executable_path[768], image_path[768], absolute_root[1024];
     char package_json[8192], report_json[8192], cache_json[4096], cache_key_json[3072];
@@ -1504,7 +1511,7 @@ static void test_fuzz_library(unsigned iters) {
     printf("[FUZZ] Testing Library JSON parser (%u iterations)...\n", iters);
     fflush(stdout);
 
-    const char *lib_path = "build/fuzz_test_library.json";
+    const char *lib_path = SR_SELFTEST_BUILD_ROOT "/fuzz_test_library.json";
     size_t seed_size = strlen(s_valid_library_json);
     write_file_bytes(lib_path, s_valid_library_json, seed_size);
 
@@ -2002,7 +2009,7 @@ static void test_fuzz_keystore(unsigned iters) {
 
     char seed[1024];
     size_t seed_len = build_keystore_json(seed, sizeof(seed));
-    const char *path = "build/fuzz_test_keystore.json";
+    const char *path = SR_SELFTEST_BUILD_ROOT "/fuzz_test_keystore.json";
     char err[256];
     {
         NkKeystore *ks = nk_keystore_create();
@@ -2484,7 +2491,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    assert(nk_platform_mkdir_p("build"));
+    assert(nk_platform_mkdir_p(SR_SELFTEST_BUILD_ROOT));
 
     printf("=================================================================\n");
     printf("Starting Nakagawa deterministic parser fuzz suite (iters=%u)\n", iters);
