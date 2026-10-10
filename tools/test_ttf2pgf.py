@@ -391,6 +391,35 @@ class RefusalTests(CliRefusalMixin, unittest.TestCase):
         self.assertIn("refused: reserved-font-name:", result.stderr)
         self.assertFalse(self.output.exists())
 
+    def test_codepoints_and_codes_are_mutually_exclusive(self) -> None:
+        points = self._write("one.txt", b"0x41\n")
+        result = _cli(self.output, FONT, "--codes", "0x41", "--codepoints", points)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("not allowed with", result.stderr)
+        self.assertFalse(self.output.exists())
+
+    def test_unsorted_or_repeated_codepoints_are_refused(self) -> None:
+        for name, text in (("unsorted.txt", "0x48\n0x41\n"), ("repeated.txt", "0x41\n0x41\n")):
+            with self.subTest(name=name):
+                path = self._write(name, text.encode("ascii"))
+                self.assert_cli_refused("codepoints-unsorted", self.output, FONT, "--codepoints", path)
+
+    def test_malformed_or_empty_codepoint_list_is_refused(self) -> None:
+        path = self._write("garbage.txt", b"0x41\nnot-a-code\n")
+        self.assert_cli_refused("bad-codepoint-list", self.output, FONT, "--codepoints", path)
+        path = self._write("empty.txt", b"# no code points\n\n")
+        self.assert_cli_refused("empty-codepoint-set", self.output, FONT, "--codepoints", path)
+
+    def test_listed_code_point_without_a_glyph_is_refused(self) -> None:
+        path = self._write("unmapped.txt", b"0x01\n0x41\n")
+        self.assert_cli_refused("missing-code-point", self.output, FONT, "--codepoints", path)
+
+    def test_vendor_marker_in_the_font_name_is_refused_before_writing(self) -> None:
+        result = _cli(self.output, FONT, "--font-name", "No" "to Sans")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("refused: reserved-font-name:", result.stderr)
+        self.assertFalse(self.output.exists())
+
     def test_firmware_font_name_is_refused_by_the_writer(self) -> None:
         result = _cli(self.output, FONT, "--font-name", "ltn0")
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
@@ -638,6 +667,63 @@ class MetricTargetTests(unittest.TestCase):
 
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
+class CodePointSetTests(unittest.TestCase):
+    """--codepoints converts exactly the listed code points, and a sparse set is written sparse."""
+
+    SET = (0x41, 0x48, 0x67, 0x7E)
+
+    def setUp(self) -> None:
+        self.data = FONT.read_bytes()
+        self.pin = load_pin(PIN, self.data)
+        self._tmp = tempfile.TemporaryDirectory(prefix="ttf2pgf_codepoints_")
+        self.addCleanup(self._tmp.cleanup)
+        self.points = Path(self._tmp.name) / "points.txt"
+        self.points.write_text("".join(f"0x{code:04X}\n" for code in self.SET), encoding="ascii")
+
+    def _convert(self, ppem: int = PPEM_SHAPE):
+        code_points = ttf2pgf.load_code_points(self.points)
+        return convert(
+            self.data,
+            input_path=str(FONT),
+            output_path="sparse.pgf",
+            code_points=code_points,
+            ppem=ppem,
+            pin=self.pin,
+        )
+
+    def test_listed_codes_only_are_converted_and_the_map_is_sparse(self) -> None:
+        conversion = self._convert()
+        image = conversion.image
+        self.assertEqual(sorted(glyph.code for glyph in conversion.glyphs), list(self.SET))
+        self.assertEqual(struct.unpack_from("<HH", image, 0xB6), (0x41, 0x7E))
+        self.assertEqual(struct.unpack_from("<I", image, 0x10)[0], 0x7E - 0x41 + 1)
+        self.assertEqual(struct.unpack_from("<I", image, 0x14)[0], len(self.SET))
+        validate_pgf_data(image, "sparse.pgf")
+
+    def test_manifest_records_the_point_list_by_digest_and_leaf_name(self) -> None:
+        conversion = self._convert()
+        points = conversion.manifest["code_points"]
+        self.assertEqual(points["sha256"], hashlib.sha256(self.points.read_bytes()).hexdigest())
+        self.assertEqual(points["count"], len(self.SET))
+        self.assertEqual(points["path"], "points.txt")
+        self.assertEqual(conversion.manifest["coverage"]["count"], len(self.SET))
+        self.assertEqual(conversion.manifest["coverage"]["span"], 0x7E - 0x41 + 1)
+        self.assertEqual(manifest_bytes(conversion.manifest), manifest_bytes(self._convert().manifest))
+
+    def test_nominal_size_is_the_em_size_at_the_chosen_ppem_not_the_extrema(self) -> None:
+        conversion = self._convert(ppem=16)
+        image = conversion.image
+        self.assertEqual(struct.unpack_from("<i", image, 0x24)[0], 16 * 64)
+        self.assertEqual(struct.unpack_from("<i", image, 0x28)[0], 16 * 64)
+        self.assertEqual(conversion.manifest["parameters"]["nominal_em_26_6"], 16 * 64)
+        self.assertEqual(conversion.manifest["output"]["horizontal_size_26_6"], 16 * 64)
+        self.assertNotEqual(
+            conversion.manifest["output"]["max_advance_26_6"],
+            16 * 64,
+            "the fixture's advance extremum must differ from the nominal size for this check to mean anything",
+        )
+
+
 class ReaderRoundTripTests(unittest.TestCase):
     """Layer 1: the generated font opens through the production reader path."""
 
@@ -771,6 +857,37 @@ class ReaderRoundTripTests(unittest.TestCase):
         first = self._read_back(conversion.image, codes)
         second = self._read_back(conversion.image, codes)
         self.assertEqual(first, second)
+
+    def test_sparse_codepoint_set_round_trips_and_absent_codes_are_misses(self) -> None:
+        codes = CodePointSetTests.SET
+        points = Path(self.tmp) / "set.txt"
+        points.write_text("".join(f"0x{code:04X}\n" for code in codes), encoding="ascii")
+        data = FONT.read_bytes()
+        conversion = convert(
+            data,
+            input_path=str(FONT),
+            output_path="converted.pgf",
+            code_points=ttf2pgf.load_code_points(points),
+            ppem=PPEM_SHAPE,
+            pin=load_pin(PIN, data),
+        )
+        glyphs = _glyph_map(conversion.glyphs)
+        probe = [0x41, 0x42, 0x48, 0x7E]  # U+0042 is outside the set
+        lines = self._read_back(conversion.image, probe)
+        self.assertEqual(lines[0], "open ok")
+        font = bytes.fromhex(lines[1].removeprefix("font "))
+        self.assertEqual(struct.unpack_from("<I", font, 0x54)[0], 0x7E - 0x41 + 1)
+        records = lines[2:]
+        for index, code in enumerate(probe):
+            char_line = records[index * 2].split(" ")
+            draw_line = records[index * 2 + 1].split(" ")
+            self.assertEqual(char_line[:2], ["char", str(code)])
+            if code not in glyphs:
+                self.assertEqual(char_line[2], "0", f"U+{code:04X} is outside the set")
+                self.assertEqual(draw_line[:3], ["draw", str(code), "none"])
+                continue
+            self.assertEqual(char_line[2], "1", f"U+{code:04X} presence")
+            self.assertEqual(list(bytes.fromhex(draw_line[4])), list(glyphs[code].samples))
 
 
 def _joined(*parts: str) -> str:

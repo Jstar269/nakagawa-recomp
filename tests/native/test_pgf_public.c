@@ -23,7 +23,7 @@
 #define TEST_GUEST_SIZE 0x04000000u
 #define TEST_FONT_CAP 32768u
 #define TEST_MAX_GLYPHS 4u
-#define TEST_MAX_MAP 8u
+#define TEST_MAX_MAP 32u
 #define TEST_MAX_TABLE 4u
 
 typedef struct TestGlyph {
@@ -47,6 +47,9 @@ typedef struct TestConfig {
     uint32_t base_header;
     uint32_t first_glyph;
     uint32_t glyph_count;
+    /* Inclusive code span from first_glyph; 0 means glyph_count (a dense font). A
+       sparse font has a code span larger than its character-pointer count. */
+    uint32_t code_span;
     uint32_t char_map_count;
     uint32_t char_map_bits;
     uint32_t char_pointer_bits;
@@ -212,13 +215,15 @@ static int test_build_font(TestFont *font, const TestConfig *config) {
     size_t length;
     size_t table_offset[4];
     size_t glyph_start;
+    uint32_t code_span = config->code_span != 0u ? config->code_span : config->glyph_count;
     unsigned table;
     unsigned glyph_id;
 
     memset(font, 0, sizeof(*font));
     if (config->glyph_count == 0u || config->glyph_count > TEST_MAX_GLYPHS ||
-        config->char_map_count > TEST_MAX_MAP || config->revision > 3u ||
-        config->first_glyph + config->glyph_count - 1u > 0xffffu ||
+        config->char_map_count > TEST_MAX_MAP || code_span > TEST_MAX_MAP ||
+        config->revision > 3u ||
+        config->first_glyph + code_span - 1u > 0xffffu ||
         config->shadow_count > TEST_MAX_MAP ||
         (config->shadow_count == 0u && shadow_bits != 0u && shadow_bits != 16u) ||
         (config->shadow_count != 0u && shadow_bits != 16u)) {
@@ -242,7 +247,7 @@ static int test_build_font(TestFont *font, const TestConfig *config) {
     memcpy(font->bytes + 0x35u, "Synthetic PGF", 13u);
     test_put_u16(font->bytes + 0xb6u, (uint16_t)config->first_glyph);
     test_put_u16(font->bytes + 0xb8u,
-                 (uint16_t)(config->first_glyph + config->glyph_count - 1u));
+                 (uint16_t)(config->first_glyph + code_span - 1u));
     test_put_u32(font->bytes + 0xd4u, 640u);
     test_put_u32(font->bytes + 0xd8u, 128u);
     test_put_u32(font->bytes + 0xdcu, (uint32_t)-64);
@@ -498,8 +503,18 @@ static void test_open_headers_and_sections(void) {
     CHECK(test_open(&font) == NULL);
     test_default_config(&config);
     CHECK(test_build_font(&font, &config));
+    /* Two character pointers under a three-code map is a sparse font (PGF_SPEC.md
+       3.1, O-15): the pointer count is the glyph count, and code 'C' maps to glyph 2,
+       which is at or above it, so 'C' is a lookup miss. The pointer section keeps the
+       same packed size, so both remaining glyph records still validate. */
     test_put_u32(font.bytes + 0x14u, 2u);
-    CHECK(test_open(&font) == NULL);
+    pgf = test_open(&font);
+    CHECK(pgf != NULL);
+    if (pgf) {
+        CHECK(pgf_has_char(pgf, 65) && pgf_has_char(pgf, 66));
+        CHECK(!pgf_has_char(pgf, 67));
+        pgf_close(pgf);
+    }
     test_default_config(&config);
     CHECK(test_build_font(&font, &config));
     test_put_u32(font.bytes + 0x16cu, 1048577u);
@@ -1732,6 +1747,134 @@ static void test_production_file_path_metrics_and_render(void) {
     (void)remove(bad_composite_path);
 }
 
+/* Draw one code of an 8x8 format-2 target and copy the whole target out, so a dense
+   and a sparse font can be compared pixel for pixel. */
+static int test_draw_target(const TestFont *font, uint32_t code, uint8_t pixels[64]) {
+    PGF *pgf = test_open(font);
+    int drawn = 0;
+    if (!pgf) return 0;
+    memset(test_guest(TEST_BUFFER_ADDR), 0, 64u);
+    test_set_image(2u, 0, 0, 8u, 8u, 8u, TEST_BUFFER_ADDR);
+    drawn = pgf_draw_glyph(pgf, (int)code, 0, TEST_IMAGE_ADDR);
+    memcpy(pixels, test_guest(TEST_BUFFER_ADDR), 64u);
+    pgf_close(pgf);
+    return drawn;
+}
+
+/* Sparse character maps (PGF_SPEC.md 3.1, 3.2, O-9, O-15): the character-pointer
+   count is the glyph count. The character map may cover a wider code span whose
+   absent codes hold the all-ones sentinel, a map value at or above the pointer count
+   is a lookup miss, and every glyph record still validates at open. */
+static void test_sparse_character_maps(void) {
+    TestConfig config;
+    TestFont font;
+    TestFont dense;
+    PGF *pgf;
+    uint32_t code;
+    uint8_t dense_pixels[64];
+    uint8_t sparse_pixels[64];
+    unsigned nonzero = 0u;
+    size_t i;
+
+    /* Codes 'A'..'Z' (26 map entries) over three glyph records. */
+    test_default_config(&config);
+    config.char_map_bits = 5u;
+    config.code_span = 26u;
+    config.char_map_count = 26u;
+    for (code = 0; code < 26u; ++code) config.map_values[code] = 31u;
+    config.map_values[0] = 0u;   /* 'A' -> glyph 0 */
+    config.map_values[2] = 1u;   /* 'C' -> glyph 1 */
+    config.map_values[25] = 2u;  /* 'Z' -> glyph 2 */
+    config.glyphs[0].bitmap[0] = 0x50u; /* sample 5 */
+    config.glyphs[1].bitmap[0] = 0x70u; /* sample 7 */
+    config.glyphs[2].bitmap[0] = 0x30u; /* sample 3 */
+    CHECK(test_build_font(&font, &config));
+    pgf = test_open(&font);
+    CHECK(pgf != NULL);
+    if (pgf) {
+        CHECK(pgf_has_char(pgf, 65));
+        CHECK(!pgf_has_char(pgf, 66));
+        CHECK(pgf_has_char(pgf, 67));
+        CHECK(pgf_has_char(pgf, 90));
+        CHECK(!pgf_has_char(pgf, 64));
+        CHECK(!pgf_has_char(pgf, 91));
+        test_set_image(2u, 0, 0, 1u, 1u, 1u, TEST_BUFFER_ADDR);
+        CHECK(pgf_draw_glyph(pgf, 65, 0, TEST_IMAGE_ADDR));
+        CHECK(test_guest(TEST_BUFFER_ADDR)[0] == 5u);
+        CHECK(pgf_draw_glyph(pgf, 67, 0, TEST_IMAGE_ADDR));
+        CHECK(test_guest(TEST_BUFFER_ADDR)[0] == 7u);
+        CHECK(pgf_draw_glyph(pgf, 90, 0, TEST_IMAGE_ADDR));
+        CHECK(test_guest(TEST_BUFFER_ADDR)[0] == 3u);
+        CHECK(!pgf_draw_glyph(pgf, 66, 0, TEST_IMAGE_ADDR));
+        pgf_close(pgf);
+    }
+
+    /* Map values 3 and 4 name glyph records past the pointer count of three, so those
+       codes are lookup misses. Value 7 is the three-bit absence sentinel. */
+    test_default_config(&config);
+    config.char_map_bits = 3u;
+    config.code_span = 5u;
+    config.char_map_count = 5u;
+    config.map_values[0] = 0u;  /* 'A' */
+    config.map_values[1] = 2u;  /* 'B' */
+    config.map_values[2] = 4u;  /* 'C' -> glyph 4, past the pointer count */
+    config.map_values[3] = 3u;  /* 'D' -> glyph 3, past the pointer count */
+    config.map_values[4] = 7u;  /* 'E' -> sentinel */
+    CHECK(test_build_font(&font, &config));
+    pgf = test_open(&font);
+    CHECK(pgf != NULL);
+    if (pgf) {
+        CHECK(pgf_has_char(pgf, 65) && pgf_has_char(pgf, 66));
+        CHECK(!pgf_has_char(pgf, 67) && !pgf_has_char(pgf, 68) && !pgf_has_char(pgf, 69));
+        pgf_close(pgf);
+    }
+
+    /* A font with no character pointers has no glyph records and is refused. */
+    test_default_config(&config);
+    CHECK(test_build_font(&font, &config));
+    test_put_u32(font.bytes + 0x14u, 0u);
+    CHECK(test_open(&font) == NULL);
+
+    /* Glyph 2 is named by no code, yet its record is validated at open. */
+    test_default_config(&config);
+    config.code_span = 26u;
+    config.char_map_count = 26u;
+    config.char_map_bits = 5u;
+    for (code = 0; code < 26u; ++code) config.map_values[code] = 31u;
+    config.map_values[0] = 0u;
+    config.map_values[2] = 1u;
+    CHECK(test_build_font(&font, &config));
+    pgf = test_open(&font);
+    CHECK(pgf != NULL);
+    if (pgf) pgf_close(pgf);
+    font.size = font.glyph_record_offsets[2] + 1u;
+    CHECK(test_open(&font) == NULL);
+
+    /* A composite whose components are named through a sparse map (codes 'B'..'D' of
+       an eight-code span) draws the same pixels as the dense font it was derived
+       from, and the sparse map's absent codes stay misses. */
+    test_composite_config(&config);
+    CHECK(test_build_font(&dense, &config));
+    CHECK(test_draw_target(&dense, 65, dense_pixels));
+    test_composite_config(&config);
+    config.code_span = 8u;
+    config.char_map_count = 8u;
+    for (code = 4; code < 8u; ++code) config.map_values[code] = 7u;
+    CHECK(test_build_font(&font, &config));
+    pgf = test_open(&font);
+    CHECK(pgf != NULL);
+    if (pgf) {
+        CHECK(!pgf_has_char(pgf, 69));
+        pgf_close(pgf);
+    }
+    CHECK(test_draw_target(&font, 65, sparse_pixels));
+    CHECK(memcmp(dense_pixels, sparse_pixels, sizeof(dense_pixels)) == 0);
+    for (i = 0; i < sizeof(dense_pixels); ++i) {
+        if (dense_pixels[i] != 0u) ++nonzero;
+    }
+    CHECK(nonzero != 0u);
+}
+
 static void test_deterministic_mutations(void) {
     TestConfig config;
     TestFont font;
@@ -1823,6 +1966,7 @@ int main(int argc, char **argv) {
     }
     test_open_headers_and_sections();
     test_maps_pointers_and_metrics();
+    test_sparse_character_maps();
     test_shadow_and_character_info();
     test_composite_glyphs();
     test_revision_and_shadow_variants();
