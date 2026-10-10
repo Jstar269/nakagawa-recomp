@@ -2108,21 +2108,65 @@ def print_progress(event: ProgressEvent) -> None:
     sys.stdout.flush()
 
 
+def _font_choices(items: list[str] | None) -> dict[str, str]:
+    choose: dict[str, str] = {}
+    for item in items or []:
+        slot, _, name = item.partition("=")
+        if not slot or not name:
+            raise ValueError(f"--choose takes SLOT=FILE, got '{item}'")
+        choose[slot] = name
+    return choose
+
+
 def cmd_fonts_import(args: argparse.Namespace) -> int:
     try:
         from nk_core.fonts import FontImportError, FontValidationError, import_fonts
 
-        user_data_root = args.user_data_root
-        result = import_fonts(args.folder, user_data_root=user_data_root)
+        result = import_fonts(
+            args.folder, user_data_root=args.user_data_root, choose=_font_choices(args.choose)
+        )
         if args.json:
             print(json.dumps(result, indent=2))
         else:
-            names = ", ".join(sorted(result["files"].keys()))
-            print(f"Successfully imported {result['imported_count']} font(s) into {result['cache_dir']}: {names}")
+            for outcome in result["outcomes"]:
+                print(f"{outcome['name']}: {outcome['detail']}")
+            if result["imported_count"]:
+                print(f"Imported {result['imported_count']} font slot(s) into {result['cache_dir']}.")
+        if not result["imported_count"]:
+            sys.stderr.write("Font import error: no font slot was imported.\n")
+            return 1
         return 0
     except (FontValidationError, FontImportError, OSError, ValueError) as exc:
         sys.stderr.write(f"Font import error: {exc}\n")
         return 1
+
+
+def cmd_fonts_status(args: argparse.Namespace) -> int:
+    from nk_core.fonts import SLOTS, slot_states
+
+    states = slot_states(user_data_root=args.user_data_root, project_root=args.project_root)
+    if args.json:
+        print(json.dumps({slot: states[slot] for slot in SLOTS}, indent=2))
+    else:
+        for slot in SLOTS:
+            print(states[slot]["detail"])
+    return 0
+
+
+def cmd_fonts_remove(args: argparse.Namespace) -> int:
+    from nk_core.fonts import SLOTS, FontImportError, remove_imports
+
+    slots = list(SLOTS) if args.all else args.slot
+    if not slots:
+        sys.stderr.write("Font remove error: name a slot with --slot, or pass --all.\n")
+        return 1
+    try:
+        removed = remove_imports(user_data_root=args.user_data_root, slots=slots)
+    except (FontImportError, OSError) as exc:
+        sys.stderr.write(f"Font remove error: {exc}\n")
+        return 1
+    print(f"Removed {removed} imported font file(s).")
+    return 0
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
@@ -3876,12 +3920,35 @@ def main() -> int:
 
     p_fonts = subparsers.add_parser("fonts", help="Manage PSP firmware system fonts")
     fonts_subparsers = p_fonts.add_subparsers(dest="fonts_subcommand", required=True)
-    p_fonts_import = fonts_subparsers.add_parser("import", help="Import dumped PSP firmware PGF fonts")
-    p_fonts_import.add_argument("folder", type=Path, help="Folder containing dumped PSP firmware PGF fonts")
+    p_fonts_import = fonts_subparsers.add_parser(
+        "import", help="Import PSP PGF fonts from your own console (any .pgf in the folder)"
+    )
+    p_fonts_import.add_argument("folder", type=Path, help="Folder holding your .pgf font files (not subfolders)")
+    p_fonts_import.add_argument(
+        "--choose", action="append", metavar="SLOT=FILE",
+        help="Pick the file for a slot several files name (slots: japanese, latin, korean)",
+    )
     p_fonts_import.add_argument("--user-data-root", type=Path, help="Override player per-user data directory")
     p_fonts_import.add_argument("--root", type=Path, dest="user_data_root", help=argparse.SUPPRESS)
     p_fonts_import.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     p_fonts_import.set_defaults(func=cmd_fonts_import)
+    p_fonts_status = fonts_subparsers.add_parser("status", help="Show the font source for each slot")
+    p_fonts_status.add_argument("--user-data-root", type=Path, help="Override player per-user data directory")
+    p_fonts_status.add_argument("--root", type=Path, dest="user_data_root", help=argparse.SUPPRESS)
+    p_fonts_status.add_argument(
+        "--project-root", type=Path, default=ROOT,
+        help="Project root whose font/ folder holds the project fonts (default: this checkout)",
+    )
+    p_fonts_status.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    p_fonts_status.set_defaults(func=cmd_fonts_status)
+    p_fonts_remove = fonts_subparsers.add_parser("remove", help="Remove the fonts this tool imported")
+    p_fonts_remove.add_argument(
+        "--slot", action="append", choices=("japanese", "latin", "korean"), help="A slot to remove"
+    )
+    p_fonts_remove.add_argument("--all", action="store_true", help="Remove every imported slot")
+    p_fonts_remove.add_argument("--user-data-root", type=Path, help="Override player per-user data directory")
+    p_fonts_remove.add_argument("--root", type=Path, dest="user_data_root", help=argparse.SUPPRESS)
+    p_fonts_remove.set_defaults(func=cmd_fonts_remove)
 
     p_inspect = subparsers.add_parser("inspect", help="Inspect a PSP ISO image")
     p_inspect.add_argument("iso", help="Path to PSP ISO image")

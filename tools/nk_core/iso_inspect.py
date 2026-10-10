@@ -2124,24 +2124,28 @@ def inspect_compatibility_preflight(
                     "issues": [308],
                 }
 
-    from .fonts import inspect_font_cache
+    from .fonts import SLOTS, inspect_font_cache, slot_states
 
-    font_status, font_message = inspect_font_cache(user_data_root=root, fallback_root=root)
-    if font_status == "OK":
-        fonts_check = {
-            "code": "SYSTEM_FONTS", "status": "OK",
-            "message": font_message, "issues": [],
-        }
-    elif font_status == "INVALID":
+    font_status, font_message = inspect_font_cache(user_data_root=root)
+    if font_status == "INVALID":
         fonts_check = {
             "code": "SYSTEM_FONTS", "status": "INVALID",
-            "message": font_message,             "issues": [313],
+            "message": font_message, "issues": [313],
         }
     else:
-        fonts_check = {
-            "code": "SYSTEM_FONTS", "status": "MISSING",
-            "message": font_message,             "issues": [313],
-        }
+        # Per slot, as the player's preflight: an imported font, else the project font, else missing.
+        states = slot_states(user_data_root=root, project_root=root)
+        slot_message = " ".join(states[slot]["detail"] for slot in SLOTS)
+        if all(states[slot]["source"] != "none" for slot in SLOTS):
+            fonts_check = {
+                "code": "SYSTEM_FONTS", "status": "OK",
+                "message": slot_message, "issues": [],
+            }
+        else:
+            fonts_check = {
+                "code": "SYSTEM_FONTS", "status": "MISSING",
+                "message": slot_message, "issues": [313],
+            }
     audio_check = {
         "code": "AUDIO_OUTPUT", "status": "OK",
         "message": "Sound plays through your default audio device. "
