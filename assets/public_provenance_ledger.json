@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "5cae15e597d846c17a38c881b2fb69b47b351fd084814dd326e6ab82a49f34a9"
+      "sha256": "d5200324c760fb7b482e51cb026bbe74e0ae645c415603ae692e3ce0ab0a76d1"
     },
     {
       "path": "NOTICE.md",
@@ -1096,7 +1096,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "236ff3733b3a9795d0adae2c14a6f79f5d55d05154a8d47149a260e3b3afc484"
+      "sha256": "c4dd894c46be5f8f15e401484cb5245fb144668376ca814fe22128526ede033a"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -4454,7 +4454,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f681bf6cec1085140b103e37530bfa70e519a3ea93fd53faf4092b36c21001a8"
+      "sha256": "b9030766fccbf50170d7596a1d1d3c3040b3de546b171d0712f4e59880e37cde"
     },
     {
       "path": "src/rt/flash0_font.h",
@@ -4466,7 +4466,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "49fed89c6f4b660e47637c40263032390d0ea34a99aa0db5e0b7a0cfbe8812e4"
+      "sha256": "6707d89303827298be84fccf48444695d1f782b791ab2d9296b226ff839c04ad"
     },
     {
       "path": "src/rt/flight_recorder.c",
@@ -4986,7 +4986,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "20e23d53ee9265aaa0e7b1a0e5e61ffc99459b0a0a7deee66d37452a32ddf481"
+      "sha256": "35122e017148294ede840395457f624367585ca405d6bd8db64465097da941e2"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5024,7 +5024,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2aec651986e4c4dc14aca2739919a14275e150c18b210ac3348ed46277a328ad"
+      "sha256": "5a661930919725d1650370ed47ae497139b7f4ba0fbd3723416f2dd7fed0d4da"
     },
     {
       "path": "src/rt/intr_conformance.h",
