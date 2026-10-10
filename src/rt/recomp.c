@@ -181,7 +181,47 @@ void sr_oor(uint32_t a, uint32_t v, int store) {
 #define SR_VRAM_LOW  0x04000000u  /* guest VRAM/eDRAM base, below user RAM */
 #define SR_RAM_SIZE  0x04000000u  /* 64 MB user RAM at 0x08000000 */
 
+#ifdef SR_NAN_TRAP
+/* SR_NAN_TRAP_CONTEXT=1: after each NAN_TRAP report, the registers a reader needs to find the
+ * instruction's inputs in guest memory (return address, value and argument registers, two
+ * saved registers, f12) and the four words each of v0 and a0..a3 points at when that span is
+ * readable. A quaternion slerp whose vasin reports a NaN has its two input quaternions behind
+ * a1 and v0 at that point. Reads the scheduler's current CpuState; nothing outside guest
+ * execution prints. */
+static void sr_nan_trap_print_floats(const float *v, int n) {
+    for (int i = 0; i < n; i++) {
+        uint32_t bits; memcpy(&bits, &v[i], sizeof(bits));
+        if (i) fputc(',', stderr);
+        if ((bits & 0x7FFFFFFFu) == 0x7F800000u) fputs((bits & 0x80000000u) ? "-inf" : "inf", stderr);
+        else if ((bits & 0x7F800000u) == 0x7F800000u) fputs("nan", stderr);
+        else fprintf(stderr, "%.9g", (double)v[i]);
+    }
+}
+static void sr_nan_trap_dump_context(void) {
+    const CpuState *c = s_cpu;
+    if (!c) return;
+    fprintf(stderr, "NAN_TRAP_CTX ra=0x%08x v0=0x%08x a0=0x%08x a1=0x%08x a2=0x%08x a3=0x%08x "
+            "t0=0x%08x s0=0x%08x s1=0x%08x f12=%.9g\n",
+            c->r[31], c->r[2], c->r[4], c->r[5], c->r[6], c->r[7], c->r[8], c->r[16], c->r[17],
+            (double)c->f[12]);
+    static const struct { const char *name; int reg; } ptrs[] = {
+        { "v0", 2 }, { "a0", 4 }, { "a1", 5 }, { "a2", 6 }, { "a3", 7 },
+    };
+    for (size_t i = 0; i < sizeof(ptrs) / sizeof(ptrs[0]); i++) {
+        uint32_t a = c->r[ptrs[i].reg];
+        if ((a & 3u) != 0u || !sr_guest_span_readable(a, 16u)) continue;
+        float v[4]; memcpy(v, SR_HOST(a), sizeof(v));
+        fprintf(stderr, "NAN_TRAP_CTX %s@0x%08x=[", ptrs[i].name, a);
+        sr_nan_trap_print_floats(v, 4);
+        fputs("]\n", stderr);
+    }
+}
+#endif
+
 void sr_mem_init(void) {
+#ifdef SR_NAN_TRAP
+    sr_nan_trap_context_hook = sr_nan_trap_dump_context;
+#endif
     if (!g_mem) {
         /* Arena covers guest physical [0, 0x0c000000). RAM at 0x08000000, VRAM at 0x04000000.
          * We set g_mem to the guest RAM base (SR_RAM_BASE) so guest 0x08000000 maps to g_mem. */

@@ -522,6 +522,8 @@ int sr_vfpu_interp(CpuState *s, uint32_t op);
  * mirror it hands to ge_set_frame(), so the number here is the same frame index
  * the SR_GE_TRANSITION_TRACE records carry. */
 uint32_t sr_audio_vbl(void);
+/* SR_NAN_TRAP_CONTEXT dump, registered by sr_mem_init; NULL in harnesses without a runtime. */
+extern void (*sr_nan_trap_context_hook)(void);
 void sr_nan_trap_note(uint32_t pc, const char *op, uint32_t fd,
                       float out, const float *in, int nin);
 void sr_nan_trap_note_v(uint32_t pc, const char *op, uint32_t vd,

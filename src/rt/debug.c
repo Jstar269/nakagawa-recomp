@@ -414,29 +414,15 @@ static int sr_nan_trap_budget(void) {
  * the scheduler's current CpuState, so a report from outside guest execution prints
  * nothing. */
 static int s_nan_trap_ctx = -1;
+void (*sr_nan_trap_context_hook)(void) = NULL;   /* set by sr_mem_init (recomp.c) */
 static void sr_nan_trap_context(void) {
     if (s_nan_trap_ctx < 0) {
         const char *p = getenv("SR_NAN_TRAP_CONTEXT");
         s_nan_trap_ctx = (p && p[0] && strcmp(p, "0") != 0) ? 1 : 0;
     }
-    if (!s_nan_trap_ctx || !s_cpu) return;
-    const CpuState *c = s_cpu;
-    fprintf(stderr, "NAN_TRAP_CTX ra=0x%08x v0=0x%08x a0=0x%08x a1=0x%08x a2=0x%08x a3=0x%08x "
-            "t0=0x%08x s0=0x%08x s1=0x%08x f12=%.9g\n",
-            c->r[31], c->r[2], c->r[4], c->r[5], c->r[6], c->r[7], c->r[8], c->r[16], c->r[17],
-            (double)c->f[12]);
-    static const struct { const char *name; int reg; } ptrs[] = {
-        { "v0", 2 }, { "a0", 4 }, { "a1", 5 }, { "a2", 6 }, { "a3", 7 },
-    };
-    for (size_t i = 0; i < sizeof(ptrs) / sizeof(ptrs[0]); i++) {
-        uint32_t a = c->r[ptrs[i].reg];
-        if ((a & 3u) != 0u || !sr_guest_span_readable(a, 16u)) continue;
-        float v[4];
-        memcpy(v, SR_HOST(a), sizeof(v));
-        fprintf(stderr, "NAN_TRAP_CTX %s@0x%08x=[", ptrs[i].name, a);
-        sr_nan_trap_print(stderr, v, 4);
-        fputs("]\n", stderr);
-    }
+    /* The dump itself lives with the runtime (it reads the scheduler's current CpuState and
+     * guest memory); this file also links alone in the trap harness tests. */
+    if (s_nan_trap_ctx && sr_nan_trap_context_hook) sr_nan_trap_context_hook();
 }
 
 void sr_nan_trap_note(uint32_t pc, const char *op, uint32_t fd,
