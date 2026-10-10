@@ -62,6 +62,9 @@ uint32_t sr_flash0_font_refuse_write(const char *guest_path, const char *operati
 int sr_flash0_font_resolve_path(const Flash0Sources *sources, NkFontSlot slot, char *path_out,
                                 size_t capacity, const char **source_out);
 
+/* The slot's lower-case name for diagnostics ("japanese", "latin", "korean"). */
+const char *sr_flash0_font_slot_label(NkFontSlot slot);
+
 #ifdef SR_HLE_THREAD_SELFTEST
 /* Test seam: marks a slot measured (non-zero) or pending (zero). Compiled only into the HLE
  * selftest, which stands in for the console measurement. */

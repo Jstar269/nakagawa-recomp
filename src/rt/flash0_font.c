@@ -141,6 +141,8 @@ static int flash0_probe(const char *path, const char *label, const char *source,
 
 /* Source order for one slot (FONT_PLAN 5.2): the user-imported cache, then the project's font,
  * then nothing. No cross-slot substitution. */
+/* `path` is an output buffer: it holds the served file's host path only when the result is
+ * FLASH0_SOURCE_USER or FLASH0_SOURCE_PROJECT, and is empty for FLASH0_SOURCE_NONE. */
 static Flash0Source flash0_resolve_path(const Flash0Sources *sources, NkFontSlot slot,
                                         char *path, size_t capacity,
                                         FILE **fp_out, uint32_t *size_out) {
@@ -166,6 +168,10 @@ static Flash0Source flash0_resolve(const Flash0Sources *sources, NkFontSlot slot
                                    FILE **fp_out, uint32_t *size_out) {
     char path[SR_FLASH0_PATH_MAX + 64];
     return flash0_resolve_path(sources, slot, path, sizeof(path), fp_out, size_out);
+}
+
+const char *sr_flash0_font_slot_label(NkFontSlot slot) {
+    return flash0_slot_label(slot);
 }
 
 int sr_flash0_font_resolve_path(const Flash0Sources *sources, NkFontSlot slot, char *path_out,

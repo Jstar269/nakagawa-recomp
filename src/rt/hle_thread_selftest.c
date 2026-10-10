@@ -5100,7 +5100,10 @@ static void test_osk_overlay_closing_press_stays_with_keyboard(void) {
     expect(osk_frame(&cpu, NK_PSP_BTN_CROSS_BIT) == 2u && sr_osk_overlay_view()->len == 1,
            "one typed character is in the field");
 
-    /* START arrives as a live pad press: held in this frame's buttons and pulsed once. */
+    /* START arrives as a live pad press on both channels sr_ctrl_sample reads: the held state
+     * (gui_buttons, what the title would latch) and the one-frame pulse (gui_pad_pulses_take,
+     * what the keyboard acts on). The keyboard consumes the pulse and closes; the held state
+     * is masked because the keyboard owned this sample. */
     s_test_gui_on = 1;
     s_test_gui_buttons = NK_PSP_BTN_START_BIT;
     s_osk_test_pulse = NK_PSP_BTN_START_BIT;

@@ -7510,12 +7510,9 @@ static int ms0_try_legacy_flat_import(const char *guest_path, const char *host_p
 static PGF *s_pgf_slot[NK_FONT_SLOT_COUNT];
 /* Where each slot's font came from: "user-imported", "project", "unreadable" or "none". */
 static const char *s_pgf_slot_source[NK_FONT_SLOT_COUNT];
-static const char *const s_pgf_slot_label[NK_FONT_SLOT_COUNT] = {
-    [NK_FONT_SLOT_JAPANESE] = "japanese",
-    [NK_FONT_SLOT_LATIN] = "latin",
-    [NK_FONT_SLOT_KOREAN] = "korean",
-};
-static void flash0_font_sources(Flash0Sources *out);   /* defined with the flash0: device roots below */
+/* Defined with the flash0: device roots below. */
+static void flash0_copy_root(char *dst, size_t capacity, const char *src);
+static void flash0_user_data_root(char *dst, size_t capacity);
 static atomic_int s_pgf_state;
 
 static PGF *font_open_host_path(const char *path, const char *label, const char *source) {
@@ -7547,8 +7544,8 @@ static void font_load(void) {
         while (atomic_load_explicit(&s_pgf_state, memory_order_acquire) == 1) { }
         return;
     }
-    /* A bad project root is named once here; the resolution itself is the flash0: device's
-     * (flash0_font_sources), so both font paths read the same directories. */
+    /* SR_FONTDIR is read once here, and a bad value is named once; the result is the project
+     * root the flash0: device also serves from, so both font paths read the same directories. */
     wchar_t *root = NULL;
     wchar_t *configured = NULL;
     int configured_present = 0;
@@ -7562,25 +7559,30 @@ static void font_load(void) {
         fprintf(stderr, "font_load: no SR_FONTDIR and executable font root could not be resolved\n");
     }
     free(configured);
+    Flash0Sources sources;
+    flash0_user_data_root(sources.user_data_dir, sizeof(sources.user_data_dir));
+    sources.project_dir[0] = '\0';
+    char *root_utf8 = NULL;
+    if (root && sr_wide_to_utf8_alloc(root, &root_utf8))
+        flash0_copy_root(sources.project_dir, sizeof(sources.project_dir), root_utf8);
+    free(root_utf8);
     free(root);
     /* Each slot (nk_font_slots.h) resolves the way the flash0: device serves it: the
      * user-imported cache under the per-user data directory first, then the project font
      * directory. The files are the slot files; the legacy ltn0/jpn0/ltn8/kr0 names were in
      * neither source after #811, so every font went missing once a user imported one. No
      * cross-slot substitution: an absent slot stays absent and is named here. */
-    Flash0Sources sources;
-    flash0_font_sources(&sources);
     for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
         char path[SR_FLASH0_PATH_MAX + 64];
         const char *from = "none";
         PGF *pgf = NULL;
         if (sr_flash0_font_resolve_path(&sources, (NkFontSlot)slot, path, sizeof(path), &from)) {
-            pgf = font_open_host_path(path, s_pgf_slot_label[slot], from);
+            pgf = font_open_host_path(path, sr_flash0_font_slot_label((NkFontSlot)slot), from);
             if (!pgf) from = "unreadable";
         } else {
             fprintf(stderr,
                     "font_load: no %s font in the user-imported cache or the project font directory\n",
-                    s_pgf_slot_label[slot]);
+                    sr_flash0_font_slot_label((NkFontSlot)slot));
         }
         s_pgf_slot[slot] = pgf;
         s_pgf_slot_source[slot] = from;
@@ -7618,12 +7620,16 @@ static void flash0_copy_root(char *dst, size_t capacity, const char *src) {
     memcpy(dst, src, strlen(src) + 1u);
 }
 
-static void flash0_font_sources(Flash0Sources *out) {
+static void flash0_user_data_root(char *dst, size_t capacity) {
     char data_dir[SR_FLASH0_PATH_MAX];
     if (nk_platform_get_path(NK_PATH_DATA, data_dir, sizeof(data_dir)))
-        flash0_copy_root(out->user_data_dir, sizeof(out->user_data_dir), data_dir);
+        flash0_copy_root(dst, capacity, data_dir);
     else
-        out->user_data_dir[0] = '\0';
+        dst[0] = '\0';
+}
+
+static void flash0_font_sources(Flash0Sources *out) {
+    flash0_user_data_root(out->user_data_dir, sizeof(out->user_data_dir));
 
     wchar_t *configured = NULL;
     wchar_t *root = NULL;
