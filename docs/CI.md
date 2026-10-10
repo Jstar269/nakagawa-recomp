@@ -50,9 +50,10 @@ changed paths.
 The `CI required` job is the stable aggregate status required by branch
 protection. It runs with `always()`, accepts an intentionally skipped irrelevant
 job, and fails when a classifier-applicable job fails, is cancelled, or is
-otherwise incomplete. A failed hygiene/security job is never hidden by the
-aggregate. Python/native jobs also wait for hygiene, so an early full-tree
-failure does not spend additional runner time on dependent expensive gates.
+otherwise incomplete. A failed hygiene/security job or public-export job is never
+hidden by the aggregate. Python/native jobs also wait for hygiene and the
+public-export job, so an early full-tree failure does not spend additional runner
+time on dependent expensive gates.
 
 The full-tree pre-commit run retains the publication audit and the Betterleaks
 current-tree scan; the hook runs Betterleaks in directory mode over the files it
@@ -400,7 +401,7 @@ first on `PATH` (#294). The contract is explicit:
 
 | Job / environment | Python running `tools/*` and the fixture generators |
 | --- | --- |
-| Linux jobs (`classify`, `hygiene`, `markdown`, `python_tools`, `native_tools`, `main_smoke`, `ci_required`) | `actions/setup-python` CPython 3.14 |
+| Linux jobs (`classify`, `hygiene`, `public_export`, `markdown`, `python_tools`, `native_tools`, `main_smoke`, `ci_required`) | `actions/setup-python` CPython 3.14 |
 | `windows_runtime` (MSYS2 UCRT64 shell) | MSYS2 UCRT64 CPython (`mingw-w64-ucrt-x86_64-python`), selected by the `msys2 {0}` shell's PATH order and asserted by the "Pin the Windows Python toolchain" step |
 | Local Windows runs | Windows CPython from the python.org installer (not the MSYS2 build); the suite stays green under both Windows CPython and MSYS2 CPython (#504) |
 
@@ -486,8 +487,11 @@ developer runs locally, without private inputs:
   test reports an explicit `SKIP` with the printed missing-dependency reason.
   The job also runs the production smoke with its executable staged into a fresh
   directory outside the build tree (`production-smoke-staged`).
-- `hygiene`'s "Exercise public-export generation and candidate audit" step runs
-  on `security_publication` changes and every manual `workflow_dispatch`. One
+- The `public_export` job ("Public export candidate audit") is ungated and runs
+  in parallel with `hygiene` (#735 item 5). Its step "Exercise public-export
+  generation and candidate audit" runs on `security_publication` changes and every
+  manual `workflow_dispatch`, and the job reports success when the step is skipped.
+  `ci_required` requires the job to succeed. One
   `build_public_export.py --export-dir ... --public-safe-profile` invocation
   runs the publication gates, generates the public-safe candidate, and audits
   the candidate-tree staging bytes. Hosted CI holds no trusted ledger, so the

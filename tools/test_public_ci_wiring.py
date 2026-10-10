@@ -132,7 +132,8 @@ class PublicCiWiringTests(unittest.TestCase):
 
         required_start = ci.index("  ci_required:\n")
         required_job = ci[required_start:]
-        self.assertIn("needs: [classify, hygiene, markdown, python_tools, native_tools,", required_job)
+        self.assertIn("needs: [classify, hygiene, public_export, markdown, python_tools, native_tools,", required_job)
+        self.assertIn("PUBLIC_EXPORT_RESULT: ${{ needs.public_export.result }}", required_job)
         self.assertIn("NATIVE_RESULT: ${{ needs.native_tools.result }}", required_job)
         self.assertIn("RUN_NATIVE: ${{ needs.classify.outputs.run_native }}", required_job)
         required = (ROOT / "tools" / "ci_required.py").read_text(encoding="utf-8")
@@ -376,6 +377,70 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
             _ci_step_index(self.block, "Build and run full production pipeline smoke"),
             _ci_step_index(self.block, "Stage and run production smoke outside its build directory"),
         )
+
+
+class PublicExportJobTests(unittest.TestCase):
+    """The public-export audit is its own job, and no hygiene command was dropped (#735 item 5).
+
+    The all-files checks and the candidate export used to run serially in one job. Splitting
+    them runs both in parallel. The split may move a command between jobs; it may never drop
+    one, run one twice, or change its command or its condition.
+    """
+
+    HYGIENE_STEPS = (
+        "Check out repository",
+        "Set up Python",
+        "Install pre-commit",
+        "Run shared all-files checks",
+        "Enforce tracked-tree reference ratchet",
+        "Locate the pinned Betterleaks binary",
+        "Scan reachable sanitized Git history with Betterleaks",
+        "Run Betterleaks synthetic canaries",
+    )
+    EXPORT_STEP = "Exercise public-export generation and candidate audit"
+
+    def setUp(self) -> None:
+        self.blocks = _ci_job_blocks()
+
+    @staticmethod
+    def _step_names(block: list[str]) -> list[str]:
+        return [line.strip()[len("- name: "):] for line in block if line.strip().startswith("- name: ")]
+
+    def test_hygiene_keeps_every_check_it_ran_before(self) -> None:
+        self.assertEqual(self._step_names(self.blocks["hygiene"]), list(self.HYGIENE_STEPS))
+        self.assertIn("pre-commit run --all-files --show-diff-on-failure",
+                      "\n".join(self.blocks["hygiene"]))
+
+    def test_export_step_moved_out_of_hygiene_into_its_own_job(self) -> None:
+        self.assertNotIn(self.EXPORT_STEP, self._step_names(self.blocks["hygiene"]))
+        self.assertIn(self.EXPORT_STEP, self._step_names(self.blocks["public_export"]))
+
+    def test_export_job_keeps_the_candidate_audit_condition_and_command(self) -> None:
+        export = "\n".join(_ci_step(self.blocks["public_export"], self.EXPORT_STEP) or [])
+        self.assertIn("security_publication == 'true' ||", export)
+        self.assertIn("github.event_name == 'workflow_dispatch'", export)
+        self.assertIn("python tools/build_public_export.py --export-dir", export)
+        self.assertIn("--public-safe-profile 2>&1", export)
+        self.assertIn("PROVENANCE_UNVERIFIED", export)
+        job = "\n".join(self.blocks["public_export"])
+        self.assertIn("fetch-depth: 0", job)
+        self.assertIn('python-version: "3.14"', job)
+
+    def test_public_export_job_is_ungated_by_path(self) -> None:
+        block = self.blocks["public_export"]
+        self.assertIn("    if: ${{ always() && needs.classify.result == 'success' }}", block)
+        self.assertIn("    needs: classify", block)
+        text = "\n".join(block)
+        for gate in ("run_python", "run_native", "run_windows", "run_markdown", "run_main_smoke",
+                     "docs_only", "allow_substantive"):
+            self.assertNotIn(gate, text, "public_export must not be path-gated on %s" % gate)
+
+    def test_every_platform_gate_waits_for_the_export_result(self) -> None:
+        for job in ("python_tools", "native_tools", "windows_runtime", "main_smoke"):
+            with self.subTest(job=job):
+                block = "\n".join(self.blocks[job])
+                self.assertIn("needs: [classify, hygiene, public_export]", block)
+                self.assertIn("needs.public_export.result == 'success'", block)
 
 
 if __name__ == "__main__":
