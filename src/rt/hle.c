@@ -19068,8 +19068,10 @@ static void sas_mix_stateful(uint32_t out, int add, int left_gain, int right_gai
         }
     }
     for (int i = 0; i < n; i++) {
-        int l = (mixl[i] * left_gain) >> 12;
-        int r = (mixr[i] * right_gain) >> 12;
+        /* The gain product is 64-bit: twenty full-scale voices already sum past INT32_MAX / 4096,
+         * and a wrapped product inverts loud samples instead of saturating them at the output. */
+        int l = (int)(((int64_t)mixl[i] * left_gain) >> 12);
+        int r = (int)(((int64_t)mixr[i] * right_gain) >> 12);
         int sl = mixsl[i], sr = mixsr[i];
         if (add) {
             l += sas_output_read(out, (uint32_t)i, 0);
