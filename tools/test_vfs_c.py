@@ -235,6 +235,24 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* Test 2b: no image configured. A sector-extent name has no image to name sectors of, so it
+     * must be not-found and must leave the out-parameters untouched. */
+    {
+        uint32_t no_lba = 0xFFFFFFFFu, no_sz = 0xFFFFFFFFu;
+        set_env_iso("");
+        if (iso_lookup("disc0:/sce_lbn0x25_size0x1000", &no_lba, &no_sz) != -1 ||
+            no_lba != 0xFFFFFFFFu || no_sz != 0xFFFFFFFFu) {
+            fprintf(stderr, "FAIL: sector-extent name with PSP_ISO unset should be not-found\n");
+            return 1;
+        }
+        set_env_iso("nonexistent_file_path.iso");
+        if (iso_lookup("disc0:/sce_lbn0x25_size0x1000", &no_lba, &no_sz) != -1 ||
+            no_lba != 0xFFFFFFFFu || no_sz != 0xFFFFFFFFu) {
+            fprintf(stderr, "FAIL: sector-extent name with no image should be not-found\n");
+            return 1;
+        }
+    }
+
     /* Test 3: Valid file -> iso_init succeeds */
     set_env_iso(iso_path);
     if (iso_init() != 0) {
@@ -283,7 +301,8 @@ int main(int argc, char **argv) {
     }
 
     /* Test 4b: sector-extent names. The title builds "sce_lbn0x<LBN>_size0x<SIZE>" from the
-     * start LBN that sceIoGetstat reports. EBOOT.BIN starts at sector 37 with size 0x1000. */
+     * start LBN that sceIoGetstat reports. EBOOT.BIN starts at sector 37 with size 0x1000.
+     * The image from Test 3 is open here; the no-image case is Test 2b. */
     if (iso_lookup("disc0:/sce_lbn0x25_size0x1000", &lba, &sz) != 0 || lba != 37 || sz != 0x1000) {
         fprintf(stderr, "FAIL: sector-extent name should resolve to its LBN and size\n");
         return 1;
