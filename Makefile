@@ -220,7 +220,7 @@ $(error BUILD_ROOT '$(BUILD_ROOT)' contains a space, which GNU Make cannot repre
 endif
 # How a recipe runs a native test binary built beneath BUILD_ROOT. The default keeps
 # the `./build/...` spelling; an absolute or drive-letter root is run as given, since
-# `./C:/...` names no file.
+# prefixing it with `./` names no file.
 BUILD_ROOT_RUN := $(if $(filter /%,$(BUILD_ROOT))$(findstring :,$(BUILD_ROOT)),$(BUILD_ROOT),./$(BUILD_ROOT))
 
 # SDL3 dependency discovery and isolation (issue #331).
