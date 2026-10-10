@@ -414,7 +414,13 @@ static bool test_remove_tree(const char *path) {
         } while (FindNextFileA(find, &data));
         FindClose(find);
     }
-    return RemoveDirectoryA(path) != 0 || GetLastError() == ERROR_PATH_NOT_FOUND;
+    /* A missing tree counts as removed, as the POSIX branch's ENOENT does: a missing leaf is
+       ERROR_FILE_NOT_FOUND, a missing parent ERROR_PATH_NOT_FOUND. */
+    if (RemoveDirectoryA(path) != 0) return true;
+    {
+        DWORD error = GetLastError();
+        return error == ERROR_PATH_NOT_FOUND || error == ERROR_FILE_NOT_FOUND;
+    }
 #else
     DIR *directory = opendir(path);
     if (directory == NULL) return errno == ENOENT;
