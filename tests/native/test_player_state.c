@@ -30,6 +30,7 @@
 #include "nk_title_manifest.h"
 #include "nk_platform.h"
 #include "native_test_isolation.h"
+#include "pgf_golden_vectors.h"
 #include "../../src/rt/recomp.h"
 
 /* The per-run root setup and its recursive cleanup run inside assert(); keep
@@ -181,6 +182,13 @@ static void write_iso_with_fixture_eboot(const char *path) {
     FILE *file = fopen(path, "wb");
     assert(file != NULL);
     assert(fwrite(image, 1, sizeof(image), file) == sizeof(image));
+    assert(fclose(file) == 0);
+}
+
+static void write_binary_file(const char *path, const unsigned char *bytes, size_t size) {
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fwrite(bytes, 1, size, file) == size);
     assert(fclose(file) == 0);
 }
 
@@ -946,33 +954,6 @@ static void write_guest_module_iso(const char *path, const char *name,
     assert(fwrite(image, 1, total, file) == total);
     assert(fclose(file) == 0);
     free(image);
-}
-
-static void write_synthetic_pgf(const char *path, uint16_t header_offset, uint16_t header_size,
-                                const char magic[4], uint16_t first_glyph, uint16_t last_glyph,
-                                size_t total_size) {
-    FILE *file = fopen(path, "wb");
-    assert(file != NULL);
-    uint8_t *buf = (uint8_t *)calloc(1, total_size);
-    assert(buf != NULL);
-    if (total_size >= 4) {
-        buf[0] = (uint8_t)(header_offset & 0xFF);
-        buf[1] = (uint8_t)((header_offset >> 8) & 0xFF);
-        buf[2] = (uint8_t)(header_size & 0xFF);
-        buf[3] = (uint8_t)((header_size >> 8) & 0xFF);
-    }
-    if (total_size >= (size_t)header_offset + 8u) {
-        memcpy(buf + header_offset + 4, magic, 4);
-    }
-    if (total_size >= (size_t)header_offset + 186u) {
-        buf[header_offset + 182] = (uint8_t)(first_glyph & 0xFF);
-        buf[header_offset + 183] = (uint8_t)((first_glyph >> 8) & 0xFF);
-        buf[header_offset + 184] = (uint8_t)(last_glyph & 0xFF);
-        buf[header_offset + 185] = (uint8_t)((last_glyph >> 8) & 0xFF);
-    }
-    assert(fwrite(buf, 1, total_size, file) == total_size);
-    free(buf);
-    assert(fclose(file) == 0);
 }
 
 static const char *const FIXTURE_SHA256 =
@@ -2330,7 +2311,7 @@ int main(int argc, char **argv) {
         stops->wizard.step = WIZARD_STEP_INSPECT_VERIFY;
         assert(player_app_focus_count(stops) == 3);
         stops->wizard.step = WIZARD_STEP_SYSTEM_FONTS;
-        assert(player_app_focus_count(stops) == 4);
+        assert(player_app_focus_count(stops) == 6); /* accept, cycle, back, cancel, import, remove */
         stops->wizard.step = WIZARD_STEP_READY_LAUNCH;
         assert(player_app_focus_count(stops) == 3);
         free(stops);
@@ -2444,6 +2425,7 @@ int main(int argc, char **argv) {
            fallback and every current pre-launch boundary without touching a
            real title or runtime package. */
         char preflight_root[640], font_dir[720], font_path[800];
+        char latin_font_path[800], korean_font_path[800];
         char preflight_fixtures_root[900], preflight_data_root[1024];
         unsigned long preflight_run_id;
 #if defined(_WIN32) || defined(_WIN64)
@@ -2462,7 +2444,11 @@ int main(int argc, char **argv) {
                  preflight_fixtures_root, nk_platform_path_separator());
         snprintf(font_dir, sizeof(font_dir), "%s%cfont", preflight_root,
                  nk_platform_path_separator());
-        snprintf(font_path, sizeof(font_path), "%s%cjpn0.pgf", font_dir,
+        snprintf(font_path, sizeof(font_path), "%s%cnkjpn.pgf", font_dir,
+                 nk_platform_path_separator());
+        snprintf(latin_font_path, sizeof(latin_font_path), "%s%cnkltn.pgf", font_dir,
+                 nk_platform_path_separator());
+        snprintf(korean_font_path, sizeof(korean_font_path), "%s%cnkkr.pgf", font_dir,
                  nk_platform_path_separator());
         NkTitleEntrySnapshot synthetic_snapshot = {0};
         assert(nk_title_catalog_find_by_id("synthetic-allegrex-v1",
@@ -2498,6 +2484,8 @@ int main(int argc, char **argv) {
         remove(package_json);
         remove(package_report);
         remove(font_path);
+        remove(latin_font_path);
+        remove(korean_font_path);
         player_app_set_runtime_root(wiz, preflight_root);
         snprintf(wiz->inspecting_game.disc_id, sizeof(wiz->inspecting_game.disc_id),
                  "%s", synthetic_disc_id);
@@ -2583,7 +2571,9 @@ int main(int argc, char **argv) {
                  nk_platform_path_separator());
         assert(nk_platform_mkdir_p(preflight_data_root));
         assert(nk_platform_mkdir_p(font_dir));
-        write_file(font_path);
+        write_binary_file(font_path, kGoldenJapanesePgf, sizeof(kGoldenJapanesePgf));
+        write_binary_file(latin_font_path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        write_binary_file(korean_font_path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
         assert(player_app_game_has_runtime(wiz, &wiz->inspecting_game));
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
@@ -2996,98 +2986,197 @@ int main(int argc, char **argv) {
         free(wiz);
     }
 
-    /* 14. Font cache provisioning: validation, manifest checking, and preflight status. */
-    printf("[PLAYER_STATE_TEST] Subtest 14: font cache validation and preflight status\n");
+    /* 14. PSP system fonts: the native reader's verdict, slot import, manifest v2, removal,
+       per-slot preflight, and the Fonts & System status text. The fonts are the golden
+       two-glyph images generated by tools/pgf_writer.py (pgf_golden_vectors.h), never real fonts. */
+    printf("[PLAYER_STATE_TEST] Subtest 14: PSP system font import and per-slot preflight\n");
     fflush(stdout);
     {
         char cache_test_root[512];
-        char cache_dir[640];
-        char fonts_v1_dir[768];
-        char manifest_path[896];
-        char installed_font[896];
-        char pgf_valid[800];
-        char pgf_trunc[800];
-        char pgf_bad_magic[800];
-        char pgf_corrupt_glyph[800];
-        char err[256];
+        char font_root[640];
+        char check_dir[768];
+        char source_dir[768];
+        char path[1024];
+        char err[512];
         char sha[65];
+        char msg[512];
         uint64_t font_size = 0;
+        NkFontSlotState states[NK_FONT_SLOT_COUNT];
+        NkFontImportResult result;
+        const char sep = nk_platform_path_separator();
+        const char *no_choice[NK_FONT_SLOT_COUNT] = { NULL, NULL, NULL };
+        const char *choose_b[NK_FONT_SLOT_COUNT] = { NULL, "dupe_b.pgf", NULL };
+        bool remove_all[NK_FONT_SLOT_COUNT] = { true, true, true };
+        bool remove_korean[NK_FONT_SLOT_COUNT] = { false, false, true };
+        unsigned char mutated[sizeof(kGoldenLatinPgf)];
+
         assert(nk_platform_get_path(NK_PATH_CACHE, cache_test_root, sizeof(cache_test_root)));
-        snprintf(cache_dir, sizeof(cache_dir), "%s%cplayer_font_test",
-                 cache_test_root, nk_platform_path_separator());
-        assert(nk_platform_mkdir_p(cache_dir));
+        snprintf(font_root, sizeof(font_root), "%s%cplayer_font_test", cache_test_root, sep);
+        snprintf(check_dir, sizeof(check_dir), "%s%ccheck", font_root, sep);
+        snprintf(source_dir, sizeof(source_dir), "%s%csource", font_root, sep);
+        /* The helper refuses a missing leaf on Windows, so the root is made first. */
+        assert(nk_platform_mkdir_p(font_root));
+        assert(test_remove_tree(font_root));
+        assert(nk_platform_mkdir_p(check_dir));
+        assert(nk_platform_mkdir_p(source_dir));
 
-        snprintf(pgf_valid, sizeof(pgf_valid), "%s%cvalid.pgf", cache_dir, nk_platform_path_separator());
-        snprintf(pgf_trunc, sizeof(pgf_trunc), "%s%ctrunc.pgf", cache_dir, nk_platform_path_separator());
-        snprintf(pgf_bad_magic, sizeof(pgf_bad_magic), "%s%cbad_magic.pgf", cache_dir, nk_platform_path_separator());
-        snprintf(pgf_corrupt_glyph, sizeof(pgf_corrupt_glyph), "%s%ccorrupt_glyph.pgf", cache_dir, nk_platform_path_separator());
-
-        /* 14a: Structural PGF validation */
-        write_synthetic_pgf(pgf_valid, 0, 392, "PGF0", 0, 10, 512);
-        assert(nk_font_validate_pgf(pgf_valid, &font_size, sha, err, sizeof(err)) == true);
-        assert(font_size == 512);
+        /* 14a: the reader's verdict on a golden font, and on each refusal the task names. */
+        snprintf(path, sizeof(path), "%s%cgolden_latin.pgf", check_dir, sep);
+        write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        assert(nk_font_validate_pgf(path, &font_size, sha, err, sizeof(err)) == true);
+        assert(font_size == sizeof(kGoldenLatinPgf));
         assert(strlen(sha) == 64);
+        {
+            NkFontInspection inspection;
+            assert(nk_font_inspect_pgf(path, &inspection, err, sizeof(err)) == true);
+            assert(inspection.slot == NK_FONT_SLOT_LATIN);
+            assert(inspection.verdict.has_latin == 1u);
+            assert(inspection.verdict.glyph_count == 2u);
+        }
 
-        /* Truncated: header declares 392 bytes, file only 100 bytes */
-        write_synthetic_pgf(pgf_trunc, 0, 392, "PGF0", 0, 10, 100);
-        assert(nk_font_validate_pgf(pgf_trunc, &font_size, sha, err, sizeof(err)) == false);
+        snprintf(path, sizeof(path), "%s%cbad_truncated.pgf", check_dir, sep);
+        write_binary_file(path, kGoldenLatinPgf, 100u);
+        assert(nk_font_validate_pgf(path, &font_size, sha, err, sizeof(err)) == false);
         assert(strstr(err, "truncated") != NULL);
 
-        /* Bad magic: magic is "BAD0" */
-        write_synthetic_pgf(pgf_bad_magic, 0, 392, "BAD0", 0, 10, 512);
-        assert(nk_font_validate_pgf(pgf_bad_magic, &font_size, sha, err, sizeof(err)) == false);
+        memcpy(mutated, kGoldenLatinPgf, sizeof(mutated));
+        memcpy(mutated + 4, "BAD0", 4u);
+        snprintf(path, sizeof(path), "%s%cbad_magic.pgf", check_dir, sep);
+        write_binary_file(path, mutated, sizeof(mutated));
+        assert(nk_font_validate_pgf(path, &font_size, sha, err, sizeof(err)) == false);
         assert(strstr(err, "invalid PGF magic") != NULL);
 
-        /* Corrupt glyphs: first_glyph 20 > last_glyph 10 */
-        write_synthetic_pgf(pgf_corrupt_glyph, 0, 392, "PGF0", 20, 10, 512);
-        assert(nk_font_validate_pgf(pgf_corrupt_glyph, &font_size, sha, err, sizeof(err)) == false);
+        memcpy(mutated, kGoldenLatinPgf, sizeof(mutated));
+        mutated[0xb6] = 0x62; /* first glyph 0x62 > last glyph 0x61 */
+        mutated[0xb7] = 0x00;
+        snprintf(path, sizeof(path), "%s%cbad_range.pgf", check_dir, sep);
+        write_binary_file(path, mutated, sizeof(mutated));
+        assert(nk_font_validate_pgf(path, &font_size, sha, err, sizeof(err)) == false);
         assert(strstr(err, "corrupt glyph indices") != NULL);
 
-        /* 14b: Cache directory and manifest inspection */
-        snprintf(fonts_v1_dir, sizeof(fonts_v1_dir), "%s%cfonts%cv1",
-                 cache_dir, nk_platform_path_separator(), nk_platform_path_separator());
-        assert(nk_platform_mkdir_p(fonts_v1_dir));
-        snprintf(manifest_path, sizeof(manifest_path), "%s%cmanifest.json",
-                 fonts_v1_dir, nk_platform_path_separator());
-        snprintf(installed_font, sizeof(installed_font), "%s%cjpn0.pgf",
-                 fonts_v1_dir, nk_platform_path_separator());
+        memcpy(mutated, kGoldenLatinPgf, sizeof(mutated));
+        mutated[8] = 4; /* revision 4 */
+        snprintf(path, sizeof(path), "%s%cbad_revision.pgf", check_dir, sep);
+        write_binary_file(path, mutated, sizeof(mutated));
+        assert(nk_font_validate_pgf(path, &font_size, sha, err, sizeof(err)) == false);
+        assert(strstr(err, "unsupported revision") != NULL);
 
-        char msg[512];
-        /* Without manifest and without fallback: MISSING */
-        remove(manifest_path);
-        remove(installed_font);
-        assert(nk_font_check_cache(cache_dir, NULL, msg, sizeof(msg)) == NK_FONT_STATUS_MISSING);
+        memcpy(mutated, kGoldenLatinPgf, sizeof(mutated));
+        mutated[2] = 0x9c; /* a 412-byte header declared under revision 2 */
+        mutated[3] = 0x01;
+        snprintf(path, sizeof(path), "%s%cbad_header_412.pgf", check_dir, sep);
+        write_binary_file(path, mutated, sizeof(mutated));
+        assert(nk_font_validate_pgf(path, &font_size, sha, err, sizeof(err)) == false);
+        assert(strstr(err, "header size") != NULL);
 
-        /* Install synthetic jpn0.pgf */
-        write_synthetic_pgf(installed_font, 0, 392, "PGF0", 0, 10, 512);
-        assert(nk_font_validate_pgf(installed_font, &font_size, sha, err, sizeof(err)) == true);
+        snprintf(path, sizeof(path), "%s%coversize.pgf", check_dir, sep);
+        {
+            FILE *big = fopen(path, "wb");
+            assert(big != NULL);
+            assert(fseek(big, (long)NK_FONT_PGF_MAX_BYTES, SEEK_SET) == 0);
+            assert(fputc(0, big) == 0);
+            assert(fclose(big) == 0);
+        }
+        assert(nk_font_validate_pgf(path, &font_size, sha, err, sizeof(err)) == false);
+        assert(strstr(err, "16 MiB") != NULL);
 
-        /* Corrupt manifest: invalid JSON */
-        write_text_file(manifest_path, "{ broken json: true ");
-        assert(nk_font_check_cache(cache_dir, NULL, msg, sizeof(msg)) == NK_FONT_STATUS_INVALID);
+        /* 14b: a folder with one file per slot, a refused file, and a file that is not a font.
+           Names do not decide the slot; the coverage does. */
+        snprintf(path, sizeof(path), "%s%cnotes.txt", source_dir, sep);
+        write_text_file(path, "not a font");
+        snprintf(path, sizeof(path), "%s%cdump_one.pgf", source_dir, sep);
+        write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        snprintf(path, sizeof(path), "%s%cdump_two.pgf", source_dir, sep);
+        write_binary_file(path, kGoldenJapanesePgf, sizeof(kGoldenJapanesePgf));
+        snprintf(path, sizeof(path), "%s%cdump_three.pgf", source_dir, sep);
+        write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
+        snprintf(path, sizeof(path), "%s%cdump_broken.pgf", source_dir, sep);
+        write_binary_file(path, kGoldenLatinPgf, 100u);
 
-        /* Manifest with hash mismatch */
-        char bad_manifest[1024];
-        snprintf(bad_manifest, sizeof(bad_manifest),
-                 "{\"schema_version\":1,\"files\":{\"jpn0.pgf\":{\"size\":512,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}}}");
-        write_text_file(manifest_path, bad_manifest);
-        assert(nk_font_check_cache(cache_dir, NULL, msg, sizeof(msg)) == NK_FONT_STATUS_INVALID);
+        assert(nk_font_check_cache(font_root, msg, sizeof(msg)) == NK_FONT_STATUS_MISSING);
+        memset(&result, 0, sizeof(result));
+        assert(nk_font_import_folder(font_root, source_dir, no_choice, &result, err, sizeof(err)));
+        assert(result.file_count == 4);
+        assert(result.imported_count == 3);
+        assert(result.slot_imported[NK_FONT_SLOT_JAPANESE]);
+        assert(result.slot_imported[NK_FONT_SLOT_LATIN]);
+        assert(result.slot_imported[NK_FONT_SLOT_KOREAN]);
 
-        /* Valid manifest */
-        char good_manifest[1024];
-        snprintf(good_manifest, sizeof(good_manifest),
-                 "{\"schema_version\":1,\"import_time\":12345,\"files\":{\"jpn0.pgf\":{\"size\":512,\"sha256\":\"%s\"}}}",
-                 sha);
-        write_text_file(manifest_path, good_manifest);
-        assert(nk_font_check_cache(cache_dir, NULL, msg, sizeof(msg)) == NK_FONT_STATUS_OK);
+        /* The cache is fonts/v2 with the served names, and the manifest lists them. */
+        snprintf(path, sizeof(path), "%s%cfonts%cv2%cmanifest.json", font_root, sep, sep, sep);
+        assert(nk_platform_file_exists(path));
+        assert(nk_font_check_cache(font_root, msg, sizeof(msg)) == NK_FONT_STATUS_OK);
+        snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkltn.pgf", font_root, sep, sep, sep);
+        assert(nk_platform_file_exists(path));
+        snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkjpn.pgf", font_root, sep, sep, sep);
+        assert(nk_platform_file_exists(path));
+        snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkkr.pgf", font_root, sep, sep, sep);
+        assert(nk_platform_file_exists(path));
 
-        /* 14c: Compatibility preflight with player app */
+        /* Per-slot status: every slot is the user's, with plain-language text. */
+        nk_font_slot_states(font_root, font_root, states);
+        for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
+            assert(states[slot].source == NK_FONT_SOURCE_USER);
+        }
+        assert(strstr(states[NK_FONT_SLOT_JAPANESE].detail, "imported from your PSP") != NULL);
+
+        /* 14c: removal drops only the cache's slot files and the manifest; originals stay. */
+        assert(nk_font_remove_imports(font_root, remove_all, err, sizeof(err)) == 3);
+        assert(nk_font_check_cache(font_root, msg, sizeof(msg)) == NK_FONT_STATUS_MISSING);
+        snprintf(path, sizeof(path), "%s%cdump_one.pgf", source_dir, sep);
+        assert(nk_platform_file_exists(path));
+        nk_font_slot_states(font_root, font_root, states);
+        for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
+            assert(states[slot].source == NK_FONT_SOURCE_NONE);
+            assert(strstr(states[slot].detail, "missing") != NULL);
+        }
+
+        /* 14d: two files name the Latin slot and none is chosen: the slot is left alone. A
+           choice imports exactly the chosen file. */
+        snprintf(path, sizeof(path), "%s%cdump_two.pgf", source_dir, sep);
+        remove(path);
+        snprintf(path, sizeof(path), "%s%cdump_three.pgf", source_dir, sep);
+        remove(path);
+        snprintf(path, sizeof(path), "%s%cdump_one.pgf", source_dir, sep);
+        remove(path);
+        snprintf(path, sizeof(path), "%s%cdupe_a.pgf", source_dir, sep);
+        write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        snprintf(path, sizeof(path), "%s%cdupe_b.pgf", source_dir, sep);
+        write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        memset(&result, 0, sizeof(result));
+        assert(nk_font_import_folder(font_root, source_dir, no_choice, &result, err, sizeof(err)));
+        assert(result.imported_count == 0);
+        assert(!result.slot_imported[NK_FONT_SLOT_LATIN]);
+        {
+            bool said_choose = false;
+            for (int i = 0; i < result.file_count; i++) {
+                if (strstr(result.files[i].detail, "choose one") != NULL) said_choose = true;
+            }
+            assert(said_choose);
+        }
+        memset(&result, 0, sizeof(result));
+        assert(nk_font_import_folder(font_root, source_dir, choose_b, &result, err, sizeof(err)));
+        assert(result.imported_count == 1);
+        assert(result.slot_imported[NK_FONT_SLOT_LATIN]);
+        assert(nk_font_remove_imports(font_root, remove_all, err, sizeof(err)) == 1);
+
+        /* 14e: a folder with no .pgf file is refused by name. */
+        {
+            char empty_dir[800];
+            snprintf(empty_dir, sizeof(empty_dir), "%s%cempty", font_root, sep);
+            assert(nk_platform_mkdir_p(empty_dir));
+            memset(&result, 0, sizeof(result));
+            assert(!nk_font_import_folder(font_root, empty_dir, no_choice, &result, err, sizeof(err)));
+            assert(strstr(err, "no .pgf files") != NULL);
+        }
+
+        /* 14f: the wizard's status text and preflight, through the player's own functions. The
+           folder now holds two Latin files and a refused one, so the first import imports nothing. */
         PlayerApp *font_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
         assert(font_app != NULL);
         nk_library_init(&font_app->library);
-        player_app_set_runtime_root(font_app, cache_dir);
-        snprintf(font_app->inspecting_game.disc_id, sizeof(font_app->inspecting_game.disc_id),
-                 "UCUS98701");
+        player_app_set_runtime_root(font_app, font_root);
+        snprintf(font_app->inspecting_game.disc_id, sizeof(font_app->inspecting_game.disc_id), "UCUS98701");
         snprintf(font_app->inspecting_game.title_id, sizeof(font_app->inspecting_game.title_id),
                  "synthetic-allegrex-v1");
         NkIsoExecutableReport exec_rep;
@@ -3098,26 +3187,63 @@ int main(int argc, char **argv) {
         exec_rep.boot_fallback = true;
         snprintf(exec_rep.selected_path, sizeof(exec_rep.selected_path), "BOOT.BIN");
 
-        /* Preflight with valid manifest -> PREFLIGHT_OK */
-        player_app_build_compatibility_preflight(font_app, true, true, &exec_rep);
-        const PlayerPreflightCheck *fcheck = find_preflight_check(&font_app->wizard.preflight, "SYSTEM_FONTS");
-        assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+        assert(player_app_fonts_import_folder(font_app, source_dir) == false);
+        assert(strstr(font_app->wizard.font_message, "No font was imported") != NULL);
+        snprintf(path, sizeof(path), "%s%cdupe_a.pgf", source_dir, sep);
+        remove(path);
+        snprintf(path, sizeof(path), "%s%cdupe_b.pgf", source_dir, sep);
+        remove(path);
 
-        /* Preflight with corrupt manifest -> PREFLIGHT_INVALID */
-        write_text_file(manifest_path, bad_manifest);
-        player_app_build_compatibility_preflight(font_app, true, true, &exec_rep);
-        fcheck = find_preflight_check(&font_app->wizard.preflight, "SYSTEM_FONTS");
-        assert(fcheck != NULL && fcheck->status == PREFLIGHT_INVALID);
-        assert(fcheck->issue_count == 1 && fcheck->issue_numbers[0] == 313);
+        snprintf(path, sizeof(path), "%s%cdump_one.pgf", source_dir, sep);
+        write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        snprintf(path, sizeof(path), "%s%cdump_two.pgf", source_dir, sep);
+        write_binary_file(path, kGoldenJapanesePgf, sizeof(kGoldenJapanesePgf));
+        snprintf(path, sizeof(path), "%s%cdump_three.pgf", source_dir, sep);
+        write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
+        assert(player_app_fonts_import_folder(font_app, source_dir));
+        assert(strstr(font_app->wizard.font_message, "Imported 3 PSP font slot(s)") != NULL);
+        assert(strstr(font_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN], "imported from your PSP") != NULL);
 
-        /* Clean up */
+        /* Korean removed on its own: preflight is MISSING and names the slot. */
+        assert(nk_font_remove_imports(font_root, remove_korean, err, sizeof(err)) == 1);
+        player_app_refresh_font_status(font_app);
+        player_app_build_compatibility_preflight(font_app, true, true, &exec_rep);
+        {
+            const PlayerPreflightCheck *fcheck = find_preflight_check(&font_app->wizard.preflight, "SYSTEM_FONTS");
+            assert(fcheck != NULL && fcheck->status == PREFLIGHT_MISSING);
+            assert(strstr(fcheck->message, "Korean: missing") != NULL);
+        }
+
+        /* A project font fills the Korean slot: preflight is then complete. */
+        snprintf(path, sizeof(path), "%s%cfont", font_root, sep);
+        assert(nk_platform_mkdir_p(path));
+        snprintf(path, sizeof(path), "%s%cfont%cnkkr.pgf", font_root, sep, sep);
+        write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
+        player_app_refresh_font_status(font_app);
+        assert(strstr(font_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN], "project font") != NULL);
+        player_app_build_compatibility_preflight(font_app, true, true, &exec_rep);
+        {
+            const PlayerPreflightCheck *fcheck = find_preflight_check(&font_app->wizard.preflight, "SYSTEM_FONTS");
+            assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+            assert(strstr(fcheck->message, "Korean: project font") != NULL);
+            assert(strstr(fcheck->message, "Japanese: imported from your PSP") != NULL);
+        }
+        assert(player_app_fonts_remove_imports(font_app));
+        assert(strstr(font_app->wizard.font_message, "Removed 2 imported PSP font file(s)") != NULL);
+
+        /* A corrupt manifest is INVALID, and the preflight names the issue (#313). */
+        snprintf(path, sizeof(path), "%s%cfonts%cv2", font_root, sep, sep);
+        assert(nk_platform_mkdir_p(path));
+        snprintf(path, sizeof(path), "%s%cfonts%cv2%cmanifest.json", font_root, sep, sep, sep);
+        write_text_file(path, "{ broken json: true ");
+        player_app_build_compatibility_preflight(font_app, true, true, &exec_rep);
+        {
+            const PlayerPreflightCheck *fcheck = find_preflight_check(&font_app->wizard.preflight, "SYSTEM_FONTS");
+            assert(fcheck != NULL && fcheck->status == PREFLIGHT_INVALID);
+            assert(fcheck->issue_count == 1 && fcheck->issue_numbers[0] == 313);
+        }
         free(font_app);
-        remove(pgf_valid);
-        remove(pgf_trunc);
-        remove(pgf_bad_magic);
-        remove(pgf_corrupt_glyph);
-        remove(manifest_path);
-        remove(installed_font);
+        assert(test_remove_tree(font_root));
     }
 
     /* 15. Player settings persistence.
