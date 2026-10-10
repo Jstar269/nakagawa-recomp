@@ -506,8 +506,8 @@ keeps the original behaviour exactly, and a file mixing the two is refused.
 | `DELAY <n>` | Release the pad for `n` samples and until the guest has read the release (input cadence *within* one screen) |
 | `WAIT_NID <import\|0xNID> <timeout>` | Block until the guest calls that import; fail the run on timeout |
 | `PRESS_UNTIL_NID <import\|0xNID> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press (held `width`, released for the rest of `period`) until the guest calls that import; fail on timeout. Use it where a press may land without changing the screen, such as a message box or a Yes/No that waits on a savedata check, because the import is the event that says the press was taken |
-| `WIDTHS VBLANKS\|READS` | The unit the widths of `PRESS`, `DELAY`, `PRESS_UNTIL` and `PRESS_WHILE` count in, for the whole file (default `VBLANKS`); must precede every step, and may appear once |
-| `READS <step>` / `VBLANKS <step>` | The unit of that one `PRESS`, `DELAY`, `PRESS_UNTIL` or `PRESS_WHILE` line; overrides `WIDTHS` |
+| `WIDTHS VBLANKS\|READS` | The unit the widths of `PRESS`, `DELAY`, `PRESS_UNTIL`, `PRESS_WHILE` and `PRESS_UNTIL_NID` count in, for the whole file (default `VBLANKS`); must precede every step, and may appear once |
+| `READS <step>` / `VBLANKS <step>` | The unit of that one `PRESS`, `DELAY`, `PRESS_UNTIL`, `PRESS_WHILE` or `PRESS_UNTIL_NID` line; overrides `WIDTHS` |
 | `END` | Route complete |
 
 A mask is either a button name (see [Naming the buttons a route presses](#naming-the-buttons-a-route-presses))
@@ -608,13 +608,14 @@ Only these rules differ from the vblank widths above:
   last press in one of its extra reads.
 - `SR_PADSCRIPT_READ_BUDGET` bounds the whole wait for the reads. A read-width press that the
   guest reads fewer times than it asked for fails the run, naming how many reads it got.
-- The timeouts of `WAIT`, `EXPECT`, `WAIT_NID` and `PRESS_UNTIL` / `PRESS_WHILE` stay in
-  vblanks, because they are time limits. `PRESS_UNTIL` and `PRESS_WHILE` take their width and
-  period in reads when they say `READS`.
+- The timeouts of `WAIT`, `EXPECT`, `WAIT_NID`, `PRESS_UNTIL` / `PRESS_WHILE` and
+  `PRESS_UNTIL_NID` stay in vblanks, because they are time limits. `PRESS_UNTIL`,
+  `PRESS_WHILE` and `PRESS_UNTIL_NID` take their width and period in reads when they say
+  `READS`.
 - `WIDTHS` must precede every step and may appear only once. `READS` and `VBLANKS` apply to
-  `PRESS`, `DELAY`, `PRESS_UNTIL` and `PRESS_WHILE` only, and anything else that names a unit is
-  refused at load, naming the line. No existing route starts a line with either word, so an
-  existing route parses and replays exactly as it did.
+  `PRESS`, `DELAY`, `PRESS_UNTIL`, `PRESS_WHILE` and `PRESS_UNTIL_NID` only, and anything
+  else that names a unit is refused at load, naming the line. No existing route starts a
+  line with either word, so an existing route parses and replays exactly as it did.
 - The legacy `frame hexmask width` table has no keyword lines, so it stays in vblanks. Write a
   route program to use reads.
 
@@ -1153,7 +1154,8 @@ never the terminal record. It is an `unsupported` event, counted in the bundle's
 `count`, `first_nid` and `first_pc` (the first refusal, in its own fields), and `nids`, the distinct
 refused NIDs in first-seen order with a count each (up to 32; further NIDs are counted in
 `nids_unlisted`). Schema 1 to 4 bundles froze at their first refusal (`unsupported-nid`, kind 2), so
-they cannot show what ran after it; the grouping script reports those as `frozen-at-refusal`.
+they cannot show what ran after it. The private triage tooling reports those as frozen at
+a refusal; that grouping is not part of this repository.
 
 ## Crash Reporter
 
