@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "52a649c20c84084961f3440862790c460ffd5a60bfffc5e06324cea86a5e1052"
+      "sha256": "9f90a88b1a4c8da45cf12d1256680e44aa1d9a11650b55e1093d31e50eb57f36"
     },
     {
       "path": "NOTICE.md",
@@ -667,7 +667,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "e6f97fe89e4321e9145189e2fcc1e24f6d3519c4c4c9c2d4c7b1191dbc89bfb1"
+      "sha256": "92c6c3e57ac388f3868cf436c61b61710f3f7dc6001f0b603e370e0ef347f6c4"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1039,7 +1039,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fc1599f5574fa15851e6e2ef2f0c3246efcfab77d6ad1ad423cd1242fbf1ef03"
+      "sha256": "2f56383b098c9bfebfe6d242db5aa018a9a24a75bfb9df1f0ede9052a064580d"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -1084,7 +1084,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "621e4dcc805e10321300793f47e64870e2fc53cab97ac7e10e9b8e756e44a925"
+      "sha256": "f92bd775b2b952e9d3c1a7afdc5dd6c92b3cae66ab29e2857f218803d6fe6bbf"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -1132,7 +1132,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a2e725798d49fc7da3f50326c054774f68b9d40f67f67b74b31beadf6c41c431"
+      "sha256": "599749936f9eb7fd3c4b8635094738438de35cc0a800175ccb6b3ad298837781"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -1141,7 +1141,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "83ea8a3c1591f35913f95bcdfc324fa578cbc1bcb9b1b309314cafd9720adbb0"
+      "sha256": "9b4fe1bad322fc1250ab55952d9121999858bfec8f4af9b02f3aec91f130beca"
     },
     {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",
@@ -4667,7 +4667,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "d83dccd9d016a38461795cd1eced00c04c21bc01bb3474071d4938e4b6d87b2a"
+      "sha256": "882721b8c5d5d9eaa2f9d030f427d921e3d158940e960ddda479b41180a0e328"
     },
     {
       "path": "src/rt/gpu_sdl3vk/sdl3vk.h",
@@ -4680,7 +4680,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "9d4f6156073ef61c5a57a654461d434c11b8a8a6058d2650a27ab9172e035325"
+      "sha256": "647b233d6e335a3f02e200112bdabef68bad0cdd8ef90be83f1df325ed6556b4"
     },
     {
       "path": "src/rt/gpu_sdl3vk/shader_manifest.json",
@@ -4792,7 +4792,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "5f0dae680a086f53019743f181d8d1b3550716b0f37a130cd9d7e1a85786df87"
+      "sha256": "209e4fe7dbce022fc65f434f6a1a709d72075fea2bde3b99136fd4e1e6eaf9e3"
     },
     {
       "path": "src/rt/h264_mf.c",
@@ -4842,7 +4842,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "19e90845daa08875a9b5d20c5df13c5feff8ab6d8bbd791bf659ebc2684b36d1"
+      "sha256": "ef786fb53bf45f5c8376e956708d47696512a2176ad7fc8f53ddf15e725d6605"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4855,7 +4855,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "890b70bf8138993231e6019fa0ebf0f35d1f7e8743fc1875b813cebd0484dc2f"
+      "sha256": "387d9f9e9e4fcdfb21ead6c3374b5c000ec31be6627afc04ab760a03d667437a"
     },
     {
       "path": "src/rt/hle_power.h",
@@ -4868,7 +4868,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "40e3892a1aec5c5cfa88778a1201132039fdd46bb66cb6f4f456b0a2762eddad"
+      "sha256": "6edff8ad1d5953ac64d465ca703abebcf614d8a8398fa32b3a56079562a44abf"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -4880,7 +4880,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8671e125a3983fcea895c8e32e87bd3534123a3f0d2e3dd31010dc6f22394e48"
+      "sha256": "fa801b204ae05afd36ee2a6cf9266ec79eb6050fcb026078f3de981bfb01e650"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -4981,78 +4981,6 @@
       "sha256": "f50e0ddd8453fdfd5a8c6e6501eefef48975787d8bce391c9a332311c7191b7d"
     },
     {
-      "path": "src/rt/osk_overlay.c",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "osk-overlay-state-machine",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "4c4ab12ca7959e0a6a037aec4ff9d755bff9f76960e155e4b4fd191af7d24d2e"
-    },
-    {
-      "path": "src/rt/osk_overlay.h",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "osk-overlay-state-machine",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "e2a207322d2de84addad4ff9f7a838c41add8b15984830bd1482a84f0116c97c"
-    },
-    {
-      "path": "src/rt/osk_overlay_paint.c",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "osk-overlay-paint",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "4576c57c3e65f75e3ec1d6f3b1b7c2671bac55d0b6eb3d7741d4bc643c9e21f2"
-    },
-    {
-      "path": "src/rt/osk_overlay_paint.h",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "osk-overlay-paint",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "3d201be63cde49ca67f2a7b680259e7386af0ac8a8ba0e0071706250fdc03f84"
-    },
-    {
-      "path": "src/rt/osk_overlay_paint_selftest.c",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "osk-overlay-paint",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "6fb1c019132e7576cc5e89bdfcef3f46696949c26cbcf35becd2b303658d7ef9"
-    },
-    {
-      "path": "src/rt/osk_overlay_selftest.c",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "osk-overlay-state-machine",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "99569c2b5ba5caaab8eef73188497a81ef7b7c3b856e3facc582e5f8a25e0669"
-    },
-    {
       "path": "src/rt/osk_text_entry.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -5062,7 +4990,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "874d21b527561e0d1ddda3f0d558d3579a47459c900873dde08e8dea074e65db"
+      "sha256": "01df63cb31ee9b7c0bdb8a56c39823842e64f336404210b3fe1298ac09cfca76"
     },
     {
       "path": "src/rt/osk_text_entry.h",
@@ -5074,7 +5002,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ceca23ef5f20c4367742b14f479154f22a780ccacbb4b88603acae80725ab080"
+      "sha256": "c1f8ff5fdb445eb7beca2eb1373c9bc6f14d4652065fa56b8cc75937c3b509f6"
     },
     {
       "path": "src/rt/osk_text_entry_selftest.c",
@@ -5086,7 +5014,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "35555fa857c563bf5eadcbf8bc1cdfd7ee92319c97d54bb19cde7b0b441d767b"
+      "sha256": "2d6363e3d0022ba248c126634c5137587dc8844708ce50fda4e3967e56468b11"
     },
     {
       "path": "src/rt/osk_win.c",
@@ -5281,7 +5209,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "f0d819a86c269df40914a8096781e13a956d622adddce404463753f484551323"
+      "sha256": "a4cd8fcf4e22ad7dfad0f59a762f5e639b95fe91f3de9130eb999107c5f79f94"
     },
     {
       "path": "src/rt/savedata.c",
@@ -6592,7 +6520,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "be280952c97cfd52bbe5b50a9239b68460b2f0a34cfd8ab5e9328c9c5404d440"
+      "sha256": "5787a61a8b0ea7a4a0f25f8252b680dd28ead0c067829eb5fba5ac14f907b973"
     },
     {
       "path": "tools/import_audit_gate.py",
@@ -6763,7 +6691,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dc978b1a44d5f019ab7d729e8efeb83be5371066ee7a6c5d7e96dc3202544407"
+      "sha256": "1e39346cab3b4e1e8be05e0ab9510f16569361458091674139f7c2665bc4c9d5"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -6871,7 +6799,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b45d2f0dc3c34a3b19e4582e335775ba9e009501548312f1adb6db7cdaf83c99"
+      "sha256": "09382527c21737b524e4aee5e2b03b3b82937f1e63c3c233dc56005ee0e82e0a"
     },
     {
       "path": "tools/nk_core/prep_engine.py",
@@ -8412,7 +8340,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "634dfc6afc5975e2cb3e3f58d0780e32f78a2f7fc774db2113ba510749a62689"
+      "sha256": "350ea87569915e1a95f0532b62ce236293456c8b3c3f81faee7c82ddf51e1e2f"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
@@ -8784,7 +8712,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "80273756bd8f1d367f12dd0b9ca3eb132a114dc0f323c03583a48a9a4e4512fa"
+      "sha256": "ee15b4cee2a864eb9c8d569ad05a39257455f062ad650d637fd57f7ad2d0af21"
     },
     {
       "path": "tools/test_nk_core.py",
@@ -8808,7 +8736,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f68aeb3d30a3c6a89fd4500afbaa0f872d67016480d32737c5fe71cb0686f19b"
+      "sha256": "be46af19c357f6f477ba5cc461d5c08054aa02d2f0cb40d7af31012913ae30eb"
     },
     {
       "path": "tools/test_package_notices.py",
@@ -9276,7 +9204,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3f0aee8e0c7a073b22345a72d2e6f57507f66645aa3de1ffdd77464e475f3f95"
+      "sha256": "f81578772098e27d9a4e81218aaaca70e29b793bd9983f52138239c8d05c3a91"
     },
     {
       "path": "tools/test_public_title_isolation.py",

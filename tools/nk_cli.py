@@ -72,7 +72,6 @@ from nk_core.iso_inspect import (  # noqa: E402
     write_experimental_profile,
 )
 import title_manifest  # noqa: E402
-import stage_runtime_dlls as _runtime_dlls  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -1159,6 +1158,33 @@ def _find_configured_runtime_dll(filename: str) -> Path | None:
     return next((candidate for candidate in candidates if candidate.is_file()), None)
 
 
+def _runtime_dll_stager():
+    """The runtime DLL stager module, imported on first use.
+
+    Importing it loads the third-party notice inventory and the codegen planner, which only
+    a package build needs, so the CLI's other commands never pay for it. A notice inventory
+    the stager cannot load is a named package-build failure, not a traceback.
+    """
+    module = globals().get("_runtime_dlls")
+    if module is None:
+        from title_codegen_plan import PackageRouteError
+        try:
+            import stage_runtime_dlls as module
+        except PackageRouteError as exc:
+            raise PackageBuildError(
+                f"the runtime DLL stager could not load the notice inventory: {exc}"
+            ) from exc
+        globals()["_runtime_dlls"] = module
+    return module
+
+
+def __getattr__(name: str):
+    """``nk_cli._runtime_dlls`` is the stager module, resolved on first access (tests patch it there)."""
+    if name == "_runtime_dlls":
+        return _runtime_dll_stager()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 def _stage_runtime_assets(package_dir: Path) -> None:
     vfpu_source = ROOT / "assets" / "vfpu"
     if vfpu_source.is_dir():
@@ -1192,9 +1218,10 @@ def _stage_runtime_assets(package_dir: Path) -> None:
         # step the Makefile's player target uses. The prerequisite installer
         # (#324) does not provide it yet, so a package without it still builds:
         # the player then draws with its bitmap fallback and logs why.
+        stager = _runtime_dll_stager()
         try:
-            _runtime_dlls.stage_runtime_dlls(package_dir, roots=("SDL3_ttf.dll",), notices=False)
-        except _runtime_dlls.StageError as exc:
+            stager.stage_runtime_dlls(package_dir, roots=("SDL3_ttf.dll",), notices=False)
+        except stager.StageError as exc:
             print(f"warning: the readable UI font runtime was not staged: {exc}. "
                   "The player will use its bitmap fallback font.", file=sys.stderr)
 
