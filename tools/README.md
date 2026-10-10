@@ -162,6 +162,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `import_audit.py` | Classify a PSP ELF's imports against the HLE registration manifest. |
 | `import_audit_gate.py` | Public CI gate for import coverage and fake-success regressions. |
 | `import_fixtures.py` | Synthetic PSP ELF fixtures for the import-coverage audit gate. |
+| `import_stub_census.py` | Import-stub census: every import-table stub of an image is owned, bodied and reaches the HLE (or a named refusal). |
 | `psp_import_table.py` | Defensive PSP ELF import-table parser for the import-coverage gate. |
 | `flight_diff.py` | Compare two source-safe flight-recorder bundles. |
 | `ge_transition_diff.py` | Offline diff for the narrow GE transition trace. |
@@ -207,6 +208,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `hst_test_fixtures.py` | Small source-owned ELF, PSP-header and ISO envelope fixtures for the doctor tests. |
 | `nk_clean.py` | Preview-first workspace cleaner for allowlisted output roots. |
 | `title_manifest.py` | Validate and deterministically normalize public title manifests. |
+| `title_qualification.py` | Qualify public titles: validate manifests, input profiles and bring-up reports, and smoke-launch a public title through the native player in a sandbox. |
 | `title_codegen_plan.py` | Build a deterministic code-generation plan or AOT package from a title manifest. |
 | `title_catalog_codegen.py` | Deterministic C generator for the native public title catalog. |
 | `title_runtime_config.py` | Emit the build-local runtime title configuration consumed by the runtime. |
@@ -335,6 +337,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_hle_umd_wakeup.py` | The ready signal must wake only UMD waiters; a plain wait creates no drive event. |
 | `test_import_audit.py` | Tests for the import-table parser, classifier and CI gate. |
 | `test_import_name_safety.py` | Synthetic regressions for untrusted PSP import-library metadata. |
+| `test_import_stub_census.py` | The import-stub census over synthetic images, including the late-pass regression guard. |
 | `test_imports.py` | Tests for the trusted code-generation import-map compatibility path. |
 | `test_nid_name_proof.py` | Tests for the independent NID-name verifier. |
 | `test_nidseq.py` | Fail-closed import-sequence extraction and oracle comparison. |
@@ -420,6 +423,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_title_manager_plan.py` | Bounded manager plan fields, generic profile and fail-closed conflicts. |
 | `test_title_manifest.py` | Manifest schema, canonicalization, native identity and guest module bases. |
 | `test_title_manifest_parity.py` | Differential parity between the Python manifest tool and the native C validator. |
+| `test_title_qualification.py` | Title qualification: validation refusals, the sandboxed smoke launch, exit codes and report shape. |
 | `test_title_protected_digest.py` | Contract tests for the protected title-manifest digest. |
 | `test_title_pspdev_phase5.py` | A second wholly source-owned title must prove multi-title planning. |
 | `test_title_runtime_config.py` | Tests for the runtime title configuration path. |
@@ -510,6 +514,7 @@ harness changes no compiler default. Findings belong in issue #317.
 
 | Module | Purpose |
 | --- | --- |
+| `test_native_core_build.py` | Pins the native-core-tests dry run: the same test binaries and arguments, one compile per flag set. |
 | `test_build_graph_snapshot.py` | Tests for the read-only build graph snapshot. |
 | `test_build_system_parity.py` | Machine-checkable parity between the Makefile and the CMake build. |
 | `test_ci_paths.py` | Path-gated CI classification tests. |

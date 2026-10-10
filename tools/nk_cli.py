@@ -2367,7 +2367,8 @@ def validate_bringup_report(report: dict) -> None:
     _validate_schema_value(report, schema, schema, "report")
 
 
-def _new_bringup_report() -> dict:
+def new_bringup_report() -> dict:
+    """Return a bring-up report with every stage NOT_RUN, the shape every bring-up producer starts from."""
     return {
         "schema_version": 1,
         "reached_stage": "none",
@@ -2397,6 +2398,11 @@ def _new_bringup_report() -> dict:
         "exit_classification": "NOT_RUN",
         "codegen_reuse": {"status": "NOT_RUN", "reason": "NONE"},
     }
+
+
+# Public names for tools/title_qualification.py. The underscore names below stay as
+# aliases of the same objects, so existing nk_cli callers and tests are unchanged.
+_new_bringup_report = new_bringup_report
 
 
 def _update_issues(report: dict, values) -> None:
@@ -2600,11 +2606,18 @@ def _minimal_valid_bringup_report(report: dict) -> dict:
     return minimal
 
 
-def _write_bringup_file(report: dict, path: Path) -> None:
+def write_bringup_file(report: dict, path: Path) -> None:
+    """Write a bring-up report as sorted, indented JSON, replacing ``path`` atomically.
+
+    The report is written as given. Callers validate it first (see validate_bringup_report).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, path)
+
+
+_write_bringup_file = write_bringup_file
 
 
 def _write_bringup_report(report: dict, path: Path) -> bool:
@@ -2907,7 +2920,8 @@ def _runtime_import_rows(output: str, imports: list[dict]) -> list[dict]:
     ]
 
 
-def _runtime_output_kind(output: str, runtime_imports: list[dict]) -> str:
+def runtime_output_kind(output: str, runtime_imports: list[dict]) -> str:
+    """Classify one runtime's captured output into the bring-up runtime_output_kind vocabulary."""
     folded = output.casefold()
     if runtime_imports:
         return "UNIMPLEMENTED_IMPORT"
@@ -2951,6 +2965,9 @@ def _runtime_output_kind(output: str, runtime_imports: list[dict]) -> str:
     return "EMPTY" if not output.strip() else "OTHER"
 
 
+_runtime_output_kind = runtime_output_kind
+
+
 _HOST_PRESENT_SUBMITTED = re.compile(
     r"^HOST_PRESENT_SUBMITTED f=\d+ buf=0x[0-9a-fA-F]{8} "
     r"fmt=[0-3] stride=\d+$"
@@ -2967,7 +2984,7 @@ _PRESENTER_BACKENDS = frozenset({"offscreen", "vulkan", "gdi", "none"})
 _ACCEPTING_PRESENTER_BACKENDS = frozenset({"offscreen"})
 
 
-def _set_bringup_presentation(report: dict, output: str) -> bool:
+def set_bringup_presentation(report: dict, output: str) -> bool:
     """Record presenter identity and accept only ordered, validated evidence."""
     lines = [line.strip() for line in output.splitlines()]
     submission_indices: list[int] = []
@@ -3020,6 +3037,9 @@ def _set_bringup_presentation(report: dict, output: str) -> bool:
         "backend": backend,
     }
     return evidence_ok
+
+
+_set_bringup_presentation = set_bringup_presentation
 
 
 # The runtime's own record of the SR_EXIT_AT_VBLANK run budget (src/rt/hle.c). The budget

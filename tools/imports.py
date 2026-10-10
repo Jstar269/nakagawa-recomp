@@ -223,6 +223,39 @@ def _import_model_impl(elf):
     structural strings (unreferenced section words, detached runs, and
     unclaimed and multi-claimed positions).
     """
+    stubs, findings, _variable_tables = _function_import_model(elf, allow_variables=False)
+    return stubs, findings
+
+
+def function_import_model(
+    elf: Elf,
+) -> "tuple[dict[int, tuple[str, int]], list[str], tuple[VariableImportTable, ...]]":
+    """Return (stubs, findings, variable_tables) without refusing variable imports.
+
+    The same layout as parse_imports. The analyzer refuses an image that declares
+    variable imports; the import-stub census uses this entry point to enumerate the
+    function stubs of such an image and name each one as missing, so none is silent.
+    """
+    return _function_import_model(elf, allow_variables=True)
+
+
+def function_import_windows(
+    elf: Elf,
+) -> "tuple[list[ImportWindow], tuple[VariableImportTable, ...]]":
+    """Return (windows, variable_tables) of an import table, without pairing its slots.
+
+    The census uses this for an image whose layout the model refuses. The loader reads
+    the windows directly (slot firstSym + 8*i takes NID nidData[i]), so every function
+    slot can still be named and accounted for. The windows are already rebased to the
+    image's load address by the walk; the base it used is intentionally not part of the
+    return, so callers read every address as it stands.
+    """
+    windows, variable_tables, _base = _walk_import_windows(elf)
+    return windows, tuple(variable_tables)
+
+
+def _walk_import_windows(elf):
+    """Walk the PspLibStubEntry table; return (windows, variable_tables, base)."""
     mi = elf.sec(".rodata.sceModuleInfo")
     if not mi:
         raise ValueError("no .rodata.sceModuleInfo section")
@@ -277,7 +310,12 @@ def _import_model_impl(elf):
         if step <= 0 or pos + step > 0xFFFFFFFF:
             raise ValueError("import stub table step wraps 32-bit guest space")
         pos += step
-    if variable_tables:
+    return windows, variable_tables, base
+
+
+def _function_import_model(elf, *, allow_variables):
+    windows, variable_tables, base = _walk_import_windows(elf)
+    if variable_tables and not allow_variables:
         raise VariableImportsUnsupported(variable_tables)
 
     # Passes 2-4: the shared layout model (psp_import_table.layout_import_windows)
@@ -296,7 +334,8 @@ def _import_model_impl(elf):
             raise ValueError(f"truncated import NID region at 0x{address:08x}")
         return struct.unpack(f"<{count}I", blob)
 
-    return layout_import_windows(windows, stub_section, nid_section, read_nids)
+    stubs, findings = layout_import_windows(windows, stub_section, nid_section, read_nids)
+    return stubs, findings, tuple(variable_tables)
 
 
 def _import_model(elf):
