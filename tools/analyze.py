@@ -564,7 +564,13 @@ def _file_backed_exec_ranges(elf):
     return cached
 
 
-def trace_function(elf, start, ranges, covered, calls, hc):
+def _import_stub_is_file_executable(addr, file_exec_ranges):
+    """True when an import stub's two words are both file-backed executable bytes."""
+    return ((addr & 3) == 0 and in_ranges(addr, file_exec_ranges)
+            and in_ranges(addr + 4, file_exec_ranges))
+
+
+def trace_function(elf, start, ranges, covered, calls, hc, walked=None):
     # Recursive descent over one function's intra-procedural control flow from `start`.
     # Adds every instruction address reached to `covered`, and every direct-call (jal) target
     # to `calls`. Returns newly found targets so callers can extend their worklists without
@@ -573,6 +579,15 @@ def trace_function(elf, start, ranges, covered, calls, hc):
     # fork: follow the target and continue past the delay slot.
     # The range membership tests below run once per traced instruction, so they use an
     # index built once per trace (same answers as in_ranges over the plain list).
+    # `walked` is the set of instruction addresses that earlier traces over these same
+    # ranges already expanded (analyze owns it). Expanding an address depends only on its
+    # encoding and the ranges; the start exception and the `calls` stop test are the only
+    # trace-dependent parts, and both can only stop an expansion that an earlier trace
+    # already did or stopped. An address in `walked` therefore ends this path: the
+    # covered addresses, call targets and successors it would add are already present.
+    # Without the memo every start re-expands the whole shared tail it reaches: a profiled
+    # run of one large executable expanded each word about 190 times. `walked=None` is the
+    # uncached walk, kept so tests can pin the memoized walk against it.
     if not isinstance(ranges, _SpanIndex):
         ranges = _SpanIndex(ranges)
     stack = [start]
@@ -602,6 +617,8 @@ def trace_function(elf, start, ranges, covered, calls, hc):
         # below (for hoisted trailing epilogues) still runs for pc+8 addresses that are not
         # treated as boundaries here.
         while in_ranges(pc, ranges) and pc not in local:
+            if walked is not None and pc in walked:
+                break
             if pc != start and pc in hc:
                 insn_bytes = elf.read_at_vaddr(pc, 4)
                 stop = True
@@ -615,6 +632,8 @@ def trace_function(elf, start, ranges, covered, calls, hc):
                 if stop:
                     break
             local.add(pc)
+            if walked is not None:
+                walked.add(pc)
             covered.add(pc)
             wb = elf.read_at_vaddr(pc, 4)
             if wb is None or len(wb) < 4:
@@ -2462,7 +2481,9 @@ def code_pointer_evidence(elf, ranges):
     return {kind: frozenset(values) for kind, values in evidence.items()}
 
 
-def analyze(elf, extra_spans=None, cfg_gate=False):
+def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True):
+    # trace_memo=False runs the uncached per-start walks; the output is the same either way
+    # (tests pin the two against each other).
     ranges = exec_ranges(elf, extra_spans=extra_spans)
     file_exec_ranges = _file_backed_exec_ranges(elf)
 
@@ -2588,6 +2609,18 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
             impmap = parse_imports(elf)
             for a in impmap.keys():
                 if in_ranges(a, ranges) and (a & 3) == 0:
+                    hc.add(a)
+                elif _import_stub_is_file_executable(a, file_exec_ranges):
+                    # A retail import stub lives in executable PT_LOAD bytes outside the
+                    # named code sections (.text, .sceStub.text), so `ranges` never holds
+                    # it. The late discovery passes (tail promotion and gap fill) keep a
+                    # callee only when it is inside `ranges`, so a stub that was reached
+                    # only through a direct call from an orphan function was dropped
+                    # there. Codegen then emitted no body, and the call dispatched to the
+                    # image's `jr $ra; nop` placeholder, which returns a stale $v0 with no
+                    # HLE event. Seeding the stub as an entry here makes it a traced
+                    # function that owns its two words before the gap-fill safety nets
+                    # run. Stubs that are not file-backed executable bytes are not seeded.
                     hc.add(a)
         except Exception as e:
             from imports import ImportTableError
@@ -2744,15 +2777,26 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
     # weak signals that land inside a function body (internal blocks) can be discarded.
     covered = set()
     calls = set()
+    # Words expanded by earlier traces, one set per range list (see trace_function's
+    # `walked`). Traces share a set only when their ranges are equal, so a word expanded
+    # under one range list is never skipped under another.
+    walked_by_ranges = {} if trace_memo else None
+
+    def trace(entry, entry_ranges):
+        walked = None
+        if walked_by_ranges is not None:
+            walked = walked_by_ranges.setdefault(tuple(entry_ranges), set())
+        return trace_function(
+            elf, entry, entry_ranges, covered, calls, hc, walked=walked,
+        )
+
     functions = set(hc)
     work = list(hc)
     while work:
         s = work.pop()
         new_calls = []
         if in_ranges(s, ranges) or in_ranges(s, file_exec_ranges):
-            new_calls = trace_function(
-                elf, s, trace_ranges_for_entry(s), covered, calls, hc
-            )
+            new_calls = trace(s, trace_ranges_for_entry(s))
         for t in new_calls:
             if t not in functions and (
                 in_ranges(t, ranges) or in_ranges(t, file_exec_ranges)
@@ -2780,17 +2824,13 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
         if not _is_hard_terminator(int.from_bytes(wb, 'little')):
             continue
         functions.add(t)
-        pending_tail_calls.extend(
-            trace_function(elf, t, ranges, covered, calls, hc)
-        )
+        pending_tail_calls.extend(trace(t, ranges))
         tail_call_batch = pending_tail_calls
         pending_tail_calls = []
         for c in tail_call_batch:
             if c not in functions and in_ranges(c, ranges):
                 functions.add(c)
-                pending_tail_calls.extend(
-                    trace_function(elf, c, ranges, covered, calls, hc)
-                )
+                pending_tail_calls.extend(trace(c, ranges))
 
     # Gap fill: a weak-signal address that no known function covers is an indirect-only
     # function (reached through a register the call graph could not resolve). Add it and trace
@@ -2823,15 +2863,13 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
                         covered.add(c + 4)
                         continue
                 functions.add(c)
-                new_calls = trace_function(elf, c, ranges, covered, calls, hc)
+                new_calls = trace(c, ranges)
                 gap_call_batch = pending_gap_calls + new_calls
                 pending_gap_calls = []
                 for t in gap_call_batch:
                     if t not in functions and in_ranges(t, ranges):
                         functions.add(t)
-                        pending_gap_calls.extend(
-                            trace_function(elf, t, ranges, covered, calls, hc)
-                        )
+                        pending_gap_calls.extend(trace(t, ranges))
                 changed = True
 
     # A direct call can prove that code exists outside named .text sections. Grant the
