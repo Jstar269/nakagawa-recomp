@@ -17220,6 +17220,59 @@ static void test_sas_state_contracts(void) {
            "a non-looping VAG voice ends despite loop markers");
 }
 
+/* pspsascore.h: "On real hardware, the end flags are refreshed only AFTER __sceSasCore is
+ * called", and __sceSasCore "updates end/pause flags".  A voice keyed on between cycles
+ * therefore still reads as ended until the next cycle runs, and a drained voice reads as
+ * ended only after the cycle that exhausted it.  The synthetic VAG stream is 4 blocks (112
+ * samples at native pitch): the first 64-sample grain leaves it playing, and the second
+ * grain drains it at sample 48. */
+static void test_sas_end_flags_refresh_per_cycle(void) {
+    CpuState cpu;
+    const uint32_t CORE = 0x08030000u;
+    const uint32_t OUT = 0x08010000u;
+    const uint32_t VAG = 0x08020000u;
+
+    reset_fixture(); sr_hle_init(); sas_test_init(&cpu, CORE, 0);
+    sas_test_vag(VAG, 4u, 0u);
+    cpu.r[4] = CORE; cpu.r[5] = 0; cpu.r[6] = VAG; cpu.r[7] = 64; cpu.r[8] = 0;
+    (void)sr_syscall(&cpu, NID_SAS_SET_VOICE);
+    cpu.r[4] = CORE; cpu.r[5] = 0; cpu.r[6] = 0x1000; cpu.r[7] = 0x1000;
+    cpu.r[8] = 0x1000; cpu.r[9] = 0x1000; (void)sr_syscall(&cpu, NID_SAS_SET_VOLUME);
+
+    cpu.r[4] = CORE;
+    expect((sr_syscall(&cpu, NID_SAS_GET_END) & 1u) != 0,
+           "an unkeyed voice reads as ended before any cycle");
+
+    cpu.r[4] = CORE; cpu.r[5] = 0; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
+    cpu.r[4] = CORE;
+    expect((sr_syscall(&cpu, NID_SAS_GET_END) & 1u) != 0,
+           "a voice keyed on between cycles still reads ended until the next Core");
+
+    memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = CORE; cpu.r[5] = OUT; (void)sr_syscall(&cpu, NID_SAS_CORE);
+    cpu.r[4] = CORE;
+    expect((sr_syscall(&cpu, NID_SAS_GET_END) & 1u) == 0,
+           "after one Core the keyed-on voice reads as playing");
+
+    memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = CORE; cpu.r[5] = OUT; (void)sr_syscall(&cpu, NID_SAS_CORE);
+    cpu.r[4] = CORE;
+    expect((sr_syscall(&cpu, NID_SAS_GET_END) & 1u) != 0,
+           "a drained voice reads as ended after the cycle that exhausted it");
+
+    /* Re-keying a drained voice keeps the last refreshed flag until the next cycle. */
+    cpu.r[4] = CORE; cpu.r[5] = 0; (void)sr_syscall(&cpu, NID_SAS_SET_KEY_ON);
+    cpu.r[4] = CORE;
+    expect((sr_syscall(&cpu, NID_SAS_GET_END) & 1u) != 0,
+           "re-keying a drained voice keeps the previous end flag until the next cycle");
+    memset(g_mem + (OUT - 0x08000000u), 0, SAS_TEST_GRAIN * 4u);
+    cpu.r[4] = CORE; cpu.r[5] = OUT; cpu.r[6] = 0x1000; cpu.r[7] = 0x1000;
+    (void)sr_syscall(&cpu, NID_SAS_CORE_WITH_MIX);
+    cpu.r[4] = CORE;
+    expect((sr_syscall(&cpu, NID_SAS_GET_END) & 1u) == 0,
+           "__sceSasCoreWithMix refreshes the end flags as a cycle does");
+}
+
 static void test_msgpipe_safety(void) {
     reset_fixture();
     sr_hle_init();
@@ -26345,6 +26398,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sas_core_mix_preserves_caller_pcm();
     test_sas_mix_saturates_without_wrapping();
     test_sas_state_contracts();
+    test_sas_end_flags_refresh_per_cycle();
     test_msgpipe_safety();
     test_msgpipe_blocking();
     test_msgpipe_departure_reconsiders_successor();
