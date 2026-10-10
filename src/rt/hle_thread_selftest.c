@@ -23949,6 +23949,63 @@ static void test_route_press_until_import_repeats_the_press_until_the_guest_call
     sr_route_reset();
 }
 
+/* PRESS_UNTIL_NID does not depend on how many imports the guest makes between two route ticks.
+ * The ring that WAIT_NID reads holds 64 dispatches (ROUTE_NID_RING in hle.c), so a burst of more
+ * than that after the awaited call evicts it before the next tick. Pinned here: the step completes
+ * on the next tick after a burst of 80 distinct imports; a second PRESS_UNTIL_NID for the same
+ * import is not completed by the call that finished the first, because arming it clears the flag;
+ * and a call made while an earlier WAIT_NID waits does not complete the PRESS_UNTIL_NID after it. */
+static void test_route_press_until_import_completes_after_an_import_burst(void) {
+    uint8_t sigA[576];
+    rt_sig(sigA, 0x20);
+    const uint32_t open_nid = sr_route_test_nid("sceIoOpen");
+    expect(open_nid != 0u, "the runtime's own NID table resolves sceIoOpen");
+
+    sr_route_reset();
+    rt_write("PRESS_UNTIL_NID sceIoOpen CROSS 8 40 400\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "a PRESS_UNTIL_NID loads for the burst case");
+    expect(rt_frame(0, sigA) == 0x4000u, "the press starts at the step's first vblank");
+    sr_route_test_import(open_nid);
+    for (uint32_t i = 0; i < 80u; i++) sr_route_test_import(0x40000000u + i);
+    expect(rt_frame(1, sigA) == 0u, "the step completes on the tick after a burst of 80 imports");
+    expect(sr_route_status() == RT_DONE,
+           "a call that left the import ring before the next tick still completes PRESS_UNTIL_NID");
+    remove(RT_PATH);
+
+    sr_route_reset();
+    rt_write("PRESS_UNTIL_NID sceIoOpen CROSS 8 40 400\n"
+             "PRESS_UNTIL_NID sceIoOpen CROSS 8 40 400\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "two PRESS_UNTIL_NIDs for one import load");
+    (void)rt_frame(0, sigA);
+    sr_route_test_import(open_nid);
+    (void)rt_frame(1, sigA);
+    expect(sr_route_status() == RT_RUNNING, "the call completes the first step and the route moves on");
+    for (uint32_t v = 2; v < 10; v++) (void)rt_frame(v, sigA);
+    expect(sr_route_status() == RT_RUNNING,
+           "the second step, armed after that call, is not completed by it");
+    sr_route_test_import(open_nid);
+    (void)rt_frame(10, sigA);
+    expect(sr_route_status() == RT_DONE, "a call made while the second step waits completes it");
+    remove(RT_PATH);
+
+    /* A call made while an earlier WAIT_NID is still waiting came before the PRESS_UNTIL_NID after
+     * it was armed, so it does not complete that step; the next call does. */
+    sr_route_reset();
+    rt_write("WAIT_NID sceIoOpen 600\nPRESS_UNTIL_NID sceIoOpen CROSS 8 40 400\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "a WAIT_NID then a PRESS_UNTIL_NID for one import load");
+    (void)rt_frame(0, sigA);
+    sr_route_test_import(open_nid);
+    (void)rt_frame(1, sigA);
+    for (uint32_t v = 2; v < 10; v++) (void)rt_frame(v, sigA);
+    expect(sr_route_status() == RT_RUNNING,
+           "the call that completed the WAIT_NID does not complete the PRESS_UNTIL_NID after it");
+    sr_route_test_import(open_nid);
+    (void)rt_frame(10, sigA);
+    expect(sr_route_status() == RT_DONE, "a call made while the PRESS_UNTIL_NID waits completes it");
+    remove(RT_PATH);
+    sr_route_reset();
+}
+
 static void test_route_widths_units_parse_and_name_their_refusals(void) {
     char hexA[1024], body[4096];
     rt_hex(hexA, 0x20);
@@ -27192,6 +27249,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_route_names_the_buttons_it_presses();
     test_route_gates_on_a_guest_event_not_a_signature();
     test_route_press_until_import_repeats_the_press_until_the_guest_calls_it();
+    test_route_press_until_import_completes_after_an_import_burst();
     test_route_widths_units_parse_and_name_their_refusals();
     test_route_read_widths_match_vblanks_for_a_guest_that_polls_every_vblank();
 
