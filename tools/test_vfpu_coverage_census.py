@@ -97,13 +97,28 @@ class VfpuCoverageCensusTests(unittest.TestCase):
         self.assertTrue(controls)
         self.assertEqual({row["opcode"] for row in controls}, {"0x3f"})
 
-    def test_reserved_vcmov_forms_are_unmodeled_and_fail_closed(self):
+    def test_vfpu3_compare_forms_are_supported_in_both_lanes(self):
+        # Major 0x1B sub-ops 5, 6 and 7 are vscmp, vsge and vslt (issue #69).
+        # Both lanes decode them now; neither lane may route them to vcmov.
         words = (
+            (0x1B << 26) | (5 << 23) | (7 << 16),
             (0x1B << 26) | (6 << 23) | (7 << 16),
             (0x1B << 26) | (7 << 23) | (7 << 16),
-            (0x34 << 26) | (21 << 21) | (7 << 16),
         )
         records = census.classify_words(words)
+        self.assertEqual(len(records), 3)
+        for record in records:
+            self.assertTrue(record["interpreter_supported"])
+            self.assertEqual(record["interpreter_kind"], "compute")
+            self.assertEqual(record["aot_disposition"], "aot-direct")
+            self.assertEqual(census.compatibility_disposition(record), "aot-direct")
+            self.assertEqual(census.agreement_status(record), "agree-supported-direct")
+
+    def test_reserved_vcmov_form_is_unmodeled_and_fail_closed(self):
+        # vcmov lives in VFPU4 (jump 21); imm3 7 is the reserved selector.
+        words = ((0x34 << 26) | (21 << 21) | (7 << 16),)
+        records = census.classify_words(words)
+        self.assertEqual(len(records), 1)
         for record in records:
             self.assertFalse(record["interpreter_supported"])
             self.assertEqual(record["aot_disposition"], "aot-unsupported")
@@ -114,7 +129,7 @@ class VfpuCoverageCensusTests(unittest.TestCase):
             self.assertEqual(census.agreement_status(record), "agree-unsupported")
 
     def test_agreement_gate_catches_mutated_support_disagreement(self):
-        word = (0x1B << 26) | (6 << 23) | (7 << 16)
+        word = (0x34 << 26) | (21 << 21) | (7 << 16)
         record = census.classify_words((word,))[0]
         mutated = copy.deepcopy(record)
         mutated["interpreter_supported"] = True
