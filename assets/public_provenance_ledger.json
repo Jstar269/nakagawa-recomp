@@ -1096,7 +1096,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "53e4a8cf6fc99b5a480fda593ce5a041755cbbc0c0121edf90650eb4de717dc4"
+      "sha256": "46957fc5e46eb0031479f1580ec6c753b58c621bb6cce85ecdc5485d82906914"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -4247,7 +4247,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5087f49e93f3bb8195e5517bc79740a8e1426e1c19553cb3151c88f33e1b1a21"
+      "sha256": "e8597368624ea5b6c539f603d91306eac0d17e0434dffc026af3d582c05570eb"
     },
     {
       "path": "src/rt/debug.h",
@@ -4540,7 +4540,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "f6a455060cf7f07b67727a1e0e9a5d867dc20f75e2ba4d88ce7fec7164e5db3a"
+      "sha256": "24ae744c544fe24197d3dbb173144a431d3c1d91fcd745cbae43039b7669655c"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -4986,7 +4986,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "9e5ed38f259b5b826f1ab8ea7757c62041bd11f4862d1421bda948b901648abc"
+      "sha256": "3dd6c1e7aaf65ce0453869406e6c4ec7185d64f650984c98d933fc4d0b99fb86"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5412,7 +5412,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "ffc114695e0b1816431c55975e8365ebaaee3dc27db058716fc62f6e586cf1b3"
+      "sha256": "e3d4be7d00c01a340c36d8617fa3556c1962bc75759b2c44bf576c9ebf8f34c5"
     },
     {
       "path": "src/rt/recomp.h",
@@ -5425,7 +5425,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b5cb8be22e4a2d2227c7323509748c7a86196a2c3884f67940ec2f0479e49090"
+      "sha256": "528ebca80e2b38350f747d96e3f3586f0ffd2ab0a3afa0dcab6f2fe97c93ba07"
     },
     {
       "path": "src/rt/savedata.c",
@@ -6543,7 +6543,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d282195c2186fda519eaec198feea4c3fef5ac81b28115231425e2e26fffb9fe"
+      "sha256": "2c9d99650d54fa19a7e1a20be570b9907ffc4e2fabae3e44d70fd20715c70302"
     },
     {
       "path": "tools/gen_key_scrub_spec.py",
@@ -8495,7 +8495,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3a468d6537b1f3f07e1ab234665c2db6b8bdf290ab0974359501197e7b507638"
+      "sha256": "e069a0db4fd4f59d9eb7a9f0a60a038bc6980972be37aa46ab2b3121da43da38"
     },
     {
       "path": "tools/test_gen_nidnames.py",
