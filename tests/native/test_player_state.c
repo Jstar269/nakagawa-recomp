@@ -1024,17 +1024,17 @@ static void write_runtime_package_fixture_with_options(
         "{\"analyzer_codegen_epoch\":\"analyzer-codegen-v1\","
         "\"analyzer_sha256\":\"%064d\",\"codegen_options_sha256\":\"%s\","
         "\"codegen_sha256\":\"%064d\",\"executable_sha256\":\"%s\","
-        "\"generated_code_abi_epoch\":1,\"manifest_sha256\":\"%064d\","
+        "\"generated_code_abi_epoch\":%d,\"manifest_sha256\":\"%064d\","
         "\"modules_sha256\":\"%s\",\"psp_header_sha256\":null,"
-        "\"runtime_abi_epoch\":1,\"title_input_identity_sha256\":\"%s\"}",
-        0, codegen_options_digest, 0, input_executable_sha256, 0, modules_digest,
-        identity_digest);
+        "\"runtime_abi_epoch\":%d,\"title_input_identity_sha256\":\"%s\"}",
+        0, codegen_options_digest, 0, input_executable_sha256, NK_AOT_GENERATED_CODE_ABI_EPOCH, 0,
+        modules_digest, NK_AOT_RUNTIME_ABI_EPOCH, identity_digest);
     assert(aot_components_length > 0 && (size_t)aot_components_length < sizeof(aot_components_json));
     int native_components_length = snprintf(native_components_json, sizeof(native_components_json),
         "{\"compile_flags\":\"\",\"compiler_identity\":\"gcc-fixture\","
         "\"compiler_target\":\"fixture-target\",\"generated_code_digest\":\"%064d\","
-        "\"link_flags\":\"\",\"runtime_abi_epoch\":1,\"runtime_source_digest\":\"%064d\"}",
-        0, 0);
+        "\"link_flags\":\"\",\"runtime_abi_epoch\":%d,\"runtime_source_digest\":\"%064d\"}",
+        0, NK_AOT_RUNTIME_ABI_EPOCH, 0);
     assert(native_components_length > 0 && (size_t)native_components_length < sizeof(native_components_json));
     int aot_hash_length = snprintf(aot_hash_input, sizeof(aot_hash_input), "%s\n", aot_components_json);
     int native_hash_length = snprintf(native_hash_input, sizeof(native_hash_input), "%s\n", native_components_json);
@@ -1050,8 +1050,8 @@ static void write_runtime_package_fixture_with_options(
     int cache_length = snprintf(cache_json, sizeof(cache_json),
         "{\"format\":\"nakagawa-aot-cache\",\"schema_version\":2,\"key\":%s,"
         "\"codegen_options\":{},\"runtime_abi_compatibility\":{"
-        "\"current_epoch\":1,\"generated_code_reusable\":true}}",
-        cache_key_json);
+        "\"current_epoch\":%d,\"generated_code_reusable\":true}}",
+        cache_key_json, NK_AOT_RUNTIME_ABI_EPOCH);
     assert(cache_length > 0 && (size_t)cache_length < sizeof(cache_json));
     int report_length = snprintf(report_json, sizeof(report_json),
         "{\"format\":\"nakagawa-build-report\",\"schema_version\":1,"
