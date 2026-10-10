@@ -609,6 +609,156 @@ _register_campaign_probe(
 )
 
 
+# HLE measurement families (probe_hle_measure.c; H-oracle-hle-measure-1009).
+# Every cell is emitted, as PASS, FAIL or SKIP, so each stream has a fixed shape
+# and order. The contracts check shape and order only: no PSP return value is
+# asserted, because these probes exist to measure what the console returns.
+_register_campaign_probe(
+    "hle-kernel-status", "PSP-HLE-KERNEL-STATUS-001",
+    ("sys-status-size-0x1c", "sys-status-size-0x20", "sys-status-size-0x08",
+     "sys-status-size-0x00", "fpl-create", "fpl-refer-full-all-free",
+     "fpl-try-alloc-a", "fpl-try-alloc-b", "fpl-try-alloc-exhausted",
+     "fpl-refer-full-two-held", "fpl-refer-size-0x08-two-held",
+     "fpl-refer-size-0x00-two-held", "fpl-free-a", "fpl-refer-full-one-free",
+     "fpl-free-b", "fpl-delete", "fpl-refer-full-after-delete"),
+    {"sys-status-size-0x1c": 8, "sys-status-size-0x20": 8,
+     "sys-status-size-0x08": 8, "sys-status-size-0x00": 8,
+     "fpl-create": 1, "fpl-refer-full-all-free": 14,
+     "fpl-try-alloc-a": 1, "fpl-try-alloc-b": 1, "fpl-try-alloc-exhausted": 1,
+     "fpl-refer-full-two-held": 14, "fpl-refer-size-0x08-two-held": 14,
+     "fpl-refer-size-0x00-two-held": 14, "fpl-free-a": 1,
+     "fpl-refer-full-one-free": 14, "fpl-free-b": 1, "fpl-delete": 1,
+     "fpl-refer-full-after-delete": 14},
+)
+_register_campaign_probe(
+    "hle-vtimer", "PSP-HLE-VTIMER-001",
+    ("vtimer-create", "vtimer-refer-created", "vtimer-stop-not-started",
+     "vtimer-start", "vtimer-time-running-early", "vtimer-refer-running-early",
+     "vtimer-delay-20ms", "vtimer-time-running-20ms", "vtimer-stop",
+     "vtimer-time-stopped", "vtimer-refer-stopped", "vtimer-delay-20ms-stopped",
+     "vtimer-time-stopped-later", "vtimer-start-restart", "vtimer-refer-size-0x08",
+     "vtimer-delete-running", "vtimer-refer-after-delete", "vtimer-delete-again"),
+    {"vtimer-create": 1, "vtimer-refer-created": 18, "vtimer-stop-not-started": 1,
+     "vtimer-start": 1, "vtimer-time-running-early": 2,
+     "vtimer-refer-running-early": 18, "vtimer-delay-20ms": 1,
+     "vtimer-time-running-20ms": 2, "vtimer-stop": 1, "vtimer-time-stopped": 2,
+     "vtimer-refer-stopped": 18, "vtimer-delay-20ms-stopped": 1,
+     "vtimer-time-stopped-later": 2, "vtimer-start-restart": 1,
+     "vtimer-refer-size-0x08": 18, "vtimer-delete-running": 1,
+     "vtimer-refer-after-delete": 18, "vtimer-delete-again": 1},
+)
+# hle-power-clock: the scePower getters return the clock, so for the Int and bare
+# getters the record's result IS the value (the frequency) and out0 repeats it. For
+# the Float getters result is the IEEE-754 bit pattern and out0 the truncated integer
+# part (all ones when out of range or NaN). The contract checks field shape only, so
+# result is never read here as a return code.
+_register_campaign_probe(
+    "hle-power-clock", "PSP-HLE-POWER-001",
+    ("pll-clock-int", "pll-clock-float", "cpu-clock-int", "cpu-clock-float",
+     "cpu-clock-alias", "bus-clock-int", "bus-clock-float", "bus-clock-alias",
+     "cpu-clock-int-repeat"),
+    {case_id: 1 for case_id in (
+        "pll-clock-int", "pll-clock-float", "cpu-clock-int", "cpu-clock-float",
+        "cpu-clock-alias", "bus-clock-int", "bus-clock-float", "bus-clock-alias",
+        "cpu-clock-int-repeat",
+    )},
+)
+_register_campaign_probe(
+    "hle-hprm", "PSP-HLE-HPRM-001",
+    ("hprm-remote-first", "hprm-headphone-first", "hprm-microphone-first",
+     "hprm-remote-second", "hprm-headphone-second", "hprm-microphone-second"),
+    {case_id: 1 for case_id in (
+        "hprm-remote-first", "hprm-headphone-first", "hprm-microphone-first",
+        "hprm-remote-second", "hprm-headphone-second", "hprm-microphone-second",
+    )},
+)
+_register_campaign_probe(
+    "hle-ctrl-latch", "PSP-HLE-CTRL-LATCH-001",
+    ("latch-read-initial", "latch-peek-initial", "latch-poll-window",
+     "latch-read-after-poll", "latch-peek-after-poll",
+     "latch-read-clears-peek-keeps"),
+    {"latch-read-initial": 4, "latch-peek-initial": 4, "latch-poll-window": 6,
+     "latch-read-after-poll": 4, "latch-peek-after-poll": 4,
+     "latch-read-clears-peek-keeps": 5},
+)
+_register_campaign_probe(
+    "hle-sysparam", "PSP-HLE-SYSPARAM-001",
+    ("int-id-2", "int-id-3", "int-id-4", "int-id-5", "int-id-6", "int-id-7",
+     "int-id-8", "int-id-9", "int-unknown-0", "int-unknown-10", "int-unknown-64",
+     "string-id-1-len-0x80", "string-id-1-len-0x04"),
+    {**{f"int-id-{i}": 1 for i in range(2, 10)},
+     "int-unknown-0": 1, "int-unknown-10": 1, "int-unknown-64": 1,
+     "string-id-1-len-0x80": 3, "string-id-1-len-0x04": 3},
+)
+_register_campaign_probe(
+    "hle-ge-edram", "PSP-HLE-GE-EDRAM-001",
+    ("edram-size", "edram-addr", "edram-width-query-initial",
+     "edram-width-set-512", "edram-width-set-1024", "edram-width-set-2048",
+     "edram-width-set-4096", "edram-width-restore", "edram-width-query-final"),
+    {case_id: 1 for case_id in (
+        "edram-size", "edram-addr", "edram-width-query-initial",
+        "edram-width-set-512", "edram-width-set-1024", "edram-width-set-2048",
+        "edram-width-set-4096", "edram-width-restore", "edram-width-query-final",
+    )},
+)
+
+#: Documented GE eDRAM translation widths (pspge.h: 0 = do not set, else these).
+HLE_EDRAM_WIDTHS = (512, 1024, 2048, 4096)
+
+
+def validate_hle_edram_restore(text: str) -> None:
+    """Fail closed unless the GE translation width was restored to its original value.
+
+    The probe changes GE state only through sceGeEdramSetAddrTranslation and
+    restores the width it found. sceGeEdramSetAddrTranslation(w) sets the width to w
+    and returns the width it replaced (set-returning-previous, as measured on the
+    PSP-3000 on 2026-10-10), so a query is itself a set to 0. When the restore cell
+    ran, its post-query must equal the initial width and the final query must return
+    0, the 0 that the post-restore query left; when the initial width was not
+    restorable, every width cell must be SKIP and nothing may have changed.
+    """
+
+    parsed = parse_output(text)
+    results = {record.case_id: record for record in parsed.results}
+    try:
+        initial = int(dict(results["edram-width-query-initial"].values)["result"], 0)
+        final = int(dict(results["edram-width-query-final"].values)["result"], 0)
+    except KeyError as exc:
+        raise ProtocolError(f"PSP-HLE-GE-EDRAM-001: missing record {exc}") from exc
+    width_cases = [f"edram-width-set-{width}" for width in HLE_EDRAM_WIDTHS]
+    restorable = initial in HLE_EDRAM_WIDTHS
+    if not restorable:
+        if any(results[case].status != "SKIP" for case in width_cases + ["edram-width-restore"]):
+            raise ProtocolError(
+                "PSP-HLE-GE-EDRAM-001: a width cell ran although the original width "
+                f"{initial:#x} is not restorable"
+            )
+        if final != initial:
+            raise ProtocolError("PSP-HLE-GE-EDRAM-001: GE width changed with no restore cell")
+        return
+    if any(results[case].status == "SKIP" for case in width_cases + ["edram-width-restore"]):
+        raise ProtocolError("PSP-HLE-GE-EDRAM-001: a restorable width cell was skipped")
+    # The restore record's `result` holds the pre-restore width (the value its
+    # SetAddrTranslation call returned) and its `out0` the post-restore width (the
+    # value its query returned), exactly as the probe records them. The check below
+    # reads out0 against the original width. The final query is itself a Set(0): it
+    # returns the 0 that the post-restore query left, so under set-returning-previous
+    # the final result is 0, not the original width, and the final check requires 0.
+    restore = dict(results["edram-width-restore"].values)
+    if int(restore["out0"], 0) != initial:
+        raise ProtocolError(
+            f"PSP-HLE-GE-EDRAM-001: restore left width {int(restore['out0'], 0):#x}, "
+            f"not the original {initial:#x}"
+        )
+    if final != 0:
+        raise ProtocolError(
+            f"PSP-HLE-GE-EDRAM-001: final query returned {final:#x}, not 0; "
+            "sceGeEdramSetAddrTranslation sets the width and returns the width it replaced "
+            "(set-returning-previous), so the final Set(0) must return the 0 that the "
+            "post-restore query left"
+        )
+
+
 def parse_campaign_probe_output(
     text: str, campaign_case: str, *, require_complete: bool = True
 ) -> SequenceReport:
