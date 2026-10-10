@@ -193,6 +193,8 @@ static uint32_t call_guest3(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, 
     dispatch(s, fn);
     uint32_t ret = s->r[2];
     memcpy(s, &save, sizeof(CpuState));
+    /* Returning to the interrupted context ends any ll..sc window it had open. */
+    sr_cpu_link_clear(s);
     atomic_store_explicit(&sr_timeslice, save_slice, memory_order_relaxed);
     (void)sr_nested_frame_release(frame);
     return ret;

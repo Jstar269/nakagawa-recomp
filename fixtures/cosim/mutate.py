@@ -117,7 +117,7 @@ MUTANTS: tuple[Mutant, ...] = (
             # per-instruction restore below. Removing only one leaves the other
             # repairing the damage, so the mutant would survive for a reason that
             # has nothing to do with the comparator. Remove the whole mechanism.
-            ("s->r[0] = 0u;", "(void)0;", 9),
+            ("s->r[0] = 0u;", "(void)0;", 10),
         ],
     ),
     Mutant(
@@ -185,6 +185,25 @@ MUTANTS: tuple[Mutant, ...] = (
             "                    write_gpr(s, rt, MEM_R8(address));",
             1,
         )],
+    ),
+    Mutant(
+        "sc-ignores-link",
+        "store-conditional succeeds without a link",
+        [(
+            "                    const uint32_t linked = s->llbit != 0u ? 1u : 0u;",
+            "                    const uint32_t linked = 1u;",
+            1,
+        )],
+    ),
+    Mutant(
+        "codegen-sc-ignores-link",
+        "GENERATOR: store-conditional succeeds without a link",
+        [(
+            "uint32_t _sc = s->llbit != 0u ? 1u : 0u; ",
+            "uint32_t _sc = 1u; ",
+            1,
+        )],
+        target="generator",
     ),
     Mutant(
         "codegen-computed-transfer-timing",
