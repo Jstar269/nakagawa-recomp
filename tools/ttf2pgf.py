@@ -1079,6 +1079,8 @@ class CodePointSet:
 def load_code_points(path: Path) -> CodePointSet:
     """Read one code point per line (``0x41``, ``U+0041`` or decimal); ``#`` starts a comment.
 
+    The ``0x`` and ``U+`` prefixes and the hex digits are accepted in either case.
+
     The list must be strictly ascending, so a set has exactly one reading and the
     output is independent of how the file was written.
     """
@@ -1171,7 +1173,11 @@ def load_metric_targets(path: Path) -> _MetricTargets:
 
 
 class _Planner:
-    """Builds glyph plans and metric-target searches for one font and code list."""
+    """Builds glyph plans and metric-target searches for one font and code list.
+
+    The code list is ascending and may be sparse: its span can be far wider than the
+    number of glyphs it names.
+    """
 
     def __init__(self, font: _Ttf, codes: list[int] | tuple[int, ...]) -> None:
         self.font = font
