@@ -571,6 +571,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
 void sr_display_advance_vcount(uint32_t periods) { (void)periods; }
 uint32_t sr_vblank_handler(void) { return 0u; }
 uint32_t sr_vblank_arg(void) { return 0u; }
+uint32_t sr_vblank_no(void) { return 0u; }
 int sr_vblank_dispatch_registered(void) { return 0; }
 void sr_vblank_tick(void) {}
 void sr_callback_unregister_owner(uint32_t uid) { (void)uid; }
