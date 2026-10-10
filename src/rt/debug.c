@@ -406,6 +406,39 @@ static int sr_nan_trap_budget(void) {
     return 1;
 }
 
+/* SR_NAN_TRAP_CONTEXT=1: after each report, the registers a reader needs to find the
+ * instruction's inputs in guest memory (return address, value and argument registers,
+ * two saved registers, f12) and the four words each of v0 and a0..a3 points at when that
+ * span is readable. A quaternion slerp whose vasin reports a NaN, for example, has its
+ * two input quaternions behind a1 and v0 at that point. Off by default; the probe reads
+ * the scheduler's current CpuState, so a report from outside guest execution prints
+ * nothing. */
+static int s_nan_trap_ctx = -1;
+static void sr_nan_trap_context(void) {
+    if (s_nan_trap_ctx < 0) {
+        const char *p = getenv("SR_NAN_TRAP_CONTEXT");
+        s_nan_trap_ctx = (p && p[0] && strcmp(p, "0") != 0) ? 1 : 0;
+    }
+    if (!s_nan_trap_ctx || !s_cpu) return;
+    const CpuState *c = s_cpu;
+    fprintf(stderr, "NAN_TRAP_CTX ra=0x%08x v0=0x%08x a0=0x%08x a1=0x%08x a2=0x%08x a3=0x%08x "
+            "t0=0x%08x s0=0x%08x s1=0x%08x f12=%.9g\n",
+            c->r[31], c->r[2], c->r[4], c->r[5], c->r[6], c->r[7], c->r[8], c->r[16], c->r[17],
+            (double)c->f[12]);
+    static const struct { const char *name; int reg; } ptrs[] = {
+        { "v0", 2 }, { "a0", 4 }, { "a1", 5 }, { "a2", 6 }, { "a3", 7 },
+    };
+    for (size_t i = 0; i < sizeof(ptrs) / sizeof(ptrs[0]); i++) {
+        uint32_t a = c->r[ptrs[i].reg];
+        if ((a & 3u) != 0u || !sr_guest_span_readable(a, 16u)) continue;
+        float v[4];
+        memcpy(v, SR_HOST(a), sizeof(v));
+        fprintf(stderr, "NAN_TRAP_CTX %s@0x%08x=[", ptrs[i].name, a);
+        sr_nan_trap_print(stderr, v, 4);
+        fputs("]\n", stderr);
+    }
+}
+
 void sr_nan_trap_note(uint32_t pc, const char *op, uint32_t fd,
                       float out, const float *in, int nin) {
     if (!sr_nan_trap_nonfinite(out)) return;
@@ -419,6 +452,7 @@ void sr_nan_trap_note(uint32_t pc, const char *op, uint32_t fd,
     fputs("] out=[", stderr);
     sr_nan_trap_print(stderr, out1, 1);
     fputs("]\n", stderr);
+    sr_nan_trap_context();
 }
 
 void sr_nan_trap_note_v(uint32_t pc, const char *op, uint32_t vd,
@@ -441,5 +475,6 @@ void sr_nan_trap_note_v(uint32_t pc, const char *op, uint32_t vd,
     fputs("] out=[", stderr);
     sr_nan_trap_print(stderr, out, nout);
     fputs("]\n", stderr);
+    sr_nan_trap_context();
 }
 #endif /* SR_NAN_TRAP */
