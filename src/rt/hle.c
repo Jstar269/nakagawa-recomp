@@ -16424,6 +16424,7 @@ void sr_ctrl_sample(void) {
      * whether or not the keyboard is open, so a button already down does not act on it. */
     uint32_t pulses = gui_pad_pulses_take();
     sr_osk_overlay_pad(s_route_state != ROUTE_OFF ? s_route_keys : 0u, pulses);
+    /* Masking the pad while the keyboard is open: a project choice, not yet measured on hardware. */
     if (sr_osk_overlay_active()) buttons = 0u;
     if (getenv("SR_INLOG")) {
         static uint32_t previous;

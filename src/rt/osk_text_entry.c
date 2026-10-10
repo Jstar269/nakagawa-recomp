@@ -136,7 +136,9 @@ int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t 
     if (!out || cap < 2) return 0;
     if (cap > OSK_TEXT_UNITS) cap = OSK_TEXT_UNITS;
     if (osk_text_entry_unanswerable()) return SR_OSK_TEXT_PENDING;
-    /* The presenter draws the keyboard in the game window: no box, nothing to wait on. */
+    /* The presenter draws the keyboard in the game window: no box, nothing to wait on.
+     * input_type is enforced only by that in-window keyboard; the native input box below takes
+     * no input type and accepts any text. */
     if (sr_osk_overlay_host()) return sr_osk_overlay_poll(desc, initial, out, cap, input_type);
     switch (entry_state()) {
     case ENTRY_OPEN:
@@ -189,6 +191,7 @@ int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t 
     if (!out || cap < 2) return 0;
     if (osk_text_entry_unanswerable()) return SR_OSK_TEXT_PENDING;
     if (sr_osk_overlay_host()) return sr_osk_overlay_poll(desc, initial, out, cap, input_type);
+    /* input_type is enforced only by the in-window keyboard; this native box fallback takes none. */
     return sr_osk_input(desc, initial, out, cap) == 1;
 }
 

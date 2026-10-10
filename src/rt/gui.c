@@ -379,7 +379,9 @@ void gui_consume_button_pulses(void) {
 }
 
 /* Gamepad presses since the last call (osk_overlay.h). The keyboard takes them every VBLANK,
- * so the list never builds up while it is closed. */
+ * so the list never builds up while it is closed. Returns 0 when no SDL3 presenter is up: the
+ * GDI and offscreen presenters have no SDL3 gamepad. The overlay host governs drawing, not this
+ * read; the presses are drained whether or not the host is on. */
 uint32_t gui_pad_pulses_take(void) {
 #ifdef SR_SDL3VK
     if (s_sdl3) return sdl3vk_take_pad_pulses();

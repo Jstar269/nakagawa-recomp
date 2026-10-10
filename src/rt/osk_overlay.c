@@ -97,9 +97,15 @@ static void row_bounds_of(int row, int *first, int *last) {
  * ALL (zero) allows every Latin category. A type naming Latin categories allows exactly those.
  * A type naming no Latin category at all (Japanese, Russian, Korean, URL) cannot be shown by
  * this Latin grid, so it falls back to ALL rather than refusing every key. */
+
+/* The low four bits of inputtype are the Latin categories. A type with any of them set is
+ * restricted to those; a type with none (ALL, or only non-Latin bits) is not restricted. */
+static int latin_restricted(uint32_t input_type) { return (input_type & 0xFu) != 0; }
+
+/* The categories the grid allows: the restricted type's own bits, or LATIN_ALL for a type that
+ * is not restricted (the fallback described above). */
 static uint32_t latin_bits(uint32_t input_type) {
-    uint32_t bits = input_type & 0xFu;
-    return bits ? bits : LATIN_ALL;
+    return latin_restricted(input_type) ? (input_type & 0xFu) : LATIN_ALL;
 }
 
 static int letters_allowed(uint32_t bits) { return (bits & (LATIN_LOWER | LATIN_UPPER)) != 0; }
@@ -174,7 +180,9 @@ static int move_horizontal(OskOverlay *o, int dir) {
 static int move_vertical(OskOverlay *o, int dir) {
     int row, start, span;
     cell_geom(o->cursor, &row, &start, &span);
-    int centre = 2 * start + span;          /* doubled, so the wide keys' centres are integers */
+    /* Centres are doubled so they stay integers: a ten-key cell (span 1) centres at start + 0.5
+     * and a wide key (span 2) at start + 1, so 2 * start + span is the exact centre in both. */
+    int centre = 2 * start + span;
     for (int r = row + dir; r >= 0 && r <= GRID_ROWS; r += dir) {
         int first, last, best = -1, best_gap = 1 << 30;
         row_bounds_of(r, &first, &last);
@@ -289,7 +297,8 @@ int osk_overlay_allows(const OskOverlay *o, uint32_t cp) {
     if (cp == ' ') return 1;
     if (cp < 0x20u || cp == 0x7Fu || (cp >= 0xD800u && cp <= 0xDFFFu) || cp > 0x10FFFFu)
         return 0;
-    if (cp >= 0x80u) return (o->input_type & 0xFu) == 0;   /* restricted types exclude it */
+    /* The grid has no non-ASCII key, so only a type with no Latin category named can type it. */
+    if (cp >= 0x80u) return !latin_restricted(o->input_type);
     if (cp >= '0' && cp <= '9') return (bits & LATIN_DIGIT) != 0;
     if ((cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z')) return letters_allowed(bits);
     return (bits & LATIN_SYMBOL) != 0;
