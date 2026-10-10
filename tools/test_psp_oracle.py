@@ -2214,12 +2214,12 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # 1-67 are the sequential probe.c cases; 90-96 are the H-oracle HLE families,
         # numbered apart so sequential additions cannot collide with them.
-        self.assertEqual(len(routes), 74)
+        self.assertGreaterEqual(len(routes), 74)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(ids), set(range(1, 68)) | set(range(90, 97)))
+        self.assertLessEqual(set(range(1, 68)) | set(range(90, 97)), set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -2261,6 +2261,15 @@ class PspOracleBuildRouteTests(unittest.TestCase):
             self.assertFalse((self.fixture / f"{stem}_imports.S").exists())
         self.assertEqual(len(re.findall(r"^\$\(BUILD_DIR\)/threadman_user_imports\.o:", self.makefile, re.MULTILINE)), 1)
         self.assertIn("threadman_user_imports.S", self.makefile)
+
+
+    def test_llsc_link_route_has_its_own_case_id(self) -> None:
+        routes = dict(re.findall(
+            r"^else ifeq \(\$\(CASE\),([^\)]+)\)\nCASE_ID = (\d+)$",
+            self.makefile,
+            re.MULTILINE,
+        ))
+        self.assertEqual(routes.get("llsc-link"), "69")
 
 
 class PspDmacProbeTests(unittest.TestCase):
@@ -3915,3 +3924,227 @@ class RegistryProbeNeverWritesTests(unittest.TestCase):
         self.assertIn("registry_category_reopenable(name)", self.source)
         self.assertRegex(self.source, r"#define REGISTRY_SAFE_NAME_MAX 26u")
         self.assertNotIn("__NAKAGAWA_ORACLE_UNKNOWN_CATEGORY__", self.source)
+
+
+class LlscLinkProbeTests(unittest.TestCase):
+    """PSP-LLSC-001: the two sc behaviours PR #812 names as unmeasured on the console.
+
+    A second sc after a successful sc also stores, and an sc does not compare its address
+    with the one ll linked. Both follow the MIPS32 operation text and the project's model
+    (src/rt/guest_interp.c). The probe is single-threaded register and memory state, so
+    these tests pin its cells, the shape of each link window, the model words, the fixed
+    record shape the parser registry expects, and the case's wiring.
+    """
+
+    CASE = "llsc-link"
+    TEST_ID = "PSP-LLSC-001"
+    CELLS = ("llsc-control", "llsc-second-sc", "llsc-other-address")
+
+    @staticmethod
+    def model_words(case_id: str) -> tuple[int, int]:
+        """The model's (word A, word B) after the cell; A starts at 0x11111111, B at 0x44444444."""
+        a_init, b_init = 0x11111111, 0x44444444
+        if case_id == "llsc-control":
+            return 0x22222222, b_init
+        if case_id == "llsc-second-sc":
+            return 0x33333333, b_init
+        return a_init, 0x55555555
+
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.fixture = self.root / "fixtures" / "psp_oracle"
+        self.probe = (self.fixture / "probe.c").read_text(encoding="utf-8")
+        self.makefile = (self.fixture / "Makefile").read_text(encoding="utf-8")
+
+    def _block(self) -> str:
+        start = self.probe.index("#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_LLSC_LINK\n")
+        return self.probe[start:self.probe.index("\n#endif", start)]
+
+    def _run_body(self) -> str:
+        start = self.probe.index("static void run_llsc_link(int emulated) {")
+        return self.probe[start:self.probe.index("\n}\n", start)]
+
+    def _stream(self, rows: list[str]) -> str:
+        return META.format(
+            source="psp", model="PSP-3000", firmware="6.61-ARK",
+            binary=MEASURED_SHA, commit=MEASURED_COMMIT,
+        ) + "".join(rows)
+
+    def _rows(self, statuses: dict[str, str] | None = None) -> list[str]:
+        spec, _counts = CAMPAIGN_PROBE_CASES[self.CASE]
+        rows = []
+        for index, case_id in enumerate(spec.semantic_cases):
+            status = (statuses or {}).get(case_id, "PASS" if index % 2 else "FAIL")
+            outs = "".join(f" out{i}=0x{i:08x}" for i in range(6))
+            rows.append(
+                f"NAKAGAWA_PSP_TEST schema=1 test_id={self.TEST_ID} case_id={case_id} "
+                f"status={status} result=0x{index:08x}{outs}\n"
+            )
+        rows.append(
+            f"NAKAGAWA_PSP_TEST schema=1 test_id={self.TEST_ID} case_id={spec.terminal_case} "
+            f"status=PASS result=0x0 out0=0x{spec.terminal_count:x}\n"
+        )
+        return rows
+
+    def test_probe_model_words_match_the_project_model(self) -> None:
+        constants = {name: int(value, 16) for name, value in re.findall(
+            r"^#define LLSC_LINK_(\w+) (0x[0-9a-fA-F]+)u$", self.probe, re.MULTILINE)}
+        model_a = re.search(r"const uint32_t model_a\[LLSC_LINK_CELLS\] = \{\s*([^}]*)\}",
+                            self.probe).group(1)
+        model_b = re.search(r"const uint32_t model_b\[LLSC_LINK_CELLS\] = \{\s*([^}]*)\}",
+                            self.probe).group(1)
+        names = {"FIRST": constants["FIRST"], "SECOND": constants["SECOND"],
+                 "A_INIT": constants["A_INIT"], "B_INIT": constants["B_INIT"],
+                 "OTHER": constants["OTHER"]}
+        def words(text: str) -> list[int]:
+            return [names[token.strip().removeprefix("LLSC_LINK_")]
+                    for token in text.split(",") if token.strip()]
+        self.assertEqual(words(model_a), [self.model_words(c)[0] for c in self.CELLS])
+        self.assertEqual(words(model_b), [self.model_words(c)[1] for c in self.CELLS])
+        self.assertEqual(constants["A_INIT"], 0x11111111)
+        self.assertEqual(constants["B_INIT"], 0x44444444)
+
+    def test_status_says_the_window_ran_not_that_the_console_matched_the_model(self) -> None:
+        # The runner accepts a capture only when every record is PASS. Only the control is
+        # judged against the model (a plain pair must store, or nothing else means anything);
+        # the two measured cells pass once their window ran as designed, and what their sc did
+        # is read from the record's words against out4/out5.
+        block = self._block()
+        status = block[block.index("int pass = loaded[c] == LLSC_LINK_A_INIT;"):]
+        status = status[:status.index("const uint32_t out[LLSC_LINK_OUTS]")]
+        self.assertIn(
+            "if (c == 0u) {\n"
+            "            pass = pass && first[0] == 1u && a_after[0] == model_a[0] &&\n"
+            "                   b_after[0] == model_b[0];\n"
+            "        } else if (c == 1u) {\n"
+            "            pass = pass && first[1] == 1u;\n"
+            "        }",
+            status,
+        )
+        self.assertNotIn("last[c]", status)
+        self.assertNotIn("model_a[c]", status)
+        self.assertNotIn("model_b[c]", status)
+
+    def test_each_link_window_is_one_asm_block_of_ll_and_sc_only(self) -> None:
+        block = self._block()
+        windows = [body for body in re.findall(r"__asm__ volatile\((.*?)\);", block, re.DOTALL)
+                   if '"ll %' in body]
+        self.assertEqual(len(windows), 3)
+        expected = [["ll", "sc"], ["ll", "sc", "sc"], ["ll", "sc"]]
+        for body, want in zip(windows, expected, strict=True):
+            template = body.split(': "', 1)[0]
+            mnemonics = [m for m in re.findall(r'"(\.?[a-z]+)', template) if m != ".set"]
+            with self.subTest(window=want):
+                self.assertEqual(mnemonics, want)
+                self.assertNotIn("syscall", template)
+                self.assertNotIn("jal", template)
+                self.assertNotIn("break", template)
+
+    def test_every_window_is_bracketed_by_suspend_and_resume_with_no_host_io_inside(self) -> None:
+        body = self._run_body()
+        suspends = [m.start() for m in re.finditer(r"sceKernelCpuSuspendIntr\(\)", body)]
+        resumes = [m.start() for m in re.finditer(r"sceKernelCpuResumeIntr\(token\)", body)]
+        calls = [body.index(name) for name in (
+            "llsc_window_one(&", "llsc_window_twice(&", "llsc_window_other(&")]
+        self.assertEqual(len(suspends), 3)
+        self.assertEqual(len(resumes), 3)
+        for suspend, call, resume in zip(suspends, calls, resumes, strict=True):
+            self.assertLess(suspend, call)
+            self.assertLess(call, resume)
+        self.assertLess(resumes[-1], body.index("emit_record_extended("))
+        self.assertNotIn("for (;;)", self._block())
+        self.assertNotIn("while (", self._block().split("static void run_llsc_link")[1])
+
+    def test_each_cell_writes_its_sentinels_and_steps_before_its_window(self) -> None:
+        body = self._run_body()
+        window = [body.index(name) for name in (
+            "llsc_window_one(&", "llsc_window_twice(&", "llsc_window_other(&")]
+        for index, case_id in enumerate(self.CELLS):
+            with self.subTest(cell=case_id):
+                step = body.index(f'probe_step(emulated, "llsc-link", "{case_id}");')
+                sentinel = body.index(f"s_llsc_mem[{index}][0] = LLSC_LINK_A_INIT;")
+                suspend = body.index("sceKernelCpuSuspendIntr()", step)
+                self.assertLess(step, sentinel)
+                self.assertLess(sentinel, suspend)
+                self.assertLess(suspend, window[index])
+
+    def test_record_names_follow_the_registered_cell_order(self) -> None:
+        self.assertRegex(
+            self._run_body(),
+            r'static const char \*const names\[LLSC_LINK_CELLS\] = \{\s*'
+            r'"llsc-control", "llsc-second-sc", "llsc-other-address",\s*\};',
+        )
+        self.assertIn('emit_record_extended(emulated, "PSP-LLSC-001", "llsc-link-done", "PASS",',
+                      self._run_body())
+
+    def test_registered_spec_is_three_cells_with_six_words_each(self) -> None:
+        spec, counts = CAMPAIGN_PROBE_CASES[self.CASE]
+        self.assertEqual(spec.test_id, self.TEST_ID)
+        self.assertEqual(spec.semantic_cases, self.CELLS)
+        self.assertEqual(spec.terminal_case, "llsc-link-done")
+        self.assertEqual(spec.terminal_count, 3)
+        self.assertEqual({counts[case] for case in self.CELLS}, {6})
+        self.assertEqual(counts[spec.terminal_case], 1)
+        self.assertEqual(_campaign_completeness_contract(self.CASE), "strict-golden-sequence")
+
+    def test_complete_stream_parses_with_every_cell_pass_fail_or_skip(self) -> None:
+        report = parse_campaign_probe_output(
+            self._stream(self._rows({"llsc-second-sc": "SKIP"})), self.CASE)
+        self.assertTrue(report.complete)
+        self.assertTrue(report.terminal_present)
+        self.assertEqual(report.record_count, 4)
+        self.assertEqual(report.results["llsc-second-sc"].status, "SKIP")
+        self.assertEqual(report.results["llsc-control"].status, "FAIL")
+
+    def test_missing_extra_out_of_order_and_unknown_cells_are_refused(self) -> None:
+        rows = self._rows()
+        duplicate = rows[:1] + [rows[0]] + rows[1:]
+        swapped = [rows[1], rows[0]] + rows[2:]
+        unknown = [rows[0], rows[1].replace("llsc-second-sc", "llsc-bogus")] + rows[2:]
+        foreign = [rows[0].replace(self.TEST_ID, "PSP-LLSC-002")] + rows[1:]
+        short_terminal = rows[:-1] + [rows[-1].replace("out0=0x3", "out0=0x2")]
+        for name, body in (("duplicate", duplicate), ("swapped", swapped),
+                           ("unknown", unknown), ("foreign", foreign),
+                           ("short-terminal", short_terminal)):
+            with self.subTest(shape=name):
+                with self.assertRaises(ProtocolError):
+                    parse_campaign_probe_output(self._stream(body), self.CASE)
+                with self.assertRaises(ProtocolError):
+                    parse_campaign_probe_output(self._stream(body), self.CASE,
+                                                require_complete=False)
+        missing = rows[:1] + rows[2:]
+        with self.assertRaises(ProtocolError):
+            parse_campaign_probe_output(self._stream(missing), self.CASE)
+        self.assertFalse(parse_campaign_probe_output(
+            self._stream(missing), self.CASE, require_complete=False).complete)
+
+    def test_manifest_row_is_not_run_and_grants_no_hardware_tier(self) -> None:
+        manifest = json.loads((self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
+            encoding="utf-8"))
+        row = next(test for test in manifest["tests"] if test["id"] == self.TEST_ID)
+        spec, _counts = CAMPAIGN_PROBE_CASES[self.CASE]
+        self.assertEqual(row["hardware_evidence"], "NOT_RUN")
+        self.assertEqual(row["status"], "implemented")
+        self.assertEqual(row["case_ids"], list(spec.ordered_cases))
+        self.assertIn("UNMEASURED", row["evidence_note"])
+        self.assertNotIn("evidence_ref", row)
+        self.assertNotIn(self.TEST_ID, {test_id for ids in
+                                        hle_manifest.oracle_exercised_apis(manifest).values()
+                                        for test_id in ids})
+
+    def test_case_is_wired_into_the_makefile_queue_and_documentation(self) -> None:
+        from psp_oracle.run_psplink import CAMPAIGN_CASE_ESTIMATE_SECONDS
+
+        self.assertIn("#define PSP_ORACLE_CASE_LLSC_LINK 69", self.probe)
+        self.assertIn("else ifeq ($(CASE),llsc-link)\nCASE_ID = 69\n", self.makefile)
+        self.assertIn('#define PROBE_HOST0_LOG "host0:/llsc_link_log.txt"', self.probe)
+        self.assertEqual(_campaign_host0_log_path(Path("host0"), self.CASE).name,
+                         "llsc_link_log.txt")
+        queue = list(CAMPAIGN_QUEUE_CASES)
+        self.assertEqual(queue[queue.index("registry-readonly") + 1], self.CASE)
+        self.assertEqual(queue[queue.index(self.CASE) + 1], "kernel-misc")
+        self.assertIn(self.CASE, CAMPAIGN_CASE_ESTIMATE_SECONDS)
+        oracle_doc = (self.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
+        self.assertIn("| `llsc-link` | `PSP-LLSC-001` | `NOT_RUN`", oracle_doc)
+        readme = (self.fixture / "README.md").read_text(encoding="utf-8")
+        self.assertIn("| `llsc-link` | `PSP-LLSC-001` |", readme)

@@ -772,6 +772,21 @@
         "issues": [],
         "risk": "medium; changes the GE translation width and restores it before exit",
         "reset": "one PRX launch; the restore is verified before the probe exits; PSPLink soft reset before the next launch"
+      },
+      {
+        "id": "PSP-LLSC-001",
+        "status": "implemented",
+        "hardware_evidence": "NOT_RUN",
+        "evidence_note": "No hardware capture exists for this probe. Its expected words are the project's model (src/rt/guest_interp.c, the sc semantics of the MIPS32 operation text) and are UNMEASURED; the control cell passes only when a plain ll/sc pair stores, and the two measured cells pass once their link window ran as designed; whether the console agrees with the model is read from each record's words against the model words in out4 and out5.",
+        "group": "cpu",
+        "source": "fixtures/psp_oracle/probe.c",
+        "prx": "nakagawa_psp_oracle.prx",
+        "apis": ["ll", "sc", "sceKernelCpuSuspendIntr", "sceKernelCpuResumeIntr"],
+        "case_ids": ["llsc-control", "llsc-second-sc", "llsc-other-address", "llsc-link-done"],
+        "invariant": "for a link window opened by ll, the sc result, the word ll loads, and the words at the linked and the other address are emitted in fixed order against the model words; the model is UNMEASURED",
+        "issues": [],
+        "risk": "low; single-threaded register and memory facts inside a window with CPU interrupts suspended",
+        "reset": "one llsc-link launch; PSPLink soft reset before the next queue entry"
       }
   ]
 }
