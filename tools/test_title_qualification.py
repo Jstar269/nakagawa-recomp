@@ -47,7 +47,7 @@ def _pass_output(*, title: str = TITLE_ID, name: str = DISPLAY_NAME, backend: st
     lines = [
         f"[PLAYER] Launch index 1 is a bundled SAMPLE demo, not in library.json: "
         f"PLAY NOW available for TEST00006 ({name}).",
-        f"[PLAYER] Spawning runtime: C:\\nk\\build\\{title}\\{title}.exe (ISO: fixtures/display_smoke/generate.py)",
+        f"[PLAYER] Spawning runtime: C:\\path\\build\\{title}\\{title}.exe (ISO: fixtures/display_smoke/generate.py)",
         f"BOOT_EVENT phase=window_ready backend={backend}",
         "BOOT_EVENT phase=guest_start mode=scheduler entry=0x08810000",
         f"BOOT_EVENT phase=first_frame source=cpu {first_frame}",
