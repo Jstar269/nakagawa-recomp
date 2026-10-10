@@ -713,5 +713,37 @@ class TestCandidateImmutability293(unittest.TestCase):
             self.assertEqual(materialized.read_text(encoding="utf-8"), "# spaced\n")
 
 
+class TestToolGitNeverDetachesMaintenance(unittest.TestCase):
+    """The exporter commits the staging tree; `git commit` would otherwise hand the
+    repository to a detached `gc --auto` that keeps writing .git/objects after the tool
+    returns (ENOTEMPTY while the tree is moved, audited or removed)."""
+
+    def test_isolated_environment_disables_auto_gc(self):
+        env = isolated_git_env({"GIT_CONFIG_COUNT": "7", "GIT_CONFIG_KEY_0": "gc.auto",
+                                "GIT_CONFIG_VALUE_0": "6700", "PATH": "/usr/bin"})
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "1")
+        self.assertEqual(env["GIT_CONFIG_KEY_0"], "gc.auto")
+        self.assertEqual(env["GIT_CONFIG_VALUE_0"], "0")
+        self.assertEqual(env["PATH"], "/usr/bin")
+
+    def test_git_in_a_tool_made_repository_sees_auto_gc_off(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir) / "repo"
+            repo.mkdir()
+            _git(["init"], repo)
+            effective = run_git(["config", "--get", "gc.auto"], cwd=repo, check=True,
+                                capture_output=True, text=True).stdout.strip()
+            self.assertEqual(effective, "0")
+            # The repository itself carries no such setting: only the tool process does.
+            stored = subprocess.run(
+                ["git", "config", "--local", "--get", "gc.auto"], cwd=repo,
+                capture_output=True, text=True,
+                env={key: value for key, value in isolated_git_env().items()
+                     if not key.startswith("GIT_CONFIG_")},
+            )
+            self.assertEqual(stored.returncode, 1)
+            self.assertEqual(stored.stdout.strip(), "")
+
+
 if __name__ == "__main__":
     unittest.main()

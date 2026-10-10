@@ -83,6 +83,15 @@ def isolated_git_env(
     env.update({
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
+        # A tool-run git command finishes when it returns. `git commit` (like fetch, merge
+        # and rebase) otherwise runs `gc --auto`, which recent Git detaches into the
+        # background, and that process keeps writing .git/objects while the caller moves,
+        # audits or removes the tree (ENOTEMPTY in the public-export test cleanup). The
+        # setting lives in the environment, so a repository the tools create keeps its own
+        # default configuration.
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "gc.auto",
+        "GIT_CONFIG_VALUE_0": "0",
         "GIT_AUTHOR_NAME": "Nakagawa Recomp Tests",
         "GIT_AUTHOR_EMAIL": "tests@nakagawa-recomp.invalid",
         "GIT_COMMITTER_NAME": "Nakagawa Recomp Tests",
