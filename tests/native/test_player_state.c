@@ -3901,13 +3901,29 @@ int main(int argc, char **argv) {
         /* A complete, self-consistent package built for the previous CpuState
            ABI: the player refuses it by name through the same validation route
            it uses before a launch, never from the validation cache, and leaves
-           no launchable paths behind. Nothing but the recorded ABI version
-           differs from the accepted fixture, so the refusal can only come from
-           the runtime ABI check. */
-        write_runtime_package_fixture(validation_root, cached_disc_id,
-                                      "synthetic-allegrex-v1",
-                                      SR_CPUSTATE_ABI_VERSION - 1u,
-                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
+           no launchable paths behind. The validation cache keys on file
+           identities (size, write time, change time), not on bytes, so a
+           rewrite that only flips the ABI digit and lands inside the write
+           timestamp tick of the accepted fixture would be served from the
+           entry that validated that fixture (the same-size case is #683's and
+           is asserted on its own below). A package built by an older player is
+           a different build with a different size, so this one carries a
+           larger build report: the identity cannot miss it on any host, and
+           the refusal can then only come from the runtime ABI check. */
+        long accepted_report_size = fixture_file_size(report_json);
+        assert(accepted_report_size > 0);
+        char accepted_identity[65];
+        assert(nk_launch_runtime_package_cache_identity(
+            validation_root, &game, accepted_identity));
+        write_runtime_package_fixture_with_report_size(
+            validation_root, cached_disc_id, "synthetic-allegrex-v1",
+            SR_CPUSTATE_ABI_VERSION - 1u, "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL,
+            (size_t)accepted_report_size + 64u);
+        assert(fixture_file_size(report_json) == accepted_report_size + 64);
+        char previous_abi_identity[65];
+        assert(nk_launch_runtime_package_cache_identity(
+            validation_root, &game, previous_abi_identity));
+        assert(strcmp(accepted_identity, previous_abi_identity) != 0);
         NkRuntimePackageInfo previous_abi_info;
         memset(&previous_abi_info, 0xA5, sizeof(previous_abi_info));
         reason[0] = '\0';
