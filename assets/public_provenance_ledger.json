@@ -1348,7 +1348,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "de449d10eda823b9010497ce2b5e3fe5b3955285a2e1e424019e87474e69e3eb"
+      "sha256": "8806bd4d3d246611d39622f6a1e4ee5275ebd8b75d4fe64ff3fd402f6e337882"
     },
     {
       "path": "docs/SHOWCASE.md",
