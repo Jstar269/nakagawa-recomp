@@ -1009,20 +1009,19 @@ class TestParserSafetyInventory(unittest.TestCase):
                     )
 
     def test_font_cache_row_states_the_real_pgf_boundary(self) -> None:
-        """nk_font_check_cache caps the manifest; nk_font_validate_pgf does not.
+        """The manifest is capped at 1 MiB; each PGF is capped at the 16 MiB reader ceiling.
 
-        The digest helper streams the whole PGF through a fixed 64 KiB buffer, so
-        its peak memory is bounded while the accepted input size is not. A row
-        that calls the PGF "bounded by nk_font_validate_pgf" claims a cap the
-        source does not apply.
+        The import reads a candidate whole only after its size is checked against the
+        ceiling, so the row must name that ceiling and must not claim a streaming digest.
         """
         font_c = "\n".join(self.source_lines("src/core/nk_font.c"))
-        self.assertIn("mlen > 1024 * 1024", font_c)
-        self.assertIn("fread(buffer, 1, sizeof(buffer), f)", font_c)
+        self.assertIn("length > 1024 * 1024", font_c)
+        self.assertIn("NK_FONT_PGF_MAX_BYTES", font_c)
+        self.assertNotIn("fread(buffer, 1, sizeof(buffer), f)", font_c)
         max_input = self.row("nk-font-cache-manifest")["max_input"]
         self.assertNotIn("bounded by", max_input)
-        self.assertIn("not byte-capped", max_input)
-        self.assertIn("src/core/nk_font.c:nk_font_check_cache", max_input)
+        self.assertIn("16 MiB", max_input)
+        self.assertIn("src/core/nk_font.c:font_load_manifest", max_input)
 
     def test_player_settings_row_matches_the_native_selftest_cases(self) -> None:
         """The settings selftest writes a corrupt document and a wrong schema.

@@ -70,7 +70,7 @@ def _compile_object(
     out = owner._object_dir / object_name
     compile_cmd = [
         "gcc", "-std=c99", "-Wall", "-Wextra", "-Werror",
-        "-Isrc/core", "-Isrc/core/generated", *extra_includes,
+        "-Isrc/core", "-Isrc/core/generated", "-Isrc/rt", *extra_includes,
         "-c", source, "-o", str(out),
     ]
     build = subprocess.run(compile_cmd, cwd=ROOT, capture_output=True, text=True)
@@ -101,6 +101,11 @@ def _build_and_run(
     link_cmd.append(str(owner._objects[PLATFORM_SRC]))
     link_cmd.append(str(owner._objects[ISOLATION_SRC]))
     link_cmd.extend(str(owner._objects[source]) for source in extra_sources)
+    if "src/rt/pgf_public.c" not in extra_sources:
+        # nk_font.c calls the reader's validator. A caller that supplies the reader itself (the
+        # reader's own test defines the guest globals it needs) gets no second copy or host stub.
+        link_cmd.append(str(owner._objects["src/rt/pgf_public.c"]))
+        link_cmd.append(str(owner._objects["src/core/nk_pgf_host.c"]))
     link_cmd.append(str(owner._objects[test_source]))
     if _WINDOWS:
         # The same host libraries the player links (Makefile PLAYER_EXTRA_LIBS):
@@ -133,7 +138,7 @@ class NativeHostBackendTests(unittest.TestCase):
 
         cls._object_dir = Path(tempfile.mkdtemp(prefix="nk_backend_objects_"))
         cls._objects: dict[str, Path] = {}
-        common_sources = [*CORE_SOURCES, PLATFORM_SRC]
+        common_sources = [*CORE_SOURCES, PLATFORM_SRC, "src/rt/pgf_public.c", "src/core/nk_pgf_host.c"]
         for source in common_sources:
             cls._objects[source] = _compile_object(
                 cls, source, f"{Path(source).stem}.o"
@@ -157,9 +162,6 @@ class NativeHostBackendTests(unittest.TestCase):
         )
         cls._objects["src/player/setup_staging.c"] = _compile_object(
             cls, "src/player/setup_staging.c", "setup_staging.o", ("-Isrc/player",)
-        )
-        cls._objects["src/rt/pgf_public.c"] = _compile_object(
-            cls, "src/rt/pgf_public.c", "pgf_public.o", ("-Isrc/rt",)
         )
         harnesses = {
             "tests/native/test_launch_resolution.c": (),
