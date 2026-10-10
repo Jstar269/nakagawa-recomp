@@ -1263,6 +1263,9 @@ def validate_completion_manifest(
     ``file_digests`` maps resolved artifact paths to digests computed earlier in the same
     validation. Each listed artifact is still compared against its manifest digest; only
     the second read of a file that was already digested is skipped.
+    The comparison therefore reflects the bytes as that validation read them: a file
+    rewritten between the package-level check and this one, inside the same call, is
+    not read a second time. A caller that wants a fresh read passes no digests.
     """
     package_dir = package_dir.resolve(strict=False)
     path = package_dir / COMPLETION_MANIFEST
