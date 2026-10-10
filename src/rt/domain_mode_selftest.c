@@ -381,6 +381,82 @@ static void test_fallback_lane(void) {
     CHECK(s_syscall_calls == 1u, "fallback dispatch rejection must never reach HLE");
 }
 
+/* ---- LLbit across the seam ---------------------------------------------------------
+ * An import the seam routes to a guest export returns like an HLE syscall: the
+ * caller's LLbit is cleared, so an sc after the import fails. The sc is run by the
+ * production interpreter over encoded words (sr_guest_interp_run), not modeled.
+ * Failing-before evidence: on origin/main sr_import_call_guest() returns without
+ * clearing, so LLbit survives the import and the sc stores and writes 1. The HLE
+ * arms are not asserted here: sr_syscall is this harness's recording double; their
+ * clear is pinned by hle_thread_selftest.c (test_hle_syscall_return_clears_link). */
+#define SC_CODE   (TEST_EXPORT + 0x100u)   /* sc, jr $ra, nop: inside the exec span */
+#define SC_DATA   0x08814000u              /* the word the sc would store to */
+#define SC_OLD    0x0BADC0DEu
+#define SC_RETURN (TEST_EXPORT + 0x1000u)  /* $ra: first address past the span */
+
+/* sc $t1, 0($a0) ; jr $ra ; nop, run by the interpreter from the state the seam left. */
+static void check_sc_after_import(CpuState *s, const char *what) {
+    SrGuestInterpFault fault;
+    SrGuestInterpResult r;
+    MEM_W32_PC(SC_DATA, SC_OLD, SC_CODE);
+    MEM_W32_PC(SC_CODE + 0u, 0xE0890000u, SC_CODE);        /* sc t1, 0(a0) */
+    MEM_W32_PC(SC_CODE + 4u, 0x03E00008u, SC_CODE + 4u);   /* jr ra */
+    MEM_W32_PC(SC_CODE + 8u, 0x00000000u, SC_CODE + 8u);   /* nop */
+    s->r[4] = SC_DATA;
+    s->r[9] = 0xAAAA0009u;
+    s->r[31] = SC_RETURN;
+    s->pc = SC_CODE;
+    memset(&fault, 0, sizeof fault);
+    r = sr_guest_interp_run(s, SC_CODE, &fault);
+    CHECK(r == SR_GUEST_INTERP_FETCH_BOUNDARY && fault.pc == SC_RETURN,
+          "%s: the sc must run to its return (got %s at 0x%08x)",
+          what, sr_guest_interp_result_name(r), fault.pc);
+    CHECK(s->r[9] == 0u, "%s: an sc after the import must report 0 (t1=0x%08x)",
+          what, s->r[9]);
+    CHECK(MEM_R32(SC_DATA) == SC_OLD, "%s: an sc after the import must store nothing (m=0x%08x)",
+          what, MEM_R32(SC_DATA));
+}
+
+/* LLE mode: the guest export's return clears the caller's link. */
+static void test_lle_return_clears_link(void) {
+    CpuState s;
+    int rc;
+    fresh_state(&s);
+    CHECK(sr_domain_bind_nid(SR_DOMAIN_THREADMAN, NID_LLEHIT) == 0, "bind the LLE NID");
+    CHECK(sr_domain_mode_set(SR_DOMAIN_THREADMAN, SR_MODE_LLE) == 0, "select LLE");
+    CHECK(sr_import_register_export(NID_LLEHIT, TEST_EXPORT) == 0, "register the export");
+    sr_register(TEST_EXPORT, test_export_fn);
+    s_export_ran = 0;
+    s.pc = STUB_PC;
+    s.llbit = 1u;   /* an ll..sc window open across the import */
+    rc = sr_import_call(&s, NID_LLEHIT, STUB_PC);
+    CHECK(rc == 0 && s_export_ran == 1, "LLE return must run the export and report handled (rc=%d ran=%d)",
+          rc, s_export_ran);
+    CHECK(s.llbit == 0u, "an LLE-routed import return must clear LLbit (llbit=%u)", s.llbit);
+    CHECK(s.flow_kind == SR_FLOW_NONE, "a cleared LLE return must not set flow");
+    check_sc_after_import(&s, "LLE import");
+}
+
+/* FALLBACK mode with a registered export takes the same guest-export return. */
+static void test_fallback_return_clears_link(void) {
+    CpuState s;
+    int rc;
+    fresh_state(&s);
+    CHECK(sr_domain_bind_nid(SR_DOMAIN_IO, NID_FBHIT) == 0, "bind the fallback-hit NID");
+    CHECK(sr_domain_mode_set(SR_DOMAIN_IO, SR_MODE_LLE_FALLBACK_HLE) == 0, "select fallback");
+    CHECK(sr_import_register_export(NID_FBHIT, TEST_EXPORT) == 0, "register the fallback export");
+    sr_register(TEST_EXPORT, test_export_fn);
+    s_export_ran = 0;
+    s.pc = STUB_PC;
+    s.llbit = 1u;
+    rc = sr_import_call(&s, NID_FBHIT, STUB_PC);
+    CHECK(rc == 0 && s_export_ran == 1, "fallback hit must run the export and report handled (rc=%d ran=%d)",
+          rc, s_export_ran);
+    CHECK(s.llbit == 0u, "a fallback guest-export return must clear LLbit (llbit=%u)", s.llbit);
+    CHECK(s_syscall_calls == 0u, "a fallback guest-export return must not reach HLE");
+    check_sc_after_import(&s, "fallback import");
+}
+
 int main(void) {
     CpuState warm;
     sr_mem_init();
@@ -408,6 +484,8 @@ int main(void) {
     test_lle_miss();
     test_lle_dispatch_reject();
     test_fallback_lane();
+    test_lle_return_clears_link();
+    test_fallback_return_clears_link();
     sr_domain_reset_defaults();
     if (g_failed) {
         fprintf(stderr, "domain-mode selftest: FAILED\n");

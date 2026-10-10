@@ -75,9 +75,9 @@ typedef struct CpuState {
     uint32_t flow_target;    /* Runtime transfer metadata, not architectural state */
     /* MIPS32 LLbit: 1 after `ll`, read by `sc`. Architectural, per thread. Cleared
      * only through sr_cpu_link_clear() at the events that end an atomic window:
-     * exception return (eret), interrupt/callback return, HLE syscall return and
-     * thread switch-in. Nothing else writes it, so an ll..sc window that crosses
-     * none of those events always succeeds (ABI v3). */
+     * exception return (eret), interrupt/callback return, HLE syscall return, LLE
+     * import seam return and thread switch-in. Nothing else writes it, so an
+     * ll..sc window that crosses none of those events always succeeds (ABI v3). */
     uint32_t llbit;
 } CpuState;
 
@@ -90,8 +90,9 @@ static inline uint32_t *sr_cp0_status_ptr(CpuState *s) {
 /* End the current ll..sc atomic window: the next `sc` fails and stores nothing.
  * Called at every point where this runtime models an event the MIPS32 contract
  * says breaks the link (an exception return, an interrupt or callback returning
- * to the interrupted context, an HLE syscall returning, and a thread being
- * switched in). See docs/ARCHITECTURE.md "LL/SC link state". */
+ * to the interrupted context, an HLE syscall returning, an LLE import seam guest
+ * export returning, and a thread being switched in). See docs/ARCHITECTURE.md
+ * "LL/SC link state". */
 static inline void sr_cpu_link_clear(CpuState *s) {
     s->llbit = 0u;
 }

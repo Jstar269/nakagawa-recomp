@@ -8,7 +8,10 @@
 // plus HLE, fallback logged plus HLE, or the LLE guest export ran); negative
 // means flow_kind/flow_target carry SR_FLOW_FATAL and the caller must leave
 // its native body at once, exactly like the PR 2 cpu_lle helpers. The seam
-// never clears flow and never invents success.
+// never clears flow and never invents success. A handled return clears the
+// caller's LLbit: the HLE arms inherit sr_syscall()'s clear (including its
+// started-module-export exemption), and the guest-export arms clear in
+// sr_import_call_guest().
 
 #include "domain_mode.h"
 
@@ -264,7 +267,14 @@ static int sr_import_fatal(
 /* Run a registered guest export through the production linked-call boundary
  * (explicit target plus resume PC; live $ra is not a resume descriptor).
  * A dispatch rejection fails closed like a missing export: falling through
- * to HLE after a partially executed guest body could double-apply effects. */
+ * to HLE after a partially executed guest body could double-apply effects.
+ * A successful return clears the caller's LLbit, as sr_syscall() does for an
+ * HLE handler: the import is modeled as a kernel call that ends in an
+ * exception return (MIPS32 ERET clears LLbit). The seam does not tell a
+ * library the console reaches through a syscall from a user-mode library it
+ * reaches through a plain jump; it clears for both, exactly like the HLE arm
+ * for the same NID. The fail-closed returns above leave FATAL flow for the
+ * caller to unwind and never resume guest code, so they do not clear. */
 static int sr_import_call_guest(CpuState *s, uint32_t nid, uint32_t stub_pc) {
     uint32_t guest_addr;
     int rc;
@@ -275,6 +285,7 @@ static int sr_import_call_guest(CpuState *s, uint32_t nid, uint32_t stub_pc) {
     if (rc < 0) {
         return sr_import_fatal(s, nid, stub_pc, "guest export dispatch rejected");
     }
+    sr_cpu_link_clear(s);
     return 0;
 }
 

@@ -338,6 +338,10 @@ those events at a fixed set of points, and `sr_cpu_link_clear()` runs at exactly
 | interrupt return | `deliver_vblank()` and `scheduler_alarm_deliver()` after restoring the interrupted frame |
 | callback / nested guest call return | `sr_callback_dispatch_one()` (`recomp.h`), `ge_call_guest*()` (`hle.c`), `call_guest3()` (`mpeg.c`) |
 | HLE syscall return | `sr_syscall()` after the handler runs; a call linked to a started module's guest export is a plain jump on hardware and does not clear |
+| LLE import seam, guest-export return | `sr_import_call_guest()` (`src/rt/domain_mode.c`) after a registered guest export returns normally; the seam's HLE arms clear through `sr_syscall()` (row above). The import is modeled as a kernel call ending in an exception return, as for HLE; the seam does not distinguish a user-mode library the console reaches through a plain jump. A fail-closed seam return does not clear: it leaves FATAL flow for the caller to unwind and never resumes guest code |
+
+The seam's guest-export row is a source-level model of the public MIPS32 text, not a PSP
+measurement.
 
 Nothing else writes `llbit`. In particular a `SR_YIELD` point whose `sr_yield()` neither switches
 threads nor delivers an interrupt leaves the link set, and exception entry does not clear it (the
@@ -352,8 +356,8 @@ The retry branch's own `SR_YIELD` runs after the failed `sc` and before the next
 the window. A window that does contain a yield point fails only when the time slice expires
 inside it and another thread is runnable or an interrupt is pending; `sr_yield()` then grants a
 fresh slice of `TIMESLICE` yield points, so the next pass succeeds unless the window itself holds
-that many. A window that contains an HLE syscall fails on every pass, as it would on hardware for
-a kernel call.
+that many. A window that contains an HLE syscall, or an import routed through the LLE seam, fails on
+every pass, as it would on hardware for a kernel call.
 
 ## Build System
 

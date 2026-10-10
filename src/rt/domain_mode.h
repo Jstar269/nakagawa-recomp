@@ -109,7 +109,9 @@ int sr_import_lookup_export(uint32_t nid, uint32_t *guest_addr_out);
  *      explicit fallback logged plus HLE, or the LLE guest export ran via
  *      dispatch_call_try). The HLE arms return the handler value cast to
  *      int; generated stubs key off s->flow_kind, not this value, because
- *      legitimate HLE errors are nonzero.
+ *      legitimate HLE errors are nonzero. A handled return clears the
+ *      caller's LLbit, except an HLE-arm call that sr_syscall() links to a
+ *      started module's export (a plain jump on hardware, unchanged).
  *   <0 fail closed: flow_kind is SR_FLOW_FATAL with flow_target naming the
  *      NID, and a diagnostic names the NID, stub PC, and reason. Generated
  *      stubs return to the native caller without clearing flow so the

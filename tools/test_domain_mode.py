@@ -150,6 +150,18 @@ class DomainSourcesTests(unittest.TestCase):
         self.assertIn("SR_FLOW_FATAL", text)
         self.assertIn("SR_IMPORT_FATAL", text)
 
+    def test_lle_guest_return_clears_link_only_on_success(self):
+        # A successful guest-export return clears the caller's LLbit, as sr_syscall
+        # does for HLE. The clear sits after the rejection check, so a fail-closed
+        # return never reaches it.
+        text = DOMAIN_C.read_text(encoding="utf-8")
+        body = text.split("static int sr_import_call_guest(", 1)[1].split("\n}\n", 1)[0]
+        self.assertIn("sr_cpu_link_clear(s);", body)
+        clear = body.index("sr_cpu_link_clear(s);")
+        self.assertLess(body.index("dispatch_call_try("), clear)
+        self.assertLess(body.index("if (rc < 0)"), clear)
+        self.assertLess(clear, body.index("return 0;"))
+
     def test_fallback_arm_logs_and_counts(self):
         text = DOMAIN_C.read_text(encoding="utf-8")
         self.assertIn("SR_IMPORT_FALLBACK_HLE", text)
