@@ -2,12 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Jstar269/nakagawa-recomp/raw/main/assets/flight_recorder_schema.json",
   "$comment": "SPDX-License-Identifier: GPL-3.0-or-later",
-  "title": "Nakagawa Recomp Flight Recorder Bundle v4",
+  "title": "Nakagawa Recomp Flight Recorder Bundle v5",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "runtime", "build", "recorder", "terminal", "events"],
   "properties": {
-    "schema_version": {"enum": [1, 2, 3, 4]},
+    "schema_version": {"enum": [1, 2, 3, 4, 5]},
     "runtime": {
       "type": "object",
       "additionalProperties": false,
@@ -20,7 +20,7 @@
     "build": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Build identity. Since bundle schema_version 3 this block records a reproducible identity instead of a wall clock: source_date_epoch is the build's SOURCE_DATE_EPOCH (the reproducible-builds.org convention) and build_id is the source commit, each null when the build forwarded none; schema_version 3 and 4 bundles must record at least one of the two (enforced here and by tools/flight_diff.py). schema_version 1 and 2 bundles carry the historical compiled_date/compiled_time compile-clock stamp; readers keep accepting them.",
+      "description": "Build identity. Since bundle schema_version 3 this block records a reproducible identity instead of a wall clock: source_date_epoch is the build's SOURCE_DATE_EPOCH (the reproducible-builds.org convention) and build_id is the source commit, each null when the build forwarded none; schema_version 3, 4 and 5 bundles must record at least one of the two (enforced here and by tools/flight_diff.py). schema_version 1 and 2 bundles carry the historical compiled_date/compiled_time compile-clock stamp; readers keep accepting them.",
       "required": ["compiler", "pointer_bits"],
       "properties": {
         "compiler": {"enum": ["gcc", "clang", "other"]},
@@ -48,6 +48,7 @@
         "dropped": {"type": "integer", "minimum": 0},
         "triggers": {
           "type": "object",
+          "description": "Armed terminal triggers and whether one fired. first_unsupported_nid arms the unknown-NID stop (no handler); a named refusal never fires a trigger in schema 5 and never ends the record. fired is 1 only for a fatal, unknown-NID, or watchdog-hang terminal.",
           "additionalProperties": false,
           "required": ["first_fatal", "first_unsupported_nid", "fired"],
           "properties": {
@@ -63,10 +64,39 @@
       "additionalProperties": false,
       "required": ["reason", "sequence", "kind", "arg0"],
       "properties": {
-        "reason": {"enum": ["running", "exit", "fatal", "unsupported-nid"]},
+        "reason": {
+          "enum": ["running", "exit", "budget", "hang", "fatal", "unsupported-nid"],
+          "description": "running: no terminal yet (a provisional record written at a named refusal, so a run killed later is not reported under that refusal). exit: normal exit. budget: the SR_EXIT_AT_VBLANK vblank budget was reached (arg0 is the vblank). hang: the no-frame watchdog aborted (arg0 is the vblanks without a frame). fatal: a fatal event. unsupported-nid: an NID with no handler ended the run (kind 13). Schema 1 to 4 bundles use only running, exit, fatal and unsupported-nid; unsupported-nid there may also be a frozen named refusal (kind 2)."
+        },
         "sequence": {"type": "integer", "minimum": 0},
         "kind": {"type": "integer", "minimum": 0, "maximum": 4294967295},
         "arg0": {"type": "integer", "minimum": 0, "maximum": 4294967295}
+      }
+    },
+    "refusals": {
+      "type": "object",
+      "description": "Schema 5 only. Named refusals: calls the runtime answered with a registered error while the guest kept running. Each one is a counted event and never ends the record. first_nid and first_pc name the first refusal (null when count is 0). nids lists each refused NID once, in first-seen order, with its count, capped at 32 entries; nids_unlisted counts refusals of further NIDs past that cap. count is the sum of the nids counts plus nids_unlisted.",
+      "additionalProperties": false,
+      "required": ["count", "first_nid", "first_pc", "first_sequence", "nids", "nids_unlisted"],
+      "properties": {
+        "count": {"type": "integer", "minimum": 0},
+        "first_nid": {"type": ["integer", "null"], "minimum": 0, "maximum": 4294967295},
+        "first_pc": {"type": ["integer", "null"], "minimum": 0, "maximum": 4294967295},
+        "first_sequence": {"type": "integer", "minimum": 0},
+        "nids": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["nid", "count"],
+            "properties": {
+              "nid": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+              "count": {"type": "integer", "minimum": 1}
+            }
+          }
+        },
+        "nids_unlisted": {"type": "integer", "minimum": 0}
       }
     },
     "events": {
@@ -77,7 +107,7 @@
         "additionalProperties": false,
         "required": ["schema_version", "sequence", "class", "kind", "arg0", "arg1", "arg2", "arg3"],
         "properties": {
-          "schema_version": {"enum": [1, 2, 3, 4]},
+          "schema_version": {"enum": [1, 2, 3, 4, 5]},
           "sequence": {"type": "integer", "minimum": 1},
           "class": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media", "ge", "present"]},
           "kind": {"type": "integer", "minimum": 1, "maximum": 4294967295, "description": "Kind 19 is a refused media stream. Kinds 20-27 are GE list enqueue, dequeue, sync, draw sync, stall update, draw, list finish, and GE FINISH command. Kinds 28-29 are SetFrameBuf and successful present."},
@@ -108,7 +138,7 @@
             }
           },
           {
-            "if": {"properties": {"schema_version": {"enum": [2, 3, 4]}}, "required": ["schema_version"]},
+            "if": {"properties": {"schema_version": {"enum": [2, 3, 4, 5]}}, "required": ["schema_version"]},
             "then": {
               "if": {
                 "properties": {"class": {"const": "hle"}, "kind": {"const": 1}},
@@ -145,6 +175,20 @@
       "then": {"properties": {"events": {"items": {"properties": {"schema_version": {"const": 4}}}}}}
     },
     {
+      "if": {"properties": {"schema_version": {"const": 5}}, "required": ["schema_version"]},
+      "then": {
+        "required": ["refusals"],
+        "properties": {"events": {"items": {"properties": {"schema_version": {"const": 5}}}}}
+      }
+    },
+    {
+      "if": {"properties": {"schema_version": {"enum": [1, 2, 3, 4]}}, "required": ["schema_version"]},
+      "then": {
+        "not": {"required": ["refusals"]},
+        "properties": {"terminal": {"properties": {"reason": {"enum": ["running", "exit", "fatal", "unsupported-nid"]}}}}
+      }
+    },
+    {
       "if": {"properties": {"schema_version": {"enum": [1, 2]}}, "required": ["schema_version"]},
       "then": {"properties": {"build": {"allOf": [
         {"required": ["compiled_date", "compiled_time"]},
@@ -153,7 +197,7 @@
       ]}}}
     },
     {
-      "if": {"properties": {"schema_version": {"enum": [3, 4]}}, "required": ["schema_version"]},
+      "if": {"properties": {"schema_version": {"enum": [3, 4, 5]}}, "required": ["schema_version"]},
       "then": {"properties": {"build": {"allOf": [
         {"required": ["source_date_epoch", "build_id"]},
         {"not": {"properties": {"source_date_epoch": {"type": "null"}, "build_id": {"type": "null"}}}},
