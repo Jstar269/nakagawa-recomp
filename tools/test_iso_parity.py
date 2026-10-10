@@ -33,6 +33,7 @@ from nk_core.iso_inspect import (
     inspect_iso,
     list_disc_module_candidates,
     plan_guest_module_bindings,
+    plan_guest_module_layout,
     read_guest_module_interface,
     runtime_registered_nids,
     runtime_serves_module,
@@ -609,9 +610,30 @@ static bool print_module_path(const char *path, const NkIsoDirEntry *entry,
     return true;
 }}
 
+static bool harness_file_read(void *context, uint64_t offset, void *dst, uint32_t bytes) {{
+    FILE *image = (FILE *)context;
+    if (offset > 0x7fffffffULL || fseek(image, (long)offset, SEEK_SET) != 0) return false;
+    return fread(dst, 1, bytes, image) == bytes;
+}}
+
 int main(int argc, char **argv) {{
     if (argc < 2) return 1;
     const char *mode = argv[1];
+
+    if (strcmp(mode, "elf_layout") == 0) {{
+        /* elf_layout <file> <module 0|1>: the shared PSP ELF32/MIPS layout rule. */
+        if (argc < 4) return 1;
+        FILE *image = fopen(argv[2], "rb");
+        if (!image) return 2;
+        if (fseek(image, 0, SEEK_END) != 0) {{ fclose(image); return 2; }}
+        long image_size = ftell(image);
+        if (image_size < 0) {{ fclose(image); return 2; }}
+        const char *rule = nk_elf32_mips_layout_violation(
+            harness_file_read, image, (uint64_t)image_size, strcmp(argv[3], "1") == 0);
+        fclose(image);
+        printf("ELF_LAYOUT:%s\\n", rule ? rule : "USABLE");
+        return 0;
+    }}
 
     if (strcmp(mode, "module_walk") == 0) {{
         if (argc < 3) return 1;
@@ -976,6 +998,117 @@ int main(int argc, char **argv) {{
         native_status, native_paths = self._run_native_module_walk(iso_file)
         self.assertEqual(native_status, 0)
         self.assertEqual(set(native_paths), set(paths))
+
+    def test_unusable_module_candidate_names_the_failing_rule(self) -> None:
+        # p_align 3 is not a power of two: the shared layout rule refuses the module, and the
+        # candidate names that rule, so the refusal says which module and which condition.
+        bad_align = bytearray(build_plain_mips_elf(0xFFA0, vaddr=0, entry=0xFFFFFFFF))
+        struct.pack_into("<I", bad_align, 52 + 28, 3)
+        iso_file = self.temp_dir / "bad-align-module.iso"
+        create_test_iso_with_module_tree(
+            iso_file, {"PSP_GAME/USRDIR/module/bad-align.prx": bytes(bad_align)}
+        )
+        candidates = nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+        self.assertEqual([candidate["name"] for candidate in candidates], ["bad-align.prx"])
+        self.assertEqual(candidates[0]["kind"], "unsupported")
+        self.assertIn("segment-alignment", candidates[0]["reason"])
+        self.assertEqual(
+            nk_cli._unready_module_lines(candidates),
+            ["MODULE bad-align.prx: not ready (" + candidates[0]["reason"] + ")"],
+        )
+
+    def test_non_congruent_valid_module_is_accepted(self) -> None:
+        # p_offset (84) and p_vaddr (0) differ modulo p_align 0x10. The loader copies segment
+        # bytes from the file offset, so this valid PSP module is accepted: no congruence rule.
+        offset_module = bytearray(build_plain_mips_elf(0xFFA0, vaddr=0, entry=0xFFFFFFFF))
+        struct.pack_into("<I", offset_module, 52 + 28, 0x10)
+        iso_file = self.temp_dir / "non-congruent-module.iso"
+        create_test_iso_with_module_tree(
+            iso_file, {"PSP_GAME/USRDIR/module/offset.prx": bytes(offset_module)}
+        )
+        candidates = nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+        self.assertEqual(
+            [(candidate["name"], candidate["kind"]) for candidate in candidates],
+            [("offset.prx", "plain-elf")],
+        )
+
+    @staticmethod
+    def _layout_case_images() -> list[tuple[str, bytes, bool, str | None]]:
+        """(case name, image bytes, module flag, expected rule or None when usable)."""
+        def patched(data: bytes, edits: list[tuple[str, int, int]]) -> bytes:
+            image = bytearray(data)
+            for fmt, offset, value in edits:
+                struct.pack_into(fmt, image, offset, value)
+            return bytes(image)
+
+        executable = build_plain_mips_elf(2)
+        prx = build_plain_mips_elf(0xFFA0, vaddr=0, entry=0xFFFFFFFF)
+        return [
+            ("usable-executable", executable, False, None),
+            ("usable-prx-module", prx, True, None),
+            ("non-congruent-prx-module", patched(prx, [("<I", 52 + 28, 0x10)]), True, None),
+            ("non-congruent-executable", patched(executable, [("<I", 52 + 28, 0x10)]), False, None),
+            ("header-truncated", executable[:40], False, "header-truncated"),
+            ("header-magic", patched(executable, [("<B", 0, 0)]), False, "header-magic"),
+            ("header-fields", patched(executable, [("<H", 18, 3)]), False, "header-fields"),
+            ("program-table-fields", patched(executable, [("<H", 42, 24)]), False,
+             "program-table-fields"),
+            ("program-table-empty", patched(executable, [("<H", 44, 0)]), False,
+             "program-table-fields"),
+            ("program-table-bounds", patched(executable, [("<I", 28, 0xFFFF0)]), False,
+             "program-table-bounds"),
+            ("section-table-bounds", patched(executable, [
+                ("<H", 46, 40), ("<H", 48, 1), ("<I", 32, 0x1000)]), False,
+             "section-table-bounds"),
+            ("section-table-stray-offset", patched(executable, [("<I", 32, 0x40)]), False,
+             "section-table-bounds"),
+            ("segment-file-range", patched(executable, [("<I", 52 + 16, 0x100)]), False,
+             "segment-file-range"),
+            ("segment-memory-below-file", patched(executable, [("<I", 52 + 20, 2)]), False,
+             "segment-memory-below-file"),
+            ("segment-memory-range", patched(executable, [("<I", 52 + 8, 0xFFFFFFF0),
+                                                          ("<I", 52 + 20, 0x100)]), False,
+             "segment-memory-range"),
+            ("segment-alignment", patched(executable, [("<I", 52 + 28, 3)]), False,
+             "segment-alignment"),
+            ("no-load-segment", patched(executable, [("<I", 52, 4)]), False, "no-load-segment"),
+            ("segment-overlap", build_overlapping_mips_elf(
+                vaddr1=0, memsz1=0x2000, vaddr2=0x1000, memsz2=0x2000), True, "segment-overlap"),
+            ("entry-not-executable", build_plain_mips_elf(2, p_flags=4), False,
+             "entry-not-executable"),
+            ("prx-without-code-segment", build_plain_mips_elf(
+                0xFFA0, vaddr=0, entry=0xFFFFFFFF, p_flags=4), True, "no-code-segment"),
+            ("prx-code-without-file-bytes", build_plain_mips_elf(
+                0xFFA0, vaddr=0, entry=0xFFFFFFFF, filesz=0), True, "no-code-segment"),
+        ]
+
+    def _run_native_elf_layout(self, path: Path, module: bool) -> str | None:
+        result = subprocess.run(
+            [str(self.exe_path), "elf_layout", str(path), "1" if module else "0"],
+            capture_output=True, text=True, encoding="utf-8", errors="strict",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for line in result.stdout.splitlines():
+            if line.startswith("ELF_LAYOUT:"):
+                rule = line.split(":", 1)[1]
+                return None if rule == "USABLE" else rule
+        self.fail(f"the native layout check printed no verdict: {result.stdout!r}")
+
+    def test_elf_layout_rule_is_shared_by_python_and_c(self) -> None:
+        # The same synthetic headers through the Python mirror and the C definition in
+        # src/core/nk_iso.c: both must accept the same inputs and refuse each one by the
+        # same named rule.
+        for name, image, module, expected in self._layout_case_images():
+            with self.subTest(case=name):
+                path = self.temp_dir / f"layout-{name}.elf"
+                path.write_bytes(image)
+                with path.open("rb") as stream:
+                    python_rule = iso_inspect._elf32_mips_iso_violation(
+                        stream, len(image), 0, len(image), module=module
+                    )
+                self.assertEqual(python_rule, expected, "python layout rule")
+                self.assertEqual(self._run_native_elf_layout(path, module), expected,
+                                 "native layout rule")
 
     def test_usrdir_prx_discovery_checklist_and_extraction_share_module_rule(self) -> None:
         iso_file = self.temp_dir / "usrdir-plain-prx.iso"
@@ -2007,11 +2140,8 @@ int main(int argc, char **argv) {{
              "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE"),
             # Fixed-address modules carry a real SceModuleInfo: the planner reads every
             # module's export table first (#771), and a plain ELF whose p_paddr is a
-            # load address is a malformed module to that reader.
-            ("a fixed-address module over the main image", None,
-             build_module_elf([SYSLIB_EXPORT], e_type=2, base_vaddr=0x08820000),
-             "fixed load address 0x08820000 that collides with layout",
-             "GUEST_MODULE_LOAD_BINDING_REQUIRED"),
+            # load address is a malformed module to that reader. An executable on the
+            # main image is deferred by name, not refused (checked below).
             ("a fixed-address module past user memory", None,
              build_module_elf([SYSLIB_EXPORT], e_type=2, base_vaddr=0x09FFFFF0),
              "fixed load address 0x09fffff0 that collides with layout",
@@ -2048,6 +2178,17 @@ int main(int argc, char **argv) {{
             plan_guest_module_bindings(
                 main_elf, [("A.prx", fixed, "disc0:/a"), ("a.PRX", fixed, "disc0:/b")])
         self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_FORMAT_UNSUPPORTED")
+        # An executable on the main image is a separate program: deferred by name.
+        over_main = self.temp_dir / "over-main.prx"
+        over_main.write_bytes(build_module_elf([SYSLIB_EXPORT], e_type=2, base_vaddr=0x08820000))
+        declared, deferred = plan_guest_module_layout(
+            main_elf, [("over-main.prx", over_main, "disc0:/over-main.prx")])
+        self.assertEqual(declared, [])
+        self.assertEqual(deferred, [{
+            "name": "over-main.prx",
+            "reason": "separate executable on the main image base, not pre-placed",
+        }])
+
     def test_guest_module_planning_with_a_main_image_that_leaves_little_memory(self) -> None:
         # A relocatable main image ending at 0x09EF4000 left no room for the former
         # fixed layout; with on-demand placement its module is still planned (the
@@ -2113,13 +2254,49 @@ int main(int argc, char **argv) {{
             "placement": "runtime", "guest_path": "disc0:/PSP_GAME/USRDIR/fixed_ok.prx",
         }])
 
+        # An executable on the main image's base is a separate program: it is deferred by
+        # name, not pre-placed beside main and not a stop.
         fixed_bad.write_bytes(build_module_elf([SYSLIB_EXPORT], e_type=2, base_vaddr=0x08810000))
-        with self.assertRaises(IsoInspectionError) as ctx:
-            plan_guest_module_bindings(
-                main_elf,
-                [("fixed_bad.prx", fixed_bad, "disc0:/PSP_GAME/USRDIR/fixed_bad.prx")],
-            )
-        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_LOAD_BINDING_REQUIRED")
+        declared, deferred = plan_guest_module_layout(
+            main_elf,
+            [("fixed_bad.prx", fixed_bad, "disc0:/PSP_GAME/USRDIR/fixed_bad.prx")],
+        )
+        self.assertEqual(declared, [])
+        self.assertEqual(deferred, [{
+            "name": "fixed_bad.prx",
+            "reason": "separate executable on the main image base, not pre-placed",
+        }])
+
+    def test_byte_identical_copy_of_the_main_executable_is_a_recorded_duplicate(self) -> None:
+        main_elf = self.temp_dir / "duplicate-main.elf"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        copy = self.temp_dir / "duplicate_copy.elf"
+        copy.write_bytes(main_elf.read_bytes())
+        declared, deferred = plan_guest_module_layout(
+            main_elf,
+            [("duplicate_copy.elf", copy, "disc0:/PSP_GAME/USRDIR/duplicate_copy.elf")],
+        )
+        self.assertEqual(declared, [])
+        self.assertEqual(deferred, [{
+            "name": "duplicate_copy.elf",
+            "reason": "duplicate of the main executable, not loaded as a module",
+        }])
+
+    def test_codegen_step_keeps_its_output_on_disk(self) -> None:
+        log = self.temp_dir / "bringup-codegen.log"
+        code = (
+            "import sys; print('codegen-stdout-line'); "
+            "print('codegen-stderr-line', file=sys.stderr); sys.exit(3)"
+        )
+        returncode = nk_cli._run_codegen_step(
+            [sys.executable, "-c", code], cwd=self.temp_dir, env=dict(os.environ),
+            log_path=log,
+        )
+        self.assertEqual(returncode, 3)
+        text = log.read_text(encoding="utf-8")
+        self.assertIn("exit 3", text)
+        self.assertIn("codegen-stdout-line", text)
+        self.assertIn("codegen-stderr-line", text)
 
     # Synthetic NIDs for the exact HLE-served rule. The registry is injected so
     # these cases pin the rule itself, independent of what src/rt/hle.c serves.

@@ -203,14 +203,14 @@
     },
     {
       "boundary": "ELF32/MIPS executable preflight classifier",
-      "entry": "src/core/nk_iso.c:nk_iso_elf32_mips_usable; src/core/nk_iso.c:nk_iso_classify_executables",
+      "entry": "src/core/nk_iso.c:nk_iso_elf32_mips_layout_violation; src/core/nk_iso.c:nk_elf32_mips_layout_violation; src/core/nk_iso.c:nk_iso_classify_executables",
       "max_input": "512 MiB executable extent.",
       "tables_nesting": "Program headers: at most 128 entries of exactly 32 bytes. Section headers: at most 65535 entries of exactly 40 bytes; preflight validates the table extent but does not consume section entries.",
       "arithmetic": {
         "safe": "SAFE",
         "evidence": [
-          "src/core/nk_iso.c:nk_iso_elf32_mips_usable",
-          "src/core/nk_iso.c:nk_iso_elf32_mips_usable",
+          "src/core/nk_iso.c:nk_elf32_mips_layout_violation",
+          "src/core/nk_iso.c:nk_elf32_mips_layout_violation",
           "src/core/nk_iso.c:nk_iso_extent_is_zero_filled"
         ]
       },
