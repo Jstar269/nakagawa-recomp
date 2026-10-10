@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -48,7 +49,7 @@ def make_bundle(events, *, recorded=None, dropped=0, terminal_reason="exit",
         }
     return {
         "schema_version": version,
-        "runtime": {"name": "nakagawa-recomp", "cpu_state_abi": 2},
+        "runtime": {"name": "nakagawa-recomp", "cpu_state_abi": 3},
         "build": build,
         "recorder": {
             "enabled_classes": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media"]
@@ -272,13 +273,13 @@ class ComparabilityContractTests(unittest.TestCase):
         # that do not see the schema, and is asserted on the raw reasoning
         # function with minimal hand-built record shapes.
         left = {"schema_version": 3,
-                "runtime": {"name": "nakagawa-recomp", "cpu_state_abi": 2},
+                "runtime": {"name": "nakagawa-recomp", "cpu_state_abi": 3},
                 "recorder": {"enabled_classes": ["sched"], "dropped": 0,
                              "triggers": {"first_fatal": True,
                                           "first_unsupported_nid": True,
                                           "fired": 0}},
                 "terminal": {"reason": "exit"}}
-        right = {**left, "runtime": {"name": "nakagawa-recomp", "cpu_state_abi": 3}}
+        right = {**left, "runtime": {"name": "nakagawa-recomp", "cpu_state_abi": 4}}
         reasons = flight_diff._comparability_reasons(left, right)
         self.assertTrue(any("runtime" in reason for reason in reasons))
 
@@ -726,6 +727,30 @@ class RefusalTerminalSchemaTests(unittest.TestCase):
         bundle["terminal"]["reason"] = "budget"
         with self.assertRaisesRegex(flight_diff.FlightDiffError, "terminal.reason"):
             flight_diff.validate_bundle(bundle)
+
+
+class RuntimeAbiPinTests(unittest.TestCase):
+    """The schema's ``cpu_state_abi`` pin follows the one header definition the recorder stamps.
+
+    #812 moved CpuState to v3 while the recorder kept writing the literal 2 and the schema kept
+    pinning 2, so flight_diff compared v2 and v3 bundles as the same runtime. The number has
+    one source (src/rt/recomp.h); this test fails the moment the schema or a recorder literal
+    drifts from it.
+    """
+
+    def test_schema_pins_the_header_version_and_the_recorder_stamps_the_macro(self):
+        header = (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8")
+        match = re.search(r"^#define SR_CPUSTATE_ABI_VERSION (\d+)u$", header, re.MULTILINE)
+        self.assertIsNotNone(match, "recomp.h must define SR_CPUSTATE_ABI_VERSION <n>u")
+        schema = json.loads(flight_diff.SCHEMA_PATH.read_text(encoding="utf-8"))
+        pinned = schema["properties"]["runtime"]["properties"]["cpu_state_abi"]["const"]
+        self.assertEqual(pinned, int(match.group(1)))
+        recorder = (ROOT / "src" / "rt" / "flight_recorder.c").read_text(encoding="utf-8")
+        self.assertIn('#include "recomp.h"', recorder)
+        # The one and only mention of the field in the recorder is the %u stamp of the macro.
+        self.assertIn('\\"cpu_state_abi\\": %u},\\n",', recorder)
+        self.assertIn("(unsigned)SR_CPUSTATE_ABI_VERSION) >= 0;", recorder)
+        self.assertEqual(recorder.count("cpu_state_abi"), 1, "a second cpu_state_abi token would be a literal")
 
 
 if __name__ == "__main__":

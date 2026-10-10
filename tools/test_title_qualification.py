@@ -338,6 +338,11 @@ class SandboxAndStagingTests(unittest.TestCase):
             env = tq.child_environment(base, sandbox)
             self.assertEqual(env["LOCALAPPDATA"], str(sandbox / "localappdata"))
             self.assertEqual(env["APPDATA"], str(sandbox / "appdata"))
+            # The POSIX player resolves these (nk_platform_posix.c); the smoke must not touch ~.
+            self.assertEqual(env["HOME"], str(sandbox / "home"))
+            for name, leaf in (("XDG_CONFIG_HOME", "config"), ("XDG_DATA_HOME", "data"),
+                               ("XDG_CACHE_HOME", "cache"), ("XDG_STATE_HOME", "state")):
+                self.assertEqual(env[name], str(sandbox / "xdg" / leaf), name)
             self.assertEqual(env["SR_VIDEO"], "offscreen")
             self.assertEqual(env["SDL_VIDEODRIVER"], "dummy")
             self.assertEqual(env["SDL_AUDIODRIVER"], "dummy")

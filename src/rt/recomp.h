@@ -35,6 +35,11 @@ typedef std::atomic_int_least32_t atomic_int_least32_t;
 #include "perf.h"
 #include "stale_code.h"  /* TD-27 opt-in stale translated-code detector (declarations only) */
 
+/* The CpuState layout version (issue #812: v3). Generated code refuses to compile against
+ * another version (tools/codegen.py emits the guard), tools/mem_debug.py reads the same
+ * number, and flight_recorder.c stamps it into every bundle's runtime block, where
+ * assets/flight_recorder_schema.json pins it as a const and tools/flight_diff.py treats it
+ * as a comparability condition. Bump it here and in the schema together. */
 #ifndef SR_CPUSTATE_ABI_VERSION
 #define SR_CPUSTATE_ABI_VERSION 3u
 #endif
