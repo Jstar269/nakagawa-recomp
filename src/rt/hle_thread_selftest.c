@@ -3785,6 +3785,11 @@ static void test_sysreg_virtual_registry(void) {
     hk_lang = hk;
     expect(sysreg_get_int(cat, "button_assign") == 1u && sysreg_sysparam_int(9u) == 1u,
            "button_assign is the measured 1 in the registry and in sceUtilityGetSystemParamInt");
+    expect(sysreg_sysparam_int(10u) == 9u, "the parental level (id 10) is the measured 9");
+    MEM_W32(SYSREG_VAL2, 0xdeadbeefu);
+    expect(!sysreg_sysparam_int_check(0u, SYSREG_VAL2) && !sysreg_sysparam_int_check(64u, SYSREG_VAL2) &&
+               MEM_R32(SYSREG_VAL2) == 0xdeadbeefu,
+           "unknown int ids 0 and 64 fail and leave the output word untouched (measured 0x80110103)");
     MEM_W32(SYSREG_TYPE, 0u);
     MEM_W32(SYSREG_SIZE, 0u);
     title_hle_write_cstr(SYSREG_NAME2, "button_assign");
@@ -4162,10 +4167,10 @@ static void test_named_refusals(void) {
            "sceNetApctlDelHandler refuses with the offline network code 0x80010086");
 }
 
-/* sceGeEdramSetAddrTranslation (0xb77905ea): PSPSDK pspge.h. Width 0 leaves the width unset and
- * reports the current setting (0 when none); 512, 1024, 2048 and 4096 set it and return the
- * previous width (0 when none was set). An unsupported width fails and leaves the setting alone.
- * The failing code is the project choice noted in hle.c. */
+/* sceGeEdramSetAddrTranslation (0xb77905ea): PSPSDK pspge.h. Measured on PSP-3000 (2026-10-10):
+ * every call, width 0 included, sets the width and returns the previous one; the boot width is
+ * 1024. An unsupported width fails and leaves the setting alone; that code is the project choice
+ * noted in hle.c (unmeasured). */
 #define NID_GE_EDRAM_SET_TRANSLATION 0xb77905eau
 #define GE_EDRAM_BAD_WIDTH_ERR       0x80000107u
 void sr_hle_test_ge_edram_reset(void);
@@ -4181,20 +4186,20 @@ static void test_ge_edram_addr_translation(void) {
     reset_fixture();
     sr_hle_init();
     sr_hle_test_ge_edram_reset();
-    expect(ge_edram_translation(0u) == 0u, "EDRAM translation width 0 with nothing set returns 0");
-    expect(ge_edram_translation(1024u) == 0u, "the first width set (1024) returns 0, no previous width");
-    expect(ge_edram_translation(512u) == 1024u, "setting 512 returns the previous width 1024");
-    expect(ge_edram_translation(0u) == 512u, "width 0 reports the current width 512 without changing it");
+    expect(ge_edram_translation(0u) == 1024u, "width 0 is a set like any other: it returns the boot width 1024 (measured)");
+    expect(ge_edram_translation(512u) == 0u, "setting 512 returns the 0 the previous call set (measured)");
+    expect(ge_edram_translation(0u) == 512u, "width 0 returns the previous width 512 and sets 0 (measured)");
+    expect(ge_edram_translation(1024u) == 0u, "setting 1024 returns the 0 the previous call set");
     expect(ge_edram_translation(333u) == GE_EDRAM_BAD_WIDTH_ERR,
-           "an unsupported width (333) fails with the documented-negative code");
-    expect(ge_edram_translation(0u) == 512u, "a failed set leaves the width at 512");
+           "an unsupported width (333) fails with the project's code (unmeasured)");
+    expect(ge_edram_translation(2048u) == 1024u, "a failed set leaves the width at 1024");
     sr_hle_test_ge_edram_reset();
 }
 
 /* sceUtilityGetSystemParamString (0x34b78343), nickname id 1: the value is the registry's
  * /CONFIG/SYSTEM/owner_name. The default is the neutral empty string; the test writes a fixture
  * value through the registry (a test value, not a user's name) to show the source, then restores
- * the default. Covers the copy and its NUL, truncation to len - 1, the unknown-id, null-buffer and
+ * the default. Covers the copy and its NUL, the short-buffer failure, the unknown-id, null-buffer and
  * zero-length failures (PSPSDK PSP_SYSTEMPARAM_RETVAL_FAIL 0x80110103). */
 #define NID_SYSPARAM_STRING 0x34b78343u
 #define SYSPARAM_STR_OUT    0x00241c00u
@@ -4236,12 +4241,13 @@ static void test_sysparam_nickname_string(void) {
                MEM_R8(SYSPARAM_STR_OUT + 8u) == 0xaau,
            "the nickname reports the registry value and its NUL");
 
-    /* Truncation: len 4 holds three bytes and the terminator. */
+    /* A buffer that cannot hold the string and its NUL fails and writes nothing (measured on PSP-3000). */
     for (uint32_t i = 0u; i < 16u; i++) MEM_W8(SYSPARAM_STR_OUT + i, 0xaau);
-    expect(sysparam_string(1u, SYSPARAM_STR_OUT, 4u) == 0u &&
-               MEM_R8(SYSPARAM_STR_OUT) == 'f' && MEM_R8(SYSPARAM_STR_OUT + 2u) == 'x' &&
-               MEM_R8(SYSPARAM_STR_OUT + 3u) == 0u && MEM_R8(SYSPARAM_STR_OUT + 4u) == 0xaau,
-           "a short buffer gets len - 1 bytes and a NUL terminator");
+    expect(sysparam_string(1u, SYSPARAM_STR_OUT, 4u) == 0x80110102u && MEM_R8(SYSPARAM_STR_OUT) == 0xaau,
+           "a short buffer fails with 0x80110102 and nothing is written (measured)");
+    expect(sysparam_string(1u, SYSPARAM_STR_OUT, 8u) == 0u && MEM_R8(SYSPARAM_STR_OUT + 7u) == 0u &&
+               MEM_R8(SYSPARAM_STR_OUT + 8u) == 0xaau,
+           "a buffer of exactly the string and its NUL succeeds");
 
     expect(sysparam_string(2u, SYSPARAM_STR_OUT, 16u) == SYSPARAM_FAIL_ERR,
            "an unmodelled string id fails with PSP_SYSTEMPARAM_RETVAL_FAIL");
@@ -11435,12 +11441,12 @@ static void test_td24b_cheap_hle_batch(void) {
     reset_fixture();
     sr_hle_init();
     sr_hle_test_power_reset();
-    expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 333u,
-           "CPU clock reads the 333 MHz default");
-    expect(td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 166u,
-           "bus clock reads the 166 MHz default");
-    expect(td24b_dispatch4(NID_SCE_POWER_GET_PLL_INT, 0u, 0u, 0u, 0u) == 333u,
-           "PLL clock reads the 333 MHz default (project choice; PSPSDK documents no default)");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 222u,
+           "CPU clock reads the 222 MHz default (measured on PSP-3000)");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 111u,
+           "bus clock reads the 111 MHz default (measured on PSP-3000)");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_PLL_INT, 0u, 0u, 0u, 0u) == 222u,
+           "PLL clock reads the 222 MHz default measured on PSP-3000");
     expect(td24b_dispatch4(NID_SCE_POWER_SET_CLOCK, 222u, 111u, 55u, 0u) == 0u,
            "scePowerSetClockFrequency answers success");
     expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 111u,
@@ -11458,10 +11464,10 @@ static void test_td24b_cheap_hle_batch(void) {
     expect(td24b_dispatch4(NID_SCE_POWER_GET_PLL_INT, 0u, 0u, 0u, 0u) == 333u,
            "PLL clock reflects the 350-variant Set request's pllfreq (333, not the earlier 222)");
     sr_hle_test_power_reset();
-    expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 333u &&
-               td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 166u &&
-               td24b_dispatch4(NID_SCE_POWER_GET_PLL_INT, 0u, 0u, 0u, 0u) == 333u,
-           "the power reset restores the 333 PLL / 333 CPU / 166 bus defaults for later fixtures");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_INT, 0u, 0u, 0u, 0u) == 222u &&
+               td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT, 0u, 0u, 0u, 0u) == 111u &&
+               td24b_dispatch4(NID_SCE_POWER_GET_PLL_INT, 0u, 0u, 0u, 0u) == 222u,
+           "the power reset restores the 222 PLL / 222 CPU / 111 bus defaults for later fixtures");
 
     /* sceHprmIsRemoteExist (0x208db1bd): PSPSDK psphprm.h returns 1 when the infrared remote is
      * plugged in. The runtime models no remote accessory, so the call answers 0 and the title
@@ -11487,14 +11493,14 @@ static void test_td24b_cheap_hle_batch(void) {
            "sceHprmIsHeadphoneExist returns to no headphones when the model detaches it");
 
     /* sceHprmIsMicrophoneExist (0x219c58f1): PSPSDK psphprm.h, 1 when the microphone is plugged in. */
-    expect(td24b_dispatch4(0x219c58f1u, 0u, 0u, 0u, 0u) == 0u,
-           "sceHprmIsMicrophoneExist reports no microphone (the runtime models no microphone accessory)");
-    sr_hle_test_hprm_set_microphone(1);
     expect(td24b_dispatch4(0x219c58f1u, 0u, 0u, 0u, 0u) == 1u,
-           "sceHprmIsMicrophoneExist follows a modeled attached microphone");
+           "sceHprmIsMicrophoneExist reports the built-in microphone (measured 1 on PSP-3000)");
     sr_hle_test_hprm_set_microphone(0);
     expect(td24b_dispatch4(0x219c58f1u, 0u, 0u, 0u, 0u) == 0u,
-           "sceHprmIsMicrophoneExist returns to no microphone when the model detaches it");
+           "sceHprmIsMicrophoneExist follows a modeled detached microphone");
+    sr_hle_test_hprm_set_microphone(1);
+    expect(td24b_dispatch4(0x219c58f1u, 0u, 0u, 0u, 0u) == 1u,
+           "sceHprmIsMicrophoneExist returns to the measured default when the model reattaches it");
 
     /* scePowerIsLowBattery (0xd3075926): the modeled battery is full, so the default is not low (0);
      * the answer follows the battery model. The PSPSDK header leaves the return encoding undocumented. */

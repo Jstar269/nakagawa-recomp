@@ -959,15 +959,16 @@ uint32_t sr_hle_test_compiled_sdk_version(void) {
  * is the source sceUtilityGetSystemParamInt reads; this table seeds it. */
 static uint32_t systemparam_int_value(uint32_t id) {
     switch (id) {
-        case 2:  return 1;   /* ADHOC_CHANNEL: automatic (unmeasured) */
+        case 2:  return 0;   /* ADHOC_CHANNEL: measured 0 (automatic) on the oracle, 2026-10-10 */
         case 3:  return 0;   /* WLAN_POWERSAVE: off (unmeasured) */
         case 4:  return 1;   /* DATE_FORMAT: measured */
         case 5:  return 1;   /* TIME_FORMAT: measured (1 = 12-hour in the PSPSDK enumeration) */
-        case 6:  return 0;   /* TIMEZONE offset in minutes (unmeasured) */
+        case 6:  return 0xfffffed4u; /* TIMEZONE offset in minutes: measured -300 on the oracle console */
         case 7:  return 1;   /* DAYLIGHTSAVINGS: measured */
         case 8:  return 1;   /* LANGUAGE: measured (English) */
         case 9:  return 1;   /* BUTTON_PREFERENCE: measured */
-        default: return 1;   /* safe default */
+        case 10: return 9;   /* LOCK_PARENTAL_LEVEL: measured 9 (off) on the oracle, 2026-10-10 */
+        default: return 1;   /* unreachable through the getter, which refuses ids outside 2..10 */
     }
 }
 
@@ -975,6 +976,9 @@ static uint32_t sreg_systemparam_int(uint32_t id);
 
 static uint32_t h_GetSystemParamInt(CpuState *s) {
     uint32_t id = A0, out = A1;
+    /* Measured on the PSP-3000 oracle (2026-10-10, hle-sysparam): ids 2 to 10 answer; any other id
+     * (0 and 64 were tried) returns PSP_SYSTEMPARAM_RETVAL_FAIL and leaves the output word untouched. */
+    if (id < 2u || id > 10u) return 0x80110103u;
     /* Read through the virtual system registry, so a setting a game wrote there is what this
      * getter reports: the two surfaces share one value per modeled key. */
     uint32_t v = sreg_systemparam_int(id);
@@ -2182,15 +2186,17 @@ static uint32_t sreg_systemparam_int(uint32_t id) {
 /* sceUtilityGetSystemParamString(int id, char *str, int len) (PSPSDK psputility_sysparam.h): 0 on
  * success, PSP_SYSTEMPARAM_RETVAL_FAIL (0x80110103) on failure. The nickname is id 1 and reads the
  * registry's /CONFIG/SYSTEM/owner_name value, so it is the neutral empty string unless a game
- * wrote one; no user name is modelled or invented. len is the buffer length (PSPSDK): the copy
- * holds at most len - 1 bytes and is NUL-terminated. The truncation and the terminator are project
- * choices, UNMEASURED. Other string ids, a null buffer and len <= 0 fail. */
+ * wrote one; no user name is modelled or invented. len is the buffer length. Measured on the
+ * PSP-3000 oracle (2026-10-10, hle-sysparam): a buffer that cannot hold the string and its NUL
+ * fails with 0x80110102 and writes nothing; a large enough buffer receives the string and its NUL
+ * and the call returns 0. Other string ids, a null buffer and len <= 0 fail with 0x80110103. */
 #define SYSPARAM_RETVAL_FAIL 0x80110103u
+#define SYSPARAM_RETVAL_BUFSIZE 0x80110102u
 #define SYSPARAM_STRING_NICKNAME 1u
 static uint32_t h_GetSystemParamString(CpuState *s) {
     uint32_t id = A0, out = A1;
     int32_t len = (int32_t)A2;
-    uint32_t count = 0u, cap;
+    uint32_t count = 0u;
     int node;
     SregNode *n;
     if (id != SYSPARAM_STRING_NICKNAME || !out || len <= 0) return SYSPARAM_RETVAL_FAIL;
@@ -2199,8 +2205,8 @@ static uint32_t h_GetSystemParamString(CpuState *s) {
     if (node < 0) return SYSPARAM_RETVAL_FAIL;
     n = &s_sreg_nodes[node];
     if (n->type != SREG_TYPE_STR) return SYSPARAM_RETVAL_FAIL;
-    cap = (uint32_t)len - 1u;
-    while (count < n->size && count < cap && n->value[count]) count++;
+    while (count < n->size && n->value[count]) count++;
+    if (count + 1u > (uint32_t)len) return SYSPARAM_RETVAL_BUFSIZE;
     if (!sr_guest_span_writable(out, count + 1u)) return SYSPARAM_RETVAL_FAIL;
     sreg_note_placeholder_read(node, "sceUtilityGetSystemParamString");
     for (uint32_t i = 0; i < count; i++) MEM_W8(out + i, n->value[i]);
@@ -2548,8 +2554,9 @@ static uint32_t h_HprmIsRemoteExist(CpuState *s) {
 void sr_hle_test_hprm_set_remote(int attached) { s_hprm_remote_attached = attached != 0; }
 #endif
 
-/* sceHprmIsHeadphoneExist(void): 1 when headphones are plugged in, else 0 (PSPSDK psphprm.h). Like
- * the remote, the runtime models the headphone accessory as absent by default. */
+/* sceHprmIsHeadphoneExist(void): 1 when headphones are plugged in, else 0 (PSPSDK psphprm.h). Measured
+ * 0 on the PSP-3000 oracle with plain headphones plugged in (2026-10-10, hle-hprm), so plain headphones
+ * do not make this 1; the runtime models the accessory as absent by default. */
 static int s_hprm_headphone_attached = 0;
 static uint32_t h_HprmIsHeadphoneExist(CpuState *s) {
     (void)s;
@@ -2560,9 +2567,10 @@ static uint32_t h_HprmIsHeadphoneExist(CpuState *s) {
 void sr_hle_test_hprm_set_headphone(int attached) { s_hprm_headphone_attached = attached != 0; }
 #endif
 
-/* sceHprmIsMicrophoneExist(void): 1 when the microphone is plugged in, else 0 (PSPSDK psphprm.h).
- * Modeled absent by default, like the other accessories. */
-static int s_hprm_microphone_attached = 0;
+/* sceHprmIsMicrophoneExist(void): 1 when a microphone is present, else 0 (PSPSDK psphprm.h). Measured
+ * 1 on the PSP-3000 oracle (built-in microphone; 2026-10-10, hle-hprm, with and without headphones),
+ * so the default follows the oracle model. */
+static int s_hprm_microphone_attached = 1;
 static uint32_t h_HprmIsMicrophoneExist(CpuState *s) {
     (void)s;
     return s_hprm_microphone_attached ? 1u : 0u;
@@ -3114,7 +3122,8 @@ static uint32_t h_FreeFpl(CpuState *s) {
  * numBlocks(44), freeBlocks(48), numWaitThreads(52). The write rule is the one measured for the
  * sema, event-flag and mailbox status calls (PSP-KERNEL-STATUS-001): a caller size of 0 writes
  * nothing and succeeds; otherwise min(size, 56) bytes of a struct whose size word is 56 reach
- * guest memory. The FPL struct size itself is the documented layout, not separately measured.
+ * guest memory. The 56-byte size word was measured on the PSP-3000 oracle (2026-10-10,
+ * hle-kernel-status: sceKernelReferFplStatus reports 0x38).
  * freeBlocks is the free-list length plus the blocks not yet handed out from the bump region. */
 typedef struct {
     uint32_t size;
@@ -18443,23 +18452,25 @@ static uint32_t h_GeEdramGetSize(CpuState *s) {
 
 /* sceGeEdramSetAddrTranslation(int width) (PSPSDK pspge.h): width 0 leaves the translation width
  * unset, and 512, 1024, 2048 and 4096 set it. The return is the previous width when one was set,
- * else 0, and < 0 on error. Width 0 reports the current setting. The retained width is reported
- * back, but this runtime does not apply address translation to GE memory accesses, so the setting
- * changes no rendering. The error code for an unsupported width is not documented: 0x80000107 (the
- * GE invalid-mode code measured on PSP-3000 for sceGeBreak) is a project choice, UNMEASURED here. */
-static uint32_t s_ge_edram_width = 0u;
+ * Measured on the PSP-3000 oracle (2026-10-10, hle-ge-edram): every call sets the given width and
+ * returns the width that was set before it, width 0 included, so there is no pure query; the boot
+ * value is 1024. The retained width is reported back, but this runtime does not apply address
+ * translation to GE memory accesses, so the setting changes no rendering. The error code for an
+ * unsupported width is not documented: 0x80000107 (the GE invalid-mode code measured on PSP-3000
+ * for sceGeBreak) is a project choice, UNMEASURED here. */
+#define GE_EDRAM_WIDTH_BOOT 1024u
+static uint32_t s_ge_edram_width = GE_EDRAM_WIDTH_BOOT;
 static uint32_t h_GeEdramSetAddrTranslation(CpuState *s) {
     uint32_t width = A0;
     uint32_t previous = s_ge_edram_width;
-    if (width == 0u) return previous;
-    if (width != 512u && width != 1024u && width != 2048u && width != 4096u) return 0x80000107u;
+    if (width != 0u && width != 512u && width != 1024u && width != 2048u && width != 4096u) return 0x80000107u;
     s_ge_edram_width = width;
     return previous;
 }
 
 #ifdef SR_HLE_THREAD_SELFTEST
-/* Test-build-only reset so the executable harness can start from an unset width. */
-void sr_hle_test_ge_edram_reset(void) { s_ge_edram_width = 0u; }
+/* Test-build-only reset to the measured boot width. */
+void sr_hle_test_ge_edram_reset(void) { s_ge_edram_width = GE_EDRAM_WIDTH_BOOT; }
 #endif
 static uint32_t h_GeDrawSync(CpuState *s) {
     /* sceGeDrawSync(mode): wait for (mode 0) or peek at (mode 1) the
