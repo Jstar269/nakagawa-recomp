@@ -21,6 +21,13 @@
 #include <string.h>
 #include <time.h>
 
+/* Scratch root for the files this test writes: the checkout's build/ by default, or
+ * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
+ * touches the checkout. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+
 #if defined(_WIN32) || defined(_WIN64)
 #include <direct.h>
 #include <windows.h>
@@ -332,7 +339,7 @@ static void test_file_backed_archive_is_lazy(void) {
           NK_XB_COMPRESSION_HUFFMAN }
     };
     ByteBuffer bytes = make_archive(entries, sizeof(entries) / sizeof(entries[0]), false);
-    const char *path = "build/test_xb_lazy.xb";
+    const char *path = SR_SELFTEST_BUILD_ROOT "/test_xb_lazy.xb";
     write_file_bytes(path, bytes.data, bytes.size);
     NkXbArchive strict;
     char error[256];
@@ -385,7 +392,7 @@ static void test_file_backed_duplicate_validation(void) {
         { "data/shared.bin", second, sizeof(second) - 1u, NK_XB_COMPRESSION_NONE }
     };
     ByteBuffer bytes = make_archive(identical, 2u, false);
-    const char *path = "build/test_xb_lazy_duplicate.xb";
+    const char *path = SR_SELFTEST_BUILD_ROOT "/test_xb_lazy_duplicate.xb";
     write_file_bytes(path, bytes.data, bytes.size);
     NkXbArchive archive;
     char error[256];
@@ -421,7 +428,7 @@ static void test_lazy_payload_failure_is_deferred(void) {
     }
     assert(header_offset != 0u);
     bytes.data[header_offset] = 0u;
-    const char *path = "build/test_xb_lazy_bad_payload.xb";
+    const char *path = SR_SELFTEST_BUILD_ROOT "/test_xb_lazy_bad_payload.xb";
     write_file_bytes(path, bytes.data, bytes.size);
     NkXbArchive archive;
     char error[256];
@@ -677,10 +684,10 @@ static void test_deterministic_mutation_fuzz(void) {
 }
 
 static void test_staging_cleanup_boundary(void) {
-    const char *root = "build/.staging_xb_cleanup";
-    const char *nested = "build/.staging_xb_cleanup/nested";
-    const char *file_path = "build/.staging_xb_cleanup/nested/member.bin";
-    assert(!player_stage_discard("build"));
+    const char *root = SR_SELFTEST_BUILD_ROOT "/.staging_xb_cleanup";
+    const char *nested = SR_SELFTEST_BUILD_ROOT "/.staging_xb_cleanup/nested";
+    const char *file_path = SR_SELFTEST_BUILD_ROOT "/.staging_xb_cleanup/nested/member.bin";
+    assert(!player_stage_discard(SR_SELFTEST_BUILD_ROOT));
     (void)player_stage_discard(root);
     assert(nk_platform_mkdir_p(nested));
     static const uint8_t data[] = "cleanup";
@@ -693,9 +700,9 @@ static void test_staging_cleanup_boundary(void) {
 
 static void test_staging_discard_reparse_boundary(void) {
 #if defined(_WIN32) || defined(_WIN64)
-    const char *root = "build/.staging_reparse_boundary";
-    const char *outside = "build/staging_discard_outside";
-    const char *outside_file = "build/staging_discard_outside/sentinel.bin";
+    const char *root = SR_SELFTEST_BUILD_ROOT "/.staging_reparse_boundary";
+    const char *outside = SR_SELFTEST_BUILD_ROOT "/staging_discard_outside";
+    const char *outside_file = SR_SELFTEST_BUILD_ROOT "/staging_discard_outside/sentinel.bin";
     (void)player_stage_discard(root);
     remove(outside_file);
     test_rmdir(outside);
@@ -707,8 +714,9 @@ static void test_staging_discard_reparse_boundary(void) {
     /* The relative target resolves outside the staging root. On hosts without
      * symlink creation rights, retain the rest of the native suite but make
      * the missing adversarial capability explicit. */
-    if (!CreateSymbolicLinkW(L"build/.staging_reparse_boundary/escaped",
-                             L"..\\staging_discard_outside",
+    /* The narrow API: the scratch root is a narrow macro, and these names are ASCII. */
+    if (!CreateSymbolicLinkA(SR_SELFTEST_BUILD_ROOT "/.staging_reparse_boundary/escaped",
+                             "..\\staging_discard_outside",
                              SYMBOLIC_LINK_FLAG_DIRECTORY |
                              SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE)) {
         DWORD error = GetLastError();
@@ -723,18 +731,18 @@ static void test_staging_discard_reparse_boundary(void) {
     }
 
     assert(player_stage_discard(root));
-    assert(GetFileAttributesW(L"build/staging_discard_outside/sentinel.bin") !=
+    assert(GetFileAttributesA(SR_SELFTEST_BUILD_ROOT "/staging_discard_outside/sentinel.bin") !=
            INVALID_FILE_ATTRIBUTES);
-    assert(GetFileAttributesW(L"build/.staging_reparse_boundary") ==
+    assert(GetFileAttributesA(SR_SELFTEST_BUILD_ROOT "/.staging_reparse_boundary") ==
            INVALID_FILE_ATTRIBUTES);
     remove(outside_file);
     test_rmdir(outside);
     printf("[XB_TEST] Windows reparse-point discard boundary PASSED\n");
 #else
-    const char *root = "build/.staging_symlink_boundary";
-    const char *outside = "build/staging_discard_posix_outside";
-    const char *outside_file = "build/staging_discard_posix_outside/sentinel.bin";
-    const char *escaped = "build/.staging_symlink_boundary/escaped";
+    const char *root = SR_SELFTEST_BUILD_ROOT "/.staging_symlink_boundary";
+    const char *outside = SR_SELFTEST_BUILD_ROOT "/staging_discard_posix_outside";
+    const char *outside_file = SR_SELFTEST_BUILD_ROOT "/staging_discard_posix_outside/sentinel.bin";
+    const char *escaped = SR_SELFTEST_BUILD_ROOT "/.staging_symlink_boundary/escaped";
     (void)player_stage_discard(root);
     remove(outside_file);
     test_rmdir(outside);
@@ -844,19 +852,19 @@ static void test_iso_to_native_staging_pipeline(void) {
     ByteBuffer xb = make_archive(xb_entries, sizeof(xb_entries) / sizeof(xb_entries[0]), false);
     assert(xb.size < 2048);
 
-    const char *iso_path = "build/test_xb_staging.iso";
-    const char *stage_root = "build/test_xb_staging_output";
-    const char *appdata_root = "build/test_ppsspp_appdata";
-    const char *userprofile_root = "build/test_ppsspp_user";
-    const char *libfont_source = "build/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM/DUMP/libfont.prx";
-    const char *psmf_source = "build/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM/DUMP/PRX/scePsmf_library.prx";
-    const char *psmfp_source = "build/test_ppsspp_user/Documents/PPSSPP/PSP/SYSTEM/DUMP/scePsmfP_library.prx";
-    const char *libfont_destination = "build/test_xb_staging_output/EXTRACTED/decrypted/libfont.prx";
-    const char *psmf_destination = "build/test_xb_staging_output/EXTRACTED/decrypted/scePsmf_library.prx";
-    const char *psmfp_destination = "build/test_xb_staging_output/EXTRACTED/decrypted/scePsmfP_library.prx";
-    assert(nk_platform_mkdir_p("build"));
-    assert(nk_platform_mkdir_p("build/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM/DUMP/PRX"));
-    assert(nk_platform_mkdir_p("build/test_ppsspp_user/Documents/PPSSPP/PSP/SYSTEM/DUMP"));
+    const char *iso_path = SR_SELFTEST_BUILD_ROOT "/test_xb_staging.iso";
+    const char *stage_root = SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output";
+    const char *appdata_root = SR_SELFTEST_BUILD_ROOT "/test_ppsspp_appdata";
+    const char *userprofile_root = SR_SELFTEST_BUILD_ROOT "/test_ppsspp_user";
+    const char *libfont_source = SR_SELFTEST_BUILD_ROOT "/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM/DUMP/libfont.prx";
+    const char *psmf_source = SR_SELFTEST_BUILD_ROOT "/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM/DUMP/PRX/scePsmf_library.prx";
+    const char *psmfp_source = SR_SELFTEST_BUILD_ROOT "/test_ppsspp_user/Documents/PPSSPP/PSP/SYSTEM/DUMP/scePsmfP_library.prx";
+    const char *libfont_destination = SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/EXTRACTED/decrypted/libfont.prx";
+    const char *psmf_destination = SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/EXTRACTED/decrypted/scePsmf_library.prx";
+    const char *psmfp_destination = SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/EXTRACTED/decrypted/scePsmfP_library.prx";
+    assert(nk_platform_mkdir_p(SR_SELFTEST_BUILD_ROOT));
+    assert(nk_platform_mkdir_p(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM/DUMP/PRX"));
+    assert(nk_platform_mkdir_p(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_user/Documents/PPSSPP/PSP/SYSTEM/DUMP"));
     static const uint8_t libfont_data[] = "synthetic libfont";
     static const uint8_t psmf_data[] = "synthetic psmf";
     static const uint8_t psmfp_data[] = "synthetic psmfp";
@@ -888,18 +896,18 @@ static void test_iso_to_native_staging_pipeline(void) {
     remove(audio_path);
     remove(visual_path);
     remove(layout_path);
-    test_rmdir("build/test_xb_staging_output/xbdata/assets.xb.d/data/sound");
-    test_rmdir("build/test_xb_staging_output/xbdata/assets.xb.d/data/menu");
-    test_rmdir("build/test_xb_staging_output/xbdata/assets.xb.d/data");
-    test_rmdir("build/test_xb_staging_output/xbdata/assets.xb.d");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/xbdata/assets.xb.d/data/sound");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/xbdata/assets.xb.d/data/menu");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/xbdata/assets.xb.d/data");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/xbdata/assets.xb.d");
     remove(archive_path);
-    test_rmdir("build/test_xb_staging_output/xbdata");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/xbdata");
     remove(eboot_path);
     remove(libfont_destination);
     remove(psmf_destination);
     remove(psmfp_destination);
-    test_rmdir("build/test_xb_staging_output/EXTRACTED/decrypted");
-    test_rmdir("build/test_xb_staging_output/EXTRACTED");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/EXTRACTED/decrypted");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/EXTRACTED");
     test_rmdir(stage_root);
 
     const size_t sector_count = 32;
@@ -949,7 +957,7 @@ static void test_iso_to_native_staging_pipeline(void) {
     uint8_t *root_child = image + 17 * 2048 + 68;
     assert(root_child[0] == 42 && root_child[32] == 8);
     root_child[32] = 9; /* PSP_GAME plus the following raw NUL byte */
-    const char *nul_stage_root = "build/.staging_xb_nul_identifier";
+    const char *nul_stage_root = SR_SELFTEST_BUILD_ROOT "/.staging_xb_nul_identifier";
     (void)player_stage_discard(nul_stage_root);
     write_file_bytes(iso_path, image, image_size);
     assert(player_stage_game_with_summary(iso_path, nul_stage_root,
@@ -981,8 +989,8 @@ static void test_iso_to_native_staging_pipeline(void) {
 
     /* A staging request without loose-content bindings stages only EBOOT.BIN;
      * the player does not infer another payload directory from the ISO. */
-    const char *empty_iso_path = "build/test_xb_empty_stage.iso";
-    const char *empty_stage_root = "build/.staging_xb_empty_assets";
+    const char *empty_iso_path = SR_SELFTEST_BUILD_ROOT "/test_xb_empty_stage.iso";
+    const char *empty_stage_root = SR_SELFTEST_BUILD_ROOT "/.staging_xb_empty_assets";
     const size_t empty_image_size = 32u * 2048u;
     uint8_t *empty_image = (uint8_t *)calloc(1, empty_image_size);
     assert(empty_image != NULL);
@@ -1024,9 +1032,9 @@ static void test_iso_to_native_staging_pipeline(void) {
 
     /* Direct ISO-stage failures carry an actionable code/message into the
      * wizard card instead of the previous generic "game staging failed". */
-    const char *missing_stage_root = "build/.staging_xb_missing_input";
+    const char *missing_stage_root = SR_SELFTEST_BUILD_ROOT "/.staging_xb_missing_input";
     (void)player_stage_discard(missing_stage_root);
-    assert(player_stage_game_with_summary("build/no_such_source_owned_iso.iso",
+    assert(player_stage_game_with_summary(SR_SELFTEST_BUILD_ROOT "/no_such_source_owned_iso.iso",
                                           missing_stage_root, NULL, 0, &callbacks,
                                           &summary, error, sizeof(error)) ==
            NK_ERROR_FILE_NOT_FOUND);
@@ -1037,8 +1045,8 @@ static void test_iso_to_native_staging_pipeline(void) {
                                           sizeof(error)) ==
            NK_ERROR_GENERIC);
     assert(strstr(error, "[STAGE_REQUEST_INVALID]") != NULL);
-    const char *bad_iso_path = "build/test_xb_malformed_stage.iso";
-    const char *bad_stage_root = "build/.staging_xb_malformed_input";
+    const char *bad_iso_path = SR_SELFTEST_BUILD_ROOT "/test_xb_malformed_stage.iso";
+    const char *bad_stage_root = SR_SELFTEST_BUILD_ROOT "/.staging_xb_malformed_input";
     (void)player_stage_discard(bad_stage_root);
     write_file_bytes(bad_iso_path, "not an ISO", 10);
     assert(player_stage_game_with_summary(bad_iso_path, bad_stage_root,
@@ -1084,34 +1092,34 @@ static void test_iso_to_native_staging_pipeline(void) {
     remove(audio_path);
     remove(visual_path);
     remove(layout_path);
-    test_rmdir("build/test_xb_staging_output/xbdata/assets.xb.d/data/sound");
-    test_rmdir("build/test_xb_staging_output/xbdata/assets.xb.d/data/menu");
-    test_rmdir("build/test_xb_staging_output/xbdata/assets.xb.d/data");
-    test_rmdir("build/test_xb_staging_output/xbdata/assets.xb.d");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/xbdata/assets.xb.d/data/sound");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/xbdata/assets.xb.d/data/menu");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/xbdata/assets.xb.d/data");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/xbdata/assets.xb.d");
     remove(archive_path);
-    test_rmdir("build/test_xb_staging_output/xbdata");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/xbdata");
     remove(eboot_path);
     remove(iso_path);
     remove(libfont_destination);
     remove(psmf_destination);
     remove(psmfp_destination);
-    test_rmdir("build/test_xb_staging_output/EXTRACTED/decrypted");
-    test_rmdir("build/test_xb_staging_output/EXTRACTED");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/EXTRACTED/decrypted");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/EXTRACTED");
     test_rmdir(stage_root);
     remove(libfont_source);
     remove(psmf_source);
     remove(psmfp_source);
-    test_rmdir("build/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM/DUMP/PRX");
-    test_rmdir("build/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM/DUMP");
-    test_rmdir("build/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM");
-    test_rmdir("build/test_ppsspp_appdata/PPSSPP/PSP");
-    test_rmdir("build/test_ppsspp_appdata/PPSSPP");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM/DUMP/PRX");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM/DUMP");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_appdata/PPSSPP/PSP");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_appdata/PPSSPP");
     test_rmdir(appdata_root);
-    test_rmdir("build/test_ppsspp_user/Documents/PPSSPP/PSP/SYSTEM/DUMP");
-    test_rmdir("build/test_ppsspp_user/Documents/PPSSPP/PSP/SYSTEM");
-    test_rmdir("build/test_ppsspp_user/Documents/PPSSPP/PSP");
-    test_rmdir("build/test_ppsspp_user/Documents/PPSSPP");
-    test_rmdir("build/test_ppsspp_user/Documents");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_user/Documents/PPSSPP/PSP/SYSTEM/DUMP");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_user/Documents/PPSSPP/PSP/SYSTEM");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_user/Documents/PPSSPP/PSP");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_user/Documents/PPSSPP");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_user/Documents");
     test_rmdir(userprofile_root);
     restore_environment_value("APPDATA", old_appdata, had_appdata);
     restore_environment_value("USERPROFILE", old_userprofile, had_userprofile);
