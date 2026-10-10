@@ -2583,7 +2583,15 @@ class PspDmacProbeTests(unittest.TestCase):
         )
         self.assertEqual(
             {test_id for test_id, value in evidence.items() if value == "CAPTURED"},
-            {"PSP-KERNEL-001", "PSP-SYSTEM-001", "PSP-GE-CONTROL-001", "PSP-TEARDOWN-001"},
+            {
+                "PSP-KERNEL-001", "PSP-SYSTEM-001", "PSP-GE-CONTROL-001", "PSP-TEARDOWN-001",
+                # The HLE measurement families ran as single-case runs on 2026-10-10 with
+                # complete streams; none was acceptance-eligible (post-unload shell
+                # qualification), so they are captured, not measured.
+                "PSP-HLE-KERNEL-STATUS-001", "PSP-HLE-VTIMER-001", "PSP-HLE-POWER-001",
+                "PSP-HLE-HPRM-001", "PSP-HLE-CTRL-LATCH-001", "PSP-HLE-SYSPARAM-001",
+                "PSP-HLE-GE-EDRAM-001",
+            },
         )
 
     def test_measured_rows_cite_a_public_document_and_the_cases_it_measures(self) -> None:
@@ -3469,10 +3477,11 @@ class HleMeasureProbeTests(unittest.TestCase):
             "edram-width-set-4096", "edram-width-restore")},
         "edram-width-query-final": ("PASS", 0x0, None),
     }
-    # The 2026-10-10 PSP-3000 sequence (initial width 0x400). sceGeEdramSetAddrTranslation(w)
-    # sets the width to w and returns the width it replaced, so each call after a Set(0)
-    # returns 0; the post-restore query returns the restored width and leaves 0 set, and
-    # the final Set(0) therefore returns 0.
+    # The behaviour captured on the PSP-3000 on 2026-10-10 (initial width 0x400; CAPTURED, the
+    # run was not acceptance-eligible) through the revised probe: sceGeEdramSetAddrTranslation(w)
+    # sets the width to w and returns the width it replaced, so each Set after a Set(0) returns
+    # 0; the restore's verifying Set(initial) returns the restored width and keeps it, and the
+    # final Set(initial) returns it again.
     GE_MEASURED_OVERRIDES = {
         "edram-width-query-initial": ("PASS", 0x400, None),
         "edram-width-set-512": ("PASS", 0x0, [0x200]),
@@ -3480,7 +3489,7 @@ class HleMeasureProbeTests(unittest.TestCase):
         "edram-width-set-2048": ("PASS", 0x0, [0x800]),
         "edram-width-set-4096": ("PASS", 0x0, [0x1000]),
         "edram-width-restore": ("PASS", 0x0, [0x400]),
-        "edram-width-query-final": ("PASS", 0x0, None),
+        "edram-width-query-final": ("PASS", 0x400, [0x400]),
     }
 
     @classmethod
@@ -3725,13 +3734,16 @@ class HleMeasureProbeTests(unittest.TestCase):
                 for semantic in spec.semantic_cases:
                     self.assertIn(f'"{semantic}"', self.probe, semantic)
 
-    def test_manifest_entries_are_not_run_and_cite_the_registry(self) -> None:
+    def test_manifest_entries_are_captured_and_cite_the_registry(self) -> None:
+        """The 2026-10-10 single-case runs captured every family without acceptance."""
         by_id = {test["id"]: test for test in self.manifest["tests"]}
         for case, _cid, stem, _block, _macro, test_id in self.FAMILIES:
             with self.subTest(case=case):
                 entry = by_id[test_id]
                 spec, _counts = CAMPAIGN_PROBE_CASES[case]
-                self.assertEqual(entry["hardware_evidence"], "NOT_RUN")
+                self.assertEqual(entry["hardware_evidence"], "CAPTURED")
+                self.assertIn("not acceptance-eligible", entry["evidence_note"])
+                self.assertIn("establishes nothing", entry["evidence_note"])
                 self.assertEqual(entry["status"], "implemented")
                 self.assertEqual(entry["source"], "fixtures/psp_oracle/probe_hle_measure.c")
                 self.assertEqual(entry["prx"], f"{stem}.prx")
@@ -3817,8 +3829,8 @@ class HleMeasureProbeTests(unittest.TestCase):
     def test_ge_restore_invariant_accepts_a_restored_width_and_rejects_a_changed_one(self) -> None:
         case = "hle-ge-edram"
         # Initial width 0x200 under set-returning-previous: each Set returns the 0 that
-        # the preceding Set(0) left, the restore returns 0 with out0 0x200 read back, and
-        # the final Set(0) returns 0.
+        # the preceding Set(0) left, the restore returns 0 with out0 0x200 read back by
+        # Set(0x200), and the final Set(0x200) returns the restored 0x200.
         restored = {
             "edram-width-query-initial": ("PASS", 0x200, None),
             "edram-width-set-512": ("PASS", 0x0, [0x200]),
@@ -3826,7 +3838,7 @@ class HleMeasureProbeTests(unittest.TestCase):
             "edram-width-set-2048": ("PASS", 0x0, [0x800]),
             "edram-width-set-4096": ("PASS", 0x0, [0x1000]),
             "edram-width-restore": ("PASS", 0x0, [0x200]),
-            "edram-width-query-final": ("PASS", 0x0, None),
+            "edram-width-query-final": ("PASS", 0x200, [0x200]),
         }
         validate_hle_edram_restore(self._body(self._stream(case, restored)))
         self.assertIsNone(_validate_campaign_contract(self._body(self._stream(case, restored)), case))
@@ -3839,7 +3851,9 @@ class HleMeasureProbeTests(unittest.TestCase):
             _validate_campaign_contract(self._body(self._stream(case, wrong_restore)), case)
 
         changed_final = dict(restored)
-        changed_final["edram-width-query-final"] = ("PASS", 0x200, None)
+        # A final read of 0 is what the previous probe revision produced: its verifying
+        # Set(0) undid the restore. The parser must refuse it.
+        changed_final["edram-width-query-final"] = ("PASS", 0x0, [0x200])
         with self.assertRaises(ProtocolError):
             validate_hle_edram_restore(self._body(self._stream(case, changed_final)))
 
@@ -3849,13 +3863,14 @@ class HleMeasureProbeTests(unittest.TestCase):
         validate_hle_edram_restore(body)
         self.assertIsNone(_validate_campaign_contract(body, case))
 
-    def test_final_query_returning_the_initial_width_is_rejected_by_the_rule(self) -> None:
-        """The pure-query model (final Set(0) returns the initial width) is refuted by the run."""
+    def test_final_read_not_returning_the_restored_width_is_rejected_by_the_rule(self) -> None:
+        """The final read is Set(initial): a 0 (the previous probe revision's destructive
+        Set(0) verify, which undid the restore) or another width is refuted."""
         case = "hle-ge-edram"
-        for final in (0x400, 0x200):
+        for final in (0x0, 0x200):
             with self.subTest(final=hex(final)):
                 overrides = dict(self.GE_MEASURED_OVERRIDES)
-                overrides["edram-width-query-final"] = ("PASS", final, None)
+                overrides["edram-width-query-final"] = ("PASS", final, [0x400])
                 with self.assertRaisesRegex(ProtocolError, "set-returning-previous"):
                     validate_hle_edram_restore(self._body(self._stream(case, overrides)))
 

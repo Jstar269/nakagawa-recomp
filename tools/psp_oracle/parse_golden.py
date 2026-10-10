@@ -612,7 +612,9 @@ _register_campaign_probe(
 # HLE measurement families (probe_hle_measure.c; H-oracle-hle-measure-1009).
 # Every cell is emitted, as PASS, FAIL or SKIP, so each stream has a fixed shape
 # and order. The contracts check shape and order only: no PSP return value is
-# asserted, because these probes exist to measure what the console returns.
+# asserted, because these probes exist to measure what the console returns. The one
+# exception is validate_hle_edram_restore, which checks the GE probe's own restore
+# of the state it changed, not a console semantic.
 _register_campaign_probe(
     "hle-kernel-status", "PSP-HLE-KERNEL-STATUS-001",
     ("sys-status-size-0x1c", "sys-status-size-0x20", "sys-status-size-0x08",
@@ -711,11 +713,15 @@ def validate_hle_edram_restore(text: str) -> None:
 
     The probe changes GE state only through sceGeEdramSetAddrTranslation and
     restores the width it found. sceGeEdramSetAddrTranslation(w) sets the width to w
-    and returns the width it replaced (set-returning-previous, as measured on the
-    PSP-3000 on 2026-10-10), so a query is itself a set to 0. When the restore cell
-    ran, its post-query must equal the initial width and the final query must return
-    0, the 0 that the post-restore query left; when the initial width was not
-    restorable, every width cell must be SKIP and nothing may have changed.
+    and returns the width it replaced (set-returning-previous, as captured on the
+    PSP-3000 on 2026-10-10; that run was not acceptance-eligible, so the behaviour is
+    CAPTURED, not MEASURED), so a read by Set(0) is itself a set to 0. The probe
+    therefore verifies its restore with Set(initial), which returns the width now set
+    and leaves it in place, and its final read is Set(initial) too. When the restore
+    cell ran, its out0 and the final read must both equal the initial width. When the
+    initial width was not restorable, every width cell must be SKIP and the final
+    read, a Set(0), must return the 0 that the initial read left: the probe cannot put
+    a non-documented width back, and says so by that 0.
     """
 
     parsed = parse_output(text)
@@ -733,29 +739,31 @@ def validate_hle_edram_restore(text: str) -> None:
                 "PSP-HLE-GE-EDRAM-001: a width cell ran although the original width "
                 f"{initial:#x} is not restorable"
             )
-        if final != initial:
-            raise ProtocolError("PSP-HLE-GE-EDRAM-001: GE width changed with no restore cell")
+        if final != 0:
+            raise ProtocolError(
+                f"PSP-HLE-GE-EDRAM-001: final read returned {final:#x}, not 0; with no restore "
+                "cell the initial Set(0) left 0 and the final Set(0) must report that 0"
+            )
         return
     if any(results[case].status == "SKIP" for case in width_cases + ["edram-width-restore"]):
         raise ProtocolError("PSP-HLE-GE-EDRAM-001: a restorable width cell was skipped")
     # The restore record's `result` holds the pre-restore width (the value its
-    # SetAddrTranslation call returned) and its `out0` the post-restore width (the
-    # value its query returned), exactly as the probe records them. The check below
-    # reads out0 against the original width. The final query is itself a Set(0): it
-    # returns the 0 that the post-restore query left, so under set-returning-previous
-    # the final result is 0, not the original width, and the final check requires 0.
+    # Set(initial) returned) and its `out0` the verifying read (the value a second
+    # Set(initial) returned), exactly as the probe records them. Both the verify and
+    # the final read are Set(initial): under set-returning-previous each returns the
+    # width the restore left and keeps it, so both must equal the original width.
     restore = dict(results["edram-width-restore"].values)
     if int(restore["out0"], 0) != initial:
         raise ProtocolError(
             f"PSP-HLE-GE-EDRAM-001: restore left width {int(restore['out0'], 0):#x}, "
             f"not the original {initial:#x}"
         )
-    if final != 0:
+    if final != initial:
         raise ProtocolError(
-            f"PSP-HLE-GE-EDRAM-001: final query returned {final:#x}, not 0; "
-            "sceGeEdramSetAddrTranslation sets the width and returns the width it replaced "
-            "(set-returning-previous), so the final Set(0) must return the 0 that the "
-            "post-restore query left"
+            f"PSP-HLE-GE-EDRAM-001: final read returned {final:#x}, not the restored "
+            f"{initial:#x}; sceGeEdramSetAddrTranslation sets the width and returns the width "
+            "it replaced (set-returning-previous), so the final Set(initial) must return the "
+            "width the restore left"
         )
 
 

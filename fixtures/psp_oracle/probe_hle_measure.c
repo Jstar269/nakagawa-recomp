@@ -716,14 +716,16 @@ static int hle_run(void)
     const uint32_t addr_bits = (uint32_t)(uintptr_t)addr;
     hle_record("edram-addr", "PASS", addr_bits, &addr_bits, 1);
 
-    /* Width 0 means "do not set": this call reports the current width and
-       leaves it unchanged. */
+    /* PSPSDK documents width 0 as "do not set". The PSP-3000 capture of 2026-10-10 (not
+       acceptance-eligible, so CAPTURED only) showed Set(0) setting 0 and returning the
+       previous width like every other value: this read already leaves 0 behind, and the
+       restore below puts the original back when it is a documented width. */
     hle_step("edram-width-query-initial");
     const int initial = sceGeEdramSetAddrTranslation(0);
     hle_record("edram-width-query-initial", "PASS", (uint32_t)initial, &zero, 1);
 
-    /* The API cannot restore "unset" (width 0 does not set), so the width
-       cells run only when the original width is a documented one. */
+    /* A width outside the documented four cannot be set back, so the width cells
+       run only when the original width is a documented one. */
     const int restorable = (initial == 512 || initial == 1024 ||
                             initial == 2048 || initial == 4096);
     for (int i = 0; i < 4; i++) {
@@ -738,23 +740,31 @@ static int hle_run(void)
         hle_record(s_width_cases[i], "PASS", (uint32_t)previous, &after, 1);
     }
 
+    /* Under the captured behaviour (Set(w) sets w and returns the width it replaced, width 0
+       included) a Set(0) reports the current width and undoes it in the same call. The restore
+       therefore ends with Set(initial) and verifies it with a second Set(initial), which returns
+       the width now set and leaves it in place. The previous revision verified with Set(0): its
+       own final read then saw 0, every run ended FAIL, and the console was left at width 0. */
     if (!restorable) {
         hle_skip("edram-width-restore", 1);
     } else {
         hle_step("edram-width-restore");
         const int previous = sceGeEdramSetAddrTranslation(initial);
-        hle_step("edram-width-restore-query");
-        const uint32_t after = (uint32_t)sceGeEdramSetAddrTranslation(0);
+        hle_step("edram-width-restore-verify");
+        const uint32_t after = (uint32_t)sceGeEdramSetAddrTranslation(initial);
         hle_record("edram-width-restore", "PASS", (uint32_t)previous, &after, 1);
         ok &= ((int)after == initial);
     }
 
+    /* The final read is Set(initial) when the width was restorable (returns initial, leaves
+       initial) and Set(0) otherwise: the initial read already left 0 and nothing can put a
+       non-documented width back; the case's soft reset restores the console. out0 records
+       the argument. */
     hle_step("edram-width-query-final");
-    const int final_width = sceGeEdramSetAddrTranslation(0);
-    hle_record("edram-width-query-final", "PASS", (uint32_t)final_width, &zero, 1);
-    if (restorable) {
-        ok &= (final_width == initial);
-    }
+    const uint32_t final_arg = restorable ? (uint32_t)initial : 0u;
+    const int final_width = sceGeEdramSetAddrTranslation((int)final_arg);
+    hle_record("edram-width-query-final", "PASS", (uint32_t)final_width, &final_arg, 1);
+    ok &= (final_width == (restorable ? initial : 0));
     return ok;
 }
 

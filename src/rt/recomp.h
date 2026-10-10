@@ -527,6 +527,8 @@ int sr_vfpu_interp(CpuState *s, uint32_t op);
  * mirror it hands to ge_set_frame(), so the number here is the same frame index
  * the SR_GE_TRANSITION_TRACE records carry. */
 uint32_t sr_audio_vbl(void);
+/* SR_NAN_TRAP_CONTEXT dump, registered by sr_mem_init; NULL in harnesses without a runtime. */
+extern void (*sr_nan_trap_context_hook)(void);
 void sr_nan_trap_note(uint32_t pc, const char *op, uint32_t fd,
                       float out, const float *in, int nin);
 void sr_nan_trap_note_v(uint32_t pc, const char *op, uint32_t vd,
@@ -792,6 +794,9 @@ uint32_t sr_alloc_uid(void);
 
 /* sceGe display-list GPU (src/rt/ge.c): execute a GE command list, rasterising into VRAM. */
 uint32_t ge_run_list(uint32_t addr, int resume);
+/* SR_GE_TRANSITION_TRACE late-write check (issue #69): re-hash the vertex and index bytes of
+ * every weighted draw recorded since the last check; a no-op unless the trace is armed. */
+void ge_transition_trace_check(const char *why, uint32_t vcount);
 extern uint32_t g_ge_stall_addr;
 uint32_t ge_framebuffer(void);
 /* Last word written for GE command `cmd` (0..0xFF). Callers validate the index first

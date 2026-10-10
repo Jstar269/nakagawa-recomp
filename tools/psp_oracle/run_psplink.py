@@ -1759,6 +1759,35 @@ class PsplinkCampaignRunner:
         """Compatibility predicate for callers that only need confirmed unload."""
         return self._unload_status(module_uid) == "PASS"
 
+    def _settle_after_unload(self) -> tuple[str, int]:
+        """Settle the link after `modstun` before any post-unload check uses it.
+
+        On 2026-10-10 seven single-case hardware runs captured complete data and
+        confirmed the unload, then failed the post-unload shell qualification and
+        host0 round-trip, the way `pspsh ver` fails right after USBHostFS
+        connects. The settle issues `ver` through the shared bounded verifier
+        until PSPLink answers, so S2 and the shell qualification run on a link
+        that has answered since the unload; the round-trip after them is a
+        host-side file check and issues no PSPLink command. The settle never
+        decides the teardown verdict: when it is exhausted those checks still
+        run and classify the case as they would without it. Its attempts carry
+        their own event prefix so they never count as qualification attempts.
+        """
+        if self.terminal_reason is not None:
+            # A stopped session issues no further PSPLink commands (see _request).
+            return "NOT_RUN", 0
+        verified, _version, attempts, _detail = _verify_psplink_shell(
+            self.transport.run,
+            self.shell_verification_timeout,
+            take_unknown_command_events=getattr(
+                self.transport, "take_unknown_command_events", None
+            ),
+            record_event=lambda event: self.recovery_events.append(
+                f"post-unload settle: {event}"
+            ),
+        )
+        return ("PASS" if verified else "EXHAUSTED"), attempts
+
     def _verify_host0_roundtrip(self) -> bool:
         root = getattr(self.transport, "host0_root", None)
         if not isinstance(root, Path):
@@ -2562,6 +2591,11 @@ class PsplinkCampaignRunner:
             self._unload_status(module_uid) if module_uid else "BLOCKED"
         )
         progress.unload_status = unload_status
+        # Only an issued stop/unload handshake disturbs the link; without a UID
+        # no `modstun` ran and there is nothing to settle.
+        settle_status, settle_attempts = (
+            self._settle_after_unload() if module_uid else ("NOT_RUN", 0)
+        )
         after_unload, s2_problem = self._take_snapshot()
         shell_qualified = self._shell_qualified()
         exprint = self._request("exprint", self.cleanup_timeout)
@@ -2605,6 +2639,8 @@ class PsplinkCampaignRunner:
             exprint_command_status=exprint[3],
         )
         teardown_report["modstun_reply"] = self.last_modstun_reply
+        teardown_report["settle_status"] = settle_status
+        teardown_report["settle_attempts"] = settle_attempts
         for stage, problem in (("S1", s1_problem), ("S2", s2_problem)):
             if problem:
                 teardown_report["issues"].append(
