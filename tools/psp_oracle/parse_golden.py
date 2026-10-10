@@ -710,9 +710,12 @@ def validate_hle_edram_restore(text: str) -> None:
     """Fail closed unless the GE translation width was restored to its original value.
 
     The probe changes GE state only through sceGeEdramSetAddrTranslation and
-    restores the width it found. When the restore cell ran, its post-query and
-    the final query must both equal the initial width; when the initial width was
-    not restorable, every width cell must be SKIP and nothing may have changed.
+    restores the width it found. sceGeEdramSetAddrTranslation(w) sets the width to w
+    and returns the width it replaced (set-returning-previous, as measured on the
+    PSP-3000 on 2026-10-10), so a query is itself a set to 0. When the restore cell
+    ran, its post-query must equal the initial width and the final query must return
+    0, the 0 that the post-restore query left; when the initial width was not
+    restorable, every width cell must be SKIP and nothing may have changed.
     """
 
     parsed = parse_output(text)
@@ -738,16 +741,21 @@ def validate_hle_edram_restore(text: str) -> None:
     # The restore record's `result` holds the pre-restore width (the value its
     # SetAddrTranslation call returned) and its `out0` the post-restore width (the
     # value its query returned), exactly as the probe records them. The check below
-    # reads out0 against the original width.
+    # reads out0 against the original width. The final query is itself a Set(0): it
+    # returns the 0 that the post-restore query left, so under set-returning-previous
+    # the final result is 0, not the original width, and the final check requires 0.
     restore = dict(results["edram-width-restore"].values)
     if int(restore["out0"], 0) != initial:
         raise ProtocolError(
             f"PSP-HLE-GE-EDRAM-001: restore left width {int(restore['out0'], 0):#x}, "
             f"not the original {initial:#x}"
         )
-    if final != initial:
+    if final != 0:
         raise ProtocolError(
-            f"PSP-HLE-GE-EDRAM-001: final width {final:#x} is not the original {initial:#x}"
+            f"PSP-HLE-GE-EDRAM-001: final query returned {final:#x}, not 0; "
+            "sceGeEdramSetAddrTranslation sets the width and returns the width it replaced "
+            "(set-returning-previous), so the final Set(0) must return the 0 that the "
+            "post-restore query left"
         )
 
 
