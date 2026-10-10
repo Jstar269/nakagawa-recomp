@@ -282,6 +282,22 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* Test 4b: sector-extent names. The title builds "sce_lbn0x<LBN>_size0x<SIZE>" from the
+     * start LBN that sceIoGetstat reports. EBOOT.BIN starts at sector 37 with size 0x1000. */
+    if (iso_lookup("disc0:/sce_lbn0x25_size0x1000", &lba, &sz) != 0 || lba != 37 || sz != 0x1000) {
+        fprintf(stderr, "FAIL: sector-extent name should resolve to its LBN and size\n");
+        return 1;
+    }
+    if (iso_lookup("disc0:/sce_lbn0x25", &lba, &sz) == 0 ||
+        iso_lookup("disc0:/sce_lbn0x_size0x1000", &lba, &sz) == 0 ||
+        iso_lookup("disc0:/sce_lbn0x25_size0x0", &lba, &sz) == 0 ||
+        iso_lookup("disc0:/sce_lbn0x25_size0x1000x", &lba, &sz) == 0 ||
+        iso_lookup("disc0:/sce_lbn0x25_size0x1000/", &lba, &sz) == 0 ||
+        iso_lookup("disc0:/sce_lbn0x123456789_size0x1", &lba, &sz) == 0) {
+        fprintf(stderr, "FAIL: malformed sector-extent name should not resolve\n");
+        return 1;
+    }
+
     /* Test 5: iso_physical_lba */
     if (iso_physical_lba(37) != 37 || iso_physical_lba(1023) != 1023) {
         fprintf(stderr, "FAIL: iso_physical_lba mismatch\n");
