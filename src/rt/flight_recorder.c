@@ -5,6 +5,7 @@
 #define SR_FLIGHT_RECORDER_LINKED
 #endif
 #include "flight_recorder.h"
+#include "recomp.h"  /* SR_CPUSTATE_ABI_VERSION, stamped into the bundle header */
 
 #include <errno.h>
 #include <stdio.h>
@@ -716,7 +717,8 @@ static int write_bundle(int reason) {
         }
     }
     ok = ok && fprintf(file, "{\n  \"schema_version\": %u,\n", SR_FLIGHT_SCHEMA_VERSION) >= 0;
-    ok = ok && fprintf(file, "  \"runtime\": {\"name\": \"nakagawa-recomp\", \"cpu_state_abi\": 2},\n") >= 0;
+    ok = ok && fprintf(file, "  \"runtime\": {\"name\": \"nakagawa-recomp\", \"cpu_state_abi\": %u},\n",
+                       (unsigned)SR_CPUSTATE_ABI_VERSION) >= 0;
     ok = ok && fprintf(file,
                        "  \"build\": {\"compiler\": \"%s\", \"source_date_epoch\": %s, "
                        "\"build_id\": %s, \"pointer_bits\": %u},\n",

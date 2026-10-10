@@ -869,7 +869,7 @@ typedef struct {
 } TrWatch;
 static TrWatch s_tr_watch[TR_WATCH_MAX];
 static int s_tr_watch_n = 0;
-static unsigned long s_tr_watch_dropped = 0, s_tr_watch_checks = 0, s_tr_watch_late = 0;
+static unsigned long s_tr_watch_dropped = 0;
 static uint32_t index_value(uint32_t ibase, int idxfmt, int i);   /* defined with the vertex fetch */
 
 static uint32_t ge_tr_hash_span(uint32_t h, uint32_t lo, uint32_t hi) {
@@ -918,12 +918,10 @@ static void ge_transition_watch_note(uint32_t ordinal, uint32_t draw_id, int typ
 
 void ge_transition_trace_check(const char *why, uint32_t vcount) {
     if (s_tr_enabled <= 0) return;
-    s_tr_watch_checks++;
     for (int i = 0; i < s_tr_watch_n; i++) {
         const TrWatch *w = &s_tr_watch[i];
         uint32_t now = ge_tr_watch_hash(w);
         if (now == w->hash) continue;
-        s_tr_watch_late++;
         fprintf(s_tr_fp,
                 "{\"kind\":\"late_write\",\"frame\":%u,\"draw\":%u,\"draw_id\":\"%08x\","
                 "\"list\":\"0x%08x\",\"cmd\":\"0x%08x\",\"prim\":%d,\"count\":%d,"

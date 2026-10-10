@@ -919,6 +919,15 @@ jobs:
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
           CC=gcc VULKAN_SDK=/ucrt64 hle-thread-selftest
 
+      # The flash0: font device contract (hle_thread_selftest --flash0-font over synthetic
+      # PGFs) is driven by tools/test_flash0_font.py, which skips wherever mingw32-make is
+      # absent; before this step no hosted job ran it at all.
+      - name: Build and run flash0 font device selftest
+        if: matrix.part == 'selftests'
+        shell: msys2 {0}
+        run: >-
+          PYTHONPATH=tools python -m unittest -v test_flash0_font
+
       - name: Build and run synthetic VFPU fuzzer
         if: matrix.part == 'fuzz'
         shell: msys2 {0}

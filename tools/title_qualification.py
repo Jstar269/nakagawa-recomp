@@ -469,6 +469,13 @@ def child_environment(base: dict[str, str], sandbox: Path) -> dict[str, str]:
     env.update({
         "LOCALAPPDATA": str(sandbox / "localappdata"),
         "APPDATA": str(sandbox / "appdata"),
+        # POSIX players resolve HOME and the XDG_* bases (src/core/nk_platform_posix.c); without
+        # these a Linux smoke writes ~/.cache/nakagawa-recomp and reads ~/.config/nakagawa-recomp.
+        "HOME": str(sandbox / "home"),
+        "XDG_CONFIG_HOME": str(sandbox / "xdg" / "config"),
+        "XDG_DATA_HOME": str(sandbox / "xdg" / "data"),
+        "XDG_CACHE_HOME": str(sandbox / "xdg" / "cache"),
+        "XDG_STATE_HOME": str(sandbox / "xdg" / "state"),
         "SDL_VIDEODRIVER": "dummy",
         "SDL_AUDIODRIVER": "dummy",
         "SR_VIDEO": "offscreen",
