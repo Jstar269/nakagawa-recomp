@@ -1096,7 +1096,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f92bd775b2b952e9d3c1a7afdc5dd6c92b3cae66ab29e2857f218803d6fe6bbf"
+      "sha256": "3be203ac51660b988f49a035e3d2a6e502365b5464795fd6719ee53c3478712b"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -4103,7 +4103,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "14f4ce5e97338fd42a0edbc2aea575bc74afd080afa4a819b4dfd3d54aab1624"
+      "sha256": "a08fabde02063d3cb2a6d0685cc3810503408338555f84fa92da18f42dfa5a4d"
     },
     {
       "path": "src/rt/cpu_lle.c",
@@ -4866,7 +4866,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "d141fb7e3d64044be3bd08ba5cea65ea077abbd5c9fda0f7ab1a8ea97ec643d0"
+      "sha256": "d01c89dac4d3fd4a18baafb4660347f0e74a216ad9b7a5b6f789ac9a06fb85be"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4904,7 +4904,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5acaf00905865a03a78e6f7cad0ba909d48e781b9860b9e2d7a0db48b3bdd44b"
+      "sha256": "137d9ebd417006c7e4b1071d78fdbd0dbaaf4ab27faa7f0273704e1b939e4627"
     },
     {
       "path": "src/rt/intr_conformance.h",
