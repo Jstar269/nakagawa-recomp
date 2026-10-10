@@ -1405,7 +1405,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ae4d0d13b32574d3b9ec072c18cec7280c700e609d0ba5eab4a7a931ca120594"
+      "sha256": "71f945f40ed6c7595255e69be2270aa5ca2559c9e5498f087c3d0f8702bd471d"
     },
     {
       "path": "docs/WORKSPACE_DOCTOR.md",
@@ -6715,7 +6715,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3235fb79443fc65bc5f04d4c95856549d43de3c0ef4bcbdd3dfa3a4b4d4b4b5b"
+      "sha256": "81a2fe4942deeac7ecbb5df5f7ddd9ded6aba3d8493aa3f2ed8a22d7dd7b52d8"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -9637,7 +9637,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "084fcbebfbbfc395abab54b2ecd039e1aacfda2f5c02a34384444d0c5926d9e4"
+      "sha256": "99bee52c3cba032e0c6cfac99c588ad1705b4bd42b36272b8b9a5cb9939dbbe8"
     },
     {
       "path": "tools/test_title_runtime_config.py",
@@ -9997,7 +9997,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ea3945f473397e07571e9f2014c6e8111a6653b9e3864f980e12cb515ac6fd33"
+      "sha256": "e83b53d6930384aabde3c26625df409e11f1dc7092f3b29b99a6bacfb475a29d"
     },
     {
       "path": "tools/title_runtime_config.py",
