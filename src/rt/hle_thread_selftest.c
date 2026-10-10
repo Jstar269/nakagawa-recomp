@@ -84,6 +84,8 @@ void sr_profile_block(uint32_t target_pc) { (void)target_pc; }
 extern void sr_ctrl_test_reset_live_input(void);
 extern int sr_ctrl_test_live_input_seen(void);
 extern int sr_ctrl_test_pulse_suppressed(uint32_t keys);
+extern void sr_font_test_reset(void);
+extern const char *sr_font_test_slot_source(int slot);
 int sr_route_sig_bytes(void);
 int sr_route_test_sample(uint8_t *out);
 /* Selftest-only entry into the real route_tick path (defined in hle.c under
@@ -502,7 +504,9 @@ static uint32_t s_test_gui_last_addr, s_test_gui_last_stride;
 static int s_test_gui_last_fmt;
 int gui_on(void) { return s_test_gui_on; }
 void gui_pump(void) {}
-uint32_t gui_buttons(void) { return 0u; }
+/* The live pad: the keyboard tests hold a button on it for one frame; zero elsewhere. */
+static uint32_t s_test_gui_buttons;
+uint32_t gui_buttons(void) { return s_test_gui_buttons; }
 void gui_consume_button_pulses(void) {}
 /* The keyboard's scripted pad: the integration test queues one press per VBLANK sample. */
 static uint32_t s_osk_test_pulse;
@@ -5071,6 +5075,51 @@ static void test_osk_overlay_through_hle_scripted_pad(void) {
     s_osk_overlay_mode = 0;
     s_osk_test_pulse = 0u;
     sr_osk_overlay_abandon();
+}
+
+/* The press that closes the keyboard belongs to the keyboard. A live pad reports START held on
+ * the frame that confirms the field; the title's controller ring must not see that START (the
+ * keyboard was open when the sample was taken), and the sample counts as read so a scripted
+ * route moves on. Before the fix the ring carried the START and the title acted on it. */
+static void test_osk_overlay_closing_press_stays_with_keyboard(void) {
+    CpuState cpu;
+    sr_hle_init();
+    osk_env("SR_OSK_SCRIPT", NULL);
+    osk_env("SR_OSK_TEXT", NULL);
+    osk_person_reset();
+    sr_osk_overlay_abandon();
+    s_osk_overlay_mode = 1;
+    s_osk_test_pulse = 0u;
+    sr_ctrl_test_reset_live_input();
+
+    osk_overlay_field(4u, 0u, 1);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u && osk_poll(&cpu) == 1u && osk_frame(&cpu, 0u) == 2u,
+           "a keyboard opens for the closing-press check");
+    expect(osk_frame(&cpu, NK_PSP_BTN_CROSS_BIT) == 2u && sr_osk_overlay_view()->len == 1,
+           "one typed character is in the field");
+
+    /* START arrives as a live pad press: held in this frame's buttons and pulsed once. */
+    s_test_gui_on = 1;
+    s_test_gui_buttons = NK_PSP_BTN_START_BIT;
+    s_osk_test_pulse = NK_PSP_BTN_START_BIT;
+    sr_ctrl_sample();
+    expect(!sr_osk_overlay_active() && osk_poll(&cpu) == 2u && osk_poll(&cpu) == 3u,
+           "the held START confirms the keyboard");
+    expect(osk_latched_buttons(&cpu) == 0u,
+           "the START that closed the keyboard does not reach the title's controller ring");
+    s_test_gui_buttons = 0u;
+    s_test_gui_on = 0;
+
+    /* The next frame is the title's again. */
+    s_osk_test_pulse = 0u;
+    sr_ctrl_sample();
+    expect(osk_latched_buttons(&cpu) == 0u, "a released pad latches nothing on the next frame");
+    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u && osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
+           "the confirmed keyboard shuts down");
+    sr_ctrl_test_reset_live_input();
+    s_osk_overlay_mode = 0;
 }
 
 static void test_osk_keyboard_keeps_guest_time_running(void) {
@@ -26810,6 +26859,20 @@ static void test_flash0_font_device(void) {
     expect(f0t_open("flash0:/font/" F0T_LATIN_NAME, 0x0001u) == F0T_ERR_NOT_FOUND,
            "after every slot returns to pending, nothing is served");
 
+    /* The HLE sceFont shim (font_load) resolves the same slot files through the same sources,
+     * so a title on the shim sees the imported latin font and the project's japanese one, and an
+     * absent korean slot stays absent instead of being substituted. The shim used to open the
+     * legacy ltn0/jpn0/ltn8/kr0 names, which neither source carries, so every font went missing
+     * once a user imported one. Pending flags do not apply to the shim: it serves no guest path. */
+    sr_font_test_reset();
+    expect(strcmp(sr_font_test_slot_source(NK_FONT_SLOT_LATIN), "user-imported") == 0,
+           "the sceFont shim loads the latin slot from the user-imported cache");
+    expect(strcmp(sr_font_test_slot_source(NK_FONT_SLOT_JAPANESE), "project") == 0,
+           "the sceFont shim loads the japanese slot from the project font directory");
+    expect(strcmp(sr_font_test_slot_source(NK_FONT_SLOT_KOREAN), "none") == 0,
+           "the sceFont shim reports an absent korean slot as absent, not substituted");
+    sr_font_test_reset();
+
     free(user_bytes);
     free(project_latin_bytes);
     free(project_japanese_bytes);
@@ -26946,6 +27009,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_volatile_mem_output_preflight();
     test_osk_scripted_answer();
     test_osk_overlay_through_hle_scripted_pad();
+    test_osk_overlay_closing_press_stays_with_keyboard();
     test_osk_keyboard_keeps_guest_time_running();
     test_io_devctl_memory_stick();
     test_exit_thread_does_not_wake_launcher(0);

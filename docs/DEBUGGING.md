@@ -414,7 +414,8 @@ drawing), and a person answers it with the pad or the keyboard: the d-pad or arr
 Cross or Enter types the highlighted key, Circle or Esc cancels, Start or Tab confirms, and
 L/R switch letter case. A physical keyboard also types directly, and Backspace deletes. The
 field's maximum length and its inputtype (`SceUtilityOskData` at +0x10, PSPSDK layout) limit
-what it accepts. While it is open the title's pad reads nothing, and guest time keeps running.
+what it accepts. While it is open the title's pad reads nothing, including the sample whose
+press confirms or cancels it, and guest time keeps running.
 
 A route answers the in-window keyboard with ordinary `PRESS` steps. The keyboard reads every
 controller sample while it is open, as the system keyboard polls the pad on a PSP, so a press
@@ -976,7 +977,7 @@ committed.
 | `SR_WAKELOG=1` | Log thread wakeup events |
 | `SR_HLE_DIAGNOSTICS=1` | Enable the retained title-scoped HLE diagnostic reads only for a validated `codegen_profile: "hst"` build; generic and public fixture profiles remain inert |
 | `SR_REAL_MODULE_START` | `sceKernelStartModule` entry gate, tri-state. `1` runs a translated/real `module_start` for any module; unset (the default) runs it for `libfont.prx` only, so the guest owns its own readiness while `psmf.prx`, `libpsmfplayer.prx` and unknown paths keep the host bypass; `0` is the environmental kill switch and runs no `module_start` for any module, For libfont, disabled or unavailable startup reports `LIBFONT_STARTUP_UNAVAILABLE`, returns `SCE_KERNEL_ERROR_NOTIMP`, and does not write readiness. Any other value is refused with one diagnostic and the default is used. `sceKernelStopModule`/`sceKernelUnloadModule` still require `1` |
-| `SR_FONTDIR=ABSOLUTE_PATH` | Override font directory (relative values are rejected; unset uses the executable's sibling `font`) |
+| `SR_FONTDIR=ABSOLUTE_PATH` | Override the project font directory (relative values are rejected; unset uses the executable's sibling `font`). The `flash0:` font device and the HLE `sceFont` shim both serve the slot files named in `src/core/nk_font_slots.h`, from the user-imported cache first and then from this directory; `SR_FONTLOG=1` names each slot's source |
 | `SR_DATAROOT=ABSOLUTE_PATH` | Override the extracted-XB data root (relative values are rejected; unset uses the executable-anchored HST tree). The executable-anchored root and walked descendants reject reparse points; an explicitly configured root is operator-trusted and may be a junction for a staged long-path fixture. Access-time replacement races inside that trusted root are not a containment boundary. |
 | `SR_FSDIR=PATH` | Legacy flat `fs/` source for one-time read-open import into the unified Memory Stick root; relative paths, including `.`/`..`, are resolved against the current directory. Write/create never creates under this root |
 | `SR_MEMSTICK=PATH` | Canonical host Memory Stick root shared by ordinary `sceIo*` `ms0:` I/O and savedata (default `memstick/`) |

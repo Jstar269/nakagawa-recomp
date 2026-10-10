@@ -54,6 +54,14 @@ uint32_t sr_flash0_font_list_dir(const char *guest_path, const Flash0Sources *so
 /* Named refusal for a write-side operation on a flash0: path. Returns EACCES. */
 uint32_t sr_flash0_font_refuse_write(const char *guest_path, const char *operation);
 
+/* Resolves one slot the way the device serves it (the user-imported cache, then the project
+ * font directory, with the same size probe) and returns the host path of the file that would
+ * be served, with *source_out = "user-imported" or "project". Returns 0 with an empty path
+ * and *source_out = "none" when no source has the slot. The HLE sceFont shim loads its fonts
+ * through this, so both font paths agree on which file a slot is. */
+int sr_flash0_font_resolve_path(const Flash0Sources *sources, NkFontSlot slot, char *path_out,
+                                size_t capacity, const char **source_out);
+
 #ifdef SR_HLE_THREAD_SELFTEST
 /* Test seam: marks a slot measured (non-zero) or pending (zero). Compiled only into the HLE
  * selftest, which stands in for the console measurement. */

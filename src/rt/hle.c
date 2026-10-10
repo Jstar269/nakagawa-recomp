@@ -7507,38 +7507,37 @@ static int ms0_try_legacy_flat_import(const char *guest_path, const char *host_p
  * directory and rasterise glyphs with the PGF reader (src/rt/pgf.c). A missing configured font is
  * reported as a path/configuration error; there is no current-working-directory retry or
  * synthetic fallback that could hide a bad root. */
-static PGF *s_pgf_ltn = NULL, *s_pgf_jpn = NULL, *s_pgf_ltn8 = NULL, *s_pgf_kr = NULL;
+static PGF *s_pgf_slot[NK_FONT_SLOT_COUNT];
+/* Where each slot's font came from: "user-imported", "project", "unreadable" or "none". */
+static const char *s_pgf_slot_source[NK_FONT_SLOT_COUNT];
+static const char *const s_pgf_slot_label[NK_FONT_SLOT_COUNT] = {
+    [NK_FONT_SLOT_JAPANESE] = "japanese",
+    [NK_FONT_SLOT_LATIN] = "latin",
+    [NK_FONT_SLOT_KOREAN] = "korean",
+};
+static void flash0_font_sources(Flash0Sources *out);   /* defined with the flash0: device roots below */
 static atomic_int s_pgf_state;
 
-static PGF *font_open_from_root(const wchar_t *root, const wchar_t *name,
-                                const char *source) {
-    wchar_t *path = NULL;
-    if (!sr_wide_join_alloc(root, name, &path)) {
-        fprintf(stderr, "font_load: %s path construction failed\n", source);
-        return NULL;
-    }
+static PGF *font_open_host_path(const char *path, const char *label, const char *source) {
 #ifdef _WIN32
-    PGF *font = pgf_open_w(path);
-    if (!font)
-        fprintf(stderr, "font_load: %s font could not be opened (%ls)\n", source, path);
-#else
-    /* This host has no wide fopen. The PGF reader derives the same internal font
-     * name from the path's basename, and a UTF-8 conversion of that basename is
-     * byte-identical to what pgf_open_w encodes, so the narrow entry point
-     * parses exactly the same font. */
+    /* Host paths are UTF-8 (the asset-index convention); Windows opens them wide. */
+    wchar_t *wide = NULL;
     PGF *font = NULL;
-    char *utf8 = NULL;
-    if (sr_wide_to_utf8_alloc(path, &utf8)) {
-        font = pgf_open(utf8);
+    if (sr_utf8_to_wide_alloc(path, &wide)) {
+        font = pgf_open_w(wide);
         if (!font)
-            fprintf(stderr, "font_load: %s font could not be opened (%s)\n", source, utf8);
-        free(utf8);
+            fprintf(stderr, "font_load: %s %s font could not be opened (%ls)\n", source, label, wide);
+        free(wide);
     } else {
-        fprintf(stderr, "font_load: %s font path is not convertible\n", source);
+        fprintf(stderr, "font_load: %s %s font path is not convertible\n", source, label);
     }
-#endif
-    free(path);
     return font;
+#else
+    PGF *font = pgf_open(path);
+    if (!font)
+        fprintf(stderr, "font_load: %s %s font could not be opened (%s)\n", source, label, path);
+    return font;
+#endif
 }
 
 static void font_load(void) {
@@ -7548,38 +7547,67 @@ static void font_load(void) {
         while (atomic_load_explicit(&s_pgf_state, memory_order_acquire) == 1) { }
         return;
     }
+    /* A bad project root is named once here; the resolution itself is the flash0: device's
+     * (flash0_font_sources), so both font paths read the same directories. */
     wchar_t *root = NULL;
     wchar_t *configured = NULL;
     int configured_present = 0;
-    const char *source = NULL;
     int env_ok = sr_wide_env_alloc(L"SR_FONTDIR", &configured, &configured_present);
     if (!env_ok) {
         fprintf(stderr, "font_load: SR_FONTDIR could not be read\n");
     } else if (configured_present) {
-        if (!configured[0] || !sr_wide_configured_root_wide_alloc(configured, &root)) {
+        if (!configured[0] || !sr_wide_configured_root_wide_alloc(configured, &root))
             fprintf(stderr, "font_load: SR_FONTDIR is configured but is not a valid absolute path\n");
-        } else {
-            source = "SR_FONTDIR";
-        }
     } else if (!sr_wide_module_font_root(&root)) {
         fprintf(stderr, "font_load: no SR_FONTDIR and executable font root could not be resolved\n");
-    } else {
-        source = "executable font root";
     }
     free(configured);
-    if (root) {
-        s_pgf_ltn = font_open_from_root(root, L"ltn0.pgf", source);
-        s_pgf_jpn = font_open_from_root(root, L"jpn0.pgf", source);
-        s_pgf_ltn8 = font_open_from_root(root, L"ltn8.pgf", source);
-        s_pgf_kr = font_open_from_root(root, L"kr0.pgf", source);
-    }
     free(root);
+    /* Each slot (nk_font_slots.h) resolves the way the flash0: device serves it: the
+     * user-imported cache under the per-user data directory first, then the project font
+     * directory. The files are the slot files; the legacy ltn0/jpn0/ltn8/kr0 names were in
+     * neither source after #811, so every font went missing once a user imported one. No
+     * cross-slot substitution: an absent slot stays absent and is named here. */
+    Flash0Sources sources;
+    flash0_font_sources(&sources);
+    for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
+        char path[SR_FLASH0_PATH_MAX + 64];
+        const char *from = "none";
+        PGF *pgf = NULL;
+        if (sr_flash0_font_resolve_path(&sources, (NkFontSlot)slot, path, sizeof(path), &from)) {
+            pgf = font_open_host_path(path, s_pgf_slot_label[slot], from);
+            if (!pgf) from = "unreadable";
+        } else {
+            fprintf(stderr,
+                    "font_load: no %s font in the user-imported cache or the project font directory\n",
+                    s_pgf_slot_label[slot]);
+        }
+        s_pgf_slot[slot] = pgf;
+        s_pgf_slot_source[slot] = from;
+    }
     if (getenv("SR_FONTLOG"))
-        fprintf(stderr, "font_load: jpn0=%s ltn0=%s ltn8=%s kr0=%s\n",
-                s_pgf_jpn ? "ok" : "MISSING", s_pgf_ltn ? "ok" : "MISSING",
-                s_pgf_ltn8 ? "ok" : "MISSING", s_pgf_kr ? "ok" : "MISSING");
+        fprintf(stderr, "font_load: japanese=%s latin=%s korean=%s\n",
+                s_pgf_slot_source[NK_FONT_SLOT_JAPANESE], s_pgf_slot_source[NK_FONT_SLOT_LATIN],
+                s_pgf_slot_source[NK_FONT_SLOT_KOREAN]);
     atomic_store_explicit(&s_pgf_state, 2, memory_order_release);
 }
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test seam: drop the loaded fonts so the next font_load resolves them again, and name the
+ * source a slot came from ("user-imported", "project", "unreadable" or "none"). */
+void sr_font_test_reset(void) {
+    for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
+        if (s_pgf_slot[slot]) pgf_close(s_pgf_slot[slot]);
+        s_pgf_slot[slot] = NULL;
+        s_pgf_slot_source[slot] = NULL;
+    }
+    atomic_store_explicit(&s_pgf_state, 0, memory_order_release);
+}
+const char *sr_font_test_slot_source(int slot) {
+    font_load();
+    if (slot < 0 || slot >= NK_FONT_SLOT_COUNT || !s_pgf_slot_source[slot]) return "none";
+    return s_pgf_slot_source[slot];
+}
+#endif
 /* Roots for the flash0: font device (flash0_font.c). The user-imported cache lives under the
  * per-user data directory. Project fonts resolve like font_load: SR_FONTDIR when it is set,
  * otherwise the executable's font directory. Both are returned as UTF-8 paths. A root that is
@@ -7745,9 +7773,9 @@ static uint32_t font_lib_alloc_size(int numFonts) {
 static const PGF *font_pgf_for_index(uint32_t index) {
     font_load();
     switch (index) {
-    case 0:  return s_pgf_jpn;
-    case 9:  return s_pgf_ltn8;
-    case 17: return s_pgf_kr;
+    case 0:  return s_pgf_slot[NK_FONT_SLOT_JAPANESE];
+    case 9:  return s_pgf_slot[NK_FONT_SLOT_LATIN];
+    case 17: return s_pgf_slot[NK_FONT_SLOT_KOREAN];
     default: return NULL;
     }
 }
@@ -7864,7 +7892,7 @@ static uint32_t font_open_common(CpuState *s, uint32_t lib, uint32_t index, uint
         MEM_W32(fh + 0x00, SR_FONT_MAGIC);
         MEM_W32(fh + 0x04, lib);
         MEM_W32(fh + 0x08, index);
-        MEM_W32(fh + 0x0c, (pgf && pgf == s_pgf_jpn) ? 1u : 0u);
+        MEM_W32(fh + 0x0c, (pgf && pgf == s_pgf_slot[NK_FONT_SLOT_JAPANESE]) ? 1u : 0u);
         MEM_W32(fh + 0x10, mode);
     }
     hle_lock();
@@ -16605,9 +16633,14 @@ void sr_ctrl_sample(void) {
      * so a headless run cannot confirm a name it did not type. The held state is tracked
      * whether or not the keyboard is open, so a button already down does not act on it. */
     uint32_t pulses = gui_pad_pulses_take();
+    int keyboard_took_sample = sr_osk_overlay_active();   /* open before this sample's press */
     sr_osk_overlay_pad(s_route_state != ROUTE_OFF ? s_route_keys : 0u, pulses);
-    /* Masking the pad while the keyboard is open: a project choice, not yet measured on hardware. */
-    if (sr_osk_overlay_active()) buttons = 0u;
+    /* The keyboard owns every sample taken while it is open, including the one whose press
+     * confirms or cancels it: that press closed the dialog and must not reach the title as a
+     * START or CIRCLE in the same frame. Masking the pad while the keyboard is open is a
+     * project choice, not yet measured on hardware. */
+    keyboard_took_sample = keyboard_took_sample || sr_osk_overlay_active();
+    if (keyboard_took_sample) buttons = 0u;
     if (getenv("SR_INLOG")) {
         static uint32_t previous;
         if (buttons != previous) {
@@ -16620,7 +16653,7 @@ void sr_ctrl_sample(void) {
     /* The on-screen keyboard reads every sample while it is open, as the system keyboard
      * polls the pad on a PSP, so a scripted press it took counts as read and the route moves
      * on; without this the route would wait for a guest read that the keyboard now holds back. */
-    if (sr_osk_overlay_active()) (void)sr_input_read(&s_input, input_id);
+    if (keyboard_took_sample) (void)sr_input_read(&s_input, input_id);
     s_ctrl_ring[s_ctrl_w].btn = buttons;
     s_ctrl_ring[s_ctrl_w].input_id = input_id;
     s_ctrl_ring[s_ctrl_w].ts = (uint32_t)sched_vtime_us();   /* low 32 bits of guest microsecond clock at latch */

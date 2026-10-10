@@ -141,23 +141,46 @@ static int flash0_probe(const char *path, const char *label, const char *source,
 
 /* Source order for one slot (FONT_PLAN 5.2): the user-imported cache, then the project's font,
  * then nothing. No cross-slot substitution. */
-static Flash0Source flash0_resolve(const Flash0Sources *sources, NkFontSlot slot,
-                                   FILE **fp_out, uint32_t *size_out) {
+static Flash0Source flash0_resolve_path(const Flash0Sources *sources, NkFontSlot slot,
+                                        char *path, size_t capacity,
+                                        FILE **fp_out, uint32_t *size_out) {
     const char *file = s_flash0_slots[slot].served_name;
     const char *label = flash0_slot_label(slot);
-    char path[SR_FLASH0_PATH_MAX + 64];
     *fp_out = NULL;
     *size_out = 0;
+    path[0] = '\0';
     if (!sources) return FLASH0_SOURCE_NONE;
     if (sources->user_data_dir[0] &&
-        flash0_user_cache_path(path, sizeof(path), sources->user_data_dir, file) &&
+        flash0_user_cache_path(path, capacity, sources->user_data_dir, file) &&
         flash0_probe(path, label, "user-imported", fp_out, size_out))
         return FLASH0_SOURCE_USER;
     if (sources->project_dir[0] &&
-        flash0_project_path(path, sizeof(path), sources->project_dir, file) &&
+        flash0_project_path(path, capacity, sources->project_dir, file) &&
         flash0_probe(path, label, "project", fp_out, size_out))
         return FLASH0_SOURCE_PROJECT;
+    path[0] = '\0';
     return FLASH0_SOURCE_NONE;
+}
+
+static Flash0Source flash0_resolve(const Flash0Sources *sources, NkFontSlot slot,
+                                   FILE **fp_out, uint32_t *size_out) {
+    char path[SR_FLASH0_PATH_MAX + 64];
+    return flash0_resolve_path(sources, slot, path, sizeof(path), fp_out, size_out);
+}
+
+int sr_flash0_font_resolve_path(const Flash0Sources *sources, NkFontSlot slot, char *path_out,
+                                size_t capacity, const char **source_out) {
+    FILE *fp = NULL;
+    uint32_t size = 0;
+    if (source_out) *source_out = "none";
+    if (!path_out || capacity == 0) return 0;
+    path_out[0] = '\0';
+    if ((unsigned)slot >= (unsigned)NK_FONT_SLOT_COUNT) return 0;
+    Flash0Source source = flash0_resolve_path(sources, slot, path_out, capacity, &fp, &size);
+    if (fp) fclose(fp);
+    if (source == FLASH0_SOURCE_NONE) return 0;
+    if (source_out) *source_out = source == FLASH0_SOURCE_USER ? "user-imported" : "project";
+    return 1;
 }
 
 static uint32_t flash0_refuse_missing_slot(NkFontSlot slot, const char *guest_path) {
