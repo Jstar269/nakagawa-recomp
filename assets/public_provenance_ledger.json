@@ -6991,7 +6991,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f9b796d1fb9417650378407eb78c208b36d454f1784d2afa7a9c67049c2606c4"
+      "sha256": "d97d31f37c7a0b8b7c969a2c4b405de24b02283f6ce41069e7658498feb77c9b"
     },
     {
       "path": "tools/nk_core/iso_inspect.py",
@@ -9468,7 +9468,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f81578772098e27d9a4e81218aaaca70e29b793bd9983f52138239c8d05c3a91"
+      "sha256": "b7f36df8539979c18a6672122ac57f055a6964ad97236da07bffb48675fc55c2"
     },
     {
       "path": "tools/test_public_title_isolation.py",
@@ -9504,7 +9504,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9b69237e1db6c2413792b72811a1c4f59f75b3d3ebb906cf62e4fa977bc28abc"
+      "sha256": "80a8ebf49c0d4f209cb7817585ccd9fc82806a7b5de5e1fe92470a8806421052"
     },
     {
       "path": "tools/test_readme_images.py",
