@@ -15206,10 +15206,14 @@ static uint32_t s_latch_seen_count = 0u;
  *   EXPECT <NAME>                assert NAME is on screen right now; fail loudly if not
  *   PRESS <hexmask> <width>      hold mask for width vblanks
  *   DELAY <n>                    advance n vblanks (input cadence within one screen)
+ *   PRESS_UNTIL_NID <import|0xNID> <hexmask> <width> <period> <timeout>
+ *                                repeat the press (held width, released for the rest of period)
+ *                                until the guest calls that import; fail on timeout
  *   END                          route complete
- *   WIDTHS VBLANKS|READS         the unit the widths of PRESS, DELAY, PRESS_UNTIL and
- *                                PRESS_WHILE count in (default VBLANKS); before every step
- *   READS | VBLANKS <step>       the unit of that one PRESS, DELAY, PRESS_UNTIL or PRESS_WHILE
+ *   WIDTHS VBLANKS|READS         the unit the widths of PRESS, DELAY, PRESS_UNTIL, PRESS_WHILE
+ *                                and PRESS_UNTIL_NID count in (default VBLANKS); before every step
+ *   READS | VBLANKS <step>       the unit of that one PRESS, DELAY, PRESS_UNTIL, PRESS_WHILE or
+ *                                PRESS_UNTIL_NID
  *
  * A width in READS is a number of guest controller reads that observe the press, not of
  * vblanks: the press is held until the guest has read it that many times, however many
@@ -15246,7 +15250,7 @@ static uint32_t s_latch_seen_count = 0u;
 #define ROUTE_FAIL_EXIT  86
 
 enum { ROUTE_OP_WAIT = 1, ROUTE_OP_EXPECT, ROUTE_OP_PRESS, ROUTE_OP_DELAY, ROUTE_OP_UNTIL,
-       ROUTE_OP_WHILE, ROUTE_OP_NID, ROUTE_OP_END };
+       ROUTE_OP_WHILE, ROUTE_OP_NID, ROUTE_OP_UNTIL_NID, ROUTE_OP_END };
 enum { ROUTE_OFF = 0, ROUTE_LEGACY, ROUTE_RUNNING, ROUTE_DONE, ROUTE_FAILED };
 
 /* One named screen. Parts of a screen legitimately vary between otherwise identical
@@ -15274,6 +15278,7 @@ typedef struct {
     int      line;                   /* source line, for diagnostics */
     int      reads;                  /* the widths above count guest reads, not vblanks
                                       * (WIDTHS READS, or a READS line); the timeouts never do */
+    uint32_t nid;                    /* PRESS_UNTIL_NID: the import whose call completes the step */
 } RouteStep;
 
 static RouteCheckpoint s_route_cp[ROUTE_MAX_CP];
@@ -15710,9 +15715,10 @@ static int route_parse_line(char *line, int lineno, const char *path) {
             return -1;
         }
         if (strcmp(tok, "PRESS") != 0 && strcmp(tok, "DELAY") != 0 &&
-            strcmp(tok, "PRESS_UNTIL") != 0 && strcmp(tok, "PRESS_WHILE") != 0) {
+            strcmp(tok, "PRESS_UNTIL") != 0 && strcmp(tok, "PRESS_WHILE") != 0 &&
+            strcmp(tok, "PRESS_UNTIL_NID") != 0) {
             fprintf(stderr, "ROUTE_PARSE: %s:%d: READS and VBLANKS apply to PRESS, DELAY, PRESS_UNTIL "
-                            "and PRESS_WHILE, not '%s'\n", path, lineno, tok);
+                            "and PRESS_WHILE, and PRESS_UNTIL_NID, not '%s'\n", path, lineno, tok);
             return -1;
         }
     }
@@ -15837,6 +15843,47 @@ static int route_parse_line(char *line, int lineno, const char *path) {
                 }
             } else if (st.b < 1 || st.c <= st.b || st.d < st.c) {
                 fprintf(stderr, "ROUTE_PARSE: %s:%d: %s needs width >= 1, period > width, timeout >= period\n", path, lineno, tok);
+                return -1;
+            }
+        } else if (strcmp(tok, "PRESS_UNTIL_NID") == 0) {
+            /* Repeat the press until the guest calls an import. PRESS_UNTIL repeats until a
+             * screen is observed, and a screen can only be recorded from a run that has already
+             * reached it. Some prompts (the savedata message boxes, the Yes/No that follows
+             * them) do not change the screen when a press is taken, so no screen says that the
+             * press landed. The import the guest calls next does say so, and it is the same in
+             * every title. */
+            st.op = ROUTE_OP_UNTIL_NID;
+            char *nid = strtok(NULL, " \t\r\n");
+            char *m = strtok(NULL, " \t\r\n"), *w = strtok(NULL, " \t\r\n");
+            char *p = strtok(NULL, " \t\r\n"), *t = strtok(NULL, " \t\r\n");
+            if (!nid || !m || !w || !p || !t) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS_UNTIL_NID <import|0xNID> <hexmask> <width> "
+                                "<period> <timeout>\n", path, lineno);
+                return -1;
+            }
+            if (route_nid_from_token(nid, &st.nid) != 0) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS_UNTIL_NID: '%s' is not an import name and not "
+                                "a 0x-prefixed NID (the runtime's own table is src/rt/nid_names.h; a name "
+                                "it does not carry can be written as hex)\n", path, lineno, nid);
+                return -1;
+            }
+            if (route_parse_mask(m, &st.a) != 0) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS_UNTIL_NID: '%s' is not a hex mask or a button name "
+                                "(%s)\n", path, lineno, m, route_button_names());
+                return -1;
+            }
+            st.b = (uint32_t)strtoul(w, NULL, 10);
+            st.c = (uint32_t)strtoul(p, NULL, 10);
+            st.d = (uint32_t)strtoul(t, NULL, 10);
+            if (st.reads) {
+                if (st.b < 1 || st.c <= st.b || st.d < 1) {
+                    fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS_UNTIL_NID with READS needs width >= 1, period > "
+                                    "width (both in reads), timeout >= 1 vblank\n", path, lineno);
+                    return -1;
+                }
+            } else if (st.b < 1 || st.c <= st.b || st.d < st.c) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS_UNTIL_NID needs width >= 1, period > width, "
+                                "timeout >= period\n", path, lineno);
                 return -1;
             }
         } else if (strcmp(tok, "PRESS") == 0) {
@@ -15987,10 +16034,14 @@ int sr_route_load(const char *path) {
          * event names the event in the log instead of leaving a reader to guess. */
         for (int i = 0; i < s_route_nsteps; i++) {
             RouteStep *st = &s_route_prog[i];
-            if (st->op != ROUTE_OP_NID) continue;
-            const char *nm = sr_nid_name(st->b);
-            fprintf(stderr, "ROUTE: step %d (WAIT_NID) waits for %s (0x%08x) for %u vblanks\n",
-                    i, nm ? nm : "an unnamed import", st->b, st->a);
+            if (st->op != ROUTE_OP_NID && st->op != ROUTE_OP_UNTIL_NID) continue;
+            uint32_t nid = st->op == ROUTE_OP_NID ? st->b : st->nid;
+            uint32_t to = st->op == ROUTE_OP_NID ? st->a : st->d;
+            const char *nm = sr_nid_name(nid);
+            fprintf(stderr, "ROUTE: step %d (%s) %s %s (0x%08x) for %u vblanks\n",
+                    i, st->op == ROUTE_OP_NID ? "WAIT_NID" : "PRESS_UNTIL_NID",
+                    st->op == ROUTE_OP_NID ? "waits for" : "presses until the guest calls",
+                    nm ? nm : "an unnamed import", nid, to);
         }
         return 1;
     }
@@ -16132,10 +16183,11 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
             s_route_step_started = 1;
             /* The NID watch is armed by the step that wants it, so "called since this step
              * began" is measured from this vblank and not from the start of the route. */
-            route_nid_watch(st->op == ROUTE_OP_NID);
+            route_nid_watch(st->op == ROUTE_OP_NID || st->op == ROUTE_OP_UNTIL_NID);
             /* Input belongs to the step that makes it: a pressing step starts its first
              * segment here, every other step leaves the pad released. */
-            if (st->op == ROUTE_OP_PRESS || st->op == ROUTE_OP_UNTIL || st->op == ROUTE_OP_WHILE) {
+            if (st->op == ROUTE_OP_PRESS || st->op == ROUTE_OP_UNTIL || st->op == ROUTE_OP_WHILE ||
+                st->op == ROUTE_OP_UNTIL_NID) {
                 SrInputSegment press = route_segment(st->a, st->b, st->reads, v,
                                                      st->op == ROUTE_OP_PRESS ? s_input_budget : 0u);
                 sr_input_start(&s_input, &press, v);
@@ -16176,6 +16228,27 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
             if (el >= st->d) {
                 route_fail("line %d: PRESS_UNTIL %s gave up after %u vblanks (from vblank %u); %s",
                            st->line, st->name, el, s_route_step_start, route_seen_desc());
+                return keys;
+            }
+            return keys | route_pulse(st, v);
+        }
+        case ROUTE_OP_UNTIL_NID: {
+            /* The press repeats until the guest calls the import, measured from the vblank the
+             * step began; an import that happened before then does not count (route_nid_since). */
+            const char *nm = sr_nid_name(st->nid);
+            if (route_nid_since(st->nid)) {
+                fprintf(stderr, "ROUTE: guest called %s (0x%08x) at vblank %u (step %d, after %u "
+                                "vblanks; the press repeated until then)\n",
+                        nm ? nm : "an unnamed import", st->nid, v, s_route_pc, el);
+                route_advance();
+                continue;
+            }
+            if (el >= st->d) {
+                route_fail("line %d: PRESS_UNTIL_NID %s (0x%08x) was not called within %u vblanks "
+                           "(from vblank %u to %u); the guest made %lu imports in that time, "
+                           "none of them this one",
+                           st->line, nm ? nm : "?", st->nid, el, s_route_step_start, v,
+                           s_route_nid_pos - s_route_nid_start);
                 return keys;
             }
             return keys | route_pulse(st, v);
@@ -17056,7 +17129,7 @@ static void route_tick(uint32_t v) {
          * needs no signature: sampling the framebuffer for it would cost the observer's ~20%
          * of vblank rate (measured) to learn nothing. */
         pending = !(op == ROUTE_OP_PRESS || op == ROUTE_OP_DELAY || op == ROUTE_OP_END ||
-                    op == ROUTE_OP_NID);
+                    op == ROUTE_OP_NID || op == ROUTE_OP_UNTIL_NID);
     }
     /* Elapsed-delivered-VCOUNT cadence (#109 reconstruction): delivered VCOUNT is
      * elapsed-period accounting and may jump over every exact residue of
