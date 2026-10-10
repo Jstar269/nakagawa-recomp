@@ -60,6 +60,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include "nid_names.h"
 #include "nk_input_profile.h"   /* NK_PSP_BTN_*_BIT: the buttons a route may name */
 #include "osk_text_entry.h"     /* the keyboard's text-entry seam, stubbed below */
+#include "osk_overlay.h"        /* the in-window keyboard the integration test drives */
 #include "flash0_font.h"        /* flash0: font device: slot binding seam */
 #include "nk_platform.h"        /* per-user data directory override for the font cache */
 
@@ -503,6 +504,13 @@ int gui_on(void) { return s_test_gui_on; }
 void gui_pump(void) {}
 uint32_t gui_buttons(void) { return 0u; }
 void gui_consume_button_pulses(void) {}
+/* The keyboard's scripted pad: the integration test queues one press per VBLANK sample. */
+static uint32_t s_osk_test_pulse;
+uint32_t gui_pad_pulses_take(void) {
+    uint32_t pulse = s_osk_test_pulse;
+    s_osk_test_pulse = 0u;
+    return pulse;
+}
 void gui_analog(uint8_t *lx, uint8_t *ly) {
     if (lx) *lx = 128;
     if (ly) *ly = 128;
@@ -4661,9 +4669,16 @@ int sr_osk_input(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int 
     return s_osk_native_answer;
 }
 
-int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap) {
+/* 1: the presenter draws the keyboard, so the field is answered by the real in-window overlay
+ * (src/rt/osk_overlay.c) that the integration test drives through the HLE path. */
+static int s_osk_overlay_mode;
+
+int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int cap,
+                           uint32_t input_type) {
+    if (s_osk_overlay_mode) return sr_osk_overlay_poll(desc, initial, out, cap, input_type);
     (void)desc;
     (void)initial;
+    (void)input_type;
     if (!s_osk_request_open) {              /* the box opens; nobody has answered it yet */
         s_osk_request_open = 1;
         s_osk_requests++;
@@ -4676,6 +4691,10 @@ int sr_osk_text_entry_poll(const wchar_t *desc, const wchar_t *initial, wchar_t 
 }
 
 void sr_osk_text_entry_abandon(void) {
+    if (s_osk_overlay_mode) {
+        sr_osk_overlay_abandon();
+        return;
+    }
     if (s_osk_request_open) s_osk_abandons++;
     s_osk_request_open = 0;
 }
@@ -4931,6 +4950,129 @@ static void test_osk_scripted_answer(void) {
  * the person is still typing; waiting for the person inside GetStatus stopped every guest
  * thread, vblank and frame until the box was answered (and forever under the offscreen
  * presenter, where nobody can answer it). */
+/* ---- the in-window keyboard through the production HLE path (src/rt/osk_overlay.c).
+ * The guest starts the keyboard and polls GetStatus once per frame; the vblank controller
+ * latch (sr_ctrl_sample) carries the pad, so each scripted press is one frame's sample, the
+ * way a gamepad press reaches the keyboard. No person, no native box, no SR_OSK_TEXT. */
+#define OSK_PEEK_ADDR      0x09032000u   /* guest scratch for one SceCtrlData record */
+#define NID_CTRL_PEEK_HLE  0x3a622550u   /* sceCtrlPeekBufferPositive */
+
+static uint32_t osk_frame(CpuState *cpu, uint32_t pad) {
+    s_osk_test_pulse = pad;              /* one press, delivered in this frame's sample */
+    sr_ctrl_sample();
+    return osk_poll(cpu);
+}
+
+/* One field: `outlen` units of guest buffer, the inputtype, and an empty or "old" start. */
+static void osk_overlay_field(uint32_t outlen, uint32_t inputtype, int empty_start) {
+    osk_guest_build(1, outlen, 0u);
+    MEM_W32(OSK_FIELDS_ADDR + 0x10u, inputtype);      /* SceUtilityOskData.inputtype */
+    if (empty_start) MEM_W16(OSK_IN_ADDR, 0);
+}
+
+static uint32_t osk_latched_buttons(CpuState *cpu) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = OSK_PEEK_ADDR;
+    cpu->r[5] = 1u;
+    (void)sr_syscall(cpu, NID_CTRL_PEEK_HLE);
+    return MEM_R32(OSK_PEEK_ADDR + 4u);
+}
+
+static void test_osk_overlay_through_hle_scripted_pad(void) {
+    CpuState cpu;
+    static const uint16_t abc[] = { 'A', 'B', 'C' };
+    static const uint16_t one[] = { '1' };
+    sr_hle_init();
+    osk_env("SR_OSK_SCRIPT", NULL);
+    osk_env("SR_OSK_TEXT", NULL);
+    osk_person_reset();
+    sr_osk_overlay_abandon();
+    s_osk_overlay_mode = 1;               /* the presenter draws the keyboard */
+    s_osk_test_pulse = 0u;
+
+    /* 1. A four-unit guest buffer holds three characters: the fourth press is refused. */
+    osk_overlay_field(4u, 0u, 1);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard for the overlay starts");
+    expect(osk_poll(&cpu) == 1u && osk_frame(&cpu, 0u) == 2u,
+           "the keyboard reports INIT, then VISIBLE");
+    int left_visible = 0;
+    for (int frame = 0; frame < 300; frame++)
+        if (osk_frame(&cpu, 0u) != 2u) left_visible++;
+    expect(left_visible == 0 && sr_osk_overlay_active(),
+           "with no press the keyboard stays open for 300 frames, so the auto START pulse "
+           "does not answer it");
+    expect(s_osk_blocking_calls == 0, "the overlay never asks the native box");
+    expect(osk_frame(&cpu, NK_PSP_BTN_CROSS_BIT) == 2u && sr_osk_overlay_view()->len == 1 &&
+               sr_osk_overlay_view()->text[0] == 'A',
+           "cross types the highlighted A");
+    expect(osk_latched_buttons(&cpu) == 0u,
+           "while the keyboard is open the title's pad reads nothing (the press went to the keyboard)");
+    expect(osk_frame(&cpu, NK_PSP_BTN_RIGHT_BIT) == 2u && osk_frame(&cpu, NK_PSP_BTN_CROSS_BIT) == 2u &&
+               osk_frame(&cpu, NK_PSP_BTN_RIGHT_BIT) == 2u && osk_frame(&cpu, NK_PSP_BTN_CROSS_BIT) == 2u,
+           "right then cross types B, then C");
+    expect(osk_frame(&cpu, NK_PSP_BTN_RIGHT_BIT) == 2u && osk_frame(&cpu, NK_PSP_BTN_CROSS_BIT) == 2u &&
+               sr_osk_overlay_view()->len == 3,
+           "a fourth character is refused: the guest's buffer holds three units");
+    expect(osk_frame(&cpu, NK_PSP_BTN_START_BIT) == 2u && osk_poll(&cpu) == 3u,
+           "start answers, and the next poll reports QUIT");
+    expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 2u && osk_guest_out_is(0, abc, 3),
+           "the answer is written to the guest as UTF-16 ABC and reported CHANGED");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u && osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
+           "the answered keyboard winds down through FINISHED to NONE");
+
+    /* 2. The inputtype is read from the parameter block: digits only, so the cursor starts on
+     * the digit 1 and the letter key is not there to be pressed. */
+    osk_overlay_field(4u, OSK_INPUT_LATIN_DIGIT, 1);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u && osk_poll(&cpu) == 1u && osk_frame(&cpu, 0u) == 2u,
+           "a digit-only keyboard starts");
+    expect(osk_frame(&cpu, NK_PSP_BTN_CROSS_BIT) == 2u && sr_osk_overlay_view()->len == 1 &&
+               sr_osk_overlay_view()->text[0] == '1',
+           "digit-only: cross types the first digit, 1");
+    expect(osk_frame(&cpu, NK_PSP_BTN_START_BIT) == 2u && osk_poll(&cpu) == 3u &&
+               MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 2u && osk_guest_out_is(0, one, 1),
+           "the digit answer is written and reported CHANGED");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u && osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
+           "the digit keyboard winds down");
+
+    /* 3. Circle cancels: the field keeps its starting text and is reported CANCELLED. */
+    osk_overlay_field(4u, 0u, 1);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u && osk_poll(&cpu) == 1u && osk_frame(&cpu, 0u) == 2u,
+           "a third keyboard starts");
+    expect(osk_frame(&cpu, NK_PSP_BTN_CROSS_BIT) == 2u && osk_frame(&cpu, NK_PSP_BTN_CIRCLE_BIT) == 2u &&
+               osk_poll(&cpu) == 3u,
+           "circle cancels the keyboard");
+    expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 1u && MEM_R16(osk_out_addr(0)) == 0,
+           "a cancelled field is reported CANCELLED and its buffer keeps the starting text");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u && osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
+           "the cancelled keyboard winds down");
+
+    /* 4. A fresh Start press answers a later keyboard (the held-across-fields case is in the
+     * session selftest, osk_overlay_selftest.c). */
+    osk_overlay_field(4u, 0u, 1);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u && osk_poll(&cpu) == 1u && osk_frame(&cpu, 0u) == 2u,
+           "a fourth keyboard starts");
+    expect(osk_frame(&cpu, NK_PSP_BTN_START_BIT) == 2u && osk_poll(&cpu) == 3u,
+           "start answers the fourth keyboard");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u && osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
+           "the fourth keyboard winds down");
+
+    s_osk_overlay_mode = 0;
+    s_osk_test_pulse = 0u;
+    sr_osk_overlay_abandon();
+}
+
 static void test_osk_keyboard_keeps_guest_time_running(void) {
     CpuState cpu;
     static const uint16_t n[] = { 'N' };
@@ -26803,6 +26945,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_ge_break_continue();
     test_volatile_mem_output_preflight();
     test_osk_scripted_answer();
+    test_osk_overlay_through_hle_scripted_pad();
     test_osk_keyboard_keeps_guest_time_running();
     test_io_devctl_memory_stick();
     test_exit_thread_does_not_wake_launcher(0);
