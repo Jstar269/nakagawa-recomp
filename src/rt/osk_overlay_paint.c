@@ -45,6 +45,35 @@ int osk_overlay_paint_available(void) {
     return s_probe;
 }
 
+/* Test seam, declared by osk_overlay_paint_selftest.c and never called by the runtime: the next
+ * `surfaces` surface creations and `renderers` renderer creations fail as if SDL refused them.
+ * It also clears the cached probe, so the next paint probes again. */
+static int s_fail_surfaces;
+static int s_fail_renderers;
+void osk_overlay_paint_test_fail_next(int surfaces, int renderers) {
+    s_fail_surfaces = surfaces;
+    s_fail_renderers = renderers;
+    s_probe = -1;
+}
+
+static SDL_Surface *paint_make_surface(uint32_t *px, int w, int h) {
+    if (s_fail_surfaces > 0) {
+        s_fail_surfaces--;
+        SDL_SetError("test seam: surface creation refused");
+        return NULL;
+    }
+    return SDL_CreateSurfaceFrom(w, h, SDL_PIXELFORMAT_XRGB8888, px, w * 4);
+}
+
+static SDL_Renderer *paint_make_renderer(SDL_Surface *surface) {
+    if (s_fail_renderers > 0) {
+        s_fail_renderers--;
+        SDL_SetError("test seam: renderer creation refused");
+        return NULL;
+    }
+    return SDL_CreateSoftwareRenderer(surface);
+}
+
 static void fill(SDL_Renderer *r, float x, float y, float w, float h, Uint8 R, Uint8 G, Uint8 B,
                  Uint8 A) {
     SDL_FRect rect = { x, y, w, h };
@@ -92,9 +121,9 @@ static void label_cell(SDL_Renderer *r, const OskCell *c, float x, float y, floa
 void osk_overlay_paint(const OskOverlay *o, uint32_t *px, int w, int h) {
     if (!o || !px || o->status != OSK_OVERLAY_OPEN) return;
     if (!osk_overlay_paint_available()) return;
-    SDL_Surface *surface = SDL_CreateSurfaceFrom(w, h, SDL_PIXELFORMAT_XRGB8888, px, w * 4);
+    SDL_Surface *surface = paint_make_surface(px, w, h);
     if (!surface) return;
-    SDL_Renderer *r = SDL_CreateSoftwareRenderer(surface);
+    SDL_Renderer *r = paint_make_renderer(surface);
     if (!r) {
         SDL_DestroySurface(surface);
         return;
