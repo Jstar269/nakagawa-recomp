@@ -372,7 +372,7 @@ class CpuStateAbiTests(unittest.TestCase):
             check=False,
         )
 
-    def test_cpustate_v2_layout_and_generated_header_guard(self) -> None:
+    def test_cpustate_v3_layout_and_generated_header_guard(self) -> None:
         layout_source = self.work / "layout.c"
         layout_source.write_text(
             textwrap.dedent(
@@ -380,13 +380,14 @@ class CpuStateAbiTests(unittest.TestCase):
                 #include <stddef.h>
                 #include "recomp.h"
 
-                _Static_assert(SR_CPUSTATE_ABI_VERSION == 2u, "ABI version");
+                _Static_assert(SR_CPUSTATE_ABI_VERSION == 3u, "ABI version");
                 _Static_assert(offsetof(CpuState, cop0) == 852u, "cop0 offset");
                 _Static_assert(offsetof(CpuState, next_pc) == 980u, "next_pc offset");
                 _Static_assert(offsetof(CpuState, in_delay_slot) == 984u, "delay offset");
                 _Static_assert(offsetof(CpuState, flow_kind) == 988u, "flow kind offset");
                 _Static_assert(offsetof(CpuState, flow_target) == 992u, "flow target offset");
-                _Static_assert(sizeof(CpuState) == 996u, "CpuState size");
+                _Static_assert(offsetof(CpuState, llbit) == 996u, "llbit offset");
+                _Static_assert(sizeof(CpuState) == 1000u, "CpuState size");
 
                 int abi_probe(void) {
                     CpuState state = {0};

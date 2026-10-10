@@ -18141,6 +18141,8 @@ static void ge_call_guest(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, ui
     if (ge_log_on())
         fprintf(stderr, "GE_CALL_GUEST: fn=0x%08x returned, v0=0x%08x\n", fn, s->r[2]);
     memcpy(s, &save, sizeof(CpuState));
+    /* Returning to the interrupted context ends any ll..sc window it had open. */
+    sr_cpu_link_clear(s);
     atomic_store_explicit(&sr_timeslice, save_slice, memory_order_relaxed);
     (void)sr_nested_frame_release(frame);
 }
@@ -18187,6 +18189,8 @@ static uint32_t ge_call_guest_gp_rv(CpuState *s, uint32_t fn, uint32_t gp,
     if (ge_log_on())
         fprintf(stderr, "GE_CALL_GUEST_RV: fn=0x%08x returned, v0=0x%08x\n", fn, rv);
     memcpy(s, &save, sizeof(CpuState));
+    /* Returning to the interrupted context ends any ll..sc window it had open. */
+    sr_cpu_link_clear(s);
     atomic_store_explicit(&sr_timeslice, save_slice, memory_order_relaxed);
     (void)sr_nested_frame_release(frame);
     return rv;
@@ -22936,6 +22940,11 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         hle_note_success_exception(e);
     }
     ge_enqueue_trace_note_hle(s, nid, e->name);
+    /* An HLE handler stands in for a kernel syscall, and a syscall returns through eret,
+     * which clears LLbit (MIPS32): an ll..sc window spanning an HLE call fails its sc.
+     * link_started_export() above is deliberately exempt -- a call into another started
+     * module's export is a plain jump on hardware, with no exception return. */
+    sr_cpu_link_clear(s);
     /* Poison caller-saved temps exactly like PPSSPP SetDeadbeefRegs: r1, r4-r15, r24, r25,
      * hi, lo. The return value in v0 (and v1) is written afterward and survives. */
     s->r[1] = 0xDEADBEEFu;

@@ -1820,8 +1820,13 @@ static void test_runtime_placed_modules(void) {
         CpuState cpu;
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = 5u;
+        cpu.llbit = 1u;
         expect(sr_syscall(&cpu, RT_EXPORT_NID) == 5u + RT_START_MARK,
                "runtime placement: an import of the export runs the module's body");
+        /* A started module's export is linked by a plain jump on hardware: no
+         * exception return, so an open ll..sc window survives the call. */
+        expect(cpu.llbit == 1u,
+               "runtime placement: a linked guest export does not clear the caller's LLbit");
     }
 
     /* Stop, then unload: the image, its exports, its dispatch and its memory go. */
@@ -14423,12 +14428,13 @@ static void nfi_thread_b_body(void *arg) {
 
 /* The register/state half of sched_run()'s resume sequence, with the
  * coroutine-creation policy left to the caller.  Copying the policy would make
- * the specimen measure the copy; copying these three stores is what makes the
- * resumed thread see the registers the scheduler really hands it. */
+ * the specimen measure the copy; the register load is the production switch-in
+ * (sched_load_thread_context), so the resumed thread sees the registers the
+ * scheduler really hands it. */
 static void nfi_resume(TCB *t) {
     s_cur = (int)(t - s_tcb);
     t->state = TH_RUNNING;
-    memcpy(s_cpu, &t->saved, sizeof(CpuState));
+    sched_load_thread_context(t);
     atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
     sr_coro_switch(t->coro);
 }
@@ -26501,6 +26507,19 @@ static void test_issue339_wait_nids_production_dispatch(void) {
     test_issue339_vblank_cb_wait_requires_a_current_thread();
 }
 
+/* An HLE handler stands in for a kernel syscall, which returns through eret, so an
+ * ll..sc window that spans an HLE import fails its sc (MIPS32 ERET clears LLbit).
+ * Failing-before: without the clear in sr_syscall() the link survives the call. */
+static void test_hle_syscall_return_clears_link(void) {
+    reset_fixture();
+    sr_hle_init();
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.llbit = 1u;
+    (void)sr_syscall(&cpu, 0x369ed59du);   /* sceKernelGetSystemTimeLow: never blocks */
+    expect(cpu.llbit == 0u, "an HLE syscall return clears the caller's LLbit");
+}
+
 /* ---- flash0: read-only font device (src/rt/flash0_font.c) -------------------------------
  * tools/test_flash0_font.py writes synthetic PGFs with tools/pgf_writer.py under
  * SR_FLASH0_TEST_ROOT: the user-imported cache is <root>/data/fonts/v2/<latin file> and the
@@ -26937,6 +26956,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_explicit_exit_status_exact(0x78, 0x78u);
     test_thread_delete_lifecycle_and_cleanup();
     test_issue339_wait_nids_production_dispatch();
+    test_hle_syscall_return_clears_link();
     test_kernel_import_sweep_display_multi();
     test_start_thread_error_semantics();
     test_exit_delete_lifecycle_and_join_result();

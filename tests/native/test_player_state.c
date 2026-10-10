@@ -1932,7 +1932,7 @@ int main(int argc, char **argv) {
     snprintf(fixture_data_root, sizeof(fixture_data_root), "%s%cfixtures%cdisplay_smoke",
              fixture_root, nk_platform_path_separator(), nk_platform_path_separator());
     assert(nk_platform_mkdir_p(fixture_data_root));
-    write_runtime_package_fixture(fixture_root, "TEST00006", "display-smoke-v1", 2,
+    write_runtime_package_fixture(fixture_root, "TEST00006", "display-smoke-v1", SR_CPUSTATE_ABI_VERSION,
                                   "display-smoke-v1.exe", FIXTURE_SHA256, NULL);
     player_app_set_runtime_root(fresh, fixture_root);
 
@@ -2563,7 +2563,7 @@ int main(int argc, char **argv) {
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
         assert(check && check->status == PREFLIGHT_MISSING);
         write_runtime_package_fixture(preflight_root, synthetic_disc_id,
-                                      "synthetic-allegrex-v1", 2,
+                                      "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
         assert(!player_app_game_has_runtime(wiz, &wiz->inspecting_game));
         snprintf(preflight_data_root, sizeof(preflight_data_root), "%s%cfixtures%cprofile_zero",
@@ -2914,7 +2914,7 @@ int main(int argc, char **argv) {
                       "Synthetic experiment") == 0);
         nk_title_catalog_snapshot_release(&profile_snapshot);
         write_runtime_package_fixture(preflight_root, "ULUS99998",
-                                      "experimental-ulus99998", 2,
+                                      "experimental-ulus99998", SR_CPUSTATE_ABI_VERSION,
                                       "experimental-ulus99998.exe", FIXTURE_SHA256, NULL);
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
@@ -2926,11 +2926,11 @@ int main(int argc, char **argv) {
         assert(strstr(check->message, "build it from the library") != NULL);
         assert(strstr(check->message, "#") == NULL);
         write_runtime_package_fixture(preflight_root, "ULUS99998",
-                                      "experimental-ulus99998", 2,
+                                      "experimental-ulus99998", SR_CPUSTATE_ABI_VERSION,
                                       "experimental-ulus99998.exe", FIXTURE_SHA256, NULL);
 
         write_runtime_package_fixture(preflight_root, "ULUS99998",
-                                      "experimental-ulus99998", 2,
+                                      "experimental-ulus99998", SR_CPUSTATE_ABI_VERSION,
                                       "experimental-ulus99998.exe",
                                       "0000000000000000000000000000000000000000000000000000000000000000",
                                       NULL);
@@ -2946,7 +2946,7 @@ int main(int argc, char **argv) {
         assert(check && check->status == PREFLIGHT_INCOMPATIBLE);
 
         write_runtime_package_fixture(preflight_root, "ULUS99998",
-                                      "experimental-ulus99998", 2,
+                                      "experimental-ulus99998", SR_CPUSTATE_ABI_VERSION,
                                       "../escape.exe", FIXTURE_SHA256, NULL);
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
@@ -3805,7 +3805,7 @@ int main(int argc, char **argv) {
                                        "synthetic-allegrex-v1");
         assert(nk_platform_mkdir_p(package_dir));
         write_runtime_package_fixture_with_report_size(
-            validation_root, cached_disc_id, "synthetic-allegrex-v1", 2,
+            validation_root, cached_disc_id, "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
             "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL,
             (size_t)NK_MANIFEST_MAX_BYTES + 1u);
         assert(fixture_file_size(report_json) > NK_MANIFEST_MAX_BYTES);
@@ -3843,7 +3843,7 @@ int main(int argc, char **argv) {
         assert(!changed_report_info.validation_cache_hit);
 
         write_runtime_package_fixture(validation_root, cached_disc_id,
-                                      "synthetic-allegrex-v1", 2,
+                                      "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
         NkRuntimePackageInfo refreshed_info;
         NkRuntimePackageStatus refreshed_status;
@@ -3866,7 +3866,7 @@ int main(int argc, char **argv) {
         assert(missing_image_status == NK_RUNTIME_PACKAGE_STALE);
         assert(!missing_image_info.validation_cache_hit);
         write_runtime_package_fixture(validation_root, cached_disc_id,
-                                      "synthetic-allegrex-v1", 2,
+                                      "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
         refreshed_status = nk_launch_validate_runtime_package(
             validation_root, &game, &refreshed_info, reason, sizeof(reason));
@@ -3886,7 +3886,7 @@ int main(int argc, char **argv) {
         assert(!changed_package_info.validation_cache_hit);
 
         write_runtime_package_fixture(validation_root, cached_disc_id,
-                                      "synthetic-allegrex-v1", 2,
+                                      "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
         refreshed_status = nk_launch_validate_runtime_package(
             validation_root, &game, &refreshed_info, reason, sizeof(reason));
@@ -3897,6 +3897,36 @@ int main(int argc, char **argv) {
                    validation_root, &game, &cached_info, reason,
                    sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
         assert(cached_info.validation_cache_hit);
+
+        /* A complete, self-consistent package built for the previous CpuState
+           ABI: the player refuses it by name through the same validation route
+           it uses before a launch, never from the validation cache, and leaves
+           no launchable paths behind. Nothing but the recorded ABI version
+           differs from the accepted fixture, so the refusal can only come from
+           the runtime ABI check. */
+        write_runtime_package_fixture(validation_root, cached_disc_id,
+                                      "synthetic-allegrex-v1",
+                                      SR_CPUSTATE_ABI_VERSION - 1u,
+                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
+        NkRuntimePackageInfo previous_abi_info;
+        memset(&previous_abi_info, 0xA5, sizeof(previous_abi_info));
+        reason[0] = '\0';
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &previous_abi_info, reason,
+                   sizeof(reason)) == NK_RUNTIME_PACKAGE_INCOMPATIBLE);
+        assert(!previous_abi_info.validation_cache_hit);
+        assert(strstr(reason, "runtime ABI is incompatible with this player build") != NULL);
+        assert(previous_abi_info.package_root[0] == '\0');
+        assert(previous_abi_info.executable_path[0] == '\0');
+        assert(previous_abi_info.image_path[0] == '\0');
+        write_runtime_package_fixture(validation_root, cached_disc_id,
+                                      "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
+                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
+        refreshed_status = nk_launch_validate_runtime_package(
+            validation_root, &game, &refreshed_info, reason, sizeof(reason));
+        assert_repaired_validation(validation_root, &game, identity_before,
+                                   refreshed_status,
+                                   &refreshed_info);
 
         assert(nk_launch_runtime_package_cache_identity(
             validation_root, &game, identity_before));
@@ -3924,7 +3954,7 @@ int main(int argc, char **argv) {
            invalidate the entry; when that filesystem timestamp also stays in
            one tick, the metadata identity can still collide. */
         write_runtime_package_fixture(validation_root, cached_disc_id,
-                                      "synthetic-allegrex-v1", 2,
+                                      "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
         NkRuntimePackageInfo pinned_entry_info;
         NkRuntimePackageStatus pinned_entry_status = nk_launch_validate_runtime_package(
@@ -3969,7 +3999,7 @@ int main(int argc, char **argv) {
         }
 
         write_runtime_package_fixture_with_report_size(
-            validation_root, cached_disc_id, "synthetic-allegrex-v1", 2,
+            validation_root, cached_disc_id, "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
             "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL,
             (size_t)NK_BUILD_REPORT_MAX_BYTES + 1u);
         assert(fixture_file_size(report_json) ==
@@ -4048,7 +4078,7 @@ int main(int argc, char **argv) {
         remove_runtime_package_fixture(epoch_root, epoch_disc_id,
                                        "synthetic-allegrex-v1");
         write_runtime_package_fixture(epoch_root, epoch_disc_id,
-                                      "synthetic-allegrex-v1", 2,
+                                      "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
 
         NkGameEntry epoch_game;
@@ -4218,7 +4248,7 @@ int main(int argc, char **argv) {
             "{\"executable\":{\"path\":\"PSP_GAME/SYSDIR/EBOOT.BIN\","
             "\"sha256\":\"%s\"},\"modules\":[]}", FIXTURE_SHA256);
         write_runtime_package_fixture_with_source_media(
-            user_root, disc_id, "synthetic-allegrex-v1", 2,
+            user_root, disc_id, "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
             "synthetic-allegrex-v1.exe", FIXTURE_SHA256, self_path,
             source_media_json);
         char package_exe[1100];

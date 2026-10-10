@@ -59,6 +59,8 @@ EXPECTED_FORMS = frozenset(
         ("op", 0x28),   # sb
         ("op", 0x29),   # sh
         ("op", 0x2B),   # sw
+        ("op", 0x30),   # ll
+        ("op", 0x38),   # sc
         ("op", 0x31),   # lwc1
         ("op", 0x39),   # swc1
         ("special", 0x00),  # sll (and the nop encoding)
