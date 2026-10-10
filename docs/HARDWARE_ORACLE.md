@@ -509,7 +509,10 @@ One console is one data point; see §11. Nothing here closes issue #70
   not acceptance-eligible (the probe's own assertions or SKIP records differed from the
   console) are `CAPTURED` only and establish nothing. Raw envelopes, registry values and
   console identifiers stay in the private campaign directory. Rows measured earlier keep their
-  own citations.
+  own citations. The seven HLE measurement families (`probe_hle_measure.c`) ran the same day as
+  single-case runs beside the campaign: every stream was complete, but no case was
+  acceptance-eligible because the runner's post-unload shell qualification and host0 round trip
+  failed after each unload, so their rows are `CAPTURED` only and cite nothing.
 
   | Evidence id | Cells cited | Not cited | Outcome (campaign case) |
   | --- | --- | --- | --- |
@@ -535,6 +538,13 @@ One console is one data point; see §11. Nothing here closes issue #70
   | `PSP-GE-001` | `ge-nan-vfpu-qnan`, `ge-nan-screen2d-qnan`, `ge-nan-clip3d-qnan`, `ge-nan-litnormal-qnan`, `ge-nan-vfpu-pinf`, `ge-nan-screen2d-pinf`, `ge-nan-clip3d-pinf`, `ge-nan-litnormal-pinf`, `ge-nan-vfpu-ninf`, `ge-nan-screen2d-ninf`, `ge-nan-clip3d-ninf`, `ge-nan-litnormal-ninf`, `ge-nan-vfpu-nzero`, `ge-nan-screen2d-nzero`, `ge-nan-clip3d-nzero`, `ge-nan-litnormal-nzero`, `ge-nan-vfpu-denorm`, `ge-nan-screen2d-denorm`, `ge-nan-clip3d-denorm`, `ge-nan-litnormal-denorm`, `ge-nan-done` | (none) | MEASURED (`ge-nan`) |
   | `PSP-DMAC-001` | row unchanged: apis `sceDmacMemcpy`, `sceDmacTryMemcpy` cited | the 43 concurrency, invalid-tail and size-matrix cells (unchanged) | campaign case `dma-cells`: 93 records PASS (`align-*` and `overlap-*` cells, recorded privately); the five `dma-invalid-tail-*` campaign cases emitted SKIP and are CAPTURED only |
   | `PSP-MUTEX-001` | `mutex-refer-unlocked`, `mutex-timeout-quanta`, `mutex-priority-inheritance` | `mutex-interrupt-context` | MEASURED (`mutex-refer-unlocked`, `mutex-timeout-quanta`, `mutex-priority-inheritance`) (not acceptance-eligible: `mutex-interrupt-context`) |
+  | `PSP-HLE-KERNEL-STATUS-001` | (none) | `sys-status-size-0x1c`, `sys-status-size-0x20`, `sys-status-size-0x08`, `sys-status-size-0x00`, `fpl-create`, `fpl-refer-full-all-free`, `fpl-try-alloc-a`, `fpl-try-alloc-b`, `fpl-try-alloc-exhausted`, `fpl-refer-full-two-held`, `fpl-refer-size-0x08-two-held`, `fpl-refer-size-0x00-two-held`, `fpl-free-a`, `fpl-refer-full-one-free`, `fpl-free-b`, `fpl-delete`, `fpl-refer-full-after-delete` | CAPTURED only (single-case run `hle-kernel-status`, 2026-10-10; not acceptance-eligible: post-unload shell qualification and host0 round trip failed) |
+  | `PSP-HLE-VTIMER-001` | (none) | `vtimer-create`, `vtimer-refer-created`, `vtimer-stop-not-started`, `vtimer-start`, `vtimer-time-running-early`, `vtimer-refer-running-early`, `vtimer-delay-20ms`, `vtimer-time-running-20ms`, `vtimer-stop`, `vtimer-time-stopped`, `vtimer-refer-stopped`, `vtimer-delay-20ms-stopped`, `vtimer-time-stopped-later`, `vtimer-start-restart`, `vtimer-refer-size-0x08`, `vtimer-delete-running`, `vtimer-refer-after-delete`, `vtimer-delete-again` | CAPTURED only (single-case run `hle-vtimer`, 2026-10-10; not acceptance-eligible: post-unload shell qualification and host0 round trip failed) |
+  | `PSP-HLE-POWER-001` | (none) | `pll-clock-int`, `pll-clock-float`, `cpu-clock-int`, `cpu-clock-float`, `cpu-clock-alias`, `bus-clock-int`, `bus-clock-float`, `bus-clock-alias`, `cpu-clock-int-repeat` | CAPTURED only (single-case run `hle-power-clock`, 2026-10-10; not acceptance-eligible: post-unload shell qualification and host0 round trip failed) |
+  | `PSP-HLE-HPRM-001` | (none) | `hprm-remote-first`, `hprm-headphone-first`, `hprm-microphone-first`, `hprm-remote-second`, `hprm-headphone-second`, `hprm-microphone-second` | CAPTURED only (single-case run `hle-hprm`, 2026-10-10; not acceptance-eligible: post-unload shell qualification and host0 round trip failed) |
+  | `PSP-HLE-CTRL-LATCH-001` | (none) | `latch-read-initial`, `latch-peek-initial`, `latch-poll-window`, `latch-read-after-poll`, `latch-peek-after-poll`, `latch-read-clears-peek-keeps` | CAPTURED only (single-case run `hle-ctrl-latch`, 2026-10-10; not acceptance-eligible: post-unload shell qualification and host0 round trip failed) |
+  | `PSP-HLE-SYSPARAM-001` | (none) | `int-id-2`, `int-id-3`, `int-id-4`, `int-id-5`, `int-id-6`, `int-id-7`, `int-id-8`, `int-id-9`, `int-unknown-0`, `int-unknown-10`, `int-unknown-64`, `string-id-1-len-0x80`, `string-id-1-len-0x04` | CAPTURED only (single-case run `hle-sysparam`, 2026-10-10; not acceptance-eligible: post-unload shell qualification and host0 round trip failed) |
+  | `PSP-HLE-GE-EDRAM-001` | (none) | `edram-size`, `edram-addr`, `edram-width-query-initial`, `edram-width-set-512`, `edram-width-set-1024`, `edram-width-set-2048`, `edram-width-set-4096`, `edram-width-restore`, `edram-width-query-final` | CAPTURED only (single-case run `hle-ge-edram`, 2026-10-10; not acceptance-eligible: post-unload shell qualification and host0 round trip failed) |
 
 ## Pending PSP-3000 measurement campaign
 
@@ -799,9 +809,22 @@ It uses `modlist` for the full loaded-module inventory; `modinfo <uid>` is the
 single-module query used for the unload handshake. S0 records threads,
 per-partition total/largest free bytes, and modules before load.
 S1 records them after the completion marker and before unload; `modinfo <uid> t`
-must show that the probe's only remaining thread is its main thread. After the
-`modstun` stop/unload handshake, S2 must match S0 for thread UID/name pairs and
-module UID/name pairs, with the probe UID absent. The verdict lists the threads S2
+must show that the probe's only remaining thread is its main thread. Right after
+the `modstun` stop/unload handshake the runner settles the link before any
+post-unload PSPLink command: it issues `ver` through the same bounded shell
+verifier as qualification (at most three attempts within
+`--shell-verification-timeout`) until PSPLink answers. On 2026-10-10 seven
+single-case runs captured complete data and confirmed the unload, then failed the
+post-unload shell qualification and host0 round-trip the way `ver` fails right
+after USBHostFS connects. The teardown report records `settle_status` (`PASS`,
+`EXHAUSTED`, or `NOT_RUN` when no `modstun` was issued or the session had already
+stopped) and `settle_attempts` (the number of settle `ver` commands); recovery
+events carry each attempt with a `post-unload settle:` prefix. The settle never
+decides the verdict: an exhausted settle adds no issue, and S2, the shell
+qualification, `exprint`, and the round-trip then run in their usual order and
+classify the case as they would without it. After the handshake and the settle,
+S2 must match S0 for thread UID/name pairs and module UID/name pairs, with the
+probe UID absent. The verdict lists the threads S2
 gained or lost relative to S0. When the only extra threads are the module's own S1
 threads, it also names the boundary: the probe main thread survived the module stop
 and unload. The verdict also keeps PSPLink's `modstun` reply in `modstun_reply`.
