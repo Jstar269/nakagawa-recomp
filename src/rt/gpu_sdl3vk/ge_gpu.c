@@ -2127,6 +2127,30 @@ static int map_factor(uint32_t f, int src_side, uint32_t fixed, int *need_const,
     }
 }
 
+/* Two DISTINCT FIX constants: VK has a single blend-constant register. */
+static int blend_dual_fix(uint32_t sfp, uint32_t dfp, uint32_t fixa, uint32_t fixb) {
+    return sfp >= 10 && dfp >= 10 && ((fixa ^ fixb) & 0xFFFFFFu) != 0;
+}
+
+/* The blend states fixed-function Vulkan cannot express exactly for ANY framebuffer
+ * (build_state adds the per-frame conditions: a 16-bit framebuffer and dither+blend, where
+ * the PSP quantizes/dithers the blend RESULT on store, so the shader must see the final
+ * colour). Shared with the blend parity matrix so both classify a state the same way.
+ *  - absdiff (eq 5): |src - dst| needs both subtraction orders
+ *  - doubled DST-alpha factors (8/9), and doubled SRC-alpha on the DST side (6/7): no VK
+ *    factor; the premultiply trick only works on the src side
+ *  - two DISTINCT FIX constants
+ *  - doubled/inverse-doubled SRC-alpha on the SRC side (6/7) premultiplies the source
+ *    colour in the shader, so a DST factor that reads the source colour (SRC_COLOR,
+ *    ONE_MINUS_SRC_COLOR: dfp 0/1) would see the premultiplied value in fixed function;
+ *    ge.c multiplies the destination by the raw source colour
+ * min/max (eq 3/4) are exact in fixed function: both PSP and VK ignore the factors. */
+static int blend_needs_shader(uint32_t sfp, uint32_t dfp, uint32_t eq, uint32_t fixa, uint32_t fixb) {
+    int premul_src_colour = (sfp == 6 || sfp == 7) && (dfp == 0 || dfp == 1);
+    return eq == 5 || sfp == 8 || sfp == 9 || (dfp >= 6 && dfp <= 9) ||
+           blend_dual_fix(sfp, dfp, fixa, fixb) || premul_src_colour;
+}
+
 /* Build pipeline key + push constants for the current GE state. Always succeeds. */
 static void build_state(int persp, int sprite, Batch *b) {
     uint64_t key_started = cpu_profile_now();
@@ -2168,25 +2192,12 @@ static void build_state(int persp, int sprite, Batch *b) {
     if (!clear && g->blend_enable) {
         uint32_t sfp = g->blend_mode & 0xF, dfp = (g->blend_mode >> 4) & 0xF;
         uint32_t eq = (g->blend_mode >> 8) & 7;
-        /* States fixed-function Vulkan cannot express exactly:
-         *  - any blend onto a 16-bit framebuffer, and dither+blend: the PSP quantizes/
-         *    dithers the blend RESULT on store; the shader must see the final color
-         *  - absdiff (eq 5): |src - dst| needs both subtraction orders
-         *  - doubled DST-alpha factors (8/9), and doubled SRC-alpha on the DST side
-         *    (6/7): no VK factor; the premultiply trick only works on the src side
-         *  - two DISTINCT FIX constants: VK has a single blend-constant register
-         * min/max (eq 3/4) are exact in fixed function: both PSP and VK ignore the
-         * factors for them. */
-        int dual_fix = sfp >= 10 && dfp >= 10 &&
-                       ((g->blend_fixa ^ g->blend_fixb) & 0xFFFFFFu) != 0;
-        /*  - doubled/inverse-doubled SRC-alpha on the SRC side (6/7) premultiplies the
-         *    source colour in the shader, so a DST factor that reads the source colour
-         *    (SRC_COLOR, ONE_MINUS_SRC_COLOR: dfp 0/1) would see the premultiplied value
-         *    in fixed function; ge.c multiplies the destination by the raw source colour */
-        int premul_src_colour = (sfp == 6 || sfp == 7) && (dfp == 0 || dfp == 1);
-        shblend = (g->fbfmt & 3) != 3 || (g->dither_enable != 0) || eq == 5 ||
-                  sfp == 8 || sfp == 9 || (dfp >= 6 && dfp <= 9) || dual_fix ||
-                  premul_src_colour;
+        /* blend_needs_shader() names the states fixed-function Vulkan cannot express for
+         * any framebuffer; a 16-bit framebuffer and dither+blend route to the shader too
+         * (the PSP quantizes/dithers the blend RESULT on store) */
+        int dual_fix = blend_dual_fix(sfp, dfp, g->blend_fixa, g->blend_fixb);
+        shblend = (g->fbfmt & 3) != 3 || (g->dither_enable != 0) ||
+                  blend_needs_shader(sfp, dfp, eq, g->blend_fixa, g->blend_fixb);
         if (shblend) {
             if (sr_perf_enabled) sr_perf_ge_event(SR_PERF_GE_SHBLEND_STATE, 1);
             if ((g->fbfmt & 3) != 3) {
@@ -3912,14 +3923,11 @@ static int parity_r6_chan(int s, int d, int sf, int df, int eq) {
     }
 }
 
-/* Mirrors the shader-blend routing in build_state(): the states fixed-function Vulkan
- * cannot express exactly. Kept separate so the matrix classifies each state itself. */
-static int parity_shader_blend(uint32_t sfp, uint32_t dfp, uint32_t eq, uint32_t fixa, uint32_t fixb) {
-    int dual_fix = sfp >= 10 && dfp >= 10 && ((fixa ^ fixb) & 0xFFFFFFu) != 0;
-    int premul_src_colour = (sfp == 6 || sfp == 7) && (dfp == 0 || dfp == 1);
-    return sfp == 8 || sfp == 9 || (dfp >= 6 && dfp <= 9) || eq == 5 || dual_fix ||
-           premul_src_colour;
-}
+/* FIX blend constants for every factor/equation cell: two distinct RGB triples whose
+ * channels all differ, so a dual-FIX state (sfp and dfp both FIX, constants unequal) is
+ * exercised and a channel swap or a constant mix-up changes the picture. */
+#define PARITY_FIXA 0x3F7F9Fu
+#define PARITY_FIXB 0x7F5F2Fu
 
 static uint32_t parity_list(uint32_t base, uint32_t vaddr, uint32_t blend_mode, uint32_t fixa,
                             uint32_t fixb, uint32_t sprites) {
@@ -4003,10 +4011,12 @@ static int coherence_run_blend_parity(void) {
     for (uint32_t eq = 0; eq < 6 && ok; eq++) {
         for (uint32_t sfp = 0; sfp <= 10 && ok; sfp++) {
             for (uint32_t dfp = 0; dfp <= 10 && ok; dfp++) {
-                const uint32_t fixa = 0x3F7F9Fu, fixb = 0x7F5F2Fu;
+                const uint32_t fixa = PARITY_FIXA, fixb = PARITY_FIXB;
                 const uint32_t mode = sfp | (dfp << 4) | (eq << 8);
                 const uint32_t list = parity_list(base, vaddr, mode, fixa, fixb, sprites);
-                int shader_path = parity_shader_blend(sfp, dfp, eq, fixa, fixb);
+                /* the matrix draws onto an 8888 framebuffer with dithering off, so
+                 * build_state's routing reduces to blend_needs_shader() */
+                int shader_path = blend_needs_shader(sfp, dfp, eq, fixa, fixb);
                 ParityTally *tally = shader_path ? &shader : &ff;
 
                 /* Vulkan path */
