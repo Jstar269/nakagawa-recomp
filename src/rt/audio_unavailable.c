@@ -17,6 +17,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <math.h>
 #include <string.h>
 #include <stdbool.h>
 
@@ -87,6 +89,7 @@ static char s_dump_path[512];
 static uint32_t s_dump_rate = 0, s_dump_channels = 0;
 static uint64_t s_dump_data_bytes = 0, s_dump_last_patch = 0;
 static SrAudioDumpStats s_dump_stats;
+static int s_dump_write_failed = 0;    /* the first short write ends the dump */
 
 static void sr_put_le16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 static void sr_put_le32(uint8_t *p, uint32_t v) {
@@ -114,26 +117,39 @@ static void sr_audio_wav_header(uint8_t out[44], uint32_t rate, uint32_t channel
  * beyond the 16-bit range is counted as clipped and clamped; NaN reads as silence. Pure. */
 static int16_t sr_audio_dump_sample(float x, uint64_t *clipped) {
     float scaled = x * 32768.0f;
-    if (scaled != scaled) return 0;
+    if (isnan(scaled)) return 0;
     if (scaled > 32767.0f) { (*clipped)++; return 32767; }
     if (scaled < -32768.0f) { (*clipped)++; return -32768; }
     return (int16_t)(int32_t)(scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
 }
 
+/* The first short write ends the dump: the header keeps its last good patch, later blocks are
+ * dropped, and the close line says so. One message, not one per buffer. */
+static void sr_audio_dump_write_failed(const char *what) {
+    if (s_dump_write_failed) return;
+    s_dump_write_failed = 1;
+    fprintf(stderr, "AUDIODUMP: %s write to %s failed (%s); the dump stops here\n",
+            what, s_dump_path, strerror(errno));
+}
+
 static void sr_audio_dump_patch_header(void) {
     uint8_t hdr[44];
     sr_audio_wav_header(hdr, s_dump_rate, s_dump_channels, (uint32_t)s_dump_data_bytes);
-    if (fseek(s_dump_file, 0, SEEK_SET) == 0) fwrite(hdr, 1, sizeof(hdr), s_dump_file);
-    fseek(s_dump_file, 0, SEEK_END);
+    if (fseek(s_dump_file, 0, SEEK_SET) != 0 || fwrite(hdr, 1, sizeof(hdr), s_dump_file) != sizeof(hdr)) {
+        sr_audio_dump_write_failed("header");
+    }
+    if (fseek(s_dump_file, 0, SEEK_END) != 0) sr_audio_dump_write_failed("seek");
     fflush(s_dump_file);
     s_dump_last_patch = s_dump_data_bytes;
 }
 
-/* Convert and write `samples` interleaved float values (a whole number of frames). */
-static void sr_audio_dump_block(const float *in, size_t samples) {
+/* Convert and write `samples` interleaved float values (a whole number of frames). Returns the
+ * number of samples written; fewer than `samples` only after a failed write. */
+static size_t sr_audio_dump_block(const float *in, size_t samples) {
     int16_t out[SR_AUDIO_DUMP_CHUNK];
     size_t chunk = SR_AUDIO_DUMP_CHUNK - (SR_AUDIO_DUMP_CHUNK % s_dump_channels);
-    for (size_t done = 0; done < samples;) {
+    size_t done = 0;
+    for (; done < samples;) {
         size_t k = samples - done < chunk ? samples - done : chunk;
         for (size_t i = 0; i < k; i++) {
             int16_t v = sr_audio_dump_sample(in[done + i], &s_dump_stats.clipped);
@@ -141,17 +157,27 @@ static void sr_audio_dump_block(const float *in, size_t samples) {
             uint32_t a = v < 0 ? (uint32_t)(-(int32_t)v) : (uint32_t)v;
             if (a > s_dump_stats.peak) s_dump_stats.peak = a;
         }
+        if (fwrite(out, sizeof(int16_t), k, s_dump_file) != k) {
+            sr_audio_dump_write_failed("data");
+            return done;
+        }
         for (size_t f = 0; f < k; f += s_dump_channels) {
             int any = 0;
             for (uint32_t c = 0; c < s_dump_channels; c++) any |= out[f + c] != 0;
             if (!any) s_dump_stats.silent_frames++;
         }
         s_dump_stats.frames += k / s_dump_channels;
-        fwrite(out, sizeof(int16_t), k, s_dump_file);
         done += k;
     }
+    return done;
 }
 
+/* Runs on SDL's audio thread. Thread contract: s_dump_file, s_dump_rate, s_dump_channels and
+ * s_dump_path are written on the main thread before SDL_SetAudioPostmixCallback registers this
+ * callback and after it is removed; SDL's registration and removal are the synchronization
+ * points, so this callback never runs concurrently with those writes. s_dump_data_bytes,
+ * s_dump_last_patch, s_dump_stats and s_dump_write_failed are written only here while the
+ * callback is registered, and the close path reads them only after removing it. */
 static void sr_audio_dump_postmix(void *userdata, const SDL_AudioSpec *spec, float *buffer, int buflen) {
     (void)userdata;
     if (!s_dump_file || !buffer || !spec || buflen < (int)sizeof(float)) return;
@@ -159,9 +185,10 @@ static void sr_audio_dump_postmix(void *userdata, const SDL_AudioSpec *spec, flo
     if ((uint32_t)spec->channels != s_dump_channels || (uint32_t)spec->freq != s_dump_rate) return;
     size_t samples = (size_t)buflen / sizeof(float);
     samples -= samples % s_dump_channels;
-    if (!samples || s_dump_data_bytes + samples * 2u > SR_AUDIO_DUMP_MAX_DATA) return;
-    sr_audio_dump_block(buffer, samples);
-    s_dump_data_bytes += samples * 2u;
+    if (!samples || s_dump_write_failed) return;
+    if (s_dump_data_bytes + samples * 2u > SR_AUDIO_DUMP_MAX_DATA) return;
+    s_dump_data_bytes += sr_audio_dump_block(buffer, samples) * 2u;
+    if (s_dump_write_failed) return;
     if (s_dump_data_bytes - s_dump_last_patch >= (uint64_t)s_dump_rate * s_dump_channels * 2u)
         sr_audio_dump_patch_header();
 }
@@ -184,8 +211,14 @@ static void sr_audio_dump_start(SDL_AudioDeviceID dev) {
     s_dump_rate = (uint32_t)spec.freq;
     s_dump_channels = (uint32_t)spec.channels;
     s_dump_data_bytes = s_dump_last_patch = 0;
+    s_dump_write_failed = 0;
     memset(&s_dump_stats, 0, sizeof(s_dump_stats));
     sr_audio_dump_patch_header();
+    if (s_dump_write_failed) {
+        fclose(s_dump_file);
+        s_dump_file = NULL;
+        return;
+    }
     if (!SDL_SetAudioPostmixCallback(dev, sr_audio_dump_postmix, NULL)) {
         fprintf(stderr, "AUDIODUMP: postmix hook refused (%s); no dump written\n", SDL_GetError());
         fclose(s_dump_file);
@@ -208,6 +241,10 @@ static void sr_audio_dump_stop(SDL_AudioDeviceID dev) {
             s_dump_rate ? (double)s_dump_stats.frames / (double)s_dump_rate : 0.0,
             (unsigned long long)s_dump_stats.silent_frames, (unsigned long long)s_dump_stats.clipped,
             (unsigned)s_dump_stats.peak);
+    if (s_dump_write_failed) {
+        fprintf(stderr, "AUDIODUMP: the dump ended early on a failed write; the header covers %llu data bytes\n",
+                (unsigned long long)s_dump_last_patch);
+    }
     fflush(stderr);
 }
 
