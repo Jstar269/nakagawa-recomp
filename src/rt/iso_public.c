@@ -125,7 +125,8 @@ int iso_init(void) {
  * LBN in st_private[0], and the title opens the raw extent it names as
  * "sce_lbn0x<LBN>_size0x<SIZE>": LBN in hexadecimal 2048-byte sectors and SIZE in
  * hexadecimal bytes. The name is the extent itself, not a directory entry, so it resolves
- * without a directory lookup. Only a name of exactly that form is an extent. */
+ * without a directory lookup, but only while an image is open. Only a name of exactly that
+ * form is an extent. */
 static int iso_hex_field(const char *p, size_t max_digits, const char **end, uint32_t *out) {
     uint32_t value = 0;
     size_t n = 0;
@@ -178,12 +179,16 @@ int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size) {
         return -1;
     }
 
-    if (iso_parse_sector_extent(norm_path, out_lba, out_size)) return 0;
-
     ISO_LOCK();
     if (ensure_reader_locked() != 0) {
         ISO_UNLOCK();
         return -1;
+    }
+
+    /* An extent names sectors of the open image, so with no image it is not-found too. */
+    if (iso_parse_sector_extent(norm_path, out_lba, out_size)) {
+        ISO_UNLOCK();
+        return 0;
     }
 
     uint32_t lba = 0, size = 0;
