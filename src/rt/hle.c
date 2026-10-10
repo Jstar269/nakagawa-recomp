@@ -18715,6 +18715,7 @@ typedef struct {
     int effect_l, effect_r;
     int effect_delay, effect_feedback;
     int effect_dry, effect_wet;
+    uint32_t end_flags;           /* voice end bits (bit N set = voice N off), per-cycle snapshot */
 } SasCoreState;
 
 static SasVoice s_sasv[SAS_VOICES];
@@ -18922,6 +18923,15 @@ static int sas_next_sample(SasVoice *v, int *sample) {
     return 1;
 }
 
+/* Live end bits: bit N is set when voice N is off. PSPSDK (pspsascore.h) says the end flags
+ * are refreshed only AFTER __sceSasCore runs, so the guest reads the snapshot captured at the
+ * end of each cycle (see sas_mix_stateful), not this live value. */
+static uint32_t sas_live_end_flags(void) {
+    uint32_t m = 0;
+    for (int i = 0; i < s_sas_max_voices; i++) if (!s_sasv[i].on) m |= 1u << i;
+    return m;
+}
+
 /* Mix one grain into out (s16 stereo or four planar channels). add=0 overwrites. */
 static void sas_mix_stateful(uint32_t out, int add, int left_gain, int right_gain) {
     uint64_t perf_started = sr_perf_now_ns();
@@ -19021,6 +19031,7 @@ static void sas_mix_stateful(uint32_t out, int add, int left_gain, int right_gai
         if (post_peak > g_sas_post_peak) g_sas_post_peak = post_peak;
         if (pre_peak && !post_peak) g_sas_erased++;
     }
+    s_sas_core.end_flags = sas_live_end_flags();
     if (perf_started) sr_perf_audio_mix(perf_started);
 }
 
@@ -19046,6 +19057,7 @@ static uint32_t h_SasInit(CpuState *s) {
         s_sasv[i].pitch = 0x1000; s_sasv[i].loop_start = -1; s_sasv[i].pcm_loop_start = -1;
         s_sasv[i].sustain_level = SAS_ENVELOPE_MAX; s_sasv[i].env_phase = 4;
     }
+    s_sas_core.end_flags = sas_live_end_flags();
     return 0;
 }
 
@@ -19160,11 +19172,12 @@ static uint32_t h_SasSetNoise(CpuState *s) {
     return 0;
 }
 
+/* The flags are the snapshot refreshed by the last __sceSasCore / __sceSasCoreWithMix cycle
+ * (all voices off at init), as pspsascore.h specifies. */
 static uint32_t h_SasGetEndFlag(CpuState *s) {
-    uint32_t e = sas_require_core(A0), m = 0;
+    uint32_t e = sas_require_core(A0);
     if (e) return e;
-    for (int i = 0; i < s_sas_max_voices; i++) if (!s_sasv[i].on) m |= 1u << i;
-    return m;
+    return s_sas_core.end_flags;
 }
 
 static uint32_t h_SasSetKeyOn(CpuState *s) {
