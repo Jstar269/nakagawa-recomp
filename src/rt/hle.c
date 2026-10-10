@@ -69,6 +69,7 @@
 #include "sr_h264.h"       /* AVC decode backend seam, shared with the sceMpeg core */
 #include "ge_shared.h"      /* GE state snapshot for headless VRAM diagnostics */
 #include "osk_text_entry.h" /* keyboard text collected without stopping guest time */
+#include "flash0_font.h"    /* read-only flash0: font device (FONT_PLAN section 5) */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -7578,6 +7579,43 @@ static void font_load(void) {
                 s_pgf_ltn8 ? "ok" : "MISSING", s_pgf_kr ? "ok" : "MISSING");
     atomic_store_explicit(&s_pgf_state, 2, memory_order_release);
 }
+/* Roots for the flash0: font device (flash0_font.c). The user-imported cache lives under the
+ * per-user data directory. Project fonts resolve like font_load: SR_FONTDIR when it is set,
+ * otherwise the executable's font directory. Both are returned as UTF-8 paths. A root that is
+ * unknown or too long stays empty, and the device skips that source. */
+static void flash0_copy_root(char *dst, size_t capacity, const char *src) {
+    dst[0] = '\0';
+    if (!src || strlen(src) >= capacity) return;
+    memcpy(dst, src, strlen(src) + 1u);
+}
+
+static void flash0_font_sources(Flash0Sources *out) {
+    char data_dir[SR_FLASH0_PATH_MAX];
+    if (nk_platform_get_path(NK_PATH_DATA, data_dir, sizeof(data_dir)))
+        flash0_copy_root(out->user_data_dir, sizeof(out->user_data_dir), data_dir);
+    else
+        out->user_data_dir[0] = '\0';
+
+    wchar_t *configured = NULL;
+    wchar_t *root = NULL;
+    int configured_present = 0;
+    if (sr_wide_env_alloc(L"SR_FONTDIR", &configured, &configured_present)) {
+        if (configured_present) {
+            if (configured && configured[0]) sr_wide_configured_root_wide_alloc(configured, &root);
+        } else {
+            sr_wide_module_font_root(&root);
+        }
+    }
+    free(configured);
+    char *utf8 = NULL;
+    if (root && sr_wide_to_utf8_alloc(root, &utf8))
+        flash0_copy_root(out->project_dir, sizeof(out->project_dir), utf8);
+    else
+        out->project_dir[0] = '\0';
+    free(utf8);
+    free(root);
+}
+
 /* HLE-to-guest call replay (defined later; used to invoke the game's allocFunc with the PSP
  * calling convention: allocFunc(userData=a0, size=a1) -> ptr). */
 static uint32_t ge_call_guest_rv(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2);
@@ -10938,6 +10976,7 @@ typedef struct {
     uint32_t lba, size, off;
     int64_t async_res;
     int writable;
+    int flash0;                  /* 1 = served by the read-only flash0: font device */
     IoAsyncRequest async;
     FILE *host;
     SrPgd *pgd;
@@ -13012,6 +13051,24 @@ static uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot
     s_closed_res[slot] = 0;
     s_closed_async_state[slot] = IO_ASYNC_IDLE;
 
+    /* flash0: is the read-only font device. It is decided before the disc, memory-stick and
+     * data-root paths, which never see it. A refused open leaves the slot unused. */
+    if (sr_flash0_font_is_device_path(path)) {
+        Flash0Sources sources;
+        FILE *font = NULL;
+        uint32_t font_size = 0;
+        flash0_font_sources(&sources);
+        uint32_t font_rc = sr_flash0_font_open(path, flags, &sources, &font, &font_size);
+        if (font_rc != 0u) {
+            memset(&s_fds[slot], 0, sizeof(s_fds[slot]));
+            return font_rc;
+        }
+        s_fds[slot].used = 1; s_fds[slot].host = font; s_fds[slot].lba = 0;
+        s_fds[slot].size = font_size; s_fds[slot].off = 0;
+        s_fds[slot].writable = 0; s_fds[slot].flash0 = 1;
+        return (uint32_t)slot;
+    }
+
     int writing = (flags & 0x0002) != 0;        /* WRONLY or RDWR */
     int creating = (flags & 0x0200) != 0;
 #ifndef _WIN32
@@ -13181,6 +13238,7 @@ static uint32_t h_IoWrite(CpuState *s) {
         return count;
     }
     if (f->kind != FD_KIND_FILE) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    if (f->flash0) return sr_flash0_font_refuse_write(f->guest_path, "write through a font descriptor");
     if (!f->host) return 0x80010013;                 /* read-only (ISO) fd: not writable */
     fseek(f->host, (long)f->off, SEEK_SET);
     uint8_t tmp[4096]; uint32_t done = 0;
@@ -13654,6 +13712,21 @@ static uint32_t h_io_dopen_path(const char *path) {
             d->used = 1; d->index = 0;
             d->path = sr_asset_index_strdup(path);
             if (!d->path) { memset(d, 0, sizeof(*d)); return 0x80010014u; }
+            if (sr_flash0_font_is_device_path(path)) {
+                /* flash0: listings are materialized here like the merged namespace (backend 1),
+                 * so Dread and Dclose need no device-specific code. */
+                Flash0Sources sources;
+                flash0_font_sources(&sources);
+                sr_vfs_dirlist_init(&d->list);
+                uint32_t font_dir_rc = sr_flash0_font_list_dir(path, &sources, &d->list);
+                if (font_dir_rc != 0u) {
+                    sr_vfs_dirlist_destroy(&d->list);
+                    free(d->path); memset(d, 0, sizeof(*d));
+                    return font_dir_rc;
+                }
+                d->backend = 1;
+                return 0x100u + i;
+            }
             int device_path = sr_vfs_strnicmp(path, "disc0:", 6) == 0 ||
                                sr_vfs_strnicmp(path, "umd:", 4) == 0;
             int iso_first_result = -1;
@@ -14307,6 +14380,9 @@ static uint32_t h_IoRename(CpuState *s) {
     if (io_guest_path(A0, oldpath, sizeof(oldpath)) != 0u ||
         io_guest_path(A1, newpath, sizeof(newpath)) != 0u)
         return 0x80010016u;
+    if (sr_flash0_font_is_device_path(oldpath) || sr_flash0_font_is_device_path(newpath))
+        return sr_flash0_font_refuse_write(sr_flash0_font_is_device_path(oldpath) ? oldpath : newpath,
+                                           "rename");
     char *old_hp = host_path_alloc(oldpath);
     char *new_hp = host_path_alloc(newpath);
     if (!old_hp || !new_hp) {
@@ -14381,6 +14457,7 @@ static uint32_t h_IoMkdir(CpuState *s) {
     char path[256];
     if (io_guest_path(A0, path, sizeof(path)) != 0u)
         return 0x80010016u;
+    if (sr_flash0_font_is_device_path(path)) return sr_flash0_font_refuse_write(path, "mkdir");
     char *hp = host_path_alloc(path);
     if (!hp) return 0x80010016u;
     wchar_t canonical[MAX_PATH * 2];
@@ -14422,6 +14499,9 @@ static uint32_t h_IoRename(CpuState *s) {
     if (io_guest_path(A0, old_guest, sizeof(old_guest)) != 0u ||
         io_guest_path(A1, new_guest, sizeof(new_guest)) != 0u)
         return ms0_posix_psp_error(SR_CD_INVALID_PATH);
+    if (sr_flash0_font_is_device_path(old_guest) || sr_flash0_font_is_device_path(new_guest))
+        return sr_flash0_font_refuse_write(
+            sr_flash0_font_is_device_path(old_guest) ? old_guest : new_guest, "rename");
     sr_cd_status st = ms0_posix_guest_relpath(old_guest, old_rel, sizeof(old_rel));
     if (st == SR_CD_OK)
         st = ms0_posix_guest_relpath(new_guest, new_rel, sizeof(new_rel));
@@ -14440,6 +14520,7 @@ static uint32_t h_IoMkdir(CpuState *s) {
     char guest[256], rel[SR_CD_REL_MAX];
     if (io_guest_path(A0, guest, sizeof(guest)) != 0u)
         return ms0_posix_psp_error(SR_CD_INVALID_PATH);
+    if (sr_flash0_font_is_device_path(guest)) return sr_flash0_font_refuse_write(guest, "mkdir");
     sr_cd_status st = ms0_posix_guest_relpath(guest, rel, sizeof(rel));
     if (st != SR_CD_OK) return ms0_posix_psp_error(st);
 
@@ -14461,6 +14542,7 @@ static uint32_t h_IoRemove(CpuState *s) {
     char path[256];
     if (io_guest_path(A0, path, sizeof(path)) != 0u)
         return 0x80010016u;
+    if (sr_flash0_font_is_device_path(path)) return sr_flash0_font_refuse_write(path, "remove");
     char *hp = host_path_alloc(path);
     if (!hp) return 0x80010016u;
     wchar_t canonical[MAX_PATH * 2];
@@ -14496,6 +14578,7 @@ static uint32_t h_IoRemove(CpuState *s) {
     char guest[256], rel[SR_CD_REL_MAX];
     if (io_guest_path(A0, guest, sizeof(guest)) != 0u)
         return ms0_posix_psp_error(SR_CD_INVALID_PATH);
+    if (sr_flash0_font_is_device_path(guest)) return sr_flash0_font_refuse_write(guest, "remove");
     sr_cd_status st = ms0_posix_guest_relpath(guest, rel, sizeof(rel));
     if (st != SR_CD_OK) return ms0_posix_psp_error(st);
 
@@ -14513,6 +14596,7 @@ static uint32_t h_IoRmdir(CpuState *s) {
     char guest[512], rel[SR_CD_REL_MAX];
     uint32_t rc = io_guest_path(A0, guest, sizeof(guest));
     if (rc != 0u) return rc;
+    if (sr_flash0_font_is_device_path(guest)) return sr_flash0_font_refuse_write(guest, "rmdir");
     sr_cd_status status = sr_cd_ms0_guest_relpath(guest, rel, sizeof(rel));
     if (status != SR_CD_OK) return sr_cd_psp_error(status);
     sr_cd_root root;
@@ -14553,6 +14637,8 @@ static uint32_t h_IoChstat(CpuState *s) {
     char guest[512], rel[SR_CD_REL_MAX];
     uint32_t rc = io_guest_path(A0, guest, sizeof(guest));
     if (rc != 0u) return rc;
+    if (sr_flash0_font_is_device_path(guest))
+        return sr_flash0_font_refuse_write(guest, "change attributes");
     uint32_t bits = A2;
     if ((bits & ~IO_CSTAT_MODE) != 0u) {
         fprintf(stderr,
@@ -14645,6 +14731,25 @@ static int data_stat_write(uint32_t st, uint64_t size) {
     return 1;
 }
 
+/* sceIoGetstat for flash0: (read-only font device). A served font reports its size as a
+ * regular file; flash0:/font reports as a directory. */
+static uint32_t h_io_getstat_flash0(const char *path, uint32_t st) {
+    Flash0Sources sources;
+    uint32_t font_size = 0;
+    int font_is_dir = 0;
+    flash0_font_sources(&sources);
+    uint32_t rc = sr_flash0_font_stat(path, &sources, &font_size, &font_is_dir);
+    if (rc != 0u) return rc;
+    if (font_is_dir) {
+        for (int i = 0; i < 0x58; i++) MEM_W8(st + (uint32_t)i, 0);
+        MEM_W32(st + 0, 0x1000u | 0x0124u);
+        MEM_W32(st + 4, 0x0010u);
+        MEM_W32(st + 0x40, 0);
+        return 0u;
+    }
+    return data_stat_write(st, font_size) ? 0u : 0x80010005u;
+}
+
 static uint32_t h_IoGetstat(CpuState *s) {
     /* a0=path, a1=SceIoStat*. SceIoStat layout: mode(+0), attr(+4), size(+8,64-bit),
      * ctime(+0x10), atime(+0x20), mtime(+0x30), st_private[6](+0x40). For UMD files PPSSPP
@@ -14654,6 +14759,7 @@ static uint32_t h_IoGetstat(CpuState *s) {
     char path[256];
     if (io_guest_path(A0, path, sizeof(path)) != 0u)
         return 0x80010016u;
+    if (sr_flash0_font_is_device_path(path)) return h_io_getstat_flash0(path, A1);
     uint32_t lba, size, st = A1;
     if (iso_lookup(path, &lba, &size) != 0) {
         /* Host-backed path under the unified Memory Stick root (ordinary ms0:
@@ -15203,10 +15309,14 @@ static uint32_t s_latch_seen_count = 0u;
  *   EXPECT <NAME>                assert NAME is on screen right now; fail loudly if not
  *   PRESS <hexmask> <width>      hold mask for width vblanks
  *   DELAY <n>                    advance n vblanks (input cadence within one screen)
+ *   PRESS_UNTIL_NID <import|0xNID> <hexmask> <width> <period> <timeout>
+ *                                repeat the press (held width, released for the rest of period)
+ *                                until the guest calls that import; fail on timeout
  *   END                          route complete
- *   WIDTHS VBLANKS|READS         the unit the widths of PRESS, DELAY, PRESS_UNTIL and
- *                                PRESS_WHILE count in (default VBLANKS); before every step
- *   READS | VBLANKS <step>       the unit of that one PRESS, DELAY, PRESS_UNTIL or PRESS_WHILE
+ *   WIDTHS VBLANKS|READS         the unit the widths of PRESS, DELAY, PRESS_UNTIL, PRESS_WHILE
+ *                                and PRESS_UNTIL_NID count in (default VBLANKS); before every step
+ *   READS | VBLANKS <step>       the unit of that one PRESS, DELAY, PRESS_UNTIL, PRESS_WHILE or
+ *                                PRESS_UNTIL_NID
  *
  * A width in READS is a number of guest controller reads that observe the press, not of
  * vblanks: the press is held until the guest has read it that many times, however many
@@ -15243,7 +15353,7 @@ static uint32_t s_latch_seen_count = 0u;
 #define ROUTE_FAIL_EXIT  86
 
 enum { ROUTE_OP_WAIT = 1, ROUTE_OP_EXPECT, ROUTE_OP_PRESS, ROUTE_OP_DELAY, ROUTE_OP_UNTIL,
-       ROUTE_OP_WHILE, ROUTE_OP_NID, ROUTE_OP_END };
+       ROUTE_OP_WHILE, ROUTE_OP_NID, ROUTE_OP_UNTIL_NID, ROUTE_OP_END };
 enum { ROUTE_OFF = 0, ROUTE_LEGACY, ROUTE_RUNNING, ROUTE_DONE, ROUTE_FAILED };
 
 /* One named screen. Parts of a screen legitimately vary between otherwise identical
@@ -15271,6 +15381,7 @@ typedef struct {
     int      line;                   /* source line, for diagnostics */
     int      reads;                  /* the widths above count guest reads, not vblanks
                                       * (WIDTHS READS, or a READS line); the timeouts never do */
+    uint32_t nid;                    /* PRESS_UNTIL_NID: the import whose call completes the step */
 } RouteStep;
 
 static RouteCheckpoint s_route_cp[ROUTE_MAX_CP];
@@ -15707,9 +15818,10 @@ static int route_parse_line(char *line, int lineno, const char *path) {
             return -1;
         }
         if (strcmp(tok, "PRESS") != 0 && strcmp(tok, "DELAY") != 0 &&
-            strcmp(tok, "PRESS_UNTIL") != 0 && strcmp(tok, "PRESS_WHILE") != 0) {
+            strcmp(tok, "PRESS_UNTIL") != 0 && strcmp(tok, "PRESS_WHILE") != 0 &&
+            strcmp(tok, "PRESS_UNTIL_NID") != 0) {
             fprintf(stderr, "ROUTE_PARSE: %s:%d: READS and VBLANKS apply to PRESS, DELAY, PRESS_UNTIL "
-                            "and PRESS_WHILE, not '%s'\n", path, lineno, tok);
+                            "and PRESS_WHILE, and PRESS_UNTIL_NID, not '%s'\n", path, lineno, tok);
             return -1;
         }
     }
@@ -15834,6 +15946,47 @@ static int route_parse_line(char *line, int lineno, const char *path) {
                 }
             } else if (st.b < 1 || st.c <= st.b || st.d < st.c) {
                 fprintf(stderr, "ROUTE_PARSE: %s:%d: %s needs width >= 1, period > width, timeout >= period\n", path, lineno, tok);
+                return -1;
+            }
+        } else if (strcmp(tok, "PRESS_UNTIL_NID") == 0) {
+            /* Repeat the press until the guest calls an import. PRESS_UNTIL repeats until a
+             * screen is observed, and a screen can only be recorded from a run that has already
+             * reached it. Some prompts (the savedata message boxes, the Yes/No that follows
+             * them) do not change the screen when a press is taken, so no screen says that the
+             * press landed. The import the guest calls next does say so, and it is the same in
+             * every title. */
+            st.op = ROUTE_OP_UNTIL_NID;
+            char *nid = strtok(NULL, " \t\r\n");
+            char *m = strtok(NULL, " \t\r\n"), *w = strtok(NULL, " \t\r\n");
+            char *p = strtok(NULL, " \t\r\n"), *t = strtok(NULL, " \t\r\n");
+            if (!nid || !m || !w || !p || !t) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS_UNTIL_NID <import|0xNID> <hexmask> <width> "
+                                "<period> <timeout>\n", path, lineno);
+                return -1;
+            }
+            if (route_nid_from_token(nid, &st.nid) != 0) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS_UNTIL_NID: '%s' is not an import name and not "
+                                "a 0x-prefixed NID (the runtime's own table is src/rt/nid_names.h; a name "
+                                "it does not carry can be written as hex)\n", path, lineno, nid);
+                return -1;
+            }
+            if (route_parse_mask(m, &st.a) != 0) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS_UNTIL_NID: '%s' is not a hex mask or a button name "
+                                "(%s)\n", path, lineno, m, route_button_names());
+                return -1;
+            }
+            st.b = (uint32_t)strtoul(w, NULL, 10);
+            st.c = (uint32_t)strtoul(p, NULL, 10);
+            st.d = (uint32_t)strtoul(t, NULL, 10);
+            if (st.reads) {
+                if (st.b < 1 || st.c <= st.b || st.d < 1) {
+                    fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS_UNTIL_NID with READS needs width >= 1, period > "
+                                    "width (both in reads), timeout >= 1 vblank\n", path, lineno);
+                    return -1;
+                }
+            } else if (st.b < 1 || st.c <= st.b || st.d < st.c) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS_UNTIL_NID needs width >= 1, period > width, "
+                                "timeout >= period\n", path, lineno);
                 return -1;
             }
         } else if (strcmp(tok, "PRESS") == 0) {
@@ -15984,10 +16137,14 @@ int sr_route_load(const char *path) {
          * event names the event in the log instead of leaving a reader to guess. */
         for (int i = 0; i < s_route_nsteps; i++) {
             RouteStep *st = &s_route_prog[i];
-            if (st->op != ROUTE_OP_NID) continue;
-            const char *nm = sr_nid_name(st->b);
-            fprintf(stderr, "ROUTE: step %d (WAIT_NID) waits for %s (0x%08x) for %u vblanks\n",
-                    i, nm ? nm : "an unnamed import", st->b, st->a);
+            if (st->op != ROUTE_OP_NID && st->op != ROUTE_OP_UNTIL_NID) continue;
+            uint32_t nid = st->op == ROUTE_OP_NID ? st->b : st->nid;
+            uint32_t to = st->op == ROUTE_OP_NID ? st->a : st->d;
+            const char *nm = sr_nid_name(nid);
+            fprintf(stderr, "ROUTE: step %d (%s) %s %s (0x%08x) for %u vblanks\n",
+                    i, st->op == ROUTE_OP_NID ? "WAIT_NID" : "PRESS_UNTIL_NID",
+                    st->op == ROUTE_OP_NID ? "waits for" : "presses until the guest calls",
+                    nm ? nm : "an unnamed import", nid, to);
         }
         return 1;
     }
@@ -16129,10 +16286,11 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
             s_route_step_started = 1;
             /* The NID watch is armed by the step that wants it, so "called since this step
              * began" is measured from this vblank and not from the start of the route. */
-            route_nid_watch(st->op == ROUTE_OP_NID);
+            route_nid_watch(st->op == ROUTE_OP_NID || st->op == ROUTE_OP_UNTIL_NID);
             /* Input belongs to the step that makes it: a pressing step starts its first
              * segment here, every other step leaves the pad released. */
-            if (st->op == ROUTE_OP_PRESS || st->op == ROUTE_OP_UNTIL || st->op == ROUTE_OP_WHILE) {
+            if (st->op == ROUTE_OP_PRESS || st->op == ROUTE_OP_UNTIL || st->op == ROUTE_OP_WHILE ||
+                st->op == ROUTE_OP_UNTIL_NID) {
                 SrInputSegment press = route_segment(st->a, st->b, st->reads, v,
                                                      st->op == ROUTE_OP_PRESS ? s_input_budget : 0u);
                 sr_input_start(&s_input, &press, v);
@@ -16173,6 +16331,27 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
             if (el >= st->d) {
                 route_fail("line %d: PRESS_UNTIL %s gave up after %u vblanks (from vblank %u); %s",
                            st->line, st->name, el, s_route_step_start, route_seen_desc());
+                return keys;
+            }
+            return keys | route_pulse(st, v);
+        }
+        case ROUTE_OP_UNTIL_NID: {
+            /* The press repeats until the guest calls the import, measured from the vblank the
+             * step began; an import that happened before then does not count (route_nid_since). */
+            const char *nm = sr_nid_name(st->nid);
+            if (route_nid_since(st->nid)) {
+                fprintf(stderr, "ROUTE: guest called %s (0x%08x) at vblank %u (step %d, after %u "
+                                "vblanks; the press repeated until then)\n",
+                        nm ? nm : "an unnamed import", st->nid, v, s_route_pc, el);
+                route_advance();
+                continue;
+            }
+            if (el >= st->d) {
+                route_fail("line %d: PRESS_UNTIL_NID %s (0x%08x) was not called within %u vblanks "
+                           "(from vblank %u to %u); the guest made %lu imports in that time, "
+                           "none of them this one",
+                           st->line, nm ? nm : "?", st->nid, el, s_route_step_start, v,
+                           s_route_nid_pos - s_route_nid_start);
                 return keys;
             }
             return keys | route_pulse(st, v);
@@ -17053,7 +17232,7 @@ static void route_tick(uint32_t v) {
          * needs no signature: sampling the framebuffer for it would cost the observer's ~20%
          * of vblank rate (measured) to learn nothing. */
         pending = !(op == ROUTE_OP_PRESS || op == ROUTE_OP_DELAY || op == ROUTE_OP_END ||
-                    op == ROUTE_OP_NID);
+                    op == ROUTE_OP_NID || op == ROUTE_OP_UNTIL_NID);
     }
     /* Elapsed-delivered-VCOUNT cadence (#109 reconstruction): delivered VCOUNT is
      * elapsed-period accounting and may jump over every exact residue of
@@ -17801,7 +17980,7 @@ void sr_vblank_tick(void) {
           if (wde < 0) { const char *e = getenv("SR_WATCHDOG_EXIT"); wde = e ? atoi(e) : 0; }
           if (wde > 0 && diff >= (uint32_t)wde) {
               fprintf(stderr, "WATCHDOG: aborting after %u vblanks with no new frame (SR_WATCHDOG_EXIT=%d)\n", diff, wde);
-              sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, diff, (uint32_t)wde);
+              sr_flight_hang(diff, (uint32_t)wde);
               _Exit(1);
           }
         }
@@ -17873,7 +18052,7 @@ void sr_vblank_tick(void) {
             sr_dump_calls();
             fflush(stderr);
             fflush(stdout);
-            sr_flight_exit(0u);
+            sr_flight_budget(s_vcount);
             _Exit(0);
         }
     }

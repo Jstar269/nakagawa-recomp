@@ -483,6 +483,7 @@ keeps the original behaviour exactly, and a file mixing the two is refused.
 | `PRESS_WHILE <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press the same way while `NAME` is observed; complete when it is not |
 | `DELAY <n>` | Release the pad for `n` samples and until the guest has read the release (input cadence *within* one screen) |
 | `WAIT_NID <import\|0xNID> <timeout>` | Block until the guest calls that import; fail the run on timeout |
+| `PRESS_UNTIL_NID <import\|0xNID> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press (held `width`, released for the rest of `period`) until the guest calls that import; fail on timeout. Use it where a press may land without changing the screen, such as a message box or a Yes/No that waits on a savedata check, because the import is the event that says the press was taken |
 | `WIDTHS VBLANKS\|READS` | The unit the widths of `PRESS`, `DELAY`, `PRESS_UNTIL` and `PRESS_WHILE` count in, for the whole file (default `VBLANKS`); must precede every step, and may appear once |
 | `READS <step>` / `VBLANKS <step>` | The unit of that one `PRESS`, `DELAY`, `PRESS_UNTIL` or `PRESS_WHILE` line; overrides `WIDTHS` |
 | `END` | Route complete |
@@ -1106,6 +1107,31 @@ To correlate a decoded through-sprite with the guest code that builds its dynami
 write watches for both source vertex records. Later reuse of those records is reported through
 the normal `MEM_WATCH[...]` log with the exact guest writer PC. The shared 16-range watch limit
 still applies, and the option never changes vertex data or rendering.
+
+## Flight Recorder (`SR_FLIGHT`)
+
+`SR_FLIGHT=<classes>;<limit>` retains the last `<limit>` (at most 4096) structured events of the
+named classes (`hle`, `unsupported`, `sched`, `prx`, `fault`, `fatal`, `media`, `ge`, `present`)
+and writes a bundle to `SR_FLIGHT_OUTPUT` (default `flight-recorder.json`). The schema is
+`assets/flight_recorder_schema.json`; `tools/flight_diff.py` validates and compares bundles.
+
+`terminal.reason` names what ended the run:
+
+| Reason | Meaning |
+| --- | --- |
+| `running` | No terminal yet. The bundle is rewritten at each named refusal (at each power of two of the refusal count), so a run killed later reads as still running. |
+| `exit` | Normal exit; `arg0` is the exit status. |
+| `budget` | `SR_EXIT_AT_VBLANK` was reached; `arg0` is the vblank. |
+| `hang` | The no-frame watchdog (`SR_WATCHDOG_EXIT`) aborted; `arg0` is the vblanks without a new frame. |
+| `fatal` | A fatal event; `kind` names it. |
+| `unsupported-nid` | An NID with no handler ended the run (`kind` 13). |
+
+A named refusal is a call answered with its registered error while the guest keeps running. It is
+never the terminal record. It is an `unsupported` event, counted in the bundle's `refusals` block:
+`count`, `first_nid` and `first_pc` (the first refusal, in its own fields), and `nids`, the distinct
+refused NIDs in first-seen order with a count each (up to 32; further NIDs are counted in
+`nids_unlisted`). Schema 1 to 4 bundles froze at their first refusal (`unsupported-nid`, kind 2), so
+they cannot show what ran after it; the grouping script reports those as `frozen-at-refusal`.
 
 ## Crash Reporter
 
