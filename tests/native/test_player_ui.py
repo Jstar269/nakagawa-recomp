@@ -20,6 +20,8 @@ import zlib
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+from nk_core import package_cache  # noqa: E402  (the package-layer epochs the fixture must spell)
 PLAYER_EXE = Path(
     os.environ.get("NAKAGAWA_PLAYER_UI_TEST_EXE", "build/nakagawa_player_ui_test.exe")
 )
@@ -300,11 +302,11 @@ def synthetic_ready_package(
         "codegen_options_sha256": canonical_hash({}),
         "codegen_sha256": zero_hash,
         "executable_sha256": input_executable_hash,
-        "generated_code_abi_epoch": 1,
+        "generated_code_abi_epoch": package_cache.GENERATED_CODE_ABI_EPOCH,
         "manifest_sha256": zero_hash,
         "modules_sha256": canonical_hash([]),
         "psp_header_sha256": None,
-        "runtime_abi_epoch": 1,
+        "runtime_abi_epoch": package_cache.RUNTIME_ABI_EPOCH,
         "title_input_identity_sha256": identity_digest,
     }
     native_components = {
@@ -313,7 +315,7 @@ def synthetic_ready_package(
         "compiler_target": "fixture-target",
         "generated_code_digest": zero_hash,
         "link_flags": "",
-        "runtime_abi_epoch": 1,
+        "runtime_abi_epoch": package_cache.RUNTIME_ABI_EPOCH,
         "runtime_source_digest": zero_hash,
     }
     cache_key = {
@@ -326,7 +328,9 @@ def synthetic_ready_package(
         "schema_version": 2,
         "key": cache_key,
         "codegen_options": {},
-        "runtime_abi_compatibility": {"current_epoch": 1, "generated_code_reusable": True},
+        "runtime_abi_compatibility": {
+            "current_epoch": package_cache.RUNTIME_ABI_EPOCH, "generated_code_reusable": True,
+        },
     }
     inputs = {
         "manifest": {"sha256": zero_hash},

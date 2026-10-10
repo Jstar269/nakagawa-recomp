@@ -244,12 +244,24 @@ following key components:
 | Runtime source/header digest and output-affecting compile/link flags | not required | required |
 
 The current package-layer epochs are `analyzer-codegen-v1`,
-`GENERATED_CODE_ABI_EPOCH = 1`, and `RUNTIME_ABI_EPOCH = 1`. The generated-code
+`GENERATED_CODE_ABI_EPOCH = 2`, and `RUNTIME_ABI_EPOCH = 2`. The generated-code
 and runtime epoch values are compatibility contracts, not release versions. A
 change to the generated C/runtime helper boundary must bump
 `GENERATED_CODE_ABI_EPOCH`; a runtime-package ABI change must bump
-`RUNTIME_ABI_EPOCH`. The package layer documents the bump because the codegen
-agent owns the implementation epoch source.
+`RUNTIME_ABI_EPOCH`. The CpuState layout (`SR_CPUSTATE_ABI_VERSION` in
+`src/rt/recomp.h`) is part of both boundaries: generated C addresses CpuState
+fields by offset, and the runtime package shares the struct with the generated
+objects, so every CpuState version bumps both epochs. `CPUSTATE_ABI_EPOCHS` in
+`tools/nk_core/package_cache.py` records the pairing (CpuState v2: epochs 1/1;
+v3, which appended `llbit`: epochs 2/2), the native validator carries the twins
+`NK_AOT_GENERATED_CODE_ABI_EPOCH` and `NK_AOT_RUNTIME_ABI_EPOCH` in
+`src/core/nk_title_manifest.h`, and `tools/test_package_cache.py` pins the header
+version, the table, the constants and the twins to each other. A package whose
+cache key names an older epoch is `aot-regenerate` for the tools and
+`NK_RUNTIME_PACKAGE_INCOMPATIBLE` for the player (the same outcome the
+codegen/runtime digests and the package `abi_version` already force; the epochs
+make the contract explicit). The package layer documents the bump because the
+codegen agent owns the implementation epoch source.
 
 The cache decision has three levels:
 

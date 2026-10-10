@@ -94,6 +94,36 @@ class PackageCacheTests(unittest.TestCase):
         native_limit = int(match.group(1)) * 1024 * 1024
         self.assertEqual(native_limit, package_cache.MAX_BUILD_REPORT_JSON_BYTES)
 
+    def test_package_epochs_follow_the_cpustate_abi_version(self) -> None:
+        """A CpuState layout change must bump both package-layer epochs, in Python and in the
+        native validator header, and the table must know the current layout version."""
+        recomp = (ROOT / "src/rt/recomp.h").read_text(encoding="utf-8")
+        version = re.search(r"(?m)^#define SR_CPUSTATE_ABI_VERSION (\d+)u$", recomp)
+        self.assertIsNotNone(version)
+        assert version is not None
+        cpustate_version = int(version.group(1))
+        self.assertEqual(max(package_cache.CPUSTATE_ABI_EPOCHS), cpustate_version)
+        self.assertEqual(
+            package_cache.CPUSTATE_ABI_EPOCHS[cpustate_version],
+            (package_cache.GENERATED_CODE_ABI_EPOCH, package_cache.RUNTIME_ABI_EPOCH),
+        )
+        self.assertIn(package_cache.RUNTIME_ABI_EPOCH, package_cache.RUNTIME_ABI_COMPATIBILITY)
+        # A layout change is never a compatible runtime change: the older epoch may not serve the
+        # current one.
+        for older in range(1, package_cache.RUNTIME_ABI_EPOCH):
+            self.assertFalse(package_cache.runtime_abi_compatible(older, package_cache.RUNTIME_ABI_EPOCH))
+        import codegen
+        self.assertEqual(codegen.CPU_STATE_ABI_VERSION, cpustate_version)
+        header = (ROOT / "src/core/nk_title_manifest.h").read_text(encoding="utf-8")
+        for macro, expected in (
+            ("NK_AOT_GENERATED_CODE_ABI_EPOCH", package_cache.GENERATED_CODE_ABI_EPOCH),
+            ("NK_AOT_RUNTIME_ABI_EPOCH", package_cache.RUNTIME_ABI_EPOCH),
+        ):
+            match = re.search(rf"(?m)^#define {macro} (\d+)$", header)
+            self.assertIsNotNone(match, macro)
+            assert match is not None
+            self.assertEqual(int(match.group(1)), expected, macro)
+
     def key(self, **overrides):
         values = {
             "input_hashes": self.inputs,
@@ -220,7 +250,7 @@ class PackageCacheTests(unittest.TestCase):
         self.assertIn("aot:analyzer_sha256", analyzer_change.reasons)
 
         abi_change = package_cache.compare_cache_keys(
-            current, self.key(generated_code_abi_epoch=2)
+            current, self.key(generated_code_abi_epoch=package_cache.GENERATED_CODE_ABI_EPOCH + 1)
         )
         self.assertEqual(abi_change.action, "aot-regenerate")
         self.assertIn("aot:generated_code_abi_epoch", abi_change.reasons)
@@ -252,17 +282,18 @@ class PackageCacheTests(unittest.TestCase):
         )
         self.assertEqual(public_safe_change.action, "native-recompile")
 
-        runtime_v2 = self.key(runtime_abi_epoch=2)
+        this_epoch = package_cache.RUNTIME_ABI_EPOCH
+        runtime_next = self.key(runtime_abi_epoch=this_epoch + 1)
         self.assertEqual(
-            package_cache.compare_cache_keys(current, runtime_v2).action,
+            package_cache.compare_cache_keys(current, runtime_next).action,
             "aot-regenerate",
         )
         with mock.patch.dict(
             package_cache.RUNTIME_ABI_COMPATIBILITY,
-            {1: frozenset({1, 2})},
+            {this_epoch: frozenset({this_epoch, this_epoch + 1})},
             clear=True,
         ):
-            compatible = package_cache.compare_cache_keys(current, runtime_v2)
+            compatible = package_cache.compare_cache_keys(current, runtime_next)
         self.assertEqual(compatible.action, "native-recompile")
         self.assertTrue(compatible.generated_c_reusable)
         self.assertIn("aot:runtime_abi_epoch", compatible.reasons)
@@ -1015,7 +1046,7 @@ class PackageCacheTests(unittest.TestCase):
                 package_cache.AOT_STAGE_GENERATOR_CHANGED, "aot:codegen_sha256")
         refused(stage, self.key(analyzer_sha256="8" * 64),
                 package_cache.AOT_STAGE_GENERATOR_CHANGED, "aot:analyzer_sha256")
-        refused(stage, self.key(generated_code_abi_epoch=2),
+        refused(stage, self.key(generated_code_abi_epoch=package_cache.GENERATED_CODE_ABI_EPOCH + 1),
                 package_cache.AOT_STAGE_GENERATOR_CHANGED, "aot:generated_code_abi_epoch")
         refused(stage, self.key(codegen_options={"profile": "none", "funcs_per_chunk": 1000}),
                 package_cache.AOT_STAGE_OPTIONS_CHANGED, "aot:codegen_options_sha256")

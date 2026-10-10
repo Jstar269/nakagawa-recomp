@@ -308,9 +308,12 @@ Changing this layout requires coordinated updates to every consumer and explicit
 verification. The consumers are: the `_Static_assert`/`static_assert` blocks in `recomp.h`;
 `ref::CpuState` in `src/ref/cpu.h`; `CPU_STATE_ABI_VERSION` in `tools/codegen.py`, which the
 generated `generated_funcs.h` checks against the runtime; the offsets and version in
-`tools/mem_debug.py` (live process view and `crash_dump.bin` header); and the AOT package's
-`runtime.abi_version`, which the player compares with its own `SR_CPUSTATE_ABI_VERSION`, so
-packages built for an older ABI are refused until rebuilt. `recomp.h` is hashed into the runtime,
+`tools/mem_debug.py` (live process view and `crash_dump.bin` header); the package-layer epochs
+`GENERATED_CODE_ABI_EPOCH`/`RUNTIME_ABI_EPOCH` and the `CPUSTATE_ABI_EPOCHS` table in
+`tools/nk_core/package_cache.py` with their native twins in `src/core/nk_title_manifest.h`
+(every layout version bumps both; `tools/test_package_cache.py` pins them to this header); and
+the AOT package's `runtime.abi_version`, which the player compares with its own
+`SR_CPUSTATE_ABI_VERSION`, so packages built for an older ABI are refused until rebuilt. `recomp.h` is hashed into the runtime,
 codegen and generated-code build profiles, so every object that includes it rebuilds.
 
 ### LL/SC link state

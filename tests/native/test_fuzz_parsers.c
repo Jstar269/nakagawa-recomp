@@ -1331,6 +1331,8 @@ static void test_fuzz_package(unsigned iters) {
     char package_dir[512], package_path[640], report_path[640];
     char executable_path[768], image_path[768], absolute_root[1024];
     char package_json[8192], report_json[8192], cache_json[4096], cache_key_json[3072];
+    char aot_components_json[1024], native_components_json[512];
+    char aot_digest[65], native_digest[65];
     char completion_json[4096], completion_path[768];
     char reason[512];
 
@@ -1354,10 +1356,6 @@ static void test_fuzz_package(unsigned iters) {
         "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570";
     const char *codegen_options_digest =
         "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356";
-    const char *aot_digest =
-        "b3f742b8ef4b96abe6e66a4301c2230ce88d7075e46e12cccfc99be598c6dad9";
-    const char *native_digest =
-        "d8e93061990e675b8d7e459866d273012414d4b583161e257e14e5703dfdc8bd";
     const char *identity_digest =
         "b9b7b9d231aafef0cb4254e9d063043d4f74edb82f87d6a828e66ba9b1eb1774";
     const char *generated_code_digest =
@@ -1371,26 +1369,45 @@ static void test_fuzz_package(unsigned iters) {
         "\"manifest\":{\"id\":\"synthetic-allegrex-v1\",\"schema_version\":1},"
         "\"modules\":[],\"param_sfo\":null,\"psp_header\":null,\"schema_version\":2,"
         "\"source_media\":null}";
-    int cache_key_length = snprintf(cache_key_json, sizeof(cache_key_json),
-        "{\"schema_version\":2,\"aot\":{\"digest\":\"%s\",\"components\":{"
-        "\"analyzer_codegen_epoch\":\"analyzer-codegen-v1\","
+    /* The validator recomputes each key digest as sha256(canonical components + "\n"), so the
+     * fixture derives them from the components it writes (the epochs are the native twins). */
+    int aot_components_length = snprintf(aot_components_json, sizeof(aot_components_json),
+        "{\"analyzer_codegen_epoch\":\"analyzer-codegen-v1\","
         "\"analyzer_sha256\":\"%064d\",\"codegen_options_sha256\":\"%s\","
         "\"codegen_sha256\":\"%064d\",\"executable_sha256\":\"%s\","
-        "\"generated_code_abi_epoch\":1,\"manifest_sha256\":\"%064d\","
+        "\"generated_code_abi_epoch\":%d,\"manifest_sha256\":\"%064d\","
         "\"modules_sha256\":\"%s\",\"psp_header_sha256\":null,"
-        "\"runtime_abi_epoch\":1,\"title_input_identity_sha256\":\"%s\"}},"
-        "\"native\":{\"digest\":\"%s\","
-        "\"components\":{\"compile_flags\":\"\",\"compiler_identity\":\"gcc-fixture\","
+        "\"runtime_abi_epoch\":%d,\"title_input_identity_sha256\":\"%s\"}",
+        0, codegen_options_digest, 0, fixture_sha, NK_AOT_GENERATED_CODE_ABI_EPOCH, 0,
+        modules_digest, NK_AOT_RUNTIME_ABI_EPOCH, identity_digest);
+    assert(aot_components_length > 0 && (size_t)aot_components_length < sizeof(aot_components_json));
+    int native_components_length = snprintf(native_components_json, sizeof(native_components_json),
+        "{\"compile_flags\":\"\",\"compiler_identity\":\"gcc-fixture\","
         "\"compiler_target\":\"fixture-target\",\"generated_code_digest\":\"%s\","
-        "\"link_flags\":\"\",\"runtime_abi_epoch\":1,\"runtime_source_digest\":\"%064d\"}}}",
-        aot_digest, 0, codegen_options_digest, 0, fixture_sha, 0, modules_digest,
-        identity_digest, native_digest, generated_code_digest, 0);
+        "\"link_flags\":\"\",\"runtime_abi_epoch\":%d,\"runtime_source_digest\":\"%064d\"}",
+        generated_code_digest, NK_AOT_RUNTIME_ABI_EPOCH, 0);
+    assert(native_components_length > 0 && (size_t)native_components_length < sizeof(native_components_json));
+    {
+        FuzzSha256 ctx;
+        fuzz_sha_init(&ctx);
+        fuzz_sha_update(&ctx, (const uint8_t *)aot_components_json, (size_t)aot_components_length);
+        fuzz_sha_update(&ctx, (const uint8_t *)"\n", 1u);
+        fuzz_sha_finish(&ctx, aot_digest);
+        fuzz_sha_init(&ctx);
+        fuzz_sha_update(&ctx, (const uint8_t *)native_components_json, (size_t)native_components_length);
+        fuzz_sha_update(&ctx, (const uint8_t *)"\n", 1u);
+        fuzz_sha_finish(&ctx, native_digest);
+    }
+    int cache_key_length = snprintf(cache_key_json, sizeof(cache_key_json),
+        "{\"schema_version\":2,\"aot\":{\"digest\":\"%s\",\"components\":%s},"
+        "\"native\":{\"digest\":\"%s\",\"components\":%s}}",
+        aot_digest, aot_components_json, native_digest, native_components_json);
     assert(cache_key_length > 0 && (size_t)cache_key_length < sizeof(cache_key_json));
     int cache_length = snprintf(cache_json, sizeof(cache_json),
         "{\"format\":\"nakagawa-aot-cache\",\"schema_version\":2,\"key\":%s,"
         "\"codegen_options\":{},\"runtime_abi_compatibility\":{"
-        "\"current_epoch\":1,\"generated_code_reusable\":true}}",
-        cache_key_json);
+        "\"current_epoch\":%d,\"generated_code_reusable\":true}}",
+        cache_key_json, NK_AOT_RUNTIME_ABI_EPOCH);
     assert(cache_length > 0 && (size_t)cache_length < sizeof(cache_json));
     int report_length = snprintf(report_json, sizeof(report_json),
         "{\"format\":\"nakagawa-build-report\",\"schema_version\":1,"
