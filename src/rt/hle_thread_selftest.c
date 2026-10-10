@@ -25595,7 +25595,7 @@ static void test_flight_recorder_trace(void) {
     bundle_size = bundle_file ? fread(bundle, 1u, sizeof(bundle) - 1u, bundle_file) : 0u;
     if (bundle_file) fclose(bundle_file);
     bundle[bundle_size] = '\0';
-    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 4") != NULL,
+    expect(bundle_size > 0u && strstr(bundle, "\"schema_version\": 5") != NULL,
            "recorder writes a schema-versioned JSON bundle");
     expect(strstr(bundle, "\"arguments\": [") != NULL && strstr(bundle, "\"return_value\": 0") != NULL,
            "recorder JSON contains HLE arguments and the returned value");
@@ -25656,14 +25656,136 @@ static void test_flight_recorder_trace(void) {
     expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
            "controlled unsupported producer remains stable on retry");
     sr_flight_snapshot(&snapshot);
-    expect(snapshot.recorded == 2u && snapshot.trigger_count == 1u && snapshot.dump_count == 1u,
-           "first unsupported NID triggers exactly one recorder dump");
+    expect(snapshot.recorded == 4u && snapshot.trigger_count == 0u &&
+               snapshot.refusal_count == 2u && snapshot.terminal_reason == SR_FLIGHT_TERMINAL_RUNNING,
+           "a named refusal is recorded and counted without ending the recorder");
     expect(sr_flight_event_at(0, &flight_event) != 0 && flight_event.event_class == SR_FLIGHT_CLASS_HLE &&
                flight_event.has_return != 0u && flight_event.return_value == 0x80110001u,
-           "controlled unsupported HLE return value is retained before its recorder trigger");
+           "controlled unsupported HLE return value is retained before its refusal event");
     expect(sr_flight_event_at(1, &flight_event) != 0 &&
                flight_event.event_class == SR_FLIGHT_CLASS_UNSUPPORTED,
-           "unsupported trigger event is retained");
+           "unsupported refusal event is retained");
+    remove(output);
+    sr_flight_test_disable();
+    SetEnvironmentVariableA("SR_FLIGHT_OUTPUT", NULL);
+}
+
+static size_t flight_refusal_read_bundle(const char *path, char *bundle, size_t capacity) {
+    FILE *file = fopen(path, "rb");
+    size_t size = file ? fread(bundle, 1u, capacity - 1u, file) : 0u;
+    if (file) fclose(file);
+    bundle[size] = '\0';
+    return size;
+}
+
+/* A named refusal returns its error to the guest, and the guest keeps running. The refusal
+ * is therefore an event and a count, never the terminal record: whatever actually ends the
+ * run is the terminal, and every refusal stays listed with the first one in its own field. */
+static void test_flight_recorder_refusals_are_events_not_terminals(void) {
+    const char *output = "flight_recorder_refusal_selftest.json";
+    char bundle[16384];
+    char needle[160];
+    CpuState cpu;
+    SrFlightSnapshot snapshot;
+    size_t bundle_size;
+
+    /* Refused calls, then a later fatal: the fatal is the terminal record. */
+    remove(output);
+    _putenv("SR_FLIGHT_OUTPUT=flight_recorder_refusal_selftest.json");
+    reset_fixture();
+    sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED | SR_FLIGHT_CLASS_FATAL, 16u);
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
+           "refused call returns its named error and the guest keeps running");
+    expect(sr_syscall(&cpu, (uint32_t)NID_SCE_KERNEL_GET_VTIMER_TIME) == 0x80020002u,
+           "a second named refusal returns its own error and the guest keeps running");
+    expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
+           "a repeated refusal returns the same error");
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.trigger_count == 0u && snapshot.terminal_reason == SR_FLIGHT_TERMINAL_RUNNING,
+           "named refusals do not end the record");
+    expect(snapshot.refusal_count == 3u && snapshot.refusal_distinct == 2u &&
+               snapshot.refusal_first_nid == 0x1579a159u && snapshot.refusal_first_sequence == 2u,
+           "refusals are counted, and the first refusal is kept in its own field");
+    sr_flight_fatal(SR_FLIGHT_KIND_FATAL_RAW_SYSCALL, 0x08900100u, 0x0000000cu, 0u);
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.trigger_count == 1u && snapshot.terminal_reason == SR_FLIGHT_TERMINAL_FATAL &&
+               snapshot.terminal_kind == SR_FLIGHT_KIND_FATAL_RAW_SYSCALL &&
+               snapshot.terminal_arg == 0x0000000cu,
+           "the later fatal is the terminal record, not the refusal");
+    expect(snapshot.recorded == 7u,
+           "events after the first refusal are recorded up to the fatal");
+    bundle_size = flight_refusal_read_bundle(output, bundle, sizeof(bundle));
+    expect(bundle_size > 0u && strstr(bundle, "\"reason\": \"fatal\"") != NULL &&
+               strstr(bundle, "\"kind\": 12") != NULL,
+           "bundle terminal names the later fatal");
+    expect(strstr(bundle, "\"refusals\": {\"count\": 3") != NULL,
+           "bundle counts every refusal");
+    snprintf(needle, sizeof(needle), "\"first_nid\": %u", 0x1579a159u);
+    expect(strstr(bundle, needle) != NULL, "bundle keeps the first refused NID in its own field");
+    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 2}", 0x1579a159u);
+    expect(strstr(bundle, needle) != NULL, "bundle lists each refused NID with its count");
+    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 1}", (uint32_t)NID_SCE_KERNEL_GET_VTIMER_TIME);
+    expect(strstr(bundle, needle) != NULL, "bundle lists the second refused NID");
+    remove(output);
+    sr_flight_test_disable();
+
+    /* A refusal, then a clean exit: the exit is the terminal and the refusal is still listed. */
+    remove(output);
+    sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED, 8u);
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
+           "refusal before a clean exit returns its named error");
+    sr_flight_exit(7u);
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.terminal_reason == SR_FLIGHT_TERMINAL_EXIT && snapshot.terminal_arg == 7u &&
+               snapshot.trigger_count == 0u && snapshot.refusal_count == 1u,
+           "a refusal followed by a clean exit ends the record with the exit");
+    bundle_size = flight_refusal_read_bundle(output, bundle, sizeof(bundle));
+    expect(bundle_size > 0u && strstr(bundle, "\"reason\": \"exit\"") != NULL &&
+               strstr(bundle, "\"arg0\": 7") != NULL &&
+               strstr(bundle, "\"refusals\": {\"count\": 1") != NULL,
+           "clean-exit bundle records the terminal exit and the refusal");
+    remove(output);
+    sr_flight_test_disable();
+
+    /* Until a terminal, the bundle on disk says the run is still running, so a run that is
+     * killed after a refusal is not reported under that refusal. */
+    remove(output);
+    sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_UNSUPPORTED, 8u);
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
+           "refusal before any terminal returns its named error");
+    bundle_size = flight_refusal_read_bundle(output, bundle, sizeof(bundle));
+    expect(bundle_size > 0u && strstr(bundle, "\"reason\": \"running\"") != NULL &&
+               strstr(bundle, "\"refusals\": {\"count\": 1") != NULL,
+           "a refusal leaves a running record on disk until the run ends");
+    remove(output);
+    sr_flight_test_disable();
+
+    /* The budget stop and the no-frame watchdog are their own terminals. */
+    remove(output);
+    sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_FATAL, 8u);
+    sr_flight_budget(41200u);
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.terminal_reason == SR_FLIGHT_TERMINAL_BUDGET && snapshot.terminal_arg == 41200u &&
+               snapshot.trigger_count == 0u,
+           "a vblank budget stop is a budget terminal, not an exit");
+    bundle_size = flight_refusal_read_bundle(output, bundle, sizeof(bundle));
+    expect(bundle_size > 0u && strstr(bundle, "\"reason\": \"budget\"") != NULL &&
+               strstr(bundle, "\"arg0\": 41200") != NULL,
+           "budget bundle names the budget terminal and its vblank");
+    remove(output);
+    sr_flight_test_reset(SR_FLIGHT_CLASS_HLE | SR_FLIGHT_CLASS_FATAL, 8u);
+    sr_flight_hang(600u, 600u);
+    sr_flight_snapshot(&snapshot);
+    expect(snapshot.terminal_reason == SR_FLIGHT_TERMINAL_HANG && snapshot.trigger_count == 1u &&
+               snapshot.terminal_kind == SR_FLIGHT_KIND_FATAL_HOST && snapshot.terminal_arg == 600u,
+           "a no-frame watchdog abort is a hang terminal");
+    bundle_size = flight_refusal_read_bundle(output, bundle, sizeof(bundle));
+    expect(bundle_size > 0u && strstr(bundle, "\"reason\": \"hang\"") != NULL &&
+               strstr(bundle, "\"arg0\": 600") != NULL,
+           "hang bundle names the hang terminal and the vblanks without a frame");
     remove(output);
     sr_flight_test_disable();
     SetEnvironmentVariableA("SR_FLIGHT_OUTPUT", NULL);
@@ -26817,6 +26939,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_flight_recorder_trace();
     test_flight_recorder_fault_trigger();
     test_flight_recorder_host_fault();
+    test_flight_recorder_refusals_are_events_not_terminals();
     test_flight_recorder_ge_present_events();
 
     /* Issue #64. SR_ROUTE_NO_EXIT keeps a deliberately failed route observable: in a real
