@@ -295,16 +295,60 @@ contains:
 - `vfpuCtrl[16]` — VFPU control/prefix/condition state;
 - `cop0[32]` — modeled COP0 register bank; COP0 status is `cop0[SR_CP0_STATUS]`;
 - `next_pc`, `in_delay_slot` — branch/delay-slot bookkeeping;
-- `flow_kind`, `flow_target` — runtime transfer metadata.
+- `flow_kind`, `flow_target` — runtime transfer metadata;
+- `llbit` — the MIPS32 LLbit used by `ll`/`sc` (see "LL/SC link state" below).
 
-The layout is versioned by `SR_CPUSTATE_ABI_VERSION` (currently `2u`) and is
-checked in both C and C++ at compile time.
+The layout is versioned by `SR_CPUSTATE_ABI_VERSION` (currently `3u`; v3 appended `llbit`
+at offset 996, size 1000) and is checked in both C and C++ at compile time.
 
 There is **no separate `lr` member**. MIPS `$ra` is general register `r[31]`; similarly `$sp` is
 `r[29]` and `$gp` is `r[28]`.
 
 Changing this layout requires coordinated updates to every consumer and explicit ABI/offset
-verification.
+verification. The consumers are: the `_Static_assert`/`static_assert` blocks in `recomp.h`;
+`ref::CpuState` in `src/ref/cpu.h`; `CPU_STATE_ABI_VERSION` in `tools/codegen.py`, which the
+generated `generated_funcs.h` checks against the runtime; the offsets and version in
+`tools/mem_debug.py` (live process view and `crash_dump.bin` header); and the AOT package's
+`runtime.abi_version`, which the player compares with its own `SR_CPUSTATE_ABI_VERSION`, so
+packages built for an older ABI are refused until rebuilt. `recomp.h` is hashed into the runtime,
+codegen and generated-code build profiles, so every object that includes it rebuilds.
+
+### LL/SC link state
+
+`ll` (opcode 0x30) loads a word and sets `llbit`. `sc` (opcode 0x38) stores `rt` and writes 1 to
+`rt` only while `llbit` is set; otherwise it stores nothing and writes 0. `sc` leaves `llbit` as
+it found it (the MIPS32 Release 2 operation). Both execution tiers implement this:
+`tools/codegen.py` `_ll_sc_stmt()` and the production interpreter in `src/rt/guest_interp.c`;
+the reference interpreter in `src/ref/interp.cpp` follows the same rule.
+
+The MIPS32 contract clears LLbit on an exception return (ERET). On the PSP every event that can
+run other code between a thread's `ll` and its `sc` -- a thread switch, an interrupt, a callback,
+a kernel syscall -- reaches the thread again through an exception return. This runtime models
+those events at a fixed set of points, and `sr_cpu_link_clear()` runs at exactly these:
+
+| Event | Where |
+| --- | --- |
+| exception return | `sr_cpu_eret()` (`src/rt/cpu_lle.c`), on a successful return only |
+| thread switch-in | `sched_load_thread_context()` (`src/rt/sched.c`), the only place `sched_run()` resumes a thread, so every parking path (`sr_yield`, blocking HLE waits, preemption) is covered |
+| interrupt return | `deliver_vblank()` and `scheduler_alarm_deliver()` after restoring the interrupted frame |
+| callback / nested guest call return | `sr_callback_dispatch_one()` (`recomp.h`), `ge_call_guest*()` (`hle.c`), `call_guest3()` (`mpeg.c`) |
+| HLE syscall return | `sr_syscall()` after the handler runs; a call linked to a started module's guest export is a plain jump on hardware and does not clear |
+
+Nothing else writes `llbit`. In particular a `SR_YIELD` point whose `sr_yield()` neither switches
+threads nor delivers an interrupt leaves the link set, and exception entry does not clear it (the
+handler's `eret` does).
+
+Forward progress. Interrupts are delivered and threads switched only from `sr_yield()` or from
+inside an HLE call, and `sr_yield()` is reached only from `SR_YIELD`, which the generated code
+places at function entry and on backward branches. An `ll .. sc` window that contains no call, no
+backward branch and no syscall -- the shape of every retry loop `L: ll; ...; sc; beqz L` -- has
+no clearing point inside it, so its `sc` succeeds on the first pass after any earlier failure.
+The retry branch's own `SR_YIELD` runs after the failed `sc` and before the next `ll`, outside
+the window. A window that does contain a yield point fails only when the time slice expires
+inside it and another thread is runnable or an interrupt is pending; `sr_yield()` then grants a
+fresh slice of `TIMESLICE` yield points, so the next pass succeeds unless the window itself holds
+that many. A window that contains an HLE syscall fails on every pass, as it would on hardware for
+a kernel call.
 
 ## Build System
 

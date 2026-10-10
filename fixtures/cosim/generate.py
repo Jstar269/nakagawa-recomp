@@ -512,6 +512,35 @@ def _cell_hilo() -> list[int]:
     ]
 
 
+def _cell_llsc() -> list[int]:
+    """`ll`/`sc` and the MIPS32 link bit (CpuState.llbit).
+
+    Every lane starts from a seeded llbit of 0, so the first `sc` must fail: no
+    store, rt = 0. A linked `sc` stores and reports 1; a second `sc` with no new
+    `ll` stores again, because `sc` leaves LLbit as it found it. `ll $zero` still
+    links. The retry loop is the canonical atomic increment and must complete in
+    one pass (no window-ending event occurs inside it). The last `sc` names the
+    base register as rt, so a lane that writes the result before latching the
+    address stores to the wrong place.
+    """
+    return [
+        _i(0x38, A0, T1, 0),                # sc    t1, 0(a0)    link clear: fails
+        _i(0x30, A0, T2, 4),                # ll    t2, 4(a0)
+        _i(0x09, T2, T2, 5),                # addiu t2, t2, 5
+        _i(0x38, A0, T2, 4),                # sc    t2, 4(a0)    linked: stores, t2 = 1
+        _i(0x38, A0, T3, 8),                # sc    t3, 8(a0)    still linked: stores
+        _i(0x30, A0, ZERO, 12),             # ll    zero, 12(a0)
+        _i(0x30, A0, T4, 16),               # L: ll t4, 16(a0)
+        _i(0x09, T4, T4, 1),                # addiu t4, t4, 1
+        _i(0x38, A0, T4, 16),               # sc    t4, 16(a0)
+        _i(0x04, T4, ZERO, -4),             # beq   t4, zero, L
+        NOP,
+        _i(0x38, A0, A0, 20),               # sc    a0, 20(a0)   rt == base
+        JR_RA,
+        NOP,
+    ]
+
+
 def _cell_fpu() -> list[int]:
     """Scalar FPU cell over the #120 helper path.
 
@@ -653,6 +682,7 @@ CELLS: tuple[tuple[str, str, object], ...] = (
     ("xtail", "cross-tier TAIL transfer across the AOT/interpreter seam",
      _cell_xtail),
     ("hilo", "HI/LO multiply", _cell_hilo),
+    ("llsc", "ll/sc and the link bit", _cell_llsc),
     ("fpu", "scalar FPU over the #120 helper path", _cell_fpu),
     ("fpu_aot", "AOT-only scalar FPU oracle cell", _cell_fpu_aot),
     ("spleak", "positive control: unbalanced $sp epilogue", _cell_spleak),
