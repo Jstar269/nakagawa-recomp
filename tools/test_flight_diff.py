@@ -592,5 +592,141 @@ class FlightBundleTests(unittest.TestCase):
         self.assertIn("DIVERGENCE: sequence 1", result.stdout)
 
 
+REFUSED_NID = 0x1579A159
+SECOND_REFUSED_NID = 0x34B78343
+REFUSAL_RETURN = 0x80110001
+
+
+def v5_refusals(nids, *, unlisted=0, first_pc=0x08900100, first_sequence=2):
+    """A schema-5 refusals block built from per-NID counts (first refusal first)."""
+    count = sum(entry["count"] for entry in nids) + unlisted
+    return {
+        "count": count,
+        "first_nid": nids[0]["nid"] if count else None,
+        "first_pc": first_pc if count else None,
+        "first_sequence": first_sequence if count else 0,
+        "nids": nids,
+        "nids_unlisted": unlisted,
+    }
+
+
+def v5_bundle(events, *, reason, kind=0, arg0=0, sequence=None, fired=0, refusals):
+    bundle = make_bundle(
+        events, recorded=len(events), terminal_reason=reason, terminal_sequence=sequence,
+        terminal_kind=kind, terminal_arg0=arg0, version=5,
+        triggers={"first_fatal": True, "first_unsupported_nid": True, "fired": fired},
+    )
+    bundle["refusals"] = refusals
+    return bundle
+
+
+def v5_hle(sequence, nid=REFUSED_NID):
+    return event(sequence, "hle", kind=1, arg0=nid, arg1=0, arg2=0, arg3=0, version=5,
+                 arguments=[0, 0, 0, 0], return_value=REFUSAL_RETURN)
+
+
+def v5_refused(sequence, nid=REFUSED_NID, pc=0x08900100):
+    return event(sequence, "unsupported", kind=2, arg0=nid, arg1=REFUSAL_RETURN, arg2=0,
+                 arg3=pc, version=5)
+
+
+class RefusalTerminalSchemaTests(unittest.TestCase):
+    """Schema 5: a named refusal is a counted event, and the terminal is what ended the run."""
+
+    def test_refusal_then_later_fatal_terminates_at_the_fatal(self):
+        events = [
+            v5_hle(1),
+            v5_refused(2),
+            event(3, "fatal", kind=12, arg0=0x08900100, arg1=0x0C, arg2=0, arg3=0, version=5),
+        ]
+        bundle = v5_bundle(events, reason="fatal", kind=12, arg0=0x0C, sequence=3, fired=1,
+                           refusals=v5_refusals([{"nid": REFUSED_NID, "count": 1}]))
+        flight_diff.validate_bundle(bundle)
+        self.assertEqual(bundle["terminal"]["reason"], "fatal")
+        self.assertEqual(bundle["refusals"]["first_nid"], REFUSED_NID)
+
+    def test_refusal_then_clean_exit_terminates_at_the_exit(self):
+        events = [v5_hle(1), v5_refused(2)]
+        bundle = v5_bundle(events, reason="exit", arg0=7, sequence=2, fired=0,
+                           refusals=v5_refusals([{"nid": REFUSED_NID, "count": 1}]))
+        flight_diff.validate_bundle(bundle)
+        self.assertEqual(bundle["terminal"]["reason"], "exit")
+
+    def test_refusal_before_any_terminal_is_a_running_record(self):
+        events = [v5_hle(1), v5_refused(2)]
+        bundle = v5_bundle(events, reason="running", sequence=2, fired=0,
+                           refusals=v5_refusals([{"nid": REFUSED_NID, "count": 1}]))
+        flight_diff.validate_bundle(bundle)
+
+    def test_budget_and_watchdog_hang_are_their_own_terminals(self):
+        budget = v5_bundle([v5_hle(1)], reason="budget", arg0=41200, sequence=1, fired=0,
+                           refusals=v5_refusals([]))
+        flight_diff.validate_bundle(budget)
+        hang_events = [
+            v5_hle(1),
+            event(2, "fatal", kind=17, arg0=0, arg1=600, arg2=600, arg3=0, version=5),
+        ]
+        hang = v5_bundle(hang_events, reason="hang", kind=17, arg0=600, sequence=2, fired=1,
+                         refusals=v5_refusals([]))
+        flight_diff.validate_bundle(hang)
+
+    def test_budget_stop_cannot_be_a_fired_trigger(self):
+        bundle = v5_bundle([v5_hle(1)], reason="budget", arg0=41200, sequence=1, fired=1,
+                           refusals=v5_refusals([]))
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "without a fired trigger"):
+            flight_diff.validate_bundle(bundle)
+
+    def test_watchdog_hang_must_be_a_fired_trigger(self):
+        bundle = v5_bundle([v5_hle(1)], reason="hang", kind=17, arg0=600, sequence=1, fired=0,
+                           refusals=v5_refusals([]))
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "is a fired trigger"):
+            flight_diff.validate_bundle(bundle)
+
+    def test_refusal_counts_must_account_for_every_refusal(self):
+        bogus = v5_refusals([{"nid": REFUSED_NID, "count": 1}])
+        bogus["count"] = 2
+        bundle = v5_bundle([v5_hle(1), v5_refused(2)], reason="exit", arg0=0, sequence=2,
+                           fired=0, refusals=bogus)
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "must account for every refusal"):
+            flight_diff.validate_bundle(bundle)
+
+    def test_unlisted_refusals_are_accounted_for(self):
+        refusals = v5_refusals([{"nid": REFUSED_NID, "count": 1}], unlisted=2)
+        bundle = v5_bundle([v5_hle(1), v5_refused(2)], reason="exit", arg0=0, sequence=2,
+                           fired=0, refusals=refusals)
+        flight_diff.validate_bundle(bundle)
+        self.assertEqual(bundle["refusals"]["count"], 3)
+
+    def test_refusal_with_no_first_nid_is_malformed(self):
+        refusals = v5_refusals([])
+        refusals["count"] = 1
+        bundle = v5_bundle([v5_hle(1)], reason="exit", arg0=0, sequence=1, fired=0,
+                           refusals=refusals)
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "first refused NID"):
+            flight_diff.validate_bundle(bundle)
+
+    def test_schema_4_frozen_refusal_bundle_still_reads(self):
+        # Pre-fix bundles froze at their first refusal; they keep validating, and carry no
+        # refusals block of their own.
+        events = [
+            event(1, "hle", kind=1, arg0=REFUSED_NID, arg1=0, arg2=0, arg3=0, version=4,
+                  arguments=[0, 0, 0, 0], return_value=REFUSAL_RETURN),
+            event(2, "unsupported", kind=2, arg0=REFUSED_NID, arg1=REFUSAL_RETURN, arg2=0,
+                  arg3=0x08900100, version=4),
+        ]
+        bundle = make_bundle(events, terminal_reason="unsupported-nid", terminal_kind=2,
+                             terminal_arg0=REFUSED_NID, version=4)
+        flight_diff.validate_bundle(bundle)
+        self.assertNotIn("refusals", bundle)
+
+    def test_schema_4_rejects_schema_5_terminals_and_blocks(self):
+        bundle = make_bundle([event(1, "hle", kind=1, arg0=1, arg1=0, arg2=0, arg3=0, version=4,
+                                    arguments=[0, 0, 0, 0], return_value=0)],
+                             terminal_reason="exit", version=4)
+        bundle["terminal"]["reason"] = "budget"
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "terminal.reason"):
+            flight_diff.validate_bundle(bundle)
+
+
 if __name__ == "__main__":
     unittest.main()
