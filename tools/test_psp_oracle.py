@@ -3441,6 +3441,10 @@ class HleMeasureProbeTests(unittest.TestCase):
         r"DeleteVTimer|DelayThread)|scePowerGet\w+|sceHprmIs\w+|sceCtrl\w*Latch|"
         r"sceUtilityGetSystemParam\w+|sceGeEdram\w+)\s*\("
     )
+    # A line that is nothing but a whole `int|float|void sce...(...);` declaration.
+    # Only such a line is skipped as "not a call"; a declaration that shares its line
+    # with a call is still scanned.
+    PROTOTYPE_LINE_RE = re.compile(r"\s*(?:int|float|void)\s+sce\w+\s*\([^;]*\);\s*")
     GE_UNSET_OVERRIDES = {
         "edram-width-query-initial": ("PASS", 0x0, None),
         **{name: ("SKIP", 0, [0]) for name in (
@@ -3631,8 +3635,8 @@ class HleMeasureProbeTests(unittest.TestCase):
         for index, line in enumerate(lines):
             if not self.MEASURED_CALL_RE.search(line):
                 continue
-            if re.match(r"\s*(?:int|float|void)\s+sce", line):
-                continue  # a prototype, not a call
+            if self.PROTOTYPE_LINE_RE.fullmatch(line):
+                continue  # a whole-line prototype, not a call
             checked += 1
             window = lines[max(0, index - 3):index]
             self.assertTrue(any("hle_step(" in previous for previous in window),
