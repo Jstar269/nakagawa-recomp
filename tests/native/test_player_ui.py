@@ -887,6 +887,21 @@ class NativePlayerUiTests(unittest.TestCase):
                 assert isinstance(frames, list)
                 self.assertEqual(frames[0]["settings_two_col"], expected_two_col)
 
+    def test_settings_text_is_drawn_with_the_font_it_was_laid_out_with(self) -> None:
+        """Long settings text (the VBlank note) never switches to the bitmap font.
+
+        Wrapping is measured with the TTF font. A string longer than the glyph
+        cache used to fall back to the wider bitmap font, so the note ran past
+        the panel's right edge. No frame may draw text that way while TTF is on."""
+        run = self.run_player("settings", width=1280, height=720)
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        ttf_frames = [frame for frame in frames if frame["font"] == "ttf"]
+        if not ttf_frames:
+            self.skipTest("the system TTF font is not available in this environment")
+        for frame in ttf_frames:
+            self.assertEqual(frame["bitmap_text_draws"], "0", run["stdout"])
+
     def test_script_can_wait_for_a_view_and_a_minimum_duration(self) -> None:
         started = time.monotonic()
         run = self.run_player(
@@ -1633,6 +1648,23 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(build_frames[0]["package_building"], "1")
         self.assertEqual(build_frames[1]["package_cancelled"], "1")
         self.assertEqual(build_frames[1]["view"], "library")
+
+    def test_build_screen_follows_the_build_state(self) -> None:
+        """The build screen names the state the session is in.
+
+        A package that has been written reads PACKAGE BUILT while it is checked.
+        It used to keep reading BUILDING RUNTIME PACKAGE, because only the stage
+        chips looked at completion."""
+        running = self.run_player("building", ("KEY_ESCAPE",))
+        running_frames = running["frames"]
+        assert isinstance(running_frames, list)
+        self.assertEqual(running_frames[0]["build_badge"], "BUILDING_RUNTIME_PACKAGE")
+
+        built = self.run_player("build-ready")
+        built_frames = built["frames"]
+        assert isinstance(built_frames, list)
+        self.assertEqual(built_frames[0]["view"], "building_package")
+        self.assertEqual(built_frames[0]["build_badge"], "PACKAGE_BUILT", built["stdout"])
 
     def test_controller_bind_conflict_calibration_and_profile_save(self) -> None:
         bind = self.run_player("controller", ("KEY_TAB", "KEY_RETURN", "PAD_SOUTH"))
