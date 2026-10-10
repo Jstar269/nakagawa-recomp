@@ -65,8 +65,21 @@ Enabled with `SR_GPU_GE=1`. Implementation:
   doubled-alpha blend factors, min/max/absdiff blend equations, two distinct FIX
   constants, partial-byte write masks — flushes and falls back to the software
   rasterizer in correct order. Presentation/snapshot code is unchanged.
-- Not reproduced on GPU: ordered dithering (±4 LSB on 16-bit targets) and the integer
-  truncation of the software blender (±1 LSB).
+- Not reproduced on GPU: ordered dithering (±4 LSB on 16-bit targets). Fixed-function
+  blends differ from the software blender's truncating integer products by at most 2 LSB
+  (analytic bound: truncation of two products plus round-to-nearest). Shader blends are
+  bit-exact to `ge.c` for non-overlapping primitives. Measured by the
+  `gpu-coherence-selftest` blend-parity matrix (726 factor/equation states on synthetic
+  draws). The shader reads a batch-start destination snapshot, so overlapping primitives
+  inside one batch are not bit-exact on the shader path; the matrix does not exercise that.
+- Source-premultiplied states (src factor 2·α or 1−2α with a dst factor that reads the
+  source colour, and min/max with those src factors) go through the shader or drop the
+  premultiply, because fixed-function blending would otherwise read the premultiplied
+  colour that `ge.c` never uses.
+- The R6 colour product in `ge_raster_ref.c` (SPEC_ASSUMPTION until the #343 P8/P9 oracle
+  cells run) is not the software blender's product. On the same synthetic draws both the
+  GPU and `ge.c` differ from R6 by at most 2 LSB, so R6 is not a parity target until a
+  hardware cell settles which product the PSP uses.
 - A/B harness: run twice with `SR_FBSNAP=1` (once `SR_GPU_GE=0`), then
   `python tools/ppmdiff.py dirA dirB`. Title/menu sequence matches pixel-exactly
   except dithering. Measured GE cost on the intro: ~1700ms/60-frames software →
