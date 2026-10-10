@@ -2530,7 +2530,7 @@ class PspDmacProbeTests(unittest.TestCase):
         """`status: implemented` is probe-source prose, never hardware evidence."""
         manifest = self._oracle_manifest()
         oracle_apis = hle_manifest.oracle_exercised_apis(manifest)
-        for test_id in ("PSP-TRANSPORT-001", "PSP-SYSTEM-001"):
+        for test_id in ("PSP-SYSTEM-001",):
             entry = next(item for item in manifest["tests"] if item["id"] == test_id)
             self.assertEqual(entry["status"], "implemented")
             self.assertEqual(entry["hardware_evidence"], "CAPTURED")
@@ -2541,12 +2541,19 @@ class PspDmacProbeTests(unittest.TestCase):
                     f"{api} reaches HARDWARE_MEASURED from a probe source, not a run",
                 )
 
-    def test_fpu_and_cache_probe_families_are_named_as_not_run(self) -> None:
+    def test_fpu_and_cache_probe_families_are_measured_by_the_campaign(self) -> None:
+        """`status` stays probe-source prose; the hardware tier comes from the cited run."""
         manifest = self._oracle_manifest()
         by_id = {entry["id"]: entry for entry in manifest["tests"]}
         for test_id in ("PSP-FPU-001", "PSP-CACHE-001"):
             self.assertEqual(by_id[test_id]["status"], "planned")
-            self.assertEqual(by_id[test_id]["hardware_evidence"], "NOT_RUN")
+            self.assertEqual(by_id[test_id]["hardware_evidence"], "MEASURED")
+            self.assertEqual(
+                by_id[test_id]["evidence_ref"],
+                "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+            )
+            self.assertEqual(by_id[test_id]["evidence_cases"], by_id[test_id]["case_ids"])
+            self.assertIn("f6ccfb33", by_id[test_id]["measurement_note"])
         self.assertEqual(len(by_id), len(manifest["tests"]))
 
     def test_manifest_hardware_evidence_uses_closed_vocabulary(self) -> None:
@@ -2561,13 +2568,22 @@ class PspDmacProbeTests(unittest.TestCase):
     def test_only_documented_measured_groups_claim_hardware_evidence(self) -> None:
         manifest = self._oracle_manifest()
         evidence = {entry["id"]: entry["hardware_evidence"] for entry in manifest["tests"]}
+        # Rows measured before the 2026-10-10 campaign keep their own citations; the campaign
+        # on f6ccfb33 measured the eighteen others and captured two without acceptance.
         self.assertEqual(
             {test_id for test_id, value in evidence.items() if value == "MEASURED"},
-            {"PSP-DMAC-001", "PSP-DISPLAY-001", "PSP-EXCEPTION-001", "PSP-KERNEL-002"},
+            {
+                "PSP-DMAC-001", "PSP-DISPLAY-001", "PSP-EXCEPTION-001", "PSP-KERNEL-002",
+                "PSP-TRANSPORT-001", "PSP-ALARM-001", "PSP-THREAD-003", "PSP-WAIT-001",
+                "PSP-KERNEL-STATUS-001", "PSP-REGISTRY-001", "PSP-KERNEL-MISC-001", "PSP-SMOKE-001",
+                "PSP-THREAD-EXIT-001", "PSP-IO-001", "PSP-DISPLAY-002", "PSP-DISPLAY-003",
+                "PSP-DISPLAY-004", "PSP-FPU-001", "PSP-CACHE-001", "PSP-AUDIO-001", "PSP-GE-001",
+                "PSP-MUTEX-001",
+            },
         )
         self.assertEqual(
             {test_id for test_id, value in evidence.items() if value == "CAPTURED"},
-            {"PSP-KERNEL-001", "PSP-TRANSPORT-001", "PSP-SYSTEM-001"},
+            {"PSP-KERNEL-001", "PSP-SYSTEM-001", "PSP-GE-CONTROL-001", "PSP-TEARDOWN-001"},
         )
 
     def test_measured_rows_cite_a_public_document_and_the_cases_it_measures(self) -> None:
@@ -2689,7 +2705,8 @@ class PspDmacProbeTests(unittest.TestCase):
                     self.assertEqual(entry["case_ids"], list(spec.ordered_cases))
                 if test_id in {"PSP-AUDIO-001", "PSP-GE-001"}:
                     self.assertEqual(entry["status"], "planned")
-                    self.assertEqual(entry["hardware_evidence"], "NOT_RUN")
+                    self.assertEqual(entry["hardware_evidence"], "MEASURED")
+                    self.assertEqual(entry["evidence_cases"], entry["case_ids"])
         for case_id in ("audio-query", "ge-nan", "dma-cells", "delay-zero"):
             self.assertIn(f"else ifeq ($(CASE),{case_id})", self.makefile)
         delay_zero = by_id["PSP-KERNEL-002"]
