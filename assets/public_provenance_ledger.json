@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2f525668339f7a529f6a8bc5d5b25ab0ca47aca38c36ebcd3cd8963ad07c970e"
+      "sha256": "9f90a88b1a4c8da45cf12d1256680e44aa1d9a11650b55e1093d31e50eb57f36"
     },
     {
       "path": "NOTICE.md",
@@ -667,7 +667,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "bf22f2a803cffd4697117d29a1ec23c2517a010db0dd8baaadc01f3183b03603"
+      "sha256": "92c6c3e57ac388f3868cf436c61b61710f3f7dc6001f0b603e370e0ef347f6c4"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1132,7 +1132,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a2e725798d49fc7da3f50326c054774f68b9d40f67f67b74b31beadf6c41c431"
+      "sha256": "599749936f9eb7fd3c4b8635094738438de35cc0a800175ccb6b3ad298837781"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -2480,18 +2480,6 @@
         "upstream_attribution": null
       },
       "sha256": "12da62e65c0cacf3920a1fca037832c8ffa4d058cdd9e596c004b775d6710126"
-    },
-    {
-      "path": "src/core/nk_font_slots.h",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "font-slot-layout-header",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "c750ec8c8e4c4359dc7707c8fdc9c1a29dddb429486b003f724b3736da7e6f59"
     },
     {
       "path": "src/core/nk_input_profile.c",
@@ -4337,30 +4325,6 @@
       "sha256": "3555995dbb0f6156a5611e4885dbdd181ee50742f25d17d57e1c4292ab8e346e"
     },
     {
-      "path": "src/rt/flash0_font.c",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "flash0-font-device",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "f681bf6cec1085140b103e37530bfa70e519a3ea93fd53faf4092b36c21001a8"
-    },
-    {
-      "path": "src/rt/flash0_font.h",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "flash0-font-device",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "49fed89c6f4b660e47637c40263032390d0ea34a99aa0db5e0b7a0cfbe8812e4"
-    },
-    {
       "path": "src/rt/flight_recorder.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -4878,7 +4842,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e2dfc7338053ebf8f5748eafbc02664a29cfb4db979b7e0a89fd05cbd00c7d46"
+      "sha256": "ef786fb53bf45f5c8376e956708d47696512a2176ad7fc8f53ddf15e725d6605"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4891,7 +4855,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "890b70bf8138993231e6019fa0ebf0f35d1f7e8743fc1875b813cebd0484dc2f"
+      "sha256": "387d9f9e9e4fcdfb21ead6c3374b5c000ec31be6627afc04ab760a03d667437a"
     },
     {
       "path": "src/rt/hle_power.h",
@@ -4904,7 +4868,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "40e3892a1aec5c5cfa88778a1201132039fdd46bb66cb6f4f456b0a2762eddad"
+      "sha256": "6edff8ad1d5953ac64d465ca703abebcf614d8a8398fa32b3a56079562a44abf"
     },
     {
       "path": "src/rt/hle_thread_selftest.c",
@@ -4916,7 +4880,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "93a9aa8bcb34411177aa40a2f1ab3307f8c766153cf68ce8f5d8d5dc33a61d16"
+      "sha256": "fa801b204ae05afd36ee2a6cf9266ec79eb6050fcb026078f3de981bfb01e650"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -5938,7 +5902,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ac8857f472f625e2be0b73e7bdc8f0873216b378be18ab9f7398ad6ac4682c39"
+      "sha256": "7c54cc7afd5536dc9a101013e4a86d6c8907e4fe3794c9dbe44dc717ea99386b"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -6556,7 +6520,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "be280952c97cfd52bbe5b50a9239b68460b2f0a34cfd8ab5e9328c9c5404d440"
+      "sha256": "5787a61a8b0ea7a4a0f25f8252b680dd28ead0c067829eb5fba5ac14f907b973"
     },
     {
       "path": "tools/import_audit_gate.py",
@@ -8138,18 +8102,6 @@
       "sha256": "02ae49e9df461ce915e66b21187ef48bb5877efa96b19ec4671aaa08605c1539"
     },
     {
-      "path": "tools/test_flash0_font.py",
-      "classification": "project_authored_attested",
-      "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "flash0-font-device-test",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
-      },
-      "sha256": "091c88fd238d8777b55b20d0e69018c59a0a00253faa407a5f78764a53b9be99"
-    },
-    {
       "path": "tools/test_flight_build_identity.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -8388,7 +8340,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "634dfc6afc5975e2cb3e3f58d0780e32f78a2f7fc774db2113ba510749a62689"
+      "sha256": "350ea87569915e1a95f0532b62ce236293456c8b3c3f81faee7c82ddf51e1e2f"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",

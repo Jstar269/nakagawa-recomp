@@ -960,15 +960,16 @@ uint32_t sr_hle_test_compiled_sdk_version(void) {
  * is the source sceUtilityGetSystemParamInt reads; this table seeds it. */
 static uint32_t systemparam_int_value(uint32_t id) {
     switch (id) {
-        case 2:  return 1;   /* ADHOC_CHANNEL: automatic (unmeasured) */
+        case 2:  return 0;   /* ADHOC_CHANNEL: measured 0 (automatic) on the oracle, 2026-10-10 */
         case 3:  return 0;   /* WLAN_POWERSAVE: off (unmeasured) */
         case 4:  return 1;   /* DATE_FORMAT: measured */
         case 5:  return 1;   /* TIME_FORMAT: measured (1 = 12-hour in the PSPSDK enumeration) */
-        case 6:  return 0;   /* TIMEZONE offset in minutes (unmeasured) */
+        case 6:  return 0xfffffed4u; /* TIMEZONE offset in minutes: measured -300 on the oracle console */
         case 7:  return 1;   /* DAYLIGHTSAVINGS: measured */
         case 8:  return 1;   /* LANGUAGE: measured (English) */
         case 9:  return 1;   /* BUTTON_PREFERENCE: measured */
-        default: return 1;   /* safe default */
+        case 10: return 9;   /* LOCK_PARENTAL_LEVEL: measured 9 (off) on the oracle, 2026-10-10 */
+        default: return 1;   /* unreachable through the getter, which refuses ids outside 2..10 */
     }
 }
 
@@ -976,6 +977,9 @@ static uint32_t sreg_systemparam_int(uint32_t id);
 
 static uint32_t h_GetSystemParamInt(CpuState *s) {
     uint32_t id = A0, out = A1;
+    /* Measured on the PSP-3000 oracle (2026-10-10, hle-sysparam): ids 2 to 10 answer; any other id
+     * (0 and 64 were tried) returns PSP_SYSTEMPARAM_RETVAL_FAIL and leaves the output word untouched. */
+    if (id < 2u || id > 10u) return 0x80110103u;
     /* Read through the virtual system registry, so a setting a game wrote there is what this
      * getter reports: the two surfaces share one value per modeled key. */
     uint32_t v = sreg_systemparam_int(id);
@@ -2142,22 +2146,27 @@ static uint32_t sreg_refuse_read_only(const char *caller) {
     return SREG_ERR_ACCES;
 }
 
+/* The first read of a placeholder (a default whose value is neither measured nor modeled) names
+ * the key on stderr, once per key. Shared by every registry read path that serves a value. */
+static void sreg_note_placeholder_read(int node, const char *caller) {
+    SregNode *n = &s_sreg_nodes[node];
+    char path[SREG_PATH_BYTES];
+    if ((n->flags & (SREG_NODE_PLACEHOLDER | SREG_NODE_LOGGED)) != SREG_NODE_PLACEHOLDER) return;
+    n->flags |= SREG_NODE_LOGGED;
+    if (!sreg_node_path(n->parent, path, sizeof(path))) path[0] = '\0';
+    fprintf(stderr, "%s: %s/%s has no measured or modeled value; serving the neutral default "
+                    "(%s)\n", caller, path, n->name,
+            n->type == SREG_TYPE_INT ? "0" : n->type == SREG_TYPE_STR ? "an empty string" : "zero bytes");
+}
+
 /* Copy a value key into a guest buffer of buf_size bytes; a buffer smaller than the value is
- * refused, and a string value includes whatever NUL it was stored with. The first read of a
- * placeholder (a default whose value is neither measured nor modeled) names the key. */
+ * refused, and a string value includes whatever NUL it was stored with. */
 static uint32_t sreg_copy_out(int node, uint32_t buf, uint32_t buf_size, const char *caller) {
     SregNode *n = &s_sreg_nodes[node];
     if (n->type == SREG_TYPE_DIR) return SREG_ERR_FTYPE;
     if (buf_size < n->size) return SREG_ERR_INVAL;
     if (!buf || !sr_guest_span_writable(buf, n->size)) return SREG_ERR_ILLEGAL_ADDR;
-    if ((n->flags & (SREG_NODE_PLACEHOLDER | SREG_NODE_LOGGED)) == SREG_NODE_PLACEHOLDER) {
-        char path[SREG_PATH_BYTES];
-        n->flags |= SREG_NODE_LOGGED;
-        if (!sreg_node_path(n->parent, path, sizeof(path))) path[0] = '\0';
-        fprintf(stderr, "%s: %s/%s has no measured or modeled value; serving the neutral default "
-                        "(%s)\n", caller, path, n->name,
-                n->type == SREG_TYPE_INT ? "0" : n->type == SREG_TYPE_STR ? "an empty string" : "zero bytes");
-    }
+    sreg_note_placeholder_read(node, caller);
     for (uint32_t i = 0; i < n->size; i++) MEM_W8(buf + i, n->value[i]);
     return 0;
 }
@@ -2173,6 +2182,37 @@ static uint32_t sreg_systemparam_int(uint32_t id) {
             return sreg_get_le32(n->value);
     }
     return systemparam_int_value(id);
+}
+
+/* sceUtilityGetSystemParamString(int id, char *str, int len) (PSPSDK psputility_sysparam.h): 0 on
+ * success, PSP_SYSTEMPARAM_RETVAL_FAIL (0x80110103) on failure. The nickname is id 1 and reads the
+ * registry's /CONFIG/SYSTEM/owner_name value, so it is the neutral empty string unless a game
+ * wrote one; no user name is modelled or invented. len is the buffer length. Measured on the
+ * PSP-3000 oracle (2026-10-10, hle-sysparam): a buffer that cannot hold the string and its NUL
+ * fails with 0x80110102 and writes nothing; a large enough buffer receives the string and its NUL
+ * and the call returns 0. Other string ids, a null buffer and len <= 0 fail with 0x80110103. */
+#define SYSPARAM_RETVAL_FAIL 0x80110103u
+#define SYSPARAM_RETVAL_BUFSIZE 0x80110102u
+#define SYSPARAM_STRING_NICKNAME 1u
+static uint32_t h_GetSystemParamString(CpuState *s) {
+    uint32_t id = A0, out = A1;
+    int32_t len = (int32_t)A2;
+    uint32_t count = 0u;
+    int node;
+    SregNode *n;
+    if (id != SYSPARAM_STRING_NICKNAME || !out || len <= 0) return SYSPARAM_RETVAL_FAIL;
+    sreg_ensure_loaded();
+    node = sreg_find_path("/CONFIG/SYSTEM/owner_name");
+    if (node < 0) return SYSPARAM_RETVAL_FAIL;
+    n = &s_sreg_nodes[node];
+    if (n->type != SREG_TYPE_STR) return SYSPARAM_RETVAL_FAIL;
+    while (count < n->size && n->value[count]) count++;
+    if (count + 1u > (uint32_t)len) return SYSPARAM_RETVAL_BUFSIZE;
+    if (!sr_guest_span_writable(out, count + 1u)) return SYSPARAM_RETVAL_FAIL;
+    sreg_note_placeholder_read(node, "sceUtilityGetSystemParamString");
+    for (uint32_t i = 0; i < count; i++) MEM_W8(out + i, n->value[i]);
+    MEM_W8(out + count, 0u);
+    return 0u;
 }
 
 #ifdef SR_HLE_THREAD_SELFTEST
@@ -2488,7 +2528,6 @@ static uint32_t h_ImposeGetLanguageMode(CpuState *s) {
                 s_impose_language, s_impose_button);
     return 0;
 }
-/* sceUtilityGetSystemParamString(id, char *out, int len): nickname etc. Write a short ASCII name. */
 /* Retained controller sampling state (TD-24 batch 4): the Set calls store
  * their arguments and the getter below reports the stored pair. Public
  * behaviour reference: PSPSDK pspctrl.h (sceCtrlSetSamplingMode/Cycle/
@@ -2502,6 +2541,46 @@ static uint32_t s_ctrl_sampling_mode = 0u;
 static uint32_t s_ctrl_sampling_cycle = 0u;
 static uint32_t s_ctrl_idle_reset = 0xFFFFFFFFu;
 static uint32_t s_ctrl_idle_back = 0xFFFFFFFFu;
+/* sceHprmIsRemoteExist(void): 1 when the infrared remote is plugged in, else 0 (PSPSDK
+ * psphprm.h). The runtime models the accessory as absent by default, so the answer comes from that
+ * modeled state and is 0 until a model attaches a remote. The state is a model, not a measurement. */
+static int s_hprm_remote_attached = 0;
+static uint32_t h_HprmIsRemoteExist(CpuState *s) {
+    (void)s;
+    return s_hprm_remote_attached ? 1u : 0u;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only setter so the executable harness can check that the answer follows the model. */
+void sr_hle_test_hprm_set_remote(int attached) { s_hprm_remote_attached = attached != 0; }
+#endif
+
+/* sceHprmIsHeadphoneExist(void): 1 when headphones are plugged in, else 0 (PSPSDK psphprm.h). Measured
+ * 0 on the PSP-3000 oracle with plain headphones plugged in (2026-10-10, hle-hprm), so plain headphones
+ * do not make this 1; the runtime models the accessory as absent by default. */
+static int s_hprm_headphone_attached = 0;
+static uint32_t h_HprmIsHeadphoneExist(CpuState *s) {
+    (void)s;
+    return s_hprm_headphone_attached ? 1u : 0u;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+void sr_hle_test_hprm_set_headphone(int attached) { s_hprm_headphone_attached = attached != 0; }
+#endif
+
+/* sceHprmIsMicrophoneExist(void): 1 when a microphone is present, else 0 (PSPSDK psphprm.h). Measured
+ * 1 on the PSP-3000 oracle (built-in microphone; 2026-10-10, hle-hprm, with and without headphones),
+ * so the default follows the oracle model. */
+static int s_hprm_microphone_attached = 1;
+static uint32_t h_HprmIsMicrophoneExist(CpuState *s) {
+    (void)s;
+    return s_hprm_microphone_attached ? 1u : 0u;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+void sr_hle_test_hprm_set_microphone(int attached) { s_hprm_microphone_attached = attached != 0; }
+#endif
+
 /* sceCtrlGetIdleCancelThreshold(int *idlereset, int *idleback): report the
  * stored thresholds (power-on default: both "disabled", -1). */
 static uint32_t h_CtrlGetIdleCancelThreshold(CpuState *s) {
@@ -2748,6 +2827,7 @@ typedef struct {
     int used;
     uint32_t block_uid;
     uint32_t attr;
+    char name[32];
     uint32_t *free_blocks;
     int nfree;
     int nblocks;
@@ -2790,6 +2870,8 @@ static void fpl_remove_waiter(FplPool *p, uint32_t thread_uid) {
 
 static uint32_t h_CreateFpl(CpuState *s) {
     /* a0=name, a1=partition, a2=attr, a3=blockSize. 5th arg (numBlocks) is in t0 (r8). */
+    char name[32] = {0};
+    if (A0) (void)guest_cstr(A0, name, sizeof(name));
     uint32_t bsize = A3;
     uint32_t nblocks = stack_arg(s, 0);
     if (bsize == 0) bsize = 16;
@@ -2813,6 +2895,7 @@ static uint32_t h_CreateFpl(CpuState *s) {
             p->used = 1;
             p->block_uid = block_uid;
             p->attr = A2;
+            memcpy(p->name, name, sizeof(p->name));
             p->nblocks = (int)nblocks;
             p->free_blocks = (uint32_t *)calloc(nblocks, sizeof(uint32_t));
             p->allocated = (uint8_t *)calloc(nblocks, sizeof(uint8_t));
@@ -3032,6 +3115,51 @@ static uint32_t h_FreeFpl(CpuState *s) {
         sched_wake_one_object_waiter(uid, next_thread);
         sched_preempt();
     }
+    return 0;
+}
+
+/* sceKernelReferFplStatus(fplid, SceKernelFplInfo *info). The 56-byte struct follows the public
+ * PSPSDK SceKernelFplInfo field order: size(0), name[32](4), attr(36), blockSize(40),
+ * numBlocks(44), freeBlocks(48), numWaitThreads(52). The write rule is the one measured for the
+ * sema, event-flag and mailbox status calls (PSP-KERNEL-STATUS-001): a caller size of 0 writes
+ * nothing and succeeds; otherwise min(size, 56) bytes of a struct whose size word is 56 reach
+ * guest memory. The 56-byte size word was measured on the PSP-3000 oracle (2026-10-10,
+ * hle-kernel-status: sceKernelReferFplStatus reports 0x38).
+ * freeBlocks is the free-list length plus the blocks not yet handed out from the bump region. */
+typedef struct {
+    uint32_t size;
+    char     name[32];
+    uint32_t attr;
+    int32_t  blockSize;
+    int32_t  numBlocks;
+    int32_t  freeBlocks;
+    int32_t  numWaitThreads;
+} SceKernelFplInfo;
+
+static uint32_t h_ReferFplStatus(CpuState *s) {
+    uint32_t uid = A0;
+    uint32_t info_addr = A1;
+    if (!info_addr || !sr_guest_span_readable(info_addr, 4u))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    FplPool *p = fpl_lookup(uid);
+    if (!p) return FPL_BAD_ID;
+    uint32_t input_size = MEM_R32(info_addr);
+    if (input_size == 0) return 0;
+    uint32_t write_len = input_size < (uint32_t)sizeof(SceKernelFplInfo)
+                         ? input_size : (uint32_t)sizeof(SceKernelFplInfo);
+    if (!sr_guest_span_writable(info_addr, write_len))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    SceKernelFplInfo info;
+    memset(&info, 0, sizeof(info));
+    info.size = (uint32_t)sizeof(SceKernelFplInfo);
+    memcpy(info.name, p->name, sizeof(info.name));
+    info.attr = p->attr;
+    info.blockSize = (int32_t)p->bsize;
+    info.numBlocks = p->nblocks;
+    info.freeBlocks = p->nfree + (int32_t)((p->end - p->cur) / p->bsize);
+    info.numWaitThreads = p->nwaiters;
+    for (uint32_t i = 0; i < write_len; i++)
+        MEM_W8(info_addr + i, ((const uint8_t *)&info)[i]);
     return 0;
 }
 
@@ -15152,6 +15280,12 @@ static void sr_dump_calls(void) {
 typedef struct { uint32_t btn; uint32_t ts; uint8_t lx, ly; uint32_t input_id; } CtrlSample;
 static CtrlSample s_ctrl_ring[CTRL_RING] = { [0 ... CTRL_RING-1] = { 0, 0, 128, 128, 0 } };
 static int s_ctrl_w = 1, s_ctrl_r = 0;   /* start with one sample available */
+/* The latch cursor is independent of the ReadBuffer cursor s_ctrl_r: sceCtrlReadLatch reports the
+ * transitions between the sampling cycles since its previous read, so it keeps the button state it
+ * last saw and the sample count at that read. s_ctrl_sample_count counts every sampling cycle. */
+static uint32_t s_ctrl_sample_count = 0u;
+static uint32_t s_latch_prev_btn = 0u;
+static uint32_t s_latch_seen_count = 0u;
 
 /* ---- state-qualified acceptance routes (issue #64) --------------------------------
  *
@@ -16402,6 +16536,7 @@ void sr_ctrl_sample(void) {
     if (gui_on()) gui_consume_button_pulses();
     s_ctrl_w = (s_ctrl_w + 1) % CTRL_RING;
     if (s_ctrl_w == s_ctrl_r) s_ctrl_r = (s_ctrl_r + 1) % CTRL_RING;  /* drop oldest on overflow */
+    s_ctrl_sample_count++;
     sched_wake(CTRL_WAIT_OBJ);
 }
 
@@ -16479,6 +16614,59 @@ static uint32_t h_CtrlReadBuffer(CpuState *s) { return ctrl_fill(A0, A1, 0); }
 static uint32_t h_CtrlPeekBufferPositive(CpuState *s) {
     return ctrl_fill_n(A0, A1, 0, 1);
 }
+
+/* sceCtrlReadLatch(SceCtrlLatch *latch) (PSPSDK pspctrl.h, 16 bytes: uiMake, uiBreak, uiPress,
+ * uiRelease): uiMake = buttons that transitioned to pressed, uiBreak = buttons that transitioned to
+ * released, uiPress = buttons in the pressed state, uiRelease = buttons in the released state, all
+ * across the sampling cycles since the previous latch read. The return is the number of sampling
+ * cycles since that read (PSPSDK). The complement of the button field is the released state, the
+ * same 32-bit convention the negative buffer read uses. Samples overwritten before a latch read are
+ * not reported one by one: the ring keeps the latest CTRL_RING - 1 samples, and a transition inside
+ * an overwritten span is lost. */
+static uint32_t h_CtrlReadLatch(CpuState *s) {
+    uint32_t out = A0;
+    uint32_t produced = s_ctrl_sample_count - s_latch_seen_count;
+    uint32_t retained = produced < (uint32_t)(CTRL_RING - 1) ? produced : (uint32_t)(CTRL_RING - 1);
+    uint32_t prev = s_latch_prev_btn, cur = prev, make = 0u, brk = 0u;
+    if (!out || !sr_guest_span_writable(out, 16u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (retained) {
+        int start = (s_ctrl_w - (int)retained + CTRL_RING) % CTRL_RING;
+        for (uint32_t i = 0; i < retained; i++) {
+            cur = s_ctrl_ring[(start + (int)i) % CTRL_RING].btn;
+            make |= cur & ~prev;
+            brk |= prev & ~cur;
+            prev = cur;
+        }
+    }
+    s_latch_prev_btn = cur;
+    s_latch_seen_count = s_ctrl_sample_count;
+    MEM_W32(out + 0, make);
+    MEM_W32(out + 4, brk);
+    MEM_W32(out + 8, cur);
+    MEM_W32(out + 12, ~cur);
+    return produced;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only: push one sampling cycle with the given button field, as sr_ctrl_sample stores
+ * it, without scripted input, the guest-time stamp or the wake. */
+void sr_hle_test_ctrl_push_sample(uint32_t buttons) {
+    s_ctrl_ring[s_ctrl_w].btn = buttons;
+    s_ctrl_ring[s_ctrl_w].input_id = 0u;
+    s_ctrl_ring[s_ctrl_w].ts = 0u;
+    s_ctrl_ring[s_ctrl_w].lx = 128u;
+    s_ctrl_ring[s_ctrl_w].ly = 128u;
+    s_ctrl_w = (s_ctrl_w + 1) % CTRL_RING;
+    if (s_ctrl_w == s_ctrl_r) s_ctrl_r = (s_ctrl_r + 1) % CTRL_RING;
+    s_ctrl_sample_count++;
+}
+
+/* Test-build-only: start the latch from the current sample count and an all-released state. */
+void sr_hle_test_ctrl_latch_reset(void) {
+    s_latch_prev_btn = 0u;
+    s_latch_seen_count = s_ctrl_sample_count;
+}
+#endif
 
 /* sceDisplay: remember the framebuffer; vblank waits block until the next delivered vblank. */
 static void dump_fb_fmt(const char *path, uint32_t fbaddr, int fmt, uint32_t stride);
@@ -18367,6 +18555,29 @@ static uint32_t h_GeEdramGetSize(CpuState *s) {
     (void)s;
     return 0x00200000u;
 }
+
+/* sceGeEdramSetAddrTranslation(int width) (PSPSDK pspge.h): width 0 leaves the translation width
+ * unset, and 512, 1024, 2048 and 4096 set it. The return is the previous width when one was set,
+ * Measured on the PSP-3000 oracle (2026-10-10, hle-ge-edram): every call sets the given width and
+ * returns the width that was set before it, width 0 included, so there is no pure query; the boot
+ * value is 1024. The retained width is reported back, but this runtime does not apply address
+ * translation to GE memory accesses, so the setting changes no rendering. The error code for an
+ * unsupported width is not documented: 0x80000107 (the GE invalid-mode code measured on PSP-3000
+ * for sceGeBreak) is a project choice, UNMEASURED here. */
+#define GE_EDRAM_WIDTH_BOOT 1024u
+static uint32_t s_ge_edram_width = GE_EDRAM_WIDTH_BOOT;
+static uint32_t h_GeEdramSetAddrTranslation(CpuState *s) {
+    uint32_t width = A0;
+    uint32_t previous = s_ge_edram_width;
+    if (width != 0u && width != 512u && width != 1024u && width != 2048u && width != 4096u) return 0x80000107u;
+    s_ge_edram_width = width;
+    return previous;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only reset to the measured boot width. */
+void sr_hle_test_ge_edram_reset(void) { s_ge_edram_width = GE_EDRAM_WIDTH_BOOT; }
+#endif
 static uint32_t h_GeDrawSync(CpuState *s) {
     /* sceGeDrawSync(mode): wait for (mode 0) or peek at (mode 1) the
      * completion of every queued GE list. Public behaviour reference: the
@@ -21727,6 +21938,7 @@ static void hle_register_wait_conformance_handlers(void) {
      * FPL_MAX=16 and the conformance matrix already uses all 16, so a test that
      * leaked one would starve the matrix rather than fail on its own assertion. */
     sr_hle_register(0xed1410e0, "sceKernelDeleteFpl", h_DeleteFpl);
+    sr_hle_register(0xd8199e4c, "sceKernelReferFplStatus", h_ReferFplStatus);
     /* VPL set (PSP_INTR_WAITS_MATRIX.md PR-G coverage rows; blocking AllocateVpl
      * forms registered with fiber wait queues). */
     sr_hle_register(0x56c039b5, "sceKernelCreateVpl", h_CreateVpl);
@@ -21756,6 +21968,7 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0x4a9e5e29, "sceUmdWaitDriveStatCB", h_UmdWaitDriveStatCB);
     sr_hle_register(0x1f803938, "sceCtrlReadBufferPositive", h_CtrlReadBuffer);
     sr_hle_register(0x3a622550, "sceCtrlPeekBufferPositive", h_CtrlPeekBufferPositive);
+    sr_hle_register(0x0b588501, "sceCtrlReadLatch", h_CtrlReadLatch);
     sr_hle_register(0x6a638d83, "sceIoRead", h_IoRead);
     sr_hle_register(0x42ec03ac, "sceIoWrite", h_IoWrite);
     sr_hle_register(0xe23eec33, "sceIoWaitAsync", h_IoWaitAsync);
@@ -21861,6 +22074,7 @@ static void hle_register_ge_handlers(void) {
     sr_hle_register(0x03444eb4, "sceGeListSync", h_GeListSync);
     sr_hle_register(0x05db22ce, "sceGeUnsetCallback", h_GeUnsetCallback);
     sr_hle_register(0x1f6752ad, "sceGeEdramGetSize", h_GeEdramGetSize);
+    sr_hle_register(0xb77905ea, "sceGeEdramSetAddrTranslation", h_GeEdramSetAddrTranslation);
     sr_hle_register(0xe0d68148, "sceGeListUpdateStallAddr", h_GeListUpdateStallAddr);
     sr_hle_register(0xdc93cfef, "sceGeGetCmd", h_GeGetCmd);
 }
@@ -22012,16 +22226,22 @@ static void hle_register_exit_game_handler(void) {
  * unregistered); the float-return shaping for the non-Int getters remains
  * tracked by #86. */
 static void hle_register_power_clock_handlers(void) {
+    sr_hle_register(0x34f9c463, "scePowerGetPllClockFrequencyInt", h_PowerGetPllClockFrequencyInt);
     sr_hle_register(0xfdb5bfe9, "scePowerGetCpuClockFrequencyInt", h_PowerGetCpuClockFrequencyInt);
     sr_hle_register(0x478fe6f5, "scePowerGetBusClockFrequency", h_PowerGetBusClockFrequencyInt);
     sr_hle_register(0x737486f2, "scePowerSetClockFrequency", h_PowerSetClockFrequency);
     sr_hle_register(0xebd177d6, "scePowerSetClockFrequency350", h_PowerSetClockFrequency350);
+    /* Battery state query, in the shared helper so the executable harness registers it too. */
+    sr_hle_register(0xd3075926, "scePowerIsLowBattery", h_PowerIsLowBattery);
 }
 
 /* TD-24 batch 4 shared families: one definition reached by both sr_hle_init()
  * branches, so the executable harness pins the production mapping through
  * dispatch (same rule as the batch-2 clock helpers above). */
 static void hle_register_ctrl_sampling_handlers(void) {
+    sr_hle_register(0x208db1bd, "sceHprmIsRemoteExist", h_HprmIsRemoteExist);
+    sr_hle_register(0x7e69eda4, "sceHprmIsHeadphoneExist", h_HprmIsHeadphoneExist);
+    sr_hle_register(0x219c58f1, "sceHprmIsMicrophoneExist", h_HprmIsMicrophoneExist);
     sr_hle_register(0x1f4011e6, "sceCtrlSetSamplingMode", h_CtrlSetSamplingMode);
     sr_hle_register(0x6a2774f3, "sceCtrlSetSamplingCycle", h_CtrlSetSamplingCycle);
     sr_hle_register(0xa7144800, "sceCtrlSetIdleCancelThreshold", h_CtrlSetIdleCancelThreshold);
@@ -22095,6 +22315,7 @@ static void hle_register_psmf_player_handlers(void) {
  * model never performs) stay unregistered, so a call is a visible dispatch miss. */
 static void hle_register_sysreg_handlers(void) {
     sr_hle_register(0xa5da2406, "sceUtilityGetSystemParamInt", h_GetSystemParamInt);
+    sr_hle_register(0x34b78343, "sceUtilityGetSystemParamString", h_GetSystemParamString);
     sr_hle_register(0x92e41280, "sceRegOpenRegistry", h_RegOpenRegistry);
     sr_hle_register(0xfa8a5739, "sceRegCloseRegistry", h_RegCloseRegistry);
     sr_hle_register(0x39461b4d, "sceRegFlushRegistry", h_RegFlushRegistry);
@@ -22167,6 +22388,14 @@ static void hle_register_unregistered_import_batch(void) {
     sr_hle_register(0xe1619d7cu, "sceKernelSysClock2USecWide", h_SysClock2USecWide);
     sr_hle_register(0x64d4540eu, "sceKernelReferThreadProfiler", h_ReferProfilerNull);
     sr_hle_register(0x8218b4ddu, "sceKernelReferGlobalProfiler", h_ReferProfilerNull);
+    /* scePower_469989ad (0x469989ad) has no public name in the sources this project may consult, so
+     * it is refused under its synthetic name rather than given a guessed one. Its contract needs a
+     * named source and a probe before it can be modelled. */
+    sr_hle_register_unsupported(0x469989adu, "scePower_469989ad", 0x80020002u);
+    /* sceKernelReferSystemStatus: the PSPSDK struct leaves the status and vfpuSwitchCount fields
+     * documented only as unknown, and the idle-clock and switch counters are not modelled here, so
+     * the status is refused until a probe measures the struct. */
+    sr_hle_register_unsupported(0x627e6f3au, "sceKernelReferSystemStatus", 0x80020002u);
     sr_hle_register_unsupported(0x20fff560u, "sceKernelCreateVTimer", 0x80020002u);
     sr_hle_register_unsupported(0xc68d9437u, "sceKernelStartVTimer", 0x80020002u);
     sr_hle_register_unsupported(0x328f9e52u, "sceKernelDeleteVTimer", 0x80020002u);
@@ -22176,6 +22405,20 @@ static void hle_register_unregistered_import_batch(void) {
     sr_hle_register_unsupported(0x72189c48u, "sceImposeSetUMDPopup", 0x80010086u);
     sr_hle_register_unsupported(0x8c943191u, "sceImposeGetBatteryIconStatus", 0x80010086u);
     sr_hle_register_unsupported(0x0bf0a3aeu, "sceNetGetLocalEtherAddr", 0x80010086u);
+    /* sceNetInit follows the same offline network policy as sceNetGetLocalEtherAddr: the runtime
+     * has no network stack, so the call refuses with that code rather than reporting success. */
+    sr_hle_register_unsupported(0x39af39a6u, "sceNetInit", 0x80010086u);
+    /* sceHttpsEnd follows the offline HTTP policy of sceHttpEnd and sceHttpInit: no network stack. */
+    sr_hle_register_unsupported(0xf9d8eb63u, "sceHttpsEnd", 0x80010086u);
+    /* The SSL library has no handler in this runtime, which has no network stack. sceSslEnd follows
+     * the same offline policy as the HTTP family (0x80010086); the other SSL calls are not modelled. */
+    sr_hle_register_unsupported(0x191cdeffu, "sceSslEnd", 0x80010086u);
+    /* sceNetApctl is the access-point control library; with no network stack the runtime refuses its
+     * handler calls under the offline network policy (0x80010086). */
+    sr_hle_register_unsupported(0x5963991bu, "sceNetApctlDelHandler", 0x80010086u);
+    /* sceRtcGetAccumulativeTime (0x011f03c1) is not declared in the PSPSDK RTC header, so its contract
+     * is not established here and it is refused under its name rather than guessed. */
+    sr_hle_register_unsupported(0x011f03c1u, "sceRtcGetAccumulativeTime", 0x80020002u);
     sr_hle_register_unsupported(0x0282a3bdu, "sceHttpGetContentLength", 0x80010086u);
     sr_hle_register_unsupported(0x03d9526fu, "sceHttpSetResolveRetry", 0x80010086u);
     sr_hle_register_unsupported(0x1f0fc3e3u, "sceHttpSetRecvTimeOut", 0x80010086u);
