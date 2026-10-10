@@ -277,7 +277,7 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
     int vd = w & 0x7F, vs = (w >> 8) & 0x7F, vt = (w >> 16) & 0x7F;
     uint8_t di[4], si[4], ti[4];
 
-    if (op == 0x1b) {  /* VFPU3: vcmp (CC) / vmin / vmax */
+    if (op == 0x1b) {  /* VFPU3: vcmp (CC) / vmin / vmax / vscmp / vsge / vslt */
         int s3 = (w >> 23) & 7;
         if (s3 == 0) {  /* vcmp: set the CC register, no v[] output */
             int cond = w & 0xF;
@@ -325,22 +325,22 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
             VFPU_NAN(s3 == 2 ? "vmin.s" : "vmax.s", d, n, a, n, b, n);
             sr_vwrite(s, di, d, n, s->vfpuCtrl[2]); eat_prefix(s); return SR_VFPU_COMPUTE;
         }
-        if (s3 == 6 || s3 == 7) {  /* vcmovt / vcmovf */
-            int tf = s3 & 1, imm3 = (w >> 16) & 7;
-            if (imm3 == 7) return SR_VFPU_OTHER;
-            float sv[4], d[4];
-            vreg_idx(vs, n, si); vreg_idx(vd, n, di);
-            sr_vread(sv, s, si, n, s->vfpuCtrl[0]);
-            sr_vread(d, s, di, n, s->vfpuCtrl[1]);
-            uint32_t cc = s->vfpuCtrl[3];
-            if (imm3 < 6) {
-                if ((int)((cc >> imm3) & 1) == !tf)
-                    for (int i = 0; i < n; i++) d[i] = sv[i];
-            } else {
-                for (int i = 0; i < n; i++)
-                    if ((int)((cc >> i) & 1) == !tf) d[i] = sv[i];
+        if (s3 == 5 || s3 == 6 || s3 == 7) {  /* vscmp / vsge / vslt: lane compares as floats */
+            /* Major 0x1B by bits 25..23: 0 vcmp, 2 vmin, 3 vmax, 5 vscmp, 6 vsge, 7 vslt. Slots 6/7
+             * were decoded as vcmovt/vcmovf before 2026-10-10 (the conditional moves are the VFPU4
+             * vcmov below), which broke the flagship's slerp sign term (issue #69). PPSSPP
+             * Int_Vscmp/Int_Vsge/Int_Vslt semantics; a NaN compares false and yields 0.0; the
+             * console's NaN behaviour is UNMEASURED. */
+            float a[4], b[4], d[4];
+            vreg_idx(vd, n, di); vreg_idx(vs, n, si); vreg_idx(vt, n, ti);
+            sr_vread(a, s, si, n, s->vfpuCtrl[0]);
+            sr_vread(b, s, ti, n, s->vfpuCtrl[1]);
+            for (int i = 0; i < n; i++) {
+                if (s3 == 5) d[i] = (a[i] < b[i]) ? -1.0f : ((a[i] > b[i]) ? 1.0f : 0.0f);
+                else if (s3 == 6) d[i] = (a[i] >= b[i]) ? 1.0f : 0.0f;
+                else d[i] = (a[i] < b[i]) ? 1.0f : 0.0f;
             }
-            VFPU_NAN(s3 == 6 ? "vcmovt.s" : "vcmovf.s", d, n, sv, n, d, n);
+            VFPU_NAN(s3 == 5 ? "vscmp.s" : s3 == 6 ? "vsge.s" : "vslt.s", d, n, a, n, b, n);
             sr_vwrite(s, di, d, n, s->vfpuCtrl[2]); eat_prefix(s); return SR_VFPU_COMPUTE;
         }
         return SR_VFPU_OTHER;
