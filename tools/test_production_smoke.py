@@ -1150,6 +1150,12 @@ class TestCodegenStageReuse(unittest.TestCase):
     stage's output, but only after the checks the native-only reuse of a package's
     generated C performs, and any refusal regenerates under a named reason."""
 
+    @classmethod
+    def setUpClass(cls):
+        # The borrowed skip helper builds its probe under the class scratch BUILD_ROOT,
+        # the same way TestProductionSmokePackage does, never the checkout's build/.
+        cls.binary_dir = _class_scratch_build_root(cls, "codegen-stage-reuse")
+
     setUp = TestProductionSmokePackage.setUp
     skip_if_toolchain_unusable = TestProductionSmokePackage.skip_if_toolchain_unusable
     skip_if_sdl3_toolchain_unavailable = (
