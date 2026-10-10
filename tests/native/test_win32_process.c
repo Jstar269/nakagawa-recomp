@@ -7,6 +7,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Scratch root for the files this test writes: the checkout's build/ by default, or
+ * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
+ * touches the checkout. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 #endif
@@ -18,14 +25,16 @@ int main(int argc, char *argv[]) {
     printf("[PROCESS_TEST] Starting Windows CreateProcessW argv quoting & env tests...\n");
 
 #if defined(_WIN32) || defined(_WIN64)
-    const char *helper_exe = "build\\argv_echo_helper.exe";
+    const char *helper_exe = SR_SELFTEST_BUILD_ROOT "\\argv_echo_helper.exe";
 
     /* Verify helper executable exists */
     assert(nk_platform_file_exists(helper_exe));
 
-    const char *out_file = "build\\argv_echo_out.txt";
-    char out_arg[128];
-    snprintf(out_arg, sizeof(out_arg), "--output=%s", out_file);
+    const char *out_file = SR_SELFTEST_BUILD_ROOT "\\argv_echo_out.txt";
+    /* Sized for an absolute BUILD_ROOT: the scratch path is far longer than the default. */
+    char out_arg[1024];
+    int out_arg_len = snprintf(out_arg, sizeof(out_arg), "--output=%s", out_file);
+    assert(out_arg_len > 0 && (size_t)out_arg_len < sizeof(out_arg));
 
     /* Test case array of distinct arguments */
     const char *test_argv[] = {
@@ -86,7 +95,7 @@ int main(int argc, char *argv[]) {
         if (strncmp(line, "ARG[", 4) == 0) {
             int idx = -1;
             char val[512] = {0};
-            if (sscanf(line, "ARG[%d]=%[^\n]", &idx, val) >= 1) {
+            if (sscanf(line, "ARG[%d]=%511[^\n]", &idx, val) >= 1) {
                 if (idx == 0) {
                     checked_args++;
                 } else if (idx < 12) {
@@ -138,13 +147,18 @@ int main(int argc, char *argv[]) {
      * explicit LOCALAPPDATA takes precedence over the Known Folder. */
     static WCHAR saved_lad[32768];
     DWORD saved_len = GetEnvironmentVariableW(L"LOCALAPPDATA", saved_lad, 32768);
-    WCHAR wcwd[1024];
-    DWORD cwd_len = GetCurrentDirectoryW(1024, wcwd);
-    assert(cwd_len > 0 && cwd_len < 1024);
+    /* The probe root is the scratch root (SR_SELFTEST_BUILD_ROOT) made absolute, so a
+     * scratch run keeps the profile tree out of the checkout's build/. */
+    WCHAR wscratch_rel[1024];
+    WCHAR wscratch[1024];
+    assert(MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, SR_SELFTEST_BUILD_ROOT, -1,
+                               wscratch_rel, 1024) > 0);
+    DWORD scratch_len = GetFullPathNameW(wscratch_rel, 1024, wscratch, NULL);
+    assert(scratch_len > 0 && scratch_len < 1024);
     WCHAR wbase[1200];
     /* Separators are passed as arguments so no literal reads as a UNC path. */
     const WCHAR *wsep = L"\\";
-    _snwprintf(wbase, 1200, L"%ls%lsbuild%lsnk_env_\x65E5\x672C\x00E9", wcwd, wsep, wsep);
+    _snwprintf(wbase, 1200, L"%ls%lsnk_env_\x65E5\x672C\x00E9", wscratch, wsep);
     wbase[1199] = L'\0';
     assert(_wputenv_s(L"LOCALAPPDATA", wbase) == 0);
     char expected[4096];
@@ -168,7 +182,7 @@ int main(int argc, char *argv[]) {
      * terminated via nk_platform_terminate_process, the grandchild must also
      * be terminated (not left running). */
     printf("[PROCESS_TEST] Testing process tree termination...\n");
-    const char *pid_file = "build\\test_grandchild.pid";
+    const char *pid_file = SR_SELFTEST_BUILD_ROOT "\\test_grandchild.pid";
     remove(pid_file);
 
     const char *tree_argv[] = {
