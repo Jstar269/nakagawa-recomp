@@ -14,10 +14,18 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# Every dry run names a scratch BUILD_ROOT: parsing the Makefile writes beneath BUILD_ROOT (the
+# SDL3 discovery fragment, a named title's stamps), so the checkout's build/ is never touched.
+# Commands are compared after that root is folded back to the literal `build/` spelling.
+_SCRATCH_ROOT = tempfile.TemporaryDirectory(prefix="nk-native-core-dry-")
+unittest.addModuleCleanup(_SCRATCH_ROOT.cleanup)
+_SCRATCH = Path(_SCRATCH_ROOT.name).as_posix()
 
 # Every binary the target runs, in order, with its arguments. ``.exe`` is dropped so one list
 # serves Windows and POSIX. The process test differs by platform, as it always did.
@@ -29,20 +37,20 @@ _RUNS_BEFORE_PROCESS_TEST = (
     "build/mygame/osk_text_entry_selftest",
     "build/mygame/ge_float24_selftest",
     "build/mygame/ge_raster_ref_selftest",
-    "./build/test_pgf_public",
-    "./build/test_core_catalog",
-    "./build/test_parsers_hostile",
-    "./build/test_manifest_parser --check",
-    "./build/test_launch_resolution",
-    "./build/test_player_state",
-    "./build/test_input_settings",
-    "./build/test_package_builder",
-    "./build/test_xb_parser",
-    "./build/test_fuzz_parsers --iters 100",
+    "build/test_pgf_public",
+    "build/test_core_catalog",
+    "build/test_parsers_hostile",
+    "build/test_manifest_parser --check",
+    "build/test_launch_resolution",
+    "build/test_player_state",
+    "build/test_input_settings",
+    "build/test_package_builder",
+    "build/test_xb_parser",
+    "build/test_fuzz_parsers --iters 100",
     "build/mygame/psmf_producer_selftest --fuzz-iters 100",
-    "./build/test_input_profile",
+    "build/test_input_profile",
 )
-_PROCESS_TEST = "./build/test_win32_process" if os.name == "nt" else "./build/test_posix_process"
+_PROCESS_TEST = "build/test_win32_process" if os.name == "nt" else "build/test_posix_process"
 EXPECTED_RUNS = _RUNS_BEFORE_PROCESS_TEST + (_PROCESS_TEST,)
 
 
@@ -75,7 +83,7 @@ def _dry_run(*goals: str) -> list[str]:
     if make is None:
         raise unittest.SkipTest("no make program on PATH")
     result = subprocess.run(
-        [make, "--no-print-directory", "-n", "CC=gcc", *goals],
+        [make, "--no-print-directory", "-n", "CC=gcc", f"BUILD_ROOT={_SCRATCH}", *goals],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -83,14 +91,19 @@ def _dry_run(*goals: str) -> list[str]:
     )
     if result.returncode != 0:
         raise AssertionError(f"make -n {' '.join(goals)} failed:\n{result.stderr}")
-    return _commands(result.stdout.splitlines())
+    return [_fold_root(c) for c in _commands(result.stdout.splitlines())]
+
+
+def _fold_root(command: str) -> str:
+    """Spell the scratch BUILD_ROOT as `build` so expectations read like the default layout."""
+    return command.replace(_SCRATCH + "/", "build/").replace("./build/", "build/")
 
 
 def _test_runs(commands: list[str]) -> list[str]:
     return [
         command.replace(".exe", "")
         for command in commands
-        if command.startswith(("./build/", "build/mygame/")) and " -o " not in command
+        if command.startswith("build/") and " -o " not in command
     ]
 
 
