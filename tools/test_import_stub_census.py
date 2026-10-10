@@ -82,6 +82,8 @@ class CensusOverSyntheticImages(unittest.TestCase):
     def test_the_late_pass_keeps_stubs_even_without_the_seed(self):
         # With the callee rule of the late passes, a file-backed stub reached by a direct
         # call stays an entry that owns its words, so the census is clean without the seed.
+        # The private predicate is patched by name on purpose: it is the late-pass seam this
+        # guard pins, and no public API exists for it.
         with mock.patch.object(analyze, "_import_stub_is_file_executable",
                                side_effect=lambda *_: False):
             rec = self._census(self.data)
@@ -116,6 +118,29 @@ class CensusOverSyntheticImages(unittest.TestCase):
         self.assertEqual(rec["status"], "refused", rec)
         self.assertEqual(rec["refusal"], "ANALYZER_IMPORT_NID_TABLE_MISSING", rec)
         self.assertEqual([m["reason"] for m in rec["missing"]], [census.REASON_OTHER])
+
+    def test_a_window_walk_refusal_names_its_exception_type_in_the_finding(self):
+        # The window walk refuses a null NID table with its own ImportTableError (a
+        # ValueError subclass), and a library name longer than its 1024-byte cap with a
+        # plain ValueError. The image-level finding must name that exception and its message.
+        cases = (
+            ("null NID table",
+             import_fixtures.build_import_elf([("SynthAlpha", [0x11000001])],
+                                              corrupt="null_nid_table"),
+             "ImportTableError", "null NID table pointer"),
+            ("library name over the cap",
+             import_fixtures.build_import_elf([("A" * 1100, [0x11000001])]),
+             "ValueError", "without a terminator"),
+        )
+        for label, blob, exc_name, message in cases:
+            with self.subTest(case=label):
+                rec = self._census(blob)
+                self.assertEqual(rec["status"], "refused", rec)
+                self.assertEqual([m["reason"] for m in rec["missing"]], [census.REASON_OTHER],
+                                 rec["missing"])
+                detail = rec["missing"][0]["detail"]
+                self.assertIn(exc_name, detail)
+                self.assertIn(message, detail)
 
     def test_a_layout_model_refusal_is_recorded_not_raised(self):
         # The layout model raises its own ImportTableError class (psp_import_table) when

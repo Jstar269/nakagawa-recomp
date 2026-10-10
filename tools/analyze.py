@@ -565,7 +565,12 @@ def _file_backed_exec_ranges(elf):
 
 
 def file_backed_exec_ranges(elf):
-    """The file-backed executable PT_LOAD ranges of `elf`: the public entry other tools use."""
+    """The file-backed executable PT_LOAD ranges of `elf`: the public entry other tools use.
+
+    The list is computed once per Elf and cached on the elf object (see
+    _file_backed_exec_ranges), so repeated calls return the same list without re-walking
+    the segment table. Callers must not mutate it.
+    """
     return _file_backed_exec_ranges(elf)
 
 
@@ -2809,6 +2814,10 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None)
         # named code, or file-backed executable bytes outside the named sections. The late
         # passes tested the named ranges alone, so a callee in those bytes that only a late
         # pass reached was dropped and got no body (the follow-up to the import-stub seed).
+        # The two tests are deliberately asymmetric. `ranges` already carries the title's
+        # extra executable spans (exec_ranges), which need not be file-backed, while
+        # `file_exec_ranges` is only the file-backed PT_LOAD executable set. So a target in
+        # an extra span that is not file-backed is accepted through `ranges` alone.
         return in_ranges(addr, ranges) or in_ranges(addr, file_exec_ranges)
 
     functions = set(hc)

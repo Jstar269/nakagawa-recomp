@@ -39,6 +39,7 @@ import glob
 import json
 import os
 import re
+import struct
 import sys
 import time
 from collections import Counter
@@ -75,9 +76,12 @@ def handled_nids(repo_root):
 def default_base(path):
     """EBOOTs are linked at their load address (no rebase); guest modules are rebased to 0.
 
-    Staging convention: the only executable the sweep stages under its load address is
-    EBOOT.ELF; every other staged image is a relocatable guest module (a PRX from the disc),
-    which the runtime loads at a chosen address, so the census reads it rebased to 0.
+    Staging convention (docs/SETUP.md, the per-title decrypted/ folder): the plain executable
+    is staged as EBOOT.elf and every other staged file is a guest module under its disc file
+    name. A guest module is relocatable and the runtime loads it at a chosen address, so the
+    census reads it rebased to 0; a manifest supplies each module's load address instead
+    (manifest_images). The ELF type is not read: the census consumes staged images whose layout
+    the title plan has already decided, and the staged name is the only split this route has.
     """
     return None if os.path.basename(path).lower() == "eboot.elf" else 0
 
@@ -93,22 +97,27 @@ def _image_level(rec, detail):
 
 
 def _window_slots(elf):
-    """Return {stub address: (library, NID)} read straight from the import windows.
+    """Return ({stub address: (library, NID)}, failure) read straight from the import windows.
 
     Used only when the layout model refuses the table. A NID the image does not map is
-    None; the slot is still listed, so it is accounted for.
+    None; the slot is still listed, so it is accounted for. failure is None, or the
+    "Type: message" text of the exception the window walk raised, so the caller's
+    image-level finding can name the cause.
     """
     try:
         windows, _variables = imports.function_import_windows(elf)
-    except Exception:  # the window walk itself is unreadable: the caller records it
-        return {}
+    except (ValueError, RuntimeError, struct.error) as exc:
+        # The set imports._import_model converts into the analyzer's boundary, so the
+        # census names exactly what the analyzer would refuse. ImportTableError, the walk's
+        # own refusal, is a ValueError subclass.
+        return {}, f"{type(exc).__name__}: {exc}"
     slots = {}
     for window in windows:
         for index in range(window.count):
             blob = elf.read_at_vaddr(window.nid_data + 4 * index, 4)
             nid = int.from_bytes(blob, "little") if blob is not None and len(blob) == 4 else None
             slots[window.first_sym + 8 * index] = (window.library, nid)
-    return slots
+    return slots, None
 
 
 def census_image(path, base, *, label, extra_spans=None, handled=frozenset()):
@@ -147,10 +156,11 @@ def census_image(path, base, *, label, extra_spans=None, handled=frozenset()):
         # The layout model refused the table. The loader still reads each window directly
         # (slot firstSym + 8*i takes nidData[i]), so name every function slot from its
         # window, with the refusal as its reason. A table no window can be read from is
-        # one image-level finding instead.
-        stubs = _window_slots(elf)
+        # one image-level finding instead, naming the exception the window walk raised.
+        stubs, window_failure = _window_slots(elf)
         if not stubs:
-            _image_level(rec, f"import table refused: {rec['refusal']}")
+            cause = f"; the window walk raised {window_failure}" if window_failure else ""
+            _image_level(rec, f"import table refused: {rec['refusal']}{cause}")
 
     functions, owned, report = set(), [], {}
     analyzed_ok = False

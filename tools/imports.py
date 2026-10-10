@@ -246,7 +246,9 @@ def function_import_windows(
 
     The census uses this for an image whose layout the model refuses. The loader reads
     the windows directly (slot firstSym + 8*i takes NID nidData[i]), so every function
-    slot can still be named and accounted for.
+    slot can still be named and accounted for. The windows are already rebased to the
+    image's load address by the walk; the base it used is intentionally not part of the
+    return, so callers read every address as it stands.
     """
     windows, variable_tables, _base = _walk_import_windows(elf)
     return windows, tuple(variable_tables)
