@@ -8387,7 +8387,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "541b7ba1198fb4052e7c4b67011294db4e4c08d2993a84151b82fcc7f64c4f91"
+      "sha256": "9a4a3c08183e5ea2b6115e6b37fc1731c140e6c368ffa81f90ff648a78264114"
     },
     {
       "path": "tools/test_font_provisioning.py",
