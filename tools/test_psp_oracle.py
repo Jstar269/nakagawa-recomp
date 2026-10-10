@@ -62,6 +62,7 @@ from psp_oracle.run_psplink import (
     parse_psplink_module_threads,
     parse_psplink_thread_snapshot,
     parse_probe_completion_sentinel,
+    _validate_campaign_contract,
 )
 from psp_oracle.parse_golden import (
     AUDIO_OUT_COUNTS,
@@ -82,6 +83,7 @@ from psp_oracle.parse_golden import (
     parse_dmac_invalid_tail_output,
     parse_ge_nan_output,
     parse_registry_readonly_output,
+    validate_hle_edram_restore,
 )
 
 
@@ -2210,12 +2212,14 @@ class PspOracleBuildRouteTests(unittest.TestCase):
             self.makefile,
             re.MULTILINE,
         )
-        self.assertEqual(len(routes), 67)
+        # 1-67 are the sequential probe.c cases; 90-96 are the H-oracle HLE families,
+        # numbered apart so sequential additions cannot collide with them.
+        self.assertEqual(len(routes), 74)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(ids), set(range(1, 68)))
+        self.assertEqual(set(ids), set(range(1, 68)) | set(range(90, 97)))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -3366,6 +3370,485 @@ class CampaignHost0LogTests(unittest.TestCase):
             body = self.probe[self.probe.index(emitter):]
             body = body[:body.index("\n}\n")]
             self.assertIn("probe_emit_durable(emulated, line,", body, emitter)
+
+
+
+
+class HleMeasureProbeTests(unittest.TestCase):
+    """H-oracle-hle-measure-1009: seven one-launch HLE measurement families.
+
+    The probes measure what the console returns. These tests pin what makes each
+    launch safe and parseable: the Makefile case table and the import block each
+    PRX links, NIDs derived from their names, the source rules (user imports only,
+    a STEP marker before each measured call, no state-changing Set call except the
+    restored GE width), the host0 log each family writes, the fixed record shape
+    the parser registry expects, and the GE restore invariant.
+    """
+
+    FAMILIES = (
+        # campaign case, CASE_ID, PRX stem, family import block, probe section macro, test id
+        ("hle-kernel-status", 90, "hle_kernel_status", None,
+         "HLE_CASE_KERNEL_STATUS", "PSP-HLE-KERNEL-STATUS-001"),
+        ("hle-vtimer", 91, "hle_vtimer", None, "HLE_CASE_VTIMER", "PSP-HLE-VTIMER-001"),
+        ("hle-power-clock", 92, "hle_power_clock", "hle_power_imports.S",
+         "HLE_CASE_POWER_CLOCK", "PSP-HLE-POWER-001"),
+        ("hle-hprm", 93, "hle_hprm", "hle_hprm_imports.S", "HLE_CASE_HPRM", "PSP-HLE-HPRM-001"),
+        ("hle-ctrl-latch", 94, "hle_ctrl_latch", "hle_ctrl_imports.S",
+         "HLE_CASE_CTRL_LATCH", "PSP-HLE-CTRL-LATCH-001"),
+        ("hle-sysparam", 95, "hle_sysparam", "hle_utility_imports.S",
+         "HLE_CASE_SYSPARAM", "PSP-HLE-SYSPARAM-001"),
+        ("hle-ge-edram", 96, "hle_ge_edram", "hle_ge_imports.S",
+         "HLE_CASE_GE_EDRAM", "PSP-HLE-GE-EDRAM-001"),
+    )
+    # Every family block: file -> (library, version word, {function: NID}). The
+    # version word 0x40010000 is the one the PSPSDK import stubs carry.
+    PINNED_BLOCKS = {
+        "hle_power_imports.S": ("scePower", 0x40010000, {
+            "scePowerGetPllClockFrequencyInt": 0x34F9C463,
+            "scePowerGetPllClockFrequencyFloat": 0xEA382A27,
+            "scePowerGetCpuClockFrequency": 0xFEE03A2F,
+            "scePowerGetCpuClockFrequencyInt": 0xFDB5BFE9,
+            "scePowerGetCpuClockFrequencyFloat": 0xB1A52C83,
+            "scePowerGetBusClockFrequency": 0x478FE6F5,
+            "scePowerGetBusClockFrequencyInt": 0xBD681969,
+            "scePowerGetBusClockFrequencyFloat": 0x9BADB3EB,
+        }),
+        "hle_hprm_imports.S": ("sceHprm", 0x40010000, {
+            "sceHprmIsRemoteExist": 0x208DB1BD,
+            "sceHprmIsHeadphoneExist": 0x7E69EDA4,
+            "sceHprmIsMicrophoneExist": 0x219C58F1,
+        }),
+        "hle_ctrl_imports.S": ("sceCtrl", 0x40010000, {
+            "sceCtrlReadLatch": 0x0B588501,
+            "sceCtrlPeekLatch": 0xB1D0E5CD,
+        }),
+        "hle_utility_imports.S": ("sceUtility", 0x40010000, {
+            "sceUtilityGetSystemParamInt": 0xA5DA2406,
+            "sceUtilityGetSystemParamString": 0x34B78343,
+        }),
+        "hle_ge_imports.S": ("sceGe_user", 0x40010000, {
+            "sceGeEdramGetSize": 0x1F6752AD,
+            "sceGeEdramGetAddr": 0xE47E40E4,
+            "sceGeEdramSetAddrTranslation": 0xB77905EA,
+        }),
+    }
+    # Calls the probe makes that come from the SDK's default link (IO), not from a
+    # declared stub block. Libc and CRT helpers are not sce-prefixed.
+    SDK_DEFAULT_CALLS = frozenset({"sceIoOpen", "sceIoWrite", "sceIoClose"})
+    MEASURED_CALL_RE = re.compile(
+        r"\b(sceKernel(?:ReferSystemStatus|ReferFplStatus|CreateFpl|TryAllocateFpl|FreeFpl|"
+        r"DeleteFpl|CreateVTimer|ReferVTimerStatus|GetVTimerTime|StartVTimer|StopVTimer|"
+        r"DeleteVTimer|DelayThread)|scePowerGet\w+|sceHprmIs\w+|sceCtrl\w*Latch|"
+        r"sceUtilityGetSystemParam\w+|sceGeEdram\w+)\s*\("
+    )
+    # A line that is nothing but a whole `int|float|void sce...(...);` declaration.
+    # Only such a line is skipped as "not a call"; a declaration that shares its line
+    # with a call is still scanned.
+    PROTOTYPE_LINE_RE = re.compile(r"\s*(?:int|float|void)\s+sce\w+\s*\([^;]*\);\s*")
+    GE_UNSET_OVERRIDES = {
+        "edram-width-query-initial": ("PASS", 0x0, None),
+        **{name: ("SKIP", 0, [0]) for name in (
+            "edram-width-set-512", "edram-width-set-1024", "edram-width-set-2048",
+            "edram-width-set-4096", "edram-width-restore")},
+        "edram-width-query-final": ("PASS", 0x0, None),
+    }
+    # The 2026-10-10 PSP-3000 sequence (initial width 0x400). sceGeEdramSetAddrTranslation(w)
+    # sets the width to w and returns the width it replaced, so each call after a Set(0)
+    # returns 0; the post-restore query returns the restored width and leaves 0 set, and
+    # the final Set(0) therefore returns 0.
+    GE_MEASURED_OVERRIDES = {
+        "edram-width-query-initial": ("PASS", 0x400, None),
+        "edram-width-set-512": ("PASS", 0x0, [0x200]),
+        "edram-width-set-1024": ("PASS", 0x0, [0x400]),
+        "edram-width-set-2048": ("PASS", 0x0, [0x800]),
+        "edram-width-set-4096": ("PASS", 0x0, [0x1000]),
+        "edram-width-restore": ("PASS", 0x0, [0x400]),
+        "edram-width-query-final": ("PASS", 0x0, None),
+    }
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.root = Path(__file__).resolve().parents[1]
+        cls.fixture = cls.root / "fixtures" / "psp_oracle"
+        cls.makefile = (cls.fixture / "Makefile").read_text(encoding="utf-8")
+        cls.probe = (cls.fixture / "probe_hle_measure.c").read_text(encoding="utf-8")
+        cls.threadman = (cls.fixture / "threadman_user_imports.S").read_text(encoding="utf-8")
+        cls.manifest = json.loads((cls.root / "tools" / "psp_oracle" / "manifest.json")
+                                  .read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _nid(name: str) -> int:
+        return int.from_bytes(hashlib.sha1(name.encode("ascii")).digest()[:4], "little")
+
+    @staticmethod
+    def _imports(text: str) -> list[tuple[str, int, str]]:
+        return [
+            (library, int(nid, 16), name)
+            for library, nid, name in re.findall(
+                r'IMPORT_FUNC\s+"([^"]+)",\s*0x([0-9A-Fa-f]+),\s*(\w+)', text)
+        ]
+
+    def _block_text(self, block: str) -> str:
+        return (self.fixture / block).read_text(encoding="utf-8")
+
+    def _declared_names(self, block: str | None) -> set[str]:
+        names = {name for _lib, _nid, name in self._imports(self.threadman)}
+        if block is not None:
+            names |= {name for _lib, _nid, name in self._imports(self._block_text(block))}
+        return names
+
+    @staticmethod
+    def _family_span(text: str, macro: str) -> tuple[int, int]:
+        # Each family section opens right after its separator comment; the header
+        # #if chain that names the same macro does not, so it is never matched.
+        match = re.search(rf"\*/\n#if PSP_ORACLE_CASE == {macro}\n", text)
+        if match is None:
+            raise AssertionError(f"no family section for {macro}")
+        end_marker = f"#endif /* {macro} */"
+        end = text.index(end_marker, match.start()) + len(end_marker)
+        return match.start(), end
+
+    def _section(self, macro: str) -> str:
+        start, end = self._family_span(self.probe, macro)
+        return self.probe[start:end]
+
+    def _shared_section(self) -> str:
+        """Probe text outside every family section (common helpers and main)."""
+        text = self.probe
+        for _case, _cid, _stem, _block, macro, _test in reversed(self.FAMILIES):
+            start, end = self._family_span(text, macro)
+            text = text[:start] + text[end:]
+        return text
+
+    # ---- Makefile wiring ---------------------------------------------------------
+
+    def test_case_ids_are_registered_once_and_match_the_families(self) -> None:
+        pairs = re.findall(r"else ifeq \(\$\(CASE\),(hle-[a-z-]+)\)\nCASE_ID = (\d+)",
+                           self.makefile)
+        self.assertEqual(sorted(pairs),
+                         sorted((case, str(case_id)) for case, case_id, *_ in self.FAMILIES))
+        all_ids = re.findall(r"^CASE_ID = (\d+)$", self.makefile, re.MULTILINE)
+        self.assertEqual(len(all_ids), len(set(all_ids)), "duplicate CASE_ID in Makefile")
+
+    def test_each_family_links_the_probe_threadman_block_and_only_its_own_block(self) -> None:
+        for case, _cid, stem, block, _macro, _test in self.FAMILIES:
+            with self.subTest(case=case):
+                match = re.search(
+                    rf"else ifeq \(\$\(CASE\),{case}\)\nTARGET = \$\(BUILD_DIR\)/{stem}\n"
+                    r"OBJS = (.*)\n",
+                    self.makefile)
+                self.assertIsNotNone(match, f"no TARGET/OBJS branch for {case}")
+                expected = ["$(BUILD_DIR)/probe_hle_measure.o",
+                            "$(BUILD_DIR)/threadman_user_imports.o"]
+                if block is not None:
+                    expected.append("$(BUILD_DIR)/" + block.replace(".S", ".o"))
+                self.assertEqual(match.group(1).split(), expected)
+
+    def test_module_stop_is_exported_for_the_probe_object(self) -> None:
+        self.assertRegex(
+            self.makefile,
+            r"ifneq \(\$\(filter \$\(BUILD_DIR\)/probe_hle_measure\.o,\$\(OBJS\)\),\)\n"
+            r"PRX_EXPORTS = \$\(BUILD_DIR\)/probe_exports\.exp\nendif\n",
+        )
+        self.assertIn("module_stop", self.probe)
+
+    def test_hle_sources_have_compile_rules(self) -> None:
+        for block in self.PINNED_BLOCKS:
+            with self.subTest(block=block):
+                self.assertIn(f"$(BUILD_DIR)/{block.replace('.S', '.o')}: {block}\n",
+                              self.makefile)
+        self.assertIn("$(BUILD_DIR)/probe_hle_measure.o: probe_hle_measure.c\n", self.makefile)
+
+    # ---- import tables -----------------------------------------------------------
+
+    def test_pinned_import_blocks_match_declared_nids_and_the_name_derivation(self) -> None:
+        for block, (library, flags, pins) in self.PINNED_BLOCKS.items():
+            with self.subTest(block=block):
+                text = self._block_text(block)
+                self.assertEqual(
+                    re.findall(r'IMPORT_START\s+"([^"]+)",\s*0x([0-9A-Fa-f]+)', text),
+                    [(library, f"{flags:08X}")])
+                declared = self._imports(text)
+                self.assertEqual({name: nid for _lib, nid, name in declared}, pins)
+                for lib, nid, name in declared:
+                    self.assertEqual(lib, library)
+                    self.assertEqual(nid, self._nid(name), name)
+
+    def test_threadman_block_declares_the_shared_reference_and_refer_status(self) -> None:
+        self.assertEqual(
+            [nid for _lib, nid, name in self._imports(self.threadman)
+             if name == "sceKernelReferSystemStatus"],
+            [0x627E6F3A],
+        )
+        self.assertEqual(self._nid("sceKernelReferSystemStatus"), 0x627E6F3A)
+
+    def test_every_stub_the_probe_calls_is_declared_by_its_own_prx_import_tables(self) -> None:
+        shared_defined = set(re.findall(r"^(?:int|float|void)\s+(sce\w+)\s*\(",
+                                        self.probe, re.MULTILINE))
+        shared_calls = set(re.findall(r"\b(sce\w+)\s*\(", self._shared_section()))
+        self.assertEqual(
+            sorted(shared_calls - self._declared_names(None) - self.SDK_DEFAULT_CALLS
+                   - shared_defined),
+            [],
+        )
+        for case, _cid, _stem, block, macro, _test in self.FAMILIES:
+            with self.subTest(case=case):
+                section = self._section(macro)
+                called = set(re.findall(r"\b(sce\w+)\s*\(", section))
+                defined = set(re.findall(r"^(?:int|float|void)\s+(sce\w+)\s*\(", section,
+                                         re.MULTILINE))
+                undeclared = sorted(called - self._declared_names(block)
+                                    - self.SDK_DEFAULT_CALLS - defined)
+                self.assertEqual(undeclared, [], f"{block} does not declare {undeclared}")
+
+    def test_each_family_table_passes_the_user_mode_gate_and_names_only_user_libraries(self) -> None:
+        for case, _cid, _stem, block, _macro, _test in self.FAMILIES:
+            with self.subTest(case=case):
+                tables: dict[str, list[int]] = {
+                    "ThreadManForUser": [nid for _lib, nid, _name in self._imports(self.threadman)],
+                }
+                if block is not None:
+                    library, _flags, _pins = self.PINNED_BLOCKS[block]
+                    tables[library] = [nid for _lib, nid, _name in
+                                       self._imports(self._block_text(block))]
+                result = user_mode_imports.check_module(
+                    build_import_elf(sorted(tables.items())))
+                self.assertTrue(result.passed, result)
+                self.assertFalse(result.kernel_mode)
+                self.assertEqual(set(result.libraries), set(tables))
+
+    def test_built_probe_import_tables_pass_the_gate_when_a_local_build_exists(self) -> None:
+        build = self.fixture / "build"
+        present = [build / f"{stem}.elf" for _c, _i, stem, _b, _m, _t in self.FAMILIES
+                   if (build / f"{stem}.elf").is_file()]
+        if not present:
+            self.skipTest("no local hle_*.elf build; make CASE=<case> produces one to check")
+        for path in present:
+            with self.subTest(elf=path.name):
+                result = user_mode_imports.check_module(path.read_bytes())
+                self.assertTrue(result.passed)
+                self.assertIn("ThreadManForUser", result.libraries)
+
+    def test_no_stub_names_a_set_install_or_remove_function_except_the_restored_ge_width(
+            self) -> None:
+        forbidden = re.compile(r"sce\w*(?:Set|Install|Remove|Flush|Register|Reset)\w*")
+        names = set(re.findall(r"\b(sce\w+)\b", self.probe))
+        self.assertEqual({name for name in names if forbidden.fullmatch(name)},
+                         {"sceGeEdramSetAddrTranslation"})
+        for _library, _flags, pins in self.PINNED_BLOCKS.values():
+            for name in pins:
+                if name != "sceGeEdramSetAddrTranslation":
+                    self.assertIsNone(forbidden.fullmatch(name), name)
+
+    # ---- probe source rules ------------------------------------------------------
+
+    def test_every_measured_call_follows_a_step_marker_within_three_lines(self) -> None:
+        lines = self.probe.splitlines()
+        checked = 0
+        for index, line in enumerate(lines):
+            if not self.MEASURED_CALL_RE.search(line):
+                continue
+            if self.PROTOTYPE_LINE_RE.fullmatch(line):
+                continue  # a whole-line prototype, not a call
+            checked += 1
+            window = lines[max(0, index - 3):index]
+            self.assertTrue(any("hle_step(" in previous for previous in window),
+                            f"line {index + 1} has no hle_step before it: {line.strip()}")
+        self.assertGreaterEqual(checked, 40)
+
+    def test_every_loop_is_bounded_except_the_module_stop_park(self) -> None:
+        self.assertEqual(self.probe.count("while ("), 2)
+        self.assertIn("while (!s_hle_stop_requested)", self.probe)
+        self.assertIn("while (offset < length)", self.probe)
+        self.assertIn("for (uint32_t i = 0; i < HLE_POLL_ITERATIONS; i++) {", self.probe)
+        self.assertRegex(self.probe, r"#define HLE_POLL_ITERATIONS 200u")
+        self.assertRegex(self.probe, r"#define HLE_POLL_DELAY_US 10000u")
+        self.assertNotIn("malloc(", self.probe)
+        self.assertNotIn("sceKernelAllocPartitionMemory", self.probe)
+
+    def test_string_nickname_bytes_never_reach_a_protocol_record(self) -> None:
+        body = self.probe[self.probe.index("static void hle_string_param("):]
+        body = body[:body.index("\n}\n")]
+        self.assertIn('hle_record(case_id, "PASS", (uint32_t)rc, out, 3);', body)
+        self.assertIn("hle_private_nickname_write(buf, nul);", body)
+        private = self.probe[self.probe.index("static void hle_private_nickname_write("):]
+        private = private[:private.index("\n}\n")]
+        self.assertIn("host0:/hle_sysparam_private_strings.txt", private)
+        self.assertNotIn("hle_record", private)
+        self.assertNotIn("hle_emit", private)
+
+    def test_probe_emits_the_protocol_lines_and_the_log_the_runner_reads(self) -> None:
+        for marker in ("NAKAGAWA_PSP_META schema=1", "NAKAGAWA_PSP_STEP schema=1 case_id=",
+                       "NAKAGAWA_PSP_TEST schema=1 test_id=",
+                       "NAKAGAWA_PSP_COMPLETE schema=1 status="):
+            self.assertIn(marker, self.probe)
+        registrations = {
+            case: (test_id, log) for case, test_id, log in re.findall(
+                r'#define HLE_CAMPAIGN_ID "(hle-[a-z-]+)"\n#define HLE_TEST_ID "([A-Z0-9-]+)"\n'
+                r'#define HLE_LOG "host0:/([a-z0-9_]+\.txt)"', self.probe)
+        }
+        self.assertEqual(len(registrations), 7)
+        for case, _cid, _stem, _block, _macro, test_id in self.FAMILIES:
+            with self.subTest(case=case):
+                self.assertEqual(registrations[case][0], test_id)
+                self.assertEqual(registrations[case][1],
+                                 _campaign_host0_log_path(Path("/scratch"), case).name)
+
+    # ---- registry, manifest, and the parser contract -----------------------------
+
+    def test_each_family_is_a_fixed_shape_strict_stream_in_the_registry(self) -> None:
+        for case, _cid, _stem, _block, _macro, test_id in self.FAMILIES:
+            with self.subTest(case=case):
+                spec, counts = CAMPAIGN_PROBE_CASES[case]
+                self.assertEqual(spec.test_id, test_id)
+                self.assertEqual(spec.terminal_case, f"{case}-done")
+                self.assertEqual(_campaign_completeness_contract(case), "strict-golden-sequence")
+                self.assertEqual(set(counts), set(spec.ordered_cases))
+                self.assertEqual(counts[spec.terminal_case], 1)
+                for semantic in spec.semantic_cases:
+                    self.assertIn(f'"{semantic}"', self.probe, semantic)
+
+    def test_manifest_entries_are_not_run_and_cite_the_registry(self) -> None:
+        by_id = {test["id"]: test for test in self.manifest["tests"]}
+        for case, _cid, stem, _block, _macro, test_id in self.FAMILIES:
+            with self.subTest(case=case):
+                entry = by_id[test_id]
+                spec, _counts = CAMPAIGN_PROBE_CASES[case]
+                self.assertEqual(entry["hardware_evidence"], "NOT_RUN")
+                self.assertEqual(entry["status"], "implemented")
+                self.assertEqual(entry["source"], "fixtures/psp_oracle/probe_hle_measure.c")
+                self.assertEqual(entry["prx"], f"{stem}.prx")
+                self.assertEqual(entry["case_ids"], list(spec.ordered_cases))
+                self.assertEqual(entry["diagnostic_case_ids"], [case])
+                self.assertEqual(entry["issues"], [])
+
+    def _probe_calls(self, macro: str) -> set[str]:
+        """The sce stubs one family PRX calls: its own section plus the shared probe code.
+
+        The shared code (main, the module lifecycle and the log writer) is linked into
+        every family PRX, so its calls are imports of every family. Prototype lines are
+        declarations, not calls, and are dropped before the scan.
+        """
+        text = self._shared_section() + self._section(macro)
+        calls = "\n".join(line for line in text.splitlines()
+                          if not self.PROTOTYPE_LINE_RE.fullmatch(line))
+        return set(re.findall(r"\b(sce\w+)\s*\(", calls))
+
+    def test_manifest_apis_name_every_import_each_family_calls(self) -> None:
+        """A family's `apis` are exactly the sce stubs its PRX calls.
+
+        Each import block the family links must be fully called, so a stub it declares
+        but never uses cannot hide in the manifest.
+        """
+        by_id = {test["id"]: test for test in self.manifest["tests"]}
+        for case, _cid, _stem, block, macro, test_id in self.FAMILIES:
+            with self.subTest(case=case):
+                called = self._probe_calls(macro)
+                listed = {api for api in by_id[test_id]["apis"] if api.startswith("sce")}
+                self.assertEqual(sorted(listed), sorted(called))
+                if block is not None:
+                    declared = {name for _lib, _nid, name in
+                                self._imports(self._block_text(block))}
+                    self.assertEqual(sorted(declared - called), [])
+
+    def _stream(self, case: str, overrides: dict | None = None) -> str:
+        """A complete synthetic stream: every cell PASS with zero fields unless overridden."""
+        spec, counts = CAMPAIGN_PROBE_CASES[case]
+        if overrides is None:
+            overrides = self.GE_UNSET_OVERRIDES if case == "hle-ge-edram" else {}
+        lines = [
+            "NAKAGAWA_PSP_META schema=1 source=psp model=unknown firmware=unknown "
+            "binary_sha256=" + "0" * 64 + " source_commit=" + "b" * 40 + " fixture=hle-measure",
+        ]
+        for semantic in spec.semantic_cases:
+            lines.append(f"NAKAGAWA_PSP_STEP schema=1 case_id={case} step={semantic}")
+            status, result, outs = overrides.get(semantic, ("PASS", 0, None))
+            outs = list(outs) if outs is not None else [0] * counts[semantic]
+            fields = " ".join(f"out{i}=0x{value:x}" for i, value in enumerate(outs))
+            lines.append(f"NAKAGAWA_PSP_TEST schema=1 test_id={spec.test_id} case_id={semantic} "
+                         f"status={status} result=0x{result:x} {fields}".rstrip())
+        lines.append(f"NAKAGAWA_PSP_TEST schema=1 test_id={spec.test_id} "
+                     f"case_id={spec.terminal_case} status=PASS result=0x0 "
+                     f"out0=0x{len(spec.semantic_cases):x}")
+        lines.append("NAKAGAWA_PSP_COMPLETE schema=1 status=PASS")
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _body(text: str) -> str:
+        """The record stream without its COMPLETE sentinel, as the runner parses it."""
+        return text.split("NAKAGAWA_PSP_COMPLETE")[0]
+
+    def test_parser_accepts_each_complete_stream_and_rejects_shape_damage(self) -> None:
+        for case, *_rest in self.FAMILIES:
+            with self.subTest(case=case):
+                text = self._stream(case)
+                self.assertTrue(parse_campaign_probe_output(self._body(text), case).complete)
+                self.assertTrue(_campaign_stream_complete(text, case))
+                self.assertEqual(parse_probe_completion_sentinel(text), "PASS")
+                spec, _counts = CAMPAIGN_PROBE_CASES[case]
+                truncated = "\n".join(text.splitlines()[:-3]) + "\n"
+                self.assertFalse(_campaign_stream_complete(truncated, case))
+                with self.assertRaises(ProtocolError):
+                    parse_campaign_probe_output(self._body(truncated), case)
+                damaged = text.replace(f"case_id={spec.semantic_cases[0]} ",
+                                       f"case_id={spec.semantic_cases[0]}x ", 1)
+                self.assertFalse(_campaign_stream_complete(damaged, case))
+                foreign = text.replace(f"test_id={spec.test_id}", "test_id=PSP-OTHER-001", 1)
+                with self.assertRaises(ProtocolError):
+                    parse_campaign_probe_output(self._body(foreign), case)
+
+    def test_ge_restore_invariant_accepts_a_restored_width_and_rejects_a_changed_one(self) -> None:
+        case = "hle-ge-edram"
+        # Initial width 0x200 under set-returning-previous: each Set returns the 0 that
+        # the preceding Set(0) left, the restore returns 0 with out0 0x200 read back, and
+        # the final Set(0) returns 0.
+        restored = {
+            "edram-width-query-initial": ("PASS", 0x200, None),
+            "edram-width-set-512": ("PASS", 0x0, [0x200]),
+            "edram-width-set-1024": ("PASS", 0x0, [0x400]),
+            "edram-width-set-2048": ("PASS", 0x0, [0x800]),
+            "edram-width-set-4096": ("PASS", 0x0, [0x1000]),
+            "edram-width-restore": ("PASS", 0x0, [0x200]),
+            "edram-width-query-final": ("PASS", 0x0, None),
+        }
+        validate_hle_edram_restore(self._body(self._stream(case, restored)))
+        self.assertIsNone(_validate_campaign_contract(self._body(self._stream(case, restored)), case))
+
+        wrong_restore = dict(restored)
+        wrong_restore["edram-width-restore"] = ("PASS", 0x0, [0x400])
+        with self.assertRaises(ProtocolError):
+            validate_hle_edram_restore(self._body(self._stream(case, wrong_restore)))
+        with self.assertRaises(ProtocolError):
+            _validate_campaign_contract(self._body(self._stream(case, wrong_restore)), case)
+
+        changed_final = dict(restored)
+        changed_final["edram-width-query-final"] = ("PASS", 0x200, None)
+        with self.assertRaises(ProtocolError):
+            validate_hle_edram_restore(self._body(self._stream(case, changed_final)))
+
+    def test_measured_ge_sequence_is_accepted_under_set_returning_previous(self) -> None:
+        case = "hle-ge-edram"
+        body = self._body(self._stream(case, self.GE_MEASURED_OVERRIDES))
+        validate_hle_edram_restore(body)
+        self.assertIsNone(_validate_campaign_contract(body, case))
+
+    def test_final_query_returning_the_initial_width_is_rejected_by_the_rule(self) -> None:
+        """The pure-query model (final Set(0) returns the initial width) is refuted by the run."""
+        case = "hle-ge-edram"
+        for final in (0x400, 0x200):
+            with self.subTest(final=hex(final)):
+                overrides = dict(self.GE_MEASURED_OVERRIDES)
+                overrides["edram-width-query-final"] = ("PASS", final, None)
+                with self.assertRaisesRegex(ProtocolError, "set-returning-previous"):
+                    validate_hle_edram_restore(self._body(self._stream(case, overrides)))
+
+    def test_ge_width_cells_skip_when_the_original_width_is_not_restorable(self) -> None:
+        case = "hle-ge-edram"
+        validate_hle_edram_restore(self._body(self._stream(case, self.GE_UNSET_OVERRIDES)))
+        ran_anyway = dict(self.GE_UNSET_OVERRIDES)
+        ran_anyway["edram-width-set-512"] = ("PASS", 0x0, [0x200])
+        with self.assertRaises(ProtocolError):
+            validate_hle_edram_restore(self._body(self._stream(case, ran_anyway)))
 
 
 if __name__ == "__main__":
