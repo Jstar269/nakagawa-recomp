@@ -993,8 +993,8 @@ def flight_smoke(build_dir: Path) -> int:
         first = json.loads(first_path.read_text(encoding="utf-8"))
         second = json.loads(second_path.read_text(encoding="utf-8"))
         for label, bundle in (("first", first), ("second", second)):
-            if bundle["schema_version"] != 4:
-                raise RuntimeError(f"{label} flight bundle is not schema v4")
+            if bundle["schema_version"] != 5:
+                raise RuntimeError(f"{label} flight bundle is not schema v5")
             if bundle["recorder"]["enabled_classes"] != ["ge", "present"]:
                 raise RuntimeError(f"{label} flight bundle has unexpected class coverage")
             if bundle["recorder"]["dropped"] != 0:
