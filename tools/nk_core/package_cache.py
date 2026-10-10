@@ -1251,14 +1251,35 @@ _COMPLETION_ARTIFACT = "artifact"
 _COMPLETION_UNCOVERED = "uncovered"
 
 
+def _digest_once(path: Path, digests: dict[Path, str] | None) -> str:
+    """Digest of one resolved package file, reusing a digest already taken in this validation."""
+    if digests is None:
+        return sha256_file(path)
+    digest = digests.get(path)
+    if digest is None:
+        digest = digests[path] = sha256_file(path)
+    return digest
+
+
 def validate_completion_manifest(
     package_dir: Path,
     *,
     expected_key: Mapping[str, Any] | None = None,
     required_paths: set[str] | None = None,
+    file_digests: dict[Path, str] | None = None,
 ) -> tuple[bool, str, dict[str, Any] | None]:
+    """Validate the completion manifest.
+
+    ``file_digests`` maps resolved artifact paths to digests computed earlier in the same
+    validation. Each listed artifact is still compared against its manifest digest; only
+    the second read of a file that was already digested is skipped.
+    The comparison therefore reflects the bytes as that validation read them: a file
+    rewritten between the package-level check and this one, inside the same call, is
+    not read a second time. A caller that wants a fresh read passes no digests.
+    """
     failure, reason, document = _check_completion_manifest(
-        package_dir, expected_key=expected_key, required_paths=required_paths
+        package_dir, expected_key=expected_key, required_paths=required_paths,
+        file_digests=file_digests,
     )
     return failure == _COMPLETION_OK, reason, document
 
@@ -1268,6 +1289,7 @@ def _check_completion_manifest(
     *,
     expected_key: Mapping[str, Any] | None = None,
     required_paths: set[str] | None = None,
+    file_digests: dict[Path, str] | None = None,
 ) -> tuple[str, str, dict[str, Any] | None]:
     package_dir = package_dir.resolve(strict=False)
     path = package_dir / COMPLETION_MANIFEST
@@ -1328,7 +1350,7 @@ def _check_completion_manifest(
         seen.add(relative)
         if not resolved.is_file() or resolved.is_symlink():
             return _COMPLETION_ARTIFACT, f"completion artifact is missing: {relative}", None
-        if sha256_file(resolved) != digest:
+        if _digest_once(resolved, file_digests) != digest:
             return _COMPLETION_ARTIFACT, f"completion artifact digest mismatch: {relative}", None
     for relative in sorted(required_paths or set()):
         if relative not in seen:
@@ -1453,11 +1475,14 @@ def validate_package_cache(
     executable_path = executable.get("path") if isinstance(executable, dict) else None
     if not isinstance(executable_path, str):
         return False, "package executable path is missing"
+    # Each executable and generated object is digested once here; the completion
+    # check below reuses these digests rather than reading the same bytes again.
+    file_digests: dict[Path, str] = {}
     try:
         executable_file = _resolve_within(package_dir, executable_path)
     except PackageCacheError as exc:
         return False, str(exc)
-    if not executable_file.is_file() or sha256_file(executable_file) != executable.get("sha256"):
+    if not executable_file.is_file() or _digest_once(executable_file, file_digests) != executable.get("sha256"):
         return False, "package executable digest is stale"
     image_path = str(Path(executable_path).with_name(
         f"{Path(executable_path).stem}_image.bin"
@@ -1480,13 +1505,14 @@ def validate_package_cache(
             object_file = _resolve_within(package_dir, object_path)
         except PackageCacheError as exc:
             return False, str(exc)
-        if not object_file.is_file() or sha256_file(object_file) != item.get("sha256"):
+        if not object_file.is_file() or _digest_once(object_file, file_digests) != item.get("sha256"):
             return False, f"package generated object digest is stale: {object_path}"
         required.add(object_path)
     valid, reason, completion = validate_completion_manifest(
         package_dir,
         expected_key=expected_key,
         required_paths=required,
+        file_digests=file_digests,
     )
     if not valid:
         return False, reason
