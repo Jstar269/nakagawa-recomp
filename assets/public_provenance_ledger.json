@@ -1069,7 +1069,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "712376d11f4cfa99afe63d74e9a42a28352cc23434788cd695d8ae95a387aa2e"
+      "sha256": "284c8e93505be7ab870d161b0c848afc7f1d1c3569bb6f65c060e5801332ee57"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -6470,7 +6470,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1d99b89bed65ee9c28704232d11a4ae061f41bf1a953aa9601b0b9889cd12c2c"
+      "sha256": "9d8563bc1733173ef51faa39a017177f2b88dc0911bc79515680a96fdbc3f11b"
     },
     {
       "path": "tools/frame_capture_check.py",
@@ -8387,7 +8387,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9a4a3c08183e5ea2b6115e6b37fc1731c140e6c368ffa81f90ff648a78264114"
+      "sha256": "4d6909c20b6e15b2dd967cd46bf17af6d168181204f40cef035f348bb29633eb"
     },
     {
       "path": "tools/test_font_provisioning.py",
