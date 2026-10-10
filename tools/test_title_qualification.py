@@ -454,11 +454,15 @@ class PosixProcessGroupTests(unittest.TestCase):
 
 
 def _process_running(pid: int) -> bool:
-    """True while the process exists and is not a zombie or dead (Linux /proc)."""
+    """True while the process exists and is not a zombie or dead (Linux /proc).
+
+    The entry can disappear between opening and reading the stat file: the open succeeds and
+    the read raises ProcessLookupError (ESRCH). Both spellings of "gone" mean not running.
+    """
     try:
         with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
             state = handle.read().rsplit(")", 1)[1].split()[0]
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return False
     return state not in {"Z", "X"}
 
