@@ -87,8 +87,12 @@ class Flash0FontDeviceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="flash0-font-") as tmp:
             root = Path(tmp)
             write_fixture(root)
+            # Build beneath the scratch tree, never the checkout's build/.
+            build_root = root / "build"
+            build_dir = build_root / "flash0-font"
             build = subprocess.run(
-                [make, "--no-print-directory", f"BUILD_DIR={BUILD_DIR}", "hle-thread-selftest-build"],
+                [make, "--no-print-directory", f"BUILD_ROOT={build_root.as_posix()}",
+                 f"BUILD_DIR={build_dir.as_posix()}", "hle-thread-selftest-build"],
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
@@ -100,7 +104,7 @@ class Flash0FontDeviceTests(unittest.TestCase):
             env["SR_FONTDIR"] = str(root / "project")
             env.pop("SR_FONTLOG", None)
             run = subprocess.run(
-                [str(ROOT / BUILD_DIR / "hle_thread_selftest.exe"), "--flash0-font"],
+                [str(build_dir / "hle_thread_selftest.exe"), "--flash0-font"],
                 cwd=ROOT,
                 env=env,
                 capture_output=True,
