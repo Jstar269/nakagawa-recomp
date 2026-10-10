@@ -111,6 +111,7 @@
     IMPORT_FUNC "ThreadManForUser", 0x3B183E26, sceKernelGetThreadExitStatus
     IMPORT_FUNC "ThreadManForUser", 0x616403BA, sceKernelTerminateThread
     IMPORT_FUNC "ThreadManForUser", 0x034A921F, sceKernelGetVTimerTime
+    IMPORT_FUNC "ThreadManForUser", 0x627E6F3A, sceKernelReferSystemStatus
     IMPORT_FUNC "ThreadManForUser", 0x64D4540E, sceKernelReferThreadProfiler
     IMPORT_FUNC "ThreadManForUser", 0x8218B4DD, sceKernelReferGlobalProfiler
     IMPORT_FUNC "ThreadManForUser", 0x912354A7, sceKernelRotateThreadReadyQueue
