@@ -2725,6 +2725,24 @@ int main(int argc, char **argv) {
             assert(module_check && module_check->status == PREFLIGHT_OK);
             assert(strstr(module_check->message, "Guest modules: 1 of 1 ready.") != NULL);
 
+            /* A valid PRX whose PT_LOAD file offset (84) and address (0) differ
+               modulo p_align 0x10 is ready: segment bytes are copied from the file
+               offset, so the layout rule has no congruence term. */
+            {
+                unsigned char offset_prx[88];
+                build_synthetic_guest_prx(offset_prx);
+                offset_prx[80] = 0x10; /* p_align */
+                write_guest_module_iso(module_iso_path, "libfont.prx", offset_prx,
+                                       sizeof(offset_prx));
+                remove(module_copy);
+                player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+                module_check = find_preflight_check(&wiz->wizard.preflight, "GUEST_MODULES");
+                assert(module_check && module_check->status == PREFLIGHT_OK);
+                assert(strstr(module_check->message, "Guest modules: 1 of 1 ready.") != NULL);
+                write_guest_module_iso(module_iso_path, "libfont.prx", prx_bytes,
+                                       sizeof(prx_bytes));
+            }
+
             /* A user-supplied decrypted copy that is a valid PRX is ready. */
             write_synthetic_guest_prx(module_copy, sizeof(prx_bytes));
             player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
