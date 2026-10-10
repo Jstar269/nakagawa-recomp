@@ -501,22 +501,58 @@ One console is one data point; see §11. Nothing here closes issue #70
 > measured index above names live issues in words (`issue #23`); read every
 > other bare number as a historical identifier.
 
+- **PSP-3000 campaign on public commit `f6ccfb33` (2026-10-10)**: the campaign queue
+  described under "Pending PSP-3000 measurement campaign" ran on the qualified PSP-3000 /
+  6.61 / ARK-5.1.0 / PSPLink 3.2.1 route, one PRX per boot with a soft reset between cases:
+  30 launched, 30 exited, teardown check PASS on all 30, 22 envelopes acceptance-eligible. A
+  `MEASURED` row below cites exactly the cells named in its row; the eight captures that were
+  not acceptance-eligible (the probe's own assertions or SKIP records differed from the
+  console) are `CAPTURED` only and establish nothing. Raw envelopes, registry values and
+  console identifiers stay in the private campaign directory. Rows measured earlier keep their
+  own citations.
+
+  | Evidence id | Cells cited | Not cited | Outcome (campaign case) |
+  | --- | --- | --- | --- |
+  | `PSP-TRANSPORT-001` | `host0-write-readback` | (none) | MEASURED (`transport-write`) |
+  | `PSP-ALARM-001` | `alarm-null-handler`, `alarm-zero-clock`, `alarm-table-exhaustion`, `alarm-cancel-fired-once`, `alarm-cancel-cancelled`, `alarm-cancel-unknown`, `alarm-rearm-base`, `alarm-blocking-in-handler`, `kernel-alarm-done` | (none) | MEASURED (`kernel-alarm`) |
+  | `PSP-THREAD-003` | `thread-suspend-idle`, `thread-suspend-self`, `thread-resume-idle`, `thread-rotate-range`, `thread-ready-order-after-rotate`, `thread-suspend-wait-timeout`, `thread-scheduler-done` | (none) | MEASURED (`thread-scheduler`) |
+  | `PSP-WAIT-001` | `sema-signal-before-deadline-late-dispatch`, `event-signal-before-deadline-late-dispatch`, `sema-cancel-before-deadline-late-dispatch`, `event-cancel-before-deadline-late-dispatch`, `wait-outcomes-done` | (none) | MEASURED (`wait-outcomes`) |
+  | `PSP-GE-CONTROL-001` | (none) | `ge-break-no-active-list`, `ge-continue-no-paused-list`, `ge-break-invalid-mode`, `ge-list-sync-paused`, `ge-draw-sync-paused`, `ge-list-sync-cancelled`, `ge-draw-sync-cancelled`, `ge-break-continue-done` | CAPTURED only (not acceptance-eligible: `ge-break-continue`) |
+  | `PSP-KERNEL-STATUS-001` | `sema-size-zero`, `sema-size-8`, `sema-size-40`, `sema-size-full`, `event-size-zero`, `event-size-8`, `event-size-40`, `event-size-full`, `mbx-size-zero`, `mbx-size-8`, `mbx-size-40`, `mbx-size-full`, `refer-status-size-done` | (none) | MEASURED (`refer-status-size`) |
+  | `PSP-REGISTRY-001` | `registry-open`, `registry-errors`, `registry-category-*`, `registry-key-*`, `registry-done` | (none) | MEASURED (`registry-readonly`) |
+  | `PSP-KERNEL-MISC-001` | `sysclock-wide`, `ctrl-sampling-mode`, `thread-profiler`, `global-profiler`, `vtimer-basic`, `display-basic`, `impose-basic`, `kernel-misc-done` | (none) | MEASURED (`kernel-misc`) |
+  | `PSP-SMOKE-001` | apis `module_start`, `sceKernelExitGame` | (none) | MEASURED (`smoke`) |
+  | `PSP-THREAD-EXIT-001` | `ED-R77`, `ED-R00`, `ED-RNEG`, `ED-RERR`, `ED-X77`, `ED-X00`, `ED-XNEG`, `ED-XERR`, `ED-D77`, `ED-D00`, `ED-DNEG`, `ED-DERR` | (none) | MEASURED (`thread-exit-delete`) |
+  | `PSP-TEARDOWN-001` | (none) | `exitdelete-main` | CAPTURED only (not acceptance-eligible: `teardown-test`) |
+  | `PSP-IO-001` | apis `open`, `seek`, `async I/O`, `devctl`, `filesystem mutation` | (none) | MEASURED (`io-matrix`) |
+  | `PSP-DISPLAY-001` | row unchanged: cited from `docs/ARCHITECTURE.md#clocks` | `display-mask-duty` (still uncited) | re-run by campaign case `display-mask-duty`: records `display-mask-duty-33000us`, `display-mask-duty-66000us` PASS |
+  | `PSP-DISPLAY-002` | `late-waitvblankstart-{2,6,10,14,20}eighths`, `late-waitvblank-{2,6,10,14,20}eighths`, `invblank-waitvblankstart`, `invblank-waitvblank`, `calibration` | (none) | MEASURED (`display-wait-late`) |
+  | `PSP-DISPLAY-003` | `calibration`, `priority-control`, `priority-experiment` | (none) | MEASURED (`display-wait-priority`) |
+  | `PSP-DISPLAY-004` | `vblank-window` | (none) | MEASURED (`display-vblank-window`) |
+  | `PSP-FPU-001` | `fpu-boot-fcr31`, `fpu-cvt-rm0`, `fpu-cvt-rm1`, `fpu-cvt-rm2`, `fpu-cvt-rm3`, `fpu-ccast-trunc`, `fpu-cvt-s-w`, `fpu-flag-overflow`, `fpu-flag-div0`, `fpu-flag-invalid`, `fpu-flag-underflow`, `fpu-flag-inexact`, `fpu-ftz-contrast`, `fpu-signed-zero`, `fpu-nan-payload`, `fpu-done` | (none) | MEASURED (`fpu-vector`) |
+  | `PSP-CACHE-001` | `cache-alias-init`, `cache-writeback-contrast`, `cache-inval-contrast`, `cache-wball`, `cache-done` | (none) | MEASURED (`cache-alias`) |
+  | `PSP-AUDIO-001` | `audio-ch-reserve`, `audio-ch-query-before`, `audio-ch-output-blocking-0`, `audio-ch-output-blocking-1`, `audio-ch-query-after`, `audio-ch-release`, `audio-ch-query-released`, `audio-out2-reserve`, `audio-out2-query-before`, `audio-out2-output-blocking`, `audio-out2-query-after`, `audio-out2-release`, `audio-src-reserve`, `audio-done` | (none) | MEASURED (`audio-query`) |
+  | `PSP-GE-001` | `ge-nan-vfpu-qnan`, `ge-nan-screen2d-qnan`, `ge-nan-clip3d-qnan`, `ge-nan-litnormal-qnan`, `ge-nan-vfpu-pinf`, `ge-nan-screen2d-pinf`, `ge-nan-clip3d-pinf`, `ge-nan-litnormal-pinf`, `ge-nan-vfpu-ninf`, `ge-nan-screen2d-ninf`, `ge-nan-clip3d-ninf`, `ge-nan-litnormal-ninf`, `ge-nan-vfpu-nzero`, `ge-nan-screen2d-nzero`, `ge-nan-clip3d-nzero`, `ge-nan-litnormal-nzero`, `ge-nan-vfpu-denorm`, `ge-nan-screen2d-denorm`, `ge-nan-clip3d-denorm`, `ge-nan-litnormal-denorm`, `ge-nan-done` | (none) | MEASURED (`ge-nan`) |
+  | `PSP-DMAC-001` | row unchanged: apis `sceDmacMemcpy`, `sceDmacTryMemcpy` cited | the 43 concurrency, invalid-tail and size-matrix cells (unchanged) | campaign case `dma-cells`: 93 records PASS (`align-*` and `overlap-*` cells, recorded privately); the five `dma-invalid-tail-*` campaign cases emitted SKIP and are CAPTURED only |
+  | `PSP-MUTEX-001` | `mutex-refer-unlocked`, `mutex-timeout-quanta`, `mutex-priority-inheritance` | `mutex-interrupt-context` | MEASURED (`mutex-refer-unlocked`, `mutex-timeout-quanta`, `mutex-priority-inheritance`) (not acceptance-eligible: `mutex-interrupt-context`) |
+
 ## Pending PSP-3000 measurement campaign
 
 The following seven source-owned cases are built for a future PSP-3000 / 6.61
-session. Every row remains `NOT_RUN` until a complete physical capture is
-validated. Their parsers check record order, scalar fields, and completion;
+session. Six of the seven were measured by the 2026-10-10 campaign on `f6ccfb33`
+(index above); `ge-break-continue` was captured but not acceptance-eligible.
+Their parsers check record order, scalar fields, and completion;
 they do not encode expected PSP return values.
 
 | Case | Evidence id | Hardware status | Contract being measured |
 | --- | --- | --- | --- |
-| `kernel-alarm` | `PSP-ALARM-001` | `NOT_RUN` | Alarm creation with a null handler and zero clock; alarm-table exhaustion capped at 1024 pending alarms; cancel after one-shot fire, repeat cancel, unknown UID; handler-return re-arm base; interrupt state and a bounded blocking call in an alarm handler. |
-| `thread-scheduler` | `PSP-THREAD-003` | `NOT_RUN` | Suspend UID 0 and self; resume UID 0; invalid ready-queue priority; ready-thread ordering after rotation; a timed wait expiring while its thread is suspended. |
-| `wait-outcomes` | `PSP-WAIT-001` | `NOT_RUN` | Semaphore and event-flag signal/cancel before the timeout deadline, followed by dispatch after that deadline. |
-| `ge-break-continue` | `PSP-GE-CONTROL-001` | `NOT_RUN` | `sceGeBreak`/`sceGeContinue` return values without active/paused lists, invalid break mode, list/draw sync states for paused/cancelled lists, and a bounded continue drain and queue quiesce (`TIMEOUT` instead of a hang). |
-| `refer-status-size` | `PSP-KERNEL-STATUS-001` | `NOT_RUN` | Bytes written and size-word results for `ReferSemaStatus`, `ReferEventFlagStatus`, and `ReferMbxStatus` at size 0, 8, 40, and full size. |
-| `registry-readonly` | `PSP-REGISTRY-001` | `NOT_RUN` | Read-only root/category opening and `/CONFIG` category/key enumeration, metadata, selected modeled settings, error returns, handle exhaustion capped at 256 opens, and the forged-handle call last. |
-| `kernel-misc` | `PSP-KERNEL-MISC-001` | `NOT_RUN` | Wide clock conversion, controller default mode, profiler-pointer returns, basic VTimer behavior, display return values, battery-icon status, and UMD-popup returns. |
+| `kernel-alarm` | `PSP-ALARM-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Alarm creation with a null handler and zero clock; alarm-table exhaustion capped at 1024 pending alarms; cancel after one-shot fire, repeat cancel, unknown UID; handler-return re-arm base; interrupt state and a bounded blocking call in an alarm handler. |
+| `thread-scheduler` | `PSP-THREAD-003` | `MEASURED` (2026-10-10, `f6ccfb33`) | Suspend UID 0 and self; resume UID 0; invalid ready-queue priority; ready-thread ordering after rotation; a timed wait expiring while its thread is suspended. |
+| `wait-outcomes` | `PSP-WAIT-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Semaphore and event-flag signal/cancel before the timeout deadline, followed by dispatch after that deadline. |
+| `ge-break-continue` | `PSP-GE-CONTROL-001` | `CAPTURED` (2026-10-10, `f6ccfb33`; not acceptance-eligible) | `sceGeBreak`/`sceGeContinue` return values without active/paused lists, invalid break mode, list/draw sync states for paused/cancelled lists, and a bounded continue drain and queue quiesce (`TIMEOUT` instead of a hang). |
+| `refer-status-size` | `PSP-KERNEL-STATUS-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Bytes written and size-word results for `ReferSemaStatus`, `ReferEventFlagStatus`, and `ReferMbxStatus` at size 0, 8, 40, and full size. |
+| `registry-readonly` | `PSP-REGISTRY-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Read-only root/category opening and `/CONFIG` category/key enumeration, metadata, selected modeled settings, error returns, handle exhaustion capped at 256 opens, and the forged-handle call last. |
+| `kernel-misc` | `PSP-KERNEL-MISC-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Wide clock conversion, controller default mode, profiler-pointer returns, basic VTimer behavior, display return values, battery-icon status, and UMD-popup returns. |
 
 The registry probe opens the registry and categories in read mode and never
 calls a write, create, remove, or flush API. Values are emitted only for keys
