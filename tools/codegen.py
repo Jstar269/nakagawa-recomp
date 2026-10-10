@@ -36,7 +36,7 @@ import entry_frame_balance
 from imports import ImportTableError, format_boundary
 
 
-CPU_STATE_ABI_VERSION = 2
+CPU_STATE_ABI_VERSION = 3
 EMITTED_OWNERSHIP_SCHEMA_VERSION = 1
 
 # LLE CPU mode (PR 2): when True, generated SYSCALL/BREAK raise guest
@@ -180,7 +180,8 @@ class AddressSpace:
 # loads and stores, cache, and lwc1/swc1.
 _RELOCATABLE_IMMEDIATE_OPS = frozenset(
     list(range(0x08, 0x10)) + [0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26,
-                               0x28, 0x29, 0x2A, 0x2B, 0x2E, 0x2F, 0x31, 0x39]
+                               0x28, 0x29, 0x2A, 0x2B, 0x2E, 0x2F, 0x30, 0x31,
+                               0x38, 0x39]
 )
 
 ADDRESS_SPACE = AddressSpace()
@@ -848,6 +849,52 @@ def _lle_access_stmt(addr, w, op, delay_branch_pc):
     return stmt, saddr, (width if is_store else 0)
 
 
+# Sentinel store-address result from effect(): the statement closes its own
+# instruction trace (it calls sr_end itself), so normal_line() must not append a
+# second sr_end. Only `sc` uses it: whether it stores is known only at run time,
+# and its result write may overwrite the base register the address came from.
+SELF_TRACED = "<self-traced>"
+
+
+def _ll_sc_stmt(addr, w, op, lle_cpu, delay_branch_pc):
+    """`ll` (0x30) and `sc` (0x38): MIPS32 load-linked / store-conditional.
+
+    Public MIPS32 contract (Architecture for Programmers Vol. II, LL and SC):
+      ll  rt, off(base)   rt = word at base+off; LLbit = 1
+      sc  rt, off(base)   if LLbit: word at base+off = rt; rt = LLbit (0 or 1)
+    `sc` leaves LLbit as it found it (the Release 2 operation). The runtime
+    clears LLbit only at the events listed in docs/ARCHITECTURE.md
+    ("LL/SC link state"); nothing here clears it.
+
+    Every field form decodes: `rs`, `rt` and the 16-bit offset are all operands
+    and the encodings have no reserved bits. rt = $zero still links (`ll`) and
+    still stores (`sc`); only the register write is dropped, exactly like the
+    other loads. The word access is aligned like `lw`/`sw`: under --lle-cpu the
+    same width-4 sr_cpu_guard_access() check runs first, before the link is
+    consulted, so an address error leaves rt, memory and LLbit untouched. That
+    check order follows the MIPS32 operation sections; PSP alignment for ll/sc
+    specifically is architectural, not separately measured.
+    """
+    base = f"{R(rs(w))} + {simm(w)}"
+    is_store = 1 if op == 0x38 else 0
+    if lle_cpu:
+        in_delay = 1 if delay_branch_pc is not None else 0
+        branch = G(delay_branch_pc) if delay_branch_pc is not None else "0u"
+        guard = (f"if (sr_cpu_guard_access(s, _ea, 4u, {is_store}, {G(addr)}, {branch}, "
+                 f"{in_delay}u)) {{ sr_end(s, 0u, 0); return; }} ")
+    else:
+        guard = ""
+    if op == 0x30:  # ll
+        load = "(void)_ea;" if rt(w) == 0 else wr(rt(w), "MEM_R32(_ea)")
+        return (f"{{ uint32_t _ea = {base}; {guard}{load} "
+                f"s->llbit = 1u; }}"), None, 0
+    # sc: the store and the trace's memory token happen only while linked; the
+    # address is latched before rt (which may also be the base) is overwritten.
+    return (f"{{ uint32_t _ea = {base}; {guard}uint32_t _sc = s->llbit != 0u ? 1u : 0u; "
+            f"if (_sc) {{ MEM_W32_PC(_ea, {R(rt(w))}, {G(addr)}); }} {wr(rt(w), '_sc')} "
+            f"sr_end(s, _ea, _sc ? 4 : 0); }}"), SELF_TRACED, 0
+
+
 def effect(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
     op = w >> 26
     if op == 0x10:  # COP0 (spec 3.4)
@@ -975,6 +1022,7 @@ def effect(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
     if op == 0x26: return wr(rt(w), f"sr_lwr({R(rt(w))}, {R(rs(w))} + {simm(w)})"), None, 0   # lwr
     if op == 0x2A: return f"sr_swl_pc({R(rs(w))} + {simm(w)}, {R(rt(w))}, {G(addr)});", f"(({R(rs(w))} + {simm(w)}) & ~3u)", 4  # swl
     if op == 0x2E: return f"sr_swr_pc({R(rs(w))} + {simm(w)}, {R(rt(w))}, {G(addr)});", f"(({R(rs(w))} + {simm(w)}) & ~3u)", 4  # swr
+    if op in (0x30, 0x38): return _ll_sc_stmt(addr, w, op, lle_cpu, delay_branch_pc)  # ll / sc
     if op == 0x31: return f"s->fi[{rt(w)}] = MEM_R32({R(rs(w))} + {simm(w)});", None, 0  # lwc1
     if op == 0x39: return f"MEM_W32_PC({R(rs(w))} + {simm(w)}, s->fi[{rt(w)}], {G(addr)});", f"({R(rs(w))} + {simm(w)})", 4  # swc1
     if op == 0x11: return fpu_effect(addr, w)
@@ -1885,6 +1933,8 @@ def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None)
             raise
         eff = _vfpu_interp_stmt(addr, w)
         saddr, ssize = None, 0
+    if saddr is SELF_TRACED:
+        return f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); {eff}"
     return f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); {eff} sr_end(s, {saddr if saddr else '0u'}, {ssize});"
 
 def _cop0_fields(w):
@@ -2087,7 +2137,8 @@ def _sv_step(w, regs, written):
     elif op == 0x0D: W(b, regs[a] | (w & 0xFFFF) if regs[a] is not None else None); return    # ori
     elif op == 0x0E: W(b, regs[a] ^ (w & 0xFFFF) if regs[a] is not None else None); return    # xori
     elif op == 0x0F: W(b, (w & 0xFFFF) << 16); return                                         # lui
-    elif op in _SV_RT_UNKNOWN_OPS: W(b, None); return   # loads: runtime-dependent
+    elif op in _SV_RT_UNKNOWN_OPS: W(b, None); return   # loads (and ll): runtime-dependent
+    elif op == 0x38: W(b, None); return   # sc: rt = 0/1 from the run-time link state
     elif op == 0x10:   # COP0 (spec 3.4): MFC0 destinations are unknown; MTC0,
         if ((w >> 21) & 0x1F) == 0x00: W(b, None)    # syscall/break/eret may
         else:                                        # mutate anything: flush.

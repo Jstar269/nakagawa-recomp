@@ -36,7 +36,7 @@ typedef std::atomic_int_least32_t atomic_int_least32_t;
 #include "stale_code.h"  /* TD-27 opt-in stale translated-code detector (declarations only) */
 
 #ifndef SR_CPUSTATE_ABI_VERSION
-#define SR_CPUSTATE_ABI_VERSION 2u
+#define SR_CPUSTATE_ABI_VERSION 3u
 #endif
 
 typedef struct CpuState {
@@ -68,12 +68,27 @@ typedef struct CpuState {
     uint32_t in_delay_slot;  /* Parity with ref::CpuState */
     uint32_t flow_kind;      /* Runtime transfer metadata, not architectural state */
     uint32_t flow_target;    /* Runtime transfer metadata, not architectural state */
+    /* MIPS32 LLbit: 1 after `ll`, read by `sc`. Architectural, per thread. Cleared
+     * only through sr_cpu_link_clear() at the events that end an atomic window:
+     * exception return (eret), interrupt/callback return, HLE syscall return and
+     * thread switch-in. Nothing else writes it, so an ll..sc window that crosses
+     * none of those events always succeeds (ABI v3). */
+    uint32_t llbit;
 } CpuState;
 
 #define SR_CP0_STATUS 12u
 
 static inline uint32_t *sr_cp0_status_ptr(CpuState *s) {
     return &s->cop0[SR_CP0_STATUS];
+}
+
+/* End the current ll..sc atomic window: the next `sc` fails and stores nothing.
+ * Called at every point where this runtime models an event the MIPS32 contract
+ * says breaks the link (an exception return, an interrupt or callback returning
+ * to the interrupted context, an HLE syscall returning, and a thread being
+ * switched in). See docs/ARCHITECTURE.md "LL/SC link state". */
+static inline void sr_cpu_link_clear(CpuState *s) {
+    s->llbit = 0u;
 }
 
 /* LLE Phase 1 (PR 2): COP0/exception/eret helpers and flow metadata. Included
@@ -86,7 +101,7 @@ static inline uint32_t *sr_cp0_status_ptr(CpuState *s) {
 #include "domain_mode.h"
 
 #ifndef __cplusplus
-_Static_assert(SR_CPUSTATE_ABI_VERSION == 2u, "unsupported CpuState ABI version");
+_Static_assert(SR_CPUSTATE_ABI_VERSION == 3u, "unsupported CpuState ABI version");
 _Static_assert(offsetof(CpuState, cop0) == 852u, "CpuState cop0 offset drift");
 _Static_assert(offsetof(CpuState, next_pc) == 980u, "CpuState next_pc offset drift");
 _Static_assert(offsetof(CpuState, in_delay_slot) == 984u,
@@ -94,7 +109,8 @@ _Static_assert(offsetof(CpuState, in_delay_slot) == 984u,
 _Static_assert(offsetof(CpuState, flow_kind) == 988u, "CpuState flow_kind offset drift");
 _Static_assert(offsetof(CpuState, flow_target) == 992u,
                "CpuState flow_target offset drift");
-_Static_assert(sizeof(CpuState) == 996u, "CpuState size drift");
+_Static_assert(offsetof(CpuState, llbit) == 996u, "CpuState llbit offset drift");
+_Static_assert(sizeof(CpuState) == 1000u, "CpuState size drift");
 #endif
 
 /* Guest memory: a single host region. g_mem points at guest 0x08000000, and the underlying
@@ -1104,6 +1120,9 @@ static inline uint32_t sr_callback_dispatch_one(CpuState *cpu, uint32_t entry, i
     dispatch_fn(cpu, entry);
     uint32_t ret = cpu->r[2];
     *cpu = save;
+    /* The interrupted thread resumes as after an exception return: its ll..sc
+     * window, if any, is over (MIPS32 LLbit is cleared by eret). */
+    sr_cpu_link_clear(cpu);
     return ret;
 }
 
@@ -1149,7 +1168,7 @@ extern jmp_buf g_hle_jmp;
 
 #ifdef __cplusplus
 #include "cpu.h"
-static_assert(SR_CPUSTATE_ABI_VERSION == 2u, "unsupported CpuState ABI version");
+static_assert(SR_CPUSTATE_ABI_VERSION == 3u, "unsupported CpuState ABI version");
 static_assert(sizeof(::CpuState) == sizeof(ref::CpuState), "CpuState structural layout drift detected!");
 #define SR_CPUSTATE_OFFSET_ASSERT(field) \
     static_assert(offsetof(::CpuState, field) == offsetof(ref::CpuState, field), \
@@ -1170,6 +1189,7 @@ SR_CPUSTATE_OFFSET_ASSERT(next_pc);
 SR_CPUSTATE_OFFSET_ASSERT(in_delay_slot);
 SR_CPUSTATE_OFFSET_ASSERT(flow_kind);
 SR_CPUSTATE_OFFSET_ASSERT(flow_target);
+SR_CPUSTATE_OFFSET_ASSERT(llbit);
 #undef SR_CPUSTATE_OFFSET_ASSERT
 #endif
 
