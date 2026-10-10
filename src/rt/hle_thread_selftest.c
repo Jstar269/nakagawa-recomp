@@ -4197,7 +4197,8 @@ static void test_named_refusals(void) {
            "sceNetApctlDelHandler refuses with the offline network code 0x80010086");
 }
 
-/* sceGeEdramSetAddrTranslation (0xb77905ea): PSPSDK pspge.h. Measured on PSP-3000 (2026-10-10):
+/* sceGeEdramSetAddrTranslation (0xb77905ea): PSPSDK pspge.h. Captured on PSP-3000 (2026-10-10;
+ * not acceptance-eligible, so CAPTURED rather than MEASURED):
  * every call, width 0 included, sets the width and returns the previous one; the boot width is
  * 1024. An unsupported width fails and leaves the setting alone; that code is the project choice
  * noted in hle.c (unmeasured). */
@@ -4216,9 +4217,9 @@ static void test_ge_edram_addr_translation(void) {
     reset_fixture();
     sr_hle_init();
     sr_hle_test_ge_edram_reset();
-    expect(ge_edram_translation(0u) == 1024u, "width 0 is a set like any other: it returns the boot width 1024 (measured)");
-    expect(ge_edram_translation(512u) == 0u, "setting 512 returns the 0 the previous call set (measured)");
-    expect(ge_edram_translation(0u) == 512u, "width 0 returns the previous width 512 and sets 0 (measured)");
+    expect(ge_edram_translation(0u) == 1024u, "width 0 is a set like any other: it returns the boot width 1024 (captured 2026-10-10)");
+    expect(ge_edram_translation(512u) == 0u, "setting 512 returns the 0 the previous call set (captured 2026-10-10)");
+    expect(ge_edram_translation(0u) == 512u, "width 0 returns the previous width 512 and sets 0 (captured 2026-10-10)");
     expect(ge_edram_translation(1024u) == 0u, "setting 1024 returns the 0 the previous call set");
     expect(ge_edram_translation(333u) == GE_EDRAM_BAD_WIDTH_ERR,
            "an unsupported width (333) fails with the project's code (unmeasured)");
