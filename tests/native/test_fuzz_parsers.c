@@ -1331,8 +1331,8 @@ static void test_fuzz_package(unsigned iters) {
     char package_dir[512], package_path[640], report_path[640];
     char executable_path[768], image_path[768], absolute_root[1024];
     char package_json[8192], report_json[8192], cache_json[4096], cache_key_json[3072];
-    char aot_components_json[1024], native_components_json[512];
-    char aot_digest[65], native_digest[65];
+    char aot_components_json[1024], generated_components_json[1024], native_components_json[512];
+    char aot_digest[65], generated_code_digest[65], native_digest[65];
     char completion_json[4096], completion_path[768];
     char reason[512];
 
@@ -1358,8 +1358,6 @@ static void test_fuzz_package(unsigned iters) {
         "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356";
     const char *identity_digest =
         "b9b7b9d231aafef0cb4254e9d063043d4f74edb82f87d6a828e66ba9b1eb1774";
-    const char *generated_code_digest =
-        "d3991dd8147b28df31bf0e2336377d7c34b38048aaecc9443fde95bd8f767dd5";
     static const char identity_json[] =
         "{\"container\":null,"
         "\"disc\":{\"disc_version\":null,\"id\":null,\"region\":null},"
@@ -1381,6 +1379,27 @@ static void test_fuzz_package(unsigned iters) {
         0, codegen_options_digest, 0, fixture_sha, NK_AOT_GENERATED_CODE_ABI_EPOCH, 0,
         modules_digest, NK_AOT_RUNTIME_ABI_EPOCH, identity_digest);
     assert(aot_components_length > 0 && (size_t)aot_components_length < sizeof(aot_components_json));
+    /* generated_code_digest covers the AOT components without runtime_abi_epoch (the generated C
+     * can outlive a compatible runtime epoch), hashed the same way as the key digests. */
+    int generated_components_length = snprintf(generated_components_json, sizeof(generated_components_json),
+        "{\"analyzer_codegen_epoch\":\"analyzer-codegen-v1\","
+        "\"analyzer_sha256\":\"%064d\",\"codegen_options_sha256\":\"%s\","
+        "\"codegen_sha256\":\"%064d\",\"executable_sha256\":\"%s\","
+        "\"generated_code_abi_epoch\":%d,\"manifest_sha256\":\"%064d\","
+        "\"modules_sha256\":\"%s\",\"psp_header_sha256\":null,"
+        "\"title_input_identity_sha256\":\"%s\"}",
+        0, codegen_options_digest, 0, fixture_sha, NK_AOT_GENERATED_CODE_ABI_EPOCH, 0,
+        modules_digest, identity_digest);
+    assert(generated_components_length > 0 &&
+           (size_t)generated_components_length < sizeof(generated_components_json));
+    {
+        FuzzSha256 ctx;
+        fuzz_sha_init(&ctx);
+        fuzz_sha_update(&ctx, (const uint8_t *)generated_components_json,
+                        (size_t)generated_components_length);
+        fuzz_sha_update(&ctx, (const uint8_t *)"\n", 1u);
+        fuzz_sha_finish(&ctx, generated_code_digest);
+    }
     int native_components_length = snprintf(native_components_json, sizeof(native_components_json),
         "{\"compile_flags\":\"\",\"compiler_identity\":\"gcc-fixture\","
         "\"compiler_target\":\"fixture-target\",\"generated_code_digest\":\"%s\","
