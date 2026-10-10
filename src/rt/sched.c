@@ -964,6 +964,7 @@ void sched_dump_threads(void) {
  * when no thread is runnable (i.e. once per simulated frame). */
 uint32_t sr_vblank_handler(void);
 uint32_t sr_vblank_arg(void);
+uint32_t sr_vblank_no(void);
 /* The deadline a thread carries when nothing but a signal can release it.
  * Named so the "infinite waits never expire" rule in
  * sched_promote_expired_waits() is checkable rather than a bare -1. */
@@ -1460,7 +1461,13 @@ static void deliver_vblank(void) {
     memcpy(s_cpu, &save, sizeof(CpuState));
     s_cpu->r[29] = SR_VBLANK_STACK_TOP; /* dedicated interrupt stack (above thread stacks, below nested frames) */
     s_cpu->r[28] = s_gp;
-    s_cpu->r[4] = sr_vblank_arg();       /* a0 = registered arg */
+    /* A sub-interrupt handler is called as handler(no, arg): a0 is the sub-interrupt number
+     * the guest registered and a1 is its arg (PSPSDK pspintrman.h; the SDK vsync sample
+     * declares `void on_vblank(int sub, void *data)`). A retail title's handler reads its
+     * event-flag id from 4(a1) and ignores a0; with the arg in a0 it set event flag 0 every
+     * vblank (UNKNOWN_EVFID) and its movie threads waited forever. */
+    s_cpu->r[4] = sr_vblank_no();
+    s_cpu->r[5] = sr_vblank_arg();
     s_cpu->r[31] = 0;
     s_cpu->vfpuCtrl[0] = 0xe4; s_cpu->vfpuCtrl[1] = 0xe4;
     s_cpu->pc = h;
