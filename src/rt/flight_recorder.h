@@ -22,7 +22,7 @@ enum {
     SR_FLIGHT_CLASS_PRESENT = 1u << 8,
     SR_FLIGHT_CLASS_ALL = (1u << 9) - 1u,
     SR_FLIGHT_MAX_EVENTS = 4096u,
-    SR_FLIGHT_SCHEMA_VERSION = 4u
+    SR_FLIGHT_SCHEMA_VERSION = 5u
 };
 
 enum {
@@ -75,7 +75,9 @@ enum {
     SR_FLIGHT_TERMINAL_RUNNING = 0u,
     SR_FLIGHT_TERMINAL_EXIT = 1u,
     SR_FLIGHT_TERMINAL_FATAL = 2u,
-    SR_FLIGHT_TERMINAL_UNSUPPORTED_NID = 3u
+    SR_FLIGHT_TERMINAL_UNSUPPORTED_NID = 3u,
+    SR_FLIGHT_TERMINAL_BUDGET = 4u,
+    SR_FLIGHT_TERMINAL_HANG = 5u
 };
 
 typedef struct {
@@ -104,6 +106,13 @@ typedef struct {
     uint32_t terminal_kind;
     uint32_t terminal_arg;
     uint64_t terminal_sequence;
+    /* Named refusals: calls the guest was told were refused and kept running after. */
+    uint64_t refusal_count;
+    uint32_t refusal_first_nid;
+    uint32_t refusal_first_pc;
+    uint64_t refusal_first_sequence;
+    uint32_t refusal_distinct;
+    uint64_t refusal_unlisted;
 } SrFlightSnapshot;
 
 /* ---- SR_TRACE_PC: an address window over the instruction trace ----
@@ -169,6 +178,8 @@ void sr_flight_prx_load(uint32_t base, uint32_t result, uint32_t entry, uint32_t
                         uint32_t exports);
 void sr_flight_fatal(uint32_t kind, uint32_t pc, uint32_t detail, uint32_t aux);
 void sr_flight_exit(uint32_t status);
+void sr_flight_budget(uint32_t vblank);
+void sr_flight_hang(uint32_t vblanks_without_frame, uint32_t limit);
 void sr_flight_fault(uint32_t kind, uint32_t pc, uint32_t detail, uint32_t aux);
 /* Host crash-filter entry: names SR_FLIGHT_KIND_FAULT_EXCEPTION with the host
  * exception code as detail and the guest fault address (or 0 when the fault
@@ -274,6 +285,13 @@ static inline void sr_flight_fatal(uint32_t kind, uint32_t pc, uint32_t detail, 
 }
 static inline void sr_flight_exit(uint32_t status) {
     (void)status;
+}
+static inline void sr_flight_budget(uint32_t vblank) {
+    (void)vblank;
+}
+static inline void sr_flight_hang(uint32_t vblanks_without_frame, uint32_t limit) {
+    (void)vblanks_without_frame;
+    (void)limit;
 }
 static inline void sr_flight_fault(uint32_t kind, uint32_t pc, uint32_t detail, uint32_t aux) {
     (void)kind;
