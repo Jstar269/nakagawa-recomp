@@ -45,6 +45,32 @@ def header_string(name: str) -> str:
 # so make reuses the ordinary objects and the selftest binary lands at a known path.
 BUILD_DIR = "build/mygame"
 
+# hle-thread-selftest-build writes hle_thread_selftest.exe on every host: the output name is
+# spelled in the recipe, not taken from EXE_EXT. Only the make program varies by platform.
+# The harness includes <windows.h> without a _WIN32 guard and calls Win32 file APIs, so it does
+# not build off Windows. Until it is ported, that is a named SKIP there, decided from the source
+# before any build (docs/LINUX_DEVELOPMENT.md lists the gap). The check retires itself: once the
+# include is guarded, the same test builds the selftest with make.
+SELFTEST_SOURCE = ROOT / "src" / "rt" / "hle_thread_selftest.c"
+
+
+def unguarded_windows_include(source: str) -> bool:
+    """True when ``#include <windows.h>`` is outside every conditional that names ``_WIN32``."""
+    guards: list[bool] = []
+    for line in source.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
+        directive = stripped[1:].strip()
+        if re.match(r"if(n?def)?\b", directive):
+            guards.append("_WIN32" in directive)
+        elif re.match(r"endif\b", directive):
+            if guards:
+                guards.pop()
+        elif re.match(r"include\s*<windows\.h>", directive, re.IGNORECASE) and not any(guards):
+            return True
+    return False
+
 
 def synthetic_pgf(glyph_count: int, first_code: int = 0x41) -> bytes:
     """A dense PGF with ``glyph_count`` glyphs starting at ``first_code``."""
@@ -80,10 +106,34 @@ def write_fixture(root: Path) -> dict[str, bytes]:
 
 
 class Flash0FontDeviceTests(unittest.TestCase):
+    def test_windows_include_detector(self) -> None:
+        """The skip below is decided by this reader, so it must tell a guarded include apart."""
+        cases = {
+            "#include <windows.h>\n": True,
+            "#ifdef _WIN32\n#include <windows.h>\n#endif\n": False,
+            "#if defined(_WIN32) && !defined(X)\n# include <Windows.h>\n#endif\n": False,
+            "#ifdef _WIN32\n#if X\n#endif\n#include <windows.h>\n#endif\n": False,
+            "#ifdef _WIN32\n#endif\n#include <windows.h>\n": True,
+            "#if SR_FEATURE\n#include <windows.h>\n#endif\n": True,
+            "/* #include <windows.h> */\n#include <stdio.h>\n": False,
+        }
+        for source, expected in cases.items():
+            with self.subTest(source=source):
+                self.assertIs(unguarded_windows_include(source), expected)
+
     def test_native_device_contract_on_synthetic_fonts(self) -> None:
-        make = shutil.which("mingw32-make")
+        if sys.platform != "win32" and unguarded_windows_include(
+            SELFTEST_SOURCE.read_text(encoding="utf-8")
+        ):
+            raise unittest.SkipTest(
+                f"{SELFTEST_SOURCE.name} includes <windows.h> without a _WIN32 guard, so the "
+                f"selftest does not build on {sys.platform} yet "
+                "(docs/LINUX_DEVELOPMENT.md, 'What doesn't yet')"
+            )
+        make_tool = "mingw32-make" if sys.platform == "win32" else "make"
+        make = shutil.which(make_tool)
         if not make:
-            raise unittest.SkipTest("mingw32-make is not available")
+            raise unittest.SkipTest(f"{make_tool} is not available")
         with tempfile.TemporaryDirectory(prefix="flash0-font-") as tmp:
             root = Path(tmp)
             write_fixture(root)
