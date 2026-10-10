@@ -35,6 +35,7 @@ _RUNS_BEFORE_PROCESS_TEST = (
     "build/mygame/ge_texture_ref_selftest",
     "build/mygame/fbcap_selftest build/mygame/fbcap_selftest",
     "build/mygame/osk_text_entry_selftest",
+    "build/mygame/osk_overlay_selftest",
     "build/mygame/ge_float24_selftest",
     "build/mygame/ge_raster_ref_selftest",
     "build/test_pgf_public",
