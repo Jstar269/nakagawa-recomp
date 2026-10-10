@@ -1084,7 +1084,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f92bd775b2b952e9d3c1a7afdc5dd6c92b3cae66ab29e2857f218803d6fe6bbf"
+      "sha256": "3be203ac51660b988f49a035e3d2a6e502365b5464795fd6719ee53c3478712b"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -4079,7 +4079,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "14f4ce5e97338fd42a0edbc2aea575bc74afd080afa4a819b4dfd3d54aab1624"
+      "sha256": "a08fabde02063d3cb2a6d0685cc3810503408338555f84fa92da18f42dfa5a4d"
     },
     {
       "path": "src/rt/cpu_lle.c",
@@ -4842,7 +4842,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "c948543c1b01aca633b789bdf4cd54059e7884eded3e6e2c975f7382f1fc1f71"
+      "sha256": "d01c89dac4d3fd4a18baafb4660347f0e74a216ad9b7a5b6f789ac9a06fb85be"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4880,7 +4880,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4a7f83c186d7cf0d5f1f1e83abfc4c7ede86d89b8d6eeb8e256e0cdfb6c1c5ff"
+      "sha256": "137d9ebd417006c7e4b1071d78fdbd0dbaaf4ab27faa7f0273704e1b939e4627"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -5235,7 +5235,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "46698b6b663b37380d4b90d8d2affd70beb576e03b12b84da55602283bc1bb01"
+      "sha256": "bfee65a98c2b1bdfa8e0648f1beb483e65e163d0382ac232211e27a14db99f64"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -5247,7 +5247,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1d362fda5fef305fc02b6558b484b5ffd57de658c5d699d1a74fb80144ce5ae1"
+      "sha256": "46eb3c60180610da5b7763d7d5a23e5d35f22e415bece0d7841aeafd0d5e5f58"
     },
     {
       "path": "src/rt/scripted_input.h",
@@ -7883,7 +7883,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "69b49fe93d240e40c516801cd5dd1dbf949db4a6a38ea512ee4ac1052d50810a"
+      "sha256": "ef47948cd0871e6618c009c5cbd1303805e85b89181fe1fe7b19e598868e2224"
     },
     {
       "path": "tools/test_dco_policy.py",
