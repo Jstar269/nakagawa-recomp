@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2f525668339f7a529f6a8bc5d5b25ab0ca47aca38c36ebcd3cd8963ad07c970e"
+      "sha256": "4dcffbcc1ebab154f76305b8e2238ab2ab2ae9b4d9200328eea69d95f1d02036"
     },
     {
       "path": "NOTICE.md",
@@ -667,7 +667,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "bf22f2a803cffd4697117d29a1ec23c2517a010db0dd8baaadc01f3183b03603"
+      "sha256": "7a9cb61c8b35465e22418b294e9e1ad3aa361494ae5b1d1b46cd85d8b916baca"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1039,7 +1039,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2f56383b098c9bfebfe6d242db5aa018a9a24a75bfb9df1f0ede9052a064580d"
+      "sha256": "fc1599f5574fa15851e6e2ef2f0c3246efcfab77d6ad1ad423cd1242fbf1ef03"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -1084,7 +1084,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b0b6e260677d1428b40c57d7efbe3b7e590ada0a078e4014b4a07d6b5e405ae9"
+      "sha256": "53e4a8cf6fc99b5a480fda593ce5a041755cbbc0c0121edf90650eb4de717dc4"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -1141,7 +1141,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9b4fe1bad322fc1250ab55952d9121999858bfec8f4af9b02f3aec91f130beca"
+      "sha256": "83ea8a3c1591f35913f95bcdfc324fa578cbc1bcb9b1b309314cafd9720adbb0"
     },
     {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",
@@ -4703,7 +4703,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "882721b8c5d5d9eaa2f9d030f427d921e3d158940e960ddda479b41180a0e328"
+      "sha256": "d83dccd9d016a38461795cd1eced00c04c21bc01bb3474071d4938e4b6d87b2a"
     },
     {
       "path": "src/rt/gpu_sdl3vk/sdl3vk.h",
@@ -4716,7 +4716,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "647b233d6e335a3f02e200112bdabef68bad0cdd8ef90be83f1df325ed6556b4"
+      "sha256": "9d4f6156073ef61c5a57a654461d434c11b8a8a6058d2650a27ab9172e035325"
     },
     {
       "path": "src/rt/gpu_sdl3vk/shader_manifest.json",
@@ -4828,7 +4828,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "209e4fe7dbce022fc65f434f6a1a709d72075fea2bde3b99136fd4e1e6eaf9e3"
+      "sha256": "2f6c40b4689da40c2e2b8c82b24f680970711bfb8719483ae5f03564688043fc"
     },
     {
       "path": "src/rt/h264_mf.c",
@@ -4878,7 +4878,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "df78e90415f90700f24074341b195c6fa78a6e3d86cb8223b9ad07303982a9ae"
+      "sha256": "47277d570cd6ff402929b2fc3c7c7da8ff2eb3f31154dff5661490a14d289a33"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4916,7 +4916,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9d37a351edb8126db527603caafcb8248daf87a60a89e46ed628839f02859892"
+      "sha256": "fc8cb5e4ad134166e18ce9afe9e3a7da8e36a320e894702726d1782bb705150b"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -5017,6 +5017,78 @@
       "sha256": "f50e0ddd8453fdfd5a8c6e6501eefef48975787d8bce391c9a332311c7191b7d"
     },
     {
+      "path": "src/rt/osk_overlay.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "osk-overlay-state-machine",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "4575187e35bf6b07de77ba7d79fd17bd2866c178a501f65812f798be1dd728f9"
+    },
+    {
+      "path": "src/rt/osk_overlay.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "osk-overlay-state-machine",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "e2a207322d2de84addad4ff9f7a838c41add8b15984830bd1482a84f0116c97c"
+    },
+    {
+      "path": "src/rt/osk_overlay_paint.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "osk-overlay-paint",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "a1e0d852c43d680cdbd16689c7a68c7e2a2fd0177859095a0047970286716218"
+    },
+    {
+      "path": "src/rt/osk_overlay_paint.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "osk-overlay-paint",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "3d201be63cde49ca67f2a7b680259e7386af0ac8a8ba0e0071706250fdc03f84"
+    },
+    {
+      "path": "src/rt/osk_overlay_paint_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "osk-overlay-paint",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "f291dd2ab26e8bbd0bdb00f1558d0d30ac8885b967dc7bad98b3f63a1052c67b"
+    },
+    {
+      "path": "src/rt/osk_overlay_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "osk-overlay-state-machine",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "99569c2b5ba5caaab8eef73188497a81ef7b7c3b856e3facc582e5f8a25e0669"
+    },
+    {
       "path": "src/rt/osk_text_entry.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -5026,7 +5098,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "01df63cb31ee9b7c0bdb8a56c39823842e64f336404210b3fe1298ac09cfca76"
+      "sha256": "f89230689427e894a8307f8665b25037d3c1c86836d5f7fbc81040111ff23b70"
     },
     {
       "path": "src/rt/osk_text_entry.h",
@@ -5038,7 +5110,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c1f8ff5fdb445eb7beca2eb1373c9bc6f14d4652065fa56b8cc75937c3b509f6"
+      "sha256": "ceca23ef5f20c4367742b14f479154f22a780ccacbb4b88603acae80725ab080"
     },
     {
       "path": "src/rt/osk_text_entry_selftest.c",
@@ -5050,7 +5122,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2d6363e3d0022ba248c126634c5137587dc8844708ce50fda4e3967e56468b11"
+      "sha256": "35555fa857c563bf5eadcbf8bc1cdfd7ee92319c97d54bb19cde7b0b441d767b"
     },
     {
       "path": "src/rt/osk_win.c",
@@ -5245,7 +5317,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "a4cd8fcf4e22ad7dfad0f59a762f5e639b95fe91f3de9130eb999107c5f79f94"
+      "sha256": "bdc962b105f103314f048cd22bd2f8b0382fe203826e6bdce9967dc80b221753"
     },
     {
       "path": "src/rt/savedata.c",
