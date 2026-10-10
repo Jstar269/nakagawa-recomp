@@ -430,7 +430,16 @@
           "sceKernelReferFplStatus",
           "sceKernelTryAllocateFpl",
           "sceKernelFreeFpl",
-          "sceKernelDeleteFpl"
+          "sceKernelDeleteFpl",
+          "sceKernelGetThreadId",
+          "sceIoOpen",
+          "sceIoWrite",
+          "sceIoClose",
+          "sceKernelSleepThread",
+          "sceKernelExitThread",
+          "sceKernelWakeupThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelDeleteThread"
         ],
         "diagnostic_case_ids": [
           "hle-kernel-status"
@@ -475,7 +484,16 @@
           "sceKernelStopVTimer",
           "sceKernelGetVTimerTime",
           "sceKernelDelayThread",
-          "sceKernelDeleteVTimer"
+          "sceKernelDeleteVTimer",
+          "sceKernelGetThreadId",
+          "sceIoOpen",
+          "sceIoWrite",
+          "sceIoClose",
+          "sceKernelSleepThread",
+          "sceKernelExitThread",
+          "sceKernelWakeupThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelDeleteThread"
         ],
         "diagnostic_case_ids": [
           "hle-vtimer"
@@ -522,7 +540,16 @@
           "scePowerGetCpuClockFrequencyFloat",
           "scePowerGetBusClockFrequency",
           "scePowerGetBusClockFrequencyInt",
-          "scePowerGetBusClockFrequencyFloat"
+          "scePowerGetBusClockFrequencyFloat",
+          "sceKernelGetThreadId",
+          "sceIoOpen",
+          "sceIoWrite",
+          "sceIoClose",
+          "sceKernelSleepThread",
+          "sceKernelExitThread",
+          "sceKernelWakeupThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelDeleteThread"
         ],
         "diagnostic_case_ids": [
           "hle-power-clock"
@@ -555,7 +582,16 @@
         "apis": [
           "sceHprmIsRemoteExist",
           "sceHprmIsHeadphoneExist",
-          "sceHprmIsMicrophoneExist"
+          "sceHprmIsMicrophoneExist",
+          "sceKernelGetThreadId",
+          "sceIoOpen",
+          "sceIoWrite",
+          "sceIoClose",
+          "sceKernelSleepThread",
+          "sceKernelExitThread",
+          "sceKernelWakeupThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelDeleteThread"
         ],
         "diagnostic_case_ids": [
           "hle-hprm"
@@ -585,7 +621,16 @@
         "apis": [
           "sceCtrlReadLatch",
           "sceCtrlPeekLatch",
-          "sceKernelDelayThread"
+          "sceKernelDelayThread",
+          "sceKernelGetThreadId",
+          "sceIoOpen",
+          "sceIoWrite",
+          "sceIoClose",
+          "sceKernelSleepThread",
+          "sceKernelExitThread",
+          "sceKernelWakeupThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelDeleteThread"
         ],
         "diagnostic_case_ids": [
           "hle-ctrl-latch"
@@ -614,7 +659,16 @@
         "prx": "hle_sysparam.prx",
         "apis": [
           "sceUtilityGetSystemParamInt",
-          "sceUtilityGetSystemParamString"
+          "sceUtilityGetSystemParamString",
+          "sceKernelGetThreadId",
+          "sceIoOpen",
+          "sceIoWrite",
+          "sceIoClose",
+          "sceKernelSleepThread",
+          "sceKernelExitThread",
+          "sceKernelWakeupThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelDeleteThread"
         ],
         "diagnostic_case_ids": [
           "hle-sysparam"
@@ -651,7 +705,16 @@
         "apis": [
           "sceGeEdramGetSize",
           "sceGeEdramGetAddr",
-          "sceGeEdramSetAddrTranslation"
+          "sceGeEdramSetAddrTranslation",
+          "sceKernelGetThreadId",
+          "sceIoOpen",
+          "sceIoWrite",
+          "sceIoClose",
+          "sceKernelSleepThread",
+          "sceKernelExitThread",
+          "sceKernelWakeupThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelDeleteThread"
         ],
         "diagnostic_case_ids": [
           "hle-ge-edram"

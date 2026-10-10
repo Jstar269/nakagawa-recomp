@@ -3709,6 +3709,35 @@ class HleMeasureProbeTests(unittest.TestCase):
                 self.assertEqual(entry["diagnostic_case_ids"], [case])
                 self.assertEqual(entry["issues"], [])
 
+    def _probe_calls(self, macro: str) -> set[str]:
+        """The sce stubs one family PRX calls: its own section plus the shared probe code.
+
+        The shared code (main, the module lifecycle and the log writer) is linked into
+        every family PRX, so its calls are imports of every family. Prototype lines are
+        declarations, not calls, and are dropped before the scan.
+        """
+        text = self._shared_section() + self._section(macro)
+        calls = "\n".join(line for line in text.splitlines()
+                          if not self.PROTOTYPE_LINE_RE.fullmatch(line))
+        return set(re.findall(r"\b(sce\w+)\s*\(", calls))
+
+    def test_manifest_apis_name_every_import_each_family_calls(self) -> None:
+        """A family's `apis` are exactly the sce stubs its PRX calls.
+
+        Each import block the family links must be fully called, so a stub it declares
+        but never uses cannot hide in the manifest.
+        """
+        by_id = {test["id"]: test for test in self.manifest["tests"]}
+        for case, _cid, _stem, block, macro, test_id in self.FAMILIES:
+            with self.subTest(case=case):
+                called = self._probe_calls(macro)
+                listed = {api for api in by_id[test_id]["apis"] if api.startswith("sce")}
+                self.assertEqual(sorted(listed), sorted(called))
+                if block is not None:
+                    declared = {name for _lib, _nid, name in
+                                self._imports(self._block_text(block))}
+                    self.assertEqual(sorted(declared - called), [])
+
     def _stream(self, case: str, overrides: dict | None = None) -> str:
         """A complete synthetic stream: every cell PASS with zero fields unless overridden."""
         spec, counts = CAMPAIGN_PROBE_CASES[case]
