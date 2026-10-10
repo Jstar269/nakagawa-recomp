@@ -227,7 +227,9 @@ def _import_model_impl(elf):
     return stubs, findings
 
 
-def function_import_model(elf):
+def function_import_model(
+    elf: Elf,
+) -> "tuple[dict[int, tuple[str, int]], list[str], tuple[VariableImportTable, ...]]":
     """Return (stubs, findings, variable_tables) without refusing variable imports.
 
     The same layout as parse_imports. The analyzer refuses an image that declares
@@ -237,7 +239,9 @@ def function_import_model(elf):
     return _function_import_model(elf, allow_variables=True)
 
 
-def function_import_windows(elf):
+def function_import_windows(
+    elf: Elf,
+) -> "tuple[list[ImportWindow], tuple[VariableImportTable, ...]]":
     """Return (windows, variable_tables) of an import table, without pairing its slots.
 
     The census uses this for an image whose layout the model refuses. The loader reads

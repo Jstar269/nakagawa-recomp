@@ -564,6 +564,18 @@ def _file_backed_exec_ranges(elf):
     return cached
 
 
+def file_backed_exec_ranges(elf):
+    """The file-backed executable PT_LOAD ranges of `elf`: the public entry other tools use."""
+    return _file_backed_exec_ranges(elf)
+
+
+def has_import_table(elf):
+    """The analyzer's gate for parsing imports: a module-info section, or a stub section
+    with relocations. Shared with the import-stub census so the two never disagree."""
+    return elf.sec(".rodata.sceModuleInfo") is not None or (
+        elf.sec(".sceStub.text") is not None and elf.reloc is not None)
+
+
 def _import_stub_is_file_executable(addr, file_exec_ranges):
     """True when an import stub's two words are both file-backed executable bytes."""
     return ((addr & 3) == 0 and in_ranges(addr, file_exec_ranges)
@@ -2605,8 +2617,7 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None)
 
     # Reconstruct stubs from .sceStub.text or imports
     stubs_sec = elf.sec(".sceStub.text")
-    has_module_info = elf.sec(".rodata.sceModuleInfo") is not None
-    if has_module_info or (stubs_sec and elf.reloc is not None):
+    if has_import_table(elf):
         try:
             from imports import ImportTableError, parse_imports
             impmap = parse_imports(elf)

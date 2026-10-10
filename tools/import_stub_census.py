@@ -73,15 +73,13 @@ def handled_nids(repo_root):
 
 
 def default_base(path):
-    """EBOOTs are linked at their load address (no rebase); guest modules are rebased to 0."""
+    """EBOOTs are linked at their load address (no rebase); guest modules are rebased to 0.
+
+    Staging convention: the only executable the sweep stages under its load address is
+    EBOOT.ELF; every other staged image is a relocatable guest module (a PRX from the disc),
+    which the runtime loads at a chosen address, so the census reads it rebased to 0.
+    """
     return None if os.path.basename(path).lower() == "eboot.elf" else 0
-
-
-def _has_import_table(elf):
-    """Mirror the analyzer's gate: it parses imports only for a module-info or a stub section."""
-    if elf.sec(".rodata.sceModuleInfo") is not None:
-        return True
-    return elf.sec(".sceStub.text") is not None and elf.reloc is not None
 
 
 def _missing(addr, library, nid, reason, detail=""):
@@ -124,27 +122,27 @@ def census_image(path, base, *, label, extra_spans=None, handled=frozenset()):
     try:
         elf = analyze.Elf(path, base=base)
     except Exception as exc:  # an unreadable image is a finding, not a crash
-        rec.update(status="error", detail=f"{type(exc).__name__}: {str(exc)[:200]}")
+        rec.update(status="error", detail=f"{type(exc).__name__}: {str(exc)}")
         _image_level(rec, f"image unreadable ({type(exc).__name__}): its slots cannot be listed")
         rec["seconds"] = round(time.time() - started, 2)
         return rec
 
     named = analyze.exec_ranges(elf, extra_spans=extra_spans)
-    file_exec = analyze._file_backed_exec_ranges(elf)
+    file_exec = analyze.file_backed_exec_ranges(elf)
     is_module = os.path.basename(path).lower() != "eboot.elf"
 
     stubs, variable_tables = {}, ()
-    if _has_import_table(elf):
+    if analyze.has_import_table(elf):
         try:
             stubs, _findings, variable_tables = imports.function_import_model(elf)
         except (ImportTableError, imports.LayoutImportError) as exc:
             # LayoutImportError is the layout model's own boundary (the same class the
             # analyzer converts); its code names the refusal when it has one.
             rec.update(status="refused", refusal=getattr(exc, "code", None)
-                       or "ANALYZER_IMPORT_TABLE_INVALID", detail=str(exc)[:200])
+                       or "ANALYZER_IMPORT_TABLE_INVALID", detail=str(exc))
         except Exception as exc:  # parity with the analyzer's own import-table wrapper
             rec.update(status="refused", refusal="ANALYZER_IMPORT_TABLE_INVALID",
-                       detail=f"{type(exc).__name__}: {str(exc)[:200]}")
+                       detail=f"{type(exc).__name__}: {str(exc)}")
     if rec["status"] == "refused" and not stubs:
         # The layout model refused the table. The loader still reads each window directly
         # (slot firstSym + 8*i takes nidData[i]), so name every function slot from its
@@ -160,9 +158,9 @@ def census_image(path, base, *, label, extra_spans=None, handled=frozenset()):
         functions, owned = analyze.analyze(elf, extra_spans=extra_spans, report=report)
         analyzed_ok = True
     except ImportTableError as exc:
-        rec.update(status="refused", refusal=exc.code, detail=str(exc)[:200])
+        rec.update(status="refused", refusal=exc.code, detail=str(exc))
     except Exception as exc:  # an analyzer fault is recorded against every slot
-        rec.update(status="error", detail=f"{type(exc).__name__}: {str(exc)[:200]}")
+        rec.update(status="error", detail=f"{type(exc).__name__}: {str(exc)}")
 
     catalog = set(codegen.build_entry_catalog(functions, owned)) if analyzed_ok else set()
 
@@ -360,7 +358,7 @@ def main(argv=None):
                 rec = census_image(path, base, label=label, extra_spans=spans, handled=handled)
             except Exception as exc:  # a census fault is a recorded finding, never a lost run
                 rec = {"image": label, "status": "error", "refusal": None,
-                       "detail": f"{type(exc).__name__}: {str(exc)[:200]}", "stubs": 0,
+                       "detail": f"{type(exc).__name__}: {str(exc)}", "stubs": 0,
                        "handled": 0, "trapped": 0, "missing": [], "runtime_missing": [],
                        "reasons": {}}
             records.append(rec)
