@@ -23178,6 +23178,79 @@ static void rt_expect_refusal(const char *body, const char *named, const char *w
     expect(strstr(err, named) != NULL, "the refusal names the rule the line broke");
 }
 
+/* PRESS_UNTIL_NID: the press repeats until the guest calls the import, and only that import
+ * completes the step. Pinned here: the press is taken at the step's first vblank, released after
+ * its width, and taken again after its period for as long as the import has not been called; an
+ * import called before the step began does not satisfy it; the step completes on the vblank the
+ * guest calls the import; a guest that never calls it fails the run loudly at its timeout; and a
+ * bad import name, a bad mask or bad timing is refused at load. */
+static void test_route_press_until_import_repeats_the_press_until_the_guest_calls_it(void) {
+    uint8_t sigA[576];
+    rt_sig(sigA, 0x20);
+    const uint32_t open_nid = sr_route_test_nid("sceIoOpen");
+    expect(open_nid != 0u, "the runtime's own NID table resolves sceIoOpen");
+
+    /* Taken at the first vblank, released after its width, and taken again after its period
+     * while the import has not been called. */
+    sr_route_reset();
+    rt_write("PRESS_UNTIL_NID sceIoOpen CROSS 8 40 400\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "a PRESS_UNTIL_NID loads");
+    expect(rt_frame(0, sigA) == 0x4000u, "the press starts at the step's first vblank");
+    for (uint32_t v = 1; v < 8; v++) (void)rt_frame(v, sigA);
+    expect(rt_frame(8, sigA) == 0u, "and is released after its width");
+    for (uint32_t v = 9; v < 40; v++) (void)rt_frame(v, sigA);
+    expect(rt_frame(40, sigA) == 0x4000u, "and is taken again after its period");
+    expect(sr_route_status() == RT_RUNNING, "while the guest has not called the import");
+
+    /* The step completes on the vblank the guest calls the import, and the route moves on. */
+    sr_route_test_import(open_nid);
+    expect(rt_frame(41, sigA) == 0u, "the import completes the step on the vblank it is called");
+    expect(sr_route_status() == RT_DONE, "and the route completes");
+    remove(RT_PATH);
+
+    /* An import called BEFORE the step began does not satisfy it. A DELAY first lets the import
+     * happen while the step is not yet waiting, so the step must still be waiting afterwards. */
+    sr_route_reset();
+    rt_write("DELAY 4\nPRESS_UNTIL_NID sceIoOpen CROSS 8 40 400\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "a PRESS_UNTIL_NID after a DELAY loads");
+    sr_route_test_import(open_nid);
+    for (uint32_t v = 0; v < 20; v++) (void)rt_frame(v, sigA);
+    expect(sr_route_status() == RT_RUNNING,
+           "an import that happened before the step began does not complete it");
+    sr_route_test_import(open_nid);
+    (void)rt_frame(20, sigA);
+    expect(sr_route_status() == RT_DONE, "a call made while the step waits completes it");
+    remove(RT_PATH);
+
+    /* A guest that never calls the import fails the run at the step's timeout. */
+    sr_route_reset();
+    rt_write("PRESS_UNTIL_NID sceIoOpen CROSS 8 40 100\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "a PRESS_UNTIL_NID with a timeout loads");
+    for (uint32_t v = 0; v < 100; v++) (void)rt_frame(v, sigA);
+    expect(sr_route_status() == RT_RUNNING, "the step is still waiting one vblank before its timeout");
+    (void)rt_frame(100, sigA);
+    expect(sr_route_status() == RT_FAILED,
+           "a guest that never calls the import fails the run at the timeout instead of waiting");
+    remove(RT_PATH);
+
+    /* READS widths are accepted on this step, as on PRESS_UNTIL. */
+    sr_route_reset();
+    rt_write("READS PRESS_UNTIL_NID sceIoOpen CROSS 2 10 100\nEND\n");
+    expect(sr_route_load(RT_PATH) == 1, "a READS PRESS_UNTIL_NID loads");
+    remove(RT_PATH);
+
+    /* Refusals name what is wrong, so a route that cannot be trusted does not run. */
+    rt_expect_refusal("PRESS_UNTIL_NID sceNotAnImport CROSS 8 40 100\nEND\n",
+                      "is not an import name", "an unknown import name is refused at load");
+    rt_expect_refusal("PRESS_UNTIL_NID sceIoOpen CROSS 8 40\nEND\n",
+                      "PRESS_UNTIL_NID <import|0xNID>", "a PRESS_UNTIL_NID without a timeout is refused");
+    rt_expect_refusal("PRESS_UNTIL_NID sceIoOpen CROSS 8 8 100\nEND\n",
+                      "PRESS_UNTIL_NID needs width", "a period that is not longer than the width is refused");
+    rt_expect_refusal("PRESS_UNTIL_NID sceIoOpen NOTABUTTON 8 40 100\nEND\n",
+                      "is not a hex mask or a button name", "an unknown button is refused");
+    sr_route_reset();
+}
+
 static void test_route_widths_units_parse_and_name_their_refusals(void) {
     char hexA[1024], body[4096];
     rt_hex(hexA, 0x20);
@@ -25916,6 +25989,7 @@ int main(int argc, char **argv) {
     test_route_legacy_pad_script_is_unchanged();
     test_route_names_the_buttons_it_presses();
     test_route_gates_on_a_guest_event_not_a_signature();
+    test_route_press_until_import_repeats_the_press_until_the_guest_calls_it();
     test_route_widths_units_parse_and_name_their_refusals();
     test_route_read_widths_match_vblanks_for_a_guest_that_polls_every_vblank();
 
