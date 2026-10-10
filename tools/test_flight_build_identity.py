@@ -136,10 +136,11 @@ class RecorderBundleTests(unittest.TestCase):
     """The bundle's build block records the build's reproducible identity."""
 
     def _build_and_dump(
-        self, tmp_path: Path, name: str, defines: list[str]
+        self, tmp_path: Path, name: str, defines: list[str], *, source: str = HARNESS_MAIN,
+        classes: str = "hle", limit: int = 4,
     ) -> tuple[dict, str, str]:
         main_c = tmp_path / f"{name}.c"
-        main_c.write_text(HARNESS_MAIN, encoding="utf-8")
+        main_c.write_text(source, encoding="utf-8")
         exe = tmp_path / f"{name}{'.exe' if os.name == 'nt' else ''}"
         bundle_path = tmp_path / f"{name}.json"
         compile_result = subprocess.run(
@@ -165,7 +166,7 @@ class RecorderBundleTests(unittest.TestCase):
             compile_result.returncode, 0, compile_result.stdout + compile_result.stderr
         )
         env = dict(os.environ)
-        env["SR_FLIGHT"] = "hle;4"
+        env["SR_FLIGHT"] = f"{classes};{limit}"
         env["SR_FLIGHT_OUTPUT"] = str(bundle_path)
         run_result = subprocess.run(
             [str(exe)],
@@ -179,6 +180,58 @@ class RecorderBundleTests(unittest.TestCase):
         raw = bundle_path.read_text(encoding="utf-8")
         return json.loads(raw), raw, run_result.stderr
 
+    def test_named_refusals_from_the_c_recorder_are_events_until_the_real_terminal(self):
+        """Schema 5 written by the production C recorder: a refusal is counted, then the end wins."""
+        refusal_then_fatal = (
+            '#include "flight_recorder.h"\n'
+            "\n"
+            "int main(void) {\n"
+            "    uint64_t sequence;\n"
+            "    sr_flight_init();\n"
+            "    sequence = sr_flight_hle_import(0x1579a159u, 0u, 0u, 0x08900100u, 0u);\n"
+            "    sr_flight_hle_arguments(sequence, 1u, 2u, 3u, 4u);\n"
+            "    sr_flight_hle_return(sequence, 0x80110001u);\n"
+            "    sr_flight_unsupported(0x1579a159u, 0x80110001u, 0u, 0x08900100u);\n"
+            "    sr_flight_fatal(SR_FLIGHT_KIND_FATAL_RAW_SYSCALL, 0x08900200u, 0x0cu, 0u);\n"
+            "    return 0;\n"
+            "}\n"
+        )
+        refusal_then_exit = (
+            '#include "flight_recorder.h"\n'
+            "\n"
+            "int main(void) {\n"
+            "    sr_flight_init();\n"
+            "    sr_flight_unsupported(0x1579a159u, 0x80110001u, 0u, 0x08900100u);\n"
+            "    sr_flight_exit(3u);\n"
+            "    return 0;\n"
+            "}\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            identity = [f'-DSR_BUILD_ID="{FAKE_COMMIT}"']
+            fatal_bundle, _, _ = self._build_and_dump(
+                Path(tmp), "refusal_fatal", identity, source=refusal_then_fatal,
+                classes="hle,unsupported,fatal", limit=8,
+            )
+            exit_bundle, _, _ = self._build_and_dump(
+                Path(tmp), "refusal_exit", identity, source=refusal_then_exit,
+                classes="unsupported", limit=8,
+            )
+        self.assertEqual(fatal_bundle["schema_version"], 5)
+        self.assertEqual(fatal_bundle["terminal"]["reason"], "fatal")
+        self.assertEqual(fatal_bundle["terminal"]["kind"], 12)
+        self.assertEqual(fatal_bundle["refusals"]["count"], 1)
+        self.assertEqual(fatal_bundle["refusals"]["first_nid"], 0x1579A159)
+        self.assertEqual(fatal_bundle["refusals"]["first_pc"], 0x08900100)
+        self.assertEqual(
+            fatal_bundle["refusals"]["nids"], [{"nid": 0x1579A159, "count": 1}]
+        )
+        flight_diff.validate_bundle(fatal_bundle)
+        self.assertEqual(exit_bundle["terminal"]["reason"], "exit")
+        self.assertEqual(exit_bundle["terminal"]["arg0"], 3)
+        self.assertEqual(exit_bundle["recorder"]["triggers"]["fired"], 0)
+        self.assertEqual(exit_bundle["refusals"]["count"], 1)
+        flight_diff.validate_bundle(exit_bundle)
+
     def test_source_date_epoch_and_build_id_are_recorded(self):
         with tempfile.TemporaryDirectory() as tmp:
             bundle, raw, _ = self._build_and_dump(
@@ -190,7 +243,7 @@ class RecorderBundleTests(unittest.TestCase):
                 ],
             )
         build = bundle["build"]
-        self.assertEqual(bundle["schema_version"], 4)
+        self.assertEqual(bundle["schema_version"], 5)
         self.assertEqual(build["source_date_epoch"], int(FAKE_EPOCH))
         self.assertEqual(build["build_id"], FAKE_COMMIT)
         self.assertNotIn("compiled_date", build)
