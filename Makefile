@@ -912,6 +912,8 @@ PUBLIC_TARGETS := \
 	ge-texture-ref-selftest \
 	fbcap-selftest \
 	osk-text-entry-selftest \
+	osk-overlay-selftest \
+	osk-overlay-paint-selftest \
 	psmf-producer-selftest \
 	psmf-media-selftest \
 	psmf-media-selftest-csc-mutant \
@@ -1029,6 +1031,8 @@ HELP_DESCRIPTION_atrac3p-bridge-selftest := run the ATRAC3+ HLE bridge selftest
 HELP_DESCRIPTION_ge-texture-ref-selftest := run the GE texture sampling reference selftest
 HELP_DESCRIPTION_fbcap-selftest := run the presenter-neutral frame capture selftest
 HELP_DESCRIPTION_osk-text-entry-selftest := run the on-screen keyboard's non-blocking text-entry selftest
+HELP_DESCRIPTION_osk-overlay-selftest := run the in-window keyboard's state-machine selftest (pure C)
+HELP_DESCRIPTION_osk-overlay-paint-selftest := run the in-window keyboard painter's exact-pixel selftest
 HELP_DESCRIPTION_psmf-producer-selftest := run the source-owned bounded PSMF producer selftest
 HELP_DESCRIPTION_psmf-media-selftest := run the source-owned PSMF-to-decoder media selftest
 HELP_DESCRIPTION_psmf-media-selftest-csc-mutant := prove the media selftest kills a Csc that reports success without writing pixels
