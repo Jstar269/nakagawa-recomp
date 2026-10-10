@@ -4842,7 +4842,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "f89a29c5e8707f72aa8861fbce512fbb21673133d878e4d73c6a19f05f0933c9"
+      "sha256": "f9a84aa1e97f0f1d1fdd757231fee82c4c470a56b5ba52935171fb0e9d9733bb"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -4880,7 +4880,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d0a922f41a0eed8965ef5da607b38b5311003b452e51eb14df267aea35a3ccc0"
+      "sha256": "ec44cda22f8e04401f841d117de90a0fda9f14d31e5910e1a1af01e359f81b44"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -6472,7 +6472,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fb8009a6bba377d8b099e360649b5d83a3198360264701f6b7ddbcc16bbaea5d"
+      "sha256": "061c5e89c8b9e535830efc2ae1b9693e47f30e4f4f609a4c95f04314493347a7"
     },
     {
       "path": "tools/host_stubs.py",
