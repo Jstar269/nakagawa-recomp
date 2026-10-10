@@ -233,6 +233,16 @@ class ComparabilityContractTests(unittest.TestCase):
         divergence = flight_diff.diff_bundles(baseline2, candidate2, "sequence")
         self.assertEqual(divergence[0], "terminal arg0")
 
+    def test_cli_names_a_terminal_divergence_without_a_traceback(self):
+        # A terminal is a block, not an event: the report names the field and prints both
+        # terminals, and never runs the event identity lines over them.
+        baseline, candidate = self._comparable_pair()
+        candidate["terminal"]["arg0"] = 9
+        result = self._run_cli(baseline, candidate)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("DIVERGENCE: terminal arg0", result.stdout)
+        self.assertEqual(result.stderr, "")
+
     def test_unfinished_running_capture_is_a_terminal_divergence(self):
         # A running terminal is only schema-valid beside a fired trigger (the
         # validator's own pairing): a mid-run snapshot dump whose run went on.
@@ -595,6 +605,7 @@ class FlightBundleTests(unittest.TestCase):
 
 REFUSED_NID = 0x1579A159
 SECOND_REFUSED_NID = 0x34B78343
+THIRD_REFUSED_NID = 0x64D50C56
 REFUSAL_RETURN = 0x80110001
 
 
@@ -751,6 +762,111 @@ class RuntimeAbiPinTests(unittest.TestCase):
         self.assertIn('\\"cpu_state_abi\\": %u},\\n",', recorder)
         self.assertIn("(unsigned)SR_CPUSTATE_ABI_VERSION) >= 0;", recorder)
         self.assertEqual(recorder.count("cpu_state_abi"), 1, "a second cpu_state_abi token would be a literal")
+
+
+class RefusalComparisonTests(unittest.TestCase):
+    """Schema 5: the refusals block is compared after the terminal, field by field."""
+
+    FIELDS = ("count", "first_nid", "first_pc", "first_sequence", "nids")
+
+    def _pair(self):
+        events = [v5_hle(1), v5_refused(2), v5_hle(3, SECOND_REFUSED_NID),
+                  v5_refused(4, SECOND_REFUSED_NID, pc=0x08900200)]
+        refusals = v5_refusals([{"nid": REFUSED_NID, "count": 1},
+                                {"nid": SECOND_REFUSED_NID, "count": 1}])
+        baseline = v5_bundle(events, reason="exit", arg0=0, sequence=4, fired=0,
+                             refusals=refusals)
+        return baseline, copy.deepcopy(baseline)
+
+    def _candidate_differing_in(self, field):
+        """A candidate whose events and terminal match the baseline; only the block moves."""
+        baseline, candidate = self._pair()
+        refusals = candidate["refusals"]
+        if field == "count":
+            refusals["nids_unlisted"] = 1
+            refusals["count"] = 3
+        elif field == "first_nid":
+            refusals["first_nid"] = SECOND_REFUSED_NID
+            refusals["nids"].reverse()
+        elif field == "first_pc":
+            refusals["first_pc"] = 0x08900300
+        elif field == "first_sequence":
+            refusals["first_sequence"] = 3
+        else:
+            refusals["nids"][1] = {"nid": THIRD_REFUSED_NID, "count": 1}
+        flight_diff.validate_bundle(baseline)
+        flight_diff.validate_bundle(candidate)
+        return baseline, candidate
+
+    def test_identical_refusals_match_under_schema_5(self):
+        baseline, candidate = self._pair()
+        for align in ("sequence", "class"):
+            with self.subTest(align=align):
+                self.assertIsNone(flight_diff.diff_bundles(baseline, candidate, align))
+        result = self._run_cli(baseline, candidate)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("MATCH:", result.stdout)
+
+    def test_refusals_only_difference_diverges_under_schema_5(self):
+        for field in self.FIELDS:
+            for align in ("sequence", "class"):
+                with self.subTest(field=field, align=align):
+                    baseline, candidate = self._candidate_differing_in(field)
+                    self.assertEqual(baseline["events"], candidate["events"])
+                    divergence = flight_diff.diff_bundles(baseline, candidate, align)
+                    self.assertIsNotNone(divergence)
+                    self.assertEqual(divergence[0], f"refusals.{field}")
+                    self.assertEqual(divergence[1], baseline["refusals"])
+                    self.assertEqual(divergence[2], candidate["refusals"])
+
+    def test_cli_names_the_refusals_field_that_differs(self):
+        for field in self.FIELDS:
+            with self.subTest(field=field):
+                baseline, candidate = self._candidate_differing_in(field)
+                result = self._run_cli(baseline, candidate)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(f"DIVERGENCE: refusals.{field}", result.stdout)
+                self.assertNotIn("event index", result.stdout)
+                self.assertIn(
+                    json.dumps(candidate["refusals"], sort_keys=True, separators=(",", ":")),
+                    result.stdout,
+                )
+                self.assertEqual(result.stderr, "")
+
+    def test_terminal_difference_is_reported_before_refusals(self):
+        baseline, candidate = self._candidate_differing_in("first_pc")
+        candidate["terminal"]["arg0"] = 9
+        divergence = flight_diff.diff_bundles(baseline, candidate, "sequence")
+        self.assertEqual(divergence[0], "terminal arg0")
+
+    def test_schema_4_bundles_without_a_block_compare_through_their_events(self):
+        events = [
+            event(1, "hle", kind=1, arg0=REFUSED_NID, arg1=0, arg2=0, arg3=0, version=4,
+                  arguments=[0, 0, 0, 0], return_value=REFUSAL_RETURN),
+            event(2, "unsupported", kind=2, arg0=REFUSED_NID, arg1=REFUSAL_RETURN, arg2=0,
+                  arg3=0x08900100, version=4),
+        ]
+        baseline = make_bundle(events, terminal_reason="unsupported-nid", terminal_kind=2,
+                               terminal_arg0=REFUSED_NID, version=4)
+        self.assertIsNone(
+            flight_diff.diff_bundles(baseline, copy.deepcopy(baseline), "sequence"))
+        candidate = copy.deepcopy(baseline)
+        candidate["events"][1]["arg3"] = 0x08900200
+        divergence = flight_diff.diff_bundles(baseline, candidate, "sequence")
+        self.assertEqual(divergence[0], "sequence 2")
+
+    def _run_cli(self, left, right) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            left_path = temp_path / "left.json"
+            right_path = temp_path / "right.json"
+            left_path.write_text(json.dumps(left), encoding="utf-8")
+            right_path.write_text(json.dumps(right), encoding="utf-8")
+            return subprocess.run(
+                [sys.executable, str(ROOT / "tools" / "flight_diff.py"),
+                 str(left_path), str(right_path)],
+                capture_output=True, text=True, check=False,
+            )
 
 
 if __name__ == "__main__":
