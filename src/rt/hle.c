@@ -18655,7 +18655,8 @@ static uint32_t h_GeEdramGetSize(CpuState *s) {
 
 /* sceGeEdramSetAddrTranslation(int width) (PSPSDK pspge.h): width 0 leaves the translation width
  * unset, and 512, 1024, 2048 and 4096 set it. The return is the previous width when one was set,
- * Measured on the PSP-3000 oracle (2026-10-10, hle-ge-edram): every call sets the given width and
+ * Captured on the PSP-3000 oracle (2026-10-10, hle-ge-edram; CAPTURED, not acceptance-eligible, see
+ * tools/psp_oracle/manifest.json): every call sets the given width and
  * returns the width that was set before it, width 0 included, so there is no pure query; the boot
  * value is 1024. The retained width is reported back, but this runtime does not apply address
  * translation to GE memory accesses, so the setting changes no rendering. The error code for an
