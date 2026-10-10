@@ -320,6 +320,11 @@ def _format_event(event: dict[str, Any] | None) -> str:
     return "<absent>" if event is None else json.dumps(event, sort_keys=True, separators=(",", ":"))
 
 
+# Event divergences are labelled "sequence N" or "class C occurrence N". The terminal and
+# refusals labels name a field of a block, and their values are blocks rather than events.
+_EVENT_LABEL_PREFIXES = ("sequence ", "class ")
+
+
 def _event_identity(event: dict[str, Any] | None) -> str:
     if event is None:
         return "<absent>"
@@ -398,6 +403,32 @@ def _terminal_divergence(
     return None
 
 
+# The schema 5 refusals fields that are compared, in order. nids_unlisted is implied: the
+# validator pins count to the sum of the nids counts plus nids_unlisted, so equal count and
+# nids force it equal. first_sequence is compared because the validator does not tie it to
+# the events, so the block alone can carry a difference.
+_REFUSALS_FIELDS = ("count", "first_nid", "first_pc", "first_sequence", "nids")
+
+
+def _refusals_divergence(
+    baseline: dict[str, Any], candidate: dict[str, Any]
+) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None] | None:
+    """First differing refusals field; a schema 5 block is evidence like the terminal.
+
+    Schema 1 to 4 bundles carry no block: their named refusals are the kind-2 events and
+    the frozen terminal, which the earlier checks already compare. Comparability pins equal
+    schema versions, so either both bundles carry the block or neither does.
+    """
+    if "refusals" not in baseline or "refusals" not in candidate:
+        return None
+    left = baseline["refusals"]
+    right = candidate["refusals"]
+    for field in _REFUSALS_FIELDS:
+        if left[field] != right[field]:
+            return f"refusals.{field}", left, right
+    return None
+
+
 def diff_bundles(
     baseline: dict[str, Any], candidate: dict[str, Any], align: str
 ) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None] | None:
@@ -419,8 +450,11 @@ def diff_bundles(
        on both sides the retained window is the complete execution regardless
        of each limit. The CLI reports identities on stdout.
     4. Events are compared first (sequence or class alignment), then the
-       terminal reason/sequence/kind/arg0. Any difference is DIVERGENCE
-       (exit 1); only full agreement prints MATCH (exit 0).
+       terminal reason/sequence/kind/arg0, then, when both bundles carry a
+       schema 5 ``refusals`` block, its count, first_nid, first_pc,
+       first_sequence and nids (nids_unlisted follows from count and nids).
+       Any difference is DIVERGENCE (exit 1); only full agreement prints
+       MATCH (exit 0).
     """
     validate_bundle(baseline)
     validate_bundle(candidate)
@@ -432,7 +466,9 @@ def diff_bundles(
     else:
         divergence = _first_class_divergence(baseline, candidate)
     if divergence is None:
-        return _terminal_divergence(baseline, candidate)
+        divergence = _terminal_divergence(baseline, candidate)
+    if divergence is None:
+        divergence = _refusals_divergence(baseline, candidate)
     return divergence
 
 
@@ -484,7 +520,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_MATCH
     label, first, second = divergence
     print(f"{DIVERGENCE}: {label}")
-    if first is not None or second is not None:
+    if label.startswith(_EVENT_LABEL_PREFIXES):
         print(f"  baseline event: {_event_identity(first)}")
         print(f"  candidate event: {_event_identity(second)}")
         differences = _event_field_differences(first, second)
