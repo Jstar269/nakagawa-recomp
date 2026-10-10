@@ -139,6 +139,29 @@
     },
     "exit_classification": {
       "enum": ["NOT_RUN", "EXITED_ZERO", "EXITED_NONZERO", "RUN_BUDGET_ENDED", "TIMED_OUT", "HEADLESS_UNAVAILABLE"]
+    },
+    "codegen_reuse": {
+      "description": "Whether the package compiled the codegen stage's output (REUSED) or generated it again (REGENERATED), and the named reason a stage was refused.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reason"],
+      "properties": {
+        "status": { "enum": ["NOT_RUN", "REUSED", "REGENERATED", "UNKNOWN"] },
+        "reason": {
+          "enum": [
+            "NONE",
+            "PACKAGE_CACHE_REUSED",
+            "AOT_STAGE_DECISION_MISSING",
+            "AOT_STAGE_RECORD_MISSING",
+            "AOT_STAGE_RECORD_INVALID",
+            "AOT_STAGE_ARTIFACT_MISMATCH",
+            "AOT_STAGE_INCOMPLETE",
+            "AOT_STAGE_INPUT_CHANGED",
+            "AOT_STAGE_GENERATOR_CHANGED",
+            "AOT_STAGE_OPTIONS_CHANGED"
+          ]
+        }
+      }
     }
   },
   "$defs": {
