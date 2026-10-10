@@ -1474,6 +1474,31 @@ def _package_build_failure_message(output: str, returncode: int, log_file: Path 
     return f"{message} ({log_note})" if log_note else message
 
 
+# The bring-up report's names for how a package build used the codegen stage. A refusal
+# names one of package_cache.AOT_STAGE_REFUSAL_CODES; PACKAGE_CACHE_REUSED means a valid
+# package already held this cache key's generated C, so no stage ran.
+AOT_STAGE_RESULT_STATUSES = ("NOT_RUN", "REUSED", "REGENERATED", "UNKNOWN")
+_AOT_STAGE_DECISION_RE = re.compile(r"(?m)^AOT_STAGE_REUSE: (ACCEPTED|REFUSED) ([A-Z_]+)")
+
+
+def _record_aot_stage_result(args: argparse.Namespace, status: str, reason: str) -> None:
+    if getattr(args, "aot_stage_dir", None) is not None:
+        args.aot_stage_result = {"status": status, "reason": reason}
+
+
+def _record_aot_stage_decision(args: argparse.Namespace, planner_output: str) -> None:
+    """Record the planner's one-line stage decision; its absence is itself recorded."""
+    match = _AOT_STAGE_DECISION_RE.search(planner_output or "")
+    if match is None:
+        _record_aot_stage_result(args, "UNKNOWN", "AOT_STAGE_DECISION_MISSING")
+    elif match.group(1) == "ACCEPTED" and match.group(2) == package_cache.AOT_STAGE_ACCEPTED:
+        _record_aot_stage_result(args, "REUSED", "NONE")
+    elif match.group(1) == "REFUSED" and match.group(2) in package_cache.AOT_STAGE_REFUSAL_CODES:
+        _record_aot_stage_result(args, "REGENERATED", match.group(2))
+    else:
+        _record_aot_stage_result(args, "UNKNOWN", "AOT_STAGE_DECISION_MISSING")
+
+
 def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
     reporter = _BuildProgressReporter(getattr(args, "progress_json", None),
                                       getattr(args, "log_file", None))
@@ -1486,6 +1511,7 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
 
 def _build_package(args: argparse.Namespace, stage_observer,
                    reporter: _BuildProgressReporter) -> int:
+    _record_aot_stage_result(args, "NOT_RUN", "NONE")
     disc_id = args.disc_id.upper()
     register_local_identity = bool(
         getattr(args, "register_local_compatibility_record", False)
@@ -1761,6 +1787,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             reporter.report("compile", "PASS", "Compilation skipped (reusing existing package)")
             reporter.report("package", "PASS", f"Package reused: {target_dir}")
             package_cache.write_local_title_input_identity(user_root, title_input_identity)
+            _record_aot_stage_result(args, "NOT_RUN", "PACKAGE_CACHE_REUSED")
             _report_reused_package_stages(stage_observer)
             reporter.close()
             return 0
@@ -1791,6 +1818,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
                 reporter.report("compile", "PASS", "Compilation skipped (content-addressed entry reused)")
                 reporter.report("package", "PASS", f"Package promoted: {target_dir}")
                 package_cache.write_local_title_input_identity(user_root, title_input_identity)
+                _record_aot_stage_result(args, "NOT_RUN", "PACKAGE_CACHE_REUSED")
                 _report_reused_package_stages(stage_observer)
                 reporter.close()
                 return 0
@@ -1811,46 +1839,103 @@ def _build_package(args: argparse.Namespace, stage_observer,
             if build_dir.is_symlink():
                 raise PackageBuildError("Package build staging directory is a symlink; refusing to replace it.")
             shutil.rmtree(build_dir)
-        reporter.report("compile", "START", "Compiling package with AOT codegen...")
-        if stage_observer is not None:
-            stage_observer("compile", "START", 0)
-        command = [
-            sys.executable,
-            str(ROOT / "tools" / "title_codegen_plan.py"),
-            str(manifest_cache_path),
-            "--package",
-            "--game-elf",
-            str(elf_path),
-            "--output-dir",
-            str(build_dir),
-            "--title-input-identity-file",
-            str(identity_path),
-        ]
-        if public_safe:
-            command.append("--public-safe")
-        if module_dir is not None:
-            command.extend(("--module-dir", str(module_dir)))
-        if cached_header is not None:
-            command.extend(("--psp-header", str(cached_header)))
+        def planner_command(output_dir: Path) -> list[str]:
+            planner = [
+                sys.executable,
+                str(ROOT / "tools" / "title_codegen_plan.py"),
+                str(manifest_cache_path),
+                "--package",
+                "--game-elf",
+                str(elf_path),
+                "--output-dir",
+                str(output_dir),
+                "--title-input-identity-file",
+                str(identity_path),
+            ]
+            if public_safe:
+                planner.append("--public-safe")
+            if module_dir is not None:
+                planner.extend(("--module-dir", str(module_dir)))
+            if cached_header is not None:
+                planner.extend(("--psp-header", str(cached_header)))
+            return planner
+
+        def log_command(planner: list[str]) -> None:
+            if os.name == "nt":
+                cmd_line = "COMMAND: " + subprocess.list2cmdline(planner)
+            else:
+                import shlex
+                cmd_line = "COMMAND: " + shlex.join(planner)
+            if not reporter.is_json_stdout:
+                print(cmd_line)
+            reporter.log(cmd_line)
+
+        build_environment = _runtime_build_environment(
+            instruction_trace=bool(getattr(args, "instruction_trace", False))
+        )
+        command = planner_command(build_dir)
         if reuse_source is not None:
             command.extend(("--reuse-aot-from", str(reuse_source)))
         if native_only:
             command.append("--native-only")
-        if os.name == "nt":
-            cmd_line = "COMMAND: " + subprocess.list2cmdline(command)
-        else:
-            import shlex
-            cmd_line = "COMMAND: " + shlex.join(command)
-        if not reporter.is_json_stdout:
-            print(cmd_line)
-        reporter.log(cmd_line)
+        aot_stage_dir = getattr(args, "aot_stage_dir", None)
+        if aot_stage_dir is not None and reuse_source is not None:
+            # The previous package's validated generated C is compiled; nothing is generated.
+            _record_aot_stage_result(args, "NOT_RUN", "PACKAGE_CACHE_REUSED")
+            if stage_observer is not None:
+                stage_observer("codegen", "PASS", 0)
+        elif aot_stage_dir is not None:
+            # The codegen stage: the generation phase alone, through the same planner,
+            # inputs and environment as the package build below. The package build then
+            # compiles this output only if it passes the native-only reuse checks.
+            reporter.report("compile", "START", "Generating AOT code...")
+            if stage_observer is not None:
+                stage_observer("codegen", "START", 0)
+            stage_command = planner_command(Path(aot_stage_dir)) + ["--aot-stage"]
+            log_command(stage_command)
+            stage_started = time.perf_counter()
+            staged = subprocess.run(
+                stage_command,
+                cwd=ROOT,
+                env=build_environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            stage_ms = int((time.perf_counter() - stage_started) * 1000)
+            if staged.stdout:
+                reporter.log(staged.stdout)
+                if not reporter.is_json_stdout:
+                    sys.stdout.write(staged.stdout)
+            if staged.stderr:
+                reporter.log(staged.stderr)
+                if not reporter.is_json_stdout:
+                    sys.stderr.write(staged.stderr)
+            if staged.returncode != 0:
+                if stage_observer is not None:
+                    stage_observer("codegen", "FAIL", stage_ms)
+                reporter.report(
+                    "compile", "FAIL",
+                    _package_build_failure_message(
+                        staged.stderr + staged.stdout,
+                        staged.returncode,
+                        reporter.log_file,
+                    ),
+                )
+                reporter.close()
+                return staged.returncode
+            if stage_observer is not None:
+                stage_observer("codegen", "PASS", stage_ms)
+            command.extend(("--reuse-aot-stage", str(aot_stage_dir)))
+        reporter.report("compile", "START", "Compiling package with AOT codegen...")
+        if stage_observer is not None:
+            stage_observer("compile", "START", 0)
+        log_command(command)
         compile_started = time.perf_counter()
         completed = subprocess.run(
             command,
             cwd=ROOT,
-            env=_runtime_build_environment(
-                instruction_trace=bool(getattr(args, "instruction_trace", False))
-            ),
+            env=build_environment,
             capture_output=True,
             text=True,
             check=False,
@@ -1859,6 +1944,8 @@ def _build_package(args: argparse.Namespace, stage_observer,
             reporter.log(completed.stdout)
             if not reporter.is_json_stdout:
                 sys.stdout.write(completed.stdout)
+        if aot_stage_dir is not None and reuse_source is None:
+            _record_aot_stage_decision(args, completed.stdout)
         if completed.returncode != 0:
             if stage_observer is not None:
                 stage_observer(
@@ -1984,8 +2071,14 @@ def _build_package(args: argparse.Namespace, stage_observer,
         _prune_package_cache(cache_dir, entry_root)
         if not reporter.is_json_stdout:
             print(f"PACKAGE: {target_dir}")
+            stage_result = getattr(args, "aot_stage_result", None) or {}
             if native_only:
                 print("CACHE: generated C reused; native objects recompiled")
+            elif stage_result.get("status") == "REUSED":
+                print("CACHE: generated C from the codegen stage compiled")
+            elif stage_result.get("status") == "REGENERATED":
+                print("CACHE: codegen stage refused (" + str(stage_result.get("reason")) +
+                      "); AOT regenerated")
             else:
                 print("CACHE: AOT regenerated for changed cache key")
         reporter.log(f"PACKAGE: {target_dir}")
@@ -2302,6 +2395,7 @@ def _new_bringup_report() -> dict:
             "unsupported_opcodes": {},
         },
         "exit_classification": "NOT_RUN",
+        "codegen_reuse": {"status": "NOT_RUN", "reason": "NONE"},
     }
 
 
@@ -2341,6 +2435,15 @@ class _BringupProgressWriter:
             "finished_at_unix_ms": None,
             "duration_ms": 0,
         }
+        self._write()
+
+    def retarget(self, stage: str, replacement: str) -> None:
+        """Move a still-running stage's entry to ``replacement``, keeping its start."""
+        detail = self.stages.get(stage)
+        if detail is None or detail["status"] != "RUNNING":
+            return
+        del self.stages[stage]
+        self.stages[replacement] = detail
         self._write()
 
     def finish(self, stage: str, status: str, duration_ms: int) -> None:
@@ -3064,6 +3167,13 @@ def _opcode_identity_report_name(mnemonic) -> str:
     return token
 
 
+def _packaged_stub_report(package_dir: Path) -> Path:
+    """The code generator's stub report inside a built package, beside its executable."""
+    package = json.loads((package_dir / "package.json").read_text(encoding="utf-8"))
+    executable = Path(str(package["executable"]["path"]))
+    return package_dir / executable.with_name(f"{executable.stem}_recomp_stubs.txt")
+
+
 def _count_unsupported_opcodes(codegen_report: Path, sources: list[dict]) -> dict[str, int]:
     import analyze
     import title_codegen_plan
@@ -3481,48 +3591,25 @@ def cmd_bringup(args: argparse.Namespace) -> int:
     set_stage(report, "analyze", "PASS", int((time.perf_counter() - started) * 1000))
     _update_issues(report, [308] if report["unsupported_imports"] else [])
 
+    # Code generation runs once per bring-up, inside the package build: its codegen
+    # stage generates the code into codegen-stage/ with the package's own inputs, cache
+    # key and Make environment, and the package compiles that output only after the
+    # native-only reuse checks accept it (otherwise it regenerates, naming why).
     if progress is not None:
         progress.start("codegen")
     started = time.perf_counter()
     codegen_dir = work_dir / "codegen-stage"
     try:
         import title_codegen_plan
-        codegen_dir.mkdir(parents=True, exist_ok=True)
-        if not codegen_dir.resolve().is_relative_to(work_dir):
+        if codegen_dir.is_symlink() or not codegen_dir.resolve(strict=False).is_relative_to(work_dir):
             raise PackageBuildError("Code generation output escaped the work directory.")
+        if codegen_dir.exists():
+            # The stage must start empty: generation never removes a chunk it did not
+            # write, so an earlier run's leftovers would be recorded as this run's output.
+            shutil.rmtree(codegen_dir)
         # The package route's naming rule: game_name is optional in a title
         # manifest (a user manifest often omits it) and defaults to the id.
         game_name = title_codegen_plan._package_game_name(manifest, None)
-        psp_header = _disc_psp_header(
-            iso_path, manifest, library_executable, work_dir / "selected.psp"
-        )
-        plan = title_codegen_plan.build_plan(
-            manifest,
-            game_name=game_name,
-            game_elf=selected_elf,
-            build_dir=codegen_dir,
-            codegen_profile=manifest.get("codegen_profile"),
-            module_dir=module_dir,
-            psp_header=psp_header,
-            python_command=sys.executable,
-        )
-        env = _runtime_build_environment()
-        env.update(plan["environment"])
-        command = list(plan["commands"]["codegen"])
-        if command and command[0] == "python":
-            command[0] = sys.executable
-        returncode = _run_codegen_step(
-            command, cwd=ROOT, env=env, log_path=work_dir / "bringup-codegen.log"
-        )
-        report["counts"]["unsupported_opcodes"] = _count_unsupported_opcodes(
-            codegen_dir / f"{game_name}_recomp_stubs.txt", sources
-        )
-        if returncode != 0:
-            fail_stage(report, "codegen", "CODEGEN_FAILED", [308],
-                          int((time.perf_counter() - started) * 1000))
-            _write_bringup_report(report, report_path)
-            print(_bringup_human_summary(report))
-            return 1
     except Exception:
         _write_private_file(
             work_dir / "bringup-codegen.log",
@@ -3535,13 +3622,15 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
         return 1
-    set_stage(report, "codegen", "PASS", int((time.perf_counter() - started) * 1000))
 
     observer_events = {}
     def observe_package_stage(stage, status, duration_ms):
         observer_events[stage] = (status, duration_ms)
-        if status != "START":
-            set_stage(report, stage, status, duration_ms)
+        if status == "START":
+            if stage == "compile" and progress is not None:
+                progress.start("compile")
+            return
+        set_stage(report, stage, status, duration_ms)
 
     build_args = argparse.Namespace(
         disc_id=metadata.disc_id,
@@ -3550,16 +3639,45 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         psp_header=None,
         instruction_trace=bool(getattr(args, "instruction_trace", False)),
         log_file=work_dir / "bringup-build.log",
+        aot_stage_dir=codegen_dir,
     )
     stdout_capture = io.StringIO()
     stderr_capture = io.StringIO()
-    if progress is not None:
-        progress.start("compile")
     with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
         build_status = cmd_build_package(build_args, stage_observer=observe_package_stage)
+    stage_result = getattr(build_args, "aot_stage_result", None)
+    if isinstance(stage_result, dict):
+        report["codegen_reuse"] = dict(stage_result)
+    codegen_status = observer_events.get("codegen", (None,))[0]
+    if progress is not None and codegen_status is None:
+        # The package build stopped before its codegen stage, in the package preparation
+        # this route always attributed to compile.
+        progress.retarget("codegen", "compile")
+    if build_status == 0:
+        # The report describes what shipped: the stub report packaged with the build.
+        try:
+            report["counts"]["unsupported_opcodes"] = _count_unsupported_opcodes(
+                _packaged_stub_report(user_root / "packages" / metadata.disc_id.upper()),
+                sources,
+            )
+        except Exception:
+            fail_stage(report, "build_package", "BUILD_PACKAGE_FAILED", [308], 0)
+            _write_bringup_report(report, report_path)
+            print(_bringup_human_summary(report))
+            return 1
+    elif codegen_status in {"PASS", "FAIL"}:
+        # No package was built; the generated output is the best description of it.
+        try:
+            report["counts"]["unsupported_opcodes"] = _count_unsupported_opcodes(
+                codegen_dir / f"{game_name}_recomp_stubs.txt", sources
+            )
+        except Exception:
+            report["counts"]["unsupported_opcodes"] = {}
     if build_status != 0:
         combined = (stdout_capture.getvalue() + stderr_capture.getvalue()).casefold()
-        if "production pgf/pgd runtime backends" in combined:
+        if codegen_status == "FAIL":
+            failure, stage, issues = "CODEGEN_FAILED", "codegen", [308]
+        elif "production pgf/pgd runtime backends" in combined:
             failure, stage, issues = "PRODUCTION_RUNTIME_BACKEND_UNAVAILABLE", "compile", [308]
         elif "package_build_failed" in combined or observer_events.get("compile", (None,))[0] == "FAIL":
             failure, stage, issues = "COMPILE_FAILED", "compile", [308]

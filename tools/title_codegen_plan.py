@@ -84,9 +84,18 @@ class PackageRouteError(Exception):
         self.code = code
 
 
-def _make_build_command(make_executable: str, *, native_only: bool) -> list[str]:
-    """Bound package builds to two jobs for independent runtime and AOT objects."""
-    target = "compile" if native_only else "all"
+def _make_build_command(
+    make_executable: str, *, native_only: bool, aot_stage: bool = False
+) -> list[str]:
+    """Bound package builds to two jobs for independent runtime and AOT objects.
+
+    A generated-code stage runs only the generation phase (``pipeline``); a build of
+    already generated C runs only the compile phase; any other build runs both.
+    """
+    if aot_stage:
+        target = "pipeline"
+    else:
+        target = "compile" if native_only else "all"
     return [make_executable, "--no-print-directory", f"-j{PACKAGE_BUILD_JOBS}", target]
 
 
@@ -1014,25 +1023,34 @@ def _cache_codegen_options(
     return options
 
 
-def _copy_reusable_aot(source: Path, destination: Path, game_name: str) -> None:
-    if not source.is_dir() or source.is_symlink():
-        raise PackageRouteError("PACKAGE_REUSE_INVALID", "reusable AOT source is not a directory")
-    destination.mkdir(parents=True, exist_ok=True)
-    exact = {
+def _aot_required_outputs(game_name: str) -> set[str]:
+    """The generation phase's outputs every reusable AOT source must hold."""
+    return {
         f"{game_name}_recomp.c",
         f"{game_name}_recomp_funcs.h",
         f"{game_name}_recomp_stubs.txt",
         f"{game_name}_image.bin",
         f"{game_name}_imports.toml",
     }
+
+
+def _is_aot_output(name: str, game_name: str) -> bool:
+    """Whether ``name`` is generation-phase output: a required output or a C chunk."""
+    return name in _aot_required_outputs(game_name) or (
+        name.startswith(f"{game_name}_recomp_") and Path(name).suffix.lower() in {".c", ".h"}
+    )
+
+
+def _copy_reusable_aot(source: Path, destination: Path, game_name: str) -> None:
+    if not source.is_dir() or source.is_symlink():
+        raise PackageRouteError("PACKAGE_REUSE_INVALID", "reusable AOT source is not a directory")
+    destination.mkdir(parents=True, exist_ok=True)
+    exact = _aot_required_outputs(game_name)
     copied: set[str] = set()
     for path in source.iterdir():
         if not path.is_file() or path.is_symlink():
             continue
-        if path.name in exact or (
-            path.name.startswith(f"{game_name}_recomp_")
-            and path.suffix.lower() in {".c", ".h"}
-        ):
+        if _is_aot_output(path.name, game_name):
             shutil.copy2(path, destination / path.name)
             copied.add(path.name)
     missing = sorted(exact - copied)
@@ -1041,6 +1059,139 @@ def _copy_reusable_aot(source: Path, destination: Path, game_name: str) -> None:
             "PACKAGE_REUSE_INVALID",
             "reusable AOT source is incomplete: " + ", ".join(missing),
         )
+
+
+def _copy_verified_aot_stage(
+    stage: Path,
+    destination: Path,
+    game_name: str,
+    artifacts: dict[str, str],
+) -> str | None:
+    """Copy an accepted stage's generated code, checking every byte against its record.
+
+    Each file is hashed as it is written, so the digest compared is the digest of the
+    bytes the build compiles, not of a second read of the stage. Returns None when
+    every copy matches its record. Otherwise it removes everything it copied and names
+    the first file that did not match, so a stage that changes between its check and
+    this copy is refused rather than compiled.
+    """
+    names = sorted(
+        name for name in artifacts if "/" not in name and _is_aot_output(name, game_name)
+    )
+    destination.mkdir(parents=True, exist_ok=True)
+    copied: list[Path] = []
+    mismatch: str | None = None
+    try:
+        for name in names:
+            source = stage / name
+            target = destination / name
+            if source.is_symlink() or not source.is_file():
+                mismatch = f"completion artifact is missing: {name}"
+                break
+            digest = hashlib.sha256()
+            copied.append(target)
+            with source.open("rb") as reader, target.open("wb") as writer:
+                for block in iter(lambda: reader.read(1024 * 1024), b""):
+                    digest.update(block)
+                    writer.write(block)
+            if digest.hexdigest() != artifacts[name]:
+                mismatch = f"completion artifact digest mismatch: {name}"
+                break
+    except OSError as exc:
+        mismatch = f"generated-code stage copy failed: {exc}"
+    if mismatch is not None:
+        for target in copied:
+            try:
+                target.unlink(missing_ok=True)
+            except OSError as exc:
+                # Regenerating over a partial copy could compile its bytes, so a copy
+                # that cannot be removed stops the build instead.
+                raise PackageRouteError(
+                    "PACKAGE_REUSE_INVALID",
+                    f"a refused generated-code stage copy could not be removed: {exc}",
+                ) from exc
+    return mismatch
+
+
+def _accept_aot_stage(
+    stage_dir: Path,
+    cache_key: dict[str, Any],
+    destination: Path,
+    game_name: str,
+):
+    """Validate a generated-code stage and copy it into ``destination`` when accepted.
+
+    The checks are the native-only reuse checks: a complete completion record whose
+    every artifact is intact, and generated-code cache key components equal to this
+    build's. A refused stage leaves ``destination`` without any of its files.
+    """
+    from nk_core import package_cache
+
+    try:
+        stage = _absolute_path(stage_dir, "generated-code stage", make_safe=False)
+    except PackageRouteError as exc:
+        return package_cache.AotStageDecision(
+            False, package_cache.AOT_STAGE_RECORD_MISSING, (str(exc),), {}
+        )
+    decision = package_cache.evaluate_aot_stage(
+        stage, cache_key, required_paths=_aot_required_outputs(game_name)
+    )
+    if not decision.accepted:
+        return decision
+    mismatch = _copy_verified_aot_stage(
+        stage, destination, game_name, dict(decision.artifacts)
+    )
+    if mismatch is not None:
+        return package_cache.AotStageDecision(
+            False, package_cache.AOT_STAGE_ARTIFACT_MISMATCH, (mismatch,), {}
+        )
+    return decision
+
+
+def _record_aot_stage(
+    build_workspace: Path,
+    output_dir: Path,
+    game_name: str,
+    cache_key: dict[str, Any],
+    title_input_identity: dict[str, Any],
+) -> dict[str, Any]:
+    """Record a finished generation phase as a reusable generated-code stage.
+
+    The record is the package completion manifest: the build's cache key, the title
+    input identity, and the SHA-256 of every file in the stage, written last. It is
+    checked once here, as a package is checked after its build, so a stage that would
+    be refused is never promoted.
+    """
+    from nk_core import package_cache
+
+    missing = sorted(
+        name for name in _aot_required_outputs(game_name)
+        if not (build_workspace / name).is_file()
+    )
+    if missing:
+        raise PackageRouteError(
+            "PACKAGE_BUILD_INCOMPLETE",
+            "missing generated-code outputs: " + ", ".join(missing),
+        )
+    package_cache.write_completion_manifest(
+        build_workspace, cache_key, title_input_identity=title_input_identity
+    )
+    decision = package_cache.evaluate_aot_stage(
+        build_workspace, cache_key, required_paths=_aot_required_outputs(game_name)
+    )
+    if not decision.accepted:
+        raise PackageRouteError(
+            "PACKAGE_BUILD_INCOMPLETE",
+            f"generated-code stage failed its own check: {decision.code}: {decision.detail}",
+        )
+    if build_workspace != output_dir:
+        _promote_package(build_workspace, output_dir)
+    return {
+        "format": "nakagawa-aot-stage",
+        "game_name": game_name,
+        "cache_key": cache_key,
+        "artifact_count": len(decision.artifacts),
+    }
 
 
 def _cache_key_for_build(
@@ -1138,8 +1289,19 @@ def build_package(
     reuse_aot_from: Path | None = None,
     native_only: bool = False,
     title_input_identity_file: Path | None = None,
+    aot_stage: bool = False,
+    reuse_aot_stage: Path | None = None,
 ) -> dict[str, Any]:
-    """Run the canonical two-phase Make build and emit package/report JSON."""
+    """Run the canonical two-phase Make build and emit package/report JSON.
+
+    ``aot_stage`` runs only the generation phase into an empty ``output_dir`` and
+    records it with the package completion discipline (the cache key and the digest
+    of every file, written last) instead of building a package. ``reuse_aot_stage``
+    names such a stage: the build compiles its generated code when the stage passes
+    the native-only reuse checks for this build's cache key, and otherwise generates
+    the code again. The decision is printed as one ``AOT_STAGE_REUSE:`` line before
+    Make runs.
+    """
     from nk_core import package_cache
 
     if public_safe is None:
@@ -1156,12 +1318,33 @@ def build_package(
             "PACKAGE_REUSE_INVALID",
             "native-only compilation requires a verified reusable AOT source",
         )
+    if aot_stage and (
+        reuse_aot_from is not None or native_only or reuse_aot_stage is not None
+    ):
+        raise PackageRouteError(
+            "PACKAGE_REUSE_INVALID",
+            "a generated-code stage is generated from source and reuses nothing",
+        )
+    if reuse_aot_stage is not None and (reuse_aot_from is not None or native_only):
+        raise PackageRouteError(
+            "PACKAGE_REUSE_INVALID",
+            "a generated-code stage and a reusable package are alternative AOT sources",
+        )
     selected_name = _package_game_name(normalized, game_name)
     # The output directory is written by the Make recipes, so it must itself be
     # Make-safe. Inputs are staged into it when their own paths are not.
     output_dir = _absolute_path(output_dir, "output-dir", make_safe=False)
     _ensure_private_identity_output(normalized, output_dir)
     _ensure_untracked_output(output_dir)
+    if aot_stage and (output_dir.is_symlink() or (output_dir.exists() and (
+        not output_dir.is_dir() or any(output_dir.iterdir())
+    ))):
+        # Generation never removes a chunk it did not write, so a stage recorded over
+        # an earlier one would record that run's leftovers as its own output.
+        raise PackageRouteError(
+            "PACKAGE_OUTPUT_CONFLICT",
+            "a generated-code stage needs an empty dedicated output directory",
+        )
     output_rendered = output_dir.as_posix()
     if any(char in _MAKE_UNSAFE_PATH_CHARS for char in output_rendered):
         raise PackageRouteError(
@@ -1244,18 +1427,20 @@ def build_package(
         if psp_header is not None:
             _require_file(psp_header, "PSP header")
 
-        try:
-            sources, analysis_summary, unsupported_imports, diagnostics = _make_input_images(
-                normalized,
-                game_elf,
-                module_dir,
-                psp_header,
-                selected_optional,
-            )
-        except PackageRouteError:
-            raise
-        except (OSError, ValueError, RuntimeError) as exc:
-            raise PackageRouteError("PACKAGE_INVALID_ELF", str(exc)) from exc
+        if not aot_stage:
+            # The build report's analysis; a generated-code stage writes no report.
+            try:
+                sources, analysis_summary, unsupported_imports, diagnostics = _make_input_images(
+                    normalized,
+                    game_elf,
+                    module_dir,
+                    psp_header,
+                    selected_optional,
+                )
+            except PackageRouteError:
+                raise
+            except (OSError, ValueError, RuntimeError) as exc:
+                raise PackageRouteError("PACKAGE_INVALID_ELF", str(exc)) from exc
 
         input_hashes = _hash_package_inputs(
             manifest_path, game_elf, selected_modules, module_input_paths, psp_header
@@ -1366,6 +1551,19 @@ def build_package(
                 )
             if native_only:
                 _copy_reusable_aot(reuse_source, build_workspace, selected_name)
+        pregenerated = native_only
+        if reuse_aot_stage is not None:
+            stage_decision = _accept_aot_stage(
+                reuse_aot_stage, cache_key, build_workspace, selected_name
+            )
+            pregenerated = stage_decision.accepted
+            stage_line = "AOT_STAGE_REUSE: " + (
+                "ACCEPTED" if stage_decision.accepted else "REFUSED"
+            ) + f" {stage_decision.code}"
+            if stage_decision.detail:
+                stage_line += f": {stage_decision.detail}"
+            # Printed before Make runs, on the stream the caller reads Make's output from.
+            print(stage_line, flush=True)
 
         extra_elf_specs = [
             arg.split("=", 1)[1]
@@ -1395,11 +1593,13 @@ def build_package(
             "CODEGEN_USER_ARGS": os.environ.get("CODEGEN_USER_ARGS", ""),
             "LINK_MAP": link_map.as_posix(),
             "PUBLIC_SAFE": "1" if public_safe else "0",
-            "NK_AOT_PREGENERATED": "1" if native_only else "0",
+            "NK_AOT_PREGENERATED": "1" if pregenerated else "0",
         })
         try:
             built = subprocess.run(
-                _make_build_command(make_executable, native_only=native_only),
+                _make_build_command(
+                    make_executable, native_only=pregenerated, aot_stage=aot_stage
+                ),
                 cwd=ROOT,
                 env=build_environment,
                 check=False,
@@ -1418,6 +1618,14 @@ def build_package(
             raise PackageRouteError(
                 "PACKAGE_INPUT_CHANGED",
                 "a package input changed while the build was running; rerun with a stable input set",
+            )
+        if aot_stage:
+            return _record_aot_stage(
+                build_workspace,
+                output_dir,
+                selected_name,
+                cache_key,
+                title_input_identity,
             )
 
         executable_suffix = ".exe" if os.name == "nt" else ""
@@ -1601,6 +1809,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--public-safe", action="store_true", help="build with the public-safe runtime backends")
     parser.add_argument("--reuse-aot-from", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--native-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--aot-stage", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--reuse-aot-stage", type=Path, help=argparse.SUPPRESS)
     parser.add_argument(
         "--profile",
         dest="codegen_profile",
@@ -1656,10 +1866,14 @@ def main(argv: list[str] | None = None) -> int:
                 reuse_aot_from=args.reuse_aot_from,
                 native_only=args.native_only,
                 title_input_identity_file=args.title_input_identity_file,
+                aot_stage=args.aot_stage,
+                reuse_aot_stage=args.reuse_aot_stage,
             )
             return 0
         if args.output_dir is not None or args.make_command is not None or args.public_safe:
             parser.error("--output-dir, --make-command, and --public-safe require --package")
+        if args.aot_stage or args.reuse_aot_stage is not None:
+            parser.error("--aot-stage and --reuse-aot-stage require --package")
         if args.print_protected_digest:
             print(compute_protected_digest(manifest))
             return 0
