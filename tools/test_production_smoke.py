@@ -939,7 +939,7 @@ class TestProductionSmokePackage(unittest.TestCase):
         self.assertEqual(package["schema_version"], 2)
         self.assertEqual(package["title"]["id"], self.manifest["id"])
         self.assertEqual(package["runtime"]["abi"], "CpuState")
-        self.assertEqual(package["runtime"]["abi_version"], 2)
+        self.assertEqual(package["runtime"]["abi_version"], title_codegen_plan.codegen_abi_version())
         self.assertEqual(package["executable"]["path"], "production_smoke.exe")
         self.assertTrue((self.build_dir / package["executable"]["path"]).is_file())
         self.assertEqual(

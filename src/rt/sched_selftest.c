@@ -284,16 +284,12 @@ static int index_of_uid(uint32_t uid) {
 }
 
 /* Mirror of sched_run's resume block: run one slice of thread s_tcb[idx] until it
- * yields, blocks, or exits. */
+ * yields, blocks, or exits. The register load is the production switch-in itself. */
 static void run_one_slice(int idx) {
     TCB *t = &s_tcb[idx];
     s_cur = idx;
     t->state = TH_RUNNING;
-    memcpy(s_cpu, &t->saved, sizeof(CpuState));
-    if (t->k0_init) {
-        s_cpu->r[26] = t->k0_init;
-        t->saved.r[26] = t->k0_init;
-    }
+    sched_load_thread_context(t);
     atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
     if (!t->started) {
         t->started = 1;
@@ -1456,6 +1452,7 @@ static void test_callback_dispatch_one_preserves_context(void) {
     cpu.cop0[SR_CP0_STATUS] = 0x8001u;
     cpu.next_pc = 0x8002u; cpu.in_delay_slot = 0x8003u;
     cpu.flow_kind = 0x8004u; cpu.flow_target = 0x8005u;
+    cpu.llbit = 1u;   /* an ll..sc window open in the interrupted thread */
 
     CpuState pre = cpu;
     memset(&s_ctx_test_dispatch, 0, sizeof(s_ctx_test_dispatch));
@@ -1489,6 +1486,10 @@ static void test_callback_dispatch_one_preserves_context(void) {
     /* Once the callback returns, the interrupted thread's full context is restored --
      * including the return value ($v0), $s0, HI/LO, FPU and VFPU state the callback body
      * (intentionally, in this test) clobbered. */
+    /* The single intended difference: returning from the callback ends the
+     * interrupted thread's ll..sc window (MIPS32 LLbit is cleared by eret). */
+    expect(cpu.llbit == 0u, "callback return clears the interrupted thread's LLbit");
+    pre.llbit = 0u;
     expect(memcmp(&cpu, &pre, sizeof(CpuState)) == 0,
            "cpu context after sr_callback_dispatch_one matches the pre-call snapshot exactly");
 }
@@ -3329,6 +3330,172 @@ static void test_alarm_table_capacity_and_reset(void) {
            "reset drops every alarm");
 }
 
+/* ---- ll/sc link state across scheduler events ----------------------------------------
+ *
+ * The guest-side statements below are the shapes tools/codegen.py emits for
+ * `ll rt, 0(base)` and `sc rt, 0(base)` (pinned there by
+ * tools/test_codegen_madd_msub.py and run as real generated code against the
+ * interpreter by cpu-lle-selftest). What is under test here is the runtime: which
+ * scheduler events end an ll..sc window and which must not.
+ *
+ * Failing-before evidence: on the base tree there is no llbit, and with the field but
+ * without the switch-in clear in sched_load_thread_context(), thread A's stale sc in
+ * test_llsc_context_switch_breaks_the_window succeeds and the lock word ends at 1
+ * (thread B's update is lost) instead of 101. */
+
+#define LLSC_LOCK 0x08900000u
+
+static void guest_ll(CpuState *s, unsigned rt, uint32_t ea) {
+    s->r[rt] = MEM_R32(ea);
+    s->llbit = 1u;
+}
+
+static uint32_t guest_sc(CpuState *s, unsigned rt, uint32_t ea) {
+    uint32_t sc = s->llbit != 0u ? 1u : 0u;
+    if (sc) MEM_W32(ea, s->r[rt]);
+    s->r[rt] = sc;
+    return sc;
+}
+
+static uint32_t g_llsc_a_uid, g_llsc_b_uid;
+static int g_llsc_yield_in_window;   /* attempt number whose window contains a yield */
+static unsigned g_llsc_a_attempts;
+static uint32_t g_llsc_a_results[8];
+
+/* Thread A: an atomic increment as a retry loop, `L: ll; addiu 1; sc; beqz L`. */
+static void llsc_thread_a(CpuState *s) {
+    for (;;) {
+        unsigned attempt = ++g_llsc_a_attempts;
+        guest_ll(s, 8u, LLSC_LOCK);
+        s->r[8] += 1u;
+        if ((int)attempt == g_llsc_yield_in_window)
+            sr_yield(s);                     /* the timeslice expires inside the window */
+        uint32_t ok = guest_sc(s, 8u, LLSC_LOCK);
+        if (attempt <= 8u) g_llsc_a_results[attempt - 1u] = ok;
+        if (ok || attempt >= 8u) return;     /* 8 is a test bound, never reached */
+    }
+}
+
+/* Thread B: one uncontended atomic add of 100. */
+static void llsc_thread_b(CpuState *s) {
+    guest_ll(s, 9u, LLSC_LOCK);
+    s->r[9] += 100u;
+    (void)guest_sc(s, 9u, LLSC_LOCK);
+}
+
+static void llsc_body(CpuState *s) {
+    if (sched_current_uid() == g_llsc_a_uid) llsc_thread_a(s);
+    else if (sched_current_uid() == g_llsc_b_uid) llsc_thread_b(s);
+}
+
+static void llsc_reset(void) {
+    reset_sched();
+    disable_vblank_sources();   /* isolate the switch: no interrupt may clear the link */
+    g_llsc_a_attempts = 0;
+    memset(g_llsc_a_results, 0, sizeof(g_llsc_a_results));
+    MEM_W32(LLSC_LOCK, 0u);
+    g_test_body = llsc_body;
+}
+
+/* A context switch between ll and sc makes the sc fail, the loser's stale value never
+ * reaches memory, and the retry completes on its next pass. */
+static void test_llsc_context_switch_breaks_the_window(void) {
+    llsc_reset();
+    g_llsc_yield_in_window = 1;
+    g_llsc_a_uid = sched_create_thread(0x4000u, 32, 0);
+    g_llsc_b_uid = sched_create_thread(0x4100u, 32, 0);
+    int ia = index_of_uid(g_llsc_a_uid), ib = index_of_uid(g_llsc_b_uid);
+    sched_start_thread(g_llsc_a_uid, 0, 0);
+    sched_start_thread(g_llsc_b_uid, 0, 0);
+
+    run_one_slice(ia);                       /* A: ll, then yields inside its window */
+    expect(s_tcb[ia].state == TH_READY && g_llsc_a_attempts == 1u,
+           "thread A was switched out between its ll and sc");
+    expect(s_tcb[ia].saved.llbit == 1u,
+           "the switched-out thread's saved context still holds its own link");
+    run_one_slice(ib);                       /* B: a complete ll/sc while A is parked */
+    expect(MEM_R32(LLSC_LOCK) == 100u, "the other thread's ll/sc committed");
+    run_one_slice(ia);                       /* A resumes after the yield, at its sc */
+    expect(g_llsc_a_results[0] == 0u,
+           "an sc after a context switch inside the ll..sc window fails");
+    expect(g_llsc_a_attempts == 2u && g_llsc_a_results[1] == 1u,
+           "the retry loop completes on its next pass (forward progress)");
+    expect(MEM_R32(LLSC_LOCK) == 101u,
+           "no update is lost: both increments land (101), not A's stale 1");
+}
+
+/* Not clearing too often: a yield that switches nothing and delivers nothing is not an
+ * exception on the PSP, so the window survives it and the first sc succeeds. */
+static void test_llsc_yield_without_switch_keeps_the_window(void) {
+    llsc_reset();
+    g_llsc_yield_in_window = 1;
+    g_llsc_a_uid = sched_create_thread(0x4000u, 32, 0);
+    g_llsc_b_uid = 0xFFFFFFFFu;
+    int ia = index_of_uid(g_llsc_a_uid);
+    sched_start_thread(g_llsc_a_uid, 0, 0);
+    run_one_slice(ia);
+    expect(g_llsc_a_attempts == 1u && g_llsc_a_results[0] == 1u,
+           "a yield with no other runnable thread and no interrupt leaves the link set");
+    expect(MEM_R32(LLSC_LOCK) == 1u, "the uncontended increment committed once");
+}
+
+/* Interrupt delivery between ll and sc ends the window even without a thread switch:
+ * the handler runs on the interrupted register file and returns as from an exception. */
+static void test_llsc_interrupt_breaks_the_window(void) {
+    reset_sched();
+    s_pace_on = 0;
+    s_vbl_next_us = UINT64_MAX;
+    int running = mk(0x240u, TH_RUNNING, 20);
+    s_cur = running;
+    g_test_vblank_handler = 0x00001234u;
+    MEM_W32(LLSC_LOCK, 7u);
+
+    guest_ll(&g_cpu_store, 8u, LLSC_LOCK);
+    sched_raise_interrupt(SCHED_INTR_VBLANK);
+    sched_resume_interrupts(1u);             /* eligible: the handler runs here */
+    expect(g_test_handler_calls == 1u, "the VBLANK handler ran inside the window");
+    expect(g_cpu_store.llbit == 0u, "interrupt return clears the interrupted link");
+    g_cpu_store.r[8] = 99u;
+    expect(guest_sc(&g_cpu_store, 8u, LLSC_LOCK) == 0u && MEM_R32(LLSC_LOCK) == 7u,
+           "the sc after an interrupt fails and stores nothing");
+}
+
+/* The alarm handler is the other interrupt episode sched.c delivers itself. */
+static void test_llsc_alarm_breaks_the_window(void) {
+    reset_sched();
+    disable_vblank_sources();
+    int running = mk(0x241u, TH_RUNNING, 20);
+    s_cur = running;
+    guest_ll(&g_cpu_store, 8u, LLSC_LOCK);
+    int slot = 0;
+    memset(&s_alarms[slot], 0, sizeof(s_alarms[slot]));
+    s_alarms[slot].uid = 0x77u;
+    s_alarms[slot].handler = 0x00005678u;
+    s_alarms[slot].deadline = s_vtime_us;
+    s_alarm_live++;
+    scheduler_alarm_deliver(slot);
+    expect(g_cpu_store.llbit == 0u, "an alarm handler's return clears the interrupted link");
+    sched_alarm_reset();
+}
+
+/* A callback run as a nested call on the thread returns like an exception return. */
+static unsigned g_llsc_cb_calls;
+static void llsc_cb_dispatch(CpuState *s, uint32_t entry) {
+    (void)entry;
+    g_llsc_cb_calls++;
+    s->r[2] = 0u;
+}
+
+static void test_llsc_callback_breaks_the_window(void) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.llbit = 1u;
+    g_llsc_cb_calls = 0;
+    (void)sr_callback_dispatch_one(&cpu, 0x08900100u, 1, 0u, 0u, llsc_cb_dispatch);
+    expect(g_llsc_cb_calls == 1u, "the callback ran");
+    expect(cpu.llbit == 0u, "callback return clears the interrupted link");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--test-pace-setup") == 0) {
         s_pace_on = -1;
@@ -3390,6 +3557,11 @@ int main(int argc, char **argv) {
     test_libc_thread_relocation();
     test_coro_self_switch_and_park();
     test_callback_abi_packing();
+    test_llsc_context_switch_breaks_the_window();
+    test_llsc_yield_without_switch_keeps_the_window();
+    test_llsc_interrupt_breaks_the_window();
+    test_llsc_alarm_breaks_the_window();
+    test_llsc_callback_breaks_the_window();
     test_callback_dispatch_one_preserves_context();
     test_callbacks_behavioral();
     test_callback_renotifies_itself_dispatched_same_pass();

@@ -430,12 +430,13 @@ class SimulationBehaviorTest(unittest.TestCase):
         self.assertEqual(status["mutation"], "enabled")
         self.assertEqual(status["rva_provenance"], "fallback")
 
-    def test_simulated_cpu_uses_cpustate_abi_v2_tail(self):
+    def test_simulated_cpu_uses_cpustate_abi_v3_tail(self):
         dbg = self._sim(mutate=True)
         cpu = dbg.read_cpu()["cpu"]
         self.assertEqual(len(cpu["cop0"]), 32)
         self.assertIn("flow_kind", cpu)
         self.assertIn("flow_target", cpu)
+        self.assertIn("llbit", cpu)
 
         self.assertEqual(md._cpu_field_offset("cop0[0]"), (852, False))
         self.assertEqual(md._cpu_field_offset("cop0[12]"), (900, False))
@@ -443,6 +444,9 @@ class SimulationBehaviorTest(unittest.TestCase):
         self.assertEqual(md._cpu_field_offset("in_delay_slot"), (984, False))
         self.assertEqual(md._cpu_field_offset("flow_kind"), (988, False))
         self.assertEqual(md._cpu_field_offset("flow_target"), (992, False))
+        self.assertEqual(md._cpu_field_offset("llbit"), (996, False))
+        self.assertEqual(md.CPU_STATE_ABI_VERSION, 3)
+        self.assertEqual(md.CPU_STATE_SIZE, 1000)
 
 
 class ResolverFailureTest(unittest.TestCase):
@@ -505,7 +509,7 @@ class CpuStateAbiUpgradeTest(unittest.TestCase):
         self.assertEqual(len(mock["cpu"]["cop0"]), md.CPU_STATE_COP0_COUNT)
         self.assertEqual(mock["cpu"]["cop0"][0], 7)
         self.assertEqual(mock["cpu"]["next_pc"], 0x08804004)
-        for field in ("in_delay_slot", "flow_kind", "flow_target"):
+        for field in ("in_delay_slot", "flow_kind", "flow_target", "llbit"):
             self.assertEqual(mock["cpu"][field], 0)
 
     def test_migrated_mock_accepts_new_cop0_writes(self):
@@ -555,10 +559,16 @@ class CpuStateAbiUpgradeTest(unittest.TestCase):
         self.assertFalse(res["success"])
         self.assertIn("ABI 1", res["error"])
 
-    def test_live_cpu_abi_check_passes_for_v2(self):
+    def test_live_cpu_abi_check_passes_for_v3(self):
+        dbg = self._live(rvas={"g_mem": 1, "s_cpu": 2, md.ABI_SYMBOL: 3})
+        dbg._read_process_bytes = lambda addr, size: (3).to_bytes(4, "little")
+        self.assertIsNone(dbg._cpu_abi_check())
+
+    def test_live_cpu_abi_check_rejects_v2(self):
+        # v2 has no llbit word; reading 1000 bytes from it would run past the struct.
         dbg = self._live(rvas={"g_mem": 1, "s_cpu": 2, md.ABI_SYMBOL: 3})
         dbg._read_process_bytes = lambda addr, size: (2).to_bytes(4, "little")
-        self.assertIsNone(dbg._cpu_abi_check())
+        self.assertIn("ABI 2", dbg._cpu_abi_check())
 
 
 class ExeOptionAndDefaultRejectionTest(unittest.TestCase):
