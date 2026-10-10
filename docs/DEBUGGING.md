@@ -504,6 +504,7 @@ keeps the original behaviour exactly, and a file mixing the two is refused.
 | `PRESS_WHILE <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press the same way while `NAME` is observed; complete when it is not |
 | `DELAY <n>` | Release the pad for `n` samples and until the guest has read the release (input cadence *within* one screen) |
 | `WAIT_NID <import\|0xNID> <timeout>` | Block until the guest calls that import; fail the run on timeout |
+| `PRESS_UNTIL_NID <import\|0xNID> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press (held `width`, released for the rest of `period`) until the guest calls that import; fail on timeout. Use it where a press may land without changing the screen, such as a message box or a Yes/No that waits on a savedata check, because the import is the event that says the press was taken |
 | `WIDTHS VBLANKS\|READS` | The unit the widths of `PRESS`, `DELAY`, `PRESS_UNTIL` and `PRESS_WHILE` count in, for the whole file (default `VBLANKS`); must precede every step, and may appear once |
 | `READS <step>` / `VBLANKS <step>` | The unit of that one `PRESS`, `DELAY`, `PRESS_UNTIL` or `PRESS_WHILE` line; overrides `WIDTHS` |
 | `END` | Route complete |
