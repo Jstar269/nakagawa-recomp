@@ -307,7 +307,7 @@ mingw32-make all NAN_TRAP=1          # adds --nan-trap and -DSR_NAN_TRAP togethe
 
 Coverage boundary: every FPU result write and every VFPU *value-producing* lane form is checked —
 `add.s`/`sub.s`/`mul.s`/`div.s`/`sqrt.s`/`abs.s`/`mov.s`/`neg.s`, `vadd/vsub/vmul/vdiv`, `vdot`,
-`vhdp`, `vcrs`, `vscl`, `vmin`/`vmax`, `vcmov`/`vcmovt`/`vcmovf`, `vocp`, the VV2Op scalar set and
+`vhdp`, `vcrs`, `vscl`, `vmin`/`vmax`, `vscmp`/`vsge`/`vslt`, `vcmov`/`vcmovt`/`vcmovf`, `vocp`, the VV2Op scalar set and
 the transcendental set (`vrcp`/`vrsqrt`/`vsin`/`vcos`/`vexp2`/`vlog2`/`vsqrt`/`vasin`), `vmmul`,
 `vtfm`, `vmscl`, `vcrsp`/`vqmul`, and `vrot`. Not checked, by construction: constant broadcasts
 (`viim`/`vfim`/`vcst`/`vzero`/`vone`/`vidt`/`vmidt`/`vmzero`/`vmone`, which have no operand to be

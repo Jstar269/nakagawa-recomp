@@ -1419,24 +1419,24 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                             "_a", n, "_b", n)
                     + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
-        if sub in (6, 7): # vcmovt / vcmovf
-            tf = sub & 1
-            imm3 = (w >> 16) & 7
-            lines = [
-                f"float _s[4], _d[4];",
-                f"sr_vread(_s, s, {_arr(si)}, {n}, s->vfpuCtrl[0]);",
-                f"sr_vread(_d, s, {_arr(di)}, {n}, s->vfpuCtrl[1]);"
-            ]
-            if imm3 < 6:
-                lines.append(f"if (((s->vfpuCtrl[3] >> {imm3}) & 1u) == {1 - tf}u) {{ for (int _i = 0; _i < {n}; _i++) _d[_i] = _s[_i]; }}")
-            elif imm3 == 6:
-                lines.append(f"for (int _i = 0; _i < {n}; _i++) if (((s->vfpuCtrl[3] >> _i) & 1u) == {1 - tf}u) _d[_i] = _s[_i];")
-            else:
-                raise Unsupported(f"vcmov imm3 {imm3} at 0x{addr:08x}")
-            lines.append(_nanv(addr, "vcmovt.s" if tf == 0 else "vcmovf.s",
-                               vd, "_d", n, "_s", n, "_d", n)
-                         + f"sr_vwrite(s, {_arr(di)}, _d, {n}, s->vfpuCtrl[2]);{_EAT}")
-            return "{ " + " ".join(lines) + " }", None, 0
+        if sub in (5, 6, 7):  # vscmp / vsge / vslt: compare lanes, write -1/0/1 or 1/0 as floats
+            # PSP VFPU3 (major 0x1B) by bits 25..23: 0 vcmp, 2 vmin, 3 vmax, 5 vscmp, 6 vsge, 7 vslt.
+            # These slots were decoded as vcmovt/vcmovf before 2026-10-10; the conditional moves
+            # are the VFPU4 vcmov (jump 0x15) handled above. The flagship's quaternion slerp uses
+            # vsge to build its sign term (2 * (dot >= 0) - 1), and the wrong decode multiplied its
+            # dot product by stale scratch lanes, which is the one-frame skinned-model corruption
+            # of issue #69. Semantics follow PPSSPP's Int_Vscmp/Int_Vsge/Int_Vslt (a NaN compares
+            # false, so it yields 0.0); hardware behaviour for NaN operands is UNMEASURED.
+            name = {5: "vscmp.s", 6: "vsge.s", 7: "vslt.s"}[sub]
+            expr = {5: "(_a[_i]<_b[_i])?-1.0f:((_a[_i]>_b[_i])?1.0f:0.0f)",
+                    6: "(_a[_i]>=_b[_i])?1.0f:0.0f",
+                    7: "(_a[_i]<_b[_i])?1.0f:0.0f"}[sub]
+            body = (f"float _a[4],_b[4],_d[4]; sr_vread(_a,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
+                    f"sr_vread(_b,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
+                    f"for(int _i=0;_i<{n};_i++) _d[_i]={expr}; "
+                    + _nanv(addr, name, vd, "_d", n, "_a", n, "_b", n)
+                    + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
+            return "{ " + body + " }", None, 0
         raise Unsupported(f"VFPU3 sub {sub} at 0x{addr:08x}")
     if op == 0x3c and sub == 7 and ((w >> 21) & 0x1F) == 28:
         which = (w >> 16) & 0xF
