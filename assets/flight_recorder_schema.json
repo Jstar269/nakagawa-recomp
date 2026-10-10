@@ -14,7 +14,7 @@
       "required": ["name", "cpu_state_abi"],
       "properties": {
         "name": {"const": "nakagawa-recomp"},
-        "cpu_state_abi": {"const": 2}
+        "cpu_state_abi": {"const": 3}
       }
     },
     "build": {

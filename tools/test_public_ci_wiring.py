@@ -308,6 +308,7 @@ _WINDOWS_SERIAL_GATES = {
     "Build and run portable FPU/VFPU conversion selftest": "CC=gcc VULKAN_SDK=/ucrt64 fp-convert-selftest",
     "Build and run strbuf checked-append formatting selftest": "CC=gcc VULKAN_SDK=/ucrt64 strbuf-selftest",
     "Build and run HLE thread selftest": "CC=gcc VULKAN_SDK=/ucrt64 hle-thread-selftest",
+    "Build and run flash0 font device selftest": "PYTHONPATH=tools python -m unittest -v test_flash0_font",
     "Build and run synthetic VFPU fuzzer": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
 }
 # Steps every part repeats: the toolchain setup and the runtime-object compile gate.
