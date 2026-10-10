@@ -18,6 +18,11 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from vulkan_sdk import VulkanSdkError, discover_vulkan_sdk, is_usable_vulkan_sdk
 
+try:
+    from test_build_truth import _scratch_build_root
+except ModuleNotFoundError:
+    from tools.test_build_truth import _scratch_build_root
+
 
 class VulkanSdkDiscoveryTests(unittest.TestCase):
     def make_sdk(self, root: Path, name: str, *, complete: bool = True) -> Path:
@@ -187,9 +192,13 @@ class VulkanSdkMakefileWiringTests(unittest.TestCase):
             env["PATH"] = os.pathsep.join(
                 [py_bin, msys_bin, env.get("PATH", "")]
             )
+            # A scratch BUILD_ROOT: the dry run still parses the Makefile, which writes the
+            # SDL3 discovery fragment beneath BUILD_ROOT, and the player's default output
+            # derives from it, so nothing lands in the checkout's build/.
+            build_root = _scratch_build_root(self, "vulkan-sdk-player")
             proc = subprocess.run(
                 [make, "--no-print-directory", "-n", "CC=gcc", "player",
-                 "PLAYER_EXE=build/td33-override-player.exe"],
+                 f"BUILD_ROOT={build_root.as_posix()}"],
                 capture_output=True, text=True, env=env, check=False, cwd=str(ROOT),
             )
             blob = proc.stdout + proc.stderr

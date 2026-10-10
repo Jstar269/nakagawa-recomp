@@ -1277,7 +1277,7 @@ class TitleConfigIdentityIsLoadBearing(unittest.TestCase):
     def make_header(self, *, game: str, manifest: Path | None):
         """Ask Make for the generated header alone. No compiler is involved."""
         argv = [self.make, "--no-print-directory", f"GAME_NAME={game}",
-                f"BUILD_DIR={self.build.as_posix()}"]
+                f"BUILD_ROOT={self.build.as_posix()}", f"BUILD_DIR={self.build.as_posix()}"]
         if manifest is not None:
             argv.append(f"TITLE_MANIFEST={manifest.as_posix()}")
         argv.append((self.build / "sr_title_config.h").as_posix())

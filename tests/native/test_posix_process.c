@@ -11,6 +11,13 @@
  * other backend, and only builds where that backend does.
  */
 
+/* Scratch root for the files this test writes: the checkout's build/ by default, or
+ * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
+ * touches the checkout. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+
 #if defined(_WIN32) || defined(_WIN64)
 
 #include <stdio.h>
@@ -181,7 +188,7 @@ int main(void) {
     printf("[POSIX_PROCESS_TEST] Subtest 7: process tree termination stops grandchildren\n");
     fflush(stdout);
 
-    const char *posix_pid_file = "build/test_posix_grandchild.pid";
+    const char *posix_pid_file = SR_SELFTEST_BUILD_ROOT "/test_posix_grandchild.pid";
     remove(posix_pid_file);
 
     NkProcessHandle tree_proc;
@@ -189,7 +196,7 @@ int main(void) {
     const char *tree_argv[] = {
         "/bin/sh",
         "-c",
-        "sleep 60 & echo $! > build/test_posix_grandchild.pid; wait",
+        "sleep 60 & echo $! > " SR_SELFTEST_BUILD_ROOT "/test_posix_grandchild.pid; wait",
         NULL
     };
     assert(nk_platform_spawn_process("/bin/sh", tree_argv, NULL, NULL, &tree_proc));
