@@ -90,8 +90,10 @@ static unsigned g_test_handler_calls;
 static int g_test_handler_raise_ge;
 static uint32_t g_test_handler_wake_obj;
 static CpuState g_test_handler_seen;
+static uint32_t g_test_vblank_no, g_test_vblank_arg;
 uint32_t sr_vblank_handler(void) { return g_test_vblank_handler; }
-uint32_t sr_vblank_arg(void) { return 0; }
+uint32_t sr_vblank_arg(void) { return g_test_vblank_arg; }
+uint32_t sr_vblank_no(void) { return g_test_vblank_no; }
 int sr_vblank_dispatch_registered(void) { return 0; }
 static unsigned g_test_vblank_delivered;
 void sr_vblank_tick(void) { g_test_vblank_delivered++; }
@@ -1844,8 +1846,12 @@ static void test_interrupt_frame_is_restored(void) {
     int running = mk(0x220u, TH_RUNNING, 20);
     s_cur = running;
     g_test_vblank_handler = 0x00001234u;
+    g_test_vblank_no = 7u;
+    g_test_vblank_arg = 0x0abcd000u;
     g_test_handler_raise_ge = 1;
     g_cpu_store.pc = 0x11112222u;
+    g_cpu_store.r[4] = 0xdead0004u;   /* the interrupted frame's own a0/a1 must not leak in */
+    g_cpu_store.r[5] = 0xdead0005u;
     g_cpu_store.r[16] = 0x33334444u;
     g_cpu_store.r[28] = 0x55556666u;
     g_cpu_store.r[29] = 0x77778888u;
@@ -1866,6 +1872,10 @@ static void test_interrupt_frame_is_restored(void) {
            "handler sees the preserved interrupted frame plus kernel entry state");
     expect(memcmp(&g_cpu_store, &interrupted, sizeof(interrupted)) == 0,
            "handler register mutations do not leak into the interrupted thread");
+    /* handler(no, arg): the PSP sub-interrupt handler signature (PSPSDK pspintrman.h). A
+     * retail handler reads its event-flag id from 4(a1); with the arg in a0 it set flag 0. */
+    expect(g_test_handler_seen.r[4] == 7u && g_test_handler_seen.r[5] == 0x0abcd000u,
+           "handler receives (sub-interrupt number, arg) in (a0, a1)");
     expect((sched_pending_interrupts() & SCHED_INTR_GE) != 0u,
            "a source raised by the handler remains pending for its own service path");
 
