@@ -1096,7 +1096,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "53e4a8cf6fc99b5a480fda593ce5a041755cbbc0c0121edf90650eb4de717dc4"
+      "sha256": "267d547b431d9f373328eab35d5e596a040f230ce7545a7888c270e27bb94efa"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -5681,7 +5681,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f73e92b8e5f172fa4aa8568e8ed96631cbe8a3e1c622cc427185c364af6d4b49"
+      "sha256": "d09ae642187035ca8200add9fee467cb3ef4cec82ffbd9ea3c88dda9a24bad49"
     },
     {
       "path": "src/rt/vfpu_oracle_host.c",
