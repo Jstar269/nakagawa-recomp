@@ -42,6 +42,10 @@ try:
     import flight_diff
 except ModuleNotFoundError:
     from tools import flight_diff
+try:
+    from test_build_truth import _scratch_build_root
+except ModuleNotFoundError:
+    from tools.test_build_truth import _scratch_build_root
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC_RT = ROOT / "src" / "rt"
@@ -542,13 +546,13 @@ class MakeIdentityResolutionTests(unittest.TestCase):
         self.assertTrue(make, "GNU Make is required for the build-identity check")
         environment = dict(os.environ)
         environment.update(env or {})
+        # A scratch BUILD_ROOT: even a dry run parses the Makefile, and that writes the
+        # SDL3 discovery fragment beneath BUILD_ROOT, which must not be the checkout's
+        # build/. The scratch path is Make-safe (no whitespace) by construction.
+        build_root = _scratch_build_root(self, "identity-probe")
         result = subprocess.run(
             [make, "--no-print-directory", "-p", "-n", "clean-preview",
-             # Relative and space-free: BUILD_DIR must stay a form GNU Make can
-             # put in a target name, or the Makefile's whitespace guard fails
-             # closed -- which is exactly what a checkout under a path with
-             # spaces would do to an absolute BUILD_DIR (#368).
-             "BUILD_DIR=build/identity-probe", *overrides],
+             f"BUILD_ROOT={build_root.as_posix()}", *overrides],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -613,7 +617,7 @@ class MakeIdentityResolutionTests(unittest.TestCase):
                 make,
                 "--no-print-directory",
                 "--dry-run",
-                "BUILD_DIR=build/flight-media-identity-dry-run",
+                f"BUILD_ROOT={_scratch_build_root(self, 'flight-media-identity').as_posix()}",
                 f"SR_SOURCE_COMMIT={FAKE_COMMIT}",
                 "psmf-media-selftest",
             ],
