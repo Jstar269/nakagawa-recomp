@@ -121,6 +121,46 @@ int iso_init(void) {
     return rc;
 }
 
+/* A title reads a UMD file by its start sector. sceIoGetstat reports the file's starting
+ * LBN in st_private[0], and the title opens the raw extent it names as
+ * "sce_lbn0x<LBN>_size0x<SIZE>": LBN in hexadecimal 2048-byte sectors and SIZE in
+ * hexadecimal bytes. The name is the extent itself, not a directory entry, so it resolves
+ * without a directory lookup. Only a name of exactly that form is an extent. */
+static int iso_hex_field(const char *p, size_t max_digits, const char **end, uint32_t *out) {
+    uint32_t value = 0;
+    size_t n = 0;
+    for (;; p++, n++) {
+        int c = (unsigned char)*p, d;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+        else break;
+        if (n >= max_digits) return 0;
+        value = (value << 4) | (uint32_t)d;
+    }
+    if (n == 0) return 0;
+    *end = p;
+    *out = value;
+    return 1;
+}
+
+static int iso_parse_sector_extent(const char *path, uint32_t *out_lba, uint32_t *out_size) {
+    static const char lbn_tag[] = "sce_lbn0x";
+    static const char size_tag[] = "_size0x";
+    const size_t lbn_len = sizeof(lbn_tag) - 1u;
+    const size_t size_len = sizeof(size_tag) - 1u;
+    if (strncmp(path, lbn_tag, lbn_len) != 0) return 0;
+    const char *lbn_end = NULL, *size_end = NULL;
+    uint32_t lba = 0, size = 0;
+    if (!iso_hex_field(path + lbn_len, 8u, &lbn_end, &lba)) return 0;
+    if (strncmp(lbn_end, size_tag, size_len) != 0) return 0;
+    if (!iso_hex_field(lbn_end + size_len, 8u, &size_end, &size)) return 0;
+    if (*size_end != '\0' || size == 0u) return 0;
+    *out_lba = lba;
+    *out_size = size;
+    return 1;
+}
+
 int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size) {
     if (!guest_path || !out_lba || !out_size) return -1;
 
@@ -137,6 +177,8 @@ int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size) {
     if (orig_len > 0 && (guest_path[orig_len - 1] == '/' || guest_path[orig_len - 1] == '\\')) {
         return -1;
     }
+
+    if (iso_parse_sector_extent(norm_path, out_lba, out_size)) return 0;
 
     ISO_LOCK();
     if (ensure_reader_locked() != 0) {
