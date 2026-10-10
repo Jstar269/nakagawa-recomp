@@ -122,6 +122,9 @@ Every launch runs in a temporary sandbox inside the title's build directory:
 
 - `LOCALAPPDATA` and `APPDATA` point into the sandbox, so `%LOCALAPPDATA%\Nakagawa`
   and `%APPDATA%` are never read or written;
+- `HOME` and the `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME` and `XDG_STATE_HOME`
+  bases point into the sandbox as well, so a POSIX player never reads or writes `~/.config`,
+  `~/.local/share`, `~/.cache` or `~/.local/state`;
 - `--user-data-root` points at the sandbox, so the library and caches stay there;
 - video and audio use the dummy drivers and the offscreen presenter, so no window opens;
 - `SR_FLIGHT*` and `SR_DATAROOT` are removed from the child's environment.
