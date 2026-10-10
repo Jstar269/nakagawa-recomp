@@ -838,7 +838,18 @@ static int s_rt_draws_f = 0;         /* draws logged this frame (cap) */
  * target, bound texture, a stable draw_id (FNV-1a over vtype+vbase+prim+count) so the
  * bad draw matches its first recovered equivalent, and non_finite, the number of
  * non-finite values among the four effective matrices (0 for a clean draw). See
- * tools/ge_transition_diff.py. */
+ * tools/ge_transition_diff.py.
+ *
+ * Late-write records. This runtime executes a list when the guest enqueues it or advances
+ * its stall address, which is EARLIER than the console's GE would read the same vertex and
+ * index bytes. A guest that keeps writing a submitted vertex buffer, relying on the GE
+ * lagging behind or on a stall it only sets on some paths, draws stale geometry here and
+ * fresh geometry on the console. So the bytes each weighted draw read are hashed at draw
+ * time and again at the next point the guest treats drawing as finished (a present, a
+ * DrawSync wait, a completed ListSync; ge_transition_trace_check from hle.c). A changed
+ * hash is one {"kind":"late_write"} record on the same trace naming the draw, the spans
+ * and both hashes. A late write is a candidate, not proof: the console's GE may already
+ * have consumed the bytes before the write landed. */
 static int s_tr_enabled = -1;        /* -1=unprobed, 0=off, 1=on */
 static FILE *s_tr_fp = NULL;
 static uint32_t s_tr_ordinal_frame = 0xFFFFFFFFu;
@@ -846,6 +857,93 @@ static uint32_t s_tr_draw_ordinal = 0;   /* frame-scoped PRIM ordinal (all draws
 static float s_tr_bone_w[96], s_tr_world_w[12], s_tr_view_w[12], s_tr_proj_w[16];
 static unsigned long s_tr_bone_drop = 0, s_tr_world_drop = 0;
 static unsigned long s_tr_view_drop = 0, s_tr_proj_drop = 0;
+
+#define TR_WATCH_MAX 512
+typedef struct {
+    uint32_t frame, draw, draw_id, list, cmd;
+    int prim, count;
+    uint32_t vbase, ibase;
+    uint32_t vlo, vhi;      /* vertex bytes the draw read: [vlo, vhi) */
+    uint32_t ilo, ihi;      /* index bytes the draw read: [ilo, ihi); empty when not indexed */
+    uint32_t hash;          /* FNV-1a over index bytes then vertex bytes, at draw time */
+} TrWatch;
+static TrWatch s_tr_watch[TR_WATCH_MAX];
+static int s_tr_watch_n = 0;
+static unsigned long s_tr_watch_dropped = 0, s_tr_watch_checks = 0, s_tr_watch_late = 0;
+static uint32_t index_value(uint32_t ibase, int idxfmt, int i);   /* defined with the vertex fetch */
+
+static uint32_t ge_tr_hash_span(uint32_t h, uint32_t lo, uint32_t hi) {
+    if (hi <= lo || !sr_guest_span_readable(lo, hi - lo)) return h;
+    const uint8_t *p = (const uint8_t *)SR_HOST(lo);
+    for (uint32_t i = 0; i < hi - lo; i++) { h ^= p[i]; h *= 16777619u; }
+    return h;
+}
+
+static uint32_t ge_tr_watch_hash(const TrWatch *w) {
+    uint32_t h = 2166136261u;
+    h = ge_tr_hash_span(h, w->ilo, w->ihi);
+    return ge_tr_hash_span(h, w->vlo, w->vhi);
+}
+
+/* Remember the bytes one weighted draw read, hashed now; checked by ge_transition_trace_check. */
+static void ge_transition_watch_note(uint32_t ordinal, uint32_t draw_id, int type, int count,
+                                     const VFmt *vf, uint32_t list_addr, uint32_t cmd_addr,
+                                     uint32_t vbase, uint32_t ibase) {
+    if (count <= 0 || vf->stride <= 0) return;
+    if (s_tr_watch_n >= TR_WATCH_MAX) { s_tr_watch_dropped++; return; }
+    TrWatch *w = &s_tr_watch[s_tr_watch_n];
+    memset(w, 0, sizeof(*w));
+    w->frame = s_ge_frame; w->draw = ordinal; w->draw_id = draw_id;
+    w->list = list_addr; w->cmd = cmd_addr; w->prim = type; w->count = count;
+    w->vbase = vbase; w->ibase = ibase;
+    int idxfmt = (int)((ge.vtype >> 11) & 3);
+    uint32_t stride = (uint32_t)vf->stride;
+    if (idxfmt) {
+        uint32_t ibytes = (uint32_t)count << (idxfmt - 1);
+        w->ilo = ibase; w->ihi = ibase + ibytes;
+        if (!sr_guest_span_readable(ibase, ibytes)) { s_tr_watch_n++; w->hash = ge_tr_watch_hash(w); return; }
+        uint32_t lo = 0xFFFFFFFFu, hi = 0;
+        for (int i = 0; i < count; i++) {
+            uint32_t v = index_value(ibase, idxfmt, i);
+            if (v < lo) lo = v;
+            if (v > hi) hi = v;
+        }
+        w->vlo = vbase + lo * stride; w->vhi = vbase + (hi + 1u) * stride;
+    } else {
+        w->vlo = vbase; w->vhi = vbase + (uint32_t)count * stride;
+    }
+    w->hash = ge_tr_watch_hash(w);
+    s_tr_watch_n++;
+}
+
+void ge_transition_trace_check(const char *why, uint32_t vcount) {
+    if (s_tr_enabled <= 0) return;
+    s_tr_watch_checks++;
+    for (int i = 0; i < s_tr_watch_n; i++) {
+        const TrWatch *w = &s_tr_watch[i];
+        uint32_t now = ge_tr_watch_hash(w);
+        if (now == w->hash) continue;
+        s_tr_watch_late++;
+        fprintf(s_tr_fp,
+                "{\"kind\":\"late_write\",\"frame\":%u,\"draw\":%u,\"draw_id\":\"%08x\","
+                "\"list\":\"0x%08x\",\"cmd\":\"0x%08x\",\"prim\":%d,\"count\":%d,"
+                "\"vbase\":\"0x%08x\",\"ibase\":\"0x%08x\","
+                "\"vertex_span\":[\"0x%08x\",\"0x%08x\"],\"index_span\":[\"0x%08x\",\"0x%08x\"],"
+                "\"hash_at_draw\":\"%08x\",\"hash_at_check\":\"%08x\",\"check\":\"%s\",\"check_vblank\":%u}\n",
+                w->frame, w->draw, w->draw_id, w->list, w->cmd, w->prim, w->count, w->vbase, w->ibase,
+                w->vlo, w->vhi, w->ilo, w->ihi, w->hash, now, why, vcount);
+        fprintf(stderr, "GE_LATE_WRITE frame=%u draw=%u draw_id=%08x list=0x%08x cmd=0x%08x "
+                "span=0x%08x-0x%08x check=%s vbl=%u\n",
+                w->frame, w->draw, w->draw_id, w->list, w->cmd, w->vlo, w->vhi, why, vcount);
+    }
+    if (s_tr_watch_dropped) {
+        fprintf(stderr, "GE_LATE_WRITE: %lu weighted draw(s) not watched (ring of %d full) before check=%s vbl=%u\n",
+                s_tr_watch_dropped, TR_WATCH_MAX, why, vcount);
+        s_tr_watch_dropped = 0;
+    }
+    fflush(s_tr_fp);
+    s_tr_watch_n = 0;
+}
 
 /* Snapshot effective state as the write history baseline. Pre-arm guest writes are
  * unknowable, so records before the first post-arm matrix upload show written values
@@ -941,6 +1039,7 @@ static void ge_transition_trace_draw(int type, int count, const VFmt *vf, unsign
     int wt = (int)((ge.vtype >> 9) & 3);
     int wc = (int)((ge.vtype >> 14) & 7);
     FILE *fp = s_tr_fp;
+    uint32_t draw_id = ge_transition_draw_id(ge.vtype, vbase, type, count);
     fprintf(fp,
             "{\"frame\":%u,\"draw\":%u,\"prim_index\":%lu,"
             "\"list\":\"0x%08x\",\"cmd\":\"0x%08x\","
@@ -963,7 +1062,7 @@ static void ge_transition_trace_draw(int type, int count, const VFmt *vf, unsign
             vbase, ibase,
             ge_fb_addr(), ge.fbw ? ge.fbw : 512, ge.fbfmt & 3,
             ge.tex_enable, ge.tex_addr, ge.tex_fmt & 0xFu,
-            ge_transition_draw_id(ge.vtype, vbase, type, count),
+            draw_id,
             ge.bone_num, ge.world_num, ge.view_num, ge.proj_num,
             s_tr_bone_drop, s_tr_world_drop, s_tr_view_drop, s_tr_proj_drop);
     fprintf(fp, "\"bone_written\":[");
@@ -984,6 +1083,7 @@ static void ge_transition_trace_draw(int type, int count, const VFmt *vf, unsign
     ge_transition_trace_floats(fp, ge.proj, 16);
     fprintf(fp, "],\"non_finite\":%d}\n", ge_transition_trace_nonfinite());
     fflush(fp);   /* keep each record crash-safe; this path is opt-in only */
+    ge_transition_watch_note(ordinal, draw_id, type, count, vf, list_addr, cmd_addr, vbase, ibase);
 }
 
 /* Per-texture alpha-test outcome counters for transform-mode fragments (SR_GESTAT). Shows which

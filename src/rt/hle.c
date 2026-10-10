@@ -17150,6 +17150,7 @@ static void display_present_frame(void) {
             fprintf(stderr, "HOST_PRESENT_SUBMITTED f=%u buf=0x%08x fmt=%d stride=%d\n",
                     s_vcount, s_display_active.addr, s_display_active.fmt,
                     s_display_active.stride);
+        ge_transition_trace_check("present", s_vcount);
     }
 }
 
@@ -18653,7 +18654,10 @@ static uint32_t h_GeListSync(CpuState *s) {
             if (ge_log_on())
                 fprintf(stderr, "GE_SYNC: qid=0x%08x syncType=%u status=%d (cur_pc=0x%08x)\n",
                         qid, syncType, s_ge_lists[i].status, s_ge_lists[i].current_pc);
-            if (s_ge_lists[i].status == GE_LIST_COMPLETED) return 0;
+            if (s_ge_lists[i].status == GE_LIST_COMPLETED) {
+                ge_transition_trace_check("listsync", s_vcount);
+                return 0;
+            }
             if (s_ge_lists[i].status == GE_LIST_STALLED) {
                 if (syncType == 1) return 1; /* PSP_GE_LIST_QUEUED */
                 sched_delay_current(1000);
@@ -18740,6 +18744,7 @@ static uint32_t h_GeDrawSync(CpuState *s) {
         if (paused) return 2u; /* PSP_GE_LIST_DRAWING_DONE */
         return busy ? 1u : 0u;
     }
+    ge_transition_trace_check("drawsync", s_vcount);
     if (busy || paused) sched_delay_current(1000);
     return 0;
 }
