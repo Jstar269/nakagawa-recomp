@@ -234,6 +234,8 @@ extern void sr_hle_test_hprm_set_headphone(int attached);
 extern void sr_hle_test_hprm_set_microphone(int attached);
 extern void sr_hle_test_power_set_low_battery(int low);
 extern uint32_t sr_vblank_handler(void);
+uint32_t sr_vblank_no(void);
+uint32_t sr_vblank_arg(void);
 
 #define NID_SCE_KERNEL_EXIT_THREAD 0xaa73c935u
 #define NID_SCE_KERNEL_SLEEP_THREAD 0x9ace131eu
@@ -11436,8 +11438,10 @@ static void test_td24b_cheap_hle_batch(void) {
     expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
            "sub-interrupt fixture starts from a released VBLANK line");
     expect(sr_vblank_handler() == 0u, "VBLANK delivery starts clear");
-    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 0u, 0x08001000u, 0x1234u) == 0u,
+    expect(td24b_dispatch4(NID_SCE_KERNEL_REGISTER_SUBINTR, 30u, 5u, 0x08001000u, 0x1234u) == 0u,
            "RegisterSubIntrHandler records the VBLANK handler");
+    expect(sr_vblank_no() == 5u && sr_vblank_arg() == 0x1234u,
+           "RegisterSubIntrHandler keeps the sub-interrupt number and arg the handler is called with");
     expect(sr_vblank_handler() == 0u, "a registered-but-disabled handler is not delivered");
     expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
            "EnableSubIntr answers success");
@@ -11451,6 +11455,8 @@ static void test_td24b_cheap_hle_batch(void) {
     expect(td24b_dispatch4(NID_SCE_KERNEL_RELEASE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
            "ReleaseSubIntrHandler answers success");
     expect(sr_vblank_handler() == 0u, "a released VBLANK handler is not delivered");
+    expect(sr_vblank_no() == 0u && sr_vblank_arg() == 0u,
+           "ReleaseSubIntrHandler clears the sub-interrupt number and arg");
     expect(td24b_dispatch4(NID_SCE_KERNEL_ENABLE_SUBINTR, 30u, 0u, 0u, 0u) == 0u,
            "EnableSubIntr after release still answers success");
     expect(sr_vblank_handler() == 0u, "Release clears the handler word: Enable delivers nothing");
