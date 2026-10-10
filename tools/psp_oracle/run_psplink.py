@@ -78,6 +78,7 @@ try:
         parse_io_matrix_output,
         parse_mbx_delete_wait_output,
         parse_registry_readonly_output,
+        validate_hle_edram_restore,
     )
 except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocation
     from psp_oracle.parse_golden import (
@@ -94,6 +95,7 @@ except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocat
         parse_io_matrix_output,
         parse_mbx_delete_wait_output,
         parse_registry_readonly_output,
+        validate_hle_edram_restore,
     )
 
 
@@ -879,6 +881,12 @@ def _validate_campaign_contract(text: str, case_id: str) -> None:
         validate_dmac_size_matrix(text)
     elif match := re.fullmatch(r"dmac-size-matrix-size-0x([0-9a-f]{8})", case_id):
         validate_dmac_size_matrix_size(text, int(match.group(1), 16))
+    elif case_id == "hle-ge-edram":
+        # Registered as a fixed-shape stream, plus the restore invariant: a
+        # stream that leaves the GE translation width changed is a protocol
+        # failure, not a measurement.
+        parse_campaign_probe_output(text, case_id, require_complete=True)
+        validate_hle_edram_restore(text)
     elif case_id in CAMPAIGN_PROBE_CASES:
         parse_campaign_probe_output(text, case_id, require_complete=True)
     elif case_id == "registry-readonly":
