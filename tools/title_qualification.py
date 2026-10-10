@@ -31,6 +31,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -58,9 +59,12 @@ MAX_PUBLIC_JSON_BYTES = 256 * 1024
 # Public titles only. Retail manifests are local-only and never checked in.
 PUBLIC_KINDS = frozenset({"synthetic", "homebrew"})
 # Bring-up issue numbers that the bring-up route attaches to a launch failure.
+# Maintenance: edit by hand; each number must be in the bring-up schema's issue_numbers enum (tested).
 LAUNCH_FAILURE_ISSUES = [308]
 # A public title is launchable only through a sample entry the native player
 # already bundles. Titles without an entry are refused by name, never guessed.
+# Maintenance rule (docs/TITLE_TESTING.md, "Launch surfaces"): add the bundled player entry
+# first, then one line here, then a test that runs it. Do not discover entries at runtime.
 PUBLIC_LAUNCH_SURFACES = {
     "display-smoke-v1": {"launch_index": 1},
 }
@@ -382,7 +386,7 @@ def _stage_fail(report: dict, stage: str, failure: str, duration_ms: int) -> Non
 
 def staging_failure_report(duration_ms: int = 0) -> dict:
     """A report for a candidate whose build is absent: the compile stage names the missing entry."""
-    report = nk_cli._new_bringup_report()
+    report = nk_cli.new_bringup_report()
     report["reached_stage"] = "compile"
     report["stages"]["compile"] = {"status": "FAIL", "duration_ms": duration_ms}
     report["failure_class"] = "ENTRY_NOT_COMPILED"
@@ -408,10 +412,10 @@ def launch_report(
     and the child exited 0. Every other outcome names one failure class from the
     bring-up vocabulary.
     """
-    report = nk_cli._new_bringup_report()
+    report = nk_cli.new_bringup_report()
     report["reached_stage"] = "launch"
-    report["runtime_output_kind"] = nk_cli._runtime_output_kind(output, [])
-    presentation_ok = nk_cli._set_bringup_presentation(report, output)
+    report["runtime_output_kind"] = nk_cli.runtime_output_kind(output, [])
+    presentation_ok = nk_cli.set_bringup_presentation(report, output)
     if timed_out:
         report["process_exit_code"] = None
         report["exit_classification"] = "TIMED_OUT"
@@ -449,7 +453,7 @@ def write_report(report: dict, path: Path) -> None:
     """Refuse to write a report the bring-up schema rejects, then write it atomically."""
     nk_cli.validate_bringup_report(report)
     path.parent.mkdir(parents=True, exist_ok=True)
-    nk_cli._write_bringup_file(report, path)
+    nk_cli.write_bringup_file(report, path)
 
 
 # -----------------------------------------------------------------------------
@@ -465,9 +469,7 @@ def child_environment(base: dict[str, str], sandbox: Path) -> dict[str, str]:
     env.update({
         "LOCALAPPDATA": str(sandbox / "localappdata"),
         "APPDATA": str(sandbox / "appdata"),
-        "SDL_VIDEO_DRIVER": "dummy",
         "SDL_VIDEODRIVER": "dummy",
-        "SDL_AUDIO_DRIVER": "dummy",
         "SDL_AUDIODRIVER": "dummy",
         "SR_VIDEO": "offscreen",
         "SR_PRESENT_TRACE": "1",
@@ -494,12 +496,28 @@ def launch_command(player: Path, sandbox: Path, runtime_root: Path, launch_index
 
 
 def _stop_process_tree(process: subprocess.Popen) -> None:
-    """Stop the player and the runtime it spawned, so no orphan keeps the output pipe open."""
+    """Stop the player and the runtime it spawned, so no orphan keeps the output pipe open.
+
+    Windows ends the tree with taskkill. POSIX children are started as session leaders
+    (run_player), so the player's process group also holds the runtime: SIGKILL that group.
+    If the group cannot be found or signalled, the player itself is killed instead.
+    """
     if os.name == "nt":
         subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
                        capture_output=True, check=False)
-    else:
-        process.kill()
+        return
+    try:
+        group = os.getpgid(process.pid)
+    except OSError:
+        group = None
+    # Signal only a group this child leads. Never signal the group the runner itself is in.
+    if group == process.pid:
+        try:
+            os.killpg(group, signal.SIGKILL)
+            return
+        except OSError:
+            pass
+    process.kill()
 
 
 def run_player(player: Path, sandbox: Path, runtime_root: Path, launch_index: int,
@@ -511,6 +529,8 @@ def run_player(player: Path, sandbox: Path, runtime_root: Path, launch_index: in
         command, cwd=ROOT, env=child_environment(os.environ, sandbox),
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace",
+        # POSIX: the player leads its own session, so _stop_process_tree can signal the whole group.
+        start_new_session=os.name != "nt",
     )
     try:
         output, _ = process.communicate(timeout=timeout_seconds)
@@ -521,6 +541,12 @@ def run_player(player: Path, sandbox: Path, runtime_root: Path, launch_index: in
         output, _ = process.communicate()
         timed_out = True
         returncode = None
+    except KeyboardInterrupt:
+        # On POSIX the child has its own session and misses the terminal's Ctrl+C, so stop the
+        # tree here, before the sandbox is deleted underneath a running child.
+        _stop_process_tree(process)
+        process.wait()
+        raise
     duration_ms = int((time.perf_counter() - started) * 1000)
     return returncode, output or "", timed_out, duration_ms
 
@@ -650,7 +676,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="build tree holding build/<title id>/ (default: %(default)s)")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    validate = sub.add_parser("validate", help="validate public manifests, input profiles and reports")
+    validate = sub.add_parser(
+        "validate", help="validate public manifests, input profiles and reports",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Exit status: 0 when every candidate passes; 2 when at least one candidate\n"
+               "fails validation (the first problem of each failing candidate is printed).\n"
+               "Nothing is built or launched.")
     validate.add_argument("--manifest", type=Path, action="append",
                           help="manifest to validate (default: every assets/titles/*.json)")
     validate.add_argument("--input-profile", type=Path, action="append",
@@ -661,7 +692,12 @@ def build_parser() -> argparse.ArgumentParser:
                           help="also require the staged build and declared directories to exist")
     validate.set_defaults(func=cmd_validate)
 
-    smoke = sub.add_parser("smoke", help="launch a public title through the native player")
+    smoke = sub.add_parser(
+        "smoke", help="launch a public title through the native player",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Exit status: 0 when the launch passes; 1 when the title launches and fails, or its\n"
+               "staged build is missing (a report naming the failed stage is written); 2 when the\n"
+               "candidate is refused before any launch (no report is written).")
     smoke.add_argument("--manifest", type=Path, required=True)
     smoke.add_argument("--input-profile", type=Path, default=DEFAULT_INPUT_PROFILE)
     smoke.add_argument("--player", type=Path, default=ROOT / "build" / PLAYER_NAME)

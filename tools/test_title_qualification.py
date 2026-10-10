@@ -6,12 +6,16 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import copy
+import inspect
 import io
 import json
+import os
 from pathlib import Path
 import re
+import signal
 import sys
 import tempfile
 import unittest
@@ -335,10 +339,17 @@ class SandboxAndStagingTests(unittest.TestCase):
             self.assertEqual(env["LOCALAPPDATA"], str(sandbox / "localappdata"))
             self.assertEqual(env["APPDATA"], str(sandbox / "appdata"))
             self.assertEqual(env["SR_VIDEO"], "offscreen")
-            self.assertEqual(env["SDL_VIDEO_DRIVER"], "dummy")
+            self.assertEqual(env["SDL_VIDEODRIVER"], "dummy")
+            self.assertEqual(env["SDL_AUDIODRIVER"], "dummy")
             self.assertNotIn("SR_FLIGHT", env)
             self.assertNotIn("SR_DATAROOT", env)
             self.assertEqual(base["LOCALAPPDATA"], "C:/real/profile")
+
+    def test_child_environment_sets_only_the_standard_sdl_names(self):
+        with tempfile.TemporaryDirectory(prefix="tq-sdl-") as temp:
+            env = tq.child_environment({"PATH": "x"}, Path(temp))
+        self.assertEqual(sorted(key for key in env if key.startswith("SDL_")),
+                         ["SDL_AUDIODRIVER", "SDL_VIDEODRIVER"])
 
     def test_input_profile_is_staged_where_the_player_reads_it(self):
         with tempfile.TemporaryDirectory(prefix="tq-profile-") as temp:
@@ -366,6 +377,155 @@ class LaunchProcessTests(unittest.TestCase):
         self.assertTrue(timed_out)
         self.assertIsNone(returncode)
         self.assertLess(duration_ms, 30000)
+
+
+class PosixProcessGroupTests(unittest.TestCase):
+    """The stop path and the session it depends on. The POSIX branch is driven by mocks, so it runs on any host."""
+
+    def test_child_is_started_as_its_own_session_leader_on_posix(self):
+        fake = mock.Mock(returncode=0)
+        fake.communicate.return_value = ("", None)
+        with tempfile.TemporaryDirectory(prefix="tq-session-") as temp:
+            # Path objects are built before os.name is patched: pathlib cannot create a PosixPath on Windows.
+            sandbox, player = Path(temp), Path("player")
+            with mock.patch.object(tq, "launch_command", return_value=["player"]), \
+                    mock.patch.object(tq, "child_environment", return_value={}), \
+                    mock.patch.object(tq.os, "name", "posix"), \
+                    mock.patch.object(tq.subprocess, "Popen", return_value=fake) as popen:
+                tq.run_player(player, sandbox, ROOT, 1, timeout_seconds=5)
+        self.assertIs(popen.call_args.kwargs["start_new_session"], True)
+
+    def test_windows_stop_keeps_the_taskkill_tree_kill(self):
+        process = mock.Mock(pid=4242)
+        with mock.patch.object(tq.os, "name", "nt"), \
+                mock.patch.object(tq.subprocess, "run") as run:
+            tq._stop_process_tree(process)
+        run.assert_called_once_with(
+            ["taskkill", "/PID", "4242", "/T", "/F"], capture_output=True, check=False)
+        process.kill.assert_not_called()
+
+    def test_posix_stop_signals_the_group_the_child_leads(self):
+        process = mock.Mock(pid=4242)
+        with mock.patch.object(tq.os, "name", "posix"), \
+                mock.patch.object(tq.os, "getpgid", return_value=4242, create=True), \
+                mock.patch.object(tq.os, "killpg", create=True) as killpg, \
+                mock.patch.object(signal, "SIGKILL", 9, create=True):
+            tq._stop_process_tree(process)
+        killpg.assert_called_once_with(4242, 9)
+        process.kill.assert_not_called()
+
+    def test_posix_stop_falls_back_to_the_child_when_the_group_is_gone(self):
+        process = mock.Mock(pid=4242)
+        with mock.patch.object(tq.os, "name", "posix"), \
+                mock.patch.object(tq.os, "getpgid", side_effect=ProcessLookupError, create=True), \
+                mock.patch.object(tq.os, "killpg", create=True) as killpg:
+            tq._stop_process_tree(process)
+        killpg.assert_not_called()
+        process.kill.assert_called_once_with()
+
+    def test_posix_stop_falls_back_to_the_child_when_the_group_signal_fails(self):
+        process = mock.Mock(pid=4242)
+        with mock.patch.object(tq.os, "name", "posix"), \
+                mock.patch.object(tq.os, "getpgid", return_value=4242, create=True), \
+                mock.patch.object(tq.os, "killpg", side_effect=PermissionError, create=True), \
+                mock.patch.object(signal, "SIGKILL", 9, create=True):
+            tq._stop_process_tree(process)
+        process.kill.assert_called_once_with()
+
+    def test_posix_stop_never_signals_a_group_the_child_does_not_lead(self):
+        process = mock.Mock(pid=4242)
+        with mock.patch.object(tq.os, "name", "posix"), \
+                mock.patch.object(tq.os, "getpgid", return_value=1000, create=True), \
+                mock.patch.object(tq.os, "killpg", create=True) as killpg:
+            tq._stop_process_tree(process)
+        killpg.assert_not_called()
+        process.kill.assert_called_once_with()
+
+    def test_interrupt_stops_the_player_tree_before_it_propagates(self):
+        fake = mock.Mock(pid=4242, returncode=None)
+        fake.communicate.side_effect = KeyboardInterrupt
+        with tempfile.TemporaryDirectory(prefix="tq-interrupt-") as temp, \
+                mock.patch.object(tq.subprocess, "Popen", return_value=fake), \
+                mock.patch.object(tq, "_stop_process_tree") as stop:
+            with self.assertRaises(KeyboardInterrupt):
+                tq.run_player(Path("player"), Path(temp), ROOT, 1, timeout_seconds=5)
+        stop.assert_called_once_with(fake)
+        fake.wait.assert_called_once_with()
+
+
+def _process_running(pid: int) -> bool:
+    """True while the process exists and is not a zombie or dead (Linux /proc)."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+            state = handle.read().rsplit(")", 1)[1].split()[0]
+    except FileNotFoundError:
+        return False
+    return state not in {"Z", "X"}
+
+
+@unittest.skipUnless(
+    os.name == "posix" and Path("/proc/self/stat").is_file(),
+    "real POSIX process groups need /proc to see the grandchild; Windows stops the tree with taskkill",
+)
+class PosixGroupStopTests(unittest.TestCase):
+
+    def test_a_timed_out_launch_takes_its_grandchild_down_with_it(self):
+        # The grandchild sleeps 20 s and holds the output pipe. Stopping only the shell would
+        # leave run_player waiting for the grandchild to exit on its own.
+        command = ["sh", "-c", 'sleep 20 & echo "GRANDCHILD=$!"; wait']
+        with tempfile.TemporaryDirectory(prefix="tq-group-") as temp:
+            with mock.patch.object(tq, "launch_command", return_value=command):
+                _returncode, output, timed_out, duration_ms = tq.run_player(
+                    Path("player"), Path(temp), ROOT, 1, timeout_seconds=2)
+        grandchild = int(next(line for line in output.splitlines() if line.startswith("GRANDCHILD=")).split("=", 1)[1])
+        self.assertTrue(timed_out)
+        self.assertLess(duration_ms, 10000)
+        self.assertFalse(_process_running(grandchild))
+
+
+class PublicNkCliSurfaceTests(unittest.TestCase):
+    """title_qualification reaches nk_cli through public names; the underscore names remain as aliases."""
+
+    PUBLIC = ("new_bringup_report", "runtime_output_kind", "set_bringup_presentation", "write_bringup_file")
+
+    def test_public_names_import_and_are_documented(self):
+        from nk_cli import (
+            new_bringup_report, runtime_output_kind, set_bringup_presentation, write_bringup_file,
+        )
+        for function in (new_bringup_report, runtime_output_kind, set_bringup_presentation, write_bringup_file):
+            with self.subTest(name=function.__name__):
+                self.assertTrue(inspect.getdoc(function))
+
+    def test_title_qualification_calls_no_underscore_nk_cli_attribute(self):
+        tree = ast.parse(Path(tq.__file__).read_text(encoding="utf-8"))
+        private = sorted({
+            node.attr for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "nk_cli"
+            and node.attr.startswith("_")
+        })
+        self.assertEqual(private, [])
+
+    def test_private_names_remain_aliases_of_the_public_ones(self):
+        for name in self.PUBLIC:
+            with self.subTest(name=name):
+                self.assertIs(getattr(nk_cli, "_" + name), getattr(nk_cli, name))
+
+
+class CommandHelpTests(unittest.TestCase):
+    """Exit status 2 means different things per subcommand, and the help text says so."""
+
+    def test_help_states_what_exit_status_two_means_for_each_command(self):
+        parser = tq.build_parser()
+        for command, phrase in (("validate", "fails validation"), ("smoke", "refused before any launch")):
+            with self.subTest(command=command):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output), self.assertRaises(SystemExit):
+                    parser.parse_args([command, "--help"])
+                text = " ".join(output.getvalue().split())
+                self.assertIn("Exit status", text)
+                self.assertIn(phrase, text)
 
 
 class SmokeRouteRefusalTests(unittest.TestCase):

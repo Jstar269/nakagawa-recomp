@@ -45,9 +45,12 @@ python tools/title_qualification.py validate [--manifest PATH] [--input-profile 
 python tools/title_qualification.py smoke --manifest assets/titles/display-smoke.json [--input-profile PATH] [--timeout SECONDS]
 ```
 
-`validate` exits 0 when every candidate passes and 2 otherwise, naming the first
-problem in each failing candidate. `smoke` exits 0 for a launch that passes, 1 for
-a launch that runs and fails (the report names the stage), and 2 for a refusal.
+Exit status 2 means different things per command. For `validate` it means at least
+one candidate failed validation, and the first problem in each failing candidate is
+printed. For `smoke` it means the candidate was refused before any launch, and no
+report is written. `validate` exits 0 when every candidate passes. `smoke` exits 0 for
+a launch that passes, and 1 for a launch that runs and fails or whose staged build is
+missing; in both cases the report names the stage. `--help` states the same codes.
 
 ## Refusals
 
