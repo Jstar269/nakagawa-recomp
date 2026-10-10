@@ -886,6 +886,7 @@
     "tools/test_mpeg_h264_bounds.py",
     "tools/test_native_driver_hardening.py",
     "tools/test_native_gate_stub_link.py",
+    "tools/test_native_core_build.py",
     "tools/test_native_host_backends.py",
     "tools/test_nid_name_proof.py",
     "tools/test_nidseq.py",

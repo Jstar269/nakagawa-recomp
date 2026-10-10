@@ -510,6 +510,7 @@ harness changes no compiler default. Findings belong in issue #317.
 
 | Module | Purpose |
 | --- | --- |
+| `test_native_core_build.py` | Pins the native-core-tests dry run: the same test binaries and arguments, one compile per flag set. |
 | `test_build_graph_snapshot.py` | Tests for the read-only build graph snapshot. |
 | `test_build_system_parity.py` | Machine-checkable parity between the Makefile and the CMake build. |
 | `test_ci_paths.py` | Path-gated CI classification tests. |
