@@ -5061,7 +5061,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "93784079ca3da56c6a0c5468584724983ae395319689bc627322fe378851c7ec"
+      "sha256": "0bc472e604389da2cec89e373c8f349289778c089315aa9ce691ac1a0c6dd01f"
     },
     {
       "path": "src/rt/iso_unavailable.c",
@@ -10129,7 +10129,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "191e008ad771e114d6f3c2ed09d6912376f5b2f86d3a49d82f05119c3925293a"
+      "sha256": "845cc702054947f5c3e7a84e4676eec328c7501a2921ef215454756ba1d63626"
     },
     {
       "path": "tools/test_vfs_contained.py",
