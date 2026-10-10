@@ -47,12 +47,17 @@ def required_gate_passes(
 
     ``skipped`` is accepted only for a gate that is not applicable. A failed,
     cancelled, or otherwise incomplete applicable gate fails the aggregate, and
-    classifier or hygiene failures can never be hidden by path gating. Callers
+    classifier, hygiene, or public-export failures can never be hidden by path
+    gating. The public-export job always runs, so it must report success. Callers
     that explicitly suppress substantive gates remain fail-closed when a draft
     requests one; the workflow normally runs those gates for drafts now.
     """
 
-    if results.get("classify") != "success" or results.get("hygiene") != "success":
+    if (
+        results.get("classify") != "success"
+        or results.get("hygiene") != "success"
+        or results.get("public-export") != "success"
+    ):
         return False
 
     # Preserve fail-closed behavior for defensive callers that explicitly
@@ -77,6 +82,7 @@ def evaluate_environment(environment: Mapping[str, str]) -> bool:
     results = {
         "classify": environment.get("CLASSIFY_RESULT", ""),
         "hygiene": environment.get("HYGIENE_RESULT", ""),
+        "public-export": environment.get("PUBLIC_EXPORT_RESULT", ""),
     }
     applicable: dict[str, bool] = {}
     for name, result_key, run_key in _GATES:
@@ -104,7 +110,7 @@ def main() -> int:
         print("All applicable CI gates passed; skipped jobs were intentionally irrelevant or policy-suppressed.")
         return 0
     print(
-        "An applicable CI gate failed, was cancelled, was suppressed by policy, or the classifier/hygiene gate did not pass.",
+        "An applicable CI gate failed, was cancelled, was suppressed by policy, or the classifier, hygiene, or public-export gate did not pass.",
         file=sys.stderr,
     )
     return 1
