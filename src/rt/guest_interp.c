@@ -688,8 +688,9 @@ static SrGuestInterpResult execute_noncontrol(
         case 0x20u: case 0x24u: case 0x28u: width = 1u; is_store = primary == 0x28u; break;
         case 0x21u: case 0x25u: case 0x29u: width = 2u; is_store = primary == 0x29u; break;
         case 0x23u: case 0x2bu: case 0x31u: case 0x39u:
+        case 0x30u: case 0x38u:    /* ll / sc: word access plus the MIPS32 LLbit */
             width = 4u;
-            is_store = primary == 0x2bu || primary == 0x39u;
+            is_store = primary == 0x2bu || primary == 0x39u || primary == 0x38u;
             break;
         default: break;
         }
@@ -728,6 +729,22 @@ static SrGuestInterpResult execute_noncontrol(
                     set_fault(fault, pc, opcode, address, 1);
                     return SR_GUEST_INTERP_MEMORY_FAULT;
                 }
+                if (primary == 0x38u) {
+                    /* sc: store and report 1 only while the link is set, else
+                     * store nothing and report 0. The address checks above ran
+                     * first, as for every store, so they do not depend on the
+                     * link. LLbit itself is left as found; only the events
+                     * that end an atomic window clear it (sr_cpu_link_clear). */
+                    const uint32_t linked = s->llbit != 0u ? 1u : 0u;
+                    if (linked) {
+                        MEM_W32_PC(address, read_gpr(s, rt), pc);
+                        *store_address = address;
+                        *store_size = (int)width;
+                    }
+                    write_gpr(s, rt, linked);
+                    s->r[0] = 0u;
+                    return SR_GUEST_INTERP_AOT_HANDOFF;
+                }
                 switch (primary) {
                 case 0x28u: MEM_W8_PC(address, read_gpr(s, rt), pc); break;
                 case 0x29u: MEM_W16_PC(address, read_gpr(s, rt), pc); break;
@@ -756,6 +773,10 @@ static SrGuestInterpResult execute_noncontrol(
                     break;
                 case 0x23u: /* lw */
                     write_gpr(s, rt, MEM_R32(address));
+                    break;
+                case 0x30u: /* ll: load the word and set the link */
+                    write_gpr(s, rt, MEM_R32(address));
+                    s->llbit = 1u;
                     break;
                 default:    /* lwc1 */
                     s->fi[rt] = MEM_R32(address);
