@@ -747,8 +747,10 @@ class RuntimeAbiPinTests(unittest.TestCase):
         self.assertEqual(pinned, int(match.group(1)))
         recorder = (ROOT / "src" / "rt" / "flight_recorder.c").read_text(encoding="utf-8")
         self.assertIn('#include "recomp.h"', recorder)
-        self.assertIn('\\"cpu_state_abi\\": %u', recorder)
-        self.assertNotRegex(recorder, r'cpu_state_abi\\": \d')
+        # The one and only mention of the field in the recorder is the %u stamp of the macro.
+        self.assertIn('\\"cpu_state_abi\\": %u},\\n",', recorder)
+        self.assertIn("(unsigned)SR_CPUSTATE_ABI_VERSION) >= 0;", recorder)
+        self.assertEqual(recorder.count("cpu_state_abi"), 1, "a second cpu_state_abi token would be a literal")
 
 
 if __name__ == "__main__":
