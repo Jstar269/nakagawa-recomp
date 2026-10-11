@@ -5930,6 +5930,129 @@ static void test_unregistered_batch_sysclock_wide(void) {
            "sceKernelSysClock2USecWide refuses a missing output pointer before writing the low word");
 }
 
+static void test_kernel_usec_sysclock_conversions(void) {
+    enum {
+        NID_USEC_TO_SYSCLOCK = 0x110dec9au,
+        NID_USEC_TO_SYSCLOCK_WIDE = 0xc8cd158cu,
+        CLOCK = 0x00270050u,
+        LOW_OUT = 0x00270060u,
+        HIGH_OUT = 0x00270064u,
+    };
+    static const uint32_t values[] = {0u, 1u, 999999u, 0xffffffffu};
+    reset_fixture();
+    sr_hle_init();
+    expect(sr_hle_test_is_registered(NID_USEC_TO_SYSCLOCK),
+           "sceKernelUSec2SysClock has a production registration");
+    expect(sr_hle_test_is_registered(NID_USEC_TO_SYSCLOCK_WIDE),
+           "sceKernelUSec2SysClockWide has a production registration");
+
+    CpuState cpu;
+    for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); i++) {
+        uint32_t usec = values[i];
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = usec;
+        cpu.r[5] = CLOCK;
+        expect(sr_syscall(&cpu, NID_USEC_TO_SYSCLOCK) == 0u &&
+                   MEM_R32(CLOCK) == usec && MEM_R32(CLOCK + 4u) == 0u,
+               "sceKernelUSec2SysClock stores microseconds in the low/high clock words");
+
+        MEM_W32(LOW_OUT, 0xa57c3de1u);
+        MEM_W32(HIGH_OUT, 0xa57c3de1u);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = CLOCK;
+        cpu.r[5] = LOW_OUT;
+        cpu.r[6] = HIGH_OUT;
+        expect(sr_syscall(&cpu, NID_SCE_KERNEL_SYS_CLOCK_TO_USEC) == 0u &&
+                   MEM_R32(LOW_OUT) == usec && MEM_R32(HIGH_OUT) == 0u,
+               "sceKernelUSec2SysClock round-trips through sceKernelSysClock2USec");
+
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = usec;
+        uint32_t wide_low = sr_syscall(&cpu, NID_USEC_TO_SYSCLOCK_WIDE);
+        expect(wide_low == usec && cpu.r[3] == 0u,
+               "sceKernelUSec2SysClockWide returns the low/high v0/v1 pair");
+    }
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = values[1];
+    expect(sr_syscall(&cpu, NID_USEC_TO_SYSCLOCK) == 0x800200d3u,
+           "sceKernelUSec2SysClock rejects a null clock pointer");
+    /* An 8-byte span that starts inside RAM and runs past its end is not writable. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = values[1];
+    cpu.r[5] = 0x0bfffffcu;
+    expect(sr_syscall(&cpu, NID_USEC_TO_SYSCLOCK) == 0x800200d3u,
+           "sceKernelUSec2SysClock rejects an unwritable clock span");
+}
+
+static void test_umd_unregister_callback(void) {
+    enum {
+        NID_CREATE_CALLBACK = 0xe81caf8fu,
+        NID_CHECK_CALLBACK = 0x349d6d6cu,
+        NID_UMD_ACTIVATE = 0xc6183d47u,
+        NID_UMD_REGISTER_CALLBACK = 0xaee7404du,
+        NID_UMD_UNREGISTER_CALLBACK = 0xbd2bde07u,
+        UNKNOWN_CALLBACK = 0xdeadbeefu,
+    };
+    int saved_oracle_mode = s_oracle_mode;
+    int saved_callback_calls = s_oracle_callback_calls;
+    reset_fixture();
+    sr_hle_init();
+    memcpy(SR_HOST(ORACLE_CALLBACK_NAME), "umd-unregister", sizeof("umd-unregister"));
+    s_oracle_mode = 1;
+    s_oracle_callback_calls = 0;
+
+    expect(sr_hle_test_is_registered(NID_UMD_UNREGISTER_CALLBACK),
+           "sceUmdUnRegisterUMDCallBack has a production registration");
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = ORACLE_CALLBACK_NAME;
+    cpu.r[5] = ORACLE_CALLBACK_ENTRY;
+    cpu.r[6] = 0x55u;
+    uint32_t cbid = sr_syscall(&cpu, NID_CREATE_CALLBACK);
+    expect(cbid != 0u && sr_callback_is_valid(cbid),
+           "UMD callback test creates a production callback object");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = cbid;
+    expect(sr_syscall(&cpu, NID_UMD_REGISTER_CALLBACK) == 0u,
+           "sceUmdRegisterUMDCallBack records the callback");
+    cpu.r[4] = cbid;
+    expect(sr_syscall(&cpu, NID_UMD_UNREGISTER_CALLBACK) == 0u,
+           "sceUmdUnRegisterUMDCallBack removes a registered callback");
+    cpu.r[4] = cbid;
+    expect(sr_syscall(&cpu, NID_UMD_UNREGISTER_CALLBACK) == 0x800201a1u,
+           "sceUmdUnRegisterUMDCallBack rejects an already unregistered callback");
+    cpu.r[4] = UNKNOWN_CALLBACK;
+    expect(sr_syscall(&cpu, NID_UMD_UNREGISTER_CALLBACK) == 0x800201a1u,
+           "sceUmdUnRegisterUMDCallBack rejects an unknown callback id");
+
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_UMD_ACTIVATE) == 0u,
+           "UMD activation traverses the production state-change path");
+    expect(sr_syscall(&cpu, NID_CHECK_CALLBACK) == 0u && s_oracle_callback_calls == 0,
+           "an unregistered UMD callback is not notified by a state change");
+
+    cpu.r[4] = cbid;
+    expect(sr_syscall(&cpu, NID_UMD_REGISTER_CALLBACK) == 0u,
+           "sceUmdRegisterUMDCallBack works again after unregistering");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_UMD_ACTIVATE) == 0u &&
+               sr_syscall(&cpu, NID_CHECK_CALLBACK) == 1u &&
+               s_oracle_callback_calls == 1,
+           "a re-registered UMD callback receives the next state change");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = cbid;
+    expect(sr_syscall(&cpu, NID_UMD_UNREGISTER_CALLBACK) == 0u,
+           "UMD callback test unregisters its final registration");
+    cpu.r[4] = cbid;
+    expect(sr_syscall(&cpu, 0xedba5844u) == 0u,
+           "UMD callback test deletes its production callback object");
+    s_oracle_mode = saved_oracle_mode;
+    s_oracle_callback_calls = saved_callback_calls;
+}
+
 /* sceCtrlGetSamplingMode reports the mode retained by sceCtrlSetSamplingMode through a
  * required out-pointer, and a NULL pointer is refused without a write. */
 extern void sr_hle_test_ctrl_sampling_reset(void);
@@ -27186,6 +27309,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_time_domains_are_coherent();
     test_kernel_import_sweep_sysclock_conversion();
     test_unregistered_batch_sysclock_wide();
+    test_kernel_usec_sysclock_conversions();
+    test_umd_unregister_callback();
     test_unregistered_batch_ctrl_sampling_getter();
     test_display_clock_reads_are_observational();
     test_delay_advances_unified_timeline();

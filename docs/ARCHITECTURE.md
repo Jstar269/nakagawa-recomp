@@ -417,6 +417,11 @@ and its delay slot, then transfers to registered AOT region B at `0x08804098`. R
 interpreted `0x00001235` value before the real HLE path and production-driver assertion. Nothing
 patches generated C after codegen and nothing substitutes host-side helpers.
 
+The scalar interpreter floor also covers `lwl`, `lwr`, `swl` and `swr`. These
+forms merge bytes within the aligned containing word, use the same runtime
+accessors as generated code, and retain fail-closed bounds checks in the
+interpreter.
+
 #### AOT/interpreter cosimulation
 
 `mingw32-make cosim-selftest` takes the same seam further: one pipeline run over a source-owned

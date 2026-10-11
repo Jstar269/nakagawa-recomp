@@ -1892,6 +1892,45 @@ static void test_lle_gate_off_data_access(void) {
     CHECK(s.flow_kind == SR_FLOW_NONE, "gate-off kernel-segment lw must not set flow");
 }
 
+/* The left/right merge helpers access the aligned containing word.  A word
+ * beyond the flat guest arena is dropped by the generated MEM_* accessors;
+ * the interpreter must reject it before calling the helper or continuing. */
+static void test_unaligned_store_guarded_region(void) {
+    CpuState s;
+    SrGuestInterpFault fault;
+    SrGuestInterpResult r;
+    const uint32_t address = 0x0C000001u;
+
+    unsigned long reads_before_accessor = g_oor_reads;
+    unsigned long writes_before_accessor = g_oor_writes;
+    sr_swl_pc(address, 0xA1B2C3D4u, TEST_BASE);
+    CHECK(g_oor_reads == reads_before_accessor + 1u &&
+          g_oor_writes == writes_before_accessor + 1u,
+          "generated swl accessors must drop an out-of-range containing word");
+
+    fresh_state(&s);
+    MEM_W32_PC(TEST_BASE + 0u, enc_mem(0x2Au, 13u, 14u, 0u), TEST_BASE);
+    MEM_W32_PC(TEST_BASE + 4u, 0x03E00008u, TEST_BASE + 4u);  /* jr $ra */
+    MEM_W32_PC(TEST_BASE + 8u, 0x00000000u, TEST_BASE + 8u);
+    s.pc = TEST_BASE;
+    s.r[13] = address;
+    s.r[14] = 0xA1B2C3D4u;
+    s.r[31] = TEST_SPAN_END;
+    reads_before_accessor = g_oor_reads;
+    writes_before_accessor = g_oor_writes;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_MEMORY_FAULT,
+          "out-of-range swl must fail closed (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(fault.pc == TEST_BASE && fault.opcode_valid &&
+          fault.opcode == enc_mem(0x2Au, 13u, 14u, 0u) &&
+          fault.address == 0x0C000000u,
+          "out-of-range swl fault must name the aligned containing word");
+    CHECK(g_oor_reads == reads_before_accessor &&
+          g_oor_writes == writes_before_accessor,
+          "interpreter must reject before the generated accessors touch memory");
+}
+
 /* ---- ll / sc (opcode 0x30 / 0x38) ---------------------------------------------------
  *
  * The same words run in three ways: the generated C emitted by tools/test_cpu_lle.py
@@ -2240,6 +2279,7 @@ int main(int argc, char **argv) {
     test_hw_psp_a3_01_adel_through_load();
     test_lle_misaligned_data_access();
     test_lle_gate_off_data_access();
+    test_unaligned_store_guarded_region();
     test_nested_exceptions();
     test_vector_selection();
     test_unbacked_aot_target();
