@@ -4540,7 +4540,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "780f13686333a458ec5a8a4260f51e4d419ae12b914781bedb7cc2d496968aec"
+      "sha256": "71f431bec8d17b28f9e612cb4f3d5c25952af9eab2499541abaa7ef6b2e4c278"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -4986,7 +4986,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "867fa635ed6189010305fdcf659f302cf9850a5ffa2cfed6487c1926ca94b8ec"
+      "sha256": "0aab426567820cd5c4efebeafd12d0c1b03afe73412213e1428461811d3be2a2"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5024,7 +5024,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4260dad1ae7e5a286108b5b4309aef3eaf18fd3e8107e01c6ab0cc90a1bf0192"
+      "sha256": "904205362541de1c10d6a83f4a29e760dbbff37751615b1be6dfa75b6326a285"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -8952,7 +8952,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8b1a45361c6300e1c5a2069412bbfc3de220fb42e9c1f5fae264198da5b87d40"
+      "sha256": "39147c84b732c98c367fa870c68457af407449b603c15f68dae51b8b9421f478"
     },
     {
       "path": "tools/test_nid_name_proof.py",
