@@ -3161,7 +3161,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0bd845d8232eb34e72c8b3c472e00ed3e5049302b7ca6f151cadfa27ed60ac01"
+      "sha256": "5fc66e8bb6433bb423c57dfbd25647a2be91048164613e604ebde09675cc516a"
     },
     {
       "path": "src/player/player_state.h",
@@ -6005,7 +6005,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b8b28a29a7649c7477898f15943ccfcc8a3084a99dfca85b2a4dec3633b66b0b"
+      "sha256": "d187f5dd7e14ab7d04450b6afe982918b11992167d1a455587450c880ad5cbe0"
     },
     {
       "path": "tests/native/test_player_ui.py",
