@@ -383,6 +383,21 @@
       "reset": "one fpu-vector launch; FCR31 is explicitly cleared between all cells and before exit"
     },
     {
+      "id": "PSP-VFPU-CMP-001",
+      "status": "implemented",
+      "hardware_evidence": "NOT_RUN",
+      "evidence_note": "No hardware capture exists for this probe. Its expected words are the project's model (src/rt/vfpu_interp.c, VFPU3 sub-ops 5, 6 and 7) and are UNMEASURED; a PASS record means only that the compare wrote its destination; whether the console agrees with the model is read from each record's result word against out0.",
+      "group": "cpu",
+      "source": "fixtures/psp_oracle/probe.c",
+      "prx": "nakagawa_psp_oracle.prx",
+      "apis": ["Allegrex VFPU vscmp.s", "Allegrex VFPU vsge.s", "Allegrex VFPU vslt.s"],
+      "case_ids": ["vscmp-lt", "vscmp-eq", "vscmp-gt", "vscmp-zero-pos-neg", "vscmp-zero-neg-pos", "vscmp-nan-left-quiet", "vscmp-nan-right-quiet", "vscmp-nan-left-signal", "vscmp-nan-right-signal", "vscmp-nan-left-negative", "vscmp-inf-pos-neg", "vscmp-inf-neg-pos", "vscmp-inf-pos-pos", "vscmp-inf-neg-neg", "vscmp-inf-pos-finite", "vsge-lt", "vsge-eq", "vsge-gt", "vsge-zero-pos-neg", "vsge-zero-neg-pos", "vsge-nan-left-quiet", "vsge-nan-right-quiet", "vsge-nan-left-signal", "vsge-nan-right-signal", "vsge-nan-left-negative", "vsge-inf-pos-neg", "vsge-inf-neg-pos", "vsge-inf-pos-pos", "vsge-inf-neg-neg", "vsge-inf-pos-finite", "vslt-lt", "vslt-eq", "vslt-gt", "vslt-zero-pos-neg", "vslt-zero-neg-pos", "vslt-nan-left-quiet", "vslt-nan-right-quiet", "vslt-nan-left-signal", "vslt-nan-right-signal", "vslt-nan-left-negative", "vslt-inf-pos-neg", "vslt-inf-neg-pos", "vslt-inf-pos-pos", "vslt-inf-neg-neg", "vslt-inf-pos-finite", "vfpu-compare-done"],
+      "invariant": "the raw result word of vscmp.s, vsge.s and vslt.s for 15 operand pairs is emitted in a fixed op-major order with the model word and both operands, then a terminal count of 45; the model is UNMEASURED",
+      "issues": [326],
+      "risk": "low; register-only VFPU operations with no memory or host I/O inside the measured span",
+      "reset": "one vfpu-compare launch; PSPLink soft reset before the next queue entry"
+    },
+    {
       "id": "PSP-CACHE-001",
       "status": "planned",
       "hardware_evidence": "MEASURED",
