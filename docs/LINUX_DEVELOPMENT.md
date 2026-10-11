@@ -116,6 +116,9 @@ make CC=gcc GAME_NAME=ci BUILD_DIR=build/slt-check \
   psmf-media-selftest atrac3p-selftest atrac3p-bridge-selftest cosim-selftest
 ```
 
+`psmf-media-selftest` passes on Linux, but it is a local gate: no hosted CI job runs it, so a
+green hosted run does not cover it. Run it locally with the command above.
+
 ### Python test suites
 
 ```bash
