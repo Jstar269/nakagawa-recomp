@@ -597,6 +597,7 @@ void sched_init(CpuState *cpu) {
     sr_rt_uid_fn = sr_rt_current_uid;
     if (cpu->r[28] != 0u) s_gp = cpu->r[28];           /* the driver seeded gp from the module's # init */
     s_sched_coro = sr_coro_main();
+    sr_dispatch_host_stack_remaining = sr_coro_stack_remaining;
     sr_sched_on = 1;
     s_interrupts_enabled = 1;
     s_dispatch_enabled = 1;
@@ -3988,7 +3989,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
              * SwitchToFiber -- a NULL fiber would deref garbage and tear the process down.
              * On failure we surface a clean error and abort (there's no game-state left to
              * save -- the scheduler loop has no way to recover a thread that never started). */
-            t->coro = sr_coro_create(coro_body, t, (size_t)64 << 20);
+            t->coro = sr_coro_create(coro_body, t, SR_GUEST_FIBER_STACK_SIZE);
             if (!t->coro) {
                 fprintf(stderr, "sched_run: sr_coro_create failed for uid=0x%x entry=0x%08x "
                         "-- cannot continue\n",

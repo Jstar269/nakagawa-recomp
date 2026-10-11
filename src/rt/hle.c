@@ -8412,6 +8412,7 @@ typedef struct {
     int channels;                 /* RIFF fmt channels (1..8) */
     int dec_channels;             /* bridge config (channels) at create time */
     int dec_align;                /* bridge config (bytesPerFrame) at create time */
+    int decodeFailureReported;    /* one boundary diagnostic per stream failure */
     uint8_t *host_frame;          /* one frame copied out of the guest ring */
     int host_frame_cap;           /* allocated size of host_frame */
     int16_t *host_pcm;            /* decode output staging, channels*2048 */
@@ -8745,6 +8746,8 @@ static int atrac_set_track(Atrac *a, uint32_t buf, uint32_t size) {
         a->streamWindowQueued = oldStreamWindowQueued;
         return 0;
     }
+    if (a->dec) (void)atrac3p_bridge_reset(a->dec);
+    a->decodeFailureReported = 0;
     if (oldStreamWindow) free(oldStreamWindow);
     a->streamWindow = NULL;
     a->streamWindowSize = 0;
@@ -8776,6 +8779,13 @@ static int atrac_set_track(Atrac *a, uint32_t buf, uint32_t size) {
     return 1;
 }
 static int atrac_log_on(void);   /* defined below; used by decoder lifecycle */
+static void atrac_report_decode_failure(Atrac *a) {
+    if (a->decodeFailureReported) return;
+    a->decodeFailureReported = 1;
+    fprintf(stderr,
+            "ATRAC_DECODE_REFUSED: ATRAC_ERROR_UNKNOWN_FORMAT: "
+            "The ATRAC3+ frame was malformed; decoding of this stream stopped.\n");
+}
 static int audio_stat_on(void);  /* SR_AUDIOSTAT gate; defined with the SAS aggregates */
 /* SR_AUDIOSTAT aggregate counters (investigation telemetry). Declared here because
  * the ATRAC decode path and the vblank exit dump both precede the SAS definitions. */
@@ -8979,15 +8989,14 @@ static int atrac_decode_frame(Atrac *a, uint32_t out) {
     int ret = atrac3p_bridge_decode(a->dec, a->host_frame, (int)a->bytesPerFrame,
                                     a->host_pcm, &n);
     if (ret < 0 || n <= 0) {
-        /* Name the source offset, not just the codec's verdict: a frame the
-         * ring pointed at incorrectly and a frame the decoder genuinely cannot
-         * handle produce the same codec error, and only the offset separates
-         * them (#32 -- the ring-wrap defect above presented as a codec
-         * "missing feature"). */
+        /* Keep the offset with the codec error: a streamed-ring frame can be
+         * pointed at incorrectly and a frame decoder genuinely cannot handle
+         * may produce the same error; only the offset distinguishes them (#32). */
         if (atrac_log_on())
             fprintf(stderr, "ATRAC_DECODE: frame decode failed ret=%d n=%d src=0x%08x pos=%u base=%u end=%u frame=%u\n",
                     ret, n, src, a->bufferPos, atrac_stream_buffer_base(a),
                     atrac_stream_buffer_end(a), a->bytesPerFrame);
+        atrac_report_decode_failure(a);
         return -1;
     }
     /* Whole-span preflight before the bulk guest write (AGENTS.md guest-memory
@@ -9026,9 +9035,7 @@ static uint32_t h_AtracDecodeData(CpuState *s) {
         if (decAddr) MEM_W32(decAddr, 0u);
         if (finAddr) MEM_W32(finAddr, 1u);
         if (remAddr) MEM_W32(remAddr, 0u);
-        if (atrac_log_on())
-            fprintf(stderr, "ATRAC_DECODE: id=%u permanent decode failure state=%d\n",
-                    A0, a->bufferState);
+        atrac_report_decode_failure(a);
         return ATRAC_ERROR_UNKNOWN_FORMAT;
     }
     if (st > 0) {
@@ -9252,7 +9259,8 @@ static uint32_t h_AtracResetPlayPosition(CpuState *s) {
     Atrac *a = atrac_of(A0);
     if (!a) return 0;
     a->posSample = (int)A1;
-    if (a->dec) atrac3p_bridge_reset(a->dec);  /* PR-B: decoder history must not cross a seek */
+    if (a->dec && atrac3p_bridge_reset(a->dec) == 0)
+        a->decodeFailureReported = 0;
     return 0;
 }
 

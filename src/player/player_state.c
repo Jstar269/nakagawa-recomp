@@ -2079,9 +2079,12 @@ static bool player_read_semantic_stop(const char *path, char *boundary,
         if (strncmp(line, prefix, sizeof(prefix) - 1u) != 0) continue;
         const char *start = line + sizeof(prefix) - 1u;
         const char *separator = strchr(start, ' ');
+        const char *line_end = strpbrk(start, "\r\n");
         const char *issue = separator ? strstr(separator, " issue=") : NULL;
-        if (!separator || !issue || issue <= start) continue;
-        size_t name_len = (size_t)(separator - start);
+        if (separator && !issue) continue;
+        const char *name_end = separator ? separator : line_end;
+        if (!name_end || name_end <= start) continue;
+        size_t name_len = (size_t)(name_end - start);
         if (name_len == 0 || name_len >= boundary_size || name_len >= 96u) continue;
         bool valid_name = true;
         for (size_t i = 0; i < name_len; i++) {
@@ -2092,12 +2095,15 @@ static bool player_read_semantic_stop(const char *path, char *boundary,
             }
         }
         if (!valid_name) continue;
-        const char *digits = issue + 7;
-        char *digits_end = NULL;
-        unsigned long parsed = strtoul(digits, &digits_end, 10);
-        if (digits_end == digits || parsed == 0 || parsed > 9999ul ||
-            (*digits_end != '\n' && *digits_end != '\r' && *digits_end != '\0')) {
-            continue;
+        unsigned long parsed = 0;
+        if (issue) {
+            const char *digits = issue + 7;
+            char *digits_end = NULL;
+            parsed = strtoul(digits, &digits_end, 10);
+            if (digits_end == digits || parsed == 0 || parsed > 9999ul ||
+                (*digits_end != '\n' && *digits_end != '\r' && *digits_end != '\0')) {
+                continue;
+            }
         }
         memcpy(boundary, start, name_len);
         boundary[name_len] = '\0';

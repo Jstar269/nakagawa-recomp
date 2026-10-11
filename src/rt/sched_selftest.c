@@ -102,6 +102,9 @@ void sr_callback_unregister_owner(uint32_t thread_uid) { (void)thread_uid; }
 void sr_hle_release_thread_resources(uint32_t thread_uid) { (void)thread_uid; }
 
 int sr_perf_enabled;
+/* sched.c installs the dispatcher's stack probe at scheduler start; this harness links
+ * neither the dispatcher nor the interpreter, so it carries the variable itself. */
+int (*sr_dispatch_host_stack_remaining)(size_t *remaining_out) = NULL;
 uint64_t sr_perf_now_ns_impl(void) { return 0; }
 void sr_perf_guest_begin(void) {}
 void sr_perf_guest_end(void) {}

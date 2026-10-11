@@ -20,6 +20,8 @@ typedef enum SrGuestInterpResult {
     SR_GUEST_INTERP_MEMORY_FAULT      = -5,
     SR_GUEST_INTERP_MISALIGNED_DATA   = -6,
     SR_GUEST_INTERP_FLOW_FATAL        = -7,
+    SR_GUEST_INTERP_HOST_STACK_EXHAUSTED = -8,
+    SR_GUEST_INTERP_HOST_STACK_BOUNDS_UNAVAILABLE = -9,
 } SrGuestInterpResult;
 
 typedef struct SrGuestInterpFault {
