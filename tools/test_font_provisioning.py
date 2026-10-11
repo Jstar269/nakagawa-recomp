@@ -251,6 +251,8 @@ class FontProvisioningTests(unittest.TestCase):
         with self.assertRaisesRegex(FontImportError, r"Latin font file nkltn\.pgf could not be removed") as raised:
             remove_imports(user_data_root=user_data, slots=["latin", "japanese"])
         self.assertIn("Removed 1 other imported font file(s).", str(raised.exception))
+        self.assertIn("nkltn.pgf could not be removed", str(raised.exception))
+        self.assertIn("; its manifest entry is kept.", str(raised.exception))
         self.assertFalse((cache / "nkjpn.pgf").exists())
         self.assertEqual((cache / "nkltn.pgf" / "keep.txt").read_bytes(), b"not a font")
         self.assertTrue((cache / "nkkr.pgf").is_file())
@@ -258,6 +260,11 @@ class FontProvisioningTests(unittest.TestCase):
         self.assertEqual(sorted(files), ["nkkr.pgf", "nkltn.pgf"])
         self.assertEqual(files["nkltn.pgf"], imported["nkltn.pgf"])
         self.assertEqual(files["nkkr.pgf"], imported["nkkr.pgf"])
+
+        # A slot named twice (`--slot latin --slot latin`) is processed and reported once.
+        with self.assertRaises(FontImportError) as twice:
+            remove_imports(user_data_root=user_data, slots=["latin", "latin"])
+        self.assertEqual(str(twice.exception).count("could not be removed"), 1)
 
         # Naming only the failing slot drops no entry, so the manifest is not rewritten: a
         # rewrite would replace this import_time. The command reports the slot and exits 1.
@@ -270,6 +277,43 @@ class FontProvisioningTests(unittest.TestCase):
         self.assertIn("Font remove error: The Latin font file nkltn.pgf could not be removed", res.stderr)
         self.assertEqual(res.stdout, "")
         self.assertEqual(manifest_path.read_bytes(), before)
+
+    def test_remove_keeps_an_unusable_manifest_while_a_named_file_stays(self) -> None:
+        source = self._folder("all", {"a.pgf": japanese_pgf(), "b.pgf": latin_pgf(), "c.pgf": korean_pgf()})
+        user_data = self.temp_path / "ud"
+        import_fonts(source, user_data_root=user_data)
+        cache = get_font_cache_dir(user_data)
+        manifest_path = cache / "manifest.json"
+        manifest_path.write_text("not json\n", encoding="utf-8")
+        (cache / "nkltn.pgf").unlink()
+        (cache / "nkltn.pgf").mkdir()
+        (cache / "nkltn.pgf" / "keep.txt").write_bytes(b"not a font")
+
+        # nk_font_remove_imports removes an unusable manifest only when no named file stayed;
+        # with the Latin directory still there it is left in place, since its entries cannot
+        # be rewritten faithfully. No entry was loaded, so no "entry is kept" clause.
+        with self.assertRaisesRegex(FontImportError, r"nkltn\.pgf could not be removed") as raised:
+            remove_imports(user_data_root=user_data, slots=["latin", "japanese"])
+        self.assertNotIn("entry is kept", str(raised.exception))
+        self.assertEqual(manifest_path.read_text(encoding="utf-8"), "not json\n")
+        self.assertFalse((cache / "nkjpn.pgf").exists())
+        self.assertEqual(inspect_font_cache(user_data_root=user_data)[0], "INVALID")
+
+        # Once every named file is gone the unusable manifest goes too, as before.
+        (cache / "nkltn.pgf" / "keep.txt").unlink()
+        (cache / "nkltn.pgf").rmdir()
+        self.assertEqual(remove_imports(user_data_root=user_data, slots=["korean"]), 1)
+        self.assertFalse(manifest_path.exists())
+
+    def test_remove_through_a_non_directory_cache_path_counts_as_absent(self) -> None:
+        user_data = self.temp_path / "ud"
+        cache = get_font_cache_dir(user_data)
+        cache.parent.mkdir(parents=True)
+        cache.write_bytes(b"not a directory")
+        # A slot path through a regular file is ENOTDIR on POSIX and not-found on Windows;
+        # both mean no slot file is there, so nothing is reported and the file is untouched.
+        self.assertEqual(remove_imports(user_data_root=user_data), 0)
+        self.assertEqual(cache.read_bytes(), b"not a directory")
 
     def test_malformed_or_old_manifest_is_invalid(self) -> None:
         user_data = self.temp_path / "ud"

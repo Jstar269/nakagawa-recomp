@@ -835,12 +835,15 @@ def remove_imports(user_data_root: Optional[Path] = None, slots: Optional[Iterab
     is gone: deleted here, or already absent. A delete that fails for any other reason,
     such as a directory at the slot's file name, keeps that slot's entry, and the other
     named slots are still processed. The manifest is rewritten only when an entry was
-    dropped, and removed when no entry is left or when it is not usable. Returns the number
+    dropped, and removed when no entry is left, or when it is not usable and no named file
+    stayed (an unusable manifest whose file could not be removed is left in place, since
+    its entries cannot be rewritten faithfully; nk_font_remove_imports does the same).
+    A slot named twice is processed once. Returns the number
     of slot files removed; raises FontImportError naming each slot whose file could not be
     removed, after the manifest is updated.
     """
     cache_dir = get_font_cache_dir(user_data_root)
-    wanted = list(SLOTS) if slots is None else list(slots)
+    wanted = list(SLOTS) if slots is None else list(dict.fromkeys(slots))
     for slot in wanted:
         if slot not in SLOTS:
             raise FontImportError(f"Unknown font slot '{slot}'; use one of {', '.join(SLOTS)}.")
@@ -868,7 +871,7 @@ def remove_imports(user_data_root: Optional[Path] = None, slots: Optional[Iterab
             dropped = True
     manifest_path = cache_dir / MANIFEST_NAME
     if status != "OK":
-        if manifest_path.is_file():
+        if not failures and manifest_path.is_file():
             manifest_path.unlink()
     elif dropped:
         if entries:
