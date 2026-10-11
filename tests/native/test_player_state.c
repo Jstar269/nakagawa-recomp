@@ -414,7 +414,13 @@ static bool test_remove_tree(const char *path) {
         } while (FindNextFileA(find, &data));
         FindClose(find);
     }
-    return RemoveDirectoryA(path) != 0 || GetLastError() == ERROR_PATH_NOT_FOUND;
+    /* A missing tree counts as removed, as the POSIX branch's ENOENT does: a missing leaf is
+       ERROR_FILE_NOT_FOUND, a missing parent ERROR_PATH_NOT_FOUND. */
+    if (RemoveDirectoryA(path) != 0) return true;
+    {
+        DWORD error = GetLastError();
+        return error == ERROR_PATH_NOT_FOUND || error == ERROR_FILE_NOT_FOUND;
+    }
 #else
     DIR *directory = opendir(path);
     if (directory == NULL) return errno == ENOENT;
@@ -3244,6 +3250,108 @@ int main(int argc, char **argv) {
         }
         free(font_app);
         assert(test_remove_tree(font_root));
+    }
+
+    /* 14g: no configured runtime root. The preflight falls back to the app-data directory, and
+       the Fonts step must read and write that same directory. The directory is also the project
+       root the preflight checks, so a project font there is named by both surfaces. */
+    printf("[PLAYER_STATE_TEST] Subtest 14g: Fonts step and preflight with no runtime root\n");
+    fflush(stdout);
+    {
+        char app_data[1024];
+        char cache_root[1024];
+        char project_dir[1200];
+        char project_path[1300];
+        char fonts_dir[1300];
+        char manifest_path[1400];
+        char source_dir[1300];
+        char source_path[1400];
+        const char sep = nk_platform_path_separator();
+        NkIsoExecutableReport exec_rep;
+
+        assert(nk_platform_get_app_data_dir(app_data, sizeof(app_data)));
+        assert(nk_platform_get_path(NK_PATH_CACHE, cache_root, sizeof(cache_root)));
+        snprintf(project_dir, sizeof(project_dir), "%s%cfont", app_data, sep);
+        snprintf(project_path, sizeof(project_path), "%s%cnkkr.pgf", project_dir, sep);
+        snprintf(fonts_dir, sizeof(fonts_dir), "%s%cfonts", app_data, sep);
+        snprintf(manifest_path, sizeof(manifest_path), "%s%cfonts%cv2%cmanifest.json",
+                 app_data, sep, sep, sep);
+        snprintf(source_dir, sizeof(source_dir), "%s%cplayer_font_fallback_source",
+                 cache_root, sep);
+
+        /* Start with no project or imported fonts under the app-data directory. */
+        assert(test_remove_tree(project_dir));
+        assert(test_remove_tree(fonts_dir));
+        assert(test_remove_tree(source_dir));
+        assert(nk_platform_mkdir_p(project_dir));
+        assert(nk_platform_mkdir_p(source_dir));
+        write_binary_file(project_path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
+        snprintf(source_path, sizeof(source_path), "%s%cdump_one.pgf", source_dir, sep);
+        write_binary_file(source_path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        snprintf(source_path, sizeof(source_path), "%s%cdump_two.pgf", source_dir, sep);
+        write_binary_file(source_path, kGoldenJapanesePgf, sizeof(kGoldenJapanesePgf));
+        snprintf(source_path, sizeof(source_path), "%s%cdump_three.pgf", source_dir, sep);
+        write_binary_file(source_path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
+
+        PlayerApp *fallback_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(fallback_app != NULL);
+        nk_library_init(&fallback_app->library);
+        assert(fallback_app->runtime_root[0] == '\0');
+        snprintf(fallback_app->inspecting_game.disc_id,
+                 sizeof(fallback_app->inspecting_game.disc_id), "TEST80001");
+        snprintf(fallback_app->inspecting_game.title_id,
+                 sizeof(fallback_app->inspecting_game.title_id), "synthetic-allegrex-v1");
+        memset(&exec_rep, 0, sizeof(exec_rep));
+        exec_rep.eboot.kind = NK_ISO_EXEC_PSP_ENCRYPTED;
+        exec_rep.boot.kind = NK_ISO_EXEC_MIPS_ELF32;
+        exec_rep.selected = NK_ISO_EXEC_SELECTION_BOOT;
+        exec_rep.boot_fallback = true;
+        snprintf(exec_rep.selected_path, sizeof(exec_rep.selected_path), "BOOT.BIN");
+
+        /* 1. The app-data project font is named by both the Fonts step and the preflight. */
+        player_app_refresh_font_status(fallback_app);
+        assert(strstr(fallback_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN],
+                      "Korean: project font.") != NULL);
+        player_app_build_compatibility_preflight(fallback_app, true, true, &exec_rep);
+        {
+            const PlayerPreflightCheck *fcheck =
+                find_preflight_check(&fallback_app->wizard.preflight, "SYSTEM_FONTS");
+            assert(fcheck != NULL && fcheck->status == PREFLIGHT_MISSING);
+            assert(strstr(fcheck->message, "Korean: project font.") != NULL);
+        }
+
+        /* 2. The import writes the cache under app-data, and the preflight reads it there. */
+        assert(player_app_fonts_import_folder(fallback_app, source_dir));
+        assert(strstr(fallback_app->wizard.font_message, "Imported 3 PSP font slot(s)") != NULL);
+        assert(nk_platform_file_exists(manifest_path));
+        assert(strstr(fallback_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN],
+                      "Korean: imported from your PSP.") != NULL);
+        player_app_build_compatibility_preflight(fallback_app, true, true, &exec_rep);
+        {
+            const PlayerPreflightCheck *fcheck =
+                find_preflight_check(&fallback_app->wizard.preflight, "SYSTEM_FONTS");
+            assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+            assert(strstr(fcheck->message, "Korean: imported from your PSP.") != NULL);
+        }
+
+        /* 3. Removing the imports leaves the project font, and both surfaces name it again. */
+        assert(player_app_fonts_remove_imports(fallback_app));
+        assert(strstr(fallback_app->wizard.font_message,
+                      "Removed 3 imported PSP font file(s)") != NULL);
+        assert(strstr(fallback_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN],
+                      "Korean: project font.") != NULL);
+        player_app_build_compatibility_preflight(fallback_app, true, true, &exec_rep);
+        {
+            const PlayerPreflightCheck *fcheck =
+                find_preflight_check(&fallback_app->wizard.preflight, "SYSTEM_FONTS");
+            assert(fcheck != NULL && fcheck->status == PREFLIGHT_MISSING);
+            assert(strstr(fcheck->message, "Korean: project font.") != NULL);
+        }
+
+        free(fallback_app);
+        assert(test_remove_tree(fonts_dir));
+        assert(test_remove_tree(project_dir));
+        assert(test_remove_tree(source_dir));
     }
 
     /* 15. Player settings persistence.

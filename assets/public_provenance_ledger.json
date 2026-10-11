@@ -2020,7 +2020,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "487788b27f3dd10b8cad16f826ca1ce72cf5f0a64f12148ff1e5b05b64ca65aa"
+      "sha256": "a45886b5bae55291e4003475dd38496bf8cdd98a4564dacbb09226240f8c7fde"
     },
     {
       "path": "fixtures/psp_oracle/psp_b1.c",
@@ -3161,7 +3161,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0bd845d8232eb34e72c8b3c472e00ed3e5049302b7ca6f151cadfa27ed60ac01"
+      "sha256": "5fc66e8bb6433bb423c57dfbd25647a2be91048164613e604ebde09675cc516a"
     },
     {
       "path": "src/player/player_state.h",
@@ -6005,7 +6005,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b8b28a29a7649c7477898f15943ccfcc8a3084a99dfca85b2a4dec3633b66b0b"
+      "sha256": "d187f5dd7e14ab7d04450b6afe982918b11992167d1a455587450c880ad5cbe0"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -7414,7 +7414,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9001e62bf68f2172c487441d1d25bfed169d5a488c3a4fe9e3b6f167d2465950"
+      "sha256": "074fb56b39a5deb7f008985f6c4864d75ad93a9a02ac0df6a14e31f7641d15d6"
     },
     {
       "path": "tools/psp_oracle/parse_golden.py",
@@ -8579,7 +8579,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "daa9c6367cfbeb9baf8e572137036cf134fccbea209bb27cbe532746f939e895"
+      "sha256": "a1bee6ba4b114b9afd514cbb4f1386908533359ade4a4a6e5387cfa925f033c9"
     },
     {
       "path": "tools/test_history_audit.py",
@@ -9396,7 +9396,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f1f61a8f4937b058e323bfd35457e9b56774f34d2c859a9895294d6721ae6e9b"
+      "sha256": "c6968a243f4991cd8a1a42041bc0501d70259a62b6dbb76fd6a469ad13bf3d9b"
     },
     {
       "path": "tools/test_psp_parsers.py",
