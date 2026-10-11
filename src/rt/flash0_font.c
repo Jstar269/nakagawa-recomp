@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../core/nk_font.h"
 #include "../core/nk_platform.h"
 
 /* PSP open flags (PSPSDK sceIo): WRONLY=0x0002 (RDWR also sets it), APPEND=0x0100,
@@ -40,6 +41,21 @@ typedef enum {
     FLASH0_SOURCE_USER,
     FLASH0_SOURCE_PROJECT
 } Flash0Source;
+
+/* Refusal lines are printed once per slot and reason for the life of the process. Bits 1..4 are
+ * the NkFontSlotCheck verdicts a cache file can fail with (one bit per verdict value). The device
+ * resolves a slot on every open, stat and listing, so a refused file must not repeat its line. The
+ * test-and-set is not atomic: a race can repeat a line, and it never changes which file is served. */
+#define FLASH0_REFUSAL_IMPORT_CACHE (1u << 5)
+#define FLASH0_REFUSAL_SIZE_USER    (1u << 6)
+#define FLASH0_REFUSAL_SIZE_PROJECT (1u << 7)
+static unsigned s_flash0_refusals[NK_FONT_SLOT_COUNT];
+
+static int flash0_first_refusal(NkFontSlot slot, unsigned bit) {
+    if (s_flash0_refusals[slot] & bit) return 0;
+    s_flash0_refusals[slot] |= bit;
+    return 1;
+}
 
 static const char *flash0_slot_label(NkFontSlot slot) {
     switch (slot) {
@@ -119,9 +135,73 @@ static int flash0_project_path(char *out, size_t capacity, const char *project_d
     return n > 0 && (size_t)n < capacity;
 }
 
+/* The per-user cache directory the user source reads from: <user data>/fonts/v2. */
+static int flash0_user_cache_dir(char *out, size_t capacity, const char *user_data_dir) {
+    char sep = nk_platform_path_separator();
+    int n = snprintf(out, capacity, "%s%c%s%c%s", user_data_dir, sep, NK_FONT_CACHE_PARENT, sep,
+                     NK_FONT_CACHE_SUBDIR);
+    return n > 0 && (size_t)n < capacity;
+}
+
+/* A directory's absolute spelling without trailing separators. A directory that does not exist
+ * keeps its spelling. */
+static int flash0_canonical_dir(char *out, size_t capacity, const char *dir) {
+    size_t n;
+    if (!nk_platform_absolute_path(dir, out, capacity)) {
+        if (strlen(dir) >= capacity) return 0;
+        memcpy(out, dir, strlen(dir) + 1u);
+    }
+    n = strlen(out);
+    while (n > 1u && (out[n - 1u] == '/' || out[n - 1u] == '\\')) out[--n] = '\0';
+    return 1;
+}
+
+/* True when both spellings name one directory, compared without regard to case. The spellings are
+ * resolved where the host can (realpath, GetFullPathNameA); neither expands a Windows 8.3 alias. A
+ * project directory that holds the cache's manifest is caught by flash0_project_is_import_cache
+ * whatever its spelling, so only a manifest-less alias of the cache can slip past this compare. */
+static int flash0_same_directory(const char *a, const char *b) {
+    char canonical_a[SR_FLASH0_PATH_MAX + 64];
+    char canonical_b[SR_FLASH0_PATH_MAX + 64];
+    if (!flash0_canonical_dir(canonical_a, sizeof(canonical_a), a) ||
+        !flash0_canonical_dir(canonical_b, sizeof(canonical_b), b))
+        return 0;
+    return ascii_ci_equal(canonical_a, canonical_b);
+}
+
+/* SR_FONTDIR can name an imported cache: the launcher points it at <user data>/fonts/v2 after an
+ * import. Such a directory holds the imports, whose files the project source does not vouch for.
+ * It is an imported cache when it holds a manifest, or when it is the device's own user cache
+ * directory (the manifest may be gone). The project source then never serves its files. */
+static int flash0_project_is_import_cache(const Flash0Sources *sources) {
+    char candidate[SR_FLASH0_PATH_MAX + 64];
+    if (flash0_project_path(candidate, sizeof(candidate), sources->project_dir,
+                            NK_FONT_MANIFEST_NAME) &&
+        nk_platform_file_exists(candidate))
+        return 1;
+    if (!sources->user_data_dir[0]) return 0;
+    if (!flash0_user_cache_dir(candidate, sizeof(candidate), sources->user_data_dir)) return 0;
+    return flash0_same_directory(sources->project_dir, candidate);
+}
+
+static void flash0_refuse_user_cache(NkFontSlot slot, NkFontSlotCheck check, const char *reason) {
+    if (!flash0_first_refusal(slot, 1u << (unsigned)check)) return;
+    fprintf(stderr,
+            "flash0: user-imported font for slot '%s' refused: %s; the project font is used if it has one\n",
+            flash0_slot_label(slot), reason);
+}
+
+static void flash0_refuse_import_cache(NkFontSlot slot) {
+    if (!flash0_first_refusal(slot, FLASH0_REFUSAL_IMPORT_CACHE)) return;
+    fprintf(stderr,
+            "flash0: project font for slot '%s' refused: the project font directory is an imported "
+            "font cache, and the project source does not vouch for its files\n",
+            flash0_slot_label(slot));
+}
+
 /* Opens one candidate source and checks its size. A file that is empty or over the reader's
  * ceiling is refused by name and treated as absent, so the next source is tried. */
-static int flash0_probe(const char *path, const char *label, const char *source,
+static int flash0_probe(const char *path, NkFontSlot slot, int from_user,
                         FILE **fp_out, uint32_t *size_out) {
     FILE *fp = nk_fopen_utf8(path, "rb");
     if (!fp) return 0;
@@ -129,8 +209,10 @@ static int flash0_probe(const char *path, const char *label, const char *source,
     if (fseek(fp, 0, SEEK_END) == 0) end = ftell(fp);
     if (end <= 0 || (unsigned long)end > NK_FONT_PGF_MAX_BYTES ||
         fseek(fp, 0, SEEK_SET) != 0) {
-        fprintf(stderr, "flash0: %s font for slot '%s' refused: size is outside 1 byte to 16 MiB\n",
-                source, label);
+        unsigned bit = from_user ? FLASH0_REFUSAL_SIZE_USER : FLASH0_REFUSAL_SIZE_PROJECT;
+        if (flash0_first_refusal(slot, bit))
+            fprintf(stderr, "flash0: %s font for slot '%s' refused: size is outside 1 byte to 16 MiB\n",
+                    from_user ? "user-imported" : "project", flash0_slot_label(slot));
         fclose(fp);
         return 0;
     }
@@ -140,26 +222,42 @@ static int flash0_probe(const char *path, const char *label, const char *source,
 }
 
 /* Source order for one slot (FONT_PLAN 5.2): the user-imported cache, then the project's font,
- * then nothing. No cross-slot substitution. */
+ * then nothing. No cross-slot substitution. A cache file is served only when the cache manifest
+ * vouches for it (nk_font_check_cache_slot_file); a refused cache file falls through to the
+ * project font, with one named refusal. The project source never serves an imported cache. */
 /* `path` is an output buffer: it holds the served file's host path only when the result is
  * FLASH0_SOURCE_USER or FLASH0_SOURCE_PROJECT, and is empty for FLASH0_SOURCE_NONE. */
 static Flash0Source flash0_resolve_path(const Flash0Sources *sources, NkFontSlot slot,
                                         char *path, size_t capacity,
                                         FILE **fp_out, uint32_t *size_out) {
     const char *file = s_flash0_slots[slot].served_name;
-    const char *label = flash0_slot_label(slot);
     *fp_out = NULL;
     *size_out = 0;
     path[0] = '\0';
     if (!sources) return FLASH0_SOURCE_NONE;
     if (sources->user_data_dir[0] &&
         flash0_user_cache_path(path, capacity, sources->user_data_dir, file) &&
-        flash0_probe(path, label, "user-imported", fp_out, size_out))
-        return FLASH0_SOURCE_USER;
+        flash0_probe(path, slot, 1, fp_out, size_out)) {
+        /* The check reads this open handle, so the bytes it hashes are the bytes served. A later
+         * in-place write to the file is not checked again, as with any open file. */
+        char reason[NK_FONT_TEXT_MAX] = "";
+        NkFontSlotCheck check = nk_font_check_cache_slot_file(sources->user_data_dir, slot, *fp_out,
+                                                              reason, sizeof(reason));
+        if (check == NK_FONT_SLOT_CHECK_OK) return FLASH0_SOURCE_USER;
+        flash0_refuse_user_cache(slot, check, reason);
+        fclose(*fp_out);
+        *fp_out = NULL;
+        *size_out = 0;
+    }
     if (sources->project_dir[0] &&
         flash0_project_path(path, capacity, sources->project_dir, file) &&
-        flash0_probe(path, label, "project", fp_out, size_out))
-        return FLASH0_SOURCE_PROJECT;
+        flash0_probe(path, slot, 0, fp_out, size_out)) {
+        if (!flash0_project_is_import_cache(sources)) return FLASH0_SOURCE_PROJECT;
+        flash0_refuse_import_cache(slot);
+        fclose(*fp_out);
+        *fp_out = NULL;
+        *size_out = 0;
+    }
     path[0] = '\0';
     return FLASH0_SOURCE_NONE;
 }

@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "../rt/pgf_api.h"
 #include "nk_font_slots.h"
@@ -70,6 +71,29 @@ bool nk_font_get_cache_dir(const char *user_data_root, char *out_dir, size_t max
 NkFontStatus nk_font_check_cache(const char *user_data_root,
                                  char *out_message,
                                  size_t message_max_len);
+
+/* The verdict for one slot of the cache. OK: the manifest lists the slot and the file checks.
+ * NO_MANIFEST: the cache has no manifest. MANIFEST_INVALID: the manifest is unreadable, malformed,
+ * another schema, or lists an entry this build does not accept. NOT_LISTED: the manifest is valid
+ * and does not list the slot. FILE_INVALID: the listed file is unreadable, refused by the reader,
+ * names another slot, or differs from its recorded size or SHA-256. */
+typedef enum {
+    NK_FONT_SLOT_CHECK_OK = 0,
+    NK_FONT_SLOT_CHECK_NO_MANIFEST,
+    NK_FONT_SLOT_CHECK_MANIFEST_INVALID,
+    NK_FONT_SLOT_CHECK_NOT_LISTED,
+    NK_FONT_SLOT_CHECK_FILE_INVALID
+} NkFontSlotCheck;
+
+/* Vouch for one slot's cache file as the import flow does: the manifest in user_data_root's
+ * cache directory (the same directory nk_font_get_cache_dir names) must be valid and list the
+ * slot, and the bytes of cache_file must match its recorded size and SHA-256 and be accepted by
+ * the reader as that slot. cache_file must be an open handle on that slot's cache file. Its bytes
+ * are read from the start, the handle is left at its start, and the file is hashed on every call.
+ * reason must point to reason_len bytes the caller owns; it receives plain text for the caller to
+ * name, on every verdict. */
+NkFontSlotCheck nk_font_check_cache_slot_file(const char *user_data_root, NkFontSlot slot,
+                                              FILE *cache_file, char *reason, size_t reason_len);
 
 /* Per-slot preflight: the user's imported font when it validates, else the project font
  * at <project_root>/font/<slot file> when it validates, else NONE with the reason. */
