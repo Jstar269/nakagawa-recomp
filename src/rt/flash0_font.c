@@ -152,9 +152,10 @@ static int flash0_canonical_dir(char *out, size_t capacity, const char *dir) {
         memcpy(out, dir, strlen(dir) + 1u);
     }
     /* A Win32 extended-length spelling names the same directory as its plain form. SR_FONTDIR
-     * reaches the device extended (\\?\C:\..., from sr_wide_configured_root_wide_alloc) while the
-     * cache directory is built plain from the per-user data root, so the prefix is dropped before
-     * the compare; \\?\UNC\server\share becomes \\server\share. */
+     * reaches the device extended (the \\?\ prefix before the drive, from
+     * sr_wide_configured_root_wide_alloc) while the cache directory is built plain from the
+     * per-user data root, so the prefix is dropped before the compare; the UNC form
+     * (\\?\UNC\ before the server) becomes the plain \\ server form. */
     if (strncmp(out, "\\\\?\\", 4) == 0) {
         if (strncmp(out + 4, "UNC\\", 4) == 0) {
             memmove(out + 2, out + 8, strlen(out + 8) + 1u);
