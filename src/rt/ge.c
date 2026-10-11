@@ -171,6 +171,9 @@ static int s_primitive_profile = -1;
 static int s_primitive_profile_calibration;
 static uint64_t s_primitive_profile_vertex_counter;
 static uint64_t s_primitive_profile_triangle_counter;
+#ifdef SR_GE_FRONTEND_PROFILE
+static uint64_t s_primitive_profile_draw_counter;
+#endif
 static int s_primitive_profile_counting;
 static int s_primitive_profile_through;
 static int s_primitive_profile_pending_phase = -1;
@@ -262,6 +265,25 @@ static void primitive_profile_end(GePrimitiveProfilePhase phase, uint64_t starte
     primitive_profile_end_stats(&s_cpu_profile_stats.primitive_profile_phase[phase], started);
 }
 
+#ifdef SR_GE_FRONTEND_PROFILE
+static uint64_t primitive_profile_draw_setup_begin(void) {
+    if (!s_primitive_profile) return 0;
+    uint32_t stride = s_cpu_profile_stats.primitive_profile_stride;
+    uint64_t ordinal = s_primitive_profile_draw_counter++;
+    if (!stride || (ordinal % stride) != 0) return 0;
+    return SDL_GetTicksNS();
+}
+
+static void primitive_profile_draw_setup_end(uint64_t started) {
+    primitive_profile_end_stats(&s_cpu_profile_stats.primitive_profile_draw_setup, started);
+}
+
+static void primitive_profile_note_assembly(void) {
+    if (s_primitive_profile)
+        s_cpu_profile_stats.primitive_profile_assembly_eligible++;
+}
+#endif
+
 /* The sampled-total timer starts after the sparse claim and ends before the
  * raster/GPU hook, so it is one non-overlapping outer frontend interval. */
 static void primitive_profile_finish_total(void) {
@@ -334,6 +356,9 @@ void ge_cpu_profile_reset(void) {
     s_primitive_profile_calibration = 0;
     s_primitive_profile_vertex_counter = 0;
     s_primitive_profile_triangle_counter = 0;
+#ifdef SR_GE_FRONTEND_PROFILE
+    s_primitive_profile_draw_counter = 0;
+#endif
     s_primitive_profile_counting = 0;
     s_primitive_profile_through = 0;
     s_primitive_profile_pending_phase = -1;
@@ -2930,6 +2955,9 @@ static int strip_cache_enabled(void) {
 static void primitive_profile_note_draw(int type, int count, const VFmt *vf) {
     if (!s_primitive_profile) return;
     s_cpu_profile_stats.primitive_profile_commands[type]++;
+#ifdef SR_GE_FRONTEND_PROFILE
+    s_cpu_profile_stats.primitive_profile_draw_setup_eligible++;
+#endif
 
     uint64_t uses = 0;
     uint64_t vertex_references = 0;
@@ -3032,6 +3060,9 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
         g_ge_list_transform_vertices += (unsigned long)count;
         if (type == 6) g_ge_list_transform_sprites += (unsigned long)(count / 2);
     }
+#ifdef SR_GE_FRONTEND_PROFILE
+    uint64_t draw_setup_started = primitive_profile_draw_setup_begin();
+#endif
     if (s_gelog < 0) s_gelog = getenv("SR_GEDUMP") ? 1 : 0;
     if (s_gewatch < 0) s_gewatch = getenv("SR_GEWATCH") ? 1 : 0;
     if (s_gewatch_after < 0) { const char *p=getenv("SR_GEWATCH_AFTER"); s_gewatch_after=p?atoi(p):0; }
@@ -3059,6 +3090,9 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
     texdump_maybe();
 
     /* ---- THROUGH-MODE (2D, screen coords) ---- */
+#ifdef SR_GE_FRONTEND_PROFILE
+    primitive_profile_draw_setup_end(draw_setup_started);
+#endif
     s_primitive_profile_through = vf.through;
     s_primitive_profile_counting = s_primitive_profile;
     if (vf.through) {
@@ -3105,6 +3139,9 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
                     int flip = ((ge.cull & 1) == 0) ^ ((type == 4) ? (i & 1) : 0);
                     if (flip) { Vtx t = a; a = b; b = t; }
                 }
+#ifdef SR_GE_FRONTEND_PROFILE
+                primitive_profile_note_assembly();
+#endif
                 if (assembly_started)
                     primitive_profile_end(GE_PRIM_PROFILE_ASSEMBLY, assembly_started);
                 primitive_profile_finish_total();
@@ -3453,6 +3490,9 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
             if (dec == D_DRAW) {
                 Vtx a, b, c;
                 uint64_t assembly_started = tri_profile_slot == 1 ? SDL_GetTicksNS() : 0;
+#ifdef SR_GE_FRONTEND_PROFILE
+                primitive_profile_note_assembly();
+#endif
                 project_cvtx(&cv[0],&a); project_cvtx(&cv[1],&b); project_cvtx(&cv[2],&c);
                 if (assembly_started)
                     primitive_profile_end(GE_PRIM_PROFILE_ASSEMBLY, assembly_started);
@@ -3467,6 +3507,9 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
                     Vtx p[4];
                     int bad[4];
                     uint64_t assembly_started = tri_profile_slot == 1 ? SDL_GetTicksNS() : 0;
+#ifdef SR_GE_FRONTEND_PROFILE
+                    primitive_profile_note_assembly();
+#endif
                     for (int k = 0; k < m && k < 4; k++) {
                         bad[k] = cl[k].nf || (cl[k].cw <= NEAR_W) || clip_vtx_out_of_range(&cl[k]);
                         if (!bad[k]) project_cvtx(&cl[k], &p[k]);
@@ -3596,6 +3639,44 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume);
 uint32_t ge_run_list(uint32_t addr, int resume) {
     uint64_t perf_started = sr_perf_now_ns();
     ge_cpu_profile_configure();
+#ifdef SR_GE_FRONTEND_PROFILE
+    int frontend_profile_active = sr_perf_enabled && s_cpu_profile;
+    uint64_t frontend_command_ns_before = 0;
+    uint64_t frontend_command_calls_before = 0;
+    uint64_t frontend_draw_setup_ns_before = 0;
+    uint64_t frontend_draw_setup_calls_before = 0;
+    uint64_t frontend_draw_setup_eligible_before = 0;
+    uint64_t frontend_phase_ns_before[GE_PRIM_PROFILE_PHASE_COUNT] = {0};
+    uint64_t frontend_phase_calls_before[GE_PRIM_PROFILE_PHASE_COUNT] = {0};
+    uint64_t frontend_phase_eligible_before[GE_PRIM_PROFILE_PHASE_COUNT] = {0};
+    uint64_t frontend_assembly_eligible_before = 0;
+    uint64_t frontend_total_ns_before = 0;
+    uint64_t frontend_total_calls_before = 0;
+    uint64_t frontend_total_eligible_before = 0;
+    uint64_t frontend_control_ns_before = 0;
+    uint64_t frontend_control_calls_before = 0;
+    if (frontend_profile_active) {
+        frontend_command_ns_before = s_cpu_profile_stats.phase[GE_CPU_COMMAND_DISPATCH].ns;
+        frontend_command_calls_before = s_cpu_profile_stats.phase[GE_CPU_COMMAND_DISPATCH].calls;
+        if (s_primitive_profile) {
+            frontend_draw_setup_ns_before = s_cpu_profile_stats.primitive_profile_draw_setup.ns;
+            frontend_draw_setup_calls_before = s_cpu_profile_stats.primitive_profile_draw_setup.calls;
+            frontend_draw_setup_eligible_before = s_cpu_profile_stats.primitive_profile_draw_setup_eligible;
+            for (unsigned i = 0; i < GE_PRIM_PROFILE_PHASE_COUNT; i++) {
+                frontend_phase_ns_before[i] = s_cpu_profile_stats.primitive_profile_phase[i].ns;
+                frontend_phase_calls_before[i] = s_cpu_profile_stats.primitive_profile_phase[i].calls;
+                frontend_phase_eligible_before[i] = s_cpu_profile_stats.primitive_profile_eligible[i];
+            }
+            frontend_assembly_eligible_before =
+                s_cpu_profile_stats.primitive_profile_assembly_eligible;
+            frontend_total_ns_before = s_cpu_profile_stats.primitive_profile_sampled_total.ns;
+            frontend_total_calls_before = s_cpu_profile_stats.primitive_profile_sampled_total.calls;
+            frontend_total_eligible_before = s_cpu_profile_stats.primitive_profile_triangle_candidates;
+            frontend_control_ns_before = s_cpu_profile_stats.primitive_profile_empty_control.ns;
+            frontend_control_calls_before = s_cpu_profile_stats.primitive_profile_empty_control.calls;
+        }
+    }
+#endif
     uint64_t transform_before = 0;
     uint64_t primitive_before = 0;
     uint64_t nested_before = 0;
@@ -3639,6 +3720,53 @@ uint32_t ge_run_list(uint32_t addr, int resume) {
         s_cpu_profile_stats.phase[GE_CPU_COMMAND_DISPATCH].calls++;
         s_cpu_profile_stats.phase[GE_CPU_COMMAND_DISPATCH].ns += total > nested ? total - nested : 0;
     }
+#ifdef SR_GE_FRONTEND_PROFILE
+    if (frontend_profile_active) {
+        uint64_t command_ns = s_cpu_profile_stats.phase[GE_CPU_COMMAND_DISPATCH].ns -
+                              frontend_command_ns_before;
+        uint64_t command_calls = s_cpu_profile_stats.phase[GE_CPU_COMMAND_DISPATCH].calls -
+                                 frontend_command_calls_before;
+        sr_perf_ge_frontend_profile_config(
+            s_primitive_profile ? s_cpu_profile_stats.primitive_profile_stride : 0,
+            s_primitive_profile && s_cpu_profile_stats.primitive_profile_calibration_enabled);
+        sr_perf_ge_frontend_profile(SR_PERF_GE_FRONTEND_COMMAND_DISPATCH,
+                                    command_ns, command_calls, command_calls);
+        if (s_primitive_profile) {
+            GeCpuPhaseStats *draw_setup = &s_cpu_profile_stats.primitive_profile_draw_setup;
+            sr_perf_ge_frontend_profile(
+                SR_PERF_GE_FRONTEND_DRAW_SETUP,
+                draw_setup->ns - frontend_draw_setup_ns_before,
+                draw_setup->calls - frontend_draw_setup_calls_before,
+                s_cpu_profile_stats.primitive_profile_draw_setup_eligible -
+                    frontend_draw_setup_eligible_before);
+            for (unsigned i = 0; i < GE_PRIM_PROFILE_PHASE_COUNT; i++) {
+                GeCpuPhaseStats *phase = &s_cpu_profile_stats.primitive_profile_phase[i];
+                uint64_t eligible = i == GE_PRIM_PROFILE_ASSEMBLY
+                    ? s_cpu_profile_stats.primitive_profile_assembly_eligible -
+                          frontend_assembly_eligible_before
+                    : s_cpu_profile_stats.primitive_profile_eligible[i] -
+                          frontend_phase_eligible_before[i];
+                sr_perf_ge_frontend_profile(
+                    (SrPerfGeFrontendStage)(SR_PERF_GE_FRONTEND_VERTEX_FETCH_DECODE + i),
+                    phase->ns - frontend_phase_ns_before[i],
+                    phase->calls - frontend_phase_calls_before[i],
+                    eligible);
+            }
+            GeCpuPhaseStats *triangle_total = &s_cpu_profile_stats.primitive_profile_sampled_total;
+            sr_perf_ge_frontend_profile(
+                SR_PERF_GE_FRONTEND_TRIANGLE_TOTAL,
+                triangle_total->ns - frontend_total_ns_before,
+                triangle_total->calls - frontend_total_calls_before,
+                s_cpu_profile_stats.primitive_profile_triangle_candidates -
+                    frontend_total_eligible_before);
+            GeCpuPhaseStats *control = &s_cpu_profile_stats.primitive_profile_empty_control;
+            sr_perf_ge_frontend_profile(
+                SR_PERF_GE_FRONTEND_EMPTY_CONTROL,
+                control->ns - frontend_control_ns_before,
+                control->calls - frontend_control_calls_before, 0);
+        }
+    }
+#endif
     return next_addr;
 }
 

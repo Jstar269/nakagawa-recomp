@@ -129,6 +129,31 @@ class PerfSummaryDiffTests(unittest.TestCase):
         self.assertEqual([item["metric"] for item in ranking],
                          ["vulkan.wait_ns", "vulkan.readback_ns", "storage.vfs_read_ns"])
 
+    def test_ge_frontend_estimates_are_ranked_and_old_summaries_remain_valid(self):
+        value = summary()
+        stages = {
+            "command_dispatch": {"estimated_ns": 12},
+            "draw_setup": {"estimated_ns": 7},
+            "vertex_fetch_decode": {"estimated_ns": 0},
+            "transform": {"estimated_ns": 31},
+            "lighting": {"estimated_ns": 0},
+            "clipping_acceptance": {"estimated_ns": 4},
+            "assembly": {"estimated_ns": 0},
+        }
+        value["ge"]["frontend_profile"] = {"stages": stages}
+        ranking = perf_summary_diff.diff_summaries(value, value)["ranking"]
+        self.assertEqual(
+            [item["metric"] for item in ranking
+             if item["metric"].startswith("ge.frontend_profile.")],
+            ["ge.frontend_profile.stages.transform.estimated_ns",
+             "ge.frontend_profile.stages.command_dispatch.estimated_ns",
+             "ge.frontend_profile.stages.draw_setup.estimated_ns",
+             "ge.frontend_profile.stages.clipping_acceptance.estimated_ns"],
+        )
+        old_ranking = perf_summary_diff.diff_summaries(summary(), summary())["ranking"]
+        self.assertFalse(any(item["metric"].startswith("ge.frontend_profile.")
+                             for item in old_ranking))
+
     def test_rejects_nonfinite_tolerance(self):
         before = summary()
         after = copy.deepcopy(before)

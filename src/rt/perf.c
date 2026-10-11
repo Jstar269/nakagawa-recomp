@@ -83,6 +83,12 @@ typedef struct SrPerfMetrics {
     uint64_t ge_cpu_calls;
     uint64_t ge_transform_sample_ns;
     uint64_t ge_primitive_ns;
+    uint64_t ge_frontend_profile_enabled;
+    uint64_t ge_frontend_profile_stride;
+    uint64_t ge_frontend_calibration_enabled;
+    uint64_t ge_frontend_sample_ns[SR_PERF_GE_FRONTEND_STAGE_COUNT];
+    uint64_t ge_frontend_samples[SR_PERF_GE_FRONTEND_STAGE_COUNT];
+    uint64_t ge_frontend_eligible[SR_PERF_GE_FRONTEND_STAGE_COUNT];
     uint64_t vk_submit_ns;
     uint64_t vk_submits;
     uint64_t vk_wait_ns;
@@ -154,6 +160,10 @@ typedef struct SrPerfState {
 static SrPerfState s_perf;
 int sr_perf_aot_active;
 int sr_perf_enabled;
+static const char *const s_ge_frontend_stage_names[SR_PERF_GE_FRONTEND_STAGE_COUNT] = {
+    "command_dispatch", "draw_setup", "vertex_fetch_decode", "transform", "lighting",
+    "clipping_acceptance", "assembly", "triangle_total", "empty_control",
+};
 /* SR_PERF prints 1 Hz telemetry; SR_HUD or the F1 overlay only collect counters for
  * the in-game HUD, so the stderr lines are gated separately. */
 static int s_perf_stderr_enabled = 0;
@@ -189,6 +199,16 @@ static uint64_t raw_now_ns(void) {
 
 static double ms(uint64_t ns) {
     return (double)ns / 1000000.0;
+}
+
+static uint64_t ge_frontend_estimate_ns(const SrPerfMetrics *m, unsigned stage) {
+    if (!m || stage >= SR_PERF_GE_FRONTEND_STAGE_COUNT ||
+        !m->ge_frontend_samples[stage] || !m->ge_frontend_eligible[stage])
+        return 0;
+    long double estimate = (long double)m->ge_frontend_sample_ns[stage] *
+                           (long double)m->ge_frontend_eligible[stage] /
+                           (long double)m->ge_frontend_samples[stage];
+    return estimate >= (long double)UINT64_MAX ? UINT64_MAX : (uint64_t)estimate;
 }
 
 static uint64_t elapsed_ns(uint64_t started_ns) {
@@ -347,7 +367,14 @@ static void csv_header(FILE *csv) {
           "texture_decode_ms,texture_decodes,texture_decode_bytes,texture_cache_hits,texture_cache_misses,"
           "iso_read_ms,iso_reads,iso_read_bytes,iso_failures,vfs_read_ms,vfs_reads,vfs_read_bytes,vfs_failures,"
           "h264_decode_ms,h264_decodes,h264_failures,atrac_decode_ms,atrac_decodes,atrac_failures,"
-          "audio_mix_ms,audio_mix_calls,audio_output_ms,audio_output_calls,audio_output_frames\n", csv);
+          "audio_mix_ms,audio_mix_calls,audio_output_ms,audio_output_calls,audio_output_frames"
+          ",ge_frontend_profile_enabled,ge_frontend_profile_stride,ge_frontend_calibration_enabled", csv);
+    for (unsigned i = 0; i < SR_PERF_GE_FRONTEND_STAGE_COUNT; i++)
+        fprintf(csv, ",ge_frontend_%s_estimated_ms,ge_frontend_%s_sample_ns,"
+                     "ge_frontend_%s_samples,ge_frontend_%s_eligible",
+                s_ge_frontend_stage_names[i], s_ge_frontend_stage_names[i],
+                s_ge_frontend_stage_names[i], s_ge_frontend_stage_names[i]);
+    fputc('\n', csv);
 }
 
 static void csv_row(FILE *csv, const SrPerfMetrics *m, uint64_t total_vblanks,
@@ -419,10 +446,20 @@ static void csv_row(FILE *csv, const SrPerfMetrics *m, uint64_t total_vblanks,
             ms(m->h264_ns), (unsigned long long)m->h264_calls,
             (unsigned long long)m->h264_failures, ms(m->atrac_ns),
             (unsigned long long)m->atrac_calls, (unsigned long long)m->atrac_failures);
-    fprintf(csv, ",%.3f,%llu,%.3f,%llu,%llu\n", ms(m->audio_mix_ns),
+    fprintf(csv, ",%.3f,%llu,%.3f,%llu,%llu", ms(m->audio_mix_ns),
             (unsigned long long)m->audio_mix_calls, ms(m->audio_output_ns),
             (unsigned long long)m->audio_output_calls,
             (unsigned long long)m->audio_output_frames);
+    fprintf(csv, ",%llu,%llu,%llu",
+            (unsigned long long)m->ge_frontend_profile_enabled,
+            (unsigned long long)m->ge_frontend_profile_stride,
+            (unsigned long long)m->ge_frontend_calibration_enabled);
+    for (unsigned i = 0; i < SR_PERF_GE_FRONTEND_STAGE_COUNT; i++)
+        fprintf(csv, ",%.3f,%llu,%llu,%llu", ms(ge_frontend_estimate_ns(m, i)),
+                (unsigned long long)m->ge_frontend_sample_ns[i],
+                (unsigned long long)m->ge_frontend_samples[i],
+                (unsigned long long)m->ge_frontend_eligible[i]);
+    fputc('\n', csv);
 }
 
 static int transition_compare(const void *left, const void *right) {
@@ -504,14 +541,27 @@ static void write_summary(const char *path, uint64_t wall_ns) {
             (unsigned long long)m->vfpu_family[SR_PERF_VFPU_ARITHMETIC],
             (unsigned long long)m->vfpu_family[SR_PERF_VFPU_PREFIX],
             (unsigned long long)m->vfpu_family[SR_PERF_VFPU_OTHER]);
-    fprintf(json, "  \"ge\":{\"cpu_ns\":%llu,\"cpu_calls\":%llu,\"transform_sample_ns\":%llu,\"primitive_ns\":%llu,\"submits\":%llu,\"waits\":%llu,\"wait_ns\":%llu,\"present_submits\":%llu,\"present_waits\":%llu,\"present_wait_ns\":%llu},\n",
+    fprintf(json, "  \"ge\":{\"cpu_ns\":%llu,\"cpu_calls\":%llu,\"transform_sample_ns\":%llu,\"primitive_ns\":%llu,\"submits\":%llu,\"waits\":%llu,\"wait_ns\":%llu,\"present_submits\":%llu,\"present_waits\":%llu,\"present_wait_ns\":%llu,\"frontend_profile\":{\"enabled\":%s,\"stride\":%llu,\"calibration_enabled\":%s,\"stages\":{",
             (unsigned long long)m->ge_cpu_ns, (unsigned long long)m->ge_cpu_calls,
             (unsigned long long)m->ge_transform_sample_ns,
             (unsigned long long)m->ge_primitive_ns, (unsigned long long)m->ge_submits,
             (unsigned long long)m->ge_waits, (unsigned long long)m->ge_wait_ns,
             (unsigned long long)m->present_submits,
             (unsigned long long)m->present_waits,
-            (unsigned long long)m->present_wait_ns);
+            (unsigned long long)m->present_wait_ns,
+            m->ge_frontend_profile_enabled ? "true" : "false",
+            (unsigned long long)m->ge_frontend_profile_stride,
+            m->ge_frontend_calibration_enabled ? "true" : "false");
+    for (unsigned i = 0; i < SR_PERF_GE_FRONTEND_STAGE_COUNT; i++) {
+        if (i) fputc(',', json);
+        fprintf(json, "\"%s\":{\"estimated_ns\":%llu,\"sample_ns\":%llu,\"samples\":%llu,\"eligible\":%llu}",
+                s_ge_frontend_stage_names[i],
+                (unsigned long long)ge_frontend_estimate_ns(m, i),
+                (unsigned long long)m->ge_frontend_sample_ns[i],
+                (unsigned long long)m->ge_frontend_samples[i],
+                (unsigned long long)m->ge_frontend_eligible[i]);
+    }
+    fputs("}}},\n", json);
     fprintf(json, "  \"vulkan\":{\"submit_ns\":%llu,\"submits\":%llu,\"wait_ns\":%llu,\"waits\":%llu,\"readback_ns\":%llu,\"readbacks\":%llu,\"readback_bytes\":%llu,\"pipeline_creation_ns\":%llu,\"pipeline_creations\":%llu},\n",
             (unsigned long long)m->vk_submit_ns, (unsigned long long)m->vk_submits,
             (unsigned long long)m->vk_wait_ns, (unsigned long long)m->vk_waits,
@@ -586,6 +636,32 @@ static void perf_emit_format(const char *fmt, ...) {
     perf_emit_line(line, len);
 }
 
+static void perf_emit_ge_frontend(const SrPerfMetrics *m) {
+    if (!m || !m->ge_frontend_profile_enabled) return;
+    char line[2048];
+    int written = snprintf(line, sizeof line,
+                           "PERF_GE_FRONTEND stride=%llu calibration=%llu",
+                           (unsigned long long)m->ge_frontend_profile_stride,
+                           (unsigned long long)m->ge_frontend_calibration_enabled);
+    if (written < 0 || (size_t)written >= sizeof line) return;
+    size_t used = (size_t)written;
+    for (unsigned i = 0; i < SR_PERF_GE_FRONTEND_STAGE_COUNT; i++) {
+        int n = snprintf(line + used, sizeof line - used,
+                         " %s_sample_ns=%llu %s_samples=%llu %s_eligible=%llu",
+                         s_ge_frontend_stage_names[i],
+                         (unsigned long long)m->ge_frontend_sample_ns[i],
+                         s_ge_frontend_stage_names[i],
+                         (unsigned long long)m->ge_frontend_samples[i],
+                         s_ge_frontend_stage_names[i],
+                         (unsigned long long)m->ge_frontend_eligible[i]);
+        if (n < 0 || (size_t)n >= sizeof line - used) return;
+        used += (size_t)n;
+    }
+    if (used + 1u >= sizeof line) return;
+    line[used++] = '\n';
+    perf_emit_line(line, used);
+}
+
 static void report_if_due(uint64_t now) {
     if (!s_perf.enabled || s_perf.shutdown) return;
     if (!s_perf.interval_start_ns) {
@@ -635,6 +711,7 @@ static void report_if_due(uint64_t now) {
             ms(m.storage_ns[SR_PERF_STORAGE_ISO]),
             ms(m.storage_ns[SR_PERF_STORAGE_VFS]), ms(m.h264_ns), ms(m.atrac_ns),
             ms(m.audio_mix_ns), ms(m.audio_output_ns));
+    perf_emit_ge_frontend(&m);
     }
     if (s_perf.csv) {
         csv_row(s_perf.csv, &m, s_perf.total_vblanks, wall_ns);
@@ -1144,6 +1221,25 @@ void sr_perf_ge_cpu_phase(uint64_t transform_ns, uint64_t raster_ns) {
     if (!s_perf.enabled || s_perf.shutdown) return;
     ADD(ge_transform_sample_ns, transform_ns);
     ADD(ge_primitive_ns, raster_ns);
+}
+
+void sr_perf_ge_frontend_profile_config(uint32_t stride, int calibration_enabled) {
+    if (!s_perf.enabled || s_perf.shutdown) return;
+    s_perf.interval.ge_frontend_profile_enabled = 1;
+    s_perf.total.ge_frontend_profile_enabled = 1;
+    s_perf.interval.ge_frontend_profile_stride = stride;
+    s_perf.total.ge_frontend_profile_stride = stride;
+    s_perf.interval.ge_frontend_calibration_enabled = calibration_enabled != 0;
+    s_perf.total.ge_frontend_calibration_enabled = calibration_enabled != 0;
+}
+
+void sr_perf_ge_frontend_profile(SrPerfGeFrontendStage stage, uint64_t sample_ns,
+                                 uint64_t samples, uint64_t eligible) {
+    if (!s_perf.enabled || s_perf.shutdown || (unsigned)stage >= SR_PERF_GE_FRONTEND_STAGE_COUNT)
+        return;
+    ADD_ARRAY(ge_frontend_sample_ns, (unsigned)stage, sample_ns);
+    ADD_ARRAY(ge_frontend_samples, (unsigned)stage, samples);
+    ADD_ARRAY(ge_frontend_eligible, (unsigned)stage, eligible);
 }
 
 void sr_perf_vulkan_submit(uint64_t started_ns) {
