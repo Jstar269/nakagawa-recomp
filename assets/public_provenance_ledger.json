@@ -4875,7 +4875,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "97a1f4df97d525d8d750cb82cd757ad1ff22bd3f99fc4a5be191600e753c1608"
+      "sha256": "beb4dc6b390da18854af8761c80028824fda207491adca5f7f31f21c7dffaad0"
     },
     {
       "path": "src/rt/guest_interp.h",
@@ -4887,7 +4887,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "eea9533517f3788c24498e2fe23aeeff1f75887ccbee6467dee0d466fd316d35"
+      "sha256": "84cfb98b1bc0edc8a324d1e4ac2be528b3110ae41cba8ba346efa957c16aa0ce"
     },
     {
       "path": "src/rt/guest_printf.c",
@@ -5412,7 +5412,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "c8c9a5c29eeb34a91c28d9b758a88dde3657f3e9e33b3f07d33c99c8af894719"
+      "sha256": "fbe69f16ee8d6b63c7772bd84f54ba4b8a59a10e775f099818e234fa4cc283a6"
     },
     {
       "path": "src/rt/recomp.h",
@@ -5425,7 +5425,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "4064a5acab32c7aca4411dcce4e4d4a0ae377077e0013cdc8c16c7d5b2dc6b7b"
+      "sha256": "5ec5ca07f428d4075b98622f7446f8c807a4f922f0651c83565032ef966f822c"
     },
     {
       "path": "src/rt/savedata.c",
@@ -5463,7 +5463,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7d4c4b1033ab15abab3e4b5bab08c46d75a5c8a90439a5f9fc9c8744557f27a8"
+      "sha256": "cbb50c886c842586ec713ffbe84ec93ab1ee28df11dd5fd5e62f7491b1a4b51f"
     },
     {
       "path": "src/rt/scripted_input.h",
