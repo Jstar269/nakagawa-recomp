@@ -15548,6 +15548,7 @@ static void route_fail(const char *fmt, ...) {
     fflush(stderr);
     if (!getenv("SR_ROUTE_NO_EXIT")) {
         sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, 0u, ROUTE_FAIL_EXIT);
+        sr_perf_shutdown();
         _Exit(ROUTE_FAIL_EXIT);
     }
 }
@@ -17732,11 +17733,13 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
             if (!snap_ok) {
                 fprintf(stderr, "SR_FBDUMP: no trustworthy framebuffer snapshot was written\n");
                 sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, 0u, 1u);
+                sr_perf_shutdown();
                 _Exit(1);
             }
             {
                 int capture_exit_status = sr_fbcap_exit_status(SR_FBCAP_FBDUMP, cres);
                 sr_flight_exit((uint32_t)capture_exit_status);
+                sr_perf_shutdown();
                 _Exit(capture_exit_status);
             }
         }
@@ -18041,6 +18044,7 @@ void sr_vblank_tick(void) {
           if (wde > 0 && diff >= (uint32_t)wde) {
               fprintf(stderr, "WATCHDOG: aborting after %u vblanks with no new frame (SR_WATCHDOG_EXIT=%d)\n", diff, wde);
               sr_flight_hang(diff, (uint32_t)wde);
+              sr_perf_shutdown();
               _Exit(1);
           }
         }
@@ -18120,6 +18124,10 @@ void sr_vblank_tick(void) {
             fflush(stderr);
             fflush(stdout);
             sr_flight_budget(s_vcount);
+            /* _Exit skips the atexit hook that writes the SR_PERF_JSON summary and the
+             * final CSV row, so the perf shutdown runs here, like the audio dump close
+             * above; it is idempotent and a no-op without SR_PERF. */
+            sr_perf_shutdown();
             _Exit(0);
         }
     }
@@ -22967,7 +22975,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         sr_hit_hle = 1;
         /* Under the fiber scheduler, longjmp across fibers is invalid; stop the process cleanly
          * after flushing the trace. The plain driver (no scheduler) keeps the longjmp boundary. */
-        if (sr_sched_on) { sr_trace_close(); fflush(stderr); _Exit(7); }
+        if (sr_sched_on) { sr_trace_close(); sr_perf_shutdown(); fflush(stderr); _Exit(7); }
         longjmp(g_hle_jmp, 1);
     }
     if (getenv("SR_SYSLOG")) {

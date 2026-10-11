@@ -1128,6 +1128,7 @@ void ge_set_frame(uint32_t frame) {
         } else {
             s_capture_done = ge_capture_end(&ge);
             if (s_capture_done && s_capture_exit) {
+                sr_perf_shutdown();
                 fflush(NULL);
                 _Exit(0);
             }
