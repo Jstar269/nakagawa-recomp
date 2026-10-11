@@ -326,7 +326,7 @@ The import copies each chosen file into the per-user cache as that slot's file, 
 A slot is served from the first source that checks: your imported font, then the project font at `<project>/font/<slot file>`, then a named refusal, which the game sees as a missing slot. There is no substitution between slots. `fonts remove` deletes only these slot files and their manifest entries. An import from an earlier cache version is not read; run the import again.
 
 > [!NOTE]
-> The runtime's in-game font loader still reads its own firmware file names until the flash0 font device lands (#300). Until then, an imported font is listed as present by the import, the status command, and the player's preflight, and the in-game font path does not read it yet.
+> The in-game font path serves the slot files in two ways. The HLE `sceFont` shim reads them directly (#825): a title that uses the HLE font API gets your imported font from the per-user cache first, then the project font, then a named refusal. The read-only `flash0:/font/` device (#808) serves the same files to guest file I/O for titles that load their own font library, but its slot table is still pending the console measurement, so until that lands it lists and opens no slot; such a title does not see the imported font yet. The import, the status command and the player's preflight (#300) list the font as present in both cases.
 
 #### Verification and player status
 
