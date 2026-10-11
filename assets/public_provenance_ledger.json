@@ -679,7 +679,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "87ff84cc5133d72cb886c777460f956c3a9d468557c670de984b05f771e3cd45"
+      "sha256": "ba8f8915c043e51b55c20359259f572b9a9b8b05c511dba9c289351b84ab05d3"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1096,7 +1096,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f84e0ad183b62cbe61f640aa9d76b5b9022863ba5cbf6cdd649f23f1aebb2047"
+      "sha256": "5a1db6cb329a6b3b5cabf59f84eb42172d28eb09b64fd82cba54017ea2352d4f"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -1219,7 +1219,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d09c01034854898f4a76518558a61c6114e56276a79196c37efbe4d36af82a31"
+      "sha256": "8de865121a9fd18ed86772f967bad5d9bf5e72a08a701b3743634530f18f2bef"
     },
     {
       "path": "docs/PLATFORM_PORTABILITY.md",
@@ -6142,7 +6142,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ae4069246c12843c77d97bc8c58cc36825948828f7c6d3ac02e07d6a82c1b00c"
+      "sha256": "753f02732875afd07c8a80728f9d5d0fd4873977fb455cbafa323a12feeb34ec"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -6300,7 +6300,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e8aa164908ba166ec9d3429c672170002fafe793da535237ff0a00a9feca24eb"
+      "sha256": "a2ea0c192b93099e6dd1989a2413fbfa5e19417eb0e20adca921c42ed247a543"
     },
     {
       "path": "tools/codegen.py",
@@ -7184,6 +7184,18 @@
         "upstream_attribution": null
       },
       "sha256": "83b26b9b2672206c36ca38552f9bad34f45a8b40ca716cd80e5646f28fee7486"
+    },
+    {
+      "path": "tools/perf_attribution.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "perf-attribution-report",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "9e11a73563b3c0292935b138aa165cb470f9192d837058662496410d4bfe8b17"
     },
     {
       "path": "tools/perf_summary_diff.py",
@@ -9061,6 +9073,18 @@
         "upstream_attribution": null
       },
       "sha256": "1b4f29aa71a5309913c436f526640aa17250231838f46620a60e2745c09d2ee6"
+    },
+    {
+      "path": "tools/test_perf_attribution.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "perf-attribution-report",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "9a9c37b346d32de3833a06fd0e696d857a677eef19a5b9e32f09a7278a2e56b2"
     },
     {
       "path": "tools/test_perf_summary_diff.py",
