@@ -116,8 +116,10 @@ MUTANTS: tuple[Mutant, ...] = (
             # $r0 suppression is enforced twice: the guarded write above and the
             # per-instruction restore below. Removing only one leaves the other
             # repairing the damage, so the mutant would survive for a reason that
-            # has nothing to do with the comparator. Remove the whole mechanism.
-            ("s->r[0] = 0u;", "(void)0;", 10),
+            # has nothing to do with the comparator. Remove the whole mechanism. The
+            # count is the number of per-instruction restore sites in guest_interp.c
+            # (the unaligned word forms added the eleventh); a new site bumps it.
+            ("s->r[0] = 0u;", "(void)0;", 11),
         ],
     ),
     Mutant(
