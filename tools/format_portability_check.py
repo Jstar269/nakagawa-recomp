@@ -20,8 +20,10 @@ conflict with the shim, so the shim defines glibc's guards for those typedefs.
 The shim is only faithful where `long` is 32 bits wide, as it is on every 32-bit
 newlib target and on Windows: the core pins CpuState offsets and sizes with static
 assertions, so a 64-bit `long` would fail them for the wrong reason. On an LP64
-host the check therefore compiles with -m32 (gcc-multilib) and fails closed with
-exit status 2 when that is unavailable, rather than passing vacuously.
+host the check therefore compiles with -m32, which needs only the 32-bit C library
+headers (libc6-dev-i386 on Debian/Ubuntu; gcc-multilib also provides them) because
+nothing is linked, and fails closed with exit status 2 when that is unavailable,
+rather than passing vacuously.
 """
 
 from __future__ import annotations
@@ -264,8 +266,8 @@ def verify_narrow_long(compiler: str, flags: list[str], scratch_dir: Path) -> No
     )
     if proc.returncode != 0:
         raise ToolchainUnavailable(
-            f"{compiler} cannot compile with {' '.join(flags)} (install gcc-multilib for the 32-bit "
-            f"libc headers): {proc.stderr.strip()}"
+            f"{compiler} cannot compile with {' '.join(flags)} (install the 32-bit C library headers: "
+            f"libc6-dev-i386 on Debian/Ubuntu, or gcc-multilib): {proc.stderr.strip()}"
         )
 
 

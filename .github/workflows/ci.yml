@@ -298,7 +298,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake curl gcc-mipsel-linux-gnu \
-            gcc-multilib git libvulkan-dev ninja-build pkg-config
+            git libc6-dev-i386 libvulkan-dev ninja-build pkg-config
 
       - name: Build pinned SDL3 for headless Linux runtime
         # Build the pinned SDL release directly so CI uses the documented version.
@@ -372,7 +372,9 @@ jobs:
         run: make GAME_NAME=ci BUILD_DIR=build/portable-check CC=gcc portable-core-objects
 
       - name: Check 32-bit format specifier portability across portable core
-        # gcc-multilib (installed above) gives this LP64 runner the 32-bit long the shim needs.
+        # libc6-dev-i386 (installed above) supplies the 32-bit C library headers for the
+        # syntax-only -m32 build that gives this LP64 runner a 32-bit long; gcc-multilib
+        # would do too but conflicts with the MIPS cross compiler this job installs.
         run: python tools/format_portability_check.py
 
       - name: Create build directory
