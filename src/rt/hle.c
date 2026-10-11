@@ -18141,6 +18141,13 @@ void sr_vblank_tick(void) {
                 sr_audio_dump_stats();
 #endif
             }
+#if !defined(SR_HLE_THREAD_SELFTEST) && defined(SR_PUBLIC_SAFE)
+            /* _Exit skips atexit, so the SR_AUDIODUMP file is closed here whether or not
+             * SR_AUDIOSTAT is set; after the stats call above it is a no-op. Only the public
+             * audio backend has the dump and exports this close. */
+            extern void sr_audio_dump_finish(void);
+            sr_audio_dump_finish();
+#endif
             sr_dump_calls();
             fflush(stderr);
             fflush(stdout);

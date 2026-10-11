@@ -26642,7 +26642,7 @@ static void test_hle_syscall_return_clears_link(void) {
 #define F0T_JAPANESE_NAME NK_FONT_SLOT_JAPANESE_FILE
 #define F0T_KOREAN_NAME   NK_FONT_SLOT_KOREAN_FILE
 #define F0T_ERR_ACCESS    0x8001000Du
-#define F0T_ERR_NOT_FOUND 0x80010014u
+#define F0T_ERR_NOT_FOUND 0x80010002u
 #define F0T_FD_KIND_FILE  2
 #define F0T_PATH_ADDR     0x09020000u
 #define F0T_PATH2_ADDR    0x09020400u
