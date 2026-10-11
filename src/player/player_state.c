@@ -3370,8 +3370,12 @@ static void player_font_append(char *out, size_t out_len, const char *text) {
 
 void player_app_refresh_font_status(PlayerApp *app) {
     NkFontSlotState states[NK_FONT_SLOT_COUNT];
+    char root[NK_MAX_PATH];
     if (!app) return;
-    nk_font_slot_states(app->runtime_root, app->runtime_root, states);
+    /* The same root the preflight checks; empty when none resolves, and the nk_font calls then
+       report that the cache location is unavailable. */
+    if (!player_app_data_root(app, root, sizeof(root))) root[0] = '\0';
+    nk_font_slot_states(root, root, states);
     for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
         snprintf(app->wizard.font_slot_detail[slot], sizeof(app->wizard.font_slot_detail[slot]),
                  "%s", states[slot].detail);
@@ -3381,12 +3385,14 @@ void player_app_refresh_font_status(PlayerApp *app) {
 bool player_app_fonts_import_folder(PlayerApp *app, const char *folder) {
     NkFontImportResult result;
     char error[NK_FONT_DETAIL_MAX] = "";
+    char root[NK_MAX_PATH];
     if (!app) return false;
     if (!folder || !*folder) {
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message), "No folder was chosen.");
         return false;
     }
-    if (!nk_font_import_folder(app->runtime_root, folder, NULL, &result, error, sizeof(error))) {
+    if (!player_app_data_root(app, root, sizeof(root))) root[0] = '\0';
+    if (!nk_font_import_folder(root, folder, NULL, &result, error, sizeof(error))) {
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
                  "Import stopped: %s.", error);
         player_app_refresh_font_status(app);
@@ -3417,10 +3423,12 @@ bool player_app_fonts_import_folder(PlayerApp *app, const char *folder) {
 bool player_app_fonts_remove_imports(PlayerApp *app) {
     bool remove[NK_FONT_SLOT_COUNT];
     char error[NK_FONT_DETAIL_MAX] = "";
+    char root[NK_MAX_PATH];
     int removed;
     if (!app) return false;
     for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) remove[slot] = true;
-    removed = nk_font_remove_imports(app->runtime_root, remove, error, sizeof(error));
+    if (!player_app_data_root(app, root, sizeof(root))) root[0] = '\0';
+    removed = nk_font_remove_imports(root, remove, error, sizeof(error));
     if (removed < 0) {
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
                  "Could not remove the imported fonts: %s.", error);
@@ -3441,13 +3449,11 @@ void player_app_build_compatibility_preflight(
     if (!app) return;
     PlayerCompatibilityPreflight *preflight = &app->wizard.preflight;
     memset(preflight, 0, sizeof(*preflight));
-    char default_runtime_root[NK_MAX_PATH];
-    const char *runtime_root = app->runtime_root[0] ? app->runtime_root : NULL;
-    if (!runtime_root && nk_platform_get_app_data_dir(default_runtime_root,
-                                                      sizeof(default_runtime_root))) {
-        runtime_root = default_runtime_root;
+    /* The Fonts step resolves the same root through player_app_data_root. */
+    char runtime_root[NK_MAX_PATH];
+    if (!player_app_data_root(app, runtime_root, sizeof(runtime_root))) {
+        snprintf(runtime_root, sizeof(runtime_root), "%s", ".");
     }
-    if (!runtime_root) runtime_root = ".";
 
     if (app->inspecting_game.is_experimental) {
         static const unsigned int issues[] = { 308 };
