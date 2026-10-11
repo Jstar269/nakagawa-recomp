@@ -91,6 +91,13 @@ bool nk_platform_dir_exists(const char *path) {
     return S_ISDIR(st.st_mode);
 }
 
+bool nk_platform_path_missing(const char *path) {
+    struct stat st;
+    if (!path || !*path) return false;
+    if (lstat(path, &st) == 0) return false;
+    return errno == ENOENT || errno == ENOTDIR;
+}
+
 bool nk_platform_list_files(const char *dir, NkDirFileFn fn, void *ctx) {
     if (!dir || !*dir || !fn) return false;
     DIR *handle = opendir(dir);

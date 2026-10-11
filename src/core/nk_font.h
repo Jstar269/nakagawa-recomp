@@ -106,9 +106,14 @@ bool nk_font_import_folder(const char *user_data_root, const char *folder,
                            const char *const choose[NK_FONT_SLOT_COUNT],
                            NkFontImportResult *result, char *out_error, size_t error_len);
 
-/* Remove the imported font for each slot with remove[slot] set. Deletes only files the
- * import flow wrote, and drops their manifest entries. Returns the number of slot files
- * removed, or -1 with out_error. */
+/* Remove the imported font for each slot with remove[slot] set. Deletes only the cache's slot
+ * files. A slot's manifest entry is dropped once its file is gone, deleted now or already
+ * absent; a file that cannot be deleted keeps its entry, and the other named slots are still
+ * processed. The manifest is rewritten only when an entry was dropped, and removed when no
+ * entry is left. Returns the number of slot files removed. Returns -1 with out_error when a
+ * named file could not be deleted or the manifest could not be rewritten or removed; out_error
+ * then names each file that stayed and the manifest problem, and gives the count of files that
+ * were removed when there were any. */
 int nk_font_remove_imports(const char *user_data_root,
                            const bool remove[NK_FONT_SLOT_COUNT],
                            char *out_error, size_t error_len);
