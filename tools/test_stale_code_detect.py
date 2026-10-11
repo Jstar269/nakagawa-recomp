@@ -216,8 +216,18 @@ class TestStaleCodeWiring(unittest.TestCase):
                           f"{fn} must consult the gate before any guest-memory touch")
 
     def test_firing_check_names_block_word_and_values_then_aborts(self):
-        self.assertIn("STALE_CODE_DETECT block=0x%08x off=0x%08x expected=0x%08x actual=0x%08x", STALE_C)
-        self.assertIn("STALE_CODE_DETECT block=0x%08x nwords=%u expected_hash=0x%08x actual_hash=0x%08x", STALE_C)
+        # The block word and values are uint32_t, printed through PRI macros so the line is
+        # identical on hosts where uint32_t is unsigned long (format_portability_check.py).
+        self.assertIn(
+            'STALE_CODE_DETECT block=0x%08" PRIx32 " off=0x%08" PRIx32 " expected=0x%08" PRIx32'
+            ' " actual=0x%08" PRIx32 "',
+            STALE_C,
+        )
+        self.assertIn(
+            'STALE_CODE_DETECT block=0x%08" PRIx32 " nwords=%" PRIu32 " expected_hash=0x%08" PRIx32'
+            ' " actual_hash=0x%08" PRIx32 "',
+            STALE_C,
+        )
         for handler in ("h_CacheInvalidateAll", "h_CacheInvalidateRange", "sr_stale_note_cache_op"):
             self.assertIn(handler, HLE_C)
         self.assertIn("abort();", HLE_C)

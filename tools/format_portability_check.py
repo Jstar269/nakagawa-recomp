@@ -115,6 +115,61 @@ typedef unsigned long long uintptr_t;
 #define INT64_MAX  9223372036854775807LL
 #define UINT64_MAX 18446744073709551615ULL
 
+typedef __INTMAX_TYPE__    intmax_t;
+typedef __UINTMAX_TYPE__   uintmax_t;
+
+/* least/fast widths are the exact widths on every target this shim models */
+typedef int8_t   int_least8_t;   typedef uint8_t  uint_least8_t;
+typedef int16_t  int_least16_t;  typedef uint16_t uint_least16_t;
+typedef int32_t  int_least32_t;  typedef uint32_t uint_least32_t;
+typedef int64_t  int_least64_t;  typedef uint64_t uint_least64_t;
+typedef int8_t   int_fast8_t;    typedef uint8_t  uint_fast8_t;
+typedef int16_t  int_fast16_t;   typedef uint16_t uint_fast16_t;
+typedef int32_t  int_fast32_t;   typedef uint32_t uint_fast32_t;
+typedef int64_t  int_fast64_t;   typedef uint64_t uint_fast64_t;
+
+#define INT_LEAST8_MIN   INT8_MIN
+#define INT_LEAST8_MAX   INT8_MAX
+#define UINT_LEAST8_MAX  UINT8_MAX
+#define INT_LEAST16_MIN  INT16_MIN
+#define INT_LEAST16_MAX  INT16_MAX
+#define UINT_LEAST16_MAX UINT16_MAX
+#define INT_LEAST32_MIN  INT32_MIN
+#define INT_LEAST32_MAX  INT32_MAX
+#define UINT_LEAST32_MAX UINT32_MAX
+#define INT_LEAST64_MIN  INT64_MIN
+#define INT_LEAST64_MAX  INT64_MAX
+#define UINT_LEAST64_MAX UINT64_MAX
+#define INT_FAST8_MIN    INT8_MIN
+#define INT_FAST8_MAX    INT8_MAX
+#define UINT_FAST8_MAX   UINT8_MAX
+#define INT_FAST16_MIN   INT16_MIN
+#define INT_FAST16_MAX   INT16_MAX
+#define UINT_FAST16_MAX  UINT16_MAX
+#define INT_FAST32_MIN   INT32_MIN
+#define INT_FAST32_MAX   INT32_MAX
+#define UINT_FAST32_MAX  UINT32_MAX
+#define INT_FAST64_MIN   INT64_MIN
+#define INT_FAST64_MAX   INT64_MAX
+#define UINT_FAST64_MAX  UINT64_MAX
+
+/* pointer-sized and implementation limits follow the compiler's own target description */
+#define INTPTR_MIN     (-__INTPTR_MAX__ - 1)
+#define INTPTR_MAX     __INTPTR_MAX__
+#define UINTPTR_MAX    __UINTPTR_MAX__
+#define INTMAX_MIN     (-__INTMAX_MAX__ - 1)
+#define INTMAX_MAX     __INTMAX_MAX__
+#define UINTMAX_MAX    __UINTMAX_MAX__
+#define PTRDIFF_MIN    (-__PTRDIFF_MAX__ - 1)
+#define PTRDIFF_MAX    __PTRDIFF_MAX__
+#define SIZE_MAX       __SIZE_MAX__
+#define SIG_ATOMIC_MIN __SIG_ATOMIC_MIN__
+#define SIG_ATOMIC_MAX __SIG_ATOMIC_MAX__
+#define WCHAR_MIN      __WCHAR_MIN__
+#define WCHAR_MAX      __WCHAR_MAX__
+#define WINT_MIN       __WINT_MIN__
+#define WINT_MAX       __WINT_MAX__
+
 #define INT8_C(c)   c
 #define UINT8_C(c)  c
 #define INT16_C(c)  c
@@ -171,6 +226,24 @@ INTTYPES_SHIM = """/* SPDX-License-Identifier: GPL-3.0-or-later */
 #define PRIxPTR "lx"
 #define PRIXPTR "lX"
 
+#define PRIdMAX "lld"
+#define PRIiMAX "lli"
+#define PRIoMAX "llo"
+#define PRIuMAX "llu"
+#define PRIxMAX "llx"
+#define PRIXMAX "llX"
+
+#define SCNd8   "hhd"
+#define SCNi8   "hhi"
+#define SCNo8   "hho"
+#define SCNu8   "hhu"
+#define SCNx8   "hhx"
+#define SCNd16  "hd"
+#define SCNi16  "hi"
+#define SCNo16  "ho"
+#define SCNu16  "hu"
+#define SCNx16  "hx"
+
 #define SCNd32  "ld"
 #define SCNi32  "li"
 #define SCNo32  "lo"
@@ -182,6 +255,17 @@ INTTYPES_SHIM = """/* SPDX-License-Identifier: GPL-3.0-or-later */
 #define SCNo64  "llo"
 #define SCNu64  "llu"
 #define SCNx64  "llx"
+
+#define SCNdPTR "ld"
+#define SCNiPTR "li"
+#define SCNoPTR "lo"
+#define SCNuPTR "lu"
+#define SCNxPTR "lx"
+#define SCNdMAX "lld"
+#define SCNiMAX "lli"
+#define SCNoMAX "llo"
+#define SCNuMAX "llu"
+#define SCNxMAX "llx"
 
 #endif /* _FORMAT_SHIM_INTTYPES_H */
 """
@@ -231,17 +315,20 @@ def resolve_compiler(compiler: str) -> str:
 
 
 class ToolchainUnavailable(RuntimeError):
-    """The host compiler cannot produce the 32-bit `long` the check needs."""
+    """The host compiler is missing or cannot produce the 32-bit `long` the check needs."""
+
+
+def run_compiler(args: list[str], **kwargs) -> subprocess.CompletedProcess:
+    """Run the compiler; a binary that is not there is a toolchain failure (exit 2), not a traceback."""
+    try:
+        return subprocess.run(args, capture_output=True, text=True, **kwargs)
+    except FileNotFoundError as exc:
+        raise ToolchainUnavailable(f"compiler not found: {args[0]}") from exc
 
 
 def host_long_width(compiler: str) -> int:
     """Width of `long` in bytes for the compiler's default target, from its predefined macros."""
-    proc = subprocess.run(
-        [compiler, "-dM", "-E", "-x", "c", "-"],
-        input="",
-        capture_output=True,
-        text=True,
-    )
+    proc = run_compiler([compiler, "-dM", "-E", "-x", "c", "-"], input="")
     match = re.search(r"^#define __SIZEOF_LONG__ (\d+)$", proc.stdout, re.M)
     if proc.returncode != 0 or not match:
         raise ToolchainUnavailable(f"{compiler} did not report __SIZEOF_LONG__")
@@ -253,17 +340,36 @@ def narrow_long_flags(long_width: int) -> list[str]:
     return ["-m32"] if long_width == 8 else []
 
 
+def kernel_header_fallback(compiler: str, flags: list[str]) -> list[str]:
+    """Under -m32 on Linux, let <asm/...> resolve through the default target's multiarch directory.
+
+    libc6-dev-i386 ships no asm/ directory; <errno.h> reaches <asm/errno.h>, and the kernel's x86
+    asm headers are bi-arch (gcc-multilib would provide /usr/include/asm as a symlink to the same
+    files). -idirafter has the lowest priority, so it only fills that gap.
+    """
+    if not flags or sys.platform == "win32":
+        return []
+    proc = run_compiler([compiler, "-print-multiarch"])
+    triplet = proc.stdout.strip()
+    if proc.returncode != 0 or not triplet:
+        return []
+    multiarch = Path("/usr/include") / triplet
+    return ["-idirafter", str(multiarch)] if (multiarch / "asm").is_dir() else []
+
+
 def verify_narrow_long(compiler: str, flags: list[str], scratch_dir: Path) -> None:
-    """Compile a one-line translation unit with the chosen flags; -m32 needs the 32-bit libc headers."""
+    """Compile a small translation unit with the chosen flags; -m32 needs the 32-bit libc headers.
+
+    <errno.h> is included because it is the core header that reaches the kernel's asm/ directory.
+    """
     if not flags:
         return
     probe = scratch_dir / "narrow_long_probe.c"
-    probe.write_text("#include <stdio.h>\nint probe(void) { return (int)sizeof(long); }\n", encoding="utf-8")
-    proc = subprocess.run(
-        [compiler, *flags, "-fsyntax-only", "-std=c11", str(probe)],
-        capture_output=True,
-        text=True,
+    probe.write_text(
+        "#include <errno.h>\n#include <stdio.h>\nint probe(void) { return (int)sizeof(long) + errno; }\n",
+        encoding="utf-8",
     )
+    proc = run_compiler([compiler, *flags, "-fsyntax-only", "-std=c11", str(probe)])
     if proc.returncode != 0:
         raise ToolchainUnavailable(
             f"{compiler} cannot compile with {' '.join(flags)} (install the 32-bit C library headers: "
@@ -321,6 +427,7 @@ def check_format_portability(
     width_flags: list[str] = []
     if narrow_long:
         width_flags = narrow_long_flags(host_long_width(resolved_cc))
+        width_flags += kernel_header_fallback(resolved_cc, width_flags)
         verify_narrow_long(resolved_cc, width_flags, shim_dir)
     failed_count = 0
     errors: list[str] = []
@@ -360,12 +467,7 @@ def check_format_portability(
         if verbose:
             print(f"Checking {file_str}...")
 
-        proc = subprocess.run(
-            cmd,
-            cwd=str(repo_root),
-            capture_output=True,
-            text=True,
-        )
+        proc = run_compiler(cmd, cwd=str(repo_root))
 
         if proc.returncode != 0:
             failed_count += 1

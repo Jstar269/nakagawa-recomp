@@ -71,12 +71,16 @@ class TestFormatPortabilityCheck(unittest.TestCase):
         """A synthetic file printing uint32_t/int32_t with PRI macros must pass."""
         good_c = self.test_root / "good.c"
         good_c.write_text(
+            "#include <errno.h>\n"
             "#include <stdint.h>\n"
             "#include <inttypes.h>\n"
             "#include <stdio.h>\n"
-            "void test_good(uint32_t u, int32_t s) {\n"
+            "void test_good(uint32_t u, int32_t s, size_t n, intmax_t m) {\n"
             '    printf("u=%" PRIu32 " s=%" PRId32 " x=0x%08" PRIx32 "\\n", u, s, u);\n'
             '    printf("cast=%u\\n", (unsigned)u);\n'
+            "    /* the shim must carry the C11 limits the core uses */\n"
+            '    printf("n=%zu max=%zu ptr=%jd m=%" PRIdMAX " e=%d\\n", n, (size_t)SIZE_MAX,\n'
+            "           (intmax_t)INTPTR_MAX, m, errno);\n"
             "}\n",
             encoding="utf-8",
         )
@@ -111,6 +115,13 @@ class TestFormatPortabilityCheck(unittest.TestCase):
 
         rc_bad = main(["--shim-dir", str(self.shim_dir), "--allow-wide-long", str(bad_c)])
         self.assertEqual(rc_bad, 1)
+
+    def test_missing_compiler_is_the_toolchain_exit_code(self) -> None:
+        """A compiler that is not installed is exit 2, the fail-closed contract, never a traceback."""
+        good_c = self.test_root / "any.c"
+        good_c.write_text("int f(void) { return 0; }\n", encoding="utf-8")
+        rc = main(["--compiler", "no-such-c-compiler-7f3a", "--allow-wide-long", str(good_c)])
+        self.assertEqual(rc, 2)
 
     def test_long_width_decides_the_32_bit_flag(self) -> None:
         """An LP64 host compiles the check with -m32; ILP32 and LLP64 hosts need nothing."""

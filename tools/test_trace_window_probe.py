@@ -118,8 +118,9 @@ class TraceWindowProbeTests(unittest.TestCase):
         # window is armed, so the oracle/diff traces keep their exact bytes.
         self.assertEqual(end.count("if (sr_trace_window_armed()) {"), 1)
         self.assertIn("fwrite(line, 1, n + 1, s_fp);", end)
-        self.assertIn("abs v%u=0x%08x", end)
-        self.assertIn("abs f%u=0x%08x", end)
+        # register values are uint32_t and print through PRIx32 (format_portability_check.py)
+        self.assertIn('abs v%u=0x%08" PRIx32', end)
+        self.assertIn('abs f%u=0x%08" PRIx32', end)
         # Spending the record budget disarms the gate, so the rest of the run is
         # uninstrumented and the writer's own stream is left open.
         record = body_of(WINDOW_C, "void sr_trace_window_record(uint32_t pc, const char *text)")
@@ -163,7 +164,8 @@ class TraceWindowProbeTests(unittest.TestCase):
         store = body_of(WINDOW_C, "void sr_watch_store(")
         self.assertIn("store_start >= s_watch_end || store_end <= s_watch_start", store)
         self.assertIn(
-            '"SR_WATCH: pc=0x%08x addr=0x%08x val=0x%08x width=%u vblank=%u\\n"',
+            '"SR_WATCH: pc=0x%08" PRIx32 " addr=0x%08" PRIx32 " val=0x%08" PRIx32'
+            ' " width=%" PRIu32 " vblank=%" PRIu32 "\\n"',
             store,
         )
         self.assertIn("s_watch_matches++", store)
