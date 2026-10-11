@@ -15500,18 +15500,31 @@ static int input_read_budget_from_env(uint32_t *out) {
  * one store there and one compare here. The ring holds the most recent dispatches; a step
  * matches only an entry newer than the moment the step began, so an event that already
  * happened cannot satisfy a later step. Set when the running step is a WAIT_NID, so a build
- * with no route pays one predictable branch per import. */
+ * with no route pays one predictable branch per import. PRESS_UNTIL_NID does not read the ring
+ * (see s_route_until_seen). */
 #define ROUTE_NID_RING 64
 static uint32_t s_route_nid_ring[ROUTE_NID_RING];
 static unsigned long s_route_nid_pos;      /* total dispatches observed, ever */
 static int      s_route_watch_nid;         /* a running WAIT_NID step wants the ring */
 static unsigned long s_route_nid_start;    /* dispatch count when that step began */
 
+/* PRESS_UNTIL_NID: the import a running step presses until, and whether the guest has called it
+ * since that step was armed. The ring is WAIT_NID's window, and a burst of more than ROUTE_NID_RING
+ * imports between two route ticks would push an awaited call out of it, so this step keeps its own
+ * flag. route_note_nid sets it; that runs only while the NID watch is on, and a PRESS_UNTIL_NID step
+ * turns the watch on when it arms, so the two agree. Guest threads are coroutines on the scheduler's
+ * host thread (sr_coro.h), so the import hook and the route tick never run at once and the flag needs
+ * no lock, as the ring does not. */
+static int      s_route_until_armed;       /* a running PRESS_UNTIL_NID step is waiting */
+static uint32_t s_route_until_nid;         /* the import that step presses until */
+static int      s_route_until_seen;        /* that import was called since the step was armed */
+
 /* The one place the ring is written, so the dispatcher's gate and the selftest's feed are
- * the same code. */
+ * the same code. The PRESS_UNTIL_NID flag is set here for the same reason. */
 static void route_note_nid(uint32_t nid) {
     s_route_nid_ring[s_route_nid_pos % ROUTE_NID_RING] = nid;
     s_route_nid_pos++;
+    if (s_route_until_armed && nid == s_route_until_nid) s_route_until_seen = 1;
 }
 
 /* Has the guest called `nid` since the running step began? */
@@ -15530,6 +15543,15 @@ static void route_nid_watch(int on) {
     s_route_nid_start = s_route_nid_pos;
 }
 
+/* Arm the PRESS_UNTIL_NID flag for the step that is starting (`on` set, `nid` its import), or
+ * clear it when a step begins or ends without one. Arming resets the flag, so a call made before
+ * the step began, or during an earlier step, never counts. */
+static void route_until_nid_arm(int on, uint32_t nid) {
+    s_route_until_armed = on;
+    s_route_until_nid = nid;
+    s_route_until_seen = 0;
+}
+
 
 static int route_sig_bytes(void) { return s_route_cols * s_route_rows * 3; }
 
@@ -15540,6 +15562,7 @@ static int route_sig_bytes(void) { return s_route_cols * s_route_rows * 3; }
 static void route_fail(const char *fmt, ...) {
     va_list ap;
     s_route_state = ROUTE_FAILED;
+    route_until_nid_arm(0, 0u);
     fputs("ROUTE_FAIL: ", stderr);
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
@@ -16095,6 +16118,7 @@ void sr_route_reset(void) {
     s_route_last_attempt = 0;
     s_route_have_attempt = 0;
     route_nid_watch(0);
+    route_until_nid_arm(0, 0u);
     snprintf(s_route_seen, sizeof s_route_seen, "no screen was observed at all");
     s_route_loaded = 0;
     sr_input_reset(&s_input);
@@ -16111,6 +16135,7 @@ int sr_route_load(const char *path) {
     s_route_ncp = s_route_nsteps = s_route_nlegacy = 0;
     s_route_pc = 0;
     s_route_step_started = 0;
+    route_until_nid_arm(0, 0u);
     s_route_keys = 0;
     s_route_while_seen = 0;
     s_route_last_attempt = 0;
@@ -16282,7 +16307,12 @@ static void route_load_once(void) {
     if (sp && sp[0]) sr_route_load(sp);
 }
 
-static void route_advance(void) { s_route_pc++; s_route_step_started = 0; }
+/* A finished step disarms its PRESS_UNTIL_NID flag, so its call cannot complete the next step. */
+static void route_advance(void) {
+    s_route_pc++;
+    s_route_step_started = 0;
+    route_until_nid_arm(0, 0u);
+}
 
 /* The repeated press of PRESS_UNTIL / PRESS_WHILE in guest time: `width` samples pressed
  * until the guest has read it, then released for the rest of the `period` until the guest
@@ -16327,6 +16357,7 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
             /* The NID watch is armed by the step that wants it, so "called since this step
              * began" is measured from this vblank and not from the start of the route. */
             route_nid_watch(st->op == ROUTE_OP_NID || st->op == ROUTE_OP_UNTIL_NID);
+            route_until_nid_arm(st->op == ROUTE_OP_UNTIL_NID, st->nid);
             /* Input belongs to the step that makes it: a pressing step starts its first
              * segment here, every other step leaves the pad released. */
             if (st->op == ROUTE_OP_PRESS || st->op == ROUTE_OP_UNTIL || st->op == ROUTE_OP_WHILE ||
@@ -16377,9 +16408,10 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
         }
         case ROUTE_OP_UNTIL_NID: {
             /* The press repeats until the guest calls the import, measured from the vblank the
-             * step began; an import that happened before then does not count (route_nid_since). */
+             * step began; an import that happened before then does not count (the flag is armed
+             * with the step, and route_note_nid sets it only for a call made after that). */
             const char *nm = sr_nid_name(st->nid);
-            if (route_nid_since(st->nid)) {
+            if (s_route_until_seen) {
                 fprintf(stderr, "ROUTE: guest called %s (0x%08x) at vblank %u (step %d, after %u "
                                 "vblanks; the press repeated until then)\n",
                         nm ? nm : "an unnamed import", st->nid, v, s_route_pc, el);
