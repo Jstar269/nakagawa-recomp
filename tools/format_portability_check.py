@@ -115,8 +115,10 @@ typedef unsigned long long uintptr_t;
 #define INT64_MAX  9223372036854775807LL
 #define UINT64_MAX 18446744073709551615ULL
 
-typedef __INTMAX_TYPE__    intmax_t;
-typedef __UINTMAX_TYPE__   uintmax_t;
+/* long long on every 32-bit target this shim models (and under -m32), matching PRI*MAX "ll";
+ * the compiler checks %j against its own intmax_t, so synthetic files use PRIdMAX, not %j. */
+typedef long long          intmax_t;
+typedef unsigned long long uintmax_t;
 
 /* least/fast widths are the exact widths on every target this shim models */
 typedef int8_t   int_least8_t;   typedef uint8_t  uint_least8_t;

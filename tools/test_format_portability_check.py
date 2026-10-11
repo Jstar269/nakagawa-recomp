@@ -79,7 +79,7 @@ class TestFormatPortabilityCheck(unittest.TestCase):
             '    printf("u=%" PRIu32 " s=%" PRId32 " x=0x%08" PRIx32 "\\n", u, s, u);\n'
             '    printf("cast=%u\\n", (unsigned)u);\n'
             "    /* the shim must carry the C11 limits the core uses */\n"
-            '    printf("n=%zu max=%zu ptr=%jd m=%" PRIdMAX " e=%d\\n", n, (size_t)SIZE_MAX,\n'
+            '    printf("n=%zu max=%zu ptr=%" PRIdMAX " m=%" PRIdMAX " e=%d\\n", n, (size_t)SIZE_MAX,\n'
             "           (intmax_t)INTPTR_MAX, m, errno);\n"
             "}\n",
             encoding="utf-8",
@@ -89,7 +89,7 @@ class TestFormatPortabilityCheck(unittest.TestCase):
             shim_dir=self.shim_dir,
             narrow_long=False,
         )
-        self.assertEqual(failed, 0)
+        self.assertEqual(failed, 0, "\n".join(errors))
         self.assertEqual(len(errors), 0)
 
     def test_cli_invocations(self) -> None:
