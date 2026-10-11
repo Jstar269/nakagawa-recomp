@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "a680fa5df9b506e46627aaea25b547da5e8bd5926d6bc54817e9a32db6430204"
+      "sha256": "d901fd4ac1a7d57922b8d0bc4a1a48b6f6088c1d2b8fdda00d5a9e8a273fe68c"
     },
     {
       "path": "NOTICE.md",
@@ -1096,7 +1096,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a5fe46759115fc932ff5a5fd253d45d12179772930905c3ef8ec692b52f9b1aa"
+      "sha256": "9fcd57a85c33c134f7cd843a707cba024863a1a4c6757549a73d611aaa657770"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -8471,7 +8471,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a032696b962198812246e7bd19e760aa6e1c33d5f495dcba46fa6b3a1a4e17ca"
+      "sha256": "bd2fc0546c8fe5a608aa10ff4a0252e3d6cdb6f9a83eaf3460c500650fb428ea"
     },
     {
       "path": "tools/test_ge_nonfinite_vertex.py",
