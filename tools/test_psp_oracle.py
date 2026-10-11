@@ -3468,7 +3468,7 @@ class HleMeasureProbeTests(unittest.TestCase):
     }
     # Calls the probe makes that come from the SDK's default link (IO), not from a
     # declared stub block. Libc and CRT helpers are not sce-prefixed.
-    SDK_DEFAULT_CALLS = frozenset({"sceIoOpen", "sceIoWrite", "sceIoClose"})
+    SDK_DEFAULT_CALLS = frozenset({"sceIoOpen", "sceIoWrite", "sceIoRead", "sceIoClose"})
     MEASURED_CALL_RE = re.compile(
         r"\b(sceKernel(?:ReferSystemStatus|ReferFplStatus|CreateFpl|TryAllocateFpl|FreeFpl|"
         r"DeleteFpl|CreateVTimer|ReferVTimerStatus|GetVTimerTime|StartVTimer|StopVTimer|"
@@ -3728,6 +3728,55 @@ class HleMeasureProbeTests(unittest.TestCase):
                 self.assertEqual(registrations[case][0], test_id)
                 self.assertEqual(registrations[case][1],
                                  _campaign_host0_log_path(Path("/scratch"), case).name)
+
+    # ---- host0 round trip ---------------------------------------------------------
+
+    @staticmethod
+    def _function_body(text: str, signature: str) -> str:
+        """A function body with its whitespace collapsed, so line wrapping does not matter."""
+        start = text.index(signature)
+        return " ".join(text[start:text.index("\n}\n", start)].split())
+
+    def test_every_family_finishes_with_the_round_trip_file_probe_c_writes(self) -> None:
+        """The runner's _verify_host0_roundtrip fails a case whose round-trip file is absent.
+
+        probe.c's teardown writes host0:/nakagawa_transport_write.bin and folds the result
+        into its COMPLETE status. The HLE families have no teardown of their own, so
+        hle_finish runs the same round trip once, in the shared section, after every
+        measurement. probe.c is a separate translation unit, so both copies are pinned here.
+        """
+        probe_c = (self.fixture / "probe.c").read_text(encoding="utf-8")
+        probe_path = re.search(r'#define PROBE_HOST0_ROUNDTRIP_PATH "([^"]+)"', probe_c)
+        hle_path = re.search(r'#define HLE_ROUNDTRIP_PATH "([^"]+)"', self.probe)
+        self.assertIsNotNone(probe_path)
+        self.assertIsNotNone(hle_path)
+        self.assertEqual(probe_path.group(1), "host0:/nakagawa_transport_write.bin")
+        self.assertEqual(hle_path.group(1), probe_path.group(1))
+        self.assertIn("#define HLE_ROUNDTRIP_BYTES 64u", self.probe)
+        self.assertIn("static int hle_host0_roundtrip(void)", self._shared_section())
+
+        probe_body = self._function_body(probe_c, "static int probe_host0_roundtrip(void)")
+        hle_body = self._function_body(self.probe, "static int hle_host0_roundtrip(void)")
+        for statement in (
+            "for (size_t i = 0; i < sizeof(expected); i++) {",
+            "expected[i] = (uint8_t)(0x5Au ^ (i * 0x25u + (i >> 3)));",
+            "PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);",
+            "written = sceIoWrite(fd, expected, (SceSize)sizeof(expected));",
+            "written != (int)sizeof(expected) || write_close < 0",
+            "PSP_O_RDONLY, 0);",
+            "read = sceIoRead(fd, observed, (SceSize)sizeof(observed));",
+            "read == (int)sizeof(observed) && read_close >= 0",
+            "memcmp(expected, observed, sizeof(expected)) == 0",
+        ):
+            with self.subTest(statement=statement):
+                self.assertIn(statement, probe_body)
+                self.assertIn(statement, hle_body)
+
+        finish = self._function_body(self.probe, "static void hle_finish(int ok)")
+        self.assertIn("hle_host0_roundtrip()", finish)
+        self.assertIn('(ok && !s_log_failed && roundtrip) ? "PASS" : "FAIL"', finish)
+        main = self._function_body(self.probe, "int main(int argc, char **argv)")
+        self.assertLess(main.index("hle_run()"), main.index("hle_finish(ok)"))
 
     # ---- registry, manifest, and the parser contract -----------------------------
 

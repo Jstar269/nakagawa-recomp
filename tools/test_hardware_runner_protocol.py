@@ -4669,6 +4669,86 @@ class Host0RemotePathTests(unittest.TestCase):
                 run_psplink_module._host0_remote_path(outside, Path(root))
 
 
+class _HleFamilyTransport(SimulatedPsplinkTransport):
+    """A simulated HLE launch whose finish leaves the host0 round-trip file, or does not.
+
+    probe.c's teardown and the HLE families' hle_finish both write
+    host0:/nakagawa_transport_write.bin. Only the transport-write case gets the file from
+    the base class, so an HLE launch writes exactly what its own finish would.
+    """
+
+    def __init__(self, roundtrip: bytes | None):
+        super().__init__(transport_file_cases={"transport-write"})
+        self.roundtrip = roundtrip
+
+    def run(self, command, timeout):
+        if (
+            self.roundtrip is not None
+            and command.startswith("ldstart host0:/hle-")
+            and self.host0_root is not None
+        ):
+            (self.host0_root / "nakagawa_transport_write.bin").write_bytes(self.roundtrip)
+        return super().run(command, timeout)
+
+
+class HleFamilyHost0RoundTripTests(unittest.TestCase):
+    """An HLE family's launch must leave the host0 round-trip file the runner verifies."""
+
+    PROBE_HLE_SOURCE = (
+        Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle" / "probe_hle_measure.c"
+    )
+    PATTERN = "(uint8_t)(0x5Au ^ (i * 0x25u + (i >> 3)))"
+
+    def _launch(self, roundtrip: bytes | None):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(
+            prefix="runner-hle-roundtrip-", dir=fixture_dir
+        ) as scratch_name:
+            scratch = Path(scratch_name)
+            cases = []
+            for case_id in ("transport-write", "hle-kernel-status"):
+                binary = scratch / f"{case_id}.prx"
+                binary.write_bytes(b"synthetic PRX")
+                cases.append(CampaignCase(case_id, binary, 1.0))
+            transport = _HleFamilyTransport(roundtrip)
+            transport.host0_root = scratch
+            with patch("psp_oracle.run_psplink._check_source_tree", return_value=None):
+                report = PsplinkCampaignRunner(
+                    transport,
+                    console_model="PSP-3000-04g",
+                    source_commit=SOURCE_COMMIT,
+                    model_code=3,
+                ).run(cases)
+            left_behind = (scratch / "nakagawa_transport_write.bin").exists()
+        return report, left_behind
+
+    def test_round_trip_file_written_per_the_family_contract_passes_verification(self):
+        source = self.PROBE_HLE_SOURCE.read_text(encoding="utf-8")
+        self.assertTrue(self.PATTERN in source,
+                        "probe_hle_measure.c must write the round-trip byte pattern")
+        # The 64 bytes the family's expression produces, as _verify_host0_roundtrip expects.
+        roundtrip = bytes((0x5A ^ (index * 0x25 + (index >> 3))) & 0xFF for index in range(64))
+        report, left_behind = self._launch(roundtrip)
+
+        envelope = report["envelopes"][1]
+        self.assertEqual(envelope["CASE_ID"], "hle-kernel-status")
+        self.assertNotEqual(report["terminal_reason"], "HOST0_ROUNDTRIP_FAILED")
+        round_trip_issues = [
+            issue for issue in envelope["TEARDOWN_CHECK"]["issues"] if "host0 round-trip" in issue
+        ]
+        self.assertEqual(round_trip_issues, [])
+        self.assertFalse(left_behind)  # the runner verified the file and removed it
+
+    def test_family_without_the_round_trip_file_fails_the_runner_check(self):
+        report, _left_behind = self._launch(None)
+
+        envelope = report["envelopes"][1]
+        self.assertEqual(report["terminal_reason"], "HOST0_ROUNDTRIP_FAILED")
+        self.assertIn("host0 round-trip failed after unload",
+                      envelope["TEARDOWN_CHECK"]["issues"])
+        self.assertFalse(envelope["ACCEPTANCE_ELIGIBLE"])
+
+
 class _PostUnloadLinkTransport(SimulatedPsplinkTransport):
     """After each `modstun`, `ver` answers only from attempt ``answer_on`` on.
 
