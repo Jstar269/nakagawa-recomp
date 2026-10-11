@@ -788,6 +788,44 @@ static SrGuestInterpResult execute_noncontrol(
         }
     }
 
+    /* The left/right word forms merge bytes within the aligned containing
+     * word.  Reuse the runtime accessors so their byte selection, aliasing and
+     * write instrumentation stay identical to generated code.  Stores are
+     * read-modify-write operations, so require the complete word to be both
+     * readable and writable before either accessor runs. */
+    if (primary == 0x22u || primary == 0x26u ||
+        primary == 0x2Au || primary == 0x2Eu) {
+        const uint32_t address = read_gpr(s, rs) + sign_extend_16(opcode);
+        const uint32_t word_address = address & ~3u;
+        const int is_store = primary == 0x2Au || primary == 0x2Eu;
+        if (is_store) {
+            if (!sr_guest_span_readable(word_address, 4u) ||
+                !sr_guest_span_writable(word_address, 4u)) {
+                set_fault(fault, pc, opcode, word_address, 1);
+                return SR_GUEST_INTERP_MEMORY_FAULT;
+            }
+            if (primary == 0x2Au) {
+                sr_swl_pc(address, read_gpr(s, rt), pc);
+            } else {
+                sr_swr_pc(address, read_gpr(s, rt), pc);
+            }
+            *store_address = word_address;
+            *store_size = 4;
+        } else {
+            if (!sr_guest_span_readable(word_address, 4u)) {
+                set_fault(fault, pc, opcode, word_address, 1);
+                return SR_GUEST_INTERP_MEMORY_FAULT;
+            }
+            if (primary == 0x22u) {
+                write_gpr(s, rt, sr_lwl(read_gpr(s, rt), address));
+            } else {
+                write_gpr(s, rt, sr_lwr(read_gpr(s, rt), address));
+            }
+        }
+        s->r[0] = 0u;
+        return SR_GUEST_INTERP_AOT_HANDOFF;
+    }
+
     /* VFPU loads and stores under --lle-cpu (runs PSP-A3-08..15). Widths mirror
      * the codegen guard: lv.s/sv.s width 4, lv.q/sv.q width 16, lvl/lvr/svl/svr
      * width 0 (never guarded, like lwl/lwr/swl/swr). With the gate off this

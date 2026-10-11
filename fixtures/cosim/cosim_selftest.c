@@ -721,6 +721,35 @@ static int compare_windows(const CosimCase *test, const CosimLane *a, const Cosi
     return 0;
 }
 
+static uint32_t lane_window_word(const CosimLane *lane, uint32_t address) {
+    const unsigned offset = (unsigned)(address - (uint32_t)COSIM_WINDOW_LO);
+    return (uint32_t)lane->window[offset] |
+           ((uint32_t)lane->window[offset + 1u] << 8) |
+           ((uint32_t)lane->window[offset + 2u] << 16) |
+           ((uint32_t)lane->window[offset + 3u] << 24);
+}
+
+static int unaligned_matches_expected(const CosimLane *lane,
+                                      const uint32_t expected_gprs[8]) {
+    static const unsigned registers[8] = { 10u, 11u, 12u, 13u, 14u, 15u, 24u, 25u };
+    static const uint32_t memory_offsets[10] = {
+        0u, 4u, 8u, 12u, 16u, 20u, 24u, 28u, 32u, 36u
+    };
+    static const uint32_t expected_memory[10] = {
+        0x11223344u, 0x55667788u,
+        0x112233A1u, 0x1122A1B2u, 0x11A1B2C3u, 0xA1B2C3D4u,
+        0xA1B2C3D4u, 0xB2C3D444u, 0xC3D43344u, 0xD4223344u
+    };
+    for (unsigned i = 0; i < 8u; i++) {
+        if (lane->state.r[registers[i]] != expected_gprs[i]) return 0;
+    }
+    for (unsigned i = 0; i < 10u; i++) {
+        if (lane_window_word(lane, (uint32_t)COSIM_SCRATCH + memory_offsets[i]) !=
+            expected_memory[i]) return 0;
+    }
+    return 1;
+}
+
 /* ---- precise PC contract -------------------------------------------------------- */
 /*
  * CpuState.pc is NOT a shared architectural field between the lanes, and the
@@ -965,6 +994,30 @@ static int run_case(const CosimCase *test, const char *trace_dir) {
     failed |= compare_write_logs(test, &aot, &interp);
     failed |= compare_windows(test, &aot, &interp);
     failed |= compare_vectors(test, &aot, &interp);
+    if (strcmp(test->name, "unaligned") == 0) {
+        static const uint32_t expected_gprs[8] = {
+            0x44B2C3D4u, 0x3344C3D4u, 0x223344D4u, 0x11223344u,
+            0x55667788u, 0xA1556677u, 0xA1B25566u, 0xA1B2C355u
+        };
+        uint32_t deliberately_wrong_gprs[8];
+        memcpy(deliberately_wrong_gprs, expected_gprs, sizeof deliberately_wrong_gprs);
+        deliberately_wrong_gprs[0] ^= 1u;
+        if (!unaligned_matches_expected(&aot, expected_gprs)) {
+            report_fail(test, "AOT merge outputs do not match the independent byte oracle");
+            failed = 1;
+        }
+        if (!unaligned_matches_expected(&interp, expected_gprs)) {
+            report_fail(test, "interpreter merge outputs do not match the independent byte oracle");
+            failed = 1;
+        }
+        if (unaligned_matches_expected(&aot, deliberately_wrong_gprs)) {
+            report_fail(test, "positive control accepted a deliberately wrong merge expectation");
+            failed = 1;
+        } else {
+            fprintf(stderr,
+                    "  cosim: unaligned merge expectation positive control rejected the wrong value\n");
+        }
+    }
 
     if (g_failures != before) {
         dump_termination(&aot);

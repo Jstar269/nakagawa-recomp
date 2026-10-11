@@ -53,7 +53,7 @@ typedef struct SrGuestInterpCallBoundary {
  *
  *   ALU        sll srl sra addu subu and or xor slt sltu / addiu ori lui
  *   HI/LO      mult multu mfhi mflo
- *   memory     lb lbu lh lhu lw / sb sh sw / lwc1 swc1
+ *   memory     lb lbu lh lhu lw / sb sh sw / lwl lwr swl swr / lwc1 swc1
  *   atomic     ll sc (CpuState.llbit: ll sets it; sc stores and writes 1 only
  *              while it is set, else writes 0; same width-4 alignment and span
  *              checks as lw/sw, run before the link is consulted)

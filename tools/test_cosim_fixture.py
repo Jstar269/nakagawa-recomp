@@ -53,12 +53,16 @@ EXPECTED_FORMS = frozenset(
         ("op", 0x05),   # bne
         ("op", 0x20),   # lb
         ("op", 0x21),   # lh
+        ("op", 0x22),   # lwl
         ("op", 0x23),   # lw
         ("op", 0x24),   # lbu
         ("op", 0x25),   # lhu
         ("op", 0x28),   # sb
         ("op", 0x29),   # sh
+        ("op", 0x2A),   # swl
         ("op", 0x2B),   # sw
+        ("op", 0x2E),   # swr
+        ("op", 0x26),   # lwr
         ("op", 0x30),   # ll
         ("op", 0x38),   # sc
         ("op", 0x31),   # lwc1
@@ -471,6 +475,16 @@ class FixtureSemanticTests(unittest.TestCase):
             f"  added:   {sorted(seen - EXPECTED_FORMS)}\n"
             f"  dropped: {sorted(EXPECTED_FORMS - seen)}",
         )
+
+    def test_unaligned_merge_cell_covers_each_form_at_all_alignments(self):
+        _offset, words = self.layout["unaligned"]
+        for opcode in (0x22, 0x26, 0x2A, 0x2E):
+            with self.subTest(opcode=opcode):
+                immediates = [
+                    word & 0xFFFF for word in words if word >> 26 == opcode
+                ]
+                self.assertEqual(len(immediates), 4)
+                self.assertEqual({immediate & 3 for immediate in immediates}, {0, 1, 2, 3})
 
     def test_generated_form_list_matches_the_declared_inventory(self):
         """The C census consumes generate.py's list; both must say the same thing.
