@@ -4283,7 +4283,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e79e910bdc65eef469c030fec6bb246768fe8432b5f9b7f8821155b842e1410e"
+      "sha256": "2c2e600d97277e4f626c67170c1ec586a7b0cb0cbc6926b5b6b1998b534f31b2"
     },
     {
       "path": "src/rt/dispatch_selftest.c",
@@ -4887,7 +4887,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "84cfb98b1bc0edc8a324d1e4ac2be528b3110ae41cba8ba346efa957c16aa0ce"
+      "sha256": "eea9533517f3788c24498e2fe23aeeff1f75887ccbee6467dee0d466fd316d35"
     },
     {
       "path": "src/rt/guest_printf.c",
@@ -5412,7 +5412,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0e09f8d9022cf0a230e73526b45b8796a157bd2f298b3b82642e8f2cee3701b5"
+      "sha256": "c8c9a5c29eeb34a91c28d9b758a88dde3657f3e9e33b3f07d33c99c8af894719"
     },
     {
       "path": "src/rt/recomp.h",
@@ -5451,7 +5451,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "f32652216426d4b386f051ac0804ea2f6b2b280a7bf1c61bee9574c89be377fe"
+      "sha256": "2c0cbca1f6ec1bf85cae73370349c29763cedff304a0ffb02b9695d0adeb46a4"
     },
     {
       "path": "src/rt/sched_selftest.c",
@@ -7810,7 +7810,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0c5acaf8900d4ee5c4dbc94d0b867ff1d657dabd72283904ca6768d23855ec93"
+      "sha256": "13ebb333789c60a1d3b2f7e9abd2775e332d652760b95e49949348bceef6bfff"
     },
     {
       "path": "tools/test_asset_index_c.py",
