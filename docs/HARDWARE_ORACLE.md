@@ -549,8 +549,9 @@ One console is one data point; see §11. Nothing here closes issue #70
 ## Pending PSP-3000 measurement campaign
 
 The following source-owned cases are built for a future PSP-3000 / 6.61
-session. Six of the original seven were measured by the 2026-10-10 campaign on `f6ccfb33`
-(index above); `ge-break-continue` was captured but not acceptance-eligible.
+session. Of the nine cases below, six were measured by the 2026-10-10 campaign on `f6ccfb33`
+(index above), `ge-break-continue` was captured but is not acceptance-eligible, and
+`llsc-link` and `vfpu-compare` were added after that campaign and have not run on hardware.
 Their parsers check record order, scalar fields, and completion;
 they do not encode expected PSP return values.
 

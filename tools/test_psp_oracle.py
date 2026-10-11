@@ -2212,21 +2212,22 @@ class PspOracleBuildRouteTests(unittest.TestCase):
             self.makefile,
             re.MULTILINE,
         )
-        # 1-67 are the sequential probe.c cases; 90-96 are the H-oracle HLE families,
-        # numbered apart so sequential additions cannot collide with them.
-        self.assertGreaterEqual(len(routes), 74)
+        # 1-69 are the sequential probe.c cases; 90-96 are the H-oracle HLE families,
+        # numbered apart so sequential additions cannot collide with them. The count and
+        # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
+        self.assertEqual(len(routes), 76)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertLessEqual(set(range(1, 68)) | set(range(90, 97)), set(ids))
+        self.assertEqual(set(range(1, 70)) | set(range(90, 97)), set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
 
     def test_vfpu_compare_route_has_its_own_case_id(self) -> None:
-        # Each probe added after 67 pins its own route here, so the shared route count and
-        # id set above stay a lower bound that no two probe changes need to edit together.
+        # Each probe added after 67 also pins its own route here, so a wrong id names the
+        # case rather than only failing the shared count above.
         routes = dict(re.findall(
             r"^else ifeq \(\$\(CASE\),([^\)]+)\)\nCASE_ID = (\d+)$",
             self.makefile,
