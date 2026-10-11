@@ -1051,7 +1051,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6b297ca0d88abe3828bbd10bb1e03b28a635472e5c5a3481597033fab6110849"
+      "sha256": "a119b2270227ae3e0ed38c050a878be28173cf213f3d9ee7a806fdedc7f58dff"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -1615,7 +1615,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6b7e73877379781dc45527fa154808de2f24a0b6590ebba495b18defb56e233d"
+      "sha256": "b1c7cab632277385f0456a3b109d44d593a05d6c513a365d23af067d4034a79c"
     },
     {
       "path": "fixtures/cosim/fpu_reference.c",
@@ -1651,7 +1651,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e3b14f37200b24c589052ffbde4a3edd2e37b09cc0beb8687ada5708b758ee47"
+      "sha256": "69998e079e87ecdc8aa3e578f00b5a405412582458f4f172907f4f1fe5bd9687"
     },
     {
       "path": "fixtures/cosim/mutate.py",
@@ -4235,7 +4235,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dbf2e89644c4727e734b5f2785f85493e0e9c78b86a5361910a6beee0776498b"
+      "sha256": "df9d070b7ee4387165740857e6b3c9f00e377833e27b9ca3da8a93b51d0d0483"
     },
     {
       "path": "src/rt/debug.c",
@@ -4875,7 +4875,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7dc652d6858a70df09c973de1197eb7845b1c1fc1a3591bfe40e2b89b8efaeb3"
+      "sha256": "9dfd79e4ad44a936e25de2da42305b0cd1fcb35bf7b5ef95c4b9ee348907cd41"
     },
     {
       "path": "src/rt/guest_interp.h",
@@ -4887,7 +4887,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "da066e3a40292eca9628d7b63b7b4e53a2fb729e40224eee27a1b0c03611473b"
+      "sha256": "77e00b1fffe1d9adffb2b4fa7046673d9df3c6d2b147da2607d6886ba52813e4"
     },
     {
       "path": "src/rt/guest_printf.c",
@@ -8147,7 +8147,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a79497d9927ad89bacf65fb956a135647802566a5b1bdf4b6f4bda7a3e467319"
+      "sha256": "e1fbf7c7db94088e47cae169d62fec8e19e6fe0414938bc3285f9da10ba994d1"
     },
     {
       "path": "tools/test_cosim_mutation_gate_outcome.py",
