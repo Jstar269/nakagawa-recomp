@@ -939,6 +939,12 @@ class TestProductionSmokePackage(unittest.TestCase):
         self.assertEqual(package["schema_version"], 2)
         self.assertEqual(package["title"]["id"], self.manifest["id"])
         self.assertEqual(package["runtime"]["abi"], "CpuState")
+        # The package's ABI is the one the runtime header defines, not a value read back from
+        # the generator that wrote it (RuntimeAbiPinTests pins the flight schema the same way).
+        header = (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8")
+        match = re.search(r"^#define SR_CPUSTATE_ABI_VERSION (\d+)u$", header, re.MULTILINE)
+        self.assertIsNotNone(match, "recomp.h must define SR_CPUSTATE_ABI_VERSION <n>u")
+        self.assertEqual(package["runtime"]["abi_version"], int(match.group(1)))
         self.assertEqual(package["runtime"]["abi_version"], title_codegen_plan.codegen_abi_version())
         self.assertEqual(package["executable"]["path"], "production_smoke.exe")
         self.assertTrue((self.build_dir / package["executable"]["path"]).is_file())
