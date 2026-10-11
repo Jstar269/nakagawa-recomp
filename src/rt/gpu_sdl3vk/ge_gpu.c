@@ -2711,11 +2711,17 @@ static void hook_vram_dirty(uint32_t addr, uint32_t bytes) {
     for (int i = 0; i < s_tex_n; i++) {
         TexEnt *e = &s_tex[i];
         uint64_t tex0 = (uint64_t)SR_PHYS(e->addr), tex1 = tex0 + e->bytes;
-        if (dirty0 < tex1 && tex0 < dirty1)
+        if (dirty0 < tex1 && tex0 < dirty1) {
             if (e->content_valid) {
                 s_cnt_tex_invalidations++;
                 e->content_valid = 0;
             }
+            /* The cached state template carries this texture's descriptor, and a draw
+             * with unchanged GE registers takes the template fast path in state_get
+             * without consulting tex_get. The notified write therefore invalidates the
+             * template as well as the entry (coherence selftest texture-dirty-same-state). */
+            s_tmpl_ok = 0;
+        }
     }
     if (!is_vram(addr)) return;
     uint32_t a0 = vram_off(addr);
@@ -3877,6 +3883,92 @@ static int coherence_run_upload_sequence(void) {
     return 1;
 }
 
+/* ---- notified texture rewrite between two same-state draws ------------------------------
+ *
+ * A CPU or DMAC write into a cached texture reaches hook_vram_dirty. Invalidating the
+ * texture entry alone is not enough: the cached state template still carries that
+ * texture's descriptor, and a following draw whose GE registers are unchanged takes the
+ * template fast path in state_get without consulting tex_get, so it samples the old
+ * image. This fixture draws one sprite, rewrites the whole texture and notifies the
+ * write, draws a second sprite with identical registers, and requires the first sprite
+ * to keep the old texels and the second to show the new ones. */
+static int coherence_run_texture_dirty_same_state(void) {
+    const uint32_t fba = 0x00140000u;
+    const uint32_t base = 0x04000000u | fba;
+    const uint32_t tex_base = 0x04040000u;
+    const uint32_t stride = 512u;
+    const uint32_t rgb = 0x00FFFFFFu;
+    const uint32_t old_texel = 0xFF0000FFu, new_texel = 0xFF00FF00u;   /* ABGR red, green */
+    uint32_t *guest = (uint32_t *)SR_HOST(base);
+    uint32_t *tex = (uint32_t *)SR_HOST(tex_base);
+
+    coherence_reset_targets();
+    memset(guest, 0, stride * FB_H * 4u);
+    sr_gpu_vram_dirty(base, stride * FB_H * 4u);
+    for (unsigned i = 0; i < 64u; i++) tex[i] = old_texel;
+    sr_gpu_vram_dirty(tex_base, 64u * 4u);
+
+    wrap_state(base, stride);
+    s_ge->tex_enable = 1;
+    s_ge->tex_addr = tex_base;
+    s_ge->tex_bufw = 8;
+    s_ge->tex_fmt = 3;
+    s_ge->tex_w = 8;
+    s_ge->tex_h = 8;
+    s_ge->tex_func = 3;      /* REPLACE: the framebuffer shows the texel */
+    s_ge->tex_filter = 0;    /* NEAREST */
+    ge_set_gpu_hooks(&k_hooks);
+
+    GeVtx p0, p1;
+    const uint32_t white = 0xFFFFFFFFu;
+    wrap_vtx(&p0, 10.0f, 10.0f, white); p0.u = 0.0f; p0.v = 0.0f;
+    wrap_vtx(&p1, 18.0f, 18.0f, white); p1.u = 8.0f; p1.v = 8.0f;
+    uint64_t invalidations_before = s_cnt_tex_invalidations;
+    if (!hook_sprite(&p0, &p1, 0)) {
+        fprintf(stderr, "gpu coherence selftest [texture-dirty-same-state]: first draw not accepted\n");
+        coherence_reset_targets();
+        return 0;
+    }
+
+    /* The notified write under test: same address, same size, new bytes, no GE
+     * register change and no CPU-batch boundary before the next draw. */
+    for (unsigned i = 0; i < 64u; i++) tex[i] = new_texel;
+    sr_gpu_vram_dirty(tex_base, 64u * 4u);
+
+    wrap_vtx(&p0, 30.0f, 10.0f, white); p0.u = 0.0f; p0.v = 0.0f;
+    wrap_vtx(&p1, 38.0f, 18.0f, white); p1.u = 8.0f; p1.v = 8.0f;
+    if (!hook_sprite(&p0, &p1, 0) || !s_cur || !target_readback(s_cur)) {
+        fprintf(stderr, "gpu coherence selftest [texture-dirty-same-state]: second draw or readback failed\n");
+        coherence_reset_targets();
+        return 0;
+    }
+
+    uint32_t left = guest[14u * stride + 14u] & rgb;
+    uint32_t right = guest[14u * stride + 34u] & rgb;
+    if (left != (old_texel & rgb) || right != (new_texel & rgb)) {
+        fprintf(stderr,
+                "gpu coherence selftest [texture-dirty-same-state]: left=%06x (want %06x) "
+                "right=%06x (want %06x)%s\n",
+                left, old_texel & rgb, right, new_texel & rgb,
+                right == (old_texel & rgb)
+                    ? " -- the second draw sampled the stale cached texture" : "");
+        coherence_reset_targets();
+        return 0;
+    }
+    if (s_cnt_tex_invalidations != invalidations_before + 1u) {
+        fprintf(stderr,
+                "gpu coherence selftest [texture-dirty-same-state]: expected one texture "
+                "invalidation, counted %llu\n",
+                (unsigned long long)(s_cnt_tex_invalidations - invalidations_before));
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu coherence selftest: PASS %-22s invalidations=1 old=%06x new=%06x\n",
+           "texture-dirty-same-state", old_texel & rgb, new_texel & rgb);
+    coherence_reset_targets();
+    return 1;
+}
+
 /* ---- blend parity: Vulkan vs ge.c (arbiter) vs the R6 colour product --------------------- */
 
 #define PARITY_GRID 16u                  /* 16 x 16 sprites, 4x4 pixels each */
@@ -4134,6 +4226,7 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_linear_sprite()) ok = 0;
     if (!coherence_run_ring_wrap()) ok = 0;
     if (!coherence_run_upload_sequence()) ok = 0;
+    if (!coherence_run_texture_dirty_same_state()) ok = 0;
     if (!coherence_run_blend_parity()) ok = 0;
     coherence_reset_targets();
     return ok;
