@@ -10,8 +10,9 @@ checks three things per slot:
 
   (a) the analyzer owns the stub address as a function entry;
   (b) codegen emits a body for it. Codegen keeps an analyzed entry only when it lies in
-      the owned ranges (codegen.build_entry_catalog); a runtime-placed module filters by
-      its named code sections alone, which is reported separately as runtime_missing;
+      the owned ranges (codegen.build_entry_catalog). Every guest module (any image but the
+      EBOOT) keeps only its named code sections, as codegen's runtime-module and extra-module
+      paths do; a stub it drops is reported separately as runtime_missing;
   (c) the NID reaches an HLE handler (an sr_hle_register call in src/rt) or the named
       unknown-NID trap in sr_syscall (src/rt/hle.c). The trap is fail-closed, so every
       NID reaches one of the two. (c) is counted, not gated.
@@ -31,7 +32,10 @@ Usage:
                         [--out OUT.jsonl] [--markdown OUT.md] [--check [--allow-reason REASON ...]]
 
 --manifest takes an archive-format title manifest: its EBOOT is analyzed with the
-manifest's base and extra executable span, and each guest module at its load address.
+manifest's base and extra executable span, each fixed guest module at its load address,
+and each runtime-placed module (placement "runtime", which has no load address) in its
+link space at base 0: the game's load address for it is not known here. Its image name
+says runtime-placed, and its stub addresses are link-space offsets, not load addresses.
 """
 
 import argparse
@@ -79,9 +83,10 @@ def default_base(path):
     Staging convention (docs/SETUP.md, the per-title decrypted/ folder): the plain executable
     is staged as EBOOT.elf and every other staged file is a guest module under its disc file
     name. A guest module is relocatable and the runtime loads it at a chosen address, so the
-    census reads it rebased to 0; a manifest supplies each module's load address instead
-    (manifest_images). The ELF type is not read: the census consumes staged images whose layout
-    the title plan has already decided, and the staged name is the only split this route has.
+    census reads it rebased to 0; a manifest supplies a fixed module's load address instead,
+    and a runtime-placed module keeps base 0 (manifest_images). The ELF type is not read: the
+    census consumes staged images whose layout the title plan has already decided, and the
+    staged name is the only split this route has.
     """
     return None if os.path.basename(path).lower() == "eboot.elf" else 0
 
@@ -204,8 +209,8 @@ def census_image(path, base, *, label, extra_spans=None, handled=frozenset()):
             rec["missing"].append(_missing(addr, library, nid, reason, detail))
             rec["reasons"][reason] = rec["reasons"].get(reason, 0) + 1
         elif is_module and not in_named:
-            # A guest module placed at runtime keeps only its named code sections
-            # (codegen's runtime-module path), so this stub would lose its body there.
+            # A guest module keeps only its named code sections (codegen's runtime-module
+            # and extra-module paths), so this stub would lose its body there.
             rec["runtime_missing"].append(_missing(addr, library, nid, REASON_OUTSIDE,
                                                    "runtime module filter (named sections only)"))
 
@@ -216,10 +221,11 @@ def census_image(path, base, *, label, extra_spans=None, handled=frozenset()):
 def manifest_images(manifest_path, title_dir):
     """Return (path, label, base, extra_spans) for one archive-format title.
 
-    The EBOOT takes the manifest's base and extra executable span; each guest module
-    is analyzed at its manifest load address with no extra span (its own title
-    configuration never reaches another module). A module file the title directory
-    lacks is returned with path None, so the census names it rather than skipping it.
+    The EBOOT takes the manifest's base and extra executable span; each fixed guest module
+    is analyzed at its manifest load address, and each runtime-placed module at base 0 (its
+    link space, since the manifest gives it no address). Neither takes an extra span: a
+    module's own title configuration never reaches another module. A module file the title
+    directory lacks is returned with path None, so the census names it rather than skipping it.
     """
     with open(manifest_path, encoding="utf-8") as handle:
         manifest = json.load(handle)
@@ -238,8 +244,23 @@ def manifest_images(manifest_path, title_dir):
     images.append((eboot, f"{disc}/EBOOT.elf", executable.get("base") or None, spans))
     for module in manifest.get("modules", []):
         name = module["name"]
-        images.append((found.get(name.lower()), f"{disc}/{name}",
-                       int(module["load_address"]), None))
+        placement = module.get("placement", "fixed")
+        path = found.get(name.lower())
+        if placement == "fixed":
+            images.append((path, f"{disc}/{name}", int(module["load_address"]), None))
+        elif placement == "runtime":
+            # title_manifest forbids an address on a runtime-placed module, and the runtime picks
+            # one when the game loads it. Base 0 is the link space codegen translates such a
+            # module in: a PSP module (ELF type 0xFFA0) is relocated from 0, and any other image
+            # keeps its own addresses at base 0.
+            for field in ("load_address", "load_address_evidence"):
+                if field in module:
+                    raise ValueError(f"module {name}: a runtime-placed module has no manifest "
+                                     f"{field}")
+            images.append((path, f"{disc}/{name} (runtime-placed, link-space addresses)", 0,
+                           None))
+        else:
+            raise ValueError(f"module {name}: unsupported module placement {placement!r}")
     return images
 
 
