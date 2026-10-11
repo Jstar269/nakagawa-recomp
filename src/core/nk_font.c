@@ -778,15 +778,33 @@ bool nk_font_import_folder(const char *user_data_root, const char *folder,
     return true;
 }
 
+/* Append text to a bounded message, keeping what is already there. */
+static void font_append_text(char *out, size_t out_len, const char *text) {
+    size_t used;
+    if (!out || out_len == 0) return;
+    used = strlen(out);
+    if (used >= out_len) return;
+    snprintf(out + used, out_len - used, "%s", text);
+}
+
+/* Add one problem to a removal's failure text, separated from the problem before it. */
+static void font_add_problem(char *problems, size_t problems_len, const char *text) {
+    if (problems[0] != '\0') font_append_text(problems, problems_len, "; ");
+    font_append_text(problems, problems_len, text);
+}
+
 int nk_font_remove_imports(const char *user_data_root,
                            const bool remove[NK_FONT_SLOT_COUNT],
                            char *out_error, size_t error_len) {
     char cache_dir[NK_MAX_PATH];
+    char manifest_path[NK_MAX_PATH * 2];
     FontManifest manifest;
     char message[NK_FONT_TEXT_MAX] = "";
+    char problems[NK_FONT_TEXT_MAX] = "";
     NkFontStatus status;
     int removed = 0;
-    bool any_left = false;
+    int dropped = 0;
+    int failed = 0;
     if (!remove) {
         font_copy_text(out_error, error_len, "no slot was named");
         return -1;
@@ -795,29 +813,61 @@ int nk_font_remove_imports(const char *user_data_root,
         font_copy_text(out_error, error_len, "PSP font cache location is unavailable");
         return -1;
     }
+    font_join(manifest_path, sizeof(manifest_path), cache_dir, NK_FONT_MANIFEST_NAME);
     status = font_load_manifest(cache_dir, &manifest, message, sizeof(message));
-    /* The cache folder holds only this flow's slot files, so a named slot's file is removed
-     * even when the manifest is unreadable; the manifest is then rewritten or removed. */
+    /* A named slot's entry is dropped only once its file is gone: deleted now, or absent
+     * already. A file that is still there after the delete failed keeps its entry, so the
+     * manifest keeps describing the cache, and the other named slots are still processed. The
+     * cache folder holds only this flow's slot files, so a named slot's file is removed even
+     * when the manifest is unreadable. */
     for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
         char path[NK_MAX_PATH * 2];
+        char line[NK_FONT_DETAIL_MAX];
         if (!remove[slot]) continue;
         font_join(path, sizeof(path), cache_dir, kSlotFile[slot]);
-        if (nk_platform_file_exists(path) && nk_remove_utf8(path) == 0) removed++;
-        manifest.present[slot] = false;
+        if (nk_remove_utf8(path) == 0) {
+            removed++;
+        } else if (!nk_platform_path_missing(path)) {
+            failed++;
+            snprintf(line, sizeof(line),
+                     "could not delete the %s font file %s, which is still in the cache and keeps its manifest entry",
+                     kSlotRole[slot], kSlotFile[slot]);
+            font_add_problem(problems, sizeof(problems), line);
+            continue;
+        }
+        if (manifest.present[slot]) {
+            manifest.present[slot] = false;
+            dropped++;
+        }
     }
-    for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) if (manifest.present[slot]) any_left = true;
-    if (status == NK_FONT_STATUS_OK && any_left) {
-        if (!font_write_manifest(cache_dir, &manifest)) {
-            font_copy_text(out_error, error_len, "the font manifest could not be rewritten");
-            return -1;
+    /* The manifest is rewritten only when an entry was dropped, so a call that changes nothing
+     * leaves its bytes as they are. An unreadable manifest is removed, as before, unless a named
+     * file stayed; it is then left in place, since its entries cannot be rewritten faithfully. */
+    if (status == NK_FONT_STATUS_OK && dropped > 0) {
+        bool any_left = false;
+        for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) if (manifest.present[slot]) any_left = true;
+        if (any_left) {
+            if (!font_write_manifest(cache_dir, &manifest)) {
+                font_add_problem(problems, sizeof(problems),
+                                 "the font manifest could not be rewritten, so it still lists the removed fonts");
+            }
+        } else if (nk_platform_file_exists(manifest_path) && nk_remove_utf8(manifest_path) != 0) {
+            font_add_problem(problems, sizeof(problems), "the font manifest could not be removed");
         }
-    } else {
-        char path[NK_MAX_PATH * 2];
-        font_join(path, sizeof(path), cache_dir, NK_FONT_MANIFEST_NAME);
-        if (nk_platform_file_exists(path) && nk_remove_utf8(path) != 0) {
-            font_copy_text(out_error, error_len, "the font manifest could not be removed");
-            return -1;
+    } else if (status != NK_FONT_STATUS_OK && failed == 0) {
+        if (nk_platform_file_exists(manifest_path) && nk_remove_utf8(manifest_path) != 0) {
+            font_add_problem(problems, sizeof(problems), "the font manifest could not be removed");
         }
+    }
+    if (problems[0] != '\0') {
+        char text[NK_FONT_TEXT_MAX + 64];
+        if (removed > 0) {
+            snprintf(text, sizeof(text), "removed %d font file(s); %s", removed, problems);
+        } else {
+            snprintf(text, sizeof(text), "%s", problems);
+        }
+        font_copy_text(out_error, error_len, text);
+        return -1;
     }
     return removed;
 }

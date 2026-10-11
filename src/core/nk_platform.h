@@ -52,6 +52,11 @@ int nk_rename_utf8(const char *from, const char *to);
 char nk_platform_path_separator(void);
 bool nk_platform_file_exists(const char *path);
 bool nk_platform_dir_exists(const char *path);
+/* True only when the OS says the name does not exist: ENOENT or ENOTDIR on POSIX, and
+ * ERROR_FILE_NOT_FOUND or ERROR_PATH_NOT_FOUND on Win32. Any other failure (access denied, an
+ * unreadable parent) is not missing, so a caller about to delete a name must not take it for
+ * gone. An entry of any kind, a directory included, is not missing. */
+bool nk_platform_path_missing(const char *path);
 /* Call fn(name, ctx) for each regular file directly inside dir (names in UTF-8,
  * unsorted; subdirectories are skipped). Stops early when fn returns false.
  * Returns false when dir cannot be opened. */

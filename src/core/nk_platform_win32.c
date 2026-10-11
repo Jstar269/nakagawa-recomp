@@ -92,6 +92,15 @@ bool nk_platform_dir_exists(const char *path) {
     return (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
+bool nk_platform_path_missing(const char *path) {
+    if (!path || !*path) return false;
+    WCHAR wpath[32768];
+    if (!utf8_to_wide(path, wpath, sizeof(wpath) / sizeof(WCHAR))) return false;
+    if (GetFileAttributesW(wpath) != INVALID_FILE_ATTRIBUTES) return false;
+    DWORD error = GetLastError();
+    return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+}
+
 bool nk_platform_list_files(const char *dir, NkDirFileFn fn, void *ctx) {
     if (!dir || !*dir || !fn) return false;
     char pattern[32768];
