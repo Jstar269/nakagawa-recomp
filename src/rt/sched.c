@@ -3988,7 +3988,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
              * SwitchToFiber -- a NULL fiber would deref garbage and tear the process down.
              * On failure we surface a clean error and abort (there's no game-state left to
              * save -- the scheduler loop has no way to recover a thread that never started). */
-            t->coro = sr_coro_create(coro_body, t, (size_t)64 << 20);
+            t->coro = sr_coro_create(coro_body, t, SR_GUEST_FIBER_STACK_SIZE);
             if (!t->coro) {
                 fprintf(stderr, "sched_run: sr_coro_create failed for uid=0x%x entry=0x%08x "
                         "-- cannot continue\n",

@@ -1194,6 +1194,9 @@ const char *sr_guest_interp_result_name(SrGuestInterpResult result) {
     case SR_GUEST_INTERP_MEMORY_FAULT: return "memory-fault";
     case SR_GUEST_INTERP_MISALIGNED_DATA: return "misaligned-data";
     case SR_GUEST_INTERP_FLOW_FATAL: return "flow-fatal";
+    case SR_GUEST_INTERP_HOST_STACK_EXHAUSTED: return "host-stack-exhausted";
+    case SR_GUEST_INTERP_HOST_STACK_BOUNDS_UNAVAILABLE:
+        return "host-stack-bounds-unavailable";
     default: return "unknown";
     }
 }

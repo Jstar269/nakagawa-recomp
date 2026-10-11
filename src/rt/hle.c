@@ -8611,11 +8611,9 @@ static uint32_t atrac_stream_buffer_end(const Atrac *a) {
                       a->bytesPerFrame;
     return frames * a->bytesPerFrame + a->bufferHeaderSize;
 }
-#ifdef SR_HLE_THREAD_SELFTEST
 static uint32_t atrac_stream_buffer_base(const Atrac *a) {
     return a->bufferHeaderSize;
 }
-#endif
 static uint32_t atrac_file_offset_by_sample(const Atrac *a, int sample) {
     if (sample < 0) sample = 0;
     /* Frame*bytesPerFrame can exceed 32 bits for hostile RIFF metadata
@@ -8786,7 +8784,7 @@ static void atrac_report_decode_failure(Atrac *a) {
     a->decodeFailureReported = 1;
     fprintf(stderr,
             "ATRAC_DECODE_REFUSED: ATRAC_ERROR_UNKNOWN_FORMAT: "
-            "This ATRAC3+ stream is not supported yet.\n");
+            "The ATRAC3+ frame was malformed; decoding of this stream stopped.\n");
 }
 static int audio_stat_on(void);  /* SR_AUDIOSTAT gate; defined with the SAS aggregates */
 /* SR_AUDIOSTAT aggregate counters (investigation telemetry). Declared here because
@@ -8991,6 +8989,13 @@ static int atrac_decode_frame(Atrac *a, uint32_t out) {
     int ret = atrac3p_bridge_decode(a->dec, a->host_frame, (int)a->bytesPerFrame,
                                     a->host_pcm, &n);
     if (ret < 0 || n <= 0) {
+        /* Keep the offset with the codec error: a streamed-ring frame can be
+         * pointed at incorrectly and a frame decoder genuinely cannot handle
+         * may produce the same error; only the offset distinguishes them (#32). */
+        if (atrac_log_on())
+            fprintf(stderr, "ATRAC_DECODE: frame decode failed ret=%d n=%d src=0x%08x pos=%u base=%u end=%u frame=%u\n",
+                    ret, n, src, a->bufferPos, atrac_stream_buffer_base(a),
+                    atrac_stream_buffer_end(a), a->bytesPerFrame);
         atrac_report_decode_failure(a);
         return -1;
     }

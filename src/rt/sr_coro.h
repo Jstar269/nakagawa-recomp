@@ -28,6 +28,11 @@
 
 #include <stddef.h>
 
+/* Guest AOT calls are native C calls, so the scheduler reserves this host stack
+ * size for each guest thread. Keep the size in the coroutine contract so runtime
+ * stack guards and scheduler tests use the same production value. */
+#define SR_GUEST_FIBER_STACK_SIZE ((size_t)64u << 20)
+
 typedef struct SrCoro SrCoro;
 typedef void (*SrCoroFn)(void *arg);
 
@@ -52,6 +57,10 @@ void sr_coro_destroy(SrCoro *c);
 /* The coroutine currently executing on this OS thread (the main coroutine between switches on
  * the scheduler side). */
 SrCoro *sr_coro_current(void);
+
+/* Return the remaining downward-growing stack range for the current coroutine.
+ * Returns 1 when the current stack bounds were measured, or 0 when unavailable. */
+int sr_coro_stack_remaining(size_t *remaining_out);
 
 /* ---- test-only lifecycle instrumentation ---------------------------------------------
  *

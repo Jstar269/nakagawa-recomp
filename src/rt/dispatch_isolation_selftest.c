@@ -32,6 +32,7 @@
  * is expected; the exit code is the result.
  */
 
+#include "sr_coro.h"
 #include "recomp.c"   /* white-box: the real dispatch() and its hook tables */
 
 #include <stdlib.h>
@@ -1131,6 +1132,73 @@ static void test_high_virtual_module_authority_is_fail_closed(void) {
     sr_exec_span_reset();
 }
 
+/* Drive production dispatch recursion on the same reserved host stack as a guest
+ * thread. The preflight must stop new AOT entries with the diagnostic reserve left. */
+#define STACK_GUARD_TARGET 0x007c0000u
+#define STACK_GUARD_RESUME 0x007c0100u
+#define STACK_GUARD_EXPECTED_MARGIN ((size_t)64u << 10)
+static SrCoro *g_stack_guard_main;
+static int g_stack_guard_result;
+static size_t g_stack_guard_remaining;
+static unsigned g_stack_guard_calls;
+
+static void stack_guard_recursive_body(CpuState *s) {
+    g_stack_guard_calls++;
+    int result = dispatch_call_try(s, STACK_GUARD_TARGET, STACK_GUARD_RESUME);
+    if (result == SR_GUEST_INTERP_HOST_STACK_EXHAUSTED ||
+        result == SR_GUEST_INTERP_HOST_STACK_BOUNDS_UNAVAILABLE) {
+        g_stack_guard_result = result;
+        if (!sr_coro_stack_remaining(&g_stack_guard_remaining))
+            g_stack_guard_remaining = 0;
+    }
+}
+
+static void stack_guard_coro_body(void *arg) {
+    CpuState *s = (CpuState *)arg;
+    size_t initial_remaining = 0;
+    if (sr_coro_stack_remaining(&initial_remaining))
+        g_stack_guard_remaining = initial_remaining;
+    (void)dispatch_call_try(s, STACK_GUARD_TARGET, STACK_GUARD_RESUME);
+    sr_coro_switch(g_stack_guard_main);
+    for (;;) sr_coro_switch(g_stack_guard_main);
+}
+
+static int run_host_stack_guard_child(void) {
+    g_stack_guard_main = sr_coro_main();
+    if (!g_stack_guard_main) return 10;
+    CpuState s;
+    memset(&s, 0, sizeof s);
+    s.pc = 0x00500000u;
+    s.r[31] = 0x00500008u;
+    g_stack_guard_result = 0;
+    g_stack_guard_remaining = 0;
+    g_stack_guard_calls = 0;
+    own_synthetic_aot_word(STACK_GUARD_TARGET);
+    sr_register(STACK_GUARD_TARGET, stack_guard_recursive_body);
+    sr_sched_on = 1;
+    SrCoro *fiber = sr_coro_create(stack_guard_coro_body, &s,
+                                   SR_GUEST_FIBER_STACK_SIZE);
+    if (!fiber) return 11;
+    sr_coro_switch(fiber);
+    sr_sched_on = 0;
+    sr_coro_destroy(fiber);
+    if (g_stack_guard_result != SR_GUEST_INTERP_HOST_STACK_EXHAUSTED ||
+        g_stack_guard_calls == 0 ||
+        g_stack_guard_remaining < STACK_GUARD_EXPECTED_MARGIN ||
+        g_stack_guard_remaining > SR_GUEST_FIBER_STACK_SIZE) {
+        fprintf(stderr,
+                "stack guard child: result=%d calls=%u remaining=%zu margin=%zu\n",
+                g_stack_guard_result, g_stack_guard_calls, g_stack_guard_remaining,
+                (size_t)STACK_GUARD_EXPECTED_MARGIN);
+        return 12;
+    }
+    fprintf(stderr,
+            "stack guard child: calls=%u remaining=%zu margin=%zu\n",
+            g_stack_guard_calls, g_stack_guard_remaining,
+            (size_t)STACK_GUARD_EXPECTED_MARGIN);
+    return 0;
+}
+
 #ifdef _WIN32
 #define CHILD_SPAWN_CAP 4096
 
@@ -1182,9 +1250,8 @@ static size_t append_quoted_argument(wchar_t *out, size_t cap, const wchar_t *ar
  * reports "OK (configuration ...)" and exits 0. The command line is built here
  * with both arguments quoted, and the wait and the exit-code read are checked
  * so a failed wait cannot read as a child status. */
-static int run_unregistered_dispatch_child(const char *self_path) {
+static int run_dispatch_child(const char *self_path, const char *mode) {
 #ifdef _WIN32
-    static const char kMode[] = "--unregistered-dispatch-child";
     wchar_t wide_path[CHILD_SPAWN_CAP];
     wchar_t resolved[CHILD_SPAWN_CAP];
     wchar_t wide_mode[CHILD_SPAWN_CAP];
@@ -1199,7 +1266,7 @@ static int run_unregistered_dispatch_child(const char *self_path) {
        the same binary and directory. */
     if (MultiByteToWideChar(CP_ACP, 0, self_path, -1, wide_path,
                             CHILD_SPAWN_CAP) <= 0) return -1;
-    if (MultiByteToWideChar(CP_ACP, 0, kMode, -1, wide_mode,
+    if (MultiByteToWideChar(CP_ACP, 0, mode, -1, wide_mode,
                             CHILD_SPAWN_CAP) <= 0) return -1;
     /* CreateProcessW is given the program through the command line, and it does
        not resolve every way argv[0] can be spelled: a relative path written with
@@ -1241,8 +1308,7 @@ static int run_unregistered_dispatch_child(const char *self_path) {
 #else
     pid_t child = fork();
     if (child == 0) {
-        execl(self_path, self_path, "--unregistered-dispatch-child",
-              (char *)NULL);
+        execl(self_path, self_path, mode, (char *)NULL);
         _exit(127);
     }
     if (child < 0) return -1;
@@ -1253,10 +1319,17 @@ static int run_unregistered_dispatch_child(const char *self_path) {
 }
 
 static void test_public_dispatch_wrapper_terminates_rejection(const char *self_path) {
-    int child_status = run_unregistered_dispatch_child(self_path);
+    int child_status = run_dispatch_child(self_path, "--unregistered-dispatch-child");
     CHECK(child_status == 1,
           "public dispatch wrapper did not terminate an unregistered executable attempt "
           "with status 1 (status=%d)", child_status);
+}
+
+static void test_host_stack_exhaustion_is_a_named_boundary(const char *self_path) {
+    int child_status = run_dispatch_child(self_path, "--host-stack-boundary-child");
+    CHECK(child_status == 0,
+          "recursive dispatch did not stop at the host-stack boundary with the "
+          "production fiber reserve (status=%d)", child_status);
 }
 
 /* ---- the retired numbers: inert in every configuration ----------------------------- */
@@ -1698,6 +1771,8 @@ int main(int argc, char **argv) {
         dispatch(&s, INTERP_REJECT_ADDR);
         return 99; /* fail-open: dispatch() must never return from this rejection */
     }
+    if (argc == 2 && strcmp(argv[1], "--host-stack-boundary-child") == 0)
+        return run_host_stack_guard_child();
 
     const SrTitleRuntimeConfig *cfg = sr_title_config();
     fprintf(stderr, "dispatch-isolation-selftest: configuration \"%s\" "
@@ -1714,6 +1789,7 @@ int main(int argc, char **argv) {
     test_nested_call_ra_zero_cannot_return_from_the_interpreter_floor();
     test_high_virtual_module_authority_is_fail_closed();
     test_public_dispatch_wrapper_terminates_rejection(argv[0]);
+    test_host_stack_exhaustion_is_a_named_boundary(argv[0]);
     test_retired_bindings_are_inert();
     test_call_boundary_keeps_callee_register_writes();
     test_historical_call_target_fails_at_named_boundary();
