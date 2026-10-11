@@ -264,7 +264,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0d3408b352aa017de007f12f83e9586ebd98a5d93e320211f278e98929c2b111"
+      "sha256": "18d7aca1df2576029f1c7b0c3f1d413a4aefa717e657e7880d040254a8adaa9b"
     },
     {
       "path": "CREDITS.md",
@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "d901fd4ac1a7d57922b8d0bc4a1a48b6f6088c1d2b8fdda00d5a9e8a273fe68c"
+      "sha256": "ffc69e382f5fc67b4033d17d722ac42778142db03af604dfe7daf9f559433fae"
     },
     {
       "path": "NOTICE.md",
@@ -679,7 +679,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "ba8f8915c043e51b55c20359259f572b9a9b8b05c511dba9c289351b84ab05d3"
+      "sha256": "8d278ccc0ea7f1b568f53e387f14406d85aca447d28f0e3dd2e595906583f892"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1264,7 +1264,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "87684eeffdabbea64bae8fb98f84d2acf6ea14ba8f9cf1ed3cf91ab9c6a9937c"
+      "sha256": "d54e74574ff8ca7874e10c0090953a73ed9f408776ef524d6293279d932709fe"
     },
     {
       "path": "docs/PSPDEV_LOCAL_VERIFICATION.md",
@@ -6365,6 +6365,18 @@
       "sha256": "7e5f2352c58ac4f7fd2192ebb672ea91433ee23262ea105d31191088863ace95"
     },
     {
+      "path": "tools/contrib_refresh.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "contrib-refresh-tool",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "287e4f9f0e1b81f49f1acdba732bc3d89b770cba1f8484edb0f17c7fb94c9339"
+    },
+    {
       "path": "tools/copy_build_assets.ps1",
       "classification": "project_authored_attested",
       "evidence": {
@@ -8112,6 +8124,18 @@
         "upstream_attribution": null
       },
       "sha256": "cf37802417407832e95fe15686993426c5232152b26e1a2e436e711a3bf431f4"
+    },
+    {
+      "path": "tools/test_contrib_refresh.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "contrib-refresh-tool",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "00642af18e94b5247b3b62eff213e81ff33dd09c23cd467aa639eb4ede1d40d6"
     },
     {
       "path": "tools/test_cosim_fixture.py",
