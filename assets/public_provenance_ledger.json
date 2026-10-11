@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b5b5576ce702fa43963f9089a9a1291b57e75c8cee096fe72ead0481f42c7ad3"
+      "sha256": "5135bba8156d519747960a3b94ebea91594aaba4bbdeac2a1de4b0e3d994fe6c"
     },
     {
       "path": "NOTICE.md",
@@ -8255,7 +8255,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5ead009879e2cae794705a87b83f7d89bac48722e5625a06ae961e24dfad0263"
+      "sha256": "5aa08b80bf0d78569ce5cf39fd22418f88cc216fe7918f83c2b12beef46641a3"
     },
     {
       "path": "tools/test_dispatch_fatal_policy.py",
