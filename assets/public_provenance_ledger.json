@@ -6494,7 +6494,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a037f30732e9f87e940228873fa83e7c75e4ab9562ae94d402df374d643ce71c"
+      "sha256": "bed029dfaee9b23c0356315c667f76e3dfdc3c55d2a6cf475dab07a751e3ff17"
     },
     {
       "path": "tools/frame_capture_check.py",
@@ -8459,7 +8459,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "047531fbf57e56e260c5d7869870950f3044e7eab57326a5674e5fedb9882b79"
+      "sha256": "c1f4f76a24cb07deab90a9927ff801000d09d35e03f8e5dd968cde8f66da047e"
     },
     {
       "path": "tools/test_fp_scalar_mutations.py",
@@ -9817,7 +9817,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5a989ceda7dc7fc1541d1518cdeef0a4fa9143ba79b18a1f59d8deedb951ca92"
+      "sha256": "1ab9a0cf962b143a27b677b5db1f71c372c3c039de6b1d0dfb8a105a12f469bf"
     },
     {
       "path": "tools/test_sync_drift_check.py",
@@ -10009,7 +10009,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7b5d22be16258aa80a0c49c176ce7b205ad2dede96de6c5b4e50149ab2d98b42"
+      "sha256": "3adcd8082c01f2bdbd2d0de7ea072f3c05264561255c6bb0e0546f09e8044b43"
     },
     {
       "path": "tools/test_tracediff_local_coverage.py",
