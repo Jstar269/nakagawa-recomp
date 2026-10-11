@@ -1876,16 +1876,18 @@
       "status": "PARTIAL"
     },
     {
-      "boundary": "Performance-summary JSON consumed by the diff tool",
+      "boundary": "Performance-summary JSON consumed by the diff tool and the present-cadence attribution report",
       "id": "python-performance-summary-json",
-      "entry": "tools/perf_summary_diff.py:load_summary; tools/perf_summary_diff.py:validate_summary",
+      "entry": "tools/perf_summary_diff.py:load_summary; tools/perf_summary_diff.py:validate_summary; tools/perf_attribution.py:_summary_block",
       "source_paths": [
-        "tools/perf_summary_diff.py"
+        "tools/perf_summary_diff.py",
+        "tools/perf_attribution.py"
       ],
       "test_paths": [
-        "tools/test_perf_summary_diff.py"
+        "tools/test_perf_summary_diff.py",
+        "tools/test_perf_attribution.py"
       ],
-      "max_input": "No byte cap: load_summary reads the whole file before json.loads.",
+      "max_input": "No byte cap: load_summary reads the whole file before json.loads. tools/perf_attribution.py reads the same file through load_summary and adds no cap of its own.",
       "tables_nesting": "No explicit nesting or aggregate member-count limit. The consumed top-level/object shapes are checked after parsing; each transitions.top_pcs direction is capped at 16 entries, while boundaries has no count cap.",
       "arithmetic": {
         "safe": "PARTIAL",
@@ -1911,7 +1913,8 @@
         "deterministic_regression": {
           "status": "IN_CI",
           "tests": [
-            "tools/test_perf_summary_diff.py"
+            "tools/test_perf_summary_diff.py",
+            "tools/test_perf_attribution.py"
           ],
           "runner": "Python unit-test shards in .github/workflows/ci.yml"
         },
@@ -1924,6 +1927,62 @@
           "status": "NOT_COVERED",
           "target": null,
           "instrumentation": "No sanitizer campaign for this Python JSON route.",
+          "ci": false
+        },
+        "coverage_guided_fuzzer": "NOT_CONFIGURED",
+        "overflow_oob_mutation_kill": "NOT_RUN"
+      },
+      "status": "PARTIAL"
+    },
+    {
+      "boundary": "SR_PERF and SR_PRESENT_TRACE stderr lines read by the present-cadence and cost attribution report",
+      "id": "python-perf-attribution-stderr-log",
+      "entry": "tools/perf_attribution.py:scan_log; tools/perf_attribution.py:_read_lines; tools/perf_attribution.py:_Scan.feed",
+      "source_paths": [
+        "tools/perf_attribution.py"
+      ],
+      "test_paths": [
+        "tools/test_perf_attribution.py"
+      ],
+      "max_input": "No byte cap on the log. It is streamed one physical line at a time, each read is limited to MAX_LINE_CHARS + 1 characters, and an overlong line is classified by its head while its remainder is discarded in bounded pieces.",
+      "tables_nesting": "No nesting. Retained state is one counter per distinct vblank interval, one (wall, cpu) pair per paired one-second telemetry line, and diagnostic examples capped at MAX_EXAMPLES per kind.",
+      "arithmetic": {
+        "safe": "PARTIAL",
+        "evidence": [
+          "tools/perf_attribution.py:_interval_stats",
+          "tools/perf_attribution.py:_Scan._feed_present"
+        ]
+      },
+      "allocation_time": "Line-at-a-time streaming with per-line allocation bounded by the read limit. Telemetry totals are float sums of printed milliseconds: they cannot overflow but are not exact.",
+      "failure_atomicity": "scan_log raises PerfAttributionError for an unopenable path, a non-UTF-8 line or a refused summary before analyze returns anything, and it writes no files.",
+      "harness": "tools/test_perf_attribution.py feeds synthetic logs covering malformed HOST_PRESENT_SUBMITTED and telemetry lines, out-of-range fields, overlong and CRLF lines, non-UTF-8 and missing inputs, non-monotonic f, and a line-accounting identity. Its source pins render the printf literals of src/rt/hle.c and src/rt/perf.c through the parser patterns.",
+      "gap": "No byte cap on the whole log, and no seeded mutation, sanitizer or coverage-guided campaign for this reader. Coverage is deterministic and synthetic only.",
+      "malformed_input_coverage": [
+        "A HOST_PRESENT_SUBMITTED line that is truncated, has a seven-digit buffer, an fmt outside 0..3, a non-positive stride, a zero buffer or an f above 32 bits is counted as malformed and never as a present.",
+        "A PERF or PERF_ATTRIB line missing a field is counted as malformed and left out of the cost shares.",
+        "A line longer than MAX_LINE_CHARS is classified by its head, and a non-UTF-8 log is refused with PerfAttributionError."
+      ],
+      "resource_gaps": [
+        "No cap on the total log size or on the number of presents; a long run grows the interval counter and the telemetry lists linearly.",
+        "No seeded mutation or sanitizer campaign for this reader."
+      ],
+      "campaigns": {
+        "deterministic_regression": {
+          "status": "IN_CI",
+          "tests": [
+            "tools/test_perf_attribution.py"
+          ],
+          "runner": "Python unit-test shards in .github/workflows/ci.yml"
+        },
+        "seeded_mutations": {
+          "status": "NOT_AVAILABLE",
+          "tests": [],
+          "campaign": "No seeded byte-mutation campaign located for this reader."
+        },
+        "sanitizer": {
+          "status": "NOT_COVERED",
+          "target": null,
+          "instrumentation": "No sanitizer campaign for this Python text route.",
           "ci": false
         },
         "coverage_guided_fuzzer": "NOT_CONFIGURED",

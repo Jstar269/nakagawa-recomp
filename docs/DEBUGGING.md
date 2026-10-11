@@ -111,6 +111,18 @@ The diff tool compares transition PCs by `(pc, reason)`, preserves `null` as not
 ranks non-zero subsystem costs without summing overlapping intervals. A private HST profile may
 add a real-workload route, but it is supplemental and must not replace the public matrix.
 
+Present cadence and cost attribution for one run read the perf summary together with its stderr log.
+Capture the log with both `SR_PERF=1` (the one-second `PERF` and `PERF_ATTRIB` lines) and
+`SR_PRESENT_TRACE=1` (one `HOST_PRESENT_SUBMITTED` line per presented frame):
+
+```powershell
+python tools/perf_attribution.py --perf run.json --stderr run.log
+python tools/perf_attribution.py --diff a.json a.log b.json b.log --format json
+```
+
+The tool's docstring defines flips, re-presents, vblanks per new frame, implied fps and the
+`cpu_ms`, `ge_cpu_ms` and `aot_ms` shares. Those cost shares overlap and must not be added together.
+
 ## VBLANK delivery ledger (is the guest told about too many vblanks?)
 
 A game runs fast if the runtime hands the guest more VBLANK episodes than the

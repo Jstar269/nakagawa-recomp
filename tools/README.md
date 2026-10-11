@@ -169,6 +169,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `ge_replay_metrics.py` | Strict parsers for aggregate GE replay CPU-profile summaries. |
 | `ge_stat_windows.py` | Read the runtime's `SR_GESTAT` windows by the vblank that closed them, for gates such as the showcase smoke. |
 | `perf_summary_diff.py` | Compare two runtime performance summaries within a tolerance. |
+| `perf_attribution.py` | Present cadence (flips, re-presents, vblanks per new frame, implied fps) and cost shares for one `SR_PERF` run, or a diff of two runs. |
 | `pgf_writer.py` | Deterministic PGF writer for project-generated glyph bitmaps (a fixture generator, never an authenticity claim). |
 | `ttf2pgf.py` | Deterministic OpenType/TTF to PGF converter for pinned public fixtures; behaviour contract and independence record in `docs/cleanroom/PGF_CONVERTER_SPEC.md` (issue #313). |
 | `evidence_model.py` | Fail-closed evidence grading and revision identity primitives. |
@@ -465,6 +466,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_parse_fuzz.py` | Seeded, deterministic mutation fuzzing over the public offline parsers. |
 | `test_padscript_from_log.py` | Controller log to pad script conversion: press widths and mask-change spans. |
 | `test_perf_summary_diff.py` | Performance summary comparison within a tolerance. |
+| `test_perf_attribution.py` | Synthetic regressions for the present-cadence and cost attribution report, including source pins on the emitter formats. |
 | `test_pgf_writer.py` | PGF writer determinism and public-reader round trip over generated glyph sets. |
 | `test_pgf_validate_parity.py` | Field-by-field parity of the native PGF validator and its Python mirror on seeded images and mutations. |
 | `test_ttf2pgf.py` | Converter determinism, manifest/pin binding, named refusals, and public-reader round trip over the pinned font fixture. |
