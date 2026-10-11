@@ -8,6 +8,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Installed by the scheduler (sched.c) when it owns the guest fibers; see recomp.h. */
+int (*sr_dispatch_host_stack_remaining)(size_t *remaining_out) = NULL;
+
 typedef struct SrExecSpan {
     uint32_t start;
     uint32_t end;

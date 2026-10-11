@@ -8,11 +8,6 @@
 
 #include "recomp.h"
 
-/* Host-stack probe the scheduler installs when it owns the guest fibers (sr_coro_stack_remaining).
- * Harnesses that link the dispatcher without the scheduler leave it NULL; the dispatcher's
- * preflight is then off (sr_sched_on is 0 there) and no coroutine code is linked. */
-extern int (*sr_dispatch_host_stack_remaining)(size_t *remaining_out);
-
 typedef enum SrGuestInterpResult {
     SR_GUEST_INTERP_AOT_HANDOFF       = 1,
     SR_GUEST_INTERP_CALL_RETURN       = 2,

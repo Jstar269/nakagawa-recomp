@@ -864,6 +864,11 @@ uint32_t sr_hle_resolve_late_import(uint32_t nid);
  * scheduler is off (per-function differential, plain driver) SR_YIELD is a cheap no-op that
  * changes nothing, so it does not affect the existing trace verification. */
 extern int     sr_sched_on;
+/* Host-stack probe the scheduler installs when it owns the guest fibers
+ * (sr_coro_stack_remaining). Defined in guest_interp.c, which every dispatcher
+ * build links; harnesses without the scheduler leave it NULL and the dispatcher's
+ * preflight stays off because sr_sched_on is 0 there. */
+extern int   (*sr_dispatch_host_stack_remaining)(size_t *remaining_out);
 extern atomic_int_least32_t sr_timeslice;
 void sr_yield(CpuState *s);
 /* Returns 1 if the host wall-clock has crossed the vblank quantum since the last vblank

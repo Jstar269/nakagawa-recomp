@@ -1674,8 +1674,6 @@ static const char *dispatch_semantic_boundary_name(SrGuestInterpResult result) {
  * dispatch unwinding. The malformed decoder and formatter path used under 20 KiB. */
 #define SR_DISPATCH_STACK_SAFETY_MARGIN ((size_t)128u << 10)
 
-int (*sr_dispatch_host_stack_remaining)(size_t *remaining_out) = NULL;
-
 static int dispatch_host_stack_preflight(void) {
     size_t remaining;
     if (!sr_sched_on) return 0;
