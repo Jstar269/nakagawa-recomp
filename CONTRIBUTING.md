@@ -18,14 +18,49 @@ third-party-derived code without resolving its actual source/license chain.
    fill in the template.
 4. Leave **Allow edits by maintainers** enabled on the pull request.
 
-**You don't need to handle provenance controls.** Two files, `PUBLIC_EXPORT.json` and
-`assets/public_provenance_ledger.json`, are generated from a private trusted ledger that
-contributors don't have. Don't edit them by hand, and don't run a generator to "fix" them: they
-are maintained by the maintainer with tooling you don't have. If **Trusted provenance
-attestation** or the publication-safety step in **Hygiene and security** reports a provenance
-mismatch, a maintainer refreshes those files on your branch. If you add a new file, say in the pull
-request where it came from: written by you, or derived from which project, at which revision, and
-under which license. A maintainer then admits the path.
+**Provenance controls: run `make contrib-refresh`, or leave them to a maintainer.** Two files,
+`PUBLIC_EXPORT.json` and `assets/public_provenance_ledger.json`, are generated from a private
+trusted ledger that contributors don't have. Never edit them by hand; they are not hand-written
+files. The ledger records, for each published path, the classification and evidence the public
+export claims for it and the SHA-256 of its bytes; the export is the public-safe inventory and
+digest built from that ledger.
+
+For the ordinary case — you changed the contents of paths that already have public entries, and you
+added and removed nothing — run:
+
+```bash
+make contrib-refresh          # Linux
+mingw32-make contrib-refresh  # Windows (MSYS2 UCRT64 on PATH)
+```
+
+`contrib-refresh` runs `tools/contrib_refresh.py` against `origin/main` (override with
+`CONTRIB_BASE`, as with `contrib-check`). It copies the claim already recorded for each changed
+path, rehashes only those paths, prints the old and new hash for every path it rehashed, and stages
+both files. Add `CONTRIB_REFRESH_CHECK=--check` to see what would change without writing anything.
+
+This is a convenience, not an authority. It cannot see the private trusted ledger, so it cannot see
+historical frozen debt or a changed executable path with no public entry, and it never invents a
+claim. The maintainer's **Trusted provenance attestation** re-derives both files from the private
+authority at landing, and that re-derivation — not this target — is what admits your change. If
+**Trusted provenance attestation** or the publication-safety step in **Hygiene and security**
+reports a provenance mismatch the refresh did not resolve, a maintainer refreshes those files on
+your branch.
+
+**If the tool refuses, say so in the pull request.** It exits non-zero, prints a code, and writes
+nothing. A maintainer then admits, withdraws or resolves the path; you never need to work around the
+refusal.
+
+| Refusal | What it means | What to put in the pull request |
+| --- | --- | --- |
+| `NEW_PUBLIC_PATH` | Your change adds a path with no public entry. | Where the file came from: written by you, or derived from which project, at which revision, and under which license. |
+| `REMOVED_PUBLIC_PATH` | Your change deletes a path that has a public entry. | That the path is gone and why; a maintainer withdraws the record. |
+| `POLICY_CHANGED` | The source policy profile itself changed (`assets/public_source_profile.json`). | That you changed the profile and why; profile edits are a maintainer decision. |
+| `UNRESOLVED_ENTRY` | A changed path's public entry still carries no resolved claim. | Which path it is; a maintainer resolves the record. |
+| `CHANGED_PATH_NOT_PUBLIC` | A changed path has no committed public entry in either direction. | Which path it is and where its content came from. |
+
+Two refusals are about how you invoked it rather than about a path: `CANDIDATE_INDEX_STALE`
+means you have unstaged edits (run `git add`), and the base-resolution codes mean the base commit
+could not be resolved (pass `--base <commit>`).
 
 **Expect Trusted provenance attestation to go red on a pull request that adds a file.** That is
 normal, not something you broke: it stays red until a maintainer admits the new path.

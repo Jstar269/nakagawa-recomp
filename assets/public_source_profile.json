@@ -1022,6 +1022,8 @@
     "tools/vulkan_sdk.ps1",
     "tools/vulkan_sdk.py",
     "tools/waits_census.py",
-    "tools/xb_probe.py"
+    "tools/xb_probe.py",
+    "tools/contrib_refresh.py",
+    "tools/test_contrib_refresh.py"
   ]
 }

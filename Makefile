@@ -863,6 +863,7 @@ PUBLIC_TARGETS := \
 	help \
 	check \
 	contrib-check \
+	contrib-refresh \
 	test \
 	native-core-tests \
 	player-ui-tests \
@@ -984,6 +985,7 @@ INTERNAL_TARGETS := FORCE player-vulkan-check player-state-test-bin input-settin
 HELP_DESCRIPTION_help := list every public Make target and its purpose
 HELP_DESCRIPTION_check := run public-safe docs, policy, audit, native, and fast checks
 HELP_DESCRIPTION_contrib-check := run only the local gates that apply to your changed files
+HELP_DESCRIPTION_contrib-refresh := reproduce the public provenance controls for your changed paths
 HELP_DESCRIPTION_test := run the complete Python tooling test suite
 HELP_DESCRIPTION_native-core-tests := build and run host-side native core tests
 HELP_DESCRIPTION_fuzz-parsers := run bounded native parser mutation fuzzing
@@ -1239,6 +1241,30 @@ CONTRIB_PYTHON ?= $(PYTHON)
 contrib-check: export CONTRIB_PYTHON := $(CONTRIB_PYTHON)
 contrib-check:
 	$(PYTHON) tools/contrib_check.py --base "$(CONTRIB_BASE)"
+
+# Reproduce the two public provenance controls for the paths your change touches,
+# so an ordinary pull request does not wait on a maintainer for the ordinary case.
+#
+# It is a convenience, not an authority. It copies the claim already recorded for
+# each changed path that has a public entry and rehashes only that path, then
+# stages PUBLIC_EXPORT.json and assets/public_provenance_ledger.json. It cannot
+# see the private trusted ledger, so it cannot see frozen historical debt or a
+# changed executable path with no public entry; it refuses rather than guess when
+# a changed path is new or removed, when its entry is unresolved, or when the
+# source policy profile itself changed. The maintainer's trusted attestation
+# re-derives both files from the private authority at landing, and that
+# re-derivation -- not this target -- is what admits the change.
+#
+#   mingw32-make contrib-refresh              # Windows
+#   make contrib-refresh                      # Linux
+#   CONTRIB_BASE=origin/main contrib-refresh  # explicit base
+#   make contrib-refresh CONTRIB_REFRESH_CHECK=--check   # report, write nothing
+#
+# Nothing is written when --check is passed, and nothing is written when the tool
+# refuses. A refusal prints its code and exits non-zero.
+CONTRIB_REFRESH_CHECK ?=
+contrib-refresh:
+	$(PYTHON) tools/contrib_refresh.py --base "$(CONTRIB_BASE)" $(CONTRIB_REFRESH_CHECK)
 
 public-safe-verify:
 	$(MAKE) PUBLIC_SAFE=1 portable-core-objects
