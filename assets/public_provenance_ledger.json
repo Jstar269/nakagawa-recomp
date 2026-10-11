@@ -4986,7 +4986,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "6b93ab300a9a878716f4721d810231e7bf5bd3917d0ac74821a59d0bafc26b75"
+      "sha256": "5b6da6aae17b34aa16321688b609fcf9eaf161436ccc434d9ee2efe2446ef234"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5024,7 +5024,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a4d79cbfa918df107ae43395b9ff1786b6ec7d713b3651036a920f0e039c6d02"
+      "sha256": "dbdac1affb7de959d9aaa361c760844e3170e90eca4fe9964f24260a0ef179d1"
     },
     {
       "path": "src/rt/intr_conformance.h",
