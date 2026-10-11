@@ -78,6 +78,9 @@ PROJECT_CACHE_PREFIX = "flash0: project font for slot 'latin' refused:"
 LATIN_CACHE_CODES = (0x41, 0x61, 0x62, 0x63, 0x64)
 LATIN_PROJECT_CODES = tuple(range(0x41, 0x5B)) + tuple(range(0x61, 0x7B))
 JAPANESE_PROJECT_CODES = (0x3042, 0x3044, 0x3046, 0x3048, 0x304A)
+FLASH0_HEADER = ROOT / "src" / "rt" / "flash0_font.h"
+VFS_HEADER = ROOT / "src" / "rt" / "vfs_contained.h"
+SELFTEST_SOURCE = ROOT / "src" / "rt" / "hle_thread_selftest.c"
 
 
 def header_string(name: str) -> str:
@@ -88,6 +91,16 @@ def header_string(name: str) -> str:
     if match is None:
         raise AssertionError(f"{name} is not a string define in {SLOT_HEADER.name}")
     return match.group(1)
+
+
+def c_unsigned_define(path: Path, name: str) -> int:
+    """The value of ``#define <name> 0x...u`` in a C source file."""
+    match = re.search(
+        rf"^#define {name}\s+(0x[0-9A-Fa-f]+)u\b", path.read_text(encoding="utf-8"), re.MULTILINE
+    )
+    if match is None:
+        raise AssertionError(f"{name} is not an unsigned hex define in {path.name}")
+    return int(match.group(1), 16)
 
 
 # The Makefile default (GAME_NAME ?= mygame). It is passed explicitly, spelled the same way,
@@ -278,6 +291,19 @@ class Flash0FontFixtureContractTests(unittest.TestCase):
 
 
 class Flash0FontDeviceTests(unittest.TestCase):
+    def test_not_found_code_matches_the_vfs_and_the_selftest_pin(self) -> None:
+        # The device has the one not-found code the rest of the VFS returns: sr_cd_psp_error
+        # maps SR_CD_NOT_FOUND to 0x80010002u (ENOENT), while 0x80010014u is ENOTDIR. The
+        # selftest pins the same value, so a drift on any side fails here without a compiler.
+        vfs = VFS_HEADER.read_text(encoding="utf-8")
+        mapping = re.search(r"case SR_CD_NOT_FOUND: return (0x[0-9A-Fa-f]+)u;", vfs)
+        self.assertIsNotNone(mapping, "sr_cd_psp_error must map SR_CD_NOT_FOUND")
+        vfs_not_found = int(mapping.group(1), 16)
+        self.assertEqual(vfs_not_found, 0x80010002)
+        header_value = c_unsigned_define(FLASH0_HEADER, "SR_FLASH0_ERR_NOT_FOUND")
+        self.assertEqual(header_value, vfs_not_found)
+        self.assertEqual(c_unsigned_define(SELFTEST_SOURCE, "F0T_ERR_NOT_FOUND"), header_value)
+
     def test_native_device_contract_on_synthetic_fonts(self) -> None:
         make = shutil.which("mingw32-make")
         if not make:
