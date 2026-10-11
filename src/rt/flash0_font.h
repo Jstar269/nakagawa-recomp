@@ -24,9 +24,11 @@
 #define SR_FLASH0_PATH_MAX 1024
 
 /* PSP error codes: EACCES for a refused write, and not-found for anything the device does not
- * serve. */
+ * serve. Not-found is 0x80010002u (ENOENT), the code the rest of the VFS returns for a missing
+ * object (sr_cd_psp_error, SR_CD_NOT_FOUND); 0x80010014u is ENOTDIR. The console's value for
+ * this device is UNMEASURED. */
 #define SR_FLASH0_ERR_ACCESS    0x8001000Du
-#define SR_FLASH0_ERR_NOT_FOUND 0x80010014u
+#define SR_FLASH0_ERR_NOT_FOUND 0x80010002u
 
 /* Font source roots, UTF-8. An empty string means the root is unknown and is skipped. */
 typedef struct {
