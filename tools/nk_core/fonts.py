@@ -831,25 +831,55 @@ def import_fonts(
 def remove_imports(user_data_root: Optional[Path] = None, slots: Optional[Iterable[str]] = None) -> int:
     """Remove the imported font for each named slot (every slot when None).
 
-    Deletes only the cache's slot files and drops their manifest entries. The manifest is
-    removed when no entry is left. Returns the number of slot files removed.
+    Deletes only the cache's slot files. A slot's manifest entry is dropped once its file
+    is gone: deleted here, or already absent. A delete that fails for any other reason,
+    such as a directory at the slot's file name, keeps that slot's entry, and the other
+    named slots are still processed. The manifest is rewritten only when an entry was
+    dropped, and removed when no entry is left, or when it is not usable and no named file
+    stayed (an unusable manifest whose file could not be removed is left in place, since
+    its entries cannot be rewritten faithfully; nk_font_remove_imports does the same).
+    A slot named twice is processed once. Returns the number
+    of slot files removed; raises FontImportError naming each slot whose file could not be
+    removed, after the manifest is updated.
     """
     cache_dir = get_font_cache_dir(user_data_root)
-    wanted = list(SLOTS) if slots is None else list(slots)
+    wanted = list(SLOTS) if slots is None else list(dict.fromkeys(slots))
     for slot in wanted:
         if slot not in SLOTS:
             raise FontImportError(f"Unknown font slot '{slot}'; use one of {', '.join(SLOTS)}.")
     status, _, entries = _load_manifest(cache_dir)
     removed = 0
+    dropped = False
+    failures: List[str] = []
     for slot in wanted:
         path = cache_dir / SLOT_FILES[slot]
-        if path.is_file():
+        try:
             path.unlink()
             removed += 1
-        entries.pop(slot, None)
+        except (FileNotFoundError, NotADirectoryError):
+            # Already absent. A cache path through a non-directory is ENOTDIR on POSIX and
+            # not-found on Windows; either way no slot file is there.
+            pass
+        except OSError as exc:
+            kept = "; its manifest entry is kept" if slot in entries else ""
+            failures.append(
+                f"The {SLOT_ROLES[slot]} font file {SLOT_FILES[slot]} could not be removed "
+                f"({exc.strerror or exc}){kept}."
+            )
+            continue
+        if entries.pop(slot, None) is not None:
+            dropped = True
     manifest_path = cache_dir / MANIFEST_NAME
-    if status == "OK" and entries:
-        _write_manifest(cache_dir, entries)
-    elif manifest_path.is_file():
-        manifest_path.unlink()
+    if status != "OK":
+        if not failures and manifest_path.is_file():
+            manifest_path.unlink()
+    elif dropped:
+        if entries:
+            _write_manifest(cache_dir, entries)
+        else:
+            manifest_path.unlink(missing_ok=True)
+    if failures:
+        if removed:
+            failures.append(f"Removed {removed} other imported font file(s).")
+        raise FontImportError(" ".join(failures))
     return removed
