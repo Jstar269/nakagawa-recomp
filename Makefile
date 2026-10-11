@@ -1918,7 +1918,7 @@ cosim-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(BUILD_DIR)/$(
 		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) -I$(COSIM_FIXTURE) \
 		-o $(BUILD_DIR)/cosim_selftest.exe \
 		$(COSIM_HARNESS) $(COSIM_FPU_REFERENCE_SRC) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o \
-		$(COSIM_INTERP_SRC) src/rt/flight_recorder.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c src/rt/perf.c -lm
+		$(COSIM_INTERP_SRC) src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c src/rt/perf.c -lm
 	$(BUILD_DIR)/cosim_selftest.exe $(BUILD_DIR)/$(GAME_NAME)_image.bin \
 		$(COSIM_BASE_ADDR) $(COSIM_TRACES)
 
