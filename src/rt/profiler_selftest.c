@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 the psp-recomp authors
 
+#define _POSIX_C_SOURCE 200809L
+
 #include "recomp.h"
 #include "perf.h"
 
@@ -53,14 +55,21 @@ static int whole_line(int i, const char *prefix) {
 }
 
 static void test_telemetry_lines_are_emitted_whole(void) {
+#ifdef _WIN32
     putenv("SR_PERF=1");
+#else
+    setenv("SR_PERF", "1", 1);
+#endif
     sr_perf_init();
     sr_perf_test_set_report_sink(capture_report_line);
     s_report_count = 0;
+    sr_perf_ge_frontend_profile_config(8, 1);
+    sr_perf_ge_frontend_profile(SR_PERF_GE_FRONTEND_COMMAND_DISPATCH, 240, 3, 3);
+    sr_perf_ge_frontend_profile(SR_PERF_GE_FRONTEND_DRAW_SETUP, 100, 2, 8);
     sr_perf_test_force_report();
     sr_perf_test_set_report_sink(NULL);
-    CHECK(s_report_count == 2,
-          "one telemetry interval emitted %d line units (expected 2: PERF and PERF_ATTRIB)",
+    CHECK(s_report_count == 3,
+          "one telemetry interval emitted %d line units (expected PERF, PERF_ATTRIB, and GE frontend)",
           s_report_count);
     CHECK(whole_line(0, "PERF vblank_total="),
           "the PERF line was not delivered as one whole newline-terminated string");
@@ -70,6 +79,12 @@ static void test_telemetry_lines_are_emitted_whole(void) {
           "the PERF_ATTRIB line was not delivered as one whole newline-terminated string");
     CHECK(whole_line(1, "PERF_ATTRIB aot_ms=") && strstr(s_report_lines[1], " output_ms=") != NULL,
           "the PERF_ATTRIB line lost its final field");
+    CHECK(whole_line(2, "PERF_GE_FRONTEND stride=8 calibration=1"),
+          "the GE frontend profile was not delivered as one whole line");
+    CHECK(whole_line(2, "PERF_GE_FRONTEND stride=8 calibration=1") &&
+              strstr(s_report_lines[2],
+                     "draw_setup_sample_ns=100 draw_setup_samples=2 draw_setup_eligible=8") != NULL,
+          "the GE frontend profile lost sampled timing or eligibility counts");
 }
 
 int main(void) {

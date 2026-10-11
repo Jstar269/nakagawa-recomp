@@ -165,6 +165,20 @@ class TestGeCaptureWiring(unittest.TestCase):
         for phase in GE_PRIM_PROFILE_PHASES:
             self.assertIn(f'"{phase}"', replay)
 
+    def test_frontend_profile_is_build_gated_and_exports_sparse_stages(self):
+        ge = (RT / "ge.c").read_text(encoding="utf-8")
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        perf = (RT / "perf.c").read_text(encoding="utf-8")
+        self.assertIn("GE_FRONTEND_PROFILE ?= 0", makefile)
+        self.assertIn("override GE_CFLAGS += -DSR_GE_FRONTEND_PROFILE", makefile)
+        self.assertIn("#ifdef SR_GE_FRONTEND_PROFILE", ge)
+        self.assertIn("primitive_profile_draw_setup_begin()", ge)
+        self.assertIn("primitive_profile_assembly_eligible", ge)
+        self.assertEqual(ge.count("primitive_profile_note_assembly();"), 3)
+        self.assertIn("sr_perf_ge_frontend_profile_config(", ge)
+        self.assertIn("ge_frontend_%s_estimated_ms", perf)
+        self.assertIn("frontend_profile", perf)
+
     def test_cpu_profile_parser_rejects_merged_or_missing_phases(self):
         lines = [f"GE_REPLAY_CPU phase={phase} calls=2 ns=30 ms=0.000030"
                  for phase in CPU_PHASES]

@@ -51,6 +51,21 @@ are disabled. Runtime seams use one predicted `sr_perf_enabled` branch; `PERF_AO
 removes the generated per-instruction hook entirely. The benchmark command measures the remaining
 runtime branch cost rather than assuming a zero-cost binary.
 
+For sparse GE front-end attribution, build with `GE_FRONTEND_PROFILE=1` (the default is `0`) and
+run with `SR_PERF=1`, `SR_GE_CPU_PROFILE=1`, and `SR_GE_PRIM_PROFILE=1`. This compiles the additional
+draw-setup timer and exports per-interval phase samples to `perf.csv`, `perf.json`, and a
+`PERF_GE_FRONTEND` stderr line. `SR_GE_PRIM_PROFILE_STRIDE` selects the sparse sample interval
+(default `512`); `SR_GE_PRIM_CALIBRATION=1` also records the triangle-total sample and empty timer
+control. With the build flag off, the new GE timers and export calls are absent from `ge.c`.
+
+The per-stage `estimated_ns` is `sample_ns * eligible / samples`. `samples` counts timed sparse
+events; `eligible` counts the corresponding list, draw, vertex, or triangle operations and can be
+divided by new frames for an operations-per-frame rate. `clipping_acceptance` includes cull-order
+reordering and triangle acceptance; `assembly` is the accepted screen-space projection work.
+`triangle_total` overlaps those two stages, and `empty_control` measures sampling overhead; neither
+is an additional front-end stage. These timers add measurement overhead and are for attribution
+runs, not absolute cadence claims.
+
 The summary fields mean:
 
 - `guest.ns` is inclusive guest execution time. `guest.aot_ns` and `guest.interpreter_ns` are
@@ -68,9 +83,11 @@ The summary fields mean:
   context-switch selections. It is sampled at scheduler boundaries, not a sum of simultaneous
   per-thread lifetimes; a wake that remains preempted is accounted for at the next scheduler
   boundary.
-- `ge.cpu_ns` covers the GE command-list CPU boundary. `transform_sample_ns` and `primitive_ns`
-  are only the existing sampled GE CPU profiler's deltas; they are not inferred from frame time and
-  are in the works for a complete phase breakdown (#282).
+- `ge.cpu_ns` covers the GE command-list CPU boundary. The optional
+  `ge.frontend_profile.stages` estimates exclusive command dispatch, draw setup, vertex fetch/decode,
+  transform, lighting, clipping/acceptance, and assembly time from sparse timers; `sample_ns`,
+  `samples`, and `eligible` preserve the raw evidence. Compare stage estimates with `ge.cpu_ns`, but
+  do not add `triangle_total` or `empty_control` to the stage sum.
 - `vulkan.submit_ns`, `wait_ns`, `readback_ns`, and `pipeline_creation_ns` measure separate host
   API regions. Readback and general wait can overlap and are intentionally not additive;
   `readbacks` counts completed CPU readback commits, not every fence poll.

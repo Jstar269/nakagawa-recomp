@@ -1113,6 +1113,7 @@ compiler-info:
 	@echo CC=$(CC)
 	@echo CC_ORIGIN=$(origin CC)
 	@echo RUNTIME_OPT=$(RUNTIME_OPT)
+	@echo GE_FRONTEND_PROFILE=$(GE_FRONTEND_PROFILE)
 	@echo CFLAGS=$(CFLAGS)
 	@echo RECOMP_OPT=$(RECOMP_OPT)
 	@echo RECOMP_FLAGS=$(RECOMP_FLAGS)
@@ -1646,6 +1647,11 @@ $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py to
 
 # ge.c: software comparison rasterizer with PPSSPP-derived behavior. -O2 for speed.
 GE_CFLAGS ?= -O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK
+# Optional sparse front-end attribution is absent from normal GE builds.
+GE_FRONTEND_PROFILE ?= 0
+ifeq ($(GE_FRONTEND_PROFILE),1)
+override GE_CFLAGS += -DSR_GE_FRONTEND_PROFILE
+endif
 # ge.c is the vblank hook for the recorder's trace window and store watch; without this
 # define those calls compile to flight_recorder.h's inert inline stubs.
 override GE_CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
