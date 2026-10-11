@@ -175,6 +175,8 @@ else ifeq ($(CASE),hle-sysparam)
 CASE_ID = 95
 else ifeq ($(CASE),hle-ge-edram)
 CASE_ID = 96
+else ifeq ($(CASE),llsc-link)
+CASE_ID = 69
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif

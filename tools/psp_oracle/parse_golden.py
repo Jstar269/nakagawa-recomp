@@ -704,6 +704,16 @@ _register_campaign_probe(
     )},
 )
 
+# llsc-link: three link windows and the sc behaviours they measure (see probe.c,
+# run_llsc_link). Six words per cell: loaded, first sc result, A and B after the
+# cell, and the model words for A and B. The parser checks shape only.
+_register_campaign_probe(
+    "llsc-link", "PSP-LLSC-001",
+    ("llsc-control", "llsc-second-sc", "llsc-other-address"),
+    {"llsc-control": 6, "llsc-second-sc": 6, "llsc-other-address": 6},
+)
+
+
 #: Documented GE eDRAM translation widths (pspge.h: 0 = do not set, else these).
 HLE_EDRAM_WIDTHS = (512, 1024, 2048, 4096)
 
