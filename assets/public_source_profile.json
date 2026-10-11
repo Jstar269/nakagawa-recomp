@@ -1024,6 +1024,8 @@
     "tools/waits_census.py",
     "tools/xb_probe.py",
     "tools/contrib_refresh.py",
-    "tools/test_contrib_refresh.py"
+    "tools/test_contrib_refresh.py",
+    "tools/format_portability_check.py",
+    "tools/test_format_portability_check.py"
   ]
 }
