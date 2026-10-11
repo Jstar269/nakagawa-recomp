@@ -50,7 +50,7 @@ summary distinguishes the two so a new file never reads as a mistake you made.
 | Windows runtime compile gate | The runtime builds with MSYS2 UCRT64 on Windows | Check Windows-only APIs and headers |
 | Trusted provenance attestation | Your change against the private trusted ledger | Provenance mismatches are handled by a maintainer |
 | dependency-review, OSV, CodeQL | Dependency and static security scans | Read the finding; ask if unsure |
-| Public export candidate audit | The publication gates and the public-safe export candidate, which must fail closed without the trusted ledger and leave nothing at the requested path | Read the failing step in the job log |
+| Public export candidate audit | The publication gates and the public-safe export candidate, which must fail closed without the trusted ledger and leave nothing at the requested path | Read the failing step in the job log. A provenance mismatch in the publication audit stops the job before the candidate audit, so the step then says it failed for a reason other than the named fail-closed candidate audit; fix the mismatch first |
 | CI required | The aggregate of the required jobs above | Fix the failing job it names |
 
 Kilo Code Review is an advisory AI review and never blocks a merge.
