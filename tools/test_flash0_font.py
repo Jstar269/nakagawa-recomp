@@ -29,6 +29,9 @@ sys.path.insert(0, str(ROOT / "tools"))
 import pgf_writer  # noqa: E402
 
 SLOT_HEADER = ROOT / "src" / "core" / "nk_font_slots.h"
+FLASH0_HEADER = ROOT / "src" / "rt" / "flash0_font.h"
+VFS_HEADER = ROOT / "src" / "rt" / "vfs_contained.h"
+SELFTEST_SOURCE = ROOT / "src" / "rt" / "hle_thread_selftest.c"
 
 
 def header_string(name: str) -> str:
@@ -41,6 +44,16 @@ def header_string(name: str) -> str:
     return match.group(1)
 
 
+def c_unsigned_define(path: Path, name: str) -> int:
+    """The value of ``#define <name> 0x...u`` in a C source file."""
+    match = re.search(
+        rf"^#define {name}\s+(0x[0-9A-Fa-f]+)u\b", path.read_text(encoding="utf-8"), re.MULTILINE
+    )
+    if match is None:
+        raise AssertionError(f"{name} is not an unsigned hex define in {path.name}")
+    return int(match.group(1), 16)
+
+
 # The Makefile default (GAME_NAME ?= mygame). It is passed explicitly, spelled the same way,
 # so make reuses the ordinary objects and the selftest binary lands at a known path.
 BUILD_DIR = "build/mygame"
@@ -51,7 +64,6 @@ BUILD_DIR = "build/mygame"
 # not build off Windows. Until it is ported, that is a named SKIP there, decided from the source
 # before any build (docs/LINUX_DEVELOPMENT.md lists the gap). The check retires itself: once the
 # include is guarded, the same test builds the selftest with make.
-SELFTEST_SOURCE = ROOT / "src" / "rt" / "hle_thread_selftest.c"
 
 
 def unguarded_windows_include(source: str) -> bool:
@@ -120,6 +132,19 @@ class Flash0FontDeviceTests(unittest.TestCase):
         for source, expected in cases.items():
             with self.subTest(source=source):
                 self.assertIs(unguarded_windows_include(source), expected)
+
+    def test_not_found_code_matches_the_vfs_and_the_selftest_pin(self) -> None:
+        # The device has the one not-found code the rest of the VFS returns: sr_cd_psp_error
+        # maps SR_CD_NOT_FOUND to 0x80010002u (ENOENT), while 0x80010014u is ENOTDIR. The
+        # selftest pins the same value, so a drift on any side fails here without a compiler.
+        vfs = VFS_HEADER.read_text(encoding="utf-8")
+        mapping = re.search(r"case SR_CD_NOT_FOUND: return (0x[0-9A-Fa-f]+)u;", vfs)
+        self.assertIsNotNone(mapping, "sr_cd_psp_error must map SR_CD_NOT_FOUND")
+        vfs_not_found = int(mapping.group(1), 16)
+        self.assertEqual(vfs_not_found, 0x80010002)
+        header_value = c_unsigned_define(FLASH0_HEADER, "SR_FLASH0_ERR_NOT_FOUND")
+        self.assertEqual(header_value, vfs_not_found)
+        self.assertEqual(c_unsigned_define(SELFTEST_SOURCE, "F0T_ERR_NOT_FOUND"), header_value)
 
     def test_native_device_contract_on_synthetic_fonts(self) -> None:
         if sys.platform != "win32" and unguarded_windows_include(

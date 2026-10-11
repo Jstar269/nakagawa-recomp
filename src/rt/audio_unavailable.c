@@ -248,6 +248,13 @@ static void sr_audio_dump_stop(SDL_AudioDeviceID dev) {
     fflush(stderr);
 }
 
+/* The SR_AUDIODUMP close for the end-of-run capture point, which exits with _Exit and so skips
+ * atexit. It prints no stats line and never reads SR_AUDIOSTAT; once the dump is closed it is a
+ * no-op. Without SR_AUDIODUMP no dump is open, so it does nothing. */
+void sr_audio_dump_finish(void) {
+    sr_audio_dump_stop(s_device_id);
+}
+
 static void sr_audio_cleanup(void) {
     if (s_audio_state == AUDIO_STATE_ACTIVE) {
         sr_audio_dump_stop(s_device_id);
@@ -514,8 +521,9 @@ void sr_audio_dump_stats(void) {
             (unsigned long long)s_stats.backpressure_events,
             (unsigned)peak, worst, lead_ms);
     fflush(stderr);
-    /* The end-of-run capture point exits with _Exit, which skips atexit, so the dump is closed
-     * here: the WAV header is finalised and the stats line printed. A no-op without SR_AUDIODUMP. */
+    /* The dump is closed after the stats line, so the WAV header is finalised. The hle.c _Exit path
+     * reaches this only with SR_AUDIOSTAT set and always calls sr_audio_dump_finish, so whichever
+     * runs second is a no-op. A no-op without SR_AUDIODUMP. */
     sr_audio_dump_stop(s_device_id);
 }
 
@@ -799,6 +807,73 @@ static void test_dump_writes_wav(void) {
     printf("test_dump_writes_wav: PASS\n");
 }
 
+/* The _Exit path closes the dump through sr_audio_dump_finish and never calls the stats gate. The
+ * finaliser does not read SR_AUDIOSTAT, so this holds whatever the host environment sets. The
+ * close must finalise the header to every byte written, and a second close must change nothing. */
+static void test_dump_finish_without_stats(void) {
+    const char *dir = getenv("TEMP");
+    if (!dir || !*dir) dir = getenv("TMPDIR");
+    if (!dir || !*dir) dir = ".";
+    char path[512];
+    snprintf(path, sizeof(path), "%s/sr_audio_dump_finish_selftest.wav", dir);
+    remove(path);
+    set_test_env("SR_AUDIODUMP", path);
+    test_reset();
+    SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "dummy", SDL_HINT_OVERRIDE);
+    assert(sr_audio_init() == 0);
+    assert(s_dump_file != NULL);
+
+    int16_t tone[2048 * 2];
+    for (int i = 0; i < 2048; i++) {
+        int16_t sample = (int16_t)(sin(2.0 * 3.141592653589793 * 440.0 * i / 44100.0) * 8000.0);
+        tone[i * 2] = sample;
+        tone[i * 2 + 1] = sample;
+    }
+    sr_audio_push(0, tone, 2048, 0x8000, 0x8000);
+
+    Uint64 deadline = SDL_GetTicks() + 5000;
+    while ((sr_audio_queued(0) != 0 || s_dump_stats.frames < 4096) && SDL_GetTicks() < deadline)
+        SDL_Delay(5);
+    assert(s_dump_stats.frames >= 4096);
+
+    /* The postmix hook is removed inside the close, so the byte count is stable after it. The
+     * checks below hold whether or not a once-a-second header patch ran before the close. */
+    sr_audio_dump_finish();
+    assert(s_dump_file == NULL);
+    uint64_t written = s_dump_data_bytes;
+    assert(written >= 4096u * 4u);
+
+    FILE *f = fopen(path, "rb");
+    assert(f != NULL);
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t h[44];
+    assert(size >= 44 && fread(h, 1, sizeof(h), f) == sizeof(h));
+    fclose(f);
+    assert(memcmp(h, "RIFF", 4) == 0 && memcmp(h + 36, "data", 4) == 0);
+    assert((uint64_t)size == 44u + written);
+    assert(test_le32(h + 4) == (uint32_t)size - 8u);
+    assert(test_le32(h + 40) == (uint32_t)written);
+    assert(test_le32(h + 40) == (uint32_t)size - 44u);
+
+    sr_audio_dump_finish();   /* a second close is a no-op */
+    uint8_t again[44];
+    f = fopen(path, "rb");
+    assert(f != NULL);
+    fseek(f, 0, SEEK_END);
+    assert(ftell(f) == size);
+    fseek(f, 0, SEEK_SET);
+    assert(fread(again, 1, sizeof(again), f) == sizeof(again));
+    fclose(f);
+    assert(memcmp(again, h, sizeof(h)) == 0);
+
+    test_reset();
+    remove(path);
+    set_test_env("SR_AUDIODUMP", "");
+    printf("test_dump_finish_without_stats: PASS\n");
+}
+
 int main(int argc, char **argv) {
     sr_perf_init();
     (void)argc;
@@ -812,6 +887,7 @@ int main(int argc, char **argv) {
     test_dump_wav_header();
     test_dump_off_by_default();
     test_dump_writes_wav();
+    test_dump_finish_without_stats();
     test_reset();
     printf("ALL AUDIO HOST TESTS PASSED\n");
     return 0;
