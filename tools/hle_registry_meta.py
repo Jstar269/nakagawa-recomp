@@ -92,6 +92,14 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "uses the runtime's microsecond system-clock representation and splits it into low/high outputs; hardware conversion and error-precedence cells are not measured",
     },
+    "h_USec2SysClock": {
+        "status": "partial",
+        "limitation": "stores the unsigned microsecond duration as the low word of the runtime's microsecond SceKernelSysClock representation and writes a zero high word; hardware conversion and error-precedence cells are not measured",
+    },
+    "h_USec2SysClockWide": {
+        "status": "partial",
+        "limitation": "returns the unsigned microsecond duration in $v0 with a zero $v1 high word under the runtime's microsecond SceKernelSysClock representation; hardware conversion is not measured",
+    },
     # Suspend/Resume/Rotate are scheduler operations: suspension is a flag on a thread
     # that keeps its wait semantics, rotation moves the head of one priority's ready
     # queue behind its peers.  Measured cells are the DORMANT, double-suspend and
@@ -326,6 +334,10 @@ HANDLER_METADATA = {
     "h_UmdGetErrorStat": {
         "status": "compatibility",
         "limitation": "returns no error under virtual ISO drive; other drive-error states unmodeled (#341)",
+    },
+    "h_UmdUnRegisterUMDCallBack": {
+        "status": "partial",
+        "limitation": "clears the single modeled UMD callback registration; unknown IDs return 0x800201a1 (the kernel callback UNKNOWN_UID code), a project choice because PSPSDK documents only a negative error and the exact code is not hardware measured",
     },
     # Common Memory Stick devctls have explicit outputs; unsupported devices or
     # command pairs remain visible per pair and are tracked under issue #341.
