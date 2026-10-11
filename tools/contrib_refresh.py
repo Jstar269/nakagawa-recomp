@@ -49,7 +49,10 @@ index has unstaged edits, so it is not the candidate the audit reads),
 ``TRUSTED_BASE_NOT_ANCESTOR`` (the base commit cannot be resolved),
 ``CANDIDATE_TREE_INVALID`` (the staged tree is unreadable) and
 ``GENERATED_LEDGER_INVALID`` (the regenerated ledger fails the public ledger's own
-validator, which would be a bug here rather than a bad change).
+validator, which would be a bug here rather than a bad change). Exit codes: 0 refreshed
+or reported under ``--check``, 1 refused with a named code, 2 the verifier rejected an
+input, 3 the refreshed files could not be staged. Anything else is an unexpected failure
+and is reported as the traceback it is.
 
 It **does not** grant anything.  The public ledger it reads is candidate-editable,
 so its output is an ordinary pull-request change, never a trusted generation.
@@ -75,9 +78,9 @@ the output; say so in the pull request and a maintainer admits the path.
 from __future__ import annotations
 
 import argparse
+import copy
 from pathlib import Path
 import hashlib
-import json
 import subprocess
 import sys
 import tempfile
@@ -219,7 +222,7 @@ def _generate(repo: Path, base: str) -> tuple[bytes, bytes, list[tuple[str, str,
             )
         rehashed.append((path, str(entry.get("sha256")), hashlib.sha256(candidate_blobs[path]).hexdigest()))
 
-    new_ledger = json.loads(json.dumps(base_ledger, ensure_ascii=False))
+    new_ledger = copy.deepcopy(base_ledger)
     by_path = {entry["path"]: entry for entry in new_ledger["entries"]}
     for path in changed:
         by_path[path]["sha256"] = hashlib.sha256(candidate_blobs[path]).hexdigest()
@@ -280,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
     staged = _git(repo, "add", "--", LEDGER, EXPORT)
     if staged.returncode:
         print("contrib-refresh: GIT_ERROR: could not stage the refreshed controls", file=sys.stderr)
-        return 2
+        return 3
     print(f"contrib-refresh: OK ({len(rehashed)} path(s) rehashed; controls staged)")
     print("  the maintainer's trusted attestation re-derives these files at landing")
     return 0

@@ -58,9 +58,14 @@ refusal.
 | `UNRESOLVED_ENTRY` | A changed path's public entry still carries no resolved claim. | Which path it is; a maintainer resolves the record. |
 | `CHANGED_PATH_NOT_PUBLIC` | A changed path has no committed public entry in either direction. | Which path it is and where its content came from. |
 
-Two refusals are about how you invoked it rather than about a path: `CANDIDATE_INDEX_STALE`
-means you have unstaged edits (run `git add`), and the base-resolution codes mean the base commit
-could not be resolved (pass `--base <commit>`).
+The other codes are about the invocation, not about a path: `CANDIDATE_INDEX_STALE` means you
+have unstaged edits (run `git add`); `TRUSTED_BASE_REQUIRED`, `TRUSTED_BASELINE_MISSING` and
+`TRUSTED_BASE_NOT_ANCESTOR` mean the base commit could not be resolved or is not an ancestor of
+your head (pass `--base <commit>`); `CANDIDATE_TREE_INVALID` means the staged tree could not be
+read; `GENERATED_LEDGER_INVALID` means the regenerated ledger failed the public ledger's own
+validator, which is a bug in the tool rather than in your change, so report it. Exit codes: 0
+refreshed (or `--check` reported), 1 refused, 2 the verifier rejected an input, 3 the refreshed
+files could not be staged.
 
 **Expect Trusted provenance attestation to go red on a pull request that adds a file.** That is
 normal, not something you broke: it stays red until a maintainer admits the new path.
