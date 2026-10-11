@@ -54,6 +54,45 @@ def _ci_step(block: list[str], name: str) -> list[str] | None:
     return block[start:end]
 
 
+def _makefile_public_safe_arms(makefile: str) -> tuple[str, str]:
+    """The private (PUBLIC_SAFE=0) and public-safe (PUBLIC_SAFE=1) arms of the Makefile switch."""
+    start = makefile.index("ifeq ($(PUBLIC_SAFE),0)\n")
+    else_at = makefile.index("\nelse\n", start)
+    end = makefile.index("\nendif\n", else_at)
+    return makefile[start:else_at], makefile[else_at:end]
+
+
+def _cmake_sources_and_definitions() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """Each CMake target's compiled .c files and the compile definitions it sets.
+
+    A light reader for the calls this build uses: set() and list(APPEND) build the source
+    lists, and every branch counts, so a conditional source still binds the check.
+    add_library, add_executable and target_compile_definitions name the targets.
+    """
+    text = re.sub(r"#.*", "", (ROOT / "CMakeLists.txt").read_text(encoding="utf-8"))
+    variables: dict[str, list[str]] = {}
+    for name, body in re.findall(r"\bset\((\w+)\s+([^()]*)\)", text):
+        variables.setdefault(name, []).extend(body.split())
+    for name, body in re.findall(r"\blist\(APPEND\s+(\w+)\s+([^()]*)\)", text):
+        variables.setdefault(name, []).extend(body.split())
+
+    def expand(tokens: list[str]) -> list[str]:
+        expanded: list[str] = []
+        for token in tokens:
+            ref = re.fullmatch(r"\$\{(\w+)\}", token)
+            expanded.extend(variables.get(ref.group(1), []) if ref else [token])
+        return expanded
+
+    sources: dict[str, set[str]] = {}
+    for target, body in re.findall(r"\badd_(?:library|executable)\((\w+)([^()]*)\)", text):
+        sources[target] = {token for token in expand(body.split()) if token.endswith(".c")}
+    definitions: dict[str, set[str]] = {}
+    for target, body in re.findall(r"\btarget_compile_definitions\((\w+)([^()]*)\)", text):
+        words = [word for word in body.split() if word not in {"PUBLIC", "PRIVATE", "INTERFACE"}]
+        definitions.setdefault(target, set()).update(words)
+    return sources, definitions
+
+
 class PublicCiWiringTests(unittest.TestCase):
     def test_showcase_guest_build_uses_pspdev_compiler(self) -> None:
         demo = {"id": "synthetic-test", "folder": "ge_scene", "target": "fixture_app"}
@@ -146,6 +185,38 @@ class PublicCiWiringTests(unittest.TestCase):
         )[0]
         self.assertIn("${CMAKE_CURRENT_SOURCE_DIR}/src/rt", target)
         self.assertIn("src/rt/archive_vfs.c", target)
+
+    def test_public_safe_define_agrees_between_cmake_and_makefile(self) -> None:
+        """SR_PUBLIC_SAFE marks the public-backend build in both build files.
+
+        The Makefile's PUBLIC_SAFE=1 arm selects the public backends and defines the macro for
+        every object; the PUBLIC_SAFE=0 arm uses the private backends and must not define it.
+        CMake has no private arm, so every target that compiles a public backend must define the
+        macro, and no CMake target may compile a private backend. This test does not cover the
+        guarded code itself: src/rt/driver.c and src/rt/gui.c are in no CMake target.
+        """
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        private_arm, public_arm = _makefile_public_safe_arms(makefile)
+        self.assertRegex(public_arm, r"(?m)^override CFLAGS \+= -DSR_PUBLIC_SAFE$")
+        self.assertNotIn("SR_PUBLIC_SAFE", private_arm)
+        public_backends = set(re.findall(r"(?m)^\w+_BACKEND_SRC := (\S+)$", public_arm))
+        private_backends = set(re.findall(r"(?m)^\w+_BACKEND_SRC := (\S+)$", private_arm))
+        self.assertIn("src/rt/pgf_public.c", public_backends)
+        self.assertFalse(public_backends & private_backends)
+
+        sources, definitions = _cmake_sources_and_definitions()
+        public_targets = {target: files & public_backends
+                          for target, files in sources.items() if files & public_backends}
+        self.assertTrue(public_targets,
+                        "CMakeLists.txt compiles no public backend; the reader or the build changed")
+        for target, files in sorted(public_targets.items()):
+            with self.subTest(target=target):
+                self.assertIn("SR_PUBLIC_SAFE", definitions.get(target, set()),
+                              f"{target} compiles {sorted(files)} without SR_PUBLIC_SAFE")
+        for target, files in sorted(sources.items()):
+            with self.subTest(target=target):
+                self.assertFalse(files & private_backends,
+                                 f"{target} compiles a private backend, and CMake has no private arm")
 
     def test_cmake_ctest_creates_its_binary_tree_scratch_directory(self) -> None:
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
