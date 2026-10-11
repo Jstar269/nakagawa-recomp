@@ -2563,7 +2563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c7ed3c658b4d133919d1507e1e1d6486e55b9faed83cdab354fb247bd0a6e77a"
+      "sha256": "ce3ba6a1868ed5dd07fae52f69e7f03ee1077c29b73fb4e4d674935aaa04ab75"
     },
     {
       "path": "src/core/nk_font.h",
@@ -2575,7 +2575,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1cf1e8e2c67456d071b52216a2ace79369a35696f477e489a170cedb36dbb700"
+      "sha256": "2b26be1ef971a80f453b2400f890cbd03189e47166fb802c150cce76427ddacf"
     },
     {
       "path": "src/core/nk_font_slots.h",
@@ -2731,7 +2731,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8cece3304f4841c33aacc36029728a4f807c28eef805617d787c894394bd525d"
+      "sha256": "d21a160d1a5568bd5ab444b993bd8dc5520aebe4d583d281d68838c659ed5e8b"
     },
     {
       "path": "src/core/nk_platform_posix.c",
@@ -2743,7 +2743,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8d781b9e7c9724215c5b5e07bf9f308ec3ee4c289c64e3034957e65e918e5e60"
+      "sha256": "bda8dfbb0600008f8e24671b48537edb5340023ce61984a97c93961a9280766b"
     },
     {
       "path": "src/core/nk_platform_win32.c",
@@ -2755,7 +2755,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ce6171c8c079cb4dfa9f5ab84df29ef5f89540242388d83a2909ec9ae9986375"
+      "sha256": "85058bf7cfd2644f16c73cfbfdfcc35d3c11974221c2cdf155bfe8c3b5de25d0"
     },
     {
       "path": "src/core/nk_psp_aes.c",
@@ -6005,7 +6005,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d187f5dd7e14ab7d04450b6afe982918b11992167d1a455587450c880ad5cbe0"
+      "sha256": "6a348ca9ec84fa2d9d34f31ea596ed7a77edbacf65a04f8906d812c784ca2bd2"
     },
     {
       "path": "tests/native/test_player_ui.py",

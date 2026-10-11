@@ -647,6 +647,19 @@ static bool git_status_snapshot(const char *out_path) {
     return system(command) == 0;
 }
 
+/* Reads a small file whole into out. Returns its length, or -1 when it cannot be read or
+ * does not fit. */
+static long read_small_file(const char *path, char *out, size_t max) {
+    FILE *file = fopen(path, "rb");
+    size_t length;
+    bool failed;
+    if (!file) return -1;
+    length = fread(out, 1, max, file);
+    failed = ferror(file) != 0 || length == max;
+    fclose(file);
+    return failed ? -1 : (long)length;
+}
+
 static bool files_identical(const char *left, const char *right) {
     FILE *a = fopen(left, "rb");
     FILE *b = fopen(right, "rb");
@@ -3236,6 +3249,129 @@ int main(int argc, char **argv) {
         }
         assert(player_app_fonts_remove_imports(font_app));
         assert(strstr(font_app->wizard.font_message, "Removed 2 imported PSP font file(s)") != NULL);
+
+        /* 14g: a slot file that cannot be deleted keeps its manifest entry. The Japanese file is
+           replaced by a directory holding a file, so the delete fails for a reason other than the
+           file being missing, on POSIX (unlink) and Win32 (DeleteFileW) alike. Japanese is named
+           first, so the call must go on past it: the Latin file is removed and its entry dropped,
+           and the manifest keeps the entries whose files remain. */
+        {
+            char blocker[NATIVE_TEST_PATH_MAX + 32];
+            const bool remove_japanese_and_latin[NK_FONT_SLOT_COUNT] = { true, true, false };
+            int rc;
+            memset(&result, 0, sizeof(result));
+            assert(nk_font_import_folder(font_root, source_dir, no_choice, &result, err, sizeof(err)));
+            assert(result.imported_count == 3);
+            snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkjpn.pgf", font_root, sep, sep, sep);
+            assert(remove(path) == 0);
+            assert(nk_platform_mkdir_p(path));
+            snprintf(blocker, sizeof(blocker), "%s%cblock.txt", path, sep);
+            write_text_file(blocker, "a directory is not removed by the slot delete");
+
+            rc = nk_font_remove_imports(font_root, remove_japanese_and_latin, err, sizeof(err));
+            assert(rc == -1);
+            assert(strstr(err, "could not delete the Japanese font file") != NULL);
+            snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkltn.pgf", font_root, sep, sep, sep);
+            assert(!nk_platform_file_exists(path));
+            snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkjpn.pgf", font_root, sep, sep, sep);
+            assert(nk_platform_dir_exists(path));
+            snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkkr.pgf", font_root, sep, sep, sep);
+            assert(nk_platform_file_exists(path));
+
+            /* Read back through the API: the manifest still lists Japanese, so the cache is
+               INVALID and names it; Korean is still served; Latin is gone. */
+            assert(nk_font_check_cache(font_root, msg, sizeof(msg)) == NK_FONT_STATUS_INVALID);
+            assert(strstr(msg, "Japanese") != NULL);
+            nk_font_slot_states(font_root, font_root, states);
+            assert(states[NK_FONT_SLOT_LATIN].source == NK_FONT_SOURCE_NONE);
+            assert(states[NK_FONT_SLOT_JAPANESE].source != NK_FONT_SOURCE_USER);
+            assert(strstr(states[NK_FONT_SLOT_JAPANESE].detail, "missing") != NULL);
+            assert(states[NK_FONT_SLOT_KOREAN].source == NK_FONT_SOURCE_USER);
+
+            /* The player's Fonts step reports the same outcome: Korean, which is healthy, is
+               removed, and the message names the Japanese file that stayed. */
+            assert(!player_app_fonts_remove_imports(font_app));
+            assert(strstr(font_app->wizard.font_message, "Could not remove the imported fonts") != NULL);
+            assert(strstr(font_app->wizard.font_message, "Japanese") != NULL);
+            snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkkr.pgf", font_root, sep, sep, sep);
+            assert(!nk_platform_file_exists(path));
+            assert(nk_font_check_cache(font_root, msg, sizeof(msg)) == NK_FONT_STATUS_INVALID);
+            assert(strstr(msg, "Japanese") != NULL);
+
+            /* Once the blocker is gone the file is missing, which is not a failure: the entry is
+               dropped, nothing is left, and the manifest is removed. */
+            snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkjpn.pgf", font_root, sep, sep, sep);
+            assert(test_remove_tree(path));
+            assert(nk_font_remove_imports(font_root, remove_all, err, sizeof(err)) == 0);
+            assert(nk_font_check_cache(font_root, msg, sizeof(msg)) == NK_FONT_STATUS_MISSING);
+        }
+
+        /* 14h: when every named delete fails, nothing changed, so the manifest is not rewritten:
+           its bytes are the same afterwards, and the call fails naming all three slots. */
+        {
+            char blocker[NATIVE_TEST_PATH_MAX + 32];
+            char manifest_file[1024];
+            char before[4096];
+            char after[4096];
+            long before_length;
+            long after_length;
+            const char *slot_files[NK_FONT_SLOT_COUNT] = {
+                NK_FONT_SLOT_JAPANESE_FILE, NK_FONT_SLOT_LATIN_FILE, NK_FONT_SLOT_KOREAN_FILE
+            };
+            memset(&result, 0, sizeof(result));
+            assert(nk_font_import_folder(font_root, source_dir, no_choice, &result, err, sizeof(err)));
+            assert(result.imported_count == 3);
+            for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
+                snprintf(path, sizeof(path), "%s%cfonts%cv2%c%s", font_root, sep, sep, sep, slot_files[slot]);
+                assert(remove(path) == 0);
+                assert(nk_platform_mkdir_p(path));
+                snprintf(blocker, sizeof(blocker), "%s%cblock.txt", path, sep);
+                write_text_file(blocker, "a directory is not removed by the slot delete");
+            }
+            snprintf(manifest_file, sizeof(manifest_file), "%s%cfonts%cv2%cmanifest.json", font_root, sep, sep, sep);
+            before_length = read_small_file(manifest_file, before, sizeof(before));
+            assert(before_length > 0);
+            assert(nk_font_remove_imports(font_root, remove_all, err, sizeof(err)) == -1);
+            assert(strstr(err, "Japanese") != NULL);
+            assert(strstr(err, "Latin") != NULL);
+            assert(strstr(err, "Korean") != NULL);
+            after_length = read_small_file(manifest_file, after, sizeof(after));
+            assert(after_length == before_length);
+            assert(memcmp(before, after, (size_t)before_length) == 0);
+            assert(nk_font_check_cache(font_root, msg, sizeof(msg)) == NK_FONT_STATUS_INVALID);
+
+            /* Clear the blockers: the same call then drops every entry and removes the manifest. */
+            for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
+                snprintf(path, sizeof(path), "%s%cfonts%cv2%c%s", font_root, sep, sep, sep, slot_files[slot]);
+                assert(test_remove_tree(path));
+            }
+            assert(nk_font_remove_imports(font_root, remove_all, err, sizeof(err)) == 0);
+            assert(nk_font_check_cache(font_root, msg, sizeof(msg)) == NK_FONT_STATUS_MISSING);
+        }
+
+        /* 14i: the manifest's staging name is blocked, so the rewrite fails after the Latin file
+           is gone. The call reports that the manifest could not be rewritten, and the manifest
+           still lists Latin until a later call drops the entry. */
+        {
+            const bool remove_latin[NK_FONT_SLOT_COUNT] = { false, true, false };
+            int rc;
+            memset(&result, 0, sizeof(result));
+            assert(nk_font_import_folder(font_root, source_dir, no_choice, &result, err, sizeof(err)));
+            assert(result.imported_count == 3);
+            snprintf(path, sizeof(path), "%s%cfonts%cv2%cmanifest.json.tmp", font_root, sep, sep, sep);
+            assert(nk_platform_mkdir_p(path));
+            rc = nk_font_remove_imports(font_root, remove_latin, err, sizeof(err));
+            assert(rc == -1);
+            assert(strstr(err, "the font manifest could not be rewritten") != NULL);
+            snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkltn.pgf", font_root, sep, sep, sep);
+            assert(!nk_platform_file_exists(path));
+            assert(nk_font_check_cache(font_root, msg, sizeof(msg)) == NK_FONT_STATUS_INVALID);
+            assert(strstr(msg, "Latin") != NULL);
+            snprintf(path, sizeof(path), "%s%cfonts%cv2%cmanifest.json.tmp", font_root, sep, sep, sep);
+            assert(test_remove_tree(path));
+            assert(nk_font_remove_imports(font_root, remove_all, err, sizeof(err)) == 2);
+            assert(nk_font_check_cache(font_root, msg, sizeof(msg)) == NK_FONT_STATUS_MISSING);
+        }
 
         /* A corrupt manifest is INVALID, and the preflight names the issue (#313). */
         snprintf(path, sizeof(path), "%s%cfonts%cv2", font_root, sep, sep);
