@@ -14,7 +14,9 @@
 // measurements, and a final NAKAGAWA_PSP_COMPLETE line. Every line is appended to
 // the case's host0 log durably (open, append, close). A bounded wait never waits
 // longer than its stated bound, and a family records SKIP rather than omitting a
-// cell when its prerequisite did not hold.
+// cell when its prerequisite did not hold. After the last record the probe runs the
+// host0 round trip that probe.c's teardown runs (hle_host0_roundtrip). COMPLETE
+// reports FAIL when that round trip fails, and the runner verifies the file it leaves.
 
 #include <pspkernel.h>
 #include <pspthreadman.h>
@@ -170,13 +172,53 @@ __attribute__((unused)) static void hle_prefill(uint32_t *buf, uint32_t words, u
     buf[0] = size_word;
 }
 
+/* The host0 round trip probe.c's teardown performs (PROBE_HOST0_ROUNDTRIP_PATH and
+   probe_host0_roundtrip there): 64 bytes, byte i = (0x5A ^ (i * 0x25 + (i >> 3))) & 0xFF,
+   written with truncate, then read back and compared. The runner's
+   _verify_host0_roundtrip reads the file after unload, so every family leaves it.
+   probe.c is a separate translation unit, so the contract is repeated here and
+   tools/test_psp_oracle.py pins both copies. */
+#define HLE_ROUNDTRIP_PATH "host0:/nakagawa_transport_write.bin"
+#define HLE_ROUNDTRIP_BYTES 64u
+
+static int hle_host0_roundtrip(void)
+{
+    uint8_t expected[HLE_ROUNDTRIP_BYTES];
+    uint8_t observed[HLE_ROUNDTRIP_BYTES];
+    for (size_t i = 0; i < sizeof(expected); i++) {
+        expected[i] = (uint8_t)(0x5Au ^ (i * 0x25u + (i >> 3)));
+    }
+    memset(observed, 0, sizeof(observed));
+    SceUID fd = sceIoOpen(HLE_ROUNDTRIP_PATH, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+    if (fd < 0) {
+        return 0;
+    }
+    const int written = sceIoWrite(fd, expected, (SceSize)sizeof(expected));
+    const int write_close = sceIoClose(fd);
+    if (written != (int)sizeof(expected) || write_close < 0) {
+        return 0;
+    }
+    fd = sceIoOpen(HLE_ROUNDTRIP_PATH, PSP_O_RDONLY, 0);
+    if (fd < 0) {
+        return 0;
+    }
+    const int read = sceIoRead(fd, observed, (SceSize)sizeof(observed));
+    const int read_close = sceIoClose(fd);
+    return read == (int)sizeof(observed) && read_close >= 0 &&
+           memcmp(expected, observed, sizeof(expected)) == 0;
+}
+
+/* Shared end of run, after every measurement and the GE width restore. The round trip
+   is host I/O only, so it cannot change a cell already recorded. As in probe.c's
+   teardown, a failed round trip makes the completion status FAIL. */
 static void hle_finish(int ok)
 {
     const uint32_t count = s_records;
     hle_emit(HLE_DONE_ID, "PASS", 0, &count, 1);
+    const int roundtrip = hle_host0_roundtrip();
     static char line[96];
     snprintf(line, sizeof(line), "NAKAGAWA_PSP_COMPLETE schema=1 status=%s\n",
-             (ok && !s_log_failed) ? "PASS" : "FAIL");
+             (ok && !s_log_failed && roundtrip) ? "PASS" : "FAIL");
     hle_write(line, 0);
 }
 
