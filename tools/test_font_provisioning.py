@@ -235,6 +235,42 @@ class FontProvisioningTests(unittest.TestCase):
         self.assertEqual(states["latin"]["source"], "none")
         self.assertEqual(inspect_font_cache(user_data_root=user_data)[0], "OK")
 
+    def test_remove_keeps_the_entry_of_a_slot_file_it_cannot_delete(self) -> None:
+        source = self._folder("all", {"a.pgf": japanese_pgf(), "b.pgf": latin_pgf(), "c.pgf": korean_pgf()})
+        user_data = self.temp_path / "ud"
+        import_fonts(source, user_data_root=user_data)
+        cache = get_font_cache_dir(user_data)
+        manifest_path = cache / "manifest.json"
+        imported = json.loads(manifest_path.read_text(encoding="utf-8"))["files"]
+        # A non-empty directory at the Latin slot's file name cannot be deleted as a file.
+        (cache / "nkltn.pgf").unlink()
+        (cache / "nkltn.pgf").mkdir()
+        (cache / "nkltn.pgf" / "keep.txt").write_bytes(b"not a font")
+
+        # The failing slot is named first: the healthy slot after it is still removed.
+        with self.assertRaisesRegex(FontImportError, r"Latin font file nkltn\.pgf could not be removed") as raised:
+            remove_imports(user_data_root=user_data, slots=["latin", "japanese"])
+        self.assertIn("Removed 1 other imported font file(s).", str(raised.exception))
+        self.assertFalse((cache / "nkjpn.pgf").exists())
+        self.assertEqual((cache / "nkltn.pgf" / "keep.txt").read_bytes(), b"not a font")
+        self.assertTrue((cache / "nkkr.pgf").is_file())
+        files = json.loads(manifest_path.read_text(encoding="utf-8"))["files"]
+        self.assertEqual(sorted(files), ["nkkr.pgf", "nkltn.pgf"])
+        self.assertEqual(files["nkltn.pgf"], imported["nkltn.pgf"])
+        self.assertEqual(files["nkkr.pgf"], imported["nkkr.pgf"])
+
+        # Naming only the failing slot drops no entry, so the manifest is not rewritten: a
+        # rewrite would replace this import_time. The command reports the slot and exits 1.
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["import_time"] = "2000-01-01T00:00:00Z"
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        before = manifest_path.read_bytes()
+        res = self._cli("remove", "--slot", "latin", "--user-data-root", str(user_data))
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("Font remove error: The Latin font file nkltn.pgf could not be removed", res.stderr)
+        self.assertEqual(res.stdout, "")
+        self.assertEqual(manifest_path.read_bytes(), before)
+
     def test_malformed_or_old_manifest_is_invalid(self) -> None:
         user_data = self.temp_path / "ud"
         cache = get_font_cache_dir(user_data)
