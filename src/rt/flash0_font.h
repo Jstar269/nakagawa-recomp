@@ -7,7 +7,10 @@
  *
  * Only flash0:/font/<served name> is served, one file per font slot. A slot's file comes
  * from the per-user cache first, then the project's fonts, and otherwise the open is refused
- * by name. There is no cross-slot substitution and no synthetic font. Every write, create,
+ * by name. A cache file is served only when the cache manifest vouches for it (listed, size and
+ * SHA-256 match, accepted by the reader as that slot); a refused cache file falls through to the
+ * project font with a named refusal, and the project source never serves an imported cache.
+ * There is no cross-slot substitution and no synthetic font. Every write, create,
  * remove, rename and attribute change is refused with EACCES. The HLE hooks in hle.c call
  * these functions; the roots are supplied by the caller.
  *
@@ -56,11 +59,11 @@ uint32_t sr_flash0_font_list_dir(const char *guest_path, const Flash0Sources *so
 /* Named refusal for a write-side operation on a flash0: path. Returns EACCES. */
 uint32_t sr_flash0_font_refuse_write(const char *guest_path, const char *operation);
 
-/* Resolves one slot the way the device serves it (the user-imported cache, then the project
- * font directory, with the same size probe) and returns the host path of the file that would
- * be served, with *source_out = "user-imported" or "project". Returns 0 with an empty path
- * and *source_out = "none" when no source has the slot. The HLE sceFont shim loads its fonts
- * through this, so both font paths agree on which file a slot is. */
+/* Resolves one slot the way the device serves it (the user-imported cache, vouched for by its
+ * manifest, then the project font directory, with the same size probe) and returns the host path
+ * of the file that would be served, with *source_out = "user-imported" or "project". Returns 0
+ * with an empty path and *source_out = "none" when no source has the slot. The HLE sceFont shim
+ * loads its fonts through this, so both font paths agree on which file a slot is. */
 int sr_flash0_font_resolve_path(const Flash0Sources *sources, NkFontSlot slot, char *path_out,
                                 size_t capacity, const char **source_out);
 

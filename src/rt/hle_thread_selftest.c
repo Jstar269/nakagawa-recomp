@@ -26580,7 +26580,18 @@ static void test_hle_syscall_return_clears_link(void) {
  * SR_FONTDIR set to <root>/project. The file names are the ones nk_font_slots.h defines, and
  * the slots are marked measured through the selftest seam, which stands in for the console
  * measurement. The production path (hle.c IO entry points, roots, source order) is exercised
- * unchanged. */
+ * unchanged.
+ *
+ * SR_FLASH0_TEST_CASE says how the driver laid out the cache's manifest:
+ *   valid              the manifest lists the cache file and its size and SHA-256 match, so the
+ *                      user-imported latin font is served (the default when unset);
+ *   tampered           the cache file was changed after the import, so the manifest refuses it;
+ *   missing-manifest   the manifest is gone, so the cache file is refused;
+ *   malformed-manifest the manifest is not valid JSON, so the cache file is refused;
+ *   unlisted           the manifest is valid but does not list the latin slot, so the cache file is
+ *                      refused.
+ * In every refused case the project latin font is served instead. The refusal lines themselves are
+ * checked by tools/test_flash0_font.py, which reads this process's stderr. */
 #define F0T_LATIN_NAME    NK_FONT_SLOT_LATIN_FILE
 #define F0T_JAPANESE_NAME NK_FONT_SLOT_JAPANESE_FILE
 #define F0T_KOREAN_NAME   NK_FONT_SLOT_KOREAN_FILE
@@ -26685,11 +26696,21 @@ static void test_flash0_font_device(void) {
     const char *root = getenv("SR_FLASH0_TEST_ROOT");
     expect(root != NULL && root[0] != '\0', "the flash0 font test receives its synthetic root");
     if (!root || !root[0]) return;
+    const char *test_case = getenv("SR_FLASH0_TEST_CASE");
+    if (!test_case || !test_case[0]) test_case = "valid";
+    expect(strcmp(test_case, "valid") == 0 || strcmp(test_case, "tampered") == 0 ||
+               strcmp(test_case, "missing-manifest") == 0 ||
+               strcmp(test_case, "malformed-manifest") == 0 || strcmp(test_case, "unlisted") == 0,
+           "the fixture case is one this test defines");
+    /* A refused cache file falls through to the project font. */
+    int user_refused = strcmp(test_case, "valid") != 0;
 
-    char data_dir[512], user_latin[600], project_latin[600], project_japanese[600];
+    char data_dir[SR_FLASH0_PATH_MAX], cache_dir[SR_FLASH0_PATH_MAX], user_latin[SR_FLASH0_PATH_MAX + 64],
+         project_latin[SR_FLASH0_PATH_MAX + 64], project_japanese[SR_FLASH0_PATH_MAX + 64];
     snprintf(data_dir, sizeof(data_dir), "%s/data", root);
-    snprintf(user_latin, sizeof(user_latin), "%s/data/%s/%s/%s", root, NK_FONT_CACHE_PARENT,
-             NK_FONT_CACHE_SUBDIR, F0T_LATIN_NAME);
+    snprintf(cache_dir, sizeof(cache_dir), "%s/data/%s/%s", root, NK_FONT_CACHE_PARENT,
+             NK_FONT_CACHE_SUBDIR);
+    snprintf(user_latin, sizeof(user_latin), "%s/%s", cache_dir, F0T_LATIN_NAME);
     snprintf(project_latin, sizeof(project_latin), "%s/project/%s", root, F0T_LATIN_NAME);
     snprintf(project_japanese, sizeof(project_japanese), "%s/project/%s", root, F0T_JAPANESE_NAME);
     expect(nk_platform_set_app_data_dir_override(data_dir),
@@ -26707,6 +26728,11 @@ static void test_flash0_font_device(void) {
         free(user_bytes); free(project_latin_bytes); free(project_japanese_bytes);
         return;
     }
+    /* The latin bytes and size the device must serve: the cache file only when its manifest
+     * vouches for it, otherwise the project font. */
+    const char *served_latin_label = user_refused ? "project" : "user-imported";
+    const char *served_latin_bytes = user_refused ? project_latin_bytes : user_bytes;
+    size_t served_latin_size = user_refused ? project_latin_size : user_size;
 
     sr_hle_init();
     sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_LATIN, 1);
@@ -26718,25 +26744,55 @@ static void test_flash0_font_device(void) {
     expect(f0t_open("flash0:/font/" F0T_KOREAN_NAME, 0x0001u) == F0T_ERR_NOT_FOUND,
            "a pending slot name is refused, not served");
 
-    /* Source order and read, seek and getstat sizes: the user cache wins for latin. */
+    /* Source order and read, seek and getstat sizes: the vouched cache file wins for latin. */
+    char msg[256];
     uint32_t fd = f0t_open("flash0:/font/" F0T_LATIN_NAME, 0x0001u);
     expect(fd >= 3u && sr_hle_test_fd_kind(fd) == F0T_FD_KIND_FILE,
            "a served latin font opens read-only as a file descriptor");
+    snprintf(msg, sizeof(msg), "getstat reports the %s latin size as a regular file", served_latin_label);
     expect(f0t_getstat("flash0:/font/" F0T_LATIN_NAME) == 0u &&
-               MEM_R32(F0T_STAT_ADDR + 8u) == user_size &&
+               MEM_R32(F0T_STAT_ADDR + 8u) == served_latin_size &&
                (MEM_R32(F0T_STAT_ADDR + 0u) & 0x2000u) != 0u,
-           "getstat reports the user-imported latin size as a regular file");
-    expect(f0t_read(fd, (uint32_t)user_size) == user_size &&
-               f0t_guest_equals(F0T_BUF_ADDR, user_bytes, user_size),
-           "the first read returns the user-imported bytes (source order: user first)");
+           msg);
+    snprintf(msg, sizeof(msg), "the first read returns the %s latin bytes", served_latin_label);
+    expect(f0t_read(fd, (uint32_t)served_latin_size) == served_latin_size &&
+               f0t_guest_equals(F0T_BUF_ADDR, served_latin_bytes, served_latin_size),
+           msg);
     expect(f0t_seek32(fd, 7, 0u) == 7u && f0t_read(fd, 9u) == 9u &&
-               f0t_guest_equals(F0T_BUF_ADDR, user_bytes + 7, 9u),
+               f0t_guest_equals(F0T_BUF_ADDR, served_latin_bytes + 7, 9u),
            "SEEK_SET then read returns the bytes at that offset");
-    expect(f0t_seek32(fd, -4, 2u) == (uint32_t)(user_size - 4u) &&
-               f0t_read(fd, 4u) == 4u && f0t_guest_equals(F0T_BUF_ADDR, user_bytes + user_size - 4u, 4u),
+    expect(f0t_seek32(fd, -4, 2u) == (uint32_t)(served_latin_size - 4u) &&
+               f0t_read(fd, 4u) == 4u &&
+               f0t_guest_equals(F0T_BUF_ADDR, served_latin_bytes + served_latin_size - 4u, 4u),
            "SEEK_END then read returns the tail of the served file");
     expect(f0t_close(fd) == 0u && sr_hle_test_fd_kind(fd) == 0,
            "closing a served font releases its descriptor");
+
+    /* SR_FONTDIR names the imported cache, which is the launcher's state after an import. The
+     * project source must not serve the cache's files: with the cache file refused, nothing is
+     * served for latin, and with it vouched for, the cache file is served as before. The
+     * variable is restored at once. */
+    {
+        const char *saved_fontdir = getenv("SR_FONTDIR");
+        char saved[512] = "";
+        expect(saved_fontdir != NULL && strlen(saved_fontdir) < sizeof(saved),
+               "the test's SR_FONTDIR is set and fits the save buffer");
+        if (saved_fontdir) snprintf(saved, sizeof(saved), "%s", saved_fontdir);
+        SetEnvironmentVariableA("SR_FONTDIR", cache_dir);
+        _putenv_s("SR_FONTDIR", cache_dir);
+        uint32_t cache_fd = f0t_open("flash0:/font/" F0T_LATIN_NAME, 0x0001u);
+        if (user_refused) {
+            expect(cache_fd == F0T_ERR_NOT_FOUND,
+                   "with SR_FONTDIR at the imported cache and its file refused, latin is not served");
+        } else {
+            expect(cache_fd >= 3u && f0t_getstat("flash0:/font/" F0T_LATIN_NAME) == 0u &&
+                       MEM_R32(F0T_STAT_ADDR + 8u) == user_size,
+                   "with SR_FONTDIR at the imported cache and its file vouched for, the cache file is served");
+        }
+        if (cache_fd >= 3u) (void)f0t_close(cache_fd);
+        SetEnvironmentVariableA("SR_FONTDIR", saved);
+        _putenv_s("SR_FONTDIR", saved);
+    }
 
     /* Case-insensitive device, prefix and name, and project fallback for japanese. */
     char upper_path[128];
@@ -26869,8 +26925,8 @@ static void test_flash0_font_device(void) {
      * legacy ltn0/jpn0/ltn8/kr0 names, which neither source carries, so every font went missing
      * once a user imported one. Pending flags do not apply to the shim: it serves no guest path. */
     sr_font_test_reset();
-    expect(strcmp(sr_font_test_slot_source(NK_FONT_SLOT_LATIN), "user-imported") == 0,
-           "the sceFont shim loads the latin slot from the user-imported cache");
+    snprintf(msg, sizeof(msg), "the sceFont shim loads the latin slot from the %s source", served_latin_label);
+    expect(strcmp(sr_font_test_slot_source(NK_FONT_SLOT_LATIN), served_latin_label) == 0, msg);
     expect(strcmp(sr_font_test_slot_source(NK_FONT_SLOT_JAPANESE), "project") == 0,
            "the sceFont shim loads the japanese slot from the project font directory");
     expect(strcmp(sr_font_test_slot_source(NK_FONT_SLOT_KOREAN), "none") == 0,

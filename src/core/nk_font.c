@@ -181,46 +181,53 @@ int nk_font_classify_verdict(const PgfVerdict *verdict, char *reason, size_t rea
     return -1;
 }
 
+/* Read a whole open file no larger than the reader ceiling, from its start, and leave the
+ * handle at its start again. The caller frees *out. */
+static bool font_read_stream(FILE *f, uint8_t **out, size_t *out_len,
+                             char *out_error, size_t error_len) {
+    int64_t size;
+    uint8_t *bytes;
+    size_t received;
+    *out = NULL;
+    *out_len = 0;
+    if (fseek(f, 0, SEEK_END) != 0 || (size = nk_ftell64(f)) < 0 || fseek(f, 0, SEEK_SET) != 0) {
+        font_copy_text(out_error, error_len, "cannot read the file size");
+        return false;
+    }
+    if ((uint64_t)size > NK_FONT_PGF_MAX_BYTES) {
+        font_copy_text(out_error, error_len, "larger than the 16 MiB reader ceiling");
+        return false;
+    }
+    bytes = (uint8_t *)malloc(size > 0 ? (size_t)size : 1u);
+    if (!bytes) {
+        font_copy_text(out_error, error_len, "out of memory");
+        return false;
+    }
+    received = size > 0 ? fread(bytes, 1u, (size_t)size, f) : 0u;
+    if (received != (size_t)size || ferror(f) || fseek(f, 0, SEEK_SET) != 0) {
+        free(bytes);
+        font_copy_text(out_error, error_len, "cannot read the file");
+        return false;
+    }
+    *out = bytes;
+    *out_len = (size_t)size;
+    return true;
+}
+
 /* Read a whole file no larger than the reader ceiling. The caller frees *out. */
 static bool font_read_file(const char *path, uint8_t **out, size_t *out_len,
                            char *out_error, size_t error_len) {
     FILE *f = nk_fopen_utf8(path, "rb");
-    int64_t size;
-    uint8_t *bytes;
-    size_t received;
+    bool ok;
     *out = NULL;
     *out_len = 0;
     if (!f) {
         font_copy_text(out_error, error_len, "cannot open the file");
         return false;
     }
-    if (fseek(f, 0, SEEK_END) != 0 || (size = nk_ftell64(f)) < 0 || fseek(f, 0, SEEK_SET) != 0) {
-        fclose(f);
-        font_copy_text(out_error, error_len, "cannot read the file size");
-        return false;
-    }
-    if ((uint64_t)size > NK_FONT_PGF_MAX_BYTES) {
-        fclose(f);
-        font_copy_text(out_error, error_len, "larger than the 16 MiB reader ceiling");
-        return false;
-    }
-    bytes = (uint8_t *)malloc(size > 0 ? (size_t)size : 1u);
-    if (!bytes) {
-        fclose(f);
-        font_copy_text(out_error, error_len, "out of memory");
-        return false;
-    }
-    received = size > 0 ? fread(bytes, 1u, (size_t)size, f) : 0u;
-    if (received != (size_t)size || ferror(f)) {
-        fclose(f);
-        free(bytes);
-        font_copy_text(out_error, error_len, "cannot read the file");
-        return false;
-    }
+    ok = font_read_stream(f, out, out_len, out_error, error_len);
     fclose(f);
-    *out = bytes;
-    *out_len = (size_t)size;
-    return true;
+    return ok;
 }
 
 /* Check bytes already in memory. Returns true when the reader accepts them. */
@@ -408,20 +415,12 @@ static NkFontStatus font_load_manifest(const char *cache_dir, FontManifest *mani
     return NK_FONT_STATUS_OK;
 }
 
-/* Check one manifest entry against its file: the file exists, its size and SHA-256 match,
- * the reader accepts it, and it names the slot the manifest gives. */
-static bool font_check_slot_file(const char *cache_dir, int slot, const FontManifest *manifest,
-                                 char *reason, size_t reason_len) {
-    char path[NK_MAX_PATH * 2];
+/* Check one slot's bytes against its manifest entry: the reader accepts them, they name the slot,
+ * and their size and SHA-256 match the entry. */
+static bool font_check_slot_bytes(int slot, const FontManifest *manifest, const uint8_t *bytes,
+                                  size_t length, char *reason, size_t reason_len) {
     NkFontInspection inspection;
-    uint8_t *bytes = NULL;
-    size_t length = 0;
-    bool accepted;
-    font_join(path, sizeof(path), cache_dir, kSlotFile[slot]);
-    if (!font_read_file(path, &bytes, &length, reason, reason_len)) return false;
-    accepted = font_inspect_bytes(bytes, length, &inspection);
-    free(bytes);
-    if (!accepted) {
+    if (!font_inspect_bytes(bytes, length, &inspection)) {
         snprintf(reason, reason_len, "the reader refused it: %s", inspection.slot_reason);
         return false;
     }
@@ -434,6 +433,21 @@ static bool font_check_slot_file(const char *cache_dir, int slot, const FontMani
         return false;
     }
     return true;
+}
+
+/* Check one manifest entry against its file: the file exists, its size and SHA-256 match,
+ * the reader accepts it, and it names the slot the manifest gives. */
+static bool font_check_slot_file(const char *cache_dir, int slot, const FontManifest *manifest,
+                                 char *reason, size_t reason_len) {
+    char path[NK_MAX_PATH * 2];
+    uint8_t *bytes = NULL;
+    size_t length = 0;
+    bool ok;
+    font_join(path, sizeof(path), cache_dir, kSlotFile[slot]);
+    if (!font_read_file(path, &bytes, &length, reason, reason_len)) return false;
+    ok = font_check_slot_bytes(slot, manifest, bytes, length, reason, reason_len);
+    free(bytes);
+    return ok;
 }
 
 NkFontStatus nk_font_check_cache(const char *user_data_root, char *out_message, size_t message_max_len) {
@@ -459,6 +473,44 @@ NkFontStatus nk_font_check_cache(const char *user_data_root, char *out_message, 
     }
     font_copy_text(out_message, message_max_len, message);
     return status;
+}
+
+NkFontSlotCheck nk_font_check_cache_slot_file(const char *user_data_root, NkFontSlot slot,
+                                              FILE *cache_file, char *reason, size_t reason_len) {
+    char cache_dir[NK_MAX_PATH];
+    FontManifest manifest;
+    NkFontStatus status;
+    char message[NK_FONT_TEXT_MAX] = "";
+    uint8_t *bytes = NULL;
+    size_t length = 0;
+    bool ok;
+    if (reason_len > 0) reason[0] = '\0';
+    if (!cache_file || (unsigned)slot >= NK_FONT_SLOT_COUNT) {
+        font_copy_text(reason, reason_len, "no cache file or font slot was named");
+        return NK_FONT_SLOT_CHECK_FILE_INVALID;
+    }
+    if (!nk_font_get_cache_dir(user_data_root, cache_dir, sizeof(cache_dir))) {
+        font_copy_text(reason, reason_len, "the per-user font cache location is unavailable");
+        return NK_FONT_SLOT_CHECK_NO_MANIFEST;
+    }
+    status = font_load_manifest(cache_dir, &manifest, message, sizeof(message));
+    if (status == NK_FONT_STATUS_MISSING) {
+        font_copy_text(reason, reason_len,
+                       "the font cache has no manifest.json (import the font from your PSP to write one)");
+        return NK_FONT_SLOT_CHECK_NO_MANIFEST;
+    }
+    if (status != NK_FONT_STATUS_OK) {
+        font_copy_text(reason, reason_len, message);
+        return NK_FONT_SLOT_CHECK_MANIFEST_INVALID;
+    }
+    if (!manifest.present[slot]) {
+        snprintf(reason, reason_len, "the manifest does not list the %s slot", kSlotRole[slot]);
+        return NK_FONT_SLOT_CHECK_NOT_LISTED;
+    }
+    if (!font_read_stream(cache_file, &bytes, &length, reason, reason_len)) return NK_FONT_SLOT_CHECK_FILE_INVALID;
+    ok = font_check_slot_bytes((int)slot, &manifest, bytes, length, reason, reason_len);
+    free(bytes);
+    return ok ? NK_FONT_SLOT_CHECK_OK : NK_FONT_SLOT_CHECK_FILE_INVALID;
 }
 
 void nk_font_slot_states(const char *user_data_root, const char *project_root,
