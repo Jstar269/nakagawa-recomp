@@ -264,7 +264,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "18d7aca1df2576029f1c7b0c3f1d413a4aefa717e657e7880d040254a8adaa9b"
+      "sha256": "804e553a65c17190abf8ee3e8c1fd68727da764ceb19e5ad4435f20b35dad53d"
     },
     {
       "path": "CREDITS.md",
@@ -6374,7 +6374,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "287e4f9f0e1b81f49f1acdba732bc3d89b770cba1f8484edb0f17c7fb94c9339"
+      "sha256": "3730addd789699be75e5c767c3a1df91f935ed80465fb56a2ca8ec258d584028"
     },
     {
       "path": "tools/copy_build_assets.ps1",
