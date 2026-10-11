@@ -548,8 +548,8 @@ One console is one data point; see §11. Nothing here closes issue #70
 
 ## Pending PSP-3000 measurement campaign
 
-The following seven source-owned cases are built for a future PSP-3000 / 6.61
-session. Six of the seven were measured by the 2026-10-10 campaign on `f6ccfb33`
+The following source-owned cases are built for a future PSP-3000 / 6.61
+session. Six of the original seven were measured by the 2026-10-10 campaign on `f6ccfb33`
 (index above); `ge-break-continue` was captured but not acceptance-eligible.
 Their parsers check record order, scalar fields, and completion;
 they do not encode expected PSP return values.
@@ -563,6 +563,7 @@ they do not encode expected PSP return values.
 | `refer-status-size` | `PSP-KERNEL-STATUS-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Bytes written and size-word results for `ReferSemaStatus`, `ReferEventFlagStatus`, and `ReferMbxStatus` at size 0, 8, 40, and full size. |
 | `registry-readonly` | `PSP-REGISTRY-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Read-only root/category opening and `/CONFIG` category/key enumeration, metadata, selected modeled settings, error returns, handle exhaustion capped at 256 opens, and the forged-handle call last. |
 | `kernel-misc` | `PSP-KERNEL-MISC-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Wide clock conversion, controller default mode, profiler-pointer returns, basic VTimer behavior, display return values, battery-icon status, and UMD-popup returns. |
+| `vfpu-compare` | `PSP-VFPU-CMP-001` | `NOT_RUN` (new probe, not yet run on hardware) | `vscmp.s`, `vsge.s`, and `vslt.s` on 15 operand pairs: less-than, equal, greater, signed zeros in both orders, quiet, signalling, and negative NaN on each side, and infinities. Each record is the raw result word against the project's model, which is UNMEASURED for the console. |
 
 The registry probe opens the registry and categories in read mode and never
 calls a write, create, remove, or flush API. Values are emitted only for keys
@@ -572,7 +573,7 @@ The resulting registry and console-specific files remain in the private
 campaign output directory.
 
 The campaign queue is ordered in `tools/psp_oracle/run_psplink.py`. It starts
-with the host0 `transport-write` preflight, then the seven cases above, followed
+with the host0 `transport-write` preflight, then the new cases above, followed
 by the remaining README `NOT_RUN` cases: smoke, thread exit/delete, teardown,
 I/O matrix, display mask duty, display waits, FPU, cache alias, audio, GE
 non-finite, DMA cells, five invalid-tail cases, and four mutex cases. The

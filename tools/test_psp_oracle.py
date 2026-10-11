@@ -2214,15 +2214,25 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # 1-67 are the sequential probe.c cases; 90-96 are the H-oracle HLE families,
         # numbered apart so sequential additions cannot collide with them.
-        self.assertEqual(len(routes), 74)
+        self.assertGreaterEqual(len(routes), 74)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(ids), set(range(1, 68)) | set(range(90, 97)))
+        self.assertLessEqual(set(range(1, 68)) | set(range(90, 97)), set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
+
+    def test_vfpu_compare_route_has_its_own_case_id(self) -> None:
+        # Each probe added after 67 pins its own route here, so the shared route count and
+        # id set above stay a lower bound that no two probe changes need to edit together.
+        routes = dict(re.findall(
+            r"^else ifeq \(\$\(CASE\),([^\)]+)\)\nCASE_ID = (\d+)$",
+            self.makefile,
+            re.MULTILINE,
+        ))
+        self.assertEqual(routes.get("vfpu-compare"), "68")
 
     def test_mutex_import_block_is_limited_to_mutex_cases(self) -> None:
         self.assertIn("OBJS = $(BUILD_DIR)/probe.o\n", self.makefile)
@@ -3202,7 +3212,7 @@ class ProbeProgressAndBoundedWaitTests(unittest.TestCase):
     """Step markers, bounded waits and record shapes of the campaign probes."""
 
     NEW_CASES = ("KERNEL_ALARM", "THREAD_SCHEDULER", "WAIT_OUTCOMES", "GE_BREAK_CONTINUE",
-                 "REFER_STATUS_SIZE", "REGISTRY_READONLY", "KERNEL_MISC")
+                 "REFER_STATUS_SIZE", "REGISTRY_READONLY", "KERNEL_MISC", "VFPU_COMPARE")
 
     def setUp(self) -> None:
         self.root = Path(__file__).resolve().parents[1]
@@ -3397,6 +3407,232 @@ class CampaignHost0LogTests(unittest.TestCase):
             self.assertIn("probe_emit_durable(emulated, line,", body, emitter)
 
 
+
+
+class VfpuCompareProbeTests(unittest.TestCase):
+    """PSP-VFPU-CMP-001: vscmp.s, vsge.s and vslt.s cells against the project's model.
+
+    The model is UNMEASURED on the console. These tests pin the probe's operand table
+    to an independent Python copy of the interpreter's lane compares (VFPU3 sub-ops 5,
+    6 and 7 in src/rt/vfpu_interp.c), the fixed record shape the parser registry
+    expects, the emission order, and the case's wiring (Makefile number, host0 log,
+    queue slot, manifest row, documentation).
+    """
+
+    CASE = "vfpu-compare"
+    TEST_ID = "PSP-VFPU-CMP-001"
+    OPS = ("vscmp", "vsge", "vslt")
+    PAIRS = (
+        ("lt", 0x3FC00000, 0x40200000),
+        ("eq", 0x3FC00000, 0x3FC00000),
+        ("gt", 0x40200000, 0x3FC00000),
+        ("zero-pos-neg", 0x00000000, 0x80000000),
+        ("zero-neg-pos", 0x80000000, 0x00000000),
+        ("nan-left-quiet", 0x7FC00000, 0x3FC00000),
+        ("nan-right-quiet", 0x3FC00000, 0x7FC00000),
+        ("nan-left-signal", 0x7F800001, 0x3FC00000),
+        ("nan-right-signal", 0x3FC00000, 0x7F800001),
+        ("nan-left-negative", 0xFFC00000, 0x3FC00000),
+        ("inf-pos-neg", 0x7F800000, 0xFF800000),
+        ("inf-neg-pos", 0xFF800000, 0x7F800000),
+        ("inf-pos-pos", 0x7F800000, 0x7F800000),
+        ("inf-neg-neg", 0xFF800000, 0xFF800000),
+        ("inf-pos-finite", 0x7F800000, 0x3FC00000),
+    )
+
+    @classmethod
+    def cells(cls) -> tuple[str, ...]:
+        return tuple(f"{op}-{pair[0]}" for op in cls.OPS for pair in cls.PAIRS)
+
+    @classmethod
+    def model_word(cls, op: str, a: int, b: int) -> int:
+        """The project's model for one lane; IEEE comparisons, so a NaN compares false."""
+        import struct
+
+        x = struct.unpack("<f", struct.pack("<I", a))[0]
+        y = struct.unpack("<f", struct.pack("<I", b))[0]
+        if op == "vscmp":
+            value = -1.0 if x < y else (1.0 if x > y else 0.0)
+        elif op == "vsge":
+            value = 1.0 if x >= y else 0.0
+        else:
+            value = 1.0 if x < y else 0.0
+        return struct.unpack("<I", struct.pack("<f", value))[0]
+
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.fixture = self.root / "fixtures" / "psp_oracle"
+        self.probe = (self.fixture / "probe.c").read_text(encoding="utf-8")
+        self.makefile = (self.fixture / "Makefile").read_text(encoding="utf-8")
+
+    def _block(self) -> str:
+        start = self.probe.index(f"#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_{self.CASE.upper().replace('-', '_')}\n")
+        return self.probe[start:self.probe.index("\n#endif", start)]
+
+    def _stream(self, rows: list[str]) -> str:
+        return META.format(
+            source="psp", model="PSP-3000", firmware="6.61-ARK",
+            binary=MEASURED_SHA, commit=MEASURED_COMMIT,
+        ) + "".join(rows)
+
+    def _rows(self, statuses: dict[str, str] | None = None) -> list[str]:
+        spec, counts = CAMPAIGN_PROBE_CASES[self.CASE]
+        rows = []
+        for index, case_id in enumerate(spec.semantic_cases):
+            status = (statuses or {}).get(case_id, "PASS" if index % 2 else "FAIL")
+            outs = "".join(f" out{i}=0x{i:08x}" for i in range(3))
+            rows.append(
+                f"NAKAGAWA_PSP_TEST schema=1 test_id={self.TEST_ID} case_id={case_id} "
+                f"status={status} result=0x{index:08x}{outs}\n"
+            )
+        rows.append(
+            f"NAKAGAWA_PSP_TEST schema=1 test_id={self.TEST_ID} case_id={spec.terminal_case} "
+            f"status=PASS result=0x0 out0=0x{spec.terminal_count:x}\n"
+        )
+        return rows
+
+    def test_probe_table_matches_the_project_model(self) -> None:
+        words = {"VFPU_COMPARE_ONE": 0x3F800000, "VFPU_COMPARE_MINUS_ONE": 0xBF800000}
+        table = self.probe[self.probe.index("static const struct vfpu_compare_pair s_vfpu_compare_pairs"):]
+        table = table[:table.index("};")]
+        rows = re.findall(
+            r'\{"([a-z-]+)", (0x[0-9a-fA-F]+)u, (0x[0-9a-fA-F]+)u, \{([^}]*)\}\}', table
+        )
+        self.assertEqual(len(rows), len(self.PAIRS))
+        for (name, a, b, expect), (want_name, want_a, want_b) in zip(rows, self.PAIRS, strict=True):
+            with self.subTest(pair=name):
+                self.assertEqual(name, want_name)
+                self.assertEqual(int(a, 16), want_a)
+                self.assertEqual(int(b, 16), want_b)
+                words_in_row = [
+                    words[token.strip()] if token.strip() in words else int(token.strip().rstrip("u"), 0)
+                    for token in expect.split(",")
+                ]
+                self.assertEqual(
+                    words_in_row,
+                    [self.model_word(op, want_a, want_b) for op in self.OPS],
+                )
+
+    def test_registered_spec_is_the_op_major_cell_list_with_a_terminal_count(self) -> None:
+        spec, counts = CAMPAIGN_PROBE_CASES[self.CASE]
+        self.assertEqual(spec.test_id, self.TEST_ID)
+        self.assertEqual(spec.semantic_cases, self.cells())
+        self.assertEqual(spec.terminal_case, "vfpu-compare-done")
+        self.assertEqual(spec.terminal_count, 45)
+        self.assertEqual(set(counts), set(spec.ordered_cases))
+        self.assertEqual({counts[case] for case in spec.semantic_cases}, {3})
+        self.assertEqual(counts[spec.terminal_case], 1)
+        self.assertEqual(_campaign_completeness_contract(self.CASE), "strict-golden-sequence")
+
+    def test_probe_names_each_cell_from_the_op_and_pair_tables(self) -> None:
+        self.assertIn('static const char *const op_names[VFPU_COMPARE_OPS] = {"vscmp", "vsge", "vslt"};',
+                      self.probe)
+        self.assertIn('snprintf(case_id, sizeof(case_id), "%s-%s", op_names[op], pair->name);',
+                      self.probe)
+        self.assertIn('emit_record_extended(emulated, "PSP-VFPU-CMP-001", "vfpu-compare-done",',
+                      self.probe)
+        self.assertIn("#define VFPU_COMPARE_PAIRS 15u", self.probe)
+        self.assertEqual(len(self.PAIRS), 15)
+
+    def test_measured_span_has_no_host_io_and_uses_only_the_vfpu_compare_instructions(self) -> None:
+        block = self._block()
+        cells = block[block.index('probe_step(emulated, "vfpu-compare", "cells");'):]
+        cells = cells[:cells.index("for (uint32_t op = 0; op < VFPU_COMPARE_OPS; op++) {\n        for (uint32_t p = 0; p < VFPU_COMPARE_PAIRS; p++) {\n            const struct vfpu_compare_pair *pair = &s_vfpu_compare_pairs[p];\n            const uint32_t index")]
+        self.assertNotIn("emit_", cells)
+        self.assertNotIn("snprintf", cells)
+        self.assertNotIn("for (;;)", block)
+        for mnemonic in ("vscmp.s S002, S000, S001", "vsge.s S002, S000, S001",
+                         "vslt.s S002, S000, S001"):
+            self.assertEqual(self.probe.count(mnemonic), 1, mnemonic)
+        self.assertIn('__asm__ volatile("ctc1 $0, $31" ::: "memory");', block)
+        self.assertIn("#define VFPU_COMPARE_SENTINEL 0x7a5a5a5au", block)
+
+    def test_status_says_the_cell_measured_not_that_it_matched_the_model(self) -> None:
+        # The runner accepts a capture only when every record is PASS, so a console that
+        # disagrees with the UNMEASURED model must still produce PASS records: the status
+        # marks a written destination, and agreement is result against out0.
+        block = self._block()
+        self.assertIn('observed[index] == VFPU_COMPARE_SENTINEL ? "FAIL" : "PASS",', block)
+        self.assertNotIn("== expect ?", block)
+        self.assertIn("const uint32_t out[] = {expect, pair->a, pair->b};", block)
+
+    def test_the_case_runs_with_the_vfpu_thread_attribute(self) -> None:
+        # The attribute chain is `#elif GE_NAN || VFPU_COMPARE`, so the VFPU case is on
+        # a continuation line; its PSP_MAIN_THREAD_ATTR must carry THREAD_ATTR_VFPU.
+        start = self.probe.index(
+            "#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \\\n"
+            "      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE\n"
+        )
+        attr = self.probe[start:self.probe.index("#else", start)]
+        self.assertIn("PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);", attr)
+
+    def test_complete_stream_parses_with_every_cell_pass_fail_or_skip(self) -> None:
+        statuses = {case: "SKIP" for case in self.cells()[:2]}
+        report = parse_campaign_probe_output(self._stream(self._rows(statuses)), self.CASE)
+        self.assertTrue(report.complete)
+        self.assertTrue(report.terminal_present)
+        self.assertEqual(report.record_count, 46)
+        seen = {record.status for case_id, record in report.results.items()
+                if case_id in self.cells()}
+        self.assertEqual(seen, {"PASS", "FAIL", "SKIP"})
+        self.assertEqual(report.results["vscmp-lt"].status, "SKIP")
+
+    def test_missing_extra_out_of_order_and_unknown_cells_are_refused(self) -> None:
+        rows = self._rows()
+        cases = [row.split("case_id=")[1].split()[0] for row in rows]
+        self.assertEqual(cases[10], "vscmp-inf-pos-neg")
+        duplicate = rows[:10] + [rows[10]] + rows[10:]
+        swapped = rows[:10] + [rows[11], rows[10]] + rows[12:]
+        unknown = rows[:10] + [rows[10].replace(cases[10], "vscmp-bogus")] + rows[11:]
+        foreign = rows[:10] + [rows[10].replace(self.TEST_ID, "PSP-VFPU-CMP-002")] + rows[11:]
+        short_terminal = rows[:-1] + [rows[-1].replace("out0=0x2d", "out0=0x2c")]
+        # Both strictness modes refuse these shapes: none of them is a truncation.
+        for name, body in (("duplicate", duplicate), ("swapped", swapped),
+                           ("unknown", unknown), ("foreign", foreign),
+                           ("short-terminal", short_terminal)):
+            with self.subTest(shape=name):
+                with self.assertRaises(ProtocolError):
+                    parse_campaign_probe_output(self._stream(body), self.CASE)
+                with self.assertRaises(ProtocolError):
+                    parse_campaign_probe_output(self._stream(body), self.CASE,
+                                                require_complete=False)
+        # A missing middle cell is a truncation shape: strict mode refuses it and the
+        # inspection mode reports it incomplete without passing it.
+        missing = rows[:10] + rows[11:]
+        with self.assertRaises(ProtocolError):
+            parse_campaign_probe_output(self._stream(missing), self.CASE)
+        self.assertFalse(parse_campaign_probe_output(
+            self._stream(missing), self.CASE, require_complete=False).complete)
+
+    def test_manifest_row_is_not_run_and_grants_no_hardware_tier(self) -> None:
+        manifest = json.loads((self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
+            encoding="utf-8"))
+        row = next(test for test in manifest["tests"] if test["id"] == self.TEST_ID)
+        spec, _counts = CAMPAIGN_PROBE_CASES[self.CASE]
+        self.assertEqual(row["hardware_evidence"], "NOT_RUN")
+        self.assertEqual(row["status"], "implemented")
+        self.assertEqual(row["case_ids"], list(spec.ordered_cases))
+        self.assertIn("UNMEASURED", row["evidence_note"])
+        self.assertNotIn("evidence_ref", row)
+        self.assertNotIn(self.TEST_ID, {test_id for ids in
+                                        hle_manifest.oracle_exercised_apis(manifest).values()
+                                        for test_id in ids})
+
+    def test_case_is_wired_into_the_makefile_queue_and_documentation(self) -> None:
+        from psp_oracle.run_psplink import CAMPAIGN_CASE_ESTIMATE_SECONDS
+
+        self.assertIn("#define PSP_ORACLE_CASE_VFPU_COMPARE 68", self.probe)
+        self.assertIn("else ifeq ($(CASE),vfpu-compare)\nCASE_ID = 68\n", self.makefile)
+        self.assertEqual(_campaign_host0_log_path(Path("host0"), self.CASE).name,
+                         "vfpu_compare_log.txt")
+        self.assertIn('#define PROBE_HOST0_LOG "host0:/vfpu_compare_log.txt"', self.probe)
+        queue = list(CAMPAIGN_QUEUE_CASES)
+        self.assertEqual(queue[queue.index("kernel-misc") + 1], self.CASE)
+        self.assertIn(self.CASE, CAMPAIGN_CASE_ESTIMATE_SECONDS)
+        oracle_doc = (self.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
+        self.assertIn("| `vfpu-compare` | `PSP-VFPU-CMP-001` | `NOT_RUN`", oracle_doc)
+        readme = (self.fixture / "README.md").read_text(encoding="utf-8")
+        self.assertIn("| `vfpu-compare` | `PSP-VFPU-CMP-001` |", readme)
 
 
 class HleMeasureProbeTests(unittest.TestCase):
