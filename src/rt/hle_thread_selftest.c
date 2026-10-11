@@ -5977,6 +5977,12 @@ static void test_kernel_usec_sysclock_conversions(void) {
     cpu.r[4] = values[1];
     expect(sr_syscall(&cpu, NID_USEC_TO_SYSCLOCK) == 0x800200d3u,
            "sceKernelUSec2SysClock rejects a null clock pointer");
+    /* An 8-byte span that starts inside RAM and runs past its end is not writable. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = values[1];
+    cpu.r[5] = 0x0bfffffcu;
+    expect(sr_syscall(&cpu, NID_USEC_TO_SYSCLOCK) == 0x800200d3u,
+           "sceKernelUSec2SysClock rejects an unwritable clock span");
 }
 
 static void test_umd_unregister_callback(void) {

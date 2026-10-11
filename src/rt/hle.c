@@ -10526,7 +10526,9 @@ static uint32_t h_SysClock2USecWide(CpuState *s) {
 }
 /* The runtime models SceKernelSysClock as a microsecond count split into low/high
  * words, so converting an unsigned microsecond duration is an identity with a
- * zero high word. Validate the complete guest span before either write. */
+ * zero high word. Validate the complete guest span before either write. The input
+ * arrives in $a0, not in guest memory, so unlike h_SysClock2USec there is no input
+ * span that could overlap the output and nothing to read before writing. */
 static uint32_t h_USec2SysClock(CpuState *s) {
     (void)s;
     if (!A1 || !sr_guest_span_writable(A1, 8u))
