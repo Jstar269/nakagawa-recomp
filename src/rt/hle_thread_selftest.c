@@ -586,6 +586,7 @@ void sr_perf_vblank_collapse(uint32_t owed, uint32_t periods) { (void)owed; (voi
 void sr_perf_vblank_coalesced(void) {}
 void sr_perf_vblank_service(uint32_t delivered) { (void)delivered; }
 void sr_perf_phase_report(int force) { (void)force; }
+void sr_perf_shutdown(void) {}
 int sr_rt_phase;
 uint32_t sr_rt_nid;
 uint32_t (*sr_rt_pc_fn)(void);
