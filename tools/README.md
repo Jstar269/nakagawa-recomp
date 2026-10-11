@@ -253,6 +253,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `lint_docs.py` | Deterministic offline documentation freshness and staleness linter. |
 | `audit_public_issue_links.py` | Networked audit of public Issue and PR references in tracked Markdown. |
 | `contrib_check.py` | Run only the local gates that apply to the files you changed. |
+| `contrib_refresh.py` | Reproduce the two public provenance controls for the changed paths that already have public entries, from the committed public ledger alone; refuses new, removed, unresolved or policy-changing paths. |
 | `discovery_contract.py` | Inventory and verify the repository's unittest discovery contract. |
 | `ci_paths.py` | Classify a change for the path-gated public CI workflow. |
 | `ci_required.py` | Evaluate the stable aggregate status for the path-gated CI workflow. |
@@ -524,6 +525,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_ci_test_shards.py` | CI test-shard planner: exactly-once coverage, separation and workflow wiring. |
 | `test_compiler_compare.py` | The compiler comparison must not publish a timing its semantic veto did not earn. |
 | `test_contrib_check.py` | The contribution gate must route, and must never turn a skip into a pass. |
+| `test_contrib_refresh.py` | The contributor refresh equals the maintainer generator byte for byte on a synthetic repository, and every refusal fails closed. |
 | `test_discovery_contract.py` | Parallel test execution and discovery contract verification. |
 | `test_hst_doctor.py` | Doctor checks: data directories, ELF validation, private inputs, repository contract. |
 | `test_hst_doctor_hardening.py` | Doctor hardening: commit identity and the fresh-clone setup matrix. |
