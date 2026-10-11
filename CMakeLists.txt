@@ -59,6 +59,13 @@ target_include_directories(nakagawa_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/rt
 )
 
+# CMake has no private PGF/PGD/ISO/audio backend to select, so this library is always the
+# public-safe build. It selects the public PGF reader (src/rt/pgf_public.c), and the Makefile's
+# PUBLIC_SAFE=1 branch defines SR_PUBLIC_SAFE for every object. PUBLIC carries the same define to
+# the player and to the tests that link this library. tools/test_public_ci_wiring.py checks that
+# both build files agree.
+target_compile_definitions(nakagawa_core PUBLIC SR_PUBLIC_SAFE)
+
 # -----------------------------------------------------------------------------
 # Native Core Test Harness
 # -----------------------------------------------------------------------------
@@ -99,6 +106,9 @@ add_executable(test_pgf_public
 target_include_directories(test_pgf_public PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/rt
 )
+# This target compiles src/rt/pgf_public.c itself instead of linking nakagawa_core, so it
+# carries the public-safe define directly.
+target_compile_definitions(test_pgf_public PRIVATE SR_PUBLIC_SAFE)
 add_test(NAME pgf_public_test COMMAND test_pgf_public)
 
 add_executable(test_xb_parser
