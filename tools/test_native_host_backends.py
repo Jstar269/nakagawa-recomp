@@ -322,6 +322,25 @@ class NativeHostBackendTests(unittest.TestCase):
         backend = (ROOT / "src" / "rt" / "audio_unavailable.c").read_text(encoding="utf-8")
         self.assertIn("\nvoid sr_audio_dump_finish(void) {\n", backend)
 
+    def test_every_guest_thread_hard_exit_writes_the_perf_summary_first(self) -> None:
+        """sr_perf_shutdown writes the SR_PERF_JSON summary and the final CSV row from an atexit
+        hook, and _Exit skips atexit. Every _Exit reached on the guest thread (hle.c and ge.c)
+        calls sr_perf_shutdown itself, or a scripted route that ends through SR_EXIT_AT_VBLANK,
+        a route failure, a capture exit or the watchdog loses its summary while its CSV stops at
+        the last whole second. The call is idempotent and a no-op without SR_PERF."""
+        for name in ("hle.c", "ge.c"):
+            lines = (ROOT / "src" / "rt" / name).read_text(encoding="utf-8").splitlines()
+            found = 0
+            for index, line in enumerate(lines):
+                code = line.split("//", 1)[0]
+                if "_Exit(" not in code or code.lstrip().startswith("*"):
+                    continue
+                found += 1
+                window = "\n".join(lines[max(0, index - 6):index + 1])
+                self.assertIn("sr_perf_shutdown();", window,
+                              f"{name}:{index + 1} exits without the perf shutdown: {line.strip()}")
+            self.assertGreater(found, 0, f"{name} has no _Exit site; the pin is stale")
+
 
 if __name__ == "__main__":
     unittest.main()
