@@ -16,18 +16,41 @@
 //   - the transform-path canary MONO unit frame decodes deterministically
 //     through the bridge (reaches reconstruct_frame(); broken transform
 //     configs crash here, mirroring the PR-A canary),
+//   - a deterministic synthetic invalid-gain frame returns AVERROR_INVALIDDATA
+//     once, stays refused on retry, and can be followed by a valid decode after
+//     reset,
 //   - determinism: byte-identical PCM across instances, after bridge reset,
 //     and after destroy/recreate (the HLE seek/loop-rewind primitive),
 //   - destroy(NULL) no-op.
 //
 // Exit code 0 = all checks passed.
 
+#if !defined(_WIN32)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_WIN32)
+#include <io.h>
+#define SR_DUP _dup
+#define SR_DUP2 _dup2
+#define SR_CLOSE _close
+#define SR_FILENO _fileno
+#else
+#include <unistd.h>
+#define SR_DUP dup
+#define SR_DUP2 dup2
+#define SR_CLOSE close
+#define SR_FILENO fileno
+#endif
+
 #include "atrac3p_bridge.h"
+#include "libavutil/common.h"
+#include "libavutil/error.h"
 #include "vfpu_tables.h"
 #include "perf.h"
 
@@ -51,6 +74,47 @@ static const uint8_t TERMINATOR_FRAME[] = { 0x60 };
 /* Deterministic MONO channel-unit frame; exercises the IMDCT/IPQF transform
  * pipeline (see atrac3p_selftest.c for the full rationale). */
 static const uint8_t MONO_UNIT_FRAME[] = { 0x16, 0x0c, 0xf6, 0x86, 0x87, 0x35, 0xd3, 0x1c, 0xb8 };
+
+/* Build the 196th nine-byte xorshift32 fixture from seed 0x61c88647. It is
+ * synthetic bitstream data constructed for this regression; it reaches the
+ * decoder's invalid gain-location refusal path. */
+static void make_invalid_gain_frame(uint8_t frame[9])
+{
+    uint32_t state = 0x61c88647u;
+    for (unsigned candidate = 0; candidate <= 195u; candidate++) {
+        for (int i = 0; i < 9; i++) {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            frame[i] = (uint8_t)state;
+        }
+    }
+}
+
+static int count_captured_text(FILE *capture, const char *needle)
+{
+    long end;
+    char *text;
+    size_t size;
+    int count = 0;
+
+    if (fflush(stderr) != 0 || fflush(capture) != 0 ||
+        fseek(capture, 0, SEEK_END) != 0)
+        return -1;
+    end = ftell(capture);
+    if (end < 0 || fseek(capture, 0, SEEK_SET) != 0)
+        return -1;
+    size = (size_t)end;
+    text = (char *)malloc(size + 1u);
+    if (!text)
+        return -1;
+    size = fread(text, 1u, size, capture);
+    text[size] = '\0';
+    for (char *at = text; (at = strstr(at, needle)) != NULL; at += strlen(needle))
+        count++;
+    free(text);
+    return count;
+}
 
 static int pcm_sha256_hex(const int16_t *pcm, size_t samples, char out[65])
 {
@@ -208,6 +272,72 @@ static void test_imdct_path_decode(void)
     atrac3p_bridge_destroy(b2);
 }
 
+static void test_invalid_gain_frame_refuses_once(void)
+{
+    Atrac3pBridge *bridge = NULL;
+    int16_t pcm[ATRAC3P_FRAME_SAMPLES];
+    uint8_t invalid_frame[9];
+    FILE *capture = NULL;
+    int stderr_fd = SR_FILENO(stderr);
+    int saved_stderr = -1;
+    int ret1 = 0, ret2 = 0, samples1 = -1, samples2 = -1;
+    int error_count = -1;
+    int redirected = 0;
+
+    CHECK(atrac3p_bridge_create(1, 9, &bridge) == 0,
+          "create bridge for synthetic invalid gain frame");
+    if (!bridge) return;
+    capture = tmpfile();
+    CHECK(capture != NULL, "create synthetic decoder log capture");
+    if (!capture) {
+        atrac3p_bridge_destroy(bridge);
+        return;
+    }
+    saved_stderr = SR_DUP(stderr_fd);
+    if (saved_stderr >= 0 && SR_DUP2(SR_FILENO(capture), stderr_fd) == 0)
+        redirected = 1;
+    CHECK(redirected, "capture decoder error without exposing fixture output");
+    if (!redirected) {
+        if (saved_stderr >= 0) SR_CLOSE(saved_stderr);
+        fclose(capture);
+        atrac3p_bridge_destroy(bridge);
+        return;
+    }
+
+    make_invalid_gain_frame(invalid_frame);
+    ret1 = atrac3p_bridge_decode(bridge, invalid_frame, sizeof(invalid_frame),
+                                 pcm, &samples1);
+    ret2 = atrac3p_bridge_decode(bridge, invalid_frame, sizeof(invalid_frame),
+                                 pcm, &samples2);
+    fflush(stderr);
+    SR_DUP2(saved_stderr, stderr_fd);
+    SR_CLOSE(saved_stderr);
+    error_count = count_captured_text(capture, "Invalid gain location");
+
+    CHECK(ret1 == AVERROR_INVALIDDATA,
+          "invalid gain frame returns the named invalid-data result");
+    CHECK(ret2 == AVERROR_INVALIDDATA,
+          "repeated decode request keeps the named failure result");
+    CHECK(samples1 == 0 && samples2 == 0,
+          "invalid gain frame never reports decoded samples");
+    if (error_count != 1)
+        fprintf(stderr, "invalid gain error calls=%d\n", error_count);
+    CHECK(error_count == 1,
+          "invalid gain path is entered once across repeated decode requests");
+
+    CHECK(atrac3p_bridge_reset(bridge) == 0,
+          "reset clears the failed-frame refusal");
+    int valid_samples = -1;
+    int valid_ret = atrac3p_bridge_decode(bridge, MONO_UNIT_FRAME,
+                                         sizeof(MONO_UNIT_FRAME), pcm,
+                                         &valid_samples);
+    CHECK(valid_ret == 0 && valid_samples == ATRAC3P_FRAME_SAMPLES,
+          "valid synthetic frame decodes after reset");
+
+    fclose(capture);
+    atrac3p_bridge_destroy(bridge);
+}
+
 int main(void)
 {
     sr_perf_init();
@@ -215,6 +345,7 @@ int main(void)
     test_decode_contract();
     test_terminator_decode();
     test_imdct_path_decode();
+    test_invalid_gain_frame_refuses_once();
 
     atrac3p_bridge_destroy(NULL);   /* no-op */
 
