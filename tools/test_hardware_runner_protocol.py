@@ -3527,16 +3527,17 @@ class CampaignCheckpointTransitionTests(unittest.TestCase):
         self.assertEqual(final["failed_case_id"], "ge-break-continue")
 
     def test_launched_case_without_completion_record_waits_for_power_cycle(self):
+        kernel_index = CAMPAIGN_QUEUE_CASES.index("kernel-misc")
         launched = _checkpoint_case_started(
-            _checkpoint_state(next_case_index=7, host0_qualified=True),
-            7, "kernel-misc", "CASE_ACTIVE",
+            _checkpoint_state(next_case_index=kernel_index, host0_qualified=True),
+            kernel_index, "kernel-misc", "CASE_ACTIVE",
         )
         final = _checkpoint_after_run(
             launched, terminal_reason="CHECKPOINT_WRITE_FAILED", intervention_case_id=None,
             resume_case_index=None, case_count=self.CASES,
         )
         self.assertEqual(final["state"], "WAITING_FOR_POWER_CYCLE")
-        self.assertEqual(final["next_case_index"], 8)
+        self.assertEqual(final["next_case_index"], kernel_index + 1)
         self.assertEqual(final["failed_case_id"], "kernel-misc")
 
     def test_running_checkpoint_without_active_index_is_rejected(self):

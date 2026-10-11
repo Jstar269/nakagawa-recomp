@@ -486,7 +486,7 @@ validation and K3/K4 remain `NOT_RUN` under #303.
 
 ## Pending PSP-3000 campaign
 
-The seven cases below are new synthetic probes. Their hardware expectations
+The cases below are new synthetic probes. Their hardware expectations
 remain `NOT_RUN`; a complete parser only proves that the record stream is
 complete and well formed. It does not decide which PSP return values or
 ordering semantics are correct.
@@ -499,6 +499,7 @@ ordering semantics are correct.
 | `ge-break-continue` | `PSP-GE-CONTROL-001` | Break without an active list, continue without a paused list, invalid break mode, list/draw sync statuses for paused work, the continue result with a bounded drain (`ge-continue-drain`, `TIMEOUT` with the last states if the GE does not go idle), a queue reset when needed (`ge-quiesce-after-continue`), cancelled work, and a final quiesce (`ge-quiesce-after-cancel`). |
 | `refer-status-size` | `PSP-KERNEL-STATUS-001` | Semaphore, event-flag, and mailbox status structures with size words 0, 8, 40, and full size; records the changed bytes and returned size word. |
 | `registry-readonly` | `PSP-REGISTRY-001` | Read-only registry/category enumeration under `/CONFIG`, key names/types/sizes, modeled setting values only, and unknown-category/key, small-buffer, and handle-exhaustion results (`registry-errors`; at most 256 opens, `out6` says whether an open failed first), then the forged-handle call last (`registry-bad-handle`). |
+| `llsc-link` | `PSP-LLSC-001` | A plain `ll`/`sc` pair (control), a second `sc` after a successful `sc` with no new `ll`, and an `sc` to an address other than the one `ll` linked. Each record carries the `sc` result, the word `ll` loaded, both words after the cell, and the project's model words (UNMEASURED for the console). |
 | `kernel-misc` | `PSP-KERNEL-MISC-001` | Wide system-clock conversion, default controller mode, thread/global profiler returns, basic VTimer behavior, display calls, battery-icon status, and UMD-popup return values. |
 
 The registry case opens the registry and every category in read mode. It never
@@ -510,7 +511,7 @@ campaign output directory.
 
 The host campaign plan requires one staged PRX for each queued case. It launches
 one PRX per boot and issues a PSPLink soft reset between completed cases. The
-queue starts with `transport-write`, then runs the seven new cases in the table
+queue starts with `transport-write`, then runs the new cases in the table
 order, then every remaining README `NOT_RUN` probe: `smoke`,
 `thread-exit-delete`, `teardown-test`, `io-matrix`, `display-mask-duty`,
 `display-wait-late`, `display-wait-priority`, `display-vblank-window`,
