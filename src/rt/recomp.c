@@ -1669,9 +1669,13 @@ static const char *dispatch_semantic_boundary_name(SrGuestInterpResult result) {
     }
 }
 
-/* Guest AOT bodies become nested native C calls. Stop adding frames with 128 KiB
- * measured headroom so at least 64 KiB remains after the boundary message and
- * dispatch unwinding. The malformed decoder and formatter path used under 20 KiB. */
+/* Guest AOT bodies become nested native C calls, so the host stack grows with the guest
+ * call depth. Stop adding frames while 128 KiB remain: 64 KiB for the frame that is
+ * about to be entered (generated functions carry no local arrays, so their frames are
+ * small; the deepest measured runtime chain, the ATRAC3+ decoder on a malformed frame
+ * with its logging, used under 20 KiB) and 64 KiB for the boundary report and the
+ * unwind back to the scheduler. Measured on the production 64 MiB fiber by the
+ * dispatch-isolation selftest, which records the remaining bytes at the stop. */
 #define SR_DISPATCH_STACK_SAFETY_MARGIN ((size_t)128u << 10)
 
 static int dispatch_host_stack_preflight(void) {
@@ -1695,28 +1699,22 @@ static const char *dispatch_validated_boundary_name(const char *boundary) {
     return boundary;
 }
 
-static void dispatch_record_semantic_stop(const char *boundary) {
+/* Every semantic stop names the public issue that tracks lifting it, so the event
+ * line keeps one shape for every parser. */
+static void dispatch_record_semantic_stop_issue(const char *boundary, unsigned issue) {
     const char *path = getenv("SR_BOOT_EVENT_FILE");
     if (!path || !path[0] || !boundary || !boundary[0]) return;
     boundary = dispatch_validated_boundary_name(boundary);
     FILE *events = fopen(path, "ab");
     if (!events) return;
     fprintf(events,
-            "BOOT_EVENT phase=stop reason=semantic-boundary boundary=%s issue=308\n",
-            boundary);
+            "BOOT_EVENT phase=stop reason=semantic-boundary boundary=%s issue=%u\n",
+            boundary, issue);
     fclose(events);
 }
 
-static void dispatch_record_semantic_stop_without_issue(const char *boundary) {
-    const char *path = getenv("SR_BOOT_EVENT_FILE");
-    if (!path || !path[0] || !boundary || !boundary[0]) return;
-    boundary = dispatch_validated_boundary_name(boundary);
-    FILE *events = fopen(path, "ab");
-    if (!events) return;
-    fprintf(events,
-            "BOOT_EVENT phase=stop reason=semantic-boundary boundary=%s\n",
-            boundary);
-    fclose(events);
+static void dispatch_record_semantic_stop(const char *boundary) {
+    dispatch_record_semantic_stop_issue(boundary, 308u);
 }
 
 static void dispatch_report_host_stack_boundary(int result) {
@@ -1734,7 +1732,8 @@ static void dispatch_report_host_stack_boundary(int result) {
                 boundary);
     }
     fflush(stderr);
-    dispatch_record_semantic_stop_without_issue(boundary);
+    /* #855 tracks lifting the host call-depth limit (trampoline or stackless dispatch). */
+    dispatch_record_semantic_stop_issue(boundary, 855u);
 }
 
 static int dispatch_run_interp(
@@ -1810,10 +1809,15 @@ static int dispatch_try_with_boundary(
     CpuState *s,
     uint32_t target,
     const SrGuestInterpCallBoundary *call_boundary) {
-    int stack_result = dispatch_host_stack_preflight();
-    if (stack_result < 0) {
-        dispatch_report_host_stack_boundary(stack_result);
-        return stack_result;
+    /* The per-instruction VFPU fallback below adds no host frame (codegen keeps executing
+     * the owning native function), so the stack preflight runs only for transfers that can
+     * enter another translated body. */
+    if ((target & SR_DISPATCH_VFPU_MASK) != SR_DISPATCH_VFPU_TAG) {
+        int stack_result = dispatch_host_stack_preflight();
+        if (stack_result < 0) {
+            dispatch_report_host_stack_boundary(stack_result);
+            return stack_result;
+        }
     }
     /* Per-instruction VFPU fallback.  Codegen keeps executing the owning native C
      * function after this returns, so no guest function boundary or host stack frame is

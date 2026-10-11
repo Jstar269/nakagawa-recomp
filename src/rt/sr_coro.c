@@ -374,6 +374,10 @@ int sr_coro_stack_remaining(size_t *remaining_out) {
         stack_size = s_current->stack_size;
     } else {
         if (!s_current->stack || s_current->stack_size == 0) {
+            /* pthread_getattr_np is a GNU extension (glibc, also musl); a non-GNU
+             * libc reports the main stack as unavailable here, which the dispatcher
+             * turns into the named host-fiber-stack-bounds-unavailable stop rather
+             * than a guess. Guest fibers do not take this path. */
             pthread_attr_t attr;
             void *stack_addr = NULL;
             if (pthread_getattr_np(pthread_self(), &attr) != 0) return 0;
