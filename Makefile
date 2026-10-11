@@ -1648,10 +1648,12 @@ $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py to
 
 # ge.c: software comparison rasterizer with PPSSPP-derived behavior. -O2 for speed.
 GE_CFLAGS ?= -O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK
-# Optional sparse front-end attribution is absent from normal GE builds.
+# Optional sparse front-end attribution is absent from normal GE builds. ge.c is also a
+# portable-core source, so the define reaches both compilations or neither.
 GE_FRONTEND_PROFILE ?= 0
 ifeq ($(GE_FRONTEND_PROFILE),1)
 override GE_CFLAGS += -DSR_GE_FRONTEND_PROFILE
+override PORTABLE_CORE_CFLAGS += -DSR_GE_FRONTEND_PROFILE
 endif
 # ge.c is the vblank hook for the recorder's trace window and store watch; without this
 # define those calls compile to flight_recorder.h's inert inline stubs.

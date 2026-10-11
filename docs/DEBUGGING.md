@@ -52,7 +52,9 @@ removes the generated per-instruction hook entirely. The benchmark command measu
 runtime branch cost rather than assuming a zero-cost binary.
 
 For sparse GE front-end attribution, build with `GE_FRONTEND_PROFILE=1` (the default is `0`) and
-run with `SR_PERF=1`, `SR_GE_CPU_PROFILE=1`, and `SR_GE_PRIM_PROFILE=1`. This compiles the additional
+run with `SR_PERF=1` and `SR_GE_CPU_PROFILE=1`; `command_dispatch` is exported with those two, and
+the per-primitive stages (`draw_setup` through `assembly`, `triangle_total`, `empty_control`) also
+need `SR_GE_PRIM_PROFILE=1`. The build flag compiles the additional
 draw-setup timer and exports per-interval phase samples to `perf.csv`, `perf.json`, and a
 `PERF_GE_FRONTEND` stderr line. `SR_GE_PRIM_PROFILE_STRIDE` selects the sparse sample interval
 (default `512`); `SR_GE_PRIM_CALIBRATION=1` also records the triangle-total sample and empty timer

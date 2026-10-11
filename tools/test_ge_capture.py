@@ -174,7 +174,11 @@ class TestGeCaptureWiring(unittest.TestCase):
         self.assertIn("#ifdef SR_GE_FRONTEND_PROFILE", ge)
         self.assertIn("primitive_profile_draw_setup_begin()", ge)
         self.assertIn("primitive_profile_assembly_eligible", ge)
-        self.assertEqual(ge.count("primitive_profile_note_assembly();"), 3)
+        # Every accepted-assembly timer end has its eligibility note, or the estimate's
+        # eligible count drifts from the samples it scales.
+        assembly_ends = ge.count("primitive_profile_end(GE_PRIM_PROFILE_ASSEMBLY")
+        self.assertGreater(assembly_ends, 0)
+        self.assertEqual(ge.count("primitive_profile_note_assembly();"), assembly_ends)
         self.assertIn("sr_perf_ge_frontend_profile_config(", ge)
         self.assertIn("ge_frontend_%s_estimated_ms", perf)
         self.assertIn("frontend_profile", perf)
