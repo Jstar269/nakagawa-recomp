@@ -246,7 +246,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8ba9e7ecf18914431e68d266fbc65a172fd64691c5ef47177f5ff8ae50feb34b"
+      "sha256": "c16475f368ee67467e4b5cdfbd7cc58a7b45b3b938c31fc3e18054d43f1a862f"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -8363,7 +8363,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "16fc8bcd58b2cd1dee3041fbc476864665867d90f11644155efe8907838ae0fd"
+      "sha256": "a940a344b17d3ce467993f0a77fb4c03c665f6746b05bdbf3ededa2bd384a091"
     },
     {
       "path": "tools/test_flight_build_identity.py",
@@ -9492,7 +9492,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "272f3f0603063abe852059285fc6d3dd80668f45da16a2b263f51d4f26a78b1b"
+      "sha256": "715d65badb8fead1a4cda66460b91e04e70636db66d59fe79681d5f3f81b8d93"
     },
     {
       "path": "tools/test_public_export.py",
