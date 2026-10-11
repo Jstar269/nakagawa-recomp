@@ -130,6 +130,7 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_MUTEX_TIMEOUT_QUANTA 20
 #define PSP_ORACLE_CASE_MUTEX_PRIORITY_INHERITANCE 21
 #define PSP_ORACLE_CASE_MUTEX_INTERRUPT_CONTEXT 22
+#define PSP_ORACLE_CASE_LLSC_LINK 69
 
 /* Plain mutex syscalls are absent from the installed PSPSDK headers, so the
    probe declares the exact ABI it imports via fixtures/psp_oracle/
@@ -300,6 +301,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/mutex_priority_inheritance_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_INTERRUPT_CONTEXT
 #define PROBE_HOST0_LOG "host0:/mutex_interrupt_context_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_LLSC_LINK
+#define PROBE_HOST0_LOG "host0:/llsc_link_log.txt"
 #endif
 
 /* Durable line writer: every record, step marker and the metadata line goes
@@ -6129,6 +6132,176 @@ static void run_refer_status_size(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_LLSC_LINK
+/* ll/sc link facts (main thread only, no threads created). Each cell is one
+   link window: ll loads a word and sets the link, then one or two sc run in the
+   same asm block, with no call, branch, syscall or memory access between ll and
+   the last sc. Every word a cell touches is written with its sentinel before the
+   window opens, so a first-touch exception cannot fall inside it. CPU interrupts
+   are suspended around each window (sceKernelCpuSuspendIntr, the user-mode call
+   the display probes already use), so no interrupt return can clear the link
+   inside it. No cell waits on time or on another thread: the cells are
+   single-threaded register and memory facts.
+
+   The expected words are the project's model (src/rt/guest_interp.c: sc stores
+   and reports 1 only while the link is set, leaves the link as found, and does
+   not compare its address with ll's). That follows the MIPS32 operation text and
+   is UNMEASURED on the console. result is the sc result of the last sc, out0 the
+   word ll loaded, out1 the result of the first sc, out2 and out3 the words at A
+   and B after the cell, and out4 and out5 the model words for A and B; the model
+   reports 1 for every sc. Whether the console agrees with the model is read from
+   those words, not from the status, as in the fpu-vector family: the campaign
+   runner accepts a capture only when every record is PASS, so a disagreement
+   must not fail the record that measured it. The status says the window ran as
+   designed. llsc-control is the control and must store (ll loaded A, the sc
+   reported 1, A holds the stored word and B is untouched): if a plain pair does
+   not store, the other two cells mean nothing. llsc-second-sc passes when ll
+   loaded A and its first sc succeeded, which is the premise of the cell; what
+   the second sc then did is the measurement. llsc-other-address passes when ll
+   loaded A; what the sc to B did is the measurement.
+
+   Cells: llsc-control (ll A; sc A), llsc-second-sc (ll A; sc A; sc A again with
+   no new ll), and llsc-other-address (ll A; sc B). */
+#define LLSC_LINK_CELLS 3u
+#define LLSC_LINK_OUTS 6u
+#define LLSC_LINK_A_INIT 0x11111111u
+#define LLSC_LINK_B_INIT 0x44444444u
+#define LLSC_LINK_FIRST 0x22222222u
+#define LLSC_LINK_SECOND 0x33333333u
+#define LLSC_LINK_OTHER 0x55555555u
+
+/* Row c holds cell c's word A at [c][0] and word B at [c][1]; each row is one
+   16-byte aligned block, so every ll and sc address is word aligned. */
+static volatile uint32_t s_llsc_mem[LLSC_LINK_CELLS][4] __attribute__((aligned(16)));
+
+/* One window: ll A, then sc A storing `value`. */
+static uint32_t llsc_window_one(volatile uint32_t *a, uint32_t value, uint32_t *loaded) {
+    uint32_t got;
+    uint32_t result = value;
+    __asm__ volatile(
+        ".set push\n\t"
+        ".set noreorder\n\t"
+        "ll %0, 0(%2)\n\t"
+        "sc %1, 0(%2)\n\t"
+        ".set pop\n\t"
+        : "=&r"(got), "+r"(result)
+        : "r"(a)
+        : "memory");
+    *loaded = got;
+    return result;
+}
+
+/* One window: ll A, then two sc on A with no new ll between them. */
+static void llsc_window_twice(volatile uint32_t *a, uint32_t first_value,
+                              uint32_t second_value, uint32_t *loaded,
+                              uint32_t *first, uint32_t *second) {
+    uint32_t got;
+    uint32_t r1 = first_value;
+    uint32_t r2 = second_value;
+    __asm__ volatile(
+        ".set push\n\t"
+        ".set noreorder\n\t"
+        "ll %0, 0(%3)\n\t"
+        "sc %1, 0(%3)\n\t"
+        "sc %2, 0(%3)\n\t"
+        ".set pop\n\t"
+        : "=&r"(got), "+r"(r1), "+r"(r2)
+        : "r"(a)
+        : "memory");
+    *loaded = got;
+    *first = r1;
+    *second = r2;
+}
+
+/* One window: ll A, then sc B storing `value`. */
+static uint32_t llsc_window_other(volatile uint32_t *a, volatile uint32_t *b,
+                                  uint32_t value, uint32_t *loaded) {
+    uint32_t got;
+    uint32_t result = value;
+    __asm__ volatile(
+        ".set push\n\t"
+        ".set noreorder\n\t"
+        "ll %0, 0(%2)\n\t"
+        "sc %1, 0(%3)\n\t"
+        ".set pop\n\t"
+        : "=&r"(got), "+r"(result)
+        : "r"(a), "r"(b)
+        : "memory");
+    *loaded = got;
+    return result;
+}
+
+static void run_llsc_link(int emulated) {
+    static const char *const names[LLSC_LINK_CELLS] = {
+        "llsc-control", "llsc-second-sc", "llsc-other-address",
+    };
+    uint32_t loaded[LLSC_LINK_CELLS];
+    uint32_t first[LLSC_LINK_CELLS];
+    uint32_t last[LLSC_LINK_CELLS];
+    uint32_t a_after[LLSC_LINK_CELLS];
+    uint32_t b_after[LLSC_LINK_CELLS];
+    const uint32_t model_a[LLSC_LINK_CELLS] = {
+        LLSC_LINK_FIRST, LLSC_LINK_SECOND, LLSC_LINK_A_INIT,
+    };
+    const uint32_t model_b[LLSC_LINK_CELLS] = {
+        LLSC_LINK_B_INIT, LLSC_LINK_B_INIT, LLSC_LINK_OTHER,
+    };
+    int token;
+
+    /* Cell 0: a plain ll/sc pair, the control for the other two. */
+    probe_step(emulated, "llsc-link", "llsc-control");
+    s_llsc_mem[0][0] = LLSC_LINK_A_INIT;
+    s_llsc_mem[0][1] = LLSC_LINK_B_INIT;
+    token = sceKernelCpuSuspendIntr();
+    first[0] = llsc_window_one(&s_llsc_mem[0][0], LLSC_LINK_FIRST, &loaded[0]);
+    sceKernelCpuResumeIntr(token);
+    last[0] = first[0];
+    a_after[0] = s_llsc_mem[0][0];
+    b_after[0] = s_llsc_mem[0][1];
+
+    /* Cell 1: the second sc, with no new ll, after one that succeeded. */
+    probe_step(emulated, "llsc-link", "llsc-second-sc");
+    s_llsc_mem[1][0] = LLSC_LINK_A_INIT;
+    s_llsc_mem[1][1] = LLSC_LINK_B_INIT;
+    token = sceKernelCpuSuspendIntr();
+    llsc_window_twice(&s_llsc_mem[1][0], LLSC_LINK_FIRST, LLSC_LINK_SECOND,
+                      &loaded[1], &first[1], &last[1]);
+    sceKernelCpuResumeIntr(token);
+    a_after[1] = s_llsc_mem[1][0];
+    b_after[1] = s_llsc_mem[1][1];
+
+    /* Cell 2: sc to an address other than the one ll linked. */
+    probe_step(emulated, "llsc-link", "llsc-other-address");
+    s_llsc_mem[2][0] = LLSC_LINK_A_INIT;
+    s_llsc_mem[2][1] = LLSC_LINK_B_INIT;
+    token = sceKernelCpuSuspendIntr();
+    first[2] = llsc_window_other(&s_llsc_mem[2][0], &s_llsc_mem[2][1],
+                                 LLSC_LINK_OTHER, &loaded[2]);
+    sceKernelCpuResumeIntr(token);
+    last[2] = first[2];
+    a_after[2] = s_llsc_mem[2][0];
+    b_after[2] = s_llsc_mem[2][1];
+
+    for (uint32_t c = 0; c < LLSC_LINK_CELLS; c++) {
+        int pass = loaded[c] == LLSC_LINK_A_INIT;
+        if (c == 0u) {
+            pass = pass && first[0] == 1u && a_after[0] == model_a[0] &&
+                   b_after[0] == model_b[0];
+        } else if (c == 1u) {
+            pass = pass && first[1] == 1u;
+        }
+        const uint32_t out[LLSC_LINK_OUTS] = {
+            loaded[c], first[c], a_after[c], b_after[c], model_a[c], model_b[c],
+        };
+        emit_record_extended(emulated, "PSP-LLSC-001", names[c],
+                             pass ? "PASS" : "FAIL", last[c], out, LLSC_LINK_OUTS);
+    }
+    uint32_t done = LLSC_LINK_CELLS;
+    emit_record_extended(emulated, "PSP-LLSC-001", "llsc-link-done", "PASS",
+                         0, &done, 1);
+}
+#endif
+
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_REGISTRY_READONLY
 static uint32_t s_registry_categories;
 static uint32_t s_registry_keys;
@@ -6863,6 +7036,8 @@ int main(int argc, char *argv[]) {
     run_registry_readonly(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_KERNEL_MISC
     run_kernel_misc(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_LLSC_LINK
+    run_llsc_link(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),
