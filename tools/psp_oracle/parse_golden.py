@@ -607,6 +607,21 @@ _register_campaign_probe(
      "global-profiler": 2, "vtimer-basic": 13, "display-basic": 4,
      "impose-basic": 5},
 )
+# vfpu-compare: 15 operand pairs for each of vscmp.s, vsge.s and vslt.s, emitted
+# op-major (every vscmp.s cell, then vsge.s, then vslt.s), each with three
+# words: the model word, then the two operands. PASS means the compare wrote its
+# destination; agreement with the model is the result word against out0, which a
+# report reads (the status does not judge it). The parser checks shape.
+_VFPU_COMPARE_PAIRS = (
+    "lt", "eq", "gt", "zero-pos-neg", "zero-neg-pos", "nan-left-quiet",
+    "nan-right-quiet", "nan-left-signal", "nan-right-signal", "nan-left-negative",
+    "inf-pos-neg", "inf-neg-pos", "inf-pos-pos", "inf-neg-neg", "inf-pos-finite",
+)
+_register_campaign_probe(
+    "vfpu-compare", "PSP-VFPU-CMP-001",
+    tuple(f"{op}-{pair}" for op in ("vscmp", "vsge", "vslt") for pair in _VFPU_COMPARE_PAIRS),
+    {f"{op}-{pair}": 3 for op in ("vscmp", "vsge", "vslt") for pair in _VFPU_COMPARE_PAIRS},
+)
 
 
 # HLE measurement families (probe_hle_measure.c; H-oracle-hle-measure-1009).
