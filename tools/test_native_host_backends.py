@@ -297,6 +297,31 @@ class NativeHostBackendTests(unittest.TestCase):
         )
         self.assertIn("ALL AUDIO HOST TESTS PASSED", run.stdout)
 
+    def test_vblank_exit_closes_the_audio_dump_outside_the_stat_gate(self) -> None:
+        """SR_EXIT_AT_VBLANK leaves through _Exit, which skips atexit, so hle.c closes the
+        SR_AUDIODUMP file itself on that path whether or not SR_AUDIOSTAT is set (#802). The
+        audio selftest pins what sr_audio_dump_finish does; this pins that the exit calls it,
+        after the stats gate rather than inside it, and only where the public backend that
+        defines it is linked."""
+        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        start = hle.index("BOOT_EVENT phase=exit_at_vblank")
+        block = hle[start:hle.index("_Exit(0);", start)]
+        gate = block.index("if (audio_stat_on()) {")
+        depth, gate_end = 0, -1
+        for offset in range(block.index("{", gate), len(block)):
+            depth += {"{": 1, "}": -1}.get(block[offset], 0)
+            if depth == 0:
+                gate_end = offset
+                break
+        self.assertGreater(gate_end, gate, "the SR_AUDIOSTAT block must close before _Exit")
+        call = block.find("sr_audio_dump_finish();")
+        self.assertGreater(call, gate_end, "the dump close must run outside the SR_AUDIOSTAT gate")
+        guard = "#if !defined(SR_HLE_THREAD_SELFTEST) && defined(SR_PUBLIC_SAFE)\n"
+        self.assertEqual(block.rfind("#", 0, call), block.rfind(guard, 0, call),
+                         "the call must sit directly under the public-backend guard")
+        backend = (ROOT / "src" / "rt" / "audio_unavailable.c").read_text(encoding="utf-8")
+        self.assertIn("\nvoid sr_audio_dump_finish(void) {\n", backend)
+
 
 if __name__ == "__main__":
     unittest.main()
