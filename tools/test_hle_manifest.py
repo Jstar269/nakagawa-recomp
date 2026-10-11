@@ -438,6 +438,7 @@ class LiveManifestTests(unittest.TestCase):
             0x9944F31F: ("sceKernelSuspendThread", "h_SuspendThread", "dedicated"),
             0x6652B8CA: ("sceKernelSetAlarm", "h_SetAlarm", "dedicated"),
             0xBA6B92E2: ("sceKernelSysClock2USec", "h_SysClock2USec", "dedicated"),
+            0x110DEC9A: ("sceKernelUSec2SysClock", "h_USec2SysClock", "dedicated"),
             0x7E65B999: ("sceKernelCancelAlarm", "h_CancelAlarm", "dedicated"),
             0x034A921F: ("sceKernelGetVTimerTime", "h_ControlledUnsupported", "controlled_unsupported"),
             0x50F61D8A: ("sceKernelFreeMemoryBlock", "h_FreeMemoryBlock", "dedicated"),
@@ -456,7 +457,7 @@ class LiveManifestTests(unittest.TestCase):
             0x0CAE832B: ("sceRegCloseCategory", "h_RegCloseCategory", "dedicated"),
             0x1D8A762E: ("sceRegOpenCategory", "h_RegOpenCategory", "dedicated"),
         }
-        self.assertEqual(len(expected), 23)
+        self.assertEqual(len(expected), 24)
         for nid, (name, handler, classification) in expected.items():
             with self.subTest(nid=f"0x{nid:08x}"):
                 if nid not in self.regs:
@@ -467,6 +468,20 @@ class LiveManifestTests(unittest.TestCase):
                 self.assertEqual(registration["classification"], classification)
                 if classification == "controlled_unsupported" and nid not in (0x0CAE832B, 0x1D8A762E):
                     self.assertEqual(int(registration["refusal_error"], 16), 0x80020002)
+
+    def test_usec_sysclock_wide_and_umd_unregister_routes_are_dedicated(self) -> None:
+        expected = {
+            0xC8CD158C: ("sceKernelUSec2SysClockWide", "h_USec2SysClockWide"),
+            0xBD2BDE07: ("sceUmdUnRegisterUMDCallBack", "h_UmdUnRegisterUMDCallBack"),
+        }
+        for nid, (name, handler) in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["name"], name)
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+        self.assertIn("project choice", meta.HANDLER_LIMITATIONS["h_UmdUnRegisterUMDCallBack"])
 
     def test_findings_and_waivers_are_in_exact_balance(self) -> None:
         findings = [{**f, "nid": int(f["nid"], 16)} for f in self.manifest["findings"]]

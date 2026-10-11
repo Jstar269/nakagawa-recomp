@@ -228,6 +228,12 @@
     "name": "memset",
     "status": "complete"
   },
+  "0x110dec9a": {
+    "classification": "dedicated",
+    "handler": "h_USec2SysClock",
+    "name": "sceKernelUSec2SysClock",
+    "status": "partial"
+  },
   "0x1117c65f": {
     "classification": "dedicated",
     "handler": "h_IoRmdir",
@@ -2390,6 +2396,12 @@
     "name": "sceKernelDelaySysClockThread",
     "status": "unreviewed"
   },
+  "0xbd2bde07": {
+    "classification": "dedicated",
+    "handler": "h_UmdUnRegisterUMDCallBack",
+    "name": "sceUmdUnRegisterUMDCallBack",
+    "status": "partial"
+  },
   "0xbd2f1094": {
     "classification": "controlled_unsupported",
     "handler": "h_ControlledUnsupported",
@@ -2493,6 +2505,12 @@
     "handler": "h_OpenPSIDGetOpenPSID",
     "name": "sceOpenPSIDGetOpenPSID",
     "status": "unreviewed"
+  },
+  "0xc8cd158c": {
+    "classification": "dedicated",
+    "handler": "h_USec2SysClockWide",
+    "name": "sceKernelUSec2SysClockWide",
+    "status": "partial"
   },
   "0xca04a2b9": {
     "classification": "dedicated",

@@ -9938,6 +9938,22 @@ static uint32_t h_UmdRegisterUMDCallBack(CpuState *s) {
     return 0;
 }
 
+/* PSPSDK pspumd.h documents only a negative result for an unknown callback ID.
+ * Match the kernel callback delete path's UNKNOWN_UID result until hardware
+ * measurements establish sceUmdUnRegisterUMDCallBack's exact error code. */
+static uint32_t h_UmdUnRegisterUMDCallBack(CpuState *s) {
+    (void)s;
+    if (!s_umd_cb_uid || s_umd_cb_uid != A0) return 0x800201a1u;
+    s_umd_cb_uid = 0u;
+    return 0u;
+}
+
+static void hle_register_umd_callback_handlers(void) {
+    sr_hle_register(0xc6183d47u, "sceUmdActivate", h_UmdActivate);
+    sr_hle_register(0xaee7404du, "sceUmdRegisterUMDCallBack", h_UmdRegisterUMDCallBack);
+    sr_hle_register(0xbd2bde07u, "sceUmdUnRegisterUMDCallBack", h_UmdUnRegisterUMDCallBack);
+}
+
 /* VBLANK sub-interrupt handler the game registers; delivered once per frame by the scheduler
  * (it typically wakes the sleeping game thread). PSP_VBLANK_INT = 30. */
 static uint32_t g_vbl_handler = 0, g_vbl_arg = 0, g_vbl_no = 0; static int g_vbl_on = 0;
@@ -10507,6 +10523,22 @@ static uint32_t h_SysClock2USecWide(CpuState *s) {
     MEM_W32(A2, A0);
     MEM_W32(A3, A1);
     return 0;
+}
+/* The runtime models SceKernelSysClock as a microsecond count split into low/high
+ * words, so converting an unsigned microsecond duration is an identity with a
+ * zero high word. Validate the complete guest span before either write. */
+static uint32_t h_USec2SysClock(CpuState *s) {
+    (void)s;
+    if (!A1 || !sr_guest_span_writable(A1, 8u))
+        return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+    MEM_W32(A1, A0);
+    MEM_W32(A1 + 4u, 0u);
+    return 0u;
+}
+/* A 64-bit Allegrex/O32 result is returned as low $v0 and high $v1. */
+static uint32_t h_USec2SysClockWide(CpuState *s) {
+    s->r[3] = 0u;
+    return A0;
 }
 static uint32_t h_RtcGetCurrentTick(CpuState *s) {
     (void)s;
@@ -22547,6 +22579,7 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0x9944f31f, "sceKernelSuspendThread", h_SuspendThread);
     sr_hle_register(0x6652b8ca, "sceKernelSetAlarm", h_SetAlarm);
     sr_hle_register(0xba6b92e2, "sceKernelSysClock2USec", h_SysClock2USec);
+    sr_hle_register(0x110dec9au, "sceKernelUSec2SysClock", h_USec2SysClock);
     sr_hle_register(0x7e65b999, "sceKernelCancelAlarm", h_CancelAlarm);
     sr_hle_register_unsupported(0x034a921f, "sceKernelGetVTimerTime", 0x80020002u);
     sr_hle_register(0x50f61d8a, "sceKernelFreeMemoryBlock", h_FreeMemoryBlock);
@@ -22581,8 +22614,8 @@ static uint32_t h_ReferProfilerNull(CpuState *s) {
 }
 
 /* Imports that were absent from the registry and stopped titles on an unknown NID. Each
- * is either a real handler over state the runtime already models (sceKernelSysClock2USecWide
- * and sceCtrlGetSamplingMode, the latter registered with the ctrl sampling helper), or a
+ * is either a real handler over state the runtime already models (the sysclock conversion
+ * pair and sceCtrlGetSamplingMode, the latter registered with the ctrl sampling helper), or a
  * named controlled refusal. A refusal is never fake success: no virtual timer, hold-mode,
  * UMD popup, battery icon, sceNet, sceHttp, or audiocodec state exists to back these calls. ThreadMan and sceDisplay refusals use SCE_KERNEL_ERROR_NOTIMP, the code the
  * kernel refusals above already use; the non-kernel sceImpose, sceNet, sceHttp and
@@ -22590,6 +22623,7 @@ static uint32_t h_ReferProfilerNull(CpuState *s) {
  * sceReg and sceUmd refusals use. The two NIDs with no confirmed public name stay unregistered. */
 static void hle_register_unregistered_import_batch(void) {
     sr_hle_register(0xe1619d7cu, "sceKernelSysClock2USecWide", h_SysClock2USecWide);
+    sr_hle_register(0xc8cd158cu, "sceKernelUSec2SysClockWide", h_USec2SysClockWide);
     sr_hle_register(0x64d4540eu, "sceKernelReferThreadProfiler", h_ReferProfilerNull);
     sr_hle_register(0x8218b4ddu, "sceKernelReferGlobalProfiler", h_ReferProfilerNull);
     /* scePower_469989ad (0x469989ad) has no public name in the sources this project may consult, so
@@ -22673,6 +22707,7 @@ void sr_hle_init(void) {
     hle_register_kernel_import_sweep_handlers();
     hle_register_sysreg_handlers();
     hle_register_unregistered_import_batch();
+    hle_register_umd_callback_handlers();
     hle_register_regular_audio_handlers();
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
@@ -22695,6 +22730,7 @@ void sr_hle_init(void) {
     hle_register_wait_conformance_handlers();
     hle_register_kernel_import_sweep_handlers();
     hle_register_unregistered_import_batch();
+    hle_register_umd_callback_handlers();
     hle_register_partition_savedata_handlers();
     /* Internal address callback, reached only after a normal dispatch-table miss. */
     sr_hle_register(0x00061e74u, "newlibModuleStreamWrite", h_ModuleStreamWrite);
@@ -22755,8 +22791,6 @@ void sr_hle_init(void) {
     sr_hle_register(0xd7763699, "sceWlanGetSwitchState", h_WlanOn);
     sr_hle_register(0x04b7766e, "scePowerRegisterCallback", h_PowerRegisterCallback);
     sr_hle_register(0x46ebb729, "sceUmdCheckMedium", h_UmdCheckMedium);
-    sr_hle_register(0xc6183d47, "sceUmdActivate", h_UmdActivate);
-    sr_hle_register(0xaee7404d, "sceUmdRegisterUMDCallBack", h_UmdRegisterUMDCallBack);
     sr_hle_register(0x52089ca1, "sceKernelGetThreadStackFreeSize", h_GetThreadStackFreeSize);
     /* sceMpeg: faithful port (src/rt/mpeg.c). Drives the PSMF intro to completion. */
     sr_hle_register(0x682a619b, "sceMpegInit", h_MpegInit);
