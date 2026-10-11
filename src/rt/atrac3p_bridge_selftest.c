@@ -293,8 +293,13 @@ static void test_invalid_gain_frame_refuses_once(void)
         atrac3p_bridge_destroy(bridge);
         return;
     }
+    /* POSIX dup2 returns the new descriptor on success, MSVCRT _dup2 returns 0;
+     * both return -1 on failure, so only that value means the redirect did not
+     * happen. Testing for 0 left Linux with stderr already pointing at the
+     * capture file while the test believed it had failed, so every later line,
+     * the summary included, vanished into the deleted temporary file. */
     saved_stderr = SR_DUP(stderr_fd);
-    if (saved_stderr >= 0 && SR_DUP2(SR_FILENO(capture), stderr_fd) == 0)
+    if (saved_stderr >= 0 && SR_DUP2(SR_FILENO(capture), stderr_fd) != -1)
         redirected = 1;
     CHECK(redirected, "capture decoder error without exposing fixture output");
     if (!redirected) {
