@@ -9,6 +9,7 @@
 
 #include "perf.h"
 
+#include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -484,7 +485,7 @@ static void json_top_pcs(FILE *json, unsigned direction) {
     fputc('[', json);
     for (unsigned i = 0; i < count; i++) {
         if (i) fputc(',', json);
-        fprintf(json, "{\"pc\":\"0x%08x\",\"reason\":\"%s\",\"count\":%llu}",
+        fprintf(json, "{\"pc\":\"0x%08" PRIx32 "\",\"reason\":\"%s\",\"count\":%llu}",
                 entries[i].pc, interp_reason_name(entries[i].reason),
                 (unsigned long long)entries[i].count);
     }
@@ -939,9 +940,9 @@ void sr_perf_phase_report(int force) {
                 (unsigned long long)a->periods_lost);
         for (unsigned k = 0; k < SR_PERF_PHASE_SAMPLE_N; k++) {
             if (!a->pc[k] && !a->nid[k] && !a->uid[k]) continue;
-            fprintf(stderr, " [uid=0x%x pc=0x%08x%s]",
+            fprintf(stderr, " [uid=0x%" PRIx32 " pc=0x%08" PRIx32 "%s]",
                     a->uid[k], a->pc[k], a->nid[k] ? " nid" : "");
-            if (a->nid[k]) fprintf(stderr, "=0x%08x", a->nid[k]);
+            if (a->nid[k]) fprintf(stderr, "=0x%08" PRIx32, a->nid[k]);
         }
         fprintf(stderr, "\n");
         fflush(stderr);

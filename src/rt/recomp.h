@@ -17,6 +17,7 @@
 #define PSP_RECOMP_RT_H
 
 #include <stdint.h>
+#include <inttypes.h>
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -284,19 +285,19 @@ static inline void sr_log_mem_watch_context(uint32_t pc) {
     }
     unsigned hit = ++g_sr_mem_watch_context_count;
     fprintf(stderr,
-            "MEM_WATCH_CONTEXT pc=0x%08x hit=%u last_yield_pc=0x%08x hi=0x%08x lo=0x%08x fcr31=0x%08x fpcond=%u\n",
+            "MEM_WATCH_CONTEXT pc=0x%08" PRIx32 " hit=%u last_yield_pc=0x%08" PRIx32 " hi=0x%08" PRIx32 " lo=0x%08" PRIx32 " fcr31=0x%08" PRIx32 " fpcond=%" PRIu32 "\n",
             pc, hit, s_cpu->pc, s_cpu->hi, s_cpu->lo, s_cpu->fcr31, s_cpu->fpcond);
     for (unsigned base = 0; base < 32; base += 8) {
         fprintf(stderr, "MEM_WATCH_CONTEXT_GPR");
         for (unsigned i = base; i < base + 8; i++) {
-            fprintf(stderr, " r%u=0x%08x", i, s_cpu->r[i]);
+            fprintf(stderr, " r%u=0x%08" PRIx32, i, s_cpu->r[i]);
         }
         fputc('\n', stderr);
     }
     for (unsigned base = 0; base < 32; base += 8) {
         fprintf(stderr, "MEM_WATCH_CONTEXT_FPR");
         for (unsigned i = base; i < base + 8; i++) {
-            fprintf(stderr, " f%u=0x%08x", i, s_cpu->fi[i]);
+            fprintf(stderr, " f%u=0x%08" PRIx32, i, s_cpu->fi[i]);
         }
         fputc('\n', stderr);
     }
@@ -314,33 +315,33 @@ static inline void sr_log_store_context(uint32_t addr, uint32_t value,
     }
     unsigned hit = ++g_sr_store_context_count;
     fprintf(stderr,
-            "STORE_CONTEXT pc=0x%08x hit=%u addr=0x%08x width=%u val=0x%08x last_yield_pc=0x%08x hi=0x%08x lo=0x%08x\n",
+            "STORE_CONTEXT pc=0x%08" PRIx32 " hit=%u addr=0x%08" PRIx32 " width=%u val=0x%08" PRIx32 " last_yield_pc=0x%08" PRIx32 " hi=0x%08" PRIx32 " lo=0x%08" PRIx32 "\n",
             pc, hit, addr, width, value, s_cpu->pc, s_cpu->hi, s_cpu->lo);
     for (unsigned base = 0; base < 32; base += 8) {
         fprintf(stderr, "STORE_CONTEXT_GPR");
         for (unsigned i = base; i < base + 8; i++) {
-            fprintf(stderr, " r%u=0x%08x", i, s_cpu->r[i]);
+            fprintf(stderr, " r%u=0x%08" PRIx32, i, s_cpu->r[i]);
         }
         fputc('\n', stderr);
     }
     for (unsigned base = 0; base < 32; base += 8) {
         fprintf(stderr, "STORE_CONTEXT_FPR");
         for (unsigned i = base; i < base + 8; i++) {
-            fprintf(stderr, " f%u=0x%08x", i, s_cpu->fi[i]);
+            fprintf(stderr, " f%u=0x%08" PRIx32, i, s_cpu->fi[i]);
         }
         fputc('\n', stderr);
     }
     if (g_sr_store_context_mem_gpr >= 0) {
         uint32_t base = s_cpu->r[g_sr_store_context_mem_gpr] +
                         g_sr_store_context_mem_offset;
-        fprintf(stderr, "STORE_CONTEXT_MEM r%d+0x%08x base=0x%08x",
+        fprintf(stderr, "STORE_CONTEXT_MEM r%d+0x%08" PRIx32 " base=0x%08" PRIx32,
                 g_sr_store_context_mem_gpr, g_sr_store_context_mem_offset, base);
         for (unsigned i = 0; i < g_sr_store_context_mem_words; i++) {
             uint32_t word_addr = base + i * 4u;
             uint32_t word = 0;
             if (sr_inrange_n(word_addr, 4u)) {
                 memcpy(&word, SR_HOST(word_addr), sizeof word);
-                fprintf(stderr, " w%u=0x%08x", i, word);
+                fprintf(stderr, " w%u=0x%08" PRIx32, i, word);
             } else {
                 fprintf(stderr, " w%u=<oor>", i);
             }

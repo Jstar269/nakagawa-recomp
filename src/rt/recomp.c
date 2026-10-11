@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <string.h>
 #include "recomp.h"
 #include "nested_frames.h"
@@ -87,7 +88,7 @@ void sr_profile_dump(void) {
     for (int i = 0; i < PROF_HASH_SIZE; i++) {
         if (g_prof_table[i].used) {
             if (g_prof_table[i].call_count > 0 || g_prof_table[i].block_count > 0) {
-                fprintf(stderr, "pc=0x%08x calls=%llu blocks=%llu duration_ns=%llu\n",
+                fprintf(stderr, "pc=0x%08" PRIx32 " calls=%llu blocks=%llu duration_ns=%llu\n",
                         g_prof_table[i].pc,
                         (unsigned long long)g_prof_table[i].call_count,
                         (unsigned long long)g_prof_table[i].block_count,
@@ -152,7 +153,7 @@ static void dump_dispatch_trace(void) {
          * null/indirect dispatch -- and must be printable, not mistaken for an empty
          * record (issue #45). */
         if (!g_dtrace[idx].used) continue;
-        fprintf(stderr, "  [%2d] tgt=0x%08x pc=0x%08x ra=0x%08x uid=0x%x\n",
+        fprintf(stderr, "  [%2d] tgt=0x%08" PRIx32 " pc=0x%08" PRIx32 " ra=0x%08" PRIx32 " uid=0x%" PRIx32 "\n",
                 i, g_dtrace[idx].target, g_dtrace[idx].pc,
                 g_dtrace[idx].ra, g_dtrace[idx].uid);
     }
@@ -173,7 +174,7 @@ void sr_oor(uint32_t a, uint32_t v, int store) {
             static uint32_t seen[64]; static int n = 0; int known = 0;
             for (int i = 0; i < n; i++) if (seen[i] == a) { known = 1; break; }
             if (!known && n < 64) { seen[n++] = a;
-                fprintf(stderr, "OOR store [0x%08x] = 0x%08x\n", a, v); }
+                fprintf(stderr, "OOR store [0x%08" PRIx32 "] = 0x%08" PRIx32 "\n", a, v); }
         }
     } else g_oor_reads++;
 }
@@ -255,7 +256,7 @@ void sr_load_segment(uint32_t vaddr, const void *data, uint32_t len) {
     if (len == 0u) return;
     /* u32 arithmetic overflow guard: vaddr + len must be >= vaddr for a well-formed seg */
     if (end_vaddr < vaddr) {
-        fprintf(stderr, "sr_load_segment: vaddr=0x%08x len=0x%08x wraps the u32 range — refusing\n",
+        fprintf(stderr, "sr_load_segment: vaddr=0x%08" PRIx32 " len=0x%08" PRIx32 " wraps the u32 range — refusing\n",
                 vaddr, len);
         abort();
     }
@@ -264,11 +265,11 @@ void sr_load_segment(uint32_t vaddr, const void *data, uint32_t len) {
      * a span that crosses an alias boundary and is much larger than the host
      * allocation. */
     if (!sr_guest_span_writable(vaddr, len)) {
-        fprintf(stderr, "sr_load_segment: vaddr=0x%08x len=0x%08x end=0x%08x outside guest arena — refusing\n",
+        fprintf(stderr, "sr_load_segment: vaddr=0x%08" PRIx32 " len=0x%08" PRIx32 " end=0x%08" PRIx32 " outside guest arena — refusing\n",
                 vaddr, len, end_vaddr);
         abort();
     }
-    fprintf(stderr, "sr_load_segment: vaddr=0x%08x len=0x%08x SR_HOST=0x%p\n", vaddr, len, SR_HOST(vaddr));
+    fprintf(stderr, "sr_load_segment: vaddr=0x%08" PRIx32 " len=0x%08" PRIx32 " SR_HOST=0x%p\n", vaddr, len, SR_HOST(vaddr));
     memcpy(SR_HOST(vaddr), data, len);
     if (vaddr + len > g_loaded_end) g_loaded_end = vaddr + len;
 }
@@ -286,8 +287,8 @@ void sr_load_segment(uint32_t vaddr, const void *data, uint32_t len) {
  * image, user partition, VRAM, thread stacks, and interrupt stack. The previous 16 MB
  * placement could silently alias guest VRAM once the allocation grew past its boundary.
  * SR_PHYS masks this whole range into the calloc-zeroed arena. */
-#define SR_HEAP_BASE 0x0a000008u
-#define SR_HEAP_END  0x0c000000u  /* exclusive: end of the guest arena */
+#define SR_HEAP_BASE UINT32_C(0x0a000008)
+#define SR_HEAP_END  UINT32_C(0x0c000000)  /* exclusive: end of the guest arena */
 /* The nested host->guest call frames (src/rt/nested_frames.c) reserve the 1 MiB
  * hole between the thread-stack arena ceiling and this heap.  Pin the adjacency
  * so growing either region downward/upward cannot silently alias the other. */
@@ -431,8 +432,8 @@ static void sr_heap_note_write_impl(
         uint32_t effective_pc = pc ? pc : (s_cpu ? s_cpu->pc : 0u);
         uint32_t ra = s_cpu ? s_cpu->r[31] : 0u;
         fprintf(stderr,
-            "HEAP_HEADER_%sWRITE: header=0x%08x old_next=0x%08x old_size=0x%08x "
-            "write_addr=0x%08x width=0x%x value=0x%08x pc=0x%08x ra=0x%08x uid=0x%x\n",
+            "HEAP_HEADER_%sWRITE: header=0x%08" PRIx32 " old_next=0x%08" PRIx32 " old_size=0x%08" PRIx32 " "
+            "write_addr=0x%08" PRIx32 " width=0x%" PRIx32 " value=0x%08" PRIx32 " pc=0x%08" PRIx32 " ra=0x%08" PRIx32 " uid=0x%" PRIx32 "\n",
             bulk ? "BULK_" : "", hdr, MEM_R32(hdr), MEM_R32(hdr + 4u),
             addr, width, value, effective_pc, ra, sched_current_uid());
         fflush(stderr);
@@ -519,16 +520,16 @@ static SrHeapStats sr_heap_stats(void) {
 static void sr_heap_dump_failure(uint32_t requested) {
     SrHeapStats st = sr_heap_stats();
     fprintf(stderr,
-        "HEAP_STATE: request=0x%x carved=0x%x live=%u/0x%llx free=%u/0x%llx "
-        "largest_free=0x%x metadata=%s\n",
+        "HEAP_STATE: request=0x%" PRIx32 " carved=0x%" PRIx32 " live=%" PRIu32 "/0x%llx free=%" PRIu32 "/0x%llx "
+        "largest_free=0x%" PRIx32 " metadata=%s\n",
         requested, s_heap_bump_ptr - SR_HEAP_BASE,
         st.allocated_blocks, (unsigned long long)st.allocated_bytes,
         st.free_blocks, (unsigned long long)st.free_bytes,
         st.largest_free, st.metadata_valid ? "valid" : "INVALID");
     if (!st.metadata_valid) {
         fprintf(stderr,
-            "HEAP_SMASH: header=0x%08x words=0x%08x/0x%08x prev=0x%08x prev_size=0x%x "
-            "prev_state=%s (prev payload 0x%08x..0x%08x is the prime overrun suspect)\n",
+            "HEAP_SMASH: header=0x%08" PRIx32 " words=0x%08" PRIx32 "/0x%08" PRIx32 " prev=0x%08" PRIx32 " prev_size=0x%" PRIx32 " "
+            "prev_state=%s (prev payload 0x%08" PRIx32 "..0x%08" PRIx32 " is the prime overrun suspect)\n",
             st.bad_hdr, st.bad_word0, st.bad_word4,
             st.bad_prev_hdr, st.bad_prev_size,
             st.bad_prev_allocated ? "live" : "free",
@@ -536,7 +537,7 @@ static void sr_heap_dump_failure(uint32_t requested) {
     }
     if (getenv("SR_HEAP_DIAG")) {
         for (unsigned i = 0; i < 8 && st.largest_size[i] != 0u; ++i) {
-            fprintf(stderr, "HEAP_LIVE[%u]: payload=0x%08x size=0x%x\n",
+            fprintf(stderr, "HEAP_LIVE[%u]: payload=0x%08" PRIx32 " size=0x%" PRIx32 "\n",
                 i, st.largest_addr[i] + 8u, st.largest_size[i]);
         }
     }
@@ -672,7 +673,7 @@ uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra) {
         static int corrupt_list_n = 0;
         if (corrupt_list_n++ < 8)
             fprintf(stderr,
-                "HEAP_FREE_LIST_CORRUPT: quarantining invalid/cyclic list head=0x%08x\n",
+                "HEAP_FREE_LIST_CORRUPT: quarantining invalid/cyclic list head=0x%08" PRIx32 "\n",
                 s_heap_free_list);
         s_heap_free_list = 0u;
     }
@@ -682,7 +683,7 @@ uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra) {
         if (!sr_heap_is_header(cur) || cur >= s_heap_bump_ptr) {
             static int corrupt_list_n = 0;
             if (corrupt_list_n++ < 8)
-                fprintf(stderr, "HEAP_FREE_LIST_CORRUPT: header=0x%08x; quarantining list\n", cur);
+                fprintf(stderr, "HEAP_FREE_LIST_CORRUPT: header=0x%08" PRIx32 "; quarantining list\n", cur);
             s_heap_free_list = 0u;
             break;
         }
@@ -694,7 +695,7 @@ uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra) {
             static int corrupt_block_n = 0;
             if (corrupt_block_n++ < 8)
                 fprintf(stderr,
-                    "HEAP_FREE_LIST_CORRUPT: header=0x%08x size=0x%x next=0x%08x; quarantining list\n",
+                    "HEAP_FREE_LIST_CORRUPT: header=0x%08" PRIx32 " size=0x%" PRIx32 " next=0x%08" PRIx32 "; quarantining list\n",
                     cur, block_size, next);
             s_heap_free_list = 0u;
             break;
@@ -733,8 +734,8 @@ uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra) {
             }
             uint32_t result = cur + 8u;
             if (trace_on) fprintf(stderr,
-                "ALLOC_RET: size=0x%x ptr=0x%08x source=reuse block=0x%x "
-                "callsite=0x%08x ra=0x%08x uid=0x%x\n",
+                "ALLOC_RET: size=0x%" PRIx32 " ptr=0x%08" PRIx32 " source=reuse block=0x%" PRIx32 " "
+                "callsite=0x%08" PRIx32 " ra=0x%08" PRIx32 " uid=0x%" PRIx32 "\n",
                 size, result, MEM_R32(cur + 4u) & ~1u,
                 guest_ra >= 8u ? guest_ra - 8u : 0u, guest_ra, sched_current_uid());
             return result;
@@ -747,7 +748,7 @@ uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra) {
         s_heap_bump_ptr + alloc < s_heap_bump_ptr) {
         if (s_heap_fail_count++ <= 10) {
             fprintf(stderr,
-                "HEAP_ALLOC: fail (NULL) size=0x%x bump_ptr=0x%08x free_list=0x%08x\n",
+                "HEAP_ALLOC: fail (NULL) size=0x%" PRIx32 " bump_ptr=0x%08" PRIx32 " free_list=0x%08" PRIx32 "\n",
                 size, s_heap_bump_ptr, s_heap_free_list);
             sr_heap_dump_failure(size);
         }
@@ -760,8 +761,8 @@ uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra) {
     MEM_W32(ptr + 4u, alloc | 1u);
     uint32_t result = ptr + 8u;
     if (trace_on) fprintf(stderr,
-        "ALLOC_RET: size=0x%x ptr=0x%08x source=bump block=0x%x "
-        "callsite=0x%08x ra=0x%08x uid=0x%x\n",
+        "ALLOC_RET: size=0x%" PRIx32 " ptr=0x%08" PRIx32 " source=bump block=0x%" PRIx32 " "
+        "callsite=0x%08" PRIx32 " ra=0x%08" PRIx32 " uid=0x%" PRIx32 "\n",
         size, result, alloc,
         guest_ra >= 8u ? guest_ra - 8u : 0u, guest_ra, sched_current_uid());
     return result;
@@ -796,10 +797,10 @@ void sr_newlib_free(uint32_t ptr, uint32_t guest_ra) {
         static int diag_on = -1;
         if (diag_on < 0) diag_on = getenv("SR_HEAP_DIAG") ? 1 : 0;
         if (diag_on) fprintf(stderr,
-            "ALLOC_FREE_REJECT: foreign/interior ptr=0x%08x hdr=0x%08x "
-            "(not an owned block in [0x%08x,0x%08x)) "
-            "callsite=0x%08x ra=0x%08x uid=0x%x\n",
-            ptr, hdr, SR_HEAP_BASE, s_heap_bump_ptr,
+            "ALLOC_FREE_REJECT: foreign/interior ptr=0x%08" PRIx32 " hdr=0x%08" PRIx32 " "
+            "(not an owned block in [0x%08" PRIx32 ",0x%08" PRIx32 ")) "
+            "callsite=0x%08" PRIx32 " ra=0x%08" PRIx32 " uid=0x%" PRIx32 "\n",
+            ptr, hdr, (uint32_t)SR_HEAP_BASE, s_heap_bump_ptr,
             guest_ra >= 8u ? guest_ra - 8u : 0u, guest_ra, sched_current_uid());
         return;
     }
@@ -809,8 +810,8 @@ void sr_newlib_free(uint32_t ptr, uint32_t guest_ra) {
         static int trace_on = -1;
         if (trace_on < 0) trace_on = getenv("SR_ALLOC_TRACE") ? 1 : 0;
         if (trace_on) fprintf(stderr,
-            "ALLOC_FREE: ptr=0x%08x hdr=0x%08x block=0x%x "
-            "callsite=0x%08x ra=0x%08x uid=0x%x\n",
+            "ALLOC_FREE: ptr=0x%08" PRIx32 " hdr=0x%08" PRIx32 " block=0x%" PRIx32 " "
+            "callsite=0x%08" PRIx32 " ra=0x%08" PRIx32 " uid=0x%" PRIx32 "\n",
             ptr, hdr, sizeflags & ~1u,
             guest_ra >= 8u ? guest_ra - 8u : 0u, guest_ra, sched_current_uid());
     }
@@ -969,7 +970,7 @@ void sr_break(CpuState *s, uint32_t code, uint32_t pc) {
     (void)s;
     /* PSP uses BREAK for assertions; log/report and continue, or abort if fatal.
      * This is a controlled compatibility approximation, not full PSP BREAK exception emulation. */
-    fprintf(stderr, "[recomp/cpu] BREAK 0x%x encountered at pc=0x%08x\n", code, pc);
+    fprintf(stderr, "[recomp/cpu] BREAK 0x%" PRIx32 " encountered at pc=0x%08" PRIx32 "\n", code, pc);
     const char *fatal = getenv("SR_BREAK_FATAL");
     if (fatal && fatal[0] != '\0' && strcmp(fatal, "0") != 0) {
         fprintf(stderr, "Fatal error: SR_BREAK_FATAL is set; aborting.\n");
@@ -982,7 +983,7 @@ void sr_break(CpuState *s, uint32_t code, uint32_t pc) {
 void sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc) {
     (void)s;
     /* Production behavior: unsupported raw MIPS syscall is explicit/fatal/diagnostic. */
-    fprintf(stderr, "Fatal error: unsupported raw MIPS syscall 0x%x at pc=0x%08x\n", code, pc);
+    fprintf(stderr, "Fatal error: unsupported raw MIPS syscall 0x%" PRIx32 " at pc=0x%08" PRIx32 "\n", code, pc);
     sr_flight_fatal(SR_FLIGHT_KIND_FATAL_RAW_SYSCALL, pc, code, 0u);
     abort();
 }
@@ -1633,7 +1634,7 @@ static void dump_dispatch_misses(void) {
     fprintf(stderr, "\n--- UNIQUE DISPATCH MISSES SUMMARY (%d entries) ---\n", g_miss_count);
     for (int i = 0; i < MISS_HASH_SIZE; i++) {
         if (g_miss_table[i].target != 0) {
-            fprintf(stderr, "  target=0x%08x pc=0x%08x ra=0x%08x\n",
+            fprintf(stderr, "  target=0x%08" PRIx32 " pc=0x%08" PRIx32 " ra=0x%08" PRIx32 "\n",
                     g_miss_table[i].target, g_miss_table[i].pc, g_miss_table[i].ra);
         }
     }
@@ -1703,8 +1704,8 @@ static int dispatch_run_interp(
         return dispatch_try_with_boundary(s, flow_target, call_boundary);
     }
     fprintf(stderr,
-            "  INTERP_REJECT: target=0x%08x result=%s fault_pc=0x%08x "
-            "opcode=%s0x%08x address=0x%08x\n",
+            "  INTERP_REJECT: target=0x%08" PRIx32 " result=%s fault_pc=0x%08" PRIx32 " "
+            "opcode=%s0x%08" PRIx32 " address=0x%08" PRIx32 "\n",
             target, sr_guest_interp_result_name(interp_result), fault.pc,
             fault.opcode_valid ? "" : "unavailable/", fault.opcode, fault.address);
     fprintf(stderr, "  SEMANTIC_BOUNDARY: %s; in the works: #308\n",
@@ -1768,8 +1769,8 @@ static int dispatch_try_with_boundary(
         int vfpu_result = sr_vfpu_interp(s,op);
         if (perf_started) sr_perf_vfpu(op, perf_started, vfpu_result);
         if (vfpu_result==SR_VFPU_OTHER) {
-            fprintf(stderr, "VFPU_FALLBACK_OTHER: pc=0x%08x op=0x%08x target=0x%08x "
-                    "caller_pc=0x%08x ra=0x%08x sp=0x%08x a0=0x%08x a1=0x%08x a2=0x%08x\n",
+            fprintf(stderr, "VFPU_FALLBACK_OTHER: pc=0x%08" PRIx32 " op=0x%08" PRIx32 " target=0x%08" PRIx32 " "
+                    "caller_pc=0x%08" PRIx32 " ra=0x%08" PRIx32 " sp=0x%08" PRIx32 " a0=0x%08" PRIx32 " a1=0x%08" PRIx32 " a2=0x%08" PRIx32 "\n",
                     pc, op, target, s->pc, s->r[31], s->r[29], s->r[4], s->r[5], s->r[6]);
             sr_unimplemented(pc,"VFPU runtime interpreter returned SR_VFPU_OTHER");
         }
@@ -1830,7 +1831,7 @@ static int dispatch_try_with_boundary(
         if (sched_current_uid() != 0) {
             static int pc0_n = 0;
             if (pc0_n < 4) {
-                fprintf(stderr, "dispatch: pc==0 uid=0x%x ra=0x%08x target=0x%08x — halting thread\n",
+                fprintf(stderr, "dispatch: pc==0 uid=0x%" PRIx32 " ra=0x%08" PRIx32 " target=0x%08" PRIx32 " — halting thread\n",
                         sched_current_uid(), s->r[31], target);
                 pc0_n++;
             }
@@ -1863,7 +1864,7 @@ static int dispatch_try_with_boundary(
     static int s_displog = -1;
     if (s_displog < 0) s_displog = getenv("SR_DISPLOG") ? 1 : 0;
     if (s_displog)
-        fprintf(stderr, "DISPATCH 0x%08x from 0x%08x (ra=0x%08x)\n", target, s->pc, s->r[31]);
+        fprintf(stderr, "DISPATCH 0x%08" PRIx32 " from 0x%08" PRIx32 " (ra=0x%08" PRIx32 ")\n", target, s->pc, s->r[31]);
 
     /* Configured dispatch aliases.
      *
@@ -1899,7 +1900,7 @@ static int dispatch_try_with_boundary(
         if (fn) {
             static int reloc_fixup_n = 0;
             if (reloc_fixup_n < 20) {
-                fprintf(stderr, "RELOC_FIXUP: target 0x%08x -> 0x%08x (found recompiled fn)\n",
+                fprintf(stderr, "RELOC_FIXUP: target 0x%08" PRIx32 " -> 0x%08" PRIx32 " (found recompiled fn)\n",
                         target, target - 0x08000000u);
                 reloc_fixup_n++;
             }
@@ -1920,7 +1921,7 @@ static int dispatch_try_with_boundary(
             if (fn) {
                 static int kseg_fixup_n = 0;
                 if (kseg_fixup_n < 20) {
-                    fprintf(stderr, "KSEG_FIXUP: target 0x%08x -> 0x%08x (found recompiled fn)\n",
+                    fprintf(stderr, "KSEG_FIXUP: target 0x%08" PRIx32 " -> 0x%08" PRIx32 " (found recompiled fn)\n",
                             target, phys);
                     kseg_fixup_n++;
                 }
@@ -1942,7 +1943,7 @@ static int dispatch_try_with_boundary(
         if (late == SR_HLE_LATE_BUILTIN) {
             static int late_hle_n = 0;
             if (late_hle_n < 20) {
-                fprintf(stderr, "LATE_IMPORT_HLE: target=0x%08x from pc=0x%08x -> sr_syscall\n",
+                fprintf(stderr, "LATE_IMPORT_HLE: target=0x%08" PRIx32 " from pc=0x%08" PRIx32 " -> sr_syscall\n",
                         target, s->pc);
                 late_hle_n++;
             }
@@ -1962,7 +1963,7 @@ static int dispatch_try_with_boundary(
                  * alias would bypass unload and same-address reload (#593). */
                 static int late_resolve_n = 0;
                 if (late_resolve_n < 20) {
-                    fprintf(stderr, "LATE_IMPORT_RESOLVE: target=0x%08x -> 0x%08x\n",
+                    fprintf(stderr, "LATE_IMPORT_RESOLVE: target=0x%08" PRIx32 " -> 0x%08" PRIx32 "\n",
                             target, resolved);
                     late_resolve_n++;
                 }
@@ -1970,7 +1971,7 @@ static int dispatch_try_with_boundary(
             } else {
                 static int late_dangle_n = 0;
                 if (late_dangle_n < 20) {
-                    fprintf(stderr, "LATE_IMPORT_DANGLE: target=0x%08x resolved to 0x%08x "
+                    fprintf(stderr, "LATE_IMPORT_DANGLE: target=0x%08" PRIx32 " resolved to 0x%08" PRIx32 " "
                             "but no recompiled body — falling through to miss path\n",
                             target, late);
                     late_dangle_n++;
@@ -1999,7 +2000,7 @@ static int dispatch_try_with_boundary(
         }
 
         if (s_displog) {
-            fprintf(stderr, "  -> calling fn %p for 0x%08x, s->r[29]=0x%08x sr_timeslice=%d\n",
+            fprintf(stderr, "  -> calling fn %p for 0x%08" PRIx32 ", s->r[29]=0x%08" PRIx32 " sr_timeslice=%d\n",
                     (void*)fn, target, s->r[29],
                     atomic_load_explicit(&sr_timeslice, memory_order_relaxed));
         }
@@ -2010,7 +2011,7 @@ static int dispatch_try_with_boundary(
         }
 
         if (s_displog) {
-            fprintf(stderr, "  <- returned from fn %p for 0x%08x, s->r[29]=0x%08x sr_timeslice=%d\n", (void*)fn, target, s->r[29], atomic_load_explicit(&sr_timeslice, memory_order_relaxed));
+            fprintf(stderr, "  <- returned from fn %p for 0x%08" PRIx32 ", s->r[29]=0x%08" PRIx32 " sr_timeslice=%d\n", (void*)fn, target, s->r[29], atomic_load_explicit(&sr_timeslice, memory_order_relaxed));
         }
     } else {
         {
@@ -2029,7 +2030,7 @@ static int dispatch_try_with_boundary(
                     g_miss_table[idx].pc = s->pc;
                     g_miss_table[idx].ra = s->r[31];
                     g_miss_count++;
-                    fprintf(stderr, "DISPATCH_MISS_NEW[%d]: target=0x%08x caller_pc=0x%08x ra=0x%08x uid=0x%x\n",
+                    fprintf(stderr, "DISPATCH_MISS_NEW[%d]: target=0x%08" PRIx32 " caller_pc=0x%08" PRIx32 " ra=0x%08" PRIx32 " uid=0x%" PRIx32 "\n",
                             g_miss_count, target, s->pc, s->r[31], sched_current_uid());
                     found = 1;
                     break;
@@ -2090,7 +2091,7 @@ void sr_hle_call(CpuState *s, uint32_t nid) {
 }
 
 void sr_unimplemented(uint32_t pc, const char *reason) {
-    fprintf(stderr, "sr_unimplemented: function 0x%08x: %s\n", pc, reason);
+    fprintf(stderr, "sr_unimplemented: function 0x%08" PRIx32 ": %s\n", pc, reason);
     sr_flight_fatal(SR_FLIGHT_KIND_FATAL_UNIMPLEMENTED, pc, 0u, 0u);
     abort();
 }
@@ -2107,7 +2108,7 @@ static unsigned long long s_step = 0;
 int sr_trace_open(const char *path, const char *target, uint32_t start_pc) {
     s_fp = fopen(path, "wb");
     if (!s_fp) return -1;
-    fprintf(s_fp, "# psp-recomp trace v1 oracle=recomp target=%s start_pc=0x%08x\n",
+    fprintf(s_fp, "# psp-recomp trace v1 oracle=recomp target=%s start_pc=0x%08" PRIx32 "\n",
             target ? target : "unknown", start_pc);
     s_step = 0;
     sr_trace_active = 1;
@@ -2137,7 +2138,7 @@ void sr_end_impl(CpuState *s, uint32_t mem_addr, int mem_size) {
     if (sr_trace_window_armed() && !sr_trace_window_begin_instruction(s_pc)) return;
     char line[4096];
     size_t n = 0;
-    n = sr_buf_append(line, sizeof(line), n, "%llu pc=0x%08x op=0x%08x",
+    n = sr_buf_append(line, sizeof(line), n, "%llu pc=0x%08" PRIx32 " op=0x%08" PRIx32,
                       (unsigned long long)s_step, s_pc, s_op);
     /* Emit the per-step register-write diff in the canonical TRACE_FORMAT.md order
      * (r1..r31, hi, lo, f0..f31, fcr31, v0..v127) so the recompiled-code trace is
@@ -2145,32 +2146,32 @@ void sr_end_impl(CpuState *s, uint32_t mem_addr, int mem_size) {
      * whose value changed since sr_begin_impl are listed. */
     for (int i = 1; i < 32; i++)
         if (s_r[i] != s->r[i])
-            n = sr_buf_append(line, sizeof(line), n, " r%d=0x%08x", i, s->r[i]);
+            n = sr_buf_append(line, sizeof(line), n, " r%d=0x%08" PRIx32, i, s->r[i]);
     if (s_hi != s->hi)
-        n = sr_buf_append(line, sizeof(line), n, " hi=0x%08x", s->hi);
+        n = sr_buf_append(line, sizeof(line), n, " hi=0x%08" PRIx32, s->hi);
     if (s_lo != s->lo)
-        n = sr_buf_append(line, sizeof(line), n, " lo=0x%08x", s->lo);
+        n = sr_buf_append(line, sizeof(line), n, " lo=0x%08" PRIx32, s->lo);
     for (int i = 0; i < 32; i++)
         if (s_fi[i] != s->fi[i])
-            n = sr_buf_append(line, sizeof(line), n, " f%d=0x%08x", i, s->fi[i]);
+            n = sr_buf_append(line, sizeof(line), n, " f%d=0x%08" PRIx32, i, s->fi[i]);
     if (s_fcr31 != s->fcr31)
-        n = sr_buf_append(line, sizeof(line), n, " fcr31=0x%08x", s->fcr31);
+        n = sr_buf_append(line, sizeof(line), n, " fcr31=0x%08" PRIx32, s->fcr31);
     /* Compare and print the raw 32-bit register bits (the vi union view of the
      * float VFPU file): comparing the s_vi snapshot against the float view
      * converts through float, and passing a float to %x is undefined varargs
      * behavior. */
     for (int i = 0; i < 128; i++)
         if (s_vi[i] != s->vi[i])
-            n = sr_buf_append(line, sizeof(line), n, " v%d=0x%08x", i, s->vi[i]);
+            n = sr_buf_append(line, sizeof(line), n, " v%d=0x%08" PRIx32, i, s->vi[i]);
     /* Memory-write tokens (ascending by address), matching the interpreter. */
     if (mem_size == 1)
-        n = sr_buf_append(line, sizeof(line), n, " m8[0x%08x]=0x%02x",
+        n = sr_buf_append(line, sizeof(line), n, " m8[0x%08" PRIx32 "]=0x%02x",
                           mem_addr, MEM_R8(mem_addr));
     else if (mem_size == 2)
-        n = sr_buf_append(line, sizeof(line), n, " m16[0x%08x]=0x%04x",
+        n = sr_buf_append(line, sizeof(line), n, " m16[0x%08" PRIx32 "]=0x%04x",
                           mem_addr, MEM_R16(mem_addr));
     else if (mem_size == 4)
-        n = sr_buf_append(line, sizeof(line), n, " m32[0x%08x]=0x%08x",
+        n = sr_buf_append(line, sizeof(line), n, " m32[0x%08" PRIx32 "]=0x%08" PRIx32,
                           mem_addr, MEM_R32(mem_addr));
     if (n >= sizeof(line)) n = sizeof(line) - 1;
     if (sr_trace_window_armed()) {
@@ -2181,9 +2182,9 @@ void sr_end_impl(CpuState *s, uint32_t mem_addr, int mem_size) {
         char rec[2048];
         size_t m = sr_buf_append(rec, sizeof(rec), 0, "%.*s", (int)n, line);
         for (unsigned i = 0; idx && i < idx->vn; i++)
-            m = sr_buf_append(rec, sizeof(rec), m, " abs v%u=0x%08x", idx->v[i], s->vi[idx->v[i]]);
+            m = sr_buf_append(rec, sizeof(rec), m, " abs v%u=0x%08" PRIx32, idx->v[i], s->vi[idx->v[i]]);
         for (unsigned i = 0; idx && i < idx->fn; i++)
-            m = sr_buf_append(rec, sizeof(rec), m, " abs f%u=0x%08x", idx->f[i], s->fi[idx->f[i]]);
+            m = sr_buf_append(rec, sizeof(rec), m, " abs f%u=0x%08" PRIx32, idx->f[i], s->fi[idx->f[i]]);
         if (m >= sizeof(rec)) m = sizeof(rec) - 1;
         rec[m] = '\0';
         sr_trace_window_record(s_pc, rec);

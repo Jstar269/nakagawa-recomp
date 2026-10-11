@@ -1025,7 +1025,7 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
 
     if (log_dispatch) {
         fprintf(stderr,
-                "GUEST_INTERP_ENTER entry=0x%08x caller_pc=0x%08x ra=0x%08x\n",
+                "GUEST_INTERP_ENTER entry=0x%08" PRIx32 " caller_pc=0x%08" PRIx32 " ra=0x%08" PRIx32 "\n",
                 entry, s->pc, s->r[31]);
     }
 
@@ -1039,7 +1039,7 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
             s->pc = pc;
             if (log_dispatch) {
                 fprintf(stderr,
-                        "GUEST_INTERP_CALL_RETURN pc=0x%08x instructions=%llu\n",
+                        "GUEST_INTERP_CALL_RETURN pc=0x%08" PRIx32 " instructions=%llu\n",
                         pc, instruction_count);
             }
             return SR_GUEST_INTERP_CALL_RETURN;
@@ -1074,7 +1074,7 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
             s->pc = pc;
             if (log_dispatch) {
                 fprintf(stderr,
-                        "GUEST_INTERP_AOT_HANDOFF pc=0x%08x instructions=%llu\n",
+                        "GUEST_INTERP_AOT_HANDOFF pc=0x%08" PRIx32 " instructions=%llu\n",
                         pc, instruction_count);
             }
             dispatch(s, pc);

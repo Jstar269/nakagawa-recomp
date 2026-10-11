@@ -878,6 +878,7 @@ PUBLIC_TARGETS := \
 	compiler-info \
 	runtime-objects \
 	portable-core-objects \
+	format-portability-check \
 	atrac3p-objects \
 	player \
 	public-safe-verify \
@@ -998,6 +999,7 @@ HELP_DESCRIPTION_compile := compile and link the generated runtime
 HELP_DESCRIPTION_compiler-info := print the effective compiler and build settings
 HELP_DESCRIPTION_runtime-objects := build runtime and decoder objects
 HELP_DESCRIPTION_portable-core-objects := build host-neutral runtime objects
+HELP_DESCRIPTION_format-portability-check := compile the portable core against a 32-bit newlib-shaped stdint shim with -Werror=format
 HELP_DESCRIPTION_atrac3p-objects := build ATRAC3+ decoder objects
 HELP_DESCRIPTION_player := build the native player
 HELP_DESCRIPTION_player-ui-tests := build and run native player UI tests (needs SDL3)
@@ -1286,18 +1288,20 @@ test:
 	$(PYTHON) -m unittest discover -s tools -p "test_*.py" -v
 
 check:
-	@echo "== [1/6] Documentation freshness lint =="
+	@echo "== [1/7] Documentation freshness lint =="
 	$(PYTHON) tools/lint_docs.py
-	@echo "== [2/6] Canonical publication policy coverage =="
+	@echo "== [2/7] Canonical publication policy coverage =="
 	$(PYTHON) -m unittest tools/test_publication_policy_gate.py
-	@echo "== [3/6] Provenance record and disposition gap check =="
+	@echo "== [3/7] Provenance record and disposition gap check =="
 	$(PYTHON) tools/provenance_record_gap.py --check
-	@echo "== [4/6] Publication safety audits (index & worktree) =="
+	@echo "== [4/7] Publication safety audits (index & worktree) =="
 	$(PYTHON) tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
 	$(PYTHON) tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
-	@echo "== [5/6] Native host core tests =="
+	@echo "== [5/7] Native host core tests =="
 	$(MAKE) native-core-tests
-	@echo "== [6/6] Fast critical test subset =="
+	@echo "== [6/7] Format portability check (32-bit newlib simulation) =="
+	$(PYTHON) tools/format_portability_check.py
+	@echo "== [7/7] Fast critical test subset =="
 	$(PYTHON) -m unittest \
 		tools/test_title_manifest.py \
 		tools/test_title_catalog.py \
@@ -1773,6 +1777,12 @@ $(PORTABLE_CORE_DIR)/%.o: src/rt/%.c src/rt/recomp.h
 	$(CC) $(PORTABLE_CORE_CFLAGS) $(DEPFLAGS) -c $< -o $@
 
 portable-core-objects: $(PORTABLE_CORE_OBJS)
+
+# Fixed-width values printed with plain %u/%x/%d compile silently where uint32_t is
+# unsigned int and fail on 32-bit newlib targets; the checker reproduces that with a
+# shim and a 32-bit long (-m32 on LP64 hosts, see tools/format_portability_check.py).
+format-portability-check:
+	$(PYTHON) tools/format_portability_check.py
 
 # Only the flight recorder embeds the reproducible build identity. A stamp named
 # after the identity makes flight_recorder.o rebuild when the commit or

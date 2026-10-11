@@ -98,7 +98,7 @@ void sr_watch_configure(void) {
     s_watch_start = (uint64_t)start;
     s_watch_end = s_watch_start + (uint64_t)length;
     g_sr_watch_enabled = 1;
-    fprintf(stderr, "SR_WATCH: armed addr=0x%08x len=0x%llx\n",
+    fprintf(stderr, "SR_WATCH: armed addr=0x%08" PRIx32 " len=0x%llx\n",
             (uint32_t)s_watch_start, length);
 }
 
@@ -116,7 +116,7 @@ void sr_watch_store(uint32_t pc, uint32_t addr, uint32_t value, uint32_t width) 
     if (store_start >= s_watch_end || store_end <= s_watch_start) return;
     s_watch_matches++;
     fprintf(stderr,
-            "SR_WATCH: pc=0x%08x addr=0x%08x val=0x%08x width=%u vblank=%u\n",
+            "SR_WATCH: pc=0x%08" PRIx32 " addr=0x%08" PRIx32 " val=0x%08" PRIx32 " width=%" PRIu32 " vblank=%" PRIu32 "\n",
             pc, addr, value, width, s_watch_vblank);
 }
 
@@ -163,18 +163,18 @@ void sr_trace_window_configure(void) {
         fprintf(stderr, "TRACE_WINDOW: cannot open '%s'\n", path);
         return;
     }
-    fprintf(s_tw_fp, "# trace-window v1 lo=0x%08x hi=0x%08x limit=%lu v=%u f=%u\n",
+    fprintf(s_tw_fp, "# trace-window v1 lo=0x%08" PRIx32 " hi=0x%08" PRIx32 " limit=%lu v=%u f=%u\n",
             lo, hi, s_tw_limit, s_tw_indices.vn, s_tw_indices.fn);
     s_tw_lo = lo;
     s_tw_hi = hi;
     s_tw_armed = 1;
-    fprintf(stderr, "TRACE_WINDOW: armed lo=0x%08x hi=0x%08x limit=%lu v=%u f=%u path=%s\n",
+    fprintf(stderr, "TRACE_WINDOW: armed lo=0x%08" PRIx32 " hi=0x%08" PRIx32 " limit=%lu v=%u f=%u path=%s\n",
             lo, hi, s_tw_limit, s_tw_indices.vn, s_tw_indices.fn, path);
 }
 
 void sr_trace_note_frame(uint32_t frame) {
     if (!s_tw_armed || !s_tw_fp) return;
-    fprintf(s_tw_fp, "frame %u\n", frame);
+    fprintf(s_tw_fp, "frame %" PRIu32 "\n", frame);
 }
 
 int sr_trace_window_armed(void) { return s_tw_armed; }
@@ -652,8 +652,8 @@ static int write_refusals(FILE *file) {
     char first_nid[16];
     char first_pc[16];
     if (s_refusal_count != 0u) {
-        snprintf(first_nid, sizeof(first_nid), "%u", s_refusal_first_nid);
-        snprintf(first_pc, sizeof(first_pc), "%u", s_refusal_first_pc);
+        snprintf(first_nid, sizeof(first_nid), "%" PRIu32, s_refusal_first_nid);
+        snprintf(first_pc, sizeof(first_pc), "%" PRIu32, s_refusal_first_pc);
     } else {
         snprintf(first_nid, sizeof(first_nid), "null");
         snprintf(first_pc, sizeof(first_pc), "null");
@@ -666,7 +666,7 @@ static int write_refusals(FILE *file) {
         return 0;
     }
     for (uint32_t i = 0u; i < s_refusal_distinct; ++i) {
-        if (fprintf(file, "%s{\"nid\": %u, \"count\": %llu}", i ? ", " : "", s_refusal_nids[i],
+        if (fprintf(file, "%s{\"nid\": %" PRIu32 ", \"count\": %llu}", i ? ", " : "", s_refusal_nids[i],
                     (unsigned long long)s_refusal_nid_counts[i]) < 0) {
             return 0;
         }
@@ -727,7 +727,7 @@ static int write_bundle(int reason) {
     ok = ok && fputs("  \"recorder\": {\"enabled_classes\": ", file) != EOF;
     ok = ok && write_enabled_classes(file, s_flight_classes);
     ok = ok && fprintf(file,
-                       ", \"limit\": %u, \"recorded\": %llu, \"dropped\": %llu, "
+                       ", \"limit\": %" PRIu32 ", \"recorded\": %llu, \"dropped\": %llu, "
                        "\"triggers\": {\"first_fatal\": %s, \"first_unsupported_nid\": %s, "
                        "\"fired\": %llu}},\n",
                         s_flight_limit, (unsigned long long)s_flight_recorded,
@@ -740,7 +740,7 @@ static int write_bundle(int reason) {
                            reason == SR_FLIGHT_TERMINAL_HANG ? "hang" : "running";
     ok = ok && fprintf(file,
                        "  \"terminal\": {\"reason\": \"%s\", \"sequence\": %llu, "
-                       "\"kind\": %u, \"arg0\": %u},\n",
+                       "\"kind\": %" PRIu32 ", \"arg0\": %" PRIu32 "},\n",
                        terminal, (unsigned long long)s_flight_terminal_sequence,
                        s_flight_terminal_kind, s_flight_terminal_arg) >= 0;
     ok = ok && write_refusals(file);
@@ -752,18 +752,18 @@ static int write_bundle(int reason) {
         const SrFlightEvent *event = &s_flight_events[slot];
         ok = fprintf(file,
                      "%s    {\"schema_version\": %u, \"sequence\": %llu, \"class\": \"%s\", "
-                     "\"kind\": %u, \"arg0\": %u, \"arg1\": %u, \"arg2\": %u, \"arg3\": %u",
-                     i ? ",\n" : "\n", event->schema_version, (unsigned long long)event->sequence,
+                     "\"kind\": %" PRIu32 ", \"arg0\": %" PRIu32 ", \"arg1\": %" PRIu32 ", \"arg2\": %" PRIu32 ", \"arg3\": %" PRIu32,
+                     i ? ",\n" : "\n", (unsigned)event->schema_version, (unsigned long long)event->sequence,
                      class_name(event->event_class), event->kind, event->arg0, event->arg1,
                      event->arg2, event->arg3) >= 0;
         if (ok && event->event_class == SR_FLIGHT_CLASS_HLE &&
             event->kind == SR_FLIGHT_KIND_HLE_IMPORT) {
-            ok = fprintf(file, ", \"arguments\": [%u, %u, %u, %u], \"return_value\": ",
+            ok = fprintf(file, ", \"arguments\": [%" PRIu32 ", %" PRIu32 ", %" PRIu32 ", %" PRIu32 "], \"return_value\": ",
                          event->arguments[0], event->arguments[1], event->arguments[2],
                          event->arguments[3]) >= 0;
             if (ok) {
                 if (event->has_return) {
-                    ok = fprintf(file, "%u", event->return_value) >= 0;
+                    ok = fprintf(file, "%" PRIu32, event->return_value) >= 0;
                 } else {
                     ok = fputs("null", file) != EOF;
                 }

@@ -46,6 +46,7 @@
 #include "strbuf.h"
 
 #include <stdint.h>
+#include <inttypes.h>
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
@@ -783,10 +784,10 @@ static void ge_capture_configure(void) {
     const char *exit_text = getenv("SR_GE_CAPTURE_EXIT");
     s_capture_exit = exit_text && exit_text[0] && strcmp(exit_text, "0") != 0;
     if (s_capture_frame_end == s_capture_frame) {
-        fprintf(stderr, "GE_CAPTURE: armed frame=%u min_prims=%lu path=%s\n",
+        fprintf(stderr, "GE_CAPTURE: armed frame=%" PRIu32 " min_prims=%lu path=%s\n",
                 s_capture_frame, s_capture_min_prims, s_capture_path);
     } else {
-        fprintf(stderr, "GE_CAPTURE: armed frames=%u-%u min_prims=%lu path=%s\n",
+        fprintf(stderr, "GE_CAPTURE: armed frames=%" PRIu32 "-%" PRIu32 " min_prims=%lu path=%s\n",
                 s_capture_frame, s_capture_frame_end, s_capture_min_prims, s_capture_path);
     }
 }
@@ -814,7 +815,7 @@ static void trace_mtx_write(const char *name, int cursor, uint32_t data) {
     if (on < 0) on = getenv("SR_GEMATW") ? 1 : 0;
     if (!on || n >= 120) return;
     n++;
-    fprintf(stderr, "GEMATW f=%u %s[%d] = 0x%06x (%g)\n",
+    fprintf(stderr, "GEMATW f=%" PRIu32 " %s[%d] = 0x%06" PRIx32 " (%g)\n",
             s_ge_frame, name, cursor, data, decode_float24(data));
 }
 static void ge_snapshot_plain(const char *path);   /* defined near ge_snapshot below */
@@ -948,19 +949,19 @@ void ge_transition_trace_check(const char *why, uint32_t vcount) {
         uint32_t now = ge_tr_watch_hash(w);
         if (now == w->hash) continue;
         fprintf(s_tr_fp,
-                "{\"kind\":\"late_write\",\"frame\":%u,\"draw\":%u,\"draw_id\":\"%08x\","
-                "\"list\":\"0x%08x\",\"cmd\":\"0x%08x\",\"prim\":%d,\"count\":%d,"
-                "\"vbase\":\"0x%08x\",\"ibase\":\"0x%08x\","
-                "\"vertex_span\":[\"0x%08x\",\"0x%08x\"],\"index_span\":[\"0x%08x\",\"0x%08x\"],"
-                "\"hash_at_draw\":\"%08x\",\"hash_at_check\":\"%08x\",\"check\":\"%s\",\"check_vblank\":%u}\n",
+                "{\"kind\":\"late_write\",\"frame\":%" PRIu32 ",\"draw\":%" PRIu32 ",\"draw_id\":\"%08" PRIx32 "\","
+                "\"list\":\"0x%08" PRIx32 "\",\"cmd\":\"0x%08" PRIx32 "\",\"prim\":%d,\"count\":%d,"
+                "\"vbase\":\"0x%08" PRIx32 "\",\"ibase\":\"0x%08" PRIx32 "\","
+                "\"vertex_span\":[\"0x%08" PRIx32 "\",\"0x%08" PRIx32 "\"],\"index_span\":[\"0x%08" PRIx32 "\",\"0x%08" PRIx32 "\"],"
+                "\"hash_at_draw\":\"%08" PRIx32 "\",\"hash_at_check\":\"%08" PRIx32 "\",\"check\":\"%s\",\"check_vblank\":%" PRIu32 "}\n",
                 w->frame, w->draw, w->draw_id, w->list, w->cmd, w->prim, w->count, w->vbase, w->ibase,
                 w->vlo, w->vhi, w->ilo, w->ihi, w->hash, now, why, vcount);
-        fprintf(stderr, "GE_LATE_WRITE frame=%u draw=%u draw_id=%08x list=0x%08x cmd=0x%08x "
-                "span=0x%08x-0x%08x check=%s vbl=%u\n",
+        fprintf(stderr, "GE_LATE_WRITE frame=%" PRIu32 " draw=%" PRIu32 " draw_id=%08" PRIx32 " list=0x%08" PRIx32 " cmd=0x%08" PRIx32 " "
+                "span=0x%08" PRIx32 "-0x%08" PRIx32 " check=%s vbl=%" PRIu32 "\n",
                 w->frame, w->draw, w->draw_id, w->list, w->cmd, w->vlo, w->vhi, why, vcount);
     }
     if (s_tr_watch_dropped) {
-        fprintf(stderr, "GE_LATE_WRITE: %lu weighted draw(s) not watched (ring of %d full) before check=%s vbl=%u\n",
+        fprintf(stderr, "GE_LATE_WRITE: %lu weighted draw(s) not watched (ring of %d full) before check=%s vbl=%" PRIu32 "\n",
                 s_tr_watch_dropped, TR_WATCH_MAX, why, vcount);
         s_tr_watch_dropped = 0;
     }
@@ -1064,16 +1065,16 @@ static void ge_transition_trace_draw(int type, int count, const VFmt *vf, unsign
     FILE *fp = s_tr_fp;
     uint32_t draw_id = ge_transition_draw_id(ge.vtype, vbase, type, count);
     fprintf(fp,
-            "{\"frame\":%u,\"draw\":%u,\"prim_index\":%lu,"
-            "\"list\":\"0x%08x\",\"cmd\":\"0x%08x\","
+            "{\"frame\":%" PRIu32 ",\"draw\":%" PRIu32 ",\"prim_index\":%lu,"
+            "\"list\":\"0x%08" PRIx32 "\",\"cmd\":\"0x%08" PRIx32 "\","
             "\"prim\":%d,\"count\":%d,"
-            "\"vtype\":\"0x%06x\","
+            "\"vtype\":\"0x%06" PRIx32 "\","
             "\"w_fmt\":%d,\"w_count\":%d,\"tc_fmt\":%d,\"col_fmt\":%d,"
             "\"nrm_fmt\":%d,\"pos_fmt\":%d,\"idx_fmt\":%d,\"morph_n\":%d,\"through\":%d,"
-            "\"vbase\":\"0x%08x\",\"ibase\":\"0x%08x\","
-            "\"fb_ptr\":\"0x%08x\",\"fb_stride\":%u,\"fb_fmt\":%u,"
-            "\"tex_enable\":%d,\"tex_addr\":\"0x%08x\",\"tex_fmt\":%u,"
-            "\"draw_id\":\"%08x\","
+            "\"vbase\":\"0x%08" PRIx32 "\",\"ibase\":\"0x%08" PRIx32 "\","
+            "\"fb_ptr\":\"0x%08" PRIx32 "\",\"fb_stride\":%" PRIu32 ",\"fb_fmt\":%" PRIu32 ","
+            "\"tex_enable\":%d,\"tex_addr\":\"0x%08" PRIx32 "\",\"tex_fmt\":%" PRIu32 ","
+            "\"draw_id\":\"%08" PRIx32 "\","
             "\"bone_cursor\":%d,\"world_cursor\":%d,\"view_cursor\":%d,\"proj_cursor\":%d,"
             "\"bone_dropped\":%lu,\"world_dropped\":%lu,\"view_dropped\":%lu,\"proj_dropped\":%lu,",
             s_ge_frame, ordinal, prim_index,
@@ -1147,7 +1148,7 @@ void ge_set_frame(uint32_t frame) {
             fprintf(stderr, "GE_CAPTURE: final GPU boundary materialization failed\n");
             ge_capture_abort();
         } else if (s_capture_total_prims < s_capture_min_prims) {
-            fprintf(stderr, "GE_CAPTURE: skipped frame=%u prims=%lu below minimum=%lu\n",
+            fprintf(stderr, "GE_CAPTURE: skipped frame=%" PRIu32 " prims=%lu below minimum=%lu\n",
                     s_ge_frame, s_capture_total_prims, s_capture_min_prims);
             ge_capture_abort();
         } else {
@@ -1169,7 +1170,7 @@ void ge_set_frame(uint32_t frame) {
     if (s_stat_on && sr_vcount_window_crossed(frame, 60u, &stat_window)) {
         unsigned long now = wall_ms();
         fprintf(stderr,
-            "GESTAT f=%u wall=%lums ge=%lums tri2d=%lu tri3d=%lu spr2d=%lu spr3d=%lu cull=%lu near=%lu zfail=%lu afail=%lu px2d=%lu px3d=%lu mw=%lu/%lu/%lu\n",
+            "GESTAT f=%" PRIu32 " wall=%lums ge=%lums tri2d=%lu tri3d=%lu spr2d=%lu spr3d=%lu cull=%lu near=%lu zfail=%lu afail=%lu px2d=%lu px3d=%lu mw=%lu/%lu/%lu\n",
             frame, now - s_wall_last, s_ge_ms_acc,
             s_stat.tri2d, s_stat.tri3d, s_stat.spr2d, s_stat.spr3d,
             s_stat.cull, s_stat.nearclip, s_stat.zfail, s_stat.afail, s_stat.px2d, s_stat.px3d,
@@ -1177,13 +1178,13 @@ void ge_set_frame(uint32_t frame) {
         s_wall_last = now;
         s_ge_ms_acc = 0;
         fprintf(stderr,
-            "GESTAT+ f=%u blk3d=%lu skin=%lu bonew=%lu deg3d=%lu line3d=%lu nonfinite=%lu gpuprim=%lu zrange=%lu zr=[%u,%u] fmt=%u zbp=0x%08x fb=[0x%08x:%lu 0x%08x:%lu 0x%08x:%lu 0x%08x:%lu]\n",
+            "GESTAT+ f=%" PRIu32 " blk3d=%lu skin=%lu bonew=%lu deg3d=%lu line3d=%lu nonfinite=%lu gpuprim=%lu zrange=%lu zr=[%" PRIu32 ",%" PRIu32 "] fmt=%" PRIu32 " zbp=0x%08" PRIx32 " fb=[0x%08" PRIx32 ":%lu 0x%08" PRIx32 ":%lu 0x%08" PRIx32 ":%lu 0x%08" PRIx32 ":%lu]\n",
             frame, s_stat.blk3d, s_stat.skin, s_stat.bonew, s_stat.deg3d, s_stat.line3d, s_stat.nonfinite, s_stat.gpuprim,
             s_stat.zrange, ge.minz, ge.maxz, ge.fbfmt, ge.zbp,
             s_stat.fbs[0], s_stat.fbn[0], s_stat.fbs[1], s_stat.fbn[1],
             s_stat.fbs[2], s_stat.fbn[2], s_stat.fbs[3], s_stat.fbn[3]);
         fprintf(stderr,
-            "GESTAT* f=%u fog0=%lu fogfull=%lu texa0=%lu/%lu atest=%d/0x%06x fogc=0x%06x fend=%g fslope=%g vp=(%.4g,%.4g,%.4g,%.4g) off=(%.4g,%.4g)\n",
+            "GESTAT* f=%" PRIu32 " fog0=%lu fogfull=%lu texa0=%lu/%lu atest=%d/0x%06" PRIx32 " fogc=0x%06" PRIx32 " fend=%g fslope=%g vp=(%.4g,%.4g,%.4g,%.4g) off=(%.4g,%.4g)\n",
             frame, s_stat.fog0, s_stat.fogfull, s_stat.texa0, g_tex_samples,
             ge.atest_enable, ge.atest, ge.fog_color, ge.fog_end, ge.fog_slope,
             decode_float24(ge.viewport_raw[0]), decode_float24(ge.viewport_raw[3]),
@@ -1191,7 +1192,7 @@ void ge_set_frame(uint32_t frame) {
             (float)(ge.offsetx & 0xFFFF) / 16.0f, (float)(ge.offsety & 0xFFFF) / 16.0f);
         for (int i = 0; i < ATEX_N; i++) {
             if (s_atex[i].fail + s_atex[i].pass < 500) continue;
-            fprintf(stderr, "ATEX f=%u addr=0x%08x fail=%lu pass=%lu\n",
+            fprintf(stderr, "ATEX f=%" PRIu32 " addr=0x%08" PRIx32 " fail=%lu pass=%lu\n",
                     frame, s_atex[i].addr, s_atex[i].fail, s_atex[i].pass);
         }
         memset(s_atex, 0, sizeof(s_atex));
@@ -1215,7 +1216,7 @@ void ge_set_frame(uint32_t frame) {
             }
             if (fbsnap && nsnap < fbsnap) {
                 char sp[96];
-                snprintf(sp, sizeof(sp), "snap_f%05u.ppm", frame);
+                snprintf(sp, sizeof(sp), "snap_f%05" PRIu32 ".ppm", frame);
                 ge_snapshot_plain(sp);
                 nsnap++;
             }
@@ -1386,11 +1387,11 @@ static void texdump_maybe(void) {
     int w = (int)ge.tex_w, h = (int)ge.tex_h;
     if (w <= 0 || h <= 0 || w > 512 || h > 512) return;
     char path[160];
-    snprintf(path, sizeof(path), "tex_%08x_f%u_%dx%d.ppm", ge.tex_addr, ge.tex_fmt, w, h);
+    snprintf(path, sizeof(path), "tex_%08" PRIx32 "_f%" PRIu32 "_%dx%d.ppm", ge.tex_addr, ge.tex_fmt, w, h);
     FILE *fp = fopen(path, "wb");
     if (!fp) return;
     char patha[160];
-    snprintf(patha, sizeof(patha), "tex_%08x_f%u_%dx%d_a.pgm", ge.tex_addr, ge.tex_fmt, w, h);
+    snprintf(patha, sizeof(patha), "tex_%08" PRIx32 "_f%" PRIu32 "_%dx%d_a.pgm", ge.tex_addr, ge.tex_fmt, w, h);
     FILE *fa = fopen(patha, "wb");
     fprintf(fp, "P6\n%d %d\n255\n", w, h);
     if (fa) fprintf(fa, "P5\n%d %d\n255\n", w, h);
@@ -1404,7 +1405,7 @@ static void texdump_maybe(void) {
         }
     fclose(fp);
     if (fa) fclose(fa);
-    fprintf(stderr, "TEXDUMP f=%u wrote %s clut=0x%08x/0x%08x sw=%u bufw=%u filter=0x%03x\n",
+    fprintf(stderr, "TEXDUMP f=%" PRIu32 " wrote %s clut=0x%08" PRIx32 "/0x%08" PRIx32 " sw=%d bufw=%" PRIu32 " filter=0x%03" PRIx32 "\n",
             s_ge_frame, path, ge.clut_addr, ge.clut_fmt, ge.tex_swizzle, ge.tex_bufw, ge.tex_filter);
 }
 
@@ -1613,14 +1614,14 @@ static void compose_px_rgba(int x, int y, int r, int g, int b, int src_a, int st
     if (x<ge.scis_x1||x>ge.scis_x2||y<ge.scis_y1||y>ge.scis_y2) return;
     if (s_stat_on > 0 && s_in3d && !ge.clear && s_pxpass < 6) {
         s_pxpass++;
-        fprintf(stderr, "PXPASS f=%u xy=(%d,%d) rgba=(%d,%d,%d,%d) fbp=0x%08x blend=%d/%06x\n",
+        fprintf(stderr, "PXPASS f=%" PRIu32 " xy=(%d,%d) rgba=(%d,%d,%d,%d) fbp=0x%08" PRIx32 " blend=%d/%06" PRIx32 "\n",
                 s_ge_frame, x, y, r, g, b, src_a, ge.fbp, ge.blend_enable, ge.blend_mode);
     }
     /* Centre-pixel composition trace: every write to (240,136), in order, shows what each
      * frame layer contributes and what finally covers the scene. */
     if (s_stat_on > 0 && x == 240 && y == 136 && s_pxc < 32) {
         s_pxc++;
-        fprintf(stderr, "PXC f=%u rgba=(%d,%d,%d,%d) clear=%d in3d=%d tex=%d blend=%d/%06x fixab=%06x/%06x vtype=0x%06x fbp=0x%08x\n",
+        fprintf(stderr, "PXC f=%" PRIu32 " rgba=(%d,%d,%d,%d) clear=%d in3d=%d tex=%d blend=%d/%06" PRIx32 " fixab=%06" PRIx32 "/%06" PRIx32 " vtype=0x%06" PRIx32 " fbp=0x%08" PRIx32 "\n",
                 s_ge_frame, r, g, b, src_a, ge.clear, s_in3d, ge.tex_enable,
                 ge.blend_enable, ge.blend_mode, ge.blend_fixa, ge.blend_fixb, ge.vtype, ge.fbp);
     }
@@ -1829,7 +1830,7 @@ static int shade(float u, float fv, int fog, int vr, int vg, int vb, int va, int
                     if ((ge.clut_fmt & 3) == 3) memcpy(&rawpal, &ge.clutram[(cidx * 4) & 2047], 4);
                     else { uint16_t p16; memcpy(&p16, &ge.clutram[(cidx * 2) & 2047], 2); rawpal = p16; }
                 }
-                fprintf(stderr, "ASHADE f=%u va=%d ta=%d out_a=%d texfunc=0x%06x texfmt=%u clutfmt=0x%06x texaddr=0x%08x atest=0x%06x uv=(%.1f,%.1f) tmm=0x%03x vtype=0x%06x tsc=(%g,%g) toff=(%g,%g) tw=%d th=%d bufw=%u swz=%d idx=0x%02x pal=0x%08x lit=%d mupd=%d ama=%d ala=%d\n",
+                fprintf(stderr, "ASHADE f=%" PRIu32 " va=%d ta=%d out_a=%d texfunc=0x%06" PRIx32 " texfmt=%" PRIu32 " clutfmt=0x%06" PRIx32 " texaddr=0x%08" PRIx32 " atest=0x%06" PRIx32 " uv=(%.1f,%.1f) tmm=0x%03" PRIx32 " vtype=0x%06" PRIx32 " tsc=(%g,%g) toff=(%g,%g) tw=%d th=%d bufw=%" PRIu32 " swz=%d idx=0x%02" PRIx32 " pal=0x%08" PRIx32 " lit=%d mupd=%" PRIu32 " ama=%d ala=%d\n",
                         s_ge_frame, va, dbg_ta, a, ge.tex_func, ge.tex_fmt, ge.clut_fmt,
                         ge.tex_addr, ge.atest, u, fv, ge.tex_map_mode, ge.vtype,
                         ge.tex_scale_u, ge.tex_scale_v, ge.tex_off_u, ge.tex_off_v,
@@ -1839,12 +1840,12 @@ static int shade(float u, float fv, int fog, int vr, int vg, int vb, int va, int
                 /* Once per window: the first 16 CLUT entries and 16 raw texels, to tell a
                  * garbled/missing palette or texture upload from a wrong-texel decode. */
                 if (s_ashade == 1 && (ge.tex_fmt == 4 || ge.tex_fmt == 5)) {
-                    fprintf(stderr, "ACLUT f=%u addr=0x%08x pal0..15=", s_ge_frame, ge.clut_addr);
+                    fprintf(stderr, "ACLUT f=%" PRIu32 " addr=0x%08" PRIx32 " pal0..15=", s_ge_frame, ge.clut_addr);
                     for (int ci = 0; ci < 16; ci++) {
                         uint32_t pv;
                         if ((ge.clut_fmt & 3) == 3) memcpy(&pv, &ge.clutram[(ci * 4) & 2047], 4);
                         else { uint16_t p16; memcpy(&p16, &ge.clutram[(ci * 2) & 2047], 2); pv = p16; }
-                        fprintf(stderr, "%08x%s", pv, ci == 15 ? "" : ",");
+                        fprintf(stderr, "%08" PRIx32 "%s", pv, ci == 15 ? "" : ",");
                     }
                     fprintf(stderr, " tex0..15=");
                     for (int ti = 0; ti < 16; ti++)
@@ -2013,7 +2014,7 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
                 who_init();
                 if (x == s_who_x && y == s_who_y && s_pixwho_n < 400) {
                     s_pixwho_n++;
-                    fprintf(stderr, "PIXWHO f=%u CLEARTRI mode=0x%03x z=%.0f persp=%d rgba=(%d,%d,%d,%d)\n",
+                    fprintf(stderr, "PIXWHO f=%" PRIu32 " CLEARTRI mode=0x%03" PRIx32 " z=%.0f persp=%d rgba=(%d,%d,%d,%d)\n",
                             s_ge_frame, ge.clear_mode, iz, persp, C->r, C->g, C->b, C->a);
                 }
                 if (ge.clear_mode & 0x300)
@@ -2063,7 +2064,7 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
                             default: zpass = 1;
                         }
                     }
-                    fprintf(stderr, "PIXWHO f=%u d=%u persp=%d clear=%d vtype=0x%06x tex=%d/0x%08x vcol=(%d,%d,%d,%d) uv=(%.2f,%.2f) rgba=(%d,%d,%d,%d) fog=%d z=%.0f zt=%d/%d zcur=%u zpass=%d zw=%d zr=[%u,%u] blend=%d/%06x world_t=(%.4g,%.4g,%.4g) tri=A(%.1f,%.1f,%.0f)B(%.1f,%.1f,%.0f)C(%.1f,%.1f,%.0f)\n",
+                    fprintf(stderr, "PIXWHO f=%" PRIu32 " d=%" PRIu32 " persp=%d clear=%d vtype=0x%06" PRIx32 " tex=%d/0x%08" PRIx32 " vcol=(%d,%d,%d,%d) uv=(%.2f,%.2f) rgba=(%d,%d,%d,%d) fog=%d z=%.0f zt=%d/%d zcur=%u zpass=%d zw=%d zr=[%" PRIu32 ",%" PRIu32 "] blend=%d/%06" PRIx32 " world_t=(%.4g,%.4g,%.4g) tri=A(%.1f,%.1f,%.0f)B(%.1f,%.1f,%.0f)C(%.1f,%.1f,%.0f)\n",
                             s_ge_frame, s_rt_draw, persp, ge.clear, ge.vtype, ge.tex_enable, ge.tex_addr,
                             r, g, b, a, u, fv,
                             sr, sg, sb, sa, fog, iz,
@@ -2612,7 +2613,7 @@ static void ge_arm_rect_maybe(int xa, int ya, int xb, int yb,
     sr_add_mem_watch(va1, va1 + stride, "ge_rect_v1");
     if (g_sr_mem_watch_count != before) {
         fprintf(stderr,
-                "GE_ARM_RECT frame=%u rect=(%d,%d)-(%d,%d) va=0x%08x/0x%08x stride=%u watches=%d\n",
+                "GE_ARM_RECT frame=%" PRIu32 " rect=(%d,%d)-(%d,%d) va=0x%08" PRIx32 "/0x%08" PRIx32 " stride=%" PRIu32 " watches=%d\n",
                 s_ge_frame, xa, ya, xb, yb, va0, va1, stride, g_sr_mem_watch_count);
     }
     uint32_t wa0 = 0, ww0 = 0, wv0 = 0, wp0 = 0;
@@ -2620,8 +2621,8 @@ static void ge_arm_rect_maybe(int xa, int ya, int xb, int yb,
     int found0 = sr_find_last_writer(va0 + xoff, xwidth, &wa0, &ww0, &wv0, &wp0);
     int found1 = sr_find_last_writer(va1 + xoff, xwidth, &wa1, &ww1, &wv1, &wp1);
     fprintf(stderr,
-            "GE_RECT_WRITER frame=%u xaddr=0x%08x/0x%08x writer="
-            "%s0x%08x@0x%08x/%u/%08x,%s0x%08x@0x%08x/%u/%08x\n",
+            "GE_RECT_WRITER frame=%" PRIu32 " xaddr=0x%08" PRIx32 "/0x%08" PRIx32 " writer="
+            "%s0x%08" PRIx32 "@0x%08" PRIx32 "/%" PRIu32 "/%08" PRIx32 ",%s0x%08" PRIx32 "@0x%08" PRIx32 "/%" PRIu32 "/%08" PRIx32 "\n",
             s_ge_frame, va0 + xoff, va1 + xoff,
             found0 ? "" : "missing:", wp0, wa0, ww0, wv0,
             found1 ? "" : "missing:", wp1, wa1, ww1, wv1);
@@ -2635,7 +2636,7 @@ static void dump_xform_debug(uint32_t vbase, uint32_t ibase, int idxfmt, const V
     if (on < 0) on = getenv("SR_GEMAT") ? 1 : 0;
     if (!on || n >= 16) return;
     n++;
-    fprintf(stderr, "GEMAT frame=%u prim type=%d count=%d vtype=0x%06x vaddr=0x%08x\n",
+    fprintf(stderr, "GEMAT frame=%" PRIu32 " prim type=%d count=%d vtype=0x%06" PRIx32 " vaddr=0x%08" PRIx32 "\n",
             s_ge_frame, type, count, ge.vtype, vbase);
     fprintf(stderr, "  world:"); for (int i=0;i<12;i++) fprintf(stderr, " %.5g", ge.world[i]); fprintf(stderr, "\n");
     fprintf(stderr, "  view :"); for (int i=0;i<12;i++) fprintf(stderr, " %.5g", ge.view[i]);  fprintf(stderr, "\n");
@@ -2667,7 +2668,7 @@ static void fill_rect_clear_fast(int xa, int ya, int xb, int yb, int r, int g, i
     if (xa >= xb || ya >= yb) return;
     if (s_stat_on > 0 && xa <= 240 && 240 < xb && ya <= 136 && 136 < yb && s_pxc < 32) {
         s_pxc++;
-        fprintf(stderr, "PXC f=%u CLEARFILL rect=(%d,%d)-(%d,%d) rgba=(%d,%d,%d,%d) fbp=0x%08x\n",
+        fprintf(stderr, "PXC f=%" PRIu32 " CLEARFILL rect=(%d,%d)-(%d,%d) rgba=(%d,%d,%d,%d) fbp=0x%08" PRIx32 "\n",
                 s_ge_frame, xa, ya, xb, yb, r, g, b, a, ge.fbp);
     }
     uint32_t c = pack_fb(r, g, b, a);
@@ -2704,7 +2705,7 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
         who_init();
         if (s_who_x >= xa && s_who_x < xb && s_who_y >= ya && s_who_y < yb && s_pixwho_n < 400) {
             s_pixwho_n++;
-            fprintf(stderr, "PIXWHO f=%u CLEARSPR mode=0x%03x z=%.0f rect=(%d,%d)-(%d,%d) rgba=(%d,%d,%d,%d)\n",
+            fprintf(stderr, "PIXWHO f=%" PRIu32 " CLEARSPR mode=0x%03" PRIx32 " z=%.0f rect=(%d,%d)-(%d,%d) rgba=(%d,%d,%d,%d)\n",
                     s_ge_frame, ge.clear_mode, p1->z, xa, ya, xb, yb, p1->r, p1->g, p1->b, p1->a);
         }
         int wc = (ge.clear_mode & 0x100) != 0, wa = (ge.clear_mode & 0x200) != 0;
@@ -2748,8 +2749,8 @@ static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
     if (s_who_x >= xa && s_who_x < xb && s_who_y >= ya && s_who_y < yb && s_pixwho_n < 400) {
         s_pixwho_n++;
         fprintf(stderr,
-                "PIXWHO f=%u SPRITE persp=%d rect=(%d,%d)-(%d,%d) uv=(%.2f,%.2f) "
-                "tex=0x%08x fmt=%u size=%ux%u bufw=%u filter=0x%08x wrap=0x%08x "
+                "PIXWHO f=%" PRIu32 " SPRITE persp=%d rect=(%d,%d)-(%d,%d) uv=(%.2f,%.2f) "
+                "tex=0x%08" PRIx32 " fmt=%" PRIu32 " size=%dx%d bufw=%" PRIu32 " filter=0x%08" PRIx32 " wrap=0x%08" PRIx32 " "
                 "rgba=(%d,%d,%d,%d) scissor=%d,%d-%d,%d\n",
                 s_ge_frame, persp, xa, ya, xb, yb,
                 u_start + (float)(s_who_x - xa) * u_dir,
@@ -2919,7 +2920,7 @@ static void near_dump(const char *what, uint32_t a0, const VFmt *vf, const CVtx 
     if (s_stat_on <= 0 || s_neardump >= 3) return;
     s_neardump++;
     float mx, my, mz; read_pos(a0, vf, &mx, &my, &mz);
-    fprintf(stderr, "NEARDUMP f=%u %s vtype=0x%06x raw=(%g,%g,%g) cw=(", s_ge_frame, what, ge.vtype, mx, my, mz);
+    fprintf(stderr, "NEARDUMP f=%" PRIu32 " %s vtype=0x%06" PRIx32 " raw=(%g,%g,%g) cw=(", s_ge_frame, what, ge.vtype, mx, my, mz);
     for (int i = 0; i < n; i++) fprintf(stderr, "%s%g", i ? "," : "", cv[i].cw);
     fprintf(stderr, ")\n  world=[%g %g %g; %g %g %g; %g %g %g; %g %g %g]\n",
             ge.world[0], ge.world[1], ge.world[2], ge.world[3], ge.world[4], ge.world[5],
@@ -3074,7 +3075,7 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
         static int n=0, nthrough=0, ntransform=0;
         if (vf.through) nthrough++; else ntransform++;
         if (n++ < 40 || (!vf.through && ntransform < 20))
-            fprintf(stderr, "GE PRIM type=%d count=%d vtype=0x%06x through=%d idx=%d tex=%d fmt=%u fbp=0x%08x vaddr=0x%08x iaddr=0x%08x [thru=%d xform=%d]\n",
+            fprintf(stderr, "GE PRIM type=%d count=%d vtype=0x%06" PRIx32 " through=%d idx=%d tex=%d fmt=%" PRIu32 " fbp=0x%08" PRIx32 " vaddr=0x%08" PRIx32 " iaddr=0x%08" PRIx32 " [thru=%d xform=%d]\n",
                 type, count, ge.vtype, vf.through, idxfmt, ge.tex_enable, ge.tex_fmt, ge.fbp, ge.vaddr, ge.iaddr, nthrough, ntransform);
     }
     uint32_t vbase = ge.vaddr, ibase = ge.iaddr;
@@ -3162,7 +3163,7 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
                     if (idxfmt||area>=4096) {
                         static int wn=0;
                         if (wn++<s_gewatch_limit)
-                            fprintf(stderr,"GEWATCH frame=%u prim=%lu spr idx=%d va=0x%08x/0x%08x area=%d rect=(%d,%d)-(%d,%d) uv=(%.0f,%.0f)-(%.0f,%.0f) color0=%02x%02x%02x%02x color1=%02x%02x%02x%02x tex=%d/0x%08x %dx%d fmt=%u func=0x%06x blend=%d mode=0x%06x fix=%06x/%06x mat=%06x a=%d clear=0x%03x fbp=0x%08x vtype=0x%06x off=(%.4g,%.4g)\n",
+                            fprintf(stderr,"GEWATCH frame=%" PRIu32 " prim=%lu spr idx=%d va=0x%08" PRIx32 "/0x%08" PRIx32 " area=%d rect=(%d,%d)-(%d,%d) uv=(%.0f,%.0f)-(%.0f,%.0f) color0=%02x%02x%02x%02x color1=%02x%02x%02x%02x tex=%d/0x%08" PRIx32 " %dx%d fmt=%" PRIu32 " func=0x%06" PRIx32 " blend=%d mode=0x%06" PRIx32 " fix=%06" PRIx32 "/%06" PRIx32 " mat=%06" PRIx32 " a=%d clear=0x%03" PRIx32 " fbp=0x%08" PRIx32 " vtype=0x%06" PRIx32 " off=(%.4g,%.4g)\n",
                                 s_ge_frame,prim_index-1,idxfmt,va0,va1,area,xa,ya,xb,yb,p0.u,p0.v,p1.u,p1.v,
                                 p0.a,p0.b,p0.g,p0.r,p1.a,p1.b,p1.g,p1.r,
                                 ge.tex_enable,ge.tex_addr,ge.tex_w,ge.tex_h,ge.tex_fmt,ge.tex_func,
@@ -3183,7 +3184,7 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
                                       (uint32_t)vf.pos_off, xwidth);
                 }
                 if (s_gelog&&(ge.tex_enable&&!ge.clear)) { static int sn=0; if(sn++<12)
-                    fprintf(stderr,"  texspr (%.0f,%.0f)-(%.0f,%.0f) uv(%.0f,%.0f)-(%.0f,%.0f) tex=0x%08x %dx%d fmt=%u bufw=%u\n",
+                    fprintf(stderr,"  texspr (%.0f,%.0f)-(%.0f,%.0f) uv(%.0f,%.0f)-(%.0f,%.0f) tex=0x%08" PRIx32 " %dx%d fmt=%" PRIu32 " bufw=%" PRIu32 "\n",
                         p0.x,p0.y,p1.x,p1.y,p0.u,p0.v,p1.u,p1.v,ge.tex_addr,ge.tex_w,ge.tex_h,ge.tex_fmt,ge.tex_bufw); }
                 fill_sprite(&p0,&p1,0);
             }
@@ -3213,7 +3214,7 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
                 s_rt_frames++;
                 s_rt_draws_f = 0;
                 who_init();
-                fprintf(stderr, "RTRACE f=%u BEGIN fbp=0x%08x/%u fmt=%u zbp=0x%08x dclip=%u probe=(%d,%d)\n",
+                fprintf(stderr, "RTRACE f=%" PRIu32 " BEGIN fbp=0x%08" PRIx32 "/%" PRIu32 " fmt=%" PRIu32 " zbp=0x%08" PRIx32 " dclip=%" PRIu32 " probe=(%d,%d)\n",
                         s_ge_frame, ge.fbp, ge.fbw, ge.fbfmt, ge.zbp, ge.depth_clip, s_who_x, s_who_y);
             }
         }
@@ -3230,13 +3231,13 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
         for (int si = 0; si < s_ge3d; si++) if (s_ge3d_sigs[si] == sig) { seen = 1; break; }
         if (!seen) {
             s_ge3d_sigs[s_ge3d++] = sig;
-            fprintf(stderr, "GE3D f=%u type=%d count=%d vtype=0x%06x tex=%d/0x%08x fmt=%u lit=%d atest=%d/0x%06x blend=%d/%06x world_t=(%.4g,%.4g,%.4g) fog=%d/%g/%g/0x%06x\n",
+            fprintf(stderr, "GE3D f=%" PRIu32 " type=%d count=%d vtype=0x%06" PRIx32 " tex=%d/0x%08" PRIx32 " fmt=%" PRIu32 " lit=%d atest=%d/0x%06" PRIx32 " blend=%d/%06" PRIx32 " world_t=(%.4g,%.4g,%.4g) fog=%d/%g/%g/0x%06" PRIx32 "\n",
                     s_ge_frame, type, count, ge.vtype, ge.tex_enable, ge.tex_addr, ge.tex_fmt,
                     ge.lighting_enable, ge.atest_enable, ge.atest, ge.blend_enable, ge.blend_mode,
                     ge.world[9], ge.world[10], ge.world[11],
                     ge.fog_enable, ge.fog_end, ge.fog_slope, ge.fog_color);
             if (ge.lighting_enable)
-                fprintf(stderr, "GE3D+ mupd=%d amb=0x%06x/%d mat_a=0x%06x mat_d=0x%06x mat_e=0x%06x texfunc=0x%06x L0=%d/0x%03x ac=0x%06x dc=0x%06x pos=(%.3g,%.3g,%.3g) L1=%d L2=%d L3=%d\n",
+                fprintf(stderr, "GE3D+ mupd=%" PRIu32 " amb=0x%06" PRIx32 "/%d mat_a=0x%06" PRIx32 " mat_d=0x%06" PRIx32 " mat_e=0x%06" PRIx32 " texfunc=0x%06" PRIx32 " L0=%d/0x%03" PRIx32 " ac=0x%06" PRIx32 " dc=0x%06" PRIx32 " pos=(%.3g,%.3g,%.3g) L1=%d L2=%d L3=%d\n",
                         ge.mat_update, ge.amb_color, ge.amb_alpha, ge.material, ge.mat_diffuse,
                         ge.mat_emissive, ge.tex_func, ge.light_on[0], ge.light_type[0],
                         ge.light_acol[0], ge.light_dcol[0],
@@ -3247,7 +3248,7 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
     if (watch_now) {
         static int xn=0;
         if (xn++<s_gewatch_limit)
-            fprintf(stderr,"GEWATCH frame=%u xform type=%d count=%d vtype=0x%06x idx=%d vaddr=0x%08x iaddr=0x%08x\n",
+            fprintf(stderr,"GEWATCH frame=%" PRIu32 " xform type=%d count=%d vtype=0x%06" PRIx32 " idx=%d vaddr=0x%08" PRIx32 " iaddr=0x%08" PRIx32 "\n",
                 s_ge_frame,type,count,ge.vtype,idxfmt,vbase,ibase);
     }
 
@@ -3271,7 +3272,7 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
             if (slot < 0 && seen_cnt < 16) { slot = seen_cnt++; seen_vt[slot] = ge.vtype; seen_n[slot] = 0; }
             if (slot >= 0 && seen_n[slot] < 2) {
                 seen_n[slot]++;
-                fprintf(stderr, "VDUMP f=%u type=%d count=%d vtype=0x%06x stride=%d offs[w=%d tc=%d col=%d nrm=%d pos=%d] lit=%d gouraud=%d fog=%d tmm=0x%03x\n",
+                fprintf(stderr, "VDUMP f=%" PRIu32 " type=%d count=%d vtype=0x%06" PRIx32 " stride=%d offs[w=%d tc=%d col=%d nrm=%d pos=%d] lit=%d gouraud=%d fog=%d tmm=0x%03" PRIx32 "\n",
                         s_ge_frame, type, count, ge.vtype, vf.stride, vf.w_n ? vf.w_off : -1,
                         vf.tc_off, vf.col_off, vf.nrm_off, vf.pos_off,
                         ge.lighting_enable, ge.shade_gouraud, ge.fog_enable, ge.tex_map_mode);
@@ -3293,7 +3294,7 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
                     if (vf.tc_off >= 0) read_tc(a, &vf, &u, &tv);
                     if (vf.w_n) { float ws[8]; read_weights(a, &vf, ws); w0 = ws[0]; }
                     CVtx cv2; transform_vtx_clip(a, &vf, &cv2);
-                    fprintf(stderr, "  v%d @0x%08x [%s] pos=(%.4g,%.4g,%.4g) uv=(%.3g,%.3g) col=%02x%02x%02x%02x nrm=(%.3g,%.3g,%.3g) w0=%.3g -> cw=%.4g lit=%02x%02x%02x%02x uvT=(%.3g,%.3g) fog=%.3g\n",
+                    fprintf(stderr, "  v%d @0x%08" PRIx32 " [%s] pos=(%.4g,%.4g,%.4g) uv=(%.3g,%.3g) col=%02x%02x%02x%02x nrm=(%.3g,%.3g,%.3g) w0=%.3g -> cw=%.4g lit=%02x%02x%02x%02x uvT=(%.3g,%.3g) fog=%.3g\n",
                             i, a, hex, px, py, pz, u, tv, r, g, b, al, nx, ny, nz, w0,
                             cv2.cw, cv2.r, cv2.g, cv2.b, cv2.a, cv2.u, cv2.v, cv2.fog);
                 }
@@ -3356,10 +3357,10 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
         float roffx = (float)(ge.offsetx & 0xFFFF) / 16.0f;
         float roffy = (float)(ge.offsety & 0xFFFF) / 16.0f;
         if (rt) {
-            fprintf(stderr, "TRIDRW f=%u d=%u fbp=0x%08x/%u zbp=0x%08x/%u type=%d n=%d vtype=0x%06x idx=%d va=0x%08x ia=0x%08x "
-                    "tex=%d/0x%08x %ux%u fmt=%u bufw=%u sw=%u tfunc=0x%06x tmm=0x%03x lit=%d gou=%d "
-                    "zt=%d/%d zw=%d zr=[%u,%u] at=%d/0x%06x bl=%d/%06x/%06x/%06x cull=%d/%u clr=0x%03x "
-                    "dclip=%u fog=%d vp=[%.4g,%.4g,%.4g|%.4g,%.4g,%.4g] off=(%.4g,%.4g) sc=(%d,%d)-(%d,%d) "
+            fprintf(stderr, "TRIDRW f=%" PRIu32 " d=%" PRIu32 " fbp=0x%08" PRIx32 "/%" PRIu32 " zbp=0x%08" PRIx32 "/%" PRIu32 " type=%d n=%d vtype=0x%06" PRIx32 " idx=%d va=0x%08" PRIx32 " ia=0x%08" PRIx32 " "
+                    "tex=%d/0x%08" PRIx32 " %dx%d fmt=%" PRIu32 " bufw=%" PRIu32 " sw=%d tfunc=0x%06" PRIx32 " tmm=0x%03" PRIx32 " lit=%d gou=%d "
+                    "zt=%d/%d zw=%d zr=[%" PRIu32 ",%" PRIu32 "] at=%d/0x%06" PRIx32 " bl=%d/%06" PRIx32 "/%06" PRIx32 "/%06" PRIx32 " cull=%d/%" PRIu32 " clr=0x%03" PRIx32 " "
+                    "dclip=%" PRIu32 " fog=%d vp=[%.4g,%.4g,%.4g|%.4g,%.4g,%.4g] off=(%.4g,%.4g) sc=(%d,%d)-(%d,%d) "
                     "wt=(%.4g,%.4g,%.4g) vt=(%.4g,%.4g,%.4g)\n",
                     s_ge_frame, s_rt_draw, ge.fbp, ge.fbw, ge.zbp, ge.zbw, type, count, ge.vtype, idxfmt, vbase, ibase,
                     ge.tex_enable, ge.tex_addr, ge.tex_w, ge.tex_h, ge.tex_fmt, ge.tex_bufw,
@@ -3474,7 +3475,7 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
                 }
                 if (probe || tlogged < 12) {
                     tlogged++;
-                    fprintf(stderr, "TRIDEC f=%u d=%u i=%d %s%s"
+                    fprintf(stderr, "TRIDEC f=%" PRIu32 " d=%" PRIu32 " i=%d %s%s"
                             " v0[c=(%.4g,%.4g,%.4g,%.4g) s=(%.1f,%.1f,%.0f) f=%d%d%d rgba=%d,%d,%d,%d uv=(%.3g,%.3g)]"
                             " v1[c=(%.4g,%.4g,%.4g,%.4g) s=(%.1f,%.1f,%.0f) f=%d%d%d rgba=%d,%d,%d,%d uv=(%.3g,%.3g)]"
                             " v2[c=(%.4g,%.4g,%.4g,%.4g) s=(%.1f,%.1f,%.0f) f=%d%d%d rgba=%d,%d,%d,%d uv=(%.3g,%.3g)]\n",
@@ -3528,7 +3529,7 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
                                                bad[k] ? -1.0f : p[k].x, bad[k] ? -1.0f : p[k].y,
                                                bad[k] ? -1.0f : p[k].z, bad[k],
                                                cl[k].r, cl[k].g, cl[k].b, cl[k].a);
-                        fprintf(stderr, "TRICLP f=%u d=%u i=%d m=%d%s\n",
+                        fprintf(stderr, "TRICLP f=%" PRIu32 " d=%" PRIu32 " i=%d m=%d%s\n",
                                 s_ge_frame, s_rt_draw, i, m, buf);
                     }
                     for (int k = 2; k < m && k < 4; k++)
@@ -3542,7 +3543,7 @@ static void draw_prim(uint32_t op, unsigned long prim_index, uint32_t list_addr,
             }
         }
         if (rt) {
-            fprintf(stderr, "TRIDRW+ f=%u d=%u tris=%lu draw=%lu clip=%lu drop[oor=%lu wneg=%lu zout=%lu "
+            fprintf(stderr, "TRIDRW+ f=%" PRIu32 " d=%" PRIu32 " tris=%lu draw=%lu clip=%lu drop[oor=%lu wneg=%lu zout=%lu "
                     "zsame=%lu nearall=%lu cwlow=%lu nonfinite=%lu] rast=%lu cull=%lu deg=%lu px=%lu "
                     "zfail=%lu afail=%lu zrange=%lu blk=%lu\n",
                     s_ge_frame, s_rt_draw,
@@ -3626,8 +3627,8 @@ static void ge_note_unhandled_cmd(uint32_t cmd, uint32_t op) {
     g_ge_unhandled_mask[cmd>>5] |= bit;
     if (on) {
         const char *nm=ge_cmd_name(cmd);
-        fprintf(stderr,"GE: unhandled command 0x%02x (%s) data=0x%06x [reported once]\n",
-                cmd, nm?nm:"unknown", op&0xFFFFFF);
+        fprintf(stderr,"GE: unhandled command 0x%02" PRIx32 " (%s) data=0x%06" PRIx32 " [reported once]\n",
+                cmd, nm?nm:"unknown", op&0xFFFFFFu);
     }
 }
 
@@ -3795,8 +3796,8 @@ static void ge_block_transfer(uint32_t startdata) {
     if (!sr_guest_rect_readable(srcBase, srcX, srcY, srcStride, w, h, bpp, &src) ||
         !sr_guest_rect_writable(dstBase, dstX, dstY, dstStride, w, h, bpp, &dst)) {
         fprintf(stderr,
-                "ge_block_transfer: invalid rectangle src=0x%08x/%u+(%u,%u) "
-                "dst=0x%08x/%u+(%u,%u) size=%ux%u bpp=%u, skipping blit\n",
+                "ge_block_transfer: invalid rectangle src=0x%08" PRIx32 "/%" PRIu32 "+(%" PRIu32 ",%" PRIu32 ") "
+                "dst=0x%08" PRIx32 "/%" PRIu32 "+(%" PRIu32 ",%" PRIu32 ") size=%" PRIu32 "x%" PRIu32 " bpp=%" PRIu32 ", skipping blit\n",
                 srcBase, srcStride, srcX, srcY, dstBase, dstStride, dstX, dstY,
                 w, h, bpp);
         return;
@@ -3835,7 +3836,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
     /* begin() records list_addr even when this invocation resumes a stalled list.
      * Later fresh lists in the same frame are appended here. */
     else if (ge_capture_active() && !resume && !ge_capture_add_list(list_addr)) {
-        fprintf(stderr, "GE_CAPTURE: could not append list 0x%08x\n", list_addr);
+        fprintf(stderr, "GE_CAPTURE: could not append list 0x%08" PRIx32 "\n", list_addr);
         ge_capture_abort();
     }
     g_list_writes=0; g_list_nonblack=0; g_list_clearpx=0;
@@ -3851,7 +3852,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
             static int s_gelog_stall = -1;
             if (s_gelog_stall < 0) s_gelog_stall = getenv("SR_GELOG") ? 1 : 0;
             if (s_gelog_stall) {
-                fprintf(stderr, "GE STALL reached: 0x%08x\n", addr);
+                fprintf(stderr, "GE STALL reached: 0x%08" PRIx32 "\n", addr);
             }
             return addr;
         }
@@ -3870,10 +3871,10 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
             case GE_VERTEXTYPE: ge.vtype=data; break;
 
             case GE_FRAMEBUFPTR:   ge.fbp=ge_normalize_vram_target((ge.fbp&0xFF000000)|data);
-                if (s_gelog>0) fprintf(stderr,"GE FRAMEBUFPTR data=0x%06x -> fbp=0x%08x\n",data,ge.fbp);
+                if (s_gelog>0) fprintf(stderr,"GE FRAMEBUFPTR data=0x%06" PRIx32 " -> fbp=0x%08" PRIx32 "\n",data,ge.fbp);
                 break;
             case GE_FRAMEBUFWIDTH: ge.fbw=data&0xFFFF; ge.fbp=ge_normalize_vram_target((ge.fbp&0x00FFFFFF)|((data&0xFF0000)<<8));
-                if (s_gelog>0) fprintf(stderr,"GE FRAMEBUFWIDTH data=0x%06x -> fbw=%u fbp=0x%08x\n",data,ge.fbw,ge.fbp);
+                if (s_gelog>0) fprintf(stderr,"GE FRAMEBUFWIDTH data=0x%06" PRIx32 " -> fbw=%" PRIu32 " fbp=0x%08" PRIx32 "\n",data,ge.fbw,ge.fbp);
                 break;
             case GE_FRAMEBUFPIXFORMAT: ge.fbfmt=data&3; break;
 
@@ -4100,7 +4101,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                 uint32_t bytes = (data & 0x3F) * 32;
                 if (bytes > sizeof(ge.clutram)) bytes = sizeof(ge.clutram);
                 if (!sr_guest_span_readable(ge.clut_addr, bytes)) {
-                    fprintf(stderr, "GE_LOADCLUT: invalid source span addr=0x%08x bytes=%u\n",
+                    fprintf(stderr, "GE_LOADCLUT: invalid source span addr=0x%08" PRIx32 " bytes=%" PRIu32 "\n",
                             ge.clut_addr, bytes);
                     ge_cpu_profile_end(GE_CPU_CLUT_LOAD, profile_started);
                     break;
@@ -4201,8 +4202,8 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                     if (s_gesiglog && signal_seen[behavior] < 8) {
                         signal_seen[behavior]++;
                         fprintf(stderr,
-                                "GE SIGNAL/END: list=0x%08x pc=0x%08x behavior=0x%02x token=0x%04x end=0x%04x\n",
-                                list_addr, addr-8, behavior, pending_signal_op&0xFFFFu, data&0xFFFFu);
+                                "GE SIGNAL/END: list=0x%08" PRIx32 " pc=0x%08" PRIx32 " behavior=0x%02x token=0x%04" PRIx32 " end=0x%04" PRIx32 "\n",
+                                list_addr, addr-8u, behavior, pending_signal_op&0xFFFFu, data&0xFFFFu);
                     }
                     pending_signal=0; pending_signal_op=0; break;
                 }
@@ -4216,7 +4217,7 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
                 if (snap && g_tex_nonzero>start_nz) ge_snapshot("fb_content.ppm");
                 g_ge_list_sig=sig; g_ge_prim_count=prims;
                 if (s_gewatch > 0 && s_ge_frame >= (uint32_t)s_gewatch_after)
-                    fprintf(stderr, "GELIST f=%u list=0x%08x fbp=0x%08x prims=%lu writes=%lu nonblack=%lu clearpx=%lu\n",
+                    fprintf(stderr, "GELIST f=%" PRIu32 " list=0x%08" PRIx32 " fbp=0x%08" PRIx32 " prims=%lu writes=%lu nonblack=%lu clearpx=%lu\n",
                             s_ge_frame, list_addr, ge_fb_addr(), prims,
                             g_list_writes, g_list_nonblack, g_list_clearpx);
                 return 0;
@@ -4266,9 +4267,9 @@ static void ge_vramdump_surface(FILE *file, int *first, const char *name,
     if (!*first) fputc(',', file);
     *first = 0;
     fprintf(file,
-            "{\"name\":\"%s\",\"kind\":\"%s\",\"addr\":\"0x%08x\","
-            "\"width\":%u,\"height\":%u,\"stride\":%u,\"format\":\"%s\","
-            "\"format_code\":%u,\"size_bytes\":%llu,\"swizzled\":%s",
+            "{\"name\":\"%s\",\"kind\":\"%s\",\"addr\":\"0x%08" PRIx32 "\","
+            "\"width\":%" PRIu32 ",\"height\":%" PRIu32 ",\"stride\":%" PRIu32 ",\"format\":\"%s\","
+            "\"format_code\":%" PRIu32 ",\"size_bytes\":%llu,\"swizzled\":%s",
             name, kind, addr, width, height, stride,
             ge_vramdump_format_name(format), format,
             (unsigned long long)ge_vramdump_surface_size(width, height, stride, format),
@@ -4291,23 +4292,23 @@ int ge_vramdump_write(const char *directory, uint32_t vblank,
 
     if (!directory || !directory[0]) return 0;
     if (s_gpu && s_gpu->capture_boundary && !s_gpu->capture_boundary()) {
-        fprintf(stderr, "VRAMDUMP vblank=%u FAIL (GPU readback boundary unavailable)\n", vblank);
+        fprintf(stderr, "VRAMDUMP vblank=%" PRIu32 " FAIL (GPU readback boundary unavailable)\n", vblank);
         return 0;
     }
     if (!sr_guest_span_readable(GE_CAPTURE_VRAM_BASE, GE_CAPTURE_VRAM_SIZE)) {
-        fprintf(stderr, "VRAMDUMP vblank=%u FAIL (guest VRAM span unavailable)\n", vblank);
+        fprintf(stderr, "VRAMDUMP vblank=%" PRIu32 " FAIL (guest VRAM span unavailable)\n", vblank);
         return 0;
     }
-    if (snprintf(image_name, sizeof image_name, "vram_%u.bin", vblank) >= (int)sizeof image_name ||
+    if (snprintf(image_name, sizeof image_name, "vram_%" PRIu32 ".bin", vblank) >= (int)sizeof image_name ||
         snprintf(image_path, sizeof image_path, "%s/%s", directory, image_name) >= (int)sizeof image_path ||
-        snprintf(sidecar_path, sizeof sidecar_path, "%s/vram_%u.json", directory, vblank) >= (int)sizeof sidecar_path) {
-        fprintf(stderr, "VRAMDUMP vblank=%u FAIL (output path too long)\n", vblank);
+        snprintf(sidecar_path, sizeof sidecar_path, "%s/vram_%" PRIu32 ".json", directory, vblank) >= (int)sizeof sidecar_path) {
+        fprintf(stderr, "VRAMDUMP vblank=%" PRIu32 " FAIL (output path too long)\n", vblank);
         return 0;
     }
 
     image = fopen(image_path, "wb");
     if (!image) {
-        fprintf(stderr, "VRAMDUMP vblank=%u FAIL (cannot open raw image)\n", vblank);
+        fprintf(stderr, "VRAMDUMP vblank=%" PRIu32 " FAIL (cannot open raw image)\n", vblank);
         return 0;
     }
     {
@@ -4317,7 +4318,7 @@ int ge_vramdump_write(const char *directory, uint32_t vblank,
         image = NULL;
         if (written != GE_CAPTURE_VRAM_SIZE || close_result != 0) {
             remove(image_path);
-            fprintf(stderr, "VRAMDUMP vblank=%u FAIL (raw image write incomplete)\n", vblank);
+            fprintf(stderr, "VRAMDUMP vblank=%" PRIu32 " FAIL (raw image write incomplete)\n", vblank);
             return 0;
         }
     }
@@ -4330,27 +4331,27 @@ int ge_vramdump_write(const char *directory, uint32_t vblank,
     sidecar = fopen(sidecar_path, "wb");
     if (!sidecar) {
         remove(image_path);
-        fprintf(stderr, "VRAMDUMP vblank=%u FAIL (cannot open JSON sidecar)\n", vblank);
+        fprintf(stderr, "VRAMDUMP vblank=%" PRIu32 " FAIL (cannot open JSON sidecar)\n", vblank);
         return 0;
     }
 
     fprintf(sidecar,
-            "{\"schema\":\"nakagawa-vram-dump-v1\",\"vblank\":%u,"
-            "\"vram\":{\"base\":\"0x%08x\",\"size_bytes\":%u,\"image_file\":\"%s\"},",
-            vblank, GE_CAPTURE_VRAM_BASE, GE_CAPTURE_VRAM_SIZE, image_name);
+            "{\"schema\":\"nakagawa-vram-dump-v1\",\"vblank\":%" PRIu32 ","
+            "\"vram\":{\"base\":\"0x%08" PRIx32 "\",\"size_bytes\":%" PRIu32 ",\"image_file\":\"%s\"},",
+            vblank, (uint32_t)GE_CAPTURE_VRAM_BASE, (uint32_t)GE_CAPTURE_VRAM_SIZE, image_name);
     fprintf(sidecar,
-            "\"display_framebuffer\":{\"addr\":\"0x%08x\",\"width\":480,"
-            "\"height\":272,\"stride\":%u,\"format\":\"%s\",\"format_code\":%u,"
+            "\"display_framebuffer\":{\"addr\":\"0x%08" PRIx32 "\",\"width\":480,"
+            "\"height\":272,\"stride\":%" PRIu32 ",\"format\":\"%s\",\"format_code\":%" PRIu32 ","
             "\"swizzled\":false},",
             display_addr, display_stride, ge_vramdump_format_name(display_format), display_format);
     fprintf(sidecar,
-            "\"draw_framebuffer\":{\"addr\":\"0x%08x\",\"width\":480,"
-            "\"height\":272,\"stride\":%u,\"format\":\"%s\",\"format_code\":%u,"
+            "\"draw_framebuffer\":{\"addr\":\"0x%08" PRIx32 "\",\"width\":480,"
+            "\"height\":272,\"stride\":%" PRIu32 ",\"format\":\"%s\",\"format_code\":%" PRIu32 ","
             "\"swizzled\":false},",
-            ge.fbp, ge.fbw, ge_vramdump_format_name(ge.fbfmt & 3u), ge.fbfmt & 3u);
+            ge.fbp, ge.fbw, ge_vramdump_format_name(ge.fbfmt & 3u), (uint32_t)(ge.fbfmt & 3u));
     fprintf(sidecar,
-            "\"depth_buffer\":{\"addr\":\"0x%08x\",\"width\":480,"
-            "\"height\":272,\"stride\":%u,\"format\":\"DEPTH16\","
+            "\"depth_buffer\":{\"addr\":\"0x%08" PRIx32 "\",\"width\":480,"
+            "\"height\":272,\"stride\":%" PRIu32 ",\"format\":\"DEPTH16\","
             "\"format_code\":11,\"swizzled\":false},",
             ge.zbp, ge.zbw ? ge.zbw : (ge.fbw ? ge.fbw : 512u));
     fprintf(sidecar, "\"texture_enabled\":%s,\"texture_levels\":[",
@@ -4371,11 +4372,11 @@ int ge_vramdump_write(const char *directory, uint32_t vblank,
             if (!first_level) fputc(',', sidecar);
             first_level = 0;
             fprintf(sidecar,
-                    "{\"level\":%u,\"addr\":\"0x%08x\",\"width\":%u,"
-                    "\"height\":%u,\"stride\":%u,\"format\":\"%s\","
-                    "\"format_code\":%u,\"size_bytes\":%llu,\"swizzled\":%s,\"in_vram\":%s}",
+                    "{\"level\":%" PRIu32 ",\"addr\":\"0x%08" PRIx32 "\",\"width\":%" PRIu32 ","
+                    "\"height\":%" PRIu32 ",\"stride\":%" PRIu32 ",\"format\":\"%s\","
+                    "\"format_code\":%" PRIu32 ",\"size_bytes\":%llu,\"swizzled\":%s,\"in_vram\":%s}",
                     level, address, width, height, stride,
-                    ge_vramdump_format_name(ge.tex_fmt & 0xFu), ge.tex_fmt & 0xFu,
+                    ge_vramdump_format_name(ge.tex_fmt & 0xFu), (uint32_t)(ge.tex_fmt & 0xFu),
                     (unsigned long long)ge_vramdump_surface_size(
                         width, height, stride, ge.tex_fmt & 0xFu),
                     ge.tex_swizzle ? "true" : "false",
@@ -4383,12 +4384,12 @@ int ge_vramdump_write(const char *directory, uint32_t vblank,
         }
     }
     fprintf(sidecar,
-            "],\"clut\":{\"addr\":\"0x%08x\",\"size_bytes\":%u,"
-            "\"stride\":%u,\"format\":\"%s\",\"format_code\":%u,"
-            "\"format_word\":\"0x%08x\",\"swizzled\":false,\"loaded_bytes\":%u,"
+            "],\"clut\":{\"addr\":\"0x%08" PRIx32 "\",\"size_bytes\":%" PRIu32 ","
+            "\"stride\":%" PRIu32 ",\"format\":\"%s\",\"format_code\":%" PRIu32 ","
+            "\"format_word\":\"0x%08" PRIx32 "\",\"swizzled\":false,\"loaded_bytes\":%" PRIu32 ","
             "\"loaded_data_hex\":\"",
             ge.clut_addr, clut_bytes, clut_stride,
-            ge_vramdump_format_name(clut_format & 3u), clut_format & 3u,
+            ge_vramdump_format_name(clut_format & 3u), (uint32_t)(clut_format & 3u),
             clut_format, clut_bytes);
     for (size_t i = 0; i < sizeof ge.clutram; i++) fprintf(sidecar, "%02x", ge.clutram[i]);
     fputs("\"},\"surfaces\":[", sidecar);
@@ -4415,7 +4416,7 @@ int ge_vramdump_write(const char *directory, uint32_t vblank,
         char name[32];
         if (!stride) stride = width;
         if (!address || !ge_vramdump_addr_in_vram(address)) continue;
-        snprintf(name, sizeof name, "texture_level_%u", level);
+        snprintf(name, sizeof name, "texture_level_%" PRIu32, level);
         ge_vramdump_surface(sidecar, &first_surface, name, "texture", address,
                             width, height, stride,
                             ge.tex_fmt & 0xFu, ge.tex_swizzle, NULL, 0);
@@ -4434,7 +4435,7 @@ int ge_vramdump_write(const char *directory, uint32_t vblank,
     if (!ok) {
         remove(sidecar_path);
         remove(image_path);
-        fprintf(stderr, "VRAMDUMP vblank=%u FAIL (JSON sidecar write incomplete)\n", vblank);
+        fprintf(stderr, "VRAMDUMP vblank=%" PRIu32 " FAIL (JSON sidecar write incomplete)\n", vblank);
         return 0;
     }
     return 1;

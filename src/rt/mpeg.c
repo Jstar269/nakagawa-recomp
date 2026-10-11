@@ -173,8 +173,8 @@ static uint32_t call_guest3(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, 
     int frame = -1;
     if (!s || !fn) return 0;
     if (!sr_nested_frame_acquire(sched_current_uid(), &frame_sp, &frame)) {
-        fprintf(stderr, "MPEG_CALL_GUEST: fn=0x%08x refused -- no nested guest-call frame "
-                        "available (cur_uid=0x%x)\n", fn, sched_current_uid());
+        fprintf(stderr, "MPEG_CALL_GUEST: fn=0x%08" PRIx32 " refused -- no nested guest-call frame "
+                        "available (cur_uid=0x%" PRIx32 ")\n", fn, sched_current_uid());
         return 0;
     }
     CpuState save;
@@ -482,8 +482,8 @@ uint32_t mpeg_ringbuffer_put(CpuState *s, uint32_t ring, uint32_t numPackets, ui
         static int warned = 0;
         if (!warned) {
             warned = 1;
-            fprintf(stderr, "mpeg: ring fill callback 0x%08x is not recompiled code "
-                    "(ring=0x%08x data=0x%08x cbArg=0x%08x mpeg=0x%08x) -- runtime-loaded code?\n",
+            fprintf(stderr, "mpeg: ring fill callback 0x%08" PRIx32 " is not recompiled code "
+                    "(ring=0x%08" PRIx32 " data=0x%08" PRIx32 " cbArg=0x%08" PRIx32 " mpeg=0x%08" PRIx32 ") -- runtime-loaded code?\n",
                     cb, ring, rb_get(ring, RB_data), cbArg, mpegAddr);
         }
     }
@@ -536,7 +536,7 @@ uint32_t mpeg_ringbuffer_put(CpuState *s, uint32_t ring, uint32_t numPackets, ui
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
         if (n++ < 32 || addedTotal != addWanted)
-            fprintf(stderr, "MpegRingbufferPut ring=0x%x want=%u/%u cb=0x%x -> %u avail=%u/%u\n",
+            fprintf(stderr, "MpegRingbufferPut ring=0x%" PRIx32 " want=%" PRIu32 "/%" PRIu32 " cb=0x%" PRIx32 " -> %" PRIu32 " avail=%" PRIu32 "/%" PRIu32 "\n",
                     ring, numPackets, available, cb, addedTotal, rb_get(ring, RB_packetsAvail), total);
     }
     return addedTotal;
@@ -621,7 +621,7 @@ uint32_t mpeg_get_avc_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint3
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
         if (n++ < 32 || (n & 0xFF) == 0)
-            fprintf(stderr, "MpegGetAvcAu #%d pts=%lld avail=%u end=%d\n",
+            fprintf(stderr, "MpegGetAvcAu #%d pts=%lld avail=%" PRIu32 " end=%d\n",
                     n, (long long)pts, rb_get(ring, RB_packetsAvail), ctx->videoEnd);
     }
     if (ctx->videoEnd) return SCE_MPEG_ERROR_NO_DATA;
@@ -734,7 +734,7 @@ uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
         if (n++ < 32 || (n & 0xFF) == 0)
-            fprintf(stderr, "MpegAvcDecode #%d buf=0x%x fw=%u pts=%lld dec=%d frames=%d\n",
+            fprintf(stderr, "MpegAvcDecode #%d buf=0x%" PRIx32 " fw=%" PRIu32 " pts=%lld dec=%d frames=%d\n",
                     n, buffer, width, (long long)ctx->videoPts, gotFrame, ctx->h264Frames);
     }
     return gotFrame > 0 ? 0 : SCE_MPEG_ERROR_NO_DATA;
@@ -940,7 +940,7 @@ uint32_t mpeg_avc_decode_ycbcr(uint32_t mpegAddr, uint32_t auAddr, uint32_t bufP
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
         if (n++ < 32 || (n & 0xFF) == 0)
-            fprintf(stderr, "MpegAvcDecodeYCbCr #%d au=0x%x ycbcr=0x%x dec=%d frames=%d pts=%lld\n",
+            fprintf(stderr, "MpegAvcDecodeYCbCr #%d au=0x%" PRIx32 " ycbcr=0x%" PRIx32 " dec=%d frames=%d pts=%lld\n",
                     n, auAddr, buf, got, ctx->h264Frames, (long long)ctx->videoPts);
     }
     return 0;
@@ -988,7 +988,7 @@ uint32_t mpeg_avc_copy_ycbcr(uint32_t mpegAddr, uint32_t dst, uint32_t src) {
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
         if (n++ < 32 || (n & 0xFF) == 0)
-            fprintf(stderr, "MpegAvcCopyYCbCr #%d dst=0x%x src=0x%x size=%u\n", n, dst, src, from->size);
+            fprintf(stderr, "MpegAvcCopyYCbCr #%d dst=0x%" PRIx32 " src=0x%" PRIx32 " size=%" PRIu32 "\n", n, dst, src, from->size);
     }
     return 0;
 }
@@ -1061,8 +1061,8 @@ uint32_t mpeg_avc_csc(uint32_t mpegAddr, uint32_t buf, uint32_t rangeAddr, uint3
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;
         if (n++ < 32 || (n & 0xFF) == 0)
-            fprintf(stderr, "MpegAvcCsc #%d ycbcr=0x%x dest=0x%x fw=%u range=%u,%u %ux%u\n",
-                    n, buf, dest, frameWidth, (uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h);
+            fprintf(stderr, "MpegAvcCsc #%d ycbcr=0x%" PRIx32 " dest=0x%" PRIx32 " fw=%" PRIu32 " range=%u,%u %ux%u\n",
+                    n, buf, dest, frameWidth, (unsigned)x, (unsigned)y, (unsigned)w, (unsigned)h);
     }
     return 0;
 }

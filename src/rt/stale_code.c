@@ -10,6 +10,7 @@
 
 #include "stale_code.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -279,11 +280,11 @@ static int fire_report(const SrStaleFire *fire,
     }
     if (fire->is_block) {
         fprintf(stderr,
-                "STALE_CODE_DETECT block=0x%08x nwords=%u expected_hash=0x%08x actual_hash=0x%08x\n",
+                "STALE_CODE_DETECT block=0x%08" PRIx32 " nwords=%" PRIu32 " expected_hash=0x%08" PRIx32 " actual_hash=0x%08" PRIx32 "\n",
                 fire->addr, fire->nwords, fire->expected, fire->actual);
     } else {
         fprintf(stderr,
-                "STALE_CODE_DETECT block=0x%08x off=0x%08x expected=0x%08x actual=0x%08x\n",
+                "STALE_CODE_DETECT block=0x%08" PRIx32 " off=0x%08" PRIx32 " expected=0x%08" PRIx32 " actual=0x%08" PRIx32 "\n",
                 fire->addr, fire->addr, fire->expected, fire->actual);
     }
     if (bad_addr_out) {

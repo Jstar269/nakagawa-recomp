@@ -255,6 +255,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `contrib_check.py` | Run only the local gates that apply to the files you changed. |
 | `contrib_refresh.py` | Reproduce the two public provenance controls for the changed paths that already have public entries, from the committed public ledger alone; refuses new, removed, unresolved or policy-changing paths. |
 | `discovery_contract.py` | Inventory and verify the repository's unittest discovery contract. |
+| `format_portability_check.py` | Compile the portable core against a 32-bit newlib-shaped `stdint.h` shim with `-Werror=format`, so a fixed-width value printed with a plain `%u`/`%x`/`%d` fails on every host. |
 | `ci_paths.py` | Classify a change for the path-gated public CI workflow. |
 | `ci_required.py` | Evaluate the stable aggregate status for the path-gated CI workflow. |
 | `ci_test_shards.py` | Deterministic cost-weighted partition of the Python test modules into CI shards; weights in `tools/ci_test_weights.json`. |
@@ -527,6 +528,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_contrib_check.py` | The contribution gate must route, and must never turn a skip into a pass. |
 | `test_contrib_refresh.py` | The contributor refresh equals the maintainer generator byte for byte on a synthetic repository, and every refusal fails closed. |
 | `test_discovery_contract.py` | Parallel test execution and discovery contract verification. |
+| `test_format_portability_check.py` | The format portability checker fails a synthetic `%u`/`%d` on a fixed-width value and passes PRI macros and casts, through the API and the CLI. |
 | `test_hst_doctor.py` | Doctor checks: data directories, ELF validation, private inputs, repository contract. |
 | `test_hst_doctor_hardening.py` | Doctor hardening: commit identity and the fresh-clone setup matrix. |
 | `test_manager_symbol_docs.py` | Keep the manager symbol guidance aligned with the public documentation. |
