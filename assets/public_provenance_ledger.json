@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "911eb685f0930268180530827f202be53685162abbe8aa5bf94226a0c60b3caa"
+      "sha256": "d5200324c760fb7b482e51cb026bbe74e0ae645c415603ae692e3ce0ab0a76d1"
     },
     {
       "path": "NOTICE.md",
@@ -1096,7 +1096,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "20678055d4d4572d66af87af6e382c8cc6ecbc9b39e2998b69331ddb08f61b7f"
+      "sha256": "574435a6775adadf4c45c4e794528ace1db1eee8eb82341cbd1fbce3c951d4bf"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -2563,7 +2563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b26dd3475601c32257024b016d5da011f83c65d58b489b9da6dc428d65654d1d"
+      "sha256": "ce3ba6a1868ed5dd07fae52f69e7f03ee1077c29b73fb4e4d674935aaa04ab75"
     },
     {
       "path": "src/core/nk_font.h",
@@ -2575,7 +2575,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3a5237a0a1e2618f9506462ca048de1e5fb47a3d3086aa18575818053286d67f"
+      "sha256": "2b26be1ef971a80f453b2400f890cbd03189e47166fb802c150cce76427ddacf"
     },
     {
       "path": "src/core/nk_font_slots.h",
@@ -2731,7 +2731,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8cece3304f4841c33aacc36029728a4f807c28eef805617d787c894394bd525d"
+      "sha256": "d21a160d1a5568bd5ab444b993bd8dc5520aebe4d583d281d68838c659ed5e8b"
     },
     {
       "path": "src/core/nk_platform_posix.c",
@@ -2743,7 +2743,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8d781b9e7c9724215c5b5e07bf9f308ec3ee4c289c64e3034957e65e918e5e60"
+      "sha256": "bda8dfbb0600008f8e24671b48537edb5340023ce61984a97c93961a9280766b"
     },
     {
       "path": "src/core/nk_platform_win32.c",
@@ -2755,7 +2755,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ce6171c8c079cb4dfa9f5ab84df29ef5f89540242388d83a2909ec9ae9986375"
+      "sha256": "85058bf7cfd2644f16c73cfbfdfcc35d3c11974221c2cdf155bfe8c3b5de25d0"
     },
     {
       "path": "src/core/nk_psp_aes.c",
@@ -4454,7 +4454,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f332743cf4717363ffc1cafab6cbab8d74fed1b7074f8145a33f1ba624bd06c5"
+      "sha256": "b9030766fccbf50170d7596a1d1d3c3040b3de546b171d0712f4e59880e37cde"
     },
     {
       "path": "src/rt/flash0_font.h",
@@ -4466,7 +4466,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4a06ac40b7daa0dda1835b315691b6243e627104b1e3ed1a3d91fdbeac061d13"
+      "sha256": "7eb5723f4edd593b029dc0690e2b0dfeeef2c15bec7b2c5878b7689cb8976a11"
     },
     {
       "path": "src/rt/flight_recorder.c",
@@ -5024,7 +5024,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "60880cb7d33e608e5788936261455670698b566e2c2f345b9e123dbca06660fa"
+      "sha256": "4260dad1ae7e5a286108b5b4309aef3eaf18fd3e8107e01c6ab0cc90a1bf0192"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -6005,7 +6005,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d187f5dd7e14ab7d04450b6afe982918b11992167d1a455587450c880ad5cbe0"
+      "sha256": "6a348ca9ec84fa2d9d34f31ea596ed7a77edbacf65a04f8906d812c784ca2bd2"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -8375,7 +8375,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "65d19f8119ffc86bf13d6ec154b9dbd4c7bea704547ae007452e393e452e60ad"
+      "sha256": "a940a344b17d3ce467993f0a77fb4c03c665f6746b05bdbf3ededa2bd384a091"
     },
     {
       "path": "tools/test_flight_build_identity.py",
