@@ -960,6 +960,7 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
                 str(harness), str(out_c), str(out_dir / "mutant_0.c"),
                 str(ROOT / "src" / "rt" / "guest_interp.c"),
                 str(ROOT / "src" / "rt" / "perf.c"),
+                str(ROOT / "src" / "rt" / "sr_coro.c"),
                 str(ROOT / "src" / "rt" / "cpu_lle.c"),
                 str(ROOT / "src" / "rt" / "domain_mode.c"),
                 str(ROOT / "src" / "rt" / "stale_code.c"),

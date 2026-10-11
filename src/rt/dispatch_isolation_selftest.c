@@ -1175,12 +1175,14 @@ static int run_host_stack_guard_child(void) {
     g_stack_guard_calls = 0;
     own_synthetic_aot_word(STACK_GUARD_TARGET);
     sr_register(STACK_GUARD_TARGET, stack_guard_recursive_body);
+    sr_dispatch_host_stack_remaining = sr_coro_stack_remaining;
     sr_sched_on = 1;
     SrCoro *fiber = sr_coro_create(stack_guard_coro_body, &s,
                                    SR_GUEST_FIBER_STACK_SIZE);
     if (!fiber) return 11;
     sr_coro_switch(fiber);
     sr_sched_on = 0;
+    sr_dispatch_host_stack_remaining = NULL;
     sr_coro_destroy(fiber);
     if (g_stack_guard_result != SR_GUEST_INTERP_HOST_STACK_EXHAUSTED ||
         g_stack_guard_calls == 0 ||

@@ -597,6 +597,7 @@ void sched_init(CpuState *cpu) {
     sr_rt_uid_fn = sr_rt_current_uid;
     if (cpu->r[28] != 0u) s_gp = cpu->r[28];           /* the driver seeded gp from the module's # init */
     s_sched_coro = sr_coro_main();
+    sr_dispatch_host_stack_remaining = sr_coro_stack_remaining;
     sr_sched_on = 1;
     s_interrupts_enabled = 1;
     s_dispatch_enabled = 1;

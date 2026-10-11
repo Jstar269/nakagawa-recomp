@@ -12,7 +12,6 @@
 #include <stdint.h>
 #include <string.h>
 #include "recomp.h"
-#include "sr_coro.h"
 #include "nested_frames.h"
 #include "dispatch_table.h"   /* guest code-address table + primitives (issue #45) */
 #include "guest_interp.h"     /* executable-span interpreter floor (issue #116) */
@@ -1675,10 +1674,12 @@ static const char *dispatch_semantic_boundary_name(SrGuestInterpResult result) {
  * dispatch unwinding. The malformed decoder and formatter path used under 20 KiB. */
 #define SR_DISPATCH_STACK_SAFETY_MARGIN ((size_t)128u << 10)
 
+int (*sr_dispatch_host_stack_remaining)(size_t *remaining_out) = NULL;
+
 static int dispatch_host_stack_preflight(void) {
     size_t remaining;
     if (!sr_sched_on) return 0;
-    if (!sr_coro_stack_remaining(&remaining))
+    if (!sr_dispatch_host_stack_remaining || !sr_dispatch_host_stack_remaining(&remaining))
         return SR_GUEST_INTERP_HOST_STACK_BOUNDS_UNAVAILABLE;
     if (remaining < SR_DISPATCH_STACK_SAFETY_MARGIN)
         return SR_GUEST_INTERP_HOST_STACK_EXHAUSTED;
