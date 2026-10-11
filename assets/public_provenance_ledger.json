@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7094c6f15f15a4d1a1b4d204f8c30f314dd2fd99507f11367a6b0fa2cb71ab92"
+      "sha256": "fe270262a565cfc37fd0304dd79c983a7d4756d11219687c8693b6be63b9773a"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -6494,7 +6494,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "56e3098c71fb504a978552432d9ed17b4426afd8151207c32c729ae58623df22"
+      "sha256": "a037f30732e9f87e940228873fa83e7c75e4ab9562ae94d402df374d643ce71c"
     },
     {
       "path": "tools/frame_capture_check.py",
