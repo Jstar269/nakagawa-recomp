@@ -1327,14 +1327,6 @@ LINEAGE_CONTRADICTION_EXCEPTIONS: dict[str, dict[str, str | int]] = {
         "issue": "#342",
         "reason": "header declares derivation from sal063 while ledger classifies as project_authored_attested",
     },
-    "tools/test_funcdiff_cmp.py": {
-        "issue": "#342",
-        "reason": "header declares derivation from sal063 while ledger classifies as project_authored_attested",
-    },
-    "tools/test_nidseq.py": {
-        "issue": "#342",
-        "reason": "header declares derivation from sal063 while ledger classifies as project_authored_attested",
-    },
 }
 
 LINEAGE_DERIVED_LINE = re.compile(
