@@ -125,8 +125,10 @@ Corrections to the mission list:
    upstream attribution. Maintainer decision (2026-10-01, #342): authorship
    of `evf.h` is unknown, so the derived attribution STAYS as the
    conservative claim; the remaining work is making the public
-   ledger/projection record that derived lineage and retiring the three
-   tool lineage exceptions separately (overlapping the #304 licensing
+   ledger/projection record that derived lineage and retiring the
+   remaining tool lineage exceptions (the two synthetic comparator test
+   suites test_funcdiff_cmp.py and test_nidseq.py were retired under #342;
+   gen_nidnames.py remains alongside evf.h, overlapping the #304 licensing
    decision);
    and the `guest_interp` record (`daybreak4-guest-interpreter`) was
    **unbacked** until the maintainer promoted the existing human-authored
@@ -276,8 +278,9 @@ replacement by an LLE path that makes the component unnecessary ·
   maintainer decision (2026-10-01, #342) keeps the `Derived from PPSSPP`
   header attribution as the conservative claim; the remaining work is
   making the public ledger/projection record derived-from-PPSSPP instead
-  of project-authored with null upstream, then retiring the three tool
-  lineage exceptions separately — maintainer-paced, blocked on the trusted
+  of project-authored with null upstream, then retiring the remaining tool
+  lineage exceptions (test_funcdiff_cmp.py and test_nidseq.py retired under #342)
+  — maintainer-paced, blocked on the trusted
   record update and the #304 licensing decision.
   `fp_convert.h`: closest to done — PSPAutotests pin + MIPS32 rationale
   already in-header; remaining work is confirming the exact pin's licence
@@ -515,7 +518,8 @@ that authority.
    2026-10-01 maintainer decision (#342) — keep the derived header,
    correct the ledger/projection to derived-from-PPSSPP (blocked on the
    trusted-record update and the #304 licensing decision), and retire the
-   three tool lineage exceptions separately.
+   remaining tool lineage exceptions separately (test_funcdiff_cmp.py and
+   test_nidseq.py retired under #342).
 5. PGF payload admission ultimately needs counsel answers (font-origins
    §8: OFL aggregation vs GPL program, RFN rename sufficiency, metric
    reproduction exposure, camouflage-name redistribution). Is counsel
