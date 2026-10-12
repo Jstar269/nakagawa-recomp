@@ -1105,7 +1105,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "d264e85df846a29eaa9d2ba3ba65f204dde3c7cdd997617f12898935efc84a4a"
+      "sha256": "05eefbe2af14d43df1af782e730e269cc3780a65ec1567dcddef1c5b73ad0290"
     },
     {
       "path": "docs/ENHANCEMENT_CONTRACT.md",

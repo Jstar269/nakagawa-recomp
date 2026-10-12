@@ -106,9 +106,9 @@ instruction's `owners`, never through its presence in the view.
 
 The exporter checks the full canonical report's structural consistency before
 writing the bundle. That check covers the whole executable image, not only the
-selected function, and the report verifier currently grows quadratically with the
-image's instruction count: small modules export in seconds, but a full-size
-executable can take far longer. The function view is a projection, **not** a standalone
+selected function, and its cost grows linearly with the image's instruction count:
+small modules export in seconds, and a 2 MiB synthetic executable takes under a
+minute end to end. The function view is a projection, **not** a standalone
 canonical report accepted by `canonical_cfg_gate`. Ownership conflicts are retained
 as observations, not repaired or promoted into execution authority. This is a
 bounded step toward issue #305; typed dataflow, imported annotations, and pseudocode
