@@ -953,8 +953,8 @@ class TestPublishAudit(unittest.TestCase):
     def test_checked_in_lineage_exceptions_structure_and_active_entries(self):
         self.assertIn("src/rt/evf.h", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
         self.assertIn("tools/gen_nidnames.py", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
-        self.assertIn("tools/test_funcdiff_cmp.py", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
-        self.assertIn("tools/test_nidseq.py", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
+        self.assertNotIn("tools/test_funcdiff_cmp.py", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
+        self.assertNotIn("tools/test_nidseq.py", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
 
         for path, info in publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS.items():
             with self.subTest(path=path):
@@ -963,6 +963,26 @@ class TestPublishAudit(unittest.TestCase):
                 self.assertIn("reason", info)
                 self.assertTrue(str(info["issue"]).endswith("342"))
                 self.assertTrue(len(str(info["reason"])) > 0)
+
+    def test_retired_lineage_exceptions_have_clean_headers(self):
+        root = Path(__file__).resolve().parents[1]
+        for retired_path in ("tools/test_funcdiff_cmp.py", "tools/test_nidseq.py"):
+            with self.subTest(path=retired_path):
+                content = (root / retired_path).read_bytes()
+                findings = publish_audit._spdx_provenance_findings(
+                    retired_path,
+                    {"classification": "project_authored_attested"},
+                    content,
+                )
+                self.assertEqual(findings, [], f"SPDX findings for {retired_path}: {findings}")
+                contra_findings, was_contradiction = publish_audit._lineage_contradiction_findings(
+                    retired_path,
+                    {"classification": "project_authored_attested"},
+                    content,
+                    exceptions={},
+                )
+                self.assertFalse(was_contradiction, f"Unexpected contradiction for {retired_path}")
+                self.assertEqual(contra_findings, [], f"Contradiction findings for {retired_path}: {contra_findings}")
 
     def test_deterministic_report_output_and_aggregate_sha(self):
         entries = [
