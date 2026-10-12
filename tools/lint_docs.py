@@ -83,10 +83,10 @@ OBSOLETE_TOPOLOGY_PATTERNS = [
 # ever moves up. State it as a bound rather than as an exact count: an exact count is stale
 # the moment the next object is opened, and the dangerous direction is a frontier that is
 # too LOW, because that is what lets a soon-to-be-live number sit in the denylist unnoticed.
-# Raise it whenever this file is touched during a sweep. The public sequence had allocated
-# at least through 410 as of 2026-09-23 (issues #278-#400 and PRs through #410), so every
-# number up to 410 is a live public object.
-PUBLIC_ISSUE_NUMBER_FRONTIER = 410
+# Raise it whenever this file is touched during a sweep. The public sequence has allocated
+# through at least 860 as of 2026-10-12 (with open PR #860), so every number up to 860 is
+# a live public object.
+PUBLIC_ISSUE_NUMBER_FRONTIER = 860
 
 # Every former private-era number is now at or below the frontier, i.e. reallocated to a
 # live public issue or PR, so none may be flagged any more.

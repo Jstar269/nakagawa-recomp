@@ -39,8 +39,8 @@ class ManagerSymbolDocumentationTests(unittest.TestCase):
 
         docs = document.read_text(encoding="utf-8")
         expected_candidates = (
-            "docs/opengrip_ref/functions.csv",
-            "OpenGrip_For_Inspiration/functions.csv",
+            "docs/symbol_ref/functions.csv",
+            "functions.csv",
         )
         for candidate in expected_candidates:
             manager_spelling = candidate.replace("/", "\\")
@@ -52,8 +52,8 @@ class ManagerSymbolDocumentationTests(unittest.TestCase):
 
     def test_supported_symbol_reference_directories_are_ignored(self) -> None:
         ignored = GITIGNORE.read_text(encoding="utf-8")
-        self.assertIn("/docs/opengrip_ref/", ignored)
-        self.assertIn("/OpenGrip_For_Inspiration/", ignored)
+        self.assertIn("/docs/symbol_ref/", ignored)
+        self.assertIn("functions.csv", ignored)
 
 
 if __name__ == "__main__":
