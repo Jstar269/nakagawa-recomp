@@ -24,6 +24,7 @@ import os
 import struct
 import sys
 from array import array
+from collections.abc import Iterable
 
 import tomllib
 
@@ -1337,19 +1338,29 @@ _CFG_REASON_NAMES = ("entry",) + _CFG_KIND_NAMES
 _CFG_REASON_BITS = {name: 1 << index for index, name in enumerate(_CFG_REASON_NAMES)}
 
 
+def _cfg_json_number(value):
+    """Return whether a JSON value is a number, the only kind that can equal an address."""
+    return isinstance(value, (int, float))
+
+
 def _cfg_successor_classifications(report):
     """Classify every CFG edge using only the serialized ownership model."""
+    def rows(name):
+        # The verifier reports a malformed field; a scalar here must not raise.
+        value = report.get(name, ())
+        return value if isinstance(value, Iterable) else ()
+
     nodes = {
         row.get("address"): row
-        for row in report.get("instructions", ())
+        for row in rows("instructions")
         if isinstance(row, dict) and type(row.get("address")) is int
     }
     entries = {
-        entry for entry in report.get("entries", ())
+        entry for entry in rows("entries")
         if type(entry) is int
     }
     interior = set()
-    for row in report.get("interior_entries", ()):
+    for row in rows("interior_entries"):
         if not isinstance(row, dict):
             continue
         source, target, kind = row.get("source"), row.get("address"), row.get("reason")
@@ -1358,7 +1369,7 @@ def _cfg_successor_classifications(report):
 
     classifications = []
     external_transfer_kinds = {"call", "direct-jump", "direct-branch", "branch", "tail-call"}
-    for edge in report.get("edges", ()):
+    for edge in rows("edges"):
         if not isinstance(edge, dict):
             continue
         source, target, kind = edge.get("source"), edge.get("target"), edge.get("kind")
@@ -1391,7 +1402,10 @@ def _cfg_successor_classifications(report):
                 if isinstance(kind, str) and kind in external_transfer_kinds
                 else "invalid-unowned"
             )
-        elif (source, target, kind) in interior:
+        elif (
+            _cfg_json_number(source) and isinstance(kind, str)
+            and (source, target, kind) in interior
+        ):
             classification = "continuation-resume-entry"
         elif source_owners.intersection(target_owners):
             classification = "same-region"
@@ -1980,6 +1994,18 @@ def verify_canonical_cfg_report(report):
     def finding(code, value):
         findings.append({"code": code, "message": repr(value)})
 
+    def known(value, names):
+        """Test a string-name set without hashing an unhashable JSON value."""
+        return isinstance(value, str) and value in names
+
+    def owner_projection(owners):
+        """Project node owners for the ownership-map comparison.
+
+        A non-list value is already a node-owners-invalid finding; a scalar is
+        kept as-is (it never equals a row's tuple) instead of raising.
+        """
+        return tuple(owners) if isinstance(owners, Iterable) else owners
+
     def list_field(name):
         value = report.get(name, [])
         if not isinstance(value, list):
@@ -2051,7 +2077,7 @@ def verify_canonical_cfg_report(report):
         node_by_address[address] = node
         if address not in interval_addresses:
             finding("node-outside-executable", node)
-        if node.get("classification") not in allowed_classifications:
+        if not known(node.get("classification"), allowed_classifications):
             finding("node-unclassified", node)
         node_edges = node.get("edges", [])
         if not isinstance(node_edges, list):
@@ -2066,14 +2092,17 @@ def verify_canonical_cfg_report(report):
             kind = edge.get("kind")
             if source != address:
                 finding("edge-source-mismatch", edge)
-            if kind not in allowed_edge_kinds:
+            if not known(kind, allowed_edge_kinds):
                 finding("edge-kind-invalid", edge)
             if target is not None and (
                 type(target) is not int or target < 0 or target > UINT32_END_MAX - 1
             ):
                 finding("edge-target-invalid", edge)
                 continue
-            if target is not None and target not in interval_addresses and kind not in external_edge_kinds:
+            if (
+                target is not None and target not in interval_addresses
+                and not known(kind, external_edge_kinds)
+            ):
                 finding("edge-target-invalid", edge)
             if type(source) is int and (target is None or type(target) is int) and isinstance(kind, str):
                 node_edge_keys.append((source, target, kind, edge.get("detail")))
@@ -2099,7 +2128,7 @@ def verify_canonical_cfg_report(report):
         if start in byte_starts:
             finding("duplicate-byte-classification", row)
         byte_starts.add(start)
-        if row.get("classification") not in allowed_byte_classifications:
+        if not known(row.get("classification"), allowed_byte_classifications):
             finding("byte-classification-invalid", row)
     if byte_starts != interval_addresses:
         findings.append({
@@ -2122,7 +2151,10 @@ def verify_canonical_cfg_report(report):
             finding("edge-target-invalid", edge)
         elif target in interval_addresses and target not in node_by_address:
             finding("edge-target-missing", edge)
-        elif target not in interval_addresses and kind not in external_edge_kinds and target is not None:
+        elif (
+            target not in interval_addresses and not known(kind, external_edge_kinds)
+            and target is not None
+        ):
             finding("edge-target-invalid", edge)
         if type(source) is int and (target is None or type(target) is int) and isinstance(kind, str):
             global_edge_keys.append((source, target, kind, edge.get("detail")))
@@ -2138,7 +2170,7 @@ def verify_canonical_cfg_report(report):
         if not isinstance(successor, dict):
             finding("successor-classification-invalid", successor)
             continue
-        if successor.get("classification") not in CFG_SUCCESSOR_CLASSIFICATIONS:
+        if not known(successor.get("classification"), CFG_SUCCESSOR_CLASSIFICATIONS):
             finding("successor-classification-invalid", successor)
     if successor_rows != _cfg_successor_classifications(report):
         finding(
@@ -2178,6 +2210,11 @@ def verify_canonical_cfg_report(report):
     interior_keys = []
     interior_addresses = set()
     valid_entries = {entry for entry in entries if type(entry) is int}
+    # Membership index for the per-row edge check; scanning the edge list for
+    # each interior entry made verification quadratic in image size.
+    global_edge_triples = {
+        (source, target, kind) for source, target, kind, _detail in global_edge_keys
+    }
     for item in interior_rows:
         if not isinstance(item, dict):
             finding("interior-entry-invalid", item)
@@ -2192,10 +2229,7 @@ def verify_canonical_cfg_report(report):
             finding("interior-entry-node-missing", item)
         if owner not in valid_entries:
             finding("interior-entry-owner-missing", item)
-        if not any(
-            edge_source == source and edge_target == address and edge_kind == reason
-            for edge_source, edge_target, edge_kind, _detail in global_edge_keys
-        ):
+        if (source, address, reason) not in global_edge_triples:
             finding("interior-entry-edge-missing", item)
         interior_keys.append((address, source, owner, reason))
         interior_addresses.add(address)
@@ -2224,13 +2258,14 @@ def verify_canonical_cfg_report(report):
         for source, target, kind, _detail in global_edge_keys
         if kind == "delay-slot" and target is not None
     }
+    delay_targets = {target for _source, target in delay_edge_pairs}
     for address, node in node_by_address.items():
         branch_likely = node.get("branch_likely")
         if type(branch_likely) is not bool:
             finding("branch-likely-invalid", node)
         predecessor = node.get("delay_slot_of")
         if predecessor is None:
-            if any(target == address for _source, target in delay_edge_pairs):
+            if address in delay_targets:
                 finding("delay-slot-projection-mismatch", node)
             continue
         if type(predecessor) is not int or predecessor not in node_by_address:
@@ -2284,7 +2319,12 @@ def verify_canonical_cfg_report(report):
         address for address, node in node_by_address.items()
         if isinstance(node.get("owners"), list) and len(node["owners"]) > 1
     )
-    if sorted(actual_conflict_addresses) != expected_conflict_addresses:
+    # A non-number already has a conflict-node-missing finding and can never
+    # equal a node address; it must not be ordered against integers.
+    if (
+        not all(_cfg_json_number(address) for address in actual_conflict_addresses)
+        or sorted(actual_conflict_addresses) != expected_conflict_addresses
+    ):
         finding("conflict-projection-mismatch", actual_conflict_addresses)
     for _address, node in node_by_address.items():
         owners = node.get("owners")
@@ -2315,7 +2355,7 @@ def verify_canonical_cfg_report(report):
                 if address in seen_ownership:
                     finding("ownership-map-duplicate", row)
                 seen_ownership.add(address)
-                if classification not in allowed_classifications:
+                if not known(classification, allowed_classifications):
                     finding("ownership-map-classification-invalid", row)
                 if not isinstance(owners, list) or any(type(owner) is not int for owner in owners):
                     finding("ownership-map-owners-invalid", row)
@@ -2325,14 +2365,16 @@ def verify_canonical_cfg_report(report):
                     finding("ownership-map-node-mismatch", row)
                 actual_ownership.append((address, classification, tuple(owners)))
             expected_ownership = [
-                (address, node.get("classification"), tuple(node.get("owners", ())))
+                (address, node.get("classification"), owner_projection(node.get("owners", ())))
                 for address, node in sorted(node_by_address.items())
             ]
-            if sorted(actual_ownership) != expected_ownership:
+            # Expected addresses are unique, so ordering by address alone is
+            # enough; a duplicate row is a mismatch whatever its other fields.
+            if sorted(actual_ownership, key=lambda item: item[0]) != expected_ownership:
                 finding("ownership-map-projection-mismatch", ownership_rows)
     for conflict in conflicts:
         address = conflict.get("address") if isinstance(conflict, dict) else None
-        node = node_by_address.get(address)
+        node = node_by_address.get(address) if _cfg_json_number(address) else None
         if node is not None and isinstance(conflict.get("owners"), list) and conflict["owners"] != node.get("owners"):
             finding("conflict-owner-mismatch", conflict)
 
