@@ -336,8 +336,11 @@ def export_function(elf_path: str, addr: int, base: int, outdir: Path,
         meta["cfg"] = {"file": "cfg.json", "sha256": sha256_hex(cfg_bytes)}
 
     outdir.mkdir(parents=True, exist_ok=True)
+    cfg_path = outdir / "cfg.json"
     if cfg_bytes is not None:
-        (outdir / "cfg.json").write_bytes(cfg_bytes)
+        cfg_path.write_bytes(cfg_bytes)
+    else:
+        cfg_path.unlink(missing_ok=True)
     (outdir / "function.bin").write_bytes(data)
     (outdir / "metadata.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     (outdir / "context.c").write_text(gen_context_c(), encoding="utf-8")

@@ -249,6 +249,30 @@ class TestFunctionCfg(unittest.TestCase):
         self.assertFalse((plain / "cfg.json").exists())
         self.assertEqual(before, analyze.analyze(analyze.Elf(str(self.elf_path), base=0)))
 
+    def test_cfg_cli_followed_by_plain_export_removes_stale_cfg(self):
+        write_elf(self.elf_path, words=[
+            0x0C000404, 0, 0x03E00008, 0, 0x03E00008, 0])
+        expected, reused = self.root / "expected", self.root / "reused"
+        dx.export_function(str(self.elf_path), 0x1000, 0, expected, "entry")
+
+        with mock.patch("builtins.print"):
+            self.assertEqual(dx.main([
+                str(self.elf_path), "--function", "0x1000", "--name", "entry",
+                "--output", str(reused), "--with-cfg"]), 0)
+        self.assertTrue((reused / "cfg.json").is_file())
+        self.assertIn("cfg", json.loads((reused / "metadata.json").read_text()))
+
+        with mock.patch("builtins.print"):
+            self.assertEqual(dx.main([
+                str(self.elf_path), "--function", "0x1000", "--name", "entry",
+                "--output", str(reused)]), 0)
+        self.assertFalse((reused / "cfg.json").exists())
+        self.assertNotIn("cfg", json.loads((reused / "metadata.json").read_text()))
+        self.assertEqual(
+            {p.name: p.read_bytes() for p in expected.iterdir()},
+            {p.name: p.read_bytes() for p in reused.iterdir()},
+        )
+
     def test_cfg_export_does_not_change_generated_aot_bytes(self):
         write_elf(self.elf_path, words=[0x0C000404, 0, 0x03E00008, 0, 0x03E00008, 0])
         source_bytes = self.elf_path.read_bytes()

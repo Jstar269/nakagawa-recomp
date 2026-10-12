@@ -6398,7 +6398,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "19ba706e7db617146922f4c841bbe6b17c8f11033d26d3e235b2ebe90e373a88"
+      "sha256": "d6cd13e69043508aef3be349315c0c22bb6c85a50c0da7023b8ff9771cea9943"
     },
     {
       "path": "tools/discovery_contract.py",
@@ -8219,7 +8219,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "72330211cce8b2210d7d0259ccd2dfcefe55c19ee18d6d036f7894fa976498b2"
+      "sha256": "a7971d8f530ec4270f546452a9a5c35ed5ab053250ee12c48bfba1767fe02763"
     },
     {
       "path": "tools/test_direct_j_omission_mutation.py",
