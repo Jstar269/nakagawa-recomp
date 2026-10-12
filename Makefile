@@ -2213,6 +2213,23 @@ ge-float24-selftest:
 
 native-core-tests: ge-float24-selftest
 
+# ge-cpu-profile-validate-selftest — ge_cpu_profile_validate() (issue #282) against the
+# counters the production GE object produces for source-owned display lists: every
+# primitive type in both modes, indexed draws, clipped and rejected triangles, rejected
+# points and sprite corners, patches, block transfer and CLUT load, the GPU hook seam, and
+# each profile switch; then one fault at a time, each of which must fail exactly its
+# check.  Run twice because ge.c latches the strip-cache switch per process.  No game input.
+GE_CPU_PROFILE_VALIDATE_SELFTEST := $(BUILD_DIR)/ge_cpu_profile_validate_selftest$(EXE_EXT)
+
+ge-cpu-profile-validate-selftest: $(RT_GE_O)
+	$(CC) $(CFLAGS) -Werror $(LDFLAGS) -o $(GE_CPU_PROFILE_VALIDATE_SELFTEST) \
+		src/rt/ge_cpu_profile_validate_selftest.c $(RT_GE_O) src/rt/ge_capture.c \
+		src/rt/flight_recorder.c src/rt/perf.c -lm
+	$(GE_CPU_PROFILE_VALIDATE_SELFTEST)
+	$(GE_CPU_PROFILE_VALIDATE_SELFTEST) --strip-cache-disabled
+
+native-core-tests: ge-cpu-profile-validate-selftest
+
 # Production-backend regression for the historical repeated-adoption RAM runaway.
 # This intentionally does not link HLE or define SR_CORO_LIFECYCLE_TEST: it proves
 # the ordinary coroutine implementation itself keeps one stable main identity.

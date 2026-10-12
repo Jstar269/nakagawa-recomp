@@ -374,6 +374,319 @@ void ge_cpu_profile_get(GeCpuProfileStats *out) {
     if (out) *out = s_cpu_profile_stats;
 }
 
+/* ---- Profile consistency (ge_cpu_profile_validate) ----
+ * Every relation below is one the producers in this file establish by construction; the
+ * comment above each check names them.  Sums carry an `exceeds` flag instead of wrapping,
+ * so parts that add up past UINT64_MAX fail the relation they belong to. */
+typedef struct GeProfileSum { uint64_t value; int exceeds; } GeProfileSum;
+
+static void ge_profile_sum_add(GeProfileSum *sum, uint64_t value) {
+    if (sum->exceeds || value > UINT64_MAX - sum->value) sum->exceeds = 1;
+    else sum->value += value;
+}
+
+static GeProfileSum ge_profile_sum2(uint64_t a, uint64_t b) {
+    GeProfileSum sum = { 0, 0 };
+    ge_profile_sum_add(&sum, a);
+    ge_profile_sum_add(&sum, b);
+    return sum;
+}
+
+static int ge_profile_sum_eq(GeProfileSum sum, uint64_t value) {
+    return !sum.exceeds && sum.value == value;
+}
+
+static int ge_profile_sum_le(GeProfileSum sum, uint64_t value) {
+    return !sum.exceeds && sum.value <= value;
+}
+
+/* Two sums past UINT64_MAX cannot be shown equal, so that also fails. */
+static int ge_profile_sums_equal(GeProfileSum a, GeProfileSum b) {
+    return !a.exceeds && !b.exceeds && a.value == b.value;
+}
+
+static int ge_profile_within(uint64_t value, GeProfileSum bound) {
+    return bound.exceeds || value <= bound.value;
+}
+
+typedef struct GeProfileVerdict {
+    uint32_t failed;
+    char *detail;
+    size_t detail_size;
+} GeProfileVerdict;
+
+/* Checks run in GeProfileCheck order, so the first failure is the lowest-numbered one.
+ * Returns 1 when the caller should describe this failure in the detail buffer. */
+static int ge_profile_fail(GeProfileVerdict *v, GeProfileCheck check) {
+    int first = v->failed == 0;
+    v->failed |= GE_PROFILE_CHECK_MASK(check);
+    return first && v->detail && v->detail_size;
+}
+
+static const char *const s_ge_profile_check_names[] = {
+    "phase_nesting", "phase_calls", "command_bound", "primitive_types", "profile_agreement",
+    "submitted_split", "triangle_mode_split", "reference_split", "use_split",
+    "references_cover_uses", "reject_bound", "decode_split", "decode_coverage",
+    "triangle_decisions", "sample_bound", "calibration_bound",
+};
+_Static_assert(sizeof(s_ge_profile_check_names) / sizeof(s_ge_profile_check_names[0]) ==
+               GE_PROFILE_CHECK_COUNT, "one name per GeProfileCheck");
+_Static_assert(GE_PROFILE_CHECK_COUNT <= 32, "GeProfileCheck must fit the uint32_t mask");
+
+const char *ge_profile_check_name(GeProfileCheck check) {
+    return (unsigned)check < GE_PROFILE_CHECK_COUNT ? s_ge_profile_check_names[check] : "unknown";
+}
+
+uint32_t ge_cpu_profile_validate(const GeCpuProfileStats *s, char *detail, size_t detail_size) {
+    GeProfileVerdict v = { 0, detail, detail_size };
+    if (detail && detail_size) detail[0] = '\0';
+    if (!s) {
+        if (detail && detail_size) snprintf(detail, detail_size, "no profile snapshot");
+        return GE_PROFILE_CHECK_MASK(GE_PROFILE_CHECK_COUNT) - 1u;
+    }
+    const int coarse = s->enabled != 0;
+    const int sparse = s->primitive_profile_enabled != 0;
+
+    if (coarse) {
+        const GeCpuPhaseStats *p = s->phase;
+        /* ge_run_list adds total - nested to command_dispatch, where nested is the
+         * primitive/block/clut/flush time timed inside that list (a nested list run can only
+         * leave slack).  gpu_hook is timed only in raster_tri, draw_line_vtx, draw_point_vtx
+         * and fill_sprite, which run only inside a GE_PRIM or patch primitive interval. */
+        GeProfileSum nested = { 0, 0 };
+        ge_profile_sum_add(&nested, p[GE_CPU_COMMAND_DISPATCH].ns);
+        ge_profile_sum_add(&nested, p[GE_CPU_PRIMITIVE].ns);
+        ge_profile_sum_add(&nested, p[GE_CPU_BLOCK_TRANSFER].ns);
+        ge_profile_sum_add(&nested, p[GE_CPU_CLUT_LOAD].ns);
+        ge_profile_sum_add(&nested, p[GE_CPU_FLUSH].ns);
+        if (!ge_profile_sum_le(nested, p[GE_CPU_LIST_TOTAL].ns) &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_PHASE_NESTING))
+            snprintf(detail, detail_size, "phase_nesting: command_dispatch+primitive+block_transfer"
+                     "+clut_load+flush ns exceed list_total ns=%" PRIu64, p[GE_CPU_LIST_TOTAL].ns);
+        if (p[GE_CPU_GPU_HOOK].ns > p[GE_CPU_PRIMITIVE].ns &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_PHASE_NESTING))
+            snprintf(detail, detail_size, "phase_nesting: gpu_hook ns=%" PRIu64 " > primitive ns=%"
+                     PRIu64, p[GE_CPU_GPU_HOOK].ns, p[GE_CPU_PRIMITIVE].ns);
+
+        /* Each list run ends list_total and command_dispatch together; each GE_PRIM, patch,
+         * TRANSFERSTART and listend flush ends its phase once and counts its event under the
+         * same gate; an invalid LOADCLUT span ends clut_load without counting a load. */
+        if ((p[GE_CPU_LIST_TOTAL].calls != p[GE_CPU_COMMAND_DISPATCH].calls ||
+             p[GE_CPU_PRIMITIVE].calls != s->primitive_commands ||
+             p[GE_CPU_BLOCK_TRANSFER].calls != s->block_transfers ||
+             p[GE_CPU_FLUSH].calls != s->flushes ||
+             p[GE_CPU_CLUT_LOAD].calls < s->clut_loads) &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_PHASE_CALLS))
+            snprintf(detail, detail_size, "phase_calls: list=%" PRIu64 " command_dispatch=%" PRIu64
+                     " primitive=%" PRIu64 "/%" PRIu64 " block_transfer=%" PRIu64 "/%" PRIu64
+                     " clut_load=%" PRIu64 "/%" PRIu64 " flush=%" PRIu64 "/%" PRIu64
+                     " (calls/events)",
+                     p[GE_CPU_LIST_TOTAL].calls, p[GE_CPU_COMMAND_DISPATCH].calls,
+                     p[GE_CPU_PRIMITIVE].calls, s->primitive_commands,
+                     p[GE_CPU_BLOCK_TRANSFER].calls, s->block_transfers,
+                     p[GE_CPU_CLUT_LOAD].calls, s->clut_loads, p[GE_CPU_FLUSH].calls, s->flushes);
+
+        /* The walker counts every command word once and at most one of these kinds per word. */
+        GeProfileSum kinds = ge_profile_sum2(s->primitive_commands, s->block_transfers);
+        ge_profile_sum_add(&kinds, s->clut_loads);
+        ge_profile_sum_add(&kinds, s->flushes);
+        if (!ge_profile_sum_le(kinds, s->commands) &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_COMMAND_BOUND))
+            snprintf(detail, detail_size, "command_bound: primitive=%" PRIu64 " block_transfer=%"
+                     PRIu64 " clut_load=%" PRIu64 " flush=%" PRIu64 " exceed commands=%" PRIu64,
+                     s->primitive_commands, s->block_transfers, s->clut_loads, s->flushes,
+                     s->commands);
+
+        /* draw_prim counts primitive_type[]; the GE_PRIM and patch cases count
+         * primitive_commands.  A patch has no type slot, and the sparse profile counts
+         * patches, so with both profiles on the relation is exact. */
+        GeProfileSum types = { 0, 0 };
+        for (unsigned i = 0; i < 8; i++) ge_profile_sum_add(&types, s->primitive_type[i]);
+        if (sparse) ge_profile_sum_add(&types, s->primitive_profile_patch_commands);
+        if (!(sparse ? ge_profile_sum_eq(types, s->primitive_commands)
+                     : ge_profile_sum_le(types, s->primitive_commands)) &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_PRIMITIVE_TYPES))
+            snprintf(detail, detail_size, "primitive_types: primitive_type[]%s %s primitive_commands=%"
+                     PRIu64, sparse ? "+patch_commands" : "", sparse ? "!=" : "exceed",
+                     s->primitive_commands);
+    }
+
+    if (coarse && sparse) {
+        /* draw_prim's coarse block and primitive_profile_note_draw count the same draw with
+         * the same type and the same per-type decode-use formula, strip cache included. */
+        int agree = s->vertex_decode_uses == s->primitive_profile_vertices &&
+                    s->strip_vertices_reused == s->primitive_profile_strip_cache_hits;
+        for (unsigned i = 0; i < 8; i++)
+            if (s->primitive_type[i] != s->primitive_profile_commands[i]) agree = 0;
+        if (!agree && ge_profile_fail(&v, GE_PROFILE_CHECK_PROFILE_AGREEMENT))
+            snprintf(detail, detail_size, "profile_agreement: vertex_decode_uses=%" PRIu64
+                     " vs vertices=%" PRIu64 ", strip_vertices_reused=%" PRIu64
+                     " vs strip_cache_hits=%" PRIu64 ", or a per-type draw count differs",
+                     s->vertex_decode_uses, s->primitive_profile_vertices,
+                     s->strip_vertices_reused, s->primitive_profile_strip_cache_hits);
+    }
+
+    if (sparse) {
+        /* primitive_profile_note_draw counts every draw's pre-clip primitives in submitted[]
+         * and the same number in exactly one of non-triangle primitives (types 0-2, 6) or
+         * triangle candidates (types 3-5); type 7 submits nothing. */
+        GeProfileSum submitted = { 0, 0 };
+        for (unsigned i = 0; i < 8; i++)
+            ge_profile_sum_add(&submitted, s->primitive_profile_submitted[i]);
+        if (!ge_profile_sums_equal(submitted,
+                                   ge_profile_sum2(s->primitive_profile_non_triangle_primitives,
+                                                   s->primitive_profile_triangle_candidates)) &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_SUBMITTED_SPLIT))
+            snprintf(detail, detail_size, "submitted_split: submitted[] != non_triangle_primitives=%"
+                     PRIu64 " + triangle_candidates=%" PRIu64,
+                     s->primitive_profile_non_triangle_primitives,
+                     s->primitive_profile_triangle_candidates);
+
+        /* note_draw adds a draw's triangles to exactly one of the through or transform
+         * candidates (by vf->through); neither population bounds the other. */
+        if (!ge_profile_sum_eq(ge_profile_sum2(s->primitive_profile_through_triangle_candidates,
+                                               s->primitive_profile_transform_triangle_candidates),
+                               s->primitive_profile_triangle_candidates) &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_TRIANGLE_MODE_SPLIT))
+            snprintf(detail, detail_size, "triangle_mode_split: through=%" PRIu64 " + transform=%"
+                     PRIu64 " != triangle_candidates=%" PRIu64,
+                     s->primitive_profile_through_triangle_candidates,
+                     s->primitive_profile_transform_triangle_candidates,
+                     s->primitive_profile_triangle_candidates);
+
+        /* note_draw adds a draw's references to the total and to exactly one split. */
+        if (!ge_profile_sum_eq(ge_profile_sum2(s->primitive_profile_triangle_vertex_references,
+                                               s->primitive_profile_non_triangle_vertex_references),
+                               s->primitive_profile_vertex_references) &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_REFERENCE_SPLIT))
+            snprintf(detail, detail_size, "reference_split: triangle=%" PRIu64 " + non_triangle=%"
+                     PRIu64 " != vertex_references=%" PRIu64,
+                     s->primitive_profile_triangle_vertex_references,
+                     s->primitive_profile_non_triangle_vertex_references,
+                     s->primitive_profile_vertex_references);
+
+        /* note_draw adds a draw's decoder uses to primitive_profile_vertices, to exactly one
+         * of the triangle/non-triangle and through/transform splits, and, for a transform
+         * draw, to transform_vertices as well. */
+        if ((!ge_profile_sum_eq(ge_profile_sum2(s->primitive_profile_triangle_vertex_uses,
+                                                s->primitive_profile_non_triangle_vertex_uses),
+                                s->primitive_profile_vertices) ||
+             !ge_profile_sum_eq(ge_profile_sum2(s->primitive_profile_through_vertex_uses,
+                                                s->primitive_profile_transform_vertex_uses),
+                                s->primitive_profile_vertices) ||
+             s->primitive_profile_transform_vertices != s->primitive_profile_transform_vertex_uses) &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_USE_SPLIT))
+            snprintf(detail, detail_size, "use_split: vertices=%" PRIu64 " triangle=%" PRIu64
+                     " non_triangle=%" PRIu64 " through=%" PRIu64 " transform=%" PRIu64
+                     " transform_vertices=%" PRIu64, s->primitive_profile_vertices,
+                     s->primitive_profile_triangle_vertex_uses,
+                     s->primitive_profile_non_triangle_vertex_uses,
+                     s->primitive_profile_through_vertex_uses,
+                     s->primitive_profile_transform_vertex_uses,
+                     s->primitive_profile_transform_vertices);
+
+        /* Uses equal references for every type except a cached strip (count >= 3), where
+         * count uses cover 3 * (count - 2) references. */
+        if (s->primitive_profile_vertices > s->primitive_profile_vertex_references &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_REFERENCES_COVER_USES))
+            snprintf(detail, detail_size, "references_cover_uses: vertices=%" PRIu64
+                     " > vertex_references=%" PRIu64, s->primitive_profile_vertices,
+                     s->primitive_profile_vertex_references);
+
+        /* transform_vtx_3d counts a reject per dropped vertex; only transform-mode points and
+         * sprite corners (non-triangle references) reach it. */
+        if (s->primitive_profile_vertex_rejects > s->primitive_profile_non_triangle_vertex_references &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_REJECT_BOUND))
+            snprintf(detail, detail_size, "reject_bound: vertex_rejects=%" PRIu64
+                     " > non_triangle_vertex_references=%" PRIu64,
+                     s->primitive_profile_vertex_rejects,
+                     s->primitive_profile_non_triangle_vertex_references);
+
+        /* load_vtx and transform_vtx_clip each count a decode with its mode counter. */
+        if (!ge_profile_sum_eq(ge_profile_sum2(s->primitive_profile_actual_through_vertices,
+                                               s->primitive_profile_actual_transformed_vertices),
+                               s->primitive_profile_actual_decoded_vertices) &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_DECODE_SPLIT))
+            snprintf(detail, detail_size, "decode_split: through=%" PRIu64 " + transformed=%" PRIu64
+                     " != decoded=%" PRIu64, s->primitive_profile_actual_through_vertices,
+                     s->primitive_profile_actual_transformed_vertices,
+                     s->primitive_profile_actual_decoded_vertices);
+
+        /* draw_prim decodes every through-mode use exactly once.  In transform mode it skips
+         * only the second corner of a sprite whose first corner transform_vtx_3d rejected, so
+         * each missing decode has its own reject. */
+        {
+            uint64_t through_uses = s->primitive_profile_through_vertex_uses;
+            uint64_t transform_uses = s->primitive_profile_transform_vertex_uses;
+            uint64_t transformed = s->primitive_profile_actual_transformed_vertices;
+            if ((s->primitive_profile_actual_through_vertices != through_uses ||
+                 transformed > transform_uses ||
+                 transform_uses - transformed > s->primitive_profile_vertex_rejects) &&
+                ge_profile_fail(&v, GE_PROFILE_CHECK_DECODE_COVERAGE))
+                snprintf(detail, detail_size, "decode_coverage: through decoded=%" PRIu64
+                         " uses=%" PRIu64 ", transform decoded=%" PRIu64 " uses=%" PRIu64
+                         " rejects=%" PRIu64, s->primitive_profile_actual_through_vertices,
+                         through_uses, transformed, transform_uses,
+                         s->primitive_profile_vertex_rejects);
+        }
+
+        /* draw_prim's transform triangle loop records one acceptance verdict per candidate
+         * note_draw counted; through-mode triangles get no verdict. */
+        {
+            GeProfileSum decided = ge_profile_sum2(s->primitive_profile_transform_triangles_drawn,
+                                                   s->primitive_profile_transform_triangles_clipped);
+            ge_profile_sum_add(&decided, s->primitive_profile_transform_triangles_rejected);
+            if (!ge_profile_sum_eq(decided, s->primitive_profile_transform_triangle_candidates) &&
+                ge_profile_fail(&v, GE_PROFILE_CHECK_TRIANGLE_DECISIONS))
+                snprintf(detail, detail_size, "triangle_decisions: drawn=%" PRIu64 " + clipped=%"
+                         PRIu64 " + rejected=%" PRIu64 " != transform_triangle_candidates=%" PRIu64,
+                         s->primitive_profile_transform_triangles_drawn,
+                         s->primitive_profile_transform_triangles_clipped,
+                         s->primitive_profile_transform_triangles_rejected,
+                         s->primitive_profile_transform_triangle_candidates);
+        }
+
+        /* A sparse sample is claimed per decode or triangle candidate and timed in at most
+         * one phase, which note_draw counted as eligible for that draw (lighting only when
+         * the draw had lighting enabled); draw setup samples one draw per stride. */
+        {
+            int over = s->primitive_profile_draw_setup.calls > s->primitive_profile_draw_setup_eligible;
+            unsigned bad = GE_PRIM_PROFILE_PHASE_COUNT;
+            for (unsigned i = 0; i < GE_PRIM_PROFILE_PHASE_COUNT; i++)
+                if (s->primitive_profile_phase[i].calls > s->primitive_profile_eligible[i]) {
+                    over = 1;
+                    if (bad == GE_PRIM_PROFILE_PHASE_COUNT) bad = i;
+                }
+            if (over && ge_profile_fail(&v, GE_PROFILE_CHECK_SAMPLE_BOUND)) {
+                if (bad < GE_PRIM_PROFILE_PHASE_COUNT)
+                    snprintf(detail, detail_size, "sample_bound: phase %u calls=%" PRIu64
+                             " > eligible=%" PRIu64, bad, s->primitive_profile_phase[bad].calls,
+                             s->primitive_profile_eligible[bad]);
+                else
+                    snprintf(detail, detail_size, "sample_bound: draw_setup calls=%" PRIu64
+                             " > eligible=%" PRIu64, s->primitive_profile_draw_setup.calls,
+                             s->primitive_profile_draw_setup_eligible);
+            }
+        }
+
+        /* With calibration, a sampled triangle claim ends one empty-control interval and may
+         * start one sampled-total interval; a sampled vertex claim ends one control interval.
+         * Claims happen once per decode and once per triangle candidate. */
+        if ((s->primitive_profile_sampled_total.calls > s->primitive_profile_triangle_candidates ||
+             !ge_profile_within(s->primitive_profile_empty_control.calls,
+                                ge_profile_sum2(s->primitive_profile_actual_decoded_vertices,
+                                                s->primitive_profile_triangle_candidates))) &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_CALIBRATION_BOUND))
+            snprintf(detail, detail_size, "calibration_bound: sampled_total calls=%" PRIu64
+                     " empty_control calls=%" PRIu64 " for decoded=%" PRIu64
+                     " triangle_candidates=%" PRIu64, s->primitive_profile_sampled_total.calls,
+                     s->primitive_profile_empty_control.calls,
+                     s->primitive_profile_actual_decoded_vertices,
+                     s->primitive_profile_triangle_candidates);
+    }
+    return v.failed;
+}
+
 uint32_t g_ge_stall_addr = 0;
 static uint32_t s_stack_pc[32], s_stack_offset[32];
 static int s_sp = 0;
