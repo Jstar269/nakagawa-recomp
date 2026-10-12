@@ -256,6 +256,20 @@ When the candidate publication profile changed, also supply the external
 `PROVENANCE_POLICY_DELTA_AUTHORITY` inputs; the command stops if either is
 missing.
 
+### Contributor refresh of existing public paths (PR #849)
+
+Contributors without access to the private trusted ledger can refresh both public controls
+(`PUBLIC_EXPORT.json` and `assets/public_provenance_ledger.json`) for changes to existing
+public paths using `python tools/contrib_refresh.py`:
+
+```bash
+python tools/contrib_refresh.py
+```
+
+This verifies that no new or removed public paths are introduced and regenerates the content
+hashes and digests from the public controls alone. Note that `contrib_refresh.py` is a contributor
+convenience, not provenance authorization; external trusted attestation still decides acceptance.
+
 The lower-level exact-path API remains available for narrowly scoped refresh
 operations and is useful for testing the underlying path checks. It is a legacy
 route that still writes the `refresh` block, so prefer `make provenance-refresh`
