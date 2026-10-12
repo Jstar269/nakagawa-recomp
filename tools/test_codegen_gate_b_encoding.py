@@ -23,6 +23,7 @@ if str(REPO / "tools") not in sys.path:
     sys.path.insert(0, str(REPO / "tools"))
 
 import codegen
+import scratch_dir
 GCC = shutil.which("gcc") or shutil.which("cc")
 
 
@@ -294,7 +295,7 @@ int main(void) {
         src += """    return 0;
 }
 """
-        with tempfile.TemporaryDirectory() as td:
+        with scratch_dir.TemporaryDirectory() as td:
             c_path = Path(td) / "snippet.c"
             exe_path = Path(td) / ("snippet.exe" if sys.platform == "win32" else "snippet")
             c_path.write_text(src)
@@ -318,7 +319,7 @@ int main(void) {
         src += """    return 0;
 }
 """
-        with tempfile.TemporaryDirectory() as td:
+        with scratch_dir.TemporaryDirectory() as td:
             c_path = Path(td) / "snippet.c"
             exe_path = Path(td) / ("snippet.exe" if sys.platform == "win32" else "snippet")
             c_path.write_text(src)

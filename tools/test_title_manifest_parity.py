@@ -24,6 +24,7 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
+import scratch_dir
 import title_manifest
 import test_public_title_isolation
 
@@ -48,7 +49,7 @@ class TitleManifestParityTests(unittest.TestCase):
                 "gcc is unavailable, so the native parser cannot be built; "
                 "reporting SKIP rather than passing without the differential half"
             )
-        cls._temp_dir = tempfile.TemporaryDirectory(prefix="nk_manifest_parser_")
+        cls._temp_dir = scratch_dir.TemporaryDirectory(prefix="nk_manifest_parser_")
         cls.native_exe = Path(cls._temp_dir.name) / f"test_manifest_parser{EXE_EXT}"
         cmd = [
             "gcc", "-std=c99", "-Wall", "-Wextra",

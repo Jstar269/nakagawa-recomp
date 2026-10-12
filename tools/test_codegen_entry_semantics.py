@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 import analyze  # noqa: E402
 import codegen  # noqa: E402
 import entry_frame_balance  # noqa: E402
+import scratch_dir  # noqa: E402
 
 OWNER = 0x00021AC0
 RESUME = 0x00021C78
@@ -140,7 +141,7 @@ def _fixture_words() -> dict[int, int]:
 class EntrySemanticsPipelineTests(unittest.TestCase):
     def test_indirect_resume_preserves_guest_epilogue_sp(self):
         assert CC is not None
-        with tempfile.TemporaryDirectory(prefix="entry_semantics_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="entry_semantics_") as tmp:
             work = Path(tmp)
             elf = work / "entry_semantics.elf"
             generated = work / "entry_semantics.c"
@@ -311,7 +312,7 @@ int main(void) {{
             resume + 8: 0x03E00008,        # jr ra
             resume + 12: 0x00000000,
         }
-        with tempfile.TemporaryDirectory(prefix="direct_j_semantics_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="direct_j_semantics_") as tmp:
             work = Path(tmp)
             elf = work / "direct_j_semantics.elf"
             generated = work / "direct_j_semantics.c"
@@ -416,7 +417,7 @@ int main(void) {{
         owner = 0x00001000
         anchor = 0x00001008
         target = 0x00001040
-        with tempfile.TemporaryDirectory(prefix="direct_j_omission_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="direct_j_omission_") as tmp:
             work = Path(tmp)
             elf = work / "direct_j_omission.elf"
             generated = work / "direct_j_omission.c"
@@ -562,7 +563,7 @@ int main(void) {{
             resume: 0x03E00008,            # jr ra          <- the shared epilogue
             resume + 4: 0x27BD0020,        # addiu sp, sp, 0x20 (in the delay slot)
         }
-        with tempfile.TemporaryDirectory(prefix="direct_branch_semantics_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="direct_branch_semantics_") as tmp:
             work = Path(tmp)
             elf = work / "direct_branch_semantics.elf"
             generated = work / "direct_branch_semantics.c"

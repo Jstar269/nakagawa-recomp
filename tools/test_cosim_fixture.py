@@ -12,9 +12,13 @@ import importlib.util
 import shutil
 import struct
 import subprocess
-import tempfile
 import unittest
 from pathlib import Path
+
+try:
+    import scratch_dir
+except ModuleNotFoundError:
+    from tools import scratch_dir
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -149,7 +153,7 @@ class FpuOracleStructureTests(unittest.TestCase):
 @unittest.skipUnless(shutil.which("gcc"), "gcc is required for the C.cond truth-table regression")
 class FpuCcondTruthTableTests(unittest.TestCase):
     def test_predicates_match_the_mips_table_for_all_relation_classes(self):
-        with tempfile.TemporaryDirectory(prefix="cosim_ccond_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="cosim_ccond_") as tmp:
             work = Path(tmp)
             source = work / "ccond_truth.c"
             executable = work / "ccond_truth.exe"

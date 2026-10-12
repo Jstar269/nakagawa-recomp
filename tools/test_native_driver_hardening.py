@@ -8,10 +8,10 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import scratch_dir  # noqa: E402
 import title_runtime_config  # noqa: E402
 
 
@@ -455,7 +455,7 @@ int main(int argc, char **argv) {{
     return 99;
 }}
 '''
-        with tempfile.TemporaryDirectory(prefix="native_driver_harden_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="native_driver_harden_") as tmp:
             tmpdir = Path(tmp)
             src = tmpdir / "harness.c"
             exe = tmpdir / "harness.exe"

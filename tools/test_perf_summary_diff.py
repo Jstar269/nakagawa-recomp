@@ -19,6 +19,10 @@ try:
     import perf_summary_diff
 except ModuleNotFoundError:
     from tools import perf_summary_diff
+try:
+    import scratch_dir
+except ModuleNotFoundError:
+    from tools import scratch_dir
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -193,7 +197,7 @@ class PerfSummaryDiffTests(unittest.TestCase):
         compiler = shutil.which("gcc")
         if compiler is None:
             self.skipTest("gcc is not available")
-        with tempfile.TemporaryDirectory() as temp:
+        with scratch_dir.TemporaryDirectory() as temp:
             root = Path(temp)
             source = root / "perf_harness.c"
             executable = root / ("perf_harness.exe" if os.name == "nt" else "perf_harness")

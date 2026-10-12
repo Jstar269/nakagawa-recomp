@@ -32,6 +32,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 
+import scratch_dir  # noqa: E402
+
 #: The host platform backend, chosen the same way the Makefile chooses it.
 _WINDOWS = os.name == "nt"
 PLATFORM_SRC = "src/core/nk_platform_win32.c" if _WINDOWS else "src/core/nk_platform_posix.c"
@@ -94,7 +96,7 @@ def _build_and_run(
             "reporting SKIP rather than passing without having run it"
         )
 
-    tmp = test_case.enterContext(tempfile.TemporaryDirectory(prefix=f"nk_backend_{exe_stem}_"))
+    tmp = test_case.enterContext(scratch_dir.TemporaryDirectory(prefix=f"nk_backend_{exe_stem}_"))
     out = Path(tmp) / f"{exe_stem}{EXE_EXT}"
     link_cmd = ["gcc", "-o", str(out)]
     link_cmd.extend(str(owner._objects[source]) for source in CORE_SOURCES)
@@ -225,7 +227,7 @@ class NativeHostBackendTests(unittest.TestCase):
         from tools.nk_core.fonts import validate_pgf_data
 
         owner = type(self)
-        tmp = self.enterContext(tempfile.TemporaryDirectory(prefix="nk_backend_pgf_fixture_"))
+        tmp = self.enterContext(scratch_dir.TemporaryDirectory(prefix="nk_backend_pgf_fixture_"))
         executable = Path(tmp) / f"test_pgf_fixture{EXE_EXT}"
         fixture = Path(tmp) / "synthetic.pgf"
         build = subprocess.run(
@@ -275,7 +277,7 @@ class NativeHostBackendTests(unittest.TestCase):
         if check_sdl.returncode != 0:
             raise unittest.SkipTest("SDL3 headers not available on this host")
 
-        tmp = self.enterContext(tempfile.TemporaryDirectory(prefix="nk_backend_audio_"))
+        tmp = self.enterContext(scratch_dir.TemporaryDirectory(prefix="nk_backend_audio_"))
         out = Path(tmp) / f"audio_selftest{EXE_EXT}"
         cmd = [
             "gcc", "-std=c99", "-Wall", "-Wextra",

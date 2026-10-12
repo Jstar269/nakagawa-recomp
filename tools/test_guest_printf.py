@@ -11,6 +11,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+try:
+    import scratch_dir
+except ModuleNotFoundError:
+    from tools import scratch_dir
+
 
 ROOT = Path(__file__).resolve().parent.parent
 RT = ROOT / "src" / "rt"
@@ -22,7 +27,7 @@ class TestGuestPrintf(unittest.TestCase):
     def test_psp_abi_behavior(self):
         """Run the PSP-EABI behavioral regressions in guest_printf_selftest.c."""
         assert CC is not None
-        with tempfile.TemporaryDirectory(prefix="guestprintf_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="guestprintf_") as tmp:
             exe = Path(tmp) / "guest_printf_selftest.exe"
             build = subprocess.run(
                 [

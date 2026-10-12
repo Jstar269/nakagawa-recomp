@@ -4,13 +4,13 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
+import scratch_dir
 
 
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
@@ -63,7 +63,7 @@ static void sr_unimplemented(uint32_t pc, const char *reason) {{ (void)pc; (void
 static void generated(CpuState *s) {{ {line} s->r[0] = 0xdeadbeefu; }}
 int main(void) {{ CpuState s = {{0}}; generated(&s); return unsupported == 1 && s.r[0] == 0u ? 0 : 1; }}
 '''
-        with tempfile.TemporaryDirectory(prefix="vfpu_census_fallback_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="vfpu_census_fallback_") as tmp:
             root = Path(tmp)
             source_path = root / "fallback.c"
             exe_path = root / ("fallback.exe" if Path(CC).suffix.lower() == ".exe" else "fallback")

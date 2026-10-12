@@ -33,6 +33,7 @@ sys.path.insert(0, str(TOOLS))
 
 import analyze  # noqa: E402
 import codegen  # noqa: E402
+import scratch_dir  # noqa: E402
 from nk_core import package_cache  # noqa: E402
 
 # A wholly synthetic span standing in for "some other title's configuration". It is
@@ -327,7 +328,7 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         self._saved_environ = os.environ.copy()
         for name in ("TITLE_EXTRA_SPANS", "HST_EXTRA_SPANS", "GAME_BASE"):
             os.environ.pop(name, None)
-        self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-span-scope-")
+        self.temp = scratch_dir.TemporaryDirectory(prefix="nakagawa-span-scope-")
         self.addCleanup(self.temp.cleanup)
         self.addCleanup(self._restore_environ)
         self.root = Path(self.temp.name)

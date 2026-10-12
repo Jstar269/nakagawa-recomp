@@ -38,7 +38,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -46,6 +45,9 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
+
+import scratch_dir  # noqa: E402
+
 CC = shutil.which("gcc")
 
 HEADER = ROOT / "src" / "rt" / "fp_convert.h"
@@ -121,7 +123,7 @@ def classify_mutant_run(staged: StagedRun, expected_diagnostics: tuple[str, ...]
 def _build_mutated_selftest(header_text: str) -> StagedRun:
     """Compile and run the real selftest against a mutated header copy at -O2."""
     assert CC is not None
-    with tempfile.TemporaryDirectory(prefix="fp_scalar_mut_") as tmp:
+    with scratch_dir.TemporaryDirectory(prefix="fp_scalar_mut_") as tmp:
         work = Path(tmp)
         (work / "fp_convert.h").write_text(header_text, encoding="utf-8", newline="\n")
         shutil.copyfile(SELFTEST, work / "fp_convert_selftest.c")
@@ -442,7 +444,7 @@ int main(void) {
 """
 
         def build_and_run(header_text: str, tag: str):
-            with tempfile.TemporaryDirectory(prefix=f"fp_scalar_m13_{tag}_") as tmp:
+            with scratch_dir.TemporaryDirectory(prefix=f"fp_scalar_m13_{tag}_") as tmp:
                 work = Path(tmp)
                 (work / "fp_convert.h").write_text(header_text, encoding="utf-8", newline="\n")
                 (work / "m13_harness.c").write_text(harness_c, encoding="utf-8", newline="\n")
@@ -574,7 +576,7 @@ class FastPathRemovedStructuralTests(unittest.TestCase):
                            's->fi[{fdv}]=0x7fc00000u; "'))
         self.assertNotEqual(mutant, original, "mutant construction produced no change")
 
-        with tempfile.TemporaryDirectory(prefix="fp_scalar_codegen_mut_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="fp_scalar_codegen_mut_") as tmp:
             tmp_codegen = Path(tmp) / "mutant_codegen.py"
             tmp_codegen.write_text(mutant, encoding="utf-8", newline="\n")
 

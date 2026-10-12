@@ -43,6 +43,10 @@ try:
 except ModuleNotFoundError:
     from tools import flight_diff
 try:
+    import scratch_dir
+except ModuleNotFoundError:
+    from tools import scratch_dir
+try:
     from test_build_truth import _scratch_build_root
 except ModuleNotFoundError:
     from tools.test_build_truth import _scratch_build_root
@@ -206,7 +210,7 @@ class RecorderBundleTests(unittest.TestCase):
             "    return 0;\n"
             "}\n"
         )
-        with tempfile.TemporaryDirectory() as tmp:
+        with scratch_dir.TemporaryDirectory() as tmp:
             identity = [f'-DSR_BUILD_ID="{FAKE_COMMIT}"']
             fatal_bundle, _, _ = self._build_and_dump(
                 Path(tmp), "refusal_fatal", identity, source=refusal_then_fatal,
@@ -233,7 +237,7 @@ class RecorderBundleTests(unittest.TestCase):
         flight_diff.validate_bundle(exit_bundle)
 
     def test_source_date_epoch_and_build_id_are_recorded(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with scratch_dir.TemporaryDirectory() as tmp:
             bundle, raw, _ = self._build_and_dump(
                 Path(tmp),
                 "both",
@@ -253,7 +257,7 @@ class RecorderBundleTests(unittest.TestCase):
         flight_diff.validate_bundle(bundle)
 
     def test_build_id_alone_is_a_valid_identity(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with scratch_dir.TemporaryDirectory() as tmp:
             bundle, _, _ = self._build_and_dump(
                 Path(tmp), "commit", [f'-DSR_BUILD_ID="{FAKE_COMMIT}"']
             )
@@ -262,7 +266,7 @@ class RecorderBundleTests(unittest.TestCase):
         flight_diff.validate_bundle(bundle)
 
     def test_unidentified_build_records_nulls_and_fails_closed(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with scratch_dir.TemporaryDirectory() as tmp:
             bundle, raw, _ = self._build_and_dump(Path(tmp), "bare", [])
         build = bundle["build"]
         self.assertIsNone(build["source_date_epoch"])
@@ -275,7 +279,7 @@ class RecorderBundleTests(unittest.TestCase):
             flight_diff.validate_bundle(bundle)
 
     def test_non_numeric_source_date_epoch_fails_closed_to_null(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with scratch_dir.TemporaryDirectory() as tmp:
             bundle, raw, stderr = self._build_and_dump(
                 Path(tmp),
                 "bad-epoch",
@@ -288,7 +292,7 @@ class RecorderBundleTests(unittest.TestCase):
         flight_diff.validate_bundle(bundle)
 
     def test_epoch_beyond_the_schema_maximum_fails_closed_to_null(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with scratch_dir.TemporaryDirectory() as tmp:
             bundle, raw, stderr = self._build_and_dump(
                 Path(tmp),
                 "huge-epoch",
@@ -300,7 +304,7 @@ class RecorderBundleTests(unittest.TestCase):
         flight_diff.validate_bundle(bundle)
 
     def test_uppercase_build_id_is_recorded_lowercase(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with scratch_dir.TemporaryDirectory() as tmp:
             bundle, _, _ = self._build_and_dump(
                 Path(tmp), "upper", [f'-DSR_BUILD_ID="{FAKE_COMMIT.upper()}"']
             )
@@ -331,7 +335,7 @@ int main(void) {
     return 0;
 }
 '''
-        with tempfile.TemporaryDirectory() as tmp:
+        with scratch_dir.TemporaryDirectory() as tmp:
             temp_path = Path(tmp)
             source = temp_path / "flight_diff_recorder_fixture.c"
             source.write_text(harness, encoding="utf-8")
@@ -446,7 +450,7 @@ int main(void) {
     return 0;
 }
 '''
-        with tempfile.TemporaryDirectory() as tmp:
+        with scratch_dir.TemporaryDirectory() as tmp:
             temp_path = Path(tmp)
             source = temp_path / "flight_media_recorder_fixture.c"
             source.write_text(harness, encoding="utf-8")
