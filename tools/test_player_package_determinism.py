@@ -49,7 +49,7 @@ nothing else, which ``PATH_ECHOES`` checks on its own. Make writes all three wit
 ``$(file >...)``, and every file it writes that way into the build directory must be
 classified here. The build class needs the Windows toolchain and every hosted runner
 skips it, so ``TestMakeWrittenFilesAreClassified`` checks that inventory from the
-Makefile itself, on every host.
+makefiles themselves, on every host.
 
 **Public-export exclusion.** The route writes nothing the public export or
 ``git status`` could pick up, and the public scope refuses the output root even
@@ -932,6 +932,23 @@ _MAKE_ASSIGNMENT_RE = re.compile(
 _MAKE_VARIABLE_RE = re.compile(r"\$\(([A-Za-z0-9_]+)\)")
 _MAKE_CALL_ARGUMENT_RE = re.compile(r"\$\(([0-9]+)\)")
 _BUILD_DIR_FILE_RE = re.compile(r"\$\(BUILD_DIR\)/([^\s$()/]+)")
+_MAKE_INCLUDE_RE = re.compile(r"^-?include\s+(.+)$", re.MULTILINE)
+
+
+def makefile_sources(root: Path) -> str:
+    """The Makefile and every in-tree makefile it includes by a literal path.
+
+    An include through a variable names a file the build itself generates in the build
+    tree (the SDL3 discovery fragment, the profile stamps, the dependency files), which
+    holds no ``$(file >...)`` recipe of the project's own.
+    """
+    makefile = (root / "Makefile").read_text(encoding="utf-8")
+    sources = [makefile]
+    for include in _MAKE_INCLUDE_RE.finditer(makefile):
+        for word in include.group(1).split():
+            if "$" not in word:
+                sources.append((root / word).read_text(encoding="utf-8"))
+    return "\n".join(sources)
 
 
 def _make_reference(text: str, start: int) -> str:
@@ -1026,12 +1043,12 @@ class TestMakeWrittenFilesAreClassified(unittest.TestCase):
     determinism contract must know how to compare. The build class above compares them,
     but it needs the Windows toolchain and every hosted runner skips it, which is how
     #783's runtime invalidation list reached main unclassified. This inventory reads the
-    Makefile itself and runs on every host.
+    Makefile and the in-tree makefiles it includes, and runs on every host.
     """
 
     def test_every_make_written_build_file_has_a_comparison(self):
         try:
-            written = make_file_writes((ROOT / "Makefile").read_text(encoding="utf-8"))
+            written = make_file_writes(makefile_sources(ROOT))
         except ValueError as error:
             self.fail(f"the Makefile's $(file >...) writes cannot be inventoried: {error}")
         classified = {*PATH_ECHOES, *MAKE_WRITTEN_IDENTICAL, *MAKE_WRITTEN_UNPACKAGED}
@@ -1056,6 +1073,17 @@ class TestMakeWrittenFilesAreClassified(unittest.TestCase):
                          "out:\n\t$(file >$(BUILD_DIR)/sub/x.lst,x)\n"):
             with self.subTest(unplaced=unplaced), self.assertRaises(ValueError):
                 make_file_writes(unplaced)
+
+    def test_the_inventory_reads_the_makefiles_the_build_includes(self):
+        with tempfile.TemporaryDirectory(prefix="nk-make-inventory-") as temporary:
+            root = Path(temporary)
+            (root / "mk").mkdir()
+            (root / "mk" / "part.mk").write_text(
+                "out:\n\t$(file >$(BUILD_DIR)/part.lst,$(OBJS))\n", encoding="utf-8")
+            (root / "Makefile").write_text(
+                "include $(GENERATED_FRAGMENT)\ninclude mk/part.mk\n-include $(DEP_FILES)\n",
+                encoding="utf-8")
+            self.assertEqual(sorted(make_file_writes(makefile_sources(root))), ["part.lst"])
 
 
 if __name__ == "__main__":
