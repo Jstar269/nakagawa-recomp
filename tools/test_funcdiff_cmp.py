@@ -1,8 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
-# Derived from sal063/PSP-recompilation-project (GPL-2.0-or-later)
-# Modified by Nakagawa Recomp contributors, 2026-09-21.
-# See NOTICE.md for upstream lineage and modification provenance.
 #
 # Synthetic fail-closed tests for tools/funcdiff_cmp.py (issue #354).
 # No retail assets, traces, or golden hashes: every fixture is synthesized here.
