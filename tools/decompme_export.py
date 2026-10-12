@@ -336,11 +336,12 @@ def export_function(elf_path: str, addr: int, base: int, outdir: Path,
         meta["cfg"] = {"file": "cfg.json", "sha256": sha256_hex(cfg_bytes)}
 
     outdir.mkdir(parents=True, exist_ok=True)
-    cfg_path = outdir / "cfg.json"
+    # An earlier export to this directory may have left optional outputs this run
+    # does not produce; clear them so the bundle never mixes two runs.
+    for optional in ("cfg.json", "target.s", "target.s.note"):
+        (outdir / optional).unlink(missing_ok=True)
     if cfg_bytes is not None:
-        cfg_path.write_bytes(cfg_bytes)
-    else:
-        cfg_path.unlink(missing_ok=True)
+        (outdir / "cfg.json").write_bytes(cfg_bytes)
     (outdir / "function.bin").write_bytes(data)
     (outdir / "metadata.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     (outdir / "context.c").write_text(gen_context_c(), encoding="utf-8")

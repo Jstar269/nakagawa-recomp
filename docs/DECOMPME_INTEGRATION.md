@@ -71,6 +71,9 @@ python tools/decompme_export.py place_game_here/EBOOT.elf --function 0x0005A648
   from `analyze.canonical_cfg_report`. It uses the same legacy analyzer entry set
   as byte extraction; it does not enable `--cfg-gate` or change the extracted
   extent. The default bundle remains unchanged.
+- Re-exporting into the same output directory rewrites every bundle file and removes
+  the optional outputs (`cfg.json`, `target.s`, `target.s.note`) that the current run
+  does not produce, so a reused directory never mixes files from two runs.
 
 ### Function CFG view
 
@@ -97,9 +100,15 @@ the known owners and classifications at external endpoints. Delay-slot/likely
 annulment flags, conflicting owners, interior entries, unresolved indirect edges,
 and jump-table ownership observations remain visible. An unknown indirect target
 stays `null`; no function boundary or target is invented to make the view complete.
+Edges are listed for every instruction in the view, including extent instructions
+that another entry owns, so attribute an edge to a function through its source
+instruction's `owners`, never through its presence in the view.
 
 The exporter checks the full canonical report's structural consistency before
-writing the bundle. The function view is a projection, **not** a standalone
+writing the bundle. That check covers the whole executable image, not only the
+selected function, and the report verifier currently grows quadratically with the
+image's instruction count: small modules export in seconds, but a full-size
+executable can take far longer. The function view is a projection, **not** a standalone
 canonical report accepted by `canonical_cfg_gate`. Ownership conflicts are retained
 as observations, not repaired or promoted into execution authority. This is a
 bounded step toward issue #305; typed dataflow, imported annotations, and pseudocode

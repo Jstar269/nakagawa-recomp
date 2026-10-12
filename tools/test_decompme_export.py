@@ -214,6 +214,26 @@ class TestFunctionCfg(unittest.TestCase):
         self.assertEqual([(r["source"], r["target"], r["kind"])
                           for r in view["incoming_edges"]], [(0x1010, 0x1000, "tail-call")])
 
+    def test_foreign_code_inside_the_extent_keeps_its_owner(self):
+        report = self.report([
+            0x08000404, 0,  # 0x1000: first entry jumps into the selected extent
+            0x03E00008, 0,  # 0x1008: selected entry returns at once
+            0x0C000408, 0,  # 0x1010: first entry's code calls 0x1020
+            0x03E00008, 0,
+            0x03E00008, 0,  # 0x1020: callee
+        ], [0x1000, 0x1008, 0x1020])
+        view = dx.function_cfg_view(report, 0x1008, 0x1020)
+        self.assertEqual(view["extent_not_owned"], [0x1010, 0x1014, 0x1018, 0x101c])
+        owners = {row["address"]: row["owners"] for row in view["instructions"]}
+        self.assertEqual({tuple(owners[a]) for a in view["extent_not_owned"]}, {(0x1000,)})
+        call = next(r for r in view["edges"] if r["kind"] == "call")
+        self.assertEqual((call["source"], call["target"], owners[call["source"]]),
+                         (0x1010, 0x1020, [0x1000]))
+        self.assertEqual([(r["source"], r["target"], r["kind"]) for r in view["incoming_edges"]],
+                         [(0x1000, 0x1010, "direct-jump")])
+        self.assertIn({"address": 0x1000, "classification": "owned", "owners": [0x1000]},
+                      view["boundary_instructions"])
+
     def test_invalid_report_is_rejected(self):
         report = self.report([0x03E00008, 0], [0x1000])
         report["successor_classifications"] = []
@@ -272,6 +292,45 @@ class TestFunctionCfg(unittest.TestCase):
             {p.name: p.read_bytes() for p in expected.iterdir()},
             {p.name: p.read_bytes() for p in reused.iterdir()},
         )
+
+    def test_reused_output_directory_matches_a_fresh_export(self):
+        """Optional outputs of an earlier export must not survive into a later bundle."""
+        first, changed = self.root / "first.elf", self.root / "changed.elf"
+        write_elf(first, words=[0x0C000404, 0, 0x03E00008, 0, 0x03E00008, 0])
+        write_elf(changed, words=[0x0C000404, 0x24020007, 0x03E00008, 0, 0x03E00008, 0])
+        real_run = subprocess.run
+
+        def fake_run(cmd, *args, **kwargs):
+            # Stand-in MIPS objdumps: one lists target.o by content, one fails.
+            if cmd[0] == "objdump-ok":
+                digest = dx.sha256_hex(Path(cmd[-1]).read_bytes())
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"target.o {digest}\n", stderr="")
+            if cmd[0] == "objdump-fails":
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unsupported\n")
+            return real_run(cmd, *args, **kwargs)
+
+        disasm, failing = {"objdump": "objdump-ok"}, {"objdump": "objdump-fails"}
+        sequences = {
+            "plain then objdump": [(first, {}), (first, disasm)],
+            "objdump then plain": [(first, disasm), (first, {})],
+            "objdump then failing objdump": [(first, disasm), (first, failing)],
+            "objdump then plain on changed input": [(first, disasm), (changed, {})],
+            "cfg and objdump then cfg on changed input": [
+                (first, {**disasm, "with_cfg": True}), (changed, {"with_cfg": True})],
+            "cfg then plain on changed input": [(first, {"with_cfg": True}), (changed, {})],
+        }
+        with mock.patch.object(dx.subprocess, "run", side_effect=fake_run):
+            for index, (label, steps) in enumerate(sequences.items()):
+                with self.subTest(label):
+                    reused, fresh = self.root / f"reused{index}", self.root / f"fresh{index}"
+                    for elf, options in steps:
+                        dx.export_function(str(elf), 0x1000, 0, reused, "entry", **options)
+                    elf, options = steps[-1]
+                    dx.export_function(str(elf), 0x1000, 0, fresh, "entry", **options)
+                    self.assertEqual(
+                        {p.name: p.read_bytes() for p in reused.iterdir()},
+                        {p.name: p.read_bytes() for p in fresh.iterdir()},
+                    )
 
     def test_cfg_export_does_not_change_generated_aot_bytes(self):
         write_elf(self.elf_path, words=[0x0C000404, 0, 0x03E00008, 0, 0x03E00008, 0])

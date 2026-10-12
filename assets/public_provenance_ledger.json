@@ -1105,7 +1105,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3b67825a09a00e5d2f0a743e80009bb58d90def32b7b507d92151fccdc20562d"
+      "sha256": "d264e85df846a29eaa9d2ba3ba65f204dde3c7cdd997617f12898935efc84a4a"
     },
     {
       "path": "docs/ENHANCEMENT_CONTRACT.md",
@@ -6398,7 +6398,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d6cd13e69043508aef3be349315c0c22bb6c85a50c0da7023b8ff9771cea9943"
+      "sha256": "8277f4b3a15d8b20dbf724f10208fbd654e20059969039b9b704f7a61f06989f"
     },
     {
       "path": "tools/discovery_contract.py",
@@ -8219,7 +8219,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a7971d8f530ec4270f546452a9a5c35ed5ab053250ee12c48bfba1767fe02763"
+      "sha256": "79c049ff0f023f4c168c95d1bf52b3f7e1e4f87ce797272d590abb44fc0be000"
     },
     {
       "path": "tools/test_direct_j_omission_mutation.py",
