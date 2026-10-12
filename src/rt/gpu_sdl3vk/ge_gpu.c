@@ -94,7 +94,25 @@ static int s_scale = 1;     /* integer render scale (SR_GPU_SCALE), 1..MAX_SCALE
 #define MAX_DEP    4
 #define READBACK_FRAMES 3
 #define SUBMIT_FRAMES 8
-#define SUBMIT_BATCH_MAX 8
+/* Recorded GE-ring ops (render batches, destination snapshot copies, ring uploads) that
+ * share one vkQueueSubmit: a submission granularity, not an ordering boundary. All GE work
+ * goes to one queue, and the GPU-side order between ops comes from what is recorded in the
+ * stream (to_layout barriers, render-pass dependencies); a queue submission adds no
+ * device-to-device memory dependency, so where a command buffer ends cannot have been
+ * providing one. Nothing CPU-visible relies on the cap either: target and depth readback,
+ * dirty-edge reads, block-transfer blits and the shared-staging upload fallback close the
+ * open chain (cmd_begin) and wait on their own fence; capture materialization and every
+ * destruction (texture eviction, target, depth image, framebuffer) drain all slots;
+ * presentation closes the chain before its readback submit (target_prepare_present). The
+ * per-slot vertex arena and upload ring flush on their own capacity checks and are
+ * rewritten only after their slot's fence. The legacy cap of 8 cost a submit, and a fence
+ * wait when the slot came round again, every eight ops: about 1,500 of each per second on
+ * the windowed player route, 95-115 ms of every second in vulkan_submit + ge_wait (#827).
+ * The cost of a larger cap is overlap: the GPU starts an op only once its command buffer is
+ * submitted. SR_GPU_SUBMIT_BATCH=1..SUBMIT_BATCH_MAX overrides the limit (8 restores the
+ * legacy schedule) and SR_GPU_SYNC_SUBMIT=1 forces one op per submit. The coherence
+ * selftest's submit-batch fixture pins the frames against ge.c and the submit accounting. */
+#define SUBMIT_BATCH_MAX 128
 #define XFER_RING_DEFAULT_BYTES (8u << 20)
 #define TEX_SHADOW_MAX_BYTES (64u << 20)
 /* A slot can retain more than one recorded render before submission. Each render gets
@@ -4198,6 +4216,331 @@ static int coherence_run_blend_parity(void) {
     return 1;
 }
 
+/* ---- submission granularity (#827, issue #323) --------------------------------------------
+ *
+ * SUBMIT_BATCH_MAX caps how many recorded GE-ring ops -- render batches, destination
+ * snapshot copies and ring uploads -- share one vkQueueSubmit. This fixture proves the cap is
+ * a submission granularity and not an ordering boundary. It builds one GE display list and
+ * runs it through ge.c's interpreter and the production hooks, so nothing here reaches the
+ * backend by a route the player does not take. The list runs once per cap, and every frame
+ * is compared byte for byte with ge.c's software rasterizer, the reference. The list chains
+ * GPU-only dependencies that would change pixels if a longer command buffer lost or
+ * reordered one:
+ *   - overlapping dual-FIX shader-blend sprites with a new FIX constant per draw: each draw
+ *     submits the previous render op and records a destination snapshot copy, the
+ *     render+snapshot pairs behind the "mixed" player-route submits in #827;
+ *   - CLUT8 sprites with a palette reload per draw (a new cache entry and a ring upload into
+ *     the open command buffer each), then a GE block transfer that rewrites the texels
+ *     through ge.c's CPU copy and dirty notification, and draws that re-upload those cached
+ *     images in place after earlier draws in the same command buffer sampled them;
+ *   - render-to-texture: draws alternate between a second target and the main one, which
+ *     samples the second target's newest pixels directly.
+ * No CPU-visible boundary falls inside the list, so the cap is the only thing that splits
+ * it: a run must cost exactly ops/cap submits and leave ops%cap ops open. That also pins
+ * SR_GPU_SUBMIT_BATCH=8 to the legacy schedule, op for op. */
+#define SB_FBA_A    0x00000000u            /* main target (VRAM offset) */
+#define SB_FBA_B    0x00088000u            /* render-to-texture source, after A's rows */
+#define SB_ZBA      0x00110000u
+#define SB_LIST     0x08400000u            /* synthetic main RAM from here on */
+#define SB_VTX      0x08480000u
+#define SB_PAL      0x08500000u            /* 16-entry 8888 palettes, 64 bytes each */
+#define SB_TEX      0x08510000u            /* 16x16 CLUT8 texels, one 256-byte copy per run */
+#define SB_XFER_SRC 0x08520000u            /* the block transfer's replacement texels */
+#define SB_FIXB     0x5F7F3Fu
+
+typedef struct SubmitBatchShape {
+    uint32_t blend_draws;                  /* overlapping shader-blend sprites */
+    uint32_t clut_draws;                   /* CLUT8 sprites, one palette reload each */
+    uint32_t rewrite_draws;                /* CLUT8 sprites after the block-transfer rewrite */
+    uint32_t rtt_rounds;                   /* draw into B, then sample B from A */
+    uint32_t size;                         /* shader-blend and target-B sprite edge */
+} SubmitBatchShape;
+
+typedef struct SubmitBatchList { uint32_t *dl; uint32_t n; uint32_t voff; } SubmitBatchList;
+
+static void sb_emit(SubmitBatchList *l, uint32_t cmd, uint32_t val) {
+    l->dl[l->n++] = (cmd << 24) | (val & 0x00FFFFFFu);
+}
+
+static void sb_target(SubmitBatchList *l, uint32_t fba) {
+    sb_emit(l, 0x9C, fba);
+    sb_emit(l, 0x9D, 512u | (0x04000000u >> 8));
+}
+
+/* One through-mode sprite: its two vertices, then VADDR and PRIM. Untextured sprites use
+ * the 8888-colour layout (ParityGuestVtx), textured ones float UV + position. */
+static void sb_sprite(SubmitBatchList *l, int textured, float x, float y, float u, float v,
+                      float size, uint32_t rgba) {
+    uint32_t vaddr = SB_VTX + l->voff;
+    if (textured) {
+        RawSpriteVtx *q = (RawSpriteVtx *)SR_HOST(vaddr);
+        q[0] = (RawSpriteVtx){ u, v, x, y, 0.0f };
+        q[1] = (RawSpriteVtx){ u + size, v + size, x + size, y + size, 0.0f };
+        l->voff += 2u * (uint32_t)sizeof(RawSpriteVtx);
+    } else {
+        ParityGuestVtx *q = (ParityGuestVtx *)SR_HOST(vaddr);
+        q[0] = (ParityGuestVtx){ rgba, x, y, 0.0f };
+        q[1] = (ParityGuestVtx){ rgba, x + size, y + size, 0.0f };
+        l->voff += 2u * (uint32_t)sizeof(ParityGuestVtx);
+    }
+    sb_emit(l, 0x01, vaddr);
+    sb_emit(l, 0x04, (6u << 16) | 2u);
+}
+
+static uint32_t sb_fixa(uint32_t i) {
+    uint32_t a = wrap_hash(0x3Du + i * 2654435761u) & 0xFFFFFFu;
+    return a == SB_FIXB ? a ^ 1u : a;      /* dual FIX needs two distinct constants */
+}
+
+/* Write fresh inputs (both targets, texels, palettes, transfer source) and the display
+ * list; return the list address. `tex` lets each run own its texture cache entries. */
+static uint32_t submit_batch_prepare(const SubmitBatchShape *sh, uint32_t tex) {
+    const uint32_t bytes = FB_W * FB_H * 4u;
+    uint32_t *a = (uint32_t *)SR_HOST(0x04000000u | SB_FBA_A);
+    for (uint32_t i = 0; i < (uint32_t)(FB_W * FB_H); i++) a[i] = wrap_pixel_rgba(0xA5u, i);
+    sr_gpu_vram_dirty(0x04000000u | SB_FBA_A, bytes);
+    memset(SR_HOST(0x04000000u | SB_FBA_B), 0, bytes);
+    sr_gpu_vram_dirty(0x04000000u | SB_FBA_B, bytes);
+    uint8_t *texels = (uint8_t *)SR_HOST(tex), *repl = (uint8_t *)SR_HOST(SB_XFER_SRC);
+    for (uint32_t v = 0; v < 16u; v++) {
+        for (uint32_t u = 0; u < 16u; u++) {
+            texels[v * 16u + u] = (uint8_t)((u * 7u + v * 3u) & 15u);
+            repl[v * 16u + u] = (uint8_t)((u * 5u + v * 11u + 9u) & 15u);
+        }
+    }
+    sr_gpu_vram_dirty(tex, 256u);
+    uint32_t *pal = (uint32_t *)SR_HOST(SB_PAL);
+    for (uint32_t k = 0; k < sh->clut_draws; k++)
+        for (uint32_t j = 0; j < 16u; j++) pal[k * 16u + j] = wrap_pixel_rgba(0xC1u + k, j);
+
+    const uint32_t colour = (7u << 2) | (3u << 7) | (1u << 23);   /* 8888, float pos, through */
+    const uint32_t uv = (3u << 0) | (3u << 7) | (1u << 23);       /* float UV, float pos */
+    const float size = (float)sh->size;
+    const uint32_t span_x = (uint32_t)DRAW_W - sh->size - 32u, span_y = FB_H - sh->size - 32u;
+    SubmitBatchList l = { (uint32_t *)SR_HOST(SB_LIST), 0u, 0u };
+    sb_emit(&l, 0x10, (SB_VTX >> 8) & 0x000F0000u);   /* BASE: vertices live in main RAM */
+    sb_emit(&l, 0x13, 0);
+    sb_emit(&l, 0x4C, 0);
+    sb_emit(&l, 0x4D, 0);
+    sb_target(&l, SB_FBA_A);
+    sb_emit(&l, 0x9E, SB_ZBA);
+    sb_emit(&l, 0x9F, 512u | (0x04000000u >> 8));
+    sb_emit(&l, 0xD2, 3);
+    sb_emit(&l, 0xD3, 0);
+    static const uint8_t k_off[] = { 0x1D, 0x1F, 0x20, 0x22, 0x23, 0x24, 0x27, 0x28, 0xE8, 0xE9 };
+    for (size_t i = 0; i < sizeof(k_off); i++) sb_emit(&l, k_off[i], 0);
+    sb_emit(&l, 0xE7, 1);
+    sb_emit(&l, 0x15, 0);
+    sb_emit(&l, 0x16, ((FB_H - 1) << 10) | (FB_W - 1));
+    sb_emit(&l, 0xD4, 0);
+    sb_emit(&l, 0xD5, ((FB_H - 1) << 10) | (FB_W - 1));
+    sb_emit(&l, 0xC0, 0);
+    sb_emit(&l, 0xC2, 0);
+    sb_emit(&l, 0xC5, 3u | (0xFFu << 8));            /* 8888 palette, mask 0xFF */
+    sb_emit(&l, 0xC6, 0);
+    sb_emit(&l, 0xC7, 0);
+    sb_emit(&l, 0xC9, 3u | (1u << 8));               /* replace, texture alpha */
+
+    /* Shader blend: FIXA*src + FIXB*dst with a new FIXA per draw, each sprite overlapping
+     * the last, so every draw blends against the previous draw's result. */
+    sb_emit(&l, 0x1E, 0);
+    sb_emit(&l, 0x21, 1);
+    sb_emit(&l, 0xDF, 10u | (10u << 4));
+    sb_emit(&l, 0xE1, SB_FIXB);
+    sb_emit(&l, 0x12, colour);
+    for (uint32_t i = 0; i < sh->blend_draws; i++) {
+        sb_emit(&l, 0xE0, sb_fixa(i));
+        sb_sprite(&l, 0, (float)(16u + (i * 3u) % span_x), (float)(16u + (i * 2u) % span_y),
+                  0.0f, 0.0f, size, wrap_pixel_rgba(0x5Au, i));
+    }
+
+    /* CLUT8 sprites, one palette per draw, overlapping one another. */
+    sb_emit(&l, 0x21, 0);
+    sb_emit(&l, 0x1E, 1);
+    sb_emit(&l, 0xA0, tex);
+    sb_emit(&l, 0xA8, 16u | ((tex & 0xFF000000u) >> 8));
+    sb_emit(&l, 0xB8, 4u | (4u << 8));
+    sb_emit(&l, 0xC3, 5);
+    sb_emit(&l, 0xB1, (SB_PAL & 0xFF000000u) >> 8);
+    sb_emit(&l, 0x12, uv);
+    for (uint32_t k = 0; k < sh->clut_draws; k++) {
+        sb_emit(&l, 0xB0, SB_PAL + k * 64u);
+        sb_emit(&l, 0xC4, 2);
+        sb_sprite(&l, 1, (float)(240u + (k * 5u) % 200u), (float)(140u + (k * 3u) % 100u),
+                  0.0f, 0.0f, 16.0f, 0);
+    }
+    /* Rewrite the texels with a 16-bit block transfer (16 rows of 16 bytes), then draw with
+     * earlier palettes: same cache keys, new contents, so the images update in place. */
+    sb_emit(&l, 0xB2, SB_XFER_SRC & 0x00FFFFF0u);
+    sb_emit(&l, 0xB3, 8u | ((SB_XFER_SRC & 0xFF000000u) >> 8));
+    sb_emit(&l, 0xB4, tex & 0x00FFFFF0u);
+    sb_emit(&l, 0xB5, 8u | ((tex & 0xFF000000u) >> 8));
+    sb_emit(&l, 0xEB, 0);
+    sb_emit(&l, 0xEC, 0);
+    sb_emit(&l, 0xEE, 7u | (15u << 10));
+    sb_emit(&l, 0xEA, 0);
+    for (uint32_t j = 0; j < sh->rewrite_draws; j++) {
+        sb_emit(&l, 0xB0, SB_PAL + (j % sh->clut_draws) * 64u);
+        sb_emit(&l, 0xC4, 2);
+        sb_sprite(&l, 1, (float)(244u + j * 6u), (float)(150u + j * 4u), 0.0f, 0.0f, 16.0f, 0);
+    }
+
+    /* Render-to-texture: draw into B, then sample B's newest sprite (and its border) from A. */
+    for (uint32_t r = 0; r < sh->rtt_rounds; r++) {
+        uint32_t bx = 8u + (r * 12u) % span_x, by = 8u + (r * 6u) % span_y;
+        sb_target(&l, SB_FBA_B);
+        sb_emit(&l, 0x1E, 0);
+        sb_emit(&l, 0x12, colour);
+        sb_sprite(&l, 0, (float)bx, (float)by, 0.0f, 0.0f, size, wrap_pixel_rgba(0xB0u, r));
+        sb_target(&l, SB_FBA_A);
+        sb_emit(&l, 0x1E, 1);
+        sb_emit(&l, 0xA0, SB_FBA_B);
+        sb_emit(&l, 0xA8, 512u | (0x04000000u >> 8));
+        sb_emit(&l, 0xB8, 9u | (9u << 8));
+        sb_emit(&l, 0xC3, 3);
+        sb_emit(&l, 0x12, uv);
+        sb_sprite(&l, 1, (float)(24u + (r * 20u) % span_x), (float)(160u + (r % 4u) * 8u),
+                  (float)(bx - 4u), (float)(by - 4u), size + 8.0f, 0);
+    }
+    sb_emit(&l, 0x0F, 0);
+    sb_emit(&l, 0x0C, 0);
+    return SB_LIST;
+}
+
+typedef struct SubmitBatchRun {
+    unsigned long long ops, submits, waits, open, snapshots, uploads, wraps, fallbacks;
+    double submit_ms, wait_ms, wall_ms;
+} SubmitBatchRun;
+
+/* Run the list at `cap` through the production hooks, then settle both targets through the
+ * explicit snapshot boundary, which leaves the GPU frames in guest VRAM. */
+static int submit_batch_run(const SubmitBatchShape *sh, uint32_t tex, uint32_t cap,
+                            SubmitBatchRun *out) {
+    memset(out, 0, sizeof(*out));
+    coherence_reset_targets();
+    if (!cmd_drain(GEGPU_BOUNDARY_LIFETIME)) return 0;
+    uint32_t saved_cap = s_submit_batch_ops;
+    if (s_async_submit) s_submit_batch_ops = cap;  /* synchronous mode is one op per submit */
+    uint32_t list = submit_batch_prepare(sh, tex);
+    ge_set_gpu_hooks(&k_hooks);
+
+    GeGpuReplayStats before, after;
+    unsigned long renders = s_cnt_submit;
+    gegpu_replay_stats_get(&before);
+    uint64_t started = SDL_GetTicksNS();
+    ge_run_list(list, 0);
+    gegpu_replay_stats_get(&after);
+    renders = s_cnt_submit - renders;        /* render ops recorded by the list itself */
+    out->open = s_cmd_slot ? s_cmd_slot->recorded_ops : 0u;
+    GeGpuFbDescriptor da = { 0x04000000u | SB_FBA_A, 3u, 512u, (uint32_t)DRAW_W, FB_H };
+    GeGpuFbDescriptor db = { 0x04000000u | SB_FBA_B, 3u, 512u, (uint32_t)DRAW_W, FB_H };
+    int ok = gegpu_sync_guest_fb(&da) == GEGPU_SYNC_OK && gegpu_sync_guest_fb(&db) == GEGPU_SYNC_OK;
+    out->wall_ms = (double)(SDL_GetTicksNS() - started) / 1000000.0;
+    s_submit_batch_ops = saved_cap;
+
+    out->snapshots = after.snapshot_copies - before.snapshot_copies;
+    out->uploads = after.upload_ring_reservations - before.upload_ring_reservations;
+    out->wraps = after.upload_ring_wraps - before.upload_ring_wraps;
+    out->fallbacks = after.upload_ring_fallbacks - before.upload_ring_fallbacks;
+    out->ops = (unsigned long long)renders + out->snapshots + out->uploads + out->fallbacks;
+    out->submits = after.queue_submits - before.queue_submits;
+    for (int i = 0; i < GEGPU_BOUNDARY_COUNT; i++) {
+        out->waits += after.boundary[i].waits - before.boundary[i].waits;
+        out->submit_ms += (double)(after.boundary[i].submit_ns - before.boundary[i].submit_ns) / 1e6;
+        out->wait_ms += (double)(after.boundary[i].wait_ns - before.boundary[i].wait_ns) / 1e6;
+    }
+    if (!ok) fprintf(stderr, "gpu coherence selftest [submit-batch]: cap=%u snapshot sync failed\n", cap);
+    return ok;
+}
+
+static int submit_batch_same(const char *what, uint32_t cap, const uint32_t *gpu,
+                             const uint32_t *ref) {
+    for (uint32_t i = 0; i < (uint32_t)(FB_W * FB_H); i++) {
+        if (gpu[i] != ref[i]) {
+            fprintf(stderr, "gpu coherence selftest [submit-batch]: cap=%u target %s x=%u y=%u "
+                            "gpu=%08x ge_c=%08x\n", cap, what, i % FB_W, i / FB_W, gpu[i], ref[i]);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int coherence_run_submit_batch(void) {
+    const SubmitBatchShape sh = { 48u, 24u, 6u, 8u, 24u };
+    const size_t bytes = (size_t)FB_W * FB_H * 4u;
+    uint32_t *ref_a = (uint32_t *)malloc(bytes), *ref_b = (uint32_t *)malloc(bytes);
+    if (!ref_a || !ref_b) {
+        free(ref_a); free(ref_b);
+        fprintf(stderr, "gpu coherence selftest [submit-batch]: out of memory\n");
+        return 0;
+    }
+    /* ge.c's software rasterizer on the same list: the reference every cap must equal. */
+    coherence_reset_targets();
+    ge_set_gpu_hooks(NULL);
+    ge_run_list(submit_batch_prepare(&sh, SB_TEX), 0);
+    ge_set_gpu_hooks(&k_hooks);
+    memcpy(ref_a, SR_HOST(0x04000000u | SB_FBA_A), bytes);
+    memcpy(ref_b, SR_HOST(0x04000000u | SB_FBA_B), bytes);
+
+    /* Legacy cap, the configured cap, and the maximum. A warm-up run first creates the
+     * pipelines, depth image and targets so every measured run records the same ops. */
+    const uint32_t wanted[3] = { 8u, s_submit_batch_ops, SUBMIT_BATCH_MAX };
+    uint32_t caps[4] = { s_submit_batch_ops, 0u, 0u, 0u };   /* caps[0] is the warm-up */
+    uint32_t ncaps = 0;
+    for (uint32_t i = 0; i < (s_async_submit ? 3u : 1u); i++) {
+        /* SR_GPU_SYNC_SUBMIT=1 fixes the cap at 1: one op per submit, nothing to compare */
+        uint32_t cap = s_async_submit ? wanted[i] : s_submit_batch_ops;
+        int dup = 0;
+        for (uint32_t j = 1; j <= ncaps; j++) dup |= caps[j] == cap;
+        if (!dup) caps[++ncaps] = cap;
+    }
+    int ok = 1;
+    for (uint32_t i = 0; i <= ncaps && ok; i++) {
+        SubmitBatchRun run;
+        uint32_t cap = caps[i];
+        ok = submit_batch_run(&sh, SB_TEX + 0x100u * (i + 1u), cap, &run) &&
+             submit_batch_same("A", cap, (const uint32_t *)SR_HOST(0x04000000u | SB_FBA_A), ref_a) &&
+             submit_batch_same("B", cap, (const uint32_t *)SR_HOST(0x04000000u | SB_FBA_B), ref_b);
+        if (!ok || i == 0) continue;         /* the warm-up checks frames only */
+        /* Non-vacuous: every blend draw recorded its snapshot copy, and every palette and
+         * rewrite draw uploaded through the GE chain. */
+        if (run.snapshots != sh.blend_draws ||
+            run.uploads + run.fallbacks < sh.clut_draws + sh.rewrite_draws) {
+            fprintf(stderr, "gpu coherence selftest [submit-batch]: cap=%u snapshots=%llu uploads=%llu "
+                            "fallbacks=%llu, want %u snapshots and >= %u uploads\n", cap,
+                    run.snapshots, run.uploads, run.fallbacks, sh.blend_draws,
+                    sh.clut_draws + sh.rewrite_draws);
+            ok = 0;
+            break;
+        }
+        /* The cap is the only thing that splits this list. A ring that wraps or is disabled
+         * (SR_GPU_XFER_RING_KB, large SR_GPU_SCALE) adds boundaries of its own, so the exact
+         * count is checked only where none occurred. */
+        const char *accounting = "unchecked(ring wrap/fallback)";
+        if (!s_async_submit) {
+            accounting = "exact";
+            ok = run.submits == run.ops && run.open == 0;
+        } else if (!run.wraps && !run.fallbacks) {
+            accounting = "exact";
+            ok = run.submits == run.ops / cap && run.open == run.ops % cap;
+        }
+        if (!ok) {
+            fprintf(stderr, "gpu coherence selftest [submit-batch]: cap=%u ops=%llu submits=%llu open=%llu, "
+                            "want submits=%llu open=%llu\n", cap, run.ops, run.submits, run.open,
+                    s_async_submit ? run.ops / cap : run.ops, s_async_submit ? run.ops % cap : 0ull);
+            break;
+        }
+        printf("gpu coherence selftest: PASS %-22s cap=%u ops=%llu submits=%llu open=%llu waits=%llu "
+               "submit_ms=%.3f wait_ms=%.3f wall_ms=%.3f accounting=%s frames=ge.c-exact\n",
+               "submit-batch", cap, run.ops, run.submits, run.open, run.waits, run.submit_ms,
+               run.wait_ms, run.wall_ms, accounting);
+    }
+    free(ref_a);
+    free(ref_b);
+    coherence_reset_targets();
+    return ok;
+}
+
 int gegpu_coherence_selftest(void) {
     static const CoherenceCase cases[] = {
         { "8888-middle", 3, 512, (91u * 512u + 137u) * 4u, 4, 0, 0, 0 },
@@ -4225,6 +4568,7 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_software_sprite_semantics()) ok = 0;
     if (!coherence_run_linear_sprite()) ok = 0;
     if (!coherence_run_ring_wrap()) ok = 0;
+    if (!coherence_run_submit_batch()) ok = 0;
     if (!coherence_run_upload_sequence()) ok = 0;
     if (!coherence_run_texture_dirty_same_state()) ok = 0;
     if (!coherence_run_blend_parity()) ok = 0;
