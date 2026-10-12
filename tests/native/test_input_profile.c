@@ -9,6 +9,13 @@
 #include "nk_input_profile.h"
 #include "nk_platform.h"
 
+/* Scratch root for the files this test writes: the checkout's build/ by default, or
+ * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
+ * touches the checkout. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 #else
@@ -407,7 +414,7 @@ static void test_future_version_refused(void) {
     assert(profile.trigger_threshold == NK_INPUT_DEFAULT_TRIGGER_THRESHOLD);
 
     /* Write future file to disk and verify loading from disk does not downgrade or overwrite it */
-    const char *file_path = "build/test_future_profile.json";
+    const char *file_path = SR_SELFTEST_BUILD_ROOT "/test_future_profile.json";
     FILE *f = fopen(file_path, "wb");
     assert(f != NULL);
     fputs(future_json, f);
@@ -506,7 +513,7 @@ static void test_conflict_detection(void) {
 static void test_save_load_round_trip(void) {
     printf("[INPUT_PROFILE_TEST] Subtest 6: Save/load round trip with atomic replacement...\n");
 
-    const char *file_path = "build/test_saved_profile.json";
+    const char *file_path = SR_SELFTEST_BUILD_ROOT "/test_saved_profile.json";
     char diag[256];
 
     NkInputProfile original;
@@ -612,7 +619,7 @@ static void test_per_title_selection_and_fallback(void) {
     assert(doc.title_count == 2);
 
     /* Saving and reloading preserves both entries and the global mapping. */
-    const char *file_path = "build/test_per_title_profile.json";
+    const char *file_path = SR_SELFTEST_BUILD_ROOT "/test_per_title_profile.json";
     assert(nk_input_profile_file_save(&doc, file_path, diag, sizeof(diag)) == NK_OK);
     assert(nk_platform_file_exists(file_path));
 
@@ -726,7 +733,7 @@ static void test_schema_one_migration(void) {
     assert(strstr(diag, "cannot carry a per_title map") != NULL);
 
     /* Re-saving a migrated document writes the current schema. */
-    const char *migrated_path = "build/test_migrated_profile.json";
+    const char *migrated_path = SR_SELFTEST_BUILD_ROOT "/test_migrated_profile.json";
     assert(nk_input_profile_file_save(&doc, NULL, diag, sizeof(diag)) != NK_OK); /* no path */
     assert(nk_input_profile_file_parse_json(&doc, v1_json, strlen(v1_json),
                                             diag, sizeof(diag)) == NK_OK);
@@ -944,7 +951,7 @@ static void test_per_title_fail_closed(void) {
     assert(nk_input_profile_file_find_title(&doc, "UCUS98701") == 0);
 
     /* A save with an invalid in-memory entry never replaces the file on disk. */
-    const char *keep_path = "build/test_per_title_keep.json";
+    const char *keep_path = SR_SELFTEST_BUILD_ROOT "/test_per_title_keep.json";
     assert(nk_input_profile_file_save(&doc, keep_path, diag, sizeof(diag)) == NK_OK);
     doc.title[1].psp_buttons[NK_PSP_BTN_CIRCLE] = doc.title[1].psp_buttons[NK_PSP_BTN_CROSS];
     assert(nk_input_profile_file_save(&doc, keep_path, diag, sizeof(diag)) != NK_OK);
@@ -1633,7 +1640,7 @@ static void test_hostile_documents_fail_closed(void) {
         expect_accepted("valid multi-byte name_hint", s_hostile_doc, len, &doc);
         assert(strcmp(doc.global.name_hint, "P\xc3" "\xa4" "d \xf0\x9f\x8e\xae") == 0);
         {
-            const char *path = "build/test_hostile_utf8.json";
+            const char *path = SR_SELFTEST_BUILD_ROOT "/test_hostile_utf8.json";
             char why[NK_INPUT_DIAGNOSTIC_MAX_LEN];
             assert(nk_input_profile_file_save(&doc, path, why, sizeof(why)) == NK_OK);
             NkInputProfileFile back;
@@ -1880,12 +1887,12 @@ static void expect_load_refused(const char *label, const char *path,
 static void test_hostile_profile_file_loader(void) {
     printf("[INPUT_PROFILE_TEST] Subtest 11: hostile files on disk fail closed at the loader...\n");
 
-    const char *path = "build/test_hostile_profile.json";
+    const char *path = SR_SELFTEST_BUILD_ROOT "/test_hostile_profile.json";
     char why[NK_INPUT_DIAGNOSTIC_MAX_LEN];
     NkInputProfileFile doc;
     size_t len;
 
-    assert(nk_platform_mkdir_p("build"));
+    assert(nk_platform_mkdir_p(SR_SELFTEST_BUILD_ROOT));
 
     /* A file that is there but empty is not an empty profile: it is refused. */
     write_bytes(path, "", 0);
@@ -1931,8 +1938,8 @@ static void test_hostile_profile_file_loader(void) {
 
     /* A path that is a directory, a path that is empty, and a path that is not
      * there at all: each one refuses itself, none of them reads. */
-    assert(nk_platform_mkdir_p("build/test_hostile_dir"));
-    expect_load_refused("path is a directory", "build/test_hostile_dir", NULL);
+    assert(nk_platform_mkdir_p(SR_SELFTEST_BUILD_ROOT "/test_hostile_dir"));
+    expect_load_refused("path is a directory", SR_SELFTEST_BUILD_ROOT "/test_hostile_dir", NULL);
     expect_load_refused("empty path", "", "file path is null or empty");
 
     {
@@ -1947,7 +1954,7 @@ static void test_hostile_profile_file_loader(void) {
     {
         char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN];
         diag[0] = '\0';
-        NkResult res = nk_input_profile_file_load(&doc, "build/test_hostile_absent.json",
+        NkResult res = nk_input_profile_file_load(&doc, SR_SELFTEST_BUILD_ROOT "/test_hostile_absent.json",
                                                   diag, sizeof(diag));
         assert(res == NK_ERROR_FILE_NOT_FOUND);
         assert(strstr(diag, "not found") != NULL);

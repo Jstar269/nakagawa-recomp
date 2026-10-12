@@ -44,6 +44,19 @@ typedef enum SrPerfGeEvent {
     SR_PERF_GE_EVENT_COUNT,
 } SrPerfGeEvent;
 
+typedef enum SrPerfGeFrontendStage {
+    SR_PERF_GE_FRONTEND_COMMAND_DISPATCH = 0,
+    SR_PERF_GE_FRONTEND_DRAW_SETUP,
+    SR_PERF_GE_FRONTEND_VERTEX_FETCH_DECODE,
+    SR_PERF_GE_FRONTEND_TRANSFORM,
+    SR_PERF_GE_FRONTEND_LIGHTING,
+    SR_PERF_GE_FRONTEND_CLIPPING_ACCEPTANCE,
+    SR_PERF_GE_FRONTEND_ASSEMBLY,
+    SR_PERF_GE_FRONTEND_TRIANGLE_TOTAL,
+    SR_PERF_GE_FRONTEND_EMPTY_CONTROL,
+    SR_PERF_GE_FRONTEND_STAGE_COUNT,
+} SrPerfGeFrontendStage;
+
 typedef enum SrPerfInterpReason {
     SR_PERF_INTERP_DISPATCH_MISS = 0,
     SR_PERF_INTERP_STALE_BLOCK,
@@ -143,6 +156,9 @@ void     sr_perf_phase_report(int force);
 void     sr_perf_ge_submit(SrPerfGeReason reason);
 void     sr_perf_ge_wait(uint64_t started_ns, SrPerfGeReason reason);
 void     sr_perf_ge_event(SrPerfGeEvent event, uint64_t count);
+void     sr_perf_ge_frontend_profile_config(uint32_t stride, int calibration_enabled);
+void     sr_perf_ge_frontend_profile(SrPerfGeFrontendStage stage, uint64_t sample_ns,
+                                     uint64_t samples, uint64_t eligible);
 void     sr_perf_present_submit(void);
 void     sr_perf_present_wait(uint64_t started_ns);
 void     sr_perf_present_done(uint64_t started_ns, int result);

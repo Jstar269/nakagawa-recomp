@@ -54,7 +54,9 @@ int atrac3p_bridge_create(int channels, int block_align, Atrac3pBridge **out);
  *   samples_out - ATRAC3P_FRAME_SAMPLES on success, 0 on failure
  *
  * Returns 0 on success or a negative AVERROR_* code on failure. Output is
- * deterministic (bit-exact decoder).
+ * deterministic (bit-exact decoder). A decoder failure is latched: later
+ * calls return the same error without re-entering mutated decoder state until
+ * atrac3p_bridge_reset() succeeds.
  */
 int atrac3p_bridge_decode(Atrac3pBridge *b, const uint8_t *frame, int frame_size,
                           int16_t *pcm_out, int *samples_out);

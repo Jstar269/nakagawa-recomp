@@ -84,6 +84,22 @@ const char *nk_iso_reader_volume_id(const NkIsoReader *reader);
 /* Return total file size in bytes */
 uint64_t nk_iso_reader_file_size(const NkIsoReader *reader);
 
+/* Read exactly `bytes` bytes at `offset` from the start of one image (a file or
+ * an ISO extent). Returns false when the range is not fully readable. */
+typedef bool (*NkElfImageRead)(void *context, uint64_t offset, void *dst,
+                               uint32_t bytes);
+
+/* The PSP ELF32/MIPS image layout rule (the shared definition; the Python mirror is
+ * tools/nk_core/iso_inspect.py _elf32_mips_layout_violation). `module` selects the
+ * guest-module entry rule (a PSP PRX needs a code segment, not an e_entry). Returns
+ * NULL when the image is usable, or the name of the first rule it breaks. */
+const char *nk_elf32_mips_layout_violation(NkElfImageRead read, void *context,
+                                           uint64_t image_size, bool module);
+const char *nk_iso_elf32_mips_layout_violation(NkIsoReader *reader, uint32_t lba,
+                                               uint32_t size, bool module);
+bool nk_iso_elf32_mips_layout_usable(NkIsoReader *reader, uint32_t lba,
+                                     uint32_t size, bool module);
+
 #ifndef NK_ISO_NO_PLAYER_EXTRAS
 typedef enum {
     NK_ISO_EXEC_UNKNOWN = 0,

@@ -124,8 +124,13 @@ class TestPublishAudit(unittest.TestCase):
             env = isolated_git_env(base, root=root)
         for name in selectors - {"GIT_CEILING_DIRECTORIES"}:
             self.assertNotIn(name, env)
-        for name in ("GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"):
-            self.assertNotIn(name, env)
+        self.assertNotIn("GIT_CONFIG", env)
+        # The caller's config entries (user.name=Ambient) are gone; the one entry left is the
+        # tool's own, which keeps auto gc off so no detached maintenance outlives a command.
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "1")
+        self.assertEqual(env["GIT_CONFIG_KEY_0"], "gc.auto")
+        self.assertEqual(env["GIT_CONFIG_VALUE_0"], "0")
+        self.assertNotIn("GIT_CONFIG_KEY_1", env)
         self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
         self.assertEqual(env["GIT_CONFIG_GLOBAL"], os.devnull)
         self.assertEqual(env["GIT_AUTHOR_NAME"], "Nakagawa Recomp Tests")

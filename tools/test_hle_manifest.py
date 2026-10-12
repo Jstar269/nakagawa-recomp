@@ -438,6 +438,7 @@ class LiveManifestTests(unittest.TestCase):
             0x9944F31F: ("sceKernelSuspendThread", "h_SuspendThread", "dedicated"),
             0x6652B8CA: ("sceKernelSetAlarm", "h_SetAlarm", "dedicated"),
             0xBA6B92E2: ("sceKernelSysClock2USec", "h_SysClock2USec", "dedicated"),
+            0x110DEC9A: ("sceKernelUSec2SysClock", "h_USec2SysClock", "dedicated"),
             0x7E65B999: ("sceKernelCancelAlarm", "h_CancelAlarm", "dedicated"),
             0x034A921F: ("sceKernelGetVTimerTime", "h_ControlledUnsupported", "controlled_unsupported"),
             0x50F61D8A: ("sceKernelFreeMemoryBlock", "h_FreeMemoryBlock", "dedicated"),
@@ -456,7 +457,7 @@ class LiveManifestTests(unittest.TestCase):
             0x0CAE832B: ("sceRegCloseCategory", "h_RegCloseCategory", "dedicated"),
             0x1D8A762E: ("sceRegOpenCategory", "h_RegOpenCategory", "dedicated"),
         }
-        self.assertEqual(len(expected), 23)
+        self.assertEqual(len(expected), 24)
         for nid, (name, handler, classification) in expected.items():
             with self.subTest(nid=f"0x{nid:08x}"):
                 if nid not in self.regs:
@@ -467,6 +468,20 @@ class LiveManifestTests(unittest.TestCase):
                 self.assertEqual(registration["classification"], classification)
                 if classification == "controlled_unsupported" and nid not in (0x0CAE832B, 0x1D8A762E):
                     self.assertEqual(int(registration["refusal_error"], 16), 0x80020002)
+
+    def test_usec_sysclock_wide_and_umd_unregister_routes_are_dedicated(self) -> None:
+        expected = {
+            0xC8CD158C: ("sceKernelUSec2SysClockWide", "h_USec2SysClockWide"),
+            0xBD2BDE07: ("sceUmdUnRegisterUMDCallBack", "h_UmdUnRegisterUMDCallBack"),
+        }
+        for nid, (name, handler) in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["name"], name)
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+        self.assertIn("project choice", meta.HANDLER_LIMITATIONS["h_UmdUnRegisterUMDCallBack"])
 
     def test_findings_and_waivers_are_in_exact_balance(self) -> None:
         findings = [{**f, "nid": int(f["nid"], 16)} for f in self.manifest["findings"]]
@@ -671,7 +686,14 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x231fc6b7": ("_sceAtracGetContextAddress", "0x80630003"),
                 "0x29681260": ("sceAudiocodecReleaseEDRAM", "0x80010086"),
                 "0x328f9e52": ("sceKernelDeleteVTimer", "0x80020002"),
+                "0x011f03c1": ("sceRtcGetAccumulativeTime", "0x80020002"),
+                "0x191cdeff": ("sceSslEnd", "0x80010086"),
+                "0x5963991b": ("sceNetApctlDelHandler", "0x80010086"),
+                "0x39af39a6": ("sceNetInit", "0x80010086"),
+                "0xf9d8eb63": ("sceHttpsEnd", "0x80010086"),
                 "0x3a20a200": ("sceAudiocodecGetEDRAM", "0x80010086"),
+                "0x469989ad": ("scePower_469989ad", "0x80020002"),
+                "0x627e6f3a": ("sceKernelReferSystemStatus", "0x80020002"),
                 "0x3eaba285": ("sceHttpAddExtraHeader", "0x80010086"),
                 "0x542ad630": ("sceKernelSetVTimerTime", "0x80020002"),
                 "0x5b37eb1d": ("sceAudiocodecInit", "0x80010086"),
@@ -1037,7 +1059,14 @@ class EvidenceTierTests(unittest.TestCase):
         promoted = hle_manifest.oracle_exercised_apis(document)
         self.assertEqual(
             sorted(t["id"] for t in document["tests"] if t.get("hardware_evidence") == "MEASURED"),
-            ["PSP-DISPLAY-001", "PSP-DMAC-001", "PSP-EXCEPTION-001", "PSP-KERNEL-002"],
+            [
+                "PSP-ALARM-001", "PSP-AUDIO-001", "PSP-CACHE-001", "PSP-DISPLAY-001",
+                "PSP-DISPLAY-002", "PSP-DISPLAY-003", "PSP-DISPLAY-004", "PSP-DMAC-001",
+                "PSP-EXCEPTION-001", "PSP-FPU-001", "PSP-GE-001", "PSP-IO-001",
+                "PSP-KERNEL-002", "PSP-KERNEL-MISC-001", "PSP-KERNEL-STATUS-001", "PSP-MUTEX-001",
+                "PSP-REGISTRY-001", "PSP-SMOKE-001", "PSP-THREAD-003", "PSP-THREAD-EXIT-001",
+                "PSP-TRANSPORT-001", "PSP-WAIT-001",
+            ],
         )
         self.assertIn("sceDmacTryMemcpy", promoted)
         rows = {t["id"]: t for t in document["tests"]}

@@ -20,6 +20,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import traceback
 import time
 import zlib
 
@@ -58,6 +59,7 @@ from nk_core.iso_inspect import (  # noqa: E402
     MAX_MODULE_CANDIDATES,
     IsoInspectionError,
     IsoDirectoryEntry,
+    _elf32_mips_iso_violation,
     _elf32_mips_usable,
     _lookup_iso_file,
     _read_iso_extent,
@@ -65,12 +67,11 @@ from nk_core.iso_inspect import (  # noqa: E402
     _has_cfw_or_kernel_only_imports,
     decrypted_module_dir,
     inspect_compatibility_preflight,
-    plan_guest_module_bindings,
+    plan_guest_module_layout,
     walk_disc_module_entries,
     write_experimental_profile,
 )
 import title_manifest  # noqa: E402
-import stage_runtime_dlls as _runtime_dlls  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -335,6 +336,22 @@ def _require_child(root: Path, child: Path, label: str) -> Path:
     return resolved
 
 
+def _run_codegen_step(command, *, cwd, env, log_path: Path) -> int:
+    """Run one codegen step and keep its output in a private log, so a failure always
+    has its cause on disk. Returns the exit code."""
+    completed = subprocess.run(
+        command, cwd=cwd, env=env, capture_output=True,
+        encoding="utf-8", errors="replace", check=False,
+    )
+    text = (
+        f"exit {completed.returncode}\n"
+        f"--- stdout ---\n{completed.stdout}"
+        f"\n--- stderr ---\n{completed.stderr}\n"
+    )
+    _write_private_file(log_path, text.encode("utf-8", errors="replace"))
+    return completed.returncode
+
+
 def _write_private_file(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary_path: Path | None = None
@@ -493,6 +510,23 @@ def _source_media_identity(iso_path: Path, selected: str,
     }
 
 
+def _unusable_elf_module_reason(stream, file_size: int, entry: IsoDirectoryEntry) -> str:
+    """Name the shared PSP layout rule an ELF32/MIPS module candidate breaks."""
+    rule = _elf32_mips_iso_violation(
+        stream, file_size, entry.lba, entry.size, module=True
+    )
+    return f"its ELF32/MIPS image breaks the PSP layout rule {rule or 'unknown'}"
+
+
+def _unready_module_lines(candidates: list[dict]) -> list[str]:
+    """One named line per candidate that prevents the import from starting."""
+    return [
+        f"MODULE {candidate['name']}: not ready "
+        f"({candidate.get('reason') or candidate['kind']})"
+        for candidate in candidates
+    ]
+
+
 def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]:
     """Find bounded ELF/PRX candidates below the title's module roots."""
     file_size = iso_path.stat().st_size
@@ -503,12 +537,15 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
             continue
         if entry.name.casefold() in {selected_name, "boot.bin", "eboot.old"}:
             continue
+        reason: str | None = None
         if not title_manifest.FILENAME_RE.fullmatch(entry.name) or \
                 entry.name.endswith(".") or \
                 entry.name.split(".", 1)[0].upper() in title_manifest.WINDOWS_RESERVED:
             kind = "unsupported"
+            reason = "its file name is not a supported module name"
         elif entry.multi_extent or entry.size <= 0 or entry.size > MAX_GUEST_MODULE_BYTES:
             kind = "unsupported"
+            reason = "it is multi-extent, empty, or larger than the module size limit"
         else:
             header_size = min(entry.size, 0x64)
             with iso_path.open("rb") as stream:
@@ -520,12 +557,14 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
                         stream, file_size, entry.lba, entry.size, module=True
                     ):
                         kind = "unsupported"
+                        reason = _unusable_elf_module_reason(stream, file_size, entry)
                     else:
                         module_bytes = _read_iso_extent(
                             stream, file_size, entry.lba, entry.size, 0, entry.size
                         )
                         if len(module_bytes) != entry.size:
                             kind = "unsupported"
+                            reason = "its image could not be read in full"
                         elif _has_cfw_or_kernel_only_imports(module_bytes):
                             continue
                         else:
@@ -536,13 +575,17 @@ def _discover_iso_module_candidates(iso_path: Path, selected: str) -> list[dict]
                     kind = "encrypted-prx" if _encrypted_prx_header_supported(
                         header
                     ) else "unsupported"
+                    if kind == "unsupported":
+                        reason = "its encrypted-container header is not one the boundary supports"
                 else:
                     kind = "unsupported"
+                    reason = "its header is neither ELF32/MIPS, ~SCE nor ~PSP"
         candidates.append({
             "name": entry.name,
             "directory": directory,
             "entry": entry,
             "kind": kind,
+            "reason": reason,
         })
         if len(candidates) > MAX_GUEST_MODULES:
             raise PackageBuildError(
@@ -1115,6 +1158,33 @@ def _find_configured_runtime_dll(filename: str) -> Path | None:
     return next((candidate for candidate in candidates if candidate.is_file()), None)
 
 
+def _runtime_dll_stager():
+    """The runtime DLL stager module, imported on first use.
+
+    Importing it loads the third-party notice inventory and the codegen planner, which only
+    a package build needs, so the CLI's other commands never pay for it. A notice inventory
+    the stager cannot load is a named package-build failure, not a traceback.
+    """
+    module = globals().get("_runtime_dlls")
+    if module is None:
+        from title_codegen_plan import PackageRouteError
+        try:
+            import stage_runtime_dlls as module
+        except PackageRouteError as exc:
+            raise PackageBuildError(
+                f"the runtime DLL stager could not load the notice inventory: {exc}"
+            ) from exc
+        globals()["_runtime_dlls"] = module
+    return module
+
+
+def __getattr__(name: str):
+    """``nk_cli._runtime_dlls`` is the stager module, resolved on first access (tests patch it there)."""
+    if name == "_runtime_dlls":
+        return _runtime_dll_stager()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 def _stage_runtime_assets(package_dir: Path) -> None:
     vfpu_source = ROOT / "assets" / "vfpu"
     if vfpu_source.is_dir():
@@ -1148,9 +1218,10 @@ def _stage_runtime_assets(package_dir: Path) -> None:
         # step the Makefile's player target uses. The prerequisite installer
         # (#324) does not provide it yet, so a package without it still builds:
         # the player then draws with its bitmap fallback and logs why.
+        stager = _runtime_dll_stager()
         try:
-            _runtime_dlls.stage_runtime_dlls(package_dir, roots=("SDL3_ttf.dll",), notices=False)
-        except _runtime_dlls.StageError as exc:
+            stager.stage_runtime_dlls(package_dir, roots=("SDL3_ttf.dll",), notices=False)
+        except stager.StageError as exc:
             print(f"warning: the readable UI font runtime was not staged: {exc}. "
                   "The player will use its bitmap fallback font.", file=sys.stderr)
 
@@ -1403,6 +1474,31 @@ def _package_build_failure_message(output: str, returncode: int, log_file: Path 
     return f"{message} ({log_note})" if log_note else message
 
 
+# The bring-up report's names for how a package build used the codegen stage. A refusal
+# names one of package_cache.AOT_STAGE_REFUSAL_CODES; PACKAGE_CACHE_REUSED means a valid
+# package already held this cache key's generated C, so no stage ran.
+AOT_STAGE_RESULT_STATUSES = ("NOT_RUN", "REUSED", "REGENERATED", "UNKNOWN")
+_AOT_STAGE_DECISION_RE = re.compile(r"(?m)^AOT_STAGE_REUSE: (ACCEPTED|REFUSED) ([A-Z_]+)")
+
+
+def _record_aot_stage_result(args: argparse.Namespace, status: str, reason: str) -> None:
+    if getattr(args, "aot_stage_dir", None) is not None:
+        args.aot_stage_result = {"status": status, "reason": reason}
+
+
+def _record_aot_stage_decision(args: argparse.Namespace, planner_output: str) -> None:
+    """Record the planner's one-line stage decision; its absence is itself recorded."""
+    match = _AOT_STAGE_DECISION_RE.search(planner_output or "")
+    if match is None:
+        _record_aot_stage_result(args, "UNKNOWN", "AOT_STAGE_DECISION_MISSING")
+    elif match.group(1) == "ACCEPTED" and match.group(2) == package_cache.AOT_STAGE_ACCEPTED:
+        _record_aot_stage_result(args, "REUSED", "NONE")
+    elif match.group(1) == "REFUSED" and match.group(2) in package_cache.AOT_STAGE_REFUSAL_CODES:
+        _record_aot_stage_result(args, "REGENERATED", match.group(2))
+    else:
+        _record_aot_stage_result(args, "UNKNOWN", "AOT_STAGE_DECISION_MISSING")
+
+
 def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
     reporter = _BuildProgressReporter(getattr(args, "progress_json", None),
                                       getattr(args, "log_file", None))
@@ -1415,6 +1511,7 @@ def cmd_build_package(args: argparse.Namespace, stage_observer=None) -> int:
 
 def _build_package(args: argparse.Namespace, stage_observer,
                    reporter: _BuildProgressReporter) -> int:
+    _record_aot_stage_result(args, "NOT_RUN", "NONE")
     disc_id = args.disc_id.upper()
     register_local_identity = bool(
         getattr(args, "register_local_compatibility_record", False)
@@ -1690,6 +1787,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
             reporter.report("compile", "PASS", "Compilation skipped (reusing existing package)")
             reporter.report("package", "PASS", f"Package reused: {target_dir}")
             package_cache.write_local_title_input_identity(user_root, title_input_identity)
+            _record_aot_stage_result(args, "NOT_RUN", "PACKAGE_CACHE_REUSED")
             _report_reused_package_stages(stage_observer)
             reporter.close()
             return 0
@@ -1720,6 +1818,7 @@ def _build_package(args: argparse.Namespace, stage_observer,
                 reporter.report("compile", "PASS", "Compilation skipped (content-addressed entry reused)")
                 reporter.report("package", "PASS", f"Package promoted: {target_dir}")
                 package_cache.write_local_title_input_identity(user_root, title_input_identity)
+                _record_aot_stage_result(args, "NOT_RUN", "PACKAGE_CACHE_REUSED")
                 _report_reused_package_stages(stage_observer)
                 reporter.close()
                 return 0
@@ -1740,46 +1839,103 @@ def _build_package(args: argparse.Namespace, stage_observer,
             if build_dir.is_symlink():
                 raise PackageBuildError("Package build staging directory is a symlink; refusing to replace it.")
             shutil.rmtree(build_dir)
-        reporter.report("compile", "START", "Compiling package with AOT codegen...")
-        if stage_observer is not None:
-            stage_observer("compile", "START", 0)
-        command = [
-            sys.executable,
-            str(ROOT / "tools" / "title_codegen_plan.py"),
-            str(manifest_cache_path),
-            "--package",
-            "--game-elf",
-            str(elf_path),
-            "--output-dir",
-            str(build_dir),
-            "--title-input-identity-file",
-            str(identity_path),
-        ]
-        if public_safe:
-            command.append("--public-safe")
-        if module_dir is not None:
-            command.extend(("--module-dir", str(module_dir)))
-        if cached_header is not None:
-            command.extend(("--psp-header", str(cached_header)))
+        def planner_command(output_dir: Path) -> list[str]:
+            planner = [
+                sys.executable,
+                str(ROOT / "tools" / "title_codegen_plan.py"),
+                str(manifest_cache_path),
+                "--package",
+                "--game-elf",
+                str(elf_path),
+                "--output-dir",
+                str(output_dir),
+                "--title-input-identity-file",
+                str(identity_path),
+            ]
+            if public_safe:
+                planner.append("--public-safe")
+            if module_dir is not None:
+                planner.extend(("--module-dir", str(module_dir)))
+            if cached_header is not None:
+                planner.extend(("--psp-header", str(cached_header)))
+            return planner
+
+        def log_command(planner: list[str]) -> None:
+            if os.name == "nt":
+                cmd_line = "COMMAND: " + subprocess.list2cmdline(planner)
+            else:
+                import shlex
+                cmd_line = "COMMAND: " + shlex.join(planner)
+            if not reporter.is_json_stdout:
+                print(cmd_line)
+            reporter.log(cmd_line)
+
+        build_environment = _runtime_build_environment(
+            instruction_trace=bool(getattr(args, "instruction_trace", False))
+        )
+        command = planner_command(build_dir)
         if reuse_source is not None:
             command.extend(("--reuse-aot-from", str(reuse_source)))
         if native_only:
             command.append("--native-only")
-        if os.name == "nt":
-            cmd_line = "COMMAND: " + subprocess.list2cmdline(command)
-        else:
-            import shlex
-            cmd_line = "COMMAND: " + shlex.join(command)
-        if not reporter.is_json_stdout:
-            print(cmd_line)
-        reporter.log(cmd_line)
+        aot_stage_dir = getattr(args, "aot_stage_dir", None)
+        if aot_stage_dir is not None and reuse_source is not None:
+            # The previous package's validated generated C is compiled; nothing is generated.
+            _record_aot_stage_result(args, "NOT_RUN", "PACKAGE_CACHE_REUSED")
+            if stage_observer is not None:
+                stage_observer("codegen", "PASS", 0)
+        elif aot_stage_dir is not None:
+            # The codegen stage: the generation phase alone, through the same planner,
+            # inputs and environment as the package build below. The package build then
+            # compiles this output only if it passes the native-only reuse checks.
+            reporter.report("compile", "START", "Generating AOT code...")
+            if stage_observer is not None:
+                stage_observer("codegen", "START", 0)
+            stage_command = planner_command(Path(aot_stage_dir)) + ["--aot-stage"]
+            log_command(stage_command)
+            stage_started = time.perf_counter()
+            staged = subprocess.run(
+                stage_command,
+                cwd=ROOT,
+                env=build_environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            stage_ms = int((time.perf_counter() - stage_started) * 1000)
+            if staged.stdout:
+                reporter.log(staged.stdout)
+                if not reporter.is_json_stdout:
+                    sys.stdout.write(staged.stdout)
+            if staged.stderr:
+                reporter.log(staged.stderr)
+                if not reporter.is_json_stdout:
+                    sys.stderr.write(staged.stderr)
+            if staged.returncode != 0:
+                if stage_observer is not None:
+                    stage_observer("codegen", "FAIL", stage_ms)
+                reporter.report(
+                    "compile", "FAIL",
+                    _package_build_failure_message(
+                        staged.stderr + staged.stdout,
+                        staged.returncode,
+                        reporter.log_file,
+                    ),
+                )
+                reporter.close()
+                return staged.returncode
+            if stage_observer is not None:
+                stage_observer("codegen", "PASS", stage_ms)
+            command.extend(("--reuse-aot-stage", str(aot_stage_dir)))
+        reporter.report("compile", "START", "Compiling package with AOT codegen...")
+        if stage_observer is not None:
+            stage_observer("compile", "START", 0)
+        log_command(command)
         compile_started = time.perf_counter()
         completed = subprocess.run(
             command,
             cwd=ROOT,
-            env=_runtime_build_environment(
-                instruction_trace=bool(getattr(args, "instruction_trace", False))
-            ),
+            env=build_environment,
             capture_output=True,
             text=True,
             check=False,
@@ -1788,6 +1944,8 @@ def _build_package(args: argparse.Namespace, stage_observer,
             reporter.log(completed.stdout)
             if not reporter.is_json_stdout:
                 sys.stdout.write(completed.stdout)
+        if aot_stage_dir is not None and reuse_source is None:
+            _record_aot_stage_decision(args, completed.stdout)
         if completed.returncode != 0:
             if stage_observer is not None:
                 stage_observer(
@@ -1913,8 +2071,14 @@ def _build_package(args: argparse.Namespace, stage_observer,
         _prune_package_cache(cache_dir, entry_root)
         if not reporter.is_json_stdout:
             print(f"PACKAGE: {target_dir}")
+            stage_result = getattr(args, "aot_stage_result", None) or {}
             if native_only:
                 print("CACHE: generated C reused; native objects recompiled")
+            elif stage_result.get("status") == "REUSED":
+                print("CACHE: generated C from the codegen stage compiled")
+            elif stage_result.get("status") == "REGENERATED":
+                print("CACHE: codegen stage refused (" + str(stage_result.get("reason")) +
+                      "); AOT regenerated")
             else:
                 print("CACHE: AOT regenerated for changed cache key")
         reporter.log(f"PACKAGE: {target_dir}")
@@ -1944,21 +2108,65 @@ def print_progress(event: ProgressEvent) -> None:
     sys.stdout.flush()
 
 
+def _font_choices(items: list[str] | None) -> dict[str, str]:
+    choose: dict[str, str] = {}
+    for item in items or []:
+        slot, _, name = item.partition("=")
+        if not slot or not name:
+            raise ValueError(f"--choose takes SLOT=FILE, got '{item}'")
+        choose[slot] = name
+    return choose
+
+
 def cmd_fonts_import(args: argparse.Namespace) -> int:
     try:
         from nk_core.fonts import FontImportError, FontValidationError, import_fonts
 
-        user_data_root = args.user_data_root
-        result = import_fonts(args.folder, user_data_root=user_data_root)
+        result = import_fonts(
+            args.folder, user_data_root=args.user_data_root, choose=_font_choices(args.choose)
+        )
         if args.json:
             print(json.dumps(result, indent=2))
         else:
-            names = ", ".join(sorted(result["files"].keys()))
-            print(f"Successfully imported {result['imported_count']} font(s) into {result['cache_dir']}: {names}")
+            for outcome in result["outcomes"]:
+                print(f"{outcome['name']}: {outcome['detail']}")
+            if result["imported_count"]:
+                print(f"Imported {result['imported_count']} font slot(s) into {result['cache_dir']}.")
+        if not result["imported_count"]:
+            sys.stderr.write("Font import error: no font slot was imported.\n")
+            return 1
         return 0
     except (FontValidationError, FontImportError, OSError, ValueError) as exc:
         sys.stderr.write(f"Font import error: {exc}\n")
         return 1
+
+
+def cmd_fonts_status(args: argparse.Namespace) -> int:
+    from nk_core.fonts import SLOTS, slot_states
+
+    states = slot_states(user_data_root=args.user_data_root, project_root=args.project_root)
+    if args.json:
+        print(json.dumps({slot: states[slot] for slot in SLOTS}, indent=2))
+    else:
+        for slot in SLOTS:
+            print(states[slot]["detail"])
+    return 0
+
+
+def cmd_fonts_remove(args: argparse.Namespace) -> int:
+    from nk_core.fonts import SLOTS, FontImportError, remove_imports
+
+    slots = list(SLOTS) if args.all else args.slot
+    if not slots:
+        sys.stderr.write("Font remove error: name a slot with --slot, or pass --all.\n")
+        return 1
+    try:
+        removed = remove_imports(user_data_root=args.user_data_root, slots=slots)
+    except (FontImportError, OSError) as exc:
+        sys.stderr.write(f"Font remove error: {exc}\n")
+        return 1
+    print(f"Removed {removed} imported font file(s).")
+    return 0
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
@@ -2159,7 +2367,8 @@ def validate_bringup_report(report: dict) -> None:
     _validate_schema_value(report, schema, schema, "report")
 
 
-def _new_bringup_report() -> dict:
+def new_bringup_report() -> dict:
+    """Return a bring-up report with every stage NOT_RUN, the shape every bring-up producer starts from."""
     return {
         "schema_version": 1,
         "reached_stage": "none",
@@ -2187,7 +2396,13 @@ def _new_bringup_report() -> dict:
             "unsupported_opcodes": {},
         },
         "exit_classification": "NOT_RUN",
+        "codegen_reuse": {"status": "NOT_RUN", "reason": "NONE"},
     }
+
+
+# Public names for tools/title_qualification.py. The underscore names below stay as
+# aliases of the same objects, so existing nk_cli callers and tests are unchanged.
+_new_bringup_report = new_bringup_report
 
 
 def _update_issues(report: dict, values) -> None:
@@ -2226,6 +2441,15 @@ class _BringupProgressWriter:
             "finished_at_unix_ms": None,
             "duration_ms": 0,
         }
+        self._write()
+
+    def retarget(self, stage: str, replacement: str) -> None:
+        """Move a still-running stage's entry to ``replacement``, keeping its start."""
+        detail = self.stages.get(stage)
+        if detail is None or detail["status"] != "RUNNING":
+            return
+        del self.stages[stage]
+        self.stages[replacement] = detail
         self._write()
 
     def finish(self, stage: str, status: str, duration_ms: int) -> None:
@@ -2382,11 +2606,18 @@ def _minimal_valid_bringup_report(report: dict) -> dict:
     return minimal
 
 
-def _write_bringup_file(report: dict, path: Path) -> None:
+def write_bringup_file(report: dict, path: Path) -> None:
+    """Write a bring-up report as sorted, indented JSON, replacing ``path`` atomically.
+
+    The report is written as given. Callers validate it first (see validate_bringup_report).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, path)
+
+
+_write_bringup_file = write_bringup_file
 
 
 def _write_bringup_report(report: dict, path: Path) -> bool:
@@ -2689,7 +2920,8 @@ def _runtime_import_rows(output: str, imports: list[dict]) -> list[dict]:
     ]
 
 
-def _runtime_output_kind(output: str, runtime_imports: list[dict]) -> str:
+def runtime_output_kind(output: str, runtime_imports: list[dict]) -> str:
+    """Classify one runtime's captured output into the bring-up runtime_output_kind vocabulary."""
     folded = output.casefold()
     if runtime_imports:
         return "UNIMPLEMENTED_IMPORT"
@@ -2733,6 +2965,9 @@ def _runtime_output_kind(output: str, runtime_imports: list[dict]) -> str:
     return "EMPTY" if not output.strip() else "OTHER"
 
 
+_runtime_output_kind = runtime_output_kind
+
+
 _HOST_PRESENT_SUBMITTED = re.compile(
     r"^HOST_PRESENT_SUBMITTED f=\d+ buf=0x[0-9a-fA-F]{8} "
     r"fmt=[0-3] stride=\d+$"
@@ -2749,7 +2984,7 @@ _PRESENTER_BACKENDS = frozenset({"offscreen", "vulkan", "gdi", "none"})
 _ACCEPTING_PRESENTER_BACKENDS = frozenset({"offscreen"})
 
 
-def _set_bringup_presentation(report: dict, output: str) -> bool:
+def set_bringup_presentation(report: dict, output: str) -> bool:
     """Record presenter identity and accept only ordered, validated evidence."""
     lines = [line.strip() for line in output.splitlines()]
     submission_indices: list[int] = []
@@ -2802,6 +3037,9 @@ def _set_bringup_presentation(report: dict, output: str) -> bool:
         "backend": backend,
     }
     return evidence_ok
+
+
+_set_bringup_presentation = set_bringup_presentation
 
 
 # The runtime's own record of the SR_EXIT_AT_VBLANK run budget (src/rt/hle.c). The budget
@@ -2947,6 +3185,13 @@ def _opcode_identity_report_name(mnemonic) -> str:
     if not token or not ("A" <= token[0] <= "Z"):
         token = f"OP_{token}"
     return token
+
+
+def _packaged_stub_report(package_dir: Path) -> Path:
+    """The code generator's stub report inside a built package, beside its executable."""
+    package = json.loads((package_dir / "package.json").read_text(encoding="utf-8"))
+    executable = Path(str(package["executable"]["path"]))
+    return package_dir / executable.with_name(f"{executable.stem}_recomp_stubs.txt")
 
 
 def _count_unsupported_opcodes(codegen_report: Path, sources: list[dict]) -> dict[str, int]:
@@ -3188,6 +3433,13 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                 print(_bringup_human_summary(report))
                 return 1
             if unready:
+                unready_lines = _unready_module_lines(unready)
+                for line in unready_lines:
+                    print(line)
+                _write_private_file(
+                    work_dir / "bringup-module-layout.log",
+                    ("\n".join(unready_lines) + "\n").encode("utf-8"),
+                )
                 fail_stage(
                     report, "prepare_import", "GUEST_MODULE_FORMAT_UNSUPPORTED",
                     [308], int((time.perf_counter() - started) * 1000),
@@ -3226,9 +3478,20 @@ def cmd_bringup(args: argparse.Namespace) -> int:
                         )
                         for candidate, _source, _folder_copy in module_sources
                     ]
-                    module_bindings = plan_guest_module_bindings(
+                    module_bindings, deferred_modules = plan_guest_module_layout(
                         selected_elf, module_inputs
                     )
+                    if deferred_modules:
+                        deferred_lines = [
+                            f"DEFERRED_MODULE {item['name']}: {item['reason']}"
+                            for item in deferred_modules
+                        ]
+                        for line in deferred_lines:
+                            print(line)
+                        _write_private_file(
+                            work_dir / "bringup-module-deferred.log",
+                            ("\n".join(deferred_lines) + "\n").encode("utf-8"),
+                        )
                 except (IsoInspectionError, OSError) as exc:
                     boundary_code = (
                         getattr(exc, "boundary_code", None)
@@ -3348,62 +3611,46 @@ def cmd_bringup(args: argparse.Namespace) -> int:
     set_stage(report, "analyze", "PASS", int((time.perf_counter() - started) * 1000))
     _update_issues(report, [308] if report["unsupported_imports"] else [])
 
+    # Code generation runs once per bring-up, inside the package build: its codegen
+    # stage generates the code into codegen-stage/ with the package's own inputs, cache
+    # key and Make environment, and the package compiles that output only after the
+    # native-only reuse checks accept it (otherwise it regenerates, naming why).
     if progress is not None:
         progress.start("codegen")
     started = time.perf_counter()
     codegen_dir = work_dir / "codegen-stage"
     try:
         import title_codegen_plan
-        codegen_dir.mkdir(parents=True, exist_ok=True)
-        if not codegen_dir.resolve().is_relative_to(work_dir):
+        if codegen_dir.is_symlink() or not codegen_dir.resolve(strict=False).is_relative_to(work_dir):
             raise PackageBuildError("Code generation output escaped the work directory.")
+        if codegen_dir.exists():
+            # The stage must start empty: generation never removes a chunk it did not
+            # write, so an earlier run's leftovers would be recorded as this run's output.
+            shutil.rmtree(codegen_dir)
         # The package route's naming rule: game_name is optional in a title
         # manifest (a user manifest often omits it) and defaults to the id.
         game_name = title_codegen_plan._package_game_name(manifest, None)
-        psp_header = _disc_psp_header(
-            iso_path, manifest, library_executable, work_dir / "selected.psp"
-        )
-        plan = title_codegen_plan.build_plan(
-            manifest,
-            game_name=game_name,
-            game_elf=selected_elf,
-            build_dir=codegen_dir,
-            codegen_profile=manifest.get("codegen_profile"),
-            module_dir=module_dir,
-            psp_header=psp_header,
-            python_command=sys.executable,
-        )
-        env = _runtime_build_environment()
-        env.update(plan["environment"])
-        command = list(plan["commands"]["codegen"])
-        if command and command[0] == "python":
-            command[0] = sys.executable
-        completed = subprocess.run(
-            command, cwd=ROOT, env=env, capture_output=True, text=True,
-            check=False,
-        )
-        report["counts"]["unsupported_opcodes"] = _count_unsupported_opcodes(
-            codegen_dir / f"{game_name}_recomp_stubs.txt", sources
-        )
-        if completed.returncode != 0:
-            fail_stage(report, "codegen", "CODEGEN_FAILED", [308],
-                          int((time.perf_counter() - started) * 1000))
-            _write_bringup_report(report, report_path)
-            print(_bringup_human_summary(report))
-            return 1
     except Exception:
+        _write_private_file(
+            work_dir / "bringup-codegen.log",
+            ("codegen stage raised:\n" + traceback.format_exc()).encode(
+                "utf-8", errors="replace"
+            ),
+        )
         fail_stage(report, "codegen", "CODEGEN_FAILED", [308],
                       int((time.perf_counter() - started) * 1000))
         _write_bringup_report(report, report_path)
         print(_bringup_human_summary(report))
         return 1
-    set_stage(report, "codegen", "PASS", int((time.perf_counter() - started) * 1000))
 
     observer_events = {}
     def observe_package_stage(stage, status, duration_ms):
         observer_events[stage] = (status, duration_ms)
-        if status != "START":
-            set_stage(report, stage, status, duration_ms)
+        if status == "START":
+            if stage == "compile" and progress is not None:
+                progress.start("compile")
+            return
+        set_stage(report, stage, status, duration_ms)
 
     build_args = argparse.Namespace(
         disc_id=metadata.disc_id,
@@ -3412,16 +3659,45 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         psp_header=None,
         instruction_trace=bool(getattr(args, "instruction_trace", False)),
         log_file=work_dir / "bringup-build.log",
+        aot_stage_dir=codegen_dir,
     )
     stdout_capture = io.StringIO()
     stderr_capture = io.StringIO()
-    if progress is not None:
-        progress.start("compile")
     with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
         build_status = cmd_build_package(build_args, stage_observer=observe_package_stage)
+    stage_result = getattr(build_args, "aot_stage_result", None)
+    if isinstance(stage_result, dict):
+        report["codegen_reuse"] = dict(stage_result)
+    codegen_status = observer_events.get("codegen", (None,))[0]
+    if progress is not None and codegen_status is None:
+        # The package build stopped before its codegen stage, in the package preparation
+        # this route always attributed to compile.
+        progress.retarget("codegen", "compile")
+    if build_status == 0:
+        # The report describes what shipped: the stub report packaged with the build.
+        try:
+            report["counts"]["unsupported_opcodes"] = _count_unsupported_opcodes(
+                _packaged_stub_report(user_root / "packages" / metadata.disc_id.upper()),
+                sources,
+            )
+        except Exception:
+            fail_stage(report, "build_package", "BUILD_PACKAGE_FAILED", [308], 0)
+            _write_bringup_report(report, report_path)
+            print(_bringup_human_summary(report))
+            return 1
+    elif codegen_status in {"PASS", "FAIL"}:
+        # No package was built; the generated output is the best description of it.
+        try:
+            report["counts"]["unsupported_opcodes"] = _count_unsupported_opcodes(
+                codegen_dir / f"{game_name}_recomp_stubs.txt", sources
+            )
+        except Exception:
+            report["counts"]["unsupported_opcodes"] = {}
     if build_status != 0:
         combined = (stdout_capture.getvalue() + stderr_capture.getvalue()).casefold()
-        if "production pgf/pgd runtime backends" in combined:
+        if codegen_status == "FAIL":
+            failure, stage, issues = "CODEGEN_FAILED", "codegen", [308]
+        elif "production pgf/pgd runtime backends" in combined:
             failure, stage, issues = "PRODUCTION_RUNTIME_BACKEND_UNAVAILABLE", "compile", [308]
         elif "package_build_failed" in combined or observer_events.get("compile", (None,))[0] == "FAIL":
             failure, stage, issues = "COMPILE_FAILED", "compile", [308]
@@ -3664,12 +3940,35 @@ def main() -> int:
 
     p_fonts = subparsers.add_parser("fonts", help="Manage PSP firmware system fonts")
     fonts_subparsers = p_fonts.add_subparsers(dest="fonts_subcommand", required=True)
-    p_fonts_import = fonts_subparsers.add_parser("import", help="Import dumped PSP firmware PGF fonts")
-    p_fonts_import.add_argument("folder", type=Path, help="Folder containing dumped PSP firmware PGF fonts")
+    p_fonts_import = fonts_subparsers.add_parser(
+        "import", help="Import PSP PGF fonts from your own console (any .pgf in the folder)"
+    )
+    p_fonts_import.add_argument("folder", type=Path, help="Folder holding your .pgf font files (not subfolders)")
+    p_fonts_import.add_argument(
+        "--choose", action="append", metavar="SLOT=FILE",
+        help="Pick the file for a slot several files name (slots: japanese, latin, korean)",
+    )
     p_fonts_import.add_argument("--user-data-root", type=Path, help="Override player per-user data directory")
     p_fonts_import.add_argument("--root", type=Path, dest="user_data_root", help=argparse.SUPPRESS)
     p_fonts_import.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     p_fonts_import.set_defaults(func=cmd_fonts_import)
+    p_fonts_status = fonts_subparsers.add_parser("status", help="Show the font source for each slot")
+    p_fonts_status.add_argument("--user-data-root", type=Path, help="Override player per-user data directory")
+    p_fonts_status.add_argument("--root", type=Path, dest="user_data_root", help=argparse.SUPPRESS)
+    p_fonts_status.add_argument(
+        "--project-root", type=Path, default=ROOT,
+        help="Project root whose font/ folder holds the project fonts (default: this checkout)",
+    )
+    p_fonts_status.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    p_fonts_status.set_defaults(func=cmd_fonts_status)
+    p_fonts_remove = fonts_subparsers.add_parser("remove", help="Remove the fonts this tool imported")
+    p_fonts_remove.add_argument(
+        "--slot", action="append", choices=("japanese", "latin", "korean"), help="A slot to remove"
+    )
+    p_fonts_remove.add_argument("--all", action="store_true", help="Remove every imported slot")
+    p_fonts_remove.add_argument("--user-data-root", type=Path, help="Override player per-user data directory")
+    p_fonts_remove.add_argument("--root", type=Path, dest="user_data_root", help=argparse.SUPPRESS)
+    p_fonts_remove.set_defaults(func=cmd_fonts_remove)
 
     p_inspect = subparsers.add_parser("inspect", help="Inspect a PSP ISO image")
     p_inspect.add_argument("iso", help="Path to PSP ISO image")

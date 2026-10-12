@@ -203,8 +203,14 @@ LOG_DIR    ?= logs
 # parent directory is spaced too, and naming it must report "an ancestor of the
 # repository root", not only that Make cannot spell it. The value travels to Python as
 # one quoted argument, so a space in it cannot split it.
+# The checkout-scope check, shared by BUILD_ROOT and an overridden BUILD_DIR. It prints
+# `ok`, or the reason the tree reaches the checkout. The tree travels to Python as one
+# quoted argument, so a space in it cannot split it. It is only ever run for a value the
+# caller supplied (or the non-default root), so an ordinary invocation starts no extra
+# interpreter.
+_CHECKOUT_SCOPE_PY := import sys; from pathlib import Path; repo = Path.cwd().resolve(); root = Path(sys.argv[1]).resolve(); print('the repository root or one of its ancestors' if repo.is_relative_to(root) else 'inside the checkout but outside its build tree' if root.is_relative_to(repo) and not root.is_relative_to(repo / 'build') else 'ok')
 ifneq ($(BUILD_ROOT),build)
-_BUILD_ROOT_SCOPE := $(strip $(shell "$(PYTHON)" -c "import sys; from pathlib import Path; repo = Path.cwd().resolve(); root = Path(sys.argv[1]).resolve(); print('the repository root or one of its ancestors' if repo.is_relative_to(root) else 'inside the checkout but outside its build/ tree' if root.is_relative_to(repo) and not root.is_relative_to(repo / 'build') else 'ok')" "$(BUILD_ROOT)"))
+_BUILD_ROOT_SCOPE := $(strip $(shell "$(PYTHON)" -c "$(_CHECKOUT_SCOPE_PY)" "$(BUILD_ROOT)"))
 ifneq ($(_BUILD_ROOT_SCOPE),ok)
 $(error BUILD_ROOT '$(BUILD_ROOT)' is $(or $(_BUILD_ROOT_SCOPE),uncheckable (the scope check printed nothing)); build outputs are created and clean-fixtures and clean-all delete beneath it, so it must be the checkout's build/ tree (the default), a directory beneath it, or a directory outside the checkout)
 endif
@@ -212,6 +218,10 @@ endif
 ifneq ($(subst $(SPACE),,$(BUILD_ROOT)),$(BUILD_ROOT))
 $(error BUILD_ROOT '$(BUILD_ROOT)' contains a space, which GNU Make cannot represent in a target or prerequisite name. Use a BUILD_ROOT without spaces (the default is build))
 endif
+# How a recipe runs a native test binary built beneath BUILD_ROOT. The default keeps
+# the `./build/...` spelling; an absolute or drive-letter root is run as given, since
+# prefixing it with `./` names no file.
+BUILD_ROOT_RUN := $(if $(filter /%,$(BUILD_ROOT))$(findstring :,$(BUILD_ROOT)),$(BUILD_ROOT),./$(BUILD_ROOT))
 
 # SDL3 dependency discovery and isolation (issue #331).
 # An explicit SDL3_DIR overrides discovery; otherwise the supported provider is
@@ -283,6 +293,32 @@ endif
 LIBS       ?= -lSDL3 $(VULKAN_LIB_NAME) $(WIN_ONLY_LIBS) $(POSIX_RUNTIME_LIBS)
 
 BUILD_DIR  ?= $(BUILD_ROOT)/$(GAME_NAME)
+# An overridden BUILD_DIR gets the BUILD_ROOT scope refusal. `make clean` deletes it and
+# every build writes its outputs into it, so `BUILD_DIR=.` or `BUILD_DIR=src` must stop
+# the run while Make parses, before any recipe runs. The default derives from the
+# BUILD_ROOT checked above, so it needs no second interpreter. Like BUILD_ROOT, a
+# directory outside the checkout is the caller's explicit choice.
+ifneq ($(origin BUILD_DIR),file)
+_BUILD_DIR_SCOPE := $(strip $(shell "$(PYTHON)" -c "$(_CHECKOUT_SCOPE_PY)" "$(subst \,/,$(BUILD_DIR))"))
+ifneq ($(_BUILD_DIR_SCOPE),ok)
+$(error BUILD_DIR '$(BUILD_DIR)' is $(or $(_BUILD_DIR_SCOPE),uncheckable (the scope check printed nothing)); clean deletes it and every build writes its outputs into it, so it must be a directory beneath the checkout's build/ tree or a directory outside the checkout)
+endif
+endif
+# clean and clean-all delete $(BUILD_DIR) wholesale (clean-all runs clean first), so a
+# BUILD_DIR that is the whole build root would delete every title's build beneath it:
+# `make clean BUILD_DIR=build` did exactly that. The root is BUILD_ROOT, and also the
+# checkout's own build/ tree, which a scratch BUILD_ROOT leaves in place. The two paths
+# are compared normalized (the value reaches Python with / for \, and _BUILD_DIR_ROOT_PY
+# resolves it and folds case on Windows), so `build`, `build/`, `./build`, an absolute path
+# and backslash spellings are all refused. Parse-time, like the scope check above. A
+# per-title directory beneath the root still cleans, and clean-all still empties BUILD_ROOT.
+_BUILD_DIR_ROOT_PY := import os, sys; from pathlib import Path; norm = lambda p: os.path.normcase(str(Path(p).resolve())); repo = Path.cwd().resolve(); print('root' if norm(sys.argv[1]) in (norm(sys.argv[2]), norm(str(repo / 'build'))) else 'ok')
+ifneq ($(strip $(filter clean clean-all,$(MAKECMDGOALS))),)
+_BUILD_DIR_ROOT := $(strip $(shell "$(PYTHON)" -c "$(_BUILD_DIR_ROOT_PY)" "$(subst \,/,$(BUILD_DIR))" "$(subst \,/,$(BUILD_ROOT))"))
+ifneq ($(_BUILD_DIR_ROOT),ok)
+$(error BUILD_DIR '$(BUILD_DIR)' is $(if $(filter root,$(_BUILD_DIR_ROOT)),the whole build root (BUILD_ROOT '$(BUILD_ROOT)' or the checkout's build/ tree),uncheckable (the root check printed nothing)); clean deletes BUILD_DIR wholesale, which would remove every title's build beneath it. Set BUILD_DIR to one title's directory beneath the root (the default is BUILD_ROOT/<game>), or leave BUILD_DIR unset. To empty the whole BUILD_ROOT on purpose, run clean-all without BUILD_DIR)
+endif
+endif
 # Refuse a BUILD_DIR GNU Make cannot represent, before any target name is derived
 # from it and before the parse-time mkdir below runs. Make splits a target or
 # prerequisite name on whitespace, so a BUILD_DIR containing a space silently
@@ -388,7 +424,7 @@ PRODUCTION_SMOKE_MAP       := $(PRODUCTION_SMOKE_DIR)/production_smoke.map
 # launched from the native player. Keep these three strings equal to the "id"
 # field of assets/titles/display-smoke.json.
 DISPLAY_SMOKE_NAME      := display-smoke-v1
-DISPLAY_SMOKE_DIR       := build/$(DISPLAY_SMOKE_NAME)
+DISPLAY_SMOKE_DIR       := $(BUILD_ROOT)/$(DISPLAY_SMOKE_NAME)
 DISPLAY_SMOKE_FIXTURE   := $(DISPLAY_SMOKE_DIR)/fixture
 DISPLAY_SMOKE_GENERATOR := fixtures/display_smoke/generate.py
 DISPLAY_SMOKE_PRX       := $(DISPLAY_SMOKE_FIXTURE)/guest.prx
@@ -689,7 +725,7 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/fbcap.c \
               src/rt/ge_capture.c \
               src/rt/vfpu_interp.c \
-              src/rt/hle.c \
+              src/rt/hle.c src/rt/flash0_font.c \
               src/core/nk_xb.c \
               src/rt/hle_power.c \
               src/rt/prx_loader.c \
@@ -707,10 +743,13 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/savedata.c \
               src/rt/osk_win.c \
               src/rt/osk_text_entry.c \
+              src/rt/osk_overlay.c \
+              src/rt/osk_overlay_paint.c \
               src/rt/driver.c \
               src/rt/gpu_sdl3vk/sdl3vk.c \
               src/rt/gpu_sdl3vk/ge_gpu.c \
               src/core/nk_input_profile.c \
+              src/core/nk_font.c \
               src/core/nk_json.c \
               $(PLAYER_PLATFORM_SRC)
 
@@ -824,6 +863,7 @@ PUBLIC_TARGETS := \
 	help \
 	check \
 	contrib-check \
+	contrib-refresh \
 	test \
 	native-core-tests \
 	player-ui-tests \
@@ -838,6 +878,7 @@ PUBLIC_TARGETS := \
 	compiler-info \
 	runtime-objects \
 	portable-core-objects \
+	format-portability-check \
 	atrac3p-objects \
 	player \
 	public-safe-verify \
@@ -854,6 +895,8 @@ PUBLIC_TARGETS := \
 	display-smoke-gui \
 	display-smoke-player \
 	display-smoke-clean \
+	title-qualification \
+	title-qualification-smoke \
 	production-smoke-gap-clean \
 	platform-ladder \
 	platform-ladder-zero \
@@ -910,6 +953,8 @@ PUBLIC_TARGETS := \
 	ge-texture-ref-selftest \
 	fbcap-selftest \
 	osk-text-entry-selftest \
+	osk-overlay-selftest \
+	osk-overlay-paint-selftest \
 	psmf-producer-selftest \
 	psmf-media-selftest \
 	psmf-media-selftest-csc-mutant \
@@ -935,12 +980,13 @@ PUBLIC_TARGETS := \
 	gpu-capture-selftest \
 	gpu-selftest-status
 
-INTERNAL_TARGETS := FORCE player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check vfpu_fuzz_validate_synthetic provenance-record-gap-check
+INTERNAL_TARGETS := FORCE player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
 HELP_DESCRIPTION_check := run public-safe docs, policy, audit, native, and fast checks
 HELP_DESCRIPTION_contrib-check := run only the local gates that apply to your changed files
+HELP_DESCRIPTION_contrib-refresh := reproduce the public provenance controls for your changed paths
 HELP_DESCRIPTION_test := run the complete Python tooling test suite
 HELP_DESCRIPTION_native-core-tests := build and run host-side native core tests
 HELP_DESCRIPTION_fuzz-parsers := run bounded native parser mutation fuzzing
@@ -953,6 +999,7 @@ HELP_DESCRIPTION_compile := compile and link the generated runtime
 HELP_DESCRIPTION_compiler-info := print the effective compiler and build settings
 HELP_DESCRIPTION_runtime-objects := build runtime and decoder objects
 HELP_DESCRIPTION_portable-core-objects := build host-neutral runtime objects
+HELP_DESCRIPTION_format-portability-check := compile the portable core against a 32-bit newlib-shaped stdint shim with -Werror=format
 HELP_DESCRIPTION_atrac3p-objects := build ATRAC3+ decoder objects
 HELP_DESCRIPTION_player := build the native player
 HELP_DESCRIPTION_player-ui-tests := build and run native player UI tests (needs SDL3)
@@ -971,6 +1018,8 @@ HELP_DESCRIPTION_display-smoke-run := run display smoke and compare its GE/prese
 HELP_DESCRIPTION_display-smoke-gui := run the display smoke with its GUI
 HELP_DESCRIPTION_display-smoke-player := build the player and run display smoke
 HELP_DESCRIPTION_display-smoke-clean := remove display smoke artifacts
+HELP_DESCRIPTION_title-qualification := validate public title manifests, input profiles and staging declarations
+HELP_DESCRIPTION_title-qualification-smoke := launch the public display fixture through the native player and write its bring-up report
 HELP_DESCRIPTION_production-smoke-gap-clean := remove AOT-gap smoke artifacts
 HELP_DESCRIPTION_platform-ladder := run the complete public platform ladder
 HELP_DESCRIPTION_platform-ladder-zero := run the zero-base platform fixture
@@ -1027,6 +1076,8 @@ HELP_DESCRIPTION_atrac3p-bridge-selftest := run the ATRAC3+ HLE bridge selftest
 HELP_DESCRIPTION_ge-texture-ref-selftest := run the GE texture sampling reference selftest
 HELP_DESCRIPTION_fbcap-selftest := run the presenter-neutral frame capture selftest
 HELP_DESCRIPTION_osk-text-entry-selftest := run the on-screen keyboard's non-blocking text-entry selftest
+HELP_DESCRIPTION_osk-overlay-selftest := run the in-window keyboard's state-machine selftest (pure C)
+HELP_DESCRIPTION_osk-overlay-paint-selftest := run the in-window keyboard painter's exact-pixel selftest
 HELP_DESCRIPTION_psmf-producer-selftest := run the source-owned bounded PSMF producer selftest
 HELP_DESCRIPTION_psmf-media-selftest := run the source-owned PSMF-to-decoder media selftest
 HELP_DESCRIPTION_psmf-media-selftest-csc-mutant := prove the media selftest kills a Csc that reports success without writing pixels
@@ -1067,6 +1118,7 @@ compiler-info:
 	@echo CC=$(CC)
 	@echo CC_ORIGIN=$(origin CC)
 	@echo RUNTIME_OPT=$(RUNTIME_OPT)
+	@echo GE_FRONTEND_PROFILE=$(GE_FRONTEND_PROFILE)
 	@echo CFLAGS=$(CFLAGS)
 	@echo RECOMP_OPT=$(RECOMP_OPT)
 	@echo RECOMP_FLAGS=$(RECOMP_FLAGS)
@@ -1192,6 +1244,30 @@ contrib-check: export CONTRIB_PYTHON := $(CONTRIB_PYTHON)
 contrib-check:
 	$(PYTHON) tools/contrib_check.py --base "$(CONTRIB_BASE)"
 
+# Reproduce the two public provenance controls for the paths your change touches,
+# so an ordinary pull request does not wait on a maintainer for the ordinary case.
+#
+# It is a convenience, not an authority. It copies the claim already recorded for
+# each changed path that has a public entry and rehashes only that path, then
+# stages PUBLIC_EXPORT.json and assets/public_provenance_ledger.json. It cannot
+# see the private trusted ledger, so it cannot see frozen historical debt or a
+# changed executable path with no public entry; it refuses rather than guess when
+# a changed path is new or removed, when its entry is unresolved, or when the
+# source policy profile itself changed. The maintainer's trusted attestation
+# re-derives both files from the private authority at landing, and that
+# re-derivation -- not this target -- is what admits the change.
+#
+#   mingw32-make contrib-refresh              # Windows
+#   make contrib-refresh                      # Linux
+#   CONTRIB_BASE=origin/main contrib-refresh  # explicit base
+#   make contrib-refresh CONTRIB_REFRESH_CHECK=--check   # report, write nothing
+#
+# Nothing is written when --check is passed, and nothing is written when the tool
+# refuses. A refusal prints its code and exits non-zero.
+CONTRIB_REFRESH_CHECK ?=
+contrib-refresh:
+	$(PYTHON) tools/contrib_refresh.py --base "$(CONTRIB_BASE)" $(CONTRIB_REFRESH_CHECK)
+
 public-safe-verify:
 	$(MAKE) PUBLIC_SAFE=1 portable-core-objects
 
@@ -1212,18 +1288,20 @@ test:
 	$(PYTHON) -m unittest discover -s tools -p "test_*.py" -v
 
 check:
-	@echo "== [1/6] Documentation freshness lint =="
+	@echo "== [1/7] Documentation freshness lint =="
 	$(PYTHON) tools/lint_docs.py
-	@echo "== [2/6] Canonical publication policy coverage =="
+	@echo "== [2/7] Canonical publication policy coverage =="
 	$(PYTHON) -m unittest tools/test_publication_policy_gate.py
-	@echo "== [3/6] Provenance record and disposition gap check =="
+	@echo "== [3/7] Provenance record and disposition gap check =="
 	$(PYTHON) tools/provenance_record_gap.py --check
-	@echo "== [4/6] Publication safety audits (index & worktree) =="
+	@echo "== [4/7] Publication safety audits (index & worktree) =="
 	$(PYTHON) tools/publish_audit.py --tracked-only --public-scope --provenance-self-consistency
 	$(PYTHON) tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
-	@echo "== [5/6] Native host core tests =="
+	@echo "== [5/7] Native host core tests =="
 	$(MAKE) native-core-tests
-	@echo "== [6/6] Fast critical test subset =="
+	@echo "== [6/7] Format portability check (32-bit newlib simulation) =="
+	$(PYTHON) tools/format_portability_check.py
+	@echo "== [7/7] Fast critical test subset =="
 	$(PYTHON) -m unittest \
 		tools/test_title_manifest.py \
 		tools/test_title_catalog.py \
@@ -1328,6 +1406,17 @@ display-smoke-player: player display-smoke-run
 display-smoke-clean:
 	$(MAKE) BUILD_DIR=$(DISPLAY_SMOKE_DIR) clean
 
+# Public title qualification (issue #699). title-qualification validates the checked-in
+# public manifests, input profiles and staging declarations without building or launching.
+# title-qualification-smoke builds the source-owned display fixture and the native player,
+# then launches the fixture through the player in a sandboxed user-data root and writes a
+# bring-up-schema report under build/<title id>/title-qualification/.
+title-qualification:
+	$(PYTHON) tools/title_qualification.py validate
+
+title-qualification-smoke: display-smoke player
+	$(PYTHON) tools/title_qualification.py smoke --manifest assets/titles/display-smoke.json
+
 # AOT-gap mode of the same fixture: the helper is omitted from native emission
 # (build-time codegen choice), so region A reaches it through the typed production
 # dispatch_call() seam. Generated registration owns the executable span; the
@@ -1367,7 +1456,7 @@ perf-benchmark:
 # included, is an ordinary PASS; the Title-2 unsupported-NID control must exit
 # through the production fatal boundary.
 # ---------------------------------------------------------------------------
-PLATFORM_LADDER_DIR       := build/platform-ladder
+PLATFORM_LADDER_DIR       := $(BUILD_ROOT)/platform-ladder
 PLATFORM_LADDER_GENERATOR := fixtures/platform_ladder/generate.py
 
 PL_ZERO_BASE   := 0x08940000
@@ -1589,6 +1678,13 @@ $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py to
 
 # ge.c: software comparison rasterizer with PPSSPP-derived behavior. -O2 for speed.
 GE_CFLAGS ?= -O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK
+# Optional sparse front-end attribution is absent from normal GE builds. ge.c is also a
+# portable-core source, so the define reaches both compilations or neither.
+GE_FRONTEND_PROFILE ?= 0
+ifeq ($(GE_FRONTEND_PROFILE),1)
+override GE_CFLAGS += -DSR_GE_FRONTEND_PROFILE
+override PORTABLE_CORE_CFLAGS += -DSR_GE_FRONTEND_PROFILE
+endif
 # ge.c is the vblank hook for the recorder's trace window and store watch; without this
 # define those calls compile to flight_recorder.h's inert inline stubs.
 override GE_CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
@@ -1600,10 +1696,14 @@ endif
 export NK_RUNTIME_PROFILE_ENTRIES := CFLAGS=$(CFLAGS)$(NEWLINE)GE_CFLAGS=$(GE_CFLAGS)$(NEWLINE)TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)$(NEWLINE)SDL3_PROVIDER=$(SDL3_PROVIDER)$(NEWLINE)SDL3_VERSION=$(SDL3_VERSION)$(NEWLINE)SDL3_DIR=$(SDL3_DIR)$(NEWLINE)PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)
 RUNTIME_PROFILE_HASH := $(call profile_hash,NK_RUNTIME_PROFILE_ENTRIES,$(CC),$(BUILD_DIR)/.runtime-profile-entries)
 RUNTIME_PROFILE_STAMP := $(BUILD_DIR)/.runtime-profile-$(RUNTIME_PROFILE_HASH)
-RUNTIME_INVALIDATE_ARGS := $(foreach obj,$(RT_GE_O) $(RT_OBJS),--invalidate "$(obj)")
+# The objects the runtime profile invalidates go in a list file that make writes (see the record
+# below): one --invalidate per object repeats the whole BUILD_DIR prefix, and under a long
+# scratch BUILD_ROOT that line overran the shell's limit and was cut without an error.
+RUNTIME_INVALIDATE_LIST := $(BUILD_DIR)/.runtime-invalidate.lst
 
 $(RUNTIME_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
-	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RUNTIME_PROFILE_MANIFEST)" --section runtime --compiler "$(CC)" --entries-env NK_RUNTIME_PROFILE_ENTRIES --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".runtime-profile-*" $(RUNTIME_INVALIDATE_ARGS)
+	$(file >$(RUNTIME_INVALIDATE_LIST),$(RT_GE_O) $(RT_OBJS))
+	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RUNTIME_PROFILE_MANIFEST)" --section runtime --compiler "$(CC)" --entries-env NK_RUNTIME_PROFILE_ENTRIES --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".runtime-profile-*" --invalidate-file "$(RUNTIME_INVALIDATE_LIST)"
 
 $(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(GE_CFLAGS) $(DEPFLAGS) -c src/rt/ge.c -o $@
@@ -1666,7 +1766,7 @@ $(PORTABLE_CORE_DIR)/title_config.o: src/rt/title_config.c src/rt/title_config.h
 
 $(BUILD_DIR)/hle_power.o: src/rt/hle_power.c src/rt/hle_power.h
 
-$(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/asset_index.h src/rt/archive_vfs.h src/rt/pgf_api.h src/rt/atrac3p_bridge.h src/rt/gpu_sdl3vk/ge_gpu.h src/rt/hle_power.h src/rt/scripted_input.h
+$(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/osk_overlay.h src/rt/osk_text_entry.h src/rt/flash0_font.h src/rt/asset_index.h src/rt/archive_vfs.h src/rt/pgf_api.h src/rt/atrac3p_bridge.h src/rt/gpu_sdl3vk/ge_gpu.h src/rt/hle_power.h src/rt/scripted_input.h
 	$(CC) $(CFLAGS) $(HLE_INCLUDES) $(DEPFLAGS) -c $< -o $@
 $(BUILD_DIR)/pgf.o: src/rt/pgf.c src/rt/pgf_api.h src/rt/pgf.h
 $(BUILD_DIR)/pgf_public.o: src/rt/pgf_public.c src/rt/pgf_api.h src/rt/recomp.h src/rt/ge_shared.h
@@ -1677,6 +1777,12 @@ $(PORTABLE_CORE_DIR)/%.o: src/rt/%.c src/rt/recomp.h
 	$(CC) $(PORTABLE_CORE_CFLAGS) $(DEPFLAGS) -c $< -o $@
 
 portable-core-objects: $(PORTABLE_CORE_OBJS)
+
+# Fixed-width values printed with plain %u/%x/%d compile silently where uint32_t is
+# unsigned int and fail on 32-bit newlib targets; the checker reproduces that with a
+# shim and a 32-bit long (-m32 on LP64 hosts, see tools/format_portability_check.py).
+format-portability-check:
+	$(PYTHON) tools/format_portability_check.py
 
 # Only the flight recorder embeds the reproducible build identity. A stamp named
 # after the identity makes flight_recorder.o rebuild when the commit or
@@ -1711,17 +1817,17 @@ endif
 sdl3-check:
 	@$(PYTHON) -c "import sys; sys.exit(sys.argv[1] or None)" "$(SDL3_ERROR)"
 
-PLAYER_EXE ?= build/nakagawa_player$(EXE_EXT)
-PLAYER_UI_TEST_EXE ?= build/nakagawa_player_ui_test$(EXE_EXT)
-PLAYER_CORE_SOURCES := src/core/nk_font.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/nk_psp_crypto.c src/core/nk_psp_keystore.c src/core/nk_psp_aes.c src/core/nk_psp_sha1.c src/core/nk_psp_ec.c src/core/nk_psp_kirk.c src/core/nk_psp_prx.c src/core/nk_psp_kle.c src/core/nk_psp_inflate.c src/core/nk_psp_container.c src/core/generated/nk_title_catalog.c
+PLAYER_EXE ?= $(BUILD_ROOT)/nakagawa_player$(EXE_EXT)
+PLAYER_UI_TEST_EXE ?= $(BUILD_ROOT)/nakagawa_player_ui_test$(EXE_EXT)
+PLAYER_CORE_SOURCES := src/core/nk_font.c src/rt/pgf_public.c src/core/nk_pgf_host.c src/core/nk_iso.c src/core/nk_library.c src/core/nk_launch.c src/core/nk_title_manifest.c src/core/nk_xb.c src/core/nk_input_profile.c src/core/nk_json.c src/core/nk_psp_crypto.c src/core/nk_psp_keystore.c src/core/nk_psp_aes.c src/core/nk_psp_sha1.c src/core/nk_psp_ec.c src/core/nk_psp_kirk.c src/core/nk_psp_prx.c src/core/nk_psp_kle.c src/core/nk_psp_inflate.c src/core/nk_psp_container.c src/core/generated/nk_title_catalog.c
 PLAYER_CORE_SRCS := $(PLAYER_CORE_SOURCES) $(PLAYER_PLATFORM_SRC)
 PLAYER_SRCS := src/player/main.c src/player/player_state.c src/player/input_settings.c src/player/iso_reader.c src/player/setup_staging.c src/player/ui_renderer.c src/player/package_builder.c $(PLAYER_CORE_SRCS)
-PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated $(SDL3_INC_FLAGS) $(PLAYER_VULKAN_INC)
+PLAYER_INCLUDES := -Isrc/player -Isrc/core -Isrc/core/generated -Isrc/rt $(SDL3_INC_FLAGS) $(PLAYER_VULKAN_INC)
 
 $(PLAYER_EXE): | player-vulkan-check sdl3-check
 
 $(PLAYER_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/package_builder.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
-	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
+	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) $(RUNTIME_OPT) -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
 # Stage the SDL3/SDL3_ttf runtime DLL closure and its licence notices beside
@@ -1734,7 +1840,7 @@ player: $(PLAYER_EXE)
 $(PLAYER_UI_TEST_EXE): | player-vulkan-check sdl3-check
 
 $(PLAYER_UI_TEST_EXE): $(PLAYER_SRCS) src/player/player_state.h src/player/input_settings.h src/player/iso_reader.h src/player/setup_staging.h src/player/ui_renderer.h src/player/package_builder.h src/core/nk_types.h src/core/nk_font.h src/core/nk_iso.h src/core/nk_library.h src/core/nk_launch.h src/core/nk_title_manifest.h src/core/nk_xb.h src/core/nk_input_profile.h src/core/nk_json.h src/core/generated/nk_title_catalog.h
-	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
+	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) $(RUNTIME_OPT) -Wall -Wextra -DNK_PLAYER_UI_REGRESSION_TEST $(PLAYER_INCLUDES) $(LDFLAGS) $(PLAYER_VULKAN_LIB) $(PLAYER_SRCS) -lSDL3 $(PLAYER_EXTRA_LIBS) -o $@
 
 .PHONY: player-ui-regressions
@@ -1822,7 +1928,7 @@ cosim-selftest-run: $(GENERIC_TITLE_CONFIG_HEADER) $(CHUNK_OBJS) $(BUILD_DIR)/$(
 		-I$(GENERIC_TITLE_CONFIG_DIR) -I$(BUILD_DIR) -I$(COSIM_FIXTURE) \
 		-o $(BUILD_DIR)/cosim_selftest.exe \
 		$(COSIM_HARNESS) $(COSIM_FPU_REFERENCE_SRC) $(CHUNK_OBJS) $(BUILD_DIR)/$(GAME_NAME)_recomp.o \
-		$(COSIM_INTERP_SRC) src/rt/flight_recorder.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c src/rt/perf.c -lm
+		$(COSIM_INTERP_SRC) src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c src/rt/perf.c -lm
 	$(BUILD_DIR)/cosim_selftest.exe $(BUILD_DIR)/$(GAME_NAME)_image.bin \
 		$(COSIM_BASE_ADDR) $(COSIM_TRACES)
 
@@ -1934,7 +2040,7 @@ sched-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/nested_f
 # standalone binary fails to link after the table-loader integration.
 heap-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/heap_selftest.exe \
-		src/rt/heap_selftest.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c $(LIBS) -lm
+		src/rt/heap_selftest.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c $(LIBS) -lm
 	$(BUILD_DIR)/heap_selftest.exe
 
 # profiler-selftest — production profiler hash-table regression suite. Exercises PC zero as a
@@ -1944,7 +2050,7 @@ profiler-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables $(LDFLAGS) \
 		-Wl,--gc-sections -o $(BUILD_DIR)/profiler_selftest.exe \
-		src/rt/profiler_selftest.c src/rt/recomp.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/perf.c $(LIBS) -lm
+		src/rt/profiler_selftest.c src/rt/recomp.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/perf.c $(LIBS) -lm
 	$(BUILD_DIR)/profiler_selftest.exe
 
 gui-present-selftest:
@@ -1960,7 +2066,7 @@ gui-present-selftest:
 # initialization and concurrent first use. No game inputs required; the success
 # path validates against the committed assets/vfpu/ tables.
 vfpu-tables-selftest:
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/vfpu_tables_selftest.exe \
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/vfpu_tables_selftest.exe -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		src/rt/vfpu_tables_selftest.c src/rt/vfpu_tables.c $(LIBS)
 	$(BUILD_DIR)/vfpu_tables_selftest.exe
 
@@ -1998,7 +2104,7 @@ native-core-tests: ge-texture-ref-selftest fbcap-selftest
 # either way), skipped-present cancel, refused re-arm, failed publication resolving as
 # failed, and the parent-directory contract. Strict C99; no GPU, window or game input.
 fbcap-selftest:
-	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		-o $(BUILD_DIR)/fbcap_selftest.exe \
 		src/rt/fbcap_selftest.c src/rt/fbcap.c src/rt/fbcap_policy.c
 	$(BUILD_DIR)/fbcap_selftest.exe $(BUILD_DIR)/fbcap_selftest
@@ -2012,8 +2118,19 @@ native-core-tests: osk-text-entry-selftest
 osk-text-entry-selftest:
 	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
 		-o $(BUILD_DIR)/osk_text_entry_selftest$(EXE_EXT) \
-		src/rt/osk_text_entry_selftest.c src/rt/osk_text_entry.c
+		src/rt/osk_text_entry_selftest.c src/rt/osk_text_entry.c src/rt/osk_overlay.c
 	$(BUILD_DIR)/osk_text_entry_selftest$(EXE_EXT)
+
+# osk-overlay-selftest - the in-window on-screen keyboard's state machine (src/rt/osk_overlay.c):
+# navigation, typing, the guest's length bound with UTF-16 pairs, backspace, confirm and cancel,
+# the UTF-16 answer, the inputtype rules, edge-based pad input and the session the HLE keyboard
+# polls. Pure C with no window, no SDL and no game data, so it runs on every host.
+native-core-tests: osk-overlay-selftest
+osk-overlay-selftest:
+	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -Isrc/rt \
+		-o $(BUILD_DIR)/osk_overlay_selftest$(EXE_EXT) \
+		src/rt/osk_overlay_selftest.c src/rt/osk_overlay.c
+	$(BUILD_DIR)/osk_overlay_selftest$(EXE_EXT)
 
 # atrac3p-selftest — standalone ATRAC3+ decoder regression suite (PR-A,
 # src/rt/atrac3p/). Public checks are source-owned (create validation, NULL/
@@ -2135,7 +2252,9 @@ native-core-tests: ge-raster-ref-selftest
 # issue #88 interrupt-context conformance matrix in src/rt/intr_conformance.h); the --psp-oracle
 # sub-mode below
 # remains available when only one scalar production-HLE stream is needed.
-HLE_SELFTEST_DEFINES := -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST -DSR_SCHED_LIVENESS_TEST
+# The selftest's scratch tree is the caller's BUILD_ROOT (src/rt/hle_thread_selftest.c,
+# SR_SELFTEST_BUILD_ROOT), so a run from a scratch root never writes the checkout's build/.
+HLE_SELFTEST_DEFINES := -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST -DSR_SCHED_LIVENESS_TEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\"
 # hle.c includes atrac3p_bridge.h and calls into the PR-B decode bridge, so any
 # target that compiles it needs the same include paths and bridge/decoder
 # sources the $(BUILD_DIR)/hle.o rule and `compile` already use. Without the
@@ -2145,9 +2264,15 @@ HLE_SELFTEST_DEFINES := -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST -DSR_S
 PSMF_FUZZ_ITERS ?= 0
 MEDIA_FUZZ_ITERS ?= 0
 
+# $(1) is the optional fuzz iteration count. native-core-tests expands this macro
+# instead of recursing into $(MAKE), which would re-parse this Makefile (#735 item 7).
+define PSMF_PRODUCER_SELFTEST_CMD
+$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -o $(BUILD_DIR)/psmf_producer_selftest.exe src/rt/psmf_producer.c src/rt/psmf_producer_selftest.c
+$(BUILD_DIR)/psmf_producer_selftest.exe $(if $(1),--fuzz-iters $(1),)
+endef
+
 psmf-producer-selftest:
-	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -o $(BUILD_DIR)/psmf_producer_selftest.exe src/rt/psmf_producer.c src/rt/psmf_producer_selftest.c
-	$(BUILD_DIR)/psmf_producer_selftest.exe $(if $(PSMF_FUZZ_ITERS),--fuzz-iters $(PSMF_FUZZ_ITERS),)
+	$(call PSMF_PRODUCER_SELFTEST_CMD,$(PSMF_FUZZ_ITERS))
 
 # psmf-media-selftest -- the synthetic PSMF fixture through the real H.264 backend and into a
 # guest display buffer.  The fixture is generated by the selftest itself (no retail media, no
@@ -2168,13 +2293,17 @@ PSMF_MEDIA_RUNTIME_OBJS := $(filter-out $(BUILD_DIR)/driver.o $(BUILD_DIR)/hle.o
 # so the canonical filter-out tail stays byte-identical for tools/test_build_truth.py.
 PSMF_MEDIA_RUNTIME_OBJS := $(filter-out $(BUILD_DIR)/iso_public.o $(BUILD_DIR)/iso_unavailable.o,$(PSMF_MEDIA_RUNTIME_OBJS))
 
+# The link's object list goes through a response file. The shell silently drops the tail of a
+# command longer than about 8191 bytes, and an absolute BUILD_ROOT puts 55 object paths on the
+# link line (about 10.6 KB under a long scratch root, cut inside the last object name). make
+# writes the list itself, so the link command carries one @file argument whatever the root length.
 psmf-media-selftest: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o
 	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -c src/rt/psmf_producer.c -o $(BUILD_DIR)/psmf_producer_media_selftest.o
 	$(CC) $(CFLAGS) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -ffunction-sections -fdata-sections -c src/rt/psmf_media_selftest.c -o $(BUILD_DIR)/psmf_media_selftest.o
+	$(file >$(BUILD_DIR)/psmf_media_selftest.rsp,$(BUILD_DIR)/psmf_producer_media_selftest.o $(BUILD_DIR)/psmf_media_selftest.o $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) $(HLE_INCLUDES) -DSR_MPEG_MEDIA_SELFTEST -Isrc/rt -std=c11 -Wno-unused-function -ffunction-sections -fdata-sections \
 		-o $(BUILD_DIR)/psmf_media_selftest.exe \
-		$(BUILD_DIR)/psmf_producer_media_selftest.o $(BUILD_DIR)/psmf_media_selftest.o \
-		src/rt/hle.c $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o \
+		src/rt/hle.c @$(BUILD_DIR)/psmf_media_selftest.rsp \
 		$(PSMF_MEDIA_LIBS) $(LDFLAGS) $(LIBS) -Wl,--gc-sections
 	$(BUILD_DIR)/psmf_media_selftest.exe $(if $(MEDIA_FUZZ_ITERS),--fuzz-iters $(MEDIA_FUZZ_ITERS),)
 
@@ -2202,12 +2331,12 @@ audio-selftest:
 	$(BUILD_DIR)/audio_selftest$(EXE_EXT)
 
 hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nested_frames.c src/rt/nested_frames.h src/rt/stale_code.c src/rt/stale_code.h src/rt/guest_interp.c src/rt/cpu_lle.c
-	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST -DSR_SCHED_LIVENESS_TEST \
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST -DSR_SCHED_LIVENESS_TEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(BUILD_DIR)/hle_thread_selftest.exe \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
@@ -2235,13 +2364,13 @@ hle-title-selftest:
 	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=fixture-a HLE_TITLE_MANIFEST=assets/titles/pspdev-phase5.json
 	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=fixture-b HLE_TITLE_MANIFEST=assets/titles/synthetic.json
 
-hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC)
+hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC)
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(HLE_TITLE_SELFTEST_CONFIG_ARG) --output $(HLE_TITLE_SELFTEST_HEADER)
 	$(CC) $(CFLAGS) -I$(HLE_TITLE_SELFTEST_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(HLE_TITLE_SELFTEST_EXE) \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
@@ -2267,12 +2396,12 @@ $(PSP_ORACLE_SMOKE_STAMP): $(PSP_ORACLE_SMOKE_ELF) tools/psp_oracle/build_nakaga
 
 $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER): $(PSP_ORACLE_SMOKE_STAMP)
 
-$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
+$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) -DSR_PSP_ORACLE_SMOKE \
 		-ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables -fno-unwind-tables \
 		-Wno-unused-function -w -I"$(PSP_ORACLE_SMOKE_DIR)" $(LDFLAGS) \
 		-Wl,--gc-sections -Wl,--no-insert-timestamp -o "$(PSP_ORACLE_SMOKE_EXE)" \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c \
@@ -2320,8 +2449,8 @@ $(CPU_LLE_AOT_FIXTURE_C): tools/test_cpu_lle.py tools/codegen.py tools/analyze.p
 	$(PYTHON) tools/test_cpu_lle.py --generate-lle-aot-flow-fixture $@
 
 cpu-lle-selftest: $(GENERIC_TITLE_CONFIG_HEADER) $(CPU_LLE_AOT_FIXTURE_C)
-	$(CC) $(CFLAGS) -DSR_INSTRUCTION_TRACE -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/cpu_lle_selftest.exe \
-		src/rt/cpu_lle_selftest.c $(CPU_LLE_AOT_FIXTURE_C) src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c -lm
+	$(CC) $(CFLAGS) -DSR_INSTRUCTION_TRACE -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/cpu_lle_selftest.exe -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		src/rt/cpu_lle_selftest.c $(CPU_LLE_AOT_FIXTURE_C) src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c -lm
 	$(BUILD_DIR)/cpu_lle_selftest.exe
 
 # domain-mode-selftest — host-neutral unit tests for the LLE Phase 1
@@ -2335,7 +2464,7 @@ cpu-lle-selftest: $(GENERIC_TITLE_CONFIG_HEADER) $(CPU_LLE_AOT_FIXTURE_C)
 # hit/miss/dispatch-reject, and fallback hit/miss/reject. Exit code 0 = all.
 domain-mode-selftest: $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(LDFLAGS) -o $(BUILD_DIR)/domain_mode_selftest.exe \
-		src/rt/domain_mode_selftest.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c -lm
+		src/rt/domain_mode_selftest.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/stale_code.c src/rt/vfpu_tables.c src/rt/title_config.c src/rt/perf.c -lm
 	$(BUILD_DIR)/domain_mode_selftest.exe
 
 # dispatch-isolation-selftest — executable proof that the two TYPED dispatch bindings a
@@ -2368,7 +2497,7 @@ dispatch-isolation-selftest-one: $(TITLE_CONFIG_TOOL) tools/title_manifest.py
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(DISPATCH_ISO_CONFIG_ARG) --output $(DISPATCH_ISO_DIR)/sr_title_config.h
 	$(CC) $(CFLAGS) -I$(DISPATCH_ISO_DIR) $(LDFLAGS) \
 		-o $(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe \
-		src/rt/dispatch_isolation_selftest.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c src/rt/perf.c \
+		src/rt/dispatch_isolation_selftest.c src/rt/sr_coro.c src/rt/flight_recorder.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/domain_mode.c src/rt/stale_code.c src/rt/title_config.c src/rt/vfpu_tables.c src/rt/perf.c \
 		$(LIBS) -lm
 	$(BUILD_DIR)/dispatch_isolation_selftest_$(DISPATCH_ISO_CONFIG).exe
 
@@ -2392,9 +2521,9 @@ asset-index-selftest:
 GPU_COHERENCE_BIN := $(BUILD_DIR)/gpu_coherence_selftest.exe
 
 $(GPU_COHERENCE_BIN): shader-verify $(RT_GE_O)
-	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -ffunction-sections -fdata-sections \
+	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -ffunction-sections -fdata-sections -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(LDFLAGS) -Wl,--gc-sections -o $(GPU_COHERENCE_BIN) \
-		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
+		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
 		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
 
 gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
@@ -2404,10 +2533,10 @@ gpu-coherence-selftest: $(GPU_COHERENCE_BIN)
 # snapshot boundary. It proves ordinary presentation remains async, then verifies
 # target-scoped synchronization closes the generation gap and rejects unsafe geometry.
 gpu-snapsync-selftest: shader-verify $(RT_GE_O)
-	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_SNAPSHOT_SYNC_SELFTEST \
+	$(CC) $(CFLAGS) -DSR_GPU_COHERENCE_SELFTEST -DSR_GPU_SNAPSHOT_SYNC_SELFTEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		-ffunction-sections -fdata-sections $(LDFLAGS) -Wl,--gc-sections \
 		-o $(BUILD_DIR)/gpu_snapsync_selftest.exe \
-		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
+		src/rt/gpu_coherence_selftest.c src/rt/ge_capture.c src/rt/ge_raster_ref.c $(RT_GE_O) src/rt/flight_recorder.c src/rt/perf.c \
 		$(SDL3VK_SRCS) src/rt/gpu_sdl3vk/ge_gpu.c $(LIBS)
 	$(BUILD_DIR)/gpu_snapsync_selftest.exe
 
@@ -2418,7 +2547,7 @@ gpu-snapsync-selftest: shader-verify $(RT_GE_O)
 GPU_CAPTURE_BIN := $(BUILD_DIR)/gpu_capture_selftest.exe
 
 $(GPU_CAPTURE_BIN): shader-verify
-	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections \
+	$(CC) $(CFLAGS) -ffunction-sections -fdata-sections -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(LDFLAGS) -Wl,--gc-sections -o $(GPU_CAPTURE_BIN) \
 		src/rt/gpu_capture_selftest.c src/rt/perf.c \
 		$(SDL3VK_SRCS) $(LIBS)
@@ -2609,82 +2738,123 @@ shader-repro-verify:
 # -----------------------------------------------------------------------------
 # Native Product Core Tests
 # -----------------------------------------------------------------------------
+# Binaries that share a compile flag set link one set of compiled core objects instead of
+# recompiling the product core sources for every binary (#735 item 3). Each set is built
+# with the exact flag list its binaries used before, so the objects are the same ones. The
+# set targets are phony: every make invocation compiles each set once, as the per-binary
+# compiles did, and file timestamps never decide freshness. The test binaries below are
+# built by macros rather than by recursive $(MAKE) calls, so native-core-tests parses this
+# Makefile once instead of once per sub-make (#735 item 7).
+NC_CFLAGS_CORE   := -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt
+NC_CFLAGS_PLAYER := $(NC_CFLAGS_CORE) -Isrc/player
+NC_SOURCES       := $(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES)
+NC_OBJ_DIR       := $(BUILD_ROOT)/native-core
+NC_OBJS_CORE     := $(addprefix $(NC_OBJ_DIR)/core/,$(notdir $(NC_SOURCES:.c=.o)))
+NC_OBJS_PLAYER   := $(addprefix $(NC_OBJ_DIR)/player/,$(notdir $(NC_SOURCES:.c=.o)))
+
+# $(1) object directory, $(2) compile flags. Objects compile in source order and the first
+# failure stops the line, as it stopped each per-binary compile before.
+define NC_COMPILE_OBJECTS
+@$(PYTHON) -c "import os, sys; os.makedirs(sys.argv[1], exist_ok=True)" $(1)
+$(foreach s,$(NC_SOURCES),$(CC) $(2) -c $(s) -o $(1)/$(notdir $(s:.c=.o)) &&) true
+endef
+
+native-core-objects-core:
+	$(call NC_COMPILE_OBJECTS,$(NC_OBJ_DIR)/core,$(NC_CFLAGS_CORE))
+
+native-core-objects-player:
+	$(call NC_COMPILE_OBJECTS,$(NC_OBJ_DIR)/player,$(NC_CFLAGS_PLAYER))
+
+# Test-binary recipes, shared by the standalone *-test-bin targets and native-core-tests.
+define PLAYER_STATE_TEST_BIN_CMD
+$(CC) -std=c99 -Wall -Wextra -DNK_TITLE_MANIFEST_TEST_SEAMS -Isrc/core -Isrc/core/generated -Isrc/rt -Isrc/player -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+	$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c src/player/player_state.c src/player/iso_reader.c src/player/package_builder.c src/player/setup_staging.c \
+	tests/native/native_test_isolation.c tests/native/test_player_state.c $(PLAYER_EXTRA_LIBS) -o $(BUILD_ROOT)/test_player_state$(EXE_EXT)
+endef
+
+define INPUT_SETTINGS_TEST_BIN_CMD
+$(CC) $(NC_CFLAGS_PLAYER) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_PLAYER) src/player/input_settings.c \
+	tests/native/native_test_isolation.c tests/native/test_input_settings.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_input_settings$(EXE_EXT)
+endef
+
+define PACKAGE_BUILDER_TEST_BIN_CMD
+$(CC) $(NC_CFLAGS_PLAYER) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_PLAYER) src/player/package_builder.c \
+	tests/native/native_test_isolation.c tests/native/test_package_builder.c $(PLAYER_EXTRA_LIBS) -o $(BUILD_ROOT)/test_package_builder$(EXE_EXT)
+endef
+
 player-state-test-bin:
-	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
-	$(CC) -std=c99 -Wall -Wextra -DNK_TITLE_MANIFEST_TEST_SEAMS -Isrc/core -Isrc/core/generated -Isrc/player \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c src/player/player_state.c src/player/iso_reader.c src/player/package_builder.c src/player/setup_staging.c \
-		tests/native/native_test_isolation.c tests/native/test_player_state.c $(PLAYER_EXTRA_LIBS) -o build/test_player_state$(EXE_EXT)
+	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	$(call PLAYER_STATE_TEST_BIN_CMD)
 
-input-settings-test-bin:
-	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/input_settings.c \
-		tests/native/native_test_isolation.c tests/native/test_input_settings.c $(PLAYER_PLATFORM_LIBS) -o build/test_input_settings$(EXE_EXT)
-
-package-builder-test-bin:
-	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/player \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/package_builder.c \
-		tests/native/native_test_isolation.c tests/native/test_package_builder.c $(PLAYER_EXTRA_LIBS) -o build/test_package_builder$(EXE_EXT)
+# osk-overlay-paint-selftest - the in-window on-screen keyboard drawn over a synthetic frame
+# (src/rt/osk_overlay_paint.c): the highlight, a dimmed key, the text field, and an unchanged
+# frame while closed. SDL3 software renderer, no window. Writes the frame as a BMP into build/
+# for the visual check. Needs SDL3, so it runs with the player UI tests.
+osk-overlay-paint-selftest:
+	$(CC) -std=c11 -O2 -Wall -Wextra -Isrc/rt $(SDL3_INC_FLAGS) \
+		-o $(BUILD_DIR)/osk_overlay_paint_selftest$(EXE_EXT) \
+		src/rt/osk_overlay_paint_selftest.c src/rt/osk_overlay.c src/rt/osk_overlay_paint.c $(LDFLAGS) $(LIBS)
+	$(BUILD_DIR)/osk_overlay_paint_selftest$(EXE_EXT) $(BUILD_DIR)/osk_overlay_paint_selftest.bmp
 
 # Player UI tests link SDL3 (software renderer, no window), so they run where the
 # player itself builds rather than in the SDL-free native-core-tests set.
-player-ui-tests:
-	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
+player-ui-tests: osk-overlay-paint-selftest
+	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) tests/native/test_ui_clip.c -lSDL3 \
-		-o build/test_ui_clip$(EXE_EXT)
-	./build/test_ui_clip$(EXE_EXT)
+		-o $(BUILD_ROOT)/test_ui_clip$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_ui_clip$(EXE_EXT)
 
-native-core-tests: cpu-lle-selftest domain-mode-selftest
-	$(CC) -std=c99 -Wall -Wextra -Isrc/rt src/rt/pgf_public.c \
-		tests/native/test_pgf_public.c -o build/test_pgf_public$(EXE_EXT)
-	./build/test_pgf_public$(EXE_EXT)
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/native_test_isolation.c tests/native/test_core_catalog.c $(PLAYER_PLATFORM_LIBS) -o build/test_core_catalog$(EXE_EXT)
-	./build/test_core_catalog$(EXE_EXT)
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/native_test_isolation.c tests/native/test_parsers_hostile.c $(PLAYER_PLATFORM_LIBS) -o build/test_parsers_hostile$(EXE_EXT)
-	./build/test_parsers_hostile$(EXE_EXT)
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/test_manifest_parser.c $(PLAYER_PLATFORM_LIBS) -o build/test_manifest_parser$(EXE_EXT)
-	./build/test_manifest_parser$(EXE_EXT) --check
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/native_test_isolation.c tests/native/test_launch_resolution.c $(PLAYER_PLATFORM_LIBS) -o build/test_launch_resolution$(EXE_EXT)
-	./build/test_launch_resolution$(EXE_EXT)
-	$(MAKE) --no-print-directory player-state-test-bin
-	./build/test_player_state$(EXE_EXT)
-	$(MAKE) --no-print-directory input-settings-test-bin
-	./build/test_input_settings$(EXE_EXT)
-	$(MAKE) --no-print-directory package-builder-test-bin
-	./build/test_package_builder$(EXE_EXT)
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt -Isrc/player \
+input-settings-test-bin: native-core-objects-player
+	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	$(call INPUT_SETTINGS_TEST_BIN_CMD)
+
+package-builder-test-bin: native-core-objects-player
+	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	$(call PACKAGE_BUILDER_TEST_BIN_CMD)
+
+native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-core native-core-objects-player
+	$(CC) -std=c99 -Wall -Wextra -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" src/rt/pgf_public.c \
+		tests/native/test_pgf_public.c -o $(BUILD_ROOT)/test_pgf_public$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_pgf_public$(EXE_EXT)
+	$(CC) $(NC_CFLAGS_CORE) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) \
+		tests/native/native_test_isolation.c tests/native/test_core_catalog.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_core_catalog$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_core_catalog$(EXE_EXT)
+	$(CC) $(NC_CFLAGS_CORE) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) \
+		tests/native/native_test_isolation.c tests/native/test_parsers_hostile.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_parsers_hostile$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_parsers_hostile$(EXE_EXT)
+	$(CC) $(NC_CFLAGS_CORE) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) \
+		tests/native/test_manifest_parser.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_manifest_parser$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_manifest_parser$(EXE_EXT) --check
+	$(CC) $(NC_CFLAGS_CORE) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) \
+		tests/native/native_test_isolation.c tests/native/test_launch_resolution.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_launch_resolution$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_launch_resolution$(EXE_EXT)
+	$(call PLAYER_STATE_TEST_BIN_CMD)
+	$(BUILD_ROOT_RUN)/test_player_state$(EXE_EXT)
+	$(call INPUT_SETTINGS_TEST_BIN_CMD)
+	$(BUILD_ROOT_RUN)/test_input_settings$(EXE_EXT)
+	$(call PACKAGE_BUILDER_TEST_BIN_CMD)
+	$(BUILD_ROOT_RUN)/test_package_builder$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt -Isrc/player -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/player/setup_staging.c src/rt/archive_vfs.c \
-		tests/native/native_test_isolation.c tests/native/test_xb_parser.c $(PLAYER_PLATFORM_LIBS) -o build/test_xb_parser$(EXE_EXT)
-	./build/test_xb_parser$(EXE_EXT)
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt \
+		tests/native/native_test_isolation.c tests/native/test_xb_parser.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_xb_parser$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_xb_parser$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
-		tests/native/test_fuzz_parsers.c $(PLAYER_PLATFORM_LIBS) -o build/test_fuzz_parsers$(EXE_EXT)
-	./build/test_fuzz_parsers$(EXE_EXT) --iters 100
-	$(MAKE) --no-print-directory psmf-producer-selftest PSMF_FUZZ_ITERS=100
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/test_input_profile.c $(PLAYER_PLATFORM_LIBS) -o build/test_input_profile$(EXE_EXT)
-	./build/test_input_profile$(EXE_EXT)
+		tests/native/test_fuzz_parsers.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_fuzz_parsers$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_fuzz_parsers$(EXE_EXT) --iters 100
+	$(call PSMF_PRODUCER_SELFTEST_CMD,100)
+	$(CC) $(NC_CFLAGS_CORE) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) \
+		tests/native/test_input_profile.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_input_profile$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_input_profile$(EXE_EXT)
 ifeq ($(OS),Windows_NT)
-	$(CC) -std=c99 -Wall -Wextra tests/native/argv_echo_helper.c -lshell32 -o build/argv_echo_helper$(EXE_EXT)
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/test_win32_process.c $(PLAYER_PLATFORM_LIBS) -o build/test_win32_process$(EXE_EXT)
-	./build/test_win32_process$(EXE_EXT)
+	$(CC) -std=c99 -Wall -Wextra tests/native/argv_echo_helper.c -lshell32 -o $(BUILD_ROOT)/argv_echo_helper$(EXE_EXT)
+	$(CC) $(NC_CFLAGS_CORE) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) \
+		tests/native/test_win32_process.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_win32_process$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_win32_process$(EXE_EXT)
 else
-	$(CC) -std=c99 -Wall -Wextra -Isrc/core -Isrc/core/generated \
-		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) \
-		tests/native/test_posix_process.c $(PLAYER_PLATFORM_LIBS) -o build/test_posix_process$(EXE_EXT)
-	./build/test_posix_process$(EXE_EXT)
+	$(CC) $(NC_CFLAGS_CORE) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) \
+		tests/native/test_posix_process.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_posix_process$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_posix_process$(EXE_EXT)
 endif
 
 FUZZ_ITERS ?= 5000
@@ -2695,11 +2865,11 @@ FUZZ_SAN_FLAGS := -fsanitize=address,undefined -fno-sanitize-recover=all
 endif
 
 fuzz-parsers:
-	@$(PYTHON) -c "from pathlib import Path; Path('build').mkdir(parents=True, exist_ok=True)"
-	$(CC) -std=c99 -Wall -Wextra $(FUZZ_SAN_FLAGS) -Isrc/core -Isrc/core/generated -Isrc/rt \
+	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	$(CC) -std=c99 -Wall -Wextra $(FUZZ_SAN_FLAGS) -Isrc/core -Isrc/core/generated -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(PLAYER_CORE_SOURCES) $(PLAYER_PLAT_SOURCES) src/rt/prx_loader.c \
-		tests/native/test_fuzz_parsers.c $(PLAYER_PLATFORM_LIBS) -o build/test_fuzz_parsers$(EXE_EXT)
-	./build/test_fuzz_parsers$(EXE_EXT) --iters $(FUZZ_ITERS)
+		tests/native/test_fuzz_parsers.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_fuzz_parsers$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_fuzz_parsers$(EXE_EXT) --iters $(FUZZ_ITERS)
 	$(MAKE) --no-print-directory psmf-producer-selftest \
 		PSMF_FUZZ_ITERS=$(FUZZ_ITERS) FUZZ_SAN_FLAGS="$(FUZZ_SAN_FLAGS)"
 	$(MAKE) --no-print-directory psmf-media-selftest \

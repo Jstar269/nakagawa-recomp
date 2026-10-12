@@ -189,10 +189,13 @@ class TestDispatchWiring(unittest.TestCase):
         self.assertIn("SEMANTIC_BOUNDARY: %s; in the works: #308", RECOMP_C)
         self.assertIn('return "target-not-executable";', RECOMP_C)
         self.assertIn('getenv("SR_BOOT_EVENT_FILE")', RECOMP_C)
+        # One recorder shapes every stop line; each stop names the issue that tracks lifting it.
         self.assertIn(
-            "BOOT_EVENT phase=stop reason=semantic-boundary boundary=%s issue=308",
+            "BOOT_EVENT phase=stop reason=semantic-boundary boundary=%s issue=%u",
             RECOMP_C,
         )
+        self.assertIn("dispatch_record_semantic_stop_issue(boundary, 308u);", RECOMP_C)
+        self.assertIn("dispatch_record_semantic_stop_issue(boundary, 855u);", RECOMP_C)
         self.assertIn(
             "dispatch_record_semantic_stop(dispatch_semantic_boundary_name(interp_result));",
             RECOMP_C,

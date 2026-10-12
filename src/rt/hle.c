@@ -69,6 +69,8 @@
 #include "sr_h264.h"       /* AVC decode backend seam, shared with the sceMpeg core */
 #include "ge_shared.h"      /* GE state snapshot for headless VRAM diagnostics */
 #include "osk_text_entry.h" /* keyboard text collected without stopping guest time */
+#include "osk_overlay.h"    /* the in-window keyboard the presenter draws and the pad drives */
+#include "flash0_font.h"    /* read-only flash0: font device (FONT_PLAN section 5) */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -959,15 +961,16 @@ uint32_t sr_hle_test_compiled_sdk_version(void) {
  * is the source sceUtilityGetSystemParamInt reads; this table seeds it. */
 static uint32_t systemparam_int_value(uint32_t id) {
     switch (id) {
-        case 2:  return 1;   /* ADHOC_CHANNEL: automatic (unmeasured) */
+        case 2:  return 0;   /* ADHOC_CHANNEL: measured 0 (automatic) on the oracle, 2026-10-10 */
         case 3:  return 0;   /* WLAN_POWERSAVE: off (unmeasured) */
         case 4:  return 1;   /* DATE_FORMAT: measured */
         case 5:  return 1;   /* TIME_FORMAT: measured (1 = 12-hour in the PSPSDK enumeration) */
-        case 6:  return 0;   /* TIMEZONE offset in minutes (unmeasured) */
+        case 6:  return 0xfffffed4u; /* TIMEZONE offset in minutes: measured -300 on the oracle console */
         case 7:  return 1;   /* DAYLIGHTSAVINGS: measured */
         case 8:  return 1;   /* LANGUAGE: measured (English) */
         case 9:  return 1;   /* BUTTON_PREFERENCE: measured */
-        default: return 1;   /* safe default */
+        case 10: return 9;   /* LOCK_PARENTAL_LEVEL: measured 9 (off) on the oracle, 2026-10-10 */
+        default: return 1;   /* unreachable through the getter, which refuses ids outside 2..10 */
     }
 }
 
@@ -975,6 +978,9 @@ static uint32_t sreg_systemparam_int(uint32_t id);
 
 static uint32_t h_GetSystemParamInt(CpuState *s) {
     uint32_t id = A0, out = A1;
+    /* Measured on the PSP-3000 oracle (2026-10-10, hle-sysparam): ids 2 to 10 answer; any other id
+     * (0 and 64 were tried) returns PSP_SYSTEMPARAM_RETVAL_FAIL and leaves the output word untouched. */
+    if (id < 2u || id > 10u) return 0x80110103u;
     /* Read through the virtual system registry, so a setting a game wrote there is what this
      * getter reports: the two surfaces share one value per modeled key. */
     uint32_t v = sreg_systemparam_int(id);
@@ -2141,22 +2147,27 @@ static uint32_t sreg_refuse_read_only(const char *caller) {
     return SREG_ERR_ACCES;
 }
 
+/* The first read of a placeholder (a default whose value is neither measured nor modeled) names
+ * the key on stderr, once per key. Shared by every registry read path that serves a value. */
+static void sreg_note_placeholder_read(int node, const char *caller) {
+    SregNode *n = &s_sreg_nodes[node];
+    char path[SREG_PATH_BYTES];
+    if ((n->flags & (SREG_NODE_PLACEHOLDER | SREG_NODE_LOGGED)) != SREG_NODE_PLACEHOLDER) return;
+    n->flags |= SREG_NODE_LOGGED;
+    if (!sreg_node_path(n->parent, path, sizeof(path))) path[0] = '\0';
+    fprintf(stderr, "%s: %s/%s has no measured or modeled value; serving the neutral default "
+                    "(%s)\n", caller, path, n->name,
+            n->type == SREG_TYPE_INT ? "0" : n->type == SREG_TYPE_STR ? "an empty string" : "zero bytes");
+}
+
 /* Copy a value key into a guest buffer of buf_size bytes; a buffer smaller than the value is
- * refused, and a string value includes whatever NUL it was stored with. The first read of a
- * placeholder (a default whose value is neither measured nor modeled) names the key. */
+ * refused, and a string value includes whatever NUL it was stored with. */
 static uint32_t sreg_copy_out(int node, uint32_t buf, uint32_t buf_size, const char *caller) {
     SregNode *n = &s_sreg_nodes[node];
     if (n->type == SREG_TYPE_DIR) return SREG_ERR_FTYPE;
     if (buf_size < n->size) return SREG_ERR_INVAL;
     if (!buf || !sr_guest_span_writable(buf, n->size)) return SREG_ERR_ILLEGAL_ADDR;
-    if ((n->flags & (SREG_NODE_PLACEHOLDER | SREG_NODE_LOGGED)) == SREG_NODE_PLACEHOLDER) {
-        char path[SREG_PATH_BYTES];
-        n->flags |= SREG_NODE_LOGGED;
-        if (!sreg_node_path(n->parent, path, sizeof(path))) path[0] = '\0';
-        fprintf(stderr, "%s: %s/%s has no measured or modeled value; serving the neutral default "
-                        "(%s)\n", caller, path, n->name,
-                n->type == SREG_TYPE_INT ? "0" : n->type == SREG_TYPE_STR ? "an empty string" : "zero bytes");
-    }
+    sreg_note_placeholder_read(node, caller);
     for (uint32_t i = 0; i < n->size; i++) MEM_W8(buf + i, n->value[i]);
     return 0;
 }
@@ -2172,6 +2183,37 @@ static uint32_t sreg_systemparam_int(uint32_t id) {
             return sreg_get_le32(n->value);
     }
     return systemparam_int_value(id);
+}
+
+/* sceUtilityGetSystemParamString(int id, char *str, int len) (PSPSDK psputility_sysparam.h): 0 on
+ * success, PSP_SYSTEMPARAM_RETVAL_FAIL (0x80110103) on failure. The nickname is id 1 and reads the
+ * registry's /CONFIG/SYSTEM/owner_name value, so it is the neutral empty string unless a game
+ * wrote one; no user name is modelled or invented. len is the buffer length. Measured on the
+ * PSP-3000 oracle (2026-10-10, hle-sysparam): a buffer that cannot hold the string and its NUL
+ * fails with 0x80110102 and writes nothing; a large enough buffer receives the string and its NUL
+ * and the call returns 0. Other string ids, a null buffer and len <= 0 fail with 0x80110103. */
+#define SYSPARAM_RETVAL_FAIL 0x80110103u
+#define SYSPARAM_RETVAL_BUFSIZE 0x80110102u
+#define SYSPARAM_STRING_NICKNAME 1u
+static uint32_t h_GetSystemParamString(CpuState *s) {
+    uint32_t id = A0, out = A1;
+    int32_t len = (int32_t)A2;
+    uint32_t count = 0u;
+    int node;
+    SregNode *n;
+    if (id != SYSPARAM_STRING_NICKNAME || !out || len <= 0) return SYSPARAM_RETVAL_FAIL;
+    sreg_ensure_loaded();
+    node = sreg_find_path("/CONFIG/SYSTEM/owner_name");
+    if (node < 0) return SYSPARAM_RETVAL_FAIL;
+    n = &s_sreg_nodes[node];
+    if (n->type != SREG_TYPE_STR) return SYSPARAM_RETVAL_FAIL;
+    while (count < n->size && n->value[count]) count++;
+    if (count + 1u > (uint32_t)len) return SYSPARAM_RETVAL_BUFSIZE;
+    if (!sr_guest_span_writable(out, count + 1u)) return SYSPARAM_RETVAL_FAIL;
+    sreg_note_placeholder_read(node, "sceUtilityGetSystemParamString");
+    for (uint32_t i = 0; i < count; i++) MEM_W8(out + i, n->value[i]);
+    MEM_W8(out + count, 0u);
+    return 0u;
 }
 
 #ifdef SR_HLE_THREAD_SELFTEST
@@ -2487,7 +2529,6 @@ static uint32_t h_ImposeGetLanguageMode(CpuState *s) {
                 s_impose_language, s_impose_button);
     return 0;
 }
-/* sceUtilityGetSystemParamString(id, char *out, int len): nickname etc. Write a short ASCII name. */
 /* Retained controller sampling state (TD-24 batch 4): the Set calls store
  * their arguments and the getter below reports the stored pair. Public
  * behaviour reference: PSPSDK pspctrl.h (sceCtrlSetSamplingMode/Cycle/
@@ -2501,6 +2542,46 @@ static uint32_t s_ctrl_sampling_mode = 0u;
 static uint32_t s_ctrl_sampling_cycle = 0u;
 static uint32_t s_ctrl_idle_reset = 0xFFFFFFFFu;
 static uint32_t s_ctrl_idle_back = 0xFFFFFFFFu;
+/* sceHprmIsRemoteExist(void): 1 when the infrared remote is plugged in, else 0 (PSPSDK
+ * psphprm.h). The runtime models the accessory as absent by default, so the answer comes from that
+ * modeled state and is 0 until a model attaches a remote. The state is a model, not a measurement. */
+static int s_hprm_remote_attached = 0;
+static uint32_t h_HprmIsRemoteExist(CpuState *s) {
+    (void)s;
+    return s_hprm_remote_attached ? 1u : 0u;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only setter so the executable harness can check that the answer follows the model. */
+void sr_hle_test_hprm_set_remote(int attached) { s_hprm_remote_attached = attached != 0; }
+#endif
+
+/* sceHprmIsHeadphoneExist(void): 1 when headphones are plugged in, else 0 (PSPSDK psphprm.h). Measured
+ * 0 on the PSP-3000 oracle with plain headphones plugged in (2026-10-10, hle-hprm), so plain headphones
+ * do not make this 1; the runtime models the accessory as absent by default. */
+static int s_hprm_headphone_attached = 0;
+static uint32_t h_HprmIsHeadphoneExist(CpuState *s) {
+    (void)s;
+    return s_hprm_headphone_attached ? 1u : 0u;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+void sr_hle_test_hprm_set_headphone(int attached) { s_hprm_headphone_attached = attached != 0; }
+#endif
+
+/* sceHprmIsMicrophoneExist(void): 1 when a microphone is present, else 0 (PSPSDK psphprm.h). Measured
+ * 1 on the PSP-3000 oracle (built-in microphone; 2026-10-10, hle-hprm, with and without headphones),
+ * so the default follows the oracle model. */
+static int s_hprm_microphone_attached = 1;
+static uint32_t h_HprmIsMicrophoneExist(CpuState *s) {
+    (void)s;
+    return s_hprm_microphone_attached ? 1u : 0u;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+void sr_hle_test_hprm_set_microphone(int attached) { s_hprm_microphone_attached = attached != 0; }
+#endif
+
 /* sceCtrlGetIdleCancelThreshold(int *idlereset, int *idleback): report the
  * stored thresholds (power-on default: both "disabled", -1). */
 static uint32_t h_CtrlGetIdleCancelThreshold(CpuState *s) {
@@ -2747,6 +2828,7 @@ typedef struct {
     int used;
     uint32_t block_uid;
     uint32_t attr;
+    char name[32];
     uint32_t *free_blocks;
     int nfree;
     int nblocks;
@@ -2789,6 +2871,8 @@ static void fpl_remove_waiter(FplPool *p, uint32_t thread_uid) {
 
 static uint32_t h_CreateFpl(CpuState *s) {
     /* a0=name, a1=partition, a2=attr, a3=blockSize. 5th arg (numBlocks) is in t0 (r8). */
+    char name[32] = {0};
+    if (A0) (void)guest_cstr(A0, name, sizeof(name));
     uint32_t bsize = A3;
     uint32_t nblocks = stack_arg(s, 0);
     if (bsize == 0) bsize = 16;
@@ -2812,6 +2896,7 @@ static uint32_t h_CreateFpl(CpuState *s) {
             p->used = 1;
             p->block_uid = block_uid;
             p->attr = A2;
+            memcpy(p->name, name, sizeof(p->name));
             p->nblocks = (int)nblocks;
             p->free_blocks = (uint32_t *)calloc(nblocks, sizeof(uint32_t));
             p->allocated = (uint8_t *)calloc(nblocks, sizeof(uint8_t));
@@ -3031,6 +3116,51 @@ static uint32_t h_FreeFpl(CpuState *s) {
         sched_wake_one_object_waiter(uid, next_thread);
         sched_preempt();
     }
+    return 0;
+}
+
+/* sceKernelReferFplStatus(fplid, SceKernelFplInfo *info). The 56-byte struct follows the public
+ * PSPSDK SceKernelFplInfo field order: size(0), name[32](4), attr(36), blockSize(40),
+ * numBlocks(44), freeBlocks(48), numWaitThreads(52). The write rule is the one measured for the
+ * sema, event-flag and mailbox status calls (PSP-KERNEL-STATUS-001): a caller size of 0 writes
+ * nothing and succeeds; otherwise min(size, 56) bytes of a struct whose size word is 56 reach
+ * guest memory. The 56-byte size word was measured on the PSP-3000 oracle (2026-10-10,
+ * hle-kernel-status: sceKernelReferFplStatus reports 0x38).
+ * freeBlocks is the free-list length plus the blocks not yet handed out from the bump region. */
+typedef struct {
+    uint32_t size;
+    char     name[32];
+    uint32_t attr;
+    int32_t  blockSize;
+    int32_t  numBlocks;
+    int32_t  freeBlocks;
+    int32_t  numWaitThreads;
+} SceKernelFplInfo;
+
+static uint32_t h_ReferFplStatus(CpuState *s) {
+    uint32_t uid = A0;
+    uint32_t info_addr = A1;
+    if (!info_addr || !sr_guest_span_readable(info_addr, 4u))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    FplPool *p = fpl_lookup(uid);
+    if (!p) return FPL_BAD_ID;
+    uint32_t input_size = MEM_R32(info_addr);
+    if (input_size == 0) return 0;
+    uint32_t write_len = input_size < (uint32_t)sizeof(SceKernelFplInfo)
+                         ? input_size : (uint32_t)sizeof(SceKernelFplInfo);
+    if (!sr_guest_span_writable(info_addr, write_len))
+        return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    SceKernelFplInfo info;
+    memset(&info, 0, sizeof(info));
+    info.size = (uint32_t)sizeof(SceKernelFplInfo);
+    memcpy(info.name, p->name, sizeof(info.name));
+    info.attr = p->attr;
+    info.blockSize = (int32_t)p->bsize;
+    info.numBlocks = p->nblocks;
+    info.freeBlocks = p->nfree + (int32_t)((p->end - p->cur) / p->bsize);
+    info.numWaitThreads = p->nwaiters;
+    for (uint32_t i = 0; i < write_len; i++)
+        MEM_W8(info_addr + i, ((const uint8_t *)&info)[i]);
     return 0;
 }
 
@@ -7377,38 +7507,34 @@ static int ms0_try_legacy_flat_import(const char *guest_path, const char *host_p
  * directory and rasterise glyphs with the PGF reader (src/rt/pgf.c). A missing configured font is
  * reported as a path/configuration error; there is no current-working-directory retry or
  * synthetic fallback that could hide a bad root. */
-static PGF *s_pgf_ltn = NULL, *s_pgf_jpn = NULL, *s_pgf_ltn8 = NULL, *s_pgf_kr = NULL;
+static PGF *s_pgf_slot[NK_FONT_SLOT_COUNT];
+/* Where each slot's font came from: "user-imported", "project", "unreadable" or "none". */
+static const char *s_pgf_slot_source[NK_FONT_SLOT_COUNT];
+/* Defined with the flash0: device roots below. */
+static void flash0_copy_root(char *dst, size_t capacity, const char *src);
+static void flash0_user_data_root(char *dst, size_t capacity);
 static atomic_int s_pgf_state;
 
-static PGF *font_open_from_root(const wchar_t *root, const wchar_t *name,
-                                const char *source) {
-    wchar_t *path = NULL;
-    if (!sr_wide_join_alloc(root, name, &path)) {
-        fprintf(stderr, "font_load: %s path construction failed\n", source);
-        return NULL;
-    }
+static PGF *font_open_host_path(const char *path, const char *label, const char *source) {
 #ifdef _WIN32
-    PGF *font = pgf_open_w(path);
-    if (!font)
-        fprintf(stderr, "font_load: %s font could not be opened (%ls)\n", source, path);
-#else
-    /* This host has no wide fopen. The PGF reader derives the same internal font
-     * name from the path's basename, and a UTF-8 conversion of that basename is
-     * byte-identical to what pgf_open_w encodes, so the narrow entry point
-     * parses exactly the same font. */
+    /* Host paths are UTF-8 (the asset-index convention); Windows opens them wide. */
+    wchar_t *wide = NULL;
     PGF *font = NULL;
-    char *utf8 = NULL;
-    if (sr_wide_to_utf8_alloc(path, &utf8)) {
-        font = pgf_open(utf8);
+    if (sr_utf8_to_wide_alloc(path, &wide)) {
+        font = pgf_open_w(wide);
         if (!font)
-            fprintf(stderr, "font_load: %s font could not be opened (%s)\n", source, utf8);
-        free(utf8);
+            fprintf(stderr, "font_load: %s %s font could not be opened (%ls)\n", source, label, wide);
+        free(wide);
     } else {
-        fprintf(stderr, "font_load: %s font path is not convertible\n", source);
+        fprintf(stderr, "font_load: %s %s font path is not convertible\n", source, label);
     }
-#endif
-    free(path);
     return font;
+#else
+    PGF *font = pgf_open(path);
+    if (!font)
+        fprintf(stderr, "font_load: %s %s font could not be opened (%s)\n", source, label, path);
+    return font;
+#endif
 }
 
 static void font_load(void) {
@@ -7418,38 +7544,113 @@ static void font_load(void) {
         while (atomic_load_explicit(&s_pgf_state, memory_order_acquire) == 1) { }
         return;
     }
+    /* SR_FONTDIR is read once here, and a bad value is named once; the result is the project
+     * root the flash0: device also serves from, so both font paths read the same directories. */
     wchar_t *root = NULL;
     wchar_t *configured = NULL;
     int configured_present = 0;
-    const char *source = NULL;
     int env_ok = sr_wide_env_alloc(L"SR_FONTDIR", &configured, &configured_present);
     if (!env_ok) {
         fprintf(stderr, "font_load: SR_FONTDIR could not be read\n");
     } else if (configured_present) {
-        if (!configured[0] || !sr_wide_configured_root_wide_alloc(configured, &root)) {
+        if (!configured[0] || !sr_wide_configured_root_wide_alloc(configured, &root))
             fprintf(stderr, "font_load: SR_FONTDIR is configured but is not a valid absolute path\n");
-        } else {
-            source = "SR_FONTDIR";
-        }
     } else if (!sr_wide_module_font_root(&root)) {
         fprintf(stderr, "font_load: no SR_FONTDIR and executable font root could not be resolved\n");
-    } else {
-        source = "executable font root";
     }
     free(configured);
-    if (root) {
-        s_pgf_ltn = font_open_from_root(root, L"ltn0.pgf", source);
-        s_pgf_jpn = font_open_from_root(root, L"jpn0.pgf", source);
-        s_pgf_ltn8 = font_open_from_root(root, L"ltn8.pgf", source);
-        s_pgf_kr = font_open_from_root(root, L"kr0.pgf", source);
-    }
+    Flash0Sources sources;
+    flash0_user_data_root(sources.user_data_dir, sizeof(sources.user_data_dir));
+    sources.project_dir[0] = '\0';
+    char *root_utf8 = NULL;
+    if (root && sr_wide_to_utf8_alloc(root, &root_utf8))
+        flash0_copy_root(sources.project_dir, sizeof(sources.project_dir), root_utf8);
+    free(root_utf8);
     free(root);
+    /* Each slot (nk_font_slots.h) resolves the way the flash0: device serves it: the
+     * user-imported cache under the per-user data directory first, then the project font
+     * directory. The files are the slot files; the legacy ltn0/jpn0/ltn8/kr0 names were in
+     * neither source after #811, so every font went missing once a user imported one. No
+     * cross-slot substitution: an absent slot stays absent and is named here. */
+    for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
+        char path[SR_FLASH0_PATH_MAX + 64];
+        const char *from = "none";
+        PGF *pgf = NULL;
+        if (sr_flash0_font_resolve_path(&sources, (NkFontSlot)slot, path, sizeof(path), &from)) {
+            pgf = font_open_host_path(path, sr_flash0_font_slot_label((NkFontSlot)slot), from);
+            if (!pgf) from = "unreadable";
+        } else {
+            fprintf(stderr,
+                    "font_load: no %s font in the user-imported cache or the project font directory\n",
+                    sr_flash0_font_slot_label((NkFontSlot)slot));
+        }
+        s_pgf_slot[slot] = pgf;
+        s_pgf_slot_source[slot] = from;
+    }
     if (getenv("SR_FONTLOG"))
-        fprintf(stderr, "font_load: jpn0=%s ltn0=%s ltn8=%s kr0=%s\n",
-                s_pgf_jpn ? "ok" : "MISSING", s_pgf_ltn ? "ok" : "MISSING",
-                s_pgf_ltn8 ? "ok" : "MISSING", s_pgf_kr ? "ok" : "MISSING");
+        fprintf(stderr, "font_load: japanese=%s latin=%s korean=%s\n",
+                s_pgf_slot_source[NK_FONT_SLOT_JAPANESE], s_pgf_slot_source[NK_FONT_SLOT_LATIN],
+                s_pgf_slot_source[NK_FONT_SLOT_KOREAN]);
     atomic_store_explicit(&s_pgf_state, 2, memory_order_release);
 }
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test seam: drop the loaded fonts so the next font_load resolves them again, and name the
+ * source a slot came from ("user-imported", "project", "unreadable" or "none"). */
+void sr_font_test_reset(void) {
+    for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
+        if (s_pgf_slot[slot]) pgf_close(s_pgf_slot[slot]);
+        s_pgf_slot[slot] = NULL;
+        s_pgf_slot_source[slot] = NULL;
+    }
+    atomic_store_explicit(&s_pgf_state, 0, memory_order_release);
+}
+const char *sr_font_test_slot_source(int slot) {
+    font_load();
+    if (slot < 0 || slot >= NK_FONT_SLOT_COUNT || !s_pgf_slot_source[slot]) return "none";
+    return s_pgf_slot_source[slot];
+}
+#endif
+/* Roots for the flash0: font device (flash0_font.c). The user-imported cache lives under the
+ * per-user data directory. Project fonts resolve like font_load: SR_FONTDIR when it is set,
+ * otherwise the executable's font directory. Both are returned as UTF-8 paths. A root that is
+ * unknown or too long stays empty, and the device skips that source. */
+static void flash0_copy_root(char *dst, size_t capacity, const char *src) {
+    dst[0] = '\0';
+    if (!src || strlen(src) >= capacity) return;
+    memcpy(dst, src, strlen(src) + 1u);
+}
+
+static void flash0_user_data_root(char *dst, size_t capacity) {
+    char data_dir[SR_FLASH0_PATH_MAX];
+    if (nk_platform_get_path(NK_PATH_DATA, data_dir, sizeof(data_dir)))
+        flash0_copy_root(dst, capacity, data_dir);
+    else
+        dst[0] = '\0';
+}
+
+static void flash0_font_sources(Flash0Sources *out) {
+    flash0_user_data_root(out->user_data_dir, sizeof(out->user_data_dir));
+
+    wchar_t *configured = NULL;
+    wchar_t *root = NULL;
+    int configured_present = 0;
+    if (sr_wide_env_alloc(L"SR_FONTDIR", &configured, &configured_present)) {
+        if (configured_present) {
+            if (configured && configured[0]) sr_wide_configured_root_wide_alloc(configured, &root);
+        } else {
+            sr_wide_module_font_root(&root);
+        }
+    }
+    free(configured);
+    char *utf8 = NULL;
+    if (root && sr_wide_to_utf8_alloc(root, &utf8))
+        flash0_copy_root(out->project_dir, sizeof(out->project_dir), utf8);
+    else
+        out->project_dir[0] = '\0';
+    free(utf8);
+    free(root);
+}
+
 /* HLE-to-guest call replay (defined later; used to invoke the game's allocFunc with the PSP
  * calling convention: allocFunc(userData=a0, size=a1) -> ptr). */
 static uint32_t ge_call_guest_rv(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, uint32_t a2);
@@ -7578,9 +7779,9 @@ static uint32_t font_lib_alloc_size(int numFonts) {
 static const PGF *font_pgf_for_index(uint32_t index) {
     font_load();
     switch (index) {
-    case 0:  return s_pgf_jpn;
-    case 9:  return s_pgf_ltn8;
-    case 17: return s_pgf_kr;
+    case 0:  return s_pgf_slot[NK_FONT_SLOT_JAPANESE];
+    case 9:  return s_pgf_slot[NK_FONT_SLOT_LATIN];
+    case 17: return s_pgf_slot[NK_FONT_SLOT_KOREAN];
     default: return NULL;
     }
 }
@@ -7697,7 +7898,7 @@ static uint32_t font_open_common(CpuState *s, uint32_t lib, uint32_t index, uint
         MEM_W32(fh + 0x00, SR_FONT_MAGIC);
         MEM_W32(fh + 0x04, lib);
         MEM_W32(fh + 0x08, index);
-        MEM_W32(fh + 0x0c, (pgf && pgf == s_pgf_jpn) ? 1u : 0u);
+        MEM_W32(fh + 0x0c, (pgf && pgf == s_pgf_slot[NK_FONT_SLOT_JAPANESE]) ? 1u : 0u);
         MEM_W32(fh + 0x10, mode);
     }
     hle_lock();
@@ -8211,6 +8412,7 @@ typedef struct {
     int channels;                 /* RIFF fmt channels (1..8) */
     int dec_channels;             /* bridge config (channels) at create time */
     int dec_align;                /* bridge config (bytesPerFrame) at create time */
+    int decodeFailureReported;    /* one boundary diagnostic per stream failure */
     uint8_t *host_frame;          /* one frame copied out of the guest ring */
     int host_frame_cap;           /* allocated size of host_frame */
     int16_t *host_pcm;            /* decode output staging, channels*2048 */
@@ -8544,6 +8746,8 @@ static int atrac_set_track(Atrac *a, uint32_t buf, uint32_t size) {
         a->streamWindowQueued = oldStreamWindowQueued;
         return 0;
     }
+    if (a->dec) (void)atrac3p_bridge_reset(a->dec);
+    a->decodeFailureReported = 0;
     if (oldStreamWindow) free(oldStreamWindow);
     a->streamWindow = NULL;
     a->streamWindowSize = 0;
@@ -8575,6 +8779,13 @@ static int atrac_set_track(Atrac *a, uint32_t buf, uint32_t size) {
     return 1;
 }
 static int atrac_log_on(void);   /* defined below; used by decoder lifecycle */
+static void atrac_report_decode_failure(Atrac *a) {
+    if (a->decodeFailureReported) return;
+    a->decodeFailureReported = 1;
+    fprintf(stderr,
+            "ATRAC_DECODE_REFUSED: ATRAC_ERROR_UNKNOWN_FORMAT: "
+            "The ATRAC3+ frame was malformed; decoding of this stream stopped.\n");
+}
 static int audio_stat_on(void);  /* SR_AUDIOSTAT gate; defined with the SAS aggregates */
 /* SR_AUDIOSTAT aggregate counters (investigation telemetry). Declared here because
  * the ATRAC decode path and the vblank exit dump both precede the SAS definitions. */
@@ -8778,15 +8989,14 @@ static int atrac_decode_frame(Atrac *a, uint32_t out) {
     int ret = atrac3p_bridge_decode(a->dec, a->host_frame, (int)a->bytesPerFrame,
                                     a->host_pcm, &n);
     if (ret < 0 || n <= 0) {
-        /* Name the source offset, not just the codec's verdict: a frame the
-         * ring pointed at incorrectly and a frame the decoder genuinely cannot
-         * handle produce the same codec error, and only the offset separates
-         * them (#32 -- the ring-wrap defect above presented as a codec
-         * "missing feature"). */
+        /* Keep the offset with the codec error: a streamed-ring frame can be
+         * pointed at incorrectly and a frame decoder genuinely cannot handle
+         * may produce the same error; only the offset distinguishes them (#32). */
         if (atrac_log_on())
             fprintf(stderr, "ATRAC_DECODE: frame decode failed ret=%d n=%d src=0x%08x pos=%u base=%u end=%u frame=%u\n",
                     ret, n, src, a->bufferPos, atrac_stream_buffer_base(a),
                     atrac_stream_buffer_end(a), a->bytesPerFrame);
+        atrac_report_decode_failure(a);
         return -1;
     }
     /* Whole-span preflight before the bulk guest write (AGENTS.md guest-memory
@@ -8825,9 +9035,7 @@ static uint32_t h_AtracDecodeData(CpuState *s) {
         if (decAddr) MEM_W32(decAddr, 0u);
         if (finAddr) MEM_W32(finAddr, 1u);
         if (remAddr) MEM_W32(remAddr, 0u);
-        if (atrac_log_on())
-            fprintf(stderr, "ATRAC_DECODE: id=%u permanent decode failure state=%d\n",
-                    A0, a->bufferState);
+        atrac_report_decode_failure(a);
         return ATRAC_ERROR_UNKNOWN_FORMAT;
     }
     if (st > 0) {
@@ -9051,7 +9259,8 @@ static uint32_t h_AtracResetPlayPosition(CpuState *s) {
     Atrac *a = atrac_of(A0);
     if (!a) return 0;
     a->posSample = (int)A1;
-    if (a->dec) atrac3p_bridge_reset(a->dec);  /* PR-B: decoder history must not cross a seek */
+    if (a->dec && atrac3p_bridge_reset(a->dec) == 0)
+        a->decodeFailureReported = 0;
     return 0;
 }
 
@@ -9535,7 +9744,9 @@ static int osk_collect(void) {
         wcscpy(out, intext);
         int ok;
         if (!scripted) {
-            int answer = sr_osk_text_entry_poll(desc, intext, out, cap);
+            /* SceUtilityOskData.inputtype sits at +0x10 in the public PSPSDK layout. */
+            uint32_t input_type = (uint32_t)MEM_R32(f + 0x10);
+            int answer = sr_osk_text_entry_poll(desc, intext, out, cap, input_type);
             if (answer == SR_OSK_TEXT_PENDING) {
                 s_osk_request_open = 1;
                 return 0;
@@ -9735,9 +9946,25 @@ static uint32_t h_UmdRegisterUMDCallBack(CpuState *s) {
     return 0;
 }
 
+/* PSPSDK pspumd.h documents only a negative result for an unknown callback ID.
+ * Match the kernel callback delete path's UNKNOWN_UID result until hardware
+ * measurements establish sceUmdUnRegisterUMDCallBack's exact error code. */
+static uint32_t h_UmdUnRegisterUMDCallBack(CpuState *s) {
+    (void)s;
+    if (!s_umd_cb_uid || s_umd_cb_uid != A0) return 0x800201a1u;
+    s_umd_cb_uid = 0u;
+    return 0u;
+}
+
+static void hle_register_umd_callback_handlers(void) {
+    sr_hle_register(0xc6183d47u, "sceUmdActivate", h_UmdActivate);
+    sr_hle_register(0xaee7404du, "sceUmdRegisterUMDCallBack", h_UmdRegisterUMDCallBack);
+    sr_hle_register(0xbd2bde07u, "sceUmdUnRegisterUMDCallBack", h_UmdUnRegisterUMDCallBack);
+}
+
 /* VBLANK sub-interrupt handler the game registers; delivered once per frame by the scheduler
  * (it typically wakes the sleeping game thread). PSP_VBLANK_INT = 30. */
-static uint32_t g_vbl_handler = 0, g_vbl_arg = 0; static int g_vbl_on = 0;
+static uint32_t g_vbl_handler = 0, g_vbl_arg = 0, g_vbl_no = 0; static int g_vbl_on = 0;
 
 /* Generic PSP callback objects are kernel objects, not a 16-entry subsystem
  * table. Hardware creates at least 1024 of them. Keep an append-only host array:
@@ -10048,10 +10275,12 @@ static uint32_t h_DeleteNotifyCallback(CpuState *s) {
     return sr_callback_table_unregister(A0) ? 0u : 0x800201A1u;
 }
 static uint32_t h_RegisterSubIntr(CpuState *s) {
-    /* a0=intno, a1=no, a2=handler, a3=arg. */
+    /* a0=intno, a1=no, a2=handler, a3=arg. The handler is later called as handler(no, arg)
+     * (PSPSDK pspintrman.h and its vsync sample: `void on_vblank(int sub, void *data)`), so
+     * the sub-interrupt number is kept with the handler and its arg. */
     if (A0 == 30) {
-        fprintf(stderr, "HLE: registering VBLANK handler 0x%08x arg 0x%08x\n", A2, A3);
-        g_vbl_handler = A2; g_vbl_arg = A3;
+        fprintf(stderr, "HLE: registering VBLANK handler 0x%08x no %u arg 0x%08x\n", A2, A1, A3);
+        g_vbl_handler = A2; g_vbl_no = A1; g_vbl_arg = A3;
     }
     return 0;
 }
@@ -10071,11 +10300,12 @@ static uint32_t h_DisableSubIntr(CpuState *s) { if (A0 == 30) g_vbl_on = 0; retu
  * Register. Non-VBLANK lines answer success without effect (UNMEASURED), as
  * with Enable/Disable. */
 static uint32_t h_ReleaseSubIntr(CpuState *s) {
-    if (A0 == 30) { g_vbl_handler = 0; g_vbl_arg = 0; g_vbl_on = 0; }
+    if (A0 == 30) { g_vbl_handler = 0; g_vbl_no = 0; g_vbl_arg = 0; g_vbl_on = 0; }
     return 0;
 }
 uint32_t sr_vblank_handler(void) { return g_vbl_on ? g_vbl_handler : 0; }
 uint32_t sr_vblank_arg(void) { return g_vbl_arg; }
+uint32_t sr_vblank_no(void) { return g_vbl_no; }
 
 static uint32_t s_vcount_fwd;  /* mirror of s_vcount for clock/input timing (set in sr_display_advance_vcount) */
 uint32_t sr_audio_vbl(void) { return s_vcount_fwd; }
@@ -10301,6 +10531,24 @@ static uint32_t h_SysClock2USecWide(CpuState *s) {
     MEM_W32(A2, A0);
     MEM_W32(A3, A1);
     return 0;
+}
+/* The runtime models SceKernelSysClock as a microsecond count split into low/high
+ * words, so converting an unsigned microsecond duration is an identity with a
+ * zero high word. Validate the complete guest span before either write. The input
+ * arrives in $a0, not in guest memory, so unlike h_SysClock2USec there is no input
+ * span that could overlap the output and nothing to read before writing. */
+static uint32_t h_USec2SysClock(CpuState *s) {
+    (void)s;
+    if (!A1 || !sr_guest_span_writable(A1, 8u))
+        return HLE_KERNEL_ERROR_ILLEGAL_ADDR;
+    MEM_W32(A1, A0);
+    MEM_W32(A1 + 4u, 0u);
+    return 0u;
+}
+/* A 64-bit Allegrex/O32 result is returned as low $v0 and high $v1. */
+static uint32_t h_USec2SysClockWide(CpuState *s) {
+    s->r[3] = 0u;
+    return A0;
 }
 static uint32_t h_RtcGetCurrentTick(CpuState *s) {
     (void)s;
@@ -10810,6 +11058,7 @@ typedef struct {
     uint32_t lba, size, off;
     int64_t async_res;
     int writable;
+    int flash0;                  /* 1 = served by the read-only flash0: font device */
     IoAsyncRequest async;
     FILE *host;
     SrPgd *pgd;
@@ -12884,6 +13133,24 @@ static uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot
     s_closed_res[slot] = 0;
     s_closed_async_state[slot] = IO_ASYNC_IDLE;
 
+    /* flash0: is the read-only font device. It is decided before the disc, memory-stick and
+     * data-root paths, which never see it. A refused open leaves the slot unused. */
+    if (sr_flash0_font_is_device_path(path)) {
+        Flash0Sources sources;
+        FILE *font = NULL;
+        uint32_t font_size = 0;
+        flash0_font_sources(&sources);
+        uint32_t font_rc = sr_flash0_font_open(path, flags, &sources, &font, &font_size);
+        if (font_rc != 0u) {
+            memset(&s_fds[slot], 0, sizeof(s_fds[slot]));
+            return font_rc;
+        }
+        s_fds[slot].used = 1; s_fds[slot].host = font; s_fds[slot].lba = 0;
+        s_fds[slot].size = font_size; s_fds[slot].off = 0;
+        s_fds[slot].writable = 0; s_fds[slot].flash0 = 1;
+        return (uint32_t)slot;
+    }
+
     int writing = (flags & 0x0002) != 0;        /* WRONLY or RDWR */
     int creating = (flags & 0x0200) != 0;
 #ifndef _WIN32
@@ -13053,6 +13320,7 @@ static uint32_t h_IoWrite(CpuState *s) {
         return count;
     }
     if (f->kind != FD_KIND_FILE) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    if (f->flash0) return sr_flash0_font_refuse_write(f->guest_path, "write through a font descriptor");
     if (!f->host) return 0x80010013;                 /* read-only (ISO) fd: not writable */
     fseek(f->host, (long)f->off, SEEK_SET);
     uint8_t tmp[4096]; uint32_t done = 0;
@@ -13526,6 +13794,21 @@ static uint32_t h_io_dopen_path(const char *path) {
             d->used = 1; d->index = 0;
             d->path = sr_asset_index_strdup(path);
             if (!d->path) { memset(d, 0, sizeof(*d)); return 0x80010014u; }
+            if (sr_flash0_font_is_device_path(path)) {
+                /* flash0: listings are materialized here like the merged namespace (backend 1),
+                 * so Dread and Dclose need no device-specific code. */
+                Flash0Sources sources;
+                flash0_font_sources(&sources);
+                sr_vfs_dirlist_init(&d->list);
+                uint32_t font_dir_rc = sr_flash0_font_list_dir(path, &sources, &d->list);
+                if (font_dir_rc != 0u) {
+                    sr_vfs_dirlist_destroy(&d->list);
+                    free(d->path); memset(d, 0, sizeof(*d));
+                    return font_dir_rc;
+                }
+                d->backend = 1;
+                return 0x100u + i;
+            }
             int device_path = sr_vfs_strnicmp(path, "disc0:", 6) == 0 ||
                                sr_vfs_strnicmp(path, "umd:", 4) == 0;
             int iso_first_result = -1;
@@ -14179,6 +14462,9 @@ static uint32_t h_IoRename(CpuState *s) {
     if (io_guest_path(A0, oldpath, sizeof(oldpath)) != 0u ||
         io_guest_path(A1, newpath, sizeof(newpath)) != 0u)
         return 0x80010016u;
+    if (sr_flash0_font_is_device_path(oldpath) || sr_flash0_font_is_device_path(newpath))
+        return sr_flash0_font_refuse_write(sr_flash0_font_is_device_path(oldpath) ? oldpath : newpath,
+                                           "rename");
     char *old_hp = host_path_alloc(oldpath);
     char *new_hp = host_path_alloc(newpath);
     if (!old_hp || !new_hp) {
@@ -14253,6 +14539,7 @@ static uint32_t h_IoMkdir(CpuState *s) {
     char path[256];
     if (io_guest_path(A0, path, sizeof(path)) != 0u)
         return 0x80010016u;
+    if (sr_flash0_font_is_device_path(path)) return sr_flash0_font_refuse_write(path, "mkdir");
     char *hp = host_path_alloc(path);
     if (!hp) return 0x80010016u;
     wchar_t canonical[MAX_PATH * 2];
@@ -14294,6 +14581,9 @@ static uint32_t h_IoRename(CpuState *s) {
     if (io_guest_path(A0, old_guest, sizeof(old_guest)) != 0u ||
         io_guest_path(A1, new_guest, sizeof(new_guest)) != 0u)
         return ms0_posix_psp_error(SR_CD_INVALID_PATH);
+    if (sr_flash0_font_is_device_path(old_guest) || sr_flash0_font_is_device_path(new_guest))
+        return sr_flash0_font_refuse_write(
+            sr_flash0_font_is_device_path(old_guest) ? old_guest : new_guest, "rename");
     sr_cd_status st = ms0_posix_guest_relpath(old_guest, old_rel, sizeof(old_rel));
     if (st == SR_CD_OK)
         st = ms0_posix_guest_relpath(new_guest, new_rel, sizeof(new_rel));
@@ -14312,6 +14602,7 @@ static uint32_t h_IoMkdir(CpuState *s) {
     char guest[256], rel[SR_CD_REL_MAX];
     if (io_guest_path(A0, guest, sizeof(guest)) != 0u)
         return ms0_posix_psp_error(SR_CD_INVALID_PATH);
+    if (sr_flash0_font_is_device_path(guest)) return sr_flash0_font_refuse_write(guest, "mkdir");
     sr_cd_status st = ms0_posix_guest_relpath(guest, rel, sizeof(rel));
     if (st != SR_CD_OK) return ms0_posix_psp_error(st);
 
@@ -14333,6 +14624,7 @@ static uint32_t h_IoRemove(CpuState *s) {
     char path[256];
     if (io_guest_path(A0, path, sizeof(path)) != 0u)
         return 0x80010016u;
+    if (sr_flash0_font_is_device_path(path)) return sr_flash0_font_refuse_write(path, "remove");
     char *hp = host_path_alloc(path);
     if (!hp) return 0x80010016u;
     wchar_t canonical[MAX_PATH * 2];
@@ -14368,6 +14660,7 @@ static uint32_t h_IoRemove(CpuState *s) {
     char guest[256], rel[SR_CD_REL_MAX];
     if (io_guest_path(A0, guest, sizeof(guest)) != 0u)
         return ms0_posix_psp_error(SR_CD_INVALID_PATH);
+    if (sr_flash0_font_is_device_path(guest)) return sr_flash0_font_refuse_write(guest, "remove");
     sr_cd_status st = ms0_posix_guest_relpath(guest, rel, sizeof(rel));
     if (st != SR_CD_OK) return ms0_posix_psp_error(st);
 
@@ -14385,6 +14678,7 @@ static uint32_t h_IoRmdir(CpuState *s) {
     char guest[512], rel[SR_CD_REL_MAX];
     uint32_t rc = io_guest_path(A0, guest, sizeof(guest));
     if (rc != 0u) return rc;
+    if (sr_flash0_font_is_device_path(guest)) return sr_flash0_font_refuse_write(guest, "rmdir");
     sr_cd_status status = sr_cd_ms0_guest_relpath(guest, rel, sizeof(rel));
     if (status != SR_CD_OK) return sr_cd_psp_error(status);
     sr_cd_root root;
@@ -14425,6 +14719,8 @@ static uint32_t h_IoChstat(CpuState *s) {
     char guest[512], rel[SR_CD_REL_MAX];
     uint32_t rc = io_guest_path(A0, guest, sizeof(guest));
     if (rc != 0u) return rc;
+    if (sr_flash0_font_is_device_path(guest))
+        return sr_flash0_font_refuse_write(guest, "change attributes");
     uint32_t bits = A2;
     if ((bits & ~IO_CSTAT_MODE) != 0u) {
         fprintf(stderr,
@@ -14517,6 +14813,25 @@ static int data_stat_write(uint32_t st, uint64_t size) {
     return 1;
 }
 
+/* sceIoGetstat for flash0: (read-only font device). A served font reports its size as a
+ * regular file; flash0:/font reports as a directory. */
+static uint32_t h_io_getstat_flash0(const char *path, uint32_t st) {
+    Flash0Sources sources;
+    uint32_t font_size = 0;
+    int font_is_dir = 0;
+    flash0_font_sources(&sources);
+    uint32_t rc = sr_flash0_font_stat(path, &sources, &font_size, &font_is_dir);
+    if (rc != 0u) return rc;
+    if (font_is_dir) {
+        for (int i = 0; i < 0x58; i++) MEM_W8(st + (uint32_t)i, 0);
+        MEM_W32(st + 0, 0x1000u | 0x0124u);
+        MEM_W32(st + 4, 0x0010u);
+        MEM_W32(st + 0x40, 0);
+        return 0u;
+    }
+    return data_stat_write(st, font_size) ? 0u : 0x80010005u;
+}
+
 static uint32_t h_IoGetstat(CpuState *s) {
     /* a0=path, a1=SceIoStat*. SceIoStat layout: mode(+0), attr(+4), size(+8,64-bit),
      * ctime(+0x10), atime(+0x20), mtime(+0x30), st_private[6](+0x40). For UMD files PPSSPP
@@ -14526,6 +14841,7 @@ static uint32_t h_IoGetstat(CpuState *s) {
     char path[256];
     if (io_guest_path(A0, path, sizeof(path)) != 0u)
         return 0x80010016u;
+    if (sr_flash0_font_is_device_path(path)) return h_io_getstat_flash0(path, A1);
     uint32_t lba, size, st = A1;
     if (iso_lookup(path, &lba, &size) != 0) {
         /* Host-backed path under the unified Memory Stick root (ordinary ms0:
@@ -15046,6 +15362,12 @@ static void sr_dump_calls(void) {
 typedef struct { uint32_t btn; uint32_t ts; uint8_t lx, ly; uint32_t input_id; } CtrlSample;
 static CtrlSample s_ctrl_ring[CTRL_RING] = { [0 ... CTRL_RING-1] = { 0, 0, 128, 128, 0 } };
 static int s_ctrl_w = 1, s_ctrl_r = 0;   /* start with one sample available */
+/* The latch cursor is independent of the ReadBuffer cursor s_ctrl_r: sceCtrlReadLatch reports the
+ * transitions between the sampling cycles since its previous read, so it keeps the button state it
+ * last saw and the sample count at that read. s_ctrl_sample_count counts every sampling cycle. */
+static uint32_t s_ctrl_sample_count = 0u;
+static uint32_t s_latch_prev_btn = 0u;
+static uint32_t s_latch_seen_count = 0u;
 
 /* ---- state-qualified acceptance routes (issue #64) --------------------------------
  *
@@ -15069,10 +15391,14 @@ static int s_ctrl_w = 1, s_ctrl_r = 0;   /* start with one sample available */
  *   EXPECT <NAME>                assert NAME is on screen right now; fail loudly if not
  *   PRESS <hexmask> <width>      hold mask for width vblanks
  *   DELAY <n>                    advance n vblanks (input cadence within one screen)
+ *   PRESS_UNTIL_NID <import|0xNID> <hexmask> <width> <period> <timeout>
+ *                                repeat the press (held width, released for the rest of period)
+ *                                until the guest calls that import; fail on timeout
  *   END                          route complete
- *   WIDTHS VBLANKS|READS         the unit the widths of PRESS, DELAY, PRESS_UNTIL and
- *                                PRESS_WHILE count in (default VBLANKS); before every step
- *   READS | VBLANKS <step>       the unit of that one PRESS, DELAY, PRESS_UNTIL or PRESS_WHILE
+ *   WIDTHS VBLANKS|READS         the unit the widths of PRESS, DELAY, PRESS_UNTIL, PRESS_WHILE
+ *                                and PRESS_UNTIL_NID count in (default VBLANKS); before every step
+ *   READS | VBLANKS <step>       the unit of that one PRESS, DELAY, PRESS_UNTIL, PRESS_WHILE or
+ *                                PRESS_UNTIL_NID
  *
  * A width in READS is a number of guest controller reads that observe the press, not of
  * vblanks: the press is held until the guest has read it that many times, however many
@@ -15109,7 +15435,7 @@ static int s_ctrl_w = 1, s_ctrl_r = 0;   /* start with one sample available */
 #define ROUTE_FAIL_EXIT  86
 
 enum { ROUTE_OP_WAIT = 1, ROUTE_OP_EXPECT, ROUTE_OP_PRESS, ROUTE_OP_DELAY, ROUTE_OP_UNTIL,
-       ROUTE_OP_WHILE, ROUTE_OP_NID, ROUTE_OP_END };
+       ROUTE_OP_WHILE, ROUTE_OP_NID, ROUTE_OP_UNTIL_NID, ROUTE_OP_END };
 enum { ROUTE_OFF = 0, ROUTE_LEGACY, ROUTE_RUNNING, ROUTE_DONE, ROUTE_FAILED };
 
 /* One named screen. Parts of a screen legitimately vary between otherwise identical
@@ -15137,6 +15463,7 @@ typedef struct {
     int      line;                   /* source line, for diagnostics */
     int      reads;                  /* the widths above count guest reads, not vblanks
                                       * (WIDTHS READS, or a READS line); the timeouts never do */
+    uint32_t nid;                    /* PRESS_UNTIL_NID: the import whose call completes the step */
 } RouteStep;
 
 static RouteCheckpoint s_route_cp[ROUTE_MAX_CP];
@@ -15215,18 +15542,31 @@ static int input_read_budget_from_env(uint32_t *out) {
  * one store there and one compare here. The ring holds the most recent dispatches; a step
  * matches only an entry newer than the moment the step began, so an event that already
  * happened cannot satisfy a later step. Set when the running step is a WAIT_NID, so a build
- * with no route pays one predictable branch per import. */
+ * with no route pays one predictable branch per import. PRESS_UNTIL_NID does not read the ring
+ * (see s_route_until_seen). */
 #define ROUTE_NID_RING 64
 static uint32_t s_route_nid_ring[ROUTE_NID_RING];
 static unsigned long s_route_nid_pos;      /* total dispatches observed, ever */
 static int      s_route_watch_nid;         /* a running WAIT_NID step wants the ring */
 static unsigned long s_route_nid_start;    /* dispatch count when that step began */
 
+/* PRESS_UNTIL_NID: the import a running step presses until, and whether the guest has called it
+ * since that step was armed. The ring is WAIT_NID's window, and a burst of more than ROUTE_NID_RING
+ * imports between two route ticks would push an awaited call out of it, so this step keeps its own
+ * flag. route_note_nid sets it; that runs only while the NID watch is on, and a PRESS_UNTIL_NID step
+ * turns the watch on when it arms, so the two agree. Guest threads are coroutines on the scheduler's
+ * host thread (sr_coro.h), so the import hook and the route tick never run at once and the flag needs
+ * no lock, as the ring does not. */
+static int      s_route_until_armed;       /* a running PRESS_UNTIL_NID step is waiting */
+static uint32_t s_route_until_nid;         /* the import that step presses until */
+static int      s_route_until_seen;        /* that import was called since the step was armed */
+
 /* The one place the ring is written, so the dispatcher's gate and the selftest's feed are
- * the same code. */
+ * the same code. The PRESS_UNTIL_NID flag is set here for the same reason. */
 static void route_note_nid(uint32_t nid) {
     s_route_nid_ring[s_route_nid_pos % ROUTE_NID_RING] = nid;
     s_route_nid_pos++;
+    if (s_route_until_armed && nid == s_route_until_nid) s_route_until_seen = 1;
 }
 
 /* Has the guest called `nid` since the running step began? */
@@ -15245,6 +15585,15 @@ static void route_nid_watch(int on) {
     s_route_nid_start = s_route_nid_pos;
 }
 
+/* Arm the PRESS_UNTIL_NID flag for the step that is starting (`on` set, `nid` its import), or
+ * clear it when a step begins or ends without one. Arming resets the flag, so a call made before
+ * the step began, or during an earlier step, never counts. */
+static void route_until_nid_arm(int on, uint32_t nid) {
+    s_route_until_armed = on;
+    s_route_until_nid = nid;
+    s_route_until_seen = 0;
+}
+
 
 static int route_sig_bytes(void) { return s_route_cols * s_route_rows * 3; }
 
@@ -15255,6 +15604,7 @@ static int route_sig_bytes(void) { return s_route_cols * s_route_rows * 3; }
 static void route_fail(const char *fmt, ...) {
     va_list ap;
     s_route_state = ROUTE_FAILED;
+    route_until_nid_arm(0, 0u);
     fputs("ROUTE_FAIL: ", stderr);
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
@@ -15263,6 +15613,7 @@ static void route_fail(const char *fmt, ...) {
     fflush(stderr);
     if (!getenv("SR_ROUTE_NO_EXIT")) {
         sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, 0u, ROUTE_FAIL_EXIT);
+        sr_perf_shutdown();
         _Exit(ROUTE_FAIL_EXIT);
     }
 }
@@ -15573,9 +15924,10 @@ static int route_parse_line(char *line, int lineno, const char *path) {
             return -1;
         }
         if (strcmp(tok, "PRESS") != 0 && strcmp(tok, "DELAY") != 0 &&
-            strcmp(tok, "PRESS_UNTIL") != 0 && strcmp(tok, "PRESS_WHILE") != 0) {
+            strcmp(tok, "PRESS_UNTIL") != 0 && strcmp(tok, "PRESS_WHILE") != 0 &&
+            strcmp(tok, "PRESS_UNTIL_NID") != 0) {
             fprintf(stderr, "ROUTE_PARSE: %s:%d: READS and VBLANKS apply to PRESS, DELAY, PRESS_UNTIL "
-                            "and PRESS_WHILE, not '%s'\n", path, lineno, tok);
+                            "and PRESS_WHILE, and PRESS_UNTIL_NID, not '%s'\n", path, lineno, tok);
             return -1;
         }
     }
@@ -15702,6 +16054,47 @@ static int route_parse_line(char *line, int lineno, const char *path) {
                 fprintf(stderr, "ROUTE_PARSE: %s:%d: %s needs width >= 1, period > width, timeout >= period\n", path, lineno, tok);
                 return -1;
             }
+        } else if (strcmp(tok, "PRESS_UNTIL_NID") == 0) {
+            /* Repeat the press until the guest calls an import. PRESS_UNTIL repeats until a
+             * screen is observed, and a screen can only be recorded from a run that has already
+             * reached it. Some prompts (the savedata message boxes, the Yes/No that follows
+             * them) do not change the screen when a press is taken, so no screen says that the
+             * press landed. The import the guest calls next does say so, and it is the same in
+             * every title. */
+            st.op = ROUTE_OP_UNTIL_NID;
+            char *nid = strtok(NULL, " \t\r\n");
+            char *m = strtok(NULL, " \t\r\n"), *w = strtok(NULL, " \t\r\n");
+            char *p = strtok(NULL, " \t\r\n"), *t = strtok(NULL, " \t\r\n");
+            if (!nid || !m || !w || !p || !t) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS_UNTIL_NID <import|0xNID> <hexmask> <width> "
+                                "<period> <timeout>\n", path, lineno);
+                return -1;
+            }
+            if (route_nid_from_token(nid, &st.nid) != 0) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS_UNTIL_NID: '%s' is not an import name and not "
+                                "a 0x-prefixed NID (the runtime's own table is src/rt/nid_names.h; a name "
+                                "it does not carry can be written as hex)\n", path, lineno, nid);
+                return -1;
+            }
+            if (route_parse_mask(m, &st.a) != 0) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS_UNTIL_NID: '%s' is not a hex mask or a button name "
+                                "(%s)\n", path, lineno, m, route_button_names());
+                return -1;
+            }
+            st.b = (uint32_t)strtoul(w, NULL, 10);
+            st.c = (uint32_t)strtoul(p, NULL, 10);
+            st.d = (uint32_t)strtoul(t, NULL, 10);
+            if (st.reads) {
+                if (st.b < 1 || st.c <= st.b || st.d < 1) {
+                    fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS_UNTIL_NID with READS needs width >= 1, period > "
+                                    "width (both in reads), timeout >= 1 vblank\n", path, lineno);
+                    return -1;
+                }
+            } else if (st.b < 1 || st.c <= st.b || st.d < st.c) {
+                fprintf(stderr, "ROUTE_PARSE: %s:%d: PRESS_UNTIL_NID needs width >= 1, period > width, "
+                                "timeout >= period\n", path, lineno);
+                return -1;
+            }
         } else if (strcmp(tok, "PRESS") == 0) {
             st.op = ROUTE_OP_PRESS;
             char *m = strtok(NULL, " \t\r\n"), *w = strtok(NULL, " \t\r\n");
@@ -15768,6 +16161,7 @@ void sr_route_reset(void) {
     s_route_last_attempt = 0;
     s_route_have_attempt = 0;
     route_nid_watch(0);
+    route_until_nid_arm(0, 0u);
     snprintf(s_route_seen, sizeof s_route_seen, "no screen was observed at all");
     s_route_loaded = 0;
     sr_input_reset(&s_input);
@@ -15784,6 +16178,7 @@ int sr_route_load(const char *path) {
     s_route_ncp = s_route_nsteps = s_route_nlegacy = 0;
     s_route_pc = 0;
     s_route_step_started = 0;
+    route_until_nid_arm(0, 0u);
     s_route_keys = 0;
     s_route_while_seen = 0;
     s_route_last_attempt = 0;
@@ -15850,10 +16245,14 @@ int sr_route_load(const char *path) {
          * event names the event in the log instead of leaving a reader to guess. */
         for (int i = 0; i < s_route_nsteps; i++) {
             RouteStep *st = &s_route_prog[i];
-            if (st->op != ROUTE_OP_NID) continue;
-            const char *nm = sr_nid_name(st->b);
-            fprintf(stderr, "ROUTE: step %d (WAIT_NID) waits for %s (0x%08x) for %u vblanks\n",
-                    i, nm ? nm : "an unnamed import", st->b, st->a);
+            if (st->op != ROUTE_OP_NID && st->op != ROUTE_OP_UNTIL_NID) continue;
+            uint32_t nid = st->op == ROUTE_OP_NID ? st->b : st->nid;
+            uint32_t to = st->op == ROUTE_OP_NID ? st->a : st->d;
+            const char *nm = sr_nid_name(nid);
+            fprintf(stderr, "ROUTE: step %d (%s) %s %s (0x%08x) for %u vblanks\n",
+                    i, st->op == ROUTE_OP_NID ? "WAIT_NID" : "PRESS_UNTIL_NID",
+                    st->op == ROUTE_OP_NID ? "waits for" : "presses until the guest calls",
+                    nm ? nm : "an unnamed import", nid, to);
         }
         return 1;
     }
@@ -15951,7 +16350,12 @@ static void route_load_once(void) {
     if (sp && sp[0]) sr_route_load(sp);
 }
 
-static void route_advance(void) { s_route_pc++; s_route_step_started = 0; }
+/* A finished step disarms its PRESS_UNTIL_NID flag, so its call cannot complete the next step. */
+static void route_advance(void) {
+    s_route_pc++;
+    s_route_step_started = 0;
+    route_until_nid_arm(0, 0u);
+}
 
 /* The repeated press of PRESS_UNTIL / PRESS_WHILE in guest time: `width` samples pressed
  * until the guest has read it, then released for the rest of the `period` until the guest
@@ -15995,10 +16399,12 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
             s_route_step_started = 1;
             /* The NID watch is armed by the step that wants it, so "called since this step
              * began" is measured from this vblank and not from the start of the route. */
-            route_nid_watch(st->op == ROUTE_OP_NID);
+            route_nid_watch(st->op == ROUTE_OP_NID || st->op == ROUTE_OP_UNTIL_NID);
+            route_until_nid_arm(st->op == ROUTE_OP_UNTIL_NID, st->nid);
             /* Input belongs to the step that makes it: a pressing step starts its first
              * segment here, every other step leaves the pad released. */
-            if (st->op == ROUTE_OP_PRESS || st->op == ROUTE_OP_UNTIL || st->op == ROUTE_OP_WHILE) {
+            if (st->op == ROUTE_OP_PRESS || st->op == ROUTE_OP_UNTIL || st->op == ROUTE_OP_WHILE ||
+                st->op == ROUTE_OP_UNTIL_NID) {
                 SrInputSegment press = route_segment(st->a, st->b, st->reads, v,
                                                      st->op == ROUTE_OP_PRESS ? s_input_budget : 0u);
                 sr_input_start(&s_input, &press, v);
@@ -16039,6 +16445,28 @@ uint32_t sr_route_step(uint32_t v, const uint8_t *sig) {
             if (el >= st->d) {
                 route_fail("line %d: PRESS_UNTIL %s gave up after %u vblanks (from vblank %u); %s",
                            st->line, st->name, el, s_route_step_start, route_seen_desc());
+                return keys;
+            }
+            return keys | route_pulse(st, v);
+        }
+        case ROUTE_OP_UNTIL_NID: {
+            /* The press repeats until the guest calls the import, measured from the vblank the
+             * step began; an import that happened before then does not count (the flag is armed
+             * with the step, and route_note_nid sets it only for a call made after that). */
+            const char *nm = sr_nid_name(st->nid);
+            if (s_route_until_seen) {
+                fprintf(stderr, "ROUTE: guest called %s (0x%08x) at vblank %u (step %d, after %u "
+                                "vblanks; the press repeated until then)\n",
+                        nm ? nm : "an unnamed import", st->nid, v, s_route_pc, el);
+                route_advance();
+                continue;
+            }
+            if (el >= st->d) {
+                route_fail("line %d: PRESS_UNTIL_NID %s (0x%08x) was not called within %u vblanks "
+                           "(from vblank %u to %u); the guest made %lu imports in that time, "
+                           "none of them this one",
+                           st->line, nm ? nm : "?", st->nid, el, s_route_step_start, v,
+                           s_route_nid_pos - s_route_nid_start);
                 return keys;
             }
             return keys | route_pulse(st, v);
@@ -16280,6 +16708,20 @@ void sr_ctrl_sample(void) {
     uint8_t lx = 128, ly = 128;
     if (gui_on()) gui_analog(&lx, &ly);
     uint32_t buttons = h_CtrlButtons();
+    /* The on-screen keyboard is a system dialog: while it is open the title's pad reads
+     * nothing, and the keyboard takes the pad instead. The scripted route reaches it as the
+     * held mask; a live gamepad as its press events (gui.c). The auto-START pulse never does,
+     * so a headless run cannot confirm a name it did not type. The held state is tracked
+     * whether or not the keyboard is open, so a button already down does not act on it. */
+    uint32_t pulses = gui_pad_pulses_take();
+    int keyboard_took_sample = sr_osk_overlay_active();   /* open before this sample's press */
+    sr_osk_overlay_pad(s_route_state != ROUTE_OFF ? s_route_keys : 0u, pulses);
+    /* The keyboard owns every sample taken while it is open, including the one whose press
+     * confirms or cancels it: that press closed the dialog and must not reach the title as a
+     * START or CIRCLE in the same frame. Masking the pad while the keyboard is open is a
+     * project choice, not yet measured on hardware. */
+    keyboard_took_sample = keyboard_took_sample || sr_osk_overlay_active();
+    if (keyboard_took_sample) buttons = 0u;
     if (getenv("SR_INLOG")) {
         static uint32_t previous;
         if (buttons != previous) {
@@ -16288,14 +16730,20 @@ void sr_ctrl_sample(void) {
             previous = buttons;
         }
     }
+    uint32_t input_id = sr_input_latch(&s_input);
+    /* The on-screen keyboard reads every sample while it is open, as the system keyboard
+     * polls the pad on a PSP, so a scripted press it took counts as read and the route moves
+     * on; without this the route would wait for a guest read that the keyboard now holds back. */
+    if (keyboard_took_sample) (void)sr_input_read(&s_input, input_id);
     s_ctrl_ring[s_ctrl_w].btn = buttons;
-    s_ctrl_ring[s_ctrl_w].input_id = sr_input_latch(&s_input);
+    s_ctrl_ring[s_ctrl_w].input_id = input_id;
     s_ctrl_ring[s_ctrl_w].ts = (uint32_t)sched_vtime_us();   /* low 32 bits of guest microsecond clock at latch */
     s_ctrl_ring[s_ctrl_w].lx = lx;
     s_ctrl_ring[s_ctrl_w].ly = ly;
     if (gui_on()) gui_consume_button_pulses();
     s_ctrl_w = (s_ctrl_w + 1) % CTRL_RING;
     if (s_ctrl_w == s_ctrl_r) s_ctrl_r = (s_ctrl_r + 1) % CTRL_RING;  /* drop oldest on overflow */
+    s_ctrl_sample_count++;
     sched_wake(CTRL_WAIT_OBJ);
 }
 
@@ -16373,6 +16821,59 @@ static uint32_t h_CtrlReadBuffer(CpuState *s) { return ctrl_fill(A0, A1, 0); }
 static uint32_t h_CtrlPeekBufferPositive(CpuState *s) {
     return ctrl_fill_n(A0, A1, 0, 1);
 }
+
+/* sceCtrlReadLatch(SceCtrlLatch *latch) (PSPSDK pspctrl.h, 16 bytes: uiMake, uiBreak, uiPress,
+ * uiRelease): uiMake = buttons that transitioned to pressed, uiBreak = buttons that transitioned to
+ * released, uiPress = buttons in the pressed state, uiRelease = buttons in the released state, all
+ * across the sampling cycles since the previous latch read. The return is the number of sampling
+ * cycles since that read (PSPSDK). The complement of the button field is the released state, the
+ * same 32-bit convention the negative buffer read uses. Samples overwritten before a latch read are
+ * not reported one by one: the ring keeps the latest CTRL_RING - 1 samples, and a transition inside
+ * an overwritten span is lost. */
+static uint32_t h_CtrlReadLatch(CpuState *s) {
+    uint32_t out = A0;
+    uint32_t produced = s_ctrl_sample_count - s_latch_seen_count;
+    uint32_t retained = produced < (uint32_t)(CTRL_RING - 1) ? produced : (uint32_t)(CTRL_RING - 1);
+    uint32_t prev = s_latch_prev_btn, cur = prev, make = 0u, brk = 0u;
+    if (!out || !sr_guest_span_writable(out, 16u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (retained) {
+        int start = (s_ctrl_w - (int)retained + CTRL_RING) % CTRL_RING;
+        for (uint32_t i = 0; i < retained; i++) {
+            cur = s_ctrl_ring[(start + (int)i) % CTRL_RING].btn;
+            make |= cur & ~prev;
+            brk |= prev & ~cur;
+            prev = cur;
+        }
+    }
+    s_latch_prev_btn = cur;
+    s_latch_seen_count = s_ctrl_sample_count;
+    MEM_W32(out + 0, make);
+    MEM_W32(out + 4, brk);
+    MEM_W32(out + 8, cur);
+    MEM_W32(out + 12, ~cur);
+    return produced;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only: push one sampling cycle with the given button field, as sr_ctrl_sample stores
+ * it, without scripted input, the guest-time stamp or the wake. */
+void sr_hle_test_ctrl_push_sample(uint32_t buttons) {
+    s_ctrl_ring[s_ctrl_w].btn = buttons;
+    s_ctrl_ring[s_ctrl_w].input_id = 0u;
+    s_ctrl_ring[s_ctrl_w].ts = 0u;
+    s_ctrl_ring[s_ctrl_w].lx = 128u;
+    s_ctrl_ring[s_ctrl_w].ly = 128u;
+    s_ctrl_w = (s_ctrl_w + 1) % CTRL_RING;
+    if (s_ctrl_w == s_ctrl_r) s_ctrl_r = (s_ctrl_r + 1) % CTRL_RING;
+    s_ctrl_sample_count++;
+}
+
+/* Test-build-only: start the latch from the current sample count and an all-released state. */
+void sr_hle_test_ctrl_latch_reset(void) {
+    s_latch_prev_btn = 0u;
+    s_latch_seen_count = s_ctrl_sample_count;
+}
+#endif
 
 /* sceDisplay: remember the framebuffer; vblank waits block until the next delivered vblank. */
 static void dump_fb_fmt(const char *path, uint32_t fbaddr, int fmt, uint32_t stride);
@@ -16724,6 +17225,7 @@ static void display_present_frame(void) {
             fprintf(stderr, "HOST_PRESENT_SUBMITTED f=%u buf=0x%08x fmt=%d stride=%d\n",
                     s_vcount, s_display_active.addr, s_display_active.fmt,
                     s_display_active.stride);
+        ge_transition_trace_check("present", s_vcount);
     }
 }
 
@@ -16865,7 +17367,7 @@ static void route_tick(uint32_t v) {
          * needs no signature: sampling the framebuffer for it would cost the observer's ~20%
          * of vblank rate (measured) to learn nothing. */
         pending = !(op == ROUTE_OP_PRESS || op == ROUTE_OP_DELAY || op == ROUTE_OP_END ||
-                    op == ROUTE_OP_NID);
+                    op == ROUTE_OP_NID || op == ROUTE_OP_UNTIL_NID);
     }
     /* Elapsed-delivered-VCOUNT cadence (#109 reconstruction): delivered VCOUNT is
      * elapsed-period accounting and may jump over every exact residue of
@@ -17305,11 +17807,13 @@ static uint32_t h_DisplaySetFrameBuf(CpuState *s) {
             if (!snap_ok) {
                 fprintf(stderr, "SR_FBDUMP: no trustworthy framebuffer snapshot was written\n");
                 sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, 0u, 1u);
+                sr_perf_shutdown();
                 _Exit(1);
             }
             {
                 int capture_exit_status = sr_fbcap_exit_status(SR_FBCAP_FBDUMP, cres);
                 sr_flight_exit((uint32_t)capture_exit_status);
+                sr_perf_shutdown();
                 _Exit(capture_exit_status);
             }
         }
@@ -17613,7 +18117,8 @@ void sr_vblank_tick(void) {
           if (wde < 0) { const char *e = getenv("SR_WATCHDOG_EXIT"); wde = e ? atoi(e) : 0; }
           if (wde > 0 && diff >= (uint32_t)wde) {
               fprintf(stderr, "WATCHDOG: aborting after %u vblanks with no new frame (SR_WATCHDOG_EXIT=%d)\n", diff, wde);
-              sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, diff, (uint32_t)wde);
+              sr_flight_hang(diff, (uint32_t)wde);
+              sr_perf_shutdown();
               _Exit(1);
           }
         }
@@ -17682,10 +18187,21 @@ void sr_vblank_tick(void) {
                 sr_audio_dump_stats();
 #endif
             }
+#if !defined(SR_HLE_THREAD_SELFTEST) && defined(SR_PUBLIC_SAFE)
+            /* _Exit skips atexit, so the SR_AUDIODUMP file is closed here whether or not
+             * SR_AUDIOSTAT is set; after the stats call above it is a no-op. Only the public
+             * audio backend has the dump and exports this close. */
+            extern void sr_audio_dump_finish(void);
+            sr_audio_dump_finish();
+#endif
             sr_dump_calls();
             fflush(stderr);
             fflush(stdout);
-            sr_flight_exit(0u);
+            sr_flight_budget(s_vcount);
+            /* _Exit skips the atexit hook that writes the SR_PERF_JSON summary and the
+             * final CSV row, so the perf shutdown runs here, like the audio dump close
+             * above; it is idempotent and a no-op without SR_PERF. */
+            sr_perf_shutdown();
             _Exit(0);
         }
     }
@@ -17754,6 +18270,8 @@ static void ge_call_guest(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, ui
     if (ge_log_on())
         fprintf(stderr, "GE_CALL_GUEST: fn=0x%08x returned, v0=0x%08x\n", fn, s->r[2]);
     memcpy(s, &save, sizeof(CpuState));
+    /* Returning to the interrupted context ends any ll..sc window it had open. */
+    sr_cpu_link_clear(s);
     atomic_store_explicit(&sr_timeslice, save_slice, memory_order_relaxed);
     (void)sr_nested_frame_release(frame);
 }
@@ -17800,6 +18318,8 @@ static uint32_t ge_call_guest_gp_rv(CpuState *s, uint32_t fn, uint32_t gp,
     if (ge_log_on())
         fprintf(stderr, "GE_CALL_GUEST_RV: fn=0x%08x returned, v0=0x%08x\n", fn, rv);
     memcpy(s, &save, sizeof(CpuState));
+    /* Returning to the interrupted context ends any ll..sc window it had open. */
+    sr_cpu_link_clear(s);
     atomic_store_explicit(&sr_timeslice, save_slice, memory_order_relaxed);
     (void)sr_nested_frame_release(frame);
     return rv;
@@ -18223,7 +18743,10 @@ static uint32_t h_GeListSync(CpuState *s) {
             if (ge_log_on())
                 fprintf(stderr, "GE_SYNC: qid=0x%08x syncType=%u status=%d (cur_pc=0x%08x)\n",
                         qid, syncType, s_ge_lists[i].status, s_ge_lists[i].current_pc);
-            if (s_ge_lists[i].status == GE_LIST_COMPLETED) return 0;
+            if (s_ge_lists[i].status == GE_LIST_COMPLETED) {
+                ge_transition_trace_check("listsync", s_vcount);
+                return 0;
+            }
             if (s_ge_lists[i].status == GE_LIST_STALLED) {
                 if (syncType == 1) return 1; /* PSP_GE_LIST_QUEUED */
                 sched_delay_current(1000);
@@ -18261,6 +18784,30 @@ static uint32_t h_GeEdramGetSize(CpuState *s) {
     (void)s;
     return 0x00200000u;
 }
+
+/* sceGeEdramSetAddrTranslation(int width) (PSPSDK pspge.h): width 0 leaves the translation width
+ * unset, and 512, 1024, 2048 and 4096 set it. The return is the previous width when one was set,
+ * Captured on the PSP-3000 oracle (2026-10-10, hle-ge-edram; CAPTURED, not acceptance-eligible, see
+ * tools/psp_oracle/manifest.json): every call sets the given width and
+ * returns the width that was set before it, width 0 included, so there is no pure query; the boot
+ * value is 1024. The retained width is reported back, but this runtime does not apply address
+ * translation to GE memory accesses, so the setting changes no rendering. The error code for an
+ * unsupported width is not documented: 0x80000107 (the GE invalid-mode code measured on PSP-3000
+ * for sceGeBreak) is a project choice, UNMEASURED here. */
+#define GE_EDRAM_WIDTH_BOOT 1024u
+static uint32_t s_ge_edram_width = GE_EDRAM_WIDTH_BOOT;
+static uint32_t h_GeEdramSetAddrTranslation(CpuState *s) {
+    uint32_t width = A0;
+    uint32_t previous = s_ge_edram_width;
+    if (width != 0u && width != 512u && width != 1024u && width != 2048u && width != 4096u) return 0x80000107u;
+    s_ge_edram_width = width;
+    return previous;
+}
+
+#ifdef SR_HLE_THREAD_SELFTEST
+/* Test-build-only reset to the measured boot width. */
+void sr_hle_test_ge_edram_reset(void) { s_ge_edram_width = GE_EDRAM_WIDTH_BOOT; }
+#endif
 static uint32_t h_GeDrawSync(CpuState *s) {
     /* sceGeDrawSync(mode): wait for (mode 0) or peek at (mode 1) the
      * completion of every queued GE list. Public behaviour reference: the
@@ -18287,6 +18834,7 @@ static uint32_t h_GeDrawSync(CpuState *s) {
         if (paused) return 2u; /* PSP_GE_LIST_DRAWING_DONE */
         return busy ? 1u : 0u;
     }
+    ge_transition_trace_check("drawsync", s_vcount);
     if (busy || paused) sched_delay_current(1000);
     return 0;
 }
@@ -18500,6 +19048,7 @@ typedef struct {
     int effect_l, effect_r;
     int effect_delay, effect_feedback;
     int effect_dry, effect_wet;
+    uint32_t end_flags;           /* voice end bits (bit N set = voice N off), per-cycle snapshot */
 } SasCoreState;
 
 static SasVoice s_sasv[SAS_VOICES];
@@ -18707,6 +19256,15 @@ static int sas_next_sample(SasVoice *v, int *sample) {
     return 1;
 }
 
+/* Live end bits: bit N is set when voice N is off. PSPSDK (pspsascore.h) says the end flags
+ * are refreshed only AFTER __sceSasCore runs, so the guest reads the snapshot captured at the
+ * end of each cycle (see sas_mix_stateful), not this live value. */
+static uint32_t sas_live_end_flags(void) {
+    uint32_t m = 0;
+    for (int i = 0; i < s_sas_max_voices; i++) if (!s_sasv[i].on) m |= 1u << i;
+    return m;
+}
+
 /* Mix one grain into out (s16 stereo or four planar channels). add=0 overwrites. */
 static void sas_mix_stateful(uint32_t out, int add, int left_gain, int right_gain) {
     uint64_t perf_started = sr_perf_now_ns();
@@ -18774,8 +19332,10 @@ static void sas_mix_stateful(uint32_t out, int add, int left_gain, int right_gai
         }
     }
     for (int i = 0; i < n; i++) {
-        int l = (mixl[i] * left_gain) >> 12;
-        int r = (mixr[i] * right_gain) >> 12;
+        /* The gain product is 64-bit: twenty full-scale voices already sum past INT32_MAX / 4096,
+         * and a wrapped product inverts loud samples instead of saturating them at the output. */
+        int l = (int)(((int64_t)mixl[i] * left_gain) >> 12);
+        int r = (int)(((int64_t)mixr[i] * right_gain) >> 12);
         int sl = mixsl[i], sr = mixsr[i];
         if (add) {
             l += sas_output_read(out, (uint32_t)i, 0);
@@ -18806,6 +19366,7 @@ static void sas_mix_stateful(uint32_t out, int add, int left_gain, int right_gai
         if (post_peak > g_sas_post_peak) g_sas_post_peak = post_peak;
         if (pre_peak && !post_peak) g_sas_erased++;
     }
+    s_sas_core.end_flags = sas_live_end_flags();
     if (perf_started) sr_perf_audio_mix(perf_started);
 }
 
@@ -18831,6 +19392,7 @@ static uint32_t h_SasInit(CpuState *s) {
         s_sasv[i].pitch = 0x1000; s_sasv[i].loop_start = -1; s_sasv[i].pcm_loop_start = -1;
         s_sasv[i].sustain_level = SAS_ENVELOPE_MAX; s_sasv[i].env_phase = 4;
     }
+    s_sas_core.end_flags = sas_live_end_flags();
     return 0;
 }
 
@@ -18945,11 +19507,12 @@ static uint32_t h_SasSetNoise(CpuState *s) {
     return 0;
 }
 
+/* The flags are the snapshot refreshed by the last __sceSasCore / __sceSasCoreWithMix cycle
+ * (all voices off at init), as pspsascore.h specifies. */
 static uint32_t h_SasGetEndFlag(CpuState *s) {
-    uint32_t e = sas_require_core(A0), m = 0;
+    uint32_t e = sas_require_core(A0);
     if (e) return e;
-    for (int i = 0; i < s_sas_max_voices; i++) if (!s_sasv[i].on) m |= 1u << i;
-    return m;
+    return s_sas_core.end_flags;
 }
 
 static uint32_t h_SasSetKeyOn(CpuState *s) {
@@ -21621,6 +22184,7 @@ static void hle_register_wait_conformance_handlers(void) {
      * FPL_MAX=16 and the conformance matrix already uses all 16, so a test that
      * leaked one would starve the matrix rather than fail on its own assertion. */
     sr_hle_register(0xed1410e0, "sceKernelDeleteFpl", h_DeleteFpl);
+    sr_hle_register(0xd8199e4c, "sceKernelReferFplStatus", h_ReferFplStatus);
     /* VPL set (PSP_INTR_WAITS_MATRIX.md PR-G coverage rows; blocking AllocateVpl
      * forms registered with fiber wait queues). */
     sr_hle_register(0x56c039b5, "sceKernelCreateVpl", h_CreateVpl);
@@ -21650,6 +22214,7 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0x4a9e5e29, "sceUmdWaitDriveStatCB", h_UmdWaitDriveStatCB);
     sr_hle_register(0x1f803938, "sceCtrlReadBufferPositive", h_CtrlReadBuffer);
     sr_hle_register(0x3a622550, "sceCtrlPeekBufferPositive", h_CtrlPeekBufferPositive);
+    sr_hle_register(0x0b588501, "sceCtrlReadLatch", h_CtrlReadLatch);
     sr_hle_register(0x6a638d83, "sceIoRead", h_IoRead);
     sr_hle_register(0x42ec03ac, "sceIoWrite", h_IoWrite);
     sr_hle_register(0xe23eec33, "sceIoWaitAsync", h_IoWaitAsync);
@@ -21755,6 +22320,7 @@ static void hle_register_ge_handlers(void) {
     sr_hle_register(0x03444eb4, "sceGeListSync", h_GeListSync);
     sr_hle_register(0x05db22ce, "sceGeUnsetCallback", h_GeUnsetCallback);
     sr_hle_register(0x1f6752ad, "sceGeEdramGetSize", h_GeEdramGetSize);
+    sr_hle_register(0xb77905ea, "sceGeEdramSetAddrTranslation", h_GeEdramSetAddrTranslation);
     sr_hle_register(0xe0d68148, "sceGeListUpdateStallAddr", h_GeListUpdateStallAddr);
     sr_hle_register(0xdc93cfef, "sceGeGetCmd", h_GeGetCmd);
 }
@@ -21906,16 +22472,22 @@ static void hle_register_exit_game_handler(void) {
  * unregistered); the float-return shaping for the non-Int getters remains
  * tracked by #86. */
 static void hle_register_power_clock_handlers(void) {
+    sr_hle_register(0x34f9c463, "scePowerGetPllClockFrequencyInt", h_PowerGetPllClockFrequencyInt);
     sr_hle_register(0xfdb5bfe9, "scePowerGetCpuClockFrequencyInt", h_PowerGetCpuClockFrequencyInt);
     sr_hle_register(0x478fe6f5, "scePowerGetBusClockFrequency", h_PowerGetBusClockFrequencyInt);
     sr_hle_register(0x737486f2, "scePowerSetClockFrequency", h_PowerSetClockFrequency);
     sr_hle_register(0xebd177d6, "scePowerSetClockFrequency350", h_PowerSetClockFrequency350);
+    /* Battery state query, in the shared helper so the executable harness registers it too. */
+    sr_hle_register(0xd3075926, "scePowerIsLowBattery", h_PowerIsLowBattery);
 }
 
 /* TD-24 batch 4 shared families: one definition reached by both sr_hle_init()
  * branches, so the executable harness pins the production mapping through
  * dispatch (same rule as the batch-2 clock helpers above). */
 static void hle_register_ctrl_sampling_handlers(void) {
+    sr_hle_register(0x208db1bd, "sceHprmIsRemoteExist", h_HprmIsRemoteExist);
+    sr_hle_register(0x7e69eda4, "sceHprmIsHeadphoneExist", h_HprmIsHeadphoneExist);
+    sr_hle_register(0x219c58f1, "sceHprmIsMicrophoneExist", h_HprmIsMicrophoneExist);
     sr_hle_register(0x1f4011e6, "sceCtrlSetSamplingMode", h_CtrlSetSamplingMode);
     sr_hle_register(0x6a2774f3, "sceCtrlSetSamplingCycle", h_CtrlSetSamplingCycle);
     sr_hle_register(0xa7144800, "sceCtrlSetIdleCancelThreshold", h_CtrlSetIdleCancelThreshold);
@@ -21989,6 +22561,7 @@ static void hle_register_psmf_player_handlers(void) {
  * model never performs) stay unregistered, so a call is a visible dispatch miss. */
 static void hle_register_sysreg_handlers(void) {
     sr_hle_register(0xa5da2406, "sceUtilityGetSystemParamInt", h_GetSystemParamInt);
+    sr_hle_register(0x34b78343, "sceUtilityGetSystemParamString", h_GetSystemParamString);
     sr_hle_register(0x92e41280, "sceRegOpenRegistry", h_RegOpenRegistry);
     sr_hle_register(0xfa8a5739, "sceRegCloseRegistry", h_RegCloseRegistry);
     sr_hle_register(0x39461b4d, "sceRegFlushRegistry", h_RegFlushRegistry);
@@ -22016,6 +22589,7 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0x9944f31f, "sceKernelSuspendThread", h_SuspendThread);
     sr_hle_register(0x6652b8ca, "sceKernelSetAlarm", h_SetAlarm);
     sr_hle_register(0xba6b92e2, "sceKernelSysClock2USec", h_SysClock2USec);
+    sr_hle_register(0x110dec9au, "sceKernelUSec2SysClock", h_USec2SysClock);
     sr_hle_register(0x7e65b999, "sceKernelCancelAlarm", h_CancelAlarm);
     sr_hle_register_unsupported(0x034a921f, "sceKernelGetVTimerTime", 0x80020002u);
     sr_hle_register(0x50f61d8a, "sceKernelFreeMemoryBlock", h_FreeMemoryBlock);
@@ -22050,8 +22624,8 @@ static uint32_t h_ReferProfilerNull(CpuState *s) {
 }
 
 /* Imports that were absent from the registry and stopped titles on an unknown NID. Each
- * is either a real handler over state the runtime already models (sceKernelSysClock2USecWide
- * and sceCtrlGetSamplingMode, the latter registered with the ctrl sampling helper), or a
+ * is either a real handler over state the runtime already models (the sysclock conversion
+ * pair and sceCtrlGetSamplingMode, the latter registered with the ctrl sampling helper), or a
  * named controlled refusal. A refusal is never fake success: no virtual timer, hold-mode,
  * UMD popup, battery icon, sceNet, sceHttp, or audiocodec state exists to back these calls. ThreadMan and sceDisplay refusals use SCE_KERNEL_ERROR_NOTIMP, the code the
  * kernel refusals above already use; the non-kernel sceImpose, sceNet, sceHttp and
@@ -22059,8 +22633,17 @@ static uint32_t h_ReferProfilerNull(CpuState *s) {
  * sceReg and sceUmd refusals use. The two NIDs with no confirmed public name stay unregistered. */
 static void hle_register_unregistered_import_batch(void) {
     sr_hle_register(0xe1619d7cu, "sceKernelSysClock2USecWide", h_SysClock2USecWide);
+    sr_hle_register(0xc8cd158cu, "sceKernelUSec2SysClockWide", h_USec2SysClockWide);
     sr_hle_register(0x64d4540eu, "sceKernelReferThreadProfiler", h_ReferProfilerNull);
     sr_hle_register(0x8218b4ddu, "sceKernelReferGlobalProfiler", h_ReferProfilerNull);
+    /* scePower_469989ad (0x469989ad) has no public name in the sources this project may consult, so
+     * it is refused under its synthetic name rather than given a guessed one. Its contract needs a
+     * named source and a probe before it can be modelled. */
+    sr_hle_register_unsupported(0x469989adu, "scePower_469989ad", 0x80020002u);
+    /* sceKernelReferSystemStatus: the PSPSDK struct leaves the status and vfpuSwitchCount fields
+     * documented only as unknown, and the idle-clock and switch counters are not modelled here, so
+     * the status is refused until a probe measures the struct. */
+    sr_hle_register_unsupported(0x627e6f3au, "sceKernelReferSystemStatus", 0x80020002u);
     sr_hle_register_unsupported(0x20fff560u, "sceKernelCreateVTimer", 0x80020002u);
     sr_hle_register_unsupported(0xc68d9437u, "sceKernelStartVTimer", 0x80020002u);
     sr_hle_register_unsupported(0x328f9e52u, "sceKernelDeleteVTimer", 0x80020002u);
@@ -22070,6 +22653,20 @@ static void hle_register_unregistered_import_batch(void) {
     sr_hle_register_unsupported(0x72189c48u, "sceImposeSetUMDPopup", 0x80010086u);
     sr_hle_register_unsupported(0x8c943191u, "sceImposeGetBatteryIconStatus", 0x80010086u);
     sr_hle_register_unsupported(0x0bf0a3aeu, "sceNetGetLocalEtherAddr", 0x80010086u);
+    /* sceNetInit follows the same offline network policy as sceNetGetLocalEtherAddr: the runtime
+     * has no network stack, so the call refuses with that code rather than reporting success. */
+    sr_hle_register_unsupported(0x39af39a6u, "sceNetInit", 0x80010086u);
+    /* sceHttpsEnd follows the offline HTTP policy of sceHttpEnd and sceHttpInit: no network stack. */
+    sr_hle_register_unsupported(0xf9d8eb63u, "sceHttpsEnd", 0x80010086u);
+    /* The SSL library has no handler in this runtime, which has no network stack. sceSslEnd follows
+     * the same offline policy as the HTTP family (0x80010086); the other SSL calls are not modelled. */
+    sr_hle_register_unsupported(0x191cdeffu, "sceSslEnd", 0x80010086u);
+    /* sceNetApctl is the access-point control library; with no network stack the runtime refuses its
+     * handler calls under the offline network policy (0x80010086). */
+    sr_hle_register_unsupported(0x5963991bu, "sceNetApctlDelHandler", 0x80010086u);
+    /* sceRtcGetAccumulativeTime (0x011f03c1) is not declared in the PSPSDK RTC header, so its contract
+     * is not established here and it is refused under its name rather than guessed. */
+    sr_hle_register_unsupported(0x011f03c1u, "sceRtcGetAccumulativeTime", 0x80020002u);
     sr_hle_register_unsupported(0x0282a3bdu, "sceHttpGetContentLength", 0x80010086u);
     sr_hle_register_unsupported(0x03d9526fu, "sceHttpSetResolveRetry", 0x80010086u);
     sr_hle_register_unsupported(0x1f0fc3e3u, "sceHttpSetRecvTimeOut", 0x80010086u);
@@ -22120,6 +22717,7 @@ void sr_hle_init(void) {
     hle_register_kernel_import_sweep_handlers();
     hle_register_sysreg_handlers();
     hle_register_unregistered_import_batch();
+    hle_register_umd_callback_handlers();
     hle_register_regular_audio_handlers();
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
@@ -22142,6 +22740,7 @@ void sr_hle_init(void) {
     hle_register_wait_conformance_handlers();
     hle_register_kernel_import_sweep_handlers();
     hle_register_unregistered_import_batch();
+    hle_register_umd_callback_handlers();
     hle_register_partition_savedata_handlers();
     /* Internal address callback, reached only after a normal dispatch-table miss. */
     sr_hle_register(0x00061e74u, "newlibModuleStreamWrite", h_ModuleStreamWrite);
@@ -22202,8 +22801,6 @@ void sr_hle_init(void) {
     sr_hle_register(0xd7763699, "sceWlanGetSwitchState", h_WlanOn);
     sr_hle_register(0x04b7766e, "scePowerRegisterCallback", h_PowerRegisterCallback);
     sr_hle_register(0x46ebb729, "sceUmdCheckMedium", h_UmdCheckMedium);
-    sr_hle_register(0xc6183d47, "sceUmdActivate", h_UmdActivate);
-    sr_hle_register(0xaee7404d, "sceUmdRegisterUMDCallBack", h_UmdRegisterUMDCallBack);
     sr_hle_register(0x52089ca1, "sceKernelGetThreadStackFreeSize", h_GetThreadStackFreeSize);
     /* sceMpeg: faithful port (src/rt/mpeg.c). Drives the PSMF intro to completion. */
     sr_hle_register(0x682a619b, "sceMpegInit", h_MpegInit);
@@ -22454,7 +23051,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         sr_hit_hle = 1;
         /* Under the fiber scheduler, longjmp across fibers is invalid; stop the process cleanly
          * after flushing the trace. The plain driver (no scheduler) keeps the longjmp boundary. */
-        if (sr_sched_on) { sr_trace_close(); fflush(stderr); _Exit(7); }
+        if (sr_sched_on) { sr_trace_close(); sr_perf_shutdown(); fflush(stderr); _Exit(7); }
         longjmp(g_hle_jmp, 1);
     }
     if (getenv("SR_SYSLOG")) {
@@ -22479,6 +23076,11 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
         hle_note_success_exception(e);
     }
     ge_enqueue_trace_note_hle(s, nid, e->name);
+    /* An HLE handler stands in for a kernel syscall, and a syscall returns through eret,
+     * which clears LLbit (MIPS32): an ll..sc window spanning an HLE call fails its sc.
+     * link_started_export() above is deliberately exempt -- a call into another started
+     * module's export is a plain jump on hardware, with no exception return. */
+    sr_cpu_link_clear(s);
     /* Poison caller-saved temps exactly like PPSSPP SetDeadbeefRegs: r1, r4-r15, r24, r25,
      * hi, lo. The return value in v0 (and v1) is written afterward and survives. */
     s->r[1] = 0xDEADBEEFu;

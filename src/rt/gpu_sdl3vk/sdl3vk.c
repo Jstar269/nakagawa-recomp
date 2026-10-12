@@ -66,6 +66,7 @@ typedef struct PresentFrame {
 } PresentFrame;
 
 static SDL_Window      *s_win;
+static int              s_window_hidden;      /* SR_WINDOW_HIDDEN: created hidden, never raised */
 static SDL_Gamepad     *s_pad;
 static VkInstance       s_inst;
 static VkSurfaceKHR     s_surf;
@@ -303,9 +304,14 @@ int sdl3vk_init(const char *title) {
         fprintf(stderr, "sdl3vk: SDL_Init failed: %s\n", SDL_GetError());
         return 0;
     }
+    /* SR_WINDOW_HIDDEN=1: the same presenter (Vulkan swapchain, keyboard, frame capture) with
+     * a window nobody sees, for headless routes. It is never raised or put in front. */
+    const char *hidden_env = getenv("SR_WINDOW_HIDDEN");
+    s_window_hidden = hidden_env && hidden_env[0] && strcmp(hidden_env, "0") != 0;
     s_win = SDL_CreateWindow(title ? title : "Nakagawa Recomp",
                              PSP_W * 2, PSP_H * 2,
-                             SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+                             SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE |
+                             (s_window_hidden ? SDL_WINDOW_HIDDEN : 0));
     if (!s_win) {
         fprintf(stderr, "sdl3vk: SDL_CreateWindow failed: %s\n", SDL_GetError());
         return 0;
@@ -512,7 +518,7 @@ int sdl3vk_init(const char *title) {
 }
 
 bool sdl3vk_raise_window(void) {
-    if (!s_win) return false;
+    if (!s_win || s_window_hidden) return false;
 
     bool raised = SDL_RaiseWindow(s_win);
     if (!raised) {
@@ -641,6 +647,56 @@ void sdl3vk_map_gamepad(
  * held buttons and axes. */
 static uint32_t s_button_pulse;
 
+/* Text entry for the in-window keyboard (sdl3vk.h). Gamepad button-down bits are kept apart
+ * from s_button_pulse, which the guest's sample consumes, so both see every press. */
+static uint32_t s_pad_pulse;
+static int      s_text_claim;
+#define KEY_QUEUE_CAP 64
+static Sdl3VkKeyEvent s_key_queue[KEY_QUEUE_CAP];
+static int            s_key_head, s_key_count;
+
+static void key_queue_push(int key, uint32_t codepoint) {
+    if (s_key_count == KEY_QUEUE_CAP) return;          /* a full queue drops the newest */
+    int tail = (s_key_head + s_key_count) % KEY_QUEUE_CAP;
+    s_key_queue[tail].key = key;
+    s_key_queue[tail].codepoint = codepoint;
+    s_key_count++;
+}
+
+/* The editing keys the keyboard uses. Auto-repeat is kept for the movement and backspace
+ * keys, as on a real keyboard; typing is not repeated. */
+static int text_entry_key(SDL_Keycode k, int *repeats) {
+    *repeats = 0;
+    switch (k) {
+    case SDLK_UP:        *repeats = 1; return SDL3VK_KEY_UP;
+    case SDLK_DOWN:      *repeats = 1; return SDL3VK_KEY_DOWN;
+    case SDLK_LEFT:      *repeats = 1; return SDL3VK_KEY_LEFT;
+    case SDLK_RIGHT:     *repeats = 1; return SDL3VK_KEY_RIGHT;
+    case SDLK_BACKSPACE: *repeats = 1; return SDL3VK_KEY_BACKSPACE;
+    case SDLK_RETURN:
+    case SDLK_KP_ENTER:  return SDL3VK_KEY_ENTER;
+    case SDLK_ESCAPE:    return SDL3VK_KEY_ESCAPE;
+    case SDLK_TAB:       return SDL3VK_KEY_TAB;
+    default:             return SDL3VK_KEY_NONE;
+    }
+}
+
+/* Queue each Unicode character of a UTF-8 text event. Malformed bytes are skipped. */
+static void queue_text_utf8(const char *s) {
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        uint32_t cp;
+        int extra;
+        if (*p < 0x80)                 { cp = *p++; extra = 0; }
+        else if ((*p & 0xE0) == 0xC0)  { cp = *p++ & 0x1Fu; extra = 1; }
+        else if ((*p & 0xF0) == 0xE0)  { cp = *p++ & 0x0Fu; extra = 2; }
+        else if ((*p & 0xF8) == 0xF0)  { cp = *p++ & 0x07u; extra = 3; }
+        else                           { p++; continue; }
+        while (extra-- > 0 && (*p & 0xC0) == 0x80) cp = (cp << 6) | (*p++ & 0x3Fu);
+        key_queue_push(SDL3VK_KEY_TEXT, cp);
+    }
+}
+
 static uint32_t keyboard_button(SDL_Scancode sc) {
     switch (sc) {
     case SDL_SCANCODE_RETURN: return 0x0008;
@@ -677,15 +733,30 @@ static void poll_input(int *quit) {
         switch (ev.type) {
         case SDL_EVENT_QUIT: s_quit_requested = 1; break;
         case SDL_EVENT_KEY_DOWN:
-            if (ev.key.key == SDLK_ESCAPE) s_quit_requested = 1;
+            /* While the on-screen keyboard is open, Escape cancels it: it does not quit. */
+            if (ev.key.key == SDLK_ESCAPE && !s_text_claim) s_quit_requested = 1;
             if (ev.key.key == SDLK_F1 && !ev.key.repeat) {
                 sdl3vk_hud_set_enabled(!s_hud_enabled);
             }
-            if (!ev.key.repeat) s_button_pulse |= keyboard_button(ev.key.scancode);
+            /* While the keyboard is claimed its keys go to the keyboard only: a keyboard Enter that
+             * confirms the field must not leave a START pulse behind for the title to see. */
+            if (!ev.key.repeat && !s_text_claim) s_button_pulse |= keyboard_button(ev.key.scancode);
+            if (s_text_claim) {
+                int repeats;
+                int key = text_entry_key(ev.key.key, &repeats);
+                if (key != SDL3VK_KEY_NONE && (!ev.key.repeat || repeats))
+                    key_queue_push(key, 0);
+            }
             break;
-        case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
-            s_button_pulse |= gamepad_button(ev.gbutton.button);
+        case SDL_EVENT_TEXT_INPUT:
+            if (s_text_claim) queue_text_utf8(ev.text.text);
             break;
+        case SDL_EVENT_GAMEPAD_BUTTON_DOWN: {
+            uint32_t bit = gamepad_button(ev.gbutton.button);
+            s_button_pulse |= bit;
+            s_pad_pulse |= bit;
+            break;
+        }
         case SDL_EVENT_GAMEPAD_ADDED:
             if (!s_pad) s_pad = SDL_OpenGamepad(ev.gdevice.which);
             break;
@@ -758,6 +829,37 @@ uint32_t sdl3vk_buttons(void) { return s_buttons | s_button_pulse; }
 void sdl3vk_consume_button_pulses(void) { s_button_pulse = 0; }
 void sdl3vk_analog(uint8_t *lx, uint8_t *ly) { if (lx) *lx = s_lx; if (ly) *ly = s_ly; }
 int  sdl3vk_pad_present(void) { return s_pad_present; }
+
+uint32_t sdl3vk_take_pad_pulses(void) {
+    uint32_t pulses = s_pad_pulse;
+    s_pad_pulse = 0;
+    return pulses;
+}
+
+/* Start or stop the window's text input with the keyboard. Claiming also clears any queued
+ * keys, so a keyboard opened now does not act on keys pressed before it. */
+void sdl3vk_set_text_claim(int on) {
+    on = on != 0;
+    if (on == s_text_claim) return;
+    s_text_claim = on;
+    if (on) {
+        s_key_head = 0;
+        s_key_count = 0;
+        if (s_win) SDL_StartTextInput(s_win);
+    } else if (s_win) {
+        SDL_StopTextInput(s_win);
+    }
+}
+
+int sdl3vk_take_key_events(Sdl3VkKeyEvent *out, int max) {
+    int n = 0;
+    while (n < max && s_key_count > 0) {
+        out[n++] = s_key_queue[s_key_head];
+        s_key_head = (s_key_head + 1) % KEY_QUEUE_CAP;
+        s_key_count--;
+    }
+    return n;
+}
 
 /* ---- present ------------------------------------------------------------------------ */
 
@@ -1353,6 +1455,17 @@ int sdl3vk_wait_image(void *vk_image) {
 
 /* ---- capture selftest (issue #57) ---------------------------------------------------- */
 
+/* Scratch root for the files the capture selftest writes (see sdl3vk_capture_selftest). The
+ * Makefile passes -DSR_SELFTEST_BUILD_ROOT=$(BUILD_ROOT); a bare compile keeps "build". */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+#ifdef _WIN32
+#define SDL3VK_TEST_CHDIR(path) _chdir(path)
+#else
+#define SDL3VK_TEST_CHDIR(path) chdir(path)
+#endif
+
 static int cap_test_pattern(int x, int y, int ch) {
     /* Deterministic per-channel pattern across the whole 8-bit range; every channel
      * varies on both axes, so row-pitch shears and channel-order mistakes change bytes. */
@@ -1560,6 +1673,8 @@ static int cap_test_image_upload(CapTestImage *t) {
     return 1;
 }
 
+/* Its fixture names are relative: sdl3vk_capture_selftest runs this from the scratch working
+ * directory beneath SR_SELFTEST_BUILD_ROOT, so the files never land in the checkout. */
 int sdl3vk_input_profile_selftest(void) {
     int ok = 1;
 
@@ -1702,7 +1817,7 @@ int sdl3vk_input_profile_selftest(void) {
 
     /* ---- 5(c) Invalid profile fallback + diagnostic; missing file fallback ---- */
     {
-        const char *tmp_invalid = "build/selftest_invalid_profile.json";
+        const char *tmp_invalid = "selftest_invalid_profile.json";
         FILE *f = fopen(tmp_invalid, "w");
         if (f) {
             fputs("{\n  \"schema_version\": 999,\n  \"deadzone_inner\": -100\n}\n", f);
@@ -1721,7 +1836,7 @@ int sdl3vk_input_profile_selftest(void) {
         }
         remove(tmp_invalid);
 
-        profile_test_setenv("NK_INPUT_PROFILE", "build/selftest_nonexistent_profile_12345.json");
+        profile_test_setenv("NK_INPUT_PROFILE", "selftest_nonexistent_profile_12345.json");
         sdl3vk_reset_input_profile();
         sdl3vk_init_input_profile();
         prof = sdl3vk_get_input_profile();
@@ -1736,7 +1851,7 @@ int sdl3vk_input_profile_selftest(void) {
 
     /* ---- 5(d) SR_PADSCRIPT still wins ---- */
     {
-        const char *tmp_custom = "build/selftest_custom_profile.json";
+        const char *tmp_custom = "selftest_custom_profile.json";
         NkInputProfile custom;
         nk_input_profile_init_default(&custom);
         custom.psp_buttons[NK_PSP_BTN_CROSS].primary.index = NK_HOST_BUTTON_NORTH;
@@ -1765,7 +1880,7 @@ int sdl3vk_input_profile_selftest(void) {
     return ok;
 }
 
-int sdl3vk_capture_selftest(void) {
+static int sdl3vk_capture_selftest_body(void) {
     int ok = 1;
 
     /* ---- pure framebuffer-capture policy (fbcap_policy.h); no Vulkan needed --------- */
@@ -2238,6 +2353,33 @@ int sdl3vk_capture_selftest(void) {
     if (!ok) return 1;
     puts("gpu capture selftest: OK");
     return 0;
+}
+
+/* Runs the body from a scratch working directory beneath SR_SELFTEST_BUILD_ROOT. Its relative
+ * paths (the FBSNAP default build/snapshots, the selftest_*.ppm frames, the input-profile
+ * fixtures) resolve against the working directory, so they land in scratch, never in the
+ * checkout's build/ or its root. The original working directory is restored on every path. */
+int sdl3vk_capture_selftest(void) {
+    static const char scratch_rel[] = SR_SELFTEST_BUILD_ROOT "/gpu_capture_selftest";
+    char original[1024];
+    char scratch[1024];
+    if (!nk_platform_absolute_path(".", original, sizeof original) ||
+        !nk_platform_mkdir_p(scratch_rel) ||
+        !nk_platform_absolute_path(scratch_rel, scratch, sizeof scratch)) {
+        fprintf(stderr, "gpu capture selftest: cannot prepare scratch directory '%s'\n",
+                scratch_rel);
+        return 1;
+    }
+    if (SDL3VK_TEST_CHDIR(scratch) != 0) {
+        fprintf(stderr, "gpu capture selftest: cannot enter scratch directory '%s'\n", scratch);
+        return 1;
+    }
+    int rc = sdl3vk_capture_selftest_body();
+    if (SDL3VK_TEST_CHDIR(original) != 0) {
+        fprintf(stderr, "gpu capture selftest: cannot restore working directory '%s'\n", original);
+        return 1;
+    }
+    return rc;
 }
 
 void sdl3vk_shutdown(void) {

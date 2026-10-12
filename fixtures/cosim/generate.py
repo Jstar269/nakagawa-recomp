@@ -229,6 +229,44 @@ def _cell_ldst() -> list[int]:
     ]
 
 
+def _cell_unaligned_merge() -> list[int]:
+    """Little-endian lwl/lwr/swl/swr merges at every byte alignment.
+
+    The eight loads start from the same poisoned register value and read from
+    two distinct known words.  Each store writes one distinct prefilled word,
+    so the harness can check every alignment independently in both lanes.
+    """
+    words = [
+        _i(0x0F, ZERO, T1, 0xA1B2),        # lui   t1, 0xa1b2
+        _i(0x0D, T1, T1, 0xC3D4),          # ori   t1, t1, 0xc3d4
+        _i(0x0F, ZERO, T0, 0x1122),        # lui   t0, 0x1122
+        _i(0x0D, T0, T0, 0x3344),          # ori   t0, t0, 0x3344
+        _i(0x2B, A0, T0, 0),               # sw    t0, 0(a0)
+        _i(0x0F, ZERO, T0, 0x5566),        # lui   t0, 0x5566
+        _i(0x0D, T0, T0, 0x7788),          # ori   t0, t0, 0x7788
+        _i(0x2B, A0, T0, 4),               # sw    t0, 4(a0)
+        _i(0x0F, ZERO, T0, 0x1122),        # lui   t0, 0x1122
+        _i(0x0D, T0, T0, 0x3344),          # ori   t0, t0, 0x3344
+    ]
+    words.extend(_i(0x2B, A0, T0, 8 + 4 * i) for i in range(8))
+
+    # Keep each merged result live in a distinct register for the expected-value
+    # oracle.  LWL covers offsets 0..3 in the first word; LWR covers 0..3 in
+    # the second word.
+    for rt, offset in zip((T2, T3, T4, T5), range(4), strict=True):
+        words.append(_r(T1, ZERO, rt, 0, 0x21))
+        words.append(_i(0x22, A0, rt, offset))  # lwl
+    for rt, offset in zip((T6, T7, T8, T9), range(4, 8), strict=True):
+        words.append(_r(T1, ZERO, rt, 0, 0x21))
+        words.append(_i(0x26, A0, rt, offset))  # lwr
+
+    # Distinct aligned words preserve the result for each store alignment.
+    words.extend(_i(0x2A, A0, T1, 8 + 4 * i + i) for i in range(4))   # swl
+    words.extend(_i(0x2E, A0, T1, 24 + 4 * i + i) for i in range(4))  # swr
+    words.extend((JR_RA, NOP))
+    return words
+
+
 def _cell_branch() -> list[int]:
     """Conditional branch ownership of its delay slot.
 
@@ -512,6 +550,35 @@ def _cell_hilo() -> list[int]:
     ]
 
 
+def _cell_llsc() -> list[int]:
+    """`ll`/`sc` and the MIPS32 link bit (CpuState.llbit).
+
+    Every lane starts from a seeded llbit of 0, so the first `sc` must fail: no
+    store, rt = 0. A linked `sc` stores and reports 1; a second `sc` with no new
+    `ll` stores again, because `sc` leaves LLbit as it found it. `ll $zero` still
+    links. The retry loop is the canonical atomic increment and must complete in
+    one pass (no window-ending event occurs inside it). The last `sc` names the
+    base register as rt, so a lane that writes the result before latching the
+    address stores to the wrong place.
+    """
+    return [
+        _i(0x38, A0, T1, 0),                # sc    t1, 0(a0)    link clear: fails
+        _i(0x30, A0, T2, 4),                # ll    t2, 4(a0)
+        _i(0x09, T2, T2, 5),                # addiu t2, t2, 5
+        _i(0x38, A0, T2, 4),                # sc    t2, 4(a0)    linked: stores, t2 = 1
+        _i(0x38, A0, T3, 8),                # sc    t3, 8(a0)    still linked: stores
+        _i(0x30, A0, ZERO, 12),             # ll    zero, 12(a0)
+        _i(0x30, A0, T4, 16),               # L: ll t4, 16(a0)
+        _i(0x09, T4, T4, 1),                # addiu t4, t4, 1
+        _i(0x38, A0, T4, 16),               # sc    t4, 16(a0)
+        _i(0x04, T4, ZERO, -4),             # beq   t4, zero, L
+        NOP,
+        _i(0x38, A0, A0, 20),               # sc    a0, 20(a0)   rt == base
+        JR_RA,
+        NOP,
+    ]
+
+
 def _cell_fpu() -> list[int]:
     """Scalar FPU cell over the #120 helper path.
 
@@ -637,6 +704,7 @@ CELLS: tuple[tuple[str, str, object], ...] = (
     ("alu", "ordinary ALU", _cell_alu),
     ("r0", "r0 write suppression", _cell_r0),
     ("ldst", "load/store width and extension", _cell_ldst),
+    ("unaligned", "lwl/lwr/swl/swr byte merges", _cell_unaligned_merge),
     ("branch", "conditional branch + delay slot", _cell_branch),
     ("jump", "direct jump + delay slot", _cell_jump),
     ("link_leaf", "leaf A: the correct call destination", _cell_link_leaf),
@@ -653,6 +721,7 @@ CELLS: tuple[tuple[str, str, object], ...] = (
     ("xtail", "cross-tier TAIL transfer across the AOT/interpreter seam",
      _cell_xtail),
     ("hilo", "HI/LO multiply", _cell_hilo),
+    ("llsc", "ll/sc and the link bit", _cell_llsc),
     ("fpu", "scalar FPU over the #120 helper path", _cell_fpu),
     ("fpu_aot", "AOT-only scalar FPU oracle cell", _cell_fpu_aot),
     ("spleak", "positive control: unbalanced $sp epilogue", _cell_spleak),

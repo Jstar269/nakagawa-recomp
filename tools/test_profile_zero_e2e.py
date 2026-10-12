@@ -26,6 +26,7 @@ if str(TOOLS) not in sys.path:
 import ge_stat_windows  # noqa: E402
 import prxload  # noqa: E402
 import vulkan_sdk  # noqa: E402
+from test_build_truth import _scratch_build_root  # noqa: E402
 
 
 MANIFEST_PATHS = (
@@ -372,7 +373,7 @@ def _verify_backend_matches_authority(backend: tuple[str, str | None]) -> None:
         )
 
 
-def _runtime_build_environment() -> tuple[dict[str, str], str]:
+def _runtime_build_environment(test: unittest.TestCase) -> tuple[dict[str, str], str]:
     make = shutil.which("mingw32-make") or shutil.which("make")
     if not make:
         raise unittest.SkipTest("SKIP: GNU Make is unavailable for the package contract")
@@ -392,8 +393,13 @@ def _runtime_build_environment() -> tuple[dict[str, str], str]:
             ) from exc
         environment["VULKAN_SDK"] = sdk.as_posix()
     environment["MAKEFLAGS"] = "-j4"
+    # A scratch BUILD_ROOT, exported to the probe and to every Make run the package route
+    # makes with this environment: parsing a Makefile writes its SDL3 discovery fragment
+    # beneath BUILD_ROOT, which must not be the checkout's build/.
+    build_root = _scratch_build_root(test, "profile-zero")
+    environment["BUILD_ROOT"] = build_root.as_posix()
     probe = subprocess.run(
-        [make, "--no-print-directory", "sdl3-check"],
+        [make, "--no-print-directory", "sdl3-check", f"BUILD_ROOT={build_root.as_posix()}"],
         cwd=ROOT,
         env=environment,
         capture_output=True,
@@ -723,7 +729,7 @@ class ProfileZeroManifestTests(unittest.TestCase):
                 flush=True,
             )
             _verify_backend_matches_authority(backend)
-        build_environment, make = _runtime_build_environment()
+        build_environment, make = _runtime_build_environment(self)
         with tempfile.TemporaryDirectory(prefix="nk-profile-zero-e2e-") as temporary:
             root = Path(temporary)
             for manifest_path in MANIFEST_PATHS:

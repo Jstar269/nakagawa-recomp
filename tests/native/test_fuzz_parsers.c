@@ -34,6 +34,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Scratch root for the files this test writes: the checkout's build/ by default, or
+ * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
+ * touches the checkout. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+
 /* Bounded mock guest arena for PRX loader relocations and segment writes */
 static uint8_t s_guest_arena[512 * 1024];
 
@@ -402,7 +409,7 @@ static void test_fuzz_iso(unsigned iters) {
     assert(seed && mutated);
 
     size_t seed_size = build_fuzz_iso(seed, cap);
-    const char *iso_path = "build/fuzz_test_temp.iso";
+    const char *iso_path = SR_SELFTEST_BUILD_ROOT "/fuzz_test_temp.iso";
 
     write_file_bytes(iso_path, seed, seed_size);
 
@@ -548,7 +555,7 @@ static void test_fuzz_elf_classifier(unsigned iters) {
     assert(iso_seed && iso_mutated);
 
     build_fuzz_classifier_iso(iso_seed, iso_size, elf_seed, elf_size);
-    const char *iso_path = "build/fuzz_classifier_temp.iso";
+    const char *iso_path = SR_SELFTEST_BUILD_ROOT "/fuzz_classifier_temp.iso";
     write_file_bytes(iso_path, iso_seed, iso_size);
     NkIsoExecutableReport report;
     assert(nk_iso_classify_executables(iso_path, &report) == NK_OK);
@@ -1151,7 +1158,7 @@ static void test_fuzz_input_profile(unsigned iters) {
     printf("[FUZZ] Testing per-game input profile parser (%u iterations)...\n", iters);
     fflush(stdout);
 
-    const char *profile_path = "build/fuzz_input_profile_temp.json";
+    const char *profile_path = SR_SELFTEST_BUILD_ROOT "/fuzz_input_profile_temp.json";
     size_t seed_size = strlen(s_valid_input_profile_json);
     size_t cap = seed_size * 2u + 64u;
     char err[256];
@@ -1320,10 +1327,12 @@ static void test_fuzz_package(unsigned iters) {
     static const char disc_id[] = "TEST00001";
     static const char title_id[] = "synthetic-allegrex-v1";
     static const char executable_name[] = "synthetic-allegrex-v1.exe";
-    const char *root = "build/fuzz_package_root";
+    const char *root = SR_SELFTEST_BUILD_ROOT "/fuzz_package_root";
     char package_dir[512], package_path[640], report_path[640];
     char executable_path[768], image_path[768], absolute_root[1024];
     char package_json[8192], report_json[8192], cache_json[4096], cache_key_json[3072];
+    char aot_components_json[1024], generated_components_json[1024], native_components_json[512];
+    char aot_digest[65], generated_code_digest[65], native_digest[65];
     char completion_json[4096], completion_path[768];
     char reason[512];
 
@@ -1347,14 +1356,8 @@ static void test_fuzz_package(unsigned iters) {
         "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570";
     const char *codegen_options_digest =
         "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356";
-    const char *aot_digest =
-        "b3f742b8ef4b96abe6e66a4301c2230ce88d7075e46e12cccfc99be598c6dad9";
-    const char *native_digest =
-        "d8e93061990e675b8d7e459866d273012414d4b583161e257e14e5703dfdc8bd";
     const char *identity_digest =
         "b9b7b9d231aafef0cb4254e9d063043d4f74edb82f87d6a828e66ba9b1eb1774";
-    const char *generated_code_digest =
-        "d3991dd8147b28df31bf0e2336377d7c34b38048aaecc9443fde95bd8f767dd5";
     static const char identity_json[] =
         "{\"container\":null,"
         "\"disc\":{\"disc_version\":null,\"id\":null,\"region\":null},"
@@ -1364,26 +1367,66 @@ static void test_fuzz_package(unsigned iters) {
         "\"manifest\":{\"id\":\"synthetic-allegrex-v1\",\"schema_version\":1},"
         "\"modules\":[],\"param_sfo\":null,\"psp_header\":null,\"schema_version\":2,"
         "\"source_media\":null}";
-    int cache_key_length = snprintf(cache_key_json, sizeof(cache_key_json),
-        "{\"schema_version\":2,\"aot\":{\"digest\":\"%s\",\"components\":{"
-        "\"analyzer_codegen_epoch\":\"analyzer-codegen-v1\","
+    /* The validator recomputes each key digest as sha256(canonical components + "\n"), so the
+     * fixture derives them from the components it writes (the epochs are the native twins). */
+    int aot_components_length = snprintf(aot_components_json, sizeof(aot_components_json),
+        "{\"analyzer_codegen_epoch\":\"analyzer-codegen-v1\","
         "\"analyzer_sha256\":\"%064d\",\"codegen_options_sha256\":\"%s\","
         "\"codegen_sha256\":\"%064d\",\"executable_sha256\":\"%s\","
-        "\"generated_code_abi_epoch\":1,\"manifest_sha256\":\"%064d\","
+        "\"generated_code_abi_epoch\":%d,\"manifest_sha256\":\"%064d\","
         "\"modules_sha256\":\"%s\",\"psp_header_sha256\":null,"
-        "\"runtime_abi_epoch\":1,\"title_input_identity_sha256\":\"%s\"}},"
-        "\"native\":{\"digest\":\"%s\","
-        "\"components\":{\"compile_flags\":\"\",\"compiler_identity\":\"gcc-fixture\","
+        "\"runtime_abi_epoch\":%d,\"title_input_identity_sha256\":\"%s\"}",
+        0, codegen_options_digest, 0, fixture_sha, NK_AOT_GENERATED_CODE_ABI_EPOCH, 0,
+        modules_digest, NK_AOT_RUNTIME_ABI_EPOCH, identity_digest);
+    assert(aot_components_length > 0 && (size_t)aot_components_length < sizeof(aot_components_json));
+    /* generated_code_digest covers the AOT components without runtime_abi_epoch (the generated C
+     * can outlive a compatible runtime epoch), hashed the same way as the key digests. */
+    int generated_components_length = snprintf(generated_components_json, sizeof(generated_components_json),
+        "{\"analyzer_codegen_epoch\":\"analyzer-codegen-v1\","
+        "\"analyzer_sha256\":\"%064d\",\"codegen_options_sha256\":\"%s\","
+        "\"codegen_sha256\":\"%064d\",\"executable_sha256\":\"%s\","
+        "\"generated_code_abi_epoch\":%d,\"manifest_sha256\":\"%064d\","
+        "\"modules_sha256\":\"%s\",\"psp_header_sha256\":null,"
+        "\"title_input_identity_sha256\":\"%s\"}",
+        0, codegen_options_digest, 0, fixture_sha, NK_AOT_GENERATED_CODE_ABI_EPOCH, 0,
+        modules_digest, identity_digest);
+    assert(generated_components_length > 0 &&
+           (size_t)generated_components_length < sizeof(generated_components_json));
+    {
+        FuzzSha256 ctx;
+        fuzz_sha_init(&ctx);
+        fuzz_sha_update(&ctx, (const uint8_t *)generated_components_json,
+                        (size_t)generated_components_length);
+        fuzz_sha_update(&ctx, (const uint8_t *)"\n", 1u);
+        fuzz_sha_finish(&ctx, generated_code_digest);
+    }
+    int native_components_length = snprintf(native_components_json, sizeof(native_components_json),
+        "{\"compile_flags\":\"\",\"compiler_identity\":\"gcc-fixture\","
         "\"compiler_target\":\"fixture-target\",\"generated_code_digest\":\"%s\","
-        "\"link_flags\":\"\",\"runtime_abi_epoch\":1,\"runtime_source_digest\":\"%064d\"}}}",
-        aot_digest, 0, codegen_options_digest, 0, fixture_sha, 0, modules_digest,
-        identity_digest, native_digest, generated_code_digest, 0);
+        "\"link_flags\":\"\",\"runtime_abi_epoch\":%d,\"runtime_source_digest\":\"%064d\"}",
+        generated_code_digest, NK_AOT_RUNTIME_ABI_EPOCH, 0);
+    assert(native_components_length > 0 && (size_t)native_components_length < sizeof(native_components_json));
+    {
+        FuzzSha256 ctx;
+        fuzz_sha_init(&ctx);
+        fuzz_sha_update(&ctx, (const uint8_t *)aot_components_json, (size_t)aot_components_length);
+        fuzz_sha_update(&ctx, (const uint8_t *)"\n", 1u);
+        fuzz_sha_finish(&ctx, aot_digest);
+        fuzz_sha_init(&ctx);
+        fuzz_sha_update(&ctx, (const uint8_t *)native_components_json, (size_t)native_components_length);
+        fuzz_sha_update(&ctx, (const uint8_t *)"\n", 1u);
+        fuzz_sha_finish(&ctx, native_digest);
+    }
+    int cache_key_length = snprintf(cache_key_json, sizeof(cache_key_json),
+        "{\"schema_version\":2,\"aot\":{\"digest\":\"%s\",\"components\":%s},"
+        "\"native\":{\"digest\":\"%s\",\"components\":%s}}",
+        aot_digest, aot_components_json, native_digest, native_components_json);
     assert(cache_key_length > 0 && (size_t)cache_key_length < sizeof(cache_key_json));
     int cache_length = snprintf(cache_json, sizeof(cache_json),
         "{\"format\":\"nakagawa-aot-cache\",\"schema_version\":2,\"key\":%s,"
         "\"codegen_options\":{},\"runtime_abi_compatibility\":{"
-        "\"current_epoch\":1,\"generated_code_reusable\":true}}",
-        cache_key_json);
+        "\"current_epoch\":%d,\"generated_code_reusable\":true}}",
+        cache_key_json, NK_AOT_RUNTIME_ABI_EPOCH);
     assert(cache_length > 0 && (size_t)cache_length < sizeof(cache_json));
     int report_length = snprintf(report_json, sizeof(report_json),
         "{\"format\":\"nakagawa-build-report\",\"schema_version\":1,"
@@ -1504,7 +1547,7 @@ static void test_fuzz_library(unsigned iters) {
     printf("[FUZZ] Testing Library JSON parser (%u iterations)...\n", iters);
     fflush(stdout);
 
-    const char *lib_path = "build/fuzz_test_library.json";
+    const char *lib_path = SR_SELFTEST_BUILD_ROOT "/fuzz_test_library.json";
     size_t seed_size = strlen(s_valid_library_json);
     write_file_bytes(lib_path, s_valid_library_json, seed_size);
 
@@ -2002,7 +2045,7 @@ static void test_fuzz_keystore(unsigned iters) {
 
     char seed[1024];
     size_t seed_len = build_keystore_json(seed, sizeof(seed));
-    const char *path = "build/fuzz_test_keystore.json";
+    const char *path = SR_SELFTEST_BUILD_ROOT "/fuzz_test_keystore.json";
     char err[256];
     {
         NkKeystore *ks = nk_keystore_create();
@@ -2484,7 +2527,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    assert(nk_platform_mkdir_p("build"));
+    assert(nk_platform_mkdir_p(SR_SELFTEST_BUILD_ROOT));
 
     printf("=================================================================\n");
     printf("Starting Nakagawa deterministic parser fuzz suite (iters=%u)\n", iters);

@@ -84,6 +84,8 @@ def parse_frames(spec: str) -> tuple[int, int]:
 
 
 def load_records(path: Path) -> list[dict]:
+    """Draw records only; late-write records (``kind == "late_write"``) are skipped here and read
+    by load_late_writes, so a trace that carries both still diffs draw by draw."""
     records = []
     with path.open(encoding="utf-8") as fp:
         for lineno, line in enumerate(fp, 1):
@@ -96,11 +98,41 @@ def load_records(path: Path) -> list[dict]:
                 raise ValueError(f"{path}:{lineno}: invalid JSON: {exc}") from exc
             if not isinstance(record, dict):
                 raise ValueError(f"{path}:{lineno}: expected a JSON object per line")
+            if record.get("kind") == "late_write":
+                continue
             for key in ("frame", "draw_id", "prim", "count"):
                 if key not in record:
                     raise ValueError(f"{path}:{lineno}: record is missing {key!r}")
             records.append(record)
     return records
+
+
+def load_late_writes(path: Path) -> list[dict]:
+    """The late-write records of a trace: a weighted draw whose vertex or index bytes changed
+    between the draw and the next present/DrawSync/ListSync (see src/rt/ge.c)."""
+    late = []
+    with path.open(encoding="utf-8") as fp:
+        for line in fp:
+            line = line.strip()
+            if not line:
+                continue
+            record = json.loads(line)
+            if isinstance(record, dict) and record.get("kind") == "late_write":
+                late.append(record)
+    return late
+
+
+def late_write_lines(late: list[dict], first: int, last: int) -> list[str]:
+    lines = []
+    for record in late:
+        frame = int(record["frame"])
+        if frame < first or frame > last:
+            continue
+        span = record.get("vertex_span", ["?", "?"])
+        lines.append(f"LATE_WRITE frame={frame} draw={record.get('draw')} draw_id={record.get('draw_id')} "
+                     f"list={record.get('list')} cmd={record.get('cmd')} span={span[0]}..{span[1]} "
+                     f"check={record.get('check')}@{record.get('check_vblank')}")
+    return lines
 
 
 def group_by_frame(records: list[dict]) -> dict[int, dict[str, list[dict]]]:
@@ -216,6 +248,10 @@ def main(argv: list[str] | None = None) -> int:
     good_ids = frames[good_frame]
     bad_ids = frames[bad_frame]
     lines = [f"LAST_GOOD frame={good_frame}", f"FIRST_BAD frame={bad_frame}"]
+    # Late writes between the last good and the first bad frame (inclusive) come first:
+    # they say which submitted bytes the guest changed before the frame it believed drawn.
+    lines += late_write_lines(load_late_writes(args.trace), min(good_frame, bad_frame),
+                              max(good_frame, bad_frame))
     for draw_id in sorted(set(good_ids) | set(bad_ids)):
         good_list = good_ids.get(draw_id, [])
         bad_list = bad_ids.get(draw_id, [])

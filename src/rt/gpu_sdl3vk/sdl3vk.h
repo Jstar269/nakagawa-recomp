@@ -103,6 +103,34 @@ void     sdl3vk_consume_button_pulses(void);
 void     sdl3vk_analog(uint8_t *lx, uint8_t *ly);
 int      sdl3vk_pad_present(void);
 
+/* Text entry for the in-window on-screen keyboard (src/rt/osk_overlay.c). While claimed, the
+ * window accepts typed text, Escape cancels instead of quitting, and the editing keys are
+ * queued here instead of reaching the guest. Keys are neutral codes, not SDL keycodes. */
+typedef enum {
+    SDL3VK_KEY_NONE = 0,
+    SDL3VK_KEY_UP,
+    SDL3VK_KEY_DOWN,
+    SDL3VK_KEY_LEFT,
+    SDL3VK_KEY_RIGHT,
+    SDL3VK_KEY_ENTER,
+    SDL3VK_KEY_ESCAPE,
+    SDL3VK_KEY_TAB,
+    SDL3VK_KEY_BACKSPACE,
+    SDL3VK_KEY_TEXT        /* codepoint holds one Unicode character typed */
+} Sdl3VkKey;
+
+typedef struct {
+    int      key;          /* an Sdl3VkKey */
+    uint32_t codepoint;    /* SDL3VK_KEY_TEXT only */
+} Sdl3VkKeyEvent;
+
+void sdl3vk_set_text_claim(int on);
+/* Drains up to max queued key and text events in order. Returns the count. */
+int  sdl3vk_take_key_events(Sdl3VkKeyEvent *out, int max);
+/* PSP button bits of gamepad buttons that went down since the last take. The keyboard's pad
+ * input: a press between two samples is not lost the way a held state would be. */
+uint32_t sdl3vk_take_pad_pulses(void);
+
 /* Host input profile mapping and evaluation (#357). */
 void sdl3vk_map_gamepad(
     const NkInputProfile *profile,

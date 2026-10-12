@@ -510,6 +510,9 @@ int sr_cpu_eret(CpuState *s, uint32_t instr_pc) {
         return -2;
     }
     s->cop0[SR_CP0_STATUS] &= (uint32_t)~SR_STATUS_EXL;
+    /* MIPS32: ERET clears LLbit, so an sc after the return fails. A faulting
+     * eret (above) is not a return and leaves the link alone. */
+    sr_cpu_link_clear(s);
     s->pc = target;
     s->flow_kind = SR_FLOW_ERET;
     s->flow_target = target;

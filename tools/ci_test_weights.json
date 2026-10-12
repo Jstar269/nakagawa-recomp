@@ -111,6 +111,7 @@
     "test_package_notices": 0.09,
     "test_padscript_from_log": 0.01,
     "test_parse_fuzz": 2.18,
+    "test_perf_attribution": 0.77,
     "test_perf_summary_diff": 0.26,
     "test_pgf_writer": 0.36,
     "test_platform_ladder": 88.38,

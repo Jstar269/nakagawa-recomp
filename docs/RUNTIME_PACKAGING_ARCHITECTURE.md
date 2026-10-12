@@ -244,12 +244,24 @@ following key components:
 | Runtime source/header digest and output-affecting compile/link flags | not required | required |
 
 The current package-layer epochs are `analyzer-codegen-v1`,
-`GENERATED_CODE_ABI_EPOCH = 1`, and `RUNTIME_ABI_EPOCH = 1`. The generated-code
+`GENERATED_CODE_ABI_EPOCH = 2`, and `RUNTIME_ABI_EPOCH = 2`. The generated-code
 and runtime epoch values are compatibility contracts, not release versions. A
 change to the generated C/runtime helper boundary must bump
 `GENERATED_CODE_ABI_EPOCH`; a runtime-package ABI change must bump
-`RUNTIME_ABI_EPOCH`. The package layer documents the bump because the codegen
-agent owns the implementation epoch source.
+`RUNTIME_ABI_EPOCH`. The CpuState layout (`SR_CPUSTATE_ABI_VERSION` in
+`src/rt/recomp.h`) is part of both boundaries: generated C addresses CpuState
+fields by offset, and the runtime package shares the struct with the generated
+objects, so every CpuState version bumps both epochs. `CPUSTATE_ABI_EPOCHS` in
+`tools/nk_core/package_cache.py` records the pairing (CpuState v2: epochs 1/1;
+v3, which appended `llbit`: epochs 2/2), the native validator carries the twins
+`NK_AOT_GENERATED_CODE_ABI_EPOCH` and `NK_AOT_RUNTIME_ABI_EPOCH` in
+`src/core/nk_title_manifest.h`, and `tools/test_package_cache.py` pins the header
+version, the table, the constants and the twins to each other. A package whose
+cache key names an older epoch is `aot-regenerate` for the tools and
+`NK_RUNTIME_PACKAGE_INCOMPATIBLE` for the player (the same outcome the
+codegen/runtime digests and the package `abi_version` already force; the epochs
+make the contract explicit). The package layer documents the bump because the
+codegen agent owns the implementation epoch source.
 
 The cache decision has three levels:
 
@@ -284,3 +296,42 @@ The cache contains private title-derived bytes and is intentionally outside the
 public export and provenance tree. Publication policy remains default-deny for
 `cache/` paths; a cache artifact accidentally proposed for publication is
 rejected by the public-scope audit.
+
+### Generated-code stage reuse (bring-up)
+
+`nk_cli.py bringup` generates each title's code once. Its codegen stage runs
+inside the package build, after the package's preflight and cache-key
+computation, as a planner call with `--aot-stage`: the same planner command,
+inputs, title input identity and Make environment as the package build,
+running only Make's generation phase (`pipeline`) into the work directory's
+empty `codegen-stage/`. The stage writes the package completion manifest last,
+holding the build's cache key, the title input identity and the SHA-256 of
+every file it contains.
+
+The package build then receives `--reuse-aot-stage codegen-stage/`. It compiles
+the stage's output with `NK_AOT_PREGENERATED=1` (Make's `compile` phase) only
+after the checks the native-only reuse of a package's generated C performs:
+the completion record must be complete and every recorded artifact intact,
+with no file added or missing, and the generated-code components of its cache
+key must equal the build's own (`compare_cache_keys`, generated C reusable).
+Each copied file is hashed as it is written and compared with the record, so
+a stage that changes after its check is refused rather than compiled. Any
+refusal regenerates the code from source with Make's `all` and is named:
+
+| Reason | Cause |
+| --- | --- |
+| `AOT_STAGE_RECORD_MISSING` | The stage or its completion record is missing (an interrupted stage). |
+| `AOT_STAGE_RECORD_INVALID` | The record is unreadable, incomplete, or inconsistent with its key. |
+| `AOT_STAGE_ARTIFACT_MISMATCH` | A recorded file changed, is missing, or a file was added. |
+| `AOT_STAGE_INCOMPLETE` | The record does not cover a required generation output. |
+| `AOT_STAGE_INPUT_CHANGED` | Executable, manifest, module, PSP header or title input identity differ. |
+| `AOT_STAGE_GENERATOR_CHANGED` | Analyzer or code generator content, or an epoch, differ. |
+| `AOT_STAGE_OPTIONS_CHANGED` | Codegen options (profile, spans, chunking, user arguments) differ. |
+
+The planner prints its decision as one `AOT_STAGE_REUSE:` line before Make
+runs, and the sanitized bring-up report records it as `codegen_reuse`
+(`REUSED`, `REGENERATED` with the reason, or `NOT_RUN` when a valid package
+already held the key's generated C). The report's
+`counts.unsupported_opcodes` is read from the stub report inside the built
+package, so it describes the code that shipped; only a build that fails
+before packaging falls back to the stage's stub report.

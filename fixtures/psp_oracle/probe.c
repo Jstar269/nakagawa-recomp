@@ -119,6 +119,7 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_REFER_STATUS_SIZE 65
 #define PSP_ORACLE_CASE_REGISTRY_READONLY 66
 #define PSP_ORACLE_CASE_KERNEL_MISC 67
+#define PSP_ORACLE_CASE_VFPU_COMPARE 68
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -130,6 +131,7 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_MUTEX_TIMEOUT_QUANTA 20
 #define PSP_ORACLE_CASE_MUTEX_PRIORITY_INHERITANCE 21
 #define PSP_ORACLE_CASE_MUTEX_INTERRUPT_CONTEXT 22
+#define PSP_ORACLE_CASE_LLSC_LINK 69
 
 /* Plain mutex syscalls are absent from the installed PSPSDK headers, so the
    probe declares the exact ABI it imports via fixtures/psp_oracle/
@@ -158,9 +160,11 @@ int sceKernelReferMutexStatus(SceUID mutexid, SceKernelMutexInfo *info);
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY
 PSP_MAIN_THREAD_PARAMS(0x20, 32, THREAD_ATTR_USER);
-#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \
+      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE
 /* vadd.s/vmul.s run on the main thread; without the VFPU attribute the first
- * VFPU instruction traps (measured on PSP-3001 6.6.1: the thread stops after META). */
+ * VFPU instruction traps (measured on PSP-3001 6.6.1: the thread stops after META).
+ * The VFPU compare case runs vscmp.s/vsge.s/vslt.s there for the same reason. */
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
 #else
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
@@ -278,6 +282,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/registry_readonly_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_KERNEL_MISC
 #define PROBE_HOST0_LOG "host0:/kernel_misc_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE
+#define PROBE_HOST0_LOG "host0:/vfpu_compare_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SMOKE
 #define PROBE_HOST0_LOG "host0:/smoke_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_EXIT_DELETE
@@ -300,6 +306,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/mutex_priority_inheritance_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_INTERRUPT_CONTEXT
 #define PROBE_HOST0_LOG "host0:/mutex_interrupt_context_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_LLSC_LINK
+#define PROBE_HOST0_LOG "host0:/llsc_link_log.txt"
 #endif
 
 /* Durable line writer: every record, step marker and the metadata line goes
@@ -3587,6 +3595,141 @@ static void run_fpu_vector(int emulated, uint32_t boot_fcr31) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE
+/* VFPU compare results (main thread only, no threads created). vscmp.s, vsge.s
+   and vslt.s each write one lane: S000 and S001 hold the operands and S002 the
+   result. Operands and results move as raw u32 words (mtv/mfv), so every record
+   carries exact bit patterns and no libc float formatting. Each cell loads a
+   sentinel into S002 first, so a compare that did not write its destination
+   cannot pass as a measured word.
+
+   The expected words are the project's model, not console behaviour. They
+   follow src/rt/vfpu_interp.c (VFPU3 sub-ops 5, 6 and 7, PPSSPP's Int_Vscmp,
+   Int_Vsge and Int_Vslt): vscmp.s yields -1.0, 0.0 or +1.0, vsge.s and vslt.s
+   yield 1.0 or 0.0, and a NaN operand compares false and yields 0.0. The
+   console's NaN results are UNMEASURED. Every record carries result = the
+   observed word, out0 = the model word, and out1/out2 = the operands; whether
+   the console agrees with the model is result against out0. The status does
+   not judge that, as in the fpu-vector family: the campaign runner accepts a
+   capture only when every record is PASS, so a disagreement must not fail the
+   record that measured it. PASS means the compare wrote S002 (the sentinel is
+   gone); FAIL means S002 still held the sentinel, so the cell measured
+   nothing.
+
+   FCR31 is cleared to traps-off before the first cell, so no IEEE trap enable
+   from the boot state can fire on a signalling NaN; the boot value is never
+   restored. Results are computed into a table and emitted after the last cell,
+   so no host0 I/O runs between VFPU operations. */
+#define VFPU_COMPARE_SENTINEL 0x7a5a5a5au
+#define VFPU_COMPARE_OPS 3u
+#define VFPU_COMPARE_PAIRS 15u
+#define VFPU_COMPARE_CELLS (VFPU_COMPARE_OPS * VFPU_COMPARE_PAIRS)
+#define VFPU_COMPARE_ONE 0x3f800000u
+#define VFPU_COMPARE_MINUS_ONE 0xbf800000u
+
+struct vfpu_compare_pair {
+    const char *name;
+    uint32_t a;
+    uint32_t b;
+    uint32_t expect[VFPU_COMPARE_OPS]; /* model word per op: vscmp.s, vsge.s, vslt.s */
+};
+
+static const struct vfpu_compare_pair s_vfpu_compare_pairs[VFPU_COMPARE_PAIRS] = {
+    {"lt", 0x3fc00000u, 0x40200000u, {VFPU_COMPARE_MINUS_ONE, 0u, VFPU_COMPARE_ONE}},
+    {"eq", 0x3fc00000u, 0x3fc00000u, {0u, VFPU_COMPARE_ONE, 0u}},
+    {"gt", 0x40200000u, 0x3fc00000u, {VFPU_COMPARE_ONE, VFPU_COMPARE_ONE, 0u}},
+    {"zero-pos-neg", 0x00000000u, 0x80000000u, {0u, VFPU_COMPARE_ONE, 0u}},
+    {"zero-neg-pos", 0x80000000u, 0x00000000u, {0u, VFPU_COMPARE_ONE, 0u}},
+    {"nan-left-quiet", 0x7fc00000u, 0x3fc00000u, {0u, 0u, 0u}},
+    {"nan-right-quiet", 0x3fc00000u, 0x7fc00000u, {0u, 0u, 0u}},
+    {"nan-left-signal", 0x7f800001u, 0x3fc00000u, {0u, 0u, 0u}},
+    {"nan-right-signal", 0x3fc00000u, 0x7f800001u, {0u, 0u, 0u}},
+    {"nan-left-negative", 0xffc00000u, 0x3fc00000u, {0u, 0u, 0u}},
+    {"inf-pos-neg", 0x7f800000u, 0xff800000u, {VFPU_COMPARE_ONE, VFPU_COMPARE_ONE, 0u}},
+    {"inf-neg-pos", 0xff800000u, 0x7f800000u, {VFPU_COMPARE_MINUS_ONE, 0u, VFPU_COMPARE_ONE}},
+    {"inf-pos-pos", 0x7f800000u, 0x7f800000u, {0u, VFPU_COMPARE_ONE, 0u}},
+    {"inf-neg-neg", 0xff800000u, 0xff800000u, {0u, VFPU_COMPARE_ONE, 0u}},
+    {"inf-pos-finite", 0x7f800000u, 0x3fc00000u, {VFPU_COMPARE_ONE, VFPU_COMPARE_ONE, 0u}},
+};
+
+static uint32_t vfpu_compare_vscmp(uint32_t a, uint32_t b) {
+    const uint32_t sentinel = VFPU_COMPARE_SENTINEL;
+    uint32_t result;
+    __asm__ volatile(
+        "mtv %2, S002\n"
+        "mtv %1, S000\n"
+        "mtv %3, S001\n"
+        "vscmp.s S002, S000, S001\n"
+        "mfv %0, S002\n"
+        : "=r"(result) : "r"(a), "r"(sentinel), "r"(b) : "memory");
+    return result;
+}
+
+static uint32_t vfpu_compare_vsge(uint32_t a, uint32_t b) {
+    const uint32_t sentinel = VFPU_COMPARE_SENTINEL;
+    uint32_t result;
+    __asm__ volatile(
+        "mtv %2, S002\n"
+        "mtv %1, S000\n"
+        "mtv %3, S001\n"
+        "vsge.s S002, S000, S001\n"
+        "mfv %0, S002\n"
+        : "=r"(result) : "r"(a), "r"(sentinel), "r"(b) : "memory");
+    return result;
+}
+
+static uint32_t vfpu_compare_vslt(uint32_t a, uint32_t b) {
+    const uint32_t sentinel = VFPU_COMPARE_SENTINEL;
+    uint32_t result;
+    __asm__ volatile(
+        "mtv %2, S002\n"
+        "mtv %1, S000\n"
+        "mtv %3, S001\n"
+        "vslt.s S002, S000, S001\n"
+        "mfv %0, S002\n"
+        : "=r"(result) : "r"(a), "r"(sentinel), "r"(b) : "memory");
+    return result;
+}
+
+static void run_vfpu_compare(int emulated) {
+    static const char *const op_names[VFPU_COMPARE_OPS] = {"vscmp", "vsge", "vslt"};
+    uint32_t observed[VFPU_COMPARE_CELLS];
+
+    __asm__ volatile("ctc1 $0, $31" ::: "memory");
+    probe_step(emulated, "vfpu-compare", "cells");
+    for (uint32_t op = 0; op < VFPU_COMPARE_OPS; op++) {
+        for (uint32_t p = 0; p < VFPU_COMPARE_PAIRS; p++) {
+            const struct vfpu_compare_pair *pair = &s_vfpu_compare_pairs[p];
+            uint32_t word;
+            if (op == 0) {
+                word = vfpu_compare_vscmp(pair->a, pair->b);
+            } else if (op == 1) {
+                word = vfpu_compare_vsge(pair->a, pair->b);
+            } else {
+                word = vfpu_compare_vslt(pair->a, pair->b);
+            }
+            observed[op * VFPU_COMPARE_PAIRS + p] = word;
+        }
+    }
+    for (uint32_t op = 0; op < VFPU_COMPARE_OPS; op++) {
+        for (uint32_t p = 0; p < VFPU_COMPARE_PAIRS; p++) {
+            const struct vfpu_compare_pair *pair = &s_vfpu_compare_pairs[p];
+            const uint32_t index = op * VFPU_COMPARE_PAIRS + p;
+            const uint32_t expect = pair->expect[op];
+            const uint32_t out[] = {expect, pair->a, pair->b};
+            char case_id[40];
+            snprintf(case_id, sizeof(case_id), "%s-%s", op_names[op], pair->name);
+            emit_record_extended(emulated, "PSP-VFPU-CMP-001", case_id,
+                                 observed[index] == VFPU_COMPARE_SENTINEL ? "FAIL" : "PASS",
+                                 observed[index], out, 3);
+        }
+    }
+    uint32_t done = VFPU_COMPARE_CELLS;
+    emit_record_extended(emulated, "PSP-VFPU-CMP-001", "vfpu-compare-done",
+                         "PASS", 0, &done, 1);
+}
+#endif
+
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_TEARDOWN_TEST
 /* Retired diagnostic: self-deleting main bypassed the CRT stop handshake.
    Keep the case name buildable while reporting the unsupported experiment. */
@@ -6129,6 +6272,176 @@ static void run_refer_status_size(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_LLSC_LINK
+/* ll/sc link facts (main thread only, no threads created). Each cell is one
+   link window: ll loads a word and sets the link, then one or two sc run in the
+   same asm block, with no call, branch, syscall or memory access between ll and
+   the last sc. Every word a cell touches is written with its sentinel before the
+   window opens, so a first-touch exception cannot fall inside it. CPU interrupts
+   are suspended around each window (sceKernelCpuSuspendIntr, the user-mode call
+   the display probes already use), so no interrupt return can clear the link
+   inside it. No cell waits on time or on another thread: the cells are
+   single-threaded register and memory facts.
+
+   The expected words are the project's model (src/rt/guest_interp.c: sc stores
+   and reports 1 only while the link is set, leaves the link as found, and does
+   not compare its address with ll's). That follows the MIPS32 operation text and
+   is UNMEASURED on the console. result is the sc result of the last sc, out0 the
+   word ll loaded, out1 the result of the first sc, out2 and out3 the words at A
+   and B after the cell, and out4 and out5 the model words for A and B; the model
+   reports 1 for every sc. Whether the console agrees with the model is read from
+   those words, not from the status, as in the fpu-vector family: the campaign
+   runner accepts a capture only when every record is PASS, so a disagreement
+   must not fail the record that measured it. The status says the window ran as
+   designed. llsc-control is the control and must store (ll loaded A, the sc
+   reported 1, A holds the stored word and B is untouched): if a plain pair does
+   not store, the other two cells mean nothing. llsc-second-sc passes when ll
+   loaded A and its first sc succeeded, which is the premise of the cell; what
+   the second sc then did is the measurement. llsc-other-address passes when ll
+   loaded A; what the sc to B did is the measurement.
+
+   Cells: llsc-control (ll A; sc A), llsc-second-sc (ll A; sc A; sc A again with
+   no new ll), and llsc-other-address (ll A; sc B). */
+#define LLSC_LINK_CELLS 3u
+#define LLSC_LINK_OUTS 6u
+#define LLSC_LINK_A_INIT 0x11111111u
+#define LLSC_LINK_B_INIT 0x44444444u
+#define LLSC_LINK_FIRST 0x22222222u
+#define LLSC_LINK_SECOND 0x33333333u
+#define LLSC_LINK_OTHER 0x55555555u
+
+/* Row c holds cell c's word A at [c][0] and word B at [c][1]; each row is one
+   16-byte aligned block, so every ll and sc address is word aligned. */
+static volatile uint32_t s_llsc_mem[LLSC_LINK_CELLS][4] __attribute__((aligned(16)));
+
+/* One window: ll A, then sc A storing `value`. */
+static uint32_t llsc_window_one(volatile uint32_t *a, uint32_t value, uint32_t *loaded) {
+    uint32_t got;
+    uint32_t result = value;
+    __asm__ volatile(
+        ".set push\n\t"
+        ".set noreorder\n\t"
+        "ll %0, 0(%2)\n\t"
+        "sc %1, 0(%2)\n\t"
+        ".set pop\n\t"
+        : "=&r"(got), "+r"(result)
+        : "r"(a)
+        : "memory");
+    *loaded = got;
+    return result;
+}
+
+/* One window: ll A, then two sc on A with no new ll between them. */
+static void llsc_window_twice(volatile uint32_t *a, uint32_t first_value,
+                              uint32_t second_value, uint32_t *loaded,
+                              uint32_t *first, uint32_t *second) {
+    uint32_t got;
+    uint32_t r1 = first_value;
+    uint32_t r2 = second_value;
+    __asm__ volatile(
+        ".set push\n\t"
+        ".set noreorder\n\t"
+        "ll %0, 0(%3)\n\t"
+        "sc %1, 0(%3)\n\t"
+        "sc %2, 0(%3)\n\t"
+        ".set pop\n\t"
+        : "=&r"(got), "+r"(r1), "+r"(r2)
+        : "r"(a)
+        : "memory");
+    *loaded = got;
+    *first = r1;
+    *second = r2;
+}
+
+/* One window: ll A, then sc B storing `value`. */
+static uint32_t llsc_window_other(volatile uint32_t *a, volatile uint32_t *b,
+                                  uint32_t value, uint32_t *loaded) {
+    uint32_t got;
+    uint32_t result = value;
+    __asm__ volatile(
+        ".set push\n\t"
+        ".set noreorder\n\t"
+        "ll %0, 0(%2)\n\t"
+        "sc %1, 0(%3)\n\t"
+        ".set pop\n\t"
+        : "=&r"(got), "+r"(result)
+        : "r"(a), "r"(b)
+        : "memory");
+    *loaded = got;
+    return result;
+}
+
+static void run_llsc_link(int emulated) {
+    static const char *const names[LLSC_LINK_CELLS] = {
+        "llsc-control", "llsc-second-sc", "llsc-other-address",
+    };
+    uint32_t loaded[LLSC_LINK_CELLS];
+    uint32_t first[LLSC_LINK_CELLS];
+    uint32_t last[LLSC_LINK_CELLS];
+    uint32_t a_after[LLSC_LINK_CELLS];
+    uint32_t b_after[LLSC_LINK_CELLS];
+    const uint32_t model_a[LLSC_LINK_CELLS] = {
+        LLSC_LINK_FIRST, LLSC_LINK_SECOND, LLSC_LINK_A_INIT,
+    };
+    const uint32_t model_b[LLSC_LINK_CELLS] = {
+        LLSC_LINK_B_INIT, LLSC_LINK_B_INIT, LLSC_LINK_OTHER,
+    };
+    int token;
+
+    /* Cell 0: a plain ll/sc pair, the control for the other two. */
+    probe_step(emulated, "llsc-link", "llsc-control");
+    s_llsc_mem[0][0] = LLSC_LINK_A_INIT;
+    s_llsc_mem[0][1] = LLSC_LINK_B_INIT;
+    token = sceKernelCpuSuspendIntr();
+    first[0] = llsc_window_one(&s_llsc_mem[0][0], LLSC_LINK_FIRST, &loaded[0]);
+    sceKernelCpuResumeIntr(token);
+    last[0] = first[0];
+    a_after[0] = s_llsc_mem[0][0];
+    b_after[0] = s_llsc_mem[0][1];
+
+    /* Cell 1: the second sc, with no new ll, after one that succeeded. */
+    probe_step(emulated, "llsc-link", "llsc-second-sc");
+    s_llsc_mem[1][0] = LLSC_LINK_A_INIT;
+    s_llsc_mem[1][1] = LLSC_LINK_B_INIT;
+    token = sceKernelCpuSuspendIntr();
+    llsc_window_twice(&s_llsc_mem[1][0], LLSC_LINK_FIRST, LLSC_LINK_SECOND,
+                      &loaded[1], &first[1], &last[1]);
+    sceKernelCpuResumeIntr(token);
+    a_after[1] = s_llsc_mem[1][0];
+    b_after[1] = s_llsc_mem[1][1];
+
+    /* Cell 2: sc to an address other than the one ll linked. */
+    probe_step(emulated, "llsc-link", "llsc-other-address");
+    s_llsc_mem[2][0] = LLSC_LINK_A_INIT;
+    s_llsc_mem[2][1] = LLSC_LINK_B_INIT;
+    token = sceKernelCpuSuspendIntr();
+    first[2] = llsc_window_other(&s_llsc_mem[2][0], &s_llsc_mem[2][1],
+                                 LLSC_LINK_OTHER, &loaded[2]);
+    sceKernelCpuResumeIntr(token);
+    last[2] = first[2];
+    a_after[2] = s_llsc_mem[2][0];
+    b_after[2] = s_llsc_mem[2][1];
+
+    for (uint32_t c = 0; c < LLSC_LINK_CELLS; c++) {
+        int pass = loaded[c] == LLSC_LINK_A_INIT;
+        if (c == 0u) {
+            pass = pass && first[0] == 1u && a_after[0] == model_a[0] &&
+                   b_after[0] == model_b[0];
+        } else if (c == 1u) {
+            pass = pass && first[1] == 1u;
+        }
+        const uint32_t out[LLSC_LINK_OUTS] = {
+            loaded[c], first[c], a_after[c], b_after[c], model_a[c], model_b[c],
+        };
+        emit_record_extended(emulated, "PSP-LLSC-001", names[c],
+                             pass ? "PASS" : "FAIL", last[c], out, LLSC_LINK_OUTS);
+    }
+    uint32_t done = LLSC_LINK_CELLS;
+    emit_record_extended(emulated, "PSP-LLSC-001", "llsc-link-done", "PASS",
+                         0, &done, 1);
+}
+#endif
+
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_REGISTRY_READONLY
 static uint32_t s_registry_categories;
 static uint32_t s_registry_keys;
@@ -6810,6 +7123,8 @@ int main(int argc, char *argv[]) {
     run_ctrl_clock(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR
     run_fpu_vector(emulated, boot_fcr31);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE
+    run_vfpu_compare(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_TEARDOWN_TEST
     run_teardown_test(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_IO_MATRIX
@@ -6863,6 +7178,8 @@ int main(int argc, char *argv[]) {
     run_registry_readonly(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_KERNEL_MISC
     run_kernel_misc(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_LLSC_LINK
+    run_llsc_link(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

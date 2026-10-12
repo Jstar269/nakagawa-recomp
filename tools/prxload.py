@@ -916,11 +916,6 @@ def load_program_image(path, base=0, psp_header=None):
                 "alignment-invalid", "error", f"PT_LOAD[{spec['idx']}].p_align",
                 f"alignment 0x{align:x} is not a power of two",
             ))
-        if align > 1 and (spec["off"] - spec["vaddr"]) % align:
-            findings.append(ProgramImageFinding(
-                "alignment-invalid", "error", f"PT_LOAD[{spec['idx']}].p_align",
-                "file offset and virtual address are not congruent at p_align",
-            ))
         try:
             checked_span(len(data), spec["off"], spec["filesz"], f"PT_LOAD[{spec['idx']}] source")
         except ValueError as exc:

@@ -169,6 +169,7 @@ class GpuVerificationStatusTests(unittest.TestCase):
                     [make, "--no-print-directory", "gpu-selftest-status",
                      f"GPU_SELFTEST_BINS={' '.join(bins)}",
                      "GPU_SELFTEST_PREREQS=",
+                     f"BUILD_ROOT={(work / 'build').as_posix()}",
                      f"BUILD_DIR={(work / 'build').as_posix()}"],
                     cwd=ROOT, capture_output=True, text=True, timeout=300,
                 )

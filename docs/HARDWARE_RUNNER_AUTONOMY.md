@@ -47,6 +47,12 @@ recorded in recovery events. Lost replies and USBHostFS unknown-command output
 are retryable transport events. After a probe launch, exhaustion escalates to
 `PHYSICAL_INTERVENTION_REQUIRED` with manual commands. This routine retries
 shell qualification only; semantic probe results are never retried.
+The same verifier settles the link after each case's `modstun` stop/unload
+handshake, before the S2 snapshot, the post-unload shell qualification, and the
+host0 round-trip. Its attempts are recorded with a `post-unload settle:` prefix
+and as `settle_status` and `settle_attempts` in the case's teardown report; an
+exhausted settle adds no teardown issue, so the checks after it classify the case
+unchanged ([HARDWARE_ORACLE.md](HARDWARE_ORACLE.md#probe-teardown-for-repeated-launches)).
 
 Transport start-up waits for positive readiness instead of issuing `ver` as
 soon as `usbhostfs_pc` is spawned. It waits for USBHostFS to report its device

@@ -36,7 +36,7 @@ import entry_frame_balance
 from imports import ImportTableError, format_boundary
 
 
-CPU_STATE_ABI_VERSION = 2
+CPU_STATE_ABI_VERSION = 3
 EMITTED_OWNERSHIP_SCHEMA_VERSION = 1
 
 # LLE CPU mode (PR 2): when True, generated SYSCALL/BREAK raise guest
@@ -180,7 +180,8 @@ class AddressSpace:
 # loads and stores, cache, and lwc1/swc1.
 _RELOCATABLE_IMMEDIATE_OPS = frozenset(
     list(range(0x08, 0x10)) + [0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26,
-                               0x28, 0x29, 0x2A, 0x2B, 0x2E, 0x2F, 0x31, 0x39]
+                               0x28, 0x29, 0x2A, 0x2B, 0x2E, 0x2F, 0x30, 0x31,
+                               0x38, 0x39]
 )
 
 ADDRESS_SPACE = AddressSpace()
@@ -848,6 +849,52 @@ def _lle_access_stmt(addr, w, op, delay_branch_pc):
     return stmt, saddr, (width if is_store else 0)
 
 
+# Sentinel store-address result from effect(): the statement closes its own
+# instruction trace (it calls sr_end itself), so normal_line() must not append a
+# second sr_end. Only `sc` uses it: whether it stores is known only at run time,
+# and its result write may overwrite the base register the address came from.
+SELF_TRACED = "<self-traced>"
+
+
+def _ll_sc_stmt(addr, w, op, lle_cpu, delay_branch_pc):
+    """`ll` (0x30) and `sc` (0x38): MIPS32 load-linked / store-conditional.
+
+    Public MIPS32 contract (Architecture for Programmers Vol. II, LL and SC):
+      ll  rt, off(base)   rt = word at base+off; LLbit = 1
+      sc  rt, off(base)   if LLbit: word at base+off = rt; rt = LLbit (0 or 1)
+    `sc` leaves LLbit as it found it (the Release 2 operation). The runtime
+    clears LLbit only at the events listed in docs/ARCHITECTURE.md
+    ("LL/SC link state"); nothing here clears it.
+
+    Every field form decodes: `rs`, `rt` and the 16-bit offset are all operands
+    and the encodings have no reserved bits. rt = $zero still links (`ll`) and
+    still stores (`sc`); only the register write is dropped, exactly like the
+    other loads. The word access is aligned like `lw`/`sw`: under --lle-cpu the
+    same width-4 sr_cpu_guard_access() check runs first, before the link is
+    consulted, so an address error leaves rt, memory and LLbit untouched. That
+    check order follows the MIPS32 operation sections; PSP alignment for ll/sc
+    specifically is architectural, not separately measured.
+    """
+    base = f"{R(rs(w))} + {simm(w)}"
+    is_store = 1 if op == 0x38 else 0
+    if lle_cpu:
+        in_delay = 1 if delay_branch_pc is not None else 0
+        branch = G(delay_branch_pc) if delay_branch_pc is not None else "0u"
+        guard = (f"if (sr_cpu_guard_access(s, _ea, 4u, {is_store}, {G(addr)}, {branch}, "
+                 f"{in_delay}u)) {{ sr_end(s, 0u, 0); return; }} ")
+    else:
+        guard = ""
+    if op == 0x30:  # ll
+        load = "(void)_ea;" if rt(w) == 0 else wr(rt(w), "MEM_R32(_ea)")
+        return (f"{{ uint32_t _ea = {base}; {guard}{load} "
+                f"s->llbit = 1u; }}"), None, 0
+    # sc: the store and the trace's memory token happen only while linked; the
+    # address is latched before rt (which may also be the base) is overwritten.
+    return (f"{{ uint32_t _ea = {base}; {guard}uint32_t _sc = s->llbit != 0u ? 1u : 0u; "
+            f"if (_sc) {{ MEM_W32_PC(_ea, {R(rt(w))}, {G(addr)}); }} {wr(rt(w), '_sc')} "
+            f"sr_end(s, _ea, _sc ? 4 : 0); }}"), SELF_TRACED, 0
+
+
 def effect(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
     op = w >> 26
     if op == 0x10:  # COP0 (spec 3.4)
@@ -975,6 +1022,7 @@ def effect(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
     if op == 0x26: return wr(rt(w), f"sr_lwr({R(rt(w))}, {R(rs(w))} + {simm(w)})"), None, 0   # lwr
     if op == 0x2A: return f"sr_swl_pc({R(rs(w))} + {simm(w)}, {R(rt(w))}, {G(addr)});", f"(({R(rs(w))} + {simm(w)}) & ~3u)", 4  # swl
     if op == 0x2E: return f"sr_swr_pc({R(rs(w))} + {simm(w)}, {R(rt(w))}, {G(addr)});", f"(({R(rs(w))} + {simm(w)}) & ~3u)", 4  # swr
+    if op in (0x30, 0x38): return _ll_sc_stmt(addr, w, op, lle_cpu, delay_branch_pc)  # ll / sc
     if op == 0x31: return f"s->fi[{rt(w)}] = MEM_R32({R(rs(w))} + {simm(w)});", None, 0  # lwc1
     if op == 0x39: return f"MEM_W32_PC({R(rs(w))} + {simm(w)}, s->fi[{rt(w)}], {G(addr)});", f"({R(rs(w))} + {simm(w)})", 4  # swc1
     if op == 0x11: return fpu_effect(addr, w)
@@ -1371,24 +1419,24 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                             "_a", n, "_b", n)
                     + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
-        if sub in (6, 7): # vcmovt / vcmovf
-            tf = sub & 1
-            imm3 = (w >> 16) & 7
-            lines = [
-                f"float _s[4], _d[4];",
-                f"sr_vread(_s, s, {_arr(si)}, {n}, s->vfpuCtrl[0]);",
-                f"sr_vread(_d, s, {_arr(di)}, {n}, s->vfpuCtrl[1]);"
-            ]
-            if imm3 < 6:
-                lines.append(f"if (((s->vfpuCtrl[3] >> {imm3}) & 1u) == {1 - tf}u) {{ for (int _i = 0; _i < {n}; _i++) _d[_i] = _s[_i]; }}")
-            elif imm3 == 6:
-                lines.append(f"for (int _i = 0; _i < {n}; _i++) if (((s->vfpuCtrl[3] >> _i) & 1u) == {1 - tf}u) _d[_i] = _s[_i];")
-            else:
-                raise Unsupported(f"vcmov imm3 {imm3} at 0x{addr:08x}")
-            lines.append(_nanv(addr, "vcmovt.s" if tf == 0 else "vcmovf.s",
-                               vd, "_d", n, "_s", n, "_d", n)
-                         + f"sr_vwrite(s, {_arr(di)}, _d, {n}, s->vfpuCtrl[2]);{_EAT}")
-            return "{ " + " ".join(lines) + " }", None, 0
+        if sub in (5, 6, 7):  # vscmp / vsge / vslt: compare lanes, write -1/0/1 or 1/0 as floats
+            # PSP VFPU3 (major 0x1B) by bits 25..23: 0 vcmp, 2 vmin, 3 vmax, 5 vscmp, 6 vsge, 7 vslt.
+            # These slots were decoded as vcmovt/vcmovf before 2026-10-10; the conditional moves
+            # are the VFPU4 vcmov (jump 0x15) handled above. The flagship's quaternion slerp uses
+            # vsge to build its sign term (2 * (dot >= 0) - 1), and the wrong decode multiplied its
+            # dot product by stale scratch lanes, which is the one-frame skinned-model corruption
+            # of issue #69. Semantics follow PPSSPP's Int_Vscmp/Int_Vsge/Int_Vslt (a NaN compares
+            # false, so it yields 0.0); hardware behaviour for NaN operands is UNMEASURED.
+            name = {5: "vscmp.s", 6: "vsge.s", 7: "vslt.s"}[sub]
+            expr = {5: "(_a[_i]<_b[_i])?-1.0f:((_a[_i]>_b[_i])?1.0f:0.0f)",
+                    6: "(_a[_i]>=_b[_i])?1.0f:0.0f",
+                    7: "(_a[_i]<_b[_i])?1.0f:0.0f"}[sub]
+            body = (f"float _a[4],_b[4],_d[4]; sr_vread(_a,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
+                    f"sr_vread(_b,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
+                    f"for(int _i=0;_i<{n};_i++) _d[_i]={expr}; "
+                    + _nanv(addr, name, vd, "_d", n, "_a", n, "_b", n)
+                    + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
+            return "{ " + body + " }", None, 0
         raise Unsupported(f"VFPU3 sub {sub} at 0x{addr:08x}")
     if op == 0x3c and sub == 7 and ((w >> 21) & 0x1F) == 28:
         which = (w >> 16) & 0xF
@@ -1885,6 +1933,8 @@ def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None)
             raise
         eff = _vfpu_interp_stmt(addr, w)
         saddr, ssize = None, 0
+    if saddr is SELF_TRACED:
+        return f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); {eff}"
     return f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); {eff} sr_end(s, {saddr if saddr else '0u'}, {ssize});"
 
 def _cop0_fields(w):
@@ -2087,7 +2137,8 @@ def _sv_step(w, regs, written):
     elif op == 0x0D: W(b, regs[a] | (w & 0xFFFF) if regs[a] is not None else None); return    # ori
     elif op == 0x0E: W(b, regs[a] ^ (w & 0xFFFF) if regs[a] is not None else None); return    # xori
     elif op == 0x0F: W(b, (w & 0xFFFF) << 16); return                                         # lui
-    elif op in _SV_RT_UNKNOWN_OPS: W(b, None); return   # loads: runtime-dependent
+    elif op in _SV_RT_UNKNOWN_OPS: W(b, None); return   # loads (and ll): runtime-dependent
+    elif op == 0x38: W(b, None); return   # sc: rt = 0/1 from the run-time link state
     elif op == 0x10:   # COP0 (spec 3.4): MFC0 destinations are unknown; MTC0,
         if ((w >> 21) & 0x1F) == 0x00: W(b, None)    # syscall/break/eret may
         else:                                        # mutate anything: flush.

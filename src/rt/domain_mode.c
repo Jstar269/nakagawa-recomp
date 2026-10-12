@@ -178,8 +178,8 @@ int sr_import_register_export(uint32_t nid, uint32_t guest_addr) {
             }
             /* A conflicting address keeps the original (fail closed). */
             fprintf(stderr,
-                    "SR_IMPORT_FATAL: nid 0x%08x already exports 0x%08x; "
-                    "refusing 0x%08x\n",
+                    "SR_IMPORT_FATAL: nid 0x%08" PRIx32 " already exports 0x%08" PRIx32 "; "
+                    "refusing 0x%08" PRIx32 "\n",
                     nid, s_exports[i].guest_addr, guest_addr);
             return -1;
         }
@@ -252,7 +252,7 @@ static int sr_import_fatal(
     const char *reason) {
     sr_flight_fatal(SR_FLIGHT_KIND_FATAL_IMPORT, stub_pc, nid, 0u);
     fprintf(stderr,
-            "SR_IMPORT_FATAL: nid 0x%08x stub_pc 0x%08x: %s\n",
+            "SR_IMPORT_FATAL: nid 0x%08" PRIx32 " stub_pc 0x%08" PRIx32 ": %s\n",
             nid, stub_pc, reason);
     if (s) {
         s->flow_kind = SR_FLOW_FATAL;
@@ -283,7 +283,7 @@ int sr_import_call(CpuState *s, uint32_t nid, uint32_t stub_pc) {
     SrDomainMode mode;
     if (!s) {
         fprintf(stderr,
-                "SR_IMPORT_FATAL: nid 0x%08x stub_pc 0x%08x: null CpuState\n",
+                "SR_IMPORT_FATAL: nid 0x%08" PRIx32 " stub_pc 0x%08" PRIx32 ": null CpuState\n",
                 nid, stub_pc);
         return -1;
     }
@@ -318,7 +318,7 @@ int sr_import_call(CpuState *s, uint32_t nid, uint32_t stub_pc) {
         s_fallback_count++;
         s_last_fallback_nid = nid;
         fprintf(stderr,
-                "SR_IMPORT_FALLBACK_HLE: nid 0x%08x stub_pc 0x%08x: "
+                "SR_IMPORT_FALLBACK_HLE: nid 0x%08" PRIx32 " stub_pc 0x%08" PRIx32 ": "
                 "no guest export; using explicit HLE fallback\n",
                 nid, stub_pc);
         return (int)sr_syscall(s, nid);

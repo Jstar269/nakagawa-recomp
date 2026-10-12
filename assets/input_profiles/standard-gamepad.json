@@ -1,0 +1,57 @@
+{
+  "schema_version": 2,
+  "device": {
+    "guid": "default",
+    "name_hint": "Standard Gamepad"
+  },
+  "calibration": {
+    "trigger_threshold": 8192,
+    "trigger_rest": 0,
+    "trigger_extreme": 32767,
+    "analog_x": {
+      "host_axis": "leftx",
+      "deadzone_inner": 7849,
+      "deadzone_outer": 0,
+      "inverted": false,
+      "rest": 0,
+      "min_val": -32768,
+      "max_val": 32767
+    },
+    "analog_y": {
+      "host_axis": "lefty",
+      "deadzone_inner": 7849,
+      "deadzone_outer": 0,
+      "inverted": false,
+      "rest": 0,
+      "min_val": -32768,
+      "max_val": 32767
+    }
+  },
+  "psp_bindings": [
+    {"control": "select", "primary": "back"},
+    {"control": "start", "primary": "start"},
+    {"control": "up", "primary": "dpad_up"},
+    {"control": "right", "primary": "dpad_right"},
+    {"control": "down", "primary": "dpad_down"},
+    {"control": "left", "primary": "dpad_left"},
+    {"control": "ltrigger", "primary": "left_shoulder", "secondary": "left_trigger"},
+    {"control": "rtrigger", "primary": "right_shoulder", "secondary": "right_trigger"},
+    {"control": "triangle", "primary": "north"},
+    {"control": "circle", "primary": "east"},
+    {"control": "cross", "primary": "south"},
+    {"control": "square", "primary": "west"},
+    {"control": "home", "primary": "none"},
+    {"control": "hold", "primary": "none"}
+  ],
+  "navigation_bindings": [
+    {"action": "confirm", "primary": "south"},
+    {"action": "cancel", "primary": "east"},
+    {"action": "up", "primary": "dpad_up"},
+    {"action": "down", "primary": "dpad_down"},
+    {"action": "left", "primary": "dpad_left"},
+    {"action": "right", "primary": "dpad_right"},
+    {"action": "page_prev", "primary": "left_shoulder"},
+    {"action": "page_next", "primary": "right_shoulder"},
+    {"action": "menu", "primary": "start"}
+  ]
+}

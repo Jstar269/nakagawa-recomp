@@ -734,6 +734,7 @@ def build_text_stub_run_elf(
     *,
     library: str = "SynthTextLib",
     first_nid: int = 0x7A000000,
+    late_callee: bool = False,
 ) -> tuple[bytes, list[int]]:
     """Build a sectioned ELF whose import stubs lie after .text, outside .sceStub.text.
 
@@ -771,6 +772,10 @@ def build_text_stub_run_elf(
     ]
     for _ in range(stub_count):
         caller_words += [0x0C000000, 0]  # jal <stub>; nop (patched below)
+    if late_callee:
+        # One more direct call from the orphan caller, to a plain function that lies in
+        # the same file-backed executable bytes as the stub run (not an import stub).
+        caller_words += [0x0C000000, 0]  # jal <late callee>; nop (patched below)
     caller_words += [
         0x8FBF001C,                     # lw    $ra,28($sp)
         0x27BD0020,                     # addiu $sp,$sp,32
@@ -794,6 +799,12 @@ def build_text_stub_run_elf(
     for i, stub in enumerate(stub_addrs):
         jal_off = caller_off + (2 + 2 * i) * 4
         struct.pack_into("<I", seg, jal_off, 0x0C000000 | ((stub >> 2) & 0x03FFFFFF))
+
+    if late_callee:
+        # The callee sits right after the stub placeholders: addiu $v0,$zero,1; jr $ra; nop.
+        callee = alloc(struct.pack("<3I", 0x24020001, 0x03E00008, 0))
+        jal_off = caller_off + (2 + 2 * stub_count) * 4
+        struct.pack_into("<I", seg, jal_off, 0x0C000000 | ((callee >> 2) & 0x03FFFFFF))
 
     entries = struct.pack(
         "<IHHBBHII", name_vaddr, 0x0101, 0x0009, 5, 0, stub_count, nid_vaddr, stub_base

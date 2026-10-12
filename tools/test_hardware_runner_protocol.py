@@ -3549,16 +3549,17 @@ class CampaignCheckpointTransitionTests(unittest.TestCase):
         self.assertEqual(final["failed_case_id"], "ge-break-continue")
 
     def test_launched_case_without_completion_record_waits_for_power_cycle(self):
+        kernel_index = CAMPAIGN_QUEUE_CASES.index("kernel-misc")
         launched = _checkpoint_case_started(
-            _checkpoint_state(next_case_index=7, host0_qualified=True),
-            7, "kernel-misc", "CASE_ACTIVE",
+            _checkpoint_state(next_case_index=kernel_index, host0_qualified=True),
+            kernel_index, "kernel-misc", "CASE_ACTIVE",
         )
         final = _checkpoint_after_run(
             launched, terminal_reason="CHECKPOINT_WRITE_FAILED", intervention_case_id=None,
             resume_case_index=None, case_count=self.CASES,
         )
         self.assertEqual(final["state"], "WAITING_FOR_POWER_CYCLE")
-        self.assertEqual(final["next_case_index"], 8)
+        self.assertEqual(final["next_case_index"], kernel_index + 1)
         self.assertEqual(final["failed_case_id"], "kernel-misc")
 
     def test_running_checkpoint_without_active_index_is_rejected(self):
@@ -4688,6 +4689,282 @@ class Host0RemotePathTests(unittest.TestCase):
             outside.write_bytes(b"\x00")
             with self.assertRaises(ValueError):
                 run_psplink_module._host0_remote_path(outside, Path(root))
+
+
+class _HleFamilyTransport(SimulatedPsplinkTransport):
+    """A simulated HLE launch whose finish leaves the host0 round-trip file, or does not.
+
+    probe.c's teardown and the HLE families' hle_finish both write
+    host0:/nakagawa_transport_write.bin. Only the transport-write case gets the file from
+    the base class, so an HLE launch writes exactly what its own finish would.
+    """
+
+    def __init__(self, roundtrip: bytes | None):
+        super().__init__(transport_file_cases={"transport-write"})
+        self.roundtrip = roundtrip
+
+    def run(self, command, timeout):
+        if (
+            self.roundtrip is not None
+            and command.startswith("ldstart host0:/hle-")
+            and self.host0_root is not None
+        ):
+            (self.host0_root / "nakagawa_transport_write.bin").write_bytes(self.roundtrip)
+        return super().run(command, timeout)
+
+
+class HleFamilyHost0RoundTripTests(unittest.TestCase):
+    """An HLE family's launch must leave the host0 round-trip file the runner verifies."""
+
+    PROBE_HLE_SOURCE = (
+        Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle" / "probe_hle_measure.c"
+    )
+    PATTERN = "(uint8_t)(0x5Au ^ (i * 0x25u + (i >> 3)))"
+
+    def _launch(self, roundtrip: bytes | None):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(
+            prefix="runner-hle-roundtrip-", dir=fixture_dir
+        ) as scratch_name:
+            scratch = Path(scratch_name)
+            cases = []
+            for case_id in ("transport-write", "hle-kernel-status"):
+                binary = scratch / f"{case_id}.prx"
+                binary.write_bytes(b"synthetic PRX")
+                cases.append(CampaignCase(case_id, binary, 1.0))
+            transport = _HleFamilyTransport(roundtrip)
+            transport.host0_root = scratch
+            with patch("psp_oracle.run_psplink._check_source_tree", return_value=None):
+                report = PsplinkCampaignRunner(
+                    transport,
+                    console_model="PSP-3000-04g",
+                    source_commit=SOURCE_COMMIT,
+                    model_code=3,
+                ).run(cases)
+            left_behind = (scratch / "nakagawa_transport_write.bin").exists()
+        return report, left_behind
+
+    def test_round_trip_file_written_per_the_family_contract_passes_verification(self):
+        source = self.PROBE_HLE_SOURCE.read_text(encoding="utf-8")
+        self.assertTrue(self.PATTERN in source,
+                        "probe_hle_measure.c must write the round-trip byte pattern")
+        # The 64 bytes the family's expression produces, as _verify_host0_roundtrip expects.
+        roundtrip = bytes((0x5A ^ (index * 0x25 + (index >> 3))) & 0xFF for index in range(64))
+        report, left_behind = self._launch(roundtrip)
+
+        envelope = report["envelopes"][1]
+        self.assertEqual(envelope["CASE_ID"], "hle-kernel-status")
+        self.assertNotEqual(report["terminal_reason"], "HOST0_ROUNDTRIP_FAILED")
+        round_trip_issues = [
+            issue for issue in envelope["TEARDOWN_CHECK"]["issues"] if "host0 round-trip" in issue
+        ]
+        self.assertEqual(round_trip_issues, [])
+        self.assertFalse(left_behind)  # the runner verified the file and removed it
+
+    def test_family_without_the_round_trip_file_fails_the_runner_check(self):
+        report, _left_behind = self._launch(None)
+
+        envelope = report["envelopes"][1]
+        self.assertEqual(report["terminal_reason"], "HOST0_ROUNDTRIP_FAILED")
+        self.assertIn("host0 round-trip failed after unload",
+                      envelope["TEARDOWN_CHECK"]["issues"])
+        self.assertFalse(envelope["ACCEPTANCE_ELIGIBLE"])
+
+
+class _PostUnloadLinkTransport(SimulatedPsplinkTransport):
+    """After each `modstun`, `ver` answers only from attempt ``answer_on`` on.
+
+    Models the hardware settle race: the case completes and the stop/unload
+    handshake succeeds, then the link loses `ver` replies for a while.
+    ``answer_on=None`` never answers `ver` again after the unload.
+    """
+
+    def __init__(self, answer_on: int | None, **options):
+        super().__init__(**options)
+        self.answer_on = answer_on
+        self.post_unload_ver_attempts: int | None = None
+
+    def run(self, command, timeout):
+        if command == f"modstun {self._probe_uid}":
+            self.post_unload_ver_attempts = 0
+        elif command == "ver" and self.post_unload_ver_attempts is not None:
+            self.post_unload_ver_attempts += 1
+            if self.answer_on is None or self.post_unload_ver_attempts < self.answer_on:
+                self.commands.append((command, timeout))
+                return None, "", "", "TIMEOUT"
+        return super().run(command, timeout)
+
+
+# The post-launch command sequence of one passing case before the settle existed:
+# S1, the module thread query, the stop/unload handshake, S2, the shell
+# qualification and the exception query.
+_LAUNCH = "ldstart host0:/transport-write.prx"
+_UNLOAD_HANDSHAKE = ["modstun 0x04280001", "modinfo 0x04280001"]
+_PRE_UNLOAD = [_LAUNCH, "thlist", "meminfo", "modlist", "modinfo 0x04280001 t"]
+_POST_SETTLE = ["thlist", "meminfo", "modlist", "ver", "usbstat", "pwd", "exprint"]
+
+
+class PostUnloadSettleTests(unittest.TestCase):
+    """The link settles after the unload handshake, before S2, qualification and round-trip."""
+
+    def setUp(self):
+        source_check = patch("psp_oracle.run_psplink._check_source_tree", return_value=None)
+        source_check.start()
+        self.addCleanup(source_check.stop)
+
+    def _run_transport_write(self, transport, **run_options):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-settle-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            binary = scratch / "transport-write.prx"
+            binary.write_bytes(b"synthetic PRX")
+            transport.host0_root = scratch
+            return PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run([CampaignCase("transport-write", binary, 1.0)], **run_options)
+
+    @staticmethod
+    def _after_launch(transport) -> list[str]:
+        commands = [command for command, _timeout in transport.commands]
+        return commands[commands.index(_LAUNCH):]
+
+    @staticmethod
+    def _classification(report) -> dict[str, object]:
+        envelope = report["envelopes"][-1]
+        teardown = envelope["TEARDOWN_CHECK"]
+        return {
+            "state": report["state"],
+            "terminal_reason": report["terminal_reason"],
+            "intervention_case_id": report["intervention_case_id"],
+            "resume_case_index": report["resume_case_index"],
+            "teardown_status": teardown["status"],
+            "teardown_issues": teardown["issues"],
+            "recovery_eligible": teardown["recovery_eligible"],
+            "recovery_status": teardown["recovery_status"],
+            "shell_qualified": teardown["shell_qualified"],
+            "qualification_status": envelope["QUALIFICATION_STATUS"],
+            "qualification_blockers": envelope["QUALIFICATION_BLOCKERS"],
+            "session_qualification_status": envelope["SESSION_QUALIFICATION_STATUS"],
+            "acceptance_eligible": envelope["ACCEPTANCE_ELIGIBLE"],
+            "acceptance_blockers": envelope["ACCEPTANCE_BLOCKERS"],
+            "evidence_class": envelope["EVIDENCE_CLASS"],
+        }
+
+    def test_ver_answering_on_the_third_attempt_after_unload_passes_with_three_settle_attempts(self):
+        transport = _PostUnloadLinkTransport(answer_on=3)
+        report = self._run_transport_write(transport)
+
+        envelope = report["envelopes"][0]
+        teardown = envelope["TEARDOWN_CHECK"]
+        self.assertIsNone(report["terminal_reason"])
+        self.assertEqual(teardown["status"], "PASS")
+        self.assertEqual(teardown["settle_status"], "PASS")
+        self.assertEqual(teardown["settle_attempts"], 3)
+        self.assertTrue(teardown["shell_qualified"])
+        self.assertTrue(envelope["ACCEPTANCE_ELIGIBLE"])
+        settle_events = [
+            event for event in report["recovery_events"]
+            if event.startswith("post-unload settle: shell verification attempt ")
+        ]
+        self.assertEqual(len(settle_events), 3)
+        self.assertIn("reply timed out or was lost", settle_events[0])
+        self.assertIn("reply timed out or was lost", settle_events[1])
+        self.assertTrue(settle_events[2].endswith("attempt 3/3: PASS"))
+        # Settle attempts never count as shell qualification attempts: the
+        # initial and the post-unload qualification each passed on their first `ver`.
+        qualification_events = [
+            event for event in report["recovery_events"]
+            if event.startswith("shell verification attempt ")
+        ]
+        self.assertEqual(qualification_events, ["shell verification attempt 1/3: PASS"] * 2)
+
+    def test_a_settle_that_never_answers_keeps_todays_failure_classification(self):
+        for mode, run_options in (
+            ("campaign-case", {}),
+            ("campaign-plan", {"reset_between_cases": True, "stop_on_incomplete": True}),
+        ):
+            with self.subTest(mode=mode):
+                transport = _PostUnloadLinkTransport(answer_on=None)
+                report = self._run_transport_write(transport, **run_options)
+                # Today's runner: the same link without the settle step.
+                before = _PostUnloadLinkTransport(answer_on=None)
+                with patch.object(
+                    PsplinkCampaignRunner, "_settle_after_unload", return_value=("NOT_RUN", 0)
+                ):
+                    before_report = self._run_transport_write(before, **run_options)
+
+                teardown = report["envelopes"][0]["TEARDOWN_CHECK"]
+                self.assertEqual(teardown["settle_status"], "EXHAUSTED")
+                self.assertEqual(teardown["settle_attempts"], 3)
+                self.assertEqual(teardown["status"], "FAIL")
+                self.assertIn("PSPLink shell is not qualified after unload", teardown["issues"])
+                self.assertFalse(report["envelopes"][0]["ACCEPTANCE_ELIGIBLE"])
+                self.assertEqual(
+                    report["terminal_reason"],
+                    "TEARDOWN_RECOVERY_NOT_ELIGIBLE" if mode == "campaign-case"
+                    else "PHYSICAL_INTERVENTION_REQUIRED",
+                )
+                self.assertEqual(self._classification(report), self._classification(before_report))
+                # The exhausted settle adds its three `ver` attempts and nothing else.
+                settle_index = len(_PRE_UNLOAD) + len(_UNLOAD_HANDSHAKE)
+                commands = self._after_launch(transport)
+                self.assertEqual(commands[settle_index:settle_index + 3], ["ver"] * 3)
+                del commands[settle_index:settle_index + 3]
+                self.assertEqual(commands, self._after_launch(before))
+
+    def test_settle_commands_sit_between_the_unload_handshake_and_s2(self):
+        transport = _PostUnloadLinkTransport(answer_on=3)
+        self._run_transport_write(transport)
+        self.assertEqual(
+            self._after_launch(transport),
+            _PRE_UNLOAD + _UNLOAD_HANDSHAKE + ["ver", "ver", "ver"] + _POST_SETTLE,
+        )
+
+        # Every other command keeps its count and order: on a link that answers at
+        # once, removing the single settle `ver` leaves today's sequence.
+        settled = SimulatedPsplinkTransport()
+        self._run_transport_write(settled)
+        today = SimulatedPsplinkTransport()
+        with patch.object(
+            PsplinkCampaignRunner, "_settle_after_unload", return_value=("NOT_RUN", 0)
+        ):
+            self._run_transport_write(today)
+        settle_index = len(_PRE_UNLOAD) + len(_UNLOAD_HANDSHAKE)
+        settled_commands = self._after_launch(settled)
+        self.assertEqual(settled_commands[settle_index], "ver")
+        del settled_commands[settle_index]
+        self.assertEqual(settled_commands, self._after_launch(today))
+        self.assertEqual(self._after_launch(today), _PRE_UNLOAD + _UNLOAD_HANDSHAKE + _POST_SETTLE)
+
+    def test_no_settle_without_an_unload_handshake_or_after_the_session_stopped(self):
+        class NoModuleUidTransport(SimulatedPsplinkTransport):
+            def run(self, command, timeout):
+                returncode, stdout, stderr, status = super().run(command, timeout)
+                if command.startswith("ldstart "):
+                    stdout = stdout.replace(f"UID: {self._probe_uid}", "UID: none")
+                return returncode, stdout, stderr, status
+
+        transport = NoModuleUidTransport()
+        report = self._run_transport_write(transport)
+        teardown = report["envelopes"][0]["TEARDOWN_CHECK"]
+        self.assertEqual(teardown["settle_status"], "NOT_RUN")
+        self.assertEqual(teardown["settle_attempts"], 0)
+        self.assertEqual(
+            self._after_launch(transport),
+            [_LAUNCH, "thlist", "meminfo", "modlist"] + _POST_SETTLE,
+        )
+
+        stopped = SimulatedPsplinkTransport()
+        runner = PsplinkCampaignRunner(
+            stopped, console_model="PSP-3000-04g", source_commit=SOURCE_COMMIT
+        )
+        runner.terminal_reason = "TRANSPORT_RESULT_DISCARDED"
+        self.assertEqual(runner._settle_after_unload(), ("NOT_RUN", 0))
+        self.assertEqual(stopped.commands, [])
+        self.assertEqual(runner.recovery_events, [])
 
 
 class Host0DriverWarmupTests(unittest.TestCase):

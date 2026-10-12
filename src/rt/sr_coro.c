@@ -11,9 +11,19 @@
  * (and the first-run trampoline) can read sr_coro_current() to find itself.
  */
 
+#if !defined(_WIN32)
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+#endif
+
 #include "sr_coro.h"
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdint.h>
 
 /* ---- test-only lifecycle instrumentation (SR_CORO_LIFECYCLE_TEST) ---------------------
  *
@@ -234,6 +244,7 @@ struct SrCoro {
     SrCoroFn fn;
     void    *arg;
     void    *fiber;      /* LPVOID from ConvertThreadToFiber / CreateFiberEx */
+    void    *stack_low;  /* AllocationBase for this fiber's reserved stack */
     int      is_main;    /* the adopted OS thread: do not DeleteFiber it */
 };
 
@@ -241,6 +252,25 @@ static _Thread_local SrCoro *s_current;
 static _Thread_local SrCoro *s_main;    /* the adopted scheduler coroutine (park target) */
 
 SrCoro *sr_coro_current(void) { return s_current; }
+
+int sr_coro_stack_remaining(size_t *remaining_out) {
+    volatile unsigned char marker = 0;
+    MEMORY_BASIC_INFORMATION region;
+    uintptr_t current = (uintptr_t)&marker;
+    if (!remaining_out || !s_current) return 0;
+    *remaining_out = 0;
+    if (!s_current->stack_low) {
+        if (VirtualQuery((const void *)&marker, &region, sizeof region) != sizeof region ||
+            !region.AllocationBase) {
+            return 0;
+        }
+        s_current->stack_low = region.AllocationBase;
+    }
+    uintptr_t low = (uintptr_t)s_current->stack_low;
+    if (current <= low) return 0;
+    *remaining_out = (size_t)(current - low);
+    return 1;
+}
 
 static void CALLBACK coro_trampoline(void *param) {
     SrCoro *c = (SrCoro *)param;
@@ -316,6 +346,7 @@ void sr_coro_destroy(SrCoro *c) {
 
 #include <ucontext.h>
 #include <sys/mman.h>
+#include <pthread.h>
 
 struct SrCoro {
     SrCoroFn  fn;
@@ -330,6 +361,39 @@ static _Thread_local SrCoro *s_current;
 static _Thread_local SrCoro *s_main;    /* the adopted scheduler coroutine (park target) */
 
 SrCoro *sr_coro_current(void) { return s_current; }
+
+int sr_coro_stack_remaining(size_t *remaining_out) {
+    volatile unsigned char marker = 0;
+    uintptr_t current = (uintptr_t)&marker;
+    uintptr_t low = 0;
+    size_t stack_size = 0;
+    if (!remaining_out || !s_current) return 0;
+    *remaining_out = 0;
+    if (!s_current->is_main) {
+        low = (uintptr_t)s_current->stack;
+        stack_size = s_current->stack_size;
+    } else {
+        if (!s_current->stack || s_current->stack_size == 0) {
+            /* pthread_getattr_np is a GNU extension (glibc, also musl); a non-GNU
+             * libc reports the main stack as unavailable here, which the dispatcher
+             * turns into the named host-fiber-stack-bounds-unavailable stop rather
+             * than a guess. Guest fibers do not take this path. */
+            pthread_attr_t attr;
+            void *stack_addr = NULL;
+            if (pthread_getattr_np(pthread_self(), &attr) != 0) return 0;
+            int attr_result = pthread_attr_getstack(&attr, &stack_addr, &stack_size);
+            pthread_attr_destroy(&attr);
+            if (attr_result != 0 || !stack_addr) return 0;
+            s_current->stack = stack_addr;
+            s_current->stack_size = stack_size;
+        }
+        low = (uintptr_t)s_current->stack;
+        stack_size = s_current->stack_size;
+    }
+    if (stack_size == 0 || current <= low || current - low > stack_size) return 0;
+    *remaining_out = (size_t)(current - low);
+    return 1;
+}
 
 /* makecontext cannot portably pass a pointer argument, so the trampoline reads the coroutine it
  * is running from s_current (set by sr_coro_switch immediately before the first resume). */

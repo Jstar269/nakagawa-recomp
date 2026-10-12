@@ -224,10 +224,51 @@ def validate_bundle(bundle: Any, schema: dict[str, Any] | None = None) -> None:
         _fail("$.events", "event class is not enabled")
     if bundle["terminal"]["sequence"] and bundle["terminal"]["sequence"] not in sequences:
         _fail("$.terminal", "terminal sequence is not retained")
-    if recorder["triggers"]["fired"] and bundle["terminal"]["reason"] == "exit":
-        _fail("$.terminal", "a triggered bundle cannot have an exit terminal reason")
-    if not recorder["triggers"]["fired"] and bundle["terminal"]["reason"] != "exit":
-        _fail("$.terminal", "an untriggered bundle must terminate at exit")
+    fired = recorder["triggers"]["fired"]
+    reason = bundle["terminal"]["reason"]
+    if version >= 5:
+        _validate_schema5_terminal(fired, reason)
+        _validate_refusals(bundle["refusals"])
+    else:
+        if fired and reason == "exit":
+            _fail("$.terminal", "a triggered bundle cannot have an exit terminal reason")
+        if not fired and reason != "exit":
+            _fail("$.terminal", "an untriggered bundle must terminate at exit")
+
+
+# A schema 5 terminal is what ended the run. Only a fatal, an unknown NID with no handler, or a
+# watchdog hang fires a trigger; a clean exit, a vblank budget stop, or a record still running
+# (a provisional write) does not. A named refusal never ends the record at all.
+SCHEMA5_FIRED_REASONS = frozenset({"fatal", "unsupported-nid", "hang"})
+SCHEMA5_UNFIRED_REASONS = frozenset({"exit", "budget", "running"})
+
+
+def _validate_schema5_terminal(fired: int, reason: str) -> None:
+    if fired:
+        if reason == "budget":
+            _fail("$.terminal", "a budget stop ends without a fired trigger")
+        if reason not in SCHEMA5_FIRED_REASONS:
+            _fail("$.terminal", "a fired trigger must end in a fatal, unsupported-nid or hang terminal")
+        return
+    if reason == "hang":
+        _fail("$.terminal", "a watchdog hang is a fired trigger")
+    if reason not in SCHEMA5_UNFIRED_REASONS:
+        _fail("$.terminal", "an untriggered bundle must terminate at exit, budget or running")
+
+
+def _validate_refusals(refusals: dict[str, Any]) -> None:
+    nids = refusals["nids"]
+    if refusals["count"] == 0:
+        if refusals["first_nid"] is not None or refusals["first_pc"] is not None:
+            _fail("$.refusals", "a bundle with no refusals cannot name a first refused NID")
+    elif refusals["first_nid"] is None or refusals["first_pc"] is None:
+        _fail("$.refusals", "a first refused NID and pc must be recorded when refusals are counted")
+    if nids and nids[0]["nid"] != refusals["first_nid"]:
+        _fail("$.refusals", "the first listed NID must be the first refused NID")
+    if sum(entry["count"] for entry in nids) + refusals["nids_unlisted"] != refusals["count"]:
+        _fail("$.refusals", "refusal counts must account for every refusal (listed plus unlisted)")
+    if len({entry["nid"] for entry in nids}) != len(nids):
+        _fail("$.refusals", "each refused NID is listed once")
 
 
 def load_bundle(path: Path) -> dict[str, Any]:
@@ -277,6 +318,11 @@ def _first_class_divergence(
 
 def _format_event(event: dict[str, Any] | None) -> str:
     return "<absent>" if event is None else json.dumps(event, sort_keys=True, separators=(",", ":"))
+
+
+# Event divergences are labelled "sequence N" or "class C occurrence N". The terminal and
+# refusals labels name a field of a block, and their values are blocks rather than events.
+_EVENT_LABEL_PREFIXES = ("sequence ", "class ")
 
 
 def _event_identity(event: dict[str, Any] | None) -> str:
@@ -357,6 +403,32 @@ def _terminal_divergence(
     return None
 
 
+# The schema 5 refusals fields that are compared, in order. nids_unlisted is implied: the
+# validator pins count to the sum of the nids counts plus nids_unlisted, so equal count and
+# nids force it equal. first_sequence is compared because the validator does not tie it to
+# the events, so the block alone can carry a difference.
+_REFUSALS_FIELDS = ("count", "first_nid", "first_pc", "first_sequence", "nids")
+
+
+def _refusals_divergence(
+    baseline: dict[str, Any], candidate: dict[str, Any]
+) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None] | None:
+    """First differing refusals field; a schema 5 block is evidence like the terminal.
+
+    Schema 1 to 4 bundles carry no block: their named refusals are the kind-2 events and
+    the frozen terminal, which the earlier checks already compare. Comparability pins equal
+    schema versions, so either both bundles carry the block or neither does.
+    """
+    if "refusals" not in baseline or "refusals" not in candidate:
+        return None
+    left = baseline["refusals"]
+    right = candidate["refusals"]
+    for field in _REFUSALS_FIELDS:
+        if left[field] != right[field]:
+            return f"refusals.{field}", left, right
+    return None
+
+
 def diff_bundles(
     baseline: dict[str, Any], candidate: dict[str, Any], align: str
 ) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None] | None:
@@ -378,8 +450,11 @@ def diff_bundles(
        on both sides the retained window is the complete execution regardless
        of each limit. The CLI reports identities on stdout.
     4. Events are compared first (sequence or class alignment), then the
-       terminal reason/sequence/kind/arg0. Any difference is DIVERGENCE
-       (exit 1); only full agreement prints MATCH (exit 0).
+       terminal reason/sequence/kind/arg0, then, when both bundles carry a
+       schema 5 ``refusals`` block, its count, first_nid, first_pc,
+       first_sequence and nids (nids_unlisted follows from count and nids).
+       Any difference is DIVERGENCE (exit 1); only full agreement prints
+       MATCH (exit 0).
     """
     validate_bundle(baseline)
     validate_bundle(candidate)
@@ -391,7 +466,9 @@ def diff_bundles(
     else:
         divergence = _first_class_divergence(baseline, candidate)
     if divergence is None:
-        return _terminal_divergence(baseline, candidate)
+        divergence = _terminal_divergence(baseline, candidate)
+    if divergence is None:
+        divergence = _refusals_divergence(baseline, candidate)
     return divergence
 
 
@@ -443,7 +520,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_MATCH
     label, first, second = divergence
     print(f"{DIVERGENCE}: {label}")
-    if first is not None or second is not None:
+    if label.startswith(_EVENT_LABEL_PREFIXES):
         print(f"  baseline event: {_event_identity(first)}")
         print(f"  candidate event: {_event_identity(second)}")
         differences = _event_field_differences(first, second)

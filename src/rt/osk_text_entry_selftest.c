@@ -34,6 +34,7 @@
 #include <wchar.h>
 
 #include "osk_text_entry.h"
+#include "osk_overlay.h"
 
 static int s_failures;
 static int s_checks;
@@ -131,7 +132,7 @@ int sr_osk_input(const wchar_t *desc, const wchar_t *initial, wchar_t *out, int 
 }
 
 static int poll_once(wchar_t *out, int cap) {
-    return sr_osk_text_entry_poll(L"Enter name.", L"", out, cap);
+    return sr_osk_text_entry_poll(L"Enter name.", L"", out, cap, 0);
 }
 
 /* Poll until the request stops being pending, at most ~5 s. */
@@ -207,7 +208,7 @@ static void test_cancel_and_capacity(void) {
     int r;
     reset_box(0, 0);
     wcscpy(out, L"old");
-    (void)sr_osk_text_entry_poll(L"Enter name.", L"old", out, 16);
+    (void)sr_osk_text_entry_poll(L"Enter name.", L"old", out, 16, 0);
     SetEvent(s_person_go);
     r = poll_until_answered(out, 16);
     check(r == 0, "a cancelled box is reported cancelled");
@@ -277,6 +278,35 @@ static void test_offscreen_presenter_has_no_person(void) {
     set_env("SR_VIDEO", NULL);
 }
 
+/* A presenter that draws the keyboard answers the field in the window: no box is shown, the
+ * request waits for the person, and the answer is handed over once. */
+static void test_overlay_host_answers_in_the_window(void) {
+    wchar_t out[16];
+    LONG before = s_box_calls;
+    set_env("SR_VIDEO", NULL);
+    sr_osk_overlay_set_host(1);
+    check(sr_osk_text_entry_poll(L"Enter name.", L"old", out, 16, 0) == SR_OSK_TEXT_PENDING,
+          "with the overlay host the request opens in the window and waits");
+    Sleep(20);
+    check(sr_osk_text_entry_poll(L"Enter name.", L"old", out, 16, 0) == SR_OSK_TEXT_PENDING,
+          "the request is still pending while the person has not answered");
+    check(s_box_calls == before, "with the overlay host no native box is ever shown");
+    sr_osk_overlay_key(OSK_KEY_CONFIRM);
+    check(sr_osk_text_entry_poll(L"Enter name.", L"old", out, 16, 0) == 1 && wcscmp(out, L"old") == 0,
+          "start answers the overlay request with the text so far");
+    check(sr_osk_text_entry_poll(L"Enter name.", L"", out, 16, 0) == SR_OSK_TEXT_PENDING,
+          "the next field opens a new overlay request");
+    sr_osk_overlay_key(OSK_KEY_CANCEL);
+    check(sr_osk_text_entry_poll(L"Enter name.", L"", out, 16, 0) == 0,
+          "circle cancels the overlay request");
+    check(sr_osk_text_entry_poll(L"Enter name.", L"", out, 16, 0) == SR_OSK_TEXT_PENDING,
+          "a poll after the cancel opens the next request");
+    sr_osk_text_entry_abandon();
+    check(!sr_osk_overlay_active(), "abandon closes the overlay request");
+    check(s_box_calls == before, "abandon with the overlay host never shows a box");
+    sr_osk_overlay_set_host(0);
+}
+
 int main(void) {
     s_box_entered = CreateEventW(NULL, TRUE, FALSE, NULL);
     s_person_go = CreateEventW(NULL, TRUE, FALSE, NULL);
@@ -287,6 +317,7 @@ int main(void) {
     test_cancel_and_capacity();
     test_abandon_closes_the_box();
     test_offscreen_presenter_has_no_person();
+    test_overlay_host_answers_in_the_window();
     printf("osk_text_entry_selftest: %d checks, %d failures\n", s_checks, s_failures);
     return s_failures ? 1 : 0;
 }
@@ -309,16 +340,27 @@ int main(void) {
     wchar_t out[16];
     set_env("SR_VIDEO", NULL);
     wcscpy(out, L"old");
-    check(sr_osk_text_entry_poll(L"Enter name.", L"old", out, 16) == 0,
+    check(sr_osk_text_entry_poll(L"Enter name.", L"old", out, 16, 0) == 0,
           "without a native box the field is answered cancelled at once");
     check(s_box_calls == 1 && wcscmp(out, L"old") == 0,
           "the cancelled answer leaves the caller's buffer untouched");
     set_env("SR_VIDEO", "offscreen");
-    check(sr_osk_text_entry_poll(L"Enter name.", L"", out, 16) == SR_OSK_TEXT_PENDING,
+    check(sr_osk_text_entry_poll(L"Enter name.", L"", out, 16, 0) == SR_OSK_TEXT_PENDING,
           "under the offscreen presenter the request stays pending");
     check(s_box_calls == 1, "under the offscreen presenter the box is never asked");
     sr_osk_text_entry_abandon();
     set_env("SR_VIDEO", NULL);
+    /* With a presenter that draws the keyboard the field waits in the window, and no box is
+     * asked. */
+    sr_osk_overlay_set_host(1);
+    check(sr_osk_text_entry_poll(L"Enter name.", L"old", out, 16, 0) == SR_OSK_TEXT_PENDING,
+          "with the overlay host the request waits in the window");
+    check(s_box_calls == 1, "with the overlay host the box is never asked");
+    sr_osk_overlay_key(OSK_KEY_CONFIRM);
+    check(sr_osk_text_entry_poll(L"Enter name.", L"old", out, 16, 0) == 1 && wcscmp(out, L"old") == 0,
+          "start answers the overlay request");
+    sr_osk_text_entry_abandon();
+    sr_osk_overlay_set_host(0);
     printf("osk_text_entry_selftest: %d checks, %d failures\n", s_checks, s_failures);
     return s_failures ? 1 : 0;
 }

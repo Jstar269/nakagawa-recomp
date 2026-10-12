@@ -3,6 +3,7 @@
 
 #define _POSIX_C_SOURCE 200809L
 
+#include "nk_json.h"
 #include "nk_library.h"
 #include "nk_platform.h"
 #include <ctype.h>
@@ -96,28 +97,30 @@ NkResult nk_library_remove(NkLibrary *lib, const char *disc_id) {
     return NK_ERROR_FILE_NOT_FOUND;
 }
 
-/* Escape string for JSON */
-static void escape_json_string(char *dest, size_t dest_size, const char *src) {
-    if (!dest || dest_size == 0) return;
-    size_t d = 0;
-    for (size_t s = 0; src && src[s] && d + 2 < dest_size; s++) {
-        if (src[s] == '\"' || src[s] == '\\') {
-            dest[d++] = '\\';
-            dest[d++] = src[s];
-        } else if (src[s] == '\n') {
-            dest[d++] = '\\';
-            dest[d++] = 'n';
-        } else if (src[s] == '\r') {
-            dest[d++] = '\\';
-            dest[d++] = 'r';
-        } else if (src[s] == '\t') {
-            dest[d++] = '\\';
-            dest[d++] = 't';
+/* Writes `"key": "value",` with the value escaped for JSON. Every control
+ * character is escaped, so the reader (which refuses raw control characters)
+ * reads back what was written. The value is streamed, so no escape ever cuts it
+ * to fit a buffer: a field of quotes or control characters is written whole. */
+static void write_json_string_field(FILE *f, const char *key, const char *src) {
+    fprintf(f, "      \"%s\": \"", key);
+    for (size_t s = 0; src && src[s]; s++) {
+        unsigned char c = (unsigned char)src[s];
+        if (c == '\"' || c == '\\') {
+            fputc('\\', f);
+            fputc((int)c, f);
+        } else if (c == '\n') {
+            fputs("\\n", f);
+        } else if (c == '\r') {
+            fputs("\\r", f);
+        } else if (c == '\t') {
+            fputs("\\t", f);
+        } else if (c < 0x20) {
+            fprintf(f, "\\u%04x", (unsigned)c);
         } else {
-            dest[d++] = src[s];
+            fputc((int)c, f);
         }
     }
-    dest[d] = '\0';
+    fputs("\",\n", f);
 }
 
 NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
@@ -149,28 +152,22 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
 
     fprintf(f, "{\n  \"schema_version\": 1,\n  \"games\": [\n");
 
+    /* Bundled samples are in memory only and are never written. */
+    int persisted_total = 0;
+    for (int i = 0; i < lib->count; i++) {
+        if (!lib->entries[i].is_sample) persisted_total++;
+    }
+    int persisted_index = 0;
     for (int i = 0; i < lib->count; i++) {
         const NkGameEntry *g = &lib->entries[i];
-        char esc_title[NK_MAX_TITLE_LEN * 2];
-        char esc_iso[NK_MAX_PATH * 2];
-        char esc_prep[NK_MAX_PATH * 2];
-        char esc_boot_executable[NK_MAX_EXECUTABLE_PATH * 2];
-        char esc_executable[NK_MAX_SELECTED_EXECUTABLE_PATH * 2];
-
-        escape_json_string(esc_title, sizeof(esc_title), g->title_name);
-        escape_json_string(esc_iso, sizeof(esc_iso), g->iso_path);
-        escape_json_string(esc_prep, sizeof(esc_prep), g->prepared_root);
-        escape_json_string(esc_boot_executable, sizeof(esc_boot_executable),
-                           g->boot_executable);
-        escape_json_string(esc_executable, sizeof(esc_executable), g->selected_executable);
-
+        if (g->is_sample) continue;
         fprintf(f, "    {\n");
-        fprintf(f, "      \"disc_id\": \"%s\",\n", g->disc_id);
-        fprintf(f, "      \"title_name\": \"%s\",\n", esc_title);
-        fprintf(f, "      \"disc_version\": \"%s\",\n", g->disc_version);
-        fprintf(f, "      \"iso_path\": \"%s\",\n", esc_iso);
-        fprintf(f, "      \"prepared_root\": \"%s\",\n", esc_prep);
-        fprintf(f, "      \"title_id\": \"%s\",\n", g->title_id);
+        write_json_string_field(f, "disc_id", g->disc_id);
+        write_json_string_field(f, "title_name", g->title_name);
+        write_json_string_field(f, "disc_version", g->disc_version);
+        write_json_string_field(f, "iso_path", g->iso_path);
+        write_json_string_field(f, "prepared_root", g->prepared_root);
+        write_json_string_field(f, "title_id", g->title_id);
         fprintf(f, "      \"iso_size_bytes\": %llu,\n", (unsigned long long)g->iso_size_bytes);
         fprintf(f, "      \"status\": %d,\n", (int)g->status);
         fprintf(f, "      \"is_experimental\": %s,\n", g->is_experimental ? "true" : "false");
@@ -179,8 +176,8 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
         fprintf(f, "      \"executable_selection\": %u,\n", (unsigned)g->executable_selection);
         fprintf(f, "      \"executable_boot_fallback\": %s,\n",
                 g->executable_boot_fallback ? "true" : "false");
-        fprintf(f, "      \"boot_executable\": \"%s\",\n", esc_boot_executable);
-        fprintf(f, "      \"selected_executable\": \"%s\",\n", esc_executable);
+        write_json_string_field(f, "boot_executable", g->boot_executable);
+        write_json_string_field(f, "selected_executable", g->selected_executable);
         fprintf(f, "      \"is_prepared\": %s,\n", g->is_prepared ? "true" : "false");
         fprintf(f, "      \"assets_staged\": %s,\n", g->assets_staged ? "true" : "false");
         fprintf(f, "      \"extracted_asset_count\": %u,\n", (unsigned)g->extracted_asset_count);
@@ -188,7 +185,8 @@ NkResult nk_library_save(const NkLibrary *lib, const char *file_path) {
         fprintf(f, "      \"extracted_visual_count\": %u,\n", (unsigned)g->extracted_visual_count);
         fprintf(f, "      \"extracted_layout_count\": %u,\n", (unsigned)g->extracted_layout_count);
         fprintf(f, "      \"last_played\": \"%s\"\n", g->last_played);
-        fprintf(f, "    }%s\n", (i < lib->count - 1) ? "," : "");
+        fprintf(f, "    }%s\n", (persisted_index + 1 < persisted_total) ? "," : "");
+        persisted_index++;
     }
 
     fprintf(f, "  ]\n}\n");
@@ -305,7 +303,12 @@ static const char *skip_whitespace(const char *p) {
     return p;
 }
 
-/* Bounded string value parser with overflow draining and unterminated string check */
+/* Bounded JSON string reader. Escapes are decoded by the same reader the
+ * manifest and profile parsers use (nk_json_decode_escape), so \uXXXX, surrogate
+ * pairs and the short escapes all produce their UTF-8 bytes. A malformed escape,
+ * a raw control character, malformed UTF-8 or an unterminated string fails the
+ * parse. A code point that does not fit the field is dropped whole, so a value
+ * is never cut inside a UTF-8 sequence. */
 static const char *parse_string_val(const char *p, char *out_val, size_t max_len) {
     if (!out_val || max_len == 0) return NULL;
     out_val[0] = '\0';
@@ -314,24 +317,40 @@ static const char *parse_string_val(const char *p, char *out_val, size_t max_len
     p++;
     size_t idx = 0;
     while (*p && *p != '\"') {
-        if (*p == '\n' || *p == '\r') {
-            /* Raw unescaped control character in JSON string is invalid per RFC 8259 */
+        unsigned char c = (unsigned char)*p;
+        char encoded[4];
+        size_t length = 0;
+        if (c < 0x20) {
+            /* Raw control characters are invalid in a JSON string (RFC 8259). */
             return NULL;
-        }
-        char c = *p;
-        if (c == '\\' && *(p + 1)) {
+        } else if (c == '\\') {
+            /* An escape reads at most 11 bytes after the backslash (a surrogate pair). */
+            size_t avail = 0;
+            while (avail < 11 && p[1 + avail] != '\0') avail++;
+            uint32_t cp = 0;
+            size_t used = 0;
+            if (nk_json_decode_escape(p + 1, avail, &cp, &used) != NULL) return NULL;
+            length = nk_json_utf8_encode(cp, encoded);
+            p += 1 + used;
+        } else if (c < 0x80) {
+            encoded[0] = (char)c;
+            length = 1;
             p++;
-            if (*p == 'n') c = '\n';
-            else if (*p == 'r') c = '\r';
-            else if (*p == 't') c = '\t';
-            else if (*p == '\\') c = '\\';
-            else if (*p == '\"') c = '\"';
-            else c = *p;
+        } else {
+            /* Raw non-ASCII: copy one complete, validated UTF-8 sequence. */
+            size_t seq = (c >= 0xC2 && c <= 0xDF) ? 2u
+                       : (c >= 0xE0 && c <= 0xEF) ? 3u
+                       : (c >= 0xF0 && c <= 0xF4) ? 4u
+                       : 0u;
+            if (seq == 0 || !nk_json_validate_utf8((const uint8_t *)p, seq)) return NULL;
+            memcpy(encoded, p, seq);
+            length = seq;
+            p += seq;
         }
-        if (idx + 1 < max_len) {
-            out_val[idx++] = c;
+        if (idx + length < max_len) {
+            memcpy(out_val + idx, encoded, length);
+            idx += length;
         }
-        p++;
     }
     out_val[idx] = '\0';
     if (*p != '\"') {

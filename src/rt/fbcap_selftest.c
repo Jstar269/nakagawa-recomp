@@ -33,6 +33,13 @@
 #include "fbcap.h"
 #include "fbcap_policy.h" /* declares sr_fbcap_path with size_t: after <stdio.h> */
 
+/* Scratch root for the files this test writes: the checkout's build/ by default, or
+ * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
+ * touches the checkout. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+
 #define PSP_W 480u
 #define PSP_H 272u
 
@@ -368,7 +375,7 @@ static void test_windows_imply_every_present(void) {
 }
 
 int main(int argc, char **argv) {
-    snprintf(s_dir, sizeof s_dir, "%s", argc > 1 ? argv[1] : "build/fbcap_selftest");
+    snprintf(s_dir, sizeof s_dir, "%s", argc > 1 ? argv[1] : SR_SELFTEST_BUILD_ROOT "/fbcap_selftest");
     make_dir(s_dir);
     make_frame();
     test_refused_requests();

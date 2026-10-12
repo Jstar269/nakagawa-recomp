@@ -92,5 +92,35 @@ class ImportStubEntryTest(unittest.TestCase):
                              "non-executable stub 0x%08x became an entry" % stub)
 
 
+class LatePhaseRangeFilterTest(unittest.TestCase):
+    """The late discovery passes keep file-backed callees, not only import stubs.
+
+    The worklist keeps a direct-call target that lies in file-backed executable bytes
+    outside the named sections. Tail promotion and gap fill tested the named ranges
+    alone, so a plain function reached only in a late pass (here, a second call from
+    the same orphan caller) was dropped and got no body. The fixture's late callee is
+    not an import stub, so this is the late-phase predicate itself, not the stub seed.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.data, self.stubs = import_fixtures.build_text_stub_run_elf(
+            4, late_callee=True)
+        # The callee is allocated right after the stub placeholders.
+        self.callee = self.stubs[-1] + 8
+
+    def test_a_late_callee_in_file_backed_bytes_is_an_entry_that_owns_its_words(self):
+        path = os.path.join(self._tmp.name, "latecallee.elf")
+        with open(path, "wb") as fh:
+            fh.write(self.data)
+        elf = analyze.Elf(path, base=BASE)
+        entries, ranges = analyze.analyze(elf)
+        self.assertIn(self.callee, entries,
+                      "late callee 0x%08x dropped by the late passes" % self.callee)
+        self.assertTrue(analyze.in_ranges(self.callee, ranges),
+                        "late callee word 0x%08x is not owned" % self.callee)
+
+
 if __name__ == "__main__":
     unittest.main()

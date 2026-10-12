@@ -8,6 +8,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Installed by the scheduler (sched.c) when it owns the guest fibers; see recomp.h. */
+int (*sr_dispatch_host_stack_remaining)(size_t *remaining_out) = NULL;
+
 typedef struct SrExecSpan {
     uint32_t start;
     uint32_t end;
@@ -688,8 +691,9 @@ static SrGuestInterpResult execute_noncontrol(
         case 0x20u: case 0x24u: case 0x28u: width = 1u; is_store = primary == 0x28u; break;
         case 0x21u: case 0x25u: case 0x29u: width = 2u; is_store = primary == 0x29u; break;
         case 0x23u: case 0x2bu: case 0x31u: case 0x39u:
+        case 0x30u: case 0x38u:    /* ll / sc: word access plus the MIPS32 LLbit */
             width = 4u;
-            is_store = primary == 0x2bu || primary == 0x39u;
+            is_store = primary == 0x2bu || primary == 0x39u || primary == 0x38u;
             break;
         default: break;
         }
@@ -728,6 +732,22 @@ static SrGuestInterpResult execute_noncontrol(
                     set_fault(fault, pc, opcode, address, 1);
                     return SR_GUEST_INTERP_MEMORY_FAULT;
                 }
+                if (primary == 0x38u) {
+                    /* sc: store and report 1 only while the link is set, else
+                     * store nothing and report 0. The address checks above ran
+                     * first, as for every store, so they do not depend on the
+                     * link. LLbit itself is left as found; only the events
+                     * that end an atomic window clear it (sr_cpu_link_clear). */
+                    const uint32_t linked = s->llbit != 0u ? 1u : 0u;
+                    if (linked) {
+                        MEM_W32_PC(address, read_gpr(s, rt), pc);
+                        *store_address = address;
+                        *store_size = (int)width;
+                    }
+                    write_gpr(s, rt, linked);
+                    s->r[0] = 0u;
+                    return SR_GUEST_INTERP_AOT_HANDOFF;
+                }
                 switch (primary) {
                 case 0x28u: MEM_W8_PC(address, read_gpr(s, rt), pc); break;
                 case 0x29u: MEM_W16_PC(address, read_gpr(s, rt), pc); break;
@@ -757,6 +777,10 @@ static SrGuestInterpResult execute_noncontrol(
                 case 0x23u: /* lw */
                     write_gpr(s, rt, MEM_R32(address));
                     break;
+                case 0x30u: /* ll: load the word and set the link */
+                    write_gpr(s, rt, MEM_R32(address));
+                    s->llbit = 1u;
+                    break;
                 default:    /* lwc1 */
                     s->fi[rt] = MEM_R32(address);
                     break;
@@ -765,6 +789,44 @@ static SrGuestInterpResult execute_noncontrol(
             s->r[0] = 0u;
             return SR_GUEST_INTERP_AOT_HANDOFF;
         }
+    }
+
+    /* The left/right word forms merge bytes within the aligned containing
+     * word.  Reuse the runtime accessors so their byte selection, aliasing and
+     * write instrumentation stay identical to generated code.  Stores are
+     * read-modify-write operations, so require the complete word to be both
+     * readable and writable before either accessor runs. */
+    if (primary == 0x22u || primary == 0x26u ||
+        primary == 0x2Au || primary == 0x2Eu) {
+        const uint32_t address = read_gpr(s, rs) + sign_extend_16(opcode);
+        const uint32_t word_address = address & ~3u;
+        const int is_store = primary == 0x2Au || primary == 0x2Eu;
+        if (is_store) {
+            if (!sr_guest_span_readable(word_address, 4u) ||
+                !sr_guest_span_writable(word_address, 4u)) {
+                set_fault(fault, pc, opcode, word_address, 1);
+                return SR_GUEST_INTERP_MEMORY_FAULT;
+            }
+            if (primary == 0x2Au) {
+                sr_swl_pc(address, read_gpr(s, rt), pc);
+            } else {
+                sr_swr_pc(address, read_gpr(s, rt), pc);
+            }
+            *store_address = word_address;
+            *store_size = 4;
+        } else {
+            if (!sr_guest_span_readable(word_address, 4u)) {
+                set_fault(fault, pc, opcode, word_address, 1);
+                return SR_GUEST_INTERP_MEMORY_FAULT;
+            }
+            if (primary == 0x22u) {
+                write_gpr(s, rt, sr_lwl(read_gpr(s, rt), address));
+            } else {
+                write_gpr(s, rt, sr_lwr(read_gpr(s, rt), address));
+            }
+        }
+        s->r[0] = 0u;
+        return SR_GUEST_INTERP_AOT_HANDOFF;
     }
 
     /* VFPU loads and stores under --lle-cpu (runs PSP-A3-08..15). Widths mirror
@@ -966,7 +1028,7 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
 
     if (log_dispatch) {
         fprintf(stderr,
-                "GUEST_INTERP_ENTER entry=0x%08x caller_pc=0x%08x ra=0x%08x\n",
+                "GUEST_INTERP_ENTER entry=0x%08" PRIx32 " caller_pc=0x%08" PRIx32 " ra=0x%08" PRIx32 "\n",
                 entry, s->pc, s->r[31]);
     }
 
@@ -980,7 +1042,7 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
             s->pc = pc;
             if (log_dispatch) {
                 fprintf(stderr,
-                        "GUEST_INTERP_CALL_RETURN pc=0x%08x instructions=%llu\n",
+                        "GUEST_INTERP_CALL_RETURN pc=0x%08" PRIx32 " instructions=%llu\n",
                         pc, instruction_count);
             }
             return SR_GUEST_INTERP_CALL_RETURN;
@@ -1015,7 +1077,7 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
             s->pc = pc;
             if (log_dispatch) {
                 fprintf(stderr,
-                        "GUEST_INTERP_AOT_HANDOFF pc=0x%08x instructions=%llu\n",
+                        "GUEST_INTERP_AOT_HANDOFF pc=0x%08" PRIx32 " instructions=%llu\n",
                         pc, instruction_count);
             }
             dispatch(s, pc);
@@ -1173,6 +1235,9 @@ const char *sr_guest_interp_result_name(SrGuestInterpResult result) {
     case SR_GUEST_INTERP_MEMORY_FAULT: return "memory-fault";
     case SR_GUEST_INTERP_MISALIGNED_DATA: return "misaligned-data";
     case SR_GUEST_INTERP_FLOW_FATAL: return "flow-fatal";
+    case SR_GUEST_INTERP_HOST_STACK_EXHAUSTED: return "host-stack-exhausted";
+    case SR_GUEST_INTERP_HOST_STACK_BOUNDS_UNAVAILABLE:
+        return "host-stack-bounds-unavailable";
     default: return "unknown";
     }
 }

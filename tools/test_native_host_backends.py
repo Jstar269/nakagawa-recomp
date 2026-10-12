@@ -70,7 +70,7 @@ def _compile_object(
     out = owner._object_dir / object_name
     compile_cmd = [
         "gcc", "-std=c99", "-Wall", "-Wextra", "-Werror",
-        "-Isrc/core", "-Isrc/core/generated", *extra_includes,
+        "-Isrc/core", "-Isrc/core/generated", "-Isrc/rt", *extra_includes,
         "-c", source, "-o", str(out),
     ]
     build = subprocess.run(compile_cmd, cwd=ROOT, capture_output=True, text=True)
@@ -101,6 +101,11 @@ def _build_and_run(
     link_cmd.append(str(owner._objects[PLATFORM_SRC]))
     link_cmd.append(str(owner._objects[ISOLATION_SRC]))
     link_cmd.extend(str(owner._objects[source]) for source in extra_sources)
+    if "src/rt/pgf_public.c" not in extra_sources:
+        # nk_font.c calls the reader's validator. A caller that supplies the reader itself (the
+        # reader's own test defines the guest globals it needs) gets no second copy or host stub.
+        link_cmd.append(str(owner._objects["src/rt/pgf_public.c"]))
+        link_cmd.append(str(owner._objects["src/core/nk_pgf_host.c"]))
     link_cmd.append(str(owner._objects[test_source]))
     if _WINDOWS:
         # The same host libraries the player links (Makefile PLAYER_EXTRA_LIBS):
@@ -133,7 +138,7 @@ class NativeHostBackendTests(unittest.TestCase):
 
         cls._object_dir = Path(tempfile.mkdtemp(prefix="nk_backend_objects_"))
         cls._objects: dict[str, Path] = {}
-        common_sources = [*CORE_SOURCES, PLATFORM_SRC]
+        common_sources = [*CORE_SOURCES, PLATFORM_SRC, "src/rt/pgf_public.c", "src/core/nk_pgf_host.c"]
         for source in common_sources:
             cls._objects[source] = _compile_object(
                 cls, source, f"{Path(source).stem}.o"
@@ -157,9 +162,6 @@ class NativeHostBackendTests(unittest.TestCase):
         )
         cls._objects["src/player/setup_staging.c"] = _compile_object(
             cls, "src/player/setup_staging.c", "setup_staging.o", ("-Isrc/player",)
-        )
-        cls._objects["src/rt/pgf_public.c"] = _compile_object(
-            cls, "src/rt/pgf_public.c", "pgf_public.o", ("-Isrc/rt",)
         )
         harnesses = {
             "tests/native/test_launch_resolution.c": (),
@@ -294,6 +296,50 @@ class NativeHostBackendTests(unittest.TestCase):
             f"audio selftest failed:\n{run.stdout}\n{run.stderr}",
         )
         self.assertIn("ALL AUDIO HOST TESTS PASSED", run.stdout)
+
+    def test_vblank_exit_closes_the_audio_dump_outside_the_stat_gate(self) -> None:
+        """SR_EXIT_AT_VBLANK leaves through _Exit, which skips atexit, so hle.c closes the
+        SR_AUDIODUMP file itself on that path whether or not SR_AUDIOSTAT is set (#802). The
+        audio selftest pins what sr_audio_dump_finish does; this pins that the exit calls it,
+        after the stats gate rather than inside it, and only where the public backend that
+        defines it is linked."""
+        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        start = hle.index("BOOT_EVENT phase=exit_at_vblank")
+        block = hle[start:hle.index("_Exit(0);", start)]
+        gate = block.index("if (audio_stat_on()) {")
+        depth, gate_end = 0, -1
+        for offset in range(block.index("{", gate), len(block)):
+            depth += {"{": 1, "}": -1}.get(block[offset], 0)
+            if depth == 0:
+                gate_end = offset
+                break
+        self.assertGreater(gate_end, gate, "the SR_AUDIOSTAT block must close before _Exit")
+        call = block.find("sr_audio_dump_finish();")
+        self.assertGreater(call, gate_end, "the dump close must run outside the SR_AUDIOSTAT gate")
+        guard = "#if !defined(SR_HLE_THREAD_SELFTEST) && defined(SR_PUBLIC_SAFE)\n"
+        self.assertEqual(block.rfind("#", 0, call), block.rfind(guard, 0, call),
+                         "the call must sit directly under the public-backend guard")
+        backend = (ROOT / "src" / "rt" / "audio_unavailable.c").read_text(encoding="utf-8")
+        self.assertIn("\nvoid sr_audio_dump_finish(void) {\n", backend)
+
+    def test_every_guest_thread_hard_exit_writes_the_perf_summary_first(self) -> None:
+        """sr_perf_shutdown writes the SR_PERF_JSON summary and the final CSV row from an atexit
+        hook, and _Exit skips atexit. Every _Exit reached on the guest thread (hle.c and ge.c)
+        calls sr_perf_shutdown itself, or a scripted route that ends through SR_EXIT_AT_VBLANK,
+        a route failure, a capture exit or the watchdog loses its summary while its CSV stops at
+        the last whole second. The call is idempotent and a no-op without SR_PERF."""
+        for name in ("hle.c", "ge.c"):
+            lines = (ROOT / "src" / "rt" / name).read_text(encoding="utf-8").splitlines()
+            found = 0
+            for index, line in enumerate(lines):
+                code = line.split("//", 1)[0]
+                if "_Exit(" not in code or code.lstrip().startswith("*"):
+                    continue
+                found += 1
+                window = "\n".join(lines[max(0, index - 6):index + 1])
+                self.assertIn("sr_perf_shutdown();", window,
+                              f"{name}:{index + 1} exits without the perf shutdown: {line.strip()}")
+            self.assertGreater(found, 0, f"{name} has no _Exit site; the pin is stale")
 
 
 if __name__ == "__main__":

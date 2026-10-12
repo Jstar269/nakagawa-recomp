@@ -8,6 +8,7 @@
 #include "nk_iso.h"
 #include "nk_library.h"
 #include "nk_launch.h"
+#include "nk_font.h"
 #include "input_settings.h"
 #include "package_builder.h"
 #include "setup_staging.h"
@@ -102,6 +103,8 @@ typedef struct {
     char package_identity[65];
     NkRuntimePackageStatus status;
     uint64_t last_checked_ms;
+    /* Why the package is not usable, as the validator said it (may be empty). */
+    char reason[256];
 } PlayerRuntimePackageCacheEntry;
 
 /* A worker-create failure has no validator result to keep in the cache. Keep
@@ -248,6 +251,10 @@ typedef struct {
     char extraction_error[256];
     char staging_root[MAX_PATH_LEN];
     PlayerCompatibilityPreflight preflight;
+    /* The Fonts & System step's status: one line per PSP font slot (imported, project, or
+       missing), refreshed from the cache, and the outcome of the last import or removal. */
+    char font_slot_detail[NK_FONT_SLOT_COUNT][NK_FONT_TEXT_MAX];
+    char font_message[NK_FONT_TEXT_MAX];
 } SetupWizardState;
 
 typedef struct {
@@ -304,6 +311,9 @@ typedef struct {
        renderer has no SDL_Window and must stay free of platform dialog calls,
        so it raises this and the event loop in main.c consumes it. */
     bool request_file_picker;
+    /* The Fonts & System step requests the host folder dialog for PSP font import through
+       this flag; the event loop in main.c opens it. */
+    bool request_font_folder_picker;
     /* The library card requests a package-status worker retry through this
        flag; worker creation and queue ownership stay on the main event loop. */
     bool request_package_status_retry;
@@ -352,6 +362,30 @@ bool player_app_add_game(PlayerApp *app, const GameRecord *game);
  * prepared root and last-played time so re-adding never discards a completed
  * extraction. Returns true when anything was carried over. */
 bool player_merge_readded_game(const GameRecord *existing, GameRecord *incoming);
+
+/* Display-only text rules. They change what is drawn, never a stored value.
+ *
+ * player_bitmap_glyph: one display unit of UTF-8 text for the bitmap font
+ * (SDL_RenderDebugText, ASCII only). Writes its replacement to out (NUL-terminated,
+ * at most two bytes) and returns the input bytes it covers (at least one). The
+ * trademark sign becomes "TM"; any other non-ASCII code point, and any malformed
+ * byte, becomes "?"; tabs and line breaks become spaces.
+ * player_text_for_bitmap_font: applies that to a whole string. The output never
+ * exceeds out_size and is cut at a whole glyph; returns its length. */
+size_t player_bitmap_glyph(const char *in, char out[3]);
+size_t player_text_for_bitmap_font(const char *in, char *out, size_t out_size);
+
+/* Privacy: the user's profile folder is shown as "~" wherever text is drawn, so
+ * a screenshot or screen share does not show the account name. Only whole path
+ * components match (the profile "name" does not match "name2"), Windows matching
+ * ignores case and accepts either separator, and the rewrite never grows the text.
+ * player_display_text_with_home takes the profile folder explicitly;
+ * player_display_text uses the current user's profile (USERPROFILE on Windows,
+ * HOME elsewhere). Stored paths never change. */
+size_t player_display_text_with_home(const char *in, const char *home,
+                                     char *out, size_t out_size);
+size_t player_display_text(const char *in, char *out, size_t out_size);
+
 bool player_app_remove_game(PlayerApp *app, int game_index);
 void player_app_set_view(PlayerApp *app, PlayerView view);
 void player_app_set_error(PlayerApp *app, const char *code, const char *title, const char *msg, const char *recovery_label, PlayerView return_view);
@@ -425,6 +459,24 @@ void player_app_runtime_package_cache_store(
     bool identity_valid, const char *package_identity,
     NkRuntimePackageStatus status, bool runtime_available,
     uint64_t checked_ms);
+/* Records the validator's reason for the entry stored at game_index. An empty
+ * reason leaves the stored one in place: a warm cache hit does not re-validate,
+ * so it has no new reason to give. */
+void player_app_runtime_package_cache_set_reason(PlayerApp *app, int game_index,
+                                                 const char *reason);
+/* The title's validated status is known (a check has finished and is not
+ * pending). Until then a card must say it is checking, not "Not prepared". */
+bool player_app_runtime_package_status_known(const PlayerApp *app,
+                                             const GameRecord *game);
+/* The validator's reason for the title's current package state, or NULL. */
+const char *player_app_runtime_package_reason(const PlayerApp *app,
+                                              const GameRecord *game);
+/* Library card status line. The card shows what is true of the package right
+ * now and, when the package cannot be used, the validator's first sentence as
+ * the reason. Returns the text length. */
+size_t player_library_status_text(bool has_runtime, bool checking, bool check_failed,
+                                  bool assets_staged, uint32_t staged_asset_count,
+                                  const char *reason, char *out, size_t out_size);
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
 uint64_t player_app_ui_test_validation_calls(void);
 #endif
@@ -612,6 +664,12 @@ void player_app_wizard_finish_extraction(PlayerApp *app, NkResult result,
 void player_app_build_compatibility_preflight(
     PlayerApp *app, bool disc_readable, bool param_sfo_parsed,
     const NkIsoExecutableReport *executables);
+/* PSP system fonts: the Fonts & System step's import and removal. Each refreshes the
+   per-slot status and the message. Import reads the folder's .pgf files once each, checks
+   them with the native reader, and copies each slot's file into the per-user cache. */
+bool player_app_fonts_import_folder(PlayerApp *app, const char *folder);
+bool player_app_fonts_remove_imports(PlayerApp *app);
+void player_app_refresh_font_status(PlayerApp *app);
 
 /* Package build actions */
 bool player_app_start_package_build(PlayerApp *app, int game_index);

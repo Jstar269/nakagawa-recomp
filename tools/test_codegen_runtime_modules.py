@@ -299,6 +299,22 @@ class RelocatedImmediateEmission(unittest.TestCase):
                          "s->r[8] = (s->r[8] + ((uint32_t)(int32_t)(int16_t)(uint16_t)"
                          "MEM_R16((sr_m7_base + 0x00000014u))));")
 
+    def test_lo16_site_on_ll_and_sc_reads_its_immediate(self):
+        # ll/sc address through simm() exactly like lw/sw, so a %lo() operand on a
+        # lock word in a relocatable module is expressible, not a refusal.
+        space = self.space({
+            0x30: prx_reloc_model.RelocationSite(0x30, "lo16", 0x2040),
+            0x34: prx_reloc_model.RelocationSite(0x34, "lo16", 0x2040),
+        })
+        ll = space.instruction_word(0x30, 0xC1092040)            # ll t1, 0x2040(t0)
+        sc = space.instruction_word(0x34, 0xE1092040)            # sc t1, 0x2040(t0)
+        relocated = ("((uint32_t)(int32_t)(int16_t)(uint16_t)"
+                     "MEM_R16((sr_m7_base + 0x000000{:02x}u)))")
+        ll_c, _, _ = codegen.effect(0x30, ll)
+        sc_c, _, _ = codegen.effect(0x34, sc)
+        self.assertIn("uint32_t _ea = s->r[8] + " + relocated.format(0x30) + ";", ll_c)
+        self.assertIn("uint32_t _ea = s->r[8] + " + relocated.format(0x34) + ";", sc_c)
+
     def test_relocations_the_translation_cannot_express_fail_closed(self):
         space = self.space({
             0x20: prx_reloc_model.RelocationSite(0x20, "lo16", 0x10),

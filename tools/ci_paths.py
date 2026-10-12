@@ -14,7 +14,7 @@ policy rather than maintaining a second, drifting list; it fails closed to "in
 the surface" when the policy cannot be read.  It is intentionally not used to
 widen ``run_python`` here: every tracked file is published, so that would make
 the Python gate unconditional and buy nothing, because the publication audit
-already runs ungated in ``hygiene`` on every event.  The output is exported so a
+already runs ungated in the hygiene jobs on every event.  The output is exported so a
 local readiness check can route the same decision, where no ungated equivalent
 runs.
 """
@@ -752,7 +752,7 @@ def classify(
     # ``public_surface`` deliberately does NOT widen this.  Every tracked file in
     # this repository is published, so routing on it would make ``run_python``
     # unconditional and buy nothing: the publication audit that protects the
-    # generated ledger and export runs in the ungated ``hygiene`` job on every
+    # generated ledger and export runs in the ungated hygiene jobs on every
     # event (see ``PublicationCoverageInvariantTests``).  The output is exported
     # so a local readiness check can route the same decision, where no ungated
     # equivalent runs.

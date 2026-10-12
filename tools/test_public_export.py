@@ -83,6 +83,24 @@ def _init_synthetic_repo(root: Path, sensitive: bool) -> None:
         _git(["commit", "-qm", "legacy artifact"], root)
 
 
+_READ_ONLY_EXPORT: tuple[bool, Path] | None = None
+
+
+def _read_only_public_export() -> tuple[bool, Path]:
+    """One public-safe export, built on first use, that tests may only read.
+
+    Its directory is removed when this module's tests finish. A test that changes the
+    export, or that checks the export procedure's own promotion, builds its own.
+    """
+    global _READ_ONLY_EXPORT
+    if _READ_ONLY_EXPORT is None:
+        temp = tempfile.TemporaryDirectory(prefix="public_export_shared_")
+        unittest.addModuleCleanup(temp.cleanup)
+        target = Path(temp.name) / "public_export"
+        _READ_ONLY_EXPORT = (export_sanitized_public_tree(target, public_safe_profile=True), target)
+    return _READ_ONLY_EXPORT
+
+
 class TestPublicExport(unittest.TestCase):
     def test_in_place_metadata_is_idempotent_across_its_own_previous_bytes(self):
         policy = publication_policy.load_policy(ROOT / "assets/public_source_profile.json")
@@ -176,61 +194,57 @@ class TestPublicExport(unittest.TestCase):
             self.assertTrue(success)
 
     def test_public_safe_export_excludes_unreviewed_components(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target_path = Path(tmpdir) / "public_export"
-            success = export_sanitized_public_tree(target_path, public_safe_profile=True)
-            self.assertTrue(success, "public-safe export should succeed at the tree level")
-            # Core toolkit and required publication files are present.
-            self.assertTrue((target_path / "src" / "rt" / "recomp.c").is_file())
-            self.assertTrue((target_path / "LICENSE").is_file())
-            self.assertTrue((target_path / "NOTICE.md").is_file())
-            # Unresolved PGF/font and PGD/amctrl surfaces are excluded from the tree.
-            for rel in (
-                "font/jpn0.pgf",
-                "font/kr0.pgf",
-                "font/ltn0.pgf",
-                "font/ltn8.pgf",
-                "src/rt/pgf.c",
-                "src/rt/pgf.h",
-                "src/rt/pgd.c",
-                "src/rt/pgd.h",
-                "tools/pgd_decrypt.py",
-                "tools/pgd_e2e_harness.c",
-                "tools/test_pgd_c.py",
-                "tools/test_pgd_decrypt.py",
-            ):
-                self.assertFalse((target_path / rel).exists(), f"{rel} must be excluded")
-            # Provenance metadata records the profile, source commit, and exclusions.
-            metadata_path = target_path / "PUBLIC_EXPORT.json"
-            self.assertTrue(metadata_path.is_file())
-            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            self.assertEqual(metadata["profile"], "public-safe-v1")
-            self.assertEqual(
-                metadata["excluded_file_count"],
-                len(metadata.get("excluded_present_paths", [])),
-            )
-            self.assertGreater(len(metadata["excluded_paths"]), 0)
-            self.assertIn("font/*.pgf", metadata["excluded_globs"])
-            self.assertIn("src/rt/pgd.c", metadata["excluded_paths"])
-            self.assertTrue(metadata.get("source_tree"))
+        success, target_path = _read_only_public_export()
+        self.assertTrue(success, "public-safe export should succeed at the tree level")
+        # Core toolkit and required publication files are present.
+        self.assertTrue((target_path / "src" / "rt" / "recomp.c").is_file())
+        self.assertTrue((target_path / "LICENSE").is_file())
+        self.assertTrue((target_path / "NOTICE.md").is_file())
+        # Unresolved PGF/font and PGD/amctrl surfaces are excluded from the tree.
+        for rel in (
+            "font/jpn0.pgf",
+            "font/kr0.pgf",
+            "font/ltn0.pgf",
+            "font/ltn8.pgf",
+            "src/rt/pgf.c",
+            "src/rt/pgf.h",
+            "src/rt/pgd.c",
+            "src/rt/pgd.h",
+            "tools/pgd_decrypt.py",
+            "tools/pgd_e2e_harness.c",
+            "tools/test_pgd_c.py",
+            "tools/test_pgd_decrypt.py",
+        ):
+            self.assertFalse((target_path / rel).exists(), f"{rel} must be excluded")
+        # Provenance metadata records the profile, source commit, and exclusions.
+        metadata_path = target_path / "PUBLIC_EXPORT.json"
+        self.assertTrue(metadata_path.is_file())
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        self.assertEqual(metadata["profile"], "public-safe-v1")
+        self.assertEqual(
+            metadata["excluded_file_count"],
+            len(metadata.get("excluded_present_paths", [])),
+        )
+        self.assertGreater(len(metadata["excluded_paths"]), 0)
+        self.assertIn("font/*.pgf", metadata["excluded_globs"])
+        self.assertIn("src/rt/pgd.c", metadata["excluded_paths"])
+        self.assertTrue(metadata.get("source_tree"))
 
     def test_public_safe_export_audits_in_public_scope_in_its_own_pre_commit(self):
         # The exported tree lacks the manifest-declared excluded components by
         # design; the export's own publication-safety pre-commit hook must run
         # in public scope so contributor commits do not fail on their absence.
-        with tempfile.TemporaryDirectory() as tmpdir:
-            target_path = Path(tmpdir) / "public_export"
-            success = export_sanitized_public_tree(target_path, public_safe_profile=True)
-            self.assertTrue(success, "public-safe export should succeed at the tree level")
-            pre_commit_text = (target_path / ".pre-commit-config.yaml").read_text(encoding="utf-8")
-            self.assertIn(
-                "entry: python tools/publish_audit.py --tracked-only --public-scope",
-                pre_commit_text,
-            )
-            self.assertNotIn(
-                "entry: python tools/publish_audit.py --tracked-only\n",
-                pre_commit_text.replace("--public-scope", ""),
-            )
+        success, target_path = _read_only_public_export()
+        self.assertTrue(success, "public-safe export should succeed at the tree level")
+        pre_commit_text = (target_path / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+        self.assertIn(
+            "entry: python tools/publish_audit.py --tracked-only --public-scope",
+            pre_commit_text,
+        )
+        self.assertNotIn(
+            "entry: python tools/publish_audit.py --tracked-only\n",
+            pre_commit_text.replace("--public-scope", ""),
+        )
 
     def test_profile_excludes_unreviewed_components_without_materializing_them(self):
         from tools import public_candidate
@@ -259,11 +273,13 @@ class TestCandidateImmutability293(unittest.TestCase):
         super().setUpClass()
         cls._tmp = tempfile.TemporaryDirectory()
         base = Path(cls._tmp.name)
-        cls.export_a = base / "export_a"
+        # export_a is only read in this class, so it is the shared read-only export.
+        exported_a, cls.export_a = _read_only_public_export()
         cls.export_b = base / "export_b"
-        for target in (cls.export_a, cls.export_b):
-            if not export_sanitized_public_tree(target, public_safe_profile=True):
-                raise AssertionError(f"public-safe export failed for {target}")
+        if not exported_a:
+            raise AssertionError(f"public-safe export failed for {cls.export_a}")
+        if not export_sanitized_public_tree(cls.export_b, public_safe_profile=True):
+            raise AssertionError(f"public-safe export failed for {cls.export_b}")
         cls.manifest_a = json.loads(
             (cls.export_a / "PUBLIC_EXPORT.json").read_text(encoding="utf-8")
         )
@@ -695,6 +711,38 @@ class TestCandidateImmutability293(unittest.TestCase):
             self.assertTrue(ok)
             materialized = target / "docs" / "dir with space" / "file name.md"
             self.assertEqual(materialized.read_text(encoding="utf-8"), "# spaced\n")
+
+
+class TestToolGitNeverDetachesMaintenance(unittest.TestCase):
+    """The exporter commits the staging tree; `git commit` would otherwise hand the
+    repository to a detached `gc --auto` that keeps writing .git/objects after the tool
+    returns (ENOTEMPTY while the tree is moved, audited or removed)."""
+
+    def test_isolated_environment_disables_auto_gc(self):
+        env = isolated_git_env({"GIT_CONFIG_COUNT": "7", "GIT_CONFIG_KEY_0": "gc.auto",
+                                "GIT_CONFIG_VALUE_0": "6700", "PATH": "/usr/bin"})
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "1")
+        self.assertEqual(env["GIT_CONFIG_KEY_0"], "gc.auto")
+        self.assertEqual(env["GIT_CONFIG_VALUE_0"], "0")
+        self.assertEqual(env["PATH"], "/usr/bin")
+
+    def test_git_in_a_tool_made_repository_sees_auto_gc_off(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir) / "repo"
+            repo.mkdir()
+            _git(["init"], repo)
+            effective = run_git(["config", "--get", "gc.auto"], cwd=repo, check=True,
+                                capture_output=True, text=True).stdout.strip()
+            self.assertEqual(effective, "0")
+            # The repository itself carries no such setting: only the tool process does.
+            stored = subprocess.run(
+                ["git", "config", "--local", "--get", "gc.auto"], cwd=repo,
+                capture_output=True, text=True,
+                env={key: value for key, value in isolated_git_env().items()
+                     if not key.startswith("GIT_CONFIG_")},
+            )
+            self.assertEqual(stored.returncode, 1)
+            self.assertEqual(stored.stdout.strip(), "")
 
 
 if __name__ == "__main__":
