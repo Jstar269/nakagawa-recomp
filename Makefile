@@ -2219,8 +2219,9 @@ native-core-tests: ge-float24-selftest
 # counters the production GE object produces for source-owned display lists: every
 # primitive type in both modes, indexed draws, clipped and rejected triangles, rejected
 # points and sprite corners, patches, block transfer and CLUT load, the GPU hook seam, and
-# each profile switch; then one fault at a time, each of which must fail exactly its
-# check.  Run twice because ge.c latches the strip-cache switch per process.  No game input.
+# each profile switch; then faults injected into copies of those blocks, each of which
+# must fail exactly the checks it breaks.  Run twice because ge.c latches the strip-cache
+# switch per process.  No game input.
 GE_CPU_PROFILE_VALIDATE_SELFTEST := $(BUILD_DIR)/ge_cpu_profile_validate_selftest$(EXE_EXT)
 
 ge-cpu-profile-validate-selftest: $(RT_GE_O)

@@ -15,9 +15,11 @@
 // ge_set_gpu_hooks() seam.  Runtime entry points a GE list must not reach abort.
 //
 // Fault injection copies a production snapshot, applies one counter fault, and requires
-// the failure mask to equal exactly the intended check(s), so a fault cannot pass because
-// an unrelated check fired.  Faults whose wrapping uint64_t sum would land back on the
-// expected value prove the comparisons are exact.
+// the failure mask to equal exactly the check(s) that fault breaks, so a fault cannot pass
+// because an unrelated check fired.  Each relation, and each clause of a multi-clause
+// relation, has a fault that breaks it alone.  The *_wraps faults are built so that a
+// wrapping uint64_t sum would land back on the expected value; they fail only because
+// those relations are compared exactly.
 //
 // The Makefile runs this twice, once with --strip-cache-disabled, because ge.c latches
 // the strip-cache switch once per process.
@@ -441,6 +443,19 @@ static int sparse_counters_zero(const GeCpuProfileStats *s) {
     return memcmp((const char *)s + from, (const char *)&zero + from, sizeof *s - from) == 0;
 }
 
+/* Every field, compared by the padding-free uint64_t runs so padding bytes never matter. */
+static int same_profile(const GeCpuProfileStats *a, const GeCpuProfileStats *b) {
+    size_t coarse = offsetof(GeCpuProfileStats, phase);
+    size_t coarse_end = offsetof(GeCpuProfileStats, primitive_profile_stride);
+    size_t sparse = offsetof(GeCpuProfileStats, primitive_profile_timer_pair_ns);
+    return a->enabled == b->enabled &&
+           a->primitive_profile_enabled == b->primitive_profile_enabled &&
+           a->primitive_profile_calibration_enabled == b->primitive_profile_calibration_enabled &&
+           a->primitive_profile_stride == b->primitive_profile_stride &&
+           memcmp((const char *)a + coarse, (const char *)b + coarse, coarse_end - coarse) == 0 &&
+           memcmp((const char *)a + sparse, (const char *)b + sparse, sizeof *a - sparse) == 0;
+}
+
 /* The populations each relation constrains must actually be produced by the scene, so a
  * relation cannot hold only because both of its sides are zero. */
 static void expect_full_coverage(const char *scenario, const GeCpuProfileStats *s,
@@ -505,14 +520,48 @@ static void m_nested_sum_wraps(GeCpuProfileStats *s) {
 static void m_primitive_phase_unpaired(GeCpuProfileStats *s) {
     s->phase[GE_CPU_PRIMITIVE].calls++;
 }
+static void m_list_calls_unpaired(GeCpuProfileStats *s) {
+    s->phase[GE_CPU_LIST_TOTAL].calls++;
+}
+static void m_block_phase_unpaired(GeCpuProfileStats *s) {
+    s->phase[GE_CPU_BLOCK_TRANSFER].calls++;
+}
+static void m_flush_phase_unpaired(GeCpuProfileStats *s) {
+    s->phase[GE_CPU_FLUSH].calls++;
+}
 static void m_clut_load_unended(GeCpuProfileStats *s) {
     s->clut_loads = s->phase[GE_CPU_CLUT_LOAD].calls + 1u;
 }
 static void m_command_undercount(GeCpuProfileStats *s) {
     s->commands = s->primitive_commands + s->block_transfers + s->clut_loads + s->flushes - 1u;
 }
+static void m_command_bound_wraps(GeCpuProfileStats *s) {
+    /* Block transfers stay paired with their phase calls; a wrapping sum of the command
+     * kinds would fall back below commands. */
+    s->block_transfers = UINT64_MAX;
+    s->phase[GE_CPU_BLOCK_TRANSFER].calls = UINT64_MAX;
+}
+static void m_command_bound_wraps_last(GeCpuProfileStats *s) {
+    /* The same with the overflow on the last term of the sum. */
+    s->flushes = UINT64_MAX;
+    s->phase[GE_CPU_FLUSH].calls = UINT64_MAX;
+}
 static void m_patch_without_command(GeCpuProfileStats *s) {
     s->primitive_profile_patch_commands++;
+}
+static void m_command_without_draw(GeCpuProfileStats *s) {
+    /* One primitive command (with its phase call) that is neither a draw nor a patch: the
+     * exact relation fails from below. */
+    s->primitive_commands++;
+    s->phase[GE_CPU_PRIMITIVE].calls++;
+}
+static void m_type_sum_wraps(GeCpuProfileStats *s) {
+    /* Both profiles agree per type; a wrapping type sum would come back to
+     * primitive_commands. */
+    uint64_t type7 = s->primitive_type[7];
+    s->primitive_type[7] = s->primitive_profile_commands[7] = UINT64_MAX;
+    s->primitive_type[0] += type7 + 1u;
+    s->primitive_profile_commands[0] += type7 + 1u;
 }
 static void m_type_slot_overcount(GeCpuProfileStats *s) {
     uint64_t types = 0;
@@ -533,8 +582,23 @@ static void m_submitted_sum_wraps(GeCpuProfileStats *s) {
     s->primitive_profile_submitted[7] = UINT64_MAX;
     s->primitive_profile_submitted[0]++;
 }
+static void m_submitted_sum_exceeds(GeCpuProfileStats *s) {
+    /* The parts before the last already equal the expected total; the last pushes the sum
+     * past UINT64_MAX, which must not compare equal. */
+    s->primitive_profile_submitted[7] = UINT64_MAX;
+}
 static void m_through_candidate_overcount(GeCpuProfileStats *s) {
     s->primitive_profile_through_triangle_candidates++;
+}
+static void m_mode_split_wraps(GeCpuProfileStats *s) {
+    /* Transform candidates at UINT64_MAX with verdicts to match; a wrapping through +
+     * transform sum would come back to triangle_candidates. */
+    uint64_t transform = s->primitive_profile_transform_triangle_candidates;
+    s->primitive_profile_transform_triangle_candidates = UINT64_MAX;
+    s->primitive_profile_through_triangle_candidates += transform + 1u;
+    s->primitive_profile_transform_triangles_drawn =
+        UINT64_MAX - s->primitive_profile_transform_triangles_clipped -
+        s->primitive_profile_transform_triangles_rejected;
 }
 static void m_triangle_reference_overcount(GeCpuProfileStats *s) {
     s->primitive_profile_triangle_vertex_references++;
@@ -549,6 +613,16 @@ static void m_triangle_use_overcount(GeCpuProfileStats *s) {
 }
 static void m_transform_vertices_drift(GeCpuProfileStats *s) {
     s->primitive_profile_transform_vertices++;
+}
+static void m_transform_use_overcount(GeCpuProfileStats *s) {
+    /* Through + transform uses no longer sum to the uses; transform_vertices follows. */
+    s->primitive_profile_transform_vertex_uses++;
+    s->primitive_profile_transform_vertices++;
+}
+static void m_use_split_wraps(GeCpuProfileStats *s) {
+    uint64_t triangle = s->primitive_profile_triangle_vertex_uses;
+    s->primitive_profile_triangle_vertex_uses = UINT64_MAX;
+    s->primitive_profile_non_triangle_vertex_uses += triangle + 1u;
 }
 static void m_references_undercount(GeCpuProfileStats *s) {
     /* Lower the total and its triangle split together, just below the uses. */
@@ -572,13 +646,27 @@ static void m_transform_decode_overcount(GeCpuProfileStats *s) {
     s->primitive_profile_actual_transformed_vertices += extra;
     s->primitive_profile_actual_decoded_vertices += extra;
 }
-static void m_decode_mode_misattributed(GeCpuProfileStats *s) {
-    /* Move decodes from transform to through: more skipped transform uses than rejects. */
-    uint64_t skipped = s->primitive_profile_transform_vertex_uses -
-                       s->primitive_profile_actual_transformed_vertices;
-    uint64_t k = s->primitive_profile_vertex_rejects - skipped + 1u;
-    s->primitive_profile_actual_transformed_vertices -= k;
-    s->primitive_profile_actual_through_vertices += k;
+static void m_skipped_decode_without_reject(GeCpuProfileStats *s) {
+    /* One reject fewer than skipped transform decodes; the through decodes still match. */
+    s->primitive_profile_vertex_rejects = s->primitive_profile_transform_vertex_uses -
+                                          s->primitive_profile_actual_transformed_vertices - 1u;
+}
+static void m_calibration_bound_exceeds(GeCpuProfileStats *s) {
+    /* Decodes just large enough that decoded + candidates exceeds UINT64_MAX, with more
+     * control samples than decodes: a bound past UINT64_MAX holds for any count, so only
+     * the through decodes (moved to keep the mode split) disagree with their uses. */
+    uint64_t decoded = UINT64_MAX - s->primitive_profile_triangle_candidates + 1u;
+    s->primitive_profile_actual_decoded_vertices = decoded;
+    s->primitive_profile_actual_through_vertices =
+        decoded - s->primitive_profile_actual_transformed_vertices;
+    s->primitive_profile_empty_control.calls = decoded + 1u;
+}
+static void m_decode_split_wraps(GeCpuProfileStats *s) {
+    /* A wrapping through + transformed sum would come back to decoded; both modes now also
+     * disagree with their uses. */
+    uint64_t through = s->primitive_profile_actual_through_vertices;
+    s->primitive_profile_actual_through_vertices = UINT64_MAX;
+    s->primitive_profile_actual_transformed_vertices += through + 1u;
 }
 static void m_decision_overcount(GeCpuProfileStats *s) {
     s->primitive_profile_transform_triangles_drawn++;
@@ -625,25 +713,38 @@ static const Fault s_full_faults[] = {
     { "dispatch_overrun", m_dispatch_overrun, BIT(PHASE_NESTING) },
     { "nested_sum_wraps", m_nested_sum_wraps, BIT(PHASE_NESTING) },
     { "primitive_phase_unpaired", m_primitive_phase_unpaired, BIT(PHASE_CALLS) },
+    { "list_calls_unpaired", m_list_calls_unpaired, BIT(PHASE_CALLS) },
+    { "block_phase_unpaired", m_block_phase_unpaired, BIT(PHASE_CALLS) },
+    { "flush_phase_unpaired", m_flush_phase_unpaired, BIT(PHASE_CALLS) },
     { "clut_load_unended", m_clut_load_unended, BIT(PHASE_CALLS) },
     { "command_undercount", m_command_undercount, BIT(COMMAND_BOUND) },
+    { "command_bound_wraps", m_command_bound_wraps, BIT(COMMAND_BOUND) },
+    { "command_bound_wraps_last", m_command_bound_wraps_last, BIT(COMMAND_BOUND) },
     { "patch_without_command", m_patch_without_command, BIT(PRIMITIVE_TYPES) },
+    { "command_without_draw", m_command_without_draw, BIT(PRIMITIVE_TYPES) },
+    { "type_sum_wraps", m_type_sum_wraps, BIT(PRIMITIVE_TYPES) },
     { "type_slot_overcount", m_type_slot_overcount, BIT(PRIMITIVE_TYPES) | BIT(PROFILE_AGREEMENT) },
     { "decode_use_drift", m_decode_use_drift, BIT(PROFILE_AGREEMENT) },
     { "strip_reuse_drift", m_strip_reuse_drift, BIT(PROFILE_AGREEMENT) },
     { "submitted_overcount", m_submitted_overcount, BIT(SUBMITTED_SPLIT) },
     { "submitted_sum_wraps", m_submitted_sum_wraps, BIT(SUBMITTED_SPLIT) },
+    { "submitted_sum_exceeds", m_submitted_sum_exceeds, BIT(SUBMITTED_SPLIT) },
     { "through_candidate_overcount", m_through_candidate_overcount, BIT(TRIANGLE_MODE_SPLIT) },
+    { "mode_split_wraps", m_mode_split_wraps, BIT(TRIANGLE_MODE_SPLIT) },
     { "triangle_reference_overcount", m_triangle_reference_overcount, BIT(REFERENCE_SPLIT) },
     { "reference_split_wraps", m_reference_split_wraps, BIT(REFERENCE_SPLIT) },
     { "triangle_use_overcount", m_triangle_use_overcount, BIT(USE_SPLIT) },
+    { "transform_use_overcount", m_transform_use_overcount, BIT(USE_SPLIT) },
     { "transform_vertices_drift", m_transform_vertices_drift, BIT(USE_SPLIT) },
+    { "use_split_wraps", m_use_split_wraps, BIT(USE_SPLIT) },
     { "references_undercount", m_references_undercount, BIT(REFERENCES_COVER_USES) },
     { "reject_overcount", m_reject_overcount, BIT(REJECT_BOUND) },
     { "decoded_total_drift", m_decoded_total_drift, BIT(DECODE_SPLIT) },
+    { "decode_split_wraps", m_decode_split_wraps, BIT(DECODE_SPLIT) | BIT(DECODE_COVERAGE) },
     { "through_decode_overcount", m_through_decode_overcount, BIT(DECODE_COVERAGE) },
     { "transform_decode_overcount", m_transform_decode_overcount, BIT(DECODE_COVERAGE) },
-    { "decode_mode_misattributed", m_decode_mode_misattributed, BIT(DECODE_COVERAGE) },
+    { "skipped_decode_without_reject", m_skipped_decode_without_reject, BIT(DECODE_COVERAGE) },
+    { "calibration_bound_exceeds", m_calibration_bound_exceeds, BIT(DECODE_COVERAGE) },
     { "decision_overcount", m_decision_overcount, BIT(TRIANGLE_DECISIONS) },
     { "decision_sum_wraps", m_decision_sum_wraps, BIT(TRIANGLE_DECISIONS) },
     { "fetch_sample_overcount", m_fetch_sample_overcount, BIT(SAMPLE_BOUND) },
@@ -755,7 +856,7 @@ int main(int argc, char **argv) {
     run_scene("reset");
     run_list(LIST_BAD_CLUT, "reset");
     GeCpuProfileStats rerun = snapshot();
-    expect(memcmp(&rerun, &full, sizeof full) == 0, "reset", "rerun after reset differs");
+    expect(same_profile(&rerun, &full), "reset", "rerun after reset differs");
 
     /* The GPU backend seam: hooks take every primitive and flush at list end. */
     GeGpuHooks hooks;

@@ -376,8 +376,9 @@ void ge_cpu_profile_get(GeCpuProfileStats *out) {
 
 /* ---- Profile consistency (ge_cpu_profile_validate) ----
  * Every relation below is one the producers in this file establish by construction; the
- * comment above each check names them.  Sums carry an `exceeds` flag instead of wrapping,
- * so parts that add up past UINT64_MAX fail the relation they belong to. */
+ * comment above each check names them.  Sums carry an `exceeds` flag instead of wrapping:
+ * parts that add up past UINT64_MAX can never equal or stay within a counter, while a bound
+ * that exceeds UINT64_MAX holds for every counter. */
 typedef struct GeProfileSum { uint64_t value; int exceeds; } GeProfileSum;
 
 static void ge_profile_sum_add(GeProfileSum *sum, uint64_t value) {
@@ -431,7 +432,8 @@ static const char *const s_ge_profile_check_names[] = {
 };
 _Static_assert(sizeof(s_ge_profile_check_names) / sizeof(s_ge_profile_check_names[0]) ==
                GE_PROFILE_CHECK_COUNT, "one name per GeProfileCheck");
-_Static_assert(GE_PROFILE_CHECK_COUNT <= 32, "GeProfileCheck must fit the uint32_t mask");
+/* < 32 so GE_PROFILE_CHECK_MASK(GE_PROFILE_CHECK_COUNT) - 1 (every bit) is defined. */
+_Static_assert(GE_PROFILE_CHECK_COUNT < 32, "GeProfileCheck must fit the uint32_t mask");
 
 const char *ge_profile_check_name(GeProfileCheck check) {
     return (unsigned)check < GE_PROFILE_CHECK_COUNT ? s_ge_profile_check_names[check] : "unknown";

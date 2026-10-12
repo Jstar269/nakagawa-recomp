@@ -394,7 +394,7 @@ def parse_hook_cpu_profile(text: str) -> tuple[dict[str, dict[str, int]], dict[s
 def parse_hierarchy(text: str) -> dict[str, int]:
     """Parse the single non-overlapping list/hook reconciliation summary."""
     _require_consistent_ge_cpu_profile(text)
-    summaries =[line for line in text.splitlines() if line.startswith("GE_REPLAY_HIERARCHY ")]
+    summaries = [line for line in text.splitlines() if line.startswith("GE_REPLAY_HIERARCHY ")]
     if len(summaries) != 1:
         raise ValueError(f"expected one hierarchy summary, found {len(summaries)}")
     fields = _fields(summaries[0])

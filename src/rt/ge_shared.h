@@ -281,9 +281,11 @@ void      ge_cpu_profile_get(GeCpuProfileStats *out);
 /* Check a ge_cpu_profile_get() snapshot against every GeProfileCheck relation and return
  * the mask of failed checks (0 when consistent; every bit when stats is NULL).  Pure: no
  * I/O, environment, or global state, so it adds nothing to the GE paths that produce the
- * counters.  Sums are compared exactly, so a sum that would wrap uint64_t fails its own
- * relation.  When detail is non-NULL it receives a NUL-terminated description of the
- * lowest-numbered failed check, or an empty string. */
+ * counters.  Sums are compared exactly, never modulo 2^64.  The relations hold for a
+ * snapshot taken between ge_run_list() calls (ge_replay reads it after its lists end); one
+ * taken from inside a GPU hook can see a draw half counted.  When detail is non-NULL it
+ * receives a NUL-terminated description of the lowest-numbered failed check, or an empty
+ * string. */
 uint32_t  ge_cpu_profile_validate(const GeCpuProfileStats *stats, char *detail,
                                   size_t detail_size);
 /* Stable lower-case name of a check, or "unknown". */
