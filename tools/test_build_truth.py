@@ -2314,7 +2314,7 @@ class MachinePortabilityTests(unittest.TestCase):
     def test_sdl3_search_flags_precede_vulkan_sdk_in_makefile(self) -> None:
         """SDL3 include and library flags must precede Vulkan SDK flags in CFLAGS, PLAYER_INCLUDES, and LDFLAGS."""
         makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
-        cflags_match = re.search(r"CFLAGS\s*\?=\s*([^\n]+)", makefile_text)
+        cflags_match = re.search(r"CFLAGS\s*\?=\s*([^\r\n]+)", makefile_text)
         self.assertIsNotNone(cflags_match, "CFLAGS must be defined")
         cflags = cflags_match.group(1)
         self.assertIn("$(SDL3_INC_FLAGS)", cflags)
@@ -2328,7 +2328,7 @@ class MachinePortabilityTests(unittest.TestCase):
         vulkan_cflags_pos = cflags.index("$(VULKAN_INC_FLAGS)")
         self.assertLess(sdl3_cflags_pos, vulkan_cflags_pos, "SDL3 includes must precede Vulkan SDK in CFLAGS")
 
-        ldflags_match = re.search(r"LDFLAGS\s*\?=\s*([^\n]+)", makefile_text)
+        ldflags_match = re.search(r"LDFLAGS\s*\?=\s*([^\r\n]+)", makefile_text)
         self.assertIsNotNone(ldflags_match, "LDFLAGS must be defined")
         ldflags = ldflags_match.group(1)
         self.assertIn("$(SDL3_LDFLAGS)", ldflags)
@@ -2336,7 +2336,7 @@ class MachinePortabilityTests(unittest.TestCase):
         vulkan_ld_pos = ldflags.index('-L"$(VULKAN_SDK)')
         self.assertLess(sdl3_ld_pos, vulkan_ld_pos, "SDL3 lib flags must precede Vulkan SDK in LDFLAGS")
 
-        player_inc_match = re.search(r"PLAYER_INCLUDES\s*:=\s*([^\n]+)", makefile_text)
+        player_inc_match = re.search(r"PLAYER_INCLUDES\s*:=\s*([^\r\n]+)", makefile_text)
         self.assertIsNotNone(player_inc_match, "PLAYER_INCLUDES must be defined")
         player_inc = player_inc_match.group(1)
         self.assertIn("$(SDL3_INC_FLAGS)", player_inc)
