@@ -1126,7 +1126,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "45fd0bdcd2332ec372f81cef9795f2cc4d1743dadb164173fc4ac27c2340f7dc"
+      "sha256": "6faf7653494b39a2673840ea9e3a3d2d3cb73ed119983fcf3261d73f305d66f8"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -7510,7 +7510,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3cbf8fae8b0cc670f91d6682bc5e2cd9fa75d2327de6a2e6d3552369a92820e8"
+      "sha256": "0e8fe29e55198b32ebe5fdba1e96a934df1652778189924159adbb91f39fc159"
     },
     {
       "path": "tools/psp_oracle/user_mode_imports.py",

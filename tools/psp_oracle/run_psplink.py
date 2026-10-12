@@ -322,10 +322,15 @@ _PROBE_COMPLETE_RE = re.compile(
     r"^NAKAGAWA_PSP_COMPLETE schema=1 status=(PASS|FAIL|NOT_RUN)$", re.MULTILINE
 )
 # Issue #698: after the first host0 transfer, S2 read one thread above S0, which the
-# teardown check reports as a leak. The working explanation is PSPLink's host0 driver
+# teardown check reports as a leak. The proposed explanation is PSPLink's host0 driver
 # thread, created on first host0 I/O and kept until reset. A directory listing is
 # that I/O without writes: it creates and removes nothing on host0 or device storage.
-# The thread's name and lifetime are not yet confirmed on hardware.
+# Measured on 2026-10-12 (session psp-session-1012, PSP-3000, PSPLink v3.2.1): after a
+# soft reset the shell listed 17 threads before any host0 access and 17 after this
+# listing, byte-identical, so on that boot the listing started no thread `thlist`
+# shows; teardown passed with the warm-up disabled as well. What the warm-up and the
+# re-read below guarantee is a baseline that is settled and self-checked before S0,
+# whatever the boot starts late. The recorded 17-vs-18 did not reproduce there.
 HOST0_WARMUP_COMMAND = "ls host0:/"
 
 

@@ -811,11 +811,18 @@ and round-trip file remain available until the host has captured and checked the
 It uses `modlist` for the full loaded-module inventory; `modinfo <uid>` is the
 single-module query used for the unload handshake. S0 records threads,
 per-partition total/largest free bytes, and modules before load. Before S0, the
-runner issues `ls host0:/`, a listing that writes nothing. The aim (issue #698) is that
-the host0 driver thread which first host0 I/O starts is already in the baseline, not
-counted as a teardown leak; hardware confirmation is pending. The thread list is then
-read again and must match S0; a failed warm-up or a thread set that still moves blocks
-the case before load.
+runner issues `ls host0:/`, a listing that writes nothing, then re-reads the thread
+list, which must match S0; a failed warm-up or a thread set that still moves blocks
+the case before load. Measured 2026-10-12 (session `psp-session-1012`, PSP-3000,
+PSPLink v3.2.1, commit `5ce131f4`): four `transport-write` runs all classified with
+S0 = S2 = 17 threads, the qualified one as `QUALIFIED_CAPTURE`. On that device the
+listing started no thread `thlist` reports — a freshly reset shell read 17 threads
+before any host0 access and 17 after the listing, byte-identical — and control runs
+with the warm-up disabled, and with the warm-up and the post-unload settle both
+disabled, passed teardown as well. So the warm-up is the guard that makes the
+baseline settled and self-checked on a boot where the host0 service does appear
+after the first transfer; it is not a measured cause of the fix, and issue #698's
+recorded 17-versus-18 did not reproduce on that boot.
 S1 records them after the completion marker and before unload; `modinfo <uid> t`
 must show that the probe's only remaining thread is its main thread. Right after
 the `modstun` stop/unload handshake the runner settles the link before any
