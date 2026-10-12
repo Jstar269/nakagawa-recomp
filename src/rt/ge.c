@@ -587,8 +587,9 @@ uint32_t ge_cpu_profile_validate(const GeCpuProfileStats *s, char *detail, size_
                      s->primitive_profile_transform_vertex_uses,
                      s->primitive_profile_transform_vertices);
 
-        /* Uses equal references for every type except a cached strip (count >= 3), where
-         * count uses cover 3 * (count - 2) references. */
+        /* primitive_profile_vertices is note_draw's decoder-use total (the replay prints it as
+         * vertex_uses), not the decoded count.  Uses equal references for every type except
+         * a cached strip (count >= 3), where count uses cover 3 * (count - 2) references. */
         if (s->primitive_profile_vertices > s->primitive_profile_vertex_references &&
             ge_profile_fail(&v, GE_PROFILE_CHECK_REFERENCES_COVER_USES))
             snprintf(detail, detail_size, "references_cover_uses: vertices=%" PRIu64
