@@ -20,6 +20,7 @@ Output (default under build/<game>/decompme/f_<addr>/, which is gitignored):
                    doc). Without it the bundle relies on target.o, which decomp.me
                    disassembles server-side.
     starter.c      empty starter carrying the privacy header
+    cfg.json       optional (--with-cfg) advisory function ownership and xrefs
 
 PRIVACY: the emitted bytes/asm are derived from a retail game. This tool never
 uploads them; it writes only into the (gitignored) output directory. Creating a
@@ -226,8 +227,63 @@ def min_mips_elf_object(func_bytes: bytes, name: str = "func",
     return bytes(buf)
 
 
+def function_cfg_view(report: dict, start: int, end: int) -> dict:
+    """Project a verified canonical report without guessing function boundaries.
+
+    Include both the approximate bundle extent and every instruction owned by
+    the selected entry. Preserve original classifications and conflicting owners;
+    a projection must not reclassify an external callee as an unowned successor.
+    This is an advisory view, not a standalone canonical report or execution gate.
+    """
+    import analyze
+
+    findings = analyze.verify_canonical_cfg_report(report)
+    if findings:
+        raise ValueError(f"DECOMP_CFG_INVALID: {findings[0]['code']}")
+    if start not in report["entries"] or not start < end:
+        raise ValueError("DECOMP_CFG_INVALID: selected extent requires a known entry")
+    instructions = [row for row in report["instructions"]
+                    if start <= row["address"] < end or start in row["owners"]]
+    selected = {row["address"] for row in instructions}
+    outgoing = [row for row in report["edges"] if row["source"] in selected]
+    incoming = [row for row in report["edges"]
+                if row["source"] not in selected and row["target"] in selected]
+    boundary = {row["target"] for row in outgoing} | {row["source"] for row in incoming}
+    return {
+        "schema": "nakagawa.decomp-function-cfg",
+        "schema_version": 1,
+        "cfg_schema_version": report["schema_version"],
+        "function": {"address": start, "extent_end": end,
+                     "extent_method": "next-start-or-range-end"},
+        "owned_outside_extent": [row["address"] for row in instructions
+                                 if not start <= row["address"] < end],
+        "extent_not_owned": [row["address"] for row in instructions
+                             if start <= row["address"] < end and start not in row["owners"]],
+        "instructions": instructions,
+        "boundary_instructions": [
+            {key: row[key] for key in ("address", "classification", "owners")}
+            for row in report["instructions"]
+            if row["address"] in boundary and row["address"] not in selected
+        ],
+        "edges": outgoing,
+        "incoming_edges": incoming,
+        "successor_classifications": [row for row in report["successor_classifications"]
+                                      if row["source"] in selected],
+        "continuation_edges": [row for row in report["continuation_edges"]
+                               if row["source"] in selected],
+        "interior_entries": [row for row in report["interior_entries"]
+                             if row["address"] in selected],
+        "ownership_conflicts": [row for row in report["ownership_conflicts"]
+                                if row["address"] in selected],
+        "unresolved_indirect_edges": [row for row in report["unresolved_indirect_edges"]
+                                      if row["source"] in selected],
+        "jump_table_ownership": [row for row in report["jump_table_ownership"]
+                                 if row["target"] in selected],
+    }
+
+
 def export_function(elf_path: str, addr: int, base: int, outdir: Path,
-                    name: str, objdump: str | None = None) -> dict:
+                    name: str, objdump: str | None = None, *, with_cfg: bool = False) -> dict:
     """Locate the function at `addr`, extract its bytes, and write the bundle.
     Returns the metadata dict. Read-only w.r.t. the repo; never touches the net."""
     if TOOLS_DIR not in sys.path:
@@ -266,7 +322,26 @@ def export_function(elf_path: str, addr: int, base: int, outdir: Path,
         "function_confidence": "start",
     }
 
+    cfg_bytes = None
+    if with_cfg:
+        report = analyze.canonical_cfg_report(elf, ranges=ranges, entries=starts)
+        view = function_cfg_view(report, start, end)
+        view["evidence"] = {
+            "status": "ANALYZER_INFERRED",
+            "entry_basis": "legacy-analyzer-entry-set",
+            "source_input_sha256": src_sha,
+            "nakagawa_commit": meta["nakagawa_commit"],
+        }
+        cfg_bytes = (json.dumps(view, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
+        meta["cfg"] = {"file": "cfg.json", "sha256": sha256_hex(cfg_bytes)}
+
     outdir.mkdir(parents=True, exist_ok=True)
+    # An earlier export to this directory may have left optional outputs this run
+    # does not produce; clear them so the bundle never mixes two runs.
+    for optional in ("cfg.json", "target.s", "target.s.note"):
+        (outdir / optional).unlink(missing_ok=True)
+    if cfg_bytes is not None:
+        (outdir / "cfg.json").write_bytes(cfg_bytes)
     (outdir / "function.bin").write_bytes(data)
     (outdir / "metadata.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     (outdir / "context.c").write_text(gen_context_c(), encoding="utf-8")
@@ -305,6 +380,8 @@ def main(argv=None) -> int:
     ap.add_argument("--output", help="output directory (default build/<game>/decompme/f_<addr>)")
     ap.add_argument("--name", help="symbol name for the target object (default f_<addr>)")
     ap.add_argument("--objdump", help="path to a MIPS objdump to also emit GNU-syntax target.s")
+    ap.add_argument("--with-cfg", action="store_true",
+                    help="include advisory function CFG/ownership/xrefs in cfg.json")
     args = ap.parse_args(argv)
 
     addr = int(args.function, 0)
@@ -316,7 +393,8 @@ def main(argv=None) -> int:
         "  gitignored build dir. It is NOT uploaded. Creating a public decomp.me scratch\n"
         "  from it is a separate, deliberate decision. See docs/DECOMPME_INTEGRATION.md.\n")
 
-    meta = export_function(args.elf, addr, args.base, outdir, name, objdump=args.objdump)
+    meta = export_function(args.elf, addr, args.base, outdir, name,
+                           objdump=args.objdump, with_cfg=args.with_cfg)
     print(f"exported {name} ({meta['size']} bytes, sha {meta['sha256'][:12]}) -> {outdir}")
     return 0
 
