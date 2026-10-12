@@ -1303,7 +1303,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e1b2399ef9db8ba3db3666350092ee2d350f22a5d8b052c0313dcb2d95ef8561"
+      "sha256": "3f61d3d6f446b8e737ab4a4b3393be5b91892b5d3fa85251f76bafb99f8fe80c"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -7690,7 +7690,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4d52f73500dc199132dea357e156d246765c7c82c167c005a197a230280fde14"
+      "sha256": "0eb046e7a7d1fdefb099beff16ddf9fb3eb54eeba0efef82562ec1a22e3184df"
     },
     {
       "path": "tools/record_toolchain.py",
@@ -9612,7 +9612,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "aebf92106d031b26a236bb93840f936c4649bdbe09f13646ce0fccbb60ff1e44"
+      "sha256": "1d2de29157b712da5a32b086006789acd7b6150dd15b4544b197dcb2029a8f67"
     },
     {
       "path": "tools/test_readme_images.py",

@@ -267,7 +267,8 @@ python tools/contrib_refresh.py
 ```
 
 This verifies that no new or removed public paths are introduced and regenerates the content
-hashes and digests from the public controls alone.
+hashes and digests from the public controls alone. Note that `contrib_refresh.py` is a contributor
+convenience, not provenance authorization; external trusted attestation still decides acceptance.
 
 The lower-level exact-path API remains available for narrowly scoped refresh
 operations and is useful for testing the underlying path checks. It is a legacy
