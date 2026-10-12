@@ -42,9 +42,10 @@ build ran, and the toolchain copies them into its own output:
     A ``sha256`` the package's own JSON records for a file that differs only by
     the rules above. A recorded digest is a consequence, not a new difference.
 
-Two toolchain files, the link's response file and the runtime profile-entries file,
-also record the cache entry the objects are written into. Across two manifests they
-differ in that entry and nothing else, which ``PATH_ECHOES`` checks on its own.
+Three toolchain files, the link's response file, the runtime profile-entries file and
+the list of runtime objects the profile stamp invalidates, also record the cache entry
+the objects are written into. Across two manifests they differ in that entry and
+nothing else, which ``PATH_ECHOES`` checks on its own.
 
 **Public-export exclusion.** The route writes nothing the public export or
 ``git status`` could pick up, and the public scope refuses the output root even
@@ -149,24 +150,35 @@ GUEST_DERIVED_SUFFIXES = (".c", ".h", ".bin", ".toml")
 # the same guest to two different manifests must differ in exactly these.
 MANIFEST_IDENTIFIED = ("build-report.json", "package.json", "completion-manifest.json")
 # Toolchain files that record where the objects were written rather than what was
-# compiled: the response file the title link reads (#724) and the profile-entries file
-# the runtime stamp is hashed from (CFLAGS carries -DSR_BUILD_DIR). Each names the
-# content-addressed cache entry, so two manifests differ in them exactly where they
-# differ in the compiled artifacts, and two roots differ in them by the root alone.
-PATH_ECHOES = ("link-objects.rsp", ".runtime-profile-entries")
+# compiled: the response file the title link reads (#724), the profile-entries file
+# the runtime stamp is hashed from (CFLAGS carries -DSR_BUILD_DIR), and the list of
+# runtime objects the stamp's recipe hands tools/build_profile.py to invalidate (#783).
+# Each names the content-addressed cache entry, so two manifests differ in them exactly
+# where they differ in the compiled artifacts, and two roots differ in them by the root
+# alone.
+#
+# They are package files because the package is the whole build directory: the planner
+# promotes it with one copytree and the completion manifest records every file in it.
+# The invalidation list is the same kind of file as the link's response file, an
+# argument list Make writes to a file because inline it overran the command line under
+# a long BUILD_DIR, so it is compared the same way rather than dropped on its own.
+PATH_ECHOES = ("link-objects.rsp", ".runtime-profile-entries", ".runtime-invalidate.lst")
 # A cache entry directory, <AOT digest>/<native digest>, in its long spelling or in the
 # Windows 8.3 spelling the planner's workspace path is echoed with (for example
 # "7B48E1~1" for "7b48e18b9f...").
 #
 # The 8.3 suffix is ``~N`` with N counting collisions, so it reaches ``~10`` and beyond.
 #
-# Separators: only forward slashes are matched, on purpose. Both writers of these two
-# files normalize backslashes before they write, so the echo is never backslashed:
-# the Makefile's CFLAGS carry ``-DSR_BUILD_DIR=\"$(subst \,/,$(BUILD_DIR))\"`` (the
-# runtime profile entries are hashed from CFLAGS), and the link response file is
-# written as ``$(file >$(LINK_OBJECTS_RSP),$(subst \,/,$(LINK_OBJECTS)))``. A backslash
-# echo would therefore not be rewritten here, and the two manifests' differing digests
-# would fail the equality check in the test, so the assumption fails closed.
+# Separators: only forward slashes are matched, on purpose. No writer of these files
+# echoes a backslash: the Makefile's CFLAGS carry
+# ``-DSR_BUILD_DIR=\"$(subst \,/,$(BUILD_DIR))\"`` (the runtime profile entries are
+# hashed from CFLAGS), and the link response file is written as
+# ``$(file >$(LINK_OBJECTS_RSP),$(subst \,/,$(LINK_OBJECTS)))``. The invalidation list
+# is written without a substitution, as ``$(RT_GE_O) $(RT_OBJS)``, but each of those is
+# ``$(BUILD_DIR)/<name>.o`` and the planner hands Make ``BUILD_DIR`` as
+# ``build_workspace.as_posix()``. A backslash echo would therefore not be rewritten
+# here, and the two manifests' differing digests would fail the equality check in the
+# test, so the assumption fails closed.
 _CACHE_ENTRY_RE = re.compile(rb"/entries/(?:[0-9a-f]{64}|[0-9A-F]{6}~[0-9]+)/"
                              rb"(?:[0-9a-f]{64}|[0-9A-F]{6}~[0-9]+)/")
 # The package files whose content names the title or the artifact stem. These are
