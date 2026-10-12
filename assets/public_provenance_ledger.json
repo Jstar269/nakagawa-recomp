@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "c8b2d330c0ae27f1c5882717e10c9c0b21c397e8e766e67ea8781ce0c1b6c245"
+      "sha256": "ebf5fd27a6b4703895c76b5d636656179da772ed93a2e2147f3b73581f5a0fca"
     },
     {
       "path": "NOTICE.md",
@@ -679,7 +679,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "a000177e4705d23f120f190109b745fc379ef8203d465ff96081b51922f1e6bd"
+      "sha256": "756f6ac09d1c7b29fda50a1235d553b2f802b0b1ca7d4ba99525143dc1ea9dcf"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1096,7 +1096,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9fcd57a85c33c134f7cd843a707cba024863a1a4c6757549a73d611aaa657770"
+      "sha256": "f0d12679711604b9db964b5fd756608dd86e6f7f802caa8925cd3a01e9c2ad5f"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -4540,7 +4540,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "941740ad72af5aa64ce6def0a8d1fb0d3b34f07f796c6ef961064b070c1abd0e"
+      "sha256": "25076484d0a9b6b35ae1b0b41a2645832e80b380f86007a9144cc9c204746130"
     },
     {
       "path": "src/rt/ge_capture.c",
@@ -4577,6 +4577,18 @@
         "upstream_attribution": null
       },
       "sha256": "01e810aedb40e8bdcd250cfde11d6a64afa0dcf86683159cef6f35cbaa1ed399"
+    },
+    {
+      "path": "src/rt/ge_cpu_profile_validate_selftest.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "ge-cpu-profile-validate-selftest",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "5b7da8dea5ecb4fcfb0d4e11ceff05402370183cd9cb6bc6a4e1c106b1f6db6d"
     },
     {
       "path": "src/rt/ge_float24.c",
@@ -4660,7 +4672,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ff6ecd38ac0baf26348cb413c8e8cc050c888f449738293b89e9b206755c752b"
+      "sha256": "b7fd163a0ab9e949747ac7ddc2f6a3c8cf45afac7f8d2b28f3f36f716dc9a111"
     },
     {
       "path": "src/rt/ge_shared.h",
@@ -4673,7 +4685,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8bf9a40d9c5408c8c583e0a127a667290b1838293d95caa2c73964f78225acfa"
+      "sha256": "1301870356fef65cd0b3afdc71f0ac335f9236295843abb2ec6a91bd3c63b972"
     },
     {
       "path": "src/rt/ge_texture_ref.c",
@@ -6543,7 +6555,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a68869d0463d007b14bf22a138d5bcf2ca1e3b59124d6f7dc5e43717cba2dcf4"
+      "sha256": "ed9c7e8608743607bd56c31846652ed5c78ca64820ed98036ff5329689463141"
     },
     {
       "path": "tools/ge_stat_windows.py",
@@ -8519,7 +8531,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bd2fc0546c8fe5a608aa10ff4a0252e3d6cdb6f9a83eaf3460c500650fb428ea"
+      "sha256": "0381e9981662f4678a494cbd3c1648b2afb092826ade76c31d816ce38539a09c"
     },
     {
       "path": "tools/test_ge_nonfinite_vertex.py",
