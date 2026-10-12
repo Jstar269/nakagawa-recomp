@@ -29,7 +29,10 @@ linked live issue, and read counts from the generator cited beside each area.
 - PGF/font and PGD/amctrl surfaces remain excluded pending qualified
   provenance and distribution review.
 - Transient model corruption entering the main menu:
-  [issue #69](https://github.com/Jstar269/nakagawa-recomp/issues/69). No
+  [issue #69](https://github.com/Jstar269/nakagawa-recomp/issues/69). The
+  one-frame corruption was traced to VFPU3 compare decode and fixed in #822; a
+  residual corruption of a few presented frames at the transition, seen only on
+  the GPU path, remains under investigation as renderer coherence. No
   public-scope reproduction exists; the public repository holds no
   private-title route evidence.
 

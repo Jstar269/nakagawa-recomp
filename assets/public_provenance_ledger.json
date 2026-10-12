@@ -111,7 +111,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a9b9a0cbaebbb2c5861a3807394d00a3ee8848f65e7423f8f58398c08da34f9e"
+      "sha256": "e52619bce4caaf126a7b994007c8f7e1c9f396935b5a3d927bb00e201ce8a281"
     },
     {
       "path": ".github/copilot-instructions.md",
@@ -195,7 +195,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "fa7038320ef4de9f8b8cab640a3f0ecab3494aa2fe9b90c6615afdac68b2fcbc"
+      "sha256": "d7b7236a4d18e59b3ff7a09577e71a44612e2c42d76e7171f84b5b5d32b04484"
     },
     {
       "path": ".markdownlint-cli2.jsonc",
@@ -282,7 +282,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f0869483caa599de26d6ff7024fc7ef7c173d73e8514fb6eb05ba96025b0eb3f"
+      "sha256": "57b7c998787121fe3daeb372e15d3bd3ce1c780f9e46bd089389d7f3519febf0"
     },
     {
       "path": "LICENSE",
@@ -1069,7 +1069,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "284c8e93505be7ab870d161b0c848afc7f1d1c3569bb6f65c060e5801332ee57"
+      "sha256": "3c61e9f5da0830bd3b480d1953e144b2fc0aeca8acb816d19a1a82f82dc13fca"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1303,7 +1303,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "8c8059340937819d456405a0f5fc3eb9d1b9646f2b32a98d957434ced9ac3402"
+      "sha256": "3f61d3d6f446b8e737ab4a4b3393be5b91892b5d3fa85251f76bafb99f8fe80c"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -1348,7 +1348,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "8806bd4d3d246611d39622f6a1e4ee5275ebd8b75d4fe64ff3fd402f6e337882"
+      "sha256": "8dc3c5a4b26a201a2fda9a2dff7e8bb214ad49d13ae09698b40ecc39ef063003"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -2506,7 +2506,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e1d596efc10a750754dedb16776dcddfcd96be5c3bdf717b64a52d4aec5d58bd"
+      "sha256": "2144117f56bdea8a0a1d2155d920d3f0213525a86374d5608bf6a4aa281f1b40"
     },
     {
       "path": "pyproject.toml",
@@ -6869,7 +6869,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b08e6c9f030f45f5f897c73288c34a00b117f71e1e003bb4a5496b847340ce02"
+      "sha256": "a16451be7897046a19659662328986257fc8e86a795410a3e98842a5662a554b"
     },
     {
       "path": "tools/mem_debug.py",
@@ -7702,7 +7702,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a8aeb7062e2245b9c0e3ce7a0c83ace54c8ac104363afc29bbc4ff7b4e83e478"
+      "sha256": "4260738fb04f1049f5fd2137db64b1b4db1e6931b88cbefe462435e9ec3d00da"
     },
     {
       "path": "tools/record_toolchain.py",
@@ -8916,7 +8916,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "403aa51fa824c78cd8304ef270aa9dfd854a834dec7dea89396715541adf1a1b"
+      "sha256": "2b2b4fbd9dcd8f6a2ff11c4a1c85814b9ffd3eba7f810ffb93adaf98c4e35525"
     },
     {
       "path": "tools/test_matrix_disposition.py",
@@ -9624,7 +9624,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6294a65eb6ad5ce9a21f689be86e3f8c3b43fd0b60d01457b5cacb994d3693b0"
+      "sha256": "489d6ae96e3d17153036f6389e2ee521ebf931f82d9124fc2e3562655fc268d0"
     },
     {
       "path": "tools/test_readme_images.py",
