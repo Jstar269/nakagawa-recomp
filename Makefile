@@ -944,6 +944,7 @@ PUBLIC_TARGETS := \
 	asset-index-selftest \
 	fp-convert-selftest \
 	ge-float24-selftest \
+	ge-cpu-profile-validate-selftest \
 	vfpu-tables-selftest \
 	watchpoints-file-selftest \
 	ge-raster-ref-selftest \
@@ -1067,6 +1068,7 @@ HELP_DESCRIPTION_memory-watch-selftest := run the SR_WATCH store-watch selftest
 HELP_DESCRIPTION_asset-index-selftest := run the asset-index selftest
 HELP_DESCRIPTION_fp-convert-selftest := run the FPU conversion selftest
 HELP_DESCRIPTION_ge-float24-selftest := run the GE float24/row-sum/reciprocal reference selftest
+HELP_DESCRIPTION_ge-cpu-profile-validate-selftest := run the GE CPU-profile validator selftest on the production GE object
 HELP_DESCRIPTION_vfpu-tables-selftest := run the VFPU table-loader selftest
 HELP_DESCRIPTION_watchpoints-file-selftest := run the watchpoints-file selftest
 HELP_DESCRIPTION_ge-raster-ref-selftest := run the GE triangle setup and rasterization reference selftest
