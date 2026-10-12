@@ -150,35 +150,8 @@ POWERSHELL ?= powershell.exe
 else
 POWERSHELL ?= pwsh
 endif
-# Direct Make callers may provide VULKAN_SDK explicitly (or export it).
-# If unset, discover dynamically via tools/vulkan_sdk.py.
-ifeq ($(VULKAN_SDK),)
-VULKAN_SDK := $(shell "$(PYTHON)" -c "import sys; sys.path.insert(0, 'tools'); from vulkan_sdk import discover_vulkan_sdk, VulkanSdkError; (lambda: exec('try:\n print(discover_vulkan_sdk().as_posix())\nexcept VulkanSdkError:\n pass'))()")
-endif
-# PowerShell commonly exports this with backslashes while nk_manager passes the
-# same directory with slashes. Canonicalize before hashing CFLAGS so direct Make
-# and manager builds do not churn otherwise identical runtime profiles.
-VULKAN_SDK := $(subst \,/,$(VULKAN_SDK))
-# glslc from the Vulkan SDK is used ONLY by the opt-in `shaders` target below.
+# glslc from the Vulkan SDK is used ONLY by the opt-in shaders target.
 GLSLC ?= glslc
-
-# Vulkan include and library search paths. On Windows these come from the resolved SDK
-# (see the VULKAN_SDK block above). On Linux there is no SDK directory by default: the
-# loader is a system library (libvulkan.so) and the headers live under /usr/include, so the
-# standard search paths already find them and no -I/-L is emitted. Forcing -I/Include -I/include
-# on Linux reorders GCC's own header search and breaks #include_next, so the empty SDK is
-# handled explicitly here rather than by leaving a dangling -I$(VULKAN_SDK)/Include.
-#
-# An explicit VULKAN_SDK override on Linux is still honoured: if the caller names a real
-# directory, -L<root>/lib is added and the SDK's own headers are picked up. The default
-# (no override, no discovery) is the system loader.
-ifeq ($(OS),Windows_NT)
-VULKAN_INC_FLAGS := -I"$(VULKAN_SDK)/Include" -I"$(VULKAN_SDK)/include"
-VULKAN_LIB_FLAGS := -L"$(VULKAN_SDK)/Lib" -L"$(VULKAN_SDK)/lib"
-else
-VULKAN_INC_FLAGS := $(if $(strip $(VULKAN_SDK)),-I"$(VULKAN_SDK)/include",)
-VULKAN_LIB_FLAGS := $(if $(strip $(VULKAN_SDK)),-L"$(VULKAN_SDK)/lib",) -lvulkan
-endif
 
 # BUILD AND LOG ROOTS. BUILD_ROOT is the shared build tree: the default per-title
 # BUILD_DIR, the shared fixture trees clean-fixtures removes and the parse-time SDL3
@@ -223,22 +196,52 @@ endif
 # prefixing it with `./` names no file.
 BUILD_ROOT_RUN := $(if $(filter /%,$(BUILD_ROOT))$(findstring :,$(BUILD_ROOT)),$(BUILD_ROOT),./$(BUILD_ROOT))
 
-# SDL3 dependency discovery and isolation (issue #331).
-# An explicit SDL3_DIR overrides discovery; otherwise the supported provider is
-# found (MSYS2 UCRT64 on Windows, pkg-config/system elsewhere). One Python pass
-# writes every SDL3 variable to a fragment, so a parse costs one interpreter
-# start rather than one per variable. Info-only goals skip discovery entirely.
+# SDL3 and Vulkan dependency discovery.
+# Normal build parses resolve both in one Python startup. The fragment carries the
+# same Make variables used by compiler/profile hashing; info-only and clean goals
+# retain their existing lightweight SDL behavior.
 SDL3_DIR ?=
 SDL3_MAKE_FRAGMENT := $(BUILD_ROOT)/.sdl3-discovery.mk
 ifeq ($(strip $(filter clean distclean clean-preview,$(MAKECMDGOALS))$(NK_INFO_ONLY)),)
+ifeq ($(VULKAN_SDK),)
+_BUILD_DEPENDENCY_DISCOVERY := $(shell "$(PYTHON)" -W ignore -c "import sys; sys.path.insert(0, 'tools'); from nk_doctor_checks import write_build_discovery_make_fragment; write_build_discovery_make_fragment(r'$(SDL3_MAKE_FRAGMENT)', r'$(subst \,/,$(SDL3_DIR))', r'$(CC)', r'$(subst \,/,$(VULKAN_SDK))', True)" 2>&1)
+ifneq ($(strip $(_BUILD_DEPENDENCY_DISCOVERY)),)
+$(error SDL3 discovery failed: $(_BUILD_DEPENDENCY_DISCOVERY))
+endif
+else
 _SDL3_DISCOVERY := $(shell "$(PYTHON)" -W ignore -c "import sys; sys.path.insert(0, 'tools'); from nk_doctor_checks import write_sdl3_make_fragment; write_sdl3_make_fragment(r'$(SDL3_MAKE_FRAGMENT)', r'$(subst \,/,$(SDL3_DIR))', r'$(CC)')" 2>&1)
 ifneq ($(strip $(_SDL3_DISCOVERY)),)
 $(error SDL3 discovery failed: $(_SDL3_DISCOVERY))
 endif
+endif
+VULKAN_SDK := $(subst \,/,$(VULKAN_SDK))
 include $(SDL3_MAKE_FRAGMENT)
+
 else
 SDL3_PROVIDER := none
 SDL3_VERSION := none
+ifeq ($(VULKAN_SDK),)
+VULKAN_SDK := $(shell "$(PYTHON)" -c "import sys; sys.path.insert(0, 'tools'); from vulkan_sdk import discover_vulkan_sdk, VulkanSdkError; (lambda: exec('try:\n print(discover_vulkan_sdk().as_posix())\nexcept VulkanSdkError:\n pass'))()")
+endif
+VULKAN_SDK := $(subst \,/,$(VULKAN_SDK))
+endif
+
+# Vulkan include and library search paths. On Windows these come from the resolved SDK
+# (see the VULKAN_SDK block above). On Linux there is no SDK directory by default: the
+# loader is a system library (libvulkan.so) and the headers live under /usr/include, so the
+# standard search paths already find them and no -I/-L is emitted. Forcing -I/Include -I/include
+# on Linux reorders GCC's own header search and breaks #include_next, so the empty SDK is
+# handled explicitly here rather than by leaving a dangling -I$(VULKAN_SDK)/Include.
+#
+# An explicit VULKAN_SDK override on Linux is still honoured: if the caller names a real
+# directory, -L<root>/lib is added and the SDK's own headers are picked up. The default
+# (no override, no discovery) is the system loader.
+ifeq ($(OS),Windows_NT)
+VULKAN_INC_FLAGS := -I"$(VULKAN_SDK)/Include" -I"$(VULKAN_SDK)/include"
+VULKAN_LIB_FLAGS := -L"$(VULKAN_SDK)/Lib" -L"$(VULKAN_SDK)/lib"
+else
+VULKAN_INC_FLAGS := $(if $(strip $(VULKAN_SDK)),-I"$(VULKAN_SDK)/include",)
+VULKAN_LIB_FLAGS := $(if $(strip $(VULKAN_SDK)),-L"$(VULKAN_SDK)/lib",) -lvulkan
 endif
 
 # Native runtime code is host-side C and can be tested independently.

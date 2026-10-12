@@ -2314,7 +2314,7 @@ class MachinePortabilityTests(unittest.TestCase):
     def test_sdl3_search_flags_precede_vulkan_sdk_in_makefile(self) -> None:
         """SDL3 include and library flags must precede Vulkan SDK flags in CFLAGS, PLAYER_INCLUDES, and LDFLAGS."""
         makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
-        cflags_match = re.search(r"CFLAGS\s*\?=\s*([^\r\n]+)", makefile_text)
+        cflags_match = re.search(r"CFLAGS\s*\?=\s*([^\n]+)", makefile_text)
         self.assertIsNotNone(cflags_match, "CFLAGS must be defined")
         cflags = cflags_match.group(1)
         self.assertIn("$(SDL3_INC_FLAGS)", cflags)
@@ -2328,7 +2328,7 @@ class MachinePortabilityTests(unittest.TestCase):
         vulkan_cflags_pos = cflags.index("$(VULKAN_INC_FLAGS)")
         self.assertLess(sdl3_cflags_pos, vulkan_cflags_pos, "SDL3 includes must precede Vulkan SDK in CFLAGS")
 
-        ldflags_match = re.search(r"LDFLAGS\s*\?=\s*([^\r\n]+)", makefile_text)
+        ldflags_match = re.search(r"LDFLAGS\s*\?=\s*([^\n]+)", makefile_text)
         self.assertIsNotNone(ldflags_match, "LDFLAGS must be defined")
         ldflags = ldflags_match.group(1)
         self.assertIn("$(SDL3_LDFLAGS)", ldflags)
@@ -2336,7 +2336,7 @@ class MachinePortabilityTests(unittest.TestCase):
         vulkan_ld_pos = ldflags.index('-L"$(VULKAN_SDK)')
         self.assertLess(sdl3_ld_pos, vulkan_ld_pos, "SDL3 lib flags must precede Vulkan SDK in LDFLAGS")
 
-        player_inc_match = re.search(r"PLAYER_INCLUDES\s*:=\s*([^\r\n]+)", makefile_text)
+        player_inc_match = re.search(r"PLAYER_INCLUDES\s*:=\s*([^\n]+)", makefile_text)
         self.assertIsNotNone(player_inc_match, "PLAYER_INCLUDES must be defined")
         player_inc = player_inc_match.group(1)
         self.assertIn("$(SDL3_INC_FLAGS)", player_inc)
@@ -2613,7 +2613,7 @@ class StrbufSafetyTests(unittest.TestCase):
 
 
 class Sdl3MakeFragmentTests(unittest.TestCase):
-    """The Makefile reads every SDL3 variable from one discovery pass."""
+    """The Makefile reads SDL3 and Vulkan variables from one discovery pass."""
 
     def _fragment(self, provider, pkg_flags=None):
         sys.path.insert(0, str(ROOT / "tools"))
@@ -2686,10 +2686,95 @@ class Sdl3MakeFragmentTests(unittest.TestCase):
         self.assertEqual(values["SDL3_ERROR"], "")
         self.assertEqual(values["SDL3_LDFLAGS"], '-L"C:/msys64/ucrt64/lib"')
 
-    def test_makefile_discovers_sdl3_once_per_parse(self) -> None:
+    def test_combined_fragment_discovers_vulkan_and_sdl3_together(self) -> None:
+        import nk_doctor_checks as ndc
+        from unittest import mock
+
+        provider = self._provider("system", "/usr/include", "/usr/lib/libSDL3.so")
+        sdk = Path("C:/VulkanSDK/1.4.357.0")
+        with mock.patch.object(ndc, "discover_vulkan_sdk", return_value=sdk) as discover_vulkan:
+            with mock.patch.object(ndc, "discover_sdl3_provider", return_value=provider):
+                text = ndc.build_discovery_make_fragment(compiler="gcc")
+        values = dict(line.split(" := ", 1) for line in text.splitlines())
+        self.assertEqual(values["VULKAN_SDK"], "C:/VulkanSDK/1.4.357.0")
+        self.assertEqual(values["SDL3_PROVIDER"], "system")
+        self.assertEqual(values["SDL3_VERSION"], "3.4.0")
+        discover_vulkan.assert_called_once_with()
+
+    def test_vulkan_discovery_failure_preserves_empty_sdk_and_sdl_output(self) -> None:
+        import nk_doctor_checks as ndc
+        from unittest import mock
+
+        provider = self._provider("system", "/usr/include", "/usr/lib/libSDL3.so")
+        failure = ndc.VulkanSdkError("No usable Vulkan SDK was discovered")
+        with mock.patch.object(ndc, "discover_vulkan_sdk", side_effect=failure):
+            with mock.patch.object(ndc, "discover_sdl3_provider", return_value=provider):
+                expected_sdl = ndc.sdl3_make_fragment(compiler="gcc")
+                combined = ndc.build_discovery_make_fragment(compiler="gcc")
+        self.assertEqual(combined, "VULKAN_SDK := \n" + expected_sdl)
+
+    def test_sdl_discovery_failure_preserves_exact_make_error_output(self) -> None:
+        import nk_doctor_checks as ndc
+        from unittest import mock
+
+        failure = ndc.Sdl3ProviderError("SDL3 dependency is unavailable")
+        sdk = Path("C:/VulkanSDK/1.4.357.0")
+        with mock.patch.object(ndc, "discover_vulkan_sdk", return_value=sdk):
+            with mock.patch.object(ndc, "discover_sdl3_provider", side_effect=failure):
+                expected_sdl = ndc.sdl3_make_fragment(compiler="gcc")
+                combined = ndc.build_discovery_make_fragment(compiler="gcc")
+        self.assertEqual(combined, "VULKAN_SDK := C:/VulkanSDK/1.4.357.0\n" + expected_sdl)
+        values = dict(line.split(" := ", 1) for line in combined.splitlines())
+        self.assertEqual(values["SDL3_ERROR"], str(failure))
+
+    def test_explicit_vulkan_override_skips_discovery_and_normalizes_slashes(self) -> None:
+        import nk_doctor_checks as ndc
+        from unittest import mock
+
+        provider = self._provider("system", "/usr/include", "/usr/lib/libSDL3.so")
+        with mock.patch.object(ndc, "discover_vulkan_sdk") as discover_vulkan:
+            with mock.patch.object(ndc, "discover_sdl3_provider", return_value=provider):
+                text = ndc.build_discovery_make_fragment(
+                    compiler="gcc", explicit_vulkan=r"C:\VulkanSDK\1.4.357.0"
+                )
+        values = dict(line.split(" := ", 1) for line in text.splitlines())
+        self.assertEqual(values["VULKAN_SDK"], "C:/VulkanSDK/1.4.357.0")
+        discover_vulkan.assert_not_called()
+
+    def test_empty_vulkan_value_preserves_legacy_discovery(self) -> None:
+        import nk_doctor_checks as ndc
+        from unittest import mock
+
+        provider = self._provider("system", "/usr/include", "/usr/lib/libSDL3.so")
+        sdk = Path("C:/VulkanSDK/1.4.357.0")
+        with mock.patch.object(ndc, "discover_vulkan_sdk", return_value=sdk) as discover_vulkan:
+            with mock.patch.object(ndc, "discover_sdl3_provider", return_value=provider):
+                text = ndc.build_discovery_make_fragment(
+                    compiler="gcc", explicit_vulkan="", discover_vulkan=True
+                )
+        values = dict(line.split(" := ", 1) for line in text.splitlines())
+        self.assertEqual(values["VULKAN_SDK"], "C:/VulkanSDK/1.4.357.0")
+        discover_vulkan.assert_called_once_with()
+
+    def test_makefile_discovers_sdl3_and_vulkan_once_per_parse(self) -> None:
         makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
-        self.assertEqual(sum("write_sdl3_make_fragment" in line for line in makefile_text.splitlines()), 1)
+        normal_discovery = makefile_text.split(
+            "# SDL3 and Vulkan dependency discovery.", 1
+        )[1].split("\nelse\nSDL3_PROVIDER", 1)[0]
+        empty_sdk_branch = normal_discovery.split("ifeq ($(VULKAN_SDK),)", 1)[1].split("\nelse\n", 1)[0]
+        explicit_sdk_branch = normal_discovery.split("\nelse\n", 1)[1].rsplit("\nendif", 1)[0]
+        self.assertEqual(empty_sdk_branch.count("$(shell"), 1)
+        self.assertIn("write_build_discovery_make_fragment", empty_sdk_branch)
+        self.assertNotIn("write_sdl3_make_fragment", empty_sdk_branch)
+        self.assertEqual(explicit_sdk_branch.count("$(shell"), 1)
+        self.assertIn("write_sdl3_make_fragment", explicit_sdk_branch)
+        self.assertNotIn("write_build_discovery_make_fragment", explicit_sdk_branch)
+        self.assertIn(r"VULKAN_SDK := $(subst \,/,$(VULKAN_SDK))", normal_discovery)
+        self.assertIn("$(error SDL3 discovery failed:", normal_discovery)
+        self.assertNotIn("origin VULKAN_SDK", normal_discovery)
+        self.assertNotIn("from vulkan_sdk import", normal_discovery)
         self.assertNotIn("query_sdl3_info", makefile_text)
+
 
 
 class ProfileEntriesEnvTransportTests(unittest.TestCase):

@@ -844,6 +844,48 @@ def write_sdl3_make_fragment(path: str, explicit: str | None = None,
         out.write_text(text, encoding="utf-8")
 
 
+def build_discovery_make_fragment(
+    explicit_sdl3: str | None = None,
+    compiler: str | None = None,
+    explicit_vulkan: str | None = None,
+    *,
+    discover_vulkan: bool = True,
+) -> str:
+    """Resolve Vulkan and SDL3 Make variables in the same Python process."""
+    vulkan_sdk = explicit_vulkan or ""
+    if vulkan_sdk:
+        vulkan_sdk = vulkan_sdk.replace("\\", "/")
+    elif discover_vulkan:
+        try:
+            vulkan_sdk = discover_vulkan_sdk().as_posix()
+        except VulkanSdkError:
+            # Match Make's existing behavior: missing Vulkan discovery leaves
+            # the variable empty; the player target reports the actionable error.
+            vulkan_sdk = ""
+
+    prefix = f"VULKAN_SDK := {_make_escape(vulkan_sdk)}\n"
+    return prefix + sdl3_make_fragment(explicit_sdl3, compiler)
+
+
+def write_build_discovery_make_fragment(
+    path: str,
+    explicit_sdl3: str | None = None,
+    compiler: str | None = None,
+    explicit_vulkan: str | None = None,
+    discover_vulkan: bool = True,
+) -> None:
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    text = build_discovery_make_fragment(
+        explicit_sdl3,
+        compiler,
+        explicit_vulkan,
+        discover_vulkan=discover_vulkan,
+    )
+    if not out.is_file() or out.read_text(encoding="utf-8") != text:
+        out.write_text(text, encoding="utf-8")
+
+
 def query_sdl3_make(explicit: str | None = None) -> str:
     """Helper for Makefile to discover SDL3 root directory in a single call."""
     exp = explicit if explicit and explicit.strip() else None

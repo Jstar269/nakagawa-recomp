@@ -304,7 +304,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "c8b2d330c0ae27f1c5882717e10c9c0b21c397e8e766e67ea8781ce0c1b6c245"
+      "sha256": "daaf88c7f1099b61a516a704ca93578491319eb4740691c2655feec302b4aafb"
     },
     {
       "path": "NOTICE.md",
@@ -7159,7 +7159,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6ff3765ad1968f0b9648fe0a81b0726e504ddf5b67d61c6c147c42a189bed629"
+      "sha256": "3dd2159addf673d271fc5e06b3e1d3d7246582069b9b48482a3dacabb73396c9"
     },
     {
       "path": "tools/nk_doctor_core.py",
@@ -7894,7 +7894,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3ae5a2a4bd8b51731d903de03e96656aa35a917aab0700a640bc1f770ec60984"
+      "sha256": "1e955283f1f135e86d9cb9f1d3d69a1a46eb8a2d3e5f14348b2c178b7858e3dd"
     },
     {
       "path": "tools/test_callback_correctness.py",
