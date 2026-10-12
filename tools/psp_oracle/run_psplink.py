@@ -1660,11 +1660,11 @@ class PsplinkCampaignRunner:
         ), None
 
     def _take_baseline(self) -> tuple[PsplinkSnapshot | None, str | None]:
-        """Read S0 only after the host0 driver is warm and the thread set has settled.
+        """Read S0 after the host0 warm-up, once the thread set has settled.
 
-        The driver thread is then part of the baseline the teardown check compares
-        against. A baseline whose thread set still moves is refused, so the check
-        can never pass against a moving reference.
+        Any thread the warm-up starts is already inside the baseline the teardown
+        check compares against, and a baseline whose thread set still moves is
+        refused, so the check can never pass against a moving reference.
         """
         result = self._request(HOST0_WARMUP_COMMAND, self.cleanup_timeout)
         if not self._ok(result):
