@@ -166,6 +166,9 @@ class TestPublishAudit(unittest.TestCase):
         self.assertIsNotNone(
             publish_audit._forbidden_path("OpenGrip_For_Inspiration/functions.csv")
         )
+        self.assertIsNotNone(
+            publish_audit._forbidden_path("docs/symbol_ref/functions.csv")
+        )
         self.assertIsNotNone(publish_audit._forbidden_path("assets/game.iso"))
         self.assertIsNotNone(publish_audit._forbidden_path("tools/vfpu_words.txt"))
         self.assertIsNotNone(publish_audit._forbidden_path("tools/reference_hashes.json"))

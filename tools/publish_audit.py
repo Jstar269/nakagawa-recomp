@@ -90,6 +90,7 @@ FORBIDDEN_PREFIXES = (
     "build/",
     "cache/",
     "docs/opengrip_ref/",
+    "docs/symbol_ref/",
     "fs/",
     "keys/",
     "logs/",

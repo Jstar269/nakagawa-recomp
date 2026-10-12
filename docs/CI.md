@@ -136,7 +136,9 @@ target stages the generated controls and the profile when `--apply-policy` is
 requested; it does not stage the rest of the worktree. The committed ledger
 stays a per-path document (no `refresh` audit block), and the export is computed
 from those generated ledger bytes in the same invocation, so a second pass is
-not needed.
+not needed. For contributors without access to the private trusted ledger,
+`python tools/contrib_refresh.py` allows refreshing both public controls for
+changed existing public paths from the public controls alone (PR #849).
 
 The `provenance_record_gap.py --check` gate (`make provenance-record-gap-check`)
 enforces that every upstream-derived production code path (under `src/` or
