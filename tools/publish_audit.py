@@ -928,11 +928,11 @@ def _forbidden_path(path: str) -> str | None:
     while normalized.startswith("./"):
         normalized = normalized[2:]
     lower = normalized.lower()
-    if any(lower.startswith(prefix.lower()) for prefix in FORBIDDEN_PREFIXES):
-        return "private/generated path"
     name = PurePosixPath(normalized).name
     if name.lower() == "functions.csv":
         return "local-only symbol reference"
+    if any(lower.startswith(prefix.lower()) for prefix in FORBIDDEN_PREFIXES):
+        return "private/generated path"
     if name == "reference_hashes.json":
         return "game-derived hash manifest"
     if (

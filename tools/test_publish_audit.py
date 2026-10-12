@@ -194,6 +194,10 @@ class TestPublishAudit(unittest.TestCase):
             publish_audit._forbidden_path("sub/dir/functions.csv"),
             "local-only symbol reference",
         )
+        self.assertEqual(
+            publish_audit._forbidden_path("docs/symbol_ref/functions.csv"),
+            "local-only symbol reference",
+        )
         # Unrelated public CSV files remain allowed under normal publication policy
         for path in (
             "docs/metrics.csv",

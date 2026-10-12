@@ -7690,7 +7690,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0eb046e7a7d1fdefb099beff16ddf9fb3eb54eeba0efef82562ec1a22e3184df"
+      "sha256": "4260738fb04f1049f5fd2137db64b1b4db1e6931b88cbefe462435e9ec3d00da"
     },
     {
       "path": "tools/record_toolchain.py",
@@ -9612,7 +9612,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1d2de29157b712da5a32b086006789acd7b6150dd15b4544b197dcb2029a8f67"
+      "sha256": "489d6ae96e3d17153036f6389e2ee521ebf931f82d9124fc2e3562655fc268d0"
     },
     {
       "path": "tools/test_readme_images.py",
