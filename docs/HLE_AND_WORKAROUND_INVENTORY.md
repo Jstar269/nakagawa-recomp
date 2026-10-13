@@ -139,7 +139,7 @@ Semantic handler census: **434** handlers across **23** API families, covering *
   - Evidence: fixtures/display_smoke/generate.py:run
   - Evidence: tools/test_sched_invariants.py:test_the_two_display_nids_have_separate_handlers
 - **`h_DisplayWaitVblankStartMulti`** (`sceDisplay`): `sceDisplayWaitVblankStartMulti` (0x40f1469c)
-  - Limitation: waits the requested positive count of scheduler VBLANK periods; zero-count behavior fails closed as not implemented, while callback/context precedence and hardware timing are not measured
+  - Limitation: waits the requested positive count of scheduler VBLANK periods; zero count returns SCE_KERNEL_ERROR_INVALID_VALUE (0x800001fe) before the wait-context check, following the historical waits-matrix transcription; callback behavior and hardware timing are not measured
 - **`h_DmacMemcpy`** (`sceDmac`): `sceDmacMemcpy` (0x617f3fe6)
   - Limitation: concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)
 - **`h_DmacTryMemcpy`** (`sceDmac`): `sceDmacTryMemcpy` (0xd97f94d8)

@@ -17898,9 +17898,9 @@ static uint32_t h_DisplayWaitVblankStartMulti(CpuState *s) {
     (void)s;
     uint32_t periods = A0;
     if (periods == 0u) {
-        /* The historical PSPAutotests transcription records INVALID_VALUE
-         * for a zero period (docs/PSP_INTR_WAITS_MATRIX.md, L42/L43). */
-        return 0x80000107u;
+        /* The waits-matrix transcription records INVALID_VALUE (0x800001fe)
+         * for an invalid count before the blocking-context result. */
+        return 0x800001feu;
     }
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
     if (sched_current_uid() == 0u) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;

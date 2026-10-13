@@ -26567,7 +26567,7 @@ static void test_kernel_import_sweep_display_multi(void) {
     s_cur = -1;
     CpuState cpu;
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI) == 0x80000107u,
+    expect(sr_syscall(&cpu, NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI) == 0x800001feu,
            "sceDisplayWaitVblankStartMulti rejects a zero period with INVALID_VALUE before the wait-context check");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 2u;
