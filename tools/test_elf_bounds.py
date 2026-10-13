@@ -725,7 +725,8 @@ def cfg_finding(code, value):
 def traced_line_events(function, *args):
     """Count the analyzer source lines executed while ``function`` runs.
 
-    Unlike wall time, the count is deterministic for one interpreter.
+    Unlike wall time, the count is deterministic for one interpreter. Line
+    events come from ``sys.settrace``, a CPython implementation detail.
     """
     filename = analyze.verify_canonical_cfg_report.__code__.co_filename
     count = 0
@@ -1017,6 +1018,10 @@ class CanonicalCfgVerifierTests(unittest.TestCase):
                 findings = analyze.verify_canonical_cfg_report(report)
                 self.assertIn(code, {finding["code"] for finding in findings})
 
+    @unittest.skipUnless(
+        sys.implementation.name == "cpython",
+        "line-event counting relies on CPython's sys.settrace",
+    )
     def test_verifier_work_grows_linearly_with_the_report(self):
         small = interior_chain_report(40)
         large = interior_chain_report(400)

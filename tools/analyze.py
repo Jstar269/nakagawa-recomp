@@ -1338,8 +1338,13 @@ _CFG_REASON_NAMES = ("entry",) + _CFG_KIND_NAMES
 _CFG_REASON_BITS = {name: 1 << index for index, name in enumerate(_CFG_REASON_NAMES)}
 
 
-def _cfg_json_number(value):
-    """Return whether a JSON value is a number, the only kind that can equal an address."""
+def _cfg_address_comparable(value):
+    """Return whether a value can compare equal to an integer address.
+
+    ``bool`` is included on purpose: these checks compared with ``==``, where
+    ``True == 1``, so excluding it would change their findings. A malformed
+    address of any type is already reported where it is read.
+    """
     return isinstance(value, (int, float))
 
 
@@ -1347,6 +1352,8 @@ def _cfg_successor_classifications(report):
     """Classify every CFG edge using only the serialized ownership model."""
     def rows(name):
         # The verifier reports a malformed field; a scalar here must not raise.
+        # A string or object still iterates to strings, which every loop below
+        # skips exactly as before, so only non-iterables need replacing.
         value = report.get(name, ())
         return value if isinstance(value, Iterable) else ()
 
@@ -1403,7 +1410,7 @@ def _cfg_successor_classifications(report):
                 else "invalid-unowned"
             )
         elif (
-            _cfg_json_number(source) and isinstance(kind, str)
+            _cfg_address_comparable(source) and isinstance(kind, str)
             and (source, target, kind) in interior
         ):
             classification = "continuation-resume-entry"
@@ -2001,8 +2008,10 @@ def verify_canonical_cfg_report(report):
     def owner_projection(owners):
         """Project node owners for the ownership-map comparison.
 
-        A non-list value is already a node-owners-invalid finding; a scalar is
-        kept as-is (it never equals a row's tuple) instead of raising.
+        A non-list value is already a node-owners-invalid finding. An iterable
+        keeps the tuple() comparison it always had. A scalar such as 5 or None
+        cannot become a tuple, so it is compared as-is: it never equals a row's
+        owner tuple, which keeps the projection mismatch instead of raising.
         """
         return tuple(owners) if isinstance(owners, Iterable) else owners
 
@@ -2319,10 +2328,10 @@ def verify_canonical_cfg_report(report):
         address for address, node in node_by_address.items()
         if isinstance(node.get("owners"), list) and len(node["owners"]) > 1
     )
-    # A non-number already has a conflict-node-missing finding and can never
+    # Any other value already has a conflict-node-missing finding and can never
     # equal a node address; it must not be ordered against integers.
     if (
-        not all(_cfg_json_number(address) for address in actual_conflict_addresses)
+        not all(_cfg_address_comparable(address) for address in actual_conflict_addresses)
         or sorted(actual_conflict_addresses) != expected_conflict_addresses
     ):
         finding("conflict-projection-mismatch", actual_conflict_addresses)
@@ -2374,7 +2383,7 @@ def verify_canonical_cfg_report(report):
                 finding("ownership-map-projection-mismatch", ownership_rows)
     for conflict in conflicts:
         address = conflict.get("address") if isinstance(conflict, dict) else None
-        node = node_by_address.get(address) if _cfg_json_number(address) else None
+        node = node_by_address.get(address) if _cfg_address_comparable(address) else None
         if node is not None and isinstance(conflict.get("owners"), list) and conflict["owners"] != node.get("owners"):
             finding("conflict-owner-mismatch", conflict)
 
