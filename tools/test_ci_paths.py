@@ -930,6 +930,9 @@ class CodeqlWorkflowCategoryTests(unittest.TestCase):
         self.assertIn("duplicate SARIF analysis category", content)
         self.assertIn("would be stored under SARIF category", content)
         self.assertIn('category.lastIndexOf("/")', content)
+        self.assertIn('const stored = cut > 0 ? category.slice(0, cut) : "";', content)
+        self.assertIn("if (stored !== `/language:${language}`) {", content)
+        self.assertIn("if (categories.has(stored)) {", content)
         self.assertIn("categories.size !== expected.length", content)
 
         # Every place the workflow writes a category must keep the trailing slash.
@@ -979,15 +982,28 @@ class CodeqlWorkflowCategoryTests(unittest.TestCase):
         self.assertEqual(len(sarif["runs"]), 3)
         self.assertEqual(cats, {"/language:actions", "/language:c-cpp", "/language:python"})
 
-        # Negative case: duplicate categories raise ValueError
-        duplicate_input = {
+        # Negative case: a run labelled with another language's category
+        mislabelled_input = {
             "actions.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:python/"}}],
             "c-cpp.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:c-cpp/"}}],
             "python.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:python/"}}],
         }
         with self.assertRaises(ValueError) as cm:
-            combine_sarif_runs(duplicate_input)
+            combine_sarif_runs(mislabelled_input)
         self.assertIn("would be stored under SARIF category", str(cm.exception))
+
+        # Negative case: two runs of one language share a category
+        duplicate_input = {
+            "actions.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:actions/"}}],
+            "c-cpp.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:c-cpp/"}}],
+            "python.sarif": [
+                {"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:python/"}},
+                {"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:python/"}},
+            ],
+        }
+        with self.assertRaises(ValueError) as cm:
+            combine_sarif_runs(duplicate_input)
+        self.assertIn("duplicate SARIF analysis category", str(cm.exception))
 
         # The pre-fix shape: no trailing slash, so every run lands in the empty category.
         slashless_input = {
