@@ -153,6 +153,18 @@
       "sha256": "fe270262a565cfc37fd0304dd79c983a7d4756d11219687c8693b6be63b9773a"
     },
     {
+      "path": ".github/workflows/codeql.yml",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "codeql-fork-prs-2026-10-12",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "09af5b866edc9804e6833ef74cbecb1fd1586d459d14c9fda838920f9bca5568"
+    },
+    {
       "path": ".github/workflows/dependency-review.yml",
       "classification": "project_authored_attested",
       "evidence": {
@@ -246,7 +258,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c16475f368ee67467e4b5cdfbd7cc58a7b45b3b938c31fc3e18054d43f1a862f"
+      "sha256": "e6a977031bf5e9ef6673f087029e4e5f8912b956d91a1900e9ec0d3399f1f219"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -679,7 +691,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "a000177e4705d23f120f190109b745fc379ef8203d465ff96081b51922f1e6bd"
+      "sha256": "89c074673efe8f236c8a970ddbf898472a82ebd1c9ea35bd8ad28e08dc27ae88"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1126,7 +1138,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "27fa5563e80011565765c7a09b509024ace12e95ad41b75d12665f3990d03c91"
+      "sha256": "a04b7e970def3481c12e0ab30571b3c4774a8e634e035329831677a3354043b2"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -1144,7 +1156,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b0d82717dc140522b9c07fda2c8749e4633cb21b6949163578f0f12ea6435212"
+      "sha256": "05626b6de5c92f0d1f8b62d973354f46a57f068fb3da262de1122995ee3ae47a"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -4986,7 +4998,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "dc63039b4a06b18ac64de981a70cc16d3360f39cef5a4c179305aa46ad219bcf"
+      "sha256": "01558f32565284bb8bd17fedd0de78e31b62219b05cdece49461e51d439ab9e8"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5024,7 +5036,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dbdac1affb7de959d9aaa361c760844e3170e90eca4fe9964f24260a0ef179d1"
+      "sha256": "fa822578c40731b22a091286e7b6fab998779f225cb4b17b1a6524b619eab651"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -6736,7 +6748,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "839adbe38cc730a3f648f1044835595cf1f801fdf30e2f171f4a665fc4548fc7"
+      "sha256": "842ee36f31758ad9621d232d3134ffb5b3c89a3e6da12e0c8d6f784215a6f8bd"
     },
     {
       "path": "tools/host_stubs.py",
@@ -7510,7 +7522,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "509e17be7958c1e3075440028e8a5a92de59cc5598fa527e28c901ab336a1ec4"
+      "sha256": "e7b2ee7903f02c86d2cd9f41cb00209f9187c8edf10aac120938f4751f0bd2aa"
     },
     {
       "path": "tools/psp_oracle/user_mode_imports.py",
@@ -7918,7 +7930,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "502c731f78dc81410e3adefe0724959cb784fd7ba82a4c1339a3537290eaa517"
+      "sha256": "2c4ae2ea9bc539921833dfece9935acbc5ee7e7ba32f388249586e49db3c10f4"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -8639,7 +8651,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6d5aa62eae02234b54c45b5e4db665e242bbf2a835f3bb7372d410b23fd388a4"
+      "sha256": "bc76778c4157f32a97e3552c4774491db5b566409f1a13361453f26d33825e32"
     },
     {
       "path": "tools/test_history_audit.py",
@@ -9468,7 +9480,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "569dad0dce85ce578ce3f221c0667d8216ddeb4f0cd86ecfd5e71dd2d9465739"
+      "sha256": "4a4a8f471d3565ba65f7cb9ca0ccc25f65ccf8ddf7882fcf56f8da73e2c7184f"
     },
     {
       "path": "tools/test_psp_parsers.py",
