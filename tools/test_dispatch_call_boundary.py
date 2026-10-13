@@ -174,17 +174,22 @@ def _beq(rs: int, rt: int, here: int, target: int) -> int:
 def _j(target: int) -> int: return (0x02 << 26) | ((target >> 2) & 0x03FFFFFF)
 def _jal(target: int) -> int: return (0x03 << 26) | ((target >> 2) & 0x03FFFFFF)
 def _jr(rs: int) -> int: return (rs << 21) | 0x08
+def _addu(rd: int, rs: int, rt: int) -> int: return (rs << 21) | (rt << 16) | (rd << 11) | 0x21
 
 
 _NOP = 0
-_V0, _A0, _T9, _SP, _RA = 2, 4, 25, 29, 31
+_V0, _V1, _A0, _T9, _SP, _RA = 2, 3, 4, 25, 29, 31
 _PROBE_BASE = 0x1000
 _PROBE_SP = 0x09F00000
 
 
 def _probe_program(body: list[int]) -> tuple[int, ...]:
-    """Entry at 0x1000 links into the cell at 0x1010 and returns to the harness."""
-    entry = [_jal(0x1010), _NOP, _jr(_RA), _NOP]
+    """Entry at 0x1000 links into the cell at 0x1010 and returns to the harness.
+
+    The return's delay slot copies $sp to $v1, so the SP the call left behind is
+    observable before the entry body's own entry-SP restore masks it.
+    """
+    entry = [_jal(0x1010), _NOP, _jr(_RA), _addu(_V1, _SP, 0)]
     return tuple(entry + body)
 
 
@@ -285,10 +290,10 @@ int main(int argc, char **argv) {
     sr_sched_on = 0;
     sr_dispatch_host_stack_remaining = NULL;
     if (!g_probe_ran) return 22;
-    printf("DEPTH_PROBE n=%lu native_bytes=%zu samples=%lu v0=%u a0=%u sp=0x%08x\n",
+    printf("DEPTH_PROBE n=%lu native_bytes=%zu samples=%lu v0=%u v1=0x%08x a0=%u sp=0x%08x\n",
            n, g_probe_top > g_probe_min ? g_probe_top - g_probe_min : (size_t)0,
-           g_probe_samples, (unsigned)g_probe_state.r[2], (unsigned)g_probe_state.r[4],
-           (unsigned)g_probe_state.r[29]);
+           g_probe_samples, (unsigned)g_probe_state.r[2], (unsigned)g_probe_state.r[3],
+           (unsigned)g_probe_state.r[4], (unsigned)g_probe_state.r[29]);
     return 0;
 }
 """
@@ -655,7 +660,7 @@ class GeneratedCallDepthTests(unittest.TestCase):
             self.assertEqual(rc, 0, output)
             self.assertEqual(fields.get("v0"), n, output)
             self.assertEqual(fields.get("a0"), 0, output)
-            self.assertEqual(fields.get("sp"), _PROBE_SP, output)
+            self.assertEqual(fields.get("v1"), _PROBE_SP, output)
         growth = results[1][2]["native_bytes"] - results[0][2]["native_bytes"]
         self.assertGreater(growth, 2032 * 16, f"probe did not see real nesting: {results}")
 
@@ -673,7 +678,8 @@ class GeneratedCallDepthTests(unittest.TestCase):
         rc, output, fields = results[0]
         self.assertEqual(rc, 0, output)
         self.assertEqual(fields.get("v0"), 6, f"interpreted caller lost its continuation\n{output}")
-        self.assertEqual(fields.get("sp"), _PROBE_SP, output)
+        # The caller unwound its own frame before returning (base: 8 bytes low).
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
 
 
 if __name__ == "__main__":

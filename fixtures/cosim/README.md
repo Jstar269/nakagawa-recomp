@@ -120,8 +120,8 @@ cell cannot degrade into a second all-native run and pass vacuously.
   (`xnestmid`, the omission) whose own `jalr` calls a **registered** leaf. The guest
   expects the middle to resume at its link address, mark the accumulator and unwind its
   frame. The interpreter used to treat that linked transfer like a tail and hand off for
-  good, so the middle's continuation never ran and the native caller reloaded `$ra` from
-  an already-popped frame; a linked transfer into a registered body is now a CALL, as it
+  good, so the middle's continuation never ran, `$sp` stayed 8 bytes low because the
+  middle never unwound, and the native caller reloaded `$ra` from its own unused slot; a linked transfer into a registered body is now a CALL, as it
   is in generated code. It is an ordinary PASS, and against the earlier interpreter it
   diverges on `r2` and the handoff target.
 
