@@ -237,7 +237,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a7b65f4736b81ac91c2308c48d781ac62f86ae8b8fa4a9fb597a3847972d93c8"
+      "sha256": "bcf8542026abcbc2c7f896693e4bc7a8649efb59a0c012c4ec7cc24627149327"
     },
     {
       "path": "CLAUDE.md",
@@ -246,7 +246,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fe10ec1526b5149c956963c44cf6f5363dd5f0ce09f628b04df1e1fdcae11cc4"
+      "sha256": "b55fcd7c54f39fa388821088c541eac7db71836095edfd9df7ce2f06eef5d661"
     },
     {
       "path": "CMakeLists.txt",
