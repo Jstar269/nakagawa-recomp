@@ -237,7 +237,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a7b65f4736b81ac91c2308c48d781ac62f86ae8b8fa4a9fb597a3847972d93c8"
+      "sha256": "5ad624303ff98c0dcdc9d571704ea06ae10e67ab4d684bf4e7ae5dececc31b2d"
     },
     {
       "path": "CLAUDE.md",
@@ -246,7 +246,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fe10ec1526b5149c956963c44cf6f5363dd5f0ce09f628b04df1e1fdcae11cc4"
+      "sha256": "18a97a0489eb5aa85a7ec875f1478a644061129cdd6a05a9c2f734925d97255b"
     },
     {
       "path": "CMakeLists.txt",
@@ -1417,7 +1417,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ff05d710664b92e7e0421cf6bb8a5f2b6357d8b51faffcbb6304f7efe52868a4"
+      "sha256": "792eab492085d15f20afbc55f6453abec6b9cee8916ed3282e67f6d2d58f76e6"
     },
     {
       "path": "docs/WORKSPACE_DOCTOR.md",
@@ -10033,7 +10033,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4750f08f20f0c30bab7bce0ff015d28efaa07b6aa864ddf6230bbb55a01053f2"
+      "sha256": "cd9adde55e55e53c42931cc4d5b9e698110abe8be9731314fa88e832ca06fece"
     },
     {
       "path": "tools/test_title_runtime_config.py",
@@ -10393,7 +10393,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "da3336850a251ceb4267cddb06c4affef5e61d67febbba4465d8fddf15b0391e"
+      "sha256": "f916fbc38a724fdcf8158bac3facd4c9a9e08adcb07469ae4cdb105437bda058"
     },
     {
       "path": "tools/title_runtime_config.py",
