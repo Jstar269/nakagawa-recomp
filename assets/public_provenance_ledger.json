@@ -5086,7 +5086,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "c2493dc9eff4f2bd417a49e9cc5d05f6db996fabb8b744958aef4168b86738ca"
+      "sha256": "1c4e7709e6928e2b1ec67138bd65b3bc5179fe6664dda51392a919896382c902"
     },
     {
       "path": "src/rt/nested_frames.c",
@@ -5363,7 +5363,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ddb9b0a85572f8741c08dca3bd7896c2a828d824f2bb7b950bc7b6f99086fd90"
+      "sha256": "43662c8458348d8923a30206e571c1783a48b4100b3316551449d44ec4764905"
     },
     {
       "path": "src/rt/psmf_producer.c",
@@ -5399,7 +5399,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8a5a355acf1e6525f3a72819db6643fbf9831009ba1d3237d1cef9b17e3735be"
+      "sha256": "271fa6032c05c10def482416d9e0a45f385d34516f5050cb33d02054947208ba"
     },
     {
       "path": "src/rt/recomp.c",
