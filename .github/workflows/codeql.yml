@@ -284,6 +284,7 @@ jobs:
           output: ${{ runner.temp }}/codeql-sarif
           upload: never
           upload-database: false
+          category: "/language:${{ matrix.language }}"
 
       - name: Require one complete SARIF result for this language
         env:
@@ -293,6 +294,7 @@ jobs:
           set -euo pipefail
           mkdir -p codeql-sarif
           python - <<'PY'
+          import json
           import os
           import shutil
           from pathlib import Path
@@ -301,8 +303,18 @@ jobs:
           results = sorted(sarif_dir.rglob("*.sarif"))
           if len(results) != 1:
               raise SystemExit(f"expected one SARIF result, found {len(results)}")
-          destination = Path("codeql-sarif") / f"{os.environ['LANGUAGE']}.sarif"
+          language = os.environ["LANGUAGE"]
+          destination = Path("codeql-sarif") / f"{language}.sarif"
           shutil.copyfile(results[0], destination)
+
+          # Guarantee explicit stable category in automationDetails for this run
+          with destination.open("r", encoding="utf-8") as handle:
+              document = json.load(handle)
+          category = f"/language:{language}"
+          for run in document.get("runs", []):
+              run.setdefault("automationDetails", {})["id"] = category
+          with destination.open("w", encoding="utf-8") as handle:
+              json.dump(document, handle, indent=2)
           PY
 
       - name: Retain this language result for one atomic upload
@@ -362,6 +374,7 @@ jobs:
 
             let schema;
             const runs = [];
+            const categories = new Set();
             for (const file of files) {
               const document = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
               if (document.version !== "2.1.0" || !Array.isArray(document.runs) || document.runs.length === 0) {
@@ -369,13 +382,29 @@ jobs:
                 return;
               }
               schema ||= document.$schema;
+              const language = file.replace(/\.sarif$/, "");
               for (const run of document.runs) {
                 if (run.tool?.driver?.name !== "CodeQL") {
                   core.setFailed(`${file} contains a result from an unexpected analysis tool`);
                   return;
                 }
+                const category = run.automationDetails?.id || `/language:${language}`;
+                run.automationDetails = {
+                  ...(run.automationDetails || {}),
+                  id: category,
+                };
+                if (categories.has(run.automationDetails.id)) {
+                  core.setFailed(`duplicate SARIF analysis category: ${run.automationDetails.id}`);
+                  return;
+                }
+                categories.add(run.automationDetails.id);
                 runs.push(run);
               }
+            }
+
+            if (categories.size !== expected.length) {
+              core.setFailed(`expected ${expected.length} distinct categories, found ${categories.size}`);
+              return;
             }
 
             const owner = context.repo.owner;
@@ -431,20 +460,24 @@ jobs:
             }
 
             let processingStatus = "pending";
+            let lastStatusData = null;
             for (let attempt = 0; attempt < 90; attempt += 1) {
               const { data } = await github.rest.codeScanning.getSarif({
                 owner, repo, sarif_id: uploaded.id,
               });
+              lastStatusData = data;
               processingStatus = data.processing_status;
               if (processingStatus === "complete") break;
               if (processingStatus === "failed") {
-                core.setFailed("GitHub failed to process the CodeQL SARIF upload");
+                const errors = data.errors ? JSON.stringify(data.errors) : "unknown error";
+                core.setFailed(`GitHub failed to process the CodeQL SARIF upload (${uploaded.id}): ${errors}`);
                 return;
               }
               await new Promise((resolve) => setTimeout(resolve, 2000));
             }
             if (processingStatus !== "complete") {
-              core.setFailed(`CodeQL SARIF processing did not complete: ${processingStatus}`);
+              const errors = lastStatusData?.errors ? JSON.stringify(lastStatusData.errors) : "";
+              core.setFailed(`CodeQL SARIF processing did not complete (${uploaded.id}): ${processingStatus} ${errors}`);
               return;
             }
 
