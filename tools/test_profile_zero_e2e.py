@@ -25,6 +25,7 @@ if str(TOOLS) not in sys.path:
 
 import ge_stat_windows  # noqa: E402
 import prxload  # noqa: E402
+import scratch_dir  # noqa: E402
 import vulkan_sdk  # noqa: E402
 from test_build_truth import _scratch_build_root  # noqa: E402
 
@@ -730,7 +731,7 @@ class ProfileZeroManifestTests(unittest.TestCase):
             )
             _verify_backend_matches_authority(backend)
         build_environment, make = _runtime_build_environment(self)
-        with tempfile.TemporaryDirectory(prefix="nk-profile-zero-e2e-") as temporary:
+        with scratch_dir.TemporaryDirectory(prefix="nk-profile-zero-e2e-") as temporary:
             root = Path(temporary)
             for manifest_path in MANIFEST_PATHS:
                 with self.subTest(manifest=manifest_path.name):

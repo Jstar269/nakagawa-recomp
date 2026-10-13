@@ -13,8 +13,12 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import tempfile
 import unittest
+
+try:
+    import scratch_dir
+except ModuleNotFoundError:
+    from tools import scratch_dir
 
 ROOT = Path(__file__).resolve().parent.parent
 SAVEDATA_C = ROOT / "src" / "rt" / "savedata.c"
@@ -662,7 +666,7 @@ class TestSavedataSecurityShape(unittest.TestCase):
 class TestSavedataSecurityProduction(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "POSIX descriptor cases run in the WSL POSIX lane")
     def test_posix_open_and_symlink_regressions(self):
-        with tempfile.TemporaryDirectory(prefix="savedata_open_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="savedata_open_") as tmp:
             exe = _build(tmp, hooks=True)
             run = _run(exe, "open", tmp)
             self.assertIsNotNone(run, "POSIX open selftest timed out")
@@ -671,7 +675,7 @@ class TestSavedataSecurityProduction(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "write-order instrumentation runs in the WSL POSIX lane")
     def test_write_order_regressions(self):
-        with tempfile.TemporaryDirectory(prefix="savedata_order_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="savedata_order_") as tmp:
             exe = _build(tmp, order=True)
             run = _run(exe, "order", tmp)
             self.assertIsNotNone(run, "write-order selftest timed out")
@@ -680,7 +684,7 @@ class TestSavedataSecurityProduction(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "GETSIZE production harness runs in the WSL POSIX lane")
     def test_getsize_regressions(self):
-        with tempfile.TemporaryDirectory(prefix="savedata_getsize_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="savedata_getsize_") as tmp:
             exe = _build(tmp)
             run = _run(exe, "getsize")
             self.assertIsNotNone(run, "bounded GETSIZE selftest timed out")
@@ -689,7 +693,7 @@ class TestSavedataSecurityProduction(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "unsupported POSIX-host build runs in the WSL lane")
     def test_unsupported_host_is_explicitly_fail_closed(self):
-        with tempfile.TemporaryDirectory(prefix="savedata_unsupported_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="savedata_unsupported_") as tmp:
             exe = _build(tmp, unsupported=True)
             run = _run(exe, "unsupported")
             self.assertIsNotNone(run)
@@ -749,7 +753,7 @@ class TestSavedataSecurityProduction(unittest.TestCase):
         survivors = []
         outcomes = {}
         for name, savedata, seam, mode in mutants:
-            with tempfile.TemporaryDirectory(prefix="savedata_mutant_") as tmp:
+            with scratch_dir.TemporaryDirectory(prefix="savedata_mutant_") as tmp:
                 exe = _build(tmp, savedata_override=savedata, seam_override=seam,
                              hooks=(mode == "open"))
                 run = _run(exe, mode, tmp, timeout=3)
@@ -822,7 +826,7 @@ class TestSavedataSecurityProduction(unittest.TestCase):
         survivors = []
         outcomes = {}
         for name, seam, savedata, mode, instrumented in mutants:
-            with tempfile.TemporaryDirectory(prefix="savedata_order_mutant_") as tmp:
+            with scratch_dir.TemporaryDirectory(prefix="savedata_order_mutant_") as tmp:
                 exe = _build(tmp, savedata_override=savedata, seam_override=seam,
                              hooks=(mode == "open"), order=instrumented)
                 run = _run(exe, mode, tmp, timeout=10)

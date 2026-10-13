@@ -18,7 +18,6 @@ import shutil
 import struct
 import subprocess
 import sys
-import tempfile
 import unittest
 
 
@@ -27,6 +26,7 @@ CODEGEN = ROOT / "tools" / "codegen.py"
 CC = shutil.which("gcc")
 ENTRY = 0x00001000
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import scratch_dir  # noqa: E402
 codegen = importlib.import_module("codegen")
 
 # Isolated translation-unit contract for generated output: the same interface the
@@ -213,7 +213,7 @@ class FpuFieldMappingTests(unittest.TestCase):
 class GeneratedFpConversionTests(unittest.TestCase):
     def test_generated_instructions_match_fixed_vectors_without_ub(self):
         assert CC is not None
-        with tempfile.TemporaryDirectory(prefix="codegen_fp_convert_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="codegen_fp_convert_") as tmp:
             work = Path(tmp)
             elf = work / "fp_convert.elf"
             generated = work / "fp_convert.c"
@@ -363,7 +363,7 @@ def _run_generated_fixture(test, name, words, harness_main, codegen_path=None):
     """
     assert CC is not None
     codegen_path = Path(codegen_path) if codegen_path else CODEGEN
-    with tempfile.TemporaryDirectory(prefix=f"codegen_fp_scalar_{name}_") as tmp:
+    with scratch_dir.TemporaryDirectory(prefix=f"codegen_fp_scalar_{name}_") as tmp:
         work = Path(tmp)
         elf = work / f"{name}.elf"
         generated = work / f"{name}.c"

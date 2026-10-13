@@ -50,6 +50,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 import nk_cli  # noqa: E402
+import scratch_dir  # noqa: E402
 from test_build_truth import _class_scratch_build_root  # noqa: E402
 from nk_core import package_cache  # noqa: E402
 from import_fixtures import BASE_VADDR, _elf  # noqa: E402
@@ -394,7 +395,7 @@ class TestPlayerPackageRoute(unittest.TestCase):
         cls.binary_dir = _class_scratch_build_root(cls, "player-route")
 
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="nk-player-route-")
+        self.temporary = scratch_dir.TemporaryDirectory(prefix="nk-player-route-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.fixture_dir = self.root / "fixture"

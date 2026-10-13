@@ -20,6 +20,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import hle_manifest
+import scratch_dir
 from import_fixtures import (
     INTERLEAVED_NIDS,
     INTERLEAVED_SHAPE,
@@ -2056,7 +2057,7 @@ int main(void) {
 }
 '''
         fixture = root / "fixtures" / "psp_oracle"
-        with tempfile.TemporaryDirectory(prefix="interrupt-resume-host-", dir=fixture) as scratch:
+        with scratch_dir.TemporaryDirectory(prefix="interrupt-resume-host-", dir=fixture) as scratch:
             source_path = Path(scratch) / "interrupt_resume_host.c"
             binary_path = Path(scratch) / "interrupt_resume_host.exe"
             source_path.write_text(harness, encoding="utf-8")
@@ -2192,7 +2193,7 @@ int main(void) {
 }
 '''
         fixture = root / "fixtures" / "psp_oracle"
-        with tempfile.TemporaryDirectory(prefix="child-teardown-host-", dir=fixture) as scratch:
+        with scratch_dir.TemporaryDirectory(prefix="child-teardown-host-", dir=fixture) as scratch:
             source_path = Path(scratch) / "child_teardown_host.c"
             binary_path = Path(scratch) / "child_teardown_host.exe"
             source_path.write_text(harness, encoding="utf-8")
@@ -3102,7 +3103,7 @@ int main(void) {
 '''.replace("/* MAILBOX PROBE SNIPPET */", mailbox_probe)
 
         fixture = root / "fixtures" / "psp_oracle"
-        with tempfile.TemporaryDirectory(prefix="mbx-cleanup-host-", dir=fixture) as scratch:
+        with scratch_dir.TemporaryDirectory(prefix="mbx-cleanup-host-", dir=fixture) as scratch:
             source_path = Path(scratch) / "mbx_cleanup_host.c"
             binary_path = Path(scratch) / "mbx_cleanup_host.exe"
             source_path.write_text(harness, encoding="utf-8")

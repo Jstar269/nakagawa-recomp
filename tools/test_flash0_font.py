@@ -46,6 +46,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import pgf_writer  # noqa: E402
+import scratch_dir  # noqa: E402
 from nk_core import fonts  # noqa: E402
 
 SLOT_HEADER = ROOT / "src" / "core" / "nk_font_slots.h"
@@ -357,7 +358,7 @@ class Flash0FontDeviceTests(unittest.TestCase):
         make = shutil.which(make_tool)
         if not make:
             raise unittest.SkipTest(f"{make_tool} is not available")
-        with tempfile.TemporaryDirectory(prefix="flash0-font-") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="flash0-font-") as tmp:
             tmp_root = Path(tmp)
             # Build beneath the scratch tree, never the checkout's build/.
             build_root = tmp_root / "build"

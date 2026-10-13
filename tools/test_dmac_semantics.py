@@ -21,13 +21,14 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-import tempfile
 import unittest
 
 try:
+    from . import scratch_dir
     from .psp_oracle.parse_golden import parse_dmac_invalid_tail_output
     from .psp_oracle.protocol import ProtocolError
 except ImportError:
+    import scratch_dir
     from psp_oracle.parse_golden import parse_dmac_invalid_tail_output
     from psp_oracle.protocol import ProtocolError
 
@@ -181,7 +182,7 @@ class TestDmacSkipProducer(unittest.TestCase):
             ("dma-invalid-tail-try-dst", "TRY_DST", 4),
             ("dma-invalid-tail-try-src", "TRY_SRC", 4),
         )
-        with tempfile.TemporaryDirectory(prefix="dmac-skip-producer-") as directory:
+        with scratch_dir.TemporaryDirectory(prefix="dmac-skip-producer-") as directory:
             root = Path(directory)
             for campaign, case, count in launches:
                 for mutation in (False, True):

@@ -10,8 +10,12 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
+
+try:
+    import scratch_dir
+except ModuleNotFoundError:
+    from tools import scratch_dir
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -183,7 +187,7 @@ class DirectJOmissionMutationTests(unittest.TestCase):
         mutant = original.replace(anchor, "        owner = resume_owners.get(target_pc)", 1)
         self.assertNotEqual(mutant, original)
 
-        with tempfile.TemporaryDirectory(prefix="direct_j_omission_mut_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="direct_j_omission_mut_") as tmp:
             root = Path(tmp)
             pristine_dir = root / "pristine"
             mutant_dir = root / "mutant"

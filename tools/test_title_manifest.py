@@ -17,6 +17,7 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
+import scratch_dir
 import title_catalog_codegen
 import title_manifest
 
@@ -658,7 +659,7 @@ class NativeTitleIdentityTests(unittest.TestCase):
     """Compile/execute the canonical projection using source-owned inputs."""
 
     def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory(prefix="native-title-identity-")
+        self.temp = scratch_dir.TemporaryDirectory(prefix="native-title-identity-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.titles = self.root / "assets" / "titles"

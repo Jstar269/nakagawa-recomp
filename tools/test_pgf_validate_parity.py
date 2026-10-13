@@ -18,7 +18,6 @@ import shutil
 import struct
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -28,6 +27,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from nk_core import fonts  # noqa: E402
 from pgf_writer import Glyph, build_pgf  # noqa: E402
+import scratch_dir  # noqa: E402
 
 HARNESS_C = ROOT / "tests" / "native" / "pgf_verdict_harness.c"
 READER_C = ROOT / "src" / "rt" / "pgf_public.c"
@@ -154,7 +154,7 @@ def _native_verdicts(executable: Path, paths: list) -> list:
 class PgfValidatorParityTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.tmp = tempfile.TemporaryDirectory(prefix="pgf_parity_")
+        cls.tmp = scratch_dir.TemporaryDirectory(prefix="pgf_parity_")
         exe_name = "pgf_verdict_harness.exe" if sys.platform == "win32" else "pgf_verdict_harness"
         cls.exe = Path(cls.tmp.name) / exe_name
         build = subprocess.run(

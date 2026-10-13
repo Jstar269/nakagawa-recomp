@@ -15,9 +15,13 @@ import shutil
 import struct
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
+
+try:
+    import scratch_dir
+except ModuleNotFoundError:
+    from tools import scratch_dir
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -59,7 +63,7 @@ def _build_and_run_stack_census(
 ) -> tuple[int, str, int, str]:
     """Generate and execute a real codegen entry wrapper against recomp.c."""
     assert CC is not None
-    with tempfile.TemporaryDirectory(prefix="stack_census_pipeline_") as tmp:
+    with scratch_dir.TemporaryDirectory(prefix="stack_census_pipeline_") as tmp:
         work = Path(tmp)
         elf = work / "fixture.elf"
         _write_minimal_elf(elf, words)
@@ -157,7 +161,7 @@ def _build_and_run(mutated_recomp: str | None = None,
                    mutated_interp: str | None = None) -> tuple[int, str, int, str]:
     """Build and run the real selftest against temporary source copies."""
     assert CC is not None
-    with tempfile.TemporaryDirectory(prefix="dispatch_call_boundary_mut_") as tmp:
+    with scratch_dir.TemporaryDirectory(prefix="dispatch_call_boundary_mut_") as tmp:
         work = Path(tmp)
         (work / "dispatch_isolation_selftest.c").write_text(
             SELFTEST.read_text(encoding="utf-8"), encoding="utf-8", newline="\n"
