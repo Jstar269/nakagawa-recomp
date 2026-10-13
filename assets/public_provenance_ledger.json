@@ -162,7 +162,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "09af5b866edc9804e6833ef74cbecb1fd1586d459d14c9fda838920f9bca5568"
+      "sha256": "7007ee053e4a0a811e4c8e99786647fc635fc110de0e93242ee9658a24e90e41"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -1081,7 +1081,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3c61e9f5da0830bd3b480d1953e144b2fc0aeca8acb816d19a1a82f82dc13fca"
+      "sha256": "34242875d4f12935d98768e0d0e8a3a121495046735027b9cd84e66c5904ee9b"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -7954,7 +7954,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2c4ae2ea9bc539921833dfece9935acbc5ee7e7ba32f388249586e49db3c10f4"
+      "sha256": "de6ce2c35c4bfd8ed3c96084bf799a4d83c39dfb89ae98ad152a03046440e82d"
     },
     {
       "path": "tools/test_ci_required.py",
