@@ -316,7 +316,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0a4ed741a6938ea9ba24e6f15712de6a84ef7cec62670e381ba6ed362c4b9655"
+      "sha256": "aad70e1669bfac719085061bf4ea91707f94e22a3e68b94a1321955f481aa1a1"
     },
     {
       "path": "NOTICE.md",
@@ -6252,7 +6252,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "291fcd9748904046bba3941cb6b3523886224ddaa2b7601084b2d07a516923ba"
+      "sha256": "8cad9fd88f04f8215509f1848f5b2bbcf13da745dac104ad831ebab5853fa9e9"
     },
     {
       "path": "tools/build_public_export.py",
@@ -7183,7 +7183,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6ff3765ad1968f0b9648fe0a81b0726e504ddf5b67d61c6c147c42a189bed629"
+      "sha256": "0f217a3a5a65352839bf83bc05ce48539c0752a83d6be5d2e9e55fe60618196e"
     },
     {
       "path": "tools/nk_doctor_core.py",
@@ -7846,7 +7846,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "13ebb333789c60a1d3b2f7e9abd2775e332d652760b95e49949348bceef6bfff"
+      "sha256": "652879d74e40f44be1cdd7119235235c383140136648863f2a581dbac33388a7"
     },
     {
       "path": "tools/test_asset_index_c.py",
@@ -7918,7 +7918,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3ae5a2a4bd8b51731d903de03e96656aa35a917aab0700a640bc1f770ec60984"
+      "sha256": "2f4234600d246c145e3a913cc9fcae2f59f828536e3d1ff84b6cf046d39c6f0d"
     },
     {
       "path": "tools/test_callback_correctness.py",
@@ -10021,7 +10021,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "47e065b07b61cf648b8f72e3182ddc6fa3b08f85745996c7ab261a42029c9d31"
+      "sha256": "50b8322649ec967aa6ca7b822df9b2e730f8c10010d1959d253762f5009075fc"
     },
     {
       "path": "tools/test_trace_window_probe.py",
