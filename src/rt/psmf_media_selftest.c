@@ -972,13 +972,27 @@ static void test_legacy_feed_take_path(void) {
         free(bytes);
         return;
     }
-    sr_h264_feed(dec, bytes + 2048u, size - 2048u);
+    CHECK(sr_h264_feed(dec, bytes + 2048u, size - 2048u) == 0,
+          "common program-stream demux accepts the source-owned PSMF bytes");
+    const int64_t expected_pts[FIX_PICTURES] = {
+        FIX_BASE, FIX_BASE + FIX_PTS_STEP, -1
+    };
+    uint64_t previous_consumed = 0;
     int frames = 0, taken = 0;
     for (int guard = 0; guard < 64; guard++) {
         uint64_t consumed = 0;
         int64_t pts = 0;
         int took = sr_h264_au_take(dec, 0, &consumed, &pts);
-        if (took > 0) taken++;
+        if (took > 0) {
+            CHECK(taken < FIX_PICTURES, "legacy demux does not emit extra pictures");
+            if (taken < FIX_PICTURES)
+                CHECK(pts == expected_pts[taken],
+                      "common demux preserves raw PTS and unknown timestamp presence");
+            CHECK(consumed >= previous_consumed && consumed <= size - 2048u,
+                  "legacy demux consumption offsets remain within the fed PS stream");
+            previous_consumed = consumed;
+            taken++;
+        }
         for (int i = 0; i < 8; i++) {
             int r = sr_h264_frame(dec, 0, GUEST_BUF, 64, 3);
             if (r < 0) { CHECK(0, "legacy path decode failed"); break; }
@@ -988,7 +1002,16 @@ static void test_legacy_feed_take_path(void) {
         if (took <= 0) break;
     }
     uint64_t consumed = 0;
-    if (sr_h264_au_take(dec, 1, &consumed, NULL) > 0) taken++;
+    int64_t final_pts = 0;
+    if (sr_h264_au_take(dec, 1, &consumed, &final_pts) > 0) {
+        CHECK(taken < FIX_PICTURES, "EOS closes only the one trailing picture");
+        if (taken < FIX_PICTURES)
+            CHECK(final_pts == expected_pts[taken],
+                  "EOS preserves the trailing picture's absent PTS");
+        CHECK(consumed >= previous_consumed && consumed <= size - 2048u,
+              "EOS consumption offset remains within the fed PS stream");
+        taken++;
+    }
     for (int i = 0; i < 16; i++) {
         int r = sr_h264_frame(dec, 1, GUEST_BUF, 64, 3);
         if (r < 0) { CHECK(0, "legacy path end-of-stream decode failed"); break; }
@@ -1417,6 +1440,122 @@ static void test_multistream_selection(void) {
 
     sr_psmf_producer_close(p);
     free(bytes);
+}
+
+/* Exercise the production ringbuffer/get-AU seam with a deliberately invalid decoder handle.
+ * The selftest build compiles the same SR_H264 integration blocks as SR_SDL3VK, so a failed
+ * demux feed or AU take cannot accidentally become legacy synthetic timestamp success. */
+static void test_mpeg_ps_demux_error_fails_closed(void) {
+    enum {
+        ERR_DESC = 0x08600000u,
+        ERR_DATA = 0x08610000u,
+        ERR_RING = 0x08620000u,
+        ERR_RING_DATA = 0x08621000u,
+        ERR_AU = 0x08630000u,
+    };
+    memset(SR_HOST(ERR_RING), 0, RB_BYTES);
+    MEM_W32(ERR_RING + RB_packets, 2u);
+    MEM_W32(ERR_RING + RB_packetsRead, 0u);
+    MEM_W32(ERR_RING + RB_packetsWritePos, 0u);
+    MEM_W32(ERR_RING + RB_packetsAvail, 0u);
+    MEM_W32(ERR_RING + RB_packetSize, MPEG_PACKET_SIZE);
+    MEM_W32(ERR_RING + RB_data, ERR_RING_DATA);
+    MEM_W32(ERR_RING + RB_callback_addr, 0u);
+    MEM_W32(ERR_RING + RB_callback_args, 0u);
+    MEM_W32(ERR_RING + RB_dataUpperBound, ERR_RING_DATA + 2u * MPEG_PACKET_SIZE);
+    MEM_W32(ERR_RING + RB_mpeg, 0u);
+    MEM_W32(ERR_RING + RB_gp, 0u);
+    memset(SR_HOST(ERR_RING_DATA), 0, 2u * MPEG_PACKET_SIZE);
+    MEM_W32(ERR_DESC, 0u);
+    CHECK(mpeg_create(ERR_DESC, ERR_DATA, 0x10000u, ERR_RING, 64u, 0u, 0u) == 0u,
+          "demux error fixture creates an MPEG ring context");
+    Mpeg *ctx = mpeg_find(ERR_DESC);
+    CHECK(ctx != NULL, "demux error fixture finds its MPEG context");
+    if (!ctx) return;
+    ctx->h264Init = 1;
+    ctx->h264 = 0x7fffffff; /* outside the decoder instance table: feed and take fail */
+    uint32_t sid = mpeg_regist_stream(ERR_DESC, MPEG_AVC_STREAM, 0u);
+
+    CHECK(mpeg_ringbuffer_put(NULL, ERR_RING, 1u, 1u) == 1u,
+          "RingbufferPut still reports the guest packet it copied");
+    CHECK(ctx->h264 >= 0 && rb_get(ERR_RING, RB_packetsAvail) == 1u,
+          "the test reaches GetAvcAu after the internal H.264 feed refusal");
+    CHECK(ctx->h264DemuxFailed,
+          "RingbufferPut retains a failed H.264 demux feed for the next AU request");
+    memset(SR_HOST(ERR_AU), 0xa5, 24u);
+    uint32_t result = mpeg_get_avc_au(ERR_DESC, sid, ERR_AU, 0u);
+    CHECK(result == SCE_MPEG_ERROR_NO_DATA,
+          "a failed H.264 feed is returned as no data, never synthetic AU success");
+    CHECK(rb_get(ERR_RING, RB_packetsAvail) == 1u,
+          "a failed H.264 feed does not consume packets through the synthetic fallback");
+
+    /* Also exercise a negative AU-take result without the feed-failure latch. */
+    ctx->h264DemuxFailed = 0;
+    memset(SR_HOST(ERR_AU), 0xa5, 24u);
+    result = mpeg_get_avc_au(ERR_DESC, sid, ERR_AU, 0u);
+    CHECK(result == SCE_MPEG_ERROR_NO_DATA && ctx->h264DemuxFailed,
+          "a negative H.264 AU take is terminal, never synthetic AU success");
+    CHECK(rb_get(ERR_RING, RB_packetsAvail) == 1u,
+          "a negative H.264 AU take does not consume ring packets");
+    CHECK(MEM_R32(ERR_AU) == UINT32_MAX && MEM_R32(ERR_AU + 4u) == UINT32_MAX,
+          "a rejected AU reports unknown timestamps");
+    CHECK(mpeg_delete(ERR_DESC) == 0u, "demux error fixture deletes its MPEG context");
+
+    /* Run malformed raw PS through RingbufferPut, the real H.264 bridge, and GetAvcAu. The
+     * unsupported start code fails in the producer before a decoder AU can be queued. */
+    memset(SR_HOST(ERR_RING), 0, RB_BYTES);
+    MEM_W32(ERR_RING + RB_packets, 2u);
+    MEM_W32(ERR_RING + RB_packetsRead, 0u);
+    MEM_W32(ERR_RING + RB_packetsWritePos, 0u);
+    MEM_W32(ERR_RING + RB_packetsAvail, 0u);
+    MEM_W32(ERR_RING + RB_packetSize, MPEG_PACKET_SIZE);
+    MEM_W32(ERR_RING + RB_data, ERR_RING_DATA);
+    MEM_W32(ERR_RING + RB_callback_addr, 0u);
+    MEM_W32(ERR_RING + RB_callback_args, 0u);
+    MEM_W32(ERR_RING + RB_dataUpperBound, ERR_RING_DATA + 2u * MPEG_PACKET_SIZE);
+    MEM_W32(ERR_RING + RB_mpeg, 0u);
+    MEM_W32(ERR_RING + RB_gp, 0u);
+    memset(SR_HOST(ERR_RING_DATA), 0, 2u * MPEG_PACKET_SIZE);
+    static const uint8_t malformed_ps[] = {0x00u, 0x00u, 0x01u, 0x01u};
+    memcpy(SR_HOST(ERR_RING_DATA), malformed_ps, sizeof(malformed_ps));
+    MEM_W32(ERR_DESC, 0u);
+    CHECK(mpeg_create(ERR_DESC, ERR_DATA, 0x10000u, ERR_RING, 64u, 0u, 0u) == 0u,
+          "malformed-PS fixture creates an MPEG ring context");
+    ctx = mpeg_find(ERR_DESC);
+    CHECK(ctx != NULL, "malformed-PS fixture finds its MPEG context");
+    if (!ctx) return;
+    sid = mpeg_regist_stream(ERR_DESC, MPEG_AVC_STREAM, 0u);
+    CHECK(memcmp(SR_HOST(ERR_RING_DATA), malformed_ps, sizeof(malformed_ps)) == 0,
+          "malformed PS start code is present in the ring packet");
+    CHECK(mpeg_ringbuffer_put(NULL, ERR_RING, 1u, 1u) == 1u,
+          "RingbufferPut submits the malformed synthetic PS packet");
+    if (ctx->h264 < 0) {
+        fprintf(stderr, "SKIP: malformed-PS MPEG integration needs a real H.264 backend\n");
+    } else {
+        CHECK(ctx->h264DemuxFailed,
+              "the production H.264 bridge latches the malformed PS parser failure");
+        uint32_t availAfterFeed = rb_get(ERR_RING, RB_packetsAvail);
+        uint32_t readAfterFeed = rb_get(ERR_RING, RB_packetsRead);
+        uint32_t writePosAfterFeed = rb_get(ERR_RING, RB_packetsWritePos);
+        uint32_t fedAfterFeed = ctx->fedPackets;
+        memset(SR_HOST(ERR_AU), 0xa5, 24u);
+        result = mpeg_get_avc_au(ERR_DESC, sid, ERR_AU, 0u);
+        CHECK(result == SCE_MPEG_ERROR_NO_DATA,
+              "malformed PS maps to the existing no-data result, not synthetic AU success");
+        CHECK(MEM_R32(ERR_AU) == UINT32_MAX && MEM_R32(ERR_AU + 4u) == UINT32_MAX &&
+                  MEM_R32(ERR_AU + 8u) == UINT32_MAX && MEM_R32(ERR_AU + 12u) == UINT32_MAX,
+              "malformed PS leaves both AU timestamps unknown");
+        CHECK(rb_get(ERR_RING, RB_packetsAvail) == availAfterFeed &&
+                  rb_get(ERR_RING, RB_packetsRead) == readAfterFeed &&
+                  rb_get(ERR_RING, RB_packetsWritePos) == writePosAfterFeed &&
+                  ctx->fedPackets == fedAfterFeed && ctx->auPacketsDone == 0u,
+              "failed AU retrieval leaves the fed ring packet state unchanged");
+    }
+    if (ctx->h264 >= 0) {
+        sr_h264_destroy(ctx->h264);
+        ctx->h264 = -1;
+    }
+    CHECK(mpeg_delete(ERR_DESC) == 0u, "malformed-PS fixture deletes its MPEG context");
 }
 
 /* Decoder-independent fail-closed paths of the #302 YCbCr contract. These run on every host,
@@ -2188,6 +2327,7 @@ int main(int argc, char **argv) {
     test_backend_registry_fail_closed();
     test_backend_reset_and_restart();
     test_backend_malformed_input();
+    test_mpeg_ps_demux_error_fails_closed();
     test_mpeg_ycbcr_fail_closed_paths();
     test_mpeg_ycbcr_guest_contract();
     test_psmf_log_tick_instance_isolation();

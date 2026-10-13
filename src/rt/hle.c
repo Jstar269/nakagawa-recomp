@@ -5578,8 +5578,9 @@ static void psmf_video_pump(SrPsmfPlayer *p) {
             if (slot->hostData && slot->bytes) {
                 sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
                                              SR_PSMF_MEDIA_SUBMITTED);
-                if (sr_h264_submit_au(p->h264, (const uint8_t *)slot->hostData,
-                                      slot->bytes) < 0) {
+                if (sr_h264_submit_au_timed(p->h264, (const uint8_t *)slot->hostData,
+                                            slot->bytes, slot->pts,
+                                            (slot->flags & 1u) != 0) < 0) {
                     p->videoErrors++;
                 } else {
                     psmf_video_clock_push(p, (slot->flags & 1u) != 0, slot->pts);

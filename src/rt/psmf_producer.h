@@ -13,8 +13,10 @@
 #define SR_PSMF_SOURCE_ERROR (-1)
 #define SR_PSMF_SOURCE_EOF    0
 #define SR_PSMF_SOURCE_DATA   1
+#define SR_PSMF_SOURCE_PENDING 2
 #define SR_PSMF_MAX_AU_BYTES  (4u * 1024u * 1024u)
 #define SR_PSMF_QUEUE_DEPTH   8u
+#define SR_PSMF_MAX_PS_BUFFER_BYTES (16u * 1024u * 1024u)
 
 /* Presentation pacing, owned here so the player (src/rt/hle.c) and every source-owned
  * test advance the same clocks with the same numbers.  Both are 90 kHz presentation
@@ -70,6 +72,7 @@ typedef struct {
     int64_t dts;       /* normalized to the PSMF presentation base */
     int64_t raw_pts;   /* PES clock observation, retained for diagnostics */
     int64_t raw_dts;
+    uint64_t ps_offset; /* PS byte offset of the PES packet carrying the AU head */
     uint8_t *data;
     uint32_t size;
 } SrPsmfAu;
@@ -120,6 +123,14 @@ typedef struct SrPsmfProducer SrPsmfProducer;
 /* Opens and validates the 2048-byte PSMF header and its bounded stream extent. */
 SrPsmfProducer *sr_psmf_producer_open(const SrPsmfSource *source,
                                       int64_t presentation_base);
+/* Streaming program-stream mode for sceMpeg ringbuffer input. Feed raw PS bytes in
+ * order, then pump/pop exactly as in file mode. EOS rejects incomplete syntax. */
+SrPsmfProducer *sr_psmf_producer_open_stream(int64_t presentation_base);
+int sr_psmf_producer_feed_stream(SrPsmfProducer *producer, const uint8_t *data,
+                                 uint32_t len, int eos);
+uint64_t sr_psmf_producer_stream_bytes(const SrPsmfProducer *producer);
+uint64_t sr_psmf_producer_stream_cursor(const SrPsmfProducer *producer);
+int64_t sr_psmf_producer_first_audio_pts(const SrPsmfProducer *producer);
 void sr_psmf_producer_close(SrPsmfProducer *producer);
 void sr_psmf_producer_reset(SrPsmfProducer *producer);
 

@@ -5,20 +5,15 @@
 // See NOTICE.md for upstream lineage and modification provenance.
 
 /* *
- * The game feeds 2048-byte MPEG-PS packets into the mpeg ring buffer; mpeg.c hands those
- * bytes here. We demux the program stream (video PES packets, stream id 0xE0-0xEF) into an
- * H.264 annex-B elementary stream and run it through the OS H.264 decoder MFT
- * (msmpeg2vdec.dll) in low-latency mode, converting each NV12 frame into the guest video
- * buffer in the PSP pixel format the game asked for.
- *
- * Pull model: sr_h264_feed() only demuxes (cheap); sr_h264_frame() pushes ES chunks into the
- * MFT until it yields one frame (or runs out of data). This keeps the MFT's input queue from
- * overflowing and bounds the work done per sceMpegAvcDecode call.
+ * The common media layer submits complete H.264 Annex-B access units. This backend queues
+ * those units and feeds them to the Windows H.264 decoder MFT (msmpeg2vdec.dll) as frames are
+ * requested, converting each native NV12 output into the guest or host format selected by the
+ * caller. Program-stream parsing, AU formation, and PTS handling stay outside this file.
  *
  * No external dependencies: mfplat.dll / msmpeg2vdec.dll ship with Windows.
  *
- * This is the Windows backend of the sr_h264 seam (sr_h264.h). On non-Windows platforms this
- * file compiles to nothing and h264_null.c (or a future h264_ffmpeg.c) provides the backend.
+ * This is the Windows decoder backend of the sr_h264 seam (sr_h264.h). On non-Windows platforms
+ * this file compiles to nothing and h264_null.c supplies the fail-closed unavailable backend.
  */
 
 #if defined(_WIN32)
@@ -59,8 +54,7 @@ static const GUID L_MF_LOW_LATENCY      = {0x9c27891a,0xed7a,0x40e1,{0x88,0xe8,0
 #define MF_E_NOTACCEPTING ((HRESULT)0xC00D36B5L)
 #endif
 
-/* psStart: absolute program-stream offset of the PES packet in which the chunk begins. */
-typedef struct { uint32_t off, len; int64_t pts; uint64_t psStart; } EsChunk;
+typedef struct { uint32_t off, len; int64_t pts; int has_pts; } EsChunk;
 
 typedef struct {
     int used;
@@ -68,20 +62,14 @@ typedef struct {
     int outW, outH, outStride;
     int failed;
     int drained;
-    /* MPEG-PS input accumulation (unparsed tail) */
-    uint8_t *ps; uint32_t psLen, psCap, psPos;
-    uint64_t psBase;               /* program-stream bytes dropped before ps[0] */
-    /* demuxed H.264 ES byte fifo + chunk table (one chunk per video PES payload) */
+    /* Compressed Annex-B access-unit queue submitted by the common media layer. */
     uint8_t *es; uint32_t esLen, esCap;
     EsChunk *ck; uint32_t nCk, capCk, curCk;
-    uint32_t takeCk;               /* chunks handed out as access units (sceMpegGetAvcAu) */
-    int64_t firstAudioPts;         /* PTS of the first audio PES (private stream 1), -1 before */
-    int ckOpen;                    /* last chunk is still receiving bytes (no AUD after it yet) */
+    uint32_t takeCk;               /* complete access units accepted from the common layer */
     LONGLONG fakeTime;             /* synthetic input timestamp when the PES had no PTS */
 } Dec;
 
 #define MAX_DEC 4
-#define H264_MAX_PS_BYTES   (16u * 1024u * 1024u)
 #define H264_MAX_ES_BYTES   (64u * 1024u * 1024u)
 #define H264_MAX_ES_CHUNKS  (1u << 20)
 #define H264_MAX_OUTPUT_BYTES (64u * 1024u * 1024u)
@@ -106,7 +94,7 @@ static int buf_reserve(uint8_t **d, uint32_t *cap, uint32_t need, uint32_t max) 
     return 1;
 }
 
-static int ck_push(Dec *d, uint32_t off, int64_t pts, uint64_t psStart) {
+static int ck_push(Dec *d, uint32_t off, uint32_t len, int64_t pts, int has_pts) {
     if (d->nCk == d->capCk) {
         if (d->nCk >= H264_MAX_ES_CHUNKS) return 0;
         uint32_t c = d->capCk ? d->capCk : 256u;
@@ -115,45 +103,29 @@ static int ck_push(Dec *d, uint32_t off, int64_t pts, uint64_t psStart) {
         if (c > H264_MAX_ES_CHUNKS) return 0;
         EsChunk *t = (EsChunk *)realloc(d->ck, (size_t)c * sizeof(EsChunk));
         if (!t) return 0;
-        d->ck = t; d->capCk = c;
+        d->ck = t;
+        d->capCk = c;
     }
     d->ck[d->nCk].off = off;
-    d->ck[d->nCk].len = 0;
+    d->ck[d->nCk].len = len;
     d->ck[d->nCk].pts = pts;
-    d->ck[d->nCk].psStart = psStart;
+    d->ck[d->nCk].has_pts = has_pts;
     d->nCk++;
     return 1;
 }
 
-/* Append a video PES payload to the ES fifo, cut into one chunk per access unit. PSMF streams
- * carry an access-unit delimiter NAL (type 9) at the start of every picture but a PTS on only a
- * few PES packets, so pictures are delimited by AUD start codes; the decoder runs in
- * low-latency mode and treats each input sample as one whole picture. The last chunk stays open
- * (not submitted) until the next delimiter or end of stream. */
-static int es_append(Dec *d, const uint8_t *p, uint32_t n, int64_t pts, uint64_t psStart) {
-    if (n > H264_MAX_ES_BYTES - d->esLen ||
-        !buf_reserve(&d->es, &d->esCap, d->esLen + n, H264_MAX_ES_BYTES)) return 0;
-    uint32_t start = d->esLen;
-    memcpy(d->es + d->esLen, p, n);
-    d->esLen += n;
-    if (!d->ckOpen) {
-        if (!ck_push(d, start, pts, psStart)) return 0;
-        d->ckOpen = 1;
-    }
-    uint32_t from = start >= 3u ? start - 3u : 0u;
-    for (uint32_t k = from; k + 3u < d->esLen; k++) {
-        EsChunk *last = &d->ck[d->nCk - 1];
-        if (k <= last->off) continue;
-        if (d->es[k] != 0 || d->es[k + 1] != 0 || d->es[k + 2] != 1 || (d->es[k + 3] & 0x1F) != 9)
-            continue;
-        uint32_t cut = (k > last->off + 1u && d->es[k - 1] == 0) ? k - 1u : k;
-        last->len = cut - last->off;
-        if (!ck_push(d, cut, -1, psStart)) return 0;
-    }
-    EsChunk *open = &d->ck[d->nCk - 1];
-    open->len = d->esLen - open->off;
+/* Queue one complete AU. The common demux owns every PS and Annex-B boundary. */
+static int es_append_au(Dec *d, const SrH264AccessUnit *au) {
+    if (!au || !au->data || !au->size || au->size > H264_MAX_ES_BYTES - d->esLen ||
+        !buf_reserve(&d->es, &d->esCap, d->esLen + au->size, H264_MAX_ES_BYTES)) return 0;
+    uint32_t off = d->esLen;
+    if (!ck_push(d, off, au->size, au->pts, au->has_pts)) return 0;
+    memcpy(d->es + off, au->data, au->size);
+    d->esLen += au->size;
+    d->takeCk = d->nCk;
     return 1;
 }
+
 static void es_compact(Dec *d) {
     if (d->curCk == 0 || d->curCk >= d->nCk || d->curCk < d->nCk / 2 ||
         d->esLen < (1u << 20)) return;
@@ -167,62 +139,8 @@ static void es_compact(Dec *d) {
         d->ck[i].off -= base;
     }
     d->takeCk = d->takeCk > d->curCk ? d->takeCk - d->curCk : 0;
-    d->nCk = live; d->curCk = 0;
-}
-
-/* ---- MPEG program-stream demux --------------------------------------------------------- */
-/* Parse one syntactic element at psPos. Returns 1 if it consumed something, 0 if it needs
- * more bytes. Video PES payloads (stream id 0xE0-0xEF) are appended to the ES fifo with the
- * PES PTS (90 kHz) when present, -1 otherwise. */
-static int ps_parse_one(Dec *d) {
-    if (d->psPos > d->psLen) { d->failed = 1; return 0; }
-    const uint8_t *p = d->ps + d->psPos;
-    uint32_t n = d->psLen - d->psPos;
-    if (n < 4) return 0;
-    /* resync to a start code */
-    if (!(p[0] == 0 && p[1] == 0 && p[2] == 1)) {
-        uint32_t i = 1;
-        while (i + 3 <= n && !(p[i] == 0 && p[i+1] == 0 && p[i+2] == 1)) i++;
-        d->psPos += i;
-        return (d->psLen - d->psPos) >= 4;
-    }
-    uint8_t code = p[3];
-    if (code == 0xBA) {                          /* pack header: 14 bytes + stuffing */
-        if (n < 14) return 0;
-        uint32_t skip = 14 + (p[13] & 7);
-        if (n < skip) return 0;
-        d->psPos += skip;
-        return 1;
-    }
-    if (code == 0xB9) { d->psPos += 4; return 1; }   /* program end */
-    if (code < 0xBB) { d->psPos += 4; return 1; }    /* unexpected: skip the start code */
-    if (n < 6) return 0;
-    uint32_t len = ((uint32_t)p[4] << 8) | p[5];
-    uint32_t tot = 6 + len;
-    if (n < tot) return 0;
-    if (code == 0xBD && d->firstAudioPts < 0 && len >= 8 && (p[6] & 0xC0) == 0x80 &&
-        (p[7] & 0x80) && p[8] >= 5) {
-        d->firstAudioPts = ((int64_t)(p[9]  >> 1 & 7) << 30) | ((int64_t) p[10] << 22) |
-                           ((int64_t)(p[11] >> 1)    << 15) | ((int64_t) p[12] << 7)  |
-                           ((int64_t)(p[13] >> 1));
-    }
-    if (code >= 0xE0 && code <= 0xEF && len >= 3 && (p[6] & 0xC0) == 0x80) {
-        uint32_t hdr = 9 + p[8];
-        int64_t pts = -1;
-        if ((p[7] & 0x80) && p[8] >= 5 && len >= 8) {
-            pts = ((int64_t)(p[9]  >> 1 & 7) << 30) |
-                  ((int64_t) p[10]          << 22) |
-                  ((int64_t)(p[11] >> 1)    << 15) |
-                  ((int64_t) p[12]          << 7)  |
-                  ((int64_t)(p[13] >> 1));
-        }
-        if (tot > hdr && !es_append(d, p + hdr, tot - hdr, pts, d->psBase + d->psPos)) {
-            d->failed = 1;
-            return 0;
-        }
-    }
-    d->psPos += tot;
-    return 1;
+    d->nCk = live;
+    d->curCk = 0;
 }
 
 /* ---- Media Foundation ------------------------------------------------------------------- */
@@ -317,9 +235,9 @@ static int feed_one(Dec *d) {
         IMFMediaBuffer_SetCurrentLength(mb, c->len);
         if (SUCCEEDED(MFCreateSample(&smp))) {
             IMFSample_AddBuffer(smp, mb);
-            /* 90 kHz -> 100 ns; synthesize a monotonic time when the PES had no PTS (the MFT
-             * wants timestamps but we never read them back -- frame pacing is the game's). */
-            LONGLONG t = c->pts >= 0 ? (LONGLONG)c->pts * 1000 / 9 : d->fakeTime;
+            /* Convert a producer-normalized 90 kHz PTS to 100 ns. When the AU has no PTS,
+             * keep decoder-internal sample times monotonic; game pacing stays in the HLE. */
+            LONGLONG t = c->has_pts ? (LONGLONG)c->pts * 1000 / 9 : d->fakeTime;
             d->fakeTime = t + 1;
             IMFSample_SetSampleTime(smp, t);
             HRESULT hr = IMFTransform_ProcessInput(d->xf, 0, smp, 0);
@@ -521,16 +439,14 @@ static int pump_out(Dec *d, uint32_t buffer, int frameWidth, int pixelMode,
     }
 }
 
-/* ================= public API (called from mpeg.c) ================= */
+/* ================= narrow decoder-backend API ================= */
 
 static void dec_release(Dec *d) {
     if (!d) return;
     if (d->xf) IMFTransform_Release(d->xf);
-    free(d->ps);
     free(d->es);
     free(d->ck);
     d->xf = NULL;
-    d->ps = NULL;
     d->es = NULL;
     d->ck = NULL;
 }
@@ -541,7 +457,6 @@ int sr_h264_mf_create(void) {
         Dec *d = &s_dec[i];
         memset(d, 0, sizeof(*d));
         d->used = 1;
-        d->firstAudioPts = -1;
         if (!dec_open(d)) {
             dec_release(d);
             d->used = 0;
@@ -559,7 +474,6 @@ int sr_h264_mf_reset(int id) {
     dec_release(d);
     memset(d, 0, sizeof(*d));
     d->used = 1;
-    d->firstAudioPts = -1;
     if (!dec_open(d)) {
         dec_release(d);
         d->used = 0;
@@ -575,42 +489,20 @@ void sr_h264_mf_destroy(int id) {
     memset(d, 0, sizeof(*d));
 }
 
-int sr_h264_mf_feed(int id, const uint8_t *data, uint32_t len) {
-    if (id < 0 || id >= MAX_DEC || !s_dec[id].used || !data || !len) return -1;
+int sr_h264_mf_submit_au(int id, const SrH264AccessUnit *au) {
+    if (id < 0 || id >= MAX_DEC || !s_dec[id].used || !au || !au->data || !au->size ||
+        (au->has_pts != 0 && au->has_pts != 1)) return -1;
     Dec *d = &s_dec[id];
-    if (d->failed) return -1;
-    if (d->psLen > H264_MAX_PS_BYTES || len > H264_MAX_PS_BYTES - d->psLen ||
-        !buf_reserve(&d->ps, &d->psCap, d->psLen + len, H264_MAX_PS_BYTES)) {
+    if (d->failed || !((au->size >= 3u && au->data[0] == 0u && au->data[1] == 0u && au->data[2] == 1u) ||
+                       (au->size >= 4u && au->data[0] == 0u && au->data[1] == 0u &&
+                        au->data[2] == 0u && au->data[3] == 1u))) {
         d->failed = 1;
         return -1;
     }
-    memcpy(d->ps + d->psLen, data, len);
-    d->psLen += len;
-    while (ps_parse_one(d)) {}
-    if (d->failed) return -1;
-    if (d->psPos > (1u << 20)) {
-        memmove(d->ps, d->ps + d->psPos, d->psLen - d->psPos);
-        d->psBase += d->psPos;
-        d->psLen -= d->psPos;
-        d->psPos = 0;
-    }
-    return 0;
-}
-
-int sr_h264_mf_submit_au(int id, const uint8_t *au, uint32_t len) {
-    if (id < 0 || id >= MAX_DEC || !s_dec[id].used || !au || !len) return -1;
-    Dec *d = &s_dec[id];
-    if (!((len >= 3u && au[0] == 0u && au[1] == 0u && au[2] == 1u) ||
-          (len >= 4u && au[0] == 0u && au[1] == 0u && au[2] == 0u && au[3] == 1u))) {
+    if (!es_append_au(d, au)) {
         d->failed = 1;
         return -1;
     }
-    if (d->failed) return -1;
-    if (!es_append(d, au, len, -1, (uint64_t)d->esLen)) {
-        d->failed = 1;
-        return -1;
-    }
-    d->takeCk = d->nCk - (d->ckOpen ? 1u : 0u);
     return 0;
 }
 
@@ -631,21 +523,11 @@ static int pull_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixe
          * failures set d->failed. */
         if (r > 0) return r == 1 ? 1 : -1;
         if (r < 0) { d->failed = 1; return -1; }
-        uint32_t ready = d->nCk - (d->ckOpen ? 1u : 0u);
-        if (ready > d->takeCk) ready = d->takeCk;
+        uint32_t ready = d->takeCk;
         if (d->curCk < ready) {
             int f = feed_one(d);
             if (f < 0) { d->failed = 1; return -1; }
             if (f == 0) return 0;           /* MFT full but no output: shouldn't happen */
-        } else if (eos && d->ckOpen) {
-            /* End of stream both closes the last picture and releases it: a caller that hands
-             * over whole access units (scePsmfPlayer) has no second AU to close the final one
-             * with, so without this the last picture of every stream was never fed. Callers that
-             * release pictures one at a time through sr_h264_au_take() have already cleared
-             * ckOpen and advanced takeCk by the time they ask for a frame, so this is inert for
-             * them. */
-            d->ckOpen = 0;
-            if (d->takeCk < d->nCk) d->takeCk = d->nCk;
         } else if (eos && !d->drained) {
             d->drained = 1;
             IMFTransform_ProcessMessage(d->xf, MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
@@ -690,37 +572,13 @@ int sr_h264_frame(int id, int eos, uint32_t buffer, int frameWidth, int pixelMod
     return sr_h264_frame_ex(id, eos, &target, NULL);
 }
 
-int64_t sr_h264_mf_first_audio_pts(int id) {
-    if (id < 0 || id >= MAX_DEC || !s_dec[id].used) return -1;
-    return s_dec[id].firstAudioPts;
-}
-
-int sr_h264_mf_au_take(int id, int eos, uint64_t *psConsumed, int64_t *pts) {
-    if (id < 0 || id >= MAX_DEC || !s_dec[id].used) return -1;
-    Dec *d = &s_dec[id];
-    if (d->failed) return -1;
-    if (eos) d->ckOpen = 0;               /* end of stream closes the last picture */
-    uint32_t closed = d->nCk - (d->ckOpen ? 1u : 0u);
-    if (d->takeCk >= closed) return 0;
-    uint32_t i = d->takeCk++;
-    /* Everything before the PES packet that starts the next picture belongs to this one or
-     * earlier; the last picture consumes everything fed. */
-    if (psConsumed)
-        *psConsumed = (i + 1u < d->nCk) ? d->ck[i + 1u].psStart : d->psBase + d->psLen;
-    if (pts) *pts = d->ck[i].pts;
-    return 1;
-}
-
 const SrH264Backend sr_h264_mf_backend = {
     "media-foundation",
     sr_h264_mf_create,
     sr_h264_mf_destroy,
     sr_h264_mf_reset,
-    sr_h264_mf_feed,
     sr_h264_mf_submit_au,
-    sr_h264_mf_frame_ex,
-    sr_h264_mf_au_take,
-    sr_h264_mf_first_audio_pts
+    sr_h264_mf_frame_ex
 };
 
 #endif /* _WIN32 */

@@ -772,21 +772,21 @@
       }
     },
     {
-      "boundary": "MPEG program stream and PES",
-      "entry": "src/rt/psmf_producer.c:parse_one",
-      "max_input": "PES packet length is 16-bit; each selected track buffers at most 4 MiB; queue depth is 8.",
-      "tables_nesting": "No recursive structure; 64 concurrent timestamp marks bound cross-packet AU ownership.",
+      "boundary": "MPEG program stream, PES, and streaming input",
+      "entry": "src/rt/psmf_producer.c:parse_one; src/rt/psmf_producer.c:sr_psmf_producer_feed_stream; src/rt/psmf_producer.c:stream_source_read",
+      "max_input": "16 MiB retained raw-PS window in stream mode; PES packet length is 16-bit; each selected track buffers at most 4 MiB; queue depth is 8.",
+      "tables_nesting": "No recursive structure; 64 concurrent timestamp marks bound cross-packet AU ownership; stream mode retains incomplete syntax across feeds.",
       "arithmetic": {
         "safe": "SAFE",
         "evidence": [
           "src/rt/psmf_producer.c:add_u64",
           "src/rt/psmf_producer.c:parse_one",
-          "src/rt/psmf_producer.c:parse_one"
+          "src/rt/psmf_producer.c:sr_psmf_producer_feed_stream"
         ]
       },
-      "allocation_time": "Per-PES payload and per-track allocations are bounded; cumulative stream duration and total packet count are not bounded.",
-      "failure_atomicity": "Failure is terminal and observable through stats. Cursor and counters can advance before a selected-track allocation fails, so the producer object is not rolled back.",
-      "harness": "src/rt/psmf_producer_selftest.c:test_seeded_mutation; src/rt/psmf_producer_selftest.c:test_conformance_corpus; src/rt/psmf_producer_selftest.c:test_timestamp_flags; src/rt/psmf_producer_selftest.c:test_conformance_corpus",
+      "allocation_time": "Stream-mode raw input, per-PES payload, and per-track storage are capped; cumulative duration and packet count are not.",
+      "failure_atomicity": "Malformed input is terminal; incomplete syntax waits for more input and is rejected at EOS. Cursor and counters may advance before selected-track allocation failure, but a failed producer never resumes without reset.",
+      "harness": "src/rt/psmf_producer_selftest.c:test_seeded_mutation; src/rt/psmf_producer_selftest.c:test_conformance_corpus; src/rt/psmf_producer_selftest.c:test_streaming_program_demux_matches_file_mode; src/rt/psmf_producer_selftest.c:test_streaming_demux_cursor_progress_without_access_units; src/rt/psmf_producer_selftest.c:test_streaming_demux_rejects_truncated_eos",
       "status": "COVERED",
       "id": "mpeg-ps-pes-c",
       "source_paths": [
@@ -797,10 +797,11 @@
       ],
       "malformed_input_coverage": [
         "Malformed packet prefix/length/options, PTS/DTS flags/markers, pack stuffing/end code and packet-boundary preservation.",
-        "PTS/DTS prefix bytes must match PTS_DTS_flags (PTS-only 0010, paired PTS 0011, DTS 0001); invalid prefixes and marker bits fail closed."
+        "PTS/DTS prefix bytes must match PTS_DTS_flags (PTS-only 0010, paired PTS 0011, DTS 0001); invalid prefixes and marker bits fail closed.",
+        "Fragmented stream input waits for completion; a partial start code is rejected at EOS with its source offset, and stream/file mode fixtures compare emitted AU bytes and timestamps."
       ],
       "resource_gaps": [
-        "Track storage is bounded, but cumulative stream duration and total packet count are not."
+        "File mode has no total stream-duration or packet-count limit; stream mode caps retained raw PS bytes at 16 MiB."
       ],
       "campaigns": {
         "deterministic_regression": {
@@ -882,24 +883,24 @@
       }
     },
     {
-      "boundary": "Windows Media Foundation MPEG/H.264 demux seam",
-      "entry": "src/rt/h264_mf.c:ps_parse_one; src/rt/h264_mf.c:sr_h264_mf_feed",
-      "max_input": "16 MiB unparsed PS buffer, 64 MiB demuxed ES, 1048576 ES chunks, four decoder instances.",
-      "tables_nesting": "Chunk table is explicitly capped; no recursive syntax nesting.",
+      "boundary": "Windows Media Foundation H.264 decoder queue",
+      "entry": "src/rt/h264_mf.c:sr_h264_mf_submit_au; src/rt/h264_mf.c:feed_one",
+      "max_input": "64 MiB queued H.264 access-unit bytes, 1048576 AU chunks, 64 MiB decoded output, and four decoder instances.",
+      "tables_nesting": "The backend AU chunk table is capped; program-stream and Annex-B parsing are owned by the common producer.",
       "arithmetic": {
         "safe": "SAFE",
         "evidence": [
-          "src/rt/h264_mf.c:es_append",
-          "src/rt/h264_mf.c:ps_parse_one",
+          "src/rt/h264_mf.c:es_append_au",
+          "src/rt/h264_mf.c:feed_one",
           "src/rt/h264_mf.c:dec_release"
         ]
       },
-      "allocation_time": "PS, ES, and chunk buffers are capped; repeated demux loop work is linear in accepted input.",
-      "failure_atomicity": "Failure poisons the decoder instance, but a failed feed can retain appended input and partial ES/chunk state until destruction.",
-      "harness": "src/rt/psmf_media_selftest.c:test_legacy_demux_mutations",
-      "gap": "The hostile campaign executes only with the Windows Media Foundation backend; Linux ASan/UBSan covers the portable producer and reports this seam as SKIP.",
+      "allocation_time": "Compressed input, output, and chunk storage are capped; decoder execution is delegated to the platform Media Foundation transform.",
+      "failure_atomicity": "Invalid AU or queue/decode failure poisons the decoder instance until reset or destruction; queue input is published only after the AU extent and chunk capacity are validated.",
+      "harness": "src/rt/psmf_media_selftest.c:test_legacy_feed_take_path; src/rt/psmf_media_selftest.c:test_real_decode_into_guest_buffer; src/rt/psmf_media_selftest.c:test_legacy_demux_mutations",
+      "gap": "The real decoder fixture and hostile legacy-feed campaign require Windows Media Foundation; the common PS parser has separate portable producer coverage.",
       "status": "PARTIAL",
-      "id": "windows-mf-demux",
+      "id": "windows-mf-h264-backend",
       "source_paths": [
         "src/rt/h264_mf.c"
       ],
@@ -907,10 +908,10 @@
         "src/rt/psmf_media_selftest.c"
       ],
       "malformed_input_coverage": [
-        "Malformed legacy demux framing, PS/ES/chunk ceilings and poisoned decoder behavior."
+        "Invalid/oversized common-demux input, non-Annex-B AU rejection, decoder failure poisoning, and output-extent refusal."
       ],
       "resource_gaps": [
-        "Linux sanitizer path cannot exercise Windows MF; failed feed may retain partial state until destruction."
+        "Linux sanitizer runs cannot execute Windows Media Foundation; portable-decoder availability and licensing remain a separate issue boundary."
       ],
       "campaigns": {
         "deterministic_regression": {
@@ -918,18 +919,18 @@
           "tests": [
             "src/rt/psmf_media_selftest.c"
           ],
-          "runner": "make psmf-media-selftest"
+          "runner": "mingw32-make --no-print-directory psmf-media-selftest"
         },
         "seeded_mutations": {
           "status": "NOT_IN_CI",
           "tests": [
             "src/rt/psmf_media_selftest.c"
           ],
-          "campaign": "Mutation loop exists, target is not in current CI."
+          "campaign": "The mutation loop enters through the common demux API and requires a Windows Media Foundation decoder; target is not in current CI."
         },
         "sanitizer": {
           "status": "BACKEND_NOT_COVERED",
-          "target": "make fuzz-parsers",
+          "target": "mingw32-make --no-print-directory fuzz-parsers",
           "instrumentation": "Linux ASan/UBSan cannot exercise Windows MF; Windows target has no sanitizer flags.",
           "ci": false
         },
