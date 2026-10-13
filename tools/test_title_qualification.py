@@ -236,6 +236,9 @@ class LaunchReportTests(unittest.TestCase):
         self._assert_bringup_valid(report)
         self.assertEqual(report["failure_class"], "NONE")
         self.assertEqual(report["reached_stage"], "launch")
+        self.assertEqual(report["stages"]["inspect"]["status"], "PASS")
+        for stage in ("prepare_import", "analyze", "codegen", "compile", "build_package"):
+            self.assertEqual(report["stages"][stage]["status"], "NOT_RUN", stage)
         self.assertEqual(report["stages"]["launch"]["status"], "PASS")
         self.assertEqual(report["presentation"]["status"], "FRAME_SUBMITTED")
         self.assertEqual(report["presentation"]["frame_submissions"], 2)
@@ -303,12 +306,16 @@ class LaunchReportTests(unittest.TestCase):
         self.assertEqual(report["stages"]["launch"]["status"], "TIMED_OUT")
         self.assertEqual(library_sweep._furthest_stage(report), "launch")
 
-    def test_unbuilt_candidate_is_entry_not_compiled_at_compile_stage(self):
+    def test_missing_entry_is_inspection_failure_without_claiming_compile_ran(self):
         report = tq.staging_failure_report()
         self._assert_bringup_valid(report)
         self.assertEqual(report["failure_class"], "ENTRY_NOT_COMPILED")
-        self.assertEqual(report["reached_stage"], "compile")
-        self.assertEqual(library_sweep._furthest_stage(report), "compile")
+        self.assertEqual(report["reached_stage"], "inspect")
+        self.assertEqual(report["stages"]["inspect"]["status"], "FAIL")
+        for stage in ("prepare_import", "analyze", "codegen", "compile", "build_package", "launch"):
+            self.assertEqual(report["stages"][stage]["status"], "NOT_RUN", stage)
+        self.assertEqual(report["stages"]["launch"]["status"], "NOT_RUN")
+        self.assertEqual(library_sweep._furthest_stage(report), "identify")
 
     def test_every_failure_class_is_in_the_sweep_vocabulary(self):
         outputs = [
@@ -567,6 +574,34 @@ class SmokeRouteRefusalTests(unittest.TestCase):
             written = json.loads(report_path.read_text(encoding="utf-8"))
         self.assertEqual(status, 1)
         self.assertEqual(report["failure_class"], "ENTRY_NOT_COMPILED")
+        self.assertEqual(report["reached_stage"], "inspect")
+        self.assertEqual(report["stages"]["inspect"]["status"], "FAIL")
+        self.assertEqual(report["stages"]["compile"]["status"], "NOT_RUN")
+        self.assertEqual(report["stages"]["launch"]["status"], "NOT_RUN")
+        nk_cli.validate_bringup_report(written)
+        self.assertEqual(written, report)
+
+    def test_existing_executable_does_not_claim_this_smoke_compiled_it(self):
+        with tempfile.TemporaryDirectory(prefix="tq-prebuilt-") as temp:
+            build_root = Path(temp) / "build"
+            candidate = build_root / TITLE_ID / f"{TITLE_ID}.exe"
+            candidate.parent.mkdir(parents=True)
+            candidate.write_bytes(b"pre-existing staged artifact")
+            player = Path(temp) / "nakagawa_player.exe"
+            player.write_bytes(b"native player fixture")
+            with mock.patch.object(
+                    tq, "run_player", return_value=(0, _pass_output(), False, 17)):
+                status, report_path, report = tq.run_smoke(
+                    DISPLAY_SMOKE, build_root=build_root, input_profile=PROFILE, player=player)
+            written = json.loads(report_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(status, 0)
+        self.assertEqual(report["stages"]["inspect"]["status"], "PASS")
+        for stage in ("prepare_import", "analyze", "codegen", "compile", "build_package"):
+            self.assertEqual(report["stages"][stage]["status"], "NOT_RUN", stage)
+        self.assertEqual(report["stages"]["launch"]["status"], "PASS")
+        self.assertEqual(report["presentation"]["status"], "FRAME_SUBMITTED")
+        self.assertEqual(report["exit_classification"], "EXITED_ZERO")
         nk_cli.validate_bringup_report(written)
         self.assertEqual(written, report)
 

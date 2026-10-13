@@ -12,9 +12,9 @@ for title intake: [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)
 
 | Claim | Evidence the route produces | Where it stops |
 | --- | --- | --- |
-| The manifest is a valid public title | `tools/title_manifest.py` (the normative validator) accepts it; its kind is `synthetic` or `homebrew` | Schema and validator agree on the root contract (checked on every `validate`) |
+| The manifest is a valid public title | `tools/title_manifest.py` (the normative validator) accepts it; its kind is `synthetic` or `homebrew`; a completed smoke marks `inspect=PASS` | Schema and validator agree on the root contract (checked on every `validate`) |
 | The input profile maps the standard controls | Every PSP control and navigation action is bound exactly once; host names come from the runtime's own tables | Structural and vocabulary checks; the runtime parser remains the acceptance authority at load time |
-| The title's staged build exists | `build/<title id>/<title id>.exe` is present (`--require-build`) | A build is not re-run by `validate`; `title-qualification-smoke` rebuilds the fixture it launches |
+| The title's staged executable is available | `smoke` inspects `build/<title id>/<title id>.exe`; a missing file is reported as `ENTRY_NOT_COMPILED` | The Python smoke does not infer that an existing file was compiled by this invocation |
 | The native player launches the title in an isolated profile | The player spawns the staged runtime, the display name it advertises matches the manifest, and the user data root and `LOCALAPPDATA` are sandboxed | Only the bundled sample entry the player exposes for the title (see below) |
 | A first presented frame carries visible pixels | `BOOT_EVENT phase=first_frame` reports nonzero pixels, and ordered `frame_present` and `HOST_PRESENT_SUBMITTED` markers agree | The offscreen presenter. An on-screen window is not captured by this route |
 | The run ends cleanly | The child exits with code 0 after its guest finishes | Window-close `QUIT` is not exercised; see "Not proven" |
@@ -45,6 +45,12 @@ python tools/title_qualification.py validate [--manifest PATH] [--input-profile 
 python tools/title_qualification.py smoke --manifest assets/titles/display-smoke.json [--input-profile PATH] [--timeout SECONDS]
 ```
 
+The Make target is the end-to-end build-and-launch command: it rebuilds the display
+fixture and player before running `smoke`. A report from the Python `smoke` command
+keeps `stages.compile` at `NOT_RUN`, even when an executable is present, because that
+command cannot prove the artifact was freshly compiled. The Make command's successful
+build steps provide compile evidence separately from the report.
+
 Exit status 2 means different things per command. For `validate` it means at least
 one candidate failed validation, and the first problem in each failing candidate is
 printed. For `smoke` it means the candidate was refused before any launch, and no
@@ -61,8 +67,9 @@ A refusal stops before any launch and writes no report:
 - a native player that is not built.
 
 A candidate whose staged build is missing is not a refusal. It writes a schema-valid
-report that fails at the `compile` stage with `ENTRY_NOT_COMPILED`, so the absence
-is recorded rather than skipped.
+report with `failure_class=ENTRY_NOT_COMPILED`. The `inspect` stage fails because the
+staged artifact is absent; `compile` and `launch` remain `NOT_RUN` because the smoke
+does not attempt either operation.
 
 ## The input profile
 
@@ -98,9 +105,28 @@ Stage mapping, from the bring-up report to the library sweep's furthest-stage na
 
 | Report state | Sweep stage |
 | --- | --- |
-| `compile` FAIL (`ENTRY_NOT_COMPILED`) | `compile` |
+| `inspect` FAIL (`ENTRY_NOT_COMPILED`) | `identify` |
 | `launch` FAIL or TIMED_OUT | `launch` |
 | `launch` PASS with `presentation.frame_submissions` above 0 | `first presented frame` |
+
+The report keeps these signals distinct:
+
+- `inspect` records whether the public manifest, input profile, declarations, and
+  staged-artifact check passed. The normative manifest and profile checks also have
+  the standalone `title-qualification` command.
+- `prepare_import`, `analyze`, `codegen`, `compile`, and `build_package` remain
+  `NOT_RUN` in the Python smoke report. The bring-up schema has no separate
+  `publish` stage; `build_package` is the package-build stage and is also
+  `NOT_RUN` here. The end-to-end Make target separately generates and builds the
+  synthetic display fixture and native player before invoking the smoke. Its build
+  output is the evidence for those Make steps, not evidence that the Python smoke
+  performed title code generation, compilation, or package publication. A
+  pre-existing executable is not treated as proof of compilation.
+- `launch` records the native player run. The saved `player-output.log` identifies
+  the spawned runtime and the report's failure class names launch problems.
+- `presentation.status`, `presentation.frame_submissions`, and `presentation.backend`
+  record presentation progress separately from `exit_classification` and
+  `process_exit_code`, which record how the player process ended.
 
 Failure classes used by this route, all from the bring-up `failure_class` enum:
 

@@ -1417,7 +1417,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ff05d710664b92e7e0421cf6bb8a5f2b6357d8b51faffcbb6304f7efe52868a4"
+      "sha256": "0e56b36ac99a41256d14074b6b3aa2ddc9b300bf8c7e8b09b8049597bc80ef6f"
     },
     {
       "path": "docs/WORKSPACE_DOCTOR.md",
@@ -9997,7 +9997,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4750f08f20f0c30bab7bce0ff015d28efaa07b6aa864ddf6230bbb55a01053f2"
+      "sha256": "901929772c79f5972b2e0668ece09f4ec12d2c0326ba6b028b740b18728438ce"
     },
     {
       "path": "tools/test_title_runtime_config.py",
@@ -10357,7 +10357,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "da3336850a251ceb4267cddb06c4affef5e61d67febbba4465d8fddf15b0391e"
+      "sha256": "f916fbc38a724fdcf8158bac3facd4c9a9e08adcb07469ae4cdb105437bda058"
     },
     {
       "path": "tools/title_runtime_config.py",
