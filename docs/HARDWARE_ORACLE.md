@@ -810,7 +810,20 @@ and round-trip file remain available until the host has captured and checked the
 `tools/psp_oracle/run_psplink.py` compares three PSPLink snapshots around each launch.
 It uses `modlist` for the full loaded-module inventory; `modinfo <uid>` is the
 single-module query used for the unload handshake. S0 records threads,
-per-partition total/largest free bytes, and modules before load.
+per-partition total/largest free bytes, and modules before load. Before S0, the
+runner issues `ls host0:/`, a listing that writes nothing, then re-reads the thread
+list, which must match S0; a failed warm-up or a thread set that still moves blocks
+the case before load. Measured 2026-10-12 (session `psp-session-1012`, PSP-3000,
+PSPLink v3.2.1, commit `5ce131f4`): four `transport-write` runs all classified with
+S0 = S2 = 17 threads, the qualified one as `QUALIFIED_CAPTURE`. On that device the
+listing started no thread `thlist` reports — a freshly reset shell read 17 threads
+before any host0 access and 17 after the listing, byte-identical — and control runs
+with the warm-up disabled, and with the warm-up and the post-unload settle both
+disabled, passed teardown as well. The warm-up is a conditional baseline guard: if
+first host0 I/O starts a service thread on a particular boot, taking S0 afterwards
+includes it in the baseline. These campaigns did not observe a new thread and did
+not establish that a service thread caused the original 17-versus-18 discrepancy,
+which did not reproduce on the measured boot.
 S1 records them after the completion marker and before unload; `modinfo <uid> t`
 must show that the probe's only remaining thread is its main thread. Right after
 the `modstun` stop/unload handshake the runner settles the link before any
