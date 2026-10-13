@@ -584,7 +584,7 @@ class SmokeRouteRefusalTests(unittest.TestCase):
     def test_existing_executable_does_not_claim_this_smoke_compiled_it(self):
         with tempfile.TemporaryDirectory(prefix="tq-prebuilt-") as temp:
             build_root = Path(temp) / "build"
-            candidate = build_root / TITLE_ID / f"{TITLE_ID}.exe"
+            candidate = tq.staged_executable(build_root, TITLE_ID)
             candidate.parent.mkdir(parents=True)
             candidate.write_bytes(b"pre-existing staged artifact")
             player = Path(temp) / "nakagawa_player.exe"
