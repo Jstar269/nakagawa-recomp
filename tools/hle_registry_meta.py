@@ -180,7 +180,7 @@ HANDLER_METADATA = {
     },
     "h_DisplayWaitVblankStartMulti": {
         "status": "partial",
-        "limitation": "waits the requested positive count of scheduler VBLANK periods; zero-count behavior fails closed as not implemented, while callback/context precedence and hardware timing are not measured",
+        "limitation": "waits the requested positive count of scheduler VBLANK periods; zero count returns SCE_KERNEL_ERROR_INVALID_VALUE (0x800001fe) before the wait-context check, following the historical waits-matrix transcription; callback behavior and hardware timing are not measured",
     },
     # sceDisplayGetFramePerSec: writes the measured 60000/1001 float refresh
     # rate (59.9400599f) into $f0 under the unified display clock. The API has

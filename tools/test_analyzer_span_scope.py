@@ -1521,19 +1521,35 @@ class MakefileSpanBindingTests(unittest.TestCase):
 
     def test_span_participates_in_the_codegen_profile_hash(self) -> None:
         # Changing the span must invalidate previously generated code. The codegen
-        # profile's entries are NK_CODEGEN_PROFILE_ENTRIES; the span is one of them,
-        # the parse-time hash reads them through profile_hash and the record recipe
-        # from its environment.
+        # profile's entries are NK_CODEGEN_PROFILE_ENTRIES; the span is one of them.
+        # Normal build parses hash the exported entries in a batch, with the
+        # individual profile_hash path retained for parses before the build directory
+        # is ready. The record recipe reads the same entries from its environment.
         export_line = next(
             line for line in self.makefile.splitlines()
             if line.startswith("export NK_CODEGEN_PROFILE_ENTRIES :=")
         )
         self.assertIn("EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)", export_line)
-        hash_line = next(
+        hash_lines = [
             line for line in self.makefile.splitlines()
             if line.startswith("CODEGEN_PROFILE_HASH :=")
+        ]
+        self.assertIn(
+            "CODEGEN_PROFILE_HASH := $(word 1,$(_PROFILE_HASHES))", hash_lines
         )
-        self.assertIn("$(call profile_hash,NK_CODEGEN_PROFILE_ENTRIES,", hash_line)
+        self.assertTrue(any(
+            "$(call profile_hash,NK_CODEGEN_PROFILE_ENTRIES," in line
+            for line in hash_lines
+        ))
+        self.assertIn(
+            "$(file >$(BUILD_DIR)/.codegen-profile-entries,$(NK_CODEGEN_PROFILE_ENTRIES))",
+            self.makefile,
+        )
+        self.assertTrue(any(
+            "hash-profiles" in line
+            and '--codegen-entries-file "$(BUILD_DIR)/.codegen-profile-entries"' in line
+            for line in self.makefile.splitlines()
+        ))
         record_line = next(
             line for line in self.makefile.splitlines() if "--section codegen" in line
         )

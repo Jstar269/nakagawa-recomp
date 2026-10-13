@@ -39,6 +39,14 @@ PRIMITIVE_PROFILE_PHASES = (
 # GE_CPU_PHASES naming convention.
 GE_PRIM_PROFILE_PHASES = PRIMITIVE_PROFILE_PHASES
 
+# ge_cpu_profile_validate() check names, in GeProfileCheck order (src/rt/ge.c).
+GE_PROFILE_CHECKS = (
+    "phase_nesting", "phase_calls", "command_bound", "primitive_types", "profile_agreement",
+    "submitted_split", "triangle_mode_split", "reference_split", "use_split",
+    "references_cover_uses", "reject_bound", "decode_split", "decode_coverage",
+    "triangle_decisions", "sample_bound", "calibration_bound",
+)
+
 
 def _fields(line: str) -> dict[str, str]:
     result: dict[str, str] = {}
@@ -108,8 +116,33 @@ def parse_wall_profile(text: str) -> dict[str, dict[str, int | str]]:
     return phases
 
 
+def parse_ge_cpu_validation(text: str) -> dict[str, object] | None:
+    """Parse the replay's GE CPU profile verdict, or None when the output has none."""
+    lines = [line for line in text.splitlines() if line.startswith("GE_REPLAY_GE_CPU_VALIDATION ")]
+    if not lines:
+        return None
+    if len(lines) != 1:
+        raise ValueError("duplicate GE CPU profile validation")
+    fields = _fields(lines[0])
+    if set(fields) != {"status", "failed"}:
+        raise ValueError("unexpected GE CPU profile validation fields")
+    failed = [] if fields["failed"] == "none" else fields["failed"].split(",")
+    if (fields["status"] not in ("PASS", "FAIL") or (fields["status"] == "PASS") != (not failed)
+            or len(set(failed)) != len(failed) or not set(failed) <= set(GE_PROFILE_CHECKS)):
+        raise ValueError(f"malformed GE CPU profile validation: {lines[0]}")
+    return {"status": fields["status"], "failed": failed}
+
+
+def _require_consistent_ge_cpu_profile(text: str) -> None:
+    verdict = parse_ge_cpu_validation(text)
+    if verdict is not None and verdict["status"] != "PASS":
+        raise ValueError("replay reported an inconsistent GE CPU profile: " +
+                         ",".join(verdict["failed"]))
+
+
 def parse_ge_cpu_profile(text: str) -> tuple[dict[str, dict[str, int]], dict[str, int]]:
     """Parse one complete coarse ge.c CPU profile; list_total is inclusive."""
+    _require_consistent_ge_cpu_profile(text)
     phases: dict[str, dict[str, int]] = {}
     counts: dict[str, int] | None = None
     for line in text.splitlines():
@@ -136,6 +169,7 @@ def parse_ge_cpu_profile(text: str) -> tuple[dict[str, dict[str, int]], dict[str
 
 def parse_primitive_profile(text: str) -> dict[str, object]:
     """Parse one sparse, exclusive-enough GE primitive-frontend profile."""
+    _require_consistent_ge_cpu_profile(text)
     config: dict[str, int] | None = None
     phases: dict[str, dict[str, int | float]] = {}
     counts: dict[str, int] | None = None
@@ -359,6 +393,7 @@ def parse_hook_cpu_profile(text: str) -> tuple[dict[str, dict[str, int]], dict[s
 
 def parse_hierarchy(text: str) -> dict[str, int]:
     """Parse the single non-overlapping list/hook reconciliation summary."""
+    _require_consistent_ge_cpu_profile(text)
     summaries = [line for line in text.splitlines() if line.startswith("GE_REPLAY_HIERARCHY ")]
     if len(summaries) != 1:
         raise ValueError(f"expected one hierarchy summary, found {len(summaries)}")
