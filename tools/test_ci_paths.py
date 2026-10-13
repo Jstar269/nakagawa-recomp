@@ -971,6 +971,12 @@ class CodeqlWorkflowCategoryTests(unittest.TestCase):
             combine_sarif_runs(duplicate_input)
         self.assertIn("duplicate SARIF analysis category", str(cm.exception))
 
+    def test_codeql_workflow_upload_step_guards_duplicate_categories(self) -> None:
+        """Assert upload step in codeql.yml requires distinct automationDetails.id categories."""
+        codeql_yml = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "codeql.yml").read_text(encoding="utf-8")
+        self.assertIn("duplicate SARIF analysis category", codeql_yml)
+        self.assertIn("categories.size !== expected.length", codeql_yml)
+
 
 if __name__ == "__main__":
     unittest.main()
