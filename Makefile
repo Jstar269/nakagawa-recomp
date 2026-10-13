@@ -150,35 +150,8 @@ POWERSHELL ?= powershell.exe
 else
 POWERSHELL ?= pwsh
 endif
-# Direct Make callers may provide VULKAN_SDK explicitly (or export it).
-# If unset, discover dynamically via tools/vulkan_sdk.py.
-ifeq ($(VULKAN_SDK),)
-VULKAN_SDK := $(shell "$(PYTHON)" -c "import sys; sys.path.insert(0, 'tools'); from vulkan_sdk import discover_vulkan_sdk, VulkanSdkError; (lambda: exec('try:\n print(discover_vulkan_sdk().as_posix())\nexcept VulkanSdkError:\n pass'))()")
-endif
-# PowerShell commonly exports this with backslashes while nk_manager passes the
-# same directory with slashes. Canonicalize before hashing CFLAGS so direct Make
-# and manager builds do not churn otherwise identical runtime profiles.
-VULKAN_SDK := $(subst \,/,$(VULKAN_SDK))
-# glslc from the Vulkan SDK is used ONLY by the opt-in `shaders` target below.
+# glslc from the Vulkan SDK is used ONLY by the opt-in shaders target.
 GLSLC ?= glslc
-
-# Vulkan include and library search paths. On Windows these come from the resolved SDK
-# (see the VULKAN_SDK block above). On Linux there is no SDK directory by default: the
-# loader is a system library (libvulkan.so) and the headers live under /usr/include, so the
-# standard search paths already find them and no -I/-L is emitted. Forcing -I/Include -I/include
-# on Linux reorders GCC's own header search and breaks #include_next, so the empty SDK is
-# handled explicitly here rather than by leaving a dangling -I$(VULKAN_SDK)/Include.
-#
-# An explicit VULKAN_SDK override on Linux is still honoured: if the caller names a real
-# directory, -L<root>/lib is added and the SDK's own headers are picked up. The default
-# (no override, no discovery) is the system loader.
-ifeq ($(OS),Windows_NT)
-VULKAN_INC_FLAGS := -I"$(VULKAN_SDK)/Include" -I"$(VULKAN_SDK)/include"
-VULKAN_LIB_FLAGS := -L"$(VULKAN_SDK)/Lib" -L"$(VULKAN_SDK)/lib"
-else
-VULKAN_INC_FLAGS := $(if $(strip $(VULKAN_SDK)),-I"$(VULKAN_SDK)/include",)
-VULKAN_LIB_FLAGS := $(if $(strip $(VULKAN_SDK)),-L"$(VULKAN_SDK)/lib",) -lvulkan
-endif
 
 # BUILD AND LOG ROOTS. BUILD_ROOT is the shared build tree: the default per-title
 # BUILD_DIR, the shared fixture trees clean-fixtures removes and the parse-time SDL3
@@ -223,22 +196,52 @@ endif
 # prefixing it with `./` names no file.
 BUILD_ROOT_RUN := $(if $(filter /%,$(BUILD_ROOT))$(findstring :,$(BUILD_ROOT)),$(BUILD_ROOT),./$(BUILD_ROOT))
 
-# SDL3 dependency discovery and isolation (issue #331).
-# An explicit SDL3_DIR overrides discovery; otherwise the supported provider is
-# found (MSYS2 UCRT64 on Windows, pkg-config/system elsewhere). One Python pass
-# writes every SDL3 variable to a fragment, so a parse costs one interpreter
-# start rather than one per variable. Info-only goals skip discovery entirely.
+# SDL3 and Vulkan dependency discovery.
+# Normal build parses resolve both in one Python startup. The fragment carries the
+# same Make variables used by compiler/profile hashing; info-only and clean goals
+# retain their existing lightweight SDL behavior.
 SDL3_DIR ?=
 SDL3_MAKE_FRAGMENT := $(BUILD_ROOT)/.sdl3-discovery.mk
 ifeq ($(strip $(filter clean distclean clean-preview,$(MAKECMDGOALS))$(NK_INFO_ONLY)),)
+ifeq ($(VULKAN_SDK),)
+_BUILD_DEPENDENCY_DISCOVERY := $(shell "$(PYTHON)" -W ignore -c "import sys; sys.path.insert(0, 'tools'); from nk_doctor_checks import write_build_discovery_make_fragment; write_build_discovery_make_fragment(r'$(SDL3_MAKE_FRAGMENT)', r'$(subst \,/,$(SDL3_DIR))', r'$(CC)', r'$(subst \,/,$(VULKAN_SDK))', True)" 2>&1)
+ifneq ($(strip $(_BUILD_DEPENDENCY_DISCOVERY)),)
+$(error SDL3 discovery failed: $(_BUILD_DEPENDENCY_DISCOVERY))
+endif
+else
 _SDL3_DISCOVERY := $(shell "$(PYTHON)" -W ignore -c "import sys; sys.path.insert(0, 'tools'); from nk_doctor_checks import write_sdl3_make_fragment; write_sdl3_make_fragment(r'$(SDL3_MAKE_FRAGMENT)', r'$(subst \,/,$(SDL3_DIR))', r'$(CC)')" 2>&1)
 ifneq ($(strip $(_SDL3_DISCOVERY)),)
 $(error SDL3 discovery failed: $(_SDL3_DISCOVERY))
 endif
+endif
+VULKAN_SDK := $(subst \,/,$(VULKAN_SDK))
 include $(SDL3_MAKE_FRAGMENT)
+
 else
 SDL3_PROVIDER := none
 SDL3_VERSION := none
+ifeq ($(VULKAN_SDK),)
+VULKAN_SDK := $(shell "$(PYTHON)" -c "import sys; sys.path.insert(0, 'tools'); from vulkan_sdk import discover_vulkan_sdk, VulkanSdkError; (lambda: exec('try:\n print(discover_vulkan_sdk().as_posix())\nexcept VulkanSdkError:\n pass'))()")
+endif
+VULKAN_SDK := $(subst \,/,$(VULKAN_SDK))
+endif
+
+# Vulkan include and library search paths. On Windows these come from the resolved SDK
+# (see the VULKAN_SDK block above). On Linux there is no SDK directory by default: the
+# loader is a system library (libvulkan.so) and the headers live under /usr/include, so the
+# standard search paths already find them and no -I/-L is emitted. Forcing -I/Include -I/include
+# on Linux reorders GCC's own header search and breaks #include_next, so the empty SDK is
+# handled explicitly here rather than by leaving a dangling -I$(VULKAN_SDK)/Include.
+#
+# An explicit VULKAN_SDK override on Linux is still honoured: if the caller names a real
+# directory, -L<root>/lib is added and the SDK's own headers are picked up. The default
+# (no override, no discovery) is the system loader.
+ifeq ($(OS),Windows_NT)
+VULKAN_INC_FLAGS := -I"$(VULKAN_SDK)/Include" -I"$(VULKAN_SDK)/include"
+VULKAN_LIB_FLAGS := -L"$(VULKAN_SDK)/Lib" -L"$(VULKAN_SDK)/lib"
+else
+VULKAN_INC_FLAGS := $(if $(strip $(VULKAN_SDK)),-I"$(VULKAN_SDK)/include",)
+VULKAN_LIB_FLAGS := $(if $(strip $(VULKAN_SDK)),-L"$(VULKAN_SDK)/lib",) -lvulkan
 endif
 
 # Native runtime code is host-side C and can be tested independently.
@@ -944,6 +947,7 @@ PUBLIC_TARGETS := \
 	asset-index-selftest \
 	fp-convert-selftest \
 	ge-float24-selftest \
+	ge-cpu-profile-validate-selftest \
 	vfpu-tables-selftest \
 	watchpoints-file-selftest \
 	ge-raster-ref-selftest \
@@ -1067,6 +1071,7 @@ HELP_DESCRIPTION_memory-watch-selftest := run the SR_WATCH store-watch selftest
 HELP_DESCRIPTION_asset-index-selftest := run the asset-index selftest
 HELP_DESCRIPTION_fp-convert-selftest := run the FPU conversion selftest
 HELP_DESCRIPTION_ge-float24-selftest := run the GE float24/row-sum/reciprocal reference selftest
+HELP_DESCRIPTION_ge-cpu-profile-validate-selftest := run the GE CPU-profile validator selftest on the production GE object
 HELP_DESCRIPTION_vfpu-tables-selftest := run the VFPU table-loader selftest
 HELP_DESCRIPTION_watchpoints-file-selftest := run the watchpoints-file selftest
 HELP_DESCRIPTION_ge-raster-ref-selftest := run the GE triangle setup and rasterization reference selftest
@@ -1626,6 +1631,43 @@ profile-zero-e2e:
 # it immediately, so a later definition would silently expand to empty.
 CODEGEN_TOOL ?= tools/codegen.py
 
+# Resolve the build-profile inputs before hashing so one Python process can reuse
+# compiler identities and the shared ABI-header digest for all three profiles.
+# Keep these definitions before the profile stamp targets below; their values and
+# order are part of the existing profile identities.
+# ge.c: software comparison rasterizer with PPSSPP-derived behavior. -O2 for speed.
+GE_CFLAGS ?= -O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK
+# Optional sparse front-end attribution is absent from normal GE builds. ge.c is also a
+# portable-core source, so the define reaches both compilations or neither.
+GE_FRONTEND_PROFILE ?= 0
+ifeq ($(GE_FRONTEND_PROFILE),1)
+override GE_CFLAGS += -DSR_GE_FRONTEND_PROFILE
+override PORTABLE_CORE_CFLAGS += -DSR_GE_FRONTEND_PROFILE
+endif
+override GE_CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
+# A trace build compiles the runtime with the trace writer too. This must precede the
+# runtime profile hash so switching TRACE rebuilds the runtime objects.
+TRACE ?= 0
+ifeq ($(TRACE),1)
+override CFLAGS += -DSR_INSTRUCTION_TRACE
+endif
+# Optimization and memory-saving flags for massive machine-generated files.
+# -O0: Conservative default for generic/unqualified titles to prevent compiler OOM / hangs.
+# -O1: Measured and qualified default for HST.
+# -fno-var-tracking: Saves significant memory on huge functions.
+# -ftrack-macro-expansion=0: Reduces memory overhead for macro-heavy code.
+RECOMP_OPT ?= -O0
+RECOMP_FLAGS ?= $(RECOMP_OPT) -w -fno-var-tracking -ftrack-macro-expansion=0 $(NAN_TRAP_CFLAG)
+override RECOMP_FLAGS += $(STACK_CENSUS_CFLAG)
+override RECOMP_FLAGS += -DSR_FLIGHT_RECORDER_LINKED
+ifeq ($(TRACE),1)
+override RECOMP_FLAGS += -DSR_INSTRUCTION_TRACE
+endif
+ifeq ($(PERF_AOT_INSTRUCTIONS),1)
+override RECOMP_FLAGS += -DPERF_AOT_INSTRUCTIONS=1
+endif
+export NK_RUNTIME_PROFILE_ENTRIES := CFLAGS=$(CFLAGS)$(NEWLINE)GE_CFLAGS=$(GE_CFLAGS)$(NEWLINE)TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)$(NEWLINE)SDL3_PROVIDER=$(SDL3_PROVIDER)$(NEWLINE)SDL3_VERSION=$(SDL3_VERSION)$(NEWLINE)SDL3_DIR=$(SDL3_DIR)$(NEWLINE)PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)
+
 # profile_hash(ENTRIES_VAR, COMPILER, ENTRIES_FILE): the parse-time hash of a build
 # profile whose entries are the newline-separated value of the exported ENTRIES_VAR.
 # Recipes read that variable from their environment (--entries-env), but GNU Make
@@ -1646,7 +1688,16 @@ endif
 # overruns the command line a shell will accept. The entries and their order are the
 # ones the --entry form used, so the hash is unchanged.
 export NK_CODEGEN_PROFILE_ENTRIES := GAME_NAME=$(GAME_NAME)$(NEWLINE)GAME_BASE=$(GAME_BASE)$(NEWLINE)CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)$(NEWLINE)EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)$(NEWLINE)EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)$(NEWLINE)FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)$(NEWLINE)CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)$(NEWLINE)CODEGEN_TOOL=$(CODEGEN_TOOL)$(CHUNK_TARGET_PROFILE_LINE)
+ifdef NK_BUILD_DIR_READY
+$(file >$(BUILD_DIR)/.codegen-profile-entries,$(NK_CODEGEN_PROFILE_ENTRIES))
+$(file >$(BUILD_DIR)/.runtime-profile-entries,$(NK_RUNTIME_PROFILE_ENTRIES))
+_PROFILE_HASHES := $(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash-profiles --codegen-compiler "$(PYTHON)" --codegen-entries-file "$(BUILD_DIR)/.codegen-profile-entries" --runtime-compiler "$(CC)" --runtime-entries-file "$(BUILD_DIR)/.runtime-profile-entries" --recomp-compiler "$(CC)" --recomp-entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --recomp-entry "TRACE=$(TRACE)" --recomp-entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)")
+CODEGEN_PROFILE_HASH := $(word 1,$(_PROFILE_HASHES))
+RUNTIME_PROFILE_HASH := $(word 2,$(_PROFILE_HASHES))
+RECOMP_PROFILE_HASH := $(word 3,$(_PROFILE_HASHES))
+else
 CODEGEN_PROFILE_HASH := $(call profile_hash,NK_CODEGEN_PROFILE_ENTRIES,$(PYTHON),$(BUILD_DIR)/.codegen-profile-entries)
+endif
 CODEGEN_PROFILE_STAMP := $(BUILD_DIR)/.codegen-profile-$(CODEGEN_PROFILE_HASH)
 
 $(CODEGEN_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
@@ -1676,25 +1727,9 @@ endif
 $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py tools/analyze.py tools/prxload.py
 	$(PYTHON) tools/imports.py --env-elf $(GAME_BASE) --toml=$@
 
-# ge.c: software comparison rasterizer with PPSSPP-derived behavior. -O2 for speed.
-GE_CFLAGS ?= -O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK
-# Optional sparse front-end attribution is absent from normal GE builds. ge.c is also a
-# portable-core source, so the define reaches both compilations or neither.
-GE_FRONTEND_PROFILE ?= 0
-ifeq ($(GE_FRONTEND_PROFILE),1)
-override GE_CFLAGS += -DSR_GE_FRONTEND_PROFILE
-override PORTABLE_CORE_CFLAGS += -DSR_GE_FRONTEND_PROFILE
-endif
-# ge.c is the vblank hook for the recorder's trace window and store watch; without this
-# define those calls compile to flight_recorder.h's inert inline stubs.
-override GE_CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
-# A trace build compiles the runtime with the trace writer too. This must precede the
-# runtime profile hash so switching TRACE rebuilds the runtime objects.
-ifeq ($(TRACE),1)
-override CFLAGS += -DSR_INSTRUCTION_TRACE
-endif
-export NK_RUNTIME_PROFILE_ENTRIES := CFLAGS=$(CFLAGS)$(NEWLINE)GE_CFLAGS=$(GE_CFLAGS)$(NEWLINE)TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)$(NEWLINE)SDL3_PROVIDER=$(SDL3_PROVIDER)$(NEWLINE)SDL3_VERSION=$(SDL3_VERSION)$(NEWLINE)SDL3_DIR=$(SDL3_DIR)$(NEWLINE)PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)
+ifndef NK_BUILD_DIR_READY
 RUNTIME_PROFILE_HASH := $(call profile_hash,NK_RUNTIME_PROFILE_ENTRIES,$(CC),$(BUILD_DIR)/.runtime-profile-entries)
+endif
 RUNTIME_PROFILE_STAMP := $(BUILD_DIR)/.runtime-profile-$(RUNTIME_PROFILE_HASH)
 # The objects the runtime profile invalidates go in a list file that make writes (see the record
 # below): one --invalidate per object repeats the whole BUILD_DIR prefix, and under a long
@@ -1708,23 +1743,6 @@ $(RUNTIME_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
 $(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(GE_CFLAGS) $(DEPFLAGS) -c src/rt/ge.c -o $@
 
-# Optimization and memory-saving flags for massive machine-generated files.
-# -O0: Conservative default for generic/unqualified titles to prevent compiler OOM / hangs.
-# -O1: Measured and qualified default for HST.
-# -fno-var-tracking: Saves significant memory on huge functions.
-# -ftrack-macro-expansion=0: Reduces memory overhead for macro-heavy code.
-RECOMP_OPT ?= -O0
-RECOMP_FLAGS ?= $(RECOMP_OPT) -w -fno-var-tracking -ftrack-macro-expansion=0 $(NAN_TRAP_CFLAG)
-override RECOMP_FLAGS += $(STACK_CENSUS_CFLAG)
-override RECOMP_FLAGS += -DSR_FLIGHT_RECORDER_LINKED
-TRACE ?= 0
-ifeq ($(TRACE),1)
-override RECOMP_FLAGS += -DSR_INSTRUCTION_TRACE
-endif
-ifeq ($(PERF_AOT_INSTRUCTIONS),1)
-override RECOMP_FLAGS += -DPERF_AOT_INSTRUCTIONS=1
-endif
-
 # Make the object flavour explicit. Switching TRACE forces only the generated
 # chunks to rebuild, avoiding a stale trace-enabled object in a release binary
 # (or a trace-disabled object in an oracle run).
@@ -1732,7 +1750,9 @@ TRACE_STAMP := $(BUILD_DIR)/.recomp-trace-$(TRACE)
 $(TRACE_STAMP):
 	$(PYTHON) $(BUILD_PROFILE_TOOL) stamp --output "$@" --stale-glob ".recomp-trace-*" --value "$(TRACE)"
 
+ifndef NK_BUILD_DIR_READY
 RECOMP_PROFILE_HASH := $(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)")
+endif
 RECOMP_PROFILE_STAMP := $(BUILD_DIR)/.recomp-profile-$(RECOMP_PROFILE_HASH)
 $(RECOMP_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
 	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RECOMP_PROFILE_MANIFEST)" --section generated --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".recomp-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
@@ -2212,6 +2232,24 @@ ge-float24-selftest:
 	$(BUILD_DIR)/ge_float24_selftest.exe
 
 native-core-tests: ge-float24-selftest
+
+# ge-cpu-profile-validate-selftest — ge_cpu_profile_validate() (issue #282) against the
+# counters the production GE object produces for source-owned display lists: every
+# primitive type in both modes, indexed draws, clipped and rejected triangles, rejected
+# points and sprite corners, patches, block transfer and CLUT load, the GPU hook seam, and
+# each profile switch; then faults injected into copies of those blocks, each of which
+# must fail exactly the checks it breaks.  Run twice because ge.c latches the strip-cache
+# switch per process.  No game input.
+GE_CPU_PROFILE_VALIDATE_SELFTEST := $(BUILD_DIR)/ge_cpu_profile_validate_selftest$(EXE_EXT)
+
+ge-cpu-profile-validate-selftest: $(RT_GE_O)
+	$(CC) $(CFLAGS) -Werror $(LDFLAGS) -o $(GE_CPU_PROFILE_VALIDATE_SELFTEST) \
+		src/rt/ge_cpu_profile_validate_selftest.c $(RT_GE_O) src/rt/ge_capture.c \
+		src/rt/flight_recorder.c src/rt/perf.c -lm
+	$(GE_CPU_PROFILE_VALIDATE_SELFTEST)
+	$(GE_CPU_PROFILE_VALIDATE_SELFTEST) --strip-cache-disabled
+
+native-core-tests: ge-cpu-profile-validate-selftest
 
 # Production-backend regression for the historical repeated-adoption RAM runaway.
 # This intentionally does not link HLE or define SR_CORO_LIFECYCLE_TEST: it proves
