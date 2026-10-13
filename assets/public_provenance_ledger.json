@@ -1063,7 +1063,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a119b2270227ae3e0ed38c050a878be28173cf213f3d9ee7a806fdedc7f58dff"
+      "sha256": "26624d87ed3de3f6c35539cdcbdf5871dee4139ac605c70caf1babcfc024635b"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -1615,7 +1615,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "11f6a5e785a5b25ab5ceae546a375d2bbf2947c404ca2bbb55a7fda282ce0c03"
+      "sha256": "99963df2164d8c21ff389edd60a8827f97072473faf4493aba15265dac80c4ce"
     },
     {
       "path": "fixtures/cosim/cosim_selftest.c",
@@ -1627,7 +1627,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b1c7cab632277385f0456a3b109d44d593a05d6c513a365d23af067d4034a79c"
+      "sha256": "3c2ba02079dd50cda50971dc69b686b751cdde6cd77e8a0638bcf8989ad6c533"
     },
     {
       "path": "fixtures/cosim/fpu_reference.c",
@@ -1663,7 +1663,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "69998e079e87ecdc8aa3e578f00b5a405412582458f4f172907f4f1fe5bd9687"
+      "sha256": "132cb8d05bb22cccafe5b4686615b5aa17382391a8f4c89f308ae184daac74a2"
     },
     {
       "path": "fixtures/cosim/mutate.py",
@@ -4899,7 +4899,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "104ce7407e41bcbf9e898c4393559b6f85d7e11ade0a5e59c6102836f7a95171"
+      "sha256": "ff3266679bf503d40003abb3d91efb702126244dd609f1f31eb25f181991cc30"
     },
     {
       "path": "src/rt/guest_interp.h",
@@ -8303,7 +8303,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "26e604d2049ad5c1faa182a04ea59aab5f7ca200cc082c9fe1b6acfdc64676f0"
+      "sha256": "d3049d365ab7721bdb03503505128d98342facb73fceca07e39593b5e4ec6ae6"
     },
     {
       "path": "tools/test_dispatch_fatal_policy.py",
