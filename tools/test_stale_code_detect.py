@@ -41,6 +41,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
+import scratch_dir
 
 RT = ROOT / "src" / "rt"
 STALE_H = (RT / "stale_code.h").read_text(encoding="utf-8")
@@ -111,7 +112,7 @@ class TestStaleCodeSelftestC(unittest.TestCase):
         the selftest cannot pass against a neutered detector."""
         self.assertEqual(STALE_C.count(WORD_CMP_ANCHOR), 2,
                          "mutation anchor drifted; the mutant below would be vacuous")
-        with tempfile.TemporaryDirectory(prefix="stalecode_mut_") as tmp_dir:
+        with scratch_dir.TemporaryDirectory(prefix="stalecode_mut_") as tmp_dir:
             mutated = STALE_C.replace(WORD_CMP_ANCHOR, "if (actual == entry->expected) {")
             Path(tmp_dir, "stale_code.c").write_text(mutated, encoding="utf-8")
             Path(tmp_dir, "stale_code.h").write_text(STALE_H, encoding="utf-8")
@@ -154,7 +155,7 @@ class TestStaleCodeSelftestC(unittest.TestCase):
         intact, so only the invalidation-half assertions must fail."""
         self.assertEqual(STALE_C.count(FLAG_SET_ANCHOR), 3,
                          "flag-set anchor drifted; the mutant below would be vacuous")
-        with tempfile.TemporaryDirectory(prefix="stalecode_flagmut_") as tmp_dir:
+        with scratch_dir.TemporaryDirectory(prefix="stalecode_flagmut_") as tmp_dir:
             mutated = STALE_C.replace(FLAG_SET_ANCHOR, "->stale = 0;")
             Path(tmp_dir, "stale_code.c").write_text(mutated, encoding="utf-8")
             Path(tmp_dir, "stale_code.h").write_text(STALE_H, encoding="utf-8")
@@ -182,7 +183,7 @@ class TestStaleCodeSelftestC(unittest.TestCase):
         query = tail.split("\n}\n", 1)[0]
         self.assertIn("return 1;", query, "query must have a firing return to neuter")
         mutated = head + "int sr_stale_block_is_stale(uint32_t addr) {\n    (void)addr;\n    return 1;\n}\n" + tail.split("\n}\n", 1)[1]
-        with tempfile.TemporaryDirectory(prefix="stalecode_qmut_") as tmp_dir:
+        with scratch_dir.TemporaryDirectory(prefix="stalecode_qmut_") as tmp_dir:
             Path(tmp_dir, "stale_code.c").write_text(mutated, encoding="utf-8")
             Path(tmp_dir, "stale_code.h").write_text(STALE_H, encoding="utf-8")
             shutil.copy(SELFTEST_C, Path(tmp_dir, "stale_code_selftest.c"))

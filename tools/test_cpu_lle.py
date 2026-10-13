@@ -16,7 +16,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -24,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
+import scratch_dir
 
 
 CPU_LLE_H = ROOT / "src" / "rt" / "cpu_lle.h"
@@ -715,7 +715,7 @@ int main(void) {
                     sdl_available = True
         env["SR_NOVBPACE"] = "1"
 
-        with tempfile.TemporaryDirectory(prefix="lle_sched_eret_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="lle_sched_eret_") as tmp:
             work = Path(tmp)
             source_path = work / "fixture.c"
             exe_path = work / "fixture.exe"

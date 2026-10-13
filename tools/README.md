@@ -255,6 +255,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `contrib_check.py` | Run only the local gates that apply to the files you changed. |
 | `contrib_refresh.py` | Reproduce the two public provenance controls for the changed paths that already have public entries, from the committed public ledger alone; refuses new, removed, unresolved or policy-changing paths. |
 | `discovery_contract.py` | Inventory and verify the repository's unittest discovery contract. |
+| `scratch_dir.py` | `TemporaryDirectory` for tests that run a program from inside it: cleanup waits out a short-lived Windows file lock for a bounded time, then raises the real error. |
 | `format_portability_check.py` | Compile the portable core against a 32-bit newlib-shaped `stdint.h` shim with `-Werror=format`, so a fixed-width value printed with a plain `%u`/`%x`/`%d` fails on every host. |
 | `ci_paths.py` | Classify a change for the path-gated public CI workflow. |
 | `ci_required.py` | Evaluate the stable aggregate status for the path-gated CI workflow. |
@@ -540,6 +541,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_public_ci_wiring.py` | Regression checks for public and clean-checkout CI wiring. |
 | `test_readme_images.py` | Deterministic checks on the published showcase screenshots. |
 | `test_relocated_clone.py` | Contributor quick check in a checkout whose own path contains spaces. |
+| `test_scratch_dir.py` | The scratch directory retries only Windows lock errors, within its bound; on Windows a real held file reproduces the WinError 32 cleanup failure. |
 | `test_text_write_newlines.py` | A tool that emits a tracked text file must pin its line endings. |
 | `test_tree_lint.py` | Offline deterministic tests for `tools/tree_lint.py`. |
 | `test_validate_assets.py` | Synthetic, retail-free hostile coverage for the asset validator. |

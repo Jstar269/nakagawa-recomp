@@ -27,13 +27,13 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
+import scratch_dir
 FIXTURE = ROOT / "fixtures" / "vfpu_addressing" / "hardware_vfpu_addr_001.json"
 SELFTEST = ROOT / "src" / "rt" / "vfpu_addr_selftest.c"
 
@@ -55,7 +55,7 @@ def build_and_run_c() -> dict[tuple[int, int], list[int]]:
     cc = shutil.which("gcc") or shutil.which("cc")
     if cc is None:
         raise unittest.SkipTest("no C compiler on PATH")
-    with tempfile.TemporaryDirectory() as tmp:
+    with scratch_dir.TemporaryDirectory() as tmp:
         exe = Path(tmp) / "vfpu_addr_selftest"
         build = subprocess.run(
             [cc, "-std=c11", "-I", str(ROOT / "src" / "rt"), "-o", str(exe), str(SELFTEST), "-lm"],

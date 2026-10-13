@@ -7,8 +7,12 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import tempfile
 import unittest
+
+try:
+    import scratch_dir
+except ModuleNotFoundError:
+    from tools import scratch_dir
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -110,7 +114,7 @@ int main(int argc, char **argv) {{
     return 99;
 }}
 '''
-        with tempfile.TemporaryDirectory(prefix="ref_runner_harden_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="ref_runner_harden_") as tmp:
             tmpdir = Path(tmp)
             src = tmpdir / "harness.cpp"
             exe = tmpdir / "harness"
@@ -157,7 +161,7 @@ class TestReferenceRunnerTerminationContract(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.tmp = tempfile.TemporaryDirectory(prefix="ref_runner_contract_")
+        cls.tmp = scratch_dir.TemporaryDirectory(prefix="ref_runner_contract_")
         root = Path(cls.tmp.name)
         exe = root / ("run_elf.exe" if os.name == "nt" else "run_elf")
         compiled = subprocess.run(

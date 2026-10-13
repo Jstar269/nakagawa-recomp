@@ -51,13 +51,13 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
+import scratch_dir
 
 GCC = shutil.which("gcc") or shutil.which("cc")
 
@@ -155,7 +155,7 @@ int main(void) {{
     return 0;
 }}
 """
-        with tempfile.TemporaryDirectory() as td:
+        with scratch_dir.TemporaryDirectory() as td:
             assert GCC is not None
             c_path = Path(td) / "snippet.c"
             exe_path = Path(td) / ("snippet.exe" if sys.platform == "win32" else "snippet")

@@ -31,9 +31,13 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 import unittest
 from pathlib import Path
+
+try:
+    import scratch_dir
+except ModuleNotFoundError:
+    from tools import scratch_dir
 
 ROOT = Path(__file__).resolve().parent.parent
 RT = ROOT / "src" / "rt"
@@ -153,7 +157,7 @@ class TestDispatchFatalPolicyBehavioral(unittest.TestCase):
     """Behavioral test verifying that dispatch() on unknown targets exits with code 1."""
 
     def test_dispatch_unmapped_target_exits_code_1(self):
-        with tempfile.TemporaryDirectory(prefix="nk_dispatch_fatal_") as tmp_dir:
+        with scratch_dir.TemporaryDirectory(prefix="nk_dispatch_fatal_") as tmp_dir:
             wrapper_c = Path(tmp_dir) / "wrapper_test.c"
             wrapper_code = """
 #include <stdio.h>
