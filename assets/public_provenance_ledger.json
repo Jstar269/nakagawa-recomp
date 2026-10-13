@@ -1417,7 +1417,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0e56b36ac99a41256d14074b6b3aa2ddc9b300bf8c7e8b09b8049597bc80ef6f"
+      "sha256": "792eab492085d15f20afbc55f6453abec6b9cee8916ed3282e67f6d2d58f76e6"
     },
     {
       "path": "docs/WORKSPACE_DOCTOR.md",
