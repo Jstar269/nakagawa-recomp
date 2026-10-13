@@ -947,6 +947,7 @@ PUBLIC_TARGETS := \
 	asset-index-selftest \
 	fp-convert-selftest \
 	ge-float24-selftest \
+	ge-cpu-profile-validate-selftest \
 	vfpu-tables-selftest \
 	watchpoints-file-selftest \
 	ge-raster-ref-selftest \
@@ -1070,6 +1071,7 @@ HELP_DESCRIPTION_memory-watch-selftest := run the SR_WATCH store-watch selftest
 HELP_DESCRIPTION_asset-index-selftest := run the asset-index selftest
 HELP_DESCRIPTION_fp-convert-selftest := run the FPU conversion selftest
 HELP_DESCRIPTION_ge-float24-selftest := run the GE float24/row-sum/reciprocal reference selftest
+HELP_DESCRIPTION_ge-cpu-profile-validate-selftest := run the GE CPU-profile validator selftest on the production GE object
 HELP_DESCRIPTION_vfpu-tables-selftest := run the VFPU table-loader selftest
 HELP_DESCRIPTION_watchpoints-file-selftest := run the watchpoints-file selftest
 HELP_DESCRIPTION_ge-raster-ref-selftest := run the GE triangle setup and rasterization reference selftest
@@ -2230,6 +2232,24 @@ ge-float24-selftest:
 	$(BUILD_DIR)/ge_float24_selftest.exe
 
 native-core-tests: ge-float24-selftest
+
+# ge-cpu-profile-validate-selftest — ge_cpu_profile_validate() (issue #282) against the
+# counters the production GE object produces for source-owned display lists: every
+# primitive type in both modes, indexed draws, clipped and rejected triangles, rejected
+# points and sprite corners, patches, block transfer and CLUT load, the GPU hook seam, and
+# each profile switch; then faults injected into copies of those blocks, each of which
+# must fail exactly the checks it breaks.  Run twice because ge.c latches the strip-cache
+# switch per process.  No game input.
+GE_CPU_PROFILE_VALIDATE_SELFTEST := $(BUILD_DIR)/ge_cpu_profile_validate_selftest$(EXE_EXT)
+
+ge-cpu-profile-validate-selftest: $(RT_GE_O)
+	$(CC) $(CFLAGS) -Werror $(LDFLAGS) -o $(GE_CPU_PROFILE_VALIDATE_SELFTEST) \
+		src/rt/ge_cpu_profile_validate_selftest.c $(RT_GE_O) src/rt/ge_capture.c \
+		src/rt/flight_recorder.c src/rt/perf.c -lm
+	$(GE_CPU_PROFILE_VALIDATE_SELFTEST)
+	$(GE_CPU_PROFILE_VALIDATE_SELFTEST) --strip-cache-disabled
+
+native-core-tests: ge-cpu-profile-validate-selftest
 
 # Production-backend regression for the historical repeated-adoption RAM runaway.
 # This intentionally does not link HLE or define SR_CORO_LIFECYCLE_TEST: it proves

@@ -68,6 +68,17 @@ reordering and triangle acceptance; `assembly` is the accepted screen-space proj
 is an additional front-end stage. These timers add measurement overhead and are for attribution
 runs, not absolute cadence claims.
 
+`ge_cpu_profile_validate()` checks a `ge_cpu_profile_get()` snapshot against the relations the GE's
+own counting code establishes: sub-phase time inside list time, phase calls against their
+command counters, the coarse and sparse profiles' per-draw counts against each other, the sparse
+population splits, decodes against the vertex uses that drive them, one acceptance verdict per
+transform triangle candidate, and samples within their eligible populations. A violation means
+the counters are wrong, not that the GE is slow; a pass says nothing about whether the times are
+accurate. The check reads only the snapshot, so the profiled GE paths do no extra work.
+`ge_replay` prints `GE_REPLAY_GE_CPU_VALIDATION status=PASS|FAIL failed=<checks>` whenever a GE
+CPU profile is enabled, exits with status 4 after printing the numbers when the check fails, and
+`tools/ge_replay_metrics.py` refuses to parse a profile the replay reported as `FAIL`.
+
 The summary fields mean:
 
 - `guest.ns` is inclusive guest execution time. `guest.aot_ns` and `guest.interpreter_ns` are

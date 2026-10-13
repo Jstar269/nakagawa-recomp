@@ -321,6 +321,18 @@ _MODULE_THREAD_HEADER_RE = re.compile(r"^Module Thread \((\d+)\)$")
 _PROBE_COMPLETE_RE = re.compile(
     r"^NAKAGAWA_PSP_COMPLETE schema=1 status=(PASS|FAIL|NOT_RUN)$", re.MULTILINE
 )
+# Issue #698 recorded one capture where S2 had one more thread than S0. The initial
+# hypothesis was that first host0 I/O might start a PSPLink-side service thread that
+# persists until reset; the measurements below did not establish that mechanism. A
+# directory listing is read-only and writes nothing to host0 or device storage.
+# Measured on 2026-10-12 (session psp-session-1012, PSP-3000, PSPLink v3.2.1): after a
+# soft reset the shell listed 17 threads before any host0 access and 17 after this
+# listing, byte-identical, so that boot showed no new thread in `thlist`; teardown
+# also passed with the warm-up disabled and with both the warm-up and post-unload
+# settle disabled. The warm-up remains a pre-S0 guard: if first host0 I/O starts a
+# service thread on a particular boot, that thread is included in S0. The original
+# 17-vs-18 result did not reproduce in these campaigns.
+HOST0_WARMUP_COMMAND = "ls host0:/"
 
 
 def parse_psplink_thread_snapshot(text: str) -> frozenset[tuple[str, str]]:
@@ -1648,6 +1660,35 @@ class PsplinkCampaignRunner:
             modules=parsed["modlist"],
         ), None
 
+    def _take_baseline(self) -> tuple[PsplinkSnapshot | None, str | None]:
+        """Read S0 after the host0 warm-up, once the thread set has settled.
+
+        Any thread the warm-up starts is already inside the baseline the teardown
+        check compares against, and a baseline whose thread set still moves is
+        refused, so the check can never pass against a moving reference.
+        """
+        result = self._request(HOST0_WARMUP_COMMAND, self.cleanup_timeout)
+        if not self._ok(result):
+            return None, "host0 warm-up (`ls host0:/`) failed before the S0 baseline"
+        before, problem = self._take_snapshot()
+        if before is None:
+            return None, problem
+        # The recorded discrepancy was a thread-set delta, so only `thlist` is
+        # re-read for warm-up stability; memory and module snapshots are captured once.
+        reread = self._request("thlist", self.cleanup_timeout)
+        if not self._ok(reread):
+            return None, "S0 baseline re-read failed (thlist)"
+        try:
+            reread_threads = parse_psplink_thread_snapshot(reread[1] + reread[2])
+        except ValueError as exc:
+            return None, f"S0 baseline re-read could not be parsed ({exc})"
+        if reread_threads != before.threads:
+            return None, "S0 thread set changed after host0 warm-up; baseline is not stable"
+        self.recovery_events.append(
+            f"S0: host0 warm-up done; {len(before.threads)} threads, baseline re-read stable"
+        )
+        return before, None
+
     def _module_threads(
         self, module_uid: str
     ) -> tuple[frozenset[tuple[str, str]], str | None]:
@@ -2437,7 +2478,7 @@ class PsplinkCampaignRunner:
                 )
             )
             return False
-        before, snapshot_problem = self._take_snapshot()
+        before, snapshot_problem = self._take_baseline()
         progress.before = before
         if before is None:
             self.state = "STOPPED"
