@@ -17898,9 +17898,9 @@ static uint32_t h_DisplayWaitVblankStartMulti(CpuState *s) {
     (void)s;
     uint32_t periods = A0;
     if (periods == 0u) {
-        fprintf(stderr,
-                "UNSUPPORTED_IMPORT: sceDisplayWaitVblankStartMulti zero-period behavior is not supported yet (NID 0x40f1469c, error 0x80020002).\n");
-        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+        /* The waits-matrix transcription records INVALID_VALUE (0x800001fe)
+         * for an invalid count before the blocking-context result. */
+        return 0x800001feu;
     }
     if (!sched_wait_permitted()) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
     if (sched_current_uid() == 0u) return SCE_KERNEL_ERROR_CAN_NOT_WAIT;
