@@ -11,6 +11,42 @@
 /* Installed by the scheduler (sched.c) when it owns the guest fibers; see recomp.h. */
 int (*sr_dispatch_host_stack_remaining)(size_t *remaining_out) = NULL;
 
+/* The TAIL transfer slot and its drain (#855; see recomp.h). They live here because every
+ * build that links generated code or the dispatcher links this file. */
+SrTailTransfer sr_tail_transfer;
+
+void sr_tail_fatal(const char *what, uint32_t target) {
+    fprintf(stderr, "TAIL_TRANSFER_FAULT: %s target=0x%08" PRIx32 "\n", what, target);
+    sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, target, 0u, 0u);
+    fflush(stderr);
+    exit(1);
+}
+
+void sr_tail_drain(CpuState *s) {
+    uint32_t chain_sp = 0u;
+    int chain_restores = 0;
+    while (sr_tail_transfer.pending) {
+        const SrTailTransfer next = sr_tail_transfer;
+        memset(&sr_tail_transfer, 0, sizeof sr_tail_transfer);
+        if (next.state != s) sr_tail_fatal("tail-transfer-foreign-state", next.target);
+        /* The nested returns restored each callable body's entry SP in turn, innermost
+         * first, with no guest instruction in between; only the outermost survived. */
+        if (next.has_restore && !chain_restores) {
+            chain_sp = next.restore_sp;
+            chain_restores = 1;
+        }
+        if (next.fn) {
+            next.fn(s);
+        } else {
+            dispatch_tail_step(s, next.target);
+        }
+        /* A body leaves either through a transfer or through exception flow, never both. */
+        if (s->flow_kind != SR_FLOW_NONE && sr_tail_transfer.pending)
+            sr_tail_fatal("tail-transfer-with-pending-flow", sr_tail_transfer.target);
+    }
+    if (chain_restores) s->r[29] = chain_sp;
+}
+
 typedef struct SrExecSpan {
     uint32_t start;
     uint32_t end;

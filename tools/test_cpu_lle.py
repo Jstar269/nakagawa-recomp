@@ -468,6 +468,18 @@ class LleSchedulerIntegrationTests(unittest.TestCase):
     """Run generated exception/ERET flow through real dispatch and scheduling."""
 
     def test_generated_tail_eret_and_scheduler_reuse(self):
+        self._run_generated_tail_eret_case(direct_tail=False)
+
+    def test_generated_direct_tail_eret_and_scheduler_reuse(self):
+        """A dispatched body's DIRECT tail into a raising leaf (#855 design review).
+
+        The tail is recorded and drained inside dispatch_call_aot, so the leaf's
+        exception flow is still seen by dispatch_after_aot and vectored exactly once;
+        draining after dispatch_after_aot would drop it.
+        """
+        self._run_generated_tail_eret_case(direct_tail=True)
+
+    def _run_generated_tail_eret_case(self, *, direct_tail):
         def addiu(rt, rs, immediate):
             return (0x09 << 26) | (rs << 21) | (rt << 16) | (immediate & 0xFFFF)
 
@@ -477,9 +489,9 @@ class LleSchedulerIntegrationTests(unittest.TestCase):
         def sw(rt, base, offset=0):
             return (0x2B << 26) | (base << 21) | (rt << 16) | (offset & 0xFFFF)
 
-        def emit(entry, words, end):
+        def emit(entry, words, end, known=()):
             return "\n".join(codegen.emit_function(
-                FakeElf(words), entry, [(entry, end)], {entry}, lle_cpu=True,
+                FakeElf(words), entry, [(entry, end)], {entry, *known}, lle_cpu=True,
             ))
 
         outer = emit(0x1000, {
@@ -491,17 +503,23 @@ class LleSchedulerIntegrationTests(unittest.TestCase):
             0x1018: sw(9, 8),
             0x101C: JR_RA, 0x1020: NOP,
         }, 0x1024)
+        tail_words = (
+            {0x2000: (0x02 << 26) | (0x3000 >> 2),  # j LEAF, a direct tail
+             0x2004: NOP, 0x2008: NOP}
+            if direct_tail else
+            {0x2000: 0x24083000,  # addiu t0, zero, LEAF
+             0x2004: (8 << 21) | 8,  # jr t0, non-linking tail
+             0x2008: NOP}
+        )
         middle = emit(0x2000, {
-            0x2000: 0x24083000,  # addiu t0, zero, LEAF
-            0x2004: (8 << 21) | 8,  # jr t0, non-linking tail
-            0x2008: NOP,
+            **tail_words,
             0x200C: 0x3C080885,  # post-tail sentinel: increment 0x0885f004
             0x2010: 0x3508F004,
             0x2014: lw(9, 8),
             0x2018: addiu(9, 9, 1),
             0x201C: sw(9, 8),
             0x2020: JR_RA, 0x2024: NOP,
-        }, 0x2028)
+        }, 0x2028, known=(0x3000,) if direct_tail else ())
         leaf = emit(0x3000, {0x3000: SYSCALL}, 0x3004)
         eret_vector = emit(0x4000, {
             0x4000: 0x3C080885,
@@ -524,8 +542,12 @@ class LleSchedulerIntegrationTests(unittest.TestCase):
             0x6004: JR_RA, 0x6008: NOP,
         }, 0x600C)
 
-        self.assertIn("dispatch(s, _t);", middle)
-        tail_dispatch = middle.index("dispatch(s, _t);")
+        tail_record = (
+            "sr_tail_record(s, 0x00003000u, f_00003000," if direct_tail
+            else "sr_tail_record(s, _t, NULL,"
+        )
+        self.assertIn(tail_record, middle)
+        tail_dispatch = middle.index(tail_record)
         self.assertIn("return;", middle[tail_dispatch:])
         self.assertNotIn("0x0000f004u", middle)
         self.assertIn("sr_cpu_raise_exception(s, 8u", leaf)
@@ -611,6 +633,7 @@ int sr_title_config_dispatch_alias(uint32_t from, uint32_t *to_addr) {
 #define VECTOR_COUNT 0x0885f008u
 #define RECOVERY_COUNT 0x0885f00cu
 
+void f_00003000(CpuState *s);
 void f_00004000(CpuState *s);
 void f_00006000(CpuState *s);
 static unsigned handler_calls;
