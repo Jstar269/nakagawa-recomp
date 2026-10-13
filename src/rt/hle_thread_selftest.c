@@ -26577,6 +26577,40 @@ static void test_kernel_import_sweep_display_multi(void) {
 
     reset_fixture();
     sr_hle_init();
+    TCB *intr_owner = fixture_thread(0x40f2u, TH_RUNNING, 32);
+    intr_owner->started = 1;
+    s_cur = (int)(intr_owner - s_tcb);
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t intr_token = sr_syscall(&cpu, NID_SCE_KERNEL_CPU_SUSPEND_INTR);
+    expect(intr_token == 1u && !sched_interrupts_enabled(),
+           "zero-count vblank precedence fixture disables interrupts through production dispatch");
+    cpu.r[4] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI) == 0x800001feu,
+           "zero-count INVALID_VALUE takes precedence when interrupts are disabled");
+    cpu.r[4] = intr_token;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_CPU_RESUME_INTR);
+    expect(sched_interrupts_enabled(),
+           "zero-count vblank precedence fixture restores interrupts");
+
+    reset_fixture();
+    sr_hle_init();
+    TCB *dispatch_owner = fixture_thread(0x40f3u, TH_RUNNING, 32);
+    dispatch_owner->started = 1;
+    s_cur = (int)(dispatch_owner - s_tcb);
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t dispatch_token = sr_syscall(&cpu, NID_SCE_KERNEL_SUSPEND_DISPATCH_THREAD);
+    expect(dispatch_token == 1u && !sched_dispatch_enabled(),
+           "zero-count vblank precedence fixture disables dispatch through production dispatch");
+    cpu.r[4] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI) == 0x800001feu,
+           "zero-count INVALID_VALUE takes precedence when dispatch is disabled");
+    cpu.r[4] = dispatch_token;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_RESUME_DISPATCH_THREAD);
+    expect(sched_dispatch_enabled(),
+           "zero-count vblank precedence fixture restores dispatch");
+
+    reset_fixture();
+    sr_hle_init();
     TCB *owner = fixture_thread(0x40f0u, TH_RUNNING, 32);
     owner->started = 1;
     TCB *waiter = fixture_thread(0x40f1u, TH_READY, 40);
