@@ -22364,7 +22364,7 @@ static void check_coroutine_lifecycle(void) {
         extern int s_pool_parks;
         extern int s_mbx_parks;
         extern int s_msgpipe_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
         char msg[768];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
@@ -22372,7 +22372,8 @@ static void check_coroutine_lifecycle(void) {
                  "+ 3 cancel/release waiters + 3 second-round waiters + 6 liveness waiters "
                  "+ 1 issue #339 joiner + 1 completed sysclock delay body "
                  "(the terminated full-range delay body never parks) + 2 vblank CB waiters "
-                 "+ 1 vblank multi waiter + 1 ReferSemaStatus waiter "
+                 "+ 1 vblank multi waiter + 1 zero-period vblank waiter body "
+                 "+ 1 ReferSemaStatus waiter "
                  "+ 3 rotate peers + 2 suspended-waiter bodies + 5 released-wait bodies "
                  "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs "
                  "+ %d Message Pipe waiter/owner legs = %d, observed %lu)",
@@ -26608,6 +26609,49 @@ static void test_kernel_import_sweep_display_multi(void) {
     (void)sr_syscall(&cpu, NID_SCE_KERNEL_RESUME_DISPATCH_THREAD);
     expect(sched_dispatch_enabled(),
            "zero-count vblank precedence fixture restores dispatch");
+
+    reset_fixture();
+    sr_hle_init();
+    TCB *zero_owner = fixture_thread(0x40f4u, TH_RUNNING, 32);
+    zero_owner->started = 1;
+    TCB *zero_waiter = fixture_thread(0x40f5u, TH_READY, 40);
+    zero_waiter->started = 1;
+    SelftestVblankWaitCtx zero_wait;
+    memset(&zero_wait, 0, sizeof(zero_wait));
+    zero_wait.nid = NID_SCE_DISPLAY_WAIT_VBLANK_START_MULTI;
+    zero_wait.arg0 = 0u;
+    zero_waiter->coro = sr_coro_create(selftest_vblank_waiter_fiber_body, &zero_wait,
+                                       (size_t)4 << 20);
+    expect(zero_waiter->coro != NULL,
+           "zero-period vblank waiter coroutine is created for the no-side-effect check");
+    s_vtime_us = 123456u;
+    s_vbl_next_us = 223456u;
+    s_vbl_count = 7u;
+    s_vbl_last_us = 100000u;
+    int zero_waiter_state_before = zero_waiter->state;
+    uint32_t zero_waiter_obj_before = zero_waiter->wait_obj;
+    int zero_waiter_kind_before = zero_waiter->wait_kind;
+    uint64_t zero_waiter_wake_before = zero_waiter->wake;
+    uint64_t vtime_before_zero_wait = s_vtime_us;
+    uint64_t vbl_next_before_zero_wait = s_vbl_next_us;
+    uint64_t vbl_count_before_zero_wait = s_vbl_count;
+    uint64_t vbl_last_before_zero_wait = s_vbl_last_us;
+    s_cur = (int)(zero_waiter - s_tcb);
+    if (zero_waiter->coro) sr_coro_switch(zero_waiter->coro);
+    expect(zero_wait.returned && zero_wait.ret == 0x800001feu,
+           "zero-period vblank request returns INVALID_VALUE immediately through production dispatch");
+    expect(s_vtime_us == vtime_before_zero_wait && s_vbl_next_us == vbl_next_before_zero_wait &&
+               s_vbl_count == vbl_count_before_zero_wait && s_vbl_last_us == vbl_last_before_zero_wait,
+           "zero-period vblank rejection leaves scheduler time and VBlank schedule unchanged");
+    expect(zero_waiter->state == zero_waiter_state_before &&
+               zero_waiter->wait_obj == zero_waiter_obj_before &&
+               zero_waiter->wait_kind == zero_waiter_kind_before &&
+               zero_waiter->wake == zero_waiter_wake_before,
+           "zero-period vblank rejection leaves the calling thread's wait state unchanged");
+    if (zero_waiter->coro) {
+        sr_coro_destroy(zero_waiter->coro);
+        zero_waiter->coro = NULL;
+    }
 
     reset_fixture();
     sr_hle_init();
