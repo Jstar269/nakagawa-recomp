@@ -157,6 +157,209 @@ def _build_and_run_stack_census(
         return 0, compile_result.stderr + compile_result.stdout, run_result.returncode, run_result.stderr + run_result.stdout
 
 
+# --- generated-code call depth on a guest fiber ----------------------------------
+# A tiny Allegrex encoder for source-owned fixtures. Registers: zero 0, v0 2, a0 4,
+# t9 25, sp 29, ra 31.
+def _i(op: int, rs: int, rt: int, imm: int) -> int:
+    return (op << 26) | (rs << 21) | (rt << 16) | (imm & 0xFFFF)
+
+
+def _addiu(rt: int, rs: int, imm: int) -> int: return _i(0x09, rs, rt, imm)
+def _ori(rt: int, rs: int, imm: int) -> int: return _i(0x0D, rs, rt, imm)
+def _lui(rt: int, imm: int) -> int: return _i(0x0F, 0, rt, imm)
+def _sw(rt: int, off: int, base: int) -> int: return _i(0x2B, base, rt, off)
+def _lw(rt: int, off: int, base: int) -> int: return _i(0x23, base, rt, off)
+def _beq(rs: int, rt: int, here: int, target: int) -> int:
+    return _i(0x04, rs, rt, (target - (here + 4)) >> 2)
+def _j(target: int) -> int: return (0x02 << 26) | ((target >> 2) & 0x03FFFFFF)
+def _jal(target: int) -> int: return (0x03 << 26) | ((target >> 2) & 0x03FFFFFF)
+def _jr(rs: int) -> int: return (rs << 21) | 0x08
+
+
+_NOP = 0
+_V0, _A0, _T9, _SP, _RA = 2, 4, 25, 29, 31
+_PROBE_BASE = 0x1000
+_PROBE_SP = 0x09F00000
+
+
+def _probe_program(body: list[int]) -> tuple[int, ...]:
+    """Entry at 0x1000 links into the cell at 0x1010 and returns to the harness."""
+    entry = [_jal(0x1010), _NOP, _jr(_RA), _NOP]
+    return tuple(entry + body)
+
+
+def _linked_recursion() -> tuple[int, ...]:
+    """Control: a valid recursive `jal` that saves `$ra` on the guest stack.
+
+    Guest call depth really grows with the iteration count, so native depth must too.
+    """
+    a, done = 0x1010, 0x1034
+    body = [
+        _beq(_A0, 0, a, done), _NOP,                       # 0x1010
+        _addiu(_SP, _SP, -8), _sw(_RA, 0, _SP),             # 0x1018
+        _addiu(_A0, _A0, -1),                              # 0x1020
+        _jal(a), _addiu(_V0, _V0, 1),                      # 0x1024
+        _lw(_RA, 0, _SP), _addiu(_SP, _SP, 8),              # 0x102C
+        _jr(_RA), _NOP,                                    # 0x1034 done
+    ]
+    return _probe_program(body)
+
+
+def _interpreted_caller_of_compiled_callee() -> tuple[int, ...]:
+    """C (interpreted when omitted) calls compiled leaf L, then adds 5 to v0."""
+    leaf = 0x1034
+    body = [
+        _addiu(_SP, _SP, -8), _sw(_RA, 0, _SP),            # 0x1010 C
+        _jal(leaf), _NOP,                                  # 0x1018
+        _addiu(_V0, _V0, 5),                               # 0x1020 continuation
+        _lw(_RA, 0, _SP), _addiu(_SP, _SP, 8),              # 0x1024
+        _jr(_RA), _NOP,                                    # 0x102C
+        _jr(_RA), _addiu(_V0, _V0, 1),                     # 0x1034 L
+    ]
+    return _probe_program(body)
+
+
+_DEPTH_PROBE_HARNESS = r"""
+#define sr_yield isolation_sr_yield
+#define main embedded_dispatch_isolation_main
+#include "dispatch_isolation_selftest.c"
+#undef main
+#undef sr_yield
+#include <stdio.h>
+extern void sr_register_all(void);
+
+/* Every generated body begins with SR_YIELD; with a timeslice of one it calls
+ * sr_yield at each guest function entry, which samples the fiber's remaining
+ * host stack. The probe is the production stack-bounds query. */
+static size_t g_probe_min = (size_t)-1;
+static unsigned long g_probe_samples;
+void sr_yield(CpuState *s) {
+    size_t remaining;
+    (void)s;
+    if (sr_coro_stack_remaining(&remaining)) {
+        if (remaining < g_probe_min) g_probe_min = remaining;
+        g_probe_samples++;
+    }
+    atomic_store_explicit(&sr_timeslice, 1, memory_order_relaxed);
+}
+
+static SrCoro *g_probe_main;
+static CpuState g_probe_state;
+static size_t g_probe_top;
+static int g_probe_ran;
+
+static void probe_body(void *arg) {
+    (void)arg;
+    RecompFn fn = sr_lookup(0x00001000u);
+    if (sr_coro_stack_remaining(&g_probe_top) && fn) {
+        fn(&g_probe_state);
+        g_probe_ran = 1;
+    }
+    sr_coro_switch(g_probe_main);
+    for (;;) sr_coro_switch(g_probe_main);
+}
+
+int main(int argc, char **argv) {
+#ifdef _WIN32
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+#endif
+    unsigned long n = argc > 1 ? strtoul(argv[1], NULL, 0) : 0ul;
+    sr_mem_init();
+    /* The loader's job: the interpreter tier executes guest memory, so the image
+     * must be there, exactly as the translated bodies were generated from it. */
+    static const uint32_t image[] = { PROBE_WORDS };
+    for (size_t i = 0; i < sizeof image / sizeof image[0]; i++)
+        MEM_W32(PROBE_BASE + 4u * (uint32_t)i, image[i]);
+    sr_register_all();
+    memset(&g_probe_state, 0, sizeof g_probe_state);
+    g_probe_state.r[29] = PROBE_SP;
+    g_probe_state.r[4] = (uint32_t)n;
+    g_probe_main = sr_coro_main();
+    if (!g_probe_main) return 20;
+    sr_dispatch_host_stack_remaining = sr_coro_stack_remaining;
+    sr_sched_on = 1;
+    atomic_store_explicit(&sr_timeslice, 1, memory_order_relaxed);
+    SrCoro *fiber = sr_coro_create(probe_body, NULL, SR_GUEST_FIBER_STACK_SIZE);
+    if (!fiber) return 21;
+    sr_coro_switch(fiber);
+    sr_sched_on = 0;
+    sr_dispatch_host_stack_remaining = NULL;
+    if (!g_probe_ran) return 22;
+    printf("DEPTH_PROBE n=%lu native_bytes=%zu samples=%lu v0=%u a0=%u sp=0x%08x\n",
+           n, g_probe_top > g_probe_min ? g_probe_top - g_probe_min : (size_t)0,
+           g_probe_samples, (unsigned)g_probe_state.r[2], (unsigned)g_probe_state.r[4],
+           (unsigned)g_probe_state.r[29]);
+    return 0;
+}
+"""
+
+
+def _build_depth_probe(
+    words: tuple[int, ...], work: Path, *, codegen_args: tuple[str, ...] = (),
+) -> tuple[Path | None, str]:
+    """Translate a source-owned fixture and link it into the depth-probe harness."""
+    assert CC is not None
+    elf = work / "fixture.elf"
+    _write_minimal_elf(elf, words, base=_PROBE_BASE)
+    generated = work / "probe.c"
+    codegen = subprocess.run(
+        [
+            sys.executable, str(CODEGEN_TOOL), str(elf), str(generated),
+            "--base=0", "--profile=none", "--funcs-per-chunk=2000", *codegen_args,
+        ],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    if codegen.returncode != 0:
+        return None, codegen.stderr + codegen.stdout
+    config = subprocess.run(
+        [sys.executable, str(TITLE_CONFIG_TOOL), "--output", str(work / "sr_title_config.h")],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    if config.returncode != 0:
+        return None, config.stderr + config.stdout
+    harness = work / "depth_probe_harness.c"
+    harness.write_text(
+        _DEPTH_PROBE_HARNESS.replace("PROBE_SP", f"0x{_PROBE_SP:08x}u")
+        .replace("PROBE_BASE", f"0x{_PROBE_BASE:08x}u")
+        .replace("PROBE_WORDS", ", ".join(f"0x{w & 0xFFFFFFFF:08x}u" for w in words)),
+        encoding="utf-8", newline="\n",
+    )
+    exe = work / "depth_probe.exe"
+    compile_result = subprocess.run(
+        [
+            CC, "-std=c11", "-O0", "-fno-strict-aliasing",
+            "-Wall", "-Wextra", "-DSR_SDL3VK", "-D_CRT_SECURE_NO_WARNINGS",
+            "-I", str(work), "-I", str(ROOT / "src" / "rt"),
+            str(harness), str(generated), str(work / "probe_0.c"),
+            str(GUEST_INTERP), str(PERF),
+            str(ROOT / "src" / "rt" / "sr_coro.c"),
+            str(ROOT / "src" / "rt" / "cpu_lle.c"),
+            str(ROOT / "src" / "rt" / "domain_mode.c"),
+            str(ROOT / "src" / "rt" / "stale_code.c"),
+            str(ROOT / "src" / "rt" / "title_config.c"),
+            str(ROOT / "src" / "rt" / "vfpu_tables.c"),
+            "-lm", "-o", str(exe),
+        ],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    if compile_result.returncode != 0:
+        return None, compile_result.stderr + compile_result.stdout
+    return exe, compile_result.stderr + compile_result.stdout
+
+
+def _run_depth_probe(exe: Path, iterations: int) -> tuple[int, str, dict[str, int]]:
+    run = subprocess.run(
+        [str(exe), str(iterations)], cwd=ROOT, capture_output=True, text=True, timeout=120,
+    )
+    fields: dict[str, int] = {}
+    for line in run.stdout.splitlines():
+        if line.startswith("DEPTH_PROBE "):
+            for item in line.split()[1:]:
+                key, _, value = item.partition("=")
+                fields[key] = int(value, 0)
+    return run.returncode, run.stdout + run.stderr, fields
+
+
 def _build_and_run(mutated_recomp: str | None = None,
                    mutated_interp: str | None = None) -> tuple[int, str, int, str]:
     """Build and run the real selftest against temporary source copies."""
@@ -327,7 +530,6 @@ class DispatchCallBoundaryMutationTests(unittest.TestCase):
                 "            instruction_count += 2u;\n"
                 "            if (sr_perf_enabled) sr_perf_interp_instruction();\n"
                 "            if (sr_perf_enabled) sr_perf_interp_instruction();\n"
-                "            pc = transfer.taken ? transfer.target : pc + 8u;"
             ),
             interp_new=(
                 "            (void)execute_noncontrol(s, pc + 4u, delay_opcode,\n"
@@ -336,7 +538,6 @@ class DispatchCallBoundaryMutationTests(unittest.TestCase):
                 "            instruction_count += 2u;\n"
                 "            if (sr_perf_enabled) sr_perf_interp_instruction();\n"
                 "            if (sr_perf_enabled) sr_perf_interp_instruction();\n"
-                "            pc = transfer.taken ? transfer.target : pc + 8u;"
             ),
             diagnostic="return delay slot did not execute exactly once",
         )
@@ -431,6 +632,48 @@ class StackCensusPipelineTests(unittest.TestCase):
             run_output,
         )
         self.assertIn("unobserved=1", run_output)
+
+
+@unittest.skipUnless(CC, "gcc is required for the generated depth probe")
+class GeneratedCallDepthTests(unittest.TestCase):
+    """Generated code on a production-size guest fiber, measured at each guest entry."""
+
+    def _probe(self, words, iterations, *, codegen_args=()):
+        with scratch_dir.TemporaryDirectory(prefix="depth_probe_") as tmp:
+            work = Path(tmp)
+            exe, output = _build_depth_probe(words, work, codegen_args=codegen_args)
+            self.assertIsNotNone(exe, output)
+            generated = (work / "probe_0.c").read_text(encoding="utf-8")
+            results = [_run_depth_probe(exe, n) for n in iterations]
+        return generated, results
+
+    def test_linked_recursion_native_depth_tracks_guest_depth(self):
+        # Control for the probe itself: a valid recursion really nests guest calls,
+        # so the measured native depth must grow with it.
+        _generated, results = self._probe(_linked_recursion(), (16, 2048))
+        for (rc, output, fields), n in zip(results, (16, 2048), strict=True):
+            self.assertEqual(rc, 0, output)
+            self.assertEqual(fields.get("v0"), n, output)
+            self.assertEqual(fields.get("a0"), 0, output)
+            self.assertEqual(fields.get("sp"), _PROBE_SP, output)
+        growth = results[1][2]["native_bytes"] - results[0][2]["native_bytes"]
+        self.assertGreater(growth, 2032 * 16, f"probe did not see real nesting: {results}")
+
+    def test_interpreted_caller_resumes_after_compiled_callee(self):
+        # The caller is omitted from AOT, so the production interpreter runs it; its
+        # `jal` lands on a registered native leaf. The guest expects the caller to
+        # continue at the link address (v0 += 5) and unwind its own frame.
+        generated, results = self._probe(
+            _interpreted_caller_of_compiled_callee(), (0,),
+            codegen_args=("--omit-aot=0x00001010",),
+        )
+        self.assertNotIn("void f_00001010(CpuState *s) {", generated,
+                         "the caller must be interpreted for this cell to mean anything")
+        self.assertIn("void f_00001034(CpuState *s) {", generated)
+        rc, output, fields = results[0]
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v0"), 6, f"interpreted caller lost its continuation\n{output}")
+        self.assertEqual(fields.get("sp"), _PROBE_SP, output)
 
 
 if __name__ == "__main__":
