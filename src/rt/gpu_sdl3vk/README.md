@@ -150,6 +150,14 @@ UNDEFINED-layout image and published a PPM under a `.png` name. It is gone. In i
 
 - `SR_GPU_GE=1` — enable the GPU rasterizer (SDL3 build only; default off).
 - `SR_GPU_LOG=1` — one line per flush (reason, batches, verts, target).
+- `SR_GPU_SUBMIT_BATCH=1..128` — recorded GE ops (render batches, destination snapshot
+  copies, ring uploads) that share one `vkQueueSubmit`; default 128, out-of-range values keep
+  the default, and `8` restores the schedule used before #827. A submission granularity, not
+  an ordering boundary: all GE work stays on one queue with its barriers recorded in the
+  stream, and every CPU-visible consumer (readback, presentation, capture, destruction,
+  software fallback) closes the open command buffer itself. A larger limit trades CPU/GPU
+  overlap inside one command buffer for fewer submits and fence waits.
+- `SR_GPU_SYNC_SUBMIT=1` — exact synchronous fallback: one op per submit, each waited on.
 - `SR_VIDEO=gdi` — Phase-0 fallback to the classic GDI window.
 - `SR_VULKAN_VALIDATION=1` — enable the `VK_LAYER_KHRONOS_validation` messenger (fail-closed
   if the layer is requested but missing). See `docs/DEBUGGING.md` for FBSNAP/FBDUMP capture

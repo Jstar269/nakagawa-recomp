@@ -166,10 +166,64 @@ class TestPublishAudit(unittest.TestCase):
         self.assertIsNotNone(
             publish_audit._forbidden_path("OpenGrip_For_Inspiration/functions.csv")
         )
+        self.assertIsNotNone(
+            publish_audit._forbidden_path("docs/symbol_ref/functions.csv")
+        )
         self.assertIsNotNone(publish_audit._forbidden_path("assets/game.iso"))
         self.assertIsNotNone(publish_audit._forbidden_path("tools/vfpu_words.txt"))
         self.assertIsNotNone(publish_audit._forbidden_path("tools/reference_hashes.json"))
         self.assertIsNone(publish_audit._forbidden_path("assets/vfpu/table.dat"))
+
+    def test_forbidden_local_symbol_reference(self):
+        # functions.csv is a local-only symbol reference and must be rejected anywhere
+        for path in (
+            "functions.csv",
+            "Functions.csv",
+            "docs/functions.csv",
+            "tools/functions.csv",
+            "sub/dir/functions.csv",
+            "docs/symbol_ref/functions.csv",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNotNone(publish_audit._forbidden_path(path))
+        self.assertEqual(
+            publish_audit._forbidden_path("functions.csv"),
+            "local-only symbol reference",
+        )
+        self.assertEqual(
+            publish_audit._forbidden_path("sub/dir/functions.csv"),
+            "local-only symbol reference",
+        )
+        self.assertEqual(
+            publish_audit._forbidden_path("docs/symbol_ref/functions.csv"),
+            "local-only symbol reference",
+        )
+        # Unrelated public CSV files remain allowed under normal publication policy
+        for path in (
+            "docs/metrics.csv",
+            "fixtures/table.csv",
+            "tools/report.csv",
+            "assets/symbols_public.csv",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNone(publish_audit._forbidden_path(path))
+
+        # Even when force-staged against .gitignore, functions.csv fails the index audit
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            repo = Path(tmp_dir_raw).resolve()
+            run_git(["init"], cwd=repo, check=True, capture_output=True)
+            (repo / ".gitignore").write_text("functions.csv\n", encoding="utf-8", newline="\n")
+            (repo / "functions.csv").write_text("nid,name\n0x1234,test_fn\n", encoding="utf-8", newline="\n")
+            run_git(["add", "-f", "functions.csv"], cwd=repo, check=True, capture_output=True)
+            entries = publish_audit._get_git_entries(tracked_only=True, repo_root=repo)
+            self.assertTrue(any(e.path == "functions.csv" for e in entries))
+            policy_path, export_path = hermetic_policy(repo, ["functions.csv"])
+            findings = publish_audit.audit_entries(
+                entries, repo_root=repo, policy_path=policy_path, export_path=export_path
+            )
+            path_findings = [f for f in findings if f.code == "PATH" and f.path == "functions.csv"]
+            self.assertTrue(path_findings)
+            self.assertEqual(path_findings[0].detail, "local-only symbol reference")
 
     def test_prohibited_extension_passes_only_as_a_pinned_approved_binary(self):
         # Project-authored PSPDEV build output may carry a guest-executable

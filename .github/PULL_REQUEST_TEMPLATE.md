@@ -55,7 +55,7 @@ mingw32-make contrib-check   # Windows
 
 - [ ] This pull request does not hand-edit `PUBLIC_EXPORT.json` or
       `assets/public_provenance_ledger.json`.
-- [ ] A maintainer refreshes them after merge. No action needed from the author.
+- [ ] For edits to existing paths, `python tools/contrib_refresh.py` may be used locally to refresh both public controls before pushing.
 - [ ] If **Trusted provenance attestation** reported only "a maintainer will admit these N new
       files", that is the expected result for a pull request that adds files; it is not a defect in
       this change.

@@ -704,23 +704,22 @@ its redistributable host dependencies, and user-supplied game input.
 
 ### Optional local symbol reference (never track it)
 
-`nk_manager.ps1 -Action FindSymbol` can search an OpenGrip-style `functions.csv` when a
+`nk_manager.ps1 -Action FindSymbol` can search an optional local `functions.csv` when a
 contributor keeps that reference data locally. This is an optional reverse-engineering aid; it is
 not required to build or run Nakagawa Recomp. The manager checks these locations in order:
 
-1. `docs/opengrip_ref/functions.csv`
-2. `OpenGrip_For_Inspiration/functions.csv`
+1. `docs/symbol_ref/functions.csv`
+2. `functions.csv`
 
-Both parent directories are ignored by the repository. **Keep the CSV and any associated OpenGrip
-checkout, decompiler export, annotations, or game-derived material untracked.** Place or link an
+Both locations are ignored by the repository. **Keep the CSV, any decompiler export, annotations, or game-derived material untracked.** Place or link an
 authorized local `functions.csv` at either supported path: the first is preferable when only the
-CSV is needed, the second supports a complete local inspiration/reference checkout. Verify that Git
+CSV is needed, the second supports a root drop point. Verify that Git
 excludes the selected path before using it:
 
 ```bash
-git check-ignore -v docs/opengrip_ref/functions.csv
+git check-ignore -v docs/symbol_ref/functions.csv
 # or
-git check-ignore -v OpenGrip_For_Inspiration/functions.csv
+git check-ignore -v functions.csv
 ```
 
 Then run a lookup from the repository root:
