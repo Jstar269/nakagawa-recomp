@@ -385,6 +385,17 @@ Windows gates. A green public-safe run proves only the paths it executes; it is
 not a complete private-title gameplay route, and local verification remains
 local-only.
 
+The required `CodeQL` check comes from `.github/workflows/codeql.yml`, which
+GitHub runs from the default branch: a `workflow_run` after `CI` completes on a
+pull request (forks included), a push to `main`, a weekly schedule, or a manual
+dispatch naming a pull request. It never checks out or executes candidate files;
+it reads the exact merge tree as blobs, analyzes `actions`, `c-cpp` and `python`
+without uploading partial results, and uploads all three in one SARIF bound to
+the merge ref. Each run's `automationDetails.id` is `/language:<lang>/`: code
+scanning stores a run under the part of the id before its last `/`, so the
+trailing slash is what keeps the three languages in separate categories. Edits to
+this workflow take effect only after they reach `main`.
+
 ## Windows hosted runner policy
 
 The Windows job intentionally remains on `windows-2022`. Hosted execution is

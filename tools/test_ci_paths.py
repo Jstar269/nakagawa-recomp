@@ -917,16 +917,30 @@ class CodeqlWorkflowCategoryTests(unittest.TestCase):
         matrix_langs = re.findall(r"-\s+language:\s*([a-zA-Z0-9_-]+)", content)
         self.assertEqual(sorted(matrix_langs), ["actions", "c-cpp", "python"])
 
-        # Verify category input is passed to analyze
-        self.assertIn('category: "/language:${{ matrix.language }}"', content)
+        # Verify category input is passed to analyze. GitHub stores a run under the
+        # part of automationDetails.id before its last "/", so the trailing slash is
+        # what keeps "/language:<lang>" from collapsing into the empty category.
+        self.assertIn('category: "/language:${{ matrix.language }}/"', content)
 
         # Verify python step assigns distinct automationDetails id
-        self.assertIn('category = f"/language:{language}"', content)
+        self.assertIn('category = f"/language:{language}/"', content)
         self.assertIn('run.setdefault("automationDetails", {})["id"] = category', content)
 
-        # Verify upload script checks category uniqueness
+        # Verify upload script checks the stored category, not only the raw id
         self.assertIn("duplicate SARIF analysis category", content)
+        self.assertIn("would be stored under SARIF category", content)
+        self.assertIn('category.lastIndexOf("/")', content)
         self.assertIn("categories.size !== expected.length", content)
+
+        # Every place the workflow writes a category must keep the trailing slash.
+        for writer in (
+            r'category: "/language:\$\{\{ matrix\.language \}\}(/?)"',
+            r'category = f"/language:\{language\}(/?)"',
+            r'\|\| `/language:\$\{language\}(/?)`',
+        ):
+            with self.subTest(writer=writer):
+                found = re.findall(writer, content)
+                self.assertEqual(found, ["/"], f"category writer {writer!r} must end in '/'")
 
     def test_sarif_category_uniqueness_enforcement(self) -> None:
         """Simulate combining multiple SARIF runs and assert duplicate categories are rejected."""
@@ -940,8 +954,12 @@ class CodeqlWorkflowCategoryTests(unittest.TestCase):
                 lang = filename.replace(".sarif", "")
                 for run in runs:
                     self.assertEqual(run.get("tool", {}).get("driver", {}).get("name"), "CodeQL")
-                    cat = run.get("automationDetails", {}).get("id") or f"/language:{lang}"
-                    run.setdefault("automationDetails", {})["id"] = cat
+                    run_id = run.get("automationDetails", {}).get("id") or f"/language:{lang}/"
+                    run.setdefault("automationDetails", {})["id"] = run_id
+                    cut = run_id.rfind("/")
+                    cat = run_id[:cut] if cut > 0 else ""
+                    if cat != f"/language:{lang}":
+                        raise ValueError(f"would be stored under SARIF category {cat!r}")
                     if cat in categories:
                         raise ValueError(f"duplicate SARIF analysis category: {cat}")
                     categories.add(cat)
@@ -953,9 +971,9 @@ class CodeqlWorkflowCategoryTests(unittest.TestCase):
 
         # Positive case: 3 distinct categories
         valid_input = {
-            "actions.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:actions"}}],
-            "c-cpp.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:c-cpp"}}],
-            "python.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:python"}}],
+            "actions.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:actions/"}}],
+            "c-cpp.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:c-cpp/"}}],
+            "python.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:python/"}}],
         }
         sarif, cats = combine_sarif_runs(valid_input)
         self.assertEqual(len(sarif["runs"]), 3)
@@ -963,13 +981,23 @@ class CodeqlWorkflowCategoryTests(unittest.TestCase):
 
         # Negative case: duplicate categories raise ValueError
         duplicate_input = {
-            "actions.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:c-cpp"}}],
+            "actions.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:python/"}}],
+            "c-cpp.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:c-cpp/"}}],
+            "python.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:python/"}}],
+        }
+        with self.assertRaises(ValueError) as cm:
+            combine_sarif_runs(duplicate_input)
+        self.assertIn("would be stored under SARIF category", str(cm.exception))
+
+        # The pre-fix shape: no trailing slash, so every run lands in the empty category.
+        slashless_input = {
+            "actions.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:actions"}}],
             "c-cpp.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:c-cpp"}}],
             "python.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:python"}}],
         }
         with self.assertRaises(ValueError) as cm:
-            combine_sarif_runs(duplicate_input)
-        self.assertIn("duplicate SARIF analysis category", str(cm.exception))
+            combine_sarif_runs(slashless_input)
+        self.assertIn("would be stored under SARIF category ''", str(cm.exception))
 
     def test_codeql_workflow_upload_step_guards_duplicate_categories(self) -> None:
         """Assert upload step in codeql.yml requires distinct automationDetails.id categories."""
