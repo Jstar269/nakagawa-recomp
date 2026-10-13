@@ -273,6 +273,10 @@ jobs:
           languages: ${{ matrix.language }}
           build-mode: none
           source-root: codeql-source
+          # A restored TRAP cache has produced an empty C/C++ database: every source
+          # file skipped, no results. Runs in the default branch's context never read
+          # the cache (they only write it), so it buys nothing; analyze from source.
+          trap-caching: false
           # Do not read query configuration from the candidate tree. Keep the
           # CodeQL default query suite used by the repository's current setup.
           config: |

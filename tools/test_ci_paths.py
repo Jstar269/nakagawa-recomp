@@ -935,6 +935,9 @@ class CodeqlWorkflowCategoryTests(unittest.TestCase):
         self.assertIn("if (categories.has(stored)) {", content)
         self.assertIn("categories.size !== expected.length", content)
 
+        # A restored TRAP cache once yielded an empty C/C++ database; scans extract from source.
+        self.assertIn("trap-caching: false", content)
+
         # Every place the workflow writes a category must keep the trailing slash.
         for writer in (
             r'category: "/language:\$\{\{ matrix\.language \}\}(/?)"',
