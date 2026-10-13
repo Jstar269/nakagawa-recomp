@@ -819,10 +819,11 @@ S0 = S2 = 17 threads, the qualified one as `QUALIFIED_CAPTURE`. On that device t
 listing started no thread `thlist` reports — a freshly reset shell read 17 threads
 before any host0 access and 17 after the listing, byte-identical — and control runs
 with the warm-up disabled, and with the warm-up and the post-unload settle both
-disabled, passed teardown as well. So the warm-up is the guard that makes the
-baseline settled and self-checked on a boot where the host0 service does appear
-after the first transfer; it is not a measured cause of the fix, and issue #698's
-recorded 17-versus-18 did not reproduce on that boot.
+disabled, passed teardown as well. The warm-up is a conditional baseline guard: if
+first host0 I/O starts a service thread on a particular boot, taking S0 afterwards
+includes it in the baseline. These campaigns did not observe a new thread and did
+not establish that a service thread caused the original 17-versus-18 discrepancy,
+which did not reproduce on the measured boot.
 S1 records them after the completion marker and before unload; `modinfo <uid> t`
 must show that the probe's only remaining thread is its main thread. Right after
 the `modstun` stop/unload handshake the runner settles the link before any
