@@ -7822,7 +7822,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "13ebb333789c60a1d3b2f7e9abd2775e332d652760b95e49949348bceef6bfff"
+      "sha256": "652879d74e40f44be1cdd7119235235c383140136648863f2a581dbac33388a7"
     },
     {
       "path": "tools/test_asset_index_c.py",
@@ -9997,7 +9997,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "47e065b07b61cf648b8f72e3182ddc6fa3b08f85745996c7ab261a42029c9d31"
+      "sha256": "50b8322649ec967aa6ca7b822df9b2e730f8c10010d1959d253762f5009075fc"
     },
     {
       "path": "tools/test_trace_window_probe.py",
