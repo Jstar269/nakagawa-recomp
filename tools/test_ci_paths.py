@@ -907,5 +907,76 @@ class PrecommitPathCoverageTests(unittest.TestCase):
                 self.assertIsNotNone(pattern.search(f"{prefix}/input.bin"))
 
 
+class CodeqlWorkflowCategoryTests(unittest.TestCase):
+    def test_codeql_workflow_declares_unique_matrix_categories(self) -> None:
+        workflow_path = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "codeql.yml"
+        self.assertTrue(workflow_path.is_file(), "codeql.yml must exist")
+        content = workflow_path.read_text(encoding="utf-8")
+
+        # Verify matrix languages
+        matrix_langs = re.findall(r"-\s+language:\s*([a-zA-Z0-9_-]+)", content)
+        self.assertEqual(sorted(matrix_langs), ["actions", "c-cpp", "python"])
+
+        # Verify category input is passed to analyze
+        self.assertIn('category: "/language:${{ matrix.language }}"', content)
+
+        # Verify python step assigns distinct automationDetails id
+        self.assertIn('category = f"/language:{language}"', content)
+        self.assertIn('run.setdefault("automationDetails", {})["id"] = category', content)
+
+        # Verify upload script checks category uniqueness
+        self.assertIn("duplicate SARIF analysis category", content)
+        self.assertIn("categories.size !== expected.length", content)
+
+    def test_sarif_category_uniqueness_enforcement(self) -> None:
+        """Simulate combining multiple SARIF runs and assert duplicate categories are rejected."""
+        def combine_sarif_runs(runs_by_file: dict[str, list[dict]]) -> tuple[dict, set[str]]:
+            expected_languages = ["actions", "c-cpp", "python"]
+            self.assertEqual(sorted(runs_by_file.keys()), [f"{lang}.sarif" for lang in expected_languages])
+
+            categories: set[str] = set()
+            combined_runs: list[dict] = []
+            for filename, runs in sorted(runs_by_file.items()):
+                lang = filename.replace(".sarif", "")
+                for run in runs:
+                    self.assertEqual(run.get("tool", {}).get("driver", {}).get("name"), "CodeQL")
+                    cat = run.get("automationDetails", {}).get("id") or f"/language:{lang}"
+                    run.setdefault("automationDetails", {})["id"] = cat
+                    if cat in categories:
+                        raise ValueError(f"duplicate SARIF analysis category: {cat}")
+                    categories.add(cat)
+                    combined_runs.append(run)
+
+            if len(categories) != len(expected_languages):
+                raise ValueError(f"expected {len(expected_languages)} distinct categories, found {len(categories)}")
+            return {"runs": combined_runs}, categories
+
+        # Positive case: 3 distinct categories
+        valid_input = {
+            "actions.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:actions"}}],
+            "c-cpp.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:c-cpp"}}],
+            "python.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:python"}}],
+        }
+        sarif, cats = combine_sarif_runs(valid_input)
+        self.assertEqual(len(sarif["runs"]), 3)
+        self.assertEqual(cats, {"/language:actions", "/language:c-cpp", "/language:python"})
+
+        # Negative case: duplicate categories raise ValueError
+        duplicate_input = {
+            "actions.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:c-cpp"}}],
+            "c-cpp.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:c-cpp"}}],
+            "python.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:python"}}],
+        }
+        with self.assertRaises(ValueError) as cm:
+            combine_sarif_runs(duplicate_input)
+        self.assertIn("duplicate SARIF analysis category", str(cm.exception))
+
+    def test_codeql_workflow_upload_step_guards_duplicate_categories(self) -> None:
+        """Assert upload step in codeql.yml requires distinct automationDetails.id categories."""
+        codeql_yml = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "codeql.yml").read_text(encoding="utf-8")
+        self.assertIn("duplicate SARIF analysis category", codeql_yml)
+        self.assertIn("categories.size !== expected.length", codeql_yml)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -210,7 +210,7 @@ jobs:
           sys.path.insert(0, str(repo / "tools"))
           import provenance_attest_verify as verifier
 
-          destination = repo / ".codeql-source"
+          destination = repo / "codeql-source"
           if destination.exists() or destination.is_symlink():
               raise SystemExit("refusing to reuse an existing CodeQL source directory")
           destination.mkdir()
@@ -232,7 +232,8 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: codeql-source-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .codeql-source
+          path: codeql-source
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
@@ -264,14 +265,14 @@ jobs:
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: codeql-source-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .codeql-source
+          path: codeql-source
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           languages: ${{ matrix.language }}
           build-mode: none
-          source-root: .codeql-source
+          source-root: codeql-source
           # Do not read query configuration from the candidate tree. Keep the
           # CodeQL default query suite used by the repository's current setup.
           config: |
@@ -283,6 +284,7 @@ jobs:
           output: ${{ runner.temp }}/codeql-sarif
           upload: never
           upload-database: false
+          category: "/language:${{ matrix.language }}"
 
       - name: Require one complete SARIF result for this language
         env:
@@ -292,6 +294,7 @@ jobs:
           set -euo pipefail
           mkdir -p codeql-sarif
           python - <<'PY'
+          import json
           import os
           import shutil
           from pathlib import Path
@@ -300,8 +303,18 @@ jobs:
           results = sorted(sarif_dir.rglob("*.sarif"))
           if len(results) != 1:
               raise SystemExit(f"expected one SARIF result, found {len(results)}")
-          destination = Path("codeql-sarif") / f"{os.environ['LANGUAGE']}.sarif"
+          language = os.environ["LANGUAGE"]
+          destination = Path("codeql-sarif") / f"{language}.sarif"
           shutil.copyfile(results[0], destination)
+
+          # Guarantee explicit stable category in automationDetails for this run
+          with destination.open("r", encoding="utf-8") as handle:
+              document = json.load(handle)
+          category = f"/language:{language}"
+          for run in document.get("runs", []):
+              run.setdefault("automationDetails", {})["id"] = category
+          with destination.open("w", encoding="utf-8") as handle:
+              json.dump(document, handle, indent=2)
           PY
 
       - name: Retain this language result for one atomic upload
@@ -361,6 +374,7 @@ jobs:
 
             let schema;
             const runs = [];
+            const categories = new Set();
             for (const file of files) {
               const document = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
               if (document.version !== "2.1.0" || !Array.isArray(document.runs) || document.runs.length === 0) {
@@ -368,13 +382,29 @@ jobs:
                 return;
               }
               schema ||= document.$schema;
+              const language = file.replace(/\.sarif$/, "");
               for (const run of document.runs) {
                 if (run.tool?.driver?.name !== "CodeQL") {
                   core.setFailed(`${file} contains a result from an unexpected analysis tool`);
                   return;
                 }
+                const category = run.automationDetails?.id || `/language:${language}`;
+                run.automationDetails = {
+                  ...(run.automationDetails || {}),
+                  id: category,
+                };
+                if (categories.has(run.automationDetails.id)) {
+                  core.setFailed(`duplicate SARIF analysis category: ${run.automationDetails.id}`);
+                  return;
+                }
+                categories.add(run.automationDetails.id);
                 runs.push(run);
               }
+            }
+
+            if (categories.size !== expected.length) {
+              core.setFailed(`expected ${expected.length} distinct categories, found ${categories.size}`);
+              return;
             }
 
             const owner = context.repo.owner;
@@ -430,20 +460,24 @@ jobs:
             }
 
             let processingStatus = "pending";
+            let lastStatusData = null;
             for (let attempt = 0; attempt < 90; attempt += 1) {
               const { data } = await github.rest.codeScanning.getSarif({
                 owner, repo, sarif_id: uploaded.id,
               });
+              lastStatusData = data;
               processingStatus = data.processing_status;
               if (processingStatus === "complete") break;
               if (processingStatus === "failed") {
-                core.setFailed("GitHub failed to process the CodeQL SARIF upload");
+                const errors = data.errors ? JSON.stringify(data.errors) : "unknown error";
+                core.setFailed(`GitHub failed to process the CodeQL SARIF upload (${uploaded.id}): ${errors}`);
                 return;
               }
               await new Promise((resolve) => setTimeout(resolve, 2000));
             }
             if (processingStatus !== "complete") {
-              core.setFailed(`CodeQL SARIF processing did not complete: ${processingStatus}`);
+              const errors = lastStatusData?.errors ? JSON.stringify(lastStatusData.errors) : "";
+              core.setFailed(`CodeQL SARIF processing did not complete (${uploaded.id}): ${processingStatus} ${errors}`);
               return;
             }
 
