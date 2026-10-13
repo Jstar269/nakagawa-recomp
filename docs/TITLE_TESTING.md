@@ -14,7 +14,7 @@ for title intake: [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)
 | --- | --- | --- |
 | The manifest is a valid public title | `tools/title_manifest.py` (the normative validator) accepts it; its kind is `synthetic` or `homebrew`; a completed smoke marks `inspect=PASS` | Schema and validator agree on the root contract (checked on every `validate`) |
 | The input profile maps the standard controls | Every PSP control and navigation action is bound exactly once; host names come from the runtime's own tables | Structural and vocabulary checks; the runtime parser remains the acceptance authority at load time |
-| The title's staged executable is available | `smoke` inspects `build/<title id>/<title id>.exe`; a missing file is reported as `ENTRY_NOT_COMPILED` | The Python smoke does not infer that an existing file was compiled by this invocation |
+| The title's staged executable is available | `smoke` inspects `build/<title id>/<title id>.exe` on Windows and `build/<title id>/<title id>` elsewhere; a missing file is reported as `ENTRY_NOT_COMPILED` | The Python smoke does not infer that an existing file was compiled by this invocation |
 | The native player launches the title in an isolated profile | The player spawns the staged runtime, the display name it advertises matches the manifest, and the user data root and `LOCALAPPDATA` are sandboxed | Only the bundled sample entry the player exposes for the title (see below) |
 | A first presented frame carries visible pixels | `BOOT_EVENT phase=first_frame` reports nonzero pixels, and ordered `frame_present` and `HOST_PRESENT_SUBMITTED` markers agree | The offscreen presenter. An on-screen window is not captured by this route |
 | The run ends cleanly | The child exits with code 0 after its guest finishes | Window-close `QUIT` is not exercised; see "Not proven" |
@@ -48,8 +48,9 @@ python tools/title_qualification.py smoke --manifest assets/titles/display-smoke
 The Make target is the end-to-end build-and-launch command: it rebuilds the display
 fixture and player before running `smoke`. A report from the Python `smoke` command
 keeps `stages.compile` at `NOT_RUN`, even when an executable is present, because that
-command cannot prove the artifact was freshly compiled. The Make command's successful
-build steps provide compile evidence separately from the report.
+command cannot prove the artifact was freshly compiled. The Make target's build steps
+run before `smoke`, but nothing records them in the report; their console output is the
+only evidence that this invocation compiled the executable.
 
 Exit status 2 means different things per command. For `validate` it means at least
 one candidate failed validation, and the first problem in each failing candidate is
@@ -132,7 +133,7 @@ Failure classes used by this route, all from the bring-up `failure_class` enum:
 
 | Failure class | Meaning |
 | --- | --- |
-| `ENTRY_NOT_COMPILED` | The staged build is absent |
+| `ENTRY_NOT_COMPILED` | The staged build is absent (`inspect` fails), or the launched runtime reports no recompiled function at its entry (`launch` fails) |
 | `LAUNCH_FAILED` | The child exited nonzero, or the player launched something other than the staged title |
 | `LAUNCH_TIMEOUT` | The run exceeded `--timeout`; the player and its runtime were stopped |
 | `NATIVE_RUNTIME_CRASH` | The runtime printed a crash report |
