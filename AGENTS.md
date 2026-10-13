@@ -88,10 +88,10 @@ subject to Section 2.
   upstream source (PPSSPP, JPCSP, sal063, or similar) into a new path.
 - Do not call code "clean-room" or "independent" unless its trusted record supports that
   label (see `docs/provenance/INDEPENDENCE_MODEL.md`); prefer "project-authored".
-- When a public path is added or removed, update `assets/public_source_profile.json` and
-  have the maintainer admit the policy delta and any trusted record in the private
-  authority repository. Then run
-  `mingw32-make provenance-refresh` against that trusted ledger and commit the regenerated
+- A new public path is admitted only through `tools/provenance_ledger.py admit-new-reviewed`
+  with an external maintainer admission authority (implementation paths also need an exact
+  trusted record); a removal needs a maintainer policy-delta authority. `provenance-refresh`
+  and `tools/contrib_refresh.py` only re-key admitted paths. Commit the regenerated
   `PUBLIC_EXPORT.json` and public ledger. Never hand-edit generated controls.
 
 ## 5. Private and public boundaries
@@ -111,9 +111,9 @@ subject to Section 2.
 - Prefer a small source-level root-cause fix with a failing-before production-path
   regression. Never add loop caps, sleeps, forced returns, fake success, latch hacks,
   arbitrary state writes, invented assets, or VFS aliases that hide missing behavior.
-- Unknown NIDs and dispatch misses remain visible. Correctness evidence uses fail-closed
-  dispatch (`SR_DISPATCH_FATAL=1` or the current equivalent) and asserts PSP-visible
-  results, state, and wakes.
+- Unknown NIDs and dispatch misses remain visible; dispatch is unconditionally fail-closed
+  (there is no opt-in switch). Correctness evidence asserts PSP-visible results, state,
+  and wakes.
 - Validate complete guest spans and checked size arithmetic before forming bulk host
   pointers.
   `src/rt/recomp.h` is a load-bearing ABI: MIPS `$ra` is `r[31]`, with no separate `lr`.
@@ -144,12 +144,12 @@ the PR numbers are navigation, not substitutes for source evidence:
   fails closed; a build-only mutant is not a valid semantic kill.
 - Nested interpreted calls outside that floor are not implied to work. Claim broader
   coverage only with a new source-owned contract and regression.
-- **LLE Phase 1** (`src/rt/cpu_lle.*`, `src/rt/domain_mode.*`): `CpuState` ABI v2 carries
-  COP0 and transfer metadata. Exception entry, `eret`, and the import seam are opt-in via
+- **LLE Phase 1** (`src/rt/cpu_lle.*`, `src/rt/domain_mode.*`): `CpuState` carries COP0,
+  transfer metadata, and the LL/SC link bit; its live version is `SR_CPUSTATE_ABI_VERSION`
+  in `src/rt/recomp.h`. Exception entry, `eret`, and the import seam are opt-in via
   `tools/codegen.py --lle-cpu` and `--lle-import-seam`; the seam implies `--lle-cpu`.
   Default output remains byte-identical to pre-LLE output. Values without hardware
-  measurements stay behind fail-closed paths and are labelled synthetic until measured on
-  a physical PSP.
+  measurements stay fail-closed and labelled synthetic until measured on a physical PSP.
 
 ## 8. Workspace, branch, and worktree lifecycle
 
