@@ -25,6 +25,8 @@ PT_REL_A = 0x700000A0
 PT_REL_B = 0x700000A1
 
 ET_PSP = 0xFFA0
+SHT_PROGBITS = 1
+SHT_NOBITS = 8
 
 BASE = 0x10000
 ARENA_SIZE = 0x30000
@@ -163,9 +165,12 @@ class Module:
     def add_reloc(self, ptype, blob):
         self.relocs.append((ptype, bytes(blob)))
 
-    def add_section(self, name, stype, addr, data, flags=0):
+    def add_section(self, name, stype, addr, data, flags=0, size=None):
+        # `size` overrides the header's sh_size, for a section (such as SHT_NOBITS
+        # .bss) whose extent is not file data.
         self.sections.append({"name": name, "type": stype, "flags": flags,
-                              "addr": addr, "data": bytes(data)})
+                              "addr": addr, "data": bytes(data),
+                              "size": len(data) if size is None else size})
 
     def build(self):
         nload = len(self.loads)
@@ -234,7 +239,7 @@ class Module:
             for idx, sc in enumerate(self.sections):
                 out += struct.pack("<10I", name_off[sc["name"]], sc["type"],
                                    sc["flags"], sc["addr"],
-                                   secblobs[idx]["off"], len(sc["data"]),
+                                   secblobs[idx]["off"], sc["size"],
                                    0, 0, 4, 0)
             out += struct.pack("<10I", 0, 3, 0,
                                0, shstr_off, len(shstr), 0, 0, 1, 0)
@@ -1095,6 +1100,21 @@ class TestModinfo(PrxTestBase):
         m = self.mod_with_table_strings()
         m.add_section(".rodata.sceModuleInfo", 1, 0x1010, bytes(4))
         self.assert_fail(m.build(), needle="disagrees")
+
+    def test_nobits_section_occupies_no_file_bytes(self):
+        # A .bss section (SHT_NOBITS) describes memory only: its offset plus size may
+        # run past the end of the file, as it does in ordinary toolchain output.
+        m = self.mod_with_table_strings()
+        m.add_section(".rodata.sceModuleInfo", SHT_PROGBITS, 0x1000, bytes(4))
+        m.add_section(".bss", SHT_NOBITS, 0x2000, b"", size=0x10000)
+        info = self.run_load(m.build())
+        self.assertEqual(info.get("result"), "ok", info.get("err"))
+        self.assertEqual(info["modinfo"], BASE + 0x1000)
+
+    def test_file_backed_section_past_the_input_fails(self):
+        m = self.mod_with_table_strings()
+        m.add_section(".data", SHT_PROGBITS, 0x2000, b"", size=0x10000)
+        self.assert_fail(m.build(), needle="section data exceeds input size")
 
     def test_name_without_nul_fails(self):
         d0 = modinfo_block(nonul=True) + bytes(16)

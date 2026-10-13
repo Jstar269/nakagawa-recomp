@@ -606,27 +606,77 @@ static int check_vf2i_conversions(void) {
     return 0;
 }
 
-static int check_reserved_cmov_forms(void) {
+static int check_reserved_cmov_form(void) {
+    /* vcmov is VFPU4 (jump 21); imm3 7 is its reserved selector and must fail closed.
+     * Major 0x1b sub-ops 6 and 7 are not vcmov forms (see check_vfpu3_compare_forms). */
     CpuState s;
-    const uint32_t words[] = {
-        (0x1bu << 26) | (6u << 23) | (7u << 16),
-        (0x1bu << 26) | (7u << 23) | (7u << 16),
-        (0x34u << 26) | (21u << 21) | (7u << 16),
-    };
+    const uint32_t word = (0x34u << 26) | (21u << 21) | (7u << 16);
     int bad = 0;
-    for (size_t i = 0; i < sizeof(words) / sizeof(words[0]); i++) {
-        setup_state(&s);
-        const CpuState before = s;
-        int kind = sr_vfpu_interp(&s, words[i]);
-        if (kind != SR_VFPU_OTHER) {
-            fprintf(stderr, "reserved vcmov word=0x%08x sub=%u imm=%u kind=%d\n",
-                    words[i], (words[i] >> 23) & 7, (words[i] >> 16) & 7, kind);
-        }
-        CHECK(kind == SR_VFPU_OTHER,
-              "reserved vcmov imm3 fails closed");
-        CHECK(memcmp(&s, &before, sizeof(s)) == 0,
-              "reserved vcmov imm3 leaves state unchanged");
+    setup_state(&s);
+    const CpuState before = s;
+    int kind = sr_vfpu_interp(&s, word);
+    if (kind != SR_VFPU_OTHER) {
+        fprintf(stderr, "reserved vcmov word=0x%08x imm=%u kind=%d\n",
+                word, (word >> 16) & 7, kind);
     }
+    CHECK(kind == SR_VFPU_OTHER, "reserved vcmov imm3 fails closed");
+    CHECK(memcmp(&s, &before, sizeof(s)) == 0, "reserved vcmov imm3 leaves state unchanged");
+    return bad;
+}
+
+static uint32_t vfpu3_single(unsigned sub, unsigned vt, unsigned vs, unsigned vd) {
+    /* Major 0x1b, bits 25..23 select the op; width bits 7/15 clear (.s form). */
+    return (0x1bu << 26) | ((sub & 7u) << 23) | ((vt & 0x7fu) << 16) | ((vs & 0x7fu) << 8) |
+           (vd & 0x7fu);
+}
+
+static int check_vfpu3_compare_forms(void) {
+    /* Major 0x1b sub-ops 5, 6 and 7 are vscmp, vsge and vslt (issue #69 root cause: they
+     * were decoded as vcmovt/vcmovf before 2026-10-10). Each compares S against T per lane
+     * and writes a float: vscmp -1/0/1, vsge and vslt 1/0. A NaN operand compares false and
+     * yields 0.0 (project semantics after PPSSPP; the console's NaN result is UNMEASURED).
+     * vs=0 is physical v[0], vt=2 is v[8], vd=1 is v[4]. */
+    static const struct {
+        unsigned sub;
+        uint32_t a, b, expect;
+        const char *name;
+    } cases[] = {
+        {6u, 0x3f800000u, 0x00000000u, 0x3f800000u, "vsge.s 1 >= 0 writes 1.0"},
+        {6u, 0x00000000u, 0x00000000u, 0x3f800000u, "vsge.s 0 >= 0 writes 1.0"},
+        {6u, 0xbf800000u, 0x00000000u, 0x00000000u, "vsge.s -1 >= 0 writes 0.0"},
+        {6u, 0x7fc00000u, 0x00000000u, 0x00000000u, "vsge.s NaN >= 0 writes 0.0 (UNMEASURED)"},
+        {7u, 0xbf800000u, 0x00000000u, 0x3f800000u, "vslt.s -1 < 0 writes 1.0"},
+        {7u, 0x00000000u, 0x00000000u, 0x00000000u, "vslt.s 0 < 0 writes 0.0"},
+        {7u, 0x3f800000u, 0x00000000u, 0x00000000u, "vslt.s 1 < 0 writes 0.0"},
+        {7u, 0x00000000u, 0x7fc00000u, 0x00000000u, "vslt.s 0 < NaN writes 0.0 (UNMEASURED)"},
+        {5u, 0xc0000000u, 0x00000000u, 0xbf800000u, "vscmp.s -2 vs 0 writes -1.0"},
+        {5u, 0x00000000u, 0x00000000u, 0x00000000u, "vscmp.s 0 vs 0 writes 0.0"},
+        {5u, 0x40400000u, 0x00000000u, 0x3f800000u, "vscmp.s 3 vs 0 writes 1.0"},
+        {5u, 0x7fc00000u, 0x00000000u, 0x00000000u, "vscmp.s NaN vs 0 writes 0.0 (UNMEASURED)"},
+    };
+    CpuState s;
+    int bad = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        setup_identity_compute(&s);
+        s.vi[0] = cases[i].a;
+        s.vi[8] = cases[i].b;
+        s.vi[4] = 0xa5a5a5a5u;
+        int kind = sr_vfpu_interp(&s, vfpu3_single(cases[i].sub, 2u, 0u, 1u));
+        CHECK(kind == SR_VFPU_COMPUTE, "VFPU3 compare executes through production fallback");
+        CHECK(s.vi[4] == cases[i].expect, cases[i].name);
+        CHECK(s.vi[0] == cases[i].a && s.vi[8] == cases[i].b, "VFPU3 compare leaves sources intact");
+        CHECK(s.vfpuCtrl[0] == 0xe4u && s.vfpuCtrl[1] == 0xe4u && s.vfpuCtrl[2] == 0u,
+              "VFPU3 compare consumes prefixes");
+    }
+    /* The destination write mask still applies. */
+    setup_identity_compute(&s);
+    s.vi[0] = 0x3f800000u;
+    s.vi[8] = 0u;
+    s.vi[4] = 0xa5a5a5a5u;
+    s.vfpuCtrl[2] = 1u << 8;
+    CHECK(sr_vfpu_interp(&s, vfpu3_single(6u, 2u, 0u, 1u)) == SR_VFPU_COMPUTE,
+          "masked vsge.s executes through production fallback");
+    CHECK(s.vi[4] == 0xa5a5a5a5u, "vsge.s honors the destination write mask");
     return bad;
 }
 
@@ -697,7 +747,8 @@ int main(void) {
     bad |= check_quad_memops();
     bad |= check_vcrs_widths();
     bad |= check_vasin_measured_domain_words();
-    bad |= check_reserved_cmov_forms();
+    bad |= check_reserved_cmov_form();
+    bad |= check_vfpu3_compare_forms();
     bad |= check_mfvc_zero_is_noop();
     bad |= check_vrot_overlap();
     bad |= check_vhdp_vmscl_overlap();

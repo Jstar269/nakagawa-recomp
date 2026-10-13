@@ -175,6 +175,9 @@ typedef struct GeCpuProfileStats {
      * timed.  The replay reporter scales the raw samples by that ratio. */
     uint32_t primitive_profile_stride;
     uint64_t primitive_profile_timer_pair_ns;
+    GeCpuPhaseStats primitive_profile_draw_setup;
+    uint64_t primitive_profile_draw_setup_eligible;
+    uint64_t primitive_profile_assembly_eligible;
     uint64_t primitive_profile_vertices;
     uint64_t primitive_profile_transform_vertices;
     uint64_t primitive_profile_triangle_candidates;

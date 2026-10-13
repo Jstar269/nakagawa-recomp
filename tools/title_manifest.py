@@ -941,17 +941,26 @@ def validate_runtime_bindings(value: Any, path: str) -> dict[str, Any]:
 
 GUEST_MODULE_RAM_LO = 0x08800000
 GUEST_MODULE_RAM_HI = 0x0C000000  # 64 MB models extend user RAM; the runtime arena ends here
+# One title manifest names at most as many modules as disc discovery admits
+# (MAX_MODULE_CANDIDATES in tools/nk_core/iso_inspect.py, PLAYER_MAX_GUEST_MODULES
+# in src/player).
+MAX_TITLE_MODULES = 256
+# "fixed": the module is translated and loaded at its manifest load_address.
+# "runtime": the module carries no address; it is translated position-
+# independently and laid out wherever the guest allocator places it when the
+# game loads it (src/rt/hle.c sceKernelLoadModule). Absent means "fixed".
+MODULE_PLACEMENTS = ("fixed", "runtime")
 
 
 def validate_modules(value: Any, path: str) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     names: set[str] = set()
     addresses: set[int] = set()
-    for index, item in enumerate(array(value, path, 32)):
+    for index, item in enumerate(array(value, path, MAX_TITLE_MODULES)):
         item_path = f"{path}[{index}]"
         item = obj(item, item_path, {"name", "load_address", "required", "role",
-                                     "guest_path", "load_address_evidence"})
-        require(item, item_path, "name", "load_address", "required", "role")
+                                     "guest_path", "load_address_evidence", "placement"})
+        require(item, item_path, "name", "required", "role")
         name = text(item["name"], f"{item_path}.name", 128)
         if not FILENAME_RE.fullmatch(name) or name.endswith("."):
             fail(f"{item_path}.name", "must be a portable module filename without path separators")
@@ -960,10 +969,6 @@ def validate_modules(value: Any, path: str) -> list[dict[str, Any]]:
         if name.casefold() in names:
             fail(f"{item_path}.name", "duplicate module name under case-insensitive comparison")
         names.add(name.casefold())
-        address = uint(item["load_address"], f"{item_path}.load_address")
-        if address in addresses:
-            fail(f"{item_path}.load_address", "duplicate module load address")
-        addresses.add(address)
         required = boolean(item["required"], f"{item_path}.required")
         role = text(item["role"], f"{item_path}.role", 32)
         if role not in {"guest-prx", "hle-capability", "optional-guest-prx"}:
@@ -972,8 +977,26 @@ def validate_modules(value: Any, path: str) -> list[dict[str, Any]]:
             fail(item_path, "optional-guest-prx cannot be marked required")
         if role == "hle-capability" and not required:
             fail(item_path, "hle-capability must be marked required")
-        entry = {"name": name, "load_address": address, "required": required, "role": role}
-        if role in {"guest-prx", "optional-guest-prx"}:
+        placement = "fixed"
+        if "placement" in item:
+            placement = text(item["placement"], f"{item_path}.placement", 16)
+            if placement not in MODULE_PLACEMENTS:
+                fail(f"{item_path}.placement", "unsupported module placement")
+        if placement == "runtime":
+            if role not in {"guest-prx", "optional-guest-prx"}:
+                fail(f"{item_path}.placement", "only a guest module is placed by the runtime")
+            for field in ("load_address", "load_address_evidence"):
+                if field in item:
+                    fail(f"{item_path}.{field}", "a runtime-placed module has no manifest load address")
+            entry = {"name": name, "required": required, "role": role, "placement": "runtime"}
+        else:
+            require(item, item_path, "load_address")
+            address = uint(item["load_address"], f"{item_path}.load_address")
+            if address in addresses:
+                fail(f"{item_path}.load_address", "duplicate module load address")
+            addresses.add(address)
+            entry = {"name": name, "load_address": address, "required": required, "role": role}
+        if role in {"guest-prx", "optional-guest-prx"} and placement == "fixed":
             # A guest module's code AND data live at load_address, so it must be real
             # user RAM: a base outside it lets translated code run while every data
             # write is dropped (the late-PRX bases once sat at 0x322xxxxx).

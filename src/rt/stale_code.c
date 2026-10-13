@@ -10,6 +10,7 @@
 
 #include "stale_code.h"
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -117,6 +118,34 @@ void sr_stale_register_block(uint32_t addr, uint32_t nwords, uint32_t expected_h
     s_blocks[s_block_count].expected_hash = expected_hash;
     s_blocks[s_block_count].stale = 0;
     s_block_count++;
+}
+
+void sr_stale_forget_range(uint32_t addr, uint32_t size) {
+    uint64_t lo = addr;
+    uint64_t hi = (uint64_t)addr + size;
+    size_t i, kept;
+    if (size == 0u || hi > 0x100000000ull) {
+        return;
+    }
+    kept = 0;
+    for (i = 0; i < s_word_count; i++) {
+        uint64_t w_lo = s_words[i].addr;
+        if (w_lo + 4u > lo && w_lo < hi) {
+            continue;
+        }
+        s_words[kept++] = s_words[i];
+    }
+    s_word_count = kept;
+    kept = 0;
+    for (i = 0; i < s_block_count; i++) {
+        uint64_t b_lo = s_blocks[i].addr;
+        uint64_t b_hi = b_lo + (uint64_t)s_blocks[i].nwords * 4u;
+        if (b_hi > lo && b_lo < hi) {
+            continue;
+        }
+        s_blocks[kept++] = s_blocks[i];
+    }
+    s_block_count = kept;
 }
 
 uint32_t sr_stale_entry_count(void) {
@@ -251,11 +280,11 @@ static int fire_report(const SrStaleFire *fire,
     }
     if (fire->is_block) {
         fprintf(stderr,
-                "STALE_CODE_DETECT block=0x%08x nwords=%u expected_hash=0x%08x actual_hash=0x%08x\n",
+                "STALE_CODE_DETECT block=0x%08" PRIx32 " nwords=%" PRIu32 " expected_hash=0x%08" PRIx32 " actual_hash=0x%08" PRIx32 "\n",
                 fire->addr, fire->nwords, fire->expected, fire->actual);
     } else {
         fprintf(stderr,
-                "STALE_CODE_DETECT block=0x%08x off=0x%08x expected=0x%08x actual=0x%08x\n",
+                "STALE_CODE_DETECT block=0x%08" PRIx32 " off=0x%08" PRIx32 " expected=0x%08" PRIx32 " actual=0x%08" PRIx32 "\n",
                 fire->addr, fire->addr, fire->expected, fire->actual);
     }
     if (bad_addr_out) {

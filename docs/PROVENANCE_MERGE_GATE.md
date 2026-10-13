@@ -50,7 +50,7 @@ it agree with every other artifact.
 | T12 | Remove an exclusion from the publication policy | `POLICY_SUBSTITUTION` unless an external blessed policy and exact policy-delta authority authorize that precise `exclude_removed` entry; scope may otherwise tighten, never loosen |
 | T13 | Edit the ledger without regenerating the export | `EXPORT_FIELD_MISMATCH` |
 | T14 | Replay a green result from an earlier head | the verdict is bound to the candidate commit and tree, and the run fails closed if the fetched head is not the head the event named |
-| T15 | Merge on a stale base | **partial:** the verifier refuses `MERGE_BASE_STALE` when the head is behind its base and evaluates the ratchet against the base tip, but the `main-minimal` ruleset's `strict_required_status_checks_policy` is `false`, so GitHub does not require the head to be up to date at merge time (see Merge-tree identity) |
+| T15 | Merge on a stale base | the verifier refuses `MERGE_BASE_STALE` when the head is behind its base and evaluates the ratchet against the base tip, and the `main-minimal` ruleset's `strict_required_status_checks_policy` is `true` (live value read from the ruleset, 2026-10-10), so GitHub also requires the head to be up to date at merge time (see Merge-tree identity). This half is enforced by live ruleset configuration, not by code in this repository, so re-read the ruleset before relying on it |
 | T16 | Add a symlink whose "content" is a path string | `TREE_INVALID` — provenance is only defined over regular file content |
 | T17 | Replace an existing file's implementation bytes, update the public hash coherently, and inherit the claim already recorded for that path | `CONTENT_UNATTESTED` — grandfathering requires the bytes to be frozen too |
 | T18 | Rename or copy an attested file so the new path inherits the old path's record | `TRUSTED_RECORD_UNRESOLVED` + `CLAIM_UNBACKED` — records name paths, and a new path is new |
@@ -256,14 +256,17 @@ conflict-resolution bytes can appear after verification. The gate therefore
 refuses `MERGE_BASE_STALE` when the head is behind its base.
 
 That makes head-tree attestation sufficient **for the verifier's side**. It is
-not a complete merge-time guarantee: nothing stops base from advancing between
-verification and the merge button. Closing that needs
-`strict_required_status_checks_policy: true`. The `main-minimal` ruleset already
-requires five checks (`CI required`, `OSV Vulnerability Scan`,
-`dependency-review`, `Hygiene and security`, `CodeQL`), but its
-`strict_required_status_checks_policy` is `false` (live value, 2026-09-30), so
-GitHub does not require an up-to-date head. Changing it is a maintainer decision
-(#364, #373). Hence PARTIAL.
+not a complete merge-time guarantee by itself: nothing in the verifier stops base
+from advancing between verification and the merge button. Closing that needs
+`strict_required_status_checks_policy: true`. The `main-minimal` ruleset requires
+five checks (`CI required`, `OSV Vulnerability Scan`, `dependency-review`,
+`Hygiene and security`, `CodeQL`) and its `strict_required_status_checks_policy`
+is **`true`** (live value read from the ruleset, 2026-10-10; this document
+previously recorded `false` as of 2026-09-30), so GitHub does require an
+up-to-date head at merge time. That half of T15 is therefore enforced by live
+configuration rather than by any code here — re-read the ruleset before relying
+on it, because a configuration change would silently reopen it with no diff in
+this repository. For the history of that decision see #364 and #373.
 
 **Tier C — reported, never fatal.** Paths where both halves are frozen and the
 claim still disagrees with authority. Each carries a `backing` value naming
@@ -315,17 +318,30 @@ Each is rewritten to exactly the classification and evidence
 `provenance_ledger.py` derives for it — 101 test files to `synthetic_fixture`,
 7 configuration files, 3 documentation files, 2 title manifests. Every
 transition is a downgrade or a lateral move to the derived class; nothing is
-upgraded and nothing is invented. That leaves **203 paths in debt**, all of
-which need a trusted record before their bytes may change; the 101 derived test
-classes are independently frozen until they gain exact records.
+upgraded and nothing is invented. That left **203 paths in debt** on that
+snapshot, all of which needed a trusted record before their bytes could change;
+the 101 derived test classes were independently frozen until they gained exact
+records.
 
-### Deployment consequence, measured
+### Deployment consequence: paid down, measured
 
-Under the Tier B predicate a pull request that modifies a path still in debt
-fails with `CONTENT_UNATTESTED`. Measured on this branch, **204 of 658 public
-paths are frozen and 454 escape that historical debt rule**; executable paths
-among the latter still require exact authority under the changed-path rule
-above:
+Those debts have since been paid down on `main`. Re-measured on **2026-10-10**
+against `main` at `5a740fb4`, through the same generation route the hosted job
+uses — `tools/provenance_attest_verify.py` with the private trusted ledger as the
+external authority — the verifier reports:
+
+```text
+  public paths     : 894
+  grandfathered ledger debt: 0 path(s)
+  verdict: PASS (0 fatal finding(s))
+```
+
+So **0 of 894 public paths are frozen** today: the historical debt rule blocks
+nothing. The per-area table below is the *older* measurement against the prior
+snapshot, retained as history; it is not the current answer. Under the Tier B
+predicate a pull request that modified a path still in debt would have failed
+with `CONTENT_UNATTESTED`. Whatever the debt count is, executable paths still
+require exact authority under the changed-path rule above:
 
 | area | frozen | of total |
 | --- | --- | --- |
@@ -336,18 +352,20 @@ above:
 | `docs/` | 0 | 32 |
 | `fixtures/` | 0 | 26 |
 
-Runtime, documentation and fixture work is therefore essentially unaffected —
-the two frozen `src/rt` paths are the `guest_interp` pair, which is the finding
-this gate exists to surface. The dashboard is effectively blocked, and 65
-`tools/` files are blocked. That is the correct security answer and it is a real
-cost; it is not something the gate should be relaxed to avoid. Two maintainer
-edits to the trusted authority clear almost all of it:
+On that older snapshot, runtime, documentation and fixture work was essentially
+unaffected — the two frozen `src/rt` paths were the `guest_interp` pair, which is
+the finding this gate exists to surface — while the dashboard was effectively
+blocked and 65 `tools/` files were blocked. That was the correct security answer
+and it was a real cost; it was not something the gate should be relaxed to avoid.
+Two maintainer edits to the trusted authority were the remedies:
 
-* replace the `tools/*` catch-all with exact per-file paths — unblocks 64;
-* add a record covering the dashboard — unblocks 134.
+* replace the `tools/*` catch-all with exact per-file paths;
+* add a record covering the dashboard.
 
-Until then, enabling the required check blocks those two areas. That trade is
-the maintainer's to make, which is why the required-check step is ordered last.
+Re-measured on **2026-10-10**, no path carries that debt any more, so neither
+remedy is outstanding and enabling the required check no longer blocks the
+dashboard or `tools/`. Whether to require it remains the maintainer's decision,
+which is why the required-check step is ordered last.
 
 ## Output discipline
 
@@ -478,8 +496,8 @@ enforcement without the property. Do not do it.
 
 When the day comes, the ruleset already carries a `pull_request` rule,
 `required_linear_history`, and an empty `bypass_actors` list; its
-`strict_required_status_checks_policy` is `false` today (live value, 2026-09-30)
-and would have to be set to `true`. Whatever context
+`strict_required_status_checks_policy` is already `true` (live value read from
+the ruleset, 2026-10-10). Whatever context
 is eventually required inherits all of that; do not relax any of it.
 
 ## Required-check identity: what GitHub can and cannot enforce here

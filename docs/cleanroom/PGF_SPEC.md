@@ -209,9 +209,14 @@ no greater than the last; and both character-map and glyph counts are at most
 1,048,576 [C2]–[C5]. The character map count is the number of character-map
 entries, not a glyph count (project decision: PSP SDK documents that meaning
 [C5], while open question O-3 records that a source-owned PSP probe should
-confirm it). The character-pointer count must equal the inclusive glyph count
-`last − first + 1` (project decision: otherwise two header facts disagree about
-the table cardinality). Negative revision or version, a nonzero header offset,
+confirm it). The character-pointer count is the glyph count: the pointer table
+defines the glyphs, so it must be at least one (project decision: a font with
+no pointers has no glyph to draw). The inclusive code span `last − first + 1`
+is not compared with the pointer count (project decision, 2026-10-09). A
+sparse character map may cover a wider span whose absent codes hold the
+absence sentinel, so a span larger than the pointer count is accepted; open
+question O-15 records that a source-owned PSP probe must still confirm whether
+real font layouts use one. Negative revision or version, a nonzero header offset,
 a header size that is neither 392 nor 412, a 412-byte header outside revision
 3, bad magic, an unsupported revision above 3, any invalid width/count, or any
 section that does not fit causes open failure without publishing partial state
@@ -233,9 +238,9 @@ no character-map entries rather than a structural failure.
 For an in-range index, the reader extracts exactly that entry's width without
 reading past the map section. An entry whose width is all ones is the absence
 sentinel [C3]. Any other value is a zero-based glyph-table index. A value not
-below the inclusive glyph count is treated as absent rather than wrapped,
-aliased, or used as a host offset (project decision: it is a lookup miss, while
-the pointer table itself remains validated at open). This makes malformed map
+below the glyph count (the character-pointer count, §3.1) is treated as absent
+rather than wrapped, aliased, or used as a host offset (project decision: it is
+a lookup miss, while the pointer table itself remains validated at open). This makes malformed map
 entries fail visibly as “character unavailable” without weakening structural
 validation of the map bytes.
 
@@ -436,7 +441,7 @@ at draw, and these checks are normative:
 2. Each of the three codes is resolved through the ordinary character map of
    §3.2, with no alternate code and no revision-3 table. A code below the first
    glyph, at or above the character-map count, carrying the absence sentinel, or
-   mapping to a glyph identifier at or above the inclusive glyph count causes
+   mapping to a glyph identifier at or above the glyph (character-pointer) count causes
    open failure.
 3. Each resolved component must be a *raster* component: row order 1 or 2 with
    nonzero width and height. A component that is itself row order 0 or 3, or a
@@ -617,7 +622,7 @@ source fields as signed 7-bit quantities [C3], [C5].
 
 `pgf_draw_glyph` uses the same direct-then-conditional-alternate resolution
 as `pgf_get_char_info`. `pgf_draw_glyph_by_id` accepts only a `glyph_id` below
-the inclusive glyph count; it never reads the character or shadow maps. Both
+the glyph (character-pointer) count; it never reads the character or shadow maps. Both
 draw operations return 0 after a resolution failure and write nothing.
 
 ### 3.10 Kerning, advance, and placement
@@ -961,7 +966,8 @@ evidence and what remains open:
    map [C3]; that is the relationship this reader's composite components rely
    on when they resolve a code through §3.2. This reader still does not require
    the equality and keeps the map count as the direct lookup bound (project
-   decision, §3.2); a firmware variant that breaks it stays open.
+   decision, §3.2); a firmware variant that breaks it stays open. The pointer
+   count is not tied to this span either (§3.1, O-15).
 10. **O-10 — draw rejection surface.** Should null buffer, unknown format,
     zero dimensions/row width, and nonpositive glyph area all return failure
     before writes, and should the three byte-per-pixel formats repeat the raw
@@ -987,7 +993,12 @@ evidence and what remains open:
     establish for Korean or Chinese fonts?
 15. **O-15 — pointer cardinality.** Must `charPointerLength` always equal
     `lastGlyph − firstGlyph + 1`, or do firmware fonts use a larger/sparser
-    table? This reader requires equality.
+    table? **Answered as project behaviour (2026-10-09):** equality is not
+    required. The character-pointer count is the glyph count (§3.1), and a code
+    span wider than it is read through the character map, with absent codes
+    and map values at or above the count as lookup misses (§3.2). Still open:
+    whether real firmware layouts are sparse, which a source-owned PSP probe
+    must report from the character-map and pointer counts of user-owned fonts.
 16. **O-16 — dirty extent.** Should notification include row bytes between
     `bufWidth` and the width implied by `bytesPerLine`, as specified, or only
     the declared image width? A homebrew VRAM-write probe can compare the
@@ -1042,8 +1053,9 @@ and no shadow; mutations then vary one fact at a time.
    at the lower bound must still fail later when its declared sections or
    glyph records cannot fit.
 3. `firstGlyph > lastGlyph` fails. Counts above 1,048,576 fail before an
-   allocation based on the count. Equality between pointer count and
-   `last − first + 1` is both accepted and, when violated, rejected.
+   allocation based on the count. A pointer count below the code span
+   `last − first + 1` is accepted (a sparse map), and a zero pointer count is
+   rejected.
 4. Packed widths 1 and 32 are accepted where a section can fit; 0 and 33 fail
    for the character and pointer maps. Shadow count zero accepts width zero;
    nonzero shadow count accepts only width 16.
@@ -1071,6 +1083,10 @@ and no shadow; mutations then vary one fact at a time.
    byte-offset multiplication by 4. Zero is a valid record start, duplicate
    pointers alias valid records, and an all-ones/out-of-range pointer causes
    open failure when no complete record fits there.
+5. Sparse map: a code span wider than the pointer count opens. Codes in the span
+   whose map value is the sentinel, or at or above the pointer count, are
+   misses. Every pointer record still validates at open, including a record that
+   no code names, so truncating it fails open. A zero pointer count fails.
 
 **Metric-record vectors.**
 
@@ -1167,7 +1183,7 @@ and no shadow; mutations then vary one fact at a time.
 5. Hostile composites, each refused at open with no handle: a payload with
    fewer than six bytes left in the image; a code below the first glyph; a code
    at or above the map count; a code carrying the absence sentinel; a code whose
-   map value is at or above the inclusive glyph count; a component that is
+   map value is at or above the glyph (character-pointer) count; a component that is
    itself a composite; a component that names the composite itself; a component
    that names another composite which names it back; and a component with zero
    width or height.

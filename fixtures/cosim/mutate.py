@@ -116,8 +116,10 @@ MUTANTS: tuple[Mutant, ...] = (
             # $r0 suppression is enforced twice: the guarded write above and the
             # per-instruction restore below. Removing only one leaves the other
             # repairing the damage, so the mutant would survive for a reason that
-            # has nothing to do with the comparator. Remove the whole mechanism.
-            ("s->r[0] = 0u;", "(void)0;", 9),
+            # has nothing to do with the comparator. Remove the whole mechanism. The
+            # count is the number of per-instruction restore sites in guest_interp.c
+            # (the unaligned word forms added the eleventh); a new site bumps it.
+            ("s->r[0] = 0u;", "(void)0;", 11),
         ],
     ),
     Mutant(
@@ -187,6 +189,25 @@ MUTANTS: tuple[Mutant, ...] = (
         )],
     ),
     Mutant(
+        "sc-ignores-link",
+        "store-conditional succeeds without a link",
+        [(
+            "                    const uint32_t linked = s->llbit != 0u ? 1u : 0u;",
+            "                    const uint32_t linked = 1u;",
+            1,
+        )],
+    ),
+    Mutant(
+        "codegen-sc-ignores-link",
+        "GENERATOR: store-conditional succeeds without a link",
+        [(
+            "uint32_t _sc = s->llbit != 0u ? 1u : 0u; ",
+            "uint32_t _sc = 1u; ",
+            1,
+        )],
+        target="generator",
+    ),
+    Mutant(
         "codegen-computed-transfer-timing",
         "GENERATOR: a computed transfer reads its target after its delay slot",
         [
@@ -194,14 +215,16 @@ MUTANTS: tuple[Mutant, ...] = (
             # (fixed by #126). The generator is restored to the pre-fix emission
             # order, in which the `jalr` target register is read AFTER the delay
             # slot has already run -- so a slot that writes that register
-            # redirects the call. Cell `jrslot` must diverge.
+            # redirects the call. Cell `jrslot` must diverge. Guest addresses are
+            # spelled through the generator's address space, G(addr), which a
+            # runtime-placed module translates base-relative.
             (
                 "            out.append(f\"    {{ uint32_t _t = {R(a)};\")\n"
-                "            out.append(f\"      sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); "
+                "            out.append(f\"      sr_begin(s, {G(addr)}, 0x{w:08x}u); "
                 "{link}sr_end(s, 0u, 0);\")\n"
                 "            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,\n"
                 "                                        indent=\"      \"))",
-                "            out.append(f\"    sr_begin(s, 0x{addr:08x}u, 0x{w:08x}u); "
+                "            out.append(f\"    sr_begin(s, {G(addr)}, 0x{w:08x}u); "
                 "{link}sr_end(s, 0u, 0);\")\n"
                 "            out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,\n"
                 "                                        indent=\"      \"))\n"

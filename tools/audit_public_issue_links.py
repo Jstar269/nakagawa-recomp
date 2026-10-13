@@ -12,7 +12,10 @@ The audit has two purposes:
   (including ``.github/copilot-instructions.md``);
 * ISSUES.md ``## At a glance`` rows whose State cell is ``Open`` must not link to a
   closed public issue/PR, so a merged fix cannot silently leave an "Open" row
-  pointing at the closed tracker item it resolved.
+  pointing at the closed tracker item it resolved;
+* in current-facing documents, a clause that says work is "in the works", and a
+  table column headed "Tracking", must not cite a closed issue or a closed or
+  merged PR: the work it points at is finished, so the pointer misleads readers.
 
 Historical evidence documents may intentionally preserve pre-export tracker numbers. A 404 in
 one of those documents is reported as historical evidence rather than silently reclassified as a
@@ -49,6 +52,7 @@ CURRENT_FACING_DOCS = {
     "docs/PUBLICATION_READINESS.md",
     "docs/PUBLIC_SOURCE_PROFILE.md",
     "docs/DCO_POLICY.md",
+    "docs/YOUR_OWN_GAMES.md",
     "font/README.md",
     "src/rt/gpu_sdl3vk/README.md",
     "tools/README.md",
@@ -99,6 +103,12 @@ TRACKER_SECTION = "## Current public tracker"
 # stale against the closed #38 after the fix merged.
 AT_A_GLANCE_SECTION = "## At a glance"
 ISSUES_ROW_STATE_PAT = re.compile(r"^\|\s*\w+\s*\|\s*(\w+)\s*\|")
+IN_THE_WORKS_PAT = re.compile(r"\bin the works\b", re.IGNORECASE)
+# A clause ends at a sentence stop or semicolon followed by whitespace; the
+# periods inside link URLs are never followed by whitespace.
+CLAUSE_SPLIT_PAT = re.compile(r"(?<=[.;])\s+")
+LIST_ITEM_PAT = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s")
+TABLE_SEPARATOR_PAT = re.compile(r"^\|?\s*:?-{3,}")
 
 
 def get_tracked_markdown_files(repo_root: pathlib.Path = ROOT) -> list[pathlib.Path]:
@@ -184,6 +194,104 @@ def public_status_label(obj: dict) -> str:
     if obj["state"] == "open":
         return "OPEN PR"
     return "MERGED PR" if obj.get("merged_at") else "CLOSED PR"
+
+
+def _tracker_numbers(text: str) -> list[int]:
+    """Return this repository's issue/PR numbers cited in ``text``, in order."""
+    numbers = [int(match.group(2)) for match in FULL_URL_PAT.finditer(text)]
+    linked = {int(match.group(1)) for match in ANY_GITHUB_TRACKER_URL_PAT.finditer(text)}
+    numbers += [
+        int(match.group(1))
+        for match in SHORTHAND_PAT.finditer(text)
+        if int(match.group(1)) not in linked
+    ]
+    return numbers
+
+
+def _table_cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def stale_in_the_works_findings(
+    rel: str, text: str, issues_map: dict[int, dict]
+) -> list[tuple[str, int, str, str, bool]]:
+    """Report finished work that a current document still presents as pending.
+
+    Prose is read as blocks (a paragraph or a list item) split into clauses; a
+    clause saying "in the works" may cite only open issues/PRs. Table cells are
+    clauses of their own, and a column headed "Tracking" may cite only open items.
+    """
+    findings: list[tuple[str, int, str, str, bool]] = []
+
+    def check(numbers: list[int], line_no: int, where: str) -> None:
+        for num in dict.fromkeys(numbers):
+            obj = issues_map.get(num)
+            if obj is None or obj.get("state") == "open":
+                continue
+            findings.append(
+                (
+                    rel,
+                    line_no,
+                    f"#{num}",
+                    (
+                        f"STALE IN-THE-WORKS POINTER: {where} cites #{num}, a public "
+                        f"{public_status_label(obj)}; cite the open item that tracks the "
+                        "remaining work, or describe the finished work plainly"
+                    ),
+                    False,
+                )
+            )
+
+    def check_clauses(text_block: str, line_no: int) -> None:
+        for clause in CLAUSE_SPLIT_PAT.split(text_block):
+            if IN_THE_WORKS_PAT.search(clause):
+                check(_tracker_numbers(clause), line_no, "an 'in the works' clause")
+
+    block: list[str] = []
+    block_start = 0
+    tracking_column: int | None = None
+    in_table = False
+    in_fenced_code = False
+
+    def flush() -> None:
+        if block:
+            check_clauses(" ".join(part.strip() for part in block), block_start)
+            block.clear()
+
+    for idx, line in enumerate(text.splitlines(), 1):
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            flush()
+            in_fenced_code = not in_fenced_code
+            continue
+        if in_fenced_code:
+            continue
+        if stripped.startswith("|"):
+            flush()
+            cells = _table_cells(stripped)
+            if not in_table:
+                tracking_column = next(
+                    (i for i, cell in enumerate(cells) if cell.lower() == "tracking"), None
+                )
+            elif not TABLE_SEPARATOR_PAT.match(stripped):
+                for cell in cells:
+                    check_clauses(cell, idx)
+                if tracking_column is not None and tracking_column < len(cells):
+                    check(_tracker_numbers(cells[tracking_column]), idx, "the Tracking column")
+            in_table = True
+            continue
+        in_table = False
+        tracking_column = None
+        if not stripped or stripped.startswith("#"):
+            flush()
+            continue
+        if LIST_ITEM_PAT.match(line):
+            flush()
+        if not block:
+            block_start = idx
+        block.append(line)
+    flush()
+    return findings
 
 
 def audit_markdown_files(
@@ -366,6 +474,9 @@ def audit_markdown_files(
                                     False,
                                 )
                             )
+
+        if rel in CURRENT_FACING_DOCS:
+            findings.extend(stale_in_the_works_findings(rel, text, issues_map))
 
     return findings
 

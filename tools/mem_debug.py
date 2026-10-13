@@ -79,11 +79,11 @@ SR_VRAM_SIZE = 0x00200000         # 2 MiB VRAM/eDRAM at 0x04000000
 SR_SCRATCHPAD_BASE = 0x00010000
 SR_SCRATCHPAD_SIZE = 0x00001000   # 4 KiB scratchpad
 
-# CpuState ABI v2 offsets from src/rt/recomp.h.  Keep the debugger's raw process
+# CpuState ABI v3 offsets from src/rt/recomp.h.  Keep the debugger's raw process
 # view in lockstep with the runtime rather than silently reading the old 864-byte
-# status-only tail.
-CPU_STATE_ABI_VERSION = 2
-CPU_STATE_SIZE = 996
+# status-only tail.  v3 appended the MIPS32 LLbit (`llbit`) after flow_target.
+CPU_STATE_ABI_VERSION = 3
+CPU_STATE_SIZE = 1000
 CRASH_DUMP_MAGIC = b"SRCD"
 CRASH_DUMP_FORMAT = 1
 CRASH_DUMP_HEADER_SIZE = 24
@@ -94,6 +94,7 @@ CPU_STATE_NEXT_PC_OFFSET = 980
 CPU_STATE_DELAY_SLOT_OFFSET = 984
 CPU_STATE_FLOW_KIND_OFFSET = 988
 CPU_STATE_FLOW_TARGET_OFFSET = 992
+CPU_STATE_LLBIT_OFFSET = 996
 
 SUPPORTED_REGIONS = ("ram", "vram", "scratchpad")
 
@@ -448,7 +449,7 @@ def get_mock_state_path():
 
 
 def _migrate_mock_state(mock):
-    """Bring a mock file written before CpuState ABI v2 up to the v2 field set.
+    """Bring a mock file written before CpuState ABI v3 up to the v3 field set.
 
     Anything that is not a well-formed mock document raises, so the caller
     falls back to a fresh state instead of simulating from a broken one.
@@ -459,7 +460,7 @@ def _migrate_mock_state(mock):
         raise ValueError("mock cop0 has too many entries")
     cpu["cop0"] = cop0 + [0] * (CPU_STATE_COP0_COUNT - len(cop0))
     cpu.setdefault("next_pc", (int(cpu.get("pc", 0)) + 4) & 0xFFFFFFFF)
-    for field in ("in_delay_slot", "flow_kind", "flow_target"):
+    for field in ("in_delay_slot", "flow_kind", "flow_target", "llbit"):
         cpu.setdefault(field, 0)
     return mock
 
@@ -491,6 +492,7 @@ def load_mock_state():
             "in_delay_slot": 0,
             "flow_kind": 0,
             "flow_target": 0,
+            "llbit": 0,
         },
         "memory": {}
     }
@@ -853,9 +855,10 @@ class MemoryDebugger:
         return g_mem_val
 
     def _cpu_abi_check(self):
-        """Return None when the attached image reports CpuState ABI v2, else a
-        refusal reason.  Offsets past the v1 layout are only meaningful for a
-        v2 image, and image identity alone does not prove which ABI it has."""
+        """Return None when the attached image reports CpuState ABI v3, else a
+        refusal reason.  Offsets past the v1 layout are only meaningful for an
+        image of the implemented ABI, and image identity alone does not prove
+        which ABI it has."""
         if self.is_simulated:
             return None
         rva = self.rvas.get(ABI_SYMBOL)
@@ -1044,6 +1047,10 @@ class MemoryDebugger:
             cpu_bytes[CPU_STATE_FLOW_TARGET_OFFSET:CPU_STATE_FLOW_TARGET_OFFSET + 4],
             byteorder='little',
         )
+        cpu["llbit"] = int.from_bytes(
+            cpu_bytes[CPU_STATE_LLBIT_OFFSET:CPU_STATE_LLBIT_OFFSET + 4],
+            byteorder='little',
+        )
 
         return {"success": True, "cpu": cpu, "mode": "process"}
 
@@ -1210,6 +1217,8 @@ def _cpu_field_offset(field):
         return CPU_STATE_FLOW_KIND_OFFSET, False
     if field == "flow_target":
         return CPU_STATE_FLOW_TARGET_OFFSET, False
+    if field == "llbit":
+        return CPU_STATE_LLBIT_OFFSET, False
     if field.startswith("f") and field[1:].isdigit():
         f_idx = int(field[1:])
         if 0 <= f_idx < 32:

@@ -39,7 +39,7 @@
     },
     "modules": {
       "type": "array",
-      "maxItems": 32,
+      "maxItems": 256,
       "items": {"$ref": "#/$defs/module"}
     },
     "filesystem": {
@@ -225,8 +225,18 @@
     "module": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "load_address", "required", "role"],
+      "required": ["name", "required", "role"],
+      "if": {"properties": {"placement": {"const": "runtime"}}, "required": ["placement"]},
+      "then": {
+        "properties": {"role": {"enum": ["guest-prx", "optional-guest-prx"]}},
+        "not": {"anyOf": [{"required": ["load_address"]}, {"required": ["load_address_evidence"]}]}
+      },
+      "else": {"required": ["load_address"]},
       "properties": {
+        "placement": {
+          "description": "fixed (default): translated and loaded at load_address. runtime: no address; translated position-independently and laid out by the guest allocator when the game loads it.",
+          "enum": ["fixed", "runtime"]
+        },
         "name": {
           "type": "string",
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"

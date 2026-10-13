@@ -501,22 +501,71 @@ One console is one data point; see §11. Nothing here closes issue #70
 > measured index above names live issues in words (`issue #23`); read every
 > other bare number as a historical identifier.
 
+- **PSP-3000 campaign on public commit `f6ccfb33` (2026-10-10)**: the campaign queue
+  described under "Pending PSP-3000 measurement campaign" ran on the qualified PSP-3000 /
+  6.61 / ARK-5.1.0 / PSPLink 3.2.1 route, one PRX per boot with a soft reset between cases:
+  30 launched, 30 exited, teardown check PASS on all 30, 22 envelopes acceptance-eligible. A
+  `MEASURED` row below cites exactly the cells named in its row; the eight captures that were
+  not acceptance-eligible (the probe's own assertions or SKIP records differed from the
+  console) are `CAPTURED` only and establish nothing. Raw envelopes, registry values and
+  console identifiers stay in the private campaign directory. Rows measured earlier keep their
+  own citations. The seven HLE measurement families (`probe_hle_measure.c`) ran the same day as
+  single-case runs beside the campaign: every stream was complete, but no case was
+  acceptance-eligible because the runner's post-unload shell qualification and host0 round trip
+  failed after each unload, so their rows are `CAPTURED` only and cite nothing.
+
+  | Evidence id | Cells cited | Not cited | Outcome (campaign case) |
+  | --- | --- | --- | --- |
+  | `PSP-TRANSPORT-001` | `host0-write-readback` | (none) | MEASURED (`transport-write`) |
+  | `PSP-ALARM-001` | `alarm-null-handler`, `alarm-zero-clock`, `alarm-table-exhaustion`, `alarm-cancel-fired-once`, `alarm-cancel-cancelled`, `alarm-cancel-unknown`, `alarm-rearm-base`, `alarm-blocking-in-handler`, `kernel-alarm-done` | (none) | MEASURED (`kernel-alarm`) |
+  | `PSP-THREAD-003` | `thread-suspend-idle`, `thread-suspend-self`, `thread-resume-idle`, `thread-rotate-range`, `thread-ready-order-after-rotate`, `thread-suspend-wait-timeout`, `thread-scheduler-done` | (none) | MEASURED (`thread-scheduler`) |
+  | `PSP-WAIT-001` | `sema-signal-before-deadline-late-dispatch`, `event-signal-before-deadline-late-dispatch`, `sema-cancel-before-deadline-late-dispatch`, `event-cancel-before-deadline-late-dispatch`, `wait-outcomes-done` | (none) | MEASURED (`wait-outcomes`) |
+  | `PSP-GE-CONTROL-001` | (none) | `ge-break-no-active-list`, `ge-continue-no-paused-list`, `ge-break-invalid-mode`, `ge-list-sync-paused`, `ge-draw-sync-paused`, `ge-list-sync-cancelled`, `ge-draw-sync-cancelled`, `ge-break-continue-done` | CAPTURED only (not acceptance-eligible: `ge-break-continue`) |
+  | `PSP-KERNEL-STATUS-001` | `sema-size-zero`, `sema-size-8`, `sema-size-40`, `sema-size-full`, `event-size-zero`, `event-size-8`, `event-size-40`, `event-size-full`, `mbx-size-zero`, `mbx-size-8`, `mbx-size-40`, `mbx-size-full`, `refer-status-size-done` | (none) | MEASURED (`refer-status-size`) |
+  | `PSP-REGISTRY-001` | `registry-open`, `registry-errors`, `registry-category-*`, `registry-key-*`, `registry-done` | (none) | MEASURED (`registry-readonly`) |
+  | `PSP-KERNEL-MISC-001` | `sysclock-wide`, `ctrl-sampling-mode`, `thread-profiler`, `global-profiler`, `vtimer-basic`, `display-basic`, `impose-basic`, `kernel-misc-done` | (none) | MEASURED (`kernel-misc`) |
+  | `PSP-SMOKE-001` | apis `module_start`, `sceKernelExitGame` | (none) | MEASURED (`smoke`) |
+  | `PSP-THREAD-EXIT-001` | `ED-R77`, `ED-R00`, `ED-RNEG`, `ED-RERR`, `ED-X77`, `ED-X00`, `ED-XNEG`, `ED-XERR`, `ED-D77`, `ED-D00`, `ED-DNEG`, `ED-DERR` | (none) | MEASURED (`thread-exit-delete`) |
+  | `PSP-TEARDOWN-001` | (none) | `exitdelete-main` | CAPTURED only (not acceptance-eligible: `teardown-test`) |
+  | `PSP-IO-001` | apis `open`, `seek`, `async I/O`, `devctl`, `filesystem mutation` | (none) | MEASURED (`io-matrix`) |
+  | `PSP-DISPLAY-001` | row unchanged: cited from `docs/ARCHITECTURE.md#clocks` | `display-mask-duty` (still uncited) | re-run by campaign case `display-mask-duty`: records `display-mask-duty-33000us`, `display-mask-duty-66000us` PASS |
+  | `PSP-DISPLAY-002` | `late-waitvblankstart-{2,6,10,14,20}eighths`, `late-waitvblank-{2,6,10,14,20}eighths`, `invblank-waitvblankstart`, `invblank-waitvblank`, `calibration` | (none) | MEASURED (`display-wait-late`) |
+  | `PSP-DISPLAY-003` | `calibration`, `priority-control`, `priority-experiment` | (none) | MEASURED (`display-wait-priority`) |
+  | `PSP-DISPLAY-004` | `vblank-window` | (none) | MEASURED (`display-vblank-window`) |
+  | `PSP-FPU-001` | `fpu-boot-fcr31`, `fpu-cvt-rm0`, `fpu-cvt-rm1`, `fpu-cvt-rm2`, `fpu-cvt-rm3`, `fpu-ccast-trunc`, `fpu-cvt-s-w`, `fpu-flag-overflow`, `fpu-flag-div0`, `fpu-flag-invalid`, `fpu-flag-underflow`, `fpu-flag-inexact`, `fpu-ftz-contrast`, `fpu-signed-zero`, `fpu-nan-payload`, `fpu-done` | (none) | MEASURED (`fpu-vector`) |
+  | `PSP-CACHE-001` | `cache-alias-init`, `cache-writeback-contrast`, `cache-inval-contrast`, `cache-wball`, `cache-done` | (none) | MEASURED (`cache-alias`) |
+  | `PSP-AUDIO-001` | `audio-ch-reserve`, `audio-ch-query-before`, `audio-ch-output-blocking-0`, `audio-ch-output-blocking-1`, `audio-ch-query-after`, `audio-ch-release`, `audio-ch-query-released`, `audio-out2-reserve`, `audio-out2-query-before`, `audio-out2-output-blocking`, `audio-out2-query-after`, `audio-out2-release`, `audio-src-reserve`, `audio-done` | (none) | MEASURED (`audio-query`) |
+  | `PSP-GE-001` | `ge-nan-vfpu-qnan`, `ge-nan-screen2d-qnan`, `ge-nan-clip3d-qnan`, `ge-nan-litnormal-qnan`, `ge-nan-vfpu-pinf`, `ge-nan-screen2d-pinf`, `ge-nan-clip3d-pinf`, `ge-nan-litnormal-pinf`, `ge-nan-vfpu-ninf`, `ge-nan-screen2d-ninf`, `ge-nan-clip3d-ninf`, `ge-nan-litnormal-ninf`, `ge-nan-vfpu-nzero`, `ge-nan-screen2d-nzero`, `ge-nan-clip3d-nzero`, `ge-nan-litnormal-nzero`, `ge-nan-vfpu-denorm`, `ge-nan-screen2d-denorm`, `ge-nan-clip3d-denorm`, `ge-nan-litnormal-denorm`, `ge-nan-done` | (none) | MEASURED (`ge-nan`) |
+  | `PSP-DMAC-001` | row unchanged: apis `sceDmacMemcpy`, `sceDmacTryMemcpy` cited | the 43 concurrency, invalid-tail and size-matrix cells (unchanged) | campaign case `dma-cells`: 93 records PASS (`align-*` and `overlap-*` cells, recorded privately); the five `dma-invalid-tail-*` campaign cases emitted SKIP and are CAPTURED only |
+  | `PSP-MUTEX-001` | `mutex-refer-unlocked`, `mutex-timeout-quanta`, `mutex-priority-inheritance` | `mutex-interrupt-context` | MEASURED (`mutex-refer-unlocked`, `mutex-timeout-quanta`, `mutex-priority-inheritance`) (not acceptance-eligible: `mutex-interrupt-context`) |
+  | `PSP-HLE-KERNEL-STATUS-001` | (none) | `sys-status-size-0x1c`, `sys-status-size-0x20`, `sys-status-size-0x08`, `sys-status-size-0x00`, `fpl-create`, `fpl-refer-full-all-free`, `fpl-try-alloc-a`, `fpl-try-alloc-b`, `fpl-try-alloc-exhausted`, `fpl-refer-full-two-held`, `fpl-refer-size-0x08-two-held`, `fpl-refer-size-0x00-two-held`, `fpl-free-a`, `fpl-refer-full-one-free`, `fpl-free-b`, `fpl-delete`, `fpl-refer-full-after-delete` | CAPTURED only (single-case run `hle-kernel-status`, 2026-10-10; not acceptance-eligible: post-unload shell qualification and host0 round trip failed) |
+  | `PSP-HLE-VTIMER-001` | (none) | `vtimer-create`, `vtimer-refer-created`, `vtimer-stop-not-started`, `vtimer-start`, `vtimer-time-running-early`, `vtimer-refer-running-early`, `vtimer-delay-20ms`, `vtimer-time-running-20ms`, `vtimer-stop`, `vtimer-time-stopped`, `vtimer-refer-stopped`, `vtimer-delay-20ms-stopped`, `vtimer-time-stopped-later`, `vtimer-start-restart`, `vtimer-refer-size-0x08`, `vtimer-delete-running`, `vtimer-refer-after-delete`, `vtimer-delete-again` | CAPTURED only (single-case run `hle-vtimer`, 2026-10-10; not acceptance-eligible: post-unload shell qualification and host0 round trip failed) |
+  | `PSP-HLE-POWER-001` | (none) | `pll-clock-int`, `pll-clock-float`, `cpu-clock-int`, `cpu-clock-float`, `cpu-clock-alias`, `bus-clock-int`, `bus-clock-float`, `bus-clock-alias`, `cpu-clock-int-repeat` | CAPTURED only (single-case run `hle-power-clock`, 2026-10-10; not acceptance-eligible: post-unload shell qualification and host0 round trip failed) |
+  | `PSP-HLE-HPRM-001` | (none) | `hprm-remote-first`, `hprm-headphone-first`, `hprm-microphone-first`, `hprm-remote-second`, `hprm-headphone-second`, `hprm-microphone-second` | CAPTURED only (single-case run `hle-hprm`, 2026-10-10; not acceptance-eligible: post-unload shell qualification and host0 round trip failed) |
+  | `PSP-HLE-CTRL-LATCH-001` | (none) | `latch-read-initial`, `latch-peek-initial`, `latch-poll-window`, `latch-read-after-poll`, `latch-peek-after-poll`, `latch-read-clears-peek-keeps` | CAPTURED only (single-case run `hle-ctrl-latch`, 2026-10-10; not acceptance-eligible: post-unload shell qualification and host0 round trip failed) |
+  | `PSP-HLE-SYSPARAM-001` | (none) | `int-id-2`, `int-id-3`, `int-id-4`, `int-id-5`, `int-id-6`, `int-id-7`, `int-id-8`, `int-id-9`, `int-unknown-0`, `int-unknown-10`, `int-unknown-64`, `string-id-1-len-0x80`, `string-id-1-len-0x04` | CAPTURED only (single-case run `hle-sysparam`, 2026-10-10; not acceptance-eligible: post-unload shell qualification and host0 round trip failed) |
+  | `PSP-HLE-GE-EDRAM-001` | (none) | `edram-size`, `edram-addr`, `edram-width-query-initial`, `edram-width-set-512`, `edram-width-set-1024`, `edram-width-set-2048`, `edram-width-set-4096`, `edram-width-restore`, `edram-width-query-final` | CAPTURED only (single-case run `hle-ge-edram`, 2026-10-10; not acceptance-eligible: post-unload shell qualification and host0 round trip failed) |
+
 ## Pending PSP-3000 measurement campaign
 
-The following seven source-owned cases are built for a future PSP-3000 / 6.61
-session. Every row remains `NOT_RUN` until a complete physical capture is
-validated. Their parsers check record order, scalar fields, and completion;
+The following source-owned cases are built for a future PSP-3000 / 6.61
+session. Of the nine cases below, six were measured by the 2026-10-10 campaign on `f6ccfb33`
+(index above), `ge-break-continue` was captured but is not acceptance-eligible, and
+`llsc-link` and `vfpu-compare` were added after that campaign and have not run on hardware.
+Their parsers check record order, scalar fields, and completion;
 they do not encode expected PSP return values.
 
 | Case | Evidence id | Hardware status | Contract being measured |
 | --- | --- | --- | --- |
-| `kernel-alarm` | `PSP-ALARM-001` | `NOT_RUN` | Alarm creation with a null handler and zero clock; dynamic alarm-table exhaustion; cancel after one-shot fire, repeat cancel, unknown UID; handler-return re-arm base; interrupt state and a bounded blocking call in an alarm handler. |
-| `thread-scheduler` | `PSP-THREAD-003` | `NOT_RUN` | Suspend UID 0 and self; resume UID 0; invalid ready-queue priority; ready-thread ordering after rotation; a timed wait expiring while its thread is suspended. |
-| `wait-outcomes` | `PSP-WAIT-001` | `NOT_RUN` | Semaphore and event-flag signal/cancel before the timeout deadline, followed by dispatch after that deadline. |
-| `ge-break-continue` | `PSP-GE-CONTROL-001` | `NOT_RUN` | `sceGeBreak`/`sceGeContinue` return values without active/paused lists, invalid break mode, and list/draw sync states for paused/cancelled lists. |
-| `refer-status-size` | `PSP-KERNEL-STATUS-001` | `NOT_RUN` | Bytes written and size-word results for `ReferSemaStatus`, `ReferEventFlagStatus`, and `ReferMbxStatus` at size 0, 8, 40, and full size. |
-| `registry-readonly` | `PSP-REGISTRY-001` | `NOT_RUN` | Read-only root/category opening and `/CONFIG` category/key enumeration, metadata, selected modeled settings, error returns, and handle exhaustion. |
-| `kernel-misc` | `PSP-KERNEL-MISC-001` | `NOT_RUN` | Wide clock conversion, controller default mode, profiler-pointer returns, basic VTimer behavior, display return values, battery-icon status, and UMD-popup returns. |
+| `kernel-alarm` | `PSP-ALARM-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Alarm creation with a null handler and zero clock; alarm-table exhaustion capped at 1024 pending alarms; cancel after one-shot fire, repeat cancel, unknown UID; handler-return re-arm base; interrupt state and a bounded blocking call in an alarm handler. |
+| `thread-scheduler` | `PSP-THREAD-003` | `MEASURED` (2026-10-10, `f6ccfb33`) | Suspend UID 0 and self; resume UID 0; invalid ready-queue priority; ready-thread ordering after rotation; a timed wait expiring while its thread is suspended. |
+| `wait-outcomes` | `PSP-WAIT-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Semaphore and event-flag signal/cancel before the timeout deadline, followed by dispatch after that deadline. |
+| `ge-break-continue` | `PSP-GE-CONTROL-001` | `CAPTURED` (2026-10-10, `f6ccfb33`; not acceptance-eligible) | `sceGeBreak`/`sceGeContinue` return values without active/paused lists, invalid break mode, list/draw sync states for paused/cancelled lists, and a bounded continue drain and queue quiesce (`TIMEOUT` instead of a hang). |
+| `refer-status-size` | `PSP-KERNEL-STATUS-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Bytes written and size-word results for `ReferSemaStatus`, `ReferEventFlagStatus`, and `ReferMbxStatus` at size 0, 8, 40, and full size. |
+| `registry-readonly` | `PSP-REGISTRY-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Read-only root/category opening and `/CONFIG` category/key enumeration, metadata, selected modeled settings, error returns, handle exhaustion capped at 256 opens, and the forged-handle call last. |
+| `llsc-link` | `PSP-LLSC-001` | `NOT_RUN` (new probe, not yet run on hardware) | Three ll/sc link windows: a plain ll and sc pair (control), a second sc after a successful sc with no new ll, and an sc to an address other than the one ll linked. Each record is the sc result, the word ll loaded, the words at both addresses, and the project's model words, which are UNMEASURED for the console. |
+| `kernel-misc` | `PSP-KERNEL-MISC-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Wide clock conversion, controller default mode, profiler-pointer returns, basic VTimer behavior, display return values, battery-icon status, and UMD-popup returns. |
+| `vfpu-compare` | `PSP-VFPU-CMP-001` | `NOT_RUN` (new probe, not yet run on hardware) | `vscmp.s`, `vsge.s`, and `vslt.s` on 15 operand pairs: less-than, equal, greater, signed zeros in both orders, quiet, signalling, and negative NaN on each side, and infinities. Each record is the raw result word against the project's model, which is UNMEASURED for the console. |
 
 The registry probe opens the registry and categories in read mode and never
 calls a write, create, remove, or flush API. Values are emitted only for keys
@@ -526,7 +575,7 @@ The resulting registry and console-specific files remain in the private
 campaign output directory.
 
 The campaign queue is ordered in `tools/psp_oracle/run_psplink.py`. It starts
-with the host0 `transport-write` preflight, then the seven cases above, followed
+with the host0 `transport-write` preflight, then the new cases above, followed
 by the remaining README `NOT_RUN` cases: smoke, thread exit/delete, teardown,
 I/O matrix, display mask duty, display waits, FPU, cache alias, audio, GE
 non-finite, DMA cells, five invalid-tail cases, and four mutex cases. The
@@ -535,7 +584,9 @@ boot, performs a PSPLink soft reset between completed cases, validates the
 whole private plan in offline dry-run mode, and checkpoints each case. A timed
 out or incomplete launch stops the queue. After the maintainer power-cycles
 and confirms that action, the runner resumes at the next case without
-reclassifying the interrupted capture.
+reclassifying the interrupted capture. A stop before a launch, such as a
+transport start failure, keeps the checkpoint at the same case and needs no
+power-cycle confirmation.
 
 ## 1. The gap this closes
 
@@ -713,13 +764,39 @@ Violating these makes the oracle lie:
 A probe can leave child threads asleep or runnable after its records finish. Those
 threads share PSPLink's kernel namespace with the next probe: names can collide,
 priorities can change scheduling, and thread stacks consume partition memory. The
-probe's main thread also remains parked until PSPLink stops and unloads its module.
+probe's main thread also remains parked until its module is stopped.
 
 Do not end the probe's main thread with `sceKernelExitDeleteThread(0)`. That bypasses
 the PSPSDK CRT exit path. The observed result was a broken PSPLink
 `modstun` handshake (`Module Stop/Unload 0x00000000/` was not reported), which
-escalated cleanup. The exact kernel transition is not established; the supported
-path leaves main alive for PSPLink to stop and unload.
+escalated cleanup. The exact kernel transition is not established.
+
+Stopping and unloading a module does not end the threads it created. PSPSDK's PRX
+CRT (`crt0_prx`) creates main in `module_start` and exports no `module_stop`. Its
+only exit path, `exit()` to `_exit()`, runs `_fini` and `__libcglue_deinit` and then
+calls `sceKernelExitGame()`. PSPLink hooks that call: with `resetonexit=1` (its
+default) it resets, and otherwise it exits the calling thread without deleting it.
+PSPLink's `modstun` calls `sceKernelStopModule` and then `sceKernelUnloadModule`,
+and nothing in that sequence ends main. On 2026-10-08 a PSP-3000 run showed the
+result. `transport-write` passed its records and `modstun` unloaded the module, but
+S2 still listed one more thread than S0 (the parked main), and about 52.5 MB of
+the probe's default newlib heap stayed allocated.
+
+The probe therefore owns the stop half of its lifecycle. Main records its thread
+UID first. After the completion marker it sleeps until a stop request arrives;
+a wakeup sent before the sleep is counted, not lost. The probe's exported
+`module_stop` sets the request, wakes main, waits up to one second for main to end,
+deletes it, and returns 0. On the request, main runs the CRT runtime
+de-initialisation (`_fini`, then `__libcglue_deinit`, which frees the newlib heap
+and the C runtime's kernel objects) without the `sceKernelExitGame` tail, then
+calls `sceKernelExitThread(0)`. If main does not end within the bound,
+`module_stop` returns 1 rather than remove a thread that may still be running; the
+module stays loaded and the unload and snapshot checks below report the failure.
+The Makefile generates the PRX export table (`module_start`, `module_stop`,
+`module_info`) into the build directory for every `probe.c` case. Releasing the heap
+at stop is the general fix for repeated launches, so the default heap size is kept.
+A smaller global bound would change the memory environment that existing cases
+measure; only the DMAC cases bound it, for their own measurement reasons.
 
 The probe now runs one ordered teardown after its case records: write back the data
 cache; terminate, delete, and verify its created child threads; delete tracked kernel
@@ -727,17 +804,35 @@ objects and registered sub-interrupts; release audio channels and close descript
 free partition blocks; restore CPU/bus clocks, captured FCR31, and any pending
 interrupt-resume tokens; remove tracked disposable `host0:` files; write and read a
 64-byte `host0:` round-trip file for the host; append the completion marker last; and
-park main in `sceKernelSleepThread()`. The case result log and round-trip file remain
-available until the host has captured and checked them.
+park main in `sceKernelSleepThread()` until `module_stop` ends it. The case result log
+and round-trip file remain available until the host has captured and checked them.
 
 `tools/psp_oracle/run_psplink.py` compares three PSPLink snapshots around each launch.
 It uses `modlist` for the full loaded-module inventory; `modinfo <uid>` is the
 single-module query used for the unload handshake. S0 records threads,
 per-partition total/largest free bytes, and modules before load.
 S1 records them after the completion marker and before unload; `modinfo <uid> t`
-must show that the probe's only remaining thread is its main thread. After the
-`modstun` stop/unload handshake, S2 must match S0 for thread UID/name pairs and
-module UID/name pairs, with the probe UID absent. Per-partition free-memory changes
+must show that the probe's only remaining thread is its main thread. Right after
+the `modstun` stop/unload handshake the runner settles the link before any
+post-unload PSPLink command: it issues `ver` through the same bounded shell
+verifier as qualification (at most three attempts within
+`--shell-verification-timeout`) until PSPLink answers. On 2026-10-10 seven
+single-case runs captured complete data and confirmed the unload, then failed the
+post-unload shell qualification and host0 round-trip the way `ver` fails right
+after USBHostFS connects. The teardown report records `settle_status` (`PASS`,
+`EXHAUSTED`, or `NOT_RUN` when no `modstun` was issued or the session had already
+stopped) and `settle_attempts` (the number of settle `ver` commands); recovery
+events carry each attempt with a `post-unload settle:` prefix. The settle never
+decides the verdict: an exhausted settle adds no issue, and S2, the shell
+qualification, `exprint`, and the round-trip then run in their usual order and
+classify the case as they would without it. After the handshake and the settle,
+S2 must match S0 for thread UID/name pairs and module UID/name pairs, with the
+probe UID absent. The verdict lists the threads S2
+gained or lost relative to S0. When the only extra threads are the module's own S1
+threads, it also names the boundary: the probe main thread survived the module stop
+and unload. The verdict also keeps PSPLink's `modstun` reply in `modstun_reply`.
+Its `Status` field is the probe's `module_stop` return value: 0 only after main
+ended and was deleted. Per-partition free-memory changes
 are retained as diagnostics; allocator equality is not a teardown gate. The runner
 also requires a qualified shell and the host0 round-trip. `exprint` output remains
 diagnostic because its interpretation is not qualified, so its status is `NOT_RUN`.

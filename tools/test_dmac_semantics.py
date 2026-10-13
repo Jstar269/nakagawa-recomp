@@ -154,7 +154,8 @@ class TestDmacExecutableCoverage(unittest.TestCase):
 class TestDmacSkipProducer(unittest.TestCase):
     """Compile the real C producer, not Python lookalike protocol rows.
 
-    Only emit() and the launch constants are synthetic. No PSP SDK, hardware,
+    Only emit(), the durable-writer seam probe_emit_durable() (which forwards
+    to emit() here) and the launch constants are synthetic. No PSP SDK, hardware,
     private input, allocation or DMAC call is involved in this setup-failure path.
     """
 
@@ -197,10 +198,12 @@ class TestDmacSkipProducer(unittest.TestCase):
                         source = root / "producer.c"
                         binary = root / "producer.exe"
                         source.write_text(
-                            "#include <stdint.h>\n#include <stdio.h>\n" + constants +
+                            "#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n" + constants +
                             f"\n#define PSP_ORACLE_CASE PSP_ORACLE_CASE_DMAC_INVALID_TAIL_{case}\n" +
                             macros +
                             "static void emit(int emulated, const char *line) { (void)emulated; fputs(line, stdout); }\n" +
+                            "static void probe_emit_durable(int emulated, const char *line, size_t length) "
+                            "{ (void)length; emit(emulated, line); }\n" +
                             record + body +
                             "int main(void) { dmac_invalid_emit_skips(1, 7u, 0x80020190u); return 0; }\n",
                             encoding="utf-8",

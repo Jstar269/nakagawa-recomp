@@ -9,6 +9,7 @@ import json
 import hashlib
 import os
 from pathlib import Path
+import re
 import shutil
 import struct
 import subprocess
@@ -20,6 +21,9 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
+import hle_manifest
+from import_fixtures import BASE_VADDR, SYSLIB_EXPORT, build_module_elf
+from nk_core import iso_inspect
 from nk_core.iso_inspect import (
     _classify_decrypted_elf_file,
     decrypt_needed_modules,
@@ -28,10 +32,26 @@ from nk_core.iso_inspect import (
     inspect_compatibility_preflight,
     inspect_iso,
     list_disc_module_candidates,
-    plan_provisional_module_bindings,
+    plan_guest_module_bindings,
+    plan_guest_module_layout,
+    read_guest_module_interface,
+    runtime_registered_nids,
+    runtime_serves_module,
+    RuntimeRegistryUnavailableError,
     write_experimental_profile,
 )
 import nk_cli
+
+# The package key asks the C compiler for its target (gcc -dumpmachine) before the planner
+# runs. The fakes below stand in for the planner only, so that host query is passed to
+# the real subprocess.run, captured here before any test patches it.
+_REAL_SUBPROCESS_RUN = subprocess.run
+
+
+def _is_compiler_target_query(command) -> bool:
+    # Match the flag anywhere in the argv, not only as the last element, so the helper
+    # keeps working if the query ever gains trailing arguments.
+    return bool(command) and "-dumpmachine" in command
 
 
 def build_param_sfo(disc_id: str, title: str, version: str = "1.00") -> bytes:
@@ -259,11 +279,12 @@ def create_test_iso_with_modules(
 
 
 def create_test_iso_with_module_tree(
-    path: Path, modules: dict[str, bytes]
+    path: Path, modules: dict[str, bytes], *,
+    disc_id: str = "TEST00001", title: str = "Synthetic Module Tree",
 ) -> dict[tuple[str, ...], int]:
-    """Build a source-owned ISO carrying modules at arbitrary PSP_GAME paths."""
+    """Build a source-owned ISO carrying files at arbitrary SYSDIR/USRDIR paths."""
     sector_size = 2048
-    sfo = build_param_sfo("TEST00001", "Synthetic Module Tree")
+    sfo = build_param_sfo(disc_id, title)
     directories: set[tuple[str, ...]] = {
         (), ("PSP_GAME",), ("PSP_GAME", "SYSDIR"), ("PSP_GAME", "USRDIR"),
     }
@@ -306,8 +327,6 @@ def create_test_iso_with_module_tree(
         if directory:
             directory_children[directory[:-1]].append((directory[-1], directory, True))
     for file_path in files:
-        if file_path == ("PSP_GAME", "PARAM.SFO"):
-            continue
         directory_children[file_path[:-1]].append((file_path[-1], file_path, False))
 
     directory_sizes: dict[tuple[str, ...], int] = {}
@@ -380,6 +399,58 @@ def create_test_iso_with_module_tree(
     return directory_lbas
 
 
+
+def archive_title_manifest(disc_id: str, title_id: str) -> dict:
+    """A user title manifest for a synthetic disc whose data ships in XB archives.
+
+    The whole USRDIR is the title's loose-content root and ``xbdata`` its data
+    root: the archive layout the native staging transaction extracts.
+    """
+    return {
+        "schema_version": 1,
+        "id": title_id,
+        "display_name": "Synthetic archive title",
+        "kind": "retail",
+        "disc": {"id": disc_id, "region": "NA", "revision_policy": "exact-disc-id"},
+        "executable": {
+            "base": 0,
+            "entry": 0,
+            "bss_metadata_source": "none",
+            "extra_executable_spans": [],
+        },
+        "modules": [],
+        "filesystem": {
+            "data_root": "xbdata",
+            "memory_stick_root": "memstick",
+            "device_prefixes": ["host0:", "ms0:"],
+            "loose_content_roots": [
+                {"root": ".", "mount": "", "precedence": 0, "skip_primary_root": True},
+            ],
+        },
+        "hle_profile": "generic",
+        "codegen_profile": "none",
+        "feature_requirements": [],
+        "verification_profile": "experimental-unverified",
+    }
+
+
+def create_archive_title_iso(
+    path: Path, *, disc_id: str, title: str, executable: bytes
+) -> None:
+    """Build a source-owned disc whose game data is an XB archive below USRDIR/xbdata."""
+    from test_xb_probe import _make_archive
+    from xb_probe import XBCompression
+
+    archive = _make_archive([
+        ("data/raw.bin", b"synthetic archive member", XBCompression.NONE),
+        ("data/sound/theme.sgd", b"synthetic sound member", XBCompression.LZS),
+    ])
+    create_test_iso_with_module_tree(path, {
+        "PSP_GAME/SYSDIR/EBOOT.BIN": executable,
+        "PSP_GAME/USRDIR/xbdata/menu/assets.xb": archive,
+        "PSP_GAME/USRDIR/readme.txt": b"synthetic loose file\n",
+    }, disc_id=disc_id, title=title)
+
 def build_plain_mips_elf(
     e_type: int = 2, *, vaddr: int = 0x08800000, memsz: int = 4,
     entry: int | None = None, p_type: int = 1, p_flags: int = 5, filesz: int = 4,
@@ -401,6 +472,20 @@ def build_psp_container() -> bytes:
     container[0x27] = 1
     struct.pack_into("<I", container, 0x54, 0x1000)
     return bytes(container)
+
+
+def build_overlapping_mips_elf(
+    *, vaddr1: int = 0, memsz1: int = 0x2000, vaddr2: int = 0x1000, memsz2: int = 0x2000
+) -> bytes:
+    elf = bytearray(124)
+    elf[:7] = b"\x7fELF\x01\x01\x01"
+    struct.pack_into("<HHI", elf, 16, 0xFFA0, 8, 1)
+    struct.pack_into("<III", elf, 24, vaddr1, 52, 0)
+    struct.pack_into("<HHHHH", elf, 40, 52, 32, 2, 0, 0)
+    struct.pack_into("<8I", elf, 52, 1, 116, vaddr1, vaddr1, 4, memsz1, 5, 4)
+    struct.pack_into("<8I", elf, 84, 1, 120, vaddr2, vaddr2, 4, memsz2, 5, 4)
+    elf[116:124] = b"\x00\x00\x00\x00\x00\x00\x00\x00"
+    return bytes(elf)
 
 
 def _both_endian32(value: int) -> bytes:
@@ -525,9 +610,30 @@ static bool print_module_path(const char *path, const NkIsoDirEntry *entry,
     return true;
 }}
 
+static bool harness_file_read(void *context, uint64_t offset, void *dst, uint32_t bytes) {{
+    FILE *image = (FILE *)context;
+    if (offset > 0x7fffffffULL || fseek(image, (long)offset, SEEK_SET) != 0) return false;
+    return fread(dst, 1, bytes, image) == bytes;
+}}
+
 int main(int argc, char **argv) {{
     if (argc < 2) return 1;
     const char *mode = argv[1];
+
+    if (strcmp(mode, "elf_layout") == 0) {{
+        /* elf_layout <file> <module 0|1>: the shared PSP ELF32/MIPS layout rule. */
+        if (argc < 4) return 1;
+        FILE *image = fopen(argv[2], "rb");
+        if (!image) return 2;
+        if (fseek(image, 0, SEEK_END) != 0) {{ fclose(image); return 2; }}
+        long image_size = ftell(image);
+        if (image_size < 0) {{ fclose(image); return 2; }}
+        const char *rule = nk_elf32_mips_layout_violation(
+            harness_file_read, image, (uint64_t)image_size, strcmp(argv[3], "1") == 0);
+        fclose(image);
+        printf("ELF_LAYOUT:%s\\n", rule ? rule : "USABLE");
+        return 0;
+    }}
 
     if (strcmp(mode, "module_walk") == 0) {{
         if (argc < 3) return 1;
@@ -893,6 +999,117 @@ int main(int argc, char **argv) {{
         self.assertEqual(native_status, 0)
         self.assertEqual(set(native_paths), set(paths))
 
+    def test_unusable_module_candidate_names_the_failing_rule(self) -> None:
+        # p_align 3 is not a power of two: the shared layout rule refuses the module, and the
+        # candidate names that rule, so the refusal says which module and which condition.
+        bad_align = bytearray(build_plain_mips_elf(0xFFA0, vaddr=0, entry=0xFFFFFFFF))
+        struct.pack_into("<I", bad_align, 52 + 28, 3)
+        iso_file = self.temp_dir / "bad-align-module.iso"
+        create_test_iso_with_module_tree(
+            iso_file, {"PSP_GAME/USRDIR/module/bad-align.prx": bytes(bad_align)}
+        )
+        candidates = nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+        self.assertEqual([candidate["name"] for candidate in candidates], ["bad-align.prx"])
+        self.assertEqual(candidates[0]["kind"], "unsupported")
+        self.assertIn("segment-alignment", candidates[0]["reason"])
+        self.assertEqual(
+            nk_cli._unready_module_lines(candidates),
+            ["MODULE bad-align.prx: not ready (" + candidates[0]["reason"] + ")"],
+        )
+
+    def test_non_congruent_valid_module_is_accepted(self) -> None:
+        # p_offset (84) and p_vaddr (0) differ modulo p_align 0x10. The loader copies segment
+        # bytes from the file offset, so this valid PSP module is accepted: no congruence rule.
+        offset_module = bytearray(build_plain_mips_elf(0xFFA0, vaddr=0, entry=0xFFFFFFFF))
+        struct.pack_into("<I", offset_module, 52 + 28, 0x10)
+        iso_file = self.temp_dir / "non-congruent-module.iso"
+        create_test_iso_with_module_tree(
+            iso_file, {"PSP_GAME/USRDIR/module/offset.prx": bytes(offset_module)}
+        )
+        candidates = nk_cli._discover_iso_module_candidates(iso_file, "EBOOT.BIN")
+        self.assertEqual(
+            [(candidate["name"], candidate["kind"]) for candidate in candidates],
+            [("offset.prx", "plain-elf")],
+        )
+
+    @staticmethod
+    def _layout_case_images() -> list[tuple[str, bytes, bool, str | None]]:
+        """(case name, image bytes, module flag, expected rule or None when usable)."""
+        def patched(data: bytes, edits: list[tuple[str, int, int]]) -> bytes:
+            image = bytearray(data)
+            for fmt, offset, value in edits:
+                struct.pack_into(fmt, image, offset, value)
+            return bytes(image)
+
+        executable = build_plain_mips_elf(2)
+        prx = build_plain_mips_elf(0xFFA0, vaddr=0, entry=0xFFFFFFFF)
+        return [
+            ("usable-executable", executable, False, None),
+            ("usable-prx-module", prx, True, None),
+            ("non-congruent-prx-module", patched(prx, [("<I", 52 + 28, 0x10)]), True, None),
+            ("non-congruent-executable", patched(executable, [("<I", 52 + 28, 0x10)]), False, None),
+            ("header-truncated", executable[:40], False, "header-truncated"),
+            ("header-magic", patched(executable, [("<B", 0, 0)]), False, "header-magic"),
+            ("header-fields", patched(executable, [("<H", 18, 3)]), False, "header-fields"),
+            ("program-table-fields", patched(executable, [("<H", 42, 24)]), False,
+             "program-table-fields"),
+            ("program-table-empty", patched(executable, [("<H", 44, 0)]), False,
+             "program-table-fields"),
+            ("program-table-bounds", patched(executable, [("<I", 28, 0xFFFF0)]), False,
+             "program-table-bounds"),
+            ("section-table-bounds", patched(executable, [
+                ("<H", 46, 40), ("<H", 48, 1), ("<I", 32, 0x1000)]), False,
+             "section-table-bounds"),
+            ("section-table-stray-offset", patched(executable, [("<I", 32, 0x40)]), False,
+             "section-table-bounds"),
+            ("segment-file-range", patched(executable, [("<I", 52 + 16, 0x100)]), False,
+             "segment-file-range"),
+            ("segment-memory-below-file", patched(executable, [("<I", 52 + 20, 2)]), False,
+             "segment-memory-below-file"),
+            ("segment-memory-range", patched(executable, [("<I", 52 + 8, 0xFFFFFFF0),
+                                                          ("<I", 52 + 20, 0x100)]), False,
+             "segment-memory-range"),
+            ("segment-alignment", patched(executable, [("<I", 52 + 28, 3)]), False,
+             "segment-alignment"),
+            ("no-load-segment", patched(executable, [("<I", 52, 4)]), False, "no-load-segment"),
+            ("segment-overlap", build_overlapping_mips_elf(
+                vaddr1=0, memsz1=0x2000, vaddr2=0x1000, memsz2=0x2000), True, "segment-overlap"),
+            ("entry-not-executable", build_plain_mips_elf(2, p_flags=4), False,
+             "entry-not-executable"),
+            ("prx-without-code-segment", build_plain_mips_elf(
+                0xFFA0, vaddr=0, entry=0xFFFFFFFF, p_flags=4), True, "no-code-segment"),
+            ("prx-code-without-file-bytes", build_plain_mips_elf(
+                0xFFA0, vaddr=0, entry=0xFFFFFFFF, filesz=0), True, "no-code-segment"),
+        ]
+
+    def _run_native_elf_layout(self, path: Path, module: bool) -> str | None:
+        result = subprocess.run(
+            [str(self.exe_path), "elf_layout", str(path), "1" if module else "0"],
+            capture_output=True, text=True, encoding="utf-8", errors="strict",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for line in result.stdout.splitlines():
+            if line.startswith("ELF_LAYOUT:"):
+                rule = line.split(":", 1)[1]
+                return None if rule == "USABLE" else rule
+        self.fail(f"the native layout check printed no verdict: {result.stdout!r}")
+
+    def test_elf_layout_rule_is_shared_by_python_and_c(self) -> None:
+        # The same synthetic headers through the Python mirror and the C definition in
+        # src/core/nk_iso.c: both must accept the same inputs and refuse each one by the
+        # same named rule.
+        for name, image, module, expected in self._layout_case_images():
+            with self.subTest(case=name):
+                path = self.temp_dir / f"layout-{name}.elf"
+                path.write_bytes(image)
+                with path.open("rb") as stream:
+                    python_rule = iso_inspect._elf32_mips_iso_violation(
+                        stream, len(image), 0, len(image), module=module
+                    )
+                self.assertEqual(python_rule, expected, "python layout rule")
+                self.assertEqual(self._run_native_elf_layout(path, module), expected,
+                                 "native layout rule")
+
     def test_usrdir_prx_discovery_checklist_and_extraction_share_module_rule(self) -> None:
         iso_file = self.temp_dir / "usrdir-plain-prx.iso"
         member = "PSP_GAME/USRDIR/module/libfont.prx"
@@ -1148,18 +1365,18 @@ int main(int argc, char **argv) {{
         update_sfo = build_param_sfo("MSTKUPDATE", "PSP Update ver 2.71")
         create_test_iso(
             iso_file,
-            disc_id="NPUH10028",
-            title="Super Pocket Tennis",
+            disc_id="TEST80003",
+            title="Synthetic PSN Fixture",
             volume_id="TYPE_0",
             update_sfo_bytes=update_sfo,
         )
 
         py_meta = inspect_iso(iso_file)
         c_meta = self._run_native_inspect(iso_file)
-        self.assertEqual(py_meta.disc_id, "NPUH10028")
-        self.assertEqual(py_meta.title, "Super Pocket Tennis")
-        self.assertEqual(c_meta.get("DISC_ID"), "NPUH10028")
-        self.assertEqual(c_meta.get("TITLE"), "Super Pocket Tennis")
+        self.assertEqual(py_meta.disc_id, "TEST80003")
+        self.assertEqual(py_meta.title, "Synthetic PSN Fixture")
+        self.assertEqual(c_meta.get("DISC_ID"), "TEST80003")
+        self.assertEqual(c_meta.get("TITLE"), "Synthetic PSN Fixture")
 
     def test_sfo_disc_id_and_utf8_title_override_volume_fallback(self) -> None:
         iso_file = self.temp_dir / "utf8-identity.iso"
@@ -1189,8 +1406,8 @@ int main(int argc, char **argv) {{
         update_sfo = build_param_sfo("MSTKUPDATE", "PSP Update ver 6.20")
         create_test_iso(
             iso_file,
-            disc_id="NPUH10028",
-            title="Super Pocket Tennis",
+            disc_id="TEST80003",
+            title="Synthetic PSN Fixture",
             volume_id="TYPE_0",
             update_sfo_bytes=update_sfo,
         )
@@ -1198,7 +1415,7 @@ int main(int argc, char **argv) {{
         registry.register(TitleProfile(
             id="psn-fixture-v1",
             name="PSN Fixture",
-            disc_ids=["NPUH10028"],
+            disc_ids=["TEST80003"],
             regions=["NA"],
         ))
 
@@ -1291,9 +1508,17 @@ int main(int argc, char **argv) {{
         (package_dir / f"{title_name}_image.bin").write_bytes(b"synthetic image")
         data_root = runtime_root / "fixtures" / "profile_zero"
         data_root.mkdir(parents=True)
+        # The project fonts are one valid synthetic PGF per slot, built by the writer (no real font).
+        from pgf_writer import Glyph, build_pgf
+
+        def _glyph(code: int) -> Glyph:
+            return Glyph(code=code, width=2, height=2, samples=(1, 2, 3, 4), row_order=1)
+
         font_dir = runtime_root / "font"
         font_dir.mkdir()
-        (font_dir / "jpn0.pgf").write_bytes(b"synthetic font marker")
+        (font_dir / "nkjpn.pgf").write_bytes(build_pgf([_glyph(0x41), _glyph(0x3042)], font_name="Nakagawa Test Japanese"))
+        (font_dir / "nkltn.pgf").write_bytes(build_pgf([_glyph(0x41), _glyph(0x61)], font_name="Nakagawa Test Latin"))
+        (font_dir / "nkkr.pgf").write_bytes(build_pgf([_glyph(0x41), _glyph(0xAC00)], font_name="Nakagawa Test Korean"))
         ready = subprocess.run(
             [sys.executable, str(ROOT / "tools" / "nk_cli.py"), "inspect",
              str(iso_file), "--json", "--root", str(runtime_root)],
@@ -1498,6 +1723,8 @@ int main(int argc, char **argv) {{
         captured_command: list[str] = []
 
         def fake_package_build(command, **_kwargs):
+            if _is_compiler_target_query(command):
+                return _REAL_SUBPROCESS_RUN(command, **_kwargs)
             captured_command.extend(command)
             build_dir = Path(command[command.index("--output-dir") + 1])
             build_dir.mkdir(parents=True, exist_ok=True)
@@ -1634,6 +1861,8 @@ int main(int argc, char **argv) {{
         captured_commands: list[list[str]] = []
 
         def fake_run(command, **_kwargs):
+            if _is_compiler_target_query(command):
+                return _REAL_SUBPROCESS_RUN(command, **_kwargs)
             captured_commands.append(list(command))
             build_dir = Path(command[command.index("--output-dir") + 1])
             build_dir.mkdir(parents=True, exist_ok=True)
@@ -1855,7 +2084,7 @@ int main(int argc, char **argv) {{
                 )
                 self.assertTrue(profile_path.is_relative_to(user_root))
 
-    def test_provisional_guest_module_placement_is_deterministic_and_disjoint(self) -> None:
+    def test_guest_modules_are_runtime_placed_and_listed_deterministically(self) -> None:
         main_elf = self.temp_dir / "placement-main.elf"
         alpha = self.temp_dir / "alpha.prx"
         beta = self.temp_dir / "beta.prx"
@@ -1867,34 +2096,425 @@ int main(int argc, char **argv) {{
             ("alpha.prx", alpha, "disc0:/PSP_GAME/SYSDIR/alpha.prx"),
         ]
 
-        first = plan_provisional_module_bindings(main_elf, inputs)
-        second = plan_provisional_module_bindings(main_elf, list(reversed(inputs)))
+        first = plan_guest_module_bindings(main_elf, inputs)
+        second = plan_guest_module_bindings(main_elf, list(reversed(inputs)))
         self.assertEqual(first, second)
-        self.assertEqual([module["name"] for module in first], ["alpha.prx", "beta.prx"])
-        self.assertTrue(all(module["load_address_evidence"] == "provisional" for module in first))
-        self.assertTrue(all(module["role"] == "guest-prx" and module["required"] for module in first))
-        spans = {"alpha.prx": 0x21001, "beta.prx": 0x17001}
-        ranges = sorted(
-            (module["load_address"], module["load_address"] + spans[module["name"]])
-            for module in first
-        )
-        self.assertGreaterEqual(ranges[0][0], 0x08800000 + 0x40000 + 0x00100000)
-        self.assertLessEqual(ranges[-1][1], 0x09EF0000)
-        self.assertLess(ranges[0][1], ranges[1][0])
+        self.assertEqual(first, [
+            {"name": "alpha.prx", "required": True, "role": "guest-prx",
+             "placement": "runtime", "guest_path": "disc0:/PSP_GAME/SYSDIR/alpha.prx"},
+            {"name": "beta.prx", "required": True, "role": "guest-prx",
+             "placement": "runtime", "guest_path": "disc0:/PSP_GAME/USRDIR/beta.prx"},
+        ])
+        # The manifest validator accepts the plan exactly as written.
+        from title_manifest import validate_manifest
+        manifest = json.loads((ROOT / "assets" / "titles" / "synthetic.json").read_text(encoding="utf-8"))
+        manifest["modules"] = first
+        self.assertEqual(validate_manifest(manifest)["modules"], first)
 
-    def test_provisional_guest_module_placement_fails_when_no_safe_span_remains(self) -> None:
+    def test_modules_that_never_fit_together_are_still_planned(self) -> None:
+        # The guest allocator places each module when it is loaded, so no concurrent
+        # fit and no build-time reserve is required: two 16 MiB modules beside a main
+        # image that leaves little user memory are both planned (#704).
         main_elf = self.temp_dir / "placement-full-main.elf"
         huge_a = self.temp_dir / "huge-a.prx"
         huge_b = self.temp_dir / "huge-b.prx"
-        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x09E00000, memsz=0x1F0000))
         huge_a.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x01000000))
         huge_b.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x01000000))
-        with self.assertRaisesRegex(ValueError, "do not fit above the main-image heap reserve"):
-            plan_provisional_module_bindings(
+        planned = plan_guest_module_bindings(
+            main_elf,
+            [("a.prx", huge_a, "disc0:/PSP_GAME/USRDIR/a.prx"),
+             ("b.prx", huge_b, "disc0:/PSP_GAME/USRDIR/b.prx")],
+        )
+        self.assertEqual([module["name"] for module in planned], ["a.prx", "b.prx"])
+        self.assertTrue(all(module["placement"] == "runtime" for module in planned))
+
+    def test_guest_module_planning_refuses_what_cannot_load(self) -> None:
+        main_elf = self.temp_dir / "placement-main-checks.elf"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08804000, memsz=0x40000))
+        module = self.temp_dir / "module.prx"
+        cases = (
+            ("a main image past user memory",
+             build_plain_mips_elf(e_type=2, vaddr=0x09FF0000, memsz=0x20000), None,
+             "exceeds the conventional user-memory ceiling",
+             "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE"),
+            # Fixed-address modules carry a real SceModuleInfo: the planner reads every
+            # module's export table first (#771), and a plain ELF whose p_paddr is a
+            # load address is a malformed module to that reader. An executable on the
+            # main image is deferred by name, not refused (checked below).
+            ("a fixed-address module past user memory", None,
+             build_module_elf([SYSLIB_EXPORT], e_type=2, base_vaddr=0x09FFFFF0),
+             "fixed load address 0x09fffff0 that collides with layout",
+             "GUEST_MODULE_LOAD_BINDING_REQUIRED"),
+            ("an image that is not a PSP module", None,
+             build_plain_mips_elf(e_type=4, vaddr=0, memsz=0x100),
+             "not a supported ELF/PRX", "GUEST_MODULE_FORMAT_UNSUPPORTED"),
+        )
+        for label, main_bytes, module_bytes, expected, boundary in cases:
+            with self.subTest(case=label):
+                main = main_elf
+                if main_bytes is not None:
+                    main = self.temp_dir / "placement-oversized-main.elf"
+                    main.write_bytes(main_bytes)
+                module.write_bytes(module_bytes if module_bytes is not None else
+                                   build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x100))
+                with self.assertRaisesRegex(IsoInspectionError, expected) as ctx:
+                    plan_guest_module_bindings(
+                        main, [("module.prx", module, "disc0:/PSP_GAME/USRDIR/module.prx")])
+                self.assertEqual(ctx.exception.boundary_code, boundary)
+        fixed = self.temp_dir / "fixed.prx"
+        fixed.write_bytes(build_module_elf([SYSLIB_EXPORT], e_type=2, base_vaddr=0x09000000))
+        planned = plan_guest_module_bindings(
+            main_elf, [("fixed.prx", fixed, "disc0:/PSP_GAME/USRDIR/fixed.prx")])
+        self.assertEqual(planned[0]["placement"], "runtime")
+        # Two fixed-address modules may share addresses: only modules loaded at the
+        # same time compete for memory, and the allocator decides that at load.
+        twin = self.temp_dir / "twin.prx"
+        twin.write_bytes(build_module_elf([SYSLIB_EXPORT], e_type=2, base_vaddr=0x09000020))
+        planned = plan_guest_module_bindings(
+            main_elf, [("fixed.prx", fixed, "disc0:/fixed.prx"), ("twin.prx", twin, "disc0:/twin.prx")])
+        self.assertEqual([module["name"] for module in planned], ["fixed.prx", "twin.prx"])
+        with self.assertRaisesRegex(IsoInspectionError, "collide") as ctx:
+            plan_guest_module_bindings(
+                main_elf, [("A.prx", fixed, "disc0:/a"), ("a.PRX", fixed, "disc0:/b")])
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_FORMAT_UNSUPPORTED")
+        # An executable on the main image is a separate program: deferred by name.
+        over_main = self.temp_dir / "over-main.prx"
+        over_main.write_bytes(build_module_elf([SYSLIB_EXPORT], e_type=2, base_vaddr=0x08820000))
+        declared, deferred = plan_guest_module_layout(
+            main_elf, [("over-main.prx", over_main, "disc0:/over-main.prx")])
+        self.assertEqual(declared, [])
+        self.assertEqual(deferred, [{
+            "name": "over-main.prx",
+            "reason": "separate executable on the main image base, not pre-placed",
+        }])
+
+    def test_guest_module_planning_with_a_main_image_that_leaves_little_memory(self) -> None:
+        # A relocatable main image ending at 0x09EF4000 left no room for the former
+        # fixed layout; with on-demand placement its module is still planned (the
+        # allocator answers at load time), and only a main image past user memory
+        # stops planning with the layout boundary.
+        main_elf = self.temp_dir / "placement-huge-main.elf"
+        module_a = self.temp_dir / "mod-a.prx"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x016F0000))
+        module_a.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x1000))
+        planned = plan_guest_module_bindings(
+            main_elf,
+            [("a.prx", module_a, "disc0:/PSP_GAME/USRDIR/a.prx")],
+        )
+        self.assertEqual([(m["name"], m["placement"]) for m in planned], [("a.prx", "runtime")])
+        main_elf.write_bytes(build_plain_mips_elf(e_type=0xFFA0, vaddr=0, memsz=0x01800000))
+        with self.assertRaises(IsoInspectionError) as ctx:
+            plan_guest_module_bindings(
                 main_elf,
-                [("a.prx", huge_a, "disc0:/PSP_GAME/USRDIR/a.prx"),
-                 ("b.prx", huge_b, "disc0:/PSP_GAME/USRDIR/b.prx")],
+                [("a.prx", module_a, "disc0:/PSP_GAME/USRDIR/a.prx")],
             )
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE")
+        self.assertIn("exceeds the conventional user-memory ceiling", str(ctx.exception))
+
+    def test_provisional_guest_module_placement_encrypted_module_raises_decryption_required(self) -> None:
+        main_elf = self.temp_dir / "placement-main-enc.elf"
+        enc_module = self.temp_dir / "enc.prx"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        enc_module.write_bytes(build_psp_container())
+        with self.assertRaises(IsoInspectionError) as ctx:
+            plan_guest_module_bindings(
+                main_elf,
+                [("enc.prx", enc_module, "disc0:/PSP_GAME/USRDIR/enc.prx")],
+            )
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_DECRYPTION_REQUIRED")
+
+    def test_provisional_guest_module_placement_overlapping_segments_raises_format_unsupported(self) -> None:
+        main_elf = self.temp_dir / "placement-main-ovl.elf"
+        ovl_module = self.temp_dir / "ovl.prx"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        ovl_module.write_bytes(build_overlapping_mips_elf())
+        with self.assertRaises(IsoInspectionError) as ctx:
+            plan_guest_module_bindings(
+                main_elf,
+                [("ovl.prx", ovl_module, "disc0:/PSP_GAME/USRDIR/ovl.prx")],
+            )
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_FORMAT_UNSUPPORTED")
+        self.assertIn("overlapping loadable segments", str(ctx.exception))
+
+    def test_provisional_guest_module_placement_fixed_address_module_support_and_collision(self) -> None:
+        main_elf = self.temp_dir / "placement-main-fixed.elf"
+        fixed_ok = self.temp_dir / "fixed_ok.prx"
+        fixed_bad = self.temp_dir / "fixed_bad.prx"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        fixed_ok.write_bytes(build_module_elf([SYSLIB_EXPORT], e_type=2, base_vaddr=0x09000000))
+        placed = plan_guest_module_bindings(
+            main_elf,
+            [("fixed_ok.prx", fixed_ok, "disc0:/PSP_GAME/USRDIR/fixed_ok.prx")],
+        )
+        # A fixed-address module is translated for its link addresses and declared
+        # runtime-placed: the allocator reserves exactly its link range at load.
+        self.assertEqual(placed, [{
+            "name": "fixed_ok.prx", "required": True, "role": "guest-prx",
+            "placement": "runtime", "guest_path": "disc0:/PSP_GAME/USRDIR/fixed_ok.prx",
+        }])
+
+        # An executable on the main image's base is a separate program: it is deferred by
+        # name, not pre-placed beside main and not a stop.
+        fixed_bad.write_bytes(build_module_elf([SYSLIB_EXPORT], e_type=2, base_vaddr=0x08810000))
+        declared, deferred = plan_guest_module_layout(
+            main_elf,
+            [("fixed_bad.prx", fixed_bad, "disc0:/PSP_GAME/USRDIR/fixed_bad.prx")],
+        )
+        self.assertEqual(declared, [])
+        self.assertEqual(deferred, [{
+            "name": "fixed_bad.prx",
+            "reason": "separate executable on the main image base, not pre-placed",
+        }])
+
+    def test_byte_identical_copy_of_the_main_executable_is_a_recorded_duplicate(self) -> None:
+        main_elf = self.temp_dir / "duplicate-main.elf"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        copy = self.temp_dir / "duplicate_copy.elf"
+        copy.write_bytes(main_elf.read_bytes())
+        declared, deferred = plan_guest_module_layout(
+            main_elf,
+            [("duplicate_copy.elf", copy, "disc0:/PSP_GAME/USRDIR/duplicate_copy.elf")],
+        )
+        self.assertEqual(declared, [])
+        self.assertEqual(deferred, [{
+            "name": "duplicate_copy.elf",
+            "reason": "duplicate of the main executable, not loaded as a module",
+        }])
+
+    def test_codegen_step_keeps_its_output_on_disk(self) -> None:
+        log = self.temp_dir / "bringup-codegen.log"
+        code = (
+            "import sys; print('codegen-stdout-line'); "
+            "print('codegen-stderr-line', file=sys.stderr); sys.exit(3)"
+        )
+        returncode = nk_cli._run_codegen_step(
+            [sys.executable, "-c", code], cwd=self.temp_dir, env=dict(os.environ),
+            log_path=log,
+        )
+        self.assertEqual(returncode, 3)
+        text = log.read_text(encoding="utf-8")
+        self.assertIn("exit 3", text)
+        self.assertIn("codegen-stdout-line", text)
+        self.assertIn("codegen-stderr-line", text)
+
+    # Synthetic NIDs for the exact HLE-served rule. The registry is injected so
+    # these cases pin the rule itself, independent of what src/rt/hle.c serves.
+    SERVED_A, SERVED_B, SERVED_C = 0x5EED0001, 0x5EED0002, 0x5EED0003
+    UNSERVED_A, UNSERVED_B, UNSERVED_C = 0x0BAD0001, 0x0BAD0002, 0x0BAD0003
+
+    def _plan_with_registry(self, main_elf: Path, modules: dict[str, bytes], registered=None):
+        inputs = []
+        for name, blob in modules.items():
+            path = self.temp_dir / name
+            path.write_bytes(blob)
+            inputs.append((name, path, f"disc0:/PSP_GAME/USRDIR/{name}"))
+        registry = frozenset(
+            {self.SERVED_A, self.SERVED_B, self.SERVED_C} if registered is None else registered
+        )
+        with patch.object(iso_inspect, "runtime_registered_nids", return_value=registry):
+            return plan_guest_module_bindings(main_elf, inputs)
+
+    def _main_importing(self, imports: list[tuple[str, list[int]]]) -> Path:
+        main_elf = self.temp_dir / "placement-main-imports.elf"
+        main_elf.write_bytes(
+            build_module_elf([SYSLIB_EXPORT], imports=imports, e_type=2, base_vaddr=BASE_VADDR)
+        )
+        return main_elf
+
+    def test_module_the_runtime_serves_completely_is_not_placed(self) -> None:
+        main_elf = self.temp_dir / "placement-main-served.elf"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        placed = self._plan_with_registry(main_elf, {
+            # user-mode library: every exported function registered
+            "served_user.prx": build_module_elf(
+                [SYSLIB_EXPORT, ("SynthAudio", 0x0001, [self.SERVED_A, self.SERVED_B], [])]
+            ),
+            # kernel-mode driver: its syscall-exported library is fully registered;
+            # the kernel-only library is not callable from user mode
+            "served_driver.prx": build_module_elf(
+                [
+                    SYSLIB_EXPORT,
+                    ("SynthCodec", 0x4001, [self.SERVED_C], []),
+                    ("SynthCodec_driver", 0x0001, [self.UNSERVED_A], []),
+                ],
+                module_attributes=0x1006,
+            ),
+            # one callable function the runtime lacks keeps the module translated
+            "partial_user.prx": build_module_elf(
+                [SYSLIB_EXPORT, ("SynthVideo", 0x0001, [self.SERVED_A, self.UNSERVED_B], [])]
+            ),
+            # the runtime registers functions only, so an exported variable keeps it
+            "variable_user.prx": build_module_elf(
+                [SYSLIB_EXPORT, ("SynthData", 0x0001, [self.SERVED_B], [self.UNSERVED_C])]
+            ),
+            # an overlay that only runs from module_start exports nothing callable
+            "overlay.prx": build_module_elf([SYSLIB_EXPORT]),
+        })
+        self.assertEqual(
+            [module["name"] for module in placed],
+            ["overlay.prx", "partial_user.prx", "variable_user.prx"],
+        )
+
+    def test_firmware_kernel_module_the_main_executable_does_not_need_is_left_out(self) -> None:
+        """A kernel driver used only by a firmware library never blocks the title."""
+        main_elf = self._main_importing([("SynthVideo", [self.SERVED_A])])
+        placed = self._plan_with_registry(main_elf, {
+            "video_library.prx": build_module_elf(
+                [SYSLIB_EXPORT, ("SynthVideo", 0x0001, [self.SERVED_A, self.UNSERVED_B], [])],
+                imports=[("SynthVideoDriver", [self.UNSERVED_A])],
+            ),
+            "video_driver.prx": build_module_elf(
+                [
+                    SYSLIB_EXPORT,
+                    ("SynthVideoDriver", 0x4001, [self.UNSERVED_A, self.UNSERVED_C], []),
+                    ("SynthVideoDriver_driver", 0x0001, [0x0BAD0010], []),
+                ],
+                module_attributes=0x1006,
+            ),
+            "lifecycle_only_driver.prx": build_module_elf([SYSLIB_EXPORT], module_attributes=0x1006),
+        })
+        self.assertEqual([module["name"] for module in placed], ["video_library.prx"])
+
+    def test_kernel_module_the_main_executable_needs_raises_format_unsupported(self) -> None:
+        main_elf = self._main_importing(
+            [("SynthDriver", [self.UNSERVED_A]), ("SynthAudio", [self.SERVED_A])]
+        )
+        driver = build_module_elf(
+            [SYSLIB_EXPORT, ("SynthDriver", 0x4001, [self.UNSERVED_A, self.UNSERVED_B], [])],
+            module_attributes=0x1006,
+        )
+        with self.assertRaises(IsoInspectionError) as ctx:
+            self._plan_with_registry(main_elf, {"title_driver.prx": driver})
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_FORMAT_UNSUPPORTED")
+        self.assertIn("requires PSP kernel mode: title_driver.prx", str(ctx.exception))
+        self.assertIn(f"0x{self.UNSERVED_A:08x}", str(ctx.exception))
+        self.assertNotIn(f"0x{self.UNSERVED_B:08x}", str(ctx.exception))
+
+    def test_kernel_module_import_is_not_a_need_when_something_else_provides_it(self) -> None:
+        main_elf = self._main_importing([("SynthDriver", [self.UNSERVED_A])])
+        driver = build_module_elf(
+            [SYSLIB_EXPORT, ("SynthDriver", 0x4001, [self.UNSERVED_A], [])],
+            module_attributes=0x1006,
+        )
+        # the runtime registers the imported NID
+        placed = self._plan_with_registry(
+            main_elf, {"driver.prx": driver},
+            registered={self.SERVED_A, self.UNSERVED_A},
+        )
+        self.assertEqual(placed, [])
+        # a placed user-mode module exports the imported NID
+        placed = self._plan_with_registry(main_elf, {
+            "driver.prx": driver,
+            "user_impl.prx": build_module_elf(
+                [SYSLIB_EXPORT, ("SynthDriver", 0x0001, [self.UNSERVED_A], [])]
+            ),
+        })
+        self.assertEqual([module["name"] for module in placed], ["user_impl.prx"])
+        # the import names a kernel-only library, which user code cannot link to
+        kernel_only = build_module_elf(
+            [SYSLIB_EXPORT, ("SynthDriver", 0x0001, [self.UNSERVED_A], [])],
+            module_attributes=0x1006,
+        )
+        self.assertEqual(self._plan_with_registry(main_elf, {"driver.prx": kernel_only}), [])
+
+    def test_unreadable_main_import_table_names_the_analyzer_boundary(self) -> None:
+        blob = bytearray(
+            build_module_elf(
+                [SYSLIB_EXPORT], imports=[("SynthDriver", [self.UNSERVED_A])],
+                e_type=2, base_vaddr=BASE_VADDR,
+            )
+        )
+        data_off = 0x1000  # import_fixtures.DATA_FILE_OFF: the segment's file offset
+        stub_top = struct.unpack_from("<I", blob, data_off + 44)[0]
+        struct.pack_into("<I", blob, data_off + (stub_top - BASE_VADDR) + 12, 0)  # nidData = 0
+        main_elf = self.temp_dir / "placement-main-bad-imports.elf"
+        main_elf.write_bytes(bytes(blob))
+        driver = build_module_elf(
+            [SYSLIB_EXPORT, ("SynthDriver", 0x4001, [self.UNSERVED_A], [])],
+            module_attributes=0x1006,
+        )
+        with self.assertRaises(IsoInspectionError) as ctx:
+            self._plan_with_registry(main_elf, {"driver.prx": driver})
+        self.assertEqual(ctx.exception.boundary_code, "ANALYZER_IMPORT_NID_TABLE_MISSING")
+
+    def test_malformed_export_table_raises_format_unsupported(self) -> None:
+        main_elf = self.temp_dir / "placement-main-bad-exports.elf"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        broken = build_module_elf(
+            [SYSLIB_EXPORT, ("SynthAudio", 0x0001, [self.SERVED_A], [])], corrupt="entry_overrun"
+        )
+        with self.assertRaises(IsoInspectionError) as ctx:
+            self._plan_with_registry(main_elf, {"broken.prx": broken})
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_FORMAT_UNSUPPORTED")
+        self.assertIn("invalid module or export table: broken.prx", str(ctx.exception))
+
+    def test_runtime_registry_failure_stops_planning_with_a_named_boundary(self) -> None:
+        runtime_registered_nids.cache_clear()
+        self.addCleanup(runtime_registered_nids.cache_clear)
+        main_elf = self.temp_dir / "placement-main-registry.elf"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        library = self.temp_dir / "library.prx"
+        library.write_bytes(
+            build_module_elf([SYSLIB_EXPORT, ("SynthAudio", 0x0001, [self.SERVED_A], [])])
+        )
+        overlay = self.temp_dir / "overlay.prx"
+        overlay.write_bytes(build_module_elf([SYSLIB_EXPORT]))
+        failures = (
+            hle_manifest.ManifestError("registration the extractor cannot account for"),
+            OSError("hle.c is missing"),
+        )
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                with patch.object(hle_manifest, "registered_nids", side_effect=failure):
+                    with self.assertRaises(RuntimeRegistryUnavailableError) as ctx:
+                        plan_guest_module_bindings(
+                            main_elf, [("library.prx", library, "disc0:/library.prx")]
+                        )
+                    self.assertEqual(
+                        ctx.exception.boundary_code, "RUNTIME_HLE_REGISTRY_UNAVAILABLE"
+                    )
+                    self.assertIn(str(failure), str(ctx.exception))
+                    # A module with nothing to compare never consults the registry.
+                    placed = plan_guest_module_bindings(
+                        main_elf, [("overlay.prx", overlay, "disc0:/overlay.prx")]
+                    )
+                    self.assertEqual([module["name"] for module in placed], ["overlay.prx"])
+
+    def test_live_runtime_registry_drives_the_served_decision(self) -> None:
+        live = runtime_registered_nids()
+        self.assertEqual(live, hle_manifest.registered_nids())
+        some_registered = sorted(live)[:3]
+        unregistered = next(nid for nid in range(0x0BAD0000, 0x0BAE0000) if nid not in live)
+        served = read_guest_module_interface(
+            "driver.prx",
+            build_module_elf(
+                [SYSLIB_EXPORT, ("SynthCodec", 0x4001, some_registered, [])],
+                module_attributes=0x1006,
+            ),
+        )
+        self.assertTrue(served.requires_kernel)
+        self.assertTrue(runtime_serves_module(served, live))
+        partial = read_guest_module_interface(
+            "driver.prx",
+            build_module_elf(
+                [SYSLIB_EXPORT, ("SynthCodec", 0x4001, [*some_registered, unregistered], [])],
+                module_attributes=0x1006,
+            ),
+        )
+        self.assertFalse(runtime_serves_module(partial, live))
+
+    def test_provisional_guest_module_placement_corrupt_elf_header_raises_format_unsupported(self) -> None:
+        main_elf = self.temp_dir / "placement-main-corrupt.elf"
+        corrupt_module = self.temp_dir / "corrupt.prx"
+        main_elf.write_bytes(build_plain_mips_elf(e_type=2, vaddr=0x08800000, memsz=0x40000))
+        corrupt_module.write_bytes(b"\x7fELF\x01\x01\x01\x00" + b"\x00" * 30)
+        with self.assertRaises(IsoInspectionError) as ctx:
+            plan_guest_module_bindings(
+                main_elf,
+                [("corrupt.prx", corrupt_module, "disc0:/PSP_GAME/USRDIR/corrupt.prx")],
+            )
+        self.assertEqual(ctx.exception.boundary_code, "GUEST_MODULE_FORMAT_UNSUPPORTED")
 
     def test_non_psp_iso_without_directory_reachable_sfo_is_refused(self) -> None:
         """An embedded but unreferenced PARAM.SFO does not authorize experimental import."""
@@ -2180,7 +2800,7 @@ int main(int argc, char **argv) {{
         # 1. Conflicting keys: Python and Native C must reject
         sfo_conflict = build_custom_param_sfo([
             ("DISC_ID", 0x0204, b"UCUS98701\0"),
-            ("DISC_ID", 0x0204, b"ULUS10001\0"),
+            ("DISC_ID", 0x0204, b"TEST80004\0"),
             ("TITLE", 0x0204, b"Test Conflict\0"),
         ])
         iso_conflict = self.temp_dir / "conflict.iso"
@@ -2321,6 +2941,26 @@ int main(int argc, char **argv) {{
         self.assertIn("READER:OPEN_FAILED", res.stdout)
 
 
+class PbpBoundaryCodeParityTests(unittest.TestCase):
+    """The PBP identify codes are one set in the Python emitter and the C emitter.
+
+    This runs without gcc: it reads the C emitter's source rather than
+    executing it, so a new code added only on the C side fails here even on a
+    machine that cannot build the native harness.
+    """
+
+    C_EMITTER = ROOT / "src" / "core" / "nk_iso.c"
+    # A C string literal naming a PBP boundary code. Only quoted literals match,
+    # so identifiers such as PBP_MAGIC or PBP_HEADER_SIZE are not counted.
+    C_CODE_LITERAL = re.compile(r'"(PBP_[A-Z0-9_]+)"')
+
+    def test_c_emitter_emits_exactly_the_python_boundary_codes(self) -> None:
+        source = self.C_EMITTER.read_text(encoding="utf-8")
+        emitted = set(self.C_CODE_LITERAL.findall(source))
+        self.assertTrue(emitted, "no PBP boundary code literal found in nk_iso.c")
+        self.assertEqual(emitted, set(iso_inspect.PBP_BOUNDARY_CODES))
+
+
 class PackageBuildFailureMessageTests(unittest.TestCase):
     """The generic compile/link failure branch names the first real diagnostic line."""
 
@@ -2365,6 +3005,8 @@ class PackageBuildFailureMessageTests(unittest.TestCase):
         })()
 
         def fake_compile(command, **_kwargs):
+            if _is_compiler_target_query(command):
+                return _REAL_SUBPROCESS_RUN(command, **_kwargs)
             return subprocess.CompletedProcess(list(command), returncode, stdout=stdout, stderr=stderr)
 
         with patch.object(nk_cli, "_load_entry_manifest", return_value=(manifest_path, manifest, None)), \

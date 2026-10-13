@@ -44,9 +44,27 @@ re-attach now share a bounded verifier: at most three `ver` attempts, each
 limited to the remaining time or 15 seconds, within a configurable total
 deadline (`--shell-verification-timeout`, default 45 seconds). Every attempt is
 recorded in recovery events. Lost replies and USBHostFS unknown-command output
-are retryable transport events; only exhaustion escalates to
+are retryable transport events. After a probe launch, exhaustion escalates to
 `PHYSICAL_INTERVENTION_REQUIRED` with manual commands. This routine retries
 shell qualification only; semantic probe results are never retried.
+The same verifier settles the link after each case's `modstun` stop/unload
+handshake, before the S2 snapshot, the post-unload shell qualification, and the
+host0 round-trip. Its attempts are recorded with a `post-unload settle:` prefix
+and as `settle_status` and `settle_attempts` in the case's teardown report; an
+exhausted settle adds no teardown issue, so the checks after it classify the case
+unchanged ([HARDWARE_ORACLE.md](HARDWARE_ORACLE.md#probe-teardown-for-repeated-launches)).
+
+Transport start-up waits for positive readiness instead of issuing `ver` as
+soon as `usbhostfs_pc` is spawned. It waits for USBHostFS to report its device
+poll loop, finds the one PSPLink device in `usbipd list`, attaches it once when
+it is `Shared`, and then waits for `Connected to device`; all of this shares one
+bounded start budget (60 seconds by default). USBHostFS prints
+`waiting for device...` once at start-up and again after every disconnect, so
+only a wait that follows a connection counts as a device loss. A failure before
+the first launch, including initial shell-qualification exhaustion, ends as
+`TRANSPORT_START_FAILED` with the USBHostFS output tail and manual commands. The
+PSP ran nothing, so it needs no power cycle and a campaign checkpoint keeps its
+resume position.
 
 The reset command's timeout alone did not establish its outcome; the subsequent
 `Shared` to attach to `Connected` to `ver` sequence did establish restored
@@ -246,7 +264,9 @@ physical power intervention. The system says so plainly instead of looping.
    existing `run_psplink.py` path; the resident framed protocol is still absent.
    Campaigns use repeated `--campaign-case CASE_ID=PRX_PATH` arguments, put
    `transport-write` first, and set one bounded `--timeout` shared by each case.
-   An optional `--out` must be inside the host0 scratch directory.
+   An optional `--out` must be inside the host0 scratch directory. Like
+   `--command`, this mode requires `--session-id` and passes the hardware-lock
+   gate before the transport starts and again before every reset and launch.
 3. REQ_002 prerequisite: an import/startup fixture that resolves ThreadManForUser
    mutex NIDs, starts clean, emits one marker, asserts nothing — validated on
    host/toolchain first so PSP sessions debug semantics, not linker plumbing.

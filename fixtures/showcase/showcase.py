@@ -27,6 +27,8 @@ import zlib
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
+from ge_stat_windows import (WINDOW_VBLANKS, GeStatWindow, GeStatWindowError, first_window,
+                             parse_windows)
 from prxload import Prx
 
 # Where the staged demos live. The defaults are inside the repository's ignored
@@ -37,8 +39,29 @@ from prxload import Prx
 BUILD_ROOT = Path(os.environ.get("NK_SHOWCASE_BUILD_ROOT") or ROOT / "build" / "showcase")
 DEMO_ROOT = Path(os.environ.get("NK_SHOWCASE_DEMO_ROOT") or ROOT / "build" / "demos")
 SCREENSHOT_ROOT = BUILD_ROOT / "screenshots"
+# Vblank window (inclusive) whose presented frames the headless capture smoke publishes
+# and checks. A window, not a single vblank: a demo need not flip on every vblank (the 3D
+# scene flips about every fourth one in the capture run), and every frame it does present
+# inside the window must be captured.
+HEADLESS_CAPTURE_WINDOW = (60, 71)
 SECTOR = 2048
 PSP_PRX_ELF_TYPE = 0xFFA0
+
+# The first-frame checkpoint is guest progress: the first SR_GESTAT window whose
+# counters show the demo's own drawing ("frame_counters" below), at whatever vblank
+# that window closed. VCOUNT is host time in the default paced mode, so a slow host
+# boots the guest later and its first drawn frame lands in a later window; that is
+# still a reached checkpoint. The budget bounds the wait: the runtime exits cleanly
+# once VCOUNT reaches SMOKE_EXIT_VBLANK (SR_EXIT_AT_VBLANK, three windows), and
+# SMOKE_TIMEOUT_SECONDS bounds the whole host process, so a guest that stops making
+# progress fails instead of hanging CI.
+SMOKE_EXIT_VBLANK = 3 * WINDOW_VBLANKS
+SMOKE_TIMEOUT_SECONDS = 15
+# Scripted presses as SR_PADSCRIPT rows: (vblank, button mask, width in vblanks).
+# Cross plays each demo's tone; Start saves and exits Breakout's savedata run.
+CROSS_PRESS = (12, 0x4000, 4)
+START_PRESS = (240, 0x0008, 4)
+SAVE_START_PRESS = (120, 0x0008, 4)
 
 DEMOS = (
     {
@@ -49,6 +72,8 @@ DEMOS = (
         "target": "showcase_scene_app",
         "manifest": "assets/titles/showcase-scene.json",
         "palette": ((23, 54, 81), (78, 204, 190)),
+        # The lit cube: transform-mode triangles with visible pixels.
+        "frame_counters": ("tri3d", "px3d"),
     },
     {
         "id": "showcase-breakout-v1",
@@ -58,6 +83,8 @@ DEMOS = (
         "target": "showcase_breakout_app",
         "manifest": "assets/titles/showcase-breakout.json",
         "palette": ((49, 35, 78), (252, 200, 87)),
+        # Paddle, ball, bricks and score: through-mode sprites with visible pixels.
+        "frame_counters": ("spr2d", "px2d"),
     },
 )
 
@@ -397,13 +424,52 @@ def _runtime_command(demo: dict[str, object], padscript: Path) -> tuple[list[str
         "SR_FBSNAP": "1",
         "SR_INLOG": "1",
         "SR_NOINPUT": "1",
-        "SR_EXIT_AT_VBLANK": "180",
+        "SR_EXIT_AT_VBLANK": str(SMOKE_EXIT_VBLANK),
         "SR_PADSCRIPT": str(padscript),
         "SDL_VIDEODRIVER": "dummy",
         "SDL_AUDIODRIVER": "dummy",
         "SR_MEMSTICK": str(BUILD_ROOT / "smoke" / disc_id / "memstick"),
     })
     return command, env, package_dir
+
+
+def _headless_capture_command(
+    demo: dict[str, object], padscript: Path
+) -> tuple[list[str], dict[str, str], Path]:
+    """The scripted run on the explicit headless presenter with one capture switch.
+
+    SR_FBSNAP_WINDOWS is the only capture variable set, so the run proves both that a window
+    is self-sufficient (every present inside it is captured) and that the offscreen sink
+    publishes the frames it presents. The run must not depend on host speed: with real-time
+    vblank pacing a loaded host lets wall-clock vblanks pass without a guest flip, so
+    SR_NOVBPACE=1 advances vblanks with the guest instead, and SR_FPS_CAP=0 hands every
+    guest flip to the presenter (the wall-clock output cap would legitimately drop, and
+    report SKIPPED, presents that land early in their output slot). SR_PRESENT_TRACE=1 logs
+    every presented vblank so the published set can be checked against it."""
+    command, env, package_dir = _runtime_command(demo, padscript)
+    command.append("--gui")
+    for name in ("SR_FBSNAP", "SR_FBSNAP_AFTER", "SR_FBDUMP"):
+        env.pop(name, None)
+    first, last = HEADLESS_CAPTURE_WINDOW
+    env.update({
+        "SR_VIDEO": "offscreen",
+        "SR_FBSNAP_WINDOWS": f"{first}-{last}",
+        "SR_NOVBPACE": "1",
+        "SR_FPS_CAP": "0",
+        "SR_PRESENT_TRACE": "1",
+        "SR_EXIT_AT_VBLANK": str(last + 20),
+    })
+    return command, env, package_dir
+
+
+def _ppm_size(path: Path) -> tuple[int, int]:
+    parts = path.read_bytes().split(b"\n", 3)
+    if len(parts) != 4 or parts[0] != b"P6" or parts[2] != b"255":
+        raise ShowcaseError(f"invalid P6 framebuffer capture: {path}")
+    width, height = (int(value) for value in parts[1].split())
+    if len(parts[3]) != width * height * 3:
+        raise ShowcaseError(f"truncated P6 framebuffer capture: {path}")
+    return width, height
 
 
 def _ppm_metrics(path: Path, background: bytes) -> tuple[int, int]:
@@ -423,6 +489,147 @@ def _ppm_metrics(path: Path, background: bytes) -> tuple[int, int]:
     return len(colors), foreground
 
 
+def first_frame_checkpoint(demo: dict[str, object], output: str, package_dir: Path,
+                           log_path: Path) -> tuple[GeStatWindow, Path]:
+    """The window in which a smoke run's guest first drew its frame, and its capture.
+
+    The checkpoint is the first GE statistics window whose counters show the demo's
+    own drawing (``frame_counters``), labelled with the vblank that closed it. Both
+    are read from the log, never assumed: a loaded host steps VCOUNT past 60 and boots
+    the guest later, which moves the checkpoint to a later window but does not make a
+    reached checkpoint look missed. The run's vblank budget bounds the wait.
+    """
+    disc_id = str(demo["disc_id"])
+    counters = tuple(str(name) for name in demo["frame_counters"])
+    try:
+        checkpoint = first_window(output, require=counters)
+    except GeStatWindowError as exc:
+        raise ShowcaseError(f"{disc_id} {exc}; see {log_path}") from exc
+    if checkpoint is None:
+        closed = ", ".join(str(window.frame) for window in parse_windows(output)) or "none"
+        raise ShowcaseError(
+            f"{disc_id} did not reach its first frame checkpoint: no GE statistics window "
+            f"before vblank {SMOKE_EXIT_VBLANK} drew {' and '.join(counters)} "
+            f"(windows closed at vblank: {closed}); see {log_path}"
+        )
+    ppm = package_dir / checkpoint.snapshot_name
+    if not ppm.is_file():
+        raise ShowcaseError(
+            f"{disc_id} produced no GE framebuffer capture at its first frame checkpoint "
+            f"(vblank {checkpoint.frame}); see {log_path}"
+        )
+    return checkpoint, ppm
+
+
+def _padscript(*presses: tuple[int, int, int]) -> str:
+    return "".join(f"{vblank} {mask:04x} {width}\n" for vblank, mask, width in presses)
+
+
+def scripted_press_note(output: str, press: tuple[int, int, int]) -> str:
+    """Say whether the guest read a scripted press, for a failed check that depends on it.
+
+    The runtime delivers scripted input in guest time (src/rt/scripted_input.h): a press
+    is held until the guest has read it, however far the host falls behind, and a press
+    the guest never reads fails the run by name. So when an input, audio or savedata check
+    fails, the useful fact is whether the guest ever read the press, from SR_INLOG's
+    "guest read scripted" line. A press that was read points at the guest or the HLE, one
+    that was never read points at a guest that stopped polling the pad.
+    """
+    vblank, mask, _width = press
+    read = re.search(rf"ctrl_read: vcount=(\d+) guest read scripted 0x{mask:04x}\b", output)
+    if read:
+        return f" (the guest read the scripted press due at vblank {vblank} at vblank {read.group(1)})"
+    return f" (the guest never read the scripted press due at vblank {vblank})"
+
+
+def _named_failure(output: str) -> str:
+    """The runtime's own named failure (ROUTE_FAIL ...) in a log, as a message suffix."""
+    match = re.search(r"^ROUTE_FAIL: ([^\n]*)", output, re.MULTILINE)
+    return f" ({match.group(1).strip()})" if match else ""
+
+
+def _run_runtime(command: list[str], env: dict[str, str], cwd: Path,
+                 log_path: Path, label: str) -> str:
+    """Run one bounded runtime smoke and keep its complete log, then return the output.
+
+    The log is written whether the runtime passes, fails, or overruns the host timeout,
+    so a failed gate always leaves the evidence that names its cause.
+    """
+    # Window captures are per-run evidence: never judge a frame an earlier run left behind.
+    for stale in cwd.glob("snap_f*.ppm"):
+        stale.unlink()
+    try:
+        result = subprocess.run(command, cwd=cwd, env=env, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                timeout=SMOKE_TIMEOUT_SECONDS, check=False)
+    except subprocess.TimeoutExpired as exc:
+        partial = exc.stdout or ""
+        if isinstance(partial, bytes):
+            partial = partial.decode("utf-8", errors="replace")
+        log_path.write_text(partial + "\nSHOWCASE_SMOKE_TIMEOUT\n", encoding="utf-8", errors="replace")
+        raise ShowcaseError(
+            f"{label} exceeded the {SMOKE_TIMEOUT_SECONDS} second smoke window; see {log_path}"
+        ) from exc
+    log_path.write_text(result.stdout, encoding="utf-8", errors="replace")
+    if result.returncode != 0:
+        raise ShowcaseError(
+            f"{label} exited {result.returncode}{_named_failure(result.stdout)}; see {log_path}")
+    return result.stdout
+
+
+def _window_vblanks(pattern: str, output: str) -> set[int]:
+    first, last = HEADLESS_CAPTURE_WINDOW
+    return {int(v) for v in re.findall(pattern, output, re.MULTILINE) if first <= int(v) <= last}
+
+
+def _smoke_headless_capture(demo: dict[str, object], padscript: Path, smoke_dir: Path) -> list[Path]:
+    """Run the demo headless and prove every frame it presented inside the capture window
+    was published as a real 480x272 frame, and nothing else was."""
+    disc_id = str(demo["disc_id"])
+    command, env, package_dir = _headless_capture_command(demo, padscript)
+    for stale in package_dir.glob("frame_v*.ppm"):
+        stale.unlink()
+    try:
+        result = subprocess.run(command, cwd=package_dir, env=env, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                timeout=15, check=False)
+    except subprocess.TimeoutExpired as exc:
+        raise ShowcaseError(f"{disc_id} headless capture run exceeded the 15 second window") from exc
+    output = result.stdout
+    log_path = smoke_dir / "runtime-headless-capture.log"
+    log_path.write_text(output, encoding="utf-8", errors="replace")
+    if result.returncode != 0:
+        raise ShowcaseError(f"{disc_id} headless capture run exited {result.returncode}; see {log_path}")
+    if "BOOT_EVENT phase=window_ready backend=offscreen" not in output:
+        raise ShowcaseError(f"{disc_id} did not select the offscreen presenter; see {log_path}")
+    presented = _window_vblanks(r"^HOST_PRESENT_SUBMITTED f=(\d+) ", output)
+    # A latched flip is reported at the next SetFrameBuf, so read the vblank from the file
+    # name the capture was armed with, not from the report's own f= field.
+    reported = _window_vblanks(
+        r"^FBSNAP f=\d+ swapchain capture -> frame_v(\d+)\.ppm \(result=1\)$", output
+    )
+    written = {int(path.stem[len("frame_v"):]) for path in package_dir.glob("frame_v*.ppm")}
+    if not presented:
+        raise ShowcaseError(f"{disc_id} presented no frame inside the capture window; see {log_path}")
+    if not (presented == reported and reported == written):
+        raise ShowcaseError(
+            f"{disc_id} offscreen captures do not match the presented frames "
+            f"(presented {sorted(presented)}, published {sorted(reported)}, "
+            f"files {sorted(written)}); see {log_path}"
+        )
+    captures = [package_dir / f"frame_v{vblank}.ppm" for vblank in sorted(written)]
+    for capture in captures:
+        if _ppm_size(capture) != (480, 272):
+            raise ShowcaseError(f"{disc_id} offscreen capture is not a 480x272 frame: {capture}")
+        color_count, lit_pixels = _ppm_metrics(capture, bytes((0, 0, 0)))
+        if color_count < 4 or lit_pixels < 1000:
+            raise ShowcaseError(
+                f"{disc_id} offscreen capture is visually empty ({color_count} colors, "
+                f"{lit_pixels} non-black pixels); see {capture}"
+            )
+    return captures
+
+
 def smoke_all() -> None:
     SCREENSHOT_ROOT.mkdir(parents=True, exist_ok=True)
     padscript_root = BUILD_ROOT / "smoke"
@@ -432,36 +639,19 @@ def smoke_all() -> None:
         disc_id = str(demo["disc_id"])
         smoke_dir = padscript_root / disc_id
         smoke_dir.mkdir(parents=True, exist_ok=True)
-        (smoke_dir / "padscript.txt").write_text("12 4000 4\n240 0008 4\n", encoding="ascii")
+        (smoke_dir / "padscript.txt").write_text(_padscript(CROSS_PRESS, START_PRESS),
+                                                 encoding="ascii")
         command, env, package_dir = _runtime_command(demo, smoke_dir / "padscript.txt")
-        try:
-            result = subprocess.run(command, cwd=package_dir, env=env, text=True,
-                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                    timeout=15, check=False)
-            output = result.stdout
-        except subprocess.TimeoutExpired as exc:
-            output = (exc.stdout or "") + "\nSHOWCASE_SMOKE_TIMEOUT\n"
-            raise ShowcaseError(f"{disc_id} exceeded the 15 second scripted smoke window") from exc
         log_path = smoke_dir / "runtime.log"
-        log_path.write_text(output, encoding="utf-8", errors="replace")
-        if result.returncode != 0:
-            raise ShowcaseError(f"{disc_id} runtime exited {result.returncode}; see {log_path}")
-        if "GESTAT f=60 " not in output:
-            raise ShowcaseError(f"{disc_id} did not reach its first frame checkpoint; see {log_path}")
-        if "-> 0x4000" not in output:
-            raise ShowcaseError(f"{disc_id} missed the scripted Cross input sample; see {log_path}")
+        output = _run_runtime(command, env, package_dir, log_path, f"{disc_id} runtime")
+        checkpoint, ppm = first_frame_checkpoint(demo, output, package_dir, log_path)
+        press_note = scripted_press_note(output, CROSS_PRESS)
+        if f"-> 0x{CROSS_PRESS[1]:04x}" not in output:
+            raise ShowcaseError(
+                f"{disc_id} missed the scripted Cross input sample{press_note}; see {log_path}")
         if "AUDIOSTAT_HOST:" not in output or "pushed=0" in output:
-            raise ShowcaseError(f"{disc_id} missed audio-submission telemetry; see {log_path}")
-        if disc_id == "TEST00007":
-            scene_frame = re.search(r"GESTAT f=60 .*?tri3d=(\d+).*?px3d=(\d+)", output)
-            if not scene_frame or not int(scene_frame.group(1)) or not int(scene_frame.group(2)):
-                raise ShowcaseError(f"{disc_id} produced no visible 3D geometry at frame 60; see {log_path}")
-        ppm = package_dir / "snap_f00060.ppm"
-        if not ppm.is_file():
-            snapshots = sorted(package_dir.glob("snap_f*.ppm"))
-            if not snapshots:
-                raise ShowcaseError(f"{disc_id} produced no GE framebuffer capture; see {log_path}")
-            ppm = snapshots[0]
+            raise ShowcaseError(
+                f"{disc_id} missed audio-submission telemetry{press_note}; see {log_path}")
         color_count, foreground_pixels = _ppm_metrics(ppm, bytes((16, 24, 32)))
         # A flat-colour 2D frame legitimately has only a handful of colours; this
         # catches an empty or single-colour frame, and the screenshots are reviewed.
@@ -477,23 +667,24 @@ def smoke_all() -> None:
             raise ShowcaseError(f"could not convert {ppm} to PNG: {converted.stderr.strip()}")
         if disc_id == "TEST00008":
             save_padscript = smoke_dir / "padscript-save.txt"
-            save_padscript.write_text("12 4000 4\n120 0008 4\n", encoding="ascii")
+            save_padscript.write_text(_padscript(CROSS_PRESS, SAVE_START_PRESS), encoding="ascii")
             save_command, save_env, save_package_dir = _runtime_command(demo, save_padscript)
             save_env.pop("SR_EXIT_AT_VBLANK", None)
-            try:
-                save_result = subprocess.run(save_command, cwd=save_package_dir, env=save_env,
-                                             text=True, stdout=subprocess.PIPE,
-                                             stderr=subprocess.STDOUT, timeout=15, check=False)
-            except subprocess.TimeoutExpired as exc:
-                raise ShowcaseError(f"{disc_id} savedata smoke exceeded the 15 second window") from exc
             save_log_path = smoke_dir / "runtime-save.log"
-            save_log_path.write_text(save_result.stdout, encoding="utf-8", errors="replace")
-            if save_result.returncode != 0:
-                raise ShowcaseError(f"{disc_id} savedata smoke exited {save_result.returncode}; see {save_log_path}")
+            try:
+                _run_runtime(save_command, save_env, save_package_dir, save_log_path,
+                             f"{disc_id} savedata smoke")
+            except ShowcaseError as exc:
+                # The savedata run ends only when the guest acts on its scripted Start.
+                save_log = save_log_path.read_text(encoding="utf-8", errors="replace")
+                raise ShowcaseError(f"{exc}{scripted_press_note(save_log, SAVE_START_PRESS)}") from exc
             save_root = Path(env["SR_MEMSTICK"])
             if not save_root.exists() or not any(path.is_file() for path in save_root.rglob("*")):
                 raise ShowcaseError(f"Breakout did not create savedata under {save_root}")
-        print(f"SHOWCASE_SMOKE: PASS {disc_id} frame/input/audio; screenshot={screenshot}")
+        captures = _smoke_headless_capture(demo, smoke_dir / "padscript.txt", smoke_dir)
+        print(f"SHOWCASE_SMOKE: PASS {disc_id} frame/input/audio/headless-capture; "
+              f"first frame checkpoint=vblank {checkpoint.frame}; screenshot={screenshot} "
+              f"captures={len(captures)} first={captures[0]}")
 
 
 def main() -> int:

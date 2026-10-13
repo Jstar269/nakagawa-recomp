@@ -9,6 +9,13 @@
 #include "nk_input_profile.h"
 #include "nk_platform.h"
 
+/* Scratch root for the files this test writes: the checkout's build/ by default, or
+ * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
+ * touches the checkout. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 #else
@@ -407,7 +414,7 @@ static void test_future_version_refused(void) {
     assert(profile.trigger_threshold == NK_INPUT_DEFAULT_TRIGGER_THRESHOLD);
 
     /* Write future file to disk and verify loading from disk does not downgrade or overwrite it */
-    const char *file_path = "build/test_future_profile.json";
+    const char *file_path = SR_SELFTEST_BUILD_ROOT "/test_future_profile.json";
     FILE *f = fopen(file_path, "wb");
     assert(f != NULL);
     fputs(future_json, f);
@@ -506,7 +513,7 @@ static void test_conflict_detection(void) {
 static void test_save_load_round_trip(void) {
     printf("[INPUT_PROFILE_TEST] Subtest 6: Save/load round trip with atomic replacement...\n");
 
-    const char *file_path = "build/test_saved_profile.json";
+    const char *file_path = SR_SELFTEST_BUILD_ROOT "/test_saved_profile.json";
     char diag[256];
 
     NkInputProfile original;
@@ -608,11 +615,11 @@ static void test_per_title_selection_and_fallback(void) {
     NkInputProfile boxing;
     nk_input_profile_init_default(&boxing);
     boxing.psp_buttons[NK_PSP_BTN_CROSS].primary.index = NK_HOST_BUTTON_LEFT_STICK;
-    assert(nk_input_profile_file_set_title(&doc, "ULUS10041", &boxing, diag, sizeof(diag)) == NK_OK);
+    assert(nk_input_profile_file_set_title(&doc, "TEST80001", &boxing, diag, sizeof(diag)) == NK_OK);
     assert(doc.title_count == 2);
 
     /* Saving and reloading preserves both entries and the global mapping. */
-    const char *file_path = "build/test_per_title_profile.json";
+    const char *file_path = SR_SELFTEST_BUILD_ROOT "/test_per_title_profile.json";
     assert(nk_input_profile_file_save(&doc, file_path, diag, sizeof(diag)) == NK_OK);
     assert(nk_platform_file_exists(file_path));
 
@@ -621,7 +628,7 @@ static void test_per_title_selection_and_fallback(void) {
     assert(loaded.schema_version == NK_INPUT_PROFILE_SCHEMA_VERSION);
     assert(loaded.title_count == 2);
     assert(nk_input_profile_file_find_title(&loaded, "UCUS98701") == 0);
-    assert(nk_input_profile_file_find_title(&loaded, "ULUS10041") == 1);
+    assert(nk_input_profile_file_find_title(&loaded, "TEST80001") == 1);
     assert(nk_input_profile_file_find_title(&loaded, "ULES99999") == -1);
     assert(loaded.title[0].psp_buttons[NK_PSP_BTN_CROSS].primary.index == NK_HOST_BUTTON_GUIDE);
     assert(loaded.title[0].axes[NK_PSP_AXIS_ANALOG_Y].inverted);
@@ -649,14 +656,14 @@ static void test_per_title_selection_and_fallback(void) {
     memset(host_buttons, 0, sizeof(host_buttons));
     memset(host_axes, 0, sizeof(host_axes));
     host_buttons[NK_HOST_BUTTON_LEFT_STICK] = true;
-    assert(nk_input_profile_eval_buttons(resolved /* ULUS10041 */, host_buttons, host_axes) == 0);
+    assert(nk_input_profile_eval_buttons(resolved /* TEST80001 */, host_buttons, host_axes) == 0);
     host_buttons[NK_HOST_BUTTON_LEFT_STICK] = false;
     host_buttons[NK_HOST_BUTTON_GUIDE] = true;
     assert(nk_input_profile_eval_buttons(&loaded.global, host_buttons, host_axes) == 0);
     resolved = nk_input_profile_file_resolve(&loaded, "UCUS98701", resolve_diag, sizeof(resolve_diag));
     assert(nk_input_profile_eval_buttons(resolved, host_buttons, host_axes) == NK_PSP_BTN_CROSS_BIT);
     host_buttons[NK_HOST_BUTTON_GUIDE] = false;
-    resolved = nk_input_profile_file_resolve(&loaded, "ULUS10041", resolve_diag, sizeof(resolve_diag));
+    resolved = nk_input_profile_file_resolve(&loaded, "TEST80001", resolve_diag, sizeof(resolve_diag));
     assert(nk_input_profile_eval_buttons(resolved, host_buttons, host_axes) == 0);
     host_buttons[NK_HOST_BUTTON_LEFT_STICK] = true;
     assert(nk_input_profile_eval_buttons(resolved, host_buttons, host_axes) == NK_PSP_BTN_CROSS_BIT);
@@ -726,7 +733,7 @@ static void test_schema_one_migration(void) {
     assert(strstr(diag, "cannot carry a per_title map") != NULL);
 
     /* Re-saving a migrated document writes the current schema. */
-    const char *migrated_path = "build/test_migrated_profile.json";
+    const char *migrated_path = SR_SELFTEST_BUILD_ROOT "/test_migrated_profile.json";
     assert(nk_input_profile_file_save(&doc, NULL, diag, sizeof(diag)) != NK_OK); /* no path */
     assert(nk_input_profile_file_parse_json(&doc, v1_json, strlen(v1_json),
                                             diag, sizeof(diag)) == NK_OK);
@@ -814,7 +821,7 @@ static void test_per_title_fail_closed(void) {
         "  \"navigation_bindings\": [],\n"
         "  \"per_title\": [\n"
         "    {\n"
-        "      \"disc_id\": \"ULUS10041\",\n"
+        "      \"disc_id\": \"TEST80001\",\n"
         "      \"profile\": {\n"
         "        \"device\": { \"guid\": \"g\", \"name_hint\": \"Pad\" },\n"
         "        \"calibration\": {\n"
@@ -830,7 +837,7 @@ static void test_per_title_fail_closed(void) {
         "}";
     assert(nk_input_profile_file_parse_json(&doc, out_of_range_entry, strlen(out_of_range_entry),
                                             diag, sizeof(diag)) != NK_OK);
-    assert(strstr(diag, "ULUS10041") != NULL);
+    assert(strstr(diag, "TEST80001") != NULL);
     assert(strstr(diag, "trigger_threshold") != NULL);
     assert(doc.title_count == 0);
 
@@ -923,10 +930,10 @@ static void test_per_title_fail_closed(void) {
     assert(nk_input_profile_file_set_title(&doc, "UCUS98701", &good, diag, sizeof(diag)) == NK_OK);
     NkInputProfile bad = good;
     bad.psp_buttons[NK_PSP_BTN_CIRCLE] = bad.psp_buttons[NK_PSP_BTN_CROSS];
-    assert(nk_input_profile_file_set_title(&doc, "ULUS10041", &bad, diag, sizeof(diag)) != NK_OK);
+    assert(nk_input_profile_file_set_title(&doc, "TEST80001", &bad, diag, sizeof(diag)) != NK_OK);
     assert(strstr(diag, "conflicting binding") != NULL);
     assert(doc.title_count == 1);
-    assert(nk_input_profile_file_find_title(&doc, "ULUS10041") == -1);
+    assert(nk_input_profile_file_find_title(&doc, "TEST80001") == -1);
     assert(nk_input_profile_file_set_title(&doc, "ULUS/10041", &good, diag, sizeof(diag)) != NK_OK);
     assert(doc.title_count == 1);
 
@@ -944,7 +951,7 @@ static void test_per_title_fail_closed(void) {
     assert(nk_input_profile_file_find_title(&doc, "UCUS98701") == 0);
 
     /* A save with an invalid in-memory entry never replaces the file on disk. */
-    const char *keep_path = "build/test_per_title_keep.json";
+    const char *keep_path = SR_SELFTEST_BUILD_ROOT "/test_per_title_keep.json";
     assert(nk_input_profile_file_save(&doc, keep_path, diag, sizeof(diag)) == NK_OK);
     doc.title[1].psp_buttons[NK_PSP_BTN_CIRCLE] = doc.title[1].psp_buttons[NK_PSP_BTN_CROSS];
     assert(nk_input_profile_file_save(&doc, keep_path, diag, sizeof(diag)) != NK_OK);
@@ -1273,7 +1280,7 @@ static void test_hostile_documents_fail_closed(void) {
         {
             char entries[1024];
             (void)render_entry(entries, sizeof(entries),
-                               "\"UCUS98701\", \"disc_id\": \"ULUS10041\"", NULL);
+                               "\"UCUS98701\", \"disc_id\": \"TEST80001\"", NULL);
             len = render_per_title_doc(s_hostile_doc, sizeof(s_hostile_doc), "2", entries);
             expect_refused("duplicate disc_id in one per_title entry", s_hostile_doc, len,
                            "duplicate JSON object key");
@@ -1633,7 +1640,7 @@ static void test_hostile_documents_fail_closed(void) {
         expect_accepted("valid multi-byte name_hint", s_hostile_doc, len, &doc);
         assert(strcmp(doc.global.name_hint, "P\xc3" "\xa4" "d \xf0\x9f\x8e\xae") == 0);
         {
-            const char *path = "build/test_hostile_utf8.json";
+            const char *path = SR_SELFTEST_BUILD_ROOT "/test_hostile_utf8.json";
             char why[NK_INPUT_DIAGNOSTIC_MAX_LEN];
             assert(nk_input_profile_file_save(&doc, path, why, sizeof(why)) == NK_OK);
             NkInputProfileFile back;
@@ -1880,12 +1887,12 @@ static void expect_load_refused(const char *label, const char *path,
 static void test_hostile_profile_file_loader(void) {
     printf("[INPUT_PROFILE_TEST] Subtest 11: hostile files on disk fail closed at the loader...\n");
 
-    const char *path = "build/test_hostile_profile.json";
+    const char *path = SR_SELFTEST_BUILD_ROOT "/test_hostile_profile.json";
     char why[NK_INPUT_DIAGNOSTIC_MAX_LEN];
     NkInputProfileFile doc;
     size_t len;
 
-    assert(nk_platform_mkdir_p("build"));
+    assert(nk_platform_mkdir_p(SR_SELFTEST_BUILD_ROOT));
 
     /* A file that is there but empty is not an empty profile: it is refused. */
     write_bytes(path, "", 0);
@@ -1931,8 +1938,8 @@ static void test_hostile_profile_file_loader(void) {
 
     /* A path that is a directory, a path that is empty, and a path that is not
      * there at all: each one refuses itself, none of them reads. */
-    assert(nk_platform_mkdir_p("build/test_hostile_dir"));
-    expect_load_refused("path is a directory", "build/test_hostile_dir", NULL);
+    assert(nk_platform_mkdir_p(SR_SELFTEST_BUILD_ROOT "/test_hostile_dir"));
+    expect_load_refused("path is a directory", SR_SELFTEST_BUILD_ROOT "/test_hostile_dir", NULL);
     expect_load_refused("empty path", "", "file path is null or empty");
 
     {
@@ -1947,7 +1954,7 @@ static void test_hostile_profile_file_loader(void) {
     {
         char diag[NK_INPUT_DIAGNOSTIC_MAX_LEN];
         diag[0] = '\0';
-        NkResult res = nk_input_profile_file_load(&doc, "build/test_hostile_absent.json",
+        NkResult res = nk_input_profile_file_load(&doc, SR_SELFTEST_BUILD_ROOT "/test_hostile_absent.json",
                                                   diag, sizeof(diag));
         assert(res == NK_ERROR_FILE_NOT_FOUND);
         assert(strstr(diag, "not found") != NULL);

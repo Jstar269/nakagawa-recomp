@@ -410,7 +410,10 @@ try {
             $modules = @($script:TitleManagerPlan.required_guest_modules)
             $extra = ""
             if ($modules.Count -gt 0) {
-                $extra = @($modules | ForEach-Object { "$ModuleDirForMake/$($_.name)@0x$('{0:x8}' -f [uint64]$_.load_address)" }) -join ' '
+                $extra = @($modules | ForEach-Object {
+                    if ($_.PSObject.Properties.Name -contains 'placement') { "$ModuleDirForMake/$($_.name)@runtime" }
+                    else { "$ModuleDirForMake/$($_.name)@0x$('{0:x8}' -f [uint64]$_.load_address)" }
+                }) -join ' '
             }
             $mArgs = @(
                 "GAME_NAME=$($script:TitleManagerPlan.make.game_name)",
@@ -665,8 +668,8 @@ try {
     function Find-Symbol {
         param([string]$Query)
         $csvCandidates = @(
-            "docs\opengrip_ref\functions.csv",
-            "OpenGrip_For_Inspiration\functions.csv"
+            "docs\symbol_ref\functions.csv",
+            "functions.csv"
         )
         $csvPath = $null
         foreach ($c in $csvCandidates) {
@@ -1007,8 +1010,8 @@ try {
             if (-not $detail) {
                 $detail = "manifest encoder could not resolve the declared roots."
             }
-            if ($detail -notmatch "Loose-content root binding #289") {
-                $detail = "Loose-content root binding #289 (in the works): $detail"
+            if ($detail -notmatch "Loose-content root binding") {
+                $detail = "Loose-content root binding: $detail"
             }
             throw $detail
         }
@@ -1021,10 +1024,10 @@ try {
                 ConvertFrom-Json -InputObject $encodedJson -ErrorAction Stop
             }
         } catch {
-            throw "Loose-content root binding #289 (in the works): manifest encoder returned an invalid value."
+            throw "Loose-content root binding: manifest encoder returned an invalid value."
         }
         if ($null -eq $looseRoots) {
-            throw "Loose-content root binding #289 (in the works): manifest encoder returned no value."
+            throw "Loose-content root binding: manifest encoder returned no value."
         }
         $env:SR_LOOSE_CONTENT_ROOTS = [string]$looseRoots
     }

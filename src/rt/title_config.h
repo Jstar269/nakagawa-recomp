@@ -162,14 +162,25 @@ int sr_title_config_reent_bindings(SrTitleReentBindings *out);
  * the callee-saved registers. Returns 0 for generic and fixture profiles. */
 int sr_title_config_preserve_callee_saved_at_calls(void);
 
+/* How a guest PRX module declared by the title manifest is placed in guest memory. */
+typedef enum SrGuestModulePlacement {
+    SR_GUEST_MODULE_FIXED = 0,    /* translated and loaded at its manifest base */
+    SR_GUEST_MODULE_RUNTIME = 1   /* no manifest base: translated position-independently and
+                                     placed by the guest allocator when the game loads it */
+} SrGuestModulePlacement;
+
 /* Guest PRX module declared by the title manifest for this guest load path
  * (case-insensitive exact match, e.g. "disc0:/PSP_GAME/USRDIR/module/psmf.prx"):
- * its module file name and the base both the recompiler and runtime use. 0 = none. */
+ * its module file name, its placement, and -- for a fixed module -- the base both the
+ * recompiler and runtime use (0 for a runtime-placed module). 0 = none. Every out
+ * pointer may be NULL. */
 int sr_title_config_guest_module(const char *guest_path, const char **name_out,
-                                 uint32_t *base_out, int *required_out);
+                                 uint32_t *base_out, int *required_out,
+                                 SrGuestModulePlacement *placement_out);
 unsigned sr_title_config_guest_module_count(void);
 int sr_title_config_guest_module_at(unsigned index, const char **name_out, const char **guest_path_out,
-                                    uint32_t *base_out, int *required_out);
+                                    uint32_t *base_out, int *required_out,
+                                    SrGuestModulePlacement *placement_out);
 
 int sr_title_config_frame_latch_addr(uint32_t *out);
 

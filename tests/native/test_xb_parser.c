@@ -10,6 +10,7 @@
 #include "nk_iso.h"
 #include "nk_platform.h"
 #include "setup_staging.h"
+#include "native_test_isolation.h"
 
 #ifdef NDEBUG
 #undef NDEBUG
@@ -20,12 +21,21 @@
 #include <string.h>
 #include <time.h>
 
+/* Scratch root for the files this test writes: the checkout's build/ by default, or
+ * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
+ * touches the checkout. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+
 #if defined(_WIN32) || defined(_WIN64)
 #include <direct.h>
 #include <windows.h>
 #define test_rmdir _rmdir
 #else
 #include <errno.h>
+#include <fcntl.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #define test_rmdir rmdir
 #endif
@@ -329,7 +339,7 @@ static void test_file_backed_archive_is_lazy(void) {
           NK_XB_COMPRESSION_HUFFMAN }
     };
     ByteBuffer bytes = make_archive(entries, sizeof(entries) / sizeof(entries[0]), false);
-    const char *path = "build/test_xb_lazy.xb";
+    const char *path = SR_SELFTEST_BUILD_ROOT "/test_xb_lazy.xb";
     write_file_bytes(path, bytes.data, bytes.size);
     NkXbArchive strict;
     char error[256];
@@ -382,7 +392,7 @@ static void test_file_backed_duplicate_validation(void) {
         { "data/shared.bin", second, sizeof(second) - 1u, NK_XB_COMPRESSION_NONE }
     };
     ByteBuffer bytes = make_archive(identical, 2u, false);
-    const char *path = "build/test_xb_lazy_duplicate.xb";
+    const char *path = SR_SELFTEST_BUILD_ROOT "/test_xb_lazy_duplicate.xb";
     write_file_bytes(path, bytes.data, bytes.size);
     NkXbArchive archive;
     char error[256];
@@ -418,7 +428,7 @@ static void test_lazy_payload_failure_is_deferred(void) {
     }
     assert(header_offset != 0u);
     bytes.data[header_offset] = 0u;
-    const char *path = "build/test_xb_lazy_bad_payload.xb";
+    const char *path = SR_SELFTEST_BUILD_ROOT "/test_xb_lazy_bad_payload.xb";
     write_file_bytes(path, bytes.data, bytes.size);
     NkXbArchive archive;
     char error[256];
@@ -674,10 +684,10 @@ static void test_deterministic_mutation_fuzz(void) {
 }
 
 static void test_staging_cleanup_boundary(void) {
-    const char *root = "build/.staging_xb_cleanup";
-    const char *nested = "build/.staging_xb_cleanup/nested";
-    const char *file_path = "build/.staging_xb_cleanup/nested/member.bin";
-    assert(!player_stage_discard("build"));
+    const char *root = SR_SELFTEST_BUILD_ROOT "/.staging_xb_cleanup";
+    const char *nested = SR_SELFTEST_BUILD_ROOT "/.staging_xb_cleanup/nested";
+    const char *file_path = SR_SELFTEST_BUILD_ROOT "/.staging_xb_cleanup/nested/member.bin";
+    assert(!player_stage_discard(SR_SELFTEST_BUILD_ROOT));
     (void)player_stage_discard(root);
     assert(nk_platform_mkdir_p(nested));
     static const uint8_t data[] = "cleanup";
@@ -690,9 +700,9 @@ static void test_staging_cleanup_boundary(void) {
 
 static void test_staging_discard_reparse_boundary(void) {
 #if defined(_WIN32) || defined(_WIN64)
-    const char *root = "build/.staging_reparse_boundary";
-    const char *outside = "build/staging_discard_outside";
-    const char *outside_file = "build/staging_discard_outside/sentinel.bin";
+    const char *root = SR_SELFTEST_BUILD_ROOT "/.staging_reparse_boundary";
+    const char *outside = SR_SELFTEST_BUILD_ROOT "/staging_discard_outside";
+    const char *outside_file = SR_SELFTEST_BUILD_ROOT "/staging_discard_outside/sentinel.bin";
     (void)player_stage_discard(root);
     remove(outside_file);
     test_rmdir(outside);
@@ -704,8 +714,9 @@ static void test_staging_discard_reparse_boundary(void) {
     /* The relative target resolves outside the staging root. On hosts without
      * symlink creation rights, retain the rest of the native suite but make
      * the missing adversarial capability explicit. */
-    if (!CreateSymbolicLinkW(L"build/.staging_reparse_boundary/escaped",
-                             L"..\\staging_discard_outside",
+    /* The narrow API: the scratch root is a narrow macro, and these names are ASCII. */
+    if (!CreateSymbolicLinkA(SR_SELFTEST_BUILD_ROOT "/.staging_reparse_boundary/escaped",
+                             "..\\staging_discard_outside",
                              SYMBOLIC_LINK_FLAG_DIRECTORY |
                              SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE)) {
         DWORD error = GetLastError();
@@ -720,18 +731,18 @@ static void test_staging_discard_reparse_boundary(void) {
     }
 
     assert(player_stage_discard(root));
-    assert(GetFileAttributesW(L"build/staging_discard_outside/sentinel.bin") !=
+    assert(GetFileAttributesA(SR_SELFTEST_BUILD_ROOT "/staging_discard_outside/sentinel.bin") !=
            INVALID_FILE_ATTRIBUTES);
-    assert(GetFileAttributesW(L"build/.staging_reparse_boundary") ==
+    assert(GetFileAttributesA(SR_SELFTEST_BUILD_ROOT "/.staging_reparse_boundary") ==
            INVALID_FILE_ATTRIBUTES);
     remove(outside_file);
     test_rmdir(outside);
     printf("[XB_TEST] Windows reparse-point discard boundary PASSED\n");
 #else
-    const char *root = "build/.staging_symlink_boundary";
-    const char *outside = "build/staging_discard_posix_outside";
-    const char *outside_file = "build/staging_discard_posix_outside/sentinel.bin";
-    const char *escaped = "build/.staging_symlink_boundary/escaped";
+    const char *root = SR_SELFTEST_BUILD_ROOT "/.staging_symlink_boundary";
+    const char *outside = SR_SELFTEST_BUILD_ROOT "/staging_discard_posix_outside";
+    const char *outside_file = SR_SELFTEST_BUILD_ROOT "/staging_discard_posix_outside/sentinel.bin";
+    const char *escaped = SR_SELFTEST_BUILD_ROOT "/.staging_symlink_boundary/escaped";
     (void)player_stage_discard(root);
     remove(outside_file);
     test_rmdir(outside);
@@ -841,19 +852,19 @@ static void test_iso_to_native_staging_pipeline(void) {
     ByteBuffer xb = make_archive(xb_entries, sizeof(xb_entries) / sizeof(xb_entries[0]), false);
     assert(xb.size < 2048);
 
-    const char *iso_path = "build/test_xb_staging.iso";
-    const char *stage_root = "build/test_xb_staging_output";
-    const char *appdata_root = "build/test_ppsspp_appdata";
-    const char *userprofile_root = "build/test_ppsspp_user";
-    const char *libfont_source = "build/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM/DUMP/libfont.prx";
-    const char *psmf_source = "build/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM/DUMP/PRX/scePsmf_library.prx";
-    const char *psmfp_source = "build/test_ppsspp_user/Documents/PPSSPP/PSP/SYSTEM/DUMP/scePsmfP_library.prx";
-    const char *libfont_destination = "build/test_xb_staging_output/EXTRACTED/decrypted/libfont.prx";
-    const char *psmf_destination = "build/test_xb_staging_output/EXTRACTED/decrypted/scePsmf_library.prx";
-    const char *psmfp_destination = "build/test_xb_staging_output/EXTRACTED/decrypted/scePsmfP_library.prx";
-    assert(nk_platform_mkdir_p("build"));
-    assert(nk_platform_mkdir_p("build/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM/DUMP/PRX"));
-    assert(nk_platform_mkdir_p("build/test_ppsspp_user/Documents/PPSSPP/PSP/SYSTEM/DUMP"));
+    const char *iso_path = SR_SELFTEST_BUILD_ROOT "/test_xb_staging.iso";
+    const char *stage_root = SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output";
+    const char *appdata_root = SR_SELFTEST_BUILD_ROOT "/test_ppsspp_appdata";
+    const char *userprofile_root = SR_SELFTEST_BUILD_ROOT "/test_ppsspp_user";
+    const char *libfont_source = SR_SELFTEST_BUILD_ROOT "/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM/DUMP/libfont.prx";
+    const char *psmf_source = SR_SELFTEST_BUILD_ROOT "/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM/DUMP/PRX/scePsmf_library.prx";
+    const char *psmfp_source = SR_SELFTEST_BUILD_ROOT "/test_ppsspp_user/Documents/PPSSPP/PSP/SYSTEM/DUMP/scePsmfP_library.prx";
+    const char *libfont_destination = SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/EXTRACTED/decrypted/libfont.prx";
+    const char *psmf_destination = SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/EXTRACTED/decrypted/scePsmf_library.prx";
+    const char *psmfp_destination = SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/EXTRACTED/decrypted/scePsmfP_library.prx";
+    assert(nk_platform_mkdir_p(SR_SELFTEST_BUILD_ROOT));
+    assert(nk_platform_mkdir_p(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM/DUMP/PRX"));
+    assert(nk_platform_mkdir_p(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_user/Documents/PPSSPP/PSP/SYSTEM/DUMP"));
     static const uint8_t libfont_data[] = "synthetic libfont";
     static const uint8_t psmf_data[] = "synthetic psmf";
     static const uint8_t psmfp_data[] = "synthetic psmfp";
@@ -885,18 +896,18 @@ static void test_iso_to_native_staging_pipeline(void) {
     remove(audio_path);
     remove(visual_path);
     remove(layout_path);
-    test_rmdir("build/test_xb_staging_output/xbdata/assets.xb.d/data/sound");
-    test_rmdir("build/test_xb_staging_output/xbdata/assets.xb.d/data/menu");
-    test_rmdir("build/test_xb_staging_output/xbdata/assets.xb.d/data");
-    test_rmdir("build/test_xb_staging_output/xbdata/assets.xb.d");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/xbdata/assets.xb.d/data/sound");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/xbdata/assets.xb.d/data/menu");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/xbdata/assets.xb.d/data");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/xbdata/assets.xb.d");
     remove(archive_path);
-    test_rmdir("build/test_xb_staging_output/xbdata");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/xbdata");
     remove(eboot_path);
     remove(libfont_destination);
     remove(psmf_destination);
     remove(psmfp_destination);
-    test_rmdir("build/test_xb_staging_output/EXTRACTED/decrypted");
-    test_rmdir("build/test_xb_staging_output/EXTRACTED");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/EXTRACTED/decrypted");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/EXTRACTED");
     test_rmdir(stage_root);
 
     const size_t sector_count = 32;
@@ -946,7 +957,7 @@ static void test_iso_to_native_staging_pipeline(void) {
     uint8_t *root_child = image + 17 * 2048 + 68;
     assert(root_child[0] == 42 && root_child[32] == 8);
     root_child[32] = 9; /* PSP_GAME plus the following raw NUL byte */
-    const char *nul_stage_root = "build/.staging_xb_nul_identifier";
+    const char *nul_stage_root = SR_SELFTEST_BUILD_ROOT "/.staging_xb_nul_identifier";
     (void)player_stage_discard(nul_stage_root);
     write_file_bytes(iso_path, image, image_size);
     assert(player_stage_game_with_summary(iso_path, nul_stage_root,
@@ -978,8 +989,8 @@ static void test_iso_to_native_staging_pipeline(void) {
 
     /* A staging request without loose-content bindings stages only EBOOT.BIN;
      * the player does not infer another payload directory from the ISO. */
-    const char *empty_iso_path = "build/test_xb_empty_stage.iso";
-    const char *empty_stage_root = "build/.staging_xb_empty_assets";
+    const char *empty_iso_path = SR_SELFTEST_BUILD_ROOT "/test_xb_empty_stage.iso";
+    const char *empty_stage_root = SR_SELFTEST_BUILD_ROOT "/.staging_xb_empty_assets";
     const size_t empty_image_size = 32u * 2048u;
     uint8_t *empty_image = (uint8_t *)calloc(1, empty_image_size);
     assert(empty_image != NULL);
@@ -1021,9 +1032,9 @@ static void test_iso_to_native_staging_pipeline(void) {
 
     /* Direct ISO-stage failures carry an actionable code/message into the
      * wizard card instead of the previous generic "game staging failed". */
-    const char *missing_stage_root = "build/.staging_xb_missing_input";
+    const char *missing_stage_root = SR_SELFTEST_BUILD_ROOT "/.staging_xb_missing_input";
     (void)player_stage_discard(missing_stage_root);
-    assert(player_stage_game_with_summary("build/no_such_source_owned_iso.iso",
+    assert(player_stage_game_with_summary(SR_SELFTEST_BUILD_ROOT "/no_such_source_owned_iso.iso",
                                           missing_stage_root, NULL, 0, &callbacks,
                                           &summary, error, sizeof(error)) ==
            NK_ERROR_FILE_NOT_FOUND);
@@ -1034,8 +1045,8 @@ static void test_iso_to_native_staging_pipeline(void) {
                                           sizeof(error)) ==
            NK_ERROR_GENERIC);
     assert(strstr(error, "[STAGE_REQUEST_INVALID]") != NULL);
-    const char *bad_iso_path = "build/test_xb_malformed_stage.iso";
-    const char *bad_stage_root = "build/.staging_xb_malformed_input";
+    const char *bad_iso_path = SR_SELFTEST_BUILD_ROOT "/test_xb_malformed_stage.iso";
+    const char *bad_stage_root = SR_SELFTEST_BUILD_ROOT "/.staging_xb_malformed_input";
     (void)player_stage_discard(bad_stage_root);
     write_file_bytes(bad_iso_path, "not an ISO", 10);
     assert(player_stage_game_with_summary(bad_iso_path, bad_stage_root,
@@ -1081,34 +1092,34 @@ static void test_iso_to_native_staging_pipeline(void) {
     remove(audio_path);
     remove(visual_path);
     remove(layout_path);
-    test_rmdir("build/test_xb_staging_output/xbdata/assets.xb.d/data/sound");
-    test_rmdir("build/test_xb_staging_output/xbdata/assets.xb.d/data/menu");
-    test_rmdir("build/test_xb_staging_output/xbdata/assets.xb.d/data");
-    test_rmdir("build/test_xb_staging_output/xbdata/assets.xb.d");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/xbdata/assets.xb.d/data/sound");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/xbdata/assets.xb.d/data/menu");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/xbdata/assets.xb.d/data");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/xbdata/assets.xb.d");
     remove(archive_path);
-    test_rmdir("build/test_xb_staging_output/xbdata");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/xbdata");
     remove(eboot_path);
     remove(iso_path);
     remove(libfont_destination);
     remove(psmf_destination);
     remove(psmfp_destination);
-    test_rmdir("build/test_xb_staging_output/EXTRACTED/decrypted");
-    test_rmdir("build/test_xb_staging_output/EXTRACTED");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/EXTRACTED/decrypted");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_xb_staging_output/EXTRACTED");
     test_rmdir(stage_root);
     remove(libfont_source);
     remove(psmf_source);
     remove(psmfp_source);
-    test_rmdir("build/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM/DUMP/PRX");
-    test_rmdir("build/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM/DUMP");
-    test_rmdir("build/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM");
-    test_rmdir("build/test_ppsspp_appdata/PPSSPP/PSP");
-    test_rmdir("build/test_ppsspp_appdata/PPSSPP");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM/DUMP/PRX");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM/DUMP");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_appdata/PPSSPP/PSP/SYSTEM");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_appdata/PPSSPP/PSP");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_appdata/PPSSPP");
     test_rmdir(appdata_root);
-    test_rmdir("build/test_ppsspp_user/Documents/PPSSPP/PSP/SYSTEM/DUMP");
-    test_rmdir("build/test_ppsspp_user/Documents/PPSSPP/PSP/SYSTEM");
-    test_rmdir("build/test_ppsspp_user/Documents/PPSSPP/PSP");
-    test_rmdir("build/test_ppsspp_user/Documents/PPSSPP");
-    test_rmdir("build/test_ppsspp_user/Documents");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_user/Documents/PPSSPP/PSP/SYSTEM/DUMP");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_user/Documents/PPSSPP/PSP/SYSTEM");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_user/Documents/PPSSPP/PSP");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_user/Documents/PPSSPP");
+    test_rmdir(SR_SELFTEST_BUILD_ROOT "/test_ppsspp_user/Documents");
     test_rmdir(userprofile_root);
     restore_environment_value("APPDATA", old_appdata, had_appdata);
     restore_environment_value("USERPROFILE", old_userprofile, had_userprofile);
@@ -1357,6 +1368,357 @@ static void test_archive_vfs_many_members(void) {
     free(entries);
 }
 
+/* ------------------------------------------------------------------------- */
+/* Title staging transaction (player_stage_title)                             */
+/* ------------------------------------------------------------------------- */
+
+/* A source-owned disc in the archive layout: PSP_GAME/SYSDIR/EBOOT.BIN and,
+ * below USRDIR, either xbdata/assets.xb (the archive-format title shape) or
+ * an unrelated folder (a disc that lacks the title's data folder). */
+static void write_title_fixture_iso(const char *path, bool with_xbdata,
+                                    const ByteBuffer *xb) {
+    const size_t image_size = 32u * 2048u;
+    uint8_t *image = (uint8_t *)calloc(1, image_size);
+    assert(image != NULL);
+    uint8_t *pvd = image + 16u * 2048u;
+    pvd[0] = 1;
+    memcpy(pvd + 1, "CD001", 5);
+    pvd[6] = 1;
+    const uint8_t root_name = 0;
+    iso_record(pvd + 156, 17, 2048, 2, &root_name, 1);
+    static const uint8_t other_data[] = "unrelated synthetic file";
+    const IsoFixtureChild root_children[] = { { "PSP_GAME", 18, 2048, 2 } };
+    const IsoFixtureChild psp_children[] = {
+        { "SYSDIR", 19, 2048, 2 },
+        { "USRDIR", 20, 2048, 2 }
+    };
+    const IsoFixtureChild sys_children[] = { { "EBOOT.BIN", 21, 4, 0 } };
+    const IsoFixtureChild usr_children[] = {
+        { with_xbdata ? "xbdata" : "other", 22, 2048, 2 }
+    };
+    const IsoFixtureChild data_children[] = {
+        { with_xbdata ? "assets.xb" : "readme.bin", 23,
+          with_xbdata ? (uint32_t)xb->size : (uint32_t)(sizeof(other_data) - 1u), 0 }
+    };
+    iso_directory(image + 17u * 2048u, 17, 17, root_children, 1);
+    iso_directory(image + 18u * 2048u, 18, 17, psp_children, 2);
+    iso_directory(image + 19u * 2048u, 19, 18, sys_children, 1);
+    iso_directory(image + 20u * 2048u, 20, 18, usr_children, 1);
+    iso_directory(image + 22u * 2048u, 22, 20, data_children, 1);
+    memcpy(image + 21u * 2048u, "BOOT", 4);
+    if (with_xbdata) {
+        assert(xb->size < 2048u);
+        memcpy(image + 23u * 2048u, xb->data, xb->size);
+    } else {
+        memcpy(image + 23u * 2048u, other_data, sizeof(other_data) - 1u);
+    }
+    write_file_bytes(path, image, image_size);
+    free(image);
+}
+
+static void title_join(char *out, size_t out_size, const char *root,
+                       const char *relative) {
+    int written = snprintf(out, out_size, "%s%c%s", root,
+                           nk_platform_path_separator(), relative);
+    assert(written > 0 && (size_t)written < out_size);
+    for (char *p = out + strlen(root) + 1u; *p; p++) {
+        if (*p == '/' || *p == '\\') *p = nk_platform_path_separator();
+    }
+}
+
+static bool title_cancel_always(void *userdata) {
+    (void)userdata;
+    return true;
+}
+
+typedef struct {
+    char user_data_root[NATIVE_TEST_PATH_MAX];
+    char games_root[NATIVE_TEST_PATH_MAX];
+    char final_root[NATIVE_TEST_PATH_MAX];
+    char staging_root[NATIVE_TEST_PATH_MAX];
+    char retired_root[NATIVE_TEST_PATH_MAX];
+    char lock_path[NATIVE_TEST_PATH_MAX];
+} TitleStagePaths;
+
+static void title_stage_paths(const char *user_data_root, const char *disc_id,
+                              TitleStagePaths *paths) {
+    char name[96];
+    snprintf(paths->user_data_root, sizeof(paths->user_data_root), "%s", user_data_root);
+    title_join(paths->games_root, sizeof(paths->games_root), user_data_root, "games");
+    title_join(paths->final_root, sizeof(paths->final_root), paths->games_root, disc_id);
+    snprintf(name, sizeof(name), ".staging_%s", disc_id);
+    title_join(paths->staging_root, sizeof(paths->staging_root), paths->games_root, name);
+    snprintf(name, sizeof(name), ".staging_%s.retired", disc_id);
+    title_join(paths->retired_root, sizeof(paths->retired_root), paths->games_root, name);
+    snprintf(name, sizeof(name), ".staging_%s.lock", disc_id);
+    title_join(paths->lock_path, sizeof(paths->lock_path), paths->games_root, name);
+}
+
+static NkResult run_title_stage(const PlayerStageTitleRequest *request,
+                                const PlayerStageCallbacks *callbacks,
+                                PlayerStageSummary *summary,
+                                PlayerStageTitleOutcome *outcome,
+                                char *prepared_root, size_t prepared_root_size,
+                                char *message, size_t message_size) {
+    NkResult result = player_stage_title(request, callbacks, summary, outcome,
+                                         prepared_root, prepared_root_size,
+                                         message, message_size);
+    printf("[XB_TEST] player_stage_title(%s) -> %d %s\n", request->disc_id,
+           (int)result, message[0] ? message : "(no message)");
+    return result;
+}
+
+#if !defined(_WIN32) && !defined(_WIN64)
+/* fcntl record locks never conflict inside one process, so a second process
+ * holds the title's lock for the busy case. */
+static pid_t hold_lock_in_child(const char *lock_path, int *release_fd) {
+    int ready[2];
+    int release[2];
+    assert(pipe(ready) == 0 && pipe(release) == 0);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        close(ready[0]);
+        close(release[1]);
+        int fd = open(lock_path, O_RDWR | O_CREAT, 0600);
+        struct flock region;
+        memset(&region, 0, sizeof(region));
+        region.l_type = F_WRLCK;
+        region.l_whence = SEEK_SET;
+        char status = (fd >= 0 && fcntl(fd, F_SETLK, &region) == 0) ? 'L' : 'F';
+        if (write(ready[1], &status, 1) != 1) _exit(2);
+        char ignored;
+        ssize_t got = read(release[0], &ignored, 1);
+        (void)got;
+        _exit(0);
+    }
+    close(ready[1]);
+    close(release[0]);
+    char status = 0;
+    assert(read(ready[0], &status, 1) == 1 && status == 'L');
+    close(ready[0]);
+    *release_fd = release[1];
+    return child;
+}
+#endif
+
+static void test_title_staging_transaction(void) {
+    native_test_create_root("xb-title-stage");
+    native_test_isolate_user_data_roots();
+    /* The staging route also looks for already-dumped support PRXs in the
+     * user's emulator folders; point every such location into the run root so
+     * nothing from the real profile can enter the fixture trees. */
+    native_test_set_env("APPDATA", native_test_get_root());
+    native_test_set_env("USERPROFILE", native_test_get_root());
+
+    static const uint8_t raw_data[] = "staged native XB data";
+    static const uint8_t audio_data[] = "synthetic sound";
+    const FixtureEntry xb_entries[] = {
+        { "data/raw.bin", raw_data, sizeof(raw_data) - 1, NK_XB_COMPRESSION_NONE },
+        { "data/sound/theme.sgd", audio_data, sizeof(audio_data) - 1, NK_XB_COMPRESSION_NONE }
+    };
+    ByteBuffer xb = make_archive(xb_entries, sizeof(xb_entries) / sizeof(xb_entries[0]), false);
+
+    char iso_path[NATIVE_TEST_PATH_MAX];
+    char missing_iso_path[NATIVE_TEST_PATH_MAX];
+    char user_data_root[NATIVE_TEST_PATH_MAX];
+    title_join(iso_path, sizeof(iso_path), native_test_get_root(), "archive-title.iso");
+    title_join(missing_iso_path, sizeof(missing_iso_path), native_test_get_root(),
+               "archive-title-without-data.iso");
+    title_join(user_data_root, sizeof(user_data_root), native_test_get_root(), "user-data");
+    write_title_fixture_iso(iso_path, true, &xb);
+    write_title_fixture_iso(missing_iso_path, false, &xb);
+    free(xb.data);
+
+    static const char *const whole_usrdir[] = { "." };
+    PlayerStageTitleRequest request;
+    memset(&request, 0, sizeof(request));
+    request.iso_path = iso_path;
+    request.user_data_root = user_data_root;
+    request.disc_id = "TEST90001";
+    request.disc_version = "1.00";
+    request.loose_content_roots = whole_usrdir;
+    request.loose_content_root_count = 1;
+    request.data_root = "xbdata";
+    TitleStagePaths paths;
+    title_stage_paths(user_data_root, request.disc_id, &paths);
+
+    PlayerStageSummary summary;
+    PlayerStageTitleOutcome outcome;
+    char prepared_root[NK_MAX_PATH];
+    char message[1024];
+    char path[NATIVE_TEST_PATH_MAX];
+
+    /* 1. First staging extracts, validates and promotes in one step. */
+    assert(run_title_stage(&request, NULL, &summary, &outcome, prepared_root,
+                           sizeof(prepared_root), message, sizeof(message)) == NK_OK);
+    assert(outcome == PLAYER_STAGE_TITLE_STAGED);
+    assert(strcmp(prepared_root, paths.final_root) == 0);
+    assert(summary.extracted_asset_count == 2 && summary.extracted_audio_count == 1);
+    title_join(path, sizeof(path), paths.final_root, "EBOOT.BIN");
+    assert(nk_platform_file_exists(path));
+    title_join(path, sizeof(path), paths.final_root, "xbdata/assets.xb.d/data/raw.bin");
+    assert(nk_platform_file_exists(path));
+    title_join(path, sizeof(path), paths.final_root, "EXTRACTED/staging-record.txt");
+    assert(nk_platform_file_exists(path));
+    assert(!nk_platform_dir_exists(paths.staging_root));
+    assert(!nk_platform_dir_exists(paths.retired_root));
+
+    /* 2. Staging again is idempotent: the complete tree is reused (a marker
+     * placed in it survives) and its counts come back from the record. */
+    char marker[NATIVE_TEST_PATH_MAX];
+    title_join(marker, sizeof(marker), paths.final_root, "reuse-marker.bin");
+    write_file_bytes(marker, "kept", 4);
+    PlayerStageSummary reused;
+    assert(run_title_stage(&request, NULL, &reused, &outcome, prepared_root,
+                           sizeof(prepared_root), message, sizeof(message)) == NK_OK);
+    assert(outcome == PLAYER_STAGE_TITLE_REUSED);
+    assert(memcmp(&reused, &summary, sizeof(summary)) == 0);
+    assert(nk_platform_file_exists(marker));
+
+    /* 3. What an interrupted run leaves (an unpromoted staging tree and a
+     * replaced tree not yet removed) is cleared, never promoted. */
+    title_join(path, sizeof(path), paths.staging_root, "partial.bin");
+    assert(nk_platform_mkdir_p(paths.staging_root));
+    write_file_bytes(path, "partial", 7);
+    title_join(path, sizeof(path), paths.retired_root, "old.bin");
+    assert(nk_platform_mkdir_p(paths.retired_root));
+    write_file_bytes(path, "old", 3);
+    assert(run_title_stage(&request, NULL, &summary, &outcome, prepared_root,
+                           sizeof(prepared_root), message, sizeof(message)) == NK_OK);
+    assert(outcome == PLAYER_STAGE_TITLE_REUSED);
+    assert(!nk_platform_dir_exists(paths.staging_root));
+    assert(!nk_platform_dir_exists(paths.retired_root));
+
+    /* An interruption before promotion leaves no game folder at all; the next
+     * run clears the partial tree and stages from the start. */
+    assert(native_test_remove_tree(paths.final_root));
+    title_join(path, sizeof(path), paths.staging_root, "xbdata/partial.bin");
+    title_join(marker, sizeof(marker), paths.staging_root, "xbdata");
+    assert(nk_platform_mkdir_p(marker));
+    write_file_bytes(path, "partial", 7);
+    assert(run_title_stage(&request, NULL, &summary, &outcome, prepared_root,
+                           sizeof(prepared_root), message, sizeof(message)) == NK_OK);
+    assert(outcome == PLAYER_STAGE_TITLE_STAGED);
+    title_join(path, sizeof(path), paths.final_root, "xbdata/partial.bin");
+    assert(!nk_platform_file_exists(path));
+    title_join(path, sizeof(path), paths.final_root, "xbdata/assets.xb.d/data/raw.bin");
+    assert(nk_platform_file_exists(path));
+    assert(!nk_platform_dir_exists(paths.staging_root));
+
+    /* 4. A tree from an older build (no staging record, no data folder) is
+     * replaced by a complete one; the replaced tree does not linger. */
+    assert(native_test_remove_tree(paths.final_root));
+    assert(nk_platform_mkdir_p(paths.final_root));
+    title_join(path, sizeof(path), paths.final_root, "EBOOT.BIN");
+    write_file_bytes(path, "OLD!", 4);
+    assert(run_title_stage(&request, NULL, &summary, &outcome, prepared_root,
+                           sizeof(prepared_root), message, sizeof(message)) == NK_OK);
+    assert(outcome == PLAYER_STAGE_TITLE_STAGED);
+    title_join(path, sizeof(path), paths.final_root, "xbdata/assets.xb.d/data/raw.bin");
+    assert(nk_platform_file_exists(path));
+    assert(!nk_platform_dir_exists(paths.retired_root));
+
+    /* A different disc revision does not reuse the earlier revision's files. */
+    request.disc_version = "1.01";
+    assert(run_title_stage(&request, NULL, &summary, &outcome, prepared_root,
+                           sizeof(prepared_root), message, sizeof(message)) == NK_OK);
+    assert(outcome == PLAYER_STAGE_TITLE_STAGED);
+    assert(run_title_stage(&request, NULL, &summary, &outcome, prepared_root,
+                           sizeof(prepared_root), message, sizeof(message)) == NK_OK);
+    assert(outcome == PLAYER_STAGE_TITLE_REUSED);
+
+    /* 5. A second staging of the same title while one holds its lock is
+     * refused with a calm message and changes nothing. */
+    title_join(marker, sizeof(marker), paths.final_root, "busy-marker.bin");
+    write_file_bytes(marker, "kept", 4);
+    title_join(path, sizeof(path), paths.staging_root, "held.bin");
+    assert(nk_platform_mkdir_p(paths.staging_root));
+    write_file_bytes(path, "held", 4);
+#if defined(_WIN32) || defined(_WIN64)
+    WCHAR wide_lock[NATIVE_TEST_PATH_MAX];
+    assert(MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, paths.lock_path, -1,
+                               wide_lock, NATIVE_TEST_PATH_MAX) > 0);
+    HANDLE holder = CreateFileW(wide_lock, GENERIC_READ | GENERIC_WRITE, 0, NULL,
+                                OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    assert(holder != INVALID_HANDLE_VALUE);
+#else
+    int release_fd = -1;
+    pid_t holder = hold_lock_in_child(paths.lock_path, &release_fd);
+#endif
+    assert(run_title_stage(&request, NULL, &summary, &outcome, prepared_root,
+                           sizeof(prepared_root), message, sizeof(message)) ==
+           NK_ERROR_ALREADY_EXISTS);
+    assert(strstr(message, "[STAGE_BUSY]") != NULL);
+    assert(prepared_root[0] == '\0');
+    assert(nk_platform_file_exists(marker));
+    assert(nk_platform_file_exists(path));
+#if defined(_WIN32) || defined(_WIN64)
+    CloseHandle(holder);
+#else
+    assert(write(release_fd, "x", 1) == 1);
+    close(release_fd);
+    int child_status = 0;
+    assert(waitpid(holder, &child_status, 0) == holder);
+#endif
+    /* Once the holder is gone the same call proceeds and clears its leftovers. */
+    assert(run_title_stage(&request, NULL, &summary, &outcome, prepared_root,
+                           sizeof(prepared_root), message, sizeof(message)) == NK_OK);
+    assert(outcome == PLAYER_STAGE_TITLE_REUSED);
+    assert(!nk_platform_dir_exists(paths.staging_root));
+
+    /* 6. A disc without the title's data folder is refused before anything
+     * is promoted. */
+    PlayerStageTitleRequest missing = request;
+    missing.iso_path = missing_iso_path;
+    missing.disc_id = "TEST90002";
+    TitleStagePaths missing_paths;
+    title_stage_paths(user_data_root, missing.disc_id, &missing_paths);
+    assert(run_title_stage(&missing, NULL, &summary, &outcome, prepared_root,
+                           sizeof(prepared_root), message, sizeof(message)) ==
+           NK_ERROR_INVALID_ISO);
+    assert(strstr(message, "[STAGE_DATA_FOLDER_MISSING]") != NULL);
+    assert(strstr(message, "'xbdata'") != NULL);
+    assert(!nk_platform_dir_exists(missing_paths.final_root));
+    assert(!nk_platform_dir_exists(missing_paths.staging_root));
+    assert(summary.extracted_asset_count == 0);
+
+    /* A data root that lives outside the disc's loose-content roots (resolved
+     * from the runtime folder instead) is not demanded of the disc. */
+    missing.disc_id = "TEST90004";
+    missing.loose_content_roots = NULL;
+    missing.loose_content_root_count = 0;
+    missing.data_root = "fixtures/synthetic";
+    title_stage_paths(user_data_root, missing.disc_id, &missing_paths);
+    assert(run_title_stage(&missing, NULL, &summary, &outcome, prepared_root,
+                           sizeof(prepared_root), message, sizeof(message)) == NK_OK);
+    title_join(path, sizeof(path), missing_paths.final_root, "EBOOT.BIN");
+    assert(nk_platform_file_exists(path));
+
+    /* 7. Cancellation leaves no game folder and no staging tree. */
+    PlayerStageTitleRequest cancelled = request;
+    cancelled.disc_id = "TEST90003";
+    TitleStagePaths cancelled_paths;
+    title_stage_paths(user_data_root, cancelled.disc_id, &cancelled_paths);
+    PlayerStageCallbacks cancel = { title_cancel_always, NULL, NULL };
+    assert(run_title_stage(&cancelled, &cancel, &summary, &outcome, prepared_root,
+                           sizeof(prepared_root), message, sizeof(message)) ==
+           NK_ERROR_CANCELLED);
+    assert(strstr(message, "[STAGE_CANCELLED]") != NULL);
+    assert(!nk_platform_dir_exists(cancelled_paths.final_root));
+    assert(!nk_platform_dir_exists(cancelled_paths.staging_root));
+
+    /* 8. A disc ID that could name another directory is refused outright. */
+    PlayerStageTitleRequest unsafe = request;
+    unsafe.disc_id = "../TEST90001";
+    assert(run_title_stage(&unsafe, NULL, &summary, &outcome, prepared_root,
+                           sizeof(prepared_root), message, sizeof(message)) ==
+           NK_ERROR_GENERIC);
+    assert(strstr(message, "[STAGE_REQUEST_INVALID]") != NULL);
+
+    printf("[XB_TEST] Title staging transaction: promote, reuse, resume, replace, busy, refuse PASSED\n");
+}
+
 int main(void) {
     printf("[XB_TEST] Starting native clean-room XB parser tests...\n");
     test_roundtrip_all_compression_modes();
@@ -1381,6 +1743,7 @@ int main(void) {
     test_staging_cleanup_boundary();
     test_staging_discard_reparse_boundary();
     test_iso_to_native_staging_pipeline();
+    test_title_staging_transaction();
     printf("[XB_TEST] ALL NATIVE XB PARSER TESTS PASSED\n");
     return 0;
 }

@@ -37,16 +37,16 @@ or labelled historical/capture-time. The evidence-tier view
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **491** (dedicated **448**, fake_success **5**, controlled_unsupported **38**).
-Semantic handler census: **413** handlers across **22** API families, covering **454** handler-associated NID registrations.
+Registered NIDs: **519** (dedicated **469**, fake_success **5**, controlled_unsupported **45**).
+Semantic handler census: **434** handlers across **23** API families, covering **475** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 10 | 18 |
-| `partial` | 68 | 68 |
+| `partial` | 80 | 80 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 332 | 361 |
+| `unreviewed` | 341 | 370 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -54,25 +54,26 @@ Semantic handler census: **413** handlers across **22** API families, covering *
 | `other` | 1 | 0 | 0 | 0 | 0 | 1 | 1 |
 | `sceAtrac` | 0 | 0 | 0 | 0 | 24 | 24 | 33 |
 | `sceAudio` | 0 | 0 | 0 | 0 | 13 | 13 | 14 |
-| `sceCtrl` | 0 | 1 | 0 | 0 | 6 | 7 | 7 |
+| `sceCtrl` | 0 | 1 | 0 | 0 | 7 | 8 | 8 |
 | `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceFont` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
-| `sceGe` | 0 | 4 | 0 | 0 | 8 | 12 | 12 |
+| `sceGe` | 0 | 4 | 0 | 0 | 9 | 13 | 13 |
+| `sceHprm` | 0 | 0 | 0 | 0 | 3 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 18 | 0 | 0 | 12 | 32 | 32 |
-| `sceKernel` | 2 | 20 | 0 | 0 | 134 | 156 | 180 |
+| `sceKernel` | 2 | 22 | 0 | 0 | 135 | 159 | 183 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
-| `scePower` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
+| `scePower` | 0 | 0 | 0 | 0 | 11 | 11 | 11 |
 | `scePsmf` | 0 | 2 | 0 | 0 | 12 | 14 | 14 |
-| `sceReg` | 0 | 6 | 0 | 0 | 0 | 6 | 6 |
+| `sceReg` | 0 | 15 | 0 | 0 | 0 | 15 | 15 |
 | `sceRtc` | 4 | 4 | 0 | 0 | 0 | 8 | 8 |
 | `sceSas` | 0 | 0 | 0 | 1 | 27 | 28 | 32 |
-| `sceUmd` | 0 | 0 | 1 | 0 | 7 | 8 | 8 |
-| `sceUtility` | 0 | 0 | 0 | 0 | 28 | 28 | 30 |
+| `sceUmd` | 0 | 1 | 1 | 0 | 7 | 9 | 9 |
+| `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 31 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **10** | **68** | **1** | **2** | **332** | **413** | **454** |
+| **Total** | **10** | **80** | **1** | **2** | **341** | **434** | **475** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -265,6 +266,10 @@ Semantic handler census: **413** handlers across **22** API families, covering *
   - Limitation: uses the runtime's microsecond system-clock representation and splits it into low/high outputs; hardware conversion and error-precedence cells are not measured
 - **`h_SysClock2USecWide`** (`sceKernel`): `sceKernelSysClock2USecWide` (0xe1619d7c)
   - Limitation: takes the 64-bit clock as the $a0/$a1 pair and writes its low/high words through $a2/$a3 on the same microsecond representation as h_SysClock2USec; invalid-output-pointer error code and hardware conversion are not measured
+- **`h_USec2SysClock`** (`sceKernel`): `sceKernelUSec2SysClock` (0x110dec9a)
+  - Limitation: stores the unsigned microsecond duration as the low word of the runtime's microsecond SceKernelSysClock representation and writes a zero high word; hardware conversion and error-precedence cells are not measured
+- **`h_USec2SysClockWide`** (`sceKernel`): `sceKernelUSec2SysClockWide` (0xc8cd158c)
+  - Limitation: returns the unsigned microsecond duration in $v0 with a zero $v1 high word under the runtime's microsecond SceKernelSysClock representation; hardware conversion is not measured
 - **`h_MpegAvcCopyYCbCr`** (`sceMpeg`): `sceMpegAvcCopyYCbCr` (0x0558b075)
   - Limitation: Copy copies the modeled guest bytes and retained picture state; PSP plane layout and overlap behavior still need an oracle (#302)
 - **`h_MpegAvcCsc`** (`sceMpeg`): `sceMpegAvcCsc` (0x31bd0272)
@@ -286,17 +291,35 @@ Semantic handler census: **413** handlers across **22** API families, covering *
 - **`h_PsmfGetVideo`** (`scePsmf`): `scePsmfPlayerGetVideoData` (0x46f61f8b)
   - Limitation: host HLE player; requires host codec backend; no hardware comparison tier measured (#341)
 - **`h_RegCloseCategory`** (`sceReg`): `sceRegCloseCategory` (0x0cae832b)
-  - Limitation: frees a category handle slot; closed or stale handles are refused with EBADF, and the error code is not hardware measured
+  - Limitation: frees a category handle slot, including one made stale by sceRegRemoveCategory; closed handles get the bad-handle code 0x8008272E (measured on sceRegGetKeysNum, applied by analogy)
 - **`h_RegCloseRegistry`** (`sceReg`): `sceRegCloseRegistry` (0xfa8a5739)
-  - Limitation: frees a registry handle slot; closed handles are refused with EBADF, and the error code is not hardware measured
+  - Limitation: frees a registry handle slot; closed handles get the bad-handle code 0x8008272E, measured on sceRegGetKeysNum and applied here by analogy
+- **`h_RegCreateKey`** (`sceReg`): `sceRegCreateKey` (0x57641a81)
+  - Limitation: creates an INT (4 bytes), STR or BIN key (up to a 4096-byte project bound) with zero-filled space through a mode-2 category handle; names over 26 bytes are cut to 26 (inferred from the measured category cut); DIR and unknown types are EINVAL, existing names EEXIST; write semantics and the errno-class codes are not hardware measured
+- **`h_RegFlushCategory`** (`sceReg`): `sceRegFlushCategory` (0x0d69bf40)
+  - Limitation: persists the whole per-user overlay, not only the flushed category (firmware scope unmeasured); a failed write is EIO and the change stays in memory
+- **`h_RegFlushRegistry`** (`sceReg`): `sceRegFlushRegistry` (0x39461b4d)
+  - Limitation: persists the whole per-user overlay atomically when the registry changed (whether firmware persists less, or commits on close, is unmeasured); a failed write is EIO and the change stays in memory
 - **`h_RegGetKeyInfo`** (`sceReg`): `sceRegGetKeyInfo` (0xd4475aa8)
-  - Limitation: serves only the modeled /CONFIG keys (language, button_assign, nickname, date, time, time zone, summer time, ad-hoc channel); unknown keys fail closed with ENOENT, and the nickname default is a project value, not a firmware measurement
+  - Limitation: reports type, size and a key handle for the measured /CONFIG entries (names, types, sizes and DIR size 0 measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration), created keys and child categories; an unknown key returns the measured 0x8008271D; values other than six measured settings are neutral placeholders
+- **`h_RegGetKeyInfoByName`** (`sceReg`): `sceRegGetKeyInfoByName` (0xc5768d02)
+  - Limitation: the same lookup as sceRegGetKeyInfo without a key handle; the not-found code is applied by analogy
 - **`h_RegGetKeyValue`** (`sceReg`): `sceRegGetKeyValue` (0x28a8e98a)
-  - Limitation: copies the modeled values with bounds checks (a buffer smaller than the value is refused); the nickname default is a project value, and the short-buffer and handle error codes are not hardware measured
+  - Limitation: copies a value key with bounds checks (a buffer smaller than the value is EINVAL, a DIR entry EFTYPE; both unmeasured); stale or foreign key handles get the bad-handle code by analogy; reading a neutral placeholder logs once
+- **`h_RegGetKeyValueByName`** (`sceReg`): `sceRegGetKeyValueByName` (0x30be0259)
+  - Limitation: the same copy as sceRegGetKeyValue, by name; error codes other than not-found are not hardware measured
+- **`h_RegGetKeys`** (`sceReg`): `sceRegGetKeys` (0x2d211135)
+  - Limitation: writes the first num entry names as NUL-padded 27-byte slots in the console's order for the measured tree (measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration) and creation order after it; truncation below the entry count is a project choice
+- **`h_RegGetKeysNum`** (`sceReg`): `sceRegGetKeysNum` (0x2c0db9dd)
+  - Limitation: counts a category's keys and child categories; a forged handle returns 0x8008272E and leaves the count untouched (measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration)
 - **`h_RegOpenCategory`** (`sceReg`): `sceRegOpenCategory` (0x1d8a762e)
-  - Limitation: serves only the modeled /CONFIG categories; unknown categories fail closed with ENOENT, CHARACTER_SET opens with no modeled keys, mode 2 is accepted without any writer, and error codes are not hardware measured
+  - Limitation: opens a category of the measured tree with 512 project-bounded handles; an open of a missing category creates it in either mode, cutting new names to 26 bytes (measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration for mode 1); the console's failure to reopen such a cut name is not modeled; write semantics and the errno-class codes are not hardware measured
 - **`h_RegOpenRegistry`** (`sceReg`): `sceRegOpenRegistry` (0x92e41280)
-  - Limitation: read-only model of the system registry: only mode 1 opens are accepted, RegParam regtype and name are not checked, and the errno-class error codes are not hardware measured
+  - Limitation: opens the one virtual system registry in mode 1 or 2 with 512 project-bounded handles (the console served at least 257 at once, measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration); RegParam regtype and name are not checked; the first open loads the measured /CONFIG tree and the per-user overlay; write semantics and the errno-class codes are not hardware measured
+- **`h_RegRemoveCategory`** (`sceReg`): `sceRegRemoveCategory` (0x4ca16893)
+  - Limitation: removes an empty category a game created through a mode-2 registry handle; measured default categories are refused (EPERM) and non-empty ones too (ENOTEMPTY); write semantics and the errno-class codes are not hardware measured
+- **`h_RegSetKeyValue`** (`sceReg`): `sceRegSetKeyValue` (0x17768e14)
+  - Limitation: writes an existing key through a mode-2 category handle (mode 1 is EACCES): INT exactly 4 bytes, a STR takes the size of its new value (string sizes follow their values, measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration), BIN up to its fixed size with the rest zero-filled; persists on a flush; write semantics and the errno-class codes are not hardware measured
 - **`h_RtcConvertLocalToUtc`** (`sceRtc`): `sceRtcConvertLocalTimeToUTC` (0x779242a2)
   - Limitation: runs on the fixed UTC timezone constant until #77 (non-UTC console local time unimplemented) and its checked-overflow failure class is not autotest-verified (#77, #341)
 - **`h_RtcConvertUtcToLocal`** (`sceRtc`): `sceRtcConvertUtcToLocalTime` (0x34885e0d)
@@ -305,6 +328,8 @@ Semantic handler census: **413** handlers across **22** API families, covering *
   - Limitation: timezone/daylight comes from the fixed UTC constant until #77 adds the settable system profile, so LocalTime matches only a UTC-configured PSP (#77, #80, #341)
 - **`h_RtcGetWin32FileTime`** (`sceRtc`): `sceRtcGetWin32FileTime` (0xcf561893)
   - Limitation: cold-first-call error reporting may differ from firmware (PSPAutotests convert.c notes errors report properly only after a prior error and that the rules are hard to determine); component bounds beyond the measured year/epoch/day-carry cases stay fail-closed rather than measured (#341)
+- **`h_UmdUnRegisterUMDCallBack`** (`sceUmd`): `sceUmdUnRegisterUMDCallBack` (0xbd2bde07)
+  - Limitation: clears the single modeled UMD callback registration; unknown IDs return 0x800201a1 (the kernel callback UNKNOWN_UID code), a project choice because PSPSDK documents only a negative error and the exact code is not hardware measured
 
 #### Compatibility Handlers (Named Limitations)
 
@@ -350,14 +375,14 @@ Title Configuration Overrides (src/rt/title_config.c):
 #### 1. `libfont.prx` Startup Refusal Boundary
 
 - **Location:** `src/rt/hle.c` (`h_LoadModule`, `h_StartModule`) and the runtime-binding validators.
-- **Mechanism:** `sceKernelLoadModule` leaves readiness untouched. `sceKernelStartModule` runs a translated guest `libfont.prx` entry when the `SR_REAL_MODULE_START` gate allows it (`1` for any module, unset for `libfont` only, `0` never). If startup is unavailable (untranslated entry, no recorded entry, or the kill switch), it reports `LIBFONT_STARTUP_UNAVAILABLE`, leaves guest memory unchanged and returns `SCE_KERNEL_ERROR_NOTIMP`. A repeated successful start still refuses re-entry. Legacy manifests that set `libfont_ready_flag_addr` fail validation with `LIBFONT_READY_FLAG_RETIRED` and a migration sentence.
+- **Mechanism:** `sceKernelLoadModule` leaves readiness untouched. `sceKernelStartModule` runs a translated guest `libfont.prx` entry when the `SR_REAL_MODULE_START` gate allows it (`1` for any module, unset for `libfont` and for guest-placed modules whose exports host HLE does not serve, `0` never). If startup is unavailable (untranslated entry, no recorded entry, or the kill switch), it reports `LIBFONT_STARTUP_UNAVAILABLE`, leaves guest memory unchanged and returns `SCE_KERNEL_ERROR_NOTIMP`. A repeated successful start still refuses re-entry. Legacy manifests that set `libfont_ready_flag_addr` fail validation with `LIBFONT_READY_FLAG_RETIRED` and a migration sentence.
 - **Root Cause:** An earlier compatibility bypass skipped `module_start` and wrote readiness during load. Translated startup and export routing now have a source-owned production-path fixture. Real-title startup readiness remains unverified when no locally supplied decrypted executable and PRXs are available.
 - **Lower-Level Solution:** Provide translated guest startup and its kernel, thread, callback, heap and file dependencies; remove the retired field from existing manifests.
 
 #### 2. `psmf.prx` and `libpsmfplayer.prx` Start Module Skip
 
 - **Location:** `src/rt/hle.c` (`h_StartModule`).
-- **Mechanism:** Explicitly skips calling `f_32280000` (`psmf`) and `f_322f8868` (`libpsmfplayer`).
+- **Mechanism:** Explicitly skips calling `f_32280000` (`psmf`) and `f_322f8868` (`libpsmfplayer`). A guest-placed module (placed by the guest allocator at run time) keeps the same bypass when host HLE implements one of its named exports, so its importers stay on the host implementation.
 - **Root Cause:** Sony SDK initialization assumes low-level kernel callbacks and ring buffer allocation.
 - **Lower-Level Solution:** Provide faithful kernel memory partition allocation (`sceKernelAllocPartitionMemory`) and let the genuine PSMF modules execute their lifecycle.
 

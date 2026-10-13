@@ -23,8 +23,10 @@ TOOLS = ROOT / "tools"
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
+import ge_stat_windows  # noqa: E402
 import prxload  # noqa: E402
 import vulkan_sdk  # noqa: E402
+from test_build_truth import _scratch_build_root  # noqa: E402
 
 
 MANIFEST_PATHS = (
@@ -371,7 +373,7 @@ def _verify_backend_matches_authority(backend: tuple[str, str | None]) -> None:
         )
 
 
-def _runtime_build_environment() -> tuple[dict[str, str], str]:
+def _runtime_build_environment(test: unittest.TestCase) -> tuple[dict[str, str], str]:
     make = shutil.which("mingw32-make") or shutil.which("make")
     if not make:
         raise unittest.SkipTest("SKIP: GNU Make is unavailable for the package contract")
@@ -391,8 +393,13 @@ def _runtime_build_environment() -> tuple[dict[str, str], str]:
             ) from exc
         environment["VULKAN_SDK"] = sdk.as_posix()
     environment["MAKEFLAGS"] = "-j4"
+    # A scratch BUILD_ROOT, exported to the probe and to every Make run the package route
+    # makes with this environment: parsing a Makefile writes its SDL3 discovery fragment
+    # beneath BUILD_ROOT, which must not be the checkout's build/.
+    build_root = _scratch_build_root(test, "profile-zero")
+    environment["BUILD_ROOT"] = build_root.as_posix()
     probe = subprocess.run(
-        [make, "--no-print-directory", "sdl3-check"],
+        [make, "--no-print-directory", "sdl3-check", f"BUILD_ROOT={build_root.as_posix()}"],
         cwd=ROOT,
         env=environment,
         capture_output=True,
@@ -606,12 +613,12 @@ def _run_package(manifest_path: Path, guest: Path, package_dir: Path,
     if "-> 0x4000" not in output:
         raise AssertionError(f"controller replay was not sampled for {manifest['id']}")
 
-    ge_line = next((line for line in output.splitlines() if line.startswith("GESTAT f=60 ")), "")
-    tri2d = re.search(r"\btri2d=(\d+)", ge_line)
-    pixels2d = re.search(r"\bpx2d=(\d+)", ge_line)
-    if not tri2d or not pixels2d or int(tri2d.group(1)) == 0 or int(pixels2d.group(1)) == 0:
+    # The checkpoint is the first GE statistics window that rasterized the primitive, at
+    # whatever vblank closed it: a loaded host pushes both later (tools/ge_stat_windows.py).
+    window = ge_stat_windows.first_window(output, require=("tri2d", "px2d"))
+    if window is None:
         raise AssertionError(f"GE did not rasterize the source-owned primitive for {manifest['id']}")
-    ppm = package_dir / "snap_f00060.ppm"
+    ppm = package_dir / window.snapshot_name
     if not ppm.is_file():
         raise AssertionError(f"runtime framebuffer capture is missing for {manifest['id']}")
     colors, foreground = _read_ppm_metrics(ppm)
@@ -722,7 +729,7 @@ class ProfileZeroManifestTests(unittest.TestCase):
                 flush=True,
             )
             _verify_backend_matches_authority(backend)
-        build_environment, make = _runtime_build_environment()
+        build_environment, make = _runtime_build_environment(self)
         with tempfile.TemporaryDirectory(prefix="nk-profile-zero-e2e-") as temporary:
             root = Path(temporary)
             for manifest_path in MANIFEST_PATHS:

@@ -81,6 +81,7 @@ uint64_t SDL_GetTicksNS(void) { static uint64_t t = 0; return (t += 1000); }
 
 extern void ge_set_frame(uint32_t frame);
 extern uint32_t ge_run_list(uint32_t addr, int resume);
+extern void ge_transition_trace_check(const char *why, uint32_t vcount);
 
 #define LIST1 0x08010000u
 #define LIST2 0x08011000u
@@ -176,6 +177,9 @@ int main(int argc, char **argv) {
 
     ge_set_frame(41);
     if (ge_run_list(LIST1, 0) != 0) { printf("list1 did not END\n"); return 1; }
+    /* Frame 41 is presented before frame 42 is built, as a game would: the check consumes
+     * frame 41's watches (nothing changed) so a later rewrite is attributed to frame 42. */
+    ge_transition_trace_check("present", 41);
 
     /* Frame 42: only bone0 re-uploaded, with tx = 7.5. */
     emit_common_head(LIST2);
@@ -190,6 +194,14 @@ int main(int argc, char **argv) {
 
     ge_set_frame(42);
     if (ge_run_list(LIST2, 0) != 0) { printf("list2 did not END\n"); return 1; }
+
+    /* Late-write check. With argv[2]=="latewrite" the guest rewrites vertex 0 of the buffer
+     * the frame-42 draw already read (x: -0.5 -> -0.25), then treats the frame as presented:
+     * the check must report exactly that draw. Without the rewrite the same check reports
+     * nothing, which is the common case the trace must not flood. */
+    if (argc > 2 && strcmp(argv[2], "latewrite") == 0)
+        emit_vtx(VERTS + 0u * 40u, 1.0f, 0, 0, 0xFFFFFFFFu, 0, 0, 1, -0.25f, -0.5f, 0);
+    ge_transition_trace_check("present", 4242);
 
     /* Frame 43 (only with argv[2]=="nonfinite"): bone0 re-uploaded with raw float24
      * words carrying a +Inf and a NaN, the exact shape the maintainer's #69 trace
@@ -344,6 +356,43 @@ class TestTransitionTraceC(unittest.TestCase):
         self.assertEqual(third["bone_written"][9], 7.5)
         self.assertEqual(third["world_effective"], ident43, "untouched state persists")
 
+    def test_unchanged_vertices_report_no_late_write(self):
+        trace = self.tmp / "quiet.jsonl"
+        result = self.run_harness(os.fspath(trace))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        records = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()
+                   if line.strip()]
+        self.assertEqual([r for r in records if r.get("kind") == "late_write"], [])
+        self.assertNotIn("GE_LATE_WRITE", result.stderr)
+
+    def test_late_write_after_draw_is_reported(self):
+        trace = self.tmp / "late.jsonl"
+        result = self.run_harness(os.fspath(trace), "latewrite")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        summary = dict(re.findall(r"(LIST2|PRIM3|VERTS|OOR)=(0x[0-9a-fA-F]+|\d+)", result.stdout))
+        self.assertEqual(summary.get("OOR"), "0")
+        verts = int(summary["VERTS"], 16)
+        records = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()
+                   if line.strip()]
+        draws = [r for r in records if r.get("kind") != "late_write"]
+        late = [r for r in records if r.get("kind") == "late_write"]
+        self.assertEqual(len(draws), 3, "the draw records are unchanged by the check")
+        self.assertEqual(len(late), 1, "exactly the frame-42 draw read the rewritten bytes")
+        record = late[0]
+        self.assertEqual(record["frame"], 42)
+        self.assertEqual(record["draw"], 0)
+        self.assertEqual(record["draw_id"], fnv1a_draw_id(0x0007FF, verts, 3, 3))
+        self.assertEqual(record["list"], f"0x{int(summary['LIST2'], 16):08x}")
+        self.assertEqual(record["cmd"], f"0x{int(summary['PRIM3'], 16):08x}")
+        self.assertEqual(record["prim"], 3)
+        self.assertEqual(record["count"], 3)
+        self.assertEqual(record["vertex_span"], [f"0x{verts:08x}", f"0x{verts + 3 * 40:08x}"])
+        self.assertEqual(record["index_span"], ["0x00000000", "0x00000000"], "not indexed")
+        self.assertNotEqual(record["hash_at_draw"], record["hash_at_check"])
+        self.assertEqual(record["check"], "present")
+        self.assertEqual(record["check_vblank"], 4242)
+        self.assertIn("GE_LATE_WRITE frame=42 draw=0", result.stderr)
+
     def test_trace_off_by_default(self):
         sentinel = self.tmp / "should_not_exist.jsonl"
         result = self.run_harness("off")
@@ -462,6 +511,32 @@ class TestTransitionDiff(unittest.TestCase):
         self.assertIn("MISSING in FIRST_BAD frame=31", out)
         self.assertIn("draw_id=00005eed", out)
         self.assertIn("NEW in FIRST_BAD frame=31", out)
+
+    def test_late_write_records_are_listed_not_diffed(self):
+        tmp = Path(tempfile.mkdtemp(prefix="getransitionlate_"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        trace = tmp / "late.jsonl"
+        late = {
+            "kind": "late_write", "frame": 31, "draw": 0, "draw_id": "deadbeef",
+            "list": "0x08010000", "cmd": "0x080100a4", "prim": 4, "count": 6,
+            "vbase": "0x08020000", "ibase": "0x00000000",
+            "vertex_span": ["0x08020000", "0x080200f0"], "index_span": ["0x00000000", "0x00000000"],
+            "hash_at_draw": "00000001", "hash_at_check": "00000002",
+            "check": "present", "check_vblank": 31,
+        }
+        outside = dict(late, frame=40, check_vblank=40)
+        with trace.open("w", encoding="utf-8") as fp:
+            for record in (make_record(30, 0, "deadbeef"), make_record(31, 0, "deadbeef", tex_fmt=0),
+                           late, outside):
+                fp.write(json.dumps(record) + "\n")
+        result = self.run_diff(trace, "--frames", "30:31")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("LATE_WRITE frame=31 draw=0 draw_id=deadbeef list=0x08010000 cmd=0x080100a4 "
+                      "span=0x08020000..0x080200f0 check=present@31", result.stdout)
+        self.assertNotIn("frame=40", result.stdout, "late writes outside GOOD..BAD are not listed")
+        self.assertIn("tex_fmt: 3 -> 0", result.stdout, "the draw diff still runs")
+        self.assertEqual(result.stdout.count("draw_id=deadbeef occurrence="), 1,
+                         "the late-write record is not a second occurrence of the draw")
 
     def test_pinned_recovery_end_cap_and_errors(self):
         trace = self.write_three_frame_trace()

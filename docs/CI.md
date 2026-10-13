@@ -50,9 +50,10 @@ changed paths.
 The `CI required` job is the stable aggregate status required by branch
 protection. It runs with `always()`, accepts an intentionally skipped irrelevant
 job, and fails when a classifier-applicable job fails, is cancelled, or is
-otherwise incomplete. A failed hygiene/security job is never hidden by the
-aggregate. Python/native jobs also wait for hygiene, so an early full-tree
-failure does not spend additional runner time on dependent expensive gates.
+otherwise incomplete. A failed hygiene/security job or public-export job is never
+hidden by the aggregate. Python/native jobs also wait for hygiene and the
+public-export job, so an early full-tree failure does not spend additional runner
+time on dependent expensive gates.
 
 The full-tree pre-commit run retains the publication audit and the Betterleaks
 current-tree scan; the hook runs Betterleaks in directory mode over the files it
@@ -92,7 +93,9 @@ Vulkan development headers. It configures and builds the CMake player with `BUIL
 runs CTest, and requires the `nakagawa_player --help` usage marker. It also downloads the PSPDEV
 archive identified by [`pspdev.lock.json`](../assets/upstream/pspdev.lock.json), checking its
 SHA-256 before use. The job runs `make CC=gcc showcase-linux` to build and boot the two
-source-owned showcase packages with dummy SDL video and audio drivers, then passes the generated
+source-owned showcase packages with dummy SDL video and audio drivers. A failed smoke uploads its
+`runtime.log` files and frame captures as the `showcase-smoke-linux-attempt-<n>` artifact. After a
+passing smoke, the job passes the generated
 TEST00007 ISO to the CMake-built player's bounded `--stage-only` route and requires
 `STAGING_RESULT status=PASS`. This is build, test, and headless staging evidence for the named
 synthetic fixtures. Separately, the job runs `make CC=gcc player-ui-regressions`: scripted native
@@ -133,7 +136,9 @@ target stages the generated controls and the profile when `--apply-policy` is
 requested; it does not stage the rest of the worktree. The committed ledger
 stays a per-path document (no `refresh` audit block), and the export is computed
 from those generated ledger bytes in the same invocation, so a second pass is
-not needed.
+not needed. For contributors without access to the private trusted ledger,
+`python tools/contrib_refresh.py` allows refreshing both public controls for
+changed existing public paths from the public controls alone (PR #849).
 
 The `provenance_record_gap.py --check` gate (`make provenance-record-gap-check`)
 enforces that every upstream-derived production code path (under `src/` or
@@ -398,7 +403,7 @@ first on `PATH` (#294). The contract is explicit:
 
 | Job / environment | Python running `tools/*` and the fixture generators |
 | --- | --- |
-| Linux jobs (`classify`, `hygiene`, `markdown`, `python_tools`, `native_tools`, `main_smoke`, `ci_required`) | `actions/setup-python` CPython 3.14 |
+| Linux jobs (`classify`, `hygiene`, `public_export`, `markdown`, `python_tools`, `native_tools`, `main_smoke`, `ci_required`) | `actions/setup-python` CPython 3.14 |
 | `windows_runtime` (MSYS2 UCRT64 shell) | MSYS2 UCRT64 CPython (`mingw-w64-ucrt-x86_64-python`), selected by the `msys2 {0}` shell's PATH order and asserted by the "Pin the Windows Python toolchain" step |
 | Local Windows runs | Windows CPython from the python.org installer (not the MSYS2 build); the suite stays green under both Windows CPython and MSYS2 CPython (#504) |
 
@@ -435,20 +440,22 @@ can actually vouch for each other. The CLI verdicts map to exit codes
   on either side (the ring slides, so a divergence inside the dropped window
   is invisible).
 - **Divergent (DIVERGENCE):** the first differing event (sequence or class
-  alignment), then the terminal reason/sequence/kind/arg0. Same retained
-  events with a different terminal outcome is a divergence, not a MATCH. A
-  terminal difference is never an incomparability: a `running` terminal is a
-  mid-run cut rather than a ring overflow, so over a complete window it hides
-  no events and stays an ordinary compared value.
+  alignment), then the terminal reason/sequence/kind/arg0, then, for schema 5,
+  the refusal block's count, first_nid, first_pc, first_sequence and nids. Same
+  retained events with a different terminal outcome or refusal block is a
+  divergence, not a MATCH. A terminal difference is never an incomparability: a
+  `running` terminal is a mid-run cut rather than a ring overflow, so over a
+  complete window it hides no events and stays an ordinary compared value.
 - **Malformed (error):** a bundle that fails schema validation, sanitization,
   or the recorder truncation invariants (retained sequences exactly
   `dropped+1..recorded`, `dropped == recorded - min(recorded, limit)`) exits 2
   on stderr as before.
 
 MATCH is a statement about the capture, never about the whole program. It
-certifies exactly two things: that the two runs agree on every event retained
-for the enabled classes over a complete window that dropped nothing, and that
-both reached the same terminal outcome. It does not certify behaviour outside
+certifies exactly these things: that the two runs agree on every event retained
+for the enabled classes over a complete window that dropped nothing, that both
+reached the same terminal outcome, and, for schema 5, that both recorded the
+same refusal block. It does not certify behaviour outside
 the enabled classes, where a class one side never recorded is silence rather
 than agreement; behaviour before the recorded window; or behaviour the recorder
 does not model at all. Two builds that MATCH here can still differ anywhere the
@@ -484,8 +491,11 @@ developer runs locally, without private inputs:
   test reports an explicit `SKIP` with the printed missing-dependency reason.
   The job also runs the production smoke with its executable staged into a fresh
   directory outside the build tree (`production-smoke-staged`).
-- `hygiene`'s "Exercise public-export generation and candidate audit" step runs
-  on `security_publication` changes and every manual `workflow_dispatch`. One
+- The `public_export` job ("Public export candidate audit") is ungated and runs
+  in parallel with `hygiene` (#735 item 5). Its step "Exercise public-export
+  generation and candidate audit" runs on `security_publication` changes and every
+  manual `workflow_dispatch`, and the job reports success when the step is skipped.
+  `ci_required` requires the job to succeed. One
   `build_public_export.py --export-dir ... --public-safe-profile` invocation
   runs the publication gates, generates the public-safe candidate, and audits
   the candidate-tree staging bytes. Hosted CI holds no trusted ledger, so the

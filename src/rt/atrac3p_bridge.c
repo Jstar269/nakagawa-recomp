@@ -24,6 +24,7 @@ struct Atrac3pBridge {
     Atrac3pHandle *dec;   /* owned decoder instance */
     int channels;         /* validated PSP channel count */
     int block_align;      /* validated frame size */
+    int decode_error;     /* latched decoder failure; cleared only by reset */
 };
 
 int atrac3p_bridge_create(int channels, int block_align, Atrac3pBridge **out) {
@@ -57,17 +58,23 @@ int atrac3p_bridge_decode(Atrac3pBridge *b, const uint8_t *frame, int frame_size
     /* The HLE feeds exactly one blockAlign-sized frame; anything else is a
      * caller contract violation, not a decodable frame. */
     if (frame_size != b->block_align) return AVERROR(EINVAL);
+    /* A rejected frame may have changed codec history before the decoder
+     * discovered malformed data. Keep the stream fail-closed instead of
+     * re-entering the same damaged decoder state on every guest retry. */
+    if (b->decode_error < 0) return b->decode_error;
     /* The PR-A API returns the consumed frame size on success; the bridge
      * normalizes that to 0 (see header contract) so callers can test
      * `ret < 0` for failure and rely on *samples_out for output. */
     uint64_t perf_started = sr_perf_now_ns();
     int ret = atrac3p_decode(b->dec, frame, frame_size, pcm_out, samples_out);
     if (ret < 0) {
+        b->decode_error = ret;
         if (perf_started) sr_perf_atrac(perf_started, ret);
         return ret;
     }
     if (*samples_out <= 0) {
         ret = AVERROR(EINVAL);
+        b->decode_error = ret;
         if (perf_started) sr_perf_atrac(perf_started, ret);
         return ret;
     }
@@ -77,7 +84,9 @@ int atrac3p_bridge_decode(Atrac3pBridge *b, const uint8_t *frame, int frame_size
 
 int atrac3p_bridge_reset(Atrac3pBridge *b) {
     if (!b) return AVERROR(EINVAL);
-    return atrac3p_reset(b->dec);
+    int ret = atrac3p_reset(b->dec);
+    if (ret >= 0) b->decode_error = 0;
+    return ret;
 }
 
 void atrac3p_bridge_destroy(Atrac3pBridge *b) {

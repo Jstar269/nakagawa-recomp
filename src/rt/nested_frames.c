@@ -144,7 +144,7 @@ int sr_nested_frame_acquire(uint32_t owner, uint32_t *sp_out, int *handle_out) {
         if (s_reported_exhaust < NF_REPORT_MAX) {
             s_reported_exhaust++;
             fprintf(stderr,
-                    "NESTED_FRAME: owner 0x%x already holds %u nested guest-call frames "
+                    "NESTED_FRAME: owner 0x%" PRIx32 " already holds %u nested guest-call frames "
                     "(maximum %u) -- refusing to nest deeper\n",
                     owner, depth - 1u, (unsigned)SR_NESTED_FRAME_MAX_DEPTH);
         }
@@ -159,7 +159,7 @@ int sr_nested_frame_acquire(uint32_t owner, uint32_t *sp_out, int *handle_out) {
         if (s_reported_exhaust < NF_REPORT_MAX) {
             s_reported_exhaust++;
             fprintf(stderr,
-                    "NESTED_FRAME: all %u nested guest-call frames are live (owner 0x%x, "
+                    "NESTED_FRAME: all %u nested guest-call frames are live (owner 0x%" PRIx32 ", "
                     "depth %u) -- refusing the call\n",
                     (unsigned)SR_NESTED_FRAME_SLOTS, owner, depth);
         }
@@ -196,7 +196,7 @@ static int nf_free_slot(NestedFrame *f, int check_lifo) {
         if (s_reported_lifo < NF_REPORT_MAX) {
             s_reported_lifo++;
             fprintf(stderr,
-                    "NESTED_FRAME: owner 0x%x released depth %u while holding depth %u "
+                    "NESTED_FRAME: owner 0x%" PRIx32 " released depth %u while holding depth %u "
                     "-- nested frames were not released innermost-first\n",
                     f->owner, f->depth, sr_nested_frame_owner_depth(f->owner));
         }
@@ -210,8 +210,8 @@ static int nf_free_slot(NestedFrame *f, int check_lifo) {
         if (s_reported_guard < NF_REPORT_MAX) {
             s_reported_guard++;
             fprintf(stderr,
-                    "NESTED_FRAME: guard word at 0x%08x is 0x%08x, expected 0x%08x "
-                    "(owner 0x%x depth %u, frame [0x%08x,0x%08x), $sp was 0x%08x) "
+                    "NESTED_FRAME: guard word at 0x%08" PRIx32 " is 0x%08" PRIx32 ", expected 0x%08" PRIx32 " "
+                    "(owner 0x%" PRIx32 " depth %u, frame [0x%08" PRIx32 ",0x%08" PRIx32 "), $sp was 0x%08" PRIx32 ") "
                     "-- the nested callee ran off its frame\n",
                     bad_addr, bad_val, nf_guard_word(bad_addr), f->owner, f->depth,
                     f->base, f->base + SR_NESTED_FRAME_STRIDE,

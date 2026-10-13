@@ -22,6 +22,7 @@ if str(TOOLS) not in sys.path:
 
 import library_sweep  # noqa: E402
 import nk_cli  # noqa: E402
+from nk_core.iso_inspect import PBP_BOUNDARY_CODES  # noqa: E402
 from test_iso_parity import build_psp_container, create_test_iso_with_executables  # noqa: E402
 
 
@@ -92,12 +93,20 @@ class LibrarySweepTests(unittest.TestCase):
             "max_wait_seconds": 0,
         }
 
+    def test_identify_refusals_are_source_backed_sweep_blocker_codes(self) -> None:
+        # A PlayStation Store package is refused at identify by name. The sweep
+        # only records blocker codes its public vocabulary accepts, so every
+        # identify code from the emitter's registry must be in that vocabulary
+        # or the row is rejected.
+        self.assertTrue(PBP_BOUNDARY_CODES)
+        self.assertEqual(set(PBP_BOUNDARY_CODES) - library_sweep._PUBLIC_BLOCKER_CODES, set())
+
     def test_interrupted_run_resumes_only_unrecorded_titles(self) -> None:
         first = _write_iso(self.iso_dir, "one.iso", "UCUS99991", "Resume Sentinel One")
         _write_iso(self.iso_dir, "two.iso", "UCUS99992", "Resume Sentinel Two")
         first_calls: list[str] = []
 
-        def interrupt_after_first(iso_path, _work, _report, _sidecar, _budget):
+        def interrupt_after_first(iso_path, _work, _report, _sidecar, _budget, _launch):
             first_calls.append(iso_path.name)
             if len(first_calls) == 2:
                 raise KeyboardInterrupt
@@ -122,7 +131,7 @@ class LibrarySweepTests(unittest.TestCase):
 
         resumed_calls: list[str] = []
 
-        def complete(iso_path, _work, _report, _sidecar, _budget):
+        def complete(iso_path, _work, _report, _sidecar, _budget, _launch):
             resumed_calls.append(iso_path.name)
             return library_sweep.RouteOutcome(_bringup_report())
 
@@ -169,10 +178,94 @@ class LibrarySweepTests(unittest.TestCase):
                     work_dir / "bringup.json",
                     work_dir / "sweep-imports.json",
                     7,
+                    7,
                 )
         self.assertTrue(outcome.timed_out)
         self.assertEqual(observed_timeouts, [7])
         terminate.assert_called_once_with(process)
+
+    def _bringup_launch_argument(self, time_budget: int, launch_timeout: int) -> str:
+        """The --launch-timeout value one title's bring-up command line carries."""
+        work_dir = self.private_dir / "work"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        iso = _write_iso(self.iso_dir, "launch.iso", "UCUS99995", "Launch Sentinel")
+        commands: list[list[str]] = []
+
+        class CompletedProcess:
+            pid = 9002
+            returncode = 0
+
+            def __init__(self, command, **_kwargs):
+                commands.append(command)
+
+            def communicate(self, timeout=None):
+                return "", ""
+
+        with mock.patch.object(library_sweep.subprocess, "Popen", CompletedProcess):
+            library_sweep._run_bringup(
+                iso,
+                work_dir,
+                work_dir / "bringup.json",
+                work_dir / "sweep-imports.json",
+                time_budget,
+                launch_timeout,
+            )
+        self.assertEqual(len(commands), 1)
+        command = commands[0]
+        self.assertEqual(command.count("--launch-timeout"), 1)
+        return command[command.index("--launch-timeout") + 1]
+
+    def test_launch_timeout_reaches_bringup_bounded_by_the_time_budget(self) -> None:
+        # The default reproduces the earlier fixed min(20, --time-budget) launch.
+        self.assertEqual(self._bringup_launch_argument(120, 20), "20")
+        self.assertEqual(self._bringup_launch_argument(15, 20), "15")
+        # A longer launch reaches bring-up when the budget allows it ...
+        self.assertEqual(self._bringup_launch_argument(120, 60), "60")
+        self.assertEqual(self._bringup_launch_argument(120, 110), "110")
+        # ... and never outlives the route budget.
+        self.assertEqual(self._bringup_launch_argument(30, 60), "30")
+
+    def test_launch_timeout_range_is_bring_ups_range(self) -> None:
+        self.assertEqual(
+            library_sweep.DEFAULT_LAUNCH_TIMEOUT_SECONDS,
+            nk_cli.BRINGUP_LAUNCH_TIMEOUT_DEFAULT_SECONDS,
+        )
+        self.assertEqual(
+            library_sweep.MAX_LAUNCH_TIMEOUT_SECONDS, nk_cli.BRINGUP_LAUNCH_TIMEOUT_MAX_SECONDS
+        )
+
+    def test_cli_launch_timeout_default_bounds_and_forwarding(self) -> None:
+        summary = {"iso_count": 0, "ran_this_invocation": 0, "resumed_this_invocation": 0}
+        base = [
+            str(self.iso_dir),
+            "--private-dir", str(self.private_dir),
+            "--public-output", str(self.public_output),
+        ]
+        for extra, expected in (([], 20), (["--launch-timeout", "1"], 1),
+                                (["--launch-timeout", "110"], 110),
+                                (["--launch-timeout", "120"], 120)):
+            with self.subTest(extra=extra):
+                with mock.patch.object(library_sweep, "run_sweep", return_value=summary) as run:
+                    self.assertEqual(library_sweep.main(base + extra), 0)
+                self.assertEqual(run.call_args.kwargs["launch_timeout_seconds"], expected)
+        for value in ("0", "121", "-5", "twenty"):
+            with self.subTest(value=value):
+                with (
+                    mock.patch.object(library_sweep, "run_sweep") as run,
+                    mock.patch("sys.stderr", new_callable=io.StringIO),
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    library_sweep.main(base + ["--launch-timeout", value])
+                self.assertEqual(raised.exception.code, 2)
+                run.assert_not_called()
+
+    def test_run_sweep_rejects_an_out_of_range_launch_timeout(self) -> None:
+        for value in (0, 121):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                library_sweep.run_sweep(
+                    self.iso_dir, self.private_dir, self.public_output,
+                    launch_timeout_seconds=value,
+                )
 
     def test_timeout_during_analyze_preserves_the_active_stage_elapsed_time(self) -> None:
         work_dir = self.private_dir / "work"
@@ -217,7 +310,7 @@ class LibrarySweepTests(unittest.TestCase):
             mock.patch.object(library_sweep, "_terminate_process_tree") as terminate,
         ):
             outcome = library_sweep._run_bringup(
-                iso, work_dir, work_dir / "bringup.json", work_dir / "sweep-imports.json", 7
+                iso, work_dir, work_dir / "bringup.json", work_dir / "sweep-imports.json", 7, 7
             )
 
         self.assertTrue(outcome.timed_out)
@@ -264,6 +357,7 @@ class LibrarySweepTests(unittest.TestCase):
                 work_dir / "bringup.json",
                 work_dir / "sweep-imports.json",
                 7,
+                7,
             )
 
         self.assertEqual(outcome.report["failure_class"], "COMPILE_FAILED")
@@ -288,6 +382,69 @@ class LibrarySweepTests(unittest.TestCase):
         self.assertEqual(row["build_diagnostic"], outcome.build_diagnostic)
         self.assertEqual(row["build_log_path"], outcome.build_log_path)
         self.assertNotIn("DIAGNOSTIC_PRIVATE_SENTINEL", public_text)
+        self.assertNotIn(str(work_dir), public_text)
+
+    def test_prepare_import_module_layout_failure_keeps_diagnostic_only_in_private_report(self) -> None:
+        work_dir = self.private_dir / "layout-failure-work"
+        work_dir.mkdir(parents=True)
+        iso = _write_iso(self.iso_dir, "layout-failure.iso", "UCUS99994", "Layout Failure Sentinel")
+
+        class FailedLayout:
+            pid = 9004
+            returncode = 1
+
+            def __init__(self, command, **_kwargs):
+                self.command = command
+
+            def communicate(self, timeout=None):
+                report_path = Path(self.command[self.command.index("--report") + 1])
+                report_path.write_text(json.dumps({
+                    **_bringup_report(failure="GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE"),
+                    "reached_stage": "prepare_import",
+                    "stages": {
+                        **_bringup_report()["stages"],
+                        "prepare_import": {"status": "FAIL", "duration_ms": 100},
+                    },
+                }), encoding="utf-8")
+                (work_dir / "bringup-module-layout.log").write_text(
+                    "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE: DIAGNOSTIC_LAYOUT_SENTINEL\n",
+                    encoding="utf-8",
+                )
+                return "", ""
+
+        with (
+            mock.patch.object(library_sweep.subprocess, "Popen", FailedLayout),
+            mock.patch.object(library_sweep, "_route_environment", return_value={}),
+        ):
+            outcome = library_sweep._run_bringup(
+                iso,
+                work_dir,
+                work_dir / "bringup.json",
+                work_dir / "sweep-imports.json",
+                7,
+                7,
+            )
+
+        self.assertEqual(outcome.report["failure_class"], "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE")
+        self.assertEqual(
+            outcome.module_layout_diagnostic,
+            "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE: DIAGNOSTIC_LAYOUT_SENTINEL",
+        )
+
+        with mock.patch.object(library_sweep, "_run_bringup", return_value=outcome):
+            library_sweep.run_sweep(
+                self.iso_dir, self.private_dir / "layout-failure", self.public_output,
+                **self._run_kwargs(),
+            )
+        private = json.loads(
+            (self.private_dir / "layout-failure" / "library-sweep.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        public_text = self.public_output.read_text(encoding="utf-8")
+        row = private["rows"][0]
+        self.assertEqual(row["module_layout_diagnostic"], outcome.module_layout_diagnostic)
+        self.assertNotIn("DIAGNOSTIC_LAYOUT_SENTINEL", public_text)
         self.assertNotIn(str(work_dir), public_text)
 
     def test_analysis_failure_keeps_first_diagnostic_only_in_private_report(self) -> None:
@@ -345,6 +502,7 @@ class LibrarySweepTests(unittest.TestCase):
                     work_dir,
                     work_dir / "bringup.json",
                     work_dir / "sweep-imports.json",
+                    7,
                     7,
                 )
 
@@ -667,7 +825,7 @@ class LibrarySweepTests(unittest.TestCase):
             "PRIVATE_TITLE_SENTINEL",
         )
 
-        def run_with_private_nid(_iso, _work, _report, sidecar, _budget):
+        def run_with_private_nid(_iso, _work, _report, sidecar, _budget, _launch):
             sidecar.parent.mkdir(parents=True, exist_ok=True)
             sidecar.write_text(json.dumps({
                 "schema_version": 1,
@@ -1304,6 +1462,64 @@ class LibrarySweepTests(unittest.TestCase):
         self.assertEqual((copied, status), (0, "NO_MATCH"))
 
 
+    def test_title_manifests_for_the_disc_are_staged_into_route_user_data(self) -> None:
+        """A user manifest naming the disc reaches bring-up's user-data root.
+
+        Failing-before: the sweep had no way to hand a title's own manifest to
+        bring-up, so a title known only from a user manifest (an archive disc)
+        ran as an unrecognized disc and its files were never staged.
+        """
+        from test_iso_parity import archive_title_manifest
+
+        manifests = self.root / "title-manifests"
+        manifests.mkdir()
+        wanted = archive_title_manifest("ULUS99995", "archive-ulus99995")
+        (manifests / "wanted.json").write_text(json.dumps(wanted), encoding="utf-8")
+        other = archive_title_manifest("ULUS99994", "archive-ulus99994")
+        (manifests / "other.json").write_text(json.dumps(other), encoding="utf-8")
+        (manifests / "broken.json").write_text("{not json", encoding="utf-8")
+        work_dir = self.private_dir / "work"
+
+        copied, status = library_sweep._stage_title_manifests(manifests, "ulus99995", work_dir)
+
+        self.assertEqual((copied, status), (1, "DIRECT_MATCH"))
+        staged = work_dir / "user-data" / "manifests"
+        self.assertEqual(sorted(path.name for path in staged.iterdir()), ["wanted.json"])
+        self.assertEqual(json.loads((staged / "wanted.json").read_text(encoding="utf-8")), wanted)
+        self.assertEqual(
+            library_sweep._stage_title_manifests(manifests, "ULUS99993", work_dir),
+            (0, "NO_MATCH"),
+        )
+        self.assertEqual(
+            library_sweep._stage_title_manifests(None, "ULUS99995", work_dir),
+            (0, "NOT_CONFIGURED"),
+        )
+
+    def test_sweep_stages_title_manifests_before_the_route_runs(self) -> None:
+        from test_iso_parity import archive_title_manifest
+
+        _write_iso(self.iso_dir, "one.iso", "UCUS99991", "Manifest Sentinel")
+        manifests = self.root / "title-manifests"
+        manifests.mkdir()
+        (manifests / "one.json").write_text(
+            json.dumps(archive_title_manifest("UCUS99991", "archive-ucus99991")),
+            encoding="utf-8",
+        )
+        seen: list[list[str]] = []
+
+        def route(_iso_path, work_dir, _report, _sidecar, _budget, _launch_timeout):
+            manifest_dir = work_dir / "user-data" / "manifests"
+            seen.append(sorted(path.name for path in manifest_dir.glob("*.json")))
+            return library_sweep.RouteOutcome(_bringup_report())
+
+        with mock.patch.object(library_sweep, "_run_bringup", side_effect=route):
+            library_sweep.run_sweep(
+                self.iso_dir, self.private_dir, self.public_output,
+                title_manifests=manifests, **self._run_kwargs(),
+            )
+        self.assertEqual(seen, [["one.json"]])
+
+
 class LibrarySweepExternalJsonTests(unittest.TestCase):
     """Drive hostile synthetic files through each external sweep JSON reader."""
 
@@ -1343,7 +1559,7 @@ class LibrarySweepExternalJsonTests(unittest.TestCase):
             ),
         ):
             return library_sweep._run_bringup(
-                iso_path, work_dir, report_path, sidecar_path, 1
+                iso_path, work_dir, report_path, sidecar_path, 1, 1
             )
 
     def test_duplicate_schema_field_is_rejected_in_previous_aggregate(self) -> None:
@@ -1621,6 +1837,122 @@ class LibrarySweepExternalJsonTests(unittest.TestCase):
         })
         self.assertEqual(status, "RUNTIME_ONLY")
         self.assertEqual(rows[0]["nid"], "0x87654321")
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+        self.sleeps: list[float] = []
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+class MachineIdleInspectionTests(unittest.TestCase):
+    def test_transient_inspection_failures_are_retried_before_the_title(self) -> None:
+        clock = _FakeClock()
+        outcomes = [
+            library_sweep.ProcessInspectionError("snapshot failed"),
+            library_sweep.ProcessInspectionError("snapshot failed"),
+            {"python", "explorer"},
+        ]
+
+        def reader() -> set[str]:
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        with mock.patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            wait_ms, remained_active = library_sweep._wait_for_machine_idle(
+                process_reader=reader, sleeper=clock.sleep, clock=clock,
+                poll_seconds=60, retry_seconds=5, max_wait_seconds=1200,
+            )
+        self.assertEqual((wait_ms, remained_active), (10_000, False))
+        self.assertEqual(clock.sleeps, [5, 5])
+        self.assertEqual(stderr.getvalue().count("process inspection failed"), 2)
+
+    def test_no_successful_inspection_before_the_deadline_stops_the_sweep(self) -> None:
+        clock = _FakeClock()
+
+        def reader() -> set[str]:
+            raise library_sweep.ProcessInspectionError("snapshot failed")
+
+        with mock.patch("sys.stderr", new_callable=io.StringIO), \
+                self.assertRaisesRegex(RuntimeError, "could not inspect running processes"):
+            library_sweep._wait_for_machine_idle(
+                process_reader=reader, sleeper=clock.sleep, clock=clock,
+                poll_seconds=60, retry_seconds=5, max_wait_seconds=12,
+            )
+        self.assertEqual(clock.sleeps, [5, 5, 2])
+
+    def test_blocking_process_still_waits_on_the_poll_interval(self) -> None:
+        clock = _FakeClock()
+        outcomes = [{"hst"}, {"ppssppwindows64"}, set()]
+        wait_ms, remained_active = library_sweep._wait_for_machine_idle(
+            process_reader=lambda: outcomes.pop(0), sleeper=clock.sleep, clock=clock,
+            poll_seconds=60, retry_seconds=5, max_wait_seconds=1200,
+        )
+        self.assertEqual((wait_ms, remained_active), (120_000, False))
+        self.assertEqual(clock.sleeps, [60, 60])
+
+    def test_blocking_process_until_the_deadline_runs_the_title_flagged_active(self) -> None:
+        clock = _FakeClock()
+        wait_ms, remained_active = library_sweep._wait_for_machine_idle(
+            process_reader=lambda: {"verify_flagship"}, sleeper=clock.sleep, clock=clock,
+            poll_seconds=60, retry_seconds=5, max_wait_seconds=150,
+        )
+        self.assertEqual((wait_ms, remained_active), (150_000, True))
+        self.assertEqual(clock.sleeps, [60, 60, 30])
+
+    def test_non_positive_intervals_are_refused(self) -> None:
+        for poll_seconds, retry_seconds in ((0, 5), (60, 0), (-1, 5)):
+            with self.subTest(poll=poll_seconds, retry=retry_seconds), \
+                    self.assertRaises(ValueError):
+                library_sweep._wait_for_machine_idle(
+                    process_reader=lambda: set(), sleeper=lambda _s: None,
+                    poll_seconds=poll_seconds, retry_seconds=retry_seconds,
+                    max_wait_seconds=10,
+                )
+
+    def test_missing_or_forbidden_ps_stops_at_once(self) -> None:
+        for failure in (FileNotFoundError("ps"), PermissionError("ps")):
+            with self.subTest(failure=type(failure).__name__), \
+                    mock.patch.object(library_sweep.subprocess, "run", side_effect=failure), \
+                    self.assertRaisesRegex(RuntimeError, "ps is unavailable") as caught:
+                library_sweep._posix_process_names()
+            self.assertNotIsInstance(caught.exception, library_sweep.ProcessInspectionError)
+
+    def test_ps_failures_are_retryable_inspection_errors(self) -> None:
+        for failure in (
+            subprocess.TimeoutExpired(["ps"], 10),
+            OSError("fork failed"),
+        ):
+            with self.subTest(failure=type(failure).__name__), \
+                    mock.patch.object(library_sweep.subprocess, "run", side_effect=failure), \
+                    self.assertRaises(library_sweep.ProcessInspectionError):
+                library_sweep._posix_process_names()
+        failed = subprocess.CompletedProcess(["ps"], 1, stdout="", stderr="")
+        with mock.patch.object(library_sweep.subprocess, "run", return_value=failed), \
+                self.assertRaises(library_sweep.ProcessInspectionError):
+            library_sweep._posix_process_names()
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows process snapshot")
+    def test_windows_snapshot_lists_this_process_without_starting_a_child(self) -> None:
+        with mock.patch.object(
+            library_sweep.subprocess, "run", side_effect=AssertionError("child process started"),
+        ):
+            names = library_sweep._process_names()
+        own_name = Path(sys.executable).name.casefold().removesuffix(".exe")
+        self.assertIn(own_name, names)
+        self.assertIn("system", names)
+        self.assertTrue(all(name == name.casefold() and not name.endswith(".exe")
+                            for name in names))
+
 
 if __name__ == "__main__":
     unittest.main()

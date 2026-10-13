@@ -607,10 +607,32 @@ def unwaived_and_stale(findings: list[dict]) -> tuple[list[dict], list[dict]]:
     return unwaived, stale
 
 
+def runtime_hle_source() -> str:
+    """The runtime HLE source the manifest is extracted from: hle.c plus hle_power.c.
+
+    hle_power.c defines handlers hle.c registers, so the handler-definition
+    cross-check in extract_registrations needs both files.
+    """
+    source = HLE_C.read_text(encoding="utf-8")
+    return source + "\n" + (HLE_C.parent / "hle_power.c").read_text(encoding="utf-8")
+
+
+def registered_nids(source: str | None = None) -> frozenset[int]:
+    """Every function NID the runtime registers, from the fail-closed extraction.
+
+    Both registration forms count: a dedicated or generic handler
+    (sr_hle_register, including the sas_ok[] loop) and a controlled refusal
+    (sr_hle_register_unsupported). Either way the runtime answers the NID
+    itself. Errors propagate unchanged: OSError when the runtime source cannot
+    be read, ManifestError when a registration cannot be proven captured.
+    """
+    regs = extract_registrations(runtime_hle_source() if source is None else source)
+    return frozenset(r["nid"] for r in regs)
+
+
 def build_manifest(source: str | None = None) -> dict:
     if source is None:
-        source = HLE_C.read_text(encoding="utf-8")
-        source += "\n" + (HLE_C.parent / "hle_power.c").read_text(encoding="utf-8")
+        source = runtime_hle_source()
     regs = extract_registrations(source)
     validate_meta(regs)
     mechanical = mechanical_stub_handlers(source)

@@ -127,6 +127,49 @@ jobs:
         shell: bash
         run: python tools/betterleaks_canary.py --betterleaks "$BETTERLEAKS_BIN"
 
+  markdown:
+    name: Markdown validation
+    runs-on: ubuntu-24.04
+    needs: classify
+    if: ${{ always() && needs.classify.result == 'success' && needs.classify.outputs.run_markdown == 'true' }}
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.21.0"
+
+      - name: Lint repository Markdown
+        run: npx --yes markdownlint-cli2@0.23.3
+
+  # Public-export candidate audit (#293/#294), in its own job so it overlaps the all-files
+  # hygiene checks instead of running after them (#735 item 5). It is a separate required
+  # result: ci_required fails unless it succeeds, and every gate that waited for hygiene
+  # also waits for it. The job runs on every event and gates no path, because publication
+  # integrity must never be path-dependent (tools/test_ci_paths.py).
+  public_export:
+    name: Public export candidate audit
+    runs-on: ubuntu-24.04
+    needs: classify
+    if: ${{ always() && needs.classify.result == 'success' }}
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
       # #293/#294: represent the release-export candidate path in hosted CI.
       # One invocation runs the publication gates, generates the public-safe
       # candidate, and runs the exhaustive candidate-tree audit against the
@@ -159,30 +202,10 @@ jobs:
             exit 1
           fi
 
-  markdown:
-    name: Markdown validation
-    runs-on: ubuntu-24.04
-    needs: classify
-    if: ${{ always() && needs.classify.result == 'success' && needs.classify.outputs.run_markdown == 'true' }}
-    timeout-minutes: 10
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24.21.0"
-
-      - name: Lint repository Markdown
-        run: npx --yes markdownlint-cli2@0.23.3
-
   python_tools:
     name: Python tooling gates
     runs-on: ubuntu-24.04
-    needs: [classify, hygiene]
+    needs: [classify, hygiene, public_export]
     # The suite is ~10 minutes serially. Four runners split the test files with
     # tools/ci_test_shards.py: a deterministic longest-first bin packing over the
     # measured per-module durations in tools/ci_test_weights.json (#693). Every
@@ -200,6 +223,7 @@ jobs:
         shard: ${{ fromJSON(needs.classify.outputs.python_shards || '[0, 1, 2, 3]') }}
     if: >-
       ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+          needs.public_export.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_python == 'true' }}
     timeout-minutes: 20
@@ -252,9 +276,10 @@ jobs:
   native_tools:
     name: Native and translation gates
     runs-on: ubuntu-24.04
-    needs: [classify, hygiene]
+    needs: [classify, hygiene, public_export]
     if: >-
       ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+          needs.public_export.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_native == 'true' }}
     timeout-minutes: 45
@@ -273,7 +298,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake curl gcc-mipsel-linux-gnu \
-            git libvulkan-dev ninja-build pkg-config
+            git libc6-dev-i386 libvulkan-dev ninja-build pkg-config
 
       - name: Build pinned SDL3 for headless Linux runtime
         # Build the pinned SDL release directly so CI uses the documented version.
@@ -346,6 +371,12 @@ jobs:
       - name: Compile host-neutral runtime objects on Linux
         run: make GAME_NAME=ci BUILD_DIR=build/portable-check CC=gcc portable-core-objects
 
+      - name: Check 32-bit format specifier portability across portable core
+        # libc6-dev-i386 (installed above) supplies the 32-bit C library headers for the
+        # syntax-only -m32 build that gives this LP64 runner a 32-bit long; gcc-multilib
+        # would do too but conflicts with the MIPS cross compiler this job installs.
+        run: python tools/format_portability_check.py
+
       - name: Create build directory
         run: mkdir -p build
 
@@ -373,10 +404,25 @@ jobs:
           grep -Fq "Usage: nakagawa_player" <<<"$help_output"
 
       - name: Build and run the Linux showcase headlessly
+        id: showcase
         run: |
           export NK_SHOWCASE_BUILD_ROOT="$RUNNER_TEMP/showcase-build"
           export NK_SHOWCASE_DEMO_ROOT="$RUNNER_TEMP/showcase-demo"
           make CC=gcc showcase-linux
+
+      # A failed smoke names runtime.log; keep it (and the window captures) so the
+      # failure can be diagnosed from the run instead of reproduced.
+      - name: Upload the Linux showcase smoke evidence on failure
+        if: failure() && steps.showcase.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: showcase-smoke-linux-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/showcase-build/smoke/
+            ${{ runner.temp }}/showcase-build/screenshots/
+            ${{ runner.temp }}/showcase-demo/packages/*/snap_f*.ppm
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Smoke the CMake Linux player headlessly
         run: |
@@ -573,9 +619,10 @@ jobs:
     # (~6.5 min), and waiting for python_tools/native_tools put ~2.5 min on every
     # PR's critical path. A Linux failure still fails ci_required; the Windows run
     # is then merely redundant, which costs nothing on a public repository.
-    needs: [classify, hygiene]
+    needs: [classify, hygiene, public_export]
     if: >-
       ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+          needs.public_export.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_windows == 'true' }}
     # The gates are split into parallel matrix parts of comparable length (#694),
@@ -878,6 +925,15 @@ jobs:
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
           CC=gcc VULKAN_SDK=/ucrt64 hle-thread-selftest
 
+      # The flash0: font device contract (hle_thread_selftest --flash0-font over synthetic
+      # PGFs) is driven by tools/test_flash0_font.py, which skips wherever mingw32-make is
+      # absent; before this step no hosted job ran it at all.
+      - name: Build and run flash0 font device selftest
+        if: matrix.part == 'selftests'
+        shell: msys2 {0}
+        run: >-
+          PYTHONPATH=tools python -m unittest -v test_flash0_font
+
       - name: Build and run synthetic VFPU fuzzer
         if: matrix.part == 'fuzz'
         shell: msys2 {0}
@@ -892,9 +948,10 @@ jobs:
   main_smoke:
     name: Main integration smoke
     runs-on: ubuntu-24.04
-    needs: [classify, hygiene]
+    needs: [classify, hygiene, public_export]
     if: >-
       ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+          needs.public_export.result == 'success' &&
           needs.classify.outputs.run_main_smoke == 'true' }}
     timeout-minutes: 10
     steps:
@@ -920,12 +977,13 @@ jobs:
   ci_required:
     name: CI required
     runs-on: ubuntu-24.04
-    needs: [classify, hygiene, markdown, python_tools, native_tools, windows_runtime, main_smoke]
+    needs: [classify, hygiene, public_export, markdown, python_tools, native_tools, windows_runtime, main_smoke]
     if: ${{ always() }}
     timeout-minutes: 5
     env:
       CLASSIFY_RESULT: ${{ needs.classify.result }}
       HYGIENE_RESULT: ${{ needs.hygiene.result }}
+      PUBLIC_EXPORT_RESULT: ${{ needs.public_export.result }}
       MARKDOWN_RESULT: ${{ needs.markdown.result }}
       PYTHON_RESULT: ${{ needs.python_tools.result }}
       NATIVE_RESULT: ${{ needs.native_tools.result }}

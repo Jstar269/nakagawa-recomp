@@ -860,3 +860,52 @@ class GuestModuleBaseTests(unittest.TestCase):
             title_manifest.validate_manifest(self._with_module(guest_path="module/x.prx"))
         with self.assertRaisesRegex(title_manifest.TitleManifestError, "evidence"):
             title_manifest.validate_manifest(self._with_module(load_address_evidence="guess"))
+
+    def test_runtime_placement_carries_no_address(self) -> None:
+        manifest = self._with_module(placement="runtime", role="guest-prx", required=True,
+                                     guest_path="disc0:/PSP_GAME/USRDIR/level01.prx")
+        del manifest["modules"][0]["load_address"]
+        normalized = title_manifest.validate_manifest(manifest)
+        self.assertEqual(normalized["modules"][0], {
+            "name": "synthetic.prx", "required": True, "role": "guest-prx",
+            "placement": "runtime", "guest_path": "disc0:/PSP_GAME/USRDIR/level01.prx",
+        })
+
+    def test_fixed_placement_keeps_its_canonical_form(self) -> None:
+        implicit = title_manifest.validate_manifest(self._with_module())
+        explicit = title_manifest.validate_manifest(self._with_module(placement="fixed"))
+        self.assertEqual(implicit, explicit)
+        self.assertNotIn("placement", implicit["modules"][0],
+                         "existing manifests normalize (and digest) exactly as before")
+
+    def test_placement_contract_is_fail_closed(self) -> None:
+        runtime_with_address = self._with_module(placement="runtime")
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "no manifest load address"):
+            title_manifest.validate_manifest(runtime_with_address)
+        runtime_with_evidence = self._with_module(placement="runtime", load_address_evidence="provisional")
+        del runtime_with_evidence["modules"][0]["load_address"]
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "no manifest load address"):
+            title_manifest.validate_manifest(runtime_with_evidence)
+        capability = self._with_module(placement="runtime", role="hle-capability", required=True)
+        del capability["modules"][0]["load_address"]
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "only a guest module"):
+            title_manifest.validate_manifest(capability)
+        fixed_without_address = self._with_module()
+        del fixed_without_address["modules"][0]["load_address"]
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "load_address"):
+            title_manifest.validate_manifest(fixed_without_address)
+        with self.assertRaisesRegex(title_manifest.TitleManifestError, "unsupported module placement"):
+            title_manifest.validate_manifest(self._with_module(placement="anywhere"))
+
+    def test_module_count_matches_the_discovery_cap(self) -> None:
+        manifest = title_manifest.load_manifest(ROOT / "assets" / "titles" / "synthetic.json")
+
+        def modules(count):
+            return [{"name": f"overlay_{i:03d}.prx", "required": True, "role": "guest-prx",
+                     "placement": "runtime"} for i in range(count)]
+
+        manifest["modules"] = modules(title_manifest.MAX_TITLE_MODULES)
+        self.assertEqual(len(title_manifest.validate_manifest(manifest)["modules"]), 256)
+        manifest["modules"] = modules(title_manifest.MAX_TITLE_MODULES + 1)
+        with self.assertRaises(title_manifest.TitleManifestError):
+            title_manifest.validate_manifest(manifest)

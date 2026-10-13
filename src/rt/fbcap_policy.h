@@ -24,8 +24,11 @@
 //   - both set                      -> SR_FBDUMP (diagnostic wins; it must not be
 //                                         silently starved out by the oracle loop)
 //   - SR_FBSNAP value "0"           -> none   (switch values are parsed as numbers,
-//                                         see sdl3vk.c _cap_env_isset)
+//                                         see sr_fbcap_env_on / sr_fbcap_snap_every)
 //   - SR_FBDUMP value "0"           -> none
+//   - only SR_FBSNAP_WINDOWS        -> SR_FBSNAP, every present inside the windows
+//                                         (sr_fbcap_snap_every; an explicit
+//                                         SR_FBSNAP=0 still disables it)
 //
 // Exit-status table (SR_FBDUMP route):
 //   capture result 1  -> 0 (the presented frame WAS published before exit)
@@ -49,6 +52,15 @@ extern "C" {
 
 /* 0 = switch off; the value is parsed as a number so the legacy literal "0" disables. */
 int sr_fbcap_env_on(const char *name);
+
+/* Effective SR_FBSNAP cadence: capture every Nth present (N >= 1), or 0 = FBSNAP off.
+ * fbsnap_value is the raw SR_FBSNAP value (NULL when unset); windows_configured is nonzero
+ * when SR_FBSNAP_WINDOWS parsed to at least one window. Windows are self-sufficient: with
+ * SR_FBSNAP unset (or empty) they capture every present inside them (N = 1). An explicit
+ * SR_FBSNAP keeps its meaning with or without windows: "0", negative or non-numeric is
+ * off, N >= 1 is the cadence. The same value decides slot ownership and the cadence gate,
+ * so the two can never disagree. */
+int sr_fbcap_snap_every(const char *fbsnap_value, int windows_configured);
 
 /* Who owns the single capture slot?  Both-set goes to SR_FBDUMP. */
 int sr_fbcap_owner(int fbdu, int fbsnap);

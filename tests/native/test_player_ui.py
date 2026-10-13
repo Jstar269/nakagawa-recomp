@@ -20,11 +20,21 @@ import zlib
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools"))
+from nk_core import package_cache  # noqa: E402  (the package-layer epochs the fixture must spell)
 PLAYER_EXE = Path(
     os.environ.get("NAKAGAWA_PLAYER_UI_TEST_EXE", "build/nakagawa_player_ui_test.exe")
 )
 if not PLAYER_EXE.is_absolute():
     PLAYER_EXE = ROOT / PLAYER_EXE
+# The player accepts a package only for the CpuState ABI it was compiled with, so a
+# synthetic ready package must name that same version (src/rt/recomp.h).
+CPU_STATE_ABI_VERSION = int(
+    re.search(
+        r"#define SR_CPUSTATE_ABI_VERSION (\d+)u",
+        (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8"),
+    ).group(1)
+)
 
 
 def read_bmp(path: Path) -> tuple[int, int, int, bytes]:
@@ -292,11 +302,11 @@ def synthetic_ready_package(
         "codegen_options_sha256": canonical_hash({}),
         "codegen_sha256": zero_hash,
         "executable_sha256": input_executable_hash,
-        "generated_code_abi_epoch": 1,
+        "generated_code_abi_epoch": package_cache.GENERATED_CODE_ABI_EPOCH,
         "manifest_sha256": zero_hash,
         "modules_sha256": canonical_hash([]),
         "psp_header_sha256": None,
-        "runtime_abi_epoch": 1,
+        "runtime_abi_epoch": package_cache.RUNTIME_ABI_EPOCH,
         "title_input_identity_sha256": identity_digest,
     }
     native_components = {
@@ -305,7 +315,7 @@ def synthetic_ready_package(
         "compiler_target": "fixture-target",
         "generated_code_digest": zero_hash,
         "link_flags": "",
-        "runtime_abi_epoch": 1,
+        "runtime_abi_epoch": package_cache.RUNTIME_ABI_EPOCH,
         "runtime_source_digest": zero_hash,
     }
     cache_key = {
@@ -318,7 +328,9 @@ def synthetic_ready_package(
         "schema_version": 2,
         "key": cache_key,
         "codegen_options": {},
-        "runtime_abi_compatibility": {"current_epoch": 1, "generated_code_reusable": True},
+        "runtime_abi_compatibility": {
+            "current_epoch": package_cache.RUNTIME_ABI_EPOCH, "generated_code_reusable": True,
+        },
     }
     inputs = {
         "manifest": {"sha256": zero_hash},
@@ -330,7 +342,7 @@ def synthetic_ready_package(
         "format": "nakagawa-build-report",
         "schema_version": 1,
         "title_id": title_id,
-        "runtime_abi": {"name": "CpuState", "version": 2},
+        "runtime_abi": {"name": "CpuState", "version": CPU_STATE_ABI_VERSION},
         "cache": cache,
         "input_hashes": inputs,
         "tools": {},
@@ -354,7 +366,7 @@ def synthetic_ready_package(
         "title_input_identity": identity,
         "runtime": {
             "abi": "CpuState",
-            "abi_version": 2,
+            "abi_version": CPU_STATE_ABI_VERSION,
             "abi_header_sha256": zero_hash,
             "run_entry": "0x00000000",
             "runtime_contract": None,
@@ -878,6 +890,21 @@ class NativePlayerUiTests(unittest.TestCase):
                 frames = run["frames"]
                 assert isinstance(frames, list)
                 self.assertEqual(frames[0]["settings_two_col"], expected_two_col)
+
+    def test_settings_text_is_drawn_with_the_font_it_was_laid_out_with(self) -> None:
+        """Long settings text (the VBlank note) never switches to the bitmap font.
+
+        Wrapping is measured with the TTF font. A string longer than the glyph
+        cache used to fall back to the wider bitmap font, so the note ran past
+        the panel's right edge. No frame may draw text that way while TTF is on."""
+        run = self.run_player("settings", width=1280, height=720)
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        ttf_frames = [frame for frame in frames if frame["font"] == "ttf"]
+        if not ttf_frames:
+            self.skipTest("the system TTF font is not available in this environment")
+        for frame in ttf_frames:
+            self.assertEqual(frame["bitmap_text_draws"], "0", run["stdout"])
 
     def test_script_can_wait_for_a_view_and_a_minimum_duration(self) -> None:
         started = time.monotonic()
@@ -1626,6 +1653,23 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(build_frames[1]["package_cancelled"], "1")
         self.assertEqual(build_frames[1]["view"], "library")
 
+    def test_build_screen_follows_the_build_state(self) -> None:
+        """The build screen names the state the session is in.
+
+        A package that has been written reads PACKAGE BUILT while it is checked.
+        It used to keep reading BUILDING RUNTIME PACKAGE, because only the stage
+        chips looked at completion."""
+        running = self.run_player("building", ("KEY_ESCAPE",))
+        running_frames = running["frames"]
+        assert isinstance(running_frames, list)
+        self.assertEqual(running_frames[0]["build_badge"], "BUILDING_RUNTIME_PACKAGE")
+
+        built = self.run_player("build-ready")
+        built_frames = built["frames"]
+        assert isinstance(built_frames, list)
+        self.assertEqual(built_frames[0]["view"], "building_package")
+        self.assertEqual(built_frames[0]["build_badge"], "PACKAGE_BUILT", built["stdout"])
+
     def test_controller_bind_conflict_calibration_and_profile_save(self) -> None:
         bind = self.run_player("controller", ("KEY_TAB", "KEY_RETURN", "PAD_SOUTH"))
         bind_frames = bind["frames"]
@@ -1901,6 +1945,53 @@ class FirstRunRouteTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
             self.assertEqual(library_disc_ids(scratch), ["TEST00002"])
 
+    def test_add_to_library_sets_up_an_archive_disc_before_saving_it(self) -> None:
+        """ADD TO LIBRARY on an archive disc runs the wizard's staging worker.
+
+        Failing-before: the card saved the disc without its files, so PLAY then
+        found the game's data missing. Now the card hands the disc to the same
+        staging transaction (progress, cancel, retry, calm messages) and the
+        game reaches the library only with its files in place.
+        """
+        sys.path.insert(0, str(ROOT / "tools"))
+        from test_iso_parity import (
+            archive_title_manifest,
+            build_plain_mips_elf,
+            create_archive_title_iso,
+        )
+
+        with tempfile.TemporaryDirectory(prefix=".first-run-card-archive-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            iso = scratch / "archive.iso"
+            create_archive_title_iso(iso, disc_id="ULUS99996", title="Synthetic Archive",
+                                     executable=build_plain_mips_elf())
+            user_root = scratch / "user-data"
+            (user_root / "manifests").mkdir(parents=True)
+            (user_root / "manifests" / "archive.json").write_text(
+                json.dumps(archive_title_manifest("ULUS99996", "archive-ulus99996")),
+                encoding="utf-8",
+            )
+            completed = subprocess.run(
+                [str(PLAYER_EXE), f"--user-data-root={user_root}", f"--iso={iso}",
+                 "--ui-test-events=WAIT_VIEW=supported,10000;KEY_RETURN;"
+                 "WAIT_VIEW=ready_library,30000;QUIT",
+                 f"--ui-test-screenshot={scratch / 'last-frame.bmp'}"],
+                cwd=ROOT, env=self.scratch_env(scratch), capture_output=True, text=True,
+                timeout=120, check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            views = [frame["view"] for frame in parse_frames(completed.stdout)]
+            self.assertIn("supported", views, completed.stdout)
+            self.assertEqual(views[-1], "ready_library", completed.stdout)
+            library = json.loads((user_root / "library.json").read_text(encoding="utf-8"))
+            self.assertEqual([game["disc_id"] for game in library["games"]], ["ULUS99996"])
+            game = library["games"][0]
+            self.assertTrue(game["assets_staged"])
+            prepared = Path(game["prepared_root"])
+            self.assertEqual(prepared.resolve(), (user_root / "games" / "ULUS99996").resolve())
+            member = prepared / "xbdata" / "menu" / "assets.xb.d" / "data" / "raw.bin"
+            self.assertEqual(member.read_bytes(), b"synthetic archive member")
+
     def test_launch_now_on_experimental_iso_reports_the_unavailable_boundary(self) -> None:
         sys.path.insert(0, str(ROOT / "tools"))
         from test_iso_parity import build_plain_mips_elf, create_test_iso_with_executables
@@ -1927,6 +2018,98 @@ class FirstRunRouteTests(unittest.TestCase):
         self.assertIn("in the works.", completed.stderr)
         self.assertNotIn("(#308)", completed.stderr)
         self.assertEqual(library_disc_ids(scratch), [])
+
+    def test_stage_route_runs_the_wizard_worker_for_an_archive_disc(self) -> None:
+        """--stage drives the setup wizard's own staging worker.
+
+        The disc's data ships in an XB archive below USRDIR/xbdata. The worker
+        runs the shared staging transaction, the game lands in the library with
+        its files promoted into the per-user data root, and the wizard ends on
+        the ready library card.
+        """
+        sys.path.insert(0, str(ROOT / "tools"))
+        from test_iso_parity import (
+            archive_title_manifest,
+            build_plain_mips_elf,
+            create_archive_title_iso,
+        )
+
+        with tempfile.TemporaryDirectory(prefix=".first-run-archive-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            iso = scratch / "archive.iso"
+            create_archive_title_iso(iso, disc_id="ULUS99996", title="Synthetic Archive",
+                                     executable=build_plain_mips_elf())
+            user_root = scratch / "user-data"
+            (user_root / "manifests").mkdir(parents=True)
+            (user_root / "manifests" / "archive.json").write_text(
+                json.dumps(archive_title_manifest("ULUS99996", "archive-ulus99996")),
+                encoding="utf-8",
+            )
+            completed = subprocess.run(
+                [str(PLAYER_EXE), f"--user-data-root={user_root}", f"--iso={iso}", "--stage",
+                 "--ui-test-events=WAIT_VIEW=ready_library,30000;QUIT",
+                 f"--ui-test-screenshot={scratch / 'last-frame.bmp'}"],
+                cwd=ROOT, env=self.scratch_env(scratch), capture_output=True, text=True,
+                timeout=120, check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            frames = parse_frames(completed.stdout)
+            self.assertTrue(frames, completed.stdout)
+            self.assertEqual(frames[-1]["view"], "ready_library", completed.stdout)
+            self.assertEqual(frames[-1]["selected_staged"], "1")
+            library = json.loads((user_root / "library.json").read_text(encoding="utf-8"))
+            self.assertEqual([game["disc_id"] for game in library["games"]], ["ULUS99996"])
+            game = library["games"][0]
+            self.assertTrue(game["assets_staged"])
+            prepared = Path(game["prepared_root"])
+            self.assertEqual(prepared.resolve(), (user_root / "games" / "ULUS99996").resolve())
+            member = prepared / "xbdata" / "menu" / "assets.xb.d" / "data" / "raw.bin"
+            self.assertEqual(member.read_bytes(), b"synthetic archive member")
+            self.assertFalse((user_root / "games" / ".staging_ULUS99996").exists())
+            self.assertEqual(library_disc_ids(scratch / "localappdata"), [],
+                             "--user-data-root keeps the library out of the default data folder")
+
+    def test_headless_launch_now_sets_up_archive_files_before_play(self) -> None:
+        """--launch-now stands in for PLAY NOW on a disc whose files are not set up.
+
+        The same staging transaction runs first, the game is recorded with its
+        files in place, and the launch then reaches PLAY's own next boundary
+        (no package has been built here) instead of a missing data folder.
+        """
+        sys.path.insert(0, str(ROOT / "tools"))
+        from test_iso_parity import (
+            archive_title_manifest,
+            build_plain_mips_elf,
+            create_archive_title_iso,
+        )
+
+        with tempfile.TemporaryDirectory(prefix=".first-run-launch-now-", dir=ROOT) as tmp:
+            scratch = Path(tmp)
+            iso = scratch / "archive.iso"
+            create_archive_title_iso(iso, disc_id="ULUS99996", title="Synthetic Archive",
+                                     executable=build_plain_mips_elf())
+            user_root = scratch / "user-data"
+            (user_root / "manifests").mkdir(parents=True)
+            (user_root / "manifests" / "archive.json").write_text(
+                json.dumps(archive_title_manifest("ULUS99996", "archive-ulus99996")),
+                encoding="utf-8",
+            )
+            completed = subprocess.run(
+                [str(PLAYER_EXE), f"--user-data-root={user_root}", f"--iso={iso}",
+                 "--launch-now", "--headless-launch"],
+                cwd=ROOT, env=self.scratch_env(scratch), capture_output=True, text=True,
+                timeout=120, check=False,
+            )
+            output = completed.stdout + completed.stderr
+            self.assertIn("STAGING_RESULT status=PASS", completed.stdout, output)
+            self.assertEqual(completed.returncode, 4, output)
+            self.assertIn("--launch-now failed: Runtime package is missing", completed.stderr)
+            self.assertNotIn("data folder", completed.stderr)
+            library = json.loads((user_root / "library.json").read_text(encoding="utf-8"))
+            self.assertEqual([game["disc_id"] for game in library["games"]], ["ULUS99996"])
+            self.assertTrue(library["games"][0]["assets_staged"])
+            self.assertTrue((user_root / "games" / "ULUS99996" / "xbdata" / "menu" /
+                             "assets.xb.d" / "data" / "raw.bin").is_file())
 
     def test_launch_index_on_an_empty_library_fails_with_a_clear_message(self) -> None:
         with tempfile.TemporaryDirectory(prefix=".first-run-empty-", dir=ROOT) as tmp:

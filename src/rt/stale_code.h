@@ -123,6 +123,13 @@ void sr_stale_register_word(uint32_t addr, uint32_t expected_word);
  * record. */
 void sr_stale_register_block(uint32_t addr, uint32_t nwords, uint32_t expected_hash);
 
+/* Forget every word and block record whose span overlaps [addr, addr+size).
+ * Used when a runtime-placed module is unbound (src/rt/guest_interp.c): its
+ * expectations described the bytes of that module only, and a module later
+ * bound over the same addresses registers its own. A zero size or a wrapping
+ * range forgets nothing. */
+void sr_stale_forget_range(uint32_t addr, uint32_t size);
+
 /* Number of registered records (words plus blocks). */
 uint32_t sr_stale_entry_count(void);
 

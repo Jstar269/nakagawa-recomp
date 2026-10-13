@@ -24,6 +24,9 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include "recomp.h"
 #include "gpu_sdl3vk/sdl3vk.h"
+#include "fbcap.h"
+#include "osk_overlay.h"        /* the in-window keyboard: keys in, the frame drawn over */
+#include "osk_overlay_paint.h"
 #ifdef SR_SDL3VK
 #include "gpu_sdl3vk/ge_gpu.h"
 #endif
@@ -153,10 +156,33 @@ static int present_slot_due(void) {
 
 #ifndef SR_GUI_PRESENT_SELFTEST
 #ifdef SR_SDL3VK
+/* The window's keys and typed text go to the in-window keyboard while it is open. The text
+ * input is claimed only then, so Escape still quits the game the rest of the time. */
+static void sr_gui_feed_keyboard(void) {
+    sdl3vk_set_text_claim(sr_osk_overlay_active());
+    Sdl3VkKeyEvent ev[32];
+    int n = sdl3vk_take_key_events(ev, 32);
+    for (int i = 0; i < n; i++) {
+        switch (ev[i].key) {
+        case SDL3VK_KEY_UP:        sr_osk_overlay_key(OSK_KEY_UP); break;
+        case SDL3VK_KEY_DOWN:      sr_osk_overlay_key(OSK_KEY_DOWN); break;
+        case SDL3VK_KEY_LEFT:      sr_osk_overlay_key(OSK_KEY_LEFT); break;
+        case SDL3VK_KEY_RIGHT:     sr_osk_overlay_key(OSK_KEY_RIGHT); break;
+        case SDL3VK_KEY_ENTER:     sr_osk_overlay_key(OSK_KEY_SELECT); break;
+        case SDL3VK_KEY_ESCAPE:    sr_osk_overlay_key(OSK_KEY_CANCEL); break;
+        case SDL3VK_KEY_TAB:       sr_osk_overlay_key(OSK_KEY_CONFIRM); break;
+        case SDL3VK_KEY_BACKSPACE: sr_osk_overlay_key(OSK_KEY_BACKSPACE); break;
+        case SDL3VK_KEY_TEXT:      sr_osk_overlay_type(ev[i].codepoint); break;
+        default: break;
+        }
+    }
+}
+
 static void sync_sdl_input(void) {
     s_buttons = sdl3vk_buttons();
     sdl3vk_analog(&s_lx, &s_ly);
     s_pad_present = sdl3vk_pad_present();
+    sr_gui_feed_keyboard();
 }
 #endif
 
@@ -274,6 +300,9 @@ void gui_init(const char *title) {
                 s_px = (uint32_t *)malloc(PSP_W * PSP_H * 4);
                 s_last_ns = SDL_GetTicksNS();
                 s_on = 1;
+                /* The window draws the on-screen keyboard, so no native box is needed; a
+                 * presenter that cannot draw keeps the box as the fallback (osk_text_entry.c). */
+                sr_osk_overlay_set_host(osk_overlay_paint_available());
                 sync_sdl_input();
                 /* Phase 1 GPU rasterizer (opt-in): captures GE triangles/sprites and
                  * renders them on the GPU, writing results back to guest VRAM. */
@@ -347,6 +376,17 @@ void gui_consume_button_pulses(void) {
         sync_sdl_input();
     }
 #endif
+}
+
+/* Gamepad presses since the last call (osk_overlay.h). The keyboard takes them every VBLANK,
+ * so the list never builds up while it is closed. Returns 0 when no SDL3 presenter is up: the
+ * GDI and offscreen presenters have no SDL3 gamepad. The overlay host governs drawing, not this
+ * read; the presses are drained whether or not the host is on. */
+uint32_t gui_pad_pulses_take(void) {
+#ifdef SR_SDL3VK
+    if (s_sdl3) return sdl3vk_take_pad_pulses();
+#endif
+    return 0u;
 }
 
 /* Present a framebuffer at guest address fbaddr. fmt: 0=5650, 1=5551, 2=4444, 3=8888.
@@ -436,18 +476,32 @@ void gui_pump(void) {
 #endif
 }
 
+#ifdef _WIN32
+/* Blit the converted frame (s_px) into the GDI window. 1 = the frame was drawn. */
+static int gdi_blit(void) {
+    if (!s_hwnd) return 0;
+    HDC dc = GetDC(s_hwnd);
+    if (!dc) return 0;
+    RECT cr;
+    if (!GetClientRect(s_hwnd, &cr)) {
+        ReleaseDC(s_hwnd, dc);
+        return 0;
+    }
+    int scanlines = StretchDIBits(dc, 0, 0, cr.right, cr.bottom, 0, 0, PSP_W, PSP_H,
+                                  s_px, &s_bmi, DIB_RGB_COLORS, SRCCOPY);
+    ReleaseDC(s_hwnd, dc);
+    return scanlines > 0;
+}
+#endif
+
 int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     if (!s_on) return 0;
     if (stride == 0) stride = 512;
 
     if (!present_slot_due()) {
+        /* No presenter runs, so an armed capture stays unserviced; the caller resolves it
+         * as "nothing attempted" when this returns (fbcap.h). */
         if (sr_perf_enabled) sr_perf_present_skip();
-#ifdef SR_SDL3VK
-        /* A host present that never runs must not service an armed capture: otherwise a
-         * later present would publish the old path with newer pixels. Resolve it as
-         * "nothing attempted" so the next request can arm cleanly. */
-        if (s_sdl3) sdl3vk_capture_cancel();
-#endif
         gui_pump();
         return 0;
     }
@@ -463,6 +517,9 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
             sr_gui_boot_event("BOOT_EVENT phase=frame_present backend=offscreen frame=%llu",
                     (unsigned long long)s_offscreen_frames);
         }
+        /* The converted frame is what this sink accepted: an armed capture publishes
+         * exactly these pixels, the same host frame the other presenters show. */
+        sr_capture_serve_host(s_px, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX);
         return 1;
     }
 
@@ -473,7 +530,9 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
          *    directly from its Vulkan image. Returns 1 on success (skip GDI), -1 when the
          *    address isn't GPU-resident (CPU movie frames etc.) — fall through to BGRA. */
         accepted = 0;
-        int res = gegpu_present(fbaddr, fmt, stride);
+        /* While the on-screen keyboard is open the frame must pass through the host copy the
+         * keyboard is drawn on, so the GPU fast path steps aside (-1: CPU path below). */
+        int res = sr_osk_overlay_active() ? -1 : gegpu_present(fbaddr, fmt, stride);
         sync_sdl_input();
         if (res == 0) { _Exit(0); }
         if (res == 1) {
@@ -494,6 +553,9 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
 
         /* 2. CPU-rendered fallback: convert guest VRAM to BGRA and blit through SDL3/Vulkan. */
         convert_fb(fbaddr, fmt, stride);
+        /* The keyboard is drawn on the host copy only: the same pixels the window and the
+         * frame capture receive, and guest VRAM is untouched. */
+        if (sr_osk_overlay_active()) osk_overlay_paint(sr_osk_overlay_view(), s_px, PSP_W, PSP_H);
         int present_result = sdl3vk_present_rgba(s_px);
         sync_sdl_input();
         if (present_result == 0) { _Exit(0); }
@@ -511,18 +573,12 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     s_pad_present = 0;
 
     convert_fb(fbaddr, fmt, stride);
-    if (!s_hwnd) return 0;
-    HDC dc = GetDC(s_hwnd);
-    if (!dc) return 0;
-    RECT cr;
-    if (!GetClientRect(s_hwnd, &cr)) {
-        ReleaseDC(s_hwnd, dc);
+    if (!gdi_blit()) {
+        sr_capture_fail("GDI present failed");
         return 0;
     }
-    int scanlines = StretchDIBits(dc, 0, 0, cr.right, cr.bottom, 0, 0, PSP_W, PSP_H,
-                                  s_px, &s_bmi, DIB_RGB_COLORS, SRCCOPY);
-    ReleaseDC(s_hwnd, dc);
-    if (scanlines <= 0) return 0;
+    /* The DIB just blitted is the converted frame: an armed capture publishes it. */
+    sr_capture_serve_host(s_px, PSP_W, PSP_H, PSP_W * 4u, SR_CAP_ORDER_BGRX);
 #else
     /* No GDI presenter on this host and the SDL3 presenter is not active: gui_init
      * reported that, so there is nothing to present and nothing to claim. */

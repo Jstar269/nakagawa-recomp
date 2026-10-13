@@ -129,6 +129,29 @@ class TitleManagerAdapterTests(unittest.TestCase):
         plan["surprise_setting"] = True
         self.assert_rejected(plan, "unknown field(s): surprise_setting")
 
+    def test_a_runtime_placed_guest_module_carries_no_address(self) -> None:
+        # The guest allocator places a runtime module when the game loads it, so its
+        # plan entry names the placement instead of an address -- and only that.
+        plan = self.plan()
+        plan["required_guest_modules"] = [
+            {"name": "fixed.prx", "load_address": 0x08C00000},
+            {"name": "level01.prx", "placement": "runtime"},
+        ]
+        proc = self.run_pwsh("Assert-TitleManagerPlan $plan | Out-Null; Write-Output 'ACCEPTED'", plan)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("ACCEPTED", proc.stdout)
+        for label, entry, expected in (
+            ("other placement", {"name": "level01.prx", "placement": "high"},
+             "placement must be runtime"),
+            ("placement with an address",
+             {"name": "level01.prx", "placement": "runtime", "load_address": 0x08C00000},
+             "unknown field(s): load_address"),
+        ):
+            with self.subTest(case=label):
+                bad = self.plan()
+                bad["required_guest_modules"] = [entry]
+                self.assert_rejected(bad, expected)
+
     # --- derivation, not duplication --------------------------------------
 
     def test_a_projection_that_disagrees_with_the_plan_is_rejected(self) -> None:

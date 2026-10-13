@@ -20,9 +20,14 @@ from typing import Any, Iterable
 SCHEMA = 1
 META_PREFIX = "NAKAGAWA_PSP_META"
 TEST_PREFIX = "NAKAGAWA_PSP_TEST"
+# Progress marker a probe writes, durably, before a call that could hang or
+# fault: ``NAKAGAWA_PSP_STEP schema=1 case_id=<id> step=<name>``.  It is not a
+# result record; parsers collect it so a truncated stream names its last step.
+STEP_PREFIX = "NAKAGAWA_PSP_STEP"
 STATUSES = frozenset({"PASS", "FAIL", "SKIP", "HANG", "TIMEOUT", "ERROR"})
 _KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
 _ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
+_STEP_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,254}$")
 _HEX_RE = re.compile(r"^0x[0-9a-fA-F]{1,16}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -189,12 +194,26 @@ class TestResult:
 
 
 @dataclass(frozen=True)
+class ProbeStep:
+    """One ``NAKAGAWA_PSP_STEP`` progress marker, in stream order."""
+
+    case_id: str
+    step: str
+
+
+@dataclass(frozen=True)
 class ParsedOutput:
     metadata: tuple[tuple[str, str], ...]
     results: tuple[TestResult, ...]
+    steps: tuple[ProbeStep, ...] = ()
 
     def metadata_dict(self) -> dict[str, str]:
         return dict(self.metadata)
+
+    @property
+    def last_step(self) -> ProbeStep | None:
+        """The last progress marker: where a truncated stream stopped."""
+        return self.steps[-1] if self.steps else None
 
 
 def _fields(tokens: Iterable[str], *, line_number: int) -> dict[str, str]:
@@ -263,12 +282,15 @@ def provenance_issues(metadata: dict[str, str]) -> tuple[str, ...]:
 def parse_output(text: str, *, require_metadata: bool = True) -> ParsedOutput:
     """Parse a complete deterministic result stream.
 
-    Blank lines and ``#`` comments are ignored.  Duplicate metadata/result
-    keys, malformed scalar fields, and duplicate test cases are rejected.
+    Blank lines and ``#`` comments are ignored.  ``NAKAGAWA_PSP_STEP`` progress
+    markers are collected in order into ``steps`` and never count as results.
+    Duplicate metadata/result keys, malformed scalar fields, and duplicate test
+    cases are rejected.
     """
 
     metadata: dict[str, str] = {}
     results: list[TestResult] = []
+    steps: list[ProbeStep] = []
     seen_results: set[tuple[str, str]] = set()
     for line_number, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
@@ -282,6 +304,9 @@ def parse_output(text: str, *, require_metadata: bool = True) -> ParsedOutput:
                 duplicate = sorted(set(fields) & set(metadata))[0]
                 raise ProtocolError(f"line {line_number}: duplicate metadata field {duplicate}")
             metadata.update(fields)
+            continue
+        if prefix == STEP_PREFIX:
+            steps.append(_probe_step(tokens, line_number=line_number))
             continue
         if prefix != TEST_PREFIX:
             raise ProtocolError(f"line {line_number}: unknown record prefix {prefix!r}")
@@ -324,7 +349,44 @@ def parse_output(text: str, *, require_metadata: bool = True) -> ParsedOutput:
         _validate_metadata(metadata, line_number=0)
     if not results:
         raise ProtocolError("result stream contains no test records")
-    return ParsedOutput(tuple(sorted(metadata.items())), tuple(results))
+    return ParsedOutput(tuple(sorted(metadata.items())), tuple(results), tuple(steps))
+
+
+def _probe_step(tokens: Iterable[str], *, line_number: int) -> ProbeStep:
+    """Validate the fields of one STEP marker (the tokens after its prefix)."""
+
+    fields = _fields(tokens, line_number=line_number)
+    if set(fields) != {"schema", "case_id", "step"}:
+        raise ProtocolError(
+            f"line {line_number}: step marker fields must be schema, case_id, step"
+        )
+    if fields["schema"] != str(SCHEMA):
+        raise ProtocolError(f"line {line_number}: unsupported step schema")
+    if not _ID_RE.fullmatch(fields["case_id"]):
+        raise ProtocolError(f"line {line_number}: invalid step case_id")
+    if not _STEP_RE.fullmatch(fields["step"]):
+        raise ProtocolError(f"line {line_number}: invalid step name")
+    return ProbeStep(fields["case_id"], fields["step"])
+
+
+def parse_progress(text: str) -> ParsedOutput:
+    """Collect the progress of a stream that may be cut off or carry console noise.
+
+    A hang or timeout can stop a probe before any result record, so its stream
+    need not parse as a result stream. Only complete ``NAKAGAWA_PSP_STEP``
+    markers are collected, in order, with the same field checks as
+    :func:`parse_output`. Every other line is ignored, and a final line without
+    its newline may stop mid-marker, so it is not counted. The result carries no
+    metadata and no results: a cut stream is never a semantic result.
+    """
+
+    steps: list[ProbeStep] = []
+    *complete, _unterminated = text.split("\n")
+    for line_number, raw in enumerate(complete, 1):
+        tokens = raw.split()
+        if tokens[:1] == [STEP_PREFIX]:
+            steps.append(_probe_step(tokens[1:], line_number=line_number))
+    return ParsedOutput((), (), tuple(steps))
 
 
 @dataclass(frozen=True)

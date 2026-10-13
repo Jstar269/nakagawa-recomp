@@ -30,6 +30,8 @@ def _elf(
     sectionless: bool = False,
     paddr_override: int | None = None,
     extra_sections: list[tuple[bytes, int, int]] | None = None,
+    e_type: int = 2,
+    base_vaddr: int = BASE_VADDR,
 ) -> bytes:
     """Wrap a guest segment into a minimal ELF32 MIPS file.
 
@@ -40,23 +42,26 @@ def _elf(
     extra_sections appends named SHT_PROGBITS/SHF_ALLOC section headers in
     (name, vaddr, size) order, so fixtures can carry the real
     .sceStub.text/.rodata.sceNid pairing sections.
+
+    e_type and base_vaddr default to an ET_EXEC loaded at BASE_VADDR; a
+    relocatable PRX fixture passes e_type=0xFFA0 and base_vaddr=0.
     """
     e_phoff = 52
     e_shoff_placeholder = 0
-    modinfo_file_off = DATA_FILE_OFF + (modinfo_vaddr - BASE_VADDR)
+    modinfo_file_off = DATA_FILE_OFF + (modinfo_vaddr - base_vaddr)
     extra_sections = extra_sections or []
     if sectionless:
         p_paddr = modinfo_file_off if paddr_override is None else paddr_override
         e_shnum, e_shstrndx = 0, 0
     else:
-        p_paddr = BASE_VADDR
+        p_paddr = base_vaddr
         e_shnum, e_shstrndx = 3 + len(extra_sections), 2 + len(extra_sections)
     ehdr = struct.pack(
         "<4s5B7x2H5I6H",
         b"\x7fELF", 1, 1, 1, 0, 0,      # ELFCLASS32, ELFDATA2LSB, EV_CURRENT
-        2, 8,                            # ET_EXEC, EM_MIPS
+        e_type, 8,                       # e_type, EM_MIPS
         1,                               # e_version
-        BASE_VADDR,                      # e_entry
+        base_vaddr,                      # e_entry
         e_phoff, e_shoff_placeholder, 0,  # e_phoff, e_shoff (patched), e_flags
         52, 32, 1,                       # e_ehsize, e_phentsize, e_phnum
         40, e_shnum, e_shstrndx,         # e_shentsize, e_shnum, e_shstrndx
@@ -64,7 +69,7 @@ def _elf(
     phdr = struct.pack(
         "<8I",
         1,                               # PT_LOAD
-        DATA_FILE_OFF, BASE_VADDR, p_paddr,
+        DATA_FILE_OFF, base_vaddr, p_paddr,
         len(segment), len(segment),      # p_filesz, p_memsz
         7, 0x1000,                       # rwx, align
     )
@@ -86,7 +91,7 @@ def _elf(
     sh_null = struct.pack("<10I", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     sh_modinfo = struct.pack(
         "<10I", 1, 1, 2,                 # name, SHT_PROGBITS, SHF_ALLOC
-        modinfo_vaddr, DATA_FILE_OFF + (modinfo_vaddr - BASE_VADDR), 52,
+        modinfo_vaddr, DATA_FILE_OFF + (modinfo_vaddr - base_vaddr), 52,
         0, 0, 4, 0,
     )
     sh_extras = []
@@ -94,7 +99,7 @@ def _elf(
         sh_extras.append(
             struct.pack(
                 "<10I", extra_name_offs[nm], 1, 2,
-                vaddr, DATA_FILE_OFF + (vaddr - BASE_VADDR), size,
+                vaddr, DATA_FILE_OFF + (vaddr - base_vaddr), size,
                 0, 0, 4, 0,
             )
         )
@@ -111,17 +116,35 @@ def _elf(
     return out
 
 
+def _module_info_record(module_attributes: int, name: bytes) -> bytes:
+    """A 52-byte SceModuleInfo with a NUL-terminated name and empty tables.
+
+    The name is required: a sectionless input locates its record through
+    phdr[0].p_paddr, and both parsers refuse a record without a printable name.
+    """
+    if not 0 < len(name) < 28:
+        raise ValueError("module name must fit the 28-byte field with its terminator")
+    return (
+        struct.pack("<H", module_attributes) + b"\0\0"
+        + name.ljust(28, b"\0") + b"\0" * 20
+    )
+
+
 def build_import_elf(
     libs: list[tuple[str, list[int]]],
     *,
     entry_size_words: int = 5,
     corrupt: str | None = None,
     sectionless: bool = False,
+    module_attributes: int = 0,
 ) -> bytes:
     """Build a synthetic ELF whose import table lists `libs` as (name, [NIDs]).
 
     sectionless=True omits every section header; the parser must then locate
     SceModuleInfo via phdr[0].p_paddr (the stripped-PRX convention).
+
+    module_attributes is written to SceModuleInfo.attribute (0x1000 marks a
+    kernel-mode module).
 
     corrupt values (each produces exactly one malformed property; the ELF
     envelope and module-info location stay valid unless stated):
@@ -154,7 +177,7 @@ def build_import_elf(
         seg.extend(b)
         return BASE_VADDR + off
 
-    modinfo_vaddr = alloc(b"\0" * 52)
+    modinfo_vaddr = alloc(_module_info_record(module_attributes, b"SynthImports"))
 
     name_vaddrs = []
     for name, _nids in libs:
@@ -296,7 +319,7 @@ def build_interleaved_import_elf(
         seg.extend(b)
         return BASE_VADDR + off
 
-    modinfo_vaddr = alloc(b"\0" * 52)
+    modinfo_vaddr = alloc(_module_info_record(0, b"SynthInterleaved"))
     name_vaddrs = [alloc(name.encode("ascii") + b"\0", 1) for name, _first, _count in windows]
     nid_array = alloc(b"".join(struct.pack("<I", n) for n in nids))
     nid_sec_size = 4 * total
@@ -349,6 +372,130 @@ def build_interleaved_import_elf(
     )
 
 
+# The nameless syslib entry every PSP module exports: module_start and the
+# module_info variable, under their public PSPSDK lifecycle NIDs.
+SYSLIB_MODULE_START_NID = 0xD632ACDB
+SYSLIB_MODULE_INFO_NID = 0xF01D73A7
+SYSLIB_EXPORT = (None, 0x8000, [SYSLIB_MODULE_START_NID], [SYSLIB_MODULE_INFO_NID])
+
+
+def build_module_elf(
+    exports: list[tuple[str | None, int, list[int], list[int]]],
+    *,
+    imports: list[tuple[str, list[int]]] | None = None,
+    module_attributes: int = 0,
+    e_type: int = 0xFFA0,
+    base_vaddr: int = 0,
+    sectionless: bool = False,
+    corrupt: str | None = None,
+) -> bytes:
+    """Build a synthetic PSP module with an export table and optional imports.
+
+    exports lists SceLibraryEntryTable entries in order as (library name, or
+    None for the nameless syslib entry; attribute; function NIDs; variable
+    NIDs). Each entry is the 16-byte header the loader reads; its entry table
+    holds the function NIDs, then the variable NIDs, then one guest address
+    per export. imports, when given, adds a psp-fixup-imports style stub
+    table (one 8-byte slot per NID) with .sceStub.text/.rodata.sceNid
+    sections. The defaults model a relocatable PRX at base 0; a fixed-address
+    module or main executable passes e_type=2 and its load address.
+
+    corrupt values (each breaks exactly one export-table property):
+      "entry_too_short"         -- first entry declares 3 words, below the header
+      "entry_overrun"           -- first entry's length runs past ent_end
+      "entry_table_unmapped"    -- first entry's entry table is outside the segment
+      "address_table_truncated" -- last entry's addresses run past the segment end
+      "ent_range_reversed"      -- ent_top above ent_end
+      "bad_name_ptr"            -- first named entry's name pointer is unmapped
+    """
+    seg = bytearray()
+
+    def alloc(b: bytes, align: int = 4) -> int:
+        while len(seg) % align:
+            seg.append(0)
+        off = len(seg)
+        seg.extend(b)
+        return base_vaddr + off
+
+    modinfo_vaddr = alloc(b"\0" * 52)
+    code_vaddr = alloc(struct.pack("<2I", 0x03E00008, 0))  # jr $ra; nop
+
+    name_vaddrs = [
+        alloc(name.encode("ascii") + b"\0", 1) if name is not None else 0
+        for name, _attr, _funcs, _vars in exports
+    ]
+    table_vaddrs = []
+    for _name, _attr, funcs, variables in exports:
+        nids = list(funcs) + list(variables)
+        addresses = [code_vaddr] * len(nids)
+        table_vaddrs.append(
+            alloc(b"".join(struct.pack("<I", value) for value in nids + addresses)) if nids else 0
+        )
+    entries = bytearray()
+    for (_name, attr, funcs, variables), name_ptr, table in zip(
+        exports, name_vaddrs, table_vaddrs, strict=True
+    ):
+        entries += struct.pack(
+            "<IHHBBHI", name_ptr, 0x0101, attr, 4, len(variables), len(funcs), table
+        )
+    ent_top = alloc(bytes(entries))
+    ent_end = ent_top + len(entries)
+
+    stub_top = stub_end = 0
+    extra_sections = []
+    if imports:
+        import_names = [alloc(name.encode("ascii") + b"\0", 1) for name, _nids in imports]
+        all_nids = [nid for _name, nids in imports for nid in nids]
+        nid_array = alloc(b"".join(struct.pack("<I", nid) for nid in all_nids))
+        first_sym = alloc(b"\0" * (8 * len(all_nids)))
+        stub_entries = bytearray()
+        position = 0
+        for (_name, nids), name_ptr in zip(imports, import_names, strict=True):
+            stub_entries += struct.pack(
+                "<IHHBBHII", name_ptr, 0x0101, 0x0009, 5, 0, len(nids),
+                nid_array + position * 4, first_sym + position * 8,
+            )
+            position += len(nids)
+        stub_top = alloc(bytes(stub_entries))
+        stub_end = stub_top + len(stub_entries)
+        extra_sections = [
+            (b".sceStub.text", first_sym, 8 * len(all_nids)),
+            (b".rodata.sceNid", nid_array, 4 * len(all_nids)),
+        ]
+
+    entry0 = ent_top - base_vaddr
+    if corrupt == "entry_too_short":
+        seg[entry0 + 8] = 3
+    elif corrupt == "entry_overrun":
+        seg[entry0 + 8] = 0x40
+    elif corrupt == "entry_table_unmapped":
+        struct.pack_into("<I", seg, entry0 + 12, base_vaddr + 0x00100000)
+    elif corrupt == "address_table_truncated":
+        last = entry0 + 16 * (len(exports) - 1)
+        _name, _attr, funcs, variables = exports[-1]
+        count = len(funcs) + len(variables)
+        struct.pack_into("<I", seg, last + 12, base_vaddr + len(seg) - count * 4)
+    elif corrupt == "ent_range_reversed":
+        ent_top, ent_end = ent_end, ent_top
+    elif corrupt == "bad_name_ptr":
+        named = next(index for index, (name, *_rest) in enumerate(exports) if name is not None)
+        struct.pack_into("<I", seg, entry0 + 16 * named, base_vaddr + 0x00100000)
+
+    struct.pack_into(
+        "<HH28sI4I", seg, modinfo_vaddr - base_vaddr,
+        module_attributes, 0x0101, b"SynthModule", base_vaddr + 0x8000,
+        ent_top, ent_end, stub_top, stub_end,
+    )
+    return _elf(
+        bytes(seg),
+        modinfo_vaddr,
+        sectionless=sectionless,
+        extra_sections=None if sectionless else extra_sections,
+        e_type=e_type,
+        base_vaddr=base_vaddr,
+    )
+
+
 # The mixed-classification fixture library set used by tests, the CI gate, and
 # docs examples. NIDs are synthetic except where a real public NID is needed
 # to exercise a manifest classification (those NIDs and API names are public
@@ -365,3 +512,310 @@ MIXED_FIXTURE_LIBS = [
     # duplicate NID imported by two different libraries
     ("SynthLibB", [0x0BADF00D]),
 ]
+
+
+def build_import_layout_elf(
+    primary: list[tuple[str, list[int]]],
+    *,
+    detached: list[tuple[str, list[int]]] | None = None,
+    nid_head_words: int = 0,
+    nid_tail_words: int = 0,
+    per_library_stub_sections: bool = False,
+    reverse_primary_layout: bool = False,
+    detached_gap_slots: int | None = None,
+    stub_head_slots: int = 0,
+    stub_tail_slots: int = 0,
+    padding_sections: int = 0,
+    duplicate_nid_section: bool = False,
+) -> tuple[bytes, dict[int, tuple[str, int]]]:
+    """Build a sectioned ELF for the retail import-table layouts.
+
+    primary lists (library, [NIDs]) windows whose stubs live in the stub
+    section(s) and whose NIDs live in .rodata.sceNid. Options model the real
+    linker layouts the code-generation import map has to accept:
+
+      nid_head_words / nid_tail_words -- zero words before / after the
+          window-referenced run inside .rodata.sceNid;
+      per_library_stub_sections -- one .sceStub.text.<library> section per
+          window instead of a single .sceStub.text;
+      reverse_primary_layout -- the linker placed the libraries' stub and NID
+          runs in reverse table order;
+      detached -- (library, [NIDs]) windows whose stubs sit inside .text and
+          whose NIDs follow their library name outside .rodata.sceNid;
+      detached_gap_slots -- instead, emit the detached NIDs as one array and
+          leave this many unused stub slots (and zero NID words) between
+          consecutive detached windows, so they share one pairing offset;
+      stub_head_slots / stub_tail_slots -- zero stub slots that no window
+          claims before / after the windows inside a single .sceStub.text;
+      padding_sections -- empty named sections appended to the section table,
+          so the header count can exceed 512 (the table is file-bounded);
+      duplicate_nid_section -- a second, empty .rodata.sceNid header after
+          the real one: the first header of a name is the section (as in
+          tools/analyze.py Elf.sec), so the second must be ignored.
+
+    Returns (ELF bytes, expected {stub address: (library, NID)}).
+    """
+    detached = detached or []
+    seg = bytearray()
+
+    def alloc(b: bytes, align: int = 4) -> int:
+        while len(seg) % align:
+            seg.append(0)
+        off = len(seg)
+        seg.extend(b)
+        return BASE_VADDR + off
+
+    gap = detached_gap_slots or 0
+    # .text is filled with 8-byte (two-word) `jr $ra; nop` pairs: one pair of
+    # ordinary code at its start, then two words per detached stub slot
+    # (including the unused gap slots after each run; the runs start at
+    # text + 8), then one trailing pair of ordinary code after the last run.
+    text_words = 4 + 2 * sum(len(nids) + gap for _name, nids in detached)
+    text = alloc(struct.pack("<2I", 0x03E00008, 0) * (text_words // 2))
+    expected: dict[int, tuple[str, int]] = {}
+    detached_runs = []
+    cursor = text + 8
+    for name, nids in detached:
+        detached_runs.append((name, nids, cursor))
+        cursor += 8 * (len(nids) + gap)
+
+    layout_order = list(range(len(primary)))
+    if reverse_primary_layout:
+        layout_order.reverse()
+    stub_section = alloc(b"\0" * (8 * stub_head_slots))
+    stub_addrs = {}
+    stub_sections = []
+    for i in layout_order:
+        name, nids = primary[i]
+        stub_addrs[i] = alloc(b"\0" * (8 * len(nids)))
+        stub_sections.append((f".sceStub.text.{name}".encode("ascii"), stub_addrs[i], 8 * len(nids)))
+    alloc(b"\0" * (8 * stub_tail_slots))
+    stub_section_end = BASE_VADDR + len(seg)
+
+    modinfo = alloc(b"\0" * 52)
+    name_addrs = [alloc(name.encode("ascii") + b"\0") for name, _nids in primary]
+    if detached_gap_slots is None:
+        detached_name_addrs = []
+        detached_nid_addrs = []
+        for name, nids, _stub in detached_runs:
+            detached_name_addrs.append(alloc(name.encode("ascii") + b"\0"))
+            detached_nid_addrs.append(alloc(b"".join(struct.pack("<I", n) for n in nids)))
+    else:
+        detached_name_addrs = [alloc(name.encode("ascii") + b"\0") for name, _n, _s in detached_runs]
+        detached_nid_addrs = [
+            alloc(b"".join(struct.pack("<I", n) for n in nids) + b"\0" * (4 * gap))
+            for _name, nids, _stub in detached_runs
+        ]
+    detached_meta = []
+    for (name, nids, stub), name_addr, nid_addr in zip(
+            detached_runs, detached_name_addrs, detached_nid_addrs, strict=True):
+        detached_meta.append((name_addr, nids, nid_addr, stub))
+        for k, nid in enumerate(nids):
+            expected[stub + 8 * k] = (name, nid)
+
+    nid_section = alloc(b"\0" * (4 * nid_head_words))
+    nid_addrs = {}
+    for i in layout_order:
+        _name, nids = primary[i]
+        nid_addrs[i] = alloc(b"".join(struct.pack("<I", n) for n in nids))
+    alloc(b"\0" * (4 * nid_tail_words))
+    nid_section_end = BASE_VADDR + len(seg)
+    for i, (name, nids) in enumerate(primary):
+        for k, nid in enumerate(nids):
+            expected[stub_addrs[i] + 8 * k] = (name, nid)
+
+    entries = bytearray()
+    for i, (_name, nids) in enumerate(primary):
+        entries += struct.pack(
+            "<IHHBBHII", name_addrs[i], 0x0011, 0x4001, 5, 0, len(nids),
+            nid_addrs[i], stub_addrs[i],
+        )
+    for name_addr, nids, nid_addr, stub in detached_meta:
+        entries += struct.pack(
+            "<IHHBBHII", name_addr, 0x0000, 0x0009, 5, 0, len(nids), nid_addr, stub,
+        )
+    libstub = alloc(bytes(entries))
+    struct.pack_into("<II", seg, (modinfo - BASE_VADDR) + 44, libstub, libstub + len(entries))
+
+    extra_sections = [(b".text", text, text_words * 4)]
+    if per_library_stub_sections:
+        extra_sections += stub_sections
+    else:
+        extra_sections.append((b".sceStub.text", stub_section, stub_section_end - stub_section))
+    extra_sections.append((b".rodata.sceNid", nid_section, nid_section_end - nid_section))
+    if duplicate_nid_section:
+        extra_sections.append((b".rodata.sceNid", BASE_VADDR, 0))
+    extra_sections += [(b".padding", BASE_VADDR, 0)] * padding_sections
+    return _elf(bytes(seg), modinfo, extra_sections=extra_sections), expected
+
+
+def build_stripped_module_elf(
+    libs: list[tuple[str, list[int]]],
+    *,
+    gp: int = 0,
+    name: bytes = b"SynthMain",
+    decoy: bool = False,
+    early_decoy: bool = False,
+    kernel_bit: bool = False,
+    paddr: int | None = None,
+) -> tuple[bytes, dict[int, tuple[str, int]], int]:
+    """Build a section-less ET_EXEC whose SceModuleInfo the p_paddr names.
+
+    The segment follows the retail order: code, import stubs, the
+    PspLibStubEntry table, SceModuleInfo, library names, NIDs. The record
+    carries gp (zero for a module built without $gp-relative data) and name.
+    decoy=True places a later plausible but false SceModuleInfo (non-zero gp,
+    printable name, file-backed spans) whose import table has a function window
+    with a null NID pointer. early_decoy=True places, before the real record, a
+    false one with a non-zero gp and a long name whose import span does not
+    split into whole SceLibraryStubTable records. kernel_bit sets the
+    kernel-mode bit of p_paddr; paddr overrides p_paddr outright.
+
+    Returns (ELF bytes, expected {stub address: (library, NID)}, module-info
+    address).
+    """
+    seg = bytearray()
+
+    def alloc(b: bytes, align: int = 4) -> int:
+        while len(seg) % align:
+            seg.append(0)
+        off = len(seg)
+        seg.extend(b)
+        return BASE_VADDR + off
+
+    alloc(struct.pack("<2I", 0x03E00008, 0) * 2)
+    stub_addrs = [alloc(struct.pack("<2I", 0x03E00008, 0) * len(nids)) for _name, nids in libs]
+    libstub = alloc(b"\0" * (20 * len(libs)))
+    if early_decoy:
+        early = alloc(b"\0" * 52)
+        seg[early - BASE_VADDR + 4:early - BASE_VADDR + 15] = b"SynthEarly\0"
+        # A 12-byte import span: the first record's length (5 words) overruns it.
+        struct.pack_into("<5I", seg, early - BASE_VADDR + 32,
+                         0x00004000, 0, 0, libstub, libstub + 12)
+    modinfo = alloc(b"\0" * 52)
+    if not 0 < len(name) < 28:
+        raise ValueError("module name must fit the 28-byte field with its terminator")
+    seg[modinfo - BASE_VADDR + 4:modinfo - BASE_VADDR + 5 + len(name)] = name + b"\0"
+    name_addrs = [alloc(name.encode("ascii") + b"\0") for name, _nids in libs]
+    nid_addrs = [alloc(b"".join(struct.pack("<I", n) for n in nids)) for _name, nids in libs]
+    expected: dict[int, tuple[str, int]] = {}
+    for i, ((name, nids), name_addr, nid_addr, stub_addr) in enumerate(zip(
+            libs, name_addrs, nid_addrs, stub_addrs, strict=True)):
+        struct.pack_into(
+            "<IHHBBHII", seg, libstub - BASE_VADDR + 20 * i,
+            name_addr, 0x0011, 0x4001, 5, 0, len(nids), nid_addr, stub_addr)
+        for k, nid in enumerate(nids):
+            expected[stub_addr + 8 * k] = (name, nid)
+    struct.pack_into("<5I", seg, modinfo - BASE_VADDR + 32, gp, 0, 0, libstub, libstub + 20 * len(libs))
+    if decoy:
+        decoy_info = alloc(b"\0" * 52)
+        decoy_entry = alloc(b"\0" * 20)
+        decoy_name = alloc(b"SynthDecoyLibrary\0")
+        seg[decoy_info - BASE_VADDR + 4:decoy_info - BASE_VADDR + 16] = b"SynthDecoy\0\0"
+        struct.pack_into("<5I", seg, decoy_info - BASE_VADDR + 32,
+                         0x00001234, 0, 0, decoy_entry, decoy_entry + 20)
+        struct.pack_into("<IHHBBHII", seg, decoy_entry - BASE_VADDR,
+                         decoy_name, 0x0011, 0x4001, 5, 0, 4, 0, stub_addrs[0])
+    p_paddr = DATA_FILE_OFF + (modinfo - BASE_VADDR)
+    if kernel_bit:
+        p_paddr |= 0x80000000
+    if paddr is not None:
+        p_paddr = paddr
+    return _elf(bytes(seg), modinfo, sectionless=True, paddr_override=p_paddr), expected, modinfo
+
+
+# Placeholder bytes the retail image holds in an import stub before the loader
+# patches it: `jr $ra; nop`.
+STUB_PLACEHOLDER = struct.pack("<II", 0x03E00008, 0)
+
+
+def build_text_stub_run_elf(
+    stub_count: int = 4,
+    *,
+    library: str = "SynthTextLib",
+    first_nid: int = 0x7A000000,
+    late_callee: bool = False,
+) -> tuple[bytes, list[int]]:
+    """Build a sectioned ELF whose import stubs lie after .text, outside .sceStub.text.
+
+    The layout follows the retail EBOOT image, not the .sceStub.text fixtures:
+
+    * a named .text section holds an entry function (a bare `jr $ra`) and an
+      orphan caller that is reached only from the analyzer's gap-fill pass
+      (it opens with an `addiu $sp,$sp,-N` prologue and no known caller). The
+      caller `jal`s every import stub, so each stub is a direct-call target
+      found in a late discovery phase;
+    * after .text, in the same executable PT_LOAD, a contiguous run of
+      `jr $ra; nop` placeholders, one per import stub, and the import tables
+      (SceModuleInfo, the PspLibStubEntry table, the library name, the NIDs).
+
+    Returns (ELF bytes, stub addresses in import-table order). Every stub is
+    outside the named code sections, so the analyzer must reach it through the
+    executable PT_LOAD alone.
+    """
+    if stub_count < 1:
+        raise ValueError("stub_count must be at least 1")
+    seg = bytearray()
+
+    def alloc(b: bytes, align: int = 4) -> int:
+        while len(seg) % align:
+            seg.append(0)
+        off = len(seg)
+        seg.extend(b)
+        return BASE_VADDR + off
+
+    # .text: entry `jr $ra; nop`, then the orphan caller. Its `jal` words are
+    # patched once the stub addresses exist.
+    caller_words = [
+        0x27BDFFE0,                     # addiu $sp,$sp,-32
+        0xAFBF001C,                     # sw    $ra,28($sp)
+    ]
+    for _ in range(stub_count):
+        caller_words += [0x0C000000, 0]  # jal <stub>; nop (patched below)
+    if late_callee:
+        # One more direct call from the orphan caller, to a plain function that lies in
+        # the same file-backed executable bytes as the stub run (not an import stub).
+        caller_words += [0x0C000000, 0]  # jal <late callee>; nop (patched below)
+    caller_words += [
+        0x8FBF001C,                     # lw    $ra,28($sp)
+        0x27BD0020,                     # addiu $sp,$sp,32
+        0x03E00008,                     # jr    $ra
+        0,                              # nop
+    ]
+    text = struct.pack("<2I", 0x03E00008, 0) + struct.pack(
+        f"<{len(caller_words)}I", *caller_words
+    )
+    text_vaddr = alloc(text)
+    assert text_vaddr == BASE_VADDR
+    caller_off = 8
+
+    modinfo_vaddr = alloc(struct.pack("<H", 0) + b"\0" * 50)
+    name_vaddr = alloc(library.encode("ascii") + b"\0", 1)
+    nids = [first_nid + i for i in range(stub_count)]
+    nid_vaddr = alloc(b"".join(struct.pack("<I", n) for n in nids))
+    stub_base = alloc(STUB_PLACEHOLDER * stub_count)
+    stub_addrs = [stub_base + 8 * i for i in range(stub_count)]
+
+    for i, stub in enumerate(stub_addrs):
+        jal_off = caller_off + (2 + 2 * i) * 4
+        struct.pack_into("<I", seg, jal_off, 0x0C000000 | ((stub >> 2) & 0x03FFFFFF))
+
+    if late_callee:
+        # The callee sits right after the stub placeholders: addiu $v0,$zero,1; jr $ra; nop.
+        callee = alloc(struct.pack("<3I", 0x24020001, 0x03E00008, 0))
+        jal_off = caller_off + (2 + 2 * stub_count) * 4
+        struct.pack_into("<I", seg, jal_off, 0x0C000000 | ((callee >> 2) & 0x03FFFFFF))
+
+    entries = struct.pack(
+        "<IHHBBHII", name_vaddr, 0x0101, 0x0009, 5, 0, stub_count, nid_vaddr, stub_base
+    )
+    libstub = alloc(entries)
+    libstubend = libstub + len(entries)
+    struct.pack_into("<II", seg, (modinfo_vaddr - BASE_VADDR) + 44, libstub, libstubend)
+
+    elf = _elf(
+        bytes(seg),
+        modinfo_vaddr,
+        extra_sections=[(b".text", BASE_VADDR, len(text))],
+    )
+    return elf, stub_addrs

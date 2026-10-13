@@ -62,6 +62,23 @@ Breakout smoke also checks the savedata file created under its temporary
 memory-stick root. These are synthetic host-runtime results, not PSP hardware
 evidence or commercial-title acceptance.
 
+The smoke's budget is counted on the guest display clock. Each frame run exits
+cleanly at vblank 180 (`SR_EXIT_AT_VBLANK`), three of the runtime's 60-vblank GE
+statistics windows, inside a 15-second host timeout. The Breakout savedata run
+ends instead when its scripted Start saves and exits. The first-frame checkpoint
+is the first window whose counters show the demo's own drawing: 3D triangles for
+the scene, sprites for Breakout. The smoke reads that window and its closing
+vblank from `runtime.log`. A busy host can step VCOUNT past 60 and can boot the
+guest later, so the checkpoint may land in a later window. The framebuffer capture
+judged is the one named for that window. Every run writes its log (`runtime.log`,
+or `runtime-save.log` for the savedata run) under
+`build/showcase/smoke/<disc id>/`, even on a timeout. Linux CI uploads those logs
+and captures when the smoke fails. The scripted Cross and Start presses are
+delivered in guest time: each is held until the demo has read it, however far the
+host falls behind (see [`DEBUGGING.md`](DEBUGGING.md#scripted-input-is-delivered-in-guest-time)).
+A press the demo never reads fails the run by name. When an input, audio, or
+savedata check fails, its message says whether the demo read the press.
+
 In the 3D scene, the analog stick rotates the lit, checker-textured cube, Cross
 plays a short tone, and Start exits. Breakout uses the analog stick or d-pad to
 move its paddle, Cross to play a tone or restart after a loss, and Start to save

@@ -12,13 +12,12 @@ dependencies = [
 ]
 
 [tool.ruff]
-target-version = "py314"
+# The target version comes from requires-python above.
 line-length = 120
-fix = false
-
-# Lint only the hand-written Python; skip generated/third-party
+# First-party import root for import-aware rules.
 src = ["tools"]
-extend-exclude = ["build", "third_party", "interface", "__pycache__"]
+# Skip generated and third-party trees when linting the whole checkout.
+extend-exclude = ["build", "third_party", "interface"]
 
 [tool.ruff.lint]
 # Baseline correctness gate for the legacy tooling. Broader style/modernization
@@ -35,7 +34,6 @@ select = [
 # to avoid mass rewrites on untouched/generated files.
 "tools/codegen.py" = ["F541", "B023"]
 "fixtures/**" = ["F401", "F841", "B007"]
-
 
 [tool.mypy]
 python_version = "3.14"

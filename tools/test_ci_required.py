@@ -19,6 +19,7 @@ def _results(**overrides: str) -> dict[str, str]:
     values = {
         "classify": "success",
         "hygiene": "success",
+        "public-export": "success",
         "markdown": "skipped",
         "python-tools": "skipped",
         "native-tools": "skipped",
@@ -58,7 +59,7 @@ class CiRequiredTests(unittest.TestCase):
                 )
 
     def test_classifier_and_hygiene_failures_cannot_be_hidden(self) -> None:
-        for name in ("classify", "hygiene"):
+        for name in ("classify", "hygiene", "public-export"):
             with self.subTest(name=name):
                 self.assertFalse(required_gate_passes(_results(**{name: "failure"}), {}))
 
@@ -86,6 +87,7 @@ class CiRequiredTests(unittest.TestCase):
         draft_env = {
             "CLASSIFY_RESULT": "success",
             "HYGIENE_RESULT": "success",
+            "PUBLIC_EXPORT_RESULT": "success",
             "MARKDOWN_RESULT": "skipped",
             "PYTHON_RESULT": "skipped",
             "NATIVE_RESULT": "skipped",
@@ -151,6 +153,7 @@ class CiRequiredTests(unittest.TestCase):
         env = {
             "CLASSIFY_RESULT": "success",
             "HYGIENE_RESULT": "success",
+            "PUBLIC_EXPORT_RESULT": "success",
             "MARKDOWN_RESULT": "skipped",
             "PYTHON_RESULT": "success",
             "NATIVE_RESULT": "skipped",
@@ -180,6 +183,7 @@ class AllowSubstantiveParsingTests(unittest.TestCase):
         env = {
             "CLASSIFY_RESULT": "success",
             "HYGIENE_RESULT": "success",
+            "PUBLIC_EXPORT_RESULT": "success",
             "MARKDOWN_RESULT": "skipped",
             "PYTHON_RESULT": "skipped",
             "NATIVE_RESULT": "skipped",
@@ -224,6 +228,7 @@ class ApplicabilityParsingTests(unittest.TestCase):
         return {
             "CLASSIFY_RESULT": "success",
             "HYGIENE_RESULT": "success",
+            "PUBLIC_EXPORT_RESULT": "success",
             "MARKDOWN_RESULT": "success",
             "PYTHON_RESULT": "success",
             "NATIVE_RESULT": "success",
@@ -296,8 +301,26 @@ class ApplicabilityParsingTests(unittest.TestCase):
                     env["DRAFT"] = value
                 self.assertFalse(evaluate_environment(env))
 
+    def test_public_export_result_is_required_on_every_event(self) -> None:
+        """The export audit is its own required result (#735 item 5).
+
+        It runs ungated on every event, so an unset or non-success result is never green,
+        even when no substantive gate applies (the docs-only and main-push shapes).
+        """
+        for value in ("failure", "cancelled", "skipped", ""):
+            with self.subTest(value=value):
+                env = self._env()
+                env["PUBLIC_EXPORT_RESULT"] = value
+                self.assertFalse(evaluate_environment(env))
+        env = self._env()
+        del env["PUBLIC_EXPORT_RESULT"]
+        self.assertFalse(evaluate_environment(env))
+        env = self._env()
+        env["PUBLIC_EXPORT_RESULT"] = "success"
+        self.assertTrue(evaluate_environment(env))
+
     def test_classifier_and_hygiene_non_success_remain_unconditionally_red(self) -> None:
-        for key in ("CLASSIFY_RESULT", "HYGIENE_RESULT"):
+        for key in ("CLASSIFY_RESULT", "HYGIENE_RESULT", "PUBLIC_EXPORT_RESULT"):
             for value in ("failure", "cancelled", "skipped", "", "garbage"):
                 with self.subTest(key=key, value=value):
                     env = self._env()

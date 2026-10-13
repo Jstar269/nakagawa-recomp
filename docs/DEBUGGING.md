@@ -51,6 +51,23 @@ are disabled. Runtime seams use one predicted `sr_perf_enabled` branch; `PERF_AO
 removes the generated per-instruction hook entirely. The benchmark command measures the remaining
 runtime branch cost rather than assuming a zero-cost binary.
 
+For sparse GE front-end attribution, build with `GE_FRONTEND_PROFILE=1` (the default is `0`) and
+run with `SR_PERF=1` and `SR_GE_CPU_PROFILE=1`; `command_dispatch` is exported with those two, and
+the per-primitive stages (`draw_setup` through `assembly`, `triangle_total`, `empty_control`) also
+need `SR_GE_PRIM_PROFILE=1`. The build flag compiles the additional
+draw-setup timer and exports per-interval phase samples to `perf.csv`, `perf.json`, and a
+`PERF_GE_FRONTEND` stderr line. `SR_GE_PRIM_PROFILE_STRIDE` selects the sparse sample interval
+(default `512`); `SR_GE_PRIM_CALIBRATION=1` also records the triangle-total sample and empty timer
+control. With the build flag off, the new GE timers and export calls are absent from `ge.c`.
+
+The per-stage `estimated_ns` is `sample_ns * eligible / samples`. `samples` counts timed sparse
+events; `eligible` counts the corresponding list, draw, vertex, or triangle operations and can be
+divided by new frames for an operations-per-frame rate. `clipping_acceptance` includes cull-order
+reordering and triangle acceptance; `assembly` is the accepted screen-space projection work.
+`triangle_total` overlaps those two stages, and `empty_control` measures sampling overhead; neither
+is an additional front-end stage. These timers add measurement overhead and are for attribution
+runs, not absolute cadence claims.
+
 The summary fields mean:
 
 - `guest.ns` is inclusive guest execution time. `guest.aot_ns` and `guest.interpreter_ns` are
@@ -68,9 +85,11 @@ The summary fields mean:
   context-switch selections. It is sampled at scheduler boundaries, not a sum of simultaneous
   per-thread lifetimes; a wake that remains preempted is accounted for at the next scheduler
   boundary.
-- `ge.cpu_ns` covers the GE command-list CPU boundary. `transform_sample_ns` and `primitive_ns`
-  are only the existing sampled GE CPU profiler's deltas; they are not inferred from frame time and
-  are in the works for a complete phase breakdown (#282).
+- `ge.cpu_ns` covers the GE command-list CPU boundary. The optional
+  `ge.frontend_profile.stages` estimates exclusive command dispatch, draw setup, vertex fetch/decode,
+  transform, lighting, clipping/acceptance, and assembly time from sparse timers; `sample_ns`,
+  `samples`, and `eligible` preserve the raw evidence. Compare stage estimates with `ge.cpu_ns`, but
+  do not add `triangle_total` or `empty_control` to the stage sum.
 - `vulkan.submit_ns`, `wait_ns`, `readback_ns`, and `pipeline_creation_ns` measure separate host
   API regions. Readback and general wait can overlap and are intentionally not additive;
   `readbacks` counts completed CPU readback commits, not every fence poll.
@@ -110,6 +129,18 @@ python tools/perf_summary_diff.py before.json after.json --tolerance 0.02
 The diff tool compares transition PCs by `(pc, reason)`, preserves `null` as not compiled, and
 ranks non-zero subsystem costs without summing overlapping intervals. A private HST profile may
 add a real-workload route, but it is supplemental and must not replace the public matrix.
+
+Present cadence and cost attribution for one run read the perf summary together with its stderr log.
+Capture the log with both `SR_PERF=1` (the one-second `PERF` and `PERF_ATTRIB` lines) and
+`SR_PRESENT_TRACE=1` (one `HOST_PRESENT_SUBMITTED` line per presented frame):
+
+```powershell
+python tools/perf_attribution.py --perf run.json --stderr run.log
+python tools/perf_attribution.py --diff a.json a.log b.json b.log --format json
+```
+
+The tool's docstring defines flips, re-presents, vblanks per new frame, implied fps and the
+`cpu_ms`, `ge_cpu_ms` and `aot_ms` shares. Those cost shares overlap and must not be added together.
 
 ## VBLANK delivery ledger (is the guest told about too many vblanks?)
 
@@ -221,13 +252,14 @@ should ignore the trailing uid/vblank columns.
 | `SR_GEDUMP=1` | Per-primitive `GE PRIM` lines (through and transform), bounded to the first ~40 |
 | `SR_GE_ENQUEUE_TRACE=1` | Trace GE enqueue/stall-update provenance without enabling the broader GE dump |
 | `SR_GE_ENQUEUE_TRACE_WINDOWS=a-b[,c-d]` | Restrict enqueue trace output to up to eight inclusive vblank ranges; malformed ranges fail closed |
-| `SR_GESTAT=1` | 60-frame stat windows: `GESTAT` totals, `GE3D` distinct 3D draw signatures, `ASHADE`/`ACLUT` alpha-test-failure decode |
+| `SR_GESTAT=1` | 60-vblank stat windows: `GESTAT` totals, `GE3D` distinct 3D draw signatures, `ASHADE`/`ACLUT` alpha-test-failure decode. A window closes on the first delivered vblank at or past each multiple of 60 and `f=` names that vblank, which is later than the multiple (61, not 60) when VCOUNT stepped over it on a busy host; read the label with `tools/ge_stat_windows.py` instead of matching `f=60` |
 | `SR_RTRACE=1` | Exhaustive render trace: one `TRIDRW` line per 3D draw with the complete GE state (render target `fbp`/`zbp`, texture address/format/`bufw`/swizzle, texture function, blend, alpha test, cull, scissor, viewport), plus per-triangle `TRIDEC` lines |
 | `SR_RTRACE_FRAMES=N` | Frames traced per stat window (default 2) |
 | `SR_TEXDUMP=1` | Write each distinct sampled texture from transform- or through-mode draws once as `tex_ADDR_fF_WxH.ppm` decoded through the real sampler (swizzle + CLUT), and log its CLUT address/format. First 32 distinct addresses per run |
 | `SR_TEXDUMP_AFTER=N` | Defer texture dumping until GE frame `N`, preserving the fixed distinct-texture budget for a late deterministic scene |
-| `SR_GE_TRANSITION_TRACE=PATH` | Narrow one-frame-corruption harness (issue #69): one JSONL record per weighted `PRIM` draw with frame/draw ordinal, list id, command address, bone/world/view/proj matrices as both last guest writes and draw-time state, `non_finite` (non-finite values among the four effective matrices, so the record names what the GE drops), decoded `VTYPE`, bases/count/prim, render target, bound texture, and stable `draw_id`. `1` selects `logs/ge_transition_trace.jsonl`. Off by default; zero cost when off. Diff offline with `python tools/ge_transition_diff.py TRACE --frames GOOD:BAD`. A non-finite matrix entry is emitted as JSON `null` (printf's `-nan(ind)` is not JSON) and the diff flags it on its own line as `NON_FINITE in bone_written[0..35]` |
+| `SR_GE_TRANSITION_TRACE=PATH` | Narrow one-frame-corruption harness (issue #69): one JSONL record per weighted `PRIM` draw with frame/draw ordinal, list id, command address, bone/world/view/proj matrices as both last guest writes and draw-time state, `non_finite` (non-finite values among the four effective matrices, so the record names what the GE drops), decoded `VTYPE`, bases/count/prim, render target, bound texture, and stable `draw_id`. `1` selects `logs/ge_transition_trace.jsonl`. Off by default; zero cost when off. Diff offline with `python tools/ge_transition_diff.py TRACE --frames GOOD:BAD`. A non-finite matrix entry is emitted as JSON `null` (printf's `-nan(ind)` is not JSON) and the diff flags it on its own line as `NON_FINITE in bone_written[0..35]` Also one `{"kind":"late_write"}` record per weighted draw whose vertex or index bytes changed between the draw and the next present, `sceGeDrawSync` wait or completed `sceGeListSync` (the runtime reads those bytes at enqueue, earlier than the console's GE would): `vertex_span`/`index_span`, both hashes, `check` and `check_vblank`; mirrored as a `GE_LATE_WRITE` stderr line. A late write is a candidate cause, not proof. |
 | `SR_NAN_TRAP_LIMIT=N` | Report limit for the `SR_NAN_TRAP` build option below (default 20; `0` silences it). Only has an effect in a package built with `make NAN_TRAP=1` |
+| `SR_NAN_TRAP_CONTEXT=1` | After each `NAN_TRAP` line, a `NAN_TRAP_CTX` line with `ra`, `v0`, `a0`..`a3`, `t0`, `s0`, `s1` and `f12`, then one line per readable 16-byte span behind `v0` and `a0`..`a3` (four floats), so an origin instruction's inputs in guest memory can be read without editing generated code. Same build requirement as the limit. |
 
 ### Locating the instruction that produced a NaN (issue #69)
 
@@ -307,7 +339,7 @@ mingw32-make all NAN_TRAP=1          # adds --nan-trap and -DSR_NAN_TRAP togethe
 
 Coverage boundary: every FPU result write and every VFPU *value-producing* lane form is checked —
 `add.s`/`sub.s`/`mul.s`/`div.s`/`sqrt.s`/`abs.s`/`mov.s`/`neg.s`, `vadd/vsub/vmul/vdiv`, `vdot`,
-`vhdp`, `vcrs`, `vscl`, `vmin`/`vmax`, `vcmov`/`vcmovt`/`vcmovf`, `vocp`, the VV2Op scalar set and
+`vhdp`, `vcrs`, `vscl`, `vmin`/`vmax`, `vscmp`/`vsge`/`vslt`, `vcmov`/`vcmovt`/`vcmovf`, `vocp`, the VV2Op scalar set and
 the transcendental set (`vrcp`/`vrsqrt`/`vsin`/`vcos`/`vexp2`/`vlog2`/`vsqrt`/`vasin`), `vmmul`,
 `vtfm`, `vmscl`, `vcrsp`/`vqmul`, and `vrot`. Not checked, by construction: constant broadcasts
 (`viim`/`vfim`/`vcst`/`vzero`/`vone`/`vidt`/`vmidt`/`vmzero`/`vmone`, which have no operand to be
@@ -343,9 +375,10 @@ The diagnostic does not skip guest work or change GE execution.
 | `SR_INLOG=1` | Log input state changes |
 | `SR_PAD=HEX` | Override pad state (hex buttons) |
 | `SR_PADPERIOD=N` | Automatic pad-pulse period in vblanks (default 240) |
-| `SR_PADWIDTH=N` | Automatic pad-pulse width in vblanks (default 4) |
+| `SR_PADWIDTH=N` | Automatic pad-pulse width in vblanks (default 4); each pulse is held until the guest has read it (see [Scripted input is delivered in guest time](#scripted-input-is-delivered-in-guest-time)) |
 | `SR_PADSTART=N` | Pad override start frame |
 | `SR_PADSCRIPT=FILE` | Scripted pad input: a state-qualified route program, or the legacy `frame hexmask width` table |
+| `SR_PADSCRIPT_READ_BUDGET=N` | Vblanks a scripted press may wait for the guest to read it before the run fails (default 1800; a press whose width is in guest reads may wait for all of them); not a whole number >= 1 refuses the script |
 | `SR_OSK_SCRIPT=FILE` | Scripted on-screen-keyboard answers, one per input field in order (`CANCEL` answers that field as cancelled) |
 | `SR_OSK_TEXT=TEXT` | Answer every on-screen-keyboard field with the same text |
 | `SR_NOINPUT=1` | Disable the automatic START pulse; live and scripted input still work |
@@ -368,17 +401,82 @@ $env:SR_NOINPUT = "1"
 .\nk_manager.ps1 -TitleManifest assets/titles/hst-ucus98701.json -GameName hst -Action Run -Profile Standard
 ```
 
-The converter expands shorter presses because a one-vblank desktop automation
-pulse can fall between the game's controller reads. Use
+The converter expands shorter presses so a replay holds each press for as many
+vblanks as a person would. A one-vblank pulse can no longer fall between the
+game's controller reads, because scripted input waits for a read (below). Use
 `--minimum-width 1` only when an exact-width replay is required.
+
+### Scripted input is delivered in guest time
+
+Every scripted input source uses the same delivery rule (`src/rt/scripted_input.h`): the
+legacy `SR_PADSCRIPT` table, the route program's `PRESS`, `DELAY`, `PRESS_UNTIL` and
+`PRESS_WHILE`, and the automatic START pulse. A script is a sequence of pressed and released
+stretches. Each stretch ends only when both of these hold:
+
+- it has been latched for its authored width in controller samples (one sample per serviced
+  vblank). A width written in guest reads ([below](#widths-in-guest-reads)) replaces this
+  condition with the number of guest reads it asks for;
+- the guest has read the controller (`sceCtrlReadBufferPositive` or
+  `sceCtrlPeekBufferPositive`) and been handed a sample of it.
+
+A stretch never starts before its authored vblank. On a host that keeps up, the guest reads
+inside every window and the timing is exactly the authored timing. On a host that falls
+behind, the runtime services several elapsed periods at once, with no guest code between
+them. The script then stretches until the guest has seen each press and each release, and
+it never shortens or skips one.
+
+Before this rule, a press whose window one such batch stepped over was never latched. A
+press shorter than the guest's frame time on a starved host was never read either. The
+headless showcase smoke "missed the scripted Cross input sample" that way.
+
+A press the guest does not read within `SR_PADSCRIPT_READ_BUDGET` vblanks (default 1800)
+fails the run with `ROUTE_FAIL` naming the buttons, the step and the vblanks waited. That
+covers a legacy row and a `PRESS` step. A release waits without a budget, because a guest
+that is not polling cannot be pressed. So does a `PRESS_UNTIL` / `PRESS_WHILE` pulse, whose
+step timeout already bounds it. A press whose width is in guest reads
+([below](#widths-in-guest-reads)) has the same budget for the whole wait for its reads.
+`SR_INLOG=1` adds a `ctrl_read: vcount=<n> guest read scripted <mask>` line when the guest
+first reads each scripted state.
+
+### The keyboard in the game window
+
+On the SDL3/Vulkan presenter (the default window) the keyboard a title opens is drawn in the
+game window (`src/rt/osk_overlay.c` for the state, `src/rt/osk_overlay_paint.c` for the
+drawing), and a person answers it with the pad or the keyboard: the d-pad or arrow keys move,
+Cross or Enter types the highlighted key, Circle or Esc cancels, Start or Tab confirms, and
+L/R switch letter case. A physical keyboard also types directly, and Backspace deletes. The
+field's maximum length and its inputtype (`SceUtilityOskData` at +0x10, PSPSDK layout) limit
+what it accepts. While it is open the title's pad reads nothing, including the sample whose
+press confirms or cancels it, and guest time keeps running.
+
+A route answers the in-window keyboard with ordinary `PRESS` steps. The keyboard reads every
+controller sample while it is open, as the system keyboard polls the pad on a PSP, so a press
+it takes counts as read by the route. `SR_OSK_TEXT` and `SR_OSK_SCRIPT` are not needed for it.
+`SR_WINDOW_HIDDEN=1` runs the same presenter with a hidden window, so a headless route keeps the
+window's keyboard and its frame capture without a visible window. Under the offscreen presenter
+the overlay is not drawn, and the variables below still answer. Where the presenter cannot draw
+the keyboard, the native input box is the fallback. If SDL refuses the frame's surface or its
+renderer after a request opened, the request is dropped, one stderr line names the SDL error,
+and the field falls back to the native input path (the Windows input box) for the rest of the
+run.
 
 ### Scripted keyboard answers
 
 `SR_PADSCRIPT` decides what a person *presses*; `SR_OSK_SCRIPT` decides what they *type*. The
-on-screen keyboard a title opens for a name is otherwise answered by a modal Windows input box,
-which an automated route cannot reach: it has to find that window and type into it, and the
-attempt races the game's own dialog timing. Both variables are off unless set, and neither
-changes how a person plays.
+on-screen keyboard a title opens for a name is otherwise answered by a person in a native
+Windows input box, which an automated route cannot reach: it has to find that window and type
+into it, and the attempt races the game's own dialog timing. Both variables are off unless set,
+and neither changes how a person plays.
+
+The keyboard never stops guest time, scripted or not. On the PSP it is a system overlay: the
+title keeps running underneath it, polling `sceUtilityOskGetStatus` once per frame. Every guest
+thread here runs on the one scheduler thread, so the input box is shown on a worker thread
+(`src/rt/osk_text_entry.c`) and each poll returns at once with `VISIBLE` until the person
+presses OK or Cancel; vblanks, frames, audio and the title's other threads carry on meanwhile.
+Under the offscreen presenter (`SR_VIDEO=offscreen`, headless bring-up) nobody can answer, so
+no window is opened at all: the keyboard stays open while the title keeps running, which is
+what a PSP nobody is typing at does, and stderr says so once. A headless route that has to get
+past a name entry answers it with one of the variables below.
 
 `SR_OSK_SCRIPT=FILE` holds one answer per keyboard field, in the order the keyboard presents
 them. Each line is the text to enter, or the keyword `CANCEL` to answer that field as
@@ -398,14 +496,16 @@ vanishing.
 
 While either variable is set **no native input box is ever opened**. A field the script does
 not cover is answered `CANCELLED` and the shortfall is named on stderr, because an automated
-run that reached an unanswered keyboard would otherwise block on a window nothing is going to
-dismiss. `SR_DLGLOG` logs the same `osk: field N ...` line either way, so a scripted run and a
+run that reached an unanswered keyboard would otherwise wait at it for a person who is not
+there. `SR_DLGLOG` logs the same `osk: field N ...` line either way, so a scripted run and a
 played one are read the same way.
 
 A scripted answer follows the same status sequence as a person's. `sceUtilityOskGetStatus`
-returns the common dialog state from the PSPSDK headers: `INIT`, then `VISIBLE`, then `QUIT`
-(whether the text was confirmed or cancelled; each field's result tells them apart) until the
-title calls `sceUtilityOskShutdownStart`, then `FINISHED` once and `NONE`.
+returns the common dialog state from the PSPSDK headers: `INIT`, then `VISIBLE` (for as many
+frames as the person takes; one poll for a scripted answer), then `QUIT` (whether the text was
+confirmed or cancelled; each field's result tells them apart) until the title calls
+`sceUtilityOskShutdownStart`, then `FINISHED` once and `NONE`. A keyboard the title shuts down,
+or replaces with a new one, before the person answered closes its input box and writes nothing.
 `sceUtilityOskUpdate` itself keeps its named no-dialog compatibility result
 ([#281](https://github.com/Jstar269/nakagawa-recomp/issues/281)); the runtime owns the
 progression instead.
@@ -432,11 +532,14 @@ keeps the original behaviour exactly, and a file mixing the two is refused.
 | `CHECKPOINT <NAME> [tol=<n>] <hex>` | A screen signature; repeat `NAME` to record it again (see below) |
 | `WAIT <NAME> <timeout>` | Block until `NAME` is observed; fail the run on timeout |
 | `EXPECT <NAME>` | Assert `NAME` is on screen now; fail the run if it is not |
-| `PRESS <hexmask\|buttons> <width>` | Hold `hexmask` (or the named buttons) for `width` vblanks |
-| `PRESS_UNTIL <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press every `period` vblanks until `NAME` is observed; fail on timeout |
-| `PRESS_WHILE <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press while `NAME` is observed; complete when it is not |
-| `DELAY <n>` | Advance `n` vblanks (input cadence *within* one screen) |
+| `PRESS <hexmask\|buttons> <width>` | Hold `hexmask` (or the named buttons) for `width` samples and until the guest has read it |
+| `PRESS_UNTIL <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press (held `width`, released for the rest of `period`, each until read) until `NAME` is observed; fail on timeout |
+| `PRESS_WHILE <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press the same way while `NAME` is observed; complete when it is not |
+| `DELAY <n>` | Release the pad for `n` samples and until the guest has read the release (input cadence *within* one screen) |
 | `WAIT_NID <import\|0xNID> <timeout>` | Block until the guest calls that import; fail the run on timeout |
+| `PRESS_UNTIL_NID <import\|0xNID> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press (held `width`, released for the rest of `period`) until the guest calls that import; fail on timeout. Use it where a press may land without changing the screen, such as a message box or a Yes/No that waits on a savedata check, because the import is the event that says the press was taken |
+| `WIDTHS VBLANKS\|READS` | The unit the widths of `PRESS`, `DELAY`, `PRESS_UNTIL`, `PRESS_WHILE` and `PRESS_UNTIL_NID` count in, for the whole file (default `VBLANKS`); must precede every step, and may appear once |
+| `READS <step>` / `VBLANKS <step>` | The unit of that one `PRESS`, `DELAY`, `PRESS_UNTIL`, `PRESS_WHILE` or `PRESS_UNTIL_NID` line; overrides `WIDTHS` |
 | `END` | Route complete |
 
 A mask is either a button name (see [Naming the buttons a route presses](#naming-the-buttons-a-route-presses))
@@ -497,6 +600,56 @@ Two habits keep a program honest. Gate every screen *transition* with `WAIT`, an
 only for input cadence inside one screen — a `DELAY` standing in for a transition is the
 fixed-vblank bet again. And put an `EXPECT` after a press whose effect you care about: `WAIT`
 proves you arrived, `EXPECT` proves the press did what the route claims.
+
+### Widths in guest reads
+
+A press or a release is normally held for its width in vblanks. On a host that falls behind,
+one batch can cover several vblanks before the guest reads the pad again, so a press of four
+vblanks may reach the guest in a single read, and a menu that needs three frames of hold to
+move one step sees it once. A width given in guest reads does not depend on the host's pace:
+the press is held until the guest has read it that many times. `WIDTHS READS` states that for
+the whole file:
+
+```text
+WIDTHS READS
+PRESS DOWN 3          # DOWN until the guest has read it three times
+DELAY 2               # released until the guest has read the release twice
+PRESS DOWN 3
+END
+```
+
+A line may name its own unit with a word in front of the step, so one file can mix the two.
+Each stretch counts in the unit its line names:
+
+```text
+PRESS START 4         # four vblanks, the default for this file
+READS PRESS CROSS 2   # two guest reads
+VBLANKS DELAY 1       # one vblank
+```
+
+Only these rules differ from the vblank widths above:
+
+- A read counts when the guest's controller read (`sceCtrlReadBufferPositive` or
+  `sceCtrlPeekBufferPositive`) hands it a sample latched while that stretch was current. A
+  read that hands over several samples counts once, and a read that comes before the stretch's
+  first sample is latched counts for nothing.
+- A release is counted the same way: a `DELAY` in reads waits for that many reads that observe
+  the release.
+- The release is latched at the next vblank. A guest that reads once per vblank, which is what
+  most titles do, gets exactly the count. A guest that reads twice in one vblank may see the
+  last press in one of its extra reads.
+- `SR_PADSCRIPT_READ_BUDGET` bounds the whole wait for the reads. A read-width press that the
+  guest reads fewer times than it asked for fails the run, naming how many reads it got.
+- The timeouts of `WAIT`, `EXPECT`, `WAIT_NID`, `PRESS_UNTIL` / `PRESS_WHILE` and
+  `PRESS_UNTIL_NID` stay in vblanks, because they are time limits. `PRESS_UNTIL`,
+  `PRESS_WHILE` and `PRESS_UNTIL_NID` take their width and period in reads when they say
+  `READS`.
+- `WIDTHS` must precede every step and may appear only once. `READS` and `VBLANKS` apply to
+  `PRESS`, `DELAY`, `PRESS_UNTIL`, `PRESS_WHILE` and `PRESS_UNTIL_NID` only, and anything
+  else that names a unit is refused at load, naming the line. No existing route starts a
+  line with either word, so an existing route parses and replays exactly as it did.
+- The legacy `frame hexmask width` table has no keyword lines, so it stays in vblanks. Write a
+  route program to use reads.
 
 ### Naming the buttons a route presses
 
@@ -679,16 +832,38 @@ so existing routes and tooling are unaffected. `-SnapEvery` still sets the caden
 window. Like the other controls this is a host-side gate: no guest work is skipped and captured
 frames are byte-identical to an ungated run.
 
+`SR_FBSNAP_WINDOWS` is self-sufficient. The full contract:
+
+| `SR_FBSNAP` | `SR_FBSNAP_WINDOWS` | Captured presents |
+| --- | --- | --- |
+| unset or empty | unset | none |
+| unset or empty | set | every present inside the windows (`N` = 1) |
+| `N` >= 1 | unset | presents at least `N` vblanks apart |
+| `N` >= 1 | set | presents at least `N` vblanks apart, inside the windows |
+| `0`, negative or non-numeric | either | none: an explicit `0` still disables FBSNAP |
+
+`SR_FBSNAP_AFTER` applies in every row, and `SR_FBDUMP` still takes the capture slot when it
+is set. A window whose text does not parse leaves no window active (reported on stderr as
+`FBSNAP_WINDOWS: could not parse`), so it selects nothing by itself.
+
 FBSNAP/FBDUMP capture is **present-truthful** (the old `sdl3vk_capture_swapchain_ppm`
 was an invalid acquisition that could read a stale/undefined image and published a PPM under a
-`.png` name). The swapchain capture is now armed *before* the present and recorded inside the same
-command buffer that blits the displayed frame, then published atomically as an exact P6 `.ppm`
-(`build/snapshots/frame_<n>.ppm`, or `frame_v<vcount>.ppm` with windows). The legacy guest-VRAM
+`.png` name). The capture is armed *before* the present and published by whichever presenter
+shows the frame, through the presenter-neutral capture service (`src/rt/fbcap.{h,c}`): the
+SDL3/Vulkan presenter records a readback inside the same command buffer that blits the displayed
+frame, while the headless `SR_VIDEO=offscreen` sink and the GDI window publish the converted frame
+they accepted. Either way the file is an exact P6 `.ppm` published atomically
+(`build/snapshots/frame_<n>.ppm`, or `frame_v<vcount>.ppm` with windows), and the same guest frame
+produces the same bytes on every presenter. A frame whose present did not run (its output slot was
+skipped) is reported `SKIPPED` and is never published later with newer pixels; with no presenter at
+all (no `--gui`) nothing is armed. The legacy guest-VRAM
 `snap_*.ppm`/`snap_v*.ppm` files (route evidence via `dump_fb_fmt`) are still written unchanged.
 `SR_FBDUMP=<N>` publishes the presented frame as `present_source.ppm` and exits; the exit status is
 0 only if a capture was truly published, 1 otherwise (the run must not be claimed as captured when
 nothing was written). `gpu-capture-selftest` (Verify step 15) byte-checks both CPU- and GPU-source
-captures and asserts zero validation-layer errors under `SR_VULKAN_VALIDATION`.
+captures and asserts zero validation-layer errors under `SR_VULKAN_VALIDATION`;
+`fbcap-selftest` (part of `native-core-tests`) byte-checks the presenter-neutral publisher
+itself, with no GPU or window.
 
 #### Headless VRAM capture and PNG export
 
@@ -707,7 +882,7 @@ nk_cli vram --from-sidecar capture/vram_120.json --out-dir capture/png
 
 Supported formats are `5650`, `5551`, `4444`, `8888`, `CLUT4`, `CLUT8`, `CLUT16`, `CLUT32`, `DXT1`, `DXT3`, `DXT5`, and `DEPTH16`. `--swizzled` applies PSP swizzle addressing to non-DXT textures. Sidecar mode exports each named VRAM surface, including the loaded palette and a grayscale depth preview. The CLI compiles the existing GE sampler into a temporary decoder with GCC, so Windows users need UCRT64 GCC on `PATH`.
 
-`mingw32-make --no-print-directory display-smoke-run` checks raw-to-PNG pixels against the display smoke fixture's host-sink PPM and checks that enabling the capture leaves that PPM byte-identical. The explicit `SR_VIDEO=offscreen` backend has no Vulkan swapchain, so this headless check uses the existing `SR_FIRST_FRAME_DUMP` host-sink PPM rather than `SR_FBDUMP`'s swapchain-only `present_source.ppm`. The interactive in-player VRAM panel remains UNBUILT; the headless viewer is the partial capability tracked by [#314](https://github.com/Jstar269/nakagawa-recomp/issues/314).
+`mingw32-make --no-print-directory display-smoke-run` checks raw-to-PNG pixels against the display smoke fixture's host-sink PPM and checks that enabling the capture leaves that PPM byte-identical. This headless check uses the existing `SR_FIRST_FRAME_DUMP` host-sink PPM; `SR_FBSNAP` and `SR_FBDUMP` captures are published from the same `SR_VIDEO=offscreen` sink as well. The interactive in-player VRAM panel remains UNBUILT; the headless viewer is the partial capability tracked by [#314](https://github.com/Jstar269/nakagawa-recomp/issues/314).
 
 #### Where `SR_EXIT_AT_VBLANK` actually stops
 
@@ -809,7 +984,7 @@ scan: they are excluded from `presenting` and never counted as a stall.
 | `SR_VBLOG=1` | Log vblank events |
 | `SR_FBSNAP=N` | Every N vblanks: legacy guest-VRAM `snap_<n>.ppm` (route evidence) plus present-truthful P6 `build/snapshots/frame_<n>.ppm` (see below) |
 | `SR_FBSNAP_AFTER=V` | Suppress every capture before vblank V (host-side gate only) |
-| `SR_FBSNAP_WINDOWS=a-b[,c-d]` | Capture only inside these vblank ranges; names files `frame_v<vcount>.ppm` so windows cannot overwrite each other (legacy `snap_v<vcount>.ppm` still written) |
+| `SR_FBSNAP_WINDOWS=a-b[,c-d]` | Capture only inside these vblank ranges; names files `frame_v<vcount>.ppm` so windows cannot overwrite each other (legacy `snap_v<vcount>.ppm` still written). Without `SR_FBSNAP` it captures every present inside the windows |
 | `SR_EXIT_AT_VBLANK=V` | Terminate cleanly (status 0) at the **end** of vblank V's tick (see above) |
 | `SR_FBDUMP=N` | At vcount=N publish the presented frame as `present_source.ppm` and exit; status 0 only if a capture was truly published, else 1 |
 | `SR_VRAMDUMP=V[,V...]` | Capture the raw 2 MiB guest VRAM image and GE metadata at up to eight unique presented vblanks; pair with `SR_VRAMDUMP_DIR` |
@@ -835,10 +1010,11 @@ committed.
 | `SR_WAKELOG=1` | Log thread wakeup events |
 | `SR_HLE_DIAGNOSTICS=1` | Enable the retained title-scoped HLE diagnostic reads only for a validated `codegen_profile: "hst"` build; generic and public fixture profiles remain inert |
 | `SR_REAL_MODULE_START` | `sceKernelStartModule` entry gate, tri-state. `1` runs a translated/real `module_start` for any module; unset (the default) runs it for `libfont.prx` only, so the guest owns its own readiness while `psmf.prx`, `libpsmfplayer.prx` and unknown paths keep the host bypass; `0` is the environmental kill switch and runs no `module_start` for any module, For libfont, disabled or unavailable startup reports `LIBFONT_STARTUP_UNAVAILABLE`, returns `SCE_KERNEL_ERROR_NOTIMP`, and does not write readiness. Any other value is refused with one diagnostic and the default is used. `sceKernelStopModule`/`sceKernelUnloadModule` still require `1` |
-| `SR_FONTDIR=ABSOLUTE_PATH` | Override font directory (relative values are rejected; unset uses the executable's sibling `font`) |
+| `SR_FONTDIR=ABSOLUTE_PATH` | Override the project font directory (relative values are rejected; unset uses the executable's sibling `font`). The `flash0:` font device and the HLE `sceFont` shim both serve the slot files named in `src/core/nk_font_slots.h`, from the user-imported cache first and then from this directory. A cache file is served only when its manifest vouches for it (listed, size and SHA-256 match, accepted by the reader as that slot); otherwise the slot falls through to this directory with a named `flash0:` refusal. This directory never serves files from an imported cache (a directory holding `manifest.json`, or the cache itself); `SR_FONTLOG=1` names each slot's source |
 | `SR_DATAROOT=ABSOLUTE_PATH` | Override the extracted-XB data root (relative values are rejected; unset uses the executable-anchored HST tree). The executable-anchored root and walked descendants reject reparse points; an explicitly configured root is operator-trusted and may be a junction for a staged long-path fixture. Access-time replacement races inside that trusted root are not a containment boundary. |
 | `SR_FSDIR=PATH` | Legacy flat `fs/` source for one-time read-open import into the unified Memory Stick root; relative paths, including `.`/`..`, are resolved against the current directory. Write/create never creates under this root |
 | `SR_MEMSTICK=PATH` | Canonical host Memory Stick root shared by ordinary `sceIo*` `ms0:` I/O and savedata (default `memstick/`) |
+| `SR_SYSTEM_REGISTRY=PATH` | Overlay file of the virtual PSP system registry: every `sceReg` change a game saves with `sceRegFlushCategory`/`sceRegFlushRegistry`, as schema-versioned JSON replaced atomically (default `registry/system.json` in the per-user data directory). A corrupt file is reported, ignored, and moved to `<file>.corrupt` on the next save |
 
 ### Scheduling & Behavior
 
@@ -849,6 +1025,7 @@ committed.
 | `SR_NO_RELAUNCH=1` | Disable thread relaunch |
 | `SR_NO_THREAD_REUSE=1` | Disable thread reuse |
 | `SR_NOAUDIO=1` | Disable audio output |
+| `SR_AUDIODUMP=PATH` | Debug only, off by default. Write the device mix (every channel's stream after the master gain, as SDL is about to submit it) to a 16-bit PCM WAV at the device's own rate and channel count. The header is patched once per second of audio data and at close, and a stats line (`AUDIODUMP: ... frames= silent_frames= clipped_samples= peak=`) is printed there. The file is closed at a normal exit and at `SR_EXIT_AT_VBLANK`, with or without `SR_AUDIOSTAT`; a runtime that is killed, crashes, or ends on another path that skips `atexit` (`sceKernelExitGame`, the watchdog, a route failure) keeps the last once-a-second patch, so up to a second at the end lies past the header's length. It runs on SDL's audio thread and does file I/O there, so it changes host pacing; never compare timing with it on. Audit the file for silence, clipping, gaps and sample rate |
 | `SR_POSTUMD=1` | Post-UMD processing |
 | `SR_HEAP_BASE=HEX` | Override heap base address |
 | `SR_PARTITION_TOP=HEX` | Override partition top |
@@ -985,6 +1162,32 @@ To correlate a decoded through-sprite with the guest code that builds its dynami
 write watches for both source vertex records. Later reuse of those records is reported through
 the normal `MEM_WATCH[...]` log with the exact guest writer PC. The shared 16-range watch limit
 still applies, and the option never changes vertex data or rendering.
+
+## Flight Recorder (`SR_FLIGHT`)
+
+`SR_FLIGHT=<classes>;<limit>` retains the last `<limit>` (at most 4096) structured events of the
+named classes (`hle`, `unsupported`, `sched`, `prx`, `fault`, `fatal`, `media`, `ge`, `present`)
+and writes a bundle to `SR_FLIGHT_OUTPUT` (default `flight-recorder.json`). The schema is
+`assets/flight_recorder_schema.json`; `tools/flight_diff.py` validates and compares bundles.
+
+`terminal.reason` names what ended the run:
+
+| Reason | Meaning |
+| --- | --- |
+| `running` | No terminal yet. The bundle is rewritten at each named refusal (at each power of two of the refusal count), so a run killed later reads as still running. |
+| `exit` | Normal exit; `arg0` is the exit status. |
+| `budget` | `SR_EXIT_AT_VBLANK` was reached; `arg0` is the vblank. |
+| `hang` | The no-frame watchdog (`SR_WATCHDOG_EXIT`) aborted; `arg0` is the vblanks without a new frame. |
+| `fatal` | A fatal event; `kind` names it. |
+| `unsupported-nid` | An NID with no handler ended the run (`kind` 13). |
+
+A named refusal is a call answered with its registered error while the guest keeps running. It is
+never the terminal record. It is an `unsupported` event, counted in the bundle's `refusals` block:
+`count`, `first_nid` and `first_pc` (the first refusal, in its own fields), and `nids`, the distinct
+refused NIDs in first-seen order with a count each (up to 32; further NIDs are counted in
+`nids_unlisted`). Schema 1 to 4 bundles froze at their first refusal (`unsupported-nid`, kind 2), so
+they cannot show what ran after it. The private triage tooling reports those as frozen at
+a refusal; that grouping is not part of this repository.
 
 ## Crash Reporter
 

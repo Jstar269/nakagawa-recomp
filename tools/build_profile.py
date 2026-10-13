@@ -255,6 +255,16 @@ def resolve_list(env_var: str, *, use_env: bool = False, cli_values: list[str] |
     return [item for item in (line.strip() for line in raw.split(LIST_SEPARATOR)) if item]
 
 
+def read_entries_file(path: Path) -> list[str]:
+    """The entries of an --entries-file: the same newline-separated KEY=VALUE text an
+    --entries-env variable carries, split and stripped the same way."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise BuildInputError(f"--entries-file {path} could not be read: {exc}") from exc
+    return [item for item in (line.strip() for line in raw.split(LIST_SEPARATOR)) if item]
+
+
 def identity_of(path: str) -> str:
     """Return a stable identity line for one input file.
 
@@ -327,6 +337,15 @@ def parse_args() -> argparse.Namespace:
                  "contain quotes or spaces travel this way so no byte of the "
                  "value reaches a command interpreter as syntax",
         )
+        command.add_argument(
+            "--entries-file",
+            metavar="PATH",
+            type=Path,
+            help="read the same newline-separated entries from a file (as Make's "
+                 "$(file ...) writes them); GNU Make before 4.4 does not hand "
+                 "exported variables to $(shell ...), so a parse-time hash reads "
+                 "its entries this way",
+        )
         command.add_argument("--file", action="append", default=[], metavar="PATH")
         if action == "record":
             command.add_argument("--output", type=Path, required=True)
@@ -334,6 +353,10 @@ def parse_args() -> argparse.Namespace:
             command.add_argument("--stamp", type=Path)
             command.add_argument("--stale-glob")
             command.add_argument("--invalidate", type=Path, action="append", default=[])
+            command.add_argument("--invalidate-file", type=Path, metavar="PATH",
+                                 help="whitespace-separated paths, merged with --invalidate; "
+                                      "make writes them with $(file ...) so a long BUILD_ROOT "
+                                      "cannot push the command past the shell's line limit")
             command.add_argument("--invalidate-glob", action="append", default=[])
     stamp = subparsers.add_parser("stamp")
     stamp.add_argument("--output", type=Path, required=True)
@@ -344,6 +367,8 @@ def parse_args() -> argparse.Namespace:
     # dependent target unambiguously out of date -- see the note on the -include of the
     # profile stamps in the Makefile.
     stamp.add_argument("--invalidate", type=Path, action="append", default=[])
+    stamp.add_argument("--invalidate-file", type=Path, metavar="PATH",
+                       help="whitespace-separated paths, merged with --invalidate")
 
     # Guest-input identity. Kept separate from `stamp` because it derives its value
     # from the environment rather than being handed one.
@@ -358,6 +383,14 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _invalidate_paths(args: argparse.Namespace) -> list[Path]:
+    """The --invalidate paths plus any listed, whitespace-separated, in --invalidate-file."""
+    paths = list(args.invalidate)
+    if getattr(args, "invalidate_file", None) is not None:
+        paths.extend(Path(word) for word in args.invalidate_file.read_text(encoding="utf-8").split())
+    return paths
+
+
 def main() -> int:
     args = parse_args()
     if args.action == "stamp-inputs":
@@ -366,19 +399,27 @@ def main() -> int:
                 args.env.append(var)
         return stamp_inputs(args)
     if args.action == "stamp":
-        activate_stamp(args.output, args.stale_glob, args.value, invalidate=args.invalidate)
+        activate_stamp(args.output, args.stale_glob, args.value, invalidate=_invalidate_paths(args))
         return 0
     try:
-        entries = (
-            resolve_list(
-                args.entries_env,
-                use_env=True,
-                cli_values=args.entry,
-                flag="--entries-env",
+        if args.entries_file is not None:
+            if args.entries_env or args.entry:
+                raise BuildInputError(
+                    "conflicting sources for the profile entries: --entries-file was "
+                    "supplied with --entries-env or --entry. Pass exactly one."
+                )
+            entries = read_entries_file(args.entries_file)
+        else:
+            entries = (
+                resolve_list(
+                    args.entries_env,
+                    use_env=True,
+                    cli_values=args.entry,
+                    flag="--entries-env",
+                )
+                if args.entries_env
+                else list(args.entry)
             )
-            if args.entries_env
-            else list(args.entry)
-        )
     except BuildInputError as exc:
         sys.stderr.write(f"build_profile: {exc}\n")
         return 2
@@ -395,7 +436,7 @@ def main() -> int:
                 args.stamp,
                 args.stale_glob,
                 digest,
-                invalidate=args.invalidate,
+                invalidate=_invalidate_paths(args),
                 invalidate_globs=args.invalidate_glob,
             )
         print(f"{args.section} profile: {digest}")

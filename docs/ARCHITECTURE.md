@@ -240,7 +240,10 @@ The runtime executes generated guest functions and implements the host side of P
 | `pgf_public.c` | Project-authored public PGF reader linked under `PUBLIC_SAFE=1`, written from `docs/cleanroom/PGF_SPEC.md` (#349); the lineage-sensitive backend `pgf.c` stays private-only, with provenance/distribution review separate |
 | `h264_mf.c` | Windows Media Foundation video-decode integration |
 | `h264_null.c` | Host-neutral/null video-decoder path used by portability/test builds |
-| `osk_win.c` | Win32 on-screen keyboard integration |
+| `osk_win.c` | Win32 on-screen keyboard input box; it blocks its caller until the person answers, so only the text-entry worker shows it |
+| `osk_text_entry.c` / `osk_text_entry.h` | Project-authored, non-blocking keyboard text entry: answers a field in the game window when the presenter can draw the keyboard, otherwise shows the input box on a worker thread so the keyboard never stops guest time; closes whatever it shows when the title drops the keyboard, and opens nothing under the offscreen presenter |
+| `osk_overlay.c` / `osk_overlay.h` | Project-authored in-window on-screen keyboard: the key grid, cursor, typing, the guest's length bound and inputtype, the UTF-16 answer, and edge-based pad input. Pure C with no host dependency; the session it keeps is the one the HLE keyboard polls and the vblank controller latch feeds |
+| `osk_overlay_paint.c` / `osk_overlay_paint.h` | Draws the in-window keyboard over the host copy of the frame the SDL3/Vulkan presenter is about to show, with SDL's software renderer. Guest VRAM is never written, and the frame capture sees the same pixels |
 | `gui.c` | Host GUI/input integration and fallback presentation plumbing |
 
 Unknown/unregistered PSP operations are not intentionally converted into fabricated success in a
@@ -294,16 +297,63 @@ contains:
 - `vfpuCtrl[16]` — VFPU control/prefix/condition state;
 - `cop0[32]` — modeled COP0 register bank; COP0 status is `cop0[SR_CP0_STATUS]`;
 - `next_pc`, `in_delay_slot` — branch/delay-slot bookkeeping;
-- `flow_kind`, `flow_target` — runtime transfer metadata.
+- `flow_kind`, `flow_target` — runtime transfer metadata;
+- `llbit` — the MIPS32 LLbit used by `ll`/`sc` (see "LL/SC link state" below).
 
-The layout is versioned by `SR_CPUSTATE_ABI_VERSION` (currently `2u`) and is
-checked in both C and C++ at compile time.
+The layout is versioned by `SR_CPUSTATE_ABI_VERSION` (currently `3u`; v3 appended `llbit`
+at offset 996, size 1000) and is checked in both C and C++ at compile time.
 
 There is **no separate `lr` member**. MIPS `$ra` is general register `r[31]`; similarly `$sp` is
 `r[29]` and `$gp` is `r[28]`.
 
 Changing this layout requires coordinated updates to every consumer and explicit ABI/offset
-verification.
+verification. The consumers are: the `_Static_assert`/`static_assert` blocks in `recomp.h`;
+`ref::CpuState` in `src/ref/cpu.h`; `CPU_STATE_ABI_VERSION` in `tools/codegen.py`, which the
+generated `generated_funcs.h` checks against the runtime; the offsets and version in
+`tools/mem_debug.py` (live process view and `crash_dump.bin` header); the package-layer epochs
+`GENERATED_CODE_ABI_EPOCH`/`RUNTIME_ABI_EPOCH` and the `CPUSTATE_ABI_EPOCHS` table in
+`tools/nk_core/package_cache.py` with their native twins in `src/core/nk_title_manifest.h`
+(every layout version bumps both; `tools/test_package_cache.py` pins them to this header); and
+the AOT package's `runtime.abi_version`, which the player compares with its own
+`SR_CPUSTATE_ABI_VERSION`, so packages built for an older ABI are refused until rebuilt. `recomp.h` is hashed into the runtime,
+codegen and generated-code build profiles, so every object that includes it rebuilds.
+
+### LL/SC link state
+
+`ll` (opcode 0x30) loads a word and sets `llbit`. `sc` (opcode 0x38) stores `rt` and writes 1 to
+`rt` only while `llbit` is set; otherwise it stores nothing and writes 0. `sc` leaves `llbit` as
+it found it (the MIPS32 Release 2 operation). Both execution tiers implement this:
+`tools/codegen.py` `_ll_sc_stmt()` and the production interpreter in `src/rt/guest_interp.c`;
+the reference interpreter in `src/ref/interp.cpp` follows the same rule.
+
+The MIPS32 contract clears LLbit on an exception return (ERET). On the PSP every event that can
+run other code between a thread's `ll` and its `sc` -- a thread switch, an interrupt, a callback,
+a kernel syscall -- reaches the thread again through an exception return. This runtime models
+those events at a fixed set of points, and `sr_cpu_link_clear()` runs at exactly these:
+
+| Event | Where |
+| --- | --- |
+| exception return | `sr_cpu_eret()` (`src/rt/cpu_lle.c`), on a successful return only |
+| thread switch-in | `sched_load_thread_context()` (`src/rt/sched.c`), the only place `sched_run()` resumes a thread, so every parking path (`sr_yield`, blocking HLE waits, preemption) is covered |
+| interrupt return | `deliver_vblank()` and `scheduler_alarm_deliver()` after restoring the interrupted frame |
+| callback / nested guest call return | `sr_callback_dispatch_one()` (`recomp.h`), `ge_call_guest*()` (`hle.c`), `call_guest3()` (`mpeg.c`) |
+| HLE syscall return | `sr_syscall()` after the handler runs; a call linked to a started module's guest export is a plain jump on hardware and does not clear |
+
+Nothing else writes `llbit`. In particular a `SR_YIELD` point whose `sr_yield()` neither switches
+threads nor delivers an interrupt leaves the link set, and exception entry does not clear it (the
+handler's `eret` does).
+
+Forward progress. Interrupts are delivered and threads switched only from `sr_yield()` or from
+inside an HLE call, and `sr_yield()` is reached only from `SR_YIELD`, which the generated code
+places at function entry and on backward branches. An `ll .. sc` window that contains no call, no
+backward branch and no syscall -- the shape of every retry loop `L: ll; ...; sc; beqz L` -- has
+no clearing point inside it, so its `sc` succeeds on the first pass after any earlier failure.
+The retry branch's own `SR_YIELD` runs after the failed `sc` and before the next `ll`, outside
+the window. A window that does contain a yield point fails only when the time slice expires
+inside it and another thread is runnable or an interrupt is pending; `sr_yield()` then grants a
+fresh slice of `TIMESLICE` yield points, so the next pass succeeds unless the window itself holds
+that many. A window that contains an HLE syscall fails on every pass, as it would on hardware for
+a kernel call.
 
 ## Build System
 
@@ -366,6 +416,11 @@ is never implicit code. The production interpreter executes the omitted helper's
 and its delay slot, then transfers to registered AOT region B at `0x08804098`. Region B commits the
 interpreted `0x00001235` value before the real HLE path and production-driver assertion. Nothing
 patches generated C after codegen and nothing substitutes host-side helpers.
+
+The scalar interpreter floor also covers `lwl`, `lwr`, `swl` and `swr`. These
+forms merge bytes within the aligned containing word, use the same runtime
+accessors as generated code, and retain fail-closed bounds checks in the
+interpreter.
 
 #### AOT/interpreter cosimulation
 
@@ -600,6 +655,7 @@ the maintained references for exact behavior.
 | `PSP_ISO` | path | Private ISO path where a route consumes it |
 | `SR_MEMSTICK` | path | Canonical host Memory Stick root shared by ordinary `sceIo*` `ms0:` I/O and savedata (default `memstick/`) |
 | `SR_FSDIR` | path | Legacy flat `fs/` source for one-time read-open import into the unified Memory Stick root (default `fs/`) |
+| `SR_SYSTEM_REGISTRY` | path | Per-user overlay file of the virtual PSP system registry that `sceRegFlush*` writes (default `registry/system.json` in the per-user data directory) |
 
 Many legacy Boolean diagnostics are enabled by **presence**, so setting them to the literal string
 `"0"` may still enable them. Remove/unset such variables to disable them. Value-parsed switches

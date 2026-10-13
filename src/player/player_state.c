@@ -339,8 +339,17 @@ void player_app_runtime_package_cache_store(
     if (!app || !game || game_index < 0 || game_index >= app->game_count) return;
     PlayerRuntimePackageCacheEntry *entry =
         &app->runtime_package_cache[game_index];
+    /* A stored reason survives a store for the same title; a warm cache hit
+     * stores no new reason, and the earlier one still describes the package. */
+    char prior_reason[sizeof(entry->reason)] = "";
+    if (strcmp(entry->disc_id, game->disc_id) == 0 &&
+        strcmp(entry->title_id, game->title_id) == 0 &&
+        strcmp(entry->selected_executable, game->selected_executable) == 0) {
+        snprintf(prior_reason, sizeof(prior_reason), "%s", entry->reason);
+    }
     memset(entry, 0, sizeof(*entry));
     player_runtime_cache_set_game_key(entry, game);
+    snprintf(entry->reason, sizeof(entry->reason), "%s", prior_reason);
     entry->status_valid = true;
     entry->identity_valid = identity_valid;
     entry->runtime_available = runtime_available;
@@ -350,6 +359,70 @@ void player_app_runtime_package_cache_store(
         snprintf(entry->package_identity, sizeof(entry->package_identity), "%s",
                  package_identity);
     }
+}
+
+static const PlayerRuntimePackageCacheEntry *player_runtime_cache_for_game(
+    const PlayerApp *app, const GameRecord *game);
+
+void player_app_runtime_package_cache_set_reason(PlayerApp *app, int game_index,
+                                                 const char *reason) {
+    if (!app || !reason || !reason[0] || game_index < 0 ||
+        game_index >= app->game_count) return;
+    snprintf(app->runtime_package_cache[game_index].reason,
+             sizeof(app->runtime_package_cache[game_index].reason), "%s", reason);
+}
+
+bool player_app_runtime_package_status_known(const PlayerApp *app,
+                                             const GameRecord *game) {
+    const PlayerRuntimePackageCacheEntry *entry =
+        player_runtime_cache_for_game(app, game);
+    return entry && entry->status_valid && !entry->validation_pending;
+}
+
+const char *player_app_runtime_package_reason(const PlayerApp *app,
+                                              const GameRecord *game) {
+    const PlayerRuntimePackageCacheEntry *entry =
+        player_runtime_cache_for_game(app, game);
+    return entry && entry->reason[0] ? entry->reason : NULL;
+}
+
+size_t player_library_status_text(bool has_runtime, bool checking, bool check_failed,
+                                  bool assets_staged, uint32_t staged_asset_count,
+                                  const char *reason, char *out, size_t out_size) {
+    if (!out || out_size == 0) return 0;
+    out[0] = '\0';
+    /* The validator's first sentence is the reason a card can afford: the rest
+     * is detail for the logs. */
+    char first[256] = "";
+    if (reason) {
+        size_t n = 0;
+        while (reason[n] && reason[n] != '.' && n + 1 < sizeof(first)) {
+            first[n] = reason[n];
+            n++;
+        }
+        first[n] = '\0';
+    }
+    int written = 0;
+    if (has_runtime) {
+        written = snprintf(out, out_size, "Status: Prepared");
+    } else if (checking) {
+        written = snprintf(out, out_size, "Status: Checking package...");
+    } else if (check_failed) {
+        written = snprintf(out, out_size, "Check failed: %s",
+                           first[0] ? first : "the package could not be checked");
+    } else if (assets_staged) {
+        written = first[0]
+            ? snprintf(out, out_size, "Assets staged: %u. %s",
+                       (unsigned)staged_asset_count, first)
+            : snprintf(out, out_size, "Assets staged: %u",
+                       (unsigned)staged_asset_count);
+    } else if (first[0]) {
+        written = snprintf(out, out_size, "Not prepared: %s", first);
+    } else {
+        written = snprintf(out, out_size, "Status: Not prepared");
+    }
+    if (written < 0) return 0;
+    return (size_t)written < out_size ? (size_t)written : out_size - 1;
 }
 
 NkRuntimePackageStatus player_app_validate_runtime_package(
@@ -556,6 +629,7 @@ bool player_app_discover_showcase(PlayerApp *app, const char *executable_directo
             !title->primary_disc_id || !title->display_name) continue;
         GameRecord game;
         memset(&game, 0, sizeof(game));
+        game.is_sample = true;
         snprintf(game.disc_id, sizeof(game.disc_id), "%s", title->primary_disc_id);
         snprintf(game.title_name, sizeof(game.title_name), "%s", title->display_name);
         snprintf(game.title_id, sizeof(game.title_id), "%s", title->id);
@@ -587,8 +661,148 @@ bool player_app_discover_showcase(PlayerApp *app, const char *executable_directo
     return app->showcase_count > 0;
 }
 
+#if defined(_WIN32) || defined(_WIN64)
+static bool player_display_path_char_equal(char a, char b) {
+    if (a == '/') a = '\\';
+    if (b == '/') b = '\\';
+    return tolower((unsigned char)a) == tolower((unsigned char)b);
+}
+static bool player_display_is_separator(char c) {
+    return c == '\\' || c == '/';
+}
+#else
+static bool player_display_path_char_equal(char a, char b) {
+    return a == b;
+}
+static bool player_display_is_separator(char c) {
+    return c == '/';
+}
+#endif
+
+/* The profile folder without trailing separators; 0 when it is empty. */
+static size_t player_display_home_length(const char *home) {
+    size_t n = strlen(home);
+    while (n > 0 && player_display_is_separator(home[n - 1])) n--;
+    return n;
+}
+
+/* True when the profile folder occurs at `at` as whole path components: what
+ * follows it ends the text, or is a separator, white space, quote or bracket. */
+static bool player_display_home_matches(const char *at, const char *home, size_t home_len) {
+    for (size_t i = 0; i < home_len; i++) {
+        if (at[i] == '\0' || !player_display_path_char_equal(at[i], home[i])) return false;
+    }
+    char next = at[home_len];
+    return next == '\0' || player_display_is_separator(next) ||
+           isspace((unsigned char)next) || next == '"' || next == '\'' ||
+           next == ')' || next == ']' || next == ',';
+}
+
+size_t player_display_text_with_home(const char *in, const char *home,
+                                     char *out, size_t out_size) {
+    if (!out || out_size == 0) return 0;
+    out[0] = '\0';
+    if (!in) return 0;
+    size_t home_len = home ? player_display_home_length(home) : 0;
+    size_t used = 0;
+    const char *p = in;
+    while (*p) {
+        bool hit = false;
+        if (home_len > 0) {
+            /* A match must start a path component, not continue a name. */
+            bool at_boundary = p == in ||
+                !(isalnum((unsigned char)p[-1]) || p[-1] == '_' ||
+                  p[-1] == '.' || p[-1] == '-');
+            hit = at_boundary && player_display_home_matches(p, home, home_len);
+        }
+        if (hit) {
+            if (used + 2 > out_size) break;
+            out[used++] = '~';
+            p += home_len;
+            continue;
+        }
+        if (used + 2 > out_size) break;
+        out[used++] = *p++;
+    }
+    out[used] = '\0';
+    return used;
+}
+
+size_t player_display_text(const char *in, char *out, size_t out_size) {
+    static char home[MAX_PATH_LEN];
+    static bool home_ready;
+    if (!home_ready) {
+        const char *value = NULL;
+#if defined(_WIN32) || defined(_WIN64)
+        value = getenv("USERPROFILE");
+#else
+        value = getenv("HOME");
+#endif
+        if (value) snprintf(home, sizeof(home), "%s", value);
+        else home[0] = '\0';
+        home_ready = true;
+    }
+    return player_display_text_with_home(in, home, out, out_size);
+}
+
+size_t player_bitmap_glyph(const char *in, char out[3]) {
+    unsigned char lead = (unsigned char)in[0];
+    if (lead < 0x80) {
+        if (lead >= 0x20 && lead < 0x7F) {
+            out[0] = (char)lead;
+        } else if (lead == '\t' || lead == '\n' || lead == '\r') {
+            out[0] = ' ';
+        } else {
+            out[0] = '?';
+        }
+        out[1] = '\0';
+        return 1;
+    }
+    size_t seq = (lead >= 0xC2 && lead <= 0xDF) ? 2u
+               : (lead >= 0xE0 && lead <= 0xEF) ? 3u
+               : (lead >= 0xF0 && lead <= 0xF4) ? 4u
+               : 0u;
+    /* nk_json_validate_utf8 reads only the seq bytes given, so a NUL inside the
+     * sequence (or a missing continuation byte) fails here without overrun. */
+    if (seq == 0 || !nk_json_validate_utf8((const uint8_t *)in, seq)) {
+        out[0] = '?';
+        out[1] = '\0';
+        return 1;
+    }
+    if (lead == 0xE2 && (unsigned char)in[1] == 0x84 && (unsigned char)in[2] == 0xA2) {
+        out[0] = 'T';
+        out[1] = 'M';
+        out[2] = '\0';
+        return 3;
+    }
+    out[0] = '?';
+    out[1] = '\0';
+    return seq;
+}
+
+size_t player_text_for_bitmap_font(const char *in, char *out, size_t out_size) {
+    if (!out || out_size == 0) return 0;
+    out[0] = '\0';
+    if (!in) return 0;
+    size_t used = 0;
+    const char *p = in;
+    while (*p) {
+        char glyph[3];
+        size_t advance = player_bitmap_glyph(p, glyph);
+        size_t glyph_len = strlen(glyph);
+        if (used + glyph_len + 1 > out_size) break;
+        memcpy(out + used, glyph, glyph_len);
+        used += glyph_len;
+        p += advance;
+    }
+    out[used] = '\0';
+    return used;
+}
+
 bool player_app_add_game(PlayerApp *app, const GameRecord *game) {
     if (!app || !game || game->disc_id[0] == '\0') return false;
+    /* A sample is shown, never added to the user's library. */
+    if (game->is_sample) return false;
 
     GameRecord merged = *game;
     for (int i = 0; i < app->library.count; i++) {
@@ -731,7 +945,7 @@ int player_app_focus_count(const PlayerApp *app) {
                     if (app->wizard.is_extracting) return 1;
                     return 3;
                 case WIZARD_STEP_SYSTEM_FONTS:
-                    return 4;
+                    return 6;
                 case WIZARD_STEP_READY_LAUNCH:
                     return 3;
                 default:
@@ -1393,6 +1607,7 @@ void player_app_populate_sample_games(PlayerApp *app) {
      * the status must not claim otherwise. */
     GameRecord p5;
     memset(&p5, 0, sizeof(p5));
+    p5.is_sample = true;
     snprintf(p5.disc_id, sizeof(p5.disc_id), "TEST00005");
     snprintf(p5.title_name, sizeof(p5.title_name), "PSPDEV Phase 5 Source-Owned Fixture");
     snprintf(p5.disc_version, sizeof(p5.disc_version), "1.00");
@@ -1418,6 +1633,7 @@ void player_app_populate_sample_games(PlayerApp *app) {
        truthful until the fixture has a source ISO and matching private identity. */
     GameRecord disp;
     memset(&disp, 0, sizeof(disp));
+    disp.is_sample = true;
     snprintf(disp.disc_id, sizeof(disp.disc_id), "TEST00006");
     snprintf(disp.title_name, sizeof(disp.title_name), "Nakagawa Display Smoke Fixture");
     snprintf(disp.disc_version, sizeof(disp.disc_version), "1.00");
@@ -1647,12 +1863,127 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     if (tm_info) {
         strftime(app->games[game_index].last_played, sizeof(app->games[game_index].last_played),
                  "%Y-%m-%d %H:%M", tm_info);
-        if (app->library.library_path[0]) {
+        /* A bundled demo or sample that ran is not a library title: its last-played
+         * time stays in memory and the library file is left as the user made it. */
+        if (app->library.library_path[0] && !app->games[game_index].is_sample) {
             nk_library_add_or_update(&app->library, &app->games[game_index]);
             nk_library_save(&app->library, app->library.library_path);
         }
     }
     printf("[PLAYER] Game started successfully (PID: %d)!\n", app->launch_session.process.process_id);
+    return true;
+}
+
+static bool player_copy_bounded_text(char *destination, size_t destination_size,
+                                     const char *source) {
+    if (!destination || destination_size == 0 || !source) return false;
+    size_t length = strlen(source);
+    if (length >= destination_size) return false;
+    memcpy(destination, source, length + 1);
+    return true;
+}
+
+static bool player_plan_take_entry(PlayerStagePlan *plan, const NkTitleEntry *entry) {
+    if (!entry || entry->loose_content_root_count < 0 ||
+        entry->loose_content_root_count > NK_TITLE_MAX_LOOSE_CONTENT_ROOTS ||
+        (entry->loose_content_root_count != 0 && !entry->loose_content_roots)) return false;
+    if (entry->data_root &&
+        !player_copy_bounded_text(plan->data_root, sizeof(plan->data_root), entry->data_root)) {
+        return false;
+    }
+    for (int i = 0; i < entry->loose_content_root_count; i++) {
+        const NkLooseContentRoot *binding = &entry->loose_content_roots[i];
+        if (!binding->root ||
+            !player_copy_bounded_text(plan->root_storage[i], sizeof(plan->root_storage[i]),
+                               binding->root)) return false;
+        plan->roots[i] = plan->root_storage[i];
+        plan->request.loose_content_root_count++;
+    }
+    return true;
+}
+
+bool player_app_build_stage_plan(const GameRecord *game, PlayerStagePlan *plan) {
+    if (!game || !plan) return false;
+    memset(plan, 0, sizeof(*plan));
+    if (!player_copy_bounded_text(plan->iso_path, sizeof(plan->iso_path), game->iso_path) ||
+        !player_copy_bounded_text(plan->disc_id, sizeof(plan->disc_id), game->disc_id) ||
+        !player_copy_bounded_text(plan->disc_version, sizeof(plan->disc_version),
+                           game->disc_version) ||
+        !nk_platform_get_app_data_dir(plan->user_data_root,
+                                      sizeof(plan->user_data_root))) return false;
+    plan->request.iso_path = plan->iso_path;
+    plan->request.user_data_root = plan->user_data_root;
+    plan->request.disc_id = plan->disc_id;
+    plan->request.disc_version = plan->disc_version;
+    plan->request.loose_content_roots = plan->roots;
+    plan->request.data_root = plan->data_root;
+
+    bool valid;
+    if (game->is_experimental) {
+        char profile_hash[65];
+        char error[256];
+        NkTitleEntrySnapshot snapshot = {0};
+        valid = nk_title_manifest_read_experimental_profile(
+                    plan->user_data_root, game->disc_id, game->title_id,
+                    game->selected_executable, &snapshot, profile_hash, error,
+                    sizeof(error)) &&
+                snapshot.entry.id && strcmp(snapshot.entry.id, game->title_id) == 0 &&
+                snapshot.entry.primary_disc_id &&
+                strcmp(snapshot.entry.primary_disc_id, game->disc_id) == 0 &&
+                player_plan_take_entry(plan, &snapshot.entry);
+        nk_title_catalog_snapshot_release(&snapshot);
+    } else {
+        nk_title_catalog_lock();
+        const NkTitleEntry *by_disc = game->disc_id[0]
+            ? nk_title_catalog_find_by_disc_id_locked(game->disc_id) : NULL;
+        const NkTitleEntry *by_id = game->title_id[0]
+            ? nk_title_catalog_find_by_id_locked(game->title_id) : NULL;
+        if (!by_disc) {
+            /* Not catalogued by disc: only the executable is staged. */
+            valid = true;
+        } else if (game->title_id[0] && (!by_id || strcmp(by_disc->id, by_id->id) != 0)) {
+            valid = false;
+        } else {
+            valid = player_plan_take_entry(plan, by_disc);
+        }
+        nk_title_catalog_unlock();
+    }
+    if (!valid) {
+        plan->request.loose_content_root_count = 0;
+        plan->data_root[0] = '\0';
+    }
+    return valid;
+}
+
+bool player_app_inspected_game_needs_staging(const PlayerApp *app) {
+    if (!app || !app->inspecting_game.disc_id[0]) return false;
+    /* A disc already in the library keeps its staged files: judge the record
+       ADD TO LIBRARY will actually save. */
+    GameRecord merged = app->inspecting_game;
+    for (int i = 0; i < app->library.count; i++) {
+        if (strcmp(app->library.entries[i].disc_id, merged.disc_id) == 0) {
+            (void)player_merge_readded_game(&app->library.entries[i], &merged);
+            break;
+        }
+    }
+    PlayerStagePlan *plan = (PlayerStagePlan *)calloc(1, sizeof(*plan));
+    bool takes_data_from_disc = plan && player_app_build_stage_plan(&merged, plan) &&
+                                player_stage_title_takes_data_from_disc(&plan->request);
+    free(plan);
+    if (!takes_data_from_disc) return false;
+    return player_app_game_data_root_status(app, &merged, NULL, 0, NULL, 0) !=
+           NK_LAUNCH_DATA_ROOT_READY;
+}
+
+bool player_app_add_inspected_game(PlayerApp *app) {
+    if (!app) return false;
+    if (player_app_inspected_game_needs_staging(app)) {
+        player_app_start_setup_wizard(app);
+        player_app_wizard_begin_extraction(app);
+        return true;
+    }
+    if (!player_app_add_game(app, &app->inspecting_game)) return false;
+    player_app_set_view(app, VIEW_LIBRARY);
     return true;
 }
 
@@ -1748,9 +2079,12 @@ static bool player_read_semantic_stop(const char *path, char *boundary,
         if (strncmp(line, prefix, sizeof(prefix) - 1u) != 0) continue;
         const char *start = line + sizeof(prefix) - 1u;
         const char *separator = strchr(start, ' ');
+        const char *line_end = strpbrk(start, "\r\n");
         const char *issue = separator ? strstr(separator, " issue=") : NULL;
-        if (!separator || !issue || issue <= start) continue;
-        size_t name_len = (size_t)(separator - start);
+        if (separator && !issue) continue;
+        const char *name_end = separator ? separator : line_end;
+        if (!name_end || name_end <= start) continue;
+        size_t name_len = (size_t)(name_end - start);
         if (name_len == 0 || name_len >= boundary_size || name_len >= 96u) continue;
         bool valid_name = true;
         for (size_t i = 0; i < name_len; i++) {
@@ -1761,12 +2095,15 @@ static bool player_read_semantic_stop(const char *path, char *boundary,
             }
         }
         if (!valid_name) continue;
-        const char *digits = issue + 7;
-        char *digits_end = NULL;
-        unsigned long parsed = strtoul(digits, &digits_end, 10);
-        if (digits_end == digits || parsed == 0 || parsed > 9999ul ||
-            (*digits_end != '\n' && *digits_end != '\r' && *digits_end != '\0')) {
-            continue;
+        unsigned long parsed = 0;
+        if (issue) {
+            const char *digits = issue + 7;
+            char *digits_end = NULL;
+            parsed = strtoul(digits, &digits_end, 10);
+            if (digits_end == digits || parsed == 0 || parsed > 9999ul ||
+                (*digits_end != '\n' && *digits_end != '\r' && *digits_end != '\0')) {
+                continue;
+            }
         }
         memcpy(boundary, start, name_len);
         boundary[name_len] = '\0';
@@ -2173,18 +2510,7 @@ void player_app_wizard_next(PlayerApp *app) {
                 app->wizard.step = WIZARD_STEP_SYSTEM_FONTS;
             } else if (app->inspecting_game.status == NK_STATUS_VERIFIED &&
                        !app->wizard.is_extracting) {
-                app->wizard.is_extracting = true;
-                app->wizard.extraction_requested = true;
-                app->wizard.extraction_cancel_requested = false;
-                app->wizard.extraction_failed = false;
-                app->wizard.extraction_result = NK_OK;
-                app->wizard.extraction_percent = 0;
-                app->wizard.files_extracted = 0;
-                app->wizard.total_files = 0;
-                app->wizard.extraction_current_file[0] = '\0';
-                app->wizard.extraction_error[0] = '\0';
-                snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
-                         "Extracting game assets into local application data...");
+                player_app_wizard_begin_extraction(app);
             } else if (app->wizard.is_extracting) {
                 /* The only action exposed while the worker is active is
                    cancellation; ignore an accidental second activation. */
@@ -2214,6 +2540,26 @@ void player_app_wizard_next(PlayerApp *app) {
         default:
             break;
     }
+}
+
+void player_app_wizard_begin_extraction(PlayerApp *app) {
+    if (!app) return;
+    app->wizard.iso_selected = true;
+    app->wizard.step = WIZARD_STEP_INSPECT_VERIFY;
+    app->wizard.is_extracting = true;
+    app->wizard.extraction_requested = true;
+    app->wizard.extraction_cancel_requested = false;
+    app->wizard.extraction_complete = false;
+    app->wizard.extraction_failed = false;
+    app->wizard.extraction_result = NK_OK;
+    app->wizard.extraction_percent = 0;
+    app->wizard.files_extracted = 0;
+    app->wizard.total_files = 0;
+    app->wizard.extraction_current_file[0] = '\0';
+    app->wizard.extraction_error[0] = '\0';
+    snprintf(app->wizard.status_message, sizeof(app->wizard.status_message),
+             "Extracting game assets into local application data...");
+    app->focus_index = 0;
 }
 
 void player_app_wizard_back(PlayerApp *app) {
@@ -2379,10 +2725,6 @@ typedef enum {
     PLAYER_DECRYPTED_EBOOT_PATH_INVALID
 } PlayerDecryptedEbootState;
 
-static uint16_t player_read_le16(const unsigned char *bytes) {
-    return (uint16_t)((uint16_t)bytes[0] | ((uint16_t)bytes[1] << 8));
-}
-
 static uint32_t player_read_le32(const unsigned char *bytes) {
     return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
            ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
@@ -2418,21 +2760,18 @@ static bool player_decrypted_eboot_paths(const char *runtime_root,
     return written >= 0 && (size_t)written < elf_path_size;
 }
 
-/* The ELF32/MIPS usability decision after the header and program-header
- * walks (issue #729).  Mirrors _elf32_mips_usable in tools/nk_core/iso_inspect.py:
- * an executable (or any non-PRX) image needs e_entry inside an executable
- * PT_LOAD, while a guest module that is a PSP PRX (e_type 0xFFA0) needs an
- * executable PT_LOAD with code bytes, because its e_entry is not its start
- * routine (module_start comes from the module info, commonly 0xFFFFFFFF). */
-static bool player_elf32_usable_decision(uint16_t e_type, bool module,
-                                         bool have_load, bool entry_executable,
-                                         bool code_segment) {
-    if (module && e_type == 0xffa0) return have_load && code_segment;
-    return have_load && entry_executable;
+/* The shared PSP ELF32/MIPS layout rule (nk_iso.c) read from a file. */
+static bool player_file_image_read(void *context, uint64_t offset, void *dst,
+                                   uint32_t bytes) {
+    FILE *file = (FILE *)context;
+    if (offset > (uint64_t)LONG_MAX ||
+        fseek(file, (long)offset, SEEK_SET) != 0) {
+        return false;
+    }
+    return fread(dst, 1, bytes, file) == bytes;
 }
 
 static bool player_is_usable_mips_elf32(const char *path, bool module) {
-    unsigned char header[52];
     FILE *file = nk_fopen_utf8(path, "rb");
     if (!file) return false;
     if (fseek(file, 0, SEEK_END) != 0) {
@@ -2440,78 +2779,14 @@ static bool player_is_usable_mips_elf32(const char *path, bool module) {
         return false;
     }
     long file_size = ftell(file);
-    if (file_size < (long)sizeof(header) || file_size > 512L * 1024L * 1024L ||
-        fseek(file, 0, SEEK_SET) != 0 ||
-        fread(header, 1, sizeof(header), file) != sizeof(header)) {
+    if (file_size < 0 || file_size > 512L * 1024L * 1024L) {
         fclose(file);
         return false;
     }
-    uint16_t e_type = player_read_le16(header + 16);
-    uint16_t machine = player_read_le16(header + 18);
-    uint32_t version = player_read_le32(header + 20);
-    uint32_t entry = player_read_le32(header + 24);
-    uint32_t phoff = player_read_le32(header + 28);
-    uint32_t shoff = player_read_le32(header + 32);
-    uint16_t ehsize = player_read_le16(header + 40);
-    uint16_t phentsize = player_read_le16(header + 42);
-    uint16_t phnum = player_read_le16(header + 44);
-    uint16_t shentsize = player_read_le16(header + 46);
-    uint16_t shnum = player_read_le16(header + 48);
-    bool valid = memcmp(header, "\x7f" "ELF", 4) == 0 &&
-                 header[4] == 1 && header[5] == 1 && header[6] == 1 &&
-                 (e_type == 1 || e_type == 2 || e_type == 3 || e_type == 0xffa0) &&
-                 machine == 8 && version == 1 && ehsize == sizeof(header) &&
-                 phentsize == 32 && phnum >= 1 && phnum <= 128 &&
-                 phoff >= ehsize &&
-                 (uint64_t)phoff + (uint64_t)phentsize * phnum <= (uint64_t)file_size;
-    if (valid && shnum != 0) {
-        valid = shentsize == 40 && shoff >= ehsize &&
-                (uint64_t)shoff + (uint64_t)shentsize * shnum <= (uint64_t)file_size;
-    } else if (valid && shoff != 0) {
-        valid = false;
-    }
-
-    bool have_load = false;
-    bool entry_executable = false;
-    bool code_segment = false;
-    for (uint16_t i = 0; valid && i < phnum; i++) {
-        unsigned char ph[32];
-        uint64_t offset = (uint64_t)phoff + (uint64_t)i * phentsize;
-        if (fseek(file, (long)offset, SEEK_SET) != 0 ||
-            fread(ph, 1, sizeof(ph), file) != sizeof(ph)) {
-            valid = false;
-            break;
-        }
-        uint32_t type = player_read_le32(ph);
-        uint32_t p_offset = player_read_le32(ph + 4);
-        uint32_t vaddr = player_read_le32(ph + 8);
-        uint32_t filesz = player_read_le32(ph + 16);
-        uint32_t memsz = player_read_le32(ph + 20);
-        uint32_t flags = player_read_le32(ph + 24);
-        uint32_t align = player_read_le32(ph + 28);
-        uint64_t memory_end = (uint64_t)vaddr + memsz;
-        if ((uint64_t)p_offset + filesz > (uint64_t)file_size) {
-            valid = false;
-            break;
-        }
-        if (type != 1) continue;
-        if (memsz < filesz || memory_end > 0x100000000ULL ||
-            (align > 1 && ((align & (align - 1u)) != 0 ||
-                           p_offset % align != vaddr % align))) {
-            valid = false;
-            break;
-        }
-        have_load = true;
-        if ((flags & 1u) != 0 && vaddr <= entry && (uint64_t)entry < memory_end) {
-            entry_executable = true;
-        }
-        if ((flags & 1u) != 0 && filesz > 0) {
-            code_segment = true;
-        }
-    }
+    bool usable = nk_elf32_mips_layout_violation(
+                      player_file_image_read, file, (uint64_t)file_size, module) == NULL;
     fclose(file);
-    return valid && player_elf32_usable_decision(e_type, module, have_load,
-                                                 entry_executable, code_segment);
+    return usable;
 }
 
 static PlayerDecryptedEbootState player_find_decrypted_eboot(
@@ -2759,81 +3034,10 @@ static bool player_prx_header_supported(const unsigned char *header,
     return total <= 64u * 1024u * 1024u;
 }
 
-/* The bounded MIPS ELF32 envelope check for a module still inside the ISO. */
+/* The shared PSP ELF32/MIPS layout rule (nk_iso.c) for a module still inside the ISO. */
 static bool player_iso_elf32_mips_usable(NkIsoReader *reader, uint32_t lba,
                                          uint32_t size, bool module) {
-    unsigned char header[52];
-    unsigned char ph[32];
-    if (size < sizeof(header) ||
-        nk_iso_reader_read(reader, lba, 0, header, sizeof(header)) !=
-            (int)sizeof(header)) {
-        return false;
-    }
-    if (memcmp(header, "\x7f" "ELF", 4) != 0 ||
-        header[4] != 1 || header[5] != 1 || header[6] != 1) {
-        return false;
-    }
-    uint16_t e_type = player_read_le16(header + 16);
-    uint16_t machine = player_read_le16(header + 18);
-    uint32_t version = player_read_le32(header + 20);
-    uint32_t entry = player_read_le32(header + 24);
-    uint32_t phoff = player_read_le32(header + 28);
-    uint32_t shoff = player_read_le32(header + 32);
-    uint16_t ehsize = player_read_le16(header + 40);
-    uint16_t phentsize = player_read_le16(header + 42);
-    uint16_t phnum = player_read_le16(header + 44);
-    uint16_t shentsize = player_read_le16(header + 46);
-    uint16_t shnum = player_read_le16(header + 48);
-    bool valid = (e_type == 1 || e_type == 2 || e_type == 3 || e_type == 0xffa0) &&
-                 machine == 8 && version == 1 && ehsize == sizeof(header) &&
-                 phentsize == 32 && phnum >= 1 && phnum <= 128 &&
-                 phoff >= ehsize &&
-                 (uint64_t)phoff + (uint64_t)phentsize * phnum <= (uint64_t)size;
-    if (valid && shnum != 0) {
-        valid = shentsize == 40 && shoff >= ehsize &&
-                (uint64_t)shoff + (uint64_t)shentsize * shnum <= (uint64_t)size;
-    } else if (valid && shoff != 0) {
-        valid = false;
-    }
-    bool have_load = false;
-    bool entry_executable = false;
-    bool code_segment = false;
-    for (uint16_t i = 0; valid && i < phnum; i++) {
-        uint64_t offset = (uint64_t)phoff + (uint64_t)i * phentsize;
-        if (nk_iso_reader_read(reader, lba, offset, ph, sizeof(ph)) !=
-            (int)sizeof(ph)) {
-            valid = false;
-            break;
-        }
-        uint32_t type = player_read_le32(ph);
-        uint32_t p_offset = player_read_le32(ph + 4);
-        uint32_t vaddr = player_read_le32(ph + 8);
-        uint32_t filesz = player_read_le32(ph + 16);
-        uint32_t memsz = player_read_le32(ph + 20);
-        uint32_t flags = player_read_le32(ph + 24);
-        uint32_t align = player_read_le32(ph + 28);
-        uint64_t memory_end = (uint64_t)vaddr + memsz;
-        if ((uint64_t)p_offset + filesz > (uint64_t)size) {
-            valid = false;
-            break;
-        }
-        if (type != 1) continue;
-        if (memsz < filesz || memory_end > 0x100000000ULL ||
-            (align > 1 && ((align & (align - 1u)) != 0 ||
-                           p_offset % align != vaddr % align))) {
-            valid = false;
-            break;
-        }
-        have_load = true;
-        if ((flags & 1u) != 0 && vaddr <= entry && (uint64_t)entry < memory_end) {
-            entry_executable = true;
-        }
-        if ((flags & 1u) != 0 && filesz > 0) {
-            code_segment = true;
-        }
-    }
-    return valid && player_elf32_usable_decision(e_type, module, have_load,
-                                                 entry_executable, code_segment);
+    return nk_iso_elf32_mips_layout_usable(reader, lba, size, module);
 }
 
 typedef struct {
@@ -3158,19 +3362,104 @@ static void player_check_guest_modules(PlayerApp *app,
     free(modules);
 }
 
+/* Append text to a bounded buffer, never past its end. */
+static void player_font_append(char *out, size_t out_len, const char *text) {
+    size_t used;
+    size_t room;
+    if (!out || out_len == 0 || !text) return;
+    used = strlen(out);
+    if (used >= out_len - 1u) return;
+    room = out_len - 1u - used;
+    strncpy(out + used, text, room);
+    out[used + room] = '\0';
+}
+
+void player_app_refresh_font_status(PlayerApp *app) {
+    NkFontSlotState states[NK_FONT_SLOT_COUNT];
+    char root[NK_MAX_PATH];
+    if (!app) return;
+    /* The same root the preflight checks; empty when none resolves, and the nk_font calls then
+       report that the cache location is unavailable. */
+    if (!player_app_data_root(app, root, sizeof(root))) root[0] = '\0';
+    nk_font_slot_states(root, root, states);
+    for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
+        snprintf(app->wizard.font_slot_detail[slot], sizeof(app->wizard.font_slot_detail[slot]),
+                 "%s", states[slot].detail);
+    }
+}
+
+bool player_app_fonts_import_folder(PlayerApp *app, const char *folder) {
+    NkFontImportResult result;
+    char error[NK_FONT_DETAIL_MAX] = "";
+    char root[NK_MAX_PATH];
+    if (!app) return false;
+    if (!folder || !*folder) {
+        snprintf(app->wizard.font_message, sizeof(app->wizard.font_message), "No folder was chosen.");
+        return false;
+    }
+    if (!player_app_data_root(app, root, sizeof(root))) root[0] = '\0';
+    if (!nk_font_import_folder(root, folder, NULL, &result, error, sizeof(error))) {
+        snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
+                 "Import stopped: %s.", error);
+        player_app_refresh_font_status(app);
+        return false;
+    }
+    if (result.imported_count == 0) {
+        /* Say why, from the first file that was not used: a refusal, or several files for one slot. */
+        const char *reason = "no .pgf file names a PSP font slot";
+        for (int i = 0; i < result.file_count; i++) {
+            if (result.files[i].detail[0] != '\0' && strstr(result.files[i].detail, "not imported") != NULL) {
+                reason = result.files[i].detail;
+                break;
+            }
+            if (result.files[i].detail[0] != '\0' && strncmp(result.files[i].detail, "refused", 7) == 0) {
+                reason = result.files[i].detail;
+            }
+        }
+        snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
+                 "No font was imported: %.400s.", reason);
+    } else {
+        snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
+                 "Imported %d PSP font slot(s) into the player's font cache.", result.imported_count);
+    }
+    player_app_refresh_font_status(app);
+    return result.imported_count > 0;
+}
+
+bool player_app_fonts_remove_imports(PlayerApp *app) {
+    bool remove[NK_FONT_SLOT_COUNT];
+    char error[NK_FONT_DETAIL_MAX] = "";
+    char root[NK_MAX_PATH];
+    int removed;
+    if (!app) return false;
+    for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) remove[slot] = true;
+    if (!player_app_data_root(app, root, sizeof(root))) root[0] = '\0';
+    removed = nk_font_remove_imports(root, remove, error, sizeof(error));
+    if (removed < 0) {
+        snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
+                 "Could not remove the imported fonts: %s.", error);
+    } else if (removed == 0) {
+        snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
+                 "No imported PSP font to remove.");
+    } else {
+        snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
+                 "Removed %d imported PSP font file(s). Project fonts, if any, are unchanged.", removed);
+    }
+    player_app_refresh_font_status(app);
+    return removed >= 0;
+}
+
 void player_app_build_compatibility_preflight(
     PlayerApp *app, bool disc_readable, bool param_sfo_parsed,
     const NkIsoExecutableReport *executables) {
     if (!app) return;
     PlayerCompatibilityPreflight *preflight = &app->wizard.preflight;
     memset(preflight, 0, sizeof(*preflight));
-    char default_runtime_root[NK_MAX_PATH];
-    const char *runtime_root = app->runtime_root[0] ? app->runtime_root : NULL;
-    if (!runtime_root && nk_platform_get_app_data_dir(default_runtime_root,
-                                                      sizeof(default_runtime_root))) {
-        runtime_root = default_runtime_root;
+    /* The Fonts step resolves the same root through player_app_data_root. */
+    char runtime_root[NK_MAX_PATH];
+    if (!player_app_data_root(app, runtime_root, sizeof(runtime_root))) {
+        snprintf(runtime_root, sizeof(runtime_root), "%s", ".");
     }
-    if (!runtime_root) runtime_root = ".";
 
     if (app->inspecting_game.is_experimental) {
         static const unsigned int issues[] = { 308 };
@@ -3326,21 +3615,25 @@ void player_app_build_compatibility_preflight(
     }
 
     static const unsigned int font_issues[] = { 313 };
-    char font_message[512] = "";
-    NkFontStatus font_status = nk_font_check_cache(runtime_root, runtime_root,
-                                                   font_message, sizeof(font_message));
-    if (font_status == NK_FONT_STATUS_OK) {
-        player_preflight_add(preflight, "SYSTEM_FONTS", PREFLIGHT_OK,
-                             font_message[0] ? font_message : "User-supplied PSP system font jpn0.pgf is available.",
-                             NULL, 0);
-    } else if (font_status == NK_FONT_STATUS_INVALID) {
+    char font_message[NK_FONT_TEXT_MAX] = "";
+    NkFontStatus font_status = nk_font_check_cache(runtime_root, font_message, sizeof(font_message));
+    if (font_status == NK_FONT_STATUS_INVALID) {
         player_preflight_add(preflight, "SYSTEM_FONTS", PREFLIGHT_INVALID,
                              font_message[0] ? font_message : "PSP font cache is invalid; run fonts import <folder>.",
                              font_issues, 1);
     } else {
-        player_preflight_add(preflight, "SYSTEM_FONTS", PREFLIGHT_MISSING,
-                             font_message[0] ? font_message : "PSP font jpn0.pgf missing; run fonts import <folder>.",
-                             font_issues, 1);
+        NkFontSlotState states[NK_FONT_SLOT_COUNT];
+        char summary[2048] = "";
+        bool every_slot = true;
+        nk_font_slot_states(runtime_root, runtime_root, states);
+        for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
+            if (states[slot].source == NK_FONT_SOURCE_NONE) every_slot = false;
+            player_font_append(summary, sizeof(summary), states[slot].detail);
+            player_font_append(summary, sizeof(summary), " ");
+        }
+        player_preflight_add(preflight, "SYSTEM_FONTS",
+                             every_slot ? PREFLIGHT_OK : PREFLIGHT_MISSING,
+                             summary, font_issues, every_slot ? 0 : 1);
     }
 
     /* The public runtime drives the default device through SDL3 (#301). Whether a

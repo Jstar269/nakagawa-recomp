@@ -18,6 +18,7 @@
 #
 # Usage: analyze.py <elf> [--toml out.toml] [--quiet]
 
+import bisect
 import hashlib
 import os
 import struct
@@ -43,6 +44,149 @@ SHT_RELA = 4
 SHT_REL = 9
 SHT_PSP_RELA = 0x700000A0
 SHT_PSP_REL = 0x700000A1
+
+# SceModuleInfo: u16 attribute, u16 version, char name[28], then gp, ent_top,
+# ent_end, stub_top, stub_end (five u32 words).
+MODULE_INFO_SIZE = 52
+MODULE_INFO_NAME_BYTES = 28
+# Bit 31 of the first loadable segment's p_paddr marks a kernel-mode module;
+# the remaining bits are the SceModuleInfo file offset.
+PSP_MODULE_INFO_KERNEL_BIT = 0x80000000
+# PspModuleInfoAttr bits PSPSDK pspmoduleinfo.h documents: NO_STOP (0x0001),
+# SINGLE_LOAD (0x0002), SINGLE_START (0x0004) and KERNEL (0x1000).
+PSP_MODULE_INFO_ATTRIBUTES = 0x1007
+# Shortest library records, in 32-bit words: a SceLibraryEntryTable carries a
+# name, version/attribute, length/counts and its entry-table pointer; a
+# SceLibraryStubTable adds the NID-table and stub-table pointers.
+LIBRARY_ENTRY_MIN_WORDS = 4
+LIBRARY_STUB_MIN_WORDS = 5
+
+
+def _file_backed_guest_span(segments, start, end):
+    """True when [start, end) is empty (0, 0) or inside one PT_LOAD's file bytes."""
+    if start == 0 and end == 0:
+        return True
+    if end < start or end > 0x100000000:
+        return False
+    return any(
+        segment["type"] == 1
+        and segment["vaddr"] <= start
+        and end <= segment["vaddr"] + segment["filesz"]
+        and segment["vaddr"] + segment["filesz"] <= 0x100000000
+        for segment in segments
+    )
+
+
+def _decode_module_info(segments, seg_data, o):
+    """Decode a candidate SceModuleInfo at ``seg_data[o:]`` or return None.
+
+    A record is structurally valid when its name is a non-empty, terminated,
+    printable-ASCII string, and its export and import table spans are either
+    empty or word-aligned and fully file-backed.
+    """
+    if o < 0 or o + MODULE_INFO_SIZE > len(seg_data):
+        return None
+    name_bytes = seg_data[o + 4:o + 4 + MODULE_INFO_NAME_BYTES]
+    name_len = name_bytes.find(b"\x00")
+    if name_len <= 0 or not all(32 <= c < 127 for c in name_bytes[:name_len]):
+        return None
+    attribute = struct.unpack_from("<H", seg_data, o)[0]
+    gp, ent, entend, stub, stubend = struct.unpack("<5I", seg_data[o + 32:o + 52])
+    if ent % 4 or stub % 4:
+        return None
+    if not (_file_backed_guest_span(segments, ent, entend)
+            and _file_backed_guest_span(segments, stub, stubend)):
+        return None
+    return dict(name=name_bytes[:name_len].decode("ascii"),
+                name_padded=not any(name_bytes[name_len:]), attribute=attribute, gp=gp,
+                ent=ent, entend=entend, stub=stub, stubend=stubend)
+
+
+def _file_bytes(segments, data, start, end):
+    """File bytes backing guest span [start, end) inside one PT_LOAD, or None."""
+    for segment in segments:
+        if (segment["type"] == 1 and segment["vaddr"] <= start
+                and end <= segment["vaddr"] + segment["filesz"]):
+            off = segment["off"] + (start - segment["vaddr"])
+            return data[off:off + (end - start)]
+    return None
+
+
+def _library_table_walks(segments, data, top, end, min_words):
+    """True when [top, end) splits exactly into library records.
+
+    Each record's length byte (offset 8, in words) must be at least
+    ``min_words`` and the last record must end exactly at ``end``. An empty
+    span is a table without records.
+    """
+    if top == end:
+        return True
+    blob = _file_bytes(segments, data, top, end)
+    if blob is None:
+        return False
+    pos = 0
+    while pos < len(blob):
+        if pos + 12 > len(blob) or blob[pos + 8] < min_words:
+            return False
+        pos += blob[pos + 8] * 4
+    return pos == len(blob)
+
+
+def _module_info_is_consistent(segments, data, record):
+    """True when a decoded SceModuleInfo proves its own internal consistency.
+
+    The name is NUL-padded to the end of its field, the attribute uses only
+    documented PspModuleInfoAttr bits, and the export and import spans split
+    exactly into whole library records, at least one of them non-empty. gp is
+    deliberately not a criterion: a module built without $gp-relative data
+    carries gp == 0, and short module names are legal too.
+    """
+    if not record["name_padded"] or record["attribute"] & ~PSP_MODULE_INFO_ATTRIBUTES:
+        return False
+    ent, entend = record["ent"], record["entend"]
+    stub, stubend = record["stub"], record["stubend"]
+    if ent == entend and stub == stubend:
+        return False
+    return (_library_table_walks(segments, data, ent, entend, LIBRARY_ENTRY_MIN_WORDS)
+            and _library_table_walks(segments, data, stub, stubend, LIBRARY_STUB_MIN_WORDS))
+
+
+def _module_info_from_load_paddr(segments, code_seg, seg_data, load_paddr):
+    """Locate SceModuleInfo through the PSP executable convention.
+
+    The PSP loader finds a module's SceModuleInfo through the first loadable
+    segment: its p_paddr, with the kernel-mode bit masked off, is the record's
+    file offset (docs/cleanroom/PRX_LOADER_SPEC.md section 3.4). Return
+    ``(offset in code_seg, ent, entend, stub, stubend)`` when that offset lies
+    inside the code segment's file bytes and decodes to a structurally valid
+    record; otherwise None (for example a toolchain ELF whose p_paddr simply
+    repeats p_vaddr). This is the loader's own designation, so the record only
+    has to decode; the internal-consistency proof is for the fallback scan.
+    """
+    if not load_paddr:
+        return None
+    file_off = load_paddr & ~PSP_MODULE_INFO_KERNEL_BIT & 0xFFFFFFFF
+    o = file_off - code_seg["off"]
+    record = _decode_module_info(segments, seg_data, o)
+    if record is None:
+        return None
+    return o, record["ent"], record["entend"], record["stub"], record["stubend"]
+
+
+def _scan_module_info(segments, data, seg_data):
+    """Fallback: the first internally consistent SceModuleInfo in the code segment.
+
+    Used only when p_paddr does not name a valid record. Without the loader's
+    designation a candidate must prove itself (_module_info_is_consistent), so
+    a printable string followed by plausible pointers is not taken for the
+    record, while real records with gp == 0 or short names are still found.
+    """
+    for o in range(0, len(seg_data) - MODULE_INFO_SIZE, 4):
+        record = _decode_module_info(segments, seg_data, o)
+        if record is None or not _module_info_is_consistent(segments, data, record):
+            continue
+        return o, record["ent"], record["entend"], record["stub"], record["stubend"]
+    return None
 
 
 class Elf:
@@ -114,87 +258,17 @@ class Elf:
                     else:  # Data
                         self.sections.append(dict(name=0, typ=1, flags=seg["flags"], addr=seg["vaddr"],
                                                   off=seg["off"], size=seg["filesz"], link=0, info=0, entsz=0, nm=".data"))
-            # Scan Segment 0 for PspModuleInfo
+            # Locate SceModuleInfo in the first executable PT_LOAD segment.
             code_seg = next((s for s in self.segments if s["type"] == 1 and (s["flags"] & 1)), None)
             if code_seg:
                 seg_data = d[code_seg["off"] : code_seg["off"] + code_seg["filesz"]]
-                module_info_offset = -1
-
-                def file_backed_guest_span(start, end):
-                    if start == 0 and end == 0:
-                        return True
-                    if end < start or end > 0x100000000:
-                        return False
-                    return any(
-                        segment["type"] == 1
-                        and segment["vaddr"] <= start
-                        and end <= segment["vaddr"] + segment["filesz"]
-                        and segment["vaddr"] + segment["filesz"] <= 0x100000000
-                        for segment in self.segments
-                    )
-
-                for o in range(0, len(seg_data) - 52, 4):
-                    attr, ver = struct.unpack("<HH", seg_data[o:o+4])
-                    name_bytes = seg_data[o+4:o+32]
-                    if name_bytes[0] == 0:
-                        continue
-                    try:
-                        name_len = name_bytes.index(0)
-                        name = name_bytes[:name_len].decode("ascii")
-                        if not all(32 <= ord(c) < 127 for c in name):
-                            continue
-                    except Exception:
-                        continue
-                    gp, ent, entend, stub, stubend = struct.unpack("<5I", seg_data[o+32:o+52])
-                    if file_backed_guest_span(ent, entend) and file_backed_guest_span(stub, stubend):
-                        if len(name) < 4 or gp == 0 or (ent % 4) != 0 or (stub % 4) != 0:
-                            continue
-                        module_info_offset = code_seg["vaddr"] + o
-                        self.sections.append(dict(name=0, typ=1, flags=2, addr=module_info_offset,
-                                                  off=code_seg["off"] + o, size=52, link=0, info=0, entsz=0, nm=".rodata.sceModuleInfo"))
-                        if stubend > stub:
-                            stub_off = -1
-                            for s in self.segments:
-                                if s["vaddr"] <= stub < s["vaddr"] + s["memsz"]:
-                                    stub_off = s["off"] + (stub - s["vaddr"])
-                                    break
-                            if stub_off != -1:
-                                self.sections.append(dict(name=0, typ=1, flags=6, addr=stub,
-                                                          off=stub_off, size=stubend - stub, link=0, info=0, entsz=0, nm=".lib.stub"))
-                        if entend > ent:
-                            ent_off = -1
-                            for s in self.segments:
-                                if s["vaddr"] <= ent < s["vaddr"] + s["memsz"]:
-                                    ent_off = s["off"] + (ent - s["vaddr"])
-                                    break
-                            if ent_off != -1:
-                                self.sections.append(dict(name=0, typ=1, flags=2, addr=ent,
-                                                          off=ent_off, size=entend - ent, link=0, info=0, entsz=0, nm=".lib.ent"))
-
-                        meta_start = module_info_offset
-                        if entend > ent and code_seg["vaddr"] <= ent < code_seg["vaddr"] + code_seg["memsz"]:
-                            meta_start = min(meta_start, ent)
-                        if stubend > stub and code_seg["vaddr"] <= stub < code_seg["vaddr"] + code_seg["memsz"]:
-                            meta_start = min(meta_start, stub)
-                        text_sec = next((s for s in self.sections if s.get("nm") == ".text"), None)
-                        if text_sec:
-                            text_sec["size"] = meta_start - text_sec["addr"]
-                        # Everything in the code segment after the module metadata is
-                        # read-only data (.rodata.sceResident/.sceNid/.rodata): switch
-                        # jump tables and function-pointer tables live there, so expose
-                        # it as .rodata for the data-pointer scan.
-                        meta_end = module_info_offset + 52
-                        if entend > ent and code_seg["vaddr"] <= ent < code_seg["vaddr"] + code_seg["memsz"]:
-                            meta_end = max(meta_end, entend)
-                        if stubend > stub and code_seg["vaddr"] <= stub < code_seg["vaddr"] + code_seg["memsz"]:
-                            meta_end = max(meta_end, stubend)
-                        seg_end = code_seg["vaddr"] + code_seg["filesz"]
-                        if meta_end < seg_end:
-                            self.sections.append(dict(name=0, typ=1, flags=2, addr=meta_end,
-                                                      off=code_seg["off"] + (meta_end - code_seg["vaddr"]),
-                                                      size=seg_end - meta_end, link=0, info=0, entsz=0,
-                                                      nm=".rodata"))
-                        break
+                load_paddr = next(
+                    (p["paddr"] for p in envelope["phdrs"] if p["type"] == 1), None)
+                record = _module_info_from_load_paddr(self.segments, code_seg, seg_data, load_paddr)
+                if record is None:
+                    record = _scan_module_info(self.segments, d, seg_data)
+                if record is not None:
+                    self._add_module_metadata_sections(code_seg, *record)
 
         # PRX (ET_SCE_PRX = 0xFFA0), relocatable (ET_REL), and relocation-bearing
         # ELFs (e.g. the -Wl,-q PSPDEV ET_EXEC form): rebase to `base` and apply
@@ -221,6 +295,59 @@ class Elf:
                 s["addr"] += base
             for s in self.segments:
                 s["vaddr"] += base
+
+    def _add_module_metadata_sections(self, code_seg, o, ent, entend, stub, stubend):
+        """Expose a located SceModuleInfo and the tables it names as sections.
+
+        ``o`` is the record's offset inside ``code_seg``. Everything before the
+        first metadata table is code (.text and .sceStub.text); everything after
+        the last one is read-only data.
+        """
+        module_info_offset = code_seg["vaddr"] + o
+        self.sections.append(dict(name=0, typ=1, flags=2, addr=module_info_offset,
+                                  off=code_seg["off"] + o, size=52, link=0, info=0, entsz=0, nm=".rodata.sceModuleInfo"))
+        if stubend > stub:
+            stub_off = -1
+            for s in self.segments:
+                if s["vaddr"] <= stub < s["vaddr"] + s["memsz"]:
+                    stub_off = s["off"] + (stub - s["vaddr"])
+                    break
+            if stub_off != -1:
+                self.sections.append(dict(name=0, typ=1, flags=6, addr=stub,
+                                          off=stub_off, size=stubend - stub, link=0, info=0, entsz=0, nm=".lib.stub"))
+        if entend > ent:
+            ent_off = -1
+            for s in self.segments:
+                if s["vaddr"] <= ent < s["vaddr"] + s["memsz"]:
+                    ent_off = s["off"] + (ent - s["vaddr"])
+                    break
+            if ent_off != -1:
+                self.sections.append(dict(name=0, typ=1, flags=2, addr=ent,
+                                          off=ent_off, size=entend - ent, link=0, info=0, entsz=0, nm=".lib.ent"))
+
+        meta_start = module_info_offset
+        if entend > ent and code_seg["vaddr"] <= ent < code_seg["vaddr"] + code_seg["memsz"]:
+            meta_start = min(meta_start, ent)
+        if stubend > stub and code_seg["vaddr"] <= stub < code_seg["vaddr"] + code_seg["memsz"]:
+            meta_start = min(meta_start, stub)
+        text_sec = next((s for s in self.sections if s.get("nm") == ".text"), None)
+        if text_sec:
+            text_sec["size"] = meta_start - text_sec["addr"]
+        # Everything in the code segment after the module metadata is
+        # read-only data (.rodata.sceResident/.sceNid/.rodata): switch
+        # jump tables and function-pointer tables live there, so expose
+        # it as .rodata for the data-pointer scan.
+        meta_end = module_info_offset + 52
+        if entend > ent and code_seg["vaddr"] <= ent < code_seg["vaddr"] + code_seg["memsz"]:
+            meta_end = max(meta_end, entend)
+        if stubend > stub and code_seg["vaddr"] <= stub < code_seg["vaddr"] + code_seg["memsz"]:
+            meta_end = max(meta_end, stubend)
+        seg_end = code_seg["vaddr"] + code_seg["filesz"]
+        if meta_end < seg_end:
+            self.sections.append(dict(name=0, typ=1, flags=2, addr=meta_end,
+                                      off=code_seg["off"] + (meta_end - code_seg["vaddr"]),
+                                      size=seg_end - meta_end, link=0, info=0, entsz=0,
+                                      nm=".rodata"))
 
     def sec(self, name):
         return next((s for s in self.sections if s.get("nm") == name), None)
@@ -392,7 +519,36 @@ def exec_ranges(elf, extra_spans=None):
 
 
 def in_ranges(addr, ranges):
+    if isinstance(ranges, _SpanIndex):
+        return addr in ranges
     return any(lo <= addr < hi for lo, hi in ranges)
+
+
+class _SpanIndex:
+    """Membership over half-open ``(lo, hi)`` spans, answering exactly as ``in_ranges``.
+
+    The spans are merged once into disjoint, sorted intervals, so a lookup is a
+    binary search instead of a scan of every span. Empty spans (``lo >= hi``)
+    can contain no address and are dropped; touching spans merge, which leaves
+    the covered set of integers unchanged.
+    """
+
+    __slots__ = ("starts", "ends")
+
+    def __init__(self, ranges):
+        self.starts = []
+        self.ends = []
+        for lo, hi in sorted((lo, hi) for lo, hi in ranges if lo < hi):
+            if self.ends and lo <= self.ends[-1]:
+                if hi > self.ends[-1]:
+                    self.ends[-1] = hi
+            else:
+                self.starts.append(lo)
+                self.ends.append(hi)
+
+    def __contains__(self, addr):
+        i = bisect.bisect_right(self.starts, addr) - 1
+        return i >= 0 and addr < self.ends[i]
 
 
 def _file_backed_exec_ranges(elf):
@@ -408,13 +564,49 @@ def _file_backed_exec_ranges(elf):
     return cached
 
 
-def trace_function(elf, start, ranges, covered, calls, hc):
+def file_backed_exec_ranges(elf):
+    """The file-backed executable PT_LOAD ranges of `elf`: the public entry other tools use.
+
+    The list is computed once per Elf and cached on the elf object (see
+    _file_backed_exec_ranges), so repeated calls return the same list without re-walking
+    the segment table. Callers must not mutate it.
+    """
+    return _file_backed_exec_ranges(elf)
+
+
+def has_import_table(elf):
+    """The analyzer's gate for parsing imports: a module-info section, or a stub section
+    with relocations. Shared with the import-stub census so the two never disagree."""
+    return elf.sec(".rodata.sceModuleInfo") is not None or (
+        elf.sec(".sceStub.text") is not None and elf.reloc is not None)
+
+
+def _import_stub_is_file_executable(addr, file_exec_ranges):
+    """True when an import stub's two words are both file-backed executable bytes."""
+    return ((addr & 3) == 0 and in_ranges(addr, file_exec_ranges)
+            and in_ranges(addr + 4, file_exec_ranges))
+
+
+def trace_function(elf, start, ranges, covered, calls, hc, walked=None):
     # Recursive descent over one function's intra-procedural control flow from `start`.
     # Adds every instruction address reached to `covered`, and every direct-call (jal) target
     # to `calls`. Returns newly found targets so callers can extend their worklists without
     # rescanning all prior calls. Calls return, so execution continues after the delay slot;
     # jr and j and an unconditional b end a path (no fall-through). Conditional branches
     # fork: follow the target and continue past the delay slot.
+    # The range membership tests below run once per traced instruction, so they use an
+    # index built once per trace (same answers as in_ranges over the plain list).
+    # `walked` is the set of instruction addresses that earlier traces over these same
+    # ranges already expanded (analyze owns it). Expanding an address depends only on its
+    # encoding and the ranges; the start exception and the `calls` stop test are the only
+    # trace-dependent parts, and both can only stop an expansion that an earlier trace
+    # already did or stopped. An address in `walked` therefore ends this path: the
+    # covered addresses, call targets and successors it would add are already present.
+    # Without the memo every start re-expands the whole shared tail it reaches: a profiled
+    # run of one large executable expanded each word about 190 times. `walked=None` is the
+    # uncached walk, kept so tests can pin the memoized walk against it.
+    if not isinstance(ranges, _SpanIndex):
+        ranges = _SpanIndex(ranges)
     stack = [start]
     local = set()
     new_calls = []
@@ -442,6 +634,8 @@ def trace_function(elf, start, ranges, covered, calls, hc):
         # below (for hoisted trailing epilogues) still runs for pc+8 addresses that are not
         # treated as boundaries here.
         while in_ranges(pc, ranges) and pc not in local:
+            if walked is not None and pc in walked:
+                break
             if pc != start and pc in hc:
                 insn_bytes = elf.read_at_vaddr(pc, 4)
                 stop = True
@@ -455,6 +649,8 @@ def trace_function(elf, start, ranges, covered, calls, hc):
                 if stop:
                     break
             local.add(pc)
+            if walked is not None:
+                walked.add(pc)
             covered.add(pc)
             wb = elf.read_at_vaddr(pc, 4)
             if wb is None or len(wb) < 4:
@@ -2302,7 +2498,12 @@ def code_pointer_evidence(elf, ranges):
     return {kind: frozenset(values) for kind, values in evidence.items()}
 
 
-def analyze(elf, extra_spans=None, cfg_gate=False):
+def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None):
+    # trace_memo=False runs the uncached per-start walks; the output is the same either way
+    # (tests pin the two against each other).
+    # `report`, when a dict, receives the discovery state the import-stub census reads:
+    # covered (every traced instruction address), calls (every direct-call target seen),
+    # and hc (the high-confidence seeds). The return value is unchanged.
     ranges = exec_ranges(elf, extra_spans=extra_spans)
     file_exec_ranges = _file_backed_exec_ranges(elf)
 
@@ -2391,43 +2592,54 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
             val = int.from_bytes(blob[o:o + 4], 'little')
             if in_ranges(val, ranges) and (val & 3) == 0:
                 hc.add(val)
-    # Reconstruct exports from .lib.ent
+    # Exported functions from .lib.ent. Each export record is a 16-byte head --
+    # library name, version, attribute, length in words (at least 4), variable
+    # count, function count, entry table -- and the entry table holds the
+    # (functions + variables) NIDs followed by as many addresses, functions
+    # first. Every exported function address (module_start/module_stop and each
+    # library function another module links to) is a real function start, even
+    # when no call or prologue heuristic would find it. Variable exports are
+    # data, never seeds.
     libent = elf.sec(".lib.ent")
     if libent:
         blob = section_bytes(elf, libent)
         idx = 0
-        while idx < len(blob) - 19:
-            name_ptr, ver, flags, size, num_vars, num_funcs, func_table, var_table = struct.unpack(
-                "<IHHBBHII", blob[idx:idx + 20])
-            entry_size_bytes = size * 4
-            if entry_size_bytes < 20:
-                entry_size_bytes = 20
-            if num_funcs > 0 and func_table != 0:
-                for f_idx in range(num_funcs):
-                    fptr_bytes = elf.read_at_vaddr(func_table + f_idx * 4, 4)
-                    if fptr_bytes:
-                        fptr = int.from_bytes(fptr_bytes, 'little')
+        while idx + 16 <= len(blob):
+            _name_ptr, _ver, _flags, size, num_vars, num_funcs, entry_table = struct.unpack(
+                "<IHHBBHI", blob[idx:idx + 16])
+            if size < 4:
+                break  # malformed: a record shorter than its own head ends the table
+            count = num_funcs + num_vars
+            if num_funcs and entry_table:
+                addresses = elf.read_at_vaddr(entry_table + 4 * count, 4 * num_funcs)
+                if addresses is not None and len(addresses) == 4 * num_funcs:
+                    for f_idx in range(num_funcs):
+                        fptr = int.from_bytes(addresses[4 * f_idx:4 * f_idx + 4], 'little')
                         if in_ranges(fptr, ranges) and (fptr & 3) == 0:
                             hc.add(fptr)
-            if num_vars > 0 and var_table != 0:
-                for v_idx in range(num_vars):
-                    vptr_bytes = elf.read_at_vaddr(var_table + v_idx * 4, 4)
-                    if vptr_bytes:
-                        vptr = int.from_bytes(vptr_bytes, 'little')
-                        if in_ranges(vptr, ranges) and (vptr & 3) == 0:
-                            hc.add(vptr)
-            idx += entry_size_bytes
+            idx += size * 4
 
 
     # Reconstruct stubs from .sceStub.text or imports
     stubs_sec = elf.sec(".sceStub.text")
-    has_module_info = elf.sec(".rodata.sceModuleInfo") is not None
-    if has_module_info or (stubs_sec and elf.reloc is not None):
+    if has_import_table(elf):
         try:
             from imports import ImportTableError, parse_imports
             impmap = parse_imports(elf)
             for a in impmap.keys():
                 if in_ranges(a, ranges) and (a & 3) == 0:
+                    hc.add(a)
+                elif _import_stub_is_file_executable(a, file_exec_ranges):
+                    # A retail import stub lives in executable PT_LOAD bytes outside the
+                    # named code sections (.text, .sceStub.text), so `ranges` never holds
+                    # it. The late discovery passes (tail promotion and gap fill) keep a
+                    # callee only when it is inside `ranges`, so a stub that was reached
+                    # only through a direct call from an orphan function was dropped
+                    # there. Codegen then emitted no body, and the call dispatched to the
+                    # image's `jr $ra; nop` placeholder, which returns a stale $v0 with no
+                    # HLE event. Seeding the stub as an entry here makes it a traced
+                    # function that owns its two words before the gap-fill safety nets
+                    # run. Stubs that are not file-backed executable bytes are not seeded.
                     hc.add(a)
         except Exception as e:
             from imports import ImportTableError
@@ -2584,15 +2796,37 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
     # weak signals that land inside a function body (internal blocks) can be discarded.
     covered = set()
     calls = set()
+    # Words expanded by earlier traces, one set per range list (see trace_function's
+    # `walked`). Traces share a set only when their ranges are equal, so a word expanded
+    # under one range list is never skipped under another.
+    walked_by_ranges = {} if trace_memo else None
+
+    def trace(entry, entry_ranges):
+        walked = None
+        if walked_by_ranges is not None:
+            walked = walked_by_ranges.setdefault(tuple(entry_ranges), set())
+        return trace_function(
+            elf, entry, entry_ranges, covered, calls, hc, walked=walked,
+        )
+
+    def callable_target(addr):
+        # The worklist's rule for a direct-call or jump target, shared by the late passes:
+        # named code, or file-backed executable bytes outside the named sections. The late
+        # passes tested the named ranges alone, so a callee in those bytes that only a late
+        # pass reached was dropped and got no body (the follow-up to the import-stub seed).
+        # The two tests are deliberately asymmetric. `ranges` already carries the title's
+        # extra executable spans (exec_ranges), which need not be file-backed, while
+        # `file_exec_ranges` is only the file-backed PT_LOAD executable set. So a target in
+        # an extra span that is not file-backed is accepted through `ranges` alone.
+        return in_ranges(addr, ranges) or in_ranges(addr, file_exec_ranges)
+
     functions = set(hc)
     work = list(hc)
     while work:
         s = work.pop()
         new_calls = []
         if in_ranges(s, ranges) or in_ranges(s, file_exec_ranges):
-            new_calls = trace_function(
-                elf, s, trace_ranges_for_entry(s), covered, calls, hc
-            )
+            new_calls = trace(s, trace_ranges_for_entry(s))
         for t in new_calls:
             if t not in functions and (
                 in_ranges(t, ranges) or in_ranges(t, file_exec_ranges)
@@ -2612,7 +2846,7 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
     # entry and emits a continuation call, so both owners stay correct.
     pending_tail_calls = []
     for t in sorted(jtails):
-        if t in functions or not in_ranges(t, ranges):
+        if t in functions or not callable_target(t):
             continue
         wb = elf.read_at_vaddr(t - 8, 4)
         if wb is None or len(wb) < 4:
@@ -2620,17 +2854,13 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
         if not _is_hard_terminator(int.from_bytes(wb, 'little')):
             continue
         functions.add(t)
-        pending_tail_calls.extend(
-            trace_function(elf, t, ranges, covered, calls, hc)
-        )
+        pending_tail_calls.extend(trace(t, trace_ranges_for_entry(t)))
         tail_call_batch = pending_tail_calls
         pending_tail_calls = []
         for c in tail_call_batch:
-            if c not in functions and in_ranges(c, ranges):
+            if c not in functions and callable_target(c):
                 functions.add(c)
-                pending_tail_calls.extend(
-                    trace_function(elf, c, ranges, covered, calls, hc)
-                )
+                pending_tail_calls.extend(trace(c, trace_ranges_for_entry(c)))
 
     # Gap fill: a weak-signal address that no known function covers is an indirect-only
     # function (reached through a register the call graph could not resolve). Add it and trace
@@ -2663,15 +2893,13 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
                         covered.add(c + 4)
                         continue
                 functions.add(c)
-                new_calls = trace_function(elf, c, ranges, covered, calls, hc)
+                new_calls = trace(c, ranges)
                 gap_call_batch = pending_gap_calls + new_calls
                 pending_gap_calls = []
                 for t in gap_call_batch:
-                    if t not in functions and in_ranges(t, ranges):
+                    if t not in functions and callable_target(t):
                         functions.add(t)
-                        pending_gap_calls.extend(
-                            trace_function(elf, t, ranges, covered, calls, hc)
-                        )
+                        pending_gap_calls.extend(trace(t, trace_ranges_for_entry(t)))
                 changed = True
 
     # A direct call can prove that code exists outside named .text sections. Grant the
@@ -2701,6 +2929,8 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
             merged_ranges[-1] = (merged_ranges[-1][0], max(merged_ranges[-1][1], hi))
         else:
             merged_ranges.append((lo, hi))
+    if report is not None:
+        report.update(covered=covered, calls=calls, hc=hc)
     return functions, merged_ranges
 
 

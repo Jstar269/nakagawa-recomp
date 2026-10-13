@@ -9,7 +9,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import subprocess
 import tempfile
 import time
 from typing import Callable, Optional
@@ -29,10 +31,163 @@ from .types import (
 MANIFEST_SCHEMA_VERSION = 1
 PREP_ENGINE_VERSION = "0.3.0"
 
-# Archive formats this Python route is allowed to promote. Everything else
-# (notably claphanz_xb) is refused before any filesystem mutation; bounded
-# ISO/XB extraction is owned by the native player staging path (#374).
+# Archive formats this Python route promotes itself. Every other format
+# (notably claphanz_xb) needs the disc's archives extracted, which only the
+# native player's staging transaction does; prepare_game hands those discs to
+# a NativeTitleStager, or refuses before any filesystem mutation when none is
+# configured.
 SUPPORTED_ARCHIVE_FORMATS = frozenset({"raw"})
+
+PLAYER_EXECUTABLE = "nakagawa_player.exe" if os.name == "nt" else "nakagawa_player"
+
+# (percent, "files done/total") from the native staging transaction.
+NativeProgress = Callable[[int, str], None]
+NativeStager = Callable[[Path, str, NativeProgress], PreparationResult]
+
+_STAGE_BOUNDARY = re.compile(r"\[(STAGE_[A-Z_]+)\]")
+
+
+def player_candidates(source_root: Path) -> list[Path]:
+    """Where the player sits relative to a source tree.
+
+    A checkout builds it into ``build/``; the release layout keeps ``bin/``
+    beside the ``source/`` folder that carries ``tools/``.
+    """
+    return [
+        source_root / "build" / PLAYER_EXECUTABLE,
+        source_root.parent / "bin" / PLAYER_EXECUTABLE,
+    ]
+
+
+def _player_fields(text: str) -> dict[str, str]:
+    return dict(part.split("=", 1) for part in text.split()[1:] if "=" in part)
+
+
+class NativeTitleStager:
+    """Set up one disc's files through the player's staging transaction.
+
+    Runs ``nakagawa_player --user-data-root=<root> --iso=<iso> --stage-only``:
+    the same transaction the player's setup wizard runs (extract into
+    ``games/.staging_<disc>``, validate, promote to ``games/<disc>``, record it
+    in the library), so the command line never keeps its own copy of the
+    extraction. The player's calm boundary message is passed through as the
+    error message, with its ``[STAGE_...]`` code as the error code.
+    """
+
+    def __init__(
+        self,
+        user_data_root: Path,
+        player: Optional[Path] = None,
+        *,
+        source_root: Optional[Path] = None,
+    ) -> None:
+        self.user_data_root = Path(user_data_root)
+        self.player = Path(player) if player is not None else None
+        self.source_root = Path(source_root) if source_root is not None else (
+            Path(__file__).resolve().parents[2]
+        )
+        self.reused = False
+
+    def candidates(self) -> list[Path]:
+        if self.player is not None:
+            return [self.player]
+        return player_candidates(self.source_root)
+
+    def __call__(self, iso: Path, disc_id: str, progress: NativeProgress) -> PreparationResult:
+        candidates = self.candidates()
+        player = next((path for path in candidates if path.is_file()), None)
+        if player is None:
+            looked = ", ".join(str(path) for path in candidates)
+            return PreparationResult(
+                success=False,
+                disc_id=disc_id,
+                error_code="PLAYER_NOT_FOUND",
+                error_message=(
+                    "This game's data is packed in archives on the disc, and the Nakagawa "
+                    "player sets those files up, but the player was not found (looked for "
+                    f"{looked}). Build it with `mingw32-make player` (`make player` on "
+                    "Linux), or pass --player with its location, then run prepare again."
+                ),
+            )
+        command = [
+            str(player),
+            f"--user-data-root={self.user_data_root}",
+            f"--iso={iso}",
+            "--stage-only",
+        ]
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=str(player.parent),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except OSError as exc:
+            return PreparationResult(
+                success=False,
+                disc_id=disc_id,
+                error_code="PLAYER_START_FAILED",
+                error_message=(
+                    f"The Nakagawa player at {player} could not be started ({exc}). "
+                    "Rebuild it, then run prepare again."
+                ),
+            )
+
+        status: Optional[str] = None
+        prepared_root: Optional[Path] = None
+        notes: list[str] = []
+        try:
+            assert process.stdout is not None
+            for raw_line in process.stdout:
+                line = raw_line.rstrip("\r\n")
+                text = line[len("[PLAYER] "):] if line.startswith("[PLAYER] ") else line
+                if text.startswith("STAGING_PROGRESS "):
+                    fields = _player_fields(text)
+                    try:
+                        progress(int(fields.get("percent", "0")), fields.get("files", ""))
+                    except ValueError:
+                        pass
+                elif text.startswith("STAGED_ROOT "):
+                    prepared_root = Path(text[len("STAGED_ROOT "):])
+                elif text.startswith("STAGING_RESULT "):
+                    fields = _player_fields(text)
+                    status = fields.get("status")
+                    self.reused = fields.get("reused") == "1"
+                elif text:
+                    notes.append(text)
+            returncode = process.wait()
+        except BaseException:
+            process.kill()
+            process.wait()
+            raise
+
+        if returncode == 0 and status == "PASS" and prepared_root is not None:
+            return PreparationResult(success=True, disc_id=disc_id, prepared_root=prepared_root)
+        boundary = next((note for note in notes if _STAGE_BOUNDARY.search(note)), None)
+        if boundary is not None:
+            match = _STAGE_BOUNDARY.search(boundary)
+            assert match is not None
+            code = match.group(1)
+            message = boundary[match.start():]
+        elif status == "INCOMPLETE":
+            code = "STAGE_DATA_ROOT_MISSING"
+            message = next(
+                (note for note in notes if "data folder" in note),
+                "The game's files were set up, but its data folder is still missing.",
+            )
+        else:
+            code = "NATIVE_STAGING_FAILED"
+            detail = notes[-1] if notes else f"exit status {returncode}"
+            message = (
+                "The Nakagawa player could not set up this game's files. "
+                f"Details: {detail}"
+            )
+        return PreparationResult(
+            success=False, disc_id=disc_id, error_code=code, error_message=message
+        )
 
 
 class PreparationOutputError(RuntimeError):
@@ -54,9 +209,11 @@ class PreparationEngine:
         self,
         base_dir: Optional[Path] = None,
         registry: Optional[TitleRegistry] = None,
+        native_stager: Optional[NativeStager] = None,
     ) -> None:
         self.base_dir = Path(base_dir or Path.cwd()).resolve()
         self.registry = registry or get_default_registry()
+        self.native_stager = native_stager
 
     @staticmethod
     def _validate_staged_outputs(
@@ -119,6 +276,57 @@ class PreparationEngine:
             raise PreparationOutputError(f"cannot stat source image: {exc}") from exc
         if staged_size != actual_size:
             raise PreparationOutputError("staged manifest iso_size does not match the source image")
+
+    def _prepare_with_native_staging(
+        self,
+        iso: Path,
+        disc_id: str,
+        profile: TitleProfile,
+        destination_root: Optional[Path],
+        emit: Callable[..., None],
+        start_time: float,
+    ) -> PreparationResult:
+        def refuse(code: str, message: str) -> PreparationResult:
+            emit(PrepStage.FAILED, message, severity=EventSeverity.ERROR)
+            return PreparationResult(
+                success=False, disc_id=disc_id, error_code=code, error_message=message
+            )
+
+        if self.native_stager is None:
+            return refuse(
+                "PREPARATION_ROUTE_UNSUPPORTED",
+                f"This game's data is packed in '{profile.archive_format}' archives on the "
+                "disc. Only the Nakagawa player's staging can set those files up, and none "
+                "was provided to this preparation. Run `python tools/nk_cli.py prepare` "
+                "with the player built, or add the disc in the player.",
+            )
+        if destination_root is not None:
+            return refuse(
+                "PREPARATION_DESTINATION_UNSUPPORTED",
+                "This game's files are set up inside Nakagawa's data folder, where the "
+                "player and Play find them, so --dest cannot place them elsewhere. Leave "
+                "out --dest, or choose another data folder with --user-data-root.",
+            )
+
+        operation = "Setting up the game's files"
+        emit(PrepStage.EXTRACTING_ARCHIVES, operation, completed=0, total=100,
+             unit="percent", message="A large disc can take a few minutes.")
+
+        def on_progress(percent: int, files: str) -> None:
+            emit(PrepStage.EXTRACTING_ARCHIVES, operation,
+                 completed=max(0, min(percent, 100)), total=100, unit="percent",
+                 current_item=files, message=f"{files} files" if files else "")
+
+        result = self.native_stager(iso, disc_id, on_progress)
+        result.elapsed_ms = int((time.monotonic() - start_time) * 1000)
+        if result.success:
+            emit(PrepStage.READY, "The game's files are in place.", completed=100,
+                 total=100, unit="percent")
+        else:
+            emit(PrepStage.FAILED,
+                 result.error_message or "Setting up the game's files failed.",
+                 severity=EventSeverity.ERROR)
+        return result
 
     def prepare_game(
         self,
@@ -215,26 +423,12 @@ class PreparationEngine:
             inspected_disc_id = (iso_meta.disc_id or "").strip()
             disc_id = inspected_disc_id if inspected_disc_id in profile.disc_ids else profile.disc_ids[0]
 
-            # Route gate (#374): refuse non-raw archive formats before any
-            # filesystem mutation. The incomplete Python XB staging path is
-            # not a supported extraction implementation; the native player
-            # staging path owns bounded ISO/XB extraction.
+            # Route gate: a disc whose data ships in archives is set up by the
+            # native staging transaction, never by a Python copy of it. Without
+            # a stager the route refuses before any filesystem mutation.
             if profile.archive_format not in SUPPORTED_ARCHIVE_FORMATS:
-                message = (
-                    f"Preparation route for archive format '{profile.archive_format}' "
-                    f"(profile '{profile.id}') is not supported by nk_cli prepare; "
-                    "the native player staging path owns bounded ISO/XB extraction."
-                )
-                emit(
-                    PrepStage.FAILED,
-                    message,
-                    severity=EventSeverity.ERROR,
-                )
-                return PreparationResult(
-                    success=False,
-                    disc_id=disc_id,
-                    error_code="PREPARATION_ROUTE_UNSUPPORTED",
-                    error_message=message,
+                return self._prepare_with_native_staging(
+                    iso, disc_id, profile, destination_root, emit, start_time
                 )
 
             games_root = destination_root or (self.base_dir / "games")

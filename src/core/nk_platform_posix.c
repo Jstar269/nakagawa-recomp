@@ -15,6 +15,7 @@
 #define _FILE_OFFSET_BITS 64
 
 #include "nk_platform.h"
+#include "nk_types.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -88,6 +89,13 @@ bool nk_platform_dir_exists(const char *path) {
     struct stat st;
     if (stat(path, &st) != 0) return false;
     return S_ISDIR(st.st_mode);
+}
+
+bool nk_platform_path_missing(const char *path) {
+    struct stat st;
+    if (!path || !*path) return false;
+    if (lstat(path, &st) == 0) return false;
+    return errno == ENOENT || errno == ENOTDIR;
 }
 
 bool nk_platform_list_files(const char *dir, NkDirFileFn fn, void *ctx) {
@@ -186,8 +194,25 @@ FILE *nk_platform_fopen_private(const char *path, const char *mode) {
     return file;
 }
 
+static char s_app_data_dir_override[NK_MAX_PATH];
+
+bool nk_platform_set_app_data_dir_override(const char *path) {
+    if (!path || !path[0]) {
+        s_app_data_dir_override[0] = '\0';
+        return true;
+    }
+    size_t length = strlen(path);
+    if (length >= sizeof(s_app_data_dir_override)) return false;
+    memcpy(s_app_data_dir_override, path, length + 1u);
+    return true;
+}
+
 static bool resolve_posix_path(NkPathType type, char *out_path, size_t max_len) {
     if (!out_path || max_len == 0) return false;
+    if (type == NK_PATH_DATA && s_app_data_dir_override[0]) {
+        int written = snprintf(out_path, max_len, "%s", s_app_data_dir_override);
+        return written > 0 && (size_t)written < max_len;
+    }
 
 #if defined(__APPLE__)
     const char *home = getenv("HOME");

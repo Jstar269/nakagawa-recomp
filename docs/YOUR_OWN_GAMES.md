@@ -23,8 +23,7 @@ in the works.
 - **PSP system fonts (optional but recommended for text).** Authentic in-game
   typography requires Sony firmware font files (`jpn0.pgf`, `ltn0.pgf`) dumped
   from a real PSP console. The project does not include or distribute these
-  files; you provide them from your own PSP (see the import step below)
-  ([#300](https://github.com/Jstar269/nakagawa-recomp/issues/300));
+  files; you provide them from your own PSP (see the import step below);
   a clean-room open-font converter is in the works
   ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)).
 
@@ -134,9 +133,8 @@ crashes.
 - **Game not in the built-in list:** a valid PSP disc that has no profile yet is
   imported as **Experimental**. The card notes that compatibility is unknown,
   checklist items indicate what is missing, and Play stays unavailable until a
-  matching runtime package exists. Second-title verification is in the works
-  ([#285](https://github.com/Jstar269/nakagawa-recomp/issues/285)) and generic
-  title intake is in the works
+  matching runtime package exists. Bring-up of further titles and generic
+  title intake are in the works
   ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). Images that
   are not PSP game discs are refused.
 - **PlayStation Store package:** a file whose first bytes are the `PBP` package
@@ -165,8 +163,7 @@ crashes.
   rescans retry after a bounded backoff.
 - **Missing firmware fonts:** if in-game fonts cannot be found, the player notes
   that the PSP font `jpn0.pgf` is missing and directs you to run
-  `python tools/nk_cli.py fonts import <folder>`
-  ([#300](https://github.com/Jstar269/nakagawa-recomp/issues/300)), rather than
+  `python tools/nk_cli.py fonts import <folder>`, rather than
   substituting mismatched system fonts that cause text clipping. Guest
   translated `libfont` startup runs through its guest entry; when that startup is
   unavailable (an untranslated entry, or `SR_REAL_MODULE_START=0`), the runtime
@@ -185,9 +182,9 @@ subsystem breakdown with tracking issues.
 
 | Area | Today | Tracking |
 | --- | --- | --- |
-| Encrypted executables and PRX modules | The built-in boundary handles supported containers with a user-supplied local key file; plain `BOOT.BIN`/`EBOOT.elf` and decrypted modules remain alternatives. PGD/amctrl is unsupported. | [#295](https://github.com/Jstar269/nakagawa-recomp/issues/295), [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
+| Encrypted executables and PRX modules | The built-in boundary handles supported containers with a user-supplied local key file; plain `BOOT.BIN`/`EBOOT.elf` and decrypted modules remain alternatives. PGD/amctrl is unsupported. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
 | Commercial-game packages in public builds | Packages build with the public runtime, and public builds render imported PGF fonts through the project-authored reader for supported inputs (PR [#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)). Composite glyphs and the supported revision and shadow-map variants render too ([#521](https://github.com/Jstar269/nakagawa-recomp/issues/521)); a revision-3 font's compressed character-map subtables and any other shadow-map width are still refused by name. | [PGF_SPEC.md §4](cleanroom/PGF_SPEC.md#4-non-requirements-and-named-boundaries) |
-| In-game system fonts | Import fonts from your own PSP with `python tools/nk_cli.py fonts import <folder>`. | [#300](https://github.com/Jstar269/nakagawa-recomp/issues/300) |
-| Games beyond the verified title | Other games import as Experimental; bring-up of further titles is ongoing. | [#285](https://github.com/Jstar269/nakagawa-recomp/issues/285), [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
+| In-game system fonts | Import fonts from your own PSP with `python tools/nk_cli.py fonts import <folder>`; a clean-room open-font converter is in the works. | [#313](https://github.com/Jstar269/nakagawa-recomp/issues/313) |
+| Games beyond the verified title | Other games import as Experimental; bring-up of further titles is ongoing. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
 
 See [`SETUP.md`](SETUP.md) for developer setup and the command-line tools.

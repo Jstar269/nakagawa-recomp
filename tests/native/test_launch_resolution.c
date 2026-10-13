@@ -527,7 +527,7 @@ static void test_posix_data_directory_rule(void) {
  *
  *   - nk_launch's writability probe (which decides where saves are routed),
  *   - the shared UTF-8 fopen/remove/rename primitives every consumer uses,
- *   - the font cache open under <user_data>/fonts/v1.
+ *   - the font cache open under <user_data>/fonts/v2.
  *
  * The fixture names mix Latin-1-supplement and CJK characters: an ANSI code
  * page that can represent neither loses the name, and one that can represent
@@ -658,28 +658,28 @@ static void test_non_ascii_user_data_root(const char *base, char sep) {
     assert(strstr(unicode_session.memstick_root, NK_NONASCII_ROOT) != NULL);
     assert(nk_platform_dir_exists(unicode_session.memstick_root));
 
-    /* The font cache open: the cache lives at <user_data>/fonts/v1, so its
+    /* The font cache open: the cache lives at <user_data>/fonts/v2, so its
      * manifest read is another user-data narrow open (#324). */
     snprintf(font_parent, sizeof(font_parent), "%s%cfonts", root, sep);
     assert(nk_platform_mkdir_p(font_parent));
-    snprintf(font_dir, sizeof(font_dir), "%s%cv1", font_parent, sep);
+    snprintf(font_dir, sizeof(font_dir), "%s%cv2", font_parent, sep);
     assert(nk_platform_mkdir_p(font_dir));
     /* A malformed manifest is enough to prove the file was OPENED: the
      * "malformed JSON" verdict is only reachable after a successful read,
      * while an unopenable path reports "unreadable". */
     snprintf(manifest, sizeof(manifest), "%s%cmanifest.json", font_dir, sep);
     write_file_utf8(manifest, "{ this is not json");
-    char font_message[256] = "";
-    NkFontStatus font_status = nk_font_check_cache(root, "", font_message,
+    char font_message[512] = "";
+    NkFontStatus font_status = nk_font_check_cache(root, font_message,
                                                    sizeof(font_message));
     assert(font_status == NK_FONT_STATUS_INVALID);
-    assert(strstr(font_message, "malformed JSON") != NULL);
+    assert(strstr(font_message, "is malformed") != NULL);
     assert(strstr(font_message, "unreadable") == NULL);
-    snprintf(pgf, sizeof(pgf), "%s%cjpn0.pgf", font_dir, sep);
-    /* A 16-byte file whose declared header fits but whose magic is wrong.
-     * "invalid PGF magic; expected 'PGF0'" is only reachable once the
-     * non-ASCII path was opened, so it distinguishes a successful open from
-     * the "Cannot open font file" verdict a narrow fopen produces. */
+    snprintf(pgf, sizeof(pgf), "%s%cnkjpn.pgf", font_dir, sep);
+    /* A 16-byte file, shorter than the reader's 392-byte base header. The reader's
+     * "truncated" refusal is only reachable once the non-ASCII path was opened, so it
+     * distinguishes a successful open from the "cannot open the file" verdict a narrow
+     * fopen produces. */
     static const uint8_t pgf_header[16] = {
         0x00, 0x00, 0x10, 0x00, 'N', 'O', 'P', 'E',
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
@@ -690,8 +690,8 @@ static void test_non_ascii_user_data_root(const char *base, char sep) {
     char pgf_error[256] = "";
     assert(!nk_font_validate_pgf(pgf, &pgf_size, pgf_sha, pgf_error,
                                  sizeof(pgf_error)));
-    assert(strstr(pgf_error, "Cannot open font file") == NULL);
-    assert(strstr(pgf_error, "PGF0") != NULL);
+    assert(strstr(pgf_error, "cannot open the file") == NULL);
+    assert(strstr(pgf_error, "truncated") != NULL);
 
     /* The key file lives under the same per-user root. A malformed key file
      * is enough to prove it was OPENED: "no key file at" is the verdict an

@@ -137,7 +137,7 @@ void sr_add_mem_watch(uint32_t start, uint32_t end, const char *label) {
         g_sr_mem_watch_count++;
     } else {
         fprintf(stderr, "sr_add_mem_watch: capacity exceeded (%d max) -- "
-                "requested [%08x..%08x] label='%s' silently dropped\n",
+                "requested [%08" PRIx32 "..%08" PRIx32 "] label='%s' silently dropped\n",
                 SR_MAX_MEM_WATCHES, start, end, label ? label : "(null)");
     }
 }
@@ -152,7 +152,7 @@ void sr_add_value_watch(uint32_t value, const char *label) {
         g_sr_mem_watch_count++;
     } else {
         fprintf(stderr, "sr_add_value_watch: capacity exceeded (%d max) -- "
-                "requested value=%08x label='%s' silently dropped\n",
+                "requested value=%08" PRIx32 " label='%s' silently dropped\n",
                 SR_MAX_MEM_WATCHES, value, label ? label : "(null)");
     }
 }
@@ -221,8 +221,8 @@ void sr_debug_init_watches(void) {
         if (env_val) {
             uint32_t st_val = 0, end_val = 0;
             char lbl_val[128] = {0};
-            if (sscanf(env_val, "0x%x,0x%x,%127[^,]", &st_val, &end_val, lbl_val) == 3 ||
-                sscanf(env_val, "%u,%u,%127[^,]", &st_val, &end_val, lbl_val) == 3) {
+            if (sscanf(env_val, "0x%" SCNx32 ",0x%" SCNx32 ",%127[^,]", &st_val, &end_val, lbl_val) == 3 ||
+                sscanf(env_val, "%" SCNu32 ",%" SCNu32 ",%127[^,]", &st_val, &end_val, lbl_val) == 3) {
                 char *dup_lbl = sr_strdup(lbl_val);
                 if (dup_lbl) {
                     sr_add_mem_watch(st_val, end_val, dup_lbl);
@@ -240,8 +240,8 @@ void sr_debug_init_watches(void) {
         if (env_val) {
             uint32_t value = 0;
             char lbl_val[128] = {0};
-            if (sscanf(env_val, "0x%x,%127[^,]", &value, lbl_val) == 2 ||
-                sscanf(env_val, "%u,%127[^,]", &value, lbl_val) == 2) {
+            if (sscanf(env_val, "0x%" SCNx32 ",%127[^,]", &value, lbl_val) == 2 ||
+                sscanf(env_val, "%" SCNu32 ",%127[^,]", &value, lbl_val) == 2) {
                 char *dup_lbl = sr_strdup(lbl_val);
                 if (dup_lbl) {
                     sr_add_value_watch(value, dup_lbl);
@@ -406,6 +406,25 @@ static int sr_nan_trap_budget(void) {
     return 1;
 }
 
+/* SR_NAN_TRAP_CONTEXT=1: after each report, the registers a reader needs to find the
+ * instruction's inputs in guest memory (return address, value and argument registers,
+ * two saved registers, f12) and the four words each of v0 and a0..a3 points at when that
+ * span is readable. A quaternion slerp whose vasin reports a NaN, for example, has its
+ * two input quaternions behind a1 and v0 at that point. Off by default; the probe reads
+ * the scheduler's current CpuState, so a report from outside guest execution prints
+ * nothing. */
+static int s_nan_trap_ctx = -1;
+void (*sr_nan_trap_context_hook)(void) = NULL;   /* set by sr_mem_init (recomp.c) */
+static void sr_nan_trap_context(void) {
+    if (s_nan_trap_ctx < 0) {
+        const char *p = getenv("SR_NAN_TRAP_CONTEXT");
+        s_nan_trap_ctx = (p && p[0] && strcmp(p, "0") != 0) ? 1 : 0;
+    }
+    /* The dump itself lives with the runtime (it reads the scheduler's current CpuState and
+     * guest memory); this file also links alone in the trap harness tests. */
+    if (s_nan_trap_ctx && sr_nan_trap_context_hook) sr_nan_trap_context_hook();
+}
+
 void sr_nan_trap_note(uint32_t pc, const char *op, uint32_t fd,
                       float out, const float *in, int nin) {
     if (!sr_nan_trap_nonfinite(out)) return;
@@ -419,6 +438,7 @@ void sr_nan_trap_note(uint32_t pc, const char *op, uint32_t fd,
     fputs("] out=[", stderr);
     sr_nan_trap_print(stderr, out1, 1);
     fputs("]\n", stderr);
+    sr_nan_trap_context();
 }
 
 void sr_nan_trap_note_v(uint32_t pc, const char *op, uint32_t vd,
@@ -441,5 +461,6 @@ void sr_nan_trap_note_v(uint32_t pc, const char *op, uint32_t vd,
     fputs("] out=[", stderr);
     sr_nan_trap_print(stderr, out, nout);
     fputs("]\n", stderr);
+    sr_nan_trap_context();
 }
 #endif /* SR_NAN_TRAP */

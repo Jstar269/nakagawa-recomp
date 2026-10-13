@@ -79,7 +79,7 @@ The player binary builds, and its CLI help works without opening a display:
 
 ```bash
 SDL_VIDEODRIVER=offscreen ./build/cmake-linux/nakagawa_player --help
-# Usage: nakagawa_player [--iso=<path>] [--stage|--stage-only] ...
+# Usage: nakagawa_player [--user-data-root=<folder>] [--iso=<path> [--stage|--stage-only|--launch-now]] ...
 ```
 
 The bounded headless staging smoke uses the source-owned TEST00007 showcase ISO. It needs
@@ -115,6 +115,9 @@ make CC=gcc GAME_NAME=ci BUILD_DIR=build/slt-check \
   cpu-lle-selftest domain-mode-selftest psmf-producer-selftest \
   psmf-media-selftest atrac3p-selftest atrac3p-bridge-selftest cosim-selftest
 ```
+
+`psmf-media-selftest` passes on Linux, but it is a local gate: no hosted CI job runs it, so a
+green hosted run does not cover it. Run it locally with the command above.
 
 ### Python test suites
 

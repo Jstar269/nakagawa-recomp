@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -95,6 +96,168 @@ class TestHistoryAudit(unittest.TestCase):
                     "a " + label + " key body must still be caught",
                 )
 
+    def test_binary_control_guard_matches_the_per_character_definition(self):
+        # Fast path: one search of BINARY_CONTROL_CHARACTER per blob. Slow path:
+        # the per-character definition the audit used before, kept here as the
+        # reference. Every code point below U+3000 plus the edge code points,
+        # placed alone and before, inside and after ordinary text.
+        def reference(text):
+            return any(ord(ch) < 32 and ch not in "\t\r\n" for ch in text)
+
+        code_points = list(range(0x3000)) + [0xFFFE, 0xFFFF, 0x10FFFF]
+        for cp in code_points:
+            if 0xD800 <= cp <= 0xDFFF:
+                continue  # a lone surrogate cannot be decoded from UTF-8 text
+            ch = chr(cp)
+            for text in (ch, "ab" + ch + "cd", ch + " tail"):
+                self.assertEqual(
+                    history_audit.BINARY_CONTROL_CHARACTER.search(text) is not None,
+                    reference(text),
+                    f"U+{cp:04X} in {text!r}",
+                )
+
+    def test_control_character_makes_a_blob_binary_while_tab_cr_lf_do_not(self):
+        begin = "-----BE" + "GIN RSA PRIVATE KEY-----"
+        end = "-----E" + "ND RSA PRIVATE KEY-----"
+        body = "MIIEowIBAAKCAQEAx7Vq9kZ3mQ8Jf2pL0sYtWn4cB6dHgR1uEvXaTzKmNpQrSuVw"
+        pem = begin + "\n" + body + "\n" + end + "\n"
+
+        def secrets(content):
+            return [f for f in self._blob_findings(content) if f.code == "HISTORICAL_BLOB_SECRET"]
+
+        self.assertTrue(secrets(pem + "\t\r\n"), "tab, CR and LF are ordinary text")
+        self.assertEqual(secrets(pem + "\x0b"), [], "a vertical tab marks the blob binary")
+
+    def test_one_object_listing_serves_every_pass_and_changes_no_finding(self):
+        # Fast path: the report lists history once and shares that listing with
+        # every pass. Slow path: each pass lists history itself (raw_objects=None).
+        # Both must agree on every pass, and the fixture must produce findings on
+        # both paths so the comparison is not vacuous.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_git(("init", "-q"), cwd=root, check=True, capture_output=True)
+            begin = "-----BE" + "GIN RSA PRIVATE KEY-----"
+            end = "-----E" + "ND RSA PRIVATE KEY-----"
+            body = "MIIEowIBAAKCAQEAx7Vq9kZ3mQ8Jf2pL0sYtWn4cB6dHgR1uEvXaTzKmNpQrSuVw"
+            (root / "notes.md").write_text(begin + "\n" + body + "\n" + end + "\n", encoding="utf-8")
+            (root / "oracle").mkdir()
+            (root / "oracle" / "dump.txt").write_text("synthetic\n", encoding="utf-8")
+            run_git(["add", "-A"], cwd=root, check=True)
+            run_git(["commit", "-qm", "fixture"], cwd=root, check=True)
+
+            real_git = history_audit._git
+            issued: list[list[str]] = []
+
+            def recording(cmd, repo_root=history_audit.ROOT):
+                issued.append(list(cmd))
+                return real_git(cmd, repo_root=repo_root)
+
+            with mock.patch.object(history_audit, "_git", side_effect=recording):
+                shared = history_audit.generate_full_history_audit_report(root, root / "absent.json")
+            listings = [cmd for cmd in issued if cmd[:2] == ["rev-list", "--objects"]]
+            self.assertEqual(len(listings), 1, "the report must list history exactly once")
+            self.assertGreater(shared["summary"]["total_findings"], 0)
+
+            listing = history_audit._object_listing(root)
+            self.assertEqual(
+                [f.to_dict() for f in history_audit.audit_history_tree_paths(root, listing)],
+                [f.to_dict() for f in history_audit.audit_history_tree_paths(root)],
+            )
+            self.assertEqual(
+                [f.to_dict() for f in history_audit.audit_history_blob_contents(root, listing)],
+                [f.to_dict() for f in history_audit.audit_history_blob_contents(root)],
+            )
+            self.assertEqual(
+                history_audit.audit_large_blobs(root, raw_objects=listing),
+                history_audit.audit_large_blobs(root),
+            )
+            self.assertEqual(
+                history_audit.get_repository_baseline(root, listing),
+                history_audit.get_repository_baseline(root),
+            )
+
+    def test_literal_prefilters_agree_with_their_regexes(self):
+        # Fast path: each _has_* prefilter, which skips a regex unless a literal every
+        # match contains is present. Slow path: the named regex alone. Seeds match each
+        # signature in several letter cases, and seeded random edits add near-misses and
+        # the characters whose case folding is special (dotless i, long s, Kelvin sign).
+        # Every verdict must agree, and both outcomes must occur for every signature.
+        import random
+        bs = chr(92)
+        seeds = [
+            "ghp_" + "A" * 36, "github_pat_" + "B" * 80, "sk_live_" + "C" * 24, "AKIA" + "D" * 16,
+            "C:" + bs + "Users" + bs + "someone" + bs + "notes",
+            "C:" + bs + "Documents and Settings" + bs + "someone" + bs + "x",
+            "/ho" + "me/someone/x", "/Us" + "ers/someone/x", "/mnt/c/Us" + "ers/someone/x",
+            bs + bs + "server" + bs + "share",
+            "~/One" + "Drive - Contoso", "/tm" + "p/build", "/var/tm" + "p/build",
+            "C:" + bs + "AppData" + bs + "Local" + bs + "Temp" + bs + "x",
+            "github.com/Jstar269/nakagawa-recomp-history-private", "HST_PGD_VKEY_HEX",
+            "private save baseline", "private trace capture", "private dump evidence",
+        ]
+        checks = {
+            "api token": (lambda t, low: history_audit._has_api_token(t),
+                          history_audit.API_TOKEN_PATTERN),
+            "windows path": (lambda t, low: history_audit._has_windows_user_path(t),
+                             history_audit.WINDOWS_USER_PATH),
+            "cloud folder": (lambda t, low: history_audit._has_onedrive_path(t, low),
+                         history_audit.ONEDRIVE_PATH),
+            "temp path": (lambda t, low: history_audit._has_temp_path(t, low),
+                          history_audit.TEMP_PATH),
+            "private repo": (lambda t, low: history_audit._has_private_repo_url(t),
+                             history_audit.PRIVATE_REPO_URL),
+            "vocabulary": (lambda t, low: history_audit._has_private_operational_vocabulary(t, low),
+                           history_audit.PRIVATE_OPERATIONAL_VOCABULARY),
+        }
+        rng = random.Random(20261009)
+        alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_./:" + bs + chr(10)
+        special = "\u0131\u0130\u017f\u212a\u212b\u00df\u1e9e"
+        corpus = []
+        for seed in seeds:
+            corpus += [seed, seed.upper(), seed.lower()]
+            for _ in range(150):
+                text = list(seed)
+                for _ in range(rng.randint(1, 3)):
+                    op = rng.random()
+                    if op < 0.4 and text:
+                        index = rng.randrange(len(text))
+                        if rng.random() < 0.3:
+                            text[index] = rng.choice(special + alphabet)
+                        else:
+                            text[index] = text[index].swapcase()
+                    elif op < 0.7 and text:
+                        del text[rng.randrange(len(text))]
+                    else:
+                        text.insert(rng.randint(0, len(text)), rng.choice(special + alphabet))
+                corpus.append("".join(text))
+        for name, (prefilter, pattern) in checks.items():
+            verdicts = []
+            for text in corpus:
+                lowered = text.lower()
+                fast = prefilter(text, lowered)
+                slow = pattern.search(text) is not None
+                verdicts.append(slow)
+                self.assertEqual(fast, slow, f"{name}: {text!r}")
+            self.assertIn(True, verdicts, f"{name}: the corpus must contain matches")
+            self.assertIn(False, verdicts, f"{name}: the corpus must contain near-misses")
+
+    def test_each_content_signature_is_still_found_through_the_prefilters(self):
+        # End to end, the audit must still report each signature from a committed blob.
+        bs = chr(92)
+        token = "gh" + "p_" + "1" * 36
+        tests = {
+            "HISTORICAL_BLOB_SECRET": "key " + token + chr(10),
+            "HISTORICAL_BLOB_LOCAL_PATH": "see C:" + bs + "Users" + bs + "someone" + bs + "notes.txt" + chr(10),
+            "HISTORICAL_BLOB_PRIVATE_REPO": "clone github.com/Jstar269/nakagawa-recomp-history-private" + chr(10),
+            "HISTORICAL_BLOB_PRIVATE_VOCABULARY": "run HST_PGD_VKEY_HEX now" + chr(10),
+        }
+        for code, content in tests.items():
+            with self.subTest(code=code):
+                self.assertTrue(
+                    any(f.code == code for f in self._blob_findings(content)),
+                    f"{code} must still be reported",
+                )
+
     def test_ancestor_only_sensitive_blob_is_scanned(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -150,6 +313,29 @@ class TestHistoryAudit(unittest.TestCase):
             self.assertEqual(report["summary"]["reviewed_findings"], 1)
             self.assertEqual(report["reviewed_findings"][0]["reason"], "synthetic fixture")
 
+    def test_reviewed_blob_accepts_its_path_findings(self):
+        """A prohibited-extension finding names its blob like a content finding does, so the
+        exact-blob review entry accepts it; another blob at the same path stays a finding."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            blob = self._repo_with_removed_blob(root, "guest.prx", "synthetic fixture bytes\n")
+            findings = [f for f in history_audit.audit_history_tree_paths(root)
+                        if f.code == "HISTORICAL_PROHIBITED_EXTENSION"]
+            self.assertEqual([f.commit for f in findings], ["blob:" + blob[:12]])
+            reviewed = Path(tmp) / "reviewed.json"
+            self._write_reviewed(reviewed, [{
+                "blob": blob, "code": "HISTORICAL_PROHIBITED_EXTENSION",
+                "path": "guest.prx", "reason": "synthetic fixture"}])
+            report = history_audit.generate_full_history_audit_report(root, reviewed)
+            self.assertEqual(report["status"], "OK")
+            self.assertEqual(report["summary"]["reviewed_findings"], 1)
+            self._write_reviewed(reviewed, [{
+                "blob": "0" * 40, "code": "HISTORICAL_PROHIBITED_EXTENSION",
+                "path": "guest.prx", "reason": "different content"}])
+            report = history_audit.generate_full_history_audit_report(root, reviewed)
+            self.assertEqual(report["status"], "FAIL")
+
     def test_review_of_one_blob_never_excuses_other_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "repo"
@@ -163,6 +349,77 @@ class TestHistoryAudit(unittest.TestCase):
             report = history_audit.generate_full_history_audit_report(root, reviewed)
             self.assertEqual(report["status"], "FAIL")
             self.assertEqual(report["summary"]["reviewed_findings"], 0)
+
+    def _repo_with_message(self, root, subject, body):
+        run_git(("init", "-q"), cwd=root, check=True, capture_output=True)
+        (root / "safe.txt").write_text("safe\n", encoding="utf-8")
+        run_git(["add", "safe.txt"], cwd=root, check=True)
+        run_git(["commit", "-q", "-m", subject, "-m", body], cwd=root, check=True)
+        return run_git(["rev-parse", "HEAD"], cwd=root, check=True,
+                       capture_output=True, text=True).stdout.strip()
+
+    def test_commit_body_is_scanned_not_only_the_subject(self):
+        """A squash merge copies the PR body into the message; the body reaches history too."""
+        root_literal = "Q:/" + "synthetic-private-root"
+        user_path = "C:" + chr(92) + "Us" + "ers" + chr(92) + "alice" + chr(92) + "notes"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sha = self._repo_with_message(
+                root, "clean subject",
+                f"Landed from {root_literal}/landings/landing.json and {user_path}.")
+            findings = history_audit.audit_history_commit_metadata(
+                root, private_roots=(root_literal.upper(),))
+        codes = sorted((f.code, f.commit, f.path) for f in findings)
+        self.assertEqual(codes, [
+            ("COMMIT_LOG_LOCAL_PATH", sha[:12], "<commit_message>"),
+            ("COMMIT_LOG_PRIVATE_ROOT", sha[:12], "<commit_message>"),
+        ])
+
+    def test_clean_commit_message_has_no_findings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._repo_with_message(root, "clean subject", "A body that names build/ and docs/ only.")
+            self.assertEqual(
+                history_audit.audit_history_commit_metadata(root, private_roots=("Q:/nowhere",)), [])
+
+    def test_canonical_policy_supplies_private_roots(self):
+        roots = history_audit.policy_private_roots(history_audit.ROOT)
+        self.assertTrue(roots, "assets/public_source_profile.json must declare private_roots")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(history_audit.policy_private_roots(Path(tmp)), ())
+
+    def test_reviewed_commit_message_is_reported_but_not_a_finding(self):
+        root_literal = "Q:/" + "synthetic-private-root"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            sha = self._repo_with_message(root, "clean subject", f"see {root_literal}/x")
+            reviewed = Path(tmp) / "reviewed.json"
+            self._write_reviewed(reviewed, [{
+                "commit": sha, "code": "COMMIT_LOG_PRIVATE_ROOT",
+                "path": "<commit_message>", "reason": "synthetic fixture"}])
+            with mock.patch.object(history_audit, "policy_private_roots", return_value=(root_literal,)):
+                report = history_audit.generate_full_history_audit_report(root, reviewed)
+                self.assertEqual(report["status"], "OK", report["findings"])
+                self.assertEqual(report["summary"]["reviewed_findings"], 1)
+                self._write_reviewed(reviewed, [{
+                    "commit": "0" * 40, "code": "COMMIT_LOG_PRIVATE_ROOT",
+                    "path": "<commit_message>", "reason": "a different commit"}])
+                report = history_audit.generate_full_history_audit_report(root, reviewed)
+                self.assertEqual(report["status"], "FAIL")
+
+    def test_reviewed_entry_names_exactly_one_object(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reviewed = Path(tmp) / "reviewed.json"
+            for entry in (
+                {"code": "X", "path": "p", "reason": "r"},
+                {"blob": "a" * 40, "commit": "b" * 40, "code": "X", "path": "p", "reason": "r"},
+                {"commit": "abc", "code": "X", "path": "p", "reason": "r"},
+            ):
+                with self.subTest(entry=entry):
+                    self._write_reviewed(reviewed, [entry])
+                    with self.assertRaises(ValueError):
+                        history_audit.load_reviewed_findings(reviewed)
 
     def test_malformed_reviewed_file_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:

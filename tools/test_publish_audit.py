@@ -124,8 +124,13 @@ class TestPublishAudit(unittest.TestCase):
             env = isolated_git_env(base, root=root)
         for name in selectors - {"GIT_CEILING_DIRECTORIES"}:
             self.assertNotIn(name, env)
-        for name in ("GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"):
-            self.assertNotIn(name, env)
+        self.assertNotIn("GIT_CONFIG", env)
+        # The caller's config entries (user.name=Ambient) are gone; the one entry left is the
+        # tool's own, which keeps auto gc off so no detached maintenance outlives a command.
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "1")
+        self.assertEqual(env["GIT_CONFIG_KEY_0"], "gc.auto")
+        self.assertEqual(env["GIT_CONFIG_VALUE_0"], "0")
+        self.assertNotIn("GIT_CONFIG_KEY_1", env)
         self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
         self.assertEqual(env["GIT_CONFIG_GLOBAL"], os.devnull)
         self.assertEqual(env["GIT_AUTHOR_NAME"], "Nakagawa Recomp Tests")
@@ -161,10 +166,64 @@ class TestPublishAudit(unittest.TestCase):
         self.assertIsNotNone(
             publish_audit._forbidden_path("OpenGrip_For_Inspiration/functions.csv")
         )
+        self.assertIsNotNone(
+            publish_audit._forbidden_path("docs/symbol_ref/functions.csv")
+        )
         self.assertIsNotNone(publish_audit._forbidden_path("assets/game.iso"))
         self.assertIsNotNone(publish_audit._forbidden_path("tools/vfpu_words.txt"))
         self.assertIsNotNone(publish_audit._forbidden_path("tools/reference_hashes.json"))
         self.assertIsNone(publish_audit._forbidden_path("assets/vfpu/table.dat"))
+
+    def test_forbidden_local_symbol_reference(self):
+        # functions.csv is a local-only symbol reference and must be rejected anywhere
+        for path in (
+            "functions.csv",
+            "Functions.csv",
+            "docs/functions.csv",
+            "tools/functions.csv",
+            "sub/dir/functions.csv",
+            "docs/symbol_ref/functions.csv",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNotNone(publish_audit._forbidden_path(path))
+        self.assertEqual(
+            publish_audit._forbidden_path("functions.csv"),
+            "local-only symbol reference",
+        )
+        self.assertEqual(
+            publish_audit._forbidden_path("sub/dir/functions.csv"),
+            "local-only symbol reference",
+        )
+        self.assertEqual(
+            publish_audit._forbidden_path("docs/symbol_ref/functions.csv"),
+            "local-only symbol reference",
+        )
+        # Unrelated public CSV files remain allowed under normal publication policy
+        for path in (
+            "docs/metrics.csv",
+            "fixtures/table.csv",
+            "tools/report.csv",
+            "assets/symbols_public.csv",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNone(publish_audit._forbidden_path(path))
+
+        # Even when force-staged against .gitignore, functions.csv fails the index audit
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            repo = Path(tmp_dir_raw).resolve()
+            run_git(["init"], cwd=repo, check=True, capture_output=True)
+            (repo / ".gitignore").write_text("functions.csv\n", encoding="utf-8", newline="\n")
+            (repo / "functions.csv").write_text("nid,name\n0x1234,test_fn\n", encoding="utf-8", newline="\n")
+            run_git(["add", "-f", "functions.csv"], cwd=repo, check=True, capture_output=True)
+            entries = publish_audit._get_git_entries(tracked_only=True, repo_root=repo)
+            self.assertTrue(any(e.path == "functions.csv" for e in entries))
+            policy_path, export_path = hermetic_policy(repo, ["functions.csv"])
+            findings = publish_audit.audit_entries(
+                entries, repo_root=repo, policy_path=policy_path, export_path=export_path
+            )
+            path_findings = [f for f in findings if f.code == "PATH" and f.path == "functions.csv"]
+            self.assertTrue(path_findings)
+            self.assertEqual(path_findings[0].detail, "local-only symbol reference")
 
     def test_prohibited_extension_passes_only_as_a_pinned_approved_binary(self):
         # Project-authored PSPDEV build output may carry a guest-executable
@@ -948,8 +1007,8 @@ class TestPublishAudit(unittest.TestCase):
     def test_checked_in_lineage_exceptions_structure_and_active_entries(self):
         self.assertIn("src/rt/evf.h", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
         self.assertIn("tools/gen_nidnames.py", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
-        self.assertIn("tools/test_funcdiff_cmp.py", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
-        self.assertIn("tools/test_nidseq.py", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
+        self.assertNotIn("tools/test_funcdiff_cmp.py", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
+        self.assertNotIn("tools/test_nidseq.py", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
 
         for path, info in publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS.items():
             with self.subTest(path=path):
@@ -958,6 +1017,26 @@ class TestPublishAudit(unittest.TestCase):
                 self.assertIn("reason", info)
                 self.assertTrue(str(info["issue"]).endswith("342"))
                 self.assertTrue(len(str(info["reason"])) > 0)
+
+    def test_retired_lineage_exceptions_have_clean_headers(self):
+        root = Path(__file__).resolve().parents[1]
+        for retired_path in ("tools/test_funcdiff_cmp.py", "tools/test_nidseq.py"):
+            with self.subTest(path=retired_path):
+                content = (root / retired_path).read_bytes()
+                findings = publish_audit._spdx_provenance_findings(
+                    retired_path,
+                    {"classification": "project_authored_attested"},
+                    content,
+                )
+                self.assertEqual(findings, [], f"SPDX findings for {retired_path}: {findings}")
+                contra_findings, was_contradiction = publish_audit._lineage_contradiction_findings(
+                    retired_path,
+                    {"classification": "project_authored_attested"},
+                    content,
+                    exceptions={},
+                )
+                self.assertFalse(was_contradiction, f"Unexpected contradiction for {retired_path}")
+                self.assertEqual(contra_findings, [], f"Contradiction findings for {retired_path}: {contra_findings}")
 
     def test_deterministic_report_output_and_aggregate_sha(self):
         entries = [
@@ -2211,6 +2290,89 @@ class GeneratedEmbeddingSpdxTests(unittest.TestCase):
         for source in contract.values():
             head = (Path(publish_audit.ROOT) / source).read_text(encoding="utf-8").splitlines()[:8]
             self.assertTrue(any("SPDX-License-Identifier:" in line for line in head), source)
+
+
+class RetailDiscIdTests(unittest.TestCase):
+    """Real-format disc ids outside the synthetic registry fail the audit.
+
+    Every unregistered id below is assembled from fragments, so this file never
+    names one contiguously and the tree-wide test stays meaningful.
+    """
+
+    UMD = "UL" + "US" + "55555"
+    PSN = "NP" + "UH" + "54321"
+
+    def test_every_written_form_is_reported_once_and_normalised(self) -> None:
+        from nk_core.synthetic_disc_ids import unregistered_retail_disc_ids
+
+        umd, psn = self.UMD, self.PSN
+        text = "\n".join((
+            umd,
+            f"{umd[:4]}-{umd[4:]}",
+            f"build_{umd.lower()}.log",
+            f"{umd[:4]} {umd[4:]}",
+            f'"disc_id": "{psn[:4]}_{psn[4:]}"',
+        ))
+        self.assertEqual(unregistered_retail_disc_ids(text), [umd, psn])
+
+    def test_registered_and_non_retail_ids_pass(self) -> None:
+        from nk_core.synthetic_disc_ids import unregistered_retail_disc_ids
+
+        text = "\n".join((
+            "UCUS98701", "hst-ucus98701.json", "UCUS-98701", "UCES01402",
+            "ULUS99998", "TEST80001", "TEST00001", "ABCD12345", "ZZZZ99999",
+            "X" + self.UMD,       # part of a longer identifier
+            self.UMD + "0",       # six digits is not a disc id
+        ))
+        self.assertEqual(unregistered_retail_disc_ids(text), [])
+
+    def test_registry_sets_are_disjoint_and_well_formed(self) -> None:
+        from nk_core import synthetic_disc_ids as ids
+
+        retail = set(ids.PUBLIC_RETAIL_DISC_IDS) | set(ids.SYNTHETIC_RETAIL_DISC_IDS)
+        self.assertFalse(set(ids.PUBLIC_RETAIL_DISC_IDS) & set(ids.SYNTHETIC_RETAIL_DISC_IDS))
+        for disc_id in sorted(retail):
+            with self.subTest(disc_id=disc_id):
+                self.assertIsNotNone(ids.RETAIL_DISC_ID.fullmatch(disc_id))
+        catalog = set(ids.SYNTHETIC_DISC_IDS.values())
+        self.assertFalse(catalog & ids.SYNTHETIC_TEST_DISC_IDS)
+        for disc_id in sorted(catalog | ids.SYNTHETIC_TEST_DISC_IDS):
+            with self.subTest(disc_id=disc_id):
+                self.assertIsNone(ids.RETAIL_DISC_ID.search(disc_id))
+                self.assertRegex(disc_id, r"^TEST[0-9]{5}$")
+
+    def test_audit_reports_an_unregistered_id_in_a_tracked_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            tmp_dir = Path(tmp_dir_raw).resolve()
+            (tmp_dir / "leak.c").write_text(
+                f'static const char *k_disc = "{self.UMD}";\n', encoding="utf-8", newline="\n")
+            (tmp_dir / "clean.c").write_text(
+                'static const char *k_disc = "UCUS98701";\n', encoding="utf-8", newline="\n")
+            entries = [
+                publish_audit.GitEntry("100644", "", "0", name, "file")
+                for name in ("leak.c", "clean.c")
+            ]
+            findings = publish_audit.audit_entries(entries, repo_root=tmp_dir, is_candidate_root=True)
+        retail = [f for f in findings if f.code == "RETAIL_DISC_ID"]
+        self.assertEqual([f.path for f in retail], ["leak.c"])
+        self.assertIn(self.UMD, retail[0].detail)
+
+    def test_tracked_tree_names_no_unregistered_retail_id(self) -> None:
+        from nk_core.synthetic_disc_ids import unregistered_retail_disc_ids
+
+        root = Path(publish_audit.ROOT)
+        listed = run_git(["ls-files", "-z"], cwd=root, check=True, capture_output=True).stdout
+        offenders = []
+        for rel in (p for p in listed.decode("utf-8").split("\0") if p):
+            path = root / rel
+            if not path.is_file():
+                continue
+            data = path.read_bytes()
+            if b"\0" in data[:8192]:
+                continue
+            for disc_id in unregistered_retail_disc_ids(data.decode("utf-8", "replace")):
+                offenders.append(f"{rel}: {disc_id}")
+        self.assertEqual(offenders, [], "\n".join(offenders))
 
 
 if __name__ == "__main__":

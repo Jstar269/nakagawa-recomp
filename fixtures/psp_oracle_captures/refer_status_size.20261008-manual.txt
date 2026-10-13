@@ -1,0 +1,15 @@
+NAKAGAWA_PSP_META schema=1 source=psp model=unknown firmware=unknown binary_sha256=0000000000000000000000000000000000000000000000000000000000000000 source_commit=5497dece74819ef6789fcfede9305f7c6041eaa1 fixture=nakagawa-psp-oracle-v1
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-KERNEL-STATUS-001 case_id=sema-size-zero status=PASS result=0x00000000 out0=0x00000000 out1=0x00000000 out2=0x00000000 out3=0x00000000 out4=0x00000000
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-KERNEL-STATUS-001 case_id=sema-size-8 status=PASS result=0x00000000 out0=0x00000008 out1=0x00000038 out2=0x000000f1 out3=0x00000000 out4=0x00000005
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-KERNEL-STATUS-001 case_id=sema-size-40 status=PASS result=0x00000000 out0=0x00000028 out1=0x00000038 out2=0xfffffff1 out3=0x000000ff out4=0x00000025
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-KERNEL-STATUS-001 case_id=sema-size-full status=PASS result=0x00000000 out0=0x00000038 out1=0x00000038 out2=0xfffffff0 out3=0x00ffffff out4=0x00000034
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-KERNEL-STATUS-001 case_id=event-size-zero status=PASS result=0x00000000 out0=0x00000000 out1=0x00000000 out2=0x00000000 out3=0x00000000 out4=0x00000000
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-KERNEL-STATUS-001 case_id=event-size-8 status=PASS result=0x00000000 out0=0x00000008 out1=0x00000034 out2=0x000000f1 out3=0x00000000 out4=0x00000005
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-KERNEL-STATUS-001 case_id=event-size-40 status=PASS result=0x00000000 out0=0x00000028 out1=0x00000034 out2=0xfffffff1 out3=0x000000ff out4=0x00000025
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-KERNEL-STATUS-001 case_id=event-size-full status=PASS result=0x00000000 out0=0x00000034 out1=0x00000034 out2=0xfffffff0 out3=0x000fffff out4=0x00000030
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-KERNEL-STATUS-001 case_id=mbx-size-zero status=PASS result=0x00000000 out0=0x00000000 out1=0x00000000 out2=0x00000000 out3=0x00000000 out4=0x00000000
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-KERNEL-STATUS-001 case_id=mbx-size-8 status=PASS result=0x00000000 out0=0x00000008 out1=0x00000034 out2=0x000000f1 out3=0x00000000 out4=0x00000005
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-KERNEL-STATUS-001 case_id=mbx-size-40 status=PASS result=0x00000000 out0=0x00000028 out1=0x00000034 out2=0xfffffff1 out3=0x000000ff out4=0x00000025
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-KERNEL-STATUS-001 case_id=mbx-size-full status=PASS result=0x00000000 out0=0x00000034 out1=0x00000034 out2=0xfffffff0 out3=0x000fffff out4=0x00000030
+NAKAGAWA_PSP_TEST schema=1 test_id=PSP-KERNEL-STATUS-001 case_id=refer-status-size-done status=PASS result=0x00000000 out0=0x0000000c
+NAKAGAWA_PSP_COMPLETE schema=1 status=PASS

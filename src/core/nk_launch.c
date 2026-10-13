@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
 #include "nk_launch.h"
+#include "nk_font_slots.h"
 #include "generated/nk_title_catalog.h"
 #include "../rt/recomp.h"
 #include <stdio.h>
@@ -723,10 +724,10 @@ NkResult nk_launch_validate_staged_executable(const NkGameEntry *game,
             goto staged_elf_cleanup;
         }
         uint64_t memory_end = (uint64_t)virtual_address + memory_size;
+        /* Segment bytes are copied from source_offset, so the offset and the
+           virtual address need not be congruent modulo the alignment. */
         if (memory_end > (uint64_t)UINT32_MAX ||
-            (alignment > 1 && (alignment & (alignment - 1u)) != 0) ||
-            (alignment > 1 && ((uint64_t)source_offset % alignment) !=
-                              ((uint64_t)virtual_address % alignment))) {
+            (alignment > 1 && (alignment & (alignment - 1u)) != 0)) {
             launch_error(error_message, error_message_size,
                          "staged ELF PT_LOAD has invalid address or alignment geometry");
             goto staged_elf_cleanup;
@@ -1160,7 +1161,7 @@ NkResult nk_launch_prepare_session(
         return NK_ERROR_FILE_NOT_FOUND;
     }
 
-    /* 5. Resolve font directory: check user-data cache (<user_data>/fonts/v1), falling back to <asset_root>/font */
+    /* 5. Resolve font directory: check user-data cache (<user_data>/fonts/v2), falling back to <asset_root>/font */
     char cache_font[640];
     char user_data_base[NK_MAX_PATH];
     const char *ud_root = session->user_data_root;
@@ -1171,7 +1172,8 @@ NkResult nk_launch_prepare_session(
     }
     bool found_cache = false;
     if (ud_root && *ud_root) {
-        int cw = snprintf(cache_font, sizeof(cache_font), "%s%cfonts%cv1", ud_root, sep, sep);
+        int cw = snprintf(cache_font, sizeof(cache_font), "%s%c%s%c%s", ud_root, sep,
+                          NK_FONT_CACHE_PARENT, sep, NK_FONT_CACHE_SUBDIR);
         if (cw > 0 && (size_t)cw < sizeof(cache_font)) {
             char manifest_file[1024];
             snprintf(manifest_file, sizeof(manifest_file), "%s%cmanifest.json", cache_font, sep);

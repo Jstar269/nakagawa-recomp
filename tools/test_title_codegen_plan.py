@@ -152,6 +152,64 @@ class TitleCodegenPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "module_dir is required"):
             self.plan(manifest, module_dir=None)
 
+    def test_runtime_placed_modules_translate_position_independently(self) -> None:
+        manifest = copy.deepcopy(self.synthetic)
+        manifest["modules"] = [
+            {"name": "fixed.prx", "load_address": 0x08C00000, "required": True,
+             "role": "guest-prx"},
+            {"name": "level01.prx", "required": True, "role": "guest-prx",
+             "placement": "runtime", "guest_path": "disc0:/PSP_GAME/USRDIR/level01.prx"},
+        ]
+        plan = self.plan(manifest, module_dir=Path("modules"))
+        extra = [arg for arg in plan["commands"]["codegen"] if arg.startswith("--extra-elf=")]
+        self.assertEqual(extra, [
+            "--extra-elf=modules/fixed.prx@0x08c00000",
+            "--extra-elf=modules/level01.prx@runtime",
+        ])
+        manager = title_codegen_plan.build_manager_plan(
+            manifest, game_name="synthetic", game_elf=Path("fixtures/synthetic.elf"),
+            build_dir=Path("build/synthetic"), module_dir=Path("modules"))
+        self.assertEqual(manager["required_guest_modules"], [
+            {"name": "fixed.prx", "load_address": 0x08C00000},
+            {"name": "level01.prx", "placement": "runtime"},
+        ])
+
+    def test_runtime_placed_module_is_analyzed_in_its_link_space(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="title_codegen_link_space_") as temp_dir:
+            prx = Path(temp_dir) / "level01.prx"
+            prx.write_bytes(b"\x7fELF\x01\x01\x01" + b"\0" * 9 + (0xFFA0).to_bytes(2, "little"))
+            image = Path(temp_dir) / "fixed.elf"
+            image.write_bytes(b"\x7fELF\x01\x01\x01" + b"\0" * 9 + (2).to_bytes(2, "little"))
+            runtime = {"name": "level01.prx", "placement": "runtime"}
+            self.assertEqual(title_codegen_plan._analysis_base(runtime, prx), 0)
+            self.assertIsNone(title_codegen_plan._analysis_base(runtime, image))
+            self.assertEqual(title_codegen_plan._analysis_base(
+                {"name": "fixed.prx", "load_address": 0x08C00000}, prx), 0x08C00000)
+
+    def test_runtime_module_fallbacks_are_attributed_by_name(self) -> None:
+        class FakeElf:
+            def read_at_vaddr(self, address, size):
+                return (0x24020000 | address).to_bytes(4, "little")
+
+        sources = [
+            {"name": "executable", "ranges": [(0x0, 0x1000)], "elf": FakeElf()},
+            {"name": "level01.prx", "ranges": [(0x0, 0x800)], "elf": FakeElf()},
+        ]
+        with tempfile.TemporaryDirectory(prefix="title_codegen_fallbacks_") as temp_dir:
+            report = Path(temp_dir) / "g_recomp_stubs.txt"
+            report.write_text(
+                "0x00000100 opcode 0x13 at 0x00000104\n"
+                "level01.prx@0x00000100 opcode 0x13 at 0x00000108\n",
+                encoding="ascii")
+            regions, instructions = title_codegen_plan._read_codegen_fallbacks(report, sources)
+            self.assertEqual(sorted((row["module"], row["entry_address"]) for row in regions), [
+                ("executable", "0x00000100"), ("level01.prx", "0x00000100")])
+            self.assertEqual(sorted((row["module"], row["address"]) for row in instructions), [
+                ("executable", "0x00000104"), ("level01.prx", "0x00000108")])
+            report.write_text("absent.prx@0x00000100 opcode 0x13\n", encoding="ascii")
+            with self.assertRaises(title_codegen_plan.PackageRouteError):
+                title_codegen_plan._read_codegen_fallbacks(report, sources)
+
     def test_hle_capabilities_are_not_passed_as_guest_elf_files(self) -> None:
         manifest = copy.deepcopy(self.synthetic)
         manifest["modules"] = [
@@ -226,6 +284,42 @@ class TitleCodegenPlanTests(unittest.TestCase):
         self.assertEqual(len(captured), 2)
         for call in captured:
             self.assertEqual(call["codegen_options"].get("planner_sha256"), expected)
+
+    def test_player_and_planner_hash_a_runtime_placed_module_alike(self) -> None:
+        manifest = copy.deepcopy(self.synthetic)
+        module = {"name": "level01.prx", "required": True, "role": "guest-prx",
+                  "placement": "runtime", "guest_path": "disc0:/PSP_GAME/USRDIR/level01.prx"}
+        manifest["modules"] = [module]
+        captured = []
+
+        def capture_cache_key(**kwargs):
+            captured.append(kwargs)
+            return {}
+
+        with tempfile.TemporaryDirectory(prefix="title_codegen_runtime_hash_") as temp_dir:
+            module_dir = Path(temp_dir)
+            (module_dir / "level01.prx").write_bytes(b"synthetic runtime-placed module")
+            game_elf = module_dir / "game.elf"
+            game_elf.write_bytes(b"synthetic executable")
+            with mock.patch.object(
+                package_cache, "build_cache_key", side_effect=capture_cache_key
+            ), mock.patch.object(
+                package_cache, "compiler_identity", return_value="synthetic-compiler"
+            ), mock.patch.object(
+                package_cache, "compiler_target", return_value="synthetic-target"
+            ):
+                nk_cli._current_package_cache_key(
+                    manifest, self.synthetic_path, "synthetic-executable-hash",
+                    module_dir, None, {}, public_safe=True,
+                )
+            planned = title_codegen_plan._hash_package_inputs(
+                self.synthetic_path, game_elf, [module],
+                {"level01.prx": module_dir / "level01.prx"}, None,
+            )
+        self.assertEqual(len(captured), 1)
+        player_modules = captured[0]["input_hashes"]["modules"]
+        self.assertEqual(player_modules, planned["modules"])
+        self.assertEqual(player_modules[0]["load_address"], "runtime")
 
     def test_optional_guest_modules_require_explicit_selection(self) -> None:
         manifest = copy.deepcopy(self.synthetic)

@@ -597,6 +597,7 @@ void sched_init(CpuState *cpu) {
     sr_rt_uid_fn = sr_rt_current_uid;
     if (cpu->r[28] != 0u) s_gp = cpu->r[28];           /* the driver seeded gp from the module's # init */
     s_sched_coro = sr_coro_main();
+    sr_dispatch_host_stack_remaining = sr_coro_stack_remaining;
     sr_sched_on = 1;
     s_interrupts_enabled = 1;
     s_dispatch_enabled = 1;
@@ -964,6 +965,7 @@ void sched_dump_threads(void) {
  * when no thread is runnable (i.e. once per simulated frame). */
 uint32_t sr_vblank_handler(void);
 uint32_t sr_vblank_arg(void);
+uint32_t sr_vblank_no(void);
 /* The deadline a thread carries when nothing but a signal can release it.
  * Named so the "infinite waits never expire" rule in
  * sched_promote_expired_waits() is checkable rather than a bare -1. */
@@ -1460,7 +1462,13 @@ static void deliver_vblank(void) {
     memcpy(s_cpu, &save, sizeof(CpuState));
     s_cpu->r[29] = SR_VBLANK_STACK_TOP; /* dedicated interrupt stack (above thread stacks, below nested frames) */
     s_cpu->r[28] = s_gp;
-    s_cpu->r[4] = sr_vblank_arg();       /* a0 = registered arg */
+    /* A sub-interrupt handler is called as handler(no, arg): a0 is the sub-interrupt number
+     * the guest registered and a1 is its arg (PSPSDK pspintrman.h; the SDK vsync sample
+     * declares `void on_vblank(int sub, void *data)`). A retail title's handler reads its
+     * event-flag id from 4(a1) and ignores a0; with the arg in a0 it set event flag 0 every
+     * vblank (UNKNOWN_EVFID) and its movie threads waited forever. */
+    s_cpu->r[4] = sr_vblank_no();
+    s_cpu->r[5] = sr_vblank_arg();
     s_cpu->r[31] = 0;
     s_cpu->vfpuCtrl[0] = 0xe4; s_cpu->vfpuCtrl[1] = 0xe4;
     s_cpu->pc = h;
@@ -1488,6 +1496,8 @@ static void deliver_vblank(void) {
 
     s_cur = save_cur;
     memcpy(s_cpu, &save, sizeof(CpuState));
+    /* Interrupt return: the interrupted ll..sc window, if any, is over. */
+    sr_cpu_link_clear(s_cpu);
     extern void sr_vblank_tick(void);
     sr_vblank_tick();
 
@@ -1679,6 +1689,8 @@ static void scheduler_alarm_deliver(int slot) {
     const uint32_t period = s_cpu->r[2];
     s_cur = save_cur;
     memcpy(s_cpu, &save, sizeof(CpuState));
+    /* Interrupt return: the interrupted ll..sc window, if any, is over. */
+    sr_cpu_link_clear(s_cpu);
 
     /* The handler may have cancelled this very alarm, and the slot may even have been
      * reused: only the UID says whether the alarm is still the one that was delivered. */
@@ -2538,6 +2550,28 @@ static SrPerfSchedState sched_perf_state(void) {
 
 static uint32_t sched_perf_uid(void) {
     return s_cur >= 0 && s_cur < s_ntcb ? s_tcb[s_cur].uid : 0u;
+}
+
+/* Switch thread t in: load its saved registers into the live CpuState. This is the only
+ * place sched_run() resumes a guest thread, so it is where a context switch takes effect.
+ *
+ * A context switch ends the incoming thread's ll..sc window: on the PSP a thread is only
+ * ever switched through an exception (a syscall that blocks or yields, or an interrupt
+ * that preempts), and the exception return clears LLbit (MIPS32 ERET). Clearing here --
+ * rather than when the outgoing thread is saved -- covers every path that parks a thread
+ * (sr_yield, a blocking HLE wait, preemption) without each having to remember it. */
+static void sched_load_thread_context(TCB *t) {
+    memcpy(s_cpu, &t->saved, sizeof(CpuState));
+    /* FRONTIER: r26/k0 is the PSP per-thread kernel-context pointer; libc's _getmodreent
+     * reads it via the recompiled f_0000fe3c. The codegen treats r26 as caller-saved
+     * scratch, so it may end as 0xDEADBEEF or 0 in the saved state. Real PSP thread
+     * bodies don't use r26 as scratch -- it's preserved per-thread. Restore it on every
+     * resume so the libc main-thread check never sees r26=0. */
+    if (t->k0_init) {
+        s_cpu->r[26] = t->k0_init;
+        t->saved.r[26] = t->k0_init;
+    }
+    sr_cpu_link_clear(s_cpu);
 }
 
 /* Save the running thread's registers, return to the scheduler, which selects and resumes the
@@ -3941,16 +3975,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         s_cur = idx;
         SCHED_LIVENESS_OWNER(t->uid);
         t->state = TH_RUNNING;
-        memcpy(s_cpu, &t->saved, sizeof(CpuState));   /* load this thread's registers */
-        /* FRONTIER: r26/k0 is the PSP per-thread kernel-context pointer; libc's _getmodreent
-         * reads it via the recompiled f_0000fe3c. The codegen treats r26 as caller-saved
-         * scratch, so it may end as 0xDEADBEEF or 0 in the saved state. Real PSP thread
-         * bodies don't use r26 as scratch -- it's preserved per-thread. Restore it on every
-         * resume so the libc main-thread check never sees r26=0. */
-        if (t->k0_init) {
-            s_cpu->r[26] = t->k0_init;
-            t->saved.r[26] = t->k0_init;
-        }
+        sched_load_thread_context(t);      /* load this thread's registers */
         atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);          /* a fresh slice for this run (the counter is global) */
         if (!t->started) {
             t->started = 1;
@@ -3964,7 +3989,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
              * SwitchToFiber -- a NULL fiber would deref garbage and tear the process down.
              * On failure we surface a clean error and abort (there's no game-state left to
              * save -- the scheduler loop has no way to recover a thread that never started). */
-            t->coro = sr_coro_create(coro_body, t, (size_t)64 << 20);
+            t->coro = sr_coro_create(coro_body, t, SR_GUEST_FIBER_STACK_SIZE);
             if (!t->coro) {
                 fprintf(stderr, "sched_run: sr_coro_create failed for uid=0x%x entry=0x%08x "
                         "-- cannot continue\n",

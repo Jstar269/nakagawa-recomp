@@ -40,7 +40,7 @@ import title_manifest
 #: 8 splits the single profile macro into a diagnostic one and an honest
 #: compatibility-debt one (#363). Version 9 removes host libfont readiness
 #: injection from the generated runtime contract.
-GENERATED_SCHEMA_VERSION = 9
+GENERATED_SCHEMA_VERSION = 10
 
 #: Emitted field -> the C validity bit that gates it. Fields sharing a bit are a
 #: configured-together group; the manifest validator already enforces the pairing.
@@ -115,13 +115,15 @@ def bindings_from_manifest(manifest: dict[str, Any] | None) -> dict[str, Any]:
         "source_id": normalized["id"],
         "codegen_profile": normalized.get("codegen_profile", "none"),
         "bindings": block,
-        # Guest PRX modules are laid out at their manifest load_address by BOTH the
-        # recompiler (GAME_EXTRA_ELFS) and the runtime loader: this is the runtime half
-        # of that single source.
+        # Guest PRX modules: a fixed module is laid out at its manifest load_address by
+        # BOTH the recompiler (GAME_EXTRA_ELFS) and the runtime loader; a runtime-placed
+        # module has no address and is placed by the guest allocator when the game loads
+        # it. This is the runtime half of that single source.
         "guest_modules": [
-            {"name": m["name"], "load_address": m["load_address"],
+            {"name": m["name"], "load_address": m.get("load_address", 0),
              "guest_path": m.get("guest_path", ""),
-             "required": bool(m["required"])}
+             "required": bool(m["required"]),
+             "placement": m.get("placement", "fixed")}
             for m in normalized.get("modules", [])
             if m["role"] in ("guest-prx", "optional-guest-prx")
         ],
@@ -294,8 +296,10 @@ def render_header(config: dict[str, Any]) -> str:
         for field in ('name', 'guest_path'):
             if '"' in module[field] or chr(92) in module[field]:
                 raise TitleRuntimeConfigError(f"guest module {field} cannot be embedded in C: {module[field]!r}")
+        placement = 1 if module.get("placement", "fixed") == "runtime" else 0
         lines.append(f'    SR_TITLE_CFG_GUEST_MODULE("{module["name"]}", "{module["guest_path"]}", '
-                     f"0x{module['load_address']:08x}u, {1 if module['required'] else 0}u){tail}")
+                     f"0x{module['load_address']:08x}u, {1 if module['required'] else 0}u, "
+                     f"{placement}u){tail}")
 
     lines += ["", "#endif /* SR_TITLE_CONFIG_GENERATED_H */", ""]
     return "\n".join(lines)

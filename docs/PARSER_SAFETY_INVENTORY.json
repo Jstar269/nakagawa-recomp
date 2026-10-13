@@ -203,14 +203,14 @@
     },
     {
       "boundary": "ELF32/MIPS executable preflight classifier",
-      "entry": "src/core/nk_iso.c:nk_iso_elf32_mips_usable; src/core/nk_iso.c:nk_iso_classify_executables",
+      "entry": "src/core/nk_iso.c:nk_iso_elf32_mips_layout_violation; src/core/nk_iso.c:nk_elf32_mips_layout_violation; src/core/nk_iso.c:nk_iso_classify_executables",
       "max_input": "512 MiB executable extent.",
       "tables_nesting": "Program headers: at most 128 entries of exactly 32 bytes. Section headers: at most 65535 entries of exactly 40 bytes; preflight validates the table extent but does not consume section entries.",
       "arithmetic": {
         "safe": "SAFE",
         "evidence": [
-          "src/core/nk_iso.c:nk_iso_elf32_mips_usable",
-          "src/core/nk_iso.c:nk_iso_elf32_mips_usable",
+          "src/core/nk_iso.c:nk_elf32_mips_layout_violation",
+          "src/core/nk_iso.c:nk_elf32_mips_layout_violation",
           "src/core/nk_iso.c:nk_iso_extent_is_zero_filled"
         ]
       },
@@ -1591,19 +1591,23 @@
       "status": "PARTIAL"
     },
     {
-      "boundary": "PSP font cache manifest.json reader (jpn0.pgf declaration and digests)",
+      "boundary": "PSP font cache manifest.json reader, PGF import, and the per-slot font sources (v2 cache)",
       "id": "nk-font-cache-manifest",
-      "entry": "src/core/nk_font.c:nk_font_check_cache src/core/nk_font.c:nk_font_validate_pgf",
+      "entry": "src/core/nk_font.c:nk_font_check_cache src/core/nk_font.c:nk_font_inspect_pgf src/core/nk_font.c:nk_font_import_folder",
       "source_paths": [
         "src/core/nk_font.c",
         "src/core/nk_font.h",
-        "src/core/nk_json.h"
+        "src/core/nk_font_slots.h",
+        "src/core/nk_json.h",
+        "src/rt/pgf_public.c"
       ],
       "test_paths": [
         "tests/native/test_player_state.c",
-        "tools/test_font_provisioning.py"
+        "tests/native/test_launch_resolution.c",
+        "tools/test_font_provisioning.py",
+        "tools/test_pgf_validate_parity.py"
       ],
-      "max_input": "1 MiB manifest cap at src/core/nk_font.c:nk_font_check_cache; each declared file's size and sha256 are verified against the cache copy. The PGF is not byte-capped: nk_font_validate_pgf only bounds its own header read and streams the whole file through a 64 KiB digest buffer, so its peak memory is fixed while the accepted PGF size is not.",
+      "max_input": "1 MiB manifest cap at src/core/nk_font.c:font_load_manifest (length > 1024 * 1024). Manifest entries are accepted only for the three slot file names, so the 'files' member count is at most three. Each PGF is refused above NK_FONT_PGF_MAX_BYTES (16 MiB) before its bytes are read, in src/core/nk_font.c:font_read_file, and the native reader src/rt/pgf_public.c:pgf_validate_memory bounds its own counts (1,048,576 ceilings) and section extents before any glyph is read. Each declared file's size and sha256 are checked against the cache copy.",
       "tables_nesting": "The 'files' object member count is not capped; entries are a flat name-to-object map, and nk_json depth 16 applies.",
       "arithmetic": {
         "safe": "SAFE",
@@ -1614,17 +1618,16 @@
       },
       "allocation_time": "One bounded manifest read; file verification is linear in each declared file's size.",
       "failure_atomicity": "Every malformed-manifest path frees the AST and returns NK_FONT_STATUS_INVALID with the remediation text instead of a partial cache state; the product surfaces the message rather than a mystery blank screen.",
-      "harness": "tests/native/test_player_state.c calls nk_font_check_cache and nk_font_validate_pgf directly under make CC=gcc native-core-tests (MISSING, corrupt-JSON, hash-mismatch, and OK cases at tests/native/test_player_state.c:main), and tools/test_font_provisioning.py covers the same contract through the Python twin",
-      "gap": "The native reader is reached by deterministic native cases, so its malformed-manifest behaviour is established for src/core/nk_font.c and not only for the Python twin; what is still absent is a seeded byte-mutation campaign, a sanitizer campaign, and a bound on the 'files' member count inside the 1 MiB cap.",
+      "harness": "tests/native/test_player_state.c calls nk_font_check_cache, nk_font_inspect_pgf, nk_font_import_folder, nk_font_remove_imports and the player's import and preflight under make CC=gcc native-core-tests; tools/test_pgf_validate_parity.py builds tests/native/pgf_verdict_harness.c and compares it with tools/nk_core/fonts.py",
+      "gap": "The native reader is reached by deterministic native cases, so the malformed-manifest and refused-PGF behaviour is established for src/core/nk_font.c and not only for the Python twin; the Python mirror is pinned to the native reader by tools/test_pgf_validate_parity.py. Still absent: a seeded byte-mutation campaign on the native path and a sanitizer campaign.",
       "malformed_input_coverage": [
-        "native: absent manifest (MISSING), corrupt JSON manifest, declared size/digest mismatch, and a valid manifest, all through nk_font_check_cache",
-        "Python twin: missing manifest, unreadable or non-object manifest, wrong schema_version, and absent 'files'/'jpn0.pgf' entries"
+        "native: absent manifest (MISSING), corrupt JSON manifest, declared size/digest mismatch, a valid manifest, a refused PGF (truncated, bad magic, first > last, revision 4, 412-byte header under revision 2, over 16 MiB), and per-slot import with duplicate and refused files, all through nk_font.c",
+        "Python twin and parity: the same refusals and header facts compared field by field against the native reader on a seeded corpus built with tools/pgf_writer.py"
       ],
       "resource_gaps": [
-        "No malformed-manifest case is generated byte-wise; the native cases are hand-written documents, so nothing probes a manifest near the 1 MiB cap.",
-        "The 'files' member count is unbounded within the 1 MiB cap.",
-        "The PGF is not byte-capped, so a declared font file is hashed in full.",
-        "No seeded mutation or sanitizer campaign."
+        "No malformed-manifest case is generated byte-wise on the native side; the native cases are hand-written documents plus the parity corpus.",
+        "The native manifest read is capped at 1 MiB, but the PGF import reads each chosen file once into memory, up to 16 MiB per slot.",
+        "No seeded mutation or sanitizer campaign on the native path."
       ],
       "campaigns": {
         "deterministic_regression": {
@@ -1874,16 +1877,18 @@
       "status": "PARTIAL"
     },
     {
-      "boundary": "Performance-summary JSON consumed by the diff tool",
+      "boundary": "Performance-summary JSON consumed by the diff tool and the present-cadence attribution report",
       "id": "python-performance-summary-json",
-      "entry": "tools/perf_summary_diff.py:load_summary; tools/perf_summary_diff.py:validate_summary",
+      "entry": "tools/perf_summary_diff.py:load_summary; tools/perf_summary_diff.py:validate_summary; tools/perf_attribution.py:_summary_block",
       "source_paths": [
-        "tools/perf_summary_diff.py"
+        "tools/perf_summary_diff.py",
+        "tools/perf_attribution.py"
       ],
       "test_paths": [
-        "tools/test_perf_summary_diff.py"
+        "tools/test_perf_summary_diff.py",
+        "tools/test_perf_attribution.py"
       ],
-      "max_input": "No byte cap: load_summary reads the whole file before json.loads.",
+      "max_input": "No byte cap: load_summary reads the whole file before json.loads. tools/perf_attribution.py reads the same file through load_summary and adds no cap of its own.",
       "tables_nesting": "No explicit nesting or aggregate member-count limit. The consumed top-level/object shapes are checked after parsing; each transitions.top_pcs direction is capped at 16 entries, while boundaries has no count cap.",
       "arithmetic": {
         "safe": "PARTIAL",
@@ -1909,7 +1914,8 @@
         "deterministic_regression": {
           "status": "IN_CI",
           "tests": [
-            "tools/test_perf_summary_diff.py"
+            "tools/test_perf_summary_diff.py",
+            "tools/test_perf_attribution.py"
           ],
           "runner": "Python unit-test shards in .github/workflows/ci.yml"
         },
@@ -1922,6 +1928,62 @@
           "status": "NOT_COVERED",
           "target": null,
           "instrumentation": "No sanitizer campaign for this Python JSON route.",
+          "ci": false
+        },
+        "coverage_guided_fuzzer": "NOT_CONFIGURED",
+        "overflow_oob_mutation_kill": "NOT_RUN"
+      },
+      "status": "PARTIAL"
+    },
+    {
+      "boundary": "SR_PERF and SR_PRESENT_TRACE stderr lines read by the present-cadence and cost attribution report",
+      "id": "python-perf-attribution-stderr-log",
+      "entry": "tools/perf_attribution.py:scan_log; tools/perf_attribution.py:_read_lines; tools/perf_attribution.py:_Scan.feed",
+      "source_paths": [
+        "tools/perf_attribution.py"
+      ],
+      "test_paths": [
+        "tools/test_perf_attribution.py"
+      ],
+      "max_input": "No byte cap on the log. It is streamed one physical line at a time, each read is limited to MAX_LINE_CHARS + 1 characters, and an overlong line is classified by its head while its remainder is discarded in bounded pieces.",
+      "tables_nesting": "No nesting. Retained state is one counter per distinct vblank interval, one (wall, cpu) pair per paired one-second telemetry line, and diagnostic examples capped at MAX_EXAMPLES per kind.",
+      "arithmetic": {
+        "safe": "PARTIAL",
+        "evidence": [
+          "tools/perf_attribution.py:_interval_stats",
+          "tools/perf_attribution.py:_Scan._feed_present"
+        ]
+      },
+      "allocation_time": "Line-at-a-time streaming with per-line allocation bounded by the read limit. Telemetry totals are float sums of printed milliseconds: they cannot overflow but are not exact.",
+      "failure_atomicity": "scan_log raises PerfAttributionError for an unopenable path, a non-UTF-8 line or a refused summary before analyze returns anything, and it writes no files.",
+      "harness": "tools/test_perf_attribution.py feeds synthetic logs covering malformed HOST_PRESENT_SUBMITTED and telemetry lines, out-of-range fields, overlong and CRLF lines, non-UTF-8 and missing inputs, non-monotonic f, and a line-accounting identity. Its source pins render the printf literals of src/rt/hle.c and src/rt/perf.c through the parser patterns.",
+      "gap": "No byte cap on the whole log, and no seeded mutation, sanitizer or coverage-guided campaign for this reader. Coverage is deterministic and synthetic only.",
+      "malformed_input_coverage": [
+        "A HOST_PRESENT_SUBMITTED line that is truncated, has a seven-digit buffer, an fmt outside 0..3, a non-positive stride, a zero buffer or an f above 32 bits is counted as malformed and never as a present.",
+        "A PERF or PERF_ATTRIB line missing a field is counted as malformed and left out of the cost shares.",
+        "A line longer than MAX_LINE_CHARS is classified by its head, and a non-UTF-8 log is refused with PerfAttributionError."
+      ],
+      "resource_gaps": [
+        "No cap on the total log size or on the number of presents; a long run grows the interval counter and the telemetry lists linearly.",
+        "No seeded mutation or sanitizer campaign for this reader."
+      ],
+      "campaigns": {
+        "deterministic_regression": {
+          "status": "IN_CI",
+          "tests": [
+            "tools/test_perf_attribution.py"
+          ],
+          "runner": "Python unit-test shards in .github/workflows/ci.yml"
+        },
+        "seeded_mutations": {
+          "status": "NOT_AVAILABLE",
+          "tests": [],
+          "campaign": "No seeded byte-mutation campaign located for this reader."
+        },
+        "sanitizer": {
+          "status": "NOT_COVERED",
+          "target": null,
+          "instrumentation": "No sanitizer campaign for this Python text route.",
           "ci": false
         },
         "coverage_guided_fuzzer": "NOT_CONFIGURED",

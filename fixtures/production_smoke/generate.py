@@ -831,6 +831,7 @@ def verify(build_dir: Path, mode: str = "aot") -> int:
         "guest_printf.o",
         "perf.o",
         "fbcap_policy.o",
+        "fbcap.o",
         "ge_capture.o",
         "vfpu_interp.o",
         "hle.o",

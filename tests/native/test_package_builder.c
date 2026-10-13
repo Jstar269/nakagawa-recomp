@@ -164,10 +164,10 @@ static void test_reused_session_restarts_the_clock(void) {
 static void test_state_machine_transitions(void) {
     printf("[PACKAGE_BUILDER_TEST] Subtest 2: state machine transitions\n");
     PackageBuildSession session;
-    package_builder_init_session(&session, "ULUS10041", "Street Supremacy");
+    package_builder_init_session(&session, "TEST80001", "Synthetic Package Fixture");
 
-    assert(strcmp(session.disc_id, "ULUS10041") == 0);
-    assert(strcmp(session.title_name, "Street Supremacy") == 0);
+    assert(strcmp(session.disc_id, "TEST80001") == 0);
+    assert(strcmp(session.title_name, "Synthetic Package Fixture") == 0);
     assert(session.current_stage == PACKAGE_BUILD_STAGE_IDLE);
     assert(!session.is_building);
     assert(!session.is_complete);
@@ -207,7 +207,7 @@ static void test_state_machine_transitions(void) {
 
     /* Test failure transition */
     PackageBuildSession fail_session;
-    package_builder_init_session(&fail_session, "ULES00123", "Encrypted Title");
+    package_builder_init_session(&fail_session, "TEST80002", "Encrypted Title");
     const char *l_err = "{\"stage\": \"preflight\", \"status\": \"FAIL\", \"message\": \"Encrypted executable. Supply a matching local key or decrypted modules.\"}";
     assert(package_builder_parse_progress_line(l_err, strlen(l_err), &ev));
     package_builder_apply_event(&fail_session, &ev);
@@ -274,7 +274,7 @@ static void test_python_and_cli_discovery(void) {
 static void test_session_cancellation(void) {
     printf("[PACKAGE_BUILDER_TEST] Subtest 5: session cancellation\n");
     PackageBuildSession session;
-    package_builder_init_session(&session, "ULUS10041", "Cancel Test");
+    package_builder_init_session(&session, "TEST80001", "Cancel Test");
     session.is_building = true;
 
     package_builder_cancel(&session);
@@ -374,6 +374,38 @@ static int run_build_package_route(const char *install_root,
     }
     printf("PACKAGE_BUILD_ROUTE status=PASS\n");
     return 0;
+}
+
+/* A build child that exits 0 without ever reporting a package PASS must end the
+ * session as a failure. Before this, the session stayed in the building state
+ * with no terminal flag, so the screen read "Building package..." forever. The
+ * child is this test binary run with --child-exit-zero. */
+static const char *s_self_executable;
+
+static void test_clean_exit_without_completion_is_a_failure(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest: clean exit without a package event\n");
+    assert(s_self_executable && s_self_executable[0]);
+    const char *child_argv[] = { s_self_executable, "--child-exit-zero", NULL };
+
+    PackageBuildSession session;
+    package_builder_init_session(&session, "TEST80003", "Synthetic Exit Fixture");
+    session.is_building = true;
+    session.start_time_ms = 0;
+    bool spawned = nk_platform_spawn_process(s_self_executable, child_argv, NULL, NULL,
+                                             &session.process);
+    assert(spawned);
+
+    uint64_t deadline = route_now_ms() + 30000u;
+    while (session.is_building && route_now_ms() < deadline) {
+        package_builder_poll(&session, route_now_ms());
+        if (session.is_building) route_pause_ms(10);
+    }
+    assert(!session.is_building);
+    assert(session.exit_code == 0);
+    assert(!session.is_complete);
+    assert(session.is_failed);
+    assert(session.current_stage == PACKAGE_BUILD_STAGE_FAILED);
+    assert(strstr(session.failure_boundary, "without confirming a package") != NULL);
 }
 
 static void test_cli_search_order_and_guidance(void) {
@@ -692,6 +724,8 @@ static void test_remove_downloaded_tools_preserves_other_app_data(void) {
 }
 
 int main(int argc, char *argv[]) {
+    if (argc == 2 && strcmp(argv[1], "--child-exit-zero") == 0) return 0;
+    s_self_executable = argv[0];
     if (argc == 3 && strcmp(argv[1], "--find-cli") == 0) {
         char cli_path[NK_MAX_PATH];
         if (!package_builder_find_cli(argv[2], cli_path, sizeof(cli_path))) {
@@ -716,6 +750,7 @@ int main(int argc, char *argv[]) {
     test_elapsed_time_advances_while_building();
     test_reused_session_restarts_the_clock();
     test_state_machine_transitions();
+    test_clean_exit_without_completion_is_a_failure();
     test_output_line_circular_buffer();
     test_python_and_cli_discovery();
     test_session_cancellation();

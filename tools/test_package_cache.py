@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -92,6 +93,36 @@ class PackageCacheTests(unittest.TestCase):
         assert match is not None
         native_limit = int(match.group(1)) * 1024 * 1024
         self.assertEqual(native_limit, package_cache.MAX_BUILD_REPORT_JSON_BYTES)
+
+    def test_package_epochs_follow_the_cpustate_abi_version(self) -> None:
+        """A CpuState layout change must bump both package-layer epochs, in Python and in the
+        native validator header, and the table must know the current layout version."""
+        recomp = (ROOT / "src/rt/recomp.h").read_text(encoding="utf-8")
+        version = re.search(r"(?m)^#define SR_CPUSTATE_ABI_VERSION (\d+)u$", recomp)
+        self.assertIsNotNone(version)
+        assert version is not None
+        cpustate_version = int(version.group(1))
+        self.assertEqual(max(package_cache.CPUSTATE_ABI_EPOCHS), cpustate_version)
+        self.assertEqual(
+            package_cache.CPUSTATE_ABI_EPOCHS[cpustate_version],
+            (package_cache.GENERATED_CODE_ABI_EPOCH, package_cache.RUNTIME_ABI_EPOCH),
+        )
+        self.assertIn(package_cache.RUNTIME_ABI_EPOCH, package_cache.RUNTIME_ABI_COMPATIBILITY)
+        # A layout change is never a compatible runtime change: the older epoch may not serve the
+        # current one.
+        for older in range(1, package_cache.RUNTIME_ABI_EPOCH):
+            self.assertFalse(package_cache.runtime_abi_compatible(older, package_cache.RUNTIME_ABI_EPOCH))
+        import codegen
+        self.assertEqual(codegen.CPU_STATE_ABI_VERSION, cpustate_version)
+        header = (ROOT / "src/core/nk_title_manifest.h").read_text(encoding="utf-8")
+        for macro, expected in (
+            ("NK_AOT_GENERATED_CODE_ABI_EPOCH", package_cache.GENERATED_CODE_ABI_EPOCH),
+            ("NK_AOT_RUNTIME_ABI_EPOCH", package_cache.RUNTIME_ABI_EPOCH),
+        ):
+            match = re.search(rf"(?m)^#define {macro} (\d+)$", header)
+            self.assertIsNotNone(match, macro)
+            assert match is not None
+            self.assertEqual(int(match.group(1)), expected, macro)
 
     def key(self, **overrides):
         values = {
@@ -219,7 +250,7 @@ class PackageCacheTests(unittest.TestCase):
         self.assertIn("aot:analyzer_sha256", analyzer_change.reasons)
 
         abi_change = package_cache.compare_cache_keys(
-            current, self.key(generated_code_abi_epoch=2)
+            current, self.key(generated_code_abi_epoch=package_cache.GENERATED_CODE_ABI_EPOCH + 1)
         )
         self.assertEqual(abi_change.action, "aot-regenerate")
         self.assertIn("aot:generated_code_abi_epoch", abi_change.reasons)
@@ -251,17 +282,18 @@ class PackageCacheTests(unittest.TestCase):
         )
         self.assertEqual(public_safe_change.action, "native-recompile")
 
-        runtime_v2 = self.key(runtime_abi_epoch=2)
+        this_epoch = package_cache.RUNTIME_ABI_EPOCH
+        runtime_next = self.key(runtime_abi_epoch=this_epoch + 1)
         self.assertEqual(
-            package_cache.compare_cache_keys(current, runtime_v2).action,
+            package_cache.compare_cache_keys(current, runtime_next).action,
             "aot-regenerate",
         )
         with mock.patch.dict(
             package_cache.RUNTIME_ABI_COMPATIBILITY,
-            {1: frozenset({1, 2})},
+            {this_epoch: frozenset({this_epoch, this_epoch + 1})},
             clear=True,
         ):
-            compatible = package_cache.compare_cache_keys(current, runtime_v2)
+            compatible = package_cache.compare_cache_keys(current, runtime_next)
         self.assertEqual(compatible.action, "native-recompile")
         self.assertTrue(compatible.generated_c_reusable)
         self.assertIn("aot:runtime_abi_epoch", compatible.reasons)
@@ -477,6 +509,165 @@ class PackageCacheTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("unreadable", reason)
 
+    def _completed_package(self, name: str) -> tuple[Path, dict]:
+        """A complete synthetic AOT package: executable, runtime image, one generated object, one nested asset."""
+        package_dir = self.root / name
+        package_dir.mkdir()
+        executable = package_dir / "synthetic.exe"
+        image = package_dir / "synthetic_image.bin"
+        generated = package_dir / "synthetic_recomp.o"
+        executable.write_bytes(b"native")
+        image.write_bytes(b"image" * 4096)
+        generated.write_bytes(b"object")
+        (package_dir / "assets").mkdir()
+        (package_dir / "assets" / "nested.bin").write_bytes(b"nested")
+        key = self.key()
+        cache = package_cache.cache_metadata(
+            key, {"profile": "none", "funcs_per_chunk": 2000}
+        )
+        package = {
+            "format": "nakagawa-aot-package",
+            "schema_version": 2,
+            "title": {
+                "id": self.identity["manifest"]["id"],
+                "manifest_sha256": self.inputs["manifest"]["sha256"],
+            },
+            "title_input_identity": self.identity,
+            "cache": cache,
+            "inputs": self.inputs,
+            "executable": {
+                "path": executable.name,
+                "sha256": package_cache.sha256_file(executable),
+            },
+            "generated_objects": [{
+                "path": generated.name,
+                "sha256": package_cache.sha256_file(generated),
+            }],
+        }
+        (package_dir / "package.json").write_text(
+            package_cache.canonical_json(package), encoding="utf-8"
+        )
+        (package_dir / "build-report.json").write_text(
+            package_cache.canonical_json({"cache": cache}), encoding="utf-8"
+        )
+        package_cache.write_completion_manifest(package_dir, key)
+        return package_dir, key
+
+    def test_completion_validation_reads_each_artifact_once_and_keeps_the_set_check(self) -> None:
+        # Fast path: the artifact-set check enumerates paths and reads no bytes.
+        # Slow path: the digest-bearing writer enumeration must describe the same
+        # path set on every layout, and validation must still accept or refuse
+        # the package exactly as the set check always did.
+        package_dir, key = self._completed_package("reads-once")
+        image = package_dir / "synthetic_image.bin"
+
+        real_sha256 = package_cache.sha256_file
+        hashed: list[str] = []
+
+        def recording(path):
+            hashed.append(Path(path).name)
+            return real_sha256(path)
+
+        with mock.patch.object(package_cache, "sha256_file", side_effect=recording):
+            valid, reason = package_cache.validate_package_cache(package_dir, expected_key=key)
+        self.assertTrue(valid, reason)
+        # Listed artifacts are read once each, by the completion check's own loop.
+        # The set check no longer reads them a second time.
+        self.assertEqual(hashed.count("synthetic_image.bin"), 1)
+        self.assertEqual(hashed.count("nested.bin"), 1)
+        self.assertEqual(hashed.count("package.json"), 1)
+        # The executable and the generated object are digested once per validation:
+        # the package-level check computes the digest and the completion check reuses it.
+        self.assertEqual(hashed.count("synthetic.exe"), 1)
+        self.assertEqual(hashed.count("synthetic_recomp.o"), 1)
+
+        extra = package_dir / "late_extra.bin"
+        extra.write_bytes(b"unlisted" * 1024)
+        hashed.clear()
+        with mock.patch.object(package_cache, "sha256_file", side_effect=recording):
+            valid, reason = package_cache.validate_package_cache(package_dir, expected_key=key)
+        self.assertFalse(valid)
+        self.assertIn("artifact set does not match", reason)
+        # An unlisted file is refused by its path alone; its bytes are never read.
+        self.assertNotIn("late_extra.bin", hashed)
+        extra.unlink()
+
+        def paths_fast(directory: Path) -> set[str]:
+            return {
+                package_cache._safe_relative(relative)
+                for relative, _ in package_cache._artifact_candidates(directory)
+            }
+
+        def paths_slow(directory: Path) -> set[str]:
+            return {record["path"] for record in package_cache._artifact_records(directory)}
+
+        nested_dir = package_dir / "deep" / "er"
+        nested_dir.mkdir(parents=True)
+        (nested_dir / "leaf.bin").write_bytes(b"leaf")
+        (package_dir / "empty_dir").mkdir()
+        self.assertIn("deep/er/leaf.bin", paths_fast(package_dir))
+        self.assertEqual(paths_fast(package_dir), paths_slow(package_dir), "with-deep-leaf")
+        (nested_dir / "leaf.bin").unlink()
+        self.assertNotIn("deep/er/leaf.bin", paths_fast(package_dir))
+        self.assertEqual(paths_fast(package_dir), paths_slow(package_dir), "after-leaf-removed")
+
+        link = package_dir / "linked.bin"
+        try:
+            os.symlink(image, link)
+        except (OSError, NotImplementedError):
+            self.skipTest("symbolic links are unavailable on this host")
+        for enumerate_paths in (paths_fast, paths_slow):
+            with self.assertRaisesRegex(package_cache.PackageCacheError, "symlink artifact"):
+                enumerate_paths(package_dir)
+        valid, reason = package_cache.validate_package_cache(package_dir, expected_key=key)
+        self.assertFalse(valid)
+        self.assertIn("symlink artifact", reason)
+        link.unlink()
+
+    def test_shared_digests_still_refuse_each_disagreeing_record(self) -> None:
+        # The package-level check digests the executable and each generated object
+        # once, and the completion check reuses that digest. Each disagreeing record
+        # must still be refused with its own named reason, and each record that
+        # agrees must still be accepted.
+        package_dir, key = self._completed_package("shared-digest")
+        manifest_path = package_dir / package_cache.COMPLETION_MANIFEST
+        package_path = package_dir / "package.json"
+        manifest_bytes = manifest_path.read_bytes()
+        package_bytes = package_path.read_bytes()
+
+        def completion_record_disagrees(name: str) -> None:
+            document = json.loads(manifest_bytes.decode("utf-8"))
+            for record in document["artifacts"]:
+                if record["path"] == name:
+                    record["sha256"] = "0" * 64
+            manifest_path.write_text(package_cache.canonical_json(document), encoding="utf-8")
+
+        for name in ("synthetic.exe", "synthetic_recomp.o"):
+            completion_record_disagrees(name)
+            valid, reason = package_cache.validate_package_cache(package_dir, expected_key=key)
+            self.assertFalse(valid, name)
+            self.assertEqual(reason, f"completion artifact digest mismatch: {name}")
+            manifest_path.write_bytes(manifest_bytes)
+
+        document = json.loads(package_bytes.decode("utf-8"))
+        document["executable"]["sha256"] = "0" * 64
+        package_path.write_text(package_cache.canonical_json(document), encoding="utf-8")
+        valid, reason = package_cache.validate_package_cache(package_dir, expected_key=key)
+        self.assertFalse(valid)
+        self.assertEqual(reason, "package executable digest is stale")
+        package_path.write_bytes(package_bytes)
+
+        document = json.loads(package_bytes.decode("utf-8"))
+        document["generated_objects"][0]["sha256"] = "0" * 64
+        package_path.write_text(package_cache.canonical_json(document), encoding="utf-8")
+        valid, reason = package_cache.validate_package_cache(package_dir, expected_key=key)
+        self.assertFalse(valid)
+        self.assertEqual(reason, "package generated object digest is stale: synthetic_recomp.o")
+        package_path.write_bytes(package_bytes)
+
+        valid, reason = package_cache.validate_package_cache(package_dir, expected_key=key)
+        self.assertTrue(valid, reason)
+
     def test_flagship_sized_build_report_is_accepted(self) -> None:
         # A flagship build report is about 1.3 MB, past the shared 1 MiB byte
         # ceiling, so the package route rejected it with PACKAGE_BUILD_INCOMPLETE
@@ -553,6 +744,30 @@ class PackageCacheTests(unittest.TestCase):
             title_codegen_plan._build_report_text(report)
         self.assertEqual(caught.exception.code, "PACKAGE_REPORT_TOO_LARGE")
         self.assertIn("rejected by the package reader", str(caught.exception))
+
+    def test_artifact_order_ignores_the_profile_stamp_hash(self) -> None:
+        # A profile stamp is named by a hash over its entries, and the entries carry CFLAGS,
+        # which carry the build directory. Two output roots that build the same inputs
+        # therefore name the stamp differently: a hash starting with "f" sorts the stamp
+        # after the entries file, any other hash sorts it before. The manifest records must
+        # come out in the same order either way. Both orders are forced here by name.
+        with tempfile.TemporaryDirectory() as tmp:
+            for stamp_hash in ("0123456789abcdef0123", "fedcba9876543210fedc"):
+                package = Path(tmp) / stamp_hash
+                package.mkdir()
+                (package / ".runtime-profile-entries").write_text(
+                    "CFLAGS=fixture\n", encoding="utf-8")
+                (package / f".runtime-profile-{stamp_hash}").write_bytes(b"")
+                (package / "build-report.json").write_text("{}", encoding="utf-8")
+                paths = [record["path"] for record in package_cache._artifact_records(package)]
+                self.assertEqual(
+                    paths,
+                    [f".runtime-profile-{stamp_hash}",
+                     ".runtime-profile-entries",
+                     "build-report.json"],
+                    "the record order follows the stamp's hash, so two output roots "
+                    "building the same inputs write different completion manifests",
+                )
 
     def test_completion_manifest_accepts_gcc_runtime_dll_artifact_names(self) -> None:
         # Host runtime closure DLLs ship inside packages and GCC/MSYS2 library
@@ -681,6 +896,244 @@ class PackageCacheTests(unittest.TestCase):
                 compiler_name=environment.get("CC", "gcc"),
             )
             self.assertEqual(cli_key, planner_key)
+
+    def test_compiler_target_is_the_c_compiler_not_the_planning_interpreter(self) -> None:
+        # The native objects are built by CC, so the key must name that compiler's
+        # target. The planner and the CLI can run under different interpreters (the
+        # player's MSYS2 python and the Python on PATH report different sysconfig
+        # platforms for the same gcc), so an interpreter-derived target made the native
+        # key change between two builds of the same inputs.
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in ("NK_TARGET_TRIPLE", "CC_TARGET")}
+        gcc = shutil.which("gcc", path=environment.get("PATH"))
+        if gcc is None:
+            self.skipTest("gcc is not on PATH, so there is no compiler target to read")
+        expected = subprocess.run(
+            [gcc, "-dumpmachine"], capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        self.assertTrue(expected)
+        # The interpreter's platform is varied on purpose and must not reach the key: the
+        # mocks are asserted to be unconsulted, so a future regression that reads them
+        # fails here instead of silently passing with the value unchanged.
+        targets = set()
+        for machine, interpreter_platform in (("AMD64", "win-amd64"),
+                                              ("AMD64", "mingw_x86_64_ucrt_gnu"),
+                                              ("x86_64", "linux-x86_64")):
+            with mock.patch("platform.machine", return_value=machine) as machine_probe, \
+                    mock.patch("sysconfig.get_platform",
+                               return_value=interpreter_platform) as platform_probe:
+                targets.add(package_cache.compiler_target(environment))
+            machine_probe.assert_not_called()
+            platform_probe.assert_not_called()
+        self.assertEqual(targets, {expected})
+        self.assertEqual(
+            package_cache.compiler_target({**environment, "CC": "no-such-compiler-nk"}),
+            "no-such-compiler-nk:unavailable",
+        )
+        self.assertEqual(
+            package_cache.compiler_target({**environment, "NK_TARGET_TRIPLE": "fixture-target"}),
+            "fixture-target",
+        )
+
+    def test_relative_cc_resolves_identity_and_target_to_the_same_compiler(self) -> None:
+        # A relative CC that PATH does not provide names a file under the repository root.
+        # The identity and the target must resolve that one file: otherwise the key could
+        # fingerprint one compiler while naming the target of another.
+        with tempfile.TemporaryDirectory() as tmp:
+            repository = Path(tmp).resolve()
+            compiler = repository / "nk-fixture-cc"
+            compiler.write_bytes(b"fixture compiler bytes")
+            environment = {"CC": "nk-fixture-cc", "PATH": ""}
+            completed = subprocess.CompletedProcess(
+                [str(compiler), "-dumpmachine"], 0, stdout="fixture-target\n", stderr="",
+            )
+            with mock.patch.object(package_cache.subprocess, "run",
+                                   return_value=completed) as run:
+                target = package_cache.compiler_target(
+                    environment, repository_root=repository,
+                )
+            self.assertEqual(target, "fixture-target")
+            self.assertEqual(run.call_args.args[0], [str(compiler), "-dumpmachine"])
+            self.assertEqual(
+                package_cache.compiler_identity(
+                    environment=environment, repository_root=repository,
+                ),
+                f"nk-fixture-cc:{package_cache.sha256_file(compiler)}",
+            )
+            # Without the repository root neither can find the compiler, and both say so.
+            self.assertEqual(
+                package_cache.compiler_target(environment),
+                "nk-fixture-cc:unavailable",
+            )
+            self.assertEqual(
+                package_cache.compiler_identity(environment=environment),
+                "nk-fixture-cc:unavailable",
+            )
+
+    # A generated-code stage: the outputs of one generation phase, named as the planner
+    # names them for the game "game", recorded with the package completion discipline.
+    STAGE_FILES = {
+        "game_recomp.c": b"generated entry table",
+        "game_recomp_0.c": b"generated chunk 0",
+        "game_recomp_1.c": b"generated chunk 1",
+        "game_recomp_funcs.h": b"generated declarations",
+        "game_recomp_stubs.txt": b"generated stub report",
+        "game_image.bin": b"runtime image",
+        "game_imports.toml": b"import table",
+    }
+    STAGE_REQUIRED = {
+        "game_recomp.c", "game_recomp_funcs.h", "game_recomp_stubs.txt",
+        "game_image.bin", "game_imports.toml",
+    }
+
+    def _aot_stage(self, name: str, key=None, files=None) -> tuple[Path, dict]:
+        stage = self.root / name
+        stage.mkdir()
+        for file_name, data in (files or self.STAGE_FILES).items():
+            (stage / file_name).write_bytes(data)
+        key = key or self.key()
+        package_cache.write_completion_manifest(
+            stage, key, title_input_identity=self.identity
+        )
+        return stage, key
+
+    def _stage_decision(self, stage: Path, key) -> package_cache.AotStageDecision:
+        return package_cache.evaluate_aot_stage(
+            stage, key, required_paths=set(self.STAGE_REQUIRED)
+        )
+
+    def test_aot_stage_is_accepted_with_an_intact_record_and_equal_generated_code_key(self) -> None:
+        stage, key = self._aot_stage("stage")
+        decision = self._stage_decision(stage, key)
+        self.assertTrue(decision.accepted, decision)
+        self.assertEqual(decision.code, package_cache.AOT_STAGE_ACCEPTED)
+        self.assertEqual(decision.reasons, ())
+        self.assertEqual(decision.artifacts, {
+            name: package_cache.sha256_bytes(data) for name, data in self.STAGE_FILES.items()
+        })
+        # Generated C does not depend on the native toolchain, exactly as the
+        # native-only reuse of a package's generated C allows.
+        native_change = self._stage_decision(stage, self.key(compiler="gcc:other"))
+        self.assertTrue(native_change.accepted, native_change)
+
+    def test_every_aot_stage_refusal_is_named(self) -> None:
+        stage, key = self._aot_stage("refusals")
+
+        def refused(directory: Path, current, code: str, *reasons: str) -> None:
+            decision = self._stage_decision(directory, current)
+            self.assertFalse(decision.accepted, decision)
+            self.assertEqual(decision.code, code, decision)
+            self.assertEqual(decision.artifacts, {})
+            for reason in reasons:
+                self.assertIn(reason, decision.reasons)
+
+        # A changed input, generator or codegen option is a key mismatch, named by
+        # what changed, with every changed component listed.
+        refused(stage, self.key(input_hashes={**self.inputs, "manifest": {"sha256": "7" * 64}}),
+                package_cache.AOT_STAGE_INPUT_CHANGED, "aot:manifest_sha256")
+        changed_identity = package_cache.build_title_input_identity(
+            manifest={"id": "synthetic-cache-test", "schema_version": 1},
+            executable_name="EBOOT.BIN",
+            executable_sha256="2" * 64,
+            modules=[],
+            disc_id="TEST00001",
+            region="TEST",
+            disc_version="1.01",
+        )
+        refused(stage, self.key(title_input_identity=changed_identity),
+                package_cache.AOT_STAGE_INPUT_CHANGED, "aot:title_input_identity_sha256")
+        refused(stage, self.key(codegen_sha256="8" * 64),
+                package_cache.AOT_STAGE_GENERATOR_CHANGED, "aot:codegen_sha256")
+        refused(stage, self.key(analyzer_sha256="8" * 64),
+                package_cache.AOT_STAGE_GENERATOR_CHANGED, "aot:analyzer_sha256")
+        refused(stage, self.key(generated_code_abi_epoch=package_cache.GENERATED_CODE_ABI_EPOCH + 1),
+                package_cache.AOT_STAGE_GENERATOR_CHANGED, "aot:generated_code_abi_epoch")
+        refused(stage, self.key(codegen_options={"profile": "none", "funcs_per_chunk": 1000}),
+                package_cache.AOT_STAGE_OPTIONS_CHANGED, "aot:codegen_options_sha256")
+        refused(
+            stage,
+            self.key(
+                input_hashes={**self.inputs, "manifest": {"sha256": "7" * 64}},
+                codegen_options={"profile": "none", "funcs_per_chunk": 1000},
+            ),
+            package_cache.AOT_STAGE_INPUT_CHANGED,
+            "aot:manifest_sha256", "aot:codegen_options_sha256",
+        )
+
+        # A tampered, extended or shortened stage fails its own record.
+        tampered, _ = self._aot_stage("tampered")
+        (tampered / "game_recomp_1.c").write_bytes(b"generated chunk 1, edited")
+        refused(tampered, key, package_cache.AOT_STAGE_ARTIFACT_MISMATCH,
+                "completion artifact digest mismatch: game_recomp_1.c")
+        extended, _ = self._aot_stage("extended")
+        (extended / "game_recomp_2.c").write_bytes(b"a chunk the record never named")
+        refused(extended, key, package_cache.AOT_STAGE_ARTIFACT_MISMATCH,
+                "completion manifest artifact set does not match the package")
+        shortened, _ = self._aot_stage("shortened")
+        (shortened / "game_recomp_0.c").unlink()
+        refused(shortened, key, package_cache.AOT_STAGE_ARTIFACT_MISMATCH,
+                "completion artifact is missing: game_recomp_0.c")
+
+        # A stage without its completion record, or with a record that does not
+        # describe a complete generation phase, is never compiled.
+        unrecorded, _ = self._aot_stage("unrecorded")
+        (unrecorded / package_cache.COMPLETION_MANIFEST).unlink()
+        refused(unrecorded, key, package_cache.AOT_STAGE_RECORD_MISSING)
+        refused(self.root / "absent", key, package_cache.AOT_STAGE_RECORD_MISSING)
+        partial_files = dict(self.STAGE_FILES)
+        del partial_files["game_imports.toml"]
+        partial, _ = self._aot_stage("partial", files=partial_files)
+        refused(partial, key, package_cache.AOT_STAGE_INCOMPLETE,
+                "completion manifest does not cover game_imports.toml")
+        incomplete, _ = self._aot_stage("incomplete")
+        record_path = incomplete / package_cache.COMPLETION_MANIFEST
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record["status"] = "running"
+        record_path.write_text(package_cache.canonical_json(record), encoding="utf-8")
+        refused(incomplete, key, package_cache.AOT_STAGE_RECORD_INVALID,
+                "completion manifest does not mark a complete build")
+
+        self.assertEqual(
+            set(package_cache.AOT_STAGE_REFUSAL_CODES),
+            {
+                package_cache.AOT_STAGE_RECORD_MISSING,
+                package_cache.AOT_STAGE_RECORD_INVALID,
+                package_cache.AOT_STAGE_ARTIFACT_MISMATCH,
+                package_cache.AOT_STAGE_INCOMPLETE,
+                package_cache.AOT_STAGE_INPUT_CHANGED,
+                package_cache.AOT_STAGE_GENERATOR_CHANGED,
+                package_cache.AOT_STAGE_OPTIONS_CHANGED,
+            },
+        )
+
+    def test_bringup_report_names_every_aot_stage_decision(self) -> None:
+        schema = json.loads((ROOT / "assets" / "bringup_report.schema.json").read_text(
+            encoding="utf-8"
+        ))
+        reuse = schema["properties"]["codegen_reuse"]["properties"]
+        self.assertEqual(
+            set(reuse["reason"]["enum"]),
+            {"NONE", "PACKAGE_CACHE_REUSED", "AOT_STAGE_DECISION_MISSING",
+             *package_cache.AOT_STAGE_REFUSAL_CODES},
+        )
+        self.assertEqual(reuse["status"]["enum"], list(nk_cli.AOT_STAGE_RESULT_STATUSES))
+        for output, expected in (
+            ("AOT_STAGE_REUSE: ACCEPTED AOT_STAGE_ACCEPTED\n",
+             {"status": "REUSED", "reason": "NONE"}),
+            ("make output\nAOT_STAGE_REUSE: REFUSED AOT_STAGE_INPUT_CHANGED: "
+             "aot:manifest_sha256\nmore\n",
+             {"status": "REGENERATED", "reason": "AOT_STAGE_INPUT_CHANGED"}),
+            ("", {"status": "UNKNOWN", "reason": "AOT_STAGE_DECISION_MISSING"}),
+            ("AOT_STAGE_REUSE: REFUSED AOT_STAGE_SOMETHING_NEW\n",
+             {"status": "UNKNOWN", "reason": "AOT_STAGE_DECISION_MISSING"}),
+        ):
+            with self.subTest(output=output):
+                args = nk_cli.argparse.Namespace(aot_stage_dir=self.root / "stage")
+                nk_cli._record_aot_stage_decision(args, output)
+                self.assertEqual(args.aot_stage_result, expected)
+                report = nk_cli._new_bringup_report()
+                report["codegen_reuse"] = args.aot_stage_result
+                nk_cli.validate_bringup_report(report)
 
     def test_promotion_refuses_a_copy_that_fails_validation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1079,6 +1532,72 @@ class BoundedJsonArtifactTests(unittest.TestCase):
         many = package_cache.bounded_echo_fields({"f%03d" % i for i in range(500)})
         self.assertIn("(+492 more)", many)
         self.assertLess(len(many), 8 * (package_cache.MAX_JSON_ECHO_CHARS + 2) + 64)
+
+
+class NanTrapCacheKeyTests(unittest.TestCase):
+    """`make NAN_TRAP=1` changes both the generated C and the native flags inside the Makefile,
+    so the cache key must name it: a trapped and an untrapped build never share an entry."""
+
+    MANIFEST = {"executable": {"base": 0x08804000, "entry": 0x08804100}}
+    PLAN = {
+        "environment": {"GAME_BASE": "0x08804000", "GAME_ENTRY": "0x08804100", "TITLE_EXTRA_SPANS": ""},
+        "codegen_profile": "none",
+    }
+
+    def test_only_make_s_enabling_value_turns_the_trap_on(self):
+        for value, expected in (("1", True), (" 1 ", True), ("0", False), ("", False),
+                                ("yes", False), ("11", False)):
+            with self.subTest(value=value):
+                self.assertIs(package_cache.nan_trap_enabled({"NAN_TRAP": value}), expected)
+        self.assertFalse(package_cache.nan_trap_enabled({}))
+
+    def test_native_flags_name_the_trap_and_leave_untrapped_flags_unchanged(self):
+        untrapped = package_cache.native_compile_flags(environment={})
+        self.assertNotIn("NAN_TRAP", untrapped)
+        self.assertEqual(package_cache.native_compile_flags(environment={"NAN_TRAP": "0"}), untrapped)
+        self.assertEqual(
+            package_cache.native_compile_flags(environment={"NAN_TRAP": "1"}),
+            untrapped + "|NAN_TRAP=1",
+        )
+
+    def test_both_option_builders_name_the_trap_identically(self):
+        for environment in ({}, {"NAN_TRAP": "1"}):
+            with self.subTest(environment=environment):
+                cli = nk_cli._package_codegen_options(self.MANIFEST, environment)
+                with mock.patch.dict(os.environ, environment, clear=True):
+                    planner = title_codegen_plan._cache_codegen_options(
+                        self.PLAN, selected_optional=set(), funcs_per_chunk=2000
+                    )
+                self.assertEqual(cli.get("nan_trap"), planner.get("nan_trap"))
+                if environment:
+                    self.assertIs(cli["nan_trap"], True)
+                else:
+                    self.assertNotIn("nan_trap", cli)
+                    self.assertNotIn("nan_trap", planner)
+
+    def test_a_trapped_key_never_matches_an_untrapped_package(self):
+        def key(environment):
+            return package_cache.build_cache_key(
+                input_hashes={
+                    "executable": {"sha256": "1" * 64},
+                    "manifest": {"sha256": "2" * 64},
+                    "modules": [],
+                    "psp_header": None,
+                },
+                codegen_options=nk_cli._package_codegen_options(self.MANIFEST, environment),
+                analyzer_sha256="3" * 64,
+                codegen_sha256="4" * 64,
+                compiler="gcc:test",
+                target="x86_64-test",
+                runtime_source_digest="5" * 64,
+                compile_flags=package_cache.native_compile_flags(environment=environment),
+            )
+
+        untrapped, trapped = key({}), key({"NAN_TRAP": "1"})
+        self.assertNotEqual(untrapped["aot"]["digest"], trapped["aot"]["digest"])
+        self.assertNotEqual(untrapped["native"]["digest"], trapped["native"]["digest"])
+        decision = package_cache.compare_cache_keys(trapped, untrapped)
+        self.assertEqual(decision.action, "aot-regenerate")
 
 
 if __name__ == "__main__":

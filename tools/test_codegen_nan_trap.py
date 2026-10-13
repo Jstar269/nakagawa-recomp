@@ -1076,5 +1076,37 @@ int main(void) {{
                          "one product column of four results carries the NaN")
 
 
+class Vfpu3CompareDecodeTests(unittest.TestCase):
+    """Major opcode 0x1B sub-ops 5, 6, 7 are vscmp, vsge, vslt (lane compares written as -1/0/1 or
+    1/0 floats), not vcmovt/vcmovf: the conditional moves are the VFPU4 vcmov. The flagship's
+    quaternion slerp builds its sign term with vsge (issue #69). The words below are the slerp's own
+    (0x6f1e6040: vsge.s S020 = S030 >= S720) and the same fields with sub 7 and sub 5."""
+
+    def _effect(self, word: int) -> str:
+        body, _, _ = codegen.vfpu_effect(0x00031d38, word)
+        return body
+
+    def test_sub6_is_vsge_not_a_conditional_move(self):
+        body = self._effect(0x6f1e6040)
+        self.assertIn("(_a[_i]>=_b[_i])?1.0f:0.0f", body)
+        self.assertNotIn("vcmov", body)
+        self.assertNotIn("vfpuCtrl[3]", body, "a set-compare reads no condition code")
+        # the T operand (S720, encoded 0x1e) is read with the T prefix, as any two-operand VFPU3 op
+        self.assertIn("s->vfpuCtrl[1]", body)
+
+    def test_sub7_is_vslt(self):
+        body = self._effect(0x6f1e6040 | (1 << 23))
+        self.assertIn("(_a[_i]<_b[_i])?1.0f:0.0f", body)
+
+    def test_sub5_is_vscmp(self):
+        body = self._effect((0x6f1e6040 & ~(7 << 23)) | (5 << 23))
+        self.assertIn("(_a[_i]<_b[_i])?-1.0f:((_a[_i]>_b[_i])?1.0f:0.0f)", body)
+
+    def test_vfpu4_vcmov_still_decodes_as_a_conditional_move(self):
+        # vcmovt.s S000, S010, CC0: VFPU4 jump 0x15, tf=0, imm3=0, vs=1, vd=0
+        body = self._effect(0xD2A00000 | (1 << 8))
+        self.assertIn("vfpuCtrl[3]", body, "a conditional move reads the condition code")
+
+
 if __name__ == "__main__":
     unittest.main()

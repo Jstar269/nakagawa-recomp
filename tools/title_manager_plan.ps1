@@ -160,9 +160,16 @@ function Assert-TitleManagerPlan {
         $fieldModules = @($Plan.$field)
         for ($index = 0; $index -lt $fieldModules.Count; $index++) {
             $module = $fieldModules[$index]
-            Assert-TitlePlanObject $module "`$.$field[$index]" @('name', 'load_address') @('name', 'load_address') | Out-Null
-            Assert-TitlePlanString $module.name "`$.$field[$index].name" | Out-Null
-            [void](Assert-TitlePlanInteger $module.load_address "`$.$field[$index].load_address")
+            if ($module.PSObject.Properties.Name -contains 'placement') {
+                # A runtime-placed module carries no address: the guest allocator places it.
+                Assert-TitlePlanObject $module "`$.$field[$index]" @('name', 'placement') @('name', 'placement') | Out-Null
+                Assert-TitlePlanString $module.name "`$.$field[$index].name" | Out-Null
+                if ($module.placement -ne 'runtime') { throw "`$.$field[$index].placement must be runtime" }
+            } else {
+                Assert-TitlePlanObject $module "`$.$field[$index]" @('name', 'load_address') @('name', 'load_address') | Out-Null
+                Assert-TitlePlanString $module.name "`$.$field[$index].name" | Out-Null
+                [void](Assert-TitlePlanInteger $module.load_address "`$.$field[$index].load_address")
+            }
         }
     }
 

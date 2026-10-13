@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-import csv
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -18,6 +17,7 @@ from pathlib import Path
 import re
 import shutil
 import statistics
+import struct
 import subprocess
 import sys
 import time
@@ -25,13 +25,24 @@ import time
 from nk_core import inspect_iso, package_cache
 from nk_core.decrypt_boundary import key_file_path
 from nk_core.prereq_fetcher import PrerequisiteFetchError, default_data_root
+import title_manifest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 NK_CLI = ROOT / "tools" / "nk_cli.py"
 DEFAULT_TIME_BUDGET_SECONDS = 120
+# Each title's bring-up launch limit, validated against the range nk_cli.py bringup
+# --launch-timeout accepts (tools/test_library_sweep.py pins the two together).
+DEFAULT_LAUNCH_TIMEOUT_SECONDS = 20
+MAX_LAUNCH_TIMEOUT_SECONDS = 120
 MACHINE_POLL_SECONDS = 60
+MACHINE_INSPECTION_RETRY_SECONDS = 5
 MACHINE_MAX_WAIT_SECONDS = 20 * 60
+# Windows Toolhelp process snapshot (CreateToolhelp32Snapshot / Process32*W).
+_TH32CS_SNAPPROCESS = 0x00000002
+_INVALID_HANDLE_VALUE = (1 << (8 * struct.calcsize("P"))) - 1
+_ERROR_NO_MORE_FILES = 18
+_MAX_PROCESS_ENTRIES = 1 << 16
 # External per-title reports carry variable-size import inventories. The
 # project-artifact budgets accept the tested 20,000-entry reports while keeping
 # one route's parser work bounded independently of build-report.json.
@@ -215,6 +226,7 @@ class RouteOutcome:
     stage_durations_ms: dict | None = None
     build_log_path: str | None = None
     build_diagnostic: str | None = None
+    module_layout_diagnostic: str | None = None
     analyzer_diagnostic: str | None = None
 
 
@@ -333,32 +345,104 @@ def _read_existing_rows(
     return retained
 
 
-def _process_names() -> set[str]:
-    if os.name == "nt":
-        completed = subprocess.run(
-            ["tasklist", "/FO", "CSV", "/NH"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
+class ProcessInspectionError(RuntimeError):
+    """The running-process list could not be read this time; the caller may retry."""
+
+
+def _windows_process_names() -> set[str]:
+    """Read image names from a Toolhelp process snapshot, in process.
+
+    Starting a child (tasklist) per title needs a new process and console, and both
+    fail on a loaded machine; a snapshot needs neither.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class ProcessEntry32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry32W)]
+    kernel32.Process32FirstW.restype = wintypes.BOOL
+    kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry32W)]
+    kernel32.Process32NextW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    snapshot = kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
+    if snapshot is None or snapshot == _INVALID_HANDLE_VALUE:
+        raise ProcessInspectionError(
+            f"process snapshot failed (Windows error {ctypes.get_last_error()})"
         )
-        if completed.returncode != 0:
-            raise RuntimeError("could not inspect running processes before the next title")
-        names = {row[0].casefold().removesuffix(".exe")
-                 for row in csv.reader(completed.stdout.splitlines()) if row}
-    else:
+    try:
+        entry = ProcessEntry32W()
+        entry.dwSize = ctypes.sizeof(ProcessEntry32W)
+        names: set[str] = set()
+        # Clear the thread's last error first: an end of walk is told apart from a
+        # failure only by ERROR_NO_MORE_FILES, and a stale value must not pass for it.
+        ctypes.set_last_error(0)
+        more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        for listed in range(_MAX_PROCESS_ENTRIES + 1):
+            if not more:
+                error = ctypes.get_last_error()
+                if error != _ERROR_NO_MORE_FILES:
+                    raise ProcessInspectionError(
+                        f"process snapshot walk failed (Windows error {error})"
+                    )
+                return names
+            if listed == _MAX_PROCESS_ENTRIES:
+                break
+            names.add(entry.szExeFile.casefold().removesuffix(".exe"))
+            ctypes.set_last_error(0)
+            more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+        raise ProcessInspectionError(
+            f"process snapshot listed more than {_MAX_PROCESS_ENTRIES} processes"
+        )
+    finally:
+        kernel32.CloseHandle(snapshot)
+
+
+def _posix_process_names() -> set[str]:
+    try:
         completed = subprocess.run(
             ["ps", "-A", "-o", "comm="],
             capture_output=True,
             text=True,
+            errors="replace",
             check=False,
             timeout=10,
         )
-        if completed.returncode != 0:
-            raise RuntimeError("could not inspect running processes before the next title")
-        names = {Path(line.strip()).name.casefold().removesuffix(".exe")
-                 for line in completed.stdout.splitlines() if line.strip()}
-    return names
+    except (FileNotFoundError, PermissionError) as exc:
+        # A missing or forbidden ps does not heal by waiting.
+        raise RuntimeError(
+            f"could not inspect running processes before the next title: ps is unavailable "
+            f"({type(exc).__name__})"
+        ) from exc
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ProcessInspectionError(f"ps could not run ({type(exc).__name__})") from exc
+    if completed.returncode != 0:
+        raise ProcessInspectionError(f"ps exited {completed.returncode}")
+    return {Path(line.strip()).name.casefold().removesuffix(".exe")
+            for line in completed.stdout.splitlines() if line.strip()}
+
+
+def _process_names() -> set[str]:
+    if os.name == "nt":
+        return _windows_process_names()
+    return _posix_process_names()
 
 
 def _blocking_processes(process_reader=_process_names) -> set[str]:
@@ -373,18 +457,39 @@ def _wait_for_machine_idle(
     *,
     process_reader=_process_names,
     sleeper=time.sleep,
+    clock=time.monotonic,
     poll_seconds: int = MACHINE_POLL_SECONDS,
+    retry_seconds: int = MACHINE_INSPECTION_RETRY_SECONDS,
     max_wait_seconds: int = MACHINE_MAX_WAIT_SECONDS,
 ) -> tuple[int, bool]:
-    """Wait at most 20 minutes for another verifier/player/emulator to exit."""
-    started = time.monotonic()
+    """Wait at most 20 minutes for another verifier/player/emulator to exit.
+
+    A failed process inspection is retried within the same deadline. A title never
+    starts unless an inspection succeeded, so if none succeeds before the deadline the
+    sweep stops instead of running blind. ``sleeper`` must advance ``clock``: tests that
+    inject one inject both.
+    """
+    if poll_seconds <= 0 or retry_seconds <= 0:
+        raise ValueError("machine poll and retry intervals must be positive")
+    started = clock()
     deadline = started + max_wait_seconds
     while True:
-        if not _blocking_processes(process_reader):
-            return int((time.monotonic() - started) * 1000), False
-        remaining = deadline - time.monotonic()
+        try:
+            blocking = _blocking_processes(process_reader)
+        except ProcessInspectionError as exc:
+            remaining = deadline - clock()
+            if remaining <= 0:
+                raise RuntimeError(
+                    "could not inspect running processes before the next title"
+                ) from exc
+            print(f"process inspection failed ({exc}); retrying", file=sys.stderr)
+            sleeper(min(retry_seconds, remaining))
+            continue
+        if not blocking:
+            return int((clock() - started) * 1000), False
+        remaining = deadline - clock()
         if remaining <= 0:
-            return int((time.monotonic() - started) * 1000), True
+            return int((clock() - started) * 1000), True
         sleeper(min(poll_seconds, remaining))
 
 
@@ -449,6 +554,44 @@ def _stage_decrypted_inputs(
         return copied, "DIRECT_FOLDER" if copied else "NO_VALID_FILES"
 
     return 0, "NO_MATCH"
+
+
+def _stage_title_manifests(
+    title_manifests: Path | None,
+    disc_id: str | None,
+    work_dir: Path,
+) -> tuple[int, str]:
+    """Stage the user's own title manifests for this disc into the route's user data.
+
+    The player and ``bringup`` read ``<user data>/manifests``, so a title that is
+    described only by a user manifest (for example one whose data ships in
+    archives on the disc) is recognized, and its files are set up, only when
+    its manifest is there. Only manifests naming this disc ID are copied.
+    """
+    if title_manifests is None or disc_id is None:
+        return 0, "NOT_CONFIGURED"
+    source_root = title_manifests.resolve(strict=False)
+    if not source_root.is_dir():
+        return 0, "NO_MATCH"
+    target_dir = work_dir / "user-data" / "manifests"
+    wanted = disc_id.upper()
+    copied = 0
+    for source in sorted(source_root.glob("*.json"), key=lambda path: path.name.casefold()):
+        try:
+            manifest = title_manifest.load_manifest(source)
+        except (OSError, ValueError):
+            continue
+        disc = manifest.get("disc") if isinstance(manifest, dict) else None
+        if not isinstance(disc, dict):
+            continue
+        revisions = disc.get("compatible_revisions", [])
+        disc_ids = [disc.get("id"), *(revisions if isinstance(revisions, list) else [])]
+        if wanted not in {value.upper() for value in disc_ids if isinstance(value, str)}:
+            continue
+        target_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target_dir / source.name)
+        copied += 1
+    return copied, "DIRECT_MATCH" if copied else "NO_MATCH"
 
 
 def _terminate_process_tree(process: subprocess.Popen) -> None:
@@ -572,12 +715,25 @@ def _first_build_diagnostic(log_path: Path) -> str | None:
     return None
 
 
+def _first_module_layout_diagnostic(log_path: Path) -> str | None:
+    try:
+        with log_path.open("r", encoding="utf-8", errors="replace") as stream:
+            while raw := stream.readline(65536):
+                line = raw.strip()
+                if line:
+                    return line[:300]
+    except OSError:
+        return None
+    return None
+
+
 def _run_bringup(
     iso_path: Path,
     work_dir: Path,
     report_path: Path,
     private_import_report_path: Path,
     time_budget_seconds: int,
+    launch_timeout_seconds: int,
 ) -> RouteOutcome:
     report_path.unlink(missing_ok=True)
     private_import_report_path.unlink(missing_ok=True)
@@ -585,6 +741,8 @@ def _run_bringup(
     progress_path.unlink(missing_ok=True)
     build_log_path = work_dir / "bringup-build.log"
     build_log_path.unlink(missing_ok=True)
+    layout_log_path = work_dir / "bringup-module-layout.log"
+    layout_log_path.unlink(missing_ok=True)
     command = [
         sys.executable,
         str(NK_CLI),
@@ -597,7 +755,7 @@ def _run_bringup(
         "--sweep-progress-report",
         str(progress_path),
         "--launch-timeout",
-        str(max(1, min(20, time_budget_seconds))),
+        str(max(1, min(launch_timeout_seconds, time_budget_seconds))),
         "--private-sweep-import-report",
         str(private_import_report_path),
     ]
@@ -631,6 +789,7 @@ def _run_bringup(
             stage_durations_ms=durations,
             build_log_path=str(build_log_path),
             build_diagnostic=_first_build_diagnostic(build_log_path),
+            module_layout_diagnostic=_first_module_layout_diagnostic(layout_log_path),
         )
     except OSError:
         return RouteOutcome(None)
@@ -646,6 +805,7 @@ def _run_bringup(
             stage_durations_ms=durations,
             build_log_path=str(build_log_path),
             build_diagnostic=_first_build_diagnostic(build_log_path),
+            module_layout_diagnostic=_first_module_layout_diagnostic(layout_log_path),
         )
     try:
         report = package_cache.read_bounded_json(
@@ -662,6 +822,7 @@ def _run_bringup(
             return_code=process.returncode,
             build_log_path=str(build_log_path),
             build_diagnostic=_first_build_diagnostic(build_log_path),
+            module_layout_diagnostic=_first_module_layout_diagnostic(layout_log_path),
         )
     if not isinstance(report, dict):
         return RouteOutcome(
@@ -669,6 +830,7 @@ def _run_bringup(
             return_code=process.returncode,
             build_log_path=str(build_log_path),
             build_diagnostic=_first_build_diagnostic(build_log_path),
+            module_layout_diagnostic=_first_module_layout_diagnostic(layout_log_path),
         )
     progress = _read_bringup_progress(progress_path)
     _active_stage, _active_elapsed_ms, durations = _progress_stage_details(progress)
@@ -683,6 +845,7 @@ def _run_bringup(
         stage_durations_ms=durations,
         build_log_path=str(build_log_path),
         build_diagnostic=_first_build_diagnostic(build_log_path),
+        module_layout_diagnostic=_first_module_layout_diagnostic(layout_log_path),
         analyzer_diagnostic=(
             _read_private_analyzer_diagnostic(private_import_report_path)
             if isinstance(analyze_stage, dict) and analyze_stage.get("status") == "FAIL"
@@ -1277,6 +1440,11 @@ def _validate_sweep_rows(rows: object) -> None:
             not isinstance(log_path, str) or not log_path or len(log_path) > 4096
         ):
             raise ValueError(f"sweep row {index} build_log_path is invalid")
+        layout_diag = row.get("module_layout_diagnostic")
+        if layout_diag is not None and (
+            not isinstance(layout_diag, str) or len(layout_diag) > 300
+        ):
+            raise ValueError(f"sweep row {index} module_layout_diagnostic is invalid")
 
 
 def _public_aggregate(
@@ -1491,16 +1659,21 @@ def run_sweep(
     public_output: Path,
     *,
     time_budget_seconds: int = DEFAULT_TIME_BUDGET_SECONDS,
+    launch_timeout_seconds: int = DEFAULT_LAUNCH_TIMEOUT_SECONDS,
     decrypted_titles: Path | None = None,
+    title_manifests: Path | None = None,
     previous_public_output: Path | None = None,
     source_commit: str | None = None,
     process_reader=_process_names,
     sleeper=time.sleep,
+    clock=time.monotonic,
     poll_seconds: int = MACHINE_POLL_SECONDS,
     max_wait_seconds: int = MACHINE_MAX_WAIT_SECONDS,
 ) -> dict:
     if time_budget_seconds < 1:
         raise ValueError("time budget must be at least one second")
+    if not 1 <= launch_timeout_seconds <= MAX_LAUNCH_TIMEOUT_SECONDS:
+        raise ValueError(f"launch timeout must be 1..{MAX_LAUNCH_TIMEOUT_SECONDS} seconds")
     iso_root = iso_dir.resolve(strict=True)
     paths = _iso_files(iso_root)
     source_commit = source_commit or _source_commit()
@@ -1547,6 +1720,7 @@ def run_sweep(
         load_wait_ms, load_remained_active = _wait_for_machine_idle(
             process_reader=process_reader,
             sleeper=sleeper,
+            clock=clock,
             poll_seconds=poll_seconds,
             max_wait_seconds=max_wait_seconds,
         )
@@ -1572,6 +1746,15 @@ def run_sweep(
         except (OSError, ValueError):
             staged_input_count = 0
             decrypted_input_status = "COPY_FAILED"
+        try:
+            staged_manifests, manifest_status = _stage_title_manifests(
+                title_manifests, disc_id, work_dir
+            )
+        except OSError:
+            staged_manifests, manifest_status = 0, "COPY_FAILED"
+        if title_manifests is not None:
+            print(f"[{index}/{len(paths)}] title manifests: {manifest_status} "
+                  f"({staged_manifests} staged)")
         started = time.perf_counter()
         outcome = _run_bringup(
             iso_path,
@@ -1579,6 +1762,7 @@ def run_sweep(
             report_path,
             private_import_report_path,
             time_budget_seconds,
+            launch_timeout_seconds,
         )
         route_wall_time_ms = int((time.perf_counter() - started) * 1000)
         report = outcome.report
@@ -1644,6 +1828,12 @@ def run_sweep(
             ):
                 row["build_log_path"] = outcome.build_log_path
                 row["build_diagnostic"] = outcome.build_diagnostic
+            if (
+                isinstance(stages.get("prepare_import"), dict)
+                and stages["prepare_import"].get("status") == "FAIL"
+                and outcome.module_layout_diagnostic is not None
+            ):
+                row["module_layout_diagnostic"] = outcome.module_layout_diagnostic
             analyze_stage = stages.get("analyze")
             if (
                 isinstance(analyze_stage, dict)
@@ -1839,6 +2029,15 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+def _launch_timeout_seconds(value: str) -> int:
+    parsed = int(value)
+    if not 1 <= parsed <= MAX_LAUNCH_TIMEOUT_SECONDS:
+        raise argparse.ArgumentTypeError(
+            f"must be 1..{MAX_LAUNCH_TIMEOUT_SECONDS} seconds (the bring-up launch range)"
+        )
+    return parsed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("iso_dir", nargs="?", type=Path,
@@ -1849,10 +2048,18 @@ def main(argv: list[str] | None = None) -> int:
                         help="Destination for the aggregate without title names or disc IDs")
     parser.add_argument("--decrypted-titles", type=Path,
                         help="Optional root containing per-title decrypted input folders")
+    parser.add_argument("--title-manifests", type=Path,
+                        help="Optional folder of your own title manifests (*.json); the ones "
+                             "naming a disc are used for that disc's route")
     parser.add_argument("--previous-public-output", type=Path,
                         help="Existing title-free aggregate used as a comparison baseline")
     parser.add_argument("--time-budget", type=_positive_int, default=DEFAULT_TIME_BUDGET_SECONDS,
                         help="Hard per-title route limit in seconds (default: 120)")
+    parser.add_argument("--launch-timeout", type=_launch_timeout_seconds,
+                        default=DEFAULT_LAUNCH_TIMEOUT_SECONDS,
+                        help="Per-title bring-up launch limit in seconds "
+                             f"(1..{MAX_LAUNCH_TIMEOUT_SECONDS}; default "
+                             f"{DEFAULT_LAUNCH_TIMEOUT_SECONDS}), never more than --time-budget")
     parser.add_argument("--merge-private-reports", nargs="+", type=Path,
                         help="Merge private shard checkpoints and write one aggregate; "
                              "each argument is a shard's library-sweep.json file or the "
@@ -1876,7 +2083,9 @@ def main(argv: list[str] | None = None) -> int:
                 args.private_dir,
                 args.public_output,
                 time_budget_seconds=args.time_budget,
+                launch_timeout_seconds=args.launch_timeout,
                 decrypted_titles=args.decrypted_titles,
+                title_manifests=args.title_manifests,
                 previous_public_output=args.previous_public_output,
             )
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:

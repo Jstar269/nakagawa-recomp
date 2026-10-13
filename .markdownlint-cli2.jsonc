@@ -12,7 +12,6 @@
     // material that must never be reformatted or treated as project source.
     "logs/**",
     ".claude/worktrees/**",
-    ".gemini/**",
     "**/.gemini/**",
     "docs/archive/**",
     "docs/STATUS_HISTORY.md",
