@@ -153,6 +153,18 @@
       "sha256": "fe270262a565cfc37fd0304dd79c983a7d4756d11219687c8693b6be63b9773a"
     },
     {
+      "path": ".github/workflows/codeql.yml",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "codeql-fork-prs-2026-10-12",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "09af5b866edc9804e6833ef74cbecb1fd1586d459d14c9fda838920f9bca5568"
+    },
+    {
       "path": ".github/workflows/dependency-review.yml",
       "classification": "project_authored_attested",
       "evidence": {
@@ -246,7 +258,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c16475f368ee67467e4b5cdfbd7cc58a7b45b3b938c31fc3e18054d43f1a862f"
+      "sha256": "e6a977031bf5e9ef6673f087029e4e5f8912b956d91a1900e9ec0d3399f1f219"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -679,7 +691,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "a000177e4705d23f120f190109b745fc379ef8203d465ff96081b51922f1e6bd"
+      "sha256": "89c074673efe8f236c8a970ddbf898472a82ebd1c9ea35bd8ad28e08dc27ae88"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -7918,7 +7930,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "502c731f78dc81410e3adefe0724959cb784fd7ba82a4c1339a3537290eaa517"
+      "sha256": "811911abc0f7053e42186e3373adb4f73966d3384097059ae8270d11d5bb7f3c"
     },
     {
       "path": "tools/test_ci_required.py",

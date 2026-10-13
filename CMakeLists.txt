@@ -141,6 +141,9 @@ target_include_directories(test_player_state PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/player
 )
 target_link_libraries(test_player_state PRIVATE nakagawa_core)
+if(WIN32)
+    target_link_libraries(test_player_state PRIVATE winhttp bcrypt)
+endif()
 add_test(NAME player_state_test COMMAND test_player_state)
 # The sample player state uses a source-relative fixture path, so this CTest
 # must run from the source tree just like the Makefile test target.
@@ -160,6 +163,9 @@ target_include_directories(test_package_builder PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/player
 )
 target_link_libraries(test_package_builder PRIVATE nakagawa_core)
+if(WIN32)
+    target_link_libraries(test_package_builder PRIVATE winhttp bcrypt)
+endif()
 # The test resolves the CLI relative to the working directory, so it must run
 # from the repository root (where tools/nk_cli.py lives), not from the build dir.
 add_test(NAME package_builder_test COMMAND test_package_builder)
@@ -234,6 +240,9 @@ if(BUILD_PLAYER)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/player
     )
     target_link_libraries(nakagawa_player PRIVATE nakagawa_core)
+    if(WIN32)
+        target_link_libraries(nakagawa_player PRIVATE winhttp bcrypt)
+    endif()
 
     if(TARGET SDL3::SDL3)
         target_link_libraries(nakagawa_player PRIVATE SDL3::SDL3)
