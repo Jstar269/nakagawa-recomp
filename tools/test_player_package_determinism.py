@@ -925,14 +925,20 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
 
 # -- the Makefile's own file writes -------------------------------------------
 
-# Indented lines count too, recipe lines included: a spurious extra definition can only
-# make a target ambiguous, which the reader refuses, never resolve it to a wrong file.
+# Indented lines count too, recipe lines included, and so do ``+=`` and ``!=``: a spurious
+# extra definition can only make a target ambiguous, which the reader refuses, never
+# resolve it to a wrong file. Leaving one out could: ``X := a`` with ``X += b`` would read
+# as the single value ``a``.
 _MAKE_ASSIGNMENT_RE = re.compile(
-    r"^\s*(?:override\s+)?(?:export\s+)?([A-Za-z0-9_]+)\s*(?:::?=|\?=|=)\s*(.*?)\s*$")
+    r"^\s*(?:override\s+)?(?:export\s+)?([A-Za-z0-9_]+)\s*(::?=|\?=|\+=|!=|=)\s*(.*?)\s*$")
 _MAKE_VARIABLE_RE = re.compile(r"\$\(([A-Za-z0-9_]+)\)")
 _MAKE_CALL_ARGUMENT_RE = re.compile(r"\$\(([0-9]+)\)")
 _BUILD_DIR_FILE_RE = re.compile(r"\$\(BUILD_DIR\)/([^\s$()/]+)")
-_MAKE_INCLUDE_RE = re.compile(r"^-?include\s+(.+)$", re.MULTILINE)
+_MAKE_INCLUDE_RE = re.compile(r"^[ \t]*-?include[ \t]+(.+)$", re.MULTILINE)
+# How many rounds of variable substitution a target may take. Every write today settles
+# within two; a target still changing after this many is a cycle or a chain the reader
+# refuses rather than follows.
+_MAKE_EXPANSION_ROUNDS = 16
 
 
 def makefile_sources(root: Path) -> str:
@@ -976,9 +982,10 @@ def _make_arguments(reference: str) -> list[str]:
 
 
 def make_file_writes(makefile: str) -> dict[str, str]:
-    """Each file a Makefile writes into ``$(BUILD_DIR)`` with ``$(file >...)``.
+    """Each file a Makefile writes into ``$(BUILD_DIR)`` with ``$(file >...)`` or ``>>``.
 
-    Maps the file's name to the line that writes it. The target is resolved through
+    Maps the file's name to the line that writes it; the search for ``$(file >`` is a
+    prefix of the append form, so both are found. The target is resolved through
     variables with a single definition and through the arguments of each ``$(call)``
     of the variable the write is defined in. A target that does not resolve to
     ``$(BUILD_DIR)/<name>`` raises, so a write this reader cannot place fails the
@@ -990,7 +997,12 @@ def make_file_writes(makefile: str) -> dict[str, str]:
     for line in lines:
         assignment = _MAKE_ASSIGNMENT_RE.match(line)
         if assignment:
-            definitions.setdefault(assignment.group(1), set()).add(assignment.group(2))
+            name, operator, value = assignment.groups()
+            # An append or a shell assignment is never the same definition as a plain
+            # value, even with equal text.
+            if operator in ("+=", "!="):
+                value = f"{operator} {value}"
+            definitions.setdefault(name, set()).add(value)
 
     def expand(name: str) -> str:
         values = definitions.get(name, set())
@@ -1000,14 +1012,15 @@ def make_file_writes(makefile: str) -> dict[str, str]:
         return next(iter(values))
 
     def resolve(target: str) -> str:
-        for _ in range(16):
+        for _ in range(_MAKE_EXPANSION_ROUNDS):
             expanded = _MAKE_VARIABLE_RE.sub(
                 lambda m: m.group(0) if m.group(1) == "BUILD_DIR" else expand(m.group(1)),
                 target)
             if expanded == target:
                 return target.strip()
             target = expanded
-        raise ValueError(f"{target!r} does not stop expanding")
+        raise ValueError(f"{target!r} is still expanding after {_MAKE_EXPANSION_ROUNDS} "
+                         "rounds: a cycle, or a chain this reader refuses to follow")
 
     writes: dict[str, str] = {}
     for found in re.finditer(r"\$\(file >", text):
@@ -1066,11 +1079,20 @@ class TestMakeWrittenFilesAreClassified(unittest.TestCase):
         synthetic = ("LIST := $(BUILD_DIR)/objects.lst\n"
                      "record = $(file >$(2),$($(1)))\n"
                      "HASH := $(call record,ENTRIES,$(BUILD_DIR)/.entries)\n"
-                     "out:\n\t$(file >$(LIST),$(subst \\,/,$(OBJS)))\n")
-        self.assertEqual(sorted(make_file_writes(synthetic)), [".entries", "objects.lst"])
+                     "out:\n\t$(file >$(LIST),$(subst \\,/,$(OBJS)))\n"
+                     "\t$(file >>$(BUILD_DIR)/appended.lst,$(OBJS))\n")
+        self.assertEqual(sorted(make_file_writes(synthetic)),
+                         [".entries", "appended.lst", "objects.lst"])
         for unplaced in ("out:\n\t$(file >$@,x)\n",
                          "out:\n\t$(file >$(BUILD_ROOT)/x.lst,x)\n",
-                         "out:\n\t$(file >$(BUILD_DIR)/sub/x.lst,x)\n"):
+                         "out:\n\t$(file >$(BUILD_DIR)/sub/x.lst,x)\n",
+                         # An appended or shell-assigned target is not one plain value,
+                         # even when the appended text repeats the first definition.
+                         "L := $(BUILD_DIR)/x.lst\nL += $(BUILD_DIR)/x.lst\n"
+                         "out:\n\t$(file >$(L),x)\n",
+                         "L := $(BUILD_DIR)/x.lst\nL += $(BUILD_DIR)/y.lst\n"
+                         "out:\n\t$(file >$(L),x)\n",
+                         "L != echo $(BUILD_DIR)/x.lst\nout:\n\t$(file >$(L),x)\n"):
             with self.subTest(unplaced=unplaced), self.assertRaises(ValueError):
                 make_file_writes(unplaced)
 
@@ -1080,10 +1102,14 @@ class TestMakeWrittenFilesAreClassified(unittest.TestCase):
             (root / "mk").mkdir()
             (root / "mk" / "part.mk").write_text(
                 "out:\n\t$(file >$(BUILD_DIR)/part.lst,$(OBJS))\n", encoding="utf-8")
+            (root / "mk" / "indented.mk").write_text(
+                "more:\n\t$(file >$(BUILD_DIR)/indented.lst,$(OBJS))\n", encoding="utf-8")
             (root / "Makefile").write_text(
-                "include $(GENERATED_FRAGMENT)\ninclude mk/part.mk\n-include $(DEP_FILES)\n",
+                "include $(GENERATED_FRAGMENT)\ninclude mk/part.mk\n-include $(DEP_FILES)\n"
+                "ifeq ($(MORE),1)\n  include mk/indented.mk\nendif\n",
                 encoding="utf-8")
-            self.assertEqual(sorted(make_file_writes(makefile_sources(root))), ["part.lst"])
+            self.assertEqual(sorted(make_file_writes(makefile_sources(root))),
+                             ["indented.lst", "part.lst"])
 
 
 if __name__ == "__main__":
