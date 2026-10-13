@@ -1629,6 +1629,43 @@ profile-zero-e2e:
 # it immediately, so a later definition would silently expand to empty.
 CODEGEN_TOOL ?= tools/codegen.py
 
+# Resolve the build-profile inputs before hashing so one Python process can reuse
+# compiler identities and the shared ABI-header digest for all three profiles.
+# Keep these definitions before the profile stamp targets below; their values and
+# order are part of the existing profile identities.
+# ge.c: software comparison rasterizer with PPSSPP-derived behavior. -O2 for speed.
+GE_CFLAGS ?= -O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK
+# Optional sparse front-end attribution is absent from normal GE builds. ge.c is also a
+# portable-core source, so the define reaches both compilations or neither.
+GE_FRONTEND_PROFILE ?= 0
+ifeq ($(GE_FRONTEND_PROFILE),1)
+override GE_CFLAGS += -DSR_GE_FRONTEND_PROFILE
+override PORTABLE_CORE_CFLAGS += -DSR_GE_FRONTEND_PROFILE
+endif
+override GE_CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
+# A trace build compiles the runtime with the trace writer too. This must precede the
+# runtime profile hash so switching TRACE rebuilds the runtime objects.
+TRACE ?= 0
+ifeq ($(TRACE),1)
+override CFLAGS += -DSR_INSTRUCTION_TRACE
+endif
+# Optimization and memory-saving flags for massive machine-generated files.
+# -O0: Conservative default for generic/unqualified titles to prevent compiler OOM / hangs.
+# -O1: Measured and qualified default for HST.
+# -fno-var-tracking: Saves significant memory on huge functions.
+# -ftrack-macro-expansion=0: Reduces memory overhead for macro-heavy code.
+RECOMP_OPT ?= -O0
+RECOMP_FLAGS ?= $(RECOMP_OPT) -w -fno-var-tracking -ftrack-macro-expansion=0 $(NAN_TRAP_CFLAG)
+override RECOMP_FLAGS += $(STACK_CENSUS_CFLAG)
+override RECOMP_FLAGS += -DSR_FLIGHT_RECORDER_LINKED
+ifeq ($(TRACE),1)
+override RECOMP_FLAGS += -DSR_INSTRUCTION_TRACE
+endif
+ifeq ($(PERF_AOT_INSTRUCTIONS),1)
+override RECOMP_FLAGS += -DPERF_AOT_INSTRUCTIONS=1
+endif
+export NK_RUNTIME_PROFILE_ENTRIES := CFLAGS=$(CFLAGS)$(NEWLINE)GE_CFLAGS=$(GE_CFLAGS)$(NEWLINE)TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)$(NEWLINE)SDL3_PROVIDER=$(SDL3_PROVIDER)$(NEWLINE)SDL3_VERSION=$(SDL3_VERSION)$(NEWLINE)SDL3_DIR=$(SDL3_DIR)$(NEWLINE)PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)
+
 # profile_hash(ENTRIES_VAR, COMPILER, ENTRIES_FILE): the parse-time hash of a build
 # profile whose entries are the newline-separated value of the exported ENTRIES_VAR.
 # Recipes read that variable from their environment (--entries-env), but GNU Make
@@ -1649,7 +1686,16 @@ endif
 # overruns the command line a shell will accept. The entries and their order are the
 # ones the --entry form used, so the hash is unchanged.
 export NK_CODEGEN_PROFILE_ENTRIES := GAME_NAME=$(GAME_NAME)$(NEWLINE)GAME_BASE=$(GAME_BASE)$(NEWLINE)CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)$(NEWLINE)EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)$(NEWLINE)EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)$(NEWLINE)FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)$(NEWLINE)CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)$(NEWLINE)CODEGEN_TOOL=$(CODEGEN_TOOL)$(CHUNK_TARGET_PROFILE_LINE)
+ifdef NK_BUILD_DIR_READY
+$(file >$(BUILD_DIR)/.codegen-profile-entries,$(NK_CODEGEN_PROFILE_ENTRIES))
+$(file >$(BUILD_DIR)/.runtime-profile-entries,$(NK_RUNTIME_PROFILE_ENTRIES))
+_PROFILE_HASHES := $(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash-profiles --codegen-compiler "$(PYTHON)" --codegen-entries-file "$(BUILD_DIR)/.codegen-profile-entries" --runtime-compiler "$(CC)" --runtime-entries-file "$(BUILD_DIR)/.runtime-profile-entries" --recomp-compiler "$(CC)" --recomp-entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --recomp-entry "TRACE=$(TRACE)" --recomp-entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)")
+CODEGEN_PROFILE_HASH := $(word 1,$(_PROFILE_HASHES))
+RUNTIME_PROFILE_HASH := $(word 2,$(_PROFILE_HASHES))
+RECOMP_PROFILE_HASH := $(word 3,$(_PROFILE_HASHES))
+else
 CODEGEN_PROFILE_HASH := $(call profile_hash,NK_CODEGEN_PROFILE_ENTRIES,$(PYTHON),$(BUILD_DIR)/.codegen-profile-entries)
+endif
 CODEGEN_PROFILE_STAMP := $(BUILD_DIR)/.codegen-profile-$(CODEGEN_PROFILE_HASH)
 
 $(CODEGEN_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
@@ -1679,25 +1725,9 @@ endif
 $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py tools/analyze.py tools/prxload.py
 	$(PYTHON) tools/imports.py --env-elf $(GAME_BASE) --toml=$@
 
-# ge.c: software comparison rasterizer with PPSSPP-derived behavior. -O2 for speed.
-GE_CFLAGS ?= -O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK
-# Optional sparse front-end attribution is absent from normal GE builds. ge.c is also a
-# portable-core source, so the define reaches both compilations or neither.
-GE_FRONTEND_PROFILE ?= 0
-ifeq ($(GE_FRONTEND_PROFILE),1)
-override GE_CFLAGS += -DSR_GE_FRONTEND_PROFILE
-override PORTABLE_CORE_CFLAGS += -DSR_GE_FRONTEND_PROFILE
-endif
-# ge.c is the vblank hook for the recorder's trace window and store watch; without this
-# define those calls compile to flight_recorder.h's inert inline stubs.
-override GE_CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
-# A trace build compiles the runtime with the trace writer too. This must precede the
-# runtime profile hash so switching TRACE rebuilds the runtime objects.
-ifeq ($(TRACE),1)
-override CFLAGS += -DSR_INSTRUCTION_TRACE
-endif
-export NK_RUNTIME_PROFILE_ENTRIES := CFLAGS=$(CFLAGS)$(NEWLINE)GE_CFLAGS=$(GE_CFLAGS)$(NEWLINE)TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)$(NEWLINE)SDL3_PROVIDER=$(SDL3_PROVIDER)$(NEWLINE)SDL3_VERSION=$(SDL3_VERSION)$(NEWLINE)SDL3_DIR=$(SDL3_DIR)$(NEWLINE)PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)
+ifndef NK_BUILD_DIR_READY
 RUNTIME_PROFILE_HASH := $(call profile_hash,NK_RUNTIME_PROFILE_ENTRIES,$(CC),$(BUILD_DIR)/.runtime-profile-entries)
+endif
 RUNTIME_PROFILE_STAMP := $(BUILD_DIR)/.runtime-profile-$(RUNTIME_PROFILE_HASH)
 # The objects the runtime profile invalidates go in a list file that make writes (see the record
 # below): one --invalidate per object repeats the whole BUILD_DIR prefix, and under a long
@@ -1711,23 +1741,6 @@ $(RUNTIME_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
 $(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(GE_CFLAGS) $(DEPFLAGS) -c src/rt/ge.c -o $@
 
-# Optimization and memory-saving flags for massive machine-generated files.
-# -O0: Conservative default for generic/unqualified titles to prevent compiler OOM / hangs.
-# -O1: Measured and qualified default for HST.
-# -fno-var-tracking: Saves significant memory on huge functions.
-# -ftrack-macro-expansion=0: Reduces memory overhead for macro-heavy code.
-RECOMP_OPT ?= -O0
-RECOMP_FLAGS ?= $(RECOMP_OPT) -w -fno-var-tracking -ftrack-macro-expansion=0 $(NAN_TRAP_CFLAG)
-override RECOMP_FLAGS += $(STACK_CENSUS_CFLAG)
-override RECOMP_FLAGS += -DSR_FLIGHT_RECORDER_LINKED
-TRACE ?= 0
-ifeq ($(TRACE),1)
-override RECOMP_FLAGS += -DSR_INSTRUCTION_TRACE
-endif
-ifeq ($(PERF_AOT_INSTRUCTIONS),1)
-override RECOMP_FLAGS += -DPERF_AOT_INSTRUCTIONS=1
-endif
-
 # Make the object flavour explicit. Switching TRACE forces only the generated
 # chunks to rebuild, avoiding a stale trace-enabled object in a release binary
 # (or a trace-disabled object in an oracle run).
@@ -1735,7 +1748,9 @@ TRACE_STAMP := $(BUILD_DIR)/.recomp-trace-$(TRACE)
 $(TRACE_STAMP):
 	$(PYTHON) $(BUILD_PROFILE_TOOL) stamp --output "$@" --stale-glob ".recomp-trace-*" --value "$(TRACE)"
 
+ifndef NK_BUILD_DIR_READY
 RECOMP_PROFILE_HASH := $(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)")
+endif
 RECOMP_PROFILE_STAMP := $(BUILD_DIR)/.recomp-profile-$(RECOMP_PROFILE_HASH)
 $(RECOMP_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
 	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RECOMP_PROFILE_MANIFEST)" --section generated --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".recomp-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"

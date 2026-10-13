@@ -17,8 +17,6 @@ import subprocess
 import sys
 import uuid
 
-from nk_core import package_cache
-from nk_core.prereq_fetcher import PrerequisiteFetchError, default_data_root
 from nk_doctor_core import (
     EXPECTED_VFPU_FILES,
     PRIVATE_EXTENSIONS,
@@ -33,7 +31,6 @@ from nk_doctor_core import (
     _validate_iso,
     _validate_pe_x64,
 )
-from shader_embed import verify as verify_shader_provenance
 from vulkan_sdk import VulkanSdkError, discover_vulkan_sdk
 
 
@@ -152,8 +149,17 @@ def _report_legacy_data_directory(report: Report, data_root: Path | None) -> Non
     )
 
 
+def default_data_root() -> Path:
+    """Resolve the user data root without importing package checks at module load."""
+    from nk_core.prereq_fetcher import default_data_root as resolve_data_root
+
+    return resolve_data_root()
+
+
 def check_data_directory(report: Report) -> None:
     """Report the shared per-user data root and any unmigrated legacy root."""
+    from nk_core.prereq_fetcher import PrerequisiteFetchError
+
     try:
         data_root = default_data_root()
     except PrerequisiteFetchError as exc:
@@ -419,6 +425,8 @@ def _shader_provenance_errors(root: Path) -> list[str]:
     shader_root = root / "src" / "rt" / "gpu_sdl3vk"
     manifest = shader_root / "shader_manifest.json"
     try:
+        from shader_embed import verify as verify_shader_provenance
+
         return verify_shader_provenance(shader_root, manifest)
     except (AttributeError, OSError, TypeError, UnicodeError, ValueError) as exc:
         return [f"shader verification error: {exc}"]
@@ -863,7 +871,7 @@ def build_discovery_make_fragment(
             # the variable empty; the player target reports the actionable error.
             vulkan_sdk = ""
 
-    prefix = f"VULKAN_SDK := {_make_escape(vulkan_sdk)}\n"
+    prefix = f"override VULKAN_SDK := {_make_escape(vulkan_sdk)}\n"
     return prefix + sdl3_make_fragment(explicit_sdl3, compiler)
 
 
@@ -1899,6 +1907,8 @@ def check_runtime_package_cache(
             remediation=remediation,
         )
         return
+    from nk_core import package_cache
+
     valid, reason = package_cache.validate_package_cache(package_dir)
     if not valid:
         report.fail(

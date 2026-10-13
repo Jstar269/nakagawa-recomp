@@ -2695,7 +2695,7 @@ class Sdl3MakeFragmentTests(unittest.TestCase):
         with mock.patch.object(ndc, "discover_vulkan_sdk", return_value=sdk) as discover_vulkan:
             with mock.patch.object(ndc, "discover_sdl3_provider", return_value=provider):
                 text = ndc.build_discovery_make_fragment(compiler="gcc")
-        values = dict(line.split(" := ", 1) for line in text.splitlines())
+        values = dict(line.removeprefix("override ").split(" := ", 1) for line in text.splitlines())
         self.assertEqual(values["VULKAN_SDK"], "C:/VulkanSDK/1.4.357.0")
         self.assertEqual(values["SDL3_PROVIDER"], "system")
         self.assertEqual(values["SDL3_VERSION"], "3.4.0")
@@ -2711,7 +2711,7 @@ class Sdl3MakeFragmentTests(unittest.TestCase):
             with mock.patch.object(ndc, "discover_sdl3_provider", return_value=provider):
                 expected_sdl = ndc.sdl3_make_fragment(compiler="gcc")
                 combined = ndc.build_discovery_make_fragment(compiler="gcc")
-        self.assertEqual(combined, "VULKAN_SDK := \n" + expected_sdl)
+        self.assertEqual(combined, "override VULKAN_SDK := \n" + expected_sdl)
 
     def test_sdl_discovery_failure_preserves_exact_make_error_output(self) -> None:
         import nk_doctor_checks as ndc
@@ -2723,8 +2723,8 @@ class Sdl3MakeFragmentTests(unittest.TestCase):
             with mock.patch.object(ndc, "discover_sdl3_provider", side_effect=failure):
                 expected_sdl = ndc.sdl3_make_fragment(compiler="gcc")
                 combined = ndc.build_discovery_make_fragment(compiler="gcc")
-        self.assertEqual(combined, "VULKAN_SDK := C:/VulkanSDK/1.4.357.0\n" + expected_sdl)
-        values = dict(line.split(" := ", 1) for line in combined.splitlines())
+        self.assertEqual(combined, "override VULKAN_SDK := C:/VulkanSDK/1.4.357.0\n" + expected_sdl)
+        values = dict(line.removeprefix("override ").split(" := ", 1) for line in combined.splitlines())
         self.assertEqual(values["SDL3_ERROR"], str(failure))
 
     def test_explicit_vulkan_override_skips_discovery_and_normalizes_slashes(self) -> None:
@@ -2737,7 +2737,7 @@ class Sdl3MakeFragmentTests(unittest.TestCase):
                 text = ndc.build_discovery_make_fragment(
                     compiler="gcc", explicit_vulkan=r"C:\VulkanSDK\1.4.357.0"
                 )
-        values = dict(line.split(" := ", 1) for line in text.splitlines())
+        values = dict(line.removeprefix("override ").split(" := ", 1) for line in text.splitlines())
         self.assertEqual(values["VULKAN_SDK"], "C:/VulkanSDK/1.4.357.0")
         discover_vulkan.assert_not_called()
 
@@ -2752,9 +2752,54 @@ class Sdl3MakeFragmentTests(unittest.TestCase):
                 text = ndc.build_discovery_make_fragment(
                     compiler="gcc", explicit_vulkan="", discover_vulkan=True
                 )
-        values = dict(line.split(" := ", 1) for line in text.splitlines())
+        values = dict(line.removeprefix("override ").split(" := ", 1) for line in text.splitlines())
         self.assertEqual(values["VULKAN_SDK"], "C:/VulkanSDK/1.4.357.0")
         discover_vulkan.assert_called_once_with()
+
+    def test_empty_make_override_uses_discovered_vulkan_sdk(self) -> None:
+        import nk_doctor_checks as ndc
+        from unittest import mock
+
+        make = shutil.which("mingw32-make") or shutil.which("make")
+        if not make:
+            self.skipTest("GNU Make is required")
+        provider = self._provider("system", "/usr/include", "/usr/lib/libSDL3.so")
+        sdk = Path("C:/VulkanSDK/1.4.357.0")
+        with mock.patch.object(ndc, "discover_vulkan_sdk", return_value=sdk):
+            with mock.patch.object(ndc, "discover_sdl3_provider", return_value=provider):
+                fragment = ndc.build_discovery_make_fragment(compiler="gcc")
+
+        build_root = _make_safe_temp_dir("nk-empty-vulkan-make-")
+        self.addCleanup(shutil.rmtree, build_root, True)
+        fragment_path = build_root / "discovery.mk"
+        makefile_path = build_root / "Makefile"
+        fragment_path.write_text(fragment, encoding="utf-8")
+        makefile_path.write_text(
+            f"include {fragment_path.as_posix()}\n"
+            ".PHONY: probe\n"
+            "probe:\n"
+            "\t@echo VULKAN_SDK=$(VULKAN_SDK)\n",
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [make, "--no-print-directory", "-f", str(makefile_path), "probe", "VULKAN_SDK="],
+            cwd=build_root, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("VULKAN_SDK=C:/VulkanSDK/1.4.357.0", result.stdout)
+
+    def test_make_discovery_import_skips_doctor_only_dependencies(self) -> None:
+        code = (
+            "import sys; sys.path.insert(0, 'tools'); import nk_doctor_checks; "
+            "assert 'nk_core' not in sys.modules; "
+            "assert 'nk_core.prereq_fetcher' not in sys.modules; "
+            "assert 'shader_embed' not in sys.modules"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_makefile_discovers_sdl3_and_vulkan_once_per_parse(self) -> None:
         makefile_text = (ROOT / "Makefile").read_text(encoding="utf-8")
@@ -2859,6 +2904,68 @@ class ProfileEntriesEnvTransportTests(unittest.TestCase):
             dict(os.environ))
         self.assertEqual(missing.returncode, 2, missing.stderr)
         self.assertIn("could not be read", missing.stderr)
+
+    def test_hash_profiles_matches_individual_hashes_and_reuses_common_inputs(self) -> None:
+        import build_profile
+        from unittest import mock
+
+        compiler = "nk-build-profile-test-compiler-not-found"
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            codegen_file = directory / "codegen-entries"
+            runtime_file = directory / "runtime-entries"
+            header = directory / "recomp.h"
+            codegen_entries = ["GAME_NAME=fixture", 'CFLAGS=-I"C:/fixture path"']
+            runtime_entries = ["CFLAGS=-O0", "SDL3_PROVIDER=msys2_ucrt64"]
+            recomp_entries = ["RECOMP_FLAGS=  -O2  ", "TRACE=0", "PERF_AOT_INSTRUCTIONS=0"]
+            codegen_file.write_text("\n".join(codegen_entries) + "\n", encoding="utf-8")
+            runtime_file.write_text("\n".join(runtime_entries) + "\n", encoding="utf-8")
+            header.write_text("#define ABI 1\n", encoding="ascii")
+
+            profiles = [
+                (compiler, codegen_entries),
+                (compiler, runtime_entries),
+                (compiler, recomp_entries),
+            ]
+            expected = [
+                build_profile.profile_hash(
+                    build_profile.profile_payload(item_compiler, entries, [str(header)])
+                )
+                for item_compiler, entries in profiles
+            ]
+            with mock.patch.object(
+                build_profile, "compiler_identity", wraps=build_profile.compiler_identity
+            ) as compiler_identity, mock.patch.object(
+                build_profile, "file_content_identity", wraps=build_profile.file_content_identity
+            ) as file_identity:
+                actual = build_profile.profile_hashes(profiles, [str(header)])
+            self.assertEqual(actual, expected)
+            self.assertEqual(compiler_identity.call_count, 1)
+            self.assertEqual(file_identity.call_count, 1)
+
+            proc = self._run(
+                [
+                    "hash-profiles",
+                    "--codegen-compiler", compiler,
+                    "--codegen-entries-file", str(codegen_file),
+                    "--runtime-compiler", compiler,
+                    "--runtime-entries-file", str(runtime_file),
+                    "--recomp-compiler", compiler,
+                    *[item for entry in recomp_entries for item in ("--recomp-entry", entry)],
+                    "--file", str(header),
+                ],
+                dict(os.environ),
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.splitlines(), expected)
+
+    def test_make_batches_profile_hashes_for_normal_build_parses(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertEqual(makefile.count(" hash-profiles "), 1)
+        self.assertIn("_PROFILE_HASHES := $(shell", makefile)
+        self.assertIn("CODEGEN_PROFILE_HASH := $(word 1,$(_PROFILE_HASHES))", makefile)
+        self.assertIn("RUNTIME_PROFILE_HASH := $(word 2,$(_PROFILE_HASHES))", makefile)
+        self.assertIn("RECOMP_PROFILE_HASH := $(word 3,$(_PROFILE_HASHES))", makefile)
 
     def test_unset_entries_env_fails_closed(self) -> None:
         env = dict(os.environ)
