@@ -1114,10 +1114,12 @@ static void test_invalid_utf8_path_is_refused(const char *test_dir) {
 #endif
 
 /* A staging ISO: PSP_GAME/SYSDIR/EBOOT.BIN plus PSP_GAME/USRDIR/DATA holding one
- * member (a file, or a directory holding X.BIN). Optional unstaged siblings sit beside
- * EBOOT.BIN in SYSDIR and beside DATA in USRDIR. Each case writes its own image. */
+ * member (a file, or a directory holding X.BIN) and an optional second file, data_sibling.
+ * Optional unstaged siblings sit beside EBOOT.BIN in SYSDIR and beside DATA in USRDIR. Each
+ * case writes its own image. */
 static void build_stage_iso_test(const char *path, const char *member, bool member_is_dir,
-                                 const char *sysdir_sibling, const char *usrdir_sibling) {
+                                 const char *sysdir_sibling, const char *usrdir_sibling,
+                                 const char *data_sibling) {
     const size_t sector_size = 2048;
     const size_t image_size = 25u * sector_size;
     uint8_t *image = (uint8_t *)calloc(image_size, 1);
@@ -1170,16 +1172,19 @@ static void build_stage_iso_test(const char *path, const char *member, bool memb
     used = append_iso_record_test(data, used, dotdot, 1, 21, dir, true);
     if (member_is_dir) {
         uint8_t *child = image + 24u * sector_size;
-        append_iso_record_test(data, used, (const uint8_t *)member, (uint8_t)strlen(member),
-                               24, dir, true);
-        used = 0;
-        used = append_iso_record_test(child, used, dot, 1, 24, dir, true);
-        used = append_iso_record_test(child, used, dotdot, 1, 22, dir, true);
-        append_iso_record_test(child, used, (const uint8_t *)"X.BIN;1", 7, 23, 7, false);
+        size_t child_used = 0;
+        used = append_iso_record_test(data, used, (const uint8_t *)member,
+                                      (uint8_t)strlen(member), 24, dir, true);
+        child_used = append_iso_record_test(child, child_used, dot, 1, 24, dir, true);
+        child_used = append_iso_record_test(child, child_used, dotdot, 1, 22, dir, true);
+        append_iso_record_test(child, child_used, (const uint8_t *)"X.BIN;1", 7, 23, 7, false);
     } else {
-        append_iso_record_test(data, used, (const uint8_t *)member, (uint8_t)strlen(member),
-                               23, 7, false);
+        used = append_iso_record_test(data, used, (const uint8_t *)member,
+                                      (uint8_t)strlen(member), 23, 7, false);
     }
+    if (data_sibling)
+        append_iso_record_test(data, used, (const uint8_t *)data_sibling,
+                               (uint8_t)strlen(data_sibling), 23, 7, false);
     memcpy(image + 23u * sector_size, "payload", 7);
     write_test_file(path, image, image_size);
     free(image);
@@ -1193,13 +1198,13 @@ static void build_stage_iso_test(const char *path, const char *member, bool memb
  * writes do not refuse the disc. */
 static void stage_one(const char *test_dir, const char *tag, const char *member, bool is_dir,
                       const char *sysdir_sibling, const char *usrdir_sibling,
-                      const char *const *roots, NkResult expected, char *host_root,
-                      size_t host_root_size) {
+                      const char *data_sibling, const char *const *roots, NkResult expected,
+                      char *host_root, size_t host_root_size) {
     const char sep = nk_platform_path_separator();
     char iso_path[700];
     snprintf(iso_path, sizeof(iso_path), "%s%cstage_%s.iso", test_dir, sep, tag);
     snprintf(host_root, host_root_size, "%s%cstage_%s", test_dir, sep, tag);
-    build_stage_iso_test(iso_path, member, is_dir, sysdir_sibling, usrdir_sibling);
+    build_stage_iso_test(iso_path, member, is_dir, sysdir_sibling, usrdir_sibling, data_sibling);
     NkResult result = nk_iso_extract_game(iso_path, host_root, roots, 1, NULL, NULL);
     if (result != expected) {
         fprintf(stderr, "[HOSTILE_TEST] staging case %s (%s) gave %d, expected %d\n",
@@ -1228,7 +1233,7 @@ static void test_iso_stage_refuses_device_names(const char *test_dir) {
     char host_root[700], probe[800], tag[32];
     for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
         snprintf(tag, sizeof(tag), "device_%u", (unsigned)i);
-        stage_one(test_dir, tag, refused[i].member, refused[i].is_dir, NULL, NULL, roots,
+        stage_one(test_dir, tag, refused[i].member, refused[i].is_dir, NULL, NULL, NULL, roots,
                   NK_ERROR_INVALID_ISO, host_root, sizeof(host_root));
         /* Refused while counting: the staging root was never created. */
         assert(!nk_platform_dir_exists(host_root));
@@ -1239,7 +1244,7 @@ static void test_iso_stage_refuses_device_names(const char *test_dir) {
     static const char *const allowed_host[] = { "NULL.BIN", "CONSOLE.BIN", "COM10.BIN" };
     for (size_t i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++) {
         snprintf(tag, sizeof(tag), "allowed_%u", (unsigned)i);
-        stage_one(test_dir, tag, allowed[i], false, NULL, NULL, roots, NK_OK, host_root,
+        stage_one(test_dir, tag, allowed[i], false, NULL, NULL, NULL, roots, NK_OK, host_root,
                   sizeof(host_root));
         snprintf(probe, sizeof(probe), "%s%cEBOOT.BIN", host_root, sep);
         assert(nk_platform_get_file_size(probe) == 5);
@@ -1248,7 +1253,7 @@ static void test_iso_stage_refuses_device_names(const char *test_dir) {
     }
 
     /* Device-named records the stager never writes do not refuse the disc. */
-    stage_one(test_dir, "sibling", "OK.BIN;1", false, "CON;1", "NUL.BIN;1", roots, NK_OK,
+    stage_one(test_dir, "sibling", "OK.BIN;1", false, "CON;1", "NUL.BIN;1", NULL, roots, NK_OK,
               host_root, sizeof(host_root));
     snprintf(probe, sizeof(probe), "%s%cDATA%cOK.BIN", host_root, sep, sep);
     assert(nk_platform_get_file_size(probe) == 7);
@@ -1259,12 +1264,12 @@ static void test_iso_stage_refuses_device_names(const char *test_dir) {
     const char *dot_root[] = { "." };
     for (size_t i = 0; i < sizeof(eboot_aliases) / sizeof(eboot_aliases[0]); i++) {
         snprintf(tag, sizeof(tag), "eboot_alias_%u", (unsigned)i);
-        stage_one(test_dir, tag, "OK.BIN;1", false, NULL, eboot_aliases[i], dot_root,
+        stage_one(test_dir, tag, "OK.BIN;1", false, NULL, eboot_aliases[i], NULL, dot_root,
                   NK_ERROR_INVALID_ISO, host_root, sizeof(host_root));
         assert(!nk_platform_dir_exists(host_root));
     }
     /* The guard is scoped to the top level of ".": below it EBOOT.BIN is an ordinary member. */
-    stage_one(test_dir, "eboot_nested", "EBOOT.BIN;1", false, NULL, NULL, dot_root, NK_OK,
+    stage_one(test_dir, "eboot_nested", "EBOOT.BIN;1", false, NULL, NULL, NULL, dot_root, NK_OK,
               host_root, sizeof(host_root));
     snprintf(probe, sizeof(probe), "%s%cEBOOT.BIN", host_root, sep);
     assert(nk_platform_get_file_size(probe) == 5);
@@ -1273,10 +1278,55 @@ static void test_iso_stage_refuses_device_names(const char *test_dir) {
 
     /* A configured content root named after a device is refused before the disc is read. */
     const char *device_root[] = { "AUX" };
-    stage_one(test_dir, "device_root", "OK.BIN;1", false, NULL, NULL, device_root,
+    stage_one(test_dir, "device_root", "OK.BIN;1", false, NULL, NULL, NULL, device_root,
               NK_ERROR_INVALID_ISO, host_root, sizeof(host_root));
     assert(!nk_platform_dir_exists(host_root));
     printf("[HOSTILE_TEST] ISO staging refuses Windows device member names.\n");
+}
+
+/* Two members of one directory that Win32 stores under one host name overwrite each other: the
+ * second write replaces the first and staging still succeeds. The disc is refused while it is
+ * counted, before anything is written, so no staging root is created. */
+static void test_iso_stage_refuses_host_name_collisions(const char *test_dir) {
+    static const struct {
+        const char *first;
+        const char *second;
+    } collisions[] = {
+        { "FOO;1", "FOO.;1" },      /* trailing dot */
+        { "FOO;1", "FOO ;1" },      /* trailing space */
+        { "foo;1", "FOO;1" },       /* letter case */
+        { "FOO;1", "FOO;2" },       /* two versions of one member */
+    };
+    const char *roots[] = { "DATA" };
+    const char sep = nk_platform_path_separator();
+    char host_root[700], probe[800], tag[32];
+    for (size_t i = 0; i < sizeof(collisions) / sizeof(collisions[0]); i++) {
+        snprintf(tag, sizeof(tag), "collide_%u", (unsigned)i);
+        stage_one(test_dir, tag, collisions[i].first, false, NULL, NULL, collisions[i].second,
+                  roots, NK_ERROR_INVALID_ISO, host_root, sizeof(host_root));
+        assert(!nk_platform_dir_exists(host_root));
+    }
+
+    /* Control: names that share a prefix but do not normalize to one host name stage normally. */
+    stage_one(test_dir, "collide_control", "FOO;1", false, NULL, NULL, "FOOD;1", roots, NK_OK,
+              host_root, sizeof(host_root));
+    snprintf(probe, sizeof(probe), "%s%cDATA%cFOO", host_root, sep, sep);
+    assert(nk_platform_get_file_size(probe) == 7);
+    snprintf(probe, sizeof(probe), "%s%cDATA%cFOOD", host_root, sep, sep);
+    assert(nk_platform_get_file_size(probe) == 7);
+
+    /* A configured content root whose first component normalizes to the staged EBOOT.BIN would
+     * create a directory where the executable is written. It is refused before any directory
+     * is created. */
+    static const char *const eboot_roots[] = { "EBOOT.BIN", "eboot.bin ." };
+    for (size_t i = 0; i < sizeof(eboot_roots) / sizeof(eboot_roots[0]); i++) {
+        const char *root[] = { eboot_roots[i] };
+        snprintf(tag, sizeof(tag), "eboot_root_%u", (unsigned)i);
+        stage_one(test_dir, tag, "OK.BIN;1", false, NULL, NULL, NULL, root,
+                  NK_ERROR_INVALID_ISO, host_root, sizeof(host_root));
+        assert(!nk_platform_dir_exists(host_root));
+    }
+    printf("[HOSTILE_TEST] ISO staging refuses host name collisions.\n");
 }
 
 int main(void) {
@@ -1297,6 +1347,7 @@ int main(void) {
     test_hostile_pbp_package(hostile_dir);
     test_iso_executable_classification(hostile_dir);
     test_iso_stage_refuses_device_names(hostile_dir);
+    test_iso_stage_refuses_host_name_collisions(hostile_dir);
 #if defined(_WIN32) || defined(_WIN64)
     test_invalid_utf8_path_is_refused(hostile_dir);
 #endif

@@ -1956,6 +1956,101 @@ static bool nk_iso_stage_host_root(const char *host_root, const char *relative,
     return true;
 }
 
+/* Win32 drops trailing dots and spaces from a file name and matches names without regard to
+ * ASCII letter case. A staged member lands on the host name that this normalization yields. The
+ * ISO;version suffix is already gone from entry->name, so only these two rules remain. */
+static size_t nk_iso_stage_host_name_length(const char *name, size_t length) {
+    while (length > 0 && (name[length - 1] == '.' || name[length - 1] == ' ')) length--;
+    return length;
+}
+
+/* A configured content root's first component is a top-level host entry beside the staged
+ * EBOOT.BIN. Refuse one that Win32 would store as that file (any case, trailing dots or spaces)
+ * before a directory is created where the executable is written. */
+static bool nk_iso_stage_root_names_eboot(const char *path) {
+    size_t length = strcspn(path, "/");
+    return nk_iso_stage_host_name_length(path, length) == 9u &&
+           strncasecmp(path, "EBOOT.BIN", 9u) == 0;
+}
+
+#define NK_ISO_STAGE_NAME_BYTES 256u
+typedef char NkIsoStageName[NK_ISO_STAGE_NAME_BYTES];
+
+/* Orders two member names by their host spelling, so equal host names sort next to each other. */
+static int nk_iso_stage_name_compare(const void *left, const void *right) {
+    const char *a = (const char *)left;
+    const char *b = (const char *)right;
+    size_t a_length = nk_iso_stage_host_name_length(a, strlen(a));
+    size_t b_length = nk_iso_stage_host_name_length(b, strlen(b));
+    size_t common = a_length < b_length ? a_length : b_length;
+    for (size_t i = 0; i < common; i++) {
+        unsigned char x = (unsigned char)a[i];
+        unsigned char y = (unsigned char)b[i];
+        if (x >= 'a' && x <= 'z') x = (unsigned char)(x - 'a' + 'A');
+        if (y >= 'a' && y <= 'z') y = (unsigned char)(y - 'a' + 'A');
+        if (x != y) return x < y ? -1 : 1;
+    }
+    if (a_length == b_length) return 0;
+    return a_length < b_length ? -1 : 1;
+}
+
+typedef struct {
+    NkIsoStageName *names;
+    size_t count;
+    size_t capacity;
+    bool out_of_memory;
+} NkIsoStageNameList;
+
+static bool nk_iso_stage_name_list_add(const NkIsoDirectoryEntry *entry, void *userdata) {
+    NkIsoStageNameList *list = (NkIsoStageNameList *)userdata;
+    if (list->count == list->capacity) {
+        size_t capacity = list->capacity ? list->capacity * 2u : 32u;
+        NkIsoStageName *grown = (NkIsoStageName *)realloc(list->names, capacity * sizeof(*grown));
+        if (!grown) {
+            list->out_of_memory = true;
+            return false;
+        }
+        list->names = grown;
+        list->capacity = capacity;
+    }
+    snprintf(list->names[list->count], NK_ISO_STAGE_NAME_BYTES, "%s", entry->name);
+    list->count++;
+    return true;
+}
+
+/* The members of one directory must map to distinct host names. Two that normalize alike would
+ * be written to one host file: the second write replaces the first and staging still reports
+ * success. The check reads the directory before any of its members is written, and runs for every
+ * directory the walk enters, at every depth. The diagnostic names the kind of collision only. */
+static NkResult nk_iso_stage_check_host_names(FILE *iso, uint64_t file_size, uint32_t lba,
+                                              uint32_t size) {
+    NkIsoStageNameList list;
+    memset(&list, 0, sizeof(list));
+    NkResult result = NK_OK;
+    if (!nk_iso_stage_directory_records(iso, file_size, lba, size,
+                                        nk_iso_stage_name_list_add, &list)) {
+        result = list.out_of_memory ? NK_ERROR_OUT_OF_MEMORY : NK_ERROR_INVALID_ISO;
+    } else if (list.count > 1) {
+        qsort(list.names, list.count, sizeof(list.names[0]), nk_iso_stage_name_compare);
+        for (size_t i = 1; i < list.count; i++) {
+            const char *a = list.names[i - 1];
+            const char *b = list.names[i];
+            if (nk_iso_stage_name_compare(a, b) != 0) continue;
+            const char *kind = strcmp(a, b) == 0
+                ? "identical once the ;version suffix is removed"
+                : strcasecmp(a, b) == 0
+                    ? "differing only in letter case"
+                    : "differing only in trailing dots or spaces, possibly also in letter case";
+            fprintf(stderr, "[STAGE_NAME_COLLISION] Two members of one directory would be written "
+                    "to the same host file (%s). Nothing was written.\n", kind);
+            result = NK_ERROR_INVALID_ISO;
+            break;
+        }
+    }
+    free(list.names);
+    return result;
+}
+
 typedef struct {
     NkIsoStageContext *stage;
     bool count_only;
@@ -1985,12 +2080,9 @@ static bool nk_iso_stage_walk_callback(const NkIsoDirectoryEntry *entry,
     /* Under the "." root a top-level member lands beside the staged EBOOT.BIN. Win32 drops
      * trailing dots and spaces, so "EBOOT.BIN." and "eboot.bin " name that file too; refuse
      * them in the counting pass, before EBOOT.BIN or anything else is written. */
-    if (!walk->relative_prefix[0]) {
-        size_t length = strlen(entry->name);
-        while (length > 0 && (entry->name[length - 1] == '.' || entry->name[length - 1] == ' '))
-            length--;
-        if (length == 9u && strncasecmp(entry->name, "EBOOT.BIN", 9u) == 0) return false;
-    }
+    if (!walk->relative_prefix[0] &&
+        nk_iso_stage_host_name_length(entry->name, strlen(entry->name)) == 9u &&
+        strncasecmp(entry->name, "EBOOT.BIN", 9u) == 0) return false;
 
     if (entry->is_directory) {
         NkIsoWalkContext child = *walk;
@@ -2084,6 +2176,9 @@ static NkResult nk_iso_stage_walk_directory(NkIsoWalkContext *walk,
     }
     if (stage->visited_count >= NK_ISO_STAGE_MAX_VISITED_DIRS) return NK_ERROR_INVALID_ISO;
     stage->visited_lbas[stage->visited_count++] = directory_lba;
+    NkResult names = nk_iso_stage_check_host_names(stage->iso, stage->file_size,
+                                                   directory_lba, directory_size);
+    if (names != NK_OK) return names;
     return nk_iso_stage_directory_records(stage->iso, stage->file_size,
                                           directory_lba, directory_size,
                                           nk_iso_stage_walk_callback, walk)
@@ -2098,7 +2193,8 @@ NkResult nk_iso_extract_game(const char *iso_path, const char *host_root,
         loose_content_root_count > NK_ISO_STAGE_MAX_CONTENT_ROOTS ||
         (loose_content_root_count != 0u && !loose_content_roots)) return NK_ERROR_GENERIC;
     for (size_t i = 0; i < loose_content_root_count; i++) {
-        if (!nk_iso_stage_root_path_valid(loose_content_roots[i])) return NK_ERROR_INVALID_ISO;
+        if (!nk_iso_stage_root_path_valid(loose_content_roots[i]) ||
+            nk_iso_stage_root_names_eboot(loose_content_roots[i])) return NK_ERROR_INVALID_ISO;
         for (size_t previous = 0; previous < i; previous++) {
             if (nk_iso_stage_root_paths_overlap(loose_content_roots[i],
                                                 loose_content_roots[previous]))
