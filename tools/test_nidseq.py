@@ -214,6 +214,25 @@ class TestNidseqFailClosed(unittest.TestCase):
         self.assertEqual(rc, 2, out)
         self.assertIn("non-u32 stub value", out)
 
+    def test_import_entry_non_string_lib_fails(self):
+        toml = self.write_imports([(STUBS[0], NIDS[0])])
+        with open(toml, "w", newline="\n") as f:
+            f.write("[[import]]\nstub = 0x08a00000\nlib = 12345\nnid = 0x111\n")
+        rc, out = run_tool([toml, self.trace([STUBS[0]]), self.trace([STUBS[0]])])
+        self.assertEqual(rc, 2, out)
+        self.assertIn("non-string lib value", out)
+
+    def test_different_stub_pcs_with_same_nid_sequence_verifies(self):
+        # STUBS[0] and STUBS[1] both map to NIDS[0] in imports.toml
+        toml = os.path.join(self.d, "imports_dup.toml")
+        with open(toml, "w", newline="\n") as f:
+            f.write("[[import]]\nstub = 0x08a00000\nlib = \"sceUtility\"\nnid = 0x00000111\n")
+            f.write("[[import]]\nstub = 0x08a00008\nlib = \"sceUtility\"\nnid = 0x00000111\n")
+        # Trace 1 hits STUBS[0], Trace 2 hits STUBS[1]. Both represent NID 0x111.
+        rc, out = run_tool([toml, self.trace([STUBS[0]]), self.trace([STUBS[1]])])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("VERIFIED: import sequences identical (1 imports)", out)
+
     def test_duplicate_stub_address_fails(self):
         toml = self.write_imports([(STUBS[0], NIDS[0])])
         with open(toml, "w", newline="\n") as f:
