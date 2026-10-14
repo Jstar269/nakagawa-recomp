@@ -221,27 +221,17 @@ class VblankLedgerTest(unittest.TestCase):
     def test_source_rate_is_the_rational_one(self) -> None:
         self.assertAlmostEqual(SOURCE_HZ, 59.94005994, places=6)
 
-    def test_consecutive_waits_and_guest_memory_unchanged(self) -> None:
-        """Prove synthetic VBLANK accounting covers consecutive waits, guest memory untouched,
-        and presentation cadence separate from simulation cadence."""
-        # Simulated guest RAM array before and after two consecutive VBLANK wait calls
-        guest_ram_before = bytearray([0x00, 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x12, 0x34])
-        guest_ram_after = bytearray(guest_ram_before)
-
-        # Synthetic telemetry for two consecutive wait periods
+    def test_consecutive_intervals_pass_rate_and_identity(self) -> None:
+        """Two consecutive 60 Hz one-second intervals pass the rate and identity checks."""
         perf = perf_rows([60, 60])
         log = stderr_log(owed=120, coalesced=0, delivered=120, dropped=0, in_flight=0, masked=0)
         code, out = self.run_tool(perf, log)
-
-        # VBLANK wait does not touch guest memory (no hidden HLE write)
-        self.assertEqual(guest_ram_before, guest_ram_after)
         self.assertEqual(code, 0, out)
         self.assertIn("VBLANK_CHECK: rate PASS", out)
         self.assertIn("VBLANK_CHECK: identity PASS", out)
 
-        # Presentation pacing vs simulation cadence separation check
         cadence = vblank_ledger.measure_cadence(vblank_ledger.read_perf(self.dir / "perf.csv"))
-        self.assertIsNotNone(cadence)
+        assert cadence is not None
         self.assertEqual(cadence.delivered, 120)
 
 
