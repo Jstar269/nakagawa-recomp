@@ -1704,12 +1704,14 @@ static bool nk_iso_stage_extent_valid(uint64_t file_size, uint32_t lba,
     return offset <= file_size && (uint64_t)size <= file_size - offset;
 }
 
-/* Windows device names (the set tools/extract_xb.py refuses). Win32 opens "NUL",
- * "COM1.BIN" or "con.txt" as a device whatever directory precedes it, so a disc member
- * with such a base name would be discarded or written to a device while staging
- * reported success. The rule is applied on every host, so a disc stages identically
- * everywhere. A trailing '.' is kept: ISO9660 records a file without an extension as
- * "NAME.;1". */
+/* Windows device base names: the portability rule tools/extract_xb.py applies to archive
+ * members. A host file whose name is a device name, case-insensitively, before the first '.'
+ * and ignoring spaces just before it, is not a portable file: Win32 has historically opened
+ * every such name as the device in any directory, and current Windows still discards writes
+ * to the NUL forms ("NUL", "NUL.BIN", "NUL .BIN") while reporting success. The rule applies
+ * on every host so a disc stages the same way everywhere. Only names the stager turns into
+ * host files are checked (staged members and configured content roots); a device-named
+ * record elsewhere on the disc is never written and does not refuse the disc. */
 static bool nk_iso_stage_device_name(const uint8_t *name, size_t name_size) {
     static const char *const devices[] = {
         "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$",
@@ -1718,11 +1720,17 @@ static bool nk_iso_stage_device_name(const uint8_t *name, size_t name_size) {
     };
     size_t base = 0;
     while (base < name_size && name[base] != '.') base++;
+    while (base > 0 && name[base - 1] == ' ') base--;
     for (size_t i = 0; i < sizeof(devices) / sizeof(devices[0]); i++) {
         size_t length = strlen(devices[i]);
         if (length != base) continue;
         size_t j = 0;
-        while (j < length && toupper(name[j]) == (unsigned char)devices[i][j]) j++;
+        while (j < length) {
+            uint8_t c = name[j];
+            if (c >= 'a' && c <= 'z') c = (uint8_t)(c - 'a' + 'A');   /* ASCII fold only */
+            if (c != (uint8_t)devices[i][j]) break;
+            j++;
+        }
         if (j == length) return true;
     }
     return false;
@@ -1739,7 +1747,7 @@ static bool nk_iso_stage_component_valid(const uint8_t *name, size_t name_size) 
             value == ':' || value == '"' || value == '|' || value == '?' ||
             value == '*') return false;
     }
-    return !nk_iso_stage_device_name(name, name_size);
+    return true;
 }
 
 static bool nk_iso_stage_directory_records(FILE *iso, uint64_t file_size,
@@ -1868,7 +1876,8 @@ static bool nk_iso_stage_root_path_valid(const char *path) {
         if (*p == '/' || *p == '\0') {
             size_t length = (size_t)(p - part);
             if (length == 0u || length >= 256u ||
-                !nk_iso_stage_component_valid((const uint8_t *)part, length)) return false;
+                !nk_iso_stage_component_valid((const uint8_t *)part, length) ||
+                nk_iso_stage_device_name((const uint8_t *)part, length)) return false;
             for (size_t i = 0; i < length; i++) {
                 if ((unsigned char)part[i] >= 0x80u) return false;
             }
@@ -1962,6 +1971,10 @@ static bool nk_iso_stage_walk_callback(const NkIsoDirectoryEntry *entry,
                                        void *userdata) {
     NkIsoWalkContext *walk = (NkIsoWalkContext *)userdata;
     if (!walk || !walk->stage || !entry) return false;
+    /* Every staged member becomes a host file or directory under its disc name. The counting
+     * pass walks the same records first, so a device-named member refuses the disc before
+     * anything is written. */
+    if (nk_iso_stage_device_name((const uint8_t *)entry->name, strlen(entry->name))) return false;
     char child_path[NK_ISO_STAGE_MAX_PATH];
     int written = walk->relative_prefix[0]
         ? snprintf(child_path, sizeof(child_path), "%s/%s",

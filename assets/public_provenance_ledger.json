@@ -2635,7 +2635,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5d6a90a985d61fa96da4b69083523f803947b48afa5cf492c65623f36371a12a"
+      "sha256": "55c0d3c789d8a91fb0dcae1c0adbcd27441849c825f636425e3356a9e75afa6e"
     },
     {
       "path": "src/core/nk_iso.h",
@@ -5993,7 +5993,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "79bd9d19a296b3347cfdf1817eb16df4f33ea037a036bf580557613e2689166f"
+      "sha256": "e15f5b5ada22614fe9e17e67abe02afed838dc75624e989ff91b8834078e219a"
     },
     {
       "path": "tests/native/test_pgf_public.c",

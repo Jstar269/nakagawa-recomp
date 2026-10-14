@@ -1114,8 +1114,10 @@ static void test_invalid_utf8_path_is_refused(const char *test_dir) {
 #endif
 
 /* A staging ISO: PSP_GAME/SYSDIR/EBOOT.BIN plus PSP_GAME/USRDIR/DATA holding one
- * member (a file, or a directory holding X.BIN). Each case writes its own image. */
-static void build_stage_iso_test(const char *path, const char *member, bool member_is_dir) {
+ * member (a file, or a directory holding X.BIN). Optional unstaged siblings sit beside
+ * EBOOT.BIN in SYSDIR and beside DATA in USRDIR. Each case writes its own image. */
+static void build_stage_iso_test(const char *path, const char *member, bool member_is_dir,
+                                 const char *sysdir_sibling, const char *usrdir_sibling) {
     const size_t sector_size = 2048;
     const size_t image_size = 25u * sector_size;
     uint8_t *image = (uint8_t *)calloc(image_size, 1);
@@ -1149,13 +1151,19 @@ static void build_stage_iso_test(const char *path, const char *member, bool memb
     used = 0;
     used = append_iso_record_test(sysdir, used, dot, 1, 19, dir, true);
     used = append_iso_record_test(sysdir, used, dotdot, 1, 18, dir, true);
-    append_iso_record_test(sysdir, used, (const uint8_t *)"EBOOT.BIN;1", 11, 20, 5, false);
+    used = append_iso_record_test(sysdir, used, (const uint8_t *)"EBOOT.BIN;1", 11, 20, 5, false);
+    if (sysdir_sibling)
+        append_iso_record_test(sysdir, used, (const uint8_t *)sysdir_sibling,
+                               (uint8_t)strlen(sysdir_sibling), 23, 7, false);
     memcpy(image + 20u * sector_size, "EBOOT", 5);
 
     used = 0;
     used = append_iso_record_test(usrdir, used, dot, 1, 21, dir, true);
     used = append_iso_record_test(usrdir, used, dotdot, 1, 18, dir, true);
-    append_iso_record_test(usrdir, used, (const uint8_t *)"DATA", 4, 22, dir, true);
+    used = append_iso_record_test(usrdir, used, (const uint8_t *)"DATA", 4, 22, dir, true);
+    if (usrdir_sibling)
+        append_iso_record_test(usrdir, used, (const uint8_t *)usrdir_sibling,
+                               (uint8_t)strlen(usrdir_sibling), 23, 7, false);
 
     used = 0;
     used = append_iso_record_test(data, used, dot, 1, 22, dir, true);
@@ -1177,10 +1185,29 @@ static void build_stage_iso_test(const char *path, const char *member, bool memb
     free(image);
 }
 
-/* Win32 opens a file whose base name is a device (NUL, COM1.BIN, con.txt) as that
- * device in any directory, so staging such a disc member would discard its bytes or
- * write them to a device while reporting success. The member is refused while the disc
- * is counted, before anything is written, on every host. */
+/* Staged disc members become host files under their disc names, so a member whose base name
+ * is a Windows device name is refused (the portability rule tools/extract_xb.py applies; current
+ * Windows silently discards writes to the NUL forms). The refusal happens while the disc is
+ * counted, before anything is written, on every host. Records the stager never writes do not
+ * refuse the disc. */
+static void stage_one(const char *test_dir, const char *tag, const char *member, bool is_dir,
+                      const char *sysdir_sibling, const char *usrdir_sibling,
+                      const char *const *roots, NkResult expected, char *host_root,
+                      size_t host_root_size) {
+    const char sep = nk_platform_path_separator();
+    char iso_path[700];
+    snprintf(iso_path, sizeof(iso_path), "%s%cstage_%s.iso", test_dir, sep, tag);
+    snprintf(host_root, host_root_size, "%s%cstage_%s", test_dir, sep, tag);
+    build_stage_iso_test(iso_path, member, is_dir, sysdir_sibling, usrdir_sibling);
+    NkResult result = nk_iso_extract_game(iso_path, host_root, roots, 1, NULL, NULL);
+    if (result != expected) {
+        fprintf(stderr, "[HOSTILE_TEST] staging case %s (%s) gave %d, expected %d\n",
+                tag, member, (int)result, (int)expected);
+    }
+    assert(result == expected);
+    remove(iso_path);
+}
+
 static void test_iso_stage_refuses_device_names(const char *test_dir) {
     static const struct {
         const char *member;
@@ -1191,45 +1218,45 @@ static void test_iso_stage_refuses_device_names(const char *test_dir) {
         { "CON.;1", false },        /* ISO9660 spelling of an extensionless file */
         { "LPT0.TXT;1", false },
         { "CONIN$.DAT;1", false },
+        { "NUL ;1", false },        /* Win32 drops the trailing space: still NUL */
+        { "NUL .BIN;1", false },    /* and the spaces before the extension */
         { "AUX", true },            /* a directory, not only a file */
     };
     const char sep = nk_platform_path_separator();
     const char *roots[] = { "DATA" };
-    char iso_path[700], host_root[700], probe[800];
+    char host_root[700], probe[800], tag[32];
     for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
-        snprintf(iso_path, sizeof(iso_path), "%s%cstage_device_%u.iso", test_dir, sep, (unsigned)i);
-        snprintf(host_root, sizeof(host_root), "%s%cstage_device_%u", test_dir, sep, (unsigned)i);
-        build_stage_iso_test(iso_path, refused[i].member, refused[i].is_dir);
-        NkResult result = nk_iso_extract_game(iso_path, host_root, roots, 1, NULL, NULL);
-        if (result != NK_ERROR_INVALID_ISO) {
-            fprintf(stderr, "[HOSTILE_TEST] device member %s staged with result %d\n",
-                    refused[i].member, (int)result);
-        }
-        assert(result == NK_ERROR_INVALID_ISO);
-        /* Refused while counting: not even EBOOT.BIN was written. */
-        snprintf(probe, sizeof(probe), "%s%cEBOOT.BIN", host_root, sep);
-        assert(nk_platform_get_file_size(probe) < 0);
-        remove(iso_path);
+        snprintf(tag, sizeof(tag), "device_%u", (unsigned)i);
+        stage_one(test_dir, tag, refused[i].member, refused[i].is_dir, NULL, NULL, roots,
+                  NK_ERROR_INVALID_ISO, host_root, sizeof(host_root));
+        /* Refused while counting: the staging root was never created. */
+        assert(!nk_platform_dir_exists(host_root));
     }
 
-    /* Control: a name that only begins like a device stages normally. */
-    snprintf(iso_path, sizeof(iso_path), "%s%cstage_device_control.iso", test_dir, sep);
-    snprintf(host_root, sizeof(host_root), "%s%cstage_device_control", test_dir, sep);
-    build_stage_iso_test(iso_path, "NULL.BIN;1", false);
-    assert(nk_iso_extract_game(iso_path, host_root, roots, 1, NULL, NULL) == NK_OK);
-    snprintf(probe, sizeof(probe), "%s%cEBOOT.BIN", host_root, sep);
-    assert(nk_platform_get_file_size(probe) == 5);
-    snprintf(probe, sizeof(probe), "%s%cDATA%cNULL.BIN", host_root, sep, sep);
+    /* Controls: names that only resemble a device stage normally. */
+    static const char *const allowed[] = { "NULL.BIN;1", "CONSOLE.BIN;1", "COM10.BIN;1" };
+    static const char *const allowed_host[] = { "NULL.BIN", "CONSOLE.BIN", "COM10.BIN" };
+    for (size_t i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++) {
+        snprintf(tag, sizeof(tag), "allowed_%u", (unsigned)i);
+        stage_one(test_dir, tag, allowed[i], false, NULL, NULL, roots, NK_OK, host_root,
+                  sizeof(host_root));
+        snprintf(probe, sizeof(probe), "%s%cEBOOT.BIN", host_root, sep);
+        assert(nk_platform_get_file_size(probe) == 5);
+        snprintf(probe, sizeof(probe), "%s%cDATA%c%s", host_root, sep, sep, allowed_host[i]);
+        assert(nk_platform_get_file_size(probe) == 7);
+    }
+
+    /* Device-named records the stager never writes do not refuse the disc. */
+    stage_one(test_dir, "sibling", "OK.BIN;1", false, "CON;1", "NUL.BIN;1", roots, NK_OK,
+              host_root, sizeof(host_root));
+    snprintf(probe, sizeof(probe), "%s%cDATA%cOK.BIN", host_root, sep, sep);
     assert(nk_platform_get_file_size(probe) == 7);
 
     /* A configured content root named after a device is refused before the disc is read. */
     const char *device_root[] = { "AUX" };
-    snprintf(host_root, sizeof(host_root), "%s%cstage_device_root", test_dir, sep);
-    assert(nk_iso_extract_game(iso_path, host_root, device_root, 1, NULL, NULL) ==
-           NK_ERROR_INVALID_ISO);
-    snprintf(probe, sizeof(probe), "%s%cEBOOT.BIN", host_root, sep);
-    assert(nk_platform_get_file_size(probe) < 0);
-    remove(iso_path);
+    stage_one(test_dir, "device_root", "OK.BIN;1", false, NULL, NULL, device_root,
+              NK_ERROR_INVALID_ISO, host_root, sizeof(host_root));
+    assert(!nk_platform_dir_exists(host_root));
     printf("[HOSTILE_TEST] ISO staging refuses Windows device member names.\n");
 }
 
