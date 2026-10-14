@@ -8904,7 +8904,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c2f9f6d560f382059db980ec73d733f40c38d54b2847423ed52cae70f61ad712"
+      "sha256": "66cd3425c808aa7e990457a3a1671faa5f269a30192329c901dc03e2e5614e4a"
     },
     {
       "path": "tools/test_manager_safety.ps1",
