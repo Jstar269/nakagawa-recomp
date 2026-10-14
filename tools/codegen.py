@@ -2691,7 +2691,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             # delay slot above run once on either path; cond_expr refuses the
             # branch-likely linked forms, so no annulled slot reaches this point.
             if target in known or target in resume_owners:
-                call = f"{ADDRESS_SPACE.symbol(target, resume_owners)}(s);"
+                call = emit_body_call(ADDRESS_SPACE.symbol(target, resume_owners))
                 if lle_cpu:
                     call += f" {_flow_return(resumable)}"
             else:

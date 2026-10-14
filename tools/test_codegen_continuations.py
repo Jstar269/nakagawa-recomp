@@ -123,7 +123,8 @@ class ContinuationFlowTests(unittest.TestCase):
 
     def test_linked_branch_out_of_the_body_is_the_same_call_as_jal(self):
         # The taken path must be exactly what `jal` emits for the same target: a direct
-        # body call for a known entry, dispatch_call with the link as resume otherwise.
+        # body call that completes the callee's tail chain (#855) for a known entry,
+        # dispatch_call with the link as resume otherwise. Never a recorded TAIL.
         for known in ({0x1000}, {0x1000, 0x2000}):
             for lle_cpu in (False, True):
                 jal_call = self._between_slot_and_continuation(
@@ -138,11 +139,11 @@ class ContinuationFlowTests(unittest.TestCase):
                             f"if (_c) {{ {jal_call} }} }}",
                         )
                         self.assertNotIn("s->pc = 0x00002000u", text)
-                        self.assertNotIn("dispatch(s, s->pc)", text)
+                        self.assertNotIn("sr_tail_record", text)
         unknown = "\n".join(self._linked_site(regimm(0x11, 0, 0x1000, 0x2000), {0x1000}))
         self.assertIn("if (_c) { dispatch_call(s, 0x00002000u, 0x00001008u); } }", unknown)
         known = "\n".join(self._linked_site(regimm(0x11, 0, 0x1000, 0x2000), {0x1000, 0x2000}))
-        self.assertIn("if (_c) { f_00002000(s); } }", known)
+        self.assertIn("if (_c) { f_00002000(s); SR_TAIL_DRAIN(s); } }", known)
 
     def test_linked_branch_out_of_the_body_links_and_runs_its_slot_once(self):
         # MIPS writes the link on both paths, before the slot; the slot runs once on
