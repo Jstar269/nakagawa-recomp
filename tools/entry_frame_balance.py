@@ -158,6 +158,21 @@ def branch_likely(word):
     return False
 
 
+def refused_branch_encoding(word):
+    """True for a branch-family word that ``analyze.branch_target`` refuses to decode.
+
+    ``branch_target`` returns None both for non-branches and for these reserved
+    encodings: blez/bgtz/blezl/bgtzl with a nonzero rt, and a COP1 branch whose
+    condition code is not 0 (the FPU models one flag, FCC0). Treating the None as
+    "not a branch" would walk past the word as straight-line code, so the caller
+    must stop and mark the entry unknown instead.
+    """
+    op = word >> 26
+    if op in (6, 7, 22, 23):
+        return True
+    return op == 0x11 and ((word >> 21) & 0x1F) == 8
+
+
 @dataclass(frozen=True)
 class FrameProfile:
     """Structural stack summary of one entry PC."""
@@ -331,6 +346,12 @@ def profile_entry(elf, addr, ranges, limit=DEFAULT_STEP_LIMIT):
                 delta += 0 if is_likely else slot_step
                 pc += 8
                 continue
+            if refused_branch_encoding(word):
+                # A reserved branch encoding has no defined successor. Walking it as
+                # straight-line code would invent a fall-through path, so the entry
+                # is unknown rather than a confident role.
+                unknown = True
+                break
             pc += 4
 
     return FrameProfile(
