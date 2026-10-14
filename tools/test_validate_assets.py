@@ -251,6 +251,7 @@ class MalformedInventoryTests(ValidatorCliBase):
         self.assertIn("Inventory Index Failures", out)
         self.assertIn("archive_locked", out)
         self.assertIn("unreadable", out)
+        self.assertNotIn(str(inv_path), out)
         self.assertIn("Verification FAILED", out)
         self.assertNotIn("Verification SUCCESS", out)
 
@@ -555,9 +556,11 @@ class GimPaletteUnitTests(unittest.TestCase):
 
     def test_unreadable_file_is_a_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            ok, msg = va.check_gim_palette(str(Path(tmp) / "does_not_exist.gim"))
+            bad_path = Path(tmp) / "does_not_exist.gim"
+            ok, msg = va.check_gim_palette(str(bad_path))
             self.assertFalse(ok)
             self.assertIn("Failed to read file", msg)
+            self.assertNotIn(str(bad_path), msg)
 
     def test_hostile_block_headers_fail_with_block_context(self) -> None:
         cases = {
