@@ -4709,7 +4709,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2563ba6061fd0a5d062e1d207ec7d9353584a239aedd8d53098f85155d8c6378"
+      "sha256": "50f642818b3d6a4200290f8c2b58cd66a411552deb0a714b22b1bc1f4407cff8"
     },
     {
       "path": "src/rt/ge_texture_ref.h",
@@ -4721,7 +4721,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6f9b73f4ca5e51602e6fcbcea67c5683e98ae6349a43e64920ff24878ab3f865"
+      "sha256": "86453d7c4c4d013e195c74f901d1c7ccc983ec72c02446c64d782b997bee0f25"
     },
     {
       "path": "src/rt/ge_texture_ref_selftest.c",
@@ -4733,7 +4733,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "931c0e671d20cddfc7f579a1039e84c54540e79c25215e1cb3ba2b73ab4ac338"
+      "sha256": "9918c39b8d7052d74774d10b224aedbfc9705439b8877ee278db782e295c4f02"
     },
     {
       "path": "src/rt/gpu_capture_selftest.c",
