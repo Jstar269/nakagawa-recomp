@@ -92,7 +92,11 @@ def _find_toolchain_binary(
         raise RuntimeError(f"{label} executable not found in expected toolchain path: {expected_dir}")
 
     candidate_resolved = candidate.resolve()
-    check_names = set(names) | {Path(n).stem for n in names}
+    # cmd.exe resolves a bare name through PATHEXT, so an outside make.cmd or gcc.bat is the same
+    # ambiguity as an outside make.exe or gcc.exe.
+    exts = [e.lower() for e in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";") if e.strip()]
+    bases = {Path(n).stem for n in names}
+    check_names = set(names) | {base + ext for base in bases for ext in exts}
     path_env = os.environ.get("PATH", "")
     for raw_dir in path_env.split(os.pathsep):
         if not raw_dir.strip():
