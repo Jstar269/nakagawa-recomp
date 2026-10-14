@@ -6216,7 +6216,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "a2a00b71e118a216ceb280171f6f469ae296629f6a03bc4223c09b484739e41c"
+      "sha256": "2a3e55322bed28af4884f6ea0fecf34fce3cf79d947877c4b3d65b8fbdccf6cd"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -7858,7 +7858,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "942e85affbdd2cf4250492a00b4e3ffbfd97b58b3360010015aeb039e76afc39"
+      "sha256": "e2d2e72427d8a64a93dc8739ef1d1933e3669af5ced98c684da06e92804b2a0f"
     },
     {
       "path": "tools/test_analyze_toml_emit.py",
