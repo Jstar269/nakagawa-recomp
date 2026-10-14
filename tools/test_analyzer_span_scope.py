@@ -851,7 +851,7 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
             0x00000000,
             0x0C000000 | ((out_of_range_target >> 2) & 0x03FFFFFF),  # jal 0x00800000
             0x00000000,
-            (0x04 << 26) | (branch_offset & 0xFFFF),                 # beq $0, $0, 0x00002000
+            (0x04 << 26) | (branch_offset & 0xFFFF),                 # beq $0, $0, target 0x00002000
             0x00000000,
             0x03E00008,                                             # jr $ra
             0x00000000,
