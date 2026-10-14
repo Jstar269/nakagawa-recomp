@@ -716,6 +716,83 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         self.assertIn("ownership-gap", {finding["code"] for finding in findings})
         self.assertTrue(any("0x00001010" in finding["message"] for finding in findings))
 
+    # --- #968: a linking branch to a callable is a call in discovery too -----------
+
+    #: Issue #968's program: the entry calls 0x1010, whose `bal` targets 0x1030, a leaf
+    #: placed after the caller's return, inside the caller's span.
+    ISSUE_968_WORDS = (
+        0x0C000404, 0x00000000, 0x03E00008, 0x03A01821,  # 0x1000 jal 0x1010; jr ra; addu v1, sp
+        0x27BDFFF0, 0xAFBF0000,                          # 0x1010 addiu sp, -16; sw ra, 0(sp)
+        0x04110005, 0x00000000,                          # 0x1018 bal 0x1030; nop
+        0x2442000A, 0x8FBF0000, 0x03E00008, 0x27BD0010,  # 0x1020 the continuation, return
+        0x24420001, 0x03E00008, 0x00000000,              # 0x1030 the callee
+    )
+    #: The entry calls a frameless body (0x1018) that only reads its PC with
+    #: `bal .+8` (0x101c -> 0x1024), and a framed one (0x1034) whose `bal`
+    #: (0x103c -> 0x1048) jumps over an inline data word into its own
+    #: frame-releasing tail. Neither branch is a call.
+    NOT_A_CALL_WORDS = (
+        0x0C000406, 0x00000000, 0x0C00040D, 0x00000000,  # 0x1000 jal 0x1018; jal 0x1034
+        0x03E00008, 0x00000000,                          # 0x1010 jr ra
+        0x03E04021,                                      # 0x1018 addu t0, ra, zero
+        0x04110001,                                      # 0x101c bal .+8 (0x1024)
+        0x24420064,                                      # 0x1020 addiu v0, v0, 100
+        0x03E02021,                                      # 0x1024 addu a0, ra, zero
+        0x0100F821, 0x03E00008, 0x2442000A,              # 0x1028 addu ra, t0; jr ra; slot
+        0x27BDFFF0, 0xAFBF0000,                          # 0x1034 addiu sp, -16; sw ra, 0(sp)
+        0x04110002,                                      # 0x103c bal 0x1048
+        0x24420064,                                      # 0x1040 addiu v0, v0, 100
+        0x24424000,                                      # 0x1044 inline data, never run
+        0x03E02021,                                      # 0x1048 addu a0, ra, zero
+        0x8FBF0000, 0x03E00008, 0x27BD0010,              # 0x104c lw ra; jr ra; addiu sp, 16
+    )
+
+    def _analyze_words(self, name: str, words) -> tuple[analyze.Elf, set, list]:
+        elf_path = self.root / f"{name}.elf"
+        write_elf(elf_path, words=words)
+        image = analyze.Elf(str(elf_path), base=0)
+        functions, ranges = analyze.analyze(image)
+        return image, set(functions), ranges
+
+    def test_in_body_linked_call_target_is_an_entry_not_the_callers_interior(self) -> None:
+        # Before: the caller's trace absorbed 0x1030 and nothing made it an entry.
+        image, functions, ranges = self._analyze_words("issue-968", self.ISSUE_968_WORDS)
+        self.assertIn(0x1030, functions, "the callee must be an analyzer-owned entry")
+        covered, calls = set(), set()
+        analyze.trace_function(image, 0x1010, ranges, covered, calls, set())
+        self.assertNotIn(0x1030, covered, "the callee is not the caller's interior")
+        self.assertIn(0x1030, calls)
+        self.assertTrue({0x1020, 0x1024, 0x1028, 0x102C} <= covered, "the link continues")
+
+    def test_read_the_pc_and_a_continuation_target_stay_interior(self) -> None:
+        image, functions, ranges = self._analyze_words("not-a-call", self.NOT_A_CALL_WORDS)
+        self.assertTrue({0x1018, 0x1034} <= functions, sorted(map(hex, functions)))
+        for caller, target in ((0x1018, 0x1024), (0x1034, 0x1048)):
+            with self.subTest(target=hex(target)):
+                self.assertNotIn(target, functions)
+                covered, calls = set(), set()
+                analyze.trace_function(image, caller, ranges, covered, calls, set())
+                self.assertIn(target, covered)
+                self.assertNotIn(target, calls)
+
+    def test_cfg_gate_owns_the_in_body_linked_call_target(self) -> None:
+        # The canonical CFG already models the link as a call edge; with the callee
+        # discovered as an entry, the opt-in gate owns it. Before: ownership-gap.
+        image, functions, ranges = self._analyze_words("issue-968-cfg", self.ISSUE_968_WORDS)
+        report = analyze.canonical_cfg_report(image, ranges=ranges, entries=sorted(functions))
+        self.assertEqual(analyze.canonical_cfg_gate(report), [])
+        elf_path = self.root / "issue-968-cfg.elf"
+        proc = subprocess.run(
+            [
+                sys.executable, str(TOOLS / "codegen.py"), str(elf_path),
+                str(self.root / "issue-968-cfg.c"),
+                "--base=0", "--profile=none", "--funcs-per-chunk=2000", "--cfg-gate",
+            ],
+            cwd=ROOT, env=self._clean_env(), capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("CFG_GATE PASS", proc.stdout)
+
     def test_codegen_gate_kills_analyzer_mutation_before_emission(self) -> None:
         # Force the production codegen seam to lose the direct-call root. The
         # independent CFG walk still sees the in-image call edge and must stop

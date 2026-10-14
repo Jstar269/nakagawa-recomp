@@ -1769,6 +1769,16 @@ def is_likely(w):
 def is_link(w):  # branch that also writes $ra
     return (w >> 26) == 1 and rt(w) in (0x10, 0x11)
 
+def is_linked_call(elf, addr, w, ranges):
+    """#968: is the linking branch ``w`` at ``addr`` a CALL of its target?
+
+    One answer for ``function_flow`` and ``emit_function`` (and, through the same
+    predicate, for the analyzer and the frame walk): see
+    ``entry_frame_balance.linked_branch_is_call``.  ``bal .+8`` and a
+    frame-releasing continuation target are not calls.
+    """
+    return (w >> 26) == 1 and entry_frame_balance.linked_branch_is_call(elf, addr, w, ranges)
+
 def branch_target(addr, w):
     return (addr + 4 + (s16(w) << 2)) & 0xFFFFFFFF
 
@@ -1924,6 +1934,18 @@ def function_flow(elf, start, ranges, known, resume_owners=None,
                 break
             if is_eret(w):  # eret: LLE transfer, no delay slot, no fall-through
                 break
+            if is_linked_call(elf, pc, w, ranges):
+                # bal/bgezal/bltzal to a callable is a CALL shaped exactly like `jal`
+                # (#968): its target is an entry, never a label of this body, and both
+                # paths continue at the link. `bal .+8` and a frame-releasing
+                # continuation target are jumps with a link and stay two-way branches.
+                insns.add(pc + 4)
+                seen.add(pc + 4)
+                next_pc = pc + 8
+                if stop_at_continuation(pc, next_pc):
+                    break
+                pc = next_pc
+                continue
             if is_cond_branch(w):
                 t = branch_target(pc, w)
                 # A conditional target is a native label only when it remains
@@ -2677,18 +2699,14 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
         _delay = delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable)
         _delay_inline = " ".join(line.strip() for line in _delay)
-        if target in labels:
-            if is_likely(w):
-                out.append(f"      if (_c) {{ {_delay_inline} {y}goto L_{target:08x}; }} }}")
-            else:
-                out.extend("   " + line for line in _delay)
-                out.append(f"      if (_c) {{ {y}goto L_{target:08x}; }} }}")
-        elif is_link(w):
-            # bltzal/bgezal (bal = bgezal $zero) out of the body is a CALL (#968), not a
-            # TAIL: the taken path calls the target exactly as `jal` (known target) or
-            # `jalr rd` (dispatch with the resume PC) does, so the callee's `jr $ra`
-            # returns here and both paths fall through to addr + 8. The link and the
-            # delay slot above run once on either path; cond_expr refuses the
+        if is_linked_call(elf, addr, w, ranges):
+            # bltzal/bgezal (bal = bgezal $zero) to a callable is a CALL (#968), inside
+            # or outside this body: the taken path calls the target exactly as `jal`
+            # (known target) or `jalr rd` (dispatch with the resume PC) does, so the
+            # callee's `jr $ra` returns here and both paths continue at addr + 8.
+            # function_flow never labels the target for this site; another branch may
+            # still label it, so this test comes before the label test. The link and
+            # the delay slot above run once on either path; cond_expr refuses the
             # branch-likely linked forms, so no annulled slot reaches this point.
             if target in known or target in resume_owners:
                 call = emit_body_call(ADDRESS_SPACE.symbol(target, resume_owners))
@@ -2698,6 +2716,17 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 call = f"dispatch_call(s, {G(target)}, {G((addr + 8) & 0xFFFFFFFF)});"
             out.extend("   " + line for line in _delay)
             out.append(f"      if (_c) {{ {call} }} }}")
+            if addr in continuations:
+                out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
+            elif addr in dup_slot_skips:
+                out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline; skip its labelled duplicate */")
+            continue
+        if target in labels:
+            if is_likely(w):
+                out.append(f"      if (_c) {{ {_delay_inline} {y}goto L_{target:08x}; }} }}")
+            else:
+                out.extend("   " + line for line in _delay)
+                out.append(f"      if (_c) {{ {y}goto L_{target:08x}; }} }}")
         else:
             if is_likely(w):
                 out.append(f"      if (_c) {{ {_delay_inline} {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable, stack_census)} }} }} }}")

@@ -492,15 +492,18 @@ Generated functions use the shared `CpuState`, direct translated calls where emi
 dispatch support for computed/dynamic transfers. When tracing is enabled, maintained boundaries
 can be compared with reference/oracle traces.
 
-A guest CALL (`jal`, `jalr rd`) is a nested native call: the callee's frame lives on the guest
-thread's host fiber until its `jr $ra` returns, so host stack use follows guest call depth. The
+A guest CALL (`jal`, `jalr rd`, or since #968 a linking branch `bal`/`bltzal`/`bgezal` to a
+callable target) is a nested native call: the callee's frame lives on the guest thread's host fiber
+until its `jr $ra` returns, so host stack use follows guest call depth. A linking branch whose
+target is its own link (`bal .+8`, which reads the PC) or a frame-releasing continuation is a jump
+that also writes `$ra`, not a call; the analyzer, the frame walk and codegen share that one rule. The
 dispatcher's host-stack preflight stops a dispatched transfer at a named
 `host-fiber-stack-exhausted` boundary before the fiber is exhausted. A direct `jal` to a known
 body does not pass through the dispatcher, so unbounded direct recursion is not preflighted and
 can still exhaust the fiber without a named boundary.
 
-A guest TAIL transfer (`j`, `jr` on a register other than `$ra`, `jalr $zero`, a branch out of
-the body, or a fall-through into another entry) does not nest (#855). The body records the
+A guest TAIL transfer (`j`, `jr` on a register other than `$ra`, `jalr $zero`, a non-calling
+branch out of the body, or a fall-through into another entry) does not nest (#855). The body records the
 transfer in one runtime slot (`sr_tail_record`) and returns, and whoever invoked that body
 drains it:
 

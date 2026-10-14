@@ -1287,5 +1287,107 @@ class DirectBranchAuditTests(unittest.TestCase):
         self.assertEqual(candidate.continuation_delta, 0x30)
 
 
+def regimm_link(selector, rs, here, target):
+    """A linking REGIMM branch at ``here``: 0x10 bltzal, 0x11 bgezal, 0x12/0x13 likely."""
+    return (1 << 26) | (rs << 21) | (selector << 16) | (((target - here - 4) >> 2) & 0xFFFF)
+
+
+class LinkedBranchCallTests(unittest.TestCase):
+    """#968: one answer to "is this linking branch a call?" for every walker."""
+
+    CALLER, LEAF, TAIL, LEAKY = 0x1000, 0x1100, 0x1200, 0x1300
+
+    def words(self):
+        words = {}
+        words.update(emit(self.LEAF, jr(RA), NOP))                       # balanced callee
+        words.update(emit(self.TAIL,                                     # releases 0x10
+                          addu(A0, RA, 0), lw(RA, SP, 0), jr(RA), addiu(SP, SP, 0x10)))
+        words.update(emit(self.LEAKY, addiu(SP, SP, -8), jr(RA), NOP))  # leaks 8
+        return words
+
+    def test_the_predicate_calls_every_target_but_the_pc_read_and_a_continuation(self):
+        here = self.CALLER
+        cases = (
+            ("bal to a balanced leaf", regimm_link(0x11, 0, here, self.LEAF), True),
+            ("bltzal to a balanced leaf", regimm_link(0x10, A0, here, self.LEAF), True),
+            ("bgezall to a balanced leaf", regimm_link(0x13, A0, here, self.LEAF), True),
+            ("bal to a frame leak", regimm_link(0x11, 0, here, self.LEAKY), True),
+            ("bal outside the ranges", regimm_link(0x11, 0, here, 0x8000), True),
+            ("bal .+8 reads the PC", regimm_link(0x11, 0, here, here + 8), False),
+            ("bal to a continuation", regimm_link(0x11, 0, here, self.TAIL), False),
+            ("bgez is not linking", bgez(0, 0x3F), False),
+            ("teqi is not a branch", teqi(0, 0x3F), False),
+        )
+        words = self.words()
+        elf = WordImage(words)
+        ranges = [(self.LEAF, self.LEAKY + 12)]
+        for label, word, expected in cases:
+            with self.subTest(label):
+                self.assertIs(efb.linked_branch_is_call(elf, here, word, ranges), expected)
+        self.assertEqual(efb.linked_target_role(elf, self.TAIL, ranges), efb.CONTINUATION)
+
+    def test_the_caller_of_a_called_leaf_is_balanced(self):
+        """The issue #968 caller. Before: the walk followed the leaf's ``jr $ra``
+        inside the caller's frame and reported ``{-0x10, 0}``, i.e. indeterminate."""
+        words = emit(
+            0x1010,
+            addiu(SP, SP, -0x10), sw(RA, SP, 0),
+            regimm_link(0x11, 0, 0x1018, 0x1030), NOP,
+            addiu(V0, V0, 10), lw(RA, SP, 0), jr(RA), addiu(SP, SP, 0x10),
+            addiu(V0, V0, 1), jr(RA), NOP,
+        )
+        elf, ranges = image(words)
+        profile = efb.profile_entry(elf, 0x1010, ranges)
+        self.assertEqual(profile.return_deltas, frozenset({0}))
+        self.assertNotIn(0x1030, profile.depths, "the callee is not part of the caller")
+        self.assertEqual(efb.classify(profile), efb.CALLABLE)
+
+    def test_a_likely_linked_call_annuls_its_slot_only_when_not_taken(self):
+        """Taken: the slot releases the frame (0). Not taken: annulled (-0x10). The
+        frame-leaking callee (-8) is never walked as part of the caller."""
+        words = self.words()
+        words.update(emit(
+            self.CALLER,
+            addiu(SP, SP, -0x10),
+            regimm_link(0x13, A0, self.CALLER + 4, self.LEAKY),  # bgezall
+            addiu(SP, SP, 0x10),
+            jr(RA), NOP,
+        ))
+        elf = WordImage(words)
+        ranges = [(self.CALLER, self.CALLER + 0x14), (self.LEAF, self.LEAKY + 12)]
+        profile = efb.profile_entry(elf, self.CALLER, ranges)
+        self.assertEqual(profile.return_deltas, frozenset({0, -0x10}))
+
+    def test_a_continuation_target_keeps_the_two_way_walk(self):
+        # A jump with a link into the caller's own tail: the gated walk still forks
+        # into it, so the tail's release is the caller's return path.
+        words = emit(
+            self.CALLER,
+            addiu(SP, SP, -0x10), sw(RA, SP, 0),
+            regimm_link(0x11, 0, self.CALLER + 8, self.CALLER + 0x18), NOP,
+            jr(RA), NOP,                                   # reached only by fall-through
+            addu(A0, RA, 0), lw(RA, SP, 0), jr(RA), addiu(SP, SP, 0x10),
+        )
+        elf, ranges = image(words)
+        profile = efb.profile_entry(elf, self.CALLER, ranges)
+        self.assertIn(self.CALLER + 0x18, profile.depths)
+        self.assertEqual(profile.return_deltas, frozenset({0, -0x10}))
+
+    def test_the_role_is_memoized_per_image_and_range_set(self):
+        elf = WordImage(self.words())
+        ranges = [(self.LEAF, self.LEAKY + 12)]
+        with unittest.mock.patch.object(efb, "_walk_frame", wraps=efb._walk_frame) as walk:
+            for _ in range(3):
+                efb.linked_target_role(elf, self.TAIL, ranges)
+            efb.linked_target_role(elf, self.TAIL, list(reversed(ranges)) + [(0x1200, 0x1204)])
+            self.assertEqual(walk.call_count, 1, "equal range sets share one walk")
+            efb.linked_target_role(elf, self.TAIL, [(self.TAIL, self.TAIL + 8)])
+            self.assertEqual(walk.call_count, 2, "a different range set is walked again")
+        self.assertEqual(
+            efb.linked_target_role(elf, self.TAIL, [(self.TAIL, self.TAIL + 8)]),
+            efb.INDETERMINATE,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -552,6 +552,16 @@ class _SpanIndex:
         return i >= 0 and addr < self.ends[i]
 
 
+def span_key(ranges):
+    """A hashable key for ``ranges`` (a span list or a :class:`_SpanIndex`).
+
+    It is the merged, sorted, non-empty span tuple, so two range lists covering
+    the same addresses have the same key, whichever form they arrive in.
+    """
+    index = ranges if isinstance(ranges, _SpanIndex) else _SpanIndex(ranges)
+    return tuple(zip(index.starts, index.ends, strict=True))
+
+
 def _file_backed_exec_ranges(elf):
     """Executable bytes that are file-backed, including bytes outside named code sections."""
     cached = getattr(elf, "_file_backed_exec_ranges", None)
@@ -590,11 +600,12 @@ def _import_stub_is_file_executable(addr, file_exec_ranges):
 
 def trace_function(elf, start, ranges, covered, calls, hc, walked=None):
     # Recursive descent over one function's intra-procedural control flow from `start`.
-    # Adds every instruction address reached to `covered`, and every direct-call (jal) target
-    # to `calls`. Returns newly found targets so callers can extend their worklists without
-    # rescanning all prior calls. Calls return, so execution continues after the delay slot;
-    # jr and j and an unconditional b end a path (no fall-through). Conditional branches
-    # fork: follow the target and continue past the delay slot.
+    # Adds every instruction address reached to `covered`, and every direct-call target (jal,
+    # or a linking branch to a callable, #968) to `calls`. Returns newly found targets so
+    # callers can extend their worklists without rescanning all prior calls. Calls return,
+    # so execution continues after the delay slot; jr and j and an unconditional b end a
+    # path (no fall-through). Conditional branches fork: follow the target and continue
+    # past the delay slot.
     # The range membership tests below run once per traced instruction, so they use an
     # index built once per trace (same answers as in_ranges over the plain list).
     # `walked` is the set of instruction addresses that earlier traces over these same
@@ -665,6 +676,22 @@ def trace_function(elf, start, ranges, covered, calls, hc, walked=None):
                     if target not in calls:
                         calls.add(target)
                         new_calls.append(target)
+                covered.add(pc + 4)
+                pc += 8
+                continue
+            if (op == 1 and ((word >> 16) & 0x1F) in REGIMM_LINK_RT
+                    and _linked_branch_is_call(elf, pc, word, ranges)):
+                # bal/bgezal/bltzal (and the likely forms) to a callable: a call wearing
+                # a branch encoding (#968). Its target is a function entry like a jal
+                # target, never this function's interior, and both paths continue past
+                # the delay slot. `bal .+8` and a frame-releasing continuation target
+                # are not calls and fork below, exactly as before.
+                target = branch_target(pc, word)
+                if target not in calls and (
+                    in_ranges(target, ranges) or in_ranges(target, _file_backed_exec_ranges(elf))
+                ):
+                    calls.add(target)
+                    new_calls.append(target)
                 covered.add(pc + 4)
                 pc += 8
                 continue
@@ -802,15 +829,41 @@ def direct_j_edges(elf, ranges, targets=None):
 #: REGIMM ``rt`` is a trap-immediate (``tgei``, ``tlti``, ``teqi``, ...) or
 #: ``synci``, whose immediate field is a trap code -- decoding it as a branch
 #: displacement manufactures an edge that does not exist.  ``trace_function``
-#: above is deliberately left alone: widening or narrowing its notion of a
+#: above still decodes those trap forms as branches: narrowing its notion of a
 #: branch would move recovered function extents, which is a separate change.
-#: The evidence census below has no such coupling and is therefore exact.
+#: (It does treat a linking branch to a callable as a call, #968.)  The
+#: evidence census below has no such coupling and is therefore exact.
 REGIMM_BRANCH_RT = frozenset({0x00, 0x01, 0x02, 0x03, 0x10, 0x11, 0x12, 0x13})
 
 #: The subset of :data:`REGIMM_BRANCH_RT` that writes ``$ra``.  ``bal`` is
 #: ``bgezal $zero``; these are *calls* wearing a branch encoding, so their
 #: target is a callable boundary and never continuation evidence.
 REGIMM_LINK_RT = frozenset({0x10, 0x11, 0x12, 0x13})
+
+
+def linked_branch_target(source, word):
+    """Target of a linking REGIMM branch that can be a call, or ``None``.
+
+    ``None`` for every word that is not ``bltzal``/``bgezal``/``bltzall``/
+    ``bgezall`` (``bal`` is ``bgezal $zero``), and for the read-the-PC idiom
+    ``bal .+8``: a target equal to the link is the caller's own next pair, so
+    that branch only materializes the PC and is never a call (#968).  Whether a
+    returned target *is* a call also depends on the target's frame role; see
+    :func:`entry_frame_balance.linked_branch_is_call`, which every walker uses.
+    """
+    if word >> 26 != 1 or ((word >> 16) & 0x1F) not in REGIMM_LINK_RT:
+        return None
+    target = branch_target(source, word)
+    if target == (source + 8) & 0xFFFFFFFF:
+        return None
+    return target
+
+
+def _linked_branch_is_call(elf, source, word, ranges):
+    # entry_frame_balance imports this module, so it is imported where it is used.
+    import entry_frame_balance
+    return entry_frame_balance.linked_branch_is_call(elf, source, word, ranges)
+
 
 #: Branch edge kinds reported by :func:`direct_branch_edges`.
 BRANCH_COND = "cond"          # an ordinary two-way conditional branch
