@@ -20,8 +20,8 @@
 /* Windows reserved-device component check.
  *
  * A guest-supplied single component is unsafe when its extension-stripped base
- * names a DOS reserved device: CON, PRN, AUX, NUL, COM1-9, LPT1-9. Win32 path
- * normalization resolves such a component in every DOS namespace, not the
+ * names a DOS reserved device: CON, PRN, AUX, NUL, COM1-9, LPT1-9, CONIN$, CONOUT$.
+ * Win32 path normalization resolves such a component in every DOS namespace, not the
  * filesystem, so "NUL" or "COM5" would silently bypass containment while still
  * succeeding. Edge semantics (F114-5): only those exact bases are reserved --
  * supersets ("CONSOLE", "COMMON", "NULL") and "COM0"/"LPT0" are ordinary
@@ -33,11 +33,12 @@ static inline int sr_vfs_is_dos_device_name(const char *name, size_t len) {
     static const char *const devices[] = {
         "CON", "PRN", "AUX", "NUL",
         "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        "CONIN$", "CONOUT$"
     };
     size_t base_len = 0;
     while (base_len < len && name[base_len] != '.') base_len++;
-    if (base_len < 3 || base_len > 4) return 0;
+    if (base_len < 3 || base_len > 7) return 0;
     for (size_t i = 0; i < sizeof(devices)/sizeof(devices[0]); i++) {
         size_t dlen = strlen(devices[i]);
         if (dlen == base_len && sr_vfs_strnicmp(name, devices[i], base_len) == 0) {

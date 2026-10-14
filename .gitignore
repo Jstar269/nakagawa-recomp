@@ -152,6 +152,7 @@ Desktop.ini
 # per-tool caches, settings, and personal instruction files stay local.
 /.claude/
 /.codex/
+/.jules/
 /.codex-remote-attachments/
 /.gemini/
 /.opencode/
