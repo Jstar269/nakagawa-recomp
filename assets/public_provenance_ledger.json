@@ -8375,7 +8375,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d31f43178910bed916e34d09ec5e542161bf06ff35c7627304919a6e6e221e3c"
+      "sha256": "665be86dae18654fd405b6e4ce92142cfebf0a81d241a95bce87c166c0477f8f"
     },
     {
       "path": "tools/test_enhancement_package.py",
@@ -8892,7 +8892,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7382ca96264d44b3fb9b409593eed40c85dd862928d037fab0919eea6f5bc7df"
+      "sha256": "70fbeb9b80c98e60f7966a30d5e915f570bae43da1faec99a5a851c5cd36a66c"
     },
     {
       "path": "tools/test_key_scrub_tools.py",
@@ -9732,7 +9732,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "030478583a7909ba3d780e0fb56b46803008eb019daf054904f70b896f97a9ac"
+      "sha256": "a6f2e07e81150d1542e5795f8976a7b1c252895fcf705501181f25ee7232cb2a"
     },
     {
       "path": "tools/test_savedata_spans.py",
