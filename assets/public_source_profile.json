@@ -644,6 +644,7 @@
     "tests/native/test_input_profile.c",
     "tests/native/test_input_settings.c",
     "tests/native/test_launch_resolution.c",
+    "tests/native/test_library.c",
     "tests/native/test_manifest_parser.c",
     "tests/native/test_package_builder.c",
     "tests/native/test_parsers_hostile.c",
