@@ -7618,7 +7618,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f6750522cb0a6db2cea5d6a41a197efc62aa788927d00bdd52242fa7305d6f7f"
+      "sha256": "0c9914d043af59a9d1b51dbc1d29660970f71a5097c39761de6a540a3183610d"
     },
     {
       "path": "tools/pspdev_probe.py",
@@ -9552,7 +9552,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "40502e87dafaaab0d6bec054c047a7ec56a58e68b672ee54e31c8983003a8a13"
+      "sha256": "e47993877620e595edcbecb289e4376d7f49e06268a702aca5f75debab3e8bad"
     },
     {
       "path": "tools/test_pspdev_probe.py",
