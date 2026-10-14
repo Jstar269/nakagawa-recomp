@@ -337,6 +337,33 @@ class SafeJoinTests(unittest.TestCase):
             with self.assertRaises(UnsafeArchivePathError):
                 safe_join(root, "link/payload.bin")
 
+    def test_contained_path_accepts_parent_root_alias_and_symlinked_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as base:
+            real_parent = os.path.join(base, "real_parent")
+            os.makedirs(real_parent)
+            link_parent = os.path.join(base, "link_parent")
+            try:
+                os.symlink(real_parent, link_parent, target_is_directory=True)
+            except (OSError, NotImplementedError, AttributeError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+
+            alias_root = os.path.join(real_parent, "sub", "..", "output")
+            os.makedirs(alias_root)
+
+            symlink_root = os.path.join(link_parent, "output")
+
+            target1 = extract_xb.contained_path(alias_root, "data/menu.bin")
+            self.assertEqual(
+                target1,
+                os.path.join(canonical_root(alias_root), "data", "menu.bin"),
+            )
+
+            target2 = extract_xb.contained_path(symlink_root, "data/menu.bin")
+            self.assertEqual(
+                target2,
+                os.path.join(canonical_root(symlink_root), "data", "menu.bin"),
+            )
+
 
 class VerifyExtractedTreeTests(unittest.TestCase):
     def test_a_clean_tree_passes(self) -> None:
