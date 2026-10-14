@@ -3221,7 +3221,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "963480c38e5f1c2c88919c884cd0d094156530c658f37ff95e2b994629471661"
+      "sha256": "cb14fb93f33a86a724e2d409a27de3f2c13b76afdf0b39dee0e063e422581ce4"
     },
     {
       "path": "src/player/ui_renderer.c",
@@ -3233,7 +3233,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4641bb5c76bdbcd9631a67c7e3bfc64ed0cd45a5d1f9db6c78f8fd9d7eae8ba0"
+      "sha256": "7d254210f32f9600f9e4d959b4b135d3b88af3c5c1ee953d2373fb31f312b900"
     },
     {
       "path": "src/player/ui_renderer.h",
@@ -6065,7 +6065,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e5cd2eb59b988628a1004ed8393902fd8f0d95e575c9af7ce8e9ea702ccca88f"
+      "sha256": "46c9eafa9566ada33167d6abdd661b367842cba0aa7ec2ee317adec57946bf4c"
     },
     {
       "path": "tests/native/test_win32_process.c",

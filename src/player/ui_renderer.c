@@ -1189,23 +1189,19 @@ static void draw_text_ellipsized(SDL_Renderer *ren, float x, float y,
     float ell_w = ui_font_text_width("...", scale);
     if (max_width <= ell_w + 1.0f) return;
     size_t prefix_bytes = ui_font_fit_prefix(str, scale, max_width - ell_w);
-    /* Never split a UTF-8 sequence: back up over continuation bytes. */
-    while (prefix_bytes > 0 && ((unsigned char)str[prefix_bytes] & 0xC0) == 0x80) {
-        prefix_bytes--;
-    }
+
     /* Never split a word when a clean break exists in the fitting prefix. */
     if (prefix_bytes > 12) {
         size_t back = prefix_bytes;
         while (back > prefix_bytes - 24 && back > 0 && str[back - 1] != ' ') back--;
         if (back > 0 && str[back - 1] == ' ') prefix_bytes = back - 1;
     }
-    if (prefix_bytes >= NK_MAX_TITLE_LEN - 4) prefix_bytes = NK_MAX_TITLE_LEN - 4;
+
     char clipped[NK_MAX_TITLE_LEN];
-    memcpy(clipped, str, prefix_bytes);
-    memcpy(clipped + prefix_bytes, "...", 3);
-    clipped[prefix_bytes + 3] = '\0';
+    ui_clip_ellipsize_utf8(clipped, sizeof(clipped), str, prefix_bytes);
     draw_text(ren, x, y, clipped, scale, c);
 }
+
 
 /* Center a fixed-width card, never letting it run off either edge. */
 static float centered_card_x(float window_w, float card_w) {
@@ -1602,7 +1598,7 @@ static float draw_text_wrapped_checked(SDL_Renderer *ren, float x, float y,
                 if (back > take / 3) take = back;
             }
             /* Never split a UTF-8 sequence. */
-            while (take > 1 && ((unsigned char)seg[take] & 0xC0) == 0x80) take--;
+            take = ui_clip_utf8_bound(seg, take);
             memcpy(line_buf, cursor + offset, take);
             line_buf[take] = '\0';
             /* Trim a leading space carried from the break. */
@@ -1610,11 +1606,9 @@ static float draw_text_wrapped_checked(SDL_Renderer *ren, float x, float y,
             if (*emit == ' ' || *emit == '\t') emit++;
             if (last_line && more_after) {
                 truncated = true;
-                size_t emit_len = strlen(emit);
-                if (emit_len > 3) {
-                    memcpy(line_buf + (emit - line_buf) + emit_len - 3, "...", 3);
-                }
-                if (ren) draw_text(ren, x, y, emit, scale, c);
+                char ell_line[sizeof(line_buf)];
+                ui_clip_ellipsize_utf8(ell_line, sizeof(ell_line), emit, strlen(emit));
+                if (ren) draw_text(ren, x, y, ell_line, scale, c);
                 y += line_h;
                 line_no++;
                 break;
@@ -1868,14 +1862,11 @@ static void render_footer_hints(SDL_Renderer *ren, PlayerApp *app) {
         draw_text(ren, 32.0f, h - 24.0f, hints, 1.0f, COLOR_TEXT_DIM);
         return;
     }
-    while (fit > 0 && ((unsigned char)hints[fit] & 0xC0) == 0x80) fit--;
     char clipped[160];
-    if (fit > sizeof(clipped) - 4) fit = sizeof(clipped) - 4;
-    if (fit == 0) return;
-    memcpy(clipped, hints, fit);
-    memcpy(clipped + fit, "...", 3);
-    clipped[fit + 3] = '\0';
-    draw_text(ren, 32.0f, h - 24.0f, clipped, 1.0f, COLOR_TEXT_DIM);
+    ui_clip_ellipsize_utf8(clipped, sizeof(clipped), hints, fit);
+    if (clipped[0] != '\0') {
+        draw_text(ren, 32.0f, h - 24.0f, clipped, 1.0f, COLOR_TEXT_DIM);
+    }
 }
 
 /* --- View: Empty Library --- */
