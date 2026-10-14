@@ -15,7 +15,8 @@ typedef enum {
     SR_H264_PIXEL_5650 = 3,
     SR_H264_PIXEL_5551 = 4,
     SR_H264_PIXEL_4444 = 5,
-    SR_H264_PIXEL_8888 = 6
+    SR_H264_PIXEL_8888 = 6,
+    SR_H264_PIXEL_NATIVE_YUV420P = 7
 } SrH264PixelFormat;
 
 typedef enum {

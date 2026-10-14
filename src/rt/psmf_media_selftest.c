@@ -717,6 +717,12 @@ static void test_media_disposition_conservation(void) {
 }
 
 /* One decoder, the producer's own access units, the guest display buffer. */
+/* A backend reports the decoder's own output layout, never a converted format: NV12 for Media
+ * Foundation, planar YUV420P for libavcodec. Both are explicit native 4:2:0 formats. */
+static int native_decoder_format(SrH264PixelFormat f) {
+    return f == SR_H264_PIXEL_NATIVE_NV12 || f == SR_H264_PIXEL_NATIVE_YUV420P;
+}
+
 static void test_real_decode_into_guest_buffer(void) {
     uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES];
     uint32_t size = 0;
@@ -766,12 +772,12 @@ static void test_real_decode_into_guest_buffer(void) {
             sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
                                          SR_PSMF_MEDIA_DECODED);
             int valid = info.width == 64 && info.height == 64 &&
-                        info.native_format == SR_H264_PIXEL_NATIVE_NV12 &&
+                        native_decoder_format(info.native_format) &&
                         info.delivered_format == SR_H264_PIXEL_8888 &&
                         info.stride == 64 * 4;
             CHECK(info.width == 64 && info.height == 64,
                   "decoded frame reports the fixture dimensions");
-            CHECK(info.native_format == SR_H264_PIXEL_NATIVE_NV12,
+            CHECK(native_decoder_format(info.native_format),
                   "decoder-native format remains explicit");
             CHECK(info.delivered_format == SR_H264_PIXEL_8888,
                   "guest delivery format remains explicit");
@@ -799,7 +805,7 @@ static void test_real_decode_into_guest_buffer(void) {
         sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
                                      SR_PSMF_MEDIA_DECODED);
         int valid = info.width == 64 && info.height == 64 &&
-                    info.native_format == SR_H264_PIXEL_NATIVE_NV12 &&
+                    native_decoder_format(info.native_format) &&
                     info.delivered_format == SR_H264_PIXEL_8888 &&
                     info.stride == 64 * 4;
         CHECK(valid, "EOS-drained frame satisfies the fixture contract");
@@ -876,7 +882,7 @@ static void test_decoded_pixels(void) {
             if (r < 0) { CHECK(0, "host decode failed"); break; }
             if (r == 0) break;
             CHECK(info.width == 64 && info.height == 64, "host frame reports the fixture dimensions");
-            CHECK(info.native_format == SR_H264_PIXEL_NATIVE_NV12,
+            CHECK(native_decoder_format(info.native_format),
                   "host delivery preserves the native format distinction");
             CHECK(info.delivered_format == SR_H264_PIXEL_RGBA8888,
                   "host delivery reports RGBA8888 explicitly");
