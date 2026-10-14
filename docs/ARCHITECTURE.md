@@ -439,8 +439,8 @@ branch-before-delay-slot order as generated code), the ordered guest writes seen
 mutated copy of the interpreter — or of `tools/codegen.py`, so both sides of the differential are
 covered — and requiring each defect class to fail the gate.
 
-Two lane `MIXED` cells (`xcall`, `xtail`) install every native body except one, which is the seam
-the AOT-gap floor actually crosses: native caller, dispatch miss, interpreter, back. Beside the
+Three lane `MIXED` cells (`xcall`, `xtail`, `xnest`) install every native body except one, which is
+the seam the AOT-gap floor actually crosses: native caller, dispatch miss, interpreter, back. Beside the
 comparison the harness runs interpreter-tier assertions the two-lane shape cannot express — a
 fail-closed negative corpus, a sweep of every control encoding in a delay slot, the `jalr`
 link-register shape, and a census that probes the production decoder and requires the set it

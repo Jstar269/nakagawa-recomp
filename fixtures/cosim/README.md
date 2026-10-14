@@ -103,7 +103,7 @@ silently comparing the wrong thing.
 
 ## Cross-tier cells
 
-`xcall` and `xtail` add a third lane, `MIXED`: every native body **except one**. That is
+`xcall`, `xtail` and `xnest` add a third lane, `MIXED`: every native body **except one**. That is
 the seam the production AOT-gap floor actually crosses — native caller, dispatch miss,
 production interpreter, back — and it is the one shape a whole-cell lane cannot express.
 `install_lane_mixed()` refuses to run if the omitted address was never registered, so a
@@ -116,6 +116,14 @@ cell cannot degrade into a second all-native run and pass vacuously.
 * `xcall` is the **returning call**, which no other gate exercises. Generated code emits
   `dispatch(s, _t);` for a `jal`/`jalr` with no host return after it, so the caller's
   native frame is still live. It is an ordinary PASS.
+* `xnest` turns `xcall` inside out: a native caller reaches an **interpreted** middle
+  (`xnestmid`, the omission) whose own `jalr` calls a **registered** leaf. The guest
+  expects the middle to resume at its link address, mark the accumulator and unwind its
+  frame. The interpreter used to treat that linked transfer like a tail and hand off for
+  good, so the middle's continuation never ran, `$sp` stayed 8 bytes low because the
+  middle never unwound, and the native caller reloaded `$ra` from its own unused slot; a linked transfer into a registered body is now a CALL, as it
+  is in generated code. It is an ordinary PASS, and against the earlier interpreter it
+  diverges on `r2` and the handoff target.
 
 `xcall` is also this gate's first worked example of a declared defect retiring itself.
 It was added while the interpreter stopped only at a registered *entry*, so an
@@ -201,7 +209,7 @@ returns through its callee's `jr $ra` instead.
 | `llsc` | `ll`/`sc` and the link bit: an unlinked `sc` fails, a linked one stores and reports 1, `sc` leaves the link set, `ll $zero` links, an atomic-increment retry loop, and `sc` whose `rt` is its own base |
 | `fpu` | scalar FPU over the #120 helper path, re-run under all four FCR31 rounding modes and with FS set |
 | `fpu_aot` | AOT-only instruction inventory checked against the independent scalar-FPU reference |
-| `xcall` / `xtail` | **cross-tier** — a returning call and a tail transfer that each drop into the interpreter mid-run and hand back |
+| `xcall` / `xtail` / `xnest` | **cross-tier** — a returning call and a tail transfer that each drop into the interpreter mid-run and hand back, and an interpreted caller that calls back into a registered body |
 | `spleak` | **positive control** — an unbalanced `$sp` epilogue |
 
 `spleak` is not a defect fixture. It pins the one architectural asymmetry the
