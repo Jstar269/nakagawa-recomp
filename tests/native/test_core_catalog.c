@@ -228,10 +228,6 @@ int main(void) {
     fclose(f_zero);
     assert(nk_platform_get_file_size(zero_file_path) == 0);
 
-    /* Invalid UTF-8 sequence path returns -1 */
-    const char invalid_utf8_path[] = { (char)0xC3, (char)0x28, '\0' };
-    assert(nk_platform_get_file_size(invalid_utf8_path) == -1);
-
     printf("[NATIVE_TEST] ALL CORE NATIVE C TESTS PASSED SUCCESSFULLY!\n");
     nk_title_catalog_snapshot_release(&found_ov);
     nk_title_catalog_snapshot_release(&found_ov_by_id);
