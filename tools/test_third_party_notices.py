@@ -213,6 +213,30 @@ class TestNativePackageNoticesGate(unittest.TestCase):
         self.assertEqual(ctx.exception.code, "PACKAGE_LICENSE_RECORD_MISSING")
         self.assertIn(INVENTORY_IDENTITY, str(ctx.exception))
 
+    def test_component_with_unresolved_spdx_id_refuses_the_package(self) -> None:
+        """A component or binary with an unresolved or missing SPDX identity refuses packaging."""
+        (self.pkg_dir / "custom_lib.dll").write_bytes(bytes([0x4D, 0x5A, 0x00, 0x00]) + b"synthetic")
+        custom_lic = self.pkg_dir / "custom_lic.txt"
+        custom_lic.write_text("Verbatim license text", encoding="utf-8")
+
+        for bad_spdx in ("NOASSERTION", "UNKNOWN", "", None):
+            with self.subTest(spdx_id=bad_spdx):
+                custom_map = {
+                    "custom_lib.dll": {
+                        "name": "Custom Lib",
+                        "spdx_id": bad_spdx,
+                        "license_path": str(custom_lic),
+                        "version": "1.0.0",
+                    }
+                }
+                with self.assertRaises(PackageRouteError) as ctx:
+                    package_notices.generate_package_notices(
+                        self.pkg_dir, repo_root=ROOT, custom_license_map=custom_map
+                    )
+                self.assertEqual(ctx.exception.code, "PACKAGE_LICENSE_RECORD_MISSING")
+                self.assertIn("lacks a valid SPDX license identifier", str(ctx.exception))
+
+
 
 class TestNoDashboardRoute(unittest.TestCase):
     """The web dashboard is retired: no release artifact carries npm packages."""
