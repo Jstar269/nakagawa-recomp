@@ -288,6 +288,18 @@ static void test_clut(void) {
     clut.csa = 0xFFu;
     CHECK(sr_ge_clut_lookup(&sm, &clut, 0xABu, &c) == SR_GE_TEX_FLAG_INVALID && rgba_eq(c, 0, 0, 0, 0),
           "banked index beyond available CLUT fails closed");
+    /* Out-of-range synthetic CSA/palette cases (#703): valid CSA with raw index exceeding
+       available CLUT count, and extreme uint32_t index combined with CSA offset. */
+    clut.shift = 0;
+    clut.csa = 4; /* (4 << 4) = 64 offset */
+    clut.mask = 0x3Fu;
+    clut.count = 64;
+    CHECK(sr_ge_clut_lookup(&sm, &clut, 0x10u, &c) == SR_GE_TEX_FLAG_INVALID && rgba_eq(c, 0, 0, 0, 0),
+          "valid CSA with raw index beyond palette table fails closed");
+    clut.csa = 0x0Fu;
+    clut.mask = 0xFFFFFFFFu;
+    CHECK(sr_ge_clut_lookup(&sm, &clut, 0xFFFFFFFFu, &c) == SR_GE_TEX_FLAG_INVALID && rgba_eq(c, 0, 0, 0, 0),
+          "extreme 32-bit index with CSA offset beyond palette table fails closed");
 }
 
 static void test_address(void) {
