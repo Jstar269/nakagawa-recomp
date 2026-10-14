@@ -2877,7 +2877,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ba3539b0ea8be117e6d07f7499898258e19f7da2fc127d6b1cd866a56a22f701"
+      "sha256": "2c2d48ea8e3f44689a0579fef8fd4f6e4341a0a35e0f1a48aa9fbdb8cffe9c2e"
     },
     {
       "path": "src/core/nk_psp_inflate.h",
@@ -5921,7 +5921,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "15ecc7cb6e3624b3d3f92735568baf0481229edb1c9212bb8618ba9b08d8a414"
+      "sha256": "d13c96e65f7b6d043def265529677e34941ad0f673fa202adce7270f321fb575"
     },
     {
       "path": "tests/native/test_input_profile.c",

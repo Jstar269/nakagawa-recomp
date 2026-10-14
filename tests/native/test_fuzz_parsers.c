@@ -2287,6 +2287,30 @@ static void test_nk_psp_inflate_unit(void) {
         free(out); out = NULL; out_len = 0;
     }
 
+    /* Raw DEFLATE beginning 08 3C: the zlib header test passes and the FDICT
+     * bit (byte 1, bit 5) is set, but the bytes are valid raw DEFLATE: a
+     * non-final stored block of 60 bytes, then an empty final stored block.
+     * It must decode and must not be refused as a preset-dictionary stream. */
+    {
+        uint8_t raw_08_3c[70];
+        memset(raw_08_3c, 0, sizeof(raw_08_3c));
+        raw_08_3c[0] = 0x08u; /* stored block, BFINAL = 0 */
+        raw_08_3c[1] = 0x3Cu; /* LEN low; also zlib FLG with FDICT set */
+        raw_08_3c[2] = 0x00u; /* LEN high: LEN = 60 */
+        raw_08_3c[3] = 0xC3u; /* NLEN low */
+        raw_08_3c[4] = 0xFFu; /* NLEN high: ~60 */
+        for (size_t i = 0; i < 60; i++) raw_08_3c[5 + i] = (uint8_t)('A' + (i % 26));
+        raw_08_3c[65] = 0x01u; /* final stored block, BFINAL = 1 */
+        raw_08_3c[66] = 0x00u; /* LEN = 0 */
+        raw_08_3c[67] = 0x00u;
+        raw_08_3c[68] = 0xFFu; /* NLEN = ~0 */
+        raw_08_3c[69] = 0xFFu;
+
+        assert(nk_psp_inflate(raw_08_3c, sizeof(raw_08_3c), &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+        assert(out != NULL && out_len == 60u && out[0] == 'A' && out[59] == (uint8_t)('A' + (59 % 26)));
+        free(out); out = NULL; out_len = 0;
+    }
+
     /* 4. Gzip Wrapper & Optional Header Flags */
     /* Unsupported compression method */
     {
