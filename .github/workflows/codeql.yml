@@ -1,11 +1,13 @@
 name: Trusted CodeQL
 
 on:
-  # CI is a wake-up signal only. Its pull_request workflow is candidate-controlled;
-  # this workflow_run definition comes from the trusted default branch and scans
-  # the current PR merge tree independently.
+  # The "CodeQL wake" workflow (codeql-wake.yml) is a signal only. Its pull_request run is
+  # candidate-controlled and carries no evidence; this workflow_run definition comes from the
+  # trusted default branch, reads the exact pull request from GitHub's API, and scans the
+  # current PR merge tree independently. CI is not a trigger, so the analysis no longer waits
+  # for the slowest CI job.
   workflow_run:
-    workflows: [CI]
+    workflows: ["CodeQL wake"]
     types: [completed]
   workflow_dispatch:
     inputs:
@@ -21,9 +23,13 @@ on:
 permissions: {}
 
 concurrency:
-  # workflow_run payloads do not reliably include pull_requests for fork PRs.
-  # Use the originating run ID so simultaneous external PRs never cancel each other.
-  group: codeql-${{ github.event.workflow_run.id || github.event.inputs.pull_request_number || github.ref }}
+  # The wake run starts an analysis at every push. Without cancellation, a superseded head
+  # would run the full analysis to a refused upload, which CI's own cancellation used to
+  # prevent. Group by head repository and branch, so a newer head of a branch cancels the
+  # older analysis. Distinct repositories (forks) never share a group, so one author cannot
+  # cancel another author's analysis. workflow_run payloads do not reliably include
+  # pull_requests for fork PRs, so the PR number is not used.
+  group: codeql-${{ github.event.workflow_run.head_repository.full_name || github.repository }}/${{ github.event.workflow_run.head_branch || github.event.inputs.pull_request_number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -76,7 +82,7 @@ jobs:
                   headRepository.full_name?.toLowerCase() !== `${headOwner}/${headName}`.toLowerCase() ||
                   typeof run.head_branch !== "string" ||
                   !/^[0-9a-f]{40}$/.test(run.head_sha || "")) {
-                core.setFailed("CI run did not identify an exact source repository, branch, and head SHA");
+                core.setFailed("The trigger run did not identify an exact source repository, branch, and head SHA");
                 return;
               }
               const { data: matches } = await github.rest.pulls.list({
@@ -91,7 +97,7 @@ jobs:
                 pr.head.repo?.full_name?.toLowerCase() === headRepository.full_name.toLowerCase() &&
                 pr.head.ref === run.head_branch && pr.head.sha === run.head_sha);
               if (exactMatches.length !== 1) {
-                core.setFailed("CI run does not map to exactly one open PR at its exact head SHA");
+                core.setFailed("The trigger run does not map to exactly one open PR at its exact head SHA");
                 return;
               }
               await resolvePullRequest(exactMatches[0].number, run.head_sha);
@@ -131,7 +137,7 @@ jobs:
                 return;
               }
               if (expectedHeadSha && pr.head.sha !== expectedHeadSha) {
-                core.setFailed(`pull request ${number} head changed after the CI run completed`);
+                core.setFailed(`pull request ${number} head changed after the trigger run completed`);
                 return;
               }
               if (pr.base.ref !== defaultBranch ||

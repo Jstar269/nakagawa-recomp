@@ -144,6 +144,7 @@
     ".github/dependabot.yml",
     ".github/instructions/c-generated.instructions.md",
     ".github/workflows/ci.yml",
+    ".github/workflows/codeql-wake.yml",
     ".github/workflows/codeql.yml",
     ".github/workflows/dependency-review.yml",
     ".github/workflows/osv-scanner.yml",
