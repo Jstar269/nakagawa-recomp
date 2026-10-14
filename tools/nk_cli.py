@@ -1188,8 +1188,21 @@ def __getattr__(name: str):
 def _stage_runtime_assets(package_dir: Path) -> None:
     vfpu_source = ROOT / "assets" / "vfpu"
     if vfpu_source.is_dir():
-        shutil.copytree(vfpu_source, package_dir / "assets" / "vfpu", dirs_exist_ok=True)
+        vfpu_target = package_dir / "assets" / "vfpu"
+        if (package_dir / "assets").is_file():
+            raise PackageBuildError(
+                f"VFPU asset staging collision: {package_dir / 'assets'} is a file, expecting a directory."
+            )
+        if vfpu_target.is_file():
+            raise PackageBuildError(
+                f"VFPU asset staging collision: {vfpu_target} is a file, expecting a directory."
+            )
+        shutil.copytree(vfpu_source, vfpu_target, dirs_exist_ok=True)
     if _windows_host() and not (package_dir / "SDL3.dll").is_file():
+        if (package_dir / "SDL3.dll").is_dir():
+            raise PackageBuildError(
+                f"SDL3.dll staging collision: {package_dir / 'SDL3.dll'} is a directory, expecting a file."
+            )
         found = _find_sdl3_runtime_dll()
         if found is None:
             raise PackageBuildError(
@@ -1198,6 +1211,10 @@ def _stage_runtime_assets(package_dir: Path) -> None:
             )
         shutil.copyfile(found, package_dir / "SDL3.dll")
     if _windows_host() and not (package_dir / "libiconv-2.dll").is_file():
+        if (package_dir / "libiconv-2.dll").is_dir():
+            raise PackageBuildError(
+                f"libiconv-2.dll staging collision: {package_dir / 'libiconv-2.dll'} is a directory, expecting a file."
+            )
         found = _find_configured_runtime_dll("libiconv-2.dll")
         if found is None:
             raise PackageBuildError(
@@ -1206,6 +1223,10 @@ def _stage_runtime_assets(package_dir: Path) -> None:
             )
         shutil.copyfile(found, package_dir / "libiconv-2.dll")
     if _windows_host() and not (package_dir / "vulkan-1.dll").is_file():
+        if (package_dir / "vulkan-1.dll").is_dir():
+            raise PackageBuildError(
+                f"vulkan-1.dll staging collision: {package_dir / 'vulkan-1.dll'} is a directory, expecting a file."
+            )
         found = _find_configured_runtime_dll("vulkan-1.dll")
         if found is None:
             raise PackageBuildError(
@@ -1343,28 +1364,31 @@ def _promote_cache_entry(entry_package: Path, target_dir: Path, cache_dir: Path,
     _require_child(user_root, target_dir.parent, "Package destination root")
     staging = Path(tempfile.mkdtemp(prefix=f".{disc_id}.staging-", dir=target_dir.parent))
     shutil.rmtree(staging)
-    shutil.copytree(entry_package, staging)
-    staged_valid, staged_reason = package_cache.validate_package_cache(
-        staging, expected_key=cache_key
-    )
-    if not staged_valid:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise PackageBuildError(
-            f"Copied package cache entry failed validation ({staged_reason}); refusing to promote it."
-        )
-    if target_dir.exists() and target_dir.is_symlink():
-        raise PackageBuildError("Existing package destination is a symlink; refusing to replace it.")
-    backup = cache_dir / f"previous-{time.time_ns()}" if target_dir.exists() else None
-    if backup is not None:
-        os.replace(target_dir, backup)
     try:
-        os.replace(staging, target_dir)
-    except OSError:
-        if backup is not None and not target_dir.exists():
-            os.replace(backup, target_dir)
-        raise
-    if backup is not None:
-        shutil.rmtree(backup, ignore_errors=True)
+        shutil.copytree(entry_package, staging)
+        staged_valid, staged_reason = package_cache.validate_package_cache(
+            staging, expected_key=cache_key
+        )
+        if not staged_valid:
+            raise PackageBuildError(
+                f"Copied package cache entry failed validation ({staged_reason}); refusing to promote it."
+            )
+        if target_dir.exists() and target_dir.is_symlink():
+            raise PackageBuildError("Existing package destination is a symlink; refusing to replace it.")
+        backup = cache_dir / f"previous-{time.time_ns()}" if target_dir.exists() else None
+        if backup is not None:
+            os.replace(target_dir, backup)
+        try:
+            os.replace(staging, target_dir)
+        except OSError:
+            if backup is not None and not target_dir.exists():
+                os.replace(backup, target_dir)
+            raise
+        if backup is not None:
+            shutil.rmtree(backup, ignore_errors=True)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def _report_reused_package_stages(stage_observer) -> None:
@@ -2007,10 +2031,19 @@ def _build_package(args: argparse.Namespace, stage_observer,
             # by its manifest name. Ship the modules the build compiled against
             # inside the package so a launch needs nothing outside it.
             package_modules = build_dir / "modules"
+            if package_modules.is_file():
+                raise PackageBuildError(
+                    f"Guest module staging collision: {package_modules} is a file, expecting a directory."
+                )
             package_modules.mkdir(parents=True, exist_ok=True)
             for module_file in sorted(module_dir.iterdir()):
                 if module_file.is_file():
-                    shutil.copyfile(module_file, package_modules / module_file.name)
+                    target_module = package_modules / module_file.name
+                    if target_module.is_dir():
+                        raise PackageBuildError(
+                            f"Guest module staging collision: {target_module} is a directory, expecting a file."
+                        )
+                    shutil.copyfile(module_file, target_module)
         backends_mode = "public" if public_safe else "private"
         backend_limits = (
             [
@@ -2045,29 +2078,33 @@ def _build_package(args: argparse.Namespace, stage_observer,
         packages_root = _require_child(user_root, packages_root, "Package destination root")
         staging = Path(tempfile.mkdtemp(prefix=f".{disc_id}.staging-", dir=packages_root))
         shutil.rmtree(staging)
-        shutil.copytree(build_dir, staging)
-        _require_child(user_root, staging, "Package staging directory")
-        valid_staging, staging_reason = package_cache.validate_package_cache(
-            staging,
-            expected_key=cache_key,
-        )
-        if not valid_staging:
-            raise PackageBuildError(f"Package staging verification failed: {staging_reason}")
-        backup = None
-        if target_dir.exists():
-            if target_dir.is_symlink():
-                raise PackageBuildError("Existing package destination is a symlink; refusing to replace it.")
-            backup = cache_dir / f"previous-{time.time_ns()}"
-            os.replace(target_dir, backup)
         try:
-            os.replace(staging, target_dir)
-        except OSError:
-            if backup is not None and not target_dir.exists():
-                os.replace(backup, target_dir)
-            raise
-        package_cache.write_local_title_input_identity(user_root, title_input_identity)
-        if backup is not None:
-            shutil.rmtree(backup, ignore_errors=True)
+            shutil.copytree(build_dir, staging)
+            _require_child(user_root, staging, "Package staging directory")
+            valid_staging, staging_reason = package_cache.validate_package_cache(
+                staging,
+                expected_key=cache_key,
+            )
+            if not valid_staging:
+                raise PackageBuildError(f"Package staging verification failed: {staging_reason}")
+            backup = None
+            if target_dir.exists():
+                if target_dir.is_symlink():
+                    raise PackageBuildError("Existing package destination is a symlink; refusing to replace it.")
+                backup = cache_dir / f"previous-{time.time_ns()}"
+                os.replace(target_dir, backup)
+            try:
+                os.replace(staging, target_dir)
+            except OSError:
+                if backup is not None and not target_dir.exists():
+                    os.replace(backup, target_dir)
+                raise
+            package_cache.write_local_title_input_identity(user_root, title_input_identity)
+            if backup is not None:
+                shutil.rmtree(backup, ignore_errors=True)
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
         _prune_package_cache(cache_dir, entry_root)
         if not reporter.is_json_stdout:
             print(f"PACKAGE: {target_dir}")

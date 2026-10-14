@@ -218,6 +218,11 @@ def stage_runtime_dlls(
         existing = target_dir / name
         if existing.is_file():
             root_dll = existing
+        elif existing.exists() and not existing.is_file():
+            raise StageError(
+                f"{name} staging collision: {existing.name} is a directory; "
+                f"remove or move the directory to stage the runtime DLL"
+            )
         else:
             root_dll = resolve_root_dll(
                 name,
@@ -230,6 +235,11 @@ def stage_runtime_dlls(
         )
         for source in closure:
             destination = target_dir / source.name
+            if destination.exists() and not destination.is_file():
+                raise StageError(
+                    f"{source.name} staging collision: {destination.name} is a directory; "
+                    f"remove or move the directory to stage the runtime DLL"
+                )
             if not destination.is_file():
                 shutil.copyfile(source, destination)
             staged.add(source.name)

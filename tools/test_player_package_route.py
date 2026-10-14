@@ -1120,6 +1120,62 @@ class TestPlayerPackageRoute(unittest.TestCase):
 
         self.assertEqual(tracked_status(), before)
 
+    def test_package_staging_collision_retains_previously_valid_package_and_cleans_staging(self):
+        """A file-versus-directory collision during package build/staging fails closed,
+        names the collision, retains the previously valid package, and cleans up staging dirs."""
+        import argparse
+        import contextlib
+        import io
+
+        iso_path = self.root / "collision.iso"
+        executable = self.executable_bytes
+        create_test_iso_with_executables(
+            iso_path, executable, disc_id=DISC_ID,
+            title="Synthetic Experimental Disc",
+        )
+        user_root = self.root / "collision-user-data"
+        self.stage_library(user_root, native_legacy_experimental_manifest(), iso_path, executable)
+
+        # 1. First create a previously valid package in the user's packages directory
+        package_dir = user_root / "packages" / DISC_ID
+        package_dir.mkdir(parents=True, exist_ok=True)
+        (package_dir / "package.json").write_text('{"valid": true}')
+        (package_dir / "display_smoke.exe").write_bytes(b"previously valid package binary")
+
+        # 2. Mock subprocess.run for compilation and inject a file-vs-directory collision in _stage_runtime_assets
+        mock_completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=mock_completed), patch.object(
+            nk_cli, "_stage_runtime_assets",
+            side_effect=nk_cli.PackageBuildError(
+                "VFPU asset staging collision: assets is a file, expecting a directory."
+            )
+        ):
+            args = argparse.Namespace(
+                disc_id=DISC_ID,
+                user_data_root=user_root,
+                module_dir=None,
+                psp_header=None,
+                instruction_trace=False,
+                register_local_compatibility_record=False,
+                progress_json=None,
+                log_file=None,
+            )
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                status = nk_cli.cmd_build_package(args)
+
+            self.assertNotEqual(status, 0)
+            self.assertIn("collision", stderr.getvalue().lower())
+            self.assertIn("assets is a file", stderr.getvalue().lower())
+
+        # 3. Verify the previously valid package is retained intact
+        self.assertTrue((package_dir / "package.json").is_file())
+        self.assertEqual((package_dir / "display_smoke.exe").read_bytes(), b"previously valid package binary")
+
+        # 4. Verify no orphan staging directory remains in packages root
+        staging_dirs = list((user_root / "packages").glob(f".{DISC_ID}.staging-*"))
+        self.assertEqual(staging_dirs, [], "no orphan staging directories must remain after a failed stage")
+
 
 class TestRuntimeDllStaging(unittest.TestCase):
     """Runtime staging ships SDL3_ttf, its resolved closure, and licences (#421).
@@ -1289,6 +1345,31 @@ class TestRuntimeDllStaging(unittest.TestCase):
             self.assertTrue((package / "vulkan-1.dll").is_file())
             self.assertIn("SDL3_ttf.dll could not be resolved", stderr.getvalue())
             self.assertIn("bitmap fallback", stderr.getvalue())
+
+    def test_stage_runtime_dlls_file_vs_directory_collision_raises_stage_error(self) -> None:
+        import stage_runtime_dlls
+
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "package"
+            package_dir.mkdir()
+            (package_dir / "SDL3.dll").mkdir()  # File-vs-directory collision
+            bin_dir = Path(tmp) / "toolchain-bin"
+            bin_dir.mkdir()
+            (bin_dir / "SDL3.dll").write_bytes(b"MZ\x00\x00synthetic-sdl3.dll")
+            imports_of, is_system = self.fake_resolver()
+
+            with self.assertRaises(stage_runtime_dlls.StageError) as ctx:
+                stage_runtime_dlls.stage_runtime_dlls(
+                    package_dir,
+                    roots=["SDL3.dll"],
+                    search_dirs=[bin_dir],
+                    env={},
+                    imports_of=imports_of,
+                    is_system=is_system,
+                    notices=False,
+                )
+            self.assertIn("staging collision", str(ctx.exception).lower())
+            self.assertIn("sdl3.dll", str(ctx.exception).lower())
 
 
 if __name__ == "__main__":
