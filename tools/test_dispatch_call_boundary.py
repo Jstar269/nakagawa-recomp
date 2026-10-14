@@ -798,7 +798,7 @@ class GeneratedCallDepthTests(unittest.TestCase):
             self.assertEqual(rc, 0, output)
             self.assertEqual(fields.get("v0"), n, output)
             self.assertEqual(fields.get("a0"), 0, output)
-            self.assertEqual(fields.get("sp"), _PROBE_SP, output)
+            self.assertEqual(fields.get("v1"), _PROBE_SP, output)
         growth = results[1][2]["native_bytes"] - results[0][2]["native_bytes"]
         self.assertGreater(growth, 2032 * 16, f"probe did not see real nesting: {results}")
 
@@ -923,7 +923,8 @@ class GeneratedCallDepthTests(unittest.TestCase):
         rc, output, fields = results[0]
         self.assertEqual(rc, 0, output)
         self.assertEqual(fields.get("v0"), 6, f"interpreted caller lost its continuation\n{output}")
-        self.assertEqual(fields.get("sp"), _PROBE_SP, output)
+        # The caller unwound its own frame before returning (base: 8 bytes low).
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
 
 
 if __name__ == "__main__":

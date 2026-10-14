@@ -123,11 +123,12 @@ uint32_t sr_ge_tex_unpack(const SrGeTexParams* params, SrGeTexFormat format, uin
     return 0;
 }
 
-uint32_t sr_ge_clut_index(const SrGeTexParams* params, uint32_t raw, unsigned shift, uint32_t mask, uint32_t* index) {
+uint32_t sr_ge_clut_index(const SrGeTexParams* params, uint32_t raw, unsigned shift, uint32_t mask, unsigned csa,
+                          uint32_t* index) {
     if (index) {
         *index = 0;
     }
-    if (!sr_ge_tex_params_valid(params) || !index || shift > 31u) {
+    if (!sr_ge_tex_params_valid(params) || !index || shift > 31u || csa > 0xFFu) {
         return SR_GE_TEX_FLAG_INVALID;
     }
     if (params->clut_order == SR_GE_CLUT_SHIFT_THEN_MASK) {
@@ -135,6 +136,7 @@ uint32_t sr_ge_clut_index(const SrGeTexParams* params, uint32_t raw, unsigned sh
     } else {
         *index = (raw & mask) >> shift;
     }
+    *index |= (uint32_t)csa << 4;
     return 0;
 }
 
@@ -146,7 +148,7 @@ uint32_t sr_ge_clut_lookup(const SrGeTexParams* params, const SrGeClut* clut, ui
     if (!clut || !clut->entries || !out || !is_direct(clut->format)) {
         return SR_GE_TEX_FLAG_INVALID;
     }
-    if (sr_ge_clut_index(params, raw, clut->shift, clut->mask, &index)) {
+    if (sr_ge_clut_index(params, raw, clut->shift, clut->mask, clut->csa, &index)) {
         return SR_GE_TEX_FLAG_INVALID;
     }
     if (index >= clut->count) {

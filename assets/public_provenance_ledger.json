@@ -237,7 +237,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a7b65f4736b81ac91c2308c48d781ac62f86ae8b8fa4a9fb597a3847972d93c8"
+      "sha256": "5ad624303ff98c0dcdc9d571704ea06ae10e67ab4d684bf4e7ae5dececc31b2d"
     },
     {
       "path": "CLAUDE.md",
@@ -246,7 +246,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fe10ec1526b5149c956963c44cf6f5363dd5f0ce09f628b04df1e1fdcae11cc4"
+      "sha256": "18a97a0489eb5aa85a7ec875f1478a644061129cdd6a05a9c2f734925d97255b"
     },
     {
       "path": "CMakeLists.txt",
@@ -1063,7 +1063,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a119b2270227ae3e0ed38c050a878be28173cf213f3d9ee7a806fdedc7f58dff"
+      "sha256": "26624d87ed3de3f6c35539cdcbdf5871dee4139ac605c70caf1babcfc024635b"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -1417,7 +1417,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ff05d710664b92e7e0421cf6bb8a5f2b6357d8b51faffcbb6304f7efe52868a4"
+      "sha256": "792eab492085d15f20afbc55f6453abec6b9cee8916ed3282e67f6d2d58f76e6"
     },
     {
       "path": "docs/WORKSPACE_DOCTOR.md",
@@ -1615,7 +1615,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "11f6a5e785a5b25ab5ceae546a375d2bbf2947c404ca2bbb55a7fda282ce0c03"
+      "sha256": "510580069645437d894a7b5d99ca35da9cda4e83908c137da27194bb39547309"
     },
     {
       "path": "fixtures/cosim/cosim_selftest.c",
@@ -1627,7 +1627,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b1c7cab632277385f0456a3b109d44d593a05d6c513a365d23af067d4034a79c"
+      "sha256": "3c2ba02079dd50cda50971dc69b686b751cdde6cd77e8a0638bcf8989ad6c533"
     },
     {
       "path": "fixtures/cosim/fpu_reference.c",
@@ -1663,7 +1663,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "69998e079e87ecdc8aa3e578f00b5a405412582458f4f172907f4f1fe5bd9687"
+      "sha256": "132cb8d05bb22cccafe5b4686615b5aa17382391a8f4c89f308ae184daac74a2"
     },
     {
       "path": "fixtures/cosim/mutate.py",
@@ -1675,7 +1675,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7278358065436d256f5b498c8746407d6c084e486f49474f450f0528a1422dd9"
+      "sha256": "db4e5ed47b66b7a171f3ed0aaf5920378f203d131e47c1b7195831e2f64710b9"
     },
     {
       "path": "fixtures/display_smoke/generate.py",
@@ -4709,7 +4709,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2563ba6061fd0a5d062e1d207ec7d9353584a239aedd8d53098f85155d8c6378"
+      "sha256": "50f642818b3d6a4200290f8c2b58cd66a411552deb0a714b22b1bc1f4407cff8"
     },
     {
       "path": "src/rt/ge_texture_ref.h",
@@ -4721,7 +4721,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6f9b73f4ca5e51602e6fcbcea67c5683e98ae6349a43e64920ff24878ab3f865"
+      "sha256": "86453d7c4c4d013e195c74f901d1c7ccc983ec72c02446c64d782b997bee0f25"
     },
     {
       "path": "src/rt/ge_texture_ref_selftest.c",
@@ -4733,7 +4733,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "931c0e671d20cddfc7f579a1039e84c54540e79c25215e1cb3ba2b73ab4ac338"
+      "sha256": "9918c39b8d7052d74774d10b224aedbfc9705439b8877ee278db782e295c4f02"
     },
     {
       "path": "src/rt/gpu_capture_selftest.c",
@@ -4899,7 +4899,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "104ce7407e41bcbf9e898c4393559b6f85d7e11ade0a5e59c6102836f7a95171"
+      "sha256": "ff3266679bf503d40003abb3d91efb702126244dd609f1f31eb25f181991cc30"
     },
     {
       "path": "src/rt/guest_interp.h",
@@ -4911,7 +4911,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "84cfb98b1bc0edc8a324d1e4ac2be528b3110ae41cba8ba346efa957c16aa0ce"
+      "sha256": "5b139a80e2a36e32fa7004d69fd5c8c7f5e8fe73ed19b387dcae43c979bfca72"
     },
     {
       "path": "src/rt/guest_printf.c",
@@ -5436,7 +5436,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "62e44f24dc6a7d029442238834e7ea5fa33aaf9e03b55e3b52e25468f7b51191"
+      "sha256": "ae347765064a2471a147427d647215618fee2543a4163caf8a0b82bf679efaee"
     },
     {
       "path": "src/rt/recomp.h",
@@ -8303,7 +8303,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "26e604d2049ad5c1faa182a04ea59aab5f7ca200cc082c9fe1b6acfdc64676f0"
+      "sha256": "c264f70fb15202a87e8c236e97681be7232092105d3b5c25821718941eb748b9"
     },
     {
       "path": "tools/test_dispatch_fatal_policy.py",
@@ -10033,7 +10033,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4750f08f20f0c30bab7bce0ff015d28efaa07b6aa864ddf6230bbb55a01053f2"
+      "sha256": "cd9adde55e55e53c42931cc4d5b9e698110abe8be9731314fa88e832ca06fece"
     },
     {
       "path": "tools/test_title_runtime_config.py",
@@ -10393,7 +10393,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "da3336850a251ceb4267cddb06c4affef5e61d67febbba4465d8fddf15b0391e"
+      "sha256": "f916fbc38a724fdcf8158bac3facd4c9a9e08adcb07469ae4cdb105437bda058"
     },
     {
       "path": "tools/title_runtime_config.py",
