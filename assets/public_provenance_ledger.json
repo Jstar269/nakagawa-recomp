@@ -1045,7 +1045,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "685466bd07179610878a007c4d06ac7fa39a4a6a912041e8e11ba6ce0bc64cf8"
+      "sha256": "35c0bf7c02b56a8cfec4e034bfddc527b2b6de3185a6054e5f5fa55eecb7f40e"
     },
     {
       "path": "docs/AOT_PRODUCTIZATION_ARCHITECTURE.md",
