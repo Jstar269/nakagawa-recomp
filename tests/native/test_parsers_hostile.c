@@ -1185,11 +1185,11 @@ static void build_stage_iso_test(const char *path, const char *member, bool memb
     free(image);
 }
 
-/* Staged disc members become host files under their disc names, so a member whose base name
- * is a Windows device name is refused (the portability rule tools/extract_xb.py applies; current
- * Windows silently discards writes to the NUL forms). The refusal happens while the disc is
- * counted, before anything is written, on every host. Records the stager never writes do not
- * refuse the disc. */
+/* Staged disc members become host entries under their disc names, so a member whose base name
+ * is a reserved Windows device name is refused (the portability rule tools/extract_xb.py
+ * applies; a bare "NUL" even swallows its bytes on current Windows). The refusal happens while
+ * the disc is counted, before anything is written, on every host. Records the stager never
+ * writes do not refuse the disc. */
 static void stage_one(const char *test_dir, const char *tag, const char *member, bool is_dir,
                       const char *sysdir_sibling, const char *usrdir_sibling,
                       const char *const *roots, NkResult expected, char *host_root,
@@ -1251,6 +1251,17 @@ static void test_iso_stage_refuses_device_names(const char *test_dir) {
               host_root, sizeof(host_root));
     snprintf(probe, sizeof(probe), "%s%cDATA%cOK.BIN", host_root, sep, sep);
     assert(nk_platform_get_file_size(probe) == 7);
+
+    /* Under the "." root a member that Win32 would store as EBOOT.BIN (trailing dot or space)
+     * is refused while counting, so the staged EBOOT.BIN is neither overwritten nor written. */
+    static const char *const eboot_aliases[] = { "EBOOT.BIN.;1", "eboot.bin ;1", "EBOOT.BIN;1" };
+    const char *dot_root[] = { "." };
+    for (size_t i = 0; i < sizeof(eboot_aliases) / sizeof(eboot_aliases[0]); i++) {
+        snprintf(tag, sizeof(tag), "eboot_alias_%u", (unsigned)i);
+        stage_one(test_dir, tag, "OK.BIN;1", false, NULL, eboot_aliases[i], dot_root,
+                  NK_ERROR_INVALID_ISO, host_root, sizeof(host_root));
+        assert(!nk_platform_dir_exists(host_root));
+    }
 
     /* A configured content root named after a device is refused before the disc is read. */
     const char *device_root[] = { "AUX" };

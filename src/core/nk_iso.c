@@ -1705,13 +1705,13 @@ static bool nk_iso_stage_extent_valid(uint64_t file_size, uint32_t lba,
 }
 
 /* Windows device base names: the portability rule tools/extract_xb.py applies to archive
- * members. A host file whose name is a device name, case-insensitively, before the first '.'
- * and ignoring spaces just before it, is not a portable file: Win32 has historically opened
- * every such name as the device in any directory, and current Windows still discards writes
- * to the NUL forms ("NUL", "NUL.BIN", "NUL .BIN") while reporting success. The rule applies
- * on every host so a disc stages the same way everywhere. Only names the stager turns into
- * host files are checked (staged members and configured content roots); a device-named
- * record elsewhere on the disc is never written and does not refuse the disc. */
+ * members. Windows file-naming rules reserve these names, compared case-insensitively before
+ * the first '.' and ignoring spaces just before it, so a host file under one is not portable;
+ * on current Windows a write to a bare "NUL", "NUL." or "NUL " even succeeds while storing
+ * nothing. The rule applies on every host so a disc stages the same way everywhere. Only names
+ * the stager would turn into host entries are checked: staged members, files and directories
+ * alike, and configured content roots. A device-named record elsewhere on the disc is never
+ * written and does not refuse the disc. */
 static bool nk_iso_stage_device_name(const uint8_t *name, size_t name_size) {
     static const char *const devices[] = {
         "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$",
@@ -1981,8 +1981,15 @@ static bool nk_iso_stage_walk_callback(const NkIsoDirectoryEntry *entry,
                    walk->relative_prefix, entry->name)
         : snprintf(child_path, sizeof(child_path), "%s", entry->name);
     if (written < 0 || (size_t)written >= sizeof(child_path)) return false;
-    if (!walk->relative_prefix[0] && !walk->count_only &&
-        strcasecmp(entry->name, "EBOOT.BIN") == 0) return false;
+    /* Under the "." root a top-level member lands beside the staged EBOOT.BIN. Win32 drops
+     * trailing dots and spaces, so "EBOOT.BIN." and "eboot.bin " name that file too; refuse
+     * them in the counting pass, before EBOOT.BIN or anything else is written. */
+    if (!walk->relative_prefix[0]) {
+        size_t length = strlen(entry->name);
+        while (length > 0 && (entry->name[length - 1] == '.' || entry->name[length - 1] == ' '))
+            length--;
+        if (length == 9u && strncasecmp(entry->name, "EBOOT.BIN", 9u) == 0) return false;
+    }
 
     if (entry->is_directory) {
         NkIsoWalkContext child = *walk;
