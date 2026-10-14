@@ -1707,8 +1707,9 @@ static bool nk_iso_stage_extent_valid(uint64_t file_size, uint32_t lba,
 /* Windows device base names: the portability rule tools/extract_xb.py applies to archive
  * members. Windows file-naming rules reserve these names, compared case-insensitively before
  * the first '.' and ignoring spaces just before it, so a host file under one is not portable;
- * on current Windows a write to a bare "NUL", "NUL." or "NUL " even succeeds while storing
- * nothing. The rule applies on every host so a disc stages the same way everywhere. Only names
+ * on Windows 11 build 26300 (the build measured) a write to "NUL", "NUL.", "NUL " or "NUL  "
+ * even succeeds while storing nothing. The rule applies on every host so a disc stages the same
+ * way everywhere. Only names
  * the stager would turn into host entries are checked: staged members, files and directories
  * alike, and configured content roots. A device-named record elsewhere on the disc is never
  * written and does not refuse the disc. */

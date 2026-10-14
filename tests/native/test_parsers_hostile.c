@@ -1187,7 +1187,8 @@ static void build_stage_iso_test(const char *path, const char *member, bool memb
 
 /* Staged disc members become host entries under their disc names, so a member whose base name
  * is a reserved Windows device name is refused (the portability rule tools/extract_xb.py
- * applies; a bare "NUL" even swallows its bytes on current Windows). The refusal happens while
+ * applies; on Windows 11 build 26300 "NUL", "NUL." and "NUL " even swallow their bytes). The
+ * refusal happens while
  * the disc is counted, before anything is written, on every host. Records the stager never
  * writes do not refuse the disc. */
 static void stage_one(const char *test_dir, const char *tag, const char *member, bool is_dir,
@@ -1262,6 +1263,13 @@ static void test_iso_stage_refuses_device_names(const char *test_dir) {
                   NK_ERROR_INVALID_ISO, host_root, sizeof(host_root));
         assert(!nk_platform_dir_exists(host_root));
     }
+    /* The guard is scoped to the top level of ".": below it EBOOT.BIN is an ordinary member. */
+    stage_one(test_dir, "eboot_nested", "EBOOT.BIN;1", false, NULL, NULL, dot_root, NK_OK,
+              host_root, sizeof(host_root));
+    snprintf(probe, sizeof(probe), "%s%cEBOOT.BIN", host_root, sep);
+    assert(nk_platform_get_file_size(probe) == 5);
+    snprintf(probe, sizeof(probe), "%s%cDATA%cEBOOT.BIN", host_root, sep, sep);
+    assert(nk_platform_get_file_size(probe) == 7);
 
     /* A configured content root named after a device is refused before the disc is read. */
     const char *device_root[] = { "AUX" };
