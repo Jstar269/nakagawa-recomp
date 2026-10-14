@@ -75,10 +75,6 @@ class TestTailcallPromotionOnEboot(unittest.TestCase):
                          "intra-function loop tests wrongly promoted: %s" % wrongly)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class FakeElf:
     def __init__(self, words, entry=0x1000):
         self.entry = entry
@@ -153,3 +149,7 @@ class TestSyntheticTailcallPromotion(unittest.TestCase):
         elf = FakeElf(words)
         starts, _ = analyze.analyze(elf)
         self.assertIn(0x1018, starts, "jr tailcall target not promoted as function entry")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -2760,7 +2760,7 @@ def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None)
             # discovery heuristic when the gate is off so default output stays
             # byte-identical.
             is_uncond = ((not cfg_gate and op == 2)
-                         or (op == 0 and ((word & 0x3F) == 0x08 or ((word & 0x3F) == 0x09 and ((word >> 11) & 0x1F) == 0)))
+                         or (op == 0 and (word & 0x3F) == 0x08)
                          or (op == 4 and ((word >> 21) & 0x1F) == 0 and ((word >> 16) & 0x1F) == 0))
             if is_uncond and in_ranges(addr + 8, ranges):
                 tb = elf.read_at_vaddr(addr + 8, 4)
