@@ -2635,7 +2635,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0245af0ba1c1bd55df5240ddc5546b6bdb771b3b1bc05be2c9f5b7f6fa59ea1b"
+      "sha256": "4d0dad16f0c3b744c28daff881d59fae368bb1fe304fd280f8a023cdde9666d9"
     },
     {
       "path": "src/core/nk_iso.h",
@@ -5957,7 +5957,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5992d7f16fa4e749981d64552e0aa089e1b851aadc33b14217531fa4bd3538c4"
+      "sha256": "e903b4a93c1445969a022d85ce8082649959316c8566deb993af414b51ded8c9"
     },
     {
       "path": "tests/native/test_manifest_parser.c",
@@ -5993,7 +5993,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "053c861b9b17d71b395b6fa627c2f8b86a79fe7a322645472b855fdd72f24e11"
+      "sha256": "3860092ee8ee70d63ee50df9b983a54764094e6bd853002561cc9922fc6c3a12"
     },
     {
       "path": "tests/native/test_pgf_public.c",
@@ -7255,7 +7255,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "be24ebcdd85e5fd22dd7a1878742afcf649feb55cd1a78e44c36a352c18349db"
+      "sha256": "54401a83662e3340f48e10ef76f73dfd15eae2e9eba50fd6f30e86d7e3917d1b"
     },
     {
       "path": "tools/pgf_writer.py",
@@ -9180,7 +9180,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5529ada603734b6874169fe3f0d320ed87eb68cb4c60ec20394241e8ec441e36"
+      "sha256": "b2f81345bf760edd5ed4c8ef562113e7fed57fbc6fc204b9ad5898320a3a6aef"
     },
     {
       "path": "tools/test_pgf_validate_parity.py",
