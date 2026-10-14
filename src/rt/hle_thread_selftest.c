@@ -1141,9 +1141,11 @@ static int write_synthetic_guest_prx(const char *path) {
 #define SYNTH_LIBFONT_READY_WORD 0x08905000u
 #define SYNTH_LIBFONT_EXPORT_NID 0x2990cafeu
 #define SYNTH_LIBFONT_EXPORT_OFF 0x90u
+#define SYNTH_LIBFONT_STOP_OFF   0xc0u
 
 static uint32_t s_synth_libfont_start_calls;
 static uint32_t s_synth_libfont_export_calls;
+static uint32_t s_synth_libfont_stop_calls;
 
 static void synth_libfont_module_start(CpuState *s) {
     s_synth_libfont_start_calls++;
@@ -1154,6 +1156,11 @@ static void synth_libfont_module_start(CpuState *s) {
 static void synth_libfont_export(CpuState *s) {
     s_synth_libfont_export_calls++;
     s->r[2] = 0x29u;
+}
+
+static void synth_libfont_module_stop(CpuState *s) {
+    s_synth_libfont_stop_calls++;
+    s->r[2] = 0x66u;
 }
 
 /* Declared here because the module gate checks below assert on the runtime's own stderr. */
@@ -1216,14 +1223,19 @@ static int write_synthetic_libfont_prx(const char *path, uint32_t base) {
     fixture_wr32(image + MODOFF + 40, base + EXPORT_VA + 16u);
     uint8_t *entry = image + 0x80 + EXPORT_VA;
     entry[8] = 4;
-    fixture_wr16(entry + 10, 2);
+    /* Three functions: the table is the NIDs (module_start, the export, module_stop),
+     * then their addresses in the same order. */
+    fixture_wr16(entry + 10, 3);
     fixture_wr32(entry + 12, base + TABLE_VA);
     fixture_wr32(image + 0x80 + TABLE_VA, 0xd632acdbu);
     fixture_wr32(image + 0x84 + TABLE_VA, SYNTH_LIBFONT_EXPORT_NID);
-    fixture_wr32(image + 0x88 + TABLE_VA, START_OFF);
-    fixture_wr32(image + 0x8c + TABLE_VA, SYNTH_LIBFONT_EXPORT_OFF);
+    fixture_wr32(image + 0x88 + TABLE_VA, 0xcee05613u);
+    fixture_wr32(image + 0x8c + TABLE_VA, START_OFF);
+    fixture_wr32(image + 0x90 + TABLE_VA, SYNTH_LIBFONT_EXPORT_OFF);
+    fixture_wr32(image + 0x94 + TABLE_VA, SYNTH_LIBFONT_STOP_OFF);
     fixture_wr32(image + 0x80 + START_OFF, 0x03e00008u); /* jr ra */
     fixture_wr32(image + 0x80 + SYNTH_LIBFONT_EXPORT_OFF, 0x03e00008u);
+    fixture_wr32(image + 0x80 + SYNTH_LIBFONT_STOP_OFF, 0x03e00008u);
     memcpy(image + SHSTR_OFF, section_names, sizeof(section_names));
 
     uint8_t *modinfo_sh = image + shoff + 40;
@@ -1274,9 +1286,11 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     sr_hle_test_module_reset();
     s_synth_libfont_start_calls = 0;
     s_synth_libfont_export_calls = 0;
+    s_synth_libfont_stop_calls = 0;
     MEM_W32(SYNTH_LIBFONT_READY_WORD, 0u);
     sr_test_register_guest_fn(base + 0x70u, synth_libfont_module_start);
     sr_test_register_guest_fn(base + SYNTH_LIBFONT_EXPORT_OFF, synth_libfont_export);
+    sr_test_register_guest_fn(base + SYNTH_LIBFONT_STOP_OFF, synth_libfont_module_stop);
 
     title_hle_write_cstr(0x08906000u, guest_path);
     memset(&cpu, 0, sizeof(cpu));
@@ -1320,6 +1334,66 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     expect(libfont_start_call(&cpu, uid) == SCE_KERNEL_ERROR_ALREADY_STARTED &&
                s_synth_libfont_start_calls == 1u,
            "a second libfont StartModule is refused and does not re-enter module_start");
+
+    /* Phase 2b: stop, unload, reload, under the shipped default (SR_REAL_MODULE_START unset),
+     * where the translated module_start ran. Stop runs the translated module_stop and keeps
+     * the export linked; unload unlinks the export and releases the image; the reload lays
+     * the same image down at the same base and starts it again. Neither unload nor reload
+     * writes readiness: the guest word changes only when a translated module_start runs. */
+    if (startup_ready) {
+        const uint32_t status_addr = 0x089060c0u;
+        const uint32_t export_at = base + SYNTH_LIBFONT_EXPORT_OFF;
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = uid;
+        cpu.r[7] = status_addr;
+        MEM_W32(status_addr, 0xFFFFFFFFu);
+        expect(sr_hle_test_stop_module(&cpu) == 0u &&
+                   s_synth_libfont_stop_calls == 1u && MEM_R32(status_addr) == 0x66u,
+               "libfont StopModule runs the translated module_stop and reports its status");
+        expect(sr_hle_test_started_export(SYNTH_LIBFONT_EXPORT_NID) == export_at,
+               "a stopped libfont keeps its export linked until unload");
+        MEM_W32(SYNTH_LIBFONT_READY_WORD, 0x5Au);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = uid;
+        expect(sr_hle_test_unload_module(&cpu) == 0u &&
+                   sr_hle_resolve_late_import(SYNTH_LIBFONT_EXPORT_NID) == 0u &&
+                   sr_hle_test_started_export(SYNTH_LIBFONT_EXPORT_NID) == 0u,
+               "libfont UnloadModule unlinks its export, so a stale import no longer resolves");
+        expect(sr_hle_test_image_count() == 0u && sr_hle_test_module_count() == 0u,
+               "libfont UnloadModule retires its image and module record");
+        expect(libfont_start_call(&cpu, uid) == SCE_ERROR_MODULE_BAD_ID &&
+                   s_synth_libfont_start_calls == 1u,
+               "the unloaded libfont handle is refused and runs no guest code");
+        expect(MEM_R32(SYNTH_LIBFONT_READY_WORD) == 0x5Au,
+               "libfont UnloadModule writes no host readiness");
+
+        title_hle_write_cstr(0x08906000u, guest_path);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = 0x08906000u;
+        uint32_t reloaded = sr_hle_test_load_module(&cpu);
+        expect(reloaded != 0u && reloaded != uid && sr_hle_test_image_count() == 1u,
+               "libfont reload returns a fresh module uid and re-stages one image");
+        expect(sr_hle_resolve_late_import(SYNTH_LIBFONT_EXPORT_NID) == export_at &&
+                   sr_hle_test_started_export(SYNTH_LIBFONT_EXPORT_NID) == 0u &&
+                   MEM_R32(SYNTH_LIBFONT_READY_WORD) == 0x5Au,
+               "libfont reload links its export at the same base, unauthorized, with no readiness");
+        expect(libfont_start_call(&cpu, reloaded) == 0u &&
+                   s_synth_libfont_start_calls == 2u &&
+                   MEM_R32(SYNTH_LIBFONT_READY_WORD) == 1u,
+               "the reloaded libfont runs its translated module_start once, at the same base");
+        expect(sr_hle_test_started_export(SYNTH_LIBFONT_EXPORT_NID) == export_at,
+               "the reloaded export is authorized only after its own module_start");
+        /* An unlinked NID is a fatal unknown-import trap in sr_syscall, so a missing export is
+         * reported by name here instead of calling through it. */
+        memset(&cpu, 0, sizeof(cpu));
+        if (sr_hle_resolve_late_import(SYNTH_LIBFONT_EXPORT_NID) == export_at) {
+            expect(sr_syscall(&cpu, SYNTH_LIBFONT_EXPORT_NID) == 0x29u &&
+                       s_synth_libfont_export_calls == 2u,
+                   "imports route to the reloaded libfont export");
+        } else {
+            expect(0, "imports route to the reloaded libfont export");
+        }
+    }
 
     /* Phase 3: SR_REAL_MODULE_START=1 keeps translated startup for every module. */
     _putenv("SR_REAL_MODULE_START=1");
