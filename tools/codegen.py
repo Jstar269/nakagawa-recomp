@@ -2658,6 +2658,21 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             else:
                 out.extend("   " + line for line in _delay)
                 out.append(f"      if (_c) {{ {y}goto L_{target:08x}; }} }}")
+        elif is_link(w):
+            # bltzal/bgezal (bal = bgezal $zero) out of the body is a CALL (#968), not a
+            # TAIL: the taken path calls the target exactly as `jal` (known target) or
+            # `jalr rd` (dispatch with the resume PC) does, so the callee's `jr $ra`
+            # returns here and both paths fall through to addr + 8. The link and the
+            # delay slot above run once on either path; cond_expr refuses the
+            # branch-likely linked forms, so no annulled slot reaches this point.
+            if target in known or target in resume_owners:
+                call = f"{ADDRESS_SPACE.symbol(target, resume_owners)}(s);"
+                if lle_cpu:
+                    call += f" {_flow_return(resumable)}"
+            else:
+                call = f"dispatch_call(s, {G(target)}, {G((addr + 8) & 0xFFFFFFFF)});"
+            out.extend("   " + line for line in _delay)
+            out.append(f"      if (_c) {{ {call} }} }}")
         else:
             if is_likely(w):
                 out.append(f"      if (_c) {{ {_delay_inline} {{ s->pc = {G(target)}; dispatch(s, s->pc); {emit_host_return(resumable, stack_census=stack_census)} }} }} }}")

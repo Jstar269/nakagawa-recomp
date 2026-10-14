@@ -224,6 +224,41 @@ def _interpreted_caller_of_compiled_callee() -> tuple[int, ...]:
     return _probe_program(body)
 
 
+# #968: a linked conditional branch (bal is bgezal $zero; bltzal) whose target is
+# another module's code, so it is never a label of the caller's body. The caller keeps
+# the issue's shape and makes each effect countable: the slot adds 100, the leaf adds
+# 1, the continuation at the link adds 10 and copies the live $ra into a0.
+_MODULE_BASE = 0x2000
+_BAL, _BLTZAL = 0x11, 0x10
+_LEAF = (_addiu(_V0, _V0, 1), _jr(_RA), _NOP)
+
+
+def _regimm(selector: int, rs: int, here: int, target: int) -> int:
+    return _i(0x01, rs, selector, (target - (here + 4)) >> 2)
+
+
+def _linked_caller(at: int, selector: int, callee: int) -> tuple[int, ...]:
+    return (
+        _addiu(_SP, _SP, -16), _sw(_RA, 0, _SP),           # at
+        _regimm(selector, 0, at + 8, callee),              # at + 8: bal / bltzal $zero
+        _addiu(_V0, _V0, 100),                             # delay slot: once per path
+        _addiu(_V0, _V0, 10),                              # at + 16: the link
+        _addu(_A0, _RA, 0),
+        _lw(_RA, 0, _SP), _jr(_RA), _addiu(_SP, _SP, 16),
+    )
+
+
+def _linked_branch_into_module(selector: int) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """The primary cell at 0x1010 links to a native leaf that a second module owns."""
+    return _probe_program(list(_linked_caller(0x1010, selector, _MODULE_BASE))), _LEAF
+
+
+def _linked_branch_into_interpreted_body() -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """The module's cell links back to a primary leaf at 0x1010 omitted from AOT."""
+    primary = (_jal(_MODULE_BASE), _NOP, _jr(_RA), _addu(_V1, _SP, 0), *_LEAF)
+    return primary, _linked_caller(_MODULE_BASE, _BAL, 0x1010)
+
+
 _DEPTH_PROBE_HARNESS = r"""
 #define sr_yield isolation_sr_yield
 #define main embedded_dispatch_isolation_main
@@ -679,6 +714,55 @@ class GeneratedCallDepthTests(unittest.TestCase):
         self.assertEqual(rc, 0, output)
         self.assertEqual(fields.get("v0"), 6, f"interpreted caller lost its continuation\n{output}")
         # The caller unwound its own frame before returning (base: 8 bytes low).
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    def _probe_with_module(self, words, module_words, *, codegen_args=()):
+        """One run with `module_words` translated as a second module at _MODULE_BASE."""
+        with scratch_dir.TemporaryDirectory(prefix="linked_branch_module_") as tmp:
+            module = Path(tmp) / "module.elf"
+            _write_minimal_elf(module, module_words, base=_MODULE_BASE)
+            generated, results = self._probe(
+                words, (0,),
+                codegen_args=(f"--extra-elf={module}@0x{_MODULE_BASE:08x}", *codegen_args),
+            )
+        return generated, results[0]
+
+    def test_linked_branch_out_of_the_body_resumes_the_caller(self):
+        # #968: the taken `bal` is a CALL, so the leaf's `jr $ra` returns to the link and
+        # the caller adds 10 there before unwinding its own frame. As a TAIL the leaf's
+        # return left the caller's body and the continuation never ran (v0 = 101).
+        generated, (rc, output, fields) = self._probe_with_module(
+            *_linked_branch_into_module(_BAL))
+        self.assertIn("void f_00002000(CpuState *s) {", generated)
+        self.assertNotIn("L_00002000", generated, "the leaf must be outside the caller's body")
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v0"), 111, f"linked branch lost its continuation\n{output}")
+        self.assertEqual(fields.get("a0"), 0x1020, output)
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    def test_not_taken_linked_branch_out_of_the_body_falls_through(self):
+        # `bltzal $zero` is never taken: it still links, its slot still runs once, and the
+        # caller falls through to the same continuation without calling the leaf.
+        _generated, (rc, output, fields) = self._probe_with_module(
+            *_linked_branch_into_module(_BLTZAL))
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v0"), 110, output)
+        self.assertEqual(fields.get("a0"), 0x1020, output)
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    def test_linked_branch_through_dispatch_resumes_the_native_caller(self):
+        # The target is neither a label of the module's body nor a registered body: the
+        # `bal` reaches the omitted primary leaf through dispatch_call, the interpreter
+        # stops at the link (the resume boundary), and the native caller continues there.
+        primary, module = _linked_branch_into_interpreted_body()
+        generated, (rc, output, fields) = self._probe_with_module(
+            primary, module, codegen_args=("--omit-aot=0x00001010",))
+        self.assertNotIn("void f_00001010(CpuState *s) {", generated,
+                         "the leaf must be interpreted for this cell to mean anything")
+        self.assertIn("void f_00002000(CpuState *s) {", generated)
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v0"), 111, f"linked branch lost its continuation\n{output}")
+        self.assertEqual(fields.get("a0"), 0x2010, output)
         self.assertEqual(fields.get("v1"), _PROBE_SP, output)
 
 
