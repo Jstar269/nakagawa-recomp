@@ -1043,6 +1043,236 @@ static void test_iso_executable_classification(const char *test_dir) {
     assert(report.eboot.kind == NK_ISO_EXEC_UNKNOWN);
 }
 
+typedef struct {
+    char paths[32][256];
+    size_t count;
+    size_t stop_after;
+} TestWalkCtx;
+
+static bool test_module_walk_cb(const char *member_path, const NkIsoDirEntry *entry, void *userdata) {
+    TestWalkCtx *ctx = (TestWalkCtx *)userdata;
+    (void)entry;
+    if (ctx->count < 32) {
+        snprintf(ctx->paths[ctx->count], sizeof(ctx->paths[0]), "%s", member_path);
+    }
+    ctx->count++;
+    if (ctx->stop_after > 0 && ctx->count >= ctx->stop_after) {
+        return false;
+    }
+    return true;
+}
+
+/* Every walk fixture uses the same geometry. The deepest record (the depth
+ * case, LBA 27) fits inside these 28 sectors. */
+#define WALK_SECTOR_SIZE 2048u
+#define WALK_TOTAL_SECTORS 28u
+#define WALK_SECTOR(image, lba) ((image) + (size_t)(lba) * WALK_SECTOR_SIZE)
+
+/* Each case builds a fresh, zeroed image holding only the PVD and an empty
+ * root. The case then adds exactly the records it tests, so no record from an
+ * earlier case can leak into a later one. */
+static uint8_t *walk_image_new(void) {
+    uint8_t *image = (uint8_t *)calloc(WALK_TOTAL_SECTORS, WALK_SECTOR_SIZE);
+    assert(image != NULL);
+    uint8_t *pvd = WALK_SECTOR(image, 16);
+    pvd[0] = 0x01;
+    memcpy(pvd + 1, "CD001", 5);
+    pvd[6] = 0x01;
+    write_both_endian_test(pvd + 158, 17);
+    write_both_endian_test(pvd + 166, WALK_SECTOR_SIZE);
+    write_dir_record(pvd, 156, "\0", 1, 17, WALK_SECTOR_SIZE, true);
+    return image;
+}
+
+/* Writes the "." and ".." records every ISO directory starts with. */
+static size_t walk_dot_records(uint8_t *dir, uint32_t self_lba, uint32_t parent_lba) {
+    size_t off = append_iso_record_test(dir, 0, (const uint8_t *)"\0", 1,
+                                        self_lba, WALK_SECTOR_SIZE, true);
+    return append_iso_record_test(dir, off, (const uint8_t *)"\1", 1,
+                                  parent_lba, WALK_SECTOR_SIZE, true);
+}
+
+/* Writes the image to its own file, opens it, and runs the module walk. */
+static NkIsoModuleWalkStatus walk_image(const char *test_dir, const char *name,
+                                        const uint8_t *image, TestWalkCtx *ctx) {
+    char path[600];
+    snprintf(path, sizeof(path), "%s%c%s", test_dir,
+             nk_platform_path_separator(), name);
+    write_test_file(path, image, WALK_TOTAL_SECTORS * WALK_SECTOR_SIZE);
+    NkIsoReader *reader = nk_iso_reader_open(path);
+    assert(reader != NULL);
+    NkIsoModuleWalkStatus status =
+        nk_iso_reader_walk_module_tree(reader, test_module_walk_cb, ctx);
+    nk_iso_reader_close(reader);
+    return status;
+}
+
+static void test_iso_walk_module_tree(const char *test_dir) {
+    printf("[HOSTILE_TEST] Testing nk_iso_reader_walk_module_tree...\n"); fflush(stdout);
+
+    TestWalkCtx ctx;
+    NkIsoModuleWalkStatus status;
+    uint8_t *image;
+    size_t off;
+
+    /* 1. NULL reader or NULL callback is refused. The image has no module
+     * roots, so an unguarded NULL callback would return OK, not the
+     * argument error. */
+    printf("[HOSTILE_TEST] Walk subtest 1: invalid arguments\n"); fflush(stdout);
+    image = walk_image_new();
+    walk_dot_records(WALK_SECTOR(image, 17), 17, 17);
+    {
+        char path[600];
+        snprintf(path, sizeof(path), "%s%cwalk_args.iso", test_dir,
+                 nk_platform_path_separator());
+        write_test_file(path, image, WALK_TOTAL_SECTORS * WALK_SECTOR_SIZE);
+        NkIsoReader *reader = nk_iso_reader_open(path);
+        assert(reader != NULL);
+        memset(&ctx, 0, sizeof(ctx));
+        status = nk_iso_reader_walk_module_tree(NULL, test_module_walk_cb, &ctx);
+        assert(status == NK_ISO_MODULE_WALK_INVALID_ARGUMENT);
+        status = nk_iso_reader_walk_module_tree(reader, NULL, NULL);
+        assert(status == NK_ISO_MODULE_WALK_INVALID_ARGUMENT);
+        nk_iso_reader_close(reader);
+    }
+    free(image);
+
+    /* 2. A callback that returns false ends the walk at once. The same
+     * two-file fixture walked without a stop reports both files, so the
+     * stopped run shows the stop itself, not an empty tree. */
+    printf("[HOSTILE_TEST] Walk subtest 2: callback stops walk\n"); fflush(stdout);
+    image = walk_image_new();
+    off = walk_dot_records(WALK_SECTOR(image, 17), 17, 17);
+    append_iso_record_test(WALK_SECTOR(image, 17), off, (const uint8_t *)"PSP_GAME", 8,
+                           18, WALK_SECTOR_SIZE, true);
+    off = walk_dot_records(WALK_SECTOR(image, 18), 18, 17);
+    append_iso_record_test(WALK_SECTOR(image, 18), off, (const uint8_t *)"SYSDIR", 6,
+                           19, WALK_SECTOR_SIZE, true);
+    off = walk_dot_records(WALK_SECTOR(image, 19), 19, 18);
+    off = append_iso_record_test(WALK_SECTOR(image, 19), off, (const uint8_t *)"A.PRX;1", 7,
+                                 20, 100, false);
+    append_iso_record_test(WALK_SECTOR(image, 19), off, (const uint8_t *)"B.PRX;1", 7,
+                           21, 100, false);
+    memset(&ctx, 0, sizeof(ctx));
+    status = walk_image(test_dir, "walk_callback.iso", image, &ctx);
+    assert(status == NK_ISO_MODULE_WALK_OK);
+    assert(ctx.count == 2);
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.stop_after = 1;
+    status = walk_image(test_dir, "walk_callback.iso", image, &ctx);
+    assert(status == NK_ISO_MODULE_WALK_CALLBACK_STOPPED);
+    assert(ctx.count == 1);
+    assert(strcmp(ctx.paths[0], "PSP_GAME/SYSDIR/A.PRX") == 0);
+    free(image);
+
+    /* 3. No PSP_GAME record means there is no module tree. That is OK with no
+     * members, because both module roots are optional. */
+    printf("[HOSTILE_TEST] Walk subtest 3: missing PSP_GAME directory\n"); fflush(stdout);
+    image = walk_image_new();
+    walk_dot_records(WALK_SECTOR(image, 17), 17, 17);
+    memset(&ctx, 0, sizeof(ctx));
+    status = walk_image(test_dir, "walk_no_psp_game.iso", image, &ctx);
+    assert(status == NK_ISO_MODULE_WALK_OK);
+    assert(ctx.count == 0);
+    free(image);
+
+    /* 4. PSP_GAME as a regular file is not a module tree: OK with no members.
+     * The game sector stays zero, so the walk could reach nothing else even if
+     * the file were misread as a directory. */
+    printf("[HOSTILE_TEST] Walk subtest 4: PSP_GAME is a file\n"); fflush(stdout);
+    image = walk_image_new();
+    off = walk_dot_records(WALK_SECTOR(image, 17), 17, 17);
+    append_iso_record_test(WALK_SECTOR(image, 17), off, (const uint8_t *)"PSP_GAME", 8,
+                           18, 100, false);
+    memset(&ctx, 0, sizeof(ctx));
+    status = walk_image(test_dir, "walk_game_file.iso", image, &ctx);
+    assert(status == NK_ISO_MODULE_WALK_OK);
+    assert(ctx.count == 0);
+    free(image);
+
+    /* 5. Two PSP_GAME records in the root -> INVALID_TREE, before any member is
+     * reported. The second record is a directory too, so only the duplicate
+     * check can reject this image. */
+    printf("[HOSTILE_TEST] Walk subtest 5: duplicate PSP_GAME directory\n"); fflush(stdout);
+    image = walk_image_new();
+    off = walk_dot_records(WALK_SECTOR(image, 17), 17, 17);
+    off = append_iso_record_test(WALK_SECTOR(image, 17), off, (const uint8_t *)"PSP_GAME", 8,
+                                 18, WALK_SECTOR_SIZE, true);
+    append_iso_record_test(WALK_SECTOR(image, 17), off, (const uint8_t *)"PSP_GAME", 8,
+                           18, WALK_SECTOR_SIZE, true);
+    memset(&ctx, 0, sizeof(ctx));
+    status = walk_image(test_dir, "walk_dup_psp_game.iso", image, &ctx);
+    assert(status == NK_ISO_MODULE_WALK_INVALID_TREE);
+    assert(ctx.count == 0);
+    free(image);
+
+    /* 6. Two SYSDIR records in PSP_GAME -> INVALID_TREE, before any member is
+     * reported. The sysdir holds a walkable file, so an unguarded duplicate
+     * would walk it and report a member instead. */
+    printf("[HOSTILE_TEST] Walk subtest 6: duplicate SYSDIR in PSP_GAME\n"); fflush(stdout);
+    image = walk_image_new();
+    off = walk_dot_records(WALK_SECTOR(image, 17), 17, 17);
+    append_iso_record_test(WALK_SECTOR(image, 17), off, (const uint8_t *)"PSP_GAME", 8,
+                           18, WALK_SECTOR_SIZE, true);
+    off = walk_dot_records(WALK_SECTOR(image, 18), 18, 17);
+    off = append_iso_record_test(WALK_SECTOR(image, 18), off, (const uint8_t *)"SYSDIR", 6,
+                                 19, WALK_SECTOR_SIZE, true);
+    append_iso_record_test(WALK_SECTOR(image, 18), off, (const uint8_t *)"SYSDIR", 6,
+                           19, WALK_SECTOR_SIZE, true);
+    walk_dot_records(WALK_SECTOR(image, 19), 19, 18);
+    append_iso_record_test(WALK_SECTOR(image, 19), 68, (const uint8_t *)"X.PRX;1", 7,
+                           20, 100, false);
+    memset(&ctx, 0, sizeof(ctx));
+    status = walk_image(test_dir, "walk_dup_sysdir.iso", image, &ctx);
+    assert(status == NK_ISO_MODULE_WALK_INVALID_TREE);
+    assert(ctx.count == 0);
+    free(image);
+
+    /* 7. Recursion depth. Directories below USRDIR are walked while their
+     * depth is under NK_ISO_MODULE_TREE_MAX_DEPTH (4). D4 is the last level
+     * walked, so AT_LIMIT.PRX inside it is reported. D5 is one level past the
+     * limit, so DEEPMOD.PRX inside it is not. The reported file proves the
+     * recursion works; the missing one proves the bound. */
+    printf("[HOSTILE_TEST] Walk subtest 7: recursion depth limit\n"); fflush(stdout);
+    image = walk_image_new();
+    off = walk_dot_records(WALK_SECTOR(image, 17), 17, 17);
+    append_iso_record_test(WALK_SECTOR(image, 17), off, (const uint8_t *)"PSP_GAME", 8,
+                           18, WALK_SECTOR_SIZE, true);
+    off = walk_dot_records(WALK_SECTOR(image, 18), 18, 17);
+    append_iso_record_test(WALK_SECTOR(image, 18), off, (const uint8_t *)"USRDIR", 6,
+                           20, WALK_SECTOR_SIZE, true);
+    off = walk_dot_records(WALK_SECTOR(image, 20), 20, 18);
+    append_iso_record_test(WALK_SECTOR(image, 20), off, (const uint8_t *)"D1", 2,
+                           21, WALK_SECTOR_SIZE, true);
+    off = walk_dot_records(WALK_SECTOR(image, 21), 21, 20);
+    append_iso_record_test(WALK_SECTOR(image, 21), off, (const uint8_t *)"D2", 2,
+                           22, WALK_SECTOR_SIZE, true);
+    off = walk_dot_records(WALK_SECTOR(image, 22), 22, 21);
+    append_iso_record_test(WALK_SECTOR(image, 22), off, (const uint8_t *)"D3", 2,
+                           23, WALK_SECTOR_SIZE, true);
+    off = walk_dot_records(WALK_SECTOR(image, 23), 23, 22);
+    append_iso_record_test(WALK_SECTOR(image, 23), off, (const uint8_t *)"D4", 2,
+                           24, WALK_SECTOR_SIZE, true);
+    off = walk_dot_records(WALK_SECTOR(image, 24), 24, 23);
+    off = append_iso_record_test(WALK_SECTOR(image, 24), off, (const uint8_t *)"D5", 2,
+                                 25, WALK_SECTOR_SIZE, true);
+    append_iso_record_test(WALK_SECTOR(image, 24), off, (const uint8_t *)"AT_LIMIT.PRX;1", 14,
+                           26, 100, false);
+    walk_dot_records(WALK_SECTOR(image, 25), 25, 24);
+    append_iso_record_test(WALK_SECTOR(image, 25), 68, (const uint8_t *)"DEEPMOD.PRX;1", 13,
+                           27, 100, false);
+    memset(&ctx, 0, sizeof(ctx));
+    status = walk_image(test_dir, "walk_depth.iso", image, &ctx);
+    assert(status == NK_ISO_MODULE_WALK_OK);
+    assert(ctx.count == 1);
+    assert(strcmp(ctx.paths[0], "PSP_GAME/USRDIR/D1/D2/D3/D4/AT_LIMIT.PRX") == 0);
+    free(image);
+
+    printf("[HOSTILE_TEST] nk_iso_reader_walk_module_tree tests PASSED!\n");
+    fflush(stdout);
+}
+
+
 #if defined(_WIN32) || defined(_WIN64)
 #include <windows.h>
 
@@ -1113,6 +1343,172 @@ static void test_invalid_utf8_path_is_refused(const char *test_dir) {
 }
 #endif
 
+/* A staging ISO: PSP_GAME/SYSDIR/EBOOT.BIN plus PSP_GAME/USRDIR/DATA holding one
+ * member (a file, or a directory holding X.BIN). Optional unstaged siblings sit beside
+ * EBOOT.BIN in SYSDIR and beside DATA in USRDIR. Each case writes its own image. */
+static void build_stage_iso_test(const char *path, const char *member, bool member_is_dir,
+                                 const char *sysdir_sibling, const char *usrdir_sibling) {
+    const size_t sector_size = 2048;
+    const size_t image_size = 25u * sector_size;
+    uint8_t *image = (uint8_t *)calloc(image_size, 1);
+    assert(image != NULL);
+
+    uint8_t *pvd = image + 16u * sector_size;
+    pvd[0] = 1;
+    memcpy(pvd + 1, "CD001", 5);
+    pvd[6] = 1;
+    write_both_endian_test(pvd + 158, 17);
+    write_both_endian_test(pvd + 166, (uint32_t)sector_size);
+
+    const uint8_t dot[] = { 0 }, dotdot[] = { 1 };
+    const uint32_t dir = (uint32_t)sector_size;
+    uint8_t *root = image + 17u * sector_size;
+    uint8_t *game = image + 18u * sector_size;
+    uint8_t *sysdir = image + 19u * sector_size;
+    uint8_t *usrdir = image + 21u * sector_size;
+    uint8_t *data = image + 22u * sector_size;
+    size_t used = 0;
+    used = append_iso_record_test(root, used, dot, 1, 17, dir, true);
+    used = append_iso_record_test(root, used, dotdot, 1, 17, dir, true);
+    append_iso_record_test(root, used, (const uint8_t *)"PSP_GAME", 8, 18, dir, true);
+
+    used = 0;
+    used = append_iso_record_test(game, used, dot, 1, 18, dir, true);
+    used = append_iso_record_test(game, used, dotdot, 1, 17, dir, true);
+    used = append_iso_record_test(game, used, (const uint8_t *)"SYSDIR", 6, 19, dir, true);
+    append_iso_record_test(game, used, (const uint8_t *)"USRDIR", 6, 21, dir, true);
+
+    used = 0;
+    used = append_iso_record_test(sysdir, used, dot, 1, 19, dir, true);
+    used = append_iso_record_test(sysdir, used, dotdot, 1, 18, dir, true);
+    used = append_iso_record_test(sysdir, used, (const uint8_t *)"EBOOT.BIN;1", 11, 20, 5, false);
+    if (sysdir_sibling)
+        append_iso_record_test(sysdir, used, (const uint8_t *)sysdir_sibling,
+                               (uint8_t)strlen(sysdir_sibling), 23, 7, false);
+    memcpy(image + 20u * sector_size, "EBOOT", 5);
+
+    used = 0;
+    used = append_iso_record_test(usrdir, used, dot, 1, 21, dir, true);
+    used = append_iso_record_test(usrdir, used, dotdot, 1, 18, dir, true);
+    used = append_iso_record_test(usrdir, used, (const uint8_t *)"DATA", 4, 22, dir, true);
+    if (usrdir_sibling)
+        append_iso_record_test(usrdir, used, (const uint8_t *)usrdir_sibling,
+                               (uint8_t)strlen(usrdir_sibling), 23, 7, false);
+
+    used = 0;
+    used = append_iso_record_test(data, used, dot, 1, 22, dir, true);
+    used = append_iso_record_test(data, used, dotdot, 1, 21, dir, true);
+    if (member_is_dir) {
+        uint8_t *child = image + 24u * sector_size;
+        append_iso_record_test(data, used, (const uint8_t *)member, (uint8_t)strlen(member),
+                               24, dir, true);
+        used = 0;
+        used = append_iso_record_test(child, used, dot, 1, 24, dir, true);
+        used = append_iso_record_test(child, used, dotdot, 1, 22, dir, true);
+        append_iso_record_test(child, used, (const uint8_t *)"X.BIN;1", 7, 23, 7, false);
+    } else {
+        append_iso_record_test(data, used, (const uint8_t *)member, (uint8_t)strlen(member),
+                               23, 7, false);
+    }
+    memcpy(image + 23u * sector_size, "payload", 7);
+    write_test_file(path, image, image_size);
+    free(image);
+}
+
+/* Staged disc members become host entries under their disc names, so a member whose base name
+ * is a reserved Windows device name is refused (the portability rule tools/extract_xb.py
+ * applies; on Windows 11 build 26300 "NUL", "NUL." and "NUL " even swallow their bytes). The
+ * refusal happens while
+ * the disc is counted, before anything is written, on every host. Records the stager never
+ * writes do not refuse the disc. */
+static void stage_one(const char *test_dir, const char *tag, const char *member, bool is_dir,
+                      const char *sysdir_sibling, const char *usrdir_sibling,
+                      const char *const *roots, NkResult expected, char *host_root,
+                      size_t host_root_size) {
+    const char sep = nk_platform_path_separator();
+    char iso_path[700];
+    snprintf(iso_path, sizeof(iso_path), "%s%cstage_%s.iso", test_dir, sep, tag);
+    snprintf(host_root, host_root_size, "%s%cstage_%s", test_dir, sep, tag);
+    build_stage_iso_test(iso_path, member, is_dir, sysdir_sibling, usrdir_sibling);
+    NkResult result = nk_iso_extract_game(iso_path, host_root, roots, 1, NULL, NULL);
+    if (result != expected) {
+        fprintf(stderr, "[HOSTILE_TEST] staging case %s (%s) gave %d, expected %d\n",
+                tag, member, (int)result, (int)expected);
+    }
+    assert(result == expected);
+    remove(iso_path);
+}
+
+static void test_iso_stage_refuses_device_names(const char *test_dir) {
+    static const struct {
+        const char *member;
+        bool is_dir;
+    } refused[] = {
+        { "NUL.BIN;1", false },
+        { "com1;1", false },        /* any case, no extension */
+        { "CON.;1", false },        /* ISO9660 spelling of an extensionless file */
+        { "LPT0.TXT;1", false },
+        { "CONIN$.DAT;1", false },
+        { "NUL ;1", false },        /* Win32 drops the trailing space: still NUL */
+        { "NUL .BIN;1", false },    /* and the spaces before the extension */
+        { "AUX", true },            /* a directory, not only a file */
+    };
+    const char sep = nk_platform_path_separator();
+    const char *roots[] = { "DATA" };
+    char host_root[700], probe[800], tag[32];
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        snprintf(tag, sizeof(tag), "device_%u", (unsigned)i);
+        stage_one(test_dir, tag, refused[i].member, refused[i].is_dir, NULL, NULL, roots,
+                  NK_ERROR_INVALID_ISO, host_root, sizeof(host_root));
+        /* Refused while counting: the staging root was never created. */
+        assert(!nk_platform_dir_exists(host_root));
+    }
+
+    /* Controls: names that only resemble a device stage normally. */
+    static const char *const allowed[] = { "NULL.BIN;1", "CONSOLE.BIN;1", "COM10.BIN;1" };
+    static const char *const allowed_host[] = { "NULL.BIN", "CONSOLE.BIN", "COM10.BIN" };
+    for (size_t i = 0; i < sizeof(allowed) / sizeof(allowed[0]); i++) {
+        snprintf(tag, sizeof(tag), "allowed_%u", (unsigned)i);
+        stage_one(test_dir, tag, allowed[i], false, NULL, NULL, roots, NK_OK, host_root,
+                  sizeof(host_root));
+        snprintf(probe, sizeof(probe), "%s%cEBOOT.BIN", host_root, sep);
+        assert(nk_platform_get_file_size(probe) == 5);
+        snprintf(probe, sizeof(probe), "%s%cDATA%c%s", host_root, sep, sep, allowed_host[i]);
+        assert(nk_platform_get_file_size(probe) == 7);
+    }
+
+    /* Device-named records the stager never writes do not refuse the disc. */
+    stage_one(test_dir, "sibling", "OK.BIN;1", false, "CON;1", "NUL.BIN;1", roots, NK_OK,
+              host_root, sizeof(host_root));
+    snprintf(probe, sizeof(probe), "%s%cDATA%cOK.BIN", host_root, sep, sep);
+    assert(nk_platform_get_file_size(probe) == 7);
+
+    /* Under the "." root a member that Win32 would store as EBOOT.BIN (trailing dot or space)
+     * is refused while counting, so the staged EBOOT.BIN is neither overwritten nor written. */
+    static const char *const eboot_aliases[] = { "EBOOT.BIN.;1", "eboot.bin ;1", "EBOOT.BIN;1" };
+    const char *dot_root[] = { "." };
+    for (size_t i = 0; i < sizeof(eboot_aliases) / sizeof(eboot_aliases[0]); i++) {
+        snprintf(tag, sizeof(tag), "eboot_alias_%u", (unsigned)i);
+        stage_one(test_dir, tag, "OK.BIN;1", false, NULL, eboot_aliases[i], dot_root,
+                  NK_ERROR_INVALID_ISO, host_root, sizeof(host_root));
+        assert(!nk_platform_dir_exists(host_root));
+    }
+    /* The guard is scoped to the top level of ".": below it EBOOT.BIN is an ordinary member. */
+    stage_one(test_dir, "eboot_nested", "EBOOT.BIN;1", false, NULL, NULL, dot_root, NK_OK,
+              host_root, sizeof(host_root));
+    snprintf(probe, sizeof(probe), "%s%cEBOOT.BIN", host_root, sep);
+    assert(nk_platform_get_file_size(probe) == 5);
+    snprintf(probe, sizeof(probe), "%s%cDATA%cEBOOT.BIN", host_root, sep, sep);
+    assert(nk_platform_get_file_size(probe) == 7);
+
+    /* A configured content root named after a device is refused before the disc is read. */
+    const char *device_root[] = { "AUX" };
+    stage_one(test_dir, "device_root", "OK.BIN;1", false, NULL, NULL, device_root,
+              NK_ERROR_INVALID_ISO, host_root, sizeof(host_root));
+    assert(!nk_platform_dir_exists(host_root));
+    printf("[HOSTILE_TEST] ISO staging refuses Windows device member names.\n");
+}
+
 int main(void) {
     native_test_create_root("parsers-hostile");
     native_test_isolate_user_data_roots();
@@ -1130,6 +1526,8 @@ int main(void) {
     test_hostile_iso_parser(hostile_dir);
     test_hostile_pbp_package(hostile_dir);
     test_iso_executable_classification(hostile_dir);
+    test_iso_walk_module_tree(hostile_dir);
+    test_iso_stage_refuses_device_names(hostile_dir);
 #if defined(_WIN32) || defined(_WIN64)
     test_invalid_utf8_path_is_refused(hostile_dir);
 #endif
