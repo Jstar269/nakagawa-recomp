@@ -735,6 +735,7 @@ def build_text_stub_run_elf(
     library: str = "SynthTextLib",
     first_nid: int = 0x7A000000,
     late_callee: bool = False,
+    nids: list[int] | None = None,
 ) -> tuple[bytes, list[int]]:
     """Build a sectioned ELF whose import stubs lie after .text, outside .sceStub.text.
 
@@ -753,6 +754,9 @@ def build_text_stub_run_elf(
     outside the named code sections, so the analyzer must reach it through the
     executable PT_LOAD alone.
     """
+    if nids is not None:
+        nids = list(nids)
+        stub_count = len(nids)
     if stub_count < 1:
         raise ValueError("stub_count must be at least 1")
     seg = bytearray()
@@ -791,7 +795,8 @@ def build_text_stub_run_elf(
 
     modinfo_vaddr = alloc(struct.pack("<H", 0) + b"\0" * 50)
     name_vaddr = alloc(library.encode("ascii") + b"\0", 1)
-    nids = [first_nid + i for i in range(stub_count)]
+    if nids is None:
+        nids = [first_nid + i for i in range(stub_count)]
     nid_vaddr = alloc(b"".join(struct.pack("<I", n) for n in nids))
     stub_base = alloc(STUB_PLACEHOLDER * stub_count)
     stub_addrs = [stub_base + 8 * i for i in range(stub_count)]

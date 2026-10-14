@@ -1456,6 +1456,23 @@ int main(int argc, char **argv) {{
         native = self._run_native_inspect(iso_file)
         self.assertTrue(native.get("RESULT", "").startswith("ERROR"))
 
+    def test_sfo_key_offset_outside_key_table_parity(self) -> None:
+        from nk_core.iso_inspect import IsoInspectionError
+
+        iso_file = self.temp_dir / "bad-key-offset.iso"
+        malformed = bytearray(build_param_sfo("TEST00001", "Bad Key Offset"))
+        struct.pack_into("<H", malformed, 20, 0xFFFF)
+        create_test_iso(
+            iso_file,
+            volume_id="TEST00001",
+            sfo_bytes=bytes(malformed),
+        )
+
+        with self.assertRaises(IsoInspectionError):
+            inspect_iso(iso_file)
+        native = self._run_native_inspect(iso_file)
+        self.assertTrue(native.get("RESULT", "").startswith("ERROR"))
+
     def test_title_id_is_not_used_as_disc_id(self) -> None:
         iso_file = self.temp_dir / "title-id.iso"
         sfo = build_custom_param_sfo([
