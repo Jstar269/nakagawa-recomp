@@ -113,6 +113,44 @@ class TestStandardsConformantLockBinding(BindingFixture):
                 generate_sbom.parse_lockfiles(outside, repo_root=self.tmp_path)
         self.assertIn("outside the repository root", str(ctx.exception))
 
+    def test_cross_format_root_version_mismatch_rejected(self):
+        parsed = self.parse()
+        manifest = json.loads(RELEASE_MANIFEST.read_text(encoding="utf-8"))
+        spdx23 = generate_sbom.generate_spdx23(
+            manifest, parsed["py_packages"],
+            lock_files=parsed["lock_files"],
+            lock_relationships=parsed["lock_relationships"],
+        )
+        cyclonedx = generate_sbom.generate_cyclonedx(manifest, parsed["py_packages"])
+
+        # Confirm valid documents pass verification
+        cdx_valid_path = self.tmp_path / "cyclonedx_valid.json"
+        cdx_valid_path.write_text(json.dumps(cyclonedx), encoding="utf-8")
+        self.assertEqual(self.verify(spdx23), [])
+        self.assertEqual(
+            verify_sbom.verify_additional_sbom_root_versions(None, cdx_valid_path, RELEASE_MANIFEST),
+            [],
+        )
+
+        # Mismatch root version in SPDX 2.3 and CycloneDX
+        spdx23["packages"][0]["versionInfo"] = "1.2.3-mismatch-spdx"
+        cyclonedx["components"][0]["version"] = "4.5.6-mismatch-cdx"
+
+        cdx_bad_path = self.tmp_path / "cyclonedx_bad.json"
+        cdx_bad_path.write_text(json.dumps(cyclonedx), encoding="utf-8")
+
+        spdx_errors = self.verify(spdx23)
+        cdx_errors = verify_sbom.verify_additional_sbom_root_versions(None, cdx_bad_path, RELEASE_MANIFEST)
+
+        self.assertTrue(
+            any("SPDX root package version '1.2.3-mismatch-spdx' does not match" in err for err in spdx_errors),
+            str(spdx_errors),
+        )
+        self.assertTrue(
+            any("CycloneDX root application version '4.5.6-mismatch-cdx' does not match" in err for err in cdx_errors),
+            str(cdx_errors),
+        )
+
 
 class TestSingleSnapshotNoTOCTOU(BindingFixture):
     def test_parse_and_evidence_share_one_read(self):
