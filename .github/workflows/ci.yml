@@ -441,8 +441,14 @@ jobs:
           player_build="$RUNNER_TEMP/nakagawa-cmake-player"
           iso="$RUNNER_TEMP/showcase-build/showcase-scene-v1/TEST00007.iso"
           test -f "$iso"
-          mkdir -p "$RUNNER_TEMP/player-smoke-data"
+          # Redirect every XDG root the player reads, so a stage run never writes
+          # under the runner's HOME (native_test_isolation.c sets the same four).
+          mkdir -p "$RUNNER_TEMP/player-smoke-data" "$RUNNER_TEMP/player-smoke-config" \
+            "$RUNNER_TEMP/player-smoke-cache" "$RUNNER_TEMP/player-smoke-state"
           stage_output=$(XDG_DATA_HOME="$RUNNER_TEMP/player-smoke-data" \
+            XDG_CONFIG_HOME="$RUNNER_TEMP/player-smoke-config" \
+            XDG_CACHE_HOME="$RUNNER_TEMP/player-smoke-cache" \
+            XDG_STATE_HOME="$RUNNER_TEMP/player-smoke-state" \
             SDL_VIDEODRIVER=offscreen timeout 60s \
             "$player_build/nakagawa_player" "--iso=$iso" --stage-only)
           printf '%s\n' "$stage_output"
