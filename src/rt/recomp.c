@@ -1649,10 +1649,15 @@ static void dump_dispatch_misses(void) {
  * the interpreter result identically (AOT_HANDOFF/CALL_RETURN return;
  * EXCEPTION/ERET clear flow and recurse; any reject propagates to the
  * fail-closed wrapper). */
+/* How dispatch_call_aot completes the TAIL chain (#855) of the body it ran. */
+#define SR_DRAIN_SEGMENT 0  /* a computed step: only its direct successors (see recomp.h) */
+#define SR_DRAIN_CHAIN 1    /* a public dispatch or CALL: the whole chain */
+
 static int dispatch_try_with_boundary(
     CpuState *s,
     uint32_t target,
-    const SrGuestInterpCallBoundary *call_boundary);
+    const SrGuestInterpCallBoundary *call_boundary,
+    int drain);
 
 static const char *dispatch_semantic_boundary_name(SrGuestInterpResult result) {
     switch (result) {
@@ -1670,8 +1675,9 @@ static const char *dispatch_semantic_boundary_name(SrGuestInterpResult result) {
     }
 }
 
-/* Guest AOT bodies become nested native C calls, so the host stack grows with the guest
- * call depth. Stop adding frames while 128 KiB remain: 64 KiB for the frame that is
+/* A guest CALL into an AOT body is a nested native C call, so the host stack grows with the
+ * guest call depth (TAIL transfers do not nest: see the TAIL protocol in recomp.h, #855).
+ * Stop adding frames while 128 KiB remain: 64 KiB for the frame that is
  * about to be entered (generated functions carry no local arrays, so their frames are
  * small; the deepest measured runtime chain, the ATRAC3+ decoder on a malformed frame
  * with its logging, used under 20 KiB) and 64 KiB for the boundary report and the
@@ -1733,14 +1739,16 @@ static void dispatch_report_host_stack_boundary(int result) {
                 boundary);
     }
     fflush(stderr);
-    /* #855 tracks lifting the host call-depth limit (trampoline or stackless dispatch). */
+    /* TAIL transfers no longer consume host stack (#855); this boundary now bounds guest
+     * CALL depth and interpreter<->AOT crossings, which still nest. */
     dispatch_record_semantic_stop_issue(boundary, 855u);
 }
 
 static int dispatch_run_interp(
     CpuState *s,
     uint32_t target,
-    const SrGuestInterpCallBoundary *call_boundary) {
+    const SrGuestInterpCallBoundary *call_boundary,
+    int drain) {
     SrGuestInterpFault fault;
     SrGuestInterpResult interp_result = call_boundary
         ? sr_guest_interp_run_with_boundary(s, target, call_boundary, &fault)
@@ -1753,7 +1761,7 @@ static int dispatch_run_interp(
         interp_result == SR_GUEST_INTERP_ERET) {
         uint32_t flow_target = s->flow_target;
         sr_cpu_clear_flow(s);
-        return dispatch_try_with_boundary(s, flow_target, call_boundary);
+        return dispatch_try_with_boundary(s, flow_target, call_boundary, drain);
     }
     fprintf(stderr,
             "  INTERP_REJECT: target=0x%08" PRIx32 " result=%s fault_pc=0x%08" PRIx32 " "
@@ -1768,7 +1776,7 @@ static int dispatch_run_interp(
 }
 
 static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
-                             int has_returning_call_boundary) {
+                             int has_returning_call_boundary, int drain) {
     uint32_t callee_saved[9];
     /* Only a title configuration that declares the #363 debt restores callee-saved
      * registers; every other title keeps the callee's architectural writes. */
@@ -1781,6 +1789,15 @@ static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
     }
     if (sr_perf_enabled) sr_perf_aot_begin(target);
     fn(s);
+    /* Complete the body's TAIL chain (#855) where the nested calls used to complete it:
+     * inside this span, before the #363 restore, and before dispatch_after_aot looks for
+     * exception flow a chained body may raise. A computed step (dispatch_tail_step) runs
+     * only its direct successors here, which used to nest inside its dispatch, and leaves
+     * the next computed transfer to the enclosing drain, so a chain never nests drains. */
+    if (sr_tail_transfer.pending) {
+        if (drain == SR_DRAIN_CHAIN) sr_tail_drain(s);
+        else sr_tail_drain_segment(s);
+    }
     /* Exception/ERET transfers are not returns and keep their architectural
      * register changes. Tail dispatch has no return edge. */
     if (has_returning_call_boundary && s->flow_kind == SR_FLOW_NONE) {
@@ -1793,11 +1810,12 @@ static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
 
 static int dispatch_after_aot(
     CpuState *s,
-    const SrGuestInterpCallBoundary *call_boundary) {
+    const SrGuestInterpCallBoundary *call_boundary,
+    int drain) {
     if (s->flow_kind == SR_FLOW_EXCEPTION || s->flow_kind == SR_FLOW_ERET) {
         uint32_t flow_target = s->flow_target;
         sr_cpu_clear_flow(s);
-        return dispatch_try_with_boundary(s, flow_target, call_boundary);
+        return dispatch_try_with_boundary(s, flow_target, call_boundary, drain);
     }
     /* Fatal and currently unhandled flow kinds must not become a successful AOT
      * handoff. Leave the metadata intact for the fail-closed caller boundary. */
@@ -1809,7 +1827,9 @@ static int dispatch_after_aot(
 static int dispatch_try_with_boundary(
     CpuState *s,
     uint32_t target,
-    const SrGuestInterpCallBoundary *call_boundary) {
+    const SrGuestInterpCallBoundary *call_boundary,
+    int drain) {
+    sr_tail_assert_empty("tail-transfer-live-at-dispatch");
     /* The per-instruction VFPU fallback below adds no host frame (codegen keeps executing
      * the owning native function), so the stack preflight runs only for transfers that can
      * enter another translated body. */
@@ -1946,8 +1966,8 @@ static int dispatch_try_with_boundary(
         if (sr_title_config_dispatch_alias(target, &alias_target)) {
             RecompFn aliased = sr_lookup(alias_target);
             if (aliased) {
-                dispatch_call_aot(aliased, s, alias_target, call_boundary != NULL);
-                return dispatch_after_aot(s, call_boundary);
+                dispatch_call_aot(aliased, s, alias_target, call_boundary != NULL, drain);
+                return dispatch_after_aot(s, call_boundary, drain);
             }
         }
     }
@@ -2049,7 +2069,7 @@ static int dispatch_try_with_boundary(
          * returning 0, so this stays exactly on the current path. */
         if (sr_stale_block_is_stale(target)) {
             sr_perf_interp_set_reason(SR_PERF_INTERP_STALE_BLOCK);
-            return dispatch_run_interp(s, target, call_boundary);
+            return dispatch_run_interp(s, target, call_boundary, drain);
         }
         uint64_t start_ns = 0;
         SrProfEntry *prof_entry = NULL;
@@ -2066,7 +2086,7 @@ static int dispatch_try_with_boundary(
                     (void*)fn, target, s->r[29],
                     atomic_load_explicit(&sr_timeslice, memory_order_relaxed));
         }
-        dispatch_call_aot(fn, s, target, call_boundary != NULL);
+        dispatch_call_aot(fn, s, target, call_boundary != NULL, drain);
 
         if (g_prof_enabled && prof_entry) {
             prof_entry->duration_ns += (SDL_GetTicksNS() - start_ns);
@@ -2102,18 +2122,27 @@ static int dispatch_try_with_boundary(
         }
         /* A valid executable miss is not a fabricated success. Only bytes inside an
          * explicitly registered executable span may execute; the interpreter itself
-         * stops at a registered AOT destination. Every rejection leaves the rejected
+         * hands off at a registered AOT destination it reaches by an unlinked
+         * transfer (a linked one calls it and resumes). Every rejection leaves the rejected
          * instruction's architectural effects unapplied and propagates to the public
          * dispatch wrapper, which terminates instead of resuming native code as if the
          * guest transfer had succeeded. */
         sr_perf_interp_set_reason(SR_PERF_INTERP_DISPATCH_MISS);
-        return dispatch_run_interp(s, target, call_boundary);
+        return dispatch_run_interp(s, target, call_boundary, drain);
     }
-    return dispatch_after_aot(s, call_boundary);
+    return dispatch_after_aot(s, call_boundary, drain);
 }
 
 static int dispatch_try(CpuState *s, uint32_t target) {
-    return dispatch_try_with_boundary(s, target, NULL);
+    return dispatch_try_with_boundary(s, target, NULL, SR_DRAIN_CHAIN);
+}
+
+void dispatch_tail_step(CpuState *s, uint32_t target) {
+    if (dispatch_try_with_boundary(s, target, NULL, SR_DRAIN_SEGMENT) < 0) {
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, target, 0u, 0u);
+        fflush(stderr);
+        exit(1);
+    }
 }
 
 int dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc) {
@@ -2121,7 +2150,7 @@ int dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc) {
         return SR_GUEST_INTERP_MISALIGNED_PC;
     }
     SrGuestInterpCallBoundary boundary = { resume_pc };
-    return dispatch_try_with_boundary(s, target, &boundary);
+    return dispatch_try_with_boundary(s, target, &boundary, SR_DRAIN_CHAIN);
 }
 
 void dispatch(CpuState *s, uint32_t target) {
