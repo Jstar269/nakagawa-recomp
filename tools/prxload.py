@@ -1215,17 +1215,24 @@ def read_psp_segment_sizes(path, expected_segments):
             f"exceeds container size 0x{psp_size:x}"
         )
 
-    bss_size = struct.unpack_from("<i", header, 0x38)[0]
-    if bss_size < 0 or bss_size > MAX_ELF_IMAGE_BYTES:
-        raise ValueError(f"{input_label}: invalid BSS size 0x{bss_size & 0xFFFFFFFF:x}")
+    bss_size = struct.unpack_from("<I", header, 0x38)[0]
+    if bss_size > MAX_ELF_IMAGE_BYTES:
+        raise ValueError(f"{input_label}: invalid BSS size 0x{bss_size:x}")
 
-    segment_sizes = list(struct.unpack_from("<4i", header, 0x54))[:segment_count]
-    for idx, seg_sz in enumerate(segment_sizes):
-        if seg_sz < 0 or seg_sz > MAX_ELF_IMAGE_BYTES:
+    # Each segment must be non-zero and within the ELF image cap (a size with the
+    # sign bit set, read as signed by some tools, is far above the cap), and their
+    # sum must stay within the 256 MiB extent, mirroring validate_psp in C.
+    segment_sizes = list(struct.unpack_from("<4I", header, 0x54))[:segment_count]
+    max_seg_bytes = 256 * 1024 * 1024
+    total_seg = 0
+    for i, sz in enumerate(segment_sizes):
+        if sz > MAX_ELF_IMAGE_BYTES:
+            raise ValueError(f"{input_label}: segment {i} has invalid memory size 0x{sz:x}")
+        if sz == 0 or sz > max_seg_bytes or total_seg > max_seg_bytes - sz:
             raise ValueError(
-                f"{input_label}: segment {idx} has invalid memory size 0x{seg_sz & 0xFFFFFFFF:x}"
+                f"{input_label}: segment {i} size 0x{sz:x} is invalid or causes extent overflow"
             )
-
+        total_seg += sz
     return segment_sizes, bss_size
 
 
