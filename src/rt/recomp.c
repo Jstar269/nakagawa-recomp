@@ -829,10 +829,10 @@ void sr_newlib_free(uint32_t ptr, uint32_t guest_ra) {
 }
 
 uint32_t sr_newlib_memalign(uint32_t alignment, uint32_t size, uint32_t guest_ra) {
+    if (alignment == 0u || (alignment & (alignment - 1u)) != 0u) return 0u;
     /* The retail newlib path delegates alignments no stricter than malloc's
      * native 16-byte payload alignment directly to _malloc_r. */
     if (alignment <= 16u) return sr_newlib_malloc(size, guest_ra);
-    if ((alignment & (alignment - 1u)) != 0u) return 0u;
 
     uint64_t raw_request = (uint64_t)size + alignment;
     if (raw_request > 0xffffffffull) return 0u;

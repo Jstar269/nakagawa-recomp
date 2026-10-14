@@ -413,6 +413,16 @@ static void test_metadata_guardrails(void) {
           "uint32 allocation-size overflow was not rejected");
     CHECK(sr_newlib_realloc(a, 0xffffffffu, 0u) == 0u,
           "realloc size overflow was not rejected");
+    CHECK(sr_newlib_memalign(32u, 0xffffffffu, 0u) == 0u,
+          "memalign 32-bit addition overflow (size + alignment) was not rejected");
+    CHECK(sr_newlib_memalign(0x80000000u, 0x80000000u, 0u) == 0u,
+          "memalign 32-bit addition overflow (large align + size) was not rejected");
+    CHECK(sr_newlib_memalign(15u, 64u, 0u) == 0u,
+          "memalign non-power-of-two alignment 15 was not rejected");
+    CHECK(sr_newlib_memalign(0u, 64u, 0u) == 0u,
+          "memalign zero alignment was not rejected");
+    CHECK(sr_newlib_memalign(64u, 0x02000000u, 0u) == 0u,
+          "memalign request exceeding guest arena size was not rejected");
     CHECK(MEM_R32(a - 8u + 4u) == a_size,
           "overflowing realloc changed the live allocation");
     CHECK(sr_heap_stats().metadata_valid, "size-overflow guard damaged metadata");
