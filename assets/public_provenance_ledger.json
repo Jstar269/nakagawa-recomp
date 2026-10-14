@@ -4745,7 +4745,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "341d6a158508486dfb0755328d351d898f075310a7b0e45069cc5a6f63eb0ae6"
+      "sha256": "ac699b598c869981818c0ad7d54138af6e66e5c0732c75ec74c6d1917c222da9"
     },
     {
       "path": "src/rt/gpu_coherence_selftest.c",
@@ -4835,7 +4835,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "d83dccd9d016a38461795cd1eced00c04c21bc01bb3474071d4938e4b6d87b2a"
+      "sha256": "f9d3c0f6cd10b6b20405f5f871d31f61b8828206a0e2926e41f7cbf5041cdda7"
     },
     {
       "path": "src/rt/gpu_sdl3vk/sdl3vk.h",
@@ -4848,7 +4848,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "9d4f6156073ef61c5a57a654461d434c11b8a8a6058d2650a27ab9172e035325"
+      "sha256": "edea422a5d55f2ac18e765753eee639faceb8c4ca803261fc25e70e73cfe0a3b"
     },
     {
       "path": "src/rt/gpu_sdl3vk/shader_manifest.json",
