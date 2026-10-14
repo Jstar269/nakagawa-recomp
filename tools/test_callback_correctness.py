@@ -194,6 +194,13 @@ class CallbackCorrectnessTests(unittest.TestCase):
         self.assertIn("sched_wait_take_result(invocation, &status)", impl)
         self.assertIn("sched_wait_finish(invocation)", impl)
 
+    def test_two_callbacks_dispatch_in_stable_slot_order_source_shape(self):
+        body = strip_comments(function_body(HLE_SOURCE, "sr_thread_dispatch_callbacks"))
+        self.assertIn("for (size_t i = 0; i < s_callbacks_len; i++)", body)
+        self.assertIn("s_callbacks[i].pending", body)
+        self.assertIn("selected_uid = s_callbacks[i].uid;", body)
+        self.assertIn("break;", body)
+
     def test_terminate_delete_delegates_owned_callback_cleanup_to_scheduler(self):
         body = strip_comments(function_body(HLE_SOURCE, "h_TerminateDeleteThread"))
         self.assertNotIn("sr_callback_unregister_owner(A0)", body)
@@ -239,6 +246,57 @@ static void stand_in_dispatch(CpuState *cpu, uint32_t entry) {
     guest_callback(cpu);
 }
 
+typedef struct {
+    uint32_t uid;
+    uint32_t entry;
+    uint32_t common_arg;
+    uint32_t owner_thread_uid;
+    int used;
+    int pending;
+    uint32_t notify_count;
+    uint32_t notify_arg;
+} SyntheticCallback;
+
+static SyntheticCallback s_synth_cb[2];
+static uint32_t s_execution_log[4];
+static int s_execution_count = 0;
+
+static void multi_cb_dispatch(CpuState *cpu, uint32_t entry) {
+    cpu->r[31] = 0xfeed0008u;
+    if (s_execution_count < 4) {
+        s_execution_log[s_execution_count++] = entry;
+    }
+    cpu->r[2] = 0;  /* return 0 -> stays registered */
+}
+
+static int pump_synthetic_callbacks(CpuState *cpu, uint32_t thread_uid) {
+    int total_dispatched = 0;
+    for (;;) {
+        uint32_t selected_uid = 0;
+        int selected_idx = -1;
+        for (size_t i = 0; i < 2; i++) {
+            if (s_synth_cb[i].used &&
+                s_synth_cb[i].owner_thread_uid == thread_uid &&
+                s_synth_cb[i].pending) {
+                selected_uid = s_synth_cb[i].uid;
+                selected_idx = (int)i;
+                break;
+            }
+        }
+        if (selected_uid == 0) break;
+        s_synth_cb[selected_idx].pending = 0;
+        (void)sr_callback_dispatch_one(
+            cpu,
+            s_synth_cb[selected_idx].entry,
+            (int)s_synth_cb[selected_idx].notify_count,
+            s_synth_cb[selected_idx].notify_arg,
+            s_synth_cb[selected_idx].common_arg,
+            multi_cb_dispatch);
+        total_dispatched++;
+    }
+    return total_dispatched;
+}
+
 /* A second dispatcher that forgets to emulate the `jal`: it leaves $ra alone.
  * The helper must still hand the callback a defined $ra (its own pin), not the
  * interrupted thread's stale one. */
@@ -268,6 +326,33 @@ int main(void) {
         &cpu, 0x08804000u, 7, 0x0000beefu, 0x0000c0deu, bare_dispatch);
 
     printf("ret=%08x\n", ret);
+
+    /* 3: Two synthetic callbacks becoming eligible at one scheduler safe point. */
+    memset(s_synth_cb, 0, sizeof(s_synth_cb));
+    s_execution_count = 0;
+    s_synth_cb[0].uid = 101;
+    s_synth_cb[0].entry = 0x08801000u;
+    s_synth_cb[0].common_arg = 0x1111u;
+    s_synth_cb[0].owner_thread_uid = 1;
+    s_synth_cb[0].used = 1;
+    s_synth_cb[0].pending = 1;
+    s_synth_cb[0].notify_count = 1;
+    s_synth_cb[0].notify_arg = 0xaaaau;
+
+    s_synth_cb[1].uid = 102;
+    s_synth_cb[1].entry = 0x08802000u;
+    s_synth_cb[1].common_arg = 0x2222u;
+    s_synth_cb[1].owner_thread_uid = 1;
+    s_synth_cb[1].used = 1;
+    s_synth_cb[1].pending = 1;
+    s_synth_cb[1].notify_count = 1;
+    s_synth_cb[1].notify_arg = 0xbbbbu;
+
+    int multi_count = pump_synthetic_callbacks(&cpu, 1);
+    printf("multi_pump count=%d log=[%08x,%08x]\n",
+           multi_count,
+           s_execution_count > 0 ? s_execution_log[0] : 0,
+           s_execution_count > 1 ? s_execution_log[1] : 0);
     printf("after r28=%08x r11=%08x v0=%08x hi=%08x lo=%08x ra=%08x pc=%08x\n",
            cpu.r[28], cpu.r[11], cpu.r[2], cpu.hi, cpu.lo, cpu.r[31], cpu.pc);
     return 0;
@@ -346,6 +431,17 @@ int main(void) {
             "after r28=12340000 r11=55555555 v0=77777777 hi=11111111 lo=22222222 ra=08900040 pc=08900000",
             out,
             "the interrupted context must be fully restored after the dispatch:\n" + out,
+        )
+
+    def test_two_callbacks_eligible_at_safe_point_dispatch_in_stable_order(self):
+        """When two synthetic callbacks become eligible for a thread before
+        a scheduler safe point, the dispatch pump services both in stable
+        PSP-visible creation/slot order without unmeasured hardware ordering."""
+        out = self._run_probe()
+        self.assertIn(
+            "multi_pump count=2 log=[08801000,08802000]",
+            out,
+            "two callbacks pending at a safe point must be dispatched in stable creation/slot order:\n" + out,
         )
 
 
