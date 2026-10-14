@@ -463,6 +463,79 @@ static inline void SDL_DelayPrecise(uint64_t ns) {
 """
 
 
+# Host stubs for fixtures that link the production dispatcher, scheduler and LLE core.
+_INTEGRATION_STUBS = r'''#include "recomp.h"
+#include "cpu_lle.h"
+#include "sr_coro.h"
+#include "title_config.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+uint64_t SDL_GetTicksNS(void) { return 0u; }
+void SDL_DelayPrecise(uint64_t ns) { (void)ns; }
+uint32_t g_sr_debug = 0;
+SrMemWatch g_sr_mem_watches[SR_MAX_MEM_WATCHES];
+int g_sr_mem_watch_count = 0;
+int g_sr_metadata_watch = 0;
+uint32_t g_sr_mem_watch_context_pc = 0;
+unsigned g_sr_mem_watch_context_limit = 0;
+unsigned g_sr_mem_watch_context_count = 0;
+int g_sr_mem_watch_context_fpr = -1;
+uint32_t g_sr_mem_watch_context_fpr_value = 0;
+uint32_t g_sr_store_context_pc = 0;
+unsigned g_sr_store_context_count = 0;
+unsigned g_sr_store_context_limit = 0;
+int g_sr_store_context_mem_gpr = -1;
+uint32_t g_sr_store_context_mem_offset = 0;
+unsigned g_sr_store_context_mem_words = 0;
+int g_sr_last_writer_enabled = 0;
+void sr_note_mem_write(uint32_t a, uint32_t w, uint32_t v, uint32_t pc) {
+    (void)a; (void)w; (void)v; (void)pc;
+}
+uint32_t sr_get_ge_status(void) { return 0u; }
+int sr_vfpu_interp(CpuState *s, uint32_t op) {
+    (void)s; (void)op; return 0;
+}
+uint32_t sr_hle_resolve_late_import(uint32_t nid) { (void)nid; return 0u; }
+uint32_t sr_syscall(CpuState *s, uint32_t nid) {
+    (void)s; (void)nid; return 0u;
+}
+void sr_display_advance_vcount(uint32_t periods) { (void)periods; }
+uint32_t sr_vblank_handler(void) { return 0u; }
+uint32_t sr_vblank_arg(void) { return 0u; }
+uint32_t sr_vblank_no(void) { return 0u; }
+int sr_vblank_dispatch_registered(void) { return 0; }
+void sr_vblank_tick(void) {}
+void sr_callback_unregister_owner(uint32_t uid) { (void)uid; }
+void sr_hle_release_thread_resources(uint32_t uid) { (void)uid; }
+static uint32_t g_uid = 0x100u;
+uint32_t sr_alloc_uid(void) { return g_uid++; }
+int gui_on(void) { return 0; }
+void gui_pump(void) {}
+int sr_thread_has_pending_callbacks(void) { return 0; }
+int sr_thread_dispatch_callbacks(void) { return 0; }
+uint32_t g_frame_prims = 0;
+int sr_title_config_vblank_counters(uint32_t *frame_addr, uint32_t *vsync_addr) {
+    (void)frame_addr; (void)vsync_addr; return 0;
+}
+int sr_title_config_reent_bindings(SrTitleReentBindings *out) {
+    (void)out; return 0;
+}
+int sr_title_config_is_worker_entry(uint32_t entry) { (void)entry; return 0; }
+int sr_title_config_is_launcher_entry(uint32_t entry) { (void)entry; return 0; }
+int sr_title_config_preserve_callee_saved_at_calls(void) { return 0; }
+int sr_title_config_is_callback_terminator(uint32_t sentinel,
+                                           uint32_t pc, uint32_t ra) {
+    (void)sentinel; (void)pc; (void)ra; return 0;
+}
+int sr_title_config_dispatch_alias(uint32_t from, uint32_t *to_addr) {
+    (void)from; (void)to_addr; return 0;
+}
+
+'''
+
+
 @unittest.skipUnless(CC, "gcc is required for the generated scheduler ERET proof")
 class LleSchedulerIntegrationTests(unittest.TestCase):
     """Run generated exception/ERET flow through real dispatch and scheduling."""
@@ -489,6 +562,137 @@ class LleSchedulerIntegrationTests(unittest.TestCase):
         (OUTER_COUNT == 1); draining them in the enclosing loop lost it.
         """
         self._run_generated_tail_eret_case(direct_tail=False, mixed_chain=True)
+
+    def test_computed_step_passes_its_restore_up_to_a_chain_without_one(self):
+        """A resume body (it owes no SP restore) takes a computed tail to H, which lowers SP
+        and takes a direct tail to X, whose computed tail reaches F (#855 review).
+
+        Nested, F ran two returns deep at H's lowered SP, and H's restore was the last one
+        applied. The computed step H leaves X's pending transfer to the enclosing drain, so it
+        must pass H's restore up with it: the chain head has none of its own to apply.
+        """
+        bodies = (
+            (0x1000, (0x24191100, 0x03200008, NOP), "resume"),                   # t9 = H; jr t9
+            (0x1100, (0x27BDFFF0, (0x02 << 26) | (0x1200 >> 2), NOP), "callable"),  # sp -= 16; j X
+            (0x1200, (0x24191300, 0x03200008, NOP), "callable"),                 # t9 = F; jr t9
+            (0x1300, (0x03A01021, JR_RA, NOP), "callable"),                      # v0 = sp; jr ra
+        )
+        words, ranges = {}, []
+        for addr, body, _kind in bodies:
+            for index, word in enumerate(body):
+                words[addr + 4 * index] = word
+            ranges.append((addr, addr + 4 * len(body)))
+        known = {addr for addr, _body, _kind in bodies}
+        resume_owners = {addr: 0x0F00 for addr, _body, kind in bodies if kind == "resume"}
+        texts, decls, regs = [], [], []
+        for addr, _body, kind in bodies:
+            texts.append("\n".join(codegen.emit_function(
+                FakeElf(words), addr, ranges, known, resume_owners=resume_owners,
+                resumable=(kind == "resume"))))
+            symbol = codegen.entry_symbol(addr, resume_owners)
+            decls.append(f"void {symbol}(CpuState *s);\n")
+            regs.append(f"    sr_register(0x{addr:08x}u, {symbol});\n")
+        spans = "".join(
+            f"    if (!sr_exec_span_register(0x{a:08x}u, 0x{e:08x}u)) return 2;\n"
+            for a, e in ranges)
+        image = "".join(f"    MEM_W32(0x{a:08x}u, 0x{w:08x}u);\n" for a, w in sorted(words.items()))
+        main = ("int main(void) {\n    CpuState s;\n    memset(&s, 0, sizeof(s));\n"
+                "    sr_exec_span_reset();\n" + spans + "".join(regs) + "    sr_mem_init();\n"
+                + image + "    s.r[29] = 0x09000000u;\n    s.pc = 0x00001000u;\n"
+                "    dispatch(&s, 0x00001000u);\n"
+                '    printf("PASSUP v0=0x%08x sp=0x%08x\\n", s.r[2], s.r[29]);\n'
+                "    return 0;\n}\n")
+        source = "\n\n".join((_INTEGRATION_STUBS, "".join(decls), *texts, main))
+        ran = self._build_and_run_integration(source)
+        self.assertEqual(ran.returncode, 0, ran.stderr + ran.stdout)
+        # F saw H's lowered SP; the chain then restored H's entry SP, the outermost owed.
+        self.assertIn("PASSUP v0=0x08fffff0 sp=0x09000000", ran.stdout)
+
+    def _build_and_run_integration(self, source):
+        """Compile a fixture against the production runtime sources and run it."""
+        env = os.environ.copy()
+        compiler = CC
+        include_flags = []
+        # A host without SDL3 development headers (the hosted Python gate) gets a
+        # test-only timer shim below; sched.c reaches SDL for its monotonic clock
+        # and precise delay only, and the fixture runs with VBLANK pacing off.
+        sdl_available = os.name == "nt"
+        if os.name == "nt":
+            msys_bin = Path("C:/msys64/ucrt64/bin")
+            msys_usr_bin = Path("C:/msys64/usr/bin")
+            msys_gcc = msys_bin / "gcc.exe"
+            if msys_gcc.exists():
+                compiler = str(msys_gcc)
+                env["PATH"] = os.pathsep.join(
+                    [str(msys_bin), str(msys_usr_bin), env.get("PATH", "")]
+                )
+                include_flags.append(f"-I{msys_bin.parent / 'include'}")
+        else:
+            pkg_config = shutil.which("pkg-config")
+            if pkg_config:
+                sdl_flags = subprocess.run(
+                    [pkg_config, "--cflags", "sdl3"], capture_output=True, text=True,
+                )
+                if sdl_flags.returncode == 0:
+                    include_flags.extend(sdl_flags.stdout.split())
+                    sdl_available = True
+        env["SR_NOVBPACE"] = "1"
+
+        with scratch_dir.TemporaryDirectory(prefix="lle_sched_eret_") as tmp:
+            work = Path(tmp)
+            source_path = work / "fixture.c"
+            exe_path = work / "fixture.exe"
+            source_path.write_text(source, encoding="ascii", newline="\n")
+            if not sdl_available:
+                shim_dir = work / "sdl_timer_shim"
+                (shim_dir / "SDL3").mkdir(parents=True)
+                (shim_dir / "SDL3" / "SDL_timer.h").write_text(
+                    SDL_TIMER_SHIM, encoding="ascii", newline="\n")
+                include_flags.extend((f"-I{shim_dir}", "-D_POSIX_C_SOURCE=200809L"))
+            common = [
+                "-std=c11", "-O0", "-g", "-fno-strict-aliasing",
+                "-ffunction-sections", "-fdata-sections", "-Isrc/rt",
+                "-Isrc/core", *include_flags, "-DSR_SDL3VK",
+                "-D_CRT_SECURE_NO_WARNINGS", "-Wall", "-Wextra",
+                "-DSR_FLIGHT_RECORDER_LINKED", "-DPERF_AOT_INSTRUCTIONS=0",
+                "-DSR_PUBLIC_SAFE", '-DSR_BUILD_DIR="build/lle-integrated"',
+            ]
+
+            objects = []
+
+            def run_checked(args):
+                completed = subprocess.run(
+                    args, cwd=ROOT, env=env, capture_output=True, text=True,
+                )
+                self.assertEqual(
+                    completed.returncode, 0, completed.stderr + completed.stdout,
+                )
+
+            harness_obj = work / "fixture.o"
+            run_checked([compiler, *common, "-c", str(source_path), "-o", str(harness_obj)])
+            objects.append(harness_obj)
+            production_sources = (
+                "recomp.c", "sched.c", "sr_coro.c", "nested_frames.c",
+                "flight_recorder.c", "guest_interp.c", "cpu_lle.c",
+                "domain_mode.c", "stale_code.c", "vfpu_tables.c", "perf.c",
+            )
+            for name in production_sources:
+                obj = work / (Path(name).stem + ".o")
+                run_checked([
+                    compiler, *common, "-c", str(ROOT / "src" / "rt" / name),
+                    "-o", str(obj),
+                ])
+                objects.append(obj)
+
+            run_checked([
+                compiler, *(str(obj) for obj in objects), "-Wl,--gc-sections",
+                "-lm", "-o", str(exe_path),
+            ])
+            ran = subprocess.run(
+                [str(exe_path)], cwd=work, env=env,
+                capture_output=True, text=True, timeout=60,
+            )
+            return ran
 
     def _run_generated_tail_eret_case(self, *, direct_tail, mixed_chain=False):
         def addiu(rt, rs, immediate):
@@ -571,76 +775,7 @@ class LleSchedulerIntegrationTests(unittest.TestCase):
         self.assertIn("sr_cpu_raise_exception(s, 8u", leaf)
         self.assertIn("sr_cpu_eret(s, 0x00004014u)", eret_vector)
 
-        prefix = r'''#include "recomp.h"
-#include "cpu_lle.h"
-#include "sr_coro.h"
-#include "title_config.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-uint64_t SDL_GetTicksNS(void) { return 0u; }
-void SDL_DelayPrecise(uint64_t ns) { (void)ns; }
-uint32_t g_sr_debug = 0;
-SrMemWatch g_sr_mem_watches[SR_MAX_MEM_WATCHES];
-int g_sr_mem_watch_count = 0;
-int g_sr_metadata_watch = 0;
-uint32_t g_sr_mem_watch_context_pc = 0;
-unsigned g_sr_mem_watch_context_limit = 0;
-unsigned g_sr_mem_watch_context_count = 0;
-int g_sr_mem_watch_context_fpr = -1;
-uint32_t g_sr_mem_watch_context_fpr_value = 0;
-uint32_t g_sr_store_context_pc = 0;
-unsigned g_sr_store_context_count = 0;
-unsigned g_sr_store_context_limit = 0;
-int g_sr_store_context_mem_gpr = -1;
-uint32_t g_sr_store_context_mem_offset = 0;
-unsigned g_sr_store_context_mem_words = 0;
-int g_sr_last_writer_enabled = 0;
-void sr_note_mem_write(uint32_t a, uint32_t w, uint32_t v, uint32_t pc) {
-    (void)a; (void)w; (void)v; (void)pc;
-}
-uint32_t sr_get_ge_status(void) { return 0u; }
-int sr_vfpu_interp(CpuState *s, uint32_t op) {
-    (void)s; (void)op; return 0;
-}
-uint32_t sr_hle_resolve_late_import(uint32_t nid) { (void)nid; return 0u; }
-uint32_t sr_syscall(CpuState *s, uint32_t nid) {
-    (void)s; (void)nid; return 0u;
-}
-void sr_display_advance_vcount(uint32_t periods) { (void)periods; }
-uint32_t sr_vblank_handler(void) { return 0u; }
-uint32_t sr_vblank_arg(void) { return 0u; }
-uint32_t sr_vblank_no(void) { return 0u; }
-int sr_vblank_dispatch_registered(void) { return 0; }
-void sr_vblank_tick(void) {}
-void sr_callback_unregister_owner(uint32_t uid) { (void)uid; }
-void sr_hle_release_thread_resources(uint32_t uid) { (void)uid; }
-static uint32_t g_uid = 0x100u;
-uint32_t sr_alloc_uid(void) { return g_uid++; }
-int gui_on(void) { return 0; }
-void gui_pump(void) {}
-int sr_thread_has_pending_callbacks(void) { return 0; }
-int sr_thread_dispatch_callbacks(void) { return 0; }
-uint32_t g_frame_prims = 0;
-int sr_title_config_vblank_counters(uint32_t *frame_addr, uint32_t *vsync_addr) {
-    (void)frame_addr; (void)vsync_addr; return 0;
-}
-int sr_title_config_reent_bindings(SrTitleReentBindings *out) {
-    (void)out; return 0;
-}
-int sr_title_config_is_worker_entry(uint32_t entry) { (void)entry; return 0; }
-int sr_title_config_is_launcher_entry(uint32_t entry) { (void)entry; return 0; }
-int sr_title_config_preserve_callee_saved_at_calls(void) { return 0; }
-int sr_title_config_is_callback_terminator(uint32_t sentinel,
-                                           uint32_t pc, uint32_t ra) {
-    (void)sentinel; (void)pc; (void)ra; return 0;
-}
-int sr_title_config_dispatch_alias(uint32_t from, uint32_t *to_addr) {
-    (void)from; (void)to_addr; return 0;
-}
-
-#define OUTER 0x00001000u
+        prefix = _INTEGRATION_STUBS + r'''#define OUTER 0x00001000u
 #define MIDDLE 0x00002000u
 #define LEAF 0x00003000u
 #define VECTOR 0x00004000u
@@ -735,90 +870,9 @@ int main(void) {
         source = "\n\n".join((
             prefix, outer, middle, hop, leaf, eret_vector, recovery, followup, suffix,
         ))
-        env = os.environ.copy()
-        compiler = CC
-        include_flags = []
-        # A host without SDL3 development headers (the hosted Python gate) gets a
-        # test-only timer shim below; sched.c reaches SDL for its monotonic clock
-        # and precise delay only, and the fixture runs with VBLANK pacing off.
-        sdl_available = os.name == "nt"
-        if os.name == "nt":
-            msys_bin = Path("C:/msys64/ucrt64/bin")
-            msys_usr_bin = Path("C:/msys64/usr/bin")
-            msys_gcc = msys_bin / "gcc.exe"
-            if msys_gcc.exists():
-                compiler = str(msys_gcc)
-                env["PATH"] = os.pathsep.join(
-                    [str(msys_bin), str(msys_usr_bin), env.get("PATH", "")]
-                )
-                include_flags.append(f"-I{msys_bin.parent / 'include'}")
-        else:
-            pkg_config = shutil.which("pkg-config")
-            if pkg_config:
-                sdl_flags = subprocess.run(
-                    [pkg_config, "--cflags", "sdl3"], capture_output=True, text=True,
-                )
-                if sdl_flags.returncode == 0:
-                    include_flags.extend(sdl_flags.stdout.split())
-                    sdl_available = True
-        env["SR_NOVBPACE"] = "1"
-
-        with scratch_dir.TemporaryDirectory(prefix="lle_sched_eret_") as tmp:
-            work = Path(tmp)
-            source_path = work / "fixture.c"
-            exe_path = work / "fixture.exe"
-            source_path.write_text(source, encoding="ascii", newline="\n")
-            if not sdl_available:
-                shim_dir = work / "sdl_timer_shim"
-                (shim_dir / "SDL3").mkdir(parents=True)
-                (shim_dir / "SDL3" / "SDL_timer.h").write_text(
-                    SDL_TIMER_SHIM, encoding="ascii", newline="\n")
-                include_flags.extend((f"-I{shim_dir}", "-D_POSIX_C_SOURCE=200809L"))
-            common = [
-                "-std=c11", "-O0", "-g", "-fno-strict-aliasing",
-                "-ffunction-sections", "-fdata-sections", "-Isrc/rt",
-                "-Isrc/core", *include_flags, "-DSR_SDL3VK",
-                "-D_CRT_SECURE_NO_WARNINGS", "-Wall", "-Wextra",
-                "-DSR_FLIGHT_RECORDER_LINKED", "-DPERF_AOT_INSTRUCTIONS=0",
-                "-DSR_PUBLIC_SAFE", '-DSR_BUILD_DIR="build/lle-integrated"',
-            ]
-
-            objects = []
-
-            def run_checked(args):
-                completed = subprocess.run(
-                    args, cwd=ROOT, env=env, capture_output=True, text=True,
-                )
-                self.assertEqual(
-                    completed.returncode, 0, completed.stderr + completed.stdout,
-                )
-
-            harness_obj = work / "fixture.o"
-            run_checked([compiler, *common, "-c", str(source_path), "-o", str(harness_obj)])
-            objects.append(harness_obj)
-            production_sources = (
-                "recomp.c", "sched.c", "sr_coro.c", "nested_frames.c",
-                "flight_recorder.c", "guest_interp.c", "cpu_lle.c",
-                "domain_mode.c", "stale_code.c", "vfpu_tables.c", "perf.c",
-            )
-            for name in production_sources:
-                obj = work / (Path(name).stem + ".o")
-                run_checked([
-                    compiler, *common, "-c", str(ROOT / "src" / "rt" / name),
-                    "-o", str(obj),
-                ])
-                objects.append(obj)
-
-            run_checked([
-                compiler, *(str(obj) for obj in objects), "-Wl,--gc-sections",
-                "-lm", "-o", str(exe_path),
-            ])
-            ran = subprocess.run(
-                [str(exe_path)], cwd=work, env=env,
-                capture_output=True, text=True, timeout=60,
-            )
-            self.assertEqual(ran.returncode, 0, ran.stderr + ran.stdout)
-            self.assertIn("generated tail ERET and scheduler reuse: OK", ran.stdout)
+        ran = self._build_and_run_integration(source)
+        self.assertEqual(ran.returncode, 0, ran.stderr + ran.stdout)
+        self.assertIn("generated tail ERET and scheduler reuse: OK", ran.stdout)
 
 
 class CpuLleSourcesTests(unittest.TestCase):

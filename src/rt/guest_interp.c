@@ -22,7 +22,8 @@ void sr_tail_fatal(const char *what, uint32_t target) {
     exit(1);
 }
 
-static void sr_tail_drain_run(CpuState *s, int segment) {
+/* Inlined into both drains so a drain is one native frame at every CALL site (#855). */
+static inline __attribute__((always_inline)) void sr_tail_drain_run(CpuState *s, int segment) {
     uint32_t chain_sp = 0u;
     int chain_restores = 0;
     while (sr_tail_transfer.pending) {

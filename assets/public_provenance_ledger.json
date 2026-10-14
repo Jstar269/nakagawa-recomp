@@ -1063,7 +1063,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3b650243aca0d05691bf7eb13d0e71212223cfb8fa85f7d04ef422a4810bd314"
+      "sha256": "c1fd2798d26eb51cd62e8952373b2d141e8e325335bdff5f3e1d05d4c8d913a3"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -4899,7 +4899,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3d13de70b46ad4a291af8b4608a930fe0865194acb63a7a815f529ad46d67443"
+      "sha256": "cce45c7284d206caa1b490b3133eb259703bf539feb53dacc65345f4f875ce6e"
     },
     {
       "path": "src/rt/guest_interp.h",
@@ -8219,7 +8219,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dd926ac9d2a70a57789603a82233f20ff8dac1f70cd26452a24e162603b5dcb1"
+      "sha256": "1b70ff951ba1622b0ae4cd584606a89597f5b062f15d0bb927b7af363da8e0db"
     },
     {
       "path": "tools/test_dco_policy.py",

@@ -527,7 +527,8 @@ Some paths still nest:
 - Interpreter-to-AOT handoffs go through `dispatch()` and add one dispatch per crossing.
 - Stack-census builds keep one nested drain per transfer, because each census wrapper drains its
   own body.
-- Per-function profile time for a computed target no longer includes the bodies that follow it.
+- Per-function profile time for a computed target still includes its direct successors, but no
+  longer the work after the next computed transfer.
 
 ### HLE boundary
 
