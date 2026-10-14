@@ -1132,7 +1132,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f0d12679711604b9db964b5fd756608dd86e6f7f802caa8925cd3a01e9c2ad5f"
+      "sha256": "670f09abd0ad313b1c1d889b28d9a37d6ad4c124973ccaa182d99bf16f014630"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -7774,7 +7774,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dd5608e436c813b1e99d9f3f3ed9ac51598c62e4aa7f30ebb5eee1d4de2725ac"
+      "sha256": "cc24d5d8754bdcd486587af2a7c7c55db5c38ae7421bec13622dea23a8ebeab2"
     },
     {
       "path": "tools/scratch_dir.py",
