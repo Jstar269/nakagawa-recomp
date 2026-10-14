@@ -5909,7 +5909,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e91eb6f7d8fc4e5b527f16d5addfe834fb5a4f0a0f03835da31673ae0710b128"
+      "sha256": "c45302aaa91fda29818d9a4eea7eceae397790555bc300cd2b3dbdbe9385db9d"
     },
     {
       "path": "tests/native/test_fuzz_parsers.c",
