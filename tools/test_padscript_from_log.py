@@ -73,6 +73,7 @@ class TestPadscriptFromLog(unittest.TestCase):
         )
 
     def test_duplicate_vcount_transitions_do_not_emit_zero_width_spans(self):
+        # The zero-width 0x8 press is expanded to the minimum width, not dropped.
         transitions = [
             padscript.Transition(10, 0, 0x8),
             padscript.Transition(10, 0x8, 0x10),
@@ -80,7 +81,17 @@ class TestPadscriptFromLog(unittest.TestCase):
         ]
         self.assertEqual(
             padscript.pulses_from_transitions(transitions),
-            [padscript.Pulse(10, 0x10, 10)],
+            [padscript.Pulse(10, 0x8, 8), padscript.Pulse(10, 0x10, 10)],
+        )
+
+    def test_same_vcount_press_and_release_is_expanded_not_dropped(self):
+        transitions = [
+            padscript.Transition(5, 0, 0x8),
+            padscript.Transition(5, 0x8, 0),
+        ]
+        self.assertEqual(
+            padscript.pulses_from_transitions(transitions),
+            [padscript.Pulse(5, 0x8, 8)],
         )
 
     def test_out_of_range_mask_is_rejected(self):

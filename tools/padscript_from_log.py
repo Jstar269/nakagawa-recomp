@@ -87,15 +87,15 @@ def pulses_from_transitions(
         if transition.new_mask == active_mask:
             continue
         if active_mask:
-            recorded_width = transition.frame - (active_frame or 0)
-            if recorded_width > 0:
-                pulses.append(
-                    Pulse(
-                        frame=active_frame or 0,
-                        mask=active_mask,
-                        width=max(recorded_width, minimum_width),
-                    )
+            # A press that starts and ends at the same vcount is still a press: expand it.
+            recorded_width = max(1, transition.frame - (active_frame or 0))
+            pulses.append(
+                Pulse(
+                    frame=active_frame or 0,
+                    mask=active_mask,
+                    width=max(recorded_width, minimum_width),
                 )
+            )
         active_frame = transition.frame if transition.new_mask else None
         active_mask = transition.new_mask
 
