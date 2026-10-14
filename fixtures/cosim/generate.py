@@ -526,6 +526,59 @@ def _cell_xtail() -> list[int]:
     ]
 
 
+def _cell_xnestleaf() -> list[int]:
+    """CROSS-TIER nested call destination: a REGISTERED leaf the interpreter calls."""
+    return [
+        _i(0x09, ZERO, V1, 0x0D17),         # 0x00 addiu v1, zero, 0xd17
+        _i(0x09, V0, V0, 0x10),             # 0x04 addiu v0, v0, 16
+        JR_RA,                              # 0x08 jr    ra -> the interpreted caller
+        _i(0x09, V0, V0, 1),                # 0x0c addiu v0, v0, 1 (slot)
+    ]
+
+
+def _cell_xnestmid() -> list[int]:
+    """CROSS-TIER: an interpreted RETURNING caller of a registered native leaf.
+
+    In lane MIXED this body is omitted, so the production interpreter runs it. Its
+    `jalr` lands on a registered entry; the guest then expects THIS function to
+    resume at the link address, mark the accumulator, and unwind its own frame.
+    A handoff that never comes back drops that continuation silently.
+    """
+    return [
+        _i(0x09, SP, SP, -8),               # 0x00 addiu sp, sp, -8
+        _i(0x2B, SP, RA, 4),                # 0x04 sw    ra, 4(sp)
+        _i(0x0F, 0, T0, 0),                 # 0x08 lui   t0, %hi(xnestleaf) (patched)
+        _i(0x0D, T0, T0, 0),                # 0x0c ori   t0, t0, %lo(xnestleaf)
+        _r(T0, 0, RA, 0, 0x09),             # 0x10 jalr  ra, t0  (interpreted CALL)
+        NOP,                                # 0x14 slot
+        _i(0x09, V0, V0, 0x200),            # 0x18 addiu v0, v0, 512  continuation mark
+        _i(0x23, SP, RA, 4),                # 0x1c lw    ra, 4(sp)
+        JR_RA,                              # 0x20 jr    ra -> the native caller
+        _i(0x09, SP, SP, 8),                # 0x24 addiu sp, sp, 8 (return slot)
+    ]
+
+
+def _cell_xnest() -> list[int]:
+    """CROSS-TIER nested CALL: AOT caller -> interpreted caller -> AOT leaf -> back.
+
+    The middle is omitted in lane MIXED. Both continuation marks ($v0 += 0x200 in
+    the middle, += 0x100 here) and both frames ($sp, $ra) must match lane AOT.
+    """
+    return [
+        _i(0x09, SP, SP, -16),              # 0x00 addiu sp, sp, -16
+        _i(0x2B, SP, RA, 12),               # 0x04 sw    ra, 12(sp)
+        _i(0x09, ZERO, V0, 2),              # 0x08 addiu v0, zero, 2
+        _i(0x0F, 0, T0, 0),                 # 0x0c lui   t0, %hi(xnestmid) (patched)
+        _i(0x0D, T0, T0, 0),                # 0x10 ori   t0, t0, %lo(xnestmid)
+        _r(T0, 0, RA, 0, 0x09),             # 0x14 jalr  ra, t0
+        NOP,                                # 0x18 slot
+        _i(0x09, V0, V0, 0x100),            # 0x1c addiu v0, v0, 256  continuation mark
+        _i(0x23, SP, RA, 12),               # 0x20 lw    ra, 12(sp)
+        JR_RA,                              # 0x24
+        _i(0x09, SP, SP, 16),               # 0x28 addiu sp, sp, 16 (return slot)
+    ]
+
+
 def _cell_hilo() -> list[int]:
     """HI/LO through signed and unsigned multiply.
 
@@ -720,6 +773,12 @@ CELLS: tuple[tuple[str, str, object], ...] = (
      _cell_xcall),
     ("xtail", "cross-tier TAIL transfer across the AOT/interpreter seam",
      _cell_xtail),
+    ("xnestleaf", "cross-tier: the registered leaf an interpreted caller calls",
+     _cell_xnestleaf),
+    ("xnestmid", "cross-tier: the interpreted caller of a registered leaf",
+     _cell_xnestmid),
+    ("xnest", "cross-tier CALL from interpreted code into a registered body",
+     _cell_xnest),
     ("hilo", "HI/LO multiply", _cell_hilo),
     ("llsc", "ll/sc and the link bit", _cell_llsc),
     ("fpu", "scalar FPU over the #120 helper path", _cell_fpu),
@@ -732,7 +791,8 @@ CELLS: tuple[tuple[str, str, object], ...] = (
 # Cells omitted from the two-lane comparison list. Most are reached through calls
 # under test; the AOT/reference oracle enters its generated body directly.
 NON_ENTRY_CELLS = frozenset(
-    {"link_leaf", "link_leaf_b", "ret", "negpad", "xstore", "xtailmid", "xread", "fpu_aot"}
+    {"link_leaf", "link_leaf_b", "ret", "negpad", "xstore", "xtailmid", "xread", "fpu_aot",
+     "xnestmid", "xnestleaf"}
 )
 
 # Discovered so codegen emits a native body, but entered only by the independent
@@ -750,6 +810,7 @@ NON_PROGRAM_CELLS = frozenset({"negpad"})
 CROSS_TIER_OMISSIONS: dict[str, str] = {
     "xcall": "xstore",
     "xtail": "xtailmid",
+    "xnest": "xnestmid",
 }
 
 # The trampoline is deliberately NOT called from the fixture entry: nothing in
@@ -848,9 +909,13 @@ def build_text_segment() -> bytes:
     leaf_b = BASE + layout["link_leaf_b"][0]
     xstore = BASE + layout["xstore"][0]
     xtailmid = BASE + layout["xtailmid"][0]
+    xnestmid = BASE + layout["xnestmid"][0]
+    xnestleaf = BASE + layout["xnestleaf"][0]
     for cell, slot, address in (
         ("xcall", 0x0C, xstore),
         ("xtail", 0x04, xtailmid),
+        ("xnest", 0x0C, xnestmid),
+        ("xnestmid", 0x08, xnestleaf),
         ("linkr", 0x0C, leaf_a),
         ("jrslot", 0x0C, leaf_a),
         ("jrslot", 0x14, leaf_b),
@@ -1307,7 +1372,12 @@ def verify(build_dir: Path) -> int:
     # The cross-tier cells are only meaningful while their pointer pairs name the
     # cell lane MIXED actually drops; a generator change that desynchronised them
     # would make both lanes run the same tier and pass vacuously.
-    for entry, target, slot in (("xcall", "xstore", 0x0C), ("xtail", "xtailmid", 0x04)):
+    for entry, target, slot in (
+        ("xcall", "xstore", 0x0C),
+        ("xtail", "xtailmid", 0x04),
+        ("xnest", "xnestmid", 0x0C),
+        ("xnestmid", "xnestleaf", 0x08),
+    ):
         expected = BASE + layout[target][0]
         base = layout[entry][0] + slot
         hi = struct.unpack_from("<I", image, base)[0] & 0xFFFF
