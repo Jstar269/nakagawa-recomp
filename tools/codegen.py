@@ -1712,23 +1712,33 @@ def fpu_effect(addr, w):
 
 def is_cond_branch(w):
     op = w >> 26
-    return op in (4, 5, 6, 7, 20, 21, 22, 23) or op == 1 or (op == 0x11 and rs(w) == 8) or (op == 0x12 and rs(w) == 8)
+    if op in (4, 5, 20, 21):
+        return True
+    if op in (6, 7, 22, 23):
+        return rt(w) == 0
+    if op == 1:
+        return rt(w) in (0, 1, 2, 3, 0x10, 0x11, 0x12, 0x13)
+    if op == 0x11 and rs(w) == 8:
+        return rt(w) <= 3
+    if op == 0x12 and rs(w) == 8:
+        return True
+    return False
 
 def cond_expr(w):
     op = w >> 26
     if op == 4: return f"({R(rs(w))} == {R(rt(w))})"          # beq
     if op == 5: return f"({R(rs(w))} != {R(rt(w))})"          # bne
-    if op == 6: return f"((int32_t){R(rs(w))} <= 0)"          # blez
-    if op == 7: return f"((int32_t){R(rs(w))} > 0)"           # bgtz
+    if op == 6 and rt(w) == 0: return f"((int32_t){R(rs(w))} <= 0)"   # blez
+    if op == 7 and rt(w) == 0: return f"((int32_t){R(rs(w))} > 0)"    # bgtz
     if op == 20: return f"({R(rs(w))} == {R(rt(w))})"         # beql
     if op == 21: return f"({R(rs(w))} != {R(rt(w))})"         # bnel
-    if op == 22: return f"((int32_t){R(rs(w))} <= 0)"         # blezl
-    if op == 23: return f"((int32_t){R(rs(w))} > 0)"          # bgtzl
+    if op == 22 and rt(w) == 0: return f"((int32_t){R(rs(w))} <= 0)"  # blezl
+    if op == 23 and rt(w) == 0: return f"((int32_t){R(rs(w))} > 0)"   # bgtzl
     if op == 1:
         sub = rt(w)
-        if sub in (0, 2, 0x10): return f"((int32_t){R(rs(w))} < 0)"   # bltz/bltzl/bltzal
-        if sub in (1, 3, 0x11): return f"((int32_t){R(rs(w))} >= 0)"  # bgez/bgezl/bgezal
-    if op == 0x11 and rs(w) == 8:
+        if sub in (0, 2, 0x10, 0x12): return f"((int32_t){R(rs(w))} < 0)"   # bltz/bltzl/bltzal/bltzall
+        if sub in (1, 3, 0x11, 0x13): return f"((int32_t){R(rs(w))} >= 0)"  # bgez/bgezl/bgezal/bgezall
+    if op == 0x11 and rs(w) == 8 and rt(w) <= 3:
         tf = (w >> 16) & 1
         return f"(s->fpcond {'!=' if tf else '=='} 0)"        # bc1t/bc1f
     if op == 0x12 and rs(w) == 8:
@@ -1739,10 +1749,10 @@ def cond_expr(w):
 
 def is_likely(w):
     op = w >> 26
-    return op in (20, 21, 22, 23) or (op == 1 and rt(w) in (2, 3)) or (op == 0x11 and rs(w) == 8 and ((w >> 17) & 1)) or (op == 0x12 and rs(w) == 8 and ((w >> 17) & 1))
+    return op in (20, 21, 22, 23) or (op == 1 and rt(w) in (2, 3, 0x12, 0x13)) or (op == 0x11 and rs(w) == 8 and ((w >> 17) & 1)) or (op == 0x12 and rs(w) == 8 and ((w >> 17) & 1))
 
 def is_link(w):  # branch that also writes $ra
-    return (w >> 26) == 1 and rt(w) in (0x10, 0x11)
+    return (w >> 26) == 1 and rt(w) in (0x10, 0x11, 0x12, 0x13)
 
 def branch_target(addr, w):
     return (addr + 4 + (s16(w) << 2)) & 0xFFFFFFFF

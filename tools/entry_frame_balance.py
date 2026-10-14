@@ -41,6 +41,7 @@ from dataclasses import dataclass
 
 from analyze import (
     BRANCH_LINK,
+    branch_target,
     code_pointer_evidence,
     direct_branch_edges,
     direct_j_edges,
@@ -151,6 +152,9 @@ def branch_likely(word):
     if op == 0x11 and ((word >> 21) & 0x1F) == 8:
         # COP1 BC: rt bit 0 selects true/false, bit 1 is nullify-delay.
         return bool((word >> 17) & 1)   # bc1fl / bc1tl
+    if op == 0x12 and ((word >> 21) & 0x1F) == 8:
+        # COP2 BC: rt bit 0 selects true/false, bit 1 is nullify-delay.
+        return bool((word >> 17) & 1)   # bc2fl / bc2tl
     return False
 
 
@@ -316,14 +320,9 @@ def profile_entry(elf, addr, ranges, limit=DEFAULT_STEP_LIMIT):
                 break
 
             is_likely = branch_likely(word)
-            is_branch = op in (1, 4, 5, 6, 7, 20, 21, 22, 23) or (
-                op == 0x11 and ((word >> 21) & 0x1F) == 8
-            )
-            if is_branch:
+            target = branch_target(pc, word)
+            if target is not None:
                 unknown = unknown or slot_unknown
-                offset = word & 0xFFFF
-                offset -= 0x10000 if offset & 0x8000 else 0
-                target = pc + 4 + (offset << 2)
                 if in_ranges(target, ranges):
                     stack.append((target, delta + slot_step))
                 if op == 4 and ((word >> 21) & 0x1F) == 0 and ((word >> 16) & 0x1F) == 0:
