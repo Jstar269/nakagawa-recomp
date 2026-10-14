@@ -13,6 +13,10 @@
  * -DVFPU_FUZZ_CASES='"path/to/vfpu_fuzz_cases.h"' (default: vfpu_fuzz_cases.h in the include path).
  *
  * Usage: vfpu_fuzz [trials_per_case] [seed]
+ *
+ * FUZZ_CASE_SHARD=k/n runs only the cases whose index c satisfies c % n == k, so
+ * several processes can split one corpus between them (unset means 0/1: every case).
+ * A malformed value, or a shard that admits no case, is refused before any case runs.
  */
 
 #define _CRT_SECURE_NO_WARNINGS
@@ -222,6 +226,29 @@ static int check_vcrs_width_guard(void) {
     return bad;
 }
 
+/* Shard selection (FUZZ_CASE_SHARD). Digits only, at most nine per field, so the values
+ * fit an unsigned and no sign, space or extra separator is accepted by accident. */
+#define FUZZ_SHARD_ENV "FUZZ_CASE_SHARD"
+
+static int fuzz_parse_decimal(const char *s, size_t len, unsigned *out) {
+    unsigned value = 0;
+    if (len == 0 || len > 9) return 0;
+    for (size_t i = 0; i < len; i++) {
+        if (s[i] < '0' || s[i] > '9') return 0;
+        value = value * 10u + (unsigned)(s[i] - '0');
+    }
+    *out = value;
+    return 1;
+}
+
+static int fuzz_parse_shard(const char *spec, unsigned *k, unsigned *n) {
+    const char *slash = strchr(spec, '/');
+    if (slash == NULL) return 0;
+    if (!fuzz_parse_decimal(spec, (size_t)(slash - spec), k)) return 0;
+    if (!fuzz_parse_decimal(slash + 1, strlen(slash + 1), n)) return 0;
+    return *n >= 1u && *k < *n;
+}
+
 int main(int argc, char **argv) {
     int trials = argc > 1 ? atoi(argv[1]) : 200;
     if (getenv("FUZZ_TRIALS")) {
@@ -244,12 +271,34 @@ int main(int argc, char **argv) {
         return 2;
     }
 
+    unsigned shard_k = 0, shard_n = 1;
+    const char *shard_spec = getenv(FUZZ_SHARD_ENV);
+    if (shard_spec != NULL && !fuzz_parse_shard(shard_spec, &shard_k, &shard_n)) {
+        fprintf(stderr,
+                "vfpu_fuzz: malformed %s=\"%s\" (expected k/n: decimal digits, n >= 1, 0 <= k < n)\n",
+                FUZZ_SHARD_ENV, shard_spec);
+        return 2;
+    }
+    int admitted = 0;
+    for (int c = 0; c < FUZZ_NCASES; c++) {
+        if ((unsigned)c % shard_n == shard_k) admitted++;
+    }
+    if (admitted == 0) {
+        fprintf(stderr, "vfpu_fuzz: %s=%u/%u admits no case of %d\n",
+                FUZZ_SHARD_ENV, shard_k, shard_n, FUZZ_NCASES);
+        return 2;
+    }
+    if (shard_n > 1) {
+        printf("vfpu_fuzz: shard %u/%u admits %d of %d cases\n", shard_k, shard_n, admitted, FUZZ_NCASES);
+    }
+
     int tested = 0, skipped = 0;
     sr_mem_init();
     int bad_cases = check_transcendentals()+check_unaligned_dispatch()+check_vcrs_width_guard();
     unsigned long long mismatches = 0, total = 0;
 
     for (int c = 0; c < FUZZ_NCASES; c++) {
+        if ((unsigned)c % shard_n != shard_k) continue;
         uint32_t w = fuzz_cases[c].w;
         int case_bad = 0, interp_other = 0;
         int trials_failed = 0;
@@ -354,6 +403,6 @@ int main(int argc, char **argv) {
 
     printf("vfpu_fuzz: %d/%d distinct words tested (%d not covered by interp oracle), "
            "%d words diverge, %llu/%llu trials mismatched\n",
-           tested, FUZZ_NCASES, skipped, bad_cases, mismatches, total);
-    return (bad_cases || skipped || tested != FUZZ_NCASES) ? 1 : 0;
+           tested, admitted, skipped, bad_cases, mismatches, total);
+    return (bad_cases || skipped || tested != admitted) ? 1 : 0;
 }
