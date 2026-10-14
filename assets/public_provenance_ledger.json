@@ -6216,7 +6216,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "18ee90de6c274fbe0bc84311922529f27d44933023170aa58ba63ab4fb8d74bd"
+      "sha256": "2a3e55322bed28af4884f6ea0fecf34fce3cf79d947877c4b3d65b8fbdccf6cd"
     },
     {
       "path": "tools/audit_public_issue_links.py",
@@ -6518,7 +6518,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b42d2886ff68d2f3b91b39b4b7e37f96113a130abf33b25600fbdc7534f85caa"
+      "sha256": "c233cf57c7527aa60ea894345875a4b1067153a211562e73bb1ad7ddf74d8335"
     },
     {
       "path": "tools/flight_diff.py",
@@ -7858,7 +7858,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "942e85affbdd2cf4250492a00b4e3ffbfd97b58b3360010015aeb039e76afc39"
+      "sha256": "e2d2e72427d8a64a93dc8739ef1d1933e3669af5ced98c684da06e92804b2a0f"
     },
     {
       "path": "tools/test_analyze_toml_emit.py",
@@ -7870,7 +7870,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f240c4815ed6e3f04401215d4c4aa7ca292df01dd102f639638e1dea2aae92bd"
+      "sha256": "edd66df545472a21aa22460c8b02269ed1f64bc46754d598e5489bfa52b425d9"
     },
     {
       "path": "tools/test_analyzer_span_scope.py",
@@ -8459,7 +8459,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "02ae49e9df461ce915e66b21187ef48bb5877efa96b19ec4671aaa08605c1539"
+      "sha256": "f6f8089e824999d4188e539c42b72ede010e277835529071da665ba1a31d4914"
     },
     {
       "path": "tools/test_flash0_font.py",
