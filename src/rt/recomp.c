@@ -2102,7 +2102,8 @@ static int dispatch_try_with_boundary(
         }
         /* A valid executable miss is not a fabricated success. Only bytes inside an
          * explicitly registered executable span may execute; the interpreter itself
-         * stops at a registered AOT destination. Every rejection leaves the rejected
+         * hands off at a registered AOT destination it reaches by an unlinked
+         * transfer (a linked one calls it and resumes). Every rejection leaves the rejected
          * instruction's architectural effects unapplied and propagates to the public
          * dispatch wrapper, which terminates instead of resuming native code as if the
          * guest transfer had succeeded. */
