@@ -517,5 +517,36 @@ class FixtureSemanticTests(unittest.TestCase):
             self.assertIn(f"#define {name}", header)
 
 
+
+class ZeroCoverageFixtureGateTests(unittest.TestCase):
+    """Refuses nominal success results when effective executed instruction count is zero."""
+
+    @staticmethod
+    def evaluate_fixture_execution(executed_instructions: int, nominal_success: bool) -> tuple[str, str]:
+        """Synthetic cosimulation fixture gate evaluation.
+
+        Returns (verdict, explanation).
+        """
+        if nominal_success and executed_instructions == 0:
+            return "REFUSED_ZERO_COVERAGE", "refused zero-coverage success: 0 effective executed instructions"
+        if nominal_success:
+            return "PASS", f"successful cosimulation execution: {executed_instructions} effective instructions"
+        return "FAIL", "cosimulation execution failed"
+
+    def test_fixture_gate_refuses_zero_coverage_nominal_success(self):
+        verdict, explanation = self.evaluate_fixture_execution(executed_instructions=0, nominal_success=True)
+        self.assertEqual(verdict, "REFUSED_ZERO_COVERAGE")
+        self.assertIn("refused zero-coverage success", explanation)
+        self.assertIn("0 effective executed instructions", explanation)
+
+    def test_fixture_gate_accepts_nonzero_coverage_success(self):
+        verdict, explanation = self.evaluate_fixture_execution(executed_instructions=100, nominal_success=True)
+        self.assertEqual(verdict, "PASS")
+        self.assertIn("100 effective instructions", explanation)
+
+    def test_fixture_gate_reports_failure_on_failed_execution(self):
+        verdict, explanation = self.evaluate_fixture_execution(executed_instructions=0, nominal_success=False)
+        self.assertEqual(verdict, "FAIL")
+
 if __name__ == "__main__":
     unittest.main()
