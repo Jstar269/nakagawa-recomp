@@ -28,8 +28,8 @@
 
 #include <stddef.h>
 
-/* Guest AOT CALLs are native C calls (TAIL transfers are drained, not nested), so the
- * scheduler reserves this host stack size for each guest thread. Keep the size in the coroutine contract so runtime
+/* Guest AOT calls are native C calls, so the scheduler reserves this host stack
+ * size for each guest thread. Keep the size in the coroutine contract so runtime
  * stack guards and scheduler tests use the same production value. */
 #define SR_GUEST_FIBER_STACK_SIZE ((size_t)64u << 20)
 

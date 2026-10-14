@@ -72,9 +72,8 @@ Assisted-by: Codex (GPT-6 Luna)
 ```
 
 - Name the tool, and the model in parentheses when it is known. The tools in use are
-  Claude Code, Codex, Antigravity, OpenCode, Kilo, Cline, Codebuff, GitHub Copilot, and
-  Jules (Google's coding agent, whose model is not reported, so its line is
-  `Assisted-by: Jules`); a new tool is added to this list before it is used.
+  Claude Code, Codex, Antigravity, OpenCode, Kilo, Cline, Codebuff, and GitHub Copilot; a
+  new tool is added to this list before it is used.
 - Use the same form for every tool. A uniform, honest record is the point: it lets anyone
   see which changes had AI help without inferring it.
 - `Assisted-by:` is a disclosure, not authorship. Do not add `Co-Authored-By:` for an AI

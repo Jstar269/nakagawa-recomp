@@ -2743,7 +2743,7 @@ def verify(build_dir: Path, workload: str) -> int:
             rf"dispatch_call\(s, 0x{omitted_addr:08x}u, 0x[0-9a-f]{{8}}u\)",
             generated_text,
         )
-        tail_seam = f"uint32_t _t = 0x{omitted_addr:08x}u; sr_tail_record(s, _t, NULL," in generated_text
+        tail_seam = f"uint32_t _t = 0x{omitted_addr:08x}u; dispatch(s, _t);" in generated_text
         required_crossings = ("CALL",) if plan.name == "ladder-title2" else ("CALL", "TAIL")
         missing = [
             name

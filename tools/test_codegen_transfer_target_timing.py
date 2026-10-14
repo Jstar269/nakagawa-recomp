@@ -100,7 +100,7 @@ class TransferTargetTimingTests(unittest.TestCase):
         )
         capture = text.index("uint32_t _t = s->r[25];")
         slot = text.index("s->r[25] = (s->r[9] + 0u);")
-        call = text.index("sr_tail_record(s, _t, NULL,")
+        call = text.index("dispatch(s, _t);")
         self.assertLess(capture, slot, "jr target captured after its delay slot")
         self.assertLess(slot, call, "delay slot emitted after the transfer")
 
@@ -164,7 +164,6 @@ class TransferTargetTimingTests(unittest.TestCase):
         """
         text = self._emit({0x1000: JR_RA, 0x1004: NOP})
         self.assertNotIn("dispatch(s, _t);", text)
-        self.assertNotIn("sr_tail_record(", text)
         self.assertIn("s->r[29] = _sp_entry; return;", text)
 
     def test_transfer_instruction_is_reported_before_its_delay_slot(self):

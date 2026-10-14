@@ -273,10 +273,6 @@ jobs:
           languages: ${{ matrix.language }}
           build-mode: none
           source-root: codeql-source
-          # A restored TRAP cache has produced an empty C/C++ database: every source
-          # file skipped, no results. Runs in the default branch's context never read
-          # the cache (they only write it), so it buys nothing; analyze from source.
-          trap-caching: false
           # Do not read query configuration from the candidate tree. Keep the
           # CodeQL default query suite used by the repository's current setup.
           config: |
@@ -288,7 +284,7 @@ jobs:
           output: ${{ runner.temp }}/codeql-sarif
           upload: never
           upload-database: false
-          category: "/language:${{ matrix.language }}/"
+          category: "/language:${{ matrix.language }}"
 
       - name: Require one complete SARIF result for this language
         env:
@@ -314,7 +310,7 @@ jobs:
           # Guarantee explicit stable category in automationDetails for this run
           with destination.open("r", encoding="utf-8") as handle:
               document = json.load(handle)
-          category = f"/language:{language}/"
+          category = f"/language:{language}"
           for run in document.get("runs", []):
               run.setdefault("automationDetails", {})["id"] = category
           with destination.open("w", encoding="utf-8") as handle:
@@ -392,25 +388,16 @@ jobs:
                   core.setFailed(`${file} contains a result from an unexpected analysis tool`);
                   return;
                 }
-                const category = run.automationDetails?.id || `/language:${language}/`;
+                const category = run.automationDetails?.id || `/language:${language}`;
                 run.automationDetails = {
                   ...(run.automationDetails || {}),
                   id: category,
                 };
-                // Code scanning stores a run under the part of automationDetails.id
-                // before its last "/", so "/language:x" would land in the empty
-                // category and every language would share it.
-                const cut = category.lastIndexOf("/");
-                const stored = cut > 0 ? category.slice(0, cut) : "";
-                if (stored !== `/language:${language}`) {
-                  core.setFailed(`${file} would be stored under SARIF category "${stored}", expected "/language:${language}"`);
+                if (categories.has(run.automationDetails.id)) {
+                  core.setFailed(`duplicate SARIF analysis category: ${run.automationDetails.id}`);
                   return;
                 }
-                if (categories.has(stored)) {
-                  core.setFailed(`duplicate SARIF analysis category: ${stored}`);
-                  return;
-                }
-                categories.add(stored);
+                categories.add(run.automationDetails.id);
                 runs.push(run);
               }
             }

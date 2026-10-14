@@ -128,11 +128,10 @@ class TestDispatchFatalPolicySource(unittest.TestCase):
             "static int dispatch_try_with_boundary(\n"
             "    CpuState *s,\n"
             "    uint32_t target,\n"
-            "    const SrGuestInterpCallBoundary *call_boundary,\n"
-            "    int drain) {",
+            "    const SrGuestInterpCallBoundary *call_boundary) {",
         )
         self.assertTrue(body, "dispatch_try_with_boundary definition not found")
-        self.assertIn("dispatch_run_interp(s, target, call_boundary, drain)", body)
+        self.assertIn("dispatch_run_interp(s, target, call_boundary)", body)
         self.assertIn("SR_PERF_INTERP_DISPATCH_MISS", body)
 
     def test_no_dispatch_control_environment_variable_exists(self):

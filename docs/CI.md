@@ -385,22 +385,6 @@ Windows gates. A green public-safe run proves only the paths it executes; it is
 not a complete private-title gameplay route, and local verification remains
 local-only.
 
-The required `CodeQL` check is the code-scanning result GitHub reports after it
-processes the SARIF that `.github/workflows/codeql.yml` ("Trusted CodeQL")
-uploads; no upload means no check. GitHub runs that workflow from the default
-branch: a `workflow_run` after `CI` completes on a pull request (forks included),
-a push to `main`, a weekly schedule, or a manual dispatch naming a pull request.
-It never checks out or executes candidate files. For a pull request it reads the
-exact merge tree as blobs and binds the upload to the merge ref; for a push or
-schedule it scans the `main` commit. It analyzes `actions`, `c-cpp` and `python`
-without uploading partial results and uploads all three in one SARIF. Each run's
-`automationDetails.id` is `/language:<lang>/`: code scanning stores a run under the
-part of the id before its last `/`, so the trailing slash keeps the three languages
-in separate categories instead of letting one replace the others. TRAP caching is off:
-a run that restored the cache was observed to extract no C/C++ file at all. An edit to this
-workflow reaches pull requests only after it lands on `main`, or through a manual
-dispatch run with `--ref` naming the branch.
-
 ## Windows hosted runner policy
 
 The Windows job intentionally remains on `windows-2022`. Hosted execution is

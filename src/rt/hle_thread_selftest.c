@@ -822,8 +822,7 @@ void dispatch(CpuState *cpu, uint32_t target) {
     if (nfi_dispatch(cpu, target)) return;
     if (title_hle_dispatch_intercept(cpu, target)) return;
     RecompFn guest_fn = sr_lookup(target);
-    /* Run a registered body to completion, its TAIL chain included (#855). */
-    if (guest_fn) { sr_call_body(guest_fn, cpu); return; }
+    if (guest_fn) { guest_fn(cpu); return; }
     if (s_oracle_mode && target == ORACLE_CALLBACK_ENTRY) {
         s_oracle_callback_calls++;
         s_oracle_callback_arg1 = cpu->r[4];
@@ -856,12 +855,6 @@ void dispatch(CpuState *cpu, uint32_t target) {
     }
     cpu->r[4] = (uint32_t)s_exit_argument;
     (void)sr_syscall(cpu, s_exit_nid);
-}
-
-/* The TAIL drain's dispatch step (#855). This harness has no dispatcher, so a recorded
- * computed transfer runs through the stand-in above, which completes its own chain. */
-void dispatch_tail_step(CpuState *cpu, uint32_t target) {
-    dispatch(cpu, target);
 }
 
 static int s_checks;

@@ -209,32 +209,6 @@ class ComparabilityContractTests(unittest.TestCase):
         self.assertIsNotNone(divergence)
         self.assertEqual(divergence[0], "terminal kind")
 
-    def test_truncated_tail_reports_terminal_divergence(self):
-        # A run that stopped earlier (e.g. fatal on event 2) compared to a run that kept going (exit on event 3)
-        # with identical shared events (1..2) must report a terminal divergence, not a sequence event divergence.
-        baseline = make_bundle(
-            [event(1, "sched", arg0=1, version=3),
-             event(2, "hle", arg0=2, version=3, arguments=[7, 0, 0, 0], return_value=None),
-             event(3, "prx", arg0=3, version=3)],
-            version=3,
-        )
-        candidate = make_bundle(
-            [event(1, "sched", arg0=1, version=3),
-             event(2, "hle", arg0=2, version=3, arguments=[7, 0, 0, 0], return_value=None)],
-            terminal_reason="fatal",
-            terminal_sequence=2,
-            version=3,
-        )
-        candidate["recorder"]["triggers"]["fired"] = 1
-
-        for align in ("sequence", "class"):
-            with self.subTest(align=align):
-                divergence = flight_diff.diff_bundles(baseline, candidate, align)
-                self.assertIsNotNone(divergence)
-                self.assertEqual(divergence[0], "terminal reason")
-                self.assertEqual(divergence[1]["reason"], "exit")
-                self.assertEqual(divergence[2]["reason"], "fatal")
-
     def test_same_events_different_terminal_semantics_diverge(self):
         baseline, candidate = self._comparable_pair()
         # Both terminals must be individually valid: a fatal outcome pairs with

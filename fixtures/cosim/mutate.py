@@ -123,24 +123,6 @@ MUTANTS: tuple[Mutant, ...] = (
         ],
     ),
     Mutant(
-        "linked-call-hands-off",
-        "a linked transfer into a registered body hands off instead of calling it",
-        [(
-            "            if (transfer.taken && transfer.link_register >= 0 &&\n",
-            "            if (0 && transfer.taken && transfer.link_register >= 0 &&\n",
-            1,
-        )],
-    ),
-    Mutant(
-        "wrong-call-resume",
-        "an interpreted call resumes at the delay slot instead of the link address",
-        [(
-            "                const uint32_t resume_pc = pc + 8u;\n",
-            "                const uint32_t resume_pc = pc + 4u;\n",
-            1,
-        )],
-    ),
-    Mutant(
         "wrong-branch-target",
         "incorrect branch target",
         [(

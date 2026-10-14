@@ -740,69 +740,6 @@ void     dispatch(CpuState *s, uint32_t target);  /* TAIL/no native resume bound
 int      dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc);
 void     dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc);
 
-/* TAIL transfer protocol (#855).
- *
- * A guest TAIL transfer -- `j`, `jr rs`, `jalr $zero` or a branch to another body, or a
- * fall-through into another entry -- must not nest a native call: a guest loop of tail
- * transfers would otherwise grow the host stack without bound while guest call depth stays
- * constant. Generated code records the transfer here and returns; whoever invoked that body
- * drains it: a generated CALL site (SR_TAIL_DRAIN), dispatch_call_aot, or sr_call_body. Each
- * drained body may record the next transfer, so a whole chain runs in one native frame.
- *
- * Guest code runs on one OS thread, and a recorded transfer is consumed before any guest
- * instruction runs, so one slot suffices and it is never live across a yield (asserted at
- * the yield, syscall and dispatch entry points). A callable body owes its caller the
- * restore of its entry SP once the chain completes; the drain applies the first restore
- * recorded in its chain, which is the value the nested native returns used to leave.
- *
- * A transfer to a computed target is one dispatch (dispatch_tail_step). The direct transfers
- * that follow it used to nest inside that dispatch, so the step drains them itself
- * (sr_tail_drain_segment): exception and ERET flow they raise is handled by the step's own
- * dispatch, at the SP the nested model had there. The step hands only the next computed
- * transfer back to the enclosing drain, so native depth stays constant. */
-typedef struct {
-    RecompFn fn;            /* native body of a known target, or NULL to dispatch by address */
-    CpuState *state;        /* the CpuState that recorded the transfer */
-    uint32_t target;        /* guest target address */
-    uint32_t restore_sp;    /* the recording body's entry SP, when it owes the restore */
-    uint8_t pending;
-    uint8_t has_restore;
-} SrTailTransfer;
-extern SrTailTransfer sr_tail_transfer;    /* defined in guest_interp.c */
-/* Fatal, named stop for a broken protocol (double record, leaked slot, foreign state). */
-void sr_tail_fatal(const char *what, uint32_t target);
-/* Run every pending transfer to completion, then apply the chain's SP restore. */
-void sr_tail_drain(CpuState *s);
-/* Inside a computed step's dispatch: run the pending direct transfers, stopping at exception
- * flow or at the next computed transfer, which is left for the enclosing drain. */
-void sr_tail_drain_segment(CpuState *s);
-/* One dispatch of a recorded computed target (recomp.c). It drains only that target's direct
- * successors; the enclosing drain loop runs the next computed transfer. */
-void dispatch_tail_step(CpuState *s, uint32_t target);
-
-static inline void sr_tail_record(CpuState *s, uint32_t target, RecompFn fn,
-                                  uint32_t restore_sp, uint32_t owes_restore) {
-    if (sr_tail_transfer.pending) sr_tail_fatal("tail-transfer-recorded-twice", target);
-    sr_tail_transfer.fn = fn;
-    sr_tail_transfer.state = s;
-    sr_tail_transfer.target = target;
-    sr_tail_transfer.restore_sp = restore_sp;
-    sr_tail_transfer.has_restore = owes_restore ? 1u : 0u;
-    sr_tail_transfer.pending = 1u;
-}
-#define SR_TAIL_DRAIN(s) do { \
-    if (__builtin_expect(sr_tail_transfer.pending != 0u, 0)) sr_tail_drain(s); \
-} while (0)
-/* Invoke a native body and complete its tail chain (runtime direct calls). */
-static inline void sr_call_body(RecompFn fn, CpuState *s) {
-    fn(s);
-    if (sr_tail_transfer.pending) sr_tail_drain(s);
-}
-/* A recorded transfer must never survive to a yield, syscall or new dispatch. */
-static inline void sr_tail_assert_empty(const char *where) {
-    if (sr_tail_transfer.pending) sr_tail_fatal(where, sr_tail_transfer.target);
-}
-
 /* Tracing. When a trace file is open, the generated code reports each instruction. sr_begin
  * snapshots the register file and records pc/op; sr_end diffs and emits the line, with an
  * optional store (addr/size) read back from guest memory. Emit order follows PPSSPP: a branch

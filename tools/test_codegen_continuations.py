@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 from pathlib import Path
-import re
 import sys
 import unittest
 
@@ -105,7 +104,7 @@ class ContinuationFlowTests(unittest.TestCase):
                 0x1200, [(0x1200, 0x1210)], {0x1200},
             )
         )
-        self.assertIn("sr_tail_record(s, _t, NULL,", text)
+        self.assertIn("dispatch(s, _t);", text)
         self.assertNotIn("dispatch_call(s, _t, 0x00001208u);", text)
 
     def test_omitted_direct_jump_remains_a_tail_dispatch_boundary(self):
@@ -134,7 +133,7 @@ class ContinuationFlowTests(unittest.TestCase):
                 dispatch_boundaries=omitted,
             )
         )
-        self.assertIn("sr_tail_record(s, _t, NULL,", text)
+        self.assertIn("dispatch(s, _t);", text)
         self.assertNotIn("goto L_00001040", text)
         self.assertNotIn("f_00001040(s);", text)
 
@@ -158,16 +157,9 @@ class ContinuationFlowTests(unittest.TestCase):
         self.assertEqual(continuations, {0x1008: 0x1010})
 
         text = "\n".join(codegen.emit_function(elf, 0x1000, [(0x1000, 0x2008)], known))
-        # The foreign entry runs as a TAIL transfer (#855): the boundary records it with
-        # the owning entry's SP restore and returns; the invoker's drain runs the foreign
-        # body and only then applies the restore, the order the nested call had.
-        self.assertIn(
-            "sr_tail_record(s, 0x00001010u, f_00001010, _sp_entry, 1u); return; "
-            "/* synthetic boundary",
-            text,
-        )
-        self.assertNotIn("f_00001010(s);", text)
-        self.assertNotIn("s->r[29] = _sp_entry; /* synthetic boundary", text)
+        boundary = text.index("f_00001010(s);")
+        restore = text.index("s->r[29] = _sp_entry; /* synthetic boundary", boundary)
+        self.assertLess(boundary, restore)
         self.assertIn("goto _sr_cont_00001010;", text)
 
     def test_stack_census_keeps_synthetic_boundary_annotation(self):
@@ -190,12 +182,12 @@ class ContinuationFlowTests(unittest.TestCase):
                 elf, 0x1000, [(0x1000, 0x2008)], known, stack_census=True,
             )
         )
-        # The census wrapper owns SP restoration (after its own drain), so the boundary
-        # records no restore, but the generated source must still mark it as synthetic.
+        boundary = text.index("f_00001010(s);")
+        # The census wrapper owns SP restoration, so the boundary is a bare
+        # return, but the generated source must still mark it as synthetic.
         self.assertIn(
-            "sr_tail_record(s, 0x00001010u, f_00001010, 0u, 0u); return; "
-            "/* synthetic boundary",
-            text,
+            "return; /* synthetic boundary: restore the owning entry frame */",
+            text[boundary:],
         )
         self.assertNotIn("s->r[29] = _sp_entry; /* synthetic boundary", text)
 
@@ -216,46 +208,8 @@ class ContinuationFlowTests(unittest.TestCase):
 
         first_text = "\n".join(codegen.emit_function(elf, 0x1000, [(0x1000, 0x1010)], known))
         second_text = "\n".join(codegen.emit_function(elf, 0x1004, [(0x1000, 0x1010)], known))
-        self.assertIn("sr_tail_record(s, 0x00001004u, f_00001004,", first_text)
-        self.assertIn("sr_tail_record(s, 0x00001008u, f_00001008,", second_text)
-
-    def test_every_direct_body_call_completes_its_tail_chain(self):
-        # #855: a callee may leave through a recorded TAIL transfer, so every direct
-        # CALL of a native body must drain it before the caller goes on.
-        elf = FakeElf(
-            {
-                0x1000: jal(0x2000),
-                0x1004: 0x00000000,
-                0x1008: jal(0x3000),
-                0x100C: 0x00000000,
-                0x1010: 0x03E00008,
-                0x1014: 0x00000000,
-                0x2000: 0x08000C00,  # j 0x3000 (a direct tail)
-                0x2004: 0x00000000,
-                0x3000: 0x03E00008,
-                0x3004: 0x00000000,
-            }
-        )
-        known = {0x1000, 0x2000, 0x3000}
-        ranges = [(0x1000, 0x1018), (0x2000, 0x2008), (0x3000, 0x3008)]
-        text = "\n".join(
-            "\n".join(codegen.emit_function(elf, entry, ranges, known))
-            for entry in sorted(known)
-        )
-        calls = re.findall(r"\b(f_[0-9a-f]{8}(?:_real)?)\(s\);( SR_TAIL_DRAIN\(s\);)?", text)
-        self.assertEqual(len(calls), 2, text)
-        for symbol, drain in calls:
-            self.assertTrue(drain, f"{symbol} is called without draining its tail chain")
-        self.assertIn("sr_tail_record(s, 0x00003000u, f_00003000, _sp_entry, 1u); return;", text)
-
-    def test_profile_wrappers_drain_the_bodies_they_call(self):
-        # The two profile wrappers call their real bodies directly (#855 review).
-        source = Path(codegen.__file__).read_text(encoding="utf-8")
-        for call in ("f_000468c8_real(s);", "f_001d9eb0_real(s);"):
-            with self.subTest(call=call):
-                at = source.index(call)
-                following = source[at + len(call):at + len(call) + 60]
-                self.assertEqual(following.split()[0], "SR_TAIL_DRAIN(s);", following)
+        self.assertIn("f_00001004(s);", first_text)
+        self.assertIn("f_00001008(s);", second_text)
 
     def test_conditional_successors_stay_native_to_avoid_host_recursion(self):
         elf = FakeElf(
@@ -304,7 +258,7 @@ class ContinuationFlowTests(unittest.TestCase):
             codegen.emit_function(elf, 0x1000, [(0x1000, 0x1010)], known)
         )
         self.assertNotIn("goto L_00002000", text)
-        self.assertIn("s->pc = 0x00002000u; sr_tail_record(s, s->pc, NULL,", text)
+        self.assertIn("s->pc = 0x00002000u; dispatch(s, s->pc);", text)
 
 
 if __name__ == "__main__":

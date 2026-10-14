@@ -22993,13 +22993,12 @@ static int link_started_export(CpuState *s, uint32_t nid) {
         fprintf(stderr, "PRX link: %s (0x%08x) -> guest 0x%08x\n", nm ? nm : "?", nid, target);
     }
     if (sr_perf_enabled) sr_perf_aot_begin(target);
-    sr_call_body(gfn, s);   /* completes the export's tail chain inside its span (#855) */
+    gfn(s);
     if (sr_perf_enabled) sr_perf_aot_end();
     return 1;
 }
 
 uint32_t sr_syscall(CpuState *s, uint32_t nid) {
-    sr_tail_assert_empty("tail-transfer-live-at-syscall");
     sr_hle_init();
     io_async_dispatch_tick();
     /* A syscall is where a guest thread can stop making scheduler progress, so the

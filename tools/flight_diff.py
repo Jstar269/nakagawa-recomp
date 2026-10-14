@@ -289,10 +289,10 @@ def _first_sequence_divergence(
 ) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None] | None:
     left = {event["sequence"]: event for event in baseline["events"]}
     right = {event["sequence"]: event for event in candidate["events"]}
-    for sequence in sorted(set(left) & set(right)):
-        first = left[sequence]
-        second = right[sequence]
-        if not _event_equal(first, second):
+    for sequence in sorted(set(left) | set(right)):
+        first = left.get(sequence)
+        second = right.get(sequence)
+        if first is None or second is None or not _event_equal(first, second):
             return f"sequence {sequence}", first, second
     return None
 
@@ -300,10 +300,6 @@ def _first_sequence_divergence(
 def _first_class_divergence(
     baseline: dict[str, Any], candidate: dict[str, Any]
 ) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None] | None:
-    max_common_sequence = min(
-        max((event["sequence"] for event in baseline["events"]), default=0),
-        max((event["sequence"] for event in candidate["events"]), default=0),
-    )
     candidates: list[tuple[int, str, dict[str, Any] | None, dict[str, Any] | None]] = []
     for event_class in CLASS_ORDER:
         left = [event for event in baseline["events"] if event["class"] == event_class]
@@ -312,8 +308,7 @@ def _first_class_divergence(
             if first is None or second is None or not _event_equal(first, second):
                 sequences = [event["sequence"] for event in (first, second) if event is not None]
                 order = min(sequences, default=0)
-                if order <= max_common_sequence:
-                    candidates.append((order, f"class {event_class} occurrence {occurrence}", first, second))
+                candidates.append((order, f"class {event_class} occurrence {occurrence}", first, second))
                 break
     if not candidates:
         return None

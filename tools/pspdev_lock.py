@@ -84,12 +84,6 @@ def _expect_keys(
         raise LockError(f"{where} has unknown keys: {unknown}")
 
 
-def _expect_int(value: Any, where: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise LockError(f"{where} must be an integer")
-    return value
-
-
 def _expect_string(value: Any, where: str, *, allow_empty: bool = False) -> str:
     if not isinstance(value, str):
         raise LockError(f"{where} must be a string")
@@ -170,8 +164,7 @@ def validate_lock(data: dict[str, Any], *, require_local: bool = False) -> list[
         optional=set(),
         where="$",
     )
-    schema = _expect_int(data["schema"], "schema")
-    if schema != SCHEMA:
+    if data["schema"] != SCHEMA:
         raise LockError(f"schema must be {SCHEMA}")
 
     _validate_reviewed_at(data["reviewed_at"])
@@ -217,12 +210,6 @@ def validate_lock(data: dict[str, Any], *, require_local: bool = False) -> list[
     release = _expect_string(distribution["release"], "distribution.release")
     if not RELEASE_RE.fullmatch(release):
         raise LockError("distribution.release must have the form vYYYYMMDD")
-    try:
-        datetime.strptime(release[1:], "%Y%m%d")
-    except ValueError as exc:
-        raise LockError(
-            f"distribution.release must be a valid calendar date: {exc}"
-        ) from exc
     # The archive asset name makes the distribution asset class (Debian vs
     # Ubuntu vs container packaging) explicit instead of implicit.
     _expect_string(
@@ -277,7 +264,7 @@ def validate_lock(data: dict[str, Any], *, require_local: bool = False) -> list[
             entry["license_expression"], f"components.{name}.license_expression"
         )
         _expect_string(entry["license_notes"], f"components.{name}.license_notes")
-        if name == "psplinkusb" and "release" in entry:
+        if name == "psplinkusb":
             tag = _expect_string(entry["release"], "components.psplinkusb.release")
             if not SEMVER_TAG_RE.fullmatch(tag):
                 raise LockError(
@@ -371,22 +358,13 @@ def validate_lock(data: dict[str, Any], *, require_local: bool = False) -> list[
     return pending
 
 
-def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise LockError(f"duplicate key in JSON object: {key}")
-        result[key] = value
-    return result
-
-
 def load_lock(path: Path) -> tuple[dict[str, Any], list[str]]:
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise LockError(f"cannot read {path}: {exc}") from exc
     try:
-        data = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+        data = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise LockError(f"{path} is invalid JSON: {exc}") from exc
     if not isinstance(data, dict):
