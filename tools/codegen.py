@@ -1722,9 +1722,7 @@ def is_cond_branch(w):
         # and nullify behaviour, so they reach effect() and are refused there, as on
         # origin/main.
         return rt(w) in (0, 1, 2, 3, 0x10, 0x11)
-    if op == 0x11 and rs(w) == 8:
-        return rt(w) <= 3
-    if op == 0x12 and rs(w) == 8:
+    if op in (0x11, 0x12) and rs(w) == 8:
         return True
     return False
 
@@ -1742,7 +1740,7 @@ def cond_expr(w):
         sub = rt(w)
         if sub in (0, 2, 0x10): return f"((int32_t){R(rs(w))} < 0)"   # bltz/bltzl/bltzal
         if sub in (1, 3, 0x11): return f"((int32_t){R(rs(w))} >= 0)"  # bgez/bgezl/bgezal
-    if op == 0x11 and rs(w) == 8 and rt(w) <= 3:
+    if op == 0x11 and rs(w) == 8:
         tf = (w >> 16) & 1
         return f"(s->fpcond {'!=' if tf else '=='} 0)"        # bc1t/bc1f
     if op == 0x12 and rs(w) == 8:

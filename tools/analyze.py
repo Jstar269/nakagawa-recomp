@@ -854,8 +854,7 @@ def branch_target(source, word):
         if ((word >> 16) & 0x1F) != 0:
             return None
     elif op in (0x11, 0x12) and ((word >> 21) & 0x1F) == 8:
-        if op == 0x11 and ((word >> 16) & 0x1F) > 3:
-            return None
+        pass
     else:
         return None
     offset = word & 0xFFFF

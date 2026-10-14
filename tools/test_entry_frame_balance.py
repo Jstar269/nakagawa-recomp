@@ -1297,7 +1297,7 @@ class RefusedBranchEncodingTests(unittest.TestCase):
         # encoding reports a confident callable. The entry must come out unknown.
         forged = {
             "blez with nonzero rt": (0x06 << 26) | (A0 << 21) | (1 << 16) | 1,
-            "bc1t with condition code 1": (0x11 << 26) | (8 << 21) | (1 << 18) | (1 << 16) | 1,
+            "bgtzl with nonzero rt": (0x17 << 26) | (A0 << 21) | (1 << 16) | 1,
         }
         for label, branch in forged.items():
             with self.subTest(encoding=label):
