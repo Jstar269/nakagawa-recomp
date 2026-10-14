@@ -1176,6 +1176,28 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
             instruction_count += 2u;
             if (sr_perf_enabled) sr_perf_interp_instruction();
             if (sr_perf_enabled) sr_perf_interp_instruction();
+            /* A linked transfer into a registered native body is a CALL, exactly as
+             * generated code treats `jal`/`jalr`: the callee runs as a nested native
+             * frame and this interpreted caller resumes at its link address. Handing
+             * off through the loop-top AOT check below would return AOT_HANDOFF once
+             * the callee returned and silently drop the rest of the interpreted
+             * caller. An unlinked transfer keeps the TAIL handoff. */
+            if (transfer.taken && transfer.link_register >= 0 &&
+                sr_lookup(transfer.target) &&
+                !sr_stale_block_is_stale(transfer.target)) {
+                const uint32_t resume_pc = pc + 8u;
+                s->pc = transfer.target;
+                if (log_dispatch) {
+                    fprintf(stderr,
+                            "GUEST_INTERP_AOT_CALL target=0x%08" PRIx32
+                            " resume=0x%08" PRIx32 "\n",
+                            transfer.target, resume_pc);
+                }
+                dispatch_call(s, transfer.target, resume_pc);
+                pc = resume_pc;
+                s->pc = pc;
+                continue;
+            }
             pc = transfer.taken ? transfer.target : pc + 8u;
             s->pc = pc;
             continue;
