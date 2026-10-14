@@ -13,23 +13,30 @@
 // pending); choices it leaves open are explicit SrGeTexParams readings
 // labelled SPEC_AMBIGUITY.  No result is a hardware-accuracy claim.
 //
-// Contract rules modelled (all SPEC_ASSUMPTION (#343 oracle pending)):
+// Contract rules modelled (T1/T2/T4/T5 remain SPEC_ASSUMPTION; #343 oracle
+// pending):
 //   T1  16-bit texels come in 5650, 5551 and 4444 layouts;
 //   T2  channel widening: 5-bit v -> v*255/31, 6-bit v -> v*255/63 (integer
 //       division, truncating), 4-bit v -> v*17, 1-bit alpha -> 0 or 255;
-//   T3  CLUT indices are derived with an explicit shift and mask;
+//   T3  PSPSDK documents the CLUT index as ((raw >> shift) & mask) | (csa << 4).
+//       This is a public SDK description, not a measured PSP result;
 //   T4  power-of-two wrapping masks the coordinate with dimension - 1, and
 //       clamping is a separate mode;
 //   T5  bilinear filtering uses 4-bit sub-texel weights u, v in 0..15 and
 //       ((c00*(16-u) + c01*u)*(16-v) + (c10*(16-u) + c11*u)*v + 128) >> 8 per
 //       channel; the final +128 is itself an assumption the contract flags.
 //
+// Hardware evidence status: all values here, including the SDK-documented CLUT
+// formula, remain HARDWARE_UNKNOWN until a source-owned #343 PSP result is
+// recorded. This module models candidate readings; it is not renderer truth.
+//
 // Readings the contract does not determine (SPEC_AMBIGUITY):
 //   B1  channel bit order inside a texel: red in the low bits (then green,
 //       blue, alpha upward) or blue in the low bits; alpha is the top field;
 //   B2  byte order of a 16-bit texel in memory (little or big endian);
-//   B3  CLUT index order of operations: (raw >> shift) & mask or
-//       (raw & mask) >> shift;
+//   B3  CLUT shift/mask hardware behavior is HARDWARE_UNKNOWN. PSPSDK documents
+//       shift-then-mask plus the csa offset; mask-then-shift remains only a
+//       candidate reading, not an accepted PSP result;
 //   B4  which nibble of a byte holds the even texel of a 4-bit indexed
 //       texture;
 //   B5  the bilinear rounding bias (128 or 0);
@@ -145,8 +152,11 @@ uint32_t sr_ge_tex_load16(const SrGeTexParams* params, const uint8_t bytes[2], u
    `texel`; 8888 uses all 32 (byte order already resolved by the caller). */
 uint32_t sr_ge_tex_unpack(const SrGeTexParams* params, SrGeTexFormat format, uint32_t texel, SrGeRgba8* out);
 
-/* T3/B3: CLUT index from a raw index texel.  shift must be 0..31. */
-uint32_t sr_ge_clut_index(const SrGeTexParams* params, uint32_t raw, unsigned shift, uint32_t mask, uint32_t* index);
+/* T3/B3: CLUT index from a raw index texel.  shift must be 0..31; csa is the
+   8-bit argument field encoded by PSPSDK's sceGuClutMode wrapper.  This
+   documented formula remains HARDWARE_UNKNOWN pending a #343 readback. */
+uint32_t sr_ge_clut_index(const SrGeTexParams* params, uint32_t raw, unsigned shift, uint32_t mask, unsigned csa,
+                          uint32_t* index);
 
 typedef struct SrGeClut {
     const uint32_t* entries; /* each entry holds one texel of `format` */
@@ -154,6 +164,7 @@ typedef struct SrGeClut {
     SrGeTexFormat format; /* 5650, 5551, 4444 or 8888 */
     unsigned shift;
     uint32_t mask;
+    unsigned csa; /* PSPSDK-documented (csa << 4) bank offset; still HARDWARE_UNKNOWN */
 } SrGeClut;
 
 /* Index derivation plus lookup; an index >= count fails closed (B7). */

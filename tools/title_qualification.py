@@ -384,11 +384,11 @@ def _stage_fail(report: dict, stage: str, failure: str, duration_ms: int) -> Non
     report["issue_numbers"] = list(LAUNCH_FAILURE_ISSUES)
 
 
-def staging_failure_report(duration_ms: int = 0) -> dict:
-    """A report for a candidate whose build is absent: the compile stage names the missing entry."""
+def staging_failure_report(*, inspect_duration_ms: int = 0) -> dict:
+    """Report a missing staged executable without claiming that compilation was attempted."""
     report = nk_cli.new_bringup_report()
-    report["reached_stage"] = "compile"
-    report["stages"]["compile"] = {"status": "FAIL", "duration_ms": duration_ms}
+    report["reached_stage"] = "inspect"
+    report["stages"]["inspect"] = {"status": "FAIL", "duration_ms": inspect_duration_ms}
     report["failure_class"] = "ENTRY_NOT_COMPILED"
     report["issue_numbers"] = list(LAUNCH_FAILURE_ISSUES)
     report["runtime_output_kind"] = "ENTRY_NOT_COMPILED"
@@ -403,6 +403,7 @@ def launch_report(
     returncode: int | None,
     timed_out: bool,
     duration_ms: int,
+    inspect_duration_ms: int = 0,
 ) -> dict:
     """Derive the bring-up-schema report for one launch from the player's output.
 
@@ -414,6 +415,10 @@ def launch_report(
     """
     report = nk_cli.new_bringup_report()
     report["reached_stage"] = "launch"
+    # run_smoke calls this only after validating the public manifest, input profile,
+    # and their declared paths. Keep compile NOT_RUN: finding an existing staged
+    # executable does not prove that this invocation compiled it.
+    report["stages"]["inspect"] = {"status": "PASS", "duration_ms": inspect_duration_ms}
     report["runtime_output_kind"] = nk_cli.runtime_output_kind(output, [])
     presentation_ok = nk_cli.set_bringup_presentation(report, output)
     if timed_out:
@@ -567,6 +572,7 @@ def run_smoke(
     timeout_seconds: int = SMOKE_TIMEOUT_SECONDS,
 ) -> tuple[int, Path | None, dict | None]:
     """Run the public smoke for one manifest. Returns (exit status, report path, report)."""
+    inspect_started = time.perf_counter()
     manifest = load_public_manifest(manifest_path)
     title_id = manifest["id"]
     surface = PUBLIC_LAUNCH_SURFACES.get(title_id)
@@ -581,9 +587,11 @@ def run_smoke(
     output_dir = build_root / title_id / "title-qualification"
     report_path = output_dir / REPORT_NAME
     if not staged_executable(build_root, title_id).is_file():
-        report = staging_failure_report()
+        inspect_duration_ms = int((time.perf_counter() - inspect_started) * 1000)
+        report = staging_failure_report(inspect_duration_ms=inspect_duration_ms)
         write_report(report, report_path)
         return 1, report_path, report
+    inspect_duration_ms = int((time.perf_counter() - inspect_started) * 1000)
     if not player.is_file():
         raise QualificationError(f"{player}: native player is not built (run make player)")
     runtime_root = build_root.parent
@@ -598,6 +606,7 @@ def run_smoke(
     report = launch_report(
         title=manifest, output=output, returncode=returncode,
         timed_out=timed_out, duration_ms=duration_ms,
+        inspect_duration_ms=inspect_duration_ms,
     )
     write_report(report, report_path)
     return (0 if report["failure_class"] == "NONE" else 1), report_path, report

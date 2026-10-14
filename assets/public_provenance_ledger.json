@@ -1417,7 +1417,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ff05d710664b92e7e0421cf6bb8a5f2b6357d8b51faffcbb6304f7efe52868a4"
+      "sha256": "792eab492085d15f20afbc55f6453abec6b9cee8916ed3282e67f6d2d58f76e6"
     },
     {
       "path": "docs/WORKSPACE_DOCTOR.md",
@@ -4709,7 +4709,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2563ba6061fd0a5d062e1d207ec7d9353584a239aedd8d53098f85155d8c6378"
+      "sha256": "50f642818b3d6a4200290f8c2b58cd66a411552deb0a714b22b1bc1f4407cff8"
     },
     {
       "path": "src/rt/ge_texture_ref.h",
@@ -4721,7 +4721,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6f9b73f4ca5e51602e6fcbcea67c5683e98ae6349a43e64920ff24878ab3f865"
+      "sha256": "86453d7c4c4d013e195c74f901d1c7ccc983ec72c02446c64d782b997bee0f25"
     },
     {
       "path": "src/rt/ge_texture_ref_selftest.c",
@@ -4733,7 +4733,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "931c0e671d20cddfc7f579a1039e84c54540e79c25215e1cb3ba2b73ab4ac338"
+      "sha256": "9918c39b8d7052d74774d10b224aedbfc9705439b8877ee278db782e295c4f02"
     },
     {
       "path": "src/rt/gpu_capture_selftest.c",
@@ -10033,7 +10033,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4750f08f20f0c30bab7bce0ff015d28efaa07b6aa864ddf6230bbb55a01053f2"
+      "sha256": "cd9adde55e55e53c42931cc4d5b9e698110abe8be9731314fa88e832ca06fece"
     },
     {
       "path": "tools/test_title_runtime_config.py",
@@ -10393,7 +10393,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "da3336850a251ceb4267cddb06c4affef5e61d67febbba4465d8fddf15b0391e"
+      "sha256": "f916fbc38a724fdcf8158bac3facd4c9a9e08adcb07469ae4cdb105437bda058"
     },
     {
       "path": "tools/title_runtime_config.py",
