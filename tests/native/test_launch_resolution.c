@@ -171,7 +171,33 @@ static int write_launch_environment_probe(void) {
                      input_profile ? input_profile : "<unset>",
                      novbpace ? novbpace : "<unset>") >= 0;
     if (fclose(f) != 0) ok = 0;
+    /* Subtest 20 sets NK_LAUNCH_TEST_HOLD so the probe stays alive long
+     * enough for nk_launch_stop to have a running child to stop. */
+    if (getenv("NK_LAUNCH_TEST_HOLD") != NULL) {
+#if defined(_WIN32) || defined(_WIN64)
+        Sleep(30000);
+#else
+        sleep(30);
+#endif
+    }
     return ok ? 0 : 4;
+}
+
+/* True once the process with this id has exited, waiting up to timeout_ms.
+ * nk_launch_stop closes the session's own handles, so the check goes through
+ * the OS by pid, as test_posix_process.c and test_win32_process.c do. */
+static bool test_child_exited(int pid, unsigned timeout_ms) {
+#if defined(_WIN32) || defined(_WIN64)
+    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)pid);
+    if (h == NULL) return GetLastError() == ERROR_INVALID_PARAMETER;
+    DWORD res = WaitForSingleObject(h, (DWORD)timeout_ms);
+    CloseHandle(h);
+    return res == WAIT_OBJECT_0;
+#else
+    /* The POSIX stop path reaps the child before it returns. */
+    (void)timeout_ms;
+    return kill((pid_t)pid, 0) != 0 && errno == ESRCH;
+#endif
 }
 
 static void write_valid_elf(const char *path, uint32_t base, uint32_t entry);
@@ -626,15 +652,24 @@ static void test_launch_stop_functionality(const char *test_executable, const ch
     char *old_report = capture_environment_value("NK_LAUNCH_TEST_REPORT_FILE", &had_report);
     set_environment_value("NK_LAUNCH_TEST_REPORT_FILE", report_path);
 
+    bool had_hold;
+    char *old_hold = capture_environment_value("NK_LAUNCH_TEST_HOLD", &had_hold);
+    set_environment_value("NK_LAUNCH_TEST_HOLD", "1");
+
     assert(nk_launch_prepare_session(&session, &game, root) == NK_OK);
     assert(nk_launch_start(&session) == NK_OK);
     assert(session.is_running == true);
     assert(nk_launch_is_running(&session) == true);
 
-    /* 4. Call nk_launch_stop on active session */
+    /* 4. Call nk_launch_stop on active session: the child must be alive
+     * before the stop and gone after it. */
+    int child_pid = session.process.process_id;
+    assert(child_pid > 0);
+    assert(!test_child_exited(child_pid, 0));
     nk_launch_stop(&session);
     assert(session.is_running == false);
     assert(nk_launch_is_running(&session) == false);
+    assert(test_child_exited(child_pid, 5000));
 
     /* 5. Repeated call to nk_launch_stop on stopped session (idempotency) */
     nk_launch_stop(&session);
@@ -642,6 +677,8 @@ static void test_launch_stop_functionality(const char *test_executable, const ch
 
     restore_environment_value("NK_LAUNCH_TEST_REPORT_FILE", old_report, had_report);
     free(old_report);
+    restore_environment_value("NK_LAUNCH_TEST_HOLD", old_hold, had_hold);
+    free(old_hold);
 
     remove(runtime_path);
     remove(image_path);
