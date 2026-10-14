@@ -438,6 +438,58 @@ class XBProbeTests(unittest.TestCase):
             self.assertEqual(main(["nonexistent.xb"]), 2)
         self.assertIn("error:", stderr.getvalue())
 
+    def test_rejects_truncated_entry_alignment_span(self) -> None:
+        raw = _make_archive([("a.bin", b"x", XBCompression.NONE)])
+        for trunc_len in (33, 34, 35):
+            with self.subTest(trunc_len=trunc_len), self.assertRaises(XBProbeError):
+                XBArchiveReader.from_bytes(raw[:trunc_len])
+
+    def test_handles_incremental_file_reads(self) -> None:
+        raw = _make_archive([("a.bin", b"payload", XBCompression.NONE)])
+        import tempfile
+
+        class ShortReadHandle:
+            def __init__(self, data: bytes, real_file):
+                self._data = data
+                self._pos = 0
+                self._real_file = real_file
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                self._real_file.close()
+
+            def fileno(self) -> int:
+                return self._real_file.fileno()
+
+            def read(self, size: int = -1) -> bytes:
+                if self._pos >= len(self._data):
+                    return b""
+                chunk_len = min(5, len(self._data) - self._pos)
+                if size >= 0:
+                    chunk_len = min(chunk_len, size)
+                chunk = self._data[self._pos : self._pos + chunk_len]
+                self._pos += chunk_len
+                return chunk
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sample.xb"
+            path.write_bytes(raw)
+
+            real_open = Path.open
+
+            def custom_open(self_path, *args, **kwargs):
+                if kwargs.get("mode") == "rb" or (args and args[0] == "rb"):
+                    f = real_open(self_path, *args, **kwargs)
+                    return ShortReadHandle(raw, f)
+                return real_open(self_path, *args, **kwargs)
+
+            Path.open = custom_open
+            try:
+                reader = XBArchiveReader(path)
+                self.assertEqual(reader.read_entry("a.bin"), b"payload")
+            finally:
+                Path.open = real_open
+
 
 if __name__ == "__main__":
     unittest.main()

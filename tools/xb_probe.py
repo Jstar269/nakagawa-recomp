@@ -409,7 +409,15 @@ class XBArchiveReader:
                     raise XBProbeError(f"cannot stat archive: {self.path}") from exc
                 if size > self.limits.max_archive_bytes:
                     raise XBProbeError("archive exceeds the configured byte limit")
-                data = handle.read(self.limits.max_archive_bytes + 1)
+                chunks = []
+                remaining = self.limits.max_archive_bytes + 1
+                while remaining > 0:
+                    chunk = handle.read(remaining)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                data = b"".join(chunks)
                 try:
                     final_size = os.fstat(handle.fileno()).st_size
                 except OSError as exc:
@@ -596,9 +604,10 @@ class XBArchiveReader:
             payload = self._data[offset:next_offset]
             if compression is XBCompression.NONE:
                 stored_size = expanded_size
-                if expanded_size > span_size:
+                min_span = (stored_size + 3) & ~3
+                if min_span > span_size:
                     raise XBProbeError("raw FST entry is truncated")
-                _check_zero_padding(payload[expanded_size:], "raw entry")
+                _check_zero_padding(payload[stored_size:], "raw entry")
             else:
                 if len(payload) < 8:
                     raise XBProbeError("compressed entry is missing its size header")
@@ -613,7 +622,8 @@ class XBArchiveReader:
                     stored_size = 8 + hdr_expanded
                 else:
                     stored_size = 8 + hdr_compressed
-                if stored_size > span_size:
+                min_span = (stored_size + 3) & ~3
+                if min_span > span_size:
                     raise XBProbeError("compressed entry exceeds its FST span")
                 _check_zero_padding(payload[stored_size:], "compressed entry")
             total_expanded += expanded_size
