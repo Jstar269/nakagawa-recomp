@@ -7231,7 +7231,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "83b26b9b2672206c36ca38552f9bad34f45a8b40ca716cd80e5646f28fee7486"
+      "sha256": "df1ddf370bf42198804e324379219303d1e4e43a5e5f2af71cfc26c4582bd286"
     },
     {
       "path": "tools/perf_attribution.py",
@@ -9144,7 +9144,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "de1981d7479d8699026935564e31c71f1bdb0baabd10b64e83d72e9743e51726"
+      "sha256": "754df1309adba7920ac10db6c09d250b55c484fbd6814e1c33e61acc9ac2dc7e"
     },
     {
       "path": "tools/test_parse_fuzz.py",

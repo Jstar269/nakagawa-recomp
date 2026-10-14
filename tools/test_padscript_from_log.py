@@ -61,6 +61,34 @@ class TestPadscriptFromLog(unittest.TestCase):
             "42 0x4000 12\n",
         )
 
+    def test_adjacent_identical_states_are_coalesced(self):
+        transitions = [
+            padscript.Transition(10, 0, 0x8),
+            padscript.Transition(20, 0x8, 0x8),
+            padscript.Transition(30, 0x8, 0),
+        ]
+        self.assertEqual(
+            padscript.pulses_from_transitions(transitions),
+            [padscript.Pulse(10, 0x8, 20)],
+        )
+
+    def test_duplicate_vcount_transitions_do_not_emit_zero_width_spans(self):
+        transitions = [
+            padscript.Transition(10, 0, 0x8),
+            padscript.Transition(10, 0x8, 0x10),
+            padscript.Transition(20, 0x10, 0),
+        ]
+        self.assertEqual(
+            padscript.pulses_from_transitions(transitions),
+            [padscript.Pulse(10, 0x10, 10)],
+        )
+
+    def test_out_of_range_mask_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "out of range"):
+            padscript.parse_transitions(
+                ["ctrl_latch: vcount=10 buttons 0x0000 -> 0x100000000\n"]
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
