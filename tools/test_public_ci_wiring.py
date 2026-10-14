@@ -550,6 +550,37 @@ class VfpuFuzzShardTests(unittest.TestCase):
                 self.assertNotIn("FUZZ_PROGRESS", run.stdout)
 
 
+class CodeqlWakeWiringTests(unittest.TestCase):
+    """The trusted CodeQL trigger names the wake workflow, and nothing else may share its name."""
+
+    WORKFLOWS = ROOT / ".github" / "workflows"
+
+    @staticmethod
+    def _top_name(text: str) -> str | None:
+        match = re.search(r"(?m)^name:[ \t]*(.+?)[ \t]*$", text)
+        return match.group(1) if match else None
+
+    def test_trigger_names_the_wake_workflow_exactly(self) -> None:
+        wake = (self.WORKFLOWS / "codeql-wake.yml").read_text(encoding="utf-8")
+        codeql = (self.WORKFLOWS / "codeql.yml").read_text(encoding="utf-8")
+        name = self._top_name(wake)
+        self.assertEqual(name, "CodeQL wake")
+        self.assertIn(f'workflows: ["{name}"]', codeql)
+
+    def test_no_other_workflow_shares_the_trigger_name(self) -> None:
+        name = self._top_name((self.WORKFLOWS / "codeql-wake.yml").read_text(encoding="utf-8"))
+        for path in sorted(self.WORKFLOWS.glob("*.y*ml")):
+            if path.name == "codeql-wake.yml":
+                continue
+            with self.subTest(workflow=path.name):
+                self.assertNotEqual(self._top_name(path.read_text(encoding="utf-8")), name)
+
+    def test_docs_describe_the_wake_trigger(self) -> None:
+        docs = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
+        self.assertIn("`.github/workflows/codeql-wake.yml`", docs)
+        self.assertNotIn("a `workflow_run` after `CI` completes", docs)
+
+
 class PublicExportJobTests(unittest.TestCase):
     """The public-export audit is its own job, and no hygiene command was dropped (#735 item 5).
 

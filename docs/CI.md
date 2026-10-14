@@ -401,9 +401,32 @@ local-only.
 The required `CodeQL` check is the code-scanning result GitHub reports after it
 processes the SARIF that `.github/workflows/codeql.yml` ("Trusted CodeQL")
 uploads; no upload means no check. GitHub runs that workflow from the default
-branch: a `workflow_run` after `CI` completes on a pull request (forks included),
-a push to `main`, a weekly schedule, or a manual dispatch naming a pull request.
-It never checks out or executes candidate files. For a pull request it reads the
+branch: a `workflow_run` after the `CodeQL wake` workflow
+(`.github/workflows/codeql-wake.yml`) completes on a pull request (forks
+included), a push to `main`, a weekly schedule, or a manual dispatch naming a
+pull request. The wake run starts with the pull request head, so the trusted
+analysis runs alongside CI rather than after the whole CI workflow finishes. CI
+itself is not a trigger: the analysis does not wait for the slowest CI job, and
+CI's result never reaches the trusted run.
+
+The wake run is a signal only. It is a `pull_request` run (candidate-controlled,
+like every pull request workflow), declares `permissions: {}`, checks nothing out,
+runs no repository code, and has no secrets for fork pull requests. Its result is
+never evidence: the trusted workflow resolves the exact pull request from GitHub's
+API and refuses any head that no longer matches. A pull request can decide whether
+its own wake run exists, and so cause an analysis of its own exact head or none at
+all (no `CodeQL` check, so the merge stays blocked). It cannot make the trusted run
+analyse another commit or repository, run its own code in that context, or supply
+the required check's evidence. Its trusted-run concurrency group is the head
+repository and branch, so a newer head of a branch cancels the analysis of the
+older one; repositories never share a group, so forks cannot cancel one another.
+The wake workflow's name is part of the trust path: `codeql.yml` names it in
+`workflows:`, and `tools/test_public_ci_wiring.py` pins that the two agree.
+
+A pull request whose head predates `codeql-wake.yml` has no wake run, so it
+receives no `CodeQL` check until it merges `main` (which carries the wake workflow).
+
+The trusted workflow never checks out or executes candidate files. For a pull request it reads the
 exact merge tree as blobs and binds the upload to the merge ref; for a push or
 schedule it scans the `main` commit. It analyzes `actions`, `c-cpp` and `python`
 without uploading partial results and uploads all three in one SARIF. Each run's

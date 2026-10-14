@@ -150,7 +150,19 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "187e20e50f79626e712511817e7bb4a2e2272989fda1f701289eb03820ce1ff4"
+      "sha256": "fe270262a565cfc37fd0304dd79c983a7d4756d11219687c8693b6be63b9773a"
+    },
+    {
+      "path": ".github/workflows/codeql-wake.yml",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "codeql-wake-workflow-2026-10-14",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "f4ccfca2cd89542e9ac7087bc3c106660e136a55d9ab1500900836eee0151478"
     },
     {
       "path": ".github/workflows/codeql.yml",
@@ -162,7 +174,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6f8b2cb18595baac0574ff5fc58161dc7b191b8931ff817d5891c22c485ed600"
+      "sha256": "22acc5461cefeb7e20dd12095d9b22e3c73a7f3a729bf18085dd6871bdf79411"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -691,7 +703,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "6602982390936ab3946b7a8a6bf17d2837cbdfc86a586a50a8e98fa176c34987"
+      "sha256": "5ab25685a2fb239a760ca7ccba8fa10c928d5983e23977689e049d05ef1f6fbf"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1081,7 +1093,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5235c879e0cc7a183a677e485a0354016fdc05fefc6cdfbd45969d548fa93dde"
+      "sha256": "6dd44b56bcb7f1a3c6361a7de721b2a03b1a5b179c236b2b01f7d855e128b682"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -5680,7 +5692,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e756f4d2e611e4e147ad44ff3fcc2ced7b2c5e45a1771708649840cf3b40dcbe"
+      "sha256": "44e2e6ae2a675d1a0d10765c3f93de85b53df14ad44a3d0daf978ef5700f5dc2"
     },
     {
       "path": "src/rt/vfpu_interp.c",
@@ -6470,7 +6482,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2c17569cda5ea5049ab2739522c9ab088c4713f9fe0ad240183eac122c66b769"
+      "sha256": "72572a28f3a3d33e39df0aca51cc6065089965af7a0b31a0815b1071bf17a3ae"
     },
     {
       "path": "tools/evidence_model.py",
@@ -7954,7 +7966,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "96daeaa2a4aa0b51610159fae64d7b6025d7c48c9a453258519f6f3497ffb6b5"
+      "sha256": "0145a4cf6fda6d1a01e515264b93e8a94fe776e0536daaa0e1f0490817d88085"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -8375,7 +8387,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7031ae925a4c74cfec03e2b271b50eca87d4d075da8c004f50906ae8b5c542f0"
+      "sha256": "90a78c9dec489e39bd21642996cb3031208d15bbfdcc6dedeb149e9f25e1e277"
     },
     {
       "path": "tools/test_evf_c.py",
@@ -9600,7 +9612,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "28791c23d6b6b4a0636a6c1787c92006e0d61c72f6a4ae28435e5494ca9164fc"
+      "sha256": "9d0c5522bb2a704f54dac9c27b426695914c543eac70f303385b90670b227dba"
     },
     {
       "path": "tools/test_public_export.py",
@@ -10141,7 +10153,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dabbeaa459eed0eb5f0ddc146e39811760b2df61fd0069f47d2dcb5f7073d0e0"
+      "sha256": "bd4856334d5c7e70f75b61a3f0af03234c66722ac687222d221230ab3565004b"
     },
     {
       "path": "tools/test_vfpu_domain_boundary.py",
