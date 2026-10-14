@@ -1704,6 +1704,30 @@ static bool nk_iso_stage_extent_valid(uint64_t file_size, uint32_t lba,
     return offset <= file_size && (uint64_t)size <= file_size - offset;
 }
 
+/* Windows device names (the set tools/extract_xb.py refuses). Win32 opens "NUL",
+ * "COM1.BIN" or "con.txt" as a device whatever directory precedes it, so a disc member
+ * with such a base name would be discarded or written to a device while staging
+ * reported success. The rule is applied on every host, so a disc stages identically
+ * everywhere. A trailing '.' is kept: ISO9660 records a file without an extension as
+ * "NAME.;1". */
+static bool nk_iso_stage_device_name(const uint8_t *name, size_t name_size) {
+    static const char *const devices[] = {
+        "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$",
+        "COM0", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    };
+    size_t base = 0;
+    while (base < name_size && name[base] != '.') base++;
+    for (size_t i = 0; i < sizeof(devices) / sizeof(devices[0]); i++) {
+        size_t length = strlen(devices[i]);
+        if (length != base) continue;
+        size_t j = 0;
+        while (j < length && toupper(name[j]) == (unsigned char)devices[i][j]) j++;
+        if (j == length) return true;
+    }
+    return false;
+}
+
 static bool nk_iso_stage_component_valid(const uint8_t *name, size_t name_size) {
     if (!name || name_size == 0) return false;
     if ((name_size == 1 && name[0] == '.') ||
@@ -1715,7 +1739,7 @@ static bool nk_iso_stage_component_valid(const uint8_t *name, size_t name_size) 
             value == ':' || value == '"' || value == '|' || value == '?' ||
             value == '*') return false;
     }
-    return true;
+    return !nk_iso_stage_device_name(name, name_size);
 }
 
 static bool nk_iso_stage_directory_records(FILE *iso, uint64_t file_size,
