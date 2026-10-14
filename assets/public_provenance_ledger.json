@@ -153,6 +153,18 @@
       "sha256": "fe270262a565cfc37fd0304dd79c983a7d4756d11219687c8693b6be63b9773a"
     },
     {
+      "path": ".github/workflows/codeql-wake.yml",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "codeql-wake-workflow-2026-10-14",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "f4ccfca2cd89542e9ac7087bc3c106660e136a55d9ab1500900836eee0151478"
+    },
+    {
       "path": ".github/workflows/codeql.yml",
       "classification": "project_authored_attested",
       "evidence": {
@@ -162,7 +174,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6f8b2cb18595baac0574ff5fc58161dc7b191b8931ff817d5891c22c485ed600"
+      "sha256": "22acc5461cefeb7e20dd12095d9b22e3c73a7f3a729bf18085dd6871bdf79411"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -691,7 +703,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "6602982390936ab3946b7a8a6bf17d2837cbdfc86a586a50a8e98fa176c34987"
+      "sha256": "5ab25685a2fb239a760ca7ccba8fa10c928d5983e23977689e049d05ef1f6fbf"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1081,7 +1093,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "90251daa817479a60b1ac90329166029d1af4999b8d8867ac2c94529293c6d89"
+      "sha256": "6dd44b56bcb7f1a3c6361a7de721b2a03b1a5b179c236b2b01f7d855e128b682"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -7954,7 +7966,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "96daeaa2a4aa0b51610159fae64d7b6025d7c48c9a453258519f6f3497ffb6b5"
+      "sha256": "0145a4cf6fda6d1a01e515264b93e8a94fe776e0536daaa0e1f0490817d88085"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -9600,7 +9612,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "715d65badb8fead1a4cda66460b91e04e70636db66d59fe79681d5f3f81b8d93"
+      "sha256": "9d0c5522bb2a704f54dac9c27b426695914c543eac70f303385b90670b227dba"
     },
     {
       "path": "tools/test_public_export.py",
