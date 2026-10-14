@@ -1238,10 +1238,13 @@ def _stage_runtime_assets(package_dir: Path) -> None:
         # The SDL3_ttf readable-font closure (#421), through the same mechanical
         # step the Makefile's player target uses. The prerequisite installer
         # (#324) does not provide it yet, so a package without it still builds:
-        # the player then draws with its bitmap fallback and logs why.
+        # the player then draws with its bitmap fallback and logs why. A staging
+        # collision is not that case: a damaged staging target refuses the build.
         stager = _runtime_dll_stager()
         try:
             stager.stage_runtime_dlls(package_dir, roots=("SDL3_ttf.dll",), notices=False)
+        except stager.StagingCollisionError as exc:
+            raise PackageBuildError(str(exc)) from exc
         except stager.StageError as exc:
             print(f"warning: the readable UI font runtime was not staged: {exc}. "
                   "The player will use its bitmap fallback font.", file=sys.stderr)

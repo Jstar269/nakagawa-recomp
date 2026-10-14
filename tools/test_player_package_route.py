@@ -1142,14 +1142,17 @@ class TestPlayerPackageRoute(unittest.TestCase):
         (package_dir / "package.json").write_text('{"valid": true}')
         (package_dir / "display_smoke.exe").write_bytes(b"previously valid package binary")
 
-        # 2. Mock subprocess.run for compilation and inject a file-vs-directory collision in _stage_runtime_assets
-        mock_completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-        with patch("subprocess.run", return_value=mock_completed), patch.object(
-            nk_cli, "_stage_runtime_assets",
-            side_effect=nk_cli.PackageBuildError(
-                "VFPU asset staging collision: assets is a file, expecting a directory."
-            )
-        ):
+        # 2. Stub only the compiler: the planner's output holds a regular file where
+        # the package's assets directory belongs. The real _stage_runtime_assets must
+        # then refuse it, so no mock stands between the build and the collision check.
+        def compile_with_a_file_named_assets(command, **kwargs):
+            if "--output-dir" in command:
+                output = Path(command[command.index("--output-dir") + 1])
+                output.mkdir(parents=True, exist_ok=True)
+                (output / "assets").write_bytes(b"not a directory")
+            return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=compile_with_a_file_named_assets):
             args = argparse.Namespace(
                 disc_id=DISC_ID,
                 user_data_root=user_root,
@@ -1358,7 +1361,7 @@ class TestRuntimeDllStaging(unittest.TestCase):
             (bin_dir / "SDL3.dll").write_bytes(b"MZ\x00\x00synthetic-sdl3.dll")
             imports_of, is_system = self.fake_resolver()
 
-            with self.assertRaises(stage_runtime_dlls.StageError) as ctx:
+            with self.assertRaises(stage_runtime_dlls.StagingCollisionError) as ctx:
                 stage_runtime_dlls.stage_runtime_dlls(
                     package_dir,
                     roots=["SDL3.dll"],
@@ -1370,6 +1373,50 @@ class TestRuntimeDllStaging(unittest.TestCase):
                 )
             self.assertIn("staging collision", str(ctx.exception).lower())
             self.assertIn("sdl3.dll", str(ctx.exception).lower())
+
+    def test_closure_dll_collision_raises_staging_collision(self) -> None:
+        import stage_runtime_dlls
+
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "package"
+            package_dir.mkdir()
+            (package_dir / "libfreetype-6.dll").mkdir()  # a closure member, as a directory
+            bin_dir = Path(tmp) / "toolchain-bin"
+            self.write_fake_dlls(bin_dir)
+            imports_of, is_system = self.fake_resolver()
+
+            with self.assertRaises(stage_runtime_dlls.StagingCollisionError) as ctx:
+                stage_runtime_dlls.stage_runtime_dlls(
+                    package_dir,
+                    roots=["SDL3_ttf.dll"],
+                    search_dirs=[bin_dir],
+                    env={},
+                    imports_of=imports_of,
+                    is_system=is_system,
+                    notices=False,
+                )
+            self.assertIn("libfreetype-6.dll staging collision", str(ctx.exception))
+
+    def test_runtime_package_refuses_a_font_dll_collision_instead_of_warning(self) -> None:
+        """A directory named SDL3_ttf.dll is a staging collision, not an absent optional
+        font: the real package staging step refuses the build with a named error."""
+        with tempfile.TemporaryDirectory(prefix="nk-ttf-collision-") as temporary:
+            root = Path(temporary)
+            provider = root / "ucrt64"
+            (provider / "bin").mkdir(parents=True)
+            for name in ("SDL3.dll", "libiconv-2.dll", "vulkan-1.dll"):
+                (provider / "bin" / name).write_bytes(b"source-owned synthetic test payload")
+            package = root / "package"
+            (package / "SDL3_ttf.dll").mkdir(parents=True)
+            # Only the provider is searched, so a host whose toolchain has no SDL3_ttf
+            # cannot turn the collision into an ordinary "not staged" warning.
+            with patch.dict(os.environ, {
+                "SDL3_DIR": str(provider), "SDL3_DLL": "", "VULKAN_SDK": str(provider),
+            }), patch("nk_cli._windows_host", return_value=True), patch.object(
+                nk_cli._runtime_dlls, "default_search_dirs", return_value=[provider / "bin"],
+            ):
+                with self.assertRaisesRegex(nk_cli.PackageBuildError, "SDL3_ttf.dll staging collision"):
+                    nk_cli._stage_runtime_assets(package)
 
 
 if __name__ == "__main__":

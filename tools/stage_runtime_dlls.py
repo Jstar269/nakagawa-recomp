@@ -71,6 +71,14 @@ class StageError(RuntimeError):
     """A runtime DLL that must be staged is missing or has no licence record."""
 
 
+class StagingCollisionError(StageError):
+    """A runtime DLL's staging name is already a directory.
+
+    Unlike a missing optional font closure, this damages the staging target, so
+    the package build must refuse rather than fall back to the bitmap font.
+    """
+
+
 def default_search_dirs(env: Mapping[str, str] | None = None) -> list[Path]:
     """Directories searched for runtime DLLs: the toolchain bin directory.
 
@@ -219,7 +227,7 @@ def stage_runtime_dlls(
         if existing.is_file():
             root_dll = existing
         elif existing.exists() and not existing.is_file():
-            raise StageError(
+            raise StagingCollisionError(
                 f"{name} staging collision: {existing.name} is a directory; "
                 f"remove or move the directory to stage the runtime DLL"
             )
@@ -236,7 +244,7 @@ def stage_runtime_dlls(
         for source in closure:
             destination = target_dir / source.name
             if destination.exists() and not destination.is_file():
-                raise StageError(
+                raise StagingCollisionError(
                     f"{source.name} staging collision: {destination.name} is a directory; "
                     f"remove or move the directory to stage the runtime DLL"
                 )
