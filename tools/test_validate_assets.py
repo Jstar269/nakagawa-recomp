@@ -560,7 +560,10 @@ class GimPaletteUnitTests(unittest.TestCase):
             ok, msg = va.check_gim_palette(str(bad_path))
             self.assertFalse(ok)
             self.assertIn("Failed to read file", msg)
-            self.assertNotIn(str(bad_path), msg)
+            # str(OSError) repr-escapes the path on Windows (doubled backslashes), so a plain
+            # str(bad_path) check cannot see that leak. The file name shows in both forms.
+            self.assertNotIn(bad_path.name, msg)
+            self.assertNotIn(str(bad_path).replace("\\", "\\\\"), msg)
 
     def test_hostile_block_headers_fail_with_block_context(self) -> None:
         cases = {
