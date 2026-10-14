@@ -56,9 +56,9 @@ class InventoryError(Exception):
     """An inventory_map.json could not be read, parsed, or fails the schema."""
 
 
-def compute_md5(fpath: str) -> str:
-    """Compute MD5 hash of a file."""
-    hasher = hashlib.md5()
+def compute_sha256(fpath: str) -> str:
+    """Compute SHA-256 hash of a file."""
+    hasher = hashlib.sha256()
     with open(fpath, "rb") as f:
         while True:
             chunk = f.read(65536)
@@ -450,7 +450,7 @@ def main():
                     continue
 
                 try:
-                    h = compute_md5(full_path)
+                    h = compute_sha256(full_path)
                 except OSError as e:
                     mismatches.append((rel_path, f"Unreadable asset: {e}"))
                     continue

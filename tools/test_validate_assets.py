@@ -22,6 +22,7 @@ diagnostics, so a visible error can never coexist with exit 0.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -734,6 +735,24 @@ class ExitCodeContractTests(ValidatorCliBase):
         proc = _run_validator(self.tree, self.base / "absent.json")
         self.assertEqual(proc.returncode, 2)
         self.assertIn("not found", _combined(proc))
+
+
+class ComputeSha256Tests(unittest.TestCase):
+    def test_compute_sha256_returns_expected_hash(self) -> None:
+        data = b"hello world"
+        expected = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            fpath = Path(tmp) / "test.bin"
+            fpath.write_bytes(data)
+            self.assertEqual(va.compute_sha256(str(fpath)), expected)
+
+    def test_compute_sha256_large_file_chunking(self) -> None:
+        data = b"x" * 100000
+        expected = hashlib.sha256(data).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            fpath = Path(tmp) / "large.bin"
+            fpath.write_bytes(data)
+            self.assertEqual(va.compute_sha256(str(fpath)), expected)
 
 
 if __name__ == "__main__":

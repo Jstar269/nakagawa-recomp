@@ -10105,7 +10105,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1d58e21d367b02668e80296feaf2d6962432eef0b25091ae141da03f58b079f9"
+      "sha256": "0c834842d369b285b8b03c587ffdc056c0b579f98a314526fc19a728c95c0096"
     },
     {
       "path": "tools/test_vblank_ledger.py",
@@ -10466,7 +10466,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a416e68b4ba4c1317ccb5dbf686c99d8d055b9ea93f7639c6f9e11e44268b886"
+      "sha256": "6d068d42bd9df3936ee34cfb22d07992cb6bee94785623ca4e590980f7949434"
     },
     {
       "path": "tools/vblank_ledger.py",
