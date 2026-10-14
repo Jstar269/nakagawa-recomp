@@ -6832,7 +6832,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e402ed73ade1a32f58a6d972f5fdd8f21a59f6dc4e401067e47c62808c5a09cf"
+      "sha256": "c207cd4fe912bf1ebcf4fbbfad46601574fa09effcfcf640771895838081a40d"
     },
     {
       "path": "tools/import_stub_census.py",
@@ -7822,7 +7822,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fdc0702f783c8a4301da5d9a304472911c0bdd91ef0bad842740620dcb4dc314"
+      "sha256": "f124ea9ddd90fdf52d9aed97d06d88f974f969145df7d471e78fb8d05e0a7d76"
     },
     {
       "path": "tools/test_analyze_tailcall.py",
