@@ -198,11 +198,12 @@ class TestAssetIndexSelftestC(unittest.TestCase):
                             "driver.c must call sr_host_data_prepare()")
         gui_idx = driver.find("gui_init(SR_APP_TITLE)")
         sched_idx = driver.find("sched_init(&s)")
-        fn_idx = driver.find("fn(&s);")
+        fn_idx = driver.find("sr_call_body(fn, &s);")
         boot_begin = driver.find("BOOT_EVENT phase=index_prepare_begin")
         self.assertLess(boot_begin, prepare_idx,
                         "preparation is announced before it runs")
-        for name, idx in (("gui_init", gui_idx), ("sched_init", sched_idx), ("fn(&s)", fn_idx)):
+        for name, idx in (("gui_init", gui_idx), ("sched_init", sched_idx),
+                          ("sr_call_body(fn, &s)", fn_idx)):
             self.assertNotEqual(idx, -1, f"driver.c anchor {name} missing")
             self.assertLess(prepare_idx, idx,
                             f"preparation must precede {name} (guest execution seam)")
