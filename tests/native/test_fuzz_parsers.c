@@ -1977,6 +1977,37 @@ static void test_fuzz_decrypt_boundary(unsigned iters) {
         free(out);
     }
 
+    /* Declared-extent checks in validate_psp: the probe must refuse each
+     * malformed segment table before any decrypt work. The aggregate case
+     * passes the per-segment cap but overflows the 256 MiB total. */
+    {
+        static const struct {
+            uint8_t nseg;
+            uint32_t seg0;
+            uint32_t seg1;
+            const char *want;
+        } cases[] = {
+            {2u, 0x0C000000u, 0x0C000000u, "overflow aggregate extent"},
+            {2u, 0xFFFFFFFFu, 0x100u, "declares an impossible size"},
+            {0u, 0x100u, 0x100u, "impossible segment count"},
+        };
+        for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+            uint8_t *bad = (uint8_t *)malloc(sealed_len);
+            NkPspCtx ctx;
+            NkContainerInfo info;
+            assert(bad != NULL);
+            memcpy(bad, sealed, sealed_len);
+            bad[0x27] = cases[c].nseg;
+            put32le(bad + 0x54, cases[c].seg0);
+            put32le(bad + 0x58, cases[c].seg1);
+            nk_psp_ctx_init(&ctx, ks);
+            assert(nk_container_probe(&ctx, bad, sealed_len, &info) == NK_PSP_ERR_FORMAT);
+            assert(info.kind == NK_CTR_UNKNOWN);
+            assert(strstr(ctx.message, cases[c].want) != NULL);
+            free(bad);
+        }
+    }
+
     uint8_t wrapped[1200];
     uint8_t *mutated;
     unsigned accepted = 0;

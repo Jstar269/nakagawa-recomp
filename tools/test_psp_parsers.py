@@ -657,5 +657,20 @@ class TestPspContainerExtentValidation(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid|overflow|out of bounds|segment size"):
             prxload.read_psp_segment_sizes(header, 2)
 
+    def test_psp_header_aggregate_extent_overflow(self) -> None:
+        # Each 192 MiB segment passes the per-segment cap; together they
+        # exceed the 256 MiB aggregate, so only the aggregate check refuses.
+        header = bytearray(0x80)
+        header[0:4] = b"~PSP"
+        header[0x27] = 2  # 2 segments
+        struct.pack_into("<I", header, 0x38, 0x100)
+        struct.pack_into("<I", header, 0x54, 0x0C000000)
+        struct.pack_into("<I", header, 0x58, 0x0C000000)
+
+        with self.assertRaisesRegex(
+            ValueError, r"segment 1 size 0xc000000 is invalid or causes extent overflow"
+        ):
+            prxload.read_psp_segment_sizes(bytes(header), 2)
+
 if __name__ == "__main__":
     unittest.main()

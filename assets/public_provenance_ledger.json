@@ -5921,7 +5921,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5b948cdfe90d8de243824d1baf7fc97652f84810488f575e15283a594b0417c7"
+      "sha256": "1c808309a551d013b6978a2edee04b1687a866a84bc27c458cc197ed7c76e7dc"
     },
     {
       "path": "tests/native/test_input_profile.c",
@@ -9516,7 +9516,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c33ebd07ce923c20d611908299163c4fc9fd23a72eba4d62128d410181977ea1"
+      "sha256": "47c9e5e23707c7109ce34835304cd7d229767b6513be57ccf45b640e4987936d"
     },
     {
       "path": "tools/test_psp_readiness.py",
