@@ -1704,6 +1704,39 @@ static bool nk_iso_stage_extent_valid(uint64_t file_size, uint32_t lba,
     return offset <= file_size && (uint64_t)size <= file_size - offset;
 }
 
+/* Windows device base names: the portability rule tools/extract_xb.py applies to archive
+ * members. Windows file-naming rules reserve these names, compared case-insensitively before
+ * the first '.' and ignoring spaces just before it, so a host file under one is not portable;
+ * on Windows 11 build 26300 (the build measured) a write to "NUL", "NUL.", "NUL " or "NUL  "
+ * even succeeds while storing nothing. The rule applies on every host so a disc stages the same
+ * way everywhere. Only names
+ * the stager would turn into host entries are checked: staged members, files and directories
+ * alike, and configured content roots. A device-named record elsewhere on the disc is never
+ * written and does not refuse the disc. */
+static bool nk_iso_stage_device_name(const uint8_t *name, size_t name_size) {
+    static const char *const devices[] = {
+        "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$",
+        "COM0", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    };
+    size_t base = 0;
+    while (base < name_size && name[base] != '.') base++;
+    while (base > 0 && name[base - 1] == ' ') base--;
+    for (size_t i = 0; i < sizeof(devices) / sizeof(devices[0]); i++) {
+        size_t length = strlen(devices[i]);
+        if (length != base) continue;
+        size_t j = 0;
+        while (j < length) {
+            uint8_t c = name[j];
+            if (c >= 'a' && c <= 'z') c = (uint8_t)(c - 'a' + 'A');   /* ASCII fold only */
+            if (c != (uint8_t)devices[i][j]) break;
+            j++;
+        }
+        if (j == length) return true;
+    }
+    return false;
+}
+
 static bool nk_iso_stage_component_valid(const uint8_t *name, size_t name_size) {
     if (!name || name_size == 0) return false;
     if ((name_size == 1 && name[0] == '.') ||
@@ -1844,7 +1877,8 @@ static bool nk_iso_stage_root_path_valid(const char *path) {
         if (*p == '/' || *p == '\0') {
             size_t length = (size_t)(p - part);
             if (length == 0u || length >= 256u ||
-                !nk_iso_stage_component_valid((const uint8_t *)part, length)) return false;
+                !nk_iso_stage_component_valid((const uint8_t *)part, length) ||
+                nk_iso_stage_device_name((const uint8_t *)part, length)) return false;
             for (size_t i = 0; i < length; i++) {
                 if ((unsigned char)part[i] >= 0x80u) return false;
             }
@@ -1938,14 +1972,25 @@ static bool nk_iso_stage_walk_callback(const NkIsoDirectoryEntry *entry,
                                        void *userdata) {
     NkIsoWalkContext *walk = (NkIsoWalkContext *)userdata;
     if (!walk || !walk->stage || !entry) return false;
+    /* Every staged member becomes a host file or directory under its disc name. The counting
+     * pass walks the same records first, so a device-named member refuses the disc before
+     * anything is written. */
+    if (nk_iso_stage_device_name((const uint8_t *)entry->name, strlen(entry->name))) return false;
     char child_path[NK_ISO_STAGE_MAX_PATH];
     int written = walk->relative_prefix[0]
         ? snprintf(child_path, sizeof(child_path), "%s/%s",
                    walk->relative_prefix, entry->name)
         : snprintf(child_path, sizeof(child_path), "%s", entry->name);
     if (written < 0 || (size_t)written >= sizeof(child_path)) return false;
-    if (!walk->relative_prefix[0] && !walk->count_only &&
-        strcasecmp(entry->name, "EBOOT.BIN") == 0) return false;
+    /* Under the "." root a top-level member lands beside the staged EBOOT.BIN. Win32 drops
+     * trailing dots and spaces, so "EBOOT.BIN." and "eboot.bin " name that file too; refuse
+     * them in the counting pass, before EBOOT.BIN or anything else is written. */
+    if (!walk->relative_prefix[0]) {
+        size_t length = strlen(entry->name);
+        while (length > 0 && (entry->name[length - 1] == '.' || entry->name[length - 1] == ' '))
+            length--;
+        if (length == 9u && strncasecmp(entry->name, "EBOOT.BIN", 9u) == 0) return false;
+    }
 
     if (entry->is_directory) {
         NkIsoWalkContext child = *walk;
