@@ -279,7 +279,8 @@ class CiPathAdversarialTests(unittest.TestCase):
                 self.assertEqual(result["docs_only"], "false")
 
     def test_workflow_and_classifier_changes_force_full_validation(self) -> None:
-        for path in (".github/workflows/ci.yml", "tools/ci_paths.py", "tools/test_ci_paths.py",
+        for path in (".github/workflows/ci.yml", ".github/workflows/codeql-wake.yml",
+                     "tools/ci_paths.py", "tools/test_ci_paths.py",
                      "tools/ci_test_shards.py", "tools/test_ci_test_shards.py"):
             with self.subTest(path=path):
                 result = classify([path])
@@ -1017,6 +1018,45 @@ class CodeqlWorkflowCategoryTests(unittest.TestCase):
         with self.assertRaises(ValueError) as cm:
             combine_sarif_runs(slashless_input)
         self.assertIn("would be stored under SARIF category ''", str(cm.exception))
+
+    def test_codeql_starts_from_the_wake_workflow_and_not_from_ci(self) -> None:
+        """The trusted analysis starts at push time (codeql-wake.yml), not after all of CI."""
+        workflows = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+        codeql = (workflows / "codeql.yml").read_text(encoding="utf-8")
+        self.assertIn('workflows: ["CodeQL wake"]', codeql)
+        self.assertNotIn("workflows: [CI]", codeql)
+        self.assertIn("types: [completed]", codeql)
+        # The prepare job still refuses any trigger that is not a pull request run.
+        self.assertIn("github.event.workflow_run.event == 'pull_request'", codeql)
+        self.assertIn('if (!run || run.event !== "pull_request") {', codeql)
+
+    def test_codeql_concurrency_groups_by_head_repository_and_branch(self) -> None:
+        """Superseded heads of a branch are cancelled; forks never share a group."""
+        codeql = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "codeql.yml").read_text(
+            encoding="utf-8")
+        self.assertIn("group: codeql-${{ github.event.workflow_run.head_repository.full_name || github.repository }}/", codeql)
+        self.assertIn("github.event.workflow_run.head_branch", codeql)
+        self.assertIn("cancel-in-progress: true", codeql)
+        # The per-run group it replaced would let every superseded head run to a refused upload.
+        self.assertNotIn("github.event.workflow_run.id", codeql)
+
+    def test_codeql_wake_workflow_is_signal_only(self) -> None:
+        """codeql-wake.yml emits a signal: no checkout, no secrets, no permissions, no repo code."""
+        wake = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "codeql-wake.yml").read_text(
+            encoding="utf-8")
+        self.assertIn("name: CodeQL wake\n", wake)
+        self.assertIn("on:\n  pull_request:\n    types: [opened, synchronize, reopened]\n", wake)
+        self.assertIn("permissions: {}\n", wake)
+        code = "\n".join(line for line in wake.splitlines() if not line.lstrip().startswith("#"))
+        for forbidden in ("uses:", "actions/checkout", "pull_request_target", "workflow_run", "secrets.",
+                          "contents:", "security-events"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, code)
+        # The run step interpolates nothing from the event or from the repository.
+        run_lines = [line for line in wake.splitlines() if line.lstrip().startswith("run:")]
+        self.assertTrue(run_lines)
+        for line in run_lines:
+            self.assertNotIn("${{", line)
 
     def test_codeql_workflow_upload_step_guards_duplicate_categories(self) -> None:
         """Assert upload step in codeql.yml requires distinct automationDetails.id categories."""
