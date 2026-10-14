@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -380,7 +382,9 @@ _WINDOWS_SERIAL_GATES = {
     "Build and run strbuf checked-append formatting selftest": "CC=gcc VULKAN_SDK=/ucrt64 strbuf-selftest",
     "Build and run HLE thread selftest": "CC=gcc VULKAN_SDK=/ucrt64 hle-thread-selftest",
     "Build and run flash0 font device selftest": "PYTHONPATH=tools python -m unittest -v test_flash0_font",
-    "Build and run synthetic VFPU fuzzer": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
+    "Build and run synthetic VFPU fuzzer (shard 0 of 2)": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
+    "Build and run synthetic VFPU fuzzer (shard 1 of 2)": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
+    "Prove the fuzz shards cover every case exactly once": "NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe python -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests",
 }
 # Steps every part repeats: the toolchain setup and the runtime-object compile gate.
 _WINDOWS_EVERY_PART = (
@@ -449,6 +453,101 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
             _ci_step_index(self.block, "Build and run full production pipeline smoke"),
             _ci_step_index(self.block, "Stage and run production smoke outside its build directory"),
         )
+
+
+class VfpuFuzzShardTests(unittest.TestCase):
+    """The synthetic VFPU fuzzer's two shards admit every case exactly once.
+
+    The source and workflow checks run everywhere. The binary checks run only when
+    NK_VFPU_FUZZ_BIN names a built vfpu_fuzz binary (the Windows fuzz-0 part builds it and
+    runs them); elsewhere they report SKIP, never a silent pass.
+    """
+
+    SOURCE = ROOT / "src" / "rt" / "vfpu_fuzz.c"
+    PROGRESS = re.compile(r"^FUZZ_PROGRESS case=(\d+) ", re.MULTILINE)
+    SUMMARY = re.compile(r"^vfpu_fuzz: (\d+)/(\d+) distinct words tested", re.MULTILINE)
+    MALFORMED = (
+        "", "1", "0/0", "2/2", "3/2", "-1/2", "0/-2", "a/2", "1/b", "0/2/3", " 0/2", "0/ 2",
+        "+0/2", "0/1234567890", "99999999999/2",
+        "5000/5001",  # well-formed, but admits no case of the corpus
+    )
+
+    def test_source_keeps_the_default_gate_and_refuses_bad_shards(self) -> None:
+        source = self.SOURCE.read_text(encoding="utf-8")
+        self.assertIn('#define FUZZ_SHARD_ENV "FUZZ_CASE_SHARD"', source)
+        self.assertIn("if (shard_spec != NULL && !fuzz_parse_shard(shard_spec, &shard_k, &shard_n)) {", source)
+        self.assertIn("return *n >= 1u && *k < *n;", source)
+        self.assertIn("if (admitted == 0) {", source)
+        self.assertIn("if ((unsigned)c % shard_n != shard_k) continue;", source)
+        self.assertIn("return (bad_cases || skipped || tested != admitted) ? 1 : 0;", source)
+
+    def test_ci_runs_one_shard_per_fuzz_part(self) -> None:
+        block = _ci_job_blocks()["windows_runtime"]
+        for part, index in (("fuzz-0", 0), ("fuzz-1", 1)):
+            with self.subTest(part=part):
+                lines = _ci_step(block, f"Build and run synthetic VFPU fuzzer (shard {index} of 2)")
+                self.assertIsNotNone(lines, f"no fuzz step for {part}")
+                text = "\n".join(lines)
+                self.assertIn(f"if: matrix.part == '{part}'", text)
+                self.assertIn(f'FUZZ_CASE_SHARD: "{index}/2"', text)
+        proof = _ci_step(block, "Prove the fuzz shards cover every case exactly once")
+        self.assertIsNotNone(proof, "the shard proof step is missing")
+        self.assertIn("if: matrix.part == 'fuzz-0'", "\n".join(proof))
+
+    def test_ci_required_aggregates_every_windows_part(self) -> None:
+        required = "\n".join(_ci_job_blocks()["ci_required"])
+        self.assertIn("needs: [classify, hygiene, public_export, markdown, python_tools, native_tools, windows_runtime, main_smoke]", required)
+        self.assertIn("WINDOWS_RESULT: ${{ needs.windows_runtime.result }}", required)
+        self.assertIn("RUN_WINDOWS: ${{ needs.classify.outputs.run_windows }}", required)
+
+    def _fuzz(self, binary: Path, shard: str | None) -> subprocess.CompletedProcess[str]:
+        env = {key: value for key, value in os.environ.items() if key not in ("FUZZ_CASE_SHARD", "FUZZ_SEED")}
+        env["FUZZ_TRIALS"] = "1"  # case selection does not depend on the trial count
+        if shard is not None:
+            env["FUZZ_CASE_SHARD"] = shard
+        return subprocess.run([str(binary)], env=env, capture_output=True, text=True, timeout=900, check=False)
+
+    @unittest.skipUnless(os.environ.get("NK_VFPU_FUZZ_BIN"),
+                         "NK_VFPU_FUZZ_BIN does not name a built vfpu_fuzz binary")
+    def test_binary_shards_cover_every_case_exactly_once(self) -> None:
+        binary = Path(os.environ["NK_VFPU_FUZZ_BIN"]).resolve()
+        self.assertTrue(binary.is_file(), f"{binary} is not built")
+        full = self._fuzz(binary, None)
+        self.assertIn(full.returncode, (0, 1), full.stderr[-2000:])
+        summary = self.SUMMARY.search(full.stdout)
+        self.assertIsNotNone(summary, "the default run printed no summary")
+        total = int(summary.group(2))
+        default_cases = sorted(int(case) for case in self.PROGRESS.findall(full.stdout))
+        self.assertEqual(default_cases, list(range(total)), "the default run did not test every case")
+        self.assertEqual(int(summary.group(1)), total)
+
+        covered: list[int] = []
+        for shard_index in (0, 1):
+            with self.subTest(shard=shard_index):
+                run = self._fuzz(binary, f"{shard_index}/2")
+                self.assertIn(run.returncode, (0, 1), run.stderr[-2000:])
+                shard = self.SUMMARY.search(run.stdout)
+                self.assertIsNotNone(shard, "the shard run printed no summary")
+                cases = [int(case) for case in self.PROGRESS.findall(run.stdout)]
+                self.assertEqual(int(shard.group(1)), len(cases), "a shard tested fewer cases than it printed")
+                self.assertEqual(int(shard.group(2)), len(cases), "a shard admitted a count it did not run")
+                self.assertTrue(all(case % 2 == shard_index for case in cases),
+                                "a shard ran a case it does not admit")
+                covered.extend(cases)
+        self.assertEqual(sorted(covered), default_cases,
+                         "the shards must together run every case exactly once")
+
+    @unittest.skipUnless(os.environ.get("NK_VFPU_FUZZ_BIN"),
+                         "NK_VFPU_FUZZ_BIN does not name a built vfpu_fuzz binary")
+    def test_binary_refuses_malformed_or_empty_shards_before_any_case(self) -> None:
+        binary = Path(os.environ["NK_VFPU_FUZZ_BIN"]).resolve()
+        self.assertTrue(binary.is_file(), f"{binary} is not built")
+        for spec in self.MALFORMED:
+            with self.subTest(spec=spec):
+                run = self._fuzz(binary, spec)
+                self.assertEqual(run.returncode, 2, run.stdout[-500:] + run.stderr[-500:])
+                self.assertIn("FUZZ_CASE_SHARD", run.stderr)
+                self.assertNotIn("FUZZ_PROGRESS", run.stdout)
 
 
 class PublicExportJobTests(unittest.TestCase):
