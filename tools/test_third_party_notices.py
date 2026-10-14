@@ -14,11 +14,13 @@ so adding a component without a notice is a failing test rather than a silent ga
 
 from __future__ import annotations
 
+import copy
 import hashlib
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
@@ -236,6 +238,34 @@ class TestNativePackageNoticesGate(unittest.TestCase):
                 self.assertEqual(ctx.exception.code, "PACKAGE_LICENSE_RECORD_MISSING")
                 self.assertIn("lacks a valid SPDX license identifier", str(ctx.exception))
 
+        # The linked-component and project-output gates read the native inventory, not
+        # the custom map. Each is killed only by corrupting its own record, so each gets
+        # its own subtests against a copy of the real inventory.
+        real_inventory = package_notices.load_component_inventory()
+        for bad_spdx in ("NOASSERTION", "UNKNOWN", "", None):
+            with self.subTest(gate="linked component", spdx_id=bad_spdx):
+                inventory = copy.deepcopy(real_inventory)
+                inventory["native"]["linked_components"][0]["spdx_id"] = bad_spdx
+                with patch.object(package_notices, "load_component_inventory", return_value=inventory):
+                    with self.assertRaises(PackageRouteError) as ctx:
+                        package_notices.generate_package_notices(self.pkg_dir, repo_root=ROOT)
+                self.assertEqual(ctx.exception.code, "PACKAGE_LICENSE_RECORD_MISSING")
+                self.assertIn("linked component", str(ctx.exception))
+                self.assertIn("lacks a valid SPDX license identifier", str(ctx.exception))
+
+        with tempfile.TemporaryDirectory() as exe_root:
+            exe_dir = Path(exe_root)
+            (exe_dir / "probe_runtime.exe").write_bytes(bytes([0x4D, 0x5A, 0x00, 0x00]) + b"synthetic")
+            for bad_spdx in ("NOASSERTION", "UNKNOWN", "", None):
+                with self.subTest(gate="project output", spdx_id=bad_spdx):
+                    inventory = copy.deepcopy(real_inventory)
+                    inventory["native"]["project_output"]["spdx_id"] = bad_spdx
+                    with patch.object(package_notices, "load_component_inventory", return_value=inventory):
+                        with self.assertRaises(PackageRouteError) as ctx:
+                            package_notices.generate_package_notices(exe_dir, repo_root=ROOT)
+                    self.assertEqual(ctx.exception.code, "PACKAGE_LICENSE_RECORD_MISSING")
+                    self.assertIn("project output", str(ctx.exception))
+                    self.assertIn("lacks a valid SPDX license identifier", str(ctx.exception))
 
 
 class TestNoDashboardRoute(unittest.TestCase):
