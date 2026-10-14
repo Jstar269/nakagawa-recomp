@@ -11,6 +11,7 @@ as a test failure rather than accepted as a kill.
 
 from __future__ import annotations
 
+import os
 import shutil
 import struct
 import subprocess
@@ -28,6 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CC = shutil.which("gcc")
 SELFTEST = ROOT / "src" / "rt" / "dispatch_isolation_selftest.c"
 RECOMP = ROOT / "src" / "rt" / "recomp.c"
+RECOMP_H = ROOT / "src" / "rt" / "recomp.h"
 GUEST_INTERP = ROOT / "src" / "rt" / "guest_interp.c"
 PERF = ROOT / "src" / "rt" / "perf.c"
 TITLE_CONFIG_TOOL = ROOT / "tools" / "title_runtime_config.py"
@@ -59,12 +61,15 @@ def _build_and_run_stack_census(
     words: tuple[int, ...], expected_status: str, *,
     codegen_args: tuple[str, ...] = (), expected_final_sp: int = 0x2000,
     post_call_probe: str = "", extra_words: tuple[int, ...] | None = None,
-    generated_body_prefix: str = "",
+    generated_body_prefix: str = "", codegen_mutation: tuple[str, str] | None = None,
 ) -> tuple[int, str, int, str]:
     """Generate and execute a real codegen entry wrapper against recomp.c."""
     assert CC is not None
     with scratch_dir.TemporaryDirectory(prefix="stack_census_pipeline_") as tmp:
         work = Path(tmp)
+        codegen_tool = _mutated_copy(CODEGEN_TOOL, work, codegen_mutation)
+        census_env = dict(os.environ)
+        census_env["PYTHONPATH"] = str(ROOT / "tools") + os.pathsep + census_env.get("PYTHONPATH", "")
         elf = work / "fixture.elf"
         _write_minimal_elf(elf, words)
         generated = work / "census.c"
@@ -75,11 +80,11 @@ def _build_and_run_stack_census(
             extra_codegen_args.append(f"--extra-elf={extra_elf}@0x2000")
         codegen = subprocess.run(
             [
-                sys.executable, str(CODEGEN_TOOL), str(elf), str(generated),
+                sys.executable, str(codegen_tool), str(elf), str(generated),
                 "--base=0", "--profile=none", "--funcs-per-chunk=2000",
                 "--stack-census", *codegen_args, *extra_codegen_args,
             ],
-            cwd=ROOT, capture_output=True, text=True,
+            cwd=ROOT, capture_output=True, text=True, env=census_env,
         )
         if codegen.returncode != 0:
             return codegen.returncode, codegen.stderr + codegen.stdout, 1, ""
@@ -193,6 +198,135 @@ def _probe_program(body: list[int]) -> tuple[int, ...]:
     return tuple(entry + body)
 
 
+def _direct_tail_cycle() -> tuple[int, ...]:
+    """A and B hand control to each other with `j`: guest call depth stays at one."""
+    a, done, b = 0x1010, 0x1024, 0x102C
+    body = [
+        _beq(_A0, 0, a, done), _NOP,          # 0x1010
+        _addiu(_A0, _A0, -1), _j(b), _NOP,     # 0x1018 .. 0x1020
+        _jr(_RA), _NOP,                        # 0x1024 done
+        _j(a), _addiu(_V0, _V0, 1),            # 0x102C B (count in the slot)
+    ]
+    return _probe_program(body)
+
+
+def _computed_tail_cycle() -> tuple[int, ...]:
+    """The same cycle through `jr $t9`, the shape of a computed tail transfer."""
+    a, done, b = 0x1010, 0x102C, 0x1034
+    body = [
+        _beq(_A0, 0, a, done), _NOP,                           # 0x1010
+        _addiu(_A0, _A0, -1), _lui(_T9, 0), _ori(_T9, _T9, b),  # 0x1018 .. 0x1020
+        _jr(_T9), _NOP,                                        # 0x1024
+        _jr(_RA), _NOP,                                        # 0x102C done
+        _lui(_T9, 0), _ori(_T9, _T9, a),                       # 0x1034 B
+        _jr(_T9), _addiu(_V0, _V0, 1),
+    ]
+    return _probe_program(body)
+
+
+def _tails_per_call_recursion(tails: int) -> tuple[int, ...]:
+    """Valid recursion whose every level reaches the next through `tails` direct tails.
+
+    A: if (a0 == 0) return; push ra; a0--; jal T1; pop ra; return.
+    T1 -> ... -> Tk each `j` onward and the last `j A`, so a level is one CALL plus
+    `tails` TAIL transfers. Native depth must follow the CALLs alone.
+    """
+    a, done = 0x1010, 0x1034
+    first_tail = 0x103C
+    call_target = first_tail if tails else a
+    body = [
+        _beq(_A0, 0, a, done), _NOP,                       # 0x1010
+        _addiu(_SP, _SP, -8), _sw(_RA, 0, _SP),             # 0x1018
+        _addiu(_A0, _A0, -1),                              # 0x1020
+        _jal(call_target), _addiu(_V0, _V0, 1),            # 0x1024
+        _lw(_RA, 0, _SP), _addiu(_SP, _SP, 8),              # 0x102C
+        _jr(_RA), _NOP,                                    # 0x1034 done
+    ]
+    for index in range(tails):
+        here = first_tail + 8 * index
+        onward = here + 8 if index + 1 < tails else a
+        body += [_j(onward), _NOP]
+        assert here == _PROBE_BASE + 4 * (4 + len(body) - 2)
+    return _probe_program(body)
+
+
+_CHAIN_MARK = 0x5A5A
+
+
+def _entry_tail_program() -> tuple[int, ...]:
+    """The entry itself ends in a direct TAIL, so whoever invoked it must drain.
+
+    0x1000 `j 0x1010` (the delay slot copies $sp to $v1); 0x1008 is a dead `jal` that only
+    makes 0x1010 a translated body; 0x1010 sets v0 = 7 and returns to the harness.
+    """
+    return (
+        _j(0x1010), _addu(_V1, _SP, 0),           # 0x1000 entry: tail to 0x1010
+        _jal(0x1010), _NOP,                       # 0x1008 discovery anchor (dead)
+        _addiu(_V0, 0, 7), _jr(_RA), _NOP,        # 0x1010
+    )
+
+
+def _segment_chain() -> tuple[int, ...]:
+    """C1 -> computed H -> direct X -> computed F, with $sp lowered by C1 and by H.
+
+    H's direct tail to X used to nest inside H's dispatch, and X's computed tail to F nested
+    inside X: F ran at the live SP (two frames down) and wrote it to v0. Only after F
+    returned did X, H and C1 restore in turn, leaving C1's entry SP for the caller.
+    """
+    c1, h, x, f = 0x1010, 0x102C, 0x1040, 0x1058
+    body = [
+        _addiu(_SP, _SP, -16), _lui(_T9, 0), _ori(_T9, _T9, h),   # 0x1010 C1
+        _jr(_T9), _NOP,                                           # 0x101C
+        _jr(_RA), _NOP,                                           # 0x1024 anchor
+        _addiu(_SP, _SP, -16), _j(x), _NOP,                       # 0x102C H
+        _jr(_RA), _NOP,                                           # 0x1038 anchor
+        _lui(_T9, 0), _ori(_T9, _T9, f), _jr(_T9), _NOP,          # 0x1040 X
+        _jr(_RA), _NOP,                                           # 0x1050 anchor
+        _addu(_V0, _SP, 0), _jr(_RA), _NOP,                       # 0x1058 F
+    ]
+    assert c1 == 0x1010 and _PROBE_BASE + 4 * (4 + 18) == f
+    return _probe_program(body)
+
+
+def _frame_sharing_tail() -> tuple[int, ...]:
+    """C1 opens a frame, stores a mark in it and tails to C2 without its epilogue.
+
+    C2 runs in C1's frame (a jump-table case body does exactly this) and reads the mark
+    through $sp. The chain then ends, and the owner's entry SP is restored afterwards.
+    """
+    c1, c2 = 0x1010, 0x102C
+    body = [
+        _addiu(_SP, _SP, -16),                             # 0x1010 C1
+        _addiu(_T9, 0, _CHAIN_MARK), _sw(_T9, 4, _SP),      # 0x1014
+        _j(c2), _NOP,                                      # 0x101C
+        _jr(_RA), _NOP,                                    # 0x1024 (anchor for C2)
+        _NOP,                                              # 0x1028
+        _lw(_V0, 4, _SP),                                  # 0x102C C2: read C1's slot
+        _jr(_RA), _NOP,                                    # 0x1030
+    ]
+    assert c1 == 0x1010
+    return _probe_program(body)
+
+
+def _three_body_chain() -> tuple[int, ...]:
+    """C1 -> C2 -> C3, each tail taken with a different $sp; C3 returns.
+
+    The nested returns restored C3's, then C2's, then C1's entry SP; only C1's survives,
+    so the caller sees its own SP back. C2 and C3 count into v0.
+    """
+    c1, c2, c3 = 0x1010, 0x1024, 0x1038
+    body = [
+        _addiu(_SP, _SP, -16), _j(c2), _NOP,               # 0x1010 C1
+        _jr(_RA), _NOP,                                    # 0x101C anchor
+        _addiu(_SP, _SP, -16), _j(c3),                     # 0x1024 C2
+        _addiu(_V0, _V0, 1),                               # 0x102C slot
+        _jr(_RA), _NOP,                                    # 0x1030 anchor
+        _addiu(_V0, _V0, 2), _jr(_RA), _NOP,               # 0x1038 C3
+    ]
+    assert c1 == 0x1010
+    return _probe_program(body)
+
+
 def _linked_recursion() -> tuple[int, ...]:
     """Control: a valid recursive `jal` that saves `$ra` on the guest stack.
 
@@ -241,6 +375,10 @@ static unsigned long g_probe_samples;
 void sr_yield(CpuState *s) {
     size_t remaining;
     (void)s;
+#ifdef SR_TAIL_DRAIN
+    /* Production sr_yield refuses a live tail transfer (#855); so does the probe. */
+    sr_tail_assert_empty("tail-transfer-live-at-yield");
+#endif
     if (sr_coro_stack_remaining(&remaining)) {
         if (remaining < g_probe_min) g_probe_min = remaining;
         g_probe_samples++;
@@ -257,7 +395,11 @@ static void probe_body(void *arg) {
     (void)arg;
     RecompFn fn = sr_lookup(0x00001000u);
     if (sr_coro_stack_remaining(&g_probe_top) && fn) {
-        fn(&g_probe_state);
+#ifdef SR_TAIL_DRAIN
+        sr_call_body(fn, &g_probe_state);   /* complete the entry's TAIL chain (#855) */
+#else
+        fn(&g_probe_state);                 /* runtimes before the TAIL protocol */
+#endif
         g_probe_ran = 1;
     }
     sr_coro_switch(g_probe_main);
@@ -279,6 +421,23 @@ int main(int argc, char **argv) {
     memset(&g_probe_state, 0, sizeof g_probe_state);
     g_probe_state.r[29] = PROBE_SP;
     g_probe_state.r[4] = (uint32_t)n;
+#ifdef SR_TAIL_DRAIN
+    if (argc > 2) {   /* a broken protocol (#855) must stop with its named fault */
+        CpuState other;
+        memset(&other, 0, sizeof other);
+        if (strcmp(argv[2], "recorded-twice") == 0) {
+            sr_tail_record(&g_probe_state, 0x00001010u, NULL, 0u, 0u);
+            sr_tail_record(&g_probe_state, 0x00001010u, NULL, 0u, 0u);
+        } else if (strcmp(argv[2], "live-at-dispatch") == 0) {
+            sr_tail_record(&g_probe_state, 0x00001010u, NULL, 0u, 0u);
+            dispatch(&g_probe_state, 0x00001010u);
+        } else if (strcmp(argv[2], "foreign-state") == 0) {
+            sr_tail_record(&other, 0x00001010u, NULL, 0u, 0u);
+            sr_tail_drain(&g_probe_state);
+        }
+        return 30;   /* reaching here means the fault did not stop the run */
+    }
+#endif
     g_probe_main = sr_coro_main();
     if (!g_probe_main) return 20;
     sr_dispatch_host_stack_remaining = sr_coro_stack_remaining;
@@ -299,20 +458,47 @@ int main(int argc, char **argv) {
 """
 
 
+def _mutated_copy(source: Path, work: Path, mutation: tuple[str, str] | None) -> Path:
+    """A scratch copy of ``source`` with one exact replacement, or the source itself."""
+    if mutation is None:
+        return source
+    old, new = mutation
+    text = source.read_text(encoding="utf-8")
+    if text.count(old) != 1:
+        raise AssertionError(f"mutation anchor drifted in {source.name}: {old[:60]!r}")
+    copy = work / source.name
+    copy.write_text(text.replace(old, new), encoding="utf-8", newline="\n")
+    return copy
+
+
 def _build_depth_probe(
     words: tuple[int, ...], work: Path, *, codegen_args: tuple[str, ...] = (),
+    mutate: dict[str, tuple[str, str]] | None = None,
 ) -> tuple[Path | None, str]:
-    """Translate a source-owned fixture and link it into the depth-probe harness."""
+    """Translate a source-owned fixture and link it into the depth-probe harness.
+
+    ``mutate`` maps ``codegen.py``, ``recomp.c`` or ``guest_interp.c`` to one exact
+    replacement applied to a scratch copy, so a mutant is generated, compiled and run
+    through the same production path as the unmutated build.
+    """
     assert CC is not None
+    mutate = mutate or {}
+    unknown = set(mutate) - {"codegen.py", "recomp.c", "recomp.h", "guest_interp.c"}
+    if unknown:
+        raise AssertionError(f"unsupported mutation target(s): {sorted(unknown)}")
     elf = work / "fixture.elf"
     _write_minimal_elf(elf, words, base=_PROBE_BASE)
     generated = work / "probe.c"
+    codegen_tool = _mutated_copy(CODEGEN_TOOL, work, mutate.get("codegen.py"))
+    env = dict(os.environ)
+    # A mutated codegen.py copy still imports its siblings from tools/.
+    env["PYTHONPATH"] = str(ROOT / "tools") + os.pathsep + env.get("PYTHONPATH", "")
     codegen = subprocess.run(
         [
-            sys.executable, str(CODEGEN_TOOL), str(elf), str(generated),
+            sys.executable, str(codegen_tool), str(elf), str(generated),
             "--base=0", "--profile=none", "--funcs-per-chunk=2000", *codegen_args,
         ],
-        cwd=ROOT, capture_output=True, text=True,
+        cwd=ROOT, capture_output=True, text=True, env=env,
     )
     if codegen.returncode != 0:
         return None, codegen.stderr + codegen.stdout
@@ -329,6 +515,21 @@ def _build_depth_probe(
         .replace("PROBE_WORDS", ", ".join(f"0x{w & 0xFFFFFFFF:08x}u" for w in words)),
         encoding="utf-8", newline="\n",
     )
+    if "recomp.c" in mutate or "recomp.h" in mutate:
+        # The harness reaches recomp.c and recomp.h through dispatch_isolation_selftest.c's
+        # quoted includes, which search the including file's directory first; copy them.
+        if "recomp.c" in mutate:
+            _mutated_copy(RECOMP, work, mutate["recomp.c"])
+        else:   # recomp.c's own quoted include of recomp.h must find the mutated copy
+            (work / RECOMP.name).write_text(
+                RECOMP.read_text(encoding="utf-8"), encoding="utf-8", newline="\n"
+            )
+        if "recomp.h" in mutate:
+            _mutated_copy(RECOMP_H, work, mutate["recomp.h"])
+        (work / SELFTEST.name).write_text(
+            SELFTEST.read_text(encoding="utf-8"), encoding="utf-8", newline="\n"
+        )
+    guest_interp = _mutated_copy(GUEST_INTERP, work, mutate.get("guest_interp.c"))
     exe = work / "depth_probe.exe"
     compile_result = subprocess.run(
         [
@@ -336,7 +537,7 @@ def _build_depth_probe(
             "-Wall", "-Wextra", "-DSR_SDL3VK", "-D_CRT_SECURE_NO_WARNINGS",
             "-I", str(work), "-I", str(ROOT / "src" / "rt"),
             str(harness), str(generated), str(work / "probe_0.c"),
-            str(GUEST_INTERP), str(PERF),
+            str(guest_interp), str(PERF),
             str(ROOT / "src" / "rt" / "sr_coro.c"),
             str(ROOT / "src" / "rt" / "cpu_lle.c"),
             str(ROOT / "src" / "rt" / "domain_mode.c"),
@@ -624,6 +825,36 @@ class StackCensusPipelineTests(unittest.TestCase):
             run_output,
         )
 
+    # 0x1000 `j 0x1010` is the entry body's TAIL; the `jr ra` anchor at 0x1008 ends that body,
+    # so 0x1010 (v0 = 7; return) is its own translated body. The entry's census wrapper must
+    # drain the transfer before its census exit.
+    _TAIL_WORDS = (
+        0x08000404, 0x00000000,               # 0x1000 j 0x1010
+        0x03E00008, 0x00000000,               # 0x1008 anchor
+        0x24020007, 0x03E00008, 0x00000000,   # 0x1010
+    )
+    _TAIL_PROBE = ('    if (s.r[2] != 7u) return 6;\n'
+                   '    sr_tail_assert_empty("census-probe");\n')
+
+    def test_generated_wrapper_completes_its_body_tail_chain(self):
+        # #855: a census body records its TAIL and its wrapper drains it before census exit.
+        compile_rc, compile_output, run_rc, run_output = _build_and_run_stack_census(
+            self._TAIL_WORDS, "SR_STACK_CENSUS_COMPLETE", post_call_probe=self._TAIL_PROBE,
+        )
+        self.assertEqual(compile_rc, 0, compile_output)
+        self.assertEqual(run_rc, 0, run_output)
+
+    def test_census_wrapper_that_does_not_drain_is_caught(self):
+        compile_rc, compile_output, run_rc, run_output = _build_and_run_stack_census(
+            self._TAIL_WORDS, "SR_STACK_CENSUS_COMPLETE", post_call_probe=self._TAIL_PROBE,
+            codegen_mutation=('            "    SR_TAIL_DRAIN(s);\\n"\n'
+                              '            f"    sr_stack_census_exit(',
+                              '            f"    sr_stack_census_exit('),
+        )
+        self.assertEqual(compile_rc, 0, compile_output)
+        self.assertEqual(run_rc, 6, f"MUTANT_SURVIVED rc={run_rc}\n{run_output}")
+        print("C1-census-wrapper-does-not-drain: MUTANT_EXECUTED_AND_SEMANTIC_TEST_FAILED")
+
     def test_unobserved_generated_callable_reports_partial(self):
         compile_rc, compile_output, run_rc, run_output = _build_and_run_stack_census(
             (0x03E00008, 0x00000000),
@@ -663,6 +894,163 @@ class GeneratedCallDepthTests(unittest.TestCase):
             self.assertEqual(fields.get("v1"), _PROBE_SP, output)
         growth = results[1][2]["native_bytes"] - results[0][2]["native_bytes"]
         self.assertGreater(growth, 2032 * 16, f"probe did not see real nesting: {results}")
+
+    # --- #855: TAIL transfers return to a drain instead of nesting native calls ---------
+
+    _TAIL_BOUND = 16 * 1024   # native growth allowed from n=16 to n=2048 for a tail cycle
+
+    def _assert_cycle(self, results, iterations):
+        for (rc, output, fields), n in zip(results, iterations, strict=True):
+            self.assertEqual(rc, 0, output)
+            self.assertEqual(fields.get("v0"), n, output)
+            self.assertEqual(fields.get("a0"), 0, output)
+            self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    def test_direct_tail_cycle_runs_in_constant_native_depth(self):
+        # A <-> B through `j` at guest call depth one. Before #855 each transfer nested a
+        # native call (2,256 B at n=16, 262,352 B at n=2048 on Windows/gcc -O0).
+        _generated, results = self._probe(_direct_tail_cycle(), (16, 2048))
+        self._assert_cycle(results, (16, 2048))
+        growth = results[1][2]["native_bytes"] - results[0][2]["native_bytes"]
+        self.assertLess(growth, self._TAIL_BOUND, f"direct tail transfers nest: {results}")
+
+    def test_computed_tail_cycle_runs_in_constant_native_depth(self):
+        # The same cycle through `jr $t9`; before #855 each transfer cost a whole
+        # dispatch chain (~544 B), the shape issue #855 measured at ~516 B.
+        _generated, results = self._probe(_computed_tail_cycle(), (16, 2048))
+        self._assert_cycle(results, (16, 2048))
+        growth = results[1][2]["native_bytes"] - results[0][2]["native_bytes"]
+        self.assertLess(growth, self._TAIL_BOUND, f"computed tail transfers nest: {results}")
+
+    def test_long_tail_cycles_complete(self):
+        # Before #855: 300,000 computed transfers stop at host-fiber-stack-exhausted and
+        # 600,000 direct ones overflow the fiber outright (no preflight on that path).
+        for words, n in ((_computed_tail_cycle(), 300_000), (_direct_tail_cycle(), 600_000)):
+            with self.subTest(n=n):
+                _generated, results = self._probe(words, (n,))
+                self._assert_cycle(results, (n,))
+
+    def test_native_depth_follows_calls_not_tail_transfers(self):
+        # A recursion d levels deep where each level reaches the next through t direct
+        # tails: native depth must not depend on t (before #855: 131,280 B for t=1 and
+        # 262,352 B for t=3 at d=1024).
+        depth = 1024
+        measured = {}
+        for tails in (1, 3):
+            _generated, results = self._probe(_tails_per_call_recursion(tails), (depth,))
+            rc, output, fields = results[0]
+            self.assertEqual(rc, 0, output)
+            self.assertEqual(fields.get("v0"), depth, output)
+            self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+            measured[tails] = fields["native_bytes"]
+        self.assertLess(abs(measured[3] - measured[1]), 4096, f"depth follows tails: {measured}")
+
+    def test_frame_sharing_tail_keeps_the_frame_until_the_chain_ends(self):
+        # C2 runs inside C1's frame; the owner's entry SP is restored only afterwards.
+        _generated, results = self._probe(_frame_sharing_tail(), (0,))
+        rc, output, fields = results[0]
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v0"), _CHAIN_MARK, output)
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    def test_tail_chain_restores_the_outermost_callable_entry_sp(self):
+        _generated, results = self._probe(_three_body_chain(), (0,))
+        rc, output, fields = results[0]
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v0"), 3, output)
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    def _assert_mutant_fails(self, name, words, iterations, mutate, check):
+        with scratch_dir.TemporaryDirectory(prefix="depth_mutant_") as tmp:
+            work = Path(tmp)
+            exe, output = _build_depth_probe(words, work, mutate=mutate)
+            self.assertIsNotNone(exe, f"{name}: MUTANT_BUILD_FAILED (not a semantic kill)\n{output}")
+            results = [_run_depth_probe(exe, n) for n in iterations]
+        self.assertTrue(check(results), f"{name}: MUTANT_SURVIVED {results}")
+        print(f"{name}: MUTANT_EXECUTED_AND_SEMANTIC_TEST_FAILED")
+
+    def test_tail_protocol_mutants_fail_for_their_semantic(self):
+        # The last recorded restore wins instead of the first: the caller sees C2's SP.
+        self._assert_mutant_fails(
+            "T1-last-restore-wins", _three_body_chain(), (0,),
+            {"guest_interp.c": ("if (next.has_restore && !chain_restores) {",
+                                "if (next.has_restore) {")},
+            lambda r: r[0][0] == 0 and r[0][2].get("v1") != _PROBE_SP,
+        )
+        # The owner's SP is restored at the TAIL site, before the target runs in its frame.
+        self._assert_mutant_fails(
+            "T2-restore-before-target", _frame_sharing_tail(), (0,),
+            {"codegen.py": (
+                'return f"sr_tail_record(s, {target_expr}, {fn}, _sp_entry, 1u); return;{suffix}"',
+                'return f"s->r[29] = _sp_entry; sr_tail_record(s, {target_expr}, {fn}, 0u, 0u); return;{suffix}"',
+            )},
+            lambda r: r[0][0] == 0 and r[0][2].get("v0") != _CHAIN_MARK,
+        )
+        # A direct CALL site stops draining: the callee's transfer is left recorded.
+        self._assert_mutant_fails(
+            "T3-call-site-does-not-drain", _tails_per_call_recursion(1), (4,),
+            {"codegen.py": ('return f"{symbol}(s); SR_TAIL_DRAIN(s);"',
+                            'return f"{symbol}(s);"')},
+            lambda r: r[0][0] != 0 or r[0][2].get("v0") != 4 or r[0][2].get("sp") != _PROBE_SP,
+        )
+        # A computed step drains the whole chain: one native drain per computed transfer.
+        self._assert_mutant_fails(
+            "T4-drain-step-drains", _computed_tail_cycle(), (16, 2048),
+            {"recomp.c": ("dispatch_try_with_boundary(s, target, NULL, SR_DRAIN_SEGMENT) < 0) {",
+                          "dispatch_try_with_boundary(s, target, NULL, SR_DRAIN_CHAIN) < 0) {")},
+            lambda r: all(x[0] == 0 for x in r)
+            and r[1][2]["native_bytes"] - r[0][2]["native_bytes"] >= self._TAIL_BOUND,
+        )
+
+    def test_runtime_direct_call_completes_the_entry_tail_chain(self):
+        # sr_call_body is how the driver, funcdiff and thread start invoke a body; an entry
+        # that ends in a TAIL completes only if that call drains.
+        _generated, results = self._probe(_entry_tail_program(), (0,))
+        rc, output, fields = results[0]
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v0"), 7, output)
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    def test_computed_step_keeps_the_live_sp_for_the_next_computed_target(self):
+        _generated, results = self._probe(_segment_chain(), (0,))
+        rc, output, fields = results[0]
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v0"), _PROBE_SP - 32, f"F did not run two frames down\n{output}")
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    def test_segment_and_runtime_call_mutants_fail_for_their_semantic(self):
+        # A runtime direct call stops draining: the entry's transfer is never run.
+        self._assert_mutant_fails(
+            "T5-call-body-does-not-drain", _entry_tail_program(), (0,),
+            {"recomp.h": ("    fn(s);\n    if (sr_tail_transfer.pending) sr_tail_drain(s);\n",
+                          "    fn(s);\n")},
+            lambda r: r[0][0] != 0 or r[0][2].get("v0") != 7,
+        )
+        # A computed step applies its restore while the next computed transfer is pending:
+        # F runs in H's frame instead of the live one.
+        self._assert_mutant_fails(
+            "T6-segment-restores-early", _segment_chain(), (0,),
+            {"guest_interp.c": ("                sr_tail_transfer.has_restore = 1u;\n"
+                                "            }\n            return;",
+                                "                sr_tail_transfer.has_restore = 1u;\n"
+                                "            }\n            if (chain_restores) s->r[29] = chain_sp;\n"
+                                "            return;")},
+            lambda r: r[0][0] == 0 and r[0][2].get("v0") != _PROBE_SP - 32,
+        )
+
+    def test_tail_protocol_faults_stop_with_their_names(self):
+        with scratch_dir.TemporaryDirectory(prefix="tail_faults_") as tmp:
+            exe, output = _build_depth_probe(_entry_tail_program(), Path(tmp))
+            self.assertIsNotNone(exe, output)
+            for mode in ("recorded-twice", "live-at-dispatch", "foreign-state"):
+                with self.subTest(fault=mode):
+                    run = subprocess.run([str(exe), "0", mode], cwd=ROOT, capture_output=True,
+                                         text=True, timeout=120)
+                    self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+                    expected = {"recorded-twice": "tail-transfer-recorded-twice",
+                                "live-at-dispatch": "tail-transfer-live-at-dispatch",
+                                "foreign-state": "tail-transfer-foreign-state"}[mode]
+                    self.assertIn(f"TAIL_TRANSFER_FAULT: {expected}", run.stderr)
 
     def test_interpreted_caller_resumes_after_compiled_callee(self):
         # The caller is omitted from AOT, so the production interpreter runs it; its
