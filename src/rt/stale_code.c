@@ -166,15 +166,15 @@ int sr_stale_enabled(void) {
 uint32_t sr_stale_fnv1a(const uint32_t *words, uint32_t nwords) {
     uint32_t h = 0x811c9dc5u;
     uint32_t i;
-    int shift;
     if (!words) {
         return h;
     }
     for (i = 0; i < nwords; i++) {
-        for (shift = 0; shift < 32; shift += 8) {
-            h ^= (words[i] >> shift) & 0xffu;
-            h *= 0x01000193u;
-        }
+        uint32_t w = words[i];
+        h = (h ^ (w & 0xffu)) * 0x01000193u;
+        h = (h ^ ((w >> 8) & 0xffu)) * 0x01000193u;
+        h = (h ^ ((w >> 16) & 0xffu)) * 0x01000193u;
+        h = (h ^ (w >> 24)) * 0x01000193u;
     }
     return h;
 }
@@ -214,17 +214,16 @@ static int mark_block(SrStaleBlockEntry *entry, SrStaleReadFn read, void *ctx,
                       uint32_t *hash_out) {
     uint32_t h = 0x811c9dc5u;
     uint32_t i;
-    int shift;
     for (i = 0; i < entry->nwords; i++) {
         uint32_t waddr = entry->addr + i * 4u;
         uint32_t w = 0u;
         if (!read(waddr, &w, ctx)) {
             return 0;
         }
-        for (shift = 0; shift < 32; shift += 8) {
-            h ^= (w >> shift) & 0xffu;
-            h *= 0x01000193u;
-        }
+        h = (h ^ (w & 0xffu)) * 0x01000193u;
+        h = (h ^ ((w >> 8) & 0xffu)) * 0x01000193u;
+        h = (h ^ ((w >> 16) & 0xffu)) * 0x01000193u;
+        h = (h ^ (w >> 24)) * 0x01000193u;
     }
     if (h != entry->expected_hash) {
         entry->stale = 1;
