@@ -166,6 +166,29 @@ class TransferTargetTimingTests(unittest.TestCase):
         self.assertNotIn("dispatch(s, _t);", text)
         self.assertIn("s->r[29] = _sp_entry; return;", text)
 
+    def test_jalr_uncommon_target_and_link_delay_slot_alias(self):
+        """`jalr $a0, $t0` with a delay slot writing both $t0 and $a0.
+
+        The transfer target MUST be captured into a temporary variable before
+        writing the link register $a0 or executing the delay slot (which modifies $t0),
+        and the link write $a0 MUST precede the delay slot.
+        """
+        text = self._emit(
+            {
+                0x1000: jalr(4, 8),      # jalr $a0, $t0 ($a0 = r4, $t0 = r8)
+                0x1004: addu(8, 9, 0),   # addu $t0, $t1, $zero (delay slot overwrites target $t0)
+                0x1008: JR_RA,
+                0x100C: NOP,
+            }
+        )
+        capture = text.index("uint32_t _t = s->r[8];")
+        link = text.index("s->r[4] = 0x00001008u;")
+        slot = text.index("s->r[8] = (s->r[9] + 0u);")
+        call = text.index("dispatch_call(s, _t, 0x00001008u);")
+        self.assertLess(capture, link, "target read must precede link write")
+        self.assertLess(link, slot, "link write must precede delay slot")
+        self.assertLess(slot, call, "delay slot must precede call dispatch")
+
     def test_transfer_instruction_is_reported_before_its_delay_slot(self):
         """Trace order stays branch-then-slot, matching src/rt/guest_interp.c.
 
