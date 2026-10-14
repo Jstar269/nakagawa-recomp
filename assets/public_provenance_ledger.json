@@ -2877,7 +2877,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c457383d11b1519b0dfd447c2c0b800b0298d48d6cb4604753a367e1863fe098"
+      "sha256": "2c2d48ea8e3f44689a0579fef8fd4f6e4341a0a35e0f1a48aa9fbdb8cffe9c2e"
     },
     {
       "path": "src/core/nk_psp_inflate.h",
@@ -5921,7 +5921,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5b948cdfe90d8de243824d1baf7fc97652f84810488f575e15283a594b0417c7"
+      "sha256": "d13c96e65f7b6d043def265529677e34941ad0f673fa202adce7270f321fb575"
     },
     {
       "path": "tests/native/test_input_profile.c",
@@ -5957,7 +5957,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5992d7f16fa4e749981d64552e0aa089e1b851aadc33b14217531fa4bd3538c4"
+      "sha256": "e903b4a93c1445969a022d85ce8082649959316c8566deb993af414b51ded8c9"
     },
     {
       "path": "tests/native/test_manifest_parser.c",
@@ -6506,7 +6506,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9d8563bc1733173ef51faa39a017177f2b88dc0911bc79515680a96fdbc3f11b"
+      "sha256": "23373077167fcad3e6827f14097c0be89a7d2206c01bd8ddb4586e0c79221679"
     },
     {
       "path": "tools/format_portability_check.py",
@@ -7329,7 +7329,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b3fc973f6f0101cdefff02960625bc917d24954767964c4268e2df9027f47369"
+      "sha256": "c2bde6e8b580a194c27f2db1fb85a0b8c3394b6dc9bb1dcbdc957e664edfdac6"
     },
     {
       "path": "tools/progress_tracker.py",
@@ -8471,7 +8471,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4d6909c20b6e15b2dd967cd46bf17af6d168181204f40cef035f348bb29633eb"
+      "sha256": "6adb7216828576ab4c6c71c1f373fa7b542078e3b2ca489f85bcc299213d569d"
     },
     {
       "path": "tools/test_font_provisioning.py",
@@ -9264,7 +9264,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8ed3836b85574651f550622230122e181ff3465674ee3818795ce3265fca8dec"
+      "sha256": "cfa04d124bd9d050c10d3fd6d472f6515976fceb5b22b779a07cc152e9afd062"
     },
     {
       "path": "tools/test_prep_fail_closed.py",
