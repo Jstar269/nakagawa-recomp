@@ -6005,7 +6005,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3860092ee8ee70d63ee50df9b983a54764094e6bd853002561cc9922fc6c3a12"
+      "sha256": "e75a6493bf631d167265c3081c4a636e2b368ed8b57939f113ffdc898a1b9ca2"
     },
     {
       "path": "tests/native/test_pgf_public.c",
@@ -7279,7 +7279,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a114d476d1a948af6a21c7728696c3202d80e883dac83a77791652b4804f4b68"
+      "sha256": "9c60df31a85d62cfc0d0a6754621bc4e47b78c40ef4c9b8a800a7f6247af9cae"
     },
     {
       "path": "tools/pngcmp.py",
@@ -9216,7 +9216,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3eb78d35e9f3cff571fb2c17f9b7d256476e84b706a66e8019b78ca1b8a2f841"
+      "sha256": "30a3505f388912dba681d8beb2fa5e26deb6f0bcd83c81ad5f233e85d40413e9"
     },
     {
       "path": "tools/test_platform_ladder.py",
