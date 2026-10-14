@@ -549,9 +549,9 @@ One console is one data point; see §11. Nothing here closes issue #70
 ## Pending PSP-3000 measurement campaign
 
 The following source-owned cases are built for a future PSP-3000 / 6.61
-session. Of the nine cases below, six were measured by the 2026-10-10 campaign on `f6ccfb33`
+session. Of the ten cases below, six were measured by the 2026-10-10 campaign on `f6ccfb33`
 (index above), `ge-break-continue` was captured but is not acceptance-eligible, and
-`llsc-link` and `vfpu-compare` were added after that campaign and have not run on hardware.
+`llsc-link`, `vfpu-compare` and `fpu-cc` were added after that campaign and have not run on hardware.
 Their parsers check record order, scalar fields, and completion;
 they do not encode expected PSP return values.
 
@@ -566,6 +566,7 @@ they do not encode expected PSP return values.
 | `llsc-link` | `PSP-LLSC-001` | `NOT_RUN` (new probe, not yet run on hardware) | Three ll/sc link windows: a plain ll and sc pair (control), a second sc after a successful sc with no new ll, and an sc to an address other than the one ll linked. Each record is the sc result, the word ll loaded, the words at both addresses, and the project's model words, which are UNMEASURED for the console. |
 | `kernel-misc` | `PSP-KERNEL-MISC-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Wide clock conversion, controller default mode, profiler-pointer returns, basic VTimer behavior, display return values, battery-icon status, and UMD-popup returns. |
 | `vfpu-compare` | `PSP-VFPU-CMP-001` | `NOT_RUN` (new probe, not yet run on hardware) | `vscmp.s`, `vsge.s`, and `vslt.s` on 15 operand pairs: less-than, equal, greater, signed zeros in both orders, quiet, signalling, and negative NaN on each side, and infinities. Each record is the raw result word against the project's model, which is UNMEASURED for the console. |
+| `fpu-cc` | `PSP-FPU-CC-001` | `NOT_RUN` (new probe, not yet run on hardware) | COP1 condition codes: which FCR31 condition bits exist, which bit `c.eq.s` sets for each condition code 0..7, and whether `bc1t`/`bc1f` with each code are taken under FCC0, no flag, and that code's own flag. Condition code 0 is the control. |
 
 The registry probe opens the registry and categories in read mode and never
 calls a write, create, remove, or flush API. Values are emitted only for keys

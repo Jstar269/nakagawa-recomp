@@ -809,6 +809,46 @@
         "issues": [],
         "risk": "low; single-threaded register and memory facts inside a window with CPU interrupts suspended",
         "reset": "one llsc-link launch; PSPLink soft reset before the next queue entry"
+      },
+      {
+        "id": "PSP-FPU-CC-001",
+        "status": "implemented",
+        "hardware_evidence": "NOT_RUN",
+        "evidence_note": "No hardware capture exists yet. The probe measures which FCR31 condition bits exist and how c.eq.s and bc1f/bc1t encode a nonzero condition code on the console; the project's tools currently treat every condition code as FCC0, and that is UNMEASURED. The condition code 0 cells are controls; the others pass once they ran and are read from their words.",
+        "group": "cpu",
+        "source": "fixtures/psp_oracle/probe.c",
+        "prx": "nakagawa_psp_oracle.prx",
+        "apis": [
+          "c.eq.s",
+          "bc1f",
+          "bc1t",
+          "cfc1",
+          "ctc1"
+        ],
+        "case_ids": [
+          "fpu-cc-fcr31-bits",
+          "fpu-cc0-ceq",
+          "fpu-cc0-branch",
+          "fpu-cc1-ceq",
+          "fpu-cc1-branch",
+          "fpu-cc2-ceq",
+          "fpu-cc2-branch",
+          "fpu-cc3-ceq",
+          "fpu-cc3-branch",
+          "fpu-cc4-ceq",
+          "fpu-cc4-branch",
+          "fpu-cc5-ceq",
+          "fpu-cc5-branch",
+          "fpu-cc6-ceq",
+          "fpu-cc6-branch",
+          "fpu-cc7-ceq",
+          "fpu-cc7-branch",
+          "fpu-cc-done"
+        ],
+        "invariant": "for each COP1 condition code 0..7, the FCR31 word after an equal and an unequal c.eq.s, and the taken flag of bc1t and bc1f under FCC0, no flag and that code's own flag, are emitted in fixed order; condition code 0 must follow the MIPS definition",
+        "issues": [],
+        "risk": "low; single-threaded FPU register facts with every FCR31 trap enable off; a reserved encoding can end the launch with an exception, which the last STEP line names",
+        "reset": "one fpu-cc launch; FCR31 is cleared between cells and before exit; PSPLink soft reset before the next queue entry"
       }
   ]
 }

@@ -2348,12 +2348,12 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         # 1-69 are the sequential probe.c cases; 90-96 are the H-oracle HLE families,
         # numbered apart so sequential additions cannot collide with them. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 76)
+        self.assertEqual(len(routes), 77)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(range(1, 70)) | set(range(90, 97)), set(ids))
+        self.assertEqual(set(range(1, 71)) | set(range(90, 97)), set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -2414,6 +2414,17 @@ class PspOracleBuildRouteTests(unittest.TestCase):
             re.MULTILINE,
         ))
         self.assertEqual(routes.get("llsc-link"), "69")
+
+    def test_fpu_cc_route_has_its_own_case_id(self) -> None:
+        routes = dict(re.findall(
+            r"^else ifeq \(\$\(CASE\),([^\)]+)\)\nCASE_ID = (\d+)$",
+            self.makefile,
+            re.MULTILINE,
+        ))
+        self.assertEqual(routes.get("fpu-cc"), "70")
+        probe = (Path(__file__).resolve().parent.parent / "fixtures" / "psp_oracle"
+                 / "probe.c").read_text(encoding="utf-8")
+        self.assertIn("#define PSP_ORACLE_CASE_FPU_CC 70", probe)
 
 
 class PspDmacProbeTests(unittest.TestCase):

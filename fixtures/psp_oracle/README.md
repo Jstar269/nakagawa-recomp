@@ -502,6 +502,7 @@ ordering semantics are correct.
 | `llsc-link` | `PSP-LLSC-001` | A plain `ll`/`sc` pair (control), a second `sc` after a successful `sc` with no new `ll`, and an `sc` to an address other than the one `ll` linked. Each record carries the `sc` result, the word `ll` loaded, both words after the cell, and the project's model words (UNMEASURED for the console). |
 | `kernel-misc` | `PSP-KERNEL-MISC-001` | Wide system-clock conversion, default controller mode, thread/global profiler returns, basic VTimer behavior, display calls, battery-icon status, and UMD-popup return values. |
 | `vfpu-compare` | `PSP-VFPU-CMP-001` | `vscmp.s`, `vsge.s`, and `vslt.s` on 15 operand pairs (less-than, equal, greater, signed zeros in both orders, quiet, signalling, and negative NaN on each side, infinities). Each record carries the observed word, the project's model word (UNMEASURED for the console), and both operands. |
+| `fpu-cc` | `PSP-FPU-CC-001` | COP1 condition codes 0..7: FCR31 condition-bit writability, the FCR31 word after an equal and an unequal `c.eq.s` with each code, and whether `bc1t`/`bc1f` with each code are taken under FCC0, no flag, and the code's own flag. A reserved encoding may end the launch with an exception; the last STEP line names the cell. |
 
 The registry case opens the registry and every category in read mode. It never
 calls a set, create, remove, or flush API. It records values only for the
