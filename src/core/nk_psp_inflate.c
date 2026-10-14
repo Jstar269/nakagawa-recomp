@@ -294,6 +294,7 @@ static int nk_deflate(Bits *b, OutBuf *o, char *err, size_t err_len)
                     return rc;
                 }
             }
+            continue;
         } else if (btype == 1 || btype == 2) {
             int nlit = 288;
             int ndist = 32;
@@ -771,7 +772,7 @@ int nk_psp_inflate(const uint8_t *src, size_t srclen, uint8_t **out,
             return NK_INFLATE_ERR_TRUNCATED;
         }
         b.pos = 2u;
-        if ((src[3] & 0x20u) != 0u) {
+        if ((src[1] & 0x20u) != 0u) {
             set_err(err, err_len,
                     "inflate: zlib preset dictionary is not supported");
             free(o.data);
