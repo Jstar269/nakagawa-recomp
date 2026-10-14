@@ -5960,15 +5960,6 @@
       "sha256": "5992d7f16fa4e749981d64552e0aa089e1b851aadc33b14217531fa4bd3538c4"
     },
     {
-      "path": "tests/native/test_library.c",
-      "classification": "synthetic_fixture",
-      "evidence": {
-        "source": "path-reviewed fixture/test census",
-        "statement": "fixture or test data is synthetic and contains no retail bytes"
-      },
-      "sha256": "cf2a6ab28557d1e2c9bcc3e79e489082ea69c683084c9e85b5f22550a67a23a8"
-    },
-    {
       "path": "tests/native/test_manifest_parser.c",
       "classification": "project_authored_attested",
       "evidence": {

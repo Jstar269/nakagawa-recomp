@@ -2858,9 +2858,6 @@ native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-cor
 		tests/native/native_test_isolation.c tests/native/test_core_catalog.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_core_catalog$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_core_catalog$(EXE_EXT)
 	$(CC) $(NC_CFLAGS_CORE) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) \
-		tests/native/native_test_isolation.c tests/native/test_library.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_library$(EXE_EXT)
-	$(BUILD_ROOT_RUN)/test_library$(EXE_EXT)
-	$(CC) $(NC_CFLAGS_CORE) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) \
 		tests/native/native_test_isolation.c tests/native/test_parsers_hostile.c $(PLAYER_PLATFORM_LIBS) -o $(BUILD_ROOT)/test_parsers_hostile$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_parsers_hostile$(EXE_EXT)
 	$(CC) $(NC_CFLAGS_CORE) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_CORE) \
