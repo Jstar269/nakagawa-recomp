@@ -124,9 +124,17 @@ class TemporaryDirectory(tempfile.TemporaryDirectory):
         *path_parts: str | os.PathLike,
         missing_ok: bool = False,
     ) -> None:
-        """Safely remove a file or directory tree contained strictly within the scratch directory."""
+        """Safely remove a file or directory tree contained strictly within the scratch directory.
+
+        The parent is resolved and contained like any other path, but the final component is
+        taken as written: a symlink there is removed itself, never the target it points to.
+        """
         root = Path(self.name).resolve()
-        target = self.resolve_path(*path_parts)
+        lexical = Path(*path_parts)
+        if lexical.name in ("", ".", ".."):
+            target = self.resolve_path(*path_parts)
+        else:
+            target = self.resolve_path(lexical.parent) / lexical.name
         if target == root:
             raise ValueError(f"Cannot remove root scratch directory {target!r} via remove_path")
         if not target.exists() and not target.is_symlink():

@@ -210,6 +210,26 @@ class PathIsolationTests(unittest.TestCase):
         self.assertIn("escapes scratch directory root", str(ctx.exception))
         self.assertTrue(self.outside_file.exists())
 
+    def test_remove_path_removes_an_in_root_symlink_and_keeps_its_target(self) -> None:
+        # The final component is the link itself: removing it must not delete what it names.
+        real_file = self.scratch.write_text("real.txt", text="keep me")
+        inner = self.scratch.write_text("real_dir", "inner.txt", text="keep me too")
+        file_link = self.root_path / "file_link.txt"
+        dir_link = self.root_path / "dir_link"
+        try:
+            file_link.symlink_to(real_file)
+            dir_link.symlink_to(inner.parent, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"Host cannot create symlinks: {error}")
+
+        self.scratch.remove_path("file_link.txt")
+        self.scratch.remove_path("dir_link")
+
+        self.assertFalse(os.path.lexists(file_link))
+        self.assertFalse(os.path.lexists(dir_link))
+        self.assertEqual(real_file.read_text(encoding="utf-8"), "keep me")
+        self.assertEqual(inner.read_text(encoding="utf-8"), "keep me too")
+
 
 @unittest.skipUnless(sys.platform == "win32", "only Windows refuses to remove a file that is open")
 class WindowsLockTests(unittest.TestCase):

@@ -7762,7 +7762,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e8b27e53e0f90e398df6ebffc59602fb5891967fa60b398dcbd7e78ce6f800f3"
+      "sha256": "7d2a6022d3578188456efe2a0fffbaf5a096185326358e1fc7f743ab43c3c40b"
     },
     {
       "path": "tools/shader_embed.py",
@@ -9781,7 +9781,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5b2f539dc31f970a6b290c96989424b7d5d06e7a6fc6f24ebedeb91598617104"
+      "sha256": "0534ab0aed4cddc9c500accc51d6c144915c531c83bcc0802bf3c73de642a132"
     },
     {
       "path": "tools/test_scripted_input.py",
