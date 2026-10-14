@@ -5705,7 +5705,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d09ae642187035ca8200add9fee467cb3ef4cec82ffbd9ea3c88dda9a24bad49"
+      "sha256": "7fe1b6aa864873aaa526eb1415d719aec53f2edc23209ebb512689623b81b86e"
     },
     {
       "path": "src/rt/vfpu_oracle_host.c",
@@ -10563,7 +10563,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5fb01eff6a1a2336c7292fe5e9803c5d8b584ebdca878914279751b73ba12a89"
+      "sha256": "b7612ca44d35571b2bd8c4666df435cf9f70a1bb6a98e7746c1dd39580172a83"
     },
     {
       "path": "tools/vfpu_synth_gen.py",
