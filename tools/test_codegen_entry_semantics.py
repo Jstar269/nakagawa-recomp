@@ -42,6 +42,44 @@ CALLER_SP = 0x00001000
 FRAME_SIZE = 0x70
 
 
+# The #855 TAIL transfer protocol, as the stand-in recomp.h below declares it and the
+# stand-in harnesses implement it: the same slot, drain and first-restore-wins rule as
+# src/rt/recomp.h and src/rt/guest_interp.c, with the stand-in dispatch() running a
+# computed target to completion.
+_TAIL_PROTOCOL_HEADER = """\
+typedef void (*TestBodyFn)(CpuState *);
+void sr_tail_record(CpuState *s, uint32_t target, TestBodyFn fn,
+                    uint32_t restore_sp, uint32_t owes_restore);
+void sr_tail_drain(CpuState *s);
+#define SR_TAIL_DRAIN(s) sr_tail_drain(s)
+"""
+_TAIL_PROTOCOL_IMPL = """\
+static struct {
+    TestBodyFn fn; CpuState *state; uint32_t target, restore_sp; int pending, owes;
+} test_tail;
+void sr_tail_record(CpuState *s, uint32_t target, TestBodyFn fn,
+                    uint32_t restore_sp, uint32_t owes_restore) {
+    if (test_tail.pending) abort();
+    test_tail.fn = fn; test_tail.state = s; test_tail.target = target;
+    test_tail.restore_sp = restore_sp; test_tail.owes = owes_restore != 0u;
+    test_tail.pending = 1;
+}
+void sr_tail_drain(CpuState *s) {
+    uint32_t chain_sp = 0u;
+    int restores = 0;
+    while (test_tail.pending) {
+        TestBodyFn fn = test_tail.fn;
+        uint32_t target = test_tail.target;
+        if (test_tail.state != s) abort();
+        if (test_tail.owes && !restores) { chain_sp = test_tail.restore_sp; restores = 1; }
+        test_tail.pending = 0;
+        if (fn) fn(s); else dispatch(s, target);
+    }
+    if (restores) s->r[29] = chain_sp;
+}
+"""
+
+
 def _synthetic_elf(
     words: dict[int, int],
     entry: int,
@@ -200,7 +238,7 @@ void sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc);
 void sr_hle_call(CpuState *s, uint32_t nid);
 void sr_syscall(CpuState *s, uint32_t nid);
 void sr_unimplemented(uint32_t addr, const char *reason);
-#endif
+""" + _TAIL_PROTOCOL_HEADER + """#endif
 """,
                 encoding="ascii",
             )
@@ -210,7 +248,7 @@ void sr_unimplemented(uint32_t addr, const char *reason);
 #include <stdio.h>
 #include <stdlib.h>
 #include "entry_semantics_funcs.h"
-
+{_TAIL_PROTOCOL_IMPL}
 static uint32_t mem[0x2000 / 4];
 uint32_t test_mem_r32(uint32_t addr) {{ return mem[(addr & 0x1fffu) / 4u]; }}
 void test_mem_w32(uint32_t addr, uint32_t value) {{ mem[(addr & 0x1fffu) / 4u] = value; }}
@@ -222,9 +260,9 @@ void sr_hle_call(CpuState *s, uint32_t nid) {{ (void)s; (void)nid; }}
 void sr_syscall(CpuState *s, uint32_t nid) {{ (void)s; (void)nid; }}
 void sr_unimplemented(uint32_t addr, const char *reason) {{ (void)addr; (void)reason; abort(); }}
 void dispatch(CpuState *s, uint32_t target) {{
-    if (target == 0x{RESUME:08x}u) {{ r_{RESUME:08x}(s); return; }}
-    if (target == 0x{TINY_LEAF:08x}u) {{ f_{TINY_LEAF:08x}(s); return; }}
-    if (target == 0x{TAIL_TARGET:08x}u) {{ f_{TAIL_TARGET:08x}(s); return; }}
+    if (target == 0x{RESUME:08x}u) {{ r_{RESUME:08x}(s); sr_tail_drain(s); return; }}
+    if (target == 0x{TINY_LEAF:08x}u) {{ f_{TINY_LEAF:08x}(s); sr_tail_drain(s); return; }}
+    if (target == 0x{TAIL_TARGET:08x}u) {{ f_{TAIL_TARGET:08x}(s); sr_tail_drain(s); return; }}
     abort();
 }}
 void dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc) {{
@@ -236,31 +274,31 @@ int main(void) {{
     CpuState resumed = {{0}};
     resumed.r[29] = 0x{CALLER_SP - FRAME_SIZE:08x}u;
     test_mem_w32(0x{CALLER_SP - 4:08x}u, 0x12345678u);
-    r_{RESUME:08x}(&resumed);
+    r_{RESUME:08x}(&resumed); sr_tail_drain(&resumed);
 
     CpuState called = {{0}};
     called.r[29] = 0x{CALLER_SP:08x}u;
     called.r[31] = 0x12345678u;
-    f_{OWNER:08x}(&called);
+    f_{OWNER:08x}(&called); sr_tail_drain(&called);
 
     CpuState adjacent = {{0}};
     adjacent.r[29] = 0x{CALLER_SP:08x}u;
-    f_{ADJACENT:08x}(&adjacent);
+    f_{ADJACENT:08x}(&adjacent); sr_tail_drain(&adjacent);
 
     CpuState leaf = {{0}};
     leaf.r[4] = 5u;
     leaf.r[29] = 0x{CALLER_SP:08x}u;
-    f_{TINY_LEAF:08x}(&leaf);
+    f_{TINY_LEAF:08x}(&leaf); sr_tail_drain(&leaf);
 
     CpuState indirect = {{0}};
     indirect.r[29] = 0x{CALLER_SP:08x}u;
     indirect.r[31] = 0x12345678u;
-    f_{INDIRECT_CALLER:08x}(&indirect);
+    f_{INDIRECT_CALLER:08x}(&indirect); sr_tail_drain(&indirect);
 
     CpuState tail = {{0}};
     tail.r[29] = 0x{CALLER_SP:08x}u;
     tail.r[31] = 0x12345678u;
-    f_{TAIL_SOURCE:08x}(&tail);
+    f_{TAIL_SOURCE:08x}(&tail); sr_tail_drain(&tail);
 
     printf("resume_sp=0x%08x owner_sp=0x%08x indirect_v0=%u tail_v0=%u\\n",
            resumed.r[29], called.r[29], indirect.r[2], tail.r[2]);
@@ -361,7 +399,7 @@ void sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc);
 void sr_hle_call(CpuState *s, uint32_t nid);
 void sr_syscall(CpuState *s, uint32_t nid);
 void sr_unimplemented(uint32_t addr, const char *reason);
-#endif
+""" + _TAIL_PROTOCOL_HEADER + """#endif
 """,
                 encoding="ascii",
             )
@@ -370,7 +408,7 @@ void sr_unimplemented(uint32_t addr, const char *reason);
 #include <stdint.h>
 #include <stdlib.h>
 #include "direct_j_semantics_funcs.h"
-static uint32_t mem[0x2000 / 4];
+{_TAIL_PROTOCOL_IMPL}static uint32_t mem[0x2000 / 4];
 uint32_t test_mem_r32(uint32_t addr) {{ return mem[(addr & 0x1fffu) / 4u]; }}
 void test_mem_w32(uint32_t addr, uint32_t value) {{ mem[(addr & 0x1fffu) / 4u] = value; }}
 void sr_register(uint32_t addr, void (*fn)(CpuState *)) {{ (void)addr; (void)fn; }}
@@ -381,7 +419,7 @@ void sr_hle_call(CpuState *s, uint32_t nid) {{ (void)s; (void)nid; }}
 void sr_syscall(CpuState *s, uint32_t nid) {{ (void)s; (void)nid; }}
 void sr_unimplemented(uint32_t addr, const char *reason) {{ (void)addr; (void)reason; abort(); }}
 void dispatch(CpuState *s, uint32_t target) {{
-    if (target == 0x{resume:08x}u) {{ r_{resume:08x}(s); return; }}
+    if (target == 0x{resume:08x}u) {{ r_{resume:08x}(s); sr_tail_drain(s); return; }}
     abort();
 }}
 int main(void) {{
@@ -445,7 +483,7 @@ int main(void) {{
             )
             self.assertNotIn(f"void f_{target:08x}(CpuState *s)", generated_text)
             self.assertIn(
-                f"{{ uint32_t _t = 0x{target:08x}u; dispatch(s, _t);",
+                f"{{ uint32_t _t = 0x{target:08x}u; sr_tail_record(s, _t, NULL,",
                 generated_text,
             )
 
@@ -473,7 +511,7 @@ void sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc);
 void sr_hle_call(CpuState *s, uint32_t nid);
 void sr_syscall(CpuState *s, uint32_t nid);
 void sr_unimplemented(uint32_t addr, const char *reason);
-#endif
+""" + _TAIL_PROTOCOL_HEADER + """#endif
 """,
                 encoding="ascii",
             )
@@ -483,7 +521,7 @@ void sr_unimplemented(uint32_t addr, const char *reason);
 #include <stdio.h>
 #include <stdlib.h>
 #include "direct_j_omission_funcs.h"
-
+{_TAIL_PROTOCOL_IMPL}
 static int dispatch_hits = 0;
 uint32_t test_mem_r32(uint32_t addr) {{ (void)addr; return 0u; }}
 void test_mem_w32(uint32_t addr, uint32_t value) {{ (void)addr; (void)value; }}
@@ -510,7 +548,7 @@ void dispatch_call(CpuState *s, uint32_t actual, uint32_t resume_pc) {{
 int main(void) {{
     CpuState state = {{0}};
     state.r[31] = 0x12345678u;
-    f_{owner:08x}(&state);
+    f_{owner:08x}(&state); sr_tail_drain(&state);
     printf("dispatch_hits=%d v0=0x%08x v1=0x%08x\\n",
            dispatch_hits, state.r[2], state.r[3]);
     return dispatch_hits == 1 && state.r[2] == 0x22u && state.r[3] == 0x55u ? 0 : 1;
@@ -614,7 +652,7 @@ void sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc);
 void sr_hle_call(CpuState *s, uint32_t nid);
 void sr_syscall(CpuState *s, uint32_t nid);
 void sr_unimplemented(uint32_t addr, const char *reason);
-#endif
+""" + _TAIL_PROTOCOL_HEADER + """#endif
 """,
                 encoding="ascii",
             )
@@ -624,7 +662,7 @@ void sr_unimplemented(uint32_t addr, const char *reason);
 #include <stdio.h>
 #include <stdlib.h>
 #include "direct_branch_semantics_funcs.h"
-static uint32_t mem[0x2000 / 4];
+{_TAIL_PROTOCOL_IMPL}static uint32_t mem[0x2000 / 4];
 uint32_t test_mem_r32(uint32_t addr) {{ return mem[(addr & 0x1fffu) / 4u]; }}
 void test_mem_w32(uint32_t addr, uint32_t value) {{ mem[(addr & 0x1fffu) / 4u] = value; }}
 void sr_register(uint32_t addr, void (*fn)(CpuState *)) {{ (void)addr; (void)fn; }}
@@ -635,7 +673,7 @@ void sr_hle_call(CpuState *s, uint32_t nid) {{ (void)s; (void)nid; }}
 void sr_syscall(CpuState *s, uint32_t nid) {{ (void)s; (void)nid; }}
 void sr_unimplemented(uint32_t addr, const char *reason) {{ (void)addr; (void)reason; abort(); }}
 void dispatch(CpuState *s, uint32_t target) {{
-    if (target == 0x{resume:08x}u) {{ r_{resume:08x}(s); return; }}
+    if (target == 0x{resume:08x}u) {{ r_{resume:08x}(s); sr_tail_drain(s); return; }}
     abort();
 }}
 int main(void) {{
@@ -647,7 +685,7 @@ int main(void) {{
     /* The owner's own native path through the same region still balances. */
     CpuState native = {{0}};
     native.r[29] = 0x{caller_sp:08x}u;
-    f_{owner:08x}(&native);
+    f_{owner:08x}(&native); sr_tail_drain(&native);
 
     printf("resume_sp=0x%08x owner_sp=0x%08x\\n", resumed.r[29], native.r[29]);
     return resumed.r[29] == 0x{caller_sp:08x}u
