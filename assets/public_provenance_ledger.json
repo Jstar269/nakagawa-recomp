@@ -162,7 +162,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "09af5b866edc9804e6833ef74cbecb1fd1586d459d14c9fda838920f9bca5568"
+      "sha256": "6f8b2cb18595baac0574ff5fc58161dc7b191b8931ff817d5891c22c485ed600"
     },
     {
       "path": ".github/workflows/dependency-review.yml",
@@ -1045,7 +1045,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "685466bd07179610878a007c4d06ac7fa39a4a6a912041e8e11ba6ce0bc64cf8"
+      "sha256": "35c0bf7c02b56a8cfec4e034bfddc527b2b6de3185a6054e5f5fa55eecb7f40e"
     },
     {
       "path": "docs/AOT_PRODUCTIZATION_ARCHITECTURE.md",
@@ -1063,7 +1063,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a119b2270227ae3e0ed38c050a878be28173cf213f3d9ee7a806fdedc7f58dff"
+      "sha256": "26624d87ed3de3f6c35539cdcbdf5871dee4139ac605c70caf1babcfc024635b"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -1081,7 +1081,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3c61e9f5da0830bd3b480d1953e144b2fc0aeca8acb816d19a1a82f82dc13fca"
+      "sha256": "90251daa817479a60b1ac90329166029d1af4999b8d8867ac2c94529293c6d89"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1615,7 +1615,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "11f6a5e785a5b25ab5ceae546a375d2bbf2947c404ca2bbb55a7fda282ce0c03"
+      "sha256": "510580069645437d894a7b5d99ca35da9cda4e83908c137da27194bb39547309"
     },
     {
       "path": "fixtures/cosim/cosim_selftest.c",
@@ -1627,7 +1627,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b1c7cab632277385f0456a3b109d44d593a05d6c513a365d23af067d4034a79c"
+      "sha256": "3c2ba02079dd50cda50971dc69b686b751cdde6cd77e8a0638bcf8989ad6c533"
     },
     {
       "path": "fixtures/cosim/fpu_reference.c",
@@ -1663,7 +1663,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "69998e079e87ecdc8aa3e578f00b5a405412582458f4f172907f4f1fe5bd9687"
+      "sha256": "132cb8d05bb22cccafe5b4686615b5aa17382391a8f4c89f308ae184daac74a2"
     },
     {
       "path": "fixtures/cosim/mutate.py",
@@ -1675,7 +1675,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7278358065436d256f5b498c8746407d6c084e486f49474f450f0528a1422dd9"
+      "sha256": "db4e5ed47b66b7a171f3ed0aaf5920378f203d131e47c1b7195831e2f64710b9"
     },
     {
       "path": "fixtures/display_smoke/generate.py",
@@ -4392,7 +4392,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4d06bc400eba0b115dc66dc1ab115fc3019ca0e0c8f46917578c0f3ebcf5edde"
+      "sha256": "49351781b7421c7128ee2e12222c29c2b6667cc6d2f76839d5bf3206eb031a9f"
     },
     {
       "path": "src/rt/fbcap.c",
@@ -4899,7 +4899,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "104ce7407e41bcbf9e898c4393559b6f85d7e11ade0a5e59c6102836f7a95171"
+      "sha256": "ff3266679bf503d40003abb3d91efb702126244dd609f1f31eb25f181991cc30"
     },
     {
       "path": "src/rt/guest_interp.h",
@@ -4911,7 +4911,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "84cfb98b1bc0edc8a324d1e4ac2be528b3110ae41cba8ba346efa957c16aa0ce"
+      "sha256": "5b139a80e2a36e32fa7004d69fd5c8c7f5e8fe73ed19b387dcae43c979bfca72"
     },
     {
       "path": "src/rt/guest_printf.c",
@@ -5436,7 +5436,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "62e44f24dc6a7d029442238834e7ea5fa33aaf9e03b55e3b52e25468f7b51191"
+      "sha256": "ae347765064a2471a147427d647215618fee2543a4163caf8a0b82bf679efaee"
     },
     {
       "path": "src/rt/recomp.h",
@@ -7954,7 +7954,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2c4ae2ea9bc539921833dfece9935acbc5ee7e7ba32f388249586e49db3c10f4"
+      "sha256": "96daeaa2a4aa0b51610159fae64d7b6025d7c48c9a453258519f6f3497ffb6b5"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -8303,7 +8303,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "26e604d2049ad5c1faa182a04ea59aab5f7ca200cc082c9fe1b6acfdc64676f0"
+      "sha256": "c264f70fb15202a87e8c236e97681be7232092105d3b5c25821718941eb748b9"
     },
     {
       "path": "tools/test_dispatch_fatal_policy.py",
