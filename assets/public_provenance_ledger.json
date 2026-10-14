@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fe270262a565cfc37fd0304dd79c983a7d4756d11219687c8693b6be63b9773a"
+      "sha256": "187e20e50f79626e712511817e7bb4a2e2272989fda1f701289eb03820ce1ff4"
     },
     {
       "path": ".github/workflows/codeql-wake.yml",
@@ -1093,7 +1093,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6dd44b56bcb7f1a3c6361a7de721b2a03b1a5b179c236b2b01f7d855e128b682"
+      "sha256": "feb50fdbc4d157b669526c3bf09dd78bb460b431d0c2e0d3da69a3bb1730f64c"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -5692,7 +5692,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "44e2e6ae2a675d1a0d10765c3f93de85b53df14ad44a3d0daf978ef5700f5dc2"
+      "sha256": "e756f4d2e611e4e147ad44ff3fcc2ced7b2c5e45a1771708649840cf3b40dcbe"
     },
     {
       "path": "src/rt/vfpu_interp.c",
@@ -9612,7 +9612,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9d0c5522bb2a704f54dac9c27b426695914c543eac70f303385b90670b227dba"
+      "sha256": "50eaddff749f757a013657f41cfea9c8640d4c290cc27fc49ea662496ef4cd9f"
     },
     {
       "path": "tools/test_public_export.py",
@@ -10153,7 +10153,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bd4856334d5c7e70f75b61a3f0af03234c66722ac687222d221230ab3565004b"
+      "sha256": "dabbeaa459eed0eb5f0ddc146e39811760b2df61fd0069f47d2dcb5f7073d0e0"
     },
     {
       "path": "tools/test_vfpu_domain_boundary.py",
