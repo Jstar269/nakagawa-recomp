@@ -182,13 +182,13 @@ class TitleRegistry:
         return self._profile_refusals.get(self._norm_disc(disc_id))
 
     def register(self, profile: TitleProfile, allow_override: bool = False) -> None:
-        collision = False
-        if profile.id in self._profiles and self._profiles[profile.id] != profile:
-            collision = True
+        # Any existing identity collides, including an identical re-registration:
+        # replacing a public entry with a copy of itself is still an override.
+        collision = profile.id in self._profiles
         if not collision:
             for disc_id in profile.disc_ids:
                 norm = self._norm_disc(disc_id)
-                if norm in self._disc_index and self._disc_index[norm] != profile.id:
+                if norm in self._disc_index:
                     collision = True
                     break
 

@@ -419,6 +419,27 @@ int main(void) {{
         with self.assertRaisesRegex(RuntimeError, "conflicts with public canonical catalog"):
             reg.load_from_directory(temp_titles, enforce_public_policy=False)
 
+    def test_identical_overlay_is_refused_unless_override_is_explicit(self) -> None:
+        """A byte-for-byte copy of a public manifest is still an override in standard mode."""
+        import contextlib
+        import io
+
+        public_dir = self.temp_dir / "public"
+        public_dir.mkdir()
+        m1 = title_manifest.load_manifest(ROOT / "assets" / "titles" / "synthetic.json")
+        (public_dir / "synthetic.json").write_text(json.dumps(m1), encoding="utf-8")
+        overlay_dir = self.temp_dir / "overlay"
+        overlay_dir.mkdir()
+        overlay = overlay_dir / "synthetic.json"
+        overlay.write_text(json.dumps(m1), encoding="utf-8")
+
+        reg = TitleRegistry(include_defaults=False)
+        reg.load_from_directory(public_dir, enforce_public_policy=False)
+        with self.assertRaisesRegex(RuntimeError, "conflicts with public canonical catalog"):
+            reg.load_private_manifest(overlay)
+        with contextlib.redirect_stderr(io.StringIO()):
+            reg.load_private_manifest(overlay, allow_override=True)
+
 
 if __name__ == "__main__":
     unittest.main()
