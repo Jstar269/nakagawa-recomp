@@ -233,6 +233,22 @@ class TestNidseqFailClosed(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn("VERIFIED: import sequences identical (1 imports)", out)
 
+    def test_two_different_unmapped_stubs_diverge(self):
+        # STUBS[0] and STUBS[3] are mapped, so the stub range also covers the unmapped
+        # STUBS[1] and STUBS[2]. Unmapped stubs are keyed by PC, so two different ones diverge.
+        toml = self.toml_with([0, 3])
+        rc, out = run_tool([toml, self.trace([STUBS[1]]), self.trace([STUBS[2]])])
+        self.assertEqual(rc, 1, out)
+        self.assertIn("DIVERGE at import 0: recomp=?.0x08a00008 oracle=?.0x08a00010", out)
+        self.assertIn("FAILED: import sequences diverge", out)
+        self.assertNotIn("VERIFIED", out)
+
+    def test_same_unmapped_stub_still_verifies(self):
+        toml = self.toml_with([0, 3])
+        rc, out = run_tool([toml, self.trace([STUBS[1]]), self.trace([STUBS[1]])])
+        self.assertEqual(rc, 0, out)
+        self.assertIn("VERIFIED: import sequences identical (1 imports)", out)
+
     def test_duplicate_stub_address_fails(self):
         toml = self.write_imports([(STUBS[0], NIDS[0])])
         with open(toml, "w", newline="\n") as f:

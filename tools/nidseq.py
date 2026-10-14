@@ -95,7 +95,8 @@ def nid_seq(trace, imp, s0, s1, limit=None):
             except ValueError:
                 raise NidseqError(f"{trace}:{lineno}: malformed pc field {p[1]!r}: {line!r}") from None
             if s0 <= pc < s1 and p[2] == "op=0x03e00008":  # the stub's jr $ra line
-                seq.append((pc, imp.get(pc, ("?", 0))))
+                # Unmapped stubs are keyed by PC so distinct unresolved stubs stay distinct.
+                seq.append((pc, imp.get(pc, ("?", pc))))
                 if limit is not None and len(seq) >= limit:
                     break
     return seq

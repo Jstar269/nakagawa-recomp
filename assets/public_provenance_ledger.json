@@ -6967,7 +6967,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "521a113f99de9fced24560a77f3e9f6bccc1f893be93fd9475a5be736ba124a7"
+      "sha256": "c41ef1860841d86a4344a553888e56529a6efbe1d436394ac72536d7a56b45db"
     },
     {
       "path": "tools/nk_clean.py",
@@ -9072,7 +9072,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "556b6904cc5349f5955236df6cc15a631351d0c12eb04d76eb16acf5ffe1da58"
+      "sha256": "01b5cf0395033688241270d25d1fa521a15452dac9e3c1cb28b0f9fbc449cd2f"
     },
     {
       "path": "tools/test_nk_clean.py",
