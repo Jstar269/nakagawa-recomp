@@ -7,6 +7,8 @@
 #endif
 
 #include "package_builder.h"
+#include "nk_launch.h"
+
 #include "nk_platform.h"
 
 #ifdef NDEBUG
@@ -675,6 +677,101 @@ static void test_native_download_verification(void) {
 }
 #endif
 
+
+static void write_text_file(const char *path, const char *text) {
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fputs(text, file) >= 0);
+    assert(fclose(file) == 0);
+}
+
+static void test_package_build_rollback_and_atomic_replacement(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest 11: package build rollback and atomic replacement\n");
+    char data_root[NK_MAX_PATH];
+    char packages_dir[NK_MAX_PATH];
+    char completed_pkg_dir[NK_MAX_PATH];
+    char staging_dir[NK_MAX_PATH];
+    char staging_file[NK_MAX_PATH];
+    char incomplete_pkg_dir[NK_MAX_PATH];
+    char incomplete_file[NK_MAX_PATH];
+    char sep = nk_platform_path_separator();
+
+    int n = snprintf(data_root, sizeof(data_root), "%s%cdata_root_rollback_test",
+                     native_test_get_root(), sep);
+    assert(n > 0 && (size_t)n < sizeof(data_root));
+    assert(nk_platform_mkdir_p(data_root));
+
+    n = snprintf(packages_dir, sizeof(packages_dir), "%s%cpackages", data_root, sep);
+    assert(n > 0 && (size_t)n < sizeof(packages_dir));
+    assert(nk_platform_mkdir_p(packages_dir));
+
+    /* 1. Setup existing package dir for ULUS99999. */
+    n = snprintf(completed_pkg_dir, sizeof(completed_pkg_dir), "%s%cULUS99999",
+                 packages_dir, sep);
+    assert(n > 0 && (size_t)n < sizeof(completed_pkg_dir));
+    assert(nk_platform_mkdir_p(completed_pkg_dir));
+
+    char exe_path[NK_MAX_PATH];
+    n = snprintf(exe_path, sizeof(exe_path), "%s%csynthetic-allegrex-v1.exe", completed_pkg_dir, sep);
+    assert(n > 0 && (size_t)n < sizeof(exe_path));
+    write_text_file(exe_path, "synthetic executable content");
+
+    char img_path[NK_MAX_PATH];
+    n = snprintf(img_path, sizeof(img_path), "%s%csynthetic-allegrex-v1_image.bin", completed_pkg_dir, sep);
+    assert(n > 0 && (size_t)n < sizeof(img_path));
+    write_text_file(img_path, "synthetic image content");
+
+    NkGameEntry game_completed;
+    memset(&game_completed, 0, sizeof(game_completed));
+    snprintf(game_completed.disc_id, sizeof(game_completed.disc_id), "ULUS99999");
+    snprintf(game_completed.title_id, sizeof(game_completed.title_id), "synthetic-allegrex-v1");
+    snprintf(game_completed.selected_executable, sizeof(game_completed.selected_executable), "EBOOT.BIN");
+
+    /* 2. Simulate a package build writing a temporary artifact into staging, then failing/rolling back. */
+    n = snprintf(staging_dir, sizeof(staging_dir), "%s%c.ULUS99999.staging-test",
+                 packages_dir, sep);
+    assert(n > 0 && (size_t)n < sizeof(staging_dir));
+    assert(nk_platform_mkdir_p(staging_dir));
+
+    n = snprintf(staging_file, sizeof(staging_file), "%s%ctemp_artifact.o", staging_dir, sep);
+    assert(n > 0 && (size_t)n < sizeof(staging_file));
+    write_text_file(staging_file, "temporary build artifact");
+    assert(nk_platform_file_exists(staging_file));
+
+    /* Simulate build failure cleanup/rollback: remove staging tree. */
+    assert(native_test_remove_tree(staging_dir));
+    assert(!nk_platform_dir_exists(staging_dir));
+
+    /* 3. Old completed package files remain untouched. */
+    assert(nk_platform_file_exists(exe_path));
+    assert(nk_platform_file_exists(img_path));
+
+    /* 4. Incomplete package rejection: write an incomplete package build. */
+    n = snprintf(incomplete_pkg_dir, sizeof(incomplete_pkg_dir), "%s%cULUS99998",
+                 packages_dir, sep);
+    assert(n > 0 && (size_t)n < sizeof(incomplete_pkg_dir));
+    assert(nk_platform_mkdir_p(incomplete_pkg_dir));
+
+    n = snprintf(incomplete_file, sizeof(incomplete_file), "%s%cpackage.json",
+                 incomplete_pkg_dir, sep);
+    assert(n > 0 && (size_t)n < sizeof(incomplete_file));
+    write_text_file(incomplete_file, "{\"format\": \"incomplete\"}");
+
+    NkGameEntry game_incomplete;
+    memset(&game_incomplete, 0, sizeof(game_incomplete));
+    snprintf(game_incomplete.disc_id, sizeof(game_incomplete.disc_id), "ULUS9998");
+    snprintf(game_incomplete.title_id, sizeof(game_incomplete.title_id), "synthetic-allegrex-v1");
+    snprintf(game_incomplete.selected_executable, sizeof(game_incomplete.selected_executable), "EBOOT.BIN");
+
+    NkRuntimePackageInfo info;
+    char reason[1024] = "";
+    NkRuntimePackageStatus status = nk_launch_validate_runtime_package(
+        data_root, &game_incomplete, &info, reason, sizeof(reason));
+    assert(status != NK_RUNTIME_PACKAGE_OK);
+
+    assert(native_test_remove_tree(data_root));
+}
+
 static void test_remove_downloaded_tools_preserves_other_app_data(void) {
     printf("[PACKAGE_BUILDER_TEST] Subtest 10: downloaded-tool removal boundary\n");
     char data_root[NK_MAX_PATH];
@@ -758,6 +855,7 @@ int main(int argc, char *argv[]) {
     test_toolchain_preflight();
     test_pinned_prerequisite_manifest();
     test_remove_downloaded_tools_preserves_other_app_data();
+    test_package_build_rollback_and_atomic_replacement();
 #if defined(_WIN32) || defined(_WIN64)
     test_native_download_verification();
 #else
