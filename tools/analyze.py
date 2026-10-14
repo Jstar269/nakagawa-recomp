@@ -1231,7 +1231,13 @@ def _canonical_cfg_report_reference(image, ranges=None, entries=None):
             for owner in node_owners
         ]
         node["edges"] = sorted(
-            node["edges"], key=lambda edge: (edge["kind"], edge["target"] is None, edge["target"] or 0)
+            node["edges"],
+            key=lambda edge: (
+                edge["kind"],
+                edge["target"] is None,
+                edge["target"] or 0,
+                edge.get("detail", ""),
+            ),
         )
 
     data_spans = []
@@ -1283,17 +1289,17 @@ def _canonical_cfg_report_reference(image, ranges=None, entries=None):
         "unmapped_entries": unmapped_entries,
         "instructions": [nodes[address] for address in sorted(nodes)],
         "edges": sorted(edge_rows, key=lambda edge: (
-            edge["source"], edge["kind"], edge["target"] is None, edge["target"] or 0
+            edge["source"], edge["kind"], edge["target"] is None, edge["target"] or 0, edge.get("detail", ""),
         )),
         "direct_edges": sorted(direct_edges, key=lambda edge: (
-            edge["source"], edge["kind"], edge["target"] or 0
+            edge["source"], edge["kind"], edge["target"] or 0, edge.get("detail", ""),
         )),
-        "call_edges": sorted(call_edges, key=lambda edge: (edge["source"], edge["target"] or 0)),
-        "tail_call_edges": sorted(tail_call_edges, key=lambda edge: (edge["source"], edge["target"] or 0)),
-        "fallthrough_edges": sorted(fallthrough_edges, key=lambda edge: (edge["source"], edge["target"] or 0)),
+        "call_edges": sorted(call_edges, key=lambda edge: (edge["source"], edge["target"] or 0, edge.get("detail", ""))),
+        "tail_call_edges": sorted(tail_call_edges, key=lambda edge: (edge["source"], edge["target"] or 0, edge.get("detail", ""))),
+        "fallthrough_edges": sorted(fallthrough_edges, key=lambda edge: (edge["source"], edge["target"] or 0, edge.get("detail", ""))),
         "continuation_edges": sorted(continuation_edges, key=lambda edge: (edge["source"], edge["target"])),
-        "interior_entries": sorted(interior_entries, key=lambda item: (item["address"], item["source"], item["owner"])),
-        "unresolved_indirect_edges": sorted(unresolved, key=lambda edge: edge["source"]),
+        "interior_entries": sorted(interior_entries, key=lambda item: (item["address"], item["source"], item["owner"], item.get("reason", ""))),
+        "unresolved_indirect_edges": sorted(unresolved, key=lambda edge: (edge["source"], edge.get("detail", ""))),
         "ownership_conflicts": conflicts,
         "ownership_map": [
             {
@@ -1629,7 +1635,12 @@ class CanonicalCfgState:
                 "content_classification": "padding" if self.words[index] == 0 else "instruction-word",
                 "edges": sorted(
                     edges_by_node[index],
-                    key=lambda edge: (edge["kind"], edge["target"] is None, edge["target"] or 0),
+                    key=lambda edge: (
+                        edge["kind"],
+                        edge["target"] is None,
+                        edge["target"] or 0,
+                        edge.get("detail", ""),
+                    ),
                 ),
                 "classification": self._classification(index),
                 "owners": owners,
@@ -1674,14 +1685,14 @@ class CanonicalCfgState:
             "unmapped_entries": list(self.unmapped_entries),
             "instructions": instructions,
             "edges": sorted(edge_rows, key=lambda edge: (
-                edge["source"], edge["kind"], edge["target"] is None, edge["target"] or 0,
+                edge["source"], edge["kind"], edge["target"] is None, edge["target"] or 0, edge.get("detail", ""),
             )),
             "direct_edges": sorted(direct_edges, key=lambda edge: (
-                edge["source"], edge["kind"], edge["target"] or 0,
+                edge["source"], edge["kind"], edge["target"] or 0, edge.get("detail", ""),
             )),
-            "call_edges": sorted(call_edges, key=lambda edge: (edge["source"], edge["target"] or 0)),
-            "tail_call_edges": sorted(tail_call_edges, key=lambda edge: (edge["source"], edge["target"] or 0)),
-            "fallthrough_edges": sorted(fallthrough_edges, key=lambda edge: (edge["source"], edge["target"] or 0)),
+            "call_edges": sorted(call_edges, key=lambda edge: (edge["source"], edge["target"] or 0, edge.get("detail", ""))),
+            "tail_call_edges": sorted(tail_call_edges, key=lambda edge: (edge["source"], edge["target"] or 0, edge.get("detail", ""))),
+            "fallthrough_edges": sorted(fallthrough_edges, key=lambda edge: (edge["source"], edge["target"] or 0, edge.get("detail", ""))),
             "continuation_edges": [
                 {"source": source, "target": target, "owner": owner}
                 for source, target, owner in sorted(self.continuation_edges)
@@ -1690,7 +1701,7 @@ class CanonicalCfgState:
                 {"address": address, "source": source, "owner": owner, "reason": _CFG_KIND_NAMES[reason]}
                 for address, source, owner, reason in sorted(self.interior_entries)
             ],
-            "unresolved_indirect_edges": sorted(unresolved, key=lambda edge: edge["source"]),
+            "unresolved_indirect_edges": sorted(unresolved, key=lambda edge: (edge["source"], edge.get("detail", ""))),
             "ownership_conflicts": conflicts,
             "ownership_map": [
                 {
@@ -3042,9 +3053,18 @@ def emit_toml(model, path):
         f'entry = {_fmt_value("entry", model["entry"])}',
         "",
     ]
-    for fn in model["functions"]:
+    functions = sorted(
+        model["functions"],
+        key=lambda fn: (
+            isinstance(fn.get("addr"), (int, float)),
+            int(fn.get("addr")) if isinstance(fn.get("addr"), (int, float)) else 0,
+            str(fn.get("addr", "")),
+        ),
+    )
+    for fn in functions:
         lines.append("[[function]]")
-        keys = [k for k in _FUNC_ORDER if k in fn] + [k for k in fn if k not in _FUNC_ORDER]
+        extra_keys = sorted(k for k in fn if k not in _FUNC_ORDER)
+        keys = [k for k in _FUNC_ORDER if k in fn] + extra_keys
         for k in keys:
             lines.append(f"{k} = {_fmt_value(k, fn[k])}")
         lines.append("")

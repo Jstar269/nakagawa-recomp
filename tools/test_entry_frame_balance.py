@@ -324,6 +324,30 @@ class FrameBalanceBasicsTests(unittest.TestCase):
             with self.subTest(form=label):
                 self.assertEqual(efb.sp_effect((SP << 11) | fn), (0, False), label)
 
+    def test_unlinked_jalr_zero_rd_is_tail_transfer_not_returning_call(self):
+        """jalr $rs, $zero (rd=0) is jr $rs, not a returning call that falls through.
+
+        Treating jalr $rs, $zero as a returning call causes the walker to
+        fall through into adjacent code, adopting a foreign jr $ra and falsely
+        claiming callable ownership over that return path.
+        """
+        words = emit(
+            0x1000,
+            addiu(SP, SP, -0x20),   # 0x1000
+            sw(RA, SP, 0x1C),       # 0x1004
+            jalr(T9, 0),            # 0x1008 jalr $t9, $zero -> jr $t9 (tail transfer)
+            addiu(SP, SP, 0x20),    # 0x100c delay slot
+            addiu(SP, SP, -0x10),   # 0x1010 adjacent function 2
+            jr(RA),                 # 0x1014 adjacent function return
+            addiu(SP, SP, 0x10),    # 0x1018
+        )
+        elf, ranges = image(words)
+        profile = efb.profile_entry(elf, 0x1000, ranges)
+        self.assertNotIn(0x1014, profile.depths)
+        self.assertIn(0, profile.tail_deltas)
+        self.assertEqual(profile.return_deltas, frozenset())
+        self.assertEqual(efb.classify(profile), efb.INDETERMINATE)
+
 
 class SharedTailOwnershipTests(unittest.TestCase):
     """Wiki doc 26 section 14: multiple owners must not be silently reduced."""
