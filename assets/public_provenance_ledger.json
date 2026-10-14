@@ -6204,7 +6204,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "204f3aaff8ef7612048d0f9f6522c28f8b4179490b05fdef9b906edf158e6d6c"
+      "sha256": "72fc86a497de786713af76308e8a859806b68d707318d2ddb00005295905d50b"
     },
     {
       "path": "tools/betterleaks_canary.py",
@@ -7882,7 +7882,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "380cd5946ed53d9e45e770d762e776fe62de47012add5ef997014eb2f89bc06a"
+      "sha256": "f2538f6b5dd239331de903d8b23972cd43290cee8bfcb6cd50d1b4b031529a8c"
     },
     {
       "path": "tools/test_boot_gate.py",
