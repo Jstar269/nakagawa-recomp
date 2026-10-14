@@ -7726,7 +7726,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9eb174e3eda9c98a3e66c04b0be0014cbbfcf4bbb241bf5500a1d58a7d10d7eb"
+      "sha256": "908b68f32daabc84435f7d65422182cfb90e9ce4964166f9602e594129c88134"
     },
     {
       "path": "tools/requirements-lock.txt",
@@ -9733,7 +9733,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ea6d406e8d8679fd4284ffb196a6e27c6eaaf46e94b2d3e8f04b74fbe769d9c8"
+      "sha256": "d12387d984bc5b24a12be5cdc4d4a9d385943fef438dbffa561dca19d4717bfe"
     },
     {
       "path": "tools/test_sbom_binding.py",
