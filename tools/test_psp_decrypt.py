@@ -61,6 +61,14 @@ RFC4493_MSG_A = bytes.fromhex("6bc1bee22e409f96e93d7e117393172a")
 RFC4493_MAC_A = bytes.fromhex("bb1d6929e95937287fa37d129b756746")  # len = 0
 RFC4493_MAC_MSG16 = bytes.fromhex("070a16b46b4d4144f79bdd9dd04a287c")  # len = 16
 
+# NIST SP 800-38A section F.2.1 / F.2.2 (AES-128-CBC multi-block vector).
+NIST_SP800_38A_CBC_PLAIN = bytes.fromhex(
+    "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e51"
+)
+NIST_SP800_38A_CBC_CIPHER = bytes.fromhex(
+    "3ad77bb40d7a3660a89ecaf32466ef97b148c17f309ee692287ae57cf12add49"
+)
+
 # RFC 3174 (SHA-1) / FIPS 180-1 sample.
 SHA1_ABC = b"abc"
 SHA1_ABC_DIGEST = bytes.fromhex("a9993e364706816aba3e25717850c26c9cd0d89d")
@@ -540,8 +548,8 @@ class TestKnownAnswers(unittest.TestCase):
         )
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         got = json.loads(out.stdout)
-        self.assertEqual(got["cipher"], FIPS197_CIPHER.hex())
-        self.assertEqual(got["roundtrip"], FIPS197_PLAIN.hex())
+        self.assertEqual(got["cipher"], NIST_SP800_38A_CBC_CIPHER.hex())
+        self.assertEqual(got["roundtrip"], NIST_SP800_38A_CBC_PLAIN.hex())
 
     def test_aes_cmac_rfc4493(self):
         import json
