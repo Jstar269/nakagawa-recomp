@@ -25,6 +25,15 @@ on:
   # is deliberately no input to narrow it -- a knob that cannot actually reduce
   # the run would be misleading.
   workflow_dispatch:
+  # Merge-queue groups. GitHub builds a group commit (the trunk plus the queued
+  # pull requests ahead of this one, plus this one) and asks for checks on that
+  # exact commit. A group is a ref in this repository, created only after a
+  # write-access maintainer enqueues a reviewed pull request. It gets the same
+  # complete matrix as a manual run and is never path-gated, so every required
+  # check reports on the group commit. The classifier forces it
+  # (tools/ci_paths.py FULL_MATRIX_EVENTS). Inert until a merge queue rule exists.
+  merge_group:
+    types: [checks_requested]
 
 concurrency:
   # A new commit supersedes an in-flight run for the same PR/ref.  This is also
@@ -205,7 +214,9 @@ jobs:
   python_tools:
     name: Python tooling gates
     runs-on: ubuntu-24.04
-    needs: [classify, hygiene, public_export]
+    # Waits for classify and the public-export audit, not hygiene: hygiene runs beside it
+    # and ci_required still requires its result (docs/CI.md, "Hygiene beside the substantive gates").
+    needs: [classify, public_export]
     # The suite is ~10 minutes serially. Four runners split the test files with
     # tools/ci_test_shards.py: a deterministic longest-first bin packing over the
     # measured per-module durations in tools/ci_test_weights.json (#693). Every
@@ -222,7 +233,7 @@ jobs:
         # outputs; the job's own condition skips it in that case.
         shard: ${{ fromJSON(needs.classify.outputs.python_shards || '[0, 1, 2, 3]') }}
     if: >-
-      ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+      ${{ always() && needs.classify.result == 'success' &&
           needs.public_export.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_python == 'true' }}
@@ -276,9 +287,10 @@ jobs:
   native_tools:
     name: Native and translation gates
     runs-on: ubuntu-24.04
-    needs: [classify, hygiene, public_export]
+    # Not gated on hygiene (docs/CI.md, "Hygiene beside the substantive gates").
+    needs: [classify, public_export]
     if: >-
-      ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+      ${{ always() && needs.classify.result == 'success' &&
           needs.public_export.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_native == 'true' }}
@@ -619,9 +631,10 @@ jobs:
     # (~6.5 min), and waiting for python_tools/native_tools put ~2.5 min on every
     # PR's critical path. A Linux failure still fails ci_required; the Windows run
     # is then merely redundant, which costs nothing on a public repository.
-    needs: [classify, hygiene, public_export]
+    # Not gated on hygiene (docs/CI.md, "Hygiene beside the substantive gates").
+    needs: [classify, public_export]
     if: >-
-      ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+      ${{ always() && needs.classify.result == 'success' &&
           needs.public_export.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_windows == 'true' }}
@@ -636,11 +649,11 @@ jobs:
     #   ladder:    full platform ladder
     #   routes:    profile-zero production routes, native core tests
     #   selftests: cosimulation + mutants, scheduler, dispatch, FP, strbuf, HLE thread
-    #   fuzz:      synthetic VFPU fuzzer build
+    #   fuzz-0/1:  synthetic VFPU fuzzer, its cases split between two shards (FUZZ_CASE_SHARD)
     strategy:
       fail-fast: false
       matrix:
-        part: [smoke, ladder, routes, selftests, fuzz]
+        part: [smoke, ladder, routes, selftests, fuzz-0, fuzz-1]
     timeout-minutes: 25
     # This job's MSYS2 shell has no git on PATH, so the Makefile cannot resolve a
     # revision here; it used to log a raw `process_begin: CreateProcess(NULL, git
@@ -934,9 +947,15 @@ jobs:
         run: >-
           PYTHONPATH=tools python -m unittest -v test_flash0_font
 
-      - name: Build and run synthetic VFPU fuzzer
-        if: matrix.part == 'fuzz'
+      # The synthetic VFPU fuzzer's cases run as two shards: shard k admits the cases with
+      # index % 2 == k (src/rt/vfpu_fuzz.c). Together they admit every case exactly once,
+      # which the "Prove the fuzz shards" step checks from the binary. A shard fails unless
+      # every case it admits is tested, so no case is dropped from the gate.
+      - name: Build and run synthetic VFPU fuzzer (shard 0 of 2)
+        if: matrix.part == 'fuzz-0'
         shell: msys2 {0}
+        env:
+          FUZZ_CASE_SHARD: "0/2"
         run: |
           python tools/vfpu_fuzz_gen.py --synthetic build/windows-runtime/vfpu_fuzz_cases.h
           printf 'void f_00304290(void *s) { (void)s; }\n' > build/windows-runtime/ci_recomp.c
@@ -944,6 +963,29 @@ jobs:
           touch build/windows-runtime/.recomp-trace-0
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime \
             VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build
+
+      - name: Build and run synthetic VFPU fuzzer (shard 1 of 2)
+        if: matrix.part == 'fuzz-1'
+        shell: msys2 {0}
+        env:
+          FUZZ_CASE_SHARD: "1/2"
+        run: |
+          python tools/vfpu_fuzz_gen.py --synthetic build/windows-runtime/vfpu_fuzz_cases.h
+          printf 'void f_00304290(void *s) { (void)s; }\n' > build/windows-runtime/ci_recomp.c
+          touch build/windows-runtime/ci_recomp_funcs.h
+          touch build/windows-runtime/.recomp-trace-0
+          mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime \
+            VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build
+
+      # The shard proof runs the same binary once more with FUZZ_TRIALS=1 (case selection does
+      # not depend on the trial count): the default run, then 0/2 and 1/2. It requires the
+      # shards to be disjoint and to union to the default's full case list.
+      - name: Prove the fuzz shards cover every case exactly once
+        if: matrix.part == 'fuzz-0'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=tools NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe python -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests
 
   main_smoke:
     name: Main integration smoke

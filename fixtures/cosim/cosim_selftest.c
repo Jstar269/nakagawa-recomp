@@ -1569,8 +1569,10 @@ static int run_control_encoding_sweep(void) {
 static int run_link_register_shape(void) {
     install_lane(0);
     seed_window();
-    /* jalr $t1, $t0 with $t0 = the registered trampoline, so the transfer lands
-     * on a handoff immediately and the run ends without interpreting further. */
+    /* jalr $t1, $t0 with $t0 = the registered trampoline. A linked transfer into a
+     * registered body is a CALL, as in generated code: the trampoline runs once and
+     * the interpreter resumes at the link address, where the break sentinel stops
+     * the run fail-closed. */
     MEM_W32(COSIM_NEGPAD + 0u, enc_r(8u, 0u, 9u, 0u, 0x09u));
     MEM_W32(COSIM_NEGPAD + 4u, 0u);
     MEM_W32(COSIM_NEGPAD + 8u, enc_r(0u, 0u, 0u, 0u, 0x0Du));   /* break sentinel */
@@ -1583,15 +1585,25 @@ static int run_link_register_shape(void) {
 
     SrGuestInterpFault fault;
     memset(&fault, 0, sizeof fault);
+    g_trampoline_hits = 0;
     s_cpu = &state;
     const SrGuestInterpResult result =
         sr_guest_interp_run(&state, (uint32_t)COSIM_NEGPAD, &fault);
     s_cpu = NULL;
 
     int failures = 0;
-    if (result != SR_GUEST_INTERP_AOT_HANDOFF) {
-        fprintf(stderr, "COSIM LINKSHAPE FAIL: result=%s" NEWLINE,
-                sr_guest_interp_result_name(result));
+    if (g_trampoline_hits != 1) {
+        fprintf(stderr, "COSIM LINKSHAPE FAIL: the registered callee ran %d time(s), "
+                "expected exactly once" NEWLINE, g_trampoline_hits);
+        failures++;
+    }
+    if (result != SR_GUEST_INTERP_UNSUPPORTED ||
+        fault.pc != (uint32_t)COSIM_NEGPAD + 8u) {
+        fprintf(stderr, "COSIM LINKSHAPE FAIL: result=%s at 0x%08x, expected the break "
+                "sentinel at the link address 0x%08x -- the call did not resume its "
+                "interpreted caller" NEWLINE,
+                sr_guest_interp_result_name(result), fault.pc,
+                (uint32_t)COSIM_NEGPAD + 8u);
         failures++;
     }
     if (state.r[9] != (uint32_t)COSIM_NEGPAD + 8u) {
@@ -1609,8 +1621,8 @@ static int run_link_register_shape(void) {
         failures++;
     }
     if (failures == 0) {
-        fprintf(stderr, "cosim: jalr link-register shape OK ($t1 linked, $ra untouched)"
-                NEWLINE);
+        fprintf(stderr, "cosim: jalr link-register shape OK ($t1 linked, $ra untouched, "
+                "caller resumed at the link)" NEWLINE);
     }
     return failures;
 }
@@ -1927,16 +1939,20 @@ int main(int argc, char **argv) {
             < stack_census.first_mismatch_actual_sp
         || stack_census.first_mismatch_expected_sp
             - stack_census.first_mismatch_actual_sp != 32u) {
+        /* A failed control is a gate failure like any divergence: count it so the
+         * run still ends with the summary and its FAIL marker, which is what lets
+         * a mutant that also unbalances an observed frame be classified. */
         sr_stack_census_report();
         fprintf(stderr,
                 "cosim: stack census positive control failed or expected-entry coverage was unknown\n");
-        return 1;
+        g_failures++;
+    } else {
+        sr_stack_census_report();
+        fprintf(stderr,
+                "cosim: stack census caught the declared spleak control at 0x%08x; "
+                "unobserved=%u, all other observed entries balanced\n",
+                stack_leak_control->address, stack_census.unobserved);
     }
-    sr_stack_census_report();
-    fprintf(stderr,
-            "cosim: stack census caught the declared spleak control at 0x%08x; "
-            "unobserved=%u, all other observed entries balanced\n",
-            stack_leak_control->address, stack_census.unobserved);
 #endif
     fprintf(stderr, "\ncosim: %u comparison cases, %d divergence report(s)\n",
             executed, g_failures);
