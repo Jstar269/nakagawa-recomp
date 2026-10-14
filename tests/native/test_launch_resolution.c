@@ -566,6 +566,102 @@ static void write_file_utf8(const char *path, const char *data) {
     assert(fclose(f) == 0);
 }
 
+
+static void test_launch_stop_functionality(const char *test_executable, const char *base, char sep) {
+    printf("[LAUNCH_TEST] Subtest 20: nk_launch_stop state changes and process termination\n");
+    fflush(stdout);
+
+    /* 1. NULL session safety */
+    nk_launch_stop(NULL);
+
+    /* 2. Stopping a session that is not running */
+    NkLaunchSession session;
+    memset(&session, 0, sizeof(session));
+    session.is_running = false;
+    nk_launch_stop(&session);
+    assert(session.is_running == false);
+
+    /* 3. Stopping an actively running session */
+    char root[800];
+    char runtime_dir[900];
+    char runtime_path[1000];
+    char image_path[1000];
+    char stage_root[900];
+    char staged_eboot[1000];
+    char staged_xbdata[1000];
+    char report_path[1000];
+    char absolute_test_executable[1000];
+
+    snprintf(root, sizeof(root), "%s%cstop_test_env", base, sep);
+    snprintf(runtime_dir, sizeof(runtime_dir), "%s%cbuild%cdisplay-smoke", root, sep, sep);
+#if defined(_WIN32) || defined(_WIN64)
+    snprintf(runtime_path, sizeof(runtime_path), "%s%cdisplay-smoke.exe", runtime_dir, sep);
+#else
+    snprintf(runtime_path, sizeof(runtime_path), "%s%cdisplay-smoke", runtime_dir, sep);
+#endif
+    snprintf(image_path, sizeof(image_path), "%s%cdisplay-smoke_image.bin", runtime_dir, sep);
+    snprintf(stage_root, sizeof(stage_root), "%s%cprepared", root, sep);
+    snprintf(staged_eboot, sizeof(staged_eboot), "%s%cEBOOT.BIN", stage_root, sep);
+    snprintf(staged_xbdata, sizeof(staged_xbdata), "%s%cxbdata", stage_root, sep);
+    snprintf(report_path, sizeof(report_path), "%s%creport.txt", root, sep);
+
+    assert(nk_platform_mkdir_p(root));
+    assert(nk_platform_mkdir_p(runtime_dir));
+    assert(nk_platform_mkdir_p(staged_xbdata));
+    assert(nk_platform_absolute_path(test_executable, absolute_test_executable, sizeof(absolute_test_executable)));
+    copy_executable(absolute_test_executable, runtime_path);
+    write_file(image_path, "synthetic image");
+    write_valid_elf(staged_eboot, 0x08810000u, 0x08810000u);
+
+    NkGameEntry game;
+    make_game(&game, "");
+    snprintf(game.disc_id, sizeof(game.disc_id), "TEST00006");
+    snprintf(game.title_id, sizeof(game.title_id), "display-smoke-v1");
+    make_catalog_data_root(stage_root, game.title_id);
+    assert(strlen(stage_root) < sizeof(game.prepared_root));
+    memcpy(game.prepared_root, stage_root, strlen(stage_root) + 1);
+    game.assets_staged = true;
+
+    bool had_report;
+    char *old_report = capture_environment_value("NK_LAUNCH_TEST_REPORT_FILE", &had_report);
+    set_environment_value("NK_LAUNCH_TEST_REPORT_FILE", report_path);
+
+    assert(nk_launch_prepare_session(&session, &game, root) == NK_OK);
+    assert(nk_launch_start(&session) == NK_OK);
+    assert(session.is_running == true);
+    assert(nk_launch_is_running(&session) == true);
+
+    /* 4. Call nk_launch_stop on active session */
+    nk_launch_stop(&session);
+    assert(session.is_running == false);
+    assert(nk_launch_is_running(&session) == false);
+
+    /* 5. Repeated call to nk_launch_stop on stopped session (idempotency) */
+    nk_launch_stop(&session);
+    assert(session.is_running == false);
+
+    restore_environment_value("NK_LAUNCH_TEST_REPORT_FILE", old_report, had_report);
+    free(old_report);
+
+    remove(runtime_path);
+    remove(image_path);
+    remove(staged_eboot);
+    {
+        char stage_memstick[1000];
+        snprintf(stage_memstick, sizeof(stage_memstick), "%s%cmemstick", stage_root, sep);
+        test_rmdir(stage_memstick);
+    }
+    test_rmdir(staged_xbdata);
+    test_rmdir(stage_root);
+    test_rmdir(runtime_dir);
+    {
+        char build_dir[900];
+        snprintf(build_dir, sizeof(build_dir), "%s%cbuild", root, sep);
+        test_rmdir(build_dir);
+    }
+    test_rmdir(root);
+}
+
 static void test_non_ascii_user_data_root(const char *base, char sep) {
     printf("[LAUNCH_TEST] Subtest 19: non-ASCII user-data root\n");
     fflush(stdout);
@@ -1532,6 +1628,9 @@ int main(int argc, char **argv) {
 
     /* 19. A non-ASCII user profile must not break any user-data open. */
     test_non_ascii_user_data_root(base, sep);
+
+    /* 20. nk_launch_stop state changes and process termination. */
+    test_launch_stop_functionality(argv[0], base, sep);
 
     printf("[LAUNCH_TEST] ALL LAUNCH RESOLUTION TESTS PASSED!\n");
     native_test_assert_real_config_untouched();
