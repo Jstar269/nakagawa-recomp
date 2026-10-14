@@ -482,6 +482,15 @@ the trusted run. Serialising CodeQL after `CI`, by a `workflow_run` of the merge
 `CI` run, would cost about 5.6 minutes median per group (round-1 measurement). That
 alternative is not used.
 
+**Provenance on a group.** `.github/workflows/provenance-attestation-merge-group.yml`
+observes each group commit with the default-branch provenance verifier. It runs as a
+`workflow_run` of the group's `CI` run, filtered to `merge_group` runs of this
+repository's `gh-readonly-queue/` branches, and reads the group commit as data only,
+without checking it out. Its verdict base is the merge base of the group with the
+default branch, because a group's parent may be an earlier group that never landed. It
+is observation only and not a required check; the hosted `Trusted provenance
+attestation` remains the pull-request gate.
+
 ## Windows hosted runner policy
 
 The Windows job intentionally remains on `windows-2022`. Hosted execution is
