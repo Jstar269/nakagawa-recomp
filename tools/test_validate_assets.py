@@ -22,6 +22,7 @@ diagnostics, so a visible error can never coexist with exit 0.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -140,6 +141,40 @@ def _clean_tree(root: Path) -> Path:
 
 def _write_reference(path: Path, mapping: dict | None = None) -> None:
     _write_json(path, mapping if mapping is not None else {})
+
+
+def _md5_hex(data: bytes) -> str:
+    return hashlib.md5(data, usedforsecurity=False).hexdigest()
+
+
+def _sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _reference_digests(tree: Path, digest) -> dict:
+    """Digest every asset of a clean tree under its reference key.
+
+    Computed here, not by the validator, so the fixtures pin the on-disk format.
+    """
+    digests = {}
+    for path in sorted(tree.rglob("*")):
+        if path.is_file() and path.name != "inventory_map.json":
+            digests[path.relative_to(tree).as_posix()] = digest(path.read_bytes())
+    return digests
+
+
+def _legacy_reference(tree: Path) -> dict:
+    """The pre-versioned format: a flat {key: md5 hex} object."""
+    return _reference_digests(tree, _md5_hex)
+
+
+def _versioned_reference(tree: Path) -> dict:
+    """The versioned format: SHA-256 digests with an explicit algorithm marker."""
+    return {
+        "format_version": 1,
+        "algorithm": "sha256",
+        "digests": _reference_digests(tree, _sha256_hex),
+    }
 
 
 def _run_validator(tree: Path, ref: Path, *extra: str) -> subprocess.CompletedProcess:
@@ -406,9 +441,9 @@ class CleanControlTests(ValidatorCliBase):
         self.assertEqual(proc.returncode, 0, _combined(proc))
         self.assertIn("Verification SUCCESS", _combined(proc))
         self.assertTrue(ref.is_file())
-        bootstrapped = json.loads(ref.read_text(encoding="utf-8"))
-        self.assertEqual(len(bootstrapped), 3)  # tex.gim, bgm.sgd, music/jingle.at3
-        self.assertIn("archive_a/tex.gim", bootstrapped)
+        digests = json.loads(ref.read_text(encoding="utf-8"))["digests"]
+        self.assertEqual(len(digests), 3)  # tex.gim, bgm.sgd, music/jingle.at3
+        self.assertIn("archive_a/tex.gim", digests)
 
         # A re-run against the freshly bootstrapped manifest must stay clean.
         proc = _run_validator(self.tree, ref)
@@ -714,6 +749,135 @@ class GimPaletteUnitTests(unittest.TestCase):
                     ok, msg = va.check_gim_palette(str(path))
                     self.assertFalse(ok, f"{n} trailing byte(s) must fail")
                     self.assertIn("truncated block header", msg)
+
+
+class ReferenceFormatTests(ValidatorCliBase):
+    """Golden reference formats (issue #969).
+
+    Legacy unversioned MD5 references keep validating and print one regenerate
+    note. New references are written as versioned SHA-256. An unknown algorithm
+    or a malformed digest fails closed.
+    """
+
+    def test_legacy_md5_reference_still_validates(self) -> None:
+        _clean_tree(self.tree)
+        _write_json(self.ref, _legacy_reference(self.tree))
+        proc = _run_validator(self.tree, self.ref)
+        out = _combined(proc)
+
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertIn("Verification SUCCESS", out)
+        self.assertEqual(_count(out, "Hash mismatches"), 0)
+        self.assertEqual(_count(out, "Missing from golden"), 0)
+
+    def test_legacy_reference_prints_one_regenerate_note_without_failing(self) -> None:
+        _clean_tree(self.tree)
+        _write_json(self.ref, _legacy_reference(self.tree))
+        proc = _run_validator(self.tree, self.ref)
+        out = _combined(proc)
+
+        self.assertEqual(proc.returncode, 0, out)
+        notes = [line for line in out.splitlines() if "legacy unversioned MD5" in line]
+        self.assertEqual(len(notes), 1, out)
+        self.assertIn("--bootstrap", notes[0])
+
+    def test_versioned_sha256_reference_validates_without_legacy_note(self) -> None:
+        _clean_tree(self.tree)
+        _write_json(self.ref, _versioned_reference(self.tree))
+        proc = _run_validator(self.tree, self.ref)
+        out = _combined(proc)
+
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertIn("Verification SUCCESS", out)
+        self.assertEqual(_count(out, "Hash mismatches"), 0)
+        # A missing entry is only a warning, so require every file to match a reference entry.
+        self.assertEqual(_count(out, "Missing from golden"), 0)
+        self.assertNotIn("legacy unversioned MD5", out)
+
+    def test_legacy_md5_mismatch_is_reported(self) -> None:
+        self._assert_mismatch_reported(_legacy_reference, _md5_hex)
+
+    def test_sha256_mismatch_is_reported(self) -> None:
+        self._assert_mismatch_reported(_versioned_reference, _sha256_hex)
+
+    def _assert_mismatch_reported(self, make_reference, digest) -> None:
+        archive = _clean_tree(self.tree)
+        # Reference is built from the untouched tree, then one byte is flipped.
+        _write_json(self.ref, make_reference(self.tree))
+        data = bytearray((archive / "tex.gim").read_bytes())
+        data[-1] ^= 0xFF
+        (archive / "tex.gim").write_bytes(bytes(data))
+
+        proc = _run_validator(self.tree, self.ref)
+        out = _combined(proc)
+        self.assertEqual(proc.returncode, 1, out)
+        self.assertIn("Hash Corruptions / Mismatches", out)
+        self.assertIn("archive_a/tex.gim: Hash mismatch", out)
+        # The digest actually compared is the one the reference format declares.
+        self.assertIn(f"Got: {digest(bytes(data))}", out)
+        self.assertNotIn("Verification SUCCESS", out)
+
+    def test_newly_written_reference_uses_versioned_sha256(self) -> None:
+        _clean_tree(self.tree)
+        ref = self.base / "bootstrapped_hashes.json"
+        proc = _run_validator(self.tree, ref, "--bootstrap")
+        self.assertEqual(proc.returncode, 0, _combined(proc))
+
+        payload = json.loads(ref.read_text(encoding="utf-8"))
+        self.assertEqual(payload, _versioned_reference(self.tree))
+
+        proc = _run_validator(self.tree, ref)
+        out = _combined(proc)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertNotIn("legacy unversioned MD5", out)
+
+    def test_unknown_digest_algorithm_fails_closed(self) -> None:
+        _clean_tree(self.tree)
+        digests = _reference_digests(self.tree, _sha256_hex)
+        for algorithm in ("sha1", "blake2b", "SHA256"):
+            with self.subTest(algorithm=algorithm):
+                _write_json(self.ref, {
+                    "format_version": 1,
+                    "algorithm": algorithm,
+                    "digests": digests,
+                })
+                proc = _run_validator(self.tree, self.ref)
+                out = _combined(proc)
+                self.assertEqual(proc.returncode, 1, out)
+                self.assertIn("Error reading reference hashes", out)
+                self.assertIn("unsupported digest algorithm", out)
+                self.assertNotIn("Verification SUCCESS", out)
+
+    def test_malformed_reference_fails_closed(self) -> None:
+        _clean_tree(self.tree)
+        key = "archive_a/tex.gim"
+        good = _reference_digests(self.tree, _sha256_hex)
+
+        def versioned(**overrides) -> dict:
+            payload = {"format_version": 1, "algorithm": "sha256", "digests": dict(good)}
+            payload.update(overrides)
+            return payload
+
+        cases = {
+            "truncated sha256 digest": versioned(digests={key: good[key][:20]}),
+            "non-hex sha256 digest": versioned(digests={key: "g" * 64}),
+            "md5-length digest under sha256": versioned(digests={key: "0" * 32}),
+            "non-string digest": versioned(digests={key: 1234}),
+            "digests not an object": versioned(digests=[key]),
+            "digests missing": {"format_version": 1, "algorithm": "sha256"},
+            "unknown format_version": versioned(format_version=2),
+            "unexpected top-level key": versioned(extra="x"),
+            "malformed legacy md5 digest": {key: "not-a-digest"},
+            "top-level list": [key],
+        }
+        for label, payload in cases.items():
+            with self.subTest(case=label):
+                _write_json(self.ref, payload)
+                proc = _run_validator(self.tree, self.ref)
+                out = _combined(proc)
+                self.assertEqual(proc.returncode, 1, out)
+                self.assertIn("Error reading reference hashes", out)
+                self.assertNotIn("Verification SUCCESS", out)
 
 
 class ExitCodeContractTests(ValidatorCliBase):
