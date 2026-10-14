@@ -38,6 +38,8 @@ TINY_LEAF = 0x00021C98
 INDIRECT_CALLER = 0x00021CA0
 TAIL_SOURCE = 0x00021CC0
 TAIL_TARGET = 0x00021CD0
+RA_MOD_CALLER = 0x00021CE0
+RA_MOD_CALLEE = 0x00021D00
 CALLER_SP = 0x00001000
 FRAME_SIZE = 0x70
 
@@ -129,6 +131,18 @@ def _fixture_words() -> dict[int, int]:
         TAIL_TARGET: 0x2402000B,       # addiu v0, zero, 11
         TAIL_TARGET + 4: 0x03E00008,
         TAIL_TARGET + 8: 0x00000000,
+        RA_MOD_CALLER: 0x27BDFFF0,       # addiu sp, sp, -0x10
+        RA_MOD_CALLER + 4: 0x3C190002,   # lui t9, 2
+        RA_MOD_CALLER + 8: 0x37391D00,   # ori t9, t9, 0x1d00
+        RA_MOD_CALLER + 12: 0x0320F809,  # jalr ra, t9
+        RA_MOD_CALLER + 16: 0x241F1234,  # addiu ra, zero, 0x1234  (delay slot)
+        RA_MOD_CALLER + 20: 0x2402002A,  # addiu v0, zero, 42
+        RA_MOD_CALLER + 24: 0x27BD0010,  # addiu sp, sp, 0x10
+        RA_MOD_CALLER + 28: 0x03E00008,  # jr ra
+        RA_MOD_CALLER + 32: 0x00000000,  # nop
+        RA_MOD_CALLEE: 0x241F5678,       # addiu ra, zero, 0x5678  (callee)
+        RA_MOD_CALLEE + 4: 0x03E00008,   # jr ra
+        RA_MOD_CALLEE + 8: 0x00000000,   # nop
     }
     # Owned padding is deliberately executable so the owner's natural path
     # reaches the same resume region without introducing another boundary.
@@ -672,6 +686,108 @@ int main(void) {{
             self.assertIn(
                 "resume_sp=0x00001000 owner_sp=0x00001000", ran.stdout
             )
+
+    def test_call_boundary_preserves_modified_ra_and_resume_pc(self):
+        """CALL/RETURN boundaries preserve modified $ra and declared resume_pc.
+
+        When $ra is overwritten inside a call delay slot or by the callee,
+        AOT generated code carries the explicit resume_pc to dispatch_call
+        while preserving architectural $ra state upon return.
+        """
+        assert CC is not None
+        with scratch_dir.TemporaryDirectory(prefix="entry_semantics_ra_") as tmp:
+            work = Path(tmp)
+            elf = work / "entry_semantics_ra.elf"
+            generated = work / "entry_semantics_ra.c"
+            elf.write_bytes(_synthetic_elf(
+                _fixture_words(), OWNER,
+                pointers=(TINY_LEAF, INDIRECT_CALLER, TAIL_SOURCE, TAIL_TARGET, RA_MOD_CALLER, RA_MOD_CALLEE),
+            ))
+
+            env = dict(os.environ)
+            result = subprocess.run(
+                [sys.executable, str(CODEGEN), str(elf), str(generated), "--profile=none"],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+            (work / "recomp.h").write_text(
+                """\
+#ifndef TEST_RECOMP_H
+#define TEST_RECOMP_H
+#include <stdint.h>
+#define SR_CPUSTATE_ABI_VERSION 3u
+typedef struct CpuState { uint32_t r[32]; uint32_t pc; } CpuState;
+uint32_t test_mem_r32(uint32_t addr);
+void test_mem_w32(uint32_t addr, uint32_t value);
+#define MEM_R32(a) test_mem_r32((uint32_t)(a))
+#define MEM_W32(a, v) test_mem_w32((uint32_t)(a), (uint32_t)(v))
+#define MEM_W32_PC(a, v, pc) test_mem_w32((uint32_t)(a), (uint32_t)(v))
+#define SR_YIELD(s, pc) ((void)0)
+#define sr_begin(s, pc, op) ((void)0)
+#define sr_end(s, addr, size) ((void)0)
+void dispatch(CpuState *s, uint32_t target);
+void dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc);
+void sr_register(uint32_t addr, void (*fn)(CpuState *));
+void sr_exec_span_reset(void);
+int sr_exec_span_register(uint32_t start, uint32_t end);
+void sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc);
+void sr_hle_call(CpuState *s, uint32_t nid);
+void sr_syscall(CpuState *s, uint32_t nid);
+void sr_unimplemented(uint32_t addr, const char *reason);
+#endif
+""",
+                encoding="ascii",
+            )
+            (work / "harness.c").write_text(
+                f"""\
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "entry_semantics_ra_funcs.h"
+
+static uint32_t mem[0x2000 / 4];
+uint32_t test_mem_r32(uint32_t addr) {{{{ return mem[(addr & 0x1fffu) / 4u]; }}}}
+void test_mem_w32(uint32_t addr, uint32_t value) {{{{ mem[(addr & 0x1fffu) / 4u] = value; }}}}
+void sr_register(uint32_t addr, void (*fn)(CpuState *)) {{{{ (void)addr; (void)fn; }}}}
+
+static uint32_t g_last_resume_pc = 0;
+void dispatch(CpuState *s, uint32_t target) {{{{
+    if (target == 0x{RA_MOD_CALLEE:08x}u) {{{{ f_{RA_MOD_CALLEE:08x}(s); return; }}}}
+    abort();
+}}}}
+void dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc) {{{{
+    g_last_resume_pc = resume_pc;
+    dispatch(s, target);
+}}}}
+
+int main(void) {{{{
+    CpuState ra_mod = {{{{0}}}};
+    ra_mod.r[29] = 0x{CALLER_SP:08x}u;
+    ra_mod.r[31] = 0x12345678u;
+    f_{RA_MOD_CALLER:08x}(&ra_mod);
+
+    printf("resume_pc=0x%08x ra=0x%08x v0=%u sp=0x%08x\\n",
+           g_last_resume_pc, ra_mod.r[31], ra_mod.r[2], ra_mod.r[29]);
+    return (g_last_resume_pc == 0x{RA_MOD_CALLER + 20:08x}u
+            && ra_mod.r[31] == 0x5678u
+            && ra_mod.r[2] == 42u
+            && ra_mod.r[29] == 0x{CALLER_SP:08x}u) ? 0 : 1;
+}}}}
+""",
+                encoding="ascii",
+            )
+            chunks = sorted(work.glob("entry_semantics_ra_*.c"))
+            exe = work / "entry_semantics_ra.exe"
+            compiled = subprocess.run(
+                [CC, "-std=c11", "-O0", "-I", str(work), str(work / "harness.c"),
+                 *(str(p) for p in chunks), "-lm", "-o", str(exe)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(compiled.returncode, 0, compiled.stderr + compiled.stdout)
+            ran = subprocess.run([str(exe)], capture_output=True, text=True)
+            self.assertEqual(ran.returncode, 0, ran.stderr + ran.stdout)
+            self.assertIn("resume_pc=0x00021cf4 ra=0x00005678 v0=42", ran.stdout)
 
 
 def _minimal_elf_path(words, entry, *, e_type=2, reloc_section=None):
