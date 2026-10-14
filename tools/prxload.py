@@ -1200,8 +1200,35 @@ def read_psp_segment_sizes(path, expected_segments):
             f"ELF has {expected_segments}"
         )
 
-    bss_size = struct.unpack_from("<I", header, 0x38)[0]
-    segment_sizes = list(struct.unpack_from("<4I", header, 0x54))[:segment_count]
+    elf_size, psp_size = struct.unpack_from("<II", header, 0x28)
+    if psp_size != 0 and psp_size < 0x64:
+        raise ValueError(
+            f"{input_label}: declared container size 0x{psp_size:x} "
+            f"is smaller than the minimum ~PSP header size"
+        )
+    if elf_size != 0 and psp_size != 0 and elf_size > psp_size:
+        raise ValueError(
+            f"{input_label}: declared ELF payload size 0x{elf_size:x} "
+            f"exceeds container size 0x{psp_size:x}"
+        )
+
+    bss_size = struct.unpack_from("<i", header, 0x38)[0]
+    if bss_size < 0 or bss_size > MAX_ELF_IMAGE_BYTES:
+        raise ValueError(f"{input_label}: invalid BSS size 0x{bss_size & 0xFFFFFFFF:x}")
+
+    segment_sizes = list(struct.unpack_from("<4i", header, 0x54))[:segment_count]
+    for idx, seg_sz in enumerate(segment_sizes):
+        if seg_sz < 0 or seg_sz > MAX_ELF_IMAGE_BYTES:
+            raise ValueError(
+                f"{input_label}: segment {idx} has invalid memory size 0x{seg_sz & 0xFFFFFFFF:x}"
+            )
+
+    if sum(segment_sizes) < bss_size:
+        raise ValueError(
+            f"{input_label}: segment sizes provide only 0x{sum(segment_sizes):x} "
+            f"bytes, which do not cover declared BSS size 0x{bss_size:x}"
+        )
+
     return segment_sizes, bss_size
 
 

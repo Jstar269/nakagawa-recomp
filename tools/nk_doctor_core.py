@@ -281,10 +281,19 @@ def _parse_psp_header(path: Path) -> tuple[dict[str, object] | None, str | None]
     segment_count = data[0x27]
     if not 1 <= segment_count <= 4:
         return None, f"invalid PSP segment count {segment_count}"
-    bss_size = struct.unpack_from("<I", data, 0x38)[0]
-    segment_sizes = list(struct.unpack_from("<4I", data, 0x54))[:segment_count]
-    if any(size == 0 for size in segment_sizes):
-        return None, "one or more declared PSP segment sizes are zero"
+    elf_size, psp_size = struct.unpack_from("<II", data, 0x28)
+    if psp_size != 0 and psp_size < 0x64:
+        return None, f"declared container size 0x{psp_size:x} is smaller than ~PSP header size"
+    if elf_size != 0 and psp_size != 0 and elf_size > psp_size:
+        return None, f"declared ELF payload size 0x{elf_size:x} exceeds container size 0x{psp_size:x}"
+    bss_size = struct.unpack_from("<i", data, 0x38)[0]
+    if bss_size < 0:
+        return None, f"invalid negative BSS size {bss_size}"
+    segment_sizes = list(struct.unpack_from("<4i", data, 0x54))[:segment_count]
+    if any(size <= 0 for size in segment_sizes):
+        return None, "one or more declared PSP segment sizes are zero or negative"
+    if sum(segment_sizes) < bss_size:
+        return None, "declared PSP segment sizes do not cover declared BSS size"
     return {
         "segment_count": segment_count,
         "bss_size": bss_size,

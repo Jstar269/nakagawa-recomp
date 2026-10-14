@@ -22,12 +22,19 @@ def make_elf(path, filesz=4, memsz=4):
     path.write_bytes(data)
 
 
-def make_psp_header(path, segment_size=16, bss_size=12, segment_count=1):
+def make_psp_header(path, segment_size=16, bss_size=12, segment_count=1,
+                    elf_size=0, psp_size=0, segment_sizes=None):
     data = bytearray(0x80)
     data[:4] = b"~PSP"
     data[0x27] = segment_count
-    struct.pack_into("<I", data, 0x38, bss_size)
-    struct.pack_into("<I", data, 0x54, segment_size)
+    struct.pack_into("<i", data, 0x28, elf_size)
+    struct.pack_into("<i", data, 0x2C, psp_size)
+    struct.pack_into("<i", data, 0x38, bss_size)
+    if segment_sizes is None:
+        segment_sizes = [segment_size] + [0] * (4 - segment_count)
+    else:
+        segment_sizes = list(segment_sizes) + [0] * (4 - len(segment_sizes))
+    struct.pack_into("<4i", data, 0x54, *segment_sizes[:4])
     path.write_bytes(data)
 
 
@@ -67,6 +74,61 @@ class PspHeaderImageExtentTests(unittest.TestCase):
             make_psp_header(header, segment_size=3, bss_size=0)
 
             with self.assertRaisesRegex(ValueError, "smaller than ELF file size"):
+                prxload.Prx(elf, 0, psp_header=header)
+
+    def test_psp_header_rejects_negative_bss_size(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            elf = root / "module.elf"
+            header = root / "EBOOT.BIN"
+            make_elf(elf)
+            make_psp_header(header, bss_size=-1)
+
+            with self.assertRaisesRegex(ValueError, "invalid BSS size"):
+                prxload.Prx(elf, 0, psp_header=header)
+
+    def test_psp_header_rejects_negative_segment_size(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            elf = root / "module.elf"
+            header = root / "EBOOT.BIN"
+            make_elf(elf)
+            make_psp_header(header, segment_sizes=[-1])
+
+            with self.assertRaisesRegex(ValueError, "invalid memory size"):
+                prxload.Prx(elf, 0, psp_header=header)
+
+    def test_psp_header_rejects_elf_size_exceeding_psp_size(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            elf = root / "module.elf"
+            header = root / "EBOOT.BIN"
+            make_elf(elf)
+            make_psp_header(header, elf_size=0x2000, psp_size=0x1000)
+
+            with self.assertRaisesRegex(ValueError, "exceeds container size"):
+                prxload.Prx(elf, 0, psp_header=header)
+
+    def test_psp_header_rejects_psp_size_smaller_than_header(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            elf = root / "module.elf"
+            header = root / "EBOOT.BIN"
+            make_elf(elf)
+            make_psp_header(header, psp_size=0x10)
+
+            with self.assertRaisesRegex(ValueError, "smaller than the minimum ~PSP header size"):
+                prxload.Prx(elf, 0, psp_header=header)
+
+    def test_psp_header_rejects_segment_sizes_less_than_bss(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            elf = root / "module.elf"
+            header = root / "EBOOT.BIN"
+            make_elf(elf)
+            make_psp_header(header, segment_sizes=[10], bss_size=100)
+
+            with self.assertRaisesRegex(ValueError, "do not cover declared BSS size"):
                 prxload.Prx(elf, 0, psp_header=header)
 
 

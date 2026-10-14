@@ -7195,7 +7195,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "99ac6209874a9fb0ede0ea211d8d3d2948b46f194474367c70113c765917c098"
+      "sha256": "7dffac55a50071327b1ebf07c603c77c29fb7a1e19ec48b617a1c1a80e891b5a"
     },
     {
       "path": "tools/nk_safety.ps1",
@@ -7414,7 +7414,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "36efa4ccb720e07625b3f24df6a8b3f8f0886840bafcf992894a749e37cb7158"
+      "sha256": "97d8d36f00d90fddb7ce48338840239092ea62afa43ae8d66610b8ca24ff94ba"
     },
     {
       "path": "tools/psp_import_table.py",
@@ -9444,7 +9444,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1234c22165fa16274d2c177e657d9df0addf6866650df6308255882eac9e8e52"
+      "sha256": "cbfbd21b00c92ff27ede5f273b31d9e677e3b535dddb17ea405ba0e0ffe18266"
     },
     {
       "path": "tools/test_prxload_relocations.py",
