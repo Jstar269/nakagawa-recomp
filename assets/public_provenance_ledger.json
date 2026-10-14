@@ -6506,7 +6506,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9d8563bc1733173ef51faa39a017177f2b88dc0911bc79515680a96fdbc3f11b"
+      "sha256": "23373077167fcad3e6827f14097c0be89a7d2206c01bd8ddb4586e0c79221679"
     },
     {
       "path": "tools/format_portability_check.py",
@@ -8471,7 +8471,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4d6909c20b6e15b2dd967cd46bf17af6d168181204f40cef035f348bb29633eb"
+      "sha256": "6adb7216828576ab4c6c71c1f373fa7b542078e3b2ca489f85bcc299213d569d"
     },
     {
       "path": "tools/test_font_provisioning.py",
