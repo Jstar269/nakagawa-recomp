@@ -40,8 +40,9 @@ typedef struct SrGuestInterpCallBoundary {
     uint32_t resume_pc;
 } SrGuestInterpCallBoundary;
 
-/* Execute from entry until control reaches a registered AOT destination or a
- * fail-closed boundary. There is deliberately no instruction-count escape hatch:
+/* Execute from entry until an unlinked transfer reaches a registered AOT destination
+ * or a fail-closed boundary. A linked transfer into a registered body is a CALL: the
+ * body runs as a nested native frame and interpretation resumes at the link address. There is deliberately no instruction-count escape hatch:
  * a guest loop is guest behavior, not permission to fabricate completion.
  *
  * IMPLEMENTED INSTRUCTION SET

@@ -139,8 +139,11 @@ int main(int argc, char **argv) {
     if (!fn) { fprintf(stderr, "no recompiled function at 0x%08x\n", target); return 2; }
     if (sr_trace_open(out, "funcdiff", target) != 0) { fprintf(stderr, "cannot open %s\n", out); return 2; }
     if (setjmp(g_hle_jmp) == 0) {
-        fn(&s);
+        sr_call_body(fn, &s);
     } else {
+        /* A recorded tail transfer is consumed before guest code runs, so none can be
+         * live when guest code longjmps out (#855). */
+        sr_tail_assert_empty("tail-transfer-live-at-unwind");
         /* sr_hle_call() longjmps here when the plain driver hits an
          * unimplemented NID.  That jump discards the C frames of any nested
          * host->guest call in flight, so their guest frames must be reclaimed
