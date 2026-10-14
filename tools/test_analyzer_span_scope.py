@@ -839,6 +839,52 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         self.assertEqual(by_address[PRIMARY_BASE + 12]["owners"], [])
         self.assertEqual(by_address[PRIMARY_BASE + 12]["classification"], "unowned-executable")
 
+    def test_branch_target_outside_authorized_code_fails_closed(self) -> None:
+        # A branch or jump target resolving outside authorized code fails closed.
+        # The target is never converted into a callable entry point, and the edge is
+        # classified as an out-of-range dispatch transfer.
+        out_of_range_target = 0x00800000
+        near_oor_target = PRIMARY_BASE + 0x1000
+        branch_offset = (near_oor_target - (PRIMARY_BASE + 0x14)) // 4
+        words = [
+            0x08000000 | ((out_of_range_target >> 2) & 0x03FFFFFF),  # j 0x00800000
+            0x00000000,
+            0x0C000000 | ((out_of_range_target >> 2) & 0x03FFFFFF),  # jal 0x00800000
+            0x00000000,
+            (0x04 << 26) | (branch_offset & 0xFFFF),                 # beq $0, $0, 0x00002000
+            0x00000000,
+            0x03E00008,                                             # jr $ra
+            0x00000000,
+        ]
+        elf_path = self.root / "oor-branch-target.elf"
+        write_elf(elf_path, words=words)
+        image = analyze.Elf(str(elf_path), base=0)
+
+        starts, ranges = analyze.analyze(image)
+
+        self.assertNotIn(out_of_range_target, starts)
+        self.assertNotIn(near_oor_target, starts)
+
+        report = analyze.canonical_cfg_report(image, ranges=ranges, entries=starts)
+        self.assertEqual(analyze.canonical_cfg_gate(report), [])
+
+        classifications = {
+            (row["source"], row["target"], row["kind"]): row["classification"]
+            for row in report["successor_classifications"]
+        }
+        self.assertEqual(
+            classifications[(PRIMARY_BASE, out_of_range_target, "direct-jump")],
+            "inter-function-handoff-dispatch",
+        )
+        self.assertEqual(
+            classifications[(PRIMARY_BASE + 8, out_of_range_target, "call")],
+            "inter-function-handoff-dispatch",
+        )
+        self.assertEqual(
+            classifications[(PRIMARY_BASE + 16, near_oor_target, "direct-branch")],
+            "inter-function-handoff-dispatch",
+        )
+
     @unittest.skipUnless(CC, "gcc is required for the analyzer semantic mutation proof")
     def test_cfg_gate_kills_generated_direct_call_root_mutation(self) -> None:
         words = (
