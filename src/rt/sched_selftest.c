@@ -105,6 +105,14 @@ int sr_perf_enabled;
 /* sched.c installs the dispatcher's stack probe at scheduler start; this harness links
  * neither the dispatcher nor the interpreter, so it carries the variable itself. */
 int (*sr_dispatch_host_stack_remaining)(size_t *remaining_out) = NULL;
+/* sched.c refuses a live TAIL transfer at every yield and unwind (#855); without the
+ * interpreter this harness carries the slot, and a fault here is a harness defect. */
+SrTailTransfer sr_tail_transfer;
+void sr_tail_fatal(const char *what, uint32_t target) {
+    fprintf(stderr, "sched-selftest: unexpected tail-transfer fault %s target=0x%08x\n",
+            what, (unsigned)target);
+    abort();
+}
 uint64_t sr_perf_now_ns_impl(void) { return 0; }
 void sr_perf_guest_begin(void) {}
 void sr_perf_guest_end(void) {}
