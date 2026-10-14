@@ -51,9 +51,22 @@ The `CI required` job is the stable aggregate status required by branch
 protection. It runs with `always()`, accepts an intentionally skipped irrelevant
 job, and fails when a classifier-applicable job fails, is cancelled, or is
 otherwise incomplete. A failed hygiene/security job or public-export job is never
-hidden by the aggregate. Python/native jobs also wait for hygiene and the
-public-export job, so an early full-tree failure does not spend additional runner
-time on dependent expensive gates.
+hidden by the aggregate.
+
+### Hygiene beside the substantive gates
+
+The Python, native and Windows jobs wait only for `classify` and the
+public-export audit (`needs: [classify, public_export]`). They do not wait for
+`hygiene`, which runs beside them. Before this change they waited for hygiene too,
+so its all-files pre-commit run, Betterleaks history scan and canaries (98 s median
+across 40 recent pull requests, as measured from their job timings) sat in front of
+every expensive gate. The public-export audit stays a dependency: it is the
+publication-integrity boundary, it runs in about 52 s, and it keeps the candidate
+export ordered before any substantive job starts. `CI required` still requires the
+hygiene result (`HYGIENE_RESULT`) and the public-export result, so no failure is
+hidden. The trade-off is that a pull request that fails hygiene now also spends
+runner time on the expensive gates that started beside it. `main_smoke` is not
+changed: it runs only on pushes to `main` and is not a substantive gate.
 
 The full-tree pre-commit run retains the publication audit and the Betterleaks
 current-tree scan; the hook runs Betterleaks in directory mode over the files it

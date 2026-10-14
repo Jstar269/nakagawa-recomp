@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a1f7e826f6c3535e4246385cdc9f50fa1dda1208d87904e0327ac6914f4458ce"
+      "sha256": "187e20e50f79626e712511817e7bb4a2e2272989fda1f701289eb03820ce1ff4"
     },
     {
       "path": ".github/workflows/codeql.yml",
@@ -1081,7 +1081,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "90251daa817479a60b1ac90329166029d1af4999b8d8867ac2c94529293c6d89"
+      "sha256": "5235c879e0cc7a183a677e485a0354016fdc05fefc6cdfbd45969d548fa93dde"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -9600,7 +9600,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d8a25d1bf4aa571f194cfc3409c61ba01312306933a1c164d1b1532db89029c8"
+      "sha256": "28791c23d6b6b4a0636a6c1787c92006e0d61c72f6a4ae28435e5494ca9164fc"
     },
     {
       "path": "tools/test_public_export.py",

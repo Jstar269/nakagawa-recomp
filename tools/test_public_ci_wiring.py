@@ -607,11 +607,25 @@ class PublicExportJobTests(unittest.TestCase):
             self.assertNotIn(gate, text, "public_export must not be path-gated on %s" % gate)
 
     def test_every_platform_gate_waits_for_the_export_result(self) -> None:
-        for job in ("python_tools", "native_tools", "windows_runtime", "main_smoke"):
+        # main_smoke runs only on main pushes and is not a substantive gate: it keeps hygiene.
+        block = "\n".join(self.blocks["main_smoke"])
+        self.assertIn("needs: [classify, hygiene, public_export]", block)
+        self.assertIn("needs.public_export.result == 'success'", block)
+        for job in ("python_tools", "native_tools", "windows_runtime"):
             with self.subTest(job=job):
                 block = "\n".join(self.blocks[job])
-                self.assertIn("needs: [classify, hygiene, public_export]", block)
+                self.assertIn("needs: [classify, public_export]", block)
+                needs_line = re.search(r"(?m)^    needs: (.+)$", block)
+                self.assertIsNotNone(needs_line, f"{job} declares no needs line")
+                self.assertNotIn("hygiene", needs_line.group(1))
+                self.assertNotIn("needs.hygiene.result", block)
                 self.assertIn("needs.public_export.result == 'success'", block)
+
+    def test_ci_required_still_requires_hygiene_and_export(self) -> None:
+        required = "\n".join(self.blocks["ci_required"])
+        self.assertIn("needs: [classify, hygiene, public_export, markdown, python_tools, native_tools,", required)
+        self.assertIn("HYGIENE_RESULT: ${{ needs.hygiene.result }}", required)
+        self.assertIn("PUBLIC_EXPORT_RESULT: ${{ needs.public_export.result }}", required)
 
 
 if __name__ == "__main__":

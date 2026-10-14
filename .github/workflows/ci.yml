@@ -205,7 +205,9 @@ jobs:
   python_tools:
     name: Python tooling gates
     runs-on: ubuntu-24.04
-    needs: [classify, hygiene, public_export]
+    # Waits for classify and the public-export audit, not hygiene: hygiene runs beside it
+    # and ci_required still requires its result (docs/CI.md, "Hygiene beside the substantive gates").
+    needs: [classify, public_export]
     # The suite is ~10 minutes serially. Four runners split the test files with
     # tools/ci_test_shards.py: a deterministic longest-first bin packing over the
     # measured per-module durations in tools/ci_test_weights.json (#693). Every
@@ -222,7 +224,7 @@ jobs:
         # outputs; the job's own condition skips it in that case.
         shard: ${{ fromJSON(needs.classify.outputs.python_shards || '[0, 1, 2, 3]') }}
     if: >-
-      ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+      ${{ always() && needs.classify.result == 'success' &&
           needs.public_export.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_python == 'true' }}
@@ -276,9 +278,10 @@ jobs:
   native_tools:
     name: Native and translation gates
     runs-on: ubuntu-24.04
-    needs: [classify, hygiene, public_export]
+    # Not gated on hygiene (docs/CI.md, "Hygiene beside the substantive gates").
+    needs: [classify, public_export]
     if: >-
-      ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+      ${{ always() && needs.classify.result == 'success' &&
           needs.public_export.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_native == 'true' }}
@@ -619,9 +622,10 @@ jobs:
     # (~6.5 min), and waiting for python_tools/native_tools put ~2.5 min on every
     # PR's critical path. A Linux failure still fails ci_required; the Windows run
     # is then merely redundant, which costs nothing on a public repository.
-    needs: [classify, hygiene, public_export]
+    # Not gated on hygiene (docs/CI.md, "Hygiene beside the substantive gates").
+    needs: [classify, public_export]
     if: >-
-      ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+      ${{ always() && needs.classify.result == 'success' &&
           needs.public_export.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_windows == 'true' }}
