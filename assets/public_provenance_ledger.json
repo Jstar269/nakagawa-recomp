@@ -2829,7 +2829,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2b29371e68e8bc796afd7f45585dc1a1eeb8e167f7338a58fff1d2e0075fde65"
+      "sha256": "8d76b0d3f1f0fbad3c1d3296930a9ddc1531388c63d41bbc4f6bdb696ef0b8ef"
     },
     {
       "path": "src/core/nk_psp_container.h",
@@ -5945,7 +5945,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d13c96e65f7b6d043def265529677e34941ad0f673fa202adce7270f321fb575"
+      "sha256": "1d11a94641c0d04109ffb41d835ef297c23ec86fa2f21b7c62715e6a5b0f298c"
     },
     {
       "path": "tests/native/test_input_profile.c",
@@ -7438,7 +7438,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "36efa4ccb720e07625b3f24df6a8b3f8f0886840bafcf992894a749e37cb7158"
+      "sha256": "867bdd706203d255005938c9912fcebf68fa30f36539f700df2f88e7e274ef94"
     },
     {
       "path": "tools/psp_import_table.py",
@@ -9540,7 +9540,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f06289b938773d9568f1af6e7c5351e464b5b0848c0c6c8578f486f38521b548"
+      "sha256": "47c9e5e23707c7109ce34835304cd7d229767b6513be57ccf45b640e4987936d"
     },
     {
       "path": "tools/test_psp_readiness.py",
