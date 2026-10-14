@@ -7195,7 +7195,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7dffac55a50071327b1ebf07c603c77c29fb7a1e19ec48b617a1c1a80e891b5a"
+      "sha256": "c41d7cf30d99e5cacabf9d869b35a1370888156f5b7834187148ba25bff9bfa8"
     },
     {
       "path": "tools/nk_safety.ps1",
@@ -7414,7 +7414,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "97d8d36f00d90fddb7ce48338840239092ea62afa43ae8d66610b8ca24ff94ba"
+      "sha256": "74a6abf790cc938f94c680a1f059b8ac54f7f51ece4c1ebd2fa4c55ad8a4f2a4"
     },
     {
       "path": "tools/psp_import_table.py",
@@ -8748,7 +8748,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e068d3558173be7f0545edf930c9b0f151f3ad722e6c7b22c2d335b0bbbfb83c"
+      "sha256": "9631a74c23a2d2bdd967182b8f9c180d00ccb5179c208c2e2fbfc8dcc7a3190f"
     },
     {
       "path": "tools/test_hst_doctor_hardening.py",
@@ -9444,7 +9444,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cbfbd21b00c92ff27ede5f273b31d9e677e3b535dddb17ea405ba0e0ffe18266"
+      "sha256": "0121608f5811303e2a071a5fb756151d29a0c2e535fc7ed5f72d4263ef7ce4da"
     },
     {
       "path": "tools/test_prxload_relocations.py",

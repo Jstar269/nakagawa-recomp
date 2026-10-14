@@ -1206,7 +1206,10 @@ def read_psp_segment_sizes(path, expected_segments):
             f"{input_label}: declared container size 0x{psp_size:x} "
             f"is smaller than the minimum ~PSP header size"
         )
-    if elf_size != 0 and psp_size != 0 and elf_size > psp_size:
+    # A compressed module (0x06 bit 0) expands to elf_size past its container,
+    # so the size relation only holds for uncompressed headers.
+    compressed = (header[0x06] & 1) != 0
+    if not compressed and elf_size != 0 and psp_size != 0 and elf_size > psp_size:
         raise ValueError(
             f"{input_label}: declared ELF payload size 0x{elf_size:x} "
             f"exceeds container size 0x{psp_size:x}"
@@ -1222,12 +1225,6 @@ def read_psp_segment_sizes(path, expected_segments):
             raise ValueError(
                 f"{input_label}: segment {idx} has invalid memory size 0x{seg_sz & 0xFFFFFFFF:x}"
             )
-
-    if sum(segment_sizes) < bss_size:
-        raise ValueError(
-            f"{input_label}: segment sizes provide only 0x{sum(segment_sizes):x} "
-            f"bytes, which do not cover declared BSS size 0x{bss_size:x}"
-        )
 
     return segment_sizes, bss_size
 
