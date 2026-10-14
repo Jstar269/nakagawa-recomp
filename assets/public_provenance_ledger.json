@@ -1138,7 +1138,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a04b7e970def3481c12e0ab30571b3c4774a8e634e035329831677a3354043b2"
+      "sha256": "cb6b9a9c60aea342b57bc87f4d1afc1ffe48760272b78fbb0fb1b6281057b254"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -5010,7 +5010,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "030e437b3286d66b43d148c88a2151abfc5eee7590598e7b5b74f1e0f6209a75"
+      "sha256": "c95c1ebebed910583db74e21254c7f4a4e506c589aa191056bfabc8de46db7e9"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5048,7 +5048,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "714fbce45f657b6ae307b4126ac38db2dd196b332b1975bafd2b1ae8b0a88905"
+      "sha256": "0fdf33d26c9ccc9f4c7ba9b047a2f5a5179caf75c1838a6a5daf1b6e2c2b8b7b"
     },
     {
       "path": "src/rt/intr_conformance.h",

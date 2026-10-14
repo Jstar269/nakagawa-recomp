@@ -325,6 +325,9 @@ uint32_t sr_vblank_arg(void);
 #define NID_SCE_AUDIO_GET_CHANNEL_REST_LENGTH 0xb011922fu
 #define NID_SCE_IO_RENAME 0x779103a0u
 #define NID_SCE_AUDIO_CHANGE_VOLUME 0xb7e1d8e7u
+#define NID_SCE_AUDIO_OUTPUT2_RESERVE 0x01562ba3u
+#define NID_SCE_AUDIO_OUTPUT2_RELEASE 0x43196845u
+#define NID_SCE_AUDIO_OUTPUT2_REST_SAMPLE 0x647cef33u
 #define SCE_AUDIO_ERROR_NOT_INITIALIZED 0x80260001u
 #define SCE_AUDIO_ERROR_INVALID_CH 0x80260003u
 #define SCE_AUDIO_ERROR_INVALID_SIZE 0x80260006u
@@ -5711,6 +5714,37 @@ static void test_audio_regular_contract_safety(void) {
            "a negative queue report ends the wait instead of looping");
     expect(s_audio_queue_calls == 1u,
            "the negative queue sentinel takes the open-loop path after one query");
+}
+
+/* sceAudioOutput2Release busy rule (issue #311).
+ *
+ * Measured on PSP-3001, firmware 6.6.1 (2026-10-01; the #311 comment, raw records private):
+ * releasing Output2 while samples are still queued returns 0x80268002 and leaves Output2
+ * reserved; draining sceAudioOutput2GetRestSample to 0 first lets the release succeed. The
+ * fixture sets the queue depth through sr_audio_queued(), which GetRestSample and the release
+ * both read. sceAudioSRCChReserve has no production handler yet (#339), so "still reserved" is
+ * observed on the Output2 surface: a second Reserve is refused, and the release after draining
+ * succeeds only if the refused release kept the reservation. */
+static void test_audio_output2_release_refuses_while_queued(void) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RESERVE, 64u, 0u, 0u) == 0u,
+           "Output2 reserves a 64-sample channel");
+
+    s_audio_queue_result = 256;
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_REST_SAMPLE, 0u, 0u, 0u) == 256u,
+           "GetRestSample reports the queued Output2 samples");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RELEASE, 0u, 0u, 0u) == 0x80268002u,
+           "release with samples queued returns the measured busy code 0x80268002");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RESERVE, 64u, 0u, 0u) != 0u,
+           "a refused release leaves Output2 reserved, so a second Reserve is refused");
+
+    s_audio_queue_result = 0;
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RELEASE, 0u, 0u, 0u) == 0u,
+           "release succeeds once Output2 is drained");
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
 }
 
 /* SR_AUDIOSTAT drift window (AUDIOSTAT_LEAD).
@@ -27355,6 +27389,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_wait_thread_end_blocking_and_resume();
     test_wait_thread_end_cb_execution();
     test_audio_regular_contract_safety();
+    test_audio_output2_release_refuses_while_queued();
     test_audio_drift_window_reports_the_pacing_value();
     test_audio_output_telemetry_counts_guest_frames();
     test_ctrl_live_input_latch_suppresses_phantom_start();
