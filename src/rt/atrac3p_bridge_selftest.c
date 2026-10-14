@@ -110,7 +110,8 @@ static int count_captured_text(FILE *capture, const char *needle)
         return -1;
     size = fread(text, 1u, size, capture);
     text[size] = '\0';
-    for (char *at = text; (at = strstr(at, needle)) != NULL; at += strlen(needle))
+    size_t needle_len = strlen(needle);
+    for (char *at = text; (at = strstr(at, needle)) != NULL; at += needle_len)
         count++;
     free(text);
     return count;
