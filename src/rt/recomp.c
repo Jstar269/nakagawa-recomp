@@ -1649,6 +1649,10 @@ static void dump_dispatch_misses(void) {
  * the interpreter result identically (AOT_HANDOFF/CALL_RETURN return;
  * EXCEPTION/ERET clear flow and recurse; any reject propagates to the
  * fail-closed wrapper). */
+/* How dispatch_call_aot completes the TAIL chain (#855) of the body it ran. */
+#define SR_DRAIN_SEGMENT 0  /* a computed step: only its direct successors (see recomp.h) */
+#define SR_DRAIN_CHAIN 1    /* a public dispatch or CALL: the whole chain */
+
 static int dispatch_try_with_boundary(
     CpuState *s,
     uint32_t target,
@@ -1787,9 +1791,13 @@ static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
     fn(s);
     /* Complete the body's TAIL chain (#855) where the nested calls used to complete it:
      * inside this span, before the #363 restore, and before dispatch_after_aot looks for
-     * exception flow a chained body may raise. The drain's own dispatches pass drain=0 so
-     * a chain never opens a second drain. */
-    if (drain && sr_tail_transfer.pending) sr_tail_drain(s);
+     * exception flow a chained body may raise. A computed step (dispatch_tail_step) runs
+     * only its direct successors here, which used to nest inside its dispatch, and leaves
+     * the next computed transfer to the enclosing drain, so a chain never nests drains. */
+    if (sr_tail_transfer.pending) {
+        if (drain == SR_DRAIN_CHAIN) sr_tail_drain(s);
+        else sr_tail_drain_segment(s);
+    }
     /* Exception/ERET transfers are not returns and keep their architectural
      * register changes. Tail dispatch has no return edge. */
     if (has_returning_call_boundary && s->flow_kind == SR_FLOW_NONE) {
@@ -2126,11 +2134,11 @@ static int dispatch_try_with_boundary(
 }
 
 static int dispatch_try(CpuState *s, uint32_t target) {
-    return dispatch_try_with_boundary(s, target, NULL, 1);
+    return dispatch_try_with_boundary(s, target, NULL, SR_DRAIN_CHAIN);
 }
 
 void dispatch_tail_step(CpuState *s, uint32_t target) {
-    if (dispatch_try_with_boundary(s, target, NULL, 0) < 0) {
+    if (dispatch_try_with_boundary(s, target, NULL, SR_DRAIN_SEGMENT) < 0) {
         sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, target, 0u, 0u);
         fflush(stderr);
         exit(1);
@@ -2142,7 +2150,7 @@ int dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc) {
         return SR_GUEST_INTERP_MISALIGNED_PC;
     }
     SrGuestInterpCallBoundary boundary = { resume_pc };
-    return dispatch_try_with_boundary(s, target, &boundary, 1);
+    return dispatch_try_with_boundary(s, target, &boundary, SR_DRAIN_CHAIN);
 }
 
 void dispatch(CpuState *s, uint32_t target) {

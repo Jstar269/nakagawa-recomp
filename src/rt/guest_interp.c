@@ -22,10 +22,20 @@ void sr_tail_fatal(const char *what, uint32_t target) {
     exit(1);
 }
 
-void sr_tail_drain(CpuState *s) {
+static void sr_tail_drain_run(CpuState *s, int segment) {
     uint32_t chain_sp = 0u;
     int chain_restores = 0;
     while (sr_tail_transfer.pending) {
+        if (segment && !sr_tail_transfer.fn) {
+            /* The next computed transfer belongs to the enclosing drain. Its target runs at
+             * the live SP, as it did nested; the segment's outermost restore travels with it
+             * so the enclosing chain still applies the outermost restore it owes. */
+            if (chain_restores) {
+                sr_tail_transfer.restore_sp = chain_sp;
+                sr_tail_transfer.has_restore = 1u;
+            }
+            return;
+        }
         const SrTailTransfer next = sr_tail_transfer;
         memset(&sr_tail_transfer, 0, sizeof sr_tail_transfer);
         if (next.state != s) sr_tail_fatal("tail-transfer-foreign-state", next.target);
@@ -45,6 +55,14 @@ void sr_tail_drain(CpuState *s) {
             sr_tail_fatal("tail-transfer-with-pending-flow", sr_tail_transfer.target);
     }
     if (chain_restores) s->r[29] = chain_sp;
+}
+
+void sr_tail_drain(CpuState *s) {
+    sr_tail_drain_run(s, 0);
+}
+
+void sr_tail_drain_segment(CpuState *s) {
+    sr_tail_drain_run(s, 1);
 }
 
 typedef struct SrExecSpan {

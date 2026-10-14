@@ -479,7 +479,18 @@ class LleSchedulerIntegrationTests(unittest.TestCase):
         """
         self._run_generated_tail_eret_case(direct_tail=True)
 
-    def _run_generated_tail_eret_case(self, *, direct_tail):
+    def test_generated_mixed_tail_chain_eret_resumes_the_call_site(self):
+        """A direct CALL whose callee takes a computed tail to a body that takes a direct
+        tail into the raising leaf (#855 review).
+
+        The direct tail used to nest inside the computed tail's dispatch, so that dispatch
+        handled the exception and the CALL site went on. The computed step now drains its
+        direct successors inside its own dispatch, which keeps the CALL site's continuation
+        (OUTER_COUNT == 1); draining them in the enclosing loop lost it.
+        """
+        self._run_generated_tail_eret_case(direct_tail=False, mixed_chain=True)
+
+    def _run_generated_tail_eret_case(self, *, direct_tail, mixed_chain=False):
         def addiu(rt, rs, immediate):
             return (0x09 << 26) | (rs << 21) | (rt << 16) | (immediate & 0xFFFF)
 
@@ -502,12 +513,19 @@ class LleSchedulerIntegrationTests(unittest.TestCase):
             0x1014: addiu(9, 9, 1),
             0x1018: sw(9, 8),
             0x101C: JR_RA, 0x1020: NOP,
-        }, 0x1024)
+        }, 0x1024, known=(0x2000,) if mixed_chain else ())
+        if mixed_chain:
+            # OUTER reaches MIDDLE by a direct generated CALL that drains at the call site.
+            self.assertIn("f_00002000(s); SR_TAIL_DRAIN(s);", outer)
+        hop = emit(0x7000, {
+            0x7000: (0x02 << 26) | (0x3000 >> 2),  # j LEAF, a direct tail after the computed one
+            0x7004: NOP, 0x7008: NOP,
+        }, 0x700C, known=(0x3000,)) if mixed_chain else ""
         tail_words = (
             {0x2000: (0x02 << 26) | (0x3000 >> 2),  # j LEAF, a direct tail
              0x2004: NOP, 0x2008: NOP}
             if direct_tail else
-            {0x2000: 0x24083000,  # addiu t0, zero, LEAF
+            {0x2000: 0x24087000 if mixed_chain else 0x24083000,  # addiu t0, zero, HOP/LEAF
              0x2004: (8 << 21) | 8,  # jr t0, non-linking tail
              0x2008: NOP}
         )
@@ -707,8 +725,15 @@ int main(void) {
     return 0;
 }
 '''
+        if mixed_chain:
+            prefix += "void f_00002000(CpuState *s);\nvoid f_00007000(CpuState *s);\n"
+            suffix = suffix.replace(
+                "    sr_register(FOLLOWUP, followup_entry);\n",
+                "    sr_register(FOLLOWUP, followup_entry);\n"
+                "    if (!sr_exec_span_register(0x7000u, 0x700cu)) return 2;\n"
+                "    sr_register(0x7000u, f_00007000);\n", 1)
         source = "\n\n".join((
-            prefix, outer, middle, leaf, eret_vector, recovery, followup, suffix,
+            prefix, outer, middle, hop, leaf, eret_vector, recovery, followup, suffix,
         ))
         env = os.environ.copy()
         compiler = CC

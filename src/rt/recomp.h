@@ -753,7 +753,13 @@ void     dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc);
  * instruction runs, so one slot suffices and it is never live across a yield (asserted at
  * the yield, syscall and dispatch entry points). A callable body owes its caller the
  * restore of its entry SP once the chain completes; the drain applies the first restore
- * recorded in its chain, which is the value the nested native returns used to leave. */
+ * recorded in its chain, which is the value the nested native returns used to leave.
+ *
+ * A transfer to a computed target is one dispatch (dispatch_tail_step). The direct transfers
+ * that follow it used to nest inside that dispatch, so the step drains them itself
+ * (sr_tail_drain_segment): exception and ERET flow they raise is handled by the step's own
+ * dispatch, at the SP the nested model had there. The step hands only the next computed
+ * transfer back to the enclosing drain, so native depth stays constant. */
 typedef struct {
     RecompFn fn;            /* native body of a known target, or NULL to dispatch by address */
     CpuState *state;        /* the CpuState that recorded the transfer */
@@ -767,7 +773,11 @@ extern SrTailTransfer sr_tail_transfer;    /* defined in guest_interp.c */
 void sr_tail_fatal(const char *what, uint32_t target);
 /* Run every pending transfer to completion, then apply the chain's SP restore. */
 void sr_tail_drain(CpuState *s);
-/* One non-draining dispatch of a recorded target (recomp.c); the drain loop owns the rest. */
+/* Inside a computed step's dispatch: run the pending direct transfers, stopping at exception
+ * flow or at the next computed transfer, which is left for the enclosing drain. */
+void sr_tail_drain_segment(CpuState *s);
+/* One dispatch of a recorded computed target (recomp.c). It drains only that target's direct
+ * successors; the enclosing drain loop runs the next computed transfer. */
 void dispatch_tail_step(CpuState *s, uint32_t target);
 
 static inline void sr_tail_record(CpuState *s, uint32_t target, RecompFn fn,

@@ -493,19 +493,41 @@ dispatch support for computed/dynamic transfers. When tracing is enabled, mainta
 can be compared with reference/oracle traces.
 
 A guest CALL (`jal`, `jalr rd`) is a nested native call: the callee's frame lives on the guest
-thread's host fiber until its `jr $ra` returns, so host stack use follows guest call depth, and
-the dispatcher's host-stack preflight stops at a named `host-fiber-stack-exhausted` boundary
-before the fiber is exhausted. A guest TAIL transfer (`j`, `jr` on a register other than `$ra`,
-`jalr $zero`, a branch out of the body, or a fall-through into another entry) does not nest
-(#855): the body records the transfer in one runtime slot (`sr_tail_record`) and returns, and
-whoever invoked that body drains it -- the generated CALL site (`SR_TAIL_DRAIN`), the dispatcher
-right after the body returns (`dispatch_call_aot`), or `sr_call_body` for runtime direct calls.
+thread's host fiber until its `jr $ra` returns, so host stack use follows guest call depth. The
+dispatcher's host-stack preflight stops a dispatched transfer at a named
+`host-fiber-stack-exhausted` boundary before the fiber is exhausted. A direct `jal` to a known
+body does not pass through the dispatcher, so unbounded direct recursion is not preflighted and
+can still exhaust the fiber without a named boundary.
+
+A guest TAIL transfer (`j`, `jr` on a register other than `$ra`, `jalr $zero`, a branch out of
+the body, or a fall-through into another entry) does not nest (#855). The body records the
+transfer in one runtime slot (`sr_tail_record`) and returns, and whoever invoked that body
+drains it:
+
+- the generated CALL site (`SR_TAIL_DRAIN`);
+- the dispatcher, right after the body returns (`dispatch_call_aot`);
+- `sr_call_body`, for runtime direct calls;
+- the stack-census and title profile wrappers, for the bodies they wrap.
+
 Each drained body may record the next transfer, so a loop of tail transfers runs in constant host
-stack. A callable body's entry-SP restore travels with its transfer and the drain applies the
-first one recorded in the chain, which is the value the nested returns used to leave. The slot is
-never live across a yield, syscall, dispatch entry or unwind; each of those refuses a live
-transfer with a named `TAIL_TRANSFER_FAULT`. Interpreter-to-AOT handoffs still go through
-`dispatch()` and add one dispatch per crossing.
+stack. A transfer to a computed target is one dispatch (`dispatch_tail_step`). That dispatch runs
+the direct transfers that follow it, which used to nest inside it, so exception and ERET flow
+they raise is still handled there. It hands only the next computed transfer back to the
+enclosing drain.
+
+A callable body's entry-SP restore travels with its transfer, and each drain applies the first
+one recorded in its chain: the value the nested returns used to leave. A computed target still
+runs at the live SP.
+
+The slot is never live across a yield, syscall, dispatch entry or unwind; each of those refuses a
+live transfer with a named `TAIL_TRANSFER_FAULT`.
+
+Some paths still nest:
+
+- Interpreter-to-AOT handoffs go through `dispatch()` and add one dispatch per crossing.
+- Stack-census builds keep one nested drain per transfer, because each census wrapper drains its
+  own body.
+- Per-function profile time for a computed target no longer includes the bodies that follow it.
 
 ### HLE boundary
 
