@@ -9672,7 +9672,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "61f374917c93f2d17b2b7648e341517b203aa14a1e9ff8df23a898845d3d9a46"
+      "sha256": "2f25e9ce3f71e9550168c67bedbd290e4c90e11f55b5b278d3f9c79f955afd47"
     },
     {
       "path": "tools/test_release_manifest.py",
