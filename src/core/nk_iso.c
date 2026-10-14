@@ -212,24 +212,22 @@ int nk_iso_reader_read(NkIsoReader *reader, uint32_t lba, uint64_t offset, void 
     return (int)got;
 }
 
+/* ISO 9660 identifiers carry a file version as a trailing ';' followed by one or more ASCII
+ * digits, as in "NAME.BIN;1". Only that suffix is a version: any other ';' is part of the name,
+ * which Windows accepts. Every place that strips a version goes through this helper. Returns the
+ * identifier length without the version suffix. */
+static size_t nk_iso_name_without_version(const char *name, size_t length) {
+    size_t digits = length;
+    while (digits > 0 && name[digits - 1] >= '0' && name[digits - 1] <= '9') digits--;
+    if (digits < length && digits > 0 && name[digits - 1] == ';') return digits - 1;
+    return length;
+}
+
 static bool nk_iso_name_matches(const char *token, const uint8_t *name_bytes, uint8_t name_len) {
     if (!token || !name_bytes || name_len == 0) return false;
 
-    size_t comp_len = name_len;
-    for (size_t i = 0; i < name_len; i++) {
-        if (name_bytes[i] == ';') {
-            comp_len = i;
-            break;
-        }
-    }
-
-    size_t tok_len = strlen(token);
-    for (size_t i = 0; i < tok_len; i++) {
-        if (token[i] == ';') {
-            tok_len = i;
-            break;
-        }
-    }
+    size_t comp_len = nk_iso_name_without_version((const char *)name_bytes, name_len);
+    size_t tok_len = nk_iso_name_without_version(token, strlen(token));
 
     if (tok_len == comp_len && strncasecmp(token, (const char *)name_bytes, comp_len) == 0) {
         return true;
@@ -468,10 +466,7 @@ int nk_iso_reader_list(NkIsoReader *reader, const char *dir_path, uint32_t index
 
         if (cur_index == index) {
             memset(out_entry, 0, sizeof(*out_entry));
-            size_t comp_len = name_len;
-            for (size_t c = 0; c < name_len; c++) {
-                if (name_bytes[c] == ';') { comp_len = c; break; }
-            }
+            size_t comp_len = nk_iso_name_without_version((const char *)name_bytes, name_len);
             if (comp_len > 0 && name_bytes[comp_len - 1] == '.') {
                 comp_len--;
             }
@@ -1111,8 +1106,8 @@ NkResult nk_iso_inspect(const char *iso_path, NkIsoMetadata *out_meta) {
                     uint8_t name_len = dir_buf[off + 32];
 
                     uint64_t ext_off = (uint64_t)extent_lba * SECTOR_SIZE;
-                    if (name_len >= 9 && memcmp(&dir_buf[off + 33], "PARAM.SFO", 9) == 0
-                        && (name_len == 9 || dir_buf[off + 33 + 9] == ';')) {
+                    if (nk_iso_name_without_version((const char *)&dir_buf[off + 33], name_len) == 9u
+                        && memcmp(&dir_buf[off + 33], "PARAM.SFO", 9) == 0) {
                         sfo_found = true;
                         if (ext_off <= file_size && (uint64_t)extent_size <= file_size - ext_off) {
                             sfo_extent_valid = true;
@@ -1589,11 +1584,8 @@ NkResult nk_iso_extract_file(const char *iso_path, const char *disc_rel_path, co
             uint8_t name_len = dir_buf[off + 32];
             const char *name = (const char *)&dir_buf[off + 33];
 
-            /* Strip ;1 version from ISO9660 filename if present */
-            size_t comp_len = name_len;
-            for (size_t c = 0; c < name_len; c++) {
-                if (name[c] == ';') { comp_len = c; break; }
-            }
+            /* Strip the ;version suffix from the ISO9660 filename if present */
+            size_t comp_len = nk_iso_name_without_version(name, name_len);
 
             if (strlen(token) == comp_len && strncasecmp(token, name, comp_len) == 0) {
                 cur_lba = ext_lba;
@@ -1805,13 +1797,8 @@ static bool nk_iso_stage_directory_records(FILE *iso, uint64_t file_size,
                 }
             }
             if (!okay) break;
-            size_t component_length = name_length;
-            for (size_t i = 0; i < component_length; i++) {
-                if (name_bytes[i] == ';') {
-                    component_length = i;
-                    break;
-                }
-            }
+            size_t component_length = nk_iso_name_without_version((const char *)name_bytes,
+                                                                  name_length);
             if (component_length == 0 || component_length >= 256 ||
                 !nk_iso_stage_component_valid(name_bytes, component_length)) {
                 okay = false;
@@ -1995,59 +1982,152 @@ static int nk_iso_stage_name_compare(const void *left, const void *right) {
 }
 
 typedef struct {
-    NkIsoStageName *names;
+    char name[NK_ISO_STAGE_NAME_BYTES];
+    uint32_t lba;
+    uint32_t size;
+    bool is_directory;
+    size_t ordinal;
+} NkIsoStageMember;
+
+typedef struct {
+    NkIsoStageMember *members;
     size_t count;
     size_t capacity;
     bool out_of_memory;
-} NkIsoStageNameList;
+} NkIsoStageMemberList;
 
-static bool nk_iso_stage_name_list_add(const NkIsoDirectoryEntry *entry, void *userdata) {
-    NkIsoStageNameList *list = (NkIsoStageNameList *)userdata;
+static bool nk_iso_stage_member_add(const NkIsoDirectoryEntry *entry, void *userdata) {
+    NkIsoStageMemberList *list = (NkIsoStageMemberList *)userdata;
     if (list->count == list->capacity) {
         size_t capacity = list->capacity ? list->capacity * 2u : 32u;
-        NkIsoStageName *grown = (NkIsoStageName *)realloc(list->names, capacity * sizeof(*grown));
+        NkIsoStageMember *grown =
+            (NkIsoStageMember *)realloc(list->members, capacity * sizeof(*grown));
         if (!grown) {
             list->out_of_memory = true;
             return false;
         }
-        list->names = grown;
+        list->members = grown;
         list->capacity = capacity;
     }
-    snprintf(list->names[list->count], NK_ISO_STAGE_NAME_BYTES, "%s", entry->name);
+    NkIsoStageMember *member = &list->members[list->count];
+    snprintf(member->name, sizeof(member->name), "%s", entry->name);
+    member->lba = entry->lba;
+    member->size = entry->size;
+    member->is_directory = entry->is_directory;
+    member->ordinal = list->count;
     list->count++;
     return true;
 }
 
-/* The members of one directory must map to distinct host names. Two that normalize alike would
- * be written to one host file: the second write replaces the first and staging still reports
- * success. The check reads the directory before any of its members is written, and runs for every
- * directory the walk enters, at every depth. The diagnostic names the kind of collision only. */
+/* Orders members by host spelling, then by record order, so the first member of each group of
+ * colliding names is the one that is kept. */
+static int nk_iso_stage_member_compare(const void *left, const void *right) {
+    const NkIsoStageMember *a = (const NkIsoStageMember *)left;
+    const NkIsoStageMember *b = (const NkIsoStageMember *)right;
+    int order = nk_iso_stage_name_compare(a->name, b->name);
+    if (order != 0) return order;
+    return a->ordinal < b->ordinal ? -1 : (a->ordinal > b->ordinal ? 1 : 0);
+}
+
+/* Compares the bytes of two file extents of one ISO. Returns 1 when they match, 0 when they
+ * differ, and -1 when a read fails. */
+static int nk_iso_stage_extents_match(FILE *iso, const NkIsoStageMember *a,
+                                      const NkIsoStageMember *b) {
+    if (a->size != b->size) return 0;
+    uint64_t left = (uint64_t)a->lba * SECTOR_SIZE;
+    uint64_t right = (uint64_t)b->lba * SECTOR_SIZE;
+    uint8_t left_buf[4096];
+    uint8_t right_buf[4096];
+    uint32_t remaining = a->size;
+    while (remaining > 0) {
+        size_t chunk = remaining < sizeof(left_buf) ? (size_t)remaining : sizeof(left_buf);
+        if (nk_fseek64(iso, (int64_t)left, SEEK_SET) != 0 ||
+            fread(left_buf, 1, chunk, iso) != chunk ||
+            nk_fseek64(iso, (int64_t)right, SEEK_SET) != 0 ||
+            fread(right_buf, 1, chunk, iso) != chunk) return -1;
+        if (memcmp(left_buf, right_buf, chunk) != 0) return 0;
+        left += chunk;
+        right += chunk;
+        remaining -= (uint32_t)chunk;
+    }
+    return 1;
+}
+
+static const char *nk_iso_stage_collision_kind(const char *a, const char *b) {
+    if (strcmp(a, b) == 0) return "identical once the ;version suffix is removed";
+    if (strcasecmp(a, b) == 0) return "differing only in letter case";
+    return "differing only in trailing dots or spaces, possibly also in letter case";
+}
+
+typedef struct {
+    bool *drop;     /* per member in record order: a byte-identical duplicate to skip */
+    size_t count;   /* members in the directory, the length of drop */
+} NkIsoStageDrops;
+
+/* Members of one directory must map to distinct host names, or be byte-identical duplicates.
+ * Win32 matches names without regard to ASCII letter case and drops trailing dots and spaces, so
+ * members that normalize alike share one host file. Such a group is refused before anything is
+ * written, unless every later member is a file whose bytes equal the group's first member. Those
+ * duplicates are staged once, through the first member. The check reads the directory before any
+ * of its members is written and runs for every directory the walk enters, at every depth.
+ * Diagnostics name the kind of collision only, never the members. */
 static NkResult nk_iso_stage_check_host_names(FILE *iso, uint64_t file_size, uint32_t lba,
-                                              uint32_t size) {
-    NkIsoStageNameList list;
+                                              uint32_t size, NkIsoStageDrops *out) {
+    out->drop = NULL;
+    out->count = 0;
+    NkIsoStageMemberList list;
     memset(&list, 0, sizeof(list));
-    NkResult result = NK_OK;
     if (!nk_iso_stage_directory_records(iso, file_size, lba, size,
-                                        nk_iso_stage_name_list_add, &list)) {
-        result = list.out_of_memory ? NK_ERROR_OUT_OF_MEMORY : NK_ERROR_INVALID_ISO;
-    } else if (list.count > 1) {
-        qsort(list.names, list.count, sizeof(list.names[0]), nk_iso_stage_name_compare);
-        for (size_t i = 1; i < list.count; i++) {
-            const char *a = list.names[i - 1];
-            const char *b = list.names[i];
-            if (nk_iso_stage_name_compare(a, b) != 0) continue;
-            const char *kind = strcmp(a, b) == 0
-                ? "identical once the ;version suffix is removed"
-                : strcasecmp(a, b) == 0
-                    ? "differing only in letter case"
-                    : "differing only in trailing dots or spaces, possibly also in letter case";
-            fprintf(stderr, "[STAGE_NAME_COLLISION] Two members of one directory would be written "
-                    "to the same host file (%s). Nothing was written.\n", kind);
-            result = NK_ERROR_INVALID_ISO;
-            break;
+                                        nk_iso_stage_member_add, &list)) {
+        free(list.members);
+        return list.out_of_memory ? NK_ERROR_OUT_OF_MEMORY : NK_ERROR_INVALID_ISO;
+    }
+    NkResult result = NK_OK;
+    if (list.count > 1) {
+        qsort(list.members, list.count, sizeof(list.members[0]), nk_iso_stage_member_compare);
+        out->drop = (bool *)calloc(list.count, sizeof(bool));
+        if (!out->drop) {
+            result = NK_ERROR_OUT_OF_MEMORY;
+        } else {
+            out->count = list.count;
         }
     }
-    free(list.names);
+    for (size_t i = 0; result == NK_OK && list.count > 1 && i < list.count;) {
+        size_t end = i + 1;
+        while (end < list.count &&
+               nk_iso_stage_name_compare(list.members[i].name, list.members[end].name) == 0) {
+            end++;
+        }
+        const NkIsoStageMember *first = &list.members[i];
+        for (size_t k = i + 1; result == NK_OK && k < end; k++) {
+            const NkIsoStageMember *other = &list.members[k];
+            const char *kind = nk_iso_stage_collision_kind(first->name, other->name);
+            if (first->is_directory || other->is_directory) {
+                fprintf(stderr, "[STAGE_NAME_COLLISION] A directory would share a host name with "
+                        "another member of its directory (%s). Nothing was written.\n", kind);
+                result = NK_ERROR_INVALID_ISO;
+                break;
+            }
+            int match = nk_iso_stage_extents_match(iso, first, other);
+            if (match < 0) {
+                result = NK_ERROR_IO;
+            } else if (match == 0) {
+                fprintf(stderr, "[STAGE_NAME_COLLISION] Two members of one directory would be "
+                        "written to the same host file with different contents (%s). Nothing "
+                        "was written.\n", kind);
+                result = NK_ERROR_INVALID_ISO;
+            } else {
+                out->drop[other->ordinal] = true;
+            }
+        }
+        i = end;
+    }
+    free(list.members);
+    if (result != NK_OK) {
+        free(out->drop);
+        out->drop = NULL;
+        out->count = 0;
+    }
     return result;
 }
 
@@ -2056,6 +2136,10 @@ typedef struct {
     bool count_only;
     unsigned depth;
     char relative_prefix[NK_ISO_STAGE_MAX_PATH];
+    /* The directory being walked: byte-identical duplicates to skip, and the record count so far. */
+    const bool *drop;
+    size_t drop_count;
+    size_t ordinal;
 } NkIsoWalkContext;
 
 static NkResult nk_iso_stage_walk_directory(NkIsoWalkContext *walk,
@@ -2067,6 +2151,7 @@ static bool nk_iso_stage_walk_callback(const NkIsoDirectoryEntry *entry,
                                        void *userdata) {
     NkIsoWalkContext *walk = (NkIsoWalkContext *)userdata;
     if (!walk || !walk->stage || !entry) return false;
+    size_t ordinal = walk->ordinal++;
     /* Every staged member becomes a host file or directory under its disc name. The counting
      * pass walks the same records first, so a device-named member refuses the disc before
      * anything is written. */
@@ -2083,6 +2168,9 @@ static bool nk_iso_stage_walk_callback(const NkIsoDirectoryEntry *entry,
     if (!walk->relative_prefix[0] &&
         nk_iso_stage_host_name_length(entry->name, strlen(entry->name)) == 9u &&
         strncasecmp(entry->name, "EBOOT.BIN", 9u) == 0) return false;
+    /* A byte-identical duplicate of an earlier member is staged once, through that member, so it
+     * is neither counted nor written here. The directory check already compared its bytes. */
+    if (walk->drop && ordinal < walk->drop_count && walk->drop[ordinal]) return true;
 
     if (entry->is_directory) {
         NkIsoWalkContext child = *walk;
@@ -2176,13 +2264,20 @@ static NkResult nk_iso_stage_walk_directory(NkIsoWalkContext *walk,
     }
     if (stage->visited_count >= NK_ISO_STAGE_MAX_VISITED_DIRS) return NK_ERROR_INVALID_ISO;
     stage->visited_lbas[stage->visited_count++] = directory_lba;
+    NkIsoStageDrops drops;
     NkResult names = nk_iso_stage_check_host_names(stage->iso, stage->file_size,
-                                                   directory_lba, directory_size);
+                                                   directory_lba, directory_size, &drops);
     if (names != NK_OK) return names;
-    return nk_iso_stage_directory_records(stage->iso, stage->file_size,
-                                          directory_lba, directory_size,
-                                          nk_iso_stage_walk_callback, walk)
-        ? NK_OK : NK_ERROR_INVALID_ISO;
+    walk->drop = drops.drop;
+    walk->drop_count = drops.count;
+    walk->ordinal = 0;
+    bool okay = nk_iso_stage_directory_records(stage->iso, stage->file_size,
+                                               directory_lba, directory_size,
+                                               nk_iso_stage_walk_callback, walk);
+    walk->drop = NULL;
+    walk->drop_count = 0;
+    free(drops.drop);
+    return okay ? NK_OK : NK_ERROR_INVALID_ISO;
 }
 
 NkResult nk_iso_extract_game(const char *iso_path, const char *host_root,

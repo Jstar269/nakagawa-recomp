@@ -889,6 +889,42 @@ int main(int argc, char **argv) {{
         return 0;
     }}
 
+    if (strcmp(mode, "lookup") == 0) {{
+        if (argc < 4) return 1;
+        NkIsoReader *reader = nk_iso_reader_open(argv[2]);
+        if (!reader) {{
+            printf("READER:OPEN_FAILED\\n");
+            return 0;
+        }}
+        uint32_t lba = 0, sz = 0;
+        bool is_dir = false;
+        int rc = nk_iso_reader_lookup(reader, argv[3], &lba, &sz, &is_dir);
+        printf("LOOKUP:%d:%u:%u:%d\\n", rc, (unsigned)lba, (unsigned)sz, is_dir ? 1 : 0);
+        nk_iso_reader_close(reader);
+        return 0;
+    }}
+
+    if (strcmp(mode, "entries") == 0) {{
+        if (argc < 4) return 1;
+        NkIsoReader *reader = nk_iso_reader_open(argv[2]);
+        if (!reader) {{
+            printf("READER:OPEN_FAILED\\n");
+            return 0;
+        }}
+        for (uint32_t index = 0;; index++) {{
+            NkIsoDirEntry de;
+            int rc = nk_iso_reader_list(reader, argv[3], index, &de);
+            if (rc != 1) {{
+                printf("END:%d\\n", rc);
+                break;
+            }}
+            printf("ENTRY:%s:%u:%u:%d\\n", de.name, (unsigned)de.lba, (unsigned)de.size,
+                   de.is_directory ? 1 : 0);
+        }}
+        nk_iso_reader_close(reader);
+        return 0;
+    }}
+
     return 2;
 }}
 """
@@ -2931,6 +2967,49 @@ int main(int argc, char **argv) {{
         self.assertEqual(lines.get("LIST_ROOT_1"), "0")
         self.assertGreater(int(lines.get("READ_SFO", "0")), 0)
         self.assertEqual(lines.get("READ_EOF"), "0")
+
+    def test_semicolon_member_names_resolve_the_same_in_python_and_c(self) -> None:
+        # A ';' inside a member name is part of the name. Only a trailing ';' and digits is a
+        # version, so "A;1.BIN" and "A;2.BIN" are two files in both implementations.
+        iso_path = self.temp_dir / "semicolon_members.iso"
+        create_test_iso_with_module_tree(iso_path, {
+            "PSP_GAME/USRDIR/DATA/A;1.BIN": b"first-bytes",
+            "PSP_GAME/USRDIR/DATA/A;2.BIN": b"second-bytes",
+            "PSP_GAME/USRDIR/DATA/FOO.BIN": b"plain",
+        })
+        py_entries = iso_inspect.list_iso_directory(iso_path, ("PSP_GAME", "USRDIR", "DATA"))
+        self.assertIsNotNone(py_entries)
+        py_by_name = {entry.name: entry for entry in py_entries}
+        self.assertEqual(sorted(py_by_name), ["A;1.BIN", "A;2.BIN", "FOO.BIN"])
+
+        listing = subprocess.run(
+            [str(self.exe_path), "entries", str(iso_path), "PSP_GAME/USRDIR/DATA"],
+            capture_output=True, text=True, encoding="utf-8", errors="strict",
+        )
+        self.assertEqual(listing.returncode, 0, listing.stderr)
+        native_names = []
+        for line in listing.stdout.splitlines():
+            if line.startswith("ENTRY:"):
+                name, lba, size, _is_dir = line[len("ENTRY:"):].rsplit(":", 3)
+                native_names.append(name)
+                self.assertEqual((int(lba), int(size)),
+                                 (py_by_name[name].lba, py_by_name[name].size), name)
+        self.assertEqual(sorted(native_names), sorted(py_by_name))
+
+        for name in ("A;1.BIN", "A;2.BIN", "FOO.BIN", "A;3.BIN"):
+            res = subprocess.run(
+                [str(self.exe_path), "lookup", str(iso_path), "PSP_GAME/USRDIR/DATA/" + name],
+                capture_output=True, text=True, encoding="utf-8", errors="strict",
+            )
+            self.assertEqual(res.returncode, 0, res.stderr)
+            fields = next(
+                line for line in res.stdout.splitlines() if line.startswith("LOOKUP:")
+            ).split(":")
+            if name in py_by_name:
+                entry = py_by_name[name]
+                self.assertEqual(fields[1:], ["0", str(entry.lba), str(entry.size), "0"], name)
+            else:
+                self.assertEqual(fields[1], "-1", name)
 
     def test_reader_invalid_iso_fails_open(self) -> None:
         bad_iso = self.temp_dir / "bad.iso"
