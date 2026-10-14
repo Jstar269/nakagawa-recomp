@@ -546,5 +546,218 @@ class PublicExportJobTests(unittest.TestCase):
                 self.assertIn("needs.public_export.result == 'success'", block)
 
 
+def _workflow_text(name: str) -> str:
+    return (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+
+
+def _on_block(text: str) -> list[str]:
+    """The top-level ``on:`` mapping: its lines, with comments and blank lines removed."""
+    lines = text.splitlines()
+    start = lines.index("on:")
+    body: list[str] = []
+    for line in lines[start + 1:]:
+        if line and not line.startswith((" ", "#")):
+            break
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            body.append(line.rstrip())
+    return body
+
+
+class MergeQueueTriggerWiringTests(unittest.TestCase):
+    """``merge_group`` is additive: it adds a trigger and changes no existing event's behaviour."""
+
+    def setUp(self) -> None:
+        self.ci = _workflow_text("ci.yml")
+
+    def test_ci_on_block_adds_merge_group_beside_unchanged_triggers(self) -> None:
+        self.assertEqual(
+            _on_block(self.ci),
+            [
+                "  pull_request:",
+                "    types: [opened, synchronize, reopened]",
+                "  push:",
+                "    branches: [main]",
+                "  workflow_dispatch:",
+                "  merge_group:",
+                "    types: [checks_requested]",
+            ],
+        )
+
+    def test_only_the_public_export_step_filters_on_the_event_name(self) -> None:
+        # Every required job must run on a merge group. The one event filter left in
+        # ci.yml is the export candidate step, which the classifier forces true for a
+        # merge group anyway (security_publication), so it still runs there.
+        occurrences = [line for line in self.ci.splitlines() if "github.event_name" in line]
+        self.assertEqual(len(occurrences), 1, occurrences)
+        self.assertIn("workflow_dispatch", occurrences[0])
+        blocks = _ci_job_blocks()
+        for job in ("classify", "hygiene", "markdown", "python_tools", "native_tools",
+                    "windows_runtime", "main_smoke", "ci_required"):
+            with self.subTest(job=job):
+                self.assertNotIn("github.event_name", "\n".join(blocks[job]))
+
+    def test_ci_stays_read_only_and_publishes_nothing_on_any_event(self) -> None:
+        self.assertIn("permissions:\n  contents: read\n", self.ci)
+        for forbidden in ("contents: write", "refs/heads/main", "gh release", "git push",
+                          "action-gh-release", "upload-release"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, self.ci)
+
+
+class MergeQueueDependencyReviewWiringTests(unittest.TestCase):
+    """dependency-review runs on a merge group with both refs taken from the group payload."""
+
+    def setUp(self) -> None:
+        self.text = _workflow_text("dependency-review.yml")
+
+    def test_trigger_adds_merge_group_beside_the_unchanged_pull_request_trigger(self) -> None:
+        self.assertEqual(
+            _on_block(self.text),
+            [
+                "  pull_request:",
+                '    branches: [ "main" ]',
+                "  merge_group:",
+                "    types: [checks_requested]",
+                '    branches: [ "main" ]',
+            ],
+        )
+
+    def test_step_passes_both_refs_from_the_merge_group_payload(self) -> None:
+        step = self.text.split("      - name: 'Dependency Review'", 1)[1]
+        self.assertEqual(step.count("base-ref: ${{ github.event.merge_group.base_sha }}"), 1)
+        self.assertEqual(step.count("head-ref: ${{ github.event.merge_group.head_sha }}"), 1)
+        self.assertIn("with:\n          base-ref:", step)
+
+    def test_required_job_name_action_pin_and_permissions_are_unchanged(self) -> None:
+        self.assertIn("  dependency-review:\n    runs-on: ubuntu-latest", self.text)
+        self.assertIn(
+            "uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0",
+            self.text,
+        )
+        self.assertIn("permissions:\n  contents: read\n", self.text)
+
+
+class MergeQueueCodeqlWiringTests(unittest.TestCase):
+    """Merge groups reach the trusted CodeQL route through the wake; the route itself is unchanged.
+
+    codeql.yml has no merge_group trigger of its own. A group's wake (codeql-wake.yml) starts
+    the default branch's copy of this workflow through workflow_run. Every route reads the
+    same analysis configuration and writes the same per-language categories, and nothing
+    checks out the candidate tree.
+    """
+
+    def setUp(self) -> None:
+        self.text = _workflow_text("codeql.yml")
+
+    def test_trigger_block_has_no_direct_merge_group_route(self) -> None:
+        self.assertEqual(
+            _on_block(self.text),
+            [
+                "  workflow_run:",
+                '    workflows: ["CodeQL wake"]',
+                "    types: [completed]",
+                "  workflow_dispatch:",
+                "    inputs:",
+                "      pull_request_number:",
+                "        description: Open pull request number to scan from the trusted default branch",
+                "        required: true",
+                "        type: number",
+                "  push:",
+                "    branches: [main]",
+                "  schedule:",
+                '    - cron: "37 3 * * 1"',
+            ],
+        )
+
+    def test_pull_request_route_text_is_unchanged(self) -> None:
+        for fragment in (
+            "if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request' || github.event.workflow_run.event == 'merge_group' }}",
+            'if (context.eventName === "workflow_run") {',
+            'if (!run || run.event !== "pull_request") {',
+            "const { data: matches } = await github.rest.pulls.list({",
+            '"+refs/pull/${PR_NUMBER}/merge:refs/candidate/merge"',
+            'if [ "${TARGET_KIND}" = "pull-request" ]; then',
+            'core.setOutput("ref", `refs/pull/${number}/merge`);',
+            'if (kind === "pull-request") {',
+            "PR base, head, or merge ref changed during CodeQL analysis; refusing a stale upload",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertEqual(self.text.count(fragment), 1, fragment)
+
+    def test_every_route_shares_one_analysis_configuration_and_category_scheme(self) -> None:
+        self.assertEqual(self.text.count('category: "/language:${{ matrix.language }}/"'), 1)
+        self.assertEqual(self.text.count("upload: never"), 1)
+        self.assertEqual(self.text.count("trap-caching: false"), 1)
+        self.assertEqual(self.text.count("disable-default-queries: false"), 1)
+        self.assertEqual(self.text.count("build-mode: none"), 1)
+
+    def test_merge_group_wake_route_analyses_the_queue_commit_as_data(self) -> None:
+        self.assertNotIn("ref: ${{ github.sha }}", self.text)
+        self.assertNotIn("ref: ${{ github.event.pull_request.head.sha", self.text)
+        self.assertEqual(
+            self.text.count('if (context.eventName === "workflow_run" && context.payload.workflow_run?.event === "merge_group") {'),
+            1,
+        )
+        self.assertIn('kind === "merge-group"', self.text)
+        self.assertIn('elif [ "${TARGET_KIND}" = "merge-group" ]; then', self.text)
+        self.assertIn('"+${TARGET_REF}:refs/candidate/merge"', self.text)
+        # Upload is by the queue ref and the group SHA, with the same categories as every route.
+        self.assertIn("commit_sha: targetSha,", self.text)
+        self.assertIn("ref: targetRef,", self.text)
+
+    def test_merge_group_wake_route_checks_the_queue_ref_before_and_after_analysis(self) -> None:
+        # Before analysis: the queue ref must name the commit the wake ran on.
+        self.assertIn("queued.object.sha !== run.head_sha", self.text)
+        # Before upload: the same check against the group SHA carried into the upload job.
+        self.assertIn("queued.object.sha !== targetSha", self.text)
+        # {ref} percent-encodes the slashes of a queue name (heads%2Fgh-readonly-queue...),
+        # so the queue ref is always read through the reserved {+ref} expansion.
+        self.assertEqual(
+            self.text.count('github.request("GET /repos/{owner}/{repo}/git/ref/{+ref}", {'), 2)
+        self.assertNotIn("git/ref/{ref}", self.text)
+        # Only this repository's own queue branches are accepted.
+        self.assertIn("/^gh-readonly-queue\\/[A-Za-z0-9._\\/-]+$/", self.text)
+        self.assertEqual(
+            self.text.count("headRepository?.full_name?.toLowerCase() !== `${context.repo.owner}/${context.repo.repo}`.toLowerCase()"),
+            1,
+        )
+
+    def test_reserved_provenance_context_is_not_named_here(self) -> None:
+        self.assertNotIn("Trusted provenance attestation", self.text)
+
+
+class MergeQueueWakeWiringTests(unittest.TestCase):
+    """The CodeQL wake signals merge groups too. It stays signal-only and keys its runs by ref."""
+
+    def setUp(self) -> None:
+        self.wake = _workflow_text("codeql-wake.yml")
+
+    def test_wake_triggers_on_pull_requests_and_merge_groups(self) -> None:
+        self.assertEqual(
+            _on_block(self.wake),
+            [
+                "  pull_request:",
+                "    types: [opened, synchronize, reopened]",
+                "  merge_group:",
+                "    types: [checks_requested]",
+            ],
+        )
+
+    def test_wake_keys_merge_group_runs_by_ref_not_by_an_empty_number(self) -> None:
+        self.assertIn(
+            "  group: codeql-wake-${{ github.event.pull_request.number || github.ref }}\n",
+            self.wake,
+        )
+        self.assertNotIn("codeql-wake-${{ github.event.pull_request.number }}\n", self.wake)
+        self.assertIn("cancel-in-progress: true", self.wake)
+
+    def test_wake_stays_signal_only_and_keeps_its_exact_name(self) -> None:
+        self.assertIn("name: CodeQL wake\n", self.wake)
+        self.assertIn("permissions: {}\n", self.wake)
+        self.assertNotIn("actions/checkout", self.wake)
+        self.assertNotIn("actions/upload-artifact", self.wake)
+
+
 if __name__ == "__main__":
     unittest.main()

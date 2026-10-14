@@ -148,6 +148,7 @@
     ".github/workflows/codeql.yml",
     ".github/workflows/dependency-review.yml",
     ".github/workflows/osv-scanner.yml",
+    ".github/workflows/provenance-attestation-merge-group.yml",
     ".github/workflows/provenance-attestation.yml",
     ".gitignore",
     ".markdownlint-cli2.jsonc",

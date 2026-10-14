@@ -1,11 +1,11 @@
 name: Trusted CodeQL
 
 on:
-  # The "CodeQL wake" workflow (codeql-wake.yml) is a signal only. Its pull_request run is
-  # candidate-controlled and carries no evidence; this workflow_run definition comes from the
-  # trusted default branch, reads the exact pull request from GitHub's API, and scans the
-  # current PR merge tree independently. CI is not a trigger, so the analysis no longer waits
-  # for the slowest CI job.
+  # The "CodeQL wake" workflow (codeql-wake.yml) is a signal only. Its pull_request and
+  # merge_group runs are candidate-controlled and carry no evidence. This workflow_run
+  # definition comes from the trusted default branch for both kinds of wake, reads the exact
+  # pull request or merge-queue group from GitHub's API, and analyses the current tree
+  # independently. CI is not a trigger, so the analysis no longer waits for the slowest CI job.
   workflow_run:
     workflows: ["CodeQL wake"]
     types: [completed]
@@ -35,7 +35,7 @@ concurrency:
 jobs:
   prepare:
     name: Prepare trusted CodeQL source
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request' }}
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request' || github.event.workflow_run.event == 'merge_group' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -68,6 +68,42 @@ jobs:
         with:
           script: |
             const defaultBranch = context.payload.repository.default_branch;
+            // A merge-queue group, reached through the CodeQL wake's merge_group run. The wake
+            // is only a signal: this definition is the default branch's copy. The queue ref is
+            // a GitHub-created ref in this repository, so the head repository must be this
+            // one, and the ref must name exactly the commit the wake ran on, before analysis.
+            if (context.eventName === "workflow_run" && context.payload.workflow_run?.event === "merge_group") {
+              const run = context.payload.workflow_run;
+              const queueBranch = run.head_branch;
+              const headRepository = run.head_repository;
+              if (typeof queueBranch !== "string" ||
+                  !/^gh-readonly-queue\/[A-Za-z0-9._\/-]+$/.test(queueBranch) ||
+                  headRepository?.full_name?.toLowerCase() !== `${context.repo.owner}/${context.repo.repo}`.toLowerCase() ||
+                  !/^[0-9a-f]{40}$/.test(run.head_sha || "")) {
+                core.setFailed("merge group wake did not identify this repository's queue branch and an exact head SHA");
+                return;
+              }
+              // {+ref} keeps the slashes of the queue name; a plain {ref} would encode them.
+              // The queue deletes its ref when the entry resolves, so a missing or moved ref
+              // refuses the analysis.
+              const { data: queued } = await github.request("GET /repos/{owner}/{repo}/git/ref/{+ref}", {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `heads/${queueBranch}`,
+              });
+              if (queued.object.sha !== run.head_sha) {
+                core.setFailed("merge group ref does not name the commit the wake ran on; refusing a stale target");
+                return;
+              }
+              core.setOutput("kind", "merge-group");
+              core.setOutput("ref", `refs/heads/${queueBranch}`);
+              core.setOutput("sha", run.head_sha);
+              core.setOutput("pr_number", "");
+              core.setOutput("base_sha", "");
+              core.setOutput("head_sha", run.head_sha);
+              return;
+            }
+
             if (context.eventName === "workflow_run") {
               const run = context.payload.workflow_run;
               if (!run || run.event !== "pull_request") {
@@ -159,7 +195,7 @@ jobs:
               core.setOutput("head_sha", pr.head.sha);
             }
 
-      # The PR is fetched into Git's object database and read as raw blobs. No
+      # The PR or merge group commit is fetched into Git's object database and read as raw blobs. No
       # candidate file is checked out, executed, imported, built, or used as an
       # action. The existing reader rejects symlinks, gitlinks, unsafe paths,
       # oversized blobs, and oversized trees before materialization.
@@ -193,6 +229,18 @@ jobs:
             parents="$(git rev-list --parents -n 1 "${fetched}")"
             if [ "${parents}" != "${TARGET_SHA} ${BASE_SHA} ${HEAD_SHA}" ]; then
               echo "merge commit parents do not match the exact PR base and head" >&2
+              exit 1
+            fi
+          elif [ "${TARGET_KIND}" = "merge-group" ]; then
+            case "${TARGET_REF}" in
+              refs/heads/gh-readonly-queue/*) ;;
+              *) echo "merge group ref is not a queue ref" >&2; exit 1 ;;
+            esac
+            git fetch --no-tags --no-recurse-submodules --quiet origin \
+              "+${TARGET_REF}:refs/candidate/merge"
+            fetched="$(git rev-parse refs/candidate/merge)"
+            if [ "${fetched}" != "${TARGET_SHA}" ]; then
+              echo "merge group ref changed during target resolution" >&2
               exit 1
             fi
           else
@@ -447,6 +495,16 @@ jobs:
               if (pr.state !== "open" || pr.base.sha !== process.env.BASE_SHA ||
                   pr.head.sha !== process.env.HEAD_SHA || pr.merge_commit_sha !== targetSha) {
                 core.setFailed("PR base, head, or merge ref changed during CodeQL analysis; refusing a stale upload");
+                return;
+              }
+            } else if (kind === "merge-group") {
+              // The queue deletes its ref when the entry resolves: a missing or moved
+              // ref means this group is no longer the commit that was analysed.
+              const { data: queued } = await github.request("GET /repos/{owner}/{repo}/git/ref/{+ref}", {
+                owner, repo, ref: targetRef.slice("refs/".length),
+              });
+              if (queued.object.sha !== targetSha) {
+                core.setFailed("merge group ref moved during CodeQL analysis; refusing a stale upload");
                 return;
               }
             } else {

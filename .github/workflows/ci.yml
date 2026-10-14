@@ -25,6 +25,15 @@ on:
   # is deliberately no input to narrow it -- a knob that cannot actually reduce
   # the run would be misleading.
   workflow_dispatch:
+  # Merge-queue groups. GitHub builds a group commit (the trunk plus the queued
+  # pull requests ahead of this one, plus this one) and asks for checks on that
+  # exact commit. A group is a ref in this repository, created only after a
+  # write-access maintainer enqueues a reviewed pull request. It gets the same
+  # complete matrix as a manual run and is never path-gated, so every required
+  # check reports on the group commit. The classifier forces it
+  # (tools/ci_paths.py FULL_MATRIX_EVENTS). Inert until a merge queue rule exists.
+  merge_group:
+    types: [checks_requested]
 
 concurrency:
   # A new commit supersedes an in-flight run for the same PR/ref.  This is also

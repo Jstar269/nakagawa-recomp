@@ -32,6 +32,7 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 | Ordinary push to `main` after a validated merge | classification, hygiene/security, Markdown when needed, compact main smoke, CI required | expensive platform matrix; the merged PR carried it |
 | Workflow push to `main` | the full applicable validation above plus main smoke | none of the substantive public gates |
 | Manual `workflow_dispatch` | the full matrix, regardless of paths | none |
+| Merge-queue group (`merge_group`, `checks_requested`) | the full matrix, as for a manual dispatch, regardless of paths; every required check reports on the group commit | none |
 
 ### Draft pull requests
 
@@ -321,6 +322,13 @@ to prevent that, and `tools/test_ci_paths.py` asserts each one:
   the native and Windows compile gates.
 - **An empty or unobtainable file list forces the full matrix**, so a shallow
   clone or an unusual event payload cannot quietly narrow the run.
+- **A merge-queue group is never path-gated.** `FULL_MATRIX_EVENTS` in
+  `tools/ci_paths.py` (`workflow_dispatch` and `merge_group`) forces the complete
+  matrix, including the main smoke, and allows substantive work. A group's change
+  set is its payload range (`merge_group.base_sha` to `head_sha`), and a payload
+  without that range fails closed to the full matrix. The classifier output for a
+  group is identical to a manual dispatch for the same paths, which
+  `MergeGroupRoutingTests` pins.
 - **Draft status does not suppress substantive validation.** A draft and a ready
   pull request receive the same path classification and applicable gates, so
   progress does not depend on a status transition or manual dispatch. The
@@ -390,14 +398,16 @@ processes the SARIF that `.github/workflows/codeql.yml` ("Trusted CodeQL")
 uploads; no upload means no check. GitHub runs that workflow from the default
 branch: a `workflow_run` after the `CodeQL wake` workflow
 (`.github/workflows/codeql-wake.yml`) completes on a pull request (forks
-included), a push to `main`, a weekly schedule, or a manual dispatch naming a
-pull request. The wake run starts with the pull request head, so the trusted
+included) or on a merge-queue group, a push to `main`, a weekly schedule, or a
+manual dispatch naming a pull request. The wake run starts with the pull request
+head or the group commit, so the trusted
 analysis runs alongside CI rather than after the whole CI workflow finishes. CI
 itself is not a trigger: the analysis does not wait for the slowest CI job, and
 CI's result never reaches the trusted run.
 
-The wake run is a signal only. It is a `pull_request` run (candidate-controlled,
-like every pull request workflow), declares `permissions: {}`, checks nothing out,
+The wake run is a signal only. It is a `pull_request` run, or a `merge_group` run for
+a merge-queue group (candidate-controlled, like every pull request workflow), declares
+`permissions: {}`, checks nothing out,
 runs no repository code, and has no secrets for fork pull requests. Its result is
 never evidence: the trusted workflow resolves the exact pull request from GitHub's
 API and refuses any head that no longer matches. A pull request can decide whether
@@ -415,7 +425,9 @@ receives no `CodeQL` check until it merges `main` (which carries the wake workfl
 
 The trusted workflow never checks out or executes candidate files. For a pull request it reads the
 exact merge tree as blobs and binds the upload to the merge ref; for a push or
-schedule it scans the `main` commit. It analyzes `actions`, `c-cpp` and `python`
+schedule it scans the `main` commit. For a merge-queue group it reads the group
+commit's tree as blobs and binds the upload to the queue ref and the group commit
+(see [Merge-queue groups](#merge-queue-groups)). It analyzes `actions`, `c-cpp` and `python`
 without uploading partial results and uploads all three in one SARIF. Each run's
 `automationDetails.id` is `/language:<lang>/`: code scanning stores a run under the
 part of the id before its last `/`, so the trailing slash keeps the three languages
@@ -423,6 +435,52 @@ in separate categories instead of letting one replace the others. TRAP caching i
 a run that restored the cache was observed to extract no C/C++ file at all. An edit to this
 workflow reaches pull requests only after it lands on `main`, or through a manual
 dispatch run with `--ref` naming the branch.
+
+## Merge-queue groups
+
+A merge queue lands each reviewed pull request on a *group commit*: the trunk, every
+queued pull request ahead of it, and this one. Each group is a ref in this repository
+(`refs/heads/gh-readonly-queue/main/pr-<n>-<sha>`), and its required checks must pass
+before `main` moves. These workflows carry a `merge_group` trigger (`checks_requested`).
+`codeql.yml` does not: CodeQL on a group comes from the group's CodeQL wake run, as described below.
+
+| Required context | Behaviour on a group commit |
+| --- | --- |
+| `CI required` | `ci.yml` runs the complete matrix, as for a manual dispatch. `hygiene` and `public_export` run ungated. |
+| `Hygiene and security` | Ungated, as on every event. |
+| `OSV Vulnerability Scan` | `osv-scanner.yml` already triggers on `merge_group`. |
+| `dependency-review` | Passes `base-ref` and `head-ref` from the group payload. On a pull request they are empty, which the action reads as unset. |
+| `CodeQL` | The group's CodeQL wake (`merge_group` run) starts the trusted `codeql.yml` through `workflow_run`, which analyses the group commit (below). |
+
+**Trust argument.** A group exists only because a user with write access enqueued a
+pull request that was reviewed. `codeql.yml` runs from the default branch for both
+pull requests and merge groups: its `workflow_run` definition is the trusted
+default-branch copy, whichever wake started it. The wake is only a signal. It declares
+no permissions, checks nothing out, and its result is never read as evidence. The
+trusted workflow reads the queue ref from GitHub's API, requires the queue branch to
+belong to this repository, and requires the ref to name the commit the wake ran on
+before analysis and again before upload. A queued change can therefore alter its own
+group's wake run, but not the trusted definition, the commit analysed, or the evidence.
+The other merge-group checks (`ci.yml`, `dependency-review.yml`, `osv-scanner.yml`) run
+their definitions from the group commit, so a queued change to `.github/workflows/` is
+still reviewed for that change and enqueued alone. Whether GitHub reads those
+definitions from the group commit is an assumption to confirm in the trial.
+
+**CodeQL on a group.** The wake's `merge_group` run starts the trusted workflow. Its
+prepare job accepts the wake only when the head repository is this repository, the head
+branch is a `gh-readonly-queue/` branch, and the queue ref names exactly the wake's
+commit. The ref is read through the reserved `{+ref}` expansion, because `{ref}` would
+percent-encode its slashes. The group tree is read as blobs with the same validator as
+the pull-request route. The upload is bound to the queue ref and the group commit, with
+the same languages, query configuration and per-language categories. Before the upload
+the queue ref is checked again, so a group that was removed or moved during analysis
+uploads nothing. The `CodeQL` check is the code-scanning result for the group commit.
+
+**Latency.** The wake is a short signal run that starts when the group is created, so
+CodeQL starts about as early as `CI` and runs alongside it. `CI`'s result never reaches
+the trusted run. Serialising CodeQL after `CI`, by a `workflow_run` of the merge-group
+`CI` run, would cost about 5.6 minutes median per group (round-1 measurement). That
+alternative is not used.
 
 ## Windows hosted runner policy
 

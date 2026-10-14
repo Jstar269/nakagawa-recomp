@@ -501,6 +501,93 @@ class CiPathAdversarialTests(unittest.TestCase):
 
 
 
+class MergeGroupRoutingTests(unittest.TestCase):
+    """A merge-queue group is a candidate for main: the complete matrix, never path-gated."""
+
+    GATES = (
+        "run_python",
+        "run_native",
+        "run_windows",
+        "run_markdown",
+        "run_main_smoke",
+        "allow_substantive",
+    )
+
+    def test_merge_group_runs_the_complete_matrix_for_any_paths(self) -> None:
+        for paths in (["docs/CI.md"], ["README.md"], ["src/rt/hle.c"], ["tools/ci_paths.py"], []):
+            with self.subTest(paths=paths):
+                result = classify(paths, event_name="merge_group")
+                for key in self.GATES:
+                    self.assertEqual(result[key], "true", key)
+                self.assertEqual(result["security_publication"], "true")
+                self.assertEqual(result["python_scope"], "all")
+                self.assertEqual(result["python_num_shards"], "4")
+                self.assertEqual(result["docs_only"], "false")
+                self.assertEqual(result["draft"], "false")
+
+    def test_merge_group_is_classified_exactly_like_a_manual_dispatch(self) -> None:
+        for paths in (["docs/CI.md"], ["src/rt/hle.c"], ["new-tool-input.dat"]):
+            with self.subTest(paths=paths):
+                self.assertEqual(
+                    classify(paths, event_name="merge_group"),
+                    classify(paths, event_name="workflow_dispatch"),
+                )
+
+    def test_merge_group_diff_endpoints_come_from_the_payload(self) -> None:
+        event = {"merge_group": {"base_sha": "a" * 40, "head_sha": "b" * 40}}
+        self.assertEqual(ci_paths_module._diff_endpoints("merge_group", event), ("a" * 40, "b" * 40))
+
+    def test_merge_group_payload_without_endpoints_has_no_range(self) -> None:
+        for event in ({}, {"merge_group": None}, {"merge_group": {"base_sha": "a" * 40}}):
+            with self.subTest(event=event):
+                self.assertIsNone(ci_paths_module._diff_endpoints("merge_group", event))
+
+    @patch.object(ci_paths_module.subprocess, "run")
+    def test_merge_group_change_set_is_the_payload_range(self, run) -> None:
+        run.return_value.stdout = "M\tsrc/rt/hle.c\nA\tdocs/new.md\n"
+        event = {"merge_group": {"base_sha": "a" * 40, "head_sha": "b" * 40}}
+        paths = ci_paths_module._changed_files_from_git("merge_group", event)
+        self.assertEqual(paths, ["src/rt/hle.c", "docs/new.md"])
+        args = run.call_args.args[0]
+        self.assertEqual(args[-2:], ["a" * 40, "b" * 40])
+
+    @patch.object(ci_paths_module.subprocess, "run")
+    def test_merge_group_without_a_range_fails_closed_without_diffing(self, run) -> None:
+        self.assertEqual(ci_paths_module._changed_files_from_git("merge_group", {}), ["<history-unavailable>"])
+        run.assert_not_called()
+
+    def test_main_writes_full_matrix_outputs_for_a_merge_group_event(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            event_path = Path(scratch) / "event.json"
+            event_path.write_text(
+                json.dumps({"merge_group": {"base_sha": "a" * 40, "head_sha": "b" * 40}}),
+                encoding="utf-8",
+            )
+            output_path = Path(scratch) / "github_output"
+            with patch.object(ci_paths_module.subprocess, "run") as run, patch("sys.stdout"):
+                run.return_value.stdout = "M\tdocs/CI.md\n"
+                code = ci_paths_module.main([
+                    "--event-name", "merge_group",
+                    "--event-path", str(event_path),
+                    "--github-output", str(output_path),
+                ])
+            values = dict(
+                line.split("=", 1) for line in output_path.read_text(encoding="utf-8").splitlines()
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(values["run_main_smoke"], "true")
+        self.assertEqual(values["allow_substantive"], "true")
+        self.assertEqual(values["run_native"], "true")
+        self.assertEqual(values["docs_only"], "false")
+
+    def test_pull_request_docs_only_routing_is_unchanged(self) -> None:
+        result = classify(["docs/CI.md"], event_name="pull_request")
+        self.assertEqual(result["docs_only"], "true")
+        self.assertEqual(result["run_native"], "false")
+        self.assertEqual(result["run_main_smoke"], "false")
+        self.assertEqual(result["allow_substantive"], "true")
+
+
 class PublicSurfaceRoutingRegressionTests(unittest.TestCase):
     """Publication integrity must be reachable for any published path.
 
