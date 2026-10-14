@@ -3297,7 +3297,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e81bf9f459d6d7e8c75bb7e632d5e4e8b37d7bb99dca027bec62611cece43c8f"
+      "sha256": "d2028dd9b4c586137bdeac6766cbeca46bc07810d1dd9cdf7d92e1171a1605d3"
     },
     {
       "path": "src/ref/selftest.cpp",
@@ -9672,7 +9672,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dedb4f5420bc940ffe8cd693a3c1a331c28b45eebd7044637d162e53277a9b55"
+      "sha256": "61f374917c93f2d17b2b7648e341517b203aa14a1e9ff8df23a898845d3d9a46"
     },
     {
       "path": "tools/test_release_manifest.py",
