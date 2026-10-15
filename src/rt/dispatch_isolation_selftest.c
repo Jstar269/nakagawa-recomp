@@ -380,6 +380,12 @@ static void test_runtime_module_binding_is_the_authority_for_its_range(void) {
     CHECK(sr_lookup(MODULE_BASE_LOW + 0x20u) == NULL &&
           sr_exec_span_owns_fetch(MODULE_BASE_LOW + 0x20u),
           "a span word with no translated entry is interpreter-owned, never the static body");
+    /* A static registration over the image's gap word (+0x80, outside the bound module's
+     * span) is no authority there: the bound module decides, and it says no. */
+    own_synthetic_aot_word(MODULE_BASE_LOW + MODULE_GAP_OFF);
+    CHECK(sr_lookup(MODULE_BASE_LOW + MODULE_GAP_OFF) == NULL &&
+          !sr_exec_span_owns_fetch(MODULE_BASE_LOW + MODULE_GAP_OFF),
+          "a static span over a bound module's gap word must not own that fetch");
     CHECK(sr_module_code_bind(&k_module_a, MODULE_BASE_ODD, &detail) ==
               SR_MODULE_BIND_ALREADY_BOUND,
           "one translation has at most one live binding");
