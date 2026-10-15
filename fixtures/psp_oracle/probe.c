@@ -120,6 +120,7 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_REGISTRY_READONLY 66
 #define PSP_ORACLE_CASE_KERNEL_MISC 67
 #define PSP_ORACLE_CASE_VFPU_COMPARE 68
+#define PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS 71
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -162,7 +163,8 @@ int sceKernelReferMutexStatus(SceUID mutexid, SceKernelMutexInfo *info);
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY
 PSP_MAIN_THREAD_PARAMS(0x20, 32, THREAD_ATTR_USER);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \
-      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE
+      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE || \
+      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS
 /* vadd.s/vmul.s run on the main thread; without the VFPU attribute the first
  * VFPU instruction traps (measured on PSP-3001 6.6.1: the thread stops after META).
  * The VFPU compare case runs vscmp.s/vsge.s/vslt.s there for the same reason. */
@@ -285,6 +287,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/kernel_misc_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE
 #define PROBE_HOST0_LOG "host0:/vfpu_compare_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS
+#define PROBE_HOST0_LOG "host0:/vfpu_transcendental_corpus_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SMOKE
 #define PROBE_HOST0_LOG "host0:/smoke_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_EXIT_DELETE
@@ -745,7 +749,8 @@ static void emit_record_extended(int emulated, const char *test_id,
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_AUDIO_QUERY || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CELLS || \
-    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DELAY_ZERO
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DELAY_ZERO || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS
 /* Deferred record buffer.
    The IO matrix measures IoFileMgr itself and the cache matrix measures
    dcache line residency across cells.  Emitting a record inside the measured
@@ -771,6 +776,9 @@ static void emit_record_extended(int emulated, const char *test_id,
 #define DEFERRED_MAX_OUT 8
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DELAY_ZERO
 #define DEFERRED_MAX_RECORDS 4
+#define DEFERRED_MAX_OUT 10
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS
+#define DEFERRED_MAX_RECORDS 128
 #define DEFERRED_MAX_OUT 10
 #else
 #define DEFERRED_MAX_RECORDS 8
@@ -3733,6 +3741,205 @@ static void run_vfpu_compare(int emulated) {
     uint32_t done = VFPU_COMPARE_CELLS;
     emit_record_extended(emulated, "PSP-VFPU-CMP-001", "vfpu-compare-done",
                          "PASS", 0, &done, 1);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS
+
+/* One deterministic 63-word grid per scalar operation: twenty shared special
+   encodings followed by forty-three operation-domain values stored as raw
+   binary32 words. The 11 operations produce 693 result words, packed into
+   eighty-eight records of at most eight words plus one completion record. */
+#define VFPU_TRANS_SPECIAL_COUNT 20u
+#define VFPU_TRANS_DOMAIN_COUNT 43u
+#define VFPU_TRANS_INPUT_COUNT (VFPU_TRANS_SPECIAL_COUNT + VFPU_TRANS_DOMAIN_COUNT)
+#define VFPU_TRANS_CHUNK_SIZE 8u
+#define VFPU_TRANS_CHUNK_COUNT ((VFPU_TRANS_INPUT_COUNT + VFPU_TRANS_CHUNK_SIZE - 1u) / \
+                                VFPU_TRANS_CHUNK_SIZE)
+#define VFPU_TRANS_OP_COUNT 11u
+#define VFPU_TRANS_RECORD_COUNT (VFPU_TRANS_OP_COUNT * VFPU_TRANS_CHUNK_COUNT)
+
+static const uint32_t s_vfpu_trans_specials[VFPU_TRANS_SPECIAL_COUNT] = {
+    0x00000000u, 0x80000000u, 0x00000001u, 0x80000001u,
+    0x3f800000u, 0xbf800000u, 0x3f000000u, 0xbf000000u,
+    0x40000000u, 0xc0000000u, 0x00800000u, 0x80800000u,
+    0x7f000000u, 0xff000000u, 0x7f800000u, 0xff800000u,
+    0x7fc00000u, 0xffc00000u, 0x7f800001u, 0xff800001u,
+};
+
+/* Replace the three VASIN specials already present in VASIN_DOMAIN_INPUTS
+   with distinct in-domain values. The other operations keep the shared set. */
+static const uint32_t s_vfpu_trans_asin_specials[VFPU_TRANS_SPECIAL_COUNT] = {
+    0x00000000u, 0x80000000u, 0x00000001u, 0x80000001u,
+    0x3f400000u, 0xbf400000u, 0x3f000000u, 0xbf000000u,
+    0x40000000u, 0x3f600000u, 0x00800000u, 0x80800000u,
+    0x7f000000u, 0xff000000u, 0x7f800000u, 0xff800000u,
+    0x7fc00000u, 0xffc00000u, 0x7f800001u, 0xff800001u,
+};
+
+/* Evenly spaced angles: -3.84375 through +4.03125 in 0.1875 increments. */
+static const uint32_t s_vfpu_trans_angle_domain[VFPU_TRANS_DOMAIN_COUNT] = {
+    0xc0760000u, 0xc06a0000u, 0xc05e0000u, 0xc0520000u, 0xc0460000u, 0xc03a0000u,
+    0xc02e0000u, 0xc0220000u, 0xc0160000u, 0xc00a0000u, 0xbffc0000u, 0xbfe40000u,
+    0xbfcc0000u, 0xbfb40000u, 0xbf9c0000u, 0xbf840000u, 0xbf580000u, 0xbf280000u,
+    0xbef00000u, 0xbe900000u, 0xbdc00000u, 0x3dc00000u, 0x3e900000u, 0x3ef00000u,
+    0x3f280000u, 0x3f580000u, 0x3f840000u, 0x3f9c0000u, 0x3fb40000u, 0x3fcc0000u,
+    0x3fe40000u, 0x3ffc0000u, 0x400a0000u, 0x40160000u, 0x40220000u, 0x402e0000u,
+    0x403a0000u, 0x40460000u, 0x40520000u, 0x405e0000u, 0x406a0000u, 0x40760000u,
+    0x40810000u,
+};
+
+/* Evenly spaced powers-of-two exponents: -15.375 through +16.125 by 0.75. */
+static const uint32_t s_vfpu_trans_exp_domain[VFPU_TRANS_DOMAIN_COUNT] = {
+    0xc1760000u, 0xc16a0000u, 0xc15e0000u, 0xc1520000u, 0xc1460000u, 0xc13a0000u,
+    0xc12e0000u, 0xc1220000u, 0xc1160000u, 0xc10a0000u, 0xc0fc0000u, 0xc0e40000u,
+    0xc0cc0000u, 0xc0b40000u, 0xc09c0000u, 0xc0840000u, 0xc0580000u, 0xc0280000u,
+    0xbff00000u, 0xbf900000u, 0xbec00000u, 0x3ec00000u, 0x3f900000u, 0x3ff00000u,
+    0x40280000u, 0x40580000u, 0x40840000u, 0x409c0000u, 0x40b40000u, 0x40cc0000u,
+    0x40e40000u, 0x40fc0000u, 0x410a0000u, 0x41160000u, 0x41220000u, 0x412e0000u,
+    0x413a0000u, 0x41460000u, 0x41520000u, 0x415e0000u, 0x416a0000u, 0x41760000u,
+    0x41810000u,
+};
+
+/* Evenly spaced positive log arguments: 0.0703125 through 5.3203125 by 0.125. */
+static const uint32_t s_vfpu_trans_log_domain[VFPU_TRANS_DOMAIN_COUNT] = {
+    0x3d900000u, 0x3e480000u, 0x3ea40000u, 0x3ee40000u, 0x3f120000u, 0x3f320000u,
+    0x3f520000u, 0x3f720000u, 0x3f890000u, 0x3f990000u, 0x3fa90000u, 0x3fb90000u,
+    0x3fc90000u, 0x3fd90000u, 0x3fe90000u, 0x3ff90000u, 0x40048000u, 0x400c8000u,
+    0x40148000u, 0x401c8000u, 0x40248000u, 0x402c8000u, 0x40348000u, 0x403c8000u,
+    0x40448000u, 0x404c8000u, 0x40548000u, 0x405c8000u, 0x40648000u, 0x406c8000u,
+    0x40748000u, 0x407c8000u, 0x40824000u, 0x40864000u, 0x408a4000u, 0x408e4000u,
+    0x40924000u, 0x40964000u, 0x409a4000u, 0x409e4000u, 0x40a24000u, 0x40a64000u,
+    0x40aa4000u,
+};
+
+/* Evenly spaced positive square-root/reciprocal-root inputs share log's domain. */
+static const uint32_t s_vfpu_trans_root_domain[VFPU_TRANS_DOMAIN_COUNT] = {
+    0x3d900000u, 0x3e480000u, 0x3ea40000u, 0x3ee40000u, 0x3f120000u, 0x3f320000u,
+    0x3f520000u, 0x3f720000u, 0x3f890000u, 0x3f990000u, 0x3fa90000u, 0x3fb90000u,
+    0x3fc90000u, 0x3fd90000u, 0x3fe90000u, 0x3ff90000u, 0x40048000u, 0x400c8000u,
+    0x40148000u, 0x401c8000u, 0x40248000u, 0x402c8000u, 0x40348000u, 0x403c8000u,
+    0x40448000u, 0x404c8000u, 0x40548000u, 0x405c8000u, 0x40648000u, 0x406c8000u,
+    0x40748000u, 0x407c8000u, 0x40824000u, 0x40864000u, 0x408a4000u, 0x408e4000u,
+    0x40924000u, 0x40964000u, 0x409a4000u, 0x409e4000u, 0x40a24000u, 0x40a64000u,
+    0x40aa4000u,
+};
+
+/* Evenly spaced reciprocal inputs: -2.5625 through +2.6875 by 0.125. */
+static const uint32_t s_vfpu_trans_recip_domain[VFPU_TRANS_DOMAIN_COUNT] = {
+    0xc0240000u, 0xc01c0000u, 0xc0140000u, 0xc00c0000u, 0xc0040000u, 0xbff80000u,
+    0xbfe80000u, 0xbfd80000u, 0xbfc80000u, 0xbfb80000u, 0xbfa80000u, 0xbf980000u,
+    0xbf880000u, 0xbf700000u, 0xbf500000u, 0xbf300000u, 0xbf100000u, 0xbee00000u,
+    0xbea00000u, 0xbe400000u, 0xbd800000u, 0x3d800000u, 0x3e400000u, 0x3ea00000u,
+    0x3ee00000u, 0x3f100000u, 0x3f300000u, 0x3f500000u, 0x3f700000u, 0x3f880000u,
+    0x3f980000u, 0x3fa80000u, 0x3fb80000u, 0x3fc80000u, 0x3fd80000u, 0x3fe80000u,
+    0x3ff80000u, 0x40040000u, 0x400c0000u, 0x40140000u, 0x401c0000u, 0x40240000u,
+    0x402c0000u,
+};
+
+/* Evenly spaced VASIN inputs: -0.640625 through +0.671875 by 0.03125. */
+static const uint32_t s_vfpu_trans_asin_domain[VFPU_TRANS_DOMAIN_COUNT] = {
+    0xbf240000u, 0xbf1c0000u, 0xbf140000u, 0xbf0c0000u, 0xbf040000u, 0xbef80000u,
+    0xbee80000u, 0xbed80000u, 0xbec80000u, 0xbeb80000u, 0xbea80000u, 0xbe980000u,
+    0xbe880000u, 0xbe700000u, 0xbe500000u, 0xbe300000u, 0xbe100000u, 0xbde00000u,
+    0xbda00000u, 0xbd400000u, 0xbc800000u, 0x3c800000u, 0x3d400000u, 0x3da00000u,
+    0x3de00000u, 0x3e100000u, 0x3e300000u, 0x3e500000u, 0x3e700000u, 0x3e880000u,
+    0x3e980000u, 0x3ea80000u, 0x3eb80000u, 0x3ec80000u, 0x3ed80000u, 0x3ee80000u,
+    0x3ef80000u, 0x3f040000u, 0x3f0c0000u, 0x3f140000u, 0x3f1c0000u, 0x3f240000u,
+    0x3f2c0000u,
+};
+
+typedef uint32_t (*vfpu_transcendental_fn)(uint32_t input);
+
+#define VFPU_TRANS_OP(name, opcode)                                      \
+    static uint32_t vfpu_trans_##name(uint32_t input) {                  \
+        uint32_t result;                                                 \
+        __asm__ volatile(                                                \
+            "mtv %1, S000\n"                                             \
+            opcode " S002, S000\n"                                       \
+            "mfv %0, S002\n"                                             \
+            : "=r"(result) : "r"(input) : "memory");                    \
+        return result;                                                   \
+    }
+
+VFPU_TRANS_OP(vsin, "vsin.s")
+VFPU_TRANS_OP(vcos, "vcos.s")
+VFPU_TRANS_OP(vexp2, "vexp2.s")
+VFPU_TRANS_OP(vlog2, "vlog2.s")
+VFPU_TRANS_OP(vrsq, "vrsq.s")
+VFPU_TRANS_OP(vrcp, "vrcp.s")
+VFPU_TRANS_OP(vsqrt, "vsqrt.s")
+VFPU_TRANS_OP(vasin, "vasin.s")
+VFPU_TRANS_OP(vnrcp, "vnrcp.s")
+VFPU_TRANS_OP(vnsin, "vnsin.s")
+VFPU_TRANS_OP(vrexp2, "vrexp2.s")
+
+#undef VFPU_TRANS_OP
+
+struct vfpu_transcendental_op {
+    const char *name;
+    vfpu_transcendental_fn apply;
+    const uint32_t *specials;
+    const uint32_t *domain;
+};
+
+static const struct vfpu_transcendental_op s_vfpu_transcendental_ops[VFPU_TRANS_OP_COUNT] = {
+    {"vsin", vfpu_trans_vsin, s_vfpu_trans_specials, s_vfpu_trans_angle_domain},
+    {"vcos", vfpu_trans_vcos, s_vfpu_trans_specials, s_vfpu_trans_angle_domain},
+    {"vexp2", vfpu_trans_vexp2, s_vfpu_trans_specials, s_vfpu_trans_exp_domain},
+    {"vlog2", vfpu_trans_vlog2, s_vfpu_trans_specials, s_vfpu_trans_log_domain},
+    {"vrsq", vfpu_trans_vrsq, s_vfpu_trans_specials, s_vfpu_trans_root_domain},
+    {"vrcp", vfpu_trans_vrcp, s_vfpu_trans_specials, s_vfpu_trans_recip_domain},
+    {"vsqrt", vfpu_trans_vsqrt, s_vfpu_trans_specials, s_vfpu_trans_root_domain},
+    {"vasin", vfpu_trans_vasin, s_vfpu_trans_asin_specials, s_vfpu_trans_asin_domain},
+    {"vnrcp", vfpu_trans_vnrcp, s_vfpu_trans_specials, s_vfpu_trans_recip_domain},
+    {"vnsin", vfpu_trans_vnsin, s_vfpu_trans_specials, s_vfpu_trans_angle_domain},
+    {"vrexp2", vfpu_trans_vrexp2, s_vfpu_trans_specials, s_vfpu_trans_exp_domain},
+};
+
+static uint32_t s_vfpu_transcendental_observed[VFPU_TRANS_OP_COUNT]
+                                               [VFPU_TRANS_INPUT_COUNT];
+
+_Static_assert(DEFERRED_MAX_RECORDS >= VFPU_TRANS_RECORD_COUNT + 1u,
+               "VFPU transcendental records fit the deferred buffer");
+_Static_assert(DEFERRED_MAX_OUT >= VFPU_TRANS_CHUNK_SIZE,
+               "VFPU transcendental chunk fits each deferred record");
+
+static void run_vfpu_transcendental_corpus(int emulated) {
+    __asm__ volatile("ctc1 $0, $31" ::: "memory");
+    probe_step(emulated, "vfpu-transcendental-corpus", "cells");
+
+    for (uint32_t op = 0; op < VFPU_TRANS_OP_COUNT; op++) {
+        const struct vfpu_transcendental_op *entry = &s_vfpu_transcendental_ops[op];
+        for (uint32_t index = 0; index < VFPU_TRANS_INPUT_COUNT; index++) {
+            const uint32_t input = index < VFPU_TRANS_SPECIAL_COUNT
+                ? entry->specials[index]
+                : entry->domain[index - VFPU_TRANS_SPECIAL_COUNT];
+            s_vfpu_transcendental_observed[op][index] = entry->apply(input);
+        }
+    }
+
+    for (uint32_t op = 0; op < VFPU_TRANS_OP_COUNT; op++) {
+        const struct vfpu_transcendental_op *entry = &s_vfpu_transcendental_ops[op];
+        for (uint32_t chunk = 0; chunk < VFPU_TRANS_CHUNK_COUNT; chunk++) {
+            const uint32_t first = chunk * VFPU_TRANS_CHUNK_SIZE;
+            uint32_t count = VFPU_TRANS_INPUT_COUNT - first;
+            uint32_t out[VFPU_TRANS_CHUNK_SIZE];
+            if (count > VFPU_TRANS_CHUNK_SIZE) {
+                count = VFPU_TRANS_CHUNK_SIZE;
+            }
+            for (uint32_t word = 0; word < count; word++) {
+                out[word] = s_vfpu_transcendental_observed[op][first + word];
+            }
+            char case_id[48];
+            snprintf(case_id, sizeof(case_id), "%s-chunk-%02u", entry->name,
+                     (unsigned int)chunk);
+            defer_record(case_id, "PASS", first, out, count);
+        }
+    }
+    const uint32_t done = VFPU_TRANS_RECORD_COUNT;
+    defer_record("vfpu-transcendental-corpus-done", "PASS", 0u, &done, 1);
+    flush_deferred(emulated, "PSP-VFPU-TRANSCENDENTAL-001");
 }
 #endif
 
@@ -7341,6 +7548,8 @@ int main(int argc, char *argv[]) {
     run_fpu_vector(emulated, boot_fcr31);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE
     run_vfpu_compare(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS
+    run_vfpu_transcendental_corpus(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_TEARDOWN_TEST
     run_teardown_test(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_IO_MATRIX

@@ -653,7 +653,7 @@ One console is one data point; see §11. Nothing here closes issue #70
   | --- | --- | --- | --- |
   | `PSP-MUTEX-001` | `mutex-interrupt-context` (APIs `sceKernelLockMutex`, `sceKernelLockMutexCB`, `sceKernelTryLockMutex`, `sceKernelUnlockMutex`). In 20 of 20 trials run from a VBLANK sub-interrupt handler, `LockMutex` with an unknown UID, `LockMutex` with count 0, `LockMutex`, `LockMutexCB` and `TryLockMutex` on an unlocked mutex, and `UnlockMutex` of a mutex the main thread owns each returned 0x80020064 (ILLEGAL_CONTEXT) | The raw `sceKernelIsCpuIntrEnable` return inside the handler (context only); `UnlockMutex` with an unknown UID or a bad count from interrupt context | MEASURED: the header record and 20 trial records, PASS |
 
-- **PSP-3000 single-case runs on public commit `b5d6fc5b` (2026-10-15)**: firmware 6.6.1, operator-declared model PSP-3000. The commit is the `origin/main` of that day and includes the five `hle-*` cases added in #1020. Each case was one runner invocation with the `transport-write` preflight, which passed on every launch (PSP-TRANSPORT-001 is not re-cited). The first case ran on a fresh power cycle, and each later one after a PSPLink soft reset and re-qualification. A row cites only the cells named in it, and cells not named here are not measured by this entry. Raw envelopes and host0 logs stay in the private campaign directory.
+- **PSP-3000 single-case runs on public commit `b5d6fc5b` (2026-10-15)**: firmware 6.6.1, operator-declared model PSP-3000. The commit is the `origin/main` of that day and includes the five initial single-launch `hle-*` cases. Each case was one runner invocation with the `transport-write` preflight, which passed on every launch (PSP-TRANSPORT-001 is not re-cited). The first case ran on a fresh power cycle, and each later one after a PSPLink soft reset and re-qualification. A row cites only the cells named in it, and cells not named here are not measured by this entry. Raw envelopes and host0 logs stay in the private campaign directory.
 
   | Evidence id | Cells cited | Not cited | Outcome (2026-10-15) |
   | --- | --- | --- | --- |
@@ -667,17 +667,19 @@ One console is one data point; see §11. Nothing here closes issue #70
 
 ## Pending PSP-3000 measurement campaign
 
-The following source-owned cases are built for a future PSP-3000 / 6.61
-session. Of the fifteen cases below, six were measured by the 2026-10-10 campaign on `f6ccfb33`
-(index above), `ge-break-continue` was measured by its acceptance-eligible 2026-10-15 re-run on
-`c642039a` after two captured-only runs, `llsc-link`, `vfpu-compare` and `fpu-cc`, added after that
-campaign, were measured on 2026-10-15 from `e45e667b` (index above), and the five `hle-*` cases,
-also added after that campaign, ran on 2026-10-15 from `b5d6fc5b` (index above):
-`hle-vtimer-unit`, `hle-vtimer-errors` and `hle-power-float-v0` were measured,
-`hle-kernel-pool-bounds` was captured only and has since been revised, and `hle-null-out-pointers` did not complete. The five
-`hle-*` cases are single launches outside the campaign queue (`CAMPAIGN_QUEUE_CASES`).
-Their parsers check record order, scalar fields, and completion;
-they do not encode expected PSP return values.
+The following eighteen source-owned cases are built for a future PSP-3000 / 6.61
+session. Six were measured by the 2026-10-10 campaign on `f6ccfb33`; `ge-break-continue`
+was measured by its acceptance-eligible 2026-10-15 re-run on `c642039a` after two
+captured-only runs; `llsc-link`, `vfpu-compare` and `fpu-cc` were measured on
+2026-10-15 from `e45e667b`. The five initial single-launch HLE cases (97-101)
+ran on 2026-10-15 from `b5d6fc5b`: the two VTimer cases and power-float case
+were measured, the earlier pool-bounds revision was captured only (the revised
+form has not run), and null-out was captured incomplete. The added HLE audio and
+timer cases (102-103) and VFPU transcendental corpus have not run on hardware.
+These eight probes run as single launches outside the campaign queue
+(`CAMPAIGN_QUEUE_CASES`); the manifest distinguishes measured, captured and
+not-run states. Their parsers check record order, scalar fields and completion,
+not expected PSP values.
 
 | Case | Evidence id | Hardware status | Contract being measured |
 | --- | --- | --- | --- |
@@ -691,11 +693,14 @@ they do not encode expected PSP return values.
 | `kernel-misc` | `PSP-KERNEL-MISC-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Wide clock conversion, controller default mode, profiler-pointer returns, basic VTimer behavior, display return values, battery-icon status, and UMD-popup returns. |
 | `vfpu-compare` | `PSP-VFPU-CMP-001` | `MEASURED` (2026-10-15, `e45e667b`) | `vscmp.s`, `vsge.s`, and `vslt.s` on 15 operand pairs: less-than, equal, greater, signed zeros in both orders, quiet, signalling, and negative NaN on each side, and infinities. Each record is the raw result word against the project's model at the time; the five `vscmp` NaN words differed from it, and the model now returns the measured words. |
 | `fpu-cc` | `PSP-FPU-CC-001` | `MEASURED` (2026-10-15, `e45e667b`) | COP1 condition codes: which FCR31 condition bits exist, which bit `c.eq.s` sets for each condition code 0..7, and whether `bc1t`/`bc1f` with each code are taken under FCC0, no flag, and that code's own flag. Condition code 0 is the control. Only FCC0 exists; every code writes and tests it. |
+| `vfpu-transcendental-corpus` | `PSP-VFPU-TRANSCENDENTAL-001` | `NOT_RUN` (single launch, not in the campaign queue) | Raw single-lane result words for vsin, vcos, vexp2, vlog2, vrsq, vrcp, vsqrt, vasin, vnrcp, vnsin, and vrexp2. Each operation uses 63 raw-word inputs: 20 special encodings and 43 evenly spaced domain constants. VASIN substitutes three in-domain words for its previously measured edge inputs. Eight-word chunks produce 88 data records plus one completion record (89 result records total); parsing checks format only and asserts no hardware values. |
 | `hle-vtimer-unit` | `PSP-HLE-VTIMER-002` | `MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the campaign queue) | One VTimer: start; a `sceKernelGetVTimerTime` and a system-clock reading either side of a bounded 20 ms delay; the VTimer base and Refer base field while running and after stop; stop; delete. Each 64-bit clock is recorded as its low word then its high word. |
 | `hle-vtimer-errors` | `PSP-HLE-VTIMER-003` | `MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the campaign queue) | Start, stop, and `sceKernelGetVTimerTime` on a deleted UID, then a cleanup delete of that UID after its last use; a live timer created and deleted; up to 64 creates; out1 records whether a refusal occurred; every created timer deleted. The NULL option pointer of `sceKernelCreateVTimer` is the optional argument. |
 | `hle-kernel-pool-bounds` | `PSP-HLE-KERNEL-STATUS-002` | `NOT_RUN` (revised form; single launch, not in the campaign queue; the earlier revision's 2026-10-15 `b5d6fc5b` run was captured only) | FPL creation with block size 0 and with a 0x7fffffff-byte block, each deleted when its create returned a pool; a refused create gives a PASS delete cell with out0 0 and no delete call; VPL allocation: up to 64 allocations; out1 records whether a refusal occurred; every block freed and the VPL deleted. The NULL option pointers of the pool creates are the optional argument. |
 | `hle-power-float-v0` | `PSP-HLE-POWER-002` | `MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the campaign queue) | Raw `$v0` and `$f0` bits of `scePowerGetPllClockFrequencyFloat`, `scePowerGetCpuClockFrequencyFloat`, and `scePowerGetBusClockFrequencyFloat`, one call each, through a short assembly wrapper. |
 | `hle-null-out-pointers` | `PSP-HLE-NULL-OUT-001` | `CAPTURED` (2026-10-15, `b5d6fc5b`; incomplete, not measured; single launch, not in the campaign queue) | `sceKernelReferSystemStatus`, `sceKernelGetVTimerTime`, `sceKernelGetVTimerBase`, and `sceKernelReferVTimerStatus` with NULL as their mandatory out pointer, one call each on a live VTimer that is deleted at the end; each record holds only its return code. Risk high: a NULL mandatory out-pointer may fault in kernel mode; schedule last in a session, after every other case. On 2026-10-15 the stream stopped at the first NULL call's step and the console needed a power cycle, so plan one after this case. |
+| `hle-audio-src` | `PSP-HLE-AUDIO-SRC-001` | `NOT_RUN` (single launch, not in the campaign queue) | Unreserved SRC release and silent output; reserve 1024 samples at 44100 Hz stereo; second reserve; one silent blocking output; release after the blocking drain and release again; six invalid reserve shapes, immediately releasing any unexpected success; Output2-then-SRC and SRC-then-Output2 reservation attempts with cleanup. 18 result records. No SRC rest-sample query exists in the public NID corpus. Risk high: two silent blocking SRC calls, at most one block per call; schedule after the other new probes. |
+| `hle-timer-order` | `PSP-HLE-TIMER-ORDER-001` | `NOT_RUN` (single launch, not in the campaign queue) | Two equal-delay alarms set A then B; long-delay then short-delay alarm; nominally equal VTimer handler and alarm; SetAlarm(0). Each callback stores a shared sequence number and system-time low/high words. Every wait has an elapsed-time deadline; cancel all alarms and stop/delete the VTimer. Ordering only, no absolute-time claim; 18 result records. |
 
 The registry probe opens the registry and categories in read mode and never
 calls a write, create, remove, or flush API. Values are emitted only for keys

@@ -225,6 +225,11 @@ static void reset_sched(void) {
     s_vbl_next_us = 0;
     s_vbl_count = 0;
     s_vbl_last_us = 0;
+    s_vbl_edge_us = 0;
+    s_vbl_edge_valid = 0;
+    s_vbl_delivery_anchor_us = 0;
+    s_vbl_delivery_anchor_valid = 0;
+    s_vblank_resume_anchor_pending = 0;
     s_vblank_q_us = -1;
     s_last_vblank_ns = 0;
     g_test_vblank_delivered = 0;
@@ -2210,11 +2215,15 @@ static void test_masked_window_keeps_the_enabled_backlog(void) {
            "a period that elapses under the mask raises the coalesced pending level");
     expect(s_pending_vblanks == 2u,
            "a period under the mask adds no episode of its own");
+    expect(!sched_display_is_vblank(),
+           "IsVblank keeps its prior delivery anchor while interrupts are masked");
 
     sched_resume_interrupts(token);
     expect(g_test_vblank_delivered == 3u,
            "resume delivers the enabled backlog plus the one coalesced masked episode");
     expect(s_pending_vblanks == 0u, "the batch is fully delivered at resume");
+    expect(sched_display_is_vblank(),
+           "the coalesced masked edge keeps its resume delivery anchor");
     s_host_ns_fn = NULL;
 }
 
@@ -2808,6 +2817,9 @@ static void test_display_wait_nid_split(void) {
     /* Inside the interval. */
     s_vbl_count = 1;
     s_vbl_last_us = 1000u;
+    s_vbl_edge_us = 1000u;
+    s_vbl_edge_valid = 1;
+    s_vbl_next_us = UINT64_MAX;
     s_vtime_us = 1000u;
     expect(sched_display_is_vblank(), "fixture is inside the vblank interval");
 
@@ -2834,6 +2846,9 @@ static void test_display_wait_nid_split(void) {
     reset_sched();
     s_vbl_count = 1;
     s_vbl_last_us = 1000u;
+    s_vbl_edge_us = 1000u;
+    s_vbl_edge_valid = 1;
+    s_vbl_next_us = UINT64_MAX;
     s_vtime_us = 1000u + SCHED_DISPLAY_VBLANK_WINDOW_US;
     expect(!sched_display_is_vblank(), "fixture has left the vblank interval");
     TCB *o = &s_tcb[mk(0x301u, TH_RUNNING, 32)];
@@ -2956,11 +2971,20 @@ static uint64_t dw_edge_us(uint64_t k) { return (k * 1001000ull) / 60ull; }
 
 static int g_dw_body_start_nid;   /* 1: sceDisplayWaitVblankStart shape, 0: sceDisplayWaitVblank */
 static int g_dw_body_ret;
+static int g_dw_body_vblank;
 static void dw_body_wait_either(CpuState *s) {
     (void)s;
     g_dw_body_calls++;
     if (g_dw_body_start_nid) sched_wait_vblank_start();
     else g_dw_body_ret = sched_wait_vblank();
+    g_dw_body_returned++;
+}
+
+static void dw_body_wait_start_then_check_vblank(CpuState *s) {
+    (void)s;
+    g_dw_body_calls++;
+    sched_wait_vblank_start();
+    g_dw_body_vblank = sched_display_is_vblank();
     g_dw_body_returned++;
 }
 
@@ -3035,6 +3059,136 @@ static void test_display_wait_late_owes_no_edges(void) {
                              "the released call returns, and sceDisplayWaitVblank reports 0 because it blocked");
         }
     }
+}
+
+/* Live display observations latch elapsed edges without delivering their handlers.
+ * GetVcount uses sched_vtime_refresh() directly; IsVblank uses the same refresh
+ * before comparing the scheduled edge with the measured 729-us window. */
+static void test_display_vcount_observation_latches_due_edge(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    scheduler_progress_time();
+    scheduler_service_pending();
+    expect(g_test_vcount == 1u && s_vbl_count == 1u,
+           "the origin edge is latched and delivered before the observation");
+
+    const uint64_t phase10_us = (10u * 1001000ull) / 480ull;
+    set_host_us(phase10_us);
+    sched_vtime_refresh();
+    expect(g_test_vcount == 2u,
+           "sceDisplayGetVcount observes the edge crossed during un-yielded work");
+    expect(s_pending_vblanks == 1u && s_vbl_count == 1u && g_test_vblank_delivered == 1u,
+           "a VCOUNT observation latches the edge without delivering its handler");
+}
+
+static void test_display_isvblank_uses_live_edge_time(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    scheduler_progress_time();
+    scheduler_service_pending();
+
+    const uint64_t phase10_us = (10u * 1001000ull) / 480ull;
+    set_host_us(phase10_us);
+    expect(!sched_display_is_vblank(),
+           "IsVblank is false at 10/8 of a period after the aligned edge");
+    expect(g_test_vcount == 2u && s_pending_vblanks == 1u && s_vbl_count == 1u,
+           "the late IsVblank read latches VCOUNT without delivering the edge");
+
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    scheduler_progress_time();
+    scheduler_service_pending();
+    set_host_us(dw_edge_us(1u) + 500u);
+    expect(sched_display_is_vblank(),
+           "IsVblank is true just after an un-serviced edge within the measured window");
+    expect(g_test_vcount == 2u && s_vbl_count == 1u,
+           "the in-window IsVblank read observes VCOUNT without running handlers");
+}
+
+static void test_display_wait_uses_live_window_before_blocking(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    scheduler_progress_time();
+    scheduler_service_pending();
+
+    TCB *t = &s_tcb[mk(0x341u, TH_RUNNING, 32)];
+    s_cur = (int)(t - s_tcb);
+    set_host_us(dw_edge_us(1u) + 500u);
+    expect(sched_wait_vblank() == 1,
+           "WaitVblank returns 1 when its live observation is inside the interval");
+    expect(t->state == TH_RUNNING && t->wait_obj == 0u,
+           "the true in-window WaitVblank result does not block");
+    expect(g_test_vcount == 2u && s_pending_vblanks == 1u && s_vbl_count == 1u,
+           "the WaitVblank fast return latches but does not deliver the edge");
+}
+
+static void test_display_wait_ignores_late_delivery_anchor(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    scheduler_progress_time();
+    scheduler_service_pending();
+    g_dw_body_calls = g_dw_body_returned = 0;
+    g_dw_body_ret = -1;
+    g_dw_body_start_nid = 0;
+    g_test_body = dw_body_wait_either;
+
+    uint32_t uid = sched_create_thread(0x3410u, 32, 0);
+    int idx = index_of_uid(uid);
+    expect(idx >= 0, "late WaitVblank fixture thread created");
+    sched_start_thread(uid, 0, 0);
+
+    const uint64_t phase10_us = (10u * 1001000ull) / 480ull;
+    set_host_us(phase10_us);
+    scheduler_progress_time();
+    scheduler_service_pending();
+    expect(s_vbl_last_us == phase10_us,
+           "the catch-up delivery retains its actual delivery stamp for diagnostics");
+    expect(!sched_display_is_vblank(),
+           "catch-up delivery remains outside the in-window interval at its late stamp");
+
+    run_one_slice(idx);
+    expect(g_dw_body_returned == 0 && s_tcb[idx].state == TH_WAIT_OBJ &&
+               s_tcb[idx].wait_obj == VBLANK_WAIT_OBJ,
+           "WaitVblank blocks instead of using the stale in-window delivery stamp");
+
+    set_host_us(dw_edge_us(2u));
+    scheduler_progress_time();
+    scheduler_service_pending();
+    expect(s_tcb[idx].state == TH_READY,
+           "the next scheduled edge wakes the caller that blocked late");
+    run_one_slice(idx);
+    expect(g_dw_body_returned == 1 && g_dw_body_ret == 0,
+           "the blocked WaitVblank resumes with return value 0");
+}
+
+static void test_display_waiter_keeps_delivery_anchor(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    scheduler_progress_time();
+    scheduler_service_pending();
+    g_dw_body_calls = g_dw_body_returned = 0;
+    g_dw_body_vblank = 0;
+    g_test_body = dw_body_wait_start_then_check_vblank;
+
+    uint32_t uid = sched_create_thread(0x3411u, 32, 0);
+    int idx = index_of_uid(uid);
+    expect(idx >= 0, "WaitVblankStart waiter fixture thread created");
+    sched_start_thread(uid, 0, 0);
+    run_one_slice(idx);
+    expect(s_tcb[idx].state == TH_WAIT_OBJ && s_tcb[idx].wait_obj == VBLANK_WAIT_OBJ,
+           "WaitVblankStart registers before the next edge");
+
+    const uint64_t wake_us = 20000u;
+    expect(wake_us - dw_edge_us(1u) > SCHED_DISPLAY_VBLANK_WINDOW_US,
+           "the simulated host wake latency exceeds the measured interval");
+    set_host_us(wake_us);
+    scheduler_progress_time();
+    scheduler_service_pending();
+    expect(s_tcb[idx].state == TH_READY,
+           "the late delivered edge wakes the existing waiter");
+    run_one_slice(idx);
+    expect(g_dw_body_returned == 1 && g_dw_body_vblank,
+           "a woken waiter still observes IsVblank at once despite host wake latency");
 }
 
 /* D) A VBLANK-only wait set is not a deadlock: the source is runtime-owned.
@@ -3718,6 +3872,11 @@ int main(int argc, char **argv) {
     test_waitvblankstart_always_blocks();
     test_display_wait_nid_split();
     test_display_wait_late_owes_no_edges();
+    test_display_vcount_observation_latches_due_edge();
+    test_display_isvblank_uses_live_edge_time();
+    test_display_wait_uses_live_window_before_blocking();
+    test_display_wait_ignores_late_delivery_anchor();
+    test_display_waiter_keeps_delivery_anchor();
     test_display_wait_ignores_other_ready_threads();
     test_display_wait_hands_over_only_while_blocked();
     test_vblank_only_wait_is_not_deadlock();

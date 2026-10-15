@@ -5580,6 +5580,12 @@ static void reset_fixture(void) {
      * test sets a deadline, which is the idiom this file uses to keep VBLANK out. */
     s_vbl_next_us = UINT64_MAX;
     s_vbl_count = 0;
+    s_vbl_last_us = 0;
+    s_vbl_edge_us = 0;
+    s_vbl_edge_valid = 0;
+    s_vbl_delivery_anchor_us = 0;
+    s_vbl_delivery_anchor_valid = 0;
+    s_vblank_resume_anchor_pending = 0;
     s_vblank_q_us = -1;
     s_last_vblank_ns = 0;
     s_heap_arena_off = 0;
@@ -7098,8 +7104,12 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
         CpuState cpu;
         memset(&cpu, 0, sizeof(cpu));
 
+        /* Establish the pre-source baseline before the live GetVcount read is
+         * allowed to observe the deadline at the timeline origin. */
+        s_vbl_next_us = UINT64_MAX;
         cpu.r[4] = 0;
         uint32_t vc0 = sr_syscall(&cpu, NID_DISPLAY_VCOUNT);
+        s_vbl_next_us = 0;
 
         /* Reach the boundary of N-1 completed periods from the origin, so the
          * latch's exact rational carry math advances exactly N period
@@ -7143,8 +7153,10 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
         s_pending_vblanks = 0;
         CpuState cpu;
         memset(&cpu, 0, sizeof(cpu));
+        s_vbl_next_us = UINT64_MAX;
         cpu.r[4] = 0;
         uint32_t vc0 = sr_syscall(&cpu, NID_DISPLAY_VCOUNT);
+        s_vbl_next_us = 0;
 
         sched_raise_interrupt(SCHED_INTR_VBLANK);  /* already pending */
         s_vtime_us = (uint64_t)scheduler_vblank_delta(2u, 0u, NULL);
@@ -7171,8 +7183,10 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
         s_pending_vblanks = 0;
         CpuState cpu;
         memset(&cpu, 0, sizeof(cpu));
+        s_vbl_next_us = UINT64_MAX;
         cpu.r[4] = 0;
         uint32_t vc0 = sr_syscall(&cpu, NID_DISPLAY_VCOUNT);
+        s_vbl_next_us = 0;
 
         s_vtime_us = (uint64_t)scheduler_vblank_delta(1u, 0u, NULL);  /* 2 periods */
         scheduler_latch_due_events();
@@ -7191,6 +7205,31 @@ static void test_vcount_tracks_elapsed_source_periods(void) {
         cpu.r[4] = 0;
         expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + 5u,
                "service leaves the accumulated VCOUNT alone");
+    }
+
+    /* A GetVcount read itself samples the source and advances only the register
+     * state; the VBLANK handler remains pending until an eligible service point. */
+    {
+        reset_fixture();
+        sr_hle_init();
+        s_pace_on = 0;
+        s_vbl_next_us = 0;
+        s_vbl_event_period_rem = 0;
+        s_vbl_count = 0;
+        s_interrupts_enabled = 1;
+        s_pending_vblanks = 0;
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+
+        uint32_t vc0 = sr_syscall(&cpu, NID_DISPLAY_VCOUNT);
+        expect(s_pending_vblanks == 1u && s_vbl_count == 0u,
+               "GetVcount latches the origin edge without servicing its handler");
+        s_vtime_us = (uint64_t)scheduler_vblank_delta(1u, 0u, NULL);
+        cpu.r[4] = 0;
+        expect(sr_syscall(&cpu, NID_DISPLAY_VCOUNT) == vc0 + 1u,
+               "GetVcount observes an un-serviced edge crossed during guest work");
+        expect(s_pending_vblanks == 2u && s_vbl_count == 0u,
+               "GetVcount keeps both source edges pending until a service point");
     }
 }
 
@@ -9835,6 +9874,9 @@ static void test_can_not_wait_semantics(void) {
          * on both NIDs here: L26/L27 and L34/L35 are CAN_NOT_WAIT. */
         s_vbl_count = 7;
         s_vbl_last_us = s_vtime_us;
+        s_vbl_edge_us = s_vtime_us;
+        s_vbl_edge_valid = 1;
+        s_vbl_next_us = UINT64_MAX;
         expect(sched_display_is_vblank(),
                "fixture places the display inside the vblank interval");
         memset(&cpu, 0, sizeof cpu);
@@ -25346,7 +25388,9 @@ static void test_scripted_input_reaches_a_starved_guest(void) {
     sr_ctrl_test_reset_live_input();
     ctrl_drain(&cpu);
     starve_reset();
+    s_vbl_next_us = UINT64_MAX;
     uint32_t v0 = starve_vcount(&cpu);
+    s_vbl_next_us = 0;
     snprintf(body, sizeof body, "%u 4000 4\n", v0 + 12u);
     rt_write(body);
     expect(sr_route_load(RT_PATH) == 1 && sr_route_status() == RT_LEGACY,

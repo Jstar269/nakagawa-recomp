@@ -776,6 +776,71 @@ _register_campaign_probe(
     ("pll-clock-float-v0", "cpu-clock-float-v0", "bus-clock-float-v0"),
     {"pll-clock-float-v0": 1, "cpu-clock-float-v0": 1, "bus-clock-float-v0": 1},
 )
+_HLE_AUDIO_SRC_INVALID_CASES = (
+    "src-reserve-invalid-samples-zero", "src-reserve-invalid-samples-65",
+    "src-reserve-invalid-samples-4096", "src-reserve-invalid-frequency",
+    "src-reserve-invalid-channels-1", "src-reserve-invalid-channels-4",
+)
+_HLE_AUDIO_SRC_CASES = (
+    "src-release-unreserved", "src-output-unreserved", "src-reserve-valid",
+    "src-reserve-already-held", "src-output-blocking-0", "src-release-after-output",
+    "src-release-again", *_HLE_AUDIO_SRC_INVALID_CASES, "out2-then-src-reserve",
+    "src-then-out2-reserve", "src-final-cleanup", "out2-final-cleanup",
+)
+_register_campaign_probe(
+    "hle-audio-src", "PSP-HLE-AUDIO-SRC-001", _HLE_AUDIO_SRC_CASES,
+    {
+        "src-release-unreserved": 0, "src-output-unreserved": 2,
+        "src-reserve-valid": 3, "src-reserve-already-held": 3,
+        "src-output-blocking-0": 2, "src-release-after-output": 0,
+        "src-release-again": 0,
+        **{case_id: 4 for case_id in _HLE_AUDIO_SRC_INVALID_CASES},
+        "out2-then-src-reserve": 3, "src-then-out2-reserve": 3,
+        "src-final-cleanup": 0, "out2-final-cleanup": 0,
+    },
+)
+_HLE_TIMER_ORDER_CASES = (
+    "alarm-same-delay-set", "alarm-same-delay-a", "alarm-same-delay-b",
+    "alarm-long-then-short-set", "alarm-long-event", "alarm-short-event",
+    "timer-order-vtimer-create", "timer-order-vtimer-handler",
+    "timer-order-vtimer-alarm-set", "timer-order-vtimer-event",
+    "timer-order-vtimer-alarm-event", "alarm-zero-set", "alarm-zero-event",
+    "alarm-same-delay-cleanup", "alarm-long-short-cleanup",
+    "timer-order-vtimer-cleanup", "alarm-zero-cleanup",
+)
+_register_campaign_probe(
+    "hle-timer-order", "PSP-HLE-TIMER-ORDER-001", _HLE_TIMER_ORDER_CASES,
+    {
+        "alarm-same-delay-set": 1, "alarm-same-delay-a": 2,
+        "alarm-same-delay-b": 2, "alarm-long-then-short-set": 1,
+        "alarm-long-event": 2, "alarm-short-event": 2,
+        "timer-order-vtimer-create": 1, "timer-order-vtimer-handler": 1,
+        "timer-order-vtimer-alarm-set": 1, "timer-order-vtimer-event": 2,
+        "timer-order-vtimer-alarm-event": 2, "alarm-zero-set": 1,
+        "alarm-zero-event": 2, "alarm-same-delay-cleanup": 2,
+        "alarm-long-short-cleanup": 2, "timer-order-vtimer-cleanup": 3,
+        "alarm-zero-cleanup": 1,
+    },
+)
+
+VFPU_TRANSCENDENTAL_OPS = (
+    "vsin", "vcos", "vexp2", "vlog2", "vrsq", "vrcp", "vsqrt", "vasin",
+    "vnrcp", "vnsin", "vrexp2",
+)
+VFPU_TRANSCENDENTAL_CHUNKS = 8
+VFPU_TRANSCENDENTAL_SEMANTIC_CASES = tuple(
+    f"{op}-chunk-{chunk:02d}"
+    for op in VFPU_TRANSCENDENTAL_OPS
+    for chunk in range(VFPU_TRANSCENDENTAL_CHUNKS)
+)
+_register_campaign_probe(
+    "vfpu-transcendental-corpus", "PSP-VFPU-TRANSCENDENTAL-001",
+    VFPU_TRANSCENDENTAL_SEMANTIC_CASES,
+    {
+        case_id: (7 if case_id.endswith("-chunk-07") else 8)
+        for case_id in VFPU_TRANSCENDENTAL_SEMANTIC_CASES
+    },
+)
 
 # llsc-link: three link windows and the sc behaviours they measure (see probe.c,
 # run_llsc_link). Six words per cell: loaded, first sc result, A and B after the
@@ -865,8 +930,9 @@ def validate_hle_edram_restore(text: str) -> None:
 #: completed and SKIP when the object it needs was not obtained, and never FAIL.
 HLE_MACHINERY_STATUS_CASES = frozenset({
     "hle-vtimer-unit", "hle-vtimer-errors", "hle-kernel-pool-bounds", "hle-power-float-v0",
-    "hle-null-out-pointers",
+    "hle-null-out-pointers", "hle-audio-src", "hle-timer-order",
 })
+VFPU_RAW_WORD_CASES = frozenset({"vfpu-transcendental-corpus"})
 
 #: hle-kernel-pool-bounds fixed-pool (create, delete) cell pairs.
 HLE_POOL_BOUNDS_FPL_PAIRS = (
@@ -932,6 +998,12 @@ def parse_campaign_probe_output(
                 )
     if campaign_case == "hle-kernel-pool-bounds":
         validate_hle_pool_bounds_deletes(sequence)
+    if campaign_case in VFPU_RAW_WORD_CASES:
+        for record in sequence.results.values():
+            if record.status != "PASS":
+                raise ProtocolError(
+                    f"{spec.test_id}: {record.case_id} must carry a produced raw-word record"
+                )
     return sequence
 
 

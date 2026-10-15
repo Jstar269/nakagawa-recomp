@@ -8,17 +8,22 @@
 // before it exits. Every import is user-mode and comes from a per-family import
 // block (hle_*_imports.S) or the shared threadman_user_imports.S.
 //
-// Five further single-launch cases share this file: CASE=hle-vtimer-unit
-// (PSP-HLE-VTIMER-002), hle-vtimer-errors (PSP-HLE-VTIMER-003), hle-kernel-pool-bounds
-// (PSP-HLE-KERNEL-STATUS-002), hle-power-float-v0 (PSP-HLE-POWER-002) and
-// hle-null-out-pointers (PSP-HLE-NULL-OUT-001). Their pass rule is machinery only: a
-// record is PASS when its calls completed and were recorded in order, and SKIP only when
-// the object a cell needs (a timer, VPL or block UID) was not obtained. A fixed-pool
-// delete cell whose create was refused is PASS with out0 0 and issues no delete,
-// because the refusal is what that create measures. No returned value is compared with
-// an expected PSP value, here, in the host checker or in the parser.
-// hle-null-out-pointers passes NULL as a mandatory out pointer, which may fault in
-// kernel mode, so it is scheduled last in a session, after every other case.
+// Seven single-launch cases share this file: CASE=hle-vtimer-unit
+// (PSP-HLE-VTIMER-002), hle-vtimer-errors (PSP-HLE-VTIMER-003),
+// hle-kernel-pool-bounds (PSP-HLE-KERNEL-STATUS-002), hle-power-float-v0
+// (PSP-HLE-POWER-002), hle-null-out-pointers (PSP-HLE-NULL-OUT-001),
+// hle-audio-src (PSP-HLE-AUDIO-SRC-001) and hle-timer-order
+// (PSP-HLE-TIMER-ORDER-001). Cases 97-101 have recorded PSP-3000 runs from
+// 2026-10-15: the VTimer and power cases were measured; pool-bounds was captured
+// only in its earlier revision, and the revised form has not run; null-out was
+// captured incomplete. Cases 102-103 have not run on hardware.
+// Their pass rule is machinery only: a record is PASS when its calls completed and were
+// recorded in order, and SKIP only when the object a cell needs (a timer, pool or
+// block UID) was not obtained. A fixed-pool delete after a refused create is PASS
+// with out0 0 and issues no delete, because the refusal is what that create measures.
+// No returned value is compared with an expected PSP value, here, in the host checker
+// or in the parser. hle-null-out-pointers passes NULL as a mandatory out pointer,
+// which may fault in kernel mode, so it is scheduled last in a session.
 //
 // Record stream (tools/psp_oracle/protocol.py): NAKAGAWA_PSP_META, then one
 // NAKAGAWA_PSP_STEP before each risky call, one NAKAGAWA_PSP_TEST per
@@ -34,6 +39,7 @@
 #include <pspthreadman.h>
 #include <pspiofilemgr.h>
 #include <pspiofilemgr_fcntl.h>
+#include <pspaudio.h>
 #include <psppower.h>
 #include <psphprm.h>
 #include <pspctrl.h>
@@ -63,6 +69,8 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CASE_KERNEL_POOL_BOUNDS 99
 #define HLE_CASE_POWER_FLOAT_V0 100
 #define HLE_CASE_NULL_OUT_POINTERS 101
+#define HLE_CASE_AUDIO_SRC 102
+#define HLE_CASE_TIMER_ORDER 103
 
 #if PSP_ORACLE_CASE == HLE_CASE_KERNEL_STATUS
 #define HLE_CAMPAIGN_ID "hle-kernel-status"
@@ -112,6 +120,14 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CAMPAIGN_ID "hle-null-out-pointers"
 #define HLE_TEST_ID "PSP-HLE-NULL-OUT-001"
 #define HLE_LOG "host0:/hle_null_out_pointers_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_AUDIO_SRC
+#define HLE_CAMPAIGN_ID "hle-audio-src"
+#define HLE_TEST_ID "PSP-HLE-AUDIO-SRC-001"
+#define HLE_LOG "host0:/hle_audio_src_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_TIMER_ORDER
+#define HLE_CAMPAIGN_ID "hle-timer-order"
+#define HLE_TEST_ID "PSP-HLE-TIMER-ORDER-001"
+#define HLE_LOG "host0:/hle_timer_order_log.txt"
 #else
 #error probe_hle_measure.c has no family for this PSP_ORACLE_CASE
 #endif
@@ -1403,6 +1419,457 @@ static int hle_run(void)
 }
 
 #endif /* HLE_CASE_POWER_FLOAT_V0 */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_AUDIO_SRC
+
+/* SRC and Output2 return words are observations only. The only output buffers
+   are this probe-owned, aligned, all-zero stereo block. SRC has no rest-sample
+   query in the project's public NID corpus, so the blocking call itself is the
+   drain boundary. Every acquired reservation is released immediately when a
+   shape probe unexpectedly succeeds and is retried once during final cleanup
+   if an earlier release did not return success. */
+#define HLE_ASRC_SAMPLES 1024u
+#define HLE_ASRC_FREQUENCY 44100u
+#define HLE_ASRC_CHANNELS 2u
+#define HLE_ASRC_OUTPUT2_SAMPLES 512u
+#define HLE_ASRC_NOT_CALLED 0xffffffffu
+
+static int16_t s_hle_asrc_silence[HLE_ASRC_SAMPLES * HLE_ASRC_CHANNELS]
+    __attribute__((aligned(64)));
+static int s_hle_asrc_src_reserved;
+static int s_hle_asrc_output2_reserved;
+
+static int hle_asrc_release_src(const char *case_id)
+{
+    hle_step(case_id);
+    const int rc = sceAudioSRCChRelease();
+    hle_record(case_id, "PASS", (uint32_t)rc, NULL, 0);
+    if (rc >= 0) {
+        s_hle_asrc_src_reserved = 0;
+    }
+    return rc;
+}
+
+static int hle_asrc_release_output2(const char *case_id)
+{
+    hle_step(case_id);
+    const int rc = sceAudioOutput2Release();
+    hle_record(case_id, "PASS", (uint32_t)rc, NULL, 0);
+    if (rc >= 0) {
+        s_hle_asrc_output2_reserved = 0;
+    }
+    return rc;
+}
+
+static void hle_asrc_invalid_reserve(const char *case_id, uint32_t samples,
+                                     uint32_t frequency, uint32_t channels)
+{
+    if (s_hle_asrc_src_reserved) {
+        hle_skip(case_id, 4);
+        return;
+    }
+    hle_step(case_id);
+    const int rc = sceAudioSRCChReserve((int)samples, (int)frequency, (int)channels);
+    uint32_t release_rc = HLE_ASRC_NOT_CALLED;
+    if (rc >= 0) {
+        s_hle_asrc_src_reserved = 1;
+        char step[72];
+        snprintf(step, sizeof(step), "%s-release", case_id);
+        hle_step(step);
+        release_rc = (uint32_t)sceAudioSRCChRelease();
+        if ((int32_t)release_rc >= 0) {
+            s_hle_asrc_src_reserved = 0;
+        }
+    }
+    const uint32_t out[4] = {samples, frequency, channels, release_rc};
+    hle_record(case_id, "PASS", (uint32_t)rc, out, 4);
+}
+
+static void hle_asrc_output2_then_src(void)
+{
+    if (s_hle_asrc_src_reserved || s_hle_asrc_output2_reserved) {
+        hle_skip("out2-then-src-reserve", 3);
+        return;
+    }
+    hle_step("out2-then-src-output2-reserve");
+    const int output2_rc = sceAudioOutput2Reserve((int)HLE_ASRC_OUTPUT2_SAMPLES);
+    int src_rc = (int)HLE_ASRC_NOT_CALLED;
+    int src_release_rc = (int)HLE_ASRC_NOT_CALLED;
+    int output2_release_rc = (int)HLE_ASRC_NOT_CALLED;
+    if (output2_rc >= 0) {
+        s_hle_asrc_output2_reserved = 1;
+        hle_step("out2-then-src-src-reserve");
+        src_rc = sceAudioSRCChReserve((int)HLE_ASRC_SAMPLES,
+                                      (int)HLE_ASRC_FREQUENCY,
+                                      (int)HLE_ASRC_CHANNELS);
+        if (src_rc >= 0) {
+            s_hle_asrc_src_reserved = 1;
+            hle_step("out2-then-src-src-release");
+            src_release_rc = sceAudioSRCChRelease();
+            if (src_release_rc >= 0) {
+                s_hle_asrc_src_reserved = 0;
+            }
+        }
+        hle_step("out2-then-src-output2-release");
+        output2_release_rc = sceAudioOutput2Release();
+        if (output2_release_rc >= 0) {
+            s_hle_asrc_output2_reserved = 0;
+        }
+    }
+    const uint32_t out[3] = {(uint32_t)output2_rc, (uint32_t)src_release_rc,
+                             (uint32_t)output2_release_rc};
+    hle_record("out2-then-src-reserve", output2_rc < 0 ? "SKIP" : "PASS",
+               (uint32_t)src_rc, out, 3);
+}
+
+static void hle_asrc_src_then_output2(void)
+{
+    if (s_hle_asrc_src_reserved || s_hle_asrc_output2_reserved) {
+        hle_skip("src-then-out2-reserve", 3);
+        return;
+    }
+    hle_step("src-then-out2-src-reserve");
+    const int src_rc = sceAudioSRCChReserve((int)HLE_ASRC_SAMPLES,
+                                            (int)HLE_ASRC_FREQUENCY,
+                                            (int)HLE_ASRC_CHANNELS);
+    int output2_rc = (int)HLE_ASRC_NOT_CALLED;
+    int src_release_rc = (int)HLE_ASRC_NOT_CALLED;
+    int output2_release_rc = (int)HLE_ASRC_NOT_CALLED;
+    if (src_rc >= 0) {
+        s_hle_asrc_src_reserved = 1;
+        hle_step("src-then-out2-output2-reserve");
+        output2_rc = sceAudioOutput2Reserve((int)HLE_ASRC_OUTPUT2_SAMPLES);
+        if (output2_rc >= 0) {
+            s_hle_asrc_output2_reserved = 1;
+        }
+        hle_step("src-then-out2-src-release");
+        src_release_rc = sceAudioSRCChRelease();
+        if (src_release_rc >= 0) {
+            s_hle_asrc_src_reserved = 0;
+        }
+        if (output2_rc >= 0) {
+            hle_step("src-then-out2-output2-release");
+            output2_release_rc = sceAudioOutput2Release();
+            if (output2_release_rc >= 0) {
+                s_hle_asrc_output2_reserved = 0;
+            }
+        }
+    }
+    const uint32_t out[3] = {(uint32_t)src_rc, (uint32_t)src_release_rc,
+                             (uint32_t)output2_release_rc};
+    hle_record("src-then-out2-reserve", src_rc < 0 ? "SKIP" : "PASS",
+               (uint32_t)output2_rc, out, 3);
+}
+
+static int hle_run(void)
+{
+    memset(s_hle_asrc_silence, 0, sizeof(s_hle_asrc_silence));
+
+    hle_asrc_release_src("src-release-unreserved");
+    const uint32_t unreserved_out[2] = {HLE_ASRC_SAMPLES,
+                                        (uint32_t)sizeof(s_hle_asrc_silence)};
+    hle_step("src-output-unreserved");
+    const int unreserved_output =
+        sceAudioSRCOutputBlocking(PSP_AUDIO_VOLUME_MAX, s_hle_asrc_silence);
+    hle_record("src-output-unreserved", "PASS", (uint32_t)unreserved_output,
+               unreserved_out, 2);
+
+    hle_step("src-reserve-valid");
+    const int reserve_rc = sceAudioSRCChReserve((int)HLE_ASRC_SAMPLES,
+                                                (int)HLE_ASRC_FREQUENCY,
+                                                (int)HLE_ASRC_CHANNELS);
+    if (reserve_rc >= 0) {
+        s_hle_asrc_src_reserved = 1;
+    }
+    const uint32_t reserve_out[3] = {HLE_ASRC_SAMPLES, HLE_ASRC_FREQUENCY,
+                                     HLE_ASRC_CHANNELS};
+    hle_record("src-reserve-valid", "PASS", (uint32_t)reserve_rc, reserve_out, 3);
+
+    if (reserve_rc < 0) {
+        hle_skip("src-reserve-already-held", 3);
+        hle_skip("src-output-blocking-0", 2);
+        hle_skip("src-release-after-output", 0);
+    } else {
+        hle_step("src-reserve-already-held");
+        const int second_rc = sceAudioSRCChReserve((int)HLE_ASRC_SAMPLES,
+                                                   (int)HLE_ASRC_FREQUENCY,
+                                                   (int)HLE_ASRC_CHANNELS);
+        hle_record("src-reserve-already-held", "PASS", (uint32_t)second_rc,
+                   reserve_out, 3);
+        const uint32_t block_out[2] = {HLE_ASRC_SAMPLES,
+                                       (uint32_t)sizeof(s_hle_asrc_silence)};
+        hle_step("src-output-blocking-0");
+        const int output_rc =
+            sceAudioSRCOutputBlocking(PSP_AUDIO_VOLUME_MAX, s_hle_asrc_silence);
+        hle_record("src-output-blocking-0", "PASS", (uint32_t)output_rc,
+                   block_out, 2);
+        hle_asrc_release_src("src-release-after-output");
+    }
+    hle_asrc_release_src("src-release-again");
+
+    hle_asrc_invalid_reserve("src-reserve-invalid-samples-zero", 0u,
+                             HLE_ASRC_FREQUENCY, HLE_ASRC_CHANNELS);
+    hle_asrc_invalid_reserve("src-reserve-invalid-samples-65", 65u,
+                             HLE_ASRC_FREQUENCY, HLE_ASRC_CHANNELS);
+    hle_asrc_invalid_reserve("src-reserve-invalid-samples-4096", 4096u,
+                             HLE_ASRC_FREQUENCY, HLE_ASRC_CHANNELS);
+    hle_asrc_invalid_reserve("src-reserve-invalid-frequency", HLE_ASRC_SAMPLES,
+                             48000u, HLE_ASRC_CHANNELS);
+    hle_asrc_invalid_reserve("src-reserve-invalid-channels-1", HLE_ASRC_SAMPLES,
+                             HLE_ASRC_FREQUENCY, 1u);
+    hle_asrc_invalid_reserve("src-reserve-invalid-channels-4", HLE_ASRC_SAMPLES,
+                             HLE_ASRC_FREQUENCY, 4u);
+    hle_asrc_output2_then_src();
+    hle_asrc_src_then_output2();
+
+    /* Nothing left reserved is the expected end state, not a skipped cell: the record passes
+       with the NOT_CALLED word, so a clean run stays acceptance-eligible (the 2026-10-15 run on
+       22b027f6 recorded these two as SKIP, which made a complete capture ineligible). */
+    int cleanup_ok = 1;
+    if (s_hle_asrc_src_reserved) {
+        cleanup_ok &= hle_asrc_release_src("src-final-cleanup") >= 0;
+    } else {
+        hle_record("src-final-cleanup", "PASS", HLE_ASRC_NOT_CALLED, NULL, 0);
+    }
+    if (s_hle_asrc_output2_reserved) {
+        cleanup_ok &= hle_asrc_release_output2("out2-final-cleanup") >= 0;
+    } else {
+        hle_record("out2-final-cleanup", "PASS", HLE_ASRC_NOT_CALLED, NULL, 0);
+    }
+    return cleanup_ok && !s_hle_asrc_src_reserved &&
+           !s_hle_asrc_output2_reserved;
+}
+
+#endif /* HLE_CASE_AUDIO_SRC */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_TIMER_ORDER
+
+/* Timer ordering only: callback sequence and the system-time words sampled
+   inside each callback are observations, not deadlines or timing claims. The
+   callback common words and VTimer target are probe-owned storage. Each wait is
+   one finite DelayThread duration, with no unbounded polling loop. */
+#define HLE_TIMER_WAIT_LIMIT_US 250000u
+#define HLE_TIMER_EQUAL_DELAY_US 50000u
+#define HLE_TIMER_LONG_DELAY_US 100000u
+#define HLE_TIMER_SHORT_DELAY_US 30000u
+#define HLE_TIMER_VTIMER_DELAY_US 60000u
+#define HLE_TIMER_ZERO_WAIT_US 100000u
+#define HLE_TIMER_NO_TIME 0xffffffffu
+
+struct hle_timer_order_capture {
+    volatile uint32_t sequence;
+    volatile uint32_t low;
+    volatile uint32_t high;
+};
+
+static volatile uint32_t s_hle_timer_order_sequence;
+static struct hle_timer_order_capture s_hle_alarm_same_a;
+static struct hle_timer_order_capture s_hle_alarm_same_b;
+static struct hle_timer_order_capture s_hle_alarm_long;
+static struct hle_timer_order_capture s_hle_alarm_short;
+static struct hle_timer_order_capture s_hle_vtimer_event;
+static struct hle_timer_order_capture s_hle_vtimer_alarm_event;
+static struct hle_timer_order_capture s_hle_alarm_zero;
+static SceKernelSysClock s_hle_vtimer_due;
+static struct SceKernelVTimerOptParam s_hle_vtimer_options = {
+    sizeof(struct SceKernelVTimerOptParam)
+};
+
+static void hle_timer_order_capture(struct hle_timer_order_capture *capture)
+{
+    const uint32_t sequence = ++s_hle_timer_order_sequence;
+    const uint64_t now = (uint64_t)sceKernelGetSystemTimeWide();
+    capture->low = (uint32_t)now;
+    capture->high = (uint32_t)(now >> 32);
+    capture->sequence = sequence;
+}
+
+static SceUInt hle_alarm_same_a(void *common)
+{
+    hle_timer_order_capture((struct hle_timer_order_capture *)common);
+    return 0;
+}
+
+static SceUInt hle_alarm_same_b(void *common)
+{
+    hle_timer_order_capture((struct hle_timer_order_capture *)common);
+    return 0;
+}
+
+static SceUInt hle_alarm_long(void *common)
+{
+    hle_timer_order_capture((struct hle_timer_order_capture *)common);
+    return 0;
+}
+
+static SceUInt hle_alarm_short(void *common)
+{
+    hle_timer_order_capture((struct hle_timer_order_capture *)common);
+    return 0;
+}
+
+static SceUInt hle_alarm_vtimer_equal(void *common)
+{
+    hle_timer_order_capture((struct hle_timer_order_capture *)common);
+    return 0;
+}
+
+static SceUInt hle_alarm_zero(void *common)
+{
+    hle_timer_order_capture((struct hle_timer_order_capture *)common);
+    return 0;
+}
+
+static SceUInt hle_vtimer_order_handler(SceUID uid, SceKernelSysClock *current,
+                                        SceKernelSysClock *scheduled, void *common)
+{
+    (void)uid;
+    (void)current;
+    (void)scheduled;
+    hle_timer_order_capture((struct hle_timer_order_capture *)common);
+    return 0;
+}
+
+static void hle_timer_order_wait(const char *step, uint32_t timeout_us)
+{
+    hle_step(step);
+    sceKernelDelayThread(timeout_us);
+}
+
+static void hle_timer_order_event(const char *case_id,
+                                  const struct hle_timer_order_capture *capture,
+                                  int scheduled)
+{
+    if (!scheduled) {
+        hle_skip(case_id, 2);
+        return;
+    }
+    const uint32_t out[2] = {
+        capture->sequence != 0u ? capture->low : HLE_TIMER_NO_TIME,
+        capture->sequence != 0u ? capture->high : HLE_TIMER_NO_TIME,
+    };
+    hle_record(case_id, "PASS", capture->sequence, out, 2);
+}
+
+static uint32_t hle_timer_order_cancel(SceUID uid, const char *step)
+{
+    if (uid < 0) {
+        return HLE_TIMER_NO_TIME;
+    }
+    hle_step(step);
+    return (uint32_t)sceKernelCancelAlarm(uid);
+}
+
+static int hle_run(void)
+{
+    hle_step("timer-order-set-same-a");
+    const SceUID alarm_same_a = sceKernelSetAlarm(HLE_TIMER_EQUAL_DELAY_US,
+                                                   hle_alarm_same_a,
+                                                   &s_hle_alarm_same_a);
+    hle_step("timer-order-set-same-b");
+    const SceUID alarm_same_b = sceKernelSetAlarm(HLE_TIMER_EQUAL_DELAY_US,
+                                                   hle_alarm_same_b,
+                                                   &s_hle_alarm_same_b);
+    const uint32_t same_set_out[1] = {(uint32_t)alarm_same_b};
+    hle_record("alarm-same-delay-set", "PASS", (uint32_t)alarm_same_a,
+               same_set_out, 1);
+    hle_timer_order_wait("timer-order-wait-same", HLE_TIMER_WAIT_LIMIT_US);
+    hle_timer_order_event("alarm-same-delay-a", &s_hle_alarm_same_a,
+                          alarm_same_a >= 0);
+    hle_timer_order_event("alarm-same-delay-b", &s_hle_alarm_same_b,
+                          alarm_same_b >= 0);
+
+    hle_step("timer-order-set-long");
+    const SceUID alarm_long = sceKernelSetAlarm(HLE_TIMER_LONG_DELAY_US,
+                                                 hle_alarm_long, &s_hle_alarm_long);
+    hle_step("timer-order-set-short");
+    const SceUID alarm_short = sceKernelSetAlarm(HLE_TIMER_SHORT_DELAY_US,
+                                                  hle_alarm_short, &s_hle_alarm_short);
+    const uint32_t order_set_out[1] = {(uint32_t)alarm_short};
+    hle_record("alarm-long-then-short-set", "PASS", (uint32_t)alarm_long,
+               order_set_out, 1);
+    hle_timer_order_wait("timer-order-wait-long-short", HLE_TIMER_WAIT_LIMIT_US);
+    hle_timer_order_event("alarm-long-event", &s_hle_alarm_long, alarm_long >= 0);
+    hle_timer_order_event("alarm-short-event", &s_hle_alarm_short, alarm_short >= 0);
+
+    hle_step("timer-order-vtimer-create");
+    const SceUID vtimer = sceKernelCreateVTimer("hleord", &s_hle_vtimer_options);
+    const uint32_t vtimer_created = vtimer >= 0 ? 1u : 0u;
+    hle_record("timer-order-vtimer-create", "PASS", (uint32_t)vtimer,
+               &vtimer_created, 1);
+    int vtimer_handler_rc = -1;
+    int vtimer_start_rc = -1;
+    SceUID vtimer_alarm = (SceUID)-1;
+    if (vtimer >= 0) {
+        s_hle_vtimer_due.low = HLE_TIMER_VTIMER_DELAY_US;
+        s_hle_vtimer_due.hi = 0;
+        hle_step("timer-order-vtimer-handler");
+        vtimer_handler_rc = sceKernelSetVTimerHandler(
+            vtimer, &s_hle_vtimer_due, hle_vtimer_order_handler, &s_hle_vtimer_event);
+        hle_step("timer-order-vtimer-start");
+        vtimer_start_rc = sceKernelStartVTimer(vtimer);
+        if (vtimer_handler_rc >= 0 && vtimer_start_rc >= 0) {
+            hle_step("timer-order-vtimer-alarm");
+            vtimer_alarm = sceKernelSetAlarm(HLE_TIMER_VTIMER_DELAY_US,
+                                               hle_alarm_vtimer_equal,
+                                               &s_hle_vtimer_alarm_event);
+        }
+    }
+    const uint32_t vtimer_setup_out[1] = {(uint32_t)vtimer_start_rc};
+    hle_record("timer-order-vtimer-handler", vtimer < 0 ? "SKIP" : "PASS",
+               (uint32_t)vtimer_handler_rc, vtimer_setup_out, 1);
+    const uint32_t vtimer_alarm_out[1] = {HLE_TIMER_VTIMER_DELAY_US};
+    hle_record("timer-order-vtimer-alarm-set",
+               vtimer_handler_rc < 0 || vtimer_start_rc < 0 ? "SKIP" : "PASS",
+               (uint32_t)vtimer_alarm, vtimer_alarm_out, 1);
+    hle_timer_order_wait("timer-order-wait-vtimer-alarm", HLE_TIMER_WAIT_LIMIT_US);
+    hle_timer_order_event("timer-order-vtimer-event", &s_hle_vtimer_event,
+                          vtimer_handler_rc >= 0 && vtimer_start_rc >= 0);
+    hle_timer_order_event("timer-order-vtimer-alarm-event",
+                          &s_hle_vtimer_alarm_event, vtimer_alarm >= 0);
+
+    hle_step("timer-order-alarm-zero");
+    const SceUID alarm_zero = sceKernelSetAlarm(0u, hle_alarm_zero,
+                                                 &s_hle_alarm_zero);
+    hle_timer_order_wait("timer-order-wait-zero", HLE_TIMER_ZERO_WAIT_US);
+    const uint32_t zero_ran = s_hle_alarm_zero.sequence != 0u ? 1u : 0u;
+    hle_record("alarm-zero-set", "PASS", (uint32_t)alarm_zero, &zero_ran, 1);
+    hle_timer_order_event("alarm-zero-event", &s_hle_alarm_zero, alarm_zero >= 0);
+
+    const uint32_t same_cleanup[2] = {
+        hle_timer_order_cancel(alarm_same_a, "timer-order-cancel-same-a"),
+        hle_timer_order_cancel(alarm_same_b, "timer-order-cancel-same-b"),
+    };
+    hle_record("alarm-same-delay-cleanup", "PASS", 0u, same_cleanup, 2);
+    const uint32_t order_cleanup[2] = {
+        hle_timer_order_cancel(alarm_long, "timer-order-cancel-long"),
+        hle_timer_order_cancel(alarm_short, "timer-order-cancel-short"),
+    };
+    hle_record("alarm-long-short-cleanup", "PASS", 0u, order_cleanup, 2);
+    uint32_t vtimer_cleanup[3] = {
+        hle_timer_order_cancel(vtimer_alarm, "timer-order-cancel-vtimer-alarm"),
+        HLE_TIMER_NO_TIME,
+        HLE_TIMER_NO_TIME,
+    };
+    int cleanup_ok = 1;
+    if (vtimer >= 0) {
+        hle_step("timer-order-vtimer-stop");
+        vtimer_cleanup[1] = (uint32_t)sceKernelStopVTimer(vtimer);
+        hle_step("timer-order-vtimer-delete");
+        vtimer_cleanup[2] = (uint32_t)sceKernelDeleteVTimer(vtimer);
+        cleanup_ok = (int32_t)vtimer_cleanup[2] >= 0;
+    }
+    hle_record("timer-order-vtimer-cleanup", "PASS", 0u, vtimer_cleanup, 3);
+    const uint32_t zero_cleanup[1] = {
+        hle_timer_order_cancel(alarm_zero, "timer-order-cancel-zero"),
+    };
+    hle_record("alarm-zero-cleanup", "PASS", 0u, zero_cleanup, 1);
+    return cleanup_ok;
+}
+
+#endif /* HLE_CASE_TIMER_ORDER */
 
 /* ------------------------------------------------------------------------- */
 
