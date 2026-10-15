@@ -505,6 +505,39 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "size-field caller contract (whether Refer preserves or overwrites size) unmeasured (#339, #341)",
     },
+    # VTimer lifecycle and query surface (PSP-HLE-VTIMER-001, 2026-10-15). Measured: Create returns
+    # a valid UID; Start returns 0 (and 1 while running, per docs/HARDWARE_ORACLE.md); Stop returns
+    # 1 while running and 0 when not started; Delete of a running timer returns 0; Refer and Delete
+    # on the deleted UID return 0x800201BE. The VTimer time unit is assumed microseconds because the
+    # entry does not cite time values. Interrupt-driven behaviour and handlers depend on issue #325.
+    "h_CreateVTimer": {
+        "status": "partial",
+        "limitation": "NULL option struct only (a non-NULL option is refused, layout unmeasured); no-slot create code 0x80020190 unmeasured; time unit assumed microseconds (#325)",
+    },
+    "h_StartVTimer": {
+        "status": "partial",
+        "limitation": "deleted-UID code reuses the measured Refer/Delete code by analogy; already-running return 1 is repo-documented, not PSP-HLE-VTIMER-001; time unit assumed microseconds (#325)",
+    },
+    "h_StopVTimer": {
+        "status": "partial",
+        "limitation": "deleted-UID code reuses the measured Refer/Delete code by analogy; time unit assumed microseconds (#325)",
+    },
+    "h_DeleteVTimer": {
+        "status": "partial",
+        "limitation": "delete of a stopped timer and interrupt-context placement unmeasured (#325)",
+    },
+    "h_GetVTimerTime": {
+        "status": "partial",
+        "limitation": "time unit assumed microseconds (values not cited by PSP-HLE-VTIMER-001); NULL-pointer and deleted-UID codes unmeasured, reused by analogy (#325)",
+    },
+    "h_GetVTimerBase": {
+        "status": "partial",
+        "limitation": "base is the create-time zero because SetVTimerTime is refused; the zero value and NULL-pointer and deleted-UID codes are unmeasured (#325)",
+    },
+    "h_ReferVTimerStatus": {
+        "status": "partial",
+        "limitation": "return 0 and the deleted-UID code are measured; only size, name and active are written, the rest of the struct is zero and unmeasured; the caller-size write rule is the sema/evf/mbx rule applied without a VTimer cite; the active encoding is not cited (#325)",
+    },
     # sceRtc family (issue #341). Contract sources: the public PSPSDK header
     # psprtc.h (declarations, 0-on-success/<0-on-error, pspRtcCheckValidErrors
     # component ranges) and the firmware-measured PSPAutotests tests/rtc corpus
