@@ -105,6 +105,9 @@ int sr_perf_enabled;
 /* sched.c installs the dispatcher's stack probe at scheduler start; this harness links
  * neither the dispatcher nor the interpreter, so it carries the variable itself. */
 int (*sr_dispatch_host_stack_remaining)(size_t *remaining_out) = NULL;
+int (*sr_dispatch_host_stack_top)(uintptr_t *top_out) = NULL;
+/* sched.c clears the direct-call host-stack window when it creates a guest stack (#855). */
+SrHostStackWindow sr_host_stack_window;
 /* sched.c refuses a live TAIL transfer at every yield and unwind (#855); without the
  * interpreter this harness carries the slot, and a fault here is a harness defect. */
 SrTailTransfer sr_tail_transfer;

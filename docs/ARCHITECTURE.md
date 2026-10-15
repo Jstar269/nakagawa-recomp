@@ -496,8 +496,18 @@ A guest CALL (`jal`, `jalr rd`) is a nested native call: the callee's frame live
 thread's host fiber until its `jr $ra` returns, so host stack use follows guest call depth. The
 dispatcher's host-stack preflight stops a dispatched transfer at a named
 `host-fiber-stack-exhausted` boundary before the fiber is exhausted. A direct `jal` to a known
-body does not pass through the dispatcher, so unbounded direct recursion is not preflighted and
-can still exhaust the fiber without a named boundary.
+body does not pass through the dispatcher, so every generated body that makes such a call opens
+with `SR_HOST_STACK_CHECK` (#855): one test of its frame address against
+`sr_host_stack_window`, the cached range of the running fiber's stack that still leaves the
+dispatcher's reserve. A frame outside the window asks the runtime, which takes the dispatcher's
+own measurement and either stops at the same named boundary with the same report or refills the
+window for the running stack. Every native recursion of generated code passes through a direct
+call or the dispatcher, so leaves and dispatch-only bodies carry no check. The window spans one
+stack, so after a fiber switch the first checked entry refills it, and the scheduler clears it
+when it creates a guest stack that may reuse a released range. Behind the check, each POSIX
+coroutine stack has a `PROT_NONE` guard band below it, as Windows fiber stacks have a guard page,
+so an overrun that escapes the check faults instead of writing into the next guest thread's
+stack.
 
 A guest TAIL transfer (`j`, `jr` on a register other than `$ra`, `jalr $zero`, a branch out of
 the body, or a fall-through into another entry) does not nest (#855). The body records the
