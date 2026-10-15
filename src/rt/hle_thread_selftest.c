@@ -547,12 +547,6 @@ int gegpu_sync_guest_fb(const GeGpuFbDescriptor *desc) {
     return 2; /* GEGPU_SYNC_NO_TARGET */
 }
 void sr_profile_dump(void) {}
-#ifdef SR_PSP_ORACLE_SMOKE
-/* The smoke translation retains the production SR_YIELD instrumentation hook,
- * but this focused executable does not link the full profiler object. */
-int g_prof_enabled;
-void sr_profile_block(uint32_t target_pc) { (void)target_pc; }
-#endif
 uint64_t SDL_GetTicksNS(void) { return 0; }
 int sr_capture_arm(const char *path) {
     s_cap_arm_calls++;
@@ -4898,7 +4892,7 @@ static int osk_write_script(const char *const *lines, int count) {
 
 static void test_osk_scripted_answer(void) {
     CpuState cpu;
-    const uint32_t k_init = NID_OSK_INIT, k_status = NID_OSK_STATUS, k_down = NID_OSK_SHUTDOWN;
+    const uint32_t k_init = NID_OSK_INIT, k_down = NID_OSK_SHUTDOWN;
     static const uint16_t play[] = { 'P', 'L', 'A', 'Y' };
     static const uint16_t ace[] = { 'A', 'C', 'E' };
     static const uint16_t n[] = { 'N' };
@@ -13661,6 +13655,232 @@ static void test_delay_threadcb_zero_bounds_a_self_renotifying_callback(void) {
     sr_test_guest_fn_reset();
 }
 
+/* ---- callback wakeup order through the production pump (issue #339) ----------------------
+ * Two callbacks that become pending for one thread before a scheduler safe point are
+ * serviced by the production pump (sr_thread_dispatch_callbacks in hle.c), reached through
+ * the public NIDs: sceKernelCheckCallback, and sceKernelDelayThreadCB while it is parked.
+ * Nothing here re-implements the selection loop.
+ *
+ * Labels for what each assertion rests on:
+ * - PROJECT ASSUMPTION, not hardware-measured: simultaneously pending callbacks run in slot
+ *   (creation) order, not notification order. hle.c documents this in
+ *   sr_callback_reserve_one and sr_thread_dispatch_callbacks, and
+ *   docs/HLE_AND_WORKAROUND_INVENTORY.md records callback ordering as unmeasured for its
+ *   entries. Nothing on hardware has ordered two simultaneously pending callbacks.
+ * - MEASURED CONTEXT, not evidence for the ordering above: sceKernelDelayThreadCB(0) runs
+ *   pending callbacks exactly once (#340, see test_delay_zero_probe_semantics), and the
+ *   docs/research/PSP_THREADING_SEMANTICS.md boundary at sceKernelCheckCallback was measured
+ *   for the ordinary sceKernelWaitEventFlag sequence only.
+ * - PROJECT MODEL, not hardware-measured: a notify wakes a thread parked in a callback wait
+ *   without running the body inline, the $a0..$a2 packing (count, notify arg, common arg),
+ *   CheckCallback returning 1 when it serviced work and 0 otherwise, a callback returning 0
+ *   staying registered, and a delay wait ending with 0 at its deadline. */
+
+extern int sr_callback_find_in_table(uint32_t uid);
+
+typedef struct {
+    uint32_t id;          /* 1 = the first-created callback, 2 = the second */
+    uint32_t count;       /* $a0 as the body received it */
+    uint32_t notify_arg;  /* $a1 */
+    uint32_t common_arg;  /* $a2 */
+} WakeupDispatch;
+
+#define WAKEUP_LOG_MAX 8u
+static WakeupDispatch s_wakeup_log[WAKEUP_LOG_MAX];
+static uint32_t s_wakeup_log_len;
+
+enum {
+    WAKEUP_FIRST_ENTRY = 0x08990300u,
+    WAKEUP_SECOND_ENTRY = 0x08990340u,
+    WAKEUP_FIRST_NAME = 0x08001100u,
+    WAKEUP_SECOND_NAME = 0x08001140u,
+    WAKEUP_FIRST_COMMON = 0x1111u,
+    WAKEUP_SECOND_COMMON = 0x2222u,
+    WAKEUP_FIRST_NOTIFY = 0xaaaau,
+    WAKEUP_SECOND_NOTIFY = 0xbbbbu,
+};
+
+static void wakeup_record(uint32_t id, CpuState *cpu) {
+    if (s_wakeup_log_len < WAKEUP_LOG_MAX) {
+        WakeupDispatch *d = &s_wakeup_log[s_wakeup_log_len++];
+        d->id = id;
+        d->count = cpu->r[4];
+        d->notify_arg = cpu->r[5];
+        d->common_arg = cpu->r[6];
+    }
+    cpu->r[2] = 0u;   /* returns 0: the callback stays registered */
+}
+
+static void wakeup_first_guest_fn(CpuState *cpu) { wakeup_record(1u, cpu); }
+static void wakeup_second_guest_fn(CpuState *cpu) { wakeup_record(2u, cpu); }
+
+static int wakeup_log_is(uint32_t index, uint32_t id, uint32_t notify_arg, uint32_t common_arg) {
+    return index < s_wakeup_log_len && s_wakeup_log[index].id == id &&
+           s_wakeup_log[index].count == 1u &&
+           s_wakeup_log[index].notify_arg == notify_arg &&
+           s_wakeup_log[index].common_arg == common_arg;
+}
+
+static uint32_t wakeup_create_callback(uint32_t name_addr, const char *name,
+                                       uint32_t entry, uint32_t common_arg) {
+    title_hle_write_cstr(name_addr, name);
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = name_addr;
+    cpu.r[5] = entry;
+    cpu.r[6] = common_arg;
+    return sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_CALLBACK);
+}
+
+static uint32_t wakeup_notify(uint32_t uid, uint32_t notify_arg) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    cpu.r[5] = notify_arg;
+    return sr_syscall(&cpu, NID_WSV_NOTIFY_CALLBACK);
+}
+
+static void wakeup_delete_callback(uint32_t uid) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK);
+}
+
+/* sceKernelCheckCallback at a safe point: both callbacks were notified in reverse slot
+ * order, so slot order and notification order differ. */
+static void test_callback_check_pump_services_pending_in_slot_order(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(WAKEUP_FIRST_ENTRY, wakeup_first_guest_fn);
+    sr_test_register_guest_fn(WAKEUP_SECOND_ENTRY, wakeup_second_guest_fn);
+    s_wakeup_log_len = 0u;
+
+    TCB *owner = fixture_thread(0x3410u, TH_RUNNING, 32);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    expect(!sr_thread_has_pending_callbacks(owner->uid),
+           "callback-check: owner starts with nothing pending");
+
+    uint32_t first = wakeup_create_callback(WAKEUP_FIRST_NAME, "wakeup-first",
+                                            WAKEUP_FIRST_ENTRY, WAKEUP_FIRST_COMMON);
+    uint32_t second = wakeup_create_callback(WAKEUP_SECOND_NAME, "wakeup-second",
+                                             WAKEUP_SECOND_ENTRY, WAKEUP_SECOND_COMMON);
+    expect(first != 0u && second != 0u && sr_callback_is_valid(first) && sr_callback_is_valid(second),
+           "callback-check: both callbacks are created through production sceKernelCreateCallback");
+    expect(sr_callback_find_in_table(first) < sr_callback_find_in_table(second),
+           "callback-check: the first created callback occupies the lower slot");
+
+    expect(wakeup_notify(second, WAKEUP_SECOND_NOTIFY) == 0u,
+           "callback-check: second callback notified first");
+    expect(wakeup_notify(first, WAKEUP_FIRST_NOTIFY) == 0u,
+           "callback-check: first callback notified second");
+    expect(s_wakeup_log_len == 0u,
+           "callback-check: notifying alone runs no callback body");
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, hle_selftest_nid("sceKernelCheckCallback")) == 1u,
+           "sceKernelCheckCallback returns 1 when it services pending callbacks");
+    expect(s_wakeup_log_len == 2u,
+           "sceKernelCheckCallback services both pending callbacks in one pump");
+    expect(wakeup_log_is(0u, 1u, WAKEUP_FIRST_NOTIFY, WAKEUP_FIRST_COMMON) &&
+               wakeup_log_is(1u, 2u, WAKEUP_SECOND_NOTIFY, WAKEUP_SECOND_COMMON),
+           "pending callbacks run in slot order, each with its own notify and common argument");
+    expect(sr_callback_is_valid(first) && sr_callback_is_valid(second),
+           "callbacks that return 0 stay registered after the pump");
+    expect(!sr_thread_has_pending_callbacks(owner->uid),
+           "the pump leaves nothing pending for the owner");
+
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, hle_selftest_nid("sceKernelCheckCallback")) == 0u && s_wakeup_log_len == 2u,
+           "a second sceKernelCheckCallback with nothing pending returns 0 and runs nothing");
+
+    wakeup_delete_callback(first);
+    wakeup_delete_callback(second);
+    sr_test_guest_fn_reset();
+}
+
+/* sceKernelDelayThreadCB(1000) parked with nothing pending. Both callbacks are then notified
+ * while the thread waits: each notify wakes it, the wakeup alone runs no body, and the resumed
+ * wait services both in slot order, re-parks on its original deadline, and returns 0 when that
+ * deadline passes. */
+static void test_callback_wakeup_resumes_delay_wait_in_slot_order(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(WAKEUP_FIRST_ENTRY, wakeup_first_guest_fn);
+    sr_test_register_guest_fn(WAKEUP_SECOND_ENTRY, wakeup_second_guest_fn);
+    s_wakeup_log_len = 0u;
+
+    TCB *self = fixture_thread(0x3411u, TH_RUNNING, 32);
+    self->started = 1;
+    s_cur = (int)(self - s_tcb);
+    expect(!sr_thread_has_pending_callbacks(self->uid),
+           "callback-wait: waiter starts with nothing pending");
+
+    uint32_t first = wakeup_create_callback(WAKEUP_FIRST_NAME, "wakeup-first",
+                                            WAKEUP_FIRST_ENTRY, WAKEUP_FIRST_COMMON);
+    uint32_t second = wakeup_create_callback(WAKEUP_SECOND_NAME, "wakeup-second",
+                                             WAKEUP_SECOND_ENTRY, WAKEUP_SECOND_COMMON);
+    expect(first != 0u && second != 0u,
+           "callback-wait: both callbacks are created for the waiting thread");
+
+    s_vtime_us = 3000u;
+    s_vbl_next_us = 100000u;   /* keep vblank out of the window */
+    uint64_t before = s_vtime_us;
+    s_delay_done = 0;
+    s_delay_ret = 0xffffffffu;
+    s_delay_nid = hle_selftest_nid("sceKernelDelayThreadCB");
+    s_delay_argument = 1000u;
+    expect(s_delay_nid != 0u, "callback-wait: DelayThreadCB NID is registered");
+
+    self->coro = sr_coro_create(delay_coro_body, NULL, (size_t)4 << 20);
+    expect(self->coro != NULL, "callback-wait: waiter coroutine is created");
+    if (self->coro) sr_coro_switch(self->coro);
+    expect(s_delay_done == 0 && self->state == TH_WAIT_DELAY && self->is_cb_wait &&
+               self->wake == before + 1000u,
+           "sceKernelDelayThreadCB(1000) parks as a callback-capable delay with its deadline");
+
+    expect(wakeup_notify(second, WAKEUP_SECOND_NOTIFY) == 0u &&
+               wakeup_notify(first, WAKEUP_FIRST_NOTIFY) == 0u,
+           "callback-wait: both callbacks notified while the waiter is parked");
+    expect(self->state == TH_READY,
+           "a notify wakes the callback-waiting thread");
+    expect(s_wakeup_log_len == 0u,
+           "the wakeup alone runs no callback body");
+
+    s_cur = (int)(self - s_tcb);
+    if (self->coro) sr_coro_switch(self->coro);
+    expect(s_wakeup_log_len == 2u &&
+               wakeup_log_is(0u, 1u, WAKEUP_FIRST_NOTIFY, WAKEUP_FIRST_COMMON) &&
+               wakeup_log_is(1u, 2u, WAKEUP_SECOND_NOTIFY, WAKEUP_SECOND_COMMON),
+           "the resumed wait services both callbacks in slot order with their own arguments");
+    expect(s_delay_done == 0 && self->state == TH_WAIT_DELAY && self->is_cb_wait &&
+               self->wake == before + 1000u,
+           "after servicing, the wait re-parks on its original deadline");
+    expect(!sr_thread_has_pending_callbacks(self->uid) &&
+               sr_callback_is_valid(first) && sr_callback_is_valid(second),
+           "callbacks that return 0 are not pending and stay registered");
+
+    sr_hle_advance_time(1000u);
+    s_cur = (int)(self - s_tcb);
+    if (self->coro) sr_coro_switch(self->coro);
+    expect(s_delay_done == 1 && s_delay_ret == 0u,
+           "sceKernelDelayThreadCB returns 0 at its deadline");
+    expect(s_wakeup_log_len == 2u,
+           "completing the wait does not dispatch either callback again");
+
+    if (self->coro) {
+        sr_coro_destroy(self->coro);
+        self->coro = NULL;
+    }
+    wakeup_delete_callback(first);
+    wakeup_delete_callback(second);
+    sr_test_guest_fn_reset();
+}
+
 static volatile uint32_t s_delay_zero_loop_iterations;
 static volatile uint32_t s_delay_zero_loop_peer_runs;
 static volatile uint32_t s_delay_zero_loop_last_ret;
@@ -15448,7 +15668,7 @@ static void test_ge_guest_sentinel(void) {
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0x01u; /* GE_VADDR: last vertex pointer written by the source-owned list */
-    expect(sr_syscall(&cpu, NID_SCE_GE_GET_CMD) == (vtx_base + 0x100u & 0x00ffffffu),
+    expect(sr_syscall(&cpu, NID_SCE_GE_GET_CMD) == ((vtx_base + 0x100u) & 0x00ffffffu),
            "sceGeGetCmd returns the last executed 24-bit command value");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0x100u;
@@ -15957,6 +16177,141 @@ static void test_ge_consumed_list_ignores_late_stall_address(void) {
     expect(g_frame_prims == prims_after_run &&
                sr_hle_test_ge_late_stall_ignored() == ignored_before + 4u,
            "a fully flushed frame re-executes nothing and is counted once per late chunk");
+}
+
+/* ---- Stall fence across the uncached mirror (issue #883) ----
+ *
+ * A list pointer or sceGeListUpdateStallAddr value may carry the 0x4xxxxxxx mirror while
+ * CALL/RET targets are masked to 0x0xxxxxxx. The GE position and the stall address then name
+ * one guest word under two aliases, and the fence has to stop there regardless. The two tests
+ * below cover each direction. Both run the production route: source-owned list ->
+ * sceGeListEnQueue -> ge_run_list -> sceGeListUpdateStallAddr -> framebuffer. */
+#define STALL_FB         0x04000000u
+#define STALL_STRIDE     512u
+#define STALL_CLEAR      0x5a5a5a5au
+#define STALL_SUB_COLOR  0xFF3399CCu
+#define STALL_POST_COLOR 0xFFCC9933u
+#define STALL_SUB_VTX    0x08964000u
+#define STALL_POST_VTX   0x08964100u
+
+static void stall_cmd(uint32_t *dl, uint32_t *p, uint32_t cmd, uint32_t data) {
+    dl[(*p)++] = ((uint32_t)cmd << 24) | (data & 0x00ffffffu);
+}
+
+/* Render state set explicitly, so the fixture does not depend on GE state left by an earlier
+ * test. Returns the number of words written. */
+static uint32_t stall_state(uint32_t *dl) {
+    uint32_t p = 0;
+    stall_cmd(dl, &p, 0x10, 0x080000u);                          /* BASE: 0x08000000 upper bits */
+    stall_cmd(dl, &p, 0x13, 0u);                                 /* OFFSETADDR */
+    stall_cmd(dl, &p, 0x9C, STALL_FB & 0x00ffffffu);             /* FRAMEBUFPTR */
+    stall_cmd(dl, &p, 0x9D, STALL_STRIDE | ((STALL_FB & 0xff000000u) >> 8));
+    stall_cmd(dl, &p, 0xD2, 3u);                                 /* PIXFORMAT 8888 */
+    stall_cmd(dl, &p, 0x15, 0u);                                 /* REGION1 */
+    stall_cmd(dl, &p, 0x16, ((272u - 1u) << 10) | (480u - 1u));  /* REGION2 */
+    stall_cmd(dl, &p, 0xD4, 0u);                                 /* SCISSOR1 */
+    stall_cmd(dl, &p, 0xD5, ((272u - 1u) << 10) | (480u - 1u));  /* SCISSOR2 */
+    stall_cmd(dl, &p, 0x23, 0u);                                 /* ZTEST off */
+    stall_cmd(dl, &p, 0x22, 0u);                                 /* ALPHATEST off */
+    stall_cmd(dl, &p, 0x21, 0u);                                 /* ALPHABLEND off */
+    stall_cmd(dl, &p, 0x1E, 0u);                                 /* TEXTUREMAP off */
+    stall_cmd(dl, &p, 0x12, (7u << 2) | (3u << 7) | (1u << 23)); /* colour, float xyz, through */
+    return p;
+}
+
+/* Two-vertex through-mode sprite; each vertex is colour then x, y, z (16 bytes). */
+static void stall_sprite(uint32_t vtx, uint32_t color, float x0, float y0, float x1, float y1) {
+    const float corner[2][3] = { { x0, y0, 0.0f }, { x1, y1, 0.0f } };
+    for (uint32_t v = 0; v < 2u; v++) {
+        uint32_t *w = (uint32_t *)SR_HOST(vtx + 16u * v);
+        w[0] = color;
+        memcpy(&w[1], corner[v], 3u * sizeof(float));
+    }
+}
+
+/* The list reaches the stall word through CALL/RET, so its position is the 0x08 spelling
+ * while the stall address, set through the 0x48 mirror, is the other spelling. */
+static void test_ge_stall_alias_across_call_return(void) {
+    const uint32_t list = 0x08960000u;
+    const uint32_t sub = 0x08962000u;
+    CpuState cpu;
+
+    reset_fixture();
+    sr_hle_init();
+
+    uint32_t *dl = (uint32_t *)SR_HOST(list);
+    uint32_t p = stall_state(dl);
+    stall_cmd(dl, &p, 0x0A, sub & 0x00ffffffu);          /* CALL sub */
+    const uint32_t ret_pc = list + 4u * p;               /* RET lands on the next word */
+    stall_cmd(dl, &p, 0x01, STALL_POST_VTX & 0x00ffffffu);
+    stall_cmd(dl, &p, 0x04, (6u << 16) | 2u);            /* post sprite */
+    stall_cmd(dl, &p, 0x0F, 0u);
+    stall_cmd(dl, &p, 0x0C, 0u);
+
+    uint32_t *sd = (uint32_t *)SR_HOST(sub);
+    uint32_t q = 0;
+    stall_cmd(sd, &q, 0x01, STALL_SUB_VTX & 0x00ffffffu);
+    stall_cmd(sd, &q, 0x04, (6u << 16) | 2u);            /* sub sprite */
+    stall_cmd(sd, &q, 0x0B, 0u);                         /* RET */
+
+    stall_sprite(STALL_SUB_VTX, STALL_SUB_COLOR, 20.0f, 20.0f, 28.0f, 28.0f);
+    stall_sprite(STALL_POST_VTX, STALL_POST_COLOR, 60.0f, 60.0f, 68.0f, 68.0f);
+
+    uint32_t *fb = (uint32_t *)SR_HOST(STALL_FB);
+    memset(fb, 0x5a, STALL_STRIDE * 272u * 4u);
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = list;
+    cpu.r[5] = 0x40000000u | ret_pc;
+    uint32_t qid = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+    expect(fb[24u * STALL_STRIDE + 24u] == STALL_SUB_COLOR,
+           "the CALL target runs before the stall");
+    expect(fb[64u * STALL_STRIDE + 64u] == STALL_CLEAR,
+           "the GE stops at the RET target reached through the 0x08 mirror: the post sprite is not drawn");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid;
+    cpu.r[5] = 0u;
+    sr_syscall(&cpu, NID_SCE_GE_LIST_UPDATE_STALL_ADDR);
+    expect(fb[64u * STALL_STRIDE + 64u] == STALL_POST_COLOR,
+           "clearing the stall resumes the list past the RET target");
+}
+
+/* The reverse direction: the list runs linearly from the uncached mirror, and the stall
+ * address is the 0x08 spelling of the word the list is about to execute. */
+static void test_ge_stall_alias_linear_from_uncached_list(void) {
+    const uint32_t list = 0x48966000u;
+    CpuState cpu;
+
+    reset_fixture();
+    sr_hle_init();
+
+    uint32_t *dl = (uint32_t *)SR_HOST(list);
+    uint32_t p = stall_state(dl);
+    const uint32_t stall = (list + 4u * p) & 0x0fffffffu; /* post word, 0x08 spelling */
+    stall_cmd(dl, &p, 0x01, STALL_POST_VTX & 0x00ffffffu);
+    stall_cmd(dl, &p, 0x04, (6u << 16) | 2u);            /* post sprite */
+    stall_cmd(dl, &p, 0x0F, 0u);
+    stall_cmd(dl, &p, 0x0C, 0u);
+
+    stall_sprite(STALL_POST_VTX, STALL_POST_COLOR, 60.0f, 60.0f, 68.0f, 68.0f);
+
+    uint32_t *fb = (uint32_t *)SR_HOST(STALL_FB);
+    memset(fb, 0x5a, STALL_STRIDE * 272u * 4u);
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = list;
+    cpu.r[5] = stall;
+    uint32_t qid = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+    expect(fb[64u * STALL_STRIDE + 64u] == STALL_CLEAR,
+           "the GE stops at the 0x08 spelling of the stall word in a list run from 0x48: the post sprite is not drawn");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid;
+    cpu.r[5] = 0u;
+    sr_syscall(&cpu, NID_SCE_GE_LIST_UPDATE_STALL_ADDR);
+    expect(fb[64u * STALL_STRIDE + 64u] == STALL_POST_COLOR,
+           "clearing the stall resumes the list past the stall word");
 }
 
 static uint32_t ge_transfer_enqueue(uint32_t src, uint32_t src_stride,
@@ -22502,7 +22857,7 @@ static void check_coroutine_lifecycle(void) {
         extern int s_pool_parks;
         extern int s_mbx_parks;
         extern int s_msgpipe_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
         char msg[768];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
@@ -22513,6 +22868,7 @@ static void check_coroutine_lifecycle(void) {
                  "+ 1 vblank multi waiter + 1 zero-period vblank waiter body "
                  "+ 1 ReferSemaStatus waiter "
                  "+ 3 rotate peers + 2 suspended-waiter bodies + 5 released-wait bodies "
+                 "+ 1 callback-wakeup delay body "
                  "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs "
                  "+ %d Message Pipe waiter/owner legs = %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks,
@@ -27715,6 +28071,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_nested_frame_handle_hygiene();
     test_ge_guest_sentinel();
     test_ge_consumed_list_ignores_late_stall_address();
+    test_ge_stall_alias_across_call_return();
+    test_ge_stall_alias_linear_from_uncached_list();
     test_ge_linear_filter_stays_inside_region();
     test_ge_block_transfer_span_atomicity();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
@@ -27747,6 +28105,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_delay_zero_probe_semantics();
     test_delay_thread_zero_loop_still_preempts_at_timeslice();
     test_delay_threadcb_zero_bounds_a_self_renotifying_callback();
+    test_callback_check_pump_services_pending_in_slot_order();
+    test_callback_wakeup_resumes_delay_wait_in_slot_order();
     test_display_frame_per_sec_float_return();
     test_rtc_conversion_errors_and_full_range();
     test_rtc_pointer_validation_and_measured_conversions();
