@@ -15006,6 +15006,9 @@ static uint32_t s_audio_len[9];
 #define SCE_AUDIO_ERROR_INVALID_FORMAT  0x80260007u
 #define SCE_AUDIO_ERROR_NOT_RESERVED    0x80260008u
 #define SCE_AUDIO_ERROR_INVALID_VOL     0x8026000bu
+/* Output2 release while samples are still queued. Measured on PSP-3001, firmware 6.6.1
+ * (2026-10-01, issue #311); the raw records stay private. */
+#define SCE_AUDIO_ERROR_OUTPUT2_BUSY    0x80268002u
 #define PSP_AUDIO_FORMAT_STEREO         0u
 #define PSP_AUDIO_FORMAT_MONO           0x10u
 #define PSP_AUDIO_SAMPLE_MIN            64u
@@ -15280,7 +15283,8 @@ static uint32_t h_AudioRestLen(CpuState *s) {
 }
 
 /* Keep the executable audio contract harness on the exact production NID
- * mapping without exposing the separate Output2 family to that focused test. */
+ * mapping. The Output2 family is registered by hle_register_output2_audio_handlers(),
+ * which both the harness and the production branch of sr_hle_init call. */
 static void hle_register_regular_audio_handlers(void) {
     sr_hle_register(0x5ec81c55, "sceAudioChReserve", h_AudioChReserve);
     sr_hle_register(0x6fc46853, "sceAudioChRelease", h_AudioChRelease);
@@ -15304,9 +15308,14 @@ static uint32_t h_AudioOutput2Reserve(CpuState *s) {
     s_audio_len[AUDIO_OUTPUT2_CHANNEL] = samples;
     return 0;
 }
+/* Measured on PSP-3001, firmware 6.6.1 (2026-10-01, issue #311): releasing while samples are
+ * still queued returns 0x80268002 and leaves Output2 reserved; draining
+ * sceAudioOutput2GetRestSample to 0 first lets the release succeed. The queue is read the
+ * same way h_AudioOutput2Rest reads it. */
 static uint32_t h_AudioOutput2Release(CpuState *s) {
     (void)s;
     if (!s_audio_ch[AUDIO_OUTPUT2_CHANNEL]) return SCE_AUDIO_ERROR_NOT_RESERVED;
+    if (sr_audio_queued(AUDIO_OUTPUT2_CHANNEL) > 0) return SCE_AUDIO_ERROR_OUTPUT2_BUSY;
     s_audio_ch[AUDIO_OUTPUT2_CHANNEL] = 0;
     s_audio_len[AUDIO_OUTPUT2_CHANNEL] = 0;
     return 0;
@@ -15328,6 +15337,16 @@ static uint32_t h_AudioOutput2Rest(CpuState *s) {
     if (!s_audio_ch[AUDIO_OUTPUT2_CHANNEL]) return SCE_AUDIO_ERROR_NOT_RESERVED;
     int queued = sr_audio_queued(AUDIO_OUTPUT2_CHANNEL);
     return queued > 0 ? (uint32_t)queued : 0u;
+}
+
+/* Output2 registrations shared by the production mapping and the ThreadMan/audio selftest
+ * harness, so the selftest drives these exact production handlers through sr_syscall. */
+static void hle_register_output2_audio_handlers(void) {
+    sr_hle_register(0x01562ba3, "sceAudioOutput2Reserve", h_AudioOutput2Reserve);
+    sr_hle_register(0x2d53f36e, "sceAudioOutput2OutputBlocking", h_AudioOutput2Blocking);
+    sr_hle_register(0x43196845, "sceAudioOutput2Release", h_AudioOutput2Release);
+    sr_hle_register(0x63f2889c, "sceAudioOutput2ChangeLength", h_AudioOutput2ChangeLength);
+    sr_hle_register(0x647cef33, "sceAudioOutput2GetRestSample", h_AudioOutput2Rest);
 }
 
 /* SR_CALLCOUNT instrumentation: per-NID call tallies, dumped at the capture point. */
@@ -15601,6 +15620,16 @@ static void route_until_nid_arm(int on, uint32_t nid) {
 
 static int route_sig_bytes(void) { return s_route_cols * s_route_rows * 3; }
 
+/* _Exit skips atexit, so a hard exit closes the SR_AUDIODUMP file itself, which finalises
+ * its WAV header. The SR_EXIT_AT_VBLANK exit and route_fail both call this outside any
+ * SR_AUDIOSTAT gate; a second close is a no-op. Only the public audio backend exports it. */
+static void hle_exit_close_audio_dump(void) {
+#if !defined(SR_HLE_THREAD_SELFTEST) && defined(SR_PUBLIC_SAFE)
+    extern void sr_audio_dump_finish(void);
+    sr_audio_dump_finish();
+#endif
+}
+
 /* A route that cannot be trusted must not be allowed to look like one that can. Every
  * failure path lands here: it names the step, the vblank and what was actually on screen,
  * then terminates with a distinct status so the manager's verdict cannot record the run
@@ -15617,6 +15646,7 @@ static void route_fail(const char *fmt, ...) {
     fflush(stderr);
     if (!getenv("SR_ROUTE_NO_EXIT")) {
         sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, 0u, ROUTE_FAIL_EXIT);
+        hle_exit_close_audio_dump();
         sr_perf_shutdown();
         _Exit(ROUTE_FAIL_EXIT);
     }
@@ -18191,13 +18221,9 @@ void sr_vblank_tick(void) {
                 sr_audio_dump_stats();
 #endif
             }
-#if !defined(SR_HLE_THREAD_SELFTEST) && defined(SR_PUBLIC_SAFE)
             /* _Exit skips atexit, so the SR_AUDIODUMP file is closed here whether or not
-             * SR_AUDIOSTAT is set; after the stats call above it is a no-op. Only the public
-             * audio backend has the dump and exports this close. */
-            extern void sr_audio_dump_finish(void);
-            sr_audio_dump_finish();
-#endif
+             * SR_AUDIOSTAT is set; after the stats call above it is a no-op. */
+            hle_exit_close_audio_dump();
             sr_dump_calls();
             fflush(stderr);
             fflush(stdout);
@@ -22468,23 +22494,6 @@ static void hle_register_exit_game_handler(void) {
     sr_hle_register(0x05572a5f, "sceKernelExitGame", h_ExitGame);
 }
 
-/* Power-clock retained state (TD-24 batch 2): the two Int getters and the two
- * SetClockFrequency variants share one definition, reached by both
- * sr_hle_init() branches, so the executable harness pins the production
- * mapping through dispatch. The getter NIDs below are the canonical #86
- * values (0x478fe6f5 is the non-Int label; the Int alias 0xbd681969 stays
- * unregistered); the float-return shaping for the non-Int getters remains
- * tracked by #86. */
-static void hle_register_power_clock_handlers(void) {
-    sr_hle_register(0x34f9c463, "scePowerGetPllClockFrequencyInt", h_PowerGetPllClockFrequencyInt);
-    sr_hle_register(0xfdb5bfe9, "scePowerGetCpuClockFrequencyInt", h_PowerGetCpuClockFrequencyInt);
-    sr_hle_register(0x478fe6f5, "scePowerGetBusClockFrequency", h_PowerGetBusClockFrequencyInt);
-    sr_hle_register(0x737486f2, "scePowerSetClockFrequency", h_PowerSetClockFrequency);
-    sr_hle_register(0xebd177d6, "scePowerSetClockFrequency350", h_PowerSetClockFrequency350);
-    /* Battery state query, in the shared helper so the executable harness registers it too. */
-    sr_hle_register(0xd3075926, "scePowerIsLowBattery", h_PowerIsLowBattery);
-}
-
 /* TD-24 batch 4 shared families: one definition reached by both sr_hle_init()
  * branches, so the executable harness pins the production mapping through
  * dispatch (same rule as the batch-2 clock helpers above). */
@@ -22500,11 +22509,6 @@ static void hle_register_ctrl_sampling_handlers(void) {
      * handler used pointer a1 as a buffer count and wrote up to a ring of SceCtrlData
      * through a1's 4-byte int (and could block the caller on the input ring). */
     sr_hle_register(0x687660fa, "sceCtrlGetIdleCancelThreshold", h_CtrlGetIdleCancelThreshold);
-}
-static void hle_register_power_lock_handlers(void) {
-    sr_hle_register(0xeadb1bd7, "sceKernelPowerLock", h_PowerLock);
-    sr_hle_register(0x3aee7261, "sceKernelPowerUnlock", h_PowerUnlock);
-    sr_hle_register(0x090ccb3f, "sceKernelPowerTick", h_PowerTick);
 }
 static void hle_register_gpi_gpo_handlers(void) {
     sr_hle_register(0x6ad345d7, "sceKernelSetGPO", h_SetGPO);
@@ -22723,13 +22727,14 @@ void sr_hle_init(void) {
     hle_register_unregistered_import_batch();
     hle_register_umd_callback_handlers();
     hle_register_regular_audio_handlers();
+    hle_register_output2_audio_handlers();
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
-    hle_register_power_clock_handlers();
+    sr_hle_power_register_clock();
     /* TD-24 batch 4 families: shared with production through the helpers, so
      * the executable harness dispatches the exact production mapping. */
     hle_register_ctrl_sampling_handlers();
-    hle_register_power_lock_handlers();
+    sr_hle_power_register_lock();
     hle_register_gpi_gpo_handlers();
     hle_register_mpeg_shared_handlers();
     hle_register_psmf_player_handlers();
@@ -22803,7 +22808,7 @@ void sr_hle_init(void) {
     sr_hle_register(0x0c622081, "sceWlanGetEtherAddr", h_WlanGetEtherAddr);
     sr_hle_register(0x93440b11, "sceWlanDevIsPowerOn", h_WlanOn);
     sr_hle_register(0xd7763699, "sceWlanGetSwitchState", h_WlanOn);
-    sr_hle_register(0x04b7766e, "scePowerRegisterCallback", h_PowerRegisterCallback);
+    sr_hle_power_register_callback();
     sr_hle_register(0x46ebb729, "sceUmdCheckMedium", h_UmdCheckMedium);
     sr_hle_register(0x52089ca1, "sceKernelGetThreadStackFreeSize", h_GetThreadStackFreeSize);
     /* sceMpeg: faithful port (src/rt/mpeg.c). Drives the PSMF intro to completion. */
@@ -22884,31 +22889,20 @@ void sr_hle_init(void) {
     sr_hle_register(0x54f5fb11, "sceIoDevctl", h_IoDevctl);
     sr_hle_register(0x06a70004, "sceIoMkdir", h_IoMkdir);
     sr_hle_register(0xf27a9c51, "sceIoRemove", h_IoRemove);
-    /* sceAudio regular channels share one production mapping with the executable
-     * contract harness. Output2 remains production-only and otherwise unchanged. */
+    /* sceAudio regular channels and Output2 share one production mapping with the
+     * executable audio contract harness. */
     hle_register_regular_audio_handlers();
-    sr_hle_register(0x01562ba3, "sceAudioOutput2Reserve", h_AudioOutput2Reserve);
-    sr_hle_register(0x2d53f36e, "sceAudioOutput2OutputBlocking", h_AudioOutput2Blocking);
-    sr_hle_register(0x43196845, "sceAudioOutput2Release", h_AudioOutput2Release);
-    sr_hle_register(0x63f2889c, "sceAudioOutput2ChangeLength", h_AudioOutput2ChangeLength);
-    sr_hle_register(0x647cef33, "sceAudioOutput2GetRestSample", h_AudioOutput2Rest);
+    hle_register_output2_audio_handlers();
     /* sceCtrl sampling family: shared with the executable harness through
      * hle_register_ctrl_sampling_handlers(). */
     hle_register_ctrl_sampling_handlers();
     hle_register_ge_handlers();
-    /* Issue #86: the previous numeric NIDs for the four getters below were bogus (absent from
-     * the PPSSPP-derived nid_names.h); they are replaced with the canonical NIDs so real title
-     * imports route here instead of being unregistered, and 0x478fe6f5 is renamed to its
-     * canonical non-Int label (the Int alias is 0xbd681969 and stays unregistered). The float
-     * return shaping for the non-Int getters remains tracked by #86. */
-    sr_hle_register(0x2085d15d, "scePowerGetBatteryLifePercent", h_PowerGetBatteryLifePercent);
-    sr_hle_register(0x1e490401, "scePowerIsBatteryCharging", h_PowerIsBatteryCharging);
-    sr_hle_register(0x0afd0d8b, "scePowerIsBatteryExist", h_PowerIsBatteryExist);
-    sr_hle_register(0x87440f5e, "scePowerIsPowerOnline", h_PowerIsPowerOnline);
+    /* Issue #86 battery getters: registered from hle_power.c, at the position these four calls held. */
+    sr_hle_power_register_battery();
     /* Clock getters/setters: shared with the executable harness through
-     * hle_register_power_clock_handlers(), which carries the canonical #86
+     * sr_hle_power_register_clock(), which carries the canonical #86
      * getter NIDs noted above. */
-    hle_register_power_clock_handlers();
+    sr_hle_power_register_clock();
     sr_hle_register(0x730ed8bc, "sceKernelReferCallbackStatus", h_ReferCallbackStatus);
     hle_register_utility_module_handlers();
     sr_hle_register(0x1b4217bc, "sceKernelSetCompiledSdkVersion603_605", h_SetCompiledSdkVersion);
@@ -22945,7 +22939,7 @@ void sr_hle_init(void) {
     sr_hle_register(0xa6bab2e9, "sceKernelStdout", h_StdFd);
     sr_hle_register(0xf78ba90a, "sceKernelStderr", h_StdFd);
     /* scePower / sceSuspendForUser / LoadExecForUser: locks and registrations succeed. */
-    hle_register_power_lock_handlers();
+    sr_hle_power_register_lock();
     /* Unlock takes only the type arg -- it must NOT run the Lock handler: writing the
      * out-params through leftover a1/a2 register garbage sprayed two wild 4-byte writes
      * per asset-load unlock (this zeroed the resource registry's model-slot counter,
