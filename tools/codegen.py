@@ -571,9 +571,19 @@ def emit_tail_transfer(target_expr, fn_symbol, resumable, stack_census=False, co
     return f"sr_tail_record(s, {target_expr}, {fn}, _sp_entry, 1u); return;{suffix}"
 
 
+#: The statement that ends every direct CALL of a native body (`emit_body_call`). Inside a
+#: generated body nothing else drains, so a body whose text contains it makes a direct call.
+BODY_CALL_DRAIN = "SR_TAIL_DRAIN(s);"
+
+
 def emit_body_call(symbol):
     """A direct CALL of a native body completes the callee's tail chain before going on."""
-    return f"{symbol}(s); SR_TAIL_DRAIN(s);"
+    return f"{symbol}(s); {BODY_CALL_DRAIN}"
+
+
+def emit_host_stack_check(entry_expr):
+    """The entry statement of a body that makes a direct CALL (#855): bound its host stack."""
+    return f"    SR_HOST_STACK_CHECK({entry_expr});"
 
 
 def emit_host_fallthrough(resumable, stack_census=False):
@@ -1450,15 +1460,25 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             # are the VFPU4 vcmov (jump 0x15) handled above. The flagship's quaternion slerp uses
             # vsge to build its sign term (2 * (dot >= 0) - 1), and the wrong decode multiplied its
             # dot product by stale scratch lanes, which is the one-frame skinned-model corruption
-            # of issue #69. Semantics follow PPSSPP's Int_Vscmp/Int_Vsge/Int_Vslt (a NaN compares
-            # false, so it yields 0.0); hardware behaviour for NaN operands is UNMEASURED.
+            # of issue #69. vsge and vslt treat a NaN operand as unordered and write 0.0; vscmp
+            # does not: a PSP-3000 orders a lane with a NaN by sign and magnitude of the raw
+            # words, so NaN vs 1.5 writes +1.0, 1.5 vs NaN writes -1.0 and -NaN vs 1.5 writes
+            # -1.0, quiet or signalling (PSP-VFPU-CMP-001, measured 2026-10-15; every other cell
+            # of that probe agrees with the plain float compares below). A pair of NaNs follows
+            # the same order and is UNMEASURED. src/rt/vfpu_interp.c (vscmp_lane) is the twin.
             name = {5: "vscmp.s", 6: "vsge.s", 7: "vslt.s"}[sub]
-            expr = {5: "(_a[_i]<_b[_i])?-1.0f:((_a[_i]>_b[_i])?1.0f:0.0f)",
-                    6: "(_a[_i]>=_b[_i])?1.0f:0.0f",
-                    7: "(_a[_i]<_b[_i])?1.0f:0.0f"}[sub]
+            mag_a = "(int64_t)(_ab&0x7fffffffu)"
+            mag_b = "(int64_t)(_bb&0x7fffffffu)"
+            expr = {5: ("{ uint32_t _ab,_bb; memcpy(&_ab,&_a[_i],4); memcpy(&_bb,&_b[_i],4); "
+                        "if((_ab&0x7fffffffu)>0x7f800000u||(_bb&0x7fffffffu)>0x7f800000u){ "
+                        f"int64_t _ka=(_ab>>31)?-{mag_a}:{mag_a},_kb=(_bb>>31)?-{mag_b}:{mag_b}; "
+                        "_d[_i]=(_ka<_kb)?-1.0f:((_ka>_kb)?1.0f:0.0f); } "
+                        "else _d[_i]=(_a[_i]<_b[_i])?-1.0f:((_a[_i]>_b[_i])?1.0f:0.0f); }"),
+                    6: "_d[_i]=(_a[_i]>=_b[_i])?1.0f:0.0f;",
+                    7: "_d[_i]=(_a[_i]<_b[_i])?1.0f:0.0f;"}[sub]
             body = (f"float _a[4],_b[4],_d[4]; sr_vread(_a,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
                     f"sr_vread(_b,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
-                    f"for(int _i=0;_i<{n};_i++) _d[_i]={expr}; "
+                    f"for(int _i=0;_i<{n};_i++) {expr} "
                     + _nanv(addr, name, vd, "_d", n, "_a", n, "_b", n)
                     + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
@@ -1679,9 +1699,13 @@ def fpu_effect(addr, w):
     if fmt == 0x00: return wr(rt(w), f"s->fi[{fs}]"), None, 0          # mfc1
     if fmt == 0x02: return wr(rt(w), f"({fs} == 31 ? s->fcr31 : ({fs} == 0 ? 0x00003351u : 0u))"), None, 0  # cfc1
     if fmt == 0x04: return f"s->fi[{fs}] = {R(rt(w))};", None, 0       # mtc1
-    # ctc1 stores the guest FCSR wholesale; FCC0 is the architectural compare
-    # condition, so the cached fpcond mirror resyncs from the written bits.
-    if fmt == 0x06: return (f"if ({fs} == 31) {{ s->fcr31 = {R(rt(w))}; "
+    # ctc1 stores the guest FCSR except bits 25..31: the PSP FPU has FCC0 only, and
+    # a ctc1 of 0xFE800000 reads back 0x00800000 (PSP-FPU-CC-001, measured on a
+    # PSP-3000). No other bit was measured as unwritable, so no other bit is
+    # masked; src/rt/fp_convert.h names the word SR_FCR31_CTC1_UNWRITABLE. FCC0 is
+    # the architectural compare condition, so the cached fpcond mirror resyncs
+    # from the written bits.
+    if fmt == 0x06: return (f"if ({fs} == 31) {{ s->fcr31 = {R(rt(w))} & ~0xfe000000u; "
                             f"s->fpcond = (s->fcr31 >> 23) & 1u; }}"), None, 0
     if fmt == 0x10:
         fn = funct(w)
@@ -2739,6 +2763,14 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
     out.append(f"    {emit_host_fallthrough(resumable, stack_census=stack_census)}")
     out.append("}")
     out.append("")
+    if any(BODY_CALL_DRAIN in line for line in out):
+        # A direct CALL nests a native frame without entering the dispatcher, so the body
+        # applies the dispatcher's host-stack bound itself, before anything else (the
+        # dispatcher preflights before its own SR_YIELD). Every native recursion of
+        # generated code passes through a direct CALL or the dispatcher, so leaves and
+        # dispatch-only bodies stay unchecked. Keyed on the CALL's own drain, so every
+        # call form that uses emit_body_call is covered. See SR_HOST_STACK_CHECK in recomp.h.
+        out.insert(1, emit_host_stack_check(G(start)))
     return out
 
 #: ``--extra-elf=<module>@runtime``: the module is placed by the runtime's guest
