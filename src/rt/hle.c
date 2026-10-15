@@ -10557,9 +10557,11 @@ static uint32_t h_GetSystemTimeWide(CpuState *s) {
  *     from zero: base + time stayed below the next system-clock read at both reads. No system
  *     time was read at Start itself.
  *
- * ASSUMED, not measured:
- *   - NULL-pointer codes follow the FPL status convention (ILLEGAL_ADDR), unmeasured here. The
- *     2026-10-15 NULL-pointer probe did not complete (PSP-HLE-NULL-OUT-001 is CAPTURED only).
+ * Runtime safety choice, not a measured VTimer return: NULL mandatory out-pointers return
+ * ILLEGAL_ADDR because the PSP-3000 hangs on ReferSystemStatus(NULL) (PSP-HLE-NULL-OUT-001),
+ * so no game relies on the output.
+ *
+ * Other assumptions, not measured:
  *   - The limit above 64 timers and the no-slot CreateVTimer error are unmeasured.
  *   - A size word of 0 writes nothing. That is the status-write rule the sema, event-flag and
  *     mailbox calls share, not a VTimer-specific citation.
@@ -10660,6 +10662,7 @@ static uint32_t h_DeleteVTimer(CpuState *s) {
 static uint32_t h_GetVTimerTime(CpuState *s) {
     /* a0=uid, a1=SceKernelSysClock * (low word, then high word). The pointer is checked before
      * the UID, as ReferFplStatus does. */
+    /* Runtime safety choice: PSP-3000 hangs on ReferSystemStatus(NULL) (PSP-HLE-NULL-OUT-001), so no game relies on this value. */
     if (!A1 || !sr_guest_span_writable(A1, 8u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     VTimer *t = vtimer_lookup(A0);
     if (!t) return VTIMER_BAD_ID;
@@ -10672,6 +10675,7 @@ static uint32_t h_GetVTimerTime(CpuState *s) {
 static uint32_t h_GetVTimerBase(CpuState *s) {
     /* a0=uid, a1=SceKernelSysClock *. Returns the same base as ReferVTimerStatus: measured equal
      * while running and 0 once stopped (PSP-HLE-VTIMER-002). */
+    /* Runtime safety choice: PSP-3000 hangs on ReferSystemStatus(NULL) (PSP-HLE-NULL-OUT-001), so no game relies on this value. */
     if (!A1 || !sr_guest_span_writable(A1, 8u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     VTimer *t = vtimer_lookup(A0);
     if (!t) return VTIMER_BAD_ID;
@@ -10705,6 +10709,7 @@ static uint32_t h_ReferVTimerStatus(CpuState *s) {
     /* a0=uid, a1=info. The caller's size word selects the write: 0 writes nothing, otherwise
      * min(size, 0x48) bytes. That is the rule the sema, event-flag and mailbox status calls
      * share (PSP-KERNEL-STATUS-001); it is applied to VTimer without a VTimer-specific cite. */
+    /* Runtime safety choice: PSP-3000 hangs on ReferSystemStatus(NULL) (PSP-HLE-NULL-OUT-001), so no game relies on this value. */
     if (!A1 || !sr_guest_span_readable(A1, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     VTimer *t = vtimer_lookup(A0);
     if (!t) return VTIMER_BAD_ID;
@@ -23229,10 +23234,12 @@ static uint32_t h_ReferProfilerNull(CpuState *s) {
  * 0x1c and 0x20; size 0 writes nothing. Status word 1 read 0 in all three records but is not cited.
  * The idle-clock, comes-out-of-idle and thread-switch counters are written as zero; hardware reports
  * non-zero, time-dependent values (not cited). That zero fill is a known divergence from hardware. The
- * VFPU-switch counter is also written as zero and is not cited. The result for a null or unwritable
- * pointer is UNMEASURED; it uses the ILLEGAL_ADDR convention of the other refers. */
+ * VFPU-switch counter is also written as zero and is not cited. A NULL pointer hangs on the
+ * PSP-3000 (PSP-HLE-NULL-OUT-001); ILLEGAL_ADDR is a runtime safety choice, not a measured result.
+ * Other unwritable non-NULL pointers remain unmeasured. */
 static uint32_t h_ReferSystemStatus(CpuState *s) {
     uint32_t out = A0;
+    /* Runtime safety choice: PSP-3000 hangs on ReferSystemStatus(NULL) (PSP-HLE-NULL-OUT-001), so no game relies on this value. */
     if (!out || !sr_guest_span_writable(out, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     uint32_t size = MEM_R32(out);
     uint32_t n = size < 0x1cu ? size : 0x1cu;

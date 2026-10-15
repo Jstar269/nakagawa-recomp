@@ -4988,14 +4988,12 @@ class HleSingleLaunchProbeTests(unittest.TestCase):
         "hle-power-float-v0": "`MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the "
                               "campaign queue)",
         "hle-null-out-pointers": "`CAPTURED` (2026-10-15, `b5d6fc5b`; incomplete, not measured; "
-                                 "single launch, not in the campaign queue)",
+                                 "retired, never to be scheduled)",
         "hle-audio-src": "`MEASURED` (2026-10-15, `7fc1641e`; the earlier run of `22b027f6` "
                          "was captured only; single launch, not in the campaign queue)",
         "hle-timer-order": "`MEASURED` (2026-10-15, `22b027f6`; single launch, not in the "
                            "campaign queue)",
     }
-    NULL_RUN_NOTE = ("On 2026-10-15 the stream stopped at the first NULL call's step and the "
-                     "console needed a power cycle, so plan one after this case.")
     NULL_CASE = "hle-null-out-pointers"
     OBJECT_CASES = frozenset({"hle-vtimer-unit", "hle-vtimer-errors",
                               "hle-kernel-pool-bounds", "hle-null-out-pointers",
@@ -5028,8 +5026,9 @@ class HleSingleLaunchProbeTests(unittest.TestCase):
     # Calls that take a NULL option pointer, which is the API's optional argument.
     OPTIONAL_NULL_CALLS = frozenset({"sceKernelCreateVTimer", "sceKernelCreateFpl",
                                      "sceKernelCreateVpl"})
-    NULL_RISK = ("high: a NULL mandatory out-pointer may fault in kernel mode; schedule "
-                 "last in a session, after every other case.")
+    NULL_RISK = ("high: retired and never to be scheduled; PSP-3000 hangs on the first call, "
+                 "sceKernelReferSystemStatus(NULL), because address 0 is not rejected by the "
+                 "kernel pointer check and the call writes through NULL.")
     # Worst-case lines per launch: META, one STEP per reached call, one record per cell,
     # the `-done` record and COMPLETE. Pinned so a change to a stream shows up here.
     WORST_CASE_LINES = {
@@ -5388,18 +5387,27 @@ class HleSingleLaunchProbeTests(unittest.TestCase):
                     self.assertEqual(cells & set(test["evidence_cases"]), set())
         row = next(test for test in self.h.manifest["tests"]
                    if test["id"] == "PSP-HLE-NULL-OUT-001")
+        self.assertEqual(row["hardware_evidence"], "CAPTURED")
         for word in ("null-sys-status", "0.9 s after launch", "240 s case timeout",
                      "power cycle", "does not show whether that call faulted"):
             self.assertIn(word, row["evidence_note"])
 
-    def test_null_out_pointer_case_is_high_risk_and_scheduled_last(self) -> None:
+    def test_null_out_pointer_case_is_retired_and_never_scheduled(self) -> None:
         tests = self.h.manifest["tests"]
         row = next(test for test in tests if test["id"] == "PSP-HLE-NULL-OUT-001")
-        self.assertEqual(row["risk"], f"{self.NULL_RISK} {self.NULL_RUN_NOTE}")
+        self.assertEqual(row["risk"], self.NULL_RISK)
         hardware = (self.h.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
         readme = (self.h.fixture / "README.md").read_text(encoding="utf-8")
-        self.assertIn(f"{self.NULL_RISK} {self.NULL_RUN_NOTE}", hardware)
-        self.assertIn(f"{self.NULL_RISK} {self.NULL_RUN_NOTE}", readme)
+        hardware_row = next(line for line in hardware.splitlines()
+                            if "| `hle-null-out-pointers` |" in line)
+        readme_row = next(line for line in readme.splitlines()
+                          if "| `hle-null-out-pointers` |" in line)
+        self.assertIn("retired and must never be scheduled", hardware)
+        self.assertIn("Retired and never to be scheduled", readme)
+        self.assertIn("writes through NULL and faults", hardware)
+        self.assertIn("writes through NULL and faults", readme)
+        self.assertNotIn("schedule last", hardware_row)
+        self.assertNotIn("schedule last", readme_row)
         for text in (row["risk"], row["evidence_note"]):
             self.assertNotIn("NULL is the only invalid pointer", text)
         for case, _cid, _stem, _block, _macro, _test in self.SINGLE:
@@ -5408,6 +5416,27 @@ class HleSingleLaunchProbeTests(unittest.TestCase):
                 if case != "hle-audio-src":
                     self.assertNotIn("high:", other["risk"])
                 self.assertNotIn("NULL is the only invalid pointer", other["risk"])
+
+    def test_manual_campaign_refuses_retired_null_out_case(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(self.h.root / "tools" / "psp_oracle" / "run_psplink.py"),
+                "--campaign-case", f"{self.NULL_CASE}=not-present.prx",
+                "--source-commit", "0" * 40,
+                "--model", "PSP-3000",
+                "--firmware", "6.6.1",
+                "--host0-root", str(self.h.fixture),
+                "--session-id", "test-retired-case",
+            ],
+            cwd=self.h.root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("retired and cannot be scheduled", completed.stderr)
+        self.assertNotIn("campaign PRX is missing", completed.stderr)
 
     def test_docs_list_each_case_with_its_outcome_outside_the_queue(self) -> None:
         hardware = (self.h.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")

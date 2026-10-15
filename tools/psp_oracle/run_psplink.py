@@ -104,6 +104,7 @@ DEFAULT_RESULTS = ROOT / "oracle" / "hardware-results"
 DEFAULT_GE_CORPUS = ROOT / "fixtures" / "psp_oracle" / "ge_corpus.json"
 DEFAULT_GE_CORPUS_SCHEMA = ROOT / "assets" / "ge_corpus.schema.json"
 TERMINAL_OUTCOMES = frozenset({"HANG", "RESET"})
+RETIRED_CAMPAIGN_CASES = frozenset({"hle-null-out-pointers"})
 _TEST_RECORD_RE = re.compile(
     r"^NAKAGAWA_PSP_TEST\b.*\bstatus=([A-Z]+)\b", re.MULTILINE
 )
@@ -4095,6 +4096,8 @@ def main(argv: list[str] | None = None) -> int:
             case_id, separator, raw_path = specification.partition("=")
             if not separator or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", case_id):
                 parser.error("--campaign-case must be CASE_ID=PRX_PATH with a simple case id")
+            if case_id in RETIRED_CAMPAIGN_CASES:
+                parser.error(f"campaign case {case_id} is retired and cannot be scheduled")
             if case_id in seen_case_ids:
                 parser.error(f"duplicate campaign case id: {case_id}")
             seen_case_ids.add(case_id)

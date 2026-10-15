@@ -1008,7 +1008,7 @@
         "id": "PSP-HLE-NULL-OUT-001",
         "status": "implemented",
         "hardware_evidence": "CAPTURED",
-        "evidence_note": "Captured incomplete by the 2026-10-15 PSP-3000 single-case run (firmware 6.6.1) of public commit b5d6fc5b, case hle-null-out-pointers, the last case of the session. null-vtimer-create was recorded PASS. The stream then stopped after the step marker null-sys-status, which the probe writes just before its first NULL call (sceKernelReferSystemStatus(NULL)), 0.9 s after launch; no record for that cell or any later one arrived. No completion arrived within the 240 s case timeout, the module was not proven unloaded, and the console needed a power cycle. The capture is not acceptance-eligible and establishes nothing about PSP behaviour: it does not show whether that call faulted, hung or would have returned. Runs as a single launch, not in the campaign queue. Schedule it last in a session.",
+        "evidence_note": "Captured incomplete by the 2026-10-15 PSP-3000 single-case run (firmware 6.6.1) of public commit b5d6fc5b, case hle-null-out-pointers, the last case of the session. null-vtimer-create was recorded PASS. The stream then stopped after the step marker null-sys-status, which the probe writes just before its first NULL call (sceKernelReferSystemStatus(NULL)), 0.9 s after launch; no record for that cell or any later one arrived. No completion arrived within the 240 s case timeout, the module was not proven unloaded, and the console needed a power cycle. The capture itself is not acceptance-eligible and establishes nothing about PSP behaviour: it does not show whether that call faulted, hung or would have returned. Maintainer retirement: the kernel pointer check rejects kernel-space addresses but not address 0, so ReferSystemStatus(NULL) writes through NULL and faults; the VTimer getters also write through their out pointers. No game can rely on these results. The probe was a single launch, not in the campaign queue; it is retired and never to be scheduled.",
         "group": "kernel",
         "source": "fixtures/psp_oracle/probe_hle_measure.c",
         "prx": "hle_null_out_pointers.prx",
@@ -1042,9 +1042,9 @@
           "null-vtimer-delete",
           "hle-null-out-pointers-done"
         ],
-        "invariant": "ReferSystemStatus, GetVTimerTime, GetVTimerBase and ReferVTimerStatus with NULL as their mandatory out pointer, one call each after a step, on a live VTimer created first and deleted last; every record holds only its return code",
+        "invariant": "Retired and never to be scheduled: ReferSystemStatus(NULL) writes through address 0 and faults; the VTimer getters also write through their mandatory out pointers. Preserve the CAPTURED run only; no game can rely on these results.",
         "issues": [],
-        "risk": "high: a NULL mandatory out-pointer may fault in kernel mode; schedule last in a session, after every other case. On 2026-10-15 the stream stopped at the first NULL call's step and the console needed a power cycle, so plan one after this case.",
+        "risk": "high: retired and never to be scheduled; PSP-3000 hangs on the first call, sceKernelReferSystemStatus(NULL), because address 0 is not rejected by the kernel pointer check and the call writes through NULL.",
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
