@@ -10393,7 +10393,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "94f50f10f633cc2c194fb702e03da105d32ef0e4acb180fd2132d8f120c487d0"
+      "sha256": "f24a83505048e77c78a08e1da5013bf042b1e5a35c0c1b018a29f6f06476b24e"
     },
     {
       "path": "tools/title_catalog_codegen.py",
@@ -10683,7 +10683,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d119b0c7daa713c4dd58925b78ef3768032059a5ef05b4ce9eda0df9df013e65"
+      "sha256": "7869f7a49433ed9a604bd810fc169003949eac70a600256753afbfab844695ef"
     }
   ]
 }
