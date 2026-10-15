@@ -28,6 +28,13 @@ uint32_t h_PowerTick(CpuState *s);
 int sr_callback_is_valid(uint32_t uid);
 uint32_t sr_callback_notify(uint32_t uid, uint32_t notify_arg);
 
+/* Registration of the NIDs above (issue #307). sr_hle_init() calls each one where its
+ * registrations stood before the move, so the registration order is unchanged. */
+void sr_hle_power_register_clock(void);
+void sr_hle_power_register_lock(void);
+void sr_hle_power_register_callback(void);
+void sr_hle_power_register_battery(void);
+
 #ifdef SR_HLE_THREAD_SELFTEST
 uint32_t sr_hle_test_power_lock_count(void);
 uint32_t sr_hle_test_power_tick_count(void);

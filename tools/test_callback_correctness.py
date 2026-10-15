@@ -164,7 +164,7 @@ class CallbackCorrectnessTests(unittest.TestCase):
         self.assertIn("sr_callback_notify(cb_uid, 0x000010E4u)", body)
         self.assertIn(
             'sr_hle_register(0x04b7766e, "scePowerRegisterCallback", h_PowerRegisterCallback);',
-            HLE_SOURCE,
+            power_source,
         )
 
     def test_umd_registration_and_cb_wait_are_distinct(self):
