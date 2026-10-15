@@ -1713,10 +1713,6 @@ int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
     }
-    test_bitmap_font_text_fallback();
-    test_display_path_hides_profile_folder();
-    test_library_card_status_text();
-    test_sample_entries_never_reach_library_json();
     if (argc == 7 && strcmp(argv[1], "--validate-package") == 0) {
         char *end = NULL;
         unsigned long experimental = strtoul(argv[5], &end, 10);
@@ -1748,9 +1744,32 @@ int main(int argc, char **argv) {
      * cache, save and boot-event paths inside a temporary root, never inside
      * the developer's real per-user directories. */
     native_test_create_root("player-state");
+    {
+        /* A developer machine may point NAKAGAWA_PSP_KEY_FILE at the real key
+         * file. Plant a decoy override that names an existing file: unless the
+         * isolation clears it, the no-key-file preflight check below consults
+         * the decoy instead of the isolated user-data root and fails. */
+        char decoy_key[NATIVE_TEST_PATH_MAX + 32];
+        int written = snprintf(decoy_key, sizeof(decoy_key), "%s%cdeveloper-keyfile.json",
+                               native_test_get_root(), nk_platform_path_separator());
+        assert(written > 0 && (size_t)written < sizeof(decoy_key));
+        write_text_file(decoy_key, "{\"format\":\"nakagawa-psp-keystore-1\",\"entries\":{}}");
+        native_test_set_env("NAKAGAWA_PSP_KEY_FILE", decoy_key);
+    }
     native_test_isolate_user_data_roots();
+    {
+        const char *key_override = getenv("NAKAGAWA_PSP_KEY_FILE");
+        assert(key_override == NULL || key_override[0] == '\0');
+    }
     native_test_assert_cache_root_isolated();
     native_test_assert_config_root_isolated();
+
+    test_bitmap_font_text_fallback();
+    test_display_path_hides_profile_folder();
+    test_library_card_status_text();
+    /* Saves a library file under the cache root, so it runs only once that
+     * root is the temporary one. */
+    test_sample_entries_never_reach_library_json();
 
     /* PlayerApp holds 64 game records twice over; keep it off the stack. */
     PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));

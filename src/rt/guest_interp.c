@@ -10,6 +10,9 @@
 
 /* Installed by the scheduler (sched.c) when it owns the guest fibers; see recomp.h. */
 int (*sr_dispatch_host_stack_remaining)(size_t *remaining_out) = NULL;
+int (*sr_dispatch_host_stack_top)(uintptr_t *top_out) = NULL;
+/* The direct-call host-stack window (#855; see SR_HOST_STACK_CHECK in recomp.h). */
+SrHostStackWindow sr_host_stack_window;
 
 /* The TAIL transfer slot and its drain (#855; see recomp.h). They live here because every
  * build that links generated code or the dispatcher links this file. */

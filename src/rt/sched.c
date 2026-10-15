@@ -18,7 +18,9 @@
  * boot threads the way the game's startup expects, not a cycle-accurate kernel.
  */
 
+#ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
+#endif
 #include "recomp.h"
 #include "sr_coro.h"     /* portable cooperative-coroutine primitive (replaces Win32 fibers) */
 #include "perf.h"
@@ -598,6 +600,7 @@ void sched_init(CpuState *cpu) {
     if (cpu->r[28] != 0u) s_gp = cpu->r[28];           /* the driver seeded gp from the module's # init */
     s_sched_coro = sr_coro_main();
     sr_dispatch_host_stack_remaining = sr_coro_stack_remaining;
+    sr_dispatch_host_stack_top = sr_coro_stack_top;
     sr_sched_on = 1;
     s_interrupts_enabled = 1;
     s_dispatch_enabled = 1;
@@ -4003,6 +4006,9 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
                 fflush(stderr);
                 abort();
             }
+            /* The new stack may reuse the range of one released earlier, which a cached
+             * direct-call host-stack window could still describe (#855, recomp.h). */
+            sr_host_stack_window_clear();
         }
         extern int g_hle_depth;
         g_hle_depth = t->hle_depth;
