@@ -3464,6 +3464,47 @@ int main(int argc, char **argv) {
         assert(player_app_fonts_remove_imports(runtime_app));
         free(runtime_app);
 
+        /* 14r-b (#827 review): the runtime root holds the project latin font and the per-user
+           directory holds no import. The Fonts step and the SYSTEM_FONTS preflight must both name
+           that project font, read from <runtime root>/font, not from the per-user directory. */
+        {
+            char project_font_dir[1024];
+            char project_latin[1100];
+            NkIsoExecutableReport project_exec;
+            snprintf(project_font_dir, sizeof(project_font_dir), "%s%cfont", runtime_only, sep);
+            assert(nk_platform_mkdir_p(project_font_dir));
+            snprintf(project_latin, sizeof(project_latin), "%s%cnkltn.pgf", project_font_dir, sep);
+            write_binary_file(project_latin, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+
+            PlayerApp *project_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+            assert(project_app != NULL);
+            nk_library_init(&project_app->library);
+            player_app_set_runtime_root(project_app, runtime_only);
+            snprintf(project_app->inspecting_game.disc_id,
+                     sizeof(project_app->inspecting_game.disc_id), "TEST80001");
+            snprintf(project_app->inspecting_game.title_id,
+                     sizeof(project_app->inspecting_game.title_id), "synthetic-allegrex-v1");
+            memset(&project_exec, 0, sizeof(project_exec));
+            project_exec.eboot.kind = NK_ISO_EXEC_PSP_ENCRYPTED;
+            project_exec.boot.kind = NK_ISO_EXEC_MIPS_ELF32;
+            project_exec.selected = NK_ISO_EXEC_SELECTION_BOOT;
+            project_exec.boot_fallback = true;
+            snprintf(project_exec.selected_path, sizeof(project_exec.selected_path), "BOOT.BIN");
+
+            player_app_refresh_font_status(project_app);
+            assert(strstr(project_app->wizard.font_slot_detail[NK_FONT_SLOT_LATIN],
+                          "Latin: project font.") != NULL);
+            player_app_build_compatibility_preflight(project_app, true, true, &project_exec);
+            {
+                const PlayerPreflightCheck *fcheck =
+                    find_preflight_check(&project_app->wizard.preflight, "SYSTEM_FONTS");
+                assert(fcheck != NULL);
+                assert(strstr(fcheck->message, "Latin: project font.") != NULL);
+            }
+            free(project_app);
+            assert(test_remove_tree(project_font_dir));
+        }
+
         assert(nk_platform_set_app_data_dir_override(NULL));
         assert(test_remove_tree(per_user));
         assert(test_remove_tree(runtime_only));

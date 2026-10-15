@@ -10,11 +10,13 @@ import json
 import os
 from pathlib import Path
 import re
+import io
 import shutil
 import struct
 import subprocess
 import sys
 import tempfile
+from contextlib import redirect_stdout
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -24,7 +26,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import nk_cli  # noqa: E402
 import title_manifest  # noqa: E402
 from nk_core import package_cache  # noqa: E402
+from nk_core.fonts import import_fonts, inspect_font_cache  # noqa: E402
 from nk_core.prereq_fetcher import default_data_root  # noqa: E402
+from test_font_provisioning import latin_pgf  # noqa: E402
 from nk_core import (
     CancellationToken,
     GameLibrary,
@@ -659,8 +663,64 @@ class NkCoreTests(unittest.TestCase):
         }):
             expected = default_data_root()
             _, env = launcher.build_launch_plan(game_dir)
-        self.assertEqual(env["SR_USER_DATA_ROOT"], str(expected))
+        self.assertEqual(Path(env["SR_USER_DATA_ROOT"]), expected.resolve(strict=False))
         self.assertTrue(Path(env["SR_USER_DATA_ROOT"]).is_absolute())
+
+    def test_runtime_launcher_carries_a_custom_user_data_root_and_its_cache(self) -> None:
+        """--user-data-root reaches the child: SR_USER_DATA_ROOT names the custom root, and SR_FONTDIR
+        names only the project fonts. A valid cache under the custom root is read through
+        SR_USER_DATA_ROOT, so a partial import cannot make the runtime drop the project source."""
+        game_dir = self.temp_dir / "TEST00001"
+        game_dir.mkdir()
+        _write_title_runtime(self.temp_dir, "synthetic", exe_ext=".exe")
+        (game_dir / "manifest.json").write_text(
+            json.dumps({
+                "title_id": "synthetic-allegrex-v1",
+                "disc_id": "TEST00001",
+                "boot_executable": "EBOOT.OLD",
+            }),
+            encoding="utf-8",
+        )
+        project_font = self.temp_dir / "font"
+        project_font.mkdir()
+        custom_root = self.temp_dir / "custom-user-data"
+        source = self.temp_dir / "font-source"
+        source.mkdir()
+        (source / "latin.pgf").write_bytes(latin_pgf())
+        import_fonts(source, user_data_root=custom_root)
+        self.assertEqual(inspect_font_cache(user_data_root=custom_root)[0], "OK")
+        launcher = RuntimeLauncher(repo_root=self.temp_dir)
+        with patch.dict(os.environ, {"SR_USER_DATA_ROOT": "poisoned-parent-root"}):
+            _, env = launcher.build_launch_plan(game_dir, user_data_root=custom_root)
+        self.assertEqual(Path(env["SR_USER_DATA_ROOT"]), custom_root.resolve(strict=False))
+        self.assertEqual(Path(env["SR_FONTDIR"]).resolve(), project_font.resolve())
+
+    def test_launch_command_takes_a_user_data_root_and_prints_both_font_roots(self) -> None:
+        """`nk_cli.py launch --user-data-root` plans the launch under that root and prints the font
+        roots the child will get."""
+        game_dir = self.temp_dir / "TEST00001"
+        game_dir.mkdir()
+        custom_root = self.temp_dir / "custom-user-data"
+        project_font = self.temp_dir / "font"
+        plan_env = {"SR_USER_DATA_ROOT": str(custom_root), "SR_FONTDIR": str(project_font)}
+        out = io.StringIO()
+        argv = ["nk_cli.py", "launch", str(game_dir), "--user-data-root", str(custom_root)]
+        with patch.object(sys, "argv", argv), patch.object(
+            nk_cli.RuntimeLauncher, "build_launch_plan", return_value=(["runtime"], plan_env)
+        ) as plan, redirect_stdout(out):
+            self.assertEqual(nk_cli.main(), 0)
+        self.assertEqual(plan.call_args.kwargs["user_data_root"], custom_root.resolve())
+        self.assertIn(f"SR_USER_DATA_ROOT: {custom_root}", out.getvalue())
+        self.assertIn(f"SR_FONTDIR: {project_font}", out.getvalue())
+
+    def test_bringup_child_environment_names_its_own_user_data_root(self) -> None:
+        """The bring-up's own runtime launch names the root it built under, not an inherited
+        SR_USER_DATA_ROOT, so its fonts come from the same root the player reads."""
+        user_root = self.temp_dir / "bringup-user-data"
+        with patch.dict(os.environ, {"SR_USER_DATA_ROOT": "poisoned-parent-root", "SR_DATAROOT": "stale"}):
+            env = nk_cli._bringup_child_environment(user_root)
+        self.assertEqual(env["SR_USER_DATA_ROOT"], str(user_root))
+        self.assertNotIn("SR_DATAROOT", env)
 
     def test_runtime_launcher_does_not_inherit_parent_iso_without_session_iso(self) -> None:
         game_dir = self.temp_dir / "TEST00001"
@@ -1290,11 +1350,13 @@ class GenericLauncherHostileTests(unittest.TestCase):
         import inspect
 
         params = set(inspect.signature(RuntimeLauncher.build_launch_plan).parameters)
+        # No parameter names an executable: the runtime is still resolved from the validated
+        # identity. user_data_root names only the per-user data directory (--user-data-root).
         self.assertEqual(
             params,
             {
                 "self", "game_dir", "profile", "fps_cap", "gpu_ge",
-                "software_render", "no_gui",
+                "software_render", "no_gui", "user_data_root",
             },
         )
 

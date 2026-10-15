@@ -1166,24 +1166,11 @@ NkResult nk_launch_prepare_session(
         return NK_ERROR_FILE_NOT_FOUND;
     }
 
-    /* 5. Resolve font directory: the user-imported cache under the per-user data directory
-       (<user_data_root>/fonts/v2, the root the importer writes and SR_USER_DATA_ROOT names for the
-       runtime), falling back to <asset_root>/font. */
-    char cache_font[640];
-    bool found_cache = false;
-    if (session->user_data_root[0]) {
-        int cw = snprintf(cache_font, sizeof(cache_font), "%s%c%s%c%s", session->user_data_root, sep,
-                          NK_FONT_CACHE_PARENT, sep, NK_FONT_CACHE_SUBDIR);
-        if (cw > 0 && (size_t)cw < sizeof(cache_font)) {
-            char manifest_file[1024];
-            snprintf(manifest_file, sizeof(manifest_file), "%s%cmanifest.json", cache_font, sep);
-            if (nk_platform_file_exists(manifest_file)) {
-                safe_copy_path(session->font_dir, sizeof(session->font_dir), cache_font);
-                found_cache = true;
-            }
-        }
-    }
-    if (!found_cache) {
+    /* 5. Resolve the project font directory, <asset_root>/font. The user-imported cache is not
+       named here: SR_USER_DATA_ROOT carries that root to the runtime, which reads the import through
+       it. Naming the cache as SR_FONTDIR would make the runtime refuse the project source, so a
+       partial import would drop the slots it does not cover. */
+    {
         char cand_font[NK_MAX_PATH * 2];
         int fw = snprintf(cand_font, sizeof(cand_font), "%s%cfont", asset_root, sep);
         if (fw > 0 && (size_t)fw < sizeof(cand_font) && nk_platform_dir_exists(cand_font)) {

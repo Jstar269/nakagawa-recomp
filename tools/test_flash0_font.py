@@ -320,6 +320,41 @@ class Flash0FontFixtureContractTests(unittest.TestCase):
         self.assertIn("src/core/nk_font.c", runtime.group(1).replace("\\\n", " ").split())
 
 
+def function_body(source: str, signature: str) -> str:
+    """The text of one C function, from its signature to the closing brace at column zero."""
+    start = source.index(signature)
+    return source[start:source.index("\n}\n", start)]
+
+
+class Flash0UserRootSourceContractTests(unittest.TestCase):
+    """SR_USER_DATA_ROOT validation, checked in the source on every host.
+
+    The device selftest that exercises these branches on Windows does not build off Windows yet,
+    so these contracts run everywhere, WSL included. They pin the checks the selftest proves.
+    """
+
+    def setUp(self) -> None:
+        self.source = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+
+    def test_relative_user_root_is_refused_on_every_host(self) -> None:
+        """#827 review: Win32 refuses a relative SR_USER_DATA_ROOT inside the wide helper, but POSIX
+        resolves it against the working directory. flash0_user_data_root must check absoluteness
+        itself, on every host, and name the refusal with the same diagnostic."""
+        signature = "static void flash0_user_data_root(char *dst, size_t capacity) {"
+        self.assertIn(signature, self.source)
+        body = function_body(self.source, signature)
+        # sr_wide_is_absolute is the host's own rule: a drive or UNC path on Win32, a leading '/' on POSIX.
+        self.assertIn("sr_wide_is_absolute(configured)", body)
+        self.assertIn("is configured but is not a valid absolute path", body)
+
+    def test_empty_user_root_is_named_not_treated_as_unset(self) -> None:
+        """An empty SR_USER_DATA_ROOT is present, so it is refused by name. Only an absent variable
+        takes the platform directory. The launcher relies on this to mask an inherited value."""
+        body = function_body(self.source, "static void flash0_user_data_root(char *dst, size_t capacity) {")
+        self.assertIn("configured[0] != L'\\0'", body)
+        self.assertIn("if (!configured_present)", body)
+
+
 class Flash0FontDeviceTests(unittest.TestCase):
     def test_windows_include_detector(self) -> None:
         """The skip below is decided by this reader, so it must tell a guarded include apart."""

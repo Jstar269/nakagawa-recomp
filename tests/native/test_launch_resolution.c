@@ -262,9 +262,16 @@ static void test_no_iso_child_environment(const char *test_executable,
     memcpy(game.prepared_root, stage_root, strlen(stage_root) + 1);
     game.assets_staged = true;
 
-    /* One font root: the per-user data directory (the platform default in this isolated run).
-     * Fonts are imported there, so the launcher names that cache and exports the root to the
-     * runtime. A cache under the package root is not the one the launcher looks at. */
+    /* --user-data-root: the player overrides the per-user data directory with the same platform
+     * call used here. The override must reach the child as SR_USER_DATA_ROOT, not the default. */
+    char custom_user_root[NK_MAX_PATH * 4];
+    snprintf(custom_user_root, sizeof(custom_user_root), "%s%cuser_data_override", root, sep);
+    assert(nk_platform_mkdir_p(custom_user_root));
+    assert(nk_platform_set_app_data_dir_override(custom_user_root));
+
+    /* One font root: the per-user data directory (the override above in this run). Fonts are
+     * imported there, so the launcher exports the root to the runtime. A cache under the package
+     * root is not the one the runtime reads. */
     char per_user_root[NK_MAX_PATH];
     assert(nk_platform_get_app_data_dir(per_user_root, sizeof(per_user_root)));
     char per_user_fonts[NK_MAX_PATH * 2];
@@ -283,6 +290,12 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(nk_platform_mkdir_p(package_cache));
     write_file(per_user_manifest, "{}");
     write_file(package_manifest, "{}");
+    /* The project fonts the launcher falls back to. The per-user manifest above is a partial
+     * import (it stands for one or more slots); the runtime still serves the project font for
+     * the slots it does not cover, so SR_FONTDIR names this directory and never the cache. */
+    char project_font[NK_MAX_PATH * 2];
+    snprintf(project_font, sizeof(project_font), "%s%cfont", root, sep);
+    assert(nk_platform_mkdir_p(project_font));
 
     bool had_iso;
     bool had_report;
@@ -294,10 +307,14 @@ static void test_no_iso_child_environment(const char *test_executable,
                                                    &had_unrelated);
     bool had_novbpace;
     char *old_novbpace = capture_environment_value("SR_NOVBPACE", &had_novbpace);
+    bool had_user_root;
+    char *old_user_root = capture_environment_value("SR_USER_DATA_ROOT", &had_user_root);
     set_environment_value("PSP_ISO", "poisoned-parent.iso");
     set_environment_value("SR_NOVBPACE", "1");
     set_environment_value("NK_LAUNCH_TEST_REPORT_FILE", report_path);
     set_environment_value("NK_LAUNCH_TEST_UNRELATED", "preserve-me");
+    /* An inherited SR_USER_DATA_ROOT must not reach the child: the session's root wins. */
+    set_environment_value("SR_USER_DATA_ROOT", "poisoned-parent-root");
 
     assert(nk_launch_prepare_session(&session, &game, root) == NK_OK);
     assert(session.iso_path[0] == '\0');
@@ -385,10 +402,16 @@ static void test_no_iso_child_environment(const char *test_executable,
         char expected[NK_MAX_PATH * 2 + 64];
         snprintf(expected, sizeof(expected), "SR_USER_DATA_ROOT=%s\n", per_user_root);
         assert(strstr(observed, expected) != NULL);
-        snprintf(expected, sizeof(expected), "SR_FONTDIR=%s\n", per_user_cache);
+        /* SR_FONTDIR names the project fonts only. Naming the per-user cache here would make the
+         * runtime refuse the project source, so a partial import would drop the other slots. */
+        snprintf(expected, sizeof(expected), "SR_FONTDIR=%s\n", project_font);
         assert(strstr(observed, expected) != NULL);
+        snprintf(expected, sizeof(expected), "SR_FONTDIR=%s\n", per_user_cache);
+        assert(strstr(observed, expected) == NULL);
         snprintf(expected, sizeof(expected), "SR_FONTDIR=%s\n", package_cache);
         assert(strstr(observed, expected) == NULL);
+        /* The inherited poison is replaced by the session root. */
+        assert(strstr(observed, "poisoned-parent-root") == NULL);
     }
     /* A normal launch clears SR_NOVBPACE from the child environment even if set in parent */
     assert(strstr(observed, "SR_NOVBPACE=<unset>\n") != NULL);
@@ -415,10 +438,13 @@ static void test_no_iso_child_environment(const char *test_executable,
                               had_report);
     restore_environment_value("NK_LAUNCH_TEST_UNRELATED", old_unrelated,
                               had_unrelated);
+    restore_environment_value("SR_USER_DATA_ROOT", old_user_root, had_user_root);
     free(old_iso);
     free(old_novbpace);
     free(old_report);
     free(old_unrelated);
+    free(old_user_root);
+    assert(nk_platform_set_app_data_dir_override(NULL));
 
     remove(report_path);
     remove(title_profile);
@@ -428,6 +454,8 @@ static void test_no_iso_child_environment(const char *test_executable,
     remove(per_user_manifest);
     test_rmdir(per_user_cache);
     test_rmdir(per_user_fonts);
+    test_rmdir(custom_user_root);
+    test_rmdir(project_font);
     remove(package_manifest);
     test_rmdir(package_cache);
     test_rmdir(package_fonts);

@@ -96,6 +96,7 @@ class NkCliProgressTests(unittest.TestCase):
                 profile="Standard",
                 fps_cap=30,
                 software=False,
+                user_data_root=None,
             )
             stdout = StringIO()
             stderr = StringIO()
@@ -148,8 +149,10 @@ class NkCliProgressTests(unittest.TestCase):
         import nk_cli
 
         source = inspect.getsource(nk_cli.cmd_bringup)
-        self.assertIn('env.pop("SR_DATAROOT", None)', source)
-        self.assertIn('env.pop("SR_LOOSE_CONTENT_ROOTS", None)', source)
+        child_env = inspect.getsource(nk_cli._bringup_child_environment)
+        self.assertIn("_bringup_child_environment(user_root)", source)
+        self.assertIn('env.pop("SR_DATAROOT", None)', child_env)
+        self.assertIn('env.pop("SR_LOOSE_CONTENT_ROOTS", None)', child_env)
         self.assertIn('title_manifest.encode_loose_content_roots(manifest, data_root)', source)
         self.assertIn('"SR_DATAROOT": str(data_root)', source)
         self.assertIn('"SR_LOOSE_CONTENT_ROOTS": loose_roots', source)

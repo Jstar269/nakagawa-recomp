@@ -3387,11 +3387,17 @@ static void player_font_append(char *out, size_t out_len, const char *text) {
 void player_app_refresh_font_status(PlayerApp *app) {
     NkFontSlotState states[NK_FONT_SLOT_COUNT];
     char root[NK_MAX_PATH];
+    char project_root[NK_MAX_PATH];
     if (!app) return;
-    /* The same per-user root the import, the removal and the preflight use; empty when none
-       resolves, and the nk_font calls then report that the cache location is unavailable. */
+    /* The user's imports come from the per-user font root, the same root the import, the removal
+       and the preflight use; empty when none resolves, and the nk_font calls then report that the
+       cache location is unavailable. The project fonts come from the runtime root, as the
+       preflight reads them, so the two surfaces name the same font. */
     if (!player_app_font_root(root, sizeof(root))) root[0] = '\0';
-    nk_font_slot_states(root, root, states);
+    if (!player_app_data_root(app, project_root, sizeof(project_root))) {
+        snprintf(project_root, sizeof(project_root), "%s", ".");
+    }
+    nk_font_slot_states(root, project_root, states);
     for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
         snprintf(app->wizard.font_slot_detail[slot], sizeof(app->wizard.font_slot_detail[slot]),
                  "%s", states[slot].detail);

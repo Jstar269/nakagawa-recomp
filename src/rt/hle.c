@@ -7666,7 +7666,11 @@ static void flash0_user_data_root(char *dst, size_t capacity) {
     }
     wchar_t *root = NULL;
     char *root_utf8 = NULL;
-    int valid = configured[0] != L'\0' && sr_wide_configured_root_wide_alloc(configured, &root) &&
+    /* Absolute on every host: sr_wide_is_absolute is this host's own rule (a drive or UNC path on
+     * Win32, a leading '/' on POSIX). The wide helper resolves a relative value against the working
+     * directory on POSIX, so the check comes first. */
+    int valid = configured[0] != L'\0' && sr_wide_is_absolute(configured) &&
+                sr_wide_configured_root_wide_alloc(configured, &root) &&
                 sr_wide_to_utf8_alloc(root, &root_utf8);
     free(configured);
     free(root);
