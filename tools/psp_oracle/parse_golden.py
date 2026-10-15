@@ -719,6 +719,55 @@ _register_campaign_probe(
     )},
 )
 
+# NOT_RUN HLE cases (probe_hle_measure.c, single launch each). Shape only: a cell
+# is PASS when its calls completed, SKIP when the object it needs was not obtained,
+# and every out word is an observation. Nothing here compares a value with a PSP
+# expectation, and none of these streams has run on hardware.
+_register_campaign_probe(
+    "hle-vtimer-unit", "PSP-HLE-VTIMER-002",
+    ("vtimer-unit-create", "vtimer-unit-start", "vtimer-unit-time-a",
+     "vtimer-unit-systime-a", "vtimer-unit-delay", "vtimer-unit-time-b",
+     "vtimer-unit-systime-b", "vtimer-unit-base-running",
+     "vtimer-unit-refer-running", "vtimer-unit-stop", "vtimer-unit-base-stopped",
+     "vtimer-unit-refer-stopped", "vtimer-unit-delete"),
+    {"vtimer-unit-create": 1, "vtimer-unit-start": 1, "vtimer-unit-time-a": 2,
+     "vtimer-unit-systime-a": 2, "vtimer-unit-delay": 1, "vtimer-unit-time-b": 2,
+     "vtimer-unit-systime-b": 2, "vtimer-unit-base-running": 2,
+     "vtimer-unit-refer-running": 2, "vtimer-unit-stop": 1,
+     "vtimer-unit-base-stopped": 2, "vtimer-unit-refer-stopped": 2,
+     "vtimer-unit-delete": 1},
+)
+_register_campaign_probe(
+    "hle-vtimer-errors", "PSP-HLE-VTIMER-003",
+    ("vtimer-err-create-stale", "vtimer-err-delete-stale",
+     "vtimer-err-start-deleted", "vtimer-err-stop-deleted",
+     "vtimer-err-time-deleted", "vtimer-err-create-live",
+     "vtimer-err-time-live-null", "vtimer-err-base-live-null",
+     "vtimer-err-refer-live-null", "vtimer-err-delete-live",
+     "vtimer-err-noslot-create", "vtimer-err-noslot-cleanup"),
+    {"vtimer-err-create-stale": 1, "vtimer-err-delete-stale": 1,
+     "vtimer-err-start-deleted": 1, "vtimer-err-stop-deleted": 1,
+     "vtimer-err-time-deleted": 2, "vtimer-err-create-live": 1,
+     "vtimer-err-time-live-null": 1, "vtimer-err-base-live-null": 1,
+     "vtimer-err-refer-live-null": 1, "vtimer-err-delete-live": 1,
+     "vtimer-err-noslot-create": 2, "vtimer-err-noslot-cleanup": 2},
+)
+_register_campaign_probe(
+    "hle-kernel-status-null", "PSP-HLE-KERNEL-STATUS-002",
+    ("sys-status-null", "fpl-create-size-0x00", "fpl-delete-size-0x00",
+     "fpl-create-size-0x7fffffff", "fpl-delete-size-0x7fffffff", "vpl-create",
+     "vpl-try-alloc-refusal", "vpl-free-all", "vpl-delete"),
+    {"sys-status-null": 1, "fpl-create-size-0x00": 1, "fpl-delete-size-0x00": 1,
+     "fpl-create-size-0x7fffffff": 1, "fpl-delete-size-0x7fffffff": 1,
+     "vpl-create": 1, "vpl-try-alloc-refusal": 2, "vpl-free-all": 2,
+     "vpl-delete": 1},
+)
+_register_campaign_probe(
+    "hle-power-float-v0", "PSP-HLE-POWER-002",
+    ("pll-clock-float-v0", "cpu-clock-float-v0", "bus-clock-float-v0"),
+    {"pll-clock-float-v0": 1, "cpu-clock-float-v0": 1, "bus-clock-float-v0": 1},
+)
+
 # llsc-link: three link windows and the sc behaviours they measure (see probe.c,
 # run_llsc_link). Six words per cell: loaded, first sc result, A and B after the
 # cell, and the model words for A and B. The parser checks shape only.
@@ -792,6 +841,13 @@ def validate_hle_edram_restore(text: str) -> None:
         )
 
 
+#: NOT_RUN HLE cases whose status is machinery-only: a record is PASS when its calls
+#: completed and SKIP when the object it needs was not obtained, and never FAIL.
+HLE_MACHINERY_STATUS_CASES = frozenset({
+    "hle-vtimer-unit", "hle-vtimer-errors", "hle-kernel-status-null", "hle-power-float-v0",
+})
+
+
 def parse_campaign_probe_output(
     text: str, campaign_case: str, *, require_complete: bool = True
 ) -> SequenceReport:
@@ -803,6 +859,13 @@ def parse_campaign_probe_output(
         raise ProtocolError(f"unknown campaign probe {campaign_case!r}") from exc
     sequence = parse_sequence(text, spec, require_complete=require_complete)
     _validate_scalar_shape(sequence, counts)
+    if campaign_case in HLE_MACHINERY_STATUS_CASES:
+        for record in sequence.results.values():
+            if record.status not in ("PASS", "SKIP"):
+                raise ProtocolError(
+                    f"{spec.test_id}: {record.case_id} status {record.status!r} is not "
+                    "machinery-only (a cell is PASS or SKIP, never FAIL)"
+                )
     return sequence
 
 

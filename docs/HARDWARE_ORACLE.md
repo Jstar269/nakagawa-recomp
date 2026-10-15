@@ -556,9 +556,11 @@ One console is one data point; see §11. Nothing here closes issue #70
 ## Pending PSP-3000 measurement campaign
 
 The following source-owned cases are built for a future PSP-3000 / 6.61
-session. Of the nine cases below, six were measured by the 2026-10-10 campaign on `f6ccfb33`
-(index above), `ge-break-continue` was captured but is not acceptance-eligible, and
-`llsc-link` and `vfpu-compare` were added after that campaign and have not run on hardware.
+session. Of the thirteen cases below, six were measured by the 2026-10-10 campaign on
+`f6ccfb33` (index above), `ge-break-continue` was captured but is not acceptance-eligible,
+and `llsc-link`, `vfpu-compare`, and the four `hle-*` cases were added after that campaign
+and have not run on hardware. The four `hle-*` cases are single launches outside the
+campaign queue (`CAMPAIGN_QUEUE_CASES`); each has a `NOT_RUN` manifest row.
 Their parsers check record order, scalar fields, and completion;
 they do not encode expected PSP return values.
 
@@ -573,6 +575,10 @@ they do not encode expected PSP return values.
 | `llsc-link` | `PSP-LLSC-001` | `NOT_RUN` (new probe, not yet run on hardware) | Three ll/sc link windows: a plain ll and sc pair (control), a second sc after a successful sc with no new ll, and an sc to an address other than the one ll linked. Each record is the sc result, the word ll loaded, the words at both addresses, and the project's model words, which are UNMEASURED for the console. |
 | `kernel-misc` | `PSP-KERNEL-MISC-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Wide clock conversion, controller default mode, profiler-pointer returns, basic VTimer behavior, display return values, battery-icon status, and UMD-popup returns. |
 | `vfpu-compare` | `PSP-VFPU-CMP-001` | `NOT_RUN` (new probe, not yet run on hardware) | `vscmp.s`, `vsge.s`, and `vslt.s` on 15 operand pairs: less-than, equal, greater, signed zeros in both orders, quiet, signalling, and negative NaN on each side, and infinities. Each record is the raw result word against the project's model, which is UNMEASURED for the console. |
+| `hle-vtimer-unit` | `PSP-HLE-VTIMER-002` | `NOT_RUN` (single launch, not in the campaign queue) | One VTimer: start; a `sceKernelGetVTimerTime` and a system-clock reading either side of a bounded 20 ms delay; the VTimer base and Refer base field while running and after stop; stop; delete. Each 64-bit clock is recorded as its low word then its high word. |
+| `hle-vtimer-errors` | `PSP-HLE-VTIMER-003` | `NOT_RUN` (single launch, not in the campaign queue) | Start, stop, and `sceKernelGetVTimerTime` on a deleted UID; `GetVTimerTime`, `GetVTimerBase`, and `ReferVTimerStatus` with a NULL out pointer on a live timer; timer creation until refusal (at most 64), with every created timer deleted. |
+| `hle-kernel-status-null` | `PSP-HLE-KERNEL-STATUS-002` | `NOT_RUN` (single launch, not in the campaign queue) | `sceKernelReferSystemStatus(NULL)`; FPL creation with block size 0 and with a 0x7fffffff-byte block; VPL allocation until refusal (at most 64 blocks), with every block freed and the VPL deleted. |
+| `hle-power-float-v0` | `PSP-HLE-POWER-002` | `NOT_RUN` (single launch, not in the campaign queue) | Raw `$v0` and `$f0` bits of `scePowerGetPllClockFrequencyFloat`, `scePowerGetCpuClockFrequencyFloat`, and `scePowerGetBusClockFrequencyFloat`, one call each, through a short assembly wrapper. |
 
 The registry probe opens the registry and categories in read mode and never
 calls a write, create, remove, or flush API. Values are emitted only for keys

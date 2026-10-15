@@ -502,6 +502,13 @@ ordering semantics are correct.
 | `llsc-link` | `PSP-LLSC-001` | A plain `ll`/`sc` pair (control), a second `sc` after a successful `sc` with no new `ll`, and an `sc` to an address other than the one `ll` linked. Each record carries the `sc` result, the word `ll` loaded, both words after the cell, and the project's model words (UNMEASURED for the console). |
 | `kernel-misc` | `PSP-KERNEL-MISC-001` | Wide system-clock conversion, default controller mode, thread/global profiler returns, basic VTimer behavior, display calls, battery-icon status, and UMD-popup return values. |
 | `vfpu-compare` | `PSP-VFPU-CMP-001` | `vscmp.s`, `vsge.s`, and `vslt.s` on 15 operand pairs (less-than, equal, greater, signed zeros in both orders, quiet, signalling, and negative NaN on each side, infinities). Each record carries the observed word, the project's model word (UNMEASURED for the console), and both operands. |
+| `hle-vtimer-unit` | `PSP-HLE-VTIMER-002` | One VTimer: start; a `sceKernelGetVTimerTime` and a system-clock reading either side of a bounded 20 ms delay; the VTimer base and Refer base field while running and after stop; stop; delete. Each 64-bit clock is recorded as its low word then its high word. |
+| `hle-vtimer-errors` | `PSP-HLE-VTIMER-003` | Start, stop, and `sceKernelGetVTimerTime` on a deleted UID; `GetVTimerTime`, `GetVTimerBase`, and `ReferVTimerStatus` with a NULL out pointer on a live timer; timer creation until refusal (at most 64), with every created timer deleted. |
+| `hle-kernel-status-null` | `PSP-HLE-KERNEL-STATUS-002` | `sceKernelReferSystemStatus(NULL)`; FPL creation with block size 0 and with a 0x7fffffff-byte block; VPL allocation until refusal (at most 64 blocks), with every block freed and the VPL deleted. |
+| `hle-power-float-v0` | `PSP-HLE-POWER-002` | Raw `$v0` and `$f0` bits of `scePowerGetPllClockFrequencyFloat`, `scePowerGetCpuClockFrequencyFloat`, and `scePowerGetBusClockFrequencyFloat`, one call each, through a short assembly wrapper. |
+
+The four `hle-*` rows are single-launch probes built from `probe_hle_measure.c`. They are
+not in the campaign queue, and their manifest rows cite no hardware run.
 
 The registry case opens the registry and every category in read mode. It never
 calls a set, create, remove, or flush API. It records values only for the
