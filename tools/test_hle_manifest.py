@@ -250,6 +250,7 @@ class PowerRegistrationOwnershipTests(unittest.TestCase):
         0xEADB1BD7, 0x3AEE7261, 0x090CCB3F,                                      # sceKernelPower Lock/Unlock/Tick
         0x04B7766E,                                                              # scePowerRegisterCallback
         0x2085D15D, 0x1E490401, 0x0AFD0D8B, 0x87440F5E,                          # battery and power online
+        0xFEE03A2F, 0xBD681969, 0xEA382A27, 0xB1A52C83, 0x9BADB3EB,              # measured clock alias, Int and Float getters (PSP-3000 6.61 oracle 2026-10-15, PSP-HLE-POWER-001)
     })
 
     def test_power_registrations_are_owned_by_hle_power_c(self) -> None:
@@ -1093,13 +1094,14 @@ class EvidenceTierTests(unittest.TestCase):
             [
                 "PSP-ALARM-001", "PSP-AUDIO-001", "PSP-CACHE-001", "PSP-DISPLAY-001",
                 "PSP-DISPLAY-002", "PSP-DISPLAY-003", "PSP-DISPLAY-004", "PSP-DMAC-001",
-                "PSP-EXCEPTION-001", "PSP-FPU-001", "PSP-GE-001", "PSP-GE-CONTROL-001",
-                "PSP-HLE-CTRL-LATCH-001",
-                "PSP-HLE-GE-EDRAM-001", "PSP-HLE-HPRM-001", "PSP-HLE-KERNEL-STATUS-001",
-                "PSP-HLE-POWER-001", "PSP-HLE-SYSPARAM-001", "PSP-HLE-VTIMER-001", "PSP-IO-001",
-                "PSP-KERNEL-001", "PSP-KERNEL-002", "PSP-KERNEL-MISC-001", "PSP-KERNEL-STATUS-001",
+                "PSP-EXCEPTION-001", "PSP-FPU-001", "PSP-FPU-CC-001", "PSP-GE-001",
+                "PSP-GE-CONTROL-001", "PSP-HLE-CTRL-LATCH-001", "PSP-HLE-GE-EDRAM-001",
+                "PSP-HLE-HPRM-001", "PSP-HLE-KERNEL-STATUS-001", "PSP-HLE-POWER-001",
+                "PSP-HLE-SYSPARAM-001", "PSP-HLE-VTIMER-001", "PSP-IO-001", "PSP-KERNEL-001",
+                "PSP-KERNEL-002", "PSP-KERNEL-MISC-001", "PSP-KERNEL-STATUS-001", "PSP-LLSC-001",
                 "PSP-MUTEX-001", "PSP-REGISTRY-001", "PSP-SMOKE-001", "PSP-SYSTEM-001",
-                "PSP-THREAD-003", "PSP-THREAD-EXIT-001", "PSP-TRANSPORT-001", "PSP-WAIT-001",
+                "PSP-THREAD-003", "PSP-THREAD-EXIT-001", "PSP-TRANSPORT-001", "PSP-VFPU-CMP-001",
+                "PSP-WAIT-001",
             ],
         )
         self.assertIn("sceDmacTryMemcpy", promoted)

@@ -14376,6 +14376,119 @@ static void test_ctrl_read_latch(void) {
     sr_hle_test_ctrl_latch_reset();
 }
 
+/* sceCtrlPeekLatch (0xb1d0e5cd): the same transition latch as sceCtrlReadLatch, but a peek leaves the
+ * latch cursor alone, so a pending transition stays pending until a read consumes it. Measured on the
+ * PSP-3000 6.61 oracle 2026-10-15 (record PSP-HLE-CTRL-LATCH-001, cases latch-peek-initial and
+ * latch-peek-after-poll): with no input the peek writes make, break and press 0 and release
+ * 0xFFFFFFFF. That record cannot tell clearing from keeping, because its release field stays
+ * saturated; the non-clearing contract here is the project's model, not a hardware cell. */
+#define NID_CTRL_PEEK_LATCH 0xb1d0e5cdu
+static uint32_t ctrl_peek_latch(uint32_t out) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = out;
+    return sr_syscall(&cpu, NID_CTRL_PEEK_LATCH);
+}
+
+static void test_ctrl_peek_latch_keeps_the_latch(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ctrl_latch_reset();
+
+    for (uint32_t i = 0u; i < 16u; i++) MEM_W8(CTRL_LATCH_OUT + i, 0xa5u);
+    expect(ctrl_peek_latch(CTRL_LATCH_OUT) == 0u &&
+               MEM_R32(CTRL_LATCH_OUT) == 0u && MEM_R32(CTRL_LATCH_OUT + 12u) == 0xffffffffu,
+           "sceCtrlPeekLatch with no input reports no transitions and all buttons released");
+
+    sr_hle_test_ctrl_push_sample(PSP_CTRL_CROSS_BIT);
+    expect(ctrl_peek_latch(CTRL_LATCH_OUT) == 1u &&
+               MEM_R32(CTRL_LATCH_OUT) == PSP_CTRL_CROSS_BIT &&
+               MEM_R32(CTRL_LATCH_OUT + 8u) == PSP_CTRL_CROSS_BIT,
+           "sceCtrlPeekLatch reports the CROSS press that is pending since the last read");
+    expect(ctrl_peek_latch(CTRL_LATCH_OUT) == 1u && MEM_R32(CTRL_LATCH_OUT) == PSP_CTRL_CROSS_BIT,
+           "a second sceCtrlPeekLatch still reports the same press: a peek does not clear the latch");
+    expect(ctrl_read_latch(CTRL_LATCH_OUT) == 1u && MEM_R32(CTRL_LATCH_OUT) == PSP_CTRL_CROSS_BIT,
+           "sceCtrlReadLatch after the peeks still reports the press it has not yet consumed");
+    expect(ctrl_read_latch(CTRL_LATCH_OUT) == 0u && MEM_R32(CTRL_LATCH_OUT) == 0u,
+           "sceCtrlReadLatch consumes the press: the next read reports nothing new");
+    expect(ctrl_peek_latch(CTRL_LATCH_OUT) == 0u && MEM_R32(CTRL_LATCH_OUT) == 0u,
+           "sceCtrlPeekLatch after the consuming read reports nothing new");
+    expect(ctrl_peek_latch(0u) == SCE_KERNEL_ILLEGAL_ADDR_ERR,
+           "a null latch pointer returns ILLEGAL_ADDR from sceCtrlPeekLatch");
+    sr_hle_test_ctrl_latch_reset();
+}
+
+/* sceKernelDevkitVersion (0x3fc9ae6a): PSP-3000 6.61 oracle 2026-10-15, record PSP-SYSTEM-001 (case
+ * model-profile), measured word 0x06060110. The literal here is the measurement; the handler returns
+ * SR_PSP_FIRMWARE_DEVKIT_VERSION from src/rt/sdkver.h, so a drift in either one fails this test. */
+#define NID_KERNEL_DEVKIT_VERSION 0x3fc9ae6au
+static void test_kernel_devkit_version_measured(void) {
+    reset_fixture();
+    sr_hle_init();
+    expect(td24b_dispatch4(NID_KERNEL_DEVKIT_VERSION, 0u, 0u, 0u, 0u) == 0x06060110u,
+           "sceKernelDevkitVersion returns the 6.61 devkit word 0x06060110 (PSP-3000 6.61 oracle 2026-10-15)");
+    expect(td24b_dispatch4(NID_KERNEL_DEVKIT_VERSION, 0u, 0u, 0u, 0u) == 0x06060110u,
+           "sceKernelDevkitVersion is stable across repeated calls");
+}
+
+/* scePower clock identity getters: PSP-3000 6.61 oracle 2026-10-15, record PSP-HLE-POWER-001 (cases
+ * pll-clock-float, cpu-clock-float, cpu-clock-alias, bus-clock-int, bus-clock-float). The defaults are
+ * PLL 222, CPU 222 and bus 111 MHz. The Float getters return single-precision bits 0x435E0000 (222.0)
+ * and 0x42DE0000 (111.0) in $f0. The Float getters report the same retained clock state as the Int
+ * getters, so they follow a Set call; the Set-then-read values are the modelled state, not a measured
+ * cell, because the oracle makes no Set call. */
+#define NID_SCE_POWER_GET_PLL_FLOAT     0xea382a27u
+#define NID_SCE_POWER_GET_CPU_FLOAT     0xb1a52c83u
+#define NID_SCE_POWER_GET_BUS_FLOAT     0x9badb3ebu
+#define NID_SCE_POWER_GET_CPU_ALIAS     0xfee03a2fu
+#define NID_SCE_POWER_GET_BUS_INT_ALIAS 0xbd681969u
+
+static uint32_t power_float_dispatch(uint32_t nid, uint32_t *bits) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.fi[0] = 0xdeadbeefu;   /* poison $f0 so a handler that skips the float write is caught */
+    uint32_t ret = sr_syscall(&cpu, nid);
+    *bits = cpu.fi[0];
+    return ret;
+}
+
+static uint32_t float_bits_of(float v) {
+    uint32_t b;
+    memcpy(&b, &v, sizeof b);
+    return b;
+}
+
+static void test_power_identity_getters_measured(void) {
+    uint32_t bits = 0u;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_power_reset();
+
+    expect(power_float_dispatch(NID_SCE_POWER_GET_PLL_FLOAT, &bits) == 0u && bits == 0x435e0000u,
+           "scePowerGetPllClockFrequencyFloat writes 222.0 (0x435E0000) in $f0");
+    expect(power_float_dispatch(NID_SCE_POWER_GET_CPU_FLOAT, &bits) == 0u && bits == 0x435e0000u,
+           "scePowerGetCpuClockFrequencyFloat writes 222.0 (0x435E0000) in $f0");
+    expect(power_float_dispatch(NID_SCE_POWER_GET_BUS_FLOAT, &bits) == 0u && bits == 0x42de0000u,
+           "scePowerGetBusClockFrequencyFloat writes 111.0 (0x42DE0000) in $f0");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_ALIAS, 0u, 0u, 0u, 0u) == 222u,
+           "scePowerGetCpuClockFrequency (0xfee03a2f) answers the 222 MHz CPU clock");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT_ALIAS, 0u, 0u, 0u, 0u) == 111u,
+           "scePowerGetBusClockFrequencyInt (0xbd681969) answers the 111 MHz bus clock");
+
+    expect(td24b_dispatch4(NID_SCE_POWER_SET_CLOCK, 333u, 300u, 150u, 0u) == 0u,
+           "scePowerSetClockFrequency accepts 333/300/150 for the float-follow check");
+    expect(power_float_dispatch(NID_SCE_POWER_GET_PLL_FLOAT, &bits) == 0u && bits == float_bits_of(333.0f),
+           "the PLL float getter follows the retained PLL request (333.0)");
+    expect(power_float_dispatch(NID_SCE_POWER_GET_CPU_FLOAT, &bits) == 0u && bits == float_bits_of(300.0f),
+           "the CPU float getter follows the retained CPU request (300.0)");
+    expect(power_float_dispatch(NID_SCE_POWER_GET_BUS_FLOAT, &bits) == 0u && bits == float_bits_of(150.0f),
+           "the bus float getter follows the retained bus request (150.0)");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_ALIAS, 0u, 0u, 0u, 0u) == 300u &&
+               td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT_ALIAS, 0u, 0u, 0u, 0u) == 150u,
+           "the CPU alias and the bus Int alias follow the same retained request");
+    sr_hle_test_power_reset();
+}
+
 static void test_ctrl_sample_timestamp_microsecond_contract(void) {
     CpuState cpu;
 
@@ -28129,6 +28242,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_named_refusals();
     test_refer_system_status();
     test_ctrl_read_latch();
+    test_ctrl_peek_latch_keeps_the_latch();
     test_sysreg_persistence_round_trip();
     test_sysreg_corrupt_overlay();
     test_sysreg_flush_failure();
@@ -28262,6 +28376,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_allocate_fpl_context_precedence();
     test_atrac_context_abi();
     test_td24b_cheap_hle_batch();
+    test_kernel_devkit_version_measured();
+    test_power_identity_getters_measured();
     test_atrac_stream_ring_wrap();
     test_td24c_atrac_info_batch();
     test_td24d_hle_batch();
