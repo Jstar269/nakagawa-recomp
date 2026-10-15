@@ -444,7 +444,7 @@ consumed entry point must do. Each row cites [Cn] or is a project decision with 
 rationale, per the reading rule in §0.
 
 | Symbol | Section | Contract |
-|---|---|---|
+| --- | --- | --- |
 | `sched_dump_threads` | §0 | Diagnostic dump of the thread table, carried over under §0. It reads scheduler state and guest memory for logging and changes no guest-visible state. Project decision: a carry-over diagnostic with no PSP semantics. |
 | `s_cpu` | §1 | Shared `CpuState` pointer that the running thread's register file follows. Within the scheduler it is written only by `sched_init`, and it is NULL before that call [C1]. |
 | `sr_thread_k0` | §3.1 | Returns the running thread's initial k0 value, or zero when no thread is current, the same rule as `sched_current_uid` [C6]. Generated code calls it only as the fallback for an out-of-window `$k0` (`tools/codegen.py`). |
