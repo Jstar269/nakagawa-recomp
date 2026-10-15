@@ -386,8 +386,9 @@ out-of-order stub warnings (issue #400). `probe.c` mirrors the documented
   `sceKernelIsCpuIntrEnable()` return (context only). `out1`..`out6` are the raw
   returns of `LockMutex` (bad UID, bad count, valid unlocked), `LockMutexCB`,
   `TryLockMutex` and `UnlockMutex` (non-owner). Neither the probe nor the host
-  checker compares a returned value with an expected value; the conformance
-  matrix in `src/rt/intr_conformance.h` is the only comparison. Interrupt context
+  checker compares a returned value with an expected value; the runtime's tests do
+  that (the interrupt conformance matrix in `src/rt/intr_conformance.h` and the
+  interrupt-context mutex cells of `hle-thread-selftest`). Interrupt context
   is established by construction: a trial exists only because the VBLANK
   sub-interrupt dispatch ran `oracle_subintr_handler`. The kernel query
   `sceKernelIsIntrContext()` is not used: it lives in the kernel-only library
