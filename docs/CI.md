@@ -67,7 +67,8 @@ export ordered before any substantive job starts. `CI required` still requires t
 hygiene result (`HYGIENE_RESULT`) and the public-export result, so no failure is
 hidden. The trade-off is that a pull request that fails hygiene now also spends
 runner time on the expensive gates that started beside it. `main_smoke` is not
-changed: it runs only on pushes to `main` and is not a substantive gate.
+changed: it runs on pushes to `main` and on manual and merge-queue runs (the full-matrix
+events), never on pull requests, and it is not a substantive gate.
 
 The full-tree pre-commit run retains the publication audit and the Betterleaks
 current-tree scan; the hook runs Betterleaks in directory mode over the files it
