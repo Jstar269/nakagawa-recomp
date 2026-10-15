@@ -66,6 +66,12 @@ def build_cases() -> tuple[list[tuple[int, str, int]], int, tuple[int, int]]:
     exotic_index = len(cases)
     cases.append((_bin_word(0x19, 4, 3, 0x08, 0x00, 0x04), "vhdp-t-signed-zero", 5))
 
+    # The PSP-VFPU-CMP-001 probe words: vscmp.s / vsge.s / vslt.s S002, S000, S001
+    # (VFPU3 sub 5/6/7, vd=0x40, vs=0x00, vt=0x20). check_vfpu_compare_measured_words()
+    # finds them by name and pins both lanes to the 45 words a PSP-3000 returned.
+    for sub, op in ((5, "vscmp"), (6, "vsge"), (7, "vslt")):
+        cases.append((_bin_word(0x1B, sub, 1, 0x40, 0x00, 0x20), f"{op}-s-measured", 1))
+
     # vmscl.t (op 0x3C sub 4 size 3): scalar inside destination matrix
     cases.append((_bin_word(0x3C, 4, 3, 0x20, 0x20, 0x00), "vmscl-t-scalar-in-dest", 2))
 

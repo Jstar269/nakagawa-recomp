@@ -5717,7 +5717,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2295f36a48a83ce1862475cf27949c4cbe1be58dc90227a8c1354a1e2ad95eb2"
+      "sha256": "f33fe8b26e680fbcd636befdccbea4203cfa3adfe50a61bdcf7654580879bcae"
     },
     {
       "path": "src/rt/vfpu_interp_selftest.c",
@@ -5729,7 +5729,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7fe1b6aa864873aaa526eb1415d719aec53f2edc23209ebb512689623b81b86e"
+      "sha256": "60036b8301ebeeb9318cbc273f49a89a207a381505c8910e5bcda3a6cc116b21"
     },
     {
       "path": "src/rt/vfpu_oracle_host.c",
@@ -6361,7 +6361,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8f64afa7667fb10e046e67f9d25b6ab33fe50a453e84f63db2fb0eb60463a01a"
+      "sha256": "26e7a60daa204210ffd209e2550ea8e83007469ea1604317c5c778cf4b2a5556"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -8075,7 +8075,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "91d35b088252ec266b73083a8fe28d08cb0a1973e3f32541da6af6bc8ae369c0"
+      "sha256": "3ef02392a045f76565d2b40c3ac8c0f794bcd437bea91bccf6aded49e6ea3a08"
     },
     {
       "path": "tools/test_codegen_no_shadow_stubs.py",
@@ -10587,7 +10587,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b7612ca44d35571b2bd8c4666df435cf9f70a1bb6a98e7746c1dd39580172a83"
+      "sha256": "8a06ee6fcb9134c872b4cd7f327430caa8b5c73b7fcb4cb4a073b2d4ab4c1522"
     },
     {
       "path": "tools/vfpu_synth_gen.py",
