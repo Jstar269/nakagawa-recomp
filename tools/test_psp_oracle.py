@@ -2791,6 +2791,10 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-GE-CONTROL-001",
                 # The 2026-10-15 single-case runs of build b5d6fc5b (#1020 cases).
                 "PSP-HLE-VTIMER-002", "PSP-HLE-VTIMER-003", "PSP-HLE-POWER-002",
+                # The 2026-10-15 single-case runs of the #1037 probes: the VFPU corpus and the
+                # timer-order case from 22b027f6, the audio SRC case from 7fc1641e.
+                "PSP-VFPU-TRANSCENDENTAL-001", "PSP-HLE-TIMER-ORDER-001",
+                "PSP-HLE-AUDIO-SRC-001",
             },
         )
         self.assertEqual(
@@ -4064,7 +4068,7 @@ class VfpuTranscendentalParserFormatTests(unittest.TestCase):
                 self.assertEqual(len(grid), 63)
                 self.assertEqual(len(set(grid)), 63, "input word repeated in its grid")
 
-    def test_case_is_not_run_or_queued_and_has_the_full_raw_word_stream(self) -> None:
+    def test_case_is_measured_outside_the_queue_and_has_the_full_raw_word_stream(self) -> None:
         spec, counts = CAMPAIGN_PROBE_CASES[self.CASE]
         row = next(test for test in self.manifest["tests"] if test["id"] == self.TEST_ID)
         self.assertEqual(spec.semantic_cases, self.CASES)
@@ -4072,11 +4076,19 @@ class VfpuTranscendentalParserFormatTests(unittest.TestCase):
         self.assertEqual(spec.terminal_count, 88)
         self.assertEqual(len(spec.ordered_cases), 89)
         self.assertEqual(set(counts.values()), {1, 7, 8})
+        # The 2026-10-15 run of 22b027f6 was complete and acceptance-eligible, so every one of
+        # the 89 records is cited; the words themselves stay in the private campaign directory.
         self.assertEqual(row["status"], "implemented")
-        self.assertEqual(row["hardware_evidence"], "NOT_RUN")
-        self.assertNotIn("evidence_ref", row)
-        self.assertIn("No hardware capture exists", row["evidence_note"])
-        self.assertIn("89 result records", row["evidence_note"])
+        self.assertEqual(row["hardware_evidence"], "MEASURED")
+        self.assertEqual(
+            row["evidence_ref"],
+            "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize")
+        self.assertEqual(row["evidence_cases"], list(spec.ordered_cases))
+        self.assertNotIn("uncited_cases", row)
+        self.assertNotIn("evidence_note", row)
+        for word in ("2026-10-15", "22b027f6", "acceptance-eligible with 0 blockers",
+                     "88 data records", "693 words", "compares no value"):
+            self.assertIn(word, row["measurement_note"])
         self.assertEqual(row["case_ids"], list(spec.ordered_cases))
         self.assertNotIn(self.CASE, CAMPAIGN_QUEUE_CASES)
 
@@ -4939,20 +4951,30 @@ class HleSingleLaunchProbeTests(unittest.TestCase):
     the power getters, and the parser's refusal of every status but PASS and SKIP. They
     also pin the manifest and docs rows: cases 97-101 have recorded runs from the
     2026-10-15 PSP-3000 session on b5d6fc5b (three measured, one earlier revision
-    captured only, and one incomplete); cases 102-103 remain NOT_RUN.
+    captured only, and one incomplete), and cases 102-103 were measured the same day (the
+    timer-order case from 22b027f6, the audio SRC case from 7fc1641e after a first run of
+    22b027f6 that was captured only).
     """
 
     SINGLE = HleMeasureProbeTests.SINGLE_LAUNCH_FAMILIES
-    # Manifest hardware_evidence per case after the 2026-10-15 session on b5d6fc5b. The
-    # pool-bounds probe was revised after its captured run, so its revised form is NOT_RUN.
+    # Manifest hardware_evidence per case after the 2026-10-15 runs. The pool-bounds probe was
+    # revised after its captured run, so its revised form is NOT_RUN.
     HARDWARE = {
         "hle-vtimer-unit": "MEASURED",
         "hle-vtimer-errors": "MEASURED",
         "hle-kernel-pool-bounds": "NOT_RUN",
         "hle-power-float-v0": "MEASURED",
         "hle-null-out-pointers": "CAPTURED",
-        "hle-audio-src": "NOT_RUN",
-        "hle-timer-order": "NOT_RUN",
+        "hle-audio-src": "MEASURED",
+        "hle-timer-order": "MEASURED",
+    }
+    # The public commit each MEASURED case's cited run was built from.
+    RUN_COMMIT = {
+        "hle-vtimer-unit": "b5d6fc5b",
+        "hle-vtimer-errors": "b5d6fc5b",
+        "hle-power-float-v0": "b5d6fc5b",
+        "hle-audio-src": "7fc1641e",
+        "hle-timer-order": "22b027f6",
     }
     # The pending-campaign status cell each case carries in docs/HARDWARE_ORACLE.md.
     DOC_STATUS = {
@@ -4967,8 +4989,10 @@ class HleSingleLaunchProbeTests(unittest.TestCase):
                               "campaign queue)",
         "hle-null-out-pointers": "`CAPTURED` (2026-10-15, `b5d6fc5b`; incomplete, not measured; "
                                  "single launch, not in the campaign queue)",
-        "hle-audio-src": "`NOT_RUN` (single launch, not in the campaign queue)",
-        "hle-timer-order": "`NOT_RUN` (single launch, not in the campaign queue)",
+        "hle-audio-src": "`MEASURED` (2026-10-15, `7fc1641e`; the earlier run of `22b027f6` "
+                         "was captured only; single launch, not in the campaign queue)",
+        "hle-timer-order": "`MEASURED` (2026-10-15, `22b027f6`; single launch, not in the "
+                           "campaign queue)",
     }
     NULL_RUN_NOTE = ("On 2026-10-15 the stream stopped at the first NULL call's step and the "
                      "console needed a power cycle, so plan one after this case.")
@@ -5308,7 +5332,8 @@ class HleSingleLaunchProbeTests(unittest.TestCase):
                                      list(spec.ordered_cases))
                     self.assertNotIn("uncited_cases", row)
                     self.assertNotIn("evidence_note", row)
-                    for word in ("2026-10-15", "b5d6fc5b", "acceptance-eligible with 0 blockers"):
+                    for word in ("2026-10-15", self.RUN_COMMIT[case],
+                                 "acceptance-eligible with 0 blockers"):
                         self.assertIn(word, row["measurement_note"])
                 else:
                     # A capture that was not acceptance-eligible, or a revision with no
@@ -5659,3 +5684,132 @@ class LlscLinkProbeTests(unittest.TestCase):
                       oracle_doc)
         readme = (self.fixture / "README.md").read_text(encoding="utf-8")
         self.assertIn("| `llsc-link` | `PSP-LLSC-001` |", readme)
+
+
+class Record20261015Tests(unittest.TestCase):
+    """The 2026-10-15 PSP-3000 runs recorded in the public tree.
+
+    Covers the three #1037 probes (the VFPU corpus and timer-order case from 22b027f6, the
+    audio SRC case from 7fc1641e), the 32-case requalification of the campaign queue on
+    f2d6c91a, and the words of the 2026-10-10 ge-nan run that the index cited without
+    publishing. The raw envelopes and logs are private; these tests pin what the public
+    rows, index entries and notes say, and that each says no more than the cells show.
+    """
+
+    ANCHOR = "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize"
+    # Campaign case -> the oracle row its campaign case measured.
+    REQUALIFIED = {
+        "audio-query": "PSP-AUDIO-001", "cache-alias": "PSP-CACHE-001",
+        "display-mask-duty": "PSP-DISPLAY-001", "display-vblank-window": "PSP-DISPLAY-004",
+        "display-wait-late": "PSP-DISPLAY-002", "display-wait-priority": "PSP-DISPLAY-003",
+        "dma-cells": "PSP-DMAC-001", "fpu-cc": "PSP-FPU-CC-001", "fpu-vector": "PSP-FPU-001",
+        "ge-break-continue": "PSP-GE-CONTROL-001", "ge-nan": "PSP-GE-001",
+        "io-matrix": "PSP-IO-001", "kernel-alarm": "PSP-ALARM-001",
+        "kernel-misc": "PSP-KERNEL-MISC-001", "llsc-link": "PSP-LLSC-001",
+        "mutex-interrupt-context": "PSP-MUTEX-001", "mutex-priority-inheritance": "PSP-MUTEX-001",
+        "mutex-refer-unlocked": "PSP-MUTEX-001", "mutex-timeout-quanta": "PSP-MUTEX-001",
+        "refer-status-size": "PSP-KERNEL-STATUS-001", "registry-readonly": "PSP-REGISTRY-001",
+        "smoke": "PSP-SMOKE-001", "thread-exit-delete": "PSP-THREAD-EXIT-001",
+        "thread-scheduler": "PSP-THREAD-003", "vfpu-compare": "PSP-VFPU-CMP-001",
+        "wait-outcomes": "PSP-WAIT-001",
+    }
+    NOT_ELIGIBLE = (
+        "teardown-test", "dma-invalid-tail-s0", "dma-invalid-tail-memcpy-src",
+        "dma-invalid-tail-memcpy-dst", "dma-invalid-tail-try-src", "dma-invalid-tail-try-dst",
+    )
+
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.manifest = json.loads(
+            (self.root / "tools" / "psp_oracle" / "manifest.json").read_text(encoding="utf-8"))
+        self.rows = {test["id"]: test for test in self.manifest["tests"]}
+        self.doc = (self.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
+        self.readme = (self.root / "fixtures" / "psp_oracle" / "README.md").read_text(
+            encoding="utf-8")
+
+    def _entry(self, heading: str) -> str:
+        """The index entry that starts with `heading`, up to the next top-level entry."""
+        start = self.doc.index(heading)
+        end = self.doc.index("\n- **", start + 1)
+        return self.doc[start:end]
+
+    def test_the_three_new_rows_cite_a_section_that_names_every_cell(self) -> None:
+        for test_id in ("PSP-VFPU-TRANSCENDENTAL-001", "PSP-HLE-TIMER-ORDER-001",
+                        "PSP-HLE-AUDIO-SRC-001"):
+            with self.subTest(test_id=test_id):
+                row = self.rows[test_id]
+                self.assertEqual(row["hardware_evidence"], "MEASURED")
+                self.assertEqual(row["evidence_ref"], self.ANCHOR)
+                self.assertEqual(row["evidence_cases"][:len(row["case_ids"])], row["case_ids"])
+                self.assertNotIn("evidence_note", row)
+                hle_manifest.measured_evidence_section(row)
+
+    def test_the_audio_src_row_cites_the_re_run_and_not_the_captured_first_run(self) -> None:
+        row = self.rows["PSP-HLE-AUDIO-SRC-001"]
+        note = row["measurement_note"]
+        self.assertIn("7fc1641e", note)
+        self.assertIn("acceptance-eligible with 0 blockers", note)
+        self.assertIn("not acceptance-eligible and is not cited", note)
+        for word in ("0x80260008", "0x80268002", "0x400", "0x80000104", "0x80000003"):
+            self.assertIn(word, note)
+            self.assertIn(word, self.doc)
+        self.assertIn("16 records PASS and 2 SKIP", self.doc)
+        self.assertIn("`src-final-cleanup` and `out2-final-cleanup`", self.doc)
+
+    def test_the_timer_order_row_claims_no_tie_break_and_no_absolute_delay(self) -> None:
+        row = self.rows["PSP-HLE-TIMER-ORDER-001"]
+        note = row["measurement_note"]
+        for word in ("17,125", "53,561", "13,579", "0x8002019F",
+                     "do not measure a tie-break at equal due time", "No absolute delay is cited"):
+            self.assertIn(word, note)
+        self.assertIn("do not show how two alarms with the same due time are ordered", self.doc)
+        for text in (note, self.doc):
+            self.assertNotIn("alarms with equal due times run in set order", text)
+
+    def test_the_ge_nan_words_are_published_without_a_raster_rule(self) -> None:
+        row = self.rows["PSP-GE-001"]
+        self.assertEqual(row["hardware_evidence"], "MEASURED")
+        self.assertIn("f2d6c91a", row["measurement_note"])
+        self.assertIn("do not establish a rasterization rule", row["measurement_note"])
+        entry = self._entry("- **PSP-3000 requalification of the 32-case campaign queue")
+        for line in (
+            "| `0x7FC00000` (qNaN) | `0x7F800001` | `0x7F800001` |",
+            "| `0x7F800000` (+Inf) | `0x7F800000` | `0x7F800000` |",
+            "| `0xFF800000` (-Inf) | `0xFF800000` | `0xFF800000` |",
+            "| `0x80000000` (-0) | `0x00000000` | `0x80000000` |",
+            "| `0x00000001` (minimum positive denormal) | `0x00000000` | `0x00000000` |",
+            "| `0x7FC00000` (qNaN) | `0x2B6647A7` | `0x9DBEB5C5` | `0x9DBEB5C5` |",
+            "| `0xFF800000` (-Inf) | `0xA1F002BD` | `0x9DBEB5C5` | `0x9DBEB5C5` |",
+            "| `0x80000000` (-0) | `0xA929B835` | `0x9DBEB5C5` | `0x9DBEB5C5` |",
+        ):
+            self.assertIn(line, entry)
+        self.assertIn("A hash is a function of the whole scanned frame", entry)
+        self.assertIn("that verdict stays NOT_MEASURED", entry)
+        # The stale "no run yet" / NOT_RUN text of the 2026-10-10 probe description is gone.
+        self.assertNotIn("This probe is `NOT_RUN` pending the physical", self.doc)
+        self.assertNotIn("(issue #69; no run\n  yet)", self.doc)
+
+    def test_the_requalification_run_is_a_newer_citation_for_every_eligible_case(self) -> None:
+        entry = self._entry("- **PSP-3000 requalification of the 32-case campaign queue")
+        self.assertIn("26 case envelopes are acceptance-eligible", entry)
+        for case, test_id in self.REQUALIFIED.items():
+            with self.subTest(case=case):
+                self.assertIn(f"| `{case}` | `{test_id}` |", entry)
+                row = self.rows[test_id]
+                self.assertEqual(row["hardware_evidence"], "MEASURED")
+                self.assertIn("f2d6c91a", row["measurement_note"])
+        for case in self.NOT_ELIGIBLE:
+            with self.subTest(case=case):
+                self.assertIn(f"`{case}`", entry)
+                self.assertNotIn(f"| `{case}` |", entry)
+        # Captured-only rows stay captured: the requalification run adds no measured cell.
+        self.assertEqual(self.rows["PSP-TEARDOWN-001"]["hardware_evidence"], "CAPTURED")
+        self.assertIn("f2d6c91a", self.rows["PSP-TEARDOWN-001"]["evidence_note"])
+        self.assertIn("f2d6c91a", self.rows["PSP-DMAC-001"]["measurement_note"])
+        self.assertEqual(len(self.REQUALIFIED) + len(self.NOT_ELIGIBLE), 32)
+
+    def test_readme_and_index_agree_on_the_status_of_the_new_probes(self) -> None:
+        self.assertIn("`MEASURED` on 2026-10-15 (`7fc1641e`)", self.readme)
+        self.assertEqual(self.readme.count("`MEASURED` on 2026-10-15 (`22b027f6`)"), 2)
+        self.assertNotIn("## Bounded follow-up probes (hardware NOT_RUN)", self.readme)
+        self.assertNotIn("are single-launch NOT_RUN probes", self.readme)
