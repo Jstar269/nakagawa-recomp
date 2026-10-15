@@ -86,6 +86,7 @@ extern int sr_ctrl_test_live_input_seen(void);
 extern int sr_ctrl_test_pulse_suppressed(uint32_t keys);
 extern void sr_font_test_reset(void);
 extern const char *sr_font_test_slot_source(int slot);
+extern uint32_t sr_font_test_info_for_index(uint32_t index, uint32_t info_addr);
 int sr_route_sig_bytes(void);
 int sr_route_test_sample(uint8_t *out);
 /* Selftest-only entry into the real route_tick path (defined in hle.c under
@@ -27847,6 +27848,7 @@ static void test_hle_syscall_return_clears_link(void) {
 #define F0T_BUF_ADDR      0x09100000u
 #define F0T_STAT_ADDR     0x09030000u
 #define F0T_DIRENT_ADDR   0x09031000u
+#define F0T_FONT_INFO_ADDR 0x09040000u
 
 static char *f0t_read_file(const char *path, size_t *size_out) {
     FILE *fp = fopen(path, "rb");
@@ -27870,6 +27872,23 @@ static int f0t_guest_equals(uint32_t addr, const char *bytes, size_t size) {
     for (size_t i = 0; i < size; i++)
         if (MEM_R8(addr + (uint32_t)i) != (uint8_t)bytes[i]) return 0;
     return 1;
+}
+
+static int f0t_guest_string_field_is(uint32_t addr, size_t capacity, const char *value) {
+    if (!value) return 0;
+    size_t length = strlen(value);
+    if (length >= capacity) return 0;
+    for (size_t i = 0; i < capacity; i++) {
+        uint8_t expected = i < length ? (uint8_t)value[i] : 0u;
+        if (MEM_R8(addr + (uint32_t)i) != expected) return 0;
+    }
+    return 1;
+}
+
+static uint32_t f0t_float_word(float value) {
+    uint32_t word;
+    memcpy(&word, &value, sizeof(word));
+    return word;
 }
 
 static uint32_t f0t_open(const char *guest, uint32_t flags) {
@@ -28580,11 +28599,56 @@ static void test_flash0_font_device(void) {
     expect(f0t_open("flash0:/font/" F0T_LATIN_NAME, 0x0001u) == F0T_ERR_NOT_FOUND,
            "after every slot returns to pending, nothing is served");
 
-    /* The HLE sceFont shim (font_load) resolves the same slot files through the same sources,
-     * so a title on the shim sees the imported latin font and the project's japanese one, and an
-     * absent korean slot stays absent instead of being substituted. The shim used to open the
-     * legacy ltn0/jpn0/ltn8/kr0 names, which neither source carries, so every font went missing
-     * once a user imported one. Pending flags do not apply to the shim: it serves no guest path. */
+    /* The HLE sceFont shim resolves the same slot files and measured registry indices as
+     * /DATA/FONT, so its metadata comes from the file actually served for each index. It used to
+     * resolve legacy aliases absent from both sources, so every font went missing once a user
+     * imported one. */
+    sr_font_test_reset();
+    sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_LATIN, 1);
+    sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_JAPANESE, 1);
+    {
+        Flash0Sources expected_sources;
+        memset(&expected_sources, 0, sizeof(expected_sources));
+        snprintf(expected_sources.user_data_dir, sizeof(expected_sources.user_data_dir), "%s", data_dir);
+        snprintf(expected_sources.project_dir, sizeof(expected_sources.project_dir), "%s/project", root);
+        for (uint32_t index = 0; index < SR_FONT_REGISTRY_COUNT; index++) {
+            SrFontRegistryInfo expected;
+            SrFontRegistryStatus status = sr_flash0_font_registry_info(&expected_sources, index, &expected);
+            if (status != SR_FONT_REGISTRY_PRESENT) {
+                expect(sr_font_test_info_for_index(index, F0T_FONT_INFO_ADDR) != 0u,
+                       "the sceFont shim refuses an index without a served font");
+                continue;
+            }
+            uint32_t result = sr_font_test_info_for_index(index, F0T_FONT_INFO_ADDR);
+            expect(result == 0u, "the sceFont shim exposes every served measured index");
+            if (result != 0u) continue;
+            float metrics[4] = {
+                (float)expected.h_size / 64.0f, (float)expected.v_size / 64.0f,
+                (float)expected.h_resolution / 64.0f, (float)expected.v_resolution / 64.0f,
+            };
+            const uint32_t metric_offsets[4] = {0x5cu, 0x60u, 0x64u, 0x68u};
+            int metric_match = 1;
+            for (size_t i = 0; i < 4; i++)
+                if (MEM_R32(F0T_FONT_INFO_ADDR + metric_offsets[i]) != f0t_float_word(metrics[i]))
+                    metric_match = 0;
+            expect(metric_match, "the sceFont shim reports the served header metrics");
+            expect(MEM_R32(F0T_FONT_INFO_ADDR + 0x6cu) == expected.weight &&
+                       MEM_R16(F0T_FONT_INFO_ADDR + 0x70u) == expected.family_code &&
+                       MEM_R16(F0T_FONT_INFO_ADDR + 0x72u) == expected.style &&
+                       MEM_R16(F0T_FONT_INFO_ADDR + 0x74u) == expected.sub_style &&
+                       MEM_R16(F0T_FONT_INFO_ADDR + 0x76u) == expected.language_code &&
+                       MEM_R16(F0T_FONT_INFO_ADDR + 0x78u) == expected.region_code &&
+                       MEM_R16(F0T_FONT_INFO_ADDR + 0x7au) == expected.country_code &&
+                       MEM_R32(F0T_FONT_INFO_ADDR + 0xfcu) == expected.extra_attributes &&
+                       MEM_R32(F0T_FONT_INFO_ADDR + 0x100u) == expected.expire_date,
+                   "the sceFont shim reports the measured codes for each served index");
+            expect(f0t_guest_string_field_is(F0T_FONT_INFO_ADDR + 0x7cu, 64u, expected.font_name) &&
+                       f0t_guest_string_field_is(F0T_FONT_INFO_ADDR + 0xbcu, 64u, expected.file_name),
+                   "the sceFont shim reads font and file names from the served source");
+        }
+    }
+    sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_LATIN, 0);
+    sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_JAPANESE, 0);
     sr_font_test_reset();
     snprintf(msg, sizeof(msg), "the sceFont shim loads the latin slot from the %s source", served_latin_label);
     expect(strcmp(sr_font_test_slot_source(NK_FONT_SLOT_LATIN), served_latin_label) == 0, msg);

@@ -529,7 +529,7 @@ publishes their words.
 | `hle-vtimer-errors` | `PSP-HLE-VTIMER-003` | Start, stop, and `sceKernelGetVTimerTime` on a deleted UID, then a cleanup delete of that UID after its last use; a live timer created and deleted; up to 64 creates; out1 records whether a refusal occurred; every created timer deleted. The NULL option pointer of `sceKernelCreateVTimer` is the optional argument. |
 | `hle-kernel-pool-bounds` | `PSP-HLE-KERNEL-STATUS-002` | FPL creation with block size 0 and with a 0x7fffffff-byte block, each deleted when its create returned a pool; a refused create gives a PASS delete cell with out0 0 and no delete call; VPL allocation: up to 64 allocations; out1 records whether a refusal occurred; every block freed and the VPL deleted. The NULL option pointers of the pool creates are the optional argument. |
 | `hle-power-float-v0` | `PSP-HLE-POWER-002` | Raw `$v0` and `$f0` bits of `scePowerGetPllClockFrequencyFloat`, `scePowerGetCpuClockFrequencyFloat`, and `scePowerGetBusClockFrequencyFloat`, one call each, through a short assembly wrapper. |
-| `hle-null-out-pointers` | `PSP-HLE-NULL-OUT-001` | `sceKernelReferSystemStatus`, `sceKernelGetVTimerTime`, `sceKernelGetVTimerBase`, and `sceKernelReferVTimerStatus` with NULL as their mandatory out pointer, one call each on a live VTimer that is deleted at the end; each record holds only its return code. Risk high: a NULL mandatory out-pointer may fault in kernel mode; schedule last in a session, after every other case. |
+| `hle-null-out-pointers` | `PSP-HLE-NULL-OUT-001` | Retired and never to be scheduled. The captured run stopped at `sceKernelReferSystemStatus(NULL)` and required a power cycle. The kernel pointer check does not reject address 0, so the call writes through NULL and faults; the VTimer getters also write through their output pointers. No game can rely on these results. |
 | `hle-audio-src` | `PSP-HLE-AUDIO-SRC-001` | No-reservation release/output, a 1024-sample/44100-Hz/stereo reservation, second reserve, one silent output block, release after drain and release again; six invalid shapes with immediate release on unexpected success; Output2/SRC reservations in both orders with cleanup. One launch, 18 result records, `MEASURED` on 2026-10-15 (`7fc1641e`); the public NID corpus has no SRC rest-sample query. |
 | `hle-timer-order` | `PSP-HLE-TIMER-ORDER-001` | Same-delay A/B alarms, longer-then-shorter alarms, a nominally equal VTimer/alarm pair, and SetAlarm(0); each callback stores one shared sequence number and system-time low/high words. Waits are bounded and all alarms are canceled; the VTimer is stopped and deleted. Ordering only, no absolute-time claim; one launch, `MEASURED` on 2026-10-15 (`22b027f6`). |
 
@@ -537,7 +537,7 @@ The seven `hle-*` rows are single-launch probes built from `probe_hle_measure.c`
 not in the campaign queue. Five cases ran on a PSP-3000 on 2026-10-15 (build `b5d6fc5b`):
 `hle-vtimer-unit`, `hle-vtimer-errors` and `hle-power-float-v0` were measured, and the measured
 index publishes their words; `hle-kernel-pool-bounds` was captured only, and its revised
-form has not run; `hle-null-out-pointers` did not complete. Cases `hle-audio-src`
+form has not run; `hle-null-out-pointers` did not complete and is retired, never to be scheduled. Cases `hle-audio-src`
 (from `7fc1641e`, after a first run from `22b027f6` that was captured only) and `hle-timer-order`
 (from `22b027f6`) ran on 2026-10-15 and were measured, as was the `vfpu-transcendental-corpus`
 launch from `22b027f6`. The `hle-audio-src` stream is bounded at
