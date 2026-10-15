@@ -4202,11 +4202,12 @@ static void test_named_refusals(void) {
            "sceNetApctlDelHandler refuses with the offline network code 0x80010086");
 }
 
-/* sceKernelReferSystemStatus(SceKernelSystemStatus *status): PSP-measured 2026-10-15 (PSP-3000,
- * firmware 6.61, probe on e45e667b; docs/HARDWARE_ORACLE.md 2026-10-15 entry, PR #1003). The size
- * word is the caller's first word. The call returns 0 and writes min(size, 0x1c) bytes. Word 0 of
- * the image is the size field, 0x1c. Words 1..6 are written as zero, because their meaning is
- * UNMEASURED. Bytes past min(size, 0x1c) must stay as the caller left them. */
+/* sceKernelReferSystemStatus(SceKernelSystemStatus *status): PSP-3000, firmware 6.61 (PR #1003 head
+ * 3072bd7d, docs/HARDWARE_ORACLE.md 2026-10-15 entry). The size word is the caller's first word. The
+ * call returns 0 and writes min(size, 0x1c) bytes. The size word reads back 0x1c for sizes 0x08, 0x1c
+ * and 0x20; size 0 writes nothing. Bytes past min(size, 0x1c) must stay as the caller left them.
+ * The zero fill of the counters after the size word is pinned here as current behaviour only. It is a
+ * known divergence: hardware reports non-zero, time-dependent counter values (not cited). */
 #define NID_REFER_SYSTEM_STATUS 0x627e6f3au
 #define SYS_STATUS_BUF          0x00240c00u
 #define SYS_STATUS_BYTES        0x40u
@@ -21993,25 +21994,6 @@ static void test_psp_mutex(void) {
     cur->started = 1;
 
     SceKernelMutexInfoTest info;
-
-    /* ---- Interrupt context: UnlockMutex is gated before the owner check ----
-     * PSP-measured 2026-10-15 (PSP-3000, 6.61): every mutex call from a VBLANK sub-interrupt
-     * handler returned ILLEGAL_CONTEXT (0x80020064), including an unlock of a mutex the handler
-     * does not own. Lock, LockCB and TryLock already gate; Unlock must gate the same way. */
-    {
-        uint32_t mi = mtx_create("intr_unlock", 0, 1);
-        expect(mi > 0 && mtx_get_info(mi, &info) && info.currentCount == 1 &&
-               info.lockThread == (int32_t)cur->uid,
-               "IntrUnlock: mutex is held by the caller before the interrupt-context unlock");
-        s_cur = -1;   /* interrupt context: sched_is_intr_context() is true */
-        expect(mtx_unlock(mi, 1) == 0x80020064u,
-               "IntrUnlock: UnlockMutex in interrupt context returns ILLEGAL_CONTEXT (0x80020064)");
-        s_cur = (int)(cur - s_tcb);
-        expect(mtx_get_info(mi, &info) && info.currentCount == 1 &&
-               info.lockThread == (int32_t)cur->uid,
-               "IntrUnlock: the rejected unlock leaves the mutex held by its owner");
-        expect(mtx_delete(mi) == 0, "IntrUnlock: the held mutex still deletes");
-    }
 
     /* ---- T01, T02, T03, T04, T05: Creation, Attributes, Name bounds, Init count ---- */
     uint32_t m1 = mtx_create("test_mutex", 0, 0);

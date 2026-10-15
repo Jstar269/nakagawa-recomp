@@ -1457,7 +1457,7 @@
     "classification": "dedicated",
     "handler": "h_UnlockMutex",
     "name": "sceKernelUnlockMutex",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x6b4a146c": {
     "classification": "dedicated",

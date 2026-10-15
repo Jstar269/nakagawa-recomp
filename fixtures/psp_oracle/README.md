@@ -378,18 +378,23 @@ out-of-order stub warnings (issue #400). `probe.c` mirrors the documented
   from main and `GetThreadCurrentPriority` from the owner itself), deciding
   whether PSP boosts the owner.
 - `CASE=mutex-interrupt-context` — registers a VBLANK sub-interrupt handler
-  that samples 20 firings; each firing first records
-  `sceKernelIsCpuIntrEnable()` as context only (the PSP handler sees interrupts
-  enabled, value 1), and a trial counts only when all six mutex calls return
-  ILLEGAL_CONTEXT (0x80020064). The rule was corrected on 2026-10-15; archives
-  recorded under the old rule (count only when the enable value is 0) are refused
-  by the current checker, and the corrected probe is re-measured at the next PSP
-  session. It then measures `LockMutex`/
-  `LockMutexCB`/`TryLockMutex` return precedence across bad UID, bad count,
-  valid-unlocked, and non-owner unlock cells. One header record and one record
-  per trial are emitted (`mutex-interrupt-context-t00`..`t19`). The kernel
-  query `sceKernelIsIntrContext()` is not used: it lives in the kernel-only
-  library InterruptManagerForKernel, which a user-mode probe cannot import.
+  that samples 20 firings. The header record carries the raw
+  `sceKernelRegisterSubIntrHandler` and `sceKernelEnableSubIntr` returns (context)
+  and the completed trial count. Each trial record is machinery-only: it reads
+  `status=PASS result=0x00000001` when the handler reached the end of its body, so
+  all six mutex cells were written and the trial was stored. `out0` is the raw
+  `sceKernelIsCpuIntrEnable()` return (context only). `out1`..`out6` are the raw
+  returns of `LockMutex` (bad UID, bad count, valid unlocked), `LockMutexCB`,
+  `TryLockMutex` and `UnlockMutex` (non-owner). Neither the probe nor the host
+  checker compares a returned value with an expected value; the conformance
+  matrix in `src/rt/intr_conformance.h` is the only comparison. Interrupt context
+  is established by construction: a trial exists only because the VBLANK
+  sub-interrupt dispatch ran `oracle_subintr_handler`. The kernel query
+  `sceKernelIsIntrContext()` is not used: it lives in the kernel-only library
+  InterruptManagerForKernel, which a user-mode probe cannot import.
+  The rule was corrected on 2026-10-15 from a value rule to this completion rule.
+  Archives recorded under the value rule (each trial FAIL with result 0) are refused
+  by the current checker. The corrected probe is re-measured at the next PSP session.
 
 All four emit `PSP-MUTEX-001` records. `status=PASS` means only that the
 machinery ran and every scalar was captured; it makes no claim that any host

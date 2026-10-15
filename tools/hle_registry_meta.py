@@ -505,10 +505,19 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "size-field caller contract (whether Refer preserves or overwrites size) unmeasured (#339, #341)",
     },
-    # sceKernelReferSystemStatus: PSP-measured 2026-10-15 (bytes written = min(size, 0x1c), return 0).
+    # sceKernelReferSystemStatus: bytes written = min(size, 0x1c), return 0, and the size word reads back
+    # 0x1c, all PSP-measured (PR #1003 head 3072bd7d, 2026-10-15).
     "h_ReferSystemStatus": {
         "status": "partial",
-        "limitation": "status word, idle-clock, context-switch and VFPU-switch counters are written as zero and unmeasured; the size word written as 0x1c follows the struct convention and is not separately measured; null-pointer result unmeasured",
+        "limitation": "idle-clock, comes-out-of-idle and thread-switch counters: written as zero; hardware reports non-zero, time-dependent values (not cited). VFPU-switch counter: written as zero, not cited. Status word 1: written as zero; hardware read 0 in all three records, uncited. Null-pointer result unmeasured.",
+    },
+    # sceKernelUnlockMutex: the interrupt-context gate (ILLEGAL_CONTEXT 0x80020064 before the owner check) is
+    # NOT in the handler. Its only evidence, the 2026-10-15 mutex-interrupt-context trial, is captured-only and
+    # not acceptance-eligible (PR #1003 head 3072bd7d). The gate is pending the next eligible
+    # mutex-interrupt-context run.
+    "h_UnlockMutex": {
+        "status": "partial",
+        "limitation": "interrupt-context unlock is ungated: the handler runs the object and owner checks from interrupt context. The unlock-in-interrupt gate is pending the next eligible mutex-interrupt-context run (2026-10-15 capture is not acceptance-eligible).",
     },
     # sceRtc family (issue #341). Contract sources: the public PSPSDK header
     # psprtc.h (declarations, 0-on-success/<0-on-error, pspRtcCheckValidErrors

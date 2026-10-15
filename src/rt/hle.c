@@ -21813,11 +21813,6 @@ static uint32_t h_UnlockMutex(CpuState *s) {
     uint32_t uid = A0;
     int count = (int)A1;
 
-    /* Interrupt context is gated ahead of the object and owner checks, as Lock, LockCB and TryLock
-     * are. PSP-measured 2026-10-15 (PSP-3000, 6.61): an unlock from a VBLANK handler returned
-     * ILLEGAL_CONTEXT (0x80020064), not MUTEX_NOT_OWNED. */
-    if (sched_is_intr_context()) return SCE_KERNEL_ERROR_ILLEGAL_CONTEXT;
-
     Mutex *m = mutex_find(uid);
     if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MUTEXID;
 
@@ -22653,12 +22648,14 @@ static uint32_t h_ReferProfilerNull(CpuState *s) {
  * kernel refusals above already use; the non-kernel sceImpose, sceNet, sceHttp and
  * sceAudiocodec libraries use SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED, the code the
  * sceReg and sceUmd refusals use. The two NIDs with no confirmed public name stay unregistered. */
-/* sceKernelReferSystemStatus(SceKernelSystemStatus *status). PSP-measured 2026-10-15 (PSP-3000,
- * firmware 6.61, probe on e45e667b; docs/HARDWARE_ORACLE.md 2026-10-15 entry, PR #1003): the call
- * returns 0 and writes min(size, 0x1c) bytes, where size is the caller's first word. The image is
- * the 28-byte struct: word 0 is the size field, 0x1c. Words 1..6 (the status word and the idle-clock,
- * context-switch and VFPU-switch counters) are UNMEASURED and are written as zero. The result for a
- * null or unwritable pointer is UNMEASURED; it uses the ILLEGAL_ADDR convention of the other refers. */
+/* sceKernelReferSystemStatus(SceKernelSystemStatus *status). PSP-3000, firmware 6.61 (PR #1003 head
+ * 3072bd7d, docs/HARDWARE_ORACLE.md 2026-10-15 entry): the call returns 0 and writes min(size, 0x1c)
+ * bytes, where size is the caller's first word. The size word reads back 0x1c for non-zero sizes 0x08,
+ * 0x1c and 0x20; size 0 writes nothing. Status word 1 read 0 in all three records but is not cited.
+ * The idle-clock, comes-out-of-idle and thread-switch counters are written as zero; hardware reports
+ * non-zero, time-dependent values (not cited). That zero fill is a known divergence from hardware. The
+ * VFPU-switch counter is also written as zero and is not cited. The result for a null or unwritable
+ * pointer is UNMEASURED; it uses the ILLEGAL_ADDR convention of the other refers. */
 static uint32_t h_ReferSystemStatus(CpuState *s) {
     uint32_t out = A0;
     if (!out || !sr_guest_span_writable(out, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;

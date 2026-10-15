@@ -5103,21 +5103,19 @@ static uint32_t run_mutex_priority_inheritance_case(uint32_t *out0, uint32_t *ou
 #endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_INTERRUPT_CONTEXT
-/* Interrupt-state proof from user mode. This probe is a user-mode module, so
+/* Interrupt-context proof from user mode. This probe is a user-mode module, so
    it cannot import InterruptManagerForKernel (sceKernelIsIntrContext): the PSP
-   refuses to load a user-mode PRX that imports a kernel-only library. The
-   handler instead records the raw return of sceKernelIsCpuIntrEnable(), the
-   user Kernel_Library export from pspintrman.h and the PSPSDK libpspuser.a
-   (the kernel-alarm case samples the same call inside its alarm handler).
-   The recorded value is context only. On PSP-3000 6.61 the VBLANK handler sees
-   CPU interrupts enabled (1), so it does not gate a trial. A trial counts only
-   when all six mutex calls return ILLEGAL_CONTEXT (0x80020064): the code the
-   kernel returns from interrupt context, which is the measured mutex contract.
-   Pass rule corrected 2026-10-15; the corrected probe is re-measured at the
-   next PSP session. */
-
-/* ILLEGAL_CONTEXT, the mutex return from interrupt context (SCE_KERNEL_ERROR_ILLEGAL_CONTEXT). */
-#define MUTEX_ILLEGAL_CONTEXT 0x80020064u
+   refuses to load a user-mode PRX that imports a kernel-only library. The proof
+   is by construction instead: each trial is written by oracle_subintr_handler,
+   which only the VBLANK sub-interrupt dispatch calls. The handler also records
+   the raw return of sceKernelIsCpuIntrEnable() (the user Kernel_Library export
+   from pspintrman.h) as context only.
+   Pass rule (machinery only, corrected 2026-10-15): a trial is PASS with result 1
+   when the handler reached the end of its body, so all six mutex cells were
+   written and the trial was stored. No returned value is compared with an
+   expected value in this probe or in the host checker; the conformance matrix in
+   src/rt/intr_conformance.h compares them with measured cells. The corrected
+   probe is re-measured at the next PSP session. */
 
 /* MUTEX_INTR_TRIALS: number of VBLANK firings to sample.  Each firing emits
    one protocol record with a trial-indexed case_id (mutex-interrupt-context-t00
@@ -5136,6 +5134,7 @@ typedef struct {
     uint32_t r_lock_cb;   /* LockMutexCB(valid_unlocked, 1, NULL)                */
     uint32_t r_try;       /* TryLockMutex(valid_unlocked, 1)                     */
     uint32_t r_unlock;    /* UnlockMutex(main_owned, 1) -- non-owner unlock      */
+    uint32_t done;        /* set last: every cell above is written and the trial is stored */
 } IntrTrial;
 
 static volatile int s_subintr_count;
@@ -5145,9 +5144,9 @@ static IntrTrial s_trials[MUTEX_INTR_TRIALS];
 
 /* VBLANK sub-interrupt handler.  Fires once per vertical blank (~60 Hz).
    Increments s_subintr_count only after writing all six cell results so the
-   main thread can use s_subintr_count as the ready sentinel.  Samples
-   sceKernelIsCpuIntrEnable() as the first call -- before any mutex
-   operation -- as proof that the body runs with CPU interrupts disabled. */
+   main thread can use s_subintr_count as the ready sentinel.  Records
+   sceKernelIsCpuIntrEnable() as the first call, before any mutex operation,
+   as context only. */
 static int oracle_subintr_handler(int subintr, void *arg) {
     (void)subintr;
     (void)arg;
@@ -5170,15 +5169,18 @@ static int oracle_subintr_handler(int subintr, void *arg) {
     t.r_try      = (uint32_t)sceKernelTryLockMutex((SceUID)s_intr_m_unlocked, 1);
     /* Cell F: unlock a mutex owned by the main thread -- non-owner unlock. */
     t.r_unlock   = (uint32_t)sceKernelUnlockMutex((SceUID)s_intr_m_main_owned, 1);
+    t.done = 1u;
     s_trials[idx] = t;
     /* Barrier: write count last so main only reads a complete trial. */
     s_subintr_count = idx + 1;
     return 0;
 }
 
-/* Emit one protocol record per completed trial.
+/* Emit one protocol record per trial.
    case_id format: mutex-interrupt-context-tNN (NN = zero-padded trial index).
-   out0 = intr_enabled (context only), out1..out6 = six cell raw return values. */
+   out0 = intr_enabled (context only), out1..out6 = six cell raw return values.
+   Machinery-only verdict: PASS with result 1 when the handler completed the trial.
+   The returned values are not compared with any expected value here. */
 static void emit_intr_trial(int emulated, int trial, const IntrTrial *t) {
     char case_id[48];
     snprintf(case_id, sizeof(case_id), "mutex-interrupt-context-t%02d", trial);
@@ -5190,18 +5192,15 @@ static void emit_intr_trial(int emulated, int trial, const IntrTrial *t) {
     out[4] = t->r_lock_cb;
     out[5] = t->r_try;
     out[6] = t->r_unlock;
-    /* pass iff all six mutex calls returned ILLEGAL_CONTEXT from the handler. The interrupt
-       state is not part of the rule: the PSP handler sees interrupts enabled (intr_enabled 1). */
-    int pass = (out[1] == MUTEX_ILLEGAL_CONTEXT && out[2] == MUTEX_ILLEGAL_CONTEXT &&
-                out[3] == MUTEX_ILLEGAL_CONTEXT && out[4] == MUTEX_ILLEGAL_CONTEXT &&
-                out[5] == MUTEX_ILLEGAL_CONTEXT && out[6] == MUTEX_ILLEGAL_CONTEXT);
+    /* pass iff the handler completed the trial: every cell above is written and the trial is stored. */
+    int pass = (t->done == 1u);
     emit_mutex_test(emulated, case_id, pass, pass ? 1u : 0u, out, 7);
 }
 
 static uint32_t run_mutex_interrupt_context_case(int emulated) {
     s_subintr_count = 0;
     for (int i = 0; i < MUTEX_INTR_TRIALS; i++) {
-        IntrTrial z = {0, 0, 0, 0, 0, 0, 0};
+        IntrTrial z = {0, 0, 0, 0, 0, 0, 0, 0};
         s_trials[i] = z;
     }
 
@@ -5231,13 +5230,13 @@ static uint32_t run_mutex_interrupt_context_case(int emulated) {
     if (s_intr_m_unlocked >= 0)   sceKernelDeleteMutex((SceUID)s_intr_m_unlocked);
     if (s_intr_m_main_owned >= 0) sceKernelDeleteMutex((SceUID)s_intr_m_main_owned);
 
-    /* Emit header record: reg/enable/count summary. */
+    /* Emit header record: raw register and enable returns as context, then the completed count. */
     {
         uint32_t hdr[3];
-        hdr[0] = (uint32_t)(reg == 0);
-        hdr[1] = (uint32_t)(ena == 0);
+        hdr[0] = (uint32_t)reg;
+        hdr[1] = (uint32_t)ena;
         hdr[2] = (uint32_t)s_subintr_count;
-        int pass = (reg == 0 && ena == 0 && s_subintr_count == MUTEX_INTR_TRIALS);
+        int pass = (s_subintr_count == MUTEX_INTR_TRIALS);
         emit_mutex_test(emulated, "mutex-interrupt-context", pass, pass ? 1u : 0u,
                         hdr, 3);
     }
@@ -5249,7 +5248,7 @@ static uint32_t run_mutex_interrupt_context_case(int emulated) {
         emit_intr_trial(emulated, i, (const IntrTrial *)&s_trials[i]);
     }
 
-    return (uint32_t)(reg == 0 && ena == 0 && s_subintr_count == MUTEX_INTR_TRIALS);
+    return (uint32_t)(s_subintr_count == MUTEX_INTR_TRIALS);
 }
 #endif
 
