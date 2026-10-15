@@ -92,6 +92,29 @@ class TestDocFreshnessLinter(unittest.TestCase):
             errors = lint_doc_links_and_topology(doc, root)
         self.assertEqual(errors, [])
 
+    def test_markdown_links_with_percent_encoding_anchors_and_nested_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = pathlib.Path(temp_dir)
+            doc_dir = root / "docs" / "nested"
+            doc_dir.mkdir(parents=True)
+            (root / "NOTICE.md").write_text("notice\n", encoding="utf-8")
+            (root / "docs" / "file with spaces.md").write_text("content\n", encoding="utf-8")
+
+            doc = doc_dir / "TEST.md"
+            doc.write_text(
+                "1. [anchor](#some-section)\n"
+                "2. [file](../../NOTICE.md#some-section)\n"
+                "3. [space](../file%20with%20spaces.md)\n"
+                "4. [space-anchor](../file%20with%20spaces.md#section-1)\n"
+                "5. [missing](../../MISSING.md#section)\n",
+                encoding="utf-8",
+            )
+            errors = lint_doc_links_and_topology(doc, root)
+        self.assertEqual(len(errors), 1)
+        self.assertTrue(
+            any("missing repository-relative link target: ../../MISSING.md#section" in error for error in errors)
+        )
+
     def test_recursive_fallback_includes_nested_markdown(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = pathlib.Path(temp_dir)

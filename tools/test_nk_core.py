@@ -494,7 +494,8 @@ class NkCoreTests(unittest.TestCase):
                 runtime_profile=base.runtime_profile,
                 codegen_profile=base.codegen_profile,
                 min_iso_bytes=base.min_iso_bytes,
-            )
+            ),
+            allow_override=True,
         )
 
         dest_root = self.temp_dir / "installed_games"
