@@ -168,6 +168,22 @@ class PublicCiWiringTests(unittest.TestCase):
         self.assertIn("timeout 60s", native_tools)
         self.assertIn('"$player_build/nakagawa_player" "--iso=$iso" --stage-only', native_tools)
         self.assertIn('grep -Fq "STAGING_RESULT status=PASS"', native_tools)
+        # The stage run must redirect all four XDG roots under RUNNER_TEMP, so it never
+        # writes config, cache or state under the runner's HOME.
+        stage_lines = _ci_step(native_tools.splitlines(), "Smoke the CMake Linux player headlessly")
+        self.assertIsNotNone(stage_lines, "Smoke the CMake Linux player headlessly is not pinned")
+        assert stage_lines is not None
+        stage_text = "\n".join(stage_lines)
+        invocation = stage_text[
+            stage_text.index("stage_output=$(") : stage_text.index("--stage-only)") + len("--stage-only)")
+        ]
+        for assignment in (
+            'XDG_DATA_HOME="$RUNNER_TEMP/player-smoke-data"',
+            'XDG_CONFIG_HOME="$RUNNER_TEMP/player-smoke-config"',
+            'XDG_CACHE_HOME="$RUNNER_TEMP/player-smoke-cache"',
+            'XDG_STATE_HOME="$RUNNER_TEMP/player-smoke-state"',
+        ):
+            self.assertIn(assignment, invocation)
         self.assertIn("SDL3_VERSION=3.4.16", native_tools)
         self.assertIn("SDL3_COMMIT=fa2c02bb6e21974a89ea9824bc53c9932abe5f9c", native_tools)
 

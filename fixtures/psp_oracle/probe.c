@@ -6915,10 +6915,12 @@ static void run_ge_break_continue(int emulated) {
                     (uint32_t)draw_state, draw_out, 3);
     emit_ge_quiesce(emulated, "ge-quiesce-after-cancel");
 
-    /* sceGeListDeQueue on a stalled list is a measured cell.  A stalled list is
-       expected to return BUSY (0x80000021) and stay queued.  The status records
-       only that the call completed, whatever it returned, so this cell never
-       gates another cell.  The quiesce afterwards resets any list left queued. */
+    /* sceGeListDeQueue on a stalled list is a measured cell.  The 2026-10-10 and
+       2026-10-15 captures (not acceptance-eligible) read BUSY (0x80000021) here,
+       which is why the cancelled-list cells no longer depend on this dequeue.  The
+       status records only that the call completed, whatever it returned, so this
+       cell never gates another cell.  The quiesce afterwards resets any list left
+       queued. */
     probe_step(emulated, "ge-break-continue", "dequeue-stalled-list");
     qid = sceGeListEnQueue((const void *)(uintptr_t)list,
                            (void *)(uintptr_t)list, -1, NULL);

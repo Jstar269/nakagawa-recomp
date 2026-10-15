@@ -12,7 +12,8 @@
  *   - Windows: Win32 fibers (ConvertThreadToFiber / CreateFiberEx / SwitchToFiber). Fibers
  *     reserve a large stack but commit it lazily, which the deep guest→native call chains need.
  *   - POSIX (Linux / Steam Deck): ucontext_t + swapcontext over an mmap'd, lazily-committed
- *     stack (MAP_NORESERVE), matching the fibers' lazy-commit behaviour.
+ *     stack (MAP_NORESERVE), matching the fibers' lazy-commit behaviour, with a PROT_NONE
+ *     guard band below it, matching the fibers' guard page.
  *
  * Semantics are identical on both: exactly one coroutine runs per OS thread at a time; a switch
  * suspends the caller and resumes the target; control returns to the caller when something
@@ -27,11 +28,19 @@
 #define SR_CORO_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 /* Guest AOT CALLs are native C calls (TAIL transfers are drained, not nested), so the
  * scheduler reserves this host stack size for each guest thread. Keep the size in the coroutine contract so runtime
  * stack guards and scheduler tests use the same production value. */
 #define SR_GUEST_FIBER_STACK_SIZE ((size_t)64u << 20)
+
+/* POSIX stacks get this much PROT_NONE address space below their usable range (rounded up to
+ * the page size), so a frame that overruns the stack faults instead of writing into the next
+ * mapping, which is usually another guest thread's stack. Windows fiber stacks already end in
+ * the kernel's guard page. No handler is installed: the named stop is the runtime's host-stack
+ * bound (#854, #855; SR_HOST_STACK_CHECK in recomp.h), which stops well before the band. */
+#define SR_CORO_STACK_GUARD_BYTES ((size_t)64u << 10)
 
 typedef struct SrCoro SrCoro;
 typedef void (*SrCoroFn)(void *arg);
@@ -61,6 +70,10 @@ SrCoro *sr_coro_current(void);
 /* Return the remaining downward-growing stack range for the current coroutine.
  * Returns 1 when the current stack bounds were measured, or 0 when unavailable. */
 int sr_coro_stack_remaining(size_t *remaining_out);
+
+/* Return the high end of the current coroutine's stack (every frame on it lies below).
+ * Returns 1 when known, or 0 when unavailable. */
+int sr_coro_stack_top(uintptr_t *top_out);
 
 /* ---- test-only lifecycle instrumentation ---------------------------------------------
  *

@@ -38,11 +38,10 @@
     "status": "unreviewed"
   },
   "0x034a921f": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_GetVTimerTime",
     "name": "sceKernelGetVTimerTime",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x03d9526f": {
     "classification": "controlled_unsupported",
@@ -443,11 +442,10 @@
     "status": "unreviewed"
   },
   "0x20fff560": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_CreateVTimer",
     "name": "sceKernelCreateVTimer",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x210eab3a": {
     "classification": "dedicated",
@@ -693,11 +691,10 @@
     "status": "unreviewed"
   },
   "0x328f9e52": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_DeleteVTimer",
     "name": "sceKernelDeleteVTimer",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x32bf938e": {
     "classification": "dedicated",
@@ -1148,6 +1145,13 @@
     "name": "strlen",
     "status": "complete"
   },
+  "0x53b00e9a": {
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
+    "name": "sceKernelSetVTimerHandlerWide",
+    "refusal_error": "0x80020002",
+    "status": "controlled_unsupported"
+  },
   "0x542ad630": {
     "classification": "controlled_unsupported",
     "handler": "h_ControlledUnsupported",
@@ -1270,6 +1274,12 @@
     "handler": "h_CpuResumeIntr",
     "name": "sceKernelCpuResumeIntr",
     "status": "unreviewed"
+  },
+  "0x5f32beaa": {
+    "classification": "dedicated",
+    "handler": "h_ReferVTimerStatus",
+    "name": "sceKernelReferVTimerStatus",
+    "status": "partial"
   },
   "0x5f9529f6": {
     "classification": "dedicated",
@@ -2276,6 +2286,12 @@
     "name": "sceIoDopen",
     "status": "unreviewed"
   },
+  "0xb3a59970": {
+    "classification": "dedicated",
+    "handler": "h_GetVTimerBase",
+    "name": "sceKernelGetVTimerBase",
+    "status": "partial"
+  },
   "0xb3b5d042": {
     "classification": "fake_success",
     "handler": "h_ok",
@@ -2500,11 +2516,10 @@
     "status": "unreviewed"
   },
   "0xc68d9437": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_StartVTimer",
     "name": "sceKernelStartVTimer",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0xc69bebce": {
     "classification": "dedicated",
@@ -2578,6 +2593,12 @@
     "name": "sceRtcGetWin32FileTime",
     "status": "partial"
   },
+  "0xd0aeee87": {
+    "classification": "dedicated",
+    "handler": "h_StopVTimer",
+    "name": "sceKernelStopVTimer",
+    "status": "partial"
+  },
   "0xd1c8945e": {
     "classification": "controlled_unsupported",
     "handler": "h_ControlledUnsupported",
@@ -2603,6 +2624,13 @@
     "handler": "h_StopModule_Trace",
     "name": "sceKernelStopModule",
     "status": "unreviewed"
+  },
+  "0xd2d615ef": {
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
+    "name": "sceKernelCancelVTimerHandler",
+    "refusal_error": "0x80020002",
+    "status": "controlled_unsupported"
   },
   "0xd3075926": {
     "classification": "dedicated",
@@ -2694,6 +2722,13 @@
     "handler": "h_CacheInvalidateAll",
     "name": "sceKernelIcacheClearAll",
     "status": "unreviewed"
+  },
+  "0xd8b299ae": {
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
+    "name": "sceKernelSetVTimerHandler",
+    "refusal_error": "0x80020002",
+    "status": "controlled_unsupported"
   },
   "0xd8b73127": {
     "classification": "dedicated",

@@ -88,6 +88,7 @@ def _build_and_run(
     test_source: str,
     exe_stem: str,
     extra_sources: tuple[str, ...] = (),
+    extra_runs: tuple[tuple[str, ...], ...] = (),
 ) -> str:
     owner = type(test_case)
     if shutil.which("gcc") is None:
@@ -120,11 +121,41 @@ def _build_and_run(
         f"linking {test_source} failed:\n{build.stdout}\n{build.stderr}",
     )
 
-    run = subprocess.run([str(out)], cwd=ROOT, capture_output=True, text=True, timeout=300)
+    # Each test isolates its own per-user roots, so it runs here against a decoy
+    # profile that must stay free of application folders: anything that lands
+    # in it would have landed in the developer's real profile.
+    profile = Path(tmp) / "developer-profile"
+    home = profile / "home"
+    env = dict(os.environ)
+    env.update({
+        "LOCALAPPDATA": str(profile / "localappdata"),
+        "APPDATA": str(profile / "appdata"),
+        "USERPROFILE": str(home),
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "XDG_CONFIG_HOME": str(home / ".config"),
+        "XDG_DATA_HOME": str(home / ".local" / "share"),
+        "XDG_STATE_HOME": str(home / ".local" / "state"),
+    })
+    env.pop("NAKAGAWA_PSP_KEY_FILE", None)
+    run = subprocess.run([str(out)], cwd=ROOT, env=env, capture_output=True, text=True,
+                         timeout=300)
     test_case.assertEqual(
         run.returncode, 0,
         f"{test_source} failed:\n{run.stdout}\n{run.stderr}",
     )
+    # Other command-line modes of the same binary run against the same profile.
+    for args in extra_runs:
+        mode = subprocess.run([str(out), *args], cwd=ROOT, env=env, capture_output=True,
+                              text=True, timeout=300)
+        test_case.assertEqual(
+            mode.returncode, 0,
+            f"{test_source} {args[0]} failed:\n{mode.stdout}\n{mode.stderr}",
+        )
+    leaked = sorted(str(path.relative_to(profile)) for path in profile.rglob("*")
+                    if "nakagawa" in path.name.lower())
+    test_case.assertEqual(
+        leaked, [], f"{test_source} wrote into the developer's profile before isolating it")
     return run.stdout
 
 
@@ -194,6 +225,10 @@ class NativeHostBackendTests(unittest.TestCase):
 
     def test_player_state(self) -> None:
         """Library entry lookup and honest add results, with no SDL involved."""
+        # The package-validator mode, which the production smoke and player package
+        # route tests run, must leave the developer's profile alone too.
+        runtime_root = self.enterContext(
+            scratch_dir.TemporaryDirectory(prefix="nk_backend_runtime_"))
         stdout = _build_and_run(
             self, "tests/native/test_player_state.c", "test_player_state",
             extra_sources=(
@@ -202,6 +237,10 @@ class NativeHostBackendTests(unittest.TestCase):
                 "src/player/iso_reader.c",
                 "src/player/package_builder.c",
                 "src/player/setup_staging.c",
+            ),
+            extra_runs=(
+                ("--validate-package", runtime_root, "ULUS99998", "SYNTH00001", "1",
+                 "EBOOT.BIN"),
             ),
         )
         self.assertIn("ALL PLAYER STATE TESTS PASSED", stdout)
