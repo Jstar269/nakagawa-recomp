@@ -325,6 +325,9 @@ uint32_t sr_vblank_arg(void);
 #define NID_SCE_AUDIO_GET_CHANNEL_REST_LENGTH 0xb011922fu
 #define NID_SCE_IO_RENAME 0x779103a0u
 #define NID_SCE_AUDIO_CHANGE_VOLUME 0xb7e1d8e7u
+#define NID_SCE_AUDIO_OUTPUT2_RESERVE 0x01562ba3u
+#define NID_SCE_AUDIO_OUTPUT2_RELEASE 0x43196845u
+#define NID_SCE_AUDIO_OUTPUT2_REST_SAMPLE 0x647cef33u
 #define SCE_AUDIO_ERROR_NOT_INITIALIZED 0x80260001u
 #define SCE_AUDIO_ERROR_INVALID_CH 0x80260003u
 #define SCE_AUDIO_ERROR_INVALID_SIZE 0x80260006u
@@ -543,12 +546,6 @@ int gegpu_sync_guest_fb(const GeGpuFbDescriptor *desc) {
     return 2; /* GEGPU_SYNC_NO_TARGET */
 }
 void sr_profile_dump(void) {}
-#ifdef SR_PSP_ORACLE_SMOKE
-/* The smoke translation retains the production SR_YIELD instrumentation hook,
- * but this focused executable does not link the full profiler object. */
-int g_prof_enabled;
-void sr_profile_block(uint32_t target_pc) { (void)target_pc; }
-#endif
 uint64_t SDL_GetTicksNS(void) { return 0; }
 int sr_capture_arm(const char *path) {
     s_cap_arm_calls++;
@@ -1141,9 +1138,11 @@ static int write_synthetic_guest_prx(const char *path) {
 #define SYNTH_LIBFONT_READY_WORD 0x08905000u
 #define SYNTH_LIBFONT_EXPORT_NID 0x2990cafeu
 #define SYNTH_LIBFONT_EXPORT_OFF 0x90u
+#define SYNTH_LIBFONT_STOP_OFF   0xc0u
 
 static uint32_t s_synth_libfont_start_calls;
 static uint32_t s_synth_libfont_export_calls;
+static uint32_t s_synth_libfont_stop_calls;
 
 static void synth_libfont_module_start(CpuState *s) {
     s_synth_libfont_start_calls++;
@@ -1154,6 +1153,11 @@ static void synth_libfont_module_start(CpuState *s) {
 static void synth_libfont_export(CpuState *s) {
     s_synth_libfont_export_calls++;
     s->r[2] = 0x29u;
+}
+
+static void synth_libfont_module_stop(CpuState *s) {
+    s_synth_libfont_stop_calls++;
+    s->r[2] = 0x66u;
 }
 
 /* Declared here because the module gate checks below assert on the runtime's own stderr. */
@@ -1216,14 +1220,19 @@ static int write_synthetic_libfont_prx(const char *path, uint32_t base) {
     fixture_wr32(image + MODOFF + 40, base + EXPORT_VA + 16u);
     uint8_t *entry = image + 0x80 + EXPORT_VA;
     entry[8] = 4;
-    fixture_wr16(entry + 10, 2);
+    /* Three functions: the table is the NIDs (module_start, the export, module_stop),
+     * then their addresses in the same order. */
+    fixture_wr16(entry + 10, 3);
     fixture_wr32(entry + 12, base + TABLE_VA);
     fixture_wr32(image + 0x80 + TABLE_VA, 0xd632acdbu);
     fixture_wr32(image + 0x84 + TABLE_VA, SYNTH_LIBFONT_EXPORT_NID);
-    fixture_wr32(image + 0x88 + TABLE_VA, START_OFF);
-    fixture_wr32(image + 0x8c + TABLE_VA, SYNTH_LIBFONT_EXPORT_OFF);
+    fixture_wr32(image + 0x88 + TABLE_VA, 0xcee05613u);
+    fixture_wr32(image + 0x8c + TABLE_VA, START_OFF);
+    fixture_wr32(image + 0x90 + TABLE_VA, SYNTH_LIBFONT_EXPORT_OFF);
+    fixture_wr32(image + 0x94 + TABLE_VA, SYNTH_LIBFONT_STOP_OFF);
     fixture_wr32(image + 0x80 + START_OFF, 0x03e00008u); /* jr ra */
     fixture_wr32(image + 0x80 + SYNTH_LIBFONT_EXPORT_OFF, 0x03e00008u);
+    fixture_wr32(image + 0x80 + SYNTH_LIBFONT_STOP_OFF, 0x03e00008u);
     memcpy(image + SHSTR_OFF, section_names, sizeof(section_names));
 
     uint8_t *modinfo_sh = image + shoff + 40;
@@ -1274,9 +1283,11 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     sr_hle_test_module_reset();
     s_synth_libfont_start_calls = 0;
     s_synth_libfont_export_calls = 0;
+    s_synth_libfont_stop_calls = 0;
     MEM_W32(SYNTH_LIBFONT_READY_WORD, 0u);
     sr_test_register_guest_fn(base + 0x70u, synth_libfont_module_start);
     sr_test_register_guest_fn(base + SYNTH_LIBFONT_EXPORT_OFF, synth_libfont_export);
+    sr_test_register_guest_fn(base + SYNTH_LIBFONT_STOP_OFF, synth_libfont_module_stop);
 
     title_hle_write_cstr(0x08906000u, guest_path);
     memset(&cpu, 0, sizeof(cpu));
@@ -1320,6 +1331,66 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     expect(libfont_start_call(&cpu, uid) == SCE_KERNEL_ERROR_ALREADY_STARTED &&
                s_synth_libfont_start_calls == 1u,
            "a second libfont StartModule is refused and does not re-enter module_start");
+
+    /* Phase 2b: stop, unload, reload, under the shipped default (SR_REAL_MODULE_START unset),
+     * where the translated module_start ran. Stop runs the translated module_stop and keeps
+     * the export linked; unload unlinks the export and releases the image; the reload lays
+     * the same image down at the same base and starts it again. Neither unload nor reload
+     * writes readiness: the guest word changes only when a translated module_start runs. */
+    if (startup_ready) {
+        const uint32_t status_addr = 0x089060c0u;
+        const uint32_t export_at = base + SYNTH_LIBFONT_EXPORT_OFF;
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = uid;
+        cpu.r[7] = status_addr;
+        MEM_W32(status_addr, 0xFFFFFFFFu);
+        expect(sr_hle_test_stop_module(&cpu) == 0u &&
+                   s_synth_libfont_stop_calls == 1u && MEM_R32(status_addr) == 0x66u,
+               "libfont StopModule runs the translated module_stop and reports its status");
+        expect(sr_hle_test_started_export(SYNTH_LIBFONT_EXPORT_NID) == export_at,
+               "a stopped libfont keeps its export linked until unload");
+        MEM_W32(SYNTH_LIBFONT_READY_WORD, 0x5Au);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = uid;
+        expect(sr_hle_test_unload_module(&cpu) == 0u &&
+                   sr_hle_resolve_late_import(SYNTH_LIBFONT_EXPORT_NID) == 0u &&
+                   sr_hle_test_started_export(SYNTH_LIBFONT_EXPORT_NID) == 0u,
+               "libfont UnloadModule unlinks its export, so a stale import no longer resolves");
+        expect(sr_hle_test_image_count() == 0u && sr_hle_test_module_count() == 0u,
+               "libfont UnloadModule retires its image and module record");
+        expect(libfont_start_call(&cpu, uid) == SCE_ERROR_MODULE_BAD_ID &&
+                   s_synth_libfont_start_calls == 1u,
+               "the unloaded libfont handle is refused and runs no guest code");
+        expect(MEM_R32(SYNTH_LIBFONT_READY_WORD) == 0x5Au,
+               "libfont UnloadModule writes no host readiness");
+
+        title_hle_write_cstr(0x08906000u, guest_path);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = 0x08906000u;
+        uint32_t reloaded = sr_hle_test_load_module(&cpu);
+        expect(reloaded != 0u && reloaded != uid && sr_hle_test_image_count() == 1u,
+               "libfont reload returns a fresh module uid and re-stages one image");
+        expect(sr_hle_resolve_late_import(SYNTH_LIBFONT_EXPORT_NID) == export_at &&
+                   sr_hle_test_started_export(SYNTH_LIBFONT_EXPORT_NID) == 0u &&
+                   MEM_R32(SYNTH_LIBFONT_READY_WORD) == 0x5Au,
+               "libfont reload links its export at the same base, unauthorized, with no readiness");
+        expect(libfont_start_call(&cpu, reloaded) == 0u &&
+                   s_synth_libfont_start_calls == 2u &&
+                   MEM_R32(SYNTH_LIBFONT_READY_WORD) == 1u,
+               "the reloaded libfont runs its translated module_start once, at the same base");
+        expect(sr_hle_test_started_export(SYNTH_LIBFONT_EXPORT_NID) == export_at,
+               "the reloaded export is authorized only after its own module_start");
+        /* An unlinked NID is a fatal unknown-import trap in sr_syscall, so a missing export is
+         * reported by name here instead of calling through it. */
+        memset(&cpu, 0, sizeof(cpu));
+        if (sr_hle_resolve_late_import(SYNTH_LIBFONT_EXPORT_NID) == export_at) {
+            expect(sr_syscall(&cpu, SYNTH_LIBFONT_EXPORT_NID) == 0x29u &&
+                       s_synth_libfont_export_calls == 2u,
+                   "imports route to the reloaded libfont export");
+        } else {
+            expect(0, "imports route to the reloaded libfont export");
+        }
+    }
 
     /* Phase 3: SR_REAL_MODULE_START=1 keeps translated startup for every module. */
     _putenv("SR_REAL_MODULE_START=1");
@@ -2015,6 +2086,32 @@ static void test_runtime_placed_modules(void) {
         remove(host);
         SetEnvironmentVariableA("SR_MEMSTICK", had_memstick ? saved_memstick : NULL);
         _putenv_s("SR_MEMSTICK", had_memstick ? saved_memstick : "");
+    }
+
+    /* LoadModuleByID of a descriptor that names no recorded file: there is no module to
+     * load, so the call refuses by name before any load. It used to return a bare uid that
+     * no module record backed, which sceKernelStartModule rejects with the generic bad id
+     * (#280). Descriptor 0xFFFF is never open. */
+    {
+        extern uint32_t sr_hle_test_load_module_by_id(CpuState *s);
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = 0xFFFFu;
+        unsigned modules_before = sr_hle_test_module_count();
+        unsigned images_before = sr_hle_test_image_count();
+        rt_capture_begin();
+        uint32_t unrecorded = sr_hle_test_load_module_by_id(&cpu);
+        out = rt_capture_end();
+        expect(unrecorded == SCE_KERNEL_ERROR_NOT_IMPLEMENTED &&
+                   strstr(out, "GUEST_MODULE_BOUNDARY: guest-module-descriptor-unrecorded") != NULL,
+               "runtime placement: LoadModuleByID of an unrecorded descriptor refuses by name");
+        expect(sr_hle_test_module_count() == modules_before &&
+                   sr_hle_test_image_count() == images_before,
+               "runtime placement: the refused LoadModuleByID records and loads nothing");
+        expect((unrecorded & 0x80000000u) != 0u ||
+                   rt_lifecycle(sr_hle_test_start_module, unrecorded, 0u, 0u, 0u) !=
+                       SCE_ERROR_MODULE_BAD_ID,
+               "runtime placement: no uid from an unrecorded descriptor is rejected as bad id");
     }
 
     /* A library module that declares no start routine starts by linking its exports. */
@@ -4798,7 +4895,7 @@ static int osk_write_script(const char *const *lines, int count) {
 
 static void test_osk_scripted_answer(void) {
     CpuState cpu;
-    const uint32_t k_init = NID_OSK_INIT, k_status = NID_OSK_STATUS, k_down = NID_OSK_SHUTDOWN;
+    const uint32_t k_init = NID_OSK_INIT, k_down = NID_OSK_SHUTDOWN;
     static const uint16_t play[] = { 'P', 'L', 'A', 'Y' };
     static const uint16_t ace[] = { 'A', 'C', 'E' };
     static const uint16_t n[] = { 'N' };
@@ -5711,6 +5808,37 @@ static void test_audio_regular_contract_safety(void) {
            "a negative queue report ends the wait instead of looping");
     expect(s_audio_queue_calls == 1u,
            "the negative queue sentinel takes the open-loop path after one query");
+}
+
+/* sceAudioOutput2Release busy rule (issue #311).
+ *
+ * Measured on PSP-3001, firmware 6.6.1 (2026-10-01; the #311 comment, raw records private):
+ * releasing Output2 while samples are still queued returns 0x80268002 and leaves Output2
+ * reserved; draining sceAudioOutput2GetRestSample to 0 first lets the release succeed. The
+ * fixture sets the queue depth through sr_audio_queued(), which GetRestSample and the release
+ * both read. sceAudioSRCChReserve has no production handler yet (#339), so "still reserved" is
+ * observed on the Output2 surface: a second Reserve is refused, and the release after draining
+ * succeeds only if the refused release kept the reservation. */
+static void test_audio_output2_release_refuses_while_queued(void) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RESERVE, 64u, 0u, 0u) == 0u,
+           "Output2 reserves a 64-sample channel");
+
+    s_audio_queue_result = 256;
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_REST_SAMPLE, 0u, 0u, 0u) == 256u,
+           "GetRestSample reports the queued Output2 samples");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RELEASE, 0u, 0u, 0u) == 0x80268002u,
+           "release with samples queued returns the measured busy code 0x80268002");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RESERVE, 64u, 0u, 0u) != 0u,
+           "a refused release leaves Output2 reserved, so a second Reserve is refused");
+
+    s_audio_queue_result = 0;
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RELEASE, 0u, 0u, 0u) == 0u,
+           "release succeeds once Output2 is drained");
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
 }
 
 /* SR_AUDIOSTAT drift window (AUDIOSTAT_LEAD).
@@ -15543,7 +15671,7 @@ static void test_ge_guest_sentinel(void) {
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0x01u; /* GE_VADDR: last vertex pointer written by the source-owned list */
-    expect(sr_syscall(&cpu, NID_SCE_GE_GET_CMD) == (vtx_base + 0x100u & 0x00ffffffu),
+    expect(sr_syscall(&cpu, NID_SCE_GE_GET_CMD) == ((vtx_base + 0x100u) & 0x00ffffffu),
            "sceGeGetCmd returns the last executed 24-bit command value");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0x100u;
@@ -16052,6 +16180,141 @@ static void test_ge_consumed_list_ignores_late_stall_address(void) {
     expect(g_frame_prims == prims_after_run &&
                sr_hle_test_ge_late_stall_ignored() == ignored_before + 4u,
            "a fully flushed frame re-executes nothing and is counted once per late chunk");
+}
+
+/* ---- Stall fence across the uncached mirror (issue #883) ----
+ *
+ * A list pointer or sceGeListUpdateStallAddr value may carry the 0x4xxxxxxx mirror while
+ * CALL/RET targets are masked to 0x0xxxxxxx. The GE position and the stall address then name
+ * one guest word under two aliases, and the fence has to stop there regardless. The two tests
+ * below cover each direction. Both run the production route: source-owned list ->
+ * sceGeListEnQueue -> ge_run_list -> sceGeListUpdateStallAddr -> framebuffer. */
+#define STALL_FB         0x04000000u
+#define STALL_STRIDE     512u
+#define STALL_CLEAR      0x5a5a5a5au
+#define STALL_SUB_COLOR  0xFF3399CCu
+#define STALL_POST_COLOR 0xFFCC9933u
+#define STALL_SUB_VTX    0x08964000u
+#define STALL_POST_VTX   0x08964100u
+
+static void stall_cmd(uint32_t *dl, uint32_t *p, uint32_t cmd, uint32_t data) {
+    dl[(*p)++] = ((uint32_t)cmd << 24) | (data & 0x00ffffffu);
+}
+
+/* Render state set explicitly, so the fixture does not depend on GE state left by an earlier
+ * test. Returns the number of words written. */
+static uint32_t stall_state(uint32_t *dl) {
+    uint32_t p = 0;
+    stall_cmd(dl, &p, 0x10, 0x080000u);                          /* BASE: 0x08000000 upper bits */
+    stall_cmd(dl, &p, 0x13, 0u);                                 /* OFFSETADDR */
+    stall_cmd(dl, &p, 0x9C, STALL_FB & 0x00ffffffu);             /* FRAMEBUFPTR */
+    stall_cmd(dl, &p, 0x9D, STALL_STRIDE | ((STALL_FB & 0xff000000u) >> 8));
+    stall_cmd(dl, &p, 0xD2, 3u);                                 /* PIXFORMAT 8888 */
+    stall_cmd(dl, &p, 0x15, 0u);                                 /* REGION1 */
+    stall_cmd(dl, &p, 0x16, ((272u - 1u) << 10) | (480u - 1u));  /* REGION2 */
+    stall_cmd(dl, &p, 0xD4, 0u);                                 /* SCISSOR1 */
+    stall_cmd(dl, &p, 0xD5, ((272u - 1u) << 10) | (480u - 1u));  /* SCISSOR2 */
+    stall_cmd(dl, &p, 0x23, 0u);                                 /* ZTEST off */
+    stall_cmd(dl, &p, 0x22, 0u);                                 /* ALPHATEST off */
+    stall_cmd(dl, &p, 0x21, 0u);                                 /* ALPHABLEND off */
+    stall_cmd(dl, &p, 0x1E, 0u);                                 /* TEXTUREMAP off */
+    stall_cmd(dl, &p, 0x12, (7u << 2) | (3u << 7) | (1u << 23)); /* colour, float xyz, through */
+    return p;
+}
+
+/* Two-vertex through-mode sprite; each vertex is colour then x, y, z (16 bytes). */
+static void stall_sprite(uint32_t vtx, uint32_t color, float x0, float y0, float x1, float y1) {
+    const float corner[2][3] = { { x0, y0, 0.0f }, { x1, y1, 0.0f } };
+    for (uint32_t v = 0; v < 2u; v++) {
+        uint32_t *w = (uint32_t *)SR_HOST(vtx + 16u * v);
+        w[0] = color;
+        memcpy(&w[1], corner[v], 3u * sizeof(float));
+    }
+}
+
+/* The list reaches the stall word through CALL/RET, so its position is the 0x08 spelling
+ * while the stall address, set through the 0x48 mirror, is the other spelling. */
+static void test_ge_stall_alias_across_call_return(void) {
+    const uint32_t list = 0x08960000u;
+    const uint32_t sub = 0x08962000u;
+    CpuState cpu;
+
+    reset_fixture();
+    sr_hle_init();
+
+    uint32_t *dl = (uint32_t *)SR_HOST(list);
+    uint32_t p = stall_state(dl);
+    stall_cmd(dl, &p, 0x0A, sub & 0x00ffffffu);          /* CALL sub */
+    const uint32_t ret_pc = list + 4u * p;               /* RET lands on the next word */
+    stall_cmd(dl, &p, 0x01, STALL_POST_VTX & 0x00ffffffu);
+    stall_cmd(dl, &p, 0x04, (6u << 16) | 2u);            /* post sprite */
+    stall_cmd(dl, &p, 0x0F, 0u);
+    stall_cmd(dl, &p, 0x0C, 0u);
+
+    uint32_t *sd = (uint32_t *)SR_HOST(sub);
+    uint32_t q = 0;
+    stall_cmd(sd, &q, 0x01, STALL_SUB_VTX & 0x00ffffffu);
+    stall_cmd(sd, &q, 0x04, (6u << 16) | 2u);            /* sub sprite */
+    stall_cmd(sd, &q, 0x0B, 0u);                         /* RET */
+
+    stall_sprite(STALL_SUB_VTX, STALL_SUB_COLOR, 20.0f, 20.0f, 28.0f, 28.0f);
+    stall_sprite(STALL_POST_VTX, STALL_POST_COLOR, 60.0f, 60.0f, 68.0f, 68.0f);
+
+    uint32_t *fb = (uint32_t *)SR_HOST(STALL_FB);
+    memset(fb, 0x5a, STALL_STRIDE * 272u * 4u);
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = list;
+    cpu.r[5] = 0x40000000u | ret_pc;
+    uint32_t qid = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+    expect(fb[24u * STALL_STRIDE + 24u] == STALL_SUB_COLOR,
+           "the CALL target runs before the stall");
+    expect(fb[64u * STALL_STRIDE + 64u] == STALL_CLEAR,
+           "the GE stops at the RET target reached through the 0x08 mirror: the post sprite is not drawn");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid;
+    cpu.r[5] = 0u;
+    sr_syscall(&cpu, NID_SCE_GE_LIST_UPDATE_STALL_ADDR);
+    expect(fb[64u * STALL_STRIDE + 64u] == STALL_POST_COLOR,
+           "clearing the stall resumes the list past the RET target");
+}
+
+/* The reverse direction: the list runs linearly from the uncached mirror, and the stall
+ * address is the 0x08 spelling of the word the list is about to execute. */
+static void test_ge_stall_alias_linear_from_uncached_list(void) {
+    const uint32_t list = 0x48966000u;
+    CpuState cpu;
+
+    reset_fixture();
+    sr_hle_init();
+
+    uint32_t *dl = (uint32_t *)SR_HOST(list);
+    uint32_t p = stall_state(dl);
+    const uint32_t stall = (list + 4u * p) & 0x0fffffffu; /* post word, 0x08 spelling */
+    stall_cmd(dl, &p, 0x01, STALL_POST_VTX & 0x00ffffffu);
+    stall_cmd(dl, &p, 0x04, (6u << 16) | 2u);            /* post sprite */
+    stall_cmd(dl, &p, 0x0F, 0u);
+    stall_cmd(dl, &p, 0x0C, 0u);
+
+    stall_sprite(STALL_POST_VTX, STALL_POST_COLOR, 60.0f, 60.0f, 68.0f, 68.0f);
+
+    uint32_t *fb = (uint32_t *)SR_HOST(STALL_FB);
+    memset(fb, 0x5a, STALL_STRIDE * 272u * 4u);
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = list;
+    cpu.r[5] = stall;
+    uint32_t qid = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+    expect(fb[64u * STALL_STRIDE + 64u] == STALL_CLEAR,
+           "the GE stops at the 0x08 spelling of the stall word in a list run from 0x48: the post sprite is not drawn");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid;
+    cpu.r[5] = 0u;
+    sr_syscall(&cpu, NID_SCE_GE_LIST_UPDATE_STALL_ADDR);
+    expect(fb[64u * STALL_STRIDE + 64u] == STALL_POST_COLOR,
+           "clearing the stall resumes the list past the stall word");
 }
 
 static uint32_t ge_transfer_enqueue(uint32_t src, uint32_t src_stride,
@@ -27582,6 +27845,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_wait_thread_end_blocking_and_resume();
     test_wait_thread_end_cb_execution();
     test_audio_regular_contract_safety();
+    test_audio_output2_release_refuses_while_queued();
     test_audio_drift_window_reports_the_pacing_value();
     test_audio_output_telemetry_counts_guest_frames();
     test_ctrl_live_input_latch_suppresses_phantom_start();
@@ -27597,6 +27861,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_nested_frame_handle_hygiene();
     test_ge_guest_sentinel();
     test_ge_consumed_list_ignores_late_stall_address();
+    test_ge_stall_alias_across_call_return();
+    test_ge_stall_alias_linear_from_uncached_list();
     test_ge_linear_filter_stays_inside_region();
     test_ge_block_transfer_span_atomicity();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);

@@ -41,6 +41,7 @@ from dataclasses import dataclass
 
 from analyze import (
     BRANCH_LINK,
+    branch_target,
     code_pointer_evidence,
     direct_branch_edges,
     direct_j_edges,
@@ -151,7 +152,21 @@ def branch_likely(word):
     if op == 0x11 and ((word >> 21) & 0x1F) == 8:
         # COP1 BC: rt bit 0 selects true/false, bit 1 is nullify-delay.
         return bool((word >> 17) & 1)   # bc1fl / bc1tl
+    if op == 0x12 and ((word >> 21) & 0x1F) == 8:
+        # COP2 BC: rt bit 0 selects true/false, bit 1 is nullify-delay.
+        return bool((word >> 17) & 1)   # bc2fl / bc2tl
     return False
+
+
+def refused_branch_encoding(word):
+    """True for a branch-family word that ``analyze.branch_target`` refuses to decode.
+
+    ``branch_target`` returns None both for non-branches and for these reserved
+    encodings: blez/bgtz/blezl/bgtzl with a nonzero rt. Treating the None as "not a
+    branch" would walk past the word as straight-line code, so the caller must stop
+    and mark the entry unknown instead.
+    """
+    return (word >> 26) in (6, 7, 22, 23)
 
 
 @dataclass(frozen=True)
@@ -316,14 +331,9 @@ def profile_entry(elf, addr, ranges, limit=DEFAULT_STEP_LIMIT):
                 break
 
             is_likely = branch_likely(word)
-            is_branch = op in (1, 4, 5, 6, 7, 20, 21, 22, 23) or (
-                op == 0x11 and ((word >> 21) & 0x1F) == 8
-            )
-            if is_branch:
+            target = branch_target(pc, word)
+            if target is not None:
                 unknown = unknown or slot_unknown
-                offset = word & 0xFFFF
-                offset -= 0x10000 if offset & 0x8000 else 0
-                target = pc + 4 + (offset << 2)
                 if in_ranges(target, ranges):
                     stack.append((target, delta + slot_step))
                 if op == 4 and ((word >> 21) & 0x1F) == 0 and ((word >> 16) & 0x1F) == 0:
@@ -332,6 +342,12 @@ def profile_entry(elf, addr, ranges, limit=DEFAULT_STEP_LIMIT):
                 delta += 0 if is_likely else slot_step
                 pc += 8
                 continue
+            if refused_branch_encoding(word):
+                # A reserved branch encoding has no defined successor. Walking it as
+                # straight-line code would invent a fall-through path, so the entry
+                # is unknown rather than a confident role.
+                unknown = True
+                break
             pc += 4
 
     return FrameProfile(
