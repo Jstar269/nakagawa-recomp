@@ -1132,7 +1132,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "670f09abd0ad313b1c1d889b28d9a37d6ad4c124973ccaa182d99bf16f014630"
+      "sha256": "db8d8b34dfa8ec7e5b68df18c96fa6c5d84028ad21c88308bc32efd602b06eff"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -4235,7 +4235,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "12f970298c865a905bc5666f686893023d898ed81417d8b22f1657c4a9fcc924"
+      "sha256": "7e986bbc18d0ec05a7f3a39fc33556a0a80d9c85d335001971ce426e27cd36f7"
     },
     {
       "path": "src/rt/cpu_lle.c",
@@ -5034,7 +5034,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "6030ed1d450367a7797604a0ea928969fe0379f00aff388b812a1b2862aa80b1"
+      "sha256": "a2ce9bf14e2635ce05df122127bffc55e283a0c73aba814b3e6cf033c313adf6"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -7075,7 +7075,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d97d31f37c7a0b8b7c969a2c4b405de24b02283f6ce41069e7658498feb77c9b"
+      "sha256": "de6b0e996451ed409ecf50f1e7d813e0960ed5ece9ae090ed9d02a430d73f06e"
     },
     {
       "path": "tools/nk_core/iso_inspect.py",
@@ -9072,7 +9072,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ad7c74d90a1ea7278813905be44f161e4badfd3451f4c9ab2228277a4c514028"
+      "sha256": "4464be86203b2229863de8694d92ac65b479bf8625c24fc277a07498c9f2c67c"
     },
     {
       "path": "tools/test_nid_name_proof.py",
@@ -9636,7 +9636,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2d873283471ed6dc002c39ac0abff45f7a0bcb6f196023a03bf71612f3c68852"
+      "sha256": "b831434d18588c72b07f165e29d08719f05be579f2d621990f150d322e0f85b5"
     },
     {
       "path": "tools/test_public_title_isolation.py",
@@ -9672,7 +9672,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "489d6ae96e3d17153036f6389e2ee521ebf931f82d9124fc2e3562655fc268d0"
+      "sha256": "b6344137dccf252b941c0bcf035d3acf14ac5e6db77aa84fb32fddd597ff5f20"
     },
     {
       "path": "tools/test_readme_images.py",
