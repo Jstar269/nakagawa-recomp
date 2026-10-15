@@ -1205,7 +1205,7 @@ def read_psp_segment_sizes(path, expected_segments):
     max_seg_bytes = 256 * 1024 * 1024
     total_seg = 0
     for i, sz in enumerate(segment_sizes):
-        if sz == 0 or sz > max_seg_bytes or total_seg > max_seg_bytes - sz:
+        if sz > max_seg_bytes or total_seg > max_seg_bytes - sz:
             raise ValueError(
                 f"{input_label}: segment {i} size 0x{sz:x} is invalid or causes extent overflow"
             )

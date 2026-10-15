@@ -672,5 +672,29 @@ class TestPspContainerExtentValidation(unittest.TestCase):
         ):
             prxload.read_psp_segment_sizes(bytes(header), 2)
 
+    def test_psp_header_zero_size_trailing_segment_accepted(self) -> None:
+        # A ~PSP module may declare a zero-size second segment after a
+        # non-empty first one; the segment count, per-segment cap and aggregate
+        # extent are the only refusals.
+        header = bytearray(0x80)
+        header[0:4] = b"~PSP"
+        header[0x27] = 2  # 2 segments
+        struct.pack_into("<I", header, 0x38, 0x100)
+        struct.pack_into("<I", header, 0x54, 0x2000)
+        struct.pack_into("<I", header, 0x58, 0)
+
+        sizes, bss = prxload.read_psp_segment_sizes(bytes(header), 2)
+        self.assertEqual(sizes, [0x2000, 0])
+        self.assertEqual(bss, 0x100)
+
+    def test_psp_header_zero_segment_count_rejected(self) -> None:
+        header = bytearray(0x80)
+        header[0:4] = b"~PSP"
+        header[0x27] = 0  # no segments
+        struct.pack_into("<I", header, 0x38, 0x100)
+
+        with self.assertRaisesRegex(ValueError, "invalid PSP segment count 0"):
+            prxload.read_psp_segment_sizes(bytes(header), 2)
+
 if __name__ == "__main__":
     unittest.main()
