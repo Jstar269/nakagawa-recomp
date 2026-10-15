@@ -15612,6 +15612,41 @@ static void route_until_nid_arm(int on, uint32_t nid) {
 
 static int route_sig_bytes(void) { return s_route_cols * s_route_rows * 3; }
 
+/* The SR_AUDIOSTAT statistics that both _Exit paths print before they finalise the SR_AUDIODUMP
+ * file: the ATRAC and SAS counters, the buffer identities, then the host backend line. The
+ * SR_EXIT_AT_VBLANK exit and route_fail share this block, so a failed route reports the same audio
+ * statistics a clean vblank-budget exit reports (#827). Nothing prints without SR_AUDIOSTAT. */
+static void hle_exit_audio_stats(void) {
+    if (!audio_stat_on()) return;
+    fprintf(stderr,
+            "AUDIOSTAT_ATRAC: frames=%lu nonzero=%lu peak=%d\n",
+            g_atrac_frames, g_atrac_frames_nonzero, g_atrac_peak);
+    fprintf(stderr,
+            "AUDIOSTAT_SAS: calls=%lu withmix=%lu pre_nonzero=%lu post_nonzero=%lu erased=%lu pre_peak=%d post_peak=%d no_voice=%lu no_voice_overwrite=%lu\n",
+            g_sas_calls, g_sas_calls_add, g_sas_pre_nonzero,
+            g_sas_post_nonzero, g_sas_erased, g_sas_pre_peak, g_sas_post_peak,
+            g_sas_no_voice, g_sas_no_voice_overwrite);
+    fprintf(stderr, "AUDIOSTAT_BUF: atrac_out n=%d", g_atrac_out_nbufs);
+    for (int i = 0; i < g_atrac_out_nbufs; i++)
+        fprintf(stderr, " 0x%08x", g_atrac_out_bufs[i]);
+    fprintf(stderr, "\nAUDIOSTAT_BUF: sas_out n=%d", g_sas_nbufs);
+    for (int i = 0; i < g_sas_nbufs; i++)
+        fprintf(stderr, " 0x%08x", g_sas_bufs[i]);
+    fprintf(stderr, "\n");
+    for (uint32_t c = 0; c < 9u; c++) {
+        if (!g_audio_nbufs[c]) continue;
+        fprintf(stderr, "AUDIOSTAT_BUF: ch=%u n=%d", c, g_audio_nbufs[c]);
+        for (int i = 0; i < g_audio_nbufs[c]; i++)
+            fprintf(stderr, " 0x%08x", g_audio_bufs[c][i]);
+        fprintf(stderr, "\n");
+    }
+#ifndef SR_HLE_THREAD_SELFTEST
+    /* audio.c is not linked into the executable HLE harness. */
+    extern void sr_audio_dump_stats(void);
+    sr_audio_dump_stats();
+#endif
+}
+
 /* _Exit skips atexit, so a hard exit closes the SR_AUDIODUMP file itself, which finalises
  * its WAV header. The SR_EXIT_AT_VBLANK exit and route_fail both call this outside any
  * SR_AUDIOSTAT gate; a second close is a no-op. Only the public audio backend exports it. */
@@ -15638,6 +15673,7 @@ static void route_fail(const char *fmt, ...) {
     fflush(stderr);
     if (!getenv("SR_ROUTE_NO_EXIT")) {
         sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, 0u, ROUTE_FAIL_EXIT);
+        hle_exit_audio_stats();
         hle_exit_close_audio_dump();
         sr_perf_shutdown();
         _Exit(ROUTE_FAIL_EXIT);
@@ -18184,35 +18220,7 @@ void sr_vblank_tick(void) {
         if (exit_at && s_vcount >= exit_at) {
             fprintf(stderr, "BOOT_EVENT phase=exit_at_vblank vblanks=%u (SR_EXIT_AT_VBLANK=%u)\n",
                     s_vcount, exit_at);
-            if (audio_stat_on()) {
-                fprintf(stderr,
-                        "AUDIOSTAT_ATRAC: frames=%lu nonzero=%lu peak=%d\n",
-                        g_atrac_frames, g_atrac_frames_nonzero, g_atrac_peak);
-                fprintf(stderr,
-                        "AUDIOSTAT_SAS: calls=%lu withmix=%lu pre_nonzero=%lu post_nonzero=%lu erased=%lu pre_peak=%d post_peak=%d no_voice=%lu no_voice_overwrite=%lu\n",
-                        g_sas_calls, g_sas_calls_add, g_sas_pre_nonzero,
-                        g_sas_post_nonzero, g_sas_erased, g_sas_pre_peak, g_sas_post_peak,
-                        g_sas_no_voice, g_sas_no_voice_overwrite);
-                fprintf(stderr, "AUDIOSTAT_BUF: atrac_out n=%d", g_atrac_out_nbufs);
-                for (int i = 0; i < g_atrac_out_nbufs; i++)
-                    fprintf(stderr, " 0x%08x", g_atrac_out_bufs[i]);
-                fprintf(stderr, "\nAUDIOSTAT_BUF: sas_out n=%d", g_sas_nbufs);
-                for (int i = 0; i < g_sas_nbufs; i++)
-                    fprintf(stderr, " 0x%08x", g_sas_bufs[i]);
-                fprintf(stderr, "\n");
-                for (uint32_t c = 0; c < 9u; c++) {
-                    if (!g_audio_nbufs[c]) continue;
-                    fprintf(stderr, "AUDIOSTAT_BUF: ch=%u n=%d", c, g_audio_nbufs[c]);
-                    for (int i = 0; i < g_audio_nbufs[c]; i++)
-                        fprintf(stderr, " 0x%08x", g_audio_bufs[c][i]);
-                    fprintf(stderr, "\n");
-                }
-#ifndef SR_HLE_THREAD_SELFTEST
-                /* audio.c is not linked into the executable HLE harness. */
-                extern void sr_audio_dump_stats(void);
-                sr_audio_dump_stats();
-#endif
-            }
+            hle_exit_audio_stats();
             /* _Exit skips atexit, so the SR_AUDIODUMP file is closed here whether or not
              * SR_AUDIOSTAT is set; after the stats call above it is a no-op. */
             hle_exit_close_audio_dump();
