@@ -715,7 +715,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "ec8422eb2bdb25dd9deb3cb0c9d6e751619484bb04a4a65877cf298446623e10"
+      "sha256": "8f44dd43f173f6b97a2a18b2ff40a1a5012bf4a81c8c5c190ae4b49ea320bba3"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1357,7 +1357,19 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9dd9d4cd7eff6e7858e8b9cc4257dc2a543429fe52e6f8258392265a1fd20029"
+      "sha256": "4f6b53721f4a5e944cfeae2b495446151ca545a06f307a7be406e950f4ff0af2"
+    },
+    {
+      "path": "docs/RECOMP_HELPER_INVENTORY.md",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recomp-helper-inventory-doc-346",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      },
+      "sha256": "c61127a584e698b6e147827010c4943fbd24edd42f31d7bc4cb7454f31f55bb8"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -7741,6 +7753,18 @@
       "sha256": "4260738fb04f1049f5fd2137db64b1b4db1e6931b88cbefe462435e9ec3d00da"
     },
     {
+      "path": "tools/recomp_helper_inventory.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recomp-helper-inventory-346",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "b7a1f53beaed5e1ebaedc8f19235521f7eb0a13f0525fe08ae3845245e29949d"
+    },
+    {
       "path": "tools/record_toolchain.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -9685,6 +9709,18 @@
         "upstream_attribution": null
       },
       "sha256": "4169bb28c9ebe3a8b657faf72b8e35f339125aea2ead56ed92663897fa23aa64"
+    },
+    {
+      "path": "tools/test_recomp_helper_inventory.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recomp-helper-inventory-tests-346",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "f57f6ff70693636a6a2504905000fd2ccd13228c25d09772ac76d87561b0c64d"
     },
     {
       "path": "tools/test_ref_run_elf_hardening.py",
