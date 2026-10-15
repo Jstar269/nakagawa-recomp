@@ -2094,6 +2094,32 @@ static void test_runtime_placed_modules(void) {
         _putenv_s("SR_MEMSTICK", had_memstick ? saved_memstick : "");
     }
 
+    /* LoadModuleByID of a descriptor that names no recorded file: there is no module to
+     * load, so the call refuses by name before any load. It used to return a bare uid that
+     * no module record backed, which sceKernelStartModule rejects with the generic bad id
+     * (#280). Descriptor 0xFFFF is never open. */
+    {
+        extern uint32_t sr_hle_test_load_module_by_id(CpuState *s);
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = 0xFFFFu;
+        unsigned modules_before = sr_hle_test_module_count();
+        unsigned images_before = sr_hle_test_image_count();
+        rt_capture_begin();
+        uint32_t unrecorded = sr_hle_test_load_module_by_id(&cpu);
+        out = rt_capture_end();
+        expect(unrecorded == SCE_KERNEL_ERROR_NOT_IMPLEMENTED &&
+                   strstr(out, "GUEST_MODULE_BOUNDARY: guest-module-descriptor-unrecorded") != NULL,
+               "runtime placement: LoadModuleByID of an unrecorded descriptor refuses by name");
+        expect(sr_hle_test_module_count() == modules_before &&
+                   sr_hle_test_image_count() == images_before,
+               "runtime placement: the refused LoadModuleByID records and loads nothing");
+        expect((unrecorded & 0x80000000u) != 0u ||
+                   rt_lifecycle(sr_hle_test_start_module, unrecorded, 0u, 0u, 0u) !=
+                       SCE_ERROR_MODULE_BAD_ID,
+               "runtime placement: no uid from an unrecorded descriptor is rejected as bad id");
+    }
+
     /* A library module that declares no start routine starts by linking its exports. */
     {
         static const char nostart_guest[] = "disc0:/PSP_GAME/USRDIR/rt-nostart.prx";

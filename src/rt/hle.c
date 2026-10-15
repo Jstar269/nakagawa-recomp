@@ -10752,26 +10752,18 @@ static const char *hle_fd_guest_path(uint32_t fd);
 /* sceKernelLoadModuleByID(fd, flags, option). The file was opened by path, and that path
  * names the module: it loads exactly as sceKernelLoadModule loads the same path, with a
  * module record its start/stop/unload can find -- guest-placed, fixed-address, or
- * (undeclared) host-served. Only a descriptor without a recorded path keeps the older
- * behaviour: every fixed-address manifest module is populated idempotently (the sorted
- * registry replaces duplicate NIDs, so repeated loads stay safe). */
+ * (undeclared) host-served. A descriptor that names no recorded file (never opened, closed,
+ * not a file, or a path too long to record) names no module, so no record can back a uid
+ * for it. It refuses by name before any load. The old fallback populated every
+ * fixed-address manifest module under a bare uid that sceKernelStartModule rejected with
+ * the generic bad id, and it left those images and exports with no owner to unload (#280). */
 static uint32_t h_LoadModuleByID(CpuState *s) {
     const char *opened = hle_fd_guest_path(A0);
     if (opened) return load_module_by_guest_path(opened, A2);
-    for (unsigned i = 0; i < sr_title_config_guest_module_count(); i++) {
-        const char *file = NULL;
-        uint32_t base = 0;
-        int required = 0;
-        SrGuestModulePlacement placement = SR_GUEST_MODULE_FIXED;
-        /* A runtime-placed module is never bulk-populated: it is laid out only when the
-         * game loads it, wherever the guest allocator places it. */
-        if (sr_title_config_guest_module_at(i, &file, NULL, &base, &required, &placement) &&
-            placement == SR_GUEST_MODULE_FIXED &&
-            !populate_guest_module(file, base, required)) {
-            return 0x80020190u;  /* SCE_KERNEL_ERROR_NO_MEMORY */
-        }
-    }
-    return sr_alloc_uid();
+    fprintf(stderr, "GUEST_MODULE_BOUNDARY: guest-module-descriptor-unrecorded fd=0x%x: no "
+                    "recorded file names this descriptor, so no module record can back a uid; "
+                    "refusing before any load\n", A0);
+    return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;  /* named refusal; the PSP return is unmeasured */
 }
 
 static uint32_t h_StartModule(CpuState *s) {
