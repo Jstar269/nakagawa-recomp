@@ -235,6 +235,25 @@ int main(void) {
     ASSERT_INT_EQ(sr_vfs_is_dos_device_name("NU", 2), 0);
     ASSERT_INT_EQ(sr_vfs_is_dos_device_name("DATA.BIN", 8), 0);
 
+    /* Test 17b: trailing spaces before the extension are not part of the device base.
+     * Positives fail on the pre-fix predicate: it cut the base at the first dot but did
+     * not trim spaces, so "NUL " and "CON  " passed as ordinary names. Negatives are
+     * over-refusal guards for the trim: they pass before and after the fix, and a trim
+     * that reached past the real base would fail them. A component made only of spaces
+     * and dots is an empty base, not a device. */
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("NUL ", 4), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("nul .txt", 8), 1);  /* space before the dot */
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("CON  ", 5), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("NULL ", 5), 0);     /* superset, trailing space */
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("COM10.", 6), 0);    /* superset, trailing dot */
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("COM0 ", 5), 0);     /* zero base, trailing space */
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name(" NUL", 4), 0);      /* leading space is kept */
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("   ", 3), 0);      /* spaces only: empty base */
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name(" . ", 3), 0);       /* spaces and dots only */
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("..", 2), 0);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("", 0), 0);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name(NULL, 3), 0);
+
     /* Test 18: safe-component validator (savedata filenames). */
     ASSERT_INT_EQ(sr_vfs_is_safe_component("DATA.BIN", 8), 1);
     ASSERT_INT_EQ(sr_vfs_is_safe_component("PARAM.SFO", 9), 1);
@@ -272,6 +291,20 @@ int main(void) {
     ASSERT_INT_EQ(len, 0);
     len = sr_vfs_host_dir_path("fs", "ms0:/PSP/a<b", out, sizeof(out), '/');
     ASSERT_INT_EQ(len, 0);
+    /* Test 19b: the ms0 resolve that sceIo* and savedata share (sr_ms0_resolve, the helper
+     * host_path_alloc calls) refuses a trailing-space device-equivalent component and keeps
+     * superset names ordinary. "NUL." is not listed: the pre-fix join already refused it.
+     * Host-neutral: the join applies the same rule on every host. */
+    len = sr_ms0_resolve("fs", "ms0:/PSP/NUL ", out, sizeof(out), '\\');
+    ASSERT_INT_EQ(len, 0);
+    len = sr_ms0_resolve("fs", "ms0:/PSP/nul .txt", out, sizeof(out), '\\');
+    ASSERT_INT_EQ(len, 0);
+    len = sr_ms0_resolve("fs", "ms0:/PSP/NULL ", out, sizeof(out), '\\');
+    ASSERT_INT_EQ(len > 0, 1);
+    if (len > 0) {
+        ASSERT_STR_EQ(out, "fs\\PSP\\NULL ");
+    }
+
     /* Repeated separators must collapse rather than smuggle an UNC prefix. */
     len = sr_vfs_host_dir_path("fs", "ms0://PSP//SAVEDATA", out, sizeof(out), '\\');
     ASSERT_INT_EQ(len > 0, 1);
