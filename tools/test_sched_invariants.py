@@ -146,6 +146,30 @@ class DisplayWaitIsReadinessIndependentTests(unittest.TestCase):
         )
 
 
+class DisplayObservationTests(unittest.TestCase):
+    def test_get_vcount_refreshes_before_returning(self):
+        body = strip_comments(function_body(HLE, "h_DisplayGetVcount"))
+        self.assertIn(
+            "sched_vtime_refresh()",
+            body,
+            "sceDisplayGetVcount must sample time and latch due display edges",
+        )
+        self.assertLess(body.index("sched_vtime_refresh()"), body.index("return s_vcount"))
+
+    def test_isvblank_refresh_does_not_advance_turbo_time(self):
+        body = strip_comments(function_body(SCHED, "sched_display_is_vblank"))
+        self.assertIn(
+            "vtime_refresh()",
+            body,
+            "sceDisplayIsVblank must sample time and latch due display edges",
+        )
+        self.assertNotIn(
+            "scheduler_progress_time()",
+            body,
+            "a display observation must not inject a turbo scheduler quantum",
+        )
+
+
 class IdleProgressGuardTests(unittest.TestCase):
     """A finite timer is progress even when the display source is not."""
 

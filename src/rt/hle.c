@@ -18491,7 +18491,11 @@ void sr_vblank_tick(void) {
         }
     }
 }
-static uint32_t h_DisplayGetVcount(CpuState *s) { (void)s; return s_vcount; }
+static uint32_t h_DisplayGetVcount(CpuState *s) {
+    (void)s;
+    sched_vtime_refresh();
+    return s_vcount;
+}
 /* The PSP scans hCountPerVblank=286 lines per frame (PPSSPP Core/HW/Display.cpp). The
  * scheduler owns the rational 59.94-Hz phase, so these observations advance with
  * elapsed guest time and remain unchanged when a game polls them repeatedly. */
