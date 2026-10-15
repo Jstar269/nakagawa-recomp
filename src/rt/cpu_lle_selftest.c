@@ -1025,6 +1025,235 @@ static void test_cop0_roundtrip(void) {
     CHECK(s.flow_kind == SR_FLOW_NONE, "clean COP0 traffic must not set flow");
 }
 
+/* ---- INTC pending/enable state and Cause.IP mirroring (spec 6.1, PR 5) ----------------
+ *
+ * SYNTHETIC. The PSP INTC register map, source numbering, CPU line, polarity, priority
+ * and nesting rules are open hardware-oracle questions (spec 6.3) and interrupt pending
+ * state is NOT_MEASURED in docs/HARDWARE_ORACLE.md. The 8-source controller on Cause.IP2
+ * below is a fixture contract, not a retail claim. What these cases pin is the spec 6.1
+ * model: no configuration means fail closed, a masked source stays pending, the line is
+ * pending & enabled, it is mirrored into exactly one Cause.IP bit a guest mtc0 cannot
+ * forge, and sr_cpu_poll still delivers nothing (delivery is PR 6).
+ *
+ * Failing-before evidence: on the base tree (origin/main 788465b2) none of the sr_intc_*
+ * API exists, so this file fails to build; mfc0 Cause returned the stored word, so a
+ * stale copy of the hardware bits was what the guest read. */
+
+#define INTC_TEST_SOURCES 8u
+#define INTC_TEST_IP 2u
+#define INTC_TEST_IP_BIT (1u << (8u + INTC_TEST_IP))   /* Cause bit 10 */
+
+static void intc_configure_fixture(void) {
+    SrIntcConfig config;
+    config.source_count = INTC_TEST_SOURCES;
+    config.cpu_ip_bit = INTC_TEST_IP;
+    CHECK(sr_intc_init(&config) == 0, "synthetic INTC configuration rejected");
+}
+
+/* What the guest reads from Cause through the production mfc0 helper (kernel mode). */
+static uint32_t intc_guest_cause(CpuState *s) {
+    s->r[6] = 0xDEADBEEFu;
+    CHECK(sr_cp0_mfc0(s, 6u, SR_CP0_CAUSE, 0u, TEST_BASE) == 0, "kernel mfc0 Cause must succeed");
+    return s->r[6];
+}
+
+/* No configuration, no device model: every call fails closed and Cause is not touched. */
+static void test_intc_unconfigured_fails_closed(void) {
+    static const SrIntcConfig bad[] = {
+        { 0u, INTC_TEST_IP },    /* no sources */
+        { 33u, INTC_TEST_IP },   /* wider than the 32-bit state */
+        { 8u, 0u },              /* IP0/IP1 are the guest-writable software pair */
+        { 8u, 1u },
+        { 8u, 8u },              /* Cause.IP has eight bits */
+    };
+    SrIntcConfig config;
+    CpuState s;
+
+    fresh_state(&s);   /* resets the INTC to unconfigured */
+    CHECK(sr_intc_raise(0u) < 0 && sr_intc_clear(0u) < 0,
+          "unconfigured INTC must reject raise and clear");
+    CHECK(sr_intc_set_enable_mask(1u) < 0, "unconfigured INTC must reject an enable mask");
+    CHECK(sr_intc_pending_mask() == 0u && sr_intc_enable_mask() == 0u,
+          "unconfigured INTC must report nothing pending or enabled");
+    s.cop0[SR_CP0_CAUSE] = 0x0000FC00u;
+    CHECK(sr_intc_cpu_pending(&s) < 0, "unconfigured INTC must not report a line");
+    CHECK(s.cop0[SR_CP0_CAUSE] == 0x0000FC00u,
+          "unconfigured INTC must leave Cause untouched (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
+    CHECK(intc_guest_cause(&s) == 0x0000FC00u,
+          "unconfigured mfc0 Cause must read the stored word (got 0x%08x)", s.r[6]);
+    CHECK(sr_intc_cpu_pending(NULL) < 0, "a NULL CPU must be rejected");
+
+    CHECK(sr_intc_init(NULL) < 0, "a NULL configuration must be rejected");
+    for (unsigned i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        CHECK(sr_intc_init(&bad[i]) < 0, "configuration %u (sources %u, IP%u) must be rejected",
+              i, bad[i].source_count, bad[i].cpu_ip_bit);
+        CHECK(sr_intc_raise(0u) < 0, "rejected configuration %u must leave the INTC unconfigured", i);
+    }
+
+    /* A rejected re-configuration keeps the previous controller and its state. */
+    config.source_count = 4u;
+    config.cpu_ip_bit = 3u;
+    CHECK(sr_intc_init(&config) == 0, "4-source controller on IP3 must be accepted");
+    CHECK(sr_intc_raise(3u) == 0, "source 3 of 4 must be accepted");
+    CHECK(sr_intc_raise(4u) < 0, "source 4 of 4 must be rejected");
+    CHECK(sr_intc_init(&bad[1]) < 0 && sr_intc_pending_mask() == 0x8u,
+          "a rejected re-configuration must keep the previous state (pending 0x%08x)",
+          sr_intc_pending_mask());
+
+    /* Boundaries: 32 sources and IP7 are valid; init resets pending and enable. */
+    config.source_count = 32u;
+    config.cpu_ip_bit = 7u;
+    CHECK(sr_intc_init(&config) == 0 && sr_intc_pending_mask() == 0u &&
+          sr_intc_enable_mask() == 0u, "init must install an idle 32-source controller");
+    CHECK(sr_intc_raise(31u) == 0 && sr_intc_set_enable_mask(0x80000000u) == 0,
+          "source 31 must be raisable and enableable");
+    s.cop0[SR_CP0_CAUSE] = 0u;
+    CHECK(sr_intc_cpu_pending(&s) == 1 && s.cop0[SR_CP0_CAUSE] == 0x00008000u,
+          "an IP7 line must mirror into Cause bit 15 only (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
+
+    sr_cpu_lle_reset_config();
+    CHECK(sr_intc_raise(0u) < 0 && sr_intc_pending_mask() == 0u,
+          "sr_cpu_lle_reset_config must unconfigure the INTC");
+}
+
+/* A masked source stays pending; the line (and Cause.IP) is pending & enabled. */
+static void test_intc_masked_pending_retention(void) {
+    CpuState s;
+
+    fresh_state(&s);   /* Status 0: kernel mode, so mfc0 is legal */
+    intc_configure_fixture();
+    CHECK(sr_intc_pending_mask() == 0u && sr_intc_enable_mask() == 0u,
+          "a fresh INTC has nothing pending or enabled");
+
+    CHECK(sr_intc_raise(3u) == 0, "raise must accept source 3");
+    CHECK(sr_intc_pending_mask() == 0x08u, "raise must latch source 3 (pending 0x%08x)",
+          sr_intc_pending_mask());
+    CHECK((intc_guest_cause(&s) & SR_CAUSE_IP_MASK) == 0u,
+          "a masked source must not reach Cause.IP (read 0x%08x)", s.r[6]);
+
+    /* MIPS32: Cause.IP reports pending lines whatever Status.IE/IM say, and the CPU-side
+     * masks never reach the controller. */
+    s.cop0[SR_CP0_STATUS] = 0u;
+    CHECK(sr_intc_set_enable_mask(0x08u) == 0, "enable must accept source 3");
+    CHECK(intc_guest_cause(&s) == INTC_TEST_IP_BIT,
+          "an enabled pending source must read as IP2 with Status IE/IM clear (read 0x%08x)",
+          s.r[6]);
+
+    /* Mask again: the line drops, the source stays pending. */
+    CHECK(sr_intc_set_enable_mask(0u) == 0, "mask must be accepted");
+    CHECK((intc_guest_cause(&s) & SR_CAUSE_IP_MASK) == 0u,
+          "masking must drop the line (read 0x%08x)", s.r[6]);
+    CHECK(sr_intc_pending_mask() == 0x08u,
+          "masking must not discard the pending source (pending 0x%08x)", sr_intc_pending_mask());
+
+    /* Re-enable: the retained source reasserts without a new raise. */
+    CHECK(sr_intc_set_enable_mask(0x08u) == 0, "re-enable must be accepted");
+    CHECK(intc_guest_cause(&s) == INTC_TEST_IP_BIT,
+          "re-enabling must reassert the retained source (read 0x%08x)", s.r[6]);
+    CHECK(sr_intc_raise(3u) == 0 && sr_intc_pending_mask() == 0x08u,
+          "a second raise of a pending source must stay one latch");
+
+    /* Acknowledge: pending clears and the line drops although the source is enabled. */
+    CHECK(sr_intc_clear(3u) == 0, "clear must accept source 3");
+    CHECK(sr_intc_pending_mask() == 0u && sr_intc_enable_mask() == 0x08u,
+          "clear must drop pending only (pending 0x%08x enable 0x%08x)",
+          sr_intc_pending_mask(), sr_intc_enable_mask());
+    CHECK((intc_guest_cause(&s) & SR_CAUSE_IP_MASK) == 0u,
+          "an acknowledged source must drop the line (read 0x%08x)", s.r[6]);
+
+    /* Two sources: the line follows whichever enabled source is pending. */
+    CHECK(sr_intc_raise(1u) == 0 && sr_intc_raise(5u) == 0, "raise 1 and 5");
+    CHECK(sr_intc_set_enable_mask(0x20u) == 0, "enable source 5 only");
+    CHECK(intc_guest_cause(&s) == INTC_TEST_IP_BIT, "enabled source 5 must assert the line");
+    CHECK(sr_intc_clear(5u) == 0, "clear source 5");
+    CHECK((intc_guest_cause(&s) & SR_CAUSE_IP_MASK) == 0u,
+          "masked source 1 alone must not hold the line (read 0x%08x)", s.r[6]);
+    CHECK(sr_intc_pending_mask() == 0x02u, "masked source 1 must stay pending (pending 0x%08x)",
+          sr_intc_pending_mask());
+    CHECK(sr_intc_set_enable_mask(0x22u) == 0, "enable sources 1 and 5");
+    CHECK(intc_guest_cause(&s) == INTC_TEST_IP_BIT, "retained source 1 must assert once enabled");
+
+    /* Out-of-range input is rejected without side effects. */
+    CHECK(sr_intc_raise(INTC_TEST_SOURCES) < 0 && sr_intc_clear(INTC_TEST_SOURCES) < 0,
+          "source %u of %u must be rejected", INTC_TEST_SOURCES, INTC_TEST_SOURCES);
+    CHECK(sr_intc_set_enable_mask(0x100u) < 0, "an enable bit past the last source must be rejected");
+    CHECK(sr_intc_pending_mask() == 0x02u && sr_intc_enable_mask() == 0x22u,
+          "rejected calls must change nothing (pending 0x%08x enable 0x%08x)",
+          sr_intc_pending_mask(), sr_intc_enable_mask());
+    CHECK(s.flow_kind == SR_FLOW_NONE, "INTC traffic must not set flow");
+}
+
+/* Guest mtc0 Cause can neither set nor clear the INTC-owned bit; the write re-derives it. */
+static void test_intc_cause_guest_writes(void) {
+    CpuState s;
+
+    fresh_state(&s);
+    intc_configure_fixture();
+
+    /* Stale stored copy with every hardware bit set while the line is low: the INTC bit
+     * follows the line, IP3..IP7 (unmodeled lines) stay as stored, the SW pair lands. */
+    s.cop0[SR_CP0_CAUSE] = 0x0000FC00u;
+    s.r[8] = 0xFFFFFFFFu;
+    CHECK(sr_cp0_mtc0(&s, 8u, SR_CP0_CAUSE, 0u, TEST_BASE) == 0, "kernel mtc0 Cause must succeed");
+    CHECK(s.cop0[SR_CP0_CAUSE] == ((0x0000FC00u & ~INTC_TEST_IP_BIT) | SR_CAUSE_IP_SW_MASK),
+          "all-ones write: INTC bit must follow the low line (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
+
+    /* A write naming only the INTC bit cannot set it. */
+    s.cop0[SR_CP0_CAUSE] = 0u;
+    s.r[8] = INTC_TEST_IP_BIT;
+    CHECK(sr_cp0_mtc0(&s, 8u, SR_CP0_CAUSE, 0u, TEST_BASE) == 0, "kernel mtc0 Cause must succeed");
+    CHECK(s.cop0[SR_CP0_CAUSE] == 0u, "a guest write must not forge the INTC bit (got 0x%08x)",
+          s.cop0[SR_CP0_CAUSE]);
+
+    /* Line high and the stored copy missing it: writing zero clears the SW pair only. */
+    CHECK(sr_intc_raise(0u) == 0 && sr_intc_set_enable_mask(0x01u) == 0, "assert source 0");
+    s.cop0[SR_CP0_CAUSE] = SR_CAUSE_IP_SW_MASK;
+    CHECK(sr_cp0_mtc0(&s, 0u, SR_CP0_CAUSE, 0u, TEST_BASE) == 0, "kernel mtc0 Cause must succeed");
+    CHECK(s.cop0[SR_CP0_CAUSE] == INTC_TEST_IP_BIT,
+          "a guest write must not clear an asserted INTC bit (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
+
+    /* BD and ExcCode are not guest-writable, and the resync touches only its own bit. */
+    s.cop0[SR_CP0_CAUSE] = SR_CAUSE_BD | (SR_EXC_SYS << 2);
+    s.r[8] = 0u;
+    CHECK(sr_cp0_mtc0(&s, 8u, SR_CP0_CAUSE, 0u, TEST_BASE) == 0, "kernel mtc0 Cause must succeed");
+    CHECK(s.cop0[SR_CP0_CAUSE] == (SR_CAUSE_BD | (SR_EXC_SYS << 2) | INTC_TEST_IP_BIT),
+          "BD/ExcCode must survive the resync (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
+    CHECK(sr_intc_pending_mask() == 0x01u && sr_intc_enable_mask() == 0x01u,
+          "guest Cause writes must not touch controller state");
+
+    /* A user-mode write still traps before reaching Cause or the controller. */
+    fresh_state(&s);
+    intc_configure_fixture();
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER;
+    s.r[8] = 0xFFFFFFFFu;
+    CHECK(sr_cp0_mtc0(&s, 8u, SR_CP0_CAUSE, 0u, TEST_BASE) < 0 &&
+          CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_CPU,
+          "user mtc0 Cause must trap as CPU");
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_IP_MASK) == 0u,
+          "a trapping write must not set any IP bit (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
+}
+
+/* Every MIPS32 condition for taking the interrupt holds, and PR 5 still delivers nothing:
+ * the poll reports none and leaves CpuState and the controller exactly as they were. */
+static void test_intc_poll_reports_none(void) {
+    CpuState s;
+    CpuState before;
+
+    fresh_state(&s);
+    intc_configure_fixture();
+    CHECK(sr_intc_raise(2u) == 0 && sr_intc_set_enable_mask(0x04u) == 0, "assert source 2");
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_IE | SR_STATUS_IM_MASK;   /* kernel, EXL/ERL 0 */
+    s.cop0[SR_CP0_EPC] = 0x12345678u;
+    s.pc = TEST_BASE;
+    memcpy(&before, &s, sizeof s);
+    CHECK(sr_cpu_poll(&s, TEST_BASE) == 0, "poll must report no interrupt");
+    CHECK(memcmp(&s, &before, sizeof s) == 0,
+          "poll must not change CpuState (Cause 0x%08x, EPC 0x%08x, pc 0x%08x, flow %u)",
+          s.cop0[SR_CP0_CAUSE], s.cop0[SR_CP0_EPC], s.pc, s.flow_kind);
+    CHECK(sr_intc_pending_mask() == 0x04u && sr_intc_enable_mask() == 0x04u,
+          "poll must not consume or mask the pending source");
+}
+
 /* User-mode COP0 access traps; unsupported encodings raise RI. */
 static void test_cop0_traps(void) {
     CpuState s;
@@ -2248,6 +2477,107 @@ static void test_eret_clears_link(void) {
     CHECK(s.llbit == 1u, "exception entry must keep LLbit for the handler's eret to clear");
 }
 
+/* INTC Cause.IP mirroring through both CPU tiers (spec 6.1, PR 5; synthetic controller,
+ * see the INTC block above). tools/test_cpu_lle.py emits INTC_CAUSE_SEQUENCE as real
+ * --lle-cpu generated C (f_08810a40) and this test runs the same words through the
+ * production interpreter. Each lane is checked against the expected values and against
+ * the other lane. Status has IE 1, EXL 0 and every IM bit set in kernel mode, so the
+ * interpreter's per-instruction poll sees an eligible asserted line at every safe point
+ * and must still deliver nothing (delivery is PR 6). */
+
+#define INTC_CAUSE_ENTRY 0x08810A40u
+
+void f_08810a40(CpuState *s);
+
+/* Word-for-word the INTC_CAUSE_SEQUENCE tools/test_cpu_lle.py emits. */
+static const uint32_t INTC_CAUSE_SEQUENCE[] = {
+    0x40086800u,   /* 0x00 mfc0 t0, Cause */
+    0x40896800u,   /* 0x04 mtc0 t1, Cause     t1 = all ones */
+    0x400A6800u,   /* 0x08 mfc0 t2, Cause */
+    0x40806800u,   /* 0x0c mtc0 zero, Cause */
+    0x400B6800u,   /* 0x10 mfc0 t3, Cause */
+    0x03E00008u,   /* 0x14 jr   ra */
+    0x00000000u,   /* 0x18 nop */
+};
+
+typedef struct {
+    int asserted;          /* source 4 enabled (line high) or masked (line low) */
+    uint32_t stale_cause;  /* stored Cause before the run: the opposite of the line */
+} IntcCauseLane;
+
+static void intc_cause_seed(CpuState *s, const IntcCauseLane *lane) {
+    fresh_state(s);
+    intc_configure_fixture();
+    CHECK(sr_intc_raise(4u) == 0, "raise source 4");
+    CHECK(sr_intc_set_enable_mask(lane->asserted ? 0x10u : 0u) == 0, "set the lane's mask");
+    sr_cpu_lle_set_enabled(1);
+    s->cop0[SR_CP0_STATUS] = SR_STATUS_IE | SR_STATUS_IM_MASK;
+    s->cop0[SR_CP0_CAUSE] = lane->stale_cause;
+    s->r[9] = 0xFFFFFFFFu;
+    s->r[31] = TEST_SPAN_END;   /* the interpreter stops cleanly on the return */
+    s->pc = INTC_CAUSE_ENTRY;
+}
+
+static void intc_cause_check_expected(const CpuState *s, const IntcCauseLane *lane,
+                                      const char *what) {
+    const uint32_t ip = lane->asserted ? INTC_TEST_IP_BIT : 0u;
+    CHECK(s->r[8] == ip, "%s: first read must see the line, not the stale copy (t0=0x%08x)",
+          what, s->r[8]);
+    CHECK(s->r[10] == (ip | SR_CAUSE_IP_SW_MASK),
+          "%s: an all-ones write must land the SW pair only (t2=0x%08x)", what, s->r[10]);
+    CHECK(s->r[11] == ip, "%s: a zero write must clear the SW pair only (t3=0x%08x)",
+          what, s->r[11]);
+    CHECK(s->cop0[SR_CP0_CAUSE] == ip, "%s: final Cause 0x%08x", what, s->cop0[SR_CP0_CAUSE]);
+    CHECK(s->cop0[SR_CP0_EPC] == 0u && s->flow_kind == SR_FLOW_NONE,
+          "%s: no interrupt may be taken (EPC 0x%08x, flow %u)", what,
+          s->cop0[SR_CP0_EPC], s->flow_kind);
+    CHECK(sr_intc_pending_mask() == 0x10u && sr_intc_enable_mask() == (lane->asserted ? 0x10u : 0u),
+          "%s: the run must not consume the source (pending 0x%08x enable 0x%08x)", what,
+          sr_intc_pending_mask(), sr_intc_enable_mask());
+}
+
+static void test_intc_cause_aot_interp_parity(void) {
+    static const IntcCauseLane lanes[] = {
+        { 1, 0u },                 /* line high, stored copy missing it */
+        { 0, INTC_TEST_IP_BIT },   /* line low (masked), stored copy claiming it */
+    };
+    const unsigned count = sizeof INTC_CAUSE_SEQUENCE / sizeof INTC_CAUSE_SEQUENCE[0];
+    for (unsigned l = 0; l < sizeof lanes / sizeof lanes[0]; l++) {
+        CpuState aot;
+        CpuState interp;
+        SrGuestInterpFault fault;
+        SrGuestInterpResult r;
+        char what[64];
+
+        snprintf(what, sizeof what, "INTC Cause %s lane",
+                 lanes[l].asserted ? "asserted" : "masked");
+        intc_cause_seed(&aot, &lanes[l]);
+        f_08810a40(&aot);
+        intc_cause_check_expected(&aot, &lanes[l], what);
+
+        intc_cause_seed(&interp, &lanes[l]);
+        llsc_place(INTC_CAUSE_ENTRY, INTC_CAUSE_SEQUENCE, count);
+        memset(&fault, 0, sizeof fault);
+        r = sr_guest_interp_run(&interp, INTC_CAUSE_ENTRY, &fault);
+        CHECK(r == SR_GUEST_INTERP_FETCH_BOUNDARY && fault.pc == TEST_SPAN_END,
+              "%s: interpreter must run to the jr $ra and stop there (got %s at 0x%08x)",
+              what, sr_guest_interp_result_name(r), fault.pc);
+        intc_cause_check_expected(&interp, &lanes[l], what);
+        sr_cpu_lle_set_enabled(0);
+
+        for (unsigned i = 0; i < 32u; i++)
+            CHECK(aot.r[i] == interp.r[i], "%s: r%u AOT=0x%08x INTERP=0x%08x",
+                  what, i, aot.r[i], interp.r[i]);
+        for (unsigned i = 0; i < 32u; i++)
+            CHECK(aot.cop0[i] == interp.cop0[i], "%s: cop0[%u] AOT=0x%08x INTERP=0x%08x",
+                  what, i, aot.cop0[i], interp.cop0[i]);
+        CHECK(aot.flow_kind == interp.flow_kind && aot.flow_target == interp.flow_target,
+              "%s: flow AOT=%u/0x%08x INTERP=%u/0x%08x", what, aot.flow_kind,
+              aot.flow_target, interp.flow_kind, interp.flow_target);
+    }
+    sr_intc_reset();
+}
+
 int main(int argc, char **argv) {
     sr_mem_init();
     setup_spans();
@@ -2293,6 +2623,11 @@ int main(int argc, char **argv) {
     test_llsc_interpreter();
     test_llsc_aot_interp_parity();
     test_llsc_lle_misaligned();
+    test_intc_unconfigured_fails_closed();
+    test_intc_masked_pending_retention();
+    test_intc_cause_guest_writes();
+    test_intc_poll_reports_none();
+    test_intc_cause_aot_interp_parity();
     sr_cpu_lle_reset_config();
     if (g_failed) {
         fprintf(stderr, "cpu-lle selftest: FAILED\n");
