@@ -1713,10 +1713,6 @@ int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
     }
-    test_bitmap_font_text_fallback();
-    test_display_path_hides_profile_folder();
-    test_library_card_status_text();
-    test_sample_entries_never_reach_library_json();
     if (argc == 7 && strcmp(argv[1], "--validate-package") == 0) {
         char *end = NULL;
         unsigned long experimental = strtoul(argv[5], &end, 10);
@@ -1767,6 +1763,13 @@ int main(int argc, char **argv) {
     }
     native_test_assert_cache_root_isolated();
     native_test_assert_config_root_isolated();
+
+    test_bitmap_font_text_fallback();
+    test_display_path_hides_profile_folder();
+    test_library_card_status_text();
+    /* Saves a library file under the cache root, so it runs only once that
+     * root is the temporary one. */
+    test_sample_entries_never_reach_library_json();
 
     /* PlayerApp holds 64 game records twice over; keep it off the stack. */
     PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));

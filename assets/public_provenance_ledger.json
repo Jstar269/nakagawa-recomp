@@ -6053,7 +6053,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0858ac9fcd4811e47d5e76c88c4d538933886ea4bf5b624f5e04df889c820577"
+      "sha256": "b0c5ef6bb6997640693a44f619df2756e637c5e9c0b8c446672c7a9cbdda8656"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -9072,7 +9072,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6661317b45ae67569131b252961f2d0be7424283be7963ac4d8141ec2a5535e2"
+      "sha256": "6845a92a62daebf2d9ccdc660ba239aa10ec1e6e3c7dc738b96bf5f4752794f5"
     },
     {
       "path": "tools/test_nid_name_proof.py",

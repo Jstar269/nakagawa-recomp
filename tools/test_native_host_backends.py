@@ -120,11 +120,33 @@ def _build_and_run(
         f"linking {test_source} failed:\n{build.stdout}\n{build.stderr}",
     )
 
-    run = subprocess.run([str(out)], cwd=ROOT, capture_output=True, text=True, timeout=300)
+    # Each test isolates its own per-user roots, so it runs here against a decoy
+    # profile that must stay free of application folders: anything that lands
+    # in it would have landed in the developer's real profile.
+    profile = Path(tmp) / "developer-profile"
+    home = profile / "home"
+    env = dict(os.environ)
+    env.update({
+        "LOCALAPPDATA": str(profile / "localappdata"),
+        "APPDATA": str(profile / "appdata"),
+        "USERPROFILE": str(home),
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "XDG_CONFIG_HOME": str(home / ".config"),
+        "XDG_DATA_HOME": str(home / ".local" / "share"),
+        "XDG_STATE_HOME": str(home / ".local" / "state"),
+    })
+    env.pop("NAKAGAWA_PSP_KEY_FILE", None)
+    run = subprocess.run([str(out)], cwd=ROOT, env=env, capture_output=True, text=True,
+                         timeout=300)
     test_case.assertEqual(
         run.returncode, 0,
         f"{test_source} failed:\n{run.stdout}\n{run.stderr}",
     )
+    leaked = sorted(str(path.relative_to(profile)) for path in profile.rglob("*")
+                    if "nakagawa" in path.name.lower())
+    test_case.assertEqual(
+        leaked, [], f"{test_source} wrote into the developer's profile before isolating it")
     return run.stdout
 
 
