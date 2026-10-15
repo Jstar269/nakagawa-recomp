@@ -7114,14 +7114,11 @@ static int sr_wide_configured_root_wide_alloc(const wchar_t *value, wchar_t **ou
     wchar_t *wide = (wchar_t *)malloc((n + 1u) * sizeof(*wide));
     if (!wide) return 0;
     memcpy(wide, value, (n + 1u) * sizeof(*wide));
+    /* Absolute on both hosts, as on Win32: a relative value is refused here and is never anchored to the
+     * working directory, which in a child process is a different directory from the one the caller meant. */
     if (!sr_wide_is_absolute(wide)) {
-        wchar_t *canonical = NULL;
-        if (!sr_wide_full_path_alloc(wide, &canonical)) {
-            free(wide);
-            return 0;
-        }
         free(wide);
-        wide = canonical;
+        return 0;
     }
     int ok = sr_wide_extended_absolute_alloc(wide, out);
     free(wide);
@@ -7216,8 +7213,8 @@ static int sr_wide_basename_alloc(const wchar_t *path, wchar_t **out) {
 }
 
 /* The directory this executable was loaded from: /proc/self/exe here, with the
- * configured SR_EXE_DIR override honoured first, exactly as the Windows layer
- * honours SR_EXE_DIR ahead of the module handle. */
+ * configured SR_EXE_DIR override honoured first. SR_EXE_DIR is read on POSIX only: the Win32 layer has
+ * no reader for it in this tree, so the override does not apply there. */
 static int sr_wide_module_dir_alloc(wchar_t **out) {
     if (!out) return 0;
     *out = NULL;
@@ -7667,8 +7664,8 @@ static void flash0_user_data_root(char *dst, size_t capacity) {
     wchar_t *root = NULL;
     char *root_utf8 = NULL;
     /* Absolute on every host: sr_wide_is_absolute is this host's own rule (a drive or UNC path on
-     * Win32, a leading '/' on POSIX). The wide helper resolves a relative value against the working
-     * directory on POSIX, so the check comes first. */
+     * Win32, a leading '/' on POSIX). The wide helper refuses a relative value on both hosts too; this
+     * check comes first so the refusal is named here with the diagnostic below. */
     int valid = configured[0] != L'\0' && sr_wide_is_absolute(configured) &&
                 sr_wide_configured_root_wide_alloc(configured, &root) &&
                 sr_wide_to_utf8_alloc(root, &root_utf8);
@@ -7684,18 +7681,29 @@ static void flash0_user_data_root(char *dst, size_t capacity) {
     free(root_utf8);
 }
 
+/* SR_FONTDIR set but refused (unreadable, empty, or relative) leaves the project source empty, and the
+ * refusal is named once here, as font_load names it for sceFont. The device resolves its roots on every
+ * open, and nothing else is tried in its place. */
+static atomic_int s_font_dir_refusal_named;
+
+static void flash0_refuse_font_dir(const char *reason) {
+    if (atomic_exchange_explicit(&s_font_dir_refusal_named, 1, memory_order_relaxed)) return;
+    fprintf(stderr, "flash0: SR_FONTDIR %s; the project font source is skipped\n", reason);
+}
+
 static void flash0_font_sources(Flash0Sources *out) {
     flash0_user_data_root(out->user_data_dir, sizeof(out->user_data_dir));
 
     wchar_t *configured = NULL;
     wchar_t *root = NULL;
     int configured_present = 0;
-    if (sr_wide_env_alloc(L"SR_FONTDIR", &configured, &configured_present)) {
-        if (configured_present) {
-            if (configured && configured[0]) sr_wide_configured_root_wide_alloc(configured, &root);
-        } else {
-            sr_wide_module_font_root(&root);
-        }
+    if (!sr_wide_env_alloc(L"SR_FONTDIR", &configured, &configured_present)) {
+        flash0_refuse_font_dir("could not be read");
+    } else if (configured_present) {
+        if (!configured[0] || !sr_wide_configured_root_wide_alloc(configured, &root))
+            flash0_refuse_font_dir("is configured but is not a valid absolute path");
+    } else {
+        sr_wide_module_font_root(&root);
     }
     free(configured);
     char *utf8 = NULL;
