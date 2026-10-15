@@ -2788,6 +2788,8 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-FPU-CC-001", "PSP-VFPU-CMP-001", "PSP-LLSC-001",
                 # The 2026-10-15 re-run of the revised ge-break-continue probe (c642039a).
                 "PSP-GE-CONTROL-001",
+                # The 2026-10-15 single-case runs of build b5d6fc5b (#1020 cases).
+                "PSP-HLE-VTIMER-002", "PSP-HLE-VTIMER-003", "PSP-HLE-POWER-002",
             },
         )
         self.assertEqual(
@@ -2795,6 +2797,8 @@ class PspDmacProbeTests(unittest.TestCase):
             {
                 # Captured only: the runner classified its envelope as not acceptance-eligible.
                 "PSP-TEARDOWN-001",
+                # b5d6fc5b, 2026-10-15: two SKIP delete cells; an incomplete NULL-pointer stream.
+                "PSP-HLE-KERNEL-STATUS-002", "PSP-HLE-NULL-OUT-001",
             },
         )
 
@@ -4120,9 +4124,10 @@ class HleMeasureProbeTests(unittest.TestCase):
         ("hle-ge-edram", 96, "hle_ge_edram", "hle_ge_imports.S",
          "HLE_CASE_GE_EDRAM", "PSP-HLE-GE-EDRAM-001"),
     )
-    # The five NOT_RUN single-launch cases in the same file (97-101). They build, link and
-    # parse like the families above, but no manifest row cites a hardware run.
-    NOT_RUN_FAMILIES = (
+    # The five single-launch cases in the same file (97-101), added after the families above.
+    # They build, link and parse like those families; their pass rule is machinery only. Their
+    # 2026-10-15 hardware outcomes (b5d6fc5b) are pinned by HleSingleLaunchProbeTests.
+    SINGLE_LAUNCH_FAMILIES = (
         ("hle-vtimer-unit", 97, "hle_vtimer_unit", None,
          "HLE_CASE_VTIMER_UNIT", "PSP-HLE-VTIMER-002"),
         ("hle-vtimer-errors", 98, "hle_vtimer_errors", None,
@@ -4134,7 +4139,7 @@ class HleMeasureProbeTests(unittest.TestCase):
         ("hle-null-out-pointers", 101, "hle_null_out_pointers", None,
          "HLE_CASE_NULL_OUT_POINTERS", "PSP-HLE-NULL-OUT-001"),
     )
-    ALL_FAMILIES = FAMILIES + NOT_RUN_FAMILIES
+    ALL_FAMILIES = FAMILIES + SINGLE_LAUNCH_FAMILIES
     # Every family block: file -> (library, version word, {function: NID}). The
     # version word 0x40010000 is the one the PSPSDK import stubs carry.
     PINNED_BLOCKS = {
@@ -4675,19 +4680,43 @@ class HleMeasureProbeTests(unittest.TestCase):
             validate_hle_edram_restore(self._body(self._stream(case, ran_anyway)))
 
 
-class HleNotRunProbeTests(unittest.TestCase):
-    """The five NOT_RUN single-launch HLE cases (97-101) in probe_hle_measure.c.
+class HleSingleLaunchProbeTests(unittest.TestCase):
+    """The five single-launch HLE cases (97-101) in probe_hle_measure.c.
 
-    No hardware run backs their manifest rows. These tests pin what keeps them
-    machinery-only: the Makefile routes, their absence from the campaign queue, the
-    host0 records, the bounded loops and their cleanup, the stream length the default
-    runner timeout has to cover, where NULL is passed (a mandatory out pointer only in
-    the null-out-pointers case), the raw `jal` wrapper of the power getters, the
-    parser's refusal of every status but PASS and SKIP, and the manifest and docs rows,
-    which cite no capture.
+    These tests pin what keeps them machinery-only: the Makefile routes, their absence
+    from the campaign queue, the host0 records, the bounded loops and their cleanup, the
+    stream length the default runner timeout has to cover, where NULL is passed (a
+    mandatory out pointer only in the null-out-pointers case), the raw `jal` wrapper of
+    the power getters, and the parser's refusal of every status but PASS and SKIP. They
+    also pin the manifest and docs rows, which record the 2026-10-15 PSP-3000 session on
+    b5d6fc5b: three cases measured, one captured only and one incomplete.
     """
 
-    NOT_RUN = HleMeasureProbeTests.NOT_RUN_FAMILIES
+    SINGLE = HleMeasureProbeTests.SINGLE_LAUNCH_FAMILIES
+    # Manifest hardware_evidence per case after the 2026-10-15 session on b5d6fc5b.
+    HARDWARE = {
+        "hle-vtimer-unit": "MEASURED",
+        "hle-vtimer-errors": "MEASURED",
+        "hle-kernel-pool-bounds": "CAPTURED",
+        "hle-power-float-v0": "MEASURED",
+        "hle-null-out-pointers": "CAPTURED",
+    }
+    # The pending-campaign status cell each case carries in docs/HARDWARE_ORACLE.md.
+    DOC_STATUS = {
+        "hle-vtimer-unit": "`MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the "
+                           "campaign queue)",
+        "hle-vtimer-errors": "`MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the "
+                             "campaign queue)",
+        "hle-kernel-pool-bounds": "`CAPTURED` (2026-10-15, `b5d6fc5b`; not acceptance-eligible: "
+                                  "both FPL delete cells SKIPped; single launch, not in the "
+                                  "campaign queue)",
+        "hle-power-float-v0": "`MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the "
+                              "campaign queue)",
+        "hle-null-out-pointers": "`CAPTURED` (2026-10-15, `b5d6fc5b`; incomplete, not measured; "
+                                 "single launch, not in the campaign queue)",
+    }
+    NULL_RUN_NOTE = ("On 2026-10-15 the stream stopped at the first NULL call's step and the "
+                     "console needed a power cycle, so plan one after this case.")
     NULL_CASE = "hle-null-out-pointers"
     OBJECT_CASES = frozenset({"hle-vtimer-unit", "hle-vtimer-errors",
                               "hle-kernel-pool-bounds", "hle-null-out-pointers"})
@@ -4737,21 +4766,21 @@ class HleNotRunProbeTests(unittest.TestCase):
                            self.h.makefile)
         routed = sorted((case, int(case_id)) for case, case_id in pairs
                         if case in self.HOST0_LOGS)
-        self.assertEqual(routed, sorted((case, case_id) for case, case_id, *_ in self.NOT_RUN))
+        self.assertEqual(routed, sorted((case, case_id) for case, case_id, *_ in self.SINGLE))
         self.assertEqual(sorted(case_id for _case, case_id in routed), [97, 98, 99, 100, 101])
-        for case, _cid, stem, _block, _macro, _test in self.NOT_RUN:
+        for case, _cid, stem, _block, _macro, _test in self.SINGLE:
             with self.subTest(case=case):
                 self.assertRegex(
                     self.h.makefile,
                     rf"else ifeq \(\$\(CASE\),{case}\)\nTARGET = \$\(BUILD_DIR\)/{stem}\n")
 
     def test_none_of_the_five_is_in_the_campaign_queue(self) -> None:
-        for case, *_rest in self.NOT_RUN:
+        for case, *_rest in self.SINGLE:
             with self.subTest(case=case):
                 self.assertNotIn(case, CAMPAIGN_QUEUE_CASES)
 
     def test_host0_records_carry_each_case_its_own_test_id_and_log(self) -> None:
-        for case, _cid, _stem, _block, _macro, test_id in self.NOT_RUN:
+        for case, _cid, _stem, _block, _macro, test_id in self.SINGLE:
             with self.subTest(case=case):
                 log = self.HOST0_LOGS[case]
                 self.assertIn(
@@ -4764,7 +4793,7 @@ class HleNotRunProbeTests(unittest.TestCase):
                 self.assertEqual(_campaign_host0_log_path(Path("/scratch"), case).name, log)
 
     def test_each_cell_records_pass_or_skip_and_never_fail(self) -> None:
-        for case, _cid, _stem, _block, macro, _test in self.NOT_RUN:
+        for case, _cid, _stem, _block, macro, _test in self.SINGLE:
             with self.subTest(case=case):
                 section = self.h._section(macro)
                 self.assertNotIn('"FAIL"', section)
@@ -4791,7 +4820,7 @@ class HleNotRunProbeTests(unittest.TestCase):
 
     def test_no_step_marker_sits_inside_a_loop(self) -> None:
         """A step per iteration would scale the stream with the loop cap (64)."""
-        for case, _cid, _stem, _block, macro, _test in self.NOT_RUN:
+        for case, _cid, _stem, _block, macro, _test in self.SINGLE:
             with self.subTest(case=case):
                 section = _c_code(self.h._section(macro))
                 for loop in re.finditer(r"\bfor\s*\(", section):
@@ -4817,7 +4846,7 @@ class HleNotRunProbeTests(unittest.TestCase):
         needs each host0 operation (open, write, close: three per line, plus the
         round trip) under 30 s / (3N + 6) on the console. No measured host0 operation
         cost exists in this repository, so the bound is an assumption to measure."""
-        for case, _cid, _stem, _block, macro, _test in self.NOT_RUN:
+        for case, _cid, _stem, _block, macro, _test in self.SINGLE:
             with self.subTest(case=case):
                 spec, _counts = CAMPAIGN_PROBE_CASES[case]
                 _cells, steps = _probe_cells(self.h.probe, macro)
@@ -4826,7 +4855,7 @@ class HleNotRunProbeTests(unittest.TestCase):
                 self.assertLessEqual(lines, 30)
 
     def test_null_is_passed_to_mandatory_outs_only_in_the_null_case(self) -> None:
-        for case, _cid, _stem, _block, macro, _test in self.NOT_RUN:
+        for case, _cid, _stem, _block, macro, _test in self.SINGLE:
             with self.subTest(case=case):
                 section = self.h._section(macro)
                 with_null = set(re.findall(r"\b(sce\w+)\s*\([^;]*\bNULL\b", section))
@@ -4887,7 +4916,7 @@ class HleNotRunProbeTests(unittest.TestCase):
         self.assertEqual(declared - called, self.POWER_UNCALLED)
 
     def test_parser_accepts_arbitrary_machinery_values(self) -> None:
-        for case, _cid, _stem, _block, _macro, _test in self.NOT_RUN:
+        for case, _cid, _stem, _block, _macro, _test in self.SINGLE:
             with self.subTest(case=case):
                 spec, counts = CAMPAIGN_PROBE_CASES[case]
                 cells = {name: ("PASS", 0xFFFFFFFF, [0xDEADBEEF] * counts[name])
@@ -4901,7 +4930,7 @@ class HleNotRunProbeTests(unittest.TestCase):
     def test_parser_refuses_every_status_other_than_pass_and_skip(self) -> None:
         """A check that names one status (FAIL) lets the others through; the refusal
         must cover every status the protocol knows, except the two machinery values."""
-        for case, _cid, _stem, _block, _macro, _test in self.NOT_RUN:
+        for case, _cid, _stem, _block, _macro, _test in self.SINGLE:
             spec, counts = CAMPAIGN_PROBE_CASES[case]
             base = {name: ("PASS", 0, [0] * counts[name]) for name in spec.semantic_cases}
             first = spec.semantic_cases[0]
@@ -4916,18 +4945,33 @@ class HleNotRunProbeTests(unittest.TestCase):
                     self.assertTrue("machinery-only" in str(raised.exception)
                                     or status in str(raised.exception), str(raised.exception))
 
-    def test_manifest_rows_are_not_run_and_cite_no_capture(self) -> None:
+    def test_manifest_rows_record_the_2026_10_15_outcome_of_each_case(self) -> None:
         tests = self.h.manifest["tests"]
-        for case, _cid, stem, _block, macro, test_id in self.NOT_RUN:
+        anchor = "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize"
+        for case, _cid, stem, _block, macro, test_id in self.SINGLE:
             with self.subTest(case=case):
                 self.assertEqual(sum(1 for test in tests if test["id"] == test_id), 1)
                 row = next(test for test in tests if test["id"] == test_id)
                 spec, _counts = CAMPAIGN_PROBE_CASES[case]
                 self.assertEqual(row["status"], "implemented")
-                self.assertEqual(row["hardware_evidence"], "NOT_RUN")
-                self.assertNotIn("evidence_ref", row)
-                self.assertIn("No hardware capture exists", row["evidence_note"])
-                self.assertIn("not in the campaign queue", row["evidence_note"])
+                self.assertEqual(row["hardware_evidence"], self.HARDWARE[case])
+                if self.HARDWARE[case] == "MEASURED":
+                    # Every cell of the complete, acceptance-eligible stream is cited.
+                    self.assertEqual(row["evidence_ref"], anchor)
+                    self.assertEqual(row["evidence_cases"][:len(spec.ordered_cases)],
+                                     list(spec.ordered_cases))
+                    self.assertNotIn("uncited_cases", row)
+                    self.assertNotIn("evidence_note", row)
+                    for word in ("2026-10-15", "b5d6fc5b", "acceptance-eligible with 0 blockers"):
+                        self.assertIn(word, row["measurement_note"])
+                else:
+                    # A capture that was not acceptance-eligible cites nothing.
+                    self.assertNotIn("evidence_ref", row)
+                    self.assertNotIn("evidence_cases", row)
+                    self.assertNotIn("measurement_note", row)
+                    for word in ("2026-10-15", "b5d6fc5b", "establishes nothing about PSP behaviour",
+                                 "not in the campaign queue"):
+                        self.assertIn(word, row["evidence_note"])
                 self.assertEqual(row["source"], "fixtures/psp_oracle/probe_hle_measure.c")
                 self.assertEqual(row["prx"], f"{stem}.prx")
                 self.assertEqual(row["case_ids"], list(spec.ordered_cases))
@@ -4939,34 +4983,58 @@ class HleNotRunProbeTests(unittest.TestCase):
                 self.assertEqual(sorted(listed), sorted(self.h._probe_calls(macro)))
                 self.assertNotIn("until refusal", json.dumps(row))
 
+    def test_vtimer_unit_row_does_not_claim_a_precise_rate(self) -> None:
+        """The VTimer and system-clock intervals are offset by host0 writes, so the unit is
+        recorded as consistent with microseconds, never as a measured rate."""
+        row = next(test for test in self.h.manifest["tests"] if test["id"] == "PSP-HLE-VTIMER-002")
+        hardware = (self.h.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
+        for text in (row["measurement_note"], hardware):
+            self.assertIn("204,379", text)
+            self.assertIn("220,608", text)
+            self.assertIn("not a precise rate measurement", text)
+        self.assertNotIn("time unit is measured", row["measurement_note"])
+
+    def test_the_incomplete_null_capture_cites_no_cell(self) -> None:
+        """The null-out-pointers stream stopped at its first NULL call's step: a run fact
+        that no MEASURED row may cite."""
+        cells = set(CAMPAIGN_PROBE_CASES[self.NULL_CASE][0].ordered_cases)
+        for test in self.h.manifest["tests"]:
+            if test.get("hardware_evidence") == "MEASURED":
+                with self.subTest(test_id=test["id"]):
+                    self.assertEqual(cells & set(test["evidence_cases"]), set())
+        row = next(test for test in self.h.manifest["tests"]
+                   if test["id"] == "PSP-HLE-NULL-OUT-001")
+        for word in ("null-sys-status", "0.9 s after launch", "240 s case timeout",
+                     "power cycle", "does not show whether that call faulted"):
+            self.assertIn(word, row["evidence_note"])
+
     def test_null_out_pointer_case_is_high_risk_and_scheduled_last(self) -> None:
         tests = self.h.manifest["tests"]
         row = next(test for test in tests if test["id"] == "PSP-HLE-NULL-OUT-001")
-        self.assertEqual(row["risk"], self.NULL_RISK)
+        self.assertEqual(row["risk"], f"{self.NULL_RISK} {self.NULL_RUN_NOTE}")
         hardware = (self.h.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
         readme = (self.h.fixture / "README.md").read_text(encoding="utf-8")
-        self.assertIn(self.NULL_RISK, hardware)
-        self.assertIn(self.NULL_RISK, readme)
+        self.assertIn(f"{self.NULL_RISK} {self.NULL_RUN_NOTE}", hardware)
+        self.assertIn(f"{self.NULL_RISK} {self.NULL_RUN_NOTE}", readme)
         for text in (row["risk"], row["evidence_note"]):
             self.assertNotIn("NULL is the only invalid pointer", text)
-        for case, _cid, _stem, _block, _macro, _test in self.NOT_RUN:
+        for case, _cid, _stem, _block, _macro, _test in self.SINGLE:
             if case != self.NULL_CASE:
                 other = next(test for test in tests if test.get("diagnostic_case_ids") == [case])
                 self.assertNotIn("high:", other["risk"])
                 self.assertNotIn("NULL is the only invalid pointer", other["risk"])
 
-    def test_docs_list_each_case_as_not_run_outside_the_queue(self) -> None:
+    def test_docs_list_each_case_with_its_outcome_outside_the_queue(self) -> None:
         hardware = (self.h.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
         readme = (self.h.fixture / "README.md").read_text(encoding="utf-8")
-        for case, _cid, _stem, _block, _macro, test_id in self.NOT_RUN:
+        for case, _cid, _stem, _block, _macro, test_id in self.SINGLE:
             with self.subTest(case=case):
-                self.assertIn(f"| `{case}` | `{test_id}` | `NOT_RUN` (single launch, not in the campaign queue) |", hardware)
+                self.assertIn(f"| `{case}` | `{test_id}` | {self.DOC_STATUS[case]} |", hardware)
                 self.assertIn(f"| `{case}` | `{test_id}` |", readme)
         self.assertNotIn("until refusal", hardware)
         self.assertNotIn("until refusal", readme)
         self.assertIn("up to 64 creates; out1 records whether a refusal occurred", hardware)
         self.assertIn("up to 64 creates; out1 records whether a refusal occurred", readme)
-
 
 if __name__ == "__main__":
     unittest.main()

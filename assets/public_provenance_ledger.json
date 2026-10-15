@@ -1162,7 +1162,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7709e36349fea025fb937ab0b09c18eb2f23b6f8a62657f232017638cafc9f7f"
+      "sha256": "fb5495da8df2237b22bc7daf1ba0ef6870f6d187b17dd6e75561e4712ab16456"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -1918,7 +1918,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "467df8d3e6311e3391b988efb188d015cebb22e05ea9f46a964aff6bd71b6cc6"
+      "sha256": "fcde5b00ddb3b79f621c271648baa553710a8a9f407cb58b535633b182851755"
     },
     {
       "path": "fixtures/psp_oracle/display_user_imports.S",
@@ -7510,7 +7510,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8599057db07387fd06bb49478ab46b99bfedb76b888675f2aee4c1f44c25e609"
+      "sha256": "447069e46bce390cee3d46d86b7ab97e434c9cf907306d4f0add88e871ab736b"
     },
     {
       "path": "tools/psp_oracle/parse_golden.py",
@@ -8748,7 +8748,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "3933b04e1937352619ef8bae907deb49dfc1d4a6038ec61683a5b4c29a42bc17"
+      "sha256": "7797abdf12dbba25ee65bf2612b353e4177fa6eacf00c5540991261e42d3ed6f"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
@@ -9552,7 +9552,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4c6a8ae8453c1e6beff9f813c3ee527d32d31e89a9ff6adf1ae21772d4437eb7"
+      "sha256": "9de92ebfc3bc62480eaea0cda827bb6b3b468be8c57dc257285e587415c16bcb"
     },
     {
       "path": "tools/test_psp_parsers.py",

@@ -526,13 +526,16 @@ publishes their words.
 | `hle-power-float-v0` | `PSP-HLE-POWER-002` | Raw `$v0` and `$f0` bits of `scePowerGetPllClockFrequencyFloat`, `scePowerGetCpuClockFrequencyFloat`, and `scePowerGetBusClockFrequencyFloat`, one call each, through a short assembly wrapper. |
 | `hle-null-out-pointers` | `PSP-HLE-NULL-OUT-001` | `sceKernelReferSystemStatus`, `sceKernelGetVTimerTime`, `sceKernelGetVTimerBase`, and `sceKernelReferVTimerStatus` with NULL as their mandatory out pointer, one call each on a live VTimer that is deleted at the end; each record holds only its return code. Risk high: a NULL mandatory out-pointer may fault in kernel mode; schedule last in a session, after every other case. |
 
-The five `hle-*` rows are single-launch probes built from `probe_hle_measure.c`. They are
-not in the campaign queue, and their manifest rows cite no hardware run. Each launch writes
+The five `hle-*` rows are single-launch probes built from `probe_hle_measure.c`, and they are
+not in the campaign queue. All five ran on a PSP-3000 on 2026-10-15 (build `b5d6fc5b`):
+`hle-vtimer-unit`, `hle-vtimer-errors` and `hle-power-float-v0` were measured, and the measured
+index publishes their words; `hle-kernel-pool-bounds` was captured only, and
+`hle-null-out-pointers` did not complete. Each launch writes
 at most 29 lines (STEP, TEST, META, the `-done` record and COMPLETE), and every line is three
 host0 operations, so the default `--timeout` of 30 s holds the whole launch only if one host0
 operation averages under about 0.3 s (the 29-line `hle-vtimer-unit` launch is the binding one:
 29 x 3 + 6 round-trip operations). No host0 operation cost has been measured, so measure it
-in the first session and raise `--timeout` for these cases if it is higher. `hle-null-out-pointers` passes NULL as a mandatory out pointer. Risk high: a NULL mandatory out-pointer may fault in kernel mode; schedule last in a session, after every other case.
+in the first session and raise `--timeout` for these cases if it is higher (the 2026-10-15 session used a 240 s case timeout). `hle-null-out-pointers` passes NULL as a mandatory out pointer. Risk high: a NULL mandatory out-pointer may fault in kernel mode; schedule last in a session, after every other case. On 2026-10-15 the stream stopped at the first NULL call's step and the console needed a power cycle, so plan one after this case.
 
 The registry case opens the registry and every category in read mode. It never
 calls a set, create, remove, or flush API. It records values only for the
