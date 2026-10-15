@@ -83,7 +83,7 @@ static int validate_psp(NkPspCtx *ctx, const uint8_t *d, size_t size)
         uint8_t nseg = d[0x27];
         for (uint8_t i = 0; i < nseg; i++) {
             uint32_t seg_sz = rd32(d + 0x54 + i * 4u);
-            if (seg_sz == 0u || seg_sz > (256u * 1024u * 1024u)) {
+            if (seg_sz > (256u * 1024u * 1024u)) {
                 return nk_psp_fail(ctx, NK_PSP_ERR_FORMAT, NULL,
                                    "container segment %u declares an impossible size "
                                    "0x%08X",

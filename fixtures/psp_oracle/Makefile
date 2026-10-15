@@ -161,7 +161,7 @@ CASE_ID = 67
 else ifeq ($(CASE),vfpu-compare)
 CASE_ID = 68
 # 90-101: the H-oracle HLE measurement families (probe_hle_measure.c). They are
-# numbered apart from the sequential 1-69 probe.c cases so that new sequential
+# numbered apart from the sequential 1-70 probe.c cases so that new sequential
 # cases cannot collide with them; 97-101 are the NOT_RUN HLE cases in the same file.
 else ifeq ($(CASE),hle-kernel-status)
 CASE_ID = 90
@@ -189,6 +189,8 @@ else ifeq ($(CASE),hle-null-out-pointers)
 CASE_ID = 101
 else ifeq ($(CASE),llsc-link)
 CASE_ID = 69
+else ifeq ($(CASE),fpu-cc)
+CASE_ID = 70
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
