@@ -7628,7 +7628,8 @@ const char *sr_font_test_slot_source(int slot) {
 }
 #endif
 /* Roots for the flash0: font device (flash0_font.c). The user-imported cache lives under the
- * per-user data directory. Project fonts resolve like font_load: SR_FONTDIR when it is set,
+ * per-user data directory that SR_USER_DATA_ROOT names (see flash0_user_data_root). Project fonts
+ * resolve like font_load: SR_FONTDIR when it is set,
  * otherwise the executable's font directory. Both are returned as UTF-8 paths. A root that is
  * unknown or too long stays empty, and the device skips that source. */
 static void flash0_copy_root(char *dst, size_t capacity, const char *src) {
@@ -7637,12 +7638,50 @@ static void flash0_copy_root(char *dst, size_t capacity, const char *src) {
     memcpy(dst, src, strlen(src) + 1u);
 }
 
+/* SR_USER_DATA_ROOT is the per-user data directory the launcher resolved; the user-imported cache is
+ * <that>/fonts/v2. It is validated the way SR_FONTDIR is. Unset (a direct runtime launch), the
+ * platform's per-user directory is used. Set but unusable, the user source is empty and nothing else
+ * is tried: the platform directory would be a different root from the one the launcher named. The
+ * refusal is named once, because the device resolves its roots on every open. */
+static atomic_int s_user_data_root_refusal_named;
+
+static void flash0_refuse_user_data_root(const char *reason) {
+    if (atomic_exchange_explicit(&s_user_data_root_refusal_named, 1, memory_order_relaxed)) return;
+    fprintf(stderr, "flash0: SR_USER_DATA_ROOT %s; the user-imported font source is skipped\n", reason);
+}
+
 static void flash0_user_data_root(char *dst, size_t capacity) {
-    char data_dir[SR_FLASH0_PATH_MAX];
-    if (nk_platform_get_path(NK_PATH_DATA, data_dir, sizeof(data_dir)))
-        flash0_copy_root(dst, capacity, data_dir);
-    else
-        dst[0] = '\0';
+    dst[0] = '\0';
+    wchar_t *configured = NULL;
+    int configured_present = 0;
+    if (!sr_wide_env_alloc(L"SR_USER_DATA_ROOT", &configured, &configured_present)) {
+        flash0_refuse_user_data_root("could not be read");
+        return;
+    }
+    if (!configured_present) {
+        char data_dir[SR_FLASH0_PATH_MAX];
+        if (nk_platform_get_path(NK_PATH_DATA, data_dir, sizeof(data_dir)))
+            flash0_copy_root(dst, capacity, data_dir);
+        return;
+    }
+    wchar_t *root = NULL;
+    char *root_utf8 = NULL;
+    /* Absolute on every host: sr_wide_is_absolute is this host's own rule (a drive or UNC path on
+     * Win32, a leading '/' on POSIX). The wide helper resolves a relative value against the working
+     * directory on POSIX, so the check comes first. */
+    int valid = configured[0] != L'\0' && sr_wide_is_absolute(configured) &&
+                sr_wide_configured_root_wide_alloc(configured, &root) &&
+                sr_wide_to_utf8_alloc(root, &root_utf8);
+    free(configured);
+    free(root);
+    if (!valid) {
+        flash0_refuse_user_data_root("is configured but is not a valid absolute path");
+    } else if (strlen(root_utf8) >= SR_FLASH0_PATH_MAX) {
+        flash0_refuse_user_data_root("is configured but is too long");
+    } else {
+        flash0_copy_root(dst, capacity, root_utf8);
+    }
+    free(root_utf8);
 }
 
 static void flash0_font_sources(Flash0Sources *out) {
