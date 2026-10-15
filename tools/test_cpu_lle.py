@@ -9,6 +9,14 @@ do not exist, the interpreter answers UNSUPPORTED for syscall/break with no
 eret path, and the Makefile has no cpu-lle-selftest target. Every LLE test
 below fails there and passes here; the HLE-default tests pin the behavior
 that must not move.
+
+PR 5 (spec 6.1, issue #325) adds synthetic INTC pending/enable state and
+Cause.IP mirroring. Failing-before (origin/main 788465b2): cpu_lle.h declares
+no sr_intc_* API or SrIntcConfig, sr_cpu_lle_reset_config has no controller to
+reset, and mfc0/mtc0 Cause never consult one, so those IntcLleTests fail
+there. The poll, no-default-controller and fixture-emission tests pin what the
+base already had and this change must keep: sr_cpu_poll stays side-effect free
+until PR 6, and nothing in the runtime installs a guessed controller.
 """
 
 import re
@@ -163,6 +171,39 @@ def _emit_llsc_parity_fixture():
     finally:
         codegen.LLE_CPU = previous_lle_cpu
     return "\n".join(generated)
+
+
+# INTC Cause.IP mirroring sequence (spec 6.1, PR 5). Emitted as --lle-cpu
+# generated C here and run through the production interpreter by
+# src/rt/cpu_lle_selftest.c (test_intc_cause_aot_interp_parity), which compares
+# both lanes with each other and with the expected values.
+INTC_CAUSE_ENTRY = 0x08810A40
+CP0_CAUSE = 13
+
+# Mirrored word-for-word by INTC_CAUSE_SEQUENCE in src/rt/cpu_lle_selftest.c.
+INTC_CAUSE_SEQUENCE = (
+    mfc0(T0, CP0_CAUSE),     # 0x00 mfc0 t0, Cause
+    mtc0(T1, CP0_CAUSE),     # 0x04 mtc0 t1, Cause   t1 = all ones
+    mfc0(T2, CP0_CAUSE),     # 0x08 mfc0 t2, Cause
+    mtc0(0, CP0_CAUSE),      # 0x0c mtc0 zero, Cause
+    mfc0(T3, CP0_CAUSE),     # 0x10 mfc0 t3, Cause
+    JR_RA,                   # 0x14
+    NOP,                     # 0x18
+)
+
+
+def _emit_intc_cause_parity_fixture():
+    """Emit the INTC Cause sequence in the --lle-cpu lane for the native parity test."""
+    previous_lle_cpu = codegen.LLE_CPU
+    try:
+        codegen.LLE_CPU = True
+        image = {INTC_CAUSE_ENTRY + 4 * i: word for i, word in enumerate(INTC_CAUSE_SEQUENCE)}
+        return "\n".join(codegen.emit_function(
+            FakeElf(image), INTC_CAUSE_ENTRY,
+            [(INTC_CAUSE_ENTRY, INTC_CAUSE_ENTRY + 4 * len(INTC_CAUSE_SEQUENCE))],
+            {INTC_CAUSE_ENTRY}, lle_cpu=True))
+    finally:
+        codegen.LLE_CPU = previous_lle_cpu
 
 
 class LlScLleCodegenTests(unittest.TestCase):
@@ -933,6 +974,84 @@ class CpuLleSourcesTests(unittest.TestCase):
         self.assertIn("SR_GUEST_INTERP_ERET", text)
 
 
+def _c_function_body(text, signature):
+    """Return the brace body of the top-level C function whose definition starts with signature."""
+    start = text.index(signature)
+    open_brace = text.index("{", start)
+    end = text.index("\n}\n", open_brace)
+    return text[open_brace + 1:end]
+
+
+class IntcLleTests(unittest.TestCase):
+    """PR 5 (spec 6.1): synthetic INTC state, Cause.IP mirroring, no delivery yet.
+
+    The behavior is asserted natively by src/rt/cpu_lle_selftest.c; these pin
+    the source contract that keeps it fail-closed and tier-symmetric."""
+
+    def test_header_declares_the_intc_api(self):
+        text = CPU_LLE_H.read_text(encoding="utf-8")
+        for proto in (r"int\s+sr_intc_init\s*\(\s*const\s+SrIntcConfig\s*\*",
+                      r"void\s+sr_intc_reset\s*\(\s*void\s*\)",
+                      r"int\s+sr_intc_raise\s*\(\s*unsigned",
+                      r"int\s+sr_intc_clear\s*\(\s*unsigned",
+                      r"int\s+sr_intc_set_enable_mask\s*\(\s*uint32_t",
+                      r"uint32_t\s+sr_intc_pending_mask\s*\(\s*void\s*\)",
+                      r"uint32_t\s+sr_intc_enable_mask\s*\(\s*void\s*\)",
+                      r"int\s+sr_intc_cpu_pending\s*\(\s*struct\s+CpuState\s*\*"):
+            self.assertRegex(text, proto)
+        config = re.search(r"typedef struct SrIntcConfig \{(.*?)\} SrIntcConfig;", text, re.DOTALL)
+        self.assertIsNotNone(config)
+        self.assertIn("source_count", config.group(1))
+        self.assertIn("cpu_ip_bit", config.group(1))
+        # IP0/IP1 are the guest-writable software pair; the controller drives IP2..IP7.
+        self.assertRegex(text, r"#define SR_INTC_CPU_IP_MIN 2u")
+        self.assertRegex(text, r"#define SR_INTC_CPU_IP_MAX 7u")
+        self.assertRegex(text, r"#define SR_INTC_MAX_SOURCES 32u")
+
+    def test_no_runtime_source_installs_a_controller(self):
+        # Every PSP INTC property is unmeasured (spec 6.3), so nothing outside the
+        # selftests may configure one: the default stays unconfigured and fail-closed.
+        offenders = []
+        for path in sorted((ROOT / "src").rglob("*.c")):
+            if path.name.endswith("_selftest.c"):
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            text = re.sub(r"(?m)^int sr_intc_init\(", "", text)  # the definition itself
+            if re.search(r"\bsr_intc_init\s*\(", text):
+                offenders.append(str(path.relative_to(ROOT)))
+        self.assertEqual(offenders, [])
+
+    def test_reset_config_unconfigures_the_controller(self):
+        body = _c_function_body(CPU_LLE_C.read_text(encoding="utf-8"),
+                                "void sr_cpu_lle_reset_config(void)")
+        self.assertIn("sr_intc_reset();", body)
+
+    def test_poll_stays_free_of_side_effects_until_pr6(self):
+        body = _c_function_body(CPU_LLE_C.read_text(encoding="utf-8"),
+                                "int sr_cpu_poll(CpuState *s, uint32_t resume_pc)")
+        code = re.sub(r"/\*.*?\*/", "", body, flags=re.DOTALL)
+        self.assertIn("return 0;", code)
+        for forbidden in ("sr_intc_", "sr_cpu_raise_exception", "s->", "SR_FLOW_"):
+            self.assertNotIn(forbidden, code)
+
+    def test_cause_accesses_resync_the_line_in_both_directions(self):
+        text = CPU_LLE_C.read_text(encoding="utf-8")
+        for helper in ("int sr_cp0_mfc0(", "int sr_cp0_mtc0("):
+            with self.subTest(helper=helper):
+                body = _c_function_body(text, helper)
+                self.assertIn("case SR_CP0_CAUSE:", body)
+                cause_case = body.split("case SR_CP0_CAUSE:", 1)[1].split("break;", 1)[0]
+                self.assertIn("sr_intc_cpu_pending(s)", cause_case)
+
+    def test_generated_intc_fixture_uses_the_lle_cop0_helpers(self):
+        source = _emit_intc_cause_parity_fixture()
+        self.assertIn(f"void f_{INTC_CAUSE_ENTRY:08x}(CpuState *s)", source)
+        self.assertNotIn("sr_unimplemented", source)
+        self.assertEqual(len(re.findall(r"sr_cp0_mfc0\(s, \d+u, 13u, 0u,", source)), 3)
+        self.assertEqual(len(re.findall(r"sr_cp0_mtc0\(s, \d+u, 13u, 0u,", source)), 2)
+        self.assertIn("sr_cp0_mtc0(s, 0u, 13u, 0u,", source)
+
+
 class MakefileWiringTests(unittest.TestCase):
     """The new selftest is wired like the existing native selftests."""
 
@@ -1148,6 +1267,8 @@ if __name__ == "__main__":
             generated_file.write(_emit_generated_fatal_flow_fixture())
             generated_file.write("\n")
             generated_file.write(_emit_llsc_parity_fixture())
+            generated_file.write("\n")
+            generated_file.write(_emit_intc_cause_parity_fixture())
             generated_file.write("\n")
     elif len(sys.argv) == 1:
         unittest.main()
