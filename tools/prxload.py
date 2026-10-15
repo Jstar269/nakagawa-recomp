@@ -1219,16 +1219,17 @@ def read_psp_segment_sizes(path, expected_segments):
     if bss_size > MAX_ELF_IMAGE_BYTES:
         raise ValueError(f"{input_label}: invalid BSS size 0x{bss_size:x}")
 
-    # Each segment must be non-zero and within the ELF image cap (a size with the
-    # sign bit set, read as signed by some tools, is far above the cap), and their
-    # sum must stay within the 256 MiB extent, mirroring validate_psp in C.
+    # Each segment must be within the ELF image cap (a size with the sign bit set,
+    # read as signed by some tools, is far above the cap), and their sum must stay
+    # within the 256 MiB extent, mirroring validate_psp in C. A zero-size segment
+    # is a valid layout (#1006).
     segment_sizes = list(struct.unpack_from("<4I", header, 0x54))[:segment_count]
     max_seg_bytes = 256 * 1024 * 1024
     total_seg = 0
     for i, sz in enumerate(segment_sizes):
         if sz > MAX_ELF_IMAGE_BYTES:
             raise ValueError(f"{input_label}: segment {i} has invalid memory size 0x{sz:x}")
-        if sz == 0 or sz > max_seg_bytes or total_seg > max_seg_bytes - sz:
+        if sz > max_seg_bytes or total_seg > max_seg_bytes - sz:
             raise ValueError(
                 f"{input_label}: segment {i} size 0x{sz:x} is invalid or causes extent overflow"
             )

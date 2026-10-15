@@ -291,8 +291,8 @@ def _parse_psp_header(path: Path) -> tuple[dict[str, object] | None, str | None]
     if bss_size < 0:
         return None, f"invalid negative BSS size {bss_size}"
     segment_sizes = list(struct.unpack_from("<4i", data, 0x54))[:segment_count]
-    if any(size <= 0 for size in segment_sizes):
-        return None, "one or more declared PSP segment sizes are zero or negative"
+    if any(size < 0 for size in segment_sizes):
+        return None, "one or more declared PSP segment sizes are negative"
     return {
         "segment_count": segment_count,
         "bss_size": bss_size,

@@ -190,21 +190,24 @@ class PspHeaderValidationTests(unittest.TestCase):
             self.assertIsNone(metadata)
             self.assertIn("negative BSS size", error or "")
 
-    def test_rejects_zero_segment_size(self) -> None:
+    def test_accepts_zero_size_trailing_segment(self) -> None:
+        # A ~PSP module may declare a zero-size second segment after a non-empty
+        # first one; the container validator and prxload accept it (#1006).
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "EBOOT.BIN"
-            write_psp_header_fields(path, segment_sizes=(0,))
+            write_psp_header_fields(path, segment_sizes=(0x2000, 0))
             metadata, error = nk_doctor_core._parse_psp_header(path)
-            self.assertIsNone(metadata)
-            self.assertIn("segment sizes are zero", error or "")
+            self.assertIsNone(error)
+            assert metadata is not None
+            self.assertEqual(metadata["segment_sizes"], [0x2000, 0])
 
     def test_rejects_negative_segment_size(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "EBOOT.BIN"
-            write_psp_header_fields(path, segment_sizes=(-1,))
+            write_psp_header_fields(path, segment_sizes=(0x2000, -1))
             metadata, error = nk_doctor_core._parse_psp_header(path)
             self.assertIsNone(metadata)
-            self.assertIn("zero or negative", error or "")
+            self.assertIn("segment sizes are negative", error or "")
 
 
 class PrivateInputTests(unittest.TestCase):
