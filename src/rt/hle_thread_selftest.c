@@ -268,6 +268,7 @@ uint32_t sr_vblank_arg(void);
 #define NID_SCE_KERNEL_SET_ALARM 0x6652b8cau
 #define NID_SCE_KERNEL_CANCEL_ALARM 0x7e65b999u
 #define NID_SCE_KERNEL_GET_VTIMER_TIME 0x034a921fu
+#define NID_SCE_KERNEL_SET_VTIMER_TIME 0x542ad630u
 #define NID_SCE_KERNEL_FREE_MEMORY_BLOCK 0x50f61d8au
 #define NID_SCE_KERNEL_GET_MEMORY_BLOCK_ADDR 0xdb83a952u
 #define NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK 0xfe707fdfu
@@ -3612,7 +3613,6 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
         uint32_t error;
         const char *name;
     } refused[] = {
-        {NID_SCE_KERNEL_GET_VTIMER_TIME, 0x80020002u, "sceKernelGetVTimerTime"},
         {NID_SCE_GE_SAVE_CONTEXT, 0x80020002u, "sceGeSaveContext"},
         {NID_SCE_GE_RESTORE_CONTEXT, 0x80020002u, "sceGeRestoreContext"},
         {NID_SCE_KERNEL_LOAD_EXEC, 0x80020002u, "sceKernelLoadExec"},
@@ -4635,9 +4635,6 @@ static void test_unregistered_batch_refusals(void) {
         uint32_t error;
         const char *name;
     } refused[] = {
-        {0x20fff560u, 0x80020002u, "sceKernelCreateVTimer"},
-        {0xc68d9437u, 0x80020002u, "sceKernelStartVTimer"},
-        {0x328f9e52u, 0x80020002u, "sceKernelDeleteVTimer"},
         {0x542ad630u, 0x80020002u, "sceKernelSetVTimerTime"},
         {0x7ed59bc4u, 0x80020002u, "sceDisplaySetHoldMode"},
         {0x77ed8b3au, 0x80020002u, "sceDisplayWaitVblankStartMultiCB"},
@@ -14328,6 +14325,119 @@ static void test_ctrl_read_latch(void) {
     expect(ctrl_read_latch(0u) == SCE_KERNEL_ILLEGAL_ADDR_ERR,
            "a null latch pointer returns ILLEGAL_ADDR");
     sr_hle_test_ctrl_latch_reset();
+}
+
+/* sceCtrlPeekLatch (0xb1d0e5cd): the same transition latch as sceCtrlReadLatch, but a peek leaves the
+ * latch cursor alone, so a pending transition stays pending until a read consumes it. Measured on the
+ * PSP-3000 6.61 oracle 2026-10-15 (record PSP-HLE-CTRL-LATCH-001, cases latch-peek-initial and
+ * latch-peek-after-poll): with no input the peek writes make, break and press 0 and release
+ * 0xFFFFFFFF. That record cannot tell clearing from keeping, because its release field stays
+ * saturated; the non-clearing contract here is the project's model, not a hardware cell. */
+#define NID_CTRL_PEEK_LATCH 0xb1d0e5cdu
+static uint32_t ctrl_peek_latch(uint32_t out) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = out;
+    return sr_syscall(&cpu, NID_CTRL_PEEK_LATCH);
+}
+
+static void test_ctrl_peek_latch_keeps_the_latch(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ctrl_latch_reset();
+
+    for (uint32_t i = 0u; i < 16u; i++) MEM_W8(CTRL_LATCH_OUT + i, 0xa5u);
+    expect(ctrl_peek_latch(CTRL_LATCH_OUT) == 0u &&
+               MEM_R32(CTRL_LATCH_OUT) == 0u && MEM_R32(CTRL_LATCH_OUT + 12u) == 0xffffffffu,
+           "sceCtrlPeekLatch with no input reports no transitions and all buttons released");
+
+    sr_hle_test_ctrl_push_sample(PSP_CTRL_CROSS_BIT);
+    expect(ctrl_peek_latch(CTRL_LATCH_OUT) == 1u &&
+               MEM_R32(CTRL_LATCH_OUT) == PSP_CTRL_CROSS_BIT &&
+               MEM_R32(CTRL_LATCH_OUT + 8u) == PSP_CTRL_CROSS_BIT,
+           "sceCtrlPeekLatch reports the CROSS press that is pending since the last read");
+    expect(ctrl_peek_latch(CTRL_LATCH_OUT) == 1u && MEM_R32(CTRL_LATCH_OUT) == PSP_CTRL_CROSS_BIT,
+           "a second sceCtrlPeekLatch still reports the same press: a peek does not clear the latch");
+    expect(ctrl_read_latch(CTRL_LATCH_OUT) == 1u && MEM_R32(CTRL_LATCH_OUT) == PSP_CTRL_CROSS_BIT,
+           "sceCtrlReadLatch after the peeks still reports the press it has not yet consumed");
+    expect(ctrl_read_latch(CTRL_LATCH_OUT) == 0u && MEM_R32(CTRL_LATCH_OUT) == 0u,
+           "sceCtrlReadLatch consumes the press: the next read reports nothing new");
+    expect(ctrl_peek_latch(CTRL_LATCH_OUT) == 0u && MEM_R32(CTRL_LATCH_OUT) == 0u,
+           "sceCtrlPeekLatch after the consuming read reports nothing new");
+    expect(ctrl_peek_latch(0u) == SCE_KERNEL_ILLEGAL_ADDR_ERR,
+           "a null latch pointer returns ILLEGAL_ADDR from sceCtrlPeekLatch");
+    sr_hle_test_ctrl_latch_reset();
+}
+
+/* sceKernelDevkitVersion (0x3fc9ae6a): PSP-3000 6.61 oracle 2026-10-15, record PSP-SYSTEM-001 (case
+ * model-profile), measured word 0x06060110. The literal here is the measurement; the handler returns
+ * SR_PSP_FIRMWARE_DEVKIT_VERSION from src/rt/sdkver.h, so a drift in either one fails this test. */
+#define NID_KERNEL_DEVKIT_VERSION 0x3fc9ae6au
+static void test_kernel_devkit_version_measured(void) {
+    reset_fixture();
+    sr_hle_init();
+    expect(td24b_dispatch4(NID_KERNEL_DEVKIT_VERSION, 0u, 0u, 0u, 0u) == 0x06060110u,
+           "sceKernelDevkitVersion returns the 6.61 devkit word 0x06060110 (PSP-3000 6.61 oracle 2026-10-15)");
+    expect(td24b_dispatch4(NID_KERNEL_DEVKIT_VERSION, 0u, 0u, 0u, 0u) == 0x06060110u,
+           "sceKernelDevkitVersion is stable across repeated calls");
+}
+
+/* scePower clock identity getters: PSP-3000 6.61 oracle 2026-10-15, record PSP-HLE-POWER-001 (cases
+ * pll-clock-float, cpu-clock-float, cpu-clock-alias, bus-clock-int, bus-clock-float). The defaults are
+ * PLL 222, CPU 222 and bus 111 MHz. The Float getters return single-precision bits 0x435E0000 (222.0)
+ * and 0x42DE0000 (111.0) in $f0. The Float getters report the same retained clock state as the Int
+ * getters, so they follow a Set call; the Set-then-read values are the modelled state, not a measured
+ * cell, because the oracle makes no Set call. */
+#define NID_SCE_POWER_GET_PLL_FLOAT     0xea382a27u
+#define NID_SCE_POWER_GET_CPU_FLOAT     0xb1a52c83u
+#define NID_SCE_POWER_GET_BUS_FLOAT     0x9badb3ebu
+#define NID_SCE_POWER_GET_CPU_ALIAS     0xfee03a2fu
+#define NID_SCE_POWER_GET_BUS_INT_ALIAS 0xbd681969u
+
+static uint32_t power_float_dispatch(uint32_t nid, uint32_t *bits) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.fi[0] = 0xdeadbeefu;   /* poison $f0 so a handler that skips the float write is caught */
+    uint32_t ret = sr_syscall(&cpu, nid);
+    *bits = cpu.fi[0];
+    return ret;
+}
+
+static uint32_t float_bits_of(float v) {
+    uint32_t b;
+    memcpy(&b, &v, sizeof b);
+    return b;
+}
+
+static void test_power_identity_getters_measured(void) {
+    uint32_t bits = 0u;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_power_reset();
+
+    expect(power_float_dispatch(NID_SCE_POWER_GET_PLL_FLOAT, &bits) == 0u && bits == 0x435e0000u,
+           "scePowerGetPllClockFrequencyFloat writes 222.0 (0x435E0000) in $f0");
+    expect(power_float_dispatch(NID_SCE_POWER_GET_CPU_FLOAT, &bits) == 0u && bits == 0x435e0000u,
+           "scePowerGetCpuClockFrequencyFloat writes 222.0 (0x435E0000) in $f0");
+    expect(power_float_dispatch(NID_SCE_POWER_GET_BUS_FLOAT, &bits) == 0u && bits == 0x42de0000u,
+           "scePowerGetBusClockFrequencyFloat writes 111.0 (0x42DE0000) in $f0");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_ALIAS, 0u, 0u, 0u, 0u) == 222u,
+           "scePowerGetCpuClockFrequency (0xfee03a2f) answers the 222 MHz CPU clock");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT_ALIAS, 0u, 0u, 0u, 0u) == 111u,
+           "scePowerGetBusClockFrequencyInt (0xbd681969) answers the 111 MHz bus clock");
+
+    expect(td24b_dispatch4(NID_SCE_POWER_SET_CLOCK, 333u, 300u, 150u, 0u) == 0u,
+           "scePowerSetClockFrequency accepts 333/300/150 for the float-follow check");
+    expect(power_float_dispatch(NID_SCE_POWER_GET_PLL_FLOAT, &bits) == 0u && bits == float_bits_of(333.0f),
+           "the PLL float getter follows the retained PLL request (333.0)");
+    expect(power_float_dispatch(NID_SCE_POWER_GET_CPU_FLOAT, &bits) == 0u && bits == float_bits_of(300.0f),
+           "the CPU float getter follows the retained CPU request (300.0)");
+    expect(power_float_dispatch(NID_SCE_POWER_GET_BUS_FLOAT, &bits) == 0u && bits == float_bits_of(150.0f),
+           "the bus float getter follows the retained bus request (150.0)");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_ALIAS, 0u, 0u, 0u, 0u) == 300u &&
+               td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT_ALIAS, 0u, 0u, 0u, 0u) == 150u,
+           "the CPU alias and the bus Int alias follow the same retained request");
+    sr_hle_test_power_reset();
 }
 
 static void test_ctrl_sample_timestamp_microsecond_contract(void) {
@@ -26577,7 +26687,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
            "refused call returns its named error and the guest keeps running");
-    expect(sr_syscall(&cpu, (uint32_t)NID_SCE_KERNEL_GET_VTIMER_TIME) == 0x80020002u,
+    expect(sr_syscall(&cpu, (uint32_t)NID_SCE_KERNEL_SET_VTIMER_TIME) == 0x80020002u,
            "a second named refusal returns its own error and the guest keeps running");
     expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
            "a repeated refusal returns the same error");
@@ -26605,7 +26715,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     expect(strstr(bundle, needle) != NULL, "bundle keeps the first refused NID in its own field");
     snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 2}", 0x1579a159u);
     expect(strstr(bundle, needle) != NULL, "bundle lists each refused NID with its count");
-    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 1}", (uint32_t)NID_SCE_KERNEL_GET_VTIMER_TIME);
+    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 1}", (uint32_t)NID_SCE_KERNEL_SET_VTIMER_TIME);
     expect(strstr(bundle, needle) != NULL, "bundle lists the second refused NID");
     remove(output);
     sr_flight_test_disable();
@@ -27701,6 +27811,211 @@ static int hle_selftest_main(int argc, char **argv);
  * FBSNAP build/snapshots tree, the framebuffer dumps), so a checkout-root working directory
  * would receive them, and the original is restored on every return. The modes that take path
  * arguments (--psp-oracle, --exit-game-poisoned) keep the caller's working directory. */
+/* ---- VTimer lifecycle and query surface -------------------------------------------------------
+ * PSP-HLE-VTIMER-001 (PSP-3000, firmware 6.61, 2026-10-15, PR #1003 record), measured: Create
+ * returns a valid UID; Start returns 0, also on a restart, and 1 while already running; Stop
+ * returns 1 while running and 0 when not started; Delete of a running timer returns 0; Refer and
+ * Delete on the deleted UID return 0x800201BE; Refer fills active, base, current and reads
+ * schedule, handler and common as 0. The elapsed-time unit (microseconds) is assumed, not cited,
+ * and base = system time at start is the project model. The timer reads guest time from the
+ * scheduler, so these tests drive it with sr_hle_advance_time in turbo mode, where each reading is
+ * exact. Every other value asserted here is this runtime's own model and is marked in hle.c. */
+#define NID_VT_CREATE           0x20fff560u
+#define NID_VT_DELETE           0x328f9e52u
+#define NID_VT_START            0xc68d9437u
+#define NID_VT_STOP             0xd0aeee87u
+#define NID_VT_GET_BASE         0xb3a59970u
+#define NID_VT_REFER            0x5f32beaau
+#define NID_VT_SET_HANDLER      0xd8b299aeu
+#define NID_VT_SET_HANDLER_WIDE 0x53b00e9au
+#define NID_VT_CANCEL_HANDLER   0xd2d615efu
+#define VT_BAD_ID_ERR           0x800201beu
+#define VT_REFUSED_ERR          0x80020002u
+#define VT_NAME                 0x00242400u
+#define VT_CLOCK                0x00242500u
+#define VT_INFO                 0x00242600u
+#define VT_OPTION               0x00242700u
+#define VT_INFO_SIZE            0x48u
+
+static uint32_t vt_call(uint32_t nid, uint32_t a0, uint32_t a1) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = a0;
+    cpu.r[5] = a1;
+    return sr_syscall(&cpu, nid);
+}
+
+/* Writes name and its NUL into guest memory, then creates a timer with no option struct. */
+static uint32_t vt_create_named(const char *name) {
+    size_t n = strlen(name);
+    for (size_t k = 0; k <= n; k++) MEM_W8(VT_NAME + (uint32_t)k, (uint8_t)name[k]);
+    return vt_call(NID_VT_CREATE, VT_NAME, 0u);
+}
+
+/* GetVTimerTime into VT_CLOCK, sentinel-filled first so an unwritten output shows as a failure. */
+static uint64_t vt_time_of(uint32_t uid, const char *what) {
+    MEM_W32(VT_CLOCK, 0xfeedfaceu);
+    MEM_W32(VT_CLOCK + 4u, 0xfeedfaceu);
+    expect(vt_call(NID_SCE_KERNEL_GET_VTIMER_TIME, uid, VT_CLOCK) == 0u, what);
+    return (uint64_t)MEM_R32(VT_CLOCK) | ((uint64_t)MEM_R32(VT_CLOCK + 4u) << 32);
+}
+
+/* ReferVTimerStatus with a caller size word; bytes 4..71 are pre-filled with 0xa5. */
+static uint32_t vt_refer(uint32_t uid, uint32_t size) {
+    for (uint32_t i = 4u; i < VT_INFO_SIZE; i++) MEM_W8(VT_INFO + i, 0xa5u);
+    MEM_W32(VT_INFO, size);
+    return vt_call(NID_VT_REFER, uid, VT_INFO);
+}
+
+static int vt_bytes_are(uint32_t from, uint32_t to, uint8_t value) {
+    for (uint32_t i = from; i < to; i++)
+        if (MEM_R8(VT_INFO + i) != value) return 0;
+    return 1;
+}
+
+/* 64-bit value at VT_INFO+off (low word first), as ReferVTimerStatus writes base and current. */
+static uint64_t vt_info_u64(uint32_t off) {
+    return (uint64_t)MEM_R32(VT_INFO + off) | ((uint64_t)MEM_R32(VT_INFO + off + 4u) << 32);
+}
+
+/* 64-bit value at VT_CLOCK (low word first), as GetVTimerBase and GetVTimerTime write it. */
+static uint64_t vt_clock_u64(void) {
+    return (uint64_t)MEM_R32(VT_CLOCK) | ((uint64_t)MEM_R32(VT_CLOCK + 4u) << 32);
+}
+
+/* name[32] at VT_INFO+4 holds `want` followed by NUL bytes out to 32. */
+static int vt_name_is(const char *want) {
+    size_t n = strlen(want);
+    for (uint32_t i = 0; i < 32u; i++) {
+        uint8_t expected = i < n ? (uint8_t)want[i] : 0u;
+        if (MEM_R8(VT_INFO + 4u + i) != expected) return 0;
+    }
+    return 1;
+}
+
+static void test_vtimer_lifecycle(void) {
+    int saved_pace = s_pace_on;
+    uint64_t saved_vtime = s_vtime_us;
+    reset_fixture();
+    sr_hle_init();
+    s_pace_on = 0;          /* turbo: guest time moves only through sr_hle_advance_time */
+    s_vtime_us = 2000000u;
+
+    uint32_t vt = vt_create_named("vt-life");
+    expect((int32_t)vt > 0, "CreateVTimer returns a valid UID");
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u, "ReferVTimerStatus returns 0 on a created timer");
+    expect(MEM_R32(VT_INFO + 36u) == 0u, "ReferVTimerStatus reports active=0 when created");
+    expect(vt_info_u64(40u) == 0u, "ReferVTimerStatus reports base=0 when created");
+    expect(vt_info_u64(48u) == 0u, "ReferVTimerStatus reports current=0 when created");
+    expect(vt_call(NID_VT_STOP, vt, 0u) == 0u,
+           "StopVTimer returns 0 when the timer was not started");
+    expect(vt_time_of(vt, "GetVTimerTime succeeds on a timer that was never started") == 0u,
+           "a timer that was never started reads zero elapsed time");
+    expect(vt_call(NID_VT_START, vt, 0u) == 0u, "StartVTimer returns 0");
+    sr_hle_advance_time(1000u);
+    expect(vt_call(NID_VT_START, vt, 0u) == 1u,
+           "StartVTimer returns 1 while the timer is already running");
+    sr_hle_advance_time(2000u);
+    expect(vt_time_of(vt, "GetVTimerTime succeeds while running") == 3000u,
+           "elapsed time follows guest time while running, and a second start does not restart the interval");
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u && MEM_R32(VT_INFO + 36u) == 1u,
+           "ReferVTimerStatus reports active=1 while running");
+    expect(vt_info_u64(40u) == 2000000u,
+           "ReferVTimerStatus reports base as the start time while running");
+    expect(vt_info_u64(48u) == 3000u,
+           "ReferVTimerStatus reports current as the elapsed time while running");
+    expect(vt_call(NID_VT_STOP, vt, 0u) == 1u,
+           "StopVTimer returns 1 while the timer is running");
+    sr_hle_advance_time(4000u);
+    expect(vt_time_of(vt, "GetVTimerTime succeeds while stopped") == 3000u,
+           "elapsed time holds while the timer is stopped");
+    expect(vt_call(NID_VT_STOP, vt, 0u) == 0u,
+           "StopVTimer returns 0 on a stopped timer");
+    expect(vt_call(NID_VT_START, vt, 0u) == 0u, "StartVTimer returns 0 after a stop");
+    sr_hle_advance_time(500u);
+    expect(vt_time_of(vt, "GetVTimerTime succeeds after a restart") == 3500u,
+           "a restart resumes the count from the held value");
+
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u, "ReferVTimerStatus returns 0 on a live timer");
+    expect(MEM_R32(VT_INFO) == VT_INFO_SIZE, "ReferVTimerStatus writes the struct size word (0x48)");
+    expect(vt_name_is("vt-life"), "ReferVTimerStatus copies the create-time name and zero-fills name[32]");
+    expect(MEM_R32(VT_INFO + 36u) == 1u, "ReferVTimerStatus reports active=1 while the timer runs");
+    expect(vt_bytes_are(56u, VT_INFO_SIZE, 0u),
+           "ReferVTimerStatus reports schedule, handler and common as zero");
+    expect(vt_refer(vt, 8u) == 0u, "ReferVTimerStatus with caller size 8 returns 0");
+    expect(MEM_R32(VT_INFO) == VT_INFO_SIZE,
+           "a caller size of 8 still writes the struct size word (0x48)");
+    expect(MEM_R8(VT_INFO + 4u) == 'v' && MEM_R8(VT_INFO + 5u) == 't' &&
+               MEM_R8(VT_INFO + 6u) == '-' && MEM_R8(VT_INFO + 7u) == 'l',
+           "a caller size of 8 writes the first four name bytes");
+    expect(vt_bytes_are(8u, VT_INFO_SIZE, 0xa5u),
+           "a caller size of 8 leaves bytes 8..71 untouched");
+    expect(vt_refer(vt, 0u) == 0u && MEM_R32(VT_INFO) == 0u && vt_bytes_are(4u, VT_INFO_SIZE, 0xa5u),
+           "ReferVTimerStatus with caller size 0 returns 0 and writes nothing");
+
+    expect(vt_call(NID_VT_GET_BASE, vt, VT_CLOCK) == 0u && vt_clock_u64() == 2007000u,
+           "GetVTimerBase returns the same base as ReferVTimerStatus while running");
+
+    expect(vt_call(NID_VT_STOP, vt, 0u) == 1u, "StopVTimer returns 1 before the refer-stopped check");
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u && MEM_R32(VT_INFO + 36u) == 0u,
+           "ReferVTimerStatus reports active=0 once the timer is stopped");
+    expect(vt_info_u64(40u) == 0u, "ReferVTimerStatus reports base=0 when stopped");
+    sr_hle_advance_time(1000u);
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u, "ReferVTimerStatus returns 0 on a stopped timer");
+    uint64_t stopped_current = vt_info_u64(48u);
+    expect(stopped_current == vt_time_of(vt, "GetVTimerTime succeeds on the stopped timer"),
+           "ReferVTimerStatus current equals GetVTimerTime while stopped");
+    expect(vt_call(NID_VT_START, vt, 0u) == 0u, "StartVTimer returns 0 before the running delete");
+
+    expect(vt_call(NID_VT_DELETE, vt, 0u) == 0u, "DeleteVTimer returns 0 on a running timer");
+    expect(vt_refer(vt, VT_INFO_SIZE) == VT_BAD_ID_ERR,
+           "ReferVTimerStatus on the deleted UID returns 0x800201BE");
+    expect(vt_call(NID_VT_DELETE, vt, 0u) == VT_BAD_ID_ERR,
+           "DeleteVTimer on the deleted UID returns 0x800201BE");
+    expect(vt_call(NID_VT_START, vt, 0u) == VT_BAD_ID_ERR,
+           "StartVTimer on the deleted UID returns 0x800201BE");
+    expect(vt_call(NID_VT_STOP, vt, 0u) == VT_BAD_ID_ERR,
+           "StopVTimer on the deleted UID returns 0x800201BE");
+    expect(vt_call(NID_SCE_KERNEL_GET_VTIMER_TIME, vt, VT_CLOCK) == VT_BAD_ID_ERR,
+           "GetVTimerTime on the deleted UID returns 0x800201BE");
+
+    uint32_t vt2 = vt_create_named("vt-next");
+    expect((int32_t)vt2 > 0 && vt2 != vt,
+           "a timer created after a delete gets a fresh UID");
+    expect(vt_refer(vt, VT_INFO_SIZE) == VT_BAD_ID_ERR,
+           "the stale UID stays unknown while a new timer exists");
+    expect(vt_call(NID_VT_DELETE, vt2, 0u) == 0u, "the new timer deletes cleanly");
+
+    expect(vt_call(NID_VT_CREATE, VT_NAME, VT_OPTION) == VT_REFUSED_ERR,
+           "CreateVTimer with a non-NULL option struct is refused by name");
+
+    s_pace_on = saved_pace;
+    s_vtime_us = saved_vtime;
+}
+
+/* The VTimer handler family and the time setter stay refused by name (issue #325 gates the
+ * handlers). Each refusal is a production registration that returns its named code. */
+static void test_vtimer_refusals_are_named(void) {
+    reset_fixture();
+    sr_hle_init();
+    expect(sr_hle_test_is_registered(NID_SCE_KERNEL_SET_VTIMER_TIME),
+           "SetVTimerTime has a named refusal registration");
+    expect(sr_hle_test_is_registered(NID_VT_SET_HANDLER),
+           "SetVTimerHandler has a named refusal registration");
+    expect(sr_hle_test_is_registered(NID_VT_SET_HANDLER_WIDE),
+           "SetVTimerHandlerWide has a named refusal registration");
+    expect(sr_hle_test_is_registered(NID_VT_CANCEL_HANDLER),
+           "CancelVTimerHandler has a named refusal registration");
+    expect(vt_call(NID_SCE_KERNEL_SET_VTIMER_TIME, 0u, 0u) == VT_REFUSED_ERR,
+           "SetVTimerTime returns the named refusal");
+    expect(vt_call(NID_VT_SET_HANDLER, 0u, 0u) == VT_REFUSED_ERR,
+           "SetVTimerHandler returns the named refusal");
+    expect(vt_call(NID_VT_SET_HANDLER_WIDE, 0u, 0u) == VT_REFUSED_ERR,
+           "SetVTimerHandlerWide returns the named refusal");
+    expect(vt_call(NID_VT_CANCEL_HANDLER, 0u, 0u) == VT_REFUSED_ERR,
+           "CancelVTimerHandler returns the named refusal");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && (strcmp(argv[1], "--psp-oracle") == 0 ||
                      strcmp(argv[1], "--exit-game-poisoned") == 0))
@@ -27803,6 +28118,14 @@ static int hle_selftest_main(int argc, char **argv) {
         return s_failures ? 1 : 0;
     }
 
+    if (argc > 1 && strcmp(argv[1], "--vtimer") == 0) {
+        test_vtimer_lifecycle();
+        test_vtimer_refusals_are_named();
+        fprintf(stderr, "vtimer: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
     test_prx_export_relocation_behavior();
     test_fd_namespace();
     test_ms0_unified_namespace();
@@ -27815,6 +28138,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_ge_edram_addr_translation();
     test_named_refusals();
     test_ctrl_read_latch();
+    test_ctrl_peek_latch_keeps_the_latch();
     test_sysreg_persistence_round_trip();
     test_sysreg_corrupt_overlay();
     test_sysreg_flush_failure();
@@ -27931,6 +28255,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sema_hardware_codes();
     test_sema_refer_status();
     test_fpl_refer_status();
+    test_vtimer_lifecycle();
+    test_vtimer_refusals_are_named();
     test_lwmutex_hardware_codes();
     test_evf_hardware_codes();
     test_wait_sema_count_validation();
@@ -27946,6 +28272,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_allocate_fpl_context_precedence();
     test_atrac_context_abi();
     test_td24b_cheap_hle_batch();
+    test_kernel_devkit_version_measured();
+    test_power_identity_getters_measured();
     test_atrac_stream_ring_wrap();
     test_td24c_atrac_info_batch();
     test_td24d_hle_batch();

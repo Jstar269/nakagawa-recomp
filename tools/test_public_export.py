@@ -3,6 +3,7 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -775,10 +776,46 @@ class TestToolGitNeverDetachesMaintenance(unittest.TestCase):
     def test_isolated_environment_disables_auto_gc(self):
         env = isolated_git_env({"GIT_CONFIG_COUNT": "7", "GIT_CONFIG_KEY_0": "gc.auto",
                                 "GIT_CONFIG_VALUE_0": "6700", "PATH": "/usr/bin"})
-        self.assertEqual(env["GIT_CONFIG_COUNT"], "1")
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "3")
         self.assertEqual(env["GIT_CONFIG_KEY_0"], "gc.auto")
         self.assertEqual(env["GIT_CONFIG_VALUE_0"], "0")
         self.assertEqual(env["PATH"], "/usr/bin")
+
+    def test_isolated_environment_disables_auto_maintenance_and_detach(self):
+        env = isolated_git_env({"PATH": "/usr/bin"})
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "3")
+        self.assertEqual(env["GIT_CONFIG_KEY_1"], "maintenance.auto")
+        self.assertEqual(env["GIT_CONFIG_VALUE_1"], "false")
+        self.assertEqual(env["GIT_CONFIG_KEY_2"], "gc.autoDetach")
+        self.assertEqual(env["GIT_CONFIG_VALUE_2"], "false")
+        self.assertNotIn("GIT_CONFIG_KEY_3", env)
+
+    def test_git_in_a_repository_configured_for_maintenance_sees_it_off(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir) / "repo"
+            repo.mkdir()
+            _git(["init"], repo)
+            # The repository's own config asks for background maintenance. Without the
+            # tool's override, `git commit` spawns `git maintenance run --auto --detach`
+            # even though gc.auto=0 is set.
+            _git(["config", "maintenance.auto", "true"], repo)
+            for key, expected in (("maintenance.auto", "false"), ("gc.autoDetach", "false")):
+                with self.subTest(key=key):
+                    effective = run_git(["config", "--get", key], cwd=repo,
+                                        capture_output=True, text=True)
+                    self.assertEqual(effective.stdout.strip(), expected,
+                                     f"git config --get {key} returned rc={effective.returncode}")
+
+    def test_caller_config_entries_cannot_re_enable_maintenance(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir) / "repo"
+            repo.mkdir()
+            _git(["init"], repo)
+            caller = dict(os.environ, GIT_CONFIG_COUNT="1",
+                          GIT_CONFIG_KEY_0="maintenance.auto", GIT_CONFIG_VALUE_0="true")
+            effective = run_git(["config", "--get", "maintenance.auto"], cwd=repo, env=caller,
+                                capture_output=True, text=True)
+            self.assertEqual(effective.stdout.strip(), "false")
 
     def test_git_in_a_tool_made_repository_sees_auto_gc_off(self):
         with tempfile.TemporaryDirectory() as tmpdir:

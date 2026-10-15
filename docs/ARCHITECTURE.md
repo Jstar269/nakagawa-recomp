@@ -324,7 +324,12 @@ codegen and generated-code build profiles, so every object that includes it rebu
 `rt` only while `llbit` is set; otherwise it stores nothing and writes 0. `sc` leaves `llbit` as
 it found it (the MIPS32 Release 2 operation). Both execution tiers implement this:
 `tools/codegen.py` `_ll_sc_stmt()` and the production interpreter in `src/rt/guest_interp.c`;
-the reference interpreter in `src/ref/interp.cpp` follows the same rule.
+the reference interpreter in `src/ref/interp.cpp` follows the same rule. A PSP-3000 measured
+it (`PSP-LLSC-001`, [hardware oracle index](HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize)):
+a second `sc` after a successful one, with no new `ll`, stores and writes 1, and an `sc` to an
+address other than the one `ll` loaded also stores and writes 1, so `sc` keeps the link and
+compares no address. `src/rt/cpu_lle_selftest.c` and `src/ref/selftest.cpp` run the probe's
+three windows against those words.
 
 The MIPS32 contract clears LLbit on an exception return (ERET). On the PSP every event that can
 run other code between a thread's `ll` and its `sc` -- a thread switch, an interrupt, a callback,
@@ -496,8 +501,18 @@ A guest CALL (`jal`, `jalr rd`) is a nested native call: the callee's frame live
 thread's host fiber until its `jr $ra` returns, so host stack use follows guest call depth. The
 dispatcher's host-stack preflight stops a dispatched transfer at a named
 `host-fiber-stack-exhausted` boundary before the fiber is exhausted. A direct `jal` to a known
-body does not pass through the dispatcher, so unbounded direct recursion is not preflighted and
-can still exhaust the fiber without a named boundary.
+body does not pass through the dispatcher, so every generated body that makes such a call opens
+with `SR_HOST_STACK_CHECK` (#855): one test of its frame address against
+`sr_host_stack_window`, the cached range of the running fiber's stack that still leaves the
+dispatcher's reserve. A frame outside the window asks the runtime, which takes the dispatcher's
+own measurement and either stops at the same named boundary with the same report or refills the
+window for the running stack. Every native recursion of generated code passes through a direct
+call or the dispatcher, so leaves and dispatch-only bodies carry no check. The window spans one
+stack, so after a fiber switch the first checked entry refills it, and the scheduler clears it
+when it creates a guest stack that may reuse a released range. Behind the check, each POSIX
+coroutine stack has a `PROT_NONE` guard band below it, as Windows fiber stacks have a guard page,
+so an overrun that escapes the check faults instead of writing into the next guest thread's
+stack.
 
 A guest TAIL transfer (`j`, `jr` on a register other than `$ra`, `jalr $zero`, a branch out of
 the body, or a fall-through into another entry) does not nest (#855). The body records the

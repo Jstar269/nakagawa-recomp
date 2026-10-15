@@ -184,6 +184,12 @@ static inline int32_t sr_u32_as_s32(uint32_t bits) {
 #define SR_FCR31_RM_MASK 0x00000003u
 #define SR_FCR31_FCC0    0x00800000u
 #define SR_FCR31_FS      0x01000000u
+/* FCR31 bits 25..31 (FCC1..FCC7 on MIPS IV) do not exist on the PSP FPU: a
+ * guest ctc1 of 0xFE800000 reads back 0x00800000 (PSP-FPU-CC-001, PSP-3000 /
+ * 6.61, 2026-10-15), so ctc1 drops them and cfc1 never returns them. Only these
+ * seven bits were measured as not writable; no other FCR31 bit is masked. The
+ * generated C spells the same word as a literal (tools/codegen.py, ctc1). */
+#define SR_FCR31_CTC1_UNWRITABLE 0xfe000000u
 
 #if defined(__SSE2__) || defined(_M_X64) || defined(__i386__)
 #include <xmmintrin.h>

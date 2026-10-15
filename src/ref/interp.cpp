@@ -384,10 +384,12 @@ static StopReason Execute(CpuState *s, Memory *mem, uint32_t op) {
 					return StopReason::kRunning;
 				case 0x04: s->fi[fs] = s->r[ft]; return StopReason::kRunning;     // mtc1
 				case 0x06:
-					// ctc1 stores the guest FCSR wholesale; the cached fpcond
+					// ctc1 stores the guest FCSR except bits 25..31, which the
+					// PSP FPU does not implement (PSP-FPU-CC-001: a ctc1 of
+					// 0xFE800000 reads back 0x00800000). The cached fpcond
 					// mirror resyncs so FCC0 stays architectural in fcr31.
 					if (fs == 31) {
-						s->fcr31 = s->r[ft];
+						s->fcr31 = s->r[ft] & ~SR_FCR31_CTC1_UNWRITABLE;
 						s->fpcond = (s->fcr31 >> 23) & 1u;
 					}
 					return StopReason::kRunning;  // ctc1

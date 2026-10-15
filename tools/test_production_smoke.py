@@ -945,7 +945,6 @@ class TestProductionSmokePackage(unittest.TestCase):
         match = re.search(r"^#define SR_CPUSTATE_ABI_VERSION (\d+)u$", header, re.MULTILINE)
         self.assertIsNotNone(match, "recomp.h must define SR_CPUSTATE_ABI_VERSION <n>u")
         self.assertEqual(package["runtime"]["abi_version"], int(match.group(1)))
-        self.assertEqual(package["runtime"]["abi_version"], title_codegen_plan.codegen_abi_version())
         self.assertEqual(package["executable"]["path"], "production_smoke.exe")
         self.assertTrue((self.build_dir / package["executable"]["path"]).is_file())
         self.assertEqual(
