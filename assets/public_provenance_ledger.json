@@ -4984,7 +4984,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2f6c40b4689da40c2e2b8c82b24f680970711bfb8719483ae5f03564688043fc"
+      "sha256": "0bb2a42caa5a93a107e259bc3f42c404d0201397b2279ac1e8419c3a83863106"
     },
     {
       "path": "src/rt/h264_mf.c",
@@ -9324,7 +9324,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1e9fdca720948a8168f8aa19877a3f5af247e51a14b69dae190efe3c628f7ac8"
+      "sha256": "9670cb1b136313f5c111f757c3a82ea5264209a4445b59295acd71b65d0e4ad2"
     },
     {
       "path": "tools/test_profile_zero_e2e.py",
