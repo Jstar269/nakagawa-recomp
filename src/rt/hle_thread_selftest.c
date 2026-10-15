@@ -15608,13 +15608,14 @@ static void test_ge_guest_sentinel(void) {
     expect((qid2 & 0xFF000000u) == 0x35000000u,
            "sceGeListEnQueue with stall returns valid queue id");
 
-    /* Stalled list sync with syncType=1 returns 3 (STALLING; PSP-GE-CONTROL-001,
-     * PSP-measured in the eligible 2026-10-15 re-run) */
+    /* Stalled list sync with syncType=1 returns 3 (STALLING). The measured cell
+     * (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run) is a list stalled at its start
+     * address; a list stalled partway through, as here, is UNMEASURED. */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid2;
     cpu.r[5] = 1;
     expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 3u,
-           "sceGeListSync(syncType=1) reports list is currently stalled (3, measured)");
+           "sceGeListSync(syncType=1) reports list is currently stalled (3; a partway stall is UNMEASURED)");
 
     /* Framebuffer is cleared to white, but purple rect is NOT drawn yet */
     expect(fb[0 * fb_stride + 0] == white_color, "stalled list executed clear to white");
@@ -15751,12 +15752,12 @@ static void test_ge_break_continue(void) {
     cpu.r[4] = qid;
     cpu.r[5] = 1u;
     expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 3u,
-           "ListSync peek reports stalled (3, measured)");
+           "ListSync peek reports stalled (3; the measured read follows the BUSY dequeue)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;
     expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 3u,
-           "DrawSync peek reports stalled (3, measured)");
+           "DrawSync peek reports stalled (3; the measured read follows the BUSY dequeue)");
 
     /* sceGeListDeQueue on a stalled list returns BUSY (0x80000021, measured) and
      * leaves the list stalled: the next sync still reports 3. */
@@ -15771,18 +15772,20 @@ static void test_ge_break_continue(void) {
     expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 3u,
            "ListSync still reports stalled (3) after a BUSY dequeue");
 
-    /* Pause with mode 0: returns the paused list's queue id (same eligible re-run) */
+    /* Pause with mode 0 returns the paused list's queue id. The measured cell (same eligible
+     * re-run) breaks a list running mid-draw; breaking a stalled list, as here, is UNMEASURED
+     * and follows the same rule. */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0u;
     cpu.r[5] = 0u;
     expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == qid,
-           "sceGeBreak mode 0 pauses the display list and returns its queue id (measured)");
+           "sceGeBreak mode 0 pauses the display list and returns its queue id (stalled-list break UNMEASURED)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid;
     cpu.r[5] = 1u;
     expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 4u,
-           "ListSync peek reports paused (4, measured)");
+           "ListSync peek reports paused (4; a pause out of a stall is UNMEASURED)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;

@@ -18547,10 +18547,10 @@ void ge_finish_latch_assist(void) {
  * acceptance-eligible 2026-10-15 re-run of the revised ge-break-continue probe (commit
  * c642039a, PSP-GE-CONTROL-001).  Each comment names the list state the cell measured;
  * a state the probe did not reach is marked UNMEASURED where the value is applied. */
-#define GE_LIST_SYNC_STALLED 3u     /* sceGeListSync(qid, 1) on a stalled list; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
-#define GE_LIST_SYNC_PAUSED 4u      /* sceGeListSync(qid, 1) on a paused list; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
-#define GE_DRAW_SYNC_STALLED 3u     /* sceGeDrawSync(1) with a stalled list; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
-#define GE_DRAW_SYNC_PAUSED 2u      /* sceGeDrawSync(1) with a paused list; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
+#define GE_LIST_SYNC_STALLED 3u     /* sceGeListSync(qid, 1) on a list stalled at its start address, read after a BUSY dequeue; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a). A list stalled partway through is UNMEASURED and reads the same value */
+#define GE_LIST_SYNC_PAUSED 4u      /* sceGeListSync(qid, 1) on a list sceGeBreak(0) paused mid-draw; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a). A list paused out of a stall, the only pause the runtime produces, is UNMEASURED and reads the same value */
+#define GE_DRAW_SYNC_STALLED 3u     /* sceGeDrawSync(1) with one list stalled at its start address, read after a BUSY dequeue; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a). A list stalled partway through is UNMEASURED */
+#define GE_DRAW_SYNC_PAUSED 2u      /* sceGeDrawSync(1) with a list sceGeBreak(0) paused mid-draw; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a). A list paused out of a stall is UNMEASURED */
 #define GE_ERROR_NO_ACTIVE_LIST 0x80000020u /* sceGeBreak(0) with no active list; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
 #define GE_ERROR_INVALID_BREAK_MODE 0x80000107u /* sceGeBreak(-1), parameter untouched; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
 #define GE_ERROR_INVALID_LIST_ID 0x80000100u /* sceGeListSync(qid, 1) on a list a sceGeBreak(1) reset removed; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
@@ -18807,6 +18807,8 @@ static uint32_t h_GeListSync(CpuState *s) {
                            qid, 0u, 0u, syncType);
     if (ge_log_on())
         fprintf(stderr, "GE_SYNC: qid=0x%08x NOT FOUND in list table\n", qid);
+    /* An unknown queue id returns 0. This predates the eligible re-run and is UNMEASURED: the
+     * measured 0x80000100 covers only a list that a sceGeBreak(1) reset removed. */
     return 0;
 }
 
@@ -18914,7 +18916,13 @@ static uint32_t h_GeBreak(CpuState *s) {
         if (ge_log_on())
             fprintf(stderr, "GE_BREAK: paused list_id=0x%08x cur_pc=0x%08x\n",
                     s_ge_lists[active_slot].uid, s_ge_lists[active_slot].current_pc);
-        /* PSP-measured (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run): a mode 0 break returns the queue id of the list it paused. */
+        /* PSP-measured (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run): a mode 0 break of a list
+         * running mid-draw returned that list's queue id. Breaking a stalled list, the only active
+         * list the runtime has, is UNMEASURED and returns its queue id by the same rule. Known
+         * divergence: a list enqueued with no stall address runs to completion inside
+         * sceGeListEnQueue, so on the measured sequence the runtime has no active list and returns
+         * 0x80000020, and the following ListSync and DrawSync peeks read 0 where the PSP read the
+         * queue id, 4 and 2. */
         return s_ge_lists[active_slot].uid;
     } else {
         /* Mode 1: reset every queue and return 0. PSP-measured (PSP-GE-CONTROL-001, eligible

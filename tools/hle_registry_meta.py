@@ -237,7 +237,7 @@ HANDLER_METADATA = {
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_ge_break_continue",
         ],
-        "limitation": "models synchronous display list pause (mode 0) and queue reset (mode 1); argument and parameter buffer inspection are K1/read checked only, asynchronous hardware command boundary timing remains unmodeled (#341); PSP-measured in the eligible PSP-GE-CONTROL-001 2026-10-15 re-run: the mode 0 queue id, the 0x80000020 no-active-list result, the invalid-mode result 0x80000107 (mode -1 only), the paused list (4) sync status, the mode 1 result 0 with one stalled list and the 0x80000100 sync result for a list the reset removed; a mode 1 reset of a paused list and modes above 1 are unmeasured and follow the same codes",
+        "limitation": "models synchronous display list pause (mode 0) and queue reset (mode 1); argument and parameter buffer inspection are K1/read checked only, asynchronous hardware command boundary timing remains unmodeled (#341); PSP-measured in the eligible PSP-GE-CONTROL-001 2026-10-15 re-run: the 0x80000020 no-active-list result, the invalid-mode result 0x80000107 (mode -1 only), the mode 0 queue id and the paused sync statuses (4, 2) for a list broken mid-draw, the mode 1 result 0 with one list stalled at its start, and the 0x80000100 sync result for a list the reset removed; a list enqueued with no stall address completes inside sceGeListEnQueue, so the runtime cannot reproduce the mid-draw break and returns 0x80000020 with sync peeks of 0 on that sequence; breaking a stalled list, a mode 1 reset of a paused list and modes above 1 are unmeasured and follow the same codes",
     },
     "h_GeContinue": {
         "status": "partial",
