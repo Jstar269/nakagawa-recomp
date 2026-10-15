@@ -152,6 +152,25 @@ LLSC_SEQUENCE = (
     NOP,                     # 0x34
 )
 
+# The three link windows PSP-LLSC-001 measured on a PSP-3000 (fixtures/psp_oracle/probe.c,
+# run_llsc_link), one 16-byte row per cell with word A at +0 and word B at +4. Mirrored
+# word-for-word by LLSC_MEASURED_SEQUENCE in src/rt/cpu_lle_selftest.c, which pins both
+# lanes to the words the console returned.
+LLSC_MEASURED_DEFAULT_ENTRY = 0x08810B00
+LLSC_MEASURED_LLE_ENTRY = 0x08810B80
+T5, T6 = 13, 14
+LLSC_MEASURED_SEQUENCE = (
+    _ll(A0, T0, 0),          # 0x00 llsc-control:       ll t0, 0(a0)
+    _sc(A0, T1, 0),          # 0x04                     sc t1, 0(a0)
+    _ll(A0, T2, 16),         # 0x08 llsc-second-sc:     ll t2, 16(a0)
+    _sc(A0, T3, 16),         # 0x0c                     sc t3, 16(a0)
+    _sc(A0, T4, 16),         # 0x10                     sc t4, 16(a0), no new ll
+    _ll(A0, T5, 32),         # 0x14 llsc-other-address: ll t5, 32(a0)
+    _sc(A0, T6, 36),         # 0x18                     sc t6, 36(a0)
+    JR_RA,                   # 0x1c
+    NOP,                     # 0x20
+)
+
 
 def _emit_llsc_parity_fixture():
     """Emit the LL/SC sequences in both CPU lanes for the native parity test."""
@@ -162,7 +181,9 @@ def _emit_llsc_parity_fixture():
                 (LLSC_DEFAULT_ENTRY, LLSC_SEQUENCE, False),
                 (LLSC_LLE_ENTRY, LLSC_SEQUENCE, True),
                 (LLSC_LLE_MISALIGNED_SC_ENTRY, (_sc(A0, T1, 2), JR_RA, NOP), True),
-                (LLSC_LLE_MISALIGNED_LL_ENTRY, (_ll(A0, T1, 1), JR_RA, NOP), True)):
+                (LLSC_LLE_MISALIGNED_LL_ENTRY, (_ll(A0, T1, 1), JR_RA, NOP), True),
+                (LLSC_MEASURED_DEFAULT_ENTRY, LLSC_MEASURED_SEQUENCE, False),
+                (LLSC_MEASURED_LLE_ENTRY, LLSC_MEASURED_SEQUENCE, True)):
             codegen.LLE_CPU = lle
             image = {entry + 4 * i: word for i, word in enumerate(words)}
             generated.extend(codegen.emit_function(
@@ -240,7 +261,20 @@ class LlScLleCodegenTests(unittest.TestCase):
         self.assertNotIn("sr_unimplemented", source)
         default = source.split(f"void f_{LLSC_LLE_ENTRY:08x}")[0]
         self.assertNotIn("sr_cpu_guard_access", default)
-        self.assertEqual(source.count("s->llbit = 1u;"), 2 * 3 + 1)
+        # LLSC_SEQUENCE has three ll in each lane, the misaligned-ll body one, and the
+        # PSP-LLSC-001 windows three in each lane.
+        self.assertEqual(source.count("s->llbit = 1u;"), 2 * 3 + 1 + 2 * 3)
+        self.assertIn(f"void f_{LLSC_MEASURED_DEFAULT_ENTRY:08x}(CpuState *s)", source)
+        self.assertIn(f"void f_{LLSC_MEASURED_LLE_ENTRY:08x}(CpuState *s)", source)
+
+    def test_measured_windows_mirror_the_native_selftest(self):
+        # The interpreter lane of the PSP-LLSC-001 pin runs the C copy of these words; the
+        # two copies must be the same program or the lanes would measure different things.
+        text = (ROOT / "src" / "rt" / "cpu_lle_selftest.c").read_text(encoding="utf-8")
+        body = text.split("static const uint32_t LLSC_MEASURED_SEQUENCE[] = {", 1)[1]
+        body = body.split("};", 1)[0]
+        words = tuple(int(word, 16) for word in re.findall(r"0x([0-9A-Fa-f]{8})u,", body))
+        self.assertEqual(words, LLSC_MEASURED_SEQUENCE)
 
 
 class HleDefaultPreservedTests(unittest.TestCase):

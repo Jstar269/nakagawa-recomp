@@ -927,6 +927,12 @@
     "name": "sceRtcGetCurrentTick",
     "status": "complete"
   },
+  "0x3fc9ae6a": {
+    "classification": "dedicated",
+    "handler": "h_KernelDevkitVersion",
+    "name": "sceKernelDevkitVersion",
+    "status": "partial"
+  },
   "0x402fcf22": {
     "classification": "dedicated",
     "handler": "h_WaitEventFlag",
@@ -1336,11 +1342,10 @@
     "status": "unreviewed"
   },
   "0x627e6f3a": {
-    "classification": "controlled_unsupported",
-    "handler": "h_ControlledUnsupported",
+    "classification": "dedicated",
+    "handler": "h_ReferSystemStatus",
     "name": "sceKernelReferSystemStatus",
-    "refusal_error": "0x80020002",
-    "status": "controlled_unsupported"
+    "status": "partial"
   },
   "0x6332aa39": {
     "classification": "dedicated",
@@ -2027,6 +2032,12 @@
     "name": "scePsmfPlayerDelete",
     "status": "unreviewed"
   },
+  "0x9badb3eb": {
+    "classification": "dedicated",
+    "handler": "h_PowerGetBusClockFrequencyFloat",
+    "name": "scePowerGetBusClockFrequencyFloat",
+    "status": "partial"
+  },
   "0x9c6eaad7": {
     "classification": "dedicated",
     "handler": "h_DisplayGetVcount",
@@ -2262,6 +2273,18 @@
     "name": "sceKernelLockMutex",
     "status": "unreviewed"
   },
+  "0xb1a52c83": {
+    "classification": "dedicated",
+    "handler": "h_PowerGetCpuClockFrequencyFloat",
+    "name": "scePowerGetCpuClockFrequencyFloat",
+    "status": "partial"
+  },
+  "0xb1d0e5cd": {
+    "classification": "dedicated",
+    "handler": "h_CtrlPeekLatch",
+    "name": "sceCtrlPeekLatch",
+    "status": "partial"
+  },
   "0xb240a59e": {
     "classification": "dedicated",
     "handler": "h_MpegRingbufferPut",
@@ -2430,6 +2453,12 @@
     "name": "sceKernelLoadExec",
     "refusal_error": "0x80020002",
     "status": "controlled_unsupported"
+  },
+  "0xbd681969": {
+    "classification": "dedicated",
+    "handler": "h_PowerGetBusClockFrequencyInt",
+    "name": "scePowerGetBusClockFrequencyInt",
+    "status": "unreviewed"
   },
   "0xbea46419": {
     "classification": "dedicated",
@@ -2922,6 +2951,12 @@
     "name": "sceKernelSendMbx",
     "status": "partial"
   },
+  "0xea382a27": {
+    "classification": "dedicated",
+    "handler": "h_PowerGetPllClockFrequencyFloat",
+    "name": "scePowerGetPllClockFrequencyFloat",
+    "status": "partial"
+  },
   "0xea748e31": {
     "classification": "dedicated",
     "handler": "h_ChangeCurrentThreadAttr",
@@ -3180,6 +3215,12 @@
     "handler": "h_AllocMemoryBlock",
     "name": "sceKernelAllocMemoryBlock",
     "status": "partial"
+  },
+  "0xfee03a2f": {
+    "classification": "dedicated",
+    "handler": "h_PowerGetCpuClockFrequencyInt",
+    "name": "scePowerGetCpuClockFrequency",
+    "status": "unreviewed"
   },
   "0xff5940b6": {
     "classification": "dedicated",

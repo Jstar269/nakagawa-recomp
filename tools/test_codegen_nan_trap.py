@@ -1102,6 +1102,16 @@ class Vfpu3CompareDecodeTests(unittest.TestCase):
         body = self._effect((0x6f1e6040 & ~(7 << 23)) | (5 << 23))
         self.assertIn("(_a[_i]<_b[_i])?-1.0f:((_a[_i]>_b[_i])?1.0f:0.0f)", body)
 
+    def test_vscmp_orders_a_nan_lane_by_sign_and_magnitude(self):
+        # PSP-VFPU-CMP-001: a PSP-3000 writes +1.0 for NaN vs 1.5, -1.0 for 1.5 vs NaN and
+        # -1.0 for -NaN vs 1.5. A lane with a NaN takes the raw-word branch; vsge and vslt
+        # keep the plain compare, which writes 0.0 for a NaN as the console does.
+        body = self._effect((0x6f1e6040 & ~(7 << 23)) | (5 << 23))
+        self.assertIn("if((_ab&0x7fffffffu)>0x7f800000u||(_bb&0x7fffffffu)>0x7f800000u)", body)
+        self.assertIn("_d[_i]=(_ka<_kb)?-1.0f:((_ka>_kb)?1.0f:0.0f);", body)
+        for sub in (6, 7):
+            self.assertNotIn("0x7f800000u", self._effect((0x6f1e6040 & ~(7 << 23)) | (sub << 23)))
+
     def test_vfpu4_vcmov_still_decodes_as_a_conditional_move(self):
         # vcmovt.s S000, S010, CC0: VFPU4 jump 0x15, tf=0, imm3=0, vs=1, vd=0
         body = self._effect(0xD2A00000 | (1 << 8))
