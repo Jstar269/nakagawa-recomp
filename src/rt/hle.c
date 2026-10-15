@@ -945,6 +945,10 @@ uint32_t sr_hle_test_partition_top(void) {
 static uint32_t g_sdk_version = 0;
 
 static uint32_t h_SetCompiledSdkVersion(CpuState *s) { return sr_sdkver_set(&g_sdk_version, A0); }
+/* sceKernelDevkitVersion (0x3fc9ae6a) returns the devkit version word of the modelled firmware. The
+ * value is the single SR_PSP_FIRMWARE_DEVKIT_VERSION in sdkver.h. PSP-3000 6.61 oracle 2026-10-15,
+ * record PSP-SYSTEM-001 (case model-profile), measured 0x06060110. */
+static uint32_t h_KernelDevkitVersion(CpuState *s) { (void)s; return SR_PSP_FIRMWARE_DEVKIT_VERSION; }
 #ifdef SR_HLE_THREAD_SELFTEST
 uint32_t sr_hle_test_compiled_sdk_version(void) {
     return sr_sdkver_get(&g_sdk_version);
@@ -16830,8 +16834,13 @@ static uint32_t h_CtrlPeekBufferPositive(CpuState *s) {
  * same 32-bit convention the negative buffer read uses. Samples overwritten before a latch read are
  * not reported one by one: the ring keeps the latest CTRL_RING - 1 samples, and a transition inside
  * an overwritten span is lost. */
-static uint32_t h_CtrlReadLatch(CpuState *s) {
-    uint32_t out = A0;
+/* One latch computation for sceCtrlReadLatch (consume = 1) and sceCtrlPeekLatch (consume = 0). A read
+ * advances the latch cursor, so the transitions it reported are consumed. A peek writes the same words
+ * and leaves the cursor alone, so a pending transition is still reported by the next read. PSP-3000 6.61
+ * oracle 2026-10-15, record PSP-HLE-CTRL-LATCH-001 (cases latch-peek-initial, latch-peek-after-poll): the
+ * no-input words are make/break/press 0 and release 0xFFFFFFFF. The clear-or-keep distinction is not
+ * measured there (the release field stays saturated). */
+static uint32_t ctrl_latch_compute(uint32_t out, int consume) {
     uint32_t produced = s_ctrl_sample_count - s_latch_seen_count;
     uint32_t retained = produced < (uint32_t)(CTRL_RING - 1) ? produced : (uint32_t)(CTRL_RING - 1);
     uint32_t prev = s_latch_prev_btn, cur = prev, make = 0u, brk = 0u;
@@ -16845,14 +16854,19 @@ static uint32_t h_CtrlReadLatch(CpuState *s) {
             prev = cur;
         }
     }
-    s_latch_prev_btn = cur;
-    s_latch_seen_count = s_ctrl_sample_count;
+    if (consume) {
+        s_latch_prev_btn = cur;
+        s_latch_seen_count = s_ctrl_sample_count;
+    }
     MEM_W32(out + 0, make);
     MEM_W32(out + 4, brk);
     MEM_W32(out + 8, cur);
     MEM_W32(out + 12, ~cur);
     return produced;
 }
+
+static uint32_t h_CtrlReadLatch(CpuState *s) { (void)s; return ctrl_latch_compute(A0, 1); }
+static uint32_t h_CtrlPeekLatch(CpuState *s) { (void)s; return ctrl_latch_compute(A0, 0); }
 
 #ifdef SR_HLE_THREAD_SELFTEST
 /* Test-build-only: push one sampling cycle with the given button field, as sr_ctrl_sample stores
@@ -22215,6 +22229,7 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0x1f803938, "sceCtrlReadBufferPositive", h_CtrlReadBuffer);
     sr_hle_register(0x3a622550, "sceCtrlPeekBufferPositive", h_CtrlPeekBufferPositive);
     sr_hle_register(0x0b588501, "sceCtrlReadLatch", h_CtrlReadLatch);
+    sr_hle_register(0xb1d0e5cd, "sceCtrlPeekLatch", h_CtrlPeekLatch);
     sr_hle_register(0x6a638d83, "sceIoRead", h_IoRead);
     sr_hle_register(0x42ec03ac, "sceIoWrite", h_IoWrite);
     sr_hle_register(0xe23eec33, "sceIoWaitAsync", h_IoWaitAsync);
@@ -22464,21 +22479,35 @@ static void hle_register_exit_game_handler(void) {
     sr_hle_register(0x05572a5f, "sceKernelExitGame", h_ExitGame);
 }
 
-/* Power-clock retained state (TD-24 batch 2): the two Int getters and the two
- * SetClockFrequency variants share one definition, reached by both
- * sr_hle_init() branches, so the executable harness pins the production
- * mapping through dispatch. The getter NIDs below are the canonical #86
- * values (0x478fe6f5 is the non-Int label; the Int alias 0xbd681969 stays
- * unregistered); the float-return shaping for the non-Int getters remains
- * tracked by #86. */
+/* Power-clock retained state (TD-24 batch 2): the Int getters, the Float getters and the two
+ * SetClockFrequency variants share one definition, reached by both sr_hle_init() branches, so the
+ * executable harness pins the production mapping through dispatch. The getter NIDs below are the
+ * canonical #86 values: 0x478fe6f5 is the non-Int label and 0xbd681969 the Int label, and both answer
+ * the same retained bus clock. 0xbd681969 was left unregistered under #86 with no reason recorded for
+ * it; the PSP-3000 6.61 oracle 2026-10-15 measured it live at 111 (record PSP-HLE-POWER-001, case
+ * bus-clock-int), so it is registered here. The Float getters write their value into $f0 (issue #86).
+ * PSP-3000 6.61 oracle 2026-10-15, record PSP-HLE-POWER-001 (cases pll-clock-float, cpu-clock-float,
+ * cpu-clock-alias, bus-clock-float). */
 static void hle_register_power_clock_handlers(void) {
     sr_hle_register(0x34f9c463, "scePowerGetPllClockFrequencyInt", h_PowerGetPllClockFrequencyInt);
     sr_hle_register(0xfdb5bfe9, "scePowerGetCpuClockFrequencyInt", h_PowerGetCpuClockFrequencyInt);
+    sr_hle_register(0xfee03a2f, "scePowerGetCpuClockFrequency", h_PowerGetCpuClockFrequencyInt);
     sr_hle_register(0x478fe6f5, "scePowerGetBusClockFrequency", h_PowerGetBusClockFrequencyInt);
+    sr_hle_register(0xbd681969, "scePowerGetBusClockFrequencyInt", h_PowerGetBusClockFrequencyInt);
+    sr_hle_register(0xea382a27, "scePowerGetPllClockFrequencyFloat", h_PowerGetPllClockFrequencyFloat);
+    sr_hle_register(0xb1a52c83, "scePowerGetCpuClockFrequencyFloat", h_PowerGetCpuClockFrequencyFloat);
+    sr_hle_register(0x9badb3eb, "scePowerGetBusClockFrequencyFloat", h_PowerGetBusClockFrequencyFloat);
     sr_hle_register(0x737486f2, "scePowerSetClockFrequency", h_PowerSetClockFrequency);
     sr_hle_register(0xebd177d6, "scePowerSetClockFrequency350", h_PowerSetClockFrequency350);
     /* Battery state query, in the shared helper so the executable harness registers it too. */
     sr_hle_register(0xd3075926, "scePowerIsLowBattery", h_PowerIsLowBattery);
+}
+
+/* sceKernelDevkitVersion (0x3fc9ae6a): one definition reached by both sr_hle_init() branches, so the
+ * executable harness dispatches the production mapping (the production-only list did not reach it).
+ * PSP-3000 6.61 oracle 2026-10-15, record PSP-SYSTEM-001 (case model-profile). */
+static void hle_register_devkit_version_handler(void) {
+    sr_hle_register(0x3fc9ae6a, "sceKernelDevkitVersion", h_KernelDevkitVersion);
 }
 
 /* TD-24 batch 4 shared families: one definition reached by both sr_hle_init()
@@ -22722,6 +22751,7 @@ void sr_hle_init(void) {
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
     hle_register_power_clock_handlers();
+    hle_register_devkit_version_handler();
     /* TD-24 batch 4 families: shared with production through the helpers, so
      * the executable harness dispatches the exact production mapping. */
     hle_register_ctrl_sampling_handlers();
@@ -22895,8 +22925,9 @@ void sr_hle_init(void) {
     /* Issue #86: the previous numeric NIDs for the four getters below were bogus (absent from
      * the PPSSPP-derived nid_names.h); they are replaced with the canonical NIDs so real title
      * imports route here instead of being unregistered, and 0x478fe6f5 is renamed to its
-     * canonical non-Int label (the Int alias is 0xbd681969 and stays unregistered). The float
-     * return shaping for the non-Int getters remains tracked by #86. */
+     * canonical non-Int label (the Int alias 0xbd681969 is registered by
+     * hle_register_power_clock_handlers, measured on the PSP-3000 6.61 oracle 2026-10-15). The Float
+     * getters now write $f0, which is tracked by #86. */
     sr_hle_register(0x2085d15d, "scePowerGetBatteryLifePercent", h_PowerGetBatteryLifePercent);
     sr_hle_register(0x1e490401, "scePowerIsBatteryCharging", h_PowerIsBatteryCharging);
     sr_hle_register(0x0afd0d8b, "scePowerIsBatteryExist", h_PowerIsBatteryExist);
@@ -22908,6 +22939,7 @@ void sr_hle_init(void) {
     sr_hle_register(0x730ed8bc, "sceKernelReferCallbackStatus", h_ReferCallbackStatus);
     hle_register_utility_module_handlers();
     sr_hle_register(0x1b4217bc, "sceKernelSetCompiledSdkVersion603_605", h_SetCompiledSdkVersion);
+    hle_register_devkit_version_handler();
 
     /* cache / misc UtilsForUser: no-ops are fine without a real cache. */
     sr_hle_register(0x79d1c3fa, "sceKernelDcacheWritebackAll", h_CacheInvalidateAll);

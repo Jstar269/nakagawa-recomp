@@ -46,6 +46,14 @@ uint32_t h_PowerGetPllClockFrequencyInt(CpuState *s) { (void)s; return s_pll_fre
 uint32_t h_PowerGetCpuClockFrequencyInt(CpuState *s) { (void)s; return s_cpu_freq; }
 uint32_t h_PowerGetBusClockFrequencyInt(CpuState *s) { (void)s; return s_bus_freq; }
 
+/* Float getters: the single-precision value of the same retained clock the Int getters report, written
+ * to $f0 (the MIPS float-return convention). $v0 has no status meaning for these, so 0 is returned.
+ * PSP-3000 6.61 oracle 2026-10-15, record PSP-HLE-POWER-001 (cases pll-clock-float, cpu-clock-float,
+ * bus-clock-float): the defaults read back as 0x435E0000 (222.0) and 0x42DE0000 (111.0). */
+uint32_t h_PowerGetPllClockFrequencyFloat(CpuState *s) { s->f[0] = (float)s_pll_freq; return 0; }
+uint32_t h_PowerGetCpuClockFrequencyFloat(CpuState *s) { s->f[0] = (float)s_cpu_freq; return 0; }
+uint32_t h_PowerGetBusClockFrequencyFloat(CpuState *s) { s->f[0] = (float)s_bus_freq; return 0; }
+
 /* scePowerSetClockFrequency(pllfreq, cpufreq, busfreq): retain the requested
  * PLL, CPU and bus clocks. Same public references as the retained state above. */
 uint32_t h_PowerSetClockFrequency(CpuState *s) {
