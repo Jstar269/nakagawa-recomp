@@ -545,6 +545,107 @@ static int check_vhdp_signed_zero_corpus(void) {
     return codegen.vi[32] != interp.vi[32] || interp.vi[32] != 0x00000000u;
 }
 
+static float vfpu3_compare_expect(unsigned sub, float a, float b) {
+    /* The stated result (issue #69 / #326): vscmp -1/0/1, vsge and vslt 1/0, a NaN operand
+     * compares false. Used only as the spec check, next to the lane-for-lane comparison. */
+    if (sub == 5u) return (a < b) ? -1.0f : ((a > b) ? 1.0f : 0.0f);
+    if (sub == 6u) return (a >= b) ? 1.0f : 0.0f;
+    return (a < b) ? 1.0f : 0.0f;
+}
+
+static int check_vfpu3_compare_parity(void) {
+    /* AOT codegen vs sr_vfpu_interp for the VFPU3 compare family (issue #326). Each vscmp,
+     * vsge and vslt width (single, pair, triple, quad) runs through the generated body and
+     * the production interpreter on identical state. The operand corpus holds ordinary values,
+     * equal pairs, signed zeros and infinities; it holds no NaN, because the console's NaN
+     * cells are UNMEASURED. Pass 0 gives every lane the same pair; pass 1 staggers the pairs
+     * across lanes. Both lanes must leave every v[] lane and vfpuCtrl[] identical, and the
+     * destination lanes must hold the stated result. */
+    static const float corpus[] = {
+        1.0f, -1.0f, 2.5f, -2.5f, 0.5f,   /* ordinary values */
+        0.0f, -0.0f,                      /* signed zeros: equal under < and >= */
+        INFINITY, -INFINITY,
+    };
+    enum { NC = (int)(sizeof(corpus) / sizeof(corpus[0])) };
+    const int first = OVERLAP_DIFF_CMP_FIRST;
+    const int count = OVERLAP_DIFF_CMP_COUNT;
+    int bad = 0;
+
+    for (int c = first; c < first + count; c++) {
+        const uint32_t w = overlap_diff_cases[c].w;
+        const char *name = overlap_diff_cases[c].name;
+        const unsigned sub = (w >> 23) & 7u;
+        const int n = vsize(w);
+        uint8_t si[4], ti[4], di[4];
+        vreg_idx((int)((w >> 8) & 0x7fu), n, si);
+        vreg_idx((int)((w >> 16) & 0x7fu), n, ti);
+        vreg_idx((int)(w & 0x7fu), n, di);
+
+        for (int pass = 0; pass < 2; pass++) {
+            int combo_bad = 0;
+            for (int p = 0; p < NC * NC && !combo_bad; p++) {
+                CpuState s0, s1, s2;
+                float a[4], b[4];
+                const int ai = p / NC, bi = p % NC;
+
+                setup_identity_compute(&s0);
+                /* Destination prefix active: saturate every lane to [-1,1]. That keeps -1/0/1 and
+                 * 0/1 unchanged, and makes the consume back to identity visible in vfpuCtrl[].
+                 * The S/T prefixes stay identity: no identity-valued non-0xe4 source prefix exists
+                 * within the 20 prefix bits (any abs, constant or negate bit changes the value). */
+                s0.vfpuCtrl[2] = 0xffu;
+                for (int i = 0; i < 128; i++) s0.vi[i] = 0xa5a5a5a5u;
+                for (int i = 0; i < n; i++) {
+                    a[i] = pass == 0 ? corpus[ai] : corpus[(ai + i) % NC];
+                    b[i] = pass == 0 ? corpus[bi] : corpus[(bi + 2 * i + 1) % NC];
+                    s0.v[si[i]] = a[i];
+                    s0.v[ti[i]] = b[i];
+                }
+                s1 = s0;
+                s2 = s0;
+                overlap_diff_run_codegen(&s1, c);
+                if (sr_vfpu_interp(&s2, w) != SR_VFPU_COMPUTE) {
+                    fprintf(stderr, "VFPU3 compare parity: %s op=0x%08x interpreter did not compute\n",
+                            name, w);
+                    combo_bad = 1;
+                    break;
+                }
+                for (int i = 0; i < 128 && !combo_bad; i++) {
+                    if (s1.vi[i] != s2.vi[i]) {
+                        fprintf(stderr,
+                                "MISMATCH vfpu3 compare parity case=%s op=0x%08x pass=%d pair=(%g,%g): "
+                                "v%d codegen=0x%08x interp=0x%08x\n",
+                                name, w, pass, a[0], b[0], i, s1.vi[i], s2.vi[i]);
+                        combo_bad = 1;
+                    }
+                }
+                for (int i = 0; i < 4 && !combo_bad; i++) {
+                    if (s1.vfpuCtrl[i] != s2.vfpuCtrl[i]) {
+                        fprintf(stderr,
+                                "MISMATCH vfpu3 compare parity case=%s op=0x%08x pass=%d: "
+                                "vfpuCtrl[%d] codegen=0x%08x interp=0x%08x\n",
+                                name, w, pass, i, s1.vfpuCtrl[i], s2.vfpuCtrl[i]);
+                        combo_bad = 1;
+                    }
+                }
+                for (int i = 0; i < n && !combo_bad; i++) {
+                    const float want = vfpu3_compare_expect(sub, a[i], b[i]);
+                    if (s1.v[di[i]] != want || s2.v[di[i]] != want) {
+                        fprintf(stderr,
+                                "MISMATCH vfpu3 compare spec case=%s op=0x%08x pass=%d lane=%d "
+                                "pair=(%g,%g): want %g codegen=%g interp=%g\n",
+                                name, w, pass, i, a[i], b[i], want, s1.v[di[i]], s2.v[di[i]]);
+                        combo_bad = 1;
+                    }
+                }
+            }
+            CHECK(!combo_bad, "VFPU3 compare: AOT codegen and sr_vfpu_interp agree on every width and operand pair");
+            if (combo_bad) bad = 1;
+        }
+    }
+    return bad;
+}
+
 static uint32_t vf2i(unsigned mode, unsigned scale) {
     /* Scalar vf2in/vf2iz/vf2iu/vf2id, vs=0 (physical v[0]), vd=1
      * (physical v[4]). Width bits 7/15 remain clear. */
@@ -753,6 +854,7 @@ int main(void) {
     bad |= check_vrot_overlap();
     bad |= check_vhdp_vmscl_overlap();
     bad |= check_overlap_diff();
+    bad |= check_vfpu3_compare_parity();
     bad |= check_vhdp_signed_zero_corpus();
     bad |= check_vf2i_conversions();
     bad |= g_failures != 0;

@@ -1458,6 +1458,15 @@ class CensusTests(unittest.TestCase):
                 hle_manifest.validate_meta(self.raw_regs)
             self.assertIn("has no evidence metadata", str(ctx.exception))
 
+    def test_complete_without_executable_evidence_is_rejected(self) -> None:
+        with mock.patch.dict(
+            meta.HANDLER_EVIDENCE,
+            {"h_DisplayGetFramePerSec": ["public ABI contract (sceDisplayGetFramePerSec)"]},
+        ):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+            self.assertIn("has no named executable evidence", str(ctx.exception))
+
     def test_complete_with_nonexistent_evidence_file_is_rejected(self) -> None:
         with mock.patch.dict(
             meta.HANDLER_EVIDENCE, {"h_DisplayGetFramePerSec": ["tools/test_nonexistent_341.py"]}

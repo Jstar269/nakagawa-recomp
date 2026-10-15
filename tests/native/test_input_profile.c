@@ -2120,6 +2120,53 @@ static void test_unbound_control_fails_closed(void) {
 }
 
 /* -----------------------------------------------------------------------------
+ * Subtest 13: Direct nk_psp_button_bitmask Mapping and Bounds Checking
+ * ------------------------------------------------------------------------- */
+
+static void test_psp_button_bitmask(void) {
+    printf("[INPUT_PROFILE_TEST] Subtest 13: Direct nk_psp_button_bitmask mapping and bounds checking...\n");
+
+    /* Valid button mappings matching NK_PSP_BTN_*_BIT constants */
+    static const struct {
+        NkPspButton btn;
+        uint32_t expected_mask;
+    } kExpectedMasks[] = {
+        { NK_PSP_BTN_SELECT,   NK_PSP_BTN_SELECT_BIT },
+        { NK_PSP_BTN_START,    NK_PSP_BTN_START_BIT },
+        { NK_PSP_BTN_UP,       NK_PSP_BTN_UP_BIT },
+        { NK_PSP_BTN_RIGHT,    NK_PSP_BTN_RIGHT_BIT },
+        { NK_PSP_BTN_DOWN,     NK_PSP_BTN_DOWN_BIT },
+        { NK_PSP_BTN_LEFT,     NK_PSP_BTN_LEFT_BIT },
+        { NK_PSP_BTN_LTRIGGER, NK_PSP_BTN_LTRIGGER_BIT },
+        { NK_PSP_BTN_RTRIGGER, NK_PSP_BTN_RTRIGGER_BIT },
+        { NK_PSP_BTN_TRIANGLE, NK_PSP_BTN_TRIANGLE_BIT },
+        { NK_PSP_BTN_CIRCLE,   NK_PSP_BTN_CIRCLE_BIT },
+        { NK_PSP_BTN_CROSS,    NK_PSP_BTN_CROSS_BIT },
+        { NK_PSP_BTN_SQUARE,   NK_PSP_BTN_SQUARE_BIT },
+        { NK_PSP_BTN_HOME,     NK_PSP_BTN_HOME_BIT },
+        { NK_PSP_BTN_HOLD,     NK_PSP_BTN_HOLD_BIT }
+    };
+
+    size_t count = sizeof(kExpectedMasks) / sizeof(kExpectedMasks[0]);
+    assert(count == NK_PSP_BTN_COUNT);
+
+    for (size_t i = 0; i < count; i++) {
+        uint32_t mask = nk_psp_button_bitmask(kExpectedMasks[i].btn);
+        assert(mask == kExpectedMasks[i].expected_mask);
+        assert(mask != 0);
+    }
+
+    /* Invalid / Out-of-bounds button inputs must fail closed (return 0) */
+    assert(nk_psp_button_bitmask((NkPspButton)-1) == 0);
+    assert(nk_psp_button_bitmask((NkPspButton)-100) == 0);
+    assert(nk_psp_button_bitmask((NkPspButton)NK_PSP_BTN_COUNT) == 0);
+    assert(nk_psp_button_bitmask((NkPspButton)(NK_PSP_BTN_COUNT + 1)) == 0);
+    assert(nk_psp_button_bitmask((NkPspButton)1000) == 0);
+
+    printf("[INPUT_PROFILE_TEST] Subtest 13 PASSED!\n");
+}
+
+/* -----------------------------------------------------------------------------
  * Main Runner
  * -------------------------------------------------------------------------- */
 
@@ -2144,6 +2191,7 @@ int main(void) {
     test_hostile_documents_fail_closed();
     test_hostile_profile_file_loader();
     test_unbound_control_fails_closed();
+    test_psp_button_bitmask();
 
     printf("=================================================================\n");
     printf("ALL HOST INPUT PROFILE TESTS PASSED SUCCESSFULLY!\n");
