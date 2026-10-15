@@ -120,6 +120,117 @@ class RetryPolicyTests(unittest.TestCase):
         self.assertEqual(self.pauses, [0.05])
 
 
+class PathIsolationTests(unittest.TestCase):
+    """Path isolation and containment tests for TemporaryDirectory."""
+
+    def setUp(self) -> None:
+        self.outside_dir = tempfile.TemporaryDirectory(prefix="scratch-isolation-outside-")
+        self.addCleanup(self.outside_dir.cleanup)
+        self.outside_path = Path(self.outside_dir.name).resolve()
+        self.outside_file = self.outside_path / "user_file.txt"
+        self.outside_file.write_text("SAFE_USER_DATA", encoding="utf-8")
+
+        self.scratch = scratch_dir.TemporaryDirectory(prefix="scratch-isolation-root-")
+        self.addCleanup(self.scratch.cleanup)
+        self.root_path = Path(self.scratch.name).resolve()
+
+    def test_valid_relative_and_subpath_writes_and_removals_stay_inside_root(self) -> None:
+        p1 = self.scratch.write_text("sub", "file1.txt", text="content1")
+        self.assertEqual(p1.read_text(encoding="utf-8"), "content1")
+        self.assertEqual(p1, self.root_path / "sub" / "file1.txt")
+
+        p2 = self.scratch.write_bytes("file2.bin", data=b"bytes2")
+        self.assertEqual(p2.read_bytes(), b"bytes2")
+
+        self.scratch.remove_path("sub", "file1.txt")
+        self.assertFalse(p1.exists())
+
+        self.scratch.remove_path("sub")
+        self.assertFalse((self.root_path / "sub").exists())
+
+    def test_symlinked_parent_directory_of_scratch_root_does_not_cause_false_escapes(self) -> None:
+        probe = self.outside_path / "symlink_parent_probe"
+        try:
+            probe.symlink_to(self.root_path, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"Host cannot create symlinks: {error}")
+
+        # Open scratch using the symlinked parent route
+        aliased = scratch_dir.TemporaryDirectory(dir=str(probe))
+        self.addCleanup(aliased.cleanup)
+
+        written = aliased.write_text("inside_alias.txt", text="aliased_ok")
+        self.assertTrue(written.exists())
+        self.assertEqual(written.read_text(encoding="utf-8"), "aliased_ok")
+
+    def test_absolute_path_outside_root_raises_and_cannot_write_or_delete_outside_file(self) -> None:
+        outside_str = str(self.outside_file)
+        with self.assertRaises(ValueError) as ctx:
+            self.scratch.write_text(outside_str, text="HACKED")
+        self.assertIn("escapes scratch directory root", str(ctx.exception))
+        self.assertEqual(self.outside_file.read_text(encoding="utf-8"), "SAFE_USER_DATA")
+
+        with self.assertRaises(ValueError) as ctx:
+            self.scratch.write_bytes(outside_str, data=b"HACKED")
+        self.assertIn("escapes scratch directory root", str(ctx.exception))
+        self.assertEqual(self.outside_file.read_text(encoding="utf-8"), "SAFE_USER_DATA")
+
+        with self.assertRaises(ValueError) as ctx:
+            self.scratch.remove_path(outside_str)
+        self.assertIn("escapes scratch directory root", str(ctx.exception))
+        self.assertTrue(self.outside_file.exists())
+
+    def test_relative_traversal_outside_root_raises_and_cannot_write_or_delete_outside_file(self) -> None:
+        rel_escape = f"../../{self.outside_path.name}/{self.outside_file.name}"
+
+        with self.assertRaises(ValueError) as ctx:
+            self.scratch.write_text(rel_escape, text="HACKED")
+        self.assertIn("escapes scratch directory root", str(ctx.exception))
+        self.assertEqual(self.outside_file.read_text(encoding="utf-8"), "SAFE_USER_DATA")
+
+        with self.assertRaises(ValueError) as ctx:
+            self.scratch.remove_path(rel_escape)
+        self.assertIn("escapes scratch directory root", str(ctx.exception))
+        self.assertTrue(self.outside_file.exists())
+
+    def test_symlink_escape_target_outside_root_raises_and_cannot_write_or_delete_outside_file(self) -> None:
+        link_path = self.root_path / "outside_link"
+        try:
+            link_path.symlink_to(self.outside_path, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"Host cannot create symlinks: {error}")
+
+        with self.assertRaises(ValueError) as ctx:
+            self.scratch.write_text("outside_link", "user_file.txt", text="HACKED")
+        self.assertIn("escapes scratch directory root", str(ctx.exception))
+        self.assertEqual(self.outside_file.read_text(encoding="utf-8"), "SAFE_USER_DATA")
+
+        with self.assertRaises(ValueError) as ctx:
+            self.scratch.remove_path("outside_link", "user_file.txt")
+        self.assertIn("escapes scratch directory root", str(ctx.exception))
+        self.assertTrue(self.outside_file.exists())
+
+    def test_remove_path_removes_an_in_root_symlink_and_keeps_its_target(self) -> None:
+        # The final component is the link itself: removing it must not delete what it names.
+        real_file = self.scratch.write_text("real.txt", text="keep me")
+        inner = self.scratch.write_text("real_dir", "inner.txt", text="keep me too")
+        file_link = self.root_path / "file_link.txt"
+        dir_link = self.root_path / "dir_link"
+        try:
+            file_link.symlink_to(real_file)
+            dir_link.symlink_to(inner.parent, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"Host cannot create symlinks: {error}")
+
+        self.scratch.remove_path("file_link.txt")
+        self.scratch.remove_path("dir_link")
+
+        self.assertFalse(os.path.lexists(file_link))
+        self.assertFalse(os.path.lexists(dir_link))
+        self.assertEqual(real_file.read_text(encoding="utf-8"), "keep me")
+        self.assertEqual(inner.read_text(encoding="utf-8"), "keep me too")
+
+
 @unittest.skipUnless(sys.platform == "win32", "only Windows refuses to remove a file that is open")
 class WindowsLockTests(unittest.TestCase):
     """The real failure: a file held open without delete sharing blocks its removal."""
