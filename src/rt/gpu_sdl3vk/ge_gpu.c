@@ -2940,7 +2940,10 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
                 (unsigned long long)s_cnt_present_gpu + s_cnt_present_cpu, (void*)t, t ? t->gpu_valid : -1,
                 t ? (int)t->fmt : -1, fmt & 3); n++; }
         s_cnt_present_cpu++; return -1; }
-    if (!target_prepare_present(t)) return -1;
+    /* A GPU-valid target that cannot be prepared may hold the frame's newest pixels, which
+     * then exist only in its image. Report it apart from the earlier -1 declines, where no
+     * target owns a newer frame, so gui_present syncs guest VRAM only here (issue #827). */
+    if (!target_prepare_present(t)) return GEGPU_PRESENT_PREP_FAILED;
     s_cnt_present_gpu++;
     stats_tick();
     /* Preserve SDL's tri-state result: 0 is a user close request, while -1 is a
@@ -4692,6 +4695,15 @@ int gegpu_snapshot_sync_selftest(void) {
         coherence_reset_targets();
         return 0;
     }
+    /* Declines that involve no GPU-valid target keep -1, so gui_present does not sync guest
+     * VRAM for them. Only a preparation failure reports GEGPU_PRESENT_PREP_FAILED (issue #827). */
+    if (gegpu_present(0x08010000u, (int)fmt, stride) != -1 ||
+        gegpu_present(base, (int)fmt, FB_W + 64u) != -1) {
+        fprintf(stderr, "gpu snapshot sync selftest: a present decline without a GPU target was not -1\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu snapshot sync selftest: present_declines_without_target_keep_code\n");
 
     if (!coherence_queue_g1_batch(base, stride, fmt) || !submit_pending() ||
         !target_prepare_present(t) || t->clean_gen == t->render_gen) {

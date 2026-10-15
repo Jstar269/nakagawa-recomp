@@ -1496,6 +1496,41 @@ class TestPresenterContract(unittest.TestCase):
         self.assertIn("goto pace;", failed)
         self.assertLess(sdl.index("GEGPU_SYNC_FAILED"), sdl.index("convert_fb(fbaddr, fmt, stride);"))
 
+    def test_prep_failed_present_syncs_guest_vram_before_convert(self):
+        """Source-shape check only (issue #827). gegpu_present() returns
+        GEGPU_PRESENT_PREP_FAILED when a GPU-valid target cannot be prepared for presentation,
+        so its newest pixels may exist only in the Vulkan image. The SDL3 branch must sync guest
+        VRAM before the fall-through convert_fb, and decline the frame when that sync fails. The
+        other -1 declines (not resident, no GPU-valid target) must not take that path."""
+        root = ROOT / "src" / "rt"
+        gui = (root / "gui.c").read_text(encoding="utf-8")
+        presenter = gui[gui.index("int gui_present"):]
+        sdl = presenter[presenter.index("if (s_sdl3) {"):presenter.index("int present_result")]
+        # The fall-through convert_fb reads guest VRAM. The preparation-failure branch must sync
+        # it first, and it must be the only branch that does so for the decline code.
+        self.assertIn("if (res == GEGPU_PRESENT_PREP_FAILED) {", sdl)
+        self.assertLess(
+            sdl.index("if (res == GEGPU_PRESENT_PREP_FAILED) {"),
+            sdl.index("convert_fb(fbaddr, fmt, stride);"),
+        )
+        prep = sdl[sdl.index("if (res == GEGPU_PRESENT_PREP_FAILED) {"):sdl.index("convert_fb(fbaddr, fmt, stride);")]
+        self.assertIn("GeGpuFbDescriptor d = { fbaddr, (uint32_t)fmt, stride, PSP_W, PSP_H };", prep)
+        self.assertIn("if (gegpu_sync_guest_fb(&d) == GEGPU_SYNC_FAILED) {", prep)
+        # FAILED declines the frame: the failure is reported to the armed capture and the branch
+        # jumps to pacing before any conversion or present happens.
+        failed = prep[prep.index("GEGPU_SYNC_FAILED"):]
+        self.assertIn("sr_capture_fail(", failed)
+        self.assertIn("goto pace;", failed)
+        # The decline code is defined once, and only the preparation failure returns it; the
+        # earlier declines (not resident, no GPU-valid target) keep -1 and never reach the sync.
+        header = (root / "gpu_sdl3vk" / "ge_gpu.h").read_text(encoding="utf-8")
+        ge = (root / "gpu_sdl3vk" / "ge_gpu.c").read_text(encoding="utf-8")
+        self.assertIn("#define GEGPU_PRESENT_PREP_FAILED (-2)", header)
+        present = ge[ge.index("int gegpu_present("):ge.index("int gegpu_sync_guest_fb(")]
+        self.assertEqual(present.count("GEGPU_PRESENT_PREP_FAILED"), 1)
+        self.assertIn("if (!target_prepare_present(t)) return GEGPU_PRESENT_PREP_FAILED;", present)
+        self.assertIn("if (!is_vram(fbaddr)) { s_cnt_present_cpu++; return -1; }", present)
+
     def test_display_smoke_offscreen_pins_inherited_sdl_selectors(self):
         inherited = {
             "SDL_VIDEO_DRIVER": "windows",
