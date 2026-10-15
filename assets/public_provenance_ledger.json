@@ -231,7 +231,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "d7b7236a4d18e59b3ff7a09577e71a44612e2c42d76e7171f84b5b5d32b04484"
+      "sha256": "577c90f38e65432b532e93f3981b2f22da1ecce36dda76fafc7c83465ba35238"
     },
     {
       "path": ".markdownlint-cli2.jsonc",
@@ -5825,7 +5825,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a4aaa6ce12fcdfbf6dc960f1c8c9afdaf7490985bf5ca7fcfa28486b92b16f2f"
+      "sha256": "53b38a8ffc55e9027a681539f7be3c22e8ee63e9661dc965b837a20d0366d2ae"
     },
     {
       "path": "src/rt/vfs_selftest.c",
@@ -5837,7 +5837,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9f6b9c7834c21754d376438fbafb43c5a6eaf2d4539d6581bece2ebf06bb134d"
+      "sha256": "c572562b600e07137dfc52dded00eae9facb698cab077b88bd049be4c7da3917"
     },
     {
       "path": "src/rt/watchpoints_file.c",

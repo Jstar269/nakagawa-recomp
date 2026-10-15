@@ -44,7 +44,7 @@
  * used (savedata, ms0 host join). */
 static inline int sr_vfs_is_dos_device_name(const char *name, size_t len) {
     static const char *const devices[] = {
-        "CON", "PRN", "AUX", "NUL",
+        "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$",
         "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
     };
@@ -56,7 +56,7 @@ static inline int sr_vfs_is_dos_device_name(const char *name, size_t len) {
      * which is at most len, so a component made only of spaces and dots reduces to
      * base_len 0 and returns 0 without reading past the component. */
     while (base_len > 0 && name[base_len - 1] == ' ') base_len--;
-    if (base_len < 3 || base_len > 4) return 0;
+    if (base_len < 3 || base_len > 7) return 0;
     for (size_t i = 0; i < sizeof(devices)/sizeof(devices[0]); i++) {
         size_t dlen = strlen(devices[i]);
         if (dlen == base_len && sr_vfs_strnicmp(name, devices[i], base_len) == 0) {
