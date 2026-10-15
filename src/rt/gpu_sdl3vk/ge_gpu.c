@@ -2940,12 +2940,17 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
                 (unsigned long long)s_cnt_present_gpu + s_cnt_present_cpu, (void*)t, t ? t->gpu_valid : -1,
                 t ? (int)t->fmt : -1, fmt & 3); n++; }
         s_cnt_present_cpu++; return -1; }
-    if (!target_prepare_present(t)) return -1;
+    /* A GPU-valid target that cannot be prepared may hold the frame's newest pixels, which
+     * then exist only in its image. Report it apart from the earlier -1 declines, where no
+     * target owns a newer frame, so gui_present syncs guest VRAM only for this code (issue #827). */
+    if (!target_prepare_present(t)) return GEGPU_PRESENT_TARGET_FAILED;
     s_cnt_present_gpu++;
     stats_tick();
-    /* Preserve SDL's tri-state result: 0 is a user close request, while -1 is a
-     * recoverable presentation failure that gui_present may route through CPU VRAM. */
     int pr = sdl3vk_present_image_ex((void *)t->img, DRAW_W * s_scale, FB_H * s_scale);
+    /* Only SDL's -1 is remapped: it is a present that failed after the target was prepared, so
+     * the target's newest pixels may exist only in its image. 0 (user close) and 1 (shown)
+     * pass through unchanged. */
+    if (pr == -1) return GEGPU_PRESENT_TARGET_FAILED;
     return pr;
 }
 
@@ -4692,6 +4697,16 @@ int gegpu_snapshot_sync_selftest(void) {
         coherence_reset_targets();
         return 0;
     }
+    /* Declines that involve no GPU-valid target keep -1, so gui_present does not sync guest
+     * VRAM for them. Only a GPU-valid target that fails to prepare or present reports
+     * GEGPU_PRESENT_TARGET_FAILED (issue #827). */
+    if (gegpu_present(0x08010000u, (int)fmt, stride) != -1 ||
+        gegpu_present(base, (int)fmt, FB_W + 64u) != -1) {
+        fprintf(stderr, "gpu snapshot sync selftest: a present decline without a GPU target was not -1\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu snapshot sync selftest: present_declines_without_target_keep_code\n");
 
     if (!coherence_queue_g1_batch(base, stride, fmt) || !submit_pending() ||
         !target_prepare_present(t) || t->clean_gen == t->render_gen) {
@@ -4704,6 +4719,49 @@ int gegpu_snapshot_sync_selftest(void) {
         coherence_reset_targets();
         return 0;
     }
+
+    /* Present-side failure (issue #827): the target is GPU-valid and newer than guest VRAM.
+     * The sdl3vk fault seam (selftest only) makes vkQueuePresentKHR report OUT_OF_DATE, which
+     * present_common resolves as -1 after the target was prepared. gegpu_present() must report
+     * GEGPU_PRESENT_TARGET_FAILED, and the sync gui_present runs before its fall-through must
+     * make guest VRAM current with the newest generation. */
+    coherence_fill_raw(guest, stride * FB_H, 4u, coherence_g0(fmt));
+    if (!coherence_queue_g1_batch(base, stride, fmt) || !submit_pending() ||
+        t->clean_gen == t->render_gen) {
+        fprintf(stderr, "gpu snapshot sync selftest: could not stage a newer GPU target\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    sdl3vk_present_fault_inject(VK_ERROR_OUT_OF_DATE_KHR);
+    int failed_present = gegpu_present(base, (int)fmt, stride);
+    sdl3vk_present_fault_clear();
+    if (failed_present != GEGPU_PRESENT_TARGET_FAILED) {
+        fprintf(stderr, "gpu snapshot sync selftest: failed present of a prepared target returned %d, "
+                        "not GEGPU_PRESENT_TARGET_FAILED\n", failed_present);
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu snapshot sync selftest: present_target_failure_reports_target_failed\n");
+    if (gegpu_sync_guest_fb(&d) != GEGPU_SYNC_OK || t->clean_gen != t->render_gen ||
+        memcmp(guest, &(uint32_t){ coherence_g1(fmt) }, sizeof(uint32_t)) != 0) {
+        fprintf(stderr, "gpu snapshot sync selftest: guest VRAM was not current after a target failure\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu snapshot sync selftest: present_target_failure_synced_guest_vram\n");
+
+    /* Controls: a present that is shown, and one that is shown with an enqueued swapchain
+     * rebuild (VK_SUBOPTIMAL_KHR), both still report 1. Only -1 is remapped. */
+    sdl3vk_present_fault_inject(VK_SUBOPTIMAL_KHR);
+    int rebuilt_present = gegpu_present(base, (int)fmt, stride);
+    sdl3vk_present_fault_clear();
+    if (rebuilt_present != 1 || gegpu_present(base, (int)fmt, stride) != 1) {
+        fprintf(stderr, "gpu snapshot sync selftest: a shown present did not stay 1 (rebuild=%d)\n",
+                rebuilt_present);
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu snapshot sync selftest: present_shown_stays_1\n");
     coherence_reset_targets();
     return 1;
 }

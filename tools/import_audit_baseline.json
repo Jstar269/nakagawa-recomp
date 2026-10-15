@@ -1293,6 +1293,12 @@
     "name": "__sceSasSetSL",
     "status": "unreviewed"
   },
+  "0x5fb86ab0": {
+    "classification": "dedicated",
+    "handler": "h_GeListDeQueue",
+    "name": "sceGeListDeQueue",
+    "status": "partial"
+  },
   "0x60107536": {
     "classification": "dedicated",
     "handler": "h_DeleteLwMutex",

@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "fixtures" / "showcase"))
 
+import ci_required  # noqa: E402
 import showcase as showcase_cli  # noqa: E402
 
 
@@ -886,6 +887,98 @@ class MergeQueueWakeWiringTests(unittest.TestCase):
         self.assertIn("permissions: {}\n", self.wake)
         self.assertNotIn("actions/checkout", self.wake)
         self.assertNotIn("actions/upload-artifact", self.wake)
+
+
+# Read-only snapshot of the live `main-minimal` ruleset (id 20662430, last updated
+# 2026-10-13T01:50:04-04:00), taken 2026-10-15 with
+# `gh api repos/Jstar269/nakagawa-recomp/rulesets/20662430`. Refresh it only by reading the
+# ruleset again; nothing in the repository writes to GitHub. Each value is the integration id
+# the ruleset pins for that context (15368 is GitHub Actions).
+MAIN_RULESET_SNAPSHOT: dict[str, object] = {
+    "strict_required_status_checks_policy": True,
+    "required_status_checks": {
+        "CI required": 15368,
+        "OSV Vulnerability Scan": 15368,
+        "dependency-review": 15368,
+        "Hygiene and security": 15368,
+        "CodeQL": 57789,
+    },
+}
+
+# Not a required check until its producer identity is bound (docs/PROVENANCE_MERGE_GATE.md,
+# Maintainer configuration, item 3). Adding it requires that proof, not only this edit.
+TRUSTED_PROVENANCE_CONTEXT = "Trusted provenance attestation"
+
+
+def _prose(text: str) -> str:
+    """Collapse line breaks and runs of spaces so a sentence can be matched as one string."""
+    return re.sub(r"\s+", " ", text)
+
+
+def _backticked(fragment: str) -> set[str]:
+    return set(re.findall(r"`([^`]+)`", fragment))
+
+
+class MainRulesetClaimsTests(unittest.TestCase):
+    """The written claims about main's required checks, and the aggregate behind them, must match the snapshot."""
+
+    def setUp(self) -> None:
+        self.required = set(MAIN_RULESET_SNAPSHOT["required_status_checks"])
+        self.strict = MAIN_RULESET_SNAPSHOT["strict_required_status_checks_policy"]
+
+    def test_ci_doc_names_exactly_the_snapshot_required_checks(self) -> None:
+        doc = _prose((ROOT / "docs" / "CI.md").read_text(encoding="utf-8"))
+        match = re.search(r"The `main` ruleset requires (.+?) on exact pull-request heads\.", doc)
+        self.assertIsNotNone(match, "docs/CI.md no longer states which checks main requires")
+        assert match is not None
+        self.assertEqual(_backticked(match.group(1)), self.required)
+
+    def test_provenance_gate_doc_names_exactly_the_snapshot_required_checks(self) -> None:
+        doc = _prose((ROOT / "docs" / "PROVENANCE_MERGE_GATE.md").read_text(encoding="utf-8"))
+        match = re.search(r"ruleset requires [a-z]+ checks \(([^)]*)\)", doc)
+        self.assertIsNotNone(match, "docs/PROVENANCE_MERGE_GATE.md no longer states which checks main requires")
+        assert match is not None
+        self.assertEqual(_backticked(match.group(1)), self.required)
+
+    def test_provenance_workflow_comment_names_exactly_the_snapshot_required_checks(self) -> None:
+        comment = _prose(re.sub(r"(?m)^\s*#", "", _workflow_text("provenance-attestation.yml")))
+        match = re.search(r"which are: ([^.]*)\.", comment)
+        self.assertIsNotNone(match, "provenance-attestation.yml no longer lists the ruleset's checks")
+        assert match is not None
+        self.assertEqual({name.strip() for name in match.group(1).split(",")}, self.required)
+
+    def test_strict_policy_claims_match_the_snapshot(self) -> None:
+        doc = _prose((ROOT / "docs" / "PROVENANCE_MERGE_GATE.md").read_text(encoding="utf-8"))
+        claims = re.findall(
+            r"`strict_required_status_checks_policy` is (?:already )?\*{0,2}`(true|false)`", doc
+        )
+        self.assertTrue(claims, "docs/PROVENANCE_MERGE_GATE.md no longer records the strict-policy value")
+        self.assertEqual(set(claims), {"true" if self.strict else "false"})
+
+    def test_trusted_provenance_context_is_not_in_the_required_snapshot(self) -> None:
+        self.assertNotIn(
+            TRUSTED_PROVENANCE_CONTEXT,
+            self.required,
+            "Trusted provenance attestation may be required only after its producer identity is bound "
+            "(docs/PROVENANCE_MERGE_GATE.md, Maintainer configuration, item 3).",
+        )
+
+    def test_ci_required_aggregates_exactly_the_results_its_script_reads(self) -> None:
+        block = "\n".join(_ci_job_blocks()["ci_required"])
+        needs = re.search(r"(?m)^    needs: \[([^\]]*)\]$", block)
+        self.assertIsNotNone(needs)
+        assert needs is not None
+        needed = {job.strip() for job in needs.group(1).split(",")}
+        wired = dict(
+            re.findall(r"(?m)^      ([A-Z_]+_RESULT): \$\{\{ needs\.([a-z_]+)\.result \}\}$", block)
+        )
+        read = {result for _name, result, _run in ci_required._GATES} | {
+            "CLASSIFY_RESULT",
+            "HYGIENE_RESULT",
+            "PUBLIC_EXPORT_RESULT",
+        }
+        self.assertEqual(set(wired), read)
+        self.assertEqual({wired[key] for key in read}, needed)
 
 
 if __name__ == "__main__":

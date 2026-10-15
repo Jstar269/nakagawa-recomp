@@ -1496,6 +1496,54 @@ class TestPresenterContract(unittest.TestCase):
         self.assertIn("goto pace;", failed)
         self.assertLess(sdl.index("GEGPU_SYNC_FAILED"), sdl.index("convert_fb(fbaddr, fmt, stride);"))
 
+    def test_target_failed_present_syncs_guest_vram_before_convert(self):
+        """Source-shape check only (issue #827). gegpu_present() returns
+        GEGPU_PRESENT_TARGET_FAILED when a GPU-valid target cannot be prepared or presented, so
+        its newest pixels may exist only in the Vulkan image. The SDL3 branch must sync guest
+        VRAM before the fall-through convert_fb, and decline the frame when that sync fails. The
+        other -1 declines (not resident, no GPU-valid target) must not take that path. The
+        present result is remapped only from -1; 0 (close) and 1 (shown) pass through."""
+        root = ROOT / "src" / "rt"
+        gui = (root / "gui.c").read_text(encoding="utf-8")
+        presenter = gui[gui.index("int gui_present"):]
+        sdl = presenter[presenter.index("if (s_sdl3) {"):presenter.index("int present_result")]
+        # The fall-through convert_fb reads guest VRAM. The target-failed branch must sync it
+        # first, and it must be the only branch that does so for the decline code.
+        marker = "if (res == GEGPU_PRESENT_TARGET_FAILED) {"
+        self.assertIn(marker, sdl)
+        self.assertLess(sdl.index(marker), sdl.index("convert_fb(fbaddr, fmt, stride);"))
+        branch = sdl[sdl.index(marker):sdl.index("convert_fb(fbaddr, fmt, stride);")]
+        self.assertIn("GeGpuFbDescriptor d = { fbaddr, (uint32_t)fmt, stride, PSP_W, PSP_H };", branch)
+        self.assertIn("if (gegpu_sync_guest_fb(&d) == GEGPU_SYNC_FAILED) {", branch)
+        # FAILED declines the frame: the failure is reported to the armed capture and the branch
+        # jumps to pacing before any conversion or present happens.
+        failed = branch[branch.index("GEGPU_SYNC_FAILED"):]
+        self.assertIn("sr_capture_fail(\"GPU present target failed: guest framebuffer sync failed\");", failed)
+        self.assertIn("goto pace;", failed)
+        self.assertIn("GPU present: target preparation or presentation FAILED", branch)
+        header = (root / "gpu_sdl3vk" / "ge_gpu.h").read_text(encoding="utf-8")
+        ge = (root / "gpu_sdl3vk" / "ge_gpu.c").read_text(encoding="utf-8")
+        self.assertIn("#define GEGPU_PRESENT_TARGET_FAILED (-2)", header)
+        self.assertIn(
+            "GEGPU_PRESENT_TARGET_FAILED: a GPU-valid target exists, but preparing or presenting it failed,",
+            header,
+        )
+        present = ge[ge.index("int gegpu_present("):ge.index("int gegpu_sync_guest_fb(")]
+        # Only -1 from sdl3vk_present_image_ex is remapped; 0 (close) and 1 (shown) are returned
+        # unchanged. The mapping is the last statement, after the present call.
+        self.assertIn(
+            "int pr = sdl3vk_present_image_ex((void *)t->img, DRAW_W * s_scale, FB_H * s_scale);",
+            present,
+        )
+        self.assertIn("    if (pr == -1) return GEGPU_PRESENT_TARGET_FAILED;\n    return pr;\n}", present)
+        # Only the two intended returns carry the code: the unprepared target and the failed present.
+        self.assertEqual(present.count("GEGPU_PRESENT_TARGET_FAILED"), 2)
+        self.assertIn("if (!target_prepare_present(t)) return GEGPU_PRESENT_TARGET_FAILED;", present)
+        self.assertIn("if (!is_vram(fbaddr)) { s_cnt_present_cpu++; return -1; }", present)
+        # The GE selftest drives the present-failure path through the existing fault seam.
+        self.assertIn("sdl3vk_present_fault_inject(VK_ERROR_OUT_OF_DATE_KHR);", ge)
+        self.assertIn("failed_present != GEGPU_PRESENT_TARGET_FAILED", ge)
+
     def test_display_smoke_offscreen_pins_inherited_sdl_selectors(self):
         inherited = {
             "SDL_VIDEO_DRIVER": "windows",
