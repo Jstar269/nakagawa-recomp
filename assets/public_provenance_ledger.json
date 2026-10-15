@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bb261c0451cd60a5ce8cdb3755d0cec0b302c58521254f5968027fd35eabada7"
+      "sha256": "b57c6dc1f98b083c425ee0f7aaad6e70e865ef45da920f0ffa2c5cdc03bc515d"
     },
     {
       "path": ".github/workflows/codeql-wake.yml",
@@ -1105,7 +1105,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "42828ae0a0b1a1a5c14937f70852a5e618f1305dddf1a60d31c5844a5aea3d98"
+      "sha256": "02d7debe1cfa73109cbd762bca82596831b15f7e747c9c9357d801f4758f9040"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -2425,7 +2425,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0c85fdaf8c8835d425ec17526451a5154c093a1a0559723c3986addcd150d6d9"
+      "sha256": "671c027c56853ee2c73540e4eea669e6d0c507982186f63e1904512b317ee837"
     },
     {
       "path": "fixtures/vfpu_addressing/hardware_vfpu_addr_001.json",
@@ -8002,7 +8002,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1d3ed28884699d38ae1345c0a794176c3d2aca9d16e8c49249c4a2bcabf6e6cc"
+      "sha256": "c07657ea5c49a5d079f34b6365cacd39fd7713e311f5971922be817c61425a7d"
     },
     {
       "path": "tools/test_ci_required.py",
@@ -9648,7 +9648,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2dd942eb32e6b04c328a538b28f839066c7591b57fd0435470703d57478ee7c0"
+      "sha256": "95d0e72db3a56935f5ea3c8dc3d5f594d68180ae4fc63d40581b1d5bb93dbaa6"
     },
     {
       "path": "tools/test_public_export.py",
@@ -9901,7 +9901,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8438ff5ce77928c5c646712c17903afc59c668609d213e739169482ec60f9a5d"
+      "sha256": "92392879bc31f9404a23685347b058958dd589595927671322a23eb6629b769d"
     },
     {
       "path": "tools/test_soak_audit.py",

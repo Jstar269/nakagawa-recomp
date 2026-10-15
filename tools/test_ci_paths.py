@@ -215,6 +215,11 @@ class CiPathAdversarialTests(unittest.TestCase):
         "tools/nk_safety.ps1",
         "tools/pspdev_lock.py",
         "tests/native/test_player_ui.py",
+        # #308: the Windows staging smoke runs the player and the showcase disc writer, and
+        # only the Windows job runs it, so each input must reach that job.
+        "src/player/setup_staging.c",
+        "fixtures/showcase/showcase.py",
+        "fixtures/display_smoke/generate.py",
     )
 
     def test_every_native_relevant_path_runs_native_and_windows(self) -> None:

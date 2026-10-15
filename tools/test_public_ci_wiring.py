@@ -387,6 +387,7 @@ _WINDOWS_SERIAL_GATES = {
     "Run native core test suite on Windows": "mingw32-make --no-print-directory CC=gcc native-core-tests",
     "Build and link the native player": "VULKAN_SDK=/ucrt64 player-ui-tests",
     "Run native player UI regressions headlessly on Windows": "VULKAN_SDK=/ucrt64 player-ui-regressions",
+    "Smoke the Windows player staging headlessly": '"--iso=$smoke/disc/TEST00007.iso" --stage-only)',
     "Stage and run production smoke outside its build directory": "VULKAN_SDK=/ucrt64 production-smoke-staged",
     "Build and run the full platform ladder": "VULKAN_SDK=/ucrt64 platform-ladder",
     "Build and run profile-zero production routes": "VULKAN_SDK=/ucrt64 profile-zero-e2e",
@@ -470,6 +471,61 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
             _ci_step_index(self.block, "Build and run full production pipeline smoke"),
             _ci_step_index(self.block, "Stage and run production smoke outside its build directory"),
         )
+
+
+class WindowsPlayerStageSmokeTests(unittest.TestCase):
+    """#308: the Windows player's headless staging smoke, the counterpart of the Linux gate.
+
+    The Linux native_tools job stages a TEST00007 disc through the built player's
+    --stage-only route. The Windows job builds the same player but never ran that route,
+    so a Windows-only staging regression reached no hosted gate.
+    """
+
+    STEP = "Smoke the Windows player staging headlessly"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.block = _ci_job_blocks()["windows_runtime"]
+        cls.step = _ci_step(cls.block, cls.STEP)
+        cls.text = "\n".join(cls.step or [])
+
+    def test_step_runs_in_the_smoke_part_after_the_player_is_built(self) -> None:
+        self.assertIsNotNone(self.step, f"windows_runtime no longer runs {self.STEP!r}")
+        self.assertIn("if: matrix.part == 'smoke'", self.text)
+        self.assertIn("shell: msys2 {0}", self.text)
+        index = _ci_step_index(self.block, self.STEP)
+        for earlier in ("Build and link the native player",
+                        "Run native player UI regressions headlessly on Windows"):
+            self.assertLess(_ci_step_index(self.block, earlier), index)
+        # It runs the executable the link step built; it does not build a second one.
+        self.assertIn("build/nakagawa_player.exe", self.text)
+        self.assertNotIn("mingw32-make", self.text)
+
+    def test_step_stages_a_test00007_disc_through_the_stage_only_route(self) -> None:
+        self.assertIn("python fixtures/showcase/showcase.py stage-iso --out-dir", self.text)
+        self.assertIn('"--iso=$smoke/disc/TEST00007.iso" --stage-only)', self.text)
+        self.assertIn('grep -Fq "STAGING_RESULT status=PASS"', self.text)
+        self.assertIn("timeout 60s", self.text)
+        self.assertIn("SDL_VIDEODRIVER=offscreen", self.text)
+
+    def test_step_redirects_every_user_data_root_under_runner_temp(self) -> None:
+        self.assertIn('smoke="$(cygpath -m "$RUNNER_TEMP")/windows-stage-smoke"', self.text)
+        invocation = self.text[
+            self.text.index("stage_output=$(") : self.text.index("--stage-only)")
+        ]
+        for assignment in (
+            'LOCALAPPDATA="$smoke/localappdata"',
+            'APPDATA="$smoke/appdata"',
+            'USERPROFILE="$smoke/userprofile"',
+        ):
+            self.assertIn(assignment, invocation)
+        for directory in ("disc", "localappdata", "appdata", "userprofile"):
+            self.assertIn(f'"$smoke/{directory}"', self.text)
+
+    def test_disc_writer_action_is_the_one_the_step_calls(self) -> None:
+        showcase = (ROOT / "fixtures" / "showcase" / "showcase.py").read_text(encoding="utf-8")
+        self.assertIn('choices=("build", "smoke", "stage-iso")', showcase)
+        self.assertIn("def stage_iso(out_dir: Path) -> Path:", showcase)
 
 
 class VfpuFuzzShardTests(unittest.TestCase):
