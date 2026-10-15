@@ -19,7 +19,10 @@ The manifest is deterministic (sorted, ASCII, LF) and carries per-NID
 classification so downstream consumers never re-derive policy:
 
     {"nid": "0x1b4217bc", "name": …, "handler": …, "origin": "static",
-     "classification": "fake_success", "status": "stub"}
+     "owner_file": "src/rt/hle.c", "classification": "fake_success", "status": "stub"}
+
+`owner_file` is the runtime source file whose registration call registers the
+NID (hle.c or hle_power.c; see runtime_hle_sources).
 
 CLI:
     python tools/hle_manifest.py [--out build/hle_manifest.json]
@@ -29,6 +32,8 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import bisect
+from collections.abc import Collection
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -377,22 +382,51 @@ def mechanical_stub_handlers(source: str) -> set[str]:
     return {name for name, inner in bodies.items() if is_trivial_success_stub(inner)}
 
 
-def extract_registrations(raw_source: str) -> list[dict]:
+def _owner_lookup(raw_source: str, sources: list[tuple[str, str]] | None):
+    """Return a function mapping an offset in `raw_source` to its source unit's path.
+
+    `sources` must be the (path, text) units that `raw_source` was joined from
+    with newlines. Without them the text is unattributed and every offset maps
+    to None.
+    """
+    if sources is None:
+        return lambda offset: None
+    if not sources or "\n".join(text for _, text in sources) != raw_source:
+        raise ValueError("sources must be the (path, text) units that raw_source is joined from")
+    starts: list[int] = []
+    paths: list[str] = []
+    pos = 0
+    for path, text in sources:
+        starts.append(pos)
+        paths.append(path)
+        pos += len(text) + 1  # the joining newline
+    return lambda offset: paths[bisect.bisect_right(starts, offset) - 1]
+
+
+def extract_registrations(raw_source: str, sources: list[tuple[str, str]] | None = None) -> list[dict]:
     """Parse hle.c text into registration dicts, failing closed on anything unaccounted.
 
     Runs on the active view of the source (comments and `#if 0` regions
     blanked, offsets preserved), so a commented-out or preprocessed-away
     registration can never become a live manifest entry and hex constants
     inside comments can never leak into the sas_ok[] NID set.
+
+    `sources` is the (path, text) list `raw_source` was joined from (see
+    runtime_hle_sources). Each registration then carries `owner_file`, the path
+    of the unit its call sits in. Without `sources` owner_file is None.
     """
     source = active_source(raw_source)
+    owner_at = _owner_lookup(raw_source, sources)
     accounted: set[int] = set()
 
     regs: list[dict] = []
     for m in _LITERAL_RE.finditer(source):
         accounted.add(m.start())
         nid = int(m.group(1), 16)
-        regs.append({"nid": nid, "name": m.group(2), "handler": m.group(3), "origin": "static"})
+        regs.append(
+            {"nid": nid, "name": m.group(2), "handler": m.group(3), "origin": "static",
+             "owner_file": owner_at(m.start())}
+        )
 
     for m in _UNSUPPORTED_LITERAL_RE.finditer(source):
         accounted.add(m.start())
@@ -403,6 +437,7 @@ def extract_registrations(raw_source: str) -> list[dict]:
                 "handler": "h_ControlledUnsupported",
                 "origin": "static_unsupported",
                 "refusal_error": int(m.group(3), 16),
+                "owner_file": owner_at(m.start()),
             }
         )
 
@@ -418,11 +453,15 @@ def extract_registrations(raw_source: str) -> list[dict]:
             )
         accounted.add(sas_loops[0].start())
         sas_name, sas_handler = sas_loops[0].group(1), sas_loops[0].group(2)
+        sas_owner = owner_at(sas_loops[0].start())
         sas_nids = [int(h, 16) for h in re.findall(r"0x[0-9a-fA-F]{1,8}", arrays[0].group(1))]
         if not sas_nids:
             raise ManifestError("sas_ok[] array parsed empty")
         for nid in sas_nids:
-            regs.append({"nid": nid, "name": sas_name, "handler": sas_handler, "origin": "sas_ok_loop"})
+            regs.append(
+                {"nid": nid, "name": sas_name, "handler": sas_handler, "origin": "sas_ok_loop",
+                 "owner_file": sas_owner}
+            )
 
     unaccounted = []
     for call in _REGISTRATION_CALL_RE.finditer(source):
@@ -615,14 +654,38 @@ def unwaived_and_stale(findings: list[dict]) -> tuple[list[dict], list[dict]]:
     return unwaived, stale
 
 
-def runtime_hle_source() -> str:
-    """The runtime HLE source the manifest is extracted from: hle.c plus hle_power.c.
+def runtime_hle_sources() -> list[tuple[str, str]]:
+    """The runtime HLE units the manifest is extracted from, as (path, text) in join order.
 
-    hle_power.c defines handlers hle.c registers, so the handler-definition
-    cross-check in extract_registrations needs both files.
+    hle.c plus hle_power.c: hle_power.c defines handlers hle.c registers, so the
+    handler-definition cross-check in extract_registrations needs both files.
+    Every registration is attributed to the unit its call sits in (owner_file).
     """
-    source = HLE_C.read_text(encoding="utf-8")
-    return source + "\n" + (HLE_C.parent / "hle_power.c").read_text(encoding="utf-8")
+    paths = (HLE_C, HLE_C.parent / "hle_power.c")
+    return [(p.relative_to(ROOT).as_posix(), p.read_text(encoding="utf-8")) for p in paths]
+
+
+def runtime_hle_source() -> str:
+    """The runtime HLE source the manifest is extracted from: the joined runtime_hle_sources()."""
+    return "\n".join(text for _, text in runtime_hle_sources())
+
+
+def registration_calls_outside(files: dict[str, str], composed: Collection[str]) -> list[str]:
+    """`path:line` of each registration call in a file the manifest does not read.
+
+    `files` maps repo-relative paths to their text and `composed` names the
+    runtime sources extract_registrations attributes. A registration call in any
+    other file is a NID the manifest cannot see, so it is reported, not skipped.
+    """
+    stray: list[str] = []
+    for path in sorted(files):
+        if path in composed:
+            continue
+        active = active_source(files[path])
+        for m in _REGISTRATION_CALL_RE.finditer(active):
+            line = active.count("\n", 0, m.start()) + 1
+            stray.append(f"{path}:{line}")
+    return stray
 
 
 def registered_nids(source: str | None = None) -> frozenset[int]:
@@ -639,9 +702,11 @@ def registered_nids(source: str | None = None) -> frozenset[int]:
 
 
 def build_manifest(source: str | None = None) -> dict:
+    sources = None
     if source is None:
-        source = runtime_hle_source()
-    regs = extract_registrations(source)
+        sources = runtime_hle_sources()
+        source = "\n".join(text for _, text in sources)
+    regs = extract_registrations(source, sources)
     validate_meta(regs)
     mechanical = mechanical_stub_handlers(source)
     entries = []
@@ -653,6 +718,7 @@ def build_manifest(source: str | None = None) -> dict:
                 "name": r["name"],
                 "handler": r["handler"],
                 "origin": r["origin"],
+                "owner_file": r["owner_file"],
                 "classification": classification,
                 "status": status,
                 **({"refusal_error": f"0x{r['refusal_error']:08x}"}
