@@ -12,6 +12,7 @@ as a test failure rather than accepted as a kill.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -31,6 +32,7 @@ SELFTEST = ROOT / "src" / "rt" / "dispatch_isolation_selftest.c"
 RECOMP = ROOT / "src" / "rt" / "recomp.c"
 RECOMP_H = ROOT / "src" / "rt" / "recomp.h"
 GUEST_INTERP = ROOT / "src" / "rt" / "guest_interp.c"
+SR_CORO = ROOT / "src" / "rt" / "sr_coro.c"
 PERF = ROOT / "src" / "rt" / "perf.c"
 TITLE_CONFIG_TOOL = ROOT / "tools" / "title_runtime_config.py"
 CODEGEN_TOOL = ROOT / "tools" / "codegen.py"
@@ -441,6 +443,30 @@ static void probe_body(void *arg) {
     for (;;) sr_coro_switch(g_probe_main);
 }
 
+/* "pair" / "pair-reverse": two guest-size fibers, created A then B. The first to run makes a
+ * shallow recursion, which leaves the host-stack window measured on its own stack (#855);
+ * the other then runs n levels. Across both orders the second fiber lies above the first in
+ * one of them, so a window that bounded only the low end would pass its frames there. */
+static unsigned long g_pair_n[2];
+static int g_pair_ran[2];
+static void pair_body(void *arg) {
+    const int i = arg ? 1 : 0;   /* A is created with a NULL argument, B with a non-NULL one */
+    RecompFn fn = sr_lookup(0x00001000u);
+    memset(&g_probe_state, 0, sizeof g_probe_state);
+    g_probe_state.r[29] = PROBE_SP;
+    g_probe_state.r[4] = (uint32_t)g_pair_n[i];
+    if (fn) {
+#ifdef SR_TAIL_DRAIN
+        sr_call_body(fn, &g_probe_state);
+#else
+        fn(&g_probe_state);
+#endif
+        g_pair_ran[i] = 1;
+    }
+    sr_coro_switch(g_probe_main);
+    for (;;) sr_coro_switch(g_probe_main);
+}
+
 int main(int argc, char **argv) {
 #ifdef _WIN32
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
@@ -456,8 +482,12 @@ int main(int argc, char **argv) {
     memset(&g_probe_state, 0, sizeof g_probe_state);
     g_probe_state.r[29] = PROBE_SP;
     g_probe_state.r[4] = (uint32_t)n;
+    const int neighbour = argc > 2 && strcmp(argv[2], "neighbour") == 0;
+    const int pair = argc > 2 && strncmp(argv[2], "pair", 4) == 0;
+    /* "no-bounds": the scheduler is on but no stack-bounds query is installed. */
+    const int no_bounds = argc > 2 && strcmp(argv[2], "no-bounds") == 0;
 #ifdef SR_TAIL_DRAIN
-    if (argc > 2) {   /* a broken protocol (#855) must stop with its named fault */
+    if (argc > 2 && !neighbour && !pair && !no_bounds) {   /* a broken protocol (#855) must stop with its named fault */
         CpuState other;
         memset(&other, 0, sizeof other);
         if (strcmp(argv[2], "recorded-twice") == 0) {
@@ -475,11 +505,35 @@ int main(int argc, char **argv) {
 #endif
     g_probe_main = sr_coro_main();
     if (!g_probe_main) return 20;
-    sr_dispatch_host_stack_remaining = sr_coro_stack_remaining;
+    if (!no_bounds) {
+        sr_dispatch_host_stack_remaining = sr_coro_stack_remaining;
+#ifdef SR_HOST_STACK_CHECK
+        sr_dispatch_host_stack_top = sr_coro_stack_top;   /* as sched_init installs it (#855) */
+#endif
+    }
     sr_sched_on = 1;
     atomic_store_explicit(&sr_timeslice, 1, memory_order_relaxed);
+    if (pair) {
+        SrCoro *a = sr_coro_create(pair_body, NULL, SR_GUEST_FIBER_STACK_SIZE);
+        SrCoro *b = sr_coro_create(pair_body, &g_pair_ran[1], SR_GUEST_FIBER_STACK_SIZE);
+        if (!a || !b) return 24;
+        const int reverse = strcmp(argv[2], "pair-reverse") == 0;
+        g_pair_n[reverse ? 1 : 0] = 1000ul;   /* the first fiber to run: shallow */
+        g_pair_n[reverse ? 0 : 1] = n;        /* then the other: n levels */
+        sr_coro_switch(reverse ? b : a);
+        sr_coro_switch(reverse ? a : b);
+        sr_sched_on = 0;
+        if (!g_pair_ran[0] || !g_pair_ran[1]) return 22;
+        printf("DEPTH_PROBE n=%lu v0=%u sp=0x%08x\n",
+               n, (unsigned)g_probe_state.r[2], (unsigned)g_probe_state.r[29]);
+        return 0;
+    }
     SrCoro *fiber = sr_coro_create(probe_body, NULL, SR_GUEST_FIBER_STACK_SIZE);
     if (!fiber) return 21;
+    /* "neighbour": a second guest-size stack created after the probe's, as the scheduler
+     * creates one per guest thread. POSIX mmap is top-down, so it usually lands directly
+     * below the probe's stack, where an overrun of the probe's stack would write. */
+    if (neighbour && !sr_coro_create(probe_body, NULL, SR_GUEST_FIBER_STACK_SIZE)) return 23;
     sr_coro_switch(fiber);
     sr_sched_on = 0;
     sr_dispatch_host_stack_remaining = NULL;
@@ -512,13 +566,13 @@ def _build_depth_probe(
 ) -> tuple[Path | None, str]:
     """Translate a source-owned fixture and link it into the depth-probe harness.
 
-    ``mutate`` maps ``codegen.py``, ``recomp.c`` or ``guest_interp.c`` to one exact
-    replacement applied to a scratch copy, so a mutant is generated, compiled and run
-    through the same production path as the unmutated build.
+    ``mutate`` maps ``codegen.py``, ``recomp.c``, ``recomp.h``, ``guest_interp.c`` or
+    ``sr_coro.c`` to one exact replacement applied to a scratch copy, so a mutant is
+    generated, compiled and run through the same production path as the unmutated build.
     """
     assert CC is not None
     mutate = mutate or {}
-    unknown = set(mutate) - {"codegen.py", "recomp.c", "recomp.h", "guest_interp.c"}
+    unknown = set(mutate) - {"codegen.py", "recomp.c", "recomp.h", "guest_interp.c", "sr_coro.c"}
     if unknown:
         raise AssertionError(f"unsupported mutation target(s): {sorted(unknown)}")
     elf = work / "fixture.elf"
@@ -565,6 +619,7 @@ def _build_depth_probe(
             SELFTEST.read_text(encoding="utf-8"), encoding="utf-8", newline="\n"
         )
     guest_interp = _mutated_copy(GUEST_INTERP, work, mutate.get("guest_interp.c"))
+    sr_coro = _mutated_copy(SR_CORO, work, mutate.get("sr_coro.c"))
     exe = work / "depth_probe.exe"
     compile_result = subprocess.run(
         [
@@ -573,7 +628,7 @@ def _build_depth_probe(
             "-I", str(work), "-I", str(ROOT / "src" / "rt"),
             str(harness), str(generated), str(work / "probe_0.c"),
             str(guest_interp), str(PERF),
-            str(ROOT / "src" / "rt" / "sr_coro.c"),
+            str(sr_coro),
             str(ROOT / "src" / "rt" / "cpu_lle.c"),
             str(ROOT / "src" / "rt" / "domain_mode.c"),
             str(ROOT / "src" / "rt" / "stale_code.c"),
@@ -1024,7 +1079,7 @@ class GeneratedCallDepthTests(unittest.TestCase):
         # A direct CALL site stops draining: the callee's transfer is left recorded.
         self._assert_mutant_fails(
             "T3-call-site-does-not-drain", _tails_per_call_recursion(1), (4,),
-            {"codegen.py": ('return f"{symbol}(s); SR_TAIL_DRAIN(s);"',
+            {"codegen.py": ('return f"{symbol}(s); {BODY_CALL_DRAIN}"',
                             'return f"{symbol}(s);"')},
             lambda r: r[0][0] != 0 or r[0][2].get("v0") != 4 or r[0][2].get("sp") != _PROBE_SP,
         )
@@ -1103,6 +1158,214 @@ class GeneratedCallDepthTests(unittest.TestCase):
         self.assertEqual(fields.get("v0"), 6, f"interpreted caller lost its continuation\n{output}")
         # The caller unwound its own frame before returning (base: 8 bytes low).
         self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    # --- #855 residual: direct CALL depth stops at the dispatcher's named boundary -----
+    #
+    # A `jal` to a known body is a native call that never enters the dispatcher, so before
+    # the entry check a deep direct recursion ran off the 64 MiB fiber: Windows stopped with
+    # STATUS_STACK_OVERFLOW (0xC00000FD), Linux with SIGSEGV, or, with another guest stack
+    # mapped directly below (the scheduler's shape), wrote into it and finished "normally".
+
+    _DEEP_LINKED = 3_000_000      # overruns the fiber at > 22 B per level (gcc -O0: 48-64 B)
+    _SHALLOW_LINKED = 500_000     # 24-32 MB at gcc -O0: well inside the fiber
+    # An overrun that ends inside a 64 MiB neighbour for 40-64 B per level (1.68M-2.1M).
+    _NEIGHBOUR_OVERRUN = 1_900_000
+    _NAMED_STOP_EVENT = ("BOOT_EVENT phase=stop reason=semantic-boundary "
+                         "boundary=host-fiber-stack-exhausted issue=855")
+    _NO_ENTRY_CHECK = ('return f"    SR_HOST_STACK_CHECK({entry_expr});"', 'return ""')
+
+    @staticmethod
+    def _run_probe_mode(exe, work, n, mode=None):
+        """Run the probe with a boot-event file; returns (rc, stdout, stderr, events)."""
+        events = work / f"events_{n}_{mode or 'plain'}.txt"
+        env = dict(os.environ)
+        env["SR_BOOT_EVENT_FILE"] = str(events)
+        run = subprocess.run([str(exe), str(n), *([mode] if mode else [])], cwd=ROOT,
+                             capture_output=True, text=True, timeout=120, env=env)
+        text = events.read_text(encoding="utf-8") if events.exists() else ""
+        return run.returncode, run.stdout, run.stderr, text
+
+    def _assert_named_stop(self, result):
+        rc, stdout, stderr, events = result
+        detail = f"rc={rc}\n{stdout}\n{stderr}"
+        self.assertEqual(rc, 1, detail)
+        self.assertNotIn("DEPTH_PROBE", stdout, detail)
+        self.assertIn("SEMANTIC_BOUNDARY: host-fiber-stack-exhausted;", stderr, detail)
+        self.assertEqual(events.splitlines(), [self._NAMED_STOP_EVENT], detail)
+
+    def test_deep_direct_recursion_stops_at_the_named_boundary(self):
+        with scratch_dir.TemporaryDirectory(prefix="direct_depth_") as tmp:
+            work = Path(tmp)
+            exe, output = _build_depth_probe(_linked_recursion(), work)
+            self.assertIsNotNone(exe, output)
+            # The bound is the dispatcher's: a recursion that fits still runs to the end.
+            rc, run_output, fields = _run_depth_probe(exe, self._SHALLOW_LINKED)
+            self.assertEqual(rc, 0, run_output)
+            self.assertEqual(fields.get("v0"), self._SHALLOW_LINKED, run_output)
+            self.assertEqual(fields.get("sp"), _PROBE_SP, run_output)
+            for mode in (None, "neighbour"):
+                with self.subTest(mode=mode or "alone"):
+                    self._assert_named_stop(
+                        self._run_probe_mode(exe, work, self._DEEP_LINKED, mode))
+
+    def test_unknown_stack_bounds_stop_a_direct_call_as_they_stop_a_dispatch(self):
+        # Fail closed: with the scheduler on and no way to measure the stack, the first
+        # checked entry stops at the dispatcher's other named host-stack boundary instead of
+        # running unbounded (before the check this run finished with rc 0).
+        with scratch_dir.TemporaryDirectory(prefix="direct_bounds_") as tmp:
+            work = Path(tmp)
+            exe, output = _build_depth_probe(_linked_recursion(), work)
+            self.assertIsNotNone(exe, output)
+            rc, stdout, stderr, events = self._run_probe_mode(exe, work, 16, "no-bounds")
+        detail = f"rc={rc}\n{stdout}\n{stderr}"
+        self.assertEqual(rc, 1, detail)
+        self.assertNotIn("DEPTH_PROBE", stdout, detail)
+        self.assertIn("SEMANTIC_BOUNDARY: host-fiber-stack-bounds-unavailable;", stderr, detail)
+        self.assertEqual(events.splitlines(), [
+            "BOOT_EVENT phase=stop reason=semantic-boundary "
+            "boundary=host-fiber-stack-bounds-unavailable issue=855"], detail)
+
+    def test_only_bodies_that_make_a_direct_call_check_their_stack(self):
+        # Every native recursion passes through a direct CALL or the dispatcher, which
+        # preflights; leaves, tail-only bodies and dispatched callers stay unchecked.
+        cells = (
+            ("linked", _linked_recursion(), (), {0x1000: True, 0x1010: True}),
+            ("direct tails", _direct_tail_cycle(), (),
+             {0x1000: True, 0x1010: False, 0x102C: False}),
+            ("computed tails", _computed_tail_cycle(), (),
+             {0x1000: True, 0x1010: False, 0x1034: False}),
+            ("dispatched caller", _interpreted_caller_of_compiled_callee(),
+             ("--omit-aot=0x00001010",), {0x1000: False, 0x1034: False}),
+        )
+        for name, words, codegen_args, expected in cells:
+            with self.subTest(cell=name):
+                generated, results = self._probe(words, (0,), codegen_args=codegen_args)
+                self.assertEqual(results[0][0], 0, results[0][1])
+                for entry, checked in expected.items():
+                    head = f"void f_{entry:08x}(CpuState *s) {{\n"
+                    self.assertEqual(generated.count(head), 1, f"{name}: no body 0x{entry:08x}")
+                    opens_with_check = (
+                        head + f"    SR_HOST_STACK_CHECK(0x{entry:08x}u);\n"
+                        + f"    SR_YIELD(s, 0x{entry:08x}u);\n") in generated
+                    self.assertEqual(opens_with_check, checked, f"{name}: body 0x{entry:08x}")
+                self.assertEqual(generated.count("SR_HOST_STACK_CHECK("),
+                                 sum(expected.values()), name)
+                # The general rule, over every body, whatever emitted the call.
+                for body in re.split(r"(?m)^(?=void [A-Za-z_]\w*\(CpuState \*s\) \{$)", generated):
+                    head = re.match(r"void ([A-Za-z_]\w*)\(CpuState \*s\) \{\n", body)
+                    if not head:
+                        continue
+                    calls = re.search(r"\b[A-Za-z_]\w*\(s\); SR_TAIL_DRAIN\(s\);", body)
+                    opens = body[head.end():].startswith("    SR_HOST_STACK_CHECK(")
+                    self.assertEqual(bool(calls), opens, f"{name}: {head.group(1)}")
+
+    def test_direct_call_stack_check_mutants_fail_for_their_semantic(self):
+        # Each mutant must overrun the fiber with no named stop, the shape before the check.
+        def overran(results):
+            rc, output, _fields = results[0]
+            return rc not in (0, 1) and "host-fiber-stack-exhausted" not in output
+
+        mutants = (
+            ("D1-codegen-emits-no-entry-check", {"codegen.py": self._NO_ENTRY_CHECK}),
+            ("D2-slow-path-ignores-the-measurement", {"recomp.c": (
+                "int result = dispatch_host_stack_measure(&remaining);\n    if (result < 0) {",
+                "int result = dispatch_host_stack_measure(&remaining);\n    if (result < -1000) {",
+            )}),
+            ("D3-refilled-window-keeps-no-reserve", {"recomp.c": (
+                "uintptr_t low = here - remaining + SR_DISPATCH_STACK_SAFETY_MARGIN;",
+                "uintptr_t low = here - remaining;",
+            )}),
+            ("D4-window-test-inverted", {"recomp.h": (
+                "if (__builtin_expect(_sr_frame - sr_host_stack_window.low > "
+                "sr_host_stack_window.span, 0))",
+                "if (__builtin_expect(_sr_frame - sr_host_stack_window.low < "
+                "sr_host_stack_window.span, 0))",
+            )}),
+        )
+        for name, mutate in mutants:
+            with self.subTest(mutant=name):
+                self._assert_mutant_fails(name, _linked_recursion(), (self._DEEP_LINKED,),
+                                          mutate, overran)
+
+    @staticmethod
+    def _probe_fields(stdout):
+        for line in stdout.splitlines():
+            if line.startswith("DEPTH_PROBE "):
+                return {k: int(v, 0) for k, _, v in
+                        (item.partition("=") for item in line.split()[1:])}
+        return {}
+
+    def test_a_window_measured_on_another_fiber_never_passes_its_frames(self):
+        # The window caches one stack's safe range and is not cleared at a fiber switch:
+        # another live stack lies wholly outside it, so its first checked entry refills it.
+        with scratch_dir.TemporaryDirectory(prefix="pair_depth_") as tmp:
+            work = Path(tmp)
+            exe, output = _build_depth_probe(_linked_recursion(), work)
+            self.assertIsNotNone(exe, output)
+            for mode in ("pair", "pair-reverse"):
+                with self.subTest(order=mode):
+                    rc, stdout, stderr, _events = self._run_probe_mode(
+                        exe, work, self._SHALLOW_LINKED, mode)
+                    self.assertEqual(rc, 0, f"{stdout}\n{stderr}")
+                    self.assertEqual(self._probe_fields(stdout).get("v0"),
+                                     self._SHALLOW_LINKED, stdout)
+                    self._assert_named_stop(
+                        self._run_probe_mode(exe, work, self._DEEP_LINKED, mode))
+
+    def test_window_without_a_top_mutant_fails_for_its_semantic(self):
+        # Bounding only the low end lets the window measured on the lower fiber pass every
+        # frame of the higher one, which then overruns its own stack unchecked.
+        no_top = ("    sr_host_stack_window.span = top - low;",
+                  "    sr_host_stack_window.span = UINTPTR_MAX - low;")
+        with scratch_dir.TemporaryDirectory(prefix="depth_mutant_") as tmp:
+            work = Path(tmp)
+            exe, output = _build_depth_probe(_linked_recursion(), work,
+                                             mutate={"recomp.c": no_top})
+            self.assertIsNotNone(exe, f"D5-window-without-a-top: MUTANT_BUILD_FAILED (not a "
+                                      f"semantic kill)\n{output}")
+            results = {mode: self._run_probe_mode(exe, work, self._DEEP_LINKED, mode)
+                       for mode in ("pair", "pair-reverse")}
+        overran = [mode for mode, (rc, _out, err, _ev) in results.items()
+                   if rc not in (0, 1) and "host-fiber-stack-exhausted" not in err]
+        self.assertTrue(overran, f"D5-window-without-a-top: MUTANT_SURVIVED {results}")
+        print("D5-window-without-a-top: MUTANT_EXECUTED_AND_SEMANTIC_TEST_FAILED")
+
+    def _overrun_with_neighbour(self, mutate):
+        """Overrun the fiber with the entry check removed and a guest stack created after it.
+
+        Returns (faulted, detail): faulted means the run died without a named stop and
+        without finishing, as a hit guard does.
+        """
+        with scratch_dir.TemporaryDirectory(prefix="guard_band_") as tmp:
+            work = Path(tmp)
+            exe, output = _build_depth_probe(_linked_recursion(), work, mutate=mutate)
+            self.assertIsNotNone(exe, f"MUTANT_BUILD_FAILED (not a semantic result)\n{output}")
+            rc, stdout, stderr, _events = self._run_probe_mode(
+                exe, work, self._NEIGHBOUR_OVERRUN, "neighbour")
+        detail = f"rc={rc}\n{stdout}\n{stderr}"
+        return rc not in (0, 1) and "DEPTH_PROBE" not in stdout, detail
+
+    _NO_GUARD_BAND = ("    if (mprotect(c->map, guard, PROT_NONE) != 0) {",
+                      "    if (0 && mprotect(c->map, guard, PROT_NONE) != 0) {")
+
+    def test_overrun_past_a_missing_check_faults_instead_of_entering_the_next_stack(self):
+        # Defence in depth behind the entry check: an overrun must hit the guard below the
+        # probe's stack (POSIX: the PROT_NONE band; Windows: the fiber's own guard page)
+        # instead of writing into the neighbouring guest stack. Before the band, POSIX
+        # finished this run with rc 0 and the right v0.
+        faulted, detail = self._overrun_with_neighbour({"codegen.py": self._NO_ENTRY_CHECK})
+        self.assertTrue(faulted, detail)
+
+    @unittest.skipIf(sys.platform == "win32",
+                     "the band is the POSIX backend's; Windows fibers end in a kernel guard page")
+    def test_guard_band_mutant_overruns_silently_into_the_neighbouring_stack(self):
+        faulted, detail = self._overrun_with_neighbour(
+            {"codegen.py": self._NO_ENTRY_CHECK, "sr_coro.c": self._NO_GUARD_BAND})
+        if faulted:
+            # The mutant can only show the silent overrun when the neighbour's mapping lies
+            # directly below the probe's, as top-down mmap places it on Linux.
+            self.skipTest("the neighbouring stack is not adjacent on this host: " + detail)
+        print("G1-no-guard-band: MUTANT_EXECUTED_AND_SEMANTIC_TEST_FAILED")
 
     def _probe_with_module(self, words, module_words, *, codegen_args=()):
         """One run with `module_words` translated as a second module at _MODULE_BASE."""
