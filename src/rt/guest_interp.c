@@ -132,6 +132,8 @@ int sr_exec_span_register(uint32_t start, uint32_t end) {
     return 1;
 }
 
+static _Atomic(uint32_t) s_module_bound_count;
+
 /* Authority tier: the PC is 4-byte aligned and one registered span covers its
  * complete fetch slot. This is the predicate sr_lookup() applies before
  * entering a native body; whether the arena can actually supply those bytes
@@ -144,9 +146,17 @@ int sr_exec_span_owns_fetch(uint32_t pc) {
     if ((pc & 3u) != 0u) {
         return 0;
     }
-    int module_authority = sr_module_code_fetch_authority(pc);
-    if (module_authority >= 0) {
-        return module_authority;
+    /* Fast path: bypass runtime module authority query when no modules are bound. */
+    if (atomic_load_explicit(&s_module_bound_count, memory_order_acquire) != 0u) {
+        int module_authority = sr_module_code_fetch_authority(pc);
+        if (module_authority >= 0) {
+            return module_authority;
+        }
+    }
+    /* Fast path: single registered span check (common case for recompiled titles). */
+    if (s_exec_span_count == 1u) {
+        const SrExecSpan *span = &s_exec_spans[0];
+        return (pc >= span->start && pc < span->end && (span->end - pc) >= 4u) ? 1 : 0;
     }
     for (size_t i = 0; i < s_exec_span_count; i++) {
         const SrExecSpan *span = &s_exec_spans[i];
@@ -186,7 +196,6 @@ typedef struct SrModuleBinding {
 
 static SrModuleBinding s_module_bindings[SR_MODULE_CODE_MAX_BOUND];
 static _Atomic(uint32_t) s_module_binding_live[SR_MODULE_CODE_MAX_BOUND];
-static _Atomic(uint32_t) s_module_bound_count;
 
 static int module_name_equal(const char *a, const char *b) {
     for (; *a && *b; a++, b++) {

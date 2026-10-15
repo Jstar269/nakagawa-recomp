@@ -231,7 +231,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "d7b7236a4d18e59b3ff7a09577e71a44612e2c42d76e7171f84b5b5d32b04484"
+      "sha256": "0ab1833be21b362bbe364651095a00cc62bbf541907755bf119ff222a5a8583e"
     },
     {
       "path": ".markdownlint-cli2.jsonc",
@@ -4331,7 +4331,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2c2e600d97277e4f626c67170c1ec586a7b0cb0cbc6926b5b6b1998b534f31b2"
+      "sha256": "022e4e617109bd2bd9b97643342a406cffc6fea25792728c86af7c96f4a92288"
     },
     {
       "path": "src/rt/dispatch_selftest.c",
@@ -4935,7 +4935,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "79e9791edbe46712feb25d47570cbde3a792d73e7f3e90911d96c6a55a192531"
+      "sha256": "3e6f173e4e8e00dbdb292fb0552844644ef7bcadc5dbac10a866e2f6671e5cfe"
     },
     {
       "path": "src/rt/guest_interp.h",
@@ -10393,7 +10393,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "94f50f10f633cc2c194fb702e03da105d32ef0e4acb180fd2132d8f120c487d0"
+      "sha256": "f24a83505048e77c78a08e1da5013bf042b1e5a35c0c1b018a29f6f06476b24e"
     },
     {
       "path": "tools/title_catalog_codegen.py",
@@ -10683,7 +10683,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d119b0c7daa713c4dd58925b78ef3768032059a5ef05b4ce9eda0df9df013e65"
+      "sha256": "7869f7a49433ed9a604bd810fc169003949eac70a600256753afbfab844695ef"
     }
   ]
 }
