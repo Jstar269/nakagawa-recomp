@@ -300,7 +300,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "804e553a65c17190abf8ee3e8c1fd68727da764ceb19e5ad4435f20b35dad53d"
+      "sha256": "434fb0b36fb17db9ac11d00a939ebcf387053257081de03d3b0bf67fb914a5b1"
     },
     {
       "path": "CREDITS.md",
@@ -1189,7 +1189,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7484b3ae6e064ae489c144c313427d6cefd7fcf166dba9e1d08277b91bc54745"
+      "sha256": "b5fc6784b0c29139601d5b9a4f23d4a2967224d979d8a6255715013434ee79ec"
     },
     {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",
@@ -8844,7 +8844,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "3222d8ef4d7e5b2561f7e0b4d09b72377b4c510110873a2994de60e5e5577e74"
+      "sha256": "311de996801ebe7528816698eb4caea0fbc73fddf358e881bbffd96889a2e95d"
     },
     {
       "path": "tools/test_imports.py",
@@ -9324,7 +9324,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1e9fdca720948a8168f8aa19877a3f5af247e51a14b69dae190efe3c628f7ac8"
+      "sha256": "050510108c87ff1f1b2065721d0acde10e980f9026bc6250ebf0b90d46fe7301"
     },
     {
       "path": "tools/test_profile_zero_e2e.py",
