@@ -15474,12 +15474,13 @@ static void test_ge_guest_sentinel(void) {
     expect((qid2 & 0xFF000000u) == 0x35000000u,
            "sceGeListEnQueue with stall returns valid queue id");
 
-    /* Stalled list sync with syncType=1 returns 1 (stalled) */
+    /* Stalled list sync with syncType=1 returns 3 (STALLING, measured on PSP-3000:
+     * PSP-3000 6.61 oracle 2026-10-15, PSP-GE-CONTROL-001) */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid2;
     cpu.r[5] = 1;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 1u,
-           "sceGeListSync(syncType=1) reports list is currently stalled");
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 3u,
+           "sceGeListSync(syncType=1) reports list is currently stalled (3, measured)");
 
     /* Framebuffer is cleared to white, but purple rect is NOT drawn yet */
     expect(fb[0 * fb_stride + 0] == white_color, "stalled list executed clear to white");
@@ -15550,13 +15551,17 @@ static void test_ge_break_continue(void) {
            "sceGeBreak is registered in this build");
     expect(sr_hle_test_is_registered(NID_SCE_GE_CONTINUE),
            "sceGeContinue is registered in this build");
+    expect(sr_hle_test_is_registered(NID_SCE_GE_LIST_DEQUEUE),
+           "sceGeListDeQueue is registered in this build");
 
-    /* Mode validation: mode > 1 is rejected with INVALID_VALUE */
+    /* Mode validation: mode -1 is rejected with the invalid-mode code measured on
+     * PSP-3000 (PSP-3000 6.61 oracle 2026-10-15, PSP-GE-CONTROL-001). Only -1 was
+     * measured; the handler applies the same code to every mode above 1. */
     memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 2u;
+    cpu.r[4] = 0xffffffffu;
     cpu.r[5] = 0u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0x800001feu,
-           "sceGeBreak with invalid mode 2 returns INVALID_VALUE");
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0x80000107u,
+           "sceGeBreak with invalid mode -1 returns 0x80000107 (measured)");
 
     /* Param validation: non-NULL unreadable/unaligned param rejected with ILLEGAL_ADDR */
     memset(&cpu, 0, sizeof(cpu));
@@ -15577,17 +15582,18 @@ static void test_ge_break_continue(void) {
     expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0x80000103u,
            "sceGeBreak with crossing-arena param returns ILLEGAL_ADDR");
 
-    /* Idle checks: mode 0 when idle returns NOT_FOUND */
+    /* Idle checks: mode 0 with no active list returns the measured 0x80000020
+     * (PSP-3000 6.61 oracle 2026-10-15, PSP-GE-CONTROL-001) */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0u;
     cpu.r[5] = 0u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0x80000025u,
-           "sceGeBreak mode 0 when idle returns NOT_FOUND");
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0x80000020u,
+           "sceGeBreak mode 0 with no active list returns 0x80000020 (measured)");
 
-    /* Idle checks: sceGeContinue when no paused list returns NOT_FOUND */
+    /* Idle checks: sceGeContinue with no paused list returns 0 (measured, same record) */
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, NID_SCE_GE_CONTINUE) == 0x80000025u,
-           "sceGeContinue when idle returns NOT_FOUND");
+    expect(sr_syscall(&cpu, NID_SCE_GE_CONTINUE) == 0u,
+           "sceGeContinue with no paused list returns 0 (measured)");
 
     /* Idle checks: mode 1 when idle resets all queues (0) and returns 0 */
     memset(&cpu, 0, sizeof(cpu));
@@ -15610,26 +15616,39 @@ static void test_ge_break_continue(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid;
     cpu.r[5] = 1u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 1u,
-           "ListSync peek reports stalled (1)");
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 3u,
+           "ListSync peek reports stalled (3, measured)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 1u,
-           "DrawSync peek reports busy (1)");
+    expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 3u,
+           "DrawSync peek reports stalled (3, measured)");
 
-    /* Pause with mode 0 */
+    /* sceGeListDeQueue on a stalled list returns BUSY (0x80000021, measured) and
+     * leaves the list stalled: the next sync still reports 3. */
     memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 0u;
-    cpu.r[5] = 0u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0u,
-           "sceGeBreak mode 0 pauses the display list and returns 0");
+    cpu.r[4] = qid;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80000021u,
+           "sceGeListDeQueue on a stalled list returns BUSY (0x80000021, measured)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid;
     cpu.r[5] = 1u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 2u,
-           "ListSync peek reports paused (DRAWING_DONE = 2)");
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 3u,
+           "ListSync still reports stalled (3) after a BUSY dequeue");
+
+    /* Pause with mode 0: returns the paused list's queue id (measured) */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == qid,
+           "sceGeBreak mode 0 pauses the display list and returns its queue id (measured)");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid;
+    cpu.r[5] = 1u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 4u,
+           "ListSync peek reports paused (4, measured)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;
@@ -15646,8 +15665,8 @@ static void test_ge_break_continue(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid;
     cpu.r[5] = 1u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 2u,
-           "ListSync peek stays paused after UpdateStallAddr");
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 4u,
+           "ListSync peek stays paused (4) after UpdateStallAddr");
 
     /* Continue: resumes and completes */
     memset(&cpu, 0, sizeof(cpu));
@@ -15664,6 +15683,18 @@ static void test_ge_break_continue(void) {
     cpu.r[4] = 1u;
     expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
            "DrawSync reports idle (0) after continue");
+
+    /* No measured dequeue result exists for a completed list or an unknown id:
+     * both fail closed as NOT_IMPLEMENTED rather than reporting success. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80020002u,
+           "sceGeListDeQueue on a completed list fails closed (NOT_IMPLEMENTED)");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x7fffffffu;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80020002u,
+           "sceGeListDeQueue on an unknown id fails closed (NOT_IMPLEMENTED)");
 
     /* Mode 1 cancellation */
     memset(&cpu, 0, sizeof(cpu));
@@ -15690,10 +15721,10 @@ static void test_ge_break_continue(void) {
     expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
            "DrawSync reports idle (0) after mode 1 break");
 
-    /* Continue fails after mode 1 break because no list is paused */
+    /* Continue with no paused list returns 0 (measured) */
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, NID_SCE_GE_CONTINUE) == 0x80000025u,
-           "sceGeContinue after mode 1 break returns NOT_FOUND");
+    expect(sr_syscall(&cpu, NID_SCE_GE_CONTINUE) == 0u,
+           "sceGeContinue after mode 1 break returns 0 (no paused list, measured)");
 
     /* Mode 1 cancellation of an already paused list */
     memset(&cpu, 0, sizeof(cpu));
@@ -15706,8 +15737,8 @@ static void test_ge_break_continue(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0u;
     cpu.r[5] = 0u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0u,
-           "sceGeBreak mode 0 pauses the third display list");
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == qid3,
+           "sceGeBreak mode 0 pauses the third display list and returns its queue id");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;
