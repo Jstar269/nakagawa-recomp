@@ -923,8 +923,8 @@
       {
         "id": "PSP-HLE-KERNEL-STATUS-002",
         "status": "implemented",
-        "hardware_evidence": "CAPTURED",
-        "evidence_note": "Captured by the 2026-10-15 PSP-3000 single-case run (firmware 6.6.1) of public commit b5d6fc5b, case hle-kernel-pool-bounds: the stream was complete, with 7 records PASS and 2 SKIP (fpl-delete-size-0x00 and fpl-delete-size-0x7fffffff). Both FPL creates were refused, so the probe had no pool to delete and recorded those delete cells SKIP; the runner therefore classified the envelope as not acceptance-eligible, and it establishes nothing about PSP behaviour. Runs as a single launch, not in the campaign queue.",
+        "hardware_evidence": "NOT_RUN",
+        "evidence_note": "No hardware capture of this revision exists. The earlier revision ran on 2026-10-15 (public commit b5d6fc5b) and was captured only: both FPL creates were refused, so its two fixed-pool delete cells were SKIP and the envelope could not be acceptance-eligible. In this revision such a delete cell is PASS with out0 0 and issues no delete, and out0 is 1 when a delete was issued. It is built from fixtures/psp_oracle/probe_hle_measure.c and its stream is strictly parsed. Its cells are machinery-only: PASS when the calls completed and were recorded, SKIP only when the VPL a cell needs was not obtained. Every returned value is an observation and is UNMEASURED for the console. Runs as a single launch, not in the campaign queue.",
         "group": "kernel",
         "source": "fixtures/psp_oracle/probe_hle_measure.c",
         "prx": "hle_kernel_pool_bounds.prx",
@@ -960,7 +960,7 @@
           "vpl-delete",
           "hle-kernel-pool-bounds-done"
         ],
-        "invariant": "zero-size and maximum-size fixed pools created and deleted; a small VPL allocated up to 64 times; out1 records whether a refusal occurred; every block freed and the VPL deleted; raw returns recorded",
+        "invariant": "zero-size and maximum-size fixed pools created, each deleted when its create returned a pool (the delete cell's out0 records whether a delete was issued); a small VPL allocated up to 64 times; out1 records whether a refusal occurred; every block freed and the VPL deleted; raw returns recorded",
         "issues": [],
         "risk": "low; the pool creates pass a NULL optional option pointer; probe-owned pools deleted in the case; the VPL loop is bounded at 64 and all blocks are freed",
         "reset": "one PRX launch; PSPLink soft reset before the next launch"

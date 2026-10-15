@@ -522,15 +522,15 @@ publishes their words.
 | `fpu-cc` | `PSP-FPU-CC-001` | COP1 condition codes 0..7: FCR31 condition-bit writability, the FCR31 word after an equal and an unequal `c.eq.s` with each code, and whether `bc1t`/`bc1f` with each code are taken under FCC0, no flag, and the code's own flag. A reserved encoding may end the launch with an exception; the last STEP line names the cell. Measured: no exception; only FCC0 exists, and every code writes and tests it. |
 | `hle-vtimer-unit` | `PSP-HLE-VTIMER-002` | One VTimer: start; a `sceKernelGetVTimerTime` and a system-clock reading either side of a bounded 20 ms delay; the VTimer base and Refer base field while running and after stop; stop; delete. Each 64-bit clock is recorded as its low word then its high word. |
 | `hle-vtimer-errors` | `PSP-HLE-VTIMER-003` | Start, stop, and `sceKernelGetVTimerTime` on a deleted UID, then a cleanup delete of that UID after its last use; a live timer created and deleted; up to 64 creates; out1 records whether a refusal occurred; every created timer deleted. The NULL option pointer of `sceKernelCreateVTimer` is the optional argument. |
-| `hle-kernel-pool-bounds` | `PSP-HLE-KERNEL-STATUS-002` | FPL creation with block size 0 and with a 0x7fffffff-byte block, each deleted; VPL allocation: up to 64 allocations; out1 records whether a refusal occurred; every block freed and the VPL deleted. The NULL option pointers of the pool creates are the optional argument. |
+| `hle-kernel-pool-bounds` | `PSP-HLE-KERNEL-STATUS-002` | FPL creation with block size 0 and with a 0x7fffffff-byte block, each deleted when its create returned a pool; a refused create gives a PASS delete cell with out0 0 and no delete call; VPL allocation: up to 64 allocations; out1 records whether a refusal occurred; every block freed and the VPL deleted. The NULL option pointers of the pool creates are the optional argument. |
 | `hle-power-float-v0` | `PSP-HLE-POWER-002` | Raw `$v0` and `$f0` bits of `scePowerGetPllClockFrequencyFloat`, `scePowerGetCpuClockFrequencyFloat`, and `scePowerGetBusClockFrequencyFloat`, one call each, through a short assembly wrapper. |
 | `hle-null-out-pointers` | `PSP-HLE-NULL-OUT-001` | `sceKernelReferSystemStatus`, `sceKernelGetVTimerTime`, `sceKernelGetVTimerBase`, and `sceKernelReferVTimerStatus` with NULL as their mandatory out pointer, one call each on a live VTimer that is deleted at the end; each record holds only its return code. Risk high: a NULL mandatory out-pointer may fault in kernel mode; schedule last in a session, after every other case. |
 
 The five `hle-*` rows are single-launch probes built from `probe_hle_measure.c`, and they are
 not in the campaign queue. All five ran on a PSP-3000 on 2026-10-15 (build `b5d6fc5b`):
 `hle-vtimer-unit`, `hle-vtimer-errors` and `hle-power-float-v0` were measured, and the measured
-index publishes their words; `hle-kernel-pool-bounds` was captured only, and
-`hle-null-out-pointers` did not complete. Each launch writes
+index publishes their words; `hle-kernel-pool-bounds` was captured only, and its revised
+form has not run; `hle-null-out-pointers` did not complete. Each launch writes
 at most 29 lines (STEP, TEST, META, the `-done` record and COMPLETE), and every line is three
 host0 operations, so the default `--timeout` of 30 s holds the whole launch only if one host0
 operation averages under about 0.3 s (the 29-line `hle-vtimer-unit` launch is the binding one:

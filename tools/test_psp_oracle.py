@@ -2797,8 +2797,9 @@ class PspDmacProbeTests(unittest.TestCase):
             {
                 # Captured only: the runner classified its envelope as not acceptance-eligible.
                 "PSP-TEARDOWN-001",
-                # b5d6fc5b, 2026-10-15: two SKIP delete cells; an incomplete NULL-pointer stream.
-                "PSP-HLE-KERNEL-STATUS-002", "PSP-HLE-NULL-OUT-001",
+                # b5d6fc5b, 2026-10-15: an incomplete NULL-pointer stream. (The pool-bounds
+                # capture of the same day belongs to a revision since replaced; NOT_RUN.)
+                "PSP-HLE-NULL-OUT-001",
             },
         )
 
@@ -4693,11 +4694,12 @@ class HleSingleLaunchProbeTests(unittest.TestCase):
     """
 
     SINGLE = HleMeasureProbeTests.SINGLE_LAUNCH_FAMILIES
-    # Manifest hardware_evidence per case after the 2026-10-15 session on b5d6fc5b.
+    # Manifest hardware_evidence per case after the 2026-10-15 session on b5d6fc5b. The
+    # pool-bounds probe was revised after its captured run, so its revised form is NOT_RUN.
     HARDWARE = {
         "hle-vtimer-unit": "MEASURED",
         "hle-vtimer-errors": "MEASURED",
-        "hle-kernel-pool-bounds": "CAPTURED",
+        "hle-kernel-pool-bounds": "NOT_RUN",
         "hle-power-float-v0": "MEASURED",
         "hle-null-out-pointers": "CAPTURED",
     }
@@ -4707,9 +4709,9 @@ class HleSingleLaunchProbeTests(unittest.TestCase):
                            "campaign queue)",
         "hle-vtimer-errors": "`MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the "
                              "campaign queue)",
-        "hle-kernel-pool-bounds": "`CAPTURED` (2026-10-15, `b5d6fc5b`; not acceptance-eligible: "
-                                  "both FPL delete cells SKIPped; single launch, not in the "
-                                  "campaign queue)",
+        "hle-kernel-pool-bounds": "`NOT_RUN` (revised form; single launch, not in the campaign "
+                                  "queue; the earlier revision's 2026-10-15 `b5d6fc5b` run was "
+                                  "captured only)",
         "hle-power-float-v0": "`MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the "
                               "campaign queue)",
         "hle-null-out-pointers": "`CAPTURED` (2026-10-15, `b5d6fc5b`; incomplete, not measured; "
@@ -4923,9 +4925,95 @@ class HleSingleLaunchProbeTests(unittest.TestCase):
                          for name in spec.semantic_cases}
                 first = spec.semantic_cases[0]
                 cells[first] = ("SKIP", 0, None)
+                if case == self.POOL_CASE:
+                    # Only the fixed-pool delete bookkeeping is constrained: with no pool
+                    # the delete cell made no call; with one, it issued a delete.
+                    cells["fpl-delete-size-0x00"] = ("PASS", 0, [0])
+                    cells["fpl-create-size-0x7fffffff"] = ("PASS", 0xFFFFFFFF, [1])
+                    cells["fpl-delete-size-0x7fffffff"] = ("PASS", 0xFFFFFFFF, [1])
                 accepted = parse_campaign_probe_output(
                     self.h._stream(case, cells).split("NAKAGAWA_PSP_COMPLETE")[0], case)
                 self.assertTrue(accepted.complete)
+
+    POOL_CASE = "hle-kernel-pool-bounds"
+    # A refused create (any negative word, out0 0) followed by a delete cell with no pool,
+    # and a created pool (a UID, out0 1) followed by an issued delete.
+    POOL_REFUSED = {
+        "fpl-create-size-0x00": ("PASS", 0x800201B7, [0]),
+        "fpl-delete-size-0x00": ("PASS", 0, [0]),
+        "fpl-create-size-0x7fffffff": ("PASS", 0x80020190, [0]),
+        "fpl-delete-size-0x7fffffff": ("PASS", 0, [0]),
+    }
+    POOL_CREATED = {
+        "fpl-create-size-0x00": ("PASS", 0x04300001, [1]),
+        "fpl-delete-size-0x00": ("PASS", 0, [1]),
+        "fpl-create-size-0x7fffffff": ("PASS", 0x04300003, [1]),
+        "fpl-delete-size-0x7fffffff": ("PASS", 0, [1]),
+    }
+
+    def _pool_body(self, overrides: dict) -> str:
+        return self.h._stream(self.POOL_CASE, overrides).split("NAKAGAWA_PSP_COMPLETE")[0]
+
+    def test_pool_delete_without_a_pool_is_a_pass_that_issues_no_delete(self) -> None:
+        """A refused fixed-pool create is the measured outcome, so the delete cell after it
+        is PASS with out0 0 and makes no call; a SKIP there made the 2026-10-15 envelope
+        ineligible."""
+        section = _c_code(self.h._section("HLE_CASE_KERNEL_POOL_BOUNDS"))
+        body = HleMeasureProbeTests._function_body(section, "static void hle_ksn_fpl_delete(")
+        self.assertNotIn("hle_skip(", body)
+        branch = body[body.index("if (uid < 0) {"):body.index("return; }")]
+        self.assertIn("const uint32_t no_object = 0;", branch)
+        self.assertIn('hle_record(case_id, "PASS", 0u, &no_object, 1);', branch)
+        self.assertNotIn("sceKernelDeleteFpl", branch)
+        self.assertNotIn("hle_step(", branch)
+        issued = body[body.index("return; }"):]
+        self.assertIn("const uint32_t issued = 1;", issued)
+        self.assertLess(issued.index("hle_step(case_id);"), issued.index("sceKernelDeleteFpl(uid)"))
+        self.assertIn('hle_record(case_id, "PASS", (uint32_t)rc, &issued, 1);', issued)
+        # The VPL cells keep their SKIP: a VPL that was not obtained is a missing object.
+        self.assertIn('hle_skip("vpl-try-alloc-refusal", 2);', section)
+
+    def test_parser_accepts_refused_and_created_pools_with_matching_deletes(self) -> None:
+        for name, overrides in (("refused", self.POOL_REFUSED), ("created", self.POOL_CREATED)):
+            with self.subTest(pools=name):
+                accepted = parse_campaign_probe_output(self._pool_body(overrides), self.POOL_CASE)
+                self.assertTrue(accepted.complete)
+                self.assertTrue(all(record.status == "PASS"
+                                    for record in accepted.results.values()))
+
+    def test_parser_refuses_a_skip_or_mismatched_fixed_pool_delete(self) -> None:
+        refused = self.POOL_REFUSED
+        cases = {
+            # The earlier revision's shape: a SKIP delete after a refused create.
+            "skip": {**refused, "fpl-delete-size-0x00": ("SKIP", 0, [0])},
+            # A delete cell that claims a call although its create returned no pool.
+            "issued-without-pool": {**refused, "fpl-delete-size-0x7fffffff": ("PASS", 0, [1])},
+            # A delete cell that claims no pool although its create returned one.
+            "no-object-after-create": {**self.POOL_CREATED,
+                                       "fpl-delete-size-0x00": ("PASS", 0, [0])},
+            # No pool, so no call was made, yet a result was recorded.
+            "result-without-call": {**refused,
+                                    "fpl-delete-size-0x00": ("PASS", 0x8002019D, [0])},
+            "out0-not-a-flag": {**self.POOL_CREATED,
+                                "fpl-create-size-0x00": ("PASS", 0x04300001, [2]),
+                                "fpl-delete-size-0x00": ("PASS", 0, [2])},
+        }
+        for name, overrides in cases.items():
+            with self.subTest(mutant=name):
+                with self.assertRaisesRegex(ProtocolError, "fpl-delete-size"):
+                    parse_campaign_probe_output(self._pool_body(overrides), self.POOL_CASE)
+
+    def test_the_pool_delete_check_compares_no_psp_value(self) -> None:
+        """Any create word is accepted; only the probe's own create/delete flags must agree."""
+        for create_word in (0x0, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF, 0x800201B7):
+            with self.subTest(create=hex(create_word)):
+                overrides = {
+                    "fpl-create-size-0x00": ("PASS", create_word, [0]),
+                    "fpl-delete-size-0x00": ("PASS", 0, [0]),
+                    "fpl-create-size-0x7fffffff": ("PASS", create_word, [1]),
+                    "fpl-delete-size-0x7fffffff": ("PASS", 0xDEADBEEF, [1]),
+                }
+                parse_campaign_probe_output(self._pool_body(overrides), self.POOL_CASE)
 
     def test_parser_refuses_every_status_other_than_pass_and_skip(self) -> None:
         """A check that names one status (FAIL) lets the others through; the refusal
@@ -4965,13 +5053,19 @@ class HleSingleLaunchProbeTests(unittest.TestCase):
                     for word in ("2026-10-15", "b5d6fc5b", "acceptance-eligible with 0 blockers"):
                         self.assertIn(word, row["measurement_note"])
                 else:
-                    # A capture that was not acceptance-eligible cites nothing.
+                    # A capture that was not acceptance-eligible, or a revision with no
+                    # capture, cites nothing.
                     self.assertNotIn("evidence_ref", row)
                     self.assertNotIn("evidence_cases", row)
                     self.assertNotIn("measurement_note", row)
-                    for word in ("2026-10-15", "b5d6fc5b", "establishes nothing about PSP behaviour",
-                                 "not in the campaign queue"):
-                        self.assertIn(word, row["evidence_note"])
+                    self.assertIn("not in the campaign queue", row["evidence_note"])
+                    if self.HARDWARE[case] == "CAPTURED":
+                        for word in ("2026-10-15", "b5d6fc5b",
+                                     "establishes nothing about PSP behaviour"):
+                            self.assertIn(word, row["evidence_note"])
+                    else:
+                        self.assertIn("No hardware capture of this revision exists",
+                                      row["evidence_note"])
                 self.assertEqual(row["source"], "fixtures/psp_oracle/probe_hle_measure.c")
                 self.assertEqual(row["prx"], f"{stem}.prx")
                 self.assertEqual(row["case_ids"], list(spec.ordered_cases))

@@ -722,10 +722,11 @@ _register_campaign_probe(
     )},
 )
 
-# NOT_RUN HLE cases (probe_hle_measure.c, single launch each). Shape only: a cell
+# Single-launch HLE cases (probe_hle_measure.c, one launch each). Shape only: a cell
 # is PASS when its calls completed, SKIP when the object it needs was not obtained,
 # and every out word is an observation. Nothing here compares a value with a PSP
-# expectation, and none of these streams has run on hardware.
+# expectation. The fixed-pool delete cells of hle-kernel-pool-bounds are PASS with
+# out0 0 when their create was refused (validate_hle_pool_bounds_deletes).
 _register_campaign_probe(
     "hle-vtimer-unit", "PSP-HLE-VTIMER-002",
     ("vtimer-unit-create", "vtimer-unit-start", "vtimer-unit-time-a",
@@ -860,12 +861,55 @@ def validate_hle_edram_restore(text: str) -> None:
         )
 
 
-#: NOT_RUN HLE cases whose status is machinery-only: a record is PASS when its calls
+#: Single-launch HLE cases whose status is machinery-only: a record is PASS when its calls
 #: completed and SKIP when the object it needs was not obtained, and never FAIL.
 HLE_MACHINERY_STATUS_CASES = frozenset({
     "hle-vtimer-unit", "hle-vtimer-errors", "hle-kernel-pool-bounds", "hle-power-float-v0",
     "hle-null-out-pointers",
 })
+
+#: hle-kernel-pool-bounds fixed-pool (create, delete) cell pairs.
+HLE_POOL_BOUNDS_FPL_PAIRS = (
+    ("fpl-create-size-0x00", "fpl-delete-size-0x00"),
+    ("fpl-create-size-0x7fffffff", "fpl-delete-size-0x7fffffff"),
+)
+
+
+def validate_hle_pool_bounds_deletes(sequence: SequenceReport) -> None:
+    """Fail closed unless each fixed-pool delete cell agrees with its own create cell.
+
+    A refused create is what these creates measure, so the delete cell after it is PASS,
+    not SKIP: its out0 is 1 when it issued a delete (the create's out0 says a pool was
+    created) and 0 when there was no pool, in which case it made no call and its result
+    is 0. This checks the probe's own bookkeeping, like validate_hle_edram_restore; it
+    compares no value with a PSP expectation. A pair with a record still missing from a
+    partial stream is not checked.
+    """
+
+    results = sequence.results
+    test_id = sequence.spec.test_id
+    for create_id, delete_id in HLE_POOL_BOUNDS_FPL_PAIRS:
+        if create_id not in results or delete_id not in results:
+            continue
+        delete = results[delete_id]
+        if delete.status != "PASS":
+            raise ProtocolError(
+                f"{test_id}: {delete_id} status {delete.status!r}; a fixed-pool delete cell is "
+                "PASS whether or not its create returned a pool"
+            )
+        created = int(dict(results[create_id].values)["out0"], 0)
+        values = dict(delete.values)
+        issued = int(values["out0"], 0)
+        if issued not in (0, 1) or issued != created:
+            raise ProtocolError(
+                f"{test_id}: {delete_id} out0 {issued:#x} must equal {create_id} out0 "
+                f"{created:#x} (1 when a pool was created and deleted, 0 when there was none)"
+            )
+        if issued == 0 and int(values["result"], 0) != 0:
+            raise ProtocolError(
+                f"{test_id}: {delete_id} recorded no pool (out0 0) but a non-zero result; "
+                "with no pool the cell makes no call"
+            )
 
 
 def parse_campaign_probe_output(
@@ -886,6 +930,8 @@ def parse_campaign_probe_output(
                     f"{spec.test_id}: {record.case_id} status {record.status!r} is not "
                     "machinery-only (a cell is PASS or SKIP, never FAIL)"
                 )
+    if campaign_case == "hle-kernel-pool-bounds":
+        validate_hle_pool_bounds_deletes(sequence)
     return sequence
 
 

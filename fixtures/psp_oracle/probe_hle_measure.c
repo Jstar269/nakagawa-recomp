@@ -8,16 +8,17 @@
 // before it exits. Every import is user-mode and comes from a per-family import
 // block (hle_*_imports.S) or the shared threadman_user_imports.S.
 //
-// Five further single-launch cases are NOT_RUN and share this file:
-// CASE=hle-vtimer-unit (PSP-HLE-VTIMER-002), hle-vtimer-errors (PSP-HLE-VTIMER-003),
-// hle-kernel-pool-bounds (PSP-HLE-KERNEL-STATUS-002), hle-power-float-v0
-// (PSP-HLE-POWER-002) and hle-null-out-pointers (PSP-HLE-NULL-OUT-001). Their pass
-// rule is machinery only: a record is PASS when its calls completed and were
-// recorded in order, and SKIP only when the object a cell needs (a timer, pool or
-// block UID) was not obtained. No returned value is compared with an expected PSP
-// value, here, in the host checker or in the parser. hle-null-out-pointers passes NULL
-// as a mandatory out pointer, which may fault in kernel mode, so it is scheduled last
-// in a session, after every other case.
+// Five further single-launch cases share this file: CASE=hle-vtimer-unit
+// (PSP-HLE-VTIMER-002), hle-vtimer-errors (PSP-HLE-VTIMER-003), hle-kernel-pool-bounds
+// (PSP-HLE-KERNEL-STATUS-002), hle-power-float-v0 (PSP-HLE-POWER-002) and
+// hle-null-out-pointers (PSP-HLE-NULL-OUT-001). Their pass rule is machinery only: a
+// record is PASS when its calls completed and were recorded in order, and SKIP only when
+// the object a cell needs (a timer, VPL or block UID) was not obtained. A fixed-pool
+// delete cell whose create was refused is PASS with out0 0 and issues no delete,
+// because the refusal is what that create measures. No returned value is compared with
+// an expected PSP value, here, in the host checker or in the parser.
+// hle-null-out-pointers passes NULL as a mandatory out pointer, which may fault in
+// kernel mode, so it is scheduled last in a session, after every other case.
 //
 // Record stream (tools/psp_oracle/protocol.py): NAKAGAWA_PSP_META, then one
 // NAKAGAWA_PSP_STEP before each risky call, one NAKAGAWA_PSP_TEST per
@@ -1124,9 +1125,11 @@ static int hle_run(void)
 
 /* Zero-size and maximum-size fixed pools, and a small variable pool exhausted by
    TryAllocateVpl (PSP-HLE-KERNEL-STATUS-002). The pool creates pass a NULL option
-   pointer, the optional argument. Every fixed pool created is deleted; the VPL blocks
-   are freed, bounded at HLE_KSN_VPL_CAP allocations, before the VPL is deleted. The
-   pass rule is machinery only: completion and cleanup. */
+   pointer, the optional argument. Every fixed pool created is deleted; a fixed-pool
+   create that is refused leaves no pool, and its delete cell records that as a PASS with
+   out0 0 instead of a SKIP, so a refusal, which is what these creates measure, keeps the
+   envelope eligible. The VPL blocks are freed, bounded at HLE_KSN_VPL_CAP allocations,
+   before the VPL is deleted. The pass rule is machinery only: completion and cleanup. */
 
 #define HLE_KSN_PART 2
 #define HLE_KSN_VPL_POOL 0x1000u
@@ -1142,16 +1145,20 @@ static SceUID hle_ksn_fpl_create(const char *case_id, uint32_t block_size, uint3
     return uid;
 }
 
+/* Deletes the pool its create returned. out0 is 1 when a delete was issued, and the result
+   is its return. With no pool (the create was refused) the cell issues no call and records
+   PASS with result 0 and out0 0: there is no object to delete. */
 static void hle_ksn_fpl_delete(const char *case_id, SceUID uid)
 {
     if (uid < 0) {
-        hle_skip(case_id, 1);
+        const uint32_t no_object = 0;
+        hle_record(case_id, "PASS", 0u, &no_object, 1);
         return;
     }
-    const uint32_t zero = 0;
+    const uint32_t issued = 1;
     hle_step(case_id);
     const int rc = sceKernelDeleteFpl(uid);
-    hle_record(case_id, "PASS", (uint32_t)rc, &zero, 1);
+    hle_record(case_id, "PASS", (uint32_t)rc, &issued, 1);
 }
 
 static SceUID hle_ksn_vpl_create(void)
