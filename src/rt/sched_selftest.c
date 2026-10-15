@@ -97,7 +97,10 @@ uint32_t sr_vblank_no(void) { return g_test_vblank_no; }
 int sr_vblank_dispatch_registered(void) { return 0; }
 static unsigned g_test_vblank_delivered;
 void sr_vblank_tick(void) { g_test_vblank_delivered++; }
-void sr_display_advance_vcount(uint32_t elapsed_periods) { (void)elapsed_periods; }
+/* Guest VCOUNT is advanced only through this seam (hle.c owns the real counter), so
+ * the harness counts it to observe what a display wait does to VCOUNT. */
+static uint64_t g_test_vcount;
+void sr_display_advance_vcount(uint32_t elapsed_periods) { g_test_vcount += elapsed_periods; }
 void sr_callback_unregister_owner(uint32_t thread_uid) { (void)thread_uid; }
 void sr_hle_release_thread_resources(uint32_t thread_uid) { (void)thread_uid; }
 
@@ -225,6 +228,7 @@ static void reset_sched(void) {
     s_vblank_q_us = -1;
     s_last_vblank_ns = 0;
     g_test_vblank_delivered = 0;
+    g_test_vcount = 0;
     g_test_vblank_handler = 0;
     g_test_handler_calls = 0;
     g_test_handler_raise_ge = 0;
@@ -2927,6 +2931,112 @@ static void test_display_wait_hands_over_only_while_blocked(void) {
            "the weaker thread runs only because the display wait genuinely blocked");
 }
 
+/* G) A late display wait is owed none of the edges it slept through.
+ *
+ * Hardware (PSP-DISPLAY-002, probe cases `late-waitvblankstart-*` and
+ * `late-waitvblank-*`): after an un-yielded spin of 1.25, 1.75 or 2.5 periods past
+ * an edge, both NIDs blocked to the first edge strictly after the call, waited the
+ * remainder of the period in progress (12.49..12.53 ms after 1.25 periods, 8.31..
+ * 8.34 ms after 2.5), and advanced VCOUNT by exactly 1. The edges that passed during
+ * the spin count toward VCOUNT but are not handed to the caller.
+ *
+ * Timeline: the source runs at 60000/1001 Hz, so edge k after the origin is at
+ * floor(k * 1001000 / 60) us, the same schedule rational_vblanks_through() asserts.
+ * The origin edge is delivered at 0. A service point at 1000 us delivers nothing and
+ * stamps the last service. The thread then spins with no service point until the
+ * call, so the edges due before the call are only latched by it.
+ *
+ * MUTANT: remove scheduler_service_pending() from sched_vblank_block -- the owed edges
+ *   are latched but not delivered before the caller registers, so the service point
+ *   at the call time wakes the caller at once and the cells fail.
+ * MUTANT: remove the latch (vtime_refresh) from sched_vblank_block -- the caller
+ *   registers with nothing owed, the next service point wakes it early, and the cells
+ *   fail the VCOUNT check at the call and the release check. */
+static uint64_t dw_edge_us(uint64_t k) { return (k * 1001000ull) / 60ull; }
+
+static int g_dw_body_start_nid;   /* 1: sceDisplayWaitVblankStart shape, 0: sceDisplayWaitVblank */
+static int g_dw_body_ret;
+static void dw_body_wait_either(CpuState *s) {
+    (void)s;
+    g_dw_body_calls++;
+    if (g_dw_body_start_nid) sched_wait_vblank_start();
+    else g_dw_body_ret = sched_wait_vblank();
+    g_dw_body_returned++;
+}
+
+static void expect_late_cell(int cond, int start_nid, unsigned phase8, const char *what) {
+    char buf[256];
+    snprintf(buf, sizeof buf, "%s at %u/8 of a period: %s",
+             start_nid ? "sceDisplayWaitVblankStart" : "sceDisplayWaitVblank", phase8, what);
+    expect(cond, buf);
+}
+
+static void test_display_wait_late_owes_no_edges(void) {
+    static const unsigned phase8_cells[3] = { 10u, 14u, 20u };
+    for (int nid = 0; nid < 2; nid++) {
+        for (int c = 0; c < 3; c++) {
+            const unsigned phase8 = phase8_cells[c];
+            reset_sched();
+            begin_clock_fixture(1, 0);          /* paced: guest time follows host time */
+            g_dw_body_calls = g_dw_body_returned = 0;
+            g_dw_body_ret = -1;
+            g_dw_body_start_nid = nid;
+            g_test_body = dw_body_wait_either;
+
+            scheduler_progress_time();          /* the origin edge, delivered at 0 */
+            scheduler_service_pending();
+            expect_late_cell(s_vbl_count == 1u && s_vbl_next_us == dw_edge_us(1), nid, phase8,
+                             "the origin edge is delivered and the next edge is on the 60000/1001 Hz schedule");
+            set_host_us(1000u);                 /* a service point that delivers nothing */
+            scheduler_progress_time();
+            scheduler_service_pending();
+
+            uint32_t uid = sched_create_thread(0x3600u, 32, 0);
+            int idx = index_of_uid(uid);
+            expect_late_cell(idx >= 0, nid, phase8, "late display-wait fixture thread created");
+            sched_start_thread(uid, 0, 0);
+
+            /* The un-yielded spin: the call arrives phase8/8 of a period after the origin. */
+            const uint64_t call_us = ((uint64_t)phase8 * 1001000ull) / 480ull;
+            set_host_us(call_us);
+            uint64_t owed = 0;                  /* edges that passed before the call */
+            while (dw_edge_us(owed + 1u) <= call_us) owed++;
+            const uint64_t release_us = dw_edge_us(owed + 1u);
+
+            run_one_slice(idx);
+            expect_late_cell(g_dw_body_calls == 1 && g_dw_body_returned == 0, nid, phase8,
+                             "the late call does not return without an edge");
+            expect_late_cell(s_tcb[idx].state == TH_WAIT_OBJ && s_tcb[idx].wait_obj == VBLANK_WAIT_OBJ,
+                             nid, phase8, "the late call parks on the VBLANK object");
+            expect_late_cell(g_test_vcount == 1u + owed, nid, phase8,
+                             "VCOUNT already counts the edges that passed during the spin");
+
+            scheduler_progress_time();          /* the service point at the call time */
+            scheduler_service_pending();
+            expect_late_cell(s_tcb[idx].state == TH_WAIT_OBJ, nid, phase8,
+                             "the edges that passed during the spin do not release the caller");
+
+            set_host_us(release_us - 1u);
+            scheduler_progress_time();
+            scheduler_service_pending();
+            expect_late_cell(s_tcb[idx].state == TH_WAIT_OBJ, nid, phase8,
+                             "the caller stays blocked until the first edge after the call");
+
+            set_host_us(release_us);
+            scheduler_progress_time();
+            scheduler_service_pending();
+            expect_late_cell(s_tcb[idx].state == TH_READY, nid, phase8,
+                             "the first edge after the call releases the caller");
+            expect_late_cell(g_test_vcount == 2u + owed, nid, phase8,
+                             "VCOUNT advances by exactly 1 across the call, from the serviced value");
+
+            run_one_slice(idx);
+            expect_late_cell(g_dw_body_returned == 1 && (nid == 1 || g_dw_body_ret == 0), nid, phase8,
+                             "the released call returns, and sceDisplayWaitVblank reports 0 because it blocked");
+        }
+    }
+}
+
 /* D) A VBLANK-only wait set is not a deadlock: the source is runtime-owned.
  *
  * MUTANT: restore `if (soonest == (uint64_t)-1) { report; break; }` -- the
@@ -3607,6 +3717,7 @@ int main(int argc, char **argv) {
     /* PSP display-wait semantics (hardware-pinned; see the block above these). */
     test_waitvblankstart_always_blocks();
     test_display_wait_nid_split();
+    test_display_wait_late_owes_no_edges();
     test_display_wait_ignores_other_ready_threads();
     test_display_wait_hands_over_only_while_blocked();
     test_vblank_only_wait_is_not_deadlock();
