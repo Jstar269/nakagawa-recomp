@@ -202,24 +202,27 @@ HANDLER_METADATA = {
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_power_identity_getters_measured",
             "hardware oracle 2026-10-15 PSP-HLE-POWER-001 case pll-clock-float (0x435E0000 = 222.0)",
+            "hardware oracle 2026-10-15 PSP-HLE-POWER-002 case pll-clock-float-v0 ($f0 0x435E0000; $v0 not modelled)",
         ],
-        "limitation": "returns the float of the retained PLL clock: the 222.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured",
+        "limitation": "returns the float of the retained PLL clock in $f0: the 222.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001, PSP-HLE-POWER-002), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured; $v0 is 0, a runtime choice: PSP-HLE-POWER-002 read a different word in $v0 after each call, neither 0 nor the clock, which is not modelled",
     },
     "h_PowerGetCpuClockFrequencyFloat": {
         "status": "partial",
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_power_identity_getters_measured",
             "hardware oracle 2026-10-15 PSP-HLE-POWER-001 case cpu-clock-float (0x435E0000 = 222.0)",
+            "hardware oracle 2026-10-15 PSP-HLE-POWER-002 case cpu-clock-float-v0 ($f0 0x435E0000; $v0 not modelled)",
         ],
-        "limitation": "returns the float of the retained CPU clock: the 222.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured",
+        "limitation": "returns the float of the retained CPU clock in $f0: the 222.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001, PSP-HLE-POWER-002), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured; $v0 is 0, a runtime choice: PSP-HLE-POWER-002 read a different word in $v0 after each call, neither 0 nor the clock, which is not modelled",
     },
     "h_PowerGetBusClockFrequencyFloat": {
         "status": "partial",
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_power_identity_getters_measured",
             "hardware oracle 2026-10-15 PSP-HLE-POWER-001 case bus-clock-float (0x42DE0000 = 111.0)",
+            "hardware oracle 2026-10-15 PSP-HLE-POWER-002 case bus-clock-float-v0 ($f0 0x42DE0000; $v0 not modelled)",
         ],
-        "limitation": "returns the float of the retained bus clock: the 111.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured",
+        "limitation": "returns the float of the retained bus clock in $f0: the 111.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001, PSP-HLE-POWER-002), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured; $v0 is 0, a runtime choice: PSP-HLE-POWER-002 read a different word in $v0 after each call, neither 0 nor the clock, which is not modelled",
     },
     "h_KernelDevkitVersion": {
         "status": "partial",
@@ -567,36 +570,39 @@ HANDLER_METADATA = {
     # docs/HARDWARE_ORACLE.md); Stop returns 1 while running and 0 when not started; Delete of a
     # running timer returns 0; Refer and Delete on the deleted UID return 0x800201BE. Refer fills
     # active, base (non-zero while running), current, and reads schedule, handler and common as 0.
-    # The VTimer time unit is assumed microseconds because the entry does not cite time values, and
-    # base = system time at start is the project model. Interrupt-driven behaviour and handlers
-    # depend on issue #325.
+    # PSP-HLE-VTIMER-002 and -003 (2026-10-15, build b5d6fc5b) add: Start, Stop and GetVTimerTime
+    # on a deleted UID return 0x800201BE and that GetVTimerTime writes nothing; Delete of a stopped
+    # timer returns 0; 64 creates in a row succeed; GetVTimerBase equals Refer's base while running
+    # and both read 0 once stopped. The microsecond unit and base = system time at Start are
+    # consistent with that run (deltas agree within about 8%), not measured exactly. Interrupt-driven
+    # behaviour and handlers depend on issue #325.
     "h_CreateVTimer": {
         "status": "partial",
-        "limitation": "NULL option struct only (a non-NULL option is refused, layout unmeasured); no-slot create code 0x80020190 unmeasured; time unit assumed microseconds (#325)",
+        "limitation": "NULL option struct only (a non-NULL option is refused, layout unmeasured); 64 creates in a row are measured (PSP-HLE-VTIMER-003), so the table holds 64; the limit above 64 and the no-slot code 0x80020190 are unmeasured; the microsecond unit is consistent with PSP-HLE-VTIMER-002, not a precise rate measurement (#325)",
     },
     "h_StartVTimer": {
         "status": "partial",
-        "limitation": "deleted-UID code reuses the measured Refer/Delete code by analogy; already-running return 1 is repo-documented, not PSP-HLE-VTIMER-001; time unit assumed microseconds (#325)",
+        "limitation": "deleted-UID code 0x800201BE measured (PSP-HLE-VTIMER-003); already-running return 1 is repo-documented, not measured by PSP-HLE-VTIMER-001, -002 or -003; base = system time at Start and the microsecond unit are consistent with PSP-HLE-VTIMER-002, not measured exactly (#325)",
     },
     "h_StopVTimer": {
         "status": "partial",
-        "limitation": "deleted-UID code reuses the measured Refer/Delete code by analogy; time unit assumed microseconds (#325)",
+        "limitation": "deleted-UID code 0x800201BE measured (PSP-HLE-VTIMER-003); the microsecond unit of the held time is consistent with PSP-HLE-VTIMER-002, not a precise rate measurement (#325)",
     },
     "h_DeleteVTimer": {
         "status": "partial",
-        "limitation": "delete of a stopped timer and interrupt-context placement unmeasured (#325)",
+        "limitation": "delete of a stopped timer returns 0 (PSP-HLE-VTIMER-002) and a second delete returns 0x800201BE (PSP-HLE-VTIMER-001, -003); interrupt-context placement unmeasured (#325)",
     },
     "h_GetVTimerTime": {
         "status": "partial",
-        "limitation": "time unit assumed microseconds (values not cited by PSP-HLE-VTIMER-001); NULL-pointer and deleted-UID codes unmeasured, reused by analogy (#325)",
+        "limitation": "deleted-UID code 0x800201BE with the output untouched measured (PSP-HLE-VTIMER-003); time = system time - base and the microsecond unit are consistent with PSP-HLE-VTIMER-002 (deltas within about 8%), not a precise rate measurement; NULL-pointer code unmeasured, ILLEGAL_ADDR by analogy (the PSP-HLE-NULL-OUT-001 run did not complete) (#325)",
     },
     "h_GetVTimerBase": {
         "status": "partial",
-        "limitation": "uncited: returns the same base as ReferVTimerStatus (guest time at the most recent Start while running, zero otherwise, a project model); NULL-pointer and deleted-UID codes unmeasured, reused by analogy (#325)",
+        "limitation": "returns the same base as ReferVTimerStatus, measured equal while running and 0 once stopped (PSP-HLE-VTIMER-002); the value, guest time at the most recent Start, is consistent with that run's system-clock reads, not measured exactly; NULL-pointer and deleted-UID codes unmeasured, reused by analogy (#325)",
     },
     "h_ReferVTimerStatus": {
         "status": "partial",
-        "limitation": "return 0, the deleted-UID code, and the active, current, schedule, handler and common states are measured (PR #1003); base's value (guest time at start) is the project model, with only its zero and non-zero states measured; the time unit is assumed microseconds; the caller-size write rule for size 0 is the sema/evf/mbx rule applied without a VTimer cite (#325)",
+        "limitation": "return 0, the deleted-UID code, and the active, current, schedule, handler and common states are measured (PR #1003); base equals GetVTimerBase while running and reads 0 once stopped (PSP-HLE-VTIMER-002), and its value (guest time at Start) and the microsecond unit are consistent with that run, not measured exactly; NULL-pointer code unmeasured; the caller-size write rule for size 0 is the sema/evf/mbx rule applied without a VTimer cite (#325)",
     },
     # sceRtc family (issue #341). Contract sources: the public PSPSDK header
     # psprtc.h (declarations, 0-on-success/<0-on-error, pspRtcCheckValidErrors

@@ -28215,6 +28215,84 @@ static void test_vtimer_lifecycle(void) {
     s_vtime_us = saved_vtime;
 }
 
+/* sceKernelGetSystemTimeWide through dispatch: the 64-bit time in $v0:$v1. */
+static uint64_t vt_system_time_wide(void) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    uint32_t low = sr_syscall(&cpu, NID_SCE_KERNEL_GET_SYSTEM_TIME_WIDE);
+    return ((uint64_t)cpu.r[3] << 32) | low;
+}
+
+/* PSP-HLE-VTIMER-002 and PSP-HLE-VTIMER-003 (PSP-3000, firmware 6.6.1, 2026-10-15, build
+ * b5d6fc5b; docs/HARDWARE_ORACLE.md measured index). Measured: 64 CreateVTimer calls in a row
+ * each return a UID with no refusal; GetVTimerTime on a deleted UID returns 0x800201BE and
+ * leaves its output untouched; GetVTimerBase reads 0 once the timer is stopped; Delete of a
+ * stopped timer returns 0. The base is a system-clock value, and the hardware reads are
+ * consistent with time = system time - base and base = system time at Start; this runtime
+ * makes that exact, which the turbo-mode clock below pins. */
+static void test_vtimer_measured_limits_and_base(void) {
+    enum { VT_MEASURED_CREATES = 64 };
+    int saved_pace = s_pace_on;
+    uint64_t saved_vtime = s_vtime_us;
+    reset_fixture();
+    sr_hle_init();
+    s_pace_on = 0;
+    s_vtime_us = 5000000u;
+
+    uint32_t uids[VT_MEASURED_CREATES];
+    int created = 0;
+    int distinct = 1;
+    uint32_t refusal = 0u;
+    for (int i = 0; i < VT_MEASURED_CREATES; i++) {
+        uint32_t uid = vt_create_named("hlevte");
+        if ((int32_t)uid <= 0) { refusal = uid; break; }
+        for (int j = 0; j < created; j++)
+            if (uids[j] == uid) distinct = 0;
+        uids[created++] = uid;
+    }
+    expect(created == VT_MEASURED_CREATES && refusal == 0u,
+           "64 CreateVTimer calls in a row each return a UID, with no refusal (PSP-HLE-VTIMER-003)");
+    expect(distinct, "the 64 VTimer UIDs are distinct");
+    int deleted = 0;
+    for (int i = 0; i < created; i++)
+        if (vt_call(NID_VT_DELETE, uids[i], 0u) == 0u) deleted++;
+    expect(deleted == created, "every one of the created VTimers deletes with 0");
+
+    uint32_t vt = vt_create_named("hlevtu");
+    expect((int32_t)vt > 0, "CreateVTimer returns a UID after the 64 are deleted");
+    expect(vt_call(NID_VT_START, vt, 0u) == 0u, "StartVTimer returns 0 (PSP-HLE-VTIMER-002)");
+    uint64_t start_time = vt_system_time_wide();
+    sr_hle_advance_time(38316u);
+    uint64_t time_a = vt_time_of(vt, "GetVTimerTime succeeds while running");
+    MEM_W32(VT_CLOCK, 0xfeedfaceu);
+    MEM_W32(VT_CLOCK + 4u, 0xfeedfaceu);
+    expect(vt_call(NID_VT_GET_BASE, vt, VT_CLOCK) == 0u, "GetVTimerBase returns 0 while running");
+    uint64_t base = vt_clock_u64();
+    expect(base == start_time, "GetVTimerBase is the system time at Start");
+    expect(base + time_a == vt_system_time_wide(),
+           "GetVTimerTime is the system time minus the base while running from zero");
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u && vt_info_u64(40u) == base,
+           "ReferVTimerStatus's base field equals GetVTimerBase while running");
+
+    expect(vt_call(NID_VT_STOP, vt, 0u) == 1u, "StopVTimer returns 1 on the running timer");
+    MEM_W32(VT_CLOCK, 0xfeedfaceu);
+    MEM_W32(VT_CLOCK + 4u, 0xfeedfaceu);
+    expect(vt_call(NID_VT_GET_BASE, vt, VT_CLOCK) == 0u && vt_clock_u64() == 0u,
+           "GetVTimerBase returns 0 and reads 0 once the timer is stopped");
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u && vt_info_u64(40u) == 0u,
+           "ReferVTimerStatus's base field reads 0 once the timer is stopped");
+    expect(vt_call(NID_VT_DELETE, vt, 0u) == 0u, "DeleteVTimer returns 0 on a stopped timer");
+
+    MEM_W32(VT_CLOCK, 0xa5a5a5a5u);
+    MEM_W32(VT_CLOCK + 4u, 0xa5a5a5a5u);
+    expect(vt_call(NID_SCE_KERNEL_GET_VTIMER_TIME, vt, VT_CLOCK) == VT_BAD_ID_ERR &&
+               MEM_R32(VT_CLOCK) == 0xa5a5a5a5u && MEM_R32(VT_CLOCK + 4u) == 0xa5a5a5a5u,
+           "GetVTimerTime on a deleted UID returns 0x800201BE and leaves its output untouched");
+
+    s_pace_on = saved_pace;
+    s_vtime_us = saved_vtime;
+}
+
 /* The VTimer handler family and the time setter stay refused by name (issue #325 gates the
  * handlers). Each refusal is a production registration that returns its named code. */
 static void test_vtimer_refusals_are_named(void) {
@@ -28342,6 +28420,7 @@ static int hle_selftest_main(int argc, char **argv) {
 
     if (argc > 1 && strcmp(argv[1], "--vtimer") == 0) {
         test_vtimer_lifecycle();
+        test_vtimer_measured_limits_and_base();
         test_vtimer_refusals_are_named();
         fprintf(stderr, "vtimer: %d checks, %d failures\n", s_checks, s_failures);
         free(g_mem_base);
@@ -28479,6 +28558,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sema_refer_status();
     test_fpl_refer_status();
     test_vtimer_lifecycle();
+    test_vtimer_measured_limits_and_base();
     test_vtimer_refusals_are_named();
     test_lwmutex_hardware_codes();
     test_evf_hardware_codes();
