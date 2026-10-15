@@ -945,6 +945,10 @@ uint32_t sr_hle_test_partition_top(void) {
 static uint32_t g_sdk_version = 0;
 
 static uint32_t h_SetCompiledSdkVersion(CpuState *s) { return sr_sdkver_set(&g_sdk_version, A0); }
+/* sceKernelDevkitVersion (0x3fc9ae6a) returns the devkit version word of the modelled firmware. The
+ * value is the single SR_PSP_FIRMWARE_DEVKIT_VERSION in sdkver.h. PSP-3000 6.61 oracle 2026-10-15,
+ * record PSP-SYSTEM-001 (case model-profile), measured 0x06060110. */
+static uint32_t h_KernelDevkitVersion(CpuState *s) { (void)s; return SR_PSP_FIRMWARE_DEVKIT_VERSION; }
 #ifdef SR_HLE_THREAD_SELFTEST
 uint32_t sr_hle_test_compiled_sdk_version(void) {
     return sr_sdkver_get(&g_sdk_version);
@@ -17078,8 +17082,13 @@ static uint32_t h_CtrlPeekBufferPositive(CpuState *s) {
  * same 32-bit convention the negative buffer read uses. Samples overwritten before a latch read are
  * not reported one by one: the ring keeps the latest CTRL_RING - 1 samples, and a transition inside
  * an overwritten span is lost. */
-static uint32_t h_CtrlReadLatch(CpuState *s) {
-    uint32_t out = A0;
+/* One latch computation for sceCtrlReadLatch (consume = 1) and sceCtrlPeekLatch (consume = 0). A read
+ * advances the latch cursor, so the transitions it reported are consumed. A peek writes the same words
+ * and leaves the cursor alone, so a pending transition is still reported by the next read. PSP-3000 6.61
+ * oracle 2026-10-15, record PSP-HLE-CTRL-LATCH-001 (cases latch-peek-initial, latch-peek-after-poll): the
+ * no-input words are make/break/press 0 and release 0xFFFFFFFF. The clear-or-keep distinction is not
+ * measured there (the release field stays saturated). */
+static uint32_t ctrl_latch_compute(uint32_t out, int consume) {
     uint32_t produced = s_ctrl_sample_count - s_latch_seen_count;
     uint32_t retained = produced < (uint32_t)(CTRL_RING - 1) ? produced : (uint32_t)(CTRL_RING - 1);
     uint32_t prev = s_latch_prev_btn, cur = prev, make = 0u, brk = 0u;
@@ -17093,14 +17102,19 @@ static uint32_t h_CtrlReadLatch(CpuState *s) {
             prev = cur;
         }
     }
-    s_latch_prev_btn = cur;
-    s_latch_seen_count = s_ctrl_sample_count;
+    if (consume) {
+        s_latch_prev_btn = cur;
+        s_latch_seen_count = s_ctrl_sample_count;
+    }
     MEM_W32(out + 0, make);
     MEM_W32(out + 4, brk);
     MEM_W32(out + 8, cur);
     MEM_W32(out + 12, ~cur);
     return produced;
 }
+
+static uint32_t h_CtrlReadLatch(CpuState *s) { (void)s; return ctrl_latch_compute(A0, 1); }
+static uint32_t h_CtrlPeekLatch(CpuState *s) { (void)s; return ctrl_latch_compute(A0, 0); }
 
 #ifdef SR_HLE_THREAD_SELFTEST
 /* Test-build-only: push one sampling cycle with the given button field, as sr_ctrl_sample stores
@@ -22431,6 +22445,7 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0x1f803938, "sceCtrlReadBufferPositive", h_CtrlReadBuffer);
     sr_hle_register(0x3a622550, "sceCtrlPeekBufferPositive", h_CtrlPeekBufferPositive);
     sr_hle_register(0x0b588501, "sceCtrlReadLatch", h_CtrlReadLatch);
+    sr_hle_register(0xb1d0e5cd, "sceCtrlPeekLatch", h_CtrlPeekLatch);
     sr_hle_register(0x6a638d83, "sceIoRead", h_IoRead);
     sr_hle_register(0x42ec03ac, "sceIoWrite", h_IoWrite);
     sr_hle_register(0xe23eec33, "sceIoWaitAsync", h_IoWaitAsync);
@@ -22680,6 +22695,13 @@ static void hle_register_exit_game_handler(void) {
     sr_hle_register(0x05572a5f, "sceKernelExitGame", h_ExitGame);
 }
 
+/* sceKernelDevkitVersion (0x3fc9ae6a): one definition reached by both sr_hle_init() branches, so the
+ * executable harness dispatches the production mapping (the production-only list did not reach it).
+ * PSP-3000 6.61 oracle 2026-10-15, record PSP-SYSTEM-001 (case model-profile). */
+static void hle_register_devkit_version_handler(void) {
+    sr_hle_register(0x3fc9ae6a, "sceKernelDevkitVersion", h_KernelDevkitVersion);
+}
+
 /* TD-24 batch 4 shared families: one definition reached by both sr_hle_init()
  * branches, so the executable harness pins the production mapping through
  * dispatch (same rule as the batch-2 clock helpers above). */
@@ -22925,6 +22947,7 @@ void sr_hle_init(void) {
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
     sr_hle_power_register_clock();
+    hle_register_devkit_version_handler();
     /* TD-24 batch 4 families: shared with production through the helpers, so
      * the executable harness dispatches the exact production mapping. */
     hle_register_ctrl_sampling_handlers();
@@ -23100,6 +23123,7 @@ void sr_hle_init(void) {
     sr_hle_register(0x730ed8bc, "sceKernelReferCallbackStatus", h_ReferCallbackStatus);
     hle_register_utility_module_handlers();
     sr_hle_register(0x1b4217bc, "sceKernelSetCompiledSdkVersion603_605", h_SetCompiledSdkVersion);
+    hle_register_devkit_version_handler();
 
     /* cache / misc UtilsForUser: no-ops are fine without a real cache. */
     sr_hle_register(0x79d1c3fa, "sceKernelDcacheWritebackAll", h_CacheInvalidateAll);

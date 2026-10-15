@@ -194,6 +194,50 @@ HANDLER_METADATA = {
         ],
         "description": "Writes measured 60000/1001 float refresh rate (59.9400599f) into $f0 under unified display clock.",
     },
+    # scePower clock getters, the devkit version word and sceCtrlPeekLatch, measured on the PSP-3000
+    # 6.61 oracle 2026-10-15. Defaults are measured; values after a Set call and the non-clearing peek
+    # are modelled and say so in their limitations.
+    "h_PowerGetPllClockFrequencyFloat": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_power_identity_getters_measured",
+            "hardware oracle 2026-10-15 PSP-HLE-POWER-001 case pll-clock-float (0x435E0000 = 222.0)",
+        ],
+        "limitation": "returns the float of the retained PLL clock: the 222.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured",
+    },
+    "h_PowerGetCpuClockFrequencyFloat": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_power_identity_getters_measured",
+            "hardware oracle 2026-10-15 PSP-HLE-POWER-001 case cpu-clock-float (0x435E0000 = 222.0)",
+        ],
+        "limitation": "returns the float of the retained CPU clock: the 222.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured",
+    },
+    "h_PowerGetBusClockFrequencyFloat": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_power_identity_getters_measured",
+            "hardware oracle 2026-10-15 PSP-HLE-POWER-001 case bus-clock-float (0x42DE0000 = 111.0)",
+        ],
+        "limitation": "returns the float of the retained bus clock: the 111.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured",
+    },
+    "h_KernelDevkitVersion": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_kernel_devkit_version_measured",
+            "src/rt/sdkver.h:SR_PSP_FIRMWARE_DEVKIT_VERSION",
+            "hardware oracle 2026-10-15 PSP-SYSTEM-001 case model-profile (0x06060110)",
+        ],
+        "limitation": "returns the 6.61 devkit word for every firmware: only the measured firmware is modelled, and other firmware devkit words are not",
+    },
+    "h_CtrlPeekLatch": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ctrl_peek_latch_keeps_the_latch",
+            "hardware oracle 2026-10-15 PSP-HLE-CTRL-LATCH-001 cases latch-peek-initial and latch-peek-after-poll (no input gives make break press 0 and release 0xFFFFFFFF)",
+        ],
+        "limitation": "the transition and return words are the sceCtrlReadLatch model, source-tested; the non-clearing peek is the project's model and is not hardware measured, because PSP-HLE-CTRL-LATCH-001 cannot tell clearing from keeping (its release field stays saturated with no input)",
+    },
     # These two handlers are reached by the source-owned display-smoke route.
     # Its fixed 8888 framebuffer flip and ordinary guest-thread vblank wait
     # establish that narrow production path, while the API edges below remain
@@ -749,6 +793,20 @@ FLOAT_RETURN_NIDS = {
         "name": "sceDisplayGetFramePerSec",
         "issue": "https://github.com/Jstar269/nakagawa-recomp/issues/80",
     },
+    # scePower Float getters: the default clock values are measured on the PSP-3000 6.61 oracle
+    # 2026-10-15 (PSP-HLE-POWER-001); the float-return shaping is tracked by #86.
+    0xEA382A27: {
+        "name": "scePowerGetPllClockFrequencyFloat",
+        "issue": "https://github.com/Jstar269/nakagawa-recomp/issues/86",
+    },
+    0xB1A52C83: {
+        "name": "scePowerGetCpuClockFrequencyFloat",
+        "issue": "https://github.com/Jstar269/nakagawa-recomp/issues/86",
+    },
+    0x9BADB3EB: {
+        "name": "scePowerGetBusClockFrequencyFloat",
+        "issue": "https://github.com/Jstar269/nakagawa-recomp/issues/86",
+    },
 }
 
 # Handlers proven to write the float return into $f0 before returning.  A
@@ -756,6 +814,9 @@ FLOAT_RETURN_NIDS = {
 # generic integer-return h_ok) is a float_return_handler_mismatch finding.
 FLOAT_RETURN_HANDLERS = {
     "h_DisplayGetFramePerSec",
+    "h_PowerGetPllClockFrequencyFloat",
+    "h_PowerGetCpuClockFrequencyFloat",
+    "h_PowerGetBusClockFrequencyFloat",
 }
 
 # Tracking issue for each canonical NID above, so a `mislabeled_nid` finding in
