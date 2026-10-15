@@ -37,16 +37,16 @@ or labelled historical/capture-time. The evidence-tier view
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **525** (dedicated **476**, fake_success **5**, controlled_unsupported **44**).
-Semantic handler census: **441** handlers across **23** API families, covering **482** handler-associated NID registrations.
+Registered NIDs: **532** (dedicated **483**, fake_success **5**, controlled_unsupported **44**).
+Semantic handler census: **446** handlers across **23** API families, covering **489** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 10 | 18 |
-| `partial` | 87 | 87 |
+| `partial` | 92 | 92 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 341 | 370 |
+| `unreviewed` | 341 | 372 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -54,7 +54,7 @@ Semantic handler census: **441** handlers across **23** API families, covering *
 | `other` | 1 | 0 | 0 | 0 | 0 | 1 | 1 |
 | `sceAtrac` | 0 | 0 | 0 | 0 | 24 | 24 | 33 |
 | `sceAudio` | 0 | 0 | 0 | 0 | 13 | 13 | 14 |
-| `sceCtrl` | 0 | 1 | 0 | 0 | 7 | 8 | 8 |
+| `sceCtrl` | 0 | 2 | 0 | 0 | 7 | 9 | 9 |
 | `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceFont` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
@@ -62,10 +62,10 @@ Semantic handler census: **441** handlers across **23** API families, covering *
 | `sceHprm` | 0 | 0 | 0 | 0 | 3 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 18 | 0 | 0 | 12 | 32 | 32 |
-| `sceKernel` | 2 | 29 | 0 | 0 | 135 | 166 | 190 |
+| `sceKernel` | 2 | 30 | 0 | 0 | 135 | 167 | 191 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
-| `scePower` | 0 | 0 | 0 | 0 | 11 | 11 | 11 |
+| `scePower` | 0 | 3 | 0 | 0 | 11 | 14 | 16 |
 | `scePsmf` | 0 | 2 | 0 | 0 | 12 | 14 | 14 |
 | `sceReg` | 0 | 15 | 0 | 0 | 0 | 15 | 15 |
 | `sceRtc` | 4 | 4 | 0 | 0 | 0 | 8 | 8 |
@@ -73,7 +73,7 @@ Semantic handler census: **441** handlers across **23** API families, covering *
 | `sceUmd` | 0 | 1 | 1 | 0 | 7 | 9 | 9 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 31 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **10** | **87** | **1** | **2** | **341** | **441** | **482** |
+| **Total** | **10** | **92** | **1** | **2** | **341** | **446** | **489** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -128,6 +128,10 @@ Semantic handler census: **441** handlers across **23** API families, covering *
 
 - **`h_CtrlGetSamplingMode`** (`sceCtrl`): `sceCtrlGetSamplingMode` (0xda6b76a1)
   - Limitation: reports the mode retained by sceCtrlSetSamplingMode but does not change the sampled SceCtrlData; the invalid-pointer error code (ILLEGAL_ADDR) is not hardware measured
+- **`h_CtrlPeekLatch`** (`sceCtrl`): `sceCtrlPeekLatch` (0xb1d0e5cd)
+  - Limitation: the transition and return words are the sceCtrlReadLatch model, source-tested; the non-clearing peek is the project's model and is not hardware measured, because PSP-HLE-CTRL-LATCH-001 cannot tell clearing from keeping (its release field stays saturated with no input)
+  - Evidence: src/rt/hle_thread_selftest.c:test_ctrl_peek_latch_keeps_the_latch
+  - Evidence: hardware oracle 2026-10-15 PSP-HLE-CTRL-LATCH-001 cases latch-peek-initial and latch-peek-after-poll (no input gives make break press 0 and release 0xFFFFFFFF)
 - **`h_DisplaySetFrameBuf`** (`sceDisplay`): `sceDisplaySetFrameBuf` (0x289d82fe)
   - Limitation: display-smoke covers only a sync=1 8888 flip with stride 512; other format, address, stride, and error-precedence cases remain outside this route (#341)
   - Evidence: Makefile:display-smoke-run
@@ -234,6 +238,11 @@ Semantic handler census: **441** handlers across **23** API families, covering *
   - Limitation: uncited: returns the same base as ReferVTimerStatus (guest time at the most recent Start while running, zero otherwise, a project model); NULL-pointer and deleted-UID codes unmeasured, reused by analogy (#325)
 - **`h_GetVTimerTime`** (`sceKernel`): `sceKernelGetVTimerTime` (0x034a921f)
   - Limitation: time unit assumed microseconds (values not cited by PSP-HLE-VTIMER-001); NULL-pointer and deleted-UID codes unmeasured, reused by analogy (#325)
+- **`h_KernelDevkitVersion`** (`sceKernel`): `sceKernelDevkitVersion` (0x3fc9ae6a)
+  - Limitation: returns the 6.61 devkit word for every firmware: only the measured firmware is modelled, and other firmware devkit words are not
+  - Evidence: src/rt/hle_thread_selftest.c:test_kernel_devkit_version_measured
+  - Evidence: src/rt/sdkver.h:SR_PSP_FIRMWARE_DEVKIT_VERSION
+  - Evidence: hardware oracle 2026-10-15 PSP-SYSTEM-001 case model-profile (0x06060110)
 - **`h_PollMbx`** (`sceKernel`): `sceKernelPollMbx` (0x0d81716a)
   - Limitation: invalid-message-pointer error class unmeasured (#339, #341)
 - **`h_ReceiveMbx`** (`sceKernel`): `sceKernelReceiveMbx` (0x18260574)
@@ -300,6 +309,18 @@ Semantic handler census: **441** handlers across **23** API families, covering *
   - Limitation: decode mode is validated and retained; skip mode fails closed because its queue/timestamp effect is not measured (#302)
 - **`h_MpegQueryPcmEsSize`** (`sceMpeg`): `sceMpegQueryPcmEsSize` (0xc02cf6b5)
   - Limitation: the public 320-byte LPCM ES/output sizes are retained, but no PCM stream is exposed by this runtime (#302)
+- **`h_PowerGetBusClockFrequencyFloat`** (`scePower`): `scePowerGetBusClockFrequencyFloat` (0x9badb3eb)
+  - Limitation: returns the float of the retained bus clock: the 111.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured
+  - Evidence: src/rt/hle_thread_selftest.c:test_power_identity_getters_measured
+  - Evidence: hardware oracle 2026-10-15 PSP-HLE-POWER-001 case bus-clock-float (0x42DE0000 = 111.0)
+- **`h_PowerGetCpuClockFrequencyFloat`** (`scePower`): `scePowerGetCpuClockFrequencyFloat` (0xb1a52c83)
+  - Limitation: returns the float of the retained CPU clock: the 222.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured
+  - Evidence: src/rt/hle_thread_selftest.c:test_power_identity_getters_measured
+  - Evidence: hardware oracle 2026-10-15 PSP-HLE-POWER-001 case cpu-clock-float (0x435E0000 = 222.0)
+- **`h_PowerGetPllClockFrequencyFloat`** (`scePower`): `scePowerGetPllClockFrequencyFloat` (0xea382a27)
+  - Limitation: returns the float of the retained PLL clock: the 222.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured
+  - Evidence: src/rt/hle_thread_selftest.c:test_power_identity_getters_measured
+  - Evidence: hardware oracle 2026-10-15 PSP-HLE-POWER-001 case pll-clock-float (0x435E0000 = 222.0)
 - **`h_PsmfGetAudio`** (`scePsmf`): `scePsmfPlayerGetAudioData` (0xb9848a74)
   - Limitation: host HLE player; requires host codec backend; stages 2048 stereo s16 frames; no hardware comparison tier measured (#341)
 - **`h_PsmfGetVideo`** (`scePsmf`): `scePsmfPlayerGetVideoData` (0x46f61f8b)

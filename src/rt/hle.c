@@ -945,6 +945,10 @@ uint32_t sr_hle_test_partition_top(void) {
 static uint32_t g_sdk_version = 0;
 
 static uint32_t h_SetCompiledSdkVersion(CpuState *s) { return sr_sdkver_set(&g_sdk_version, A0); }
+/* sceKernelDevkitVersion (0x3fc9ae6a) returns the devkit version word of the modelled firmware. The
+ * value is the single SR_PSP_FIRMWARE_DEVKIT_VERSION in sdkver.h. PSP-3000 6.61 oracle 2026-10-15,
+ * record PSP-SYSTEM-001 (case model-profile), measured 0x06060110. */
+static uint32_t h_KernelDevkitVersion(CpuState *s) { (void)s; return SR_PSP_FIRMWARE_DEVKIT_VERSION; }
 #ifdef SR_HLE_THREAD_SELFTEST
 uint32_t sr_hle_test_compiled_sdk_version(void) {
     return sr_sdkver_get(&g_sdk_version);
@@ -15798,6 +15802,41 @@ static void route_until_nid_arm(int on, uint32_t nid) {
 
 static int route_sig_bytes(void) { return s_route_cols * s_route_rows * 3; }
 
+/* The SR_AUDIOSTAT statistics that both _Exit paths print before they finalise the SR_AUDIODUMP
+ * file: the ATRAC and SAS counters, the buffer identities, then the host backend line. The
+ * SR_EXIT_AT_VBLANK exit and route_fail share this block, so a failed route reports the same audio
+ * statistics a clean vblank-budget exit reports (#827). Nothing prints without SR_AUDIOSTAT. */
+static void hle_exit_audio_stats(void) {
+    if (!audio_stat_on()) return;
+    fprintf(stderr,
+            "AUDIOSTAT_ATRAC: frames=%lu nonzero=%lu peak=%d\n",
+            g_atrac_frames, g_atrac_frames_nonzero, g_atrac_peak);
+    fprintf(stderr,
+            "AUDIOSTAT_SAS: calls=%lu withmix=%lu pre_nonzero=%lu post_nonzero=%lu erased=%lu pre_peak=%d post_peak=%d no_voice=%lu no_voice_overwrite=%lu\n",
+            g_sas_calls, g_sas_calls_add, g_sas_pre_nonzero,
+            g_sas_post_nonzero, g_sas_erased, g_sas_pre_peak, g_sas_post_peak,
+            g_sas_no_voice, g_sas_no_voice_overwrite);
+    fprintf(stderr, "AUDIOSTAT_BUF: atrac_out n=%d", g_atrac_out_nbufs);
+    for (int i = 0; i < g_atrac_out_nbufs; i++)
+        fprintf(stderr, " 0x%08x", g_atrac_out_bufs[i]);
+    fprintf(stderr, "\nAUDIOSTAT_BUF: sas_out n=%d", g_sas_nbufs);
+    for (int i = 0; i < g_sas_nbufs; i++)
+        fprintf(stderr, " 0x%08x", g_sas_bufs[i]);
+    fprintf(stderr, "\n");
+    for (uint32_t c = 0; c < 9u; c++) {
+        if (!g_audio_nbufs[c]) continue;
+        fprintf(stderr, "AUDIOSTAT_BUF: ch=%u n=%d", c, g_audio_nbufs[c]);
+        for (int i = 0; i < g_audio_nbufs[c]; i++)
+            fprintf(stderr, " 0x%08x", g_audio_bufs[c][i]);
+        fprintf(stderr, "\n");
+    }
+#ifndef SR_HLE_THREAD_SELFTEST
+    /* audio.c is not linked into the executable HLE harness. */
+    extern void sr_audio_dump_stats(void);
+    sr_audio_dump_stats();
+#endif
+}
+
 /* _Exit skips atexit, so a hard exit closes the SR_AUDIODUMP file itself, which finalises
  * its WAV header. The SR_EXIT_AT_VBLANK exit and route_fail both call this outside any
  * SR_AUDIOSTAT gate; a second close is a no-op. Only the public audio backend exports it. */
@@ -15824,6 +15863,7 @@ static void route_fail(const char *fmt, ...) {
     fflush(stderr);
     if (!getenv("SR_ROUTE_NO_EXIT")) {
         sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, 0u, ROUTE_FAIL_EXIT);
+        hle_exit_audio_stats();
         hle_exit_close_audio_dump();
         sr_perf_shutdown();
         _Exit(ROUTE_FAIL_EXIT);
@@ -17042,8 +17082,13 @@ static uint32_t h_CtrlPeekBufferPositive(CpuState *s) {
  * same 32-bit convention the negative buffer read uses. Samples overwritten before a latch read are
  * not reported one by one: the ring keeps the latest CTRL_RING - 1 samples, and a transition inside
  * an overwritten span is lost. */
-static uint32_t h_CtrlReadLatch(CpuState *s) {
-    uint32_t out = A0;
+/* One latch computation for sceCtrlReadLatch (consume = 1) and sceCtrlPeekLatch (consume = 0). A read
+ * advances the latch cursor, so the transitions it reported are consumed. A peek writes the same words
+ * and leaves the cursor alone, so a pending transition is still reported by the next read. PSP-3000 6.61
+ * oracle 2026-10-15, record PSP-HLE-CTRL-LATCH-001 (cases latch-peek-initial, latch-peek-after-poll): the
+ * no-input words are make/break/press 0 and release 0xFFFFFFFF. The clear-or-keep distinction is not
+ * measured there (the release field stays saturated). */
+static uint32_t ctrl_latch_compute(uint32_t out, int consume) {
     uint32_t produced = s_ctrl_sample_count - s_latch_seen_count;
     uint32_t retained = produced < (uint32_t)(CTRL_RING - 1) ? produced : (uint32_t)(CTRL_RING - 1);
     uint32_t prev = s_latch_prev_btn, cur = prev, make = 0u, brk = 0u;
@@ -17057,14 +17102,19 @@ static uint32_t h_CtrlReadLatch(CpuState *s) {
             prev = cur;
         }
     }
-    s_latch_prev_btn = cur;
-    s_latch_seen_count = s_ctrl_sample_count;
+    if (consume) {
+        s_latch_prev_btn = cur;
+        s_latch_seen_count = s_ctrl_sample_count;
+    }
     MEM_W32(out + 0, make);
     MEM_W32(out + 4, brk);
     MEM_W32(out + 8, cur);
     MEM_W32(out + 12, ~cur);
     return produced;
 }
+
+static uint32_t h_CtrlReadLatch(CpuState *s) { (void)s; return ctrl_latch_compute(A0, 1); }
+static uint32_t h_CtrlPeekLatch(CpuState *s) { (void)s; return ctrl_latch_compute(A0, 0); }
 
 #ifdef SR_HLE_THREAD_SELFTEST
 /* Test-build-only: push one sampling cycle with the given button field, as sr_ctrl_sample stores
@@ -18370,35 +18420,7 @@ void sr_vblank_tick(void) {
         if (exit_at && s_vcount >= exit_at) {
             fprintf(stderr, "BOOT_EVENT phase=exit_at_vblank vblanks=%u (SR_EXIT_AT_VBLANK=%u)\n",
                     s_vcount, exit_at);
-            if (audio_stat_on()) {
-                fprintf(stderr,
-                        "AUDIOSTAT_ATRAC: frames=%lu nonzero=%lu peak=%d\n",
-                        g_atrac_frames, g_atrac_frames_nonzero, g_atrac_peak);
-                fprintf(stderr,
-                        "AUDIOSTAT_SAS: calls=%lu withmix=%lu pre_nonzero=%lu post_nonzero=%lu erased=%lu pre_peak=%d post_peak=%d no_voice=%lu no_voice_overwrite=%lu\n",
-                        g_sas_calls, g_sas_calls_add, g_sas_pre_nonzero,
-                        g_sas_post_nonzero, g_sas_erased, g_sas_pre_peak, g_sas_post_peak,
-                        g_sas_no_voice, g_sas_no_voice_overwrite);
-                fprintf(stderr, "AUDIOSTAT_BUF: atrac_out n=%d", g_atrac_out_nbufs);
-                for (int i = 0; i < g_atrac_out_nbufs; i++)
-                    fprintf(stderr, " 0x%08x", g_atrac_out_bufs[i]);
-                fprintf(stderr, "\nAUDIOSTAT_BUF: sas_out n=%d", g_sas_nbufs);
-                for (int i = 0; i < g_sas_nbufs; i++)
-                    fprintf(stderr, " 0x%08x", g_sas_bufs[i]);
-                fprintf(stderr, "\n");
-                for (uint32_t c = 0; c < 9u; c++) {
-                    if (!g_audio_nbufs[c]) continue;
-                    fprintf(stderr, "AUDIOSTAT_BUF: ch=%u n=%d", c, g_audio_nbufs[c]);
-                    for (int i = 0; i < g_audio_nbufs[c]; i++)
-                        fprintf(stderr, " 0x%08x", g_audio_bufs[c][i]);
-                    fprintf(stderr, "\n");
-                }
-#ifndef SR_HLE_THREAD_SELFTEST
-                /* audio.c is not linked into the executable HLE harness. */
-                extern void sr_audio_dump_stats(void);
-                sr_audio_dump_stats();
-#endif
-            }
+            hle_exit_audio_stats();
             /* _Exit skips atexit, so the SR_AUDIODUMP file is closed here whether or not
              * SR_AUDIOSTAT is set; after the stats call above it is a no-op. */
             hle_exit_close_audio_dump();
@@ -22423,6 +22445,7 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0x1f803938, "sceCtrlReadBufferPositive", h_CtrlReadBuffer);
     sr_hle_register(0x3a622550, "sceCtrlPeekBufferPositive", h_CtrlPeekBufferPositive);
     sr_hle_register(0x0b588501, "sceCtrlReadLatch", h_CtrlReadLatch);
+    sr_hle_register(0xb1d0e5cd, "sceCtrlPeekLatch", h_CtrlPeekLatch);
     sr_hle_register(0x6a638d83, "sceIoRead", h_IoRead);
     sr_hle_register(0x42ec03ac, "sceIoWrite", h_IoWrite);
     sr_hle_register(0xe23eec33, "sceIoWaitAsync", h_IoWaitAsync);
@@ -22672,6 +22695,13 @@ static void hle_register_exit_game_handler(void) {
     sr_hle_register(0x05572a5f, "sceKernelExitGame", h_ExitGame);
 }
 
+/* sceKernelDevkitVersion (0x3fc9ae6a): one definition reached by both sr_hle_init() branches, so the
+ * executable harness dispatches the production mapping (the production-only list did not reach it).
+ * PSP-3000 6.61 oracle 2026-10-15, record PSP-SYSTEM-001 (case model-profile). */
+static void hle_register_devkit_version_handler(void) {
+    sr_hle_register(0x3fc9ae6a, "sceKernelDevkitVersion", h_KernelDevkitVersion);
+}
+
 /* TD-24 batch 4 shared families: one definition reached by both sr_hle_init()
  * branches, so the executable harness pins the production mapping through
  * dispatch (same rule as the batch-2 clock helpers above). */
@@ -22917,6 +22947,7 @@ void sr_hle_init(void) {
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
     sr_hle_power_register_clock();
+    hle_register_devkit_version_handler();
     /* TD-24 batch 4 families: shared with production through the helpers, so
      * the executable harness dispatches the exact production mapping. */
     hle_register_ctrl_sampling_handlers();
@@ -23092,6 +23123,7 @@ void sr_hle_init(void) {
     sr_hle_register(0x730ed8bc, "sceKernelReferCallbackStatus", h_ReferCallbackStatus);
     hle_register_utility_module_handlers();
     sr_hle_register(0x1b4217bc, "sceKernelSetCompiledSdkVersion603_605", h_SetCompiledSdkVersion);
+    hle_register_devkit_version_handler();
 
     /* cache / misc UtilsForUser: no-ops are fine without a real cache. */
     sr_hle_register(0x79d1c3fa, "sceKernelDcacheWritebackAll", h_CacheInvalidateAll);
