@@ -93,6 +93,13 @@ ordinary production `dispatch()` seam. Analyzer-owned executable-span registrati
 those guest bytes to enter the fail-closed interpreter; the gate then requires a registered AOT
 region-B handoff, real HLE call, and final `0x00001235` production-driver assertion.
 
+The Windows job also runs a headless staging smoke after it links the player (#308). Because the
+runner has no PSPDEV, `python fixtures/showcase/showcase.py stage-iso` wraps the source-owned
+display guest in the showcase's synthetic TEST00007 identity. The built `nakagawa_player.exe
+--stage-only` must then report `STAGING_RESULT status=PASS` within 60 seconds. LOCALAPPDATA,
+APPDATA and USERPROFILE point under the runner temporary directory. The Linux `native_tools` job
+stages the PSPDEV-built scene instead. Neither run is PSP-hardware or consumer-ISO evidence.
+
 The Windows job also runs `cosim-selftest` and `cosim-mutants`. The first executes the same
 source-owned guest bytes twice — once as generated native code, once through the production
 interpreter floor — and reports the first difference in the canonical instruction trace, the
