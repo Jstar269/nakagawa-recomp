@@ -45,7 +45,18 @@ EVENT_KIND_NAMES = {
     27: "ge-finish-command",
     28: "present-set-framebuf",
     29: "present-frame",
+    30: "nan-origin",
 }
+
+# SR_FLIGHT_KIND_NAN_ORIGIN (issue #320): arg1 packs domain (bits 0-7), result class
+# (bits 8-15) and destination register (bits 16-23); arg0 is the guest pc, arg2 the lane,
+# arg3 the VBLANK count. The limits are the register file and vector lane count per domain.
+NAN_ORIGIN_KIND = 30
+NAN_ORIGIN_CLASS = "fault"
+NAN_DOMAIN_NAMES = {1: "fpu", 2: "vfpu"}
+NAN_DOMAIN_REGISTERS = {1: ("f", 32), 2: ("v", 128)}
+NAN_DOMAIN_LANES = {1: 1, 2: 16}
+NAN_RESULT_NAMES = {1: "nan", 2: "+inf", 3: "-inf"}
 
 # Verdict tokens of the comparison contract. MATCH is printed only when the two
 # bundles are comparable and every compared field agrees; the full contract is
@@ -222,6 +233,7 @@ def validate_bundle(bundle: Any, schema: dict[str, Any] | None = None) -> None:
     enabled = set(recorder["enabled_classes"])
     if any(event["class"] not in enabled for event in events):
         _fail("$.events", "event class is not enabled")
+    _validate_nan_origin_events(events)
     if bundle["terminal"]["sequence"] and bundle["terminal"]["sequence"] not in sequences:
         _fail("$.terminal", "terminal sequence is not retained")
     fired = recorder["triggers"]["fired"]
@@ -234,6 +246,33 @@ def validate_bundle(bundle: Any, schema: dict[str, Any] | None = None) -> None:
             _fail("$.terminal", "a triggered bundle cannot have an exit terminal reason")
         if not fired and reason != "exit":
             _fail("$.terminal", "an untriggered bundle must terminate at exit")
+
+
+def _nan_origin_operands(event: dict[str, Any]) -> tuple[int, int, int]:
+    """(domain, result, destination register) packed into a nan-origin event's arg1."""
+    packed = event["arg1"]
+    return packed & 0xFF, (packed >> 8) & 0xFF, (packed >> 16) & 0xFF
+
+
+def _validate_nan_origin_events(events: list[dict[str, Any]]) -> None:
+    """A nan-origin event is an SR_NAN_TRAP origin; its operands must fit the packing."""
+    for index, event in enumerate(events):
+        if event["kind"] != NAN_ORIGIN_KIND:
+            continue
+        path = f"$.events[{index}]"
+        if event["class"] != NAN_ORIGIN_CLASS:
+            _fail(path, "a nan-origin event belongs to the fault class")
+        if event["arg1"] >> 24:
+            _fail(path, "nan-origin arg1 has bits above its packed domain, result and register")
+        domain, result, register = _nan_origin_operands(event)
+        if domain not in NAN_DOMAIN_NAMES:
+            _fail(path, "nan-origin domain must be fpu (1) or vfpu (2)")
+        if result not in NAN_RESULT_NAMES:
+            _fail(path, "nan-origin result must be nan (1), +inf (2) or -inf (3)")
+        if register >= NAN_DOMAIN_REGISTERS[domain][1]:
+            _fail(path, "nan-origin destination register is out of range for its domain")
+        if event["arg2"] >= NAN_DOMAIN_LANES[domain]:
+            _fail(path, "nan-origin lane is out of range for its domain")
 
 
 # A schema 5 terminal is what ended the run. Only a fatal, an unknown NID with no handler, or a
@@ -330,13 +369,24 @@ def _format_event(event: dict[str, Any] | None) -> str:
 _EVENT_LABEL_PREFIXES = ("sequence ", "class ")
 
 
+def _nan_origin_detail(event: dict[str, Any]) -> str:
+    """The decoded origin of a nan-origin event: where it ran, what it produced, which lane."""
+    if event["kind"] != NAN_ORIGIN_KIND or event["class"] != NAN_ORIGIN_CLASS:
+        return ""
+    domain, result, register = _nan_origin_operands(event)
+    prefix, _ = NAN_DOMAIN_REGISTERS.get(domain, ("?", 0))
+    return (f" pc=0x{event['arg0']:08x} domain={NAN_DOMAIN_NAMES.get(domain, 'unknown')} "
+            f"dst={prefix}{register} result={NAN_RESULT_NAMES.get(result, 'unknown')} "
+            f"lane={event['arg2']} vbl={event['arg3']}")
+
+
 def _event_identity(event: dict[str, Any] | None) -> str:
     if event is None:
         return "<absent>"
     kind = event["kind"]
     name = EVENT_KIND_NAMES.get(kind, "unknown-kind")
     return f"event index {event['sequence'] - 1} class={event['class']} kind={name} ({kind}) " \
-           f"sequence={event['sequence']}"
+           f"sequence={event['sequence']}" + _nan_origin_detail(event)
 
 
 def _event_field_differences(

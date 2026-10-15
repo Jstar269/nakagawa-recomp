@@ -435,6 +435,13 @@ non-finite relative to), the integer reinterpretations (`vs2i`/`vi2uc`/`vi2c`/`v
 float32), the `lv`/`sv` memory forms (guest data, not a computed result), and the raw per-element
 `v[]` row copies of `VFPUMatrix1` (`vmmov`/`vmscl` rows, which move an existing lane).
 
+With the flight recorder armed and its `fault` class enabled (`SR_FLIGHT=fault,...;N`), each printed
+origin is also one `nan-origin` event (bundle kind 30, issue #320). It records the guest pc, the domain
+(FPU or VFPU), the result (NaN, +Inf or -Inf), the destination register, the lane (the first non-finite
+word of the reported output) and the VBLANK count. It follows the same `SR_NAN_TRAP_LIMIT` budget as the
+printed line and never triggers the recorder, so the run continues. `tools/flight_diff.py` localises the
+first one against a clean run. With the recorder disarmed the report is unchanged and nothing is recorded.
+
 > [!IMPORTANT]
 > **`SR_RTRACE` re-arms only when `SR_GESTAT` is also set.** Its per-window frame budget is reset
 > inside the `SR_GESTAT` 60-frame window block in `ge_set_frame()`. With `SR_RTRACE=1` alone you get
@@ -1255,7 +1262,8 @@ still applies, and the option never changes vertex data or rendering.
 `SR_FLIGHT=<classes>;<limit>` retains the last `<limit>` (at most 4096) structured events of the
 named classes (`hle`, `unsupported`, `sched`, `prx`, `fault`, `fatal`, `media`, `ge`, `present`)
 and writes a bundle to `SR_FLIGHT_OUTPUT` (default `flight-recorder.json`). The schema is
-`assets/flight_recorder_schema.json`; `tools/flight_diff.py` validates and compares bundles.
+`assets/flight_recorder_schema.json`; `tools/flight_diff.py` validates and compares bundles. A build
+with `NAN_TRAP=1` also records each `SR_NAN_TRAP` origin into the `fault` class (see the NaN section).
 
 `terminal.reason` names what ended the run:
 
