@@ -438,11 +438,39 @@ class XBProbeTests(unittest.TestCase):
             self.assertEqual(main(["nonexistent.xb"]), 2)
         self.assertIn("error:", stderr.getvalue())
 
-    def test_rejects_truncated_entry_alignment_span(self) -> None:
+    def test_accepts_unpadded_final_entry_and_rejects_actual_truncation(self) -> None:
         raw = _make_archive([("a.bin", b"x", XBCompression.NONE)])
-        for trunc_len in (33, 34, 35):
-            with self.subTest(trunc_len=trunc_len), self.assertRaises(XBProbeError):
-                XBArchiveReader.from_bytes(raw[:trunc_len])
+        self.assertEqual(len(raw), 36)
+        # Entry starts at offset 32 with 1 byte of payload.
+        # Lengths 33..36 are complete (33 is unpadded, 34..36 have 1..3 zero padding bytes).
+        for complete_len in (33, 34, 35, 36):
+            with self.subTest(complete_len=complete_len):
+                reader = XBArchiveReader.from_bytes(raw[:complete_len])
+                self.assertEqual(reader.read_entry("a.bin"), b"x")
+
+        # An archive shorter than stored payload is genuinely truncated.
+        with self.assertRaises(XBProbeError):
+            XBArchiveReader.from_bytes(raw[:32])
+
+        raw_multi = _make_archive([("a.bin", b"abcdef", XBCompression.NONE)])
+        # Offset 32 + 6 bytes payload = 38 bytes unpadded.
+        reader = XBArchiveReader.from_bytes(raw_multi[:38])
+        self.assertEqual(reader.read_entry("a.bin"), b"abcdef")
+        with self.assertRaises(XBProbeError):
+            XBArchiveReader.from_bytes(raw_multi[:37])
+
+        # Unpadded compressed entry is also valid.
+        raw_lzs = _make_archive([("a.bin", b"x", XBCompression.LZS)])
+        # Offset 32 + 8-byte header + 2-byte LZS body = 42 bytes unpadded.
+        reader = XBArchiveReader.from_bytes(raw_lzs[:42])
+        self.assertEqual(reader.read_entry("a.bin"), b"x")
+        with self.assertRaises(XBProbeError):
+            XBArchiveReader.from_bytes(raw_lzs[:41])
+
+        # Non-zero trailing bytes in padding must still be rejected.
+        corrupt_padding = raw[:34] + b"\x01"
+        with self.assertRaises(XBProbeError):
+            XBArchiveReader.from_bytes(corrupt_padding)
 
     def test_handles_incremental_file_reads(self) -> None:
         raw = _make_archive([("a.bin", b"payload", XBCompression.NONE)])
