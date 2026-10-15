@@ -143,11 +143,18 @@ proposals. Each claim covers only the exact fixture named:
   the works under #69. The out-of-domain arc-sine argument that can produce a
   non-finite bone matrix remains a separate cell.
 - **Audio query and blocking-output semantics** (issue #311; `CASE=audio-query`):
-  `NOT_RUN`. The probe captures both channel rest-length spellings, two bounded
-  channel output blocks, one silent Output2 block, rest-sample queries, raw
-  returns, and elapsed microseconds. Each successfully reserved channel is
-  released. No audio timing or return rule is hardware-measured by this build;
-  the remaining #311 audio contract is in the works.
+  MEASURED in the index row above (2026-10-10, PSP-3000, 6.61 / ARK-5.1.0). The
+  probe captures both channel rest-length spellings, two bounded channel output
+  blocks, one silent Output2 block, rest-sample queries, raw returns, and elapsed
+  microseconds, with no acoustic claims. The probe drains Output2 before its
+  release, so that index row does not show the busy return. The Output2 release
+  rule comes from the 2026-10-01 comment on issue #311 (PSP-3001, firmware 6.6.1,
+  PSPLink 3.2.1; raw records private): releasing while samples are queued returns
+  `0x80268002` and leaves Output2 reserved, a following `sceAudioSRCChReserve`
+  also fails with `0x80268002`, draining `sceAudioOutput2GetRestSample` to 0
+  first lets the release succeed, and `sceAudioChRelease` succeeds right after
+  blocking output. `h_AudioOutput2Release` in `src/rt/hle.c` implements the
+  release rule; `sceAudioSRCChReserve` has no HLE handler yet (#339).
 - **DMAC alignment and overlap cells** (issue #303; `CASE=dma-cells`):
   `NOT_RUN`. The source-owned buffer matrix covers both APIs, unaligned source
   and destination residues, paired unaligned addresses, and overlap in both

@@ -1500,6 +1500,38 @@ class PspOracleRunnerTests(unittest.TestCase):
         self.assertIn("tools/psp_oracle/build_nakagawa_smoke.py", makefile)
         self.assertIn("psp-oracle-nakagawa-smoke", makefile)
 
+    def test_smoke_compile_recipe_has_no_blanket_warning_suppression(self) -> None:
+        # A bare -w hides every warning from the smoke compile, including the
+        # ATRAC3P sources it builds in-line. Narrow -Wno-<warning> flags stay
+        # allowed because each one names the single warning it hides.
+        lines = (Path(__file__).resolve().parents[1] / "Makefile").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        rules = [
+            index for index, line in enumerate(lines)
+            if line.startswith("$(PSP_ORACLE_SMOKE_EXE):")
+        ]
+        self.assertEqual(len(rules), 1)
+        recipe: list[str] = []
+        for line in lines[rules[0] + 1:]:
+            if not line.startswith("\t"):
+                break
+            recipe.append(line)
+        tokens = " ".join(recipe).replace("\\", " ").split()
+        self.assertIn("-DSR_PSP_ORACLE_SMOKE", tokens)
+        self.assertNotIn("-w", tokens)
+
+    def test_selftest_defines_profile_hooks_once_for_the_smoke_build(self) -> None:
+        # The smoke define used to add a second sr_profile_block/g_prof_enabled pair
+        # on top of the unconditional ones, which broke the smoke compile.
+        source = (
+            Path(__file__).resolve().parents[1] / "src" / "rt" / "hle_thread_selftest.c"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(
+            source.count("void sr_profile_block(uint32_t target_pc) { (void)target_pc; }"), 1
+        )
+        self.assertEqual(source.count("int g_prof_enabled;"), 1)
+
     def test_smoke_builder_is_source_owned_and_does_not_emit_records(self) -> None:
         builder = Path(__file__).resolve().parent / "psp_oracle" / "build_nakagawa_smoke.py"
         text = builder.read_text(encoding="utf-8")
