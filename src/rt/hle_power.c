@@ -47,9 +47,13 @@ uint32_t h_PowerGetCpuClockFrequencyInt(CpuState *s) { (void)s; return s_cpu_fre
 uint32_t h_PowerGetBusClockFrequencyInt(CpuState *s) { (void)s; return s_bus_freq; }
 
 /* Float getters: the single-precision value of the same retained clock the Int getters report, written
- * to $f0 (the MIPS float-return convention). $v0 has no status meaning for these, so 0 is returned.
- * PSP-3000 6.61 oracle 2026-10-15, record PSP-HLE-POWER-001 (cases pll-clock-float, cpu-clock-float,
- * bus-clock-float): the defaults read back as 0x435E0000 (222.0) and 0x42DE0000 (111.0). */
+ * to $f0 (the MIPS float-return convention). PSP-3000 6.61 oracle 2026-10-15, record PSP-HLE-POWER-001
+ * (cases pll-clock-float, cpu-clock-float, bus-clock-float): the defaults read back as 0x435E0000
+ * (222.0) and 0x42DE0000 (111.0). The raw-register run PSP-HLE-POWER-002 (2026-10-15, build b5d6fc5b)
+ * read the same $f0 bits. It also read $v0 after each call: neither 0 nor the clock, a different
+ * user-memory-range word each time, and the probe did not preset $v0, so it does not show whether a
+ * getter writes $v0 at all. That value is not modelled. The 0 these handlers return into $v0 is this
+ * runtime's choice, not a PSP value; a caller that reads the result as a float does not see it. */
 uint32_t h_PowerGetPllClockFrequencyFloat(CpuState *s) { s->f[0] = (float)s_pll_freq; return 0; }
 uint32_t h_PowerGetCpuClockFrequencyFloat(CpuState *s) { s->f[0] = (float)s_cpu_freq; return 0; }
 uint32_t h_PowerGetBusClockFrequencyFloat(CpuState *s) { s->f[0] = (float)s_bus_freq; return 0; }

@@ -355,6 +355,166 @@ class Flash0UserRootSourceContractTests(unittest.TestCase):
         self.assertIn("if (!configured_present)", body)
 
 
+class Flash0ConfiguredRootSourceContractTests(unittest.TestCase):
+    """Configured roots (SR_FONTDIR, SR_DATAROOT, SR_EXE_DIR) must be absolute on every host, checked in
+    the source so it runs everywhere, WSL included.
+
+    sr_wide_configured_root_wide_alloc has a Win32 and a POSIX definition in hle.c. Win32 refused a relative
+    value; POSIX joined it to the working directory, so a child process started in a package directory read
+    a different directory from the one the caller configured (#827 review of #1025).
+    """
+
+    SIGNATURE = "static int sr_wide_configured_root_wide_alloc(const wchar_t *value, wchar_t **out) {"
+
+    def setUp(self) -> None:
+        self.source = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        self.assertEqual(self.source.count(self.SIGNATURE), 2, "expected one Win32 and one POSIX definition")
+        self.first = self.source.index(self.SIGNATURE)
+        self.second = self.source.index(self.SIGNATURE, self.first + 1)
+
+    def test_posix_configured_root_refuses_a_relative_value(self) -> None:
+        """The POSIX helper refuses a non-absolute value and never anchors it to the working directory."""
+        posix = self.source[self.second:self.source.index("\n}\n", self.second)]
+        self.assertNotIn("sr_wide_full_path_alloc(wide", posix)
+        self.assertRegex(posix, r"if \(!sr_wide_is_absolute\(wide\)\) \{\s*free\(wide\);\s*return 0;")
+
+    def test_win32_configured_root_refuses_a_relative_value(self) -> None:
+        """The Win32 definition, which the POSIX one now matches, refuses anything not absolute."""
+        win32 = self.source[self.first:self.source.index("\n}\n", self.first)]
+        self.assertRegex(
+            win32,
+            r"if \(!\(sr_wide_is_extended\(wide\) \|\| sr_wide_is_absolute\(wide\)\)\) \{\s*free\(wide\);\s*return 0;",
+        )
+
+    def test_each_configured_root_reader_goes_through_the_helper(self) -> None:
+        """SR_EXE_DIR (module directory), SR_FONTDIR (font_load and the module font root) and SR_DATAROOT
+        (host_data) are read through the helper, so one refusal covers all three."""
+        for call in (
+            "sr_wide_configured_root_wide_alloc(configured, &full)",
+            "sr_wide_configured_root_wide_alloc(configured, out)",
+            "sr_wide_configured_root_wide_alloc(configured, &root)",
+            "sr_wide_configured_root_wide_alloc(configured_root, &root_wide)",
+        ):
+            with self.subTest(call=call):
+                self.assertIn(call, self.source)
+
+    def test_flash0_font_sources_names_a_refused_font_dir(self) -> None:
+        """The flash0: device names a refused SR_FONTDIR once, and does not fall back to another root."""
+        body = function_body(self.source, "static void flash0_font_sources(Flash0Sources *out) {")
+        self.assertIn('flash0_refuse_font_dir("could not be read")', body)
+        self.assertIn('flash0_refuse_font_dir("is configured but is not a valid absolute path")', body)
+        self.assertIn("atomic_exchange_explicit(&s_font_dir_refusal_named", self.source)
+
+
+#: A scratch harness for the native check. It #includes the production hle.c and resolves the flash0:
+#: project font root twice, so the one-time refusal is counted across two opens.
+FONT_DIR_HARNESS_C = r'''
+#include "src/rt/hle.c"
+
+int main(void) {
+    Flash0Sources first;
+    Flash0Sources second;
+    flash0_font_sources(&first);
+    flash0_font_sources(&second);
+    printf("PROJECT=%s\n", first.project_dir);
+    printf("PROJECT_AGAIN=%s\n", second.project_dir);
+    return 0;
+}
+'''
+
+FONT_DIR_REFUSAL = (
+    "flash0: SR_FONTDIR is configured but is not a valid absolute path; the project font source is skipped"
+)
+FONT_DIR_UNREADABLE = "flash0: SR_FONTDIR could not be read; the project font source is skipped"
+
+
+class Flash0FontDirRefusalNativeTests(unittest.TestCase):
+    """A refused SR_FONTDIR is named once on stderr, and the project source is skipped, on every host with a
+    C compiler (WSL and hosted Linux included). Elsewhere the class is skipped by name.
+
+    The harness links the production hle.c with its other entry points left unresolved. That is safe here:
+    flash0_font_sources reaches only SR_USER_DATA_ROOT (set absolute, so nk_platform_get_path is never
+    called), SR_FONTDIR (always set in these cases), and the wide helpers.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if sys.platform == "win32":
+            # The mingw linker has no unresolved-symbol option, and section GC still leaves the hle.c
+            # globals referenced, so the harness cannot link here. The Windows lane is covered by the
+            # source contract above and by hle-thread-selftest.
+            raise unittest.SkipTest("the native harness links on POSIX only; Windows is covered by the source contract")
+        compiler = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
+        if compiler is None:
+            raise unittest.SkipTest("no C compiler on PATH")
+        cls.scratch = scratch_dir.TemporaryDirectory(prefix="flash0-fontdir-")
+        cls.tmp = Path(cls.scratch.name)
+        source = cls.tmp / "harness.c"
+        source.write_text(FONT_DIR_HARNESS_C, encoding="utf-8")
+        cls.exe = cls.tmp / "harness"
+        build = subprocess.run(
+            [compiler, "-std=gnu11", "-w", f"-I{ROOT}", f"-I{ROOT / 'src' / 'rt'}",
+             f"-I{ROOT / 'src' / 'core'}", f"-I{ROOT / 'src' / 'core' / 'generated'}",
+             f"-I{ROOT / 'src' / 'rt' / 'atrac3p'}", f"-I{ROOT / 'src' / 'rt' / 'atrac3p' / 'libavcodec'}",
+             f"-I{ROOT / 'src' / 'rt' / 'atrac3p' / 'libavutil'}",
+             str(source), "-o", str(cls.exe), "-Wl,--unresolved-symbols=ignore-all",
+             "-lpthread", "-lm"],
+            capture_output=True, text=True, check=False, timeout=600,
+        )
+        if build.returncode != 0:
+            cls.scratch.cleanup()
+            raise AssertionError("the flash0 font-dir harness did not build: " + build.stderr[-4000:])
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        if hasattr(cls, "scratch"):
+            cls.scratch.cleanup()
+
+    def run_case(self, cwd: Path, font_dir: str | None) -> dict:
+        env = dict(os.environ)
+        env.pop("SR_FONTDIR", None)
+        env["SR_USER_DATA_ROOT"] = str(self.tmp / "user-data")
+        if font_dir is not None:
+            env["SR_FONTDIR"] = font_dir
+        run = subprocess.run([str(self.exe)], cwd=cwd, env=env, capture_output=True, text=True,
+                             check=False, timeout=120)
+        self.assertEqual(run.returncode, 0, run.stderr[-4000:])
+        fields = dict(line.split("=", 1) for line in run.stdout.splitlines() if "=" in line)
+        return {"project": fields.get("PROJECT"), "again": fields.get("PROJECT_AGAIN"),
+                "stderr": run.stderr}
+
+    @staticmethod
+    def named(stderr: str, line: str) -> int:
+        return sum(1 for text in stderr.splitlines() if text == line)
+
+    def test_relative_font_dir_is_named_once_and_skipped(self) -> None:
+        case = self.tmp / "relative-case"
+        (case / "relative-project").mkdir(parents=True, exist_ok=True)
+        result = self.run_case(case, "relative-project")
+        self.assertEqual(result["project"], "")
+        self.assertEqual(result["again"], "")
+        self.assertEqual(self.named(result["stderr"], FONT_DIR_REFUSAL), 1, result["stderr"])
+
+    def test_empty_font_dir_is_named_once_and_skipped(self) -> None:
+        result = self.run_case(self.tmp, "")
+        self.assertEqual(result["project"], "")
+        self.assertEqual(self.named(result["stderr"], FONT_DIR_REFUSAL), 1, result["stderr"])
+
+    @unittest.skipIf(sys.platform == "win32", "Windows environment values are UTF-16; no invalid UTF-8 spelling")
+    def test_unreadable_font_dir_is_named_once_and_skipped(self) -> None:
+        result = self.run_case(self.tmp, "\udcff")
+        self.assertEqual(result["project"], "")
+        self.assertEqual(self.named(result["stderr"], FONT_DIR_UNREADABLE), 1, result["stderr"])
+
+    def test_absolute_font_dir_is_served_without_a_refusal(self) -> None:
+        project = self.tmp / "project"
+        project.mkdir(parents=True, exist_ok=True)
+        result = self.run_case(self.tmp, str(project))
+        self.assertIn("project", result["project"] or "")
+        self.assertIn("project", result["again"] or "")
+        self.assertFalse([text for text in result["stderr"].splitlines() if text.startswith("flash0: SR_FONTDIR")])
+
+
 class Flash0FontDeviceTests(unittest.TestCase):
     def test_windows_include_detector(self) -> None:
         """The skip below is decided by this reader, so it must tell a guarded include apart."""

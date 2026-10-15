@@ -7114,14 +7114,11 @@ static int sr_wide_configured_root_wide_alloc(const wchar_t *value, wchar_t **ou
     wchar_t *wide = (wchar_t *)malloc((n + 1u) * sizeof(*wide));
     if (!wide) return 0;
     memcpy(wide, value, (n + 1u) * sizeof(*wide));
+    /* Absolute on both hosts, as on Win32: a relative value is refused here and is never anchored to the
+     * working directory, which in a child process is a different directory from the one the caller meant. */
     if (!sr_wide_is_absolute(wide)) {
-        wchar_t *canonical = NULL;
-        if (!sr_wide_full_path_alloc(wide, &canonical)) {
-            free(wide);
-            return 0;
-        }
         free(wide);
-        wide = canonical;
+        return 0;
     }
     int ok = sr_wide_extended_absolute_alloc(wide, out);
     free(wide);
@@ -7216,8 +7213,8 @@ static int sr_wide_basename_alloc(const wchar_t *path, wchar_t **out) {
 }
 
 /* The directory this executable was loaded from: /proc/self/exe here, with the
- * configured SR_EXE_DIR override honoured first, exactly as the Windows layer
- * honours SR_EXE_DIR ahead of the module handle. */
+ * configured SR_EXE_DIR override honoured first. SR_EXE_DIR is read on POSIX only: the Win32 layer has
+ * no reader for it in this tree, so the override does not apply there. */
 static int sr_wide_module_dir_alloc(wchar_t **out) {
     if (!out) return 0;
     *out = NULL;
@@ -7667,8 +7664,8 @@ static void flash0_user_data_root(char *dst, size_t capacity) {
     wchar_t *root = NULL;
     char *root_utf8 = NULL;
     /* Absolute on every host: sr_wide_is_absolute is this host's own rule (a drive or UNC path on
-     * Win32, a leading '/' on POSIX). The wide helper resolves a relative value against the working
-     * directory on POSIX, so the check comes first. */
+     * Win32, a leading '/' on POSIX). The wide helper refuses a relative value on both hosts too; this
+     * check comes first so the refusal is named here with the diagnostic below. */
     int valid = configured[0] != L'\0' && sr_wide_is_absolute(configured) &&
                 sr_wide_configured_root_wide_alloc(configured, &root) &&
                 sr_wide_to_utf8_alloc(root, &root_utf8);
@@ -7684,18 +7681,29 @@ static void flash0_user_data_root(char *dst, size_t capacity) {
     free(root_utf8);
 }
 
+/* SR_FONTDIR set but refused (unreadable, empty, or relative) leaves the project source empty, and the
+ * refusal is named once here, as font_load names it for sceFont. The device resolves its roots on every
+ * open, and nothing else is tried in its place. */
+static atomic_int s_font_dir_refusal_named;
+
+static void flash0_refuse_font_dir(const char *reason) {
+    if (atomic_exchange_explicit(&s_font_dir_refusal_named, 1, memory_order_relaxed)) return;
+    fprintf(stderr, "flash0: SR_FONTDIR %s; the project font source is skipped\n", reason);
+}
+
 static void flash0_font_sources(Flash0Sources *out) {
     flash0_user_data_root(out->user_data_dir, sizeof(out->user_data_dir));
 
     wchar_t *configured = NULL;
     wchar_t *root = NULL;
     int configured_present = 0;
-    if (sr_wide_env_alloc(L"SR_FONTDIR", &configured, &configured_present)) {
-        if (configured_present) {
-            if (configured && configured[0]) sr_wide_configured_root_wide_alloc(configured, &root);
-        } else {
-            sr_wide_module_font_root(&root);
-        }
+    if (!sr_wide_env_alloc(L"SR_FONTDIR", &configured, &configured_present)) {
+        flash0_refuse_font_dir("could not be read");
+    } else if (configured_present) {
+        if (!configured[0] || !sr_wide_configured_root_wide_alloc(configured, &root))
+            flash0_refuse_font_dir("is configured but is not a valid absolute path");
+    } else {
+        sr_wide_module_font_root(&root);
     }
     free(configured);
     char *utf8 = NULL;
@@ -10401,24 +10409,35 @@ static uint32_t h_GetSystemTimeWide(CpuState *s) {
  * and common read 0; a size word of 0x08 writes 8 bytes. StartVTimer returns 1 while the timer
  * already runs (docs/HARDWARE_ORACLE.md, callbacks/VTimer/alarms; not part of that entry).
  *
+ * Measured on the PSP-3000 oracle (2026-10-15, firmware 6.6.1, build b5d6fc5b, PSP-HLE-VTIMER-002
+ * and PSP-HLE-VTIMER-003; docs/HARDWARE_ORACLE.md measured index): Start, Stop and GetVTimerTime
+ * on a deleted UID return 0x800201BE, and that GetVTimerTime leaves its output untouched; a
+ * second Delete returns 0x800201BE; Delete of a stopped timer returns 0; 64 creates in a row
+ * each return a UID, with no refusal. While running, GetVTimerBase and Refer return the same
+ * base, a system-clock value; both read 0 once stopped. Consistent with the measurement, not
+ * measured exactly:
+ *   - The time unit is microseconds. A GetVTimerTime delta of 204,379 against a system-clock
+ *     delta of 220,608 over intervals offset by the probe's host0 writes agrees within about 8%;
+ *     that is not a precise rate measurement.
+ *   - base = system time at the most recent Start, and time = system time - base while running
+ *     from zero: base + time stayed below the next system-clock read at both reads. No system
+ *     time was read at Start itself.
+ *
  * ASSUMED, not measured:
- *   - The time unit is microseconds. The record cites no absolute time values and does not
- *     establish the unit; microseconds is the unit of every other SceKernelSysClock here.
- *   - base = system time at start is the project model; the record establishes non-zero while
- *     running and zero otherwise. The value is the guest time at the most recent Start.
- *   - GetVTimerBase is uncited. It returns the same base as Refer.
- *   - Start, Stop and GetVTimerTime on a deleted UID return the measured Refer/Delete code.
- *   - NULL-pointer codes follow the FPL status convention (ILLEGAL_ADDR), unmeasured here.
- *   - The no-slot CreateVTimer error is unmeasured.
+ *   - NULL-pointer codes follow the FPL status convention (ILLEGAL_ADDR), unmeasured here. The
+ *     2026-10-15 NULL-pointer probe did not complete (PSP-HLE-NULL-OUT-001 is CAPTURED only).
+ *   - The limit above 64 timers and the no-slot CreateVTimer error are unmeasured.
  *   - A size word of 0 writes nothing. That is the status-write rule the sema, event-flag and
  *     mailbox calls share, not a VTimer-specific citation.
  *
  * Refused by name, out of scope: SetVTimerTime, and the handler family (SetVTimerHandler,
  * SetVTimerHandlerWide, CancelVTimerHandler), which needs the timer interrupt model (issue #325).
  * A non-NULL CreateVTimer option struct is refused too, because its layout is unmeasured. */
-#define VTIMER_MAX 16
-#define VTIMER_BAD_ID 0x800201beu     /* measured: Refer and Delete on a deleted UID */
-#define VTIMER_NO_SLOT 0x80020190u    /* UNMEASURED: no free slot at create */
+/* The PSP-3000 accepted 64 creates in a row without a refusal (PSP-HLE-VTIMER-003), so the table
+ * holds 64 timers. What the console does past 64 is unmeasured. */
+#define VTIMER_MAX 64
+#define VTIMER_BAD_ID 0x800201beu     /* deleted UID: measured except GetVTimerBase */
+#define VTIMER_NO_SLOT 0x80020190u    /* UNMEASURED: no free slot, past the measured 64 */
 #define VTIMER_INFO_SIZE 0x48u        /* PSPSDK SceKernelVTimerInfo, 72 bytes */
 
 typedef struct {
@@ -10451,8 +10470,9 @@ static uint64_t vtimer_elapsed_at(const VTimer *t, uint64_t now) {
     return t->accum_us + (now >= t->started_us ? now - t->started_us : 0u);
 }
 
-/* base = system time at start is the project model; the record establishes non-zero while
- * running and zero otherwise. Guest time at the most recent Start while running, else zero. */
+/* Guest time at the most recent Start while running, else zero. Zero once stopped is measured
+ * (PSP-HLE-VTIMER-002); the value while running is a system-clock value on the PSP-3000, and
+ * base = system time at Start is consistent with that run, not measured exactly. */
 static uint64_t vtimer_base_us(const VTimer *t) {
     return t->running ? t->started_us : 0u;
 }
@@ -10516,7 +10536,8 @@ static uint32_t h_GetVTimerTime(CpuState *s) {
 }
 
 static uint32_t h_GetVTimerBase(CpuState *s) {
-    /* a0=uid, a1=SceKernelSysClock *. UNCITED: returns the same base as ReferVTimerStatus. */
+    /* a0=uid, a1=SceKernelSysClock *. Returns the same base as ReferVTimerStatus: measured equal
+     * while running and 0 once stopped (PSP-HLE-VTIMER-002). */
     if (!A1 || !sr_guest_span_writable(A1, 8u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     VTimer *t = vtimer_lookup(A0);
     if (!t) return VTIMER_BAD_ID;
@@ -10529,15 +10550,16 @@ static uint32_t h_GetVTimerBase(CpuState *s) {
 /* sceKernelReferVTimerStatus(uid, SceKernelVTimerInfo *). Field offsets follow the PSPSDK
  * struct: size(0), name[32](4), active(36), then base, current and schedule as 8-byte clocks,
  * handler and common. Measured (PSP-HLE-VTIMER-001, PR #1003 record): active, base, current,
- * and schedule/handler/common = 0, with the states given in the header above. base = system time
- * at start is the project model; the record establishes non-zero while running and zero
- * otherwise. current is the same elapsed value GetVTimerTime returns, as a 64-bit low/high pair.
- * The time unit is ASSUMED microseconds (see the header). */
+ * and schedule/handler/common = 0, with the states given in the header above. base equals
+ * GetVTimerBase while running and reads 0 once stopped (PSP-HLE-VTIMER-002); base = system time
+ * at Start is consistent with that run, not measured exactly. current is the same elapsed value
+ * GetVTimerTime returns, as a 64-bit low/high pair. The microsecond unit is consistent with the
+ * measurement, not a precise rate measurement (see the header). */
 typedef struct {
     uint32_t size;          /* 0x00: struct size (0x48) */
     char     name[32];      /* 0x04: create-time name */
     uint32_t active;        /* 0x24: 1 while running, 0 when created or stopped (measured) */
-    uint32_t base[2];       /* 0x28: guest time at the last Start while running, else 0 (model) */
+    uint32_t base[2];       /* 0x28: guest time at the last Start while running, else 0 */
     uint32_t current[2];    /* 0x30: elapsed guest time, low/high (measured shape) */
     uint32_t schedule[2];   /* 0x38: 0 (measured) */
     uint32_t handler;       /* 0x40: 0 (measured) */
