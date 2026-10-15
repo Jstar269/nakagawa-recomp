@@ -231,7 +231,7 @@ Semantic handler census: **441** handlers across **23** API families, covering *
 - **`h_GetMemoryBlockAddr`** (`sceKernel`): `sceKernelGetMemoryBlockAddr` (0xdb83a952)
   - Limitation: resolves UIDs created by the modeled Low allocation path; output-pointer and unknown-UID results are source-tested but not hardware measured
 - **`h_GetVTimerBase`** (`sceKernel`): `sceKernelGetVTimerBase` (0xb3a59970)
-  - Limitation: base is the create-time zero because SetVTimerTime is refused; the zero value and NULL-pointer and deleted-UID codes are unmeasured (#325)
+  - Limitation: uncited: returns the same base as ReferVTimerStatus (guest time at the most recent Start while running, zero otherwise, a project model); NULL-pointer and deleted-UID codes unmeasured, reused by analogy (#325)
 - **`h_GetVTimerTime`** (`sceKernel`): `sceKernelGetVTimerTime` (0x034a921f)
   - Limitation: time unit assumed microseconds (values not cited by PSP-HLE-VTIMER-001); NULL-pointer and deleted-UID codes unmeasured, reused by analogy (#325)
 - **`h_PollMbx`** (`sceKernel`): `sceKernelPollMbx` (0x0d81716a)
@@ -247,7 +247,7 @@ Semantic handler census: **441** handlers across **23** API families, covering *
 - **`h_ReferThreadStatus`** (`sceKernel`): `sceKernelReferThreadStatus` (0x17c1684e)
   - Limitation: run clocks use host scheduler time and preemption/release counters are modeled rather than PSP-measured (#311)
 - **`h_ReferVTimerStatus`** (`sceKernel`): `sceKernelReferVTimerStatus` (0x5f32beaa)
-  - Limitation: return 0 and the deleted-UID code are measured; only size, name and active are written, the rest of the struct is zero and unmeasured; the caller-size write rule is the sema/evf/mbx rule applied without a VTimer cite; the active encoding is not cited (#325)
+  - Limitation: return 0, the deleted-UID code, and the active, current, schedule, handler and common states are measured (PR #1003); base's value (guest time at start) is the project model, with only its zero and non-zero states measured; the time unit is assumed microseconds; the caller-size write rule for size 0 is the sema/evf/mbx rule applied without a VTimer cite (#325)
 - **`h_ResumeThread`** (`sceKernel`): `sceKernelResumeThread` (0x75156e8f)
   - Limitation: resume clears the scheduler suspension flag and applies strict-priority preemption; the not-suspended and DORMANT codes are hardware measured, while resume of UID 0 (the running caller) answers the not-suspended code without a measurement and interrupt/dispatch-context precedence is unmeasured
   - Evidence: src/rt/hle_thread_selftest.c:test_suspend_resume_errors_and_ready_thread

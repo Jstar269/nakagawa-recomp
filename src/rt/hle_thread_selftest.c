@@ -27209,13 +27209,14 @@ static int hle_selftest_main(int argc, char **argv);
  * would receive them, and the original is restored on every return. The modes that take path
  * arguments (--psp-oracle, --exit-game-poisoned) keep the caller's working directory. */
 /* ---- VTimer lifecycle and query surface -------------------------------------------------------
- * PSP-HLE-VTIMER-001 (PSP-3000, firmware 6.6.1, 2026-10-15), measured: Create returns a valid
- * UID; Start returns 0 and 1 while already running; Stop returns 1 while running and 0 when not
- * started; Delete of a running timer returns 0; Refer and Delete on the deleted UID return
- * 0x800201BE; Refer returns 0. The elapsed-time unit (microseconds) is assumed, not cited. The
- * timer reads guest time from the scheduler, so these tests drive it with sr_hle_advance_time in
- * turbo mode, where each reading is exact. Every other value asserted here is this runtime's own
- * model and is marked UNMEASURED in hle.c. */
+ * PSP-HLE-VTIMER-001 (PSP-3000, firmware 6.6.1, 2026-10-15, PR #1003 record), measured: Create
+ * returns a valid UID; Start returns 0, also on a restart, and 1 while already running; Stop
+ * returns 1 while running and 0 when not started; Delete of a running timer returns 0; Refer and
+ * Delete on the deleted UID return 0x800201BE; Refer fills active, base, current and reads
+ * schedule, handler and common as 0. The elapsed-time unit (microseconds) is assumed, not cited,
+ * and base = system time at start is the project model. The timer reads guest time from the
+ * scheduler, so these tests drive it with sr_hle_advance_time in turbo mode, where each reading is
+ * exact. Every other value asserted here is this runtime's own model and is marked in hle.c. */
 #define NID_VT_CREATE           0x20fff560u
 #define NID_VT_DELETE           0x328f9e52u
 #define NID_VT_START            0xc68d9437u
@@ -27269,6 +27270,16 @@ static int vt_bytes_are(uint32_t from, uint32_t to, uint8_t value) {
     return 1;
 }
 
+/* 64-bit value at VT_INFO+off (low word first), as ReferVTimerStatus writes base and current. */
+static uint64_t vt_info_u64(uint32_t off) {
+    return (uint64_t)MEM_R32(VT_INFO + off) | ((uint64_t)MEM_R32(VT_INFO + off + 4u) << 32);
+}
+
+/* 64-bit value at VT_CLOCK (low word first), as GetVTimerBase and GetVTimerTime write it. */
+static uint64_t vt_clock_u64(void) {
+    return (uint64_t)MEM_R32(VT_CLOCK) | ((uint64_t)MEM_R32(VT_CLOCK + 4u) << 32);
+}
+
 /* name[32] at VT_INFO+4 holds `want` followed by NUL bytes out to 32. */
 static int vt_name_is(const char *want) {
     size_t n = strlen(want);
@@ -27289,6 +27300,10 @@ static void test_vtimer_lifecycle(void) {
 
     uint32_t vt = vt_create_named("vt-life");
     expect((int32_t)vt > 0, "CreateVTimer returns a valid UID");
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u, "ReferVTimerStatus returns 0 on a created timer");
+    expect(MEM_R32(VT_INFO + 36u) == 0u, "ReferVTimerStatus reports active=0 when created");
+    expect(vt_info_u64(40u) == 0u, "ReferVTimerStatus reports base=0 when created");
+    expect(vt_info_u64(48u) == 0u, "ReferVTimerStatus reports current=0 when created");
     expect(vt_call(NID_VT_STOP, vt, 0u) == 0u,
            "StopVTimer returns 0 when the timer was not started");
     expect(vt_time_of(vt, "GetVTimerTime succeeds on a timer that was never started") == 0u,
@@ -27300,6 +27315,12 @@ static void test_vtimer_lifecycle(void) {
     sr_hle_advance_time(2000u);
     expect(vt_time_of(vt, "GetVTimerTime succeeds while running") == 3000u,
            "elapsed time follows guest time while running, and a second start does not restart the interval");
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u && MEM_R32(VT_INFO + 36u) == 1u,
+           "ReferVTimerStatus reports active=1 while running");
+    expect(vt_info_u64(40u) == 2000000u,
+           "ReferVTimerStatus reports base as the start time while running");
+    expect(vt_info_u64(48u) == 3000u,
+           "ReferVTimerStatus reports current as the elapsed time while running");
     expect(vt_call(NID_VT_STOP, vt, 0u) == 1u,
            "StopVTimer returns 1 while the timer is running");
     sr_hle_advance_time(4000u);
@@ -27316,8 +27337,8 @@ static void test_vtimer_lifecycle(void) {
     expect(MEM_R32(VT_INFO) == VT_INFO_SIZE, "ReferVTimerStatus writes the struct size word (0x48)");
     expect(vt_name_is("vt-life"), "ReferVTimerStatus copies the create-time name and zero-fills name[32]");
     expect(MEM_R32(VT_INFO + 36u) == 1u, "ReferVTimerStatus reports active=1 while the timer runs");
-    expect(vt_bytes_are(40u, VT_INFO_SIZE, 0u),
-           "ReferVTimerStatus leaves the UNMEASURED fields (base, current, schedule, handler, common) zero");
+    expect(vt_bytes_are(56u, VT_INFO_SIZE, 0u),
+           "ReferVTimerStatus reports schedule, handler and common as zero");
     expect(vt_refer(vt, 8u) == 0u, "ReferVTimerStatus with caller size 8 returns 0");
     expect(MEM_R32(VT_INFO) == VT_INFO_SIZE,
            "a caller size of 8 still writes the struct size word (0x48)");
@@ -27329,13 +27350,18 @@ static void test_vtimer_lifecycle(void) {
     expect(vt_refer(vt, 0u) == 0u && MEM_R32(VT_INFO) == 0u && vt_bytes_are(4u, VT_INFO_SIZE, 0xa5u),
            "ReferVTimerStatus with caller size 0 returns 0 and writes nothing");
 
-    expect(vt_call(NID_VT_GET_BASE, vt, VT_CLOCK) == 0u &&
-               MEM_R32(VT_CLOCK) == 0u && MEM_R32(VT_CLOCK + 4u) == 0u,
-           "GetVTimerBase returns 0 and the zero base (SetVTimerTime is refused)");
+    expect(vt_call(NID_VT_GET_BASE, vt, VT_CLOCK) == 0u && vt_clock_u64() == 2007000u,
+           "GetVTimerBase returns the same base as ReferVTimerStatus while running");
 
     expect(vt_call(NID_VT_STOP, vt, 0u) == 1u, "StopVTimer returns 1 before the refer-stopped check");
     expect(vt_refer(vt, VT_INFO_SIZE) == 0u && MEM_R32(VT_INFO + 36u) == 0u,
            "ReferVTimerStatus reports active=0 once the timer is stopped");
+    expect(vt_info_u64(40u) == 0u, "ReferVTimerStatus reports base=0 when stopped");
+    sr_hle_advance_time(1000u);
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u, "ReferVTimerStatus returns 0 on a stopped timer");
+    uint64_t stopped_current = vt_info_u64(48u);
+    expect(stopped_current == vt_time_of(vt, "GetVTimerTime succeeds on the stopped timer"),
+           "ReferVTimerStatus current equals GetVTimerTime while stopped");
     expect(vt_call(NID_VT_START, vt, 0u) == 0u, "StartVTimer returns 0 before the running delete");
 
     expect(vt_call(NID_VT_DELETE, vt, 0u) == 0u, "DeleteVTimer returns 0 on a running timer");

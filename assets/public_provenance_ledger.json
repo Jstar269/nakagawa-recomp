@@ -1180,7 +1180,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "05626b6de5c92f0d1f8b62d973354f46a57f068fb3da262de1122995ee3ae47a"
+      "sha256": "91994a71e419af711bec4481a1ce72e7b73b732c61f6ee4497215eb769f53ecd"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -5034,7 +5034,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "d8ad7c971c58103bf8199d79cfe90bb458a6f6db7613d321b1c58020dce62d4b"
+      "sha256": "a5cce9753d522909820bb1c8bf60a47fa60279c55ad9466e7a18625634313302"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5072,7 +5072,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "714fbce45f657b6ae307b4126ac38db2dd196b332b1975bafd2b1ae8b0a88905"
+      "sha256": "3d2c1a55886250e3d361700058ccaace90b5f27340dc21faf7d3a7679d7fdb49"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -6784,7 +6784,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "842ee36f31758ad9621d232d3134ffb5b3c89a3e6da12e0c8d6f784215a6f8bd"
+      "sha256": "1e6860b44b7394022b7368fc08fbf9e06f5ee9fb0c01ea8516120e36c9723c46"
     },
     {
       "path": "tools/host_stubs.py",
@@ -6832,7 +6832,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ac3ba4a6be922f8588f278d445aeacbce0e15426413893699fb5079cac8e0d43"
+      "sha256": "1d741c11536fd610bca577552536ce6c4290b975bb5003a1ba315fb6b5d648b4"
     },
     {
       "path": "tools/import_audit_gate.py",
@@ -8724,7 +8724,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "506973a605a88f97e5ea6aeb5365698b29ebaccd57418cd89a3ccf629909ab41"
+      "sha256": "ce75e03a069a36192b01d0995ab59c8600b1ad5db649a193001fa95752da4160"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",

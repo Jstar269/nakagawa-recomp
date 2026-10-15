@@ -505,11 +505,14 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "size-field caller contract (whether Refer preserves or overwrites size) unmeasured (#339, #341)",
     },
-    # VTimer lifecycle and query surface (PSP-HLE-VTIMER-001, 2026-10-15). Measured: Create returns
-    # a valid UID; Start returns 0 (and 1 while running, per docs/HARDWARE_ORACLE.md); Stop returns
-    # 1 while running and 0 when not started; Delete of a running timer returns 0; Refer and Delete
-    # on the deleted UID return 0x800201BE. The VTimer time unit is assumed microseconds because the
-    # entry does not cite time values. Interrupt-driven behaviour and handlers depend on issue #325.
+    # VTimer lifecycle and query surface (PSP-HLE-VTIMER-001, 2026-10-15, PR #1003 record). Measured:
+    # Create returns a valid UID; Start returns 0, also on a restart, and 1 while running (per
+    # docs/HARDWARE_ORACLE.md); Stop returns 1 while running and 0 when not started; Delete of a
+    # running timer returns 0; Refer and Delete on the deleted UID return 0x800201BE. Refer fills
+    # active, base (non-zero while running), current, and reads schedule, handler and common as 0.
+    # The VTimer time unit is assumed microseconds because the entry does not cite time values, and
+    # base = system time at start is the project model. Interrupt-driven behaviour and handlers
+    # depend on issue #325.
     "h_CreateVTimer": {
         "status": "partial",
         "limitation": "NULL option struct only (a non-NULL option is refused, layout unmeasured); no-slot create code 0x80020190 unmeasured; time unit assumed microseconds (#325)",
@@ -532,11 +535,11 @@ HANDLER_METADATA = {
     },
     "h_GetVTimerBase": {
         "status": "partial",
-        "limitation": "base is the create-time zero because SetVTimerTime is refused; the zero value and NULL-pointer and deleted-UID codes are unmeasured (#325)",
+        "limitation": "uncited: returns the same base as ReferVTimerStatus (guest time at the most recent Start while running, zero otherwise, a project model); NULL-pointer and deleted-UID codes unmeasured, reused by analogy (#325)",
     },
     "h_ReferVTimerStatus": {
         "status": "partial",
-        "limitation": "return 0 and the deleted-UID code are measured; only size, name and active are written, the rest of the struct is zero and unmeasured; the caller-size write rule is the sema/evf/mbx rule applied without a VTimer cite; the active encoding is not cited (#325)",
+        "limitation": "return 0, the deleted-UID code, and the active, current, schedule, handler and common states are measured (PR #1003); base's value (guest time at start) is the project model, with only its zero and non-zero states measured; the time unit is assumed microseconds; the caller-size write rule for size 0 is the sema/evf/mbx rule applied without a VTimer cite (#325)",
     },
     # sceRtc family (issue #341). Contract sources: the public PSPSDK header
     # psprtc.h (declarations, 0-on-success/<0-on-error, pspRtcCheckValidErrors
