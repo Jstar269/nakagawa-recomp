@@ -8724,7 +8724,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "506973a605a88f97e5ea6aeb5365698b29ebaccd57418cd89a3ccf629909ab41"
+      "sha256": "cb6be389fb65ccf99efbe568610b8f4ffbc8e3564ab2d9634391a866edf32b06"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
