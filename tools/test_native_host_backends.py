@@ -152,7 +152,7 @@ def _build_and_run(
             mode.returncode, 0,
             f"{test_source} {args[0]} failed:\n{mode.stdout}\n{mode.stderr}",
         )
-    leaked =sorted(str(path.relative_to(profile)) for path in profile.rglob("*")
+    leaked = sorted(str(path.relative_to(profile)) for path in profile.rglob("*")
                     if "nakagawa" in path.name.lower())
     test_case.assertEqual(
         leaked, [], f"{test_source} wrote into the developer's profile before isolating it")
