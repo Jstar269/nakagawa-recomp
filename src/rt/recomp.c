@@ -1685,14 +1685,23 @@ static const char *dispatch_semantic_boundary_name(SrGuestInterpResult result) {
  * dispatch-isolation selftest, which records the remaining bytes at the stop. */
 #define SR_DISPATCH_STACK_SAFETY_MARGIN ((size_t)128u << 10)
 
-static int dispatch_host_stack_preflight(void) {
-    size_t remaining;
+/* The one host-stack measurement: 0 with the remaining bytes when another frame fits (0 bytes
+ * when the scheduler is off and there is nothing to bound), or the named boundary's result. */
+static int dispatch_host_stack_measure(size_t *remaining_out) {
+    size_t remaining = 0;
+    *remaining_out = 0;
     if (!sr_sched_on) return 0;
     if (!sr_dispatch_host_stack_remaining || !sr_dispatch_host_stack_remaining(&remaining))
         return SR_GUEST_INTERP_HOST_STACK_BOUNDS_UNAVAILABLE;
     if (remaining < SR_DISPATCH_STACK_SAFETY_MARGIN)
         return SR_GUEST_INTERP_HOST_STACK_EXHAUSTED;
+    *remaining_out = remaining;
     return 0;
+}
+
+static int dispatch_host_stack_preflight(void) {
+    size_t remaining;
+    return dispatch_host_stack_measure(&remaining);
 }
 
 static const char *dispatch_validated_boundary_name(const char *boundary) {
@@ -1740,8 +1749,42 @@ static void dispatch_report_host_stack_boundary(int result) {
     }
     fflush(stderr);
     /* TAIL transfers no longer consume host stack (#855); this boundary now bounds guest
-     * CALL depth and interpreter<->AOT crossings, which still nest. */
+     * CALL depth, dispatched or direct (sr_host_stack_entry_slow), and interpreter<->AOT
+     * crossings, which still nest. */
     dispatch_record_semantic_stop_issue(boundary, 855u);
+}
+
+/* A generated body that makes direct calls found its frame outside sr_host_stack_window
+ * (SR_HOST_STACK_CHECK, recomp.h): take the dispatcher's measurement. Exhausted or unknown
+ * bounds stop exactly as a dispatched transfer does. Otherwise refill the window so the frames
+ * that still leave the reserve pass without asking.
+ *
+ * `here - remaining` is the stack's low end as seen from this function's frame, and this
+ * function always reaches the measurement through the same frames: a frame below `low` would
+ * have measured under the margin here, so the window never passes a frame the measurement
+ * would stop, and the frame that asked always lies inside the refilled window. The window's
+ * top is the running stack's own high end (or, when that is unknown, the asking frame), never
+ * an estimate, so a frame on another live stack cannot fall inside it. A fiber switch
+ * therefore costs one call here, at the first checked entry after it. */
+__attribute__((noinline, cold))
+void sr_host_stack_entry_slow(uint32_t entry, uintptr_t frame) {
+    size_t remaining;
+    int result = dispatch_host_stack_measure(&remaining);
+    if (result < 0) {
+        dispatch_report_host_stack_boundary(result);
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, entry, 0u, 0u);
+        fflush(stderr);
+        exit(1);
+    }
+    if (remaining == 0) return;   /* scheduler off: no bound, and nothing cached */
+    uintptr_t here = (uintptr_t)__builtin_frame_address(0);
+    uintptr_t low = here - remaining + SR_DISPATCH_STACK_SAFETY_MARGIN;
+    uintptr_t top = frame;
+    uintptr_t stack_top;
+    if (sr_dispatch_host_stack_top && sr_dispatch_host_stack_top(&stack_top) && stack_top > top)
+        top = stack_top;
+    sr_host_stack_window.low = low;
+    sr_host_stack_window.span = top - low;
 }
 
 static int dispatch_run_interp(
