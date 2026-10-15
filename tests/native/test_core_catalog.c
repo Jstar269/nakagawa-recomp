@@ -211,6 +211,23 @@ int main(void) {
     assert(nk_platform_file_exists(u_file));
     assert(nk_platform_get_file_size(u_file) == (int64_t)sizeof(test_data));
 
+    printf("[NATIVE_TEST] Verifying nk_platform_get_file_size edge cases...\n");
+    /* NULL path returns -1 */
+    assert(nk_platform_get_file_size(NULL) == -1);
+
+    /* Non-existent path returns -1 */
+    char missing_file_path[700];
+    snprintf(missing_file_path, sizeof(missing_file_path), "%s%c%s", cache_dir, nk_platform_path_separator(), "non_existent_file_12345.dat");
+    assert(nk_platform_get_file_size(missing_file_path) == -1);
+
+    /* Zero-byte file returns 0 */
+    char zero_file_path[700];
+    snprintf(zero_file_path, sizeof(zero_file_path), "%s%c%s", cache_dir, nk_platform_path_separator(), "zero_byte_file.dat");
+    FILE *f_zero = nk_fopen_utf8(zero_file_path, "wb");
+    assert(f_zero != NULL);
+    fclose(f_zero);
+    assert(nk_platform_get_file_size(zero_file_path) == 0);
+
     printf("[NATIVE_TEST] ALL CORE NATIVE C TESTS PASSED SUCCESSFULLY!\n");
     nk_title_catalog_snapshot_release(&found_ov);
     nk_title_catalog_snapshot_release(&found_ov_by_id);
