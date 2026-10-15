@@ -80,6 +80,7 @@ static void init(void) {
                 "handler": "h_ControlledUnsupported",
                 "origin": "static_unsupported",
                 "refusal_error": 0x80010086,
+                "owner_file": None,
             }],
         )
 
@@ -254,9 +255,11 @@ class PowerRegistrationOwnershipTests(unittest.TestCase):
     })
 
     def test_power_registrations_are_owned_by_hle_power_c(self) -> None:
-        power_src = (ROOT / "src" / "rt" / "hle_power.c").read_text(encoding="utf-8")
-        owned = {r["nid"] for r in extract_registrations(power_src)}
-        self.assertEqual({f"0x{n:08x}" for n in owned}, {f"0x{n:08x}" for n in self.POWER_NIDS})
+        """The live manifest's owner_file puts exactly the power NIDs in hle_power.c."""
+        owned = {
+            r["nid"] for r in build_manifest()["registrations"] if r["owner_file"] == "src/rt/hle_power.c"
+        }
+        self.assertEqual(owned, {f"0x{n:08x}" for n in self.POWER_NIDS})
 
     def test_hle_c_registers_no_power_nid(self) -> None:
         active = hle_manifest.active_source(hle_manifest.HLE_C.read_text(encoding="utf-8"))
@@ -267,6 +270,74 @@ class PowerRegistrationOwnershipTests(unittest.TestCase):
             )
         }
         self.assertEqual(registered & self.POWER_NIDS, set())
+
+
+class RegistrationOwnerFileTests(unittest.TestCase):
+    """Every registration has exactly one owner file; none is registered outside the manifest.
+
+    A NID registered from two runtime units is rejected by extract_registrations'
+    duplicate check, pinned here per file. A registration call in a production file
+    the manifest does not read is a NID with no owner at all, so the live tree must
+    have none.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.manifest = build_manifest()
+
+    def test_every_registration_has_a_composed_owner_file(self) -> None:
+        composed = {path for path, _ in hle_manifest.runtime_hle_sources()}
+        for r in self.manifest["registrations"]:
+            self.assertIn(r["owner_file"], composed, f"{r['nid']} {r['name']} has no owner file")
+
+    def test_live_production_tree_registers_only_from_composed_sources(self) -> None:
+        composed = [path for path, _ in hle_manifest.runtime_hle_sources()]
+        files = {
+            p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8")
+            for p in sorted((ROOT / "src").rglob("*.c"))
+        }
+        self.assertEqual(hle_manifest.registration_calls_outside(files, composed), [])
+
+    def test_nid_registered_from_two_runtime_units_is_rejected(self) -> None:
+        a = (
+            "static uint32_t h_A(CpuState *s) { (void)s; return 0; }\n"
+            'static void init_a(void) { sr_hle_register(0x00000010u, "synthA", h_A); }\n'
+        )
+        b = (
+            "static uint32_t h_B(CpuState *s) { (void)s; return 0; }\n"
+            'static void init_b(void) { sr_hle_register(0x00000010u, "synthB", h_B); }\n'
+        )
+        sources = [("src/rt/hle.c", a), ("src/rt/hle_power.c", b)]
+        with self.assertRaises(ManifestError) as ctx:
+            extract_registrations("\n".join(text for _, text in sources), sources)
+        self.assertIn("duplicate NID", str(ctx.exception))
+        self.assertIn("0x00000010", str(ctx.exception))
+
+    def test_registration_call_outside_the_composed_sources_is_reported(self) -> None:
+        files = {
+            "src/rt/hle.c": SYNTH_SOURCE,
+            "src/rt/hle_fs.c": 'static void init_fs(void) {\n    sr_hle_register(0x00000070u, "synthFs", h_Fs);\n}\n',
+        }
+        self.assertEqual(hle_manifest.registration_calls_outside(files, ["src/rt/hle.c"]), ["src/rt/hle_fs.c:2"])
+
+    def test_owner_file_follows_the_unit_each_call_sits_in(self) -> None:
+        a = (
+            "static uint32_t h_A(CpuState *s) { (void)s; return 0; }\n"
+            'static void init_a(void) { sr_hle_register(0x00000010u, "synthA", h_A); }\n'
+        )
+        b = (
+            "static uint32_t h_B(CpuState *s) { (void)s; return 0; }\n"
+            'static void init_b(void) { sr_hle_register(0x00000020u, "synthB", h_B); }\n'
+        )
+        sources = [("src/rt/a.c", a), ("src/rt/b.c", b)]
+        regs = extract_registrations("\n".join(text for _, text in sources), sources)
+        self.assertEqual(
+            [(r["nid"], r["owner_file"]) for r in regs], [(0x10, "src/rt/a.c"), (0x20, "src/rt/b.c")]
+        )
+
+    def test_sources_must_be_the_text_that_is_extracted(self) -> None:
+        with self.assertRaises(ValueError):
+            extract_registrations(SYNTH_SOURCE, [("src/rt/hle.c", "static void other(void) {}\n")])
 
 
 class LiveManifestTests(unittest.TestCase):
