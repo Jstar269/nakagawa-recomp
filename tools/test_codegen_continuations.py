@@ -174,6 +174,104 @@ class ContinuationFlowTests(unittest.TestCase):
             with self.subTest(selector=hex(selector)):
                 with self.assertRaises(codegen.Unsupported):
                     self._linked_site(regimm(selector, 4, 0x1000, 0x2000), {0x1000})
+                with self.assertRaises(codegen.Unsupported):
+                    self._in_body_site(regimm(selector, 4, 0x1000, 0x1010), {0x1000, 0x1010})
+
+    # #968 in the body: the target lies inside the caller's own span. function_flow used
+    # to make it a label and the taken path a `goto`, so the callee's `jr $ra` was the
+    # caller's host return and the continuation at the link never ran.
+    _LEAF_WORDS = {
+        0x1010: 0x24420001,  # leaf: addiu v0, v0, 1
+        0x1014: 0x03E00008,  # jr ra
+        0x1018: 0x00000000,
+    }
+
+    def _in_body_site(self, first, known, extra=None):
+        """`first` at 0x1000, its slot, the continuation `jr ra` at 0x1008, a leaf at 0x1010."""
+        words = {
+            0x1000: first,
+            0x1004: 0x24030011,  # addiu v1, zero, 0x11 (delay slot)
+            0x1008: 0x03E00008,  # continuation: jr ra
+            0x100C: 0x00000000,
+            **self._LEAF_WORDS,
+        }
+        words.update(extra or {})
+        return codegen.emit_function(FakeElf(words), 0x1000, [(0x1000, 0x101C)], known)
+
+    def test_linked_branch_inside_the_body_is_the_same_call_as_jal(self):
+        for known in ({0x1000}, {0x1000, 0x1010}):
+            jal_call = self._between_slot_and_continuation(self._in_body_site(jal(0x1010), known))
+            for name, word in (("bal", regimm(0x11, 0, 0x1000, 0x1010)),
+                               ("bltzal", regimm(0x10, 4, 0x1000, 0x1010))):
+                with self.subTest(known=sorted(known), branch=name):
+                    lines = self._in_body_site(word, known)
+                    text = "\n".join(lines)
+                    self.assertEqual(
+                        self._between_slot_and_continuation(lines),
+                        f"if (_c) {{ {jal_call} }} }}",
+                    )
+                    self.assertNotIn("L_00001010", text, "the callee is not a label")
+                    self.assertNotIn("0x00001010u, 0x24420001u", text, "nor part of this body")
+        elf = FakeElf({0x1000: regimm(0x11, 0, 0x1000, 0x1010), 0x1004: 0,
+                       0x1008: 0x03E00008, 0x100C: 0, **self._LEAF_WORDS})
+        insns, labels, _ = codegen.function_flow(elf, 0x1000, [(0x1000, 0x101C)], {0x1000})
+        self.assertEqual(sorted(insns), [0x1000, 0x1004, 0x1008, 0x100C])
+        self.assertEqual(labels, set())
+
+    def test_linked_call_keeps_its_call_when_another_branch_labels_the_target(self):
+        # `bne` makes 0x1018 a native label of this body; the `bal` to the same address
+        # must still call it rather than jump to that label.
+        lines = codegen.emit_function(
+            FakeElf({
+                0x1000: (0x05 << 26) | (4 << 21) | ((0x1018 - 0x1004) >> 2),  # bne a0, zero
+                0x1004: 0x00000000,
+                0x1008: regimm(0x11, 0, 0x1008, 0x1018),                      # bal 0x1018
+                0x100C: 0x24030011,
+                0x1010: 0x03E00008,
+                0x1014: 0x00000000,
+                0x1018: 0x24420001,
+                0x101C: 0x03E00008,
+                0x1020: 0x00000000,
+            }),
+            0x1000, [(0x1000, 0x1024)], {0x1000, 0x1018},
+        )
+        text = "\n".join(lines)
+        self.assertIn("if (_c) { goto L_00001018; } }", text)
+        self.assertIn("if (_c) { f_00001018(s); SR_TAIL_DRAIN(s); } }", text)
+        self.assertEqual(text.count("goto L_00001018;"), 1)
+
+    def test_linked_call_whose_link_is_an_entry_continues_there(self):
+        # The link is a known entry: after the call (and on the not-taken path) the body
+        # ends at the ordinary continuation boundary, exactly as after a `jal`.
+        for word in (jal(0x1010), regimm(0x11, 0, 0x1000, 0x1010)):
+            with self.subTest(word=hex(word)):
+                text = "\n".join(self._in_body_site(word, {0x1000, 0x1008, 0x1010}))
+                call = text.index("f_00001010(s); SR_TAIL_DRAIN(s);")
+                boundary = text.index("    goto _sr_cont_00001008;")
+                self.assertLess(call, boundary)
+                self.assertIn("_sr_cont_00001008: ;", text)
+                self.assertNotIn("sr_begin(s, 0x00001008u", text)
+
+    def test_linked_branch_into_a_frame_releasing_tail_stays_a_goto(self):
+        # The target releases the frame it never allocated (a continuation), so its
+        # `jr $ra` returns for this body: a jump that writes $ra, unchanged by #968.
+        text = "\n".join(codegen.emit_function(
+            FakeElf({
+                0x1000: 0x27BDFFF0,                      # addiu sp, sp, -16
+                0x1004: 0xAFBF0000,                      # sw ra, 0(sp)
+                0x1008: regimm(0x11, 0, 0x1008, 0x1014),  # bal 0x1014
+                0x100C: 0x24030011,
+                0x1010: 0x24424000,                      # inline data, never executed
+                0x1014: 0x03E02021,                      # addu a0, ra, zero
+                0x1018: 0x8FBF0000,                      # lw ra, 0(sp)
+                0x101C: 0x03E00008,                      # jr ra
+                0x1020: 0x27BD0010,                      # addiu sp, sp, 16
+            }),
+            0x1000, [(0x1000, 0x1024)], {0x1000},
+        ))
+        self.assertIn("if (_c) { goto L_00001014; } }", text)
+        self.assertNotIn("dispatch_call", text)
+        self.assertNotIn("f_00001014(s)", text)
 
     def test_unlinked_computed_transfer_remains_a_tail_dispatch(self):
         text = "\n".join(

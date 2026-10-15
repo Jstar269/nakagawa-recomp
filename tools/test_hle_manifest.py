@@ -250,6 +250,7 @@ class PowerRegistrationOwnershipTests(unittest.TestCase):
         0xEADB1BD7, 0x3AEE7261, 0x090CCB3F,                                      # sceKernelPower Lock/Unlock/Tick
         0x04B7766E,                                                              # scePowerRegisterCallback
         0x2085D15D, 0x1E490401, 0x0AFD0D8B, 0x87440F5E,                          # battery and power online
+        0xFEE03A2F, 0xBD681969, 0xEA382A27, 0xB1A52C83, 0x9BADB3EB,              # measured clock alias, Int and Float getters (PSP-3000 6.61 oracle 2026-10-15, PSP-HLE-POWER-001)
     })
 
     def test_power_registrations_are_owned_by_hle_power_c(self) -> None:
@@ -723,7 +724,6 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0xf9d8eb63": ("sceHttpsEnd", "0x80010086"),
                 "0x3a20a200": ("sceAudiocodecGetEDRAM", "0x80010086"),
                 "0x469989ad": ("scePower_469989ad", "0x80020002"),
-                "0x627e6f3a": ("sceKernelReferSystemStatus", "0x80020002"),
                 "0x3eaba285": ("sceHttpAddExtraHeader", "0x80010086"),
                 "0x542ad630": ("sceKernelSetVTimerTime", "0x80020002"),
                 "0x53b00e9a": ("sceKernelSetVTimerHandlerWide", "0x80020002"),
