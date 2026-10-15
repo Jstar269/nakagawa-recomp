@@ -337,6 +337,7 @@ def contained_path(root_real, rel_posix):
     lexically clean name land outside the root.
     """
 
+    root_real = canonical_root(root_real)
     components = member_components(rel_posix)
     target = os.path.join(root_real, *components)
     partial = root_real

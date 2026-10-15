@@ -252,6 +252,33 @@ def collect_public_manifests(
 
     # Sort deterministically by ID
     results.sort(key=lambda item: item["id"])
+
+    seen_ids: set[str] = set()
+    seen_disc_ids: set[str] = set()
+    for item in results:
+        t_id = item["id"]
+        if t_id in seen_ids:
+            raise ValueError(f"catalog contains duplicate title identity {t_id!r}")
+        seen_ids.add(t_id)
+
+        kind = item["kind"]
+        if kind == "retail":
+            disc_info = item.get("disc", {})
+            disc_ids = [disc_info["id"]] + disc_info.get("compatible_revisions", [])
+        elif kind == "synthetic":
+            assigned = synthetic_disc_ids.SYNTHETIC_DISC_IDS.get(t_id)
+            disc_ids = [assigned] if assigned else []
+        else:
+            disc_ids = []
+
+        for disc_id in disc_ids:
+            norm = "".join(c for c in disc_id if c not in "-_ ").upper()
+            if norm in seen_disc_ids:
+                raise ValueError(
+                    f"catalog contains duplicate disc identity {disc_id!r} for title {t_id!r}"
+                )
+            seen_disc_ids.add(norm)
+
     return public_files, results
 
 
