@@ -50,6 +50,15 @@ GIM_MAX_BLOCKS = 1 << 20
 # The inventory schema written by tools/extract_xb.py process_extracted_directory.
 INVENTORY_CATEGORIES = ("textures", "sounds", "scene_graphs", "other")
 INVENTORY_ITEM_KEYS = ("name", "path", "size_bytes")
+def _format_os_error(e: Exception) -> str:
+    """Format an exception without leaking absolute host paths from e.filename."""
+    if isinstance(e, OSError):
+        if e.errno is not None:
+            return f"[Errno {e.errno}] {e.strerror}"
+        if e.strerror:
+            return e.strerror
+    return str(e)
+
 
 
 class InventoryError(Exception):
@@ -121,7 +130,7 @@ def check_gim_palette(gim_path: str) -> tuple[bool, str]:
         with open(gim_path, "rb") as f:
             data = f.read()
     except Exception as e:
-        return False, f"Failed to read file: {e}"
+        return False, f"Failed to read file: {_format_os_error(e)}"
 
     if len(data) < GIM_HEADER_SIZE:
         return False, (
@@ -259,7 +268,7 @@ def check_sgd_stream_links(sgd_path: str, local_files_lower: set, local_full_low
         with open(sgd_path, "rb") as f:
             data = f.read()
     except Exception as e:
-        return False, f"Failed to read file: {e}"
+        return False, f"Failed to read file: {_format_os_error(e)}"
 
     # Extract printable ASCII paths/filenames that could be stream targets
     strings = re.findall(b"[a-zA-Z0-9_./\\\\-]{4,128}", data)
@@ -299,7 +308,7 @@ def _load_inventory(inv_path: str) -> dict:
         with open(inv_path, "r", encoding="utf-8") as f:
             text = f.read()
     except OSError as e:
-        raise InventoryError(f"unreadable ({e})") from None
+        raise InventoryError(f"unreadable ({_format_os_error(e)})") from None
     except UnicodeDecodeError as e:
         raise InventoryError(f"not valid UTF-8 text ({e})") from None
     try:
@@ -461,7 +470,7 @@ def main():
                     ref_algorithm, ref_hashes = parse_reference(json.load(f))
                 print(f"Loaded {len(ref_hashes)} golden reference hashes from {os.path.basename(ref_path)}.")
             except Exception as e:
-                print(f"Error reading reference hashes: {e}")
+                print(f"Error reading reference hashes: {_format_os_error(e)}")
                 sys.exit(1)
             if ref_algorithm == LEGACY_REFERENCE_ALGORITHM:
                 print(
@@ -493,7 +502,7 @@ def main():
         try:
             inv = _load_inventory(inv_path)
         except InventoryError as e:
-            print(f"Error reading index {inv_path}: {e}")
+            print(f"Error reading index {_display_path(inv_path, extracted_dir)}: {e}")
             inventory_failures.append((inv_path, str(e)))
             continue
 
@@ -502,7 +511,7 @@ def main():
             summary = "; ".join(shape_problems[:5])
             if len(shape_problems) > 5:
                 summary += f" (and {len(shape_problems) - 5} more)"
-            print(f"Error reading index {inv_path}: schema violations: {summary}")
+            print(f"Error reading index {_display_path(inv_path, extracted_dir)}: schema violations: {summary}")
             inventory_failures.append((inv_path, f"schema violations: {summary}"))
             continue
 
@@ -520,7 +529,7 @@ def main():
                 try:
                     h = compute_digest(full_path, digest_algorithm)
                 except OSError as e:
-                    mismatches.append((rel_path, f"Unreadable asset: {e}"))
+                    mismatches.append((rel_path, f"Unreadable asset: {_format_os_error(e)}"))
                     continue
 
                 # Store in bootstrap database
@@ -580,7 +589,7 @@ def main():
                 json.dump(payload, f, indent=4)
             print(f"\nBootstrapped/updated reference hashes file: {ref_path} ({len(new_ref_hashes)} files logged)")
         except Exception as e:
-            print(f"Failed to write reference hashes: {e}")
+            print(f"Failed to write reference hashes: {_format_os_error(e)}")
             sys.exit(1)
 
     # Report detailed failures

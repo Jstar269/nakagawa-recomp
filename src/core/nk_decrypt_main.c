@@ -173,6 +173,14 @@ static const u8 kat_aes_plain[16] = {
 static const u8 kat_aes_k[16] = {
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
     0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f};
+/* Public SP 800-38A F.2.1 plaintext (two blocks). The aes-cbc vector encrypts it
+ * under kat_cmac_k, the public F.2.1 key, from an all-zero starting block. The
+ * output is zero-IV CBC, not the F.2.1 ciphertext (see tools/test_psp_decrypt.py). */
+static const u8 kat_cbc_plain[32] = {
+    0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f, 0x96,
+    0xe9, 0x3d, 0x7e, 0x11, 0x73, 0x93, 0x17, 0x2a,
+    0xae, 0x2d, 0x8a, 0x57, 0x1e, 0x03, 0xac, 0x9c,
+    0x9e, 0xb7, 0x6f, 0xac, 0x45, 0xaf, 0x8e, 0x51};
 static const u8 kat_cmac_k[16] = {
     0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6,
     0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c};
@@ -202,14 +210,14 @@ static int cmd_kat(const char *vector)
     }
     if (strcmp(vector, "aes-cbc") == 0) {
         AES_ctx ctx;
-        u8 cipher[16];
-        u8 back[16];
-        AES_set_key(&ctx, kat_aes_k, 128);
-        AES_cbc_encrypt(&ctx, kat_aes_plain, cipher, 16);
-        AES_cbc_decrypt(&ctx, cipher, back, 16);
-        to_hex(cipher, 16, hex);
+        u8 cipher[32];
+        u8 back[32];
+        AES_set_key(&ctx, kat_cmac_k, 128);
+        AES_cbc_encrypt(&ctx, kat_cbc_plain, cipher, 32);
+        AES_cbc_decrypt(&ctx, cipher, back, 32);
+        to_hex(cipher, 32, hex);
         printf("{\"cipher\":\"%s\",", hex);
-        to_hex(back, 16, hex);
+        to_hex(back, 32, hex);
         printf("\"roundtrip\":\"%s\"}\n", hex);
         return 0;
     }

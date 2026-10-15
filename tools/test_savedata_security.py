@@ -364,6 +364,48 @@ static void check_open_cases(const char *base) {
     }
     sr_cd_root_close(&bound);
 
+    /* Symlinked parent directory: replacing the save slot directory (ULUS99999SLOT00)
+     * with a symlink to an outside directory must fail closed on SAVE and leave
+     * earlier valid saves intact once restored. */
+    snprintf(root, sizeof(root), "%s/symparent", base);
+    snprintf(outside, sizeof(outside), "%s/symparent-outside", base);
+    CHECK(make_savedata_tree(root) && make_dir(outside), "symparent fixture");
+    snprintf(path, sizeof(path), "%s/PSP/SAVEDATA/ULUS99999SLOT00/DATA.BIN", root);
+    CHECK(run_save(root, "DATA.BIN", "VALID_PREVIOUS") == 0, "earlier valid save must succeed");
+    CHECK(read_file(path, content, sizeof(content)) && !strcmp(content, "VALID_PREVIOUS"),
+          "earlier valid save must be written in-root");
+
+    char slot_dir[512], slot_bak[512], outside_file[512];
+    snprintf(slot_dir, sizeof(slot_dir), "%s/PSP/SAVEDATA/ULUS99999SLOT00", root);
+    snprintf(slot_bak, sizeof(slot_bak), "%s/PSP/SAVEDATA/ULUS99999SLOT00_BAK", root);
+    snprintf(target, sizeof(target), "%s/target_slot", outside);
+    CHECK(make_dir(target), "symparent target dir setup");
+    snprintf(outside_file, sizeof(outside_file), "%s/DATA.BIN", target);
+    CHECK(write_file(outside_file, "OUTSIDE_INITIAL"), "outside file setup");
+
+    CHECK(rename(slot_dir, slot_bak) == 0, "backup valid slot dir");
+    CHECK(symlink(target, slot_dir) == 0, "symlink slot dir to outside target");
+
+    CHECK(run_save(root, "DATA.BIN", "ATTACK") != 0,
+          "SAVE through symlinked parent directory must fail closed");
+    CHECK(read_file(outside_file, content, sizeof(content)) && !strcmp(content, "OUTSIDE_INITIAL"),
+          "symlinked parent SAVE must not modify outside target file");
+
+    CHECK(unlink(slot_dir) == 0 && rename(slot_bak, slot_dir) == 0, "restore valid slot dir");
+    memset(content, 0, sizeof(content));
+    CHECK(run_load(root, "DATA.BIN", content, sizeof(content)) == 0 && !strcmp(content, "VALID_PREVIOUS"),
+          "earlier valid save must remain intact");
+
+    /* Reserved DOS device name: attempted save using a reserved name (NUL, CON)
+     * must fail closed without modifying earlier valid saves. */
+    snprintf(root, sizeof(root), "%s/reserved", base);
+    CHECK(run_save(root, "DATA.BIN", "VALID_PREVIOUS") == 0, "reserved test initial save");
+    CHECK(run_save(root, "NUL", "ATTACK") != 0, "reserved name NUL SAVE must fail closed");
+    CHECK(run_save(root, "CON", "ATTACK") != 0, "reserved name CON SAVE must fail closed");
+    memset(content, 0, sizeof(content));
+    CHECK(run_load(root, "DATA.BIN", content, sizeof(content)) == 0 && !strcmp(content, "VALID_PREVIOUS"),
+          "earlier valid save must remain intact after reserved name attempt");
+
 #if defined(SR_CD_TEST_HOOKS)
     /* Deterministic replacement after validation: the hook swaps the final
      * name for an outside symlink immediately before openat(). */

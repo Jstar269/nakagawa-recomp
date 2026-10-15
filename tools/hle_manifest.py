@@ -1191,7 +1191,8 @@ def build_evidence_chain(manifest: dict | None = None, imports_path: Path | None
 
     if manifest is None:
         manifest = build_manifest()
-    scopes = registration_scopes(HLE_C.read_text(encoding="utf-8"))
+    # hle_power.c owns scePower/sceKernelPower registrations (issue #307); read it with hle.c.
+    scopes = registration_scopes(runtime_hle_source())
     cells = conformance_cells(_read_optional(INTR_CONFORMANCE_H))
     dispatched = selftest_dispatched_nids(_read_optional(SELFTEST_C))
     try:
