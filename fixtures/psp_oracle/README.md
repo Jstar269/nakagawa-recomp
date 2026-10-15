@@ -379,8 +379,12 @@ out-of-order stub warnings (issue #400). `probe.c` mirrors the documented
   whether PSP boosts the owner.
 - `CASE=mutex-interrupt-context` — registers a VBLANK sub-interrupt handler
   that samples 20 firings; each firing first records
-  `sceKernelIsCpuIntrEnable()` (a trial counts only when it is 0, meaning the
-  handler ran with CPU interrupts disabled), then measures `LockMutex`/
+  `sceKernelIsCpuIntrEnable()` as context only (the PSP handler sees interrupts
+  enabled, value 1), and a trial counts only when all six mutex calls return
+  ILLEGAL_CONTEXT (0x80020064). The rule was corrected on 2026-10-15; archives
+  recorded under the old rule (count only when the enable value is 0) are refused
+  by the current checker, and the corrected probe is re-measured at the next PSP
+  session. It then measures `LockMutex`/
   `LockMutexCB`/`TryLockMutex` return precedence across bad UID, bad count,
   valid-unlocked, and non-owner unlock cells. One header record and one record
   per trial are emitted (`mutex-interrupt-context-t00`..`t19`). The kernel

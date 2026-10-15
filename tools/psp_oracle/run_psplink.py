@@ -191,9 +191,11 @@ _FIXED_CAMPAIGN_CASES = {
         "PSP-MUTEX-001", [("mutex-priority-inheritance", 7, _PASS)]
     ),
     # Each trial records sceKernelIsCpuIntrEnable() from the VBLANK handler in
-    # out0 and the six mutex returns in out1..out6. By the probe's design a
-    # trial counts (PASS) only when out0 is 0; FAIL marks a trial that does not
-    # count. _check_mutex_interrupt_trial enforces that pairing exactly.
+    # out0 (context only) and the six mutex returns in out1..out6. By the probe's
+    # design a trial counts (PASS) only when all six returns are ILLEGAL_CONTEXT;
+    # FAIL marks a trial that does not count. _check_mutex_interrupt_trial enforces
+    # that pairing exactly. Archives recorded under the superseded rule (out0 == 0)
+    # are refused by this check on purpose.
     "mutex-interrupt-context": _fixed_campaign_rows(
         "PSP-MUTEX-001",
         [("mutex-interrupt-context", 3, _PASS)]
@@ -203,18 +205,23 @@ _FIXED_CAMPAIGN_CASES = {
 }
 
 
+MUTEX_ILLEGAL_CONTEXT = 0x80020064
+
+
 def _check_mutex_interrupt_trial(record) -> None:
-    """A trial's status must follow its recorded interrupt state, nothing else."""
+    """A trial's status must follow its six recorded mutex returns, nothing else."""
 
     if not record.case_id.startswith("mutex-interrupt-context-t"):
         return
     values = dict(record.values)
-    interrupts_enabled = int(values["out0"], 0)
-    expected = "PASS" if interrupts_enabled == 0 else "FAIL"
+    returns = [values[f"out{index}"] for index in range(1, 7)]
+    expected = (
+        "PASS" if all(int(value, 0) == MUTEX_ILLEGAL_CONTEXT for value in returns) else "FAIL"
+    )
     if record.status != expected or int(values["result"], 0) != (expected == "PASS"):
         raise ProtocolError(
             f"mutex-interrupt-context: {record.case_id} status {record.status} "
-            f"disagrees with its interrupt state out0={values['out0']}"
+            f"disagrees with its mutex returns {' '.join(returns)}"
         )
 
 

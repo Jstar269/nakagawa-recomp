@@ -693,7 +693,6 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0xf9d8eb63": ("sceHttpsEnd", "0x80010086"),
                 "0x3a20a200": ("sceAudiocodecGetEDRAM", "0x80010086"),
                 "0x469989ad": ("scePower_469989ad", "0x80020002"),
-                "0x627e6f3a": ("sceKernelReferSystemStatus", "0x80020002"),
                 "0x3eaba285": ("sceHttpAddExtraHeader", "0x80010086"),
                 "0x542ad630": ("sceKernelSetVTimerTime", "0x80020002"),
                 "0x5b37eb1d": ("sceAudiocodecInit", "0x80010086"),

@@ -5109,9 +5109,15 @@ static uint32_t run_mutex_priority_inheritance_case(uint32_t *out0, uint32_t *ou
    handler instead records the raw return of sceKernelIsCpuIntrEnable(), the
    user Kernel_Library export from pspintrman.h and the PSPSDK libpspuser.a
    (the kernel-alarm case samples the same call inside its alarm handler).
-   A trial counts only when it is 0, meaning the handler body ran with CPU
-   interrupts disabled, as the interrupt dispatcher runs it, before any mutex
-   call was made. */
+   The recorded value is context only. On PSP-3000 6.61 the VBLANK handler sees
+   CPU interrupts enabled (1), so it does not gate a trial. A trial counts only
+   when all six mutex calls return ILLEGAL_CONTEXT (0x80020064): the code the
+   kernel returns from interrupt context, which is the measured mutex contract.
+   Pass rule corrected 2026-10-15; the corrected probe is re-measured at the
+   next PSP session. */
+
+/* ILLEGAL_CONTEXT, the mutex return from interrupt context (SCE_KERNEL_ERROR_ILLEGAL_CONTEXT). */
+#define MUTEX_ILLEGAL_CONTEXT 0x80020064u
 
 /* MUTEX_INTR_TRIALS: number of VBLANK firings to sample.  Each firing emits
    one protocol record with a trial-indexed case_id (mutex-interrupt-context-t00
@@ -5150,7 +5156,7 @@ static int oracle_subintr_handler(int subintr, void *arg) {
         return 0;
     }
     IntrTrial t;
-    /* Interrupt-state proof: 0 when CPU interrupts are disabled here. */
+    /* Context only: the value is recorded, and the pass rule does not read it. */
     t.intr_enabled = (uint32_t)sceKernelIsCpuIntrEnable();
     /* Cell A: bad UID.  PRX must already have context-check before lookup. */
     t.r_bad_uid  = (uint32_t)sceKernelLockMutex(0x7fffffff, 1, NULL);
@@ -5172,7 +5178,7 @@ static int oracle_subintr_handler(int subintr, void *arg) {
 
 /* Emit one protocol record per completed trial.
    case_id format: mutex-interrupt-context-tNN (NN = zero-padded trial index).
-   out0 = intr_enabled, out1..out6 = six cell raw return values. */
+   out0 = intr_enabled (context only), out1..out6 = six cell raw return values. */
 static void emit_intr_trial(int emulated, int trial, const IntrTrial *t) {
     char case_id[48];
     snprintf(case_id, sizeof(case_id), "mutex-interrupt-context-t%02d", trial);
@@ -5184,8 +5190,11 @@ static void emit_intr_trial(int emulated, int trial, const IntrTrial *t) {
     out[4] = t->r_lock_cb;
     out[5] = t->r_try;
     out[6] = t->r_unlock;
-    /* pass iff the handler ran with CPU interrupts disabled (intr_enabled == 0) */
-    int pass = (t->intr_enabled == 0u);
+    /* pass iff all six mutex calls returned ILLEGAL_CONTEXT from the handler. The interrupt
+       state is not part of the rule: the PSP handler sees interrupts enabled (intr_enabled 1). */
+    int pass = (out[1] == MUTEX_ILLEGAL_CONTEXT && out[2] == MUTEX_ILLEGAL_CONTEXT &&
+                out[3] == MUTEX_ILLEGAL_CONTEXT && out[4] == MUTEX_ILLEGAL_CONTEXT &&
+                out[5] == MUTEX_ILLEGAL_CONTEXT && out[6] == MUTEX_ILLEGAL_CONTEXT);
     emit_mutex_test(emulated, case_id, pass, pass ? 1u : 0u, out, 7);
 }
 

@@ -4167,15 +4167,14 @@ static void test_sysreg_write_model(void) {
 
 /* Persistence: a flush writes the overlay atomically, a restart loads it, a flush after reads
  * writes nothing, and values equal to their defaults are not recorded. */
-/* Named refusals for three NIDs whose contract is not established from the sources in this tree.
+/* Named refusals for NIDs whose contract is not established from the sources in this tree.
  * Each one returns its named error and does not stop the title, so the run continues past it:
  *  - sceNetInit (0x39af39a6): the offline network policy (sceNetGetLocalEtherAddr's 0x80010086);
- *  - scePower_469989ad (0x469989ad): no public name, refused under its synthetic name;
- *  - sceKernelReferSystemStatus (0x627e6f3a): status and vfpuSwitchCount meanings undocumented.
- * The test pins the codes, so a later measured handler has to replace them deliberately. */
+ *  - scePower_469989ad (0x469989ad): no public name, refused under its synthetic name.
+ * The test pins the codes, so a later measured handler has to replace them deliberately.
+ * sceKernelReferSystemStatus is no longer refused: it is measured (test_refer_system_status). */
 #define NID_REFUSE_NET_INIT                0x39af39a6u
 #define NID_REFUSE_POWER_469989AD          0x469989adu
-#define NID_REFUSE_REFER_SYSTEM_STATUS     0x627e6f3au
 #define REFUSE_NET_CODE                    0x80010086u
 #define REFUSE_UNSUPPORTED_CODE            0x80020002u
 
@@ -4193,8 +4192,6 @@ static void test_named_refusals(void) {
            "sceNetInit refuses with the offline network code 0x80010086");
     expect(refuse_call(NID_REFUSE_POWER_469989AD) == REFUSE_UNSUPPORTED_CODE,
            "scePower_469989ad is a named refusal (0x80020002), not a guessed handler");
-    expect(refuse_call(NID_REFUSE_REFER_SYSTEM_STATUS) == REFUSE_UNSUPPORTED_CODE,
-           "sceKernelReferSystemStatus is a named refusal (0x80020002) until its fields are measured");
     expect(refuse_call(0xf9d8eb63u) == REFUSE_NET_CODE,
            "sceHttpsEnd refuses with the offline HTTP code 0x80010086, as sceHttpEnd does");
     expect(refuse_call(0x011f03c1u) == REFUSE_UNSUPPORTED_CODE,
@@ -4203,6 +4200,51 @@ static void test_named_refusals(void) {
            "sceSslEnd refuses with the offline network code 0x80010086 (no SSL or network stack)");
     expect(refuse_call(0x5963991bu) == REFUSE_NET_CODE,
            "sceNetApctlDelHandler refuses with the offline network code 0x80010086");
+}
+
+/* sceKernelReferSystemStatus(SceKernelSystemStatus *status): PSP-measured 2026-10-15 (PSP-3000,
+ * firmware 6.61, probe on e45e667b; docs/HARDWARE_ORACLE.md 2026-10-15 entry, PR #1003). The size
+ * word is the caller's first word. The call returns 0 and writes min(size, 0x1c) bytes. Word 0 of
+ * the image is the size field, 0x1c. Words 1..6 are written as zero, because their meaning is
+ * UNMEASURED. Bytes past min(size, 0x1c) must stay as the caller left them. */
+#define NID_REFER_SYSTEM_STATUS 0x627e6f3au
+#define SYS_STATUS_BUF          0x00240c00u
+#define SYS_STATUS_BYTES        0x40u
+#define SYS_STATUS_SENTINEL     0xa5u
+
+static void sys_status_refer(uint32_t size_word, uint32_t expect_written, const char *label) {
+    char msg[160];
+    uint32_t i, mismatches = 0;
+    for (i = 0; i < SYS_STATUS_BYTES; i++) MEM_W8(SYS_STATUS_BUF + i, SYS_STATUS_SENTINEL);
+    MEM_W32(SYS_STATUS_BUF, size_word);
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = SYS_STATUS_BUF;
+    uint32_t rc = sr_syscall(&cpu, NID_REFER_SYSTEM_STATUS);
+    snprintf(msg, sizeof msg, "ReferSystemStatus with size %s returns 0", label);
+    expect(rc == 0u, msg);
+
+    for (i = 0; i < SYS_STATUS_BYTES; i++) {
+        uint8_t want;
+        if (i < expect_written) want = (i == 0u) ? 0x1cu : 0u;
+        else if (i < 4u) want = (uint8_t)(size_word >> (8u * i));
+        else want = SYS_STATUS_SENTINEL;
+        if (MEM_R8(SYS_STATUS_BUF + i) != want) mismatches++;
+    }
+    snprintf(msg, sizeof msg,
+             "ReferSystemStatus with size %s writes exactly %u bytes (size word 0x1c, rest zero)",
+             label, (unsigned)expect_written);
+    expect(mismatches == 0u, msg);
+}
+
+static void test_refer_system_status(void) {
+    reset_fixture();
+    sr_hle_init();
+    sys_status_refer(0x1cu, 0x1cu, "0x1c");
+    sys_status_refer(0x20u, 0x1cu, "0x20");
+    sys_status_refer(0x08u, 0x08u, "0x08");
+    sys_status_refer(0x00u, 0x00u, "0x00");
 }
 
 /* sceGeEdramSetAddrTranslation (0xb77905ea): PSPSDK pspge.h. Captured on PSP-3000 (2026-10-10;
@@ -11186,8 +11228,12 @@ static void test_b23_second_round(void) {
 #define NID_FPL_ALLOCATE      0xd979e9bfu
 #define NID_FPL_ALLOCATE_CB   0xe7282cb6u
 #define NID_FPL_TRY_ALLOCATE  0x623ae665u
-#define FPL_BAD_ID_ERR        0x800200d3u
-#define FPL_EXHAUSTED_ERR     0x800200d9u
+/* PSP-measured 2026-10-15 (PSP-3000, 6.61; docs/HARDWARE_ORACLE.md 2026-10-15 entry, PR #1003):
+ * an unknown or deleted FPL id, and an exhausted TryAllocateFpl. */
+#define FPL_UNKNOWN_ID_ERR    0x8002019du
+#define FPL_NO_MEMORY_ERR     0x80020190u
+/* UNMEASURED: a blocking allocate outside a thread keeps its pre-measurement code. */
+#define FPL_UNMEASURED_NO_SPACE_ERR 0x800200d9u
 #define FPL_NAMEBUF           0x00240900u
 #define FPL_OUTPTR            0x00240940u
 #define FPL_SENTINEL          0xfeedfaceu
@@ -11201,7 +11247,9 @@ static void test_b23_second_round(void) {
 #define NID_VPL_ALLOCATE_CB   0xec0a693fu
 #define NID_VPL_FREE          0xb736e9ffu
 #define NID_VPL_REFER         0x39810265u
-#define VPL_BAD_ID_ERR        0x800200d3u
+/* PSP-measured (docs/HARDWARE_ORACLE.md kernel-object error table, PSP-B1-01): unknown VPL id. */
+#define VPL_UNKNOWN_ID_ERR    0x8002019cu
+/* UNMEASURED: no VPL exhausted code is recorded; the value predates the FPL measurement. */
 #define VPL_EXHAUSTED_ERR     0x800200d9u
 #define VPL_INFO              0x00240a00u
 #define VPL_OUTPTR            0x00240a80u
@@ -11356,8 +11404,8 @@ static void test_fpl_refer_status(void) {
     expect(MEM_R32(RFS_INFO) == 0u && rfs_bytes_are(4u, 56u, 0x5au),
            "ReferFplStatus with caller size 0 writes nothing");
 
-    expect(rfs_refer(RFS_UNKNOWN_UID, RFS_INFO) == FPL_BAD_ID_ERR,
-           "ReferFplStatus with an unknown UID returns FPL_BAD_ID (0x800200d3)");
+    expect(rfs_refer(RFS_UNKNOWN_UID, RFS_INFO) == FPL_UNKNOWN_ID_ERR,
+           "ReferFplStatus with an unknown UID returns FPL_UNKNOWN_ID (0x8002019d)");
     expect(rfs_refer(fpl, 0u) == RFS_ILLEGAL_ADDR,
            "ReferFplStatus with a null info pointer returns ILLEGAL_ADDR");
 
@@ -11368,7 +11416,7 @@ static void test_allocate_fpl_context_precedence(void) {
     char msg[160];
 
     /* ---- 1+2. context beats the object lookup, on BOTH disabled states ------
-     * A bad uid would return FPL_BAD_ID_ERR if the lookup ran first. Asserting
+     * A bad uid would return FPL_UNKNOWN_ID_ERR if the lookup ran first. Asserting
      * CAN_NOT_WAIT here is what proves the ordering, not merely that some error
      * came back. Both legs run so dispatch-disabled is not inferred from the
      * interrupt-disabled result. */
@@ -11432,7 +11480,7 @@ static void test_allocate_fpl_context_precedence(void) {
         snprintf(msg, sizeof msg,
                  "the pool really was exhausted at %d blocks, so the count is a real bound",
                  FPL_NBLOCKS);
-        expect(fpl_call(NID_FPL_ALLOCATE, uid, FPL_OUTPTR) == FPL_EXHAUSTED_ERR, msg);
+        expect(fpl_call(NID_FPL_ALLOCATE, uid, FPL_OUTPTR) == FPL_UNMEASURED_NO_SPACE_ERR, msg);
         fpl_free_pool(uid);
     }
 
@@ -11455,7 +11503,7 @@ static void test_allocate_fpl_context_precedence(void) {
                "normal-context AllocateFplCB still returns 0");
         expect(MEM_R32(FPL_OUTPTR) == first + FPL_BSIZE,
                "normal-context AllocateFplCB still advances the cursor by one block");
-        expect(fpl_call(NID_FPL_ALLOCATE, 0u, FPL_OUTPTR) == FPL_BAD_ID_ERR,
+        expect(fpl_call(NID_FPL_ALLOCATE, 0u, FPL_OUTPTR) == FPL_UNKNOWN_ID_ERR,
                "normal-context AllocateFpl still reports the bad-uid error");
         fpl_free_pool(uid);
         s_cur = -1;
@@ -11478,7 +11526,7 @@ static void test_allocate_fpl_context_precedence(void) {
                "normal-context TryAllocateFpl still returns 0");
         uint32_t first = MEM_R32(FPL_OUTPTR);
         expect(first != FPL_SENTINEL, "normal-context TryAllocateFpl still writes the data pointer");
-        expect(fpl_call(NID_FPL_TRY_ALLOCATE, 0u, FPL_OUTPTR) == FPL_BAD_ID_ERR,
+        expect(fpl_call(NID_FPL_TRY_ALLOCATE, 0u, FPL_OUTPTR) == FPL_UNKNOWN_ID_ERR,
                "normal-context TryAllocateFpl still reports the bad-uid error");
         fpl_free_pool(uid);
         s_cur = -1;
@@ -11501,7 +11549,7 @@ static void test_allocate_fpl_context_precedence(void) {
         snprintf(msg, sizeof msg, "TryAllocateFpl still advances the cursor with %s", ctx);
         expect(rc == 0u && MEM_R32(FPL_OUTPTR) == base_before + FPL_BSIZE, msg);
         snprintf(msg, sizeof msg, "TryAllocateFpl still reports the bad-uid error with %s", ctx);
-        expect(fpl_call(NID_FPL_TRY_ALLOCATE, 0u, FPL_OUTPTR) == FPL_BAD_ID_ERR, msg);
+        expect(fpl_call(NID_FPL_TRY_ALLOCATE, 0u, FPL_OUTPTR) == FPL_UNKNOWN_ID_ERR, msg);
         fpl_free_pool(uid);
         cnw_end(intr_off, token);
     }
@@ -20534,18 +20582,18 @@ static void test_vpl_nonblocking_roundtrip(void) {
     expect(MEM_R32(VPL_INFO + 40) == 0x100u && MEM_R32(VPL_INFO + 44) == 0x80u,
            "vpl status reports pool and free sizes");
     memset(&cpu, 0, sizeof cpu); cpu.r[4] = vpl; cpu.r[5] = first;
-    expect(sr_syscall(&cpu, NID_VPL_FREE) == VPL_BAD_ID_ERR, "vpl double free is rejected");
+    expect(sr_syscall(&cpu, NID_VPL_FREE) == VPL_UNKNOWN_ID_ERR, "vpl double free is rejected");
     memset(&cpu, 0, sizeof cpu); cpu.r[4] = vpl; cpu.r[5] = 0xdead0000u;
-    expect(sr_syscall(&cpu, NID_VPL_FREE) == VPL_BAD_ID_ERR, "vpl unknown address is rejected");
+    expect(sr_syscall(&cpu, NID_VPL_FREE) == VPL_UNKNOWN_ID_ERR, "vpl unknown address is rejected");
 
     /* Delete releases the single backing partition block, so same-size recreate reuses it. */
     memset(&cpu, 0, sizeof cpu); cpu.r[4] = vpl;
     expect(sr_syscall(&cpu, NID_VPL_DELETE) == 0u, "vpl delete succeeds");
     expect(sr_hle_test_partition_free_block_count() == 1, "vpl delete releases backing block");
     memset(&cpu, 0, sizeof cpu); cpu.r[4] = vpl;
-    expect(sr_syscall(&cpu, NID_VPL_DELETE) == VPL_BAD_ID_ERR, "vpl double delete is rejected");
+    expect(sr_syscall(&cpu, NID_VPL_DELETE) == VPL_UNKNOWN_ID_ERR, "vpl double delete is rejected");
     memset(&cpu, 0, sizeof cpu); cpu.r[4] = 0x699u;
-    expect(sr_syscall(&cpu, NID_VPL_DELETE) == VPL_BAD_ID_ERR, "vpl unknown uid is rejected");
+    expect(sr_syscall(&cpu, NID_VPL_DELETE) == VPL_UNKNOWN_ID_ERR, "vpl unknown uid is rejected");
 
     memset(&cpu, 0, sizeof cpu);
     cpu.r[4] = FPL_NAMEBUF; cpu.r[5] = 2u; cpu.r[6] = 0u; cpu.r[7] = 0x100u;
@@ -21026,10 +21074,10 @@ static void test_fpl_blocking_waits(void) {
     uint32_t addr2 = MEM_R32(out2);
     expect(addr1 != addr2, "FPL: allocations return distinct addresses");
     MEM_W32(out3, 0xfeedfaceu);
-    expect(selftest_fpl_try_allocate(pool, out3) == FPL_EXHAUSTED_ERR, "FPL: pool is exhausted");
+    expect(selftest_fpl_try_allocate(pool, out3) == FPL_NO_MEMORY_ERR, "FPL: pool is exhausted");
     expect(MEM_R32(out3) == 0xfeedfaceu, "FPL: exhausted try_allocate leaves outptr untouched");
 
-    expect(selftest_fpl_free(0x5ffu, addr1) == FPL_BAD_ID_ERR, "FPL: bad UID free is rejected");
+    expect(selftest_fpl_free(0x5ffu, addr1) == FPL_UNKNOWN_ID_ERR, "FPL: bad UID free is rejected");
     expect(selftest_fpl_free(pool, 0xdeadbeefu) == 0x80000103u, "FPL: illegal address free is rejected");
     expect(selftest_fpl_free(pool, addr1 + 1) == 0x80000103u, "FPL: unaligned address free is rejected");
 
@@ -21224,11 +21272,11 @@ static void test_vpl_blocking_waits(void) {
     expect(selftest_vpl_try_allocate(vpool, 64, out3) == VPL_EXHAUSTED_ERR, "VPL: pool is exhausted");
     expect(MEM_R32(out3) == 0xfeedfaceu, "VPL: exhausted try_allocate leaves outptr untouched");
 
-    expect(selftest_vpl_free(0x6ffu, addr1) == VPL_BAD_ID_ERR, "VPL: bad UID free is rejected");
-    expect(selftest_vpl_free(vpool, 0xdeadbeefu) == VPL_BAD_ID_ERR, "VPL: unknown address free is rejected");
+    expect(selftest_vpl_free(0x6ffu, addr1) == VPL_UNKNOWN_ID_ERR, "VPL: bad UID free is rejected");
+    expect(selftest_vpl_free(vpool, 0xdeadbeefu) == VPL_UNKNOWN_ID_ERR, "VPL: unknown address free is rejected");
 
     expect(selftest_vpl_free(vpool, addr1) == 0, "VPL: FreeVpl succeeds");
-    expect(selftest_vpl_free(vpool, addr1) == VPL_BAD_ID_ERR, "VPL: double free is rejected");
+    expect(selftest_vpl_free(vpool, addr1) == VPL_UNKNOWN_ID_ERR, "VPL: double free is rejected");
 
     expect(selftest_vpl_allocate(vpool, 128, out3, 0) == 0, "VPL: allocate after free succeeds");
     expect(MEM_R32(out3) == addr1, "VPL: freed address is reused");
@@ -21605,6 +21653,40 @@ static void test_mbx_lifecycle_and_ordering(void) {
            "MBX: waiter on deleted mailbox returns 0x800201B5");
     sr_coro_destroy(w.tcb->coro); w.tcb->coro = NULL;
     s_cur = (int)(cur - s_tcb);
+
+    /* ---- 9. DeleteMbx rewrites a timed waiter's timeout word to the remaining time ----
+     * PSP-measured 2026-10-15 (PSP-3000, 6.61): a waiter with a 500000 us timeout, woken by
+     * DeleteMbx, returned WAIT_DELETE and wrote 499950 of 500000 us. The scheduler clock
+     * advances 50 ms while the waiter is blocked, so the written remaining time must fall
+     * strictly between zero and the original timeout. */
+    mbx = selftest_mbx_create(0);
+    MEM_W32(MBX_TIMEOUT_PTR, 500000u);
+    memset(&w, 0, sizeof w);
+    w.uid = 0x154u;
+    w.tcb = fixture_thread(w.uid, TH_READY, 32);
+    w.tcb->started = 1;
+    w.mbx_uid = mbx;
+    w.outptr = out;
+    w.toptr = MBX_TIMEOUT_PTR;
+    MEM_W32(out, 0xfeedfaceu);
+    w.tcb->coro = sr_coro_create(selftest_mbx_waiter_fiber_body, &w, (size_t)4 << 20);
+
+    s_cur = (int)(w.tcb - s_tcb); sr_coro_switch(w.tcb->coro);
+    expect(w.returned == 0 && w.tcb->state == TH_WAIT_OBJ,
+           "MBX: timed waiter blocked before delete");
+
+    s_vtime_us += 50000u;
+    expect(selftest_mbx_delete(mbx) == 0, "MBX: DeleteMbx with a timed waiter succeeds");
+    expect(w.tcb->state == TH_READY, "MBX: delete woke the timed waiter to TH_READY");
+
+    s_cur = (int)(w.tcb - s_tcb); sr_coro_switch(w.tcb->coro);
+    expect(w.returned == 1 && w.ret == MBX_WAIT_DELETE_ERR,
+           "MBX: timed waiter returns 0x800201B5 after DeleteMbx");
+    expect(MEM_R32(MBX_TIMEOUT_PTR) > 0u && MEM_R32(MBX_TIMEOUT_PTR) < 500000u,
+           "MBX: DeleteMbx rewrites the timed waiter's timeout word to the remaining time (0 < rem < 500000)");
+    expect(MEM_R32(out) == 0xfeedfaceu, "MBX: waiter woken by DeleteMbx writes no message");
+    sr_coro_destroy(w.tcb->coro); w.tcb->coro = NULL;
+    s_cur = (int)(cur - s_tcb);
 }
 
 /* =========================================================================
@@ -21911,6 +21993,25 @@ static void test_psp_mutex(void) {
     cur->started = 1;
 
     SceKernelMutexInfoTest info;
+
+    /* ---- Interrupt context: UnlockMutex is gated before the owner check ----
+     * PSP-measured 2026-10-15 (PSP-3000, 6.61): every mutex call from a VBLANK sub-interrupt
+     * handler returned ILLEGAL_CONTEXT (0x80020064), including an unlock of a mutex the handler
+     * does not own. Lock, LockCB and TryLock already gate; Unlock must gate the same way. */
+    {
+        uint32_t mi = mtx_create("intr_unlock", 0, 1);
+        expect(mi > 0 && mtx_get_info(mi, &info) && info.currentCount == 1 &&
+               info.lockThread == (int32_t)cur->uid,
+               "IntrUnlock: mutex is held by the caller before the interrupt-context unlock");
+        s_cur = -1;   /* interrupt context: sched_is_intr_context() is true */
+        expect(mtx_unlock(mi, 1) == 0x80020064u,
+               "IntrUnlock: UnlockMutex in interrupt context returns ILLEGAL_CONTEXT (0x80020064)");
+        s_cur = (int)(cur - s_tcb);
+        expect(mtx_get_info(mi, &info) && info.currentCount == 1 &&
+               info.lockThread == (int32_t)cur->uid,
+               "IntrUnlock: the rejected unlock leaves the mutex held by its owner");
+        expect(mtx_delete(mi) == 0, "IntrUnlock: the held mutex still deletes");
+    }
 
     /* ---- T01, T02, T03, T04, T05: Creation, Attributes, Name bounds, Init count ---- */
     uint32_t m1 = mtx_create("test_mutex", 0, 0);
@@ -27324,6 +27425,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sysparam_nickname_string();
     test_ge_edram_addr_translation();
     test_named_refusals();
+    test_refer_system_status();
     test_ctrl_read_latch();
     test_sysreg_persistence_round_trip();
     test_sysreg_corrupt_overlay();

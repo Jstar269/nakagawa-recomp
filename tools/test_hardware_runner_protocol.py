@@ -4589,34 +4589,61 @@ class RealProbeContractTests(unittest.TestCase):
         with self.assertRaises(PspProtocolError):
             _parse_campaign_records("".join(regrouped), "display-wait-late")
 
-    def test_mutex_interrupt_trials_follow_their_recorded_interrupt_state(self):
+    @staticmethod
+    def _restate_superseded_verdicts(text: str) -> str:
+        """The archive's trial verdicts under the current rule, from the same recorded returns."""
+        return text.replace(
+            " status=FAIL result=0x00000000 out0=", " status=PASS result=0x00000001 out0=")
+
+    @staticmethod
+    def _with_return_changed(text: str, trial: str, cell: str, value: str) -> str:
+        lines = text.split("\n")
+        for index, line in enumerate(lines):
+            if f"case_id=mutex-interrupt-context-{trial} " in line:
+                lines[index] = line.replace(f" {cell}=0x80020064", f" {cell}={value}", 1)
+        return "\n".join(lines)
+
+    def test_mutex_interrupt_trials_follow_their_recorded_mutex_returns(self):
         text = _console_capture(self.MUTEX)
-        self.assertTrue(run_psplink_module._campaign_stream_complete(text, "mutex-interrupt-context"))
-        parsed = _parse_campaign_records(self._records(text), "mutex-interrupt-context")
+        # The archive was recorded under the superseded rule, which counted a trial only when
+        # sceKernelIsCpuIntrEnable() was 0. Every trial there saw interrupts enabled (out0 1)
+        # and returned ILLEGAL_CONTEXT from all six mutex calls. The current rule counts exactly
+        # those trials, so the verdicts are restated from the same returns before the checker reads them.
+        self.assertEqual(self._records(text).count(" status=FAIL "), 20)
+        for index in range(20):
+            line = next(line for line in self._records(text).split("\n")
+                        if f"case_id=mutex-interrupt-context-t{index:02d} " in line)
+            self.assertIn(" out0=0x00000001 ", line)
+            for cell in range(1, 7):
+                self.assertIn(f" out{cell}=0x80020064", line)
+        restated_text = self._restate_superseded_verdicts(text)
+        self.assertTrue(run_psplink_module._campaign_stream_complete(
+            restated_text, "mutex-interrupt-context"))
+        restated = self._records(restated_text)
+        parsed = _parse_campaign_records(restated, "mutex-interrupt-context")
         trials = [record for record in parsed.results if record.case_id.endswith(tuple(
             f"-t{index:02d}" for index in range(20)))]
         self.assertEqual(len(trials), 20)
         for record in trials:
-            values = dict(record.values)
-            # PSP-3000 / 6.6.1: every VBLANK handler trial saw interrupts enabled,
-            # so by the probe's design none counts; the mutex returns stay recorded.
-            self.assertEqual((record.status, values["out0"]), ("FAIL", "0x00000001"))
-            self.assertEqual(values["out1"], "0x80020064")
+            self.assertEqual(record.status, "PASS")
         for forged in (
-            # A trial claiming to count while it recorded interrupts enabled.
-            self._records(text).replace(
-                "case_id=mutex-interrupt-context-t07 status=FAIL result=0x00000000",
-                "case_id=mutex-interrupt-context-t07 status=PASS result=0x00000001", 1),
-            # A trial that recorded interrupts disabled but was not counted.
-            self._records(text).replace(
-                "case_id=mutex-interrupt-context-t03 status=FAIL result=0x00000000 out0=0x00000001",
-                "case_id=mutex-interrupt-context-t03 status=FAIL result=0x00000000 out0=0x00000000",
-                1),
+            # A trial that does not count although all six returns are ILLEGAL_CONTEXT.
+            restated.replace(
+                "case_id=mutex-interrupt-context-t07 status=PASS result=0x00000001",
+                "case_id=mutex-interrupt-context-t07 status=FAIL result=0x00000000", 1),
+            # A trial that counts although one mutex return is not ILLEGAL_CONTEXT.
+            self._with_return_changed(restated, "t03", "out3", "0x800201c5"),
         ):
             with self.assertRaises(PspProtocolError):
                 _parse_campaign_records(forged, "mutex-interrupt-context")
+        # The archive itself is refused by the current rule: its FAIL verdicts disagree with
+        # the all-ILLEGAL_CONTEXT returns it recorded, so it is not a complete campaign stream.
+        self.assertFalse(run_psplink_module._campaign_stream_complete(
+            text, "mutex-interrupt-context"))
+        with self.assertRaises(PspProtocolError):
+            _parse_campaign_records(self._records(text), "mutex-interrupt-context")
 
-    def test_mutex_interrupt_capture_is_qualified_but_not_eligible(self):
+    def test_superseded_mutex_capture_is_refused_by_the_current_checker(self):
         fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
         with tempfile.TemporaryDirectory(prefix="capture-mutex-", dir=fixture_dir) as name:
             runner, _transport, cases = ConsoleCaptureRegressionTests()._campaign(
@@ -4629,13 +4656,17 @@ class RealProbeContractTests(unittest.TestCase):
         envelope = report["envelopes"][1]
         self.assertIsNone(report["terminal_reason"])
         self.assertEqual(envelope["TEARDOWN_CHECK"]["status"], "PASS")
-        self.assertFalse(any(
+        # The archive was recorded under the superseded pass rule. The current checker refuses
+        # its FAIL verdicts, so strict protocol validation is a qualification blocker.
+        self.assertTrue(any(
             "strict protocol validation" in blocker
             for blocker in envelope["QUALIFICATION_BLOCKERS"]
         ))
         self.assertFalse(envelope["ACCEPTANCE_ELIGIBLE"])
-        self.assertIn("one or more scalar result records did not pass",
-                      envelope["ACCEPTANCE_BLOCKERS"])
+        self.assertTrue(any(
+            "disagrees with its mutex returns" in blocker
+            for blocker in envelope["ACCEPTANCE_BLOCKERS"]
+        ), envelope["ACCEPTANCE_BLOCKERS"])
 
 
 class Host0RemotePathTests(unittest.TestCase):
