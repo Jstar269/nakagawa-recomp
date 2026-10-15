@@ -15386,6 +15386,13 @@ extern void sr_audio_push(int ch, const int16_t *lr, int nframes, int volL, int 
  * sceAudioOutput2 channel, which has its own reservation and queue. */
 static int s_audio_ch[9], s_audio_fmt[9];   /* regular fmt: 0=stereo, 0x10=mono */
 static uint32_t s_audio_len[9];
+/* sceAudioSRC* shares slot 8 with Output2: the PSP-3000 refused either API's reserve with
+ * 0x80268002 while the other held it, in both orders (PSP-HLE-AUDIO-SRC-001). The flag says
+ * which API holds the slot, the rate is the input rate the SRC reservation named, and the
+ * last flag records that the unconverted-rate diagnostic was already printed. */
+static int s_audio_src_owned;
+static uint32_t s_audio_src_freq;
+static int s_audio_src_rate_noted;
 
 /* Public contract vocabulary pinned to PSPSDK src/audio/pspaudio.h at
  * 314b2083f2e1eaf145fc5de342736336fe1f0148 and PSPAutotests
@@ -15403,6 +15410,11 @@ static uint32_t s_audio_len[9];
 /* Output2 release while samples are still queued. Measured on PSP-3001, firmware 6.6.1
  * (2026-10-01, issue #311); the raw records stay private. */
 #define SCE_AUDIO_ERROR_OUTPUT2_BUSY    0x80268002u
+/* sceAudioSRCChReserve argument errors, measured on PSP-3000 firmware 6.6.1 (2026-10-15,
+ * PSP-HLE-AUDIO-SRC-001): a sample count of 0 and a channel count of 1 both returned
+ * 0x80000104, a channel count of 4 returned 0x80000003. */
+#define SCE_AUDIO_ERROR_SRC_INVALID_SIZE     0x80000104u
+#define SCE_AUDIO_ERROR_SRC_INVALID_CHANNELS 0x80000003u
 #define PSP_AUDIO_FORMAT_STEREO         0u
 #define PSP_AUDIO_FORMAT_MONO           0x10u
 #define PSP_AUDIO_SAMPLE_MIN            64u
@@ -15574,6 +15586,9 @@ void sr_hle_test_audio_reset(void) {
     memset(s_audio_len, 0, sizeof(s_audio_len));
     memset(s_audio_volL, 0, sizeof(s_audio_volL));
     memset(s_audio_volR, 0, sizeof(s_audio_volR));
+    s_audio_src_owned = 0;
+    s_audio_src_freq = 0;
+    s_audio_src_rate_noted = 0;
     memset(s_audio_delay_carry, 0, sizeof(s_audio_delay_carry));
     memset(g_audio_bufs, 0, sizeof(g_audio_bufs));
     memset(g_audio_nbufs, 0, sizeof(g_audio_nbufs));
@@ -15693,8 +15708,18 @@ static void hle_register_regular_audio_handlers(void) {
 
 #define AUDIO_OUTPUT2_CHANNEL 8u
 
+/* Slot 8 reserved through sceAudioOutput2Reserve, as opposed to sceAudioSRCChReserve. Using one
+ * API's call on the other's reservation is unmeasured; it is refused as "not reserved". */
+static int audio_output2_reserved(void) {
+    return s_audio_ch[AUDIO_OUTPUT2_CHANNEL] && !s_audio_src_owned;
+}
+
 static uint32_t h_AudioOutput2Reserve(CpuState *s) {
     uint32_t samples = A0;
+    /* A slot held through sceAudioSRCChReserve refuses this with 0x80268002 (measured,
+     * PSP-HLE-AUDIO-SRC-001). The code for a second Output2 reserve over an Output2 one is
+     * unmeasured and keeps the regular-channel busy code. */
+    if (s_audio_src_owned) return SCE_AUDIO_ERROR_OUTPUT2_BUSY;
     if (s_audio_ch[AUDIO_OUTPUT2_CHANNEL]) return SCE_AUDIO_ERROR_OUTPUT_BUSY;
     if (samples < 17u || samples > 4111u) return SCE_AUDIO_ERROR_INVALID_SIZE;
     s_audio_ch[AUDIO_OUTPUT2_CHANNEL] = 1;
@@ -15708,34 +15733,106 @@ static uint32_t h_AudioOutput2Reserve(CpuState *s) {
  * same way h_AudioOutput2Rest reads it. */
 static uint32_t h_AudioOutput2Release(CpuState *s) {
     (void)s;
-    if (!s_audio_ch[AUDIO_OUTPUT2_CHANNEL]) return SCE_AUDIO_ERROR_NOT_RESERVED;
+    if (!audio_output2_reserved()) return SCE_AUDIO_ERROR_NOT_RESERVED;
     if (sr_audio_queued(AUDIO_OUTPUT2_CHANNEL) > 0) return SCE_AUDIO_ERROR_OUTPUT2_BUSY;
     s_audio_ch[AUDIO_OUTPUT2_CHANNEL] = 0;
     s_audio_len[AUDIO_OUTPUT2_CHANNEL] = 0;
     return 0;
 }
 static uint32_t h_AudioOutput2ChangeLength(CpuState *s) {
-    if (!s_audio_ch[AUDIO_OUTPUT2_CHANNEL]) return SCE_AUDIO_ERROR_NOT_RESERVED;
+    if (!audio_output2_reserved()) return SCE_AUDIO_ERROR_NOT_RESERVED;
     if (A0 < 17u || A0 > 4111u) return SCE_AUDIO_ERROR_INVALID_SIZE;
     s_audio_len[AUDIO_OUTPUT2_CHANNEL] = A0;
     return 0;
 }
 static uint32_t h_AudioOutput2Blocking(CpuState *s) {
-    if (!s_audio_ch[AUDIO_OUTPUT2_CHANNEL]) return SCE_AUDIO_ERROR_NOT_RESERVED;
+    if (!audio_output2_reserved()) return SCE_AUDIO_ERROR_NOT_RESERVED;
     if (A0 > 0x8000u) return SCE_AUDIO_ERROR_INVALID_VOL;
     (void)audio_output(s, AUDIO_OUTPUT2_CHANNEL, A1, (int)A0, (int)A0);
     return 0;
 }
 static uint32_t h_AudioOutput2Rest(CpuState *s) {
     (void)s;
-    if (!s_audio_ch[AUDIO_OUTPUT2_CHANNEL]) return SCE_AUDIO_ERROR_NOT_RESERVED;
+    if (!audio_output2_reserved()) return SCE_AUDIO_ERROR_NOT_RESERVED;
     int queued = sr_audio_queued(AUDIO_OUTPUT2_CHANNEL);
     return queued > 0 ? (uint32_t)queued : 0u;
 }
 
-/* Output2 registrations shared by the production mapping and the ThreadMan/audio selftest
- * harness, so the selftest drives these exact production handlers through sr_syscall. */
+/* sceAudioSRCChReserve / sceAudioSRCOutputBlocking / sceAudioSRCChRelease (issue #339).
+ *
+ * The SRC channel is the same hardware slot Output2 uses (slot 8 here). Measured on PSP-3000,
+ * firmware 6.6.1, 2026-10-15 (PSP-HLE-AUDIO-SRC-001): with nothing reserved Release and
+ * OutputBlocking return 0x80260008; Reserve(1024, 44100, 2) returns 0, an identical second
+ * Reserve returns 0x80268002, OutputBlocking then returns the sample count, Release returns
+ * 0 and a second Release returns 0x80260008; a sample count of 0 and a channel count of 1 return
+ * 0x80000104 and a channel count of 4 returns 0x80000003; sample counts 65 and 4096 and a rate
+ * of 48000 Hz are accepted; and Output2 and SRC refuse each other's Reserve with 0x80268002 in
+ * both orders.
+ *
+ * Not measured, so held to what is already modelled or refused in the open: the upper
+ * sample-count bound (the Output2 range 17..4111 is reused), channel counts other than 1, 2
+ * and 4 (refused with the code measured for 4), the volume bound (the Output2 bound 0x8000 is
+ * reused), and rates other than 44100 and 48000 (refused with the code measured for an
+ * unsupported channel count, and a message). The host mixer runs at 44100 Hz and there is no
+ * rate converter here, so a 48000 Hz block is paced for its real duration but not forwarded,
+ * with one message. */
+static uint32_t h_AudioSRCChReserve(CpuState *s) {
+    const uint32_t samples = A0, freq = A1, channels = A2;
+    if (s_audio_ch[AUDIO_OUTPUT2_CHANNEL]) return SCE_AUDIO_ERROR_OUTPUT2_BUSY;
+    if (samples < 17u || samples > 4111u) return SCE_AUDIO_ERROR_SRC_INVALID_SIZE;
+    if (channels == 1u) return SCE_AUDIO_ERROR_SRC_INVALID_SIZE;
+    if (channels != 2u) return SCE_AUDIO_ERROR_SRC_INVALID_CHANNELS;
+    if (freq != 44100u && freq != 48000u) {
+        fprintf(stderr, "AUDIOSRC+ unsupported sample rate %u Hz: only 44100 and 48000 Hz are "
+                "modelled, the reservation is refused\n", freq);
+        return SCE_AUDIO_ERROR_SRC_INVALID_CHANNELS;
+    }
+    s_audio_ch[AUDIO_OUTPUT2_CHANNEL] = 1;
+    s_audio_fmt[AUDIO_OUTPUT2_CHANNEL] = 0;
+    s_audio_len[AUDIO_OUTPUT2_CHANNEL] = samples;
+    s_audio_src_owned = 1;
+    s_audio_src_freq = freq;
+    return 0;
+}
+static uint32_t h_AudioSRCChRelease(CpuState *s) {
+    (void)s;
+    if (!s_audio_src_owned) return SCE_AUDIO_ERROR_NOT_RESERVED;
+    s_audio_ch[AUDIO_OUTPUT2_CHANNEL] = 0;
+    s_audio_len[AUDIO_OUTPUT2_CHANNEL] = 0;
+    s_audio_src_owned = 0;
+    s_audio_src_freq = 0;
+    return 0;
+}
+static uint32_t h_AudioSRCOutputBlocking(CpuState *s) {
+    /* sceAudioSRCOutputBlocking(vol, buf): returns the reserved sample count. */
+    if (!s_audio_src_owned) return SCE_AUDIO_ERROR_NOT_RESERVED;
+    if (A0 > 0x8000u) return SCE_AUDIO_ERROR_INVALID_VOL;
+    if (s_audio_src_freq == 44100u)
+        return audio_output(s, AUDIO_OUTPUT2_CHANNEL, A1, (int)A0, (int)A0);
+
+    /* A rate the host mixer does not run at: validate the block as audio_output does, keep the
+     * guest's pacing, and say once that the samples are not forwarded. */
+    const uint32_t n = s_audio_len[AUDIO_OUTPUT2_CHANNEL];
+    uint32_t bytes = 0;
+    if (A1 && n > 0u &&
+        (!sr_size_mul_ok(n, 4u, &bytes) || !sr_guest_span_readable(A1, bytes)))
+        return 0x80000103u; /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
+    if (!s_audio_src_rate_noted) {
+        s_audio_src_rate_noted = 1;
+        fprintf(stderr, "AUDIOSRC+ %u Hz needs conversion to the 44100 Hz host mixer, which is "
+                "not implemented: the blocks are paced and not forwarded\n", s_audio_src_freq);
+    }
+    uint64_t us = (uint64_t)n * 1000000u / s_audio_src_freq;
+    sched_delay_current(us ? (uint32_t)us : 1u);
+    return n;
+}
+
+/* Output2 and SRC registrations shared by the production mapping and the ThreadMan/audio
+ * selftest harness, so the selftest drives these exact production handlers through sr_syscall. */
 static void hle_register_output2_audio_handlers(void) {
+    sr_hle_register(0x38553111, "sceAudioSRCChReserve", h_AudioSRCChReserve);
+    sr_hle_register(0x5c37c0ae, "sceAudioSRCChRelease", h_AudioSRCChRelease);
+    sr_hle_register(0xe0727056, "sceAudioSRCOutputBlocking", h_AudioSRCOutputBlocking);
     sr_hle_register(0x01562ba3, "sceAudioOutput2Reserve", h_AudioOutput2Reserve);
     sr_hle_register(0x2d53f36e, "sceAudioOutput2OutputBlocking", h_AudioOutput2Blocking);
     sr_hle_register(0x43196845, "sceAudioOutput2Release", h_AudioOutput2Release);

@@ -1309,13 +1309,16 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                     + _nanv(addr, "vv2op.s", vd, "_d", n, "_s", n)
                     + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
+        # Optype 28 is vrexp2, which a PSP-3000 measured as exp2(-x) (PSP-VFPU-TRANSCENDENTAL-001,
+        # 2026-10-15), not a negated exp2. The other negated entries (25, 27, 29, 30, 31) are
+        # encodings no probe has covered; they keep the negation of the positive operation.
         _TRANS = {16: "sr_vfpu_rcp(_s[_i])", 17: "sr_vfpu_rsqrt(_s[_i])",
                   18: "sr_vfpu_sin(_s[_i])", 19: "sr_vfpu_cos(_s[_i])",
                   20: "sr_vfpu_exp2(_s[_i])", 21: "sr_vfpu_log2(_s[_i])",
                   22: "sr_vfpu_sqrt(_s[_i])", 23: "sr_vfpu_asin(_s[_i])",
                   24: "-sr_vfpu_rcp(_s[_i])", 25: "-sr_vfpu_rsqrt(_s[_i])",
                   26: "-sr_vfpu_sin(_s[_i])", 27: "-sr_vfpu_cos(_s[_i])",
-                  28: "-sr_vfpu_exp2(_s[_i])", 29: "-sr_vfpu_log2(_s[_i])",
+                  28: "sr_vfpu_exp2(-_s[_i])", 29: "-sr_vfpu_log2(_s[_i])",
                   30: "-sr_vfpu_sqrt(_s[_i])", 31: "-sr_vfpu_asin(_s[_i])"}
         if optype in _TRANS:
             si = vreg_indices(vs, n)
