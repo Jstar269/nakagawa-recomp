@@ -4164,7 +4164,11 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
     int pending_signal=0;
     uint32_t pending_signal_op=0;
     for (int guard=0; guard<(1<<20); guard++) {
-        if (g_ge_stall_addr && addr == g_ge_stall_addr) {
+        /* Compare 28-bit addresses. The list pointer and sceGeListUpdateStallAddr value may use
+         * the uncached mirror (0x4xxxxxxx), while CALL/JUMP/RET targets are masked to 28 bits,
+         * so one guest word can arrive under either spelling. A zero stall address still means
+         * no fence. */
+        if (g_ge_stall_addr && (addr & 0x0FFFFFFFu) == (g_ge_stall_addr & 0x0FFFFFFFu)) {
             static int s_gelog_stall = -1;
             if (s_gelog_stall < 0) s_gelog_stall = getenv("SR_GELOG") ? 1 : 0;
             if (s_gelog_stall) {

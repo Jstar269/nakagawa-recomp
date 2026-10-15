@@ -980,6 +980,20 @@ def write_experimental_profile(
     return profile_path
 
 
+def _iso_name_without_version(name: str | bytes) -> str | bytes:
+    """Strip the ISO 9660 ';version' suffix: a trailing ';' and one or more ASCII digits.
+
+    Any other ';' is part of the name, which Windows accepts. Mirrors
+    nk_iso_name_without_version in src/core/nk_iso.c, which must agree with it.
+    """
+    semicolon = ";" if isinstance(name, str) else b";"
+    digits = "0123456789" if isinstance(name, str) else b"0123456789"
+    stripped = name.rstrip(digits)
+    if len(stripped) < len(name) and stripped.endswith(semicolon):
+        return stripped[:-1]
+    return name
+
+
 def _extent_from_record(record: bytes, file_size: int) -> tuple[int, int, bool]:
     if len(record) < 34 or record[0] < 34 or record[0] > len(record):
         raise IsoInspectionError("malformed ISO directory record")
@@ -1040,7 +1054,7 @@ def _read_iso_directory_entries(
         except UnicodeDecodeError as exc:
             raise IsoInspectionError("ISO directory identifier is not ASCII") from exc
         # ISO9660 file versions are metadata, not part of the guest filename.
-        name = name.split(";", 1)[0]
+        name = _iso_name_without_version(name)
         if not name or name in {".", ".."}:
             raise IsoInspectionError("ISO directory contains an invalid filename")
         entry_lba, entry_size, is_directory = _extent_from_record(record, file_size)
@@ -1139,7 +1153,7 @@ def _lookup_iso_file(stream, file_size: int, path: tuple[str, ...]) -> tuple[int
             if name_size == 0 or 33 + name_size > record_size:
                 raise IsoInspectionError("malformed ISO directory identifier")
             name = record[33 : 33 + name_size]
-            if name not in (b"\0", b"\1") and name.split(b";", 1)[0].upper() == wanted:
+            if name not in (b"\0", b"\1") and _iso_name_without_version(name).upper() == wanted:
                 found = _extent_from_record(record, file_size)
                 break
             offset += record_size
