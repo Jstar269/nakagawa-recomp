@@ -7063,7 +7063,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d83d560632bad7cdf10f541867668153ffc2f56d8743e73f136dedb50e8404c4"
+      "sha256": "bccf61520b1e3186cad6701b878564696cfe3589ba0b91dde971d0539fa2220d"
     },
     {
       "path": "tools/nk_core/git_isolation.py",
@@ -8507,7 +8507,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d92d3037f26269e418adf46effda81def27f8b157b7db9c152de821367a28281"
+      "sha256": "681a396bd0530b5b4062730efc744bf6783c73f943067c8a52c30496236e28ea"
     },
     {
       "path": "tools/test_format_portability_check.py",
