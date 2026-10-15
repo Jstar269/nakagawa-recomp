@@ -110,7 +110,7 @@
           "schema_version": {"enum": [1, 2, 3, 4, 5]},
           "sequence": {"type": "integer", "minimum": 1},
           "class": {"enum": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media", "ge", "present"]},
-          "kind": {"type": "integer", "minimum": 1, "maximum": 4294967295, "description": "Kind 19 is a refused media stream. Kinds 20-27 are GE list enqueue, dequeue, sync, draw sync, stall update, draw, list finish, and GE FINISH command. Kinds 28-29 are SetFrameBuf and successful present."},
+          "kind": {"type": "integer", "minimum": 1, "maximum": 4294967295, "description": "Kind 19 is a refused media stream. Kinds 20-27 are GE list enqueue, dequeue, sync, draw sync, stall update, draw, list finish, and GE FINISH command. Kinds 28-29 are SetFrameBuf and successful present. Kind 30 is an SR_NAN_TRAP origin (fault class, never a trigger): arg0 is the guest pc, arg1 packs the domain (1 FPU, 2 VFPU) in bits 0-7, the result (1 NaN, 2 +Inf, 3 -Inf) in bits 8-15 and the destination register in bits 16-23, arg2 is the lane of the first non-finite result word, and arg3 is the VBLANK count."},
           "arg0": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Event-specific scalar. GE draw: list address; GE list operations: list id; SetFrameBuf/present: framebuffer address."},
           "arg1": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Event-specific scalar. GE draw: command address; enqueue: stall address; SetFrameBuf/present: pixel format."},
           "arg2": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Event-specific scalar. GE draw: primitive type; SetFrameBuf/present: stride."},
@@ -128,6 +128,10 @@
           }
         },
         "allOf": [
+          {
+            "if": {"properties": {"kind": {"const": 30}}, "required": ["kind"]},
+            "then": {"properties": {"class": {"const": "fault"}}}
+          },
           {
             "if": {"properties": {"schema_version": {"const": 1}}, "required": ["schema_version"]},
             "then": {

@@ -523,6 +523,16 @@ def get_font_cache_dir(user_data_root: Optional[Path] = None) -> Path:
     return root / CACHE_PARENT / CACHE_SUBDIR
 
 
+def _reject_duplicate_keys(pairs: List[Tuple[str, Any]]) -> Dict[str, Any]:
+    """object_pairs_hook: refuse a repeated key, as the C manifest reader does (nk_json.c)."""
+    result: Dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key: {key!r}")
+        result[key] = value
+    return result
+
+
 def _load_manifest(cache_dir: Path) -> Tuple[str, str, Dict[str, Dict[str, Any]]]:
     """Return (status, message, entries) with entries keyed by slot id.
 
@@ -533,7 +543,7 @@ def _load_manifest(cache_dir: Path) -> Tuple[str, str, Dict[str, Dict[str, Any]]
     if not path.is_file():
         return "MISSING", "No imported PSP font.", {}
     try:
-        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys)
     except (OSError, ValueError):
         return "INVALID", "PSP font manifest is malformed; run fonts import <folder>.", {}
     if not isinstance(manifest, dict):
@@ -654,7 +664,11 @@ def resolve_font_directory(
     user_data_root: Optional[Path] = None,
     fallback_root: Optional[Path] = None,
 ) -> Optional[Path]:
-    """Resolve the font directory for runtime execution: the cache when its manifest checks."""
+    """Resolve the cache-or-project font directory: the cache when its manifest checks.
+
+    The runtime launcher does not pass this to the child as SR_FONTDIR. The cache travels as
+    SR_USER_DATA_ROOT, and SR_FONTDIR names only the project fonts (build_launch_plan).
+    """
     cdir = get_font_cache_dir(user_data_root)
     status, _ = inspect_font_cache(cache_dir=cdir)
     if status == "OK":

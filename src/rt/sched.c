@@ -18,7 +18,9 @@
  * boot threads the way the game's startup expects, not a cycle-accurate kernel.
  */
 
+#ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
+#endif
 #include "recomp.h"
 #include "sr_coro.h"     /* portable cooperative-coroutine primitive (replaces Win32 fibers) */
 #include "perf.h"
@@ -598,6 +600,7 @@ void sched_init(CpuState *cpu) {
     if (cpu->r[28] != 0u) s_gp = cpu->r[28];           /* the driver seeded gp from the module's # init */
     s_sched_coro = sr_coro_main();
     sr_dispatch_host_stack_remaining = sr_coro_stack_remaining;
+    sr_dispatch_host_stack_top = sr_coro_stack_top;
     sr_sched_on = 1;
     s_interrupts_enabled = 1;
     s_dispatch_enabled = 1;
@@ -1852,6 +1855,9 @@ static void coro_body(void *param) {
              * here: leaving them held would retire pool slots permanently and
              * make this thread's later nested calls fail closed for no reason. */
             unsigned reclaimed = sr_nested_frame_release_owner(t->uid);
+            /* A recorded tail transfer is consumed before guest code runs, so none can
+             * be live when guest code unwinds the thread (#855). */
+            sr_tail_assert_empty("tail-transfer-live-at-unwind");
             if (sched_uid_is_worker(t->uid)) fprintf(stderr, "FIBER_UNWIND: uid=0x%x cleanly unwound\n", t->uid);
             if (reclaimed)
                 fprintf(stderr,
@@ -2631,6 +2637,9 @@ void sr_t111_dump(void) {
 }
 
 void sr_yield(CpuState *s) {
+    /* A fiber switch with a recorded tail transfer would let another thread's drain run
+     * it on the wrong guest state (#855). */
+    sr_tail_assert_empty("tail-transfer-live-at-yield");
     if (s->r[28] != 0u) {
         s_gp = s->r[28];
     }
@@ -3997,6 +4006,9 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
                 fflush(stderr);
                 abort();
             }
+            /* The new stack may reuse the range of one released earlier, which a cached
+             * direct-call host-stack window could still describe (#855, recomp.h). */
+            sr_host_stack_window_clear();
         }
         extern int g_hle_depth;
         g_hle_depth = t->hle_depth;

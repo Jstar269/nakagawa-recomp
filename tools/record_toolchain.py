@@ -74,6 +74,55 @@ def _candidate_identity(repo_root: Path) -> dict[str, Any]:
     }
 
 
+def _find_toolchain_binary(
+    names: tuple[str, ...],
+    expected_dir: Path,
+    label: str,
+) -> Path:
+    """Find a toolchain executable in expected_dir and verify PATH does not contain ambiguous binaries outside it."""
+    resolved_dir = expected_dir.resolve()
+    candidate: Path | None = None
+    for name in names:
+        p = expected_dir / name
+        if p.is_file():
+            candidate = p
+            break
+
+    if candidate is None:
+        raise RuntimeError(f"{label} executable not found in expected toolchain path: {expected_dir}")
+
+    candidate_resolved = candidate.resolve()
+    # cmd.exe resolves a bare name through PATHEXT, so an outside make.cmd or gcc.bat is the same
+    # ambiguity as an outside make.exe or gcc.exe.
+    exts = [e.lower() for e in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";") if e.strip()]
+    bases = {Path(n).stem for n in names}
+    check_names = set(names) | {base + ext for base in bases for ext in exts}
+    path_env = os.environ.get("PATH", "")
+    for raw_dir in path_env.split(os.pathsep):
+        if not raw_dir.strip():
+            continue
+        try:
+            d = Path(raw_dir).resolve()
+        except OSError:
+            continue
+        if d == resolved_dir:
+            continue
+        for name in check_names:
+            exe = d / name
+            if exe.is_file():
+                try:
+                    exe_resolved = exe.resolve()
+                except OSError:
+                    continue
+                if exe_resolved.parent != resolved_dir and exe_resolved != candidate_resolved:
+                    raise RuntimeError(
+                        f"Ambiguous {label} executable on PATH: {name} also resolves to {exe_resolved} "
+                        f"(outside expected toolchain {expected_dir})"
+                    )
+
+    return candidate
+
+
 def _record_optional_glslc(vulkan_root: Path) -> dict[str, Any]:
     """Record the optional shader compiler when present; it is not a normal build input."""
     glslc = nk_doctor_core._find_executable(("glslc.exe", "glslc"), vulkan_root / "Bin")
@@ -141,9 +190,7 @@ def record_observed_toolchain(
             resolved_msys = Path(r"C:\msys64\ucrt64\bin")
 
     # GCC compiler detection
-    gcc = nk_doctor_core._find_executable(("gcc.exe", "gcc"), resolved_msys)
-    if not gcc:
-        raise RuntimeError(f"GCC compiler not found in MSYS2 path: {resolved_msys}")
+    gcc = _find_toolchain_binary(("gcc.exe", "gcc"), resolved_msys, "GCC compiler")
     rc, gcc_line = nk_doctor_core._run_version([str(gcc), "--version"])
     if rc != 0:
         raise RuntimeError(f"Failed to query gcc version: {gcc_line}")
@@ -151,9 +198,7 @@ def record_observed_toolchain(
     gcc_version = m_gcc.group(1) if m_gcc else gcc_line
 
     # The Windows native player and its supporting selftests also compile C++.
-    cxx = nk_doctor_core._find_executable(("g++.exe", "g++"), resolved_msys)
-    if not cxx:
-        raise RuntimeError(f"G++ compiler not found in MSYS2 path: {resolved_msys}")
+    cxx = _find_toolchain_binary(("g++.exe", "g++"), resolved_msys, "G++ compiler")
     rc, cxx_line = nk_doctor_core._run_version([str(cxx), "--version"])
     if rc != 0:
         raise RuntimeError(f"Failed to query g++ version: {cxx_line}")
@@ -161,11 +206,9 @@ def record_observed_toolchain(
     cxx_version = m_cxx.group(1) if m_cxx else cxx_line
 
     # Make tool detection
-    make = nk_doctor_core._find_executable(
-        ("mingw32-make.exe", "mingw32-make", "make.exe", "make"), resolved_msys
+    make = _find_toolchain_binary(
+        ("mingw32-make.exe", "mingw32-make", "make.exe", "make"), resolved_msys, "Make tool"
     )
-    if not make:
-        raise RuntimeError(f"Make not found in MSYS2 path: {resolved_msys}")
     rc, make_line = nk_doctor_core._run_version([str(make), "--version"])
     if rc != 0:
         raise RuntimeError(f"Failed to query make version: {make_line}")

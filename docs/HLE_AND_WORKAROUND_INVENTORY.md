@@ -37,16 +37,16 @@ or labelled historical/capture-time. The evidence-tier view
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **519** (dedicated **469**, fake_success **5**, controlled_unsupported **45**).
-Semantic handler census: **434** handlers across **23** API families, covering **475** handler-associated NID registrations.
+Registered NIDs: **533** (dedicated **485**, fake_success **5**, controlled_unsupported **43**).
+Semantic handler census: **448** handlers across **23** API families, covering **491** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 10 | 18 |
-| `partial` | 80 | 80 |
+| `partial` | 94 | 94 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 341 | 370 |
+| `unreviewed` | 341 | 372 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -54,18 +54,18 @@ Semantic handler census: **434** handlers across **23** API families, covering *
 | `other` | 1 | 0 | 0 | 0 | 0 | 1 | 1 |
 | `sceAtrac` | 0 | 0 | 0 | 0 | 24 | 24 | 33 |
 | `sceAudio` | 0 | 0 | 0 | 0 | 13 | 13 | 14 |
-| `sceCtrl` | 0 | 1 | 0 | 0 | 7 | 8 | 8 |
+| `sceCtrl` | 0 | 2 | 0 | 0 | 7 | 9 | 9 |
 | `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceFont` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
-| `sceGe` | 0 | 4 | 0 | 0 | 9 | 13 | 13 |
+| `sceGe` | 0 | 5 | 0 | 0 | 9 | 14 | 14 |
 | `sceHprm` | 0 | 0 | 0 | 0 | 3 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 18 | 0 | 0 | 12 | 32 | 32 |
-| `sceKernel` | 2 | 22 | 0 | 0 | 135 | 159 | 183 |
+| `sceKernel` | 2 | 31 | 0 | 0 | 135 | 168 | 192 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
-| `scePower` | 0 | 0 | 0 | 0 | 11 | 11 | 11 |
+| `scePower` | 0 | 3 | 0 | 0 | 11 | 14 | 16 |
 | `scePsmf` | 0 | 2 | 0 | 0 | 12 | 14 | 14 |
 | `sceReg` | 0 | 15 | 0 | 0 | 0 | 15 | 15 |
 | `sceRtc` | 4 | 4 | 0 | 0 | 0 | 8 | 8 |
@@ -73,7 +73,7 @@ Semantic handler census: **434** handlers across **23** API families, covering *
 | `sceUmd` | 0 | 1 | 1 | 0 | 7 | 9 | 9 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 31 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **10** | **80** | **1** | **2** | **341** | **434** | **475** |
+| **Total** | **10** | **94** | **1** | **2** | **341** | **448** | **491** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -128,6 +128,10 @@ Semantic handler census: **434** handlers across **23** API families, covering *
 
 - **`h_CtrlGetSamplingMode`** (`sceCtrl`): `sceCtrlGetSamplingMode` (0xda6b76a1)
   - Limitation: reports the mode retained by sceCtrlSetSamplingMode but does not change the sampled SceCtrlData; the invalid-pointer error code (ILLEGAL_ADDR) is not hardware measured
+- **`h_CtrlPeekLatch`** (`sceCtrl`): `sceCtrlPeekLatch` (0xb1d0e5cd)
+  - Limitation: the transition and return words are the sceCtrlReadLatch model, source-tested; the non-clearing peek is the project's model and is not hardware measured, because PSP-HLE-CTRL-LATCH-001 cannot tell clearing from keeping (its release field stays saturated with no input)
+  - Evidence: src/rt/hle_thread_selftest.c:test_ctrl_peek_latch_keeps_the_latch
+  - Evidence: hardware oracle 2026-10-15 PSP-HLE-CTRL-LATCH-001 cases latch-peek-initial and latch-peek-after-poll (no input gives make break press 0 and release 0xFFFFFFFF)
 - **`h_DisplaySetFrameBuf`** (`sceDisplay`): `sceDisplaySetFrameBuf` (0x289d82fe)
   - Limitation: display-smoke covers only a sync=1 8888 flip with stride 512; other format, address, stride, and error-precedence cases remain outside this route (#341)
   - Evidence: Makefile:display-smoke-run
@@ -145,10 +149,13 @@ Semantic handler census: **434** handlers across **23** API families, covering *
 - **`h_DmacTryMemcpy`** (`sceDmac`): `sceDmacTryMemcpy` (0xd97f94d8)
   - Limitation: concurrent-DMA BUSY behavior and invalid truncated-tail validation precedence unmodeled (#303, #341)
 - **`h_GeBreak`** (`sceGe`): `sceGeBreak` (0xb448ec0d)
-  - Limitation: models synchronous display list pause (mode 0) and queue cancellation (mode 1); argument and parameter buffer inspection are K1/read checked only, asynchronous hardware command boundary timing remains unmodeled (#341); the 0x80000025 result when no list is active and the paused (2) and cancelled (4) sync statuses are not hardware-measured
+  - Limitation: models synchronous display list pause (mode 0) and queue reset (mode 1); argument and parameter buffer inspection are K1/read checked only, asynchronous hardware command boundary timing remains unmodeled (#341); PSP-measured in the eligible PSP-GE-CONTROL-001 2026-10-15 re-run: the 0x80000020 no-active-list result, the invalid-mode result 0x80000107 (mode -1 only), the mode 0 queue id and the paused sync statuses (4, 2) for a list broken mid-draw, the mode 1 result 0 with one list stalled at its start, and the 0x80000100 sync result for a list the reset removed; a list enqueued with no stall address completes inside sceGeListEnQueue, so the runtime cannot reproduce the mid-draw break and returns 0x80000020 with sync peeks of 0 on that sequence; breaking a stalled list, a mode 1 reset of a paused list and modes above 1 are unmeasured and follow the same codes
   - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
 - **`h_GeContinue`** (`sceGe`): `sceGeContinue` (0x4c06e472)
-  - Limitation: resumes a paused display list using the synchronous GE runner; hardware timing and multi-queue priority ordering remain unmodeled (#341); the 0x80000025 result when no list is paused is not hardware-measured
+  - Limitation: resumes a paused display list using the synchronous GE runner; hardware timing and multi-queue priority ordering remain unmodeled (#341); the 0 result when no list is paused is PSP-measured (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run)
+  - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
+- **`h_GeListDeQueue`** (`sceGe`): `sceGeListDeQueue` (0x5fb86ab0)
+  - Limitation: a stalled list returns BUSY (0x80000021) and stays queued, PSP-measured (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run); paused, completed, cancelled and unknown queue ids are refused as NOT_IMPLEMENTED because no dequeue result is measured for them (#341)
   - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
 - **`h_GeListEnQueue`** (`sceGe`): `sceGeListEnQueue` (0xab49e76a)
   - Limitation: display-smoke covers one unstalled synchronous list; ring-buffer stall deferral, a full list table (slot 0 is reused), argument and priority validation, and asynchronous execution timing remain outside this route (#341)
@@ -220,24 +227,41 @@ Semantic handler census: **434** handlers across **23** API families, covering *
   - Limitation: cancel with zero waiters and invalid numWait-thread pointer error class unmeasured (#339, #341)
 - **`h_CreateMbx`** (`sceKernel`): `sceKernelCreateMbx` (0x8125221d)
   - Limitation: NULL-name create error and interrupt-context placement unmeasured (#339, #341)
+- **`h_CreateVTimer`** (`sceKernel`): `sceKernelCreateVTimer` (0x20fff560)
+  - Limitation: NULL option struct only (a non-NULL option is refused, layout unmeasured); no-slot create code 0x80020190 unmeasured; time unit assumed microseconds (#325)
 - **`h_DeleteMbx`** (`sceKernel`): `sceKernelDeleteMbx` (0x86255ada)
-  - Limitation: delete-while-waited is corroborated by campaign psp-hw-20260917 but not mailbox-measured; interrupt-context placement unmeasured (#339, #341)
+  - Limitation: delete-while-waited is mailbox-measured on 2026-10-15 (PSP-3000, 6.61): the waiter returns WAIT_DELETE and its timeout word is rewritten to the remaining time; interrupt-context placement unmeasured (#339, #341)
+- **`h_DeleteVTimer`** (`sceKernel`): `sceKernelDeleteVTimer` (0x328f9e52)
+  - Limitation: delete of a stopped timer and interrupt-context placement unmeasured (#325)
 - **`h_FreeMemoryBlock`** (`sceKernel`): `sceKernelFreeMemoryBlock` (0x50f61d8a)
   - Limitation: releases UIDs created by the modeled Low allocation path; invalid-UID result is source-tested but not hardware measured
 - **`h_GetMemoryBlockAddr`** (`sceKernel`): `sceKernelGetMemoryBlockAddr` (0xdb83a952)
   - Limitation: resolves UIDs created by the modeled Low allocation path; output-pointer and unknown-UID results are source-tested but not hardware measured
+- **`h_GetVTimerBase`** (`sceKernel`): `sceKernelGetVTimerBase` (0xb3a59970)
+  - Limitation: uncited: returns the same base as ReferVTimerStatus (guest time at the most recent Start while running, zero otherwise, a project model); NULL-pointer and deleted-UID codes unmeasured, reused by analogy (#325)
+- **`h_GetVTimerTime`** (`sceKernel`): `sceKernelGetVTimerTime` (0x034a921f)
+  - Limitation: time unit assumed microseconds (values not cited by PSP-HLE-VTIMER-001); NULL-pointer and deleted-UID codes unmeasured, reused by analogy (#325)
+- **`h_KernelDevkitVersion`** (`sceKernel`): `sceKernelDevkitVersion` (0x3fc9ae6a)
+  - Limitation: returns the 6.61 devkit word for every firmware: only the measured firmware is modelled, and other firmware devkit words are not
+  - Evidence: src/rt/hle_thread_selftest.c:test_kernel_devkit_version_measured
+  - Evidence: src/rt/sdkver.h:SR_PSP_FIRMWARE_DEVKIT_VERSION
+  - Evidence: hardware oracle 2026-10-15 PSP-SYSTEM-001 case model-profile (0x06060110)
 - **`h_PollMbx`** (`sceKernel`): `sceKernelPollMbx` (0x0d81716a)
   - Limitation: invalid-message-pointer error class unmeasured (#339, #341)
 - **`h_ReceiveMbx`** (`sceKernel`): `sceKernelReceiveMbx` (0x18260574)
-  - Limitation: ILLEGAL_CONTEXT precedence for a blocking receive unmeasured; priority-mailbox circular linking not separately asserted beyond campaign facts (#339, #341)
+  - Limitation: delete-while-waited is mailbox-measured on 2026-10-15 (WAIT_DELETE and timeout word rewritten to the remaining time); ILLEGAL_CONTEXT precedence for a blocking receive unmeasured; priority-mailbox circular linking not separately asserted beyond campaign facts (#339, #341)
 - **`h_ReceiveMbxCB`** (`sceKernel`): `sceKernelReceiveMbxCB` (0xf3986382)
   - Limitation: callback-dispatch interleaving during a mailbox wait unmeasured; ILLEGAL_CONTEXT precedence unmeasured (#339, #341)
 - **`h_ReferMbxStatus`** (`sceKernel`): `sceKernelReferMbxStatus` (0xa8e8c846)
   - Limitation: size-field caller contract (whether Refer preserves or overwrites size) unmeasured (#339, #341)
 - **`h_ReferSemaStatus`** (`sceKernel`): `sceKernelReferSemaStatus` (0xbc6febc5)
   - Limitation: reports the modeled count, create-time initCount, maxCount, attr, name and blocked-waiter count; the caller size word is left as written and the full 56-byte span is written, a convention copied from ReferEventFlagStatus that is not hardware measured; unknown-UID and bad-pointer codes are source-selftested only
+- **`h_ReferSystemStatus`** (`sceKernel`): `sceKernelReferSystemStatus` (0x627e6f3a)
+  - Limitation: idle-clock, comes-out-of-idle and thread-switch counters: written as zero; hardware reports non-zero, time-dependent values (not cited). VFPU-switch counter: written as zero, not cited. Status word 1: written as zero; hardware read 0 in all three records, uncited. Null-pointer result unmeasured.
 - **`h_ReferThreadStatus`** (`sceKernel`): `sceKernelReferThreadStatus` (0x17c1684e)
   - Limitation: run clocks use host scheduler time and preemption/release counters are modeled rather than PSP-measured (#311)
+- **`h_ReferVTimerStatus`** (`sceKernel`): `sceKernelReferVTimerStatus` (0x5f32beaa)
+  - Limitation: return 0, the deleted-UID code, and the active, current, schedule, handler and common states are measured (PR #1003); base's value (guest time at start) is the project model, with only its zero and non-zero states measured; the time unit is assumed microseconds; the caller-size write rule for size 0 is the sema/evf/mbx rule applied without a VTimer cite (#325)
 - **`h_ResumeThread`** (`sceKernel`): `sceKernelResumeThread` (0x75156e8f)
   - Limitation: resume clears the scheduler suspension flag and applies strict-priority preemption; the not-suspended and DORMANT codes are hardware measured, while resume of UID 0 (the running caller) answers the not-suspended code without a measurement and interrupt/dispatch-context precedence is unmeasured
   - Evidence: src/rt/hle_thread_selftest.c:test_suspend_resume_errors_and_ready_thread
@@ -257,6 +281,10 @@ Semantic handler census: **434** handlers across **23** API families, covering *
   - Evidence: src/rt/hle_thread_selftest.c:test_alarm_idle_scheduler_advances_to_the_deadline
   - Evidence: src/rt/sched_selftest.c:test_alarm_runs_at_its_deadline_in_interrupt_context
   - Evidence: src/rt/sched_selftest.c:test_alarm_is_a_wake_source_for_the_idle_scheduler
+- **`h_StartVTimer`** (`sceKernel`): `sceKernelStartVTimer` (0xc68d9437)
+  - Limitation: deleted-UID code reuses the measured Refer/Delete code by analogy; already-running return 1 is repo-documented, not PSP-HLE-VTIMER-001; time unit assumed microseconds (#325)
+- **`h_StopVTimer`** (`sceKernel`): `sceKernelStopVTimer` (0xd0aeee87)
+  - Limitation: deleted-UID code reuses the measured Refer/Delete code by analogy; time unit assumed microseconds (#325)
 - **`h_SuspendThread`** (`sceKernel`): `sceKernelSuspendThread` (0x9944f31f)
   - Limitation: suspend is a scheduler flag (no nesting count); a waiting thread still completes its wait while suspended and runs only after resume; DORMANT and double-suspend codes are hardware measured, while the code for suspending UID 0 or the calling thread reuses the thread-object refusal code without a suspend-specific measurement, and interrupt/dispatch-context precedence is unmeasured
   - Evidence: src/rt/hle_thread_selftest.c:test_suspend_resume_errors_and_ready_thread
@@ -286,6 +314,18 @@ Semantic handler census: **434** handlers across **23** API families, covering *
   - Limitation: decode mode is validated and retained; skip mode fails closed because its queue/timestamp effect is not measured (#302)
 - **`h_MpegQueryPcmEsSize`** (`sceMpeg`): `sceMpegQueryPcmEsSize` (0xc02cf6b5)
   - Limitation: the public 320-byte LPCM ES/output sizes are retained, but no PCM stream is exposed by this runtime (#302)
+- **`h_PowerGetBusClockFrequencyFloat`** (`scePower`): `scePowerGetBusClockFrequencyFloat` (0x9badb3eb)
+  - Limitation: returns the float of the retained bus clock: the 111.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured
+  - Evidence: src/rt/hle_thread_selftest.c:test_power_identity_getters_measured
+  - Evidence: hardware oracle 2026-10-15 PSP-HLE-POWER-001 case bus-clock-float (0x42DE0000 = 111.0)
+- **`h_PowerGetCpuClockFrequencyFloat`** (`scePower`): `scePowerGetCpuClockFrequencyFloat` (0xb1a52c83)
+  - Limitation: returns the float of the retained CPU clock: the 222.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured
+  - Evidence: src/rt/hle_thread_selftest.c:test_power_identity_getters_measured
+  - Evidence: hardware oracle 2026-10-15 PSP-HLE-POWER-001 case cpu-clock-float (0x435E0000 = 222.0)
+- **`h_PowerGetPllClockFrequencyFloat`** (`scePower`): `scePowerGetPllClockFrequencyFloat` (0xea382a27)
+  - Limitation: returns the float of the retained PLL clock: the 222.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured
+  - Evidence: src/rt/hle_thread_selftest.c:test_power_identity_getters_measured
+  - Evidence: hardware oracle 2026-10-15 PSP-HLE-POWER-001 case pll-clock-float (0x435E0000 = 222.0)
 - **`h_PsmfGetAudio`** (`scePsmf`): `scePsmfPlayerGetAudioData` (0xb9848a74)
   - Limitation: host HLE player; requires host codec backend; stages 2048 stereo s16 frames; no hardware comparison tier measured (#341)
 - **`h_PsmfGetVideo`** (`scePsmf`): `scePsmfPlayerGetVideoData` (0x46f61f8b)

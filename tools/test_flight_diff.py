@@ -209,6 +209,32 @@ class ComparabilityContractTests(unittest.TestCase):
         self.assertIsNotNone(divergence)
         self.assertEqual(divergence[0], "terminal kind")
 
+    def test_truncated_tail_reports_terminal_divergence(self):
+        # A run that stopped earlier (e.g. fatal on event 2) compared to a run that kept going (exit on event 3)
+        # with identical shared events (1..2) must report a terminal divergence, not a sequence event divergence.
+        baseline = make_bundle(
+            [event(1, "sched", arg0=1, version=3),
+             event(2, "hle", arg0=2, version=3, arguments=[7, 0, 0, 0], return_value=None),
+             event(3, "prx", arg0=3, version=3)],
+            version=3,
+        )
+        candidate = make_bundle(
+            [event(1, "sched", arg0=1, version=3),
+             event(2, "hle", arg0=2, version=3, arguments=[7, 0, 0, 0], return_value=None)],
+            terminal_reason="fatal",
+            terminal_sequence=2,
+            version=3,
+        )
+        candidate["recorder"]["triggers"]["fired"] = 1
+
+        for align in ("sequence", "class"):
+            with self.subTest(align=align):
+                divergence = flight_diff.diff_bundles(baseline, candidate, align)
+                self.assertIsNotNone(divergence)
+                self.assertEqual(divergence[0], "terminal reason")
+                self.assertEqual(divergence[1]["reason"], "exit")
+                self.assertEqual(divergence[2]["reason"], "fatal")
+
     def test_same_events_different_terminal_semantics_diverge(self):
         baseline, candidate = self._comparable_pair()
         # Both terminals must be individually valid: a fatal outcome pairs with
@@ -865,6 +891,125 @@ class RefusalComparisonTests(unittest.TestCase):
             return subprocess.run(
                 [sys.executable, str(ROOT / "tools" / "flight_diff.py"),
                  str(left_path), str(right_path)],
+                capture_output=True, text=True, check=False,
+            )
+
+
+def v5_nan_origin(sequence, *, pc=0x08900010, domain=2, result=1, register=5, lane=2, vbl=1180):
+    """A schema 5 SR_NAN_TRAP origin: arg1 packs domain, result class and destination."""
+    packed = domain | (result << 8) | (register << 16)
+    return event(sequence, "fault", kind=30, arg0=pc, arg1=packed, arg2=lane, arg3=vbl,
+                 version=5)
+
+
+class NanOriginFlightTests(unittest.TestCase):
+    """Issue #320: an SR_NAN_TRAP origin is a fault-class event, and the first one localises.
+
+    The origin is recorded where the trap reports it, before any later value it corrupts, so
+    a first-divergence comparison names the origin rather than the draw that showed it.
+    """
+
+    def _clean_run(self):
+        events = [
+            v5_hle(1),
+            event(2, "ge", kind=25, arg0=0x08900000, arg1=0x08900018, arg2=6, arg3=6, version=5),
+            event(3, "ge", kind=25, arg0=0x08900000, arg1=0x08900018, arg2=6, arg3=6, version=5),
+        ]
+        return v5_bundle(events, reason="exit", arg0=0, sequence=3, fired=0,
+                         refusals=v5_refusals([]))
+
+    def _origin_run(self):
+        """The origin at sequence 2 and the draw it corrupts at sequence 3."""
+        events = [
+            v5_hle(1),
+            v5_nan_origin(2),
+            event(3, "ge", kind=25, arg0=0x08900000, arg1=0x08900018, arg2=6, arg3=2, version=5),
+        ]
+        return v5_bundle(events, reason="exit", arg0=0, sequence=3, fired=0,
+                         refusals=v5_refusals([]))
+
+    def test_nan_origin_is_schema_valid_and_decodes_its_operands(self):
+        vfpu = v5_nan_origin(2)
+        flight_diff.validate_bundle(v5_bundle([v5_hle(1), vfpu], reason="exit", arg0=0,
+                                              sequence=2, fired=0, refusals=v5_refusals([])))
+        identity = flight_diff._event_identity(vfpu)
+        self.assertIn("class=fault kind=nan-origin (30) sequence=2", identity)
+        self.assertIn("pc=0x08900010 domain=vfpu dst=v5 result=nan lane=2 vbl=1180", identity)
+        scalar = v5_nan_origin(2, pc=0x08900020, domain=1, result=3, register=3, lane=0)
+        self.assertIn("pc=0x08900020 domain=fpu dst=f3 result=-inf lane=0 vbl=1180",
+                      flight_diff._event_identity(scalar))
+
+    def test_first_nan_origin_is_localised_before_its_symptom(self):
+        baseline = self._clean_run()
+        candidate = self._origin_run()
+        flight_diff.validate_bundle(candidate)
+        divergence = flight_diff.diff_bundles(baseline, candidate, "sequence")
+        self.assertIsNotNone(divergence)
+        self.assertEqual(divergence[0], "sequence 2")
+        self.assertEqual(divergence[2]["kind"], 30)
+        result = self._run_cli(baseline, candidate)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("DIVERGENCE: sequence 2", result.stdout)
+        self.assertIn("candidate event: event index 1 class=fault kind=nan-origin (30) "
+                      "sequence=2 pc=0x08900010 domain=vfpu dst=v5 result=nan lane=2 vbl=1180",
+                      result.stdout)
+
+    def test_class_alignment_names_the_first_nan_origin_occurrence(self):
+        baseline, candidate = self._clean_run(), self._origin_run()
+        divergence = flight_diff.diff_bundles(baseline, candidate, "class")
+        self.assertIsNotNone(divergence)
+        self.assertEqual(divergence[0], "class fault occurrence 0")
+        self.assertEqual(divergence[2]["kind"], 30)
+        result = self._run_cli_aligned(baseline, candidate, "class")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("DIVERGENCE: class fault occurrence 0", result.stdout)
+        self.assertIn("pc=0x08900010 domain=vfpu dst=v5 result=nan lane=2 vbl=1180", result.stdout)
+
+    def test_nan_origin_outside_the_fault_class_is_malformed(self):
+        bundle = self._origin_run()
+        bundle["events"][1]["class"] = "ge"
+        with self.assertRaises(flight_diff.FlightDiffError):
+            flight_diff.validate_bundle(bundle)
+        # The schema rule runs first in validate_bundle; the validator's own rule is checked too.
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "belongs to the fault class"):
+            flight_diff._validate_nan_origin_events(bundle["events"])
+
+    def test_nan_origin_operands_are_range_checked(self):
+        cases = {
+            "unknown domain": dict(domain=3),
+            "unknown result class": dict(result=0),
+            "fpu register past f31": dict(domain=1, register=32, lane=0),
+            "fpu lane past its single result": dict(domain=1, register=3, lane=1),
+            "vfpu lane past the sixteen lanes of a matrix": dict(lane=16),
+            "vfpu register past v127": dict(register=128),
+        }
+        for label, fields in cases.items():
+            with self.subTest(case=label):
+                bundle = v5_bundle([v5_hle(1), v5_nan_origin(2, **fields)], reason="exit",
+                                   arg0=0, sequence=2, fired=0, refusals=v5_refusals([]))
+                with self.assertRaises(flight_diff.FlightDiffError):
+                    flight_diff.validate_bundle(bundle)
+
+    def test_nan_origin_packing_leaves_no_stray_bits(self):
+        bundle = v5_bundle([v5_hle(1), v5_nan_origin(2)], reason="exit", arg0=0, sequence=2,
+                           fired=0, refusals=v5_refusals([]))
+        bundle["events"][1]["arg1"] |= 1 << 24
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "above its packed"):
+            flight_diff.validate_bundle(bundle)
+
+    def _run_cli(self, left, right):
+        return self._run_cli_aligned(left, right, "sequence")
+
+    def _run_cli_aligned(self, left, right, align):
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            left_path = temp_path / "left.json"
+            right_path = temp_path / "right.json"
+            left_path.write_text(json.dumps(left), encoding="utf-8")
+            right_path.write_text(json.dumps(right), encoding="utf-8")
+            return subprocess.run(
+                [sys.executable, str(ROOT / "tools" / "flight_diff.py"),
+                 str(left_path), str(right_path), "--align", align],
                 capture_output=True, text=True, check=False,
             )
 

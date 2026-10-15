@@ -151,6 +151,8 @@ static int write_launch_environment_probe(void) {
     const char *volume = getenv("SR_MASTER_VOLUME");
     const char *input_profile = getenv("NK_INPUT_PROFILE");
     const char *novbpace = getenv("SR_NOVBPACE");
+    const char *font_dir = getenv("SR_FONTDIR");
+    const char *user_data_root = getenv("SR_USER_DATA_ROOT");
     int ok = fprintf(f,
                      "PSP_ISO=%s\n"
                      "NK_LAUNCH_TEST_UNRELATED=%s\n"
@@ -160,7 +162,9 @@ static int write_launch_environment_probe(void) {
                      "SR_FULLSCREEN=%s\n"
                      "SR_MASTER_VOLUME=%s\n"
                      "NK_INPUT_PROFILE=%s\n"
-                     "SR_NOVBPACE=%s\n",
+                     "SR_NOVBPACE=%s\n"
+                     "SR_FONTDIR=%s\n"
+                     "SR_USER_DATA_ROOT=%s\n",
                      iso ? iso : "<unset>",
                      unrelated ? unrelated : "<unset>",
                      fps ? fps : "<unset>",
@@ -169,9 +173,37 @@ static int write_launch_environment_probe(void) {
                      fullscreen ? fullscreen : "<unset>",
                      volume ? volume : "<unset>",
                      input_profile ? input_profile : "<unset>",
-                     novbpace ? novbpace : "<unset>") >= 0;
+                     novbpace ? novbpace : "<unset>",
+                     font_dir ? font_dir : "<unset>",
+                     user_data_root ? user_data_root : "<unset>") >= 0;
     if (fclose(f) != 0) ok = 0;
+    /* Subtest 21 sets NK_LAUNCH_TEST_HOLD so the probe stays alive long
+     * enough for nk_launch_stop to have a running child to stop. */
+    if (getenv("NK_LAUNCH_TEST_HOLD") != NULL) {
+#if defined(_WIN32) || defined(_WIN64)
+        Sleep(30000);
+#else
+        sleep(30);
+#endif
+    }
     return ok ? 0 : 4;
+}
+
+/* True once the process with this id has exited, waiting up to timeout_ms.
+ * nk_launch_stop closes the session's own handles, so the check goes through
+ * the OS by pid, as test_posix_process.c and test_win32_process.c do. */
+static bool test_child_exited(int pid, unsigned timeout_ms) {
+#if defined(_WIN32) || defined(_WIN64)
+    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)pid);
+    if (h == NULL) return GetLastError() == ERROR_INVALID_PARAMETER;
+    DWORD res = WaitForSingleObject(h, (DWORD)timeout_ms);
+    CloseHandle(h);
+    return res == WAIT_OBJECT_0;
+#else
+    /* The POSIX stop path reaps the child before it returns. */
+    (void)timeout_ms;
+    return kill((pid_t)pid, 0) != 0 && errno == ESRCH;
+#endif
 }
 
 static void write_valid_elf(const char *path, uint32_t base, uint32_t entry);
@@ -230,6 +262,41 @@ static void test_no_iso_child_environment(const char *test_executable,
     memcpy(game.prepared_root, stage_root, strlen(stage_root) + 1);
     game.assets_staged = true;
 
+    /* --user-data-root: the player overrides the per-user data directory with the same platform
+     * call used here. The override must reach the child as SR_USER_DATA_ROOT, not the default. */
+    char custom_user_root[NK_MAX_PATH * 4];
+    snprintf(custom_user_root, sizeof(custom_user_root), "%s%cuser_data_override", root, sep);
+    assert(nk_platform_mkdir_p(custom_user_root));
+    assert(nk_platform_set_app_data_dir_override(custom_user_root));
+
+    /* One font root: the per-user data directory (the override above in this run). Fonts are
+     * imported there, so the launcher exports the root to the runtime. A cache under the package
+     * root is not the one the runtime reads. */
+    char per_user_root[NK_MAX_PATH];
+    assert(nk_platform_get_app_data_dir(per_user_root, sizeof(per_user_root)));
+    char per_user_fonts[NK_MAX_PATH * 2];
+    char per_user_cache[NK_MAX_PATH * 2 + 32];
+    char per_user_manifest[NK_MAX_PATH * 4];
+    snprintf(per_user_fonts, sizeof(per_user_fonts), "%s%cfonts", per_user_root, sep);
+    snprintf(per_user_cache, sizeof(per_user_cache), "%s%cv2", per_user_fonts, sep);
+    snprintf(per_user_manifest, sizeof(per_user_manifest), "%s%cmanifest.json", per_user_cache, sep);
+    char package_fonts[NK_MAX_PATH * 2];
+    char package_cache[NK_MAX_PATH * 2 + 32];
+    char package_manifest[NK_MAX_PATH * 4];
+    snprintf(package_fonts, sizeof(package_fonts), "%s%cfonts", root, sep);
+    snprintf(package_cache, sizeof(package_cache), "%s%cv2", package_fonts, sep);
+    snprintf(package_manifest, sizeof(package_manifest), "%s%cmanifest.json", package_cache, sep);
+    assert(nk_platform_mkdir_p(per_user_cache));
+    assert(nk_platform_mkdir_p(package_cache));
+    write_file(per_user_manifest, "{}");
+    write_file(package_manifest, "{}");
+    /* The project fonts the launcher falls back to. The per-user manifest above is a partial
+     * import (it stands for one or more slots); the runtime still serves the project font for
+     * the slots it does not cover, so SR_FONTDIR names this directory and never the cache. */
+    char project_font[NK_MAX_PATH * 2];
+    snprintf(project_font, sizeof(project_font), "%s%cfont", root, sep);
+    assert(nk_platform_mkdir_p(project_font));
+
     bool had_iso;
     bool had_report;
     bool had_unrelated;
@@ -240,10 +307,14 @@ static void test_no_iso_child_environment(const char *test_executable,
                                                    &had_unrelated);
     bool had_novbpace;
     char *old_novbpace = capture_environment_value("SR_NOVBPACE", &had_novbpace);
+    bool had_user_root;
+    char *old_user_root = capture_environment_value("SR_USER_DATA_ROOT", &had_user_root);
     set_environment_value("PSP_ISO", "poisoned-parent.iso");
     set_environment_value("SR_NOVBPACE", "1");
     set_environment_value("NK_LAUNCH_TEST_REPORT_FILE", report_path);
     set_environment_value("NK_LAUNCH_TEST_UNRELATED", "preserve-me");
+    /* An inherited SR_USER_DATA_ROOT must not reach the child: the session's root wins. */
+    set_environment_value("SR_USER_DATA_ROOT", "poisoned-parent-root");
 
     assert(nk_launch_prepare_session(&session, &game, root) == NK_OK);
     assert(session.iso_path[0] == '\0');
@@ -302,7 +373,7 @@ static void test_no_iso_child_environment(const char *test_executable,
 
     FILE *report = fopen(report_path, "rb");
     assert(report != NULL);
-    char observed[512];
+    char observed[2048];
     size_t observed_size = fread(observed, 1, sizeof(observed) - 1, report);
     observed[observed_size] = '\0';
     assert(!ferror(report));
@@ -323,6 +394,24 @@ static void test_no_iso_child_environment(const char *test_executable,
         char expected[1200];
         snprintf(expected, sizeof(expected), "NK_INPUT_PROFILE=%s\n", title_profile);
         assert(strstr(observed, expected) != NULL);
+    }
+    /* The per-user data directory reaches the runtime as SR_USER_DATA_ROOT, and the font cache
+     * the runtime serves from is the one under it. The package root's own fonts/v2 (the
+     * launcher's old lookup) is not named at all. */
+    {
+        char expected[NK_MAX_PATH * 2 + 64];
+        snprintf(expected, sizeof(expected), "SR_USER_DATA_ROOT=%s\n", per_user_root);
+        assert(strstr(observed, expected) != NULL);
+        /* SR_FONTDIR names the project fonts only. Naming the per-user cache here would make the
+         * runtime refuse the project source, so a partial import would drop the other slots. */
+        snprintf(expected, sizeof(expected), "SR_FONTDIR=%s\n", project_font);
+        assert(strstr(observed, expected) != NULL);
+        snprintf(expected, sizeof(expected), "SR_FONTDIR=%s\n", per_user_cache);
+        assert(strstr(observed, expected) == NULL);
+        snprintf(expected, sizeof(expected), "SR_FONTDIR=%s\n", package_cache);
+        assert(strstr(observed, expected) == NULL);
+        /* The inherited poison is replaced by the session root. */
+        assert(strstr(observed, "poisoned-parent-root") == NULL);
     }
     /* A normal launch clears SR_NOVBPACE from the child environment even if set in parent */
     assert(strstr(observed, "SR_NOVBPACE=<unset>\n") != NULL);
@@ -349,16 +438,27 @@ static void test_no_iso_child_environment(const char *test_executable,
                               had_report);
     restore_environment_value("NK_LAUNCH_TEST_UNRELATED", old_unrelated,
                               had_unrelated);
+    restore_environment_value("SR_USER_DATA_ROOT", old_user_root, had_user_root);
     free(old_iso);
     free(old_novbpace);
     free(old_report);
     free(old_unrelated);
+    free(old_user_root);
+    assert(nk_platform_set_app_data_dir_override(NULL));
 
     remove(report_path);
     remove(title_profile);
     remove(runtime_path);
     remove(image_path);
     remove(staged_eboot);
+    remove(per_user_manifest);
+    test_rmdir(per_user_cache);
+    test_rmdir(per_user_fonts);
+    test_rmdir(custom_user_root);
+    test_rmdir(project_font);
+    remove(package_manifest);
+    test_rmdir(package_cache);
+    test_rmdir(package_fonts);
     {
         char stage_memstick[1000];
         snprintf(stage_memstick, sizeof(stage_memstick), "%s%cmemstick",
@@ -564,6 +664,275 @@ static void write_file_utf8(const char *path, const char *data) {
         assert(fwrite(data, 1, strlen(data), f) == strlen(data));
     }
     assert(fclose(f) == 0);
+}
+
+
+static void test_launch_stop_functionality(const char *test_executable, const char *base, char sep) {
+    printf("[LAUNCH_TEST] Subtest 21: nk_launch_stop state changes and process termination\n");
+    fflush(stdout);
+
+    /* 1. NULL session safety */
+    nk_launch_stop(NULL);
+
+    /* 2. Stopping a session that is not running */
+    NkLaunchSession session;
+    memset(&session, 0, sizeof(session));
+    session.is_running = false;
+    nk_launch_stop(&session);
+    assert(session.is_running == false);
+
+    /* 3. Stopping an actively running session */
+    char root[800];
+    char runtime_dir[900];
+    char runtime_path[1000];
+    char image_path[1000];
+    char stage_root[900];
+    char staged_eboot[1000];
+    char staged_xbdata[1000];
+    char report_path[1000];
+    char absolute_test_executable[1000];
+
+    snprintf(root, sizeof(root), "%s%cstop_test_env", base, sep);
+    snprintf(runtime_dir, sizeof(runtime_dir), "%s%cbuild%cdisplay-smoke", root, sep, sep);
+#if defined(_WIN32) || defined(_WIN64)
+    snprintf(runtime_path, sizeof(runtime_path), "%s%cdisplay-smoke.exe", runtime_dir, sep);
+#else
+    snprintf(runtime_path, sizeof(runtime_path), "%s%cdisplay-smoke", runtime_dir, sep);
+#endif
+    snprintf(image_path, sizeof(image_path), "%s%cdisplay-smoke_image.bin", runtime_dir, sep);
+    snprintf(stage_root, sizeof(stage_root), "%s%cprepared", root, sep);
+    snprintf(staged_eboot, sizeof(staged_eboot), "%s%cEBOOT.BIN", stage_root, sep);
+    snprintf(staged_xbdata, sizeof(staged_xbdata), "%s%cxbdata", stage_root, sep);
+    snprintf(report_path, sizeof(report_path), "%s%creport.txt", root, sep);
+
+    assert(nk_platform_mkdir_p(root));
+    assert(nk_platform_mkdir_p(runtime_dir));
+    assert(nk_platform_mkdir_p(staged_xbdata));
+    assert(nk_platform_absolute_path(test_executable, absolute_test_executable, sizeof(absolute_test_executable)));
+    copy_executable(absolute_test_executable, runtime_path);
+    write_file(image_path, "synthetic image");
+    write_valid_elf(staged_eboot, 0x08810000u, 0x08810000u);
+
+    NkGameEntry game;
+    make_game(&game, "");
+    snprintf(game.disc_id, sizeof(game.disc_id), "TEST00006");
+    snprintf(game.title_id, sizeof(game.title_id), "display-smoke-v1");
+    make_catalog_data_root(stage_root, game.title_id);
+    assert(strlen(stage_root) < sizeof(game.prepared_root));
+    memcpy(game.prepared_root, stage_root, strlen(stage_root) + 1);
+    game.assets_staged = true;
+
+    bool had_report;
+    char *old_report = capture_environment_value("NK_LAUNCH_TEST_REPORT_FILE", &had_report);
+    set_environment_value("NK_LAUNCH_TEST_REPORT_FILE", report_path);
+
+    bool had_hold;
+    char *old_hold = capture_environment_value("NK_LAUNCH_TEST_HOLD", &had_hold);
+    set_environment_value("NK_LAUNCH_TEST_HOLD", "1");
+
+    assert(nk_launch_prepare_session(&session, &game, root) == NK_OK);
+    assert(nk_launch_start(&session) == NK_OK);
+    assert(session.is_running == true);
+    assert(nk_launch_is_running(&session) == true);
+
+    /* 4. Call nk_launch_stop on active session: the child must be alive
+     * before the stop and gone after it. */
+    int child_pid = session.process.process_id;
+    assert(child_pid > 0);
+    assert(!test_child_exited(child_pid, 0));
+    nk_launch_stop(&session);
+    assert(session.is_running == false);
+    assert(nk_launch_is_running(&session) == false);
+    assert(test_child_exited(child_pid, 5000));
+
+    /* 5. Repeated call to nk_launch_stop on stopped session (idempotency) */
+    nk_launch_stop(&session);
+    assert(session.is_running == false);
+
+    restore_environment_value("NK_LAUNCH_TEST_REPORT_FILE", old_report, had_report);
+    free(old_report);
+    restore_environment_value("NK_LAUNCH_TEST_HOLD", old_hold, had_hold);
+    free(old_hold);
+
+    remove(runtime_path);
+    remove(image_path);
+    remove(staged_eboot);
+    {
+        char stage_memstick[1000];
+        snprintf(stage_memstick, sizeof(stage_memstick), "%s%cmemstick", stage_root, sep);
+        test_rmdir(stage_memstick);
+    }
+    test_rmdir(staged_xbdata);
+    test_rmdir(stage_root);
+    test_rmdir(runtime_dir);
+    {
+        char build_dir[900];
+        snprintf(build_dir, sizeof(build_dir), "%s%cbuild", root, sep);
+        test_rmdir(build_dir);
+    }
+    test_rmdir(root);
+}
+
+/* True when `path` ends with the relative `suffix`. Separators compare equal.
+ * The resolver joins a data root with the native separator but keeps the
+ * catalog's '/' inside the relative part, and Windows absolute-path
+ * normalization rewrites that '/', so a raw strstr would be platform-sensitive. */
+static bool launch_path_ends_with(const char *path, const char *suffix) {
+    size_t path_len = strlen(path);
+    size_t suffix_len = strlen(suffix);
+    if (suffix_len > path_len) return false;
+    const char *tail = path + (path_len - suffix_len);
+    for (size_t i = 0; i < suffix_len; i++) {
+        char a = tail[i] == '\\' ? '/' : tail[i];
+        char b = suffix[i] == '\\' ? '/' : suffix[i];
+        if (a != b) return false;
+    }
+    return true;
+}
+
+/* Writes "<dir><sep><name>" into out and asserts that the result fits. */
+static void launch_join_path(char *out, size_t out_size, const char *dir,
+                             char sep, const char *name) {
+    int written = snprintf(out, out_size, "%s%c%s", dir, sep, name);
+    assert(written > 0 && (size_t)written < out_size);
+}
+
+/* Removes an empty directory and fails if anything was left inside it. */
+static void launch_remove_empty_dir(const char *path) {
+    int rc = test_rmdir(path);
+    assert(rc == 0 && "fixture directory must be empty when removed");
+}
+
+/* Removes the pspdev data-root fixture under `root` (root/fixtures/pspdev_phase5)
+ * and then `root` itself. */
+static void launch_remove_data_root_tree(const char *root, char sep) {
+    char fixtures[NK_MAX_PATH * 3];
+    char pspdev[NK_MAX_PATH * 3];
+    launch_join_path(fixtures, sizeof(fixtures), root, sep, "fixtures");
+    launch_join_path(pspdev, sizeof(pspdev), fixtures, sep, "pspdev_phase5");
+    launch_remove_empty_dir(pspdev);
+    launch_remove_empty_dir(fixtures);
+    launch_remove_empty_dir(root);
+}
+
+static void test_game_data_root_status(const char *base, char sep) {
+    printf("[LAUNCH_TEST] Subtest 20: nk_launch_game_data_root_status coverage\n");
+    fflush(stdout);
+
+    char resolved[NK_MAX_PATH];
+    char reason[512];
+    NkGameEntry g;
+    NkLaunchDataRootStatus status;
+
+    /* Every scenario owns its fixture directory under base, so no scenario can
+     * be satisfied by another scenario's files. All of them are removed below,
+     * and launch_remove_empty_dir asserts that nothing was left behind. */
+    char empty_root[NK_MAX_PATH * 2];
+    char runtime_root[NK_MAX_PATH * 2];
+    char prepared_root[NK_MAX_PATH * 2];
+    char iso_dir[NK_MAX_PATH * 2];
+    char iso_path[NK_MAX_PATH * 2];
+    char iso_extracted[NK_MAX_PATH * 2];
+    char iso_psp_game[NK_MAX_PATH * 2];
+    char iso_usrdir[NK_MAX_PATH * 2];
+    char iso_fixtures[NK_MAX_PATH * 2];
+    char iso_data_root[NK_MAX_PATH * 2];
+    launch_join_path(empty_root, sizeof(empty_root), base, sep, "data_root_empty");
+    launch_join_path(runtime_root, sizeof(runtime_root), base, sep, "data_root_runtime");
+    launch_join_path(prepared_root, sizeof(prepared_root), base, sep, "data_root_prepared");
+    launch_join_path(iso_dir, sizeof(iso_dir), base, sep, "data_root_iso");
+    launch_join_path(iso_path, sizeof(iso_path), iso_dir, sep, "game.iso");
+    launch_join_path(iso_extracted, sizeof(iso_extracted), iso_dir, sep, "EXTRACTED");
+    launch_join_path(iso_psp_game, sizeof(iso_psp_game), iso_extracted, sep, "PSP_GAME");
+    launch_join_path(iso_usrdir, sizeof(iso_usrdir), iso_psp_game, sep, "USRDIR");
+    launch_join_path(iso_fixtures, sizeof(iso_fixtures), iso_usrdir, sep, "fixtures");
+    launch_join_path(iso_data_root, sizeof(iso_data_root), iso_fixtures, sep, "pspdev_phase5");
+    assert(nk_platform_mkdir_p(empty_root));
+
+    /* a. A missing library entry is refused before any path is consulted. */
+    status = nk_launch_game_data_root_status(NULL, NULL, resolved, sizeof(resolved),
+                                             reason, sizeof(reason));
+    assert(status == NK_LAUNCH_DATA_ROOT_INVALID);
+    assert(strstr(reason, "Library entry is missing.") != NULL);
+    assert(resolved[0] == '\0');
+
+    /* b. An unknown title fails catalog identity before any data-root lookup. */
+    make_game(&g, "");
+    snprintf(g.title_id, sizeof(g.title_id), "non-existent-title-id");
+    snprintf(g.disc_id, sizeof(g.disc_id), "TEST99999");
+    status = nk_launch_game_data_root_status(empty_root, &g, resolved, sizeof(resolved),
+                                             reason, sizeof(reason));
+    assert(status == NK_LAUNCH_DATA_ROOT_INVALID);
+    assert(strstr(reason, "No catalog entry describes this title") != NULL);
+
+    /* c. showcase-scene-v1 declares an empty data_root, so none is required. */
+    make_game(&g, "");
+    snprintf(g.title_id, sizeof(g.title_id), "showcase-scene-v1");
+    snprintf(g.disc_id, sizeof(g.disc_id), "TEST00007");
+    status = nk_launch_game_data_root_status(empty_root, &g, resolved, sizeof(resolved),
+                                             reason, sizeof(reason));
+    assert(status == NK_LAUNCH_DATA_ROOT_NOT_REQUIRED);
+    assert(resolved[0] == '\0');
+
+    /* d. pspdev-phase5-v1 needs fixtures/pspdev_phase5. The runtime root is
+     * empty and nothing is staged, so the answer is MISSING and the reason
+     * names the required folder. */
+    make_game(&g, "");
+    snprintf(g.title_id, sizeof(g.title_id), "pspdev-phase5-v1");
+    snprintf(g.disc_id, sizeof(g.disc_id), "TEST00005");
+    status = nk_launch_game_data_root_status(empty_root, &g, resolved, sizeof(resolved),
+                                             reason, sizeof(reason));
+    assert(status == NK_LAUNCH_DATA_ROOT_MISSING);
+    assert(strstr(reason, "fixtures/pspdev_phase5") != NULL);
+    assert(resolved[0] == '\0');
+
+    /* e. The runtime root holds the data root, and nothing is staged. */
+    make_catalog_data_root(runtime_root, "pspdev-phase5-v1");
+    make_game(&g, "");
+    snprintf(g.title_id, sizeof(g.title_id), "pspdev-phase5-v1");
+    snprintf(g.disc_id, sizeof(g.disc_id), "TEST00005");
+    status = nk_launch_game_data_root_status(runtime_root, &g, resolved, sizeof(resolved),
+                                             reason, sizeof(reason));
+    assert(status == NK_LAUNCH_DATA_ROOT_READY);
+    assert(launch_path_ends_with(resolved, "fixtures/pspdev_phase5"));
+
+    /* f. The staged prepared root holds the data root. The runtime root is
+     * empty, so only the prepared-root branch can produce READY. */
+    make_catalog_data_root(prepared_root, "pspdev-phase5-v1");
+    make_game(&g, "");
+    snprintf(g.title_id, sizeof(g.title_id), "pspdev-phase5-v1");
+    snprintf(g.disc_id, sizeof(g.disc_id), "TEST00005");
+    g.assets_staged = true;
+    assert(strlen(prepared_root) < sizeof(g.prepared_root));
+    memcpy(g.prepared_root, prepared_root, strlen(prepared_root) + 1);
+    status = nk_launch_game_data_root_status(empty_root, &g, resolved, sizeof(resolved),
+                                             reason, sizeof(reason));
+    assert(status == NK_LAUNCH_DATA_ROOT_READY);
+    assert(launch_path_ends_with(resolved, "fixtures/pspdev_phase5"));
+
+    /* g. Only the extracted disc folder holds the data root:
+     * <iso dir>/EXTRACTED/PSP_GAME/USRDIR/fixtures/pspdev_phase5. The runtime
+     * root is empty and nothing is staged. */
+    assert(nk_platform_mkdir_p(iso_data_root));
+    write_file(iso_path, "iso");
+    assert(strlen(iso_path) < NK_MAX_PATH);
+    make_game(&g, iso_path);
+    snprintf(g.title_id, sizeof(g.title_id), "pspdev-phase5-v1");
+    snprintf(g.disc_id, sizeof(g.disc_id), "TEST00005");
+    status = nk_launch_game_data_root_status(empty_root, &g, resolved, sizeof(resolved),
+                                             reason, sizeof(reason));
+    assert(status == NK_LAUNCH_DATA_ROOT_READY);
+    assert(launch_path_ends_with(resolved, "fixtures/pspdev_phase5"));
+
+    /* Cleanup, deepest first. Each removal asserts the directory was empty. */
+    assert(remove(iso_path) == 0);
+    launch_remove_data_root_tree(iso_usrdir, sep);
+    launch_remove_empty_dir(iso_psp_game);
+    launch_remove_empty_dir(iso_extracted);
+    launch_remove_empty_dir(iso_dir);
+    launch_remove_data_root_tree(runtime_root, sep);
+    launch_remove_data_root_tree(prepared_root, sep);
+    launch_remove_empty_dir(empty_root);
 }
 
 static void test_non_ascii_user_data_root(const char *base, char sep) {
@@ -1532,6 +1901,10 @@ int main(int argc, char **argv) {
 
     /* 19. A non-ASCII user profile must not break any user-data open. */
     test_non_ascii_user_data_root(base, sep);
+    test_game_data_root_status(base, sep);
+
+    /* 20. nk_launch_stop state changes and process termination. */
+    test_launch_stop_functionality(argv[0], base, sep);
 
     printf("[LAUNCH_TEST] ALL LAUNCH RESOLUTION TESTS PASSED!\n");
     native_test_assert_real_config_untouched();

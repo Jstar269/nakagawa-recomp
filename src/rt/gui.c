@@ -531,8 +531,10 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
          *    address isn't GPU-resident (CPU movie frames etc.) — fall through to BGRA. */
         accepted = 0;
         /* While the on-screen keyboard is open the frame must pass through the host copy the
-         * keyboard is drawn on, so the GPU fast path steps aside (-1: CPU path below). */
-        int res = sr_osk_overlay_active() ? -1 : gegpu_present(fbaddr, fmt, stride);
+         * keyboard is drawn on, so the GPU fast path steps aside (-1: CPU path below). The
+         * decision is taken once: osk_open also gates the guest-VRAM sync before that copy. */
+        int osk_open = sr_osk_overlay_active();
+        int res = osk_open ? -1 : gegpu_present(fbaddr, fmt, stride);
         sync_sdl_input();
         if (res == 0) { _Exit(0); }
         if (res == 1) {
@@ -552,6 +554,43 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
         }
 
         /* 2. CPU-rendered fallback: convert guest VRAM to BGRA and blit through SDL3/Vulkan. */
+        if (osk_open) {
+            /* The GPU fast path was skipped for this frame, so a frame the rasterizer produced
+             * may exist only in its Vulkan image. Materialize that target into guest VRAM before
+             * convert_fb reads it, the boundary hle.c snapshot_sync_ok() enforces before a dump.
+             * NO_TARGET: the frame was never GPU-resident and guest VRAM is already current.
+             * FAILED: decline the frame rather than draw the keyboard over stale pixels. */
+            GeGpuFbDescriptor d = { fbaddr, (uint32_t)fmt, stride, PSP_W, PSP_H };
+            if (gegpu_sync_guest_fb(&d) == GEGPU_SYNC_FAILED) {
+                static int s_osk_sync_warned = 0;
+                if (s_osk_sync_warned < 3) {
+                    s_osk_sync_warned++;
+                    fprintf(stderr, "OSK: guest framebuffer synchronisation FAILED for addr=0x%08x "
+                                    "fmt=%d stride=%u -- frame not presented\n", fbaddr, fmt, stride);
+                }
+                sr_capture_fail("keyboard guest framebuffer sync failed");
+                goto pace;
+            }
+        }
+        if (res == GEGPU_PRESENT_TARGET_FAILED) {
+            /* gegpu_present() found a GPU-valid target for this frame, but preparing or presenting
+             * it failed (issue #827). Its newest pixels may exist only in that Vulkan image, so
+             * guest VRAM is stale. Materialize it with the same sync the keyboard path uses before
+             * the fall-through below reads it. FAILED declines the frame instead of presenting the
+             * older pixels still in guest VRAM. */
+            GeGpuFbDescriptor d = { fbaddr, (uint32_t)fmt, stride, PSP_W, PSP_H };
+            if (gegpu_sync_guest_fb(&d) == GEGPU_SYNC_FAILED) {
+                static int s_target_sync_warned = 0;
+                if (s_target_sync_warned < 3) {
+                    s_target_sync_warned++;
+                    fprintf(stderr, "GPU present: target preparation or presentation FAILED and guest "
+                                    "framebuffer synchronisation FAILED for addr=0x%08x fmt=%d "
+                                    "stride=%u -- frame not presented\n", fbaddr, fmt, stride);
+                }
+                sr_capture_fail("GPU present target failed: guest framebuffer sync failed");
+                goto pace;
+            }
+        }
         convert_fb(fbaddr, fmt, stride);
         /* The keyboard is drawn on the host copy only: the same pixels the window and the
          * frame capture receive, and guest VRAM is untouched. */

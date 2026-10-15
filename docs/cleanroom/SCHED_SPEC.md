@@ -160,6 +160,10 @@ Yield and switch globals: `SEAM: sr_sched_on`, `SEAM: sr_timeslice`,
 Teardown seam: `SEAM: sr_hle_release_thread_resources` (release HLE-side
 resources when a thread object goes away; ordering pinned by [C5]).
 
+Consumed symbols that carry no `SEAM:` marker above are mapped in §10. The
+coverage test `SpecSeamCoverageTests` in `tools/test_sched_invariants.py` checks
+every outside consumer against the two mappings together.
+
 ## 3. Behaviour
 
 ### 3.1 Lifecycle and states
@@ -428,3 +432,47 @@ blocking test; a test that needs a wall-clock wait uses the turbo
   positions only.
 - [C13] `docs/TITLE_PROFILE_ARCHITECTURE.md` — title profiles describe,
   never implement; no title identity in generic code.
+
+## 10. Consumed-symbol map
+
+Every scheduler symbol with external linkage that a source file or tool outside
+`src/rt/sched.c` consumes must be mapped, either by a `SEAM:` marker in §2 or by a
+row below. `SpecSeamCoverageTests` in `tools/test_sched_invariants.py` enforces this
+and also fails on a row that names an undeclared symbol, a missing section, or a
+duplicate. The rows add no seam names and change no caller; each states what the
+consumed entry point must do. Each row cites [Cn] or is a project decision with its
+rationale, per the reading rule in §0.
+
+| Symbol | Section | Contract |
+| --- | --- | --- |
+| `sched_dump_threads` | §0 | Diagnostic dump of the thread table, carried over under §0. It reads scheduler state and guest memory for logging and changes no guest-visible state. Project decision: a carry-over diagnostic with no PSP semantics. |
+| `s_cpu` | §1 | Shared `CpuState` pointer that the running thread's register file follows. Within the scheduler it is written only by `sched_init`, and it is NULL before that call [C1]. |
+| `sr_thread_k0` | §3.1 | Returns the running thread's initial k0 value, or zero when no thread is current, the same rule as `sched_current_uid` [C6]. Generated code calls it only as the fallback for an out-of-window `$k0` (`tools/codegen.py`). |
+| `sched_create_thread_ex` | §3.1 | Extended create that also takes an attribute word and a name. Failure follows `sched_create_thread`: a zero UID and no partial thread on exhaustion [C5]. The attribute word and name are PSP ABI inputs [C6]; this spec defines no further meaning for them. |
+| `sched_thread_info` | §3.1 | Fills `SrThreadInfo` for a UID and returns zero. Returns nonzero when the UID cannot be queried, which the thread handler reports as UNKNOWN_THID [C6]. |
+| `sched_suspend_thread` | §3.1 | `sceKernelSuspendThread`. Returns the PSP status: UNKNOWN_THID for an unknown UID, ILLEGAL_THID for UID zero or the calling thread, DORMANT for a dormant thread, and SUSPEND for a second suspend. A suspended thread is never selected until resumed (§3.2) [C5], [C6]. |
+| `sched_resume_thread` | §3.1 | `sceKernelResumeThread`. Returns the PSP status: UNKNOWN_THID for an unknown UID, DORMANT for a dormant thread, and NOT_SUSPEND for a thread that is not suspended, including the calling thread [C5], [C6]. A resumed thread is selectable again under §3.2. |
+| `sched_change_current_thread_attr` | §3.1 | `sceKernelChangeCurrentThreadAttr`. Applies `clear_mask` and `set_mask` to the running thread's attribute word and returns the PSP status code; the bit meanings are PSP ABI facts [C6]. |
+| `sched_rotate_thread_ready_queue` | §3.2 | `sceKernelRotateThreadReadyQueue`. Rotates the ready queue at the given priority, where zero selects the caller's priority. Rotation reorders only threads of equal priority; strict priority still decides between levels [C5]. |
+| `sched_alarm_set` | §3.4 | `sceKernelSetAlarm`. The delay is relative to the guest timeline (§3.4). Returns an alarm UID, or an error at or above 0x80000000 when no alarm slot can be allocated [C5]. The handler runs at the deadline in interrupt context with the common word in `$a0`; a nonzero return re-arms the same alarm that many microseconds later, and zero ends it [C5], [C6]. |
+| `sched_alarm_cancel` | §3.4 | `sceKernelCancelAlarm`. Returns zero when the alarm is cancelled. Returns SCHED_ERROR_UNKNOWN_ALMID for an unknown UID, for a one-shot alarm that has already run, and for an alarm that ended through its handler's return value [C5]. |
+| `sched_count_waiters` | §3.5 | Returns the number of threads currently blocked on `obj`, or zero when there are none. It is read-only [C5]. |
+| `sched_wake_with_result` | §3.5 | Readies every thread blocked on `obj`, as `sched_wake` does, and attaches `result` to each wake for the take operations `sched_take_wake_result` and `sched_wait_take_result` [C5]. |
+| `sched_take_wake_result` | §3.5 | Consuming take of the result that a wake attached to the calling thread. Returns 1 and writes the code when one is pending, otherwise 0 [C5]. |
+| `sched_wake_one_object_waiter_with_result` | §3.5 | Readies the named thread only when it is blocked on an object, attaching `result` as `sched_wake_with_result` does. Returns nonzero when it readied the thread and zero otherwise [C5]. |
+| `sched_set_current_wait_kind` | §3.5 | Latches the PSP wait-type value reported for the calling thread before it blocks. It neither blocks nor wakes anything [C6]. |
+| `sched_wait_begin` | §3.5 | Opens a wait invocation on `object`. A timed wait passes an absolute deadline built with `sched_vtime_deadline_after` (§3.4); an untimed wait passes zero and selects no timeout through the `timed` argument of `sched_wait_block`. The detach hook is the object's policy and must not preempt during owner teardown (`recomp.h`). Returns the handle, or zero when none can be allocated [C1], [C5]. |
+| `sched_wait_block` | §3.5 | Parks the calling thread on the handle until it is notified or, when `timed` is set, until `remaining` guest microseconds have passed. `remaining` is the caller's difference between the deadline and the current guest time (§3.4). Returns nonzero when the wait ended by timeout [C5]. |
+| `sched_wait_callback` | §3.8 | Sets the callback-parked state of a wait invocation when `active` is nonzero and clears it when zero. Only the innermost block attaches to the thread; callback-parked parents stay live [C5]. |
+| `sched_wait_state` | §3.5 | Reports the handle's `SrWaitState` and owning UID. Returns nonzero for a live handle and zero for a stale or foreign one; a stale handle is refused and never applied to another waiter [C3]. |
+| `sched_wait_notify` | §3.5 | Records a notification on a live handle. A notification does not grant the object. Returns nonzero when a notification was recorded [C5]. |
+| `sched_wait_complete` | §3.5 | Completes exactly the given invocation, including callback parents, with `result`. A stale handle is refused and affects no other waiter [C3]. |
+| `sched_wait_begin_join` | §3.5 | Opens a join wait on thread `target` with a guest-time deadline (zero when the guest set no timeout) and optional callback participation. Returns the handle, or zero when none can be allocated. The exit status is delivered through `sched_wait_take_result` [C5]. |
+| `sched_wait_take_result` | §3.5 | Consuming take of a completed invocation's result. Returns nonzero and writes `result` when one is present [C5]. |
+| `sched_wait_finish` | §3.5 | Closes the invocation and returns its notification count. A nonzero return means the caller should run `sched_preempt`; the caller owns that preemption point (`recomp.h`) [C1]. |
+| `sched_wait_cancel_object` | §3.5 | Completes the waiters on `object` with `result`, as the object deletion and cancel paths require [C5]. |
+| `sched_wait_vblank_cb` | §3.7 | Callback-aware display wait. A nonzero `wait_start` selects WaitVblankStart semantics, which always block to the next start edge. Zero selects WaitVblank semantics, which return at once inside the interval [C6]. |
+| `sr_cpu_for_callbacks` | §3.8 | Returns the `CpuState` that callback dispatch runs on, the shared register file bound by `sched_init` (§1). Returns NULL before that binding [C1]. |
+| `g_master_reent` | §3.9 | Exported global holding the master libc reent address. A launcher-role thread sets it at its libc registration, and the title binding sets it while it is still zero; later threads copy from it when they initialise their own reent. Project decision: the launcher-role seeding follows the role capture rule of §3.9, and the title binding is title configuration (§3.9). |
+| `sr_cpustate_abi_version` | §3.10 | Exported constant equal to `SR_CPUSTATE_ABI_VERSION` in `recomp.h`. `tools/mem_debug.py` reads it by name to identify the `CpuState` layout of an attached build. The value is fixed by the header, not chosen by the scheduler [C12]. |
+| `sched_vbl_paced` | §4 | Host pacing query: returns true when vblank pacing is active, in which case the presenter's frame-pacing step returns early (`src/rt/gui.c`). This is host performance behaviour outside the PSP contract (§4). The `SR_NOVBPACE` value rule is pinned by `NovbpaceSemanticsTests`. Project decision. |

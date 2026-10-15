@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -17,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "fixtures" / "showcase"))
 
+import ci_required  # noqa: E402
 import showcase as showcase_cli  # noqa: E402
 
 
@@ -166,6 +169,22 @@ class PublicCiWiringTests(unittest.TestCase):
         self.assertIn("timeout 60s", native_tools)
         self.assertIn('"$player_build/nakagawa_player" "--iso=$iso" --stage-only', native_tools)
         self.assertIn('grep -Fq "STAGING_RESULT status=PASS"', native_tools)
+        # The stage run must redirect all four XDG roots under RUNNER_TEMP, so it never
+        # writes config, cache or state under the runner's HOME.
+        stage_lines = _ci_step(native_tools.splitlines(), "Smoke the CMake Linux player headlessly")
+        self.assertIsNotNone(stage_lines, "Smoke the CMake Linux player headlessly is not pinned")
+        assert stage_lines is not None
+        stage_text = "\n".join(stage_lines)
+        invocation = stage_text[
+            stage_text.index("stage_output=$(") : stage_text.index("--stage-only)") + len("--stage-only)")
+        ]
+        for assignment in (
+            'XDG_DATA_HOME="$RUNNER_TEMP/player-smoke-data"',
+            'XDG_CONFIG_HOME="$RUNNER_TEMP/player-smoke-config"',
+            'XDG_CACHE_HOME="$RUNNER_TEMP/player-smoke-cache"',
+            'XDG_STATE_HOME="$RUNNER_TEMP/player-smoke-state"',
+        ):
+            self.assertIn(assignment, invocation)
         self.assertIn("SDL3_VERSION=3.4.16", native_tools)
         self.assertIn("SDL3_COMMIT=fa2c02bb6e21974a89ea9824bc53c9932abe5f9c", native_tools)
 
@@ -368,6 +387,7 @@ _WINDOWS_SERIAL_GATES = {
     "Run native core test suite on Windows": "mingw32-make --no-print-directory CC=gcc native-core-tests",
     "Build and link the native player": "VULKAN_SDK=/ucrt64 player-ui-tests",
     "Run native player UI regressions headlessly on Windows": "VULKAN_SDK=/ucrt64 player-ui-regressions",
+    "Smoke the Windows player staging headlessly": '"--iso=$smoke/disc/TEST00007.iso" --stage-only)',
     "Stage and run production smoke outside its build directory": "VULKAN_SDK=/ucrt64 production-smoke-staged",
     "Build and run the full platform ladder": "VULKAN_SDK=/ucrt64 platform-ladder",
     "Build and run profile-zero production routes": "VULKAN_SDK=/ucrt64 profile-zero-e2e",
@@ -380,7 +400,9 @@ _WINDOWS_SERIAL_GATES = {
     "Build and run strbuf checked-append formatting selftest": "CC=gcc VULKAN_SDK=/ucrt64 strbuf-selftest",
     "Build and run HLE thread selftest": "CC=gcc VULKAN_SDK=/ucrt64 hle-thread-selftest",
     "Build and run flash0 font device selftest": "PYTHONPATH=tools python -m unittest -v test_flash0_font",
-    "Build and run synthetic VFPU fuzzer": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
+    "Build and run synthetic VFPU fuzzer (shard 0 of 2)": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
+    "Build and run synthetic VFPU fuzzer (shard 1 of 2)": "VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build",
+    "Prove the fuzz shards cover every case exactly once": "NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe python -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests",
 }
 # Steps every part repeats: the toolchain setup and the runtime-object compile gate.
 _WINDOWS_EVERY_PART = (
@@ -451,6 +473,187 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
         )
 
 
+class WindowsPlayerStageSmokeTests(unittest.TestCase):
+    """#308: the Windows player's headless staging smoke, the counterpart of the Linux gate.
+
+    The Linux native_tools job stages a TEST00007 disc through the built player's
+    --stage-only route. The Windows job builds the same player but never ran that route,
+    so a Windows-only staging regression reached no hosted gate.
+    """
+
+    STEP = "Smoke the Windows player staging headlessly"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.block = _ci_job_blocks()["windows_runtime"]
+        cls.step = _ci_step(cls.block, cls.STEP)
+        cls.text = "\n".join(cls.step or [])
+
+    def test_step_runs_in_the_smoke_part_after_the_player_is_built(self) -> None:
+        self.assertIsNotNone(self.step, f"windows_runtime no longer runs {self.STEP!r}")
+        self.assertIn("if: matrix.part == 'smoke'", self.text)
+        self.assertIn("shell: msys2 {0}", self.text)
+        index = _ci_step_index(self.block, self.STEP)
+        for earlier in ("Build and link the native player",
+                        "Run native player UI regressions headlessly on Windows"):
+            self.assertLess(_ci_step_index(self.block, earlier), index)
+        # It runs the executable the link step built; it does not build a second one.
+        self.assertIn("build/nakagawa_player.exe", self.text)
+        self.assertNotIn("mingw32-make", self.text)
+
+    def test_step_stages_a_test00007_disc_through_the_stage_only_route(self) -> None:
+        self.assertIn("python fixtures/showcase/showcase.py stage-iso --out-dir", self.text)
+        self.assertIn('"--iso=$smoke/disc/TEST00007.iso" --stage-only)', self.text)
+        self.assertIn('grep -Fq "STAGING_RESULT status=PASS"', self.text)
+        self.assertIn("timeout 60s", self.text)
+        self.assertIn("SDL_VIDEODRIVER=offscreen", self.text)
+
+    def test_step_redirects_every_user_data_root_under_runner_temp(self) -> None:
+        self.assertIn('smoke="$(cygpath -m "$RUNNER_TEMP")/windows-stage-smoke"', self.text)
+        invocation = self.text[
+            self.text.index("stage_output=$(") : self.text.index("--stage-only)")
+        ]
+        for assignment in (
+            'LOCALAPPDATA="$smoke/localappdata"',
+            'APPDATA="$smoke/appdata"',
+            'USERPROFILE="$smoke/userprofile"',
+        ):
+            self.assertIn(assignment, invocation)
+        for directory in ("disc", "localappdata", "appdata", "userprofile"):
+            self.assertIn(f'"$smoke/{directory}"', self.text)
+
+    def test_disc_writer_action_is_the_one_the_step_calls(self) -> None:
+        showcase = (ROOT / "fixtures" / "showcase" / "showcase.py").read_text(encoding="utf-8")
+        self.assertIn('choices=("build", "smoke", "stage-iso")', showcase)
+        self.assertIn("def stage_iso(out_dir: Path) -> Path:", showcase)
+
+
+class VfpuFuzzShardTests(unittest.TestCase):
+    """The synthetic VFPU fuzzer's two shards admit every case exactly once.
+
+    The source and workflow checks run everywhere. The binary checks run only when
+    NK_VFPU_FUZZ_BIN names a built vfpu_fuzz binary (the Windows fuzz-0 part builds it and
+    runs them); elsewhere they report SKIP, never a silent pass.
+    """
+
+    SOURCE = ROOT / "src" / "rt" / "vfpu_fuzz.c"
+    PROGRESS = re.compile(r"^FUZZ_PROGRESS case=(\d+) ", re.MULTILINE)
+    SUMMARY = re.compile(r"^vfpu_fuzz: (\d+)/(\d+) distinct words tested", re.MULTILINE)
+    MALFORMED = (
+        "", "1", "0/0", "2/2", "3/2", "-1/2", "0/-2", "a/2", "1/b", "0/2/3", " 0/2", "0/ 2",
+        "+0/2", "0/1234567890", "99999999999/2",
+        "5000/5001",  # well-formed, but admits no case of the corpus
+    )
+
+    def test_source_keeps_the_default_gate_and_refuses_bad_shards(self) -> None:
+        source = self.SOURCE.read_text(encoding="utf-8")
+        self.assertIn('#define FUZZ_SHARD_ENV "FUZZ_CASE_SHARD"', source)
+        self.assertIn("if (shard_spec != NULL && !fuzz_parse_shard(shard_spec, &shard_k, &shard_n)) {", source)
+        self.assertIn("return *n >= 1u && *k < *n;", source)
+        self.assertIn("if (admitted == 0) {", source)
+        self.assertIn("if ((unsigned)c % shard_n != shard_k) continue;", source)
+        self.assertIn("return (bad_cases || skipped || tested != admitted) ? 1 : 0;", source)
+
+    def test_ci_runs_one_shard_per_fuzz_part(self) -> None:
+        block = _ci_job_blocks()["windows_runtime"]
+        for part, index in (("fuzz-0", 0), ("fuzz-1", 1)):
+            with self.subTest(part=part):
+                lines = _ci_step(block, f"Build and run synthetic VFPU fuzzer (shard {index} of 2)")
+                self.assertIsNotNone(lines, f"no fuzz step for {part}")
+                text = "\n".join(lines)
+                self.assertIn(f"if: matrix.part == '{part}'", text)
+                self.assertIn(f'FUZZ_CASE_SHARD: "{index}/2"', text)
+        proof = _ci_step(block, "Prove the fuzz shards cover every case exactly once")
+        self.assertIsNotNone(proof, "the shard proof step is missing")
+        self.assertIn("if: matrix.part == 'fuzz-0'", "\n".join(proof))
+
+    def test_ci_required_aggregates_every_windows_part(self) -> None:
+        required = "\n".join(_ci_job_blocks()["ci_required"])
+        self.assertIn("needs: [classify, hygiene, public_export, markdown, python_tools, native_tools, windows_runtime, main_smoke]", required)
+        self.assertIn("WINDOWS_RESULT: ${{ needs.windows_runtime.result }}", required)
+        self.assertIn("RUN_WINDOWS: ${{ needs.classify.outputs.run_windows }}", required)
+
+    def _fuzz(self, binary: Path, shard: str | None) -> subprocess.CompletedProcess[str]:
+        env = {key: value for key, value in os.environ.items() if key not in ("FUZZ_CASE_SHARD", "FUZZ_SEED")}
+        env["FUZZ_TRIALS"] = "1"  # case selection does not depend on the trial count
+        if shard is not None:
+            env["FUZZ_CASE_SHARD"] = shard
+        return subprocess.run([str(binary)], env=env, capture_output=True, text=True, timeout=900, check=False)
+
+    @unittest.skipUnless(os.environ.get("NK_VFPU_FUZZ_BIN"),
+                         "NK_VFPU_FUZZ_BIN does not name a built vfpu_fuzz binary")
+    def test_binary_shards_cover_every_case_exactly_once(self) -> None:
+        binary = Path(os.environ["NK_VFPU_FUZZ_BIN"]).resolve()
+        self.assertTrue(binary.is_file(), f"{binary} is not built")
+        full = self._fuzz(binary, None)
+        self.assertIn(full.returncode, (0, 1), full.stderr[-2000:])
+        summary = self.SUMMARY.search(full.stdout)
+        self.assertIsNotNone(summary, "the default run printed no summary")
+        total = int(summary.group(2))
+        default_cases = sorted(int(case) for case in self.PROGRESS.findall(full.stdout))
+        self.assertEqual(default_cases, list(range(total)), "the default run did not test every case")
+        self.assertEqual(int(summary.group(1)), total)
+
+        covered: list[int] = []
+        for shard_index in (0, 1):
+            with self.subTest(shard=shard_index):
+                run = self._fuzz(binary, f"{shard_index}/2")
+                self.assertIn(run.returncode, (0, 1), run.stderr[-2000:])
+                shard = self.SUMMARY.search(run.stdout)
+                self.assertIsNotNone(shard, "the shard run printed no summary")
+                cases = [int(case) for case in self.PROGRESS.findall(run.stdout)]
+                self.assertEqual(int(shard.group(1)), len(cases), "a shard tested fewer cases than it printed")
+                self.assertEqual(int(shard.group(2)), len(cases), "a shard admitted a count it did not run")
+                self.assertTrue(all(case % 2 == shard_index for case in cases),
+                                "a shard ran a case it does not admit")
+                covered.extend(cases)
+        self.assertEqual(sorted(covered), default_cases,
+                         "the shards must together run every case exactly once")
+
+    @unittest.skipUnless(os.environ.get("NK_VFPU_FUZZ_BIN"),
+                         "NK_VFPU_FUZZ_BIN does not name a built vfpu_fuzz binary")
+    def test_binary_refuses_malformed_or_empty_shards_before_any_case(self) -> None:
+        binary = Path(os.environ["NK_VFPU_FUZZ_BIN"]).resolve()
+        self.assertTrue(binary.is_file(), f"{binary} is not built")
+        for spec in self.MALFORMED:
+            with self.subTest(spec=spec):
+                run = self._fuzz(binary, spec)
+                self.assertEqual(run.returncode, 2, run.stdout[-500:] + run.stderr[-500:])
+                self.assertIn("FUZZ_CASE_SHARD", run.stderr)
+                self.assertNotIn("FUZZ_PROGRESS", run.stdout)
+
+
+class CodeqlWakeWiringTests(unittest.TestCase):
+    """The trusted CodeQL trigger names the wake workflow, and nothing else may share its name."""
+
+    WORKFLOWS = ROOT / ".github" / "workflows"
+
+    @staticmethod
+    def _top_name(text: str) -> str | None:
+        match = re.search(r"(?m)^name:[ \t]*(.+?)[ \t]*$", text)
+        return match.group(1) if match else None
+
+    def test_trigger_names_the_wake_workflow_exactly(self) -> None:
+        wake = (self.WORKFLOWS / "codeql-wake.yml").read_text(encoding="utf-8")
+        codeql = (self.WORKFLOWS / "codeql.yml").read_text(encoding="utf-8")
+        name = self._top_name(wake)
+        self.assertEqual(name, "CodeQL wake")
+        self.assertIn(f'workflows: ["{name}"]', codeql)
+
+    def test_no_other_workflow_shares_the_trigger_name(self) -> None:
+        name = self._top_name((self.WORKFLOWS / "codeql-wake.yml").read_text(encoding="utf-8"))
+        for path in sorted(self.WORKFLOWS.glob("*.y*ml")):
+            if path.name == "codeql-wake.yml":
+                continue
+            with self.subTest(workflow=path.name):
+                self.assertNotEqual(self._top_name(path.read_text(encoding="utf-8")), name)
+
+    def test_docs_describe_the_wake_trigger(self) -> None:
+        docs = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
+        self.assertIn("`.github/workflows/codeql-wake.yml`", docs)
+        self.assertNotIn("a `workflow_run` after `CI` completes", docs)
+
+
 class PublicExportJobTests(unittest.TestCase):
     """The public-export audit is its own job, and no hygiene command was dropped (#735 item 5).
 
@@ -508,11 +711,330 @@ class PublicExportJobTests(unittest.TestCase):
             self.assertNotIn(gate, text, "public_export must not be path-gated on %s" % gate)
 
     def test_every_platform_gate_waits_for_the_export_result(self) -> None:
-        for job in ("python_tools", "native_tools", "windows_runtime", "main_smoke"):
+        # main_smoke runs only on main pushes and is not a substantive gate: it keeps hygiene.
+        block = "\n".join(self.blocks["main_smoke"])
+        self.assertIn("needs: [classify, hygiene, public_export]", block)
+        self.assertIn("needs.public_export.result == 'success'", block)
+        for job in ("python_tools", "native_tools", "windows_runtime"):
             with self.subTest(job=job):
                 block = "\n".join(self.blocks[job])
-                self.assertIn("needs: [classify, hygiene, public_export]", block)
+                self.assertIn("needs: [classify, public_export]", block)
+                needs_line = re.search(r"(?m)^    needs: (.+)$", block)
+                self.assertIsNotNone(needs_line, f"{job} declares no needs line")
+                self.assertNotIn("hygiene", needs_line.group(1))
+                self.assertNotIn("needs.hygiene.result", block)
                 self.assertIn("needs.public_export.result == 'success'", block)
+
+    def test_ci_required_still_requires_hygiene_and_export(self) -> None:
+        required = "\n".join(self.blocks["ci_required"])
+        self.assertIn("needs: [classify, hygiene, public_export, markdown, python_tools, native_tools,", required)
+        self.assertIn("HYGIENE_RESULT: ${{ needs.hygiene.result }}", required)
+        self.assertIn("PUBLIC_EXPORT_RESULT: ${{ needs.public_export.result }}", required)
+
+
+def _workflow_text(name: str) -> str:
+    return (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+
+
+def _on_block(text: str) -> list[str]:
+    """The top-level ``on:`` mapping: its lines, with comments and blank lines removed."""
+    lines = text.splitlines()
+    start = lines.index("on:")
+    body: list[str] = []
+    for line in lines[start + 1:]:
+        if line and not line.startswith((" ", "#")):
+            break
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            body.append(line.rstrip())
+    return body
+
+
+class MergeQueueTriggerWiringTests(unittest.TestCase):
+    """``merge_group`` is additive: it adds a trigger and changes no existing event's behaviour."""
+
+    def setUp(self) -> None:
+        self.ci = _workflow_text("ci.yml")
+
+    def test_ci_on_block_adds_merge_group_beside_unchanged_triggers(self) -> None:
+        self.assertEqual(
+            _on_block(self.ci),
+            [
+                "  pull_request:",
+                "    types: [opened, synchronize, reopened]",
+                "  push:",
+                "    branches: [main]",
+                "  workflow_dispatch:",
+                "  merge_group:",
+                "    types: [checks_requested]",
+            ],
+        )
+
+    def test_only_the_public_export_step_filters_on_the_event_name(self) -> None:
+        # Every required job must run on a merge group. The one event filter left in
+        # ci.yml is the export candidate step, which the classifier forces true for a
+        # merge group anyway (security_publication), so it still runs there.
+        occurrences = [line for line in self.ci.splitlines() if "github.event_name" in line]
+        self.assertEqual(len(occurrences), 1, occurrences)
+        self.assertIn("workflow_dispatch", occurrences[0])
+        blocks = _ci_job_blocks()
+        for job in ("classify", "hygiene", "markdown", "python_tools", "native_tools",
+                    "windows_runtime", "main_smoke", "ci_required"):
+            with self.subTest(job=job):
+                self.assertNotIn("github.event_name", "\n".join(blocks[job]))
+
+    def test_ci_stays_read_only_and_publishes_nothing_on_any_event(self) -> None:
+        self.assertIn("permissions:\n  contents: read\n", self.ci)
+        for forbidden in ("contents: write", "refs/heads/main", "gh release", "git push",
+                          "action-gh-release", "upload-release"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, self.ci)
+
+
+class MergeQueueDependencyReviewWiringTests(unittest.TestCase):
+    """dependency-review runs on a merge group with both refs taken from the group payload."""
+
+    def setUp(self) -> None:
+        self.text = _workflow_text("dependency-review.yml")
+
+    def test_trigger_adds_merge_group_beside_the_unchanged_pull_request_trigger(self) -> None:
+        self.assertEqual(
+            _on_block(self.text),
+            [
+                "  pull_request:",
+                '    branches: [ "main" ]',
+                "  merge_group:",
+                "    types: [checks_requested]",
+                '    branches: [ "main" ]',
+            ],
+        )
+
+    def test_step_passes_both_refs_from_the_merge_group_payload(self) -> None:
+        step = self.text.split("      - name: 'Dependency Review'", 1)[1]
+        self.assertEqual(step.count("base-ref: ${{ github.event.merge_group.base_sha }}"), 1)
+        self.assertEqual(step.count("head-ref: ${{ github.event.merge_group.head_sha }}"), 1)
+        self.assertIn("with:\n          base-ref:", step)
+
+    def test_required_job_name_action_pin_and_permissions_are_unchanged(self) -> None:
+        self.assertIn("  dependency-review:\n    runs-on: ubuntu-latest", self.text)
+        self.assertIn(
+            "uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0",
+            self.text,
+        )
+        self.assertIn("permissions:\n  contents: read\n", self.text)
+
+
+class MergeQueueCodeqlWiringTests(unittest.TestCase):
+    """Merge groups reach the trusted CodeQL route through the wake; the route itself is unchanged.
+
+    codeql.yml has no merge_group trigger of its own. A group's wake (codeql-wake.yml) starts
+    the default branch's copy of this workflow through workflow_run. Every route reads the
+    same analysis configuration and writes the same per-language categories, and nothing
+    checks out the candidate tree.
+    """
+
+    def setUp(self) -> None:
+        self.text = _workflow_text("codeql.yml")
+
+    def test_trigger_block_has_no_direct_merge_group_route(self) -> None:
+        self.assertEqual(
+            _on_block(self.text),
+            [
+                "  workflow_run:",
+                '    workflows: ["CodeQL wake"]',
+                "    types: [completed]",
+                "  workflow_dispatch:",
+                "    inputs:",
+                "      pull_request_number:",
+                "        description: Open pull request number to scan from the trusted default branch",
+                "        required: true",
+                "        type: number",
+                "  push:",
+                "    branches: [main]",
+                "  schedule:",
+                '    - cron: "37 3 * * 1"',
+            ],
+        )
+
+    def test_pull_request_route_text_is_unchanged(self) -> None:
+        for fragment in (
+            "if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request' || github.event.workflow_run.event == 'merge_group' }}",
+            'if (context.eventName === "workflow_run") {',
+            'if (!run || run.event !== "pull_request") {',
+            "const { data: matches } = await github.rest.pulls.list({",
+            '"+refs/pull/${PR_NUMBER}/merge:refs/candidate/merge"',
+            'if [ "${TARGET_KIND}" = "pull-request" ]; then',
+            'core.setOutput("ref", `refs/pull/${number}/merge`);',
+            'if (kind === "pull-request") {',
+            "PR base, head, or merge ref changed during CodeQL analysis; refusing a stale upload",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertEqual(self.text.count(fragment), 1, fragment)
+
+    def test_every_route_shares_one_analysis_configuration_and_category_scheme(self) -> None:
+        self.assertEqual(self.text.count('category: "/language:${{ matrix.language }}/"'), 1)
+        self.assertEqual(self.text.count("upload: never"), 1)
+        self.assertEqual(self.text.count("trap-caching: false"), 1)
+        self.assertEqual(self.text.count("disable-default-queries: false"), 1)
+        self.assertEqual(self.text.count("build-mode: none"), 1)
+
+    def test_merge_group_wake_route_analyses_the_queue_commit_as_data(self) -> None:
+        self.assertNotIn("ref: ${{ github.sha }}", self.text)
+        self.assertNotIn("ref: ${{ github.event.pull_request.head.sha", self.text)
+        self.assertEqual(
+            self.text.count('if (context.eventName === "workflow_run" && context.payload.workflow_run?.event === "merge_group") {'),
+            1,
+        )
+        self.assertIn('kind === "merge-group"', self.text)
+        self.assertIn('elif [ "${TARGET_KIND}" = "merge-group" ]; then', self.text)
+        self.assertIn('"+${TARGET_REF}:refs/candidate/merge"', self.text)
+        # Upload is by the queue ref and the group SHA, with the same categories as every route.
+        self.assertIn("commit_sha: targetSha,", self.text)
+        self.assertIn("ref: targetRef,", self.text)
+
+    def test_merge_group_wake_route_checks_the_queue_ref_before_and_after_analysis(self) -> None:
+        # Before analysis: the queue ref must name the commit the wake ran on.
+        self.assertIn("queued.object.sha !== run.head_sha", self.text)
+        # Before upload: the same check against the group SHA carried into the upload job.
+        self.assertIn("queued.object.sha !== targetSha", self.text)
+        # {ref} percent-encodes the slashes of a queue name (heads%2Fgh-readonly-queue...),
+        # so the queue ref is always read through the reserved {+ref} expansion.
+        self.assertEqual(
+            self.text.count('github.request("GET /repos/{owner}/{repo}/git/ref/{+ref}", {'), 2)
+        self.assertNotIn("git/ref/{ref}", self.text)
+        # Only this repository's own queue branches are accepted.
+        self.assertIn("/^gh-readonly-queue\\/[A-Za-z0-9._\\/-]+$/", self.text)
+        self.assertEqual(
+            self.text.count("headRepository?.full_name?.toLowerCase() !== `${context.repo.owner}/${context.repo.repo}`.toLowerCase()"),
+            1,
+        )
+
+    def test_reserved_provenance_context_is_not_named_here(self) -> None:
+        self.assertNotIn("Trusted provenance attestation", self.text)
+
+
+class MergeQueueWakeWiringTests(unittest.TestCase):
+    """The CodeQL wake signals merge groups too. It stays signal-only and keys its runs by ref."""
+
+    def setUp(self) -> None:
+        self.wake = _workflow_text("codeql-wake.yml")
+
+    def test_wake_triggers_on_pull_requests_and_merge_groups(self) -> None:
+        self.assertEqual(
+            _on_block(self.wake),
+            [
+                "  pull_request:",
+                "    types: [opened, synchronize, reopened]",
+                "  merge_group:",
+                "    types: [checks_requested]",
+            ],
+        )
+
+    def test_wake_keys_merge_group_runs_by_ref_not_by_an_empty_number(self) -> None:
+        self.assertIn(
+            "  group: codeql-wake-${{ github.event.pull_request.number || github.ref }}\n",
+            self.wake,
+        )
+        self.assertNotIn("codeql-wake-${{ github.event.pull_request.number }}\n", self.wake)
+        self.assertIn("cancel-in-progress: true", self.wake)
+
+    def test_wake_stays_signal_only_and_keeps_its_exact_name(self) -> None:
+        self.assertIn("name: CodeQL wake\n", self.wake)
+        self.assertIn("permissions: {}\n", self.wake)
+        self.assertNotIn("actions/checkout", self.wake)
+        self.assertNotIn("actions/upload-artifact", self.wake)
+
+
+# Read-only snapshot of the live `main-minimal` ruleset (id 20662430, last updated
+# 2026-10-13T01:50:04-04:00), taken 2026-10-15 with
+# `gh api repos/Jstar269/nakagawa-recomp/rulesets/20662430`. Refresh it only by reading the
+# ruleset again; nothing in the repository writes to GitHub. Each value is the integration id
+# the ruleset pins for that context (15368 is GitHub Actions).
+MAIN_RULESET_SNAPSHOT: dict[str, object] = {
+    "strict_required_status_checks_policy": True,
+    "required_status_checks": {
+        "CI required": 15368,
+        "OSV Vulnerability Scan": 15368,
+        "dependency-review": 15368,
+        "Hygiene and security": 15368,
+        "CodeQL": 57789,
+    },
+}
+
+# Not a required check until its producer identity is bound (docs/PROVENANCE_MERGE_GATE.md,
+# Maintainer configuration, item 3). Adding it requires that proof, not only this edit.
+TRUSTED_PROVENANCE_CONTEXT = "Trusted provenance attestation"
+
+
+def _prose(text: str) -> str:
+    """Collapse line breaks and runs of spaces so a sentence can be matched as one string."""
+    return re.sub(r"\s+", " ", text)
+
+
+def _backticked(fragment: str) -> set[str]:
+    return set(re.findall(r"`([^`]+)`", fragment))
+
+
+class MainRulesetClaimsTests(unittest.TestCase):
+    """The written claims about main's required checks, and the aggregate behind them, must match the snapshot."""
+
+    def setUp(self) -> None:
+        self.required = set(MAIN_RULESET_SNAPSHOT["required_status_checks"])
+        self.strict = MAIN_RULESET_SNAPSHOT["strict_required_status_checks_policy"]
+
+    def test_ci_doc_names_exactly_the_snapshot_required_checks(self) -> None:
+        doc = _prose((ROOT / "docs" / "CI.md").read_text(encoding="utf-8"))
+        match = re.search(r"The `main` ruleset requires (.+?) on exact pull-request heads\.", doc)
+        self.assertIsNotNone(match, "docs/CI.md no longer states which checks main requires")
+        assert match is not None
+        self.assertEqual(_backticked(match.group(1)), self.required)
+
+    def test_provenance_gate_doc_names_exactly_the_snapshot_required_checks(self) -> None:
+        doc = _prose((ROOT / "docs" / "PROVENANCE_MERGE_GATE.md").read_text(encoding="utf-8"))
+        match = re.search(r"ruleset requires [a-z]+ checks \(([^)]*)\)", doc)
+        self.assertIsNotNone(match, "docs/PROVENANCE_MERGE_GATE.md no longer states which checks main requires")
+        assert match is not None
+        self.assertEqual(_backticked(match.group(1)), self.required)
+
+    def test_provenance_workflow_comment_names_exactly_the_snapshot_required_checks(self) -> None:
+        comment = _prose(re.sub(r"(?m)^\s*#", "", _workflow_text("provenance-attestation.yml")))
+        match = re.search(r"which are: ([^.]*)\.", comment)
+        self.assertIsNotNone(match, "provenance-attestation.yml no longer lists the ruleset's checks")
+        assert match is not None
+        self.assertEqual({name.strip() for name in match.group(1).split(",")}, self.required)
+
+    def test_strict_policy_claims_match_the_snapshot(self) -> None:
+        doc = _prose((ROOT / "docs" / "PROVENANCE_MERGE_GATE.md").read_text(encoding="utf-8"))
+        claims = re.findall(
+            r"`strict_required_status_checks_policy` is (?:already )?\*{0,2}`(true|false)`", doc
+        )
+        self.assertTrue(claims, "docs/PROVENANCE_MERGE_GATE.md no longer records the strict-policy value")
+        self.assertEqual(set(claims), {"true" if self.strict else "false"})
+
+    def test_trusted_provenance_context_is_not_in_the_required_snapshot(self) -> None:
+        self.assertNotIn(
+            TRUSTED_PROVENANCE_CONTEXT,
+            self.required,
+            "Trusted provenance attestation may be required only after its producer identity is bound "
+            "(docs/PROVENANCE_MERGE_GATE.md, Maintainer configuration, item 3).",
+        )
+
+    def test_ci_required_aggregates_exactly_the_results_its_script_reads(self) -> None:
+        block = "\n".join(_ci_job_blocks()["ci_required"])
+        needs = re.search(r"(?m)^    needs: \[([^\]]*)\]$", block)
+        self.assertIsNotNone(needs)
+        assert needs is not None
+        needed = {job.strip() for job in needs.group(1).split(",")}
+        wired = dict(
+            re.findall(r"(?m)^      ([A-Z_]+_RESULT): \$\{\{ needs\.([a-z_]+)\.result \}\}$", block)
+        )
+        read = {result for _name, result, _run in ci_required._GATES} | {
+            "CLASSIFY_RESULT",
+            "HYGIENE_RESULT",
+            "PUBLIC_EXPORT_RESULT",
+        }
+        self.assertEqual(set(wired), read)
+        self.assertEqual({wired[key] for key in read}, needed)
 
 
 if __name__ == "__main__":
