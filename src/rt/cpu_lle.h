@@ -3,6 +3,7 @@
 //
 // LLE Phase 1 (PR 2): COP0 register definitions, kernel/user mode checks,
 // exception entry, eret, and runtime transfer metadata (flow_kind/flow_target).
+// PR 5 (spec 6.1): synthetic INTC pending/enable state and Cause.IP mirroring.
 //
 // This header deliberately uses only a forward-declared `struct CpuState` so
 // src/rt/recomp.h can include it after the full CpuState definition without
@@ -144,9 +145,66 @@ int sr_cpu_guard_access(
 
 int sr_cpu_eret(struct CpuState *s, uint32_t instr_pc);
 
-/* Phase 1 stub: no INTC/timer model yet (PR 5/PR 6 own device time and Cause.IP
- * synchronization). Always reports no pending interrupt. */
+/* Safe-point poll. INTC pending state exists (below), but delivery does not:
+ * this always reports no pending interrupt and changes nothing. Delivery is
+ * PR 6, which adds the AOT safe points in the same change so both tiers poll
+ * alike. Timer advancement is BLOCKED (spec 6.2/6.3). */
 int sr_cpu_poll(struct CpuState *s, uint32_t resume_pc);
+
+/* Interrupt controller (INTC) pending/enable state and Cause.IP mirroring
+ * (spec 6.1; LLE Phase 1 PR 5; issue #325).
+ *
+ * SYNTHETIC. Every PSP-specific property of the controller is an open
+ * hardware-oracle question (spec 6.3 rows "INTC map", "INTC polarity",
+ * "INTC sources", "Priority", "Masking", "Nesting"), and
+ * docs/HARDWARE_ORACLE.md lists interrupt pending state as NOT_MEASURED. So
+ * there is no default configuration: until sr_intc_init() installs one, every
+ * INTC call fails closed and Cause is left exactly as it was. Source count and
+ * the CPU line are configuration, never retail claims. The semantics are the
+ * spec 6.1 fixture contract:
+ *   - a raised source stays pending until it is acknowledged (sr_intc_clear),
+ *     whatever the enable mask says (masked-pending retention);
+ *   - the controller drives one CPU interrupt line, asserted while any source
+ *     is both pending and enabled;
+ *   - that line is mirrored into one hardware Cause.IP bit, which a guest mtc0
+ *     can neither set nor clear. Guest COP0 reads and writes of Cause re-derive
+ *     the bit from the controller, so a stale copy (for example one restored
+ *     with a thread context) is never what the guest observes.
+ * Not modeled: register offsets and write polarity (MMIO needs spec PR 4,
+ * which has not landed), a software-force input, source priority, and
+ * delivery (PR 6). No timer source exists: timer expiry is BLOCKED. */
+typedef struct SrIntcConfig {
+    unsigned source_count;  /* 1..SR_INTC_MAX_SOURCES */
+    unsigned cpu_ip_bit;    /* Cause.IP index the line drives: 2..7 */
+} SrIntcConfig;
+
+#define SR_INTC_MAX_SOURCES 32u
+/* MIPS32 Privileged Resource Architecture, Cause register: IP1..IP0 are the
+ * software interrupt pair (guest-writable), IP7..IP2 the hardware lines. Which
+ * hardware line the PSP INTC drives is unmeasured (spec 6.3, "INTC map"). */
+#define SR_INTC_CPU_IP_MIN 2u
+#define SR_INTC_CPU_IP_MAX 7u
+
+/* Install a configuration: nothing pending, every source disabled. Returns 0,
+ * or -1 for a NULL/invalid configuration (the previous state is kept). */
+int sr_intc_init(const SrIntcConfig *config);
+/* Forget the configuration (selftests); every INTC call fails closed again. */
+void sr_intc_reset(void);
+/* Device side: assert / acknowledge one source. Return 0, or -1 when no
+ * controller is configured or the source is out of range (nothing changes). */
+int sr_intc_raise(unsigned source);
+int sr_intc_clear(unsigned source);
+/* Enable mask, 1 = enabled. Bits beyond source_count are rejected, not
+ * dropped: returns -1 and keeps the previous mask. Masking never discards a
+ * pending source. */
+int sr_intc_set_enable_mask(uint32_t mask);
+/* Raw state; 0 when no controller is configured. */
+uint32_t sr_intc_pending_mask(void);
+uint32_t sr_intc_enable_mask(void);
+/* Mirror the controller line into s's Cause.IP bit and report it: 1 asserted,
+ * 0 deasserted, -1 when no controller is configured or s is NULL (Cause is
+ * untouched). Only that one bit is written. */
+int sr_intc_cpu_pending(struct CpuState *s);
 
 int sr_cpu_in_kernel(const struct CpuState *s);
 void sr_cpu_clear_flow(struct CpuState *s);
@@ -174,7 +232,8 @@ void sr_cpu_lle_get_vectors(
 void sr_cpu_lle_set_prid(uint32_t prid);
 void sr_cpu_lle_set_config(uint32_t config);
 
-/* Restore every LLE knob above to its default (for selftests). */
+/* Restore every LLE knob in this header to its default and leave the INTC
+ * unconfigured (for selftests). */
 void sr_cpu_lle_reset_config(void);
 
 #endif
