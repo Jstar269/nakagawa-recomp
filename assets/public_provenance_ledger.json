@@ -736,7 +736,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "2c49fed5c1ac4556dbbf97484a8d6cdea7a9c9b9c93415f20c726fb4f04d36cc"
+      "sha256": "f5c144f64c117e88489a770d1bdcc446b8717705a68ad33aead41acf617f20d2"
     },
     {
       "path": "assets/third_party_components.json",
