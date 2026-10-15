@@ -858,8 +858,11 @@ def branch_target(source, word):
     if op == 1:
         if ((word >> 16) & 0x1F) not in REGIMM_BRANCH_RT:
             return None
-    elif op in (4, 5, 6, 7, 20, 21, 22, 23):
+    elif op in (4, 5, 20, 21):
         pass
+    elif op in (6, 7, 22, 23):
+        if ((word >> 16) & 0x1F) != 0:
+            return None
     elif op in (0x11, 0x12) and ((word >> 21) & 0x1F) == 8:
         pass
     else:

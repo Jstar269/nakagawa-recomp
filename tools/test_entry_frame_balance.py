@@ -1311,5 +1311,37 @@ class DirectBranchAuditTests(unittest.TestCase):
         self.assertEqual(candidate.continuation_delta, 0x30)
 
 
+class RefusedBranchEncodingTests(unittest.TestCase):
+    """A reserved branch encoding must not be walked as straight-line code."""
+
+    def test_forged_branch_encodings_make_the_entry_unknown_not_callable(self):
+        # The taken path of the bne reaches a reserved branch encoding whose
+        # successor is undefined. The not-taken path returns balanced, and so does
+        # the straight-line walk of the forged word, so a walker that ignores the
+        # encoding reports a confident callable. The entry must come out unknown.
+        forged = {
+            "blez with nonzero rt": (0x06 << 26) | (A0 << 21) | (1 << 16) | 1,
+            "bgtzl with nonzero rt": (0x17 << 26) | (A0 << 21) | (1 << 16) | 1,
+        }
+        for label, branch in forged.items():
+            with self.subTest(encoding=label):
+                words = emit(
+                    0x1000,
+                    addiu(SP, SP, -0x20),
+                    bne(A0, 0, 3),       # 0x1004: taken target 0x1014
+                    NOP,                 # 0x1008: delay slot
+                    jr(RA),              # 0x100c: not-taken return, balanced
+                    addiu(SP, SP, 0x20),
+                    branch,              # 0x1014: reserved encoding
+                    NOP,                 # 0x1018: delay slot
+                    jr(RA),              # 0x101c: straight-line return, balanced
+                    addiu(SP, SP, 0x20),
+                )
+                elf, ranges = image(words)
+                profile = efb.profile_entry(elf, 0x1000, ranges)
+                self.assertTrue(profile.unknown_sp)
+                self.assertEqual(efb.classify(profile), efb.INDETERMINATE)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1737,18 +1737,30 @@ def fpu_effect(addr, w):
 
 def is_cond_branch(w):
     op = w >> 26
-    return op in (4, 5, 6, 7, 20, 21, 22, 23) or op == 1 or (op == 0x11 and rs(w) == 8) or (op == 0x12 and rs(w) == 8)
+    if op in (4, 5, 20, 21):
+        return True
+    if op in (6, 7, 22, 23):
+        return rt(w) == 0
+    if op == 1:
+        # REGIMM trap-immediates (tgei..tnei) are not branches. BLTZALL/BGEZALL
+        # (rt 0x12/0x13) are left out too: no codegen semantics test pins their link
+        # and nullify behaviour, so they reach effect() and are refused there, as on
+        # origin/main.
+        return rt(w) in (0, 1, 2, 3, 0x10, 0x11)
+    if op in (0x11, 0x12) and rs(w) == 8:
+        return True
+    return False
 
 def cond_expr(w):
     op = w >> 26
     if op == 4: return f"({R(rs(w))} == {R(rt(w))})"          # beq
     if op == 5: return f"({R(rs(w))} != {R(rt(w))})"          # bne
-    if op == 6: return f"((int32_t){R(rs(w))} <= 0)"          # blez
-    if op == 7: return f"((int32_t){R(rs(w))} > 0)"           # bgtz
+    if op == 6 and rt(w) == 0: return f"((int32_t){R(rs(w))} <= 0)"   # blez
+    if op == 7 and rt(w) == 0: return f"((int32_t){R(rs(w))} > 0)"    # bgtz
     if op == 20: return f"({R(rs(w))} == {R(rt(w))})"         # beql
     if op == 21: return f"({R(rs(w))} != {R(rt(w))})"         # bnel
-    if op == 22: return f"((int32_t){R(rs(w))} <= 0)"         # blezl
-    if op == 23: return f"((int32_t){R(rs(w))} > 0)"          # bgtzl
+    if op == 22 and rt(w) == 0: return f"((int32_t){R(rs(w))} <= 0)"  # blezl
+    if op == 23 and rt(w) == 0: return f"((int32_t){R(rs(w))} > 0)"   # bgtzl
     if op == 1:
         sub = rt(w)
         if sub in (0, 2, 0x10): return f"((int32_t){R(rs(w))} < 0)"   # bltz/bltzl/bltzal
@@ -2683,6 +2695,21 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             else:
                 out.extend("   " + line for line in _delay)
                 out.append(f"      if (_c) {{ {y}goto L_{target:08x}; }} }}")
+        elif is_link(w):
+            # bltzal/bgezal (bal = bgezal $zero) out of the body is a CALL (#968), not a
+            # TAIL: the taken path calls the target exactly as `jal` (known target) or
+            # `jalr rd` (dispatch with the resume PC) does, so the callee's `jr $ra`
+            # returns here and both paths fall through to addr + 8. The link and the
+            # delay slot above run once on either path; cond_expr refuses the
+            # branch-likely linked forms, so no annulled slot reaches this point.
+            if target in known or target in resume_owners:
+                call = emit_body_call(ADDRESS_SPACE.symbol(target, resume_owners))
+                if lle_cpu:
+                    call += f" {_flow_return(resumable)}"
+            else:
+                call = f"dispatch_call(s, {G(target)}, {G((addr + 8) & 0xFFFFFFFF)});"
+            out.extend("   " + line for line in _delay)
+            out.append(f"      if (_c) {{ {call} }} }}")
         else:
             if is_likely(w):
                 out.append(f"      if (_c) {{ {_delay_inline} {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable, stack_census)} }} }} }}")
