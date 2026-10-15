@@ -47,6 +47,21 @@ static inline size_t ui_clip_utf8_floor(const char *str, size_t limit) {
     return limit;
 }
 
+/* Title word break: when the fitting prefix str[0..prefix_bytes) is longer than 12
+ * bytes, the scan walks back at most 24 bytes looking for a space, then tests the
+ * byte just before where it stopped, so a space among the last 25 bytes is found.
+ * The kept text then ends just before that space. Otherwise prefix_bytes is
+ * returned unchanged. The window's lower edge is computed without unsigned wrap,
+ * so a 13- to 23-byte prefix scans back to the start of the string. */
+static inline size_t ui_clip_word_break(const char *str, size_t prefix_bytes) {
+    if (!str || prefix_bytes <= 12) return prefix_bytes;
+    size_t lo = prefix_bytes > 24 ? prefix_bytes - 24 : 0;
+    size_t back = prefix_bytes;
+    while (back > lo && str[back - 1] != ' ') back--;
+    if (back > 0 && str[back - 1] == ' ') return back - 1;
+    return prefix_bytes;
+}
+
 /* Writes str[0..k) followed by "..." and a NUL into out[0..out_size), where k is
  * prefix_bytes clamped to strlen(str) and to the room left by the marker
  * (out_size - 4), then floored to a character boundary. The caller has already decided that str is

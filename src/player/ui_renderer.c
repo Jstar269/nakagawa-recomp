@@ -1192,11 +1192,7 @@ static void draw_text_ellipsized(SDL_Renderer *ren, float x, float y,
     /* Never split a UTF-8 sequence. Done before the word break, as before. */
     prefix_bytes = ui_clip_utf8_floor(str, prefix_bytes);
     /* Never split a word when a clean break exists in the fitting prefix. */
-    if (prefix_bytes > 12) {
-        size_t back = prefix_bytes;
-        while (back > prefix_bytes - 24 && back > 0 && str[back - 1] != ' ') back--;
-        if (back > 0 && str[back - 1] == ' ') prefix_bytes = back - 1;
-    }
+    prefix_bytes = ui_clip_word_break(str, prefix_bytes);
     /* The buffer clamp and the boundary floor both happen inside the helper, so the
      * clamp can no longer leave a partial sequence in front of the marker. */
     char clipped[NK_MAX_TITLE_LEN];

@@ -248,7 +248,37 @@ static void check_bounded_output(void) {
           "a NULL source gives an empty string");
 }
 
+/* The title word break scans back at most 24 bytes from a fitting prefix longer
+ * than 12 bytes. A 13- to 23-byte prefix used to wrap the window's lower edge as a
+ * size_t, so its scan never ran and a word was split. */
+static void check_word_break(void) {
+    const char *title = "abcdefghij klmnopqrstuvwxyz0123456789";
+    for (size_t prefix = 13; prefix <= 35; prefix++) {
+        size_t got = ui_clip_word_break(title, prefix);
+        if (got != 10) {
+            fprintf(stderr, "FAIL: a %zu-byte prefix breaks at %zu, not at the space (10)\n", prefix, got);
+            g_failures++;
+        }
+    }
+    /* The scan stops 24 bytes back and then tests the byte before its stop, so the
+     * space at index 10 is reached from prefixes up to 35 and not from 36. */
+    CHECK(ui_clip_word_break(title, 36) == 36, "a space more than 25 bytes back is not used");
+    /* Short prefixes and NULL are never word-broken. */
+    for (size_t prefix = 0; prefix <= 12; prefix++) {
+        CHECK(ui_clip_word_break(title, prefix) == prefix, "a prefix of 12 bytes or fewer is kept");
+    }
+    CHECK(ui_clip_word_break(NULL, 20) == 20, "a NULL title keeps its prefix");
+    /* No space at all: the prefix is kept whatever its length. */
+    const char *solid = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz";
+    for (size_t prefix = 13; prefix <= 40; prefix++) {
+        CHECK(ui_clip_word_break(solid, prefix) == prefix, "a title without a space keeps its prefix");
+    }
+    /* A space right at the cut drops only that space. */
+    CHECK(ui_clip_word_break("abcdefghijklmn opq", 15) == 14, "a trailing space at the cut is dropped");
+}
+
 static void run_utf8_checks(void) {
+    check_word_break();
     check_every_cut("2-byte", "\xC3\xA9", 40);
     check_every_cut("3-byte", "\xE3\x81\x82", 40);
     check_every_cut("4-byte", "\xF0\x9F\x98\x80", 40);
