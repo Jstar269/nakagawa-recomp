@@ -731,6 +731,17 @@ _register_campaign_probe(
     {"llsc-control": 6, "llsc-second-sc": 6, "llsc-other-address": 6},
 )
 
+# fpu-cc: COP1 condition-code facts (see probe.c, run_fpu_cc). One FCR31 writability
+# cell, then for each condition code 0..7 a c.eq.s cell (one word) and a bc1t/bc1f cell
+# (four words). The condition code 0 cells are controls; the parser checks shape only.
+_FPU_CC_CELLS = ("fpu-cc-fcr31-bits",) + tuple(
+    f"fpu-cc{n}-{kind}" for n in range(8) for kind in ("ceq", "branch"))
+_register_campaign_probe(
+    "fpu-cc", "PSP-FPU-CC-001", _FPU_CC_CELLS,
+    {cell: (2 if cell == "fpu-cc-fcr31-bits" else 1 if cell.endswith("-ceq") else 4)
+     for cell in _FPU_CC_CELLS},
+)
+
 
 #: Documented GE eDRAM translation widths (pspge.h: 0 = do not set, else these).
 HLE_EDRAM_WIDTHS = (512, 1024, 2048, 4096)

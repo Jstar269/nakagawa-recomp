@@ -395,6 +395,95 @@ def _linked_branch_into_interpreted_body() -> tuple[tuple[int, ...], tuple[int, 
     return primary, _linked_caller(_MODULE_BASE, _BAL, 0x1010)
 
 
+# #968 in the body: the same linked call when the target lies inside the caller's own
+# span, where both the analyzer and codegen used to make it an interior label. The
+# callee's `jr $ra` then became the caller's host return and the continuation at the
+# link never ran. The REGIMM leaf is a callee the production interpreter refuses
+# (classify_control rejects every REGIMM branch), so a callee that discovery loses
+# cannot be rescued by the dispatch fallback: it fails closed instead.
+_T0 = 8
+_INBODY_LEAF = 0x1010 + 4 * 9    # right after _linked_caller's nine words
+_LEAF_REGIMM = (_i(0x01, 0, 0x01, 1), _NOP, *_LEAF)   # bgez $zero, .+8; nop; leaf
+
+
+def _issue_968_fixture() -> tuple[int, ...]:
+    """Issue #968's program verbatim: the callee at 0x1030 follows the caller's return."""
+    return _probe_program([
+        _addiu(_SP, _SP, -16), _sw(_RA, 0, _SP),          # 0x1010
+        _regimm(_BAL, 0, 0x1018, 0x1030), _NOP,            # 0x1018 bal 0x1030
+        _addiu(_V0, _V0, 10),                              # 0x1020 the continuation
+        _lw(_RA, 0, _SP), _jr(_RA), _addiu(_SP, _SP, 16),
+        _addiu(_V0, _V0, 1), _jr(_RA), _NOP,               # 0x1030 the callee
+    ])
+
+
+def _linked_branch_in_body(selector: int, leaf: tuple[int, ...] = _LEAF) -> tuple[int, ...]:
+    """#984's countable caller with its leaf placed right after its own return."""
+    return _probe_program([*_linked_caller(0x1010, selector, _INBODY_LEAF), *leaf])
+
+
+def _linked_callee_also_fallen_into() -> tuple[int, ...]:
+    """The callee is also the caller's linear tail once the caller has unwound its frame.
+
+    Hardware: slot +100, call +1, link +10, then the caller falls into the same code
+    (+1) and returns through it: v0 = 112.
+    """
+    return _probe_program([
+        _addiu(_SP, _SP, -16), _sw(_RA, 0, _SP),          # 0x1010
+        _regimm(_BAL, 0, 0x1018, 0x102C),                  # 0x1018 bal 0x102c
+        _addiu(_V0, _V0, 100),                             # 0x101c slot
+        _addiu(_V0, _V0, 10),                              # 0x1020 the link
+        _lw(_RA, 0, _SP), _addiu(_SP, _SP, 16),            # 0x1024 unwind, fall through
+        *_LEAF,                                            # 0x102c callee and tail
+    ])
+
+
+def _linked_callee_also_branched_to() -> tuple[int, ...]:
+    """An ordinary branch labels the same leaf: a0 != 0 enters it without a frame.
+
+    a0 == 0: the linked call, v0 = 111. a0 != 0: the leaf is the caller's own tail
+    (its `jr $ra` returns for the caller), v0 = 1.
+    """
+    leaf = 0x1038
+    return _probe_program([
+        _i(0x05, _A0, 0, (leaf - 0x1014) >> 2), _NOP,      # 0x1010 bne a0, zero, leaf
+        _addiu(_SP, _SP, -16), _sw(_RA, 0, _SP),          # 0x1018
+        _regimm(_BAL, 0, 0x1020, leaf),                    # 0x1020 bal leaf
+        _addiu(_V0, _V0, 100),                             # 0x1024 slot
+        _addiu(_V0, _V0, 10),                              # 0x1028 the link
+        _lw(_RA, 0, _SP), _jr(_RA), _addiu(_SP, _SP, 16),  # 0x102c
+        *_LEAF,                                            # 0x1038
+    ])
+
+
+def _linked_branch_into_own_tail() -> tuple[int, ...]:
+    """A jump with a link into the caller's own frame-releasing tail, over inline data.
+
+    The target 0x1024 releases a frame it never allocated (a continuation), so its
+    `jr $ra` returns for the caller and the link 0x1020 is only a pointer to the data
+    word there, which the hardware never executes: v0 = 100, a0 = 0x1020.
+    """
+    return _probe_program([
+        _addiu(_SP, _SP, -16), _sw(_RA, 0, _SP),          # 0x1010
+        _regimm(_BAL, 0, 0x1018, 0x1024),                  # 0x1018 bal 0x1024
+        _addiu(_V0, _V0, 100),                             # 0x101c slot
+        _addiu(_V0, _V0, 0x4000),                          # 0x1020 inline data, never run
+        _addu(_A0, _RA, 0),                                # 0x1024 a0 = the data address
+        _lw(_RA, 0, _SP), _jr(_RA), _addiu(_SP, _SP, 16),
+    ])
+
+
+def _read_the_pc() -> tuple[int, ...]:
+    """`bal .+8` in a frameless body: it only reads the PC (a0 = 0x101c), v0 = 110."""
+    return _probe_program([
+        _addu(_T0, _RA, 0),                                # 0x1010 keep the return address
+        _regimm(_BAL, 0, 0x1014, 0x101C),                  # 0x1014 bal .+8
+        _addiu(_V0, _V0, 100),                             # 0x1018 slot
+        _addu(_A0, _RA, 0),                                # 0x101c a0 = the PC
+        _addu(_RA, _T0, 0), _jr(_RA), _addiu(_V0, _V0, 10),
+    ])
+
+
 _DEPTH_PROBE_HARNESS = r"""
 #define sr_yield isolation_sr_yield
 #define main embedded_dispatch_isolation_main
@@ -566,19 +655,34 @@ def _build_depth_probe(
 ) -> tuple[Path | None, str]:
     """Translate a source-owned fixture and link it into the depth-probe harness.
 
-    ``mutate`` maps ``codegen.py``, ``recomp.c``, ``recomp.h``, ``guest_interp.c`` or
-    ``sr_coro.c`` to one exact replacement applied to a scratch copy, so a mutant is
-    generated, compiled and run through the same production path as the unmutated build.
+    ``mutate`` maps ``codegen.py``, ``analyze.py``, ``entry_frame_balance.py``,
+    ``recomp.c``, ``recomp.h``, ``guest_interp.c`` or ``sr_coro.c`` to one exact
+    replacement applied to a scratch copy, so a mutant is generated, compiled and run
+    through the same production path as the unmutated build.
     """
     assert CC is not None
     mutate = mutate or {}
-    unknown = set(mutate) - {"codegen.py", "recomp.c", "recomp.h", "guest_interp.c", "sr_coro.c"}
+    unknown = set(mutate) - {
+        "codegen.py", "analyze.py", "entry_frame_balance.py",
+        "recomp.c", "recomp.h", "guest_interp.c", "sr_coro.c",
+    }
     if unknown:
         raise AssertionError(f"unsupported mutation target(s): {sorted(unknown)}")
     elf = work / "fixture.elf"
     _write_minimal_elf(elf, words, base=_PROBE_BASE)
     generated = work / "probe.c"
     codegen_tool = _mutated_copy(CODEGEN_TOOL, work, mutate.get("codegen.py"))
+    analysis = [name for name in ("analyze.py", "entry_frame_balance.py") if name in mutate]
+    if analysis:
+        # A script's own directory leads its import path, so codegen runs from the
+        # scratch directory and imports the mutated analysis copies from there.
+        for name in analysis:
+            _mutated_copy(ROOT / "tools" / name, work, mutate[name])
+        if codegen_tool == CODEGEN_TOOL:
+            codegen_tool = work / CODEGEN_TOOL.name
+            codegen_tool.write_text(
+                CODEGEN_TOOL.read_text(encoding="utf-8"), encoding="utf-8", newline="\n"
+            )
     env = dict(os.environ)
     # A mutated codegen.py copy still imports its siblings from tools/.
     env["PYTHONPATH"] = str(ROOT / "tools") + os.pathsep + env.get("PYTHONPATH", "")
@@ -1415,6 +1519,120 @@ class GeneratedCallDepthTests(unittest.TestCase):
         self.assertEqual(fields.get("v0"), 111, f"linked branch lost its continuation\n{output}")
         self.assertEqual(fields.get("a0"), 0x2010, output)
         self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    # --- #968 in the body: the analyzer and codegen make the target a called entry ---
+
+    def _run_one(self, words, n=0):
+        generated, results = self._probe(words, (n,))
+        return generated, results[0]
+
+    def test_issue_968_fixture_resumes_the_caller(self):
+        # The issue's own program. Before: `goto L_00001030`, the callee's `jr $ra`
+        # returned for the caller and the continuation never ran (v0 = 1).
+        generated, (rc, output, fields) = self._run_one(_issue_968_fixture())
+        self.assertIn("void f_00001030(CpuState *s) {", generated)
+        self.assertIn("if (_c) { f_00001030(s); SR_TAIL_DRAIN(s); } }", generated)
+        self.assertNotIn("L_00001030", generated, "the callee must not be a label of the caller")
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v0"), 11, f"linked branch lost its continuation\n{output}")
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    def test_linked_branch_in_the_body_calls_the_target(self):
+        # Taken (`bal`): slot +100, the called leaf +1, the link +10. Not taken
+        # (`bltzal $zero`): the slot and the link only. The leaf here is the REGIMM one,
+        # which the interpreter refuses, so only an AOT entry can run it.
+        for selector, expected in ((_BAL, 111), (_BLTZAL, 110)):
+            with self.subTest(selector=hex(selector)):
+                generated, (rc, output, fields) = self._run_one(
+                    _linked_branch_in_body(selector, _LEAF_REGIMM))
+                self.assertIn(f"void f_{_INBODY_LEAF:08x}(CpuState *s) {{", generated)
+                self.assertNotIn(f"goto L_{_INBODY_LEAF:08x};", generated)
+                self.assertEqual(rc, 0, output)
+                self.assertEqual(fields.get("v0"), expected, output)
+                self.assertEqual(fields.get("a0"), 0x1020, output)
+                self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    def test_linked_callee_that_is_also_the_callers_tail(self):
+        # The callee is now an entry, so the caller's fall-through into it is the
+        # ordinary continuation boundary: the call returns to the link, the caller
+        # unwinds and tail-enters the same code. Before: v0 = 101.
+        generated, (rc, output, fields) = self._run_one(_linked_callee_also_fallen_into())
+        self.assertIn("if (_c) { f_0000102c(s); SR_TAIL_DRAIN(s); } }", generated)
+        self.assertIn("_sr_cont_0000102c", generated)
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v0"), 112, output)
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    def test_linked_call_does_not_reuse_another_branchs_label(self):
+        # `bne` keeps the leaf a label of the caller; the `bal` to the same leaf still
+        # calls it. Before: the `bal` reused the label (v0 = 101 for a0 = 0).
+        generated, results = self._probe(_linked_callee_also_branched_to(), (0, 1))
+        self.assertIn("if (_c) { f_00001038(s); SR_TAIL_DRAIN(s); } }", generated)
+        self.assertIn("goto L_00001038;", generated, "the ordinary branch keeps its label")
+        for (rc, output, fields), expected in zip(results, (111, 1), strict=True):
+            self.assertEqual(rc, 0, output)
+            self.assertEqual(fields.get("v0"), expected, output)
+            self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    def test_jump_with_link_into_the_callers_own_tail_is_unchanged(self):
+        # The target is a frame-releasing continuation: a call could not be exact, so
+        # the branch stays a jump that writes $ra, exactly as before #968.
+        generated, (rc, output, fields) = self._run_one(_linked_branch_into_own_tail())
+        self.assertIn("goto L_00001024;", generated)
+        self.assertNotIn("void f_00001024(CpuState *s) {", generated)
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v0"), 100, f"the inline data word ran\n{output}")
+        self.assertEqual(fields.get("a0"), 0x1020, output)
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    def test_read_the_pc_is_unchanged(self):
+        generated, (rc, output, fields) = self._run_one(_read_the_pc())
+        self.assertIn("goto L_0000101c;", generated)
+        self.assertNotIn("void f_0000101c(CpuState *s) {", generated)
+        self.assertEqual(rc, 0, output)
+        self.assertEqual(fields.get("v0"), 110, output)
+        self.assertEqual(fields.get("a0"), 0x101C, output)
+        self.assertEqual(fields.get("v1"), _PROBE_SP, output)
+
+    def test_linked_branch_mutants_fail_for_their_semantic(self):
+        # L1: codegen keeps the target a label (the bug): the leaf's return ends the
+        # caller before the link runs (v0 = 101, the issue's symptom).
+        self._assert_mutant_fails(
+            "L1-codegen-labels-the-callee", _linked_branch_in_body(_BAL), (0,),
+            {"codegen.py": (
+                "return (w >> 26) == 1 and entry_frame_balance.linked_branch_is_call(elf, addr, w, ranges)",
+                "return False",
+            )},
+            lambda r: r[0][0] == 0 and r[0][2].get("v0") == 101,
+        )
+        # L2: the analyzer absorbs the callee again, so codegen has no body to call and
+        # the call reaches the interpreter floor, which refuses the leaf's REGIMM branch.
+        self._assert_mutant_fails(
+            "L2-analyzer-absorbs-the-callee", _linked_branch_in_body(_BAL, _LEAF_REGIMM), (0,),
+            {"analyze.py": (
+                "if (op == 1 and ((word >> 16) & 0x1F) in REGIMM_LINK_RT",
+                "if (False and op == 1 and ((word >> 16) & 0x1F) in REGIMM_LINK_RT",
+            )},
+            lambda r: r[0][0] != 0
+            and f"INTERP_REJECT: target=0x{_INBODY_LEAF:08x}" in r[0][1],
+        )
+        # L3: a frame-releasing continuation is called: its return restores the SP it
+        # released and the caller then runs the inline data word at the link.
+        self._assert_mutant_fails(
+            "L3-continuation-is-called", _linked_branch_into_own_tail(), (0,),
+            {"entry_frame_balance.py": (
+                "return linked_target_role(elf, target, ranges, limit) != CONTINUATION",
+                "return True",
+            )},
+            lambda r: r[0][0] == 0 and r[0][2].get("v0") == 100 + 0x4000,
+        )
+        # L4: `bal .+8` is called: the PC read runs once as a call and again at the link,
+        # the second time with the restored return address (v0 = 120, a0 = 0x1008).
+        self._assert_mutant_fails(
+            "L4-read-the-pc-is-called", _read_the_pc(), (0,),
+            {"analyze.py": ("if target == (source + 8) & 0xFFFFFFFF:", "if False:")},
+            lambda r: r[0][0] == 0 and r[0][2].get("v0") == 120 and r[0][2].get("a0") == 0x1008,
+        )
 
 
 if __name__ == "__main__":
