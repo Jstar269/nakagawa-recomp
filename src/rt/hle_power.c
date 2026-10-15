@@ -189,7 +189,8 @@ void sr_hle_power_register_callback(void) {
 
 /* Battery getters. Issue #86: the previous numeric NIDs were bogus (absent from the PPSSPP-derived
  * nid_names.h); these canonical NIDs replace them so real title imports route here instead of being
- * unregistered. The Int alias 0xbd681969 is not a battery getter; sr_hle_power_register_clock registers it. */
+ * unregistered. The Int alias 0xbd681969 is not a battery getter; sr_hle_power_register_clock
+ * registers it. */
 void sr_hle_power_register_battery(void) {
     sr_hle_register(0x2085d15d, "scePowerGetBatteryLifePercent", h_PowerGetBatteryLifePercent);
     sr_hle_register(0x1e490401, "scePowerIsBatteryCharging", h_PowerIsBatteryCharging);

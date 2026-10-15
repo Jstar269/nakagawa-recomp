@@ -16,8 +16,9 @@
 
 /* The devkit version word that sceKernelDevkitVersion (NID 0x3fc9ae6a) returns for the modelled
  * firmware. This is the one definition: the HLE handler returns it, and the native selftest pins the
- * measured literal so either one drifting fails. Measured on the PSP-3000 6.61 oracle 2026-10-15 (record PSP-SYSTEM-001, case model-profile). It is
- * a firmware fact, not the title's retained compiled-SDK version above. */
+ * measured literal so either one drifting fails. Measured on the PSP-3000 6.61 oracle 2026-10-15
+ * (record PSP-SYSTEM-001, case model-profile). It is a firmware fact, not the title's retained
+ * compiled-SDK version above. */
 #define SR_PSP_FIRMWARE_DEVKIT_VERSION 0x06060110u
 
 /* Store the version a Set variant supplied. All shipping variants report
