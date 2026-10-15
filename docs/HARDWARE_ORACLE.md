@@ -556,10 +556,10 @@ One console is one data point; see §11. Nothing here closes issue #70
 ## Pending PSP-3000 measurement campaign
 
 The following source-owned cases are built for a future PSP-3000 / 6.61
-session. Of the thirteen cases below, six were measured by the 2026-10-10 campaign on
+session. Of the fourteen cases below, six were measured by the 2026-10-10 campaign on
 `f6ccfb33` (index above), `ge-break-continue` was captured but is not acceptance-eligible,
-and `llsc-link`, `vfpu-compare`, and the four `hle-*` cases were added after that campaign
-and have not run on hardware. The four `hle-*` cases are single launches outside the
+and `llsc-link`, `vfpu-compare`, and the five `hle-*` cases were added after that campaign
+and have not run on hardware. The five `hle-*` cases are single launches outside the
 campaign queue (`CAMPAIGN_QUEUE_CASES`); each has a `NOT_RUN` manifest row.
 Their parsers check record order, scalar fields, and completion;
 they do not encode expected PSP return values.
@@ -576,9 +576,10 @@ they do not encode expected PSP return values.
 | `kernel-misc` | `PSP-KERNEL-MISC-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Wide clock conversion, controller default mode, profiler-pointer returns, basic VTimer behavior, display return values, battery-icon status, and UMD-popup returns. |
 | `vfpu-compare` | `PSP-VFPU-CMP-001` | `NOT_RUN` (new probe, not yet run on hardware) | `vscmp.s`, `vsge.s`, and `vslt.s` on 15 operand pairs: less-than, equal, greater, signed zeros in both orders, quiet, signalling, and negative NaN on each side, and infinities. Each record is the raw result word against the project's model, which is UNMEASURED for the console. |
 | `hle-vtimer-unit` | `PSP-HLE-VTIMER-002` | `NOT_RUN` (single launch, not in the campaign queue) | One VTimer: start; a `sceKernelGetVTimerTime` and a system-clock reading either side of a bounded 20 ms delay; the VTimer base and Refer base field while running and after stop; stop; delete. Each 64-bit clock is recorded as its low word then its high word. |
-| `hle-vtimer-errors` | `PSP-HLE-VTIMER-003` | `NOT_RUN` (single launch, not in the campaign queue) | Start, stop, and `sceKernelGetVTimerTime` on a deleted UID; `GetVTimerTime`, `GetVTimerBase`, and `ReferVTimerStatus` with a NULL out pointer on a live timer; timer creation until refusal (at most 64), with every created timer deleted. |
-| `hle-kernel-status-null` | `PSP-HLE-KERNEL-STATUS-002` | `NOT_RUN` (single launch, not in the campaign queue) | `sceKernelReferSystemStatus(NULL)`; FPL creation with block size 0 and with a 0x7fffffff-byte block; VPL allocation until refusal (at most 64 blocks), with every block freed and the VPL deleted. |
+| `hle-vtimer-errors` | `PSP-HLE-VTIMER-003` | `NOT_RUN` (single launch, not in the campaign queue) | Start, stop, and `sceKernelGetVTimerTime` on a deleted UID, then a cleanup delete of that UID after its last use; a live timer created and deleted; up to 64 creates; out1 records whether a refusal occurred; every created timer deleted. The NULL option pointer of `sceKernelCreateVTimer` is the optional argument. |
+| `hle-kernel-pool-bounds` | `PSP-HLE-KERNEL-STATUS-002` | `NOT_RUN` (single launch, not in the campaign queue) | FPL creation with block size 0 and with a 0x7fffffff-byte block, each deleted; VPL allocation: up to 64 allocations; out1 records whether a refusal occurred; every block freed and the VPL deleted. The NULL option pointers of the pool creates are the optional argument. |
 | `hle-power-float-v0` | `PSP-HLE-POWER-002` | `NOT_RUN` (single launch, not in the campaign queue) | Raw `$v0` and `$f0` bits of `scePowerGetPllClockFrequencyFloat`, `scePowerGetCpuClockFrequencyFloat`, and `scePowerGetBusClockFrequencyFloat`, one call each, through a short assembly wrapper. |
+| `hle-null-out-pointers` | `PSP-HLE-NULL-OUT-001` | `NOT_RUN` (single launch, not in the campaign queue) | `sceKernelReferSystemStatus`, `sceKernelGetVTimerTime`, `sceKernelGetVTimerBase`, and `sceKernelReferVTimerStatus` with NULL as their mandatory out pointer, one call each on a live VTimer that is deleted at the end; each record holds only its return code. Risk high: a NULL mandatory out-pointer may fault in kernel mode; schedule last in a session, after every other case. |
 
 The registry probe opens the registry and categories in read mode and never
 calls a write, create, remove, or flush API. Values are emitted only for keys

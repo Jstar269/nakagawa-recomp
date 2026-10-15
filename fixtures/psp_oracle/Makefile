@@ -160,9 +160,9 @@ else ifeq ($(CASE),kernel-misc)
 CASE_ID = 67
 else ifeq ($(CASE),vfpu-compare)
 CASE_ID = 68
-# 90-100: the H-oracle HLE measurement families (probe_hle_measure.c). They are
+# 90-101: the H-oracle HLE measurement families (probe_hle_measure.c). They are
 # numbered apart from the sequential 1-69 probe.c cases so that new sequential
-# cases cannot collide with them; 97-100 are the NOT_RUN HLE cases in the same file.
+# cases cannot collide with them; 97-101 are the NOT_RUN HLE cases in the same file.
 else ifeq ($(CASE),hle-kernel-status)
 CASE_ID = 90
 else ifeq ($(CASE),hle-vtimer)
@@ -181,10 +181,12 @@ else ifeq ($(CASE),hle-vtimer-unit)
 CASE_ID = 97
 else ifeq ($(CASE),hle-vtimer-errors)
 CASE_ID = 98
-else ifeq ($(CASE),hle-kernel-status-null)
+else ifeq ($(CASE),hle-kernel-pool-bounds)
 CASE_ID = 99
 else ifeq ($(CASE),hle-power-float-v0)
 CASE_ID = 100
+else ifeq ($(CASE),hle-null-out-pointers)
+CASE_ID = 101
 else ifeq ($(CASE),llsc-link)
 CASE_ID = 69
 else
@@ -347,12 +349,15 @@ OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),hle-vtimer-errors)
 TARGET = $(BUILD_DIR)/hle_vtimer_errors
 OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
-else ifeq ($(CASE),hle-kernel-status-null)
-TARGET = $(BUILD_DIR)/hle_kernel_status_null
+else ifeq ($(CASE),hle-kernel-pool-bounds)
+TARGET = $(BUILD_DIR)/hle_kernel_pool_bounds
 OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
 else ifeq ($(CASE),hle-power-float-v0)
 TARGET = $(BUILD_DIR)/hle_power_float_v0
 OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/hle_power_imports.o
+else ifeq ($(CASE),hle-null-out-pointers)
+TARGET = $(BUILD_DIR)/hle_null_out_pointers
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
 endif
 CXXFLAGS = $(CFLAGS)
 ASFLAGS = $(CFLAGS)

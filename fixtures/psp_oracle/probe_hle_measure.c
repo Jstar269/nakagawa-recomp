@@ -8,13 +8,16 @@
 // before it exits. Every import is user-mode and comes from a per-family import
 // block (hle_*_imports.S) or the shared threadman_user_imports.S.
 //
-// Four further single-launch cases are NOT_RUN and share this file:
+// Five further single-launch cases are NOT_RUN and share this file:
 // CASE=hle-vtimer-unit (PSP-HLE-VTIMER-002), hle-vtimer-errors (PSP-HLE-VTIMER-003),
-// hle-kernel-status-null (PSP-HLE-KERNEL-STATUS-002) and hle-power-float-v0
-// (PSP-HLE-POWER-002). Their pass rule is machinery only: a record is PASS when
-// its calls completed and were recorded in order, and SKIP only when the object
-// a cell needs (a timer, pool or block UID) was not obtained. No returned value
-// is compared with an expected PSP value, here, in the host checker or in the parser.
+// hle-kernel-pool-bounds (PSP-HLE-KERNEL-STATUS-002), hle-power-float-v0
+// (PSP-HLE-POWER-002) and hle-null-out-pointers (PSP-HLE-NULL-OUT-001). Their pass
+// rule is machinery only: a record is PASS when its calls completed and were
+// recorded in order, and SKIP only when the object a cell needs (a timer, pool or
+// block UID) was not obtained. No returned value is compared with an expected PSP
+// value, here, in the host checker or in the parser. hle-null-out-pointers passes NULL
+// as a mandatory out pointer, which may fault in kernel mode, so it is scheduled last
+// in a session, after every other case.
 //
 // Record stream (tools/psp_oracle/protocol.py): NAKAGAWA_PSP_META, then one
 // NAKAGAWA_PSP_STEP before each risky call, one NAKAGAWA_PSP_TEST per
@@ -56,8 +59,9 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CASE_GE_EDRAM 96
 #define HLE_CASE_VTIMER_UNIT 97
 #define HLE_CASE_VTIMER_ERRORS 98
-#define HLE_CASE_KERNEL_STATUS_NULL 99
+#define HLE_CASE_KERNEL_POOL_BOUNDS 99
 #define HLE_CASE_POWER_FLOAT_V0 100
+#define HLE_CASE_NULL_OUT_POINTERS 101
 
 #if PSP_ORACLE_CASE == HLE_CASE_KERNEL_STATUS
 #define HLE_CAMPAIGN_ID "hle-kernel-status"
@@ -95,20 +99,26 @@ PSP_HEAP_SIZE_KB(64);
 #define HLE_CAMPAIGN_ID "hle-vtimer-errors"
 #define HLE_TEST_ID "PSP-HLE-VTIMER-003"
 #define HLE_LOG "host0:/hle_vtimer_errors_log.txt"
-#elif PSP_ORACLE_CASE == HLE_CASE_KERNEL_STATUS_NULL
-#define HLE_CAMPAIGN_ID "hle-kernel-status-null"
+#elif PSP_ORACLE_CASE == HLE_CASE_KERNEL_POOL_BOUNDS
+#define HLE_CAMPAIGN_ID "hle-kernel-pool-bounds"
 #define HLE_TEST_ID "PSP-HLE-KERNEL-STATUS-002"
-#define HLE_LOG "host0:/hle_kernel_status_null_log.txt"
+#define HLE_LOG "host0:/hle_kernel_pool_bounds_log.txt"
 #elif PSP_ORACLE_CASE == HLE_CASE_POWER_FLOAT_V0
 #define HLE_CAMPAIGN_ID "hle-power-float-v0"
 #define HLE_TEST_ID "PSP-HLE-POWER-002"
 #define HLE_LOG "host0:/hle_power_float_v0_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_NULL_OUT_POINTERS
+#define HLE_CAMPAIGN_ID "hle-null-out-pointers"
+#define HLE_TEST_ID "PSP-HLE-NULL-OUT-001"
+#define HLE_LOG "host0:/hle_null_out_pointers_log.txt"
 #else
 #error probe_hle_measure.c has no family for this PSP_ORACLE_CASE
 #endif
 #define HLE_DONE_ID HLE_CAMPAIGN_ID "-done"
 
 #define HLE_SENTINEL 0xA5A5A5A5u
+/* The same value as text, for the assembly wrappers (HLE_PFV_WRAPPER). */
+#define HLE_SENTINEL_HEX "0xA5A5A5A5"
 #define HLE_MAX_WORDS 18u
 #define HLE_POLL_ITERATIONS 200u
 #define HLE_POLL_DELAY_US 10000u
@@ -982,12 +992,13 @@ static int hle_run(void)
 /* ------------------------------------------------------------------------- */
 #if PSP_ORACLE_CASE == HLE_CASE_VTIMER_ERRORS
 
-/* VTimer cells that pass a UID already deleted in this run, pass NULL as an out
-   pointer on a live timer, and create timers until one is refused (PSP-HLE-VTIMER-003).
-   The only invalid pointer used is NULL. The no-slot loop is bounded at
-   HLE_VTE_NOSLOT_CAP creates, and every timer it created is deleted before the case
-   returns, whichever way the loop ended. The pass rule is machinery only: completion
-   and full cleanup (each created timer was passed to a delete call). */
+/* VTimer cells that pass a UID already deleted in this run, and create up to
+   HLE_VTE_NOSLOT_CAP timers (PSP-HLE-VTIMER-003). The stale UID is deleted by a cleanup
+   cell after its last use, whatever the delete cell returned, so a delete that failed
+   cannot leave that timer running for the cells after it. The NULL that CreateVTimer
+   takes as its option pointer is an optional argument. The pass rule is machinery only:
+   a cell is PASS when its calls completed and were recorded, and SKIP when the UID it
+   needs was not obtained. */
 
 #define HLE_VTE_NOSLOT_CAP 64u
 #define HLE_VTE_NAME "hlevte"
@@ -1041,57 +1052,28 @@ static void hle_vte_time_valid(const char *case_id, SceUID uid)
     hle_record(case_id, "PASS", (uint32_t)rc, out, 2);
 }
 
-/* The three NULL out-pointer cells on a live timer; each records only its return. */
-static void hle_vte_time_null(const char *case_id, SceUID uid)
+/* Deletes the stale UID after its last use, whatever the delete cell returned. The
+   record holds only the return code, so it carries no out words (count 0). */
+static void hle_vte_cleanup_stale(SceUID uid)
 {
-    if (uid < 0) {
-        hle_skip(case_id, 1);
-        return;
-    }
-    const uint32_t zero = 0;
-    hle_step(case_id);
-    const int rc = sceKernelGetVTimerTime(uid, NULL);
-    hle_record(case_id, "PASS", (uint32_t)rc, &zero, 1);
+    hle_step("vtimer-err-cleanup-stale");
+    const int rc = sceKernelDeleteVTimer(uid);
+    hle_record("vtimer-err-cleanup-stale", "PASS", (uint32_t)rc, NULL, 0);
 }
 
-static void hle_vte_base_null(const char *case_id, SceUID uid)
-{
-    if (uid < 0) {
-        hle_skip(case_id, 1);
-        return;
-    }
-    const uint32_t zero = 0;
-    hle_step(case_id);
-    const int rc = sceKernelGetVTimerBase(uid, NULL);
-    hle_record(case_id, "PASS", (uint32_t)rc, &zero, 1);
-}
-
-static void hle_vte_refer_null(const char *case_id, SceUID uid)
-{
-    if (uid < 0) {
-        hle_skip(case_id, 1);
-        return;
-    }
-    const uint32_t zero = 0;
-    hle_step(case_id);
-    const int rc = sceKernelReferVTimerStatus(uid, NULL);
-    hle_record(case_id, "PASS", (uint32_t)rc, &zero, 1);
-}
-
-/* Create until a create returns a negative code, at most HLE_VTE_NOSLOT_CAP times.
-   The create cell's result is the first refusal code (0 when none came within the
-   cap); out0 counts the timers created and out1 is 1 when a refusal was seen. The
-   cleanup cell then deletes every timer created: its result is the first delete
-   return, out0 the count created and out1 the number of delete calls issued. The
-   return value is 1 only when every created timer was passed to a delete. */
+/* Up to HLE_VTE_NOSLOT_CAP creates, stopping at the first negative code. The create
+   cell's result is the first refusal code (0 when none came within the cap); out0
+   counts the timers created and out1 records whether a refusal occurred. The cleanup
+   cell's result is the first delete return; out0 is the count created and out1 the
+   number of delete calls issued. Returns 1 once both cells are recorded. */
 static int hle_vte_noslot(void)
 {
     SceUID slots[HLE_VTE_NOSLOT_CAP];
     uint32_t created = 0;
     uint32_t refusal = 0;
     uint32_t refused = 0;
+    hle_step("vtimer-err-noslot-create");
     for (uint32_t i = 0; i < HLE_VTE_NOSLOT_CAP; i++) {
-        hle_step("vtimer-err-noslot-create");
         const SceUID uid = sceKernelCreateVTimer(HLE_VTE_NAME, NULL);
         if (uid < 0) {
             refusal = (uint32_t)uid;
@@ -1106,8 +1088,8 @@ static int hle_vte_noslot(void)
 
     uint32_t issued = 0;
     uint32_t first = 0;
+    hle_step("vtimer-err-noslot-cleanup");
     for (uint32_t i = 0; i < created; i++) {
-        hle_step("vtimer-err-noslot-cleanup");
         const int rc = sceKernelDeleteVTimer(slots[i]);
         if (issued == 0) {
             first = (uint32_t)rc;
@@ -1116,7 +1098,7 @@ static int hle_vte_noslot(void)
     }
     const uint32_t cleanup_out[2] = {created, issued};
     hle_record("vtimer-err-noslot-cleanup", "PASS", first, cleanup_out, 2);
-    return issued == created;
+    return 1;
 }
 
 static int hle_run(void)
@@ -1127,11 +1109,9 @@ static int hle_run(void)
     hle_vte_control("vtimer-err-start-deleted", stale, 0);
     hle_vte_control("vtimer-err-stop-deleted", stale, 1);
     hle_vte_time_valid("vtimer-err-time-deleted", stale);
+    hle_vte_cleanup_stale(stale);
 
     const SceUID live = hle_vte_create("vtimer-err-create-live");
-    hle_vte_time_null("vtimer-err-time-live-null", live);
-    hle_vte_base_null("vtimer-err-base-live-null", live);
-    hle_vte_refer_null("vtimer-err-refer-live-null", live);
     hle_vte_delete("vtimer-err-delete-live", live);
 
     return hle_vte_noslot();
@@ -1140,26 +1120,18 @@ static int hle_run(void)
 #endif /* HLE_CASE_VTIMER_ERRORS */
 
 /* ------------------------------------------------------------------------- */
-#if PSP_ORACLE_CASE == HLE_CASE_KERNEL_STATUS_NULL
+#if PSP_ORACLE_CASE == HLE_CASE_KERNEL_POOL_BOUNDS
 
-/* NULL and zero-size cells for the status and pool APIs (PSP-HLE-KERNEL-STATUS-002).
-   The only invalid pointer passed is NULL: ReferSystemStatus receives NULL, and the
-   pool creates take the NULL option pointer. Every fixed pool created is deleted; the
-   VPL blocks are freed, bounded at HLE_KSN_VPL_CAP allocations, before the VPL is
-   deleted. The pass rule is machinery only: completion and cleanup. */
+/* Zero-size and maximum-size fixed pools, and a small variable pool exhausted by
+   TryAllocateVpl (PSP-HLE-KERNEL-STATUS-002). The pool creates pass a NULL option
+   pointer, the optional argument. Every fixed pool created is deleted; the VPL blocks
+   are freed, bounded at HLE_KSN_VPL_CAP allocations, before the VPL is deleted. The
+   pass rule is machinery only: completion and cleanup. */
 
 #define HLE_KSN_PART 2
 #define HLE_KSN_VPL_POOL 0x1000u
 #define HLE_KSN_VPL_REQUEST 0x100u
 #define HLE_KSN_VPL_CAP 64u
-
-static void hle_ksn_sys_null(void)
-{
-    const uint32_t zero = 0;
-    hle_step("sys-status-null");
-    const int rc = sceKernelReferSystemStatus(NULL);
-    hle_record("sys-status-null", "PASS", (uint32_t)rc, &zero, 1);
-}
 
 static SceUID hle_ksn_fpl_create(const char *case_id, uint32_t block_size, uint32_t blocks)
 {
@@ -1203,9 +1175,9 @@ static uint32_t hle_ksn_vpl_alloc(SceUID vpl, void **blocks)
     uint32_t taken = 0;
     uint32_t refusal = 0;
     uint32_t refused = 0;
+    void *block = NULL;
+    hle_step("vpl-try-alloc-refusal");
     for (uint32_t i = 0; i < HLE_KSN_VPL_CAP; i++) {
-        void *block = NULL;
-        hle_step("vpl-try-alloc-refusal");
         const int rc = sceKernelTryAllocateVpl(vpl, HLE_KSN_VPL_REQUEST, &block);
         if (rc < 0) {
             refusal = (uint32_t)rc;
@@ -1230,8 +1202,8 @@ static void hle_ksn_vpl_free(SceUID vpl, void **blocks, uint32_t taken)
     }
     uint32_t issued = 0;
     uint32_t first = 0;
+    hle_step("vpl-free-all");
     for (uint32_t i = 0; i < taken; i++) {
-        hle_step("vpl-free-all");
         const int rc = sceKernelFreeVpl(vpl, blocks[i]);
         if (issued == 0) {
             first = (uint32_t)rc;
@@ -1256,7 +1228,6 @@ static void hle_ksn_vpl_delete(SceUID vpl)
 
 static int hle_run(void)
 {
-    hle_ksn_sys_null();
     const SceUID fpl_zero = hle_ksn_fpl_create("fpl-create-size-0x00", 0u, 1u);
     hle_ksn_fpl_delete("fpl-delete-size-0x00", fpl_zero);
     const SceUID fpl_max = hle_ksn_fpl_create("fpl-create-size-0x7fffffff", 0x7fffffffu, 1u);
@@ -1270,7 +1241,92 @@ static int hle_run(void)
     return 1;
 }
 
-#endif /* HLE_CASE_KERNEL_STATUS_NULL */
+#endif /* HLE_CASE_KERNEL_POOL_BOUNDS */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_NULL_OUT_POINTERS
+
+/* NULL as a mandatory out pointer (PSP-HLE-NULL-OUT-001). Four calls pass NULL where
+   pspthreadman.h makes the pointer a mandatory output: sceKernelReferSystemStatus,
+   sceKernelGetVTimerTime, sceKernelGetVTimerBase and sceKernelReferVTimerStatus. The
+   kernel's user-pointer check only tests the sign bit, so a NULL may fault in kernel
+   mode and hang the PSP, and a fault loses every later cell in the launch. This case
+   is scheduled last in a session, after every other case. It creates one live VTimer
+   for the three VTimer calls, deletes it at the end, and records only return codes
+   (count 0). The pass rule is machinery only: a cell is PASS when its call returned and
+   was recorded, and SKIP when the timer UID it needs was not obtained. */
+
+static SceUID hle_null_vtimer_create(void)
+{
+    hle_step("null-vtimer-create");
+    const SceUID uid = sceKernelCreateVTimer("hlenul", NULL);
+    hle_record("null-vtimer-create", "PASS", (uint32_t)uid, NULL, 0);
+    return uid;
+}
+
+static void hle_null_sys_status(void)
+{
+    hle_step("null-sys-status");
+    const int rc = sceKernelReferSystemStatus(NULL);
+    hle_record("null-sys-status", "PASS", (uint32_t)rc, NULL, 0);
+}
+
+static void hle_null_time(SceUID uid)
+{
+    if (uid < 0) {
+        hle_skip("null-vtimer-time", 0);
+        return;
+    }
+    hle_step("null-vtimer-time");
+    const int rc = sceKernelGetVTimerTime(uid, NULL);
+    hle_record("null-vtimer-time", "PASS", (uint32_t)rc, NULL, 0);
+}
+
+static void hle_null_base(SceUID uid)
+{
+    if (uid < 0) {
+        hle_skip("null-vtimer-base", 0);
+        return;
+    }
+    hle_step("null-vtimer-base");
+    const int rc = sceKernelGetVTimerBase(uid, NULL);
+    hle_record("null-vtimer-base", "PASS", (uint32_t)rc, NULL, 0);
+}
+
+static void hle_null_refer(SceUID uid)
+{
+    if (uid < 0) {
+        hle_skip("null-vtimer-refer", 0);
+        return;
+    }
+    hle_step("null-vtimer-refer");
+    const int rc = sceKernelReferVTimerStatus(uid, NULL);
+    hle_record("null-vtimer-refer", "PASS", (uint32_t)rc, NULL, 0);
+}
+
+static void hle_null_delete(SceUID uid)
+{
+    if (uid < 0) {
+        hle_skip("null-vtimer-delete", 0);
+        return;
+    }
+    hle_step("null-vtimer-delete");
+    const int rc = sceKernelDeleteVTimer(uid);
+    hle_record("null-vtimer-delete", "PASS", (uint32_t)rc, NULL, 0);
+}
+
+static int hle_run(void)
+{
+    const SceUID vt = hle_null_vtimer_create();
+    hle_null_sys_status();
+    hle_null_time(vt);
+    hle_null_base(vt);
+    hle_null_refer(vt);
+    hle_null_delete(vt);
+    return 1;
+}
+
+#endif /* HLE_CASE_NULL_OUT_POINTERS */
 
 /* ------------------------------------------------------------------------- */
 #if PSP_ORACLE_CASE == HLE_CASE_POWER_FLOAT_V0
@@ -1278,14 +1334,17 @@ static int hle_run(void)
 /* Raw registers of the three scePower Float getters (PSP-HLE-POWER-002). A getter's
    integer return register is $v0 and its float return register is $f0, so no C call
    reads both. Each wrapper below is a few instructions of assembly: it saves $ra and
-   its output pointer in a 32-byte frame, makes one `jal` to its import, stores $v0 and
-   the raw bits of $f0 to the output words, and returns. It touches no other register
-   the caller can observe. The record carries $v0 as result and the $f0 bits as out0.
+   its output pointer in a 32-byte frame, presets $f0 to HLE_SENTINEL, makes one `jal`
+   to its import, stores $v0 and the raw bits of $f0 to the output words, and returns.
+   A getter that leaves $f0 untouched therefore records the sentinel bits in out0. It
+   touches no other register the caller can observe. The record carries $v0 as result
+   and the $f0 bits as out0. The code is placed in .text whatever section is current.
    hle_power_imports.S supplies the NIDs; that block also declares the other five
    getters, which this family does not call. */
 
 #define HLE_PFV_WRAPPER(wrapper, target)                                      \
     __asm__(                                                                  \
+        ".pushsection .text\n\t"                                              \
         ".set push\n\t"                                                       \
         ".set noreorder\n\t"                                                  \
         ".globl " #wrapper "\n\t"                                             \
@@ -1294,6 +1353,8 @@ static int hle_run(void)
         "addiu $sp, $sp, -32\n\t"                                             \
         "sw $ra, 28($sp)\n\t"                                                 \
         "sw $a0, 24($sp)\n\t"                                                 \
+        "li $t1, " HLE_SENTINEL_HEX "\n\t"                                    \
+        "mtc1 $t1, $f0\n\t"                                                   \
         "jal " #target "\n\t"                                                 \
         "nop\n\t"                                                             \
         "lw $t0, 24($sp)\n\t"                                                 \
@@ -1305,7 +1366,8 @@ static int hle_run(void)
         "jr $ra\n\t"                                                          \
         "nop\n\t"                                                             \
         ".end " #wrapper "\n\t"                                               \
-        ".set pop\n")
+        ".set pop\n\t"                                                        \
+        ".popsection\n")
 
 HLE_PFV_WRAPPER(hle_pfv_raw_pll, scePowerGetPllClockFrequencyFloat);
 HLE_PFV_WRAPPER(hle_pfv_raw_cpu, scePowerGetCpuClockFrequencyFloat);

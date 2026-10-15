@@ -741,26 +741,31 @@ _register_campaign_probe(
     "hle-vtimer-errors", "PSP-HLE-VTIMER-003",
     ("vtimer-err-create-stale", "vtimer-err-delete-stale",
      "vtimer-err-start-deleted", "vtimer-err-stop-deleted",
-     "vtimer-err-time-deleted", "vtimer-err-create-live",
-     "vtimer-err-time-live-null", "vtimer-err-base-live-null",
-     "vtimer-err-refer-live-null", "vtimer-err-delete-live",
+     "vtimer-err-time-deleted", "vtimer-err-cleanup-stale",
+     "vtimer-err-create-live", "vtimer-err-delete-live",
      "vtimer-err-noslot-create", "vtimer-err-noslot-cleanup"),
     {"vtimer-err-create-stale": 1, "vtimer-err-delete-stale": 1,
      "vtimer-err-start-deleted": 1, "vtimer-err-stop-deleted": 1,
-     "vtimer-err-time-deleted": 2, "vtimer-err-create-live": 1,
-     "vtimer-err-time-live-null": 1, "vtimer-err-base-live-null": 1,
-     "vtimer-err-refer-live-null": 1, "vtimer-err-delete-live": 1,
+     "vtimer-err-time-deleted": 2, "vtimer-err-cleanup-stale": 0,
+     "vtimer-err-create-live": 1, "vtimer-err-delete-live": 1,
      "vtimer-err-noslot-create": 2, "vtimer-err-noslot-cleanup": 2},
 )
 _register_campaign_probe(
-    "hle-kernel-status-null", "PSP-HLE-KERNEL-STATUS-002",
-    ("sys-status-null", "fpl-create-size-0x00", "fpl-delete-size-0x00",
+    "hle-kernel-pool-bounds", "PSP-HLE-KERNEL-STATUS-002",
+    ("fpl-create-size-0x00", "fpl-delete-size-0x00",
      "fpl-create-size-0x7fffffff", "fpl-delete-size-0x7fffffff", "vpl-create",
      "vpl-try-alloc-refusal", "vpl-free-all", "vpl-delete"),
-    {"sys-status-null": 1, "fpl-create-size-0x00": 1, "fpl-delete-size-0x00": 1,
+    {"fpl-create-size-0x00": 1, "fpl-delete-size-0x00": 1,
      "fpl-create-size-0x7fffffff": 1, "fpl-delete-size-0x7fffffff": 1,
      "vpl-create": 1, "vpl-try-alloc-refusal": 2, "vpl-free-all": 2,
      "vpl-delete": 1},
+)
+_register_campaign_probe(
+    "hle-null-out-pointers", "PSP-HLE-NULL-OUT-001",
+    ("null-vtimer-create", "null-sys-status", "null-vtimer-time", "null-vtimer-base",
+     "null-vtimer-refer", "null-vtimer-delete"),
+    {"null-vtimer-create": 0, "null-sys-status": 0, "null-vtimer-time": 0,
+     "null-vtimer-base": 0, "null-vtimer-refer": 0, "null-vtimer-delete": 0},
 )
 _register_campaign_probe(
     "hle-power-float-v0", "PSP-HLE-POWER-002",
@@ -844,7 +849,8 @@ def validate_hle_edram_restore(text: str) -> None:
 #: NOT_RUN HLE cases whose status is machinery-only: a record is PASS when its calls
 #: completed and SKIP when the object it needs was not obtained, and never FAIL.
 HLE_MACHINERY_STATUS_CASES = frozenset({
-    "hle-vtimer-unit", "hle-vtimer-errors", "hle-kernel-status-null", "hle-power-float-v0",
+    "hle-vtimer-unit", "hle-vtimer-errors", "hle-kernel-pool-bounds", "hle-power-float-v0",
+    "hle-null-out-pointers",
 })
 
 

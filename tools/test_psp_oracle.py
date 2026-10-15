@@ -31,6 +31,7 @@ from psp_import_table import UNATTRIBUTED_LIBRARY
 from psp_oracle import user_mode_imports
 from psp_oracle.protocol import (
     ProtocolError,
+    STATUSES,
     ge_corpus_report,
     PSP_MODEL_INTERPRETATION_RULE,
     compare_texts,
@@ -2345,15 +2346,15 @@ class PspOracleBuildRouteTests(unittest.TestCase):
             self.makefile,
             re.MULTILINE,
         )
-        # 1-69 are the sequential probe.c cases; 90-100 are the H-oracle HLE families (97-100 NOT_RUN),
+        # 1-69 are the sequential probe.c cases; 90-101 are the H-oracle HLE families (97-101 NOT_RUN),
         # numbered apart so sequential additions cannot collide with them. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 80)
+        self.assertEqual(len(routes), 81)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(range(1, 70)) | set(range(90, 101)), set(ids))
+        self.assertEqual(set(range(1, 70)) | set(range(90, 102)), set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -3778,6 +3779,198 @@ class VfpuCompareProbeTests(unittest.TestCase):
         self.assertIn("| `vfpu-compare` | `PSP-VFPU-CMP-001` |", readme)
 
 
+# ---- probe_hle_measure.c analysis: out-word counts per cell -----------------------
+#
+# A cell's out-word count is the last argument of its hle_record call, or the second
+# argument of hle_skip. The cell name and the count reach those calls through helper
+# parameters, so the analysis walks hle_run and every helper it calls inside one
+# family's #if section, substituting the literal arguments of each call. Both branches
+# of a helper are walked. A cell reached twice must carry one count, or the probe is
+# refused as inconsistent.
+
+_C_NOT_CALLS = frozenset({"if", "for", "while", "switch", "return", "sizeof", "do"})
+_C_CALL_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
+_C_STRING_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+_C_INT_RE = re.compile(r"(0x[0-9A-Fa-f]+|\d+)[uUlL]*")
+
+
+def _c_code(text: str) -> str:
+    """The C text with its comments removed."""
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
+    return re.sub(r"//[^\n]*", "", text)
+
+
+def _c_close(text: str, open_at: int) -> int:
+    """Index of the bracket that closes the one at open_at; string literals are skipped."""
+    closer = {"(": ")", "{": "}", "[": "]"}[text[open_at]]
+    opener = text[open_at]
+    depth = 0
+    i = open_at
+    while i < len(text):
+        ch = text[i]
+        if ch == '"':
+            i += 1
+            while text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+        elif ch == opener:
+            depth += 1
+        elif ch == closer:
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    raise ValueError("unbalanced brackets in the probe source")
+
+
+def _c_split(text: str) -> list[str]:
+    """The top-level comma-separated pieces of an argument list."""
+    pieces = []
+    depth = 0
+    start = 0
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == '"':
+            i += 1
+            while text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            pieces.append(text[start:i].strip())
+            start = i + 1
+        i += 1
+    tail = text[start:].strip()
+    if tail:
+        pieces.append(tail)
+    return pieces
+
+
+def _c_functions(section: str) -> dict[str, tuple[list[str], str]]:
+    """Name -> (parameter names, body) for each static function defined in a section."""
+    found: dict[str, tuple[list[str], str]] = {}
+    for match in re.finditer(r"^static [^\n;{}]*?\b(\w+)\s*\(", section, re.M):
+        open_paren = match.end() - 1
+        close_paren = _c_close(section, open_paren)
+        brace = section.find("{", close_paren)
+        if brace < 0 or section[close_paren + 1:brace].strip():
+            continue  # a prototype, not a definition
+        raw = section[open_paren + 1:close_paren].strip()
+        params: list[str] = []
+        if raw not in ("", "void"):
+            for piece in _c_split(raw):
+                named = (re.search(r"\(\*\s*(\w+)\s*\)", piece)
+                         or re.search(r"(\w+)\s*(\[[^\]]*\])?\s*$", piece))
+                params.append(named.group(1))
+        found[match.group(1)] = (params, section[brace + 1:_c_close(section, brace)])
+    return found
+
+
+def _c_value(arg: str, env: dict, defines: dict, arrays: dict):
+    """(kind, value): ("str", text), ("strs", [texts]), ("int", n) or ("unknown", text)."""
+    arg = arg.strip()
+    if _C_STRING_RE.fullmatch(arg):
+        return ("str", arg[1:-1])
+    if _C_INT_RE.fullmatch(arg):
+        return ("int", int(_C_INT_RE.fullmatch(arg).group(1), 0))
+    if re.fullmatch(r"\w+", arg):
+        if arg in env:
+            return env[arg]
+        if arg in defines:
+            return ("int", defines[arg])
+    indexed = re.fullmatch(r"(\w+)\s*\[\s*\w+\s*\]", arg)
+    if indexed and indexed.group(1) in arrays:
+        return ("strs", arrays[indexed.group(1)])
+    cast = re.fullmatch(r"\(\s*\w+\s*\)\s*(.+)", arg)
+    if cast:
+        return _c_value(cast.group(1), env, defines, arrays)
+    return ("unknown", arg)
+
+
+def _c_walk(name, env, functions, defines, arrays, emit, active=()):
+    if name in active:
+        raise AssertionError(f"helper {name} calls itself")
+    body = functions[name][1]
+    for match in _C_CALL_RE.finditer(body):
+        callee = match.group(1)
+        if callee in _C_NOT_CALLS:
+            continue
+        close = _c_close(body, match.end() - 1)
+        args = _c_split(body[match.end():close])
+        if callee == "hle_record" and len(args) == 5:
+            emit("record", _c_value(args[0], env, defines, arrays),
+                 _c_value(args[4], env, defines, arrays), name)
+        elif callee == "hle_skip" and len(args) == 2:
+            emit("record", _c_value(args[0], env, defines, arrays),
+                 _c_value(args[1], env, defines, arrays), name)
+        elif callee == "hle_step":
+            emit("step", None, None, name)
+        elif callee in functions:
+            params = functions[callee][0]
+            inner = {p: _c_value(a, env, defines, arrays)
+                     for p, a in zip(params, args, strict=False)}
+            _c_walk(callee, inner, functions, defines, arrays, emit, active + (name,))
+
+
+def _probe_cells(probe: str, macro: str) -> tuple[list[tuple[str, int]], int]:
+    """The (cell, out-word count) pairs a family's record calls can emit, in source order,
+    and the number of hle_step calls the walk reaches. A cell can appear more than once
+    when a skip branch and a record branch both emit it."""
+    anchor = re.search(rf"\*/\n#if PSP_ORACLE_CASE == {macro}\n", probe)
+    if anchor is None:
+        raise AssertionError(f"no family section for {macro}")
+    end_marker = f"#endif /* {macro} */"
+    end = probe.index(end_marker, anchor.start()) + len(end_marker)
+    section = _c_code(probe[anchor.start():end])
+    code = _c_code(probe)
+    defines = {name: int(value, 0) for name, value in re.findall(
+        r"^#define\s+(\w+)\s+(0x[0-9A-Fa-f]+|\d+)[uUlL]*\s*$", code, re.M)}
+    arrays = {name: _C_STRING_RE.findall(body) for name, body in re.findall(
+        r"\b(\w+)\s*\[[^\]]*\]\s*=\s*\{([^}]*)\}", code)}
+    functions = _c_functions(section)
+    emitted: list[tuple[str, int]] = []
+    steps: list[str] = []
+
+    def emit(kind, case, count, where):
+        if kind == "step":
+            steps.append(where)
+            return
+        if case[0] == "str":
+            names = [case[1]]
+        elif case[0] == "strs":
+            names = list(case[1])
+        else:
+            raise AssertionError(f"{macro}: cell name in {where} is not a literal: {case[1]}")
+        if count[0] != "int":
+            raise AssertionError(f"{macro}: out-word count in {where} is not a constant: "
+                                 f"{count[1]}")
+        emitted.extend((name, count[1]) for name in names)
+
+    _c_walk("hle_run", {}, functions, defines, arrays, emit)
+    return emitted, len(steps)
+
+
+def _out_count_mismatches(probe: str, campaign: str, macro: str) -> list[str]:
+    """Differences between the counts the probe source yields and the parser registry."""
+    spec, registry = CAMPAIGN_PROBE_CASES[campaign]
+    cells, _steps = _probe_cells(probe, macro)
+    by_name: dict[str, set[int]] = {}
+    for name, count in cells:
+        by_name.setdefault(name, set()).add(count)
+    problems = [f"{name}: conflicting counts {sorted(values)}"
+                for name, values in by_name.items() if len(values) != 1]
+    derived = {name: next(iter(values)) for name, values in by_name.items() if len(values) == 1}
+    expected = {name: count for name, count in registry.items() if name != spec.terminal_case}
+    for name in sorted(set(derived) | set(expected)):
+        if derived.get(name) != expected.get(name):
+            problems.append(f"{name}: source {derived.get(name)} != registry {expected.get(name)}")
+    if list(by_name) != list(spec.semantic_cases):
+        problems.append("cell order in the source differs from the registry")
+    return problems
+
+
 class HleMeasureProbeTests(unittest.TestCase):
     """H-oracle-hle-measure-1009: seven one-launch HLE measurement families.
 
@@ -3804,17 +3997,19 @@ class HleMeasureProbeTests(unittest.TestCase):
         ("hle-ge-edram", 96, "hle_ge_edram", "hle_ge_imports.S",
          "HLE_CASE_GE_EDRAM", "PSP-HLE-GE-EDRAM-001"),
     )
-    # The four NOT_RUN single-launch cases in the same file (97-100). They build, link and
+    # The five NOT_RUN single-launch cases in the same file (97-101). They build, link and
     # parse like the families above, but no manifest row cites a hardware run.
     NOT_RUN_FAMILIES = (
         ("hle-vtimer-unit", 97, "hle_vtimer_unit", None,
          "HLE_CASE_VTIMER_UNIT", "PSP-HLE-VTIMER-002"),
         ("hle-vtimer-errors", 98, "hle_vtimer_errors", None,
          "HLE_CASE_VTIMER_ERRORS", "PSP-HLE-VTIMER-003"),
-        ("hle-kernel-status-null", 99, "hle_kernel_status_null", None,
-         "HLE_CASE_KERNEL_STATUS_NULL", "PSP-HLE-KERNEL-STATUS-002"),
+        ("hle-kernel-pool-bounds", 99, "hle_kernel_pool_bounds", None,
+         "HLE_CASE_KERNEL_POOL_BOUNDS", "PSP-HLE-KERNEL-STATUS-002"),
         ("hle-power-float-v0", 100, "hle_power_float_v0", "hle_power_imports.S",
          "HLE_CASE_POWER_FLOAT_V0", "PSP-HLE-POWER-002"),
+        ("hle-null-out-pointers", 101, "hle_null_out_pointers", None,
+         "HLE_CASE_NULL_OUT_POINTERS", "PSP-HLE-NULL-OUT-001"),
     )
     ALL_FAMILIES = FAMILIES + NOT_RUN_FAMILIES
     # Every family block: file -> (library, version word, {function: NID}). The
@@ -4176,6 +4371,22 @@ class HleMeasureProbeTests(unittest.TestCase):
                 for semantic in spec.semantic_cases:
                     self.assertIn(f'"{semantic}"', self.probe, semantic)
 
+    def test_out_word_counts_match_the_parser_registry_for_every_family(self) -> None:
+        """Each cell's out-word count, read from the record call that emits it, equals the
+        parser registry's count, and the cells come in registry order, for families 90
+        through 101."""
+        for case, _cid, _stem, _block, macro, _test in self.ALL_FAMILIES:
+            with self.subTest(case=case):
+                self.assertEqual(_out_count_mismatches(self.probe, case, macro), [])
+
+    def test_a_count_mutant_is_refused_by_the_same_comparison(self) -> None:
+        """Mutant: the no-slot create record declares one out word where it writes two."""
+        original = 'hle_record("vtimer-err-noslot-create", "PASS", refusal, create_out, 2);'
+        mutant = self.probe.replace(original, original.replace(", 2);", ", 1);"))
+        self.assertNotEqual(mutant, self.probe)
+        problems = _out_count_mismatches(mutant, "hle-vtimer-errors", "HLE_CASE_VTIMER_ERRORS")
+        self.assertIn("vtimer-err-noslot-create: source 1 != registry 2", problems)
+
     def test_manifest_entries_are_captured_and_cite_the_registry(self) -> None:
         """The 2026-10-10 single-case runs captured every family without acceptance."""
         by_id = {test["id"]: test for test in self.manifest["tests"]}
@@ -4337,22 +4548,27 @@ class HleMeasureProbeTests(unittest.TestCase):
 
 
 class HleNotRunProbeTests(unittest.TestCase):
-    """The four NOT_RUN single-launch HLE cases (97-100) in probe_hle_measure.c.
+    """The five NOT_RUN single-launch HLE cases (97-101) in probe_hle_measure.c.
 
     No hardware run backs their manifest rows. These tests pin what keeps them
     machinery-only: the Makefile routes, their absence from the campaign queue, the
-    host0 records, the bounded loops and their cleanup, where NULL is passed, the raw
-    `jal` wrapper of the power getters, the parser's refusal of FAIL, and the manifest
-    rows, which cite no capture.
+    host0 records, the bounded loops and their cleanup, the stream length the default
+    runner timeout has to cover, where NULL is passed (a mandatory out pointer only in
+    the null-out-pointers case), the raw `jal` wrapper of the power getters, the
+    parser's refusal of every status but PASS and SKIP, and the manifest and docs rows,
+    which cite no capture.
     """
 
     NOT_RUN = HleMeasureProbeTests.NOT_RUN_FAMILIES
-    OBJECT_CASES = frozenset({"hle-vtimer-unit", "hle-vtimer-errors", "hle-kernel-status-null"})
+    NULL_CASE = "hle-null-out-pointers"
+    OBJECT_CASES = frozenset({"hle-vtimer-unit", "hle-vtimer-errors",
+                              "hle-kernel-pool-bounds", "hle-null-out-pointers"})
     HOST0_LOGS = {
         "hle-vtimer-unit": "hle_vtimer_unit_log.txt",
         "hle-vtimer-errors": "hle_vtimer_errors_log.txt",
-        "hle-kernel-status-null": "hle_kernel_status_null_log.txt",
+        "hle-kernel-pool-bounds": "hle_kernel_pool_bounds_log.txt",
         "hle-power-float-v0": "hle_power_float_v0_log.txt",
+        "hle-null-out-pointers": "hle_null_out_pointers_log.txt",
     }
     POWER_FLOAT_GETTERS = frozenset({
         "scePowerGetPllClockFrequencyFloat", "scePowerGetCpuClockFrequencyFloat",
@@ -4364,6 +4580,23 @@ class HleNotRunProbeTests(unittest.TestCase):
         "scePowerGetCpuClockFrequencyInt", "scePowerGetBusClockFrequency",
         "scePowerGetBusClockFrequencyInt",
     })
+    # Calls whose out pointer pspthreadman.h makes a mandatory output. Only the
+    # null-out-pointers case passes NULL to them.
+    MANDATORY_NULL_CALLS = frozenset({
+        "sceKernelReferSystemStatus", "sceKernelGetVTimerTime", "sceKernelGetVTimerBase",
+        "sceKernelReferVTimerStatus",
+    })
+    # Calls that take a NULL option pointer, which is the API's optional argument.
+    OPTIONAL_NULL_CALLS = frozenset({"sceKernelCreateVTimer", "sceKernelCreateFpl",
+                                     "sceKernelCreateVpl"})
+    NULL_RISK = ("high: a NULL mandatory out-pointer may fault in kernel mode; schedule "
+                 "last in a session, after every other case.")
+    # Worst-case lines per launch: META, one STEP per reached call, one record per cell,
+    # the `-done` record and COMPLETE. Pinned so a change to a stream shows up here.
+    WORST_CASE_LINES = {
+        "hle-vtimer-unit": 29, "hle-vtimer-errors": 23, "hle-kernel-pool-bounds": 19,
+        "hle-power-float-v0": 9, "hle-null-out-pointers": 15,
+    }
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -4371,20 +4604,20 @@ class HleNotRunProbeTests(unittest.TestCase):
         # Its helpers read the probe, Makefile and manifest that setUpClass just loaded.
         cls.h = HleMeasureProbeTests("test_case_ids_are_registered_once_and_match_the_families")
 
-    def test_routes_are_97_to_100_and_each_links_its_own_prx(self) -> None:
+    def test_routes_are_97_to_101_and_each_links_its_own_prx(self) -> None:
         pairs = re.findall(r"else ifeq \(\$\(CASE\),(hle-[a-z0-9-]+)\)\nCASE_ID = (\d+)",
                            self.h.makefile)
         routed = sorted((case, int(case_id)) for case, case_id in pairs
                         if case in self.HOST0_LOGS)
         self.assertEqual(routed, sorted((case, case_id) for case, case_id, *_ in self.NOT_RUN))
-        self.assertEqual(sorted(case_id for _case, case_id in routed), [97, 98, 99, 100])
+        self.assertEqual(sorted(case_id for _case, case_id in routed), [97, 98, 99, 100, 101])
         for case, _cid, stem, _block, _macro, _test in self.NOT_RUN:
             with self.subTest(case=case):
                 self.assertRegex(
                     self.h.makefile,
                     rf"else ifeq \(\$\(CASE\),{case}\)\nTARGET = \$\(BUILD_DIR\)/{stem}\n")
 
-    def test_none_of_the_four_is_in_the_campaign_queue(self) -> None:
+    def test_none_of_the_five_is_in_the_campaign_queue(self) -> None:
         for case, *_rest in self.NOT_RUN:
             with self.subTest(case=case):
                 self.assertNotIn(case, CAMPAIGN_QUEUE_CASES)
@@ -4420,37 +4653,95 @@ class HleNotRunProbeTests(unittest.TestCase):
         self.assertIn("for (uint32_t i = 0; i < HLE_VTE_NOSLOT_CAP; i++) {", vte)
         self.assertIn("for (uint32_t i = 0; i < created; i++) {", vte)
         self.assertIn("sceKernelDeleteVTimer(slots[i])", vte)
-        ksn = self.h._section("HLE_CASE_KERNEL_STATUS_NULL")
-        self.assertIn("#define HLE_KSN_VPL_CAP 64u", ksn)
-        self.assertIn("for (uint32_t i = 0; i < HLE_KSN_VPL_CAP; i++) {", ksn)
-        self.assertIn("for (uint32_t i = 0; i < taken; i++) {", ksn)
-        self.assertIn("sceKernelFreeVpl(vpl, blocks[i])", ksn)
-        self.assertIn("sceKernelDeleteVpl(vpl)", ksn)
-        self.assertIn("sceKernelDeleteFpl(uid)", ksn)
+        pool = self.h._section("HLE_CASE_KERNEL_POOL_BOUNDS")
+        self.assertIn("#define HLE_KSN_VPL_CAP 64u", pool)
+        self.assertIn("for (uint32_t i = 0; i < HLE_KSN_VPL_CAP; i++) {", pool)
+        self.assertIn("for (uint32_t i = 0; i < taken; i++) {", pool)
+        self.assertIn("sceKernelFreeVpl(vpl, blocks[i])", pool)
+        self.assertIn("sceKernelDeleteVpl(vpl)", pool)
+        self.assertIn("sceKernelDeleteFpl(uid)", pool)
 
-    def test_null_is_passed_only_as_an_invalid_out_pointer_or_an_optional_argument(self) -> None:
-        expected = {
-            "HLE_CASE_VTIMER_UNIT": {"sceKernelCreateVTimer"},
-            "HLE_CASE_VTIMER_ERRORS": {"sceKernelCreateVTimer", "sceKernelGetVTimerTime",
-                                       "sceKernelGetVTimerBase", "sceKernelReferVTimerStatus"},
-            "HLE_CASE_KERNEL_STATUS_NULL": {"sceKernelReferSystemStatus", "sceKernelCreateFpl",
-                                            "sceKernelCreateVpl"},
-            "HLE_CASE_POWER_FLOAT_V0": set(),
-        }
+    def test_no_step_marker_sits_inside_a_loop(self) -> None:
+        """A step per iteration would scale the stream with the loop cap (64)."""
+        for case, _cid, _stem, _block, macro, _test in self.NOT_RUN:
+            with self.subTest(case=case):
+                section = _c_code(self.h._section(macro))
+                for loop in re.finditer(r"\bfor\s*\(", section):
+                    brace = section.index("{", loop.end())
+                    body = section[brace + 1:_c_close(section, brace)]
+                    self.assertNotIn("hle_step(", body)
+
+    def test_vtimer_errors_deletes_the_stale_timer_before_the_live_cells(self) -> None:
+        section = _c_code(self.h._section("HLE_CASE_VTIMER_ERRORS"))
+        run = HleMeasureProbeTests._function_body(section, "static int hle_run(")
+        time_valid = run.index('hle_vte_time_valid("vtimer-err-time-deleted", stale);')
+        cleanup = run.index("hle_vte_cleanup_stale(stale);")
+        live = run.index('hle_vte_create("vtimer-err-create-live")')
+        self.assertLess(time_valid, cleanup)
+        self.assertLess(cleanup, live)
+        body = HleMeasureProbeTests._function_body(section, "static void hle_vte_cleanup_stale(")
+        self.assertIn("sceKernelDeleteVTimer(uid);", body)
+        self.assertNotIn("if (uid", body)  # unconditional: the delete cell may have failed
+        self.assertNotIn("return issued == created;", section)
+
+    def test_stream_lengths_are_pinned_and_fit_the_default_runner_timeout(self) -> None:
+        """The default --timeout is 30 s for the whole launch, so a stream of N lines
+        needs each host0 operation (open, write, close: three per line, plus the
+        round trip) under 30 s / (3N + 6) on the console. No measured host0 operation
+        cost exists in this repository, so the bound is an assumption to measure."""
+        for case, _cid, _stem, _block, macro, _test in self.NOT_RUN:
+            with self.subTest(case=case):
+                spec, _counts = CAMPAIGN_PROBE_CASES[case]
+                _cells, steps = _probe_cells(self.h.probe, macro)
+                lines = steps + len(spec.semantic_cases) + 3
+                self.assertEqual(lines, self.WORST_CASE_LINES[case])
+                self.assertLessEqual(lines, 30)
+
+    def test_null_is_passed_to_mandatory_outs_only_in_the_null_case(self) -> None:
         for case, _cid, _stem, _block, macro, _test in self.NOT_RUN:
             with self.subTest(case=case):
                 section = self.h._section(macro)
                 with_null = set(re.findall(r"\b(sce\w+)\s*\([^;]*\bNULL\b", section))
-                self.assertEqual(with_null, expected[macro])
+                if case == self.NULL_CASE:
+                    self.assertEqual(with_null,
+                                     self.MANDATORY_NULL_CALLS | {"sceKernelCreateVTimer"})
+                else:
+                    self.assertTrue(with_null <= self.OPTIONAL_NULL_CALLS, with_null)
+                    self.assertEqual(with_null & self.MANDATORY_NULL_CALLS, set())
+
+    def test_null_out_pointer_cells_are_one_call_each_after_a_step(self) -> None:
+        section = _c_code(self.h._section("HLE_CASE_NULL_OUT_POINTERS"))
+        run = HleMeasureProbeTests._function_body(section, "static int hle_run(")
+        order = [run.index(call) for call in (
+            "hle_null_vtimer_create();", "hle_null_sys_status();", "hle_null_time(vt);",
+            "hle_null_base(vt);", "hle_null_refer(vt);", "hle_null_delete(vt);")]
+        self.assertEqual(order, sorted(order))
+        for helper, call in (("static void hle_null_sys_status(", "sceKernelReferSystemStatus(NULL)"),
+                             ("static void hle_null_time(", "sceKernelGetVTimerTime(uid, NULL)"),
+                             ("static void hle_null_base(", "sceKernelGetVTimerBase(uid, NULL)"),
+                             ("static void hle_null_refer(", "sceKernelReferVTimerStatus(uid, NULL)")):
+            with self.subTest(helper=helper):
+                body = HleMeasureProbeTests._function_body(section, helper)
+                self.assertEqual(body.count("sce"), 1)
+                self.assertIn(call, body)
+                self.assertLess(body.index("hle_step("), body.index(call))
+                self.assertEqual(body.count("hle_record("), 1)
+                self.assertIn("NULL, 0);", body)  # the record holds only the return code
 
     def test_power_float_wrapper_is_one_jal_per_getter_and_stores_v0_and_f0(self) -> None:
         section = self.h._section("HLE_CASE_POWER_FLOAT_V0")
-        for fragment in (r'".set noreorder\n\t"', r'"jal " #target "\n\t"',
-                         r'"mfc1 $t1, $f0\n\t"', r'"sw $v0, 0($t0)\n\t"',
-                         r'"sw $t1, 4($t0)\n\t"', r'"sw $ra, 28($sp)\n\t"',
-                         r'"jr $ra\n\t"'):
+        for fragment in (r'".pushsection .text\n\t"', r'".set noreorder\n\t"',
+                         r'"li $t1, " HLE_SENTINEL_HEX "\n\t"', r'"mtc1 $t1, $f0\n\t"',
+                         r'"jal " #target "\n\t"', r'"mfc1 $t1, $f0\n\t"',
+                         r'"sw $v0, 0($t0)\n\t"', r'"sw $t1, 4($t0)\n\t"',
+                         r'"sw $ra, 28($sp)\n\t"', r'"jr $ra\n\t"', r'".popsection\n")'):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, section)
+        # $f0 is preset to the sentinel before the jal, so an untouched $f0 is recorded.
+        self.assertLess(section.index('"mtc1 $t1, $f0'), section.index('"jal " #target'))
+        sentinel_text = re.search(r'#define HLE_SENTINEL_HEX "(0x[0-9A-Fa-f]+)"', self.h.probe)
+        self.assertEqual(int(sentinel_text.group(1), 16), 0xA5A5A5A5)
+        self.assertIn("#define HLE_SENTINEL 0xA5A5A5A5u", self.h.probe)
         self.assertEqual(
             re.findall(r"^HLE_PFV_WRAPPER\((\w+), (\w+)\);$", section, re.MULTILINE),
             [("hle_pfv_raw_pll", "scePowerGetPllClockFrequencyFloat"),
@@ -4467,7 +4758,7 @@ class HleNotRunProbeTests(unittest.TestCase):
         self.assertLessEqual(self.POWER_FLOAT_GETTERS, called)
         self.assertEqual(declared - called, self.POWER_UNCALLED)
 
-    def test_parser_accepts_arbitrary_machinery_values_and_refuses_fail(self) -> None:
+    def test_parser_accepts_arbitrary_machinery_values(self) -> None:
         for case, _cid, _stem, _block, _macro, _test in self.NOT_RUN:
             with self.subTest(case=case):
                 spec, counts = CAMPAIGN_PROBE_CASES[case]
@@ -4478,11 +4769,24 @@ class HleNotRunProbeTests(unittest.TestCase):
                 accepted = parse_campaign_probe_output(
                     self.h._stream(case, cells).split("NAKAGAWA_PSP_COMPLETE")[0], case)
                 self.assertTrue(accepted.complete)
-                refused = dict(cells)
-                refused[first] = ("FAIL", 0, None)
-                with self.assertRaisesRegex(ProtocolError, "machinery-only"):
-                    parse_campaign_probe_output(
-                        self.h._stream(case, refused).split("NAKAGAWA_PSP_COMPLETE")[0], case)
+
+    def test_parser_refuses_every_status_other_than_pass_and_skip(self) -> None:
+        """A check that names one status (FAIL) lets the others through; the refusal
+        must cover every status the protocol knows, except the two machinery values."""
+        for case, _cid, _stem, _block, _macro, _test in self.NOT_RUN:
+            spec, counts = CAMPAIGN_PROBE_CASES[case]
+            base = {name: ("PASS", 0, [0] * counts[name]) for name in spec.semantic_cases}
+            first = spec.semantic_cases[0]
+            for status in sorted(STATUSES - {"PASS", "SKIP"}):
+                with self.subTest(case=case, status=status):
+                    refused = dict(base)
+                    refused[first] = (status, 0, None)
+                    with self.assertRaises(ProtocolError) as raised:
+                        parse_campaign_probe_output(
+                            self.h._stream(case, refused).split("NAKAGAWA_PSP_COMPLETE")[0],
+                            case)
+                    self.assertTrue("machinery-only" in str(raised.exception)
+                                    or status in str(raised.exception), str(raised.exception))
 
     def test_manifest_rows_are_not_run_and_cite_no_capture(self) -> None:
         tests = self.h.manifest["tests"]
@@ -4505,6 +4809,23 @@ class HleNotRunProbeTests(unittest.TestCase):
                                  "one PRX launch; PSPLink soft reset before the next launch")
                 listed = {api for api in row["apis"] if api.startswith("sce")}
                 self.assertEqual(sorted(listed), sorted(self.h._probe_calls(macro)))
+                self.assertNotIn("until refusal", json.dumps(row))
+
+    def test_null_out_pointer_case_is_high_risk_and_scheduled_last(self) -> None:
+        tests = self.h.manifest["tests"]
+        row = next(test for test in tests if test["id"] == "PSP-HLE-NULL-OUT-001")
+        self.assertEqual(row["risk"], self.NULL_RISK)
+        hardware = (self.h.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
+        readme = (self.h.fixture / "README.md").read_text(encoding="utf-8")
+        self.assertIn(self.NULL_RISK, hardware)
+        self.assertIn(self.NULL_RISK, readme)
+        for text in (row["risk"], row["evidence_note"]):
+            self.assertNotIn("NULL is the only invalid pointer", text)
+        for case, _cid, _stem, _block, _macro, _test in self.NOT_RUN:
+            if case != self.NULL_CASE:
+                other = next(test for test in tests if test.get("diagnostic_case_ids") == [case])
+                self.assertNotIn("high:", other["risk"])
+                self.assertNotIn("NULL is the only invalid pointer", other["risk"])
 
     def test_docs_list_each_case_as_not_run_outside_the_queue(self) -> None:
         hardware = (self.h.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
@@ -4513,6 +4834,10 @@ class HleNotRunProbeTests(unittest.TestCase):
             with self.subTest(case=case):
                 self.assertIn(f"| `{case}` | `{test_id}` | `NOT_RUN` (single launch, not in the campaign queue) |", hardware)
                 self.assertIn(f"| `{case}` | `{test_id}` |", readme)
+        self.assertNotIn("until refusal", hardware)
+        self.assertNotIn("until refusal", readme)
+        self.assertIn("up to 64 creates; out1 records whether a refusal occurred", hardware)
+        self.assertIn("up to 64 creates; out1 records whether a refusal occurred", readme)
 
 
 if __name__ == "__main__":

@@ -866,9 +866,7 @@
           "sceKernelDeleteVTimer",
           "sceKernelExitThread",
           "sceKernelGetThreadId",
-          "sceKernelGetVTimerBase",
           "sceKernelGetVTimerTime",
-          "sceKernelReferVTimerStatus",
           "sceKernelSleepThread",
           "sceKernelStartVTimer",
           "sceKernelStopVTimer",
@@ -884,18 +882,16 @@
           "vtimer-err-start-deleted",
           "vtimer-err-stop-deleted",
           "vtimer-err-time-deleted",
+          "vtimer-err-cleanup-stale",
           "vtimer-err-create-live",
-          "vtimer-err-time-live-null",
-          "vtimer-err-base-live-null",
-          "vtimer-err-refer-live-null",
           "vtimer-err-delete-live",
           "vtimer-err-noslot-create",
           "vtimer-err-noslot-cleanup",
           "hle-vtimer-errors-done"
         ],
-        "invariant": "start, stop and GetVTimerTime (valid out pointer) on a deleted UID; GetVTimerTime, GetVTimerBase and ReferVTimerStatus with a NULL pointer on a live timer; timer creates until a refusal, at most 64, with every created timer deleted",
+        "invariant": "start, stop and GetVTimerTime (valid out pointer) on a deleted UID, then a cleanup delete of that UID after its last use; a live timer created and deleted; up to 64 creates; out1 records whether a refusal occurred; every created timer deleted",
         "issues": [],
-        "risk": "low; NULL is the only invalid pointer; probe-owned timers, all deleted in the case; the create loop is bounded at 64",
+        "risk": "low; probe-owned timers, all deleted in the case, and the stale UID deleted by a cleanup cell; up to 64 creates",
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
@@ -905,7 +901,7 @@
         "evidence_note": "No hardware capture exists for this probe. It is built from fixtures/psp_oracle/probe_hle_measure.c and its stream is strictly parsed. Its cells are machinery-only: PASS when the calls completed and were recorded, SKIP when the object a cell needs was not obtained. Every returned value is an observation and is UNMEASURED for the console. Runs as a single launch, not in the campaign queue.",
         "group": "kernel",
         "source": "fixtures/psp_oracle/probe_hle_measure.c",
-        "prx": "hle_kernel_status_null.prx",
+        "prx": "hle_kernel_pool_bounds.prx",
         "apis": [
           "sceIoClose",
           "sceIoOpen",
@@ -919,17 +915,15 @@
           "sceKernelExitThread",
           "sceKernelFreeVpl",
           "sceKernelGetThreadId",
-          "sceKernelReferSystemStatus",
           "sceKernelSleepThread",
           "sceKernelTryAllocateVpl",
           "sceKernelWaitThreadEnd",
           "sceKernelWakeupThread"
         ],
         "diagnostic_case_ids": [
-          "hle-kernel-status-null"
+          "hle-kernel-pool-bounds"
         ],
         "case_ids": [
-          "sys-status-null",
           "fpl-create-size-0x00",
           "fpl-delete-size-0x00",
           "fpl-create-size-0x7fffffff",
@@ -938,11 +932,11 @@
           "vpl-try-alloc-refusal",
           "vpl-free-all",
           "vpl-delete",
-          "hle-kernel-status-null-done"
+          "hle-kernel-pool-bounds-done"
         ],
-        "invariant": "ReferSystemStatus with NULL; FPL creates with block size 0 and with one block of 0x7fffffff bytes; a small VPL allocated until refusal, at most 64 blocks, with every block freed and the VPL deleted; raw returns recorded",
+        "invariant": "zero-size and maximum-size fixed pools created and deleted; a small VPL allocated up to 64 times; out1 records whether a refusal occurred; every block freed and the VPL deleted; raw returns recorded",
         "issues": [],
-        "risk": "low; NULL is the only invalid pointer; probe-owned pools deleted in the case; the VPL loop is bounded at 64 and all blocks are freed",
+        "risk": "low; the pool creates pass a NULL optional option pointer; probe-owned pools deleted in the case; the VPL loop is bounded at 64 and all blocks are freed",
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
@@ -979,7 +973,50 @@
         ],
         "invariant": "raw $v0 (result) and $f0 bits (out0) of scePowerGetPllClockFrequencyFloat, scePowerGetCpuClockFrequencyFloat and scePowerGetBusClockFrequencyFloat, one call each",
         "issues": [],
-        "risk": "low; read-only getters; a short assembly wrapper makes one jal per getter and stores $v0 and $f0",
+        "risk": "low; read-only getters; a short assembly wrapper presets $f0, makes one jal per getter and stores $v0 and $f0",
+        "reset": "one PRX launch; PSPLink soft reset before the next launch"
+      },
+      {
+        "id": "PSP-HLE-NULL-OUT-001",
+        "status": "implemented",
+        "hardware_evidence": "NOT_RUN",
+        "evidence_note": "No hardware capture exists for this probe. It is built from fixtures/psp_oracle/probe_hle_measure.c and its stream is strictly parsed. Its cells are machinery-only: PASS when the calls completed and were recorded, SKIP when the object a cell needs was not obtained. Every returned value is an observation and is UNMEASURED for the console. Runs as a single launch, not in the campaign queue. Schedule it last in a session.",
+        "group": "kernel",
+        "source": "fixtures/psp_oracle/probe_hle_measure.c",
+        "prx": "hle_null_out_pointers.prx",
+        "apis": [
+          "sceIoClose",
+          "sceIoOpen",
+          "sceIoRead",
+          "sceIoWrite",
+          "sceKernelCreateVTimer",
+          "sceKernelDeleteThread",
+          "sceKernelDeleteVTimer",
+          "sceKernelExitThread",
+          "sceKernelGetThreadId",
+          "sceKernelGetVTimerBase",
+          "sceKernelGetVTimerTime",
+          "sceKernelReferSystemStatus",
+          "sceKernelReferVTimerStatus",
+          "sceKernelSleepThread",
+          "sceKernelWaitThreadEnd",
+          "sceKernelWakeupThread"
+        ],
+        "diagnostic_case_ids": [
+          "hle-null-out-pointers"
+        ],
+        "case_ids": [
+          "null-vtimer-create",
+          "null-sys-status",
+          "null-vtimer-time",
+          "null-vtimer-base",
+          "null-vtimer-refer",
+          "null-vtimer-delete",
+          "hle-null-out-pointers-done"
+        ],
+        "invariant": "ReferSystemStatus, GetVTimerTime, GetVTimerBase and ReferVTimerStatus with NULL as their mandatory out pointer, one call each after a step, on a live VTimer created first and deleted last; every record holds only its return code",
+        "issues": [],
+        "risk": "high: a NULL mandatory out-pointer may fault in kernel mode; schedule last in a session, after every other case.",
         "reset": "one PRX launch; PSPLink soft reset before the next launch"
       },
       {
