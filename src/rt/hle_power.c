@@ -135,3 +135,48 @@ uint32_t sr_hle_test_power_lock_count(void) { return s_power_lock_count; }
 uint32_t sr_hle_test_power_tick_count(void) { return s_power_tick_count; }
 void sr_hle_test_power_lock_reset(void) { s_power_lock_count = 0u; s_power_tick_count = 0u; }
 #endif
+
+/* Registration of the scePower and sceKernelPower NIDs above (issue #307). Each function holds the
+ * sr_hle_register() calls that sr_hle_init() used to make directly, in the same order. sr_hle_init()
+ * still calls each one where those registrations stood, so the registration order and the final NID
+ * table are unchanged. hle.c keeps the call sites; this file owns the NIDs. */
+
+/* Power-clock retained state (TD-24 batch 2): the two Int getters and the two
+ * SetClockFrequency variants share one definition, reached by both
+ * sr_hle_init() branches, so the executable harness pins the production
+ * mapping through dispatch. The getter NIDs below are the canonical #86
+ * values (0x478fe6f5 is the non-Int label; the Int alias 0xbd681969 stays
+ * unregistered); the float-return shaping for the non-Int getters remains
+ * tracked by #86. */
+void sr_hle_power_register_clock(void) {
+    sr_hle_register(0x34f9c463, "scePowerGetPllClockFrequencyInt", h_PowerGetPllClockFrequencyInt);
+    sr_hle_register(0xfdb5bfe9, "scePowerGetCpuClockFrequencyInt", h_PowerGetCpuClockFrequencyInt);
+    sr_hle_register(0x478fe6f5, "scePowerGetBusClockFrequency", h_PowerGetBusClockFrequencyInt);
+    sr_hle_register(0x737486f2, "scePowerSetClockFrequency", h_PowerSetClockFrequency);
+    sr_hle_register(0xebd177d6, "scePowerSetClockFrequency350", h_PowerSetClockFrequency350);
+    /* Battery state query, in the shared helper so the executable harness registers it too. */
+    sr_hle_register(0xd3075926, "scePowerIsLowBattery", h_PowerIsLowBattery);
+}
+
+/* TD-24 batch 4: sceKernelPowerLock, sceKernelPowerUnlock and sceKernelPowerTick. One definition
+ * reached by both sr_hle_init() branches, so the executable harness pins the production mapping. */
+void sr_hle_power_register_lock(void) {
+    sr_hle_register(0xeadb1bd7, "sceKernelPowerLock", h_PowerLock);
+    sr_hle_register(0x3aee7261, "sceKernelPowerUnlock", h_PowerUnlock);
+    sr_hle_register(0x090ccb3f, "sceKernelPowerTick", h_PowerTick);
+}
+
+/* scePowerRegisterCallback. sr_hle_init() registers it in its production branch only. */
+void sr_hle_power_register_callback(void) {
+    sr_hle_register(0x04b7766e, "scePowerRegisterCallback", h_PowerRegisterCallback);
+}
+
+/* Battery getters. Issue #86: the previous numeric NIDs were bogus (absent from the PPSSPP-derived
+ * nid_names.h); these canonical NIDs replace them so real title imports route here instead of being
+ * unregistered. The Int alias is 0xbd681969 and stays unregistered. */
+void sr_hle_power_register_battery(void) {
+    sr_hle_register(0x2085d15d, "scePowerGetBatteryLifePercent", h_PowerGetBatteryLifePercent);
+    sr_hle_register(0x1e490401, "scePowerIsBatteryCharging", h_PowerIsBatteryCharging);
+    sr_hle_register(0x0afd0d8b, "scePowerIsBatteryExist", h_PowerIsBatteryExist);
+    sr_hle_register(0x87440f5e, "scePowerIsPowerOnline", h_PowerIsPowerOnline);
+}
