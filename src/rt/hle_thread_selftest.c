@@ -2094,6 +2094,32 @@ static void test_runtime_placed_modules(void) {
         _putenv_s("SR_MEMSTICK", had_memstick ? saved_memstick : "");
     }
 
+    /* LoadModuleByID of a descriptor that names no recorded file: there is no module to
+     * load, so the call refuses by name before any load. It used to return a bare uid that
+     * no module record backed, which sceKernelStartModule rejects with the generic bad id
+     * (#280). Descriptor 0xFFFF is never open. */
+    {
+        extern uint32_t sr_hle_test_load_module_by_id(CpuState *s);
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = 0xFFFFu;
+        unsigned modules_before = sr_hle_test_module_count();
+        unsigned images_before = sr_hle_test_image_count();
+        rt_capture_begin();
+        uint32_t unrecorded = sr_hle_test_load_module_by_id(&cpu);
+        out = rt_capture_end();
+        expect(unrecorded == SCE_KERNEL_ERROR_NOT_IMPLEMENTED &&
+                   strstr(out, "GUEST_MODULE_BOUNDARY: guest-module-descriptor-unrecorded") != NULL,
+               "runtime placement: LoadModuleByID of an unrecorded descriptor refuses by name");
+        expect(sr_hle_test_module_count() == modules_before &&
+                   sr_hle_test_image_count() == images_before,
+               "runtime placement: the refused LoadModuleByID records and loads nothing");
+        expect((unrecorded & 0x80000000u) != 0u ||
+                   rt_lifecycle(sr_hle_test_start_module, unrecorded, 0u, 0u, 0u) !=
+                       SCE_ERROR_MODULE_BAD_ID,
+               "runtime placement: no uid from an unrecorded descriptor is rejected as bad id");
+    }
+
     /* A library module that declares no start routine starts by linking its exports. */
     {
         static const char nostart_guest[] = "disc0:/PSP_GAME/USRDIR/rt-nostart.prx";
@@ -15967,6 +15993,141 @@ static void test_ge_consumed_list_ignores_late_stall_address(void) {
            "a fully flushed frame re-executes nothing and is counted once per late chunk");
 }
 
+/* ---- Stall fence across the uncached mirror (issue #883) ----
+ *
+ * A list pointer or sceGeListUpdateStallAddr value may carry the 0x4xxxxxxx mirror while
+ * CALL/RET targets are masked to 0x0xxxxxxx. The GE position and the stall address then name
+ * one guest word under two aliases, and the fence has to stop there regardless. The two tests
+ * below cover each direction. Both run the production route: source-owned list ->
+ * sceGeListEnQueue -> ge_run_list -> sceGeListUpdateStallAddr -> framebuffer. */
+#define STALL_FB         0x04000000u
+#define STALL_STRIDE     512u
+#define STALL_CLEAR      0x5a5a5a5au
+#define STALL_SUB_COLOR  0xFF3399CCu
+#define STALL_POST_COLOR 0xFFCC9933u
+#define STALL_SUB_VTX    0x08964000u
+#define STALL_POST_VTX   0x08964100u
+
+static void stall_cmd(uint32_t *dl, uint32_t *p, uint32_t cmd, uint32_t data) {
+    dl[(*p)++] = ((uint32_t)cmd << 24) | (data & 0x00ffffffu);
+}
+
+/* Render state set explicitly, so the fixture does not depend on GE state left by an earlier
+ * test. Returns the number of words written. */
+static uint32_t stall_state(uint32_t *dl) {
+    uint32_t p = 0;
+    stall_cmd(dl, &p, 0x10, 0x080000u);                          /* BASE: 0x08000000 upper bits */
+    stall_cmd(dl, &p, 0x13, 0u);                                 /* OFFSETADDR */
+    stall_cmd(dl, &p, 0x9C, STALL_FB & 0x00ffffffu);             /* FRAMEBUFPTR */
+    stall_cmd(dl, &p, 0x9D, STALL_STRIDE | ((STALL_FB & 0xff000000u) >> 8));
+    stall_cmd(dl, &p, 0xD2, 3u);                                 /* PIXFORMAT 8888 */
+    stall_cmd(dl, &p, 0x15, 0u);                                 /* REGION1 */
+    stall_cmd(dl, &p, 0x16, ((272u - 1u) << 10) | (480u - 1u));  /* REGION2 */
+    stall_cmd(dl, &p, 0xD4, 0u);                                 /* SCISSOR1 */
+    stall_cmd(dl, &p, 0xD5, ((272u - 1u) << 10) | (480u - 1u));  /* SCISSOR2 */
+    stall_cmd(dl, &p, 0x23, 0u);                                 /* ZTEST off */
+    stall_cmd(dl, &p, 0x22, 0u);                                 /* ALPHATEST off */
+    stall_cmd(dl, &p, 0x21, 0u);                                 /* ALPHABLEND off */
+    stall_cmd(dl, &p, 0x1E, 0u);                                 /* TEXTUREMAP off */
+    stall_cmd(dl, &p, 0x12, (7u << 2) | (3u << 7) | (1u << 23)); /* colour, float xyz, through */
+    return p;
+}
+
+/* Two-vertex through-mode sprite; each vertex is colour then x, y, z (16 bytes). */
+static void stall_sprite(uint32_t vtx, uint32_t color, float x0, float y0, float x1, float y1) {
+    const float corner[2][3] = { { x0, y0, 0.0f }, { x1, y1, 0.0f } };
+    for (uint32_t v = 0; v < 2u; v++) {
+        uint32_t *w = (uint32_t *)SR_HOST(vtx + 16u * v);
+        w[0] = color;
+        memcpy(&w[1], corner[v], 3u * sizeof(float));
+    }
+}
+
+/* The list reaches the stall word through CALL/RET, so its position is the 0x08 spelling
+ * while the stall address, set through the 0x48 mirror, is the other spelling. */
+static void test_ge_stall_alias_across_call_return(void) {
+    const uint32_t list = 0x08960000u;
+    const uint32_t sub = 0x08962000u;
+    CpuState cpu;
+
+    reset_fixture();
+    sr_hle_init();
+
+    uint32_t *dl = (uint32_t *)SR_HOST(list);
+    uint32_t p = stall_state(dl);
+    stall_cmd(dl, &p, 0x0A, sub & 0x00ffffffu);          /* CALL sub */
+    const uint32_t ret_pc = list + 4u * p;               /* RET lands on the next word */
+    stall_cmd(dl, &p, 0x01, STALL_POST_VTX & 0x00ffffffu);
+    stall_cmd(dl, &p, 0x04, (6u << 16) | 2u);            /* post sprite */
+    stall_cmd(dl, &p, 0x0F, 0u);
+    stall_cmd(dl, &p, 0x0C, 0u);
+
+    uint32_t *sd = (uint32_t *)SR_HOST(sub);
+    uint32_t q = 0;
+    stall_cmd(sd, &q, 0x01, STALL_SUB_VTX & 0x00ffffffu);
+    stall_cmd(sd, &q, 0x04, (6u << 16) | 2u);            /* sub sprite */
+    stall_cmd(sd, &q, 0x0B, 0u);                         /* RET */
+
+    stall_sprite(STALL_SUB_VTX, STALL_SUB_COLOR, 20.0f, 20.0f, 28.0f, 28.0f);
+    stall_sprite(STALL_POST_VTX, STALL_POST_COLOR, 60.0f, 60.0f, 68.0f, 68.0f);
+
+    uint32_t *fb = (uint32_t *)SR_HOST(STALL_FB);
+    memset(fb, 0x5a, STALL_STRIDE * 272u * 4u);
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = list;
+    cpu.r[5] = 0x40000000u | ret_pc;
+    uint32_t qid = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+    expect(fb[24u * STALL_STRIDE + 24u] == STALL_SUB_COLOR,
+           "the CALL target runs before the stall");
+    expect(fb[64u * STALL_STRIDE + 64u] == STALL_CLEAR,
+           "the GE stops at the RET target reached through the 0x08 mirror: the post sprite is not drawn");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid;
+    cpu.r[5] = 0u;
+    sr_syscall(&cpu, NID_SCE_GE_LIST_UPDATE_STALL_ADDR);
+    expect(fb[64u * STALL_STRIDE + 64u] == STALL_POST_COLOR,
+           "clearing the stall resumes the list past the RET target");
+}
+
+/* The reverse direction: the list runs linearly from the uncached mirror, and the stall
+ * address is the 0x08 spelling of the word the list is about to execute. */
+static void test_ge_stall_alias_linear_from_uncached_list(void) {
+    const uint32_t list = 0x48966000u;
+    CpuState cpu;
+
+    reset_fixture();
+    sr_hle_init();
+
+    uint32_t *dl = (uint32_t *)SR_HOST(list);
+    uint32_t p = stall_state(dl);
+    const uint32_t stall = (list + 4u * p) & 0x0fffffffu; /* post word, 0x08 spelling */
+    stall_cmd(dl, &p, 0x01, STALL_POST_VTX & 0x00ffffffu);
+    stall_cmd(dl, &p, 0x04, (6u << 16) | 2u);            /* post sprite */
+    stall_cmd(dl, &p, 0x0F, 0u);
+    stall_cmd(dl, &p, 0x0C, 0u);
+
+    stall_sprite(STALL_POST_VTX, STALL_POST_COLOR, 60.0f, 60.0f, 68.0f, 68.0f);
+
+    uint32_t *fb = (uint32_t *)SR_HOST(STALL_FB);
+    memset(fb, 0x5a, STALL_STRIDE * 272u * 4u);
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = list;
+    cpu.r[5] = stall;
+    uint32_t qid = sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
+    expect(fb[64u * STALL_STRIDE + 64u] == STALL_CLEAR,
+           "the GE stops at the 0x08 spelling of the stall word in a list run from 0x48: the post sprite is not drawn");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid;
+    cpu.r[5] = 0u;
+    sr_syscall(&cpu, NID_SCE_GE_LIST_UPDATE_STALL_ADDR);
+    expect(fb[64u * STALL_STRIDE + 64u] == STALL_POST_COLOR,
+           "clearing the stall resumes the list past the stall word");
+}
+
 static uint32_t ge_transfer_enqueue(uint32_t src, uint32_t src_stride,
                                     uint32_t src_x, uint32_t src_y,
                                     uint32_t dst, uint32_t dst_stride,
@@ -27510,6 +27671,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_nested_frame_handle_hygiene();
     test_ge_guest_sentinel();
     test_ge_consumed_list_ignores_late_stall_address();
+    test_ge_stall_alias_across_call_return();
+    test_ge_stall_alias_linear_from_uncached_list();
     test_ge_linear_filter_stays_inside_region();
     test_ge_block_transfer_span_atomicity();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
