@@ -324,6 +324,30 @@ class FrameBalanceBasicsTests(unittest.TestCase):
             with self.subTest(form=label):
                 self.assertEqual(efb.sp_effect((SP << 11) | fn), (0, False), label)
 
+    def test_unlinked_jalr_zero_rd_is_tail_transfer_not_returning_call(self):
+        """jalr $rs, $zero (rd=0) is jr $rs, not a returning call that falls through.
+
+        Treating jalr $rs, $zero as a returning call causes the walker to
+        fall through into adjacent code, adopting a foreign jr $ra and falsely
+        claiming callable ownership over that return path.
+        """
+        words = emit(
+            0x1000,
+            addiu(SP, SP, -0x20),   # 0x1000
+            sw(RA, SP, 0x1C),       # 0x1004
+            jalr(T9, 0),            # 0x1008 jalr $t9, $zero -> jr $t9 (tail transfer)
+            addiu(SP, SP, 0x20),    # 0x100c delay slot
+            addiu(SP, SP, -0x10),   # 0x1010 adjacent function 2
+            jr(RA),                 # 0x1014 adjacent function return
+            addiu(SP, SP, 0x10),    # 0x1018
+        )
+        elf, ranges = image(words)
+        profile = efb.profile_entry(elf, 0x1000, ranges)
+        self.assertNotIn(0x1014, profile.depths)
+        self.assertIn(0, profile.tail_deltas)
+        self.assertEqual(profile.return_deltas, frozenset())
+        self.assertEqual(efb.classify(profile), efb.INDETERMINATE)
+
 
 class SharedTailOwnershipTests(unittest.TestCase):
     """Wiki doc 26 section 14: multiple owners must not be silently reduced."""
@@ -1285,6 +1309,38 @@ class DirectBranchAuditTests(unittest.TestCase):
         candidate = self.only(records)
         self.assertEqual(candidate.classification, efb.CONTINUATION)
         self.assertEqual(candidate.continuation_delta, 0x30)
+
+
+class RefusedBranchEncodingTests(unittest.TestCase):
+    """A reserved branch encoding must not be walked as straight-line code."""
+
+    def test_forged_branch_encodings_make_the_entry_unknown_not_callable(self):
+        # The taken path of the bne reaches a reserved branch encoding whose
+        # successor is undefined. The not-taken path returns balanced, and so does
+        # the straight-line walk of the forged word, so a walker that ignores the
+        # encoding reports a confident callable. The entry must come out unknown.
+        forged = {
+            "blez with nonzero rt": (0x06 << 26) | (A0 << 21) | (1 << 16) | 1,
+            "bgtzl with nonzero rt": (0x17 << 26) | (A0 << 21) | (1 << 16) | 1,
+        }
+        for label, branch in forged.items():
+            with self.subTest(encoding=label):
+                words = emit(
+                    0x1000,
+                    addiu(SP, SP, -0x20),
+                    bne(A0, 0, 3),       # 0x1004: taken target 0x1014
+                    NOP,                 # 0x1008: delay slot
+                    jr(RA),              # 0x100c: not-taken return, balanced
+                    addiu(SP, SP, 0x20),
+                    branch,              # 0x1014: reserved encoding
+                    NOP,                 # 0x1018: delay slot
+                    jr(RA),              # 0x101c: straight-line return, balanced
+                    addiu(SP, SP, 0x20),
+                )
+                elf, ranges = image(words)
+                profile = efb.profile_entry(elf, 0x1000, ranges)
+                self.assertTrue(profile.unknown_sp)
+                self.assertEqual(efb.classify(profile), efb.INDETERMINATE)
 
 
 def regimm_link(selector, rs, here, target):
