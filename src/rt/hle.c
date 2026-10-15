@@ -7114,14 +7114,11 @@ static int sr_wide_configured_root_wide_alloc(const wchar_t *value, wchar_t **ou
     wchar_t *wide = (wchar_t *)malloc((n + 1u) * sizeof(*wide));
     if (!wide) return 0;
     memcpy(wide, value, (n + 1u) * sizeof(*wide));
+    /* Absolute on both hosts, as on Win32: a relative value is refused here and is never anchored to the
+     * working directory, which in a child process is a different directory from the one the caller meant. */
     if (!sr_wide_is_absolute(wide)) {
-        wchar_t *canonical = NULL;
-        if (!sr_wide_full_path_alloc(wide, &canonical)) {
-            free(wide);
-            return 0;
-        }
         free(wide);
-        wide = canonical;
+        return 0;
     }
     int ok = sr_wide_extended_absolute_alloc(wide, out);
     free(wide);
@@ -7667,8 +7664,8 @@ static void flash0_user_data_root(char *dst, size_t capacity) {
     wchar_t *root = NULL;
     char *root_utf8 = NULL;
     /* Absolute on every host: sr_wide_is_absolute is this host's own rule (a drive or UNC path on
-     * Win32, a leading '/' on POSIX). The wide helper resolves a relative value against the working
-     * directory on POSIX, so the check comes first. */
+     * Win32, a leading '/' on POSIX). The wide helper refuses a relative value on both hosts too; this
+     * check comes first so the refusal is named here with the diagnostic below. */
     int valid = configured[0] != L'\0' && sr_wide_is_absolute(configured) &&
                 sr_wide_configured_root_wide_alloc(configured, &root) &&
                 sr_wide_to_utf8_alloc(root, &root_utf8);

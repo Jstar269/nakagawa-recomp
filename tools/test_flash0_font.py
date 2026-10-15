@@ -355,6 +355,50 @@ class Flash0UserRootSourceContractTests(unittest.TestCase):
         self.assertIn("if (!configured_present)", body)
 
 
+class Flash0ConfiguredRootSourceContractTests(unittest.TestCase):
+    """Configured roots (SR_FONTDIR, SR_DATAROOT, SR_EXE_DIR) must be absolute on every host, checked in
+    the source so it runs everywhere, WSL included.
+
+    sr_wide_configured_root_wide_alloc has a Win32 and a POSIX definition in hle.c. Win32 refused a relative
+    value; POSIX joined it to the working directory, so a child process started in a package directory read
+    a different directory from the one the caller configured (#827 review of #1025).
+    """
+
+    SIGNATURE = "static int sr_wide_configured_root_wide_alloc(const wchar_t *value, wchar_t **out) {"
+
+    def setUp(self) -> None:
+        self.source = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        self.assertEqual(self.source.count(self.SIGNATURE), 2, "expected one Win32 and one POSIX definition")
+        self.first = self.source.index(self.SIGNATURE)
+        self.second = self.source.index(self.SIGNATURE, self.first + 1)
+
+    def test_posix_configured_root_refuses_a_relative_value(self) -> None:
+        """The POSIX helper refuses a non-absolute value and never anchors it to the working directory."""
+        posix = self.source[self.second:self.source.index("\n}\n", self.second)]
+        self.assertNotIn("sr_wide_full_path_alloc(wide", posix)
+        self.assertRegex(posix, r"if \(!sr_wide_is_absolute\(wide\)\) \{\s*free\(wide\);\s*return 0;")
+
+    def test_win32_configured_root_refuses_a_relative_value(self) -> None:
+        """The Win32 definition, which the POSIX one now matches, refuses anything not absolute."""
+        win32 = self.source[self.first:self.source.index("\n}\n", self.first)]
+        self.assertRegex(
+            win32,
+            r"if \(!\(sr_wide_is_extended\(wide\) \|\| sr_wide_is_absolute\(wide\)\)\) \{\s*free\(wide\);\s*return 0;",
+        )
+
+    def test_each_configured_root_reader_goes_through_the_helper(self) -> None:
+        """SR_EXE_DIR (module directory), SR_FONTDIR (font_load and the module font root) and SR_DATAROOT
+        (host_data) are read through the helper, so one refusal covers all three."""
+        for call in (
+            "sr_wide_configured_root_wide_alloc(configured, &full)",
+            "sr_wide_configured_root_wide_alloc(configured, out)",
+            "sr_wide_configured_root_wide_alloc(configured, &root)",
+            "sr_wide_configured_root_wide_alloc(configured_root, &root_wide)",
+        ):
+            with self.subTest(call=call):
+                self.assertIn(call, self.source)
+
+
 class Flash0FontDeviceTests(unittest.TestCase):
     def test_windows_include_detector(self) -> None:
         """The skip below is decided by this reader, so it must tell a guarded include apart."""
