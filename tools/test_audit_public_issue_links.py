@@ -471,6 +471,61 @@ class TestAuditPublicIssueLinks(unittest.TestCase):
             ):
                 self.assertEqual(main(), 1)
 
+    def test_same_line_external_tracker_link_does_not_hide_dead_shorthand(self) -> None:
+        # Regression: an external tracker link on the same line suppressed our own bare
+        # #N shorthand by number, so a dead current-facing reference passed silently.
+        (self.repo_path / "README.md").write_text(
+            "Ours #999 is blocked; upstream [#999](https://github.com/hrydgard/ppsspp/issues/999).\n",
+            encoding="utf-8",
+        )
+        findings = audit_markdown_files(self.repo_path, {})
+        dead = [f for f in findings if not f[4] and "DEAD / UNRESOLVED SHORTHAND" in f[3]]
+        self.assertEqual([(f[1], f[2]) for f in dead], [(1, "#999")])
+
+    def test_in_the_works_pointer_beside_external_link_of_same_number_fails(self) -> None:
+        (self.repo_path / "README.md").write_text(
+            "The fix is in the works (#38), upstream [#38](https://github.com/hrydgard/ppsspp/issues/38).\n",
+            encoding="utf-8",
+        )
+        stale = self._stale_in_works(
+            audit_markdown_files(self.repo_path, {38: self._tracker(38, "closed")})
+        )
+        self.assertEqual([(f[1], f[2]) for f in stale], [(1, "#38")])
+
+    def test_malformed_tracker_url_tails_fail_instead_of_resolving_to_the_number(self) -> None:
+        # GitHub redirects issues/N-suffix to an unrelated filtered list and returns 404 for
+        # issues/N/suffix, so neither tail is a live reference to issue or PR N.
+        repo = "https://github.com/Jstar269/nakagawa-recomp"
+        for text in (
+            f"See {repo}/issues/23-extra\n",
+            f"See {repo}/issues/23/extra\n",
+            f"See {repo}/pull/23-extra\n",
+        ):
+            with self.subTest(text=text):
+                (self.repo_path / "README.md").write_text(text, encoding="utf-8")
+                findings = audit_markdown_files(self.repo_path, {23: self._tracker(23, "open")})
+                self.assertTrue(findings)
+                self.assertTrue(all(not f[4] for f in findings), findings)
+                self.assertTrue(any("MALFORMED PUBLIC TRACKER URL" in f[3] for f in findings), findings)
+
+    def test_canonical_query_fragment_punctuation_and_pull_subroutes_stay_live(self) -> None:
+        repo = "https://github.com/Jstar269/nakagawa-recomp"
+        (self.repo_path / "README.md").write_text(
+            f"See {repo}/issues/23 and {repo}/issues/23?utm=x and {repo}/issues/23#issuecomment-1.\n"
+            f"Also ({repo}/issues/24), {repo}/pull/20/files, and {repo}/pull/20/\n"
+            "Other trackers: https://github.com/Jstar269/nakagawa-recomp-fork/issues/999 "
+            "and https://github.com/hrydgard/ppsspp/issues/999.\n",
+            encoding="utf-8",
+        )
+        issues_map = {
+            23: self._tracker(23, "open"),
+            24: self._tracker(24, "closed"),
+            20: self._tracker(20, "closed", is_pr=True, merged=True),
+        }
+        findings = audit_markdown_files(self.repo_path, issues_map)
+        self.assertEqual(len(findings), 6, findings)
+        self.assertTrue(all(f[4] for f in findings), findings)
+
 
 if __name__ == "__main__":
     unittest.main()

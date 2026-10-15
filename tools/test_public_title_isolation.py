@@ -198,8 +198,9 @@ class PublicTitleIsolationTests(unittest.TestCase):
 
     def test_in_memory_private_overlay_registry(self) -> None:
         """TitleRegistry loads public titles by default, and can load private manifest on demand."""
+        # The default registry already loaded the tracked catalog (self.titles_dir);
+        # loading it again is a re-registration, which standard mode now refuses.
         reg = TitleRegistry()
-        reg.load_from_directory(self.titles_dir)
 
         # Public titles are loaded
         self.assertIsNotNone(reg.find_by_disc_id("TEST00001"))
@@ -349,8 +350,8 @@ class PublicTitleIsolationTests(unittest.TestCase):
 
     def test_overlay_collision_policy(self) -> None:
         """Section 4: Conflicting overlay on canonical public title must fail closed unless overridden."""
+        # The default registry already holds the tracked catalog (self.titles_dir).
         reg = TitleRegistry()
-        reg.load_from_directory(self.titles_dir)
 
         # Create a manifest that conflicts with public title 'synthetic-allegrex-v1'
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:

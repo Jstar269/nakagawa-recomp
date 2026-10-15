@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from fractions import Fraction
 import math
 import sys
 from pathlib import Path
@@ -179,8 +180,10 @@ def _close(before: Any, after: Any, tolerance: float) -> bool:
         return before == after
     if tolerance == 0.0:
         return before == after
-    delta = abs(float(after) - float(before))
-    return delta <= tolerance * max(1.0, abs(float(before)))
+    # str() is the shortest decimal that round-trips, so 0.3 means exactly 3/10 as typed,
+    # not its binary neighbour (which sits just below 3/10 and would flip the inclusive bound).
+    delta = abs(Fraction(after) - Fraction(before))
+    return delta <= Fraction(str(tolerance)) * max(Fraction(1), abs(Fraction(before)))
 
 
 def _change(path: str, before: Any, after: Any) -> dict[str, Any]:
