@@ -212,12 +212,24 @@ static int create_swapchain(void) {
     VK_TRY(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(s_pdev, s_surf, &caps));
 
     /* Prefer BGRA8 UNORM (matches the framebuffer byte order); fall back to whatever the
-     * surface offers first. */
-    VkSurfaceFormatKHR fmts[32]; uint32_t nf = 32;
-    VK_TRY(vkGetPhysicalDeviceSurfaceFormatsKHR(s_pdev, s_surf, &nf, fmts));
-    VkSurfaceFormatKHR pick = fmts[0];
-    for (uint32_t i = 0; i < nf; i++)
-        if (fmts[i].format == VK_FORMAT_B8G8R8A8_UNORM) { pick = fmts[i]; break; }
+     * surface offers first. VK_INCOMPLETE is a success code here (the surface has more
+     * formats than fmts[] holds, and the entries written are valid), so it is not routed
+     * through VK_TRY (issue #884). The pick itself is sdl3vk_pick_surface_format. */
+    VkSurfaceFormatKHR fmts[SDL3VK_SURFACE_FORMAT_CAP]; uint32_t nf = SDL3VK_SURFACE_FORMAT_CAP;
+    VkResult fr = vkGetPhysicalDeviceSurfaceFormatsKHR(s_pdev, s_surf, &nf, fmts);
+    int fmt_ids[SDL3VK_SURFACE_FORMAT_CAP];
+    int nk = 0;
+    if (fr == VK_SUCCESS || fr == VK_INCOMPLETE) {
+        nk = nf < SDL3VK_SURFACE_FORMAT_CAP ? (int)nf : SDL3VK_SURFACE_FORMAT_CAP;
+        for (int i = 0; i < nk; i++) fmt_ids[i] = (int)fmts[i].format;
+    }
+    int pi = sdl3vk_pick_surface_format((int)fr, nk, fmt_ids);
+    if (pi < 0) {
+        fprintf(stderr, "sdl3vk: vkGetPhysicalDeviceSurfaceFormatsKHR gave no usable formats: "
+                        "VkResult %d, %d format(s)\n", (int)fr, nk);
+        return 0;
+    }
+    VkSurfaceFormatKHR pick = fmts[pi];
     s_swap_fmt = pick.format;
 
     VkExtent2D ext = caps.currentExtent;
@@ -295,6 +307,24 @@ int sdl3vk_pick_present_mode(int vsync, const int *available, int count) {
     for (int i = 0; i < count; i++)
         if (available[i] == immediate) return immediate;
     return fifo;
+}
+
+/* Guard the Vulkan values sdl3vk_pick_surface_format compares against (passed as plain
+ * ints, see sdl3vk.h): VK_SUCCESS, VK_INCOMPLETE and VK_FORMAT_B8G8R8A8_UNORM. */
+typedef char sdl3vk_surface_success_is_0[(int)VK_SUCCESS == 0 ? 1 : -1];
+typedef char sdl3vk_surface_incomplete_is_5[(int)VK_INCOMPLETE == 5 ? 1 : -1];
+typedef char sdl3vk_surface_bgra8_unorm_is_44[(int)VK_FORMAT_B8G8R8A8_UNORM == 44 ? 1 : -1];
+
+int sdl3vk_pick_surface_format(int query, int count, const int *formats) {
+    const int success = 0;
+    const int incomplete = 5;
+    const int bgra8_unorm = 44;
+    if (query != success && query != incomplete) return -1;
+    if (count > SDL3VK_SURFACE_FORMAT_CAP) count = SDL3VK_SURFACE_FORMAT_CAP;
+    if (count <= 0 || formats == NULL) return -1;
+    for (int i = 0; i < count; i++)
+        if (formats[i] == bgra8_unorm) return i;
+    return 0;
 }
 
 /* ---- init --------------------------------------------------------------------------- */

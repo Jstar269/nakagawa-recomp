@@ -503,6 +503,7 @@ def validate_meta(regs: list[dict]) -> None:
                     "a complete handler must cite at least one verifiable evidence entry "
                     "(public ABI/doc, source-owned test name, hardware oracle id, or guest-module takeover)"
                 )
+        has_executable_evidence = False
         if evidence is not None:
             if not isinstance(evidence, list) or not evidence:
                 raise ManifestError(f"handler {handler!r} has empty evidence metadata")
@@ -515,6 +516,7 @@ def validate_meta(regs: list[dict]) -> None:
                     or candidate_path.startswith(("src/", "tools/", "fixtures/"))
                 ):
                     continue
+                has_executable_evidence = True
                 if not (ROOT / candidate_path).exists():
                     raise ManifestError(
                         f"handler {handler!r} cites non-existent evidence file {candidate_path!r}"
@@ -524,6 +526,12 @@ def validate_meta(regs: list[dict]) -> None:
                         f"handler {handler!r} cites evidence anchor {anchor!r} that "
                         f"{candidate_path!r} does not define"
                     )
+        if status == "complete" and not has_executable_evidence:
+            raise ManifestError(
+                f"handler {handler!r} is marked 'complete' but has no named executable evidence; "
+                "a complete handler must cite at least one executable evidence file in the repository "
+                "(under src/, tools/, fixtures/, or Makefile)"
+            )
         # Independent of evidence: a partial or compatibility handler must always
         # name its limitation, whether or not it also cites evidence.
         if status in ("partial", "compatibility"):
@@ -1183,7 +1191,8 @@ def build_evidence_chain(manifest: dict | None = None, imports_path: Path | None
 
     if manifest is None:
         manifest = build_manifest()
-    scopes = registration_scopes(HLE_C.read_text(encoding="utf-8"))
+    # hle_power.c owns scePower/sceKernelPower registrations (issue #307); read it with hle.c.
+    scopes = registration_scopes(runtime_hle_source())
     cells = conformance_cells(_read_optional(INTR_CONFORMANCE_H))
     dispatched = selftest_dispatched_nids(_read_optional(SELFTEST_C))
     try:
