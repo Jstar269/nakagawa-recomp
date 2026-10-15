@@ -7213,8 +7213,8 @@ static int sr_wide_basename_alloc(const wchar_t *path, wchar_t **out) {
 }
 
 /* The directory this executable was loaded from: /proc/self/exe here, with the
- * configured SR_EXE_DIR override honoured first, exactly as the Windows layer
- * honours SR_EXE_DIR ahead of the module handle. */
+ * configured SR_EXE_DIR override honoured first. SR_EXE_DIR is read on POSIX only: the Win32 layer has
+ * no reader for it in this tree, so the override does not apply there. */
 static int sr_wide_module_dir_alloc(wchar_t **out) {
     if (!out) return 0;
     *out = NULL;
@@ -7681,18 +7681,29 @@ static void flash0_user_data_root(char *dst, size_t capacity) {
     free(root_utf8);
 }
 
+/* SR_FONTDIR set but refused (unreadable, empty, or relative) leaves the project source empty, and the
+ * refusal is named once here, as font_load names it for sceFont. The device resolves its roots on every
+ * open, and nothing else is tried in its place. */
+static atomic_int s_font_dir_refusal_named;
+
+static void flash0_refuse_font_dir(const char *reason) {
+    if (atomic_exchange_explicit(&s_font_dir_refusal_named, 1, memory_order_relaxed)) return;
+    fprintf(stderr, "flash0: SR_FONTDIR %s; the project font source is skipped\n", reason);
+}
+
 static void flash0_font_sources(Flash0Sources *out) {
     flash0_user_data_root(out->user_data_dir, sizeof(out->user_data_dir));
 
     wchar_t *configured = NULL;
     wchar_t *root = NULL;
     int configured_present = 0;
-    if (sr_wide_env_alloc(L"SR_FONTDIR", &configured, &configured_present)) {
-        if (configured_present) {
-            if (configured && configured[0]) sr_wide_configured_root_wide_alloc(configured, &root);
-        } else {
-            sr_wide_module_font_root(&root);
-        }
+    if (!sr_wide_env_alloc(L"SR_FONTDIR", &configured, &configured_present)) {
+        flash0_refuse_font_dir("could not be read");
+    } else if (configured_present) {
+        if (!configured[0] || !sr_wide_configured_root_wide_alloc(configured, &root))
+            flash0_refuse_font_dir("is configured but is not a valid absolute path");
+    } else {
+        sr_wide_module_font_root(&root);
     }
     free(configured);
     char *utf8 = NULL;
