@@ -33,6 +33,7 @@ import os
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -462,6 +463,36 @@ def gzip_payload(data: bytes) -> bytes:
     return gzip.compress(data, mtime=0)
 
 
+def mixed_block_gzip_payload(elf: bytes) -> tuple[bytes, bytes, list[bytes]]:
+    """Return ``(plain, gzip, runs)`` whose DEFLATE stream mixes block types.
+
+    zlib writes stored blocks for the incompressible stretches of a module, so
+    a real compressed ``~PSP`` payload switches from Huffman-coded blocks to
+    stored blocks and back.  Each run here comes from its own zlib compressor
+    and ends on a full flush, so every seam is byte aligned and no match
+    reaches across it; the middle run is compressed at level 0, which zlib
+    writes as stored blocks.  ``runs`` holds each run's DEFLATE bytes.
+    """
+    import zlib
+
+    compressible = (struct.pack("<I", 0x27BDFFE0) + bytes(12)) * 0x10000  # 1 MiB
+    incompressible = b"".join(hashlib.sha256(struct.pack("<I", n)).digest()
+                              for n in range(0x400))                     # 32 KiB
+    plans = ((elf + compressible, 9), (incompressible, 0), (compressible, 9))
+    plain = b"".join(data for data, _ in plans)
+    runs = []
+    for index, (data, level) in enumerate(plans):
+        compressor = zlib.compressobj(level, zlib.DEFLATED, -15)
+        last = index == len(plans) - 1
+        runs.append(compressor.compress(data) +
+                    compressor.flush(zlib.Z_FINISH if last else zlib.Z_FULL_FLUSH))
+    header = b"\x1f\x8b\x08\x00" + bytes(4) + b"\x00\xff"  # no optional fields
+    trailer = struct.pack("<II", zlib.crc32(plain), len(plain))
+    stream = header + b"".join(runs) + trailer
+    assert zlib.decompress(stream, 16 + 15) == plain
+    return plain, stream, runs
+
+
 # ---------------------------------------------------------------------------
 # Key file helpers (synthetic, clearly fake, outside the repository).
 # ---------------------------------------------------------------------------
@@ -470,8 +501,23 @@ def fake_hex(n: int) -> str:
     return os.urandom(n).hex()
 
 
+def require_scratch_path(path: Path) -> Path:
+    """Refuse a test key file anywhere but the system temporary directory.
+
+    The real key file sits under the user's profile, so a fixture written
+    through a default user-data root would replace the user's own keys.
+    """
+    resolved = Path(path).resolve()
+    scratch = Path(tempfile.gettempdir()).resolve()
+    if not resolved.is_relative_to(scratch):
+        raise AssertionError(
+            f"test key file {resolved} is outside the temporary directory {scratch}")
+    return path
+
+
 def write_keyfile(path: Path, entries: dict) -> None:
     import json
+    require_scratch_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     doc = {"format": "nakagawa-psp-keystore-1", "entries": entries}
     path.write_text(json.dumps(doc, indent=2, sort_keys=True), encoding="utf-8")
@@ -528,6 +574,54 @@ def build_tool() -> Path:
     """Compile (or reuse) the production ``nk_decrypt`` command-line entry."""
     from tools.nk_core import decrypt_tool
     return decrypt_tool.find_or_build_tool(ROOT)
+
+
+def isolated_profile_environment(root: Path) -> dict[str, str]:
+    """Per-user locations that the tools and the player resolve, all under ``root``."""
+    home = root / "home"
+    return {
+        "LOCALAPPDATA": str(root / "localappdata"),
+        "APPDATA": str(root / "appdata"),
+        "USERPROFILE": str(home),
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "XDG_CONFIG_HOME": str(home / ".config"),
+        "XDG_DATA_HOME": str(home / ".local" / "share"),
+        "XDG_STATE_HOME": str(home / ".local" / "state"),
+    }
+
+
+_PROFILE_ROOT: Path | None = None
+_PROFILE_PATCH = None
+
+
+def setUpModule():
+    """Run every test here against a throwaway user profile.
+
+    The boundary resolves the key file from ``NAKAGAWA_PSP_KEY_FILE`` before
+    ``<user data>/keys/psp-keyfile.json``, and the user-data root itself from
+    the profile variables.  Without this a developer's override would point
+    these tests at the real key file, and any test that fell back to the
+    default user-data root would read or write the real profile.
+    """
+    global _PROFILE_ROOT, _PROFILE_PATCH
+    from tools.nk_core.decrypt_boundary import KEY_FILE_ENV
+
+    _PROFILE_ROOT = Path(tempfile.mkdtemp(prefix="nk_psp_profile_"))
+    _PROFILE_PATCH = mock.patch.dict(os.environ,
+                                     isolated_profile_environment(_PROFILE_ROOT))
+    _PROFILE_PATCH.start()
+    os.environ.pop(KEY_FILE_ENV, None)
+
+
+def tearDownModule():
+    global _PROFILE_ROOT, _PROFILE_PATCH
+    if _PROFILE_PATCH is not None:
+        _PROFILE_PATCH.stop()
+        _PROFILE_PATCH = None
+    if _PROFILE_ROOT is not None:
+        shutil.rmtree(_PROFILE_ROOT, ignore_errors=True)
+        _PROFILE_ROOT = None
 
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
@@ -603,14 +697,16 @@ class TestSyntheticEndToEnd(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
-    def _seal(self, payload: bytes, compressed: bool) -> tuple[bytes, dict, bytes]:
+    def _seal(self, payload: bytes, compressed: bool,
+              elf_size: int | None = None) -> tuple[bytes, dict, bytes]:
         entries, tag_key = synthetic_entries()
         tag_entry = entries[f"prx.tag.0x{SYNTH_TAG:08X}"]
         container = seal_type2_psp(
             payload, SYNTH_TAG, bytes.fromhex(tag_entry["key"]),
             bytes.fromhex(entries["kirk.cmd1.key"]),
             bytes.fromhex(entries[f"kirk.keyvault.{SYNTH_CODE}"]),
-            compressed=compressed, elf_size=len(self.elf),
+            compressed=compressed,
+            elf_size=len(self.elf) if elf_size is None else elf_size,
         )
         return container, entries, tag_key
 
@@ -643,6 +739,35 @@ class TestSyntheticEndToEnd(unittest.TestCase):
         )
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertEqual(dst.read_bytes(), self.elf)
+
+    def test_gzip_payload_with_stored_blocks_between_huffman_blocks(self):
+        """A gzip payload that switches between Huffman and stored blocks decrypts.
+
+        The inflater used to fall through from a stored block into the Huffman
+        body loop with the previous block's table, so a real compressed module
+        failed with "inflate: invalid deflate block type" while zlib inflated
+        it.  The tiny-ELF payload above never produces a stored block.
+        """
+        plain, stream, runs = mixed_block_gzip_payload(self.elf)
+        # The stream really has the shape under test: a Huffman-coded run, a
+        # stored run, then a Huffman-coded final run (BTYPE is bits 1-2).
+        self.assertIn((runs[0][0] >> 1) & 3, (1, 2))
+        self.assertEqual((runs[1][0] >> 1) & 3, 0)
+        self.assertIn((runs[2][0] >> 1) & 3, (1, 2))
+        container, entries, _ = self._seal(stream, compressed=True,
+                                           elf_size=len(plain))
+        src = self.tmp / "EBOOT_mixed.BIN"
+        src.write_bytes(container)
+        keyfile = self.tmp / "keys_mixed.json"
+        write_keyfile(keyfile, entries)
+        dst = self.tmp / "EBOOT_mixed.elf"
+        out = subprocess.run(
+            [str(self.exe), "decrypt", "--key-file", str(keyfile),
+             "--in", str(src), "--out", str(dst)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(dst.read_bytes(), plain)
 
     def test_probe_reports_needed_entries_without_keyfile(self):
         container, _, _ = self._seal(self.elf, compressed=False)
@@ -824,6 +949,48 @@ class TestPreflightIntegration(unittest.TestCase):
         self.assertIn("supply decrypted modules at", executable["message"])
         self.assertFalse((user_root / "titles" / "TEST00001" / "decrypted" /
                           "EBOOT.elf").exists())
+
+
+@unittest.skipUnless(CC, "no C compiler on PATH")
+class TestDeveloperProfileIsolation(unittest.TestCase):
+    """A developer's own key file and profile never reach these tests.
+
+    Runs two preflight tests in a child process whose environment points
+    ``NAKAGAWA_PSP_KEY_FILE`` at a decoy key file and the profile variables at a
+    decoy profile, as a developer machine with a real key file would.  The
+    tests must still use their own per-test key file, and must leave the decoy
+    key file and the decoy profile exactly as they were.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="nk_psp_decoy_"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_key_file_override_and_profile_do_not_reach_boundary_tests(self):
+        from tools.nk_core.decrypt_boundary import KEY_FILE_ENV
+
+        decoy_key = self.tmp / "developer-keys" / "psp-keyfile.json"
+        write_keyfile(decoy_key, synthetic_entries()[0])  # valid, but the wrong keys
+        decoy_bytes = decoy_key.read_bytes()
+        decoy_profile = self.tmp / "developer-profile"
+        env = dict(os.environ)
+        env.update(isolated_profile_environment(decoy_profile))
+        env[KEY_FILE_ENV] = str(decoy_key)
+        env["PYTHONPATH"] = os.pathsep.join(
+            part for part in (str(ROOT), env.get("PYTHONPATH")) if part)
+        child = subprocess.run(
+            [sys.executable, "-m", "unittest",
+             "tools.test_psp_decrypt.TestPreflightIntegration"
+             ".test_keyfile_routes_encrypted_disc_to_analyzer",
+             "tools.test_psp_decrypt.TestPreflightIntegration"
+             ".test_no_keyfile_keeps_fail_closed_guidance"],
+            cwd=ROOT, env=env, capture_output=True, text=True, timeout=600,
+        )
+        self.assertEqual(child.returncode, 0, child.stdout + child.stderr)
+        self.assertEqual(decoy_key.read_bytes(), decoy_bytes)
+        touched = sorted(str(path.relative_to(decoy_profile))
+                         for path in decoy_profile.rglob("*")) if decoy_profile.exists() else []
+        self.assertEqual(touched, [], "a test wrote into the developer's profile")
 
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
@@ -1384,7 +1551,7 @@ class TestKeystoreErasure(unittest.TestCase):
         return exe
 
     def _run(self, payload: bytes):
-        keyfile = self.tmp / f"keys_{os.urandom(6).hex()}.json"
+        keyfile = require_scratch_path(self.tmp / f"keys_{os.urandom(6).hex()}.json")
         keyfile.write_bytes(payload)
         return subprocess.run([str(self.exe), str(keyfile)],
                               capture_output=True, text=True)
