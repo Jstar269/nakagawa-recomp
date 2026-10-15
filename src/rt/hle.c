@@ -945,6 +945,10 @@ uint32_t sr_hle_test_partition_top(void) {
 static uint32_t g_sdk_version = 0;
 
 static uint32_t h_SetCompiledSdkVersion(CpuState *s) { return sr_sdkver_set(&g_sdk_version, A0); }
+/* sceKernelDevkitVersion (0x3fc9ae6a) returns the devkit version word of the modelled firmware. The
+ * value is the single SR_PSP_FIRMWARE_DEVKIT_VERSION in sdkver.h. PSP-3000 6.61 oracle 2026-10-15,
+ * record PSP-SYSTEM-001 (case model-profile), measured 0x06060110. */
+static uint32_t h_KernelDevkitVersion(CpuState *s) { (void)s; return SR_PSP_FIRMWARE_DEVKIT_VERSION; }
 #ifdef SR_HLE_THREAD_SELFTEST
 uint32_t sr_hle_test_compiled_sdk_version(void) {
     return sr_sdkver_get(&g_sdk_version);
@@ -2813,8 +2817,13 @@ static uint32_t h_MaxFreeMemSize(CpuState *s) {
  * waiter queuing, and blocking allocation support (PR-G). */
 #define FPL_MAX 16
 #define FPL_MAX_WAITERS 64
-#define FPL_BAD_ID 0x800200d3u
-#define FPL_EXHAUSTED 0x800200d9u
+/* PSP-measured 2026-10-15 (PSP-3000, firmware 6.61, probe on e45e667b; docs/HARDWARE_ORACLE.md
+ * 2026-10-15 entry, PR #1003): an unknown or deleted FPL id returns SCE_KERNEL_ERROR_UNKNOWN_FPLID,
+ * and a refer after delete returns it and writes nothing. */
+#define SCE_KERNEL_ERROR_UNKNOWN_FPLID 0x8002019du
+/* UNMEASURED: create-time block failure and a blocking allocate outside a thread keep the code
+ * they returned before the 2026-10-15 measurement; neither path was probed. */
+#define FPL_UNMEASURED_NO_SPACE 0x800200d9u
 
 typedef struct {
     uint32_t thread_uid;
@@ -2879,7 +2888,7 @@ static uint32_t h_CreateFpl(CpuState *s) {
     if (nblocks == 0) nblocks = 1;
     uint32_t total = bsize * nblocks;
     uint32_t block_uid = alloc_block(total ? total : 16);
-    if (block_uid == 0xFFFFFFFFu) return FPL_EXHAUSTED;
+    if (block_uid == 0xFFFFFFFFu) return FPL_UNMEASURED_NO_SPACE;
     uint32_t pool = block_addr(block_uid);
     uint32_t uid = 0;
     for (int i = 0; i < FPL_MAX; i++) {
@@ -2905,7 +2914,7 @@ static uint32_t h_CreateFpl(CpuState *s) {
     }
     if (uid == 0) {
         free_block(block_uid);
-        return FPL_EXHAUSTED;
+        return FPL_UNMEASURED_NO_SPACE;
     }
     fprintf(stderr, "sceKernelCreateFpl: uid=0x%x pool_uid=0x%x base=0x%08x bsize=%u nblocks=%u total=%u\n", uid, block_uid, pool, bsize, nblocks, total);
     return uid;
@@ -2927,14 +2936,14 @@ static uint32_t fpl_try_allocate_internal(FplPool *p, uint32_t *addr_out) {
         *addr_out = addr;
         return 0;
     }
-    return FPL_EXHAUSTED;
+    return HLE_KERNEL_ERROR_NO_MEMORY; /* PSP-measured 2026-10-15: exhausted TryAllocateFpl */
 }
 
 static uint32_t h_TryAllocateFpl(CpuState *s) {
     /* a0=fplUid, a1=dataPtrOut. Returns 0 on success. */
     uint32_t uid = A0, out = A1;
     FplPool *p = fpl_lookup(uid);
-    if (!p) { fprintf(stderr, "sceKernelTryAllocateFpl: bad uid=0x%x\n", uid); return FPL_BAD_ID; }
+    if (!p) { fprintf(stderr, "sceKernelTryAllocateFpl: bad uid=0x%x\n", uid); return SCE_KERNEL_ERROR_UNKNOWN_FPLID; }
     if (out && !sr_guest_span_writable(out, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     uint32_t addr = 0;
     uint32_t err = fpl_try_allocate_internal(p, &addr);
@@ -2955,7 +2964,7 @@ static uint32_t allocate_fpl_common(CpuState *s, int is_cb) {
 
     uint32_t uid = A0, out = A1, toptr = A2;
     FplPool *p = fpl_lookup(uid);
-    if (!p) return FPL_BAD_ID;
+    if (!p) return SCE_KERNEL_ERROR_UNKNOWN_FPLID;
 
     if (out && !sr_guest_span_writable(out, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
 
@@ -2986,7 +2995,7 @@ static uint32_t allocate_fpl_common(CpuState *s, int is_cb) {
     uint32_t cur_thid = sched_current_uid();
     if (cur_thid == 0) {
         /* Direct invocation outside scheduler thread fiber cannot block */
-        return FPL_EXHAUSTED;
+        return FPL_UNMEASURED_NO_SPACE;
     }
 
     if (p->nwaiters >= FPL_MAX_WAITERS) return 0x80020190u; /* SCE_KERNEL_ERROR_NO_MEMORY */
@@ -3090,7 +3099,7 @@ static uint32_t h_DeleteFpl(CpuState *s) {
 static uint32_t h_FreeFpl(CpuState *s) {
     uint32_t uid = A0, addr = A1;
     FplPool *p = fpl_lookup(uid);
-    if (!p) return FPL_BAD_ID;
+    if (!p) return SCE_KERNEL_ERROR_UNKNOWN_FPLID;
     if (addr < p->base || addr + p->bsize > p->end || ((addr - p->base) % p->bsize) != 0) {
         /* Exact bad-address error code for FreeFpl is UNMEASURED; using SCE_KERNEL_ERROR_ILLEGAL_ADDR (0x80000103u) as defined in hle.c. */
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
@@ -3143,7 +3152,7 @@ static uint32_t h_ReferFplStatus(CpuState *s) {
     if (!info_addr || !sr_guest_span_readable(info_addr, 4u))
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     FplPool *p = fpl_lookup(uid);
-    if (!p) return FPL_BAD_ID;
+    if (!p) return SCE_KERNEL_ERROR_UNKNOWN_FPLID;
     uint32_t input_size = MEM_R32(info_addr);
     if (input_size == 0) return 0;
     uint32_t write_len = input_size < (uint32_t)sizeof(SceKernelFplInfo)
@@ -3173,8 +3182,12 @@ static uint32_t h_ReferFplStatus(CpuState *s) {
 #define VPL_MAX_ALLOCS 128
 #define VPL_MAX_WAITERS 64
 #define VPL_ALIGN 16u
-#define VPL_BAD_ID 0x800200d3u       /* same invalid-object code used by FPL */
-#define VPL_EXHAUSTED 0x800200d9u    /* same no-space code used by FPL */
+/* PSP-measured (docs/HARDWARE_ORACLE.md kernel-object error table, PSP-B1-01): an unknown VPL id
+ * returns SCE_KERNEL_ERROR_UNKNOWN_VPLID. */
+#define SCE_KERNEL_ERROR_UNKNOWN_VPLID 0x8002019cu
+/* UNMEASURED: no VPL exhausted code is recorded; this is the pre-measurement value, not the FPL
+ * code. */
+#define VPL_EXHAUSTED 0x800200d9u
 typedef struct { uint32_t addr, size; } VplSpan;
 typedef struct { uint32_t addr, size; int used; } VplAlloc;
 typedef struct { uint32_t thread_uid; uint32_t size; } VplWaiter;
@@ -3282,7 +3295,7 @@ static uint32_t vpl_try_allocate_internal(VplPool *p, uint32_t request, uint32_t
 static uint32_t h_TryAllocateVpl(CpuState *s) {
     VplPool *p = vpl_lookup(A0);
     uint32_t request = A1, out = A2;
-    if (!p) return VPL_BAD_ID;
+    if (!p) return SCE_KERNEL_ERROR_UNKNOWN_VPLID;
     if (request == 0) return VPL_EXHAUSTED; /* exact zero-size result is UNMEASURED */
     if (out && !sr_guest_span_writable(out, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     uint32_t addr = 0;
@@ -3297,7 +3310,7 @@ static uint32_t allocate_vpl_common(CpuState *s, int is_cb) {
 
     uint32_t uid = A0, request = A1, out = A2, toptr = A3;
     VplPool *p = vpl_lookup(uid);
-    if (!p) return VPL_BAD_ID;
+    if (!p) return SCE_KERNEL_ERROR_UNKNOWN_VPLID;
     if (request == 0) return VPL_EXHAUSTED;
     if (out && !sr_guest_span_writable(out, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
 
@@ -3413,7 +3426,7 @@ static uint32_t h_AllocateVplCB(CpuState *s) {
 static uint32_t h_FreeVpl(CpuState *s) {
     VplPool *p = vpl_lookup(A0);
     uint32_t addr = A1;
-    if (!p) return VPL_BAD_ID;
+    if (!p) return SCE_KERNEL_ERROR_UNKNOWN_VPLID;
     for (int i = 0; i < VPL_MAX_ALLOCS; ++i) if (p->allocs[i].used && p->allocs[i].addr == addr) {
         vpl_insert_free(p, addr, p->allocs[i].size);
         p->allocs[i].used = 0;
@@ -3431,12 +3444,12 @@ static uint32_t h_FreeVpl(CpuState *s) {
         }
         return 0;
     }
-    return VPL_BAD_ID;
+    return SCE_KERNEL_ERROR_UNKNOWN_VPLID;
 }
 
 static uint32_t h_DeleteVpl(CpuState *s) {
     VplPool *p = vpl_lookup(A0);
-    if (!p) return VPL_BAD_ID;
+    if (!p) return SCE_KERNEL_ERROR_UNKNOWN_VPLID;
     uint32_t block_uid = p->block_uid;
     uint32_t uid = A0;
     int waiters = sched_count_waiters(uid);
@@ -3451,7 +3464,7 @@ static uint32_t h_DeleteVpl(CpuState *s) {
 static uint32_t h_ReferVplStatus(CpuState *s) {
     VplPool *p = vpl_lookup(A0);
     uint32_t info = A1;
-    if (!p) return VPL_BAD_ID;
+    if (!p) return SCE_KERNEL_ERROR_UNKNOWN_VPLID;
     if (!info || !sr_guest_span_writable(info, 52u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     /* SceKernelVplInfo: size, name[32], attr, poolSize, freeSize, numWaitThreads. */
     MEM_W32(info + 0, 52u);
@@ -17113,8 +17126,13 @@ static uint32_t h_CtrlPeekBufferPositive(CpuState *s) {
  * same 32-bit convention the negative buffer read uses. Samples overwritten before a latch read are
  * not reported one by one: the ring keeps the latest CTRL_RING - 1 samples, and a transition inside
  * an overwritten span is lost. */
-static uint32_t h_CtrlReadLatch(CpuState *s) {
-    uint32_t out = A0;
+/* One latch computation for sceCtrlReadLatch (consume = 1) and sceCtrlPeekLatch (consume = 0). A read
+ * advances the latch cursor, so the transitions it reported are consumed. A peek writes the same words
+ * and leaves the cursor alone, so a pending transition is still reported by the next read. PSP-3000 6.61
+ * oracle 2026-10-15, record PSP-HLE-CTRL-LATCH-001 (cases latch-peek-initial, latch-peek-after-poll): the
+ * no-input words are make/break/press 0 and release 0xFFFFFFFF. The clear-or-keep distinction is not
+ * measured there (the release field stays saturated). */
+static uint32_t ctrl_latch_compute(uint32_t out, int consume) {
     uint32_t produced = s_ctrl_sample_count - s_latch_seen_count;
     uint32_t retained = produced < (uint32_t)(CTRL_RING - 1) ? produced : (uint32_t)(CTRL_RING - 1);
     uint32_t prev = s_latch_prev_btn, cur = prev, make = 0u, brk = 0u;
@@ -17128,14 +17146,19 @@ static uint32_t h_CtrlReadLatch(CpuState *s) {
             prev = cur;
         }
     }
-    s_latch_prev_btn = cur;
-    s_latch_seen_count = s_ctrl_sample_count;
+    if (consume) {
+        s_latch_prev_btn = cur;
+        s_latch_seen_count = s_ctrl_sample_count;
+    }
     MEM_W32(out + 0, make);
     MEM_W32(out + 4, brk);
     MEM_W32(out + 8, cur);
     MEM_W32(out + 12, ~cur);
     return produced;
 }
+
+static uint32_t h_CtrlReadLatch(CpuState *s) { (void)s; return ctrl_latch_compute(A0, 1); }
+static uint32_t h_CtrlPeekLatch(CpuState *s) { (void)s; return ctrl_latch_compute(A0, 0); }
 
 #ifdef SR_HLE_THREAD_SELFTEST
 /* Test-build-only: push one sampling cycle with the given button field, as sr_ctrl_sample stores
@@ -18771,7 +18794,19 @@ void ge_finish_latch_assist(void) {
 }
 
 #define GE_LIST_MAX 64
-#define SCE_ERROR_NOT_FOUND 0x80000025u
+
+/* GE list-control values.  Every value below is PSP-measured on a PSP-3000 (6.61): the
+ * acceptance-eligible 2026-10-15 re-run of the revised ge-break-continue probe (commit
+ * c642039a, PSP-GE-CONTROL-001).  Each comment names the list state the cell measured;
+ * a state the probe did not reach is marked UNMEASURED where the value is applied. */
+#define GE_LIST_SYNC_STALLED 3u     /* sceGeListSync(qid, 1) on a list stalled at its start address, read after a BUSY dequeue; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a). A list stalled partway through is UNMEASURED and reads the same value */
+#define GE_LIST_SYNC_PAUSED 4u      /* sceGeListSync(qid, 1) on a list sceGeBreak(0) paused mid-draw; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a). A list paused out of a stall, the only pause the runtime produces, is UNMEASURED and reads the same value */
+#define GE_DRAW_SYNC_STALLED 3u     /* sceGeDrawSync(1) with one list stalled at its start address, read after a BUSY dequeue; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a). A list stalled partway through is UNMEASURED */
+#define GE_DRAW_SYNC_PAUSED 2u      /* sceGeDrawSync(1) with a list sceGeBreak(0) paused mid-draw; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a). A list paused out of a stall is UNMEASURED */
+#define GE_ERROR_NO_ACTIVE_LIST 0x80000020u /* sceGeBreak(0) with no active list; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
+#define GE_ERROR_INVALID_BREAK_MODE 0x80000107u /* sceGeBreak(-1), parameter untouched; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
+#define GE_ERROR_INVALID_LIST_ID 0x80000100u /* sceGeListSync(qid, 1) on a list a sceGeBreak(1) reset removed; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
+#define GE_ERROR_LIST_BUSY 0x80000021u /* sceGeListDeQueue on a stalled list; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
 
 enum {
     GE_LIST_FREE = 0,
@@ -18999,17 +19034,24 @@ static uint32_t h_GeListSync(CpuState *s) {
                 return 0;
             }
             if (s_ge_lists[i].status == GE_LIST_STALLED) {
-                if (syncType == 1) return 1; /* PSP_GE_LIST_QUEUED */
+                if (syncType == 1) return GE_LIST_SYNC_STALLED;
                 sched_delay_current(1000);
                 return 0;
             }
             if (s_ge_lists[i].status == GE_LIST_PAUSED) {
-                if (syncType == 1) return 2; /* PSP_GE_LIST_DRAWING_DONE */
+                /* The blocking form (syncType 0) has no measured return value: probe.c
+                 * records that a blocking sync on a paused list did not return on
+                 * PSP-3000, so its value is left as it was. */
+                if (syncType == 1) return GE_LIST_SYNC_PAUSED;
                 sched_delay_current(1000);
                 return 2;
             }
             if (s_ge_lists[i].status == GE_LIST_CANCELLED) {
-                return 4; /* PSP_GE_LIST_CANCEL_DONE */
+                /* A sceGeBreak(1) reset removes the list, so its id is no longer valid:
+                 * measured with syncType 1 on a list the reset removed while it stalled
+                 * (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run). syncType 0 and a list
+                 * the reset removed while paused are UNMEASURED and take the same code. */
+                return GE_ERROR_INVALID_LIST_ID;
             }
         }
     }
@@ -19017,6 +19059,8 @@ static uint32_t h_GeListSync(CpuState *s) {
                            qid, 0u, 0u, syncType);
     if (ge_log_on())
         fprintf(stderr, "GE_SYNC: qid=0x%08x NOT FOUND in list table\n", qid);
+    /* An unknown queue id returns 0. This predates the eligible re-run and is UNMEASURED: the
+     * measured 0x80000100 covers only a list that a sceGeBreak(1) reset removed. */
     return 0;
 }
 
@@ -19065,8 +19109,9 @@ static uint32_t h_GeDrawSync(CpuState *s) {
      * PSPSDK GE interface (pspge.h) and PPSSPP Core/HLE/sceGe.cpp. The queue
      * state is the same s_ge_lists table h_GeListSync reads: status 1 is a
      * list still owned by the GE (stalled on its stall address), status 2 is
-     * completed, status 3 is paused. Peek reports the documented sync status
-     * (2 while any list is paused, 1 while any list is stalled/owned, else 0);
+     * completed, status 3 is paused. Peek reports the measured sync status
+     * (2 while any list is paused, 3 while any list is stalled, else 0;
+     * PSP-GE-CONTROL-001, measured in the eligible 2026-10-15 re-run);
      * wait yields once through the scheduler -- the same pacing h_GeListSync's
      * mode-0 path uses -- and reports completion, because a stalled list advances
      * only on the game's UpdateStallAddr, never on time, so blocking here could
@@ -19082,8 +19127,8 @@ static uint32_t h_GeDrawSync(CpuState *s) {
     SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_DRAW_SYNC,
                            mode, (uint32_t)(busy || paused), 0u, 0u);
     if (mode == 1u) {
-        if (paused) return 2u; /* PSP_GE_LIST_DRAWING_DONE */
-        return busy ? 1u : 0u;
+        if (paused) return GE_DRAW_SYNC_PAUSED;
+        return busy ? GE_DRAW_SYNC_STALLED : 0u;
     }
     ge_transition_trace_check("drawsync", s_vcount);
     if (busy || paused) sched_delay_current(1000);
@@ -19095,7 +19140,9 @@ static uint32_t h_GeBreak(CpuState *s) {
     uint32_t pparam = A1;
 
     if (mode > 1u) {
-        return 0x800001feu; /* SCE_KERNEL_ERROR_INVALID_VALUE */
+        /* 0x80000107 is measured for mode -1 (GE_ERROR_INVALID_BREAK_MODE); the same code is
+         * applied to any mode above 1, which is UNMEASURED. */
+        return GE_ERROR_INVALID_BREAK_MODE;
     }
     if (pparam != 0u && (!sr_guest_span_readable(pparam, 16u) || (pparam & 3u) != 0u)) {
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
@@ -19112,7 +19159,7 @@ static uint32_t h_GeBreak(CpuState *s) {
     if (mode == 0u) {
         /* Mode 0: pause current drawing list at command boundary */
         if (active_slot == -1) {
-            return SCE_ERROR_NOT_FOUND;
+            return GE_ERROR_NO_ACTIVE_LIST;
         }
         s_ge_lists[active_slot].status = GE_LIST_PAUSED;
         SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_GE, SR_FLIGHT_KIND_GE_LIST_SYNC,
@@ -19121,18 +19168,19 @@ static uint32_t h_GeBreak(CpuState *s) {
         if (ge_log_on())
             fprintf(stderr, "GE_BREAK: paused list_id=0x%08x cur_pc=0x%08x\n",
                     s_ge_lists[active_slot].uid, s_ge_lists[active_slot].current_pc);
-        return 0;
+        /* PSP-measured (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run): a mode 0 break of a list
+         * running mid-draw returned that list's queue id. Breaking a stalled list, the only active
+         * list the runtime has, is UNMEASURED and returns its queue id by the same rule. Known
+         * divergence: a list enqueued with no stall address runs to completion inside
+         * sceGeListEnQueue, so on the measured sequence the runtime has no active list and returns
+         * 0x80000020, and the following ListSync and DrawSync peeks read 0 where the PSP read the
+         * queue id, 4 and 2. */
+        return s_ge_lists[active_slot].uid;
     } else {
-        /* Mode 1: cancel/reset all queues, returning stopped queue ID (or 0 if none) */
-        uint32_t stopped_id = (active_slot != -1) ? s_ge_lists[active_slot].uid : 0u;
-        if (stopped_id == 0u) {
-            for (int i = 0; i < GE_LIST_MAX; i++) {
-                if (s_ge_lists[i].status == GE_LIST_PAUSED) {
-                    stopped_id = s_ge_lists[i].uid;
-                    break;
-                }
-            }
-        }
+        /* Mode 1: reset every queue and return 0. PSP-measured (PSP-GE-CONTROL-001, eligible
+         * 2026-10-15 re-run): a reset with one list stalled at its stall address returned 0,
+         * not that list's queue id. A reset with a paused list is UNMEASURED and returns 0 by
+         * the same rule. */
         for (int i = 0; i < GE_LIST_MAX; i++) {
             if (s_ge_lists[i].status == GE_LIST_STALLED || s_ge_lists[i].status == GE_LIST_PAUSED) {
                 s_ge_lists[i].status = GE_LIST_CANCELLED;
@@ -19140,7 +19188,7 @@ static uint32_t h_GeBreak(CpuState *s) {
                     fprintf(stderr, "GE_BREAK: cancelled queue list_id=0x%08x\n", s_ge_lists[i].uid);
             }
         }
-        return stopped_id;
+        return 0u;
     }
 }
 
@@ -19153,7 +19201,8 @@ static uint32_t h_GeContinue(CpuState *s) {
         }
     }
     if (paused_slot == -1) {
-        return SCE_ERROR_NOT_FOUND;
+        /* PSP-measured (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run): continue with no paused list returns 0. */
+        return 0;
     }
 
     s_ge_lists[paused_slot].status = GE_LIST_STALLED;
@@ -19184,6 +19233,26 @@ static uint32_t h_GeContinue(CpuState *s) {
 
     return 0;
 }
+
+/* sceGeListDeQueue(qid). The one measured result is a stalled list: the dequeue
+ * returns BUSY and leaves the list in place, so the next list and draw sync peeks
+ * still read 3 (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run). A paused, completed,
+ * cancelled or unknown queue id has no measured result, so it is refused as
+ * NOT_IMPLEMENTED with the same unsupported line h_GeListEnQueueHead uses, never
+ * reported as success. */
+static uint32_t h_GeListDeQueue(CpuState *s) {
+    uint32_t qid = A0;
+    for (int i = 0; i < GE_LIST_MAX; i++) {
+        if (s_ge_lists[i].uid == qid && s_ge_lists[i].status == GE_LIST_STALLED) {
+            return GE_ERROR_LIST_BUSY;
+        }
+    }
+    fprintf(stderr,
+            "UNSUPPORTED_IMPORT: sceGeListDeQueue(0x%08x) has no measured result for this list state; refused.\n",
+            qid);
+    return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+}
+
 static uint32_t h_GeEdramGetAddr(CpuState *s) { (void)s; return 0x04000000; }
 static uint32_t h_GeSetCallback(CpuState *s) {
     uint32_t info = A0;
@@ -20644,6 +20713,14 @@ static uint32_t receive_mbx_common(CpuState *s, int is_cb) {
             if (sched_take_wake_result(&woken)) {
                 m = mbx_find(uid);
                 if (m) mbx_remove_waiter(m, cur_thid);
+                if (woken == SCE_KERNEL_ERROR_WAIT_DELETE) {
+                    /* PSP-measured 2026-10-15 (PSP-3000, 6.61): a timed waiter woken by DeleteMbx
+                     * rewrites its timeout word to the remaining time (499950 of 500000 us). Other
+                     * wake results are not measured for this word and leave it unchanged. */
+                    sched_vtime_refresh();
+                    uint64_t now_us = sched_vtime_us();
+                    MEM_W32(toptr, now_us < end_time ? (uint32_t)(end_time - now_us) : 0u);
+                }
                 return woken;
             }
 
@@ -22047,6 +22124,14 @@ static uint32_t h_UnlockMutex(CpuState *s) {
     uint32_t uid = A0;
     int count = (int)A1;
 
+    /* Interrupt context is gated ahead of the object and owner checks, as Lock, LockCB and TryLock
+     * are. PSP-measured 2026-10-15 (PSP-3000, 6.61; acceptance-eligible mutex-interrupt-context run on
+     * probe ec5dd563): in 20 of 20 VBLANK sub-interrupt trials, an unlock of a mutex the handler does
+     * not own returned ILLEGAL_CONTEXT (0x80020064), not MUTEX_NOT_OWNED. Unlock with an unknown
+     * UID or a count of 0 or less from interrupt context is UNMEASURED; it takes the same gate,
+     * following the order measured for LockMutex. */
+    if (sched_is_intr_context()) return SCE_KERNEL_ERROR_ILLEGAL_CONTEXT;
+
     Mutex *m = mutex_find(uid);
     if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MUTEXID;
 
@@ -22466,6 +22551,7 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0x1f803938, "sceCtrlReadBufferPositive", h_CtrlReadBuffer);
     sr_hle_register(0x3a622550, "sceCtrlPeekBufferPositive", h_CtrlPeekBufferPositive);
     sr_hle_register(0x0b588501, "sceCtrlReadLatch", h_CtrlReadLatch);
+    sr_hle_register(0xb1d0e5cd, "sceCtrlPeekLatch", h_CtrlPeekLatch);
     sr_hle_register(0x6a638d83, "sceIoRead", h_IoRead);
     sr_hle_register(0x42ec03ac, "sceIoWrite", h_IoWrite);
     sr_hle_register(0xe23eec33, "sceIoWaitAsync", h_IoWaitAsync);
@@ -22715,6 +22801,13 @@ static void hle_register_exit_game_handler(void) {
     sr_hle_register(0x05572a5f, "sceKernelExitGame", h_ExitGame);
 }
 
+/* sceKernelDevkitVersion (0x3fc9ae6a): one definition reached by both sr_hle_init() branches, so the
+ * executable harness dispatches the production mapping (the production-only list did not reach it).
+ * PSP-3000 6.61 oracle 2026-10-15, record PSP-SYSTEM-001 (case model-profile). */
+static void hle_register_devkit_version_handler(void) {
+    sr_hle_register(0x3fc9ae6a, "sceKernelDevkitVersion", h_KernelDevkitVersion);
+}
+
 /* TD-24 batch 4 shared families: one definition reached by both sr_hle_init()
  * branches, so the executable harness pins the production mapping through
  * dispatch (same rule as the batch-2 clock helpers above). */
@@ -22828,6 +22921,7 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0x1c0d95a6, "sceGeListEnQueueHead", h_GeListEnQueueHead);
     sr_hle_register(0x4c06e472, "sceGeContinue", h_GeContinue);
     sr_hle_register(0xb448ec0d, "sceGeBreak", h_GeBreak);
+    sr_hle_register(0x5fb86ab0, "sceGeListDeQueue", h_GeListDeQueue);
     /* sceGeSaveContext / sceGeRestoreContext are refused, not faked. The modeled GE state
      * (GeState in ge_shared.h, 3364 bytes) carries 2048 bytes of CLUT RAM plus matrix banks
      * and derived fields, so it cannot fit a 2048-byte PspGeContext, and the 256-entry
@@ -22860,6 +22954,27 @@ static uint32_t h_ReferProfilerNull(CpuState *s) {
  * kernel refusals above already use; the non-kernel sceImpose, sceNet, sceHttp and
  * sceAudiocodec libraries use SCE_KERNEL_ERROR_ERRNO_FUNCTION_NOT_SUPPORTED, the code the
  * sceReg and sceUmd refusals use. The two NIDs with no confirmed public name stay unregistered. */
+/* sceKernelReferSystemStatus(SceKernelSystemStatus *status). PSP-3000, firmware 6.61 (PR #1003 head
+ * 3072bd7d, docs/HARDWARE_ORACLE.md 2026-10-15 entry): the call returns 0 and writes min(size, 0x1c)
+ * bytes, where size is the caller's first word. The size word reads back 0x1c for non-zero sizes 0x08,
+ * 0x1c and 0x20; size 0 writes nothing. Status word 1 read 0 in all three records but is not cited.
+ * The idle-clock, comes-out-of-idle and thread-switch counters are written as zero; hardware reports
+ * non-zero, time-dependent values (not cited). That zero fill is a known divergence from hardware. The
+ * VFPU-switch counter is also written as zero and is not cited. The result for a null or unwritable
+ * pointer is UNMEASURED; it uses the ILLEGAL_ADDR convention of the other refers. */
+static uint32_t h_ReferSystemStatus(CpuState *s) {
+    uint32_t out = A0;
+    if (!out || !sr_guest_span_writable(out, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    uint32_t size = MEM_R32(out);
+    uint32_t n = size < 0x1cu ? size : 0x1cu;
+    if (n > 4u && !sr_guest_span_writable(out, n)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    uint8_t image[0x1c];
+    memset(image, 0, sizeof image);
+    image[0] = 0x1cu; /* size field, little-endian */
+    for (uint32_t i = 0; i < n; i++) MEM_W8(out + i, image[i]);
+    return 0;
+}
+
 static void hle_register_unregistered_import_batch(void) {
     sr_hle_register(0xe1619d7cu, "sceKernelSysClock2USecWide", h_SysClock2USecWide);
     sr_hle_register(0xc8cd158cu, "sceKernelUSec2SysClockWide", h_USec2SysClockWide);
@@ -22869,10 +22984,8 @@ static void hle_register_unregistered_import_batch(void) {
      * it is refused under its synthetic name rather than given a guessed one. Its contract needs a
      * named source and a probe before it can be modelled. */
     sr_hle_register_unsupported(0x469989adu, "scePower_469989ad", 0x80020002u);
-    /* sceKernelReferSystemStatus: the PSPSDK struct leaves the status and vfpuSwitchCount fields
-     * documented only as unknown, and the idle-clock and switch counters are not modelled here, so
-     * the status is refused until a probe measures the struct. */
-    sr_hle_register_unsupported(0x627e6f3au, "sceKernelReferSystemStatus", 0x80020002u);
+    /* sceKernelReferSystemStatus: measured for the bytes written and the size field; see h_ReferSystemStatus. */
+    sr_hle_register(0x627e6f3au, "sceKernelReferSystemStatus", h_ReferSystemStatus);
     /* VTimer lifecycle and query surface (measured; see the VTimer block above). */
     sr_hle_register(0x20fff560u, "sceKernelCreateVTimer", h_CreateVTimer);
     sr_hle_register(0xc68d9437u, "sceKernelStartVTimer", h_StartVTimer);
@@ -22960,6 +23073,7 @@ void sr_hle_init(void) {
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
     sr_hle_power_register_clock();
+    hle_register_devkit_version_handler();
     /* TD-24 batch 4 families: shared with production through the helpers, so
      * the executable harness dispatches the exact production mapping. */
     hle_register_ctrl_sampling_handlers();
@@ -23135,6 +23249,7 @@ void sr_hle_init(void) {
     sr_hle_register(0x730ed8bc, "sceKernelReferCallbackStatus", h_ReferCallbackStatus);
     hle_register_utility_module_handlers();
     sr_hle_register(0x1b4217bc, "sceKernelSetCompiledSdkVersion603_605", h_SetCompiledSdkVersion);
+    hle_register_devkit_version_handler();
 
     /* cache / misc UtilsForUser: no-ops are fine without a real cache. */
     sr_hle_register(0x79d1c3fa, "sceKernelDcacheWritebackAll", h_CacheInvalidateAll);

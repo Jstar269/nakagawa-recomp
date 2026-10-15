@@ -4264,15 +4264,14 @@ static void test_sysreg_write_model(void) {
 
 /* Persistence: a flush writes the overlay atomically, a restart loads it, a flush after reads
  * writes nothing, and values equal to their defaults are not recorded. */
-/* Named refusals for three NIDs whose contract is not established from the sources in this tree.
+/* Named refusals for NIDs whose contract is not established from the sources in this tree.
  * Each one returns its named error and does not stop the title, so the run continues past it:
  *  - sceNetInit (0x39af39a6): the offline network policy (sceNetGetLocalEtherAddr's 0x80010086);
- *  - scePower_469989ad (0x469989ad): no public name, refused under its synthetic name;
- *  - sceKernelReferSystemStatus (0x627e6f3a): status and vfpuSwitchCount meanings undocumented.
- * The test pins the codes, so a later measured handler has to replace them deliberately. */
+ *  - scePower_469989ad (0x469989ad): no public name, refused under its synthetic name.
+ * The test pins the codes, so a later measured handler has to replace them deliberately.
+ * sceKernelReferSystemStatus is no longer refused: it is measured (test_refer_system_status). */
 #define NID_REFUSE_NET_INIT                0x39af39a6u
 #define NID_REFUSE_POWER_469989AD          0x469989adu
-#define NID_REFUSE_REFER_SYSTEM_STATUS     0x627e6f3au
 #define REFUSE_NET_CODE                    0x80010086u
 #define REFUSE_UNSUPPORTED_CODE            0x80020002u
 
@@ -4290,8 +4289,6 @@ static void test_named_refusals(void) {
            "sceNetInit refuses with the offline network code 0x80010086");
     expect(refuse_call(NID_REFUSE_POWER_469989AD) == REFUSE_UNSUPPORTED_CODE,
            "scePower_469989ad is a named refusal (0x80020002), not a guessed handler");
-    expect(refuse_call(NID_REFUSE_REFER_SYSTEM_STATUS) == REFUSE_UNSUPPORTED_CODE,
-           "sceKernelReferSystemStatus is a named refusal (0x80020002) until its fields are measured");
     expect(refuse_call(0xf9d8eb63u) == REFUSE_NET_CODE,
            "sceHttpsEnd refuses with the offline HTTP code 0x80010086, as sceHttpEnd does");
     expect(refuse_call(0x011f03c1u) == REFUSE_UNSUPPORTED_CODE,
@@ -4300,6 +4297,52 @@ static void test_named_refusals(void) {
            "sceSslEnd refuses with the offline network code 0x80010086 (no SSL or network stack)");
     expect(refuse_call(0x5963991bu) == REFUSE_NET_CODE,
            "sceNetApctlDelHandler refuses with the offline network code 0x80010086");
+}
+
+/* sceKernelReferSystemStatus(SceKernelSystemStatus *status): PSP-3000, firmware 6.61 (PR #1003 head
+ * 3072bd7d, docs/HARDWARE_ORACLE.md 2026-10-15 entry). The size word is the caller's first word. The
+ * call returns 0 and writes min(size, 0x1c) bytes. The size word reads back 0x1c for sizes 0x08, 0x1c
+ * and 0x20; size 0 writes nothing. Bytes past min(size, 0x1c) must stay as the caller left them.
+ * The zero fill of the counters after the size word is pinned here as current behaviour only. It is a
+ * known divergence: hardware reports non-zero, time-dependent counter values (not cited). */
+#define NID_REFER_SYSTEM_STATUS 0x627e6f3au
+#define SYS_STATUS_BUF          0x00240c00u
+#define SYS_STATUS_BYTES        0x40u
+#define SYS_STATUS_SENTINEL     0xa5u
+
+static void sys_status_refer(uint32_t size_word, uint32_t expect_written, const char *label) {
+    char msg[160];
+    uint32_t i, mismatches = 0;
+    for (i = 0; i < SYS_STATUS_BYTES; i++) MEM_W8(SYS_STATUS_BUF + i, SYS_STATUS_SENTINEL);
+    MEM_W32(SYS_STATUS_BUF, size_word);
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = SYS_STATUS_BUF;
+    uint32_t rc = sr_syscall(&cpu, NID_REFER_SYSTEM_STATUS);
+    snprintf(msg, sizeof msg, "ReferSystemStatus with size %s returns 0", label);
+    expect(rc == 0u, msg);
+
+    for (i = 0; i < SYS_STATUS_BYTES; i++) {
+        uint8_t want;
+        if (i < expect_written) want = (i == 0u) ? 0x1cu : 0u;
+        else if (i < 4u) want = (uint8_t)(size_word >> (8u * i));
+        else want = SYS_STATUS_SENTINEL;
+        if (MEM_R8(SYS_STATUS_BUF + i) != want) mismatches++;
+    }
+    snprintf(msg, sizeof msg,
+             "ReferSystemStatus with size %s writes exactly %u bytes (size word 0x1c, rest zero)",
+             label, (unsigned)expect_written);
+    expect(mismatches == 0u, msg);
+}
+
+static void test_refer_system_status(void) {
+    reset_fixture();
+    sr_hle_init();
+    sys_status_refer(0x1cu, 0x1cu, "0x1c");
+    sys_status_refer(0x20u, 0x1cu, "0x20");
+    sys_status_refer(0x08u, 0x08u, "0x08");
+    sys_status_refer(0x00u, 0x00u, "0x00");
 }
 
 /* sceGeEdramSetAddrTranslation (0xb77905ea): PSPSDK pspge.h. Captured on PSP-3000 (2026-10-10;
@@ -11311,8 +11354,12 @@ static void test_b23_second_round(void) {
 #define NID_FPL_ALLOCATE      0xd979e9bfu
 #define NID_FPL_ALLOCATE_CB   0xe7282cb6u
 #define NID_FPL_TRY_ALLOCATE  0x623ae665u
-#define FPL_BAD_ID_ERR        0x800200d3u
-#define FPL_EXHAUSTED_ERR     0x800200d9u
+/* PSP-measured 2026-10-15 (PSP-3000, 6.61; docs/HARDWARE_ORACLE.md 2026-10-15 entry, PR #1003):
+ * an unknown or deleted FPL id, and an exhausted TryAllocateFpl. */
+#define FPL_UNKNOWN_ID_ERR    0x8002019du
+#define FPL_NO_MEMORY_ERR     0x80020190u
+/* UNMEASURED: a blocking allocate outside a thread keeps its pre-measurement code. */
+#define FPL_UNMEASURED_NO_SPACE_ERR 0x800200d9u
 #define FPL_NAMEBUF           0x00240900u
 #define FPL_OUTPTR            0x00240940u
 #define FPL_SENTINEL          0xfeedfaceu
@@ -11326,7 +11373,9 @@ static void test_b23_second_round(void) {
 #define NID_VPL_ALLOCATE_CB   0xec0a693fu
 #define NID_VPL_FREE          0xb736e9ffu
 #define NID_VPL_REFER         0x39810265u
-#define VPL_BAD_ID_ERR        0x800200d3u
+/* PSP-measured (docs/HARDWARE_ORACLE.md kernel-object error table, PSP-B1-01): unknown VPL id. */
+#define VPL_UNKNOWN_ID_ERR    0x8002019cu
+/* UNMEASURED: no VPL exhausted code is recorded; the value predates the FPL measurement. */
 #define VPL_EXHAUSTED_ERR     0x800200d9u
 #define VPL_INFO              0x00240a00u
 #define VPL_OUTPTR            0x00240a80u
@@ -11481,8 +11530,8 @@ static void test_fpl_refer_status(void) {
     expect(MEM_R32(RFS_INFO) == 0u && rfs_bytes_are(4u, 56u, 0x5au),
            "ReferFplStatus with caller size 0 writes nothing");
 
-    expect(rfs_refer(RFS_UNKNOWN_UID, RFS_INFO) == FPL_BAD_ID_ERR,
-           "ReferFplStatus with an unknown UID returns FPL_BAD_ID (0x800200d3)");
+    expect(rfs_refer(RFS_UNKNOWN_UID, RFS_INFO) == FPL_UNKNOWN_ID_ERR,
+           "ReferFplStatus with an unknown UID returns FPL_UNKNOWN_ID (0x8002019d)");
     expect(rfs_refer(fpl, 0u) == RFS_ILLEGAL_ADDR,
            "ReferFplStatus with a null info pointer returns ILLEGAL_ADDR");
 
@@ -11493,7 +11542,7 @@ static void test_allocate_fpl_context_precedence(void) {
     char msg[160];
 
     /* ---- 1+2. context beats the object lookup, on BOTH disabled states ------
-     * A bad uid would return FPL_BAD_ID_ERR if the lookup ran first. Asserting
+     * A bad uid would return FPL_UNKNOWN_ID_ERR if the lookup ran first. Asserting
      * CAN_NOT_WAIT here is what proves the ordering, not merely that some error
      * came back. Both legs run so dispatch-disabled is not inferred from the
      * interrupt-disabled result. */
@@ -11557,7 +11606,7 @@ static void test_allocate_fpl_context_precedence(void) {
         snprintf(msg, sizeof msg,
                  "the pool really was exhausted at %d blocks, so the count is a real bound",
                  FPL_NBLOCKS);
-        expect(fpl_call(NID_FPL_ALLOCATE, uid, FPL_OUTPTR) == FPL_EXHAUSTED_ERR, msg);
+        expect(fpl_call(NID_FPL_ALLOCATE, uid, FPL_OUTPTR) == FPL_UNMEASURED_NO_SPACE_ERR, msg);
         fpl_free_pool(uid);
     }
 
@@ -11580,7 +11629,7 @@ static void test_allocate_fpl_context_precedence(void) {
                "normal-context AllocateFplCB still returns 0");
         expect(MEM_R32(FPL_OUTPTR) == first + FPL_BSIZE,
                "normal-context AllocateFplCB still advances the cursor by one block");
-        expect(fpl_call(NID_FPL_ALLOCATE, 0u, FPL_OUTPTR) == FPL_BAD_ID_ERR,
+        expect(fpl_call(NID_FPL_ALLOCATE, 0u, FPL_OUTPTR) == FPL_UNKNOWN_ID_ERR,
                "normal-context AllocateFpl still reports the bad-uid error");
         fpl_free_pool(uid);
         s_cur = -1;
@@ -11603,7 +11652,7 @@ static void test_allocate_fpl_context_precedence(void) {
                "normal-context TryAllocateFpl still returns 0");
         uint32_t first = MEM_R32(FPL_OUTPTR);
         expect(first != FPL_SENTINEL, "normal-context TryAllocateFpl still writes the data pointer");
-        expect(fpl_call(NID_FPL_TRY_ALLOCATE, 0u, FPL_OUTPTR) == FPL_BAD_ID_ERR,
+        expect(fpl_call(NID_FPL_TRY_ALLOCATE, 0u, FPL_OUTPTR) == FPL_UNKNOWN_ID_ERR,
                "normal-context TryAllocateFpl still reports the bad-uid error");
         fpl_free_pool(uid);
         s_cur = -1;
@@ -11626,7 +11675,7 @@ static void test_allocate_fpl_context_precedence(void) {
         snprintf(msg, sizeof msg, "TryAllocateFpl still advances the cursor with %s", ctx);
         expect(rc == 0u && MEM_R32(FPL_OUTPTR) == base_before + FPL_BSIZE, msg);
         snprintf(msg, sizeof msg, "TryAllocateFpl still reports the bad-uid error with %s", ctx);
-        expect(fpl_call(NID_FPL_TRY_ALLOCATE, 0u, FPL_OUTPTR) == FPL_BAD_ID_ERR, msg);
+        expect(fpl_call(NID_FPL_TRY_ALLOCATE, 0u, FPL_OUTPTR) == FPL_UNKNOWN_ID_ERR, msg);
         fpl_free_pool(uid);
         cnw_end(intr_off, token);
     }
@@ -14327,6 +14376,119 @@ static void test_ctrl_read_latch(void) {
     sr_hle_test_ctrl_latch_reset();
 }
 
+/* sceCtrlPeekLatch (0xb1d0e5cd): the same transition latch as sceCtrlReadLatch, but a peek leaves the
+ * latch cursor alone, so a pending transition stays pending until a read consumes it. Measured on the
+ * PSP-3000 6.61 oracle 2026-10-15 (record PSP-HLE-CTRL-LATCH-001, cases latch-peek-initial and
+ * latch-peek-after-poll): with no input the peek writes make, break and press 0 and release
+ * 0xFFFFFFFF. That record cannot tell clearing from keeping, because its release field stays
+ * saturated; the non-clearing contract here is the project's model, not a hardware cell. */
+#define NID_CTRL_PEEK_LATCH 0xb1d0e5cdu
+static uint32_t ctrl_peek_latch(uint32_t out) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = out;
+    return sr_syscall(&cpu, NID_CTRL_PEEK_LATCH);
+}
+
+static void test_ctrl_peek_latch_keeps_the_latch(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_ctrl_latch_reset();
+
+    for (uint32_t i = 0u; i < 16u; i++) MEM_W8(CTRL_LATCH_OUT + i, 0xa5u);
+    expect(ctrl_peek_latch(CTRL_LATCH_OUT) == 0u &&
+               MEM_R32(CTRL_LATCH_OUT) == 0u && MEM_R32(CTRL_LATCH_OUT + 12u) == 0xffffffffu,
+           "sceCtrlPeekLatch with no input reports no transitions and all buttons released");
+
+    sr_hle_test_ctrl_push_sample(PSP_CTRL_CROSS_BIT);
+    expect(ctrl_peek_latch(CTRL_LATCH_OUT) == 1u &&
+               MEM_R32(CTRL_LATCH_OUT) == PSP_CTRL_CROSS_BIT &&
+               MEM_R32(CTRL_LATCH_OUT + 8u) == PSP_CTRL_CROSS_BIT,
+           "sceCtrlPeekLatch reports the CROSS press that is pending since the last read");
+    expect(ctrl_peek_latch(CTRL_LATCH_OUT) == 1u && MEM_R32(CTRL_LATCH_OUT) == PSP_CTRL_CROSS_BIT,
+           "a second sceCtrlPeekLatch still reports the same press: a peek does not clear the latch");
+    expect(ctrl_read_latch(CTRL_LATCH_OUT) == 1u && MEM_R32(CTRL_LATCH_OUT) == PSP_CTRL_CROSS_BIT,
+           "sceCtrlReadLatch after the peeks still reports the press it has not yet consumed");
+    expect(ctrl_read_latch(CTRL_LATCH_OUT) == 0u && MEM_R32(CTRL_LATCH_OUT) == 0u,
+           "sceCtrlReadLatch consumes the press: the next read reports nothing new");
+    expect(ctrl_peek_latch(CTRL_LATCH_OUT) == 0u && MEM_R32(CTRL_LATCH_OUT) == 0u,
+           "sceCtrlPeekLatch after the consuming read reports nothing new");
+    expect(ctrl_peek_latch(0u) == SCE_KERNEL_ILLEGAL_ADDR_ERR,
+           "a null latch pointer returns ILLEGAL_ADDR from sceCtrlPeekLatch");
+    sr_hle_test_ctrl_latch_reset();
+}
+
+/* sceKernelDevkitVersion (0x3fc9ae6a): PSP-3000 6.61 oracle 2026-10-15, record PSP-SYSTEM-001 (case
+ * model-profile), measured word 0x06060110. The literal here is the measurement; the handler returns
+ * SR_PSP_FIRMWARE_DEVKIT_VERSION from src/rt/sdkver.h, so a drift in either one fails this test. */
+#define NID_KERNEL_DEVKIT_VERSION 0x3fc9ae6au
+static void test_kernel_devkit_version_measured(void) {
+    reset_fixture();
+    sr_hle_init();
+    expect(td24b_dispatch4(NID_KERNEL_DEVKIT_VERSION, 0u, 0u, 0u, 0u) == 0x06060110u,
+           "sceKernelDevkitVersion returns the 6.61 devkit word 0x06060110 (PSP-3000 6.61 oracle 2026-10-15)");
+    expect(td24b_dispatch4(NID_KERNEL_DEVKIT_VERSION, 0u, 0u, 0u, 0u) == 0x06060110u,
+           "sceKernelDevkitVersion is stable across repeated calls");
+}
+
+/* scePower clock identity getters: PSP-3000 6.61 oracle 2026-10-15, record PSP-HLE-POWER-001 (cases
+ * pll-clock-float, cpu-clock-float, cpu-clock-alias, bus-clock-int, bus-clock-float). The defaults are
+ * PLL 222, CPU 222 and bus 111 MHz. The Float getters return single-precision bits 0x435E0000 (222.0)
+ * and 0x42DE0000 (111.0) in $f0. The Float getters report the same retained clock state as the Int
+ * getters, so they follow a Set call; the Set-then-read values are the modelled state, not a measured
+ * cell, because the oracle makes no Set call. */
+#define NID_SCE_POWER_GET_PLL_FLOAT     0xea382a27u
+#define NID_SCE_POWER_GET_CPU_FLOAT     0xb1a52c83u
+#define NID_SCE_POWER_GET_BUS_FLOAT     0x9badb3ebu
+#define NID_SCE_POWER_GET_CPU_ALIAS     0xfee03a2fu
+#define NID_SCE_POWER_GET_BUS_INT_ALIAS 0xbd681969u
+
+static uint32_t power_float_dispatch(uint32_t nid, uint32_t *bits) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.fi[0] = 0xdeadbeefu;   /* poison $f0 so a handler that skips the float write is caught */
+    uint32_t ret = sr_syscall(&cpu, nid);
+    *bits = cpu.fi[0];
+    return ret;
+}
+
+static uint32_t float_bits_of(float v) {
+    uint32_t b;
+    memcpy(&b, &v, sizeof b);
+    return b;
+}
+
+static void test_power_identity_getters_measured(void) {
+    uint32_t bits = 0u;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_power_reset();
+
+    expect(power_float_dispatch(NID_SCE_POWER_GET_PLL_FLOAT, &bits) == 0u && bits == 0x435e0000u,
+           "scePowerGetPllClockFrequencyFloat writes 222.0 (0x435E0000) in $f0");
+    expect(power_float_dispatch(NID_SCE_POWER_GET_CPU_FLOAT, &bits) == 0u && bits == 0x435e0000u,
+           "scePowerGetCpuClockFrequencyFloat writes 222.0 (0x435E0000) in $f0");
+    expect(power_float_dispatch(NID_SCE_POWER_GET_BUS_FLOAT, &bits) == 0u && bits == 0x42de0000u,
+           "scePowerGetBusClockFrequencyFloat writes 111.0 (0x42DE0000) in $f0");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_ALIAS, 0u, 0u, 0u, 0u) == 222u,
+           "scePowerGetCpuClockFrequency (0xfee03a2f) answers the 222 MHz CPU clock");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT_ALIAS, 0u, 0u, 0u, 0u) == 111u,
+           "scePowerGetBusClockFrequencyInt (0xbd681969) answers the 111 MHz bus clock");
+
+    expect(td24b_dispatch4(NID_SCE_POWER_SET_CLOCK, 333u, 300u, 150u, 0u) == 0u,
+           "scePowerSetClockFrequency accepts 333/300/150 for the float-follow check");
+    expect(power_float_dispatch(NID_SCE_POWER_GET_PLL_FLOAT, &bits) == 0u && bits == float_bits_of(333.0f),
+           "the PLL float getter follows the retained PLL request (333.0)");
+    expect(power_float_dispatch(NID_SCE_POWER_GET_CPU_FLOAT, &bits) == 0u && bits == float_bits_of(300.0f),
+           "the CPU float getter follows the retained CPU request (300.0)");
+    expect(power_float_dispatch(NID_SCE_POWER_GET_BUS_FLOAT, &bits) == 0u && bits == float_bits_of(150.0f),
+           "the bus float getter follows the retained bus request (150.0)");
+    expect(td24b_dispatch4(NID_SCE_POWER_GET_CPU_ALIAS, 0u, 0u, 0u, 0u) == 300u &&
+               td24b_dispatch4(NID_SCE_POWER_GET_BUS_INT_ALIAS, 0u, 0u, 0u, 0u) == 150u,
+           "the CPU alias and the bus Int alias follow the same retained request");
+    sr_hle_test_power_reset();
+}
+
 static void test_ctrl_sample_timestamp_microsecond_contract(void) {
     CpuState cpu;
 
@@ -15825,12 +15987,14 @@ static void test_ge_guest_sentinel(void) {
     expect((qid2 & 0xFF000000u) == 0x35000000u,
            "sceGeListEnQueue with stall returns valid queue id");
 
-    /* Stalled list sync with syncType=1 returns 1 (stalled) */
+    /* Stalled list sync with syncType=1 returns 3 (STALLING). The measured cell
+     * (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run) is a list stalled at its start
+     * address; a list stalled partway through, as here, is UNMEASURED. */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid2;
     cpu.r[5] = 1;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 1u,
-           "sceGeListSync(syncType=1) reports list is currently stalled");
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 3u,
+           "sceGeListSync(syncType=1) reports list is currently stalled (3; a partway stall is UNMEASURED)");
 
     /* Framebuffer is cleared to white, but purple rect is NOT drawn yet */
     expect(fb[0 * fb_stride + 0] == white_color, "stalled list executed clear to white");
@@ -15901,13 +16065,17 @@ static void test_ge_break_continue(void) {
            "sceGeBreak is registered in this build");
     expect(sr_hle_test_is_registered(NID_SCE_GE_CONTINUE),
            "sceGeContinue is registered in this build");
+    expect(sr_hle_test_is_registered(NID_SCE_GE_LIST_DEQUEUE),
+           "sceGeListDeQueue is registered in this build");
 
-    /* Mode validation: mode > 1 is rejected with INVALID_VALUE */
+    /* Mode validation: mode -1 is rejected with 0x80000107 (PSP-GE-CONTROL-001, measured in
+     * the eligible 2026-10-15 re-run). Only -1 is measured; the handler applies the same
+     * code to every mode above 1, which is UNMEASURED. */
     memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 2u;
+    cpu.r[4] = 0xffffffffu;
     cpu.r[5] = 0u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0x800001feu,
-           "sceGeBreak with invalid mode 2 returns INVALID_VALUE");
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0x80000107u,
+           "sceGeBreak with invalid mode -1 returns 0x80000107 (measured)");
 
     /* Param validation: non-NULL unreadable/unaligned param rejected with ILLEGAL_ADDR */
     memset(&cpu, 0, sizeof(cpu));
@@ -15928,17 +16096,18 @@ static void test_ge_break_continue(void) {
     expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0x80000103u,
            "sceGeBreak with crossing-arena param returns ILLEGAL_ADDR");
 
-    /* Idle checks: mode 0 when idle returns NOT_FOUND */
+    /* Idle checks: mode 0 with no active list returns 0x80000020 (PSP-GE-CONTROL-001,
+     * measured in the eligible 2026-10-15 re-run) */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0u;
     cpu.r[5] = 0u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0x80000025u,
-           "sceGeBreak mode 0 when idle returns NOT_FOUND");
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0x80000020u,
+           "sceGeBreak mode 0 with no active list returns 0x80000020 (measured)");
 
-    /* Idle checks: sceGeContinue when no paused list returns NOT_FOUND */
+    /* Idle checks: sceGeContinue with no paused list returns 0 (same eligible re-run) */
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, NID_SCE_GE_CONTINUE) == 0x80000025u,
-           "sceGeContinue when idle returns NOT_FOUND");
+    expect(sr_syscall(&cpu, NID_SCE_GE_CONTINUE) == 0u,
+           "sceGeContinue with no paused list returns 0 (measured)");
 
     /* Idle checks: mode 1 when idle resets all queues (0) and returns 0 */
     memset(&cpu, 0, sizeof(cpu));
@@ -15961,26 +16130,41 @@ static void test_ge_break_continue(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid;
     cpu.r[5] = 1u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 1u,
-           "ListSync peek reports stalled (1)");
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 3u,
+           "ListSync peek reports stalled (3; the measured read follows the BUSY dequeue)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 1u,
-           "DrawSync peek reports busy (1)");
+    expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 3u,
+           "DrawSync peek reports stalled (3; the measured read follows the BUSY dequeue)");
 
-    /* Pause with mode 0 */
+    /* sceGeListDeQueue on a stalled list returns BUSY (0x80000021, measured) and
+     * leaves the list stalled: the next sync still reports 3. */
     memset(&cpu, 0, sizeof(cpu));
-    cpu.r[4] = 0u;
-    cpu.r[5] = 0u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0u,
-           "sceGeBreak mode 0 pauses the display list and returns 0");
+    cpu.r[4] = qid;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80000021u,
+           "sceGeListDeQueue on a stalled list returns BUSY (0x80000021, measured)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid;
     cpu.r[5] = 1u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 2u,
-           "ListSync peek reports paused (DRAWING_DONE = 2)");
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 3u,
+           "ListSync still reports stalled (3) after a BUSY dequeue");
+
+    /* Pause with mode 0 returns the paused list's queue id. The measured cell (same eligible
+     * re-run) breaks a list running mid-draw; breaking a stalled list, as here, is UNMEASURED
+     * and follows the same rule. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
+    cpu.r[5] = 0u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == qid,
+           "sceGeBreak mode 0 pauses the display list and returns its queue id (stalled-list break UNMEASURED)");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid;
+    cpu.r[5] = 1u;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 4u,
+           "ListSync peek reports paused (4; a pause out of a stall is UNMEASURED)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;
@@ -15997,8 +16181,8 @@ static void test_ge_break_continue(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid;
     cpu.r[5] = 1u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 2u,
-           "ListSync peek stays paused after UpdateStallAddr");
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 4u,
+           "ListSync peek stays paused (4) after UpdateStallAddr");
 
     /* Continue: resumes and completes */
     memset(&cpu, 0, sizeof(cpu));
@@ -16016,6 +16200,18 @@ static void test_ge_break_continue(void) {
     expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
            "DrawSync reports idle (0) after continue");
 
+    /* No measured dequeue result exists for a completed list or an unknown id:
+     * both fail closed as NOT_IMPLEMENTED rather than reporting success. */
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = qid;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80020002u,
+           "sceGeListDeQueue on a completed list fails closed (NOT_IMPLEMENTED)");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0x7fffffffu;
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80020002u,
+           "sceGeListDeQueue on an unknown id fails closed (NOT_IMPLEMENTED)");
+
     /* Mode 1 cancellation */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = dl_base;
@@ -16027,24 +16223,28 @@ static void test_ge_break_continue(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;
     cpu.r[5] = 0u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == qid2,
-           "sceGeBreak mode 1 returns stopped queue id");
+    /* PSP-GE-CONTROL-001, eligible 2026-10-15 re-run (ge-break-reset-no-dequeue and the
+     * cancelled-list cells): a reset with one list stalled at its stall address returns 0,
+     * the reset list's id is then invalid for a ListSync peek (0x80000100), and a DrawSync
+     * peek reads 0. */
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0u,
+           "sceGeBreak mode 1 with a stalled list returns 0 (measured)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid2;
     cpu.r[5] = 1u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 4u,
-           "ListSync reports cancelled (CANCEL_DONE = 4) after mode 1 break");
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 0x80000100u,
+           "ListSync peek on a list the mode 1 break removed returns 0x80000100 (measured)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;
     expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
            "DrawSync reports idle (0) after mode 1 break");
 
-    /* Continue fails after mode 1 break because no list is paused */
+    /* Continue with no paused list returns 0 (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run) */
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, NID_SCE_GE_CONTINUE) == 0x80000025u,
-           "sceGeContinue after mode 1 break returns NOT_FOUND");
+    expect(sr_syscall(&cpu, NID_SCE_GE_CONTINUE) == 0u,
+           "sceGeContinue after mode 1 break returns 0 (no paused list, measured)");
 
     /* Mode 1 cancellation of an already paused list */
     memset(&cpu, 0, sizeof(cpu));
@@ -16057,20 +16257,22 @@ static void test_ge_break_continue(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0u;
     cpu.r[5] = 0u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0u,
-           "sceGeBreak mode 0 pauses the third display list");
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == qid3,
+           "sceGeBreak mode 0 pauses the third display list and returns its queue id");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;
     cpu.r[5] = 0u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == qid3,
-           "sceGeBreak mode 1 cancels paused list and returns its queue id");
+    /* A reset with a paused list is UNMEASURED; the handler applies the measured stalled-list
+     * results (return 0, then 0x80000100 for the removed id). */
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0u,
+           "sceGeBreak mode 1 with a paused list returns 0 (same rule, unmeasured)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid3;
     cpu.r[5] = 1u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 4u,
-           "ListSync reports cancelled (4) for paused list cancelled by mode 1 break");
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 0x80000100u,
+           "ListSync peek on a paused list the mode 1 break removed returns 0x80000100 (same rule)");
 }
 
 /* A display list the GE already ran to its END is consumed, and a stall address
@@ -21020,18 +21222,18 @@ static void test_vpl_nonblocking_roundtrip(void) {
     expect(MEM_R32(VPL_INFO + 40) == 0x100u && MEM_R32(VPL_INFO + 44) == 0x80u,
            "vpl status reports pool and free sizes");
     memset(&cpu, 0, sizeof cpu); cpu.r[4] = vpl; cpu.r[5] = first;
-    expect(sr_syscall(&cpu, NID_VPL_FREE) == VPL_BAD_ID_ERR, "vpl double free is rejected");
+    expect(sr_syscall(&cpu, NID_VPL_FREE) == VPL_UNKNOWN_ID_ERR, "vpl double free is rejected");
     memset(&cpu, 0, sizeof cpu); cpu.r[4] = vpl; cpu.r[5] = 0xdead0000u;
-    expect(sr_syscall(&cpu, NID_VPL_FREE) == VPL_BAD_ID_ERR, "vpl unknown address is rejected");
+    expect(sr_syscall(&cpu, NID_VPL_FREE) == VPL_UNKNOWN_ID_ERR, "vpl unknown address is rejected");
 
     /* Delete releases the single backing partition block, so same-size recreate reuses it. */
     memset(&cpu, 0, sizeof cpu); cpu.r[4] = vpl;
     expect(sr_syscall(&cpu, NID_VPL_DELETE) == 0u, "vpl delete succeeds");
     expect(sr_hle_test_partition_free_block_count() == 1, "vpl delete releases backing block");
     memset(&cpu, 0, sizeof cpu); cpu.r[4] = vpl;
-    expect(sr_syscall(&cpu, NID_VPL_DELETE) == VPL_BAD_ID_ERR, "vpl double delete is rejected");
+    expect(sr_syscall(&cpu, NID_VPL_DELETE) == VPL_UNKNOWN_ID_ERR, "vpl double delete is rejected");
     memset(&cpu, 0, sizeof cpu); cpu.r[4] = 0x699u;
-    expect(sr_syscall(&cpu, NID_VPL_DELETE) == VPL_BAD_ID_ERR, "vpl unknown uid is rejected");
+    expect(sr_syscall(&cpu, NID_VPL_DELETE) == VPL_UNKNOWN_ID_ERR, "vpl unknown uid is rejected");
 
     memset(&cpu, 0, sizeof cpu);
     cpu.r[4] = FPL_NAMEBUF; cpu.r[5] = 2u; cpu.r[6] = 0u; cpu.r[7] = 0x100u;
@@ -21512,10 +21714,10 @@ static void test_fpl_blocking_waits(void) {
     uint32_t addr2 = MEM_R32(out2);
     expect(addr1 != addr2, "FPL: allocations return distinct addresses");
     MEM_W32(out3, 0xfeedfaceu);
-    expect(selftest_fpl_try_allocate(pool, out3) == FPL_EXHAUSTED_ERR, "FPL: pool is exhausted");
+    expect(selftest_fpl_try_allocate(pool, out3) == FPL_NO_MEMORY_ERR, "FPL: pool is exhausted");
     expect(MEM_R32(out3) == 0xfeedfaceu, "FPL: exhausted try_allocate leaves outptr untouched");
 
-    expect(selftest_fpl_free(0x5ffu, addr1) == FPL_BAD_ID_ERR, "FPL: bad UID free is rejected");
+    expect(selftest_fpl_free(0x5ffu, addr1) == FPL_UNKNOWN_ID_ERR, "FPL: bad UID free is rejected");
     expect(selftest_fpl_free(pool, 0xdeadbeefu) == 0x80000103u, "FPL: illegal address free is rejected");
     expect(selftest_fpl_free(pool, addr1 + 1) == 0x80000103u, "FPL: unaligned address free is rejected");
 
@@ -21710,11 +21912,11 @@ static void test_vpl_blocking_waits(void) {
     expect(selftest_vpl_try_allocate(vpool, 64, out3) == VPL_EXHAUSTED_ERR, "VPL: pool is exhausted");
     expect(MEM_R32(out3) == 0xfeedfaceu, "VPL: exhausted try_allocate leaves outptr untouched");
 
-    expect(selftest_vpl_free(0x6ffu, addr1) == VPL_BAD_ID_ERR, "VPL: bad UID free is rejected");
-    expect(selftest_vpl_free(vpool, 0xdeadbeefu) == VPL_BAD_ID_ERR, "VPL: unknown address free is rejected");
+    expect(selftest_vpl_free(0x6ffu, addr1) == VPL_UNKNOWN_ID_ERR, "VPL: bad UID free is rejected");
+    expect(selftest_vpl_free(vpool, 0xdeadbeefu) == VPL_UNKNOWN_ID_ERR, "VPL: unknown address free is rejected");
 
     expect(selftest_vpl_free(vpool, addr1) == 0, "VPL: FreeVpl succeeds");
-    expect(selftest_vpl_free(vpool, addr1) == VPL_BAD_ID_ERR, "VPL: double free is rejected");
+    expect(selftest_vpl_free(vpool, addr1) == VPL_UNKNOWN_ID_ERR, "VPL: double free is rejected");
 
     expect(selftest_vpl_allocate(vpool, 128, out3, 0) == 0, "VPL: allocate after free succeeds");
     expect(MEM_R32(out3) == addr1, "VPL: freed address is reused");
@@ -22091,6 +22293,40 @@ static void test_mbx_lifecycle_and_ordering(void) {
            "MBX: waiter on deleted mailbox returns 0x800201B5");
     sr_coro_destroy(w.tcb->coro); w.tcb->coro = NULL;
     s_cur = (int)(cur - s_tcb);
+
+    /* ---- 9. DeleteMbx rewrites a timed waiter's timeout word to the remaining time ----
+     * PSP-measured 2026-10-15 (PSP-3000, 6.61): a waiter with a 500000 us timeout, woken by
+     * DeleteMbx, returned WAIT_DELETE and wrote 499950 of 500000 us. The scheduler clock
+     * advances 50 ms while the waiter is blocked, so the written remaining time must fall
+     * strictly between zero and the original timeout. */
+    mbx = selftest_mbx_create(0);
+    MEM_W32(MBX_TIMEOUT_PTR, 500000u);
+    memset(&w, 0, sizeof w);
+    w.uid = 0x154u;
+    w.tcb = fixture_thread(w.uid, TH_READY, 32);
+    w.tcb->started = 1;
+    w.mbx_uid = mbx;
+    w.outptr = out;
+    w.toptr = MBX_TIMEOUT_PTR;
+    MEM_W32(out, 0xfeedfaceu);
+    w.tcb->coro = sr_coro_create(selftest_mbx_waiter_fiber_body, &w, (size_t)4 << 20);
+
+    s_cur = (int)(w.tcb - s_tcb); sr_coro_switch(w.tcb->coro);
+    expect(w.returned == 0 && w.tcb->state == TH_WAIT_OBJ,
+           "MBX: timed waiter blocked before delete");
+
+    s_vtime_us += 50000u;
+    expect(selftest_mbx_delete(mbx) == 0, "MBX: DeleteMbx with a timed waiter succeeds");
+    expect(w.tcb->state == TH_READY, "MBX: delete woke the timed waiter to TH_READY");
+
+    s_cur = (int)(w.tcb - s_tcb); sr_coro_switch(w.tcb->coro);
+    expect(w.returned == 1 && w.ret == MBX_WAIT_DELETE_ERR,
+           "MBX: timed waiter returns 0x800201B5 after DeleteMbx");
+    expect(MEM_R32(MBX_TIMEOUT_PTR) > 0u && MEM_R32(MBX_TIMEOUT_PTR) < 500000u,
+           "MBX: DeleteMbx rewrites the timed waiter's timeout word to the remaining time (0 < rem < 500000)");
+    expect(MEM_R32(out) == 0xfeedfaceu, "MBX: waiter woken by DeleteMbx writes no message");
+    sr_coro_destroy(w.tcb->coro); w.tcb->coro = NULL;
+    s_cur = (int)(cur - s_tcb);
 }
 
 /* =========================================================================
@@ -22397,6 +22633,26 @@ static void test_psp_mutex(void) {
     cur->started = 1;
 
     SceKernelMutexInfoTest info;
+
+    /* ---- Interrupt context: UnlockMutex is gated before the owner check ----
+     * PSP-measured 2026-10-15 (PSP-3000, 6.61; acceptance-eligible run on probe ec5dd563): in every
+     * one of 20 VBLANK sub-interrupt trials, all six mutex calls returned ILLEGAL_CONTEXT (0x80020064),
+     * including an unlock of a mutex the handler does not own. Lock, LockCB and TryLock already gate;
+     * Unlock must gate the same way. */
+    {
+        uint32_t mi = mtx_create("intr_unlock", 0, 1);
+        expect(mi > 0 && mtx_get_info(mi, &info) && info.currentCount == 1 &&
+               info.lockThread == (int32_t)cur->uid,
+               "IntrUnlock: mutex is held by the caller before the interrupt-context unlock");
+        s_cur = -1;   /* interrupt context: sched_is_intr_context() is true */
+        expect(mtx_unlock(mi, 1) == 0x80020064u,
+               "IntrUnlock: UnlockMutex in interrupt context returns ILLEGAL_CONTEXT (0x80020064)");
+        s_cur = (int)(cur - s_tcb);
+        expect(mtx_get_info(mi, &info) && info.currentCount == 1 &&
+               info.lockThread == (int32_t)cur->uid,
+               "IntrUnlock: the rejected unlock leaves the mutex held by its owner");
+        expect(mtx_delete(mi) == 0, "IntrUnlock: the held mutex still deletes");
+    }
 
     /* ---- T01, T02, T03, T04, T05: Creation, Attributes, Name bounds, Init count ---- */
     uint32_t m1 = mtx_create("test_mutex", 0, 0);
@@ -28081,7 +28337,9 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sysparam_nickname_string();
     test_ge_edram_addr_translation();
     test_named_refusals();
+    test_refer_system_status();
     test_ctrl_read_latch();
+    test_ctrl_peek_latch_keeps_the_latch();
     test_sysreg_persistence_round_trip();
     test_sysreg_corrupt_overlay();
     test_sysreg_flush_failure();
@@ -28215,6 +28473,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_allocate_fpl_context_precedence();
     test_atrac_context_abi();
     test_td24b_cheap_hle_batch();
+    test_kernel_devkit_version_measured();
+    test_power_identity_getters_measured();
     test_atrac_stream_ring_wrap();
     test_td24c_atrac_info_batch();
     test_td24d_hle_batch();

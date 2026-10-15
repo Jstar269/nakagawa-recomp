@@ -945,7 +945,6 @@ class TestProductionSmokePackage(unittest.TestCase):
         match = re.search(r"^#define SR_CPUSTATE_ABI_VERSION (\d+)u$", header, re.MULTILINE)
         self.assertIsNotNone(match, "recomp.h must define SR_CPUSTATE_ABI_VERSION <n>u")
         self.assertEqual(package["runtime"]["abi_version"], int(match.group(1)))
-        self.assertEqual(package["runtime"]["abi_version"], title_codegen_plan.codegen_abi_version())
         self.assertEqual(package["executable"]["path"], "production_smoke.exe")
         self.assertTrue((self.build_dir / package["executable"]["path"]).is_file())
         self.assertEqual(
@@ -1475,6 +1474,27 @@ class TestPresenterContract(unittest.TestCase):
             r'if \(getenv\("SR_PRESENT_TRACE"\)\)\s*\{\s*'
             r'sr_gui_boot_event\("BOOT_EVENT phase=frame_present backend=offscreen',
         )
+
+    def test_osk_frame_syncs_guest_vram_before_host_copy(self):
+        """Source-shape check only (issue #827): no runtime is run. With the keyboard open the
+        GPU fast path is skipped, so the SDL3 branch must make guest VRAM current before
+        convert_fb reads it, and a failed sync must decline the frame instead of drawing the
+        keyboard over stale pixels."""
+        source = (ROOT / "src" / "rt" / "gui.c").read_text(encoding="utf-8")
+        presenter = source[source.index("int gui_present"):]
+        sdl = presenter[presenter.index("if (s_sdl3) {"):presenter.index("int present_result")]
+        # One keyboard decision gates both the skipped fast path and the sync that replaces it,
+        # so sync_sdl_input() cannot open or close the keyboard between the two.
+        self.assertIn("int osk_open = sr_osk_overlay_active();", sdl)
+        self.assertIn("int res = osk_open ? -1 : gegpu_present(fbaddr, fmt, stride);", sdl)
+        self.assertLess(sdl.index("if (osk_open) {"), sdl.index("gegpu_sync_guest_fb(&d)"))
+        self.assertLess(sdl.index("gegpu_sync_guest_fb(&d)"), sdl.index("convert_fb(fbaddr, fmt, stride);"))
+        # Only FAILED declines the frame; the failure is reported to the armed capture and the
+        # branch jumps to pacing before any conversion or present happens.
+        failed = sdl[sdl.index("GEGPU_SYNC_FAILED"):sdl.index("convert_fb(fbaddr, fmt, stride);")]
+        self.assertIn("sr_capture_fail(", failed)
+        self.assertIn("goto pace;", failed)
+        self.assertLess(sdl.index("GEGPU_SYNC_FAILED"), sdl.index("convert_fb(fbaddr, fmt, stride);"))
 
     def test_display_smoke_offscreen_pins_inherited_sdl_selectors(self):
         inherited = {

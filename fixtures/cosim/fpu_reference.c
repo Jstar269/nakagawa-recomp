@@ -21,7 +21,9 @@
  * conversion words, gradual subnormal inputs, and min-normal*0.5 FS result;
  * tools/test_codegen_fp_convert.py pins generated AOT compare/branch and
  * cvt.s.w results. Mul.s infinity*zero is the repository's explicit canonical
- * qNaN result, not a host-NaN assumption.
+ * qNaN result, not a host-NaN assumption. The ctc1 write rule (FCR31 bits 25..31
+ * do not exist) is the project's own PSP-3000 measurement PSP-FPU-CC-001, indexed
+ * in docs/HARDWARE_ORACLE.md.
  *
  * Exact NaN payload propagation, signaling-NaN quieting, FS behavior for an
  * exact subnormal result, and COP1 exception/flag/enable behavior have no PSP
@@ -866,4 +868,12 @@ unsigned fpu_reference_compare(unsigned condition, uint32_t a_bits,
 
 unsigned fpu_reference_bc1(unsigned tf, unsigned condition) {
     return tf != 0u ? condition != 0u : condition == 0u;
+}
+
+/* FCR31 after a guest ctc1 of `written`. The PSP FPU implements FCC0 only: a
+ * ctc1 of 0xFE800000 (every MIPS IV condition bit) reads back 0x00800000 on a
+ * PSP-3000 (PSP-FPU-CC-001), so bits 25..31 are dropped. Every other bit is kept;
+ * no other bit was measured as unwritable. */
+uint32_t fpu_reference_ctc1(uint32_t written) {
+    return written & 0x01ffffffu;
 }

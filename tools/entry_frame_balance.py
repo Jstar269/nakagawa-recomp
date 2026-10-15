@@ -47,6 +47,8 @@ from analyze import (
     direct_j_edges,
     in_ranges,
     is_hard_terminator,
+    linked_branch_target,
+    span_key,
     trace_function,
 )
 from imports import ImportTableError, format_boundary
@@ -270,11 +272,73 @@ def classify(profile):
 def profile_entry(elf, addr, ranges, limit=DEFAULT_STEP_LIMIT):
     """Walk the intra-procedural CFG from ``addr`` accumulating the ``$sp`` delta.
 
-    ``jal``/``jalr`` are treated as returning calls (execution continues after
-    the delay slot); ``j``, ``jr`` and conditional branches fork or terminate a
-    path as :func:`analyze.trace_function` does, so the traversal agrees with
-    the extent the analyzer recovers.
+    ``jal``/``jalr``, and every linking branch :func:`linked_branch_is_call`
+    classifies as a call, are treated as returning calls (execution continues
+    after the delay slot); ``j``, ``jr`` and conditional branches fork or
+    terminate a path as :func:`analyze.trace_function` does, so the traversal
+    agrees with the extent the analyzer recovers.
     """
+    return _walk_frame(elf, addr, ranges, limit, gated=True)
+
+
+def linked_branch_is_call(elf, source, word, ranges, limit=DEFAULT_STEP_LIMIT):
+    """Is the linking branch ``word`` at ``source`` a CALL of its target (#968)?
+
+    ``bltzal``/``bgezal`` (``bal`` is ``bgezal $zero``) and their likely forms
+    write ``$ra`` with the link ``source + 8``.  They are calls wearing a branch
+    encoding, so their target is a function entry and both paths continue at the
+    link -- except in the two shapes where the link is not a return address:
+
+    * ``bal .+8`` reads the PC; the target is the link itself
+      (:func:`analyze.linked_branch_target` returns ``None``);
+    * the target is a frame-releasing :data:`CONTINUATION` in these ranges.  It
+      releases a frame it never allocated, so each of its ``jr $ra`` returns from
+      that frame's owner with the owner's ``$ra``, never to the link: the branch
+      is a jump that also writes ``$ra`` (``bal`` over inline data, PC-relative
+      addressing into the function's own tail), and a call there could not be
+      exact.
+
+    Every other target, including one this image cannot walk, is called, which
+    is the o32 default ``jal`` has.  Every walker -- the analyzer's trace, the
+    frame profile, codegen's flow and its emission -- asks this one question, so
+    they agree on each site.
+    """
+    target = linked_branch_target(source, word)
+    if target is None:
+        return False
+    if not in_ranges(target, ranges):
+        return True
+    return linked_target_role(elf, target, ranges, limit) != CONTINUATION
+
+
+def linked_target_role(elf, target, ranges, limit=DEFAULT_STEP_LIMIT):
+    """Frame role of a linking-branch target, from a structural walk.
+
+    The walk treats every linking branch it meets inside the target as a call
+    unless it is ``bal .+8``, so a role never depends on another role and the
+    answer is the same in whatever order sites are asked.  Images are immutable
+    once loaded, so the role is memoized on the image per target and range set.
+    """
+    key = (target, span_key(ranges), limit)
+    cache = getattr(elf, "_linked_target_roles", None)
+    if cache is None:
+        cache = {}
+        try:
+            elf._linked_target_roles = cache
+        except AttributeError:  # an image type that refuses attributes: no memo
+            cache = None
+    if cache is not None and key in cache:
+        return cache[key]
+    role = classify(_walk_frame(elf, target, ranges, limit, gated=False))
+    if cache is not None:
+        cache[key] = role
+    return role
+
+
+def _walk_frame(elf, addr, ranges, limit, gated):
+    """:func:`profile_entry`'s walk.  ``gated=False`` is the structural form
+    :func:`linked_target_role` uses: there every linking branch except
+    ``bal .+8`` is a call, without asking for its target's role."""
     seen = set()
     stack = [(addr, 0)]
     returns = set()
@@ -329,6 +393,18 @@ def profile_entry(elf, addr, ranges, limit=DEFAULT_STEP_LIMIT):
                 break
             if op == 0 and fn == 0x0C:  # syscall: an HLE boundary, not a return
                 break
+            if op == 1 and linked_branch_target(pc, word) is not None and (
+                not gated or linked_branch_is_call(elf, pc, word, ranges, limit)
+            ):
+                # A linking branch to a callable returns like `jal` (#968). A likely
+                # form annuls its slot when not taken, so that path continues at the
+                # link without the slot's effect.
+                unknown = unknown or slot_unknown
+                if branch_likely(word):
+                    stack.append((pc + 8, delta))
+                delta += slot_step
+                pc += 8
+                continue
 
             is_likely = branch_likely(word)
             target = branch_target(pc, word)

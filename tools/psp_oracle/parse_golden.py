@@ -722,6 +722,60 @@ _register_campaign_probe(
     )},
 )
 
+# NOT_RUN HLE cases (probe_hle_measure.c, single launch each). Shape only: a cell
+# is PASS when its calls completed, SKIP when the object it needs was not obtained,
+# and every out word is an observation. Nothing here compares a value with a PSP
+# expectation, and none of these streams has run on hardware.
+_register_campaign_probe(
+    "hle-vtimer-unit", "PSP-HLE-VTIMER-002",
+    ("vtimer-unit-create", "vtimer-unit-start", "vtimer-unit-time-a",
+     "vtimer-unit-systime-a", "vtimer-unit-delay", "vtimer-unit-time-b",
+     "vtimer-unit-systime-b", "vtimer-unit-base-running",
+     "vtimer-unit-refer-running", "vtimer-unit-stop", "vtimer-unit-base-stopped",
+     "vtimer-unit-refer-stopped", "vtimer-unit-delete"),
+    {"vtimer-unit-create": 1, "vtimer-unit-start": 1, "vtimer-unit-time-a": 2,
+     "vtimer-unit-systime-a": 2, "vtimer-unit-delay": 1, "vtimer-unit-time-b": 2,
+     "vtimer-unit-systime-b": 2, "vtimer-unit-base-running": 2,
+     "vtimer-unit-refer-running": 2, "vtimer-unit-stop": 1,
+     "vtimer-unit-base-stopped": 2, "vtimer-unit-refer-stopped": 2,
+     "vtimer-unit-delete": 1},
+)
+_register_campaign_probe(
+    "hle-vtimer-errors", "PSP-HLE-VTIMER-003",
+    ("vtimer-err-create-stale", "vtimer-err-delete-stale",
+     "vtimer-err-start-deleted", "vtimer-err-stop-deleted",
+     "vtimer-err-time-deleted", "vtimer-err-cleanup-stale",
+     "vtimer-err-create-live", "vtimer-err-delete-live",
+     "vtimer-err-noslot-create", "vtimer-err-noslot-cleanup"),
+    {"vtimer-err-create-stale": 1, "vtimer-err-delete-stale": 1,
+     "vtimer-err-start-deleted": 1, "vtimer-err-stop-deleted": 1,
+     "vtimer-err-time-deleted": 2, "vtimer-err-cleanup-stale": 0,
+     "vtimer-err-create-live": 1, "vtimer-err-delete-live": 1,
+     "vtimer-err-noslot-create": 2, "vtimer-err-noslot-cleanup": 2},
+)
+_register_campaign_probe(
+    "hle-kernel-pool-bounds", "PSP-HLE-KERNEL-STATUS-002",
+    ("fpl-create-size-0x00", "fpl-delete-size-0x00",
+     "fpl-create-size-0x7fffffff", "fpl-delete-size-0x7fffffff", "vpl-create",
+     "vpl-try-alloc-refusal", "vpl-free-all", "vpl-delete"),
+    {"fpl-create-size-0x00": 1, "fpl-delete-size-0x00": 1,
+     "fpl-create-size-0x7fffffff": 1, "fpl-delete-size-0x7fffffff": 1,
+     "vpl-create": 1, "vpl-try-alloc-refusal": 2, "vpl-free-all": 2,
+     "vpl-delete": 1},
+)
+_register_campaign_probe(
+    "hle-null-out-pointers", "PSP-HLE-NULL-OUT-001",
+    ("null-vtimer-create", "null-sys-status", "null-vtimer-time", "null-vtimer-base",
+     "null-vtimer-refer", "null-vtimer-delete"),
+    {"null-vtimer-create": 0, "null-sys-status": 0, "null-vtimer-time": 0,
+     "null-vtimer-base": 0, "null-vtimer-refer": 0, "null-vtimer-delete": 0},
+)
+_register_campaign_probe(
+    "hle-power-float-v0", "PSP-HLE-POWER-002",
+    ("pll-clock-float-v0", "cpu-clock-float-v0", "bus-clock-float-v0"),
+    {"pll-clock-float-v0": 1, "cpu-clock-float-v0": 1, "bus-clock-float-v0": 1},
+)
+
 # llsc-link: three link windows and the sc behaviours they measure (see probe.c,
 # run_llsc_link). Six words per cell: loaded, first sc result, A and B after the
 # cell, and the model words for A and B. The parser checks shape only.
@@ -729,6 +783,17 @@ _register_campaign_probe(
     "llsc-link", "PSP-LLSC-001",
     ("llsc-control", "llsc-second-sc", "llsc-other-address"),
     {"llsc-control": 6, "llsc-second-sc": 6, "llsc-other-address": 6},
+)
+
+# fpu-cc: COP1 condition-code facts (see probe.c, run_fpu_cc). One FCR31 writability
+# cell, then for each condition code 0..7 a c.eq.s cell (one word) and a bc1t/bc1f cell
+# (four words). The condition code 0 cells are controls; the parser checks shape only.
+_FPU_CC_CELLS = ("fpu-cc-fcr31-bits",) + tuple(
+    f"fpu-cc{n}-{kind}" for n in range(8) for kind in ("ceq", "branch"))
+_register_campaign_probe(
+    "fpu-cc", "PSP-FPU-CC-001", _FPU_CC_CELLS,
+    {cell: (2 if cell == "fpu-cc-fcr31-bits" else 1 if cell.endswith("-ceq") else 4)
+     for cell in _FPU_CC_CELLS},
 )
 
 
@@ -795,6 +860,14 @@ def validate_hle_edram_restore(text: str) -> None:
         )
 
 
+#: NOT_RUN HLE cases whose status is machinery-only: a record is PASS when its calls
+#: completed and SKIP when the object it needs was not obtained, and never FAIL.
+HLE_MACHINERY_STATUS_CASES = frozenset({
+    "hle-vtimer-unit", "hle-vtimer-errors", "hle-kernel-pool-bounds", "hle-power-float-v0",
+    "hle-null-out-pointers",
+})
+
+
 def parse_campaign_probe_output(
     text: str, campaign_case: str, *, require_complete: bool = True
 ) -> SequenceReport:
@@ -806,6 +879,13 @@ def parse_campaign_probe_output(
         raise ProtocolError(f"unknown campaign probe {campaign_case!r}") from exc
     sequence = parse_sequence(text, spec, require_complete=require_complete)
     _validate_scalar_shape(sequence, counts)
+    if campaign_case in HLE_MACHINERY_STATUS_CASES:
+        for record in sequence.results.values():
+            if record.status not in ("PASS", "SKIP"):
+                raise ProtocolError(
+                    f"{spec.test_id}: {record.case_id} status {record.status!r} is not "
+                    "machinery-only (a cell is PASS or SKIP, never FAIL)"
+                )
     return sequence
 
 
