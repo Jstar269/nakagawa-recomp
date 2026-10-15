@@ -1003,9 +1003,9 @@ static uint32_t sr_rt_current_uid(void) {
  * `display-wait-late`, `display-vblank-window`; records PSP-DISPLAY-002 and
  * PSP-DISPLAY-004).
  *
- * There is no missed-edge memory. The scheduler used to carry a per-thread
- * `vbl_seen` latch: if a VBLANK had been delivered since this thread last
- * completed a display wait, the wait returned immediately and consumed the
+ * There is no per-thread missed-edge memory. The scheduler used to carry a
+ * per-thread `vbl_seen` latch: if a VBLANK had been delivered since this thread
+ * last completed a display wait, the wait returned immediately and consumed the
  * missed edge, on the theory that blocking would hard-quantize a frame whose
  * work crossed the period. Hardware says otherwise, and says it without
  * ambiguity. With 0.25, 0.75, 1.25, 1.75 and 2.5 periods of un-yielded CPU spin
@@ -1014,6 +1014,15 @@ static uint32_t sr_rt_current_uid(void) {
  * exactly 1 -- never 0, and never 2 even when two whole edges had been missed.
  * A late caller is not owed the edges it slept through. The latch is therefore
  * gone, along with the TCB field that backed it.
+ *
+ * The source itself is not memoryless, though. Edges are latched at a service
+ * point, so an edge that falls due during a stretch with no service point stays
+ * owed until the scheduler next runs one. If the caller registered first, the
+ * idle path would deliver that owed edge after registration and release the
+ * caller about one period early, which is the behaviour the hardware rules out.
+ * sched_vblank_block() closes that window: it samples the clock and delivers the
+ * owed edges before the caller registers, so they wake only threads that were
+ * already waiting.
  *
  * The two NIDs differ in exactly one place. At every phase OUTSIDE the vblank
  * interval the two calls are indistinguishable (240/240 trials each: blocked,
@@ -1027,6 +1036,15 @@ static uint32_t sr_rt_current_uid(void) {
  * semantic and is not expressible on hardware; see the D2 record
  * (PSP-DISPLAY-003) quoted above sched_run's idle handling. */
 static void sched_vblank_block(void) {
+    /* Sample the clock, latch any edge that has fallen due, and deliver the edges owed
+     * from before this call. All of it runs before the caller registers, so the owed
+     * edges wake only threads already waiting and this caller is not released by an
+     * edge that passed before it called (PSP-DISPLAY-002). vtime_refresh() rather than
+     * scheduler_progress_time(): in turbo the latter injects its fixed quantum, and an
+     * observation point must not move the turbo clock. In paced mode the two are the
+     * same host-clock sample and latch. */
+    vtime_refresh();
+    scheduler_service_pending();
     sched_block_on(VBLANK_WAIT_OBJ);
 }
 

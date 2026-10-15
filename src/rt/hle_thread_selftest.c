@@ -5573,7 +5573,12 @@ static void reset_fixture(void) {
     s_pending_vblanks = 0;          /* owed VBLANK episodes */
     s_vblank_masked_pending = 0;
     s_vbl_event_period_rem = 0;
-    s_vbl_next_us = 0;
+    /* No VBLANK source until a test arms one. A deadline of 0 would be due at the
+     * first service point, and a display wait now services owed edges before it
+     * registers (sched_vblank_block), so the fixture's origin edge would be delivered
+     * ahead of the call. UINT64_MAX is the saturated source: nothing latches until a
+     * test sets a deadline, which is the idiom this file uses to keep VBLANK out. */
+    s_vbl_next_us = UINT64_MAX;
     s_vbl_count = 0;
     s_vblank_q_us = -1;
     s_last_vblank_ns = 0;
