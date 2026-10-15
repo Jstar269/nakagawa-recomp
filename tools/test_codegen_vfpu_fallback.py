@@ -100,6 +100,19 @@ int main(void) {{ CpuState s = {{0}}; generated(&s); return unsupported == 1 && 
         self.assertIn("sr_vfpu_cos(_d[0])",effect)
         self.assertRegex(effect,r"vfpuCtrl\[2\]&~0x[0-9a-f]+u")
 
+    def test_vrexp2_is_exp2_of_the_negated_operand_at_every_width(self):
+        # PSP-VFPU-TRANSCENDENTAL-001: a PSP-3000 returned exp2(-x) for vrexp2.s (1.0 for
+        # zero, 2.0 for -1.0). Optype 28 of the VV2 group is that instruction, not a negated
+        # exp2; vexp2 (optype 20) stays the plain exp2.
+        for size in (1, 2, 3, 4):
+            lo, hi = (size - 1) & 1, (size - 1) >> 1
+            for optype, want in ((28, "sr_vfpu_exp2(-_s[_i])"), (20, "sr_vfpu_exp2(_s[_i])")):
+                word = ((0x34 << 26) | (optype << 16) | (0 << 8) | 0x40 | (lo << 7) | (hi << 15))
+                with self.subTest(size=size, optype=optype):
+                    effect, _, _ = codegen.vfpu_effect(0x4200, word)
+                    self.assertIn(want, effect)
+                    self.assertNotIn("-sr_vfpu_exp2(", effect)
+
     def test_vrot_overlap_ignores_inactive_lanes(self):
         # A scalar source register 0 must not match a zero-filled inactive
         # lane of a pair destination.

@@ -535,7 +535,9 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
                 case 25: d[i] = -sr_vfpu_rsqrt(v[i]); break;
                 case 26: d[i] = -sr_vfpu_sin(v[i]); break;
                 case 27: d[i] = -sr_vfpu_cos(v[i]); break;
-                case 28: d[i] = -sr_vfpu_exp2(v[i]); break;
+                /* optype 28 is vrexp2, exp2(-x), not a negated exp2: a PSP-3000 returned 1.0
+                 * for zero and 2.0 for -1.0 (PSP-VFPU-TRANSCENDENTAL-001, 2026-10-15). */
+                case 28: d[i] = sr_vfpu_exp2(-v[i]); break;
                 case 29: d[i] = -sr_vfpu_log2(v[i]); break;
                 case 30: d[i] = -sr_vfpu_sqrt(v[i]); break;
                 case 31: d[i] = -sr_vfpu_asin(v[i]); break;

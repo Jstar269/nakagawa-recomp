@@ -925,6 +925,67 @@ static int check_vfpu_compare_measured_words(void) {
     return bad;
 }
 
+static int check_vrexp2_measured_words(void) {
+    /* PSP-VFPU-TRANSCENDENTAL-001: the 63 words a PSP-3000 (6.61, 2026-10-15, probe build
+     * 22b027f6) returned for vrexp2.s S002, S000, as {input, result} pairs: 20 special
+     * encodings followed by 43 evenly spaced exponents; docs/HARDWARE_ORACLE.md indexes the
+     * run. VREXP2 is exp2(-x): 1.0 for zero, 2.0 for -1.0 and 0.5 (0x3efffffc) for +1.0. Both
+     * execution lanes run the probe's own words: the AOT body tools/codegen.py emits (via the
+     * overlap-diff header) and the production interpreter. Both computed -exp2(x) before this
+     * measurement, negative for every finite input. */
+    static const uint32_t pairs[63][2] = {
+        {0x00000000u, 0x3f800000u}, {0x80000000u, 0x3f800000u}, {0x00000001u, 0x3f800000u},
+        {0x80000001u, 0x3f800000u}, {0x3f800000u, 0x3efffffcu}, {0xbf800000u, 0x40000000u},
+        {0x3f000000u, 0x3f3504f0u}, {0xbf000000u, 0x3fb504f0u}, {0x40000000u, 0x3e7ffffcu},
+        {0xc0000000u, 0x40800000u}, {0x00800000u, 0x3f7ffffcu}, {0x80800000u, 0x3f800000u},
+        {0x7f000000u, 0x00000000u}, {0xff000000u, 0x7f800000u}, {0x7f800000u, 0x00000000u},
+        {0xff800000u, 0x7f800000u}, {0x7fc00000u, 0x7f800001u}, {0xffc00000u, 0x7f800001u},
+        {0x7f800001u, 0x7f800001u}, {0xff800001u, 0x7f800001u}, {0xc1760000u, 0x4725fed4u},
+        {0xc16a0000u, 0x46c56728u}, {0xc15e0000u, 0x466ac0c4u}, {0xc1520000u, 0x460b95c0u},
+        {0xc1460000u, 0x45a5fed4u}, {0xc13a0000u, 0x45456728u}, {0xc12e0000u, 0x44eac0c4u},
+        {0xc1220000u, 0x448b95c0u}, {0xc1160000u, 0x4425fed4u}, {0xc10a0000u, 0x43c56728u},
+        {0xc0fc0000u, 0x436ac0c4u}, {0xc0e40000u, 0x430b95c0u}, {0xc0cc0000u, 0x42a5fed4u},
+        {0xc0b40000u, 0x42456728u}, {0xc09c0000u, 0x41eac0c4u}, {0xc0840000u, 0x418b95c0u},
+        {0xc0580000u, 0x4125fed4u}, {0xc0280000u, 0x40c56728u}, {0xbff00000u, 0x406ac0c4u},
+        {0xbf900000u, 0x400b95c0u}, {0xbec00000u, 0x3fa5fed4u}, {0x3ec00000u, 0x3f456728u},
+        {0x3f900000u, 0x3eeac0c4u}, {0x3ff00000u, 0x3e8b95c0u}, {0x40280000u, 0x3e25fed4u},
+        {0x40580000u, 0x3dc56728u}, {0x40840000u, 0x3d6ac0c4u}, {0x409c0000u, 0x3d0b95c0u},
+        {0x40b40000u, 0x3ca5fed4u}, {0x40cc0000u, 0x3c456728u}, {0x40e40000u, 0x3beac0c4u},
+        {0x40fc0000u, 0x3b8b95c0u}, {0x410a0000u, 0x3b25fed4u}, {0x41160000u, 0x3ac56728u},
+        {0x41220000u, 0x3a6ac0c4u}, {0x412e0000u, 0x3a0b95c0u}, {0x413a0000u, 0x39a5fed4u},
+        {0x41460000u, 0x39456728u}, {0x41520000u, 0x38eac0c4u}, {0x415e0000u, 0x388b95c0u},
+        {0x416a0000u, 0x3825fed4u}, {0x41760000u, 0x37c56728u}, {0x41810000u, 0x376ac0c4u},
+    };
+    const int c = find_overlap_diff_case("vrexp2-s-measured");
+    CHECK(c >= 0, "measured vrexp2 word is in the overlap-diff header");
+    if (c < 0) return 1;
+    const uint32_t w = overlap_diff_cases[c].w;
+    uint8_t si[4], di[4];
+    vreg_idx((int)((w >> 8) & 0x7fu), 1, si);
+    vreg_idx((int)(w & 0x7fu), 1, di);
+    int bad = 0;
+    for (unsigned p = 0; p < sizeof(pairs) / sizeof(pairs[0]); p++) {
+        CpuState aot, interp;
+        setup_identity_compute(&aot);
+        aot.vi[si[0]] = pairs[p][0];
+        aot.vi[di[0]] = 0x7a5a5a5au; /* the probe's sentinel */
+        interp = aot;
+        overlap_diff_run_codegen(&aot, c);
+        const int kind = sr_vfpu_interp(&interp, w);
+        g_checks++;
+        if (kind != SR_VFPU_COMPUTE || aot.vi[di[0]] != pairs[p][1] ||
+            interp.vi[di[0]] != pairs[p][1]) {
+            g_failures++;
+            bad = 1;
+            fprintf(stderr,
+                    "FAIL: PSP-VFPU-TRANSCENDENTAL-001 vrexp2 in=0x%08x psp=0x%08x "
+                    "aot=0x%08x interp=0x%08x kind=%d\n",
+                    pairs[p][0], pairs[p][1], aot.vi[di[0]], interp.vi[di[0]], kind);
+        }
+    }
+    return bad;
+}
+
 int main(void) {
     int bad = 0;
     bad |= check_cop2_control_transfers();
@@ -932,6 +993,7 @@ int main(void) {
     bad |= check_vcrs_widths();
     bad |= check_vasin_measured_domain_words();
     bad |= check_vfpu_compare_measured_words();
+    bad |= check_vrexp2_measured_words();
     bad |= check_reserved_cmov_form();
     bad |= check_vfpu3_compare_forms();
     bad |= check_mfvc_zero_is_noop();

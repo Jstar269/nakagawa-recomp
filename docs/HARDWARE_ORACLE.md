@@ -120,8 +120,8 @@ proposals. Each claim covers only the exact fixture named:
     destination register is unchanged.
   - Cause bit 28 read as 1 in all three runs, so treat the CE field as
     undefined for non-coprocessor-unusable exceptions.
-- **Non-finite vertex position and lit colour in the GE** (issue #69; no run
-  yet): what the PSP GE rasterizes for a vertex whose clip position, projected
+- **Non-finite vertex position and lit colour in the GE** (issue #69; scalar words
+  measured, rasterization not): what the PSP GE rasterizes for a vertex whose clip position, projected
   screen position or lit colour channel is NaN or infinite is **NOT_MEASURED**.
   No public PSP documentation states a result, and PPSSPP's software GE was not
   usable as an oracle for the cell either (its screen acceptance and its
@@ -137,10 +137,11 @@ proposals. Each claim covers only the exact fixture named:
   `CASE=ge-nan` now emits `PSP-GE-001` raw-word records for qNaN, positive and
   negative infinity, negative zero, and the minimum positive denormal. It also
   hashes the PSP framebuffer after direct screen-coordinate, clip-position,
-  and lit-normal triangles. This probe is `NOT_RUN` pending the physical
-  campaign, does not repeat the already measured VASIN edge words, and has not
-  yet established a hardware rasterization rule; this GE boundary remains in
-  the works under #69. The out-of-domain arc-sine argument that can produce a
+  and lit-normal triangles. It ran on a PSP-3000 on 2026-10-10 (`f6ccfb33`) and
+  again on 2026-10-15 (`f2d6c91a`) with identical records, and the measured
+  index publishes its words. It does not repeat the already measured VASIN
+  edge words, and its framebuffer hashes have not established a hardware
+  rasterization rule; this GE boundary remains in the works under #69. The out-of-domain arc-sine argument that can produce a
   non-finite bone matrix remains a separate cell.
 - **Audio query and blocking-output semantics** (issue #311; `CASE=audio-query`):
   MEASURED in the index row above (2026-10-10, PSP-3000, 6.61 / ARK-5.1.0). The
@@ -154,7 +155,8 @@ proposals. Each claim covers only the exact fixture named:
   also fails with `0x80268002`, draining `sceAudioOutput2GetRestSample` to 0
   first lets the release succeed, and `sceAudioChRelease` succeeds right after
   blocking output. `h_AudioOutput2Release` in `src/rt/hle.c` implements the
-  release rule; `sceAudioSRCChReserve` has no HLE handler yet (#339).
+  release rule. The `sceAudioSRC*` handlers (`h_AudioSRCChReserve`, `h_AudioSRCChRelease` and
+  `h_AudioSRCOutputBlocking`, #339) share its slot and implement the 2026-10-15 SRC measurements.
 - **DMAC alignment and overlap cells** (issue #303; `CASE=dma-cells`):
   `NOT_RUN`. The source-owned buffer matrix covers both APIs, unaligned source
   and destination residues, paired unaligned addresses, and overlap in both
@@ -665,6 +667,115 @@ One console is one data point; see §11. Nothing here closes issue #70
   - `PSP-HLE-KERNEL-STATUS-002`, case `hle-kernel-pool-bounds`: the stream was complete, with 7 records PASS and 2 SKIP (`fpl-delete-size-0x00` and `fpl-delete-size-0x7fffffff`). Both FPL creates were refused, so the probe had no pool to delete and recorded those delete cells SKIP, and a SKIP record makes the envelope ineligible. The probe has since been revised: such a delete cell is now PASS with out0 0 and issues no delete, and the revised form has not run.
   - `PSP-HLE-NULL-OUT-001`, case `hle-null-out-pointers`, run last: incomplete, not measured. `null-vtimer-create` was recorded PASS. The stream then stopped after the step marker `null-sys-status`, which the probe writes just before its first NULL call (`sceKernelReferSystemStatus(NULL)`), 0.9 s after launch. No record for that cell or any later one arrived, no completion arrived within the 240 s case timeout, the module was not proven unloaded, and the console needed a power cycle. This is a run fact, not a PSP semantic: it does not show whether that call faulted, hung or would have returned. Risk note: keep any re-run the last case of its session and plan a power cycle after it.
 
+- **PSP-3000 single-case runs on public commits `22b027f6` and `7fc1641e` (2026-10-15)**: firmware 6.6.1, PSPLink 3.2.1, operator-declared model PSP-3000. `22b027f6` is the pre-merge head of the change that added the `vfpu-transcendental-corpus`, `hle-timer-order` and `hle-audio-src` probes. The first two probes are unchanged in the merged commit `7fc1641e`, which also changed the `hle-audio-src` pass rule: its two final-cleanup cells became PASS records in place of SKIP records. That case was therefore re-run from `7fc1641e`. Each case was one runner invocation with the `transport-write` preflight, which passed on every launch (PSP-TRANSPORT-001 is not re-cited). A row cites only the cells named in it, and cells not named here are not measured by this entry. Raw envelopes and host0 logs stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-15) |
+  | --- | --- | --- | --- |
+  | `PSP-VFPU-TRANSCENDENTAL-001` | `vsin-chunk-00`, `vsin-chunk-01`, `vsin-chunk-02`, `vsin-chunk-03`, `vsin-chunk-04`, `vsin-chunk-05`, `vsin-chunk-06`, `vsin-chunk-07`, `vcos-chunk-00`, `vcos-chunk-01`, `vcos-chunk-02`, `vcos-chunk-03`, `vcos-chunk-04`, `vcos-chunk-05`, `vcos-chunk-06`, `vcos-chunk-07`, `vexp2-chunk-00`, `vexp2-chunk-01`, `vexp2-chunk-02`, `vexp2-chunk-03`, `vexp2-chunk-04`, `vexp2-chunk-05`, `vexp2-chunk-06`, `vexp2-chunk-07`, `vlog2-chunk-00`, `vlog2-chunk-01`, `vlog2-chunk-02`, `vlog2-chunk-03`, `vlog2-chunk-04`, `vlog2-chunk-05`, `vlog2-chunk-06`, `vlog2-chunk-07`, `vrsq-chunk-00`, `vrsq-chunk-01`, `vrsq-chunk-02`, `vrsq-chunk-03`, `vrsq-chunk-04`, `vrsq-chunk-05`, `vrsq-chunk-06`, `vrsq-chunk-07`, `vrcp-chunk-00`, `vrcp-chunk-01`, `vrcp-chunk-02`, `vrcp-chunk-03`, `vrcp-chunk-04`, `vrcp-chunk-05`, `vrcp-chunk-06`, `vrcp-chunk-07`, `vsqrt-chunk-00`, `vsqrt-chunk-01`, `vsqrt-chunk-02`, `vsqrt-chunk-03`, `vsqrt-chunk-04`, `vsqrt-chunk-05`, `vsqrt-chunk-06`, `vsqrt-chunk-07`, `vasin-chunk-00`, `vasin-chunk-01`, `vasin-chunk-02`, `vasin-chunk-03`, `vasin-chunk-04`, `vasin-chunk-05`, `vasin-chunk-06`, `vasin-chunk-07`, `vnrcp-chunk-00`, `vnrcp-chunk-01`, `vnrcp-chunk-02`, `vnrcp-chunk-03`, `vnrcp-chunk-04`, `vnrcp-chunk-05`, `vnrcp-chunk-06`, `vnrcp-chunk-07`, `vnsin-chunk-00`, `vnsin-chunk-01`, `vnsin-chunk-02`, `vnsin-chunk-03`, `vnsin-chunk-04`, `vnsin-chunk-05`, `vnsin-chunk-06`, `vnsin-chunk-07`, `vrexp2-chunk-00`, `vrexp2-chunk-01`, `vrexp2-chunk-02`, `vrexp2-chunk-03`, `vrexp2-chunk-04`, `vrexp2-chunk-05`, `vrexp2-chunk-06`, `vrexp2-chunk-07`, `vfpu-transcendental-corpus-done`: the raw single-lane result words of `vsin.s`, `vcos.s`, `vexp2.s`, `vlog2.s`, `vrsq.s`, `vrcp.s`, `vsqrt.s`, `vasin.s`, `vnrcp.s`, `vnsin.s` and `vrexp2.s` over 63 input words each | Anything the words do not show: the probe compares no value, and the PASS status records only that the instruction result was recorded | MEASURED: 88 data records (693 words) and the done record, PASS (`22b027f6`) |
+  | `PSP-HLE-TIMER-ORDER-001` | `alarm-same-delay-set`, `alarm-same-delay-a`, `alarm-same-delay-b`, `alarm-long-then-short-set`, `alarm-long-event`, `alarm-short-event`, `timer-order-vtimer-create`, `timer-order-vtimer-handler`, `timer-order-vtimer-alarm-set`, `timer-order-vtimer-event`, `timer-order-vtimer-alarm-event`, `alarm-zero-set`, `alarm-zero-event`, `alarm-same-delay-cleanup`, `alarm-long-short-cleanup`, `timer-order-vtimer-cleanup`, `alarm-zero-cleanup`, `hle-timer-order-done` (APIs `sceKernelSetAlarm`, `sceKernelCancelAlarm`, `sceKernelCreateVTimer`, `sceKernelSetVTimerHandler`, `sceKernelStartVTimer`, `sceKernelStopVTimer`, `sceKernelDeleteVTimer`) | Absolute delays: no cell compares a due time with a clock; a tie-break at an equal due time (the pairs below were set with a host0 step record between the two calls); the UID values | MEASURED: 17 records and the done record, PASS (`22b027f6`) |
+  | `PSP-HLE-AUDIO-SRC-001` | `src-release-unreserved`, `src-output-unreserved`, `src-reserve-valid`, `src-reserve-already-held`, `src-output-blocking-0`, `src-release-after-output`, `src-release-again`, `src-reserve-invalid-samples-zero`, `src-reserve-invalid-samples-65`, `src-reserve-invalid-samples-4096`, `src-reserve-invalid-frequency`, `src-reserve-invalid-channels-1`, `src-reserve-invalid-channels-4`, `out2-then-src-reserve`, `src-then-out2-reserve`, `src-final-cleanup`, `out2-final-cleanup`, `hle-audio-src-done` (APIs `sceAudioSRCChReserve`, `sceAudioSRCChRelease`, `sceAudioSRCOutputBlocking`, `sceAudioOutput2Reserve`, `sceAudioOutput2Release`) | The upper sample-count bound; frequencies other than 44100 and 48000; channel counts other than 1, 2 and 4; volume validation; releasing one reservation through the other API; the audible output (silence); an SRC rest-sample query (the public NID corpus has none) | MEASURED: 17 records and the done record, PASS (`7fc1641e`) |
+
+  What the cells establish, for these exact words only:
+  - *Alarm and VTimer callback order (`PSP-HLE-TIMER-ORDER-001`).* Each `SetAlarm` returned a UID. The callback sequence numbers and the system-time low words they stored were:
+    - alarms set 50000 us ahead, first A then B: A ran first (sequence 1), B second (sequence 2), 17,125 us later;
+    - a 100000 us alarm set before a 30000 us alarm: the 30000 us alarm ran first (sequence 3), the 100000 us alarm second (sequence 4), 53,561 us later;
+    - a VTimer handler due 60000 us after `StartVTimer` and a 60000 us alarm set after it: the handler ran first (sequence 5), the alarm second (sequence 6), 13,579 us later (`SetVTimerHandler` and `StartVTimer` both returned 0);
+    - `SetAlarm(0)`: a UID was returned and the handler had run (sequence 7) by the end of a 100000 us wait.
+
+    A host0 step record sits between each pair of `SetAlarm` calls (and between `StartVTimer` and the alarm), so the nominally equal delays were not equal due times. The 17,125 us and 13,579 us gaps are of the order of that record's cost, and the 53,561 us gap is the 70,000 us difference of the two delays less about 16,400 us. The cells therefore show delivery in due-time order (the 30000 us alarm ran before the earlier-set 100000 us alarm). In the equal-delay pairs the callback that ran first was also the one set first and due first, so they do not show how two alarms with the same due time are ordered. After their handlers returned 0, `CancelAlarm` on each of the six alarm UIDs returned 0x8002019F, `StopVTimer` of the still-running timer returned 1, and `DeleteVTimer` returned 0.
+
+    Runtime comparison (`src/rt/sched.c`, `src/rt/hle.c`): the alarm cells match. Due alarms run in
+    deadline order, ties in set order (`scheduler_alarm_due_slot`), so the 30000 us alarm precedes
+    the earlier-set 100000 us one and the first-set alarm precedes the second. `SetAlarm(0)` is due at
+    the next interrupt-service point, and a one-shot whose handler returned 0 is released, so
+    `CancelAlarm` on it returns `SCHED_ERROR_UNKNOWN_ALMID` (0x8002019F).
+    `test_alarm_delivery_order_matches_the_timer_order_probe` pins these orders. The VTimer handler
+    cells do not match: `sceKernelSetVTimerHandler` is refused by name with 0x80020002, because the
+    handler family needs the timer interrupt model (issue #325), where the console returned 0 and ran the
+    handler. Nothing in the runtime changed for it.
+  - *Audio SRC channel (`PSP-HLE-AUDIO-SRC-001`, issue #339).* With nothing reserved, `sceAudioSRCChRelease()` and `sceAudioSRCOutputBlocking` (one silent 1024-sample stereo block at the maximum volume) each returned 0x80260008. `sceAudioSRCChReserve(1024, 44100, 2)` returned 0, an identical second reserve returned 0x80268002, and `sceAudioSRCOutputBlocking` then returned 0x400, the sample count. `sceAudioSRCChRelease()` returned 0 and a second release returned 0x80260008. Reserve shapes, with nothing reserved:
+
+    | Shape (samples, Hz, channels) | Return |
+    | --- | --- |
+    | (0, 44100, 2) | 0x80000104 |
+    | (65, 44100, 2) | 0 (accepted; released at once, 0) |
+    | (4096, 44100, 2) | 0 (accepted; released at once, 0) |
+    | (1024, 48000, 2) | 0 (accepted; released at once, 0) |
+    | (1024, 44100, 1) | 0x80000104 |
+    | (1024, 44100, 4) | 0x80000003 |
+
+    `sceAudioOutput2Reserve(512)` then `sceAudioSRCChReserve(1024, 44100, 2)` returned 0 then 0x80268002, and the Output2 release returned 0. `sceAudioSRCChReserve` then `sceAudioOutput2Reserve(512)` returned 0 then 0x80268002, and the SRC release returned 0. The two final-cleanup cells record that nothing was left reserved (0xFFFFFFFF, no call).
+
+    The runtime had no SRC handlers before this entry. `h_AudioSRCChReserve`, `h_AudioSRCChRelease` and
+    `h_AudioSRCOutputBlocking` in `src/rt/hle.c` now return every word above, on the Output2 slot, and
+    `test_audio_src_matches_the_measured_contract` in `src/rt/hle_thread_selftest.c` pins them. A reserve
+    at 48000 Hz is accepted as measured, but the host mixer runs at 44100 Hz and no rate converter
+    exists, so those blocks are paced for their duration and not forwarded, with a message. The
+    values listed as not cited are unmeasured; the handler metadata names the choices made for them.
+  - *Transcendental words (`PSP-VFPU-TRANSCENDENTAL-001`, issue #347).* The eleven scalar operations returned 693 result words over the probe's fixed inputs: 20 special encodings (signed zeros, the smallest signed denormals, plus and minus one, two and one half, the smallest signed normals, plus and minus 2^127, the infinities, and quiet and signalling NaN encodings) and 43 evenly spaced domain constants per operation. The raw words stay private. Compared with the runtime (the generated code and `sr_vfpu_interp`), ten operations matched on all 63 inputs: `vsin.s`, `vcos.s`, `vexp2.s`, `vlog2.s`, `vrsq.s`, `vrcp.s`, `vsqrt.s`, `vasin.s`, `vnrcp.s` and `vnsin.s`. `vrexp2.s` matched on none: the runtime computed the negated `exp2(x)` (`0xBF800000` for an input of zero) where the console returned `exp2(-x)` (`0x3F800000` for zero, `0x40000000` for -1.0 and `0x3EFFFFFC` for +1.0). Both paths now compute `exp2(-x)`, and the 63 measured words are pinned in `src/rt/vfpu_interp_selftest.c`. The same opcode group still decodes five more negated forms (optypes 25, 27, 29, 30 and 31) as the negation of the positive operation; no probe covers them, so they are unmeasured.
+
+- **Captured only, not acceptance-eligible (2026-10-15, `22b027f6`)**: these establish nothing about PSP behaviour.
+  - `PSP-HLE-AUDIO-SRC-001`, case `hle-audio-src`: the stream was complete, with 16 records PASS and 2 SKIP (`src-final-cleanup` and `out2-final-cleanup`). Both SKIP records were the probe's own gate for "nothing left to release", a pass-rule flaw that `7fc1641e` fixed, and a SKIP record makes the envelope ineligible. The 16 other records carry the same words as the eligible re-run above.
+
+- **PSP-3000 requalification of the 32-case campaign queue on public commit `f2d6c91a` (2026-10-15)**: firmware 6.6.1, PSPLink 3.2.1, operator-declared model PSP-3000. Each case was one runner invocation with the `transport-write` preflight, which was acceptance-eligible on all 32 launches. All 32 cases launched and exited, the teardown check passed on all 32, every envelope binds the source commit (`MATCH`, clean committed tree), and 26 case envelopes are acceptance-eligible. Device identity is `PARTIAL` (an operator-declared model label) and the PRX digest is the host-side `PLACEHOLDER` binding described under "Device build identity" in the [fixture runbook](../fixtures/psp_oracle/README.md). This entry is a newer acceptance citation for the campaign cases below. It cites no new cell, and each row keeps the cells it already names. A record is "identical" when its status and every word match the 2026-10-10 run (`f6ccfb33`); in the cases whose probe did not change, the other records are time-stamped or carry UIDs, and their statuses agree. Raw envelopes and host0 logs stay in the private campaign directory.
+
+  | Campaign case | Evidence id | Outcome (2026-10-15, acceptance-eligible) |
+  | --- | --- | --- |
+  | `audio-query` | `PSP-AUDIO-001` | 14 records PASS; 11 identical to 2026-10-10; the three blocking-output records differ only in the elapsed-microsecond word |
+  | `cache-alias` | `PSP-CACHE-001` | 5 records PASS, all identical |
+  | `display-mask-duty` | `PSP-DISPLAY-001` | 2 records PASS; clock and VBLANK-counter words differ |
+  | `display-vblank-window` | `PSP-DISPLAY-004` | 1 record PASS; clock and VBLANK-counter words differ |
+  | `display-wait-late` | `PSP-DISPLAY-002` | 13 records PASS; clock and VBLANK-counter words differ |
+  | `display-wait-priority` | `PSP-DISPLAY-003` | 3 records PASS; clock and VBLANK-counter words differ |
+  | `dma-cells` | `PSP-DMAC-001` | 93 records PASS, all identical |
+  | `fpu-cc` | `PSP-FPU-CC-001` | first campaign-queue run of this case; not compared |
+  | `fpu-vector` | `PSP-FPU-001` | 16 records PASS, all identical |
+  | `ge-break-continue` | `PSP-GE-CONTROL-001` | 14 records PASS (the revised probe; the 2026-10-10 run was of an earlier revision) |
+  | `ge-nan` | `PSP-GE-001` | 21 records PASS, all identical |
+  | `io-matrix` | `PSP-IO-001` | 7 records PASS, all identical |
+  | `kernel-alarm` | `PSP-ALARM-001` | 9 records PASS; 4 identical, the others differ in UID and clock words |
+  | `kernel-misc` | `PSP-KERNEL-MISC-001` | 8 records PASS; 7 identical, `vtimer-basic` differs in clock words |
+  | `llsc-link` | `PSP-LLSC-001` | first campaign-queue run of this case; not compared |
+  | `mutex-interrupt-context` | `PSP-MUTEX-001` | 21 records PASS (the corrected pass rule; the 2026-10-10 run failed the probe's own assertions) |
+  | `mutex-priority-inheritance` | `PSP-MUTEX-001` | 1 record PASS, identical |
+  | `mutex-refer-unlocked` | `PSP-MUTEX-001` | 1 record PASS; two UID words differ |
+  | `mutex-timeout-quanta` | `PSP-MUTEX-001` | 1 record PASS; timing words differ |
+  | `refer-status-size` | `PSP-KERNEL-STATUS-001` | 13 records PASS, all identical |
+  | `registry-readonly` | `PSP-REGISTRY-001` | 414 records PASS, all identical |
+  | `smoke` | `PSP-SMOKE-001` | 1 record PASS, identical |
+  | `thread-exit-delete` | `PSP-THREAD-EXIT-001` | 12 records PASS, all identical |
+  | `thread-scheduler` | `PSP-THREAD-003` | 7 records PASS, all identical |
+  | `vfpu-compare` | `PSP-VFPU-CMP-001` | first campaign-queue run of this case; not compared |
+  | `wait-outcomes` | `PSP-WAIT-001` | 5 records PASS, all identical |
+
+  Six cases ran to completion but were not acceptance-eligible, so they stay `CAPTURED` only and establish nothing:
+  - `teardown-test` (`PSP-TEARDOWN-001`): `exitdelete-main` is a SKIP record, as on 2026-10-10.
+  - `dma-invalid-tail-s0`, `dma-invalid-tail-memcpy-src`, `dma-invalid-tail-memcpy-dst`, `dma-invalid-tail-try-src` and `dma-invalid-tail-try-dst` (`PSP-DMAC-001`): every record is a SKIP, identical to the 2026-10-10 run.
+
+  What the `ge-nan` cells establish (`PSP-GE-001`, issue #69), for these exact words only. All 21 records were identical in both runs. Each input word was loaded into `S000`, with `S001` set to `0.0` for `vadd.s` and `1.0` for `vmul.s`:
+
+  | Input word | `vadd.s S002, S000, S001` (+0) | `vmul.s S002, S000, S001` (x1) |
+  | --- | --- | --- |
+  | `0x7FC00000` (qNaN) | `0x7F800001` | `0x7F800001` |
+  | `0x7F800000` (+Inf) | `0x7F800000` | `0x7F800000` |
+  | `0xFF800000` (-Inf) | `0xFF800000` | `0xFF800000` |
+  | `0x80000000` (-0) | `0x00000000` | `0x80000000` |
+  | `0x00000001` (minimum positive denormal) | `0x00000000` | `0x00000000` |
+
+  A quiet NaN comes back as `0x7F800001`, and the denormal is flushed to zero. Negative zero plus zero is positive zero, and negative zero times one keeps its sign. Which of the two operands a NaN or a denormal flush applies to is not separable from these cells, and no other VFPU arithmetic form (`vsub`, `vdiv`, the pair, triple and quad widths) was measured.
+
+  The draw cells put the same input word in one vertex of a triangle (the x of a 2D screen-coordinate vertex, the x of a 3D clip-position vertex, and a lit-normal vertex) and record a framebuffer hash, a changed-pixel count and the draw state after `sceGuFinish` and a bounded drain:
+
+  | Input word | `screen2d` hash | `clip3d` hash | `litnormal` hash |
+  | --- | --- | --- | --- |
+  | `0x7FC00000` (qNaN) | `0x2B6647A7` | `0x9DBEB5C5` | `0x9DBEB5C5` |
+  | `0x7F800000` (+Inf) | `0x2B6647A7` | `0x9DBEB5C5` | `0x9DBEB5C5` |
+  | `0xFF800000` (-Inf) | `0xA1F002BD` | `0x9DBEB5C5` | `0x9DBEB5C5` |
+  | `0x80000000` (-0) | `0xA929B835` | `0x9DBEB5C5` | `0x9DBEB5C5` |
+  | `0x00000001` (denormal) | `0xA929B835` | `0x9DBEB5C5` | `0x9DBEB5C5` |
+
+  In all fifteen draw records the changed-pixel count is `0x0001FBFE` (130,046 of the 480 x 272 = 130,560 scanned pixels) and the draw-state word is 0. These are probe observations. A hash is a function of the whole scanned frame: it shows that two draws left the same frame or different frames, and nothing about which pixels differ or why, and with almost every scanned pixel differing from the probe's background word the cells do not isolate the triangle either. No rasterization rule for a non-finite vertex follows from them, and that verdict stays NOT_MEASURED. The runtime's `vadd.s` and `vmul.s` (the generated code and `sr_vfpu_interp` alike) return the host IEEE result: the qNaN input stays `0x7FC00000` and the denormal stays `0x00000001`, where the console wrote `0x7F800001` and `0x00000000`. The other six words match. This entry does not change that.
+
 ## Pending PSP-3000 measurement campaign
 
 The following eighteen source-owned cases are built for a future PSP-3000 / 6.61
@@ -674,8 +785,10 @@ captured-only runs; `llsc-link`, `vfpu-compare` and `fpu-cc` were measured on
 2026-10-15 from `e45e667b`. The five initial single-launch HLE cases (97-101)
 ran on 2026-10-15 from `b5d6fc5b`: the two VTimer cases and power-float case
 were measured, the earlier pool-bounds revision was captured only (the revised
-form has not run), and null-out was captured incomplete. The added HLE audio and
-timer cases (102-103) and VFPU transcendental corpus have not run on hardware.
+form has not run), and null-out was captured incomplete. The added HLE timer-order
+case (103) and the VFPU transcendental corpus were measured on 2026-10-15 from
+`22b027f6`, and the HLE audio case (102) from `7fc1641e` after a first run from
+`22b027f6` was captured only.
 These eight probes run as single launches outside the campaign queue
 (`CAMPAIGN_QUEUE_CASES`); the manifest distinguishes measured, captured and
 not-run states. Their parsers check record order, scalar fields and completion,
@@ -693,14 +806,14 @@ not expected PSP values.
 | `kernel-misc` | `PSP-KERNEL-MISC-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Wide clock conversion, controller default mode, profiler-pointer returns, basic VTimer behavior, display return values, battery-icon status, and UMD-popup returns. |
 | `vfpu-compare` | `PSP-VFPU-CMP-001` | `MEASURED` (2026-10-15, `e45e667b`) | `vscmp.s`, `vsge.s`, and `vslt.s` on 15 operand pairs: less-than, equal, greater, signed zeros in both orders, quiet, signalling, and negative NaN on each side, and infinities. Each record is the raw result word against the project's model at the time; the five `vscmp` NaN words differed from it, and the model now returns the measured words. |
 | `fpu-cc` | `PSP-FPU-CC-001` | `MEASURED` (2026-10-15, `e45e667b`) | COP1 condition codes: which FCR31 condition bits exist, which bit `c.eq.s` sets for each condition code 0..7, and whether `bc1t`/`bc1f` with each code are taken under FCC0, no flag, and that code's own flag. Condition code 0 is the control. Only FCC0 exists; every code writes and tests it. |
-| `vfpu-transcendental-corpus` | `PSP-VFPU-TRANSCENDENTAL-001` | `NOT_RUN` (single launch, not in the campaign queue) | Raw single-lane result words for vsin, vcos, vexp2, vlog2, vrsq, vrcp, vsqrt, vasin, vnrcp, vnsin, and vrexp2. Each operation uses 63 raw-word inputs: 20 special encodings and 43 evenly spaced domain constants. VASIN substitutes three in-domain words for its previously measured edge inputs. Eight-word chunks produce 88 data records plus one completion record (89 result records total); parsing checks format only and asserts no hardware values. |
+| `vfpu-transcendental-corpus` | `PSP-VFPU-TRANSCENDENTAL-001` | `MEASURED` (2026-10-15, `22b027f6`; single launch, not in the campaign queue) | Raw single-lane result words for vsin, vcos, vexp2, vlog2, vrsq, vrcp, vsqrt, vasin, vnrcp, vnsin, and vrexp2. Each operation uses 63 raw-word inputs: 20 special encodings and 43 evenly spaced domain constants. VASIN substitutes three in-domain words for its previously measured edge inputs. Eight-word chunks produce 88 data records plus one completion record (89 result records total); parsing checks format only and asserts no hardware values. |
 | `hle-vtimer-unit` | `PSP-HLE-VTIMER-002` | `MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the campaign queue) | One VTimer: start; a `sceKernelGetVTimerTime` and a system-clock reading either side of a bounded 20 ms delay; the VTimer base and Refer base field while running and after stop; stop; delete. Each 64-bit clock is recorded as its low word then its high word. |
 | `hle-vtimer-errors` | `PSP-HLE-VTIMER-003` | `MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the campaign queue) | Start, stop, and `sceKernelGetVTimerTime` on a deleted UID, then a cleanup delete of that UID after its last use; a live timer created and deleted; up to 64 creates; out1 records whether a refusal occurred; every created timer deleted. The NULL option pointer of `sceKernelCreateVTimer` is the optional argument. |
 | `hle-kernel-pool-bounds` | `PSP-HLE-KERNEL-STATUS-002` | `NOT_RUN` (revised form; single launch, not in the campaign queue; the earlier revision's 2026-10-15 `b5d6fc5b` run was captured only) | FPL creation with block size 0 and with a 0x7fffffff-byte block, each deleted when its create returned a pool; a refused create gives a PASS delete cell with out0 0 and no delete call; VPL allocation: up to 64 allocations; out1 records whether a refusal occurred; every block freed and the VPL deleted. The NULL option pointers of the pool creates are the optional argument. |
 | `hle-power-float-v0` | `PSP-HLE-POWER-002` | `MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the campaign queue) | Raw `$v0` and `$f0` bits of `scePowerGetPllClockFrequencyFloat`, `scePowerGetCpuClockFrequencyFloat`, and `scePowerGetBusClockFrequencyFloat`, one call each, through a short assembly wrapper. |
 | `hle-null-out-pointers` | `PSP-HLE-NULL-OUT-001` | `CAPTURED` (2026-10-15, `b5d6fc5b`; incomplete, not measured; single launch, not in the campaign queue) | `sceKernelReferSystemStatus`, `sceKernelGetVTimerTime`, `sceKernelGetVTimerBase`, and `sceKernelReferVTimerStatus` with NULL as their mandatory out pointer, one call each on a live VTimer that is deleted at the end; each record holds only its return code. Risk high: a NULL mandatory out-pointer may fault in kernel mode; schedule last in a session, after every other case. On 2026-10-15 the stream stopped at the first NULL call's step and the console needed a power cycle, so plan one after this case. |
-| `hle-audio-src` | `PSP-HLE-AUDIO-SRC-001` | `NOT_RUN` (single launch, not in the campaign queue) | Unreserved SRC release and silent output; reserve 1024 samples at 44100 Hz stereo; second reserve; one silent blocking output; release after the blocking drain and release again; six invalid reserve shapes, immediately releasing any unexpected success; Output2-then-SRC and SRC-then-Output2 reservation attempts with cleanup. 18 result records. No SRC rest-sample query exists in the public NID corpus. Risk high: two silent blocking SRC calls, at most one block per call; schedule after the other new probes. |
-| `hle-timer-order` | `PSP-HLE-TIMER-ORDER-001` | `NOT_RUN` (single launch, not in the campaign queue) | Two equal-delay alarms set A then B; long-delay then short-delay alarm; nominally equal VTimer handler and alarm; SetAlarm(0). Each callback stores a shared sequence number and system-time low/high words. Every wait has an elapsed-time deadline; cancel all alarms and stop/delete the VTimer. Ordering only, no absolute-time claim; 18 result records. |
+| `hle-audio-src` | `PSP-HLE-AUDIO-SRC-001` | `MEASURED` (2026-10-15, `7fc1641e`; the earlier run of `22b027f6` was captured only; single launch, not in the campaign queue) | Unreserved SRC release and silent output; reserve 1024 samples at 44100 Hz stereo; second reserve; one silent blocking output; release after the blocking drain and release again; six invalid reserve shapes, immediately releasing any unexpected success; Output2-then-SRC and SRC-then-Output2 reservation attempts with cleanup. 18 result records. No SRC rest-sample query exists in the public NID corpus. Risk high: two silent blocking SRC calls, at most one block per call; schedule after the other new probes. |
+| `hle-timer-order` | `PSP-HLE-TIMER-ORDER-001` | `MEASURED` (2026-10-15, `22b027f6`; single launch, not in the campaign queue) | Two equal-delay alarms set A then B; long-delay then short-delay alarm; nominally equal VTimer handler and alarm; SetAlarm(0). Each callback stores a shared sequence number and system-time low/high words. Every wait has an elapsed-time deadline; cancel all alarms and stop/delete the VTimer. Ordering only, no absolute-time claim; 18 result records. |
 
 The registry probe opens the registry and categories in read mode and never
 calls a write, create, remove, or flush API. Values are emitted only for keys

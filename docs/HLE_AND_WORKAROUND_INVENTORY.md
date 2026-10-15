@@ -37,13 +37,13 @@ or labelled historical/capture-time. The evidence-tier view
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **533** (dedicated **485**, fake_success **5**, controlled_unsupported **43**).
-Semantic handler census: **448** handlers across **23** API families, covering **491** handler-associated NID registrations.
+Registered NIDs: **536** (dedicated **488**, fake_success **5**, controlled_unsupported **43**).
+Semantic handler census: **451** handlers across **23** API families, covering **494** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 10 | 18 |
-| `partial` | 94 | 94 |
+| `partial` | 97 | 97 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
 | `unreviewed` | 341 | 372 |
@@ -53,7 +53,7 @@ Semantic handler census: **448** handlers across **23** API families, covering *
 | `newlib` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `other` | 1 | 0 | 0 | 0 | 0 | 1 | 1 |
 | `sceAtrac` | 0 | 0 | 0 | 0 | 24 | 24 | 33 |
-| `sceAudio` | 0 | 0 | 0 | 0 | 13 | 13 | 14 |
+| `sceAudio` | 0 | 3 | 0 | 0 | 13 | 16 | 17 |
 | `sceCtrl` | 0 | 2 | 0 | 0 | 7 | 9 | 9 |
 | `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
@@ -73,7 +73,7 @@ Semantic handler census: **448** handlers across **23** API families, covering *
 | `sceUmd` | 0 | 1 | 1 | 0 | 7 | 9 | 9 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 31 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **10** | **94** | **1** | **2** | **341** | **448** | **491** |
+| **Total** | **10** | **97** | **1** | **2** | **341** | **451** | **494** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -126,6 +126,12 @@ Semantic handler census: **448** handlers across **23** API families, covering *
 
 #### Partial Handlers (Named Limitations)
 
+- **`h_AudioSRCChRelease`** (`sceAudio`): `sceAudioSRCChRelease` (0x5c37c0ae)
+  - Limitation: release after a blocking output (0) and release with nothing reserved (0x80260008) are measured (PSP-HLE-AUDIO-SRC-001); whether a release succeeds while samples are still queued, as the Output2 busy rule does, and releasing a reservation made through the other API (refused here as not reserved) are unmeasured (#339)
+- **`h_AudioSRCChReserve`** (`sceAudio`): `sceAudioSRCChReserve` (0x38553111)
+  - Limitation: the returns for an unreserved slot, a held slot (0x80268002, including Output2 holding it), sample counts 0 (0x80000104), 65 and 4096 (accepted), 48000 Hz (accepted) and channel counts 1 (0x80000104) and 4 (0x80000003) are measured (PSP-HLE-AUDIO-SRC-001); the upper sample-count bound reuses the Output2 range 17..4111, channel counts other than 1, 2 and 4 take the code measured for 4, and rates other than 44100 and 48000 are refused with that same code and a message, all unmeasured (#339)
+- **`h_AudioSRCOutputBlocking`** (`sceAudio`): `sceAudioSRCOutputBlocking` (0xe0727056)
+  - Limitation: returns 0x80260008 with nothing reserved and the reserved sample count after a reserve (0x400), both measured (PSP-HLE-AUDIO-SRC-001); the volume bound reuses the Output2 bound and the NULL or unreadable buffer result follows the regular output, both unmeasured; the host mixer runs at 44100 Hz and no rate converter exists, so a 48000 Hz block is paced for its duration and not forwarded, with a message (#339)
 - **`h_CtrlGetSamplingMode`** (`sceCtrl`): `sceCtrlGetSamplingMode` (0xda6b76a1)
   - Limitation: reports the mode retained by sceCtrlSetSamplingMode but does not change the sampled SceCtrlData; the invalid-pointer error code (ILLEGAL_ADDR) is not hardware measured
 - **`h_CtrlPeekLatch`** (`sceCtrl`): `sceCtrlPeekLatch` (0xb1d0e5cd)
