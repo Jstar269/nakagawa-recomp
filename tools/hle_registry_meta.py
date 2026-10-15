@@ -237,21 +237,21 @@ HANDLER_METADATA = {
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_ge_break_continue",
         ],
-        "limitation": "models synchronous display list pause (mode 0) and queue cancellation (mode 1); argument and parameter buffer inspection are K1/read checked only, asynchronous hardware command boundary timing remains unmodeled (#341); the mode 0 queue id, the 0x80000020 no-active-list result and the paused list (4) sync status are PSP-GE-CONTROL-001 2026-10-15 capture values (not acceptance-eligible; re-measure pending), the invalid-mode result 0x80000107 (mode -1 only) is from the 2026-10-08 partial capture (not acceptance-eligible), the mode 1 result after a failed dequeue is not captured (the stopped queue id is still returned), and the cancelled (4) sync status is unmeasured",
+        "limitation": "models synchronous display list pause (mode 0) and queue reset (mode 1); argument and parameter buffer inspection are K1/read checked only, asynchronous hardware command boundary timing remains unmodeled (#341); PSP-measured in the eligible PSP-GE-CONTROL-001 2026-10-15 re-run: the mode 0 queue id, the 0x80000020 no-active-list result, the invalid-mode result 0x80000107 (mode -1 only), the paused list (4) sync status, the mode 1 result 0 with one stalled list and the 0x80000100 sync result for a list the reset removed; a mode 1 reset of a paused list and modes above 1 are unmeasured and follow the same codes",
     },
     "h_GeContinue": {
         "status": "partial",
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_ge_break_continue",
         ],
-        "limitation": "resumes a paused display list using the synchronous GE runner; hardware timing and multi-queue priority ordering remain unmodeled (#341); the 0 result when no list is paused is a PSP-GE-CONTROL-001 2026-10-15 capture value (not acceptance-eligible; re-measure pending)",
+        "limitation": "resumes a paused display list using the synchronous GE runner; hardware timing and multi-queue priority ordering remain unmodeled (#341); the 0 result when no list is paused is PSP-measured (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run)",
     },
     "h_GeListDeQueue": {
         "status": "partial",
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_ge_break_continue",
         ],
-        "limitation": "a stalled list returns BUSY (0x80000021) and stays queued, a PSP-GE-CONTROL-001 2026-10-15 capture value (not acceptance-eligible; re-measure pending); paused, completed, cancelled and unknown queue ids are refused as NOT_IMPLEMENTED because no dequeue result is captured for them (#341)",
+        "limitation": "a stalled list returns BUSY (0x80000021) and stays queued, PSP-measured (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run); paused, completed, cancelled and unknown queue ids are refused as NOT_IMPLEMENTED because no dequeue result is measured for them (#341)",
     },
     # scePsmfPlayerGetVideoData / GetAudioData. Both drive the project-authored
     # PSMF producer and a host codec backend, and return 0 only for output a

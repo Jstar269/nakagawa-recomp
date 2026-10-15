@@ -18543,23 +18543,18 @@ void ge_finish_latch_assist(void) {
 
 #define GE_LIST_MAX 64
 
-/* GE list-control values.  Every value below except GE_ERROR_INVALID_BREAK_MODE comes
- * from the PSP-GE-CONTROL-001 2026-10-15 capture (PSP-3000 6.61): PSP-GE-CONTROL-001,
- * 2026-10-15 capture (not acceptance-eligible; re-measure pending).  The capture
- * establishes nothing about PSP behaviour until an acceptance-eligible re-measurement
- * lands; the runtime values stay as the project's best reading of that capture. */
-#define GE_LIST_SYNC_STALLED 3u     /* sceGeListSync(qid, 1) on a stalled list; PSP-GE-CONTROL-001, 2026-10-15 capture (not acceptance-eligible; re-measure pending) */
-#define GE_LIST_SYNC_PAUSED 4u      /* sceGeListSync(qid, 1) on a paused list; PSP-GE-CONTROL-001, 2026-10-15 capture (not acceptance-eligible; re-measure pending) */
-#define GE_DRAW_SYNC_STALLED 3u     /* sceGeDrawSync(1) with a stalled list; PSP-GE-CONTROL-001, 2026-10-15 capture (not acceptance-eligible; re-measure pending) */
-#define GE_DRAW_SYNC_PAUSED 2u      /* sceGeDrawSync(1) with a paused list; PSP-GE-CONTROL-001, 2026-10-15 capture (not acceptance-eligible; re-measure pending) */
-#define GE_ERROR_NO_ACTIVE_LIST 0x80000020u /* sceGeBreak(0) with no active list; PSP-GE-CONTROL-001, 2026-10-15 capture (not acceptance-eligible; re-measure pending) */
-/* Invalid break mode 0x80000107 is NOT from the 2026-10-15 capture.  It is the value
- * the existing PSP-3000 measurement of sceGeBreak(-1) recorded: the 2026-10-08 manual
- * partial capture of ge-break-continue (fixtures/psp_oracle_captures/ge_break_continue.
- * 20261008-manual-partial.txt, case ge-break-invalid-mode; model and firmware unknown,
- * not acceptance-eligible). Neither capture is acceptance-eligible. */
-#define GE_ERROR_INVALID_BREAK_MODE 0x80000107u
-#define GE_ERROR_LIST_BUSY 0x80000021u /* sceGeListDeQueue on a stalled list; PSP-GE-CONTROL-001, 2026-10-15 capture (not acceptance-eligible; re-measure pending) */
+/* GE list-control values.  Every value below is PSP-measured on a PSP-3000 (6.61): the
+ * acceptance-eligible 2026-10-15 re-run of the revised ge-break-continue probe (commit
+ * c642039a, PSP-GE-CONTROL-001).  Each comment names the list state the cell measured;
+ * a state the probe did not reach is marked UNMEASURED where the value is applied. */
+#define GE_LIST_SYNC_STALLED 3u     /* sceGeListSync(qid, 1) on a stalled list; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
+#define GE_LIST_SYNC_PAUSED 4u      /* sceGeListSync(qid, 1) on a paused list; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
+#define GE_DRAW_SYNC_STALLED 3u     /* sceGeDrawSync(1) with a stalled list; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
+#define GE_DRAW_SYNC_PAUSED 2u      /* sceGeDrawSync(1) with a paused list; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
+#define GE_ERROR_NO_ACTIVE_LIST 0x80000020u /* sceGeBreak(0) with no active list; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
+#define GE_ERROR_INVALID_BREAK_MODE 0x80000107u /* sceGeBreak(-1), parameter untouched; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
+#define GE_ERROR_INVALID_LIST_ID 0x80000100u /* sceGeListSync(qid, 1) on a list a sceGeBreak(1) reset removed; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
+#define GE_ERROR_LIST_BUSY 0x80000021u /* sceGeListDeQueue on a stalled list; PSP-GE-CONTROL-001, PSP-measured 2026-10-15 (eligible re-run, probe c642039a) */
 
 enum {
     GE_LIST_FREE = 0,
@@ -18800,10 +18795,11 @@ static uint32_t h_GeListSync(CpuState *s) {
                 return 2;
             }
             if (s_ge_lists[i].status == GE_LIST_CANCELLED) {
-                /* Unmeasured: the 2026-10-15 capture's cancelled-list cells were SKIP, so
-                 * no cancelled sync value was captured. 4 is still the runtime's own value
-                 * and shares GE_LIST_SYNC_PAUSED; re-measure pending. */
-                return 4;
+                /* A sceGeBreak(1) reset removes the list, so its id is no longer valid:
+                 * measured with syncType 1 on a list the reset removed while it stalled
+                 * (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run). syncType 0 and a list
+                 * the reset removed while paused are UNMEASURED and take the same code. */
+                return GE_ERROR_INVALID_LIST_ID;
             }
         }
     }
@@ -18861,7 +18857,7 @@ static uint32_t h_GeDrawSync(CpuState *s) {
      * list still owned by the GE (stalled on its stall address), status 2 is
      * completed, status 3 is paused. Peek reports the measured sync status
      * (2 while any list is paused, 3 while any list is stalled, else 0;
-     * PSP-GE-CONTROL-001, 2026-10-15 capture, not acceptance-eligible; re-measure pending);
+     * PSP-GE-CONTROL-001, measured in the eligible 2026-10-15 re-run);
      * wait yields once through the scheduler -- the same pacing h_GeListSync's
      * mode-0 path uses -- and reports completion, because a stalled list advances
      * only on the game's UpdateStallAddr, never on time, so blocking here could
@@ -18890,8 +18886,8 @@ static uint32_t h_GeBreak(CpuState *s) {
     uint32_t pparam = A1;
 
     if (mode > 1u) {
-        /* 0x80000107 for mode -1 is the existing partial-capture value (see GE_ERROR_INVALID_BREAK_MODE);
-         * the same code is applied to any mode above 1, which is not measured. */
+        /* 0x80000107 is measured for mode -1 (GE_ERROR_INVALID_BREAK_MODE); the same code is
+         * applied to any mode above 1, which is UNMEASURED. */
         return GE_ERROR_INVALID_BREAK_MODE;
     }
     if (pparam != 0u && (!sr_guest_span_readable(pparam, 16u) || (pparam & 3u) != 0u)) {
@@ -18918,19 +18914,13 @@ static uint32_t h_GeBreak(CpuState *s) {
         if (ge_log_on())
             fprintf(stderr, "GE_BREAK: paused list_id=0x%08x cur_pc=0x%08x\n",
                     s_ge_lists[active_slot].uid, s_ge_lists[active_slot].current_pc);
-        /* Captured (PSP-GE-CONTROL-001, 2026-10-15; not acceptance-eligible; re-measure pending): a mode 0 break returns the queue id of the list it paused. */
+        /* PSP-measured (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run): a mode 0 break returns the queue id of the list it paused. */
         return s_ge_lists[active_slot].uid;
     } else {
-        /* Mode 1: cancel/reset all queues, returning stopped queue ID (or 0 if none) */
-        uint32_t stopped_id = (active_slot != -1) ? s_ge_lists[active_slot].uid : 0u;
-        if (stopped_id == 0u) {
-            for (int i = 0; i < GE_LIST_MAX; i++) {
-                if (s_ge_lists[i].status == GE_LIST_PAUSED) {
-                    stopped_id = s_ge_lists[i].uid;
-                    break;
-                }
-            }
-        }
+        /* Mode 1: reset every queue and return 0. PSP-measured (PSP-GE-CONTROL-001, eligible
+         * 2026-10-15 re-run): a reset with one list stalled at its stall address returned 0,
+         * not that list's queue id. A reset with a paused list is UNMEASURED and returns 0 by
+         * the same rule. */
         for (int i = 0; i < GE_LIST_MAX; i++) {
             if (s_ge_lists[i].status == GE_LIST_STALLED || s_ge_lists[i].status == GE_LIST_PAUSED) {
                 s_ge_lists[i].status = GE_LIST_CANCELLED;
@@ -18938,7 +18928,7 @@ static uint32_t h_GeBreak(CpuState *s) {
                     fprintf(stderr, "GE_BREAK: cancelled queue list_id=0x%08x\n", s_ge_lists[i].uid);
             }
         }
-        return stopped_id;
+        return 0u;
     }
 }
 
@@ -18951,7 +18941,7 @@ static uint32_t h_GeContinue(CpuState *s) {
         }
     }
     if (paused_slot == -1) {
-        /* Captured (PSP-GE-CONTROL-001, 2026-10-15; not acceptance-eligible; re-measure pending): continue with no paused list returns 0. */
+        /* PSP-measured (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run): continue with no paused list returns 0. */
         return 0;
     }
 
@@ -18984,11 +18974,12 @@ static uint32_t h_GeContinue(CpuState *s) {
     return 0;
 }
 
-/* sceGeListDeQueue(qid). The one captured result is a stalled list: the dequeue
- * returns BUSY and leaves the list in place (PSP-GE-CONTROL-001, 2026-10-15 capture,
- * not acceptance-eligible; re-measure pending). A paused, completed, cancelled or
- * unknown queue id has no captured result, so it is refused as NOT_IMPLEMENTED with the same unsupported
- * line h_GeListEnQueueHead uses, never reported as success. */
+/* sceGeListDeQueue(qid). The one measured result is a stalled list: the dequeue
+ * returns BUSY and leaves the list in place, so the next list and draw sync peeks
+ * still read 3 (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run). A paused, completed,
+ * cancelled or unknown queue id has no measured result, so it is refused as
+ * NOT_IMPLEMENTED with the same unsupported line h_GeListEnQueueHead uses, never
+ * reported as success. */
 static uint32_t h_GeListDeQueue(CpuState *s) {
     uint32_t qid = A0;
     for (int i = 0; i < GE_LIST_MAX; i++) {

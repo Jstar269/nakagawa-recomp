@@ -15609,12 +15609,12 @@ static void test_ge_guest_sentinel(void) {
            "sceGeListEnQueue with stall returns valid queue id");
 
     /* Stalled list sync with syncType=1 returns 3 (STALLING; PSP-GE-CONTROL-001,
-     * 2026-10-15 capture, not acceptance-eligible; re-measure pending) */
+     * PSP-measured in the eligible 2026-10-15 re-run) */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid2;
     cpu.r[5] = 1;
     expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 3u,
-           "sceGeListSync(syncType=1) reports list is currently stalled (3, captured)");
+           "sceGeListSync(syncType=1) reports list is currently stalled (3, measured)");
 
     /* Framebuffer is cleared to white, but purple rect is NOT drawn yet */
     expect(fb[0 * fb_stride + 0] == white_color, "stalled list executed clear to white");
@@ -15688,14 +15688,14 @@ static void test_ge_break_continue(void) {
     expect(sr_hle_test_is_registered(NID_SCE_GE_LIST_DEQUEUE),
            "sceGeListDeQueue is registered in this build");
 
-    /* Mode validation: mode -1 is rejected with 0x80000107, the value of the 2026-10-08
-     * partial capture (not acceptance-eligible). Only -1 has that value; the handler
-     * applies the same code to every mode above 1, which is not captured. */
+    /* Mode validation: mode -1 is rejected with 0x80000107 (PSP-GE-CONTROL-001, measured in
+     * the eligible 2026-10-15 re-run). Only -1 is measured; the handler applies the same
+     * code to every mode above 1, which is UNMEASURED. */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0xffffffffu;
     cpu.r[5] = 0u;
     expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0x80000107u,
-           "sceGeBreak with invalid mode -1 returns 0x80000107 (captured)");
+           "sceGeBreak with invalid mode -1 returns 0x80000107 (measured)");
 
     /* Param validation: non-NULL unreadable/unaligned param rejected with ILLEGAL_ADDR */
     memset(&cpu, 0, sizeof(cpu));
@@ -15717,17 +15717,17 @@ static void test_ge_break_continue(void) {
            "sceGeBreak with crossing-arena param returns ILLEGAL_ADDR");
 
     /* Idle checks: mode 0 with no active list returns 0x80000020 (PSP-GE-CONTROL-001,
-     * 2026-10-15 capture, not acceptance-eligible; re-measure pending) */
+     * measured in the eligible 2026-10-15 re-run) */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0u;
     cpu.r[5] = 0u;
     expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0x80000020u,
-           "sceGeBreak mode 0 with no active list returns 0x80000020 (captured)");
+           "sceGeBreak mode 0 with no active list returns 0x80000020 (measured)");
 
-    /* Idle checks: sceGeContinue with no paused list returns 0 (same capture, not acceptance-eligible) */
+    /* Idle checks: sceGeContinue with no paused list returns 0 (same eligible re-run) */
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, NID_SCE_GE_CONTINUE) == 0u,
-           "sceGeContinue with no paused list returns 0 (captured)");
+           "sceGeContinue with no paused list returns 0 (measured)");
 
     /* Idle checks: mode 1 when idle resets all queues (0) and returns 0 */
     memset(&cpu, 0, sizeof(cpu));
@@ -15751,19 +15751,19 @@ static void test_ge_break_continue(void) {
     cpu.r[4] = qid;
     cpu.r[5] = 1u;
     expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 3u,
-           "ListSync peek reports stalled (3, captured)");
+           "ListSync peek reports stalled (3, measured)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;
     expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 3u,
-           "DrawSync peek reports stalled (3, captured)");
+           "DrawSync peek reports stalled (3, measured)");
 
-    /* sceGeListDeQueue on a stalled list returns BUSY (0x80000021, captured) and
+    /* sceGeListDeQueue on a stalled list returns BUSY (0x80000021, measured) and
      * leaves the list stalled: the next sync still reports 3. */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid;
     expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80000021u,
-           "sceGeListDeQueue on a stalled list returns BUSY (0x80000021, captured)");
+           "sceGeListDeQueue on a stalled list returns BUSY (0x80000021, measured)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid;
@@ -15771,18 +15771,18 @@ static void test_ge_break_continue(void) {
     expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 3u,
            "ListSync still reports stalled (3) after a BUSY dequeue");
 
-    /* Pause with mode 0: returns the paused list's queue id (same capture) */
+    /* Pause with mode 0: returns the paused list's queue id (same eligible re-run) */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0u;
     cpu.r[5] = 0u;
     expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == qid,
-           "sceGeBreak mode 0 pauses the display list and returns its queue id (captured)");
+           "sceGeBreak mode 0 pauses the display list and returns its queue id (measured)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid;
     cpu.r[5] = 1u;
     expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 4u,
-           "ListSync peek reports paused (4, captured)");
+           "ListSync peek reports paused (4, measured)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;
@@ -15818,7 +15818,7 @@ static void test_ge_break_continue(void) {
     expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
            "DrawSync reports idle (0) after continue");
 
-    /* No captured dequeue result exists for a completed list or an unknown id:
+    /* No measured dequeue result exists for a completed list or an unknown id:
      * both fail closed as NOT_IMPLEMENTED rather than reporting success. */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid;
@@ -15841,24 +15841,28 @@ static void test_ge_break_continue(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;
     cpu.r[5] = 0u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == qid2,
-           "sceGeBreak mode 1 returns stopped queue id");
+    /* PSP-GE-CONTROL-001, eligible 2026-10-15 re-run (ge-break-reset-no-dequeue and the
+     * cancelled-list cells): a reset with one list stalled at its stall address returns 0,
+     * the reset list's id is then invalid for a ListSync peek (0x80000100), and a DrawSync
+     * peek reads 0. */
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0u,
+           "sceGeBreak mode 1 with a stalled list returns 0 (measured)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid2;
     cpu.r[5] = 1u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 4u,
-           "ListSync reports cancelled (CANCEL_DONE = 4) after mode 1 break");
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 0x80000100u,
+           "ListSync peek on a list the mode 1 break removed returns 0x80000100 (measured)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;
     expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
            "DrawSync reports idle (0) after mode 1 break");
 
-    /* Continue with no paused list returns 0 (PSP-GE-CONTROL-001 capture; not acceptance-eligible) */
+    /* Continue with no paused list returns 0 (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run) */
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, NID_SCE_GE_CONTINUE) == 0u,
-           "sceGeContinue after mode 1 break returns 0 (no paused list, captured)");
+           "sceGeContinue after mode 1 break returns 0 (no paused list, measured)");
 
     /* Mode 1 cancellation of an already paused list */
     memset(&cpu, 0, sizeof(cpu));
@@ -15877,14 +15881,16 @@ static void test_ge_break_continue(void) {
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;
     cpu.r[5] = 0u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == qid3,
-           "sceGeBreak mode 1 cancels paused list and returns its queue id");
+    /* A reset with a paused list is UNMEASURED; the handler applies the measured stalled-list
+     * results (return 0, then 0x80000100 for the removed id). */
+    expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0u,
+           "sceGeBreak mode 1 with a paused list returns 0 (same rule, unmeasured)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid3;
     cpu.r[5] = 1u;
-    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 4u,
-           "ListSync reports cancelled (4) for paused list cancelled by mode 1 break");
+    expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 0x80000100u,
+           "ListSync peek on a paused list the mode 1 break removed returns 0x80000100 (same rule)");
 }
 
 /* A display list the GE already ran to its END is consumed, and a stall address
