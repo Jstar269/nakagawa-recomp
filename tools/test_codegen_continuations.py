@@ -53,6 +53,12 @@ def beq(rs, rt, pc, target):
     return 0x10000000 | (rs << 21) | (rt << 16) | offset
 
 
+def regimm(selector, rs, pc, target):
+    """REGIMM branch: 0x10 bltzal, 0x11 bgezal (bal is bgezal $zero), 0x12/0x13 likely."""
+    offset = ((target - (pc + 4)) >> 2) & 0xFFFF
+    return 0x04000000 | (rs << 21) | (selector << 16) | offset
+
+
 class ContinuationFlowTests(unittest.TestCase):
     def test_emission_does_not_copy_the_complete_known_entry_set(self):
         known = IterationTrackingKnownEntries(
@@ -92,6 +98,82 @@ class ContinuationFlowTests(unittest.TestCase):
             )
         )
         self.assertIn("dispatch_call(s, _t, 0x00001108u);", linked_jalr)
+
+    # #968: bltzal/bgezal (bal is bgezal $zero) write $ra and CALL their target. Out of
+    # the body the taken path used to be a TAIL (`s->pc = target; dispatch; return`), so
+    # the callee's `jr $ra` left this body and the continuation at addr + 8 never ran.
+    @staticmethod
+    def _linked_site(first, known, lle_cpu=False):
+        """`first` at 0x1000, a counted delay slot, and the continuation at 0x1008."""
+        return codegen.emit_function(
+            FakeElf({
+                0x1000: first,
+                0x1004: 0x24030011,  # addiu v1, zero, 0x11 (delay slot)
+                0x1008: 0x03E00008,  # continuation: jr ra
+                0x100C: 0x00000000,
+            }),
+            0x1000, [(0x1000, 0x1010)], known, lle_cpu=lle_cpu,
+        )
+
+    @staticmethod
+    def _between_slot_and_continuation(lines):
+        slot = next(i for i, line in enumerate(lines) if "sr_begin(s, 0x00001004u" in line)
+        resume = next(i for i, line in enumerate(lines) if "sr_begin(s, 0x00001008u" in line)
+        return " ".join(line.strip() for line in lines[slot + 1:resume])
+
+    def test_linked_branch_out_of_the_body_is_the_same_call_as_jal(self):
+        # The taken path must be exactly what `jal` emits for the same target: a direct
+        # body call that completes the callee's tail chain (#855) for a known entry,
+        # dispatch_call with the link as resume otherwise. Never a recorded TAIL.
+        for known in ({0x1000}, {0x1000, 0x2000}):
+            for lle_cpu in (False, True):
+                jal_call = self._between_slot_and_continuation(
+                    self._linked_site(jal(0x2000), known, lle_cpu))
+                for name, word in (("bal", regimm(0x11, 0, 0x1000, 0x2000)),
+                                   ("bltzal", regimm(0x10, 4, 0x1000, 0x2000))):
+                    with self.subTest(known=sorted(known), lle_cpu=lle_cpu, branch=name):
+                        lines = self._linked_site(word, known, lle_cpu)
+                        text = "\n".join(lines)
+                        self.assertEqual(
+                            self._between_slot_and_continuation(lines),
+                            f"if (_c) {{ {jal_call} }} }}",
+                        )
+                        self.assertNotIn("s->pc = 0x00002000u", text)
+                        self.assertNotIn("sr_tail_record", text)
+        unknown = "\n".join(self._linked_site(regimm(0x11, 0, 0x1000, 0x2000), {0x1000}))
+        self.assertIn("if (_c) { dispatch_call(s, 0x00002000u, 0x00001008u); } }", unknown)
+        known = "\n".join(self._linked_site(regimm(0x11, 0, 0x1000, 0x2000), {0x1000, 0x2000}))
+        self.assertIn("if (_c) { f_00002000(s); SR_TAIL_DRAIN(s); } }", known)
+
+    def test_linked_branch_out_of_the_body_links_and_runs_its_slot_once(self):
+        # MIPS writes the link on both paths, before the slot; the slot runs once on
+        # both paths; the not-taken path is a plain fall-through into the continuation.
+        text = "\n".join(self._linked_site(regimm(0x10, 4, 0x1000, 0x2000), {0x1000}))
+        call = "if (_c) { dispatch_call(s, 0x00002000u, 0x00001008u); } }"
+        self.assertIn(call, text)
+        link = text.index("s->r[31] = 0x00001008u;")
+        slot = text.index("s->r[3] = ")
+        taken = text.index(call)
+        resume = text.index("sr_begin(s, 0x00001008u")
+        self.assertLess(link, slot)
+        self.assertLess(slot, taken)
+        self.assertLess(taken, resume)
+        self.assertEqual(text.count("sr_begin(s, 0x00001004u"), 1)
+        self.assertNotIn("_sr_cont_", text)
+
+    def test_linked_branch_to_its_own_continuation_stays_a_goto(self):
+        # `bal .+8` reads the PC; its target is this body's own next pair, so the
+        # in-body goto (no call) is exact and unchanged by #968.
+        text = "\n".join(self._linked_site(regimm(0x11, 0, 0x1000, 0x1008), {0x1000}))
+        self.assertIn("if (_c) { goto L_00001008; } }", text)
+        self.assertNotIn("dispatch_call", text)
+
+    def test_branch_likely_linked_forms_stay_refused(self):
+        # bltzall/bgezall have no cond_expr case; #968 adds no opcode support.
+        for selector in (0x12, 0x13):
+            with self.subTest(selector=hex(selector)):
+                with self.assertRaises(codegen.Unsupported):
+                    self._linked_site(regimm(selector, 4, 0x1000, 0x2000), {0x1000})
 
     def test_unlinked_computed_transfer_remains_a_tail_dispatch(self):
         text = "\n".join(
