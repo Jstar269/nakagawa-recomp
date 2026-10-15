@@ -258,6 +258,60 @@ class TestPublicExport(unittest.TestCase):
         ):
             self.assertTrue(public_candidate.is_excluded(rel, profile), rel)
 
+    def test_audit_detects_stale_export_when_synthetic_index_content_changes(self):
+        # Issue #364: Use a minimal synthetic index where included content changes after export digest calculation.
+        # The audit detects the mismatch (POLICY_EXPORT_STALE) without fabricating private authority.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _git(["init", "-q"], root)
+            assets = root / "assets"
+            assets.mkdir()
+            shutil.copy2(
+                ROOT / "assets" / "public_source_profile.json",
+                assets / "public_source_profile.json",
+            )
+            shutil.copy2(
+                ROOT / "assets" / "release_manifest.json",
+                assets / "release_manifest.json",
+            )
+            (root / "LICENSE").write_text("GPL-3.0-or-later\n", encoding="utf-8")
+            (root / "NOTICE.md").write_text("Notice\n", encoding="utf-8")
+            (root / "README.md").write_text("Initial README content\n", encoding="utf-8")
+            _git(["add", "-A"], root)
+
+            policy = publication_policy.load_policy(assets / "public_source_profile.json")
+            files = public_export.index_files(repo_root=root)
+            doc = public_export.build_document(
+                policy,
+                files,
+                manifest=(assets / "release_manifest.json").read_bytes(),
+            )
+            public_export.write_document(root / "PUBLIC_EXPORT.json", doc)
+            _git(["add", "PUBLIC_EXPORT.json"], root)
+
+            # Change included content in the index AFTER export digest calculation
+            (root / "README.md").write_text("Changed README content after export calculation\n", encoding="utf-8")
+            _git(["add", "README.md"], root)
+
+            res = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "tools" / "publish_audit.py"),
+                    "--repo-root", str(root),
+                    "--tracked-only",
+                    "--public-scope",
+                    "--provenance-self-consistency",
+                ],
+                cwd=root,
+                env=isolated_git_env(root=root),
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            output = res.stdout + res.stderr
+            self.assertIn("POLICY_EXPORT_STALE", output)
+            self.assertIn("included-content digest does not match the audited bytes", output)
+
 
 class TestCandidateImmutability293(unittest.TestCase):
     """Issue #293: candidate bytes are frozen when PUBLIC_EXPORT.json is written.
