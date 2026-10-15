@@ -715,7 +715,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "ec8422eb2bdb25dd9deb3cb0c9d6e751619484bb04a4a65877cf298446623e10"
+      "sha256": "8f44dd43f173f6b97a2a18b2ff40a1a5012bf4a81c8c5c190ae4b49ea320bba3"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1357,7 +1357,19 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9dd9d4cd7eff6e7858e8b9cc4257dc2a543429fe52e6f8258392265a1fd20029"
+      "sha256": "4f6b53721f4a5e944cfeae2b495446151ca545a06f307a7be406e950f4ff0af2"
+    },
+    {
+      "path": "docs/RECOMP_HELPER_INVENTORY.md",
+      "classification": "generated_from_public_source",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recomp-helper-inventory-doc-346",
+        "evidence_tier": "S",
+        "generator": "documented public-source data path",
+        "source_family": "public source data"
+      },
+      "sha256": "c61127a584e698b6e147827010c4943fbd24edd42f31d7bc4cb7454f31f55bb8"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -4807,7 +4819,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "6246d6bde16f821b5376a409357a1dd4ba97b1d0adf0a4934c3c89f1f215ae65"
+      "sha256": "668b63e636c81b862e1f884a938eb17a58fa1420c011c1053bc40f88741147f7"
     },
     {
       "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
@@ -4820,7 +4832,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0fb3dd9dca67f9ba2e0efcf7c0801e7087ce7b9b91e597da3dfa4cda4485f7aa"
+      "sha256": "d39772f540505c2cf9b3c0c34b8ae05c2e77874a2ad70f9837b3bd1564380b4d"
     },
     {
       "path": "src/rt/gpu_sdl3vk/psp_frag.inc",
@@ -4984,7 +4996,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0bb2a42caa5a93a107e259bc3f42c404d0201397b2279ac1e8419c3a83863106"
+      "sha256": "9dc61edd1d30f362dab8df247901756f3cd7119d415ccca54f3908c88b3a4425"
     },
     {
       "path": "src/rt/h264_mf.c",
@@ -6190,7 +6202,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c7450cc7f35f1d46ba613c68cd06cb1c42054ca2b46267e2a8db1d3dbc8dcab0"
+      "sha256": "b0c61c8e46791a843f34306a00a87a22f8fbc190e2d7b6b8233fd5256f595206"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -7739,6 +7751,18 @@
         "upstream_attribution": null
       },
       "sha256": "4260738fb04f1049f5fd2137db64b1b4db1e6931b88cbefe462435e9ec3d00da"
+    },
+    {
+      "path": "tools/recomp_helper_inventory.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recomp-helper-inventory-346",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "b7a1f53beaed5e1ebaedc8f19235521f7eb0a13f0525fe08ae3845245e29949d"
     },
     {
       "path": "tools/record_toolchain.py",
@@ -9324,7 +9348,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ee98caabf5a8b687df44b27d162bcea772f2a5d7620b5ce6c81d6f19ba13e98d"
+      "sha256": "dbedd765d06a8b44258f538581ad544662be77ee45a5a26adb8dda501b0b9854"
     },
     {
       "path": "tools/test_profile_zero_e2e.py",
@@ -9685,6 +9709,18 @@
         "upstream_attribution": null
       },
       "sha256": "4169bb28c9ebe3a8b657faf72b8e35f339125aea2ead56ed92663897fa23aa64"
+    },
+    {
+      "path": "tools/test_recomp_helper_inventory.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "recomp-helper-inventory-tests-346",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "f57f6ff70693636a6a2504905000fd2ccd13228c25d09772ac76d87561b0c64d"
     },
     {
       "path": "tools/test_ref_run_elf_hardening.py",
