@@ -144,7 +144,30 @@ class TitleRegistry:
         raw = title_manifest.load_manifest(manifest_file)
         validated = title_manifest.validate_manifest(raw)
         profile = title_profile_from_manifest(validated)
-        self.register(profile, allow_override=allow_override)
+
+        # Collision check against existing public profiles
+        collision = (profile.id in self._profiles)
+        if not collision:
+            for disc_id in profile.disc_ids:
+                norm = self._norm_disc(disc_id)
+                if norm in self._disc_index:
+                    collision = True
+                    break
+
+        if collision:
+            if not allow_override:
+                raise RuntimeError(
+                    f"Overlay identity '{profile.id}' conflicts with public canonical catalog; "
+                    f"override forbidden in standard mode"
+                )
+            else:
+                print(
+                    f"[WARNING] Overriding canonical public title definition for '{profile.id}' "
+                    f"with external private manifest!",
+                    file=sys.stderr
+                )
+
+        self.register(profile)
         return profile
 
     def load_local_manifests(self, directory: Path) -> None:
@@ -181,30 +204,7 @@ class TitleRegistry:
     def profile_refusal_for_disc(self, disc_id: str) -> Optional[str]:
         return self._profile_refusals.get(self._norm_disc(disc_id))
 
-    def register(self, profile: TitleProfile, allow_override: bool = False) -> None:
-        # Any existing identity collides, including an identical re-registration:
-        # replacing a public entry with a copy of itself is still an override.
-        collision = profile.id in self._profiles
-        if not collision:
-            for disc_id in profile.disc_ids:
-                norm = self._norm_disc(disc_id)
-                if norm in self._disc_index:
-                    collision = True
-                    break
-
-        if collision:
-            if not allow_override:
-                raise RuntimeError(
-                    f"Overlay identity '{profile.id}' conflicts with public canonical catalog; "
-                    f"override forbidden in standard mode"
-                )
-            else:
-                print(
-                    f"[WARNING] Overriding canonical public title definition for '{profile.id}' "
-                    f"with external private manifest!",
-                    file=sys.stderr
-                )
-
+    def register(self, profile: TitleProfile) -> None:
         self._profiles[profile.id] = profile
         for disc_id in profile.disc_ids:
             norm = self._norm_disc(disc_id)

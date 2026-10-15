@@ -125,17 +125,12 @@ class TestPublishAudit(unittest.TestCase):
         for name in selectors - {"GIT_CEILING_DIRECTORIES"}:
             self.assertNotIn(name, env)
         self.assertNotIn("GIT_CONFIG", env)
-        # The caller's config entries (user.name=Ambient) are gone; the three left are the
-        # tool's own, which keep auto gc and auto maintenance off, and any detach foreground,
-        # so no detached maintenance outlives a command.
-        self.assertEqual(env["GIT_CONFIG_COUNT"], "3")
+        # The caller's config entries (user.name=Ambient) are gone; the one entry left is the
+        # tool's own, which keeps auto gc off so no detached maintenance outlives a command.
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "1")
         self.assertEqual(env["GIT_CONFIG_KEY_0"], "gc.auto")
         self.assertEqual(env["GIT_CONFIG_VALUE_0"], "0")
-        self.assertEqual(env["GIT_CONFIG_KEY_1"], "maintenance.auto")
-        self.assertEqual(env["GIT_CONFIG_VALUE_1"], "false")
-        self.assertEqual(env["GIT_CONFIG_KEY_2"], "gc.autoDetach")
-        self.assertEqual(env["GIT_CONFIG_VALUE_2"], "false")
-        self.assertNotIn("GIT_CONFIG_KEY_3", env)
+        self.assertNotIn("GIT_CONFIG_KEY_1", env)
         self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
         self.assertEqual(env["GIT_CONFIG_GLOBAL"], os.devnull)
         self.assertEqual(env["GIT_AUTHOR_NAME"], "Nakagawa Recomp Tests")

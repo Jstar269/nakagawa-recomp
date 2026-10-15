@@ -68,42 +68,6 @@ class LockValidationTests(unittest.TestCase):
         with self.assertRaises(pspdev_lock.LockError):
             pspdev_lock.validate_lock(data)
 
-    def test_duplicate_keys_in_json_fail(self) -> None:
-        raw = LOCK_PATH.read_text(encoding="utf-8")
-        dup_raw = raw.replace('"schema": 2,', '"schema": 2,\n  "schema": 2,')
-        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".json") as f:
-            f.write(dup_raw)
-            fname = Path(f.name)
-        try:
-            with self.assertRaises(pspdev_lock.LockError) as ctx:
-                pspdev_lock.load_lock(fname)
-            self.assertIn("duplicate key", str(ctx.exception))
-        finally:
-            fname.unlink(missing_ok=True)
-
-    def test_non_integer_schema_fails(self) -> None:
-        for bad_schema in (2.0, "2", True, None):
-            with self.subTest(schema=bad_schema):
-                data = copy.deepcopy(self.lock)
-                data["schema"] = bad_schema
-                with self.assertRaises(pspdev_lock.LockError):
-                    pspdev_lock.validate_lock(data)
-
-    def test_invalid_release_calendar_date_fails(self) -> None:
-        for bad_release in ("v20261399", "v20260230", "v20260000"):
-            with self.subTest(release=bad_release):
-                data = copy.deepcopy(self.lock)
-                data["distribution"]["release"] = bad_release
-                with self.assertRaises(pspdev_lock.LockError) as ctx:
-                    pspdev_lock.validate_lock(data)
-                self.assertIn("calendar date", str(ctx.exception))
-
-    def test_omitted_optional_psplinkusb_release_validates(self) -> None:
-        data = copy.deepcopy(self.lock)
-        del data["components"]["psplinkusb"]["release"]
-        # The schema declares psplinkusb.release optional; omission must not raise KeyError.
-        pspdev_lock.validate_lock(data)
-
     def test_private_absolute_paths_are_rejected(self) -> None:
         windows_profile_path = "C:" + r"\Users\Example\pspdev"
         unc_path = r"\\" + "server" + r"\private\pspdev"

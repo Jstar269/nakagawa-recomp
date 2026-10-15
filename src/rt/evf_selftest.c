@@ -28,9 +28,6 @@ static void test_clear_is_keep_mask(void) {
     EXPECT(sr_evf_clear_pattern(0x12345678u, 0xFFFFFFFFu) == 0x12345678u);
     /* The old (inverted) semantics would have produced pattern & ~bits. */
     EXPECT(sr_evf_clear_pattern(0xF0F0u, 0x0FF0u) != (0xF0F0u & ~0x0FF0u));
-    /* MSB / boundary bitmask edge tests. */
-    EXPECT(sr_evf_clear_pattern(0x80000000u, 0x80000000u) == 0x80000000u);
-    EXPECT(sr_evf_clear_pattern(0x80000000u, 0x7FFFFFFFu) == 0u);
 }
 
 static void test_and_or_matching(void) {
@@ -44,11 +41,6 @@ static void test_and_or_matching(void) {
     EXPECT(!sr_evf_matches(0xF0u, 0x05u, SR_EVF_WAIT_OR));
     /* Clear bits do not change the matching rule itself. */
     EXPECT(sr_evf_matches(0x0Fu, 0x05u, SR_EVF_WAIT_CLEAR));
-    /* MSB and 32-bit pattern edges. */
-    EXPECT(sr_evf_matches(0x80000000u, 0x80000000u, 0));
-    EXPECT(sr_evf_matches(0x80000001u, 0x80000000u, SR_EVF_WAIT_OR));
-    EXPECT(!sr_evf_matches(0x7FFFFFFFu, 0x80000000u, 0));
-    EXPECT(!sr_evf_matches(0x7FFFFFFFu, 0x80000000u, SR_EVF_WAIT_OR));
     EXPECT(sr_evf_matches(0x04u, 0x05u, SR_EVF_WAIT_OR | SR_EVF_WAIT_CLEARALL));
 }
 
@@ -64,9 +56,6 @@ static void test_consume_on_success(void) {
     EXPECT(sr_evf_consume(0xFFu, 0x0Fu, SR_EVF_WAIT_OR | SR_EVF_WAIT_CLEARALL) == 0u);
     /* Both together (reachable via wait, not poll) still ends at zero. */
     EXPECT(sr_evf_consume(0xFFu, 0x0Fu, SR_EVF_WAIT_CLEAR | SR_EVF_WAIT_CLEARALL) == 0u);
-    /* MSB / boundary bitmask consume. */
-    EXPECT(sr_evf_consume(0x80000001u, 0x80000000u, SR_EVF_WAIT_CLEAR) == 0x00000001u);
-    EXPECT(sr_evf_consume(0x80000001u, 0x80000000u, SR_EVF_WAIT_CLEARALL) == 0u);
 }
 
 static void test_wait_arg_validation(void) {

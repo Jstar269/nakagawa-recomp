@@ -272,14 +272,6 @@ int sr_coro_stack_remaining(size_t *remaining_out) {
     return 1;
 }
 
-int sr_coro_stack_top(uintptr_t *top_out) {
-    /* SwitchToFiber swaps the TIB's stack fields, so StackBase is the running fiber's top. */
-    const NT_TIB *tib = (const NT_TIB *)NtCurrentTeb();
-    if (!top_out || !s_current || !tib || !tib->StackBase) return 0;
-    *top_out = (uintptr_t)tib->StackBase;
-    return 1;
-}
-
 static void CALLBACK coro_trampoline(void *param) {
     SrCoro *c = (SrCoro *)param;
     c->fn(c->arg);
@@ -355,16 +347,13 @@ void sr_coro_destroy(SrCoro *c) {
 #include <ucontext.h>
 #include <sys/mman.h>
 #include <pthread.h>
-#include <unistd.h>
 
 struct SrCoro {
     SrCoroFn  fn;
     void     *arg;
     ucontext_t ctx;
-    void     *stack;       /* usable low end: the guard band lies directly below it */
-    size_t    stack_size;  /* usable bytes */
-    void     *map;         /* the whole mapping, guard band included (created coroutines) */
-    size_t    map_size;
+    void     *stack;
+    size_t    stack_size;
     int       is_main;
 };
 
@@ -406,13 +395,6 @@ int sr_coro_stack_remaining(size_t *remaining_out) {
     return 1;
 }
 
-int sr_coro_stack_top(uintptr_t *top_out) {
-    /* The main coroutine's bounds are known once sr_coro_stack_remaining has read them. */
-    if (!top_out || !s_current || !s_current->stack || s_current->stack_size == 0) return 0;
-    *top_out = (uintptr_t)s_current->stack + s_current->stack_size;
-    return 1;
-}
-
 /* makecontext cannot portably pass a pointer argument, so the trampoline reads the coroutine it
  * is running from s_current (set by sr_coro_switch immediately before the first resume). */
 static void coro_trampoline(void) {
@@ -449,25 +431,13 @@ SrCoro *sr_coro_create(SrCoroFn fn, void *arg, size_t stack_size) {
     c->fn = fn;
     c->arg = arg;
     c->stack_size = stack_size;
-    /* The guard band (see sr_coro.h) sits below the usable range, page aligned. */
-    long page = sysconf(_SC_PAGESIZE);
-    size_t guard = SR_CORO_STACK_GUARD_BYTES;
-    if (page > 0) guard = (guard + (size_t)page - 1u) / (size_t)page * (size_t)page;
-    if (stack_size == 0 || stack_size > SIZE_MAX - guard) { free(c); return NULL; }
-    c->map_size = stack_size + guard;
     /* MAP_NORESERVE gives lazy commit like a Win32 fiber's reserved stack: the full range is
      * addressable but physical pages are only backed as the deep call chain touches them, so a
      * large per-coroutine stack does not cost real memory while the coroutine is idle. */
-    c->map = mmap(NULL, c->map_size, PROT_READ | PROT_WRITE,
-                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    if (c->map == MAP_FAILED) { free(c); return NULL; }
-    if (mprotect(c->map, guard, PROT_NONE) != 0) {
-        munmap(c->map, c->map_size);
-        free(c);
-        return NULL;
-    }
-    c->stack = (unsigned char *)c->map + guard;
-    if (getcontext(&c->ctx) != 0) { munmap(c->map, c->map_size); free(c); return NULL; }
+    c->stack = mmap(NULL, stack_size, PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (c->stack == MAP_FAILED) { free(c); return NULL; }
+    if (getcontext(&c->ctx) != 0) { munmap(c->stack, stack_size); free(c); return NULL; }
     c->ctx.uc_stack.ss_sp = c->stack;
     c->ctx.uc_stack.ss_size = stack_size;
     c->ctx.uc_link = NULL;   /* body never returns */
@@ -489,7 +459,7 @@ void sr_coro_switch(SrCoro *to) {
 void sr_coro_destroy(SrCoro *c) {
     if (!c) return;
     if (!LC_DESTROY_OK(c)) return;   /* instrumented builds: refuse an invalid destroy */
-    if (c->map && c->map != MAP_FAILED && !c->is_main) munmap(c->map, c->map_size);
+    if (c->stack && c->stack != MAP_FAILED && !c->is_main) munmap(c->stack, c->stack_size);
     free(c);
 }
 

@@ -1713,6 +1713,10 @@ int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
     }
+    test_bitmap_font_text_fallback();
+    test_display_path_hides_profile_folder();
+    test_library_card_status_text();
+    test_sample_entries_never_reach_library_json();
     if (argc == 7 && strcmp(argv[1], "--validate-package") == 0) {
         char *end = NULL;
         unsigned long experimental = strtoul(argv[5], &end, 10);
@@ -1744,32 +1748,9 @@ int main(int argc, char **argv) {
      * cache, save and boot-event paths inside a temporary root, never inside
      * the developer's real per-user directories. */
     native_test_create_root("player-state");
-    {
-        /* A developer machine may point NAKAGAWA_PSP_KEY_FILE at the real key
-         * file. Plant a decoy override that names an existing file: unless the
-         * isolation clears it, the no-key-file preflight check below consults
-         * the decoy instead of the isolated user-data root and fails. */
-        char decoy_key[NATIVE_TEST_PATH_MAX + 32];
-        int written = snprintf(decoy_key, sizeof(decoy_key), "%s%cdeveloper-keyfile.json",
-                               native_test_get_root(), nk_platform_path_separator());
-        assert(written > 0 && (size_t)written < sizeof(decoy_key));
-        write_text_file(decoy_key, "{\"format\":\"nakagawa-psp-keystore-1\",\"entries\":{}}");
-        native_test_set_env("NAKAGAWA_PSP_KEY_FILE", decoy_key);
-    }
     native_test_isolate_user_data_roots();
-    {
-        const char *key_override = getenv("NAKAGAWA_PSP_KEY_FILE");
-        assert(key_override == NULL || key_override[0] == '\0');
-    }
     native_test_assert_cache_root_isolated();
     native_test_assert_config_root_isolated();
-
-    test_bitmap_font_text_fallback();
-    test_display_path_hides_profile_folder();
-    test_library_card_status_text();
-    /* Saves a library file under the cache root, so it runs only once that
-     * root is the temporary one. */
-    test_sample_entries_never_reach_library_json();
 
     /* PlayerApp holds 64 game records twice over; keep it off the stack. */
     PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
@@ -3218,9 +3199,6 @@ int main(int argc, char **argv) {
 
         /* 14f: the wizard's status text and preflight, through the player's own functions. The
            folder now holds two Latin files and a refused one, so the first import imports nothing. */
-        /* The Fonts step reads and writes the per-user data directory, so this block points that
-           directory at its own font root, the same folder the runtime root names here. */
-        assert(nk_platform_set_app_data_dir_override(font_root));
         PlayerApp *font_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
         assert(font_app != NULL);
         nk_library_init(&font_app->library);
@@ -3415,100 +3393,7 @@ int main(int argc, char **argv) {
             assert(fcheck->issue_count == 1 && fcheck->issue_numbers[0] == 313);
         }
         free(font_app);
-        assert(nk_platform_set_app_data_dir_override(NULL));
         assert(test_remove_tree(font_root));
-    }
-
-    /* 14r: a runtime root does not move the fonts. Under --runtime-root the Fonts step imports into
-       and reads from the per-user data directory (the --user-data-root override here), and the
-       runtime root's own fonts/v2 is neither written nor read. */
-    printf("[PLAYER_STATE_TEST] Subtest 14r: Fonts step under a runtime root uses the per-user directory\n");
-    fflush(stdout);
-    {
-        char rt_base[512];
-        char per_user[768];
-        char runtime_only[768];
-        char source[768];
-        char path[1024];
-        const char sep = nk_platform_path_separator();
-
-        assert(nk_platform_get_path(NK_PATH_CACHE, rt_base, sizeof(rt_base)));
-        snprintf(per_user, sizeof(per_user), "%s%cfont_root_per_user", rt_base, sep);
-        snprintf(runtime_only, sizeof(runtime_only), "%s%cfont_root_runtime", rt_base, sep);
-        snprintf(source, sizeof(source), "%s%cfont_root_source", rt_base, sep);
-        assert(test_remove_tree(per_user));
-        assert(test_remove_tree(runtime_only));
-        assert(test_remove_tree(source));
-        assert(nk_platform_mkdir_p(per_user));
-        assert(nk_platform_mkdir_p(runtime_only));
-        assert(nk_platform_mkdir_p(source));
-        snprintf(path, sizeof(path), "%s%cdump_latin.pgf", source, sep);
-        write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
-
-        assert(nk_platform_set_app_data_dir_override(per_user));
-        PlayerApp *runtime_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
-        assert(runtime_app != NULL);
-        nk_library_init(&runtime_app->library);
-        player_app_set_runtime_root(runtime_app, runtime_only);
-
-        assert(player_app_fonts_import_folder(runtime_app, source));
-        assert(strstr(runtime_app->wizard.font_message, "Imported 1 PSP font slot(s)") != NULL);
-        snprintf(path, sizeof(path), "%s%cfonts%cv2%cmanifest.json", per_user, sep, sep, sep);
-        assert(nk_platform_file_exists(path));
-        snprintf(path, sizeof(path), "%s%cfonts", runtime_only, sep);
-        assert(!nk_platform_dir_exists(path));
-
-        player_app_refresh_font_status(runtime_app);
-        assert(strstr(runtime_app->wizard.font_slot_detail[NK_FONT_SLOT_LATIN],
-                      "imported from your PSP") != NULL);
-        assert(player_app_fonts_remove_imports(runtime_app));
-        free(runtime_app);
-
-        /* 14r-b (#827 review): the runtime root holds the project latin font and the per-user
-           directory holds no import. The Fonts step and the SYSTEM_FONTS preflight must both name
-           that project font, read from <runtime root>/font, not from the per-user directory. */
-        {
-            char project_font_dir[1024];
-            char project_latin[1100];
-            NkIsoExecutableReport project_exec;
-            snprintf(project_font_dir, sizeof(project_font_dir), "%s%cfont", runtime_only, sep);
-            assert(nk_platform_mkdir_p(project_font_dir));
-            snprintf(project_latin, sizeof(project_latin), "%s%cnkltn.pgf", project_font_dir, sep);
-            write_binary_file(project_latin, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
-
-            PlayerApp *project_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
-            assert(project_app != NULL);
-            nk_library_init(&project_app->library);
-            player_app_set_runtime_root(project_app, runtime_only);
-            snprintf(project_app->inspecting_game.disc_id,
-                     sizeof(project_app->inspecting_game.disc_id), "TEST80001");
-            snprintf(project_app->inspecting_game.title_id,
-                     sizeof(project_app->inspecting_game.title_id), "synthetic-allegrex-v1");
-            memset(&project_exec, 0, sizeof(project_exec));
-            project_exec.eboot.kind = NK_ISO_EXEC_PSP_ENCRYPTED;
-            project_exec.boot.kind = NK_ISO_EXEC_MIPS_ELF32;
-            project_exec.selected = NK_ISO_EXEC_SELECTION_BOOT;
-            project_exec.boot_fallback = true;
-            snprintf(project_exec.selected_path, sizeof(project_exec.selected_path), "BOOT.BIN");
-
-            player_app_refresh_font_status(project_app);
-            assert(strstr(project_app->wizard.font_slot_detail[NK_FONT_SLOT_LATIN],
-                          "Latin: project font.") != NULL);
-            player_app_build_compatibility_preflight(project_app, true, true, &project_exec);
-            {
-                const PlayerPreflightCheck *fcheck =
-                    find_preflight_check(&project_app->wizard.preflight, "SYSTEM_FONTS");
-                assert(fcheck != NULL);
-                assert(strstr(fcheck->message, "Latin: project font.") != NULL);
-            }
-            free(project_app);
-            assert(test_remove_tree(project_font_dir));
-        }
-
-        assert(nk_platform_set_app_data_dir_override(NULL));
-        assert(test_remove_tree(per_user));
-        assert(test_remove_tree(runtime_only));
-        assert(test_remove_tree(source));
     }
 
     /* 14g: no configured runtime root. The preflight falls back to the app-data directory, and

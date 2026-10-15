@@ -41,8 +41,7 @@ def _clear_outputs(output_dir: Path) -> None:
 
 
 def _run_one(make: str, python: str, name: str, targets: tuple[str, ...],
-             output_root: Path, enabled: bool, build_prefix: str,
-             build_root: str | None = None) -> dict[str, Any]:
+             output_root: Path, enabled: bool, build_prefix: str) -> dict[str, Any]:
     output_dir = output_root / name
     output_dir.mkdir(parents=True, exist_ok=True)
     _clear_outputs(output_dir)
@@ -51,13 +50,7 @@ def _run_one(make: str, python: str, name: str, targets: tuple[str, ...],
     env["SR_PERF"] = "1" if enabled else "0"
     env["SR_PERF_JSON"] = str((output_dir / "perf.json").resolve())
     env["SR_PERF_CSV"] = str((output_dir / "perf.csv").resolve())
-    command = [make, f"BUILD_DIR={build_prefix}/{name}"]
-    if build_root is not None:
-        # Targets such as production-smoke-gap place their output under BUILD_ROOT,
-        # not BUILD_DIR. Without this the overhead runs look for a build the make
-        # target never wrote.
-        command.append(f"BUILD_ROOT={build_root}")
-    command.extend(targets)
+    command = [make, f"BUILD_DIR={build_prefix}/{name}", *targets]
     started = time.perf_counter()
     completed = subprocess.run(command, cwd=ROOT, env=env, check=False,
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -111,8 +104,7 @@ def _run_direct(command: list[str], output_dir: Path, enabled: bool) -> dict[str
 
 def _run_overhead(make: str, python: str, output_root: Path, samples: int,
                   build_prefix: str) -> dict[str, Any]:
-    build = _run_one(make, python, "overhead-build", ("production-smoke-gap",), output_root, False,
-                     build_prefix, build_root=build_prefix)
+    build = _run_one(make, python, "overhead-build", ("production-smoke-gap",), output_root, False, build_prefix)
     if build["status"] != "PASS":
         return {"status": "BLOCKED", "build": build, "ratio": None}
     command = [
@@ -124,14 +116,13 @@ def _run_overhead(make: str, python: str, output_root: Path, samples: int,
         "--mode",
         "aot-gap",
     ]
-    measured: dict[str, list[dict[str, Any]]] = {"disabled": [], "enabled": []}
-    # Alternate disabled and enabled runs (A B A B ...) so host load that drifts during
-    # the series lands on both arms instead of on whichever block ran second.
-    for index in range(samples):
-        for enabled in (False, True):
-            label = "enabled" if enabled else "disabled"
-            measured[label].append(
-                _run_direct(command, output_root / f"overhead-{label}-{index}", enabled))
+    measured: dict[str, Any] = {}
+    for enabled in (False, True):
+        runs = [
+            _run_direct(command, output_root / f"overhead-{'enabled' if enabled else 'disabled'}-{index}", enabled)
+            for index in range(samples)
+        ]
+        measured["enabled" if enabled else "disabled"] = runs
     if any(run["status"] != "PASS" for group in measured.values() for run in group):
         return {"status": "BLOCKED", "build": build, **measured, "ratio": None}
     disabled_median = statistics.median(run["duration_s"] for run in measured["disabled"])

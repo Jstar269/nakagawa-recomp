@@ -58,24 +58,7 @@ enum {
     SR_FLIGHT_KIND_GE_LIST_FINISH = 26u,
     SR_FLIGHT_KIND_GE_FINISH_COMMAND = 27u,
     SR_FLIGHT_KIND_PRESENT_SET_FRAMEBUF = 28u,
-    SR_FLIGHT_KIND_PRESENT_FRAME = 29u,
-    /* A NaN/Inf origin reported by SR_NAN_TRAP (issue #69): a FPU or VFPU result that went
-     * non-finite from all-finite operands, recorded in the fault class with no trigger, so
-     * a run keeps going after it. arg0 is the guest pc; arg1 packs the domain
-     * (SR_FLIGHT_NAN_DOMAIN_*, bits 0-7), the result class (SR_FLIGHT_NAN_RESULT_*, bits
-     * 8-15) and the destination register (bits 16-23); arg2 is the lane, the index of the
-     * first non-finite word in the reported output; arg3 is the VBLANK count. The reporter
-     * applies the same SR_NAN_TRAP_LIMIT budget as its printed line. */
-    SR_FLIGHT_KIND_NAN_ORIGIN = 30u
-};
-
-/* Operands of SR_FLIGHT_KIND_NAN_ORIGIN (see above). */
-enum {
-    SR_FLIGHT_NAN_DOMAIN_FPU = 1u,
-    SR_FLIGHT_NAN_DOMAIN_VFPU = 2u,
-    SR_FLIGHT_NAN_RESULT_NAN = 1u,
-    SR_FLIGHT_NAN_RESULT_POS_INF = 2u,
-    SR_FLIGHT_NAN_RESULT_NEG_INF = 3u
+    SR_FLIGHT_KIND_PRESENT_FRAME = 29u
 };
 
 /* Synthetic media-selftest labels only. They describe source-owned fixture
@@ -203,11 +186,6 @@ void sr_flight_fault(uint32_t kind, uint32_t pc, uint32_t detail, uint32_t aux);
  * is outside guest memory) as aux, so the first host fault dumps a bounded
  * bundle whose fatal terminal carries the fault. Recording stays opt-in. */
 void sr_flight_host_fault(uint32_t guest_pc, uint32_t exception_code, uint32_t guest_fault_addr);
-/* SR_NAN_TRAP origin (SR_FLIGHT_KIND_NAN_ORIGIN, issue #320). Packs domain, result and dst
- * into arg1 as documented at the kind. It never triggers: a NaN origin neither freezes the
- * record nor ends the run, so the trap stays a diagnostic. */
-void sr_flight_nan_origin(uint32_t guest_pc, uint32_t domain, uint32_t dst, uint32_t result,
-                          uint32_t lane, uint32_t vbl);
 void sr_flight_snapshot(SrFlightSnapshot *out);
 int sr_flight_event_count(void);
 int sr_flight_event_at(uint32_t index, SrFlightEvent *out);
@@ -326,15 +304,6 @@ static inline void sr_flight_host_fault(uint32_t guest_pc, uint32_t exception_co
     (void)guest_pc;
     (void)exception_code;
     (void)guest_fault_addr;
-}
-static inline void sr_flight_nan_origin(uint32_t guest_pc, uint32_t domain, uint32_t dst,
-                                        uint32_t result, uint32_t lane, uint32_t vbl) {
-    (void)guest_pc;
-    (void)domain;
-    (void)dst;
-    (void)result;
-    (void)lane;
-    (void)vbl;
 }
 static inline void sr_flight_snapshot(SrFlightSnapshot *out) {
     if (out) *out = (SrFlightSnapshot){0};

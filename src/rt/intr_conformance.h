@@ -347,19 +347,15 @@ static const IcProbe kIcMatrix[] = {
  * Allocate forms now answer CAN_NOT_WAIT ahead of the FPL object lookup. The
  * normal cells keep their control values and the intr-ctx cells stay pinned to
  * the pre-existing deviation -- sched_wait_permitted() is true inside a handler,
- * so the new check cannot fire there. Those belong to PR-D.
- * Bad-fpl base moved to 0x8002019d: PSP-measured 2026-10-15 (SCE_KERNEL_ERROR_
- * UNKNOWN_FPLID). The normal cell is a control and follows that measurement; the
- * interrupt-context hardware cell is still ILLEGAL_CONTEXT, so that cell remains a
- * known deviation (base != hw) until PR-D adds the interrupt-context gate. */
+ * so the new check cannot fire there. Those belong to PR-D. */
 { "sceKernelAllocateFpl", 0xd979e9bfu, "Bad fpl", ICG_FPL, 0,
-  {0, 102, 347, 103}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0x8002019du), CNW, IC_RET(0x8002019du), CNW},
+  {0, 102, 347, 103}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0x800200d3u), CNW, IC_RET(0x800200d3u), CNW},
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_IMMEDIATE},
 { "sceKernelAllocateFpl", 0xd979e9bfu, "Valid fpl", ICG_FPL, 1,
   {0, 104, 348, 105}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0), CNW, IC_RET(0), CNW},
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_IMMEDIATE},
 { "sceKernelAllocateFplCB", 0xe7282cb6u, "Bad fpl", ICG_FPL, 0,
-  {0, 108, 349, 109}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0x8002019du), CNW, IC_RET(0x8002019du), CNW},
+  {0, 108, 349, 109}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0x800200d3u), CNW, IC_RET(0x800200d3u), CNW},
   {IC_PREC_NA, IC_PREC_CONTEXT, IC_PREC_CONTEXT, IC_PREC_CONTEXT}, IC_HW_IMMEDIATE},
 { "sceKernelAllocateFplCB", 0xe7282cb6u, "Valid fpl", ICG_FPL, 1,
   {0, 110, 350, 111}, {ICU, CNW, ILCTX, CNW}, {IC_RET(0), CNW, IC_RET(0), CNW},

@@ -39,12 +39,8 @@ int  gegpu_init(void);
 void gegpu_flush(const char *reason);
 
 /* Present the framebuffer at fbaddr straight from its GPU image. Returns 1 when shown,
- * 0 when the user closed the window, -1 when no GPU-valid target owns the address (not
- * GPU-resident, e.g. CPU-written movie frames) — the caller should convert guest VRAM instead.
- * GEGPU_PRESENT_TARGET_FAILED: a GPU-valid target exists, but preparing or presenting it failed,
- * so its newest pixels may exist only in the GPU image. The caller must make guest VRAM current
- * with gegpu_sync_guest_fb() before converting it, or decline the frame. */
-#define GEGPU_PRESENT_TARGET_FAILED (-2)
+ * 0 when the user closed the window, -1 when the address is not GPU-resident
+ * (CPU-written movie frames etc.) — the caller should convert guest VRAM instead. */
 int  gegpu_present(unsigned int fbaddr, int fmt, unsigned int stride);
 int  gegpu_capture_materialize(void);
 int  gegpu_replay_reset(void);

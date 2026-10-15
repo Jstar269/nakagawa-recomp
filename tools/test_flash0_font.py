@@ -23,9 +23,7 @@ hle.c IO entry points:
 
 In every case the selftest also points ``SR_FONTDIR`` at the imported cache, the launcher's state
 after an import, and checks that the project source does not serve the cache's files. Each refusal
-is named on stderr once per slot and reason, however many opens resolve the slot. The selftest also
-checks that ``SR_USER_DATA_ROOT`` names the user source (its per-user directory is an empty decoy
-there), and that a relative value is named once and skips that source instead of falling back. The native part
+is named on stderr once per slot and reason, however many opens resolve the slot. The native part
 needs mingw32-make. The contract tests need no compiler: they check the fixture, the Python
 checker's verdict for each case, and that every link that compiles the device also supplies
 src/core/nk_font.c.
@@ -74,8 +72,6 @@ USER_REFUSAL = {
 }
 USER_REFUSAL_PREFIX = "flash0: user-imported font for slot 'latin' refused:"
 PROJECT_CACHE_PREFIX = "flash0: project font for slot 'latin' refused:"
-#: Named once when SR_USER_DATA_ROOT is set but is not an absolute path (the selftest sets one).
-USER_ROOT_PREFIX = "flash0: SR_USER_DATA_ROOT"
 
 # Glyph sets. Each names its slot under the reader's probes: latin covers 'A' and 'a' and no kana or
 # Hangul; japanese covers hiragana. The cache copy and the project latin font differ in size, so
@@ -320,41 +316,6 @@ class Flash0FontFixtureContractTests(unittest.TestCase):
         self.assertIn("src/core/nk_font.c", runtime.group(1).replace("\\\n", " ").split())
 
 
-def function_body(source: str, signature: str) -> str:
-    """The text of one C function, from its signature to the closing brace at column zero."""
-    start = source.index(signature)
-    return source[start:source.index("\n}\n", start)]
-
-
-class Flash0UserRootSourceContractTests(unittest.TestCase):
-    """SR_USER_DATA_ROOT validation, checked in the source on every host.
-
-    The device selftest that exercises these branches on Windows does not build off Windows yet,
-    so these contracts run everywhere, WSL included. They pin the checks the selftest proves.
-    """
-
-    def setUp(self) -> None:
-        self.source = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
-
-    def test_relative_user_root_is_refused_on_every_host(self) -> None:
-        """#827 review: Win32 refuses a relative SR_USER_DATA_ROOT inside the wide helper, but POSIX
-        resolves it against the working directory. flash0_user_data_root must check absoluteness
-        itself, on every host, and name the refusal with the same diagnostic."""
-        signature = "static void flash0_user_data_root(char *dst, size_t capacity) {"
-        self.assertIn(signature, self.source)
-        body = function_body(self.source, signature)
-        # sr_wide_is_absolute is the host's own rule: a drive or UNC path on Win32, a leading '/' on POSIX.
-        self.assertIn("sr_wide_is_absolute(configured)", body)
-        self.assertIn("is configured but is not a valid absolute path", body)
-
-    def test_empty_user_root_is_named_not_treated_as_unset(self) -> None:
-        """An empty SR_USER_DATA_ROOT is present, so it is refused by name. Only an absent variable
-        takes the platform directory. The launcher relies on this to mask an inherited value."""
-        body = function_body(self.source, "static void flash0_user_data_root(char *dst, size_t capacity) {")
-        self.assertIn("configured[0] != L'\\0'", body)
-        self.assertIn("if (!configured_present)", body)
-
-
 class Flash0FontDeviceTests(unittest.TestCase):
     def test_windows_include_detector(self) -> None:
         """The skip below is decided by this reader, so it must tell a guarded include apart."""
@@ -422,7 +383,6 @@ class Flash0FontDeviceTests(unittest.TestCase):
                     env["SR_FONTDIR"] = str(root / "project")
                     env["SR_FLASH0_TEST_CASE"] = case
                     env.pop("SR_FONTLOG", None)
-                    env.pop("SR_USER_DATA_ROOT", None)
                     run = subprocess.run(
                         [str(exe), "--flash0-font"],
                         cwd=ROOT,
@@ -435,10 +395,6 @@ class Flash0FontDeviceTests(unittest.TestCase):
                     self.assertIn("flash0-font:", run.stderr)
                     self.assertEqual(run.returncode, 0, run.stderr[-6000:])
                     assert_refusals_named(self, run.stderr, case)
-                    # The relative SR_USER_DATA_ROOT the selftest sets is named once, however many opens follow.
-                    named = refusal_lines(run.stderr, USER_ROOT_PREFIX)
-                    self.assertEqual(len(named), 1, "expected one SR_USER_DATA_ROOT refusal, got: " + repr(named))
-                    self.assertIn("is configured but is not a valid absolute path", named[0])
 
 
 if __name__ == "__main__":

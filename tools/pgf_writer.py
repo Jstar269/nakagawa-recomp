@@ -270,20 +270,14 @@ def _resolve(glyph: Glyph) -> _Planned:
     code = glyph.code
     if not isinstance(code, int) or isinstance(code, bool) or not 0 <= code <= 0xFFFF:
         raise _refuse("code-point-out-of-range", f"{code!r} is not a 16-bit character code")
-    # bool is an int subclass, so every int check below would pass True as 1 unless refused here.
-    if (
-        not isinstance(glyph.width, int)
-        or isinstance(glyph.width, bool)
-        or not isinstance(glyph.height, int)
-        or isinstance(glyph.height, bool)
-    ):
+    if not isinstance(glyph.width, int) or not isinstance(glyph.height, int):
         raise _refuse("glyph-too-large", f"U+{code:04X} has non-integer dimensions")
     if not 0 <= glyph.width <= MAX_EDGE or not 0 <= glyph.height <= MAX_EDGE:
         raise _refuse(
             "glyph-too-large",
             f"U+{code:04X} is {glyph.width}x{glyph.height}; the record field is 7 bits",
         )
-    if isinstance(glyph.row_order, bool) or glyph.row_order not in SUPPORTED_ROW_ORDERS:
+    if glyph.row_order not in SUPPORTED_ROW_ORDERS:
         raise _refuse(
             "unsupported-row-order",
             f"U+{code:04X} declares row order {glyph.row_order}; only 1 and 2 are writable",
@@ -295,14 +289,9 @@ def _resolve(glyph: Glyph) -> _Planned:
             f"U+{code:04X} declares {glyph.width}x{glyph.height} but carries {len(samples)} samples",
         )
     for sample in samples:
-        if not isinstance(sample, int) or isinstance(sample, bool) or not 0 <= sample <= 15:
+        if not isinstance(sample, int) or not 0 <= sample <= 15:
             raise _refuse("sample-out-of-range", f"U+{code:04X} carries sample {sample!r}")
-    if (
-        isinstance(glyph.adjust_x, bool)
-        or isinstance(glyph.adjust_y, bool)
-        or not ADJUST_MIN <= glyph.adjust_x <= ADJUST_MAX
-        or not ADJUST_MIN <= glyph.adjust_y <= ADJUST_MAX
-    ):
+    if not ADJUST_MIN <= glyph.adjust_x <= ADJUST_MAX or not ADJUST_MIN <= glyph.adjust_y <= ADJUST_MAX:
         raise _refuse(
             "metric-out-of-range",
             f"U+{code:04X} adjustment ({glyph.adjust_x},{glyph.adjust_y}) leaves the signed 7-bit range",
@@ -326,7 +315,7 @@ def _resolve(glyph: Glyph) -> _Planned:
         "y_top": y_top,
     }
     for name, value in metrics.items():
-        if isinstance(value, bool) or not INT32_MIN <= value <= INT32_MAX:
+        if not INT32_MIN <= value <= INT32_MAX:
             raise _refuse("metric-out-of-range", f"U+{code:04X} {name} {value} is not a signed 32-bit value")
     descender = y_base - dimension_height
     if not INT32_MIN <= descender <= INT32_MAX:

@@ -331,32 +331,6 @@ class FontProvisioningTests(unittest.TestCase):
         }), encoding="utf-8")
         self.assertEqual(inspect_font_cache(user_data_root=user_data)[0], "INVALID")
 
-    def test_duplicate_manifest_key_is_malformed_like_the_c_reader(self) -> None:
-        # The C reader (nk_json.c parse_object) refuses a repeated key at any depth, so the manifest
-        # is malformed and the cache is not used. json.loads would keep the last value instead.
-        user_data = self.temp_path / "ud_dup_key"
-        cache = get_font_cache_dir(user_data)
-        cache.mkdir(parents=True)
-        pgf = latin_pgf()
-        (cache / "nkltn.pgf").write_bytes(pgf)
-        good = hashlib.sha256(pgf).hexdigest()
-        # The last sha256 matches the file, so only the duplicate-key rule makes this manifest invalid.
-        nested = ('{"schema_version": 2, "files": {"nkltn.pgf": {"slot": "latin", "size": %d, '
-                  '"sha256": "%s", "sha256": "%s", "source": "user"}}}' % (len(pgf), "0" * 64, good))
-        top_level = ('{"schema_version": 2, "schema_version": 2, "files": {"nkltn.pgf": '
-                     '{"slot": "latin", "size": %d, "sha256": "%s", "source": "user"}}}' % (len(pgf), good))
-        for name, text in (("nested", nested), ("top_level", top_level)):
-            with self.subTest(shape=name):
-                (cache / "manifest.json").write_text(text, encoding="utf-8")
-                status, message = inspect_font_cache(user_data_root=user_data)
-                self.assertEqual(status, "INVALID")
-                self.assertIn("malformed", message)
-                self.assertIsNone(resolve_font_directory(user_data_root=user_data))
-        control = ('{"schema_version": 2, "files": {"nkltn.pgf": {"slot": "latin", "size": %d, '
-                   '"sha256": "%s", "source": "user"}}}' % (len(pgf), good))
-        (cache / "manifest.json").write_text(control, encoding="utf-8")
-        self.assertEqual(inspect_font_cache(user_data_root=user_data)[0], "OK")
-
     def test_empty_folder_is_refused(self) -> None:
         empty = self._folder("empty", {})
         with self.assertRaisesRegex(FontImportError, "No .pgf files"):

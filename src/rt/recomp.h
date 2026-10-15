@@ -740,69 +740,6 @@ void     dispatch(CpuState *s, uint32_t target);  /* TAIL/no native resume bound
 int      dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc);
 void     dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc);
 
-/* TAIL transfer protocol (#855).
- *
- * A guest TAIL transfer -- `j`, `jr rs`, `jalr $zero` or a branch to another body, or a
- * fall-through into another entry -- must not nest a native call: a guest loop of tail
- * transfers would otherwise grow the host stack without bound while guest call depth stays
- * constant. Generated code records the transfer here and returns; whoever invoked that body
- * drains it: a generated CALL site (SR_TAIL_DRAIN), dispatch_call_aot, or sr_call_body. Each
- * drained body may record the next transfer, so a whole chain runs in one native frame.
- *
- * Guest code runs on one OS thread, and a recorded transfer is consumed before any guest
- * instruction runs, so one slot suffices and it is never live across a yield (asserted at
- * the yield, syscall and dispatch entry points). A callable body owes its caller the
- * restore of its entry SP once the chain completes; the drain applies the first restore
- * recorded in its chain, which is the value the nested native returns used to leave.
- *
- * A transfer to a computed target is one dispatch (dispatch_tail_step). The direct transfers
- * that follow it used to nest inside that dispatch, so the step drains them itself
- * (sr_tail_drain_segment): exception and ERET flow they raise is handled by the step's own
- * dispatch, at the SP the nested model had there. The step hands only the next computed
- * transfer back to the enclosing drain, so native depth stays constant. */
-typedef struct {
-    RecompFn fn;            /* native body of a known target, or NULL to dispatch by address */
-    CpuState *state;        /* the CpuState that recorded the transfer */
-    uint32_t target;        /* guest target address */
-    uint32_t restore_sp;    /* the recording body's entry SP, when it owes the restore */
-    uint8_t pending;
-    uint8_t has_restore;
-} SrTailTransfer;
-extern SrTailTransfer sr_tail_transfer;    /* defined in guest_interp.c */
-/* Fatal, named stop for a broken protocol (double record, leaked slot, foreign state). */
-void sr_tail_fatal(const char *what, uint32_t target);
-/* Run every pending transfer to completion, then apply the chain's SP restore. */
-void sr_tail_drain(CpuState *s);
-/* Inside a computed step's dispatch: run the pending direct transfers, stopping at exception
- * flow or at the next computed transfer, which is left for the enclosing drain. */
-void sr_tail_drain_segment(CpuState *s);
-/* One dispatch of a recorded computed target (recomp.c). It drains only that target's direct
- * successors; the enclosing drain loop runs the next computed transfer. */
-void dispatch_tail_step(CpuState *s, uint32_t target);
-
-static inline void sr_tail_record(CpuState *s, uint32_t target, RecompFn fn,
-                                  uint32_t restore_sp, uint32_t owes_restore) {
-    if (sr_tail_transfer.pending) sr_tail_fatal("tail-transfer-recorded-twice", target);
-    sr_tail_transfer.fn = fn;
-    sr_tail_transfer.state = s;
-    sr_tail_transfer.target = target;
-    sr_tail_transfer.restore_sp = restore_sp;
-    sr_tail_transfer.has_restore = owes_restore ? 1u : 0u;
-    sr_tail_transfer.pending = 1u;
-}
-#define SR_TAIL_DRAIN(s) do { \
-    if (__builtin_expect(sr_tail_transfer.pending != 0u, 0)) sr_tail_drain(s); \
-} while (0)
-/* Invoke a native body and complete its tail chain (runtime direct calls). */
-static inline void sr_call_body(RecompFn fn, CpuState *s) {
-    fn(s);
-    if (sr_tail_transfer.pending) sr_tail_drain(s);
-}
-/* A recorded transfer must never survive to a yield, syscall or new dispatch. */
-static inline void sr_tail_assert_empty(const char *where) {
-    if (sr_tail_transfer.pending) sr_tail_fatal(where, sr_tail_transfer.target);
-}
-
 /* Tracing. When a trace file is open, the generated code reports each instruction. sr_begin
  * snapshots the register file and records pc/op; sr_end diffs and emits the line, with an
  * optional store (addr/size) read back from guest memory. Emit order follows PPSSPP: a branch
@@ -933,38 +870,6 @@ extern int     sr_sched_on;
  * build links; harnesses without the scheduler leave it NULL and the dispatcher's
  * preflight stays off because sr_sched_on is 0 there. */
 extern int   (*sr_dispatch_host_stack_remaining)(size_t *remaining_out);
-/* The high end of the running stack, installed beside it (sr_coro_stack_top); may stay NULL. */
-extern int   (*sr_dispatch_host_stack_top)(uintptr_t *top_out);
-/* The same host-stack bound for direct compiled calls (#855). A `jal` to a known body is a
- * native C call that never enters the dispatcher, so codegen opens every body that makes such
- * a call with SR_HOST_STACK_CHECK; leaves and bodies whose calls all go through the dispatcher
- * need none, since every native recursion of generated code passes through one or the other.
- *
- * The hot path is one test of the body's frame address against sr_host_stack_window: frame
- * addresses on the running stack already known to leave the dispatcher's reserve. Frames in
- * [low, low + span] pass; {0, 0} passes nothing. A frame outside it calls
- * sr_host_stack_entry_slow (recomp.c), which takes the dispatcher's measurement: when the
- * stack is exhausted (or its bounds are unknown) the run stops at the dispatcher's named
- * boundary with the dispatcher's report; otherwise it refills the window for the running stack
- * and returns. The window spans one stack and is never an estimate, so a frame on any other
- * live stack falls outside it and refills it; the scheduler clears it when it creates a guest
- * stack, which may reuse the range of a released one. A plain global: guest code runs on one
- * OS thread (as for sr_tail_transfer). Defined in guest_interp.c. */
-typedef struct {
-    uintptr_t low;
-    uintptr_t span;
-} SrHostStackWindow;
-extern SrHostStackWindow sr_host_stack_window;
-void  sr_host_stack_entry_slow(uint32_t entry, uintptr_t frame);
-#define SR_HOST_STACK_CHECK(entry) do { \
-    uintptr_t _sr_frame = (uintptr_t)__builtin_frame_address(0); \
-    if (__builtin_expect(_sr_frame - sr_host_stack_window.low > sr_host_stack_window.span, 0)) \
-        sr_host_stack_entry_slow((entry), _sr_frame); \
-} while (0)
-static inline void sr_host_stack_window_clear(void) {
-    sr_host_stack_window.low = 0;
-    sr_host_stack_window.span = 0;
-}
 extern atomic_int_least32_t sr_timeslice;
 void sr_yield(CpuState *s);
 /* Returns 1 if the host wall-clock has crossed the vblank quantum since the last vblank

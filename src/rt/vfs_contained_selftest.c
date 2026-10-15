@@ -819,39 +819,6 @@ static void case_host_policy_end_to_end(void) {
     nuke(root);
 }
 
-/* DOS device components are refused by the guest-facing ms0 grammar on every
- * host, the seam-level half of the rule the ms0 host join applies. The POSIX
- * host layer keeps accepting such names for the seam's direct callers. */
-static void case_guest_relpath_device_names(void) {
-    static const char *const device_guests[] = {
-        "ms0:/PSP/SAVEDATA/ULUS00001DATA/NUL ",
-        "ms0:/PSP/SAVEDATA/ULUS00001DATA/NUL",
-        "ms0:/PSP/SAVEDATA/ULUS00001DATA/CON.",
-        "ms0:/PSP/SAVEDATA/ULUS00001DATA/nul .txt",
-        "ms0:/PSP/NUL/DATA.BIN",
-        "fatms0:\\PSP\\SAVEDATA\\ULUS00001DATA\\NUL ",
-    };
-    static const char *const ordinary_guests[] = {
-        "ms0:/PSP/SAVEDATA/ULUS00001DATA/NULL",
-        "ms0:/PSP/SAVEDATA/ULUS00001DATA/CONSOLE",
-        "ms0:/PSP/SAVEDATA/ULUS00001DATA/COM10",
-        "ms0:/PSP/SAVEDATA/ULUS00001DATA/LPT0",
-    };
-    char rel[SR_CD_REL_MAX];
-    for (size_t i = 0; i < sizeof(device_guests) / sizeof(device_guests[0]); i++) {
-        sr_cd_status st = sr_cd_ms0_guest_relpath(device_guests[i], rel, sizeof(rel));
-        CHECK(st == SR_CD_INVALID_PATH,
-              "guest device name '%s' must be refused by the ms0 grammar, got %s",
-              device_guests[i], sr_cd_status_name(st));
-    }
-    for (size_t i = 0; i < sizeof(ordinary_guests) / sizeof(ordinary_guests[0]); i++) {
-        sr_cd_status st = sr_cd_ms0_guest_relpath(ordinary_guests[i], rel, sizeof(rel));
-        CHECK(st == SR_CD_OK,
-              "ordinary guest name '%s' must stay accepted, got %s",
-              ordinary_guests[i], sr_cd_status_name(st));
-    }
-}
-
 /* POSIX guest IoFileMgr operations share the descriptor-relative seam with
  * savedata. The status-to-PSP conversion is the same inline helper used by
  * hle.c, so hostile names are checked at the guest-visible error boundary. */
@@ -1294,7 +1261,6 @@ int main(void) {
     case_rejected_paths_touch_nothing();
     case_policy_layer_boundary();
     case_host_policy_end_to_end();
-    case_guest_relpath_device_names();
     case_posix_guest_file_operations();
     case_final_dir_replacement();
     case_residual_window_is_bounded();

@@ -589,7 +589,7 @@ have_image:;
         }
         if (sr_perf_enabled) sr_perf_guest_begin();
         if (sr_perf_enabled) sr_perf_aot_begin(entry);
-        sr_call_body(fn, &s);
+        fn(&s);
         if (sr_perf_enabled) sr_perf_aot_end();
         if (sr_perf_enabled) sr_perf_guest_end();
     }

@@ -194,50 +194,6 @@ HANDLER_METADATA = {
         ],
         "description": "Writes measured 60000/1001 float refresh rate (59.9400599f) into $f0 under unified display clock.",
     },
-    # scePower clock getters, the devkit version word and sceCtrlPeekLatch, measured on the PSP-3000
-    # 6.61 oracle 2026-10-15. Defaults are measured; values after a Set call and the non-clearing peek
-    # are modelled and say so in their limitations.
-    "h_PowerGetPllClockFrequencyFloat": {
-        "status": "partial",
-        "evidence": [
-            "src/rt/hle_thread_selftest.c:test_power_identity_getters_measured",
-            "hardware oracle 2026-10-15 PSP-HLE-POWER-001 case pll-clock-float (0x435E0000 = 222.0)",
-        ],
-        "limitation": "returns the float of the retained PLL clock: the 222.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured",
-    },
-    "h_PowerGetCpuClockFrequencyFloat": {
-        "status": "partial",
-        "evidence": [
-            "src/rt/hle_thread_selftest.c:test_power_identity_getters_measured",
-            "hardware oracle 2026-10-15 PSP-HLE-POWER-001 case cpu-clock-float (0x435E0000 = 222.0)",
-        ],
-        "limitation": "returns the float of the retained CPU clock: the 222.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured",
-    },
-    "h_PowerGetBusClockFrequencyFloat": {
-        "status": "partial",
-        "evidence": [
-            "src/rt/hle_thread_selftest.c:test_power_identity_getters_measured",
-            "hardware oracle 2026-10-15 PSP-HLE-POWER-001 case bus-clock-float (0x42DE0000 = 111.0)",
-        ],
-        "limitation": "returns the float of the retained bus clock: the 111.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured",
-    },
-    "h_KernelDevkitVersion": {
-        "status": "partial",
-        "evidence": [
-            "src/rt/hle_thread_selftest.c:test_kernel_devkit_version_measured",
-            "src/rt/sdkver.h:SR_PSP_FIRMWARE_DEVKIT_VERSION",
-            "hardware oracle 2026-10-15 PSP-SYSTEM-001 case model-profile (0x06060110)",
-        ],
-        "limitation": "returns the 6.61 devkit word for every firmware: only the measured firmware is modelled, and other firmware devkit words are not",
-    },
-    "h_CtrlPeekLatch": {
-        "status": "partial",
-        "evidence": [
-            "src/rt/hle_thread_selftest.c:test_ctrl_peek_latch_keeps_the_latch",
-            "hardware oracle 2026-10-15 PSP-HLE-CTRL-LATCH-001 cases latch-peek-initial and latch-peek-after-poll (no input gives make break press 0 and release 0xFFFFFFFF)",
-        ],
-        "limitation": "the transition and return words are the sceCtrlReadLatch model, source-tested; the non-clearing peek is the project's model and is not hardware measured, because PSP-HLE-CTRL-LATCH-001 cannot tell clearing from keeping (its release field stays saturated with no input)",
-    },
     # These two handlers are reached by the source-owned display-smoke route.
     # Its fixed 8888 framebuffer flip and ordinary guest-thread vblank wait
     # establish that narrow production path, while the API edges below remain
@@ -281,21 +237,14 @@ HANDLER_METADATA = {
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_ge_break_continue",
         ],
-        "limitation": "models synchronous display list pause (mode 0) and queue reset (mode 1); argument and parameter buffer inspection are K1/read checked only, asynchronous hardware command boundary timing remains unmodeled (#341); PSP-measured in the eligible PSP-GE-CONTROL-001 2026-10-15 re-run: the 0x80000020 no-active-list result, the invalid-mode result 0x80000107 (mode -1 only), the mode 0 queue id and the paused sync statuses (4, 2) for a list broken mid-draw, the mode 1 result 0 with one list stalled at its start, and the 0x80000100 sync result for a list the reset removed; a list enqueued with no stall address completes inside sceGeListEnQueue, so the runtime cannot reproduce the mid-draw break and returns 0x80000020 with sync peeks of 0 on that sequence; breaking a stalled list, a mode 1 reset of a paused list and modes above 1 are unmeasured and follow the same codes",
+        "limitation": "models synchronous display list pause (mode 0) and queue cancellation (mode 1); argument and parameter buffer inspection are K1/read checked only, asynchronous hardware command boundary timing remains unmodeled (#341); the 0x80000025 result when no list is active and the paused (2) and cancelled (4) sync statuses are not hardware-measured",
     },
     "h_GeContinue": {
         "status": "partial",
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_ge_break_continue",
         ],
-        "limitation": "resumes a paused display list using the synchronous GE runner; hardware timing and multi-queue priority ordering remain unmodeled (#341); the 0 result when no list is paused is PSP-measured (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run)",
-    },
-    "h_GeListDeQueue": {
-        "status": "partial",
-        "evidence": [
-            "src/rt/hle_thread_selftest.c:test_ge_break_continue",
-        ],
-        "limitation": "a stalled list returns BUSY (0x80000021) and stays queued, PSP-measured (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run); paused, completed, cancelled and unknown queue ids are refused as NOT_IMPLEMENTED because no dequeue result is measured for them (#341)",
+        "limitation": "resumes a paused display list using the synchronous GE runner; hardware timing and multi-queue priority ordering remain unmodeled (#341); the 0x80000025 result when no list is paused is not hardware-measured",
     },
     # scePsmfPlayerGetVideoData / GetAudioData. Both drive the project-authored
     # PSMF producer and a host codec backend, and return 0 only for output a
@@ -530,7 +479,7 @@ HANDLER_METADATA = {
     },
     "h_DeleteMbx": {
         "status": "partial",
-        "limitation": "delete-while-waited is mailbox-measured on 2026-10-15 (PSP-3000, 6.61): the waiter returns WAIT_DELETE and its timeout word is rewritten to the remaining time; interrupt-context placement unmeasured (#339, #341)",
+        "limitation": "delete-while-waited is corroborated by campaign psp-hw-20260917 but not mailbox-measured; interrupt-context placement unmeasured (#339, #341)",
     },
     "h_SendMbx": {
         "status": "partial",
@@ -538,7 +487,7 @@ HANDLER_METADATA = {
     },
     "h_ReceiveMbx": {
         "status": "partial",
-        "limitation": "delete-while-waited is mailbox-measured on 2026-10-15 (WAIT_DELETE and timeout word rewritten to the remaining time); ILLEGAL_CONTEXT precedence for a blocking receive unmeasured; priority-mailbox circular linking not separately asserted beyond campaign facts (#339, #341)",
+        "limitation": "ILLEGAL_CONTEXT precedence for a blocking receive unmeasured; priority-mailbox circular linking not separately asserted beyond campaign facts (#339, #341)",
     },
     "h_ReceiveMbxCB": {
         "status": "partial",
@@ -555,48 +504,6 @@ HANDLER_METADATA = {
     "h_ReferMbxStatus": {
         "status": "partial",
         "limitation": "size-field caller contract (whether Refer preserves or overwrites size) unmeasured (#339, #341)",
-    },
-    # sceKernelReferSystemStatus: bytes written = min(size, 0x1c), return 0, and the size word reads back
-    # 0x1c, all PSP-measured (PR #1003 head 3072bd7d, 2026-10-15).
-    "h_ReferSystemStatus": {
-        "status": "partial",
-        "limitation": "idle-clock, comes-out-of-idle and thread-switch counters: written as zero; hardware reports non-zero, time-dependent values (not cited). VFPU-switch counter: written as zero, not cited. Status word 1: written as zero; hardware read 0 in all three records, uncited. Null-pointer result unmeasured.",
-    },
-    # VTimer lifecycle and query surface (PSP-HLE-VTIMER-001, 2026-10-15, PR #1003 record). Measured:
-    # Create returns a valid UID; Start returns 0, also on a restart, and 1 while running (per
-    # docs/HARDWARE_ORACLE.md); Stop returns 1 while running and 0 when not started; Delete of a
-    # running timer returns 0; Refer and Delete on the deleted UID return 0x800201BE. Refer fills
-    # active, base (non-zero while running), current, and reads schedule, handler and common as 0.
-    # The VTimer time unit is assumed microseconds because the entry does not cite time values, and
-    # base = system time at start is the project model. Interrupt-driven behaviour and handlers
-    # depend on issue #325.
-    "h_CreateVTimer": {
-        "status": "partial",
-        "limitation": "NULL option struct only (a non-NULL option is refused, layout unmeasured); no-slot create code 0x80020190 unmeasured; time unit assumed microseconds (#325)",
-    },
-    "h_StartVTimer": {
-        "status": "partial",
-        "limitation": "deleted-UID code reuses the measured Refer/Delete code by analogy; already-running return 1 is repo-documented, not PSP-HLE-VTIMER-001; time unit assumed microseconds (#325)",
-    },
-    "h_StopVTimer": {
-        "status": "partial",
-        "limitation": "deleted-UID code reuses the measured Refer/Delete code by analogy; time unit assumed microseconds (#325)",
-    },
-    "h_DeleteVTimer": {
-        "status": "partial",
-        "limitation": "delete of a stopped timer and interrupt-context placement unmeasured (#325)",
-    },
-    "h_GetVTimerTime": {
-        "status": "partial",
-        "limitation": "time unit assumed microseconds (values not cited by PSP-HLE-VTIMER-001); NULL-pointer and deleted-UID codes unmeasured, reused by analogy (#325)",
-    },
-    "h_GetVTimerBase": {
-        "status": "partial",
-        "limitation": "uncited: returns the same base as ReferVTimerStatus (guest time at the most recent Start while running, zero otherwise, a project model); NULL-pointer and deleted-UID codes unmeasured, reused by analogy (#325)",
-    },
-    "h_ReferVTimerStatus": {
-        "status": "partial",
-        "limitation": "return 0, the deleted-UID code, and the active, current, schedule, handler and common states are measured (PR #1003); base's value (guest time at start) is the project model, with only its zero and non-zero states measured; the time unit is assumed microseconds; the caller-size write rule for size 0 is the sema/evf/mbx rule applied without a VTimer cite (#325)",
     },
     # sceRtc family (issue #341). Contract sources: the public PSPSDK header
     # psprtc.h (declarations, 0-on-success/<0-on-error, pspRtcCheckValidErrors
@@ -806,20 +713,6 @@ FLOAT_RETURN_NIDS = {
         "name": "sceDisplayGetFramePerSec",
         "issue": "https://github.com/Jstar269/nakagawa-recomp/issues/80",
     },
-    # scePower Float getters: the default clock values are measured on the PSP-3000 6.61 oracle
-    # 2026-10-15 (PSP-HLE-POWER-001); the float-return shaping is tracked by #86.
-    0xEA382A27: {
-        "name": "scePowerGetPllClockFrequencyFloat",
-        "issue": "https://github.com/Jstar269/nakagawa-recomp/issues/86",
-    },
-    0xB1A52C83: {
-        "name": "scePowerGetCpuClockFrequencyFloat",
-        "issue": "https://github.com/Jstar269/nakagawa-recomp/issues/86",
-    },
-    0x9BADB3EB: {
-        "name": "scePowerGetBusClockFrequencyFloat",
-        "issue": "https://github.com/Jstar269/nakagawa-recomp/issues/86",
-    },
 }
 
 # Handlers proven to write the float return into $f0 before returning.  A
@@ -827,9 +720,6 @@ FLOAT_RETURN_NIDS = {
 # generic integer-return h_ok) is a float_return_handler_mismatch finding.
 FLOAT_RETURN_HANDLERS = {
     "h_DisplayGetFramePerSec",
-    "h_PowerGetPllClockFrequencyFloat",
-    "h_PowerGetCpuClockFrequencyFloat",
-    "h_PowerGetBusClockFrequencyFloat",
 }
 
 # Tracking issue for each canonical NID above, so a `mislabeled_nid` finding in

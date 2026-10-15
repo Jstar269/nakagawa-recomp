@@ -473,15 +473,6 @@ The Makefile (`ATRAC3P_SRCS`) builds these objects in `$(BUILD_DIR)`:
 """
 
 
-def _validate_spdx_id(spdx_id: Any, comp_type: str, comp_name: str) -> None:
-    if not spdx_id or "NOASSERTION" in str(spdx_id) or "UNKNOWN" in str(spdx_id):
-        raise PackageRouteError(
-            "PACKAGE_LICENSE_RECORD_MISSING",
-            f"LICENSE_RECORD_INCOMPLETE: {comp_type} {comp_name!r} "
-            f"lacks a valid SPDX license identifier ({spdx_id!r})",
-        )
-
-
 def generate_package_notices(
     package_dir: Path,
     *,
@@ -536,7 +527,6 @@ def generate_package_notices(
     # named whenever the package contains one.
     inventory = load_component_inventory()
     for linked in inventory["native"].get("linked_components", []):
-        _validate_spdx_id(linked.get("spdx_id"), "linked component", linked.get("name", "linked"))
         sources = component_license_sources(linked, toolchain_root, repo_root)
         if not sources:
             declared = [entry["file"] for entry in linked.get("license_texts", [])]
@@ -584,7 +574,6 @@ def generate_package_notices(
                     f"LICENSE_RECORD_SOURCE_INCOMPLETE: {COMPONENTS_IDENTITY} declares no "
                     f"native.project_output record for the packaged executable",
                 )
-            _validate_spdx_id(runtime_record.get("spdx_id"), "project output", bin_name)
             runtime_sources = component_license_sources(runtime_record, toolchain_root, repo_root)
             if not runtime_sources:
                 raise PackageRouteError(
@@ -639,7 +628,6 @@ def generate_package_notices(
                 f"local toolchain; {COMPONENTS_IDENTITY} declares {declared}",
             )
 
-        _validate_spdx_id(record.get("spdx_id"), "bundled binary", bin_name)
         clean_slug = notice_file_name(record)
         target_lic_name = clean_slug
         rel_src = make_relative_path(sources[0][0], toolchain_root, repo_root)

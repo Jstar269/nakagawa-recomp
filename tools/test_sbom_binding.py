@@ -113,61 +113,6 @@ class TestStandardsConformantLockBinding(BindingFixture):
                 generate_sbom.parse_lockfiles(outside, repo_root=self.tmp_path)
         self.assertIn("outside the repository root", str(ctx.exception))
 
-    def test_cross_format_root_version_mismatch_rejected(self):
-        parsed = self.parse()
-        manifest = json.loads(RELEASE_MANIFEST.read_text(encoding="utf-8"))
-        spdx23 = generate_sbom.generate_spdx23(
-            manifest, parsed["py_packages"],
-            lock_files=parsed["lock_files"],
-            lock_relationships=parsed["lock_relationships"],
-        )
-        cyclonedx = generate_sbom.generate_cyclonedx(manifest, parsed["py_packages"])
-        spdx3 = generate_sbom.generate_spdx301(manifest, parsed["py_packages"])
-
-        # Confirm valid documents pass verification
-        cdx_valid_path = self.tmp_path / "cyclonedx_valid.json"
-        cdx_valid_path.write_text(json.dumps(cyclonedx), encoding="utf-8")
-        spdx3_valid_path = self.tmp_path / "spdx3_valid.json"
-        spdx3_valid_path.write_text(json.dumps(spdx3), encoding="utf-8")
-        self.assertEqual(self.verify(spdx23), [])
-        self.assertEqual(
-            verify_sbom.verify_additional_sbom_root_versions(spdx3_valid_path, cdx_valid_path, RELEASE_MANIFEST),
-            [],
-        )
-
-        # Mismatch the root version in each format. The roots are found the way the verifier
-        # finds them (by identifier, or by type and name), not by their position in the list.
-        spdx23_root = next(p for p in spdx23["packages"] if p.get("SPDXID") == "SPDXRef-Package-nakagawa-recomp")
-        spdx23_root["versionInfo"] = "1.2.3-mismatch-spdx"
-        cdx_root = next(c for c in cyclonedx["components"]
-                        if c.get("type") == "application" and c.get("name") == manifest.get("name"))
-        cdx_root["version"] = "4.5.6-mismatch-cdx"
-        spdx3_root_id = generate_sbom.spdx3_root_package_id(manifest.get("version"))
-        spdx3_root = next(item for item in spdx3["@graph"]
-                          if item.get("@id") == spdx3_root_id and item.get("@type") == "spdx:Package")
-        spdx3_root["spdx:packageVersion"] = "7.8.9-mismatch-spdx3"
-
-        cdx_bad_path = self.tmp_path / "cyclonedx_bad.json"
-        cdx_bad_path.write_text(json.dumps(cyclonedx), encoding="utf-8")
-        spdx3_bad_path = self.tmp_path / "spdx3_bad.json"
-        spdx3_bad_path.write_text(json.dumps(spdx3), encoding="utf-8")
-
-        spdx_errors = self.verify(spdx23)
-        extra_errors = verify_sbom.verify_additional_sbom_root_versions(spdx3_bad_path, cdx_bad_path, RELEASE_MANIFEST)
-
-        self.assertTrue(
-            any("SPDX root package version '1.2.3-mismatch-spdx' does not match" in err for err in spdx_errors),
-            str(spdx_errors),
-        )
-        self.assertTrue(
-            any("CycloneDX root application version '4.5.6-mismatch-cdx' does not match" in err for err in extra_errors),
-            str(extra_errors),
-        )
-        self.assertTrue(
-            any("SPDX 3 root package version '7.8.9-mismatch-spdx3' does not match" in err for err in extra_errors),
-            str(extra_errors),
-        )
-
 
 class TestSingleSnapshotNoTOCTOU(BindingFixture):
     def test_parse_and_evidence_share_one_read(self):

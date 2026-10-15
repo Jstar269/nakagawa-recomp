@@ -191,11 +191,9 @@ _FIXED_CAMPAIGN_CASES = {
         "PSP-MUTEX-001", [("mutex-priority-inheritance", 7, _PASS)]
     ),
     # Each trial records sceKernelIsCpuIntrEnable() from the VBLANK handler in
-    # out0 (context only) and the six mutex returns in out1..out6. The verdict is
-    # machinery-only: a trial is PASS with result 1 when the handler completed it.
-    # FAIL is admitted here only so that _check_mutex_interrupt_trial can name it;
-    # that check refuses any trial that is not a completed PASS. The returned
-    # values are observations and are not compared with expected values.
+    # out0 and the six mutex returns in out1..out6. By the probe's design a
+    # trial counts (PASS) only when out0 is 0; FAIL marks a trial that does not
+    # count. _check_mutex_interrupt_trial enforces that pairing exactly.
     "mutex-interrupt-context": _fixed_campaign_rows(
         "PSP-MUTEX-001",
         [("mutex-interrupt-context", 3, _PASS)]
@@ -206,19 +204,17 @@ _FIXED_CAMPAIGN_CASES = {
 
 
 def _check_mutex_interrupt_trial(record) -> None:
-    """A trial counts only when the VBLANK handler completed it (result 1).
-
-    Completion and record order are the contract. The returned values are not
-    compared with any expected value here; the conformance matrix does that.
-    """
+    """A trial's status must follow its recorded interrupt state, nothing else."""
 
     if not record.case_id.startswith("mutex-interrupt-context-t"):
         return
     values = dict(record.values)
-    if record.status != "PASS" or int(values["result"], 0) != 1:
+    interrupts_enabled = int(values["out0"], 0)
+    expected = "PASS" if interrupts_enabled == 0 else "FAIL"
+    if record.status != expected or int(values["result"], 0) != (expected == "PASS"):
         raise ProtocolError(
             f"mutex-interrupt-context: {record.case_id} status {record.status} "
-            f"result {values['result']} is not a completed trial"
+            f"disagrees with its interrupt state out0={values['out0']}"
         )
 
 
@@ -238,7 +234,6 @@ CAMPAIGN_QUEUE_CASES = (
     "llsc-link",
     "kernel-misc",
     "vfpu-compare",
-    "fpu-cc",
     "smoke",
     "thread-exit-delete",
     "teardown-test",
@@ -274,7 +269,6 @@ CAMPAIGN_CASE_ESTIMATE_SECONDS = {
     "llsc-link": 90,
     "kernel-misc": 90,
     "vfpu-compare": 90,
-    "fpu-cc": 90,
     "smoke": 60,
     "thread-exit-delete": 180,
     "teardown-test": 60,

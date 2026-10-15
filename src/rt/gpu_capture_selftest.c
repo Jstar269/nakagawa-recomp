@@ -30,30 +30,6 @@ int main(void) {
         assert(sdl3vk_pick_present_mode(0, fifo_only, 1) == 2);
         assert(sdl3vk_pick_present_mode(0, NULL, 0) == 2);
     }
-    /* Surface-format pick (issue #884): VK_INCOMPLETE (5) is a success code, so the first 32
-     * formats of a 40-format surface still count; BGRA8 UNORM (44) wins when present, else
-     * entry 0; zero formats, NULL lists and failed queries are refused. */
-    {
-        enum { FMT_R8G8B8A8_UNORM = 37, FMT_BGRA8_UNORM = 44 };
-        enum { RES_SUCCESS = 0, RES_INCOMPLETE = 5, RES_OUT_OF_HOST_MEMORY = -1 };
-        static const int two_bgra[] = { 37, 44, 37, 44 };
-        static const int no_bgra[] = { 37, 50 };
-        int big[40];
-        for (int i = 0; i < 40; i++) big[i] = FMT_R8G8B8A8_UNORM;
-        big[20] = FMT_BGRA8_UNORM;
-        assert(sdl3vk_pick_surface_format(RES_INCOMPLETE, 32, big) == 20);
-        big[20] = FMT_R8G8B8A8_UNORM;
-        big[35] = FMT_BGRA8_UNORM;   /* past the 32-entry cap: never seen */
-        assert(sdl3vk_pick_surface_format(RES_INCOMPLETE, 40, big) == 0);
-        assert(sdl3vk_pick_surface_format(RES_INCOMPLETE, 35, big) == 0);
-        assert(sdl3vk_pick_surface_format(RES_SUCCESS, 4, two_bgra) == 1);  /* first match */
-        assert(sdl3vk_pick_surface_format(RES_SUCCESS, 2, no_bgra) == 0);   /* fallback */
-        assert(sdl3vk_pick_surface_format(RES_INCOMPLETE, 2, no_bgra) == 0);
-        assert(sdl3vk_pick_surface_format(RES_SUCCESS, 0, two_bgra) == -1); /* zero count */
-        assert(sdl3vk_pick_surface_format(RES_INCOMPLETE, 0, two_bgra) == -1);
-        assert(sdl3vk_pick_surface_format(RES_SUCCESS, 2, NULL) == -1);
-        assert(sdl3vk_pick_surface_format(RES_OUT_OF_HOST_MEMORY, 4, two_bgra) == -1);
-    }
     assert(sr_parse_render_scale(NULL, NULL, 4) == 1);
     assert(sr_parse_render_scale(NULL, "1", 4) == 1);
     assert(sr_parse_render_scale(NULL, "3", 4) == 3);

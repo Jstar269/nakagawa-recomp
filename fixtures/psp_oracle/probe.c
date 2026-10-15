@@ -132,7 +132,6 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_MUTEX_PRIORITY_INHERITANCE 21
 #define PSP_ORACLE_CASE_MUTEX_INTERRUPT_CONTEXT 22
 #define PSP_ORACLE_CASE_LLSC_LINK 69
-#define PSP_ORACLE_CASE_FPU_CC 70
 
 /* Plain mutex syscalls are absent from the installed PSPSDK headers, so the
    probe declares the exact ABI it imports via fixtures/psp_oracle/
@@ -309,8 +308,6 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/mutex_interrupt_context_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_LLSC_LINK
 #define PROBE_HOST0_LOG "host0:/llsc_link_log.txt"
-#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_CC
-#define PROBE_HOST0_LOG "host0:/fpu_cc_log.txt"
 #endif
 
 /* Durable line writer: every record, step marker and the metadata line goes
@@ -3607,13 +3604,10 @@ static void run_fpu_vector(int emulated, uint32_t boot_fcr31) {
    cannot pass as a measured word.
 
    The expected words are the project's model, not console behaviour. They
-   follow src/rt/vfpu_interp.c (VFPU3 sub-ops 5, 6 and 7): vscmp.s yields -1.0,
-   0.0 or +1.0, vsge.s and vslt.s yield 1.0 or 0.0, and a NaN operand makes
-   vsge.s and vslt.s yield 0.0. A PSP-3000 measured all 45 cells on 2026-10-15
-   from build e45e667b (PSP-VFPU-CMP-001, docs/HARDWARE_ORACLE.md): that build's
-   model wrote 0.0 for the five vscmp NaN cells, the console orders a NaN by sign
-   and magnitude instead, and the model below now carries the measured words.
-   Every record carries result = the
+   follow src/rt/vfpu_interp.c (VFPU3 sub-ops 5, 6 and 7, PPSSPP's Int_Vscmp,
+   Int_Vsge and Int_Vslt): vscmp.s yields -1.0, 0.0 or +1.0, vsge.s and vslt.s
+   yield 1.0 or 0.0, and a NaN operand compares false and yields 0.0. The
+   console's NaN results are UNMEASURED. Every record carries result = the
    observed word, out0 = the model word, and out1/out2 = the operands; whether
    the console agrees with the model is result against out0. The status does
    not judge that, as in the fpu-vector family: the campaign runner accepts a
@@ -3646,11 +3640,11 @@ static const struct vfpu_compare_pair s_vfpu_compare_pairs[VFPU_COMPARE_PAIRS] =
     {"gt", 0x40200000u, 0x3fc00000u, {VFPU_COMPARE_ONE, VFPU_COMPARE_ONE, 0u}},
     {"zero-pos-neg", 0x00000000u, 0x80000000u, {0u, VFPU_COMPARE_ONE, 0u}},
     {"zero-neg-pos", 0x80000000u, 0x00000000u, {0u, VFPU_COMPARE_ONE, 0u}},
-    {"nan-left-quiet", 0x7fc00000u, 0x3fc00000u, {VFPU_COMPARE_ONE, 0u, 0u}},
-    {"nan-right-quiet", 0x3fc00000u, 0x7fc00000u, {VFPU_COMPARE_MINUS_ONE, 0u, 0u}},
-    {"nan-left-signal", 0x7f800001u, 0x3fc00000u, {VFPU_COMPARE_ONE, 0u, 0u}},
-    {"nan-right-signal", 0x3fc00000u, 0x7f800001u, {VFPU_COMPARE_MINUS_ONE, 0u, 0u}},
-    {"nan-left-negative", 0xffc00000u, 0x3fc00000u, {VFPU_COMPARE_MINUS_ONE, 0u, 0u}},
+    {"nan-left-quiet", 0x7fc00000u, 0x3fc00000u, {0u, 0u, 0u}},
+    {"nan-right-quiet", 0x3fc00000u, 0x7fc00000u, {0u, 0u, 0u}},
+    {"nan-left-signal", 0x7f800001u, 0x3fc00000u, {0u, 0u, 0u}},
+    {"nan-right-signal", 0x3fc00000u, 0x7f800001u, {0u, 0u, 0u}},
+    {"nan-left-negative", 0xffc00000u, 0x3fc00000u, {0u, 0u, 0u}},
     {"inf-pos-neg", 0x7f800000u, 0xff800000u, {VFPU_COMPARE_ONE, VFPU_COMPARE_ONE, 0u}},
     {"inf-neg-pos", 0xff800000u, 0x7f800000u, {VFPU_COMPARE_MINUS_ONE, 0u, VFPU_COMPARE_ONE}},
     {"inf-pos-pos", 0x7f800000u, 0x7f800000u, {0u, VFPU_COMPARE_ONE, 0u}},
@@ -5109,19 +5103,15 @@ static uint32_t run_mutex_priority_inheritance_case(uint32_t *out0, uint32_t *ou
 #endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_INTERRUPT_CONTEXT
-/* Interrupt-context proof from user mode. This probe is a user-mode module, so
+/* Interrupt-state proof from user mode. This probe is a user-mode module, so
    it cannot import InterruptManagerForKernel (sceKernelIsIntrContext): the PSP
-   refuses to load a user-mode PRX that imports a kernel-only library. The proof
-   is by construction instead: each trial is written by oracle_subintr_handler,
-   which only the VBLANK sub-interrupt dispatch calls. The handler also records
-   the raw return of sceKernelIsCpuIntrEnable() (the user Kernel_Library export
-   from pspintrman.h) as context only.
-   Pass rule (machinery only, corrected 2026-10-15): a trial is PASS with result 1
-   when the handler reached the end of its body, so all six mutex cells were
-   written and the trial was stored. No returned value is compared with an
-   expected value in this probe or in the host checker; the conformance matrix in
-   src/rt/intr_conformance.h compares them with measured cells. The corrected
-   probe is re-measured at the next PSP session. */
+   refuses to load a user-mode PRX that imports a kernel-only library. The
+   handler instead records the raw return of sceKernelIsCpuIntrEnable(), the
+   user Kernel_Library export from pspintrman.h and the PSPSDK libpspuser.a
+   (the kernel-alarm case samples the same call inside its alarm handler).
+   A trial counts only when it is 0, meaning the handler body ran with CPU
+   interrupts disabled, as the interrupt dispatcher runs it, before any mutex
+   call was made. */
 
 /* MUTEX_INTR_TRIALS: number of VBLANK firings to sample.  Each firing emits
    one protocol record with a trial-indexed case_id (mutex-interrupt-context-t00
@@ -5140,7 +5130,6 @@ typedef struct {
     uint32_t r_lock_cb;   /* LockMutexCB(valid_unlocked, 1, NULL)                */
     uint32_t r_try;       /* TryLockMutex(valid_unlocked, 1)                     */
     uint32_t r_unlock;    /* UnlockMutex(main_owned, 1) -- non-owner unlock      */
-    uint32_t done;        /* set last: every cell above is written and the trial is stored */
 } IntrTrial;
 
 static volatile int s_subintr_count;
@@ -5150,9 +5139,9 @@ static IntrTrial s_trials[MUTEX_INTR_TRIALS];
 
 /* VBLANK sub-interrupt handler.  Fires once per vertical blank (~60 Hz).
    Increments s_subintr_count only after writing all six cell results so the
-   main thread can use s_subintr_count as the ready sentinel.  Records
-   sceKernelIsCpuIntrEnable() as the first call, before any mutex operation,
-   as context only. */
+   main thread can use s_subintr_count as the ready sentinel.  Samples
+   sceKernelIsCpuIntrEnable() as the first call -- before any mutex
+   operation -- as proof that the body runs with CPU interrupts disabled. */
 static int oracle_subintr_handler(int subintr, void *arg) {
     (void)subintr;
     (void)arg;
@@ -5161,7 +5150,7 @@ static int oracle_subintr_handler(int subintr, void *arg) {
         return 0;
     }
     IntrTrial t;
-    /* Context only: the value is recorded, and the pass rule does not read it. */
+    /* Interrupt-state proof: 0 when CPU interrupts are disabled here. */
     t.intr_enabled = (uint32_t)sceKernelIsCpuIntrEnable();
     /* Cell A: bad UID.  PRX must already have context-check before lookup. */
     t.r_bad_uid  = (uint32_t)sceKernelLockMutex(0x7fffffff, 1, NULL);
@@ -5175,18 +5164,15 @@ static int oracle_subintr_handler(int subintr, void *arg) {
     t.r_try      = (uint32_t)sceKernelTryLockMutex((SceUID)s_intr_m_unlocked, 1);
     /* Cell F: unlock a mutex owned by the main thread -- non-owner unlock. */
     t.r_unlock   = (uint32_t)sceKernelUnlockMutex((SceUID)s_intr_m_main_owned, 1);
-    t.done = 1u;
     s_trials[idx] = t;
     /* Barrier: write count last so main only reads a complete trial. */
     s_subintr_count = idx + 1;
     return 0;
 }
 
-/* Emit one protocol record per trial.
+/* Emit one protocol record per completed trial.
    case_id format: mutex-interrupt-context-tNN (NN = zero-padded trial index).
-   out0 = intr_enabled (context only), out1..out6 = six cell raw return values.
-   Machinery-only verdict: PASS with result 1 when the handler completed the trial.
-   The returned values are not compared with any expected value here. */
+   out0 = intr_enabled, out1..out6 = six cell raw return values. */
 static void emit_intr_trial(int emulated, int trial, const IntrTrial *t) {
     char case_id[48];
     snprintf(case_id, sizeof(case_id), "mutex-interrupt-context-t%02d", trial);
@@ -5198,15 +5184,15 @@ static void emit_intr_trial(int emulated, int trial, const IntrTrial *t) {
     out[4] = t->r_lock_cb;
     out[5] = t->r_try;
     out[6] = t->r_unlock;
-    /* pass iff the handler completed the trial: every cell above is written and the trial is stored. */
-    int pass = (t->done == 1u);
+    /* pass iff the handler ran with CPU interrupts disabled (intr_enabled == 0) */
+    int pass = (t->intr_enabled == 0u);
     emit_mutex_test(emulated, case_id, pass, pass ? 1u : 0u, out, 7);
 }
 
 static uint32_t run_mutex_interrupt_context_case(int emulated) {
     s_subintr_count = 0;
     for (int i = 0; i < MUTEX_INTR_TRIALS; i++) {
-        IntrTrial z = {0, 0, 0, 0, 0, 0, 0, 0};
+        IntrTrial z = {0, 0, 0, 0, 0, 0, 0};
         s_trials[i] = z;
     }
 
@@ -5236,13 +5222,13 @@ static uint32_t run_mutex_interrupt_context_case(int emulated) {
     if (s_intr_m_unlocked >= 0)   sceKernelDeleteMutex((SceUID)s_intr_m_unlocked);
     if (s_intr_m_main_owned >= 0) sceKernelDeleteMutex((SceUID)s_intr_m_main_owned);
 
-    /* Emit header record: raw register and enable returns as context, then the completed count. */
+    /* Emit header record: reg/enable/count summary. */
     {
         uint32_t hdr[3];
-        hdr[0] = (uint32_t)reg;
-        hdr[1] = (uint32_t)ena;
+        hdr[0] = (uint32_t)(reg == 0);
+        hdr[1] = (uint32_t)(ena == 0);
         hdr[2] = (uint32_t)s_subintr_count;
-        int pass = (s_subintr_count == MUTEX_INTR_TRIALS);
+        int pass = (reg == 0 && ena == 0 && s_subintr_count == MUTEX_INTR_TRIALS);
         emit_mutex_test(emulated, "mutex-interrupt-context", pass, pass ? 1u : 0u,
                         hdr, 3);
     }
@@ -5254,7 +5240,7 @@ static uint32_t run_mutex_interrupt_context_case(int emulated) {
         emit_intr_trial(emulated, i, (const IntrTrial *)&s_trials[i]);
     }
 
-    return (uint32_t)(s_subintr_count == MUTEX_INTR_TRIALS);
+    return (uint32_t)(reg == 0 && ena == 0 && s_subintr_count == MUTEX_INTR_TRIALS);
 }
 #endif
 
@@ -6299,9 +6285,8 @@ static void run_refer_status_size(int emulated) {
 
    The expected words are the project's model (src/rt/guest_interp.c: sc stores
    and reports 1 only while the link is set, leaves the link as found, and does
-   not compare its address with ll's). That follows the MIPS32 operation text; a
-   PSP-3000 measured all three cells on 2026-10-15 (PSP-LLSC-001,
-   docs/HARDWARE_ORACLE.md) and agrees. result is the sc result of the last sc, out0 the
+   not compare its address with ll's). That follows the MIPS32 operation text and
+   is UNMEASURED on the console. result is the sc result of the last sc, out0 the
    word ll loaded, out1 the result of the first sc, out2 and out3 the words at A
    and B after the cell, and out4 and out5 the model words for A and B; the model
    reports 1 for every sc. Whether the console agrees with the model is read from
@@ -6454,180 +6439,6 @@ static void run_llsc_link(int emulated) {
     uint32_t done = LLSC_LINK_CELLS;
     emit_record_extended(emulated, "PSP-LLSC-001", "llsc-link-done", "PASS",
                          0, &done, 1);
-}
-#endif
-
-#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_CC
-/* COP1 condition codes (main thread only, no threads created). MIPS IV gives c.cond.s and
-   bc1f/bc1t a 3-bit condition code (instruction bits 10..8 and 20..18) selecting FCC0..FCC7
-   (FCR31 bit 23, then bits 25..31); MIPS II has one flag, FCC0, and the field reserved.
-   The project's tools decide how to translate a nonzero condition code from what the PSP's
-   FPU implements (issue #934 review). A PSP-3000 measured it on 2026-10-15 (PSP-FPU-CC-001,
-   docs/HARDWARE_ORACLE.md): only FCC0 exists, bits 25..31 are not stored, and every
-   condition code writes and tests FCC0. Every encoding below is emitted as a .word so the
-   assembler cannot rewrite it.
-
-   FCR31 is only ever written with condition bits (no trap enable, RM=RN), and is cleared
-   before every cell and before exit. Each cell is emitted as soon as it ran, after a
-   step marker, so a cell that raises an exception (a reserved condition-code encoding
-   would) is named by the last STEP line and every earlier record stays durable.
-
-   Records:
-   - fpu-cc-fcr31-bits: result = FCR31 read back after writing 0xFE800000 (FCC0..FCC7 on
-     MIPS IV); out0 = the word written; out1 = read back after writing 0x00800000 (FCC0 only).
-   - fpu-cc<n>-ceq: c.eq.s with condition code n. result = FCR31 after an equal compare
-     from FCR31 = 0; out0 = FCR31 after an unequal compare from FCR31 = 0xFE800000.
-   - fpu-cc<n>-branch: taken flags (1 taken, 0 not) for bc1t with condition code n under
-     FCR31 = FCC0 only (result), = 0 (out0), = FCCn only (out1; FCC0 only for n = 0), and
-     for bc1f with condition code n under FCC0 only (out2) and 0 (out3).
-   The n = 0 cells are the controls and must behave as MIPS defines condition code 0; the
-   n = 1..7 cells are the measurement and pass once they ran. */
-#define FPU_CC_FCC0 0x00800000u
-#define FPU_CC_ALL 0xFE800000u
-
-static inline uint32_t fpu_cc_get_fcr31(void) {
-    uint32_t v;
-    __asm__ volatile("cfc1 %0, $31" : "=r"(v) :: "memory");
-    return v;
-}
-
-static inline void fpu_cc_set_fcr31(uint32_t v) {
-    __asm__ volatile("ctc1 %0, $31\n\tnop\n\tnop" :: "r"(v) : "memory");
-}
-
-/* c.eq.s $f12, $f13 with condition code n, starting from FCR31 = start. */
-#define FPU_CC_CEQ_FN(name, word)                                                    \
-    static uint32_t name(uint32_t start, uint32_t a, uint32_t b) {                    \
-        uint32_t after;                                                                \
-        __asm__ volatile(".set push\n\t.set noreorder\n\t"                            \
-                         "ctc1 %1, $31\n\t"                                           \
-                         "mtc1 %2, $f12\n\t"                                          \
-                         "mtc1 %3, $f13\n\t"                                          \
-                         "nop\n\tnop\n\t"                                             \
-                         ".word " #word "\n\t"                                        \
-                         "nop\n\tnop\n\t"                                             \
-                         "cfc1 %0, $31\n\t"                                           \
-                         ".set pop\n\t"                                               \
-                         : "=r"(after)                                                \
-                         : "r"(start), "r"(a), "r"(b)                                 \
-                         : "$f12", "$f13", "memory");                                 \
-        return after;                                                                  \
-    }
-
-/* A bc1f/bc1t word with offset 2 skips the instruction after its delay slot: taken
-   leaves the flag at 1, not taken clears it. */
-#define FPU_CC_BRANCH_FN(name, word)                                                 \
-    static uint32_t name(uint32_t fcr31) {                                             \
-        uint32_t taken = 1u;                                                           \
-        __asm__ volatile(".set push\n\t.set noreorder\n\t"                            \
-                         "ctc1 %1, $31\n\t"                                           \
-                         "nop\n\tnop\n\t"                                             \
-                         ".word " #word "\n\t"                                        \
-                         "nop\n\t"                                                    \
-                         "move %0, $0\n\t"                                            \
-                         ".set pop\n\t"                                               \
-                         : "+r"(taken)                                                \
-                         : "r"(fcr31)                                                 \
-                         : "memory");                                                 \
-        return taken;                                                                  \
-    }
-
-/* c.eq.s fs=$f12 ft=$f13: 0x460D6032 | (cc << 8). */
-FPU_CC_CEQ_FN(fpu_cc0_ceq, 0x460D6032)
-FPU_CC_CEQ_FN(fpu_cc1_ceq, 0x460D6132)
-FPU_CC_CEQ_FN(fpu_cc2_ceq, 0x460D6232)
-FPU_CC_CEQ_FN(fpu_cc3_ceq, 0x460D6332)
-FPU_CC_CEQ_FN(fpu_cc4_ceq, 0x460D6432)
-FPU_CC_CEQ_FN(fpu_cc5_ceq, 0x460D6532)
-FPU_CC_CEQ_FN(fpu_cc6_ceq, 0x460D6632)
-FPU_CC_CEQ_FN(fpu_cc7_ceq, 0x460D6732)
-/* bc1t offset 2: 0x45010002 | (cc << 18); bc1f: 0x45000002 | (cc << 18). */
-FPU_CC_BRANCH_FN(fpu_cc0_bc1t, 0x45010002)
-FPU_CC_BRANCH_FN(fpu_cc1_bc1t, 0x45050002)
-FPU_CC_BRANCH_FN(fpu_cc2_bc1t, 0x45090002)
-FPU_CC_BRANCH_FN(fpu_cc3_bc1t, 0x450D0002)
-FPU_CC_BRANCH_FN(fpu_cc4_bc1t, 0x45110002)
-FPU_CC_BRANCH_FN(fpu_cc5_bc1t, 0x45150002)
-FPU_CC_BRANCH_FN(fpu_cc6_bc1t, 0x45190002)
-FPU_CC_BRANCH_FN(fpu_cc7_bc1t, 0x451D0002)
-FPU_CC_BRANCH_FN(fpu_cc0_bc1f, 0x45000002)
-FPU_CC_BRANCH_FN(fpu_cc1_bc1f, 0x45040002)
-FPU_CC_BRANCH_FN(fpu_cc2_bc1f, 0x45080002)
-FPU_CC_BRANCH_FN(fpu_cc3_bc1f, 0x450C0002)
-FPU_CC_BRANCH_FN(fpu_cc4_bc1f, 0x45100002)
-FPU_CC_BRANCH_FN(fpu_cc5_bc1f, 0x45140002)
-FPU_CC_BRANCH_FN(fpu_cc6_bc1f, 0x45180002)
-FPU_CC_BRANCH_FN(fpu_cc7_bc1f, 0x451C0002)
-
-typedef uint32_t (*FpuCcCeqFn)(uint32_t, uint32_t, uint32_t);
-typedef uint32_t (*FpuCcBranchFn)(uint32_t);
-
-static void run_fpu_cc(int emulated) {
-    static const FpuCcCeqFn ceq[8] = {
-        fpu_cc0_ceq, fpu_cc1_ceq, fpu_cc2_ceq, fpu_cc3_ceq,
-        fpu_cc4_ceq, fpu_cc5_ceq, fpu_cc6_ceq, fpu_cc7_ceq,
-    };
-    static const FpuCcBranchFn bc1t[8] = {
-        fpu_cc0_bc1t, fpu_cc1_bc1t, fpu_cc2_bc1t, fpu_cc3_bc1t,
-        fpu_cc4_bc1t, fpu_cc5_bc1t, fpu_cc6_bc1t, fpu_cc7_bc1t,
-    };
-    static const FpuCcBranchFn bc1f[8] = {
-        fpu_cc0_bc1f, fpu_cc1_bc1f, fpu_cc2_bc1f, fpu_cc3_bc1f,
-        fpu_cc4_bc1f, fpu_cc5_bc1f, fpu_cc6_bc1f, fpu_cc7_bc1f,
-    };
-    const uint32_t one = 0x3f800000u, two = 0x40000000u;
-    uint32_t cells = 0;
-
-    probe_step(emulated, "fpu-cc", "fpu-cc-fcr31-bits");
-    fpu_cc_set_fcr31(FPU_CC_ALL);
-    const uint32_t all_back = fpu_cc_get_fcr31();
-    fpu_cc_set_fcr31(FPU_CC_FCC0);
-    const uint32_t fcc0_back = fpu_cc_get_fcr31();
-    fpu_cc_set_fcr31(0);
-    {
-        const uint32_t out[] = {FPU_CC_ALL, fcc0_back};
-        emit_record_extended(emulated, "PSP-FPU-CC-001", "fpu-cc-fcr31-bits",
-                             fcc0_back == FPU_CC_FCC0 ? "PASS" : "FAIL", all_back, out, 2);
-        cells++;
-    }
-
-    for (uint32_t n = 0; n < 8u; n++) {
-        char cid[32];
-        snprintf(cid, sizeof(cid), "fpu-cc%u-ceq", (unsigned int)n);
-        probe_step(emulated, "fpu-cc", cid);
-        const uint32_t eq_from_zero = ceq[n](0u, one, one);
-        fpu_cc_set_fcr31(0);
-        const uint32_t ne_from_all = ceq[n](FPU_CC_ALL, one, two);
-        fpu_cc_set_fcr31(0);
-        int pass = 1;
-        if (n == 0u) pass = eq_from_zero == FPU_CC_FCC0 && (ne_from_all & FPU_CC_FCC0) == 0u;
-        {
-            const uint32_t out[] = {ne_from_all};
-            emit_record_extended(emulated, "PSP-FPU-CC-001", cid, pass ? "PASS" : "FAIL",
-                                 eq_from_zero, out, 1);
-            cells++;
-        }
-
-        snprintf(cid, sizeof(cid), "fpu-cc%u-branch", (unsigned int)n);
-        probe_step(emulated, "fpu-cc", cid);
-        const uint32_t own = n == 0u ? FPU_CC_FCC0 : (1u << (24u + n));
-        const uint32_t t_fcc0 = bc1t[n](FPU_CC_FCC0);
-        const uint32_t t_none = bc1t[n](0u);
-        const uint32_t t_own = bc1t[n](own);
-        const uint32_t f_fcc0 = bc1f[n](FPU_CC_FCC0);
-        const uint32_t f_none = bc1f[n](0u);
-        fpu_cc_set_fcr31(0);
-        pass = 1;
-        if (n == 0u) pass = t_fcc0 == 1u && t_none == 0u && f_fcc0 == 0u && f_none == 1u;
-        {
-            const uint32_t out[] = {t_none, t_own, f_fcc0, f_none};
-            emit_record_extended(emulated, "PSP-FPU-CC-001", cid, pass ? "PASS" : "FAIL",
-                                 t_fcc0, out, 4);
-            cells++;
-        }
-    }
-    fpu_cc_set_fcr31(0);
-    emit_record_extended(emulated, "PSP-FPU-CC-001", "fpu-cc-done", "PASS", 0, &cells, 1);
 }
 #endif
 
@@ -7076,53 +6887,26 @@ static void run_ge_break_continue(int emulated) {
                     (uint32_t)continue_rc, drain_out, 5);
     emit_ge_quiesce(emulated, "ge-quiesce-after-continue");
 
-    /* Item 10: sceGeBreak(1) reset with no sceGeListDeQueue earlier in this case.
-       The reset is the only control call made on this stalled list, so its result
-       is not mixed with a dequeue's side effect.  The cancelled-list sync cells are
-       read after this same reset, so they do not depend on a successful dequeue. */
-    probe_step(emulated, "ge-break-continue", "reset-no-dequeue");
+    probe_step(emulated, "ge-break-continue", "cancel-stalled-list");
     qid = sceGeListEnQueue((const void *)(uintptr_t)list,
                            (void *)(uintptr_t)list, -1, NULL);
-    memset(&param, 0, sizeof(param));
-    const int reset_rc = qid >= 0 ? sceGeBreak(1, &param) : qid;
-    uint32_t reset_out[2] = {(uint32_t)qid, (uint32_t)reset_rc};
-    emit_ge_control(emulated, "ge-break-reset-no-dequeue",
-                    qid >= 0 ? "PASS" : "SKIP", (uint32_t)reset_rc, reset_out, 2);
-
+    const int cancel_rc = qid >= 0 ? sceGeListDeQueue(qid) : qid;
     list_state = qid >= 0 ? sceGeListSync(qid, 1) : qid;
     draw_state = qid >= 0 ? sceGeDrawSync(1) : qid;
     list_out[0] = (uint32_t)qid;
-    list_out[1] = (uint32_t)reset_rc;
+    list_out[1] = (uint32_t)cancel_rc;
     list_out[2] = (uint32_t)list_state;
     draw_out[0] = (uint32_t)qid;
-    draw_out[1] = (uint32_t)reset_rc;
+    draw_out[1] = (uint32_t)cancel_rc;
     draw_out[2] = (uint32_t)draw_state;
-    const char *cancel_status = qid >= 0 ? "PASS" : "SKIP";
+    const char *cancel_status = qid >= 0 && cancel_rc >= 0 ? "PASS" : "SKIP";
     emit_ge_control(emulated, "ge-list-sync-cancelled", cancel_status,
                     (uint32_t)list_state, list_out, 3);
     emit_ge_control(emulated, "ge-draw-sync-cancelled", cancel_status,
                     (uint32_t)draw_state, draw_out, 3);
     emit_ge_quiesce(emulated, "ge-quiesce-after-cancel");
 
-    /* sceGeListDeQueue on a stalled list is a measured cell.  The 2026-10-10 and
-       2026-10-15 captures (not acceptance-eligible) read BUSY (0x80000021) here,
-       which is why the cancelled-list cells no longer depend on this dequeue.  The
-       status records only that the call completed, whatever it returned, so this
-       cell never gates another cell.  The quiesce afterwards resets any list left
-       queued. */
-    probe_step(emulated, "ge-break-continue", "dequeue-stalled-list");
-    qid = sceGeListEnQueue((const void *)(uintptr_t)list,
-                           (void *)(uintptr_t)list, -1, NULL);
-    const int dequeue_rc = qid >= 0 ? sceGeListDeQueue(qid) : qid;
-    list_state = qid >= 0 ? sceGeListSync(qid, 1) : qid;
-    draw_state = qid >= 0 ? sceGeDrawSync(1) : qid;
-    uint32_t dequeue_out[4] = {(uint32_t)qid, (uint32_t)dequeue_rc,
-                               (uint32_t)list_state, (uint32_t)draw_state};
-    emit_ge_control(emulated, "ge-list-dequeue-stalled",
-                    qid >= 0 ? "PASS" : "SKIP", (uint32_t)dequeue_rc, dequeue_out, 4);
-    emit_ge_quiesce(emulated, "ge-quiesce-after-dequeue");
-
-    uint32_t done = 13;
+    uint32_t done = 10;
     emit_record_extended(emulated, "PSP-GE-CONTROL-001", "ge-break-continue-done",
                          "PASS", 0, &done, 1);
 }
@@ -7217,7 +7001,7 @@ int main(int argc, char *argv[]) {
     __asm__ volatile("cfc1 %0, $31" : "=r"(boot_fcr31) :: "memory");
     s_boot_fcr31 = boot_fcr31;
     s_have_fcr31_state = 1;
-#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR || PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_CC
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR
     __asm__ volatile("ctc1 $0, $31" ::: "memory");
 #endif
 #endif
@@ -7396,8 +7180,6 @@ int main(int argc, char *argv[]) {
     run_kernel_misc(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_LLSC_LINK
     run_llsc_link(emulated);
-#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_CC
-    run_fpu_cc(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

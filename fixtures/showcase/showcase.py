@@ -229,35 +229,6 @@ def write_iso(path: Path, disc_id: str, title: str, icon: bytes,
     path.write_bytes(image)
 
 
-def stage_iso(out_dir: Path) -> Path:
-    """Write the TEST00007 disc the Windows staging smoke stages, with no PSPDEV.
-
-    The Linux gate stages the PSPDEV-built scene. A Windows runner has no PSPDEV, so
-    this wraps the source-owned display guest in the showcase's synthetic identity.
-    Staging reads the disc identity, the manifest and the executable's own bytes; it
-    never runs the guest, so the staging path itself is exercised unchanged (#308).
-    """
-    demo = DEMOS[0]
-    guest_dir = out_dir / "guest"
-    completed = subprocess.run(
-        [sys.executable, str(ROOT / "fixtures" / "display_smoke" / "generate.py"),
-         "generate", "--out-dir", str(guest_dir)],
-        capture_output=True, text=True, check=False)
-    if completed.returncode:
-        raise ShowcaseError("display smoke guest generation failed: " + completed.stderr.strip())
-    eboot = bytearray((guest_dir / "guest.prx").read_bytes())
-    # The guest uses load-relative zero addresses. Only each program header's
-    # congruence field changes, to pass the staging preflight; no code or data does.
-    phoff = struct.unpack_from("<I", eboot, 28)[0]
-    phnum = struct.unpack_from("<H", eboot, 44)[0]
-    for index in range(phnum):
-        struct.pack_into("<I", eboot, phoff + index * 32 + 28, 0x100)
-    iso = out_dir / "TEST00007.iso"
-    write_iso(iso, demo["disc_id"], demo["display_name"], make_icon_png(demo["palette"]),
-              bytes(eboot), b"Source-owned synthetic notice\n")
-    return iso
-
-
 def _host_path(path: Path) -> str:
     """Spell `path` for the shell that owns the PSP toolchain.
 
@@ -718,20 +689,13 @@ def smoke_all() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("build", "smoke", "stage-iso"))
-    parser.add_argument("--out-dir", type=Path,
-                        help="stage-iso: directory that receives TEST00007.iso")
+    parser.add_argument("action", choices=("build", "smoke"))
     args = parser.parse_args()
     try:
         if args.action == "build":
             build_all()
-        elif args.action == "smoke":
-            smoke_all()
         else:
-            if args.out_dir is None:
-                parser.error("stage-iso requires --out-dir")
-            stage_iso(args.out_dir)
-            print("SHOWCASE_STAGE_ISO disc_id=TEST00007")
+            smoke_all()
     except (ShowcaseError, OSError, subprocess.SubprocessError, ValueError, KeyError) as exc:
         print(f"SHOWCASE_ERROR: {exc}", file=sys.stderr)
         return 1

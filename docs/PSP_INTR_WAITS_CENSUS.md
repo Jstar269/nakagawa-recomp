@@ -22,14 +22,14 @@ Live join of every exact `sce*` / `__sce*` API named in
 ## Summary
 
 - total exact APIs: **72**
-- missing: **3**
+- missing: **4**
 - registered (fake success): **0**
-- implemented: **68**
+- implemented: **67**
 - controlled-unsupported: **1**
 
 Open-owner counts:
 
-- #339: 3
+- #339: 4
 - #341: 53
 
 ## Census
@@ -49,7 +49,7 @@ Open-owner counts:
 | `sceDisplayWaitVblankStartMulti` | implemented | - | dedicated | partial | `h_DisplayWaitVblankStartMulti` | `0x40f1469c` |
 | `sceDisplayWaitVblankStartMultiCB` | controlled-unsupported | - | controlled_unsupported | controlled_unsupported | `h_ControlledUnsupported` | `0x77ed8b3a` |
 | `sceGeDrawSync` | implemented | #341 | dedicated | unreviewed | `h_GeDrawSync` | `0xb287bd61` |
-| `sceGeListDeQueue` | implemented | - | dedicated | partial | `h_GeListDeQueue` | `0x5fb86ab0` |
+| `sceGeListDeQueue` | missing | #339 | missing | - | - | - |
 | `sceGeListSync` | implemented | #341 | dedicated | unreviewed | `h_GeListSync` | `0x03444eb4` |
 | `sceIoGetAsyncStat` | implemented | - | dedicated | partial | `h_IoGetAsyncStat` | `0xcb05f8d6` |
 | `sceIoRead` | implemented | #341 | dedicated | unreviewed | `h_IoRead` | `0x6a638d83` |

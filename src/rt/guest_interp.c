@@ -10,64 +10,6 @@
 
 /* Installed by the scheduler (sched.c) when it owns the guest fibers; see recomp.h. */
 int (*sr_dispatch_host_stack_remaining)(size_t *remaining_out) = NULL;
-int (*sr_dispatch_host_stack_top)(uintptr_t *top_out) = NULL;
-/* The direct-call host-stack window (#855; see SR_HOST_STACK_CHECK in recomp.h). */
-SrHostStackWindow sr_host_stack_window;
-
-/* The TAIL transfer slot and its drain (#855; see recomp.h). They live here because every
- * build that links generated code or the dispatcher links this file. */
-SrTailTransfer sr_tail_transfer;
-
-void sr_tail_fatal(const char *what, uint32_t target) {
-    fprintf(stderr, "TAIL_TRANSFER_FAULT: %s target=0x%08" PRIx32 "\n", what, target);
-    sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, target, 0u, 0u);
-    fflush(stderr);
-    exit(1);
-}
-
-/* Inlined into both drains so a drain is one native frame at every CALL site (#855). */
-static inline __attribute__((always_inline)) void sr_tail_drain_run(CpuState *s, int segment) {
-    uint32_t chain_sp = 0u;
-    int chain_restores = 0;
-    while (sr_tail_transfer.pending) {
-        if (segment && !sr_tail_transfer.fn) {
-            /* The next computed transfer belongs to the enclosing drain. Its target runs at
-             * the live SP, as it did nested; the segment's outermost restore travels with it
-             * so the enclosing chain still applies the outermost restore it owes. */
-            if (chain_restores) {
-                sr_tail_transfer.restore_sp = chain_sp;
-                sr_tail_transfer.has_restore = 1u;
-            }
-            return;
-        }
-        const SrTailTransfer next = sr_tail_transfer;
-        memset(&sr_tail_transfer, 0, sizeof sr_tail_transfer);
-        if (next.state != s) sr_tail_fatal("tail-transfer-foreign-state", next.target);
-        /* The nested returns restored each callable body's entry SP in turn, innermost
-         * first, with no guest instruction in between; only the outermost survived. */
-        if (next.has_restore && !chain_restores) {
-            chain_sp = next.restore_sp;
-            chain_restores = 1;
-        }
-        if (next.fn) {
-            next.fn(s);
-        } else {
-            dispatch_tail_step(s, next.target);
-        }
-        /* A body leaves either through a transfer or through exception flow, never both. */
-        if (s->flow_kind != SR_FLOW_NONE && sr_tail_transfer.pending)
-            sr_tail_fatal("tail-transfer-with-pending-flow", sr_tail_transfer.target);
-    }
-    if (chain_restores) s->r[29] = chain_sp;
-}
-
-void sr_tail_drain(CpuState *s) {
-    sr_tail_drain_run(s, 0);
-}
-
-void sr_tail_drain_segment(CpuState *s) {
-    sr_tail_drain_run(s, 1);
-}
 
 typedef struct SrExecSpan {
     uint32_t start;
@@ -1234,28 +1176,6 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
             instruction_count += 2u;
             if (sr_perf_enabled) sr_perf_interp_instruction();
             if (sr_perf_enabled) sr_perf_interp_instruction();
-            /* A linked transfer into a registered native body is a CALL, exactly as
-             * generated code treats `jal`/`jalr`: the callee runs as a nested native
-             * frame and this interpreted caller resumes at its link address. Handing
-             * off through the loop-top AOT check below would return AOT_HANDOFF once
-             * the callee returned and silently drop the rest of the interpreted
-             * caller. An unlinked transfer keeps the TAIL handoff. */
-            if (transfer.taken && transfer.link_register >= 0 &&
-                sr_lookup(transfer.target) &&
-                !sr_stale_block_is_stale(transfer.target)) {
-                const uint32_t resume_pc = pc + 8u;
-                s->pc = transfer.target;
-                if (log_dispatch) {
-                    fprintf(stderr,
-                            "GUEST_INTERP_AOT_CALL target=0x%08" PRIx32
-                            " resume=0x%08" PRIx32 "\n",
-                            transfer.target, resume_pc);
-                }
-                dispatch_call(s, transfer.target, resume_pc);
-                pc = resume_pc;
-                s->pc = pc;
-                continue;
-            }
             pc = transfer.taken ? transfer.target : pc + 8u;
             s->pc = pc;
             continue;

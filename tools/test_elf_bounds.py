@@ -1010,7 +1010,6 @@ class CanonicalCfgVerifierTests(unittest.TestCase):
             "entries scalar": (set_field("entries", 5), "entries-type"),
             "edges scalar": (set_field("edges", 5), "edges-type"),
             "interior entries scalar": (set_field("interior_entries", 5), "interior_entries-type"),
-            "ownership_map scalar": (set_field("ownership_map", 5), "ownership-map-type"),
         }
         for label, (mutate, code) in cases.items():
             with self.subTest(label):

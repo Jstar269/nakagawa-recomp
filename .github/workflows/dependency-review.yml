@@ -11,12 +11,6 @@ name: 'Dependency Review'
 on:
   pull_request:
     branches: [ "main" ]
-  # Merge-queue groups (see ci.yml). A merge group has no pull_request payload, so
-  # the step below passes base-ref and head-ref from the group. On pull_request runs
-  # those expressions are empty, which the action reads as unset.
-  merge_group:
-    types: [checks_requested]
-    branches: [ "main" ]
 
 # If using a dependency submission action in this workflow this permission will need to be set to:
 #
@@ -42,11 +36,3 @@ jobs:
       - name: 'Dependency Review'
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         # See https://github.com/actions/dependency-review-action#configuration-options for all available options.
-        # The pinned v5.0.0 reads both refs from the merge_group payload only when
-        # neither input is set, and fails if only one is set (src/git-refs.ts). Passing
-        # both is therefore the explicit form. Empty values on pull_request runs are
-        # unset inputs (src/config.ts getOptionalInput), so pull_request behaviour is
-        # unchanged.
-        with:
-          base-ref: ${{ github.event.merge_group.base_sha }}
-          head-ref: ${{ github.event.merge_group.head_sha }}

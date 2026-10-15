@@ -604,7 +604,8 @@ class XBArchiveReader:
             payload = self._data[offset:next_offset]
             if compression is XBCompression.NONE:
                 stored_size = expanded_size
-                if stored_size > span_size:
+                min_span = (stored_size + 3) & ~3
+                if min_span > span_size:
                     raise XBProbeError("raw FST entry is truncated")
                 _check_zero_padding(payload[stored_size:], "raw entry")
             else:
@@ -621,7 +622,8 @@ class XBArchiveReader:
                     stored_size = 8 + hdr_expanded
                 else:
                     stored_size = 8 + hdr_compressed
-                if stored_size > span_size:
+                min_span = (stored_size + 3) & ~3
+                if min_span > span_size:
                     raise XBProbeError("compressed entry exceeds its FST span")
                 _check_zero_padding(payload[stored_size:], "compressed entry")
             total_expanded += expanded_size

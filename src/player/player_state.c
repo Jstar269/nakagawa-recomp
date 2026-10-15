@@ -49,16 +49,6 @@ static bool player_app_data_root(const PlayerApp *app, char *out, size_t out_siz
     return nk_platform_get_app_data_dir(out, out_size);
 }
 
-/* The one font root: the per-user data directory, which honours --user-data-root. The import, the
- * removal, the status and the preflight read and write <this>/fonts/v2, and the launcher names the
- * same root to the runtime (SR_USER_DATA_ROOT), so a runtime root does not move the fonts.
- * player_app_data_root is not used for fonts because prerequisites share it. */
-static bool player_app_font_root(char *out, size_t out_size) {
-    if (!out || out_size == 0) return false;
-    out[0] = '\0';
-    return nk_platform_get_app_data_dir(out, out_size);
-}
-
 bool player_game_is_showcase(const GameRecord *game) {
     return game && strncmp(game->title_id, "showcase-", 9) == 0;
 }
@@ -3387,17 +3377,11 @@ static void player_font_append(char *out, size_t out_len, const char *text) {
 void player_app_refresh_font_status(PlayerApp *app) {
     NkFontSlotState states[NK_FONT_SLOT_COUNT];
     char root[NK_MAX_PATH];
-    char project_root[NK_MAX_PATH];
     if (!app) return;
-    /* The user's imports come from the per-user font root, the same root the import, the removal
-       and the preflight use; empty when none resolves, and the nk_font calls then report that the
-       cache location is unavailable. The project fonts come from the runtime root, as the
-       preflight reads them, so the two surfaces name the same font. */
-    if (!player_app_font_root(root, sizeof(root))) root[0] = '\0';
-    if (!player_app_data_root(app, project_root, sizeof(project_root))) {
-        snprintf(project_root, sizeof(project_root), "%s", ".");
-    }
-    nk_font_slot_states(root, project_root, states);
+    /* The same root the preflight checks; empty when none resolves, and the nk_font calls then
+       report that the cache location is unavailable. */
+    if (!player_app_data_root(app, root, sizeof(root))) root[0] = '\0';
+    nk_font_slot_states(root, root, states);
     for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
         snprintf(app->wizard.font_slot_detail[slot], sizeof(app->wizard.font_slot_detail[slot]),
                  "%s", states[slot].detail);
@@ -3413,7 +3397,7 @@ bool player_app_fonts_import_folder(PlayerApp *app, const char *folder) {
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message), "No folder was chosen.");
         return false;
     }
-    if (!player_app_font_root(root, sizeof(root))) root[0] = '\0';
+    if (!player_app_data_root(app, root, sizeof(root))) root[0] = '\0';
     if (!nk_font_import_folder(root, folder, NULL, &result, error, sizeof(error))) {
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
                  "Import stopped: %s.", error);
@@ -3449,7 +3433,7 @@ bool player_app_fonts_remove_imports(PlayerApp *app) {
     int removed;
     if (!app) return false;
     for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) remove[slot] = true;
-    if (!player_app_font_root(root, sizeof(root))) root[0] = '\0';
+    if (!player_app_data_root(app, root, sizeof(root))) root[0] = '\0';
     removed = nk_font_remove_imports(root, remove, error, sizeof(error));
     if (removed < 0) {
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
@@ -3471,14 +3455,11 @@ void player_app_build_compatibility_preflight(
     if (!app) return;
     PlayerCompatibilityPreflight *preflight = &app->wizard.preflight;
     memset(preflight, 0, sizeof(*preflight));
+    /* The Fonts step resolves the same root through player_app_data_root. */
     char runtime_root[NK_MAX_PATH];
     if (!player_app_data_root(app, runtime_root, sizeof(runtime_root))) {
         snprintf(runtime_root, sizeof(runtime_root), "%s", ".");
     }
-    /* The Fonts step reads the user's imports from the per-user font root; the project fonts
-     * stay under the runtime root, which is the second argument of the nk_font calls below. */
-    char font_root[NK_MAX_PATH];
-    if (!player_app_font_root(font_root, sizeof(font_root))) font_root[0] = '\0';
 
     if (app->inspecting_game.is_experimental) {
         static const unsigned int issues[] = { 308 };
@@ -3635,7 +3616,7 @@ void player_app_build_compatibility_preflight(
 
     static const unsigned int font_issues[] = { 313 };
     char font_message[NK_FONT_TEXT_MAX] = "";
-    NkFontStatus font_status = nk_font_check_cache(font_root, font_message, sizeof(font_message));
+    NkFontStatus font_status = nk_font_check_cache(runtime_root, font_message, sizeof(font_message));
     if (font_status == NK_FONT_STATUS_INVALID) {
         player_preflight_add(preflight, "SYSTEM_FONTS", PREFLIGHT_INVALID,
                              font_message[0] ? font_message : "PSP font cache is invalid; run fonts import <folder>.",
@@ -3644,7 +3625,7 @@ void player_app_build_compatibility_preflight(
         NkFontSlotState states[NK_FONT_SLOT_COUNT];
         char summary[2048] = "";
         bool every_slot = true;
-        nk_font_slot_states(font_root, runtime_root, states);
+        nk_font_slot_states(runtime_root, runtime_root, states);
         for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
             if (states[slot].source == NK_FONT_SOURCE_NONE) every_slot = false;
             player_font_append(summary, sizeof(summary), states[slot].detail);

@@ -57,10 +57,6 @@ def parse_transitions(lines: Iterable[str]) -> list[Transition]:
             old_mask=int(match.group(2), 16),
             new_mask=int(match.group(3), 16),
         )
-        if transition.old_mask > 0xFFFFFFFF or transition.new_mask > 0xFFFFFFFF:
-            raise ValueError(
-                f"button mask out of range at input line {line_number}"
-            )
         if transition.frame < previous_frame:
             raise ValueError(
                 f"vcount moved backwards at input line {line_number}; "
@@ -84,10 +80,7 @@ def pulses_from_transitions(
     active_mask = 0
 
     for transition in transitions:
-        if transition.new_mask == active_mask:
-            continue
         if active_mask:
-            # A press that starts and ends at the same vcount is still a press: expand it.
             recorded_width = max(1, transition.frame - (active_frame or 0))
             pulses.append(
                 Pulse(

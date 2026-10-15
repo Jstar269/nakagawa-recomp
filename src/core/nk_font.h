@@ -61,9 +61,8 @@ bool nk_font_inspect_pgf(const char *file_path, NkFontInspection *out,
 bool nk_font_validate_pgf(const char *file_path, uint64_t *out_size,
                           char *out_sha256, char *out_error, size_t error_len);
 
-/* Retrieve the per-user font cache directory (<user_data_root>/fonts/v2). The per-user data
- * directory is the one font root: the importer, the launcher and the runtime all read it. If
- * user_data_root is NULL or empty, queries nk_platform_get_path(NK_PATH_DATA). */
+/* Retrieve the per-user font cache directory (<user_data_root>/fonts/v2). If user_data_root
+ * is NULL or empty, queries nk_platform_get_path(NK_PATH_DATA). */
 bool nk_font_get_cache_dir(const char *user_data_root, char *out_dir, size_t max_len);
 
 /* Check the imported-font manifest in the cache. MISSING: no manifest. INVALID: the manifest
@@ -143,9 +142,8 @@ int nk_font_remove_imports(const char *user_data_root,
                            const bool remove[NK_FONT_SLOT_COUNT],
                            char *out_error, size_t error_len);
 
-/* Resolve the active font directory for runtime launch. user_data_root is the per-user data
- * directory, the same root the import writes; a runtime root does not move it. If the cache
- * manifest is OK, resolves <user_data_root>/fonts/v2; else <fallback_root>/font when it exists. */
+/* Resolve the active font directory for runtime launch. If the cache manifest is OK,
+ * resolves <user_data_root>/fonts/v2; else <fallback_root>/font when it exists. */
 bool nk_font_resolve_directory(const char *user_data_root,
                                const char *fallback_root,
                                char *out_dir,

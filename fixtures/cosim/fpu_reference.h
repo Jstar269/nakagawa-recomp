@@ -39,6 +39,5 @@ unsigned fpu_reference_compare(unsigned condition, uint32_t a_bits,
                                uint32_t b_bits,
                                enum FpuReferenceStatus *status);
 unsigned fpu_reference_bc1(unsigned tf, unsigned condition);
-uint32_t fpu_reference_ctc1(uint32_t written);
 
 #endif

@@ -19,43 +19,24 @@
 
 /* Windows reserved-device component check.
  *
- * A guest-supplied single component is refused when its base names a DOS reserved
- * device: CON, PRN, AUX, NUL, COM1-COM9, LPT1-LPT9. The base is the text before the
- * first '.' with trailing spaces removed. So "NUL", "NUL ", "NUL  ", "NUL." and
- * "NUL.txt" all have the base NUL and are refused. A component made only of spaces
- * and dots has an empty base and is not refused. Leading spaces are not removed, so
- * " NUL" is an ordinary name, and so are "NULL", "CONSOLE", "COM10", "LPT10", "COM0"
- * and "LPT0".
- *
- * Measured on Windows NT 10.0.26300.9711 (Windows 11), with a directory prefix and
- * CreateFileW OPEN_ALWAYS: NUL with a trailing space or dot ("NUL ", "NUL.") resolves
- * to the NUL device (FILE_TYPE_CHAR, no file created). The other refused bases were
- * not measured in the trailing-space or trailing-dot forms. On the same build, bare
- * "CON  " and "COM1." created ordinary files, so the rule refuses more than that build
- * resolves. Those names stay in the set because they are device names on other builds.
- * "nul .txt" is refused to follow the space-before-dot rule of the ISO portability
- * check (src/core/nk_iso.c), not because this build resolves it to a device.
- *
- * The rule is host-neutral and the ms0 host join applies it on every host, so
- * sceIoMkdir, sceIoRemove and sceIoRename refuse these components on POSIX too.
- * sceIoOpen on POSIX does not consult the join for the open itself, so it still
- * creates such a name as an ordinary file there. The \\?\-prefixed writable VFS route
- * does not treat devices specially, so this rejection matters where classic paths are
- * used (savedata, ms0 host join). */
+ * A guest-supplied single component is unsafe when its extension-stripped base
+ * names a DOS reserved device: CON, PRN, AUX, NUL, COM1-9, LPT1-9. Win32 path
+ * normalization resolves such a component in every DOS namespace, not the
+ * filesystem, so "NUL" or "COM5" would silently bypass containment while still
+ * succeeding. Edge semantics (F114-5): only those exact bases are reserved --
+ * supersets ("CONSOLE", "COMMON", "NULL") and "COM0"/"LPT0" are ordinary
+ * filenames on every Windows this runtime supports; an extension does NOT save
+ * a reserved base because classic APIs strip it ("NUL.txt" -> device NUL).
+ * The \\?\-prefixed writable VFS route does not treat devices specially, so
+ * this rejection matters exactly where classic paths are used (savedata). */
 static inline int sr_vfs_is_dos_device_name(const char *name, size_t len) {
     static const char *const devices[] = {
         "CON", "PRN", "AUX", "NUL",
         "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
     };
-    if (!name) return 0;
     size_t base_len = 0;
     while (base_len < len && name[base_len] != '.') base_len++;
-    /* Trailing spaces of the base are not part of the device name. The base ends at
-     * the first '.', so dots cannot appear in it. Every index read is below base_len,
-     * which is at most len, so a component made only of spaces and dots reduces to
-     * base_len 0 and returns 0 without reading past the component. */
-    while (base_len > 0 && name[base_len - 1] == ' ') base_len--;
     if (base_len < 3 || base_len > 4) return 0;
     for (size_t i = 0; i < sizeof(devices)/sizeof(devices[0]); i++) {
         size_t dlen = strlen(devices[i]);

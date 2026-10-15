@@ -37,70 +37,32 @@ def read_ppm(path):
     except OSError as exc:
         raise CoverageError(f"cannot read {path}: {exc}") from exc
 
-    tokens = []
-    idx = 0
-    n = len(data)
-
-    while idx < n and len(tokens) < 4:
-        b = data[idx:idx + 1]
-        if b in (b" ", b"\t", b"\r", b"\n"):
-            idx += 1
-            continue
-        if b == b"#":
-            newline_pos = data.find(b"\n", idx)
-            if newline_pos == -1:
-                idx = n
-            else:
-                idx = newline_pos + 1
-            continue
-
-        token_start = idx
-        while idx < n:
-            tb = data[idx:idx + 1]
-            if tb in (b" ", b"\t", b"\r", b"\n", b"#"):
-                break
-            idx += 1
-        tokens.append(data[token_start:idx])
-
-    if len(tokens) < 4:
-        raise CoverageError(f"malformed PPM header in {path}: too few header tokens")
-
-    if tokens[0] != b"P6":
+    parts = data.split(b"\n", 3)
+    if len(parts) < 4:
+        raise CoverageError(f"malformed PPM header in {path}: too few header lines")
+    if parts[0] != b"P6":
         raise CoverageError(f"not a P6 PPM file: {path}")
 
     try:
-        w = int(tokens[1])
-        h = int(tokens[2])
+        w, h = map(int, parts[1].split())
     except (ValueError, IndexError) as exc:
         raise CoverageError(f"bad dimensions in {path}: {exc}") from exc
 
     if w <= 0 or h <= 0:
         raise CoverageError(f"non-positive dimensions {w}x{h} in {path}")
 
-    maxval = tokens[3]
+    maxval = parts[2].strip()
     if maxval != b"255":
         raise CoverageError(f"unsupported maxval {maxval!r} in {path}")
 
-    if idx >= n or data[idx:idx + 1] not in (b" ", b"\t", b"\r", b"\n"):
-        raise CoverageError(f"malformed PPM header in {path}: missing whitespace after maxval")
-
-    if data[idx:idx + 2] == b"\r\n":
-        idx += 2
-    else:
-        idx += 1
-
-    payload = data[idx:]
     expected = w * h * 3
+    payload = parts[3]
     if len(payload) < expected:
         raise CoverageError(
             f"truncated payload in {path}: expected {expected} bytes, got {len(payload)}"
         )
-    if len(payload) > expected:
-        raise CoverageError(
-            f"extra payload bytes in {path}: expected {expected} bytes, got {len(payload)}"
-        )
 
-    return payload, w, h
+    return payload[:expected], w, h
 
 
 def run_diff(da, db, threshold):

@@ -75,9 +75,9 @@ class TestContainedDeleteSelftest(unittest.TestCase):
         # A run that quietly skipped every hostile case would look like a pass.
         # Report what actually executed so a skipped matrix stays visible.
         if "backend=windows-verified-handle" in out:
-            expected_checks = 249  # +6: invalid UTF-8 leaf refusal (Windows only); +10: device-name grammar
+            expected_checks = 239  # +6: invalid UTF-8 leaf refusal (Windows only)
         elif "backend=posix-descriptor-relative" in out:
-            expected_checks = 329  # +10 device-name grammar; includes the Linux guest path and file-operation matrix
+            expected_checks = 319  # includes the Linux guest path and file-operation matrix
         else:
             self.fail("selftest did not identify a supported containment backend:\n" + out)
         self.assertIn(f": {expected_checks} checks, 0 skipped hostile case(s)", out)

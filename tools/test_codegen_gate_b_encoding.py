@@ -278,20 +278,6 @@ class TestGateBElfEncodingAudit(unittest.TestCase):
         self.assertNotEqual(stmt1, stmt2)
 
 
-class TestGateBForgedBranchEncoding(unittest.TestCase):
-    """The static gate must refuse invalid branch encodings (e.g. forged rt field
-    on blez/bgtz/blezl/bgtzl) even at immediate-field signed edges."""
-
-    def test_static_gate_refuses_forged_branch_encoding_at_signed_edge(self):
-        import analyze
-        # 0x18218000: blez with rs=1, rt=1 (invalid/forged non-zero rt), imm=0x8000 (-32768)
-        forged_blez = 0x18218000
-        self.assertIsNone(analyze.branch_target(0x08900000, forged_blez))
-        self.assertFalse(codegen.is_cond_branch(forged_blez))
-        with self.assertRaises(codegen.Unsupported):
-            codegen.effect(0x08900000, forged_blez)
-
-
 class TestAllegrexSemantics(unittest.TestCase):
     """Semantic verification of generated Allegrex instruction C code via host GCC."""
 

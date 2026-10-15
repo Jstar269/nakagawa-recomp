@@ -5,7 +5,6 @@ from contextlib import redirect_stderr, redirect_stdout
 import hashlib
 import importlib.metadata
 import io
-import os
 import json
 from pathlib import Path
 import re
@@ -823,11 +822,7 @@ class TestToolchainPolicyVerification(unittest.TestCase):
     def test_live_toolchain_recorder_and_verification(self):
         # Inspects the real build environment; hosts without the native toolchain (for example
         # the Linux Python-only CI shards, which have no SDL3, or a Linux host that has SDL3
-        # but no Windows-layout Vulkan SDK) skip rather than fail. A present MSYS2 toolchain is
-        # never skipped on RuntimeError: an ambiguous PATH binary must fail this test.
-        msys_dir = Path(os.environ.get("MSYS_PATH") or r"C:\msys64\ucrt64\bin")
-        if not msys_dir.is_dir():
-            self.skipTest(f"MSYS2 toolchain directory not present on this host: {msys_dir}")
+        # but no Windows-layout Vulkan SDK) skip rather than fail.
         try:
             recorded = record_toolchain.record_observed_toolchain()
         except (
@@ -858,179 +853,6 @@ class TestToolchainPolicyVerification(unittest.TestCase):
         self.assertIn("available", recorded["shader_compiler"])
         errors = verify_sbom.verify_release_locks(self.MANIFEST_PATH, observed_toolchain=recorded)
         self.assertEqual(errors, [])
-
-    def test_record_toolchain_rejects_ambiguous_path_binary(self):
-        dummy_candidate = {
-            "commit": "0" * 40,
-            "working_tree_clean": True,
-            "manifest_version": "1.0.0",
-            "manifest_sha256": "0" * 64,
-        }
-        with tempfile.TemporaryDirectory() as tmp_msys, tempfile.TemporaryDirectory() as tmp_outside:
-            msys_bin = Path(tmp_msys)
-            outside_bin = Path(tmp_outside)
-
-            msys_gcc = msys_bin / ("gcc.exe" if sys.platform == "win32" else "gcc")
-            outside_gcc = outside_bin / ("gcc.exe" if sys.platform == "win32" else "gcc")
-            msys_cxx = msys_bin / ("g++.exe" if sys.platform == "win32" else "g++")
-            msys_make = msys_bin / ("mingw32-make.exe" if sys.platform == "win32" else "mingw32-make")
-
-            for bin_file in (msys_gcc, msys_cxx, msys_make, outside_gcc):
-                bin_file.write_text("#!/bin/sh\necho 14.2.0\n")
-                bin_file.chmod(0o755)
-
-            dummy_provider = mock.Mock(version="3.2.0", provider="msys2_ucrt64", root_dir=msys_bin, import_lib=msys_bin / "libSDL3.a", runtime_dll=None)
-
-            new_path = os.pathsep.join([str(outside_bin), str(msys_bin)])
-            with mock.patch.dict(os.environ, {"PATH": new_path}), \
-                 mock.patch.object(record_toolchain, "_candidate_identity", return_value=dummy_candidate), \
-                 mock.patch.object(nk_doctor_checks, "discover_sdl3_provider", return_value=dummy_provider), \
-                 mock.patch.object(vulkan_sdk, "discover_vulkan_sdk", return_value=msys_bin), \
-                 mock.patch.object(record_toolchain, "_detect_vulkan_version", return_value="1.3.200"), \
-                 mock.patch.object(record_toolchain.nk_doctor_core, "_run_version", return_value=(0, "14.2.0")):
-                with self.assertRaises(RuntimeError) as ctx:
-                    record_toolchain.record_observed_toolchain(msys_path=msys_bin)
-                self.assertIn("Ambiguous", str(ctx.exception))
-
-            # Also test when msys_bin comes BEFORE outside_bin on PATH
-            new_path_first = os.pathsep.join([str(msys_bin), str(outside_bin)])
-            with mock.patch.dict(os.environ, {"PATH": new_path_first}), \
-                 mock.patch.object(record_toolchain, "_candidate_identity", return_value=dummy_candidate), \
-                 mock.patch.object(nk_doctor_checks, "discover_sdl3_provider", return_value=dummy_provider), \
-                 mock.patch.object(vulkan_sdk, "discover_vulkan_sdk", return_value=msys_bin), \
-                 mock.patch.object(record_toolchain, "_detect_vulkan_version", return_value="1.3.200"), \
-                 mock.patch.object(record_toolchain.nk_doctor_core, "_run_version", return_value=(0, "14.2.0")):
-                with self.assertRaises(RuntimeError) as ctx:
-                    record_toolchain.record_observed_toolchain(msys_path=msys_bin)
-                self.assertIn("Ambiguous", str(ctx.exception))
-
-    def test_record_toolchain_rejects_out_of_toolchain_fallback(self):
-        dummy_candidate = {
-            "commit": "0" * 40,
-            "working_tree_clean": True,
-            "manifest_version": "1.0.0",
-            "manifest_sha256": "0" * 64,
-        }
-        with tempfile.TemporaryDirectory() as tmp_msys, tempfile.TemporaryDirectory() as tmp_outside:
-            msys_bin = Path(tmp_msys)
-            outside_bin = Path(tmp_outside)
-
-            outside_gcc = outside_bin / ("gcc.exe" if sys.platform == "win32" else "gcc")
-            outside_gcc.write_text("#!/bin/sh\necho 14.2.0\n")
-            outside_gcc.chmod(0o755)
-
-            dummy_provider = mock.Mock(version="3.2.0", provider="msys2_ucrt64", root_dir=msys_bin, import_lib=msys_bin / "libSDL3.a", runtime_dll=None)
-
-            new_path = os.pathsep.join([str(outside_bin), str(msys_bin)])
-            with mock.patch.dict(os.environ, {"PATH": new_path}), \
-                 mock.patch.object(record_toolchain, "_candidate_identity", return_value=dummy_candidate), \
-                 mock.patch.object(nk_doctor_checks, "discover_sdl3_provider", return_value=dummy_provider), \
-                 mock.patch.object(vulkan_sdk, "discover_vulkan_sdk", return_value=msys_bin), \
-                 mock.patch.object(record_toolchain, "_detect_vulkan_version", return_value="1.3.200"), \
-                 mock.patch.object(record_toolchain.nk_doctor_core, "_run_version", return_value=(0, "14.2.0")):
-                with self.assertRaises(RuntimeError) as ctx:
-                    record_toolchain.record_observed_toolchain(msys_path=msys_bin)
-                self.assertIn("not found in expected toolchain", str(ctx.exception))
-
-    def test_record_toolchain_rejects_alias_collision_on_path(self):
-        dummy_candidate = {
-            "commit": "0" * 40,
-            "working_tree_clean": True,
-            "manifest_version": "1.0.0",
-            "manifest_sha256": "0" * 64,
-        }
-        with tempfile.TemporaryDirectory() as tmp_msys, tempfile.TemporaryDirectory() as tmp_outside:
-            msys_bin = Path(tmp_msys)
-            outside_bin = Path(tmp_outside)
-
-            msys_gcc = msys_bin / ("gcc.exe" if sys.platform == "win32" else "gcc")
-            msys_cxx = msys_bin / ("g++.exe" if sys.platform == "win32" else "g++")
-            msys_make = msys_bin / ("mingw32-make.exe" if sys.platform == "win32" else "mingw32-make")
-
-            outside_make = outside_bin / ("make.exe" if sys.platform == "win32" else "make")
-
-            for bin_file in (msys_gcc, msys_cxx, msys_make, outside_make):
-                bin_file.write_text("#!/bin/sh\necho 14.2.0\n")
-                bin_file.chmod(0o755)
-
-            dummy_provider = mock.Mock(version="3.2.0", provider="msys2_ucrt64", root_dir=msys_bin, import_lib=msys_bin / "libSDL3.a", runtime_dll=None)
-
-            new_path = os.pathsep.join([str(msys_bin), str(outside_bin)])
-            with mock.patch.dict(os.environ, {"PATH": new_path}), \
-                 mock.patch.object(record_toolchain, "_candidate_identity", return_value=dummy_candidate), \
-                 mock.patch.object(nk_doctor_checks, "discover_sdl3_provider", return_value=dummy_provider), \
-                 mock.patch.object(vulkan_sdk, "discover_vulkan_sdk", return_value=msys_bin), \
-                 mock.patch.object(record_toolchain, "_detect_vulkan_version", return_value="1.3.200"), \
-                 mock.patch.object(record_toolchain.nk_doctor_core, "_run_version", return_value=(0, "14.2.0")):
-                with self.assertRaises(RuntimeError) as ctx:
-                    record_toolchain.record_observed_toolchain(msys_path=msys_bin)
-                self.assertIn("Ambiguous Make tool", str(ctx.exception))
-
-    def test_record_toolchain_rejects_cmd_wrapper_on_path(self):
-        dummy_candidate = {
-            "commit": "0" * 40,
-            "working_tree_clean": True,
-            "manifest_version": "1.0.0",
-            "manifest_sha256": "0" * 64,
-        }
-        with tempfile.TemporaryDirectory() as tmp_msys, tempfile.TemporaryDirectory() as tmp_outside:
-            msys_bin = Path(tmp_msys)
-            outside_bin = Path(tmp_outside)
-
-            for bin_file in (
-                msys_bin / ("gcc.exe" if sys.platform == "win32" else "gcc"),
-                msys_bin / ("g++.exe" if sys.platform == "win32" else "g++"),
-                msys_bin / ("mingw32-make.exe" if sys.platform == "win32" else "mingw32-make"),
-            ):
-                bin_file.write_text("#!/bin/sh\necho 14.2.0\n")
-                bin_file.chmod(0o755)
-            # A PATHEXT wrapper outside the toolchain is what a bare "make" resolves to in cmd.exe.
-            (outside_bin / "make.cmd").write_text("@echo off\r\n", encoding="utf-8")
-
-            dummy_provider = mock.Mock(version="3.2.0", provider="msys2_ucrt64", root_dir=msys_bin, import_lib=msys_bin / "libSDL3.a", runtime_dll=None)
-
-            new_path = os.pathsep.join([str(outside_bin), str(msys_bin)])
-            with mock.patch.dict(os.environ, {"PATH": new_path, "PATHEXT": ".COM;.EXE;.BAT;.CMD"}), \
-                 mock.patch.object(record_toolchain, "_candidate_identity", return_value=dummy_candidate), \
-                 mock.patch.object(nk_doctor_checks, "discover_sdl3_provider", return_value=dummy_provider), \
-                 mock.patch.object(vulkan_sdk, "discover_vulkan_sdk", return_value=msys_bin), \
-                 mock.patch.object(record_toolchain, "_detect_vulkan_version", return_value="1.3.200"), \
-                 mock.patch.object(record_toolchain.nk_doctor_core, "_run_version", return_value=(0, "14.2.0")):
-                with self.assertRaises(RuntimeError) as ctx:
-                    record_toolchain.record_observed_toolchain(msys_path=msys_bin)
-                self.assertIn("Ambiguous Make tool", str(ctx.exception))
-
-    def test_record_toolchain_accepts_unambiguous_binary(self):
-        dummy_candidate = {
-            "commit": "0" * 40,
-            "working_tree_clean": True,
-            "manifest_version": "1.0.0",
-            "manifest_sha256": "0" * 64,
-        }
-        with tempfile.TemporaryDirectory() as tmp_msys:
-            msys_bin = Path(tmp_msys)
-
-            gcc = msys_bin / ("gcc.exe" if sys.platform == "win32" else "gcc")
-            cxx = msys_bin / ("g++.exe" if sys.platform == "win32" else "g++")
-            make = msys_bin / ("mingw32-make.exe" if sys.platform == "win32" else "mingw32-make")
-
-            for bin_file in (gcc, cxx, make):
-                bin_file.write_text("#!/bin/sh\necho 14.2.0\n")
-                bin_file.chmod(0o755)
-
-            dummy_provider = mock.Mock(version="3.2.0", provider="msys2_ucrt64", root_dir=msys_bin, import_lib=msys_bin / "libSDL3.a", runtime_dll=None)
-
-            new_path = str(msys_bin)
-            with mock.patch.dict(os.environ, {"PATH": new_path}), \
-                 mock.patch.object(record_toolchain, "_candidate_identity", return_value=dummy_candidate), \
-                 mock.patch.object(nk_doctor_checks, "discover_sdl3_provider", return_value=dummy_provider), \
-                 mock.patch.object(vulkan_sdk, "discover_vulkan_sdk", return_value=msys_bin), \
-                 mock.patch.object(record_toolchain, "_detect_vulkan_version", return_value="1.3.200"), \
-                 mock.patch.object(record_toolchain.nk_doctor_core, "_run_version", return_value=(0, "14.2.0")):
-                observed = record_toolchain.record_observed_toolchain(msys_path=msys_bin)
-                self.assertEqual(observed["compiler"]["path"], str(gcc))
-                self.assertEqual(observed["compiler"]["cxx"]["path"], str(cxx))
-                self.assertEqual(observed["make"]["path"], str(make))
 
 
 if __name__ == "__main__":

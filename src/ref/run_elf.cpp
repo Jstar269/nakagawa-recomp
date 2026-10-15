@@ -94,40 +94,11 @@ uint32_t LoadElf(const std::vector<uint8_t> &elf, Memory *mem) {
 	if (elf.size() < 52 || memcmp(elf.data(), "\x7f""ELF", 4) != 0) ElfError("not an ELF");
 	uint32_t e_entry = Rd32(&elf[24]);
 	uint32_t e_phoff = Rd32(&elf[28]);
-	uint32_t e_shoff = Rd32(&elf[32]);
 	uint16_t e_phentsize = Rd16(&elf[42]);
 	uint16_t e_phnum = Rd16(&elf[44]);
-	uint16_t e_shentsize = Rd16(&elf[46]);
-	uint16_t e_shnum = Rd16(&elf[48]);
-	uint16_t e_shstrndx = Rd16(&elf[50]);
-
 	if (e_phnum != 0 && e_phentsize < 32) ElfError("ELF program header entry too small");
 	uint64_t ph_table_size = static_cast<uint64_t>(e_phentsize) * e_phnum;
 	if (!RangeWithin(elf.size(), e_phoff, ph_table_size)) ElfError("ELF program header table out of range");
-
-	if (e_shnum != 0 || e_shoff != 0) {
-		if (e_shnum != 0 && e_shentsize < 40) ElfError("ELF section header entry too small");
-		uint64_t sh_table_size = static_cast<uint64_t>(e_shentsize) * e_shnum;
-		if (!RangeWithin(elf.size(), e_shoff, sh_table_size)) ElfError("ELF section header table out of range");
-		if (e_shnum != 0 && e_shstrndx >= e_shnum) ElfError("ELF section header string index out of range");
-		for (uint16_t i = 0; i < e_shnum; i++) {
-			uint64_t sh_offset = static_cast<uint64_t>(e_shoff) + static_cast<uint64_t>(i) * e_shentsize;
-			if (!RangeWithin(elf.size(), sh_offset, 40)) ElfError("ELF section header out of range");
-			const uint8_t *sh = elf.data() + static_cast<size_t>(sh_offset);
-			uint32_t sh_type = Rd32(sh + 4);
-			uint32_t sh_offset_val = Rd32(sh + 16);
-			uint32_t sh_size = Rd32(sh + 20);
-			if (sh_type != 8 && !RangeWithin(elf.size(), sh_offset_val, sh_size)) {
-				ElfError("ELF section data out of range");
-			}
-		}
-	}
-
-	if ((e_entry & 3) != 0) ElfError("ELF entry address unaligned");
-	uint32_t entry_index = 0;
-	GuestRangeStatus entry_status = ClassifyGuestRange(mem, e_entry, 4, &entry_index);
-	if (entry_status != GuestRangeStatus::kMapped) ElfError("ELF entry address out of mapped guest memory");
-
 	for (uint16_t i = 0; i < e_phnum; i++) {
 		uint64_t ph_offset = static_cast<uint64_t>(e_phoff) + static_cast<uint64_t>(i) * e_phentsize;
 		if (!RangeWithin(elf.size(), ph_offset, 32)) ElfError("ELF program header out of range");

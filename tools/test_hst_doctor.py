@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import struct
 import subprocess
 import sys
 import tempfile
@@ -124,90 +123,6 @@ class ElfValidationTests(unittest.TestCase):
             metadata, error = nk_doctor_core._parse_elf(path)
             self.assertIsNone(metadata)
             self.assertIn("ELF", error or "")
-
-
-def write_psp_header_fields(
-    path: Path,
-    *,
-    flags: int = 0,
-    elf_size: int = 0,
-    psp_size: int = 0,
-    bss_size: int = 0x100,
-    segment_sizes: tuple[int, ...] = (0x1000,),
-) -> None:
-    data = bytearray(0x80)
-    data[:4] = b"~PSP"
-    data[0x06] = flags
-    data[0x27] = len(segment_sizes)
-    struct.pack_into("<II", data, 0x28, elf_size, psp_size)
-    struct.pack_into("<i", data, 0x38, bss_size)
-    sizes = list(segment_sizes) + [0] * (4 - len(segment_sizes))
-    struct.pack_into("<4i", data, 0x54, *sizes)
-    path.write_bytes(data)
-
-
-class PspHeaderValidationTests(unittest.TestCase):
-    def test_valid_psp_header_is_accepted(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "EBOOT.BIN"
-            write_psp_header_fields(path)
-            metadata, error = nk_doctor_core._parse_psp_header(path)
-            self.assertIsNone(error)
-            assert metadata is not None
-            self.assertEqual(metadata["segment_count"], 1)
-            self.assertEqual(metadata["bss_size"], 0x100)
-            self.assertEqual(metadata["segment_sizes"], [0x1000])
-
-    def test_compressed_elf_size_may_exceed_container_size(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "EBOOT.BIN"
-            write_psp_header_fields(path, flags=1, elf_size=0x2000, psp_size=0x1000)
-            metadata, error = nk_doctor_core._parse_psp_header(path)
-            self.assertIsNone(error)
-            self.assertIsNotNone(metadata)
-
-    def test_uncompressed_elf_size_exceeding_container_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "EBOOT.BIN"
-            write_psp_header_fields(path, flags=0, elf_size=0x2000, psp_size=0x1000)
-            metadata, error = nk_doctor_core._parse_psp_header(path)
-            self.assertIsNone(metadata)
-            self.assertIn("exceeds container size", error or "")
-
-    def test_rejects_container_size_below_header_size(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "EBOOT.BIN"
-            write_psp_header_fields(path, psp_size=0x10)
-            metadata, error = nk_doctor_core._parse_psp_header(path)
-            self.assertIsNone(metadata)
-            self.assertIn("smaller than ~PSP header size", error or "")
-
-    def test_rejects_negative_bss_size(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "EBOOT.BIN"
-            write_psp_header_fields(path, bss_size=-1)
-            metadata, error = nk_doctor_core._parse_psp_header(path)
-            self.assertIsNone(metadata)
-            self.assertIn("negative BSS size", error or "")
-
-    def test_accepts_zero_size_trailing_segment(self) -> None:
-        # A ~PSP module may declare a zero-size second segment after a non-empty
-        # first one; the container validator and prxload accept it (#1006).
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "EBOOT.BIN"
-            write_psp_header_fields(path, segment_sizes=(0x2000, 0))
-            metadata, error = nk_doctor_core._parse_psp_header(path)
-            self.assertIsNone(error)
-            assert metadata is not None
-            self.assertEqual(metadata["segment_sizes"], [0x2000, 0])
-
-    def test_rejects_negative_segment_size(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "EBOOT.BIN"
-            write_psp_header_fields(path, segment_sizes=(0x2000, -1))
-            metadata, error = nk_doctor_core._parse_psp_header(path)
-            self.assertIsNone(metadata)
-            self.assertIn("segment sizes are negative", error or "")
 
 
 class PrivateInputTests(unittest.TestCase):

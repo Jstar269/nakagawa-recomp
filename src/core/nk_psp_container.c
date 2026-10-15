@@ -72,29 +72,11 @@ static int validate_psp(NkPspCtx *ctx, const uint8_t *d, size_t size)
                            "file carries %u)",
                            (unsigned)psp_size, (unsigned)size);
     }
-    if (d[0x27] == 0u || d[0x27] > 4u) {
+    if (d[0x27] > 4u) {
         return nk_psp_fail(ctx, NK_PSP_ERR_FORMAT, NULL,
                            "container declares an impossible segment count "
                            "(%u)",
                            (unsigned)d[0x27]);
-    }
-    {
-        uint32_t total_seg = 0;
-        uint8_t nseg = d[0x27];
-        for (uint8_t i = 0; i < nseg; i++) {
-            uint32_t seg_sz = rd32(d + 0x54 + i * 4u);
-            if (seg_sz > (256u * 1024u * 1024u)) {
-                return nk_psp_fail(ctx, NK_PSP_ERR_FORMAT, NULL,
-                                   "container segment %u declares an impossible size "
-                                   "0x%08X",
-                                   (unsigned)i, (unsigned)seg_sz);
-            }
-            if (total_seg > (256u * 1024u * 1024u) - seg_sz) {
-                return nk_psp_fail(ctx, NK_PSP_ERR_FORMAT, NULL,
-                                   "container segment sizes overflow aggregate extent");
-            }
-            total_seg += seg_sz;
-        }
     }
     return NK_PSP_OK;
 }

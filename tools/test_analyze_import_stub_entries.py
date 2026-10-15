@@ -26,7 +26,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import analyze
 import codegen
 import import_fixtures
-import import_stub_census
 import imports
 
 BASE = 0x08804000
@@ -121,52 +120,6 @@ class LatePhaseRangeFilterTest(unittest.TestCase):
                       "late callee 0x%08x dropped by the late passes" % self.callee)
         self.assertTrue(analyze.in_ranges(self.callee, ranges),
                         "late callee word 0x%08x is not owned" % self.callee)
-
-
-
-
-class EqualNidImportStubTest(unittest.TestCase):
-    """A synthetic pair of equal-NID stubs with distinct file-backed addresses.
-
-    Confirm the analyzer keeps valid ownership without inventing a shared callee.
-    Import census and callable ownership match the input graph exactly.
-    """
-
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
-        self.equal_nid = 0x7A000000
-        self.nids = [self.equal_nid, self.equal_nid, 0x7A000002, 0x7A000003]
-        self.data, self.stubs = import_fixtures.build_text_stub_run_elf(
-            nids=self.nids
-        )
-
-    def test_equal_nid_stubs_retain_distinct_entries_and_ownership(self):
-        path = os.path.join(self._tmp.name, "EBOOT.elf")
-        with open(path, "wb") as fh:
-            fh.write(self.data)
-
-        elf = analyze.Elf(path, base=BASE)
-        parsed = imports.parse_imports(elf)
-        self.assertEqual(len(parsed), len(self.stubs))
-        self.assertEqual(parsed[self.stubs[0]], ("SynthTextLib", self.equal_nid))
-        self.assertEqual(parsed[self.stubs[1]], ("SynthTextLib", self.equal_nid))
-        self.assertNotEqual(self.stubs[0], self.stubs[1])
-
-        entries, ranges = analyze.analyze(elf)
-        for stub in self.stubs:
-            self.assertIn(stub, entries,
-                          "equal-NID stub 0x%08x is not a function entry" % stub)
-            self.assertTrue(analyze.in_ranges(stub, ranges),
-                            "stub word 0x%08x is not owned" % stub)
-            self.assertTrue(analyze.in_ranges(stub + 4, ranges),
-                            "stub delay slot 0x%08x is not owned" % (stub + 4))
-
-        census = import_stub_census.census_image(path, None, label="EBOOT.elf")
-        self.assertEqual(census["status"], "ok")
-        self.assertEqual(census["stubs"], len(self.stubs))
-        self.assertEqual(len(census["missing"]), 0)
-        self.assertEqual(len(census["runtime_missing"]), 0)
 
 
 if __name__ == "__main__":

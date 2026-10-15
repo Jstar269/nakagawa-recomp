@@ -286,15 +286,6 @@ class ShowcaseImageTests(unittest.TestCase):
                                         "not a final relocatable PSP PRX"):
                 showcase.validate_psp_prx(path, 0x08804000)
 
-    def test_stage_iso_writes_a_test00007_disc_without_pspdev(self) -> None:
-        """#308: the Windows staging smoke's disc needs no PSPDEV, only the display guest."""
-        with tempfile.TemporaryDirectory() as temp:
-            iso = showcase.stage_iso(Path(temp) / "disc")
-            self.assertEqual(iso.name, "TEST00007.iso")
-            metadata = inspect_iso(iso)
-        self.assertEqual(metadata.disc_id, "TEST00007")
-        self.assertEqual(metadata.title, "Nakagawa 3D Showcase")
-
 
 if __name__ == "__main__":
     unittest.main()

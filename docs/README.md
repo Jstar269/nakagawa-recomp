@@ -233,7 +233,6 @@ Every substantial document carries one status.
 | `research/PSP_THREADING_SEMANTICS.md` | REFERENCE | Frozen design + measured-scope table; CT/ST oracle HARDWARE_MEASURED |
 | `PSP_INTR_WAITS_MATRIX.md` | HISTORICAL | Snapshot table; live counts in `src/rt/intr_conformance.h` |
 | `PSP_INTR_WAITS_CENSUS.md` | CURRENT | Generated registration census for the waits matrix; regenerate with `tools/waits_census.py` |
-| `RECOMP_HELPER_INVENTORY.md` | CURRENT | Generated helper inventory of `src/rt/recomp.c` and `src/rt/recomp.h` for #346 (names, defining files, header declaration, reach and provenance class; no line numbers or call counts); regenerate with `tools/recomp_helper_inventory.py`, and `--details` prints lines and counts |
 | `provenance/MODIFIED_FILE_NOTICES.md` | HISTORICAL | Retained notice contract, capture-time scope |
 
 Meanings: CURRENT is maintained contract — update it with the change.

@@ -294,7 +294,6 @@ static int nk_deflate(Bits *b, OutBuf *o, char *err, size_t err_len)
                     return rc;
                 }
             }
-            continue;
         } else if (btype == 1 || btype == 2) {
             int nlit = 288;
             int ndist = 32;
@@ -764,32 +763,20 @@ int nk_psp_inflate(const uint8_t *src, size_t srclen, uint8_t **out,
     } else if (mode == 1) {
         /* zlib (RFC 1950): a 2-byte header, the deflate stream, then a
          * 4-byte adler32 trailer.  Anything shorter cannot be a zlib
-         * stream, so it is rejected before the trailer is read. */
+         * stream, so it is rejected before the header flags (src[3]) and
+         * the trailer are read. */
         if (srclen < 6u) {
             set_err(err, err_len, "inflate: truncated zlib stream");
             free(o.data);
             return NK_INFLATE_ERR_TRUNCATED;
         }
-        if ((src[1] & 0x20u) != 0u) {
-            /*
-             * FDICT (byte 1, bit 5). A zlib stream with a preset dictionary
-             * cannot be decoded here, so it is refused. Raw DEFLATE that
-             * passes the zlib header test can carry this bit too (08 3C ...
-             * is a valid stored block), so the raw decode runs first and
-             * FDICT is reported only when it also fails.
-             */
-            b.pos = 0u;
-            rc = decode_and_check(&b, &o, err, err_len);
-            if (rc == NK_INFLATE_OK) {
-                *out = o.data;
-                *outlen = o.len;
-                return NK_INFLATE_OK;
-            }
+        b.pos = 2u;
+        if ((src[3] & 0x20u) != 0u) {
             set_err(err, err_len,
                     "inflate: zlib preset dictionary is not supported");
+            free(o.data);
             return NK_INFLATE_ERR_FORMAT;
         }
-        b.pos = 2u;
         rc = decode_and_check(&b, &o, err, err_len);
         if (rc != NK_INFLATE_OK) {
             /*

@@ -182,16 +182,10 @@ class VfpuCoverageCensusTests(unittest.TestCase):
         source = (ROOT / "src" / "rt" / "vfpu_fuzz.c").read_text(encoding="utf-8")
         self.assertIn("if (trials <= 0)", source)
         self.assertIn("if (FUZZ_NCASES <= 0)", source)
-        # A shard passes only when every case it admits is tested. For the default 0/1 shard
-        # "admitted" is FUZZ_NCASES, so the gate is unchanged; test_public_ci_wiring proves
-        # that the shards together admit every case exactly once.
         self.assertIn(
-            "return (bad_cases || skipped || tested != admitted) ? 1 : 0;",
+            "return (bad_cases || skipped || tested != FUZZ_NCASES) ? 1 : 0;",
             source,
         )
-        self.assertIn('#define FUZZ_SHARD_ENV "FUZZ_CASE_SHARD"', source)
-        self.assertIn("if ((unsigned)c % shard_n != shard_k) continue;", source)
-        self.assertIn("admits no case", source)
 
     def test_hardware_ids_are_row_level_not_inherited(self):
         memory_rows = [

@@ -51,16 +51,14 @@ def load_imports(path):
     for i, e in enumerate(table):
         if not isinstance(e, dict) or not {"stub", "lib", "nid"} <= set(e):
             raise NidseqError(f"import map {path}: entry {i} lacks stub/lib/nid fields")
-        stub, lib, nid = e["stub"], e["lib"], e["nid"]
+        stub, nid = e["stub"], e["nid"]
         if type(stub) is not int or not 0 <= stub < 2**32:
             raise NidseqError(f"import map {path}: entry {i} has a non-u32 stub value {stub!r}")
-        if type(lib) is not str:
-            raise NidseqError(f"import map {path}: entry {i} has a non-string lib value {lib!r}")
         if type(nid) is not int or not 0 <= nid < 2**32:
             raise NidseqError(f"import map {path}: entry {i} has a non-u32 nid value {nid!r}")
         if stub in m:
             raise NidseqError(f"import map {path}: duplicate stub address 0x{stub:08x}")
-        m[stub] = (lib, nid)
+        m[stub] = (str(e["lib"]), nid)
         stubs.append(stub)
     if not stubs:
         raise NidseqError(f"import map {path}: empty import table")
@@ -95,8 +93,7 @@ def nid_seq(trace, imp, s0, s1, limit=None):
             except ValueError:
                 raise NidseqError(f"{trace}:{lineno}: malformed pc field {p[1]!r}: {line!r}") from None
             if s0 <= pc < s1 and p[2] == "op=0x03e00008":  # the stub's jr $ra line
-                # Unmapped stubs are keyed by PC so distinct unresolved stubs stay distinct.
-                seq.append((pc, imp.get(pc, ("?", pc))))
+                seq.append((pc, imp.get(pc, ("?", 0))))
                 if limit is not None and len(seq) >= limit:
                     break
     return seq
@@ -117,9 +114,9 @@ def verify_sequences(mine, orac, imp, allow_prefix):
         )
         return 1
     for i in range(n):
-        if mine[i][1] != orac[i][1]:
-            rl, rn = mine[i][1]
-            ol, on = orac[i][1]
+        if mine[i][0] != orac[i][0]:
+            rl, rn = imp.get(mine[i][0], ("?", 0))
+            ol, on = imp.get(orac[i][0], ("?", 0))
             print(
                 f"DIVERGE at import {i}: recomp={rl}.0x{rn:08x} " f"oracle={ol}.0x{on:08x}"
             )
