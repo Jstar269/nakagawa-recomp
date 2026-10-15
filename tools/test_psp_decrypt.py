@@ -8,7 +8,10 @@ command-line entry that the Python tooling calls.
 
 Nothing here reads retail bytes, private inputs, or real key material:
 
-*   the known-answer vectors are the published NIST/RFC values;
+*   the known-answer vectors are the published NIST/RFC values, except the
+    two-block AES-CBC check, whose expected output is zero-IV CBC computed
+    over the published SP 800-38A F.2.1 key and plaintext (see the comment at
+    ``ZERO_START_CBC_CIPHER``);
 *   the container keys are generated per-run as *clearly fake* random bytes
     and written into a throwaway key file outside the repository;
 *   the sealed ``~PSP`` container is built by this test around a tiny,
@@ -41,6 +44,8 @@ CC = os.environ.get("CC") or shutil.which("gcc") or shutil.which("cc")
 
 # ---------------------------------------------------------------------------
 # Published known-answer vectors (NIST FIPS 197 / FIPS 180-1 / RFC 4493).
+# The zero-IV CBC expectation (ZERO_START_CBC_CIPHER) is not a published value;
+# it is cross-checked against OpenSSL and documented at its definition.
 # ---------------------------------------------------------------------------
 
 # Published standards test-vector bytes only -- never secret key material.
@@ -60,6 +65,23 @@ RFC4493_KAT_MATERIAL = bytes.fromhex("2b7e151628aed2a6abf7158809cf4f3c")
 RFC4493_MSG_A = bytes.fromhex("6bc1bee22e409f96e93d7e117393172a")
 RFC4493_MAC_A = bytes.fromhex("bb1d6929e95937287fa37d129b756746")  # len = 0
 RFC4493_MAC_MSG16 = bytes.fromhex("070a16b46b4d4144f79bdd9dd04a287c")  # len = 16
+
+# NIST SP 800-38A section F.2.1 plaintext (two AES blocks), published value.
+# The AES-128 key for this vector is the public F.2.1 key, which is the same
+# value as RFC4493_KAT_MATERIAL above.
+NIST_SP800_38A_F21_PLAIN = bytes.fromhex(
+    "6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e51"
+)
+# Expected output of AES-128-CBC over NIST_SP800_38A_F21_PLAIN with an all-zero
+# starting block (the C library has no IV parameter; chaining starts from zero).
+# This is NOT the SP 800-38A F.2.1 ciphertext, which uses the starting block
+# 000102...0f. Cross-checked independently with OpenSSL:
+#   openssl enc -aes-128-cbc -nopad -K <F.2.1 key hex> -iv <16 zero bytes> -in <plain>
+# gives this value, and the same command with the F.2.1 starting block gives the
+# published F.2.1 ciphertext.
+ZERO_START_CBC_CIPHER = bytes.fromhex(
+    "3ad77bb40d7a3660a89ecaf32466ef97b148c17f309ee692287ae57cf12add49"
+)
 
 # RFC 3174 (SHA-1) / FIPS 180-1 sample.
 SHA1_ABC = b"abc"
@@ -510,7 +532,8 @@ def build_tool() -> Path:
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
 class TestKnownAnswers(unittest.TestCase):
-    """Published NIST/RFC vectors for the primitive operations."""
+    """Published NIST/RFC vectors for the primitive operations, plus the
+    cross-checked zero-IV CBC expectation."""
 
     @classmethod
     def setUpClass(cls):
@@ -540,8 +563,8 @@ class TestKnownAnswers(unittest.TestCase):
         )
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         got = json.loads(out.stdout)
-        self.assertEqual(got["cipher"], FIPS197_CIPHER.hex())
-        self.assertEqual(got["roundtrip"], FIPS197_PLAIN.hex())
+        self.assertEqual(got["cipher"], ZERO_START_CBC_CIPHER.hex())
+        self.assertEqual(got["roundtrip"], NIST_SP800_38A_F21_PLAIN.hex())
 
     def test_aes_cmac_rfc4493(self):
         import json

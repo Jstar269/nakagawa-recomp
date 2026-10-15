@@ -129,8 +129,9 @@ mingw32-make BUILD_DIR=build/perf-282 perf-benchmark
 It runs the AOT-gap production smoke, cosimulation, PSMF media, audio, ATRAC bridge, platform-ladder
 AOT-gap, platform-ladder scheduler, and platform-ladder VFS workloads, records per-run status and
 JSON paths, and
-measures disabled/enabled overhead from repeated direct runs of one public production-smoke build
-in `build/perf-282/perf-benchmark/benchmark.json`. Exit 77 is reported as `SKIP`, never as a pass.
+measures disabled/enabled overhead from alternating direct runs (disabled, enabled, disabled, ...) of
+one public production-smoke build in `build/perf-282/perf-benchmark/benchmark.json`. Measured results
+and the verdict rule are in the next section. Exit 77 is reported as `SKIP`, never as a pass.
 Compare two summaries without treating wall-clock metadata as a regression:
 
 ```powershell
@@ -152,6 +153,81 @@ python tools/perf_attribution.py --diff a.json a.log b.json b.log --format json
 
 The tool's docstring defines flips, re-presents, vblanks per new frame, implied fps and the
 `cpu_ms`, `ge_cpu_ms` and `aot_ms` shares. Those cost shares overlap and must not be added together.
+
+### Measured overhead of the perf counters (#282)
+
+Two switches exist. `SR_PERF=1` turns the counters and one-second telemetry on at run time, and
+`SR_HUD=1` turns on counter collection for the overlay. No build switch removes the counter calls:
+with the counters off, each seam costs one predicted-false `sr_perf_enabled` branch. The one
+compile-time switch is `PERF_AOT_INSTRUCTIONS`, which compiles the per-instruction hook into
+generated AOT code. "Switched off versus on" therefore means `SR_PERF=0` versus `SR_PERF=1`, and
+"compiled in versus out" means `PERF_AOT_INSTRUCTIONS=1` versus `0`.
+
+Method. The workload is `production-smoke-gap` (public synthetic guest, `aot-gap` mode), the one the
+`--overhead` check uses. Five arms ran round-robin, with the start arm rotated each round: 30
+rounds, 150 runs, no failures. The arms are `P0-off` and `P0-on` (default build), and `P1-off` and
+`P1-on` (`PERF_AOT_INSTRUCTIONS=1`). `N-off` is the recorder-absent build used in the flight
+recorder section below. Each run is timed two ways. The harness metric is the wall time of
+`fixtures/production_smoke/generate.py run`, which includes Python start-up and the fixture's
+checks. The direct metric is the same executable, with the same arguments and mode environment as
+that fixture passes, and no Python wrapper. A difference is reported as a percentage only when it
+exceeds the larger arm's interquartile range and a two-sided permutation test on the medians gives
+p < 0.05. Otherwise the result reads "not distinguishable from noise at N runs", with a 95% bootstrap
+interval on the median difference in milliseconds.
+
+| Arm | Direct median, IQR (ms) | Harness median, IQR (ms) |
+| --- | --- | --- |
+| `P0-off` | 28.54, 4.75 | 177.59, 7.59 |
+| `P0-on` | 28.89, 3.28 | 180.24, 9.57 |
+| `P1-off` | 28.43, 4.28 | 179.98, 10.26 |
+| `P1-on` | 28.81, 3.41 | 181.14, 7.64 |
+
+| Comparison | Direct 95% interval (ms) | Harness 95% interval (ms) | Result |
+| --- | --- | --- | --- |
+| `SR_PERF` on minus off, default build | [-1.6, +2.6] | [-1.0, +7.8] | not distinguishable from noise at 30 runs |
+| `PERF_AOT_INSTRUCTIONS` 1 minus 0, counters off | [-2.5, +2.0] | [-2.3, +7.3] | not distinguishable from noise at 30 runs |
+| `PERF_AOT_INSTRUCTIONS` 1 minus 0, counters on | [-1.7, +1.3] | [-4.2, +4.4] | not distinguishable from noise at 30 runs |
+
+The counters are deterministic for this workload, as far as one pair shows. Two counter-on runs of one
+build (rounds 0 and 1) differed only in timing fields (`perf_summary_diff`); the count fields matched.
+`PERF_AOT_INSTRUCTIONS=1` changed only `guest.aot_instruction_count` (null to 34), the hook flags, and
+timing, in the one pair compared.
+
+What this does not show. The smoke guest executes 34 AOT and 7 interpreter instructions. In the runs
+inspected its counted guest region was about 5 to 6 ms, and the runtime's own `wall_ns` was 10 to 13 ms
+inside a 178 ms harness run. Its GE, Vulkan and texture counters are all zero. A null result here bounds
+the counter cost only for a workload this small. The platform-ladder fixtures delete every ambient `SR_*`
+variable (the "SR_* namespace rule" in `fixtures/platform_ladder/generate.py`), so their `SR_PERF=1` runs
+stay counter-off. Of 60 such runs, none printed `PERF enabled`, and the harness's summary check flags
+them FAIL because no summary is written. `cosim-selftest` builds with `TRACE=1`, which measures a
+different instrumentation. So the cost of the counters on a workload with substantial guest work is not
+measured here.
+
+Environment. Host: AMD Ryzen 9 5900X (12 cores, 24 threads), Windows 11 Home 10.0.26300, shared with
+other agent sessions and MCP servers, so not idle. Total CPU over the smoke series had a median of 24%
+across run windows (window means 16% to 39%), and no run window averaged above 50%. Toolchain: gcc 16.1.0 (MSYS2 UCRT64),
+GNU Make 4.4.1, Python 3.14.7. Flags are the Makefile defaults: `RUNTIME_OPT=-O0`,
+`-fno-strict-aliasing -Wall -Wextra`, `RECOMP_OPT=-O0`, `FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1`, and
+`SR_FLIGHT_RECORDER_LINKED` plus `PERF_AOT_INSTRUCTIONS` as stated per build. Base commit `788465b2`.
+
+```powershell
+# default build (P0 arms and the recorder-disabled arm); also the source of the harness metric
+mingw32-make BUILD_DIR=build/perf-282/p0/overhead-build BUILD_ROOT=build/perf-282/p0 production-smoke-gap
+# compile-time AOT instruction hook (P1 arms)
+$env:PERF_AOT_INSTRUCTIONS = "1"
+mingw32-make BUILD_DIR=build/perf-282/p1/p1-build BUILD_ROOT=build/perf-282/p1 production-smoke-gap
+Remove-Item Env:PERF_AOT_INSTRUCTIONS
+```
+
+The harness metric and the direct metric were run from a scratch driver that imports the fixture's
+constants and the harness's `_run_one` and `_run_direct`. That driver is not committed.
+
+Harness changes made for this measurement. `--overhead` now builds with `BUILD_ROOT` set to the build
+prefix. Before, the smoke build landed in `build/production-smoke-gap`, while the overhead runs read
+`<prefix>/production-smoke-gap`, so a fresh tree failed with `[WinError 2]`. It also now alternates
+disabled and enabled runs (A B A B), where it used to run all disabled runs before all enabled runs.
+The JSON `ratio` is a bare median ratio with no spread. Judge it with the per-run durations and the
+rule above.
 
 ## VBLANK delivery ledger (is the guest told about too many vblanks?)
 
@@ -1199,6 +1275,47 @@ refused NIDs in first-seen order with a count each (up to 32; further NIDs are c
 `nids_unlisted`). Schema 1 to 4 bundles froze at their first refusal (`unsupported-nid`, kind 2), so
 they cannot show what ran after it. The private triage tooling reports those as frozen at
 a refusal; that grouping is not part of this repository.
+
+### Disabled-recorder overhead (#320)
+
+Switches. `SR_FLIGHT_RECORDER_LINKED` is a compile-time define that the Makefile adds to the runtime, generated-code
+and GE compile flags. When it is defined, each `SR_FLIGHT_RECORD_CLASS` site calls `sr_flight_class_enabled()`,
+and guest store helpers test `g_sr_watch_enabled` first. `SR_FLIGHT` arms the recorder at run time, and
+with it unset the recorder stays disarmed. The Makefile has no switch that omits the define, so the
+recorder-absent build passes `-USR_FLIGHT_RECORDER_LINKED` through an overridden `DEPFLAGS`. The compile rules place
+`DEPFLAGS` after `CFLAGS`, `RECOMP_FLAGS` and `GE_CFLAGS`, so the undefine wins on the compile lines the
+smoke build uses (48 of 48 `gcc -c` lines). Check: in that build no object references a `sr_flight_*`
+symbol (0 of 57 objects; the default build has 9 that do).
+`flight_recorder.c` redefines the switch for its own translation unit, so its object still links,
+but nothing calls into it.
+
+```powershell
+mingw32-make BUILD_DIR=build/perf-282/nolink/p-build BUILD_ROOT=build/perf-282/nolink 'DEPFLAGS=-MMD -MP -MF $(@:.o=.d) -MT $@ -USR_FLIGHT_RECORDER_LINKED' production-smoke-gap
+```
+
+Method. The recorder-disabled arm is `P0-off` (default build, `SR_FLIGHT` unset, counters off). The
+recorder-absent arm is `N-off`. The smoke rows come from the interleaved #282 series (30 rounds, no
+failures). The ladder row comes from a separate 30-round series with the same arms and design. Statistics
+and the verdict rule are those in the #282 section, and the build, toolchain and host are the same. The
+first table gives medians, and the second the intervals on (linked minus absent).
+
+| Workload and timing | Linked, disabled (ms) | Absent (ms) |
+| --- | --- | --- |
+| `production-smoke-gap`, direct executable | 28.54 | 27.95 |
+| `production-smoke-gap`, harness metric | 177.59 | 179.44 |
+| `platform-ladder-sched`, harness metric | 211.24 | 210.09 |
+
+| Workload and timing | 95% interval on linked minus absent (ms) | Result |
+| --- | --- | --- |
+| `production-smoke-gap`, direct executable | [-1.1, +2.6] | not distinguishable from noise at 30 runs |
+| `production-smoke-gap`, harness metric | [-6.2, +0.7] | not distinguishable from noise at 30 runs |
+| `platform-ladder-sched`, harness metric | [-6.4, +7.7] | not distinguishable from noise at 30 runs |
+
+The ladder rows run with `SR_FLIGHT` and `SR_PERF` both removed by the fixture's `SR_*` rule, so
+they measure the compiled-in cost with the recorder disarmed, as the smoke rows do. The direct
+executable interval is the tightest bound. Neither workload is a GE or presentation workload (the
+smoke summary shows zero GE and Vulkan calls), so the recorder sites in
+`src/rt/gpu_sdl3vk/ge_gpu.c` are not measured here.
 
 ## Crash Reporter
 

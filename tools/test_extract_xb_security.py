@@ -337,6 +337,37 @@ class SafeJoinTests(unittest.TestCase):
             with self.assertRaises(UnsafeArchivePathError):
                 safe_join(root, "link/payload.bin")
 
+    def test_contained_path_accepts_parent_root_alias_and_symlinked_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as base:
+            real_parent = os.path.join(base, "real_parent")
+            os.makedirs(real_parent)
+            link_parent = os.path.join(base, "link_parent")
+            try:
+                os.symlink(real_parent, link_parent, target_is_directory=True)
+            except (OSError, NotImplementedError, AttributeError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+
+            alias_root = os.path.join(real_parent, "sub", "..", "output")
+            os.makedirs(alias_root)
+
+            symlink_root = os.path.join(link_parent, "output")
+
+            # Both spellings name the one real directory; the expected target is derived
+            # from the real parent, never by re-canonicalizing the alias input.
+            expected = os.path.join(
+                os.path.realpath(os.path.join(real_parent, "output")), "data", "menu.bin"
+            )
+            self.assertEqual(extract_xb.contained_path(alias_root, "data/menu.bin"), expected)
+            self.assertEqual(extract_xb.contained_path(symlink_root, "data/menu.bin"), expected)
+
+            # A non-canonical root still refuses a member whose directory leaves the root.
+            outside = os.path.join(base, "outside")
+            os.makedirs(outside)
+            os.symlink(outside, os.path.join(real_parent, "output", "escape"), target_is_directory=True)
+            for root in (alias_root, symlink_root):
+                with self.assertRaises(UnsafeArchivePathError):
+                    extract_xb.contained_path(root, "escape/payload.bin")
+
 
 class VerifyExtractedTreeTests(unittest.TestCase):
     def test_a_clean_tree_passes(self) -> None:

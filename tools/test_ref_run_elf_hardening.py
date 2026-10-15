@@ -102,6 +102,29 @@ int main(int argc, char **argv) {{
         if (mem.last_fault()) return 31;
         return 0;
     }}
+    if (strcmp(mode, "shbounds") == 0) {{
+        auto elf = base_elf(52); wr32(elf, 32, 50); wr16(elf, 46, 40); wr16(elf, 48, 1); LoadElf(elf, &mem); return 15;
+    }}
+    if (strcmp(mode, "shentsize") == 0) {{
+        auto elf = base_elf(92); wr32(elf, 32, 52); wr16(elf, 46, 10); wr16(elf, 48, 1); LoadElf(elf, &mem); return 16;
+    }}
+    if (strcmp(mode, "shstrndx") == 0) {{
+        auto elf = base_elf(92); wr32(elf, 32, 52); wr16(elf, 46, 40); wr16(elf, 48, 1); wr16(elf, 50, 5); LoadElf(elf, &mem); return 17;
+    }}
+    if (strcmp(mode, "secbounds") == 0) {{
+        auto elf = base_elf(92); wr32(elf, 32, 52); wr16(elf, 46, 40); wr16(elf, 48, 1);
+        wr32(elf, 52 + 16, 90); wr32(elf, 52 + 20, 10); LoadElf(elf, &mem); return 18;
+    }}
+    if (strcmp(mode, "entryunaligned") == 0) {{
+        auto elf = base_elf(88); wr32(elf, 24, 0x08000011u); wr32(elf, 28, 52); wr16(elf, 42, 32); wr16(elf, 44, 1);
+        wr32(elf, 52, 1); wr32(elf, 56, 84); wr32(elf, 60, 0x08000010u); wr32(elf, 68, 4); wr32(elf, 72, 8);
+        LoadElf(elf, &mem); return 19;
+    }}
+    if (strcmp(mode, "entryunmapped") == 0) {{
+        auto elf = base_elf(88); wr32(elf, 24, 0x00400000u); wr32(elf, 28, 52); wr16(elf, 42, 32); wr16(elf, 44, 1);
+        wr32(elf, 52, 1); wr32(elf, 56, 84); wr32(elf, 60, 0x08000010u); wr32(elf, 68, 4); wr32(elf, 72, 8);
+        LoadElf(elf, &mem); return 20;
+    }}
     if (strcmp(mode, "valid") == 0) {{
         auto elf = base_elf(88); wr32(elf, 28, 52); wr16(elf, 42, 32); wr16(elf, 44, 1);
         wr32(elf, 52, 1); wr32(elf, 56, 84); wr32(elf, 60, 0x08000010u); wr32(elf, 68, 4); wr32(elf, 72, 8);
@@ -137,9 +160,15 @@ int main(int argc, char **argv) {{
             self.assertEqual(valid.returncode, 0, valid.stderr + valid.stdout)
             unmapped = subprocess.run([str(exe), "unmapped"], capture_output=True, text=True)
             self.assertEqual(unmapped.returncode, 0, unmapped.stderr + unmapped.stdout)
-            for mode in ("phbounds", "phentsize", "segbounds", "memrange", "filesz"):
+            entry_reasons = {
+                "entryunaligned": "ELF entry address unaligned",
+                "entryunmapped": "ELF entry address out of mapped guest memory",
+            }
+            for mode in ("phbounds", "phentsize", "segbounds", "memrange", "filesz", "shbounds", "shentsize", "shstrndx", "secbounds", "entryunaligned", "entryunmapped"):
                 result = subprocess.run([str(exe), mode], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 2, f"{mode}: {result.stderr}{result.stdout}")
+                if mode in entry_reasons:
+                    self.assertIn(entry_reasons[mode], result.stderr, mode)
 
 
 @unittest.skipUnless(CC, "no C++ compiler on PATH")
