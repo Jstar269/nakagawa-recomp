@@ -5034,7 +5034,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "6030ed1d450367a7797604a0ea928969fe0379f00aff388b812a1b2862aa80b1"
+      "sha256": "a2ce9bf14e2635ce05df122127bffc55e283a0c73aba814b3e6cf033c313adf6"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -9072,7 +9072,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ad7c74d90a1ea7278813905be44f161e4badfd3451f4c9ab2228277a4c514028"
+      "sha256": "4464be86203b2229863de8694d92ac65b479bf8625c24fc277a07498c9f2c67c"
     },
     {
       "path": "tools/test_nid_name_proof.py",
