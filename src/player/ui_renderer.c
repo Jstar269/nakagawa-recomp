@@ -1486,6 +1486,7 @@ static bool draw_button_focused(SDL_Renderer *ren, float x, float y, float w, fl
                                 bool focused) {
     bool hovered = in ? is_point_in_rect((float)in->mouse_x, (float)in->mouse_y, x, y, w, h) : false;
     bool activated = in && in->activate_pressed && focused;
+    bool pressed = hovered && in && in->mouse_down;
     SDL_Color bg = is_accent ? (hovered ? COLOR_EMERALD_HOVER : COLOR_EMERALD) : (hovered ? COLOR_CARD_HOVER : COLOR_CARD_BG);
     SDL_Color border = is_accent ? COLOR_EMERALD : COLOR_CARD_BORDER;
     SDL_Color text = is_accent ? (SDL_Color){10, 25, 20, 255} : COLOR_TEXT_WHITE;
@@ -1503,7 +1504,7 @@ static bool draw_button_focused(SDL_Renderer *ren, float x, float y, float w, fl
         ring.a = (Uint8)(255.0f * pulse);
         draw_rounded_outline(ren, x - 2.0f, y - 2.0f, w + 4.0f, h + 4.0f, 9.0f, ring);
     }
-    if (activated) {
+    if (activated || pressed) {
         draw_filled_rect(ren, x + 2.0f, y + 2.0f, w - 4.0f, 2.0f, COLOR_LIME);
     }
 
@@ -1854,11 +1855,21 @@ static void render_footer_hints(SDL_Renderer *ren, PlayerApp *app) {
     float h = (float)app->window_height;
     if (h < 560.0f) return;
     const char *hints = "O: Add ISO · Arrows: Select · Tab: Focus · Enter: Activate · S: Settings · ESC: Back";
-    if (w < 900.0f) {
-        hints = "O: Add · Arrows: Select · Tab: Focus · Enter: OK · S: Settings";
-    }
-    if (w < 640.0f) {
-        hints = "O: Add · Tab: Focus · Enter: OK";
+    if (app->settings.controller_connected) {
+        hints = "D-Pad: Select · A: Activate · B: Back · Y: Add ISO · Start: Settings";
+        if (w < 900.0f) {
+            hints = "D-Pad: Select · A: Activate · B: Back · Start: Settings";
+        }
+        if (w < 640.0f) {
+            hints = "D-Pad: Select · A: OK · B: Back";
+        }
+    } else {
+        if (w < 900.0f) {
+            hints = "O: Add · Arrows: Select · Tab: Focus · Enter: OK · S: Settings";
+        }
+        if (w < 640.0f) {
+            hints = "O: Add · Tab: Focus · Enter: OK";
+        }
     }
     float max_w = w - 64.0f;
     if (max_w <= 0.0f) return;
