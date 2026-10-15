@@ -118,8 +118,9 @@ MUTANTS: tuple[Mutant, ...] = (
             # repairing the damage, so the mutant would survive for a reason that
             # has nothing to do with the comparator. Remove the whole mechanism. The
             # count is the number of per-instruction restore sites in guest_interp.c
-            # (the unaligned word forms added the eleventh); a new site bumps it.
-            ("s->r[0] = 0u;", "(void)0;", 11),
+            # (the unaligned word forms added the eleventh and the SPECIAL3 forms
+            # the twelfth); a new site bumps it.
+            ("s->r[0] = 0u;", "(void)0;", 12),
         ],
     ),
     Mutant(
@@ -144,9 +145,11 @@ MUTANTS: tuple[Mutant, ...] = (
         "wrong-branch-target",
         "incorrect branch target",
         [(
+            # Four decoders share this expression: beq/bne and their likely
+            # forms, blezl/bgtzl, bltzl/bgezl, and the bc1 group.
             "        out->target = pc + 4u + (sign_extend_16(opcode) << 2);",
             "        out->target = pc + 8u + (sign_extend_16(opcode) << 2);",
-            1,
+            4,
         )],
     ),
     Mutant(
@@ -156,6 +159,71 @@ MUTANTS: tuple[Mutant, ...] = (
             "        out->target = ((pc + 4u) & 0xf0000000u) | ((opcode & 0x03ffffffu) << 2);",
             "        out->target = ((pc + 4u) & 0xf0000000u) | "
             "(((opcode & 0x03ffffffu) << 2) + 4u);",
+            1,
+        )],
+    ),
+    Mutant(
+        "likely-slot-not-annulled",
+        "a not-taken branch-likely still executes its delay slot",
+        [(
+            "            if (transfer.likely && !transfer.taken) {\n",
+            "            if (0 && transfer.likely && !transfer.taken) {\n",
+            1,
+        )],
+    ),
+    Mutant(
+        "bc1-inverted-sense",
+        "bc1t/bc1f test the wrong sense of FCC0",
+        [(
+            "        out->taken = tf != 0u ? condition : !condition;",
+            "        out->taken = tf != 0u ? !condition : condition;",
+            1,
+        )],
+    ),
+    Mutant(
+        "movn-inverted",
+        "movn writes when its condition register is zero",
+        [(
+            "if (read_gpr(s, rt) != 0u) write_gpr(s, rd, read_gpr(s, rs));",
+            "if (read_gpr(s, rt) == 0u) write_gpr(s, rd, read_gpr(s, rs));",
+            1,
+        )],
+    ),
+    Mutant(
+        "ext-size-off-by-one",
+        "ext extracts one bit fewer than its size field encodes",
+        [(
+            "            const uint32_t size = rd + 1u;\n",
+            "            const uint32_t size = rd;\n",
+            1,
+        )],
+    ),
+    Mutant(
+        "ins-keeps-old-field",
+        "ins ORs into the destination instead of replacing the field",
+        [(
+            "write_gpr(s, rt, (old_value & ~field_mask) | inserted);",
+            "write_gpr(s, rt, old_value | inserted);",
+            1,
+        )],
+    ),
+    Mutant(
+        "seb-zero-extends",
+        "seb fails to sign-extend a negative byte",
+        [(
+            "write_gpr(s, rd, (byte & 0x80u) != 0u ? byte | 0xffffff00u : byte);",
+            "write_gpr(s, rd, byte);",
+            1,
+        )],
+    ),
+    Mutant(
+        "mov-s-quiets-nan",
+        "mov.s quiets a signaling NaN instead of copying the raw word",
+        [(
+            "            s->fi[fd] = s->fi[fs];\n",
+            "            s->fi[fd] = ((s->fi[fs] & 0x7f800000u) == 0x7f800000u &&\n"
+            "                         (s->fi[fs] & 0x007fffffu) != 0u)\n"
+            "                ? (s->fi[fs] | 0x00400000u) : s->fi[fs];\n",
             1,
         )],
     ),
@@ -221,6 +289,26 @@ MUTANTS: tuple[Mutant, ...] = (
         [(
             "uint32_t _sc = s->llbit != 0u ? 1u : 0u; ",
             "uint32_t _sc = 1u; ",
+            1,
+        )],
+        target="generator",
+    ),
+    Mutant(
+        "codegen-likely-slot-always-runs",
+        "GENERATOR: a not-taken branch-likely still runs its delay slot",
+        [(
+            "            if is_likely(w):\n",
+            "            if False and is_likely(w):\n",
+            2,
+        )],
+        target="generator",
+    ),
+    Mutant(
+        "codegen-ins-keeps-old-field",
+        "GENERATOR: ins ORs into the destination instead of replacing the field",
+        [(
+            'f"(({R(rt(w))} & ~0x{mask:x}u) | (({R(rs(w))} << {pos}) & 0x{mask:x}u))"',
+            'f"({R(rt(w))} | (({R(rs(w))} << {pos}) & 0x{mask:x}u))"',
             1,
         )],
         target="generator",

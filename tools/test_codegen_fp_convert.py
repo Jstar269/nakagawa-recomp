@@ -424,6 +424,42 @@ def _run_generated_fixture(test, name, words, harness_main, codegen_path=None):
 # arithmetic in this repository; the mul.s row reproduces the hardware-published
 # RM anchors (18.386576 under RN/RP, 18.386574 under RZ/RM).
 
+_MOV_RAW_BITS_MAIN = r'''\
+#include <stdint.h>
+#include <stdio.h>
+#include <xmmintrin.h>
+#include "fp_raw_bits_funcs.h"
+
+int main(void) {
+    static const uint32_t inputs[] = {
+        0x7f800001u, 0xff812345u, 0x7fc12345u, 0xffc54321u,
+        0x00000001u, 0x807fffffu, 0x80000000u, 0xffffffffu,
+    };
+    const uint32_t original = _mm_getcsr();
+    const uint32_t hostile = original | (1u << 15) | (1u << 6); /* FTZ + DAZ */
+    unsigned failures = 0u;
+    for (unsigned i = 0u; i < sizeof inputs / sizeof inputs[0]; ++i) {
+        CpuState s = {0};
+        _mm_setcsr(hostile);
+        s.r[8] = inputs[i];
+        s.fcr31 = 0x01000000u; /* guest FS: moves must still preserve subnormals */
+        f_00001000(&s);
+        if (s.fi[0] != inputs[i] || s.fi[1] != inputs[i] || s.r[9] != inputs[i]) {
+            fprintf(stderr, "FAIL raw move %08x -> f0=%08x f1=%08x r9=%08x\\n",
+                    inputs[i], s.fi[0], s.fi[1], s.r[9]);
+            ++failures;
+        }
+        if (s.fcr31 != 0x01000000u || _mm_getcsr() != hostile) {
+            fprintf(stderr, "FAIL raw move changed guest FCR31 or host MXCSR\\n");
+            ++failures;
+        }
+    }
+    _mm_setcsr(original);
+    printf("generated_fp_raw_moves: %s\\n", failures == 0u ? "PASS" : "FAIL");
+    return failures == 0u ? 0 : 1;
+}
+'''
+
 _CELL1_MAIN = """\
 #include <fenv.h>
 #include <stdio.h>
@@ -839,8 +875,9 @@ class GeneratedScalarFcr31Tests(unittest.TestCase):
     Expectations are raw IEEE-754 words derived independently by rational
     arithmetic in this repository; the mul.s row additionally reproduces the
     public PSP_HARDWARE RM anchors, and CELL 5 pins the project's own PSP-3000
-    measurement words. The production interpreter floor has no
-    COP1 support yet, so these cells are AOT-executor scoped by design.
+    measurement words. The bounded interpreter subset is exercised separately
+    by the two-tier cosim cells; this broad kernel oracle remains AOT-only for
+    scalar operations outside that subset.
     """
 
     def test_cell1_rounding_modes_direct_scalar_arithmetic(self):
@@ -858,6 +895,23 @@ class GeneratedScalarFcr31Tests(unittest.TestCase):
         self.assertIn("sr_fpu_add_s", emitted)
         self.assertIn("sr_fpu_sub_s", emitted)
         self.assertIn("sr_fpu_div_s", emitted)
+
+    def test_mov_s_is_a_raw_word_copy_under_hostile_host_and_guest_flush_modes(self):
+        """MOV.S moves a register word; it must not behave as an arithmetic op.
+
+        MIPS32 defines MOV.fmt as a non-arithmetic copy that raises no IEEE
+        exception, so signaling-NaN payloads, subnormals and negative zero must
+        cross it unchanged whatever the guest FS bit or the host MXCSR flush
+        modes say. No PSP measurement of MOV.S on a signaling NaN exists; this
+        pins the ISA statement against the generated host C.
+        """
+        words = [
+            _mtc1(8, 0),                         # mtc1 t0,f0
+            _fps(0, 1, 0x06),                   # mov.s f1,f0
+            _mfc1(9, 1),                         # mfc1 t1,f1
+            0x03E00008, 0x00000000,
+        ]
+        _run_generated_fixture(self, "fp_raw_bits", words, _MOV_RAW_BITS_MAIN)
 
     def test_cell2_fs_bit_gates_gradual_underflow(self):
         words: list[int] = [

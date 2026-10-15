@@ -13674,7 +13674,8 @@ static uint32_t h_IoLseek32(CpuState *s) {
     return f->off;
 }
 static uint32_t h_IoLseek(CpuState *s) {
-    /* a0=fd, [a2:a3]=64-bit offset, [sp+16]=whence. Returns 64-bit pos in v0:v1. */
+    /* a0=fd, a2/a3=aligned 64-bit offset (a1 is skipped), t0=whence.
+     * Returns the 64-bit position in v0:v1. */
     uint32_t fd = A0;
     int64_t off = (int64_t)(((uint64_t)A3 << 32) | A2);
     uint32_t whence = stack_arg(s, 0);
