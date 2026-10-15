@@ -50,15 +50,48 @@ GIM_MAX_BLOCKS = 1 << 20
 # The inventory schema written by tools/extract_xb.py process_extracted_directory.
 INVENTORY_CATEGORIES = ("textures", "sounds", "scene_graphs", "other")
 INVENTORY_ITEM_KEYS = ("name", "path", "size_bytes")
+def _format_os_error(e: Exception) -> str:
+    """Format an exception without leaking absolute host paths from e.filename."""
+    if isinstance(e, OSError):
+        if e.errno is not None:
+            return f"[Errno {e.errno}] {e.strerror}"
+        if e.strerror:
+            return e.strerror
+    return str(e)
+
 
 
 class InventoryError(Exception):
     """An inventory_map.json could not be read, parsed, or fails the schema."""
 
 
-def compute_md5(fpath: str) -> str:
-    """Compute MD5 hash of a file."""
-    hasher = hashlib.md5()
+# Golden-reference digests (tools/reference_hashes.json). The reference is a local,
+# game-derived drift check generated from the same tree it checks, so it is not an
+# integrity or security anchor (issue #969). New references are written in the
+# versioned SHA-256 format below. MD5 is read only from legacy, unversioned
+# references written before that format existed. It is a plain checksum for those
+# files and must never be presented as a security control.
+REFERENCE_FORMAT_VERSION = 1
+REFERENCE_ALGORITHM = "sha256"
+LEGACY_REFERENCE_ALGORITHM = "md5"
+REFERENCE_HASHERS = {
+    "md5": lambda: hashlib.md5(usedforsecurity=False),
+    "sha256": hashlib.sha256,
+}
+_REFERENCE_DIGEST_PATTERNS = {
+    "md5": re.compile(r"[0-9a-f]{32}"),
+    "sha256": re.compile(r"[0-9a-f]{64}"),
+}
+_REFERENCE_TOP_LEVEL_KEYS = frozenset(("format_version", "algorithm", "digests"))
+
+
+class ReferenceFormatError(Exception):
+    """A golden reference file is unreadable, malformed, or uses an unknown format."""
+
+
+def compute_digest(fpath: str, algorithm: str) -> str:
+    """Hash a file with a reference algorithm: `sha256`, or legacy `md5`."""
+    hasher = REFERENCE_HASHERS[algorithm]()
     with open(fpath, "rb") as f:
         while True:
             chunk = f.read(65536)
@@ -97,7 +130,7 @@ def check_gim_palette(gim_path: str) -> tuple[bool, str]:
         with open(gim_path, "rb") as f:
             data = f.read()
     except Exception as e:
-        return False, f"Failed to read file: {e}"
+        return False, f"Failed to read file: {_format_os_error(e)}"
 
     if len(data) < GIM_HEADER_SIZE:
         return False, (
@@ -235,7 +268,7 @@ def check_sgd_stream_links(sgd_path: str, local_files_lower: set, local_full_low
         with open(sgd_path, "rb") as f:
             data = f.read()
     except Exception as e:
-        return False, f"Failed to read file: {e}"
+        return False, f"Failed to read file: {_format_os_error(e)}"
 
     # Extract printable ASCII paths/filenames that could be stream targets
     strings = re.findall(b"[a-zA-Z0-9_./\\\\-]{4,128}", data)
@@ -275,7 +308,7 @@ def _load_inventory(inv_path: str) -> dict:
         with open(inv_path, "r", encoding="utf-8") as f:
             text = f.read()
     except OSError as e:
-        raise InventoryError(f"unreadable ({e})") from None
+        raise InventoryError(f"unreadable ({_format_os_error(e)})") from None
     except UnicodeDecodeError as e:
         raise InventoryError(f"not valid UTF-8 text ({e})") from None
     try:
@@ -289,6 +322,42 @@ def _load_inventory(inv_path: str) -> dict:
 
 def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def parse_reference(payload: object) -> tuple[str, dict]:
+    """Return (algorithm, {reference key: digest}) for a parsed reference file.
+
+    Versioned (integer format_version 1):
+        {"format_version": 1, "algorithm": "sha256", "digests": {key: hex}}
+    Legacy (no integer format_version): a flat {key: md5 hex} object written
+    before the versioned format existed. An unknown format version or algorithm,
+    a malformed digest, or any other shape problem fails closed.
+    """
+    if not isinstance(payload, dict):
+        raise ReferenceFormatError(
+            f"top-level JSON value must be an object, got {type(payload).__name__}"
+        )
+    if _is_int(payload.get("format_version")):
+        version = payload["format_version"]
+        if version != REFERENCE_FORMAT_VERSION:
+            raise ReferenceFormatError(f"unsupported reference format_version {version}")
+        unknown = sorted(set(payload) - _REFERENCE_TOP_LEVEL_KEYS)
+        if unknown:
+            raise ReferenceFormatError(f"unexpected reference key(s): {', '.join(unknown)}")
+        algorithm = payload.get("algorithm")
+        if algorithm != REFERENCE_ALGORITHM:
+            raise ReferenceFormatError(f"unsupported digest algorithm {algorithm!r}")
+        digests = payload.get("digests")
+        if not isinstance(digests, dict):
+            raise ReferenceFormatError("'digests' must be an object of reference key to digest")
+    else:
+        algorithm = LEGACY_REFERENCE_ALGORITHM
+        digests = payload
+    pattern = _REFERENCE_DIGEST_PATTERNS[algorithm]
+    for key, value in digests.items():
+        if not isinstance(value, str) or not pattern.fullmatch(value):
+            raise ReferenceFormatError(f"malformed {algorithm} digest for {key!r}")
+    return algorithm, digests
 
 
 def _path_is_contained(rel_path: str) -> bool:
@@ -392,16 +461,22 @@ def main():
     print(f"Index built: {len(local_files_lower)} files registered.")
 
     # Load reference hashes if not bootstrapping
+    ref_algorithm = REFERENCE_ALGORITHM
     ref_hashes = {}
     if not args.bootstrap:
         if os.path.isfile(ref_path):
             try:
                 with open(ref_path, "r", encoding="utf-8") as f:
-                    ref_hashes = json.load(f)
+                    ref_algorithm, ref_hashes = parse_reference(json.load(f))
                 print(f"Loaded {len(ref_hashes)} golden reference hashes from {os.path.basename(ref_path)}.")
             except Exception as e:
-                print(f"Error reading reference hashes: {e}")
+                print(f"Error reading reference hashes: {_format_os_error(e)}")
                 sys.exit(1)
+            if ref_algorithm == LEGACY_REFERENCE_ALGORITHM:
+                print(
+                    f"Note: {os.path.basename(ref_path)} uses the legacy unversioned MD5 format; "
+                    "run --bootstrap to regenerate it in the versioned SHA-256 format."
+                )
         else:
             print(
                 f"Reference file {os.path.basename(ref_path)} not found. "
@@ -409,6 +484,8 @@ def main():
             )
             sys.exit(2)
 
+    # Bootstrap always writes the current format; checking uses the reference's own algorithm.
+    digest_algorithm = REFERENCE_ALGORITHM if args.bootstrap else ref_algorithm
     new_ref_hashes = {}
     mismatches = []
     palette_failures = []
@@ -425,7 +502,7 @@ def main():
         try:
             inv = _load_inventory(inv_path)
         except InventoryError as e:
-            print(f"Error reading index {inv_path}: {e}")
+            print(f"Error reading index {_display_path(inv_path, extracted_dir)}: {e}")
             inventory_failures.append((inv_path, str(e)))
             continue
 
@@ -434,7 +511,7 @@ def main():
             summary = "; ".join(shape_problems[:5])
             if len(shape_problems) > 5:
                 summary += f" (and {len(shape_problems) - 5} more)"
-            print(f"Error reading index {inv_path}: schema violations: {summary}")
+            print(f"Error reading index {_display_path(inv_path, extracted_dir)}: schema violations: {summary}")
             inventory_failures.append((inv_path, f"schema violations: {summary}"))
             continue
 
@@ -450,9 +527,9 @@ def main():
                     continue
 
                 try:
-                    h = compute_md5(full_path)
+                    h = compute_digest(full_path, digest_algorithm)
                 except OSError as e:
-                    mismatches.append((rel_path, f"Unreadable asset: {e}"))
+                    mismatches.append((rel_path, f"Unreadable asset: {_format_os_error(e)}"))
                     continue
 
                 # Store in bootstrap database
@@ -468,7 +545,9 @@ def main():
                         # Record it (warn later); only hard-fail under --strict.
                         missing_from_golden.append(db_key)
                     elif ref_h != h:
-                        mismatches.append((db_key, f"Hash mismatch (Got: {h}, Expected: {ref_h})"))
+                        mismatches.append(
+                            (db_key, f"Hash mismatch [{digest_algorithm}] (Got: {h}, Expected: {ref_h})")
+                        )
 
                 # 2. Check texture palette for GIMs
                 if cat == "textures" and rel_path.lower().endswith(".gim"):
@@ -501,11 +580,16 @@ def main():
         )
     elif args.bootstrap:
         try:
+            payload = {
+                "format_version": REFERENCE_FORMAT_VERSION,
+                "algorithm": REFERENCE_ALGORITHM,
+                "digests": new_ref_hashes,
+            }
             with open(ref_path, "w", encoding="utf-8") as f:
-                json.dump(new_ref_hashes, f, indent=4)
+                json.dump(payload, f, indent=4)
             print(f"\nBootstrapped/updated reference hashes file: {ref_path} ({len(new_ref_hashes)} files logged)")
         except Exception as e:
-            print(f"Failed to write reference hashes: {e}")
+            print(f"Failed to write reference hashes: {_format_os_error(e)}")
             sys.exit(1)
 
     # Report detailed failures
