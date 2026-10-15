@@ -394,7 +394,9 @@ out-of-order stub warnings (issue #400). `probe.c` mirrors the documented
   InterruptManagerForKernel, which a user-mode probe cannot import.
   The rule was corrected on 2026-10-15 from a value rule to this completion rule.
   Archives recorded under the value rule (each trial FAIL with result 0) are refused
-  by the current checker. The corrected probe is re-measured at the next PSP session.
+  by the current checker. The corrected probe, built from `ec5dd563`, was re-run on a
+  PSP-3000 (6.61) on 2026-10-15. The run is acceptance-eligible, and all 20 trials
+  completed.
 
 All four emit `PSP-MUTEX-001` records. `status=PASS` means only that the
 machinery ran and every scalar was captured; it makes no claim that any host

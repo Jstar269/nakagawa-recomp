@@ -22264,6 +22264,26 @@ static void test_psp_mutex(void) {
 
     SceKernelMutexInfoTest info;
 
+    /* ---- Interrupt context: UnlockMutex is gated before the owner check ----
+     * PSP-measured 2026-10-15 (PSP-3000, 6.61; acceptance-eligible run on probe ec5dd563): in every
+     * one of 20 VBLANK sub-interrupt trials, all six mutex calls returned ILLEGAL_CONTEXT (0x80020064),
+     * including an unlock of a mutex the handler does not own. Lock, LockCB and TryLock already gate;
+     * Unlock must gate the same way. */
+    {
+        uint32_t mi = mtx_create("intr_unlock", 0, 1);
+        expect(mi > 0 && mtx_get_info(mi, &info) && info.currentCount == 1 &&
+               info.lockThread == (int32_t)cur->uid,
+               "IntrUnlock: mutex is held by the caller before the interrupt-context unlock");
+        s_cur = -1;   /* interrupt context: sched_is_intr_context() is true */
+        expect(mtx_unlock(mi, 1) == 0x80020064u,
+               "IntrUnlock: UnlockMutex in interrupt context returns ILLEGAL_CONTEXT (0x80020064)");
+        s_cur = (int)(cur - s_tcb);
+        expect(mtx_get_info(mi, &info) && info.currentCount == 1 &&
+               info.lockThread == (int32_t)cur->uid,
+               "IntrUnlock: the rejected unlock leaves the mutex held by its owner");
+        expect(mtx_delete(mi) == 0, "IntrUnlock: the held mutex still deletes");
+    }
+
     /* ---- T01, T02, T03, T04, T05: Creation, Attributes, Name bounds, Init count ---- */
     uint32_t m1 = mtx_create("test_mutex", 0, 0);
     expect(m1 > 0, "T01: CreateMutex with initCount=0 returns valid UID");

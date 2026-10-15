@@ -21835,6 +21835,12 @@ static uint32_t h_UnlockMutex(CpuState *s) {
     uint32_t uid = A0;
     int count = (int)A1;
 
+    /* Interrupt context is gated ahead of the object and owner checks, as Lock, LockCB and TryLock
+     * are. PSP-measured 2026-10-15 (PSP-3000, 6.61; acceptance-eligible mutex-interrupt-context run on
+     * probe ec5dd563): in 20 of 20 VBLANK sub-interrupt trials, an unlock of a mutex the handler does
+     * not own returned ILLEGAL_CONTEXT (0x80020064), not MUTEX_NOT_OWNED. */
+    if (sched_is_intr_context()) return SCE_KERNEL_ERROR_ILLEGAL_CONTEXT;
+
     Mutex *m = mutex_find(uid);
     if (!m) return SCE_KERNEL_ERROR_UNKNOWN_MUTEXID;
 
