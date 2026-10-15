@@ -5046,7 +5046,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b6868d7c1f8bec625c25173378b3c7fd85fffbf13c706a82e2204f44e8a481c9"
+      "sha256": "da77f7a1ca4140345b44eeefcd787005e2ad8b450b41dfc1dfe7f363148df73a"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -8495,7 +8495,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4950fb8f3e833ad2d2ce1b3034c0fa6a45c128c6caccb4e4d4551e5189356c4e"
+      "sha256": "d0e6a09da046c51ac7ea5b015d250e24c34d17cf32f82aa2c4ebfd0d25948e26"
     },
     {
       "path": "tools/test_flight_build_identity.py",
