@@ -249,8 +249,9 @@ class _OmitAot:
     An omitted address stays in the guest image and in analyzer discovery, but is
     removed from the emission/registration catalog, so generated callers reach it
     through the ordinary production dispatcher instead of a direct C call. A linked
-    call carries its resume PC with ``dispatch_call``; a tail transfer uses
-    ``dispatch`` with no native resume boundary. This is the seam an interpreter
+    call carries its resume PC with ``dispatch_call``; a tail transfer records a
+    pending transfer with no native resume boundary, which the invoker drains through
+    the dispatcher. This is the seam an interpreter
     fallback plugs into; with no interpreter it fails closed at the dispatch miss.
     """
 
@@ -552,6 +553,29 @@ def emit_host_return(resumable, comment=None, stack_census=False):
     return "s->r[29] = _sp_entry; return;"
 
 
+def emit_tail_transfer(target_expr, fn_symbol, resumable, stack_census=False, comment=None):
+    """A guest TAIL transfer (#855): record it and leave; the invoker drains it.
+
+    The transfer never nests a native call, so a guest loop of tail transfers runs in
+    constant host stack. A callable body still owes its entry-SP restore; it travels with
+    the transfer and the drain applies it once the chain completes, exactly where the
+    nested native return used to apply it. A resume body owes none, and under the stack
+    census the wrapper restores after its own drain. ``fn_symbol`` keeps a known target's
+    direct call (no dispatcher entry); ``None`` keeps a computed or unknown target's
+    dispatch, which also keeps that path's timeslice tick and guards.
+    """
+    fn = fn_symbol if fn_symbol else "NULL"
+    suffix = f" /* {comment} */" if comment else ""
+    if resumable or stack_census:
+        return f"sr_tail_record(s, {target_expr}, {fn}, 0u, 0u); return;{suffix}"
+    return f"sr_tail_record(s, {target_expr}, {fn}, _sp_entry, 1u); return;{suffix}"
+
+
+def emit_body_call(symbol):
+    """A direct CALL of a native body completes the callee's tail chain before going on."""
+    return f"{symbol}(s); SR_TAIL_DRAIN(s);"
+
+
 def emit_host_fallthrough(resumable, stack_census=False):
     """Natural C fallthrough follows the same entry contract without a fake guest return."""
     if resumable:
@@ -595,6 +619,7 @@ def wrap_stack_census_functions(func_texts, emitted, resume_owners):
             f"    uint32_t _sr_census_entry_sp = s->r[29];\n"
             f"    sr_stack_census_enter(0x{addr:08x}u);\n"
             f"    {body}(s);\n"
+            "    SR_TAIL_DRAIN(s);\n"
             f"    sr_stack_census_exit(0x{addr:08x}u, _sr_census_entry_sp, "
             "s->r[29], s->flow_kind);\n"
             "    if (s->flow_kind == 0u) s->r[29] = _sr_census_entry_sp;\n"
@@ -2558,7 +2583,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); s->r[31] = {G((addr + 8) & 0xFFFFFFFF)}; sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
             if target in known or target in resume_owners:
-                out.append(f"    {ADDRESS_SPACE.symbol(target, resume_owners)}(s);")
+                out.append(f"    {emit_body_call(ADDRESS_SPACE.symbol(target, resume_owners))}")
                 if lle_cpu:
                     out.append(f"    {_flow_return(resumable)}")
             else:
@@ -2592,7 +2617,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                     out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline; skip its labelled duplicate */")
             else:
                 out.append(
-                    f"      dispatch(s, _t); {emit_host_return(resumable, stack_census=stack_census)} }}"
+                    f"      {emit_tail_transfer('_t', None, resumable, stack_census)} }}"
                 )
             continue
         if op == 0 and fn == 0x08:  # jr rs
@@ -2610,7 +2635,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                     out.append(f"    {emit_host_return(resumable, stack_census=stack_census)}")
                 else:
                     out.append(f"    {{ uint32_t _t = {R(a)};")
-                    out.append(f"      dispatch(s, _t); {emit_host_return(resumable, stack_census=stack_census)} }}")
+                    out.append(f"      {emit_tail_transfer('_t', None, resumable, stack_census)} }}")
             elif a == 31:
                 # `jr $ra` IS the host return; $ra is read at the transfer by
                 # construction, so a slot that rewrites it cannot redirect this.
@@ -2624,7 +2649,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
                 out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,
                                             indent="      "))
-                out.append(f"      dispatch(s, _t); {emit_host_return(resumable, stack_census=stack_census)} }}")
+                out.append(f"      {emit_tail_transfer('_t', None, resumable, stack_census)} }}")
             continue
         if op == 2:  # j
             ADDRESS_SPACE.check_jump(addr, w)
@@ -2638,12 +2663,12 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             elif (target in known or target in resume_owners) and not (
                 target in resume_owners and target in labels
             ):
-                out.append(f"    {ADDRESS_SPACE.symbol(target, resume_owners)}(s); {emit_host_return(resumable, stack_census=stack_census)}")
+                out.append(f"    {emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners), resumable, stack_census)}")
             elif target in labels:
                 y = f"SR_YIELD(s, {G(addr)}); " if target <= addr else ""   # backward j: loop edge
                 out.append(f"    {y}goto L_{target:08x};")
             else:
-                out.append(f"    {{ uint32_t _t = {G(target)}; dispatch(s, _t); {emit_host_return(resumable, stack_census=stack_census)} }}")
+                out.append(f"    {{ uint32_t _t = {G(target)}; {emit_tail_transfer('_t', None, resumable, stack_census)} }}")
             continue
         # conditional branch
         target = branch_target(addr, w)
@@ -2672,10 +2697,10 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 out.append(f"      if (_c) {{ {y}goto L_{target:08x}; }} }}")
         else:
             if is_likely(w):
-                out.append(f"      if (_c) {{ {_delay_inline} {{ s->pc = {G(target)}; dispatch(s, s->pc); {emit_host_return(resumable, stack_census=stack_census)} }} }} }}")
+                out.append(f"      if (_c) {{ {_delay_inline} {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable, stack_census)} }} }} }}")
             else:
                 out.extend("   " + line for line in _delay)
-                out.append(f"      if (_c) {{ {{ s->pc = {G(target)}; dispatch(s, s->pc); {emit_host_return(resumable, stack_census=stack_census)} }} }} }}")
+                out.append(f"      if (_c) {{ {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable, stack_census)} }} }} }}")
         if addr in dup_slot_skips:
             out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline (or was annulled); skip its labelled duplicate */")
     if continuations:
@@ -2690,12 +2715,11 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 # is no native symbol to call, and this edge is a tail-shaped transfer:
                 # dispatch the guest target and then leave the current native body.
                 out.append(
-                    f"    {{ uint32_t _t = {G(target)}; dispatch(s, _t); "
-                    f"{emit_host_return(resumable, stack_census=stack_census)} }}"
+                    f"    {{ uint32_t _t = {G(target)}; "
+                    f"{emit_tail_transfer('_t', None, resumable, stack_census)} }}"
                 )
             else:
-                out.append(f"    {ADDRESS_SPACE.symbol(target, resume_owners)}(s);")
-                out.append(f"    {emit_host_return(resumable, 'synthetic boundary: restore the owning entry frame', stack_census=stack_census)}")
+                out.append(f"    {emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners), resumable, stack_census, 'synthetic boundary: the owning entry frame is restored after the chain')}")
         out.append("  _sr_fallthrough_return: ;")
     out.append(f"    {emit_host_fallthrough(resumable, stack_census=stack_census)}")
     out.append("}")
@@ -3300,6 +3324,7 @@ def main(argv):
     for (;;) {
         SR_YIELD(s, 0x000468c8u);
         f_000468c8_real(s);
+        SR_TAIL_DRAIN(s);
     }
 }"""
             func_texts.append(text); emitted.append(a); continue
@@ -3322,6 +3347,7 @@ def main(argv):
                 "void f_001d9eb0(CpuState *s)", "void f_001d9eb0_real(CpuState *s)")
             text = """void f_001d9eb0(CpuState *s) {  /* title backdrop selector postcondition */
     f_001d9eb0_real(s);
+    SR_TAIL_DRAIN(s);
     if (s->r[2] == 0u) {
         static int warned = 0;
         if (!warned) {
