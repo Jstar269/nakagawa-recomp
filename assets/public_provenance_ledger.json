@@ -1132,7 +1132,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "670f09abd0ad313b1c1d889b28d9a37d6ad4c124973ccaa182d99bf16f014630"
+      "sha256": "db8d8b34dfa8ec7e5b68df18c96fa6c5d84028ad21c88308bc32efd602b06eff"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -4235,7 +4235,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "12f970298c865a905bc5666f686893023d898ed81417d8b22f1657c4a9fcc924"
+      "sha256": "7e986bbc18d0ec05a7f3a39fc33556a0a80d9c85d335001971ce426e27cd36f7"
     },
     {
       "path": "src/rt/cpu_lle.c",
