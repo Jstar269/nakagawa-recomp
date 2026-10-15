@@ -143,11 +143,18 @@ proposals. Each claim covers only the exact fixture named:
   the works under #69. The out-of-domain arc-sine argument that can produce a
   non-finite bone matrix remains a separate cell.
 - **Audio query and blocking-output semantics** (issue #311; `CASE=audio-query`):
-  `NOT_RUN`. The probe captures both channel rest-length spellings, two bounded
-  channel output blocks, one silent Output2 block, rest-sample queries, raw
-  returns, and elapsed microseconds. Each successfully reserved channel is
-  released. No audio timing or return rule is hardware-measured by this build;
-  the remaining #311 audio contract is in the works.
+  MEASURED in the index row above (2026-10-10, PSP-3000, 6.61 / ARK-5.1.0). The
+  probe captures both channel rest-length spellings, two bounded channel output
+  blocks, one silent Output2 block, rest-sample queries, raw returns, and elapsed
+  microseconds, with no acoustic claims. The probe drains Output2 before its
+  release, so that index row does not show the busy return. The Output2 release
+  rule comes from the 2026-10-01 comment on issue #311 (PSP-3001, firmware 6.6.1,
+  PSPLink 3.2.1; raw records private): releasing while samples are queued returns
+  `0x80268002` and leaves Output2 reserved, a following `sceAudioSRCChReserve`
+  also fails with `0x80268002`, draining `sceAudioOutput2GetRestSample` to 0
+  first lets the release succeed, and `sceAudioChRelease` succeeds right after
+  blocking output. `h_AudioOutput2Release` in `src/rt/hle.c` implements the
+  release rule; `sceAudioSRCChReserve` has no HLE handler yet (#339).
 - **DMAC alignment and overlap cells** (issue #303; `CASE=dma-cells`):
   `NOT_RUN`. The source-owned buffer matrix covers both APIs, unaligned source
   and destination residues, paired unaligned addresses, and overlap in both
@@ -560,7 +567,7 @@ they do not encode expected PSP return values.
 | `kernel-alarm` | `PSP-ALARM-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Alarm creation with a null handler and zero clock; alarm-table exhaustion capped at 1024 pending alarms; cancel after one-shot fire, repeat cancel, unknown UID; handler-return re-arm base; interrupt state and a bounded blocking call in an alarm handler. |
 | `thread-scheduler` | `PSP-THREAD-003` | `MEASURED` (2026-10-10, `f6ccfb33`) | Suspend UID 0 and self; resume UID 0; invalid ready-queue priority; ready-thread ordering after rotation; a timed wait expiring while its thread is suspended. |
 | `wait-outcomes` | `PSP-WAIT-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Semaphore and event-flag signal/cancel before the timeout deadline, followed by dispatch after that deadline. |
-| `ge-break-continue` | `PSP-GE-CONTROL-001` | `CAPTURED` (2026-10-10, `f6ccfb33`; not acceptance-eligible) | `sceGeBreak`/`sceGeContinue` return values without active/paused lists, invalid break mode, list/draw sync states for paused/cancelled lists, and a bounded continue drain and queue quiesce (`TIMEOUT` instead of a hang). |
+| `ge-break-continue` | `PSP-GE-CONTROL-001` | `CAPTURED` (2026-10-10, `f6ccfb33`; not acceptance-eligible) | `sceGeBreak`/`sceGeContinue` return values without active/paused lists, invalid break mode, list/draw sync states for paused/cancelled lists, and a bounded continue drain and queue quiesce (`TIMEOUT` instead of a hang). The probe was revised after that capture: the cancelled-list cells are read after a `sceGeBreak(1)` reset, a stalled-list `sceGeListDeQueue` is a PASS cell whatever it returns, and `sceGeBreak(1)` with no prior dequeue is its own cell. The revised probe has not run on hardware; its acceptance-eligible re-measurement is pending. |
 | `refer-status-size` | `PSP-KERNEL-STATUS-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Bytes written and size-word results for `ReferSemaStatus`, `ReferEventFlagStatus`, and `ReferMbxStatus` at size 0, 8, 40, and full size. |
 | `registry-readonly` | `PSP-REGISTRY-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Read-only root/category opening and `/CONFIG` category/key enumeration, metadata, selected modeled settings, error returns, handle exhaustion capped at 256 opens, and the forged-handle call last. |
 | `llsc-link` | `PSP-LLSC-001` | `NOT_RUN` (new probe, not yet run on hardware) | Three ll/sc link windows: a plain ll and sc pair (control), a second sc after a successful sc with no new ll, and an sc to an address other than the one ll linked. Each record is the sc result, the word ll loaded, the words at both addresses, and the project's model words, which are UNMEASURED for the console. |

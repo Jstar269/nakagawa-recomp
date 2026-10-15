@@ -325,6 +325,9 @@ uint32_t sr_vblank_arg(void);
 #define NID_SCE_AUDIO_GET_CHANNEL_REST_LENGTH 0xb011922fu
 #define NID_SCE_IO_RENAME 0x779103a0u
 #define NID_SCE_AUDIO_CHANGE_VOLUME 0xb7e1d8e7u
+#define NID_SCE_AUDIO_OUTPUT2_RESERVE 0x01562ba3u
+#define NID_SCE_AUDIO_OUTPUT2_RELEASE 0x43196845u
+#define NID_SCE_AUDIO_OUTPUT2_REST_SAMPLE 0x647cef33u
 #define SCE_AUDIO_ERROR_NOT_INITIALIZED 0x80260001u
 #define SCE_AUDIO_ERROR_INVALID_CH 0x80260003u
 #define SCE_AUDIO_ERROR_INVALID_SIZE 0x80260006u
@@ -1141,9 +1144,11 @@ static int write_synthetic_guest_prx(const char *path) {
 #define SYNTH_LIBFONT_READY_WORD 0x08905000u
 #define SYNTH_LIBFONT_EXPORT_NID 0x2990cafeu
 #define SYNTH_LIBFONT_EXPORT_OFF 0x90u
+#define SYNTH_LIBFONT_STOP_OFF   0xc0u
 
 static uint32_t s_synth_libfont_start_calls;
 static uint32_t s_synth_libfont_export_calls;
+static uint32_t s_synth_libfont_stop_calls;
 
 static void synth_libfont_module_start(CpuState *s) {
     s_synth_libfont_start_calls++;
@@ -1154,6 +1159,11 @@ static void synth_libfont_module_start(CpuState *s) {
 static void synth_libfont_export(CpuState *s) {
     s_synth_libfont_export_calls++;
     s->r[2] = 0x29u;
+}
+
+static void synth_libfont_module_stop(CpuState *s) {
+    s_synth_libfont_stop_calls++;
+    s->r[2] = 0x66u;
 }
 
 /* Declared here because the module gate checks below assert on the runtime's own stderr. */
@@ -1216,14 +1226,19 @@ static int write_synthetic_libfont_prx(const char *path, uint32_t base) {
     fixture_wr32(image + MODOFF + 40, base + EXPORT_VA + 16u);
     uint8_t *entry = image + 0x80 + EXPORT_VA;
     entry[8] = 4;
-    fixture_wr16(entry + 10, 2);
+    /* Three functions: the table is the NIDs (module_start, the export, module_stop),
+     * then their addresses in the same order. */
+    fixture_wr16(entry + 10, 3);
     fixture_wr32(entry + 12, base + TABLE_VA);
     fixture_wr32(image + 0x80 + TABLE_VA, 0xd632acdbu);
     fixture_wr32(image + 0x84 + TABLE_VA, SYNTH_LIBFONT_EXPORT_NID);
-    fixture_wr32(image + 0x88 + TABLE_VA, START_OFF);
-    fixture_wr32(image + 0x8c + TABLE_VA, SYNTH_LIBFONT_EXPORT_OFF);
+    fixture_wr32(image + 0x88 + TABLE_VA, 0xcee05613u);
+    fixture_wr32(image + 0x8c + TABLE_VA, START_OFF);
+    fixture_wr32(image + 0x90 + TABLE_VA, SYNTH_LIBFONT_EXPORT_OFF);
+    fixture_wr32(image + 0x94 + TABLE_VA, SYNTH_LIBFONT_STOP_OFF);
     fixture_wr32(image + 0x80 + START_OFF, 0x03e00008u); /* jr ra */
     fixture_wr32(image + 0x80 + SYNTH_LIBFONT_EXPORT_OFF, 0x03e00008u);
+    fixture_wr32(image + 0x80 + SYNTH_LIBFONT_STOP_OFF, 0x03e00008u);
     memcpy(image + SHSTR_OFF, section_names, sizeof(section_names));
 
     uint8_t *modinfo_sh = image + shoff + 40;
@@ -1274,9 +1289,11 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     sr_hle_test_module_reset();
     s_synth_libfont_start_calls = 0;
     s_synth_libfont_export_calls = 0;
+    s_synth_libfont_stop_calls = 0;
     MEM_W32(SYNTH_LIBFONT_READY_WORD, 0u);
     sr_test_register_guest_fn(base + 0x70u, synth_libfont_module_start);
     sr_test_register_guest_fn(base + SYNTH_LIBFONT_EXPORT_OFF, synth_libfont_export);
+    sr_test_register_guest_fn(base + SYNTH_LIBFONT_STOP_OFF, synth_libfont_module_stop);
 
     title_hle_write_cstr(0x08906000u, guest_path);
     memset(&cpu, 0, sizeof(cpu));
@@ -1320,6 +1337,66 @@ static void test_synthetic_libfont_startup(const char *name, const char *guest_p
     expect(libfont_start_call(&cpu, uid) == SCE_KERNEL_ERROR_ALREADY_STARTED &&
                s_synth_libfont_start_calls == 1u,
            "a second libfont StartModule is refused and does not re-enter module_start");
+
+    /* Phase 2b: stop, unload, reload, under the shipped default (SR_REAL_MODULE_START unset),
+     * where the translated module_start ran. Stop runs the translated module_stop and keeps
+     * the export linked; unload unlinks the export and releases the image; the reload lays
+     * the same image down at the same base and starts it again. Neither unload nor reload
+     * writes readiness: the guest word changes only when a translated module_start runs. */
+    if (startup_ready) {
+        const uint32_t status_addr = 0x089060c0u;
+        const uint32_t export_at = base + SYNTH_LIBFONT_EXPORT_OFF;
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = uid;
+        cpu.r[7] = status_addr;
+        MEM_W32(status_addr, 0xFFFFFFFFu);
+        expect(sr_hle_test_stop_module(&cpu) == 0u &&
+                   s_synth_libfont_stop_calls == 1u && MEM_R32(status_addr) == 0x66u,
+               "libfont StopModule runs the translated module_stop and reports its status");
+        expect(sr_hle_test_started_export(SYNTH_LIBFONT_EXPORT_NID) == export_at,
+               "a stopped libfont keeps its export linked until unload");
+        MEM_W32(SYNTH_LIBFONT_READY_WORD, 0x5Au);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = uid;
+        expect(sr_hle_test_unload_module(&cpu) == 0u &&
+                   sr_hle_resolve_late_import(SYNTH_LIBFONT_EXPORT_NID) == 0u &&
+                   sr_hle_test_started_export(SYNTH_LIBFONT_EXPORT_NID) == 0u,
+               "libfont UnloadModule unlinks its export, so a stale import no longer resolves");
+        expect(sr_hle_test_image_count() == 0u && sr_hle_test_module_count() == 0u,
+               "libfont UnloadModule retires its image and module record");
+        expect(libfont_start_call(&cpu, uid) == SCE_ERROR_MODULE_BAD_ID &&
+                   s_synth_libfont_start_calls == 1u,
+               "the unloaded libfont handle is refused and runs no guest code");
+        expect(MEM_R32(SYNTH_LIBFONT_READY_WORD) == 0x5Au,
+               "libfont UnloadModule writes no host readiness");
+
+        title_hle_write_cstr(0x08906000u, guest_path);
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = 0x08906000u;
+        uint32_t reloaded = sr_hle_test_load_module(&cpu);
+        expect(reloaded != 0u && reloaded != uid && sr_hle_test_image_count() == 1u,
+               "libfont reload returns a fresh module uid and re-stages one image");
+        expect(sr_hle_resolve_late_import(SYNTH_LIBFONT_EXPORT_NID) == export_at &&
+                   sr_hle_test_started_export(SYNTH_LIBFONT_EXPORT_NID) == 0u &&
+                   MEM_R32(SYNTH_LIBFONT_READY_WORD) == 0x5Au,
+               "libfont reload links its export at the same base, unauthorized, with no readiness");
+        expect(libfont_start_call(&cpu, reloaded) == 0u &&
+                   s_synth_libfont_start_calls == 2u &&
+                   MEM_R32(SYNTH_LIBFONT_READY_WORD) == 1u,
+               "the reloaded libfont runs its translated module_start once, at the same base");
+        expect(sr_hle_test_started_export(SYNTH_LIBFONT_EXPORT_NID) == export_at,
+               "the reloaded export is authorized only after its own module_start");
+        /* An unlinked NID is a fatal unknown-import trap in sr_syscall, so a missing export is
+         * reported by name here instead of calling through it. */
+        memset(&cpu, 0, sizeof(cpu));
+        if (sr_hle_resolve_late_import(SYNTH_LIBFONT_EXPORT_NID) == export_at) {
+            expect(sr_syscall(&cpu, SYNTH_LIBFONT_EXPORT_NID) == 0x29u &&
+                       s_synth_libfont_export_calls == 2u,
+                   "imports route to the reloaded libfont export");
+        } else {
+            expect(0, "imports route to the reloaded libfont export");
+        }
+    }
 
     /* Phase 3: SR_REAL_MODULE_START=1 keeps translated startup for every module. */
     _putenv("SR_REAL_MODULE_START=1");
@@ -5711,6 +5788,37 @@ static void test_audio_regular_contract_safety(void) {
            "a negative queue report ends the wait instead of looping");
     expect(s_audio_queue_calls == 1u,
            "the negative queue sentinel takes the open-loop path after one query");
+}
+
+/* sceAudioOutput2Release busy rule (issue #311).
+ *
+ * Measured on PSP-3001, firmware 6.6.1 (2026-10-01; the #311 comment, raw records private):
+ * releasing Output2 while samples are still queued returns 0x80268002 and leaves Output2
+ * reserved; draining sceAudioOutput2GetRestSample to 0 first lets the release succeed. The
+ * fixture sets the queue depth through sr_audio_queued(), which GetRestSample and the release
+ * both read. sceAudioSRCChReserve has no production handler yet (#339), so "still reserved" is
+ * observed on the Output2 surface: a second Reserve is refused, and the release after draining
+ * succeeds only if the refused release kept the reservation. */
+static void test_audio_output2_release_refuses_while_queued(void) {
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RESERVE, 64u, 0u, 0u) == 0u,
+           "Output2 reserves a 64-sample channel");
+
+    s_audio_queue_result = 256;
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_REST_SAMPLE, 0u, 0u, 0u) == 256u,
+           "GetRestSample reports the queued Output2 samples");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RELEASE, 0u, 0u, 0u) == 0x80268002u,
+           "release with samples queued returns the measured busy code 0x80268002");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RESERVE, 64u, 0u, 0u) != 0u,
+           "a refused release leaves Output2 reserved, so a second Reserve is refused");
+
+    s_audio_queue_result = 0;
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RELEASE, 0u, 0u, 0u) == 0u,
+           "release succeeds once Output2 is drained");
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
 }
 
 /* SR_AUDIOSTAT drift window (AUDIOSTAT_LEAD).
@@ -15474,13 +15582,13 @@ static void test_ge_guest_sentinel(void) {
     expect((qid2 & 0xFF000000u) == 0x35000000u,
            "sceGeListEnQueue with stall returns valid queue id");
 
-    /* Stalled list sync with syncType=1 returns 3 (STALLING, measured on PSP-3000:
-     * PSP-3000 6.61 oracle 2026-10-15, PSP-GE-CONTROL-001) */
+    /* Stalled list sync with syncType=1 returns 3 (STALLING; PSP-GE-CONTROL-001,
+     * 2026-10-15 capture, not acceptance-eligible; re-measure pending) */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid2;
     cpu.r[5] = 1;
     expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 3u,
-           "sceGeListSync(syncType=1) reports list is currently stalled (3, measured)");
+           "sceGeListSync(syncType=1) reports list is currently stalled (3, captured)");
 
     /* Framebuffer is cleared to white, but purple rect is NOT drawn yet */
     expect(fb[0 * fb_stride + 0] == white_color, "stalled list executed clear to white");
@@ -15554,14 +15662,14 @@ static void test_ge_break_continue(void) {
     expect(sr_hle_test_is_registered(NID_SCE_GE_LIST_DEQUEUE),
            "sceGeListDeQueue is registered in this build");
 
-    /* Mode validation: mode -1 is rejected with the invalid-mode code measured on
-     * PSP-3000 (PSP-3000 6.61 oracle 2026-10-15, PSP-GE-CONTROL-001). Only -1 was
-     * measured; the handler applies the same code to every mode above 1. */
+    /* Mode validation: mode -1 is rejected with 0x80000107, the value of the 2026-10-08
+     * partial capture (not acceptance-eligible). Only -1 has that value; the handler
+     * applies the same code to every mode above 1, which is not captured. */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0xffffffffu;
     cpu.r[5] = 0u;
     expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0x80000107u,
-           "sceGeBreak with invalid mode -1 returns 0x80000107 (measured)");
+           "sceGeBreak with invalid mode -1 returns 0x80000107 (captured)");
 
     /* Param validation: non-NULL unreadable/unaligned param rejected with ILLEGAL_ADDR */
     memset(&cpu, 0, sizeof(cpu));
@@ -15582,18 +15690,18 @@ static void test_ge_break_continue(void) {
     expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0x80000103u,
            "sceGeBreak with crossing-arena param returns ILLEGAL_ADDR");
 
-    /* Idle checks: mode 0 with no active list returns the measured 0x80000020
-     * (PSP-3000 6.61 oracle 2026-10-15, PSP-GE-CONTROL-001) */
+    /* Idle checks: mode 0 with no active list returns 0x80000020 (PSP-GE-CONTROL-001,
+     * 2026-10-15 capture, not acceptance-eligible; re-measure pending) */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0u;
     cpu.r[5] = 0u;
     expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == 0x80000020u,
-           "sceGeBreak mode 0 with no active list returns 0x80000020 (measured)");
+           "sceGeBreak mode 0 with no active list returns 0x80000020 (captured)");
 
-    /* Idle checks: sceGeContinue with no paused list returns 0 (measured, same record) */
+    /* Idle checks: sceGeContinue with no paused list returns 0 (same capture, not acceptance-eligible) */
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, NID_SCE_GE_CONTINUE) == 0u,
-           "sceGeContinue with no paused list returns 0 (measured)");
+           "sceGeContinue with no paused list returns 0 (captured)");
 
     /* Idle checks: mode 1 when idle resets all queues (0) and returns 0 */
     memset(&cpu, 0, sizeof(cpu));
@@ -15617,19 +15725,19 @@ static void test_ge_break_continue(void) {
     cpu.r[4] = qid;
     cpu.r[5] = 1u;
     expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 3u,
-           "ListSync peek reports stalled (3, measured)");
+           "ListSync peek reports stalled (3, captured)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;
     expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 3u,
-           "DrawSync peek reports stalled (3, measured)");
+           "DrawSync peek reports stalled (3, captured)");
 
-    /* sceGeListDeQueue on a stalled list returns BUSY (0x80000021, measured) and
+    /* sceGeListDeQueue on a stalled list returns BUSY (0x80000021, captured) and
      * leaves the list stalled: the next sync still reports 3. */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid;
     expect(sr_syscall(&cpu, NID_SCE_GE_LIST_DEQUEUE) == 0x80000021u,
-           "sceGeListDeQueue on a stalled list returns BUSY (0x80000021, measured)");
+           "sceGeListDeQueue on a stalled list returns BUSY (0x80000021, captured)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid;
@@ -15637,18 +15745,18 @@ static void test_ge_break_continue(void) {
     expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 3u,
            "ListSync still reports stalled (3) after a BUSY dequeue");
 
-    /* Pause with mode 0: returns the paused list's queue id (measured) */
+    /* Pause with mode 0: returns the paused list's queue id (same capture) */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0u;
     cpu.r[5] = 0u;
     expect(sr_syscall(&cpu, NID_SCE_GE_BREAK) == qid,
-           "sceGeBreak mode 0 pauses the display list and returns its queue id (measured)");
+           "sceGeBreak mode 0 pauses the display list and returns its queue id (captured)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid;
     cpu.r[5] = 1u;
     expect(sr_syscall(&cpu, NID_SCE_GE_LIST_SYNC) == 4u,
-           "ListSync peek reports paused (4, measured)");
+           "ListSync peek reports paused (4, captured)");
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 1u;
@@ -15684,7 +15792,7 @@ static void test_ge_break_continue(void) {
     expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
            "DrawSync reports idle (0) after continue");
 
-    /* No measured dequeue result exists for a completed list or an unknown id:
+    /* No captured dequeue result exists for a completed list or an unknown id:
      * both fail closed as NOT_IMPLEMENTED rather than reporting success. */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = qid;
@@ -15721,10 +15829,10 @@ static void test_ge_break_continue(void) {
     expect(sr_syscall(&cpu, NID_SCE_GE_DRAW_SYNC) == 0u,
            "DrawSync reports idle (0) after mode 1 break");
 
-    /* Continue with no paused list returns 0 (measured) */
+    /* Continue with no paused list returns 0 (PSP-GE-CONTROL-001 capture; not acceptance-eligible) */
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, NID_SCE_GE_CONTINUE) == 0u,
-           "sceGeContinue after mode 1 break returns 0 (no paused list, measured)");
+           "sceGeContinue after mode 1 break returns 0 (no paused list, captured)");
 
     /* Mode 1 cancellation of an already paused list */
     memset(&cpu, 0, sizeof(cpu));
@@ -27386,6 +27494,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_wait_thread_end_blocking_and_resume();
     test_wait_thread_end_cb_execution();
     test_audio_regular_contract_safety();
+    test_audio_output2_release_refuses_while_queued();
     test_audio_drift_window_reports_the_pacing_value();
     test_audio_output_telemetry_counts_guest_frames();
     test_ctrl_live_input_latch_suppresses_phantom_start();
