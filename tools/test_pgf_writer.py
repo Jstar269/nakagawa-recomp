@@ -309,6 +309,22 @@ class PgfWriterRefusalTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertTrue(build_pgf(glyphs, font_name=name))
 
+    def test_boolean_field_types_are_refused(self):
+        # bool is an int subclass, so True would otherwise be written silently as 1.
+        cases = (
+            ("glyph-too-large", Glyph(0x41, True, 1, (0,))),
+            ("glyph-too-large", Glyph(0x41, 1, False, (0,))),
+            ("unsupported-row-order", Glyph(0x41, 1, 1, (0,), row_order=True)),
+            ("sample-out-of-range", Glyph(0x41, 1, 1, (True,))),
+            ("metric-out-of-range", Glyph(0x41, 1, 1, (0,), adjust_x=True)),
+            ("metric-out-of-range", Glyph(0x41, 1, 1, (0,), adjust_y=True)),
+            ("metric-out-of-range", Glyph(0x41, 1, 1, (0,), advance_x=True)),
+            ("metric-out-of-range", Glyph(0x41, 1, 1, (0,), advance_y=True)),
+        )
+        for reason, glyph in cases:
+            with self.subTest(glyph=glyph):
+                self.assert_refused(reason, glyphs=[glyph])
+
     def test_cli_refusal_names_the_reason_and_writes_nothing(self):
         with tempfile.TemporaryDirectory(prefix="pgf_writer_") as tmp:
             glyph_set = Path(tmp) / "glyphs.json"
