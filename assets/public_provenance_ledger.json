@@ -231,7 +231,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "d7b7236a4d18e59b3ff7a09577e71a44612e2c42d76e7171f84b5b5d32b04484"
+      "sha256": "0ab1833be21b362bbe364651095a00cc62bbf541907755bf119ff222a5a8583e"
     },
     {
       "path": ".markdownlint-cli2.jsonc",
@@ -4935,7 +4935,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "79e9791edbe46712feb25d47570cbde3a792d73e7f3e90911d96c6a55a192531"
+      "sha256": "3e6f173e4e8e00dbdb292fb0552844644ef7bcadc5dbac10a866e2f6671e5cfe"
     },
     {
       "path": "src/rt/guest_interp.h",
