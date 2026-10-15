@@ -37,13 +37,13 @@ or labelled historical/capture-time. The evidence-tier view
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **519** (dedicated **470**, fake_success **5**, controlled_unsupported **44**).
-Semantic handler census: **435** handlers across **23** API families, covering **476** handler-associated NID registrations.
+Registered NIDs: **525** (dedicated **477**, fake_success **5**, controlled_unsupported **43**).
+Semantic handler census: **442** handlers across **23** API families, covering **483** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 10 | 18 |
-| `partial` | 81 | 81 |
+| `partial` | 88 | 88 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
 | `unreviewed` | 341 | 370 |
@@ -62,7 +62,7 @@ Semantic handler census: **435** handlers across **23** API families, covering *
 | `sceHprm` | 0 | 0 | 0 | 0 | 3 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 18 | 0 | 0 | 12 | 32 | 32 |
-| `sceKernel` | 2 | 23 | 0 | 0 | 135 | 160 | 184 |
+| `sceKernel` | 2 | 30 | 0 | 0 | 135 | 167 | 191 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `scePower` | 0 | 0 | 0 | 0 | 11 | 11 | 11 |
@@ -73,7 +73,7 @@ Semantic handler census: **435** handlers across **23** API families, covering *
 | `sceUmd` | 0 | 1 | 1 | 0 | 7 | 9 | 9 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 31 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **10** | **81** | **1** | **2** | **341** | **435** | **476** |
+| **Total** | **10** | **88** | **1** | **2** | **341** | **442** | **483** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -220,12 +220,20 @@ Semantic handler census: **435** handlers across **23** API families, covering *
   - Limitation: cancel with zero waiters and invalid numWait-thread pointer error class unmeasured (#339, #341)
 - **`h_CreateMbx`** (`sceKernel`): `sceKernelCreateMbx` (0x8125221d)
   - Limitation: NULL-name create error and interrupt-context placement unmeasured (#339, #341)
+- **`h_CreateVTimer`** (`sceKernel`): `sceKernelCreateVTimer` (0x20fff560)
+  - Limitation: NULL option struct only (a non-NULL option is refused, layout unmeasured); no-slot create code 0x80020190 unmeasured; time unit assumed microseconds (#325)
 - **`h_DeleteMbx`** (`sceKernel`): `sceKernelDeleteMbx` (0x86255ada)
   - Limitation: delete-while-waited is mailbox-measured on 2026-10-15 (PSP-3000, 6.61): the waiter returns WAIT_DELETE and its timeout word is rewritten to the remaining time; interrupt-context placement unmeasured (#339, #341)
+- **`h_DeleteVTimer`** (`sceKernel`): `sceKernelDeleteVTimer` (0x328f9e52)
+  - Limitation: delete of a stopped timer and interrupt-context placement unmeasured (#325)
 - **`h_FreeMemoryBlock`** (`sceKernel`): `sceKernelFreeMemoryBlock` (0x50f61d8a)
   - Limitation: releases UIDs created by the modeled Low allocation path; invalid-UID result is source-tested but not hardware measured
 - **`h_GetMemoryBlockAddr`** (`sceKernel`): `sceKernelGetMemoryBlockAddr` (0xdb83a952)
   - Limitation: resolves UIDs created by the modeled Low allocation path; output-pointer and unknown-UID results are source-tested but not hardware measured
+- **`h_GetVTimerBase`** (`sceKernel`): `sceKernelGetVTimerBase` (0xb3a59970)
+  - Limitation: uncited: returns the same base as ReferVTimerStatus (guest time at the most recent Start while running, zero otherwise, a project model); NULL-pointer and deleted-UID codes unmeasured, reused by analogy (#325)
+- **`h_GetVTimerTime`** (`sceKernel`): `sceKernelGetVTimerTime` (0x034a921f)
+  - Limitation: time unit assumed microseconds (values not cited by PSP-HLE-VTIMER-001); NULL-pointer and deleted-UID codes unmeasured, reused by analogy (#325)
 - **`h_PollMbx`** (`sceKernel`): `sceKernelPollMbx` (0x0d81716a)
   - Limitation: invalid-message-pointer error class unmeasured (#339, #341)
 - **`h_ReceiveMbx`** (`sceKernel`): `sceKernelReceiveMbx` (0x18260574)
@@ -240,6 +248,8 @@ Semantic handler census: **435** handlers across **23** API families, covering *
   - Limitation: idle-clock, comes-out-of-idle and thread-switch counters: written as zero; hardware reports non-zero, time-dependent values (not cited). VFPU-switch counter: written as zero, not cited. Status word 1: written as zero; hardware read 0 in all three records, uncited. Null-pointer result unmeasured.
 - **`h_ReferThreadStatus`** (`sceKernel`): `sceKernelReferThreadStatus` (0x17c1684e)
   - Limitation: run clocks use host scheduler time and preemption/release counters are modeled rather than PSP-measured (#311)
+- **`h_ReferVTimerStatus`** (`sceKernel`): `sceKernelReferVTimerStatus` (0x5f32beaa)
+  - Limitation: return 0, the deleted-UID code, and the active, current, schedule, handler and common states are measured (PR #1003); base's value (guest time at start) is the project model, with only its zero and non-zero states measured; the time unit is assumed microseconds; the caller-size write rule for size 0 is the sema/evf/mbx rule applied without a VTimer cite (#325)
 - **`h_ResumeThread`** (`sceKernel`): `sceKernelResumeThread` (0x75156e8f)
   - Limitation: resume clears the scheduler suspension flag and applies strict-priority preemption; the not-suspended and DORMANT codes are hardware measured, while resume of UID 0 (the running caller) answers the not-suspended code without a measurement and interrupt/dispatch-context precedence is unmeasured
   - Evidence: src/rt/hle_thread_selftest.c:test_suspend_resume_errors_and_ready_thread
@@ -259,6 +269,10 @@ Semantic handler census: **435** handlers across **23** API families, covering *
   - Evidence: src/rt/hle_thread_selftest.c:test_alarm_idle_scheduler_advances_to_the_deadline
   - Evidence: src/rt/sched_selftest.c:test_alarm_runs_at_its_deadline_in_interrupt_context
   - Evidence: src/rt/sched_selftest.c:test_alarm_is_a_wake_source_for_the_idle_scheduler
+- **`h_StartVTimer`** (`sceKernel`): `sceKernelStartVTimer` (0xc68d9437)
+  - Limitation: deleted-UID code reuses the measured Refer/Delete code by analogy; already-running return 1 is repo-documented, not PSP-HLE-VTIMER-001; time unit assumed microseconds (#325)
+- **`h_StopVTimer`** (`sceKernel`): `sceKernelStopVTimer` (0xd0aeee87)
+  - Limitation: deleted-UID code reuses the measured Refer/Delete code by analogy; time unit assumed microseconds (#325)
 - **`h_SuspendThread`** (`sceKernel`): `sceKernelSuspendThread` (0x9944f31f)
   - Limitation: suspend is a scheduler flag (no nesting count); a waiting thread still completes its wait while suspended and runs only after resume; DORMANT and double-suspend codes are hardware measured, while the code for suspending UID 0 or the calling thread reuses the thread-object refusal code without a suspend-specific measurement, and interrupt/dispatch-context precedence is unmeasured
   - Evidence: src/rt/hle_thread_selftest.c:test_suspend_resume_errors_and_ready_thread

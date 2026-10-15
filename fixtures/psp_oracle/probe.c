@@ -6895,26 +6895,53 @@ static void run_ge_break_continue(int emulated) {
                     (uint32_t)continue_rc, drain_out, 5);
     emit_ge_quiesce(emulated, "ge-quiesce-after-continue");
 
-    probe_step(emulated, "ge-break-continue", "cancel-stalled-list");
+    /* Item 10: sceGeBreak(1) reset with no sceGeListDeQueue earlier in this case.
+       The reset is the only control call made on this stalled list, so its result
+       is not mixed with a dequeue's side effect.  The cancelled-list sync cells are
+       read after this same reset, so they do not depend on a successful dequeue. */
+    probe_step(emulated, "ge-break-continue", "reset-no-dequeue");
     qid = sceGeListEnQueue((const void *)(uintptr_t)list,
                            (void *)(uintptr_t)list, -1, NULL);
-    const int cancel_rc = qid >= 0 ? sceGeListDeQueue(qid) : qid;
+    memset(&param, 0, sizeof(param));
+    const int reset_rc = qid >= 0 ? sceGeBreak(1, &param) : qid;
+    uint32_t reset_out[2] = {(uint32_t)qid, (uint32_t)reset_rc};
+    emit_ge_control(emulated, "ge-break-reset-no-dequeue",
+                    qid >= 0 ? "PASS" : "SKIP", (uint32_t)reset_rc, reset_out, 2);
+
     list_state = qid >= 0 ? sceGeListSync(qid, 1) : qid;
     draw_state = qid >= 0 ? sceGeDrawSync(1) : qid;
     list_out[0] = (uint32_t)qid;
-    list_out[1] = (uint32_t)cancel_rc;
+    list_out[1] = (uint32_t)reset_rc;
     list_out[2] = (uint32_t)list_state;
     draw_out[0] = (uint32_t)qid;
-    draw_out[1] = (uint32_t)cancel_rc;
+    draw_out[1] = (uint32_t)reset_rc;
     draw_out[2] = (uint32_t)draw_state;
-    const char *cancel_status = qid >= 0 && cancel_rc >= 0 ? "PASS" : "SKIP";
+    const char *cancel_status = qid >= 0 ? "PASS" : "SKIP";
     emit_ge_control(emulated, "ge-list-sync-cancelled", cancel_status,
                     (uint32_t)list_state, list_out, 3);
     emit_ge_control(emulated, "ge-draw-sync-cancelled", cancel_status,
                     (uint32_t)draw_state, draw_out, 3);
     emit_ge_quiesce(emulated, "ge-quiesce-after-cancel");
 
-    uint32_t done = 10;
+    /* sceGeListDeQueue on a stalled list is a measured cell.  The 2026-10-10 and
+       2026-10-15 captures (not acceptance-eligible) read BUSY (0x80000021) here,
+       which is why the cancelled-list cells no longer depend on this dequeue.  The
+       status records only that the call completed, whatever it returned, so this
+       cell never gates another cell.  The quiesce afterwards resets any list left
+       queued. */
+    probe_step(emulated, "ge-break-continue", "dequeue-stalled-list");
+    qid = sceGeListEnQueue((const void *)(uintptr_t)list,
+                           (void *)(uintptr_t)list, -1, NULL);
+    const int dequeue_rc = qid >= 0 ? sceGeListDeQueue(qid) : qid;
+    list_state = qid >= 0 ? sceGeListSync(qid, 1) : qid;
+    draw_state = qid >= 0 ? sceGeDrawSync(1) : qid;
+    uint32_t dequeue_out[4] = {(uint32_t)qid, (uint32_t)dequeue_rc,
+                               (uint32_t)list_state, (uint32_t)draw_state};
+    emit_ge_control(emulated, "ge-list-dequeue-stalled",
+                    qid >= 0 ? "PASS" : "SKIP", (uint32_t)dequeue_rc, dequeue_out, 4);
+    emit_ge_quiesce(emulated, "ge-quiesce-after-dequeue");
+
+    uint32_t done = 13;
     emit_record_extended(emulated, "PSP-GE-CONTROL-001", "ge-break-continue-done",
                          "PASS", 0, &done, 1);
 }
