@@ -1087,7 +1087,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c1fd2798d26eb51cd62e8952373b2d141e8e325335bdff5f3e1d05d4c8d913a3"
+      "sha256": "e263134af2412bd1fc804a72ef731ebec7a9cef7e6e9a4cb56a7d1907f4f0256"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
@@ -3334,7 +3334,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8d3b3f6ad65461f0a6caf5d04f40627cea8f15d1b850c0ecf7b186f4f965b413"
+      "sha256": "6988e609126139c6459e8f736f01ace92f3fd74750ddf6128f9fc3ce55061758"
     },
     {
       "path": "src/rt/archive_vfs.c",
@@ -4271,7 +4271,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "df9d070b7ee4387165740857e6b3c9f00e377833e27b9ca3da8a93b51d0d0483"
+      "sha256": "ef1cc2f4d44b209b1ea5d7ed5d80adb5729f10afb8f7e36be41af061e0efab9b"
     },
     {
       "path": "src/rt/debug.c",
@@ -8243,7 +8243,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1b70ff951ba1622b0ae4cd584606a89597f5b062f15d0bb927b7af363da8e0db"
+      "sha256": "8a65c34b44ddcdcf35d0b397a3747698cf84c46b5c5e75a85054941ded330ba1"
     },
     {
       "path": "tools/test_dco_policy.py",

@@ -432,6 +432,54 @@ void TestFpuConditionCodesMeasured() {
 	Check("bc1t cc3 target ran", s.r[T5], 0x111u);
 }
 
+// PSP-LLSC-001 (PSP-3000 / 6.61, 2026-10-15): the probe's three ll/sc link windows with its
+// values (fixtures/psp_oracle/probe.c, run_llsc_link). On the console a plain ll/sc pair
+// stores and reports 1, a second sc with no new ll stores and reports 1 again, and an sc to
+// another address than ll's stores there and reports 1. Rows are 16 bytes, A at +0, B at +4.
+void TestLlScMeasuredWindows() {
+	const uint32_t base = 0x08900000;
+	auto li = [](uint32_t rt, uint32_t value) {
+		return std::vector<uint32_t>{I(0x0F, ZERO, rt, (uint16_t)(value >> 16)),
+		                             I(0x0D, rt, rt, (uint16_t)(value & 0xFFFF))};
+	};
+	std::vector<uint32_t> p = {I(0x0F, ZERO, A0, 0x0890), I(0x0D, A0, A0, 0x1000)};
+	for (uint32_t w : li(T9, 0x11111111u)) p.push_back(w);
+	for (uint32_t w : li(T8, 0x44444444u)) p.push_back(w);
+	for (uint16_t row = 0; row < 48; row += 16) {
+		p.push_back(I(0x2B, A0, T9, row));              // sw A
+		p.push_back(I(0x2B, A0, T8, row + 4));          // sw B
+	}
+	for (uint32_t w : li(T1, 0x22222222u)) p.push_back(w);
+	for (uint32_t w : li(T3, 0x22222222u)) p.push_back(w);
+	for (uint32_t w : li(T4, 0x33333333u)) p.push_back(w);
+	for (uint32_t w : li(T6, 0x55555555u)) p.push_back(w);
+	const std::vector<uint32_t> windows = {
+		I(0x30, A0, T0, 0), I(0x38, A0, T1, 0),         // llsc-control
+		I(0x30, A0, T2, 16), I(0x38, A0, T3, 16),       // llsc-second-sc
+		I(0x38, A0, T4, 16),                            //   second sc, no new ll
+		I(0x30, A0, T5, 32), I(0x38, A0, T6, 36),       // llsc-other-address
+		I(0x23, A0, S0, 0), I(0x23, A0, S1, 4),         // A, B after each cell
+		I(0x23, A0, S2, 16), I(0x23, A0, S3, 20),
+		I(0x23, A0, S4, 32), I(0x23, A0, S5, 36),
+		SYSCALL,
+	};
+	p.insert(p.end(), windows.begin(), windows.end());
+	ref::CpuState s = RunProgram(p, base);
+	Check("llsc-control ll loaded", s.r[T0], 0x11111111u);
+	Check("llsc-control sc result", s.r[T1], 1u);
+	Check("llsc-control A after", s.r[S0], 0x22222222u);
+	Check("llsc-control B after", s.r[S1], 0x44444444u);
+	Check("llsc-second-sc ll loaded", s.r[T2], 0x11111111u);
+	Check("llsc-second-sc first sc", s.r[T3], 1u);
+	Check("llsc-second-sc second sc", s.r[T4], 1u);
+	Check("llsc-second-sc A after", s.r[S2], 0x33333333u);
+	Check("llsc-second-sc B after", s.r[S3], 0x44444444u);
+	Check("llsc-other-address ll", s.r[T5], 0x11111111u);
+	Check("llsc-other-address sc", s.r[T6], 1u);
+	Check("llsc-other-address A", s.r[S4], 0x11111111u);
+	Check("llsc-other-address B", s.r[S5], 0x55555555u);
+}
+
 void TestR0IsZero() {
 	const uint32_t base = 0x08900000;
 	std::vector<uint32_t> p = {
@@ -678,6 +726,7 @@ int main() {
 	TestFpuConvertEdgeCases();
 	TestFpuCompareBranch();
 	TestFpuConditionCodesMeasured();
+	TestLlScMeasuredWindows();
 	TestArithmeticShifts();
 	TestR0IsZero();
 	TestBreakContinues();
