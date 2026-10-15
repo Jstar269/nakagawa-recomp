@@ -1366,6 +1366,7 @@ class GeneratedCallDepthTests(unittest.TestCase):
             # directly below the probe's, as top-down mmap places it on Linux.
             self.skipTest("the neighbouring stack is not adjacent on this host: " + detail)
         print("G1-no-guard-band: MUTANT_EXECUTED_AND_SEMANTIC_TEST_FAILED")
+
     def _probe_with_module(self, words, module_words, *, codegen_args=()):
         """One run with `module_words` translated as a second module at _MODULE_BASE."""
         with scratch_dir.TemporaryDirectory(prefix="linked_branch_module_") as tmp:
