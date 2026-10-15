@@ -268,6 +268,7 @@ uint32_t sr_vblank_arg(void);
 #define NID_SCE_KERNEL_SET_ALARM 0x6652b8cau
 #define NID_SCE_KERNEL_CANCEL_ALARM 0x7e65b999u
 #define NID_SCE_KERNEL_GET_VTIMER_TIME 0x034a921fu
+#define NID_SCE_KERNEL_SET_VTIMER_TIME 0x542ad630u
 #define NID_SCE_KERNEL_FREE_MEMORY_BLOCK 0x50f61d8au
 #define NID_SCE_KERNEL_GET_MEMORY_BLOCK_ADDR 0xdb83a952u
 #define NID_SCE_KERNEL_ALLOC_MEMORY_BLOCK 0xfe707fdfu
@@ -3612,7 +3613,6 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
         uint32_t error;
         const char *name;
     } refused[] = {
-        {NID_SCE_KERNEL_GET_VTIMER_TIME, 0x80020002u, "sceKernelGetVTimerTime"},
         {NID_SCE_GE_SAVE_CONTEXT, 0x80020002u, "sceGeSaveContext"},
         {NID_SCE_GE_RESTORE_CONTEXT, 0x80020002u, "sceGeRestoreContext"},
         {NID_SCE_KERNEL_LOAD_EXEC, 0x80020002u, "sceKernelLoadExec"},
@@ -4635,9 +4635,6 @@ static void test_unregistered_batch_refusals(void) {
         uint32_t error;
         const char *name;
     } refused[] = {
-        {0x20fff560u, 0x80020002u, "sceKernelCreateVTimer"},
-        {0xc68d9437u, 0x80020002u, "sceKernelStartVTimer"},
-        {0x328f9e52u, 0x80020002u, "sceKernelDeleteVTimer"},
         {0x542ad630u, 0x80020002u, "sceKernelSetVTimerTime"},
         {0x7ed59bc4u, 0x80020002u, "sceDisplaySetHoldMode"},
         {0x77ed8b3au, 0x80020002u, "sceDisplayWaitVblankStartMultiCB"},
@@ -13658,6 +13655,232 @@ static void test_delay_threadcb_zero_bounds_a_self_renotifying_callback(void) {
     sr_test_guest_fn_reset();
 }
 
+/* ---- callback wakeup order through the production pump (issue #339) ----------------------
+ * Two callbacks that become pending for one thread before a scheduler safe point are
+ * serviced by the production pump (sr_thread_dispatch_callbacks in hle.c), reached through
+ * the public NIDs: sceKernelCheckCallback, and sceKernelDelayThreadCB while it is parked.
+ * Nothing here re-implements the selection loop.
+ *
+ * Labels for what each assertion rests on:
+ * - PROJECT ASSUMPTION, not hardware-measured: simultaneously pending callbacks run in slot
+ *   (creation) order, not notification order. hle.c documents this in
+ *   sr_callback_reserve_one and sr_thread_dispatch_callbacks, and
+ *   docs/HLE_AND_WORKAROUND_INVENTORY.md records callback ordering as unmeasured for its
+ *   entries. Nothing on hardware has ordered two simultaneously pending callbacks.
+ * - MEASURED CONTEXT, not evidence for the ordering above: sceKernelDelayThreadCB(0) runs
+ *   pending callbacks exactly once (#340, see test_delay_zero_probe_semantics), and the
+ *   docs/research/PSP_THREADING_SEMANTICS.md boundary at sceKernelCheckCallback was measured
+ *   for the ordinary sceKernelWaitEventFlag sequence only.
+ * - PROJECT MODEL, not hardware-measured: a notify wakes a thread parked in a callback wait
+ *   without running the body inline, the $a0..$a2 packing (count, notify arg, common arg),
+ *   CheckCallback returning 1 when it serviced work and 0 otherwise, a callback returning 0
+ *   staying registered, and a delay wait ending with 0 at its deadline. */
+
+extern int sr_callback_find_in_table(uint32_t uid);
+
+typedef struct {
+    uint32_t id;          /* 1 = the first-created callback, 2 = the second */
+    uint32_t count;       /* $a0 as the body received it */
+    uint32_t notify_arg;  /* $a1 */
+    uint32_t common_arg;  /* $a2 */
+} WakeupDispatch;
+
+#define WAKEUP_LOG_MAX 8u
+static WakeupDispatch s_wakeup_log[WAKEUP_LOG_MAX];
+static uint32_t s_wakeup_log_len;
+
+enum {
+    WAKEUP_FIRST_ENTRY = 0x08990300u,
+    WAKEUP_SECOND_ENTRY = 0x08990340u,
+    WAKEUP_FIRST_NAME = 0x08001100u,
+    WAKEUP_SECOND_NAME = 0x08001140u,
+    WAKEUP_FIRST_COMMON = 0x1111u,
+    WAKEUP_SECOND_COMMON = 0x2222u,
+    WAKEUP_FIRST_NOTIFY = 0xaaaau,
+    WAKEUP_SECOND_NOTIFY = 0xbbbbu,
+};
+
+static void wakeup_record(uint32_t id, CpuState *cpu) {
+    if (s_wakeup_log_len < WAKEUP_LOG_MAX) {
+        WakeupDispatch *d = &s_wakeup_log[s_wakeup_log_len++];
+        d->id = id;
+        d->count = cpu->r[4];
+        d->notify_arg = cpu->r[5];
+        d->common_arg = cpu->r[6];
+    }
+    cpu->r[2] = 0u;   /* returns 0: the callback stays registered */
+}
+
+static void wakeup_first_guest_fn(CpuState *cpu) { wakeup_record(1u, cpu); }
+static void wakeup_second_guest_fn(CpuState *cpu) { wakeup_record(2u, cpu); }
+
+static int wakeup_log_is(uint32_t index, uint32_t id, uint32_t notify_arg, uint32_t common_arg) {
+    return index < s_wakeup_log_len && s_wakeup_log[index].id == id &&
+           s_wakeup_log[index].count == 1u &&
+           s_wakeup_log[index].notify_arg == notify_arg &&
+           s_wakeup_log[index].common_arg == common_arg;
+}
+
+static uint32_t wakeup_create_callback(uint32_t name_addr, const char *name,
+                                       uint32_t entry, uint32_t common_arg) {
+    title_hle_write_cstr(name_addr, name);
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = name_addr;
+    cpu.r[5] = entry;
+    cpu.r[6] = common_arg;
+    return sr_syscall(&cpu, NID_SCE_KERNEL_CREATE_CALLBACK);
+}
+
+static uint32_t wakeup_notify(uint32_t uid, uint32_t notify_arg) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    cpu.r[5] = notify_arg;
+    return sr_syscall(&cpu, NID_WSV_NOTIFY_CALLBACK);
+}
+
+static void wakeup_delete_callback(uint32_t uid) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = uid;
+    (void)sr_syscall(&cpu, NID_SCE_KERNEL_DELETE_CALLBACK);
+}
+
+/* sceKernelCheckCallback at a safe point: both callbacks were notified in reverse slot
+ * order, so slot order and notification order differ. */
+static void test_callback_check_pump_services_pending_in_slot_order(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(WAKEUP_FIRST_ENTRY, wakeup_first_guest_fn);
+    sr_test_register_guest_fn(WAKEUP_SECOND_ENTRY, wakeup_second_guest_fn);
+    s_wakeup_log_len = 0u;
+
+    TCB *owner = fixture_thread(0x3410u, TH_RUNNING, 32);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    expect(!sr_thread_has_pending_callbacks(owner->uid),
+           "callback-check: owner starts with nothing pending");
+
+    uint32_t first = wakeup_create_callback(WAKEUP_FIRST_NAME, "wakeup-first",
+                                            WAKEUP_FIRST_ENTRY, WAKEUP_FIRST_COMMON);
+    uint32_t second = wakeup_create_callback(WAKEUP_SECOND_NAME, "wakeup-second",
+                                             WAKEUP_SECOND_ENTRY, WAKEUP_SECOND_COMMON);
+    expect(first != 0u && second != 0u && sr_callback_is_valid(first) && sr_callback_is_valid(second),
+           "callback-check: both callbacks are created through production sceKernelCreateCallback");
+    expect(sr_callback_find_in_table(first) < sr_callback_find_in_table(second),
+           "callback-check: the first created callback occupies the lower slot");
+
+    expect(wakeup_notify(second, WAKEUP_SECOND_NOTIFY) == 0u,
+           "callback-check: second callback notified first");
+    expect(wakeup_notify(first, WAKEUP_FIRST_NOTIFY) == 0u,
+           "callback-check: first callback notified second");
+    expect(s_wakeup_log_len == 0u,
+           "callback-check: notifying alone runs no callback body");
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, hle_selftest_nid("sceKernelCheckCallback")) == 1u,
+           "sceKernelCheckCallback returns 1 when it services pending callbacks");
+    expect(s_wakeup_log_len == 2u,
+           "sceKernelCheckCallback services both pending callbacks in one pump");
+    expect(wakeup_log_is(0u, 1u, WAKEUP_FIRST_NOTIFY, WAKEUP_FIRST_COMMON) &&
+               wakeup_log_is(1u, 2u, WAKEUP_SECOND_NOTIFY, WAKEUP_SECOND_COMMON),
+           "pending callbacks run in slot order, each with its own notify and common argument");
+    expect(sr_callback_is_valid(first) && sr_callback_is_valid(second),
+           "callbacks that return 0 stay registered after the pump");
+    expect(!sr_thread_has_pending_callbacks(owner->uid),
+           "the pump leaves nothing pending for the owner");
+
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, hle_selftest_nid("sceKernelCheckCallback")) == 0u && s_wakeup_log_len == 2u,
+           "a second sceKernelCheckCallback with nothing pending returns 0 and runs nothing");
+
+    wakeup_delete_callback(first);
+    wakeup_delete_callback(second);
+    sr_test_guest_fn_reset();
+}
+
+/* sceKernelDelayThreadCB(1000) parked with nothing pending. Both callbacks are then notified
+ * while the thread waits: each notify wakes it, the wakeup alone runs no body, and the resumed
+ * wait services both in slot order, re-parks on its original deadline, and returns 0 when that
+ * deadline passes. */
+static void test_callback_wakeup_resumes_delay_wait_in_slot_order(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(WAKEUP_FIRST_ENTRY, wakeup_first_guest_fn);
+    sr_test_register_guest_fn(WAKEUP_SECOND_ENTRY, wakeup_second_guest_fn);
+    s_wakeup_log_len = 0u;
+
+    TCB *self = fixture_thread(0x3411u, TH_RUNNING, 32);
+    self->started = 1;
+    s_cur = (int)(self - s_tcb);
+    expect(!sr_thread_has_pending_callbacks(self->uid),
+           "callback-wait: waiter starts with nothing pending");
+
+    uint32_t first = wakeup_create_callback(WAKEUP_FIRST_NAME, "wakeup-first",
+                                            WAKEUP_FIRST_ENTRY, WAKEUP_FIRST_COMMON);
+    uint32_t second = wakeup_create_callback(WAKEUP_SECOND_NAME, "wakeup-second",
+                                             WAKEUP_SECOND_ENTRY, WAKEUP_SECOND_COMMON);
+    expect(first != 0u && second != 0u,
+           "callback-wait: both callbacks are created for the waiting thread");
+
+    s_vtime_us = 3000u;
+    s_vbl_next_us = 100000u;   /* keep vblank out of the window */
+    uint64_t before = s_vtime_us;
+    s_delay_done = 0;
+    s_delay_ret = 0xffffffffu;
+    s_delay_nid = hle_selftest_nid("sceKernelDelayThreadCB");
+    s_delay_argument = 1000u;
+    expect(s_delay_nid != 0u, "callback-wait: DelayThreadCB NID is registered");
+
+    self->coro = sr_coro_create(delay_coro_body, NULL, (size_t)4 << 20);
+    expect(self->coro != NULL, "callback-wait: waiter coroutine is created");
+    if (self->coro) sr_coro_switch(self->coro);
+    expect(s_delay_done == 0 && self->state == TH_WAIT_DELAY && self->is_cb_wait &&
+               self->wake == before + 1000u,
+           "sceKernelDelayThreadCB(1000) parks as a callback-capable delay with its deadline");
+
+    expect(wakeup_notify(second, WAKEUP_SECOND_NOTIFY) == 0u &&
+               wakeup_notify(first, WAKEUP_FIRST_NOTIFY) == 0u,
+           "callback-wait: both callbacks notified while the waiter is parked");
+    expect(self->state == TH_READY,
+           "a notify wakes the callback-waiting thread");
+    expect(s_wakeup_log_len == 0u,
+           "the wakeup alone runs no callback body");
+
+    s_cur = (int)(self - s_tcb);
+    if (self->coro) sr_coro_switch(self->coro);
+    expect(s_wakeup_log_len == 2u &&
+               wakeup_log_is(0u, 1u, WAKEUP_FIRST_NOTIFY, WAKEUP_FIRST_COMMON) &&
+               wakeup_log_is(1u, 2u, WAKEUP_SECOND_NOTIFY, WAKEUP_SECOND_COMMON),
+           "the resumed wait services both callbacks in slot order with their own arguments");
+    expect(s_delay_done == 0 && self->state == TH_WAIT_DELAY && self->is_cb_wait &&
+               self->wake == before + 1000u,
+           "after servicing, the wait re-parks on its original deadline");
+    expect(!sr_thread_has_pending_callbacks(self->uid) &&
+               sr_callback_is_valid(first) && sr_callback_is_valid(second),
+           "callbacks that return 0 are not pending and stay registered");
+
+    sr_hle_advance_time(1000u);
+    s_cur = (int)(self - s_tcb);
+    if (self->coro) sr_coro_switch(self->coro);
+    expect(s_delay_done == 1 && s_delay_ret == 0u,
+           "sceKernelDelayThreadCB returns 0 at its deadline");
+    expect(s_wakeup_log_len == 2u,
+           "completing the wait does not dispatch either callback again");
+
+    if (self->coro) {
+        sr_coro_destroy(self->coro);
+        self->coro = NULL;
+    }
+    wakeup_delete_callback(first);
+    wakeup_delete_callback(second);
+    sr_test_guest_fn_reset();
+}
+
 static volatile uint32_t s_delay_zero_loop_iterations;
 static volatile uint32_t s_delay_zero_loop_peer_runs;
 static volatile uint32_t s_delay_zero_loop_last_ret;
@@ -22634,7 +22857,7 @@ static void check_coroutine_lifecycle(void) {
         extern int s_pool_parks;
         extern int s_mbx_parks;
         extern int s_msgpipe_parks;
-        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
+        int expected_parks = 9 + 3 + 3 + 6 + 4 + 1 + 1 + 5 + 5 + 1 + 1 + ic_expected_parks() + s_mtx_parks + s_pool_parks + s_mbx_parks + s_msgpipe_parks;
         char msg[768];
         snprintf(msg, sizeof msg,
                  "every parking body parked exactly once (3 joiners (including #668) + 1 sema CB body "
@@ -22645,6 +22868,7 @@ static void check_coroutine_lifecycle(void) {
                  "+ 1 vblank multi waiter + 1 zero-period vblank waiter body "
                  "+ 1 ReferSemaStatus waiter "
                  "+ 3 rotate peers + 2 suspended-waiter bodies + 5 released-wait bodies "
+                 "+ 1 callback-wakeup delay body "
                  "+ %d returned conformance legs + %d mutex legs + %d pool legs + %d mailbox legs "
                  "+ %d Message Pipe waiter/owner legs = %d, observed %lu)",
                  ic_expected_parks(), s_mtx_parks, s_pool_parks, s_mbx_parks,
@@ -26350,7 +26574,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
            "refused call returns its named error and the guest keeps running");
-    expect(sr_syscall(&cpu, (uint32_t)NID_SCE_KERNEL_GET_VTIMER_TIME) == 0x80020002u,
+    expect(sr_syscall(&cpu, (uint32_t)NID_SCE_KERNEL_SET_VTIMER_TIME) == 0x80020002u,
            "a second named refusal returns its own error and the guest keeps running");
     expect(sr_syscall(&cpu, 0x1579a159u) == 0x80110001u,
            "a repeated refusal returns the same error");
@@ -26378,7 +26602,7 @@ static void test_flight_recorder_refusals_are_events_not_terminals(void) {
     expect(strstr(bundle, needle) != NULL, "bundle keeps the first refused NID in its own field");
     snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 2}", 0x1579a159u);
     expect(strstr(bundle, needle) != NULL, "bundle lists each refused NID with its count");
-    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 1}", (uint32_t)NID_SCE_KERNEL_GET_VTIMER_TIME);
+    snprintf(needle, sizeof(needle), "{\"nid\": %u, \"count\": 1}", (uint32_t)NID_SCE_KERNEL_SET_VTIMER_TIME);
     expect(strstr(bundle, needle) != NULL, "bundle lists the second refused NID");
     remove(output);
     sr_flight_test_disable();
@@ -27474,6 +27698,211 @@ static int hle_selftest_main(int argc, char **argv);
  * FBSNAP build/snapshots tree, the framebuffer dumps), so a checkout-root working directory
  * would receive them, and the original is restored on every return. The modes that take path
  * arguments (--psp-oracle, --exit-game-poisoned) keep the caller's working directory. */
+/* ---- VTimer lifecycle and query surface -------------------------------------------------------
+ * PSP-HLE-VTIMER-001 (PSP-3000, firmware 6.61, 2026-10-15, PR #1003 record), measured: Create
+ * returns a valid UID; Start returns 0, also on a restart, and 1 while already running; Stop
+ * returns 1 while running and 0 when not started; Delete of a running timer returns 0; Refer and
+ * Delete on the deleted UID return 0x800201BE; Refer fills active, base, current and reads
+ * schedule, handler and common as 0. The elapsed-time unit (microseconds) is assumed, not cited,
+ * and base = system time at start is the project model. The timer reads guest time from the
+ * scheduler, so these tests drive it with sr_hle_advance_time in turbo mode, where each reading is
+ * exact. Every other value asserted here is this runtime's own model and is marked in hle.c. */
+#define NID_VT_CREATE           0x20fff560u
+#define NID_VT_DELETE           0x328f9e52u
+#define NID_VT_START            0xc68d9437u
+#define NID_VT_STOP             0xd0aeee87u
+#define NID_VT_GET_BASE         0xb3a59970u
+#define NID_VT_REFER            0x5f32beaau
+#define NID_VT_SET_HANDLER      0xd8b299aeu
+#define NID_VT_SET_HANDLER_WIDE 0x53b00e9au
+#define NID_VT_CANCEL_HANDLER   0xd2d615efu
+#define VT_BAD_ID_ERR           0x800201beu
+#define VT_REFUSED_ERR          0x80020002u
+#define VT_NAME                 0x00242400u
+#define VT_CLOCK                0x00242500u
+#define VT_INFO                 0x00242600u
+#define VT_OPTION               0x00242700u
+#define VT_INFO_SIZE            0x48u
+
+static uint32_t vt_call(uint32_t nid, uint32_t a0, uint32_t a1) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = a0;
+    cpu.r[5] = a1;
+    return sr_syscall(&cpu, nid);
+}
+
+/* Writes name and its NUL into guest memory, then creates a timer with no option struct. */
+static uint32_t vt_create_named(const char *name) {
+    size_t n = strlen(name);
+    for (size_t k = 0; k <= n; k++) MEM_W8(VT_NAME + (uint32_t)k, (uint8_t)name[k]);
+    return vt_call(NID_VT_CREATE, VT_NAME, 0u);
+}
+
+/* GetVTimerTime into VT_CLOCK, sentinel-filled first so an unwritten output shows as a failure. */
+static uint64_t vt_time_of(uint32_t uid, const char *what) {
+    MEM_W32(VT_CLOCK, 0xfeedfaceu);
+    MEM_W32(VT_CLOCK + 4u, 0xfeedfaceu);
+    expect(vt_call(NID_SCE_KERNEL_GET_VTIMER_TIME, uid, VT_CLOCK) == 0u, what);
+    return (uint64_t)MEM_R32(VT_CLOCK) | ((uint64_t)MEM_R32(VT_CLOCK + 4u) << 32);
+}
+
+/* ReferVTimerStatus with a caller size word; bytes 4..71 are pre-filled with 0xa5. */
+static uint32_t vt_refer(uint32_t uid, uint32_t size) {
+    for (uint32_t i = 4u; i < VT_INFO_SIZE; i++) MEM_W8(VT_INFO + i, 0xa5u);
+    MEM_W32(VT_INFO, size);
+    return vt_call(NID_VT_REFER, uid, VT_INFO);
+}
+
+static int vt_bytes_are(uint32_t from, uint32_t to, uint8_t value) {
+    for (uint32_t i = from; i < to; i++)
+        if (MEM_R8(VT_INFO + i) != value) return 0;
+    return 1;
+}
+
+/* 64-bit value at VT_INFO+off (low word first), as ReferVTimerStatus writes base and current. */
+static uint64_t vt_info_u64(uint32_t off) {
+    return (uint64_t)MEM_R32(VT_INFO + off) | ((uint64_t)MEM_R32(VT_INFO + off + 4u) << 32);
+}
+
+/* 64-bit value at VT_CLOCK (low word first), as GetVTimerBase and GetVTimerTime write it. */
+static uint64_t vt_clock_u64(void) {
+    return (uint64_t)MEM_R32(VT_CLOCK) | ((uint64_t)MEM_R32(VT_CLOCK + 4u) << 32);
+}
+
+/* name[32] at VT_INFO+4 holds `want` followed by NUL bytes out to 32. */
+static int vt_name_is(const char *want) {
+    size_t n = strlen(want);
+    for (uint32_t i = 0; i < 32u; i++) {
+        uint8_t expected = i < n ? (uint8_t)want[i] : 0u;
+        if (MEM_R8(VT_INFO + 4u + i) != expected) return 0;
+    }
+    return 1;
+}
+
+static void test_vtimer_lifecycle(void) {
+    int saved_pace = s_pace_on;
+    uint64_t saved_vtime = s_vtime_us;
+    reset_fixture();
+    sr_hle_init();
+    s_pace_on = 0;          /* turbo: guest time moves only through sr_hle_advance_time */
+    s_vtime_us = 2000000u;
+
+    uint32_t vt = vt_create_named("vt-life");
+    expect((int32_t)vt > 0, "CreateVTimer returns a valid UID");
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u, "ReferVTimerStatus returns 0 on a created timer");
+    expect(MEM_R32(VT_INFO + 36u) == 0u, "ReferVTimerStatus reports active=0 when created");
+    expect(vt_info_u64(40u) == 0u, "ReferVTimerStatus reports base=0 when created");
+    expect(vt_info_u64(48u) == 0u, "ReferVTimerStatus reports current=0 when created");
+    expect(vt_call(NID_VT_STOP, vt, 0u) == 0u,
+           "StopVTimer returns 0 when the timer was not started");
+    expect(vt_time_of(vt, "GetVTimerTime succeeds on a timer that was never started") == 0u,
+           "a timer that was never started reads zero elapsed time");
+    expect(vt_call(NID_VT_START, vt, 0u) == 0u, "StartVTimer returns 0");
+    sr_hle_advance_time(1000u);
+    expect(vt_call(NID_VT_START, vt, 0u) == 1u,
+           "StartVTimer returns 1 while the timer is already running");
+    sr_hle_advance_time(2000u);
+    expect(vt_time_of(vt, "GetVTimerTime succeeds while running") == 3000u,
+           "elapsed time follows guest time while running, and a second start does not restart the interval");
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u && MEM_R32(VT_INFO + 36u) == 1u,
+           "ReferVTimerStatus reports active=1 while running");
+    expect(vt_info_u64(40u) == 2000000u,
+           "ReferVTimerStatus reports base as the start time while running");
+    expect(vt_info_u64(48u) == 3000u,
+           "ReferVTimerStatus reports current as the elapsed time while running");
+    expect(vt_call(NID_VT_STOP, vt, 0u) == 1u,
+           "StopVTimer returns 1 while the timer is running");
+    sr_hle_advance_time(4000u);
+    expect(vt_time_of(vt, "GetVTimerTime succeeds while stopped") == 3000u,
+           "elapsed time holds while the timer is stopped");
+    expect(vt_call(NID_VT_STOP, vt, 0u) == 0u,
+           "StopVTimer returns 0 on a stopped timer");
+    expect(vt_call(NID_VT_START, vt, 0u) == 0u, "StartVTimer returns 0 after a stop");
+    sr_hle_advance_time(500u);
+    expect(vt_time_of(vt, "GetVTimerTime succeeds after a restart") == 3500u,
+           "a restart resumes the count from the held value");
+
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u, "ReferVTimerStatus returns 0 on a live timer");
+    expect(MEM_R32(VT_INFO) == VT_INFO_SIZE, "ReferVTimerStatus writes the struct size word (0x48)");
+    expect(vt_name_is("vt-life"), "ReferVTimerStatus copies the create-time name and zero-fills name[32]");
+    expect(MEM_R32(VT_INFO + 36u) == 1u, "ReferVTimerStatus reports active=1 while the timer runs");
+    expect(vt_bytes_are(56u, VT_INFO_SIZE, 0u),
+           "ReferVTimerStatus reports schedule, handler and common as zero");
+    expect(vt_refer(vt, 8u) == 0u, "ReferVTimerStatus with caller size 8 returns 0");
+    expect(MEM_R32(VT_INFO) == VT_INFO_SIZE,
+           "a caller size of 8 still writes the struct size word (0x48)");
+    expect(MEM_R8(VT_INFO + 4u) == 'v' && MEM_R8(VT_INFO + 5u) == 't' &&
+               MEM_R8(VT_INFO + 6u) == '-' && MEM_R8(VT_INFO + 7u) == 'l',
+           "a caller size of 8 writes the first four name bytes");
+    expect(vt_bytes_are(8u, VT_INFO_SIZE, 0xa5u),
+           "a caller size of 8 leaves bytes 8..71 untouched");
+    expect(vt_refer(vt, 0u) == 0u && MEM_R32(VT_INFO) == 0u && vt_bytes_are(4u, VT_INFO_SIZE, 0xa5u),
+           "ReferVTimerStatus with caller size 0 returns 0 and writes nothing");
+
+    expect(vt_call(NID_VT_GET_BASE, vt, VT_CLOCK) == 0u && vt_clock_u64() == 2007000u,
+           "GetVTimerBase returns the same base as ReferVTimerStatus while running");
+
+    expect(vt_call(NID_VT_STOP, vt, 0u) == 1u, "StopVTimer returns 1 before the refer-stopped check");
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u && MEM_R32(VT_INFO + 36u) == 0u,
+           "ReferVTimerStatus reports active=0 once the timer is stopped");
+    expect(vt_info_u64(40u) == 0u, "ReferVTimerStatus reports base=0 when stopped");
+    sr_hle_advance_time(1000u);
+    expect(vt_refer(vt, VT_INFO_SIZE) == 0u, "ReferVTimerStatus returns 0 on a stopped timer");
+    uint64_t stopped_current = vt_info_u64(48u);
+    expect(stopped_current == vt_time_of(vt, "GetVTimerTime succeeds on the stopped timer"),
+           "ReferVTimerStatus current equals GetVTimerTime while stopped");
+    expect(vt_call(NID_VT_START, vt, 0u) == 0u, "StartVTimer returns 0 before the running delete");
+
+    expect(vt_call(NID_VT_DELETE, vt, 0u) == 0u, "DeleteVTimer returns 0 on a running timer");
+    expect(vt_refer(vt, VT_INFO_SIZE) == VT_BAD_ID_ERR,
+           "ReferVTimerStatus on the deleted UID returns 0x800201BE");
+    expect(vt_call(NID_VT_DELETE, vt, 0u) == VT_BAD_ID_ERR,
+           "DeleteVTimer on the deleted UID returns 0x800201BE");
+    expect(vt_call(NID_VT_START, vt, 0u) == VT_BAD_ID_ERR,
+           "StartVTimer on the deleted UID returns 0x800201BE");
+    expect(vt_call(NID_VT_STOP, vt, 0u) == VT_BAD_ID_ERR,
+           "StopVTimer on the deleted UID returns 0x800201BE");
+    expect(vt_call(NID_SCE_KERNEL_GET_VTIMER_TIME, vt, VT_CLOCK) == VT_BAD_ID_ERR,
+           "GetVTimerTime on the deleted UID returns 0x800201BE");
+
+    uint32_t vt2 = vt_create_named("vt-next");
+    expect((int32_t)vt2 > 0 && vt2 != vt,
+           "a timer created after a delete gets a fresh UID");
+    expect(vt_refer(vt, VT_INFO_SIZE) == VT_BAD_ID_ERR,
+           "the stale UID stays unknown while a new timer exists");
+    expect(vt_call(NID_VT_DELETE, vt2, 0u) == 0u, "the new timer deletes cleanly");
+
+    expect(vt_call(NID_VT_CREATE, VT_NAME, VT_OPTION) == VT_REFUSED_ERR,
+           "CreateVTimer with a non-NULL option struct is refused by name");
+
+    s_pace_on = saved_pace;
+    s_vtime_us = saved_vtime;
+}
+
+/* The VTimer handler family and the time setter stay refused by name (issue #325 gates the
+ * handlers). Each refusal is a production registration that returns its named code. */
+static void test_vtimer_refusals_are_named(void) {
+    reset_fixture();
+    sr_hle_init();
+    expect(sr_hle_test_is_registered(NID_SCE_KERNEL_SET_VTIMER_TIME),
+           "SetVTimerTime has a named refusal registration");
+    expect(sr_hle_test_is_registered(NID_VT_SET_HANDLER),
+           "SetVTimerHandler has a named refusal registration");
+    expect(sr_hle_test_is_registered(NID_VT_SET_HANDLER_WIDE),
+           "SetVTimerHandlerWide has a named refusal registration");
+    expect(sr_hle_test_is_registered(NID_VT_CANCEL_HANDLER),
+           "CancelVTimerHandler has a named refusal registration");
+    expect(vt_call(NID_SCE_KERNEL_SET_VTIMER_TIME, 0u, 0u) == VT_REFUSED_ERR,
+           "SetVTimerTime returns the named refusal");
+    expect(vt_call(NID_VT_SET_HANDLER, 0u, 0u) == VT_REFUSED_ERR,
+           "SetVTimerHandler returns the named refusal");
+    expect(vt_call(NID_VT_SET_HANDLER_WIDE, 0u, 0u) == VT_REFUSED_ERR,
+           "SetVTimerHandlerWide returns the named refusal");
+    expect(vt_call(NID_VT_CANCEL_HANDLER, 0u, 0u) == VT_REFUSED_ERR,
+           "CancelVTimerHandler returns the named refusal");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && (strcmp(argv[1], "--psp-oracle") == 0 ||
                      strcmp(argv[1], "--exit-game-poisoned") == 0))
@@ -27576,6 +28005,14 @@ static int hle_selftest_main(int argc, char **argv) {
         return s_failures ? 1 : 0;
     }
 
+    if (argc > 1 && strcmp(argv[1], "--vtimer") == 0) {
+        test_vtimer_lifecycle();
+        test_vtimer_refusals_are_named();
+        fprintf(stderr, "vtimer: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
     test_prx_export_relocation_behavior();
     test_fd_namespace();
     test_ms0_unified_namespace();
@@ -27668,6 +28105,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_delay_zero_probe_semantics();
     test_delay_thread_zero_loop_still_preempts_at_timeslice();
     test_delay_threadcb_zero_bounds_a_self_renotifying_callback();
+    test_callback_check_pump_services_pending_in_slot_order();
+    test_callback_wakeup_resumes_delay_wait_in_slot_order();
     test_display_frame_per_sec_float_return();
     test_rtc_conversion_errors_and_full_range();
     test_rtc_pointer_validation_and_measured_conversions();
@@ -27702,6 +28141,8 @@ static int hle_selftest_main(int argc, char **argv) {
     test_sema_hardware_codes();
     test_sema_refer_status();
     test_fpl_refer_status();
+    test_vtimer_lifecycle();
+    test_vtimer_refusals_are_named();
     test_lwmutex_hardware_codes();
     test_evf_hardware_codes();
     test_wait_sema_count_validation();
