@@ -1552,7 +1552,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "21f548314f6381363d7b95f0ec3cfe2f0b67bcd3b8b4e26efd6773cf1bff623a"
+      "sha256": "75e28e61651b9a6777ede0819c90a89938c53cf4c6bd248cc6e2eeabf1c0e78a"
     },
     {
       "path": "docs/images/showcase-breakout-v180.png",
@@ -9829,7 +9829,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9a4db442b3fd1d5b0f10d892b81eb53e23afa16aa6ff7063ae3058909e512954"
+      "sha256": "c85c0092c7fdd4ecd23dfbccbb755f352b6669af08fb69dcca1148d4ee44099f"
     },
     {
       "path": "tools/test_scratch_dir.py",

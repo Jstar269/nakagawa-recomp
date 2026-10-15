@@ -391,5 +391,152 @@ class NovbpaceSemanticsTests(unittest.TestCase):
             self.assertIn("SR_NOVBPACE: invalid value", res.stderr)
 
 
+# ---------------------------------------------------------------------------
+# Spec coverage: every scheduler symbol consumed outside sched.c is mapped by
+# docs/cleanroom/SCHED_SPEC.md (issue #340).
+#
+# Surface: functions and globals with external linkage defined at file scope in
+# sched.c. Macros are not linkage symbols and are out of scope.
+#
+# Consumers: C/C++ sources and headers under src/ and tools/ that do not
+# #include sched.c, plus non-test Python modules under tools/ (the code generator
+# emits calls to some symbols; the memory debugger resolves others by name). A
+# white-box TU that #includes sched.c sees the statics directly and is not an
+# outside consumer. Test modules (test_*.py) name symbols to assert on source
+# text or to drive binaries, so they are not consumers either.
+#
+# Mapping: a SEAM: marker in SCHED_SPEC.md section 2, or a row of the section 10
+# table. Section 10 rows are "| `symbol` | §N | contract |".
+
+SPEC = (ROOT / "docs" / "cleanroom" / "SCHED_SPEC.md").read_text(encoding="utf-8")
+RECOMP_H = (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8")
+
+C_KEYWORDS = {"if", "for", "while", "switch", "return", "sizeof", "else", "do", "case"}
+FUNCTION_HEAD = re.compile(
+    r"^(?!static\b|extern\b|typedef\b|return\b)[A-Za-z_][^\n;(]*?\b([A-Za-z_]\w*)\s*\(", re.M)
+GLOBAL_DEF = re.compile(
+    r"^(?!static\b|extern\b|typedef\b|return\b)[A-Za-z_][\w \t\*]*?\b([A-Za-z_]\w*)\s*"
+    r"(?:__attribute__\s*\(\(.*?\)\)\s*)?[=;\[]", re.M)
+SEAM_MARKER = re.compile(r"SEAM: (\w+)")
+MAP_ROW = re.compile(r"^\|\s*`(\w+)`\s*\|\s*§(\d+(?:\.\d+)?)\s*\|\s*(.+?)\s*\|\s*$", re.M)
+
+
+def strip_c_comments(source):
+    """Blank C comments but keep newlines, so line-anchored patterns still hold."""
+    def blank(match):
+        return re.sub(r"[^\n]", " ", match.group(0))
+    source = re.sub(r"/\*.*?\*/", blank, source, flags=re.S)
+    return re.sub(r"//[^\n]*", blank, source)
+
+
+def scheduler_surface(source):
+    """Names with external linkage defined at file scope in sched.c."""
+    text = strip_c_comments(source)
+    names = set()
+    for match in FUNCTION_HEAD.finditer(text):
+        end = text.find("\n", match.end())
+        line = text[match.start():] if end == -1 else text[match.start():end]
+        if line.rstrip().endswith(";"):
+            continue  # a prototype, not a definition
+        names.add(match.group(1))
+    names.update(GLOBAL_DEF.findall(text))
+    return names - C_KEYWORDS
+
+
+def outside_consumers():
+    """Yield (path, text) for each file that consumes the scheduler surface outside sched.c."""
+    sched_path = ROOT / "src" / "rt" / "sched.c"
+    for area in ("src", "tools"):
+        for dirpath, dirnames, filenames in os.walk(ROOT / area):
+            dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+            for name in filenames:
+                path = Path(dirpath) / name
+                if path == sched_path:
+                    continue
+                if name.endswith((".c", ".h", ".cc", ".cpp", ".hpp")):
+                    text = path.read_text(encoding="utf-8", errors="replace")
+                    if re.search(r'^\s*#\s*include\s+"sched\.c"', text, re.M):
+                        continue  # white-box fixture, not an outside consumer
+                    yield path, strip_c_comments(text)
+                elif area == "tools" and name.endswith(".py") and not name.startswith("test_"):
+                    yield path, path.read_text(encoding="utf-8", errors="replace")
+
+
+def consumed_scheduler_symbols(surface):
+    if not surface:
+        return set()
+    pattern = re.compile(r"\b(?:" + "|".join(sorted(re.escape(n) for n in surface)) + r")\b")
+    used = set()
+    for _path, text in outside_consumers():
+        used.update(pattern.findall(text))
+    return used & surface
+
+
+def spec_part(start, end):
+    """Text from the start heading to the end heading; empty when the start heading is absent."""
+    begin = SPEC.find(start)
+    if begin == -1:
+        return ""
+    stop = SPEC.find(end, begin + 1) if end else -1
+    return SPEC[begin:stop] if stop != -1 else SPEC[begin:]
+
+
+def spec_heading_pattern(section):
+    if "." in section:
+        return rf"^### {re.escape(section)}\b"
+    return rf"^## {re.escape(section)}\. "
+
+
+class SpecSeamCoverageTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.surface = scheduler_surface(SCHED)
+        cls.rows = MAP_ROW.findall(spec_part("## 10. ", None))
+        cls.seams = set(SEAM_MARKER.findall(spec_part("## 2. Normative interface", "## 3. Behaviour")))
+
+    def test_surface_extraction_finds_the_seam(self):
+        for name in ("sched_init", "sched_wait_begin", "sched_thread_info", "s_cpu", "sr_thread_k0"):
+            self.assertIn(name, self.surface)
+        for name in ("pick_next", "scheduler_service_pending"):
+            self.assertNotIn(name, self.surface, "static helpers are not linkage symbols")
+
+    def test_every_consumed_symbol_is_mapped_by_the_spec(self):
+        consumed = consumed_scheduler_symbols(self.surface)
+        self.assertTrue(consumed, "no outside consumer found; the consumer scan is broken")
+        mapped = self.seams | {symbol for symbol, _section, _contract in self.rows}
+        missing = sorted(consumed - mapped)
+        self.assertEqual(
+            missing, [],
+            "scheduler symbols consumed outside sched.c but not mapped in SCHED_SPEC.md "
+            "(add a section 10 row for each): " + ", ".join(missing))
+
+    def test_mapping_table_is_present(self):
+        self.assertIn("\n## 10. ", SPEC, "SCHED_SPEC.md has no section 10 mapping table")
+        self.assertTrue(self.rows, "SCHED_SPEC.md section 10 has no mapping rows")
+
+    def test_each_symbol_has_one_row(self):
+        symbols = [symbol for symbol, _section, _contract in self.rows]
+        duplicates = sorted({s for s in symbols if symbols.count(s) > 1})
+        self.assertEqual(duplicates, [], "symbols mapped more than once")
+
+    def test_each_row_points_at_a_real_section(self):
+        for symbol, section, _contract in self.rows:
+            with self.subTest(symbol=symbol, section=section):
+                self.assertRegex(SPEC, re.compile(spec_heading_pattern(section), re.M))
+
+    def test_each_row_names_a_symbol_the_scheduler_declares(self):
+        declared = SCHED + "\n" + RECOMP_H
+        for symbol, _section, _contract in self.rows:
+            with self.subTest(symbol=symbol):
+                self.assertRegex(declared, rf"\b{re.escape(symbol)}\b")
+
+    def test_each_row_cites_a_source_or_records_a_decision(self):
+        for symbol, _section, contract in self.rows:
+            with self.subTest(symbol=symbol):
+                self.assertTrue(re.search(r"\[C\d+\]", contract)
+                                or re.search(r"project decision", contract, re.I),
+                                "the reading rule needs a [Cn] citation or a project decision")
+
+
 if __name__ == "__main__":
     unittest.main()
