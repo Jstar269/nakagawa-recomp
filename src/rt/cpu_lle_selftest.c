@@ -2392,6 +2392,115 @@ static void test_llsc_lle_misaligned(void) {
     }
 }
 
+/* PSP-LLSC-001 (PSP-3000 / 6.61, 2026-10-15, probe build e45e667b): the three link
+ * windows fixtures/psp_oracle/probe.c ran on the console, with its values. On the PSP:
+ *   llsc-control        ll A; sc A        -> ll loads A, sc stores and reports 1;
+ *   llsc-second-sc      ll A; sc A; sc A  -> the second sc, with no new ll, also stores
+ *                                            and reports 1 (sc does not clear the link);
+ *   llsc-other-address  ll A; sc B        -> sc stores at B and reports 1, A unchanged
+ *                                            (sc does not compare its address with ll's).
+ * Each row is 16 bytes, word A at +0 and word B at +4, as in the probe. Both generated
+ * lanes and the interpreter must return exactly those words. */
+#define LLSC_MEASURED_DEFAULT_ENTRY 0x08810B00u
+#define LLSC_MEASURED_LLE_ENTRY 0x08810B80u
+#define LLSC_MEASURED_DATA 0x08812100u
+
+void f_08810b00(CpuState *s);
+void f_08810b80(CpuState *s);
+
+/* Word-for-word the LLSC_MEASURED_SEQUENCE tools/test_cpu_lle.py emits. */
+static const uint32_t LLSC_MEASURED_SEQUENCE[] = {
+    0xC0880000u,   /* 0x00 ll t0, 0(a0)    llsc-control */
+    0xE0890000u,   /* 0x04 sc t1, 0(a0) */
+    0xC08A0010u,   /* 0x08 ll t2, 16(a0)   llsc-second-sc */
+    0xE08B0010u,   /* 0x0c sc t3, 16(a0) */
+    0xE08C0010u,   /* 0x10 sc t4, 16(a0)   no new ll */
+    0xC08D0020u,   /* 0x14 ll t5, 32(a0)   llsc-other-address */
+    0xE08E0024u,   /* 0x18 sc t6, 36(a0)   word B of the row */
+    0x03E00008u,   /* 0x1c jr ra */
+    0x00000000u,   /* 0x20 nop */
+};
+
+static void llsc_measured_seed(CpuState *s) {
+    fresh_state(s);
+    for (unsigned row = 0; row < 3u; row++) {
+        MEM_W32_PC(LLSC_MEASURED_DATA + 16u * row, 0x11111111u, LLSC_MEASURED_DATA);
+        MEM_W32_PC(LLSC_MEASURED_DATA + 16u * row + 4u, 0x44444444u, LLSC_MEASURED_DATA);
+    }
+    s->r[4] = LLSC_MEASURED_DATA;
+    s->r[9] = 0x22222222u;    /* llsc-control: the sc value */
+    s->r[11] = 0x22222222u;   /* llsc-second-sc: the first sc value */
+    s->r[12] = 0x33333333u;   /* llsc-second-sc: the second sc value */
+    s->r[14] = 0x55555555u;   /* llsc-other-address: the sc value */
+    s->r[31] = TEST_SPAN_END;
+    s->llbit = 0u;
+}
+
+static void llsc_measured_check(const CpuState *s, const char *lane) {
+    static const struct {
+        const char *cell;
+        unsigned loaded_reg, first_reg, last_reg;
+        uint32_t a, b;   /* words at A and B after the cell, as the PSP left them */
+    } cells[] = {
+        { "llsc-control", 8u, 9u, 9u, 0x22222222u, 0x44444444u },
+        { "llsc-second-sc", 10u, 11u, 12u, 0x33333333u, 0x44444444u },
+        { "llsc-other-address", 13u, 14u, 14u, 0x11111111u, 0x55555555u },
+    };
+    for (unsigned c = 0; c < 3u; c++) {
+        const uint32_t row = LLSC_MEASURED_DATA + 16u * c;
+        CHECK(s->r[cells[c].loaded_reg] == 0x11111111u,
+              "PSP-LLSC-001 %s %s: ll loaded 0x%08x, the PSP loaded 0x11111111",
+              lane, cells[c].cell, s->r[cells[c].loaded_reg]);
+        CHECK(s->r[cells[c].first_reg] == 1u && s->r[cells[c].last_reg] == 1u,
+              "PSP-LLSC-001 %s %s: sc reported %u/%u, the PSP reported 1/1",
+              lane, cells[c].cell, s->r[cells[c].first_reg], s->r[cells[c].last_reg]);
+        CHECK(MEM_R32(row) == cells[c].a && MEM_R32(row + 4u) == cells[c].b,
+              "PSP-LLSC-001 %s %s: A=0x%08x B=0x%08x, the PSP left 0x%08x 0x%08x",
+              lane, cells[c].cell, MEM_R32(row), MEM_R32(row + 4u), cells[c].a, cells[c].b);
+    }
+    CHECK(s->llbit == 1u, "PSP-LLSC-001 %s: no event ended the last window (llbit=%u)",
+          lane, s->llbit);
+}
+
+static void test_llsc_measured_windows(void) {
+    static const struct {
+        RecompFn body;
+        uint32_t entry;
+        int lle;
+        const char *lane;
+    } lanes[] = {
+        { f_08810b00, LLSC_MEASURED_DEFAULT_ENTRY, 0, "default" },
+        { f_08810b80, LLSC_MEASURED_LLE_ENTRY, 1, "lle-cpu" },
+    };
+    const unsigned count = sizeof LLSC_MEASURED_SEQUENCE / sizeof LLSC_MEASURED_SEQUENCE[0];
+    for (unsigned l = 0; l < sizeof lanes / sizeof lanes[0]; l++) {
+        CpuState s;
+        SrGuestInterpFault fault;
+        SrGuestInterpResult r;
+        char what[64];
+
+        llsc_measured_seed(&s);
+        sr_cpu_lle_set_enabled(lanes[l].lle);
+        s.pc = lanes[l].entry;
+        lanes[l].body(&s);
+        snprintf(what, sizeof what, "AOT %s", lanes[l].lane);
+        llsc_measured_check(&s, what);
+
+        llsc_measured_seed(&s);
+        sr_cpu_lle_set_enabled(lanes[l].lle);
+        llsc_place(lanes[l].entry, LLSC_MEASURED_SEQUENCE, count);
+        s.pc = lanes[l].entry;
+        memset(&fault, 0, sizeof fault);
+        r = sr_guest_interp_run(&s, lanes[l].entry, &fault);
+        snprintf(what, sizeof what, "INTERP %s", lanes[l].lane);
+        CHECK(r == SR_GUEST_INTERP_FETCH_BOUNDARY && fault.pc == TEST_SPAN_END,
+              "PSP-LLSC-001 %s: interpreter must run to the jr $ra (got %s at 0x%08x)",
+              what, sr_guest_interp_result_name(r), fault.pc);
+        llsc_measured_check(&s, what);
+        sr_cpu_lle_set_enabled(0);
+    }
+}
+
 /* Interpreter-only field forms and the default lane's fail-closed alignment. */
 static void test_llsc_interpreter(void) {
     CpuState s;
@@ -2628,6 +2737,7 @@ int main(int argc, char **argv) {
     test_intc_cause_guest_writes();
     test_intc_poll_reports_none();
     test_intc_cause_aot_interp_parity();
+    test_llsc_measured_windows();
     sr_cpu_lle_reset_config();
     if (g_failed) {
         fprintf(stderr, "cpu-lle selftest: FAILED\n");

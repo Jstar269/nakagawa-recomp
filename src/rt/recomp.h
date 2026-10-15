@@ -933,6 +933,38 @@ extern int     sr_sched_on;
  * build links; harnesses without the scheduler leave it NULL and the dispatcher's
  * preflight stays off because sr_sched_on is 0 there. */
 extern int   (*sr_dispatch_host_stack_remaining)(size_t *remaining_out);
+/* The high end of the running stack, installed beside it (sr_coro_stack_top); may stay NULL. */
+extern int   (*sr_dispatch_host_stack_top)(uintptr_t *top_out);
+/* The same host-stack bound for direct compiled calls (#855). A `jal` to a known body is a
+ * native C call that never enters the dispatcher, so codegen opens every body that makes such
+ * a call with SR_HOST_STACK_CHECK; leaves and bodies whose calls all go through the dispatcher
+ * need none, since every native recursion of generated code passes through one or the other.
+ *
+ * The hot path is one test of the body's frame address against sr_host_stack_window: frame
+ * addresses on the running stack already known to leave the dispatcher's reserve. Frames in
+ * [low, low + span] pass; {0, 0} passes nothing. A frame outside it calls
+ * sr_host_stack_entry_slow (recomp.c), which takes the dispatcher's measurement: when the
+ * stack is exhausted (or its bounds are unknown) the run stops at the dispatcher's named
+ * boundary with the dispatcher's report; otherwise it refills the window for the running stack
+ * and returns. The window spans one stack and is never an estimate, so a frame on any other
+ * live stack falls outside it and refills it; the scheduler clears it when it creates a guest
+ * stack, which may reuse the range of a released one. A plain global: guest code runs on one
+ * OS thread (as for sr_tail_transfer). Defined in guest_interp.c. */
+typedef struct {
+    uintptr_t low;
+    uintptr_t span;
+} SrHostStackWindow;
+extern SrHostStackWindow sr_host_stack_window;
+void  sr_host_stack_entry_slow(uint32_t entry, uintptr_t frame);
+#define SR_HOST_STACK_CHECK(entry) do { \
+    uintptr_t _sr_frame = (uintptr_t)__builtin_frame_address(0); \
+    if (__builtin_expect(_sr_frame - sr_host_stack_window.low > sr_host_stack_window.span, 0)) \
+        sr_host_stack_entry_slow((entry), _sr_frame); \
+} while (0)
+static inline void sr_host_stack_window_clear(void) {
+    sr_host_stack_window.low = 0;
+    sr_host_stack_window.span = 0;
+}
 extern atomic_int_least32_t sr_timeslice;
 void sr_yield(CpuState *s);
 /* Returns 1 if the host wall-clock has crossed the vblank quantum since the last vblank
