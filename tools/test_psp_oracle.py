@@ -2719,8 +2719,9 @@ class PspDmacProbeTests(unittest.TestCase):
             entry for entry in self._oracle_manifest()["tests"] if entry["id"] == "PSP-SYSTEM-001"
         )
         self.assertEqual(system["status"], "implemented")
-        self.assertEqual(system["hardware_evidence"], "CAPTURED")
+        self.assertEqual(system["hardware_evidence"], "MEASURED")
         self.assertEqual(system["case_ids"], ["model-profile"])
+        self.assertEqual(system["evidence_cases"][0], "model-profile")
 
     def test_implemented_status_alone_is_not_accepted_hardware_evidence(self) -> None:
         """`status: implemented` is probe-source prose, never hardware evidence."""
@@ -2729,12 +2730,13 @@ class PspDmacProbeTests(unittest.TestCase):
         for test_id in ("PSP-SYSTEM-001",):
             entry = next(item for item in manifest["tests"] if item["id"] == test_id)
             self.assertEqual(entry["status"], "implemented")
-            self.assertEqual(entry["hardware_evidence"], "CAPTURED")
+            self.assertEqual(entry["hardware_evidence"], "MEASURED")
+            # Status alone grants nothing: an API is granted only when the cited run names it.
             for api in entry["apis"]:
-                self.assertNotIn(
-                    api,
-                    oracle_apis,
-                    f"{api} reaches HARDWARE_MEASURED from a probe source, not a run",
+                self.assertEqual(
+                    api in oracle_apis,
+                    api in entry["evidence_cases"],
+                    f"{api} tier must follow the cited run, not the probe source",
                 )
 
     def test_fpu_and_cache_probe_families_are_measured_by_the_campaign(self) -> None:
@@ -2766,7 +2768,8 @@ class PspDmacProbeTests(unittest.TestCase):
         evidence = {entry["id"]: entry["hardware_evidence"] for entry in manifest["tests"]}
         # Rows measured before the 2026-10-10 campaign keep their own citations; the campaign
         # on f6ccfb33 measured eighteen others and captured two without acceptance, and the
-        # 2026-10-15 runs of build e45e667b measured the three CPU-semantics probes.
+        # 2026-10-15 runs of build e45e667b measured the HLE single-case probes and the three
+        # CPU-semantics probes.
         self.assertEqual(
             {test_id for test_id, value in evidence.items() if value == "MEASURED"},
             {
@@ -2775,7 +2778,11 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-KERNEL-STATUS-001", "PSP-REGISTRY-001", "PSP-KERNEL-MISC-001", "PSP-SMOKE-001",
                 "PSP-THREAD-EXIT-001", "PSP-IO-001", "PSP-DISPLAY-002", "PSP-DISPLAY-003",
                 "PSP-DISPLAY-004", "PSP-FPU-001", "PSP-CACHE-001", "PSP-AUDIO-001", "PSP-GE-001",
-                "PSP-MUTEX-001",
+                "PSP-MUTEX-001", "PSP-KERNEL-001", "PSP-SYSTEM-001",
+                # The 2026-10-15 single-case runs on e45e667b were acceptance-eligible.
+                "PSP-HLE-KERNEL-STATUS-001", "PSP-HLE-VTIMER-001", "PSP-HLE-POWER-001",
+                "PSP-HLE-HPRM-001", "PSP-HLE-CTRL-LATCH-001", "PSP-HLE-SYSPARAM-001",
+                "PSP-HLE-GE-EDRAM-001",
                 # The 2026-10-15 CPU-semantics runs of build e45e667b.
                 "PSP-FPU-CC-001", "PSP-VFPU-CMP-001", "PSP-LLSC-001",
             },
@@ -2783,13 +2790,8 @@ class PspDmacProbeTests(unittest.TestCase):
         self.assertEqual(
             {test_id for test_id, value in evidence.items() if value == "CAPTURED"},
             {
-                "PSP-KERNEL-001", "PSP-SYSTEM-001", "PSP-GE-CONTROL-001", "PSP-TEARDOWN-001",
-                # The HLE measurement families ran as single-case runs on 2026-10-10 with
-                # complete streams; none was acceptance-eligible (post-unload shell
-                # qualification), so they are captured, not measured.
-                "PSP-HLE-KERNEL-STATUS-001", "PSP-HLE-VTIMER-001", "PSP-HLE-POWER-001",
-                "PSP-HLE-HPRM-001", "PSP-HLE-CTRL-LATCH-001", "PSP-HLE-SYSPARAM-001",
-                "PSP-HLE-GE-EDRAM-001",
+                # Captured only: the runner classified their envelopes as not acceptance-eligible.
+                "PSP-GE-CONTROL-001", "PSP-TEARDOWN-001",
             },
         )
 
@@ -2881,8 +2883,13 @@ class PspDmacProbeTests(unittest.TestCase):
         kernel = next(
             entry for entry in manifest["tests"] if entry["id"] == "PSP-KERNEL-001"
         )
-        self.assertIn("mbx-delete-wait", kernel["diagnostic_case_ids"])
-        self.assertIn("mbx-timeout-control", kernel["diagnostic_case_ids"])
+        self.assertIn("mbx-delete-wait", kernel["case_ids"])
+        self.assertIn("mbx-timeout-control", kernel["case_ids"])
+        self.assertEqual(kernel["hardware_evidence"], "MEASURED")
+        self.assertEqual(
+            kernel["uncited_cases"],
+            ["callback-notify-check", "wait-cancel", "thread-lifecycle"],
+        )
         self.assertIn(339, kernel["issues"])
         self.assertIn(341, kernel["issues"])
         for api in (
@@ -4252,15 +4259,20 @@ class HleMeasureProbeTests(unittest.TestCase):
                     self.assertIn(f'"{semantic}"', self.probe, semantic)
 
     def test_manifest_entries_are_captured_and_cite_the_registry(self) -> None:
-        """The 2026-10-10 single-case runs captured every family without acceptance."""
+        """The 2026-10-15 single-case runs on e45e667b measured every family (acceptance-eligible)."""
         by_id = {test["id"]: test for test in self.manifest["tests"]}
         for case, _cid, stem, _block, _macro, test_id in self.FAMILIES:
             with self.subTest(case=case):
                 entry = by_id[test_id]
                 spec, _counts = CAMPAIGN_PROBE_CASES[case]
-                self.assertEqual(entry["hardware_evidence"], "CAPTURED")
-                self.assertIn("not acceptance-eligible", entry["evidence_note"])
-                self.assertIn("establishes nothing", entry["evidence_note"])
+                self.assertEqual(entry["hardware_evidence"], "MEASURED")
+                self.assertEqual(
+                    entry["evidence_ref"],
+                    "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+                )
+                self.assertTrue(set(entry["case_ids"]).issubset(entry["evidence_cases"]))
+                self.assertIn("2026-10-15", entry["measurement_note"])
+                self.assertIn("acceptance-eligible", entry["measurement_note"])
                 self.assertEqual(entry["status"], "implemented")
                 self.assertEqual(entry["source"], "fixtures/psp_oracle/probe_hle_measure.c")
                 self.assertEqual(entry["prx"], f"{stem}.prx")

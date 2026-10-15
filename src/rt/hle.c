@@ -10334,6 +10334,192 @@ static uint32_t h_GetSystemTimeWide(CpuState *s) {
     return (uint32_t)t;
 }
 
+/* ---- VTimer (ThreadManForUser virtual timers) ----------------------------------------------
+ * A VTimer is a stopwatch on the scheduler's guest microsecond timeline. It accumulates the
+ * guest time that elapses while it runs and holds that total while it is stopped.
+ *
+ * Measured on the PSP-3000 oracle (2026-10-15, PSP-HLE-VTIMER-001, firmware 6.61, PR #1003
+ * record at oracle/hle-measured-20261014 1d5df5c9): Create returns a valid UID; Start returns 0,
+ * also when it restarts a stopped timer; Stop returns 1 while running and 0 when not started;
+ * Delete of a running timer returns 0; Refer and Delete on the deleted UID return 0x800201BE and
+ * Refer writes nothing. Refer returns 0 and fills the struct: active is 1 while running and 0
+ * when created or stopped; base is non-zero while running and 0 when created or stopped; current
+ * is 0 when created, non-zero while running, and holds the accumulated time while stopped (the
+ * stopped Refer and both stopped GetVTimerTime reads return the same value); schedule, handler
+ * and common read 0; a size word of 0x08 writes 8 bytes. StartVTimer returns 1 while the timer
+ * already runs (docs/HARDWARE_ORACLE.md, callbacks/VTimer/alarms; not part of that entry).
+ *
+ * ASSUMED, not measured:
+ *   - The time unit is microseconds. The record cites no absolute time values and does not
+ *     establish the unit; microseconds is the unit of every other SceKernelSysClock here.
+ *   - base = system time at start is the project model; the record establishes non-zero while
+ *     running and zero otherwise. The value is the guest time at the most recent Start.
+ *   - GetVTimerBase is uncited. It returns the same base as Refer.
+ *   - Start, Stop and GetVTimerTime on a deleted UID return the measured Refer/Delete code.
+ *   - NULL-pointer codes follow the FPL status convention (ILLEGAL_ADDR), unmeasured here.
+ *   - The no-slot CreateVTimer error is unmeasured.
+ *   - A size word of 0 writes nothing. That is the status-write rule the sema, event-flag and
+ *     mailbox calls share, not a VTimer-specific citation.
+ *
+ * Refused by name, out of scope: SetVTimerTime, and the handler family (SetVTimerHandler,
+ * SetVTimerHandlerWide, CancelVTimerHandler), which needs the timer interrupt model (issue #325).
+ * A non-NULL CreateVTimer option struct is refused too, because its layout is unmeasured. */
+#define VTIMER_MAX 16
+#define VTIMER_BAD_ID 0x800201beu     /* measured: Refer and Delete on a deleted UID */
+#define VTIMER_NO_SLOT 0x80020190u    /* UNMEASURED: no free slot at create */
+#define VTIMER_INFO_SIZE 0x48u        /* PSPSDK SceKernelVTimerInfo, 72 bytes */
+
+typedef struct {
+    int used;
+    uint32_t uid;
+    char name[32];
+    int running;
+    uint64_t accum_us;     /* elapsed guest time over the finished running intervals */
+    uint64_t started_us;   /* guest time at the start of the open interval, when running */
+} VTimer;
+
+static VTimer s_vtimers[VTIMER_MAX];
+
+static VTimer *vtimer_lookup(uint32_t uid) {
+    for (int i = 0; i < VTIMER_MAX; i++)
+        if (s_vtimers[i].used && s_vtimers[i].uid == uid) return &s_vtimers[i];
+    return NULL;
+}
+
+/* Guest time now. The refresh before the read is the one the timed waits make, so a running
+ * timer keeps pace with the guest clock even when the scheduler is paced to the host clock. */
+static uint64_t vtimer_now_us(void) {
+    sched_vtime_refresh();
+    return now_usec();
+}
+
+/* Elapsed guest time at `now`: the finished intervals plus the open one, if running. */
+static uint64_t vtimer_elapsed_at(const VTimer *t, uint64_t now) {
+    if (!t->running) return t->accum_us;
+    return t->accum_us + (now >= t->started_us ? now - t->started_us : 0u);
+}
+
+/* base = system time at start is the project model; the record establishes non-zero while
+ * running and zero otherwise. Guest time at the most recent Start while running, else zero. */
+static uint64_t vtimer_base_us(const VTimer *t) {
+    return t->running ? t->started_us : 0u;
+}
+
+static uint32_t h_CreateVTimer(CpuState *s) {
+    /* a0=name, a1=option struct (only NULL is measured). */
+    if (A1) {
+        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelCreateVTimer option struct is not supported yet.\n");
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    VTimer *t = NULL;
+    for (int i = 0; i < VTIMER_MAX; i++) {
+        if (!s_vtimers[i].used) { t = &s_vtimers[i]; break; }
+    }
+    if (!t) return VTIMER_NO_SLOT;
+    memset(t, 0, sizeof *t);
+    t->used = 1;
+    t->uid = sr_alloc_uid();
+    if (A0) (void)guest_cstr(A0, t->name, sizeof(t->name));
+    return t->uid;
+}
+
+static uint32_t h_StartVTimer(CpuState *s) {
+    /* a0=uid. Returns 1 while the timer already runs (documented), 0 when it starts. */
+    VTimer *t = vtimer_lookup(A0);
+    if (!t) return VTIMER_BAD_ID;
+    if (t->running) return 1u;
+    t->started_us = vtimer_now_us();
+    t->running = 1;
+    return 0;
+}
+
+static uint32_t h_StopVTimer(CpuState *s) {
+    /* a0=uid. Returns 1 if the timer was running, 0 if it was not started. */
+    VTimer *t = vtimer_lookup(A0);
+    if (!t) return VTIMER_BAD_ID;
+    if (!t->running) return 0;
+    t->accum_us = vtimer_elapsed_at(t, vtimer_now_us());
+    t->running = 0;
+    return 1;
+}
+
+static uint32_t h_DeleteVTimer(CpuState *s) {
+    /* a0=uid. The UID is never reissued (sr_alloc_uid), so a deleted UID stays unknown. */
+    VTimer *t = vtimer_lookup(A0);
+    if (!t) return VTIMER_BAD_ID;
+    memset(t, 0, sizeof *t);
+    return 0;
+}
+
+static uint32_t h_GetVTimerTime(CpuState *s) {
+    /* a0=uid, a1=SceKernelSysClock * (low word, then high word). The pointer is checked before
+     * the UID, as ReferFplStatus does. */
+    if (!A1 || !sr_guest_span_writable(A1, 8u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    VTimer *t = vtimer_lookup(A0);
+    if (!t) return VTIMER_BAD_ID;
+    uint64_t value = vtimer_elapsed_at(t, vtimer_now_us());
+    MEM_W32(A1, (uint32_t)value);
+    MEM_W32(A1 + 4u, (uint32_t)(value >> 32));
+    return 0;
+}
+
+static uint32_t h_GetVTimerBase(CpuState *s) {
+    /* a0=uid, a1=SceKernelSysClock *. UNCITED: returns the same base as ReferVTimerStatus. */
+    if (!A1 || !sr_guest_span_writable(A1, 8u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    VTimer *t = vtimer_lookup(A0);
+    if (!t) return VTIMER_BAD_ID;
+    uint64_t base = vtimer_base_us(t);
+    MEM_W32(A1, (uint32_t)base);
+    MEM_W32(A1 + 4u, (uint32_t)(base >> 32));
+    return 0;
+}
+
+/* sceKernelReferVTimerStatus(uid, SceKernelVTimerInfo *). Field offsets follow the PSPSDK
+ * struct: size(0), name[32](4), active(36), then base, current and schedule as 8-byte clocks,
+ * handler and common. Measured (PSP-HLE-VTIMER-001, PR #1003 record): active, base, current,
+ * and schedule/handler/common = 0, with the states given in the header above. base = system time
+ * at start is the project model; the record establishes non-zero while running and zero
+ * otherwise. current is the same elapsed value GetVTimerTime returns, as a 64-bit low/high pair.
+ * The time unit is ASSUMED microseconds (see the header). */
+typedef struct {
+    uint32_t size;          /* 0x00: struct size (0x48) */
+    char     name[32];      /* 0x04: create-time name */
+    uint32_t active;        /* 0x24: 1 while running, 0 when created or stopped (measured) */
+    uint32_t base[2];       /* 0x28: guest time at the last Start while running, else 0 (model) */
+    uint32_t current[2];    /* 0x30: elapsed guest time, low/high (measured shape) */
+    uint32_t schedule[2];   /* 0x38: 0 (measured) */
+    uint32_t handler;       /* 0x40: 0 (measured) */
+    uint32_t common;        /* 0x44: 0 (measured) */
+} SceKernelVTimerInfo;
+typedef char vtimer_info_is_72_bytes[(sizeof(SceKernelVTimerInfo) == VTIMER_INFO_SIZE) ? 1 : -1];
+
+static uint32_t h_ReferVTimerStatus(CpuState *s) {
+    /* a0=uid, a1=info. The caller's size word selects the write: 0 writes nothing, otherwise
+     * min(size, 0x48) bytes. That is the rule the sema, event-flag and mailbox status calls
+     * share (PSP-KERNEL-STATUS-001); it is applied to VTimer without a VTimer-specific cite. */
+    if (!A1 || !sr_guest_span_readable(A1, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    VTimer *t = vtimer_lookup(A0);
+    if (!t) return VTIMER_BAD_ID;
+    uint32_t input_size = MEM_R32(A1);
+    if (input_size == 0u) return 0;
+    uint32_t write_len = input_size < VTIMER_INFO_SIZE ? input_size : VTIMER_INFO_SIZE;
+    if (!sr_guest_span_writable(A1, write_len)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    uint64_t base = vtimer_base_us(t);
+    uint64_t current = vtimer_elapsed_at(t, vtimer_now_us());
+    SceKernelVTimerInfo info;
+    memset(&info, 0, sizeof info);
+    info.size = VTIMER_INFO_SIZE;
+    memcpy(info.name, t->name, sizeof info.name);
+    info.active = t->running ? 1u : 0u;
+    info.base[0] = (uint32_t)base;
+    info.base[1] = (uint32_t)(base >> 32);
+    info.current[0] = (uint32_t)current;
+    info.current[1] = (uint32_t)(current >> 32);
+    for (uint32_t i = 0; i < write_len; i++)
+        MEM_W8(A1 + i, ((const uint8_t *)&info)[i]);
+    return 0;
+}
+
 enum {
     RTC_ILLEGAL_ADDR = 0x80000103u,
     /* PSPAutotests tests/rtc/convert.expected: the RTC conversion family reports
@@ -22591,7 +22777,7 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0xba6b92e2, "sceKernelSysClock2USec", h_SysClock2USec);
     sr_hle_register(0x110dec9au, "sceKernelUSec2SysClock", h_USec2SysClock);
     sr_hle_register(0x7e65b999, "sceKernelCancelAlarm", h_CancelAlarm);
-    sr_hle_register_unsupported(0x034a921f, "sceKernelGetVTimerTime", 0x80020002u);
+    sr_hle_register(0x034a921fu, "sceKernelGetVTimerTime", h_GetVTimerTime);
     sr_hle_register(0x50f61d8a, "sceKernelFreeMemoryBlock", h_FreeMemoryBlock);
     sr_hle_register(0xdb83a952, "sceKernelGetMemoryBlockAddr", h_GetMemoryBlockAddr);
     sr_hle_register(0xfe707fdf, "sceKernelAllocMemoryBlock", h_AllocMemoryBlock);
@@ -22644,10 +22830,18 @@ static void hle_register_unregistered_import_batch(void) {
      * documented only as unknown, and the idle-clock and switch counters are not modelled here, so
      * the status is refused until a probe measures the struct. */
     sr_hle_register_unsupported(0x627e6f3au, "sceKernelReferSystemStatus", 0x80020002u);
-    sr_hle_register_unsupported(0x20fff560u, "sceKernelCreateVTimer", 0x80020002u);
-    sr_hle_register_unsupported(0xc68d9437u, "sceKernelStartVTimer", 0x80020002u);
-    sr_hle_register_unsupported(0x328f9e52u, "sceKernelDeleteVTimer", 0x80020002u);
+    /* VTimer lifecycle and query surface (measured; see the VTimer block above). */
+    sr_hle_register(0x20fff560u, "sceKernelCreateVTimer", h_CreateVTimer);
+    sr_hle_register(0xc68d9437u, "sceKernelStartVTimer", h_StartVTimer);
+    sr_hle_register(0xd0aeee87u, "sceKernelStopVTimer", h_StopVTimer);
+    sr_hle_register(0x328f9e52u, "sceKernelDeleteVTimer", h_DeleteVTimer);
+    sr_hle_register(0xb3a59970u, "sceKernelGetVTimerBase", h_GetVTimerBase);
+    sr_hle_register(0x5f32beaau, "sceKernelReferVTimerStatus", h_ReferVTimerStatus);
+    /* VTimer handler family and time setter: refused by name (issue #325 for the handlers). */
     sr_hle_register_unsupported(0x542ad630u, "sceKernelSetVTimerTime", 0x80020002u);
+    sr_hle_register_unsupported(0xd8b299aeu, "sceKernelSetVTimerHandler", 0x80020002u);
+    sr_hle_register_unsupported(0x53b00e9au, "sceKernelSetVTimerHandlerWide", 0x80020002u);
+    sr_hle_register_unsupported(0xd2d615efu, "sceKernelCancelVTimerHandler", 0x80020002u);
     sr_hle_register_unsupported(0x7ed59bc4u, "sceDisplaySetHoldMode", 0x80020002u);
     sr_hle_register_unsupported(0x77ed8b3au, "sceDisplayWaitVblankStartMultiCB", 0x80020002u);
     sr_hle_register_unsupported(0x72189c48u, "sceImposeSetUMDPopup", 0x80010086u);

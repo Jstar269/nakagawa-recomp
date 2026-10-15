@@ -326,8 +326,10 @@ numbers show.
 `CASE=display-mask-duty` is the same question asked as a sustained duty cycle —
 repeated 33 ms or 66 ms masks separated by 2 ms servicing gaps across a 2 s
 window — where the three candidate semantics separate by a factor of about four
-in accumulated VCOUNT. It is built and warning-free but was not needed once the
-per-trial case came back unanimous, and no result from it is recorded.
+in accumulated VCOUNT. It was run on 2026-10-15 on commit `e45e667b` (firmware
+6.6.1): both records PASS, which is machinery only. The result is indexed in
+`docs/HARDWARE_ORACLE.md` and is not granted through `PSP-DISPLAY-001`, which cites
+`docs/ARCHITECTURE.md#clocks`.
 
 `CASE=display-ge-mask` asks whether the GE keeps executing while CPU interrupts
 are masked, and is deliberately stall-gated so that "the GE simply finished
