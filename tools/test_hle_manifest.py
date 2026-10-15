@@ -235,6 +235,39 @@ static void more(void) {
         self.assertIn("static_unsupported", origins)
 
 
+class PowerRegistrationOwnershipTests(unittest.TestCase):
+    """scePower and sceKernelPower NIDs are registered from src/rt/hle_power.c (issue #307).
+
+    Their handlers already live in hle_power.c, so the registrations must too: one
+    obvious owner per NID, with hle.c left as composition glue. The NID set is pinned
+    here rather than derived from hle.c, so the test cannot pass by reading the old
+    location. scePower_469989ad stays in hle.c: its refusal uses hle.c's private
+    sr_hle_register_unsupported(), which hle_power.c cannot call.
+    """
+
+    POWER_NIDS = frozenset({
+        0x34F9C463, 0xFDB5BFE9, 0x478FE6F5, 0x737486F2, 0xEBD177D6, 0xD3075926,  # clock and low battery
+        0xEADB1BD7, 0x3AEE7261, 0x090CCB3F,                                      # sceKernelPower Lock/Unlock/Tick
+        0x04B7766E,                                                              # scePowerRegisterCallback
+        0x2085D15D, 0x1E490401, 0x0AFD0D8B, 0x87440F5E,                          # battery and power online
+    })
+
+    def test_power_registrations_are_owned_by_hle_power_c(self) -> None:
+        power_src = (ROOT / "src" / "rt" / "hle_power.c").read_text(encoding="utf-8")
+        owned = {r["nid"] for r in extract_registrations(power_src)}
+        self.assertEqual({f"0x{n:08x}" for n in owned}, {f"0x{n:08x}" for n in self.POWER_NIDS})
+
+    def test_hle_c_registers_no_power_nid(self) -> None:
+        active = hle_manifest.active_source(hle_manifest.HLE_C.read_text(encoding="utf-8"))
+        registered = {
+            int(m.group(1), 16)
+            for m in re.finditer(
+                r"sr_hle_register(?:_unsupported)?\s*\(\s*0x([0-9a-fA-F]{1,8})[uU]?\s*,", active
+            )
+        }
+        self.assertEqual(registered & self.POWER_NIDS, set())
+
+
 class LiveManifestTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -440,7 +473,7 @@ class LiveManifestTests(unittest.TestCase):
             0xBA6B92E2: ("sceKernelSysClock2USec", "h_SysClock2USec", "dedicated"),
             0x110DEC9A: ("sceKernelUSec2SysClock", "h_USec2SysClock", "dedicated"),
             0x7E65B999: ("sceKernelCancelAlarm", "h_CancelAlarm", "dedicated"),
-            0x034A921F: ("sceKernelGetVTimerTime", "h_ControlledUnsupported", "controlled_unsupported"),
+            0x034A921F: ("sceKernelGetVTimerTime", "h_GetVTimerTime", "dedicated"),
             0x50F61D8A: ("sceKernelFreeMemoryBlock", "h_FreeMemoryBlock", "dedicated"),
             0xDB83A952: ("sceKernelGetMemoryBlockAddr", "h_GetMemoryBlockAddr", "dedicated"),
             0xFE707FDF: ("sceKernelAllocMemoryBlock", "h_AllocMemoryBlock", "dedicated"),
@@ -674,18 +707,15 @@ static uint32_t h_SynthReal(CpuState *s) {
             unsupported,
             {
                 "0x0282a3bd": ("sceHttpGetContentLength", "0x80010086"),
-                "0x034a921f": ("sceKernelGetVTimerTime", "0x80020002"),
                 "0x03d9526f": ("sceHttpSetResolveRetry", "0x80010086"),
                 "0x0bf0a3ae": ("sceNetGetLocalEtherAddr", "0x80010086"),
                 "0x0c116e1b": ("sceAtracLowLevelDecode", "0x80630004"),
                 "0x1575d64b": ("sceAtracLowLevelInitDecoder", "0x80630004"),
                 "0x1579a159": ("sceUtilityLoadNetModule", "0x80110001"),
                 "0x1f0fc3e3": ("sceHttpSetRecvTimeOut", "0x80010086"),
-                "0x20fff560": ("sceKernelCreateVTimer", "0x80020002"),
                 "0x2255551e": ("sceHttpGetNetworkPspError", "0x80010086"),
                 "0x231fc6b7": ("_sceAtracGetContextAddress", "0x80630003"),
                 "0x29681260": ("sceAudiocodecReleaseEDRAM", "0x80010086"),
-                "0x328f9e52": ("sceKernelDeleteVTimer", "0x80020002"),
                 "0x011f03c1": ("sceRtcGetAccumulativeTime", "0x80020002"),
                 "0x191cdeff": ("sceSslEnd", "0x80010086"),
                 "0x5963991b": ("sceNetApctlDelHandler", "0x80010086"),
@@ -696,6 +726,9 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x627e6f3a": ("sceKernelReferSystemStatus", "0x80020002"),
                 "0x3eaba285": ("sceHttpAddExtraHeader", "0x80010086"),
                 "0x542ad630": ("sceKernelSetVTimerTime", "0x80020002"),
+                "0x53b00e9a": ("sceKernelSetVTimerHandlerWide", "0x80020002"),
+                "0xd2d615ef": ("sceKernelCancelVTimerHandler", "0x80020002"),
+                "0xd8b299ae": ("sceKernelSetVTimerHandler", "0x80020002"),
                 "0x5b37eb1d": ("sceAudiocodecInit", "0x80010086"),
                 "0x438a385a": ("sceGeSaveContext", "0x80020002"),
                 "0x0bf608fb": ("sceGeRestoreContext", "0x80020002"),
@@ -708,7 +741,6 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x8c943191": ("sceImposeGetBatteryIconStatus", "0x80010086"),
                 "0xab1abe07": ("sceHttpInit", "0x80010086"),
                 "0xbd2f1094": ("sceKernelLoadExec", "0x80020002"),
-                "0xc68d9437": ("sceKernelStartVTimer", "0x80020002"),
                 "0xd1c8945e": ("sceHttpEnd", "0x80010086"),
                 "0xd1f59fdb": ("sceAtracStartEntry", "0x80630004"),
                 "0xd675ebb8": ("sceKernelSelfStopUnloadModule", "0x80020002"),
@@ -1062,10 +1094,12 @@ class EvidenceTierTests(unittest.TestCase):
             [
                 "PSP-ALARM-001", "PSP-AUDIO-001", "PSP-CACHE-001", "PSP-DISPLAY-001",
                 "PSP-DISPLAY-002", "PSP-DISPLAY-003", "PSP-DISPLAY-004", "PSP-DMAC-001",
-                "PSP-EXCEPTION-001", "PSP-FPU-001", "PSP-GE-001", "PSP-IO-001",
-                "PSP-KERNEL-002", "PSP-KERNEL-MISC-001", "PSP-KERNEL-STATUS-001", "PSP-MUTEX-001",
-                "PSP-REGISTRY-001", "PSP-SMOKE-001", "PSP-THREAD-003", "PSP-THREAD-EXIT-001",
-                "PSP-TRANSPORT-001", "PSP-WAIT-001",
+                "PSP-EXCEPTION-001", "PSP-FPU-001", "PSP-GE-001", "PSP-HLE-CTRL-LATCH-001",
+                "PSP-HLE-GE-EDRAM-001", "PSP-HLE-HPRM-001", "PSP-HLE-KERNEL-STATUS-001",
+                "PSP-HLE-POWER-001", "PSP-HLE-SYSPARAM-001", "PSP-HLE-VTIMER-001", "PSP-IO-001",
+                "PSP-KERNEL-001", "PSP-KERNEL-002", "PSP-KERNEL-MISC-001", "PSP-KERNEL-STATUS-001",
+                "PSP-MUTEX-001", "PSP-REGISTRY-001", "PSP-SMOKE-001", "PSP-SYSTEM-001",
+                "PSP-THREAD-003", "PSP-THREAD-EXIT-001", "PSP-TRANSPORT-001", "PSP-WAIT-001",
             ],
         )
         self.assertIn("sceDmacTryMemcpy", promoted)

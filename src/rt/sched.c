@@ -18,7 +18,9 @@
  * boot threads the way the game's startup expects, not a cycle-accurate kernel.
  */
 
+#ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
+#endif
 #include "recomp.h"
 #include "sr_coro.h"     /* portable cooperative-coroutine primitive (replaces Win32 fibers) */
 #include "perf.h"

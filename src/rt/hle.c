@@ -5991,8 +5991,12 @@ static uint32_t h_GetModuleId(CpuState *s) { (void)s; return 0x112; }   /* main 
 static uint32_t h_StopModule_Trace(CpuState *s) {
     uint32_t modid = A0;
     LoadedModule *mod = find_loaded_module(modid);
+    /* libfont's translated module_start runs under the default gate (module_start_policy),
+     * so its module_stop runs too. A trace-only stop here would leave the module STARTED,
+     * and sceKernelUnloadModule would refuse it with ALREADY_LOADED. */
     if (!real_module_start_enabled() &&
-        (!mod || (!mod->runtime_placed && mod->state == MODULE_STATE_STARTED &&
+        (!mod || (!mod->runtime_placed && !module_path_is(mod->path, "libfont.prx") &&
+                  mod->state == MODULE_STATE_STARTED &&
                   mod->start_entry_ran && mod->module_stop != 0))) {
         uint32_t uid = sched_current_uid();
         fprintf(stderr, "TRACE_STOPMODULE: uid=0x%x pc=0x%08x ra=0x%08x modid=0x%08x\n",
@@ -10330,6 +10334,192 @@ static uint32_t h_GetSystemTimeWide(CpuState *s) {
     return (uint32_t)t;
 }
 
+/* ---- VTimer (ThreadManForUser virtual timers) ----------------------------------------------
+ * A VTimer is a stopwatch on the scheduler's guest microsecond timeline. It accumulates the
+ * guest time that elapses while it runs and holds that total while it is stopped.
+ *
+ * Measured on the PSP-3000 oracle (2026-10-15, PSP-HLE-VTIMER-001, firmware 6.61, PR #1003
+ * record at oracle/hle-measured-20261014 1d5df5c9): Create returns a valid UID; Start returns 0,
+ * also when it restarts a stopped timer; Stop returns 1 while running and 0 when not started;
+ * Delete of a running timer returns 0; Refer and Delete on the deleted UID return 0x800201BE and
+ * Refer writes nothing. Refer returns 0 and fills the struct: active is 1 while running and 0
+ * when created or stopped; base is non-zero while running and 0 when created or stopped; current
+ * is 0 when created, non-zero while running, and holds the accumulated time while stopped (the
+ * stopped Refer and both stopped GetVTimerTime reads return the same value); schedule, handler
+ * and common read 0; a size word of 0x08 writes 8 bytes. StartVTimer returns 1 while the timer
+ * already runs (docs/HARDWARE_ORACLE.md, callbacks/VTimer/alarms; not part of that entry).
+ *
+ * ASSUMED, not measured:
+ *   - The time unit is microseconds. The record cites no absolute time values and does not
+ *     establish the unit; microseconds is the unit of every other SceKernelSysClock here.
+ *   - base = system time at start is the project model; the record establishes non-zero while
+ *     running and zero otherwise. The value is the guest time at the most recent Start.
+ *   - GetVTimerBase is uncited. It returns the same base as Refer.
+ *   - Start, Stop and GetVTimerTime on a deleted UID return the measured Refer/Delete code.
+ *   - NULL-pointer codes follow the FPL status convention (ILLEGAL_ADDR), unmeasured here.
+ *   - The no-slot CreateVTimer error is unmeasured.
+ *   - A size word of 0 writes nothing. That is the status-write rule the sema, event-flag and
+ *     mailbox calls share, not a VTimer-specific citation.
+ *
+ * Refused by name, out of scope: SetVTimerTime, and the handler family (SetVTimerHandler,
+ * SetVTimerHandlerWide, CancelVTimerHandler), which needs the timer interrupt model (issue #325).
+ * A non-NULL CreateVTimer option struct is refused too, because its layout is unmeasured. */
+#define VTIMER_MAX 16
+#define VTIMER_BAD_ID 0x800201beu     /* measured: Refer and Delete on a deleted UID */
+#define VTIMER_NO_SLOT 0x80020190u    /* UNMEASURED: no free slot at create */
+#define VTIMER_INFO_SIZE 0x48u        /* PSPSDK SceKernelVTimerInfo, 72 bytes */
+
+typedef struct {
+    int used;
+    uint32_t uid;
+    char name[32];
+    int running;
+    uint64_t accum_us;     /* elapsed guest time over the finished running intervals */
+    uint64_t started_us;   /* guest time at the start of the open interval, when running */
+} VTimer;
+
+static VTimer s_vtimers[VTIMER_MAX];
+
+static VTimer *vtimer_lookup(uint32_t uid) {
+    for (int i = 0; i < VTIMER_MAX; i++)
+        if (s_vtimers[i].used && s_vtimers[i].uid == uid) return &s_vtimers[i];
+    return NULL;
+}
+
+/* Guest time now. The refresh before the read is the one the timed waits make, so a running
+ * timer keeps pace with the guest clock even when the scheduler is paced to the host clock. */
+static uint64_t vtimer_now_us(void) {
+    sched_vtime_refresh();
+    return now_usec();
+}
+
+/* Elapsed guest time at `now`: the finished intervals plus the open one, if running. */
+static uint64_t vtimer_elapsed_at(const VTimer *t, uint64_t now) {
+    if (!t->running) return t->accum_us;
+    return t->accum_us + (now >= t->started_us ? now - t->started_us : 0u);
+}
+
+/* base = system time at start is the project model; the record establishes non-zero while
+ * running and zero otherwise. Guest time at the most recent Start while running, else zero. */
+static uint64_t vtimer_base_us(const VTimer *t) {
+    return t->running ? t->started_us : 0u;
+}
+
+static uint32_t h_CreateVTimer(CpuState *s) {
+    /* a0=name, a1=option struct (only NULL is measured). */
+    if (A1) {
+        fprintf(stderr, "UNSUPPORTED_IMPORT: sceKernelCreateVTimer option struct is not supported yet.\n");
+        return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;
+    }
+    VTimer *t = NULL;
+    for (int i = 0; i < VTIMER_MAX; i++) {
+        if (!s_vtimers[i].used) { t = &s_vtimers[i]; break; }
+    }
+    if (!t) return VTIMER_NO_SLOT;
+    memset(t, 0, sizeof *t);
+    t->used = 1;
+    t->uid = sr_alloc_uid();
+    if (A0) (void)guest_cstr(A0, t->name, sizeof(t->name));
+    return t->uid;
+}
+
+static uint32_t h_StartVTimer(CpuState *s) {
+    /* a0=uid. Returns 1 while the timer already runs (documented), 0 when it starts. */
+    VTimer *t = vtimer_lookup(A0);
+    if (!t) return VTIMER_BAD_ID;
+    if (t->running) return 1u;
+    t->started_us = vtimer_now_us();
+    t->running = 1;
+    return 0;
+}
+
+static uint32_t h_StopVTimer(CpuState *s) {
+    /* a0=uid. Returns 1 if the timer was running, 0 if it was not started. */
+    VTimer *t = vtimer_lookup(A0);
+    if (!t) return VTIMER_BAD_ID;
+    if (!t->running) return 0;
+    t->accum_us = vtimer_elapsed_at(t, vtimer_now_us());
+    t->running = 0;
+    return 1;
+}
+
+static uint32_t h_DeleteVTimer(CpuState *s) {
+    /* a0=uid. The UID is never reissued (sr_alloc_uid), so a deleted UID stays unknown. */
+    VTimer *t = vtimer_lookup(A0);
+    if (!t) return VTIMER_BAD_ID;
+    memset(t, 0, sizeof *t);
+    return 0;
+}
+
+static uint32_t h_GetVTimerTime(CpuState *s) {
+    /* a0=uid, a1=SceKernelSysClock * (low word, then high word). The pointer is checked before
+     * the UID, as ReferFplStatus does. */
+    if (!A1 || !sr_guest_span_writable(A1, 8u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    VTimer *t = vtimer_lookup(A0);
+    if (!t) return VTIMER_BAD_ID;
+    uint64_t value = vtimer_elapsed_at(t, vtimer_now_us());
+    MEM_W32(A1, (uint32_t)value);
+    MEM_W32(A1 + 4u, (uint32_t)(value >> 32));
+    return 0;
+}
+
+static uint32_t h_GetVTimerBase(CpuState *s) {
+    /* a0=uid, a1=SceKernelSysClock *. UNCITED: returns the same base as ReferVTimerStatus. */
+    if (!A1 || !sr_guest_span_writable(A1, 8u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    VTimer *t = vtimer_lookup(A0);
+    if (!t) return VTIMER_BAD_ID;
+    uint64_t base = vtimer_base_us(t);
+    MEM_W32(A1, (uint32_t)base);
+    MEM_W32(A1 + 4u, (uint32_t)(base >> 32));
+    return 0;
+}
+
+/* sceKernelReferVTimerStatus(uid, SceKernelVTimerInfo *). Field offsets follow the PSPSDK
+ * struct: size(0), name[32](4), active(36), then base, current and schedule as 8-byte clocks,
+ * handler and common. Measured (PSP-HLE-VTIMER-001, PR #1003 record): active, base, current,
+ * and schedule/handler/common = 0, with the states given in the header above. base = system time
+ * at start is the project model; the record establishes non-zero while running and zero
+ * otherwise. current is the same elapsed value GetVTimerTime returns, as a 64-bit low/high pair.
+ * The time unit is ASSUMED microseconds (see the header). */
+typedef struct {
+    uint32_t size;          /* 0x00: struct size (0x48) */
+    char     name[32];      /* 0x04: create-time name */
+    uint32_t active;        /* 0x24: 1 while running, 0 when created or stopped (measured) */
+    uint32_t base[2];       /* 0x28: guest time at the last Start while running, else 0 (model) */
+    uint32_t current[2];    /* 0x30: elapsed guest time, low/high (measured shape) */
+    uint32_t schedule[2];   /* 0x38: 0 (measured) */
+    uint32_t handler;       /* 0x40: 0 (measured) */
+    uint32_t common;        /* 0x44: 0 (measured) */
+} SceKernelVTimerInfo;
+typedef char vtimer_info_is_72_bytes[(sizeof(SceKernelVTimerInfo) == VTIMER_INFO_SIZE) ? 1 : -1];
+
+static uint32_t h_ReferVTimerStatus(CpuState *s) {
+    /* a0=uid, a1=info. The caller's size word selects the write: 0 writes nothing, otherwise
+     * min(size, 0x48) bytes. That is the rule the sema, event-flag and mailbox status calls
+     * share (PSP-KERNEL-STATUS-001); it is applied to VTimer without a VTimer-specific cite. */
+    if (!A1 || !sr_guest_span_readable(A1, 4u)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    VTimer *t = vtimer_lookup(A0);
+    if (!t) return VTIMER_BAD_ID;
+    uint32_t input_size = MEM_R32(A1);
+    if (input_size == 0u) return 0;
+    uint32_t write_len = input_size < VTIMER_INFO_SIZE ? input_size : VTIMER_INFO_SIZE;
+    if (!sr_guest_span_writable(A1, write_len)) return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    uint64_t base = vtimer_base_us(t);
+    uint64_t current = vtimer_elapsed_at(t, vtimer_now_us());
+    SceKernelVTimerInfo info;
+    memset(&info, 0, sizeof info);
+    info.size = VTIMER_INFO_SIZE;
+    memcpy(info.name, t->name, sizeof info.name);
+    info.active = t->running ? 1u : 0u;
+    info.base[0] = (uint32_t)base;
+    info.base[1] = (uint32_t)(base >> 32);
+    info.current[0] = (uint32_t)current;
+    info.current[1] = (uint32_t)(current >> 32);
+    for (uint32_t i = 0; i < write_len; i++)
+        MEM_W8(A1 + i, ((const uint8_t *)&info)[i]);
+    return 0;
+}
+
 enum {
     RTC_ILLEGAL_ADDR = 0x80000103u,
     /* PSPAutotests tests/rtc/convert.expected: the RTC conversion family reports
@@ -10744,26 +10934,18 @@ static const char *hle_fd_guest_path(uint32_t fd);
 /* sceKernelLoadModuleByID(fd, flags, option). The file was opened by path, and that path
  * names the module: it loads exactly as sceKernelLoadModule loads the same path, with a
  * module record its start/stop/unload can find -- guest-placed, fixed-address, or
- * (undeclared) host-served. Only a descriptor without a recorded path keeps the older
- * behaviour: every fixed-address manifest module is populated idempotently (the sorted
- * registry replaces duplicate NIDs, so repeated loads stay safe). */
+ * (undeclared) host-served. A descriptor that names no recorded file (never opened, closed,
+ * not a file, or a path too long to record) names no module, so no record can back a uid
+ * for it. It refuses by name before any load. The old fallback populated every
+ * fixed-address manifest module under a bare uid that sceKernelStartModule rejected with
+ * the generic bad id, and it left those images and exports with no owner to unload (#280). */
 static uint32_t h_LoadModuleByID(CpuState *s) {
     const char *opened = hle_fd_guest_path(A0);
     if (opened) return load_module_by_guest_path(opened, A2);
-    for (unsigned i = 0; i < sr_title_config_guest_module_count(); i++) {
-        const char *file = NULL;
-        uint32_t base = 0;
-        int required = 0;
-        SrGuestModulePlacement placement = SR_GUEST_MODULE_FIXED;
-        /* A runtime-placed module is never bulk-populated: it is laid out only when the
-         * game loads it, wherever the guest allocator places it. */
-        if (sr_title_config_guest_module_at(i, &file, NULL, &base, &required, &placement) &&
-            placement == SR_GUEST_MODULE_FIXED &&
-            !populate_guest_module(file, base, required)) {
-            return 0x80020190u;  /* SCE_KERNEL_ERROR_NO_MEMORY */
-        }
-    }
-    return sr_alloc_uid();
+    fprintf(stderr, "GUEST_MODULE_BOUNDARY: guest-module-descriptor-unrecorded fd=0x%x: no "
+                    "recorded file names this descriptor, so no module record can back a uid; "
+                    "refusing before any load\n", A0);
+    return HLE_KERNEL_ERROR_NOT_IMPLEMENTED;  /* named refusal; the PSP return is unmeasured */
 }
 
 static uint32_t h_StartModule(CpuState *s) {
@@ -15002,6 +15184,9 @@ static uint32_t s_audio_len[9];
 #define SCE_AUDIO_ERROR_INVALID_FORMAT  0x80260007u
 #define SCE_AUDIO_ERROR_NOT_RESERVED    0x80260008u
 #define SCE_AUDIO_ERROR_INVALID_VOL     0x8026000bu
+/* Output2 release while samples are still queued. Measured on PSP-3001, firmware 6.6.1
+ * (2026-10-01, issue #311); the raw records stay private. */
+#define SCE_AUDIO_ERROR_OUTPUT2_BUSY    0x80268002u
 #define PSP_AUDIO_FORMAT_STEREO         0u
 #define PSP_AUDIO_FORMAT_MONO           0x10u
 #define PSP_AUDIO_SAMPLE_MIN            64u
@@ -15276,7 +15461,8 @@ static uint32_t h_AudioRestLen(CpuState *s) {
 }
 
 /* Keep the executable audio contract harness on the exact production NID
- * mapping without exposing the separate Output2 family to that focused test. */
+ * mapping. The Output2 family is registered by hle_register_output2_audio_handlers(),
+ * which both the harness and the production branch of sr_hle_init call. */
 static void hle_register_regular_audio_handlers(void) {
     sr_hle_register(0x5ec81c55, "sceAudioChReserve", h_AudioChReserve);
     sr_hle_register(0x6fc46853, "sceAudioChRelease", h_AudioChRelease);
@@ -15300,9 +15486,14 @@ static uint32_t h_AudioOutput2Reserve(CpuState *s) {
     s_audio_len[AUDIO_OUTPUT2_CHANNEL] = samples;
     return 0;
 }
+/* Measured on PSP-3001, firmware 6.6.1 (2026-10-01, issue #311): releasing while samples are
+ * still queued returns 0x80268002 and leaves Output2 reserved; draining
+ * sceAudioOutput2GetRestSample to 0 first lets the release succeed. The queue is read the
+ * same way h_AudioOutput2Rest reads it. */
 static uint32_t h_AudioOutput2Release(CpuState *s) {
     (void)s;
     if (!s_audio_ch[AUDIO_OUTPUT2_CHANNEL]) return SCE_AUDIO_ERROR_NOT_RESERVED;
+    if (sr_audio_queued(AUDIO_OUTPUT2_CHANNEL) > 0) return SCE_AUDIO_ERROR_OUTPUT2_BUSY;
     s_audio_ch[AUDIO_OUTPUT2_CHANNEL] = 0;
     s_audio_len[AUDIO_OUTPUT2_CHANNEL] = 0;
     return 0;
@@ -15324,6 +15515,16 @@ static uint32_t h_AudioOutput2Rest(CpuState *s) {
     if (!s_audio_ch[AUDIO_OUTPUT2_CHANNEL]) return SCE_AUDIO_ERROR_NOT_RESERVED;
     int queued = sr_audio_queued(AUDIO_OUTPUT2_CHANNEL);
     return queued > 0 ? (uint32_t)queued : 0u;
+}
+
+/* Output2 registrations shared by the production mapping and the ThreadMan/audio selftest
+ * harness, so the selftest drives these exact production handlers through sr_syscall. */
+static void hle_register_output2_audio_handlers(void) {
+    sr_hle_register(0x01562ba3, "sceAudioOutput2Reserve", h_AudioOutput2Reserve);
+    sr_hle_register(0x2d53f36e, "sceAudioOutput2OutputBlocking", h_AudioOutput2Blocking);
+    sr_hle_register(0x43196845, "sceAudioOutput2Release", h_AudioOutput2Release);
+    sr_hle_register(0x63f2889c, "sceAudioOutput2ChangeLength", h_AudioOutput2ChangeLength);
+    sr_hle_register(0x647cef33, "sceAudioOutput2GetRestSample", h_AudioOutput2Rest);
 }
 
 /* SR_CALLCOUNT instrumentation: per-NID call tallies, dumped at the capture point. */
@@ -15597,6 +15798,16 @@ static void route_until_nid_arm(int on, uint32_t nid) {
 
 static int route_sig_bytes(void) { return s_route_cols * s_route_rows * 3; }
 
+/* _Exit skips atexit, so a hard exit closes the SR_AUDIODUMP file itself, which finalises
+ * its WAV header. The SR_EXIT_AT_VBLANK exit and route_fail both call this outside any
+ * SR_AUDIOSTAT gate; a second close is a no-op. Only the public audio backend exports it. */
+static void hle_exit_close_audio_dump(void) {
+#if !defined(SR_HLE_THREAD_SELFTEST) && defined(SR_PUBLIC_SAFE)
+    extern void sr_audio_dump_finish(void);
+    sr_audio_dump_finish();
+#endif
+}
+
 /* A route that cannot be trusted must not be allowed to look like one that can. Every
  * failure path lands here: it names the step, the vblank and what was actually on screen,
  * then terminates with a distinct status so the manager's verdict cannot record the run
@@ -15613,6 +15824,7 @@ static void route_fail(const char *fmt, ...) {
     fflush(stderr);
     if (!getenv("SR_ROUTE_NO_EXIT")) {
         sr_flight_fatal(SR_FLIGHT_KIND_FATAL_HOST, 0u, 0u, ROUTE_FAIL_EXIT);
+        hle_exit_close_audio_dump();
         sr_perf_shutdown();
         _Exit(ROUTE_FAIL_EXIT);
     }
@@ -18187,13 +18399,9 @@ void sr_vblank_tick(void) {
                 sr_audio_dump_stats();
 #endif
             }
-#if !defined(SR_HLE_THREAD_SELFTEST) && defined(SR_PUBLIC_SAFE)
             /* _Exit skips atexit, so the SR_AUDIODUMP file is closed here whether or not
-             * SR_AUDIOSTAT is set; after the stats call above it is a no-op. Only the public
-             * audio backend has the dump and exports this close. */
-            extern void sr_audio_dump_finish(void);
-            sr_audio_dump_finish();
-#endif
+             * SR_AUDIOSTAT is set; after the stats call above it is a no-op. */
+            hle_exit_close_audio_dump();
             sr_dump_calls();
             fflush(stderr);
             fflush(stdout);
@@ -22464,23 +22672,6 @@ static void hle_register_exit_game_handler(void) {
     sr_hle_register(0x05572a5f, "sceKernelExitGame", h_ExitGame);
 }
 
-/* Power-clock retained state (TD-24 batch 2): the two Int getters and the two
- * SetClockFrequency variants share one definition, reached by both
- * sr_hle_init() branches, so the executable harness pins the production
- * mapping through dispatch. The getter NIDs below are the canonical #86
- * values (0x478fe6f5 is the non-Int label; the Int alias 0xbd681969 stays
- * unregistered); the float-return shaping for the non-Int getters remains
- * tracked by #86. */
-static void hle_register_power_clock_handlers(void) {
-    sr_hle_register(0x34f9c463, "scePowerGetPllClockFrequencyInt", h_PowerGetPllClockFrequencyInt);
-    sr_hle_register(0xfdb5bfe9, "scePowerGetCpuClockFrequencyInt", h_PowerGetCpuClockFrequencyInt);
-    sr_hle_register(0x478fe6f5, "scePowerGetBusClockFrequency", h_PowerGetBusClockFrequencyInt);
-    sr_hle_register(0x737486f2, "scePowerSetClockFrequency", h_PowerSetClockFrequency);
-    sr_hle_register(0xebd177d6, "scePowerSetClockFrequency350", h_PowerSetClockFrequency350);
-    /* Battery state query, in the shared helper so the executable harness registers it too. */
-    sr_hle_register(0xd3075926, "scePowerIsLowBattery", h_PowerIsLowBattery);
-}
-
 /* TD-24 batch 4 shared families: one definition reached by both sr_hle_init()
  * branches, so the executable harness pins the production mapping through
  * dispatch (same rule as the batch-2 clock helpers above). */
@@ -22496,11 +22687,6 @@ static void hle_register_ctrl_sampling_handlers(void) {
      * handler used pointer a1 as a buffer count and wrote up to a ring of SceCtrlData
      * through a1's 4-byte int (and could block the caller on the input ring). */
     sr_hle_register(0x687660fa, "sceCtrlGetIdleCancelThreshold", h_CtrlGetIdleCancelThreshold);
-}
-static void hle_register_power_lock_handlers(void) {
-    sr_hle_register(0xeadb1bd7, "sceKernelPowerLock", h_PowerLock);
-    sr_hle_register(0x3aee7261, "sceKernelPowerUnlock", h_PowerUnlock);
-    sr_hle_register(0x090ccb3f, "sceKernelPowerTick", h_PowerTick);
 }
 static void hle_register_gpi_gpo_handlers(void) {
     sr_hle_register(0x6ad345d7, "sceKernelSetGPO", h_SetGPO);
@@ -22591,7 +22777,7 @@ static void hle_register_kernel_import_sweep_handlers(void) {
     sr_hle_register(0xba6b92e2, "sceKernelSysClock2USec", h_SysClock2USec);
     sr_hle_register(0x110dec9au, "sceKernelUSec2SysClock", h_USec2SysClock);
     sr_hle_register(0x7e65b999, "sceKernelCancelAlarm", h_CancelAlarm);
-    sr_hle_register_unsupported(0x034a921f, "sceKernelGetVTimerTime", 0x80020002u);
+    sr_hle_register(0x034a921fu, "sceKernelGetVTimerTime", h_GetVTimerTime);
     sr_hle_register(0x50f61d8a, "sceKernelFreeMemoryBlock", h_FreeMemoryBlock);
     sr_hle_register(0xdb83a952, "sceKernelGetMemoryBlockAddr", h_GetMemoryBlockAddr);
     sr_hle_register(0xfe707fdf, "sceKernelAllocMemoryBlock", h_AllocMemoryBlock);
@@ -22644,10 +22830,18 @@ static void hle_register_unregistered_import_batch(void) {
      * documented only as unknown, and the idle-clock and switch counters are not modelled here, so
      * the status is refused until a probe measures the struct. */
     sr_hle_register_unsupported(0x627e6f3au, "sceKernelReferSystemStatus", 0x80020002u);
-    sr_hle_register_unsupported(0x20fff560u, "sceKernelCreateVTimer", 0x80020002u);
-    sr_hle_register_unsupported(0xc68d9437u, "sceKernelStartVTimer", 0x80020002u);
-    sr_hle_register_unsupported(0x328f9e52u, "sceKernelDeleteVTimer", 0x80020002u);
+    /* VTimer lifecycle and query surface (measured; see the VTimer block above). */
+    sr_hle_register(0x20fff560u, "sceKernelCreateVTimer", h_CreateVTimer);
+    sr_hle_register(0xc68d9437u, "sceKernelStartVTimer", h_StartVTimer);
+    sr_hle_register(0xd0aeee87u, "sceKernelStopVTimer", h_StopVTimer);
+    sr_hle_register(0x328f9e52u, "sceKernelDeleteVTimer", h_DeleteVTimer);
+    sr_hle_register(0xb3a59970u, "sceKernelGetVTimerBase", h_GetVTimerBase);
+    sr_hle_register(0x5f32beaau, "sceKernelReferVTimerStatus", h_ReferVTimerStatus);
+    /* VTimer handler family and time setter: refused by name (issue #325 for the handlers). */
     sr_hle_register_unsupported(0x542ad630u, "sceKernelSetVTimerTime", 0x80020002u);
+    sr_hle_register_unsupported(0xd8b299aeu, "sceKernelSetVTimerHandler", 0x80020002u);
+    sr_hle_register_unsupported(0x53b00e9au, "sceKernelSetVTimerHandlerWide", 0x80020002u);
+    sr_hle_register_unsupported(0xd2d615efu, "sceKernelCancelVTimerHandler", 0x80020002u);
     sr_hle_register_unsupported(0x7ed59bc4u, "sceDisplaySetHoldMode", 0x80020002u);
     sr_hle_register_unsupported(0x77ed8b3au, "sceDisplayWaitVblankStartMultiCB", 0x80020002u);
     sr_hle_register_unsupported(0x72189c48u, "sceImposeSetUMDPopup", 0x80010086u);
@@ -22719,13 +22913,14 @@ void sr_hle_init(void) {
     hle_register_unregistered_import_batch();
     hle_register_umd_callback_handlers();
     hle_register_regular_audio_handlers();
+    hle_register_output2_audio_handlers();
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
-    hle_register_power_clock_handlers();
+    sr_hle_power_register_clock();
     /* TD-24 batch 4 families: shared with production through the helpers, so
      * the executable harness dispatches the exact production mapping. */
     hle_register_ctrl_sampling_handlers();
-    hle_register_power_lock_handlers();
+    sr_hle_power_register_lock();
     hle_register_gpi_gpo_handlers();
     hle_register_mpeg_shared_handlers();
     hle_register_psmf_player_handlers();
@@ -22799,7 +22994,7 @@ void sr_hle_init(void) {
     sr_hle_register(0x0c622081, "sceWlanGetEtherAddr", h_WlanGetEtherAddr);
     sr_hle_register(0x93440b11, "sceWlanDevIsPowerOn", h_WlanOn);
     sr_hle_register(0xd7763699, "sceWlanGetSwitchState", h_WlanOn);
-    sr_hle_register(0x04b7766e, "scePowerRegisterCallback", h_PowerRegisterCallback);
+    sr_hle_power_register_callback();
     sr_hle_register(0x46ebb729, "sceUmdCheckMedium", h_UmdCheckMedium);
     sr_hle_register(0x52089ca1, "sceKernelGetThreadStackFreeSize", h_GetThreadStackFreeSize);
     /* sceMpeg: faithful port (src/rt/mpeg.c). Drives the PSMF intro to completion. */
@@ -22880,31 +23075,20 @@ void sr_hle_init(void) {
     sr_hle_register(0x54f5fb11, "sceIoDevctl", h_IoDevctl);
     sr_hle_register(0x06a70004, "sceIoMkdir", h_IoMkdir);
     sr_hle_register(0xf27a9c51, "sceIoRemove", h_IoRemove);
-    /* sceAudio regular channels share one production mapping with the executable
-     * contract harness. Output2 remains production-only and otherwise unchanged. */
+    /* sceAudio regular channels and Output2 share one production mapping with the
+     * executable audio contract harness. */
     hle_register_regular_audio_handlers();
-    sr_hle_register(0x01562ba3, "sceAudioOutput2Reserve", h_AudioOutput2Reserve);
-    sr_hle_register(0x2d53f36e, "sceAudioOutput2OutputBlocking", h_AudioOutput2Blocking);
-    sr_hle_register(0x43196845, "sceAudioOutput2Release", h_AudioOutput2Release);
-    sr_hle_register(0x63f2889c, "sceAudioOutput2ChangeLength", h_AudioOutput2ChangeLength);
-    sr_hle_register(0x647cef33, "sceAudioOutput2GetRestSample", h_AudioOutput2Rest);
+    hle_register_output2_audio_handlers();
     /* sceCtrl sampling family: shared with the executable harness through
      * hle_register_ctrl_sampling_handlers(). */
     hle_register_ctrl_sampling_handlers();
     hle_register_ge_handlers();
-    /* Issue #86: the previous numeric NIDs for the four getters below were bogus (absent from
-     * the PPSSPP-derived nid_names.h); they are replaced with the canonical NIDs so real title
-     * imports route here instead of being unregistered, and 0x478fe6f5 is renamed to its
-     * canonical non-Int label (the Int alias is 0xbd681969 and stays unregistered). The float
-     * return shaping for the non-Int getters remains tracked by #86. */
-    sr_hle_register(0x2085d15d, "scePowerGetBatteryLifePercent", h_PowerGetBatteryLifePercent);
-    sr_hle_register(0x1e490401, "scePowerIsBatteryCharging", h_PowerIsBatteryCharging);
-    sr_hle_register(0x0afd0d8b, "scePowerIsBatteryExist", h_PowerIsBatteryExist);
-    sr_hle_register(0x87440f5e, "scePowerIsPowerOnline", h_PowerIsPowerOnline);
+    /* Issue #86 battery getters: registered from hle_power.c, at the position these four calls held. */
+    sr_hle_power_register_battery();
     /* Clock getters/setters: shared with the executable harness through
-     * hle_register_power_clock_handlers(), which carries the canonical #86
+     * sr_hle_power_register_clock(), which carries the canonical #86
      * getter NIDs noted above. */
-    hle_register_power_clock_handlers();
+    sr_hle_power_register_clock();
     sr_hle_register(0x730ed8bc, "sceKernelReferCallbackStatus", h_ReferCallbackStatus);
     hle_register_utility_module_handlers();
     sr_hle_register(0x1b4217bc, "sceKernelSetCompiledSdkVersion603_605", h_SetCompiledSdkVersion);
@@ -22941,7 +23125,7 @@ void sr_hle_init(void) {
     sr_hle_register(0xa6bab2e9, "sceKernelStdout", h_StdFd);
     sr_hle_register(0xf78ba90a, "sceKernelStderr", h_StdFd);
     /* scePower / sceSuspendForUser / LoadExecForUser: locks and registrations succeed. */
-    hle_register_power_lock_handlers();
+    sr_hle_power_register_lock();
     /* Unlock takes only the type arg -- it must NOT run the Lock handler: writing the
      * out-params through leftover a1/a2 register garbage sprayed two wild 4-byte writes
      * per asset-load unlock (this zeroed the resource registry's model-slot counter,

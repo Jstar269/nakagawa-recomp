@@ -1352,8 +1352,8 @@ excluded files.
   requirements.
 - `docs/provenance/FONT_ORIGINS.md`, especially the metric, converter, payload,
   and open-question sections.
-- `src/rt/pgf_api.h` and `src/rt/pgf_unavailable.c` for the public seam and
-  current public-build refusal.
+- `src/rt/pgf_api.h` and `src/rt/pgf_public.c` (`pgf_validate_memory` and its
+  `PgfRefusal` rules) for the public seam and current public-build refusal.
 - `src/rt/hle.c` font call sites, `src/rt/recomp.h` guest-memory helpers,
   `src/rt/ge_shared.h` dirty-region interface, and the relevant `Makefile`
   backend-selection lines.
