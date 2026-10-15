@@ -5813,3 +5813,22 @@ class Record20261015Tests(unittest.TestCase):
         self.assertEqual(self.readme.count("`MEASURED` on 2026-10-15 (`22b027f6`)"), 2)
         self.assertNotIn("## Bounded follow-up probes (hardware NOT_RUN)", self.readme)
         self.assertNotIn("are single-launch NOT_RUN probes", self.readme)
+
+    def test_the_transcendental_comparison_is_recorded_and_vrexp2_is_pinned(self) -> None:
+        for phrase in ("ten operations matched on all 63 inputs", "`vrexp2.s` matched on none",
+                       "Both paths now compute `exp2(-x)`", "are unmeasured"):
+            self.assertIn(phrase, self.doc)
+        selftest = (self.root / "src" / "rt" / "vfpu_interp_selftest.c").read_text(
+            encoding="utf-8")
+        start = selftest.index("static int check_vrexp2_measured_words(void)")
+        body = selftest[start:selftest.index("\nint main(void)", start)]
+        pairs = re.findall(r"\{0x([0-9a-f]{8})u, 0x([0-9a-f]{8})u\}", body)
+        self.assertEqual(len(pairs), 63)
+        # exp2(-x): 1.0 for zero (the first special), 2.0 for -1.0 and just under 0.5 for +1.0.
+        words = {int(a, 16): int(b, 16) for a, b in pairs}
+        self.assertEqual(words[0x00000000], 0x3F800000)
+        self.assertEqual(words[0xBF800000], 0x40000000)
+        self.assertEqual(words[0x3F800000], 0x3EFFFFFC)
+        interp = (self.root / "src" / "rt" / "vfpu_interp.c").read_text(encoding="utf-8")
+        self.assertIn("case 28: d[i] = sr_vfpu_exp2(-v[i]); break;", interp)
+        self.assertNotIn("-sr_vfpu_exp2(v[i])", interp)

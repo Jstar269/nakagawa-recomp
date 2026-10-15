@@ -174,7 +174,9 @@ class NamedBoundaryTests(unittest.TestCase):
     def test_hardware_oracle_records_the_measured_words(self) -> None:
         test_src = VFPU_INTERP_SELFTEST_C.read_text(encoding="utf-8")
         start = test_src.index("static int check_vasin_measured_domain_words(void)")
-        body = test_src[start:test_src.index("\nint main(void)", start)]
+        # The function ends where find_overlap_diff_case begins; the later checks in the file
+        # carry their own measured tables, which are not the 14 VASIN words.
+        body = test_src[start:test_src.index("\nstatic int find_overlap_diff_case", start)]
         measured = re.findall(
             r"\{0x([0-9A-Fa-f]{8})u,\s*0x([0-9A-Fa-f]{8})u\}", body)
         self.assertEqual(len(measured), 14, "the runtime regression must retain all 14 PSP words")
