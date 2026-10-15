@@ -4807,7 +4807,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "38cebcbc4458f041ad88e0222a1ef3bbb8c99f1417dc2bba380880033104328b"
+      "sha256": "668b63e636c81b862e1f884a938eb17a58fa1420c011c1053bc40f88741147f7"
     },
     {
       "path": "src/rt/gpu_sdl3vk/ge_gpu.h",
@@ -4820,7 +4820,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "da96bf0384d266e2287118ac00ce46dcf85ecf5d612677da1fc79b8e90702f16"
+      "sha256": "d39772f540505c2cf9b3c0c34b8ae05c2e77874a2ad70f9837b3bd1564380b4d"
     },
     {
       "path": "src/rt/gpu_sdl3vk/psp_frag.inc",
@@ -4984,7 +4984,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "4f2a225a975e4a9e9a392f99d637f5b76627e3fb03f5e6b09cd4f13e086009bc"
+      "sha256": "9dc61edd1d30f362dab8df247901756f3cd7119d415ccca54f3908c88b3a4425"
     },
     {
       "path": "src/rt/h264_mf.c",
@@ -9324,7 +9324,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ccb2ed4939745f75267c77e445b1272cd3e221fa6a463c9b194e3655b504aa2c"
+      "sha256": "dbedd765d06a8b44258f538581ad544662be77ee45a5a26adb8dda501b0b9854"
     },
     {
       "path": "tools/test_profile_zero_e2e.py",

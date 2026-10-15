@@ -572,22 +572,22 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
                 goto pace;
             }
         }
-        if (res == GEGPU_PRESENT_PREP_FAILED) {
-            /* gegpu_present() found a GPU-valid target for this frame but could not prepare it
-             * for presentation (issue #827). Its newest pixels may exist only in that Vulkan
-             * image, so guest VRAM is stale. Materialize it with the same sync the keyboard path
-             * uses before the fall-through below reads it. FAILED declines the frame instead of
-             * presenting the older pixels still in guest VRAM. */
+        if (res == GEGPU_PRESENT_TARGET_FAILED) {
+            /* gegpu_present() found a GPU-valid target for this frame, but preparing or presenting
+             * it failed (issue #827). Its newest pixels may exist only in that Vulkan image, so
+             * guest VRAM is stale. Materialize it with the same sync the keyboard path uses before
+             * the fall-through below reads it. FAILED declines the frame instead of presenting the
+             * older pixels still in guest VRAM. */
             GeGpuFbDescriptor d = { fbaddr, (uint32_t)fmt, stride, PSP_W, PSP_H };
             if (gegpu_sync_guest_fb(&d) == GEGPU_SYNC_FAILED) {
-                static int s_prep_sync_warned = 0;
-                if (s_prep_sync_warned < 3) {
-                    s_prep_sync_warned++;
-                    fprintf(stderr, "GPU present: preparation FAILED and guest framebuffer "
-                                    "synchronisation FAILED for addr=0x%08x fmt=%d stride=%u "
-                                    "-- frame not presented\n", fbaddr, fmt, stride);
+                static int s_target_sync_warned = 0;
+                if (s_target_sync_warned < 3) {
+                    s_target_sync_warned++;
+                    fprintf(stderr, "GPU present: target preparation or presentation FAILED and guest "
+                                    "framebuffer synchronisation FAILED for addr=0x%08x fmt=%d "
+                                    "stride=%u -- frame not presented\n", fbaddr, fmt, stride);
                 }
-                sr_capture_fail("GPU present preparation failed: guest framebuffer sync failed");
+                sr_capture_fail("GPU present target failed: guest framebuffer sync failed");
                 goto pace;
             }
         }
