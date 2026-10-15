@@ -523,7 +523,7 @@ HANDLER_METADATA = {
     },
     "h_DeleteMbx": {
         "status": "partial",
-        "limitation": "delete-while-waited is corroborated by campaign psp-hw-20260917 but not mailbox-measured; interrupt-context placement unmeasured (#339, #341)",
+        "limitation": "delete-while-waited is mailbox-measured on 2026-10-15 (PSP-3000, 6.61): the waiter returns WAIT_DELETE and its timeout word is rewritten to the remaining time; interrupt-context placement unmeasured (#339, #341)",
     },
     "h_SendMbx": {
         "status": "partial",
@@ -531,7 +531,7 @@ HANDLER_METADATA = {
     },
     "h_ReceiveMbx": {
         "status": "partial",
-        "limitation": "ILLEGAL_CONTEXT precedence for a blocking receive unmeasured; priority-mailbox circular linking not separately asserted beyond campaign facts (#339, #341)",
+        "limitation": "delete-while-waited is mailbox-measured on 2026-10-15 (WAIT_DELETE and timeout word rewritten to the remaining time); ILLEGAL_CONTEXT precedence for a blocking receive unmeasured; priority-mailbox circular linking not separately asserted beyond campaign facts (#339, #341)",
     },
     "h_ReceiveMbxCB": {
         "status": "partial",
@@ -548,6 +548,12 @@ HANDLER_METADATA = {
     "h_ReferMbxStatus": {
         "status": "partial",
         "limitation": "size-field caller contract (whether Refer preserves or overwrites size) unmeasured (#339, #341)",
+    },
+    # sceKernelReferSystemStatus: bytes written = min(size, 0x1c), return 0, and the size word reads back
+    # 0x1c, all PSP-measured (PR #1003 head 3072bd7d, 2026-10-15).
+    "h_ReferSystemStatus": {
+        "status": "partial",
+        "limitation": "idle-clock, comes-out-of-idle and thread-switch counters: written as zero; hardware reports non-zero, time-dependent values (not cited). VFPU-switch counter: written as zero, not cited. Status word 1: written as zero; hardware read 0 in all three records, uncited. Null-pointer result unmeasured.",
     },
     # VTimer lifecycle and query surface (PSP-HLE-VTIMER-001, 2026-10-15, PR #1003 record). Measured:
     # Create returns a valid UID; Start returns 0, also on a restart, and 1 while running (per

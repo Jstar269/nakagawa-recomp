@@ -647,6 +647,12 @@ One console is one data point; see §11. Nothing here closes issue #70
 
 - **Recorded, not granted (2026-10-15, `e45e667b`)**: `display-mask-duty` (`PSP-DISPLAY-001`). Both records PASS, which is machinery only. Calibrated period 16,683,050 ns. For the 33000 us masks, VCOUNT advanced 65 over 58 masked windows against about 121 periods of wall time. For the 66000 us masks, VCOUNT advanced 34 over 30 windows against about 122 periods. The unmasked gaps account for the remainder, which fits one credit per masked window rather than catch-up. This cell is not granted through `PSP-DISPLAY-001`, because that row cites `docs/ARCHITECTURE.md#clocks`.
 
+- **PSP-3000 re-run of the corrected `mutex-interrupt-context` probe (2026-10-15, `ec5dd563`)**: firmware 6.6.1, PSPLink 3.2.1, operator-declared model PSP-3000. The case launched one PRX on a fresh boot after the `transport-write` preflight, which passed. The case envelope is acceptance-eligible with 0 blockers, so this entry supersedes the captured-only `mutex-interrupt-context` runs above for the cells it names. The corrected pass rule records only that a trial completed; no returned value is compared. The raw envelope and host0 log stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-15) |
+  | --- | --- | --- | --- |
+  | `PSP-MUTEX-001` | `mutex-interrupt-context` (APIs `sceKernelLockMutex`, `sceKernelLockMutexCB`, `sceKernelTryLockMutex`, `sceKernelUnlockMutex`). In 20 of 20 trials run from a VBLANK sub-interrupt handler, `LockMutex` with an unknown UID, `LockMutex` with count 0, `LockMutex`, `LockMutexCB` and `TryLockMutex` on an unlocked mutex, and `UnlockMutex` of a mutex the main thread owns each returned 0x80020064 (ILLEGAL_CONTEXT) | The raw `sceKernelIsCpuIntrEnable` return inside the handler (context only); `UnlockMutex` with an unknown UID or a bad count from interrupt context | MEASURED: the header record and 20 trial records, PASS |
+
 ## Pending PSP-3000 measurement campaign
 
 The following source-owned cases are built for a future PSP-3000 / 6.61
