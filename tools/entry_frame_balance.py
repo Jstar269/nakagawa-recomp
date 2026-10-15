@@ -292,7 +292,7 @@ def profile_entry(elf, addr, ranges, limit=DEFAULT_STEP_LIMIT):
 
             slot_step, slot_unknown = sp_effect(read32(elf, pc + 4))
 
-            if op == 3 or (op == 0 and fn == 0x09):  # jal / jalr: the call returns
+            if op == 3 or (op == 0 and fn == 0x09 and ((word >> 11) & 0x1F) != 0):  # jal / linked jalr: the call returns
                 unknown = unknown or slot_unknown
                 delta += slot_step
                 pc += 8
@@ -304,7 +304,7 @@ def profile_entry(elf, addr, ranges, limit=DEFAULT_STEP_LIMIT):
                 if in_ranges(target, ranges):
                     stack.append((target, delta))
                 break
-            if op == 0 and fn == 0x08:  # jr
+            if op == 0 and (fn == 0x08 or (fn == 0x09 and ((word >> 11) & 0x1F) == 0)):  # jr / unlinked jalr ($zero, rs)
                 unknown = unknown or slot_unknown
                 delta += slot_step
                 if ((word >> 21) & 0x1F) == RA:
