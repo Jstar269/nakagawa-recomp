@@ -253,6 +253,19 @@ MUTANTS: tuple[Mutant, ...] = (
         target="generator",
     ),
     Mutant(
+        "codegen-ctc1-keeps-unimplemented-bits",
+        "GENERATOR: ctc1 stores FCR31 bits 25..31, which the PSP FPU does not have",
+        [(
+            # The pre-measurement emission: ctc1 stored the guest word wholesale.
+            # PSP-FPU-CC-001 measured that a ctc1 of 0xFE800000 reads back
+            # 0x00800000; the FPU oracle's ctc1/FCR31 check must report it.
+            'if ({fs} == 31) {{ s->fcr31 = {R(rt(w))} & ~0xfe000000u; "',
+            'if ({fs} == 31) {{ s->fcr31 = {R(rt(w))}; "',
+            1,
+        )],
+        target="generator",
+    ),
+    Mutant(
         "drop-fcr31-threading",
         "guest FCR31 not threaded into the scalar FPU helper path",
         [(

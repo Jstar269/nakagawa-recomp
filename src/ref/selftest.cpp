@@ -400,6 +400,38 @@ void TestFpuCompareBranch() {
 	Check("c.lt.s+bc1t taken", s.r[T2], 0x111);
 }
 
+uint32_t CFC1(uint32_t rt, uint32_t fs) { return (0x11u << 26) | (0x02u << 21) | (rt << 16) | (fs << 11); }
+
+// PSP-FPU-CC-001 (PSP-3000 / 6.61, 2026-10-15): the PSP FPU has FCC0 only. A ctc1 of
+// 0xFE800000 reads back 0x00800000, c.eq.s with condition code 1..7 writes FCC0, and
+// bc1t with condition code 1..7 tests FCC0. The encodings are the probe's own
+// (fixtures/psp_oracle/probe.c, run_fpu_cc): c.eq.s 0x460D6032 | (cc << 8) and bc1t
+// 0x45010002 | (cc << 18).
+void TestFpuConditionCodesMeasured() {
+	const uint32_t base = 0x08900000;
+	std::vector<uint32_t> p = {
+		I(0x0F, ZERO, T0, 0x3F80), MTC1(T0, 12),   // f12 = 1.0
+		MTC1(T0, 13),                              // f13 = 1.0
+		I(0x0F, ZERO, T0, 0xFE80), CTC1(T0, 31),   // ctc1 0xFE800000
+		CFC1(T1, 31),                              // t1 = FCR31 (measured 0x00800000)
+		I(0x0F, ZERO, T0, 0xFE00), CTC1(T0, 31),   // ctc1 0xFE000000: no FCC0
+		CFC1(T2, 31),                              // t2 = FCR31 (measured 0)
+		0x460D6332u,                               // c.eq.s f12,f13 with cc 3: equal
+		CFC1(T3, 31),                              // t3 = FCR31 (FCC0 only)
+		0x450D0002u,                               // bc1t with cc 3, +2: taken
+		0,                                         // delay slot
+		I(0x09, ZERO, T4, 0xBAD),                  // skipped
+		I(0x09, ZERO, T5, 0x111),                  // branch target
+		SYSCALL,
+	};
+	ref::CpuState s = RunProgram(p, base);
+	Check("ctc1 0xFE800000 reads back", s.r[T1], 0x00800000u);
+	Check("ctc1 0xFE000000 reads back", s.r[T2], 0x00000000u);
+	Check("c.eq.s cc3 writes FCC0", s.r[T3], 0x00800000u);
+	Check("bc1t cc3 tests FCC0", s.r[T4], 0u);
+	Check("bc1t cc3 target ran", s.r[T5], 0x111u);
+}
+
 void TestR0IsZero() {
 	const uint32_t base = 0x08900000;
 	std::vector<uint32_t> p = {
@@ -645,6 +677,7 @@ int main() {
 	TestFpu();
 	TestFpuConvertEdgeCases();
 	TestFpuCompareBranch();
+	TestFpuConditionCodesMeasured();
 	TestArithmeticShifts();
 	TestR0IsZero();
 	TestBreakContinues();
