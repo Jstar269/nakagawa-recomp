@@ -28,10 +28,14 @@ does not do is named as such below rather than implied by it.
 | **UNBUILT** | Not implemented. Named as *in the works* with its tracking issue. |
 | **DROPPED** | Deliberately retired. Named with the change that removed it. |
 
-A **PASS** or **PARTIAL** row must name a backticked repository path that exists; an
-**UNBUILT** or **DROPPED** row must name a tracking issue. `tools/lint_docs.py`
-enforces both, fails closed on a missing or empty table, and rejects any status
-outside this vocabulary.
+A **PASS** or **PARTIAL** row must name a backticked repository path that exists, and a
+**PASS** row must name at least one such path that is a test file (`test_*`, a
+`*selftest*` source, or a file under `tests/`). An **UNBUILT** or **DROPPED** row must
+name a tracking issue. `tools/lint_docs.py` enforces the path, vocabulary and issue
+rules and fails closed on a missing or empty table. `tools/test_lint_docs.py` enforces
+the PASS test-file rule and the section 2 rules, and it fails on any open font family,
+any font claim the shipped player cannot back, and any unmeasured latency threshold in
+this document.
 
 **Surface** is `native player`, `headless nk_cli` (`tools/nk_cli.py`, `nk.ps1`), or
 `none`. A capability with no surface is not a promise.
@@ -57,7 +61,7 @@ outside this vocabulary.
 | `CONTROLLER_CALIBRATION` | Button mapping, deadzone and trigger calibration, live input monitor, guided resting/extreme wizard | **PASS** | native player | `tests/native/test_input_settings.c`, `tests/native/test_input_profile.c` ([#357](https://github.com/Jstar269/nakagawa-recomp/issues/357)) |
 | `HOST_PREFLIGHT_DOCTOR` | Host, toolchain, private-input and publication-contract preflight | **PASS** | headless `nk_cli` (`nk.ps1 Doctor`) | `tools/test_hst_doctor.py`, `docs/WORKSPACE_DOCTOR.md` |
 | `DISC_PREFLIGHT_CHECKS` | Per-disc compatibility checks surfaced in the wizard and library card | **PASS** | native player | `tests/native/test_player_state.c` |
-| `STAGING_PROGRESS` | Bounded copy/unpack counts and percentages during staging | **PASS** | native player | `tests/native/test_player_state.c` (asserts the recorded percent, files and total) |
+| `STAGING_PROGRESS` | Bounded copy/unpack counts and percentages during staging | **PASS** | native player | `tests/native/test_player_state.c` (asserts the recorded percent and file count) |
 | `BUILD_PIPELINE_UI` | `BUILD PACKAGE` / `REBUILD PACKAGE` with live stage progress, recent output, elapsed time and cancel | **PASS** | native player, headless `nk_cli` | `tests/native/test_package_builder.c`, `tools/test_nk_cli_progress.py` |
 | `PACKAGE_CHECK_FAILURE_RECOVERY` | Worker-start failure shows `PACKAGE CHECK FAILED`; `RETRY PACKAGE CHECK` and bounded background backoff can recover without losing a completed build's prepared state | **PASS** | native player | `tests/native/test_player_ui.py` |
 | `ERROR_RECOVERY_UI` | Structured error card with a stable code and a recovery action | **PASS** | native player | `tests/native/test_player_state.c` |
@@ -66,10 +70,10 @@ outside this vocabulary.
 | `LIVE_FRAME_OVERLAY` | F1 / `SR_HUD=1` in-game overlay: presented FPS, frame time, VBlank rate, audio active status | **PARTIAL** | native runtime | `tools/test_profile_zero_e2e.py` and `tools/test_player_package_route.py` regression-test the `SR_PERF` / `SR_PERF_CSV` telemetry the overlay renders. The overlay's own composition and the F1 toggle are covered only by the developer display gate, not by an automated assertion |
 | `PERF_HOT_BLOCK_COUNTERS` | Per-PC call, block and duration counts from the AOT profiler, dumped at exit under `SR_PROFILE=1` | **PASS** | native runtime | `src/rt/profiler_selftest.c` (`mingw32-make profiler-selftest`) |
 | `PERF_PROFILE_VIEW` | Interactive hot-block visualizer, flame chart or profile viewer | **UNBUILT** | none | In the works: [#314](https://github.com/Jstar269/nakagawa-recomp/issues/314) |
-| `FRAMEBUFFER_SNAPSHOTS` | `SR_FBSNAP` PPM framebuffer captures with diffing and PNG conversion | **PASS** | native runtime, headless `nk_cli` | `tools/test_ppmdiff_coverage.py`, `docs/DEBUGGING.md` |
+| `FRAMEBUFFER_SNAPSHOTS` | `SR_FBSNAP` PPM framebuffer captures with diffing and PNG conversion | **PARTIAL** | native runtime | `tools/test_ppmdiff_coverage.py` covers the diffing in `tools/ppmdiff.py`; see `docs/DEBUGGING.md`. PNG conversion (`tools/ppm2png.py`) has no named test |
 | `VRAM_VIEWER` | Interactive guest-VRAM inspection | **UNBUILT** | none | In the works: [#314](https://github.com/Jstar269/nakagawa-recomp/issues/314) |
 | `VRAM_CAPTURE_EXPORT` | Present-aligned capture of guest VRAM and GE state (`SR_VRAMDUMP`), exported as linear, swizzled, CLUT, DXT and depth PNGs | **PASS** | native runtime, headless `nk_cli` | `fixtures/display_smoke/generate.py` (`mingw32-make display-smoke-run`: decoded-pixel parity and capture-on/off frame identity), `tools/test_nk_cli_progress.py` (`NkCliVramTests`), `docs/DEBUGGING.md` |
-| `FUNCTION_AND_CHUNK_CENSUS` | MIPS function count, generated chunk table and executable-span scope reports | **PASS** | headless `nk_cli` | `tools/test_build_graph_snapshot.py`, `tools/test_analyzer_span_scope.py` |
+| `FUNCTION_AND_CHUNK_CENSUS` | MIPS function count, generated chunk table and executable-span scope reports | **PARTIAL** | none | `tools/test_analyzer_span_scope.py` (span scope and chunk generation), `tools/test_build_graph_snapshot.py` (generated chunk count). No named test asserts the MIPS function count, and no `nk_cli` subcommand exposes a census |
 | `SPAN_INSPECTOR_VIEW` | Interactive executable-span or chunk viewer | **UNBUILT** | none | In the works: [#314](https://github.com/Jstar269/nakagawa-recomp/issues/314) |
 | `LOCALHOST_DASHBOARD` | The browser dashboard itself: live local server, browser-sandboxed ISO drop, disjoint second window, all eight screens | **DROPPED** | none | Removed in [#522](https://github.com/Jstar269/nakagawa-recomp/pull/522); this table is its replacement inventory |
 
@@ -88,36 +92,51 @@ Notes on what the table deliberately does not claim:
 
 ## 2. Regression gate checklist for native slices
 
-This is a per-slice authoring template, not an acceptance oracle: each gate must be
-satisfied and cited before a slice is declared complete, and a completed slice must
-have its capability row above at `PASS` or `PARTIAL` with the evidence that was run.
-An unticked box records work not yet done; it never records a failure.
+Each gate carries exactly one status and the evidence that backs it. **PASS** means a
+named repository test runs the gate on source-owned input, and the item cites that test
+file. **PARTIAL** means the cited files back the named subset, and the item states what
+is not verified. **UNBUILT** means not implemented, and the item names its tracking
+issue. A completed slice must also have its capability row above at `PASS` or `PARTIAL`.
+The checkboxes were replaced by statuses, because an unticked box cannot say whether a
+gate failed or was never run. `tools/test_lint_docs.py` rejects an item with no status, a
+PASS item with no existing test file, a PARTIAL item with no existing path, and any named
+path that does not exist.
 
-1. [ ] **Binary compilation:** `mingw32-make player` and `mingw32-make native-core-tests`
-   build without warnings on Windows UCRT64 GCC, and `native-core-tests` also builds on
-   hosted Linux.
-2. [ ] **Window lifecycle:** the window presents before any disc read, indexing or
-   extraction; that work runs on the staging worker (`src/player/setup_staging.c`).
-   `mingw32-make display-smoke-player` exercises the launch path. No latency figure is
-   claimed until one is measured.
-3. [ ] **Multi-title invariant:** no `hst` or disc-ID logic in the UI; identity and launch
-   resolve from the manifest and catalog (`src/core/nk_title_manifest.c`,
-   `src/core/generated/nk_title_catalog.c`). Covered by
-   `tests/native/test_launch_resolution.c`.
-4. [ ] **LLE compliance:** no synthetic TTF substitution in the guest runtime, no
-   unconditional `libfont` readiness write, and no fake `psmf` return values. An
-   unavailable `libfont` startup (an untranslated entry, no recorded entry, or the
-   `SR_REAL_MODULE_START=0` kill switch) names `LIBFONT_STARTUP_UNAVAILABLE` before
-   any configured fallback. Missing firmware fonts fail closed with guidance.
-5. [ ] **File dialog:** the native picker (`SDL_ShowOpenFileDialog` in
-   `src/player/main.c`) opens without a terminal or console prompt.
-6. [ ] **Error handling:** missing, corrupt or unsupported discs produce an actionable
-   error card with a stable code (for example `ISO_CORRUPT`, `SOURCE_NOT_FOUND`,
-   `STAGED_EXECUTABLE_INVALID`, `LIBRARY_WRITE_FAILED`, `RUNTIME_PACKAGE_NOT_READY`) and
-   a recovery button. Covered by `tests/native/test_player_state.c`.
-7. [ ] **Automated tests:** `python -m unittest tools.test_nk_core` and the
-   `tests/native/` binaries run by `native-core-tests` pass.
-8. [ ] **Typography:** the player loads a system UI font at run time through SDL3_ttf
-   (for example DejaVu Sans on Linux) and falls back to SDL3 debug text; the repository
-   and shipped binary bundle no fonts. Open fonts such as M PLUS Rounded 1c, Rubik,
-   Inter and JetBrains Mono are design references only.
+1. **PARTIAL** **Binary compilation:** hosted CI builds `player` on Windows (`windows_runtime`)
+   and `native-core-tests` on Windows and Linux (`native_tools`). The player compiles with
+   `-Wall -Wextra` and no `-Werror`, so a warning does not fail the build. Evidence:
+   `.github/workflows/ci.yml`.
+2. **PARTIAL** **Window lifecycle:** the window presents before any disc read, indexing or
+   extraction, and that work runs on the staging worker (`src/player/setup_staging.c`).
+   Hosted CI covers only the offscreen route (`tools/test_production_smoke.py`). The
+   visible window and its ordering run only in the developer gate
+   `mingw32-make display-smoke-player`, which CI does not run. Window latency is
+   UNMEASURED, and no figure is claimed.
+3. **PARTIAL** **Multi-title invariant:** identity and launch resolve from the manifest and
+   catalog (`src/core/nk_title_manifest.c`, `src/core/generated/nk_title_catalog.c`), which
+   `tests/native/test_launch_resolution.c` covers. No named test asserts that the UI has no
+   `hst` or disc-ID logic.
+4. **PARTIAL** **LLE compliance:** `tools/test_hle_title_config_behavior.py` covers the
+   `LIBFONT_STARTUP_UNAVAILABLE` naming, the `SR_REAL_MODULE_START=0` kill switch and the
+   refused host readiness binding. No named test asserts the absence of a synthetic TTF
+   substitution or of fake `psmf` return values, and none in this item covers the
+   fail-closed firmware-font refusal.
+5. **PARTIAL** **File dialog:** `src/player/main.c` opens the native picker with
+   `SDL_ShowOpenFileDialog`, and `tests/native/test_player_state.c` asserts that the wizard
+   requests the picker. No automated test checks that the picker opens without a terminal
+   or console prompt.
+6. **PASS** **Error handling:** an actionable error card with a stable code and a recovery
+   action is asserted by `tests/native/test_player_state.c` (`RUNTIME_PACKAGE_NOT_READY`
+   and its recovery label) and by `tests/native/test_player_ui.py` (`ISO_CORRUPT`,
+   `SOURCE_NOT_FOUND`, `STAGED_EXECUTABLE_INVALID`, `LIBRARY_WRITE_FAILED`,
+   `RUNTIME_PACKAGE_NOT_READY`).
+7. **PASS** **Automated tests:** `tools/test_nk_core.py` backs the Python gate
+   `python -m unittest tools.test_nk_core`, and `native-core-tests` runs the `tests/native/`
+   binaries (for example `tests/native/test_xb_parser.c`).
+8. **PARTIAL** **Typography:** the player loads a system UI font at run time through SDL3_ttf
+   (for example DejaVu Sans on Linux) and falls back to SDL3 debug text when that font is
+   unavailable or `NK_UI_NO_TTF=1` is set. `tests/native/test_player_ui.py` forces the
+   fallback and asserts its reason. The player ships no font of its own: the in-game PGF
+   fonts come from the user's own PSP import or the project `font/` folder
+   (`docs/SETUP.md`). No named test checks that no font ships, so that half stays PARTIAL.
+   Evidence: `src/player/ui_renderer.c`, `tests/native/test_player_ui.py`.
