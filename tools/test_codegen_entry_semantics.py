@@ -45,13 +45,16 @@ FRAME_SIZE = 0x70
 # The #855 TAIL transfer protocol, as the stand-in recomp.h below declares it and the
 # stand-in harnesses implement it: the same slot, drain and first-restore-wins rule as
 # src/rt/recomp.h and src/rt/guest_interp.c, with the stand-in dispatch() running a
-# computed target to completion.
+# computed target to completion. The header also stands in for the entry host-stack check
+# of bodies that make direct calls (#855): these harnesses run no scheduler or guest fiber,
+# where the production check has nothing to bound either.
 _TAIL_PROTOCOL_HEADER = """\
 typedef void (*TestBodyFn)(CpuState *);
 void sr_tail_record(CpuState *s, uint32_t target, TestBodyFn fn,
                     uint32_t restore_sp, uint32_t owes_restore);
 void sr_tail_drain(CpuState *s);
 #define SR_TAIL_DRAIN(s) sr_tail_drain(s)
+#define SR_HOST_STACK_CHECK(entry) ((void)(entry))
 """
 _TAIL_PROTOCOL_IMPL = """\
 static struct {

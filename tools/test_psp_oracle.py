@@ -1500,6 +1500,38 @@ class PspOracleRunnerTests(unittest.TestCase):
         self.assertIn("tools/psp_oracle/build_nakagawa_smoke.py", makefile)
         self.assertIn("psp-oracle-nakagawa-smoke", makefile)
 
+    def test_smoke_compile_recipe_has_no_blanket_warning_suppression(self) -> None:
+        # A bare -w hides every warning from the smoke compile, including the
+        # ATRAC3P sources it builds in-line. Narrow -Wno-<warning> flags stay
+        # allowed because each one names the single warning it hides.
+        lines = (Path(__file__).resolve().parents[1] / "Makefile").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        rules = [
+            index for index, line in enumerate(lines)
+            if line.startswith("$(PSP_ORACLE_SMOKE_EXE):")
+        ]
+        self.assertEqual(len(rules), 1)
+        recipe: list[str] = []
+        for line in lines[rules[0] + 1:]:
+            if not line.startswith("\t"):
+                break
+            recipe.append(line)
+        tokens = " ".join(recipe).replace("\\", " ").split()
+        self.assertIn("-DSR_PSP_ORACLE_SMOKE", tokens)
+        self.assertNotIn("-w", tokens)
+
+    def test_selftest_defines_profile_hooks_once_for_the_smoke_build(self) -> None:
+        # The smoke define used to add a second sr_profile_block/g_prof_enabled pair
+        # on top of the unconditional ones, which broke the smoke compile.
+        source = (
+            Path(__file__).resolve().parents[1] / "src" / "rt" / "hle_thread_selftest.c"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(
+            source.count("void sr_profile_block(uint32_t target_pc) { (void)target_pc; }"), 1
+        )
+        self.assertEqual(source.count("int g_prof_enabled;"), 1)
+
     def test_smoke_builder_is_source_owned_and_does_not_emit_records(self) -> None:
         builder = Path(__file__).resolve().parent / "psp_oracle" / "build_nakagawa_smoke.py"
         text = builder.read_text(encoding="utf-8")
@@ -2676,8 +2708,9 @@ class PspDmacProbeTests(unittest.TestCase):
             entry for entry in self._oracle_manifest()["tests"] if entry["id"] == "PSP-SYSTEM-001"
         )
         self.assertEqual(system["status"], "implemented")
-        self.assertEqual(system["hardware_evidence"], "CAPTURED")
+        self.assertEqual(system["hardware_evidence"], "MEASURED")
         self.assertEqual(system["case_ids"], ["model-profile"])
+        self.assertEqual(system["evidence_cases"][0], "model-profile")
 
     def test_implemented_status_alone_is_not_accepted_hardware_evidence(self) -> None:
         """`status: implemented` is probe-source prose, never hardware evidence."""
@@ -2686,12 +2719,13 @@ class PspDmacProbeTests(unittest.TestCase):
         for test_id in ("PSP-SYSTEM-001",):
             entry = next(item for item in manifest["tests"] if item["id"] == test_id)
             self.assertEqual(entry["status"], "implemented")
-            self.assertEqual(entry["hardware_evidence"], "CAPTURED")
+            self.assertEqual(entry["hardware_evidence"], "MEASURED")
+            # Status alone grants nothing: an API is granted only when the cited run names it.
             for api in entry["apis"]:
-                self.assertNotIn(
-                    api,
-                    oracle_apis,
-                    f"{api} reaches HARDWARE_MEASURED from a probe source, not a run",
+                self.assertEqual(
+                    api in oracle_apis,
+                    api in entry["evidence_cases"],
+                    f"{api} tier must follow the cited run, not the probe source",
                 )
 
     def test_fpu_and_cache_probe_families_are_measured_by_the_campaign(self) -> None:
@@ -2731,19 +2765,20 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-KERNEL-STATUS-001", "PSP-REGISTRY-001", "PSP-KERNEL-MISC-001", "PSP-SMOKE-001",
                 "PSP-THREAD-EXIT-001", "PSP-IO-001", "PSP-DISPLAY-002", "PSP-DISPLAY-003",
                 "PSP-DISPLAY-004", "PSP-FPU-001", "PSP-CACHE-001", "PSP-AUDIO-001", "PSP-GE-001",
-                "PSP-MUTEX-001",
+                "PSP-MUTEX-001", "PSP-KERNEL-001", "PSP-SYSTEM-001",
+                # The 2026-10-15 single-case runs on e45e667b were acceptance-eligible.
+                "PSP-HLE-KERNEL-STATUS-001", "PSP-HLE-VTIMER-001", "PSP-HLE-POWER-001",
+                "PSP-HLE-HPRM-001", "PSP-HLE-CTRL-LATCH-001", "PSP-HLE-SYSPARAM-001",
+                "PSP-HLE-GE-EDRAM-001",
+                # The 2026-10-15 re-run of the revised ge-break-continue probe (c642039a).
+                "PSP-GE-CONTROL-001",
             },
         )
         self.assertEqual(
             {test_id for test_id, value in evidence.items() if value == "CAPTURED"},
             {
-                "PSP-KERNEL-001", "PSP-SYSTEM-001", "PSP-GE-CONTROL-001", "PSP-TEARDOWN-001",
-                # The HLE measurement families ran as single-case runs on 2026-10-10 with
-                # complete streams; none was acceptance-eligible (post-unload shell
-                # qualification), so they are captured, not measured.
-                "PSP-HLE-KERNEL-STATUS-001", "PSP-HLE-VTIMER-001", "PSP-HLE-POWER-001",
-                "PSP-HLE-HPRM-001", "PSP-HLE-CTRL-LATCH-001", "PSP-HLE-SYSPARAM-001",
-                "PSP-HLE-GE-EDRAM-001",
+                # Captured only: the runner classified its envelope as not acceptance-eligible.
+                "PSP-TEARDOWN-001",
             },
         )
 
@@ -2835,8 +2870,13 @@ class PspDmacProbeTests(unittest.TestCase):
         kernel = next(
             entry for entry in manifest["tests"] if entry["id"] == "PSP-KERNEL-001"
         )
-        self.assertIn("mbx-delete-wait", kernel["diagnostic_case_ids"])
-        self.assertIn("mbx-timeout-control", kernel["diagnostic_case_ids"])
+        self.assertIn("mbx-delete-wait", kernel["case_ids"])
+        self.assertIn("mbx-timeout-control", kernel["case_ids"])
+        self.assertEqual(kernel["hardware_evidence"], "MEASURED")
+        self.assertEqual(
+            kernel["uncited_cases"],
+            ["callback-notify-check", "wait-cancel", "thread-lifecycle"],
+        )
         self.assertIn(339, kernel["issues"])
         self.assertIn(341, kernel["issues"])
         for api in (
@@ -3434,6 +3474,31 @@ class ProbeProgressAndBoundedWaitTests(unittest.TestCase):
         report = parse_campaign_probe_output(self._stream(rows), "ge-break-continue")
         statuses = {record.case_id: record.status for record in report.results.values()}
         self.assertEqual(statuses["ge-continue-drain"], "TIMEOUT")
+
+    def test_ge_break_continue_resets_before_any_dequeue(self) -> None:
+        # The reset cell is separable only if the sceGeBreak(1) reset cell comes before every
+        # sceGeListDeQueue cell, and the cancelled-list cells are read after that reset.
+        spec, _ = CAMPAIGN_PROBE_CASES["ge-break-continue"]
+        order = spec.ordered_cases
+        reset = order.index("ge-break-reset-no-dequeue")
+        cancelled = order.index("ge-list-sync-cancelled")
+        dequeue = order.index("ge-list-dequeue-stalled")
+        self.assertLess(reset, cancelled)
+        self.assertLess(cancelled, dequeue)
+
+    def test_ge_break_continue_busy_dequeue_is_a_pass_cell_that_gates_nothing(self) -> None:
+        # The stalled-list dequeue result is a measured cell (the eligible 2026-10-15 re-run
+        # read BUSY 0x80000021). Its status is PASS whatever it
+        # returns, so the cancelled cells and the envelope stay eligible.
+        rows = self._campaign_rows("ge-break-continue")
+        busy = [
+            row.replace("status=PASS result=0x0", "status=PASS result=0x80000021", 1)
+            if "case_id=ge-list-dequeue-stalled " in row else row
+            for row in rows
+        ]
+        report = parse_campaign_probe_output(self._stream(busy), "ge-break-continue")
+        statuses = {record.case_id: record.status for record in report.results.values()}
+        self.assertEqual(set(statuses.values()), {"PASS"})
 
     def test_campaign_specs_match_the_records_the_probe_emits(self) -> None:
         defines = {name: int(value) for name, value in
@@ -4163,15 +4228,20 @@ class HleMeasureProbeTests(unittest.TestCase):
                     self.assertIn(f'"{semantic}"', self.probe, semantic)
 
     def test_manifest_entries_are_captured_and_cite_the_registry(self) -> None:
-        """The 2026-10-10 single-case runs captured every family without acceptance."""
+        """The 2026-10-15 single-case runs on e45e667b measured every family (acceptance-eligible)."""
         by_id = {test["id"]: test for test in self.manifest["tests"]}
         for case, _cid, stem, _block, _macro, test_id in self.FAMILIES:
             with self.subTest(case=case):
                 entry = by_id[test_id]
                 spec, _counts = CAMPAIGN_PROBE_CASES[case]
-                self.assertEqual(entry["hardware_evidence"], "CAPTURED")
-                self.assertIn("not acceptance-eligible", entry["evidence_note"])
-                self.assertIn("establishes nothing", entry["evidence_note"])
+                self.assertEqual(entry["hardware_evidence"], "MEASURED")
+                self.assertEqual(
+                    entry["evidence_ref"],
+                    "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+                )
+                self.assertTrue(set(entry["case_ids"]).issubset(entry["evidence_cases"]))
+                self.assertIn("2026-10-15", entry["measurement_note"])
+                self.assertIn("acceptance-eligible", entry["measurement_note"])
                 self.assertEqual(entry["status"], "implemented")
                 self.assertEqual(entry["source"], "fixtures/psp_oracle/probe_hle_measure.c")
                 self.assertEqual(entry["prx"], f"{stem}.prx")
