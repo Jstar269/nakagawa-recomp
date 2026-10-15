@@ -5,7 +5,6 @@
 
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
@@ -225,24 +224,19 @@ class TestAssetIndexSelftestC(unittest.TestCase):
 
 
 class TestHleFontSpecTable(unittest.TestCase):
-    """The HLE font table reports project-owned names; its numeric fields are unchanged."""
+    """The sceFont shim keeps no font table of its own: it reads the measured slots and served headers."""
 
-    ROW = re.compile(r'\[(\d+)\]\s*=\s*\{"([^"]*)",\s*"([^"]*)",\s*([^}]*)\}')
-
-    def test_font_specs_report_project_names_and_unchanged_numbers(self):
+    def test_shim_reads_metadata_from_the_measured_registry_view(self):
         hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
-        start = hle.index("static const SrFontSpec s_font_specs[18] = {")
-        table = hle[start:hle.index("};", start)]
-        rows = {int(index): (file_name, font_name, numbers)
-                for index, file_name, font_name, numbers in self.ROW.findall(table)}
-        self.assertEqual(rows, {
-            0: ("nkjpn.pgf", "Nakagawa Open Japanese",
-                "0, 2, 0, 1, 0, 1, 10.125f, 10.125f, 128.f, 128.f"),
-            9: ("nkltn.pgf", "Nakagawa Open Latin",
-                "0, 0, 0, 2, 0, 1, 7.f, 7.f, 128.f, 128.f"),
-            17: ("nkkr.pgf", "Nakagawa Open Korean",
-                 "0, 0, 0, 3, 0, 3, 10.125f, 10.125f, 128.f, 128.f"),
-        })
+        # The removed per-index table held model values and hard-coded names; neither may return.
+        self.assertNotIn("s_font_specs", hle)
+        self.assertNotIn("SrFontSpec", hle)
+        # Index map, numeric codes, sizes, resolutions and the name come from flash0's registry view.
+        self.assertIn("sr_flash0_font_registry_info(", hle)
+        self.assertIn("sr_flash0_font_registry_slot(", hle)
+        # Font names reach guest memory only from the served file's header, never from a literal.
+        for literal in ("Nakagawa Open Japanese", "Nakagawa Open Latin", "Nakagawa Open Korean"):
+            self.assertNotIn(literal, hle)
 
 
 if __name__ == "__main__":
