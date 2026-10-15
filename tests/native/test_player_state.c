@@ -3218,6 +3218,9 @@ int main(int argc, char **argv) {
 
         /* 14f: the wizard's status text and preflight, through the player's own functions. The
            folder now holds two Latin files and a refused one, so the first import imports nothing. */
+        /* The Fonts step reads and writes the per-user data directory, so this block points that
+           directory at its own font root, the same folder the runtime root names here. */
+        assert(nk_platform_set_app_data_dir_override(font_root));
         PlayerApp *font_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
         assert(font_app != NULL);
         nk_library_init(&font_app->library);
@@ -3412,7 +3415,59 @@ int main(int argc, char **argv) {
             assert(fcheck->issue_count == 1 && fcheck->issue_numbers[0] == 313);
         }
         free(font_app);
+        assert(nk_platform_set_app_data_dir_override(NULL));
         assert(test_remove_tree(font_root));
+    }
+
+    /* 14r: a runtime root does not move the fonts. Under --runtime-root the Fonts step imports into
+       and reads from the per-user data directory (the --user-data-root override here), and the
+       runtime root's own fonts/v2 is neither written nor read. */
+    printf("[PLAYER_STATE_TEST] Subtest 14r: Fonts step under a runtime root uses the per-user directory\n");
+    fflush(stdout);
+    {
+        char rt_base[512];
+        char per_user[768];
+        char runtime_only[768];
+        char source[768];
+        char path[1024];
+        const char sep = nk_platform_path_separator();
+
+        assert(nk_platform_get_path(NK_PATH_CACHE, rt_base, sizeof(rt_base)));
+        snprintf(per_user, sizeof(per_user), "%s%cfont_root_per_user", rt_base, sep);
+        snprintf(runtime_only, sizeof(runtime_only), "%s%cfont_root_runtime", rt_base, sep);
+        snprintf(source, sizeof(source), "%s%cfont_root_source", rt_base, sep);
+        assert(test_remove_tree(per_user));
+        assert(test_remove_tree(runtime_only));
+        assert(test_remove_tree(source));
+        assert(nk_platform_mkdir_p(per_user));
+        assert(nk_platform_mkdir_p(runtime_only));
+        assert(nk_platform_mkdir_p(source));
+        snprintf(path, sizeof(path), "%s%cdump_latin.pgf", source, sep);
+        write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+
+        assert(nk_platform_set_app_data_dir_override(per_user));
+        PlayerApp *runtime_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(runtime_app != NULL);
+        nk_library_init(&runtime_app->library);
+        player_app_set_runtime_root(runtime_app, runtime_only);
+
+        assert(player_app_fonts_import_folder(runtime_app, source));
+        assert(strstr(runtime_app->wizard.font_message, "Imported 1 PSP font slot(s)") != NULL);
+        snprintf(path, sizeof(path), "%s%cfonts%cv2%cmanifest.json", per_user, sep, sep, sep);
+        assert(nk_platform_file_exists(path));
+        snprintf(path, sizeof(path), "%s%cfonts", runtime_only, sep);
+        assert(!nk_platform_dir_exists(path));
+
+        player_app_refresh_font_status(runtime_app);
+        assert(strstr(runtime_app->wizard.font_slot_detail[NK_FONT_SLOT_LATIN],
+                      "imported from your PSP") != NULL);
+        assert(player_app_fonts_remove_imports(runtime_app));
+        free(runtime_app);
+
+        assert(nk_platform_set_app_data_dir_override(NULL));
+        assert(test_remove_tree(per_user));
+        assert(test_remove_tree(runtime_only));
+        assert(test_remove_tree(source));
     }
 
     /* 14g: no configured runtime root. The preflight falls back to the app-data directory, and

@@ -373,8 +373,16 @@ class RuntimeLauncher:
         except (OSError, ValueError) as exc:
             raise RuntimeLaunchError(str(exc)) from exc
         from .fonts import resolve_font_directory
+        from .prereq_fetcher import default_data_root
 
-        resolved_font_dir = resolve_font_directory(fallback_root=self.repo_root)
+        # One font root: the per-user data directory the import writes. A runtime root does
+        # not move it, and the runtime reads it through SR_USER_DATA_ROOT (set here, so an
+        # inherited value cannot point the child at another root).
+        user_data_root = default_data_root()
+        env["SR_USER_DATA_ROOT"] = str(user_data_root)
+        resolved_font_dir = resolve_font_directory(
+            user_data_root=user_data_root, fallback_root=self.repo_root
+        )
         if resolved_font_dir:
             env["SR_FONTDIR"] = str(resolved_font_dir)
 

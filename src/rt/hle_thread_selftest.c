@@ -27445,6 +27445,13 @@ static uint32_t f0t_rename(const char *from, const char *to) {
     return sr_hle_test_io_rename(&cpu);
 }
 
+/* Sets or clears one environment variable in both views the runtime reads: the wide block that
+ * sr_wide_env_alloc uses on Win32, and the CRT table that getenv reads. */
+static void f0t_set_env(const char *name, const char *value) {
+    SetEnvironmentVariableA(name, value);
+    _putenv_s(name, value ? value : "");
+}
+
 static void test_flash0_font_device(void) {
     const char *root = getenv("SR_FLASH0_TEST_ROOT");
     expect(root != NULL && root[0] != '\0', "the flash0 font test receives its synthetic root");
@@ -27468,6 +27475,9 @@ static void test_flash0_font_device(void) {
     snprintf(project_japanese, sizeof(project_japanese), "%s/project/%s", root, F0T_JAPANESE_NAME);
     expect(nk_platform_set_app_data_dir_override(data_dir),
            "the per-user data directory can be pointed at the synthetic cache");
+    /* The runtime's own root variable is unset here, so the cases below read the per-user directory
+     * the way a direct runtime launch does. */
+    f0t_set_env("SR_USER_DATA_ROOT", NULL);
 
     size_t user_size = 0, project_latin_size = 0, project_japanese_size = 0;
     char *user_bytes = f0t_read_file(user_latin, &user_size);
@@ -27664,6 +27674,53 @@ static void test_flash0_font_device(void) {
         cpu.r[4] = F0T_PATH_ADDR;
         expect(sr_hle_test_io_dopen(&cpu) == F0T_ERR_NOT_FOUND,
                "a listing outside /font/ is refused");
+    }
+
+    /* SR_USER_DATA_ROOT names the per-user data directory the launcher resolved; the device reads the
+     * user-imported cache from there, not from NK_PATH_DATA. Here the process's per-user directory is
+     * an empty decoy, which is what a child runtime sees when the launcher's root is not the platform
+     * default: with the variable set to the cache's root, the cache is still the user source. */
+    {
+        char decoy[SR_FLASH0_PATH_MAX];
+        uint32_t follow_fd;
+        uint32_t invalid_fd;
+        snprintf(decoy, sizeof(decoy), "%s/decoy-user-data", root);
+        expect(nk_platform_mkdir_p(decoy), "the empty decoy per-user directory can be created");
+        expect(nk_platform_set_app_data_dir_override(decoy),
+               "the process's per-user directory can be pointed at the empty decoy");
+        f0t_set_env("SR_USER_DATA_ROOT", data_dir);
+        follow_fd = f0t_open("flash0:/font/" F0T_LATIN_NAME, 0x0001u);
+        snprintf(msg, sizeof(msg),
+                 "with SR_USER_DATA_ROOT at the cache and the per-user directory an empty decoy, the latin font is the %s source",
+                 served_latin_label);
+        expect(follow_fd >= 3u && f0t_getstat("flash0:/font/" F0T_LATIN_NAME) == 0u &&
+                   MEM_R32(F0T_STAT_ADDR + 8u) == served_latin_size,
+               msg);
+        expect(follow_fd >= 3u && f0t_read(follow_fd, (uint32_t)served_latin_size) == served_latin_size &&
+                   f0t_guest_equals(F0T_BUF_ADDR, served_latin_bytes, served_latin_size),
+               "the decoy run reads the bytes of the source SR_USER_DATA_ROOT names");
+        if (follow_fd >= 3u) (void)f0t_close(follow_fd);
+
+        /* A set but relative value is invalid: the user source is skipped and NK_PATH_DATA, which holds
+         * the cache, is not used instead. The project latin font is served, and the refusal is named
+         * once however many opens follow. */
+        expect(nk_platform_set_app_data_dir_override(data_dir),
+               "the per-user directory is the synthetic cache again");
+        f0t_set_env("SR_USER_DATA_ROOT", "relative-user-data");
+        invalid_fd = f0t_open("flash0:/font/" F0T_LATIN_NAME, 0x0001u);
+        expect(invalid_fd >= 3u && f0t_getstat("flash0:/font/" F0T_LATIN_NAME) == 0u &&
+                   MEM_R32(F0T_STAT_ADDR + 8u) == project_latin_size,
+               "a relative SR_USER_DATA_ROOT skips the user-imported source; the project latin font is served, not the per-user cache");
+        expect(invalid_fd >= 3u && f0t_read(invalid_fd, (uint32_t)project_latin_size) == project_latin_size &&
+                   f0t_guest_equals(F0T_BUF_ADDR, project_latin_bytes, project_latin_size),
+               "the invalid-variable run reads the project latin bytes");
+        if (invalid_fd >= 3u) (void)f0t_close(invalid_fd);
+        invalid_fd = f0t_open("flash0:/font/" F0T_LATIN_NAME, 0x0001u);
+        if (invalid_fd >= 3u) (void)f0t_close(invalid_fd);
+
+        f0t_set_env("SR_USER_DATA_ROOT", NULL);
+        expect(nk_platform_set_app_data_dir_override(data_dir),
+               "the per-user directory is restored to the synthetic cache root");
     }
 
     sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_LATIN, 0);

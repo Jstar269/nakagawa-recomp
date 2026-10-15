@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import nk_cli  # noqa: E402
 import title_manifest  # noqa: E402
 from nk_core import package_cache  # noqa: E402
+from nk_core.prereq_fetcher import default_data_root  # noqa: E402
 from nk_core import (
     CancellationToken,
     GameLibrary,
@@ -633,6 +634,33 @@ class NkCoreTests(unittest.TestCase):
         # executable.entry (title_codegen_plan._resolve_run_entry, and the native
         # catalog's run_entry), so every launcher starts the title at one address.
         self.assertEqual(int(cmd[4], 16), int(profile.fallback_entry, 16))
+
+    def test_runtime_launcher_exports_the_per_user_data_root(self) -> None:
+        """The runtime reads user-imported fonts from SR_USER_DATA_ROOT: the per-user data root the font import uses."""
+        game_dir = self.temp_dir / "TEST00001"
+        game_dir.mkdir()
+        _write_title_runtime(self.temp_dir, "synthetic", exe_ext=".exe")
+        (game_dir / "manifest.json").write_text(
+            json.dumps({
+                "title_id": "synthetic-allegrex-v1",
+                "disc_id": "TEST00001",
+                "boot_executable": "EBOOT.OLD",
+            }),
+            encoding="utf-8",
+        )
+        user_root = self.temp_dir / "per-user-data-root"
+        launcher = RuntimeLauncher(repo_root=self.temp_dir)
+        with patch.dict(os.environ, {
+            "LOCALAPPDATA": str(user_root),
+            "APPDATA": str(user_root),
+            "XDG_DATA_HOME": str(user_root),
+            "HOME": str(user_root),
+            "SR_USER_DATA_ROOT": "poisoned-parent-root",
+        }):
+            expected = default_data_root()
+            _, env = launcher.build_launch_plan(game_dir)
+        self.assertEqual(env["SR_USER_DATA_ROOT"], str(expected))
+        self.assertTrue(Path(env["SR_USER_DATA_ROOT"]).is_absolute())
 
     def test_runtime_launcher_does_not_inherit_parent_iso_without_session_iso(self) -> None:
         game_dir = self.temp_dir / "TEST00001"

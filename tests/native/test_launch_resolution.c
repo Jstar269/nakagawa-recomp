@@ -151,6 +151,8 @@ static int write_launch_environment_probe(void) {
     const char *volume = getenv("SR_MASTER_VOLUME");
     const char *input_profile = getenv("NK_INPUT_PROFILE");
     const char *novbpace = getenv("SR_NOVBPACE");
+    const char *font_dir = getenv("SR_FONTDIR");
+    const char *user_data_root = getenv("SR_USER_DATA_ROOT");
     int ok = fprintf(f,
                      "PSP_ISO=%s\n"
                      "NK_LAUNCH_TEST_UNRELATED=%s\n"
@@ -160,7 +162,9 @@ static int write_launch_environment_probe(void) {
                      "SR_FULLSCREEN=%s\n"
                      "SR_MASTER_VOLUME=%s\n"
                      "NK_INPUT_PROFILE=%s\n"
-                     "SR_NOVBPACE=%s\n",
+                     "SR_NOVBPACE=%s\n"
+                     "SR_FONTDIR=%s\n"
+                     "SR_USER_DATA_ROOT=%s\n",
                      iso ? iso : "<unset>",
                      unrelated ? unrelated : "<unset>",
                      fps ? fps : "<unset>",
@@ -169,7 +173,9 @@ static int write_launch_environment_probe(void) {
                      fullscreen ? fullscreen : "<unset>",
                      volume ? volume : "<unset>",
                      input_profile ? input_profile : "<unset>",
-                     novbpace ? novbpace : "<unset>") >= 0;
+                     novbpace ? novbpace : "<unset>",
+                     font_dir ? font_dir : "<unset>",
+                     user_data_root ? user_data_root : "<unset>") >= 0;
     if (fclose(f) != 0) ok = 0;
     /* Subtest 21 sets NK_LAUNCH_TEST_HOLD so the probe stays alive long
      * enough for nk_launch_stop to have a running child to stop. */
@@ -256,6 +262,28 @@ static void test_no_iso_child_environment(const char *test_executable,
     memcpy(game.prepared_root, stage_root, strlen(stage_root) + 1);
     game.assets_staged = true;
 
+    /* One font root: the per-user data directory (the platform default in this isolated run).
+     * Fonts are imported there, so the launcher names that cache and exports the root to the
+     * runtime. A cache under the package root is not the one the launcher looks at. */
+    char per_user_root[NK_MAX_PATH];
+    assert(nk_platform_get_app_data_dir(per_user_root, sizeof(per_user_root)));
+    char per_user_fonts[NK_MAX_PATH * 2];
+    char per_user_cache[NK_MAX_PATH * 2 + 32];
+    char per_user_manifest[NK_MAX_PATH * 4];
+    snprintf(per_user_fonts, sizeof(per_user_fonts), "%s%cfonts", per_user_root, sep);
+    snprintf(per_user_cache, sizeof(per_user_cache), "%s%cv2", per_user_fonts, sep);
+    snprintf(per_user_manifest, sizeof(per_user_manifest), "%s%cmanifest.json", per_user_cache, sep);
+    char package_fonts[NK_MAX_PATH * 2];
+    char package_cache[NK_MAX_PATH * 2 + 32];
+    char package_manifest[NK_MAX_PATH * 4];
+    snprintf(package_fonts, sizeof(package_fonts), "%s%cfonts", root, sep);
+    snprintf(package_cache, sizeof(package_cache), "%s%cv2", package_fonts, sep);
+    snprintf(package_manifest, sizeof(package_manifest), "%s%cmanifest.json", package_cache, sep);
+    assert(nk_platform_mkdir_p(per_user_cache));
+    assert(nk_platform_mkdir_p(package_cache));
+    write_file(per_user_manifest, "{}");
+    write_file(package_manifest, "{}");
+
     bool had_iso;
     bool had_report;
     bool had_unrelated;
@@ -328,7 +356,7 @@ static void test_no_iso_child_environment(const char *test_executable,
 
     FILE *report = fopen(report_path, "rb");
     assert(report != NULL);
-    char observed[512];
+    char observed[2048];
     size_t observed_size = fread(observed, 1, sizeof(observed) - 1, report);
     observed[observed_size] = '\0';
     assert(!ferror(report));
@@ -349,6 +377,18 @@ static void test_no_iso_child_environment(const char *test_executable,
         char expected[1200];
         snprintf(expected, sizeof(expected), "NK_INPUT_PROFILE=%s\n", title_profile);
         assert(strstr(observed, expected) != NULL);
+    }
+    /* The per-user data directory reaches the runtime as SR_USER_DATA_ROOT, and the font cache
+     * the runtime serves from is the one under it. The package root's own fonts/v2 (the
+     * launcher's old lookup) is not named at all. */
+    {
+        char expected[NK_MAX_PATH * 2 + 64];
+        snprintf(expected, sizeof(expected), "SR_USER_DATA_ROOT=%s\n", per_user_root);
+        assert(strstr(observed, expected) != NULL);
+        snprintf(expected, sizeof(expected), "SR_FONTDIR=%s\n", per_user_cache);
+        assert(strstr(observed, expected) != NULL);
+        snprintf(expected, sizeof(expected), "SR_FONTDIR=%s\n", package_cache);
+        assert(strstr(observed, expected) == NULL);
     }
     /* A normal launch clears SR_NOVBPACE from the child environment even if set in parent */
     assert(strstr(observed, "SR_NOVBPACE=<unset>\n") != NULL);
@@ -385,6 +425,12 @@ static void test_no_iso_child_environment(const char *test_executable,
     remove(runtime_path);
     remove(image_path);
     remove(staged_eboot);
+    remove(per_user_manifest);
+    test_rmdir(per_user_cache);
+    test_rmdir(per_user_fonts);
+    remove(package_manifest);
+    test_rmdir(package_cache);
+    test_rmdir(package_fonts);
     {
         char stage_memstick[1000];
         snprintf(stage_memstick, sizeof(stage_memstick), "%s%cmemstick",

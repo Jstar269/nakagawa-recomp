@@ -23,7 +23,9 @@ hle.c IO entry points:
 
 In every case the selftest also points ``SR_FONTDIR`` at the imported cache, the launcher's state
 after an import, and checks that the project source does not serve the cache's files. Each refusal
-is named on stderr once per slot and reason, however many opens resolve the slot. The native part
+is named on stderr once per slot and reason, however many opens resolve the slot. The selftest also
+checks that ``SR_USER_DATA_ROOT`` names the user source (its per-user directory is an empty decoy
+there), and that a relative value is named once and skips that source instead of falling back. The native part
 needs mingw32-make. The contract tests need no compiler: they check the fixture, the Python
 checker's verdict for each case, and that every link that compiles the device also supplies
 src/core/nk_font.c.
@@ -72,6 +74,8 @@ USER_REFUSAL = {
 }
 USER_REFUSAL_PREFIX = "flash0: user-imported font for slot 'latin' refused:"
 PROJECT_CACHE_PREFIX = "flash0: project font for slot 'latin' refused:"
+#: Named once when SR_USER_DATA_ROOT is set but is not an absolute path (the selftest sets one).
+USER_ROOT_PREFIX = "flash0: SR_USER_DATA_ROOT"
 
 # Glyph sets. Each names its slot under the reader's probes: latin covers 'A' and 'a' and no kana or
 # Hangul; japanese covers hiragana. The cache copy and the project latin font differ in size, so
@@ -383,6 +387,7 @@ class Flash0FontDeviceTests(unittest.TestCase):
                     env["SR_FONTDIR"] = str(root / "project")
                     env["SR_FLASH0_TEST_CASE"] = case
                     env.pop("SR_FONTLOG", None)
+                    env.pop("SR_USER_DATA_ROOT", None)
                     run = subprocess.run(
                         [str(exe), "--flash0-font"],
                         cwd=ROOT,
@@ -395,6 +400,10 @@ class Flash0FontDeviceTests(unittest.TestCase):
                     self.assertIn("flash0-font:", run.stderr)
                     self.assertEqual(run.returncode, 0, run.stderr[-6000:])
                     assert_refusals_named(self, run.stderr, case)
+                    # The relative SR_USER_DATA_ROOT the selftest sets is named once, however many opens follow.
+                    named = refusal_lines(run.stderr, USER_ROOT_PREFIX)
+                    self.assertEqual(len(named), 1, "expected one SR_USER_DATA_ROOT refusal, got: " + repr(named))
+                    self.assertIn("is configured but is not a valid absolute path", named[0])
 
 
 if __name__ == "__main__":
