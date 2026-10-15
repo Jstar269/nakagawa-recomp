@@ -546,12 +546,6 @@ int gegpu_sync_guest_fb(const GeGpuFbDescriptor *desc) {
     return 2; /* GEGPU_SYNC_NO_TARGET */
 }
 void sr_profile_dump(void) {}
-#ifdef SR_PSP_ORACLE_SMOKE
-/* The smoke translation retains the production SR_YIELD instrumentation hook,
- * but this focused executable does not link the full profiler object. */
-int g_prof_enabled;
-void sr_profile_block(uint32_t target_pc) { (void)target_pc; }
-#endif
 uint64_t SDL_GetTicksNS(void) { return 0; }
 int sr_capture_arm(const char *path) {
     s_cap_arm_calls++;
@@ -4901,7 +4895,7 @@ static int osk_write_script(const char *const *lines, int count) {
 
 static void test_osk_scripted_answer(void) {
     CpuState cpu;
-    const uint32_t k_init = NID_OSK_INIT, k_status = NID_OSK_STATUS, k_down = NID_OSK_SHUTDOWN;
+    const uint32_t k_init = NID_OSK_INIT, k_down = NID_OSK_SHUTDOWN;
     static const uint16_t play[] = { 'P', 'L', 'A', 'Y' };
     static const uint16_t ace[] = { 'A', 'C', 'E' };
     static const uint16_t n[] = { 'N' };
@@ -15451,7 +15445,7 @@ static void test_ge_guest_sentinel(void) {
 
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0x01u; /* GE_VADDR: last vertex pointer written by the source-owned list */
-    expect(sr_syscall(&cpu, NID_SCE_GE_GET_CMD) == (vtx_base + 0x100u & 0x00ffffffu),
+    expect(sr_syscall(&cpu, NID_SCE_GE_GET_CMD) == ((vtx_base + 0x100u) & 0x00ffffffu),
            "sceGeGetCmd returns the last executed 24-bit command value");
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0x100u;
