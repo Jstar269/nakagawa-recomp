@@ -2058,6 +2058,23 @@ static void test_fuzz_decrypt_boundary(unsigned iters) {
         }
     }
 
+    /* A zero-size trailing segment is a valid layout: a ~PSP module may declare
+     * segment 1 as 0x0 after a non-empty segment 0. Only the segment count,
+     * the per-segment cap and the aggregate extent may refuse a table. */
+    {
+        uint8_t *zero_tail = (uint8_t *)malloc(sealed_len);
+        NkPspCtx ctx;
+        NkContainerInfo info;
+        assert(zero_tail != NULL);
+        memcpy(zero_tail, sealed, sealed_len);
+        put32le(zero_tail + 0x58, 0u);
+        nk_psp_ctx_init(&ctx, ks);
+        assert(nk_container_probe(&ctx, zero_tail, sealed_len, &info) == NK_PSP_OK);
+        assert(info.kind == NK_CTR_PSP);
+        assert(info.tag == FUZZ_PSP_TAG);
+        free(zero_tail);
+    }
+
     uint8_t wrapped[1200];
     uint8_t *mutated;
     unsigned accepted = 0;

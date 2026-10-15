@@ -489,9 +489,12 @@ validation and K3/K4 remain `NOT_RUN` under #303.
 ## Pending PSP-3000 campaign
 
 The cases below are new synthetic probes. Their hardware expectations
-remain `NOT_RUN`; a complete parser only proves that the record stream is
+remain `NOT_RUN` until a run is cited; a complete parser only proves that the record stream is
 complete and well formed. It does not decide which PSP return values or
-ordering semantics are correct.
+ordering semantics are correct. `llsc-link`, `vfpu-compare` and `fpu-cc` were measured on a
+PSP-3000 on 2026-10-15 (build `e45e667b`); the
+[measured index](../../docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize)
+publishes their words.
 
 | Case | Test id | Measurements |
 | --- | --- | --- |
@@ -501,9 +504,10 @@ ordering semantics are correct.
 | `ge-break-continue` | `PSP-GE-CONTROL-001` | Break without an active list, continue without a paused list, invalid break mode, list/draw sync statuses for paused work, the continue result with a bounded drain (`ge-continue-drain`, `TIMEOUT` with the last states if the GE does not go idle), a queue reset when needed (`ge-quiesce-after-continue`), cancelled work, and a final quiesce (`ge-quiesce-after-cancel`). |
 | `refer-status-size` | `PSP-KERNEL-STATUS-001` | Semaphore, event-flag, and mailbox status structures with size words 0, 8, 40, and full size; records the changed bytes and returned size word. |
 | `registry-readonly` | `PSP-REGISTRY-001` | Read-only registry/category enumeration under `/CONFIG`, key names/types/sizes, modeled setting values only, and unknown-category/key, small-buffer, and handle-exhaustion results (`registry-errors`; at most 256 opens, `out6` says whether an open failed first), then the forged-handle call last (`registry-bad-handle`). |
-| `llsc-link` | `PSP-LLSC-001` | A plain `ll`/`sc` pair (control), a second `sc` after a successful `sc` with no new `ll`, and an `sc` to an address other than the one `ll` linked. Each record carries the `sc` result, the word `ll` loaded, both words after the cell, and the project's model words (UNMEASURED for the console). |
+| `llsc-link` | `PSP-LLSC-001` | A plain `ll`/`sc` pair (control), a second `sc` after a successful `sc` with no new `ll`, and an `sc` to an address other than the one `ll` linked. Each record carries the `sc` result, the word `ll` loaded, both words after the cell, and the project's model words. Measured: every `sc` reported 1 and stored, matching the model. |
 | `kernel-misc` | `PSP-KERNEL-MISC-001` | Wide system-clock conversion, default controller mode, thread/global profiler returns, basic VTimer behavior, display calls, battery-icon status, and UMD-popup return values. |
-| `vfpu-compare` | `PSP-VFPU-CMP-001` | `vscmp.s`, `vsge.s`, and `vslt.s` on 15 operand pairs (less-than, equal, greater, signed zeros in both orders, quiet, signalling, and negative NaN on each side, infinities). Each record carries the observed word, the project's model word (UNMEASURED for the console), and both operands. |
+| `vfpu-compare` | `PSP-VFPU-CMP-001` | `vscmp.s`, `vsge.s`, and `vslt.s` on 15 operand pairs (less-than, equal, greater, signed zeros in both orders, quiet, signalling, and negative NaN on each side, infinities). Each record carries the observed word, the project's model word at build time, and both operands. Measured: `vsge.s`/`vslt.s` write 0.0 for a NaN; `vscmp.s` orders a NaN by sign and magnitude, which the model now does. |
+| `fpu-cc` | `PSP-FPU-CC-001` | COP1 condition codes 0..7: FCR31 condition-bit writability, the FCR31 word after an equal and an unequal `c.eq.s` with each code, and whether `bc1t`/`bc1f` with each code are taken under FCC0, no flag, and the code's own flag. A reserved encoding may end the launch with an exception; the last STEP line names the cell. Measured: no exception; only FCC0 exists, and every code writes and tests it. |
 
 The registry case opens the registry and every category in read mode. It never
 calls a set, create, remove, or flush API. It records values only for the

@@ -591,13 +591,16 @@ _register_campaign_probe(
     ("ge-break-no-active-list", "ge-continue-no-paused-list",
      "ge-break-invalid-mode", "ge-list-sync-paused", "ge-draw-sync-paused",
      "ge-continue-drain", "ge-quiesce-after-continue",
-     "ge-list-sync-cancelled", "ge-draw-sync-cancelled",
-     "ge-quiesce-after-cancel"),
+     "ge-break-reset-no-dequeue", "ge-list-sync-cancelled",
+     "ge-draw-sync-cancelled", "ge-quiesce-after-cancel",
+     "ge-list-dequeue-stalled", "ge-quiesce-after-dequeue"),
     {"ge-break-no-active-list": 2, "ge-continue-no-paused-list": 1,
      "ge-break-invalid-mode": 2, "ge-list-sync-paused": 3,
      "ge-draw-sync-paused": 3, "ge-continue-drain": 5,
-     "ge-quiesce-after-continue": 4, "ge-list-sync-cancelled": 3,
-     "ge-draw-sync-cancelled": 3, "ge-quiesce-after-cancel": 4},
+     "ge-quiesce-after-continue": 4, "ge-break-reset-no-dequeue": 2,
+     "ge-list-sync-cancelled": 3, "ge-draw-sync-cancelled": 3,
+     "ge-quiesce-after-cancel": 4, "ge-list-dequeue-stalled": 4,
+     "ge-quiesce-after-dequeue": 4},
 )
 _register_campaign_probe(
     "kernel-misc", "PSP-KERNEL-MISC-001",
@@ -726,6 +729,17 @@ _register_campaign_probe(
     "llsc-link", "PSP-LLSC-001",
     ("llsc-control", "llsc-second-sc", "llsc-other-address"),
     {"llsc-control": 6, "llsc-second-sc": 6, "llsc-other-address": 6},
+)
+
+# fpu-cc: COP1 condition-code facts (see probe.c, run_fpu_cc). One FCR31 writability
+# cell, then for each condition code 0..7 a c.eq.s cell (one word) and a bc1t/bc1f cell
+# (four words). The condition code 0 cells are controls; the parser checks shape only.
+_FPU_CC_CELLS = ("fpu-cc-fcr31-bits",) + tuple(
+    f"fpu-cc{n}-{kind}" for n in range(8) for kind in ("ceq", "branch"))
+_register_campaign_probe(
+    "fpu-cc", "PSP-FPU-CC-001", _FPU_CC_CELLS,
+    {cell: (2 if cell == "fpu-cc-fcr31-bits" else 1 if cell.endswith("-ceq") else 4)
+     for cell in _FPU_CC_CELLS},
 )
 
 
