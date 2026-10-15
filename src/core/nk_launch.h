@@ -71,6 +71,14 @@ typedef struct {
        Empty when an older manifest omits the optional binding. */
     char loose_content_roots[NK_LAUNCH_LOOSE_ROOTS_ENV_CAPACITY];
     char font_dir[NK_MAX_PATH];
+    /* The root the caller named to nk_launch_prepare_session (a runtime root, a showcase
+       root, or the per-user data directory when none was named). It holds the runtime package
+       and sets the asset root; it is not where fonts live. */
+    char package_root[NK_MAX_PATH];
+    /* The per-user data directory (the platform's, honouring --user-data-root). It is the one
+       font root: the launcher looks for <this>/fonts/v2, and the runtime reads the same cache
+       through SR_USER_DATA_ROOT. Filled by nk_launch_prepare_session, whatever package root
+       was named. Empty only when the platform cannot resolve a per-user directory. */
     char user_data_root[NK_MAX_PATH];
     /* Memory Stick root handed to the runtime as SR_MEMSTICK. Resolved by
        nk_launch_prepare_session to a directory that is known to be writable;
