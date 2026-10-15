@@ -571,9 +571,19 @@ def emit_tail_transfer(target_expr, fn_symbol, resumable, stack_census=False, co
     return f"sr_tail_record(s, {target_expr}, {fn}, _sp_entry, 1u); return;{suffix}"
 
 
+#: The statement that ends every direct CALL of a native body (`emit_body_call`). Inside a
+#: generated body nothing else drains, so a body whose text contains it makes a direct call.
+BODY_CALL_DRAIN = "SR_TAIL_DRAIN(s);"
+
+
 def emit_body_call(symbol):
     """A direct CALL of a native body completes the callee's tail chain before going on."""
-    return f"{symbol}(s); SR_TAIL_DRAIN(s);"
+    return f"{symbol}(s); {BODY_CALL_DRAIN}"
+
+
+def emit_host_stack_check(entry_expr):
+    """The entry statement of a body that makes a direct CALL (#855): bound its host stack."""
+    return f"    SR_HOST_STACK_CHECK({entry_expr});"
 
 
 def emit_host_fallthrough(resumable, stack_census=False):
@@ -2753,6 +2763,14 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
     out.append(f"    {emit_host_fallthrough(resumable, stack_census=stack_census)}")
     out.append("}")
     out.append("")
+    if any(BODY_CALL_DRAIN in line for line in out):
+        # A direct CALL nests a native frame without entering the dispatcher, so the body
+        # applies the dispatcher's host-stack bound itself, before anything else (the
+        # dispatcher preflights before its own SR_YIELD). Every native recursion of
+        # generated code passes through a direct CALL or the dispatcher, so leaves and
+        # dispatch-only bodies stay unchecked. Keyed on the CALL's own drain, so every
+        # call form that uses emit_body_call is covered. See SR_HOST_STACK_CHECK in recomp.h.
+        out.insert(1, emit_host_stack_check(G(start)))
     return out
 
 #: ``--extra-elf=<module>@runtime``: the module is placed by the runtime's guest

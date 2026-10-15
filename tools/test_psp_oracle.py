@@ -2785,13 +2785,15 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-HLE-GE-EDRAM-001",
                 # The 2026-10-15 CPU-semantics runs of build e45e667b.
                 "PSP-FPU-CC-001", "PSP-VFPU-CMP-001", "PSP-LLSC-001",
+                # The 2026-10-15 re-run of the revised ge-break-continue probe (c642039a).
+                "PSP-GE-CONTROL-001",
             },
         )
         self.assertEqual(
             {test_id for test_id, value in evidence.items() if value == "CAPTURED"},
             {
-                # Captured only: the runner classified their envelopes as not acceptance-eligible.
-                "PSP-GE-CONTROL-001", "PSP-TEARDOWN-001",
+                # Captured only: the runner classified its envelope as not acceptance-eligible.
+                "PSP-TEARDOWN-001",
             },
         )
 
@@ -3487,6 +3489,31 @@ class ProbeProgressAndBoundedWaitTests(unittest.TestCase):
         report = parse_campaign_probe_output(self._stream(rows), "ge-break-continue")
         statuses = {record.case_id: record.status for record in report.results.values()}
         self.assertEqual(statuses["ge-continue-drain"], "TIMEOUT")
+
+    def test_ge_break_continue_resets_before_any_dequeue(self) -> None:
+        # The reset cell is separable only if the sceGeBreak(1) reset cell comes before every
+        # sceGeListDeQueue cell, and the cancelled-list cells are read after that reset.
+        spec, _ = CAMPAIGN_PROBE_CASES["ge-break-continue"]
+        order = spec.ordered_cases
+        reset = order.index("ge-break-reset-no-dequeue")
+        cancelled = order.index("ge-list-sync-cancelled")
+        dequeue = order.index("ge-list-dequeue-stalled")
+        self.assertLess(reset, cancelled)
+        self.assertLess(cancelled, dequeue)
+
+    def test_ge_break_continue_busy_dequeue_is_a_pass_cell_that_gates_nothing(self) -> None:
+        # The stalled-list dequeue result is a measured cell (the eligible 2026-10-15 re-run
+        # read BUSY 0x80000021). Its status is PASS whatever it
+        # returns, so the cancelled cells and the envelope stay eligible.
+        rows = self._campaign_rows("ge-break-continue")
+        busy = [
+            row.replace("status=PASS result=0x0", "status=PASS result=0x80000021", 1)
+            if "case_id=ge-list-dequeue-stalled " in row else row
+            for row in rows
+        ]
+        report = parse_campaign_probe_output(self._stream(busy), "ge-break-continue")
+        statuses = {record.case_id: record.status for record in report.results.values()}
+        self.assertEqual(set(statuses.values()), {"PASS"})
 
     def test_campaign_specs_match_the_records_the_probe_emits(self) -> None:
         defines = {name: int(value) for name, value in
