@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 import shutil
@@ -362,6 +363,82 @@ int main(void) {{
             p = reg.lookup_by_id(m["id"])
             self.assertIsNotNone(p)
             self.assertEqual(p.name, m["display_name"])
+
+
+    def test_collect_public_manifests_rejects_duplicate_title_and_disc_identities(self) -> None:
+        """Verify that collect_public_manifests refuses colliding title catalog IDs or disc IDs."""
+        temp_titles = self.temp_dir / "titles"
+        temp_titles.mkdir()
+
+        m1 = title_manifest.load_manifest(ROOT / "assets" / "titles" / "synthetic.json")
+        m2 = title_manifest.load_manifest(ROOT / "assets" / "titles" / "synthetic-title2.json")
+
+        # Case 1: Colliding title IDs
+        m2_colliding_id = copy.deepcopy(m2)
+        m2_colliding_id["id"] = m1["id"]
+
+        (temp_titles / "synthetic.json").write_text(json.dumps(m1), encoding="utf-8")
+        (temp_titles / "synthetic-title2.json").write_text(json.dumps(m2_colliding_id), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "catalog contains duplicate title identity"):
+            title_catalog_codegen.collect_public_manifests(temp_titles, policy_dir=ROOT / "assets" / "titles")
+
+        # Case 2: Colliding disc IDs
+        m1_retail = copy.deepcopy(m1)
+        m1_retail.pop("profile_zero", None)
+        m1_retail["kind"] = "retail"
+        m1_retail["disc"] = {"id": "TEST12345", "region": "NA", "revision_policy": "exact-disc-id"}
+
+        m2_retail = copy.deepcopy(m2)
+        m2_retail.pop("profile_zero", None)
+        m2_retail["kind"] = "retail"
+        m2_retail["disc"] = {"id": "TEST12345", "region": "NA", "revision_policy": "exact-disc-id"}
+
+        (temp_titles / "synthetic.json").write_text(json.dumps(m1_retail), encoding="utf-8")
+        (temp_titles / "synthetic-title2.json").write_text(json.dumps(m2_retail), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "catalog contains duplicate disc identity"):
+            title_catalog_codegen.collect_public_manifests(temp_titles, policy_dir=ROOT / "assets" / "titles")
+
+    def test_title_registry_rejects_duplicate_or_colliding_manifests(self) -> None:
+        """Verify that TitleRegistry refuses loading or registering colliding title profiles."""
+        temp_titles = self.temp_dir / "titles"
+        temp_titles.mkdir()
+
+        m1 = title_manifest.load_manifest(ROOT / "assets" / "titles" / "synthetic.json")
+        m2 = title_manifest.load_manifest(ROOT / "assets" / "titles" / "synthetic-title2.json")
+
+        # Duplicate title ID
+        m2_colliding = copy.deepcopy(m2)
+        m2_colliding["id"] = m1["id"]
+
+        (temp_titles / "synthetic.json").write_text(json.dumps(m1), encoding="utf-8")
+        (temp_titles / "synthetic-title2.json").write_text(json.dumps(m2_colliding), encoding="utf-8")
+
+        reg = TitleRegistry(include_defaults=False)
+        with self.assertRaisesRegex(RuntimeError, "conflicts with public canonical catalog"):
+            reg.load_from_directory(temp_titles, enforce_public_policy=False)
+
+    def test_identical_overlay_is_refused_unless_override_is_explicit(self) -> None:
+        """A byte-for-byte copy of a public manifest is still an override in standard mode."""
+        import contextlib
+        import io
+
+        public_dir = self.temp_dir / "public"
+        public_dir.mkdir()
+        m1 = title_manifest.load_manifest(ROOT / "assets" / "titles" / "synthetic.json")
+        (public_dir / "synthetic.json").write_text(json.dumps(m1), encoding="utf-8")
+        overlay_dir = self.temp_dir / "overlay"
+        overlay_dir.mkdir()
+        overlay = overlay_dir / "synthetic.json"
+        overlay.write_text(json.dumps(m1), encoding="utf-8")
+
+        reg = TitleRegistry(include_defaults=False)
+        reg.load_from_directory(public_dir, enforce_public_policy=False)
+        with self.assertRaisesRegex(RuntimeError, "conflicts with public canonical catalog"):
+            reg.load_private_manifest(overlay)
+        with contextlib.redirect_stderr(io.StringIO()):
+            reg.load_private_manifest(overlay, allow_override=True)
 
 
 if __name__ == "__main__":
