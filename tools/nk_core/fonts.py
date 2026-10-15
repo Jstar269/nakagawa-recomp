@@ -664,7 +664,11 @@ def resolve_font_directory(
     user_data_root: Optional[Path] = None,
     fallback_root: Optional[Path] = None,
 ) -> Optional[Path]:
-    """Resolve the font directory for runtime execution: the cache when its manifest checks."""
+    """Resolve the cache-or-project font directory: the cache when its manifest checks.
+
+    The runtime launcher does not pass this to the child as SR_FONTDIR. The cache travels as
+    SR_USER_DATA_ROOT, and SR_FONTDIR names only the project fonts (build_launch_plan).
+    """
     cdir = get_font_cache_dir(user_data_root)
     status, _ = inspect_font_cache(cache_dir=cdir)
     if status == "OK":

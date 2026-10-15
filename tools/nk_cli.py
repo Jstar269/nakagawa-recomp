@@ -1118,6 +1118,20 @@ def _runtime_build_environment(*, instruction_trace: bool = False) -> dict[str, 
     return env
 
 
+def _bringup_child_environment(user_root: Path) -> dict[str, str]:
+    """The environment of the bring-up's own runtime launch.
+
+    The child names the per-user root its package was built under as SR_USER_DATA_ROOT, the same
+    root the player names, so an inherited value cannot point its fonts at another root. The
+    launcher-owned data variables are cleared before the stage adds its own.
+    """
+    env = os.environ.copy()
+    env.pop("SR_DATAROOT", None)
+    env.pop("SR_LOOSE_CONTENT_ROOTS", None)
+    env["SR_USER_DATA_ROOT"] = str(user_root)
+    return env
+
+
 def _windows_host() -> bool:
     """True when packages must carry the Windows runtime DLLs (a test seam:
     patching os.name itself would make pathlib build WindowsPath objects)."""
@@ -2306,11 +2320,13 @@ def cmd_launch(args: argparse.Namespace) -> int:
     # invoked from another working directory.
     launcher = RuntimeLauncher(repo_root=ROOT)
     try:
+        user_root = _user_data_root(args.user_data_root)
         cmd, env = launcher.build_launch_plan(
             args.game_dir,
             profile=args.profile,
             fps_cap=args.fps_cap,
             software_render=args.software,
+            user_data_root=user_root,
         )
         print("Launch plan prepared:")
         print(f"Executable: {cmd[0]}")
@@ -2318,6 +2334,8 @@ def cmd_launch(args: argparse.Namespace) -> int:
         print(f"DATAROOT:   {env.get('SR_DATAROOT')}")
         print(f"LOOSE_ROOTS: {env.get('SR_LOOSE_CONTENT_ROOTS')}")
         print(f"FPS_CAP:    {env.get('SR_FPS_CAP')}")
+        print(f"SR_USER_DATA_ROOT: {env.get('SR_USER_DATA_ROOT')}")
+        print(f"SR_FONTDIR: {env.get('SR_FONTDIR')}")
         return 0
     except Exception as exc:
         sys.stderr.write(f"Launch planning error: {exc}\n")
@@ -3765,9 +3783,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         executable = package_dir / package["executable"]["path"]
         if not executable.is_file():
             raise PackageBuildError("The generated package executable is missing.")
-        env = os.environ.copy()
-        env.pop("SR_DATAROOT", None)
-        env.pop("SR_LOOSE_CONTENT_ROOTS", None)
+        env = _bringup_child_environment(user_root)
         # The package ships the guest modules it was compiled against in
         # <package>/modules; the runtime loads them from SR_MODULE_DIR, as a
         # player launch of the same package does. Without it the runtime falls
@@ -4033,6 +4049,8 @@ def main() -> int:
     p_launch.add_argument("--fps-cap", type=int, default=-1,
                           help="Host presentation cap (-1 uses PSP scanout pacing)")
     p_launch.add_argument("--software", action="store_true", help="Use software GE rasterizer")
+    p_launch.add_argument("--user-data-root", type=Path,
+                          help="Override player per-user data directory (the imported fonts live under it)")
     p_launch.set_defaults(func=cmd_launch)
 
     p_build = subparsers.add_parser(
