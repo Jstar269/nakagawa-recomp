@@ -5814,6 +5814,23 @@ class Record20261015Tests(unittest.TestCase):
         self.assertNotIn("## Bounded follow-up probes (hardware NOT_RUN)", self.readme)
         self.assertNotIn("are single-launch NOT_RUN probes", self.readme)
 
+    def test_the_audio_src_and_timer_comparisons_are_recorded_and_pinned(self) -> None:
+        for phrase in ("`test_audio_src_matches_the_measured_contract`",
+                       "`test_alarm_delivery_order_matches_the_timer_order_probe`",
+                       "The runtime had no SRC handlers before this entry",
+                       "The VTimer handler\n    cells do not match"):
+            self.assertIn(phrase, self.doc)
+        selftest = (self.root / "src" / "rt" / "hle_thread_selftest.c").read_text(
+            encoding="utf-8")
+        for name in ("test_audio_src_matches_the_measured_contract",
+                     "test_alarm_delivery_order_matches_the_timer_order_probe"):
+            self.assertEqual(selftest.count(f"static void {name}(void)"), 1)
+            self.assertEqual(selftest.count(f"    {name}();"), 1)
+        hle = (self.root / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        for nid, name in ((0x38553111, "sceAudioSRCChReserve"), (0x5c37c0ae, "sceAudioSRCChRelease"),
+                          (0xe0727056, "sceAudioSRCOutputBlocking")):
+            self.assertIn(f'sr_hle_register(0x{nid:08x}, "{name}", h_', hle)
+
     def test_the_transcendental_comparison_is_recorded_and_vrexp2_is_pinned(self) -> None:
         for phrase in ("ten operations matched on all 63 inputs", "`vrexp2.s` matched on none",
                        "Both paths now compute `exp2(-x)`", "are unmeasured"):

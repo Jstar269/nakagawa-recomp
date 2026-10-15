@@ -155,7 +155,8 @@ proposals. Each claim covers only the exact fixture named:
   also fails with `0x80268002`, draining `sceAudioOutput2GetRestSample` to 0
   first lets the release succeed, and `sceAudioChRelease` succeeds right after
   blocking output. `h_AudioOutput2Release` in `src/rt/hle.c` implements the
-  release rule; `sceAudioSRCChReserve` has no HLE handler yet (#339).
+  release rule. The `sceAudioSRC*` handlers (`h_AudioSRCChReserve`, `h_AudioSRCChRelease` and
+  `h_AudioSRCOutputBlocking`, #339) share its slot and implement the 2026-10-15 SRC measurements.
 - **DMAC alignment and overlap cells** (issue #303; `CASE=dma-cells`):
   `NOT_RUN`. The source-owned buffer matrix covers both APIs, unaligned source
   and destination residues, paired unaligned addresses, and overlap in both
@@ -682,6 +683,16 @@ One console is one data point; see §11. Nothing here closes issue #70
     - `SetAlarm(0)`: a UID was returned and the handler had run (sequence 7) by the end of a 100000 us wait.
 
     A host0 step record sits between each pair of `SetAlarm` calls (and between `StartVTimer` and the alarm), so the nominally equal delays were not equal due times. The 17,125 us and 13,579 us gaps are of the order of that record's cost, and the 53,561 us gap is the 70,000 us difference of the two delays less about 16,400 us. The cells therefore show delivery in due-time order (the 30000 us alarm ran before the earlier-set 100000 us alarm). In the equal-delay pairs the callback that ran first was also the one set first and due first, so they do not show how two alarms with the same due time are ordered. After their handlers returned 0, `CancelAlarm` on each of the six alarm UIDs returned 0x8002019F, `StopVTimer` of the still-running timer returned 1, and `DeleteVTimer` returned 0.
+
+    Runtime comparison (`src/rt/sched.c`, `src/rt/hle.c`): the alarm cells match. Due alarms run in
+    deadline order, ties in set order (`scheduler_alarm_due_slot`), so the 30000 us alarm precedes
+    the earlier-set 100000 us one and the first-set alarm precedes the second. `SetAlarm(0)` is due at
+    the next interrupt-service point, and a one-shot whose handler returned 0 is released, so
+    `CancelAlarm` on it returns `SCHED_ERROR_UNKNOWN_ALMID` (0x8002019F).
+    `test_alarm_delivery_order_matches_the_timer_order_probe` pins these orders. The VTimer handler
+    cells do not match: `sceKernelSetVTimerHandler` is refused by name with 0x80020002, because the
+    handler family needs the timer interrupt model (issue #325), where the console returned 0 and ran the
+    handler. Nothing in the runtime changed for it.
   - *Audio SRC channel (`PSP-HLE-AUDIO-SRC-001`, issue #339).* With nothing reserved, `sceAudioSRCChRelease()` and `sceAudioSRCOutputBlocking` (one silent 1024-sample stereo block at the maximum volume) each returned 0x80260008. `sceAudioSRCChReserve(1024, 44100, 2)` returned 0, an identical second reserve returned 0x80268002, and `sceAudioSRCOutputBlocking` then returned 0x400, the sample count. `sceAudioSRCChRelease()` returned 0 and a second release returned 0x80260008. Reserve shapes, with nothing reserved:
 
     | Shape (samples, Hz, channels) | Return |
@@ -694,6 +705,13 @@ One console is one data point; see §11. Nothing here closes issue #70
     | (1024, 44100, 4) | 0x80000003 |
 
     `sceAudioOutput2Reserve(512)` then `sceAudioSRCChReserve(1024, 44100, 2)` returned 0 then 0x80268002, and the Output2 release returned 0. `sceAudioSRCChReserve` then `sceAudioOutput2Reserve(512)` returned 0 then 0x80268002, and the SRC release returned 0. The two final-cleanup cells record that nothing was left reserved (0xFFFFFFFF, no call).
+
+    The runtime had no SRC handlers before this entry. `h_AudioSRCChReserve`, `h_AudioSRCChRelease` and
+    `h_AudioSRCOutputBlocking` in `src/rt/hle.c` now return every word above, on the Output2 slot, and
+    `test_audio_src_matches_the_measured_contract` in `src/rt/hle_thread_selftest.c` pins them. A reserve
+    at 48000 Hz is accepted as measured, but the host mixer runs at 44100 Hz and no rate converter
+    exists, so those blocks are paced for their duration and not forwarded, with a message. The
+    values listed as not cited are unmeasured; the handler metadata names the choices made for them.
   - *Transcendental words (`PSP-VFPU-TRANSCENDENTAL-001`, issue #347).* The eleven scalar operations returned 693 result words over the probe's fixed inputs: 20 special encodings (signed zeros, the smallest signed denormals, plus and minus one, two and one half, the smallest signed normals, plus and minus 2^127, the infinities, and quiet and signalling NaN encodings) and 43 evenly spaced domain constants per operation. The raw words stay private. Compared with the runtime (the generated code and `sr_vfpu_interp`), ten operations matched on all 63 inputs: `vsin.s`, `vcos.s`, `vexp2.s`, `vlog2.s`, `vrsq.s`, `vrcp.s`, `vsqrt.s`, `vasin.s`, `vnrcp.s` and `vnsin.s`. `vrexp2.s` matched on none: the runtime computed the negated `exp2(x)` (`0xBF800000` for an input of zero) where the console returned `exp2(-x)` (`0x3F800000` for zero, `0x40000000` for -1.0 and `0x3EFFFFFC` for +1.0). Both paths now compute `exp2(-x)`, and the 63 measured words are pinned in `src/rt/vfpu_interp_selftest.c`. The same opcode group still decodes five more negated forms (optypes 25, 27, 29, 30 and 31) as the negation of the positive operation; no probe covers them, so they are unmeasured.
 
 - **Captured only, not acceptance-eligible (2026-10-15, `22b027f6`)**: these establish nothing about PSP behaviour.

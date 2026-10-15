@@ -816,6 +816,12 @@
     "name": "sceKernelTerminateDeleteThread",
     "status": "unreviewed"
   },
+  "0x38553111": {
+    "classification": "dedicated",
+    "handler": "h_AudioSRCChReserve",
+    "name": "sceAudioSRCChReserve",
+    "status": "partial"
+  },
   "0x39461b4d": {
     "classification": "dedicated",
     "handler": "h_RegFlushRegistry",
@@ -1250,6 +1256,12 @@
     "handler": "h_LockMutexCB",
     "name": "sceKernelLockMutexCB",
     "status": "unreviewed"
+  },
+  "0x5c37c0ae": {
+    "classification": "dedicated",
+    "handler": "h_AudioSRCChRelease",
+    "name": "sceAudioSRCChRelease",
+    "status": "partial"
   },
   "0x5cf9d852": {
     "classification": "dedicated",
@@ -2836,6 +2848,12 @@
     "handler": "h_TryReceiveMsgPipe",
     "name": "sceKernelTryReceiveMsgPipe",
     "status": "unreviewed"
+  },
+  "0xe0727056": {
+    "classification": "dedicated",
+    "handler": "h_AudioSRCOutputBlocking",
+    "name": "sceAudioSRCOutputBlocking",
+    "status": "partial"
   },
   "0xe0d68148": {
     "classification": "dedicated",

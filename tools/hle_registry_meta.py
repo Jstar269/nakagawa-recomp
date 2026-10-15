@@ -604,6 +604,22 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "return 0, the deleted-UID code, and the active, current, schedule, handler and common states are measured (PR #1003); base equals GetVTimerBase while running and reads 0 once stopped (PSP-HLE-VTIMER-002), and its value (guest time at Start) and the microsecond unit are consistent with that run, not measured exactly; NULL-pointer code unmeasured; the caller-size write rule for size 0 is the sema/evf/mbx rule applied without a VTimer cite (#325)",
     },
+    # sceAudioSRC* (issue #339). Measured on PSP-3000 firmware 6.6.1, 2026-10-15
+    # (PSP-HLE-AUDIO-SRC-001): the unreserved, reserve, second-reserve, release and
+    # Output2-exclusion returns, the sample count returned by OutputBlocking, and the
+    # accepted and refused reserve shapes listed in docs/HARDWARE_ORACLE.md.
+    "h_AudioSRCChReserve": {
+        "status": "partial",
+        "limitation": "the returns for an unreserved slot, a held slot (0x80268002, including Output2 holding it), sample counts 0 (0x80000104), 65 and 4096 (accepted), 48000 Hz (accepted) and channel counts 1 (0x80000104) and 4 (0x80000003) are measured (PSP-HLE-AUDIO-SRC-001); the upper sample-count bound reuses the Output2 range 17..4111, channel counts other than 1, 2 and 4 take the code measured for 4, and rates other than 44100 and 48000 are refused with that same code and a message, all unmeasured (#339)",
+    },
+    "h_AudioSRCChRelease": {
+        "status": "partial",
+        "limitation": "release after a blocking output (0) and release with nothing reserved (0x80260008) are measured (PSP-HLE-AUDIO-SRC-001); whether a release succeeds while samples are still queued, as the Output2 busy rule does, and releasing a reservation made through the other API (refused here as not reserved) are unmeasured (#339)",
+    },
+    "h_AudioSRCOutputBlocking": {
+        "status": "partial",
+        "limitation": "returns 0x80260008 with nothing reserved and the reserved sample count after a reserve (0x400), both measured (PSP-HLE-AUDIO-SRC-001); the volume bound reuses the Output2 bound and the NULL or unreadable buffer result follows the regular output, both unmeasured; the host mixer runs at 44100 Hz and no rate converter exists, so a 48000 Hz block is paced for its duration and not forwarded, with a message (#339)",
+    },
     # sceRtc family (issue #341). Contract sources: the public PSPSDK header
     # psprtc.h (declarations, 0-on-success/<0-on-error, pspRtcCheckValidErrors
     # component ranges) and the firmware-measured PSPAutotests tests/rtc corpus

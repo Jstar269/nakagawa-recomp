@@ -329,6 +329,9 @@ uint32_t sr_vblank_arg(void);
 #define NID_SCE_AUDIO_OUTPUT2_RESERVE 0x01562ba3u
 #define NID_SCE_AUDIO_OUTPUT2_RELEASE 0x43196845u
 #define NID_SCE_AUDIO_OUTPUT2_REST_SAMPLE 0x647cef33u
+#define NID_SCE_AUDIO_SRC_CH_RESERVE 0x38553111u
+#define NID_SCE_AUDIO_SRC_CH_RELEASE 0x5c37c0aeu
+#define NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING 0xe0727056u
 #define SCE_AUDIO_ERROR_NOT_INITIALIZED 0x80260001u
 #define SCE_AUDIO_ERROR_INVALID_CH 0x80260003u
 #define SCE_AUDIO_ERROR_INVALID_SIZE 0x80260006u
@@ -5884,9 +5887,9 @@ static void test_audio_regular_contract_safety(void) {
  * releasing Output2 while samples are still queued returns 0x80268002 and leaves Output2
  * reserved; draining sceAudioOutput2GetRestSample to 0 first lets the release succeed. The
  * fixture sets the queue depth through sr_audio_queued(), which GetRestSample and the release
- * both read. sceAudioSRCChReserve has no production handler yet (#339), so "still reserved" is
- * observed on the Output2 surface: a second Reserve is refused, and the release after draining
- * succeeds only if the refused release kept the reservation. */
+ * both read. "Still reserved" is observed on the Output2 surface: a second Reserve is refused,
+ * and the release after draining succeeds only if the refused release kept the reservation.
+ * The SRC side of the same slot is driven by the next test. */
 static void test_audio_output2_release_refuses_while_queued(void) {
     CpuState cpu;
     reset_fixture();
@@ -5905,6 +5908,124 @@ static void test_audio_output2_release_refuses_while_queued(void) {
     s_audio_queue_result = 0;
     expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RELEASE, 0u, 0u, 0u) == 0u,
            "release succeeds once Output2 is drained");
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+}
+
+/* sceAudioSRCChReserve / sceAudioSRCOutputBlocking / sceAudioSRCChRelease (issue #339).
+ *
+ * The expected words are the ones a PSP-3000 returned on 2026-10-15 (PSP-HLE-AUDIO-SRC-001,
+ * firmware 6.6.1; docs/HARDWARE_ORACLE.md indexes the run), entered through the production
+ * NIDs. SRC shares slot 8 with Output2, so the two exclusion orders go through the Output2
+ * reserve and release that the previous test drives. */
+static void test_audio_src_matches_the_measured_contract(void) {
+    enum { SRC_BUF = 0x08a00000u };   /* 1024 stereo frames: 4096 bytes inside the arena */
+    CpuState cpu;
+    reset_fixture();
+    sr_hle_init();
+    sr_hle_test_audio_reset();
+    audio_fixture_reset();
+    expect(sr_hle_test_is_registered(NID_SCE_AUDIO_SRC_CH_RESERVE) &&
+           sr_hle_test_is_registered(NID_SCE_AUDIO_SRC_CH_RELEASE) &&
+           sr_hle_test_is_registered(NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING),
+           "the three SRC NIDs have production registrations");
+
+    /* Nothing reserved. */
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u,
+           "SRC release with nothing reserved returns 0x80260008");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING, 0x8000u, SRC_BUF, 0u) ==
+               0x80260008u,
+           "SRC output with nothing reserved returns 0x80260008");
+    expect(s_audio_push_calls == 0u, "an unreserved SRC output submits nothing");
+
+    /* Reserve(1024, 44100, 2), the second reserve, one blocking output, and the releases. */
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 1024u, 44100u, 2u) == 0u,
+           "SRC reserve of 1024 samples at 44100 Hz stereo returns 0");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 1024u, 44100u, 2u) ==
+               0x80268002u,
+           "an identical second SRC reserve returns 0x80268002");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING, 0x8000u, SRC_BUF, 0u) ==
+               0x400u,
+           "SRC output returns the reserved sample count, 0x400");
+    expect(s_audio_push_calls == 1u && s_audio_push_frames == 1024,
+           "the 44100 Hz block reaches the mixer once, with all 1024 frames");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0u,
+           "SRC release after the output returns 0");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u,
+           "a second SRC release returns 0x80260008");
+
+    /* The reserve shapes, each released at once when accepted. */
+    static const struct {
+        uint32_t samples, freq, channels, want;
+    } shapes[] = {
+        {0u,    44100u, 2u, 0x80000104u},   /* sample count 0 */
+        {65u,   44100u, 2u, 0u},            /* accepted */
+        {4096u, 44100u, 2u, 0u},            /* accepted */
+        {1024u, 48000u, 2u, 0u},            /* 48000 Hz accepted */
+        {1024u, 44100u, 1u, 0x80000104u},   /* one channel */
+        {1024u, 44100u, 4u, 0x80000003u},   /* four channels */
+    };
+    for (unsigned i = 0; i < sizeof(shapes) / sizeof(shapes[0]); i++) {
+        const uint32_t got = audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, shapes[i].samples,
+                                            shapes[i].freq, shapes[i].channels);
+        expect(got == shapes[i].want, "SRC reserve shape returns the measured word");
+        if (got == 0u)
+            expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0u,
+                   "an accepted SRC shape is released at once");
+    }
+
+    /* Output2 and SRC exclude each other in both orders, and each release frees the slot. */
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RESERVE, 512u, 0u, 0u) == 0u,
+           "Output2 reserves 512 samples");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 1024u, 44100u, 2u) == 0x80268002u,
+           "SRC reserve while Output2 holds the slot returns 0x80268002");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RELEASE, 0u, 0u, 0u) == 0u,
+           "the Output2 release returns 0");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 1024u, 44100u, 2u) == 0u,
+           "SRC reserves once Output2 has released");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RESERVE, 512u, 0u, 0u) == 0x80268002u,
+           "Output2 reserve while SRC holds the slot returns 0x80268002");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0u,
+           "the SRC release returns 0");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RESERVE, 512u, 0u, 0u) == 0u,
+           "Output2 reserves once SRC has released");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RELEASE, 0u, 0u, 0u) == 0u,
+           "and releases, leaving nothing reserved");
+
+    /* Releasing through the other API is unmeasured: it is refused, and the reservation stays. */
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 1024u, 44100u, 2u) == 0u,
+           "SRC reserves for the cross-API check");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RELEASE, 0u, 0u, 0u) == 0x80260008u,
+           "an Output2 release does not free an SRC reservation");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0u,
+           "the SRC reservation survived and now releases");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RESERVE, 512u, 0u, 0u) == 0u,
+           "Output2 reserves for the other direction");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u,
+           "an SRC release does not free an Output2 reservation");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RELEASE, 0u, 0u, 0u) == 0u,
+           "the Output2 reservation survived and now releases");
+
+    /* A 48000 Hz reservation is accepted but there is no rate converter: the block is paced,
+     * counted as the reserved sample count, and not forwarded to the 44100 Hz mixer. */
+    audio_fixture_reset();
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 1024u, 48000u, 2u) == 0u,
+           "SRC reserves at 48000 Hz");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING, 0x8000u, SRC_BUF, 0u) ==
+               1024u,
+           "a 48000 Hz block returns the reserved sample count");
+    expect(s_audio_push_calls == 0u, "a 48000 Hz block is not forwarded to the 44100 Hz mixer");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING, 0x8000u,
+                          SRC_BUF + 0x08000000u, 0u) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
+           "a 48000 Hz block outside the arena is refused as the 44100 Hz path refuses it");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0u,
+           "the 48000 Hz reservation releases");
+
+    /* A rate the runtime does not model is refused in the open, not accepted. */
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 1024u, 22050u, 2u) == 0x80000003u,
+           "an unmodelled rate is refused, and nothing is reserved");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0x80260008u,
+           "the refused reserve left the slot free");
     sr_hle_test_audio_reset();
     audio_fixture_reset();
 }
@@ -13404,6 +13525,54 @@ static void test_alarm_cancel_before_firing_prevents_the_handler(void) {
     s_vtime_us = 100000u;
     scheduler_service_pending();
     expect(s_alm_calls == 1u, "a cancelled periodic alarm does not run again");
+    s_cur = -1;
+}
+
+/* PSP-HLE-TIMER-ORDER-001 (PSP-3000, firmware 6.6.1, 2026-10-15): the alarm callbacks ran in
+ * due-time order, and a handler that returned 0 ended its alarm. The probe set each pair with a
+ * host0 step record between the two calls, so its due times differed by 17,125 us (50000 us
+ * alarms) and by 16,439 us (100000 us then 30000 us alarms); this test sets the alarms the same
+ * distance apart. SetAlarm(0) had run by the end of a 100000 us wait. A tie at an equal due time
+ * is not measured: the last case pins the model's set-order tie-break as a model choice. */
+static void test_alarm_delivery_order_matches_the_timer_order_probe(void) {
+    alm_fixture();
+    s_vtime_us = 0u;
+    (void)alm_set(50000u, ALM_HANDLER_ENTRY, 0xa1u);
+    s_vtime_us = 17125u;
+    (void)alm_set(50000u, ALM_HANDLER_ENTRY, 0xb2u);
+    s_vtime_us = 400000u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 2u && s_alm_commons[0] == 0xa1u && s_alm_commons[1] == 0xb2u,
+           "two equal-delay alarms set apart run first-set first");
+
+    alm_fixture();
+    s_vtime_us = 0u;
+    (void)alm_set(100000u, ALM_HANDLER_ENTRY, 0x10u);
+    s_vtime_us = 16439u;
+    (void)alm_set(30000u, ALM_HANDLER_ENTRY, 0x20u);
+    s_vtime_us = 400000u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 2u && s_alm_commons[0] == 0x20u && s_alm_commons[1] == 0x10u,
+           "the 30000 us alarm runs before the 100000 us alarm set ahead of it");
+
+    alm_fixture();
+    s_vtime_us = 5000u;
+    uint32_t zero = alm_set(0u, ALM_HANDLER_ENTRY, 0x30u);
+    expect(s_alm_calls == 0u, "SetAlarm(0) does not run its handler inline");
+    scheduler_service_pending();
+    expect(s_alm_calls == 1u && s_alm_commons[0] == 0x30u,
+           "SetAlarm(0) runs at the next service point");
+    expect(alm_cancel(zero) == ALM_UNKNOWN_ALMID,
+           "CancelAlarm of the fired SetAlarm(0) returns UNKNOWN_ALMID");
+
+    alm_fixture();
+    s_vtime_us = 0u;
+    (void)alm_set(1000u, ALM_HANDLER_ENTRY, 0x41u);
+    (void)alm_set(1000u, ALM_HANDLER_ENTRY, 0x42u);
+    s_vtime_us = 1000u;
+    scheduler_service_pending();
+    expect(s_alm_calls == 2u && s_alm_commons[0] == 0x41u && s_alm_commons[1] == 0x42u,
+           "model choice, not measured: alarms with the same due time run in set order");
     s_cur = -1;
 }
 
@@ -28516,6 +28685,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_wait_thread_end_cb_execution();
     test_audio_regular_contract_safety();
     test_audio_output2_release_refuses_while_queued();
+    test_audio_src_matches_the_measured_contract();
     test_audio_drift_window_reports_the_pacing_value();
     test_audio_output_telemetry_counts_guest_frames();
     test_ctrl_live_input_latch_suppresses_phantom_start();
@@ -28550,6 +28720,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_alarm_one_shot_fires_once_at_its_time_with_its_argument();
     test_alarm_rearm_by_return_value();
     test_alarm_cancel_before_firing_prevents_the_handler();
+    test_alarm_delivery_order_matches_the_timer_order_probe();
     test_alarm_handler_runs_under_interrupt_context_rules();
     test_alarm_idle_scheduler_advances_to_the_deadline();
     test_dmac_semantics();
