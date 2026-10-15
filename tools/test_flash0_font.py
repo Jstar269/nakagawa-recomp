@@ -138,8 +138,15 @@ def unguarded_windows_include(source: str) -> bool:
     return False
 
 
-def synthetic_pgf(codes: tuple[int, ...]) -> bytes:
-    """A dense PGF with one 4x4 glyph per code point in ``codes``."""
+def synthetic_pgf(
+    codes: tuple[int, ...],
+    font_name: str = pgf_writer.DEFAULT_FONT_NAME,
+    nominal_em_26_6: int = pgf_writer.DEFAULT_NOMINAL_EM_26_6,
+) -> bytes:
+    """A dense PGF with one 4x4 glyph per code point in ``codes``.
+
+    The font name and nominal size land in the header the registry view reads (FONT_PLAN 4.4), so
+    each fixture file carries its own, and the selftest can tell which file the device served."""
     glyphs = [
         pgf_writer.Glyph(
             code=code,
@@ -149,7 +156,7 @@ def synthetic_pgf(codes: tuple[int, ...]) -> bytes:
         )
         for index, code in enumerate(codes)
     ]
-    return pgf_writer.build_pgf(glyphs)
+    return pgf_writer.build_pgf(glyphs, font_name=font_name, nominal_em_26_6=nominal_em_26_6)
 
 
 def cache_dir(root: Path) -> Path:
@@ -165,9 +172,9 @@ def write_fixture(root: Path) -> dict[Path, bytes]:
     """
     latin = header_string("NK_FONT_SLOT_LATIN_FILE")
     japanese = header_string("NK_FONT_SLOT_JAPANESE_FILE")
-    project_latin = synthetic_pgf(LATIN_PROJECT_CODES)
-    project_japanese = synthetic_pgf(JAPANESE_PROJECT_CODES)
-    cache_latin = synthetic_pgf(LATIN_CACHE_CODES)
+    project_latin = synthetic_pgf(LATIN_PROJECT_CODES, "Nakagawa Project Latin", 7 * 64)
+    project_japanese = synthetic_pgf(JAPANESE_PROJECT_CODES, "Nakagawa Project Japanese", 648)
+    cache_latin = synthetic_pgf(LATIN_CACHE_CODES, "Nakagawa Cache Latin", 11 * 64)
     files = {root / "project" / latin: project_latin, root / "project" / japanese: project_japanese}
     for path, data in files.items():
         path.parent.mkdir(parents=True, exist_ok=True)

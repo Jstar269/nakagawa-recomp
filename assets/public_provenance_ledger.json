@@ -1132,7 +1132,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "bfda177e6283761157dd0aa5f5d545bdf7e93c39554bcca4e4ebacfa83a662bf"
+      "sha256": "9fa0ae5a230f98d919d0873f04b9d96a00b1ed3f0ff1c4ffba8cd9109f6fdfb9"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -1396,7 +1396,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b946baa000b4d46acad2a33811e8d4dbd47be6bbdb2748ad334cc5ee0e52b8a1"
+      "sha256": "6d9a3440c0a6ef889a8f8622ab79ba5494d78e0a41ebe24f2909526d5364ad3d"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -4502,7 +4502,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f332743cf4717363ffc1cafab6cbab8d74fed1b7074f8145a33f1ba624bd06c5"
+      "sha256": "aff0d8e537a27d841d1487c18d55f33f024a0552534766a5477e871cd6951e7f"
     },
     {
       "path": "src/rt/flash0_font.h",
@@ -4514,7 +4514,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4a06ac40b7daa0dda1835b315691b6243e627104b1e3ed1a3d91fdbeac061d13"
+      "sha256": "d4c872c7987584449afff164bce8ea86c31a84a36795c19fca4ddb357c524d75"
     },
     {
       "path": "src/rt/flight_recorder.c",
@@ -5046,7 +5046,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "f104f8939428fc14ef9f17980935537026636e50f2c8b9efe538471c66192d9a"
+      "sha256": "ebc9feb13eaa1a5c98373ccd3126b276133f8f6d27a8448f814a7896acfd3144"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5084,7 +5084,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "873c77f73c5cc3712a14440fdb6251c8132a369567e4bba0f3e3a070c19d38d1"
+      "sha256": "018b0d2e61ed80cdcdc45d9b0b0a632bd184c70b63086ca725824215f444b4fd"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -8495,7 +8495,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d0e6a09da046c51ac7ea5b015d250e24c34d17cf32f82aa2c4ebfd0d25948e26"
+      "sha256": "ace764a8ddc858389fa355a2cfae41a7182acec6fd127f8ed0154a032d5b00b3"
     },
     {
       "path": "tools/test_flight_build_identity.py",

@@ -1052,6 +1052,16 @@ static uint32_t h_GetSystemParamInt(CpuState *s) {
  *    <per-user data dir>/registry/system.json; nothing is written anywhere resembling a console. A
  *    missing file means no changes. An unreadable or invalid file is reported once and ignored as a
  *    whole (the defaults are served), and the next flush moves it aside to <file>.corrupt.
+ *  - /DATA/FONT is generated, not measured as a tree: the guest's own font library asks for it (it
+ *    opens the category, reads path_name and num_fonts, then every INFO<n> category in index order;
+ *    it was seen to stop at the first INFO<n> it could not open and to leave every later font with an
+ *    empty file name, so an absent index hides the indices after it from that library). The index
+ *    count and the numeric codes of each index are measured on a PSP-3000 (2026-10-15,
+ *    flash0_font.c); the key names and types, the path_name string and the unit of the size values
+ *    are not. The library also asks for /SYSPROFILE/RESOLUTION/horizontal, which stays unserved
+ *    (unmeasured, fails closed; the library carries on without it). The subtree is read-only
+ *    (SREG_NODE_READONLY): a write is EACCES, an open does not create entries in it, it is never
+ *    persisted, and an overlay that names it is refused whole.
  *  - Project bounds, not console limits: 512 registry handles (the console served at least 257)
  *    and 512 category handles, 1024 nodes, category paths and names read up to 255 bytes, STR/BIN
  *    values up to 4096 bytes, an overlay file up to 1 MiB, and names of printable ASCII
@@ -1090,6 +1100,7 @@ static uint32_t h_GetSystemParamInt(CpuState *s) {
 #define SREG_NODE_DEFAULT 0x01u     /* part of the defaults: never persisted unchanged, never removed */
 #define SREG_NODE_PLACEHOLDER 0x02u /* default value neither measured nor modeled (neutral) */
 #define SREG_NODE_LOGGED 0x04u      /* the placeholder read was already reported */
+#define SREG_NODE_READONLY 0x08u    /* generated from the served fonts: no write, no overlay */
 
 typedef struct {
     uint16_t id;          /* nonzero while live; key handles carry it */
@@ -1563,6 +1574,15 @@ static int sreg_walk(const char *path, int create, uint8_t flags, uint32_t *err,
                     *err = SREG_ERR_NOT_FOUND;
                     return -1;
                 }
+                if (cur >= 0 && (s_sreg_nodes[cur].flags & SREG_NODE_READONLY) &&
+                    !(flags & SREG_NODE_READONLY)) {
+                    /* A read-only subtree is generated from the served fonts: an open cannot add to
+                     * it, so a missing entry (an absent font index) finds nothing. */
+                    fprintf(stderr, "sceReg: \"%s\" is not served: the font subtree is read-only and an "
+                                    "open does not create entries in it\n", path);
+                    *err = SREG_ERR_NOT_FOUND;
+                    return -1;
+                }
                 if (n >= SREG_NAME_BYTES) comp[SREG_NAME_BYTES - 1u] = '\0';
                 if (!sreg_name_ok(comp)) {
                     *err = SREG_ERR_INVAL;
@@ -1646,6 +1666,91 @@ static int sreg_find_path(const char *path) {
     return parent < 0 ? -1 : sreg_child(parent, slash + 1);
 }
 
+/* ---- /DATA/FONT: the font list the guest's own font library reads (FONT_PLAN section 4) ----
+ * A read-only subtree generated from the served fonts when the defaults are built; it is never
+ * persisted in the overlay and no write reaches it (SREG_NODE_READONLY). Which keys exist, their
+ * order, and the numeric codes of each index come from flash0_font.c, where what a PSP-3000
+ * measured is told apart from what it did not. The key names and types below are NOT measured:
+ * they follow FONT_PLAN 4.2 and the keys the guest library is seen to ask for, and an unknown
+ * key stays a named refusal. An index with no usable served font has no INFO<n> category. */
+static void flash0_font_sources(Flash0Sources *out);
+
+static int sreg_add_font_int(int cat, const char *name, uint32_t value) {
+    int node = sreg_add(cat, name, SREG_TYPE_INT, 4u, SREG_NODE_DEFAULT | SREG_NODE_READONLY);
+    if (node >= 0) sreg_put_le32(s_sreg_nodes[node].value, value);
+    return node;
+}
+
+static int sreg_add_font_str(int cat, const char *name, const char *value) {
+    size_t bytes = strlen(value) + 1u; /* a string key's size is its value and the NUL */
+    int node = sreg_add(cat, name, SREG_TYPE_STR, (uint32_t)bytes, SREG_NODE_DEFAULT | SREG_NODE_READONLY);
+    if (node >= 0) memcpy(s_sreg_nodes[node].value, value, bytes);
+    return node;
+}
+
+static int sreg_add_font_info(int prop, uint32_t index, const SrFontRegistryInfo *f) {
+    char name[SREG_NAME_BYTES];
+    int cat;
+    snprintf(name, sizeof(name), "INFO%u", index);
+    cat = sreg_add(prop, name, SREG_TYPE_DIR, 0u, SREG_NODE_DEFAULT | SREG_NODE_READONLY);
+    return cat >= 0 &&
+           sreg_add_font_int(cat, "h_size", (uint32_t)f->h_size) >= 0 &&
+           sreg_add_font_int(cat, "v_size", (uint32_t)f->v_size) >= 0 &&
+           sreg_add_font_int(cat, "h_resolution", (uint32_t)f->h_resolution) >= 0 &&
+           sreg_add_font_int(cat, "v_resolution", (uint32_t)f->v_resolution) >= 0 &&
+           sreg_add_font_int(cat, "weight", f->weight) >= 0 &&
+           sreg_add_font_int(cat, "family_code", f->family_code) >= 0 &&
+           sreg_add_font_int(cat, "style", f->style) >= 0 &&
+           sreg_add_font_int(cat, "sub_style", f->sub_style) >= 0 &&
+           sreg_add_font_int(cat, "language_code", f->language_code) >= 0 &&
+           sreg_add_font_int(cat, "region_code", f->region_code) >= 0 &&
+           sreg_add_font_int(cat, "country_code", f->country_code) >= 0 &&
+           sreg_add_font_str(cat, "font_name", f->font_name) >= 0 &&
+           sreg_add_font_str(cat, "file_name", f->file_name) >= 0 &&
+           sreg_add_font_int(cat, "extra_attributes", f->extra_attributes) >= 0 &&
+           sreg_add_font_int(cat, "expire_date", f->expire_date) >= 0;
+}
+
+static void sreg_build_font_registry(void) {
+    const uint8_t flags = SREG_NODE_DEFAULT | SREG_NODE_READONLY;
+    Flash0Sources sources;
+    uint32_t err = 0, absent_named = 0;
+    int font, prop = -1, ok;
+    flash0_font_sources(&sources);
+    font = sreg_walk("/DATA/FONT", 1, flags, &err, NULL);
+    ok = font >= 0 &&
+         sreg_add_font_str(font, "path_name", sr_flash0_font_registry_path_name()) >= 0 &&
+         sreg_add_font_int(font, "num_fonts", SR_FONT_REGISTRY_COUNT) >= 0 &&
+         (prop = sreg_add(font, "PROPERTY", SREG_TYPE_DIR, 0u, flags)) >= 0;
+    for (uint32_t index = 0; ok && index < SR_FONT_REGISTRY_COUNT; index++) {
+        SrFontRegistryInfo info;
+        SrFontRegistryStatus status = sr_flash0_font_registry_info(&sources, index, &info);
+        if (status != SR_FONT_REGISTRY_PRESENT) {
+            /* One line per slot: a missing Latin slot would otherwise name sixteen indices. */
+            NkFontSlot slot = NK_FONT_SLOT_JAPANESE;
+            if (sr_flash0_font_registry_slot(index, &slot) && !(absent_named & (1u << (unsigned)slot))) {
+                absent_named |= 1u << (unsigned)slot;
+                fprintf(stderr, "sceReg: the font indices of the %s slot (from %u) are absent from "
+                                "/DATA/FONT: %s\n", sr_flash0_font_slot_label(slot), index,
+                        sr_flash0_font_registry_status_text(status));
+            }
+            continue;
+        }
+        if (getenv("SR_FONTLOG"))
+            fprintf(stderr, "sceReg: font index %u is served from the %s source as %s%s\n", index,
+                    info.source, info.file_name,
+                    info.served_as_regular ? " (its measured bold or italic style is served as regular)" : "");
+        ok = sreg_add_font_info(prop, index, &info);
+    }
+    if (!ok) {
+        /* A partial list would tell the guest a different story than the served fonts: serve none. */
+        for (uint32_t i = 0; i < SREG_MAX_NODES; i++)
+            if (s_sreg_nodes[i].id && (s_sreg_nodes[i].flags & SREG_NODE_READONLY)) sreg_free_node((int)i);
+        fprintf(stderr, "sceReg: /DATA/FONT could not be built (no free registry nodes); the font "
+                        "list is not served\n");
+    }
+}
+
 /* Build the defaults: the measured tree, then the system-param-backed and measured values. Every
  * other value key keeps its neutral placeholder (INT 0, an empty string, or zero bytes). */
 static void sreg_build_defaults(void) {
@@ -1678,6 +1783,7 @@ static void sreg_build_defaults(void) {
         s_sreg_nodes[node].flags &= (uint8_t)~SREG_NODE_PLACEHOLDER;
         sreg_put_le32(s_sreg_nodes[node].value, s_sreg_measured_ints[i].value);
     }
+    sreg_build_font_registry();
 }
 
 /* True when a value key holds its default, so the overlay need not record it. */
@@ -1841,7 +1947,7 @@ static int sreg_overlay_apply(const NkJsonNode *doc, char *why, size_t why_len) 
             /* Only a default may be overridden, with its own type (and size, unless a string);
              * anything else is a duplicate record or a key that is a category. */
             SregNode *n = &s_sreg_nodes[node];
-            if (!(n->flags & SREG_NODE_DEFAULT) || n->type != type ||
+            if (!(n->flags & SREG_NODE_DEFAULT) || (n->flags & SREG_NODE_READONLY) || n->type != type ||
                 (type != SREG_TYPE_STR && n->size != bytes)) {
                 snprintf(why, why_len, "keys[%u] conflicts with an existing entry", (unsigned)i);
                 return 0;
@@ -1857,6 +1963,10 @@ static int sreg_overlay_apply(const NkJsonNode *doc, char *why, size_t why_len) 
             }
             n->flags &= (uint8_t)~SREG_NODE_PLACEHOLDER;
         } else {
+            if (s_sreg_nodes[cat].flags & SREG_NODE_READONLY) {
+                snprintf(why, why_len, "keys[%u] adds a key to a read-only category", (unsigned)i);
+                return 0;
+            }
             node = sreg_add(cat, name, type, bytes, 0u);
             if (node < 0) {
                 snprintf(why, why_len, "it holds more entries than the registry model's %u", SREG_MAX_NODES);
@@ -1968,7 +2078,8 @@ static void sreg_overlay_render(SregText *t) {
     for (uint32_t i = 0; i < count; i++) {
         const SregNode *n = &s_sreg_nodes[order[i]];
         static const char digits[] = "0123456789abcdef";
-        if (n->type == SREG_TYPE_DIR || sreg_is_default_value(n)) continue;
+        if (n->type == SREG_TYPE_DIR || (n->flags & SREG_NODE_READONLY) || sreg_is_default_value(n))
+            continue;
         if (!sreg_node_path(n->parent, path, sizeof(path))) {
             t->failed = 1;
             return;
@@ -2142,12 +2253,22 @@ static uint32_t sreg_lookup_entry(int slot, uint32_t name_addr, const char *call
                 caller, key, path);
         return SREG_ERR_NOT_FOUND;
     }
+    if ((s_sreg_nodes[node].flags & SREG_NODE_READONLY) && getenv("SR_FONTLOG"))
+        fprintf(stderr, "%s: key \"%s\" type %u size %u\n", caller, s_sreg_nodes[node].name,
+                s_sreg_nodes[node].type, s_sreg_nodes[node].size);
     *node_out = node;
     return 0;
 }
 
 static uint32_t sreg_refuse_read_only(const char *caller) {
     fprintf(stderr, "%s: refused: the handle was opened with mode 1 (read only)\n", caller);
+    return SREG_ERR_ACCES;
+}
+
+/* A write to the generated font subtree (SREG_NODE_READONLY) is refused whatever the handle's mode.
+ * EACCES is a project choice: the console's answer is unmeasured (the oracle never wrote). */
+static uint32_t sreg_refuse_generated(const char *caller, const char *what) {
+    fprintf(stderr, "%s: refused: \"%s\" is generated from the served fonts and is read-only\n", caller, what);
     return SREG_ERR_ACCES;
 }
 
@@ -2173,6 +2294,14 @@ static uint32_t sreg_copy_out(int node, uint32_t buf, uint32_t buf_size, const c
     if (!buf || !sr_guest_span_writable(buf, n->size)) return SREG_ERR_ILLEGAL_ADDR;
     sreg_note_placeholder_read(node, caller);
     for (uint32_t i = 0; i < n->size; i++) MEM_W8(buf + i, n->value[i]);
+    if ((n->flags & SREG_NODE_READONLY) && getenv("SR_FONTLOG")) {
+        char path[SREG_PATH_BYTES];
+        if (!sreg_node_path(n->parent, path, sizeof(path))) path[0] = '\0';
+        if (n->type == SREG_TYPE_INT && n->size == 4u)
+            fprintf(stderr, "%s: read %s/%s = %u\n", caller, path, n->name, sreg_get_le32(n->value));
+        else
+            fprintf(stderr, "%s: read %s/%s (%u bytes)\n", caller, path, n->name, n->size);
+    }
     return 0;
 }
 
@@ -2290,6 +2419,8 @@ static uint32_t h_RegOpenCategory(CpuState *s) {
         fprintf(stderr, "sceRegOpenCategory: created category \"%s\" (an open of a missing category "
                         "creates it, as measured on a PSP-3000)\n", path);
     }
+    if ((s_sreg_nodes[node].flags & SREG_NODE_READONLY) && getenv("SR_FONTLOG"))
+        fprintf(stderr, "sceRegOpenCategory: opened \"%s\" (mode %u, read-only font subtree)\n", path, mode);
     s_sreg_cat[slot].open = 1;
     s_sreg_cat[slot].mode = (uint8_t)mode;
     s_sreg_cat[slot].node = node;
@@ -2327,6 +2458,7 @@ static uint32_t h_RegRemoveCategory(CpuState *s) {
             fprintf(stderr, "sceRegRemoveCategory: unknown category \"%s\"\n", path);
         return err;
     }
+    if (s_sreg_nodes[node].flags & SREG_NODE_READONLY) return sreg_refuse_generated("sceRegRemoveCategory", path);
     if (s_sreg_nodes[node].flags & SREG_NODE_DEFAULT) {
         fprintf(stderr, "sceRegRemoveCategory: refused: \"%s\" is a modeled system category\n", path);
         return SREG_ERR_PERM;
@@ -2401,6 +2533,7 @@ static uint32_t h_RegSetKeyValue(CpuState *s) {
     rc = sreg_lookup_entry(slot, A1, "sceRegSetKeyValue", &node);
     if (rc) return rc;
     n = &s_sreg_nodes[node];
+    if (n->flags & SREG_NODE_READONLY) return sreg_refuse_generated("sceRegSetKeyValue", n->name);
     if (n->type == SREG_TYPE_DIR) return SREG_ERR_FTYPE;
     if (size == 0u) return SREG_ERR_INVAL;
     if (n->type == SREG_TYPE_INT && size != 4u) return SREG_ERR_FTYPE;
@@ -2446,6 +2579,7 @@ static uint32_t h_RegCreateKey(CpuState *s) {
     if (size == 0u || (type == SREG_TYPE_INT && size != 4u)) return SREG_ERR_INVAL;
     if (size > SREG_VALUE_MAX) return SREG_ERR_NOSPC;
     cat = s_sreg_cat[slot].node;
+    if (s_sreg_nodes[cat].flags & SREG_NODE_READONLY) return sreg_refuse_generated("sceRegCreateKey", key);
     if (sreg_child(cat, key) >= 0) return SREG_ERR_EXIST;
     if (sreg_add(cat, key, type, size, 0u) < 0) return SREG_ERR_NOSPC;
     s_sreg_dirty = 1;

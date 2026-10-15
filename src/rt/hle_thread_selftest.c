@@ -27774,6 +27774,349 @@ static void f0t_set_env(const char *name, const char *value) {
     _putenv_s(name, value ? value : "");
 }
 
+/* ---- The registry view of the font device (FONT_PLAN section 4) ----
+ * The guest's own font library reads /DATA/FONT before it opens a font. The synthetic fonts carry
+ * their own names and nominal sizes in their headers, so every value below traces to the file the
+ * device served (A prime), and the index map to the measured 18-font order. */
+static uint32_t f0t_le32(const char *bytes, size_t offset) {
+    const uint8_t *p = (const uint8_t *)bytes + offset;
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+/* A STR key holds text and its NUL, and its info says so. */
+static int f0t_reg_str_is(uint32_t cat, const char *key, const char *text) {
+    uint32_t bytes = (uint32_t)strlen(text) + 1u;
+    if (sysreg_key_info(cat, key) != 0u || MEM_R32(SYSREG_TYPE) != 3u || MEM_R32(SYSREG_SIZE) != bytes)
+        return 0;
+    return sysreg_get_by_name(cat, key, bytes) == 0u && f0t_guest_equals(SYSREG_VAL, text, bytes);
+}
+
+/* An INT key is four bytes and holds value. */
+static int f0t_reg_int_is(uint32_t cat, const char *key, uint32_t value) {
+    if (sysreg_key_info(cat, key) != 0u || MEM_R32(SYSREG_TYPE) != 2u || MEM_R32(SYSREG_SIZE) != 4u)
+        return 0;
+    return sysreg_get_by_name(cat, key, 4u) == 0u && MEM_R32(SYSREG_VAL) == value;
+}
+
+typedef struct {
+    const char *bytes;      /* the served file: its header holds the sizes and the name */
+    const char *file_name;  /* the served name under flash0:/font/ */
+    uint32_t weight, family, style, sub_style, language, region, country;
+} F0tExpectInfo;
+
+/* Every key of one INFO<n> category holds what the served header and the measured codes say. */
+static int f0t_reg_info_is(uint32_t cat, const F0tExpectInfo *e) {
+    return f0t_reg_int_is(cat, "h_size", f0t_le32(e->bytes, 0x24)) &&
+           f0t_reg_int_is(cat, "v_size", f0t_le32(e->bytes, 0x28)) &&
+           f0t_reg_int_is(cat, "h_resolution", f0t_le32(e->bytes, 0x2c)) &&
+           f0t_reg_int_is(cat, "v_resolution", f0t_le32(e->bytes, 0x30)) &&
+           f0t_reg_int_is(cat, "weight", e->weight) && f0t_reg_int_is(cat, "family_code", e->family) &&
+           f0t_reg_int_is(cat, "style", e->style) && f0t_reg_int_is(cat, "sub_style", e->sub_style) &&
+           f0t_reg_int_is(cat, "language_code", e->language) &&
+           f0t_reg_int_is(cat, "region_code", e->region) &&
+           f0t_reg_int_is(cat, "country_code", e->country) &&
+           f0t_reg_str_is(cat, "font_name", e->bytes + 0x35) &&
+           f0t_reg_str_is(cat, "file_name", e->file_name) &&
+           f0t_reg_int_is(cat, "extra_attributes", 0u) && f0t_reg_int_is(cat, "expire_date", 0u);
+}
+
+/* The names sceRegGetKeys lists for a category are exactly names[0..count), in order. */
+static int f0t_reg_keys_are(uint32_t cat, const char *const *names, uint32_t count) {
+    int ok;
+    if (sysreg_keys_num(cat) != count) return 0;
+    sysreg_fill(SYSREG_KEYS, 0x5au, count * 27u);
+    ok = sysreg_call(NID_SCE_REG_GET_KEYS, cat, SYSREG_KEYS, count, 0u, 0u) == 0u;
+    for (uint32_t i = 0; ok && i < count; i++) ok = sysreg_keys_slot_is(i, names[i]);
+    return ok;
+}
+
+/* A PGF header for the registry binder: only the fields it reads are set (PGF_SPEC section 3.1). */
+static void f0t_fill_header(uint8_t *h, size_t size, uint32_t declared_header_size, int32_t h_size,
+                            int32_t v_size, int32_t h_res, int32_t v_res, const char *name,
+                            size_t name_len) {
+    memset(h, 0, size);
+    h[2] = (uint8_t)declared_header_size;
+    h[3] = (uint8_t)(declared_header_size >> 8);
+    memcpy(h + 4, "PGF0", 4u);
+    memcpy(h + 0x24, &h_size, 4u);
+    memcpy(h + 0x28, &v_size, 4u);
+    memcpy(h + 0x2c, &h_res, 4u);
+    memcpy(h + 0x30, &v_res, 4u);
+    memcpy(h + 0x35, name, name_len < 64u ? name_len : 64u);
+}
+
+static int f0t_write_bytes(const char *path, const uint8_t *bytes, size_t size) {
+    FILE *f = fopen(path, "wb");
+    int ok = f && fwrite(bytes, 1u, size, f) == size;
+    return f && fclose(f) == 0 && ok;
+}
+
+/* The binder reads the served file's header and refuses what is not a header, by name. */
+static void test_flash0_font_registry_headers(const char *root) {
+    char dir[SR_FLASH0_PATH_MAX], file[SR_FLASH0_PATH_MAX + 64];
+    uint8_t h[412];
+    Flash0Sources sources;
+    SrFontRegistryInfo info;
+    snprintf(dir, sizeof(dir), "%s/registry-headers", root);
+    snprintf(file, sizeof(file), "%s/%s", dir, F0T_LATIN_NAME);
+    expect(nk_platform_mkdir_p(dir), "the registry header scratch directory can be created");
+    memset(&sources, 0, sizeof(sources));
+    snprintf(sources.project_dir, sizeof(sources.project_dir), "%s", dir);
+
+    expect(sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_NO_SOURCE,
+           "a Latin index with no file in either source is absent: no source");
+    expect(sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_NO_SOURCE &&
+               sr_flash0_font_registry_info(&sources, 17u, &info) == SR_FONT_REGISTRY_NO_SOURCE,
+           "the Japanese and Korean indices have no file here, so they are absent too");
+    expect(sr_flash0_font_registry_info(&sources, SR_FONT_REGISTRY_COUNT, &info) ==
+               SR_FONT_REGISTRY_BAD_INDEX,
+           "an index past the measured list does not exist");
+    {
+        /* The measured index map: Japanese 0, Latin 1 to 16, Korean 17. */
+        NkFontSlot slot = NK_FONT_SLOT_LATIN;
+        int map_ok = sr_flash0_font_registry_slot(0u, &slot) && slot == NK_FONT_SLOT_JAPANESE;
+        for (uint32_t i = 1u; i <= 16u; i++)
+            map_ok &= sr_flash0_font_registry_slot(i, &slot) && slot == NK_FONT_SLOT_LATIN;
+        map_ok &= sr_flash0_font_registry_slot(17u, &slot) && slot == NK_FONT_SLOT_KOREAN;
+        map_ok &= !sr_flash0_font_registry_slot(18u, &slot);
+        expect(map_ok, "font index 0 is the Japanese slot, 1 to 16 the Latin slot, 17 the Korean slot");
+    }
+
+    f0t_fill_header(h, sizeof(h), 392u, 448, 448, 8192, 8192, "Fixture Font", 12u);
+    expect(f0t_write_bytes(file, h, 100u) &&
+               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_TRUNCATED,
+           "a file shorter than a PGF header is refused as truncated");
+    f0t_fill_header(h, sizeof(h), 412u, 448, 448, 8192, 8192, "Fixture Font", 12u);
+    expect(f0t_write_bytes(file, h, 392u) &&
+               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_TRUNCATED,
+           "a header that declares 412 bytes in a 392-byte file is refused as truncated");
+    memset(h, 0, sizeof(h));
+    expect(f0t_write_bytes(file, h, 392u) &&
+               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_SHAPE,
+           "a file with no PGF magic is refused as not a PGF header");
+    f0t_fill_header(h, sizeof(h), 392u, 448, 448, 8192, 8192, "Fixture Font", 12u);
+    h[0] = 1u;
+    expect(f0t_write_bytes(file, h, 392u) &&
+               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_SHAPE,
+           "a nonzero header offset is refused as not a PGF header");
+    f0t_fill_header(h, sizeof(h), 400u, 448, 448, 8192, 8192, "Fixture Font", 12u);
+    expect(f0t_write_bytes(file, h, 412u) &&
+               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_SHAPE,
+           "a declared header size other than 392 or 412 is refused as not a PGF header");
+
+    f0t_fill_header(h, sizeof(h), 392u, 0, 448, 8192, 8192, "Fixture Font", 12u);
+    expect(f0t_write_bytes(file, h, 392u) &&
+               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_SIZES,
+           "a zero nominal horizontal size is refused, not defaulted");
+    f0t_fill_header(h, sizeof(h), 392u, 448, 448, 8192, -64, "Fixture Font", 12u);
+    expect(f0t_write_bytes(file, h, 392u) &&
+               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_SIZES,
+           "a negative vertical resolution is refused, not defaulted");
+    f0t_fill_header(h, sizeof(h), 392u, 448, 448, 8192, 8192, "", 0u);
+    expect(f0t_write_bytes(file, h, 392u) &&
+               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_NAME,
+           "an empty font name is refused, not defaulted");
+    f0t_fill_header(h, sizeof(h), 392u, 448, 448, 8192, 8192, "Bad\tName", 8u);
+    expect(f0t_write_bytes(file, h, 392u) &&
+               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_NAME,
+           "a font name with a control character is refused");
+    expect(info.source == NULL && info.h_size == 0 && info.font_name[0] == '\0',
+           "a refused index leaves the info zeroed");
+
+    f0t_fill_header(h, sizeof(h), 392u, 448, 456, 8192, 9216, "Fixture Font", 12u);
+    expect(f0t_write_bytes(file, h, 392u) &&
+               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_PRESENT &&
+               info.h_size == 448 && info.v_size == 456 && info.h_resolution == 8192 &&
+               info.v_resolution == 9216 && strcmp(info.font_name, "Fixture Font") == 0 &&
+               strcmp(info.source, "project") == 0 && strcmp(info.file_name, F0T_LATIN_NAME) == 0 &&
+               info.slot == NK_FONT_SLOT_LATIN,
+           "a 392-byte header yields its own sizes and name, and the served name of the Latin slot");
+    f0t_fill_header(h, sizeof(h), 412u, 448, 448, 8192, 8192, "Fixture Font", 12u);
+    expect(f0t_write_bytes(file, h, 412u) &&
+               sr_flash0_font_registry_info(&sources, 9u, &info) == SR_FONT_REGISTRY_PRESENT,
+           "a 412-byte header is accepted too");
+    {
+        char long_name[70];
+        memset(long_name, 'A', sizeof(long_name));
+        f0t_fill_header(h, sizeof(h), 392u, 448, 448, 8192, 8192, long_name, sizeof(long_name));
+        expect(f0t_write_bytes(file, h, 392u) &&
+                   sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_PRESENT &&
+                   strlen(info.font_name) == 63u,
+               "a name with no NUL in its 64-byte field is cut to 63 characters");
+    }
+    (void)remove(file);
+}
+
+/* The guest-visible /DATA/FONT subtree over the synthetic roots the device test set up. Latin and
+ * Japanese are served (the Latin file is the user's cache or the project's, by the case), Korean has
+ * no source. */
+static void test_flash0_font_registry(const char *root, const char *served_latin, const char *other_latin,
+                                      const char *japanese) {
+    static const char *const info_keys[15] = {
+        "h_size", "v_size", "h_resolution", "v_resolution", "weight", "family_code", "style",
+        "sub_style", "language_code", "region_code", "country_code", "font_name", "file_name",
+        "extra_attributes", "expire_date",
+    };
+    static const char *const font_keys[3] = { "path_name", "num_fonts", "PROPERTY" };
+    const char *info_names[18];
+    char names[18][8];
+    uint32_t r = 0, reg, rw, font, prop, info, rw_info;
+    F0tExpectInfo e;
+    char msg[160];
+    char *overlay;
+    static const char stale_prefix[] =
+        "{\"schema\":\"nakagawa.psp-system-registry-overlay\",\"schema_version\":1,";
+    for (int i = 0; i < 18; i++) {
+        snprintf(names[i], sizeof(names[i]), "INFO%d", i);
+        info_names[i] = names[i];
+    }
+    expect(f0t_le32(served_latin, 0x24) != f0t_le32(other_latin, 0x24) &&
+               strcmp(served_latin + 0x35, other_latin + 0x35) != 0,
+           "the two latin fixtures differ in nominal size and name, so the served source is visible");
+
+    sysreg_scratch_clean();
+    sysreg_env(SYSREG_SCRATCH_FILE);
+    sysreg_restart();
+    reg = sysreg_open_registry(1u, &r);
+    expect(r == 0u && reg != 0u, "the registry opens for the font subtree checks");
+
+    font = sysreg_open_category(reg, "/DATA/FONT", 1u, &r);
+    expect(r == 0u && font != 0u, "/DATA/FONT opens");
+    expect(f0t_reg_keys_are(font, font_keys, 3u),
+           "/DATA/FONT lists path_name, num_fonts and PROPERTY in that order");
+    expect(f0t_reg_str_is(font, "path_name", "flash0:/font"),
+           "path_name is the flash0 font directory, with no trailing separator");
+    expect(f0t_reg_int_is(font, "num_fonts", 18u), "num_fonts is the measured 18");
+
+    /* The index map: Latin 1 to 16 and Japanese 0 are served; Korean 17 has no source and is absent,
+     * not invented. */
+    prop = sysreg_open_category(reg, "/DATA/FONT/PROPERTY", 1u, &r);
+    expect(r == 0u && prop != 0u && f0t_reg_keys_are(prop, info_names, 17u),
+           "PROPERTY lists INFO0 to INFO16 in index order; INFO17 (no Korean source) is absent");
+
+    e = (F0tExpectInfo){ japanese, F0T_JAPANESE_NAME, 0u, 1u, 103u, 0u, 1u, 0u, 1u };
+    info = sysreg_open_category(reg, "/DATA/FONT/PROPERTY/INFO0", 1u, &r);
+    expect(r == 0u && info != 0u && f0t_reg_info_is(info, &e),
+           "INFO0 is the Japanese font: measured codes, and sizes and name from the served header");
+    expect(f0t_reg_keys_are(info, info_keys, 15u), "INFO0 lists its 15 keys in order");
+
+    /* Every Latin index reads the served Latin file's header. A bold or italic index serves the regular
+     * face and says Regular; the family alternates sans (1) and serif (2) as measured. */
+    {
+        int ok = 1, regular_ok = 1;
+        for (int i = 1; i <= 16; i++) {
+            char path[64];
+            e = (F0tExpectInfo){ served_latin, F0T_LATIN_NAME, 0u, (uint32_t)(((i - 1) % 2) + 1), 1u, 0u,
+                                 2u, 0u, 1u };
+            snprintf(path, sizeof(path), "/DATA/FONT/PROPERTY/INFO%d", i);
+            info = sysreg_open_category(reg, path, 1u, &r);
+            ok &= r == 0u && info != 0u && f0t_reg_info_is(info, &e);
+            /* Indices 3 to 8 and 11 to 16 are the measured bold and italic styles. */
+            if (((i >= 3 && i <= 8) || (i >= 11 && i <= 16)))
+                regular_ok &= f0t_reg_int_is(info, "style", 1u);
+        }
+        snprintf(msg, sizeof(msg),
+                 "INFO1 to INFO16 are the Latin indices, with sizes and name from the %s file's header",
+                 "served");
+        expect(ok, msg);
+        expect(regular_ok, "the bold and italic Latin indices report the Regular style of the face served");
+    }
+
+    /* Unknown keys stay named refusals, and an absent index finds nothing and is not created. */
+    info = sysreg_open_category(reg, "/DATA/FONT/PROPERTY/INFO9", 1u, &r);
+    expect(sysreg_key_info(info, "shadow_option") == SYSREG_E_NOT_FOUND,
+           "a key the model does not list is not found (fails closed)");
+    (void)sysreg_open_category(reg, "/DATA/FONT/PROPERTY/INFO17", 1u, &r);
+    expect(r == SYSREG_E_NOT_FOUND, "opening the absent INFO17 finds nothing");
+    (void)sysreg_open_category(reg, "/DATA/FONT/PROPERTY/INFO18", 1u, &r);
+    expect(r == SYSREG_E_NOT_FOUND, "opening INFO18, past the measured 18, finds nothing");
+    expect(sysreg_keys_num(prop) == 17u, "the refused opens created nothing under PROPERTY");
+
+    /* Read-only: every write is EACCES, whatever the handle's mode, and nothing changes. */
+    rw = sysreg_open_registry(2u, &r);
+    rw_info = sysreg_open_category(rw, "/DATA/FONT/PROPERTY/INFO9", 2u, &r);
+    expect(r == 0u && rw_info != 0u, "a mode-2 open of an INFO category succeeds (the write is what is refused)");
+    e = (F0tExpectInfo){ served_latin, F0T_LATIN_NAME, 0u, 1u, 1u, 0u, 2u, 0u, 1u };
+    expect(sysreg_set_int(rw_info, "h_size", 4242u) == SYSREG_E_ACCES,
+           "sceRegSetKeyValue on an INT key of /DATA/FONT is refused with EACCES");
+    expect(sysreg_set(rw_info, "font_name", "x", 2u) == SYSREG_E_ACCES,
+           "sceRegSetKeyValue on a STR key of /DATA/FONT is refused with EACCES");
+    expect(sysreg_create(rw_info, "added_key", 2u, 4u) == SYSREG_E_ACCES,
+           "sceRegCreateKey in /DATA/FONT is refused with EACCES");
+    expect(sysreg_remove_category(rw, "/DATA/FONT/PROPERTY/INFO9") == SYSREG_E_ACCES &&
+               sysreg_remove_category(rw, "/DATA/FONT") == SYSREG_E_ACCES,
+           "sceRegRemoveCategory on the font subtree is refused with EACCES");
+    (void)sysreg_open_category(rw, "/DATA/FONT/extra", 2u, &r);
+    expect(r == SYSREG_E_NOT_FOUND && sysreg_keys_num(font) == 3u,
+           "a mode-2 open of a missing category under /DATA/FONT is not created");
+    expect(f0t_reg_info_is(rw_info, &e) && sysreg_keys_num(rw_info) == 15u,
+           "after the refused writes INFO9 still holds the served header's values");
+
+    /* The font subtree is never persisted: a real write elsewhere flushes an overlay without it. */
+    {
+        uint32_t xmb = sysreg_open_category(rw, "/CONFIG/SYSTEM/XMB", 2u, &r);
+        expect(r == 0u && xmb != 0u && sysreg_set_int(xmb, "language", 3u) == 0u &&
+                   sysreg_call(NID_SCE_REG_FLUSH_REGISTRY, rw, 0u, 0u, 0u, 0u) == 0u,
+               "a write to a modeled setting flushes");
+        overlay = sysreg_read_file(SYSREG_SCRATCH_FILE);
+        expect(overlay && strstr(overlay, "\"language\"") != NULL && strstr(overlay, "DATA") == NULL &&
+                   strstr(overlay, "path_name") == NULL && strstr(overlay, "INFO") == NULL,
+               "the flushed overlay holds the setting and no font subtree entry");
+        free(overlay);
+    }
+
+    /* A stale or hand-edited overlay cannot override or extend the subtree: it is refused whole, and
+     * the generated values are served. */
+    {
+        static const char *const overlays[] = {
+            "\"categories\":[],\"keys\":[{\"category\":\"/DATA/FONT\",\"name\":\"path_name\","
+            "\"type\":\"str\",\"value_hex\":\"6f7468657200\"}]}",
+            "\"categories\":[],\"keys\":[{\"category\":\"/DATA/FONT\",\"name\":\"num_fonts\","
+            "\"type\":\"int\",\"value_hex\":\"01000000\"}]}",
+            "\"categories\":[],\"keys\":[{\"category\":\"/DATA/FONT/PROPERTY/INFO9\",\"name\":\"extra\","
+            "\"type\":\"int\",\"value_hex\":\"01000000\"}]}",
+            "\"categories\":[\"/DATA/FONT/PROPERTY/INFO99\"],\"keys\":[]}",
+        };
+        for (size_t i = 0; i < sizeof(overlays) / sizeof(overlays[0]); i++) {
+            char text[512];
+            uint32_t reg2, font2, prop2;
+            snprintf(text, sizeof(text), "%s%s", stale_prefix, overlays[i]);
+            expect(sysreg_write_file(SYSREG_SCRATCH_FILE, text, strlen(text)),
+                   "a stale overlay file can be written");
+            sysreg_restart();
+            reg2 = sysreg_open_registry(1u, &r);
+            font2 = sysreg_open_category(reg2, "/DATA/FONT", 1u, &r);
+            prop2 = sysreg_open_category(reg2, "/DATA/FONT/PROPERTY", 1u, &r);
+            snprintf(msg, sizeof(msg),
+                     "overlay %u that overrides or extends the font subtree is refused; the generated "
+                     "values are served",
+                     (unsigned)i);
+            expect(f0t_reg_str_is(font2, "path_name", "flash0:/font") &&
+                       f0t_reg_int_is(font2, "num_fonts", 18u) && sysreg_keys_num(prop2) == 17u,
+                   msg);
+        }
+    }
+
+    /* A slot that is pending or has no source drops its indices; the rest keep their positions. */
+    sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_JAPANESE, 0);
+    sysreg_scratch_clean();
+    sysreg_restart();
+    reg = sysreg_open_registry(1u, &r);
+    font = sysreg_open_category(reg, "/DATA/FONT", 1u, &r);
+    prop = sysreg_open_category(reg, "/DATA/FONT/PROPERTY", 1u, &r);
+    expect(f0t_reg_int_is(font, "num_fonts", 18u) && sysreg_keys_num(prop) == 16u,
+           "with the Japanese slot unserved, num_fonts stays 18 and INFO0 alone is absent");
+    (void)sysreg_open_category(reg, "/DATA/FONT/PROPERTY/INFO0", 1u, &r);
+    expect(r == SYSREG_E_NOT_FOUND, "the unserved Japanese index finds nothing");
+    sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_JAPANESE, 1);
+
+    test_flash0_font_registry_headers(root);
+
+    sysreg_env(NULL);
+    sysreg_restart();
+    sysreg_scratch_clean();
+}
+
 static void test_flash0_font_device(void) {
     const char *root = getenv("SR_FLASH0_TEST_ROOT");
     expect(root != NULL && root[0] != '\0', "the flash0 font test receives its synthetic root");
@@ -27820,6 +28163,18 @@ static void test_flash0_font_device(void) {
     size_t served_latin_size = user_refused ? project_latin_size : user_size;
 
     sr_hle_init();
+    /* The production slot table is measured (the 2026-10-15 font list fixed the slot order), so the
+     * served slots open before any test seam runs. */
+    {
+        uint32_t production_fd = f0t_open("flash0:/font/" F0T_LATIN_NAME, 0x0001u);
+        int latin_served = production_fd >= 3u && sr_hle_test_fd_kind(production_fd) == F0T_FD_KIND_FILE;
+        expect(latin_served, "the production slot table serves the latin slot without the test seam");
+        if (latin_served) (void)f0t_close(production_fd);
+        production_fd = f0t_open("flash0:/font/" F0T_JAPANESE_NAME, 0x0001u);
+        int japanese_served = production_fd >= 3u && sr_hle_test_fd_kind(production_fd) == F0T_FD_KIND_FILE;
+        expect(japanese_served, "the production slot table serves the japanese slot without the test seam");
+        if (japanese_served) (void)f0t_close(production_fd);
+    }
     sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_LATIN, 1);
     sr_flash0_font_selftest_set_measured(NK_FONT_SLOT_JAPANESE, 1);
     /* Korean stays pending: a pending slot is not listed and nothing under it can open. */
@@ -27997,6 +28352,11 @@ static void test_flash0_font_device(void) {
         expect(sr_hle_test_io_dopen(&cpu) == F0T_ERR_NOT_FOUND,
                "a listing outside /font/ is refused");
     }
+
+    /* The registry view: the guest's own font library reads the font list from /DATA/FONT. Latin and
+     * Japanese are served here and Korean has no source. */
+    test_flash0_font_registry(root, served_latin_bytes,
+                              user_refused ? user_bytes : project_latin_bytes, project_japanese_bytes);
 
     /* SR_USER_DATA_ROOT names the per-user data directory the launcher resolved; the device reads the
      * user-imported cache from there, not from NK_PATH_DATA. Here the process's per-user directory is
