@@ -33,13 +33,11 @@ policy into a public-safe PGF fixture:
   shaping; authentic firmware-font provisioning (route #300, which remains
   preferable when fidelity to the PSP system fonts is required); claiming any
   pixel identity with a firmware font (non-goal of issue #313).
-- **CJK.** Issue #313 permits a CJK source only when legally and technically
-  suitable. No CJK source is pinned by this change: the OFL CJK candidates are
-  multi-megabyte payloads whose admission needs the qualified review that
-  `FONT_ORIGINS.md` route (2) requires before any such fixture enters the
-  tree. The converter itself is codepoint-driven and has no Latin-only
-  assumption, so a future CJK pin needs a pin file and a coverage range, not a
-  converter change.
+- **Japanese project font.** The project pins M PLUS 1p Regular under SIL OFL
+  1.1 and converts the Japanese repertoire described below. The converter is
+  codepoint-driven; any additional font pin still needs its own pin file and
+  coverage set. The output is not claimed to be pixel-identical to a firmware
+  font (`FONT_ORIGINS.md` records the source and conversion).
 
 ## 2. Input contract
 
@@ -95,7 +93,7 @@ scaling.
 | `bad-codepoint-list` | A `--codepoints` file is unreadable, not ASCII, holds a line that is not a code point, or leaves 16 bits. |
 | `codepoints-unsorted` | A `--codepoints` file repeats a code or is not in ascending order. |
 | `empty-codepoint-set` | A `--codepoints` file lists no code point. |
-| `jis-x-0208-codec-unavailable` / `jis-x-0208-mapping-invalid` | The built-in EUC-JP codec or its pinned JIS mapping is unavailable or has changed. |
+| `japanese-codec-unavailable` / `japanese-mapping-invalid` | A built-in ASCII/EUC-JP codec or its pinned Japanese mapping is unavailable or has changed. |
 | `ppem-out-of-range` | Size outside 1..128. |
 | `glyph-too-large` | A raster exceeds the writer's 7-bit record fields (127 px). |
 | `composite-too-deep` / `composite-too-many-components` | Composite expansion bounds. |
@@ -113,12 +111,15 @@ and leaf name go into the manifest. The writer then emits a sparse character map
 over the span from the smallest to the largest code, and codes outside the set
 are misses.
 
-`--jis-x-0208-japanese` uses Python's built-in EUC-JP mapping for assigned
-cells in rows 1..8 and 16..47: the 524 non-kanji code points in the former
-rows and all 2,965 level-1 kanji in the latter. The sorted Unicode set has a
-fixed SHA-256 in the converter; an unavailable or changed built-in mapping is
-refused by name. It is a sparse map just like `--codepoints`, and its built-in
-mapping id and digest are recorded in the manifest.
+`--jis-x-0208-japanese` uses Python's built-in codecs for JIS X 0201 Roman
+U+0020-U+007E (95 code points) and half-width katakana U+FF61-U+FF9F (63),
+plus the EUC-JP mapping for assigned JIS X 0208 cells in rows 1..8 and 16..47:
+524 non-kanji code points and all 2,965 level-1 kanji, respectively. The
+sorted set contains 3,647 unique Unicode points and has the pinned SHA-256
+`abc5302681a3c700179f29ac22a7c8082ed087a07b4cf8c3de4de5f73e7e0889` in the
+converter. An unavailable or changed built-in mapping is refused by name. It
+is a sparse map just like `--codepoints`, and its built-in mapping id and
+digest are recorded in the manifest.
 
 A refusal means no byte is written: the CLI builds the complete image and
 manifest in memory first and writes only after every stage succeeds.

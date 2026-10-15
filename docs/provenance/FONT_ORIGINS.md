@@ -213,11 +213,13 @@ space without changing any licence wording. `PIN.json` records both the
 downloaded and local licence digests. The full licence text is kept beside the
 TTF and copied beside each generated PGF.
 
-The built-in `--jis-x-0208-japanese` repertoire comes from Python's standard
-EUC-JP mapping: assigned cells in rows 1-8 (524 non-kanji code points) and
-rows 16-47 (2,965 level-1 kanji), 3,489 unique Unicode points total. Its
+The built-in `--jis-x-0208-japanese` repertoire combines Python's standard
+ASCII mapping for JIS X 0201 Roman U+0020-U+007E (95 code points), EUC-JP
+mapping for JIS X 0201 half-width katakana U+FF61-U+FF9F (63), and assigned
+JIS X 0208 cells in rows 1-8 (524 non-kanji code points) and rows 16-47
+(2,965 level-1 kanji). The set contains 3,647 unique Unicode points; its
 canonical point-list SHA-256 is
-`2522133dd7cc48c4af7d4f415780143c18ff04e1c88038bf3d1d7bdca54c45ae`. The
+`abc5302681a3c700179f29ac22a7c8082ed087a07b4cf8c3de4de5f73e7e0889`. The
 pinned input covers every code point in this set.
 
 ### 6.2 Conversion and runtime naming
@@ -227,14 +229,20 @@ at 12 ppem into a sparse PGF named `nkjpn.pgf`. The generated PGF name and
 style are `Nakagawa Open Japanese` and `Regular`; the source family name is
 not copied into PGF naming fields. The conversion manifest records the input,
 point-set and output digests plus the licence text. Generated files live under
-the build output and are not committed.
+the build output and are not committed. Two independent Make builds produced
+identical outputs:
+
+| Output | Size | SHA-256 |
+| --- | ---: | --- |
+| `nkjpn.pgf` | 379,630 bytes | `49a3b3b4160f82410226edbe6061d770c484d0c9cea27a04b68ba9902099fab3` |
+| `nkjpn.json` | 6,841 bytes | `aa7ccb47da6ddf02ab54f164251ef021df9029cc424d4bcf47b9b05a93ba8123` |
 
 The measurement-backed flash0 table maps index 0 to the Japanese slot, and the
 device and registry resolve the user's imported font before the project file.
 The native HLE selftest covers index 0 with no Japanese import, project-file
 fallback, and registry header fields. The built PGF is also validated by the
-public reader and its Japanese sparse subset is round-tripped through the
-native reader. No retail-title or hardware run was part of this source task.
+public reader; a sparse round-trip fixture includes ASCII `A` and half-width
+katakana U+FF76. No retail-title or hardware run was part of this source task.
 
 RULE (licence-text hygiene): the OFL text stays alongside the generated build
 payload. It is not added under `THIRD_PARTY_LICENSES/` unless a corresponding

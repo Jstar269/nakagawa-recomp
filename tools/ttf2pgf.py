@@ -70,7 +70,7 @@ DEFAULT_PPEM = 12
 DEFAULT_CODES = "0x20-0x7E"
 DEFAULT_FONT_NAME = "Nakagawa Open Latin"
 DEFAULT_FONT_TYPE = "Regular"
-JIS_X_0208_JAPANESE_SHA256 = "2522133dd7cc48c4af7d4f415780143c18ff04e1c88038bf3d1d7bdca54c45ae"
+JAPANESE_CODE_POINTS_SHA256 = "abc5302681a3c700179f29ac22a7c8082ed087a07b4cf8c3de4de5f73e7e0889"
 
 SCALER_TRUE = 0x00010000
 SCALER_APPLE_TRUE = 0x74727565  # 'true'
@@ -1134,41 +1134,85 @@ def _jis_x_0208_rows(rows: range) -> tuple[int, ...]:
             except UnicodeDecodeError:
                 continue
             except LookupError as exc:
-                raise _refuse("jis-x-0208-codec-unavailable", "Python's euc_jp codec is unavailable") from exc
+                raise _refuse("japanese-codec-unavailable", "Python's euc_jp codec is unavailable") from exc
             if len(character) != 1:
                 raise _refuse(
-                    "jis-x-0208-mapping-invalid",
+                    "japanese-mapping-invalid",
                     f"row {row:02d}, cell {cell:02d} maps to {len(character)} Unicode characters",
                 )
             codes.append(ord(character))
     return tuple(codes)
 
 
-def jis_x_0208_japanese_code_points() -> CodePointSet:
-    """Return JIS X 0208 symbols/kana and level-1 kanji as one pinned sparse set.
+def _jis_x_0201_roman_codes() -> tuple[int, ...]:
+    """Decode the JIS X 0201 Roman repertoire from the standard ASCII codec."""
+    try:
+        return tuple(ord(character) for character in bytes(range(0x20, 0x7F)).decode("ascii"))
+    except LookupError as exc:  # pragma: no cover - ASCII is a required Python codec
+        raise _refuse("japanese-codec-unavailable", "Python's ascii codec is unavailable") from exc
 
-    Rows 1..8 contain the non-kanji repertoire (524 assigned code points); rows
-    16..47 contain all 2,965 level-1 kanji. The standard mapping is supplied
-    by Python's built-in EUC-JP codec, not a downloaded vendor table. A canonical
-    digest makes any mapping drift a named refusal.
+
+def _jis_x_0201_half_width_katakana_codes() -> tuple[int, ...]:
+    """Decode JIS X 0201 half-width katakana through the standard EUC-JP codec."""
+    codes: list[int] = []
+    for value in range(0xA1, 0xE0):
+        try:
+            character = bytes((0x8E, value)).decode("euc_jp")
+        except UnicodeDecodeError as exc:
+            raise _refuse(
+                "japanese-mapping-invalid",
+                f"JIS X 0201 half-width byte 0x{value:02X} is unassigned in Python's euc_jp codec",
+            ) from exc
+        except LookupError as exc:
+            raise _refuse("japanese-codec-unavailable", "Python's euc_jp codec is unavailable") from exc
+        if len(character) != 1:
+            raise _refuse(
+                "japanese-mapping-invalid",
+                f"JIS X 0201 half-width byte 0x{value:02X} maps to {len(character)} Unicode characters",
+            )
+        codes.append(ord(character))
+    return tuple(codes)
+
+
+def jis_x_0208_japanese_code_points() -> CodePointSet:
+    """Return the Japanese project-font repertoire as one pinned sparse set.
+
+    This combines JIS X 0201 Roman (95 ASCII code points) and half-width
+    katakana (63 code points) with JIS X 0208 rows 1..8 (524 assigned
+    non-kanji code points) and rows 16..47 (2,965 level-1 kanji). Python's
+    built-in ASCII and EUC-JP codecs supply the standard mappings; no vendor
+    table is downloaded. A canonical digest makes mapping drift a named refusal.
     """
     nonkanji = set(_jis_x_0208_rows(range(1, 9)))
     level1 = set(_jis_x_0208_rows(range(16, 48)))
-    if len(nonkanji) != 524 or len(level1) != 2965:
+    roman = set(_jis_x_0201_roman_codes())
+    half_width_katakana = set(_jis_x_0201_half_width_katakana_codes())
+    if (
+        len(nonkanji) != 524
+        or len(level1) != 2965
+        or roman != set(range(0x20, 0x7F))
+        or half_width_katakana != set(range(0xFF61, 0xFFA0))
+    ):
         raise _refuse(
-            "jis-x-0208-mapping-invalid",
-            f"the built-in table produced {len(nonkanji)} non-kanji and {len(level1)} level-1 code points; "
-            "expected 524 and 2965",
+            "japanese-mapping-invalid",
+            f"the built-in tables produced {len(nonkanji)} JIS X 0208 non-kanji, "
+            f"{len(level1)} level-1 kanji, {len(roman)} JIS X 0201 Roman, and "
+            f"{len(half_width_katakana)} half-width katakana code points; expected 524, 2965, 95, and 63",
         )
-    codes = tuple(sorted(nonkanji | level1))
+    codes = tuple(sorted(nonkanji | level1 | roman | half_width_katakana))
+    if len(codes) != 3647:
+        raise _refuse(
+            "japanese-mapping-invalid",
+            f"the built-in tables produced {len(codes)} unique code points; expected 3647",
+        )
     canonical = "".join(f"U+{code:04X}\n" for code in codes).encode("ascii")
     digest = hashlib.sha256(canonical).hexdigest()
-    if digest != JIS_X_0208_JAPANESE_SHA256:
+    if digest != JAPANESE_CODE_POINTS_SHA256:
         raise _refuse(
-            "jis-x-0208-mapping-invalid",
-            f"the built-in code-point mapping SHA-256 is {digest}, expected {JIS_X_0208_JAPANESE_SHA256}",
+            "japanese-mapping-invalid",
+            f"the built-in code-point mapping SHA-256 is {digest}, expected {JAPANESE_CODE_POINTS_SHA256}",
         )
-    return CodePointSet(codes=codes, sha256=digest, source="builtin:jis-x-0208-japanese")
+    return CodePointSet(codes=codes, sha256=digest, source="builtin:jis-x-0208-jis-x-0201-japanese")
 
 
 @dataclass(frozen=True)
@@ -1601,7 +1645,7 @@ def _main(argv: list[str]) -> int:
     source.add_argument(
         "--jis-x-0208-japanese",
         action="store_true",
-        help="use JIS X 0208 non-kanji rows 1-8 and all level-1 kanji in rows 16-47 (sparse output)",
+        help="use JIS X 0201 Roman/half-width katakana and JIS X 0208 rows 1-8/16-47 (sparse output)",
     )
     size = parser.add_mutually_exclusive_group()
     size.add_argument("--ppem", type=int, help=f"pixel size of the em (default {DEFAULT_PPEM})")

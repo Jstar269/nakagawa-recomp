@@ -728,15 +728,18 @@ class CodePointSetTests(unittest.TestCase):
 
 
 class JapaneseCodePointCoverageTests(unittest.TestCase):
-    """The built-in JIS repertoire is complete and the selected pin covers every point."""
+    """The built-in Japanese repertoire is complete and the selected pin covers every point."""
 
     def test_builtin_jis_set_pins_kana_symbols_and_level1_kanji(self) -> None:
         points = ttf2pgf.jis_x_0208_japanese_code_points()
-        self.assertEqual(len(points.codes), 3489)
+        self.assertEqual(len(points.codes), 3647)
         self.assertEqual(points.codes, tuple(sorted(set(points.codes))))
-        self.assertEqual(points.source, "builtin:jis-x-0208-japanese")
-        self.assertEqual(points.sha256, ttf2pgf.JIS_X_0208_JAPANESE_SHA256)
+        self.assertEqual(points.source, "builtin:jis-x-0208-jis-x-0201-japanese")
+        self.assertEqual(points.sha256, "abc5302681a3c700179f29ac22a7c8082ed087a07b4cf8c3de4de5f73e7e0889")
+        self.assertEqual(points.sha256, ttf2pgf.JAPANESE_CODE_POINTS_SHA256)
         self.assertTrue({0x3000, 0x3042, 0x30A2, 0x03B1, 0x2212, 0x4E00}.issubset(points.codes))
+        self.assertTrue(set(range(0x20, 0x7F)).issubset(points.codes), "JIS X 0201 Roman coverage")
+        self.assertTrue(set(range(0xFF61, 0xFFA0)).issubset(points.codes), "half-width katakana coverage")
         self.assertEqual(len(set(ttf2pgf._jis_x_0208_rows(range(1, 9)))), 524)
         self.assertEqual(len(set(ttf2pgf._jis_x_0208_rows(range(16, 48)))), 2965)
 
@@ -919,7 +922,7 @@ class ReaderRoundTripTests(unittest.TestCase):
 
     def test_japanese_sparse_subset_round_trips_through_native_reader(self) -> None:
         data = JAPANESE_FONT.read_bytes()
-        codes = (0x3042, 0x30A2, 0x4E00, 0x9FA0)
+        codes = (0x41, 0x3042, 0x30A2, 0x4E00, 0x9FA0, 0xFF76)
         code_points = ttf2pgf.CodePointSet(
             codes=codes,
             sha256=hashlib.sha256(b"japanese sparse reader fixture").hexdigest(),
@@ -935,7 +938,7 @@ class ReaderRoundTripTests(unittest.TestCase):
             pin=load_pin(JAPANESE_PIN, data),
         )
         self.assertEqual(struct.unpack_from("<I", conversion.image, 0x14)[0], len(codes))
-        probes = [*codes, 0x3043]
+        probes = [*codes, 0x3043, 0xFF77]
         lines = self._read_back(conversion.image, probes)
         self.assertEqual(lines[0], "open ok")
         records = lines[2:]
@@ -943,7 +946,7 @@ class ReaderRoundTripTests(unittest.TestCase):
         for index, code in enumerate(probes):
             char_line = records[index * 2].split(" ")
             draw_line = records[index * 2 + 1].split(" ")
-            if code == 0x3043:
+            if code in (0x3043, 0xFF77):
                 self.assertEqual(char_line[2], "0")
                 self.assertEqual(draw_line[:3], ["draw", str(code), "none"])
                 continue

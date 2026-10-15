@@ -34,8 +34,8 @@ M PLUS 1p is the project Japanese build input. Its pin uses the immutable
 Google Fonts commit recorded in `mplus1p/PIN.json`; the adjacent `OFL.txt`
 contains the complete licence text from that commit. The pin records the
 downloaded licence digest and the local digest after its one trailing space
-was removed. The converter's built-in JIS X 0208
-set covers rows 1-8 (524 non-kanji characters) and rows 16-47 (all 2,965
-level-1 kanji), for 3,489 Unicode code points. Sawarabi Gothic was evaluated
-first but misses 80 code points in rows 1-8, so it does not meet the required
-symbol coverage.
+was removed. The converter's built-in Japanese set covers JIS X 0201 Roman
+U+0020-U+007E (95 points), half-width katakana U+FF61-U+FF9F (63), and JIS X
+0208 rows 1-8 (524 non-kanji points) plus rows 16-47 (all 2,965 level-1
+kanji), for 3,647 points total. Sawarabi Gothic was evaluated first but misses
+80 points in rows 1-8, so it does not meet the required symbol coverage.
