@@ -3607,10 +3607,13 @@ static void run_fpu_vector(int emulated, uint32_t boot_fcr31) {
    cannot pass as a measured word.
 
    The expected words are the project's model, not console behaviour. They
-   follow src/rt/vfpu_interp.c (VFPU3 sub-ops 5, 6 and 7, PPSSPP's Int_Vscmp,
-   Int_Vsge and Int_Vslt): vscmp.s yields -1.0, 0.0 or +1.0, vsge.s and vslt.s
-   yield 1.0 or 0.0, and a NaN operand compares false and yields 0.0. The
-   console's NaN results are UNMEASURED. Every record carries result = the
+   follow src/rt/vfpu_interp.c (VFPU3 sub-ops 5, 6 and 7): vscmp.s yields -1.0,
+   0.0 or +1.0, vsge.s and vslt.s yield 1.0 or 0.0, and a NaN operand makes
+   vsge.s and vslt.s yield 0.0. A PSP-3000 measured all 45 cells on 2026-10-15
+   from build e45e667b (PSP-VFPU-CMP-001, docs/HARDWARE_ORACLE.md): that build's
+   model wrote 0.0 for the five vscmp NaN cells, the console orders a NaN by sign
+   and magnitude instead, and the model below now carries the measured words.
+   Every record carries result = the
    observed word, out0 = the model word, and out1/out2 = the operands; whether
    the console agrees with the model is result against out0. The status does
    not judge that, as in the fpu-vector family: the campaign runner accepts a
@@ -3643,11 +3646,11 @@ static const struct vfpu_compare_pair s_vfpu_compare_pairs[VFPU_COMPARE_PAIRS] =
     {"gt", 0x40200000u, 0x3fc00000u, {VFPU_COMPARE_ONE, VFPU_COMPARE_ONE, 0u}},
     {"zero-pos-neg", 0x00000000u, 0x80000000u, {0u, VFPU_COMPARE_ONE, 0u}},
     {"zero-neg-pos", 0x80000000u, 0x00000000u, {0u, VFPU_COMPARE_ONE, 0u}},
-    {"nan-left-quiet", 0x7fc00000u, 0x3fc00000u, {0u, 0u, 0u}},
-    {"nan-right-quiet", 0x3fc00000u, 0x7fc00000u, {0u, 0u, 0u}},
-    {"nan-left-signal", 0x7f800001u, 0x3fc00000u, {0u, 0u, 0u}},
-    {"nan-right-signal", 0x3fc00000u, 0x7f800001u, {0u, 0u, 0u}},
-    {"nan-left-negative", 0xffc00000u, 0x3fc00000u, {0u, 0u, 0u}},
+    {"nan-left-quiet", 0x7fc00000u, 0x3fc00000u, {VFPU_COMPARE_ONE, 0u, 0u}},
+    {"nan-right-quiet", 0x3fc00000u, 0x7fc00000u, {VFPU_COMPARE_MINUS_ONE, 0u, 0u}},
+    {"nan-left-signal", 0x7f800001u, 0x3fc00000u, {VFPU_COMPARE_ONE, 0u, 0u}},
+    {"nan-right-signal", 0x3fc00000u, 0x7f800001u, {VFPU_COMPARE_MINUS_ONE, 0u, 0u}},
+    {"nan-left-negative", 0xffc00000u, 0x3fc00000u, {VFPU_COMPARE_MINUS_ONE, 0u, 0u}},
     {"inf-pos-neg", 0x7f800000u, 0xff800000u, {VFPU_COMPARE_ONE, VFPU_COMPARE_ONE, 0u}},
     {"inf-neg-pos", 0xff800000u, 0x7f800000u, {VFPU_COMPARE_MINUS_ONE, 0u, VFPU_COMPARE_ONE}},
     {"inf-pos-pos", 0x7f800000u, 0x7f800000u, {0u, VFPU_COMPARE_ONE, 0u}},
@@ -6288,8 +6291,9 @@ static void run_refer_status_size(int emulated) {
 
    The expected words are the project's model (src/rt/guest_interp.c: sc stores
    and reports 1 only while the link is set, leaves the link as found, and does
-   not compare its address with ll's). That follows the MIPS32 operation text and
-   is UNMEASURED on the console. result is the sc result of the last sc, out0 the
+   not compare its address with ll's). That follows the MIPS32 operation text; a
+   PSP-3000 measured all three cells on 2026-10-15 (PSP-LLSC-001,
+   docs/HARDWARE_ORACLE.md) and agrees. result is the sc result of the last sc, out0 the
    word ll loaded, out1 the result of the first sc, out2 and out3 the words at A
    and B after the cell, and out4 and out5 the model words for A and B; the model
    reports 1 for every sc. Whether the console agrees with the model is read from
@@ -6449,9 +6453,11 @@ static void run_llsc_link(int emulated) {
 /* COP1 condition codes (main thread only, no threads created). MIPS IV gives c.cond.s and
    bc1f/bc1t a 3-bit condition code (instruction bits 10..8 and 20..18) selecting FCC0..FCC7
    (FCR31 bit 23, then bits 25..31); MIPS II has one flag, FCC0, and the field reserved.
-   Which of these the PSP's FPU implements is UNMEASURED, and the project's tools decide how
-   to translate a nonzero condition code from it (issue #934 review). Every encoding below is
-   emitted as a .word so the assembler cannot rewrite it.
+   The project's tools decide how to translate a nonzero condition code from what the PSP's
+   FPU implements (issue #934 review). A PSP-3000 measured it on 2026-10-15 (PSP-FPU-CC-001,
+   docs/HARDWARE_ORACLE.md): only FCC0 exists, bits 25..31 are not stored, and every
+   condition code writes and tests FCC0. Every encoding below is emitted as a .word so the
+   assembler cannot rewrite it.
 
    FCR31 is only ever written with condition bits (no trap enable, RM=RN), and is cleared
    before every cell and before exit. Each cell is emitted as soon as it ran, after a
