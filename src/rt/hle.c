@@ -7658,6 +7658,7 @@ static int ms0_try_legacy_flat_import(const char *guest_path, const char *host_p
 static PGF *s_pgf_slot[NK_FONT_SLOT_COUNT];
 /* Where each slot's font came from: "user-imported", "project", "unreadable" or "none". */
 static const char *s_pgf_slot_source[NK_FONT_SLOT_COUNT];
+static Flash0Sources s_pgf_sources;
 /* Defined with the flash0: device roots below. */
 static void flash0_copy_root(char *dst, size_t capacity, const char *src);
 static void flash0_user_data_root(char *dst, size_t capacity);
@@ -7708,6 +7709,7 @@ static void font_load(void) {
     }
     free(configured);
     Flash0Sources sources;
+    memset(&sources, 0, sizeof(sources));
     flash0_user_data_root(sources.user_data_dir, sizeof(sources.user_data_dir));
     sources.project_dir[0] = '\0';
     char *root_utf8 = NULL;
@@ -7715,16 +7717,16 @@ static void font_load(void) {
         flash0_copy_root(sources.project_dir, sizeof(sources.project_dir), root_utf8);
     free(root_utf8);
     free(root);
+    s_pgf_sources = sources;
     /* Each slot (nk_font_slots.h) resolves the way the flash0: device serves it: the
      * user-imported cache under the per-user data directory first, then the project font
-     * directory. The files are the slot files; the legacy ltn0/jpn0/ltn8/kr0 names were in
-     * neither source after #811, so every font went missing once a user imported one. No
-     * cross-slot substitution: an absent slot stays absent and is named here. */
+     * directory. Legacy aliases absent from both sources made every font go missing after an
+     * import. There is no cross-slot substitution: an absent slot stays absent and is named here. */
     for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
         char path[SR_FLASH0_PATH_MAX + 64];
         const char *from = "none";
         PGF *pgf = NULL;
-        if (sr_flash0_font_resolve_path(&sources, (NkFontSlot)slot, path, sizeof(path), &from)) {
+        if (sr_flash0_font_resolve_path(&s_pgf_sources, (NkFontSlot)slot, path, sizeof(path), &from)) {
             pgf = font_open_host_path(path, sr_flash0_font_slot_label((NkFontSlot)slot), from);
             if (!pgf) from = "unreadable";
         } else {
@@ -7750,6 +7752,7 @@ void sr_font_test_reset(void) {
         s_pgf_slot[slot] = NULL;
         s_pgf_slot_source[slot] = NULL;
     }
+    memset(&s_pgf_sources, 0, sizeof(s_pgf_sources));
     atomic_store_explicit(&s_pgf_state, 0, memory_order_release);
 }
 const char *sr_font_test_slot_source(int slot) {
@@ -7867,20 +7870,7 @@ static uint32_t ge_call_guest_rv(CpuState *s, uint32_t fn, uint32_t a0, uint32_t
 #define SR_FONT_ERROR_TOO_MANY     0x80460009u
 #define SR_FONT_ERROR_INVALID_DATA 0x8046000au
 
-typedef struct {
-    const char *fileName;
-    const char *fontName;
-    uint16_t family, style, styleSub, language, region, country;
-    float h, v, hRes, vRes;
-} SrFontSpec;
-/* The HST locale selector requests internal registry indices 0 (jpn0), 9 (ltn8), and
- * 17 (kr0). Keep the registry explicit so an absent indexed asset is an honest error rather
- * than silently returning ltn0 metrics with the wrong size/style. */
-static const SrFontSpec s_font_specs[18] = {
-    [0]  = {"nkjpn.pgf", "Nakagawa Open Japanese", 0, 2, 0, 1, 0, 1, 10.125f, 10.125f, 128.f, 128.f},
-    [9]  = {"nkltn.pgf", "Nakagawa Open Latin", 0, 0, 0, 2, 0, 1, 7.f, 7.f, 128.f, 128.f},
-    [17] = {"nkkr.pgf", "Nakagawa Open Korean", 0, 0, 0, 3, 0, 3, 10.125f, 10.125f, 128.f, 128.f},
-};
+/* sceFont uses the same measured index map and served-header values as /DATA/FONT. */
 
 typedef struct {
     int used;
@@ -7901,7 +7891,8 @@ typedef struct {
     const PGF *pgf;       /* PGF backend this font resolves against */
     PGF *ownedPgf;        /* non-NULL for sceFontOpenUserMemory */
     int index;
-    const SrFontSpec *spec;
+    int has_registry_info;
+    SrFontRegistryInfo registry_info;
 } SrFont;
 static SrFontLib s_fontlibs[32];
 static SrFont s_fonts[64];
@@ -7974,34 +7965,59 @@ static uint32_t font_lib_alloc_size(int numFonts) {
     return size <= 0x7fffffffull ? (uint32_t)size : 0;
 }
 
-static const PGF *font_pgf_for_index(uint32_t index) {
+static SrFontRegistryStatus font_registry_info_for_index(uint32_t index, SrFontRegistryInfo *info) {
     font_load();
-    switch (index) {
-    case 0:  return s_pgf_slot[NK_FONT_SLOT_JAPANESE];
-    case 9:  return s_pgf_slot[NK_FONT_SLOT_LATIN];
-    case 17: return s_pgf_slot[NK_FONT_SLOT_KOREAN];
-    default: return NULL;
-    }
+    return sr_flash0_font_registry_info(&s_pgf_sources, index, info);
 }
 
-static void font_overlay_style(uint32_t fi, const SrFontSpec *spec, int userMemory) {
+static const PGF *font_pgf_for_index(uint32_t index) {
+    NkFontSlot slot;
+    font_load();
+    if (!sr_flash0_font_registry_slot(index, &slot) || (unsigned)slot >= NK_FONT_SLOT_COUNT)
+        return NULL;
+    return s_pgf_slot[slot];
+}
+
+static void font_overlay_style(uint32_t fi, const SrFontRegistryInfo *info, int userMemory) {
     if (!fi) return;
     /* PGFFontStyle begins at +0x5c. For user-memory PGFs, intrinsic metrics remain useful but
      * registry identity is deliberately unknown. */
-    if (!spec || userMemory) {
+    if (!info || userMemory) {
         for (uint32_t i = 0; i < 0x90; i++) MEM_W8(fi + 0x70u + i, 0);
         return;
     }
-    float f[4] = { spec->h, spec->v, spec->hRes, spec->vRes };
-    for (int i = 0; i < 4; i++) { uint32_t w; memcpy(&w, &f[i], 4); MEM_W32(fi + 0x5cu + (uint32_t)i * 4, w); }
-    MEM_W16(fi + 0x70, spec->family); MEM_W16(fi + 0x72, spec->style);
-    MEM_W16(fi + 0x74, spec->styleSub); MEM_W16(fi + 0x76, spec->language);
-    MEM_W16(fi + 0x78, spec->region); MEM_W16(fi + 0x7a, spec->country);
+    float f[4] = {
+        (float)info->h_size / 64.0f, (float)info->v_size / 64.0f,
+        (float)info->h_resolution / 64.0f, (float)info->v_resolution / 64.0f,
+    };
+    for (int i = 0; i < 4; i++) {
+        uint32_t w;
+        memcpy(&w, &f[i], sizeof(w));
+        MEM_W32(fi + 0x5cu + (uint32_t)i * 4u, w);
+    }
+    MEM_W32(fi + 0x6c, info->weight);
+    MEM_W16(fi + 0x70, (uint16_t)info->family_code);
+    MEM_W16(fi + 0x72, (uint16_t)info->style);
+    MEM_W16(fi + 0x74, (uint16_t)info->sub_style);
+    MEM_W16(fi + 0x76, (uint16_t)info->language_code);
+    MEM_W16(fi + 0x78, (uint16_t)info->region_code);
+    MEM_W16(fi + 0x7a, (uint16_t)info->country_code);
     for (uint32_t i = 0; i < 64; i++) MEM_W8(fi + 0x7c + i, 0);
-    for (uint32_t i = 0; spec->fontName[i] && i < 63; i++) MEM_W8(fi + 0x7c + i, (uint8_t)spec->fontName[i]);
+    for (uint32_t i = 0; info->font_name[i] && i < 63; i++)
+        MEM_W8(fi + 0x7c + i, (uint8_t)info->font_name[i]);
     for (uint32_t i = 0; i < 64; i++) MEM_W8(fi + 0xbc + i, 0);
-    for (uint32_t i = 0; spec->fileName[i] && i < 63; i++) MEM_W8(fi + 0xbc + i, (uint8_t)spec->fileName[i]);
-    MEM_W32(fi + 0xfc, 0); MEM_W32(fi + 0x100, 0);
+    const char *file_name = info->file_name ? info->file_name : "";
+    for (uint32_t i = 0; file_name[i] && i < 63; i++)
+        MEM_W8(fi + 0xbc + i, (uint8_t)file_name[i]);
+    MEM_W32(fi + 0xfc, info->extra_attributes);
+    MEM_W32(fi + 0x100, info->expire_date);
+}
+
+static void font_write_info(uint32_t addr, const PGF *pgf,
+                            const SrFontRegistryInfo *info, int userMemory) {
+    for (uint32_t i = 0; i < 0x108u; i++) MEM_W8(addr + i, 0u);
+    pgf_get_font_info(pgf, addr);
+    font_overlay_style(addr, info, userMemory);
 }
 
 static uint32_t h_FontNewLib(CpuState *s) {
@@ -8058,7 +8074,8 @@ static uint32_t h_FontNewLib(CpuState *s) {
 }
 /* Shared Font-handle constructor for Open / OpenUserMemory. */
 static uint32_t font_open_common(CpuState *s, uint32_t lib, uint32_t index, uint32_t mode,
-                                 const PGF *pgf, PGF *ownedPgf, const SrFontSpec *spec,
+                                 const PGF *pgf, PGF *ownedPgf,
+                                 const SrFontRegistryInfo *registry_info,
                                  uint32_t errPtr) {
     SrFontLib L;
     if (!fontlib_snapshot(lib, &L)) {
@@ -8104,7 +8121,10 @@ static uint32_t font_open_common(CpuState *s, uint32_t lib, uint32_t index, uint
         s_fonts[slot].used = 1; s_fonts[slot].closing = 0; s_fonts[slot].refs = 0;
         s_fonts[slot].handle = fh; s_fonts[slot].lib = lib;
         s_fonts[slot].pgf = pgf; s_fonts[slot].ownedPgf = ownedPgf;
-        s_fonts[slot].index = (int)index; s_fonts[slot].spec = spec;
+        s_fonts[slot].index = (int)index;
+        s_fonts[slot].has_registry_info = registry_info != NULL;
+        if (registry_info) s_fonts[slot].registry_info = *registry_info;
+        else memset(&s_fonts[slot].registry_info, 0, sizeof(s_fonts[slot].registry_info));
         s_fontlibs[libslot].pending--; s_fontlibs[libslot].openCount++;
         MEM_W32(lib + 0x14, (uint32_t)s_fontlibs[libslot].openCount);
     } else {
@@ -8119,13 +8139,14 @@ static uint32_t font_open_common(CpuState *s, uint32_t lib, uint32_t index, uint
 }
 static uint32_t h_FontOpen(CpuState *s) {
     /* sceFontOpen(a0=lib, a1=index, a2=mode, a3=u32* errorCode). */
-    const PGF *pgf = font_pgf_for_index(A1);
-    const SrFontSpec *spec = A1 < 18 ? &s_font_specs[A1] : NULL;
-    if (!pgf || !spec->fileName) {
+    SrFontRegistryInfo info;
+    SrFontRegistryStatus status = font_registry_info_for_index(A1, &info);
+    const PGF *pgf = status == SR_FONT_REGISTRY_PRESENT ? font_pgf_for_index(A1) : NULL;
+    if (!pgf || !info.file_name) {
         if (A3) MEM_W32(A3, SR_FONT_ERROR_INVALID_DATA);
         return 0;
     }
-    uint32_t fh = font_open_common(s, A0, A1, A2, pgf, NULL, spec, A3);
+    uint32_t fh = font_open_common(s, A0, A1, A2, pgf, NULL, &info, A3);
     if (getenv("SR_FONTLOG"))
         fprintf(stderr, "h_FontOpen: lib=0x%08x index=%u mode=%u -> font=0x%08x\n", A0, A1, A2, fh);
     return fh;
@@ -8209,12 +8230,22 @@ static uint32_t h_FontGetFontInfo(CpuState *s) {
     font_load();
     SrFont *f = NULL; const PGF *p = font_acquire(A0, &f);
     if (!p || !A1) { font_release(f); return SR_FONT_ERROR_INVALID_ARG; }
-    for (int i = 0; i < 0x108; i++) MEM_W8(A1 + (uint32_t)i, 0);
-    pgf_get_font_info(p, A1);
-    font_overlay_style(A1, f ? f->spec : NULL, f ? (f->ownedPgf != NULL) : 1);
+    font_write_info(A1, p, f && f->has_registry_info ? &f->registry_info : NULL,
+                    f ? (f->ownedPgf != NULL) : 1);
     font_release(f);
     return 0;
 }
+#ifdef SR_HLE_THREAD_SELFTEST
+uint32_t sr_font_test_info_for_index(uint32_t index, uint32_t info_addr) {
+    SrFontRegistryInfo info;
+    if (font_registry_info_for_index(index, &info) != SR_FONT_REGISTRY_PRESENT)
+        return SR_FONT_ERROR_INVALID_DATA;
+    const PGF *pgf = font_pgf_for_index(index);
+    if (!info_addr || !pgf) return SR_FONT_ERROR_INVALID_DATA;
+    font_write_info(info_addr, pgf, &info, 0);
+    return 0u;
+}
+#endif
 uint32_t h_FontGetCharInfo(CpuState *s) {
     uint32_t ci = A2; if (!ci) return SR_FONT_ERROR_INVALID_ARG;
     uint32_t cc = A1 & 0xffff;
