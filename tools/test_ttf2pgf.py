@@ -59,6 +59,9 @@ FONT_DIR = ROOT / "fixtures" / "fonts" / "gudea"
 FONT = FONT_DIR / "Gudea-Regular.ttf"
 PIN = FONT_DIR / "PIN.json"
 LICENSE_TEXT = FONT_DIR / "OFL.txt"
+JAPANESE_FONT_DIR = ROOT / "fixtures" / "fonts" / "mplus1p"
+JAPANESE_FONT = JAPANESE_FONT_DIR / "MPLUS1p-Regular.ttf"
+JAPANESE_PIN = JAPANESE_FONT_DIR / "PIN.json"
 
 DEFAULT_CODES = (0x20, 0x7E)
 PPEM_SHAPE = 16  # large enough that the source-owned H shape is unambiguous
@@ -724,6 +727,31 @@ class CodePointSetTests(unittest.TestCase):
         )
 
 
+class JapaneseCodePointCoverageTests(unittest.TestCase):
+    """The built-in JIS repertoire is complete and the selected pin covers every point."""
+
+    def test_builtin_jis_set_pins_kana_symbols_and_level1_kanji(self) -> None:
+        points = ttf2pgf.jis_x_0208_japanese_code_points()
+        self.assertEqual(len(points.codes), 3489)
+        self.assertEqual(points.codes, tuple(sorted(set(points.codes))))
+        self.assertEqual(points.source, "builtin:jis-x-0208-japanese")
+        self.assertEqual(points.sha256, ttf2pgf.JIS_X_0208_JAPANESE_SHA256)
+        self.assertTrue({0x3000, 0x3042, 0x30A2, 0x03B1, 0x2212, 0x4E00}.issubset(points.codes))
+        self.assertEqual(len(set(ttf2pgf._jis_x_0208_rows(range(1, 9)))), 524)
+        self.assertEqual(len(set(ttf2pgf._jis_x_0208_rows(range(16, 48)))), 2965)
+
+    def test_pinned_project_font_covers_the_complete_jis_set(self) -> None:
+        data = JAPANESE_FONT.read_bytes()
+        pin = load_pin(JAPANESE_PIN, data)
+        self.assertEqual(pin.spdx, "OFL-1.1")
+        self.assertEqual(pin.reserved_font_names, ())
+        ttf2pgf.validate_output_name("Nakagawa Open Japanese", pin)
+        font = ttf2pgf._Ttf(data)
+        codes = ttf2pgf.jis_x_0208_japanese_code_points().codes
+        missing = [code for code in codes if font.glyph_id(code) is None]
+        self.assertEqual(missing, [], "the selected Japanese font must cover every assigned JIS code point")
+
+
 class ReaderRoundTripTests(unittest.TestCase):
     """Layer 1: the generated font opens through the production reader path."""
 
@@ -888,6 +916,41 @@ class ReaderRoundTripTests(unittest.TestCase):
                 continue
             self.assertEqual(char_line[2], "1", f"U+{code:04X} presence")
             self.assertEqual(list(bytes.fromhex(draw_line[4])), list(glyphs[code].samples))
+
+    def test_japanese_sparse_subset_round_trips_through_native_reader(self) -> None:
+        data = JAPANESE_FONT.read_bytes()
+        codes = (0x3042, 0x30A2, 0x4E00, 0x9FA0)
+        code_points = ttf2pgf.CodePointSet(
+            codes=codes,
+            sha256=hashlib.sha256(b"japanese sparse reader fixture").hexdigest(),
+            source="test:japanese-sparse",
+        )
+        conversion = convert(
+            data,
+            input_path=str(JAPANESE_FONT),
+            output_path="japanese-sparse.pgf",
+            code_points=code_points,
+            ppem=12,
+            font_name="Nakagawa Open Japanese",
+            pin=load_pin(JAPANESE_PIN, data),
+        )
+        self.assertEqual(struct.unpack_from("<I", conversion.image, 0x14)[0], len(codes))
+        probes = [*codes, 0x3043]
+        lines = self._read_back(conversion.image, probes)
+        self.assertEqual(lines[0], "open ok")
+        records = lines[2:]
+        glyphs = _glyph_map(conversion.glyphs)
+        for index, code in enumerate(probes):
+            char_line = records[index * 2].split(" ")
+            draw_line = records[index * 2 + 1].split(" ")
+            if code == 0x3043:
+                self.assertEqual(char_line[2], "0")
+                self.assertEqual(draw_line[:3], ["draw", str(code), "none"])
+                continue
+            glyph = glyphs[code]
+            self.assertEqual(char_line[2], "1")
+            self.assertEqual(draw_line[2:4], [str(glyph.width), str(glyph.height)])
+            self.assertEqual(list(bytes.fromhex(draw_line[4])), list(glyph.samples))
 
 
 def _joined(*parts: str) -> str:

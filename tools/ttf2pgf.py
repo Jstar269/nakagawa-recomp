@@ -70,6 +70,7 @@ DEFAULT_PPEM = 12
 DEFAULT_CODES = "0x20-0x7E"
 DEFAULT_FONT_NAME = "Nakagawa Open Latin"
 DEFAULT_FONT_TYPE = "Regular"
+JIS_X_0208_JAPANESE_SHA256 = "2522133dd7cc48c4af7d4f415780143c18ff04e1c88038bf3d1d7bdca54c45ae"
 
 SCALER_TRUE = 0x00010000
 SCALER_APPLE_TRUE = 0x74727565  # 'true'
@@ -1068,11 +1069,11 @@ def parse_code_range(spec: str) -> tuple[int, int]:
 
 @dataclass(frozen=True)
 class CodePointSet:
-    """A strictly ascending code-point list read from a ``--codepoints`` file."""
+    """A strictly ascending code-point list from a file or a built-in mapping."""
 
     codes: tuple[int, ...]
     sha256: str
-    #: The file's leaf name only; the manifest never records a host path.
+    #: The file leaf name or built-in mapping id; the manifest never records a host path.
     source: str
 
 
@@ -1121,6 +1122,53 @@ def load_code_points(path: Path) -> CodePointSet:
     if not codes:
         raise _refuse("empty-codepoint-set", f"{path.name} lists no code points")
     return CodePointSet(codes=tuple(codes), sha256=hashlib.sha256(data).hexdigest(), source=path.name)
+
+
+def _jis_x_0208_rows(rows: range) -> tuple[int, ...]:
+    """Decode assigned JIS X 0208 cells through Python's standard EUC-JP table."""
+    codes: list[int] = []
+    for row in rows:
+        for cell in range(1, 95):
+            try:
+                character = bytes((row + 0xA0, cell + 0xA0)).decode("euc_jp")
+            except UnicodeDecodeError:
+                continue
+            except LookupError as exc:
+                raise _refuse("jis-x-0208-codec-unavailable", "Python's euc_jp codec is unavailable") from exc
+            if len(character) != 1:
+                raise _refuse(
+                    "jis-x-0208-mapping-invalid",
+                    f"row {row:02d}, cell {cell:02d} maps to {len(character)} Unicode characters",
+                )
+            codes.append(ord(character))
+    return tuple(codes)
+
+
+def jis_x_0208_japanese_code_points() -> CodePointSet:
+    """Return JIS X 0208 symbols/kana and level-1 kanji as one pinned sparse set.
+
+    Rows 1..8 contain the non-kanji repertoire (524 assigned code points); rows
+    16..47 contain all 2,965 level-1 kanji. The standard mapping is supplied
+    by Python's built-in EUC-JP codec, not a downloaded vendor table. A canonical
+    digest makes any mapping drift a named refusal.
+    """
+    nonkanji = set(_jis_x_0208_rows(range(1, 9)))
+    level1 = set(_jis_x_0208_rows(range(16, 48)))
+    if len(nonkanji) != 524 or len(level1) != 2965:
+        raise _refuse(
+            "jis-x-0208-mapping-invalid",
+            f"the built-in table produced {len(nonkanji)} non-kanji and {len(level1)} level-1 code points; "
+            "expected 524 and 2965",
+        )
+    codes = tuple(sorted(nonkanji | level1))
+    canonical = "".join(f"U+{code:04X}\n" for code in codes).encode("ascii")
+    digest = hashlib.sha256(canonical).hexdigest()
+    if digest != JIS_X_0208_JAPANESE_SHA256:
+        raise _refuse(
+            "jis-x-0208-mapping-invalid",
+            f"the built-in code-point mapping SHA-256 is {digest}, expected {JIS_X_0208_JAPANESE_SHA256}",
+        )
+    return CodePointSet(codes=codes, sha256=digest, source="builtin:jis-x-0208-japanese")
 
 
 @dataclass(frozen=True)
@@ -1550,6 +1598,11 @@ def _main(argv: list[str]) -> int:
         type=Path,
         help="file listing code points, one per line, strictly ascending (sparse output)",
     )
+    source.add_argument(
+        "--jis-x-0208-japanese",
+        action="store_true",
+        help="use JIS X 0208 non-kanji rows 1-8 and all level-1 kanji in rows 16-47 (sparse output)",
+    )
     size = parser.add_mutually_exclusive_group()
     size.add_argument("--ppem", type=int, help=f"pixel size of the em (default {DEFAULT_PPEM})")
     size.add_argument("--metric-targets", type=Path, help="metric-target policy JSON; selects the ppem")
@@ -1561,7 +1614,12 @@ def _main(argv: list[str]) -> int:
         parser.error("--manifest requires --pin so the manifest can carry attribution and licence material")
 
     try:
-        code_points = load_code_points(args.codepoints) if args.codepoints is not None else None
+        if args.codepoints is not None:
+            code_points = load_code_points(args.codepoints)
+        elif args.jis_x_0208_japanese:
+            code_points = jis_x_0208_japanese_code_points()
+        else:
+            code_points = None
         codes = None if code_points is not None else parse_code_range(args.codes or DEFAULT_CODES)
         data = args.input.read_bytes()
         pin = load_pin(args.pin, data) if args.pin is not None else None

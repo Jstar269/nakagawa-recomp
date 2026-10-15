@@ -7,7 +7,7 @@ three files and nothing else:
 | File | Role |
 | --- | --- |
 | `<Family>.ttf` | The exact pinned source bytes, unmodified. |
-| `OFL.txt` | The licence text required by OFL section 2, byte-identical to the upstream copy. |
+| `OFL.txt` | The full licence text required by OFL section 2; its local digest is in `PIN.json`. |
 | `PIN.json` | The `font-pin/v1` record: SHA-256 and size of the font, SPDX id, copyright line, licence-text digest, Reserved Font Names, and the upstream URL/repository/path/retrieved provenance. |
 
 The converter refuses any input whose bytes do not match the pin
@@ -28,3 +28,14 @@ for the full contract, including why generated PGFs are never committed here:
 | Family | File | SPDX | Reserved Font Names |
 | --- | --- | --- | --- |
 | Gudea | `gudea/Gudea-Regular.ttf` | OFL-1.1 | `Gudea` |
+| M PLUS 1p | `mplus1p/MPLUS1p-Regular.ttf` | OFL-1.1 | none declared |
+
+M PLUS 1p is the project Japanese build input. Its pin uses the immutable
+Google Fonts commit recorded in `mplus1p/PIN.json`; the adjacent `OFL.txt`
+contains the complete licence text from that commit. The pin records the
+downloaded licence digest and the local digest after its one trailing space
+was removed. The converter's built-in JIS X 0208
+set covers rows 1-8 (524 non-kanji characters) and rows 16-47 (all 2,965
+level-1 kanji), for 3,489 Unicode code points. Sawarabi Gothic was evaluated
+first but misses 80 code points in rows 1-8, so it does not meet the required
+symbol coverage.

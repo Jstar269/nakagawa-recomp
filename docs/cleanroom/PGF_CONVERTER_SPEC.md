@@ -62,8 +62,8 @@ records first, then Microsoft full-repertoire, Microsoft BMP, Microsoft
 symbol, then legacy records - and the first subtable in a supported format
 (0, 4, 6, or 12) parses successfully wins. Ties keep directory order. A
 mapping to glyph 0 (`.notdef`) counts as absent. Every code in the requested
-range must resolve, or the conversion is refused with `missing-code-point`
-naming the first gap in ascending order.
+range or set must resolve, or the conversion is refused with
+`missing-code-point` naming the first gap in ascending order.
 
 ### 2.3 Outlines
 
@@ -95,11 +95,12 @@ scaling.
 | `bad-codepoint-list` | A `--codepoints` file is unreadable, not ASCII, holds a line that is not a code point, or leaves 16 bits. |
 | `codepoints-unsorted` | A `--codepoints` file repeats a code or is not in ascending order. |
 | `empty-codepoint-set` | A `--codepoints` file lists no code point. |
+| `jis-x-0208-codec-unavailable` / `jis-x-0208-mapping-invalid` | The built-in EUC-JP codec or its pinned JIS mapping is unavailable or has changed. |
 | `ppem-out-of-range` | Size outside 1..128. |
 | `glyph-too-large` | A raster exceeds the writer's 7-bit record fields (127 px). |
 | `composite-too-deep` / `composite-too-many-components` | Composite expansion bounds. |
 | `metric-targets-invalid` / `metric-target-unreachable` | Policy document is malformed / no size satisfies it. |
-| `conflicting-parameters` | `--ppem` together with `--metric-targets`. (`--codes` and `--codepoints` are mutually exclusive at the CLI.) |
+| `conflicting-parameters` | `--ppem` together with `--metric-targets`. (`--codes`, `--codepoints`, and `--jis-x-0208-japanese` are mutually exclusive at the CLI.) |
 | `pin-invalid` / `pin-digest-mismatch` / `pin-size-mismatch` / `pin-license-mismatch` | Source pin does not bind the exact input and licence bytes. |
 | `reserved-font-name` / `camouflage-font-name` | Output name policy violation (section 6). |
 | writer reasons (`font-field-invalid`, `nominal-size-out-of-range`, `metric-table-overflow`, ...) | Re-raised unchanged from `pgf_writer.py`. |
@@ -111,6 +112,13 @@ listed code needs a glyph (`missing-code-point` otherwise). The file's SHA-256
 and leaf name go into the manifest. The writer then emits a sparse character map
 over the span from the smallest to the largest code, and codes outside the set
 are misses.
+
+`--jis-x-0208-japanese` uses Python's built-in EUC-JP mapping for assigned
+cells in rows 1..8 and 16..47: the 524 non-kanji code points in the former
+rows and all 2,965 level-1 kanji in the latter. The sorted Unicode set has a
+fixed SHA-256 in the converter; an unavailable or changed built-in mapping is
+refused by name. It is a sparse map just like `--codepoints`, and its built-in
+mapping id and digest are recorded in the manifest.
 
 A refusal means no byte is written: the CLI builds the complete image and
 manifest in memory first and writes only after every stage succeeds.
