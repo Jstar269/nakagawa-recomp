@@ -1748,7 +1748,23 @@ int main(int argc, char **argv) {
      * cache, save and boot-event paths inside a temporary root, never inside
      * the developer's real per-user directories. */
     native_test_create_root("player-state");
+    {
+        /* A developer machine may point NAKAGAWA_PSP_KEY_FILE at the real key
+         * file. Plant a decoy override that names an existing file: unless the
+         * isolation clears it, the no-key-file preflight check below consults
+         * the decoy instead of the isolated user-data root and fails. */
+        char decoy_key[NATIVE_TEST_PATH_MAX + 32];
+        int written = snprintf(decoy_key, sizeof(decoy_key), "%s%cdeveloper-keyfile.json",
+                               native_test_get_root(), nk_platform_path_separator());
+        assert(written > 0 && (size_t)written < sizeof(decoy_key));
+        write_text_file(decoy_key, "{\"format\":\"nakagawa-psp-keystore-1\",\"entries\":{}}");
+        native_test_set_env("NAKAGAWA_PSP_KEY_FILE", decoy_key);
+    }
     native_test_isolate_user_data_roots();
+    {
+        const char *key_override = getenv("NAKAGAWA_PSP_KEY_FILE");
+        assert(key_override == NULL || key_override[0] == '\0');
+    }
     native_test_assert_cache_root_isolated();
     native_test_assert_config_root_isolated();
 
