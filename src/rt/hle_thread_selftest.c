@@ -2870,6 +2870,23 @@ static void test_fd_namespace(void) {
     expect(sr_hle_test_io_open(&cpu) == 0x80010002u,
            "open non-existent file returns driver errno 0x80010002");
 
+    /* DOS device names (join rule): create-open is not-found, matching the POSIX open
+     * branch in hle.c; remove and mkdir refuse as an illegal path. Pins the cross-host
+     * guest codes on the host where this harness runs. */
+    memset(&cpu, 0, sizeof(cpu));
+    fd_set_path(&cpu, path_addr, "ms0:/PSP/NUL ");
+    cpu.r[5] = 0x0602u; /* WRONLY | CREAT | TRUNC */
+    expect(sr_hle_test_io_open(&cpu) == 0x80010002u,
+           "sceIoOpen create of a DOS device name returns 0x80010002");
+    memset(&cpu, 0, sizeof(cpu));
+    fd_set_path(&cpu, path_addr, "ms0:/PSP/NUL ");
+    expect(sr_hle_test_io_remove(&cpu) == 0x80010016u,
+           "sceIoRemove of a DOS device name returns 0x80010016");
+    memset(&cpu, 0, sizeof(cpu));
+    fd_set_path(&cpu, path_addr, "ms0:/PSP/NUL ");
+    expect(sr_hle_test_io_mkdir(&cpu) == 0x80010016u,
+           "sceIoMkdir of a DOS device name returns 0x80010016");
+
     /* Out-of-range / Negative descriptors (0xFFFFFFFFu = -1) */
     fd_set_write(&cpu, 0xffffffffu, payload_addr, (uint32_t)(sizeof(payload) - 1u));
     expect(sr_hle_test_io_write(&cpu) == SCE_KERNEL_ERROR_BAD_FILE_DESCRIPTOR,

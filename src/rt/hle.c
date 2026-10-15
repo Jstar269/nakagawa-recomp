@@ -13421,6 +13421,13 @@ static uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot
 #ifndef _WIN32
             if (sr_ms0_classify(path, NULL) == SR_MS0_OWNED &&
                 open_status != SR_CD_NOT_FOUND) {
+                /* A DOS device component is a not-found open here, not a path refusal:
+                 * 0x80010002 is what Windows sceIoOpen returns for the same name (the
+                 * join refuses it and the open falls through to not-found). Remove, mkdir,
+                 * rename, rmdir and chmod return 0x80010016 for it on both hosts. Every
+                 * other refusal keeps its code. */
+                if (open_status == SR_CD_INVALID_PATH && sr_cd_ms0_guest_has_dos_device(path))
+                    return 0x80010002u;
                 fprintf(stderr, "sceIoOpen: contained Memory Stick path refused (%s): %s\n",
                         path, sr_cd_status_name(open_status));
                 return ms0_posix_psp_error(open_status);

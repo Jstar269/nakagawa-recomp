@@ -5034,7 +5034,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "6cd581ddcce4bd8e9fcdce800f8624b89941b3d554459c22b80b5abac6e7f7d4"
+      "sha256": "b3106e38741c5ad0f33ee67c3f6cca250b6d0efaf6084289fa2f31edbca7305b"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5072,7 +5072,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "45482d09874439b9fad4a64afb153aebc89946ccc0f2a1286755e3ff33fc733e"
+      "sha256": "5b2a444ce387bf7c2a3e86c7a4e35fe9eb9d6e46b63fbcb2332f4c2b6a769b6d"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -5789,7 +5789,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8cdb0142df1811f9bfb9e453c4f7852a99f162ac069ca170399f0d38ac0aeed3"
+      "sha256": "888ace406390f2934055c06c953ff5167bb12367945d7562033f21edcfa511dd"
     },
     {
       "path": "src/rt/vfs_contained_selftest.c",
@@ -5801,7 +5801,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5b03b2ff2a45c23857b838ff944272dbd93b8394b9a9c793c92831fd7f811303"
+      "sha256": "df94d144f166990e0c1054ce0ac9c1324f024232886dac71c57ac2aec5101ca8"
     },
     {
       "path": "src/rt/vfs_path.h",
@@ -9624,7 +9624,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ef928c0945746e31f4597c27edcc77265dbbbadb50b9e25844438c9589136a22"
+      "sha256": "2dd942eb32e6b04c328a538b28f839066c7591b57fd0435470703d57478ee7c0"
     },
     {
       "path": "tools/test_public_export.py",
@@ -10285,7 +10285,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "faf44a015219bda6b353ea10ecf09a486c31e92659b00c936bff766aff7f2322"
+      "sha256": "6930376eba6d8eca68d4ad029b9cab91b5a7784388a355cd60b700135e6e489d"
     },
     {
       "path": "tools/test_visual_oracle.ps1",
