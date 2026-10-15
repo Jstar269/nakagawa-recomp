@@ -1989,7 +1989,7 @@ $(PROJECT_JAPANESE_PGF): $(PROJECT_JAPANESE_TTF) $(PROJECT_JAPANESE_PIN) $(PROJE
 	$(PYTHON) tools/ttf2pgf.py "$@" "$(PROJECT_JAPANESE_TTF)" --pin "$(PROJECT_JAPANESE_PIN)" --jis-x-0208-japanese --ppem 12 --font-name "Nakagawa Open Japanese" --font-type "Regular" --manifest "$(PROJECT_JAPANESE_MANIFEST)"
 	$(PYTHON) -c "import shutil; shutil.copyfile('$(PROJECT_JAPANESE_LICENSE)', '$(PROJECT_JAPANESE_GENERATED_DIR)/OFL.txt')"
 
-compile: project-japanese-font shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(BUILD_DIR)/$(GAME_NAME)_recomp.o | sdl3-check
+compile: shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(BUILD_DIR)/$(GAME_NAME)_recomp.o | sdl3-check project-japanese-font
 	$(file >$(LINK_OBJECTS_RSP),$(subst \,/,$(LINK_OBJECTS)))
 	$(CC) $(CFLAGS) $(LDFLAGS) $(LINK_MAP_ARG) $(REPRODUCIBLE_LINK_FLAG) -o $(BUILD_DIR)/$(GAME_NAME)$(EXE_EXT) \
 		@$(LINK_OBJECTS_RSP) \
