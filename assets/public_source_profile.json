@@ -516,6 +516,8 @@
     "src/rt/atrac3p_bridge_selftest.c",
     "src/rt/atrac3p_selftest.c",
     "src/rt/atrac3p_title_accept.c",
+    "src/rt/audio_resample.c",
+    "src/rt/audio_resample.h",
     "src/rt/audio_unavailable.c",
     "src/rt/cpu_lle.c",
     "src/rt/cpu_lle.h",

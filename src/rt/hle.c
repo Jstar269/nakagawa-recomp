@@ -58,6 +58,7 @@
 #include "atrac3p_bridge.h" /* PR-B: real ATRAC3+ decode in sceAtracDecodeData */
 #include "fbcap_policy.h"   /* frame-capture slot policy for the present path (issue #57) */
 #include "fbcap.h"           /* presenter-neutral frame capture service (issue #57) */
+#include "audio_resample.h"  /* deterministic SRC-to-host-rate conversion */
 #include "gpu_sdl3vk/ge_gpu.h" /* explicit guest-VRAM snapshot boundary */
 #include "title_config.h"  /* title-qualified compatibility addresses (issue #98) */
 #include "nested_frames.h" /* per-owner/per-depth frames for nested guest calls */
@@ -15423,12 +15424,10 @@ extern void sr_audio_push(int ch, const int16_t *lr, int nframes, int volL, int 
 static int s_audio_ch[9], s_audio_fmt[9];   /* regular fmt: 0=stereo, 0x10=mono */
 static uint32_t s_audio_len[9];
 /* sceAudioSRC* shares slot 8 with Output2: the PSP-3000 refused either API's reserve with
- * 0x80268002 while the other held it, in both orders (PSP-HLE-AUDIO-SRC-001). The flag says
- * which API holds the slot, the rate is the input rate the SRC reservation named, and the
- * last flag records that the unconverted-rate diagnostic was already printed. */
+ * 0x80268002 while the other held it, in both orders (PSP-HLE-AUDIO-SRC-001). */
 static int s_audio_src_owned;
 static uint32_t s_audio_src_freq;
-static int s_audio_src_rate_noted;
+static SrAudioResampler s_audio_src_resampler;
 
 /* Public contract vocabulary pinned to PSPSDK src/audio/pspaudio.h at
  * 314b2083f2e1eaf145fc5de342736336fe1f0148 and PSPAutotests
@@ -15624,7 +15623,7 @@ void sr_hle_test_audio_reset(void) {
     memset(s_audio_volR, 0, sizeof(s_audio_volR));
     s_audio_src_owned = 0;
     s_audio_src_freq = 0;
-    s_audio_src_rate_noted = 0;
+    sr_audio_resampler_destroy(&s_audio_src_resampler);
     memset(s_audio_delay_carry, 0, sizeof(s_audio_delay_carry));
     memset(g_audio_bufs, 0, sizeof(g_audio_bufs));
     memset(g_audio_nbufs, 0, sizeof(g_audio_nbufs));
@@ -15809,9 +15808,8 @@ static uint32_t h_AudioOutput2Rest(CpuState *s) {
  * sample-count bound (the Output2 range 17..4111 is reused), channel counts other than 1, 2
  * and 4 (refused with the code measured for 4), the volume bound (the Output2 bound 0x8000 is
  * reused), and rates other than 44100 and 48000 (refused with the code measured for an
- * unsupported channel count, and a message). The host mixer runs at 44100 Hz and there is no
- * rate converter here, so a 48000 Hz block is paced for its real duration but not forwarded,
- * with one message. */
+ * unsupported channel count, and a message). The host mixer runs at 44100 Hz; 48000 Hz SRC
+ * blocks pass through a streaming band-limited converter while retaining source-rate pacing. */
 static uint32_t h_AudioSRCChReserve(CpuState *s) {
     const uint32_t samples = A0, freq = A1, channels = A2;
     if (s_audio_ch[AUDIO_OUTPUT2_CHANNEL]) return SCE_AUDIO_ERROR_OUTPUT2_BUSY;
@@ -15823,6 +15821,9 @@ static uint32_t h_AudioSRCChReserve(CpuState *s) {
                 "modelled, the reservation is refused\n", freq);
         return SCE_AUDIO_ERROR_SRC_INVALID_CHANNELS;
     }
+    sr_audio_resampler_destroy(&s_audio_src_resampler);
+    if (freq != SR_AUDIO_RESAMPLER_OUTPUT_RATE && !sr_audio_resampler_init(&s_audio_src_resampler, freq))
+        return HLE_KERNEL_ERROR_NO_MEMORY;
     s_audio_ch[AUDIO_OUTPUT2_CHANNEL] = 1;
     s_audio_fmt[AUDIO_OUTPUT2_CHANNEL] = 0;
     s_audio_len[AUDIO_OUTPUT2_CHANNEL] = samples;
@@ -15837,6 +15838,7 @@ static uint32_t h_AudioSRCChRelease(CpuState *s) {
     s_audio_len[AUDIO_OUTPUT2_CHANNEL] = 0;
     s_audio_src_owned = 0;
     s_audio_src_freq = 0;
+    sr_audio_resampler_destroy(&s_audio_src_resampler);
     return 0;
 }
 static uint32_t h_AudioSRCOutputBlocking(CpuState *s) {
@@ -15846,17 +15848,37 @@ static uint32_t h_AudioSRCOutputBlocking(CpuState *s) {
     if (s_audio_src_freq == 44100u)
         return audio_output(s, AUDIO_OUTPUT2_CHANNEL, A1, (int)A0, (int)A0);
 
-    /* A rate the host mixer does not run at: validate the block as audio_output does, keep the
-     * guest's pacing, and say once that the samples are not forwarded. */
+    /* Preserve the guest-rate blocking interval while forwarding converted frames to the
+     * 44100 Hz mixer. The reserve contract limits n to 4111 stereo frames. */
     const uint32_t n = s_audio_len[AUDIO_OUTPUT2_CHANNEL];
     uint32_t bytes = 0;
     if (A1 && n > 0u &&
         (!sr_size_mul_ok(n, 4u, &bytes) || !sr_guest_span_readable(A1, bytes)))
         return 0x80000103u; /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
-    if (!s_audio_src_rate_noted) {
-        s_audio_src_rate_noted = 1;
-        fprintf(stderr, "AUDIOSRC+ %u Hz needs conversion to the 44100 Hz host mixer, which is "
-                "not implemented: the blocks are paced and not forwarded\n", s_audio_src_freq);
+    /* Fail closed if a reserved rate ever lacks its converter (Reserve builds one for every
+     * accepted rate other than the mixer's own). */
+    if (s_audio_src_resampler.input_rate != s_audio_src_freq)
+        return SCE_AUDIO_ERROR_SRC_INVALID_CHANNELS;
+    if (A1 && n > 0u) {
+        /* Shared scratch is safe: the SRC slot has one owner, and nothing between filling
+         * these buffers and handing the frames to the mixer can yield to another thread. */
+        static int16_t input[4111u * 2u];
+        static int16_t converted[4111u * 2u];
+        for (uint32_t i = 0; i < n; i++) {
+            input[i * 2u] = (int16_t)MEM_R16(A1 + i * 4u);
+            input[i * 2u + 1u] = (int16_t)MEM_R16(A1 + i * 4u + 2u);
+        }
+        if (!sr_audio_resampler_push(&s_audio_src_resampler, input, n))
+            return HLE_KERNEL_ERROR_NO_MEMORY;
+        const size_t converted_frames = sr_audio_resampler_pull(
+            &s_audio_src_resampler, converted, 4111u);
+        if (converted_frames > 0u) {
+            uint64_t out_started = sr_perf_now_ns();
+            sr_audio_push(AUDIO_OUTPUT2_CHANNEL, converted, (int)converted_frames,
+                          (int)A0, (int)A0);
+            if (out_started)
+                sr_perf_audio_output(out_started, (uint32_t)converted_frames);
+        }
     }
     uint64_t us = (uint64_t)n * 1000000u / s_audio_src_freq;
     sched_delay_current(us ? (uint32_t)us : 1u);
