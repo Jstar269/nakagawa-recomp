@@ -4369,7 +4369,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2a7fca02295e495d0a68f8e3399d849b5d0238bcdac93bdd5ae1d77163b22870"
+      "sha256": "7785eaf46ee303fa5473773ecebee625a4dad838486cf5d7fed4d9ba6be816d9"
     },
     {
       "path": "src/rt/audio_resample.h",
@@ -4381,7 +4381,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b714c1572366c3faee8c7cf0d38c34bdbb42b86d91aac5bdefdcd6a762ada563"
+      "sha256": "4991cf15325161eab33cf5860c613c025acaae7db6a9347c822ae47b96d075ea"
     },
     {
       "path": "src/rt/audio_unavailable.c",
@@ -5192,7 +5192,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "3ff6eb7aa9765aae7d84f3b3e7464762600d06d0a4d484bcd08bb0381874f3ab"
+      "sha256": "f5ce2787b150ed87d9613722510b7ad8d91d3203c5b602fb016cb04c62bd6e45"
     },
     {
       "path": "src/rt/hle_power.c",
