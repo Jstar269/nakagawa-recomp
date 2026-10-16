@@ -608,8 +608,11 @@ evidence and are never committed. `io_cases_host.c` runs both cases against a
 fake file system for the tests in `tools/test_psp_oracle.py`.
 
 The font-list case (`font-list`, `PSP-FONTLIST-001`, `font_list.h`) is not in the
-campaign queue; it runs only on the maintainer's request, with the firmware's own
-`sceLibFont` module resident (loaded through PSPLink before the launch). It asks
+campaign queue; it runs only on the maintainer's request, with a user-mode
+`sceLibFont` module resident (loaded through PSPLink before the launch). In the
+2026-10-15 run PSPLink could not start the firmware's own copy from `flash0:`, so
+the operator loaded a `sceLibFont` module from their own software on `host0:`;
+that module is private input and is never committed. The case asks
 that library for the system font list the way a title does: `sceFontNewLib` with a
 static arena allocator and no file callbacks, `sceFontGetNumFontList`,
 `sceFontGetFontList`, one `sceFontGetFontInfoByIndexNumber` per index (at most 64),
