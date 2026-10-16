@@ -778,7 +778,7 @@ One console is one data point; see §11. Nothing here closes issue #70
 
 ## Pending PSP-3000 measurement campaign
 
-The following eighteen source-owned cases are built for a future PSP-3000 / 6.61
+The following twenty source-owned cases are built for a future PSP-3000 / 6.61
 session. Six were measured by the 2026-10-10 campaign on `f6ccfb33`; `ge-break-continue`
 was measured by its acceptance-eligible 2026-10-15 re-run on `c642039a` after two
 captured-only runs; `llsc-link`, `vfpu-compare` and `fpu-cc` were measured on
@@ -807,6 +807,8 @@ not expected PSP values.
 | `vfpu-compare` | `PSP-VFPU-CMP-001` | `MEASURED` (2026-10-15, `e45e667b`) | `vscmp.s`, `vsge.s`, and `vslt.s` on 15 operand pairs: less-than, equal, greater, signed zeros in both orders, quiet, signalling, and negative NaN on each side, and infinities. Each record is the raw result word against the project's model at the time; the five `vscmp` NaN words differed from it, and the model now returns the measured words. |
 | `fpu-cc` | `PSP-FPU-CC-001` | `MEASURED` (2026-10-15, `e45e667b`) | COP1 condition codes: which FCR31 condition bits exist, which bit `c.eq.s` sets for each condition code 0..7, and whether `bc1t`/`bc1f` with each code are taken under FCC0, no flag, and that code's own flag. Condition code 0 is the control. Only FCC0 exists; every code writes and tests it. |
 | `vfpu-transcendental-corpus` | `PSP-VFPU-TRANSCENDENTAL-001` | `MEASURED` (2026-10-15, `22b027f6`; single launch, not in the campaign queue) | Raw single-lane result words for vsin, vcos, vexp2, vlog2, vrsq, vrcp, vsqrt, vasin, vnrcp, vnsin, and vrexp2. Each operation uses 63 raw-word inputs: 20 special encodings and 43 evenly spaced domain constants. VASIN substitutes three in-domain words for its previously measured edge inputs. Eight-word chunks produce 88 data records plus one completion record (89 result records total); parsing checks format only and asserts no hardware values. |
+| `registry-font` | `PSP-REGISTRY-002` | `NOT_RUN` | Whether the registry handle lists the root, then the `/DATA/FONT` and `/SYSPROFILE/RESOLUTION` subtrees: every key's name, type, size, value and enumeration order, reached only through categories the console listed first. |
+| `umd-io` | `PSP-UMDIO-001` | `NOT_RUN` | `sceIoOpen` (read-only flags) and `sceIoDopen` results for bare UMD devices (`umd0:`, `umd1:`, `umd:`), `disc0:` with and without a path, two raw `umd` opens with the extra `0x000f0000` bits, and `msstor0p1:/`, each descriptor closed, with `sceUmdCheckMedium` and `sceUmdGetDriveStat` before and after. No UMD activation. |
 | `hle-vtimer-unit` | `PSP-HLE-VTIMER-002` | `MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the campaign queue) | One VTimer: start; a `sceKernelGetVTimerTime` and a system-clock reading either side of a bounded 20 ms delay; the VTimer base and Refer base field while running and after stop; stop; delete. Each 64-bit clock is recorded as its low word then its high word. |
 | `hle-vtimer-errors` | `PSP-HLE-VTIMER-003` | `MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the campaign queue) | Start, stop, and `sceKernelGetVTimerTime` on a deleted UID, then a cleanup delete of that UID after its last use; a live timer created and deleted; up to 64 creates; out1 records whether a refusal occurred; every created timer deleted. The NULL option pointer of `sceKernelCreateVTimer` is the optional argument. |
 | `hle-kernel-pool-bounds` | `PSP-HLE-KERNEL-STATUS-002` | `NOT_RUN` (revised form; single launch, not in the campaign queue; the earlier revision's 2026-10-15 `b5d6fc5b` run was captured only) | FPL creation with block size 0 and with a 0x7fffffff-byte block, each deleted when its create returned a pool; a refused create gives a PASS delete cell with out0 0 and no delete call; VPL allocation: up to 64 allocations; out1 records whether a refusal occurred; every block freed and the VPL deleted. The NULL option pointers of the pool creates are the optional argument. |
@@ -821,6 +823,24 @@ the runtime models (`language`, `button_assign`, date/time format, `timezone`,
 `summer_time`, and `adhoc_channel`); other keys emit name, type, and size only.
 The resulting registry and console-specific files remain in the private
 campaign output directory.
+
+The font-registry probe (`registry-font`, `fixtures/psp_oracle/registry_walk.h`)
+opens no category by a literal path. On PSP-3000 6.6.1 opening a missing
+category creates it, so the probe lists the root through the registry handle
+itself and opens a category only after its open parent listed it as a
+directory with a name shorter than the 26-byte stored-name limit. If the
+registry handle does not list the root, or its listing does not show the
+measured `CONFIG` category as a directory, the probe opens nothing below it and
+records that result. It enters only `/DATA`, `/DATA/FONT`, `/SYSPROFILE` and
+`/SYSPROFILE/RESOLUTION` and what lies below the last two, and reads values only
+there. The build pins the probe's `sceReg` imports to the eight read calls.
+
+The `font-files` case (`PSP-FONTFILES-001`, `fixtures/psp_oracle/font_files.h`)
+is not in the campaign queue; it runs only when the maintainer asks for it. It
+lists `flash0:/font`, opens each regular file read-only, and copies it to
+`host0:/fonts/` for the maintainer's private use, verifying each copy with
+SHA-256 over the flash0 read, the host0 read-back and a second flash0 read. The
+copies and digests are private evidence and are never committed.
 
 The campaign queue is ordered in `tools/psp_oracle/run_psplink.py`. It starts
 with the host0 `transport-write` preflight, then the new cases above, followed

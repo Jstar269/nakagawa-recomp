@@ -1146,6 +1146,801 @@ def _validate_registry_name(value: str, *, category: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# PSP-REGISTRY-002 read-only font-registry walk (fixtures/psp_oracle/registry_walk.h)
+#
+# The stream is font-registry-open, then font-category/font-key records in the
+# walk's enumeration order, then font-registry-done. The parser re-checks the
+# walk's safety contract on the evidence itself: a category appears only right
+# after the key record that listed it as an on-route directory with a name
+# that round-trips, the root is never opened (it is listed through the registry
+# handle, and its children are opened only when that listing showed /CONFIG as
+# a directory), values appear only inside /DATA/FONT and
+# /SYSPROFILE/RESOLUTION, and every listed key is accounted for in order. It
+# does not decide PSP values.
+# ---------------------------------------------------------------------------
+
+REGISTRY_FONT_TEST_ID = "PSP-REGISTRY-002"
+REGISTRY_FONT_HOST0_LOG = "host0:/registry_font_log.txt"
+REGISTRY_FONT_ROUTES = (("DATA", "FONT"), ("SYSPROFILE", "RESOLUTION"))
+REGISTRY_FONT_NAME_MAX = 26
+REGISTRY_FONT_KEYS_MAX = 64
+REGISTRY_FONT_DEPTH_MAX = 6
+REGISTRY_FONT_VALUE_MAX = 1024
+REGISTRY_FONT_ERROR = 0xFFFFFFFF
+REGISTRY_FONT_TYPE_DIR = 1
+REGISTRY_FONT_KEY_METADATA = 0
+REGISTRY_FONT_KEY_VALUE = 1
+REGISTRY_FONT_KEY_OPENED = 2
+REGISTRY_FONT_KEY_OFF_ROUTE = 3
+REGISTRY_FONT_KEY_NAME_REFUSED = 4
+REGISTRY_FONT_KEY_DEPTH_LIMIT = 5
+REGISTRY_FONT_KEY_OPEN_LIMIT = 6
+REGISTRY_FONT_KEY_VALUE_SIZE = 7
+REGISTRY_FONT_KEY_INFO_FAILED = 8
+REGISTRY_FONT_KEY_NAME_UNSAFE = 9
+REGISTRY_FONT_KEY_ROOT_UNVERIFIED = 10
+REGISTRY_FONT_ROOT_ANCHOR = "/CONFIG"
+_REGISTRY_FONT_REFUSALS = frozenset({
+    REGISTRY_FONT_KEY_NAME_REFUSED, REGISTRY_FONT_KEY_DEPTH_LIMIT, REGISTRY_FONT_KEY_OPEN_LIMIT,
+    REGISTRY_FONT_KEY_ROOT_UNVERIFIED,
+})
+_REGISTRY_FONT_NAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,26}")
+
+
+@dataclass(frozen=True)
+class RegistryFontKey:
+    path: str
+    index: int
+    type: int
+    size: int
+    disposition: int
+    value: bytes | None
+
+
+@dataclass(frozen=True)
+class RegistryFontReport:
+    parsed: object
+    complete: bool
+    registry_opened: bool
+    root_enumerated: bool
+    root_verified: bool
+    categories: tuple[str, ...]
+    opened: tuple[str, ...]
+    keys: tuple[RegistryFontKey, ...]
+
+
+def _font_components(path: str) -> list[str]:
+    if path == "/":
+        return []
+    if not path.startswith("/") or path.endswith("/"):
+        raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: malformed registry path {path!r}")
+    parts = path[1:].split("/")
+    if any(not _REGISTRY_FONT_NAME_RE.fullmatch(part) for part in parts):
+        raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: unsafe registry path {path!r}")
+    return parts
+
+
+def _font_on_route(parts: list[str]) -> bool:
+    """Whether a directory at ``parts`` may be entered: a route prefix or below a route."""
+
+    span = min(len(parts), 2)
+    return bool(parts) and any(tuple(parts[:span]) == route[:span] for route in REGISTRY_FONT_ROUTES)
+
+
+def _font_value_subtree(parent: list[str]) -> bool:
+    """Whether keys of the directory ``parent`` are inside a value subtree."""
+
+    return len(parent) >= 2 and tuple(parent[:2]) in REGISTRY_FONT_ROUTES
+
+
+def _font_reopenable(name: str) -> bool:
+    return 0 < len(name) < REGISTRY_FONT_NAME_MAX and not name.startswith("__NAKAGAWA")
+
+
+def _font_fields(record, expected: set[str]) -> dict[str, int | str]:
+    values = dict(record.values)
+    if set(values) != expected:
+        raise ProtocolError(
+            f"{REGISTRY_FONT_TEST_ID}: {record.case_id} fields must be {sorted(expected)}, "
+            f"got {sorted(values)}"
+        )
+    out: dict[str, int | str] = {}
+    for field, value in values.items():
+        if field in {"detail", "value_hex", "name_hex"}:
+            if field != "detail" and not re.fullmatch(r"(?:[0-9a-f]{2})*", value):
+                raise ProtocolError(
+                    f"{REGISTRY_FONT_TEST_ID}: {record.case_id} {field} is not byte encoded"
+                )
+            out[field] = value
+            continue
+        try:
+            out[field] = int(value, 0)
+        except ValueError as exc:
+            raise ProtocolError(
+                f"{REGISTRY_FONT_TEST_ID}: {record.case_id} {field} is not an integer"
+            ) from exc
+    return out
+
+
+def parse_registry_font_output(
+    text: str, *, require_complete: bool = True
+) -> RegistryFontReport:
+    """Validate the read-only font-registry walk and its safety contract."""
+
+    parsed = parse_output(text)
+    records = list(parsed.results)
+    if any(record.test_id != REGISTRY_FONT_TEST_ID for record in records):
+        raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: foreign test_id in font-registry stream")
+    if records[0].case_id != "font-registry-open":
+        raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: stream must start with font-registry-open")
+    opening = _font_fields(records[0], {"result", "out0", "out1"})
+    registry_opened = opening["result"] == 0
+    if (records[0].status == "PASS") != registry_opened:
+        raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: font-registry-open status disagrees")
+    terminal = records[-1].case_id == "font-registry-done" and len(records) > 1
+    body = records[1:-1] if terminal else records[1:]
+    if not registry_opened and body:
+        raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: records after a failed registry open")
+
+    categories: list[str] = []
+    opened: list[str] = []
+    keys: list[RegistryFontKey] = []
+    stack: list[list] = []  # [path, count, next index]
+    pending_open: str | None = None
+    root_enumerated = False
+    for record in body:
+        if record.case_id.startswith("font-category-"):
+            if record.case_id != f"font-category-{len(categories):04d}":
+                raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} is out of sequence")
+            values = _font_fields(record, {"result", "out0", "out1", "out2", "out3", "detail"})
+            path = str(values["detail"])
+            parts = _font_components(path)
+            usable = (values["result"] == 0 and values["out0"] == 0
+                      and values["out1"] <= REGISTRY_FONT_KEYS_MAX
+                      and (values["out1"] == 0 or values["out2"] == 0))
+            if (record.status == "PASS") != usable:
+                raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} status disagrees")
+            if values["out3"] != len(parts):
+                raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} depth disagrees")
+            if not categories:
+                if path != "/" or values["result"] != 0:
+                    raise ProtocolError(
+                        f"{REGISTRY_FONT_TEST_ID}: the first category must be the root listing"
+                    )
+                root_enumerated = usable
+            else:
+                # Safety: a category exists in the evidence only because the key record just
+                # before it listed it as an on-route directory whose name round-trips.
+                if pending_open != path:
+                    raise ProtocolError(
+                        f"{REGISTRY_FONT_TEST_ID}: {path} was opened without being listed "
+                        "as an on-route directory just before"
+                    )
+                if (not _font_on_route(parts) or len(parts) > REGISTRY_FONT_DEPTH_MAX
+                        or not all(_font_reopenable(part) for part in parts)):
+                    raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {path} must never be opened")
+                if values["result"] == 0:
+                    opened.append(path)
+            pending_open = None
+            categories.append(path)
+            if usable and values["out1"] > 0:
+                stack.append([path, values["out1"], 0])
+            continue
+
+        if not record.case_id.startswith("font-key-"):
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: unexpected record {record.case_id!r}")
+        if pending_open is not None:
+            raise ProtocolError(
+                f"{REGISTRY_FONT_TEST_ID}: {pending_open} was listed as opened but has no category"
+            )
+        if record.case_id != f"font-key-{len(keys):04d}":
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} is out of sequence")
+        base = {"result", "out0", "out1", "out2", "out3", "out4", "detail"}
+        raw = dict(record.values)
+        extra = set(raw) - base
+        if extra not in (set(), {"value_hex"}, {"name_hex"}):
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} has invalid fields")
+        values = _font_fields(record, base | extra)
+        while stack and stack[-1][2] >= stack[-1][1]:
+            stack.pop()
+        if not stack:
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} has no listing parent")
+        parent_path, _count, index = stack[-1]
+        if values["out2"] != index:
+            raise ProtocolError(
+                f"{REGISTRY_FONT_TEST_ID}: {record.case_id} breaks the enumeration order"
+            )
+        stack[-1][2] += 1
+        disposition = values["out3"]
+        path = str(values["detail"])
+        if disposition == REGISTRY_FONT_KEY_NAME_UNSAFE:
+            # name_hex is the whole listing slot; a usable name is NUL-terminated inside it.
+            slot = bytes.fromhex(str(values.get("name_hex", "")))
+            name = slot.split(b"\0", 1)[0] if b"\0" in slot else None
+            if ("name_hex" not in values or len(slot) != REGISTRY_FONT_NAME_MAX + 1
+                    or path != parent_path or values["result"] != REGISTRY_FONT_ERROR
+                    or record.status != "FAIL"
+                    or (name is not None
+                        and _REGISTRY_FONT_NAME_RE.fullmatch(name.decode("latin-1")))):
+                raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} unsafe-name record")
+            keys.append(RegistryFontKey(parent_path, index, REGISTRY_FONT_ERROR,
+                                        REGISTRY_FONT_ERROR, disposition, None))
+            continue
+        if "name_hex" in values:
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} has a stray name_hex")
+        parts = _font_components(path)
+        parent_parts = _font_components(parent_path)
+        if parts[:-1] != parent_parts or not parts:
+            raise ProtocolError(
+                f"{REGISTRY_FONT_TEST_ID}: {record.case_id} is not a child of {parent_path}"
+            )
+        is_dir = values["out0"] == REGISTRY_FONT_TYPE_DIR
+        in_values = _font_value_subtree(parent_parts)
+        value = None
+        if "value_hex" in values:
+            if disposition != REGISTRY_FONT_KEY_VALUE or values["out4"] != 0 or not in_values:
+                raise ProtocolError(
+                    f"{REGISTRY_FONT_TEST_ID}: {record.case_id} carries a value it must not have"
+                )
+            value = bytes.fromhex(str(values["value_hex"]))
+            if len(value) != values["out1"]:
+                raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} value size disagrees")
+        ok = values["result"] == 0
+        if (record.status == "PASS") != ok:
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} status disagrees")
+        if disposition == REGISTRY_FONT_KEY_INFO_FAILED:
+            consistent = not ok
+        elif not ok:
+            consistent = False
+        elif disposition == REGISTRY_FONT_KEY_METADATA:
+            consistent = not is_dir and not in_values and values["out4"] == REGISTRY_FONT_ERROR
+        elif disposition == REGISTRY_FONT_KEY_VALUE:
+            consistent = (not is_dir and in_values
+                          and 0 < values["out1"] <= REGISTRY_FONT_VALUE_MAX
+                          and (values["out4"] == 0) == (value is not None))
+        elif disposition == REGISTRY_FONT_KEY_VALUE_SIZE:
+            consistent = (not is_dir and in_values and values["out4"] == REGISTRY_FONT_ERROR
+                          and not 0 < values["out1"] <= REGISTRY_FONT_VALUE_MAX)
+        elif disposition == REGISTRY_FONT_KEY_OPENED:
+            consistent = (is_dir and _font_on_route(parts) and _font_reopenable(parts[-1])
+                          and len(parts) <= REGISTRY_FONT_DEPTH_MAX)
+            pending_open = path
+        elif disposition == REGISTRY_FONT_KEY_OFF_ROUTE:
+            consistent = is_dir and not _font_on_route(parts)
+        elif disposition == REGISTRY_FONT_KEY_NAME_REFUSED:
+            consistent = is_dir and _font_on_route(parts) and not _font_reopenable(parts[-1])
+        elif disposition in (REGISTRY_FONT_KEY_DEPTH_LIMIT, REGISTRY_FONT_KEY_OPEN_LIMIT):
+            consistent = is_dir and _font_on_route(parts)
+        elif disposition == REGISTRY_FONT_KEY_ROOT_UNVERIFIED:
+            consistent = is_dir and _font_on_route(parts) and len(parts) == 1
+        else:
+            consistent = False
+        if not consistent:
+            raise ProtocolError(
+                f"{REGISTRY_FONT_TEST_ID}: {record.case_id} disposition {disposition} "
+                "disagrees with its key"
+            )
+        keys.append(RegistryFontKey(path, index, values["out0"], values["out1"],
+                                    disposition, value))
+
+    if pending_open is not None:
+        raise ProtocolError(
+            f"{REGISTRY_FONT_TEST_ID}: {pending_open} was listed as opened but has no category"
+        )
+    anchor_listed = any(key.path == REGISTRY_FONT_ROOT_ANCHOR
+                        and key.type == REGISTRY_FONT_TYPE_DIR for key in keys)
+    root_opened = any(key.disposition == REGISTRY_FONT_KEY_OPENED
+                      and key.path.count("/") == 1 for key in keys)
+    root_refused = any(key.disposition == REGISTRY_FONT_KEY_ROOT_UNVERIFIED for key in keys)
+    if root_opened and not anchor_listed:
+        raise ProtocolError(
+            f"{REGISTRY_FONT_TEST_ID}: a root category was opened although the listing did not "
+            f"show {REGISTRY_FONT_ROOT_ANCHOR} as a directory"
+        )
+    root_verified = False
+    if terminal:
+        done = _font_fields(records[-1], {
+            "result", "out0", "out1", "out2", "out3", "out4", "out5", "out6",
+        })
+        root_verified = done["out6"] == 1
+        if (done["out6"] not in (0, 1)
+                or (root_verified and (root_refused or not anchor_listed))
+                or (not root_verified and root_opened)):
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: font-registry-done root check disagrees")
+        while stack and stack[-1][2] >= stack[-1][1]:
+            stack.pop()
+        if stack:
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: listed keys are missing before done")
+        refused = sum(1 for key in keys if key.disposition in _REGISTRY_FONT_REFUSALS)
+        expected = {
+            "out0": len(categories), "out1": len(keys), "out2": len(records) - 1,
+            "out3": len(opened), "out4": refused, "out5": int(root_enumerated),
+        }
+        if any(done[field] != value for field, value in expected.items()):
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: font-registry-done counts disagree")
+        if not registry_opened and done["result"] != REGISTRY_FONT_ERROR:
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: registry closed without being opened")
+        if registry_opened and not categories:
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: the root listing record is missing")
+    elif require_complete:
+        raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: stream is missing font-registry-done")
+    return RegistryFontReport(
+        parsed=parsed,
+        complete=terminal,
+        registry_opened=registry_opened,
+        root_enumerated=root_enumerated,
+        root_verified=root_verified,
+        categories=tuple(categories),
+        opened=tuple(opened),
+        keys=tuple(keys),
+    )
+
+
+def _s32(value: int) -> int:
+    return value - (1 << 32) if value & 0x80000000 else value
+
+
+# ---------------------------------------------------------------------------
+# PSP-FONTFILES-001 read-only copy of flash0:/font (fixtures/psp_oracle/font_files.h)
+#
+# font-dir-open, then (when the listing opened) font-mkdir, font-entry-NNNN in
+# listing order, font-dir-close, one font-copy-NNNN per copy candidate, and
+# font-files-done. The parser checks the order, that only regular files with
+# safe names inside the size bound were copied, and that a copy passes only
+# when its three digests and byte counts agree. The copies and digests are
+# private evidence; this parser never decides what a console should hold.
+# ---------------------------------------------------------------------------
+
+FONT_FILES_TEST_ID = "PSP-FONTFILES-001"
+FONT_FILES_HOST0_LOG = "host0:/font_files_log.txt"
+FONT_FILES_ENTRIES_MAX = 64
+FONT_FILES_FILE_MAX = 16 * 1024 * 1024
+FONT_FILES_MATCH_ALL = 7
+_FONT_FILES_NAME_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,62}")
+_SHA256_TEXT_RE = re.compile(r"[0-9a-f]{64}")
+
+
+@dataclass(frozen=True)
+class FontFileEntry:
+    name: str | None
+    name_hex: str | None
+    mode: int
+    attr: int
+    size: int
+    disposition: int
+
+
+@dataclass(frozen=True)
+class FontFileCopy:
+    name: str
+    size: int
+    sha256: str
+    readback_sha256: str
+    reread_sha256: str
+    match: int
+    verified: bool
+
+
+@dataclass(frozen=True)
+class FontFilesReport:
+    parsed: object
+    complete: bool
+    listed: bool
+    entries: tuple[FontFileEntry, ...]
+    copies: tuple[FontFileCopy, ...]
+
+
+def _io_fields(test_id: str, record, expected: set[str], text: set[str]) -> dict[str, object]:
+    values = dict(record.values)
+    if set(values) != expected:
+        raise ProtocolError(
+            f"{test_id}: {record.case_id} fields must be {sorted(expected)}, got {sorted(values)}"
+        )
+    out: dict[str, object] = {}
+    for field, value in values.items():
+        if field in text:
+            out[field] = value
+            continue
+        try:
+            out[field] = int(value, 0)
+        except ValueError as exc:
+            raise ProtocolError(f"{test_id}: {record.case_id} {field} is not an integer") from exc
+    return out
+
+
+def parse_font_files_output(text: str, *, require_complete: bool = True) -> FontFilesReport:
+    """Validate the flash0:/font listing-and-copy stream."""
+
+    tid = FONT_FILES_TEST_ID
+    parsed = parse_output(text)
+    records = list(parsed.results)
+    if any(record.test_id != tid for record in records):
+        raise ProtocolError(f"{tid}: foreign test_id in font-files stream")
+    if records[0].case_id != "font-dir-open":
+        raise ProtocolError(f"{tid}: stream must start with font-dir-open")
+    opening = _io_fields(tid, records[0], {"result", "out0", "out1"}, set())
+    listed = _s32(opening["result"]) >= 0
+    if (records[0].status == "PASS") != listed:
+        raise ProtocolError(f"{tid}: font-dir-open status disagrees")
+    terminal = len(records) > 1 and records[-1].case_id == "font-files-done"
+    body = records[1:-1] if terminal else records[1:]
+    entries: list[FontFileEntry] = []
+    copies: list[FontFileCopy] = []
+    candidates: list[FontFileEntry] = []
+    closed = False
+    if not listed and body:
+        raise ProtocolError(f"{tid}: records after a listing that did not open")
+    if body:
+        if body[0].case_id != "font-mkdir":
+            raise ProtocolError(f"{tid}: font-mkdir must follow an opened listing")
+        _io_fields(tid, body[0], {"result"}, set())
+    for record in body[1:]:
+        if record.case_id.startswith("font-entry-"):
+            if closed or record.case_id != f"font-entry-{len(entries):04d}":
+                raise ProtocolError(f"{tid}: {record.case_id} is out of sequence")
+            raw = dict(record.values)
+            name_field = {"detail"} if "detail" in raw else {"name_hex"}
+            values = _io_fields(tid, record, {"result", "out0", "out1", "out2", "out3", "out4"}
+                                | name_field, {"detail", "name_hex"})
+            name = values.get("detail")
+            name_hex = values.get("name_hex")
+            if name is not None and not _FONT_FILES_NAME_RE.fullmatch(str(name)):
+                raise ProtocolError(f"{tid}: {record.case_id} prints an unsafe name")
+            if name_hex is not None and not re.fullmatch(r"(?:[0-9a-f]{2}){1,64}", str(name_hex)):
+                raise ProtocolError(f"{tid}: {record.case_id} name_hex is not byte encoded")
+            size = values["out2"] | (values["out3"] << 32)
+            if size & (1 << 63):
+                size -= 1 << 64
+            regular = (values["out0"] & 0xF000) == 0x2000
+            disposition = values["out4"]
+            consistent = {
+                0: regular and name is not None and 0 <= size <= FONT_FILES_FILE_MAX,
+                1: not regular,
+                2: regular and name is None,
+                3: regular and name is not None and not 0 <= size <= FONT_FILES_FILE_MAX,
+            }.get(disposition, False)
+            if not consistent or values["result"] <= 0 or record.status != "PASS":
+                raise ProtocolError(f"{tid}: {record.case_id} disposition {disposition} disagrees")
+            entry = FontFileEntry(None if name is None else str(name),
+                                  None if name_hex is None else str(name_hex),
+                                  values["out0"], values["out1"], size, disposition)
+            entries.append(entry)
+            if disposition == 0:
+                candidates.append(entry)
+        elif record.case_id == "font-dir-close":
+            if closed:
+                raise ProtocolError(f"{tid}: font-dir-close repeats")
+            values = _io_fields(tid, record, {"result", "out0", "out1"}, set())
+            if values["out0"] != len(entries):
+                raise ProtocolError(f"{tid}: font-dir-close entry count disagrees")
+            if values["out1"] == 0xFFFFFFFF and len(entries) != FONT_FILES_ENTRIES_MAX:
+                raise ProtocolError(f"{tid}: font-dir-close end result disagrees")
+            if (record.status == "PASS") != (values["result"] == 0 and values["out1"] == 0):
+                raise ProtocolError(f"{tid}: font-dir-close status disagrees")
+            closed = True
+        elif record.case_id.startswith("font-copy-"):
+            index = len(copies)
+            if not closed or record.case_id != f"font-copy-{index:04d}" or index >= len(candidates):
+                raise ProtocolError(f"{tid}: {record.case_id} is out of sequence")
+            values = _io_fields(
+                tid, record,
+                {"result", *(f"out{i}" for i in range(9)), "detail", "sha256",
+                 "readback_sha256", "reread_sha256"},
+                {"detail", "sha256", "readback_sha256", "reread_sha256"},
+            )
+            entry = candidates[index]
+            if values["detail"] != entry.name:
+                raise ProtocolError(f"{tid}: {record.case_id} copies a file it did not list")
+            digests = [str(values[field]) for field in ("sha256", "readback_sha256", "reread_sha256")]
+            if not all(_SHA256_TEXT_RE.fullmatch(digest) for digest in digests):
+                raise ProtocolError(f"{tid}: {record.case_id} digests are malformed")
+            match = values["out8"]
+            expected = 0
+            read_a = _s32(values["out1"])
+            if read_a >= 0 and values["out3"] == values["out1"] and values["out5"] == values["out1"] \
+                    and digests[0] == digests[1]:
+                expected |= 1
+            if read_a >= 0 and values["out7"] == values["out1"] and digests[0] == digests[2]:
+                expected |= 2
+            if read_a >= 0 and read_a == entry.size:
+                expected |= 4
+            # A failed write leaves fewer bytes written than read, so the counts decide bit 0 too.
+            if match != expected:
+                raise ProtocolError(f"{tid}: {record.case_id} match bits disagree with its counts")
+            verified = match == FONT_FILES_MATCH_ALL
+            if verified != (values["result"] == 0) or (record.status == "PASS") != verified:
+                raise ProtocolError(f"{tid}: {record.case_id} status disagrees with its checks")
+            copies.append(FontFileCopy(entry.name or "", entry.size, digests[0], digests[1],
+                                       digests[2], match, verified))
+        else:
+            raise ProtocolError(f"{tid}: unexpected record {record.case_id!r}")
+    if terminal:
+        if listed and (not closed or len(copies) != len(candidates)):
+            raise ProtocolError(f"{tid}: listing or copies incomplete before font-files-done")
+        done = _io_fields(tid, records[-1], {"result", "out0", "out1", "out2", "out3"}, set())
+        expected_done = {
+            "out0": len(entries), "out1": len(candidates),
+            "out2": sum(1 for copy in copies if copy.verified), "out3": len(records) - 1,
+        }
+        if any(done[field] != value for field, value in expected_done.items()):
+            raise ProtocolError(f"{tid}: font-files-done counts disagree")
+    elif require_complete:
+        raise ProtocolError(f"{tid}: stream is missing font-files-done")
+    return FontFilesReport(parsed, terminal, listed, tuple(entries), tuple(copies))
+
+
+# ---------------------------------------------------------------------------
+# PSP-FONTLIST-001 the system font list as the console's own font library reports
+# it (fixtures/psp_oracle/font_list.h)
+#
+# font-list-newlib, then (when the library opened) font-list-count, and when the
+# count is positive font-list-list, font-list-entry-NNNN for every requested
+# index, font-info-NNNN for the same indices, then font-list-donelib and
+# font-list-done. Entries carry the raw style bytes as raw_hex with words 0-7
+# and 40-41 as out0-out9. The parser checks the order, the field sets, each
+# record's own consistency and the counts; it never decides what fonts a console
+# should hold. Names inside the entries are console strings and stay private.
+# ---------------------------------------------------------------------------
+
+FONT_LIST_TEST_ID = "PSP-FONTLIST-001"
+FONT_LIST_HOST0_LOG = "host0:/font_list_log.txt"
+FONT_LIST_ENTRIES_MAX = 64
+FONT_LIST_STYLE_BYTES = 168
+FONT_LIST_UNTOUCHED = 0xA5A5A5A5
+_FONT_LIST_WORD_FIELDS = frozenset(f"out{i}" for i in range(10))
+_FONT_LIST_RAW_RE = re.compile(r"(?:[0-9a-f]{2}){168}")
+
+
+@dataclass(frozen=True)
+class FontListEntry:
+    index: int
+    words: tuple[int, ...]
+    raw: bytes
+    ok: bool
+    result: int
+
+
+@dataclass(frozen=True)
+class FontListReport:
+    parsed: object
+    complete: bool
+    library: int
+    library_ok: bool
+    count: int | None
+    requested: int
+    entries: tuple[FontListEntry, ...]
+    infos: tuple[FontListEntry, ...]
+    failures: int | None
+
+
+def _font_list_error_clean(error: int) -> bool:
+    """An error word the library wrote as 0, or never wrote (the probe's untouched marker)."""
+    return error in (0, FONT_LIST_UNTOUCHED)
+
+
+def _font_list_entry(tid: str, record, prefix: str, index: int) -> FontListEntry:
+    expected_id = f"{prefix}{index:04d}"
+    if record.case_id != expected_id:
+        raise ProtocolError(f"{tid}: {record.case_id} is out of sequence; expected {expected_id}")
+    values = _io_fields(tid, record, {"result", "raw_hex", *_FONT_LIST_WORD_FIELDS}, {"raw_hex"})
+    raw_hex = str(values["raw_hex"])
+    if not _FONT_LIST_RAW_RE.fullmatch(raw_hex):
+        raise ProtocolError(f"{tid}: {record.case_id} raw_hex is not {FONT_LIST_STYLE_BYTES} bytes")
+    raw = bytes.fromhex(raw_hex)
+    words = tuple(values[f"out{i}"] for i in range(10))
+    expected = tuple(int.from_bytes(raw[4 * i:4 * i + 4], "little") for i in range(8)) + (
+        int.from_bytes(raw[0xA0:0xA4], "little"), int.from_bytes(raw[0xA4:0xA8], "little"))
+    if words != expected:
+        raise ProtocolError(f"{tid}: {record.case_id} out words disagree with raw_hex")
+    return FontListEntry(index, words, raw, record.status == "PASS", values["result"])
+
+
+def parse_font_list_output(text: str, *, require_complete: bool = True) -> FontListReport:
+    """Validate the font-library list stream."""
+
+    tid = FONT_LIST_TEST_ID
+    parsed = parse_output(text)
+    records = list(parsed.results)
+    if not records:
+        raise ProtocolError(f"{tid}: empty font-list stream")
+    if any(record.test_id != tid for record in records):
+        raise ProtocolError(f"{tid}: foreign test_id in font-list stream")
+    if records[0].case_id != "font-list-newlib":
+        raise ProtocolError(f"{tid}: stream must start with font-list-newlib")
+    newlib = _io_fields(tid, records[0], {"result", "out0", "out1", "out2", "out3", "out4"}, set())
+    library = newlib["result"]
+    library_ok = library != 0 and _font_list_error_clean(newlib["out0"])
+    if (records[0].status == "PASS") != library_ok:
+        raise ProtocolError(f"{tid}: font-list-newlib status disagrees")
+    terminal = len(records) > 1 and records[-1].case_id == "font-list-done"
+    body = records[1:-1] if terminal else records[1:]
+    failures = 0 if library_ok else 1
+    count: int | None = None
+    requested = 0
+    entries: list[FontListEntry] = []
+    infos: list[FontListEntry] = []
+    donelib_seen = False
+    position = 0
+    if library == 0:
+        if body:
+            raise ProtocolError(f"{tid}: records after a library that did not open")
+    else:
+        if position < len(body):
+            record = body[position]
+            position += 1
+            if record.case_id != "font-list-count":
+                raise ProtocolError(f"{tid}: font-list-count must follow font-list-newlib")
+            values = _io_fields(tid, record, {"result", "out0", "out1"}, set())
+            count = _s32(values["result"])
+            requested = values["out1"]
+            count_ok = 0 <= count <= FONT_LIST_ENTRIES_MAX and _font_list_error_clean(values["out0"])
+            if (record.status == "PASS") != count_ok:
+                raise ProtocolError(f"{tid}: font-list-count status disagrees")
+            if requested != min(max(count, 0), FONT_LIST_ENTRIES_MAX):
+                raise ProtocolError(f"{tid}: font-list-count requested count disagrees with the count")
+            if not count_ok:
+                failures += 1
+        elif require_complete:
+            raise ProtocolError(f"{tid}: stream is missing font-list-count")
+        if requested > 0 and position < len(body):
+            record = body[position]
+            position += 1
+            if record.case_id != "font-list-list":
+                raise ProtocolError(f"{tid}: font-list-list must follow font-list-count")
+            values = _io_fields(tid, record, {"result", "out0"}, set())
+            if values["out0"] != requested:
+                raise ProtocolError(f"{tid}: font-list-list requested count disagrees")
+            list_ok = _s32(values["result"]) >= 0
+            if (record.status == "PASS") != list_ok:
+                raise ProtocolError(f"{tid}: font-list-list status disagrees")
+            if not list_ok:
+                failures += 1
+            for index in range(requested):
+                if position >= len(body):
+                    break
+                entry = _font_list_entry(tid, body[position], "font-list-entry-", index)
+                position += 1
+                if entry.ok != list_ok or entry.result != 0:
+                    raise ProtocolError(f"{tid}: {body[position - 1].case_id} disagrees with font-list-list")
+                entries.append(entry)
+            for index in range(requested):
+                if position >= len(body):
+                    break
+                info = _font_list_entry(tid, body[position], "font-info-", index)
+                position += 1
+                if info.ok != (info.result == 0):
+                    raise ProtocolError(f"{tid}: {body[position - 1].case_id} status disagrees")
+                if not info.ok:
+                    failures += 1
+                infos.append(info)
+        if position < len(body):
+            record = body[position]
+            position += 1
+            if record.case_id != "font-list-donelib":
+                raise ProtocolError(f"{tid}: {record.case_id} is out of sequence; expected font-list-donelib")
+            values = _io_fields(tid, record, {"result", "out0", "out1"}, set())
+            donelib_ok = values["result"] == 0
+            if (record.status == "PASS") != donelib_ok:
+                raise ProtocolError(f"{tid}: font-list-donelib status disagrees")
+            if not donelib_ok:
+                failures += 1
+            donelib_seen = True
+        if position < len(body):
+            raise ProtocolError(f"{tid}: unexpected record {body[position].case_id}")
+    done_failures: int | None = None
+    if terminal:
+        values = _io_fields(tid, records[-1],
+                            {"result", "out0", "out1", "out2", "out3", "out4", "out5", "out6"}, set())
+        if library != 0 and not donelib_seen:
+            raise ProtocolError(f"{tid}: font-list-done before font-list-donelib")
+        if len(entries) != requested or len(infos) != requested:
+            raise ProtocolError(f"{tid}: entries or infos incomplete before font-list-done")
+        if values["out0"] != len(entries) or values["out1"] != sum(1 for info in infos if info.ok):
+            raise ProtocolError(f"{tid}: font-list-done counts disagree")
+        if values["out6"] != failures:
+            raise ProtocolError(f"{tid}: font-list-done failure count disagrees")
+        if (records[-1].status == "PASS") != (failures == 0):
+            raise ProtocolError(f"{tid}: font-list-done status disagrees")
+        done_failures = values["out6"]
+    elif require_complete:
+        raise ProtocolError(f"{tid}: stream is missing font-list-done")
+    return FontListReport(parsed, terminal, library, library_ok, count, requested,
+                          tuple(entries), tuple(infos), done_failures)
+
+
+# ---------------------------------------------------------------------------
+# PSP-UMDIO-001 bare-device and disc open results (fixtures/psp_oracle/umd_io.h)
+#
+# umd-state-before, io-open-NNNN for each fixed open, io-dopen-NNNN for each
+# fixed dopen, umd-state-after, umdio-done. The path lists below mirror the
+# probe source (a test keeps them equal); the parser records results and never
+# decides which answer is correct.
+# ---------------------------------------------------------------------------
+
+UMDIO_TEST_ID = "PSP-UMDIO-001"
+UMDIO_HOST0_LOG = "host0:/umd_io_log.txt"
+UMDIO_OPENS = (
+    ("umd0:", 0x1), ("umd1:", 0x1), ("umd:", 0x1), ("umd0:/", 0x1), ("umd1:/", 0x1),
+    ("disc0:", 0x1), ("disc0:/", 0x1), ("disc0:/PSP_GAME", 0x1),
+    ("disc0:/PSP_GAME/SYSDIR", 0x1), ("disc0:/UMD_DATA.BIN", 0x1),
+    ("umd0:", 0xF0001), ("umd1:", 0xF0001), ("msstor0p1:/", 0x1),
+)
+UMDIO_DOPENS = ("umd0:", "umd1:", "umd:", "disc0:", "disc0:/", "disc0:/PSP_GAME")
+
+
+@dataclass(frozen=True)
+class UmdIoReport:
+    parsed: object
+    complete: bool
+    before: tuple[int, int]
+    after: tuple[int, int] | None
+    opens: tuple[tuple[str, int, int, int], ...]
+    dopens: tuple[tuple[str, int, int], ...]
+
+
+def parse_umd_io_output(text: str, *, require_complete: bool = True) -> UmdIoReport:
+    """Validate the fixed bare-device open/dopen stream."""
+
+    tid = UMDIO_TEST_ID
+    parsed = parse_output(text)
+    records = list(parsed.results)
+    if any(record.test_id != tid for record in records):
+        raise ProtocolError(f"{tid}: foreign test_id in umd-io stream")
+    expected = (["umd-state-before"]
+                + [f"io-open-{i:04d}" for i in range(len(UMDIO_OPENS))]
+                + [f"io-dopen-{i:04d}" for i in range(len(UMDIO_DOPENS))]
+                + ["umd-state-after", "umdio-done"])
+    observed = [record.case_id for record in records]
+    if observed != expected[:len(observed)]:
+        raise ProtocolError(f"{tid}: records out of order: {observed}")
+    complete = len(observed) == len(expected)
+    if not complete and require_complete:
+        raise ProtocolError(f"{tid}: stream is missing umdio-done")
+    before = after = None
+    opens: list[tuple[str, int, int, int]] = []
+    dopens: list[tuple[str, int, int]] = []
+    for record in records:
+        if record.status != "PASS":
+            raise ProtocolError(f"{tid}: {record.case_id} must be PASS (results are recorded)")
+        if record.case_id.startswith("umd-state-"):
+            values = _io_fields(tid, record, {"result", "out0"}, set())
+            state = (values["result"], values["out0"])
+            if record.case_id == "umd-state-before":
+                before = state
+            else:
+                after = state
+        elif record.case_id.startswith("io-open-"):
+            values = _io_fields(tid, record, {"result", "out0", "out1", "detail"}, {"detail"})
+            path, flags = UMDIO_OPENS[len(opens)]
+            if values["detail"] != path or values["out0"] != flags:
+                raise ProtocolError(f"{tid}: {record.case_id} is not the source's open {path}")
+            if (_s32(values["result"]) < 0) != (values["out1"] == 0xFFFFFFFF):
+                raise ProtocolError(f"{tid}: {record.case_id} close result disagrees")
+            opens.append((path, flags, values["result"], values["out1"]))
+        elif record.case_id.startswith("io-dopen-"):
+            values = _io_fields(tid, record, {"result", "out0", "detail"}, {"detail"})
+            path = UMDIO_DOPENS[len(dopens)]
+            if values["detail"] != path:
+                raise ProtocolError(f"{tid}: {record.case_id} is not the source's dopen {path}")
+            if (_s32(values["result"]) < 0) != (values["out0"] == 0xFFFFFFFF):
+                raise ProtocolError(f"{tid}: {record.case_id} close result disagrees")
+            dopens.append((path, values["result"], values["out0"]))
+        elif record.case_id == "umdio-done":
+            values = _io_fields(tid, record, {"result", "out0", "out1", "out2", "out3", "out4"},
+                                set())
+            counts = {
+                "out0": len(UMDIO_OPENS),
+                "out1": sum(1 for item in opens if _s32(item[2]) >= 0),
+                "out2": len(UMDIO_DOPENS),
+                "out3": sum(1 for item in dopens if _s32(item[1]) >= 0),
+                "out4": len(records) - 1,
+            }
+            if any(values[field] != value for field, value in counts.items()):
+                raise ProtocolError(f"{tid}: umdio-done counts disagree")
+    return UmdIoReport(parsed, complete, before, after, tuple(opens), tuple(dopens))
+
+
+# ---------------------------------------------------------------------------
 # PSP-CACHE-001 dcache/uncached-alias probe
 #
 # The record contract is derived from ``fixtures/psp_oracle/probe.c``
