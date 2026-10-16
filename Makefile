@@ -697,7 +697,7 @@ EXE_EXT             := .exe
 # its own executable-anchored root, so the step is absent rather than emulated
 # by a second copy script. A missing asset is reported by the runtime itself
 # (font_load / data walk), never silently ignored here.
-ASSET_COPY_STEP     = $(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File tools/copy_build_assets.ps1 -BuildDir "$(BUILD_DIR)" -Sdl3DllPath "$(SDL3_DLL)" $(ASSET_COPY_ARGS)
+ASSET_COPY_STEP     = $(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File tools/copy_build_assets.ps1 -BuildDir "$(BUILD_DIR)" -ProjectFontDir "$(PROJECT_FONT_GENERATED_DIR)" -Sdl3DllPath "$(SDL3_DLL)" $(ASSET_COPY_ARGS)
 else
 PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
 PLAYER_PLATFORM_LIBS :=
@@ -1973,7 +1973,10 @@ endif
 endif
 -include $(DEP_FILES)
 
-PROJECT_FONT_GENERATED_DIR := $(BUILD_DIR)/project-font
+# The project PGFs depend only on their pinned sources and the converter, not on the title
+# or build configuration, so every BUILD_DIR under one BUILD_ROOT shares one generated set
+# (the platform ladder's rungs and each title build would otherwise regenerate them).
+PROJECT_FONT_GENERATED_DIR := $(BUILD_ROOT)/project-font
 PROJECT_FONT_GENERATED_DIR_PY := $(subst \,/,$(PROJECT_FONT_GENERATED_DIR))
 
 # Keep every internal target visible to the static target inventory.

@@ -19,7 +19,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$BuildDir,
     [switch]$ExcludeOptionalFonts,
-    [string]$Sdl3DllPath = ''
+    [string]$Sdl3DllPath = '',
+    # The shared generated project-font directory (the Makefile passes $(BUILD_ROOT)/project-font).
+    [string]$ProjectFontDir = ''
 )
 
 New-Item -ItemType Directory -Path $BuildDir -Force | Out-Null
@@ -62,7 +64,7 @@ if (-not $ExcludeOptionalFonts) {
 # Stage them after the optional source-font copy so that replacing the destination
 # directory cannot remove a generated default. They are part of every runtime
 # build, including builds that omit optional source fonts.
-$generatedFontDir = Join-Path $BuildDir 'project-font'
+$generatedFontDir = if ($ProjectFontDir) { $ProjectFontDir } else { Join-Path $BuildDir 'project-font' }
 if (-not (Test-Path -LiteralPath $generatedFontDir -PathType Container)) {
     throw "PROJECT_FONT_OUTPUT_DIR_MISSING: $generatedFontDir was not generated; the compile target builds it (project-fonts)"
 }
