@@ -340,7 +340,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "d52e1c926aef3dff858b9aab4923fdc8b340b962e21a31f6b48f005a43a61a0a"
+      "sha256": "c5826aa663c5cc3f3d22bcf094982f3ffe1ad69f99bbc772d0a1d33e8b2c7e4a"
     },
     {
       "path": "NOTICE.md",
@@ -715,7 +715,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "aac416c449056a47a7b2a849da755f6ad8adc96681b95e01c42401c2c0a2da84"
+      "sha256": "3151dbef7bf2dad8db172e33fbbaa3005c06a983ec0adc6742b20ad55e1fb61a"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -4360,6 +4360,30 @@
       "sha256": "8bee724a89d9c045cc9a4b8185d78819665c3b068563ec82a92cf55e6c941a3b"
     },
     {
+      "path": "src/rt/audio_resample.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "audio-src-band-limited-resampler",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "2a7fca02295e495d0a68f8e3399d849b5d0238bcdac93bdd5ae1d77163b22870"
+    },
+    {
+      "path": "src/rt/audio_resample.h",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "audio-src-band-limited-resampler",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "b714c1572366c3faee8c7cf0d38c34bdbb42b86d91aac5bdefdcd6a762ada563"
+    },
+    {
       "path": "src/rt/audio_unavailable.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -5168,7 +5192,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "243b68716961b8c574ab2319da2e2a262f59b076d2b77a8d42e82a066c7e3b59"
+      "sha256": "3ff6eb7aa9765aae7d84f3b3e7464762600d06d0a4d484bcd08bb0381874f3ab"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5206,7 +5230,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "771b4945f3e6f4c786986df93c4cd79ddaf564ce914db98d34a4da99465e1227"
+      "sha256": "7a1bbcf95ae7d6b8714926547f286c1aec3ab3e4c372d9d0bf30d3992a284b3f"
     },
     {
       "path": "src/rt/intr_conformance.h",
