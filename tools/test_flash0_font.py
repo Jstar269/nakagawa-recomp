@@ -3,11 +3,12 @@
 
 """Regression for the read-only flash0: font device (src/rt/flash0_font.c).
 
-The driver lays out a synthetic root with tools/pgf_writer.py: the project fonts for the latin and
-japanese slots, and the user-imported latin cache. The cache is written by the Python importer
-(tools/nk_core/fonts.py, ``import_fonts``), which also writes the manifest the native reader and
-the player check, so the two sides share one writer. File names and the cache layout come from
-src/core/nk_font_slots.h, the header the device and the import flow share.
+The driver lays out a synthetic root with tools/pgf_writer.py: project fonts for the latin and
+japanese slots, and the user-imported latin cache. A separate native device case proves that
+project latin and Korean files resolve with no imports. The cache is written by the Python
+importer (tools/nk_core/fonts.py, ``import_fonts``), which also writes the manifest the native
+reader and the player check, so the two sides share one writer. File names and the cache layout
+come from src/core/nk_font_slots.h, the header the device and the import flow share.
 
 The native part runs the HLE selftest's ``--flash0-font`` mode once per case, against production
 hle.c IO entry points:
@@ -45,6 +46,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
 sys.path.insert(0, str(ROOT / "tools"))
 
 import pgf_writer  # noqa: E402
@@ -83,6 +85,7 @@ USER_ROOT_PREFIX = "flash0: SR_USER_DATA_ROOT"
 LATIN_CACHE_CODES = (0x41, 0x61, 0x62, 0x63, 0x64)
 LATIN_PROJECT_CODES = tuple(range(0x41, 0x5B)) + tuple(range(0x61, 0x7B))
 JAPANESE_PROJECT_CODES = (0x3042, 0x3044, 0x3046, 0x3048, 0x304A)
+KOREAN_PROJECT_CODES = (0x41, 0xAC00, 0xD55C)
 FLASH0_HEADER = ROOT / "src" / "rt" / "flash0_font.h"
 VFS_HEADER = ROOT / "src" / "rt" / "vfs_contained.h"
 SELFTEST_SOURCE = ROOT / "src" / "rt" / "hle_thread_selftest.c"
@@ -433,6 +436,127 @@ FONT_DIR_REFUSAL = (
     "flash0: SR_FONTDIR is configured but is not a valid absolute path; the project font source is skipped"
 )
 FONT_DIR_UNREADABLE = "flash0: SR_FONTDIR could not be read; the project font source is skipped"
+
+
+FLASH0_PROJECT_SLOT_HARNESS_C = r'''
+#include "src/core/nk_font.h"
+#include "src/core/nk_platform.h"
+#include "src/rt/flash0_font.h"
+
+#include <stdio.h>
+#include <string.h>
+
+FILE *nk_fopen_utf8(const char *path, const char *mode) {
+    return fopen(path, mode);
+}
+
+char nk_platform_path_separator(void) {
+#ifdef _WIN32
+    return '\\';
+#else
+    return '/';
+#endif
+}
+
+bool nk_platform_file_exists(const char *path) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return false;
+    fclose(fp);
+    return true;
+}
+
+bool nk_platform_absolute_path(const char *path, char *out_path, size_t max_len) {
+    size_t length = strlen(path);
+    if (length >= max_len) return false;
+    memcpy(out_path, path, length + 1u);
+    return true;
+}
+
+NkFontSlotCheck nk_font_check_cache_slot_file(const char *user_data_root, NkFontSlot slot,
+                                              FILE *cache_file, char *reason, size_t reason_len) {
+    (void)user_data_root;
+    (void)slot;
+    (void)cache_file;
+    (void)reason;
+    (void)reason_len;
+    return NK_FONT_SLOT_CHECK_FILE_INVALID;
+}
+
+int main(int argc, char **argv) {
+    Flash0Sources sources = {0};
+    const NkFontSlot slots[] = {NK_FONT_SLOT_LATIN, NK_FONT_SLOT_KOREAN};
+    if (argc != 2 || strlen(argv[1]) >= sizeof(sources.project_dir)) return 2;
+    memcpy(sources.project_dir, argv[1], strlen(argv[1]) + 1u);
+    for (size_t index = 0; index < sizeof(slots) / sizeof(slots[0]); ++index) {
+        NkFontSlot slot = slots[index];
+        const char *source = NULL;
+        char path[SR_FLASH0_PATH_MAX];
+        FILE *fp = NULL;
+        uint32_t size = 0;
+        char guest_path[128];
+        snprintf(guest_path, sizeof(guest_path), "flash0:/font/%s",
+                 slot == NK_FONT_SLOT_LATIN ? NK_FONT_SLOT_LATIN_FILE : NK_FONT_SLOT_KOREAN_FILE);
+        if (sr_flash0_font_open(guest_path, 0u, &sources, &fp, &size) != 0u || !fp || size == 0u)
+            return 3;
+        fclose(fp);
+        if (!sr_flash0_font_resolve_path(&sources, slot, path, sizeof(path), &source) ||
+            !source || strcmp(source, "project") != 0) return 4;
+        printf("%s %s %s\n", sr_flash0_font_slot_label(slot), source, path);
+    }
+    {
+        SrFontRegistryInfo info;
+        if (sr_flash0_font_registry_info(&sources, 17u, &info) != SR_FONT_REGISTRY_PRESENT ||
+            info.slot != NK_FONT_SLOT_KOREAN || strcmp(info.source, "project") != 0 ||
+            strcmp(info.font_name, "Nakagawa Project Korean") != 0) return 5;
+        printf("index17 %s %s\n", info.source, info.file_name);
+    }
+    return 0;
+}
+'''
+
+
+class ProjectSlotResolutionTests(unittest.TestCase):
+    """The production flash0 device resolves project Latin and Korean files without imports."""
+
+    def test_latin_and_korean_slots_resolve_to_project_files(self) -> None:
+        if CC is None:
+            self.skipTest("no C compiler on PATH")
+        with tempfile.TemporaryDirectory(prefix="flash0-project-slots-") as tmp:
+            root = Path(tmp)
+            project = root / "project"
+            project.mkdir()
+            fonts_by_file = {
+                header_string("NK_FONT_SLOT_LATIN_FILE"): synthetic_pgf(LATIN_PROJECT_CODES),
+                header_string("NK_FONT_SLOT_KOREAN_FILE"):
+                    synthetic_pgf(KOREAN_PROJECT_CODES, "Nakagawa Project Korean"),
+            }
+            for file_name, image in fonts_by_file.items():
+                self.assertEqual(fonts.validate_pgf_data(image)["slot"],
+                                 "korean" if file_name == "nkkr.pgf" else "latin")
+                (project / file_name).write_bytes(image)
+
+            source = root / "project_slots.c"
+            source.write_text(FLASH0_PROJECT_SLOT_HARNESS_C, encoding="utf-8")
+            executable = root / ("project_slots.exe" if os.name == "nt" else "project_slots")
+            build = subprocess.run(
+                [CC, "-std=c99", "-Wall", "-Wextra", "-Werror", f"-I{ROOT}",
+                 str(source), str(ROOT / "src" / "rt" / "flash0_font.c"), "-o", str(executable)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(build.returncode, 0, build.stderr)
+            result = subprocess.run(
+                [str(executable), str(project)], capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            lines = result.stdout.splitlines()
+            self.assertEqual(len(lines), 3)
+            self.assertTrue(lines[0].startswith("latin project "), result.stdout)
+            self.assertTrue(lines[0].endswith("nkltn.pgf"), result.stdout)
+            self.assertTrue(lines[1].startswith("korean project "), result.stdout)
+            self.assertTrue(lines[1].endswith("nkkr.pgf"), result.stdout)
+            self.assertEqual(lines[2], "index17 project nkkr.pgf")
 
 
 class Flash0FontDirRefusalNativeTests(unittest.TestCase):

@@ -15,6 +15,7 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 SELFTEST_C = ROOT / "src" / "rt" / "asset_index_selftest.c"
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
+POWERSHELL = shutil.which("powershell") or shutil.which("pwsh")
 
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
@@ -130,6 +131,69 @@ class TestAssetIndexSelftestC(unittest.TestCase):
                 expected_common,
             )
             self.assertEqual(long_inventory[(deep_relative / "deep.to").as_posix()], b"deep")
+
+
+class TestProjectFontBuildWiring(unittest.TestCase):
+    def test_makefile_uses_one_rule_family_for_all_project_slots(self):
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("define PROJECT_FONT_RULE", makefile)
+        for target in ("japanese", "latin", "korean"):
+            self.assertIn(f"PROJECT_FONT_RULE,{target},", makefile)
+            self.assertIn(f"project-{target}-font", makefile)
+        self.assertIn("project-fonts: $(PROJECT_FONT_SLOT_TARGETS)", makefile)
+        self.assertIn("compile: | project-fonts", makefile)
+
+
+@unittest.skipUnless(POWERSHELL, "PowerShell is required to exercise tools/copy_build_assets.ps1")
+class TestProjectFontAssetCopy(unittest.TestCase):
+    OUTPUTS = (
+        "nkjpn.pgf", "nkjpn.json", "nkjpn-OFL.txt",
+        "nkltn.pgf", "nkltn.json", "nkltn-OFL.txt",
+        "nkkr.pgf", "nkkr.json", "nkkr-OFL.txt",
+    )
+
+    def _run_copy(self, build_dir: Path) -> subprocess.CompletedProcess[str]:
+        assert POWERSHELL is not None
+        return subprocess.run(
+            [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+             str(ROOT / "tools" / "copy_build_assets.ps1"), "-BuildDir", str(build_dir),
+             "-ExcludeOptionalFonts"],
+            cwd=build_dir.parent,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_all_project_slot_outputs_are_staged_with_their_own_licence(self):
+        with tempfile.TemporaryDirectory(prefix="project-font-assets-") as tmp:
+            build = Path(tmp) / "build"
+            generated = build / "project-font"
+            generated.mkdir(parents=True)
+            expected = {}
+            for name in self.OUTPUTS:
+                content = f"synthetic project asset: {name}\n".encode("ascii")
+                (generated / name).write_bytes(content)
+                expected[name] = content
+            result = self._run_copy(build)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            runtime = build / "font"
+            self.assertEqual(
+                {name: (runtime / name).read_bytes() for name in self.OUTPUTS},
+                expected,
+            )
+
+    def test_missing_project_slot_output_fails_by_name(self):
+        with tempfile.TemporaryDirectory(prefix="project-font-missing-") as tmp:
+            build = Path(tmp) / "build"
+            generated = build / "project-font"
+            generated.mkdir(parents=True)
+            for name in self.OUTPUTS:
+                if name != "nkkr.pgf":
+                    (generated / name).write_bytes(b"synthetic\n")
+            result = self._run_copy(build)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("PROJECT_FONT_OUTPUT_INCOMPLETE", result.stdout + result.stderr)
+            self.assertIn("nkkr.pgf", result.stdout + result.stderr)
 
     def test_production_font_policy_has_distinct_configured_and_absent_roots(self):
         hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")

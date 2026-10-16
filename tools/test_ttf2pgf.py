@@ -62,6 +62,9 @@ LICENSE_TEXT = FONT_DIR / "OFL.txt"
 JAPANESE_FONT_DIR = ROOT / "fixtures" / "fonts" / "mplus1p"
 JAPANESE_FONT = JAPANESE_FONT_DIR / "MPLUS1p-Regular.ttf"
 JAPANESE_PIN = JAPANESE_FONT_DIR / "PIN.json"
+KOREAN_FONT_DIR = ROOT / "fixtures" / "fonts" / "gowundodum"
+KOREAN_FONT = KOREAN_FONT_DIR / "GowunDodum-Regular.ttf"
+KOREAN_PIN = KOREAN_FONT_DIR / "PIN.json"
 
 DEFAULT_CODES = (0x20, 0x7E)
 PPEM_SHAPE = 16  # large enough that the source-owned H shape is unambiguous
@@ -755,6 +758,55 @@ class JapaneseCodePointCoverageTests(unittest.TestCase):
         self.assertEqual(missing, [], "the selected Japanese font must cover every assigned JIS code point")
 
 
+class ProjectCodePointCoverageTests(unittest.TestCase):
+    """Built-in Latin and Korean repertoires stay stable and pinned fonts cover them."""
+
+    def test_latin_set_is_exact_and_mplus_covers_every_assigned_point(self) -> None:
+        points = ttf2pgf.latin_1_text_code_points()
+        self.assertEqual(len(points.codes), 348)
+        self.assertEqual(points.codes, tuple(sorted(set(points.codes))))
+        self.assertEqual(points.source, "builtin:latin-1-text")
+        self.assertEqual(points.sha256, "7fbcaac92248acdb1c2704c3fef2181e7bc49f2b0e9d0f970cd029fb58057340")
+        expected = (
+            set(range(0x20, 0x7F))
+            | set(range(0xA0, 0x100))
+            | set(range(0x100, 0x180))
+            | set(range(0x2010, 0x2028))
+            | {0x2030, 0x2039, 0x203A, 0x20AC, 0x2122}
+        )
+        self.assertEqual(set(points.codes), expected)
+        data = JAPANESE_FONT.read_bytes()
+        pin = load_pin(JAPANESE_PIN, data)
+        self.assertEqual(pin.spdx, "OFL-1.1")
+        font = ttf2pgf._Ttf(data)
+        missing = [code for code in points.codes if font.glyph_id(code) is None]
+        self.assertEqual(missing, [], "M PLUS 1p must cover all 348 Latin text points")
+
+    def test_korean_set_is_codec_derived_and_gowun_covers_every_assigned_point(self) -> None:
+        points = ttf2pgf.ks_x_1001_korean_code_points()
+        rows = (1, 2, 3, 4, 6, 7, 8, 9)
+        row_counts = tuple(len(ttf2pgf._ks_x_1001_rows((row,))) for row in rows)
+        self.assertEqual(row_counts, (94, 71, 94, 93, 68, 79, 91, 94))
+        self.assertEqual(sum(row_counts), 684)
+        self.assertEqual(len(points.codes), 11951)
+        self.assertEqual(points.codes, tuple(sorted(set(points.codes))))
+        self.assertEqual(points.source, "builtin:ks-x-1001-hangul-syllables-korean")
+        self.assertEqual(points.sha256, "50596a7f6e0e5158561147eae40a38edc12c28b1a4be3efff6d717c74b638bc4")
+        self.assertTrue(set(range(0x20, 0x7F)).issubset(points.codes))
+        self.assertTrue(set(range(0xAC00, 0xD7A4)).issubset(points.codes))
+        self.assertTrue({0x3000, 0x3131, 0x2500, 0x3395, 0xFFE6}.issubset(points.codes))
+
+        data = KOREAN_FONT.read_bytes()
+        pin = load_pin(KOREAN_PIN, data)
+        self.assertEqual(pin.spdx, "OFL-1.1")
+        self.assertEqual(pin.reserved_font_names, ())
+        self.assertNotRegex(pin.license_text, r"(?im)^\s*Reserved Font Name\s*:")
+        ttf2pgf.validate_output_name("Nakagawa Open Korean", pin)
+        font = ttf2pgf._Ttf(data)
+        missing = [code for code in points.codes if font.glyph_id(code) is None]
+        self.assertEqual(missing, [], "Gowun Dodum must cover the complete assigned Korean set")
+
+
 class ReaderRoundTripTests(unittest.TestCase):
     """Layer 1: the generated font opens through the production reader path."""
 
@@ -954,6 +1006,44 @@ class ReaderRoundTripTests(unittest.TestCase):
             self.assertEqual(char_line[2], "1")
             self.assertEqual(draw_line[2:4], [str(glyph.width), str(glyph.height)])
             self.assertEqual(list(bytes.fromhex(draw_line[4])), list(glyph.samples))
+
+    def test_korean_sparse_map_round_trips_through_native_reader(self) -> None:
+        data = KOREAN_FONT.read_bytes()
+        codes = (0x41, 0xAC00, 0xD55C, 0xFFE6)
+        code_points = ttf2pgf.CodePointSet(
+            codes=codes,
+            sha256=hashlib.sha256(b"Korean sparse reader fixture").hexdigest(),
+            source="test:korean-sparse",
+        )
+        conversion = convert(
+            data,
+            input_path=str(KOREAN_FONT),
+            output_path="korean-sparse.pgf",
+            code_points=code_points,
+            ppem=12,
+            font_name="Nakagawa Open Korean",
+            pin=load_pin(KOREAN_PIN, data),
+        )
+        first, last = struct.unpack_from("<HH", conversion.image, 0xB6)
+        self.assertEqual((first, last), (codes[0], codes[-1]))
+        self.assertEqual(struct.unpack_from("<I", conversion.image, 0x10)[0], last - first + 1)
+        self.assertEqual(struct.unpack_from("<I", conversion.image, 0x14)[0], len(codes))
+        probes = [*codes, 0xAC01, 0x3042]
+        lines = self._read_back(conversion.image, probes)
+        self.assertEqual(lines[0], "open ok")
+        font = bytes.fromhex(lines[1].removeprefix("font "))
+        name = b"Nakagawa Open Korean"
+        self.assertEqual(font[0x7C : 0x7C + len(name)], name)
+        self.assertEqual(struct.unpack_from("<I", font, 0x54)[0], last - first + 1)
+        records = lines[2:]
+        for index, code in enumerate(probes):
+            char_line = records[index * 2].split(" ")
+            draw_line = records[index * 2 + 1].split(" ")
+            if code in (0xAC01, 0x3042):
+                self.assertEqual(char_line[2], "0", f"U+{code:04X} absence")
+                self.assertEqual(draw_line[:3], ["draw", str(code), "none"])
+            else:
+                self.assertEqual(char_line[2], "1", f"U+{code:04X} presence")
 
 
 def _joined(*parts: str) -> str:

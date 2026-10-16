@@ -181,15 +181,15 @@ header to an honest project-owned name is a further modification that must
 then satisfy OFL §3 (avoid 'Source') and Ume attribution simultaneously.
 Either direction needs counsel before any redistribution (§6).
 
-## 6. Project Japanese font route
+## 6. Project font slots
 
-The opaque PGF route remains excluded. The project now builds its Japanese
-slot from a pinned OFL source with the project-owned converter
-(`tools/ttf2pgf.py`, `tools/pgf_writer.py`) and the public PGF reader
-(`src/rt/pgf_public.c`). The generated file is a project conversion, not a
+The opaque PGF route remains excluded. The project builds its Japanese, Latin,
+and Korean slots from pinned OFL sources with the project-owned converter
+(`tools/ttf2pgf.py`, `tools/pgf_writer.py`) and public PGF reader
+(`src/rt/pgf_public.c`). Each generated file is a project conversion, not a
 claim that it is an authentic firmware font.
 
-### 6.1 Source selection and coverage
+### 6.1 Japanese and Latin source selection and coverage
 
 Sawarabi Gothic was evaluated first from Google Fonts commit
 [`7bfa8c0bdd1a33f4b34dd05aba830ad40742ef1e`](https://github.com/google/fonts/tree/7bfa8c0bdd1a33f4b34dd05aba830ad40742ef1e/ofl/sawarabigothic).
@@ -243,6 +243,91 @@ The native HLE selftest covers index 0 with no Japanese import, project-file
 fallback, and registry header fields. The built PGF is also validated by the
 public reader; a sparse round-trip fixture includes ASCII `A` and half-width
 katakana U+FF76. No retail-title or hardware run was part of this source task.
+
+### 6.3 Latin slot
+
+The Latin slot reuses the already pinned M PLUS 1p Regular input above, so it
+adds no TTF binary. Its built-in repertoire contains ASCII U+0020-U+007E (95
+points), Latin-1 Supplement U+00A0-U+00FF (96), Latin Extended-A
+U+0100-U+017F (128), and the assigned punctuation and symbols U+2010-U+2027,
+U+2030, U+2039-U+203A, U+20AC, and U+2122 (29). The set has 348 unique points
+and canonical SHA-256
+`7fbcaac92248acdb1c2704c3fef2181e7bc49f2b0e9d0f970cd029fb58057340`. M PLUS
+1p covers all 348 points; the missing-point list is empty.
+
+The build creates `nkltn.pgf` at 12 ppem with project-owned name `Nakagawa
+Open Latin` and style `Regular`. No source-family string is copied into PGF
+name or style fields. The generated output is included in the one project-font
+asset-copy step and is not committed.
+
+Two independent project-font builds produced identical bytes:
+
+| Output | Size | SHA-256 |
+| --- | ---: | --- |
+| `nkltn.pgf` | 28,737 bytes | `808ce04f68b6fb644fe7ba0614ee13a0e019ca1217e88de426adad94ba8c03e0` |
+| `nkltn.json` | 6,811 bytes | `78396d9e8a67f734a39c17d244e974f5727b67402a77e89f4cda7d91e41ca435` |
+
+### 6.4 Korean slot
+
+Nanum Gothic was evaluated first from Google Fonts commit
+[`c1eda9233c33ad7775b27efd794f931095cf6133`](https://github.com/google/fonts/tree/c1eda9233c33ad7775b27efd794f931095cf6133/ofl/nanumgothic).
+Its Regular TTF is 2,054,744 bytes with SHA-256
+`76f45ef4a6bcff344c837c95a7dcc26e017e38b5846d5ae0cdcb5b86be2e2d31`; its
+adjacent licence is SIL OFL 1.1 and declares no Reserved Font Name. It maps
+11,697 of the assigned 11,951 Korean points, missing 254, so it was not
+selected despite its smaller source file.
+
+The selected fallback is Gowun Dodum Regular, pinned from Google Fonts commit
+[`c1eda9233c33ad7775b27efd794f931095cf6133`](https://github.com/google/fonts/tree/c1eda9233c33ad7775b27efd794f931095cf6133/ofl/gowundodum):
+
+| Input | Upstream size / SHA-256 | Pinned local size / SHA-256 |
+| --- | ---: | --- |
+| `GowunDodum-Regular.ttf` | 7,229,088 / `a6e457933227483a11758fd0947bc74422a106d46f0bf057fdaa5af94a30067d` | 7,229,088 / `a6e457933227483a11758fd0947bc74422a106d46f0bf057fdaa5af94a30067d` |
+| `OFL.txt` | 4,395 / `a7c73f9521cd646bbdfb6684c99a62311bbd7bce11898dc11ef0b3c69eda1aca` | 4,394 / `3e5acd28c1f57250f9486bd280b9f268c563687543f25a186c632a56400bbc25` |
+
+The downloaded licence is SIL OFL 1.1 and declares no Reserved Font Name;
+`PIN.json` records an empty list, matching the upstream text. The local licence
+removes one trailing ASCII space on line 22 without changing licence wording.
+The selected font covers all 11,951 assigned points. The converter's denied
+source-name markers are also avoided: the PGF uses the project-owned name
+`Nakagawa Open Korean` and style `Regular`.
+
+At the target 12 ppem, a converter-generated software sample of ASCII `A`,
+Hangul U+AC00 and U+D55C, and jamo U+3131 is legible in both candidate Regular
+faces. Gowun Dodum is selected for its complete assigned coverage, not its
+larger binary size. This visual check does not establish PSP hardware output.
+
+The built-in Korean text repertoire is decoded from Python's standard
+`euc_kr` codec: ASCII U+0020-U+007E (95), assigned cells in KS X 1001 rows 1-4
+and 6-9 (684 symbols, punctuation, full-width forms, and jamo), and all 11,172
+modern precomposed Hangul syllables U+AC00-U+D7A3. The 2,350 Hangul syllables
+from KS X 1001 rows 16-40 are contained in the modern range. This gives 11,951
+unique points with canonical SHA-256
+`50596a7f6e0e5158561147eae40a38edc12c28b1a4be3efff6d717c74b638bc4`. Hanja
+rows are out of scope. Roman numerals (row 5), Japanese kana (rows 10-11), and
+Greek/Cyrillic (row 12) are outside this Korean-text repertoire.
+
+The 12 ppem PGF is named `nkkr.pgf`. Its sparse character map spans
+U+0020-U+FFE6 with 65,479 entries and 11,951 glyph pointers. The public native
+reader accepts this image; a small native round-trip fixture verifies the
+high code point, Hangul, and absent-code behavior. Two independent builds
+produced identical PGF bytes:
+
+| Output | Size | SHA-256 |
+| --- | ---: | --- |
+| `nkkr.pgf` | 987,672 bytes | `193ddfcbc9053d1c5941019c4cd42170c64d8a4dcdb22456d9cf2f611fd224a1` |
+| `nkkr.json` | 6,922 bytes | `fda03c0988b8f4a3fce4755b66104eb1730e587702965e6e30bf9edb93fd56b7` |
+
+The selected 7.2 MB source is larger than Nanum Gothic because it covers the
+entire assigned set. The remaining import path keeps a user's own Korean font
+ahead of the project fallback.
+
+The reader now refuses a `char_map_count` larger than the inclusive header
+range `last - first + 1`. Before that bound, a malformed map count could expose
+padding as a drawable code after the declared last point. Smaller map counts
+remain valid. The Korean PGF's 65,479 map entries match U+0020-U+FFE6 exactly
+and remain accepted even though the map is sparse relative to its 11,951 glyph
+pointers.
 
 RULE (licence-text hygiene): the OFL text stays alongside the generated build
 payload. It is not added under `THIRD_PARTY_LICENSES/` unless a corresponding
