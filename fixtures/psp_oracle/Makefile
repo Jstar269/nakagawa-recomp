@@ -434,6 +434,27 @@ USER_MODE_IMPORT_GATE = $(FIXTURE_DIR)../../tools/psp_oracle/user_mode_imports.p
 FIXUP = bash -c 'out=$$(psp-fixup-imports "$$1" 2>&1); rc=$$?; test -n "$$out" && echo "$$out"; echo "$$out" | grep -q "stubs out of order" && exit 1; test $$rc -eq 0 || exit $$rc; exec "$(PYTHON)" "$(USER_MODE_IMPORT_GATE)" "$$1"' --
 .DELETE_ON_ERROR:
 
+# Make judges staleness by file times alone, but the case selects the flags every
+# object is compiled with (PSP_ORACLE_CASE, the embedded build commit, A3_CASE,
+# DMAC_SIZE_REQUEST), the libraries the ELF links, and the PARAM.SFO memory size.
+# Without a dependency on that selection, `make CASE=a` then `make CASE=b` linked
+# case a's objects into case b's PRX, or failed to link when case b dropped a
+# library case a's objects import. The stamp holds the selection and the FORCE
+# rule rewrites it only when its content changes, so a new CASE (or commit)
+# rebuilds every linked object and PARAM.SFO while an unchanged rebuild stays a
+# no-op; the ELF and PRX follow from the objects. The stamp is not an ELF
+# prerequisite, so the SDK link rule's $^ still names only objects.
+BUILD_CONFIG = CASE=$(CASE) CFLAGS=$(CFLAGS) LIBS=$(LIBS) SFOFLAGS=$(SFOFLAGS)
+BUILD_CONFIG_STAMP = $(BUILD_DIR)/build-config.stamp
+EXTRA_CLEAN += $(BUILD_CONFIG_STAMP)
+$(OBJS) $(PSP_EBOOT_SFO): $(BUILD_CONFIG_STAMP)
+$(BUILD_CONFIG_STAMP): FORCE
+	@printf '%s\n' '$(subst ','\'',$(BUILD_CONFIG))' > $@.tmp; \
+	if cmp -s $@.tmp $@; then rm -f $@.tmp; \
+	else echo "build configuration changed (CASE=$(CASE)): rebuilding objects"; mv -f $@.tmp $@; fi
+.PHONY: FORCE
+FORCE:
+
 # The SDK's generic `%.o: %.c` rule expects source and object to share a
 # directory. Keep the source at the fixture root while placing all generated
 # objects under the ignored build directory.
