@@ -795,6 +795,7 @@ class ProjectCodePointCoverageTests(unittest.TestCase):
         self.assertTrue(set(range(0x20, 0x7F)).issubset(points.codes))
         self.assertTrue(set(range(0xAC00, 0xD7A4)).issubset(points.codes))
         self.assertTrue({0x3000, 0x3131, 0x2500, 0x3395, 0xFFE6}.issubset(points.codes))
+        self.assertFalse({0x2160, 0x3042, 0x0391, 0x0410}.intersection(points.codes))
 
         data = KOREAN_FONT.read_bytes()
         pin = load_pin(KOREAN_PIN, data)

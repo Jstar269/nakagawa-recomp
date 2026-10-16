@@ -1269,12 +1269,14 @@ def _ks_x_1001_rows(rows: tuple[int, ...] | list[int] | range) -> tuple[int, ...
 def ks_x_1001_korean_code_points() -> CodePointSet:
     """Return the Korean project-font repertoire as one pinned sparse set.
 
-    This combines ASCII U+0020-007E (95 code points), KS X 1001 non-Hanja rows
-    1..4 and 6..9 (684 code points covering symbols, punctuation, box drawing,
-    units, and compatibility jamo), and all 11,172 modern Hangul syllables
+    This combines ASCII U+0020-007E (95 code points), assigned cells in the
+    Korean text rows of KS X 1001 (rows 1..4 and 6..9; 684 points covering
+    symbols, punctuation, box drawing, units, and compatibility jamo), and all
+    11,172 modern Hangul syllables
     U+AC00-D7A3 (superseding the 2,350 syllables in KS X 1001 rows 16..40),
-    totaling 11,951 unique code points. A canonical digest makes mapping drift
-    a named refusal.
+    totaling 11,951 unique code points. Roman numerals, Japanese kana, Greek,
+    Cyrillic, and Hanja are outside this Korean text repertoire. A canonical
+    digest makes mapping drift a named refusal.
     """
     ascii_codes = set(range(0x20, 0x7F))
     nonhanja_rows = (1, 2, 3, 4, 6, 7, 8, 9)
@@ -1284,7 +1286,7 @@ def ks_x_1001_korean_code_points() -> CodePointSet:
         raise _refuse(
             "korean-mapping-invalid",
             f"the built-in tables produced {len(ascii_codes)} ASCII, "
-            f"{len(ks_symbols)} KS X 1001 symbols/jamo, and "
+            f"{len(ks_symbols)} KS X 1001 Korean text rows, and "
             f"{len(hangul_syllables)} modern Hangul syllables; expected 95, 684, and 11172",
         )
     codes = tuple(sorted(ascii_codes | ks_symbols | hangul_syllables))
@@ -1743,7 +1745,7 @@ def _main(argv: list[str]) -> int:
     source.add_argument(
         "--ks-x-1001-korean",
         action="store_true",
-        help="use KS X 1001 non-Hanja symbols/jamo, ASCII, and modern Hangul syllables (sparse output)",
+        help="use ASCII, KS X 1001 Korean text rows 1-4/6-9, and modern Hangul syllables (sparse output)",
     )
     size = parser.add_mutually_exclusive_group()
     size.add_argument("--ppem", type=int, help=f"pixel size of the em (default {DEFAULT_PPEM})")
