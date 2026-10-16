@@ -205,6 +205,8 @@ else ifeq ($(CASE),umd-io)
 CASE_ID = 74
 else ifeq ($(CASE),font-list)
 CASE_ID = 75
+else ifeq ($(CASE),vram-mirror)
+CASE_ID = 76
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -396,7 +398,7 @@ endif
 PSP_EBOOT_TITLE = Nakagawa PSP Oracle
 PSP_EBOOT_ICON = NULL
 LIBS = -lpspdmac -lpsppower -lpspge -lpspaudio
-ifeq ($(CASE),ge-nan)
+ifneq ($(filter ge-nan vram-mirror,$(CASE)),)
 LIBS := -lpspgum -lpspgu $(LIBS)
 endif
 ifeq ($(CASE),model-profile)

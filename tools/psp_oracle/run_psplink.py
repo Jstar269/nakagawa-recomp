@@ -81,6 +81,7 @@ try:
         parse_registry_font_output,
         parse_registry_readonly_output,
         parse_umd_io_output,
+        parse_vram_mirror_output,
         validate_hle_edram_restore,
     )
 except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocation
@@ -101,6 +102,7 @@ except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocat
         parse_registry_font_output,
         parse_registry_readonly_output,
         parse_umd_io_output,
+        parse_vram_mirror_output,
         validate_hle_edram_restore,
     )
 
@@ -260,6 +262,7 @@ CAMPAIGN_QUEUE_CASES = (
     "cache-alias",
     "audio-query",
     "ge-nan",
+    "vram-mirror",
     "dma-cells",
     "dma-invalid-tail-s0",
     "dma-invalid-tail-memcpy-dst",
@@ -298,6 +301,7 @@ CAMPAIGN_CASE_ESTIMATE_SECONDS = {
     "cache-alias": 90,
     "audio-query": 180,
     "ge-nan": 240,
+    "vram-mirror": 600,
     "dma-cells": 180,
     "dma-invalid-tail-s0": 120,
     "dma-invalid-tail-memcpy-dst": 120,
@@ -950,6 +954,7 @@ _COMPLETE_CAMPAIGN_PARSERS = {
     "io-matrix": parse_io_matrix_output,
     "mbx-delete-wait": parse_mbx_delete_wait_output,
     "ge-nan": parse_ge_nan_output,
+    "vram-mirror": parse_vram_mirror_output,
     "dma-cells": parse_dmac_cells_output,
     "delay-zero": parse_delay_zero_output,
 }
@@ -1053,7 +1058,8 @@ def _campaign_completeness_contract(case_id: str) -> str:
     ):
         return "strict-dmac-sequence"
     if case_id in {"audio-query", "fpu-vector", "cache-alias", "io-matrix",
-                   "mbx-delete-wait", "ge-nan", "dma-cells", "delay-zero"}:
+                   "mbx-delete-wait", "ge-nan", "vram-mirror", "dma-cells",
+                   "delay-zero"}:
         return "strict-golden-sequence"
     if case_id in DMAC_INVALID_CASES:
         return "strict-dmac-invalid-cell-records"

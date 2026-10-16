@@ -1883,6 +1883,14 @@ static void test_sparse_character_maps(void) {
         if (dense_pixels[i] != 0u) ++nonzero;
     }
     CHECK(nonzero != 0u);
+
+    /* The map entry count must match first..last. Otherwise padding can be
+       interpreted as a drawable code point beyond the header's declared range. */
+    test_default_config(&config);
+    config.code_span = 4u;
+    config.char_map_count = 5u;
+    CHECK(test_build_font(&font, &config));
+    CHECK(test_open(&font) == NULL);
 }
 
 static void test_deterministic_mutations(void) {

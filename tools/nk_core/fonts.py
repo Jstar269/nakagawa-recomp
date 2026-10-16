@@ -194,6 +194,8 @@ class _Image:
         shadow_bits = _u32(data, 0x170)
         if first > last:
             raise _Refused("GLYPH_RANGE")
+        if self.char_map_count > last - first + 1:
+            raise _Refused("COUNTS")
         if (
             char_map_bits == 0
             or char_map_bits > 32
