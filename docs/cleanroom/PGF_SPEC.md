@@ -209,12 +209,16 @@ no greater than the last; and both character-map and glyph counts are at most
 1,048,576 [C2]–[C5]. The character map count is the number of character-map
 entries, not a glyph count (project decision: PSP SDK documents that meaning
 [C5], while open question O-3 records that a source-owned PSP probe should
-confirm it). The character-pointer count is the glyph count: the pointer table
+confirm it). The map count cannot exceed the inclusive code range
+`last − first + 1`; it may be smaller. A sparse map can still have fewer glyph
+pointers than map entries; unmapped entries within the map hold the all-ones
+sentinel. When the count is smaller than the range, codes beyond the map count
+are also lookup misses. The character-pointer count is the glyph count: the pointer table
 defines the glyphs, so it must be at least one (project decision: a font with
 no pointers has no glyph to draw). The inclusive code span `last − first + 1`
 is not compared with the pointer count (project decision, 2026-10-09). A
-sparse character map may cover a wider span whose absent codes hold the
-absence sentinel, so a span larger than the pointer count is accepted; open
+sparse character map may cover a wider span than its glyph-pointer count, so a
+span larger than the pointer count is accepted; open
 question O-15 records that a source-owned PSP probe must still confirm whether
 real font layouts use one. Negative revision or version, a nonzero header offset,
 a header size that is neither 392 nor 412, a 412-byte header outside revision

@@ -701,6 +701,24 @@
       "comment": "Built with PSPDEV/PSPSDK from fixtures/profile_zero/{main.c,Makefile} (project-authored); links the permissively licensed PSPSDK/newlib startup (THIRD_PARTY_LICENSES/PSPSDK.txt). No retail bytes. Reproduce: fixtures/profile_zero/README.md (#557)."
     },
     {
+      "id": "fixture-fonts-gowundodum-regular",
+      "name": "Pinned permissively redistributable Korean font source: GowunDodum-Regular.ttf",
+      "source_path": "fixtures/fonts/gowundodum/GowunDodum-Regular.ttf",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "upstream_origin": "https://github.com/google/fonts",
+      "license": "OFL-1.1",
+      "notice_path": "fixtures/fonts/gowundodum/OFL.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "a6e457933227483a11758fd0947bc74422a106d46f0bf057fdaa5af94a30067d"
+      },
+      "comment": "Retrieved from google/fonts ofl/gowundodum/GowunDodum-Regular.ttf at c1eda9233c33ad7775b27efd794f931095cf6133; byte-identical pinned source for the build-time project Korean PGF. Shipped beside its OFL license text."
+    },
+    {
       "id": "fixture-fonts-gudea-regular",
       "name": "Pinned permissively redistributable Latin font fixture: Gudea-Regular.ttf",
       "source_path": "fixtures/fonts/gudea/Gudea-Regular.ttf",

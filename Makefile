@@ -697,7 +697,7 @@ EXE_EXT             := .exe
 # its own executable-anchored root, so the step is absent rather than emulated
 # by a second copy script. A missing asset is reported by the runtime itself
 # (font_load / data walk), never silently ignored here.
-ASSET_COPY_STEP     = $(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File tools/copy_build_assets.ps1 -BuildDir "$(BUILD_DIR)" -Sdl3DllPath "$(SDL3_DLL)" $(ASSET_COPY_ARGS)
+ASSET_COPY_STEP     = $(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File tools/copy_build_assets.ps1 -BuildDir "$(BUILD_DIR)" -ProjectFontDir "$(PROJECT_FONT_GENERATED_DIR)" -Sdl3DllPath "$(SDL3_DLL)" $(ASSET_COPY_ARGS)
 else
 PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
 PLAYER_PLATFORM_LIBS :=
@@ -984,7 +984,8 @@ PUBLIC_TARGETS := \
 	gpu-capture-selftest \
 	gpu-selftest-status
 
-INTERNAL_TARGETS := FORCE project-japanese-font player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
+PROJECT_FONT_SLOT_TARGETS := project-japanese-font project-latin-font project-korean-font
+INTERNAL_TARGETS := FORCE project-japanese-font project-latin-font project-korean-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
@@ -1972,25 +1973,37 @@ endif
 endif
 -include $(DEP_FILES)
 
-PROJECT_JAPANESE_GENERATED_DIR := $(BUILD_DIR)/project-font
-PROJECT_JAPANESE_RUNTIME_DIR := $(BUILD_DIR)/font
-PROJECT_JAPANESE_PGF := $(PROJECT_JAPANESE_GENERATED_DIR)/nkjpn.pgf
-PROJECT_JAPANESE_MANIFEST := $(PROJECT_JAPANESE_GENERATED_DIR)/nkjpn.json
-PROJECT_JAPANESE_TTF := fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf
-PROJECT_JAPANESE_PIN := fixtures/fonts/mplus1p/PIN.json
-PROJECT_JAPANESE_LICENSE := fixtures/fonts/mplus1p/OFL.txt
+# The project PGFs depend only on their pinned sources and the converter, not on the title
+# or build configuration, so every BUILD_DIR under one BUILD_ROOT shares one generated set
+# (the platform ladder's rungs and each title build would otherwise regenerate them).
+PROJECT_FONT_GENERATED_DIR := $(BUILD_ROOT)/project-font
+PROJECT_FONT_GENERATED_DIR_PY := $(subst \,/,$(PROJECT_FONT_GENERATED_DIR))
 
-project-japanese-font: $(PROJECT_JAPANESE_PGF)
-	@$(PYTHON) -c "from pathlib import Path; import shutil; src=Path('$(PROJECT_JAPANESE_GENERATED_DIR)'); dst=Path('$(PROJECT_JAPANESE_RUNTIME_DIR)'); dst.mkdir(parents=True, exist_ok=True); [shutil.copyfile(src/name, dst/name) for name in ('nkjpn.pgf', 'nkjpn.json', 'OFL.txt')]"
+# Keep every internal target visible to the static target inventory.
+project-japanese-font:
+project-latin-font:
+project-korean-font:
 
-$(PROJECT_JAPANESE_PGF): $(PROJECT_JAPANESE_TTF) $(PROJECT_JAPANESE_PIN) $(PROJECT_JAPANESE_LICENSE) tools/ttf2pgf.py tools/pgf_writer.py docs/cleanroom/PGF_CONVERTER_SPEC.md
-	@$(PYTHON) -c "from pathlib import Path; Path('$(PROJECT_JAPANESE_GENERATED_DIR)').mkdir(parents=True, exist_ok=True)"
-	$(PYTHON) tools/ttf2pgf.py "$@" "$(PROJECT_JAPANESE_TTF)" --pin "$(PROJECT_JAPANESE_PIN)" --jis-x-0208-japanese --ppem 12 --font-name "Nakagawa Open Japanese" --font-type "Regular" --manifest "$(PROJECT_JAPANESE_MANIFEST)"
-	$(PYTHON) -c "import shutil; shutil.copyfile('$(PROJECT_JAPANESE_LICENSE)', '$(PROJECT_JAPANESE_GENERATED_DIR)/OFL.txt')"
+# All three project slots use this rule family. Each source pin, repertoire, and
+# project-owned PGF name is data; output staging is handled once by tools/copy_build_assets.ps1.
+define PROJECT_FONT_RULE
+project-$(1)-font: $(PROJECT_FONT_GENERATED_DIR)/$(2)
 
-# The project Japanese font is built before compile but is not a link input, so it is an
-# order-only prerequisite on its own rule line; the compile line below keeps its link set.
-compile: | project-japanese-font
+$(PROJECT_FONT_GENERATED_DIR)/$(2): $(3) $(4) $(5) tools/ttf2pgf.py tools/pgf_writer.py docs/cleanroom/PGF_CONVERTER_SPEC.md
+	@$(PYTHON) -c "from pathlib import Path; Path('$(PROJECT_FONT_GENERATED_DIR_PY)').mkdir(parents=True, exist_ok=True)"
+	$(PYTHON) tools/ttf2pgf.py "$$@" "$(3)" --pin "$(4)" $(6) --ppem 12 --font-name "$(7)" --font-type "Regular" --manifest "$(PROJECT_FONT_GENERATED_DIR_PY)/$(basename $(2)).json"
+	$(PYTHON) -c "import shutil; shutil.copyfile('$(5)', '$(PROJECT_FONT_GENERATED_DIR_PY)/$(basename $(2))-OFL.txt')"
+endef
+
+$(eval $(call PROJECT_FONT_RULE,japanese,nkjpn.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--jis-x-0208-japanese,Nakagawa Open Japanese))
+$(eval $(call PROJECT_FONT_RULE,latin,nkltn.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--latin-1-text,Nakagawa Open Latin))
+$(eval $(call PROJECT_FONT_RULE,korean,nkkr.pgf,fixtures/fonts/gowundodum/GowunDodum-Regular.ttf,fixtures/fonts/gowundodum/PIN.json,fixtures/fonts/gowundodum/OFL.txt,--ks-x-1001-korean,Nakagawa Open Korean))
+
+project-fonts: $(PROJECT_FONT_SLOT_TARGETS)
+
+# Project PGFs are generated before compile but are not link inputs, so keep the
+# dependency order-only and preserve the link set below.
+compile: | project-fonts
 compile: shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(BUILD_DIR)/$(GAME_NAME)_recomp.o | sdl3-check
 	$(file >$(LINK_OBJECTS_RSP),$(subst \,/,$(LINK_OBJECTS)))
 	$(CC) $(CFLAGS) $(LDFLAGS) $(LINK_MAP_ARG) $(REPRODUCIBLE_LINK_FLAG) -o $(BUILD_DIR)/$(GAME_NAME)$(EXE_EXT) \

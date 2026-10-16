@@ -340,7 +340,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "c5826aa663c5cc3f3d22bcf094982f3ffe1ad69f99bbc772d0a1d33e8b2c7e4a"
+      "sha256": "5de2da97643a1b2cf325a04374796296a7aaf2a2bdb3fed8f4cba8df4689cacb"
     },
     {
       "path": "NOTICE.md",
@@ -715,7 +715,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "3151dbef7bf2dad8db172e33fbbaa3005c06a983ec0adc6742b20ad55e1fb61a"
+      "sha256": "d2f1fc58390130f30d010dd0af7085ae9ac8b1ef0a0d0208874161b5cf29afb2"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -736,7 +736,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "f5c144f64c117e88489a770d1bdcc446b8717705a68ad33aead41acf617f20d2"
+      "sha256": "b696baf4cad90d3496798ccc9fe21e56669c212b8194102202984efd06e2f767"
     },
     {
       "path": "assets/third_party_components.json",
@@ -1525,7 +1525,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "f78dd6cfb1f7bf678c0a4f8274b42e8fbbcf59af35610f55e37a03636504a7f5"
+      "sha256": "d7c935b8ee933e0b3a777c3248901862b44b8754a0f4a10314ad3e690caf2e6a"
     },
     {
       "path": "docs/cleanroom/PGF_SPEC.md",
@@ -1534,7 +1534,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3a1202db0c13a2e744060f2c0eef572415528ddf5daa867ddceab181dd2de0eb"
+      "sha256": "79d97397e5c5813e6b29954249685780f79119f54339062410fcb09726b887b6"
     },
     {
       "path": "docs/cleanroom/PRX_LOADER_SPEC.md",
@@ -1588,7 +1588,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5d2f26276a84dfd3ae47853262b75870f07c199196a94e7b82f77cacd6166490"
+      "sha256": "9e8a00885c0d037059d13ddf46eae7dedd1569c020e207f40cdd5c50df5dbe33"
     },
     {
       "path": "docs/provenance/GUEST_INTERP_ATTESTATION.md",
@@ -1732,7 +1732,45 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "52ea14a54a5ea061e7315a766a77446dc47aa22cf9130770fecb7d65048fd9fd"
+      "sha256": "ed97e9d13d94574c20ed1600273770be509f69b54f04039e3ea2514fe1db5b76"
+    },
+    {
+      "path": "fixtures/fonts/gowundodum/GowunDodum-Regular.ttf",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "gowundodum-project-korean-font",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "SIL Open Font License 1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "a6e457933227483a11758fd0947bc74422a106d46f0bf057fdaa5af94a30067d"
+    },
+    {
+      "path": "fixtures/fonts/gowundodum/OFL.txt",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "gowundodum-project-korean-font",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "SIL Open Font License 1.1",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "3e5acd28c1f57250f9486bd280b9f268c563687543f25a186c632a56400bbc25"
+    },
+    {
+      "path": "fixtures/fonts/gowundodum/PIN.json",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "gowundodum-font-pin-record",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "6d2d35d75a2cfbc4b0e95fc4984c018ea00d9d8faf38201f939961184f4fb6d1"
     },
     {
       "path": "fixtures/fonts/gudea/Gudea-Regular.ttf",
@@ -5521,7 +5559,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b98040a95d1041a1df12361beef14b9711bfcd6465c488218598e8e183ec241a"
+      "sha256": "da70977a16a40f8f598ae22d0fdbb0ce4d7315fd91425d511f2953c65d5ef682"
     },
     {
       "path": "src/rt/profiler_selftest.c",
@@ -6187,7 +6225,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "12ee1e11a3c5c4f5dd29dfc6c6a60b9f69d12ed59830f75dcde315b5af697755"
+      "sha256": "91a193b90c06c7ddaa0bc933a891bd498d22eded4efb6e852f46b8974fe6ae41"
     },
     {
       "path": "tests/native/test_pgf_writer_roundtrip.c",
@@ -6592,7 +6630,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "744a59455c11d8732c4e0f219127a94508a914ae69e5697a47f7de491f9d6bec"
+      "sha256": "1f26183f1094584f8baa9a698166da50037a876a26fe7b3bd3d5fce9f80d835a"
     },
     {
       "path": "tools/decompme_export.py",
@@ -7221,7 +7259,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "37ef3d83334c67c7e18c317f8836721cb2347ec343fe87bc359146774dff9d13"
+      "sha256": "3f4891ccf28f1dcba7f94df8b43445bd271ae1a10b04ddc478f32403a43ee356"
     },
     {
       "path": "tools/nk_core/git_isolation.py",
@@ -8064,7 +8102,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bae6a8631ce9b9ac768e758d1c9b2e8afd7dc9f2d9f0936763b16ef6ec47e580"
+      "sha256": "7de1798e45e44ddcba0fbe214fbcd716b66e698420cdace1e2fa1682b22d83d7"
     },
     {
       "path": "tools/test_audit_public_issue_links.py",
@@ -8641,7 +8679,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ace764a8ddc858389fa355a2cfae41a7182acec6fd127f8ed0154a032d5b00b3"
+      "sha256": "be64339953efa54c869bcd225b3453ae3f86a5a85480f4f0365ac243438e7a67"
     },
     {
       "path": "tools/test_flight_build_identity.py",
@@ -9386,7 +9424,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b45742881fb251a8341d30be0e892d2f9d8f6fde62b41fd6035fa5bf3fd1c19e"
+      "sha256": "a84ec695f9d10f58b155becc72c05dbe1e18b2550f698cac2532c330fef22757"
     },
     {
       "path": "tools/test_pgf_writer.py",
@@ -9410,7 +9448,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "881c00039ddf1344fe1a83c350ee2291796592e7160bc5d9de759925387ff244"
+      "sha256": "f2b6df5f8c2e5b6d98c92281892b118f74ee5613d0acd2759b392e2cab964135"
     },
     {
       "path": "tools/test_player_package_determinism.py",
@@ -9890,7 +9928,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d87b0692128f32e1e57c7d621c3c3ee79647350aee6d012c639096c51a33d45b"
+      "sha256": "e33f6bb0a7a7c5bc9da77ef9b4cd6a40f1cac714d6d8b69c439e9a64557c04eb"
     },
     {
       "path": "tools/test_relocated_clone.py",
@@ -10299,7 +10337,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9326d426634b7a2d0b83c8d2f367a4fc5ad866d721041ff547f7551e5fe49573"
+      "sha256": "92ec2e8a7e1e42ce24192ec1de9d05675763d4657017e18efaf9bdb26f43ac74"
     },
     {
       "path": "tools/test_validate_assets.py",
@@ -10660,7 +10698,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8aaf322e474457778fc508bd7ef01c4186e687b3a4d3f29ce935c9cd92fc8543"
+      "sha256": "224c3853212a40ab296cdcb5210391f40e0b82a33c9fbe9545e352d5725d82f0"
     },
     {
       "path": "tools/validate_assets.py",

@@ -71,6 +71,8 @@ DEFAULT_CODES = "0x20-0x7E"
 DEFAULT_FONT_NAME = "Nakagawa Open Latin"
 DEFAULT_FONT_TYPE = "Regular"
 JAPANESE_CODE_POINTS_SHA256 = "abc5302681a3c700179f29ac22a7c8082ed087a07b4cf8c3de4de5f73e7e0889"
+LATIN_CODE_POINTS_SHA256 = "7fbcaac92248acdb1c2704c3fef2181e7bc49f2b0e9d0f970cd029fb58057340"
+KOREAN_CODE_POINTS_SHA256 = "50596a7f6e0e5158561147eae40a38edc12c28b1a4be3efff6d717c74b638bc4"
 
 SCALER_TRUE = 0x00010000
 SCALER_APPLE_TRUE = 0x74727565  # 'true'
@@ -1215,6 +1217,94 @@ def jis_x_0208_japanese_code_points() -> CodePointSet:
     return CodePointSet(codes=codes, sha256=digest, source="builtin:jis-x-0208-jis-x-0201-japanese")
 
 
+def latin_1_text_code_points() -> CodePointSet:
+    """Return the Latin project-font repertoire as one pinned sparse set.
+
+    This combines ASCII U+0020-007E (95 code points), Latin-1 Supplement
+    U+00A0-00FF (96 code points), Latin Extended-A U+0100-017F (128 code points),
+    and common punctuation/symbols (U+2010-2027, U+2030, U+2039-203A, U+20AC,
+    U+2122; 29 code points), totaling 348 code points. A canonical digest makes
+    mapping drift a named refusal.
+    """
+    ascii_codes = set(range(0x20, 0x7F))
+    latin1_supp = set(range(0xA0, 0x0100))
+    latin_ext_a = set(range(0x0100, 0x0180))
+    common_symbols = set(range(0x2010, 0x2028)) | {0x2030, 0x2039, 0x203A, 0x20AC, 0x2122}
+    codes = tuple(sorted(ascii_codes | latin1_supp | latin_ext_a | common_symbols))
+    if len(codes) != 348:
+        raise _refuse(
+            "latin-mapping-invalid",
+            f"the built-in tables produced {len(codes)} unique code points; expected 348",
+        )
+    canonical = "".join(f"U+{code:04X}\n" for code in codes).encode("ascii")
+    digest = hashlib.sha256(canonical).hexdigest()
+    if digest != LATIN_CODE_POINTS_SHA256:
+        raise _refuse(
+            "latin-mapping-invalid",
+            f"the built-in code-point mapping SHA-256 is {digest}, expected {LATIN_CODE_POINTS_SHA256}",
+        )
+    return CodePointSet(codes=codes, sha256=digest, source="builtin:latin-1-text")
+
+
+def _ks_x_1001_rows(rows: tuple[int, ...] | list[int] | range) -> tuple[int, ...]:
+    """Decode assigned KS X 1001 cells through Python's standard EUC-KR table."""
+    codes: list[int] = []
+    for row in rows:
+        for cell in range(1, 95):
+            try:
+                character = bytes((row + 0xA0, cell + 0xA0)).decode("euc_kr")
+            except UnicodeDecodeError:
+                continue
+            except LookupError as exc:  # pragma: no cover - euc_kr is a standard Python codec
+                raise _refuse("korean-codec-unavailable", "Python's euc_kr codec is unavailable") from exc
+            if len(character) != 1:
+                raise _refuse(
+                    "korean-mapping-invalid",
+                    f"row {row:02d}, cell {cell:02d} maps to {len(character)} Unicode characters",
+                )
+            codes.append(ord(character))
+    return tuple(codes)
+
+
+def ks_x_1001_korean_code_points() -> CodePointSet:
+    """Return the Korean project-font repertoire as one pinned sparse set.
+
+    This combines ASCII U+0020-007E (95 code points), assigned cells in the
+    Korean text rows of KS X 1001 (rows 1..4 and 6..9; 684 points covering
+    symbols, punctuation, box drawing, units, and compatibility jamo), and all
+    11,172 modern Hangul syllables
+    U+AC00-D7A3 (superseding the 2,350 syllables in KS X 1001 rows 16..40),
+    totaling 11,951 unique code points. Roman numerals, Japanese kana, Greek,
+    Cyrillic, and Hanja are outside this Korean text repertoire. A canonical
+    digest makes mapping drift a named refusal.
+    """
+    ascii_codes = set(range(0x20, 0x7F))
+    nonhanja_rows = (1, 2, 3, 4, 6, 7, 8, 9)
+    ks_symbols = set(_ks_x_1001_rows(nonhanja_rows))
+    hangul_syllables = set(range(0xAC00, 0xD7A4))
+    if len(ascii_codes) != 95 or len(ks_symbols) != 684 or len(hangul_syllables) != 11172:
+        raise _refuse(
+            "korean-mapping-invalid",
+            f"the built-in tables produced {len(ascii_codes)} ASCII, "
+            f"{len(ks_symbols)} KS X 1001 Korean text rows, and "
+            f"{len(hangul_syllables)} modern Hangul syllables; expected 95, 684, and 11172",
+        )
+    codes = tuple(sorted(ascii_codes | ks_symbols | hangul_syllables))
+    if len(codes) != 11951:
+        raise _refuse(
+            "korean-mapping-invalid",
+            f"the built-in tables produced {len(codes)} unique code points; expected 11951",
+        )
+    canonical = "".join(f"U+{code:04X}\n" for code in codes).encode("ascii")
+    digest = hashlib.sha256(canonical).hexdigest()
+    if digest != KOREAN_CODE_POINTS_SHA256:
+        raise _refuse(
+            "korean-mapping-invalid",
+            f"the built-in code-point mapping SHA-256 is {digest}, expected {KOREAN_CODE_POINTS_SHA256}",
+        )
+    return CodePointSet(codes=codes, sha256=digest, source="builtin:ks-x-1001-hangul-syllables-korean")
+
+
 @dataclass(frozen=True)
 class _MetricTargets:
     ascender_px: float
@@ -1647,6 +1737,16 @@ def _main(argv: list[str]) -> int:
         action="store_true",
         help="use JIS X 0201 Roman/half-width katakana and JIS X 0208 rows 1-8/16-47 (sparse output)",
     )
+    source.add_argument(
+        "--latin-1-text",
+        action="store_true",
+        help="use Latin-1 text set (ASCII, Latin-1 Supplement, Latin Extended-A, common symbols; sparse output)",
+    )
+    source.add_argument(
+        "--ks-x-1001-korean",
+        action="store_true",
+        help="use ASCII, KS X 1001 Korean text rows 1-4/6-9, and modern Hangul syllables (sparse output)",
+    )
     size = parser.add_mutually_exclusive_group()
     size.add_argument("--ppem", type=int, help=f"pixel size of the em (default {DEFAULT_PPEM})")
     size.add_argument("--metric-targets", type=Path, help="metric-target policy JSON; selects the ppem")
@@ -1662,6 +1762,10 @@ def _main(argv: list[str]) -> int:
             code_points = load_code_points(args.codepoints)
         elif args.jis_x_0208_japanese:
             code_points = jis_x_0208_japanese_code_points()
+        elif args.latin_1_text:
+            code_points = latin_1_text_code_points()
+        elif args.ks_x_1001_korean:
+            code_points = ks_x_1001_korean_code_points()
         else:
             code_points = None
         codes = None if code_points is not None else parse_code_range(args.codes or DEFAULT_CODES)

@@ -98,7 +98,7 @@ scaling.
 | `glyph-too-large` | A raster exceeds the writer's 7-bit record fields (127 px). |
 | `composite-too-deep` / `composite-too-many-components` | Composite expansion bounds. |
 | `metric-targets-invalid` / `metric-target-unreachable` | Policy document is malformed / no size satisfies it. |
-| `conflicting-parameters` | `--ppem` together with `--metric-targets`. (`--codes`, `--codepoints`, and `--jis-x-0208-japanese` are mutually exclusive at the CLI.) |
+| `conflicting-parameters` | `--ppem` together with `--metric-targets`. (`--codes`, `--codepoints`, `--jis-x-0208-japanese`, `--latin-1-text`, and `--ks-x-1001-korean` are mutually exclusive at the CLI.) |
 | `pin-invalid` / `pin-digest-mismatch` / `pin-size-mismatch` / `pin-license-mismatch` | Source pin does not bind the exact input and licence bytes. |
 | `reserved-font-name` / `camouflage-font-name` | Output name policy violation (section 6). |
 | writer reasons (`font-field-invalid`, `nominal-size-out-of-range`, `metric-table-overflow`, ...) | Re-raised unchanged from `pgf_writer.py`. |
@@ -120,6 +120,23 @@ sorted set contains 3,647 unique Unicode points and has the pinned SHA-256
 converter. An unavailable or changed built-in mapping is refused by name. It
 is a sparse map just like `--codepoints`, and its built-in mapping id and
 digest are recorded in the manifest.
+
+`--latin-1-text` combines ASCII U+0020-U+007E (95 code points), Latin-1
+Supplement U+00A0-U+00FF (96), Latin Extended-A U+0100-U+017F (128), and the
+assigned punctuation and symbols U+2010-U+2027, U+2030, U+2039-U+203A, U+20AC,
+and U+2122 (29). The set contains 348 unique points with canonical SHA-256
+`7fbcaac92248acdb1c2704c3fef2181e7bc49f2b0e9d0f970cd029fb58057340`.
+
+`--ks-x-1001-korean` decodes assigned cells in KS X 1001 rows 1-4 and 6-9
+through Python's standard `euc_kr` codec, adds ASCII, and includes every modern
+precomposed Hangul syllable U+AC00-U+D7A3. The 2,350 Hangul syllables in KS X
+1001 rows 16-40 are contained in that modern range. The Korean text repertoire
+has 11,951 unique points and canonical SHA-256
+`50596a7f6e0e5158561147eae40a38edc12c28b1a4be3efff6d717c74b638bc4`. Its
+sparse PGF map spans U+0020-U+FFE6 (65,479 map entries) and has 11,951 glyph
+pointers; both counts are below the reader and writer's 1,048,576 ceiling.
+Hanja is outside this repertoire. Rows 5 and 10-12 (Roman numerals, Japanese
+kana, Greek, and Cyrillic) are outside the Korean text scope.
 
 A refusal means no byte is written: the CLI builds the complete image and
 manifest in memory first and writes only after every stage succeeds.

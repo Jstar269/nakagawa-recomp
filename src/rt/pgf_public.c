@@ -428,6 +428,10 @@ static int pgf_parse_directory(PGF *p, PgfRefusal *refusal) {
         *refusal = PGF_REFUSE_GLYPH_RANGE;
         return 0;
     }
+    if ((uint64_t)p->char_map_count > (uint64_t)last - (uint64_t)first + 1u) {
+        *refusal = PGF_REFUSE_COUNTS;
+        return 0;
+    }
     if (char_map_bits == 0u || char_map_bits > 32u ||
         pointer_bits == 0u || pointer_bits > 32u ||
         p->char_map_count > PGF_MAX_COUNT || pointer_count > PGF_MAX_COUNT ||
