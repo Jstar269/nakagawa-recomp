@@ -5275,10 +5275,10 @@ static uint32_t h_ControlledUnsupported(CpuState *s) {
  * handler costs one cached flag branch and returns 0 exactly like h_ok. */
 static int stale_mem_read(uint32_t addr, uint32_t *word_out, void *ctx) {
     (void)ctx;
-    if (!sr_guest_span_readable(addr, 4u)) {
+    if (!sr_inrange_n(addr, 4u)) {
         return 0;
     }
-    memcpy(word_out, SR_HOST(addr), 4u);
+    *word_out = sr_r32(addr);
     return 1;
 }
 
@@ -6478,7 +6478,7 @@ static uint32_t h_DmacMemcpy(CpuState *s) {
         if (src_prefix != n) sr_oor(src, 0u, 0);
         return SCE_DMAC_ERROR_ILLEGAL_ADDR;
     }
-    if (!sr_guest_span_readable(src, effective) ||
+    if (!sr_guest_span_readable_current(src, effective) ||
         !sr_guest_span_writable(dst, effective)) {
         if (!sr_guest_span_writable(dst, effective)) sr_oor(dst, 0u, 1);
         if (!sr_guest_span_readable(src, effective)) sr_oor(src, 0u, 0);
@@ -6487,9 +6487,9 @@ static uint32_t h_DmacMemcpy(CpuState *s) {
 
     /* memmove, not memcpy: hardware showed both overlap directions landing
      * correctly, and dst == src must leave the buffer intact. */
+    sr_guest_vram_write_prepare_bytes(dst, effective);
     memmove(SR_HOST(dst), SR_HOST(src), effective);
-    extern void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes);
-    sr_gpu_vram_dirty(dst, effective);   /* notify only the bytes actually transferred */
+    sr_guest_vram_write_commit_bytes(dst, effective);
     if (g_sr_heap_watch) sr_heap_note_bulk_write(dst, effective, 0u);
     return 0;
 }
@@ -6504,7 +6504,9 @@ static uint32_t h_Memset(CpuState *s) {
     /* a0=dst, a1=byte_val, a2=size */
     uint32_t dst = A0, val = A1 & 0xff, n = A2;
     if (n && sr_guest_span_writable(dst, n)) {
+        sr_guest_vram_write_prepare_bytes(dst, n);
         memset(SR_HOST(dst), (int)val, n);
+        sr_guest_vram_write_commit_bytes(dst, n);
         if (g_sr_heap_watch) sr_heap_note_bulk_write(dst, n, 0u);
     } else if (n) {
         sr_oor(dst, val, 1);
@@ -6522,19 +6524,19 @@ static uint32_t h_Strlen(CpuState *s) {
         sr_oor(A0, 0u, 0);
         return 0u;
     }
-    const unsigned char *start = (const unsigned char *)SR_HOST(A0);
-    const unsigned char *end = (const unsigned char *)memchr(start, 0, readable);
-    if (!end) {
-        sr_oor(A0, 0u, 0);
-        return 0u;
+    for (uint32_t i = 0; i < readable; i++) {
+        if (sr_r8(A0 + i) == 0u) return i;
     }
-    return (uint32_t)(end - start);
+    sr_oor(A0, 0u, 0);
+    return 0u;
 }
 static uint32_t h_Memcpy(CpuState *s) {
     /* a0=dst, a1=src, a2=size */
     uint32_t dst = A0, src = A1, n = A2;
-    if (n && sr_guest_span_readable(src, n) && sr_guest_span_writable(dst, n)) {
+    if (n && sr_guest_span_readable_current(src, n) && sr_guest_span_writable(dst, n)) {
+        sr_guest_vram_write_prepare_bytes(dst, n);
         memmove(SR_HOST(dst), SR_HOST(src), n);
+        sr_guest_vram_write_commit_bytes(dst, n);
         if (g_sr_heap_watch) sr_heap_note_bulk_write(dst, n, 0u);
     } else if (n) {
         sr_oor(dst, 0u, 1);

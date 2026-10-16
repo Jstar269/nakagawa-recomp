@@ -859,12 +859,12 @@ CpuState *sr_cpu_for_callbacks(void) { return s_cpu; }
  * struct pointer is simply not reported rather than dumping arbitrary memory. */
 static int sched_guest_cstr(uint32_t addr, char *out, size_t out_sz) {
     if (addr == 0u || out_sz < 2u) return 0;
-    if (!sr_guest_span_readable(addr, 1u)) return 0;
-    const unsigned char *p = (const unsigned char *)SR_HOST(addr);
     size_t max = out_sz - 1u;
     for (size_t i = 0; i < max; i++) {
-        if (!sr_guest_span_readable(addr + (uint32_t)i, 1u)) return 0;
-        unsigned char c = p[i];
+        uint32_t current;
+        if (i > UINT32_MAX || !sr_size_add_ok(addr, (uint32_t)i, &current) ||
+            !sr_inrange(current)) return 0;
+        unsigned char c = sr_r8(current);
         if (c == 0u) { out[i] = 0; return i > 0u; }   /* empty string is not informative */
         if (c < 0x20u || c > 0x7eu) return 0;
         out[i] = (char)c;
@@ -878,9 +878,11 @@ static int sched_guest_cstr(uint32_t addr, char *out, size_t out_sz) {
 static int sched_guest_hexdump(uint32_t addr, char *out, size_t out_sz) {
     enum { N = 16 };
     if (addr == 0u || out_sz < (size_t)(N * 3 + 1)) return 0;
-    if (!sr_guest_span_readable(addr, (uint32_t)N)) return 0;
-    const unsigned char *p = (const unsigned char *)SR_HOST(addr);
-    for (int i = 0; i < N; i++) snprintf(out + i * 3, 4, "%02x ", p[i]);
+    for (int i = 0; i < N; i++) {
+        uint32_t current;
+        if (!sr_size_add_ok(addr, (uint32_t)i, &current) || !sr_inrange(current)) return 0;
+        snprintf(out + i * 3, 4, "%02x ", sr_r8(current));
+    }
     out[N * 3 - 1] = 0;
     return 1;
 }

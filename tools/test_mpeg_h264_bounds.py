@@ -47,7 +47,7 @@ class TestMpegH264Bounds(unittest.TestCase):
     def test_ring_feed_span_is_preflighted_before_h264(self) -> None:
         put = MPEG[MPEG.index("uint32_t mpeg_ringbuffer_put") : MPEG.index("static Mpeg *au_stream")]
         self.assertIn("sr_guest_span_writable(dst, chunkBytes)", put)
-        self.assertIn("sr_guest_span_readable(dst, gotBytes)", put)
+        self.assertIn("sr_guest_span_readable_current(dst, gotBytes)", put)
         self.assertIn("sr_h264_feed(ctx->h264, (const uint8_t *)SR_HOST(dst), gotBytes)", put)
         self.assertNotIn("got * packetSize);", put)
 

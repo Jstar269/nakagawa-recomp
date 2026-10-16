@@ -494,6 +494,18 @@ static int gdi_blit(void) {
 }
 #endif
 
+/* CPU-backed presenters consume guest memory, so cross the same lazy GE read
+ * barrier as the scalar accessors before converting a complete framebuffer. The
+ * direct Vulkan present path bypasses this helper and keeps its target resident. */
+static int display_cpu_source_current(uint32_t fbaddr, int fmt, uint32_t stride) {
+    if (fmt < 0 || fmt > 3 || stride == 0u) return 0;
+    uint32_t row_bytes, total_bytes;
+    uint32_t bytes_per_pixel = fmt == 3 ? 4u : 2u;
+    if (!sr_size_mul_ok(stride, bytes_per_pixel, &row_bytes) ||
+        !sr_size_mul_ok(row_bytes, PSP_H, &total_bytes)) return 0;
+    return sr_guest_span_readable_current(fbaddr, total_bytes);
+}
+
 int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     if (!s_on) return 0;
     if (stride == 0) stride = 512;
@@ -511,6 +523,10 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
          * call. Conversion is the sink operation: the accepted frame is now
          * resident in the allocated host buffer, with no window or Vulkan WSI
          * dependency. */
+        if (!display_cpu_source_current(fbaddr, fmt, stride)) {
+            sr_capture_fail("guest framebuffer is unavailable for CPU presentation");
+            return 0;
+        }
         convert_fb(fbaddr, fmt, stride);
         s_offscreen_frames++;
         if (getenv("SR_PRESENT_TRACE")) {
@@ -591,6 +607,10 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
                 goto pace;
             }
         }
+        if (!display_cpu_source_current(fbaddr, fmt, stride)) {
+            sr_capture_fail("guest framebuffer is unavailable for CPU presentation");
+            goto pace;
+        }
         convert_fb(fbaddr, fmt, stride);
         /* The keyboard is drawn on the host copy only: the same pixels the window and the
          * frame capture receive, and guest VRAM is untouched. */
@@ -611,6 +631,10 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
     s_lx = 128; s_ly = 128;
     s_pad_present = 0;
 
+    if (!display_cpu_source_current(fbaddr, fmt, stride)) {
+        sr_capture_fail("guest framebuffer is unavailable for CPU presentation");
+        return 0;
+    }
     convert_fb(fbaddr, fmt, stride);
     if (!gdi_blit()) {
         sr_capture_fail("GDI present failed");

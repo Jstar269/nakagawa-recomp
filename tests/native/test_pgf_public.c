@@ -91,6 +91,21 @@ static TestDirty dirty_spans[256];
 static size_t dirty_count;
 
 uint8_t *g_mem;
+volatile int g_sr_vram_read_pending;
+
+void sr_ge_vram_read_prepare(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
+void sr_ge_vram_write_prepare(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
+void sr_ge_vram_write_commit(uint32_t address, uint32_t bytes) {
+    sr_gpu_vram_dirty(address, bytes);
+}
+void sr_oor(uint32_t address, uint32_t value, int store) {
+    (void)address; (void)value; (void)store;
+    abort();
+}
 
 void sr_gpu_vram_dirty(uint32_t address, uint32_t bytes) {
     if (dirty_count < sizeof(dirty_spans) / sizeof(dirty_spans[0])) {

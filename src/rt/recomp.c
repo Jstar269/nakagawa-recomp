@@ -210,7 +210,7 @@ static void sr_nan_trap_dump_context(void) {
     };
     for (size_t i = 0; i < sizeof(ptrs) / sizeof(ptrs[0]); i++) {
         uint32_t a = c->r[ptrs[i].reg];
-        if ((a & 3u) != 0u || !sr_guest_span_readable(a, 16u)) continue;
+        if ((a & 3u) != 0u || !sr_guest_span_readable_current(a, 16u)) continue;
         float v[4]; memcpy(v, SR_HOST(a), sizeof(v));
         fprintf(stderr, "NAN_TRAP_CTX %s@0x%08x=[", ptrs[i].name, a);
         sr_nan_trap_print_floats(v, 4);
