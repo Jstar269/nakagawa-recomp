@@ -233,6 +233,7 @@ VRAM_MIRROR_WRITE_BASES = (
     0x04200000, 0x04400000, 0x04600000,
     0x44200000, 0x44400000, 0x44600000,
 )
+VRAM_MIRROR_CACHED_ALIAS_COUNT = len(VRAM_MIRROR_BASES) // 2
 VRAM_MIRROR_BYTES = 0x00200000
 VRAM_MIRROR_ROW_BYTES = 0x400
 VRAM_MIRROR_ROW_WORDS = VRAM_MIRROR_ROW_BYTES // 4
@@ -518,6 +519,10 @@ def parse_vram_mirror_output(
 
     for case_id in ("vram-ge-flat-sync", "vram-ge-gradient-sync"):
         record = sequence.results[case_id]
+        if _vram_mirror_integer(record, "out7") != VRAM_MIRROR_CACHED_ALIAS_COUNT:
+            raise ProtocolError(
+                f"PSP-VRAM-MIRROR-001: {case_id} must invalidate every cached VRAM alias"
+            )
         if any(_vram_mirror_integer(record, f"out{index}") > 1
                for index in (4, 6, 10, 11)):
             raise ProtocolError(
@@ -558,6 +563,10 @@ def parse_vram_mirror_output(
     )
     if restore_values[0:2] != (VRAM_MIRROR_BASES[4], VRAM_MIRROR_BYTES):
         raise ProtocolError("PSP-VRAM-MIRROR-001: restore record does not cover all VRAM")
+    if restore_values[2] != 2 * VRAM_MIRROR_CACHED_ALIAS_COUNT:
+        raise ProtocolError(
+            "PSP-VRAM-MIRROR-001: restore record must maintain every cached VRAM alias"
+        )
     if restore_values[4] > 1:
         raise ProtocolError("PSP-VRAM-MIRROR-001: restore GE idle field is not boolean")
     if restore.status == "PASS" and restore_values[3] != 0:

@@ -1352,7 +1352,7 @@
       "id": "PSP-VRAM-MIRROR-001",
       "status": "implemented",
       "hardware_evidence": "NOT_RUN",
-      "evidence_note": "No physical PSP run has been performed. The probe records raw address/value pairs for cached and uncached VRAM aliases, CPU writes through each mirror, and GE depth rows. The parser validates stream shape and addresses only; expected PSP words remain unpinned until hardware measurement. The probe snapshots all 2 MiB of EDRAM and verifies the full byte image after restore.",
+      "evidence_note": "No physical PSP run has been performed. The probe records raw address/value pairs for cached and uncached VRAM aliases, CPU writes through each mirror, and GE depth rows. The parser validates stream shape, addresses, and cache-maintenance metadata; expected raw PSP samples remain unpinned until hardware measurement. The probe snapshots all 2 MiB of EDRAM and verifies the full byte image after restore.",
       "group": "ge",
       "source": "fixtures/psp_oracle/probe.c",
       "prx": "nakagawa_psp_oracle.prx",

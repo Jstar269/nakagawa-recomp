@@ -5539,7 +5539,8 @@ class VramMirrorParserTests(unittest.TestCase):
             elif case_id in ("vram-ge-flat-sync", "vram-ge-gradient-sync"):
                 gradient = case_id == "vram-ge-gradient-sync"
                 outputs = (
-                    0, 0, 4, 123, 1, 0, 1, 0, 0x3E800000,
+                    0, 0, 4, 123, 1, 0, 1,
+                    parse_golden.VRAM_MIRROR_CACHED_ALIAS_COUNT, 0x3E800000,
                     0x3F400000 if gradient else 0x3E800000,
                     1 if gradient else 0, 1,
                 )
@@ -5558,7 +5559,10 @@ class VramMirrorParserTests(unittest.TestCase):
                 )
                 outputs = self._address_pairs(offsets, 0xABCD)
             elif case_id == "vram-restore":
-                outputs = (0x44000000, 0x200000, 0, 0, 1)
+                outputs = (
+                    0x44000000, 0x200000,
+                    2 * parse_golden.VRAM_MIRROR_CACHED_ALIAS_COUNT, 0, 1,
+                )
             else:
                 outputs = (len(spec.semantic_cases),)
             rows.append(self._record(case_id, outputs))
@@ -5601,6 +5605,33 @@ class VramMirrorParserTests(unittest.TestCase):
         )
         lines[info_index] = lines[info_index].replace(
             "out3=0x00044000", "out3=0x00044100", 1
+        )
+        with self.assertRaises(ProtocolError):
+            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
+
+    def test_cache_maintenance_counts_are_checked(self) -> None:
+        lines = self._stream().splitlines()
+        sync_index = next(
+            index for index, line in enumerate(lines)
+            if "case_id=vram-ge-flat-sync " in line
+        )
+        lines[sync_index] = lines[sync_index].replace(
+            f"out7=0x{parse_golden.VRAM_MIRROR_CACHED_ALIAS_COUNT:08x}",
+            "out7=0x00000000",
+            1,
+        )
+        with self.assertRaises(ProtocolError):
+            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
+
+        lines = self._stream().splitlines()
+        restore_index = next(
+            index for index, line in enumerate(lines)
+            if "case_id=vram-restore " in line
+        )
+        lines[restore_index] = lines[restore_index].replace(
+            f"out2=0x{2 * parse_golden.VRAM_MIRROR_CACHED_ALIAS_COUNT:08x}",
+            "out2=0x00000000",
+            1,
         )
         with self.assertRaises(ProtocolError):
             parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
@@ -5659,6 +5690,7 @@ class VramMirrorParserTests(unittest.TestCase):
         self.assertIn("sceGuDisable(GU_DEPTH_TEST)", probe)
         self.assertIn("sceGuDepthMask(GU_FALSE)", probe)
         self.assertIn("sceGeDrawSync(1)", probe)
+        self.assertIn("uint32_t out[12];", probe)
 
 
 if __name__ == "__main__":
