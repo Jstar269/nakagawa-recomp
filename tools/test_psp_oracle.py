@@ -5478,11 +5478,15 @@ class VramMirrorParserTests(unittest.TestCase):
             f"case_id={case_id} status={status} result=0x{result:08x}{suffix}\n"
         )
 
-    def _address_pairs(self, offsets: tuple[int, ...], value: int) -> tuple[int, ...]:
+    def _address_pairs(
+        self, offsets: tuple[int, ...], value: int,
+        aliases: tuple[int, ...] | None = None,
+    ) -> tuple[int, ...]:
+        selected_aliases = self.BASES if aliases is None else aliases
         return tuple(
             field
             for offset in offsets
-            for base in self.BASES
+            for base in selected_aliases
             for field in (base + offset, value)
         )
 
@@ -5516,10 +5520,18 @@ class VramMirrorParserTests(unittest.TestCase):
             "write_scan_bytes": parse_golden.VRAM_MIRROR_BYTES,
             "depth_stride": parse_golden.VRAM_MIRROR_DEPTH_STRIDE,
             "depth_row_count": len(parse_golden.VRAM_MIRROR_DEPTH_ROWS),
-            "depth_row_y0": parse_golden.VRAM_MIRROR_DEPTH_ROWS[0],
-            "depth_row_y1": parse_golden.VRAM_MIRROR_DEPTH_ROWS[1],
-            "depth_row_y2": parse_golden.VRAM_MIRROR_DEPTH_ROWS[2],
-            "depth_row_y3": parse_golden.VRAM_MIRROR_DEPTH_ROWS[3],
+            **{
+                f"depth_row_y{row}": y
+                for row, y in enumerate(parse_golden.VRAM_MIRROR_DEPTH_ROWS)
+            },
+            "depth_alias_count": len(parse_golden.VRAM_MIRROR_DEPTH_ALIASES),
+            "depth_chunk_pixels": parse_golden.VRAM_MIRROR_DEPTH_CHUNK_PIXELS,
+            "color_row_count": len(parse_golden.VRAM_MIRROR_COLOR_ROWS),
+            **{
+                f"color_row_y{row}": y
+                for row, y in enumerate(parse_golden.VRAM_MIRROR_COLOR_ROWS)
+            },
+            "color_chunk_pixels": parse_golden.VRAM_MIRROR_COLOR_CHUNK_PIXELS,
             "depth_test_enabled": 1,
             "depth_function": parse_golden.VRAM_MIRROR_DEPTH_FUNCTION_ALWAYS,
             "depth_mask": parse_golden.VRAM_MIRROR_DEPTH_MASK_WRITE_ENABLE,
@@ -5566,7 +5578,7 @@ class VramMirrorParserTests(unittest.TestCase):
                     found_count,
                 )
             elif case_id in {item[0] for item in parse_golden.VRAM_MIRROR_GE_SYNC_CASES}:
-                _case, operation, z_start, z_end = next(
+                sync_case = next(
                     item for item in parse_golden.VRAM_MIRROR_GE_SYNC_CASES
                     if item[0] == case_id
                 )
@@ -5579,9 +5591,9 @@ class VramMirrorParserTests(unittest.TestCase):
                     parse_golden.VRAM_MIRROR_DEPTH_FUNCTION_ALWAYS,
                     parse_golden.VRAM_MIRROR_DEPTH_MASK_WRITE_ENABLE,
                     1, parse_golden.VRAM_MIRROR_CLEAR_DEPTH,
-                    operation, z_start, z_end,
+                    *sync_case[1:],
                 )
-            elif match := re.fullmatch(r"vram-ge-depth-row(\d{2})-(\d{2})", case_id):
+            elif match := re.fullmatch(r"vram-ge-depth-row(\d+)-(\d{2})", case_id):
                 row, chunk = (int(part) for part in match.groups())
                 y = parse_golden.VRAM_MIRROR_DEPTH_ROWS[row]
                 offsets = tuple(
@@ -5591,7 +5603,24 @@ class VramMirrorParserTests(unittest.TestCase):
                     ) * 2
                     for pixel in range(parse_golden.VRAM_MIRROR_DEPTH_CHUNK_PIXELS)
                 )
-                outputs = self._address_pairs(offsets, observed_word & 0xFFFF)
+                outputs = self._address_pairs(
+                    offsets, observed_word & 0xFFFF,
+                    aliases=parse_golden.VRAM_MIRROR_DEPTH_ALIASES,
+                )
+            elif match := re.fullmatch(r"vram-ge-color-row(\d+)-(\d{2})", case_id):
+                row, chunk = (int(part) for part in match.groups())
+                y = parse_golden.VRAM_MIRROR_COLOR_ROWS[row]
+                offsets = tuple(
+                    info["color_offset"] + (
+                        y * parse_golden.VRAM_MIRROR_DEPTH_STRIDE
+                        + chunk * parse_golden.VRAM_MIRROR_COLOR_CHUNK_PIXELS + pixel
+                    ) * 2
+                    for pixel in range(parse_golden.VRAM_MIRROR_COLOR_CHUNK_PIXELS)
+                )
+                outputs = self._address_pairs(
+                    offsets, observed_word & 0xFFFF,
+                    aliases=(parse_golden.VRAM_MIRROR_COLOR_ALIAS,),
+                )
             elif case_id == "vram-restore":
                 outputs = (
                     0x44000000, 0x200000,
@@ -5688,6 +5717,28 @@ class VramMirrorParserTests(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
 
+        lines = self._stream().splitlines()
+        depth_index = next(
+            index for index, line in enumerate(lines)
+            if "case_id=vram-ge-depth-row0-00 " in line
+        )
+        lines[depth_index] = re.sub(
+            r"out0=0x[0-9a-f]+", "out0=0x44088002", lines[depth_index], count=1
+        )
+        with self.assertRaises(ProtocolError):
+            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
+
+        lines = self._stream().splitlines()
+        color_index = next(
+            index for index, line in enumerate(lines)
+            if "case_id=vram-ge-color-row0-00 " in line
+        )
+        lines[color_index] = re.sub(
+            r"out0=0x[0-9a-f]+", "out0=0x44044002", lines[color_index], count=1
+        )
+        with self.assertRaises(ProtocolError):
+            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
+
         changed = self._stream(observed_word=0x1BADB002)
         self.assertTrue(parse_golden.parse_vram_mirror_output(changed).all_passed)
 
@@ -5719,6 +5770,43 @@ class VramMirrorParserTests(unittest.TestCase):
                          "vram_mirror_log.txt")
         self.assertTrue(_campaign_stream_complete(self._stream(), "vram-mirror"))
 
+    def test_probe_case_ids_are_registered_in_the_strict_protocol_table(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        probe = (root / "fixtures" / "psp_oracle" / "probe.c").read_text(
+            encoding="utf-8"
+        )
+        self.assertEqual(probe.count('"vram-ge-depth-row%u-%02u"'), 2)
+        self.assertEqual(probe.count('"vram-ge-color-row%u-%02u"'), 2)
+        emitted_case_ids = (
+            ("vram-mirror-info",)
+            + tuple(
+                f"vram-cpu-pattern-{chunk:03d}"
+                for chunk in range(parse_golden.VRAM_MIRROR_CPU_SAMPLE_CHUNK_COUNT)
+            )
+            + tuple(
+                f"vram-cpu-write-mirror-{alias:02d}-{sample:02d}"
+                for alias in range(len(self.WRITE_BASES))
+                for sample in range(len(parse_golden.VRAM_MIRROR_WRITE_OFFSETS))
+            )
+            + tuple(case[0] for case in parse_golden.VRAM_MIRROR_GE_SYNC_CASES)
+            + tuple(
+                f"vram-ge-depth-row{row}-{chunk:02d}"
+                for row in range(len(parse_golden.VRAM_MIRROR_DEPTH_ROWS))
+                for chunk in range(parse_golden.VRAM_MIRROR_DEPTH_ROW_CHUNK_COUNT)
+            )
+            + tuple(
+                f"vram-ge-color-row{row}-{chunk:02d}"
+                for row in range(len(parse_golden.VRAM_MIRROR_COLOR_ROWS))
+                for chunk in range(parse_golden.VRAM_MIRROR_COLOR_ROW_CHUNK_COUNT)
+            )
+            + ("vram-restore", "vram-mirror-done")
+        )
+        self.assertEqual(emitted_case_ids, parse_golden.VRAM_MIRROR_SPEC.ordered_cases)
+        parsed = _parse_campaign_records(self._stream(), "vram-mirror")
+        self.assertEqual(
+            tuple(record.case_id for record in parsed.results), emitted_case_ids
+        )
+
     def test_manifest_and_docs_keep_the_hardware_result_not_run(self) -> None:
         root = Path(__file__).resolve().parents[1]
         manifest = json.loads(
@@ -5728,7 +5816,7 @@ class VramMirrorParserTests(unittest.TestCase):
                    if test["id"] == self.TEST_ID)
         self.assertEqual(row["hardware_evidence"], "NOT_RUN")
         self.assertEqual(row["case_ids"], list(parse_golden.VRAM_MIRROR_SPEC.ordered_cases))
-        self.assertIn("The redesigned full-position protocol has not been run on hardware",
+        self.assertIn("The VMIR3 through-mode sprite depth probe has not been run on hardware",
                       row["evidence_note"])
         readme = (root / "fixtures" / "psp_oracle" / "README.md").read_text(
             encoding="utf-8"
@@ -5737,7 +5825,8 @@ class VramMirrorParserTests(unittest.TestCase):
         self.assertIn("| `vram-mirror` | `PSP-VRAM-MIRROR-001` |", readme)
         self.assertIn("| `vram-mirror` | `PSP-VRAM-MIRROR-001` | `NOT_RUN` |", doc)
         self.assertIn("Fills all EDRAM with a position-encoded pattern", readme)
-        self.assertIn("four complete depth rows", doc)
+        self.assertIn("All 512 depth words in each of ten rows", doc)
+        self.assertIn("three full color rows", doc)
 
     def test_probe_snapshots_and_verifies_full_edram_restore(self) -> None:
         probe = (Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
@@ -5751,6 +5840,11 @@ class VramMirrorParserTests(unittest.TestCase):
         self.assertIn("sceGuEnable(GU_DEPTH_TEST)", probe)
         self.assertIn("sceGuDepthFunc(GU_ALWAYS)", probe)
         self.assertIn("sceGuDepthMask(GU_FALSE)", probe)
+        self.assertIn("GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D", probe)
+        self.assertIn("sceGuDrawArray(GU_SPRITES, vertex_type, 2", probe)
+        self.assertIn("0x1111u, 32u, 16u, 0x1111u", probe)
+        self.assertIn("0x2222u, 96u, 12u, 0x2222u", probe)
+        self.assertIn("0x3333u, 208u, 101u, 0x3333u", probe)
         self.assertIn("sceGeDrawSync(1)", probe)
         self.assertIn("base_words[scan_offset / sizeof(uint32_t)] == marker", probe)
 

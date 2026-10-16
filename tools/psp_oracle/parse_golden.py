@@ -258,24 +258,36 @@ VRAM_MIRROR_MARKER_PREFIX = 0xB6000000
 VRAM_MIRROR_PATTERN_PREFIX = 0xA5000000
 VRAM_MIRROR_FRAME_BYTES = 512 * 272 * 2
 VRAM_MIRROR_DEPTH_STRIDE = 512
-VRAM_MIRROR_DEPTH_ROWS = (8, 24, 48, 80)
+VRAM_MIRROR_DEPTH_ROWS = (0, 7, 8, 9, 15, 16, 100, 101, 108, 109)
 VRAM_MIRROR_DEPTH_ROW_COUNT = len(VRAM_MIRROR_DEPTH_ROWS)
-VRAM_MIRROR_DEPTH_CHUNK_PIXELS = 8
+VRAM_MIRROR_DEPTH_ALIASES = (VRAM_MIRROR_BASES[4], VRAM_MIRROR_BASES[5])
+VRAM_MIRROR_DEPTH_CHUNK_PIXELS = 32
 VRAM_MIRROR_DEPTH_ROW_CHUNK_COUNT = (
     VRAM_MIRROR_DEPTH_STRIDE // VRAM_MIRROR_DEPTH_CHUNK_PIXELS
 )
+VRAM_MIRROR_COLOR_ROWS = (0, 8, 100)
+VRAM_MIRROR_COLOR_CHUNK_PIXELS = 64
+VRAM_MIRROR_COLOR_ROW_CHUNK_COUNT = (
+    VRAM_MIRROR_DEPTH_STRIDE // VRAM_MIRROR_COLOR_CHUNK_PIXELS
+)
+VRAM_MIRROR_COLOR_ALIAS = VRAM_MIRROR_BASES[4]
 VRAM_MIRROR_CLEAR_DEPTH = 0x5A5A
 VRAM_MIRROR_DEPTH_FUNCTION_ALWAYS = 1
 VRAM_MIRROR_DEPTH_MASK_WRITE_ENABLE = 0
 VRAM_MIRROR_DEPTH_RANGE_NEAR = 0xFFFF
 VRAM_MIRROR_DEPTH_RANGE_FAR = 0
+VRAM_MIRROR_GU_SPRITES = 6
+VRAM_MIRROR_GU_VERTEX_TYPE = (7 << 2) | (2 << 7) | (1 << 23)
 VRAM_MIRROR_GE_SYNC_CASES = (
-    ("vram-ge-clear-sync", 0, 0, 0),
-    ("vram-ge-flat-sync", 1, 0x3E800000, 0x3E800000),
-    ("vram-ge-gradient-x-sync", 2, 0x3E800000, 0x3F400000),
-    ("vram-ge-gradient-y-sync", 3, 0x3E800000, 0x3F400000),
+    ("vram-ge-clear-sync", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+    ("vram-ge-sprite-a-sync", 1, 0, 0, 0x1111, 32, 16, 0x1111,
+     0xFFFF0000, 2, VRAM_MIRROR_GU_SPRITES, VRAM_MIRROR_GU_VERTEX_TYPE),
+    ("vram-ge-sprite-b-sync", 2, 64, 8, 0x2222, 96, 12, 0x2222,
+     0xFF00FF00, 2, VRAM_MIRROR_GU_SPRITES, VRAM_MIRROR_GU_VERTEX_TYPE),
+    ("vram-ge-sprite-c-sync", 3, 200, 100, 0x3333, 208, 101, 0x3333,
+     0xFF0000FF, 2, VRAM_MIRROR_GU_SPRITES, VRAM_MIRROR_GU_VERTEX_TYPE),
 )
-VRAM_MIRROR_GE_SYNC_OUT_COUNT = 19
+VRAM_MIRROR_GE_SYNC_OUT_COUNT = 27
 VRAM_MIRROR_INFO_FIELDS = (
     "cached_base", "uncached_base", "display_offset", "display_bytes",
     "display_stride", "display_format", "color_offset", "color_frame_bytes",
@@ -284,7 +296,10 @@ VRAM_MIRROR_INFO_FIELDS = (
     "cpu_pair_rows", "cpu_sweep_first_bit", "cpu_sweep_last_bit",
     "write_alias_count", "write_sample_count", "write_offset_0", "write_offset_1",
     "write_offset_2", "write_scan_bytes", "depth_stride", "depth_row_count",
-    "depth_row_y0", "depth_row_y1", "depth_row_y2", "depth_row_y3",
+    *(f"depth_row_y{row}" for row in range(VRAM_MIRROR_DEPTH_ROW_COUNT)),
+    "depth_alias_count", "depth_chunk_pixels", "color_row_count",
+    *(f"color_row_y{row}" for row in range(len(VRAM_MIRROR_COLOR_ROWS))),
+    "color_chunk_pixels",
     "depth_test_enabled", "depth_function", "depth_mask", "depth_range_near",
     "depth_range_far", "clear_depth", "pattern_prefix", "marker_prefix",
     "cached_alias_count",
@@ -302,12 +317,17 @@ VRAM_MIRROR_SEMANTIC_CASES = (
         for sample in range(len(VRAM_MIRROR_WRITE_OFFSETS))
     )
     + tuple(
-        case_id for case_id, _operation, _z_start, _z_end in VRAM_MIRROR_GE_SYNC_CASES
+        sync_case[0] for sync_case in VRAM_MIRROR_GE_SYNC_CASES
     )
     + tuple(
-        f"vram-ge-depth-row{row:02d}-{chunk:02d}"
+        f"vram-ge-depth-row{row}-{chunk:02d}"
         for row in range(len(VRAM_MIRROR_DEPTH_ROWS))
         for chunk in range(VRAM_MIRROR_DEPTH_ROW_CHUNK_COUNT)
+    )
+    + tuple(
+        f"vram-ge-color-row{row}-{chunk:02d}"
+        for row in range(len(VRAM_MIRROR_COLOR_ROWS))
+        for chunk in range(VRAM_MIRROR_COLOR_ROW_CHUNK_COUNT)
     )
     + ("vram-restore",)
 )
@@ -332,13 +352,21 @@ VRAM_MIRROR_OUT_COUNTS = {
         for alias in range(len(VRAM_MIRROR_WRITE_BASES))
         for sample in range(len(VRAM_MIRROR_WRITE_OFFSETS))
     },
-    **{case_id: VRAM_MIRROR_GE_SYNC_OUT_COUNT
-       for case_id, _operation, _z_start, _z_end in VRAM_MIRROR_GE_SYNC_CASES},
     **{
-        f"vram-ge-depth-row{row:02d}-{chunk:02d}":
-            VRAM_MIRROR_DEPTH_CHUNK_PIXELS * len(VRAM_MIRROR_BASES) * 2
+        sync_case[0]: VRAM_MIRROR_GE_SYNC_OUT_COUNT
+        for sync_case in VRAM_MIRROR_GE_SYNC_CASES
+    },
+    **{
+        f"vram-ge-depth-row{row}-{chunk:02d}":
+            VRAM_MIRROR_DEPTH_CHUNK_PIXELS * len(VRAM_MIRROR_DEPTH_ALIASES) * 2
         for row in range(len(VRAM_MIRROR_DEPTH_ROWS))
         for chunk in range(VRAM_MIRROR_DEPTH_ROW_CHUNK_COUNT)
+    },
+    **{
+        f"vram-ge-color-row{row}-{chunk:02d}":
+            VRAM_MIRROR_COLOR_CHUNK_PIXELS * 2
+        for row in range(len(VRAM_MIRROR_COLOR_ROWS))
+        for chunk in range(VRAM_MIRROR_COLOR_ROW_CHUNK_COUNT)
     },
     "vram-restore": 5,
     "vram-mirror-done": 1,
@@ -491,10 +519,18 @@ def parse_vram_mirror_output(
         "write_scan_bytes": VRAM_MIRROR_BYTES,
         "depth_stride": VRAM_MIRROR_DEPTH_STRIDE,
         "depth_row_count": len(VRAM_MIRROR_DEPTH_ROWS),
-        "depth_row_y0": VRAM_MIRROR_DEPTH_ROWS[0],
-        "depth_row_y1": VRAM_MIRROR_DEPTH_ROWS[1],
-        "depth_row_y2": VRAM_MIRROR_DEPTH_ROWS[2],
-        "depth_row_y3": VRAM_MIRROR_DEPTH_ROWS[3],
+        **{
+            f"depth_row_y{row}": y
+            for row, y in enumerate(VRAM_MIRROR_DEPTH_ROWS)
+        },
+        "depth_alias_count": len(VRAM_MIRROR_DEPTH_ALIASES),
+        "depth_chunk_pixels": VRAM_MIRROR_DEPTH_CHUNK_PIXELS,
+        "color_row_count": len(VRAM_MIRROR_COLOR_ROWS),
+        **{
+            f"color_row_y{row}": y
+            for row, y in enumerate(VRAM_MIRROR_COLOR_ROWS)
+        },
+        "color_chunk_pixels": VRAM_MIRROR_COLOR_CHUNK_PIXELS,
         "depth_test_enabled": 1,
         "depth_function": VRAM_MIRROR_DEPTH_FUNCTION_ALWAYS,
         "depth_mask": VRAM_MIRROR_DEPTH_MASK_WRITE_ENABLE,
@@ -559,7 +595,8 @@ def parse_vram_mirror_output(
                     f"PSP-VRAM-MIRROR-001: {record.case_id} first match offset is invalid"
                 )
 
-    for case_id, operation, z_start, z_end in VRAM_MIRROR_GE_SYNC_CASES:
+    for sync_case in VRAM_MIRROR_GE_SYNC_CASES:
+        case_id = sync_case[0]
         record = sequence.results[case_id]
         if record.status == "SKIP":
             continue
@@ -581,9 +618,9 @@ def parse_vram_mirror_output(
             raise ProtocolError(
                 f"PSP-VRAM-MIRROR-001: {case_id} GE state metadata disagrees with setup"
             )
-        if values[16:19] != (operation, z_start, z_end):
+        if values[16:] != sync_case[1:]:
             raise ProtocolError(
-                f"PSP-VRAM-MIRROR-001: {case_id} operation/Z metadata is invalid"
+                f"PSP-VRAM-MIRROR-001: {case_id} operation/vertex metadata is invalid"
             )
         if values[4] > 1 or values[6] > 1:
             raise ProtocolError(
@@ -594,7 +631,7 @@ def parse_vram_mirror_output(
                          for row in range(VRAM_MIRROR_DEPTH_ROW_COUNT))
     for row, y in enumerate(depth_rows_y):
         for chunk in range(VRAM_MIRROR_DEPTH_ROW_CHUNK_COUNT):
-            record = sequence.results[f"vram-ge-depth-row{row:02d}-{chunk:02d}"]
+            record = sequence.results[f"vram-ge-depth-row{row}-{chunk:02d}"]
             if record.status == "SKIP":
                 continue
             offsets = tuple(
@@ -603,8 +640,25 @@ def parse_vram_mirror_output(
                 for pixel in range(VRAM_MIRROR_DEPTH_CHUNK_PIXELS)
             )
             addresses = tuple(
-                alias + offset for offset in offsets for alias in VRAM_MIRROR_BASES
+                alias + offset
+                for offset in offsets
+                for alias in VRAM_MIRROR_DEPTH_ALIASES
             )
+            _vram_mirror_validate_address_pairs(record, addresses, value_max=0xFFFF)
+
+    for row, y in enumerate(VRAM_MIRROR_COLOR_ROWS):
+        for chunk in range(VRAM_MIRROR_COLOR_ROW_CHUNK_COUNT):
+            record = sequence.results[f"vram-ge-color-row{row}-{chunk:02d}"]
+            if record.status == "SKIP":
+                continue
+            offsets = tuple(
+                color_offset + (
+                    y * VRAM_MIRROR_DEPTH_STRIDE
+                    + chunk * VRAM_MIRROR_COLOR_CHUNK_PIXELS + pixel
+                ) * 2
+                for pixel in range(VRAM_MIRROR_COLOR_CHUNK_PIXELS)
+            )
+            addresses = tuple(VRAM_MIRROR_COLOR_ALIAS + offset for offset in offsets)
             _vram_mirror_validate_address_pairs(record, addresses, value_max=0xFFFF)
 
     restore = sequence.results["vram-restore"]
