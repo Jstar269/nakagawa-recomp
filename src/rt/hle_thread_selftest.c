@@ -63,7 +63,9 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include "osk_overlay.h"        /* the in-window keyboard the integration test drives */
 #include "flash0_font.h"        /* flash0: font device: slot binding seam */
 #include "nk_platform.h"        /* per-user data directory override for the font cache */
+#include "audio_resample.h"
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -455,6 +457,8 @@ static unsigned long s_audio_queue_calls;
 static int s_audio_push_frames;
 static int16_t s_audio_push_first_l, s_audio_push_first_r;
 static int16_t s_audio_push_last_l, s_audio_push_last_r;
+static int16_t s_audio_push_capture[8192u * 2u];
+static size_t s_audio_push_capture_frames;
 static int s_audio_queue_result;
 static int s_audio_queue_seq[4];
 static int s_audio_queue_seq_len;
@@ -478,6 +482,9 @@ void sr_audio_push(int ch, const int16_t *lr, int nframes, int volL, int volR) {
         s_audio_push_first_r = lr[1];
         s_audio_push_last_l = lr[(nframes - 1) * 2];
         s_audio_push_last_r = lr[(nframes - 1) * 2 + 1];
+        s_audio_push_capture_frames = (size_t)nframes < 8192u ? (size_t)nframes : 8192u;
+        memcpy(s_audio_push_capture, lr,
+               s_audio_push_capture_frames * 2u * sizeof(*s_audio_push_capture));
     }
 }
 
@@ -502,6 +509,7 @@ static void audio_fixture_reset(void) {
     s_audio_push_first_r = 0;
     s_audio_push_last_l = 0;
     s_audio_push_last_r = 0;
+    s_audio_push_capture_frames = 0;
     s_audio_queue_result = 0;
     s_audio_queue_seq_len = 0;
 }
@@ -5913,6 +5921,207 @@ static void test_audio_output2_release_refuses_while_queued(void) {
     audio_fixture_reset();
 }
 
+static size_t audio_resampler_convert_chunks(SrAudioResampler *state,
+                                             const int16_t *input,
+                                             size_t input_frames,
+                                             const size_t *chunks,
+                                             size_t chunk_count,
+                                             int16_t *output,
+                                             size_t output_capacity) {
+    size_t input_offset = 0;
+    size_t output_frames = 0;
+    for (size_t chunk = 0; chunk < chunk_count; chunk++) {
+        size_t produced;
+        if (chunks[chunk] > input_frames - input_offset ||
+            !sr_audio_resampler_push(state, input + input_offset * 2u, chunks[chunk]))
+            return SIZE_MAX;
+        produced = sr_audio_resampler_pull(state, output + output_frames * 2u,
+                                            output_capacity - output_frames);
+        if (produced > output_capacity - output_frames) return SIZE_MAX;
+        input_offset += chunks[chunk];
+        output_frames += produced;
+    }
+    if (input_offset != input_frames) return SIZE_MAX;
+    return output_frames;
+}
+
+static void audio_resampler_make_tone(int16_t *stereo, size_t frames,
+                                      uint32_t frequency, int amplitude) {
+    const double tau = 6.283185307179586476925286766559;
+    for (size_t i = 0; i < frames; i++) {
+        const double angle = tau * (double)frequency * (double)i / 48000.0;
+        const int16_t sample = (int16_t)lround(sin(angle) * amplitude);
+        stereo[i * 2u] = sample;
+        stereo[i * 2u + 1u] = sample;
+    }
+}
+
+static double audio_resampler_rms_amplitude(const int16_t *stereo,
+                                             size_t first, size_t end) {
+    double squares = 0.0;
+    for (size_t i = first; i < end; i++) {
+        double sample = stereo[i * 2u];
+        squares += sample * sample;
+    }
+    return sqrt(2.0 * squares / (double)(end - first));
+}
+
+static unsigned audio_resampler_positive_crossings(const int16_t *stereo,
+                                                     size_t first, size_t end) {
+    unsigned crossings = 0;
+    for (size_t i = first + 1u; i < end; i++)
+        if (stereo[(i - 1u) * 2u] <= 0 && stereo[i * 2u] > 0) crossings++;
+    return crossings;
+}
+
+/* The fixed-point CORDIC coefficient builder is shared by every source rate. These
+ * cells pin startup latency, passband gain/frequency, the Nyquist-edge stopband,
+ * phase continuity, exact rational frame counts, and reset behavior. */
+static void test_audio_resampler_quality_and_streaming(void) {
+    enum { INPUT_FRAMES = 4096, OUTPUT_CAPACITY = 4096, WARMUP = 192 };
+    static SrAudioResampler one_state, four_state, uneven_state, generic_state, long_state;
+    static int16_t input[INPUT_FRAMES * 2];
+    static int16_t one_output[OUTPUT_CAPACITY * 2];
+    static int16_t four_output[OUTPUT_CAPACITY * 2];
+    static int16_t uneven_output[OUTPUT_CAPACITY * 2];
+    static int16_t tone_output[OUTPUT_CAPACITY * 2];
+    static int16_t long_input[1024u * 2u];
+    static int16_t long_output[2048u * 2u];
+    static const size_t four_chunks[] = {1024u, 1024u, 1024u, 1024u};
+    static const size_t uneven_chunks[] = {17u, 503u, 1u, 777u, 1024u, 53u, 1721u};
+    SrAudioResampler *states[] = {
+        &one_state, &four_state, &uneven_state, &generic_state, &long_state
+    };
+    size_t one_frames, four_frames, uneven_frames;
+
+    for (size_t i = 0; i < sizeof(states) / sizeof(states[0]); i++)
+        sr_audio_resampler_destroy(states[i]);
+
+    expect(sr_audio_resampler_init(&one_state, 48000u),
+           "the SRC converter initializes at 48000 Hz");
+    for (size_t i = 0; i < INPUT_FRAMES; i++) {
+        input[i * 2u] = 12000;
+        input[i * 2u + 1u] = -7000;
+    }
+    expect(sr_audio_resampler_push(&one_state, input, INPUT_FRAMES),
+           "the SRC converter accepts a stereo block");
+    one_frames = sr_audio_resampler_pull(&one_state, one_output, OUTPUT_CAPACITY);
+    expect(one_frames == 3763u,
+           "4096 input frames produce floor(4096 * 44100 / 48000) output frames");
+    int dc_exact = one_frames > WARMUP;
+    for (size_t i = WARMUP; i < one_frames; i++)
+        if (one_output[i * 2u] != 12000 || one_output[i * 2u + 1u] != -7000)
+            dc_exact = 0;
+    expect(dc_exact, "DC passes at unity gain after the 48.5-input-frame filter delay");
+
+    /* A 22 kHz input is 50 Hz below the mathematical 22.05 kHz Nyquist; it pins
+     * upper-transition rejection. The 23 kHz cell is strictly above that Nyquist. */
+    audio_resampler_make_tone(input, INPUT_FRAMES, 22000u, 12000);
+    sr_audio_resampler_reset(&one_state);
+    expect(sr_audio_resampler_push(&one_state, input, INPUT_FRAMES),
+           "the SRC converter accepts a 22 kHz upper-transition tone");
+    size_t tone_frames = sr_audio_resampler_pull(&one_state, tone_output, OUTPUT_CAPACITY);
+    double attenuated_22k = tone_frames > WARMUP
+                                ? audio_resampler_rms_amplitude(tone_output, WARMUP, tone_frames)
+                                : 12000.0;
+    expect(attenuated_22k <= 12.0,
+           "the 22 kHz upper-transition tone is attenuated by at least 60 dB");
+
+    audio_resampler_make_tone(input, INPUT_FRAMES, 23000u, 12000);
+    sr_audio_resampler_reset(&one_state);
+    expect(sr_audio_resampler_push(&one_state, input, INPUT_FRAMES),
+           "the SRC converter accepts a tone above output Nyquist");
+    tone_frames = sr_audio_resampler_pull(&one_state, tone_output, OUTPUT_CAPACITY);
+    double attenuated_23k = tone_frames > WARMUP
+                                ? audio_resampler_rms_amplitude(tone_output, WARMUP, tone_frames)
+                                : 12000.0;
+    expect(attenuated_23k <= 12.0,
+           "a tone above output Nyquist is attenuated by at least 60 dB");
+
+    const uint32_t passband_tones[] = {1000u, 15000u};
+    for (size_t tone = 0; tone < sizeof(passband_tones) / sizeof(passband_tones[0]); tone++) {
+        const uint32_t frequency = passband_tones[tone];
+        audio_resampler_make_tone(input, INPUT_FRAMES, frequency, 12000);
+        sr_audio_resampler_reset(&one_state);
+        expect(sr_audio_resampler_push(&one_state, input, INPUT_FRAMES),
+               "the SRC converter accepts a passband tone");
+        tone_frames = sr_audio_resampler_pull(&one_state, tone_output, OUTPUT_CAPACITY);
+        double measured_amplitude = audio_resampler_rms_amplitude(tone_output, WARMUP,
+                                                                   tone_frames);
+        unsigned crossings = audio_resampler_positive_crossings(tone_output, WARMUP,
+                                                                 tone_frames);
+        double measured_frequency = (double)crossings * SR_AUDIO_RESAMPLER_OUTPUT_RATE /
+                                    (double)(tone_frames - WARMUP);
+        char message[112];
+        (void)snprintf(message, sizeof(message),
+                       "%u Hz converts to 44100 Hz within 2%% amplitude tolerance", frequency);
+        expect(fabs(measured_amplitude - 12000.0) <= 240.0, message);
+        (void)snprintf(message, sizeof(message),
+                       "%u Hz converts to the same frequency within 20 Hz", frequency);
+        expect(fabs(measured_frequency - frequency) <= 20.0, message);
+    }
+
+    uint32_t seed = UINT32_C(0x4d595df4);
+    for (size_t i = 0; i < INPUT_FRAMES; i++) {
+        seed = seed * UINT32_C(1664525) + UINT32_C(1013904223);
+        input[i * 2u] = (int16_t)(seed >> 16);
+        seed = seed * UINT32_C(1664525) + UINT32_C(1013904223);
+        input[i * 2u + 1u] = (int16_t)(seed >> 16);
+    }
+    expect(sr_audio_resampler_init(&four_state, 48000u) &&
+           sr_audio_resampler_init(&uneven_state, 48000u),
+           "independent converter states initialize for split-block comparison");
+    sr_audio_resampler_reset(&one_state);
+    one_frames = audio_resampler_convert_chunks(&one_state, input, INPUT_FRAMES,
+                                                 (const size_t[]){INPUT_FRAMES}, 1u,
+                                                 one_output, OUTPUT_CAPACITY);
+    four_frames = audio_resampler_convert_chunks(&four_state, input, INPUT_FRAMES,
+                                                  four_chunks,
+                                                  sizeof(four_chunks) / sizeof(four_chunks[0]),
+                                                  four_output, OUTPUT_CAPACITY);
+    uneven_frames = audio_resampler_convert_chunks(
+        &uneven_state, input, INPUT_FRAMES, uneven_chunks,
+        sizeof(uneven_chunks) / sizeof(uneven_chunks[0]), uneven_output, OUTPUT_CAPACITY);
+    expect(one_frames == 3763u && four_frames == one_frames && uneven_frames == one_frames,
+           "one, four, and uneven input splits produce the exact same frame count");
+    expect(one_frames == four_frames &&
+           memcmp(one_output, four_output, one_frames * 2u * sizeof(int16_t)) == 0 &&
+           memcmp(one_output, uneven_output, one_frames * 2u * sizeof(int16_t)) == 0,
+           "one, four, and uneven input splits produce byte-identical samples");
+
+    sr_audio_resampler_reset(&one_state);
+    size_t reset_frames = audio_resampler_convert_chunks(
+        &one_state, input, INPUT_FRAMES, (const size_t[]){INPUT_FRAMES}, 1u,
+        tone_output, OUTPUT_CAPACITY);
+    expect(reset_frames == one_frames &&
+           memcmp(one_output, tone_output, one_frames * 2u * sizeof(int16_t)) == 0,
+           "reset clears fractional phase and history to fresh-state output");
+
+    expect(sr_audio_resampler_init(&generic_state, 32000u),
+           "the converter accepts a source rate other than 48000 Hz");
+    expect(sr_audio_resampler_push(&generic_state, input, 512u),
+           "the generic 32000 Hz source rate accepts input");
+    size_t generic_frames = sr_audio_resampler_pull(&generic_state, tone_output,
+                                                     OUTPUT_CAPACITY);
+    expect(generic_frames == 705u,
+           "512 frames at 32000 Hz produce floor(512 * 44100 / 32000) frames");
+
+    expect(sr_audio_resampler_init(&long_state, 48000u),
+           "the long-run frame-count converter initializes");
+    size_t long_frames = 0;
+    for (unsigned block = 0; block < 375u; block++) {
+        if (!sr_audio_resampler_push(&long_state, long_input, 1024u)) {
+            long_frames = SIZE_MAX;
+            break;
+        }
+        long_frames += sr_audio_resampler_pull(&long_state, long_output, 2048u);
+    }
+    expect(long_frames == 8u * 44100u,
+           "eight seconds of 48000 Hz input produce exactly eight seconds at 44100 Hz");
+    for (size_t i = 0; i < sizeof(states) / sizeof(states[0]); i++)
+        sr_audio_resampler_destroy(states[i]);
+}
+
 /* sceAudioSRCChReserve / sceAudioSRCOutputBlocking / sceAudioSRCChRelease (issue #339).
  *
  * The expected words are the ones a PSP-3000 returned on 2026-10-15 (PSP-HLE-AUDIO-SRC-001,
@@ -5921,6 +6130,8 @@ static void test_audio_output2_release_refuses_while_queued(void) {
  * reserve and release that the previous test drives. */
 static void test_audio_src_matches_the_measured_contract(void) {
     enum { SRC_BUF = 0x08a00000u };   /* 1024 stereo frames: 4096 bytes inside the arena */
+    static int16_t first_conversion[8192u * 2u];
+    size_t first_conversion_frames = 0;
     CpuState cpu;
     reset_fixture();
     sr_hle_init();
@@ -6007,20 +6218,46 @@ static void test_audio_src_matches_the_measured_contract(void) {
     expect(audio_dispatch(&cpu, NID_SCE_AUDIO_OUTPUT2_RELEASE, 0u, 0u, 0u) == 0u,
            "the Output2 reservation survived and now releases");
 
-    /* A 48000 Hz reservation is accepted but there is no rate converter: the block is paced,
-     * counted as the reserved sample count, and not forwarded to the 44100 Hz mixer. */
+    /* A 48000 Hz reservation is accepted and converted to the 44100 Hz mixer rate while the
+     * guest-visible return stays in source frames. */
     audio_fixture_reset();
+    uint32_t audio_seed = UINT32_C(0x53524348);
+    for (uint32_t i = 0; i < 1024u; i++) {
+        audio_seed = audio_seed * UINT32_C(1664525) + UINT32_C(1013904223);
+        MEM_W16(SRC_BUF + i * 4u, audio_seed >> 16);
+        audio_seed = audio_seed * UINT32_C(1664525) + UINT32_C(1013904223);
+        MEM_W16(SRC_BUF + i * 4u + 2u, audio_seed >> 16);
+    }
     expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 1024u, 48000u, 2u) == 0u,
            "SRC reserves at 48000 Hz");
     expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING, 0x8000u, SRC_BUF, 0u) ==
                1024u,
            "a 48000 Hz block returns the reserved sample count");
-    expect(s_audio_push_calls == 0u, "a 48000 Hz block is not forwarded to the 44100 Hz mixer");
+    expect(s_audio_push_calls == 1u && s_audio_push_frames == 940,
+           "a 48000 Hz block reaches the 44100 Hz mixer as 940 converted frames");
+    first_conversion_frames = s_audio_push_capture_frames;
+    memcpy(first_conversion, s_audio_push_capture,
+           first_conversion_frames * 2u * sizeof(*first_conversion));
+    expect(first_conversion_frames == 940u &&
+           (s_audio_push_first_l != 0 || s_audio_push_last_l != 0),
+           "the 48000 Hz hand-off contains converted source samples");
     expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING, 0x8000u,
                           SRC_BUF + 0x08000000u, 0u) == SCE_KERNEL_ERROR_ILLEGAL_ADDR,
            "a 48000 Hz block outside the arena is refused as the 44100 Hz path refuses it");
     expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0u,
            "the 48000 Hz reservation releases");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 1024u, 48000u, 2u) == 0u,
+           "SRC can reserve 48000 Hz again after release");
+    audio_fixture_reset();
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_OUTPUT_BLOCKING, 0x8000u, SRC_BUF, 0u) ==
+               1024u,
+           "a new 48000 Hz reservation keeps returning source frames");
+    expect(s_audio_push_capture_frames == first_conversion_frames &&
+           memcmp(first_conversion, s_audio_push_capture,
+                  first_conversion_frames * 2u * sizeof(*first_conversion)) == 0,
+           "Release and Reserve reset the converter phase and filter history");
+    expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RELEASE, 0u, 0u, 0u) == 0u,
+           "the fresh 48000 Hz reservation releases");
 
     /* A rate the runtime does not model is refused in the open, not accepted. */
     expect(audio_dispatch(&cpu, NID_SCE_AUDIO_SRC_CH_RESERVE, 1024u, 22050u, 2u) == 0x80000003u,
@@ -29109,6 +29346,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_wait_thread_end_cb_execution();
     test_audio_regular_contract_safety();
     test_audio_output2_release_refuses_while_queued();
+    test_audio_resampler_quality_and_streaming();
     test_audio_src_matches_the_measured_contract();
     test_audio_drift_window_reports_the_pacing_value();
     test_audio_output_telemetry_counts_guest_frames();
