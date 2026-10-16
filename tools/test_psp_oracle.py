@@ -2523,9 +2523,12 @@ class PspOracleBuildRouteTests(unittest.TestCase):
             repo = root / "repo"
             repo.mkdir()
             dated = time.time() - 3600
-            for name in ("Makefile", "probe.c"):
-                shutil.copyfile(self.fixture / name, repo / name)
-                os.utime(repo / name, (dated, dated))
+            # The Makefile and every source and header it may name as a prerequisite.
+            sources = [self.fixture / "Makefile"]
+            sources += sorted(p for p in self.fixture.iterdir() if p.suffix in {".c", ".h", ".S"})
+            for source in sources:
+                shutil.copyfile(source, repo / source.name)
+                os.utime(repo / source.name, (dated, dated))
             (root / "sdk" / "lib").mkdir(parents=True)
             (root / "sdk" / "lib" / "build.mak").write_text(
                 "# Stub SDK: the test names the object it builds.\n", encoding="utf-8"
@@ -2550,7 +2553,7 @@ class PspOracleBuildRouteTests(unittest.TestCase):
                 "GIT_COMMITTER_NAME": "oracle-case-stamp test",
                 "GIT_COMMITTER_EMAIL": "oracle-case-stamp@example.invalid",
             }
-            for git_args in (("init", "-q"), ("add", "Makefile", "probe.c"),
+            for git_args in (("init", "-q"), ("add", "--all"),
                              ("commit", "-q", "-m", "fixture")):
                 subprocess.run(["git", *git_args], cwd=repo, env=env, check=True,
                                capture_output=True)
