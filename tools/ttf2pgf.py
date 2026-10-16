@@ -1163,7 +1163,7 @@ def _jis_x_0201_half_width_katakana_codes() -> tuple[int, ...]:
                 "japanese-mapping-invalid",
                 f"JIS X 0201 half-width byte 0x{value:02X} is unassigned in Python's euc_jp codec",
             ) from exc
-        except LookupError as exc:
+        except LookupError as exc:  # pragma: no cover - euc_jp is a standard Python codec
             raise _refuse("japanese-codec-unavailable", "Python's euc_jp codec is unavailable") from exc
         if len(character) != 1:
             raise _refuse(

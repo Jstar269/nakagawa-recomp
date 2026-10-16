@@ -63,6 +63,9 @@ if (-not $ExcludeOptionalFonts) {
 # destination directory cannot remove the generated default font. It is part
 # of every runtime build, including builds that omit optional source fonts.
 $generatedFontDir = Join-Path $BuildDir 'project-font'
+if (-not (Test-Path -LiteralPath $generatedFontDir -PathType Container)) {
+    throw "PROJECT_JAPANESE_FONT_OUTPUT_MISSING: $generatedFontDir was not generated; the compile target builds it (project-japanese-font)"
+}
 if (Test-Path -LiteralPath $generatedFontDir -PathType Container) {
     $fontDst = Join-Path $BuildDir 'font'
     New-Item -ItemType Directory -Path $fontDst -Force | Out-Null
