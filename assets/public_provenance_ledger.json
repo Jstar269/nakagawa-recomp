@@ -1162,7 +1162,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "85a16c75883f031c161a33a1654bd2238e7b4de36952c611dbc0643a00fb0c93"
+      "sha256": "8fbbc28b380f7cf00aa8aa6ce9c3650b831b2e204f8af9cf9ca56c910ee77898"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -1180,7 +1180,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "271cbe1aa7315a23c5830ea3690b3513ee08fb84ba20f8c7c23c59f3312712d1"
+      "sha256": "3d9f7b2badff7aaf45155fabfafedd056743b2828e4648936fe102de194b5e20"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -6942,7 +6942,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2be553bf30d89890a4e2dc8532a3b7fb4b514299ac4e52ccb96ea70565c419f5"
+      "sha256": "77b50fe70a7520e4b173be0f2b73930b80ec4f2d0fb14a9ef07ff022fdf6d937"
     },
     {
       "path": "tools/host_stubs.py",
