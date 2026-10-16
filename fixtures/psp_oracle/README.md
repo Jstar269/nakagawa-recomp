@@ -525,6 +525,8 @@ publishes their words.
 | `vfpu-compare` | `PSP-VFPU-CMP-001` | `vscmp.s`, `vsge.s`, and `vslt.s` on 15 operand pairs (less-than, equal, greater, signed zeros in both orders, quiet, signalling, and negative NaN on each side, infinities). Each record carries the observed word, the project's model word at build time, and both operands. Measured: `vsge.s`/`vslt.s` write 0.0 for a NaN; `vscmp.s` orders a NaN by sign and magnitude, which the model now does. |
 | `fpu-cc` | `PSP-FPU-CC-001` | COP1 condition codes 0..7: FCR31 condition-bit writability, the FCR31 word after an equal and an unequal `c.eq.s` with each code, and whether `bc1t`/`bc1f` with each code are taken under FCC0, no flag, and the code's own flag. A reserved encoding may end the launch with an exception; the last STEP line names the cell. Measured: no exception; only FCC0 exists, and every code writes and tests it. |
 | `vfpu-transcendental-corpus` | `PSP-VFPU-TRANSCENDENTAL-001` | Raw result words for vsin, vcos, vexp2, vlog2, vrsq, vrcp, vsqrt, vasin, vnrcp, vnsin, and vrexp2 over 63 deterministic input words per operation. The VASIN special table substitutes three in-domain words for its already measured edge inputs. Records use 8-word chunks (7 words in each final chunk): 88 data records plus one completion record; the parser checks format only. `MEASURED` on 2026-10-15 (`22b027f6`). |
+| `registry-font` | `PSP-REGISTRY-002` | Read-only walk of `/DATA/FONT` (with `PROPERTY/INFO<n>`) and `/SYSPROFILE/RESOLUTION`: whether the registry handle lists the root (`font-category-0000`), then every key's name, type, size, value and enumeration order (`font-category-*`, `font-key-*`), and `font-registry-done` with the record, open and refusal counts. |
+| `umd-io` | `PSP-UMDIO-001` | Fixed lists of `sceIoOpen` (`PSP_O_RDONLY`, or `PSP_O_RDONLY` with the `0x000f0000` bits a title passes for `umd0:`) and `sceIoDopen` paths: `umd0:`, `umd1:`, `umd:`, `umd0:/`, `umd1:/`, `disc0:` with and without a path, and `msstor0p1:/` (`io-open-*`, `io-dopen-*`, each with its close result), with `sceUmdCheckMedium`/`sceUmdGetDriveStat` before and after (`umd-state-*`). |
 | `hle-vtimer-unit` | `PSP-HLE-VTIMER-002` | One VTimer: start; a `sceKernelGetVTimerTime` and a system-clock reading either side of a bounded 20 ms delay; the VTimer base and Refer base field while running and after stop; stop; delete. Each 64-bit clock is recorded as its low word then its high word. |
 | `hle-vtimer-errors` | `PSP-HLE-VTIMER-003` | Start, stop, and `sceKernelGetVTimerTime` on a deleted UID, then a cleanup delete of that UID after its last use; a live timer created and deleted; up to 64 creates; out1 records whether a refusal occurred; every created timer deleted. The NULL option pointer of `sceKernelCreateVTimer` is the optional argument. |
 | `hle-kernel-pool-bounds` | `PSP-HLE-KERNEL-STATUS-002` | FPL creation with block size 0 and with a 0x7fffffff-byte block, each deleted when its create returned a pool; a refused create gives a PASS delete cell with out0 0 and no delete call; VPL allocation: up to 64 allocations; out1 records whether a refusal occurred; every block freed and the VPL deleted. The NULL option pointers of the pool creates are the optional argument. |
@@ -560,6 +562,67 @@ runtime-modeled keys `language`, `button_assign`, date/time format, `timezone`,
 `summer_time`, and `adhoc_channel`; all other keys contribute only name, type,
 and size. Registry and console-specific capture output stays in the private
 campaign output directory.
+
+The font-registry case (`registry-font`) runs the walk in `registry_walk.h`.
+Opening a missing category creates it on the console, so the walk never opens
+a category by a literal path:
+
+- The root is listed through the registry handle (`sceRegGetKeysNum` and
+  `sceRegGetKeys` take no name, so they cannot create anything). If the handle
+  does not list the root, nothing is opened. The listing counts as the root only
+  if it shows `CONFIG`, the one root category already measured, as a directory
+  (`font-registry-done` `out6`); otherwise no root child is opened.
+- A category is opened only after its already-open parent listed it,
+  `sceRegGetKeyInfo` on that parent reported a directory, and its name is 1 to
+  25 bytes of `[A-Za-z0-9_.-]`. Its path is the parent's path plus that name.
+- Only `/DATA`, `/DATA/FONT` and below, `/SYSPROFILE`, and
+  `/SYSPROFILE/RESOLUTION` and below are entered. Values are read only inside
+  `/DATA/FONT` and `/SYSPROFILE/RESOLUTION`; other keys record name, type and
+  size.
+- Keys per category (64), depth (6), categories opened (96) and value size
+  (1024 bytes) are bounded, and every buffer is static.
+
+`registry_walk_host.c` runs the same walk against a fake registry that creates
+a category on a missing open, as the console does; `tools/test_psp_oracle.py`
+replays its call log against these rules. The Makefile passes
+`--exact-library sceReg=...` to `tools/psp_oracle/user_mode_imports.py` for both
+registry cases, so a build fails unless the probe imports exactly the eight
+read calls; the gate also refuses any other `sceReg` NID in every probe.
+
+The UMD case (`umd-io`, `umd_io.h`) never activates, deactivates or reads the
+UMD: the Makefile pins its `sceUmdUser` imports to `sceUmdCheckMedium` and
+`sceUmdGetDriveStat`. It opens with read-only flags only, reads and writes
+nothing through a descriptor, closes every descriptor, and behaves the same with
+or without a UMD inserted.
+
+The font-file case (`font-files`, `PSP-FONTFILES-001`, `font_files.h`) is not in
+the campaign queue; it runs only on the maintainer's request. It lists
+`flash0:/font` (falling back to `flash0:/font/`; if neither opens it records both
+results and stops), opens each regular file `PSP_O_RDONLY`, and copies it to
+`host0:/fonts/<name>` in 64 KiB chunks. Each copy is verified by SHA-256 over
+the flash0 read, a host0 read-back and a second flash0 read (`font-copy-*`
+`out8` bits). Only names of 1 to 63 bytes of `[A-Za-z0-9_.-]` not starting with
+`.` and files up to 16 MiB are copied; other entries are recorded and skipped.
+Nothing writes to `flash0:`. The copies and digests are the maintainer's private
+evidence and are never committed. `io_cases_host.c` runs both cases against a
+fake file system for the tests in `tools/test_psp_oracle.py`.
+
+The font-list case (`font-list`, `PSP-FONTLIST-001`, `font_list.h`) is not in the
+campaign queue; it runs only on the maintainer's request, with a user-mode
+`sceLibFont` module resident (loaded through PSPLink before the launch). In the
+2026-10-15 run PSPLink could not start the firmware's own copy from `flash0:`, so
+the operator loaded a `sceLibFont` module from their own software on `host0:`;
+that module is private input and is never committed. The case asks
+that library for the system font list the way a title does: `sceFontNewLib` with a
+static arena allocator and no file callbacks, `sceFontGetNumFontList`,
+`sceFontGetFontList`, one `sceFontGetFontInfoByIndexNumber` per index (at most 64),
+then `sceFontDoneLib`. Each entry's 168 raw bytes are recorded as `raw_hex` with
+words 0-7 and 40-41 as `out0`-`out9`. The probe imports exactly the five
+`sceLibFont` calls and nothing from `sceReg` (the import gate fails the build
+otherwise), opens no font and no file, and writes only its host0 log. Font names
+and file names inside the entries are console strings and stay in that private
+log. `io_cases_host.c` (mode `fontlist`) runs the case against a fake font library
+for the tests in `tools/test_psp_oracle.py`.
 
 The host campaign plan requires one staged PRX for each queued case. It launches
 one PRX per boot and issues a PSPLink soft reset between completed cases. The

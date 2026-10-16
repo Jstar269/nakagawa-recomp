@@ -77,7 +77,10 @@ try:
         parse_ge_nan_output,
         parse_io_matrix_output,
         parse_mbx_delete_wait_output,
+        parse_font_files_output,
+        parse_registry_font_output,
         parse_registry_readonly_output,
+        parse_umd_io_output,
         validate_hle_edram_restore,
     )
 except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocation
@@ -94,7 +97,10 @@ except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocat
         parse_ge_nan_output,
         parse_io_matrix_output,
         parse_mbx_delete_wait_output,
+        parse_font_files_output,
+        parse_registry_font_output,
         parse_registry_readonly_output,
+        parse_umd_io_output,
         validate_hle_edram_restore,
     )
 
@@ -240,6 +246,8 @@ CAMPAIGN_QUEUE_CASES = (
     "kernel-misc",
     "vfpu-compare",
     "fpu-cc",
+    "registry-font",
+    "umd-io",
     "smoke",
     "thread-exit-delete",
     "teardown-test",
@@ -276,6 +284,8 @@ CAMPAIGN_CASE_ESTIMATE_SECONDS = {
     "kernel-misc": 90,
     "vfpu-compare": 90,
     "fpu-cc": 90,
+    "registry-font": 120,
+    "umd-io": 60,
     "smoke": 60,
     "thread-exit-delete": 180,
     "teardown-test": 60,
@@ -914,6 +924,12 @@ def _validate_campaign_contract(text: str, case_id: str) -> None:
         parse_campaign_probe_output(text, case_id, require_complete=True)
     elif case_id == "registry-readonly":
         parse_registry_readonly_output(text, require_complete=True)
+    elif case_id == "registry-font":
+        parse_registry_font_output(text, require_complete=True)
+    elif case_id == "umd-io":
+        parse_umd_io_output(text, require_complete=True)
+    elif case_id == "font-files":
+        parse_font_files_output(text, require_complete=True)
     elif case_id in _FIXED_CAMPAIGN_CASES:
         _parse_fixed_campaign_records(text, case_id)
     elif case_id in _COMPLETE_CAMPAIGN_PARSERS:
@@ -1026,7 +1042,9 @@ def _normalise_unbound_identity_fields(text: str) -> str:
 
 
 def _campaign_completeness_contract(case_id: str) -> str:
-    if case_id in CAMPAIGN_PROBE_CASES or case_id == "registry-readonly":
+    if case_id in CAMPAIGN_PROBE_CASES or case_id in {
+        "registry-readonly", "registry-font", "umd-io", "font-files",
+    }:
         return "strict-golden-sequence"
     if case_id in _FIXED_CAMPAIGN_CASES:
         return "strict-fixed-record-sequence"

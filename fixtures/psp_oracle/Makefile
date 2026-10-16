@@ -163,7 +163,7 @@ CASE_ID = 68
 else ifeq ($(CASE),vfpu-transcendental-corpus)
 CASE_ID = 71
 # 90-103: the H-oracle HLE measurement families (probe_hle_measure.c). They are
-# numbered apart from the sequential 1-70 probe.c cases so that new sequential
+# numbered apart from the sequential probe.c cases so that new sequential
 # cases cannot collide with them; 97-103 are single-launch NOT_RUN cases.
 else ifeq ($(CASE),hle-kernel-status)
 CASE_ID = 90
@@ -197,6 +197,14 @@ else ifeq ($(CASE),llsc-link)
 CASE_ID = 69
 else ifeq ($(CASE),fpu-cc)
 CASE_ID = 70
+else ifeq ($(CASE),registry-font)
+CASE_ID = 72
+else ifeq ($(CASE),font-files)
+CASE_ID = 73
+else ifeq ($(CASE),umd-io)
+CASE_ID = 74
+else ifeq ($(CASE),font-list)
+CASE_ID = 75
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -394,8 +402,26 @@ endif
 ifeq ($(CASE),model-profile)
 LIBS += -lpspkubridge
 endif
-ifeq ($(CASE),registry-readonly)
+# The registry cases may import only the eight read-only sceReg calls, exactly: the gate
+# below fails the build on any other sceReg NID (a set, create, remove or flush call).
+REGISTRY_CASES = registry-readonly registry-font
+ifneq ($(filter $(REGISTRY_CASES),$(CASE)),)
 LIBS += -lpspreg
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceReg=0x92E41280,0xFA8A5739,0x1D8A762E,0x0CAE832B,0x2C0DB9DD,0x2D211135,0xD4475AA8,0x28A8E98A
+endif
+# The UMD case reads the drive state only: exactly sceUmdCheckMedium and sceUmdGetDriveStat,
+# so a build that imported sceUmdActivate (or any other UMD call) fails the gate.
+ifeq ($(CASE),umd-io)
+LIBS += -lpspumd
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceUmdUser=0x46EBB729,0x6B4A146C
+endif
+# The font-list case asks the console's own font library for the system font list. It links
+# the hand-authored sceLibFont stubs (libfont_imports.S) and may import exactly those five
+# calls; it may import nothing from sceReg, so the probe itself can neither open nor create a
+# registry category (the only registry reads are the library's own).
+ifeq ($(CASE),font-list)
+OBJS += $(BUILD_DIR)/libfont_imports.o
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceLibFont=0x67F17ED7,0x574B6FBC,0x27F6E642,0xBC75D85B,0x5333322D --forbid-library sceReg
 endif
 ifeq ($(CASE),kernel-misc)
 OBJS += $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/display_user_imports.o
@@ -431,13 +457,13 @@ include $(PSPSDK)/lib/build.mak
 # .DELETE_ON_ERROR removes a rejected ELF so a later make cannot package it.
 PYTHON ?= python3
 USER_MODE_IMPORT_GATE = $(FIXTURE_DIR)../../tools/psp_oracle/user_mode_imports.py
-FIXUP = bash -c 'out=$$(psp-fixup-imports "$$1" 2>&1); rc=$$?; test -n "$$out" && echo "$$out"; echo "$$out" | grep -q "stubs out of order" && exit 1; test $$rc -eq 0 || exit $$rc; exec "$(PYTHON)" "$(USER_MODE_IMPORT_GATE)" "$$1"' --
+FIXUP = bash -c 'out=$$(psp-fixup-imports "$$1" 2>&1); rc=$$?; test -n "$$out" && echo "$$out"; echo "$$out" | grep -q "stubs out of order" && exit 1; test $$rc -eq 0 || exit $$rc; exec "$(PYTHON)" "$(USER_MODE_IMPORT_GATE)" $(USER_MODE_IMPORT_GATE_ARGS) "$$1"' --
 .DELETE_ON_ERROR:
 
 # The SDK's generic `%.o: %.c` rule expects source and object to share a
 # directory. Keep the source at the fixture root while placing all generated
 # objects under the ignored build directory.
-$(BUILD_DIR)/probe.o: probe.c
+$(BUILD_DIR)/probe.o: probe.c registry_walk.h font_files.h umd_io.h font_list.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/probe_exports.exp: Makefile
@@ -452,6 +478,9 @@ $(BUILD_DIR)/threadman_user_imports.o: threadman_user_imports.S
 	$(CC) $(ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/display_user_imports.o: display_user_imports.S
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/libfont_imports.o: libfont_imports.S
 	$(CC) $(ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/probe_hle_measure.o: probe_hle_measure.c
