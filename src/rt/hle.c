@@ -15822,7 +15822,7 @@ static uint32_t h_AudioSRCChReserve(CpuState *s) {
         return SCE_AUDIO_ERROR_SRC_INVALID_CHANNELS;
     }
     sr_audio_resampler_destroy(&s_audio_src_resampler);
-    if (freq == 48000u && !sr_audio_resampler_init(&s_audio_src_resampler, freq))
+    if (freq != SR_AUDIO_RESAMPLER_OUTPUT_RATE && !sr_audio_resampler_init(&s_audio_src_resampler, freq))
         return HLE_KERNEL_ERROR_NO_MEMORY;
     s_audio_ch[AUDIO_OUTPUT2_CHANNEL] = 1;
     s_audio_fmt[AUDIO_OUTPUT2_CHANNEL] = 0;
@@ -15855,8 +15855,13 @@ static uint32_t h_AudioSRCOutputBlocking(CpuState *s) {
     if (A1 && n > 0u &&
         (!sr_size_mul_ok(n, 4u, &bytes) || !sr_guest_span_readable(A1, bytes)))
         return 0x80000103u; /* SCE_KERNEL_ERROR_ILLEGAL_ADDR */
-    if (s_audio_src_freq != 48000u) return SCE_AUDIO_ERROR_SRC_INVALID_CHANNELS;
+    /* Fail closed if a reserved rate ever lacks its converter (Reserve builds one for every
+     * accepted rate other than the mixer's own). */
+    if (s_audio_src_resampler.input_rate != s_audio_src_freq)
+        return SCE_AUDIO_ERROR_SRC_INVALID_CHANNELS;
     if (A1 && n > 0u) {
+        /* Shared scratch is safe: the SRC slot has one owner, and nothing between filling
+         * these buffers and handing the frames to the mixer can yield to another thread. */
         static int16_t input[4111u * 2u];
         static int16_t converted[4111u * 2u];
         for (uint32_t i = 0; i < n; i++) {

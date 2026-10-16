@@ -8,9 +8,10 @@
 
 #define SR_AUDIO_RESAMPLER_OUTPUT_RATE 44100u
 
-/* A streaming stereo signed-16-bit converter. Initialize state as {0}, then
- * call destroy before reinitializing it. reset keeps the rate-specific filter
- * table allocated while clearing phase, history, and queued output. */
+/* A streaming stereo signed-16-bit converter. The state starts as {0}; init
+ * releases anything an earlier init allocated, so it may be called again on the
+ * same state. reset keeps the rate-specific filter table allocated while
+ * clearing phase, history, and queued output. */
 typedef struct SrAudioResampler {
     uint32_t input_rate;
     uint64_t input_frames;

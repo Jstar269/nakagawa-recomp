@@ -165,7 +165,6 @@ static int sr_audio_reserve_pending(SrAudioResampler *state, size_t additional) 
                 state->pending_frames * 2u * sizeof(*state->pending_output));
     }
     state->pending_head = 0;
-    if (!state->pending_frames) state->pending_head = 0;
     if (needed <= state->pending_capacity) return 1;
 
     new_capacity = state->pending_capacity ? state->pending_capacity : 64u;
@@ -243,7 +242,7 @@ int sr_audio_resampler_init(SrAudioResampler *state, uint32_t input_rate) {
     if (history_extra > SIZE_MAX - SR_AUDIO_RESAMPLER_TAPS) return 0;
     history_capacity = SR_AUDIO_RESAMPLER_TAPS + (size_t)history_extra;
     if (history_capacity > SIZE_MAX / (2u * sizeof(int16_t))) return 0;
-    memset(state, 0, sizeof(*state));
+    sr_audio_resampler_destroy(state); /* releases an earlier init; zeroes the state */
     state->coefficients_q30 = (int32_t *)malloc(coefficient_count * sizeof(int32_t));
     if (!state->coefficients_q30) return 0;
     if (!sr_audio_make_coefficients(input_rate, state->coefficients_q30)) {
