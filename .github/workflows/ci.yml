@@ -25,6 +25,15 @@ on:
   # is deliberately no input to narrow it -- a knob that cannot actually reduce
   # the run would be misleading.
   workflow_dispatch:
+  # Merge-queue groups. GitHub builds a group commit (the trunk plus the queued
+  # pull requests ahead of this one, plus this one) and asks for checks on that
+  # exact commit. A group is a ref in this repository, created only after a
+  # write-access maintainer enqueues a reviewed pull request. It gets the same
+  # complete matrix as a manual run and is never path-gated, so every required
+  # check reports on the group commit. The classifier forces it
+  # (tools/ci_paths.py FULL_MATRIX_EVENTS). Inert until a merge queue rule exists.
+  merge_group:
+    types: [checks_requested]
 
 concurrency:
   # A new commit supersedes an in-flight run for the same PR/ref.  This is also
@@ -127,6 +136,49 @@ jobs:
         shell: bash
         run: python tools/betterleaks_canary.py --betterleaks "$BETTERLEAKS_BIN"
 
+  markdown:
+    name: Markdown validation
+    runs-on: ubuntu-24.04
+    needs: classify
+    if: ${{ always() && needs.classify.result == 'success' && needs.classify.outputs.run_markdown == 'true' }}
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24.21.0"
+
+      - name: Lint repository Markdown
+        run: npx --yes markdownlint-cli2@0.23.3
+
+  # Public-export candidate audit (#293/#294), in its own job so it overlaps the all-files
+  # hygiene checks instead of running after them (#735 item 5). It is a separate required
+  # result: ci_required fails unless it succeeds, and every gate that waited for hygiene
+  # also waits for it. The job runs on every event and gates no path, because publication
+  # integrity must never be path-dependent (tools/test_ci_paths.py).
+  public_export:
+    name: Public export candidate audit
+    runs-on: ubuntu-24.04
+    needs: classify
+    if: ${{ always() && needs.classify.result == 'success' }}
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
       # #293/#294: represent the release-export candidate path in hosted CI.
       # One invocation runs the publication gates, generates the public-safe
       # candidate, and runs the exhaustive candidate-tree audit against the
@@ -159,30 +211,12 @@ jobs:
             exit 1
           fi
 
-  markdown:
-    name: Markdown validation
-    runs-on: ubuntu-24.04
-    needs: classify
-    if: ${{ always() && needs.classify.result == 'success' && needs.classify.outputs.run_markdown == 'true' }}
-    timeout-minutes: 10
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24.21.0"
-
-      - name: Lint repository Markdown
-        run: npx --yes markdownlint-cli2@0.23.3
-
   python_tools:
     name: Python tooling gates
     runs-on: ubuntu-24.04
-    needs: [classify, hygiene]
+    # Waits for classify and the public-export audit, not hygiene: hygiene runs beside it
+    # and ci_required still requires its result (docs/CI.md, "Hygiene beside the substantive gates").
+    needs: [classify, public_export]
     # The suite is ~10 minutes serially. Four runners split the test files with
     # tools/ci_test_shards.py: a deterministic longest-first bin packing over the
     # measured per-module durations in tools/ci_test_weights.json (#693). Every
@@ -199,7 +233,8 @@ jobs:
         # outputs; the job's own condition skips it in that case.
         shard: ${{ fromJSON(needs.classify.outputs.python_shards || '[0, 1, 2, 3]') }}
     if: >-
-      ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+      ${{ always() && needs.classify.result == 'success' &&
+          needs.public_export.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_python == 'true' }}
     timeout-minutes: 20
@@ -252,9 +287,11 @@ jobs:
   native_tools:
     name: Native and translation gates
     runs-on: ubuntu-24.04
-    needs: [classify, hygiene]
+    # Not gated on hygiene (docs/CI.md, "Hygiene beside the substantive gates").
+    needs: [classify, public_export]
     if: >-
-      ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+      ${{ always() && needs.classify.result == 'success' &&
+          needs.public_export.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_native == 'true' }}
     timeout-minutes: 45
@@ -273,7 +310,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake curl gcc-mipsel-linux-gnu \
-            git libvulkan-dev ninja-build pkg-config
+            git libc6-dev-i386 libvulkan-dev ninja-build pkg-config
 
       - name: Build pinned SDL3 for headless Linux runtime
         # Build the pinned SDL release directly so CI uses the documented version.
@@ -346,6 +383,12 @@ jobs:
       - name: Compile host-neutral runtime objects on Linux
         run: make GAME_NAME=ci BUILD_DIR=build/portable-check CC=gcc portable-core-objects
 
+      - name: Check 32-bit format specifier portability across portable core
+        # libc6-dev-i386 (installed above) supplies the 32-bit C library headers for the
+        # syntax-only -m32 build that gives this LP64 runner a 32-bit long; gcc-multilib
+        # would do too but conflicts with the MIPS cross compiler this job installs.
+        run: python tools/format_portability_check.py
+
       - name: Create build directory
         run: mkdir -p build
 
@@ -398,8 +441,14 @@ jobs:
           player_build="$RUNNER_TEMP/nakagawa-cmake-player"
           iso="$RUNNER_TEMP/showcase-build/showcase-scene-v1/TEST00007.iso"
           test -f "$iso"
-          mkdir -p "$RUNNER_TEMP/player-smoke-data"
+          # Redirect every XDG root the player reads, so a stage run never writes
+          # under the runner's HOME (native_test_isolation.c sets the same four).
+          mkdir -p "$RUNNER_TEMP/player-smoke-data" "$RUNNER_TEMP/player-smoke-config" \
+            "$RUNNER_TEMP/player-smoke-cache" "$RUNNER_TEMP/player-smoke-state"
           stage_output=$(XDG_DATA_HOME="$RUNNER_TEMP/player-smoke-data" \
+            XDG_CONFIG_HOME="$RUNNER_TEMP/player-smoke-config" \
+            XDG_CACHE_HOME="$RUNNER_TEMP/player-smoke-cache" \
+            XDG_STATE_HOME="$RUNNER_TEMP/player-smoke-state" \
             SDL_VIDEODRIVER=offscreen timeout 60s \
             "$player_build/nakagawa_player" "--iso=$iso" --stage-only)
           printf '%s\n' "$stage_output"
@@ -588,9 +637,11 @@ jobs:
     # (~6.5 min), and waiting for python_tools/native_tools put ~2.5 min on every
     # PR's critical path. A Linux failure still fails ci_required; the Windows run
     # is then merely redundant, which costs nothing on a public repository.
-    needs: [classify, hygiene]
+    # Not gated on hygiene (docs/CI.md, "Hygiene beside the substantive gates").
+    needs: [classify, public_export]
     if: >-
-      ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+      ${{ always() && needs.classify.result == 'success' &&
+          needs.public_export.result == 'success' &&
           needs.classify.outputs.allow_substantive == 'true' &&
           needs.classify.outputs.run_windows == 'true' }}
     # The gates are split into parallel matrix parts of comparable length (#694),
@@ -604,11 +655,11 @@ jobs:
     #   ladder:    full platform ladder
     #   routes:    profile-zero production routes, native core tests
     #   selftests: cosimulation + mutants, scheduler, dispatch, FP, strbuf, HLE thread
-    #   fuzz:      synthetic VFPU fuzzer build
+    #   fuzz-0/1:  synthetic VFPU fuzzer, its cases split between two shards (FUZZ_CASE_SHARD)
     strategy:
       fail-fast: false
       matrix:
-        part: [smoke, ladder, routes, selftests, fuzz]
+        part: [smoke, ladder, routes, selftests, fuzz-0, fuzz-1]
     timeout-minutes: 25
     # This job's MSYS2 shell has no git on PATH, so the Makefile cannot resolve a
     # revision here; it used to log a raw `process_begin: CreateProcess(NULL, git
@@ -762,6 +813,27 @@ jobs:
           command -v pwsh
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 player-ui-regressions
 
+      # Windows counterpart of the Linux staging smoke (#308): the built player must
+      # stage a TEST00007 disc headlessly and report STAGING_RESULT status=PASS, so a
+      # Windows-only staging regression fails hosted CI. This runner has no PSPDEV, so
+      # the disc wraps the source-owned display guest under the showcase's synthetic
+      # identity (fixtures/showcase/showcase.py stage-iso). Staging reads the disc
+      # identity, the manifest and the executable's bytes, not the guest's code. Every
+      # user-data root is redirected under the runner temp directory, never a profile.
+      - name: Smoke the Windows player staging headlessly
+        if: matrix.part == 'smoke'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          smoke="$(cygpath -m "$RUNNER_TEMP")/windows-stage-smoke"
+          mkdir -p "$smoke/disc" "$smoke/localappdata" "$smoke/appdata" "$smoke/userprofile"
+          python fixtures/showcase/showcase.py stage-iso --out-dir "$smoke/disc"
+          stage_output=$(LOCALAPPDATA="$smoke/localappdata" APPDATA="$smoke/appdata" \
+            USERPROFILE="$smoke/userprofile" SDL_VIDEODRIVER=offscreen timeout 60s \
+            build/nakagawa_player.exe "--iso=$smoke/disc/TEST00007.iso" --stage-only)
+          printf '%s\n' "$stage_output"
+          grep -Fq "STAGING_RESULT status=PASS" <<<"$stage_output"
+
       # Run the same smoke with the executable staged outside its build tree
       # (#294): a launcher/staging path bug must fail in CI, not only in the
       # build-tree spelling. Depends on the production-smoke step above; the
@@ -893,9 +965,24 @@ jobs:
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime
           CC=gcc VULKAN_SDK=/ucrt64 hle-thread-selftest
 
-      - name: Build and run synthetic VFPU fuzzer
-        if: matrix.part == 'fuzz'
+      # The flash0: font device contract (hle_thread_selftest --flash0-font over synthetic
+      # PGFs) is driven by tools/test_flash0_font.py, which skips wherever mingw32-make is
+      # absent; before this step no hosted job ran it at all.
+      - name: Build and run flash0 font device selftest
+        if: matrix.part == 'selftests'
         shell: msys2 {0}
+        run: >-
+          PYTHONPATH=tools python -m unittest -v test_flash0_font
+
+      # The synthetic VFPU fuzzer's cases run as two shards: shard k admits the cases with
+      # index % 2 == k (src/rt/vfpu_fuzz.c). Together they admit every case exactly once,
+      # which the "Prove the fuzz shards" step checks from the binary. A shard fails unless
+      # every case it admits is tested, so no case is dropped from the gate.
+      - name: Build and run synthetic VFPU fuzzer (shard 0 of 2)
+        if: matrix.part == 'fuzz-0'
+        shell: msys2 {0}
+        env:
+          FUZZ_CASE_SHARD: "0/2"
         run: |
           python tools/vfpu_fuzz_gen.py --synthetic build/windows-runtime/vfpu_fuzz_cases.h
           printf 'void f_00304290(void *s) { (void)s; }\n' > build/windows-runtime/ci_recomp.c
@@ -904,12 +991,36 @@ jobs:
           mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime \
             VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build
 
+      - name: Build and run synthetic VFPU fuzzer (shard 1 of 2)
+        if: matrix.part == 'fuzz-1'
+        shell: msys2 {0}
+        env:
+          FUZZ_CASE_SHARD: "1/2"
+        run: |
+          python tools/vfpu_fuzz_gen.py --synthetic build/windows-runtime/vfpu_fuzz_cases.h
+          printf 'void f_00304290(void *s) { (void)s; }\n' > build/windows-runtime/ci_recomp.c
+          touch build/windows-runtime/ci_recomp_funcs.h
+          touch build/windows-runtime/.recomp-trace-0
+          mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime \
+            VFPU_FUZZ_PREGENERATED=1 CC=gcc VULKAN_SDK=/ucrt64 -j4 vfpu_fuzz_build
+
+      # The shard proof runs the same binary once more with FUZZ_TRIALS=1 (case selection does
+      # not depend on the trial count): the default run, then 0/2 and 1/2. It requires the
+      # shards to be disjoint and to union to the default's full case list.
+      - name: Prove the fuzz shards cover every case exactly once
+        if: matrix.part == 'fuzz-0'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=tools NK_VFPU_FUZZ_BIN=build/windows-runtime/vfpu_fuzz.exe python -m unittest -v test_public_ci_wiring.VfpuFuzzShardTests
+
   main_smoke:
     name: Main integration smoke
     runs-on: ubuntu-24.04
-    needs: [classify, hygiene]
+    needs: [classify, hygiene, public_export]
     if: >-
       ${{ always() && needs.classify.result == 'success' && needs.hygiene.result == 'success' &&
+          needs.public_export.result == 'success' &&
           needs.classify.outputs.run_main_smoke == 'true' }}
     timeout-minutes: 10
     steps:
@@ -935,12 +1046,13 @@ jobs:
   ci_required:
     name: CI required
     runs-on: ubuntu-24.04
-    needs: [classify, hygiene, markdown, python_tools, native_tools, windows_runtime, main_smoke]
+    needs: [classify, hygiene, public_export, markdown, python_tools, native_tools, windows_runtime, main_smoke]
     if: ${{ always() }}
     timeout-minutes: 5
     env:
       CLASSIFY_RESULT: ${{ needs.classify.result }}
       HYGIENE_RESULT: ${{ needs.hygiene.result }}
+      PUBLIC_EXPORT_RESULT: ${{ needs.public_export.result }}
       MARKDOWN_RESULT: ${{ needs.markdown.result }}
       PYTHON_RESULT: ${{ needs.python_tools.result }}
       NATIVE_RESULT: ${{ needs.native_tools.result }}

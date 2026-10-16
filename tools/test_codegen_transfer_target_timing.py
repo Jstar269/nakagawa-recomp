@@ -100,7 +100,7 @@ class TransferTargetTimingTests(unittest.TestCase):
         )
         capture = text.index("uint32_t _t = s->r[25];")
         slot = text.index("s->r[25] = (s->r[9] + 0u);")
-        call = text.index("dispatch(s, _t);")
+        call = text.index("sr_tail_record(s, _t, NULL,")
         self.assertLess(capture, slot, "jr target captured after its delay slot")
         self.assertLess(slot, call, "delay slot emitted after the transfer")
 
@@ -164,6 +164,7 @@ class TransferTargetTimingTests(unittest.TestCase):
         """
         text = self._emit({0x1000: JR_RA, 0x1004: NOP})
         self.assertNotIn("dispatch(s, _t);", text)
+        self.assertNotIn("sr_tail_record(", text)
         self.assertIn("s->r[29] = _sp_entry; return;", text)
 
     def test_transfer_instruction_is_reported_before_its_delay_slot(self):
@@ -184,6 +185,35 @@ class TransferTargetTimingTests(unittest.TestCase):
         transfer_report = text.index("sr_begin(s, 0x00001000u")
         slot_report = text.index("sr_begin(s, 0x00001004u")
         self.assertLess(transfer_report, slot_report)
+
+
+class SelfLoopJumpTests(unittest.TestCase):
+    """A jump to its own address is a spin loop, not a call to itself.
+
+    `j <self>` with a delay slot used to be emitted as a native call to the same
+    function. Each iteration then nests one host frame, so a guest busy-wait
+    exhausts the fiber stack (a host stack overflow) instead of spinning. It must
+    stay an in-function backward edge with the usual preemption point."""
+
+    def _emit(self, words, start=0x1000, end=0x1008, known=None):
+        elf = FakeElf(words)
+        known = known if known is not None else {start}
+        return "\n".join(codegen.emit_function(elf, start, [(start, end)], known))
+
+    def test_self_jump_is_a_goto_not_a_native_call(self):
+        # 0x1000: j 0x1000 ; 0x1004: nop (delay slot)
+        j_self = (2 << 26) | ((0x1000 >> 2) & 0x03FFFFFF)
+        text = self._emit({0x1000: j_self, 0x1004: NOP})
+        self.assertNotIn("f_00001000(s)", text)
+        self.assertIn("SR_YIELD(s, 0x00001000u); goto L_00001000;", text)
+        self.assertIn("L_00001000: ;", text)
+
+    def test_self_jump_with_known_entry_is_still_a_loop(self):
+        # The same spin, with the entry registered as a callable target elsewhere.
+        j_self = (2 << 26) | ((0x1000 >> 2) & 0x03FFFFFF)
+        text = self._emit({0x1000: j_self, 0x1004: NOP}, known={0x1000, 0x1004})
+        self.assertNotIn("f_00001000(s)", text)
+        self.assertIn("goto L_00001000;", text)
 
 
 if __name__ == "__main__":

@@ -65,8 +65,21 @@ Enabled with `SR_GPU_GE=1`. Implementation:
   doubled-alpha blend factors, min/max/absdiff blend equations, two distinct FIX
   constants, partial-byte write masks — flushes and falls back to the software
   rasterizer in correct order. Presentation/snapshot code is unchanged.
-- Not reproduced on GPU: ordered dithering (±4 LSB on 16-bit targets) and the integer
-  truncation of the software blender (±1 LSB).
+- Not reproduced on GPU: ordered dithering (±4 LSB on 16-bit targets). Fixed-function
+  blends differ from the software blender's truncating integer products by at most 2 LSB
+  (analytic bound: truncation of two products plus round-to-nearest). Shader blends are
+  bit-exact to `ge.c` for non-overlapping primitives. Measured by the
+  `gpu-coherence-selftest` blend-parity matrix (726 factor/equation states on synthetic
+  draws). The shader reads a batch-start destination snapshot, so overlapping primitives
+  inside one batch are not bit-exact on the shader path; the matrix does not exercise that.
+- Source-premultiplied states (src factor 2·α or 1−2α with a dst factor that reads the
+  source colour, and min/max with those src factors) go through the shader or drop the
+  premultiply, because fixed-function blending would otherwise read the premultiplied
+  colour that `ge.c` never uses.
+- The R6 colour product in `ge_raster_ref.c` (SPEC_ASSUMPTION until the #343 P8/P9 oracle
+  cells run) is not the software blender's product. On the same synthetic draws both the
+  GPU and `ge.c` differ from R6 by at most 2 LSB, so R6 is not a parity target until a
+  hardware cell settles which product the PSP uses.
 - A/B harness: run twice with `SR_FBSNAP=1` (once `SR_GPU_GE=0`), then
   `python tools/ppmdiff.py dirA dirB`. Title/menu sequence matches pixel-exactly
   except dithering. Measured GE cost on the intro: ~1700ms/60-frames software →
@@ -137,6 +150,14 @@ UNDEFINED-layout image and published a PPM under a `.png` name. It is gone. In i
 
 - `SR_GPU_GE=1` — enable the GPU rasterizer (SDL3 build only; default off).
 - `SR_GPU_LOG=1` — one line per flush (reason, batches, verts, target).
+- `SR_GPU_SUBMIT_BATCH=1..128` — recorded GE ops (render batches, destination snapshot
+  copies, ring uploads) that share one `vkQueueSubmit`; default 128, out-of-range values keep
+  the default, and `8` restores the schedule used before #827. A submission granularity, not
+  an ordering boundary: all GE work stays on one queue with its barriers recorded in the
+  stream, and every CPU-visible consumer (readback, presentation, capture, destruction,
+  software fallback) closes the open command buffer itself. A larger limit trades CPU/GPU
+  overlap inside one command buffer for fewer submits and fence waits.
+- `SR_GPU_SYNC_SUBMIT=1` — exact synchronous fallback: one op per submit, each waited on.
 - `SR_VIDEO=gdi` — Phase-0 fallback to the classic GDI window.
 - `SR_VULKAN_VALIDATION=1` — enable the `VK_LAYER_KHRONOS_validation` messenger (fail-closed
   if the layer is requested but missing). See `docs/DEBUGGING.md` for FBSNAP/FBDUMP capture

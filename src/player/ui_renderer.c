@@ -104,6 +104,15 @@ typedef struct {
 
 static UiFont g_font;
 
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+/* Strings that had to be drawn with the bitmap font although the system TTF
+ * font was active. Layout is measured with the TTF font, so any such string
+ * is drawn wider than it was laid out. The harness asserts this stays zero. */
+static unsigned s_ui_test_bitmap_text_draws;
+/* Badge text of the package build screen as last drawn. */
+static const char *s_ui_test_build_badge;
+#endif
+
 static uint32_t ui_color_key(SDL_Color c) {
     return ((uint32_t)c.r << 24) | ((uint32_t)c.g << 16) | ((uint32_t)c.b << 8) | c.a;
 }
@@ -1061,13 +1070,37 @@ static UiFontCacheEntry *ui_font_cache_lookup(const char *str, int bucket, uint3
 
 /* Render one string through the cache. Returns false when the caller must
  * use the DebugText fallback (TTF off, overlong string, or GPU failure). */
+/* A string too long to key the cache is still drawn with the TTF font it was
+ * laid out with. Rendering it fresh costs one texture per draw, and long text
+ * is rare; the alternative was a silent switch to the bitmap font, which is
+ * wider and overran the panel. */
+static bool ui_font_draw_uncached(SDL_Renderer *ren, float x, float y, const char *str,
+                                  size_t len, SDL_Color c) {
+    SDL_Surface *surf = g_font.f_render(g_font.font, str, len, c);
+    if (!surf) return false;
+    SDL_Texture *tex = SDL_CreateTextureFromSurface(ren, surf);
+    int sw = surf->w;
+    int sh = surf->h;
+    SDL_DestroySurface(surf);
+    if (!tex || sw <= 0 || sh <= 0) {
+        if (tex) SDL_DestroyTexture(tex);
+        return false;
+    }
+    SDL_FRect dst = { x, y, (float)sw / g_font.density, (float)sh / g_font.density };
+    bool drawn = SDL_RenderTexture(ren, tex, NULL, &dst);
+    SDL_DestroyTexture(tex);
+    return drawn;
+}
+
 static bool ui_font_draw_cached(SDL_Renderer *ren, float x, float y, const char *str, float scale, SDL_Color c) {
     ui_font_ensure();
     if (!g_font.ready || !str || !*str || scale <= 0.0f) return false;
     size_t len = strlen(str);
-    if (len >= UI_FONT_CACHE_TEXT) return false;
     int bucket = (int)(scale * 10.0f);
     if (!ui_font_begin_bucket(bucket, g_font.density)) return false;
+    if (len >= UI_FONT_CACHE_TEXT) {
+        return ui_font_draw_uncached(ren, x, y, str, len, c);
+    }
     uint32_t key = ui_color_key(c);
     UiFontCacheEntry *e = ui_font_cache_lookup(str, bucket, key, g_font.density);
     if (!e->tex) {
@@ -1099,11 +1132,30 @@ static bool ui_font_draw_cached(SDL_Renderer *ren, float x, float y, const char 
 
 static void draw_text(SDL_Renderer *ren, float x, float y, const char *str, float scale, SDL_Color c) {
     if (!str || !*str) return;
-    if (ui_font_draw_cached(ren, x, y, str, scale, c)) return;
-    set_draw_color(ren, c);
-    SDL_SetRenderScale(ren, scale, scale);
-    SDL_RenderDebugText(ren, x / scale, y / scale, str);
-    SDL_SetRenderScale(ren, 1.0f, 1.0f);
+    /* Every string drawn passes through the display rules: the profile folder
+     * shows as "~", and the bitmap fallback gets ASCII only. Both rewrites
+     * never grow their input, so strlen + 1 bytes always hold the result. */
+    size_t len = strlen(str);
+    char *shown = (char *)malloc(len + 1);
+    if (!shown) return;
+    player_display_text(str, shown, len + 1);
+    if (ui_font_draw_cached(ren, x, y, shown, scale, c)) {
+        free(shown);
+        return;
+    }
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    if (g_font.ready) s_ui_test_bitmap_text_draws++;
+#endif
+    char *ascii = (char *)malloc(len + 1);
+    if (ascii) {
+        player_text_for_bitmap_font(shown, ascii, len + 1);
+        set_draw_color(ren, c);
+        SDL_SetRenderScale(ren, scale, scale);
+        SDL_RenderDebugText(ren, x / scale, y / scale, ascii);
+        SDL_SetRenderScale(ren, 1.0f, 1.0f);
+        free(ascii);
+    }
+    free(shown);
 }
 
 /* Width of a string at scale 1: the single metric every layout helper
@@ -1137,21 +1189,14 @@ static void draw_text_ellipsized(SDL_Renderer *ren, float x, float y,
     float ell_w = ui_font_text_width("...", scale);
     if (max_width <= ell_w + 1.0f) return;
     size_t prefix_bytes = ui_font_fit_prefix(str, scale, max_width - ell_w);
-    /* Never split a UTF-8 sequence: back up over continuation bytes. */
-    while (prefix_bytes > 0 && ((unsigned char)str[prefix_bytes] & 0xC0) == 0x80) {
-        prefix_bytes--;
-    }
+    /* Never split a UTF-8 sequence. Done before the word break, as before. */
+    prefix_bytes = ui_clip_utf8_floor(str, prefix_bytes);
     /* Never split a word when a clean break exists in the fitting prefix. */
-    if (prefix_bytes > 12) {
-        size_t back = prefix_bytes;
-        while (back > prefix_bytes - 24 && back > 0 && str[back - 1] != ' ') back--;
-        if (back > 0 && str[back - 1] == ' ') prefix_bytes = back - 1;
-    }
-    if (prefix_bytes >= NK_MAX_TITLE_LEN - 4) prefix_bytes = NK_MAX_TITLE_LEN - 4;
+    prefix_bytes = ui_clip_word_break(str, prefix_bytes);
+    /* The buffer clamp and the boundary floor both happen inside the helper, so the
+     * clamp can no longer leave a partial sequence in front of the marker. */
     char clipped[NK_MAX_TITLE_LEN];
-    memcpy(clipped, str, prefix_bytes);
-    memcpy(clipped + prefix_bytes, "...", 3);
-    clipped[prefix_bytes + 3] = '\0';
+    ui_clip_ellipsize_utf8(clipped, sizeof(clipped), str, prefix_bytes);
     draw_text(ren, x, y, clipped, scale, c);
 }
 
@@ -1549,8 +1594,13 @@ static float draw_text_wrapped_checked(SDL_Renderer *ren, float x, float y,
                 while (back > 0 && seg[back] != ' ' && seg[back] != '\t') back--;
                 if (back > take / 3) take = back;
             }
-            /* Never split a UTF-8 sequence. */
-            while (take > 1 && ((unsigned char)seg[take] & 0xC0) == 0x80) take--;
+            /* Never split a UTF-8 sequence. A lone character wider than the budget is
+             * taken whole (at most 4 bytes), so the loop still makes progress. */
+            take = ui_clip_utf8_floor(seg, take);
+            if (take == 0) {
+                take = 1;
+                while (take < 4 && take < remaining && ((unsigned char)seg[take] & 0xC0) == 0x80) take++;
+            }
             memcpy(line_buf, cursor + offset, take);
             line_buf[take] = '\0';
             /* Trim a leading space carried from the break. */
@@ -1558,11 +1608,9 @@ static float draw_text_wrapped_checked(SDL_Renderer *ren, float x, float y,
             if (*emit == ' ' || *emit == '\t') emit++;
             if (last_line && more_after) {
                 truncated = true;
-                size_t emit_len = strlen(emit);
-                if (emit_len > 3) {
-                    memcpy(line_buf + (emit - line_buf) + emit_len - 3, "...", 3);
-                }
-                if (ren) draw_text(ren, x, y, emit, scale, c);
+                char ell_line[sizeof(line_buf)];
+                ui_clip_wrapped_last_line(ell_line, sizeof(ell_line), emit);
+                if (ren) draw_text(ren, x, y, ell_line, scale, c);
                 y += line_h;
                 line_no++;
                 break;
@@ -1627,6 +1675,14 @@ bool ui_test_error_details_complete(void) {
 
 int ui_test_error_details_lines(void) {
     return s_ui_test_error_details_lines;
+}
+
+unsigned ui_test_bitmap_text_draws(void) {
+    return s_ui_test_bitmap_text_draws;
+}
+
+const char *ui_test_build_badge(void) {
+    return s_ui_test_build_badge ? s_ui_test_build_badge : "none";
 }
 #endif
 
@@ -1808,13 +1864,9 @@ static void render_footer_hints(SDL_Renderer *ren, PlayerApp *app) {
         draw_text(ren, 32.0f, h - 24.0f, hints, 1.0f, COLOR_TEXT_DIM);
         return;
     }
-    while (fit > 0 && ((unsigned char)hints[fit] & 0xC0) == 0x80) fit--;
     char clipped[160];
-    if (fit > sizeof(clipped) - 4) fit = sizeof(clipped) - 4;
-    if (fit == 0) return;
-    memcpy(clipped, hints, fit);
-    memcpy(clipped + fit, "...", 3);
-    clipped[fit + 3] = '\0';
+    /* Nothing fits: draw nothing, as before (no bare "..." footer). */
+    if (ui_clip_ellipsize_utf8(clipped, sizeof(clipped), hints, fit) == 0) return;
     draw_text(ren, 32.0f, h - 24.0f, clipped, 1.0f, COLOR_TEXT_DIM);
 }
 
@@ -2260,17 +2312,23 @@ static void render_loaded_library(SDL_Renderer *ren, PlayerApp *app, const UiInp
                              app->games[i].title_name, 1.1f, title_avail,
                              COLOR_TEXT_WHITE);
         if (ch >= 110.0f) {
-            char status_line[96];
-            if (app->games[i].is_prepared) {
-                snprintf(status_line, sizeof(status_line), "Status: Prepared");
-            } else if (app->games[i].assets_staged) {
-                snprintf(status_line, sizeof(status_line), "Assets staged: %u",
-                         (unsigned)app->games[i].extracted_asset_count);
-            } else {
-                snprintf(status_line, sizeof(status_line), "Status: Not prepared");
-            }
-            draw_text(ren, card_x + 12.0f, card_y + 104.0f,
-                      status_line, 0.9f, COLOR_TEXT_MUTED);
+            /* What the card says comes from the same validated package state the
+             * hero and the action buttons use, not from the stored prepared flag.
+             * A title not checked yet is checking, and an unusable package says why. */
+            const GameRecord *card_game = &app->games[i];
+            bool card_failed = player_app_runtime_package_check_failed(app, card_game);
+            bool card_checking = !card_failed &&
+                (player_app_runtime_package_check_pending(app, card_game) ||
+                 !player_app_runtime_package_status_known(app, card_game));
+            char status_line[256];
+            player_library_status_text(
+                player_app_cached_game_has_runtime(app, card_game),
+                card_checking, card_failed,
+                card_game->assets_staged, card_game->extracted_asset_count,
+                player_app_runtime_package_reason(app, card_game),
+                status_line, sizeof(status_line));
+            draw_text_ellipsized(ren, card_x + 12.0f, card_y + 104.0f,
+                                 status_line, 0.9f, cw - 24.0f, COLOR_TEXT_MUTED);
         }
 
         if (in && in->mouse_clicked && is_point_in_rect((float)in->mouse_x, (float)in->mouse_y, card_x, card_y, cw, ch)) {
@@ -2633,7 +2691,10 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
     draw_text_ellipsized(ren, card_x + 32.0f, card_y + 60.0f, "Graphics & Controller Settings",
                          2.0f, card_w - 64.0f, COLOR_TEXT_WHITE);
     if (app->settings_notice[0]) {
-        draw_text(ren, card_x + 32.0f, card_y + 96.0f, app->settings_notice, 1.0f, COLOR_AMBER);
+        /* Settings rows keep to the panel: a value that is too long is
+         * ellipsized at the panel's inner edge, never drawn past it. */
+        draw_text_ellipsized(ren, card_x + 32.0f, card_y + 96.0f, app->settings_notice,
+                             1.0f, card_w - 64.0f, COLOR_AMBER);
     } else {
         draw_text_wrapped(ren, card_x + 32.0f, card_y + 96.0f,
                           card_w - 64.0f,
@@ -2796,7 +2857,8 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
                          app->settings.controller_name[0] ? app->settings.controller_name : "Controller");
                 draw_text_ellipsized(ren, col1_x, y + 24.0f, dev_line, 1.0f, inner_r - col1_x, COLOR_TEXT_WHITE);
             } else {
-                draw_text(ren, col1_x, y + 24.0f, "No controller connected (keyboard ready).", 1.0f, COLOR_TEXT_WHITE);
+                draw_text_ellipsized(ren, col1_x, y + 24.0f, "No controller connected (keyboard ready).",
+                                     1.0f, inner_r - col1_x, COLOR_TEXT_WHITE);
             }
             draw_text_ellipsized(ren, col1_x, y + 44.0f,
                                  saves_root_display(),
@@ -3581,7 +3643,17 @@ static void render_building_package(SDL_Renderer *ren, PlayerApp *app, const UiI
     draw_rounded_outline(ren, card_x, card_y, card_w, card_h, 10.0f, COLOR_CARD_BORDER);
 
     /* Badge & Title */
-    draw_badge(ren, card_x + 32.0f, card_y + 28.0f, "BUILDING RUNTIME PACKAGE", COLOR_BLUE);
+    /* The screen follows the build session. is_complete means the package was
+     * written and is being checked; this screen leaves when the check passes,
+     * and a failed check opens the error card. Before, only the stage chips
+     * reflected completion, so a finished build still read as running. */
+    bool built = app->build_session.is_complete && !app->build_session.is_failed;
+    const char *badge = built ? "PACKAGE BUILT" : "BUILDING RUNTIME PACKAGE";
+    draw_badge(ren, card_x + 32.0f, card_y + 28.0f, badge,
+               built ? COLOR_EMERALD : COLOR_BLUE);
+#ifdef NK_PLAYER_UI_REGRESSION_TEST
+    s_ui_test_build_badge = badge;
+#endif
 
     char title_buf[256];
     if (app->build_session.title_name[0]) {
@@ -3629,12 +3701,18 @@ static void render_building_package(SDL_Renderer *ren, PlayerApp *app, const UiI
 
     /* Progress bar */
     float bar_y = stage_y + 40.0f;
-    draw_indeterminate_bar(ren, card_x + 32.0f, bar_y, card_w - 64.0f, 16.0f, g_reduce_motion);
+    if (built) {
+        draw_progress_bar(ren, card_x + 32.0f, bar_y, card_w - 64.0f, 16.0f, 100.0f);
+    } else {
+        draw_indeterminate_bar(ren, card_x + 32.0f, bar_y, card_w - 64.0f, 16.0f, g_reduce_motion);
+    }
 
     /* Current status message & elapsed time */
     float info_y = bar_y + 24.0f;
-    const char *msg = app->build_session.current_message[0]
-        ? app->build_session.current_message : "Building package...";
+    const char *msg = built
+        ? "Package written. Checking it before PLAY NOW is offered."
+        : (app->build_session.current_message[0]
+               ? app->build_session.current_message : "Building package...");
     draw_text_ellipsized(ren, card_x + 32.0f, info_y, msg, 1.1f, card_w - 180.0f, COLOR_TEXT_WHITE);
 
     char elapsed_str[64];
@@ -3662,8 +3740,11 @@ static void render_building_package(SDL_Renderer *ren, PlayerApp *app, const UiI
     /* Cancel button */
     float btn_y = card_y + card_h - 58.0f;
     bool focused = (app->focus_index == 0);
-    if (draw_button_focused(ren, card_x + 32.0f, btn_y, 180.0f, 44.0f, "CANCEL BUILD", false, in, focused)) {
-        player_app_cancel_package_build(app);
+    /* Cancelling stops a running build. Once the package is written there is
+     * nothing to stop, so the same control leaves the screen instead. */
+    if (draw_button_focused(ren, card_x + 32.0f, btn_y, 180.0f, 44.0f,
+                            built ? "BACK TO LIBRARY" : "CANCEL BUILD", false, in, focused)) {
+        if (!built) player_app_cancel_package_build(app);
         player_app_set_view(app, VIEW_LIBRARY);
     }
 }
@@ -4342,7 +4423,8 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
         }
 
         case WIZARD_STEP_SYSTEM_FONTS: {
-            draw_text(ren, card_x + 32.0f, content_y, "System & Open-Source Typography", 2.0f, COLOR_TEXT_WHITE);
+            draw_text(ren, card_x + 32.0f, content_y, "PSP System Fonts", 2.0f, COLOR_TEXT_WHITE);
+            if (app->wizard.font_slot_detail[0][0] == '\0') player_app_refresh_font_status(app);
 
             float spec_y = content_y + 36.0f;
             float spec_h = 170.0f;
@@ -4360,15 +4442,18 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                      app->settings.controller_connected ? "Connected" : "Ready");
             draw_text(ren, card_x + 48.0f, spec_y + 38.0f, ctrl_txt, 1.0f, COLOR_LIME);
 
-            draw_text(ren, card_x + 48.0f, spec_y + 66.0f, "Open-Source Typography Defaults (SIL Open Font License):", 1.0f, COLOR_TEXT_DIM);
-            draw_text(ren, card_x + 48.0f, spec_y + 88.0f,
-                      " • In-Game UI: M PLUS Rounded 1c / Rubik defaults", 1.0f, COLOR_TEXT_MUTED);
-            draw_text(ren, card_x + 48.0f, spec_y + 108.0f,
-                      " • Native Menus & Setup: Inter / Roboto Flex / Rubik", 1.0f, COLOR_TEXT_MUTED);
-            draw_text(ren, card_x + 48.0f, spec_y + 128.0f,
-                      " • Japanese Kana/Kanji: Kosugi Maru / Zen Maru Gothic", 1.0f, COLOR_TEXT_MUTED);
+            draw_text(ren, card_x + 48.0f, spec_y + 66.0f,
+                      "Font source for each PSP slot (your PSP font, the project font, or missing):",
+                      1.0f, COLOR_TEXT_DIM);
+            for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
+                draw_text(ren, card_x + 48.0f, spec_y + 88.0f + 20.0f * (float)slot,
+                          app->wizard.font_slot_detail[slot], 1.0f, COLOR_TEXT_MUTED);
+            }
             draw_text(ren, card_x + 48.0f, spec_y + 148.0f,
-                      " • Optional user-owned PSP font (jpn0.pgf): Loaded from font/ if installed", 0.9f, COLOR_AMBER);
+                      app->wizard.font_message[0]
+                          ? app->wizard.font_message
+                          : "Import reads .pgf files from a folder you choose. Nothing is uploaded.",
+                      0.9f, COLOR_AMBER);
 
             bool accept_foc = (app->focus_index == focus++);
             if (draw_button_focused(ren, card_x + 32.0f, btn_y, 200.0f, 44.0f, "ACCEPT & CONTINUE", true, in, accept_foc)) {
@@ -4386,6 +4471,18 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
             bool cancel_foc = (app->focus_index == focus++);
             if (draw_button_focused(ren, card_x + 560.0f, btn_y, 90.0f, 44.0f, "CANCEL", false, in, cancel_foc)) {
                 player_app_wizard_cancel(app);
+            }
+
+            float fonts_btn_y = spec_y + spec_h + 14.0f;
+            bool import_foc = (app->focus_index == focus++);
+            if (draw_button_focused(ren, card_x + 32.0f, fonts_btn_y, 220.0f, 40.0f,
+                                    "IMPORT FONTS FOLDER", false, in, import_foc)) {
+                app->request_font_folder_picker = true;
+            }
+            bool remove_foc = (app->focus_index == focus++);
+            if (draw_button_focused(ren, card_x + 268.0f, fonts_btn_y, 220.0f, 40.0f,
+                                    "REMOVE IMPORTED FONTS", false, in, remove_foc)) {
+                player_app_fonts_remove_imports(app);
             }
             break;
         }

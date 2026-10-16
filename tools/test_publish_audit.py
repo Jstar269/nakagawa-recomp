@@ -124,8 +124,18 @@ class TestPublishAudit(unittest.TestCase):
             env = isolated_git_env(base, root=root)
         for name in selectors - {"GIT_CEILING_DIRECTORIES"}:
             self.assertNotIn(name, env)
-        for name in ("GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"):
-            self.assertNotIn(name, env)
+        self.assertNotIn("GIT_CONFIG", env)
+        # The caller's config entries (user.name=Ambient) are gone; the three left are the
+        # tool's own, which keep auto gc and auto maintenance off, and any detach foreground,
+        # so no detached maintenance outlives a command.
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "3")
+        self.assertEqual(env["GIT_CONFIG_KEY_0"], "gc.auto")
+        self.assertEqual(env["GIT_CONFIG_VALUE_0"], "0")
+        self.assertEqual(env["GIT_CONFIG_KEY_1"], "maintenance.auto")
+        self.assertEqual(env["GIT_CONFIG_VALUE_1"], "false")
+        self.assertEqual(env["GIT_CONFIG_KEY_2"], "gc.autoDetach")
+        self.assertEqual(env["GIT_CONFIG_VALUE_2"], "false")
+        self.assertNotIn("GIT_CONFIG_KEY_3", env)
         self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
         self.assertEqual(env["GIT_CONFIG_GLOBAL"], os.devnull)
         self.assertEqual(env["GIT_AUTHOR_NAME"], "Nakagawa Recomp Tests")
@@ -161,10 +171,64 @@ class TestPublishAudit(unittest.TestCase):
         self.assertIsNotNone(
             publish_audit._forbidden_path("OpenGrip_For_Inspiration/functions.csv")
         )
+        self.assertIsNotNone(
+            publish_audit._forbidden_path("docs/symbol_ref/functions.csv")
+        )
         self.assertIsNotNone(publish_audit._forbidden_path("assets/game.iso"))
         self.assertIsNotNone(publish_audit._forbidden_path("tools/vfpu_words.txt"))
         self.assertIsNotNone(publish_audit._forbidden_path("tools/reference_hashes.json"))
         self.assertIsNone(publish_audit._forbidden_path("assets/vfpu/table.dat"))
+
+    def test_forbidden_local_symbol_reference(self):
+        # functions.csv is a local-only symbol reference and must be rejected anywhere
+        for path in (
+            "functions.csv",
+            "Functions.csv",
+            "docs/functions.csv",
+            "tools/functions.csv",
+            "sub/dir/functions.csv",
+            "docs/symbol_ref/functions.csv",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNotNone(publish_audit._forbidden_path(path))
+        self.assertEqual(
+            publish_audit._forbidden_path("functions.csv"),
+            "local-only symbol reference",
+        )
+        self.assertEqual(
+            publish_audit._forbidden_path("sub/dir/functions.csv"),
+            "local-only symbol reference",
+        )
+        self.assertEqual(
+            publish_audit._forbidden_path("docs/symbol_ref/functions.csv"),
+            "local-only symbol reference",
+        )
+        # Unrelated public CSV files remain allowed under normal publication policy
+        for path in (
+            "docs/metrics.csv",
+            "fixtures/table.csv",
+            "tools/report.csv",
+            "assets/symbols_public.csv",
+        ):
+            with self.subTest(path=path):
+                self.assertIsNone(publish_audit._forbidden_path(path))
+
+        # Even when force-staged against .gitignore, functions.csv fails the index audit
+        with tempfile.TemporaryDirectory() as tmp_dir_raw:
+            repo = Path(tmp_dir_raw).resolve()
+            run_git(["init"], cwd=repo, check=True, capture_output=True)
+            (repo / ".gitignore").write_text("functions.csv\n", encoding="utf-8", newline="\n")
+            (repo / "functions.csv").write_text("nid,name\n0x1234,test_fn\n", encoding="utf-8", newline="\n")
+            run_git(["add", "-f", "functions.csv"], cwd=repo, check=True, capture_output=True)
+            entries = publish_audit._get_git_entries(tracked_only=True, repo_root=repo)
+            self.assertTrue(any(e.path == "functions.csv" for e in entries))
+            policy_path, export_path = hermetic_policy(repo, ["functions.csv"])
+            findings = publish_audit.audit_entries(
+                entries, repo_root=repo, policy_path=policy_path, export_path=export_path
+            )
+            path_findings = [f for f in findings if f.code == "PATH" and f.path == "functions.csv"]
+            self.assertTrue(path_findings)
+            self.assertEqual(path_findings[0].detail, "local-only symbol reference")
 
     def test_prohibited_extension_passes_only_as_a_pinned_approved_binary(self):
         # Project-authored PSPDEV build output may carry a guest-executable
@@ -948,8 +1012,8 @@ class TestPublishAudit(unittest.TestCase):
     def test_checked_in_lineage_exceptions_structure_and_active_entries(self):
         self.assertIn("src/rt/evf.h", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
         self.assertIn("tools/gen_nidnames.py", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
-        self.assertIn("tools/test_funcdiff_cmp.py", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
-        self.assertIn("tools/test_nidseq.py", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
+        self.assertNotIn("tools/test_funcdiff_cmp.py", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
+        self.assertNotIn("tools/test_nidseq.py", publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS)
 
         for path, info in publish_audit.LINEAGE_CONTRADICTION_EXCEPTIONS.items():
             with self.subTest(path=path):
@@ -958,6 +1022,26 @@ class TestPublishAudit(unittest.TestCase):
                 self.assertIn("reason", info)
                 self.assertTrue(str(info["issue"]).endswith("342"))
                 self.assertTrue(len(str(info["reason"])) > 0)
+
+    def test_retired_lineage_exceptions_have_clean_headers(self):
+        root = Path(__file__).resolve().parents[1]
+        for retired_path in ("tools/test_funcdiff_cmp.py", "tools/test_nidseq.py"):
+            with self.subTest(path=retired_path):
+                content = (root / retired_path).read_bytes()
+                findings = publish_audit._spdx_provenance_findings(
+                    retired_path,
+                    {"classification": "project_authored_attested"},
+                    content,
+                )
+                self.assertEqual(findings, [], f"SPDX findings for {retired_path}: {findings}")
+                contra_findings, was_contradiction = publish_audit._lineage_contradiction_findings(
+                    retired_path,
+                    {"classification": "project_authored_attested"},
+                    content,
+                    exceptions={},
+                )
+                self.assertFalse(was_contradiction, f"Unexpected contradiction for {retired_path}")
+                self.assertEqual(contra_findings, [], f"Contradiction findings for {retired_path}: {contra_findings}")
 
     def test_deterministic_report_output_and_aggregate_sha(self):
         entries = [

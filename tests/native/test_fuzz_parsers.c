@@ -34,6 +34,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Scratch root for the files this test writes: the checkout's build/ by default, or
+ * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
+ * touches the checkout. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+
 /* Bounded mock guest arena for PRX loader relocations and segment writes */
 static uint8_t s_guest_arena[512 * 1024];
 
@@ -402,7 +409,7 @@ static void test_fuzz_iso(unsigned iters) {
     assert(seed && mutated);
 
     size_t seed_size = build_fuzz_iso(seed, cap);
-    const char *iso_path = "build/fuzz_test_temp.iso";
+    const char *iso_path = SR_SELFTEST_BUILD_ROOT "/fuzz_test_temp.iso";
 
     write_file_bytes(iso_path, seed, seed_size);
 
@@ -548,7 +555,7 @@ static void test_fuzz_elf_classifier(unsigned iters) {
     assert(iso_seed && iso_mutated);
 
     build_fuzz_classifier_iso(iso_seed, iso_size, elf_seed, elf_size);
-    const char *iso_path = "build/fuzz_classifier_temp.iso";
+    const char *iso_path = SR_SELFTEST_BUILD_ROOT "/fuzz_classifier_temp.iso";
     write_file_bytes(iso_path, iso_seed, iso_size);
     NkIsoExecutableReport report;
     assert(nk_iso_classify_executables(iso_path, &report) == NK_OK);
@@ -1151,7 +1158,7 @@ static void test_fuzz_input_profile(unsigned iters) {
     printf("[FUZZ] Testing per-game input profile parser (%u iterations)...\n", iters);
     fflush(stdout);
 
-    const char *profile_path = "build/fuzz_input_profile_temp.json";
+    const char *profile_path = SR_SELFTEST_BUILD_ROOT "/fuzz_input_profile_temp.json";
     size_t seed_size = strlen(s_valid_input_profile_json);
     size_t cap = seed_size * 2u + 64u;
     char err[256];
@@ -1320,10 +1327,12 @@ static void test_fuzz_package(unsigned iters) {
     static const char disc_id[] = "TEST00001";
     static const char title_id[] = "synthetic-allegrex-v1";
     static const char executable_name[] = "synthetic-allegrex-v1.exe";
-    const char *root = "build/fuzz_package_root";
+    const char *root = SR_SELFTEST_BUILD_ROOT "/fuzz_package_root";
     char package_dir[512], package_path[640], report_path[640];
     char executable_path[768], image_path[768], absolute_root[1024];
     char package_json[8192], report_json[8192], cache_json[4096], cache_key_json[3072];
+    char aot_components_json[1024], generated_components_json[1024], native_components_json[512];
+    char aot_digest[65], generated_code_digest[65], native_digest[65];
     char completion_json[4096], completion_path[768];
     char reason[512];
 
@@ -1347,14 +1356,8 @@ static void test_fuzz_package(unsigned iters) {
         "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570";
     const char *codegen_options_digest =
         "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356";
-    const char *aot_digest =
-        "b3f742b8ef4b96abe6e66a4301c2230ce88d7075e46e12cccfc99be598c6dad9";
-    const char *native_digest =
-        "d8e93061990e675b8d7e459866d273012414d4b583161e257e14e5703dfdc8bd";
     const char *identity_digest =
         "b9b7b9d231aafef0cb4254e9d063043d4f74edb82f87d6a828e66ba9b1eb1774";
-    const char *generated_code_digest =
-        "d3991dd8147b28df31bf0e2336377d7c34b38048aaecc9443fde95bd8f767dd5";
     static const char identity_json[] =
         "{\"container\":null,"
         "\"disc\":{\"disc_version\":null,\"id\":null,\"region\":null},"
@@ -1364,26 +1367,66 @@ static void test_fuzz_package(unsigned iters) {
         "\"manifest\":{\"id\":\"synthetic-allegrex-v1\",\"schema_version\":1},"
         "\"modules\":[],\"param_sfo\":null,\"psp_header\":null,\"schema_version\":2,"
         "\"source_media\":null}";
-    int cache_key_length = snprintf(cache_key_json, sizeof(cache_key_json),
-        "{\"schema_version\":2,\"aot\":{\"digest\":\"%s\",\"components\":{"
-        "\"analyzer_codegen_epoch\":\"analyzer-codegen-v1\","
+    /* The validator recomputes each key digest as sha256(canonical components + "\n"), so the
+     * fixture derives them from the components it writes (the epochs are the native twins). */
+    int aot_components_length = snprintf(aot_components_json, sizeof(aot_components_json),
+        "{\"analyzer_codegen_epoch\":\"analyzer-codegen-v1\","
         "\"analyzer_sha256\":\"%064d\",\"codegen_options_sha256\":\"%s\","
         "\"codegen_sha256\":\"%064d\",\"executable_sha256\":\"%s\","
-        "\"generated_code_abi_epoch\":1,\"manifest_sha256\":\"%064d\","
+        "\"generated_code_abi_epoch\":%d,\"manifest_sha256\":\"%064d\","
         "\"modules_sha256\":\"%s\",\"psp_header_sha256\":null,"
-        "\"runtime_abi_epoch\":1,\"title_input_identity_sha256\":\"%s\"}},"
-        "\"native\":{\"digest\":\"%s\","
-        "\"components\":{\"compile_flags\":\"\",\"compiler_identity\":\"gcc-fixture\","
+        "\"runtime_abi_epoch\":%d,\"title_input_identity_sha256\":\"%s\"}",
+        0, codegen_options_digest, 0, fixture_sha, NK_AOT_GENERATED_CODE_ABI_EPOCH, 0,
+        modules_digest, NK_AOT_RUNTIME_ABI_EPOCH, identity_digest);
+    assert(aot_components_length > 0 && (size_t)aot_components_length < sizeof(aot_components_json));
+    /* generated_code_digest covers the AOT components without runtime_abi_epoch (the generated C
+     * can outlive a compatible runtime epoch), hashed the same way as the key digests. */
+    int generated_components_length = snprintf(generated_components_json, sizeof(generated_components_json),
+        "{\"analyzer_codegen_epoch\":\"analyzer-codegen-v1\","
+        "\"analyzer_sha256\":\"%064d\",\"codegen_options_sha256\":\"%s\","
+        "\"codegen_sha256\":\"%064d\",\"executable_sha256\":\"%s\","
+        "\"generated_code_abi_epoch\":%d,\"manifest_sha256\":\"%064d\","
+        "\"modules_sha256\":\"%s\",\"psp_header_sha256\":null,"
+        "\"title_input_identity_sha256\":\"%s\"}",
+        0, codegen_options_digest, 0, fixture_sha, NK_AOT_GENERATED_CODE_ABI_EPOCH, 0,
+        modules_digest, identity_digest);
+    assert(generated_components_length > 0 &&
+           (size_t)generated_components_length < sizeof(generated_components_json));
+    {
+        FuzzSha256 ctx;
+        fuzz_sha_init(&ctx);
+        fuzz_sha_update(&ctx, (const uint8_t *)generated_components_json,
+                        (size_t)generated_components_length);
+        fuzz_sha_update(&ctx, (const uint8_t *)"\n", 1u);
+        fuzz_sha_finish(&ctx, generated_code_digest);
+    }
+    int native_components_length = snprintf(native_components_json, sizeof(native_components_json),
+        "{\"compile_flags\":\"\",\"compiler_identity\":\"gcc-fixture\","
         "\"compiler_target\":\"fixture-target\",\"generated_code_digest\":\"%s\","
-        "\"link_flags\":\"\",\"runtime_abi_epoch\":1,\"runtime_source_digest\":\"%064d\"}}}",
-        aot_digest, 0, codegen_options_digest, 0, fixture_sha, 0, modules_digest,
-        identity_digest, native_digest, generated_code_digest, 0);
+        "\"link_flags\":\"\",\"runtime_abi_epoch\":%d,\"runtime_source_digest\":\"%064d\"}",
+        generated_code_digest, NK_AOT_RUNTIME_ABI_EPOCH, 0);
+    assert(native_components_length > 0 && (size_t)native_components_length < sizeof(native_components_json));
+    {
+        FuzzSha256 ctx;
+        fuzz_sha_init(&ctx);
+        fuzz_sha_update(&ctx, (const uint8_t *)aot_components_json, (size_t)aot_components_length);
+        fuzz_sha_update(&ctx, (const uint8_t *)"\n", 1u);
+        fuzz_sha_finish(&ctx, aot_digest);
+        fuzz_sha_init(&ctx);
+        fuzz_sha_update(&ctx, (const uint8_t *)native_components_json, (size_t)native_components_length);
+        fuzz_sha_update(&ctx, (const uint8_t *)"\n", 1u);
+        fuzz_sha_finish(&ctx, native_digest);
+    }
+    int cache_key_length = snprintf(cache_key_json, sizeof(cache_key_json),
+        "{\"schema_version\":2,\"aot\":{\"digest\":\"%s\",\"components\":%s},"
+        "\"native\":{\"digest\":\"%s\",\"components\":%s}}",
+        aot_digest, aot_components_json, native_digest, native_components_json);
     assert(cache_key_length > 0 && (size_t)cache_key_length < sizeof(cache_key_json));
     int cache_length = snprintf(cache_json, sizeof(cache_json),
         "{\"format\":\"nakagawa-aot-cache\",\"schema_version\":2,\"key\":%s,"
         "\"codegen_options\":{},\"runtime_abi_compatibility\":{"
-        "\"current_epoch\":1,\"generated_code_reusable\":true}}",
-        cache_key_json);
+        "\"current_epoch\":%d,\"generated_code_reusable\":true}}",
+        cache_key_json, NK_AOT_RUNTIME_ABI_EPOCH);
     assert(cache_length > 0 && (size_t)cache_length < sizeof(cache_json));
     int report_length = snprintf(report_json, sizeof(report_json),
         "{\"format\":\"nakagawa-build-report\",\"schema_version\":1,"
@@ -1504,7 +1547,7 @@ static void test_fuzz_library(unsigned iters) {
     printf("[FUZZ] Testing Library JSON parser (%u iterations)...\n", iters);
     fflush(stdout);
 
-    const char *lib_path = "build/fuzz_test_library.json";
+    const char *lib_path = SR_SELFTEST_BUILD_ROOT "/fuzz_test_library.json";
     size_t seed_size = strlen(s_valid_library_json);
     write_file_bytes(lib_path, s_valid_library_json, seed_size);
 
@@ -1763,6 +1806,56 @@ static size_t build_zlib(uint8_t *out, size_t cap, const uint8_t *deflated,
     return at + 4u;
 }
 
+static size_t build_gzip_full(uint8_t *out, size_t cap, const uint8_t *deflated,
+                              size_t deflated_len, const uint8_t *plain,
+                              size_t plain_len, uint8_t flags,
+                              const uint8_t *extra, size_t extra_len,
+                              const char *name, const char *comment,
+                              int corrupt_fhcrc) {
+    assert(cap >= deflated_len + 256u);
+    out[0] = 0x1Fu; out[1] = 0x8Bu; out[2] = 8u; out[3] = flags;
+    memset(out + 4, 0, 6); /* MTIME, XFL, OS */
+    size_t pos = 10u;
+
+    if (flags & 0x04u) { /* FEXTRA */
+        out[pos++] = (uint8_t)(extra_len & 0xFFu);
+        out[pos++] = (uint8_t)((extra_len >> 8) & 0xFFu);
+        if (extra_len > 0u && extra != NULL) {
+            memcpy(out + pos, extra, extra_len);
+            pos += extra_len;
+        }
+    }
+    if (flags & 0x08u) { /* FNAME */
+        if (name != NULL) {
+            size_t nlen = strlen(name) + 1u;
+            memcpy(out + pos, name, nlen);
+            pos += nlen;
+        }
+    }
+    if (flags & 0x10u) { /* FCOMMENT */
+        if (comment != NULL) {
+            size_t clen = strlen(comment) + 1u;
+            memcpy(out + pos, comment, clen);
+            pos += clen;
+        }
+    }
+    if (flags & 0x02u) { /* FHCRC */
+        uint32_t hcrc = fuzz_crc32(out, pos) & 0xFFFFu;
+        if (corrupt_fhcrc) {
+            hcrc ^= 0xFFFFu;
+        }
+        out[pos++] = (uint8_t)(hcrc & 0xFFu);
+        out[pos++] = (uint8_t)((hcrc >> 8) & 0xFFu);
+    }
+
+    memcpy(out + pos, deflated, deflated_len);
+    pos += deflated_len;
+
+    put32le(out + pos, fuzz_crc32(plain, plain_len));
+    put32le(out + pos + 4u, (uint32_t)plain_len);
+    return pos + 8u;
+}
+
 /* ---- synthetic type-2 ~PSP sealer (mirrors tools/test_psp_decrypt.py) --- */
 
 #define FUZZ_KLE_SIZE 0x1000u
@@ -1934,6 +2027,54 @@ static void test_fuzz_decrypt_boundary(unsigned iters) {
         free(out);
     }
 
+    /* Declared-extent checks in validate_psp: the probe must refuse each
+     * malformed segment table before any decrypt work. The aggregate case
+     * passes the per-segment cap but overflows the 256 MiB total. */
+    {
+        static const struct {
+            uint8_t nseg;
+            uint32_t seg0;
+            uint32_t seg1;
+            const char *want;
+        } cases[] = {
+            {2u, 0x0C000000u, 0x0C000000u, "overflow aggregate extent"},
+            {2u, 0xFFFFFFFFu, 0x100u, "declares an impossible size"},
+            {0u, 0x100u, 0x100u, "impossible segment count"},
+        };
+        for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+            uint8_t *bad = (uint8_t *)malloc(sealed_len);
+            NkPspCtx ctx;
+            NkContainerInfo info;
+            assert(bad != NULL);
+            memcpy(bad, sealed, sealed_len);
+            bad[0x27] = cases[c].nseg;
+            put32le(bad + 0x54, cases[c].seg0);
+            put32le(bad + 0x58, cases[c].seg1);
+            nk_psp_ctx_init(&ctx, ks);
+            assert(nk_container_probe(&ctx, bad, sealed_len, &info) == NK_PSP_ERR_FORMAT);
+            assert(info.kind == NK_CTR_UNKNOWN);
+            assert(strstr(ctx.message, cases[c].want) != NULL);
+            free(bad);
+        }
+    }
+
+    /* A zero-size trailing segment is a valid layout: a ~PSP module may declare
+     * segment 1 as 0x0 after a non-empty segment 0. Only the segment count,
+     * the per-segment cap and the aggregate extent may refuse a table. */
+    {
+        uint8_t *zero_tail = (uint8_t *)malloc(sealed_len);
+        NkPspCtx ctx;
+        NkContainerInfo info;
+        assert(zero_tail != NULL);
+        memcpy(zero_tail, sealed, sealed_len);
+        put32le(zero_tail + 0x58, 0u);
+        nk_psp_ctx_init(&ctx, ks);
+        assert(nk_container_probe(&ctx, zero_tail, sealed_len, &info) == NK_PSP_OK);
+        assert(info.kind == NK_CTR_PSP);
+        assert(info.tag == FUZZ_PSP_TAG);
+        free(zero_tail);
+    }
+
     uint8_t wrapped[1200];
     uint8_t *mutated;
     unsigned accepted = 0;
@@ -2002,7 +2143,7 @@ static void test_fuzz_keystore(unsigned iters) {
 
     char seed[1024];
     size_t seed_len = build_keystore_json(seed, sizeof(seed));
-    const char *path = "build/fuzz_test_keystore.json";
+    const char *path = SR_SELFTEST_BUILD_ROOT "/fuzz_test_keystore.json";
     char err[256];
     {
         NkKeystore *ks = nk_keystore_create();
@@ -2065,7 +2206,238 @@ static void test_fuzz_keystore(unsigned iters) {
 
 /* ---- inflate (raw DEFLATE / zlib / gzip) ------------------------------ */
 
+
+static void test_nk_psp_inflate_unit(void) {
+    printf("[UNIT] Testing nk_psp_inflate error paths and spec conformance...\n");
+    fflush(stdout);
+
+    uint8_t plain[16];
+    for (size_t i = 0; i < sizeof(plain); i++) plain[i] = (uint8_t)(i * 7u + 3u);
+
+    uint8_t deflated[512];
+    size_t deflated_len = build_deflate_fixed(deflated, sizeof(deflated), plain,
+                                             sizeof(plain), 0u);
+    uint8_t stored[128];
+    size_t stored_len = build_deflate_stored(stored, sizeof(stored), plain,
+                                            sizeof(plain));
+    uint8_t zlibbed[512];
+    size_t zlibbed_len = build_zlib(zlibbed, sizeof(zlibbed), deflated,
+                                    deflated_len, plain, sizeof(plain));
+    uint8_t gzipped[512];
+    size_t gzipped_len = build_gzip(gzipped, sizeof(gzipped), deflated,
+                                    deflated_len, plain, sizeof(plain));
+
+    uint8_t *out = NULL;
+    size_t out_len = 0;
+    char err[128];
+
+    /* 1. Invalid Arguments & Null Handling */
+    assert(nk_psp_inflate(NULL, 10, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+    assert(nk_psp_inflate(deflated, 10, NULL, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+    assert(nk_psp_inflate(deflated, 10, &out, NULL, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+    assert(nk_psp_inflate(deflated, 0, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+    assert(out == NULL && out_len == 0u);
+    /* Safely handles NULL err buffer or 0 err_len */
+    assert(nk_psp_inflate(NULL, 10, &out, &out_len, 0, FUZZ_INFLATE_CAP, NULL, 0) == NK_INFLATE_ERR_FORMAT);
+
+    /* 2. Raw DEFLATE & Stored Blocks */
+    /* Happy path: raw DEFLATE fixed */
+    assert(nk_psp_inflate(deflated, deflated_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+    assert(out != NULL && out_len == sizeof(plain) && memcmp(out, plain, sizeof(plain)) == 0);
+    free(out); out = NULL; out_len = 0;
+
+    /* Happy path: raw DEFLATE stored block */
+    assert(nk_psp_inflate(stored, stored_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+    assert(out != NULL && out_len == sizeof(plain) && memcmp(out, plain, sizeof(plain)) == 0);
+    free(out); out = NULL; out_len = 0;
+
+    /* Stored block with invalid length complement */
+    {
+        uint8_t bad_stored[128];
+        memcpy(bad_stored, stored, stored_len);
+        bad_stored[3] ^= 0xFFu;
+        assert(nk_psp_inflate(bad_stored, stored_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+        assert(out == NULL && strstr(err, "stored block length mismatch") != NULL);
+    }
+
+    /* Truncated stored block header & payload */
+    assert(nk_psp_inflate(stored, 3, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_TRUNCATED);
+    assert(nk_psp_inflate(stored, 8, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_TRUNCATED);
+
+    /* Invalid DEFLATE block type (btype = 3) */
+    {
+        uint8_t bad_btype[1] = { 0x06u }; /* final bit = 0, btype = 11b (3) */
+        assert(nk_psp_inflate(bad_btype, sizeof(bad_btype), &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+        assert(out == NULL && strstr(err, "invalid deflate block type") != NULL);
+    }
+
+    /* Distance code too far back (referencing data before start of output) */
+    {
+        FuzzBits w;
+        uint8_t bad_dist[64];
+        w.buf = bad_dist; w.cap = sizeof(bad_dist); w.len = 0; w.acc = 0u; w.have = 0; w.overflow = 0;
+        fuzz_put_bits(&w, 1u, 1);    /* final block */
+        fuzz_put_bits(&w, 1u, 2);    /* fixed Huffman */
+        fuzz_put_code(&w, 0xC5u, 8); /* length symbol 285 -> 258 bytes */
+        fuzz_put_code(&w, 0u, 5);    /* distance symbol 0 -> distance 1, but output length is 0! */
+        fuzz_put_code(&w, 0u, 7);    /* EOB */
+        fuzz_finish_bits(&w);
+        assert(nk_psp_inflate(bad_dist, w.len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+        assert(out == NULL && strstr(err, "distance too far back") != NULL);
+    }
+
+    /* 3. Zlib Wrapper & Fallback */
+    /* Happy path: zlib */
+    assert(nk_psp_inflate(zlibbed, zlibbed_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+    assert(out != NULL && out_len == sizeof(plain) && memcmp(out, plain, sizeof(plain)) == 0);
+    free(out); out = NULL; out_len = 0;
+
+    /* Preset dictionary unsupported */
+    {
+        uint8_t bad_zlib[512];
+        memcpy(bad_zlib, zlibbed, zlibbed_len);
+        bad_zlib[1] = 0x7Du; /* FDICT set (0x787D % 31 == 0, FDICT bit 5 set) */
+        assert(nk_psp_inflate(bad_zlib, zlibbed_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+        assert(out == NULL && strstr(err, "zlib preset dictionary is not supported") != NULL);
+    }
+
+    /* Adler32 checksum mismatch */
+    {
+        uint8_t bad_adler[512];
+        memcpy(bad_adler, zlibbed, zlibbed_len);
+        bad_adler[zlibbed_len - 1] ^= 0xFFu;
+        assert(nk_psp_inflate(bad_adler, zlibbed_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_CHECKSUM);
+        assert(out == NULL && strstr(err, "zlib adler32 mismatch") != NULL);
+    }
+
+
+    /* Zlib header-like stream that fails zlib decode, but falls back to raw DEFLATE */
+    {
+        uint8_t zlib_like_raw[256];
+        memset(zlib_like_raw, 0, sizeof(zlib_like_raw));
+        zlib_like_raw[0] = 0x78u; /* non-final stored block: BFINAL=0, BTYPE=00 */
+        zlib_like_raw[1] = 0x9Cu; /* len16 low = 156 */
+        zlib_like_raw[2] = 0x00u; /* len16 high = 0 */
+        zlib_like_raw[3] = 0x63u; /* nlen16 low = ~156 */
+        zlib_like_raw[4] = 0xFFu; /* nlen16 high = ~0 */
+        /* 156 bytes payload */
+        for (size_t i = 0; i < 156; i++) zlib_like_raw[5 + i] = (uint8_t)(i & 0xFF);
+        /* final stored block */
+        zlib_like_raw[161] = 0x01u; /* BFINAL=1, BTYPE=00 */
+        zlib_like_raw[162] = 0x01u; /* len16 = 1 */
+        zlib_like_raw[163] = 0x00u;
+        zlib_like_raw[164] = 0xFEu; /* nlen16 = ~1 */
+        zlib_like_raw[165] = 0xFFu;
+        zlib_like_raw[166] = 0x42u;
+
+        assert(nk_psp_inflate(zlib_like_raw, 167, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+        assert(out != NULL && out_len == 157u && out[156] == 0x42u);
+        free(out); out = NULL; out_len = 0;
+    }
+
+    /* Raw DEFLATE beginning 08 3C: the zlib header test passes and the FDICT
+     * bit (byte 1, bit 5) is set, but the bytes are valid raw DEFLATE: a
+     * non-final stored block of 60 bytes, then an empty final stored block.
+     * It must decode and must not be refused as a preset-dictionary stream. */
+    {
+        uint8_t raw_08_3c[70];
+        memset(raw_08_3c, 0, sizeof(raw_08_3c));
+        raw_08_3c[0] = 0x08u; /* stored block, BFINAL = 0 */
+        raw_08_3c[1] = 0x3Cu; /* LEN low; also zlib FLG with FDICT set */
+        raw_08_3c[2] = 0x00u; /* LEN high: LEN = 60 */
+        raw_08_3c[3] = 0xC3u; /* NLEN low */
+        raw_08_3c[4] = 0xFFu; /* NLEN high: ~60 */
+        for (size_t i = 0; i < 60; i++) raw_08_3c[5 + i] = (uint8_t)('A' + (i % 26));
+        raw_08_3c[65] = 0x01u; /* final stored block, BFINAL = 1 */
+        raw_08_3c[66] = 0x00u; /* LEN = 0 */
+        raw_08_3c[67] = 0x00u;
+        raw_08_3c[68] = 0xFFu; /* NLEN = ~0 */
+        raw_08_3c[69] = 0xFFu;
+
+        assert(nk_psp_inflate(raw_08_3c, sizeof(raw_08_3c), &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+        assert(out != NULL && out_len == 60u && out[0] == 'A' && out[59] == (uint8_t)('A' + (59 % 26)));
+        free(out); out = NULL; out_len = 0;
+    }
+
+    /* 4. Gzip Wrapper & Optional Header Flags */
+    /* Unsupported compression method */
+    {
+        uint8_t bad_gz[512];
+        memcpy(bad_gz, gzipped, gzipped_len);
+        bad_gz[2] = 9u;
+        assert(nk_psp_inflate(bad_gz, gzipped_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+        assert(out == NULL && strstr(err, "unsupported gzip compression method") != NULL);
+    }
+
+    /* Reserved gzip header bits set */
+    {
+        uint8_t bad_gz[512];
+        memcpy(bad_gz, gzipped, gzipped_len);
+        bad_gz[3] = 0xE0u;
+        assert(nk_psp_inflate(bad_gz, gzipped_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+        assert(out == NULL && strstr(err, "gzip header reserved bits set") != NULL);
+    }
+
+    /* Trailer CRC32 mismatch */
+    {
+        uint8_t bad_gz[512];
+        memcpy(bad_gz, gzipped, gzipped_len);
+        bad_gz[gzipped_len - 8] ^= 0xFFu;
+        assert(nk_psp_inflate(bad_gz, gzipped_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_CHECKSUM);
+        assert(out == NULL && strstr(err, "gzip crc or size mismatch") != NULL);
+    }
+
+    /* Trailer ISIZE mismatch */
+    {
+        uint8_t bad_gz[512];
+        memcpy(bad_gz, gzipped, gzipped_len);
+        bad_gz[gzipped_len - 1] ^= 0xFFu;
+        assert(nk_psp_inflate(bad_gz, gzipped_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_CHECKSUM);
+        assert(out == NULL && strstr(err, "gzip crc or size mismatch") != NULL);
+    }
+
+    /* Gzip optional fields: FEXTRA, FNAME, FCOMMENT, FHCRC */
+    {
+        uint8_t extra_data[4] = { 0xDE, 0xAD, 0xBE, 0xEF };
+        uint8_t gz_full[1024];
+        /* Flags: FHCRC (0x02) | FEXTRA (0x04) | FNAME (0x08) | FCOMMENT (0x10) = 0x1E */
+        size_t gz_full_len = build_gzip_full(gz_full, sizeof(gz_full), deflated, deflated_len,
+                                             plain, sizeof(plain), 0x1Eu, extra_data, 4u,
+                                             "hello.txt", "a test comment", 0);
+        assert(nk_psp_inflate(gz_full, gz_full_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+        assert(out != NULL && out_len == sizeof(plain) && memcmp(out, plain, sizeof(plain)) == 0);
+        free(out); out = NULL; out_len = 0;
+
+        /* Test FHCRC mismatch */
+        size_t gz_bad_hcrc_len = build_gzip_full(gz_full, sizeof(gz_full), deflated, deflated_len,
+                                                  plain, sizeof(plain), 0x1Eu, extra_data, 4u,
+                                                  "hello.txt", "a test comment", 1);
+        assert(nk_psp_inflate(gz_full, gz_bad_hcrc_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_CHECKSUM);
+        assert(out == NULL && strstr(err, "gzip header crc mismatch") != NULL);
+
+        /* Test truncated FNAME/FCOMMENT string */
+        uint8_t gz_trunc_str[1024];
+        memcpy(gz_trunc_str, gz_full, gz_full_len);
+        assert(nk_psp_inflate(gz_trunc_str, 20, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_TRUNCATED);
+    }
+
+    /* 5. Capacity Limit & Expectations */
+    /* Capacity lower than uncompressed output length */
+    assert(nk_psp_inflate(gzipped, gzipped_len, &out, &out_len, 0, 8u, err, sizeof(err)) == NK_INFLATE_ERR_OVERFLOW);
+    assert(out == NULL && strstr(err, "output exceeds limit") != NULL);
+
+    /* Custom expectation hints */
+    assert(nk_psp_inflate(gzipped, gzipped_len, &out, &out_len, 4u, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+    assert(out != NULL && out_len == sizeof(plain) && memcmp(out, plain, sizeof(plain)) == 0);
+    free(out); out = NULL; out_len = 0;
+
+    assert(nk_psp_inflate(gzipped, gzipped_len, &out, &out_len, 1024u, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+    assert(out != NULL && out_len == sizeof(plain) && memcmp(out, plain, sizeof(plain)) == 0);
+    free(out); out = NULL; out_len = 0;
+}
+
 static void test_fuzz_inflate(unsigned iters) {
+    test_nk_psp_inflate_unit();
     printf("[FUZZ] Testing inflate: raw DEFLATE, zlib and gzip (%u iterations)...\n",
            iters);
     fflush(stdout);
@@ -2484,7 +2856,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    assert(nk_platform_mkdir_p("build"));
+    assert(nk_platform_mkdir_p(SR_SELFTEST_BUILD_ROOT));
 
     printf("=================================================================\n");
     printf("Starting Nakagawa deterministic parser fuzz suite (iters=%u)\n", iters);

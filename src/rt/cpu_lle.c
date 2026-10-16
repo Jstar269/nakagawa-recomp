@@ -2,6 +2,7 @@
 // Copyright (C) 2026 the Nakagawa Recomp authors
 //
 // LLE Phase 1 (PR 2): COP0 access, mode checks, exception entry, and eret.
+// PR 5 (spec 6.1): synthetic INTC pending/enable state and Cause.IP mirroring.
 //
 // Return contract for every helper below: 0 means "no transfer, keep
 // executing"; any negative value means flow metadata was set and the caller
@@ -25,6 +26,17 @@ static uint32_t s_vector_bootstrap = SR_LLE_VECTOR_BOOTSTRAP_DEFAULT;
 static uint32_t s_prid_value;
 static uint32_t s_config_value;
 static int s_lle_enabled;
+
+/* INTC model state (spec 6.1). Synthetic; see cpu_lle.h. A system device, not
+ * per-thread CPU state, so it lives here rather than in CpuState: the CpuState
+ * ABI is unchanged and Cause.IP only mirrors it. Zero = unconfigured. */
+static struct {
+    int configured;
+    unsigned source_count;
+    unsigned cpu_ip_bit;
+    uint32_t pending;
+    uint32_t enabled;
+} s_intc;
 
 void sr_cpu_lle_set_enabled(int enabled) {
     s_lle_enabled = enabled != 0;
@@ -67,6 +79,87 @@ void sr_cpu_lle_reset_config(void) {
     s_prid_value = 0u;
     s_config_value = 0u;
     s_lle_enabled = 0;
+    sr_intc_reset();
+}
+
+static uint32_t sr_intc_valid_sources(void) {
+    return s_intc.source_count >= 32u
+        ? 0xFFFFFFFFu
+        : (1u << s_intc.source_count) - 1u;
+}
+
+int sr_intc_init(const SrIntcConfig *config) {
+    if (!config || config->source_count == 0u ||
+        config->source_count > SR_INTC_MAX_SOURCES ||
+        config->cpu_ip_bit < SR_INTC_CPU_IP_MIN ||
+        config->cpu_ip_bit > SR_INTC_CPU_IP_MAX) {
+        return -1;
+    }
+    /* Synthetic reset state (cold-reset state is unmeasured, spec 6.3). */
+    s_intc.configured = 1;
+    s_intc.source_count = config->source_count;
+    s_intc.cpu_ip_bit = config->cpu_ip_bit;
+    s_intc.pending = 0u;
+    s_intc.enabled = 0u;
+    return 0;
+}
+
+void sr_intc_reset(void) {
+    s_intc.configured = 0;
+    s_intc.source_count = 0u;
+    s_intc.cpu_ip_bit = 0u;
+    s_intc.pending = 0u;
+    s_intc.enabled = 0u;
+}
+
+int sr_intc_raise(unsigned source) {
+    if (!s_intc.configured || source >= s_intc.source_count) {
+        return -1;
+    }
+    s_intc.pending |= 1u << source;
+    return 0;
+}
+
+int sr_intc_clear(unsigned source) {
+    if (!s_intc.configured || source >= s_intc.source_count) {
+        return -1;
+    }
+    s_intc.pending &= ~(1u << source);
+    return 0;
+}
+
+int sr_intc_set_enable_mask(uint32_t mask) {
+    if (!s_intc.configured || (mask & ~sr_intc_valid_sources()) != 0u) {
+        return -1;
+    }
+    /* Pending bits are untouched: a masked source stays pending (spec 6.1). */
+    s_intc.enabled = mask;
+    return 0;
+}
+
+uint32_t sr_intc_pending_mask(void) {
+    return s_intc.configured ? s_intc.pending : 0u;
+}
+
+uint32_t sr_intc_enable_mask(void) {
+    return s_intc.configured ? s_intc.enabled : 0u;
+}
+
+int sr_intc_cpu_pending(CpuState *s) {
+    uint32_t bit;
+    int asserted;
+
+    if (!s || !s_intc.configured) {
+        return -1;
+    }
+    /* Cause.IP sits at bits 15..8 (SR_CAUSE_IP_MASK); IP<n> is bit 8+n. The
+     * controller owns exactly its configured bit; the other hardware bits are
+     * unmodeled lines and are left as they are. */
+    bit = 1u << (8u + s_intc.cpu_ip_bit);
+    asserted = (s_intc.pending & s_intc.enabled) != 0u;
+    s->cop0[SR_CP0_CAUSE] =
+        (s->cop0[SR_CP0_CAUSE] & ~bit) | (asserted ? bit : 0u);
+    return asserted;
 }
 
 int sr_cpu_in_kernel(const CpuState *s) {
@@ -84,10 +177,15 @@ void sr_cpu_clear_flow(CpuState *s) {
 }
 
 int sr_cpu_poll(CpuState *s, uint32_t resume_pc) {
-    /* No device model yet: INTC pending bits, timer advancement, and Cause.IP
-     * synchronization land in PR 5; safe-point delivery lands in PR 6. A stub
-     * that fabricated an interrupt here would invent timer behavior the timer
-     * oracle questions (spec 6.3) leave BLOCKED, so report none. */
+    /* No delivery yet. PR 5 added INTC pending/enable state and Cause.IP
+     * mirroring (sr_intc_*), refreshed at guest COP0 Cause accesses, which
+     * both tiers make through the same helpers. Spec 3.6 also has this poll
+     * sync Cause.IP and enter the interrupt vector, but that is PR 6: the AOT
+     * tier has no poll sites yet, so any side effect here would run in the
+     * interpreter only and the tiers would diverge. Timer advancement stays
+     * out as well: the timer oracle questions (spec 6.3) are BLOCKED, and a
+     * fabricated interrupt would invent that behavior. Report none and change
+     * nothing. */
     (void)s;
     (void)resume_pc;
     return 0;
@@ -413,6 +511,12 @@ int sr_cp0_mfc0(
     case SR_CP0_CONFIG:
         value = s_config_value;
         break;
+    case SR_CP0_CAUSE:
+        /* The INTC-owned IP bit reports the current line (no-op when no
+         * controller is configured). */
+        (void)sr_intc_cpu_pending(s);
+        value = s->cop0[SR_CP0_CAUSE];
+        break;
     default:
         value = s->cop0[rd];
         break;
@@ -459,15 +563,20 @@ int sr_cp0_mtc0(
         break;
     case SR_CP0_CAUSE:
         /* Hardware pending bits are INTC-owned; guest writes can only set the
-         * software pair (spec 3.2). */
+         * software pair (spec 3.2). The INTC bit is then re-derived from the
+         * controller, so the write leaves it equal to the line. */
         s->cop0[SR_CP0_CAUSE] =
             (s->cop0[SR_CP0_CAUSE] & (uint32_t)~SR_CAUSE_IP_SW_MASK) |
             (value & SR_CAUSE_IP_SW_MASK);
+        (void)sr_intc_cpu_pending(s);
         break;
     case SR_CP0_COUNT:
     case SR_CP0_COMPARE:
-        /* Stored plainly: PR 5 (spec 6.2) connects these to the virtual-time
-         * timer model. No frequency is fabricated here. */
+        /* Stored plainly. Spec 6.2 routes these through a virtual-time timer
+         * model, but the count rate, width, reset value, rollover and compare
+         * rule are unmeasured (spec 6.3, Count/Compare row), so there is no
+         * timer: Count does not advance and no Compare match raises an
+         * interrupt. Timer expiry is BLOCKED, not guessed. */
         s->cop0[rd] = value;
         break;
     case SR_CP0_PRID:
@@ -510,6 +619,9 @@ int sr_cpu_eret(CpuState *s, uint32_t instr_pc) {
         return -2;
     }
     s->cop0[SR_CP0_STATUS] &= (uint32_t)~SR_STATUS_EXL;
+    /* MIPS32: ERET clears LLbit, so an sc after the return fails. A faulting
+     * eret (above) is not a return and leaves the link alone. */
+    sr_cpu_link_clear(s);
     s->pc = target;
     s->flow_kind = SR_FLOW_ERET;
     s->flow_target = target;

@@ -17,6 +17,7 @@
 #define PSP_RECOMP_RT_H
 
 #include <stdint.h>
+#include <inttypes.h>
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -35,8 +36,13 @@ typedef std::atomic_int_least32_t atomic_int_least32_t;
 #include "perf.h"
 #include "stale_code.h"  /* TD-27 opt-in stale translated-code detector (declarations only) */
 
+/* The CpuState layout version (issue #812: v3). Generated code refuses to compile against
+ * another version (tools/codegen.py emits the guard), tools/mem_debug.py reads the same
+ * number, and flight_recorder.c stamps it into every bundle's runtime block, where
+ * assets/flight_recorder_schema.json pins it as a const and tools/flight_diff.py treats it
+ * as a comparability condition. Bump it here and in the schema together. */
 #ifndef SR_CPUSTATE_ABI_VERSION
-#define SR_CPUSTATE_ABI_VERSION 2u
+#define SR_CPUSTATE_ABI_VERSION 3u
 #endif
 
 typedef struct CpuState {
@@ -68,12 +74,27 @@ typedef struct CpuState {
     uint32_t in_delay_slot;  /* Parity with ref::CpuState */
     uint32_t flow_kind;      /* Runtime transfer metadata, not architectural state */
     uint32_t flow_target;    /* Runtime transfer metadata, not architectural state */
+    /* MIPS32 LLbit: 1 after `ll`, read by `sc`. Architectural, per thread. Cleared
+     * only through sr_cpu_link_clear() at the events that end an atomic window:
+     * exception return (eret), interrupt/callback return, HLE syscall return and
+     * thread switch-in. Nothing else writes it, so an ll..sc window that crosses
+     * none of those events always succeeds (ABI v3). */
+    uint32_t llbit;
 } CpuState;
 
 #define SR_CP0_STATUS 12u
 
 static inline uint32_t *sr_cp0_status_ptr(CpuState *s) {
     return &s->cop0[SR_CP0_STATUS];
+}
+
+/* End the current ll..sc atomic window: the next `sc` fails and stores nothing.
+ * Called at every point where this runtime models an event the MIPS32 contract
+ * says breaks the link (an exception return, an interrupt or callback returning
+ * to the interrupted context, an HLE syscall returning, and a thread being
+ * switched in). See docs/ARCHITECTURE.md "LL/SC link state". */
+static inline void sr_cpu_link_clear(CpuState *s) {
+    s->llbit = 0u;
 }
 
 /* LLE Phase 1 (PR 2): COP0/exception/eret helpers and flow metadata. Included
@@ -86,7 +107,7 @@ static inline uint32_t *sr_cp0_status_ptr(CpuState *s) {
 #include "domain_mode.h"
 
 #ifndef __cplusplus
-_Static_assert(SR_CPUSTATE_ABI_VERSION == 2u, "unsupported CpuState ABI version");
+_Static_assert(SR_CPUSTATE_ABI_VERSION == 3u, "unsupported CpuState ABI version");
 _Static_assert(offsetof(CpuState, cop0) == 852u, "CpuState cop0 offset drift");
 _Static_assert(offsetof(CpuState, next_pc) == 980u, "CpuState next_pc offset drift");
 _Static_assert(offsetof(CpuState, in_delay_slot) == 984u,
@@ -94,7 +115,8 @@ _Static_assert(offsetof(CpuState, in_delay_slot) == 984u,
 _Static_assert(offsetof(CpuState, flow_kind) == 988u, "CpuState flow_kind offset drift");
 _Static_assert(offsetof(CpuState, flow_target) == 992u,
                "CpuState flow_target offset drift");
-_Static_assert(sizeof(CpuState) == 996u, "CpuState size drift");
+_Static_assert(offsetof(CpuState, llbit) == 996u, "CpuState llbit offset drift");
+_Static_assert(sizeof(CpuState) == 1000u, "CpuState size drift");
 #endif
 
 /* Guest memory: a single host region. g_mem points at guest 0x08000000, and the underlying
@@ -263,19 +285,19 @@ static inline void sr_log_mem_watch_context(uint32_t pc) {
     }
     unsigned hit = ++g_sr_mem_watch_context_count;
     fprintf(stderr,
-            "MEM_WATCH_CONTEXT pc=0x%08x hit=%u last_yield_pc=0x%08x hi=0x%08x lo=0x%08x fcr31=0x%08x fpcond=%u\n",
+            "MEM_WATCH_CONTEXT pc=0x%08" PRIx32 " hit=%u last_yield_pc=0x%08" PRIx32 " hi=0x%08" PRIx32 " lo=0x%08" PRIx32 " fcr31=0x%08" PRIx32 " fpcond=%" PRIu32 "\n",
             pc, hit, s_cpu->pc, s_cpu->hi, s_cpu->lo, s_cpu->fcr31, s_cpu->fpcond);
     for (unsigned base = 0; base < 32; base += 8) {
         fprintf(stderr, "MEM_WATCH_CONTEXT_GPR");
         for (unsigned i = base; i < base + 8; i++) {
-            fprintf(stderr, " r%u=0x%08x", i, s_cpu->r[i]);
+            fprintf(stderr, " r%u=0x%08" PRIx32, i, s_cpu->r[i]);
         }
         fputc('\n', stderr);
     }
     for (unsigned base = 0; base < 32; base += 8) {
         fprintf(stderr, "MEM_WATCH_CONTEXT_FPR");
         for (unsigned i = base; i < base + 8; i++) {
-            fprintf(stderr, " f%u=0x%08x", i, s_cpu->fi[i]);
+            fprintf(stderr, " f%u=0x%08" PRIx32, i, s_cpu->fi[i]);
         }
         fputc('\n', stderr);
     }
@@ -293,33 +315,33 @@ static inline void sr_log_store_context(uint32_t addr, uint32_t value,
     }
     unsigned hit = ++g_sr_store_context_count;
     fprintf(stderr,
-            "STORE_CONTEXT pc=0x%08x hit=%u addr=0x%08x width=%u val=0x%08x last_yield_pc=0x%08x hi=0x%08x lo=0x%08x\n",
+            "STORE_CONTEXT pc=0x%08" PRIx32 " hit=%u addr=0x%08" PRIx32 " width=%u val=0x%08" PRIx32 " last_yield_pc=0x%08" PRIx32 " hi=0x%08" PRIx32 " lo=0x%08" PRIx32 "\n",
             pc, hit, addr, width, value, s_cpu->pc, s_cpu->hi, s_cpu->lo);
     for (unsigned base = 0; base < 32; base += 8) {
         fprintf(stderr, "STORE_CONTEXT_GPR");
         for (unsigned i = base; i < base + 8; i++) {
-            fprintf(stderr, " r%u=0x%08x", i, s_cpu->r[i]);
+            fprintf(stderr, " r%u=0x%08" PRIx32, i, s_cpu->r[i]);
         }
         fputc('\n', stderr);
     }
     for (unsigned base = 0; base < 32; base += 8) {
         fprintf(stderr, "STORE_CONTEXT_FPR");
         for (unsigned i = base; i < base + 8; i++) {
-            fprintf(stderr, " f%u=0x%08x", i, s_cpu->fi[i]);
+            fprintf(stderr, " f%u=0x%08" PRIx32, i, s_cpu->fi[i]);
         }
         fputc('\n', stderr);
     }
     if (g_sr_store_context_mem_gpr >= 0) {
         uint32_t base = s_cpu->r[g_sr_store_context_mem_gpr] +
                         g_sr_store_context_mem_offset;
-        fprintf(stderr, "STORE_CONTEXT_MEM r%d+0x%08x base=0x%08x",
+        fprintf(stderr, "STORE_CONTEXT_MEM r%d+0x%08" PRIx32 " base=0x%08" PRIx32,
                 g_sr_store_context_mem_gpr, g_sr_store_context_mem_offset, base);
         for (unsigned i = 0; i < g_sr_store_context_mem_words; i++) {
             uint32_t word_addr = base + i * 4u;
             uint32_t word = 0;
             if (sr_inrange_n(word_addr, 4u)) {
                 memcpy(&word, SR_HOST(word_addr), sizeof word);
-                fprintf(stderr, " w%u=0x%08x", i, word);
+                fprintf(stderr, " w%u=0x%08" PRIx32, i, word);
             } else {
                 fprintf(stderr, " w%u=<oor>", i);
             }
@@ -506,6 +528,8 @@ int sr_vfpu_interp(CpuState *s, uint32_t op);
  * mirror it hands to ge_set_frame(), so the number here is the same frame index
  * the SR_GE_TRANSITION_TRACE records carry. */
 uint32_t sr_audio_vbl(void);
+/* SR_NAN_TRAP_CONTEXT dump, registered by sr_mem_init; NULL in harnesses without a runtime. */
+extern void (*sr_nan_trap_context_hook)(void);
 void sr_nan_trap_note(uint32_t pc, const char *op, uint32_t fd,
                       float out, const float *in, int nin);
 void sr_nan_trap_note_v(uint32_t pc, const char *op, uint32_t vd,
@@ -716,6 +740,69 @@ void     dispatch(CpuState *s, uint32_t target);  /* TAIL/no native resume bound
 int      dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc);
 void     dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc);
 
+/* TAIL transfer protocol (#855).
+ *
+ * A guest TAIL transfer -- `j`, `jr rs`, `jalr $zero` or a branch to another body, or a
+ * fall-through into another entry -- must not nest a native call: a guest loop of tail
+ * transfers would otherwise grow the host stack without bound while guest call depth stays
+ * constant. Generated code records the transfer here and returns; whoever invoked that body
+ * drains it: a generated CALL site (SR_TAIL_DRAIN), dispatch_call_aot, or sr_call_body. Each
+ * drained body may record the next transfer, so a whole chain runs in one native frame.
+ *
+ * Guest code runs on one OS thread, and a recorded transfer is consumed before any guest
+ * instruction runs, so one slot suffices and it is never live across a yield (asserted at
+ * the yield, syscall and dispatch entry points). A callable body owes its caller the
+ * restore of its entry SP once the chain completes; the drain applies the first restore
+ * recorded in its chain, which is the value the nested native returns used to leave.
+ *
+ * A transfer to a computed target is one dispatch (dispatch_tail_step). The direct transfers
+ * that follow it used to nest inside that dispatch, so the step drains them itself
+ * (sr_tail_drain_segment): exception and ERET flow they raise is handled by the step's own
+ * dispatch, at the SP the nested model had there. The step hands only the next computed
+ * transfer back to the enclosing drain, so native depth stays constant. */
+typedef struct {
+    RecompFn fn;            /* native body of a known target, or NULL to dispatch by address */
+    CpuState *state;        /* the CpuState that recorded the transfer */
+    uint32_t target;        /* guest target address */
+    uint32_t restore_sp;    /* the recording body's entry SP, when it owes the restore */
+    uint8_t pending;
+    uint8_t has_restore;
+} SrTailTransfer;
+extern SrTailTransfer sr_tail_transfer;    /* defined in guest_interp.c */
+/* Fatal, named stop for a broken protocol (double record, leaked slot, foreign state). */
+void sr_tail_fatal(const char *what, uint32_t target);
+/* Run every pending transfer to completion, then apply the chain's SP restore. */
+void sr_tail_drain(CpuState *s);
+/* Inside a computed step's dispatch: run the pending direct transfers, stopping at exception
+ * flow or at the next computed transfer, which is left for the enclosing drain. */
+void sr_tail_drain_segment(CpuState *s);
+/* One dispatch of a recorded computed target (recomp.c). It drains only that target's direct
+ * successors; the enclosing drain loop runs the next computed transfer. */
+void dispatch_tail_step(CpuState *s, uint32_t target);
+
+static inline void sr_tail_record(CpuState *s, uint32_t target, RecompFn fn,
+                                  uint32_t restore_sp, uint32_t owes_restore) {
+    if (sr_tail_transfer.pending) sr_tail_fatal("tail-transfer-recorded-twice", target);
+    sr_tail_transfer.fn = fn;
+    sr_tail_transfer.state = s;
+    sr_tail_transfer.target = target;
+    sr_tail_transfer.restore_sp = restore_sp;
+    sr_tail_transfer.has_restore = owes_restore ? 1u : 0u;
+    sr_tail_transfer.pending = 1u;
+}
+#define SR_TAIL_DRAIN(s) do { \
+    if (__builtin_expect(sr_tail_transfer.pending != 0u, 0)) sr_tail_drain(s); \
+} while (0)
+/* Invoke a native body and complete its tail chain (runtime direct calls). */
+static inline void sr_call_body(RecompFn fn, CpuState *s) {
+    fn(s);
+    if (sr_tail_transfer.pending) sr_tail_drain(s);
+}
+/* A recorded transfer must never survive to a yield, syscall or new dispatch. */
+static inline void sr_tail_assert_empty(const char *where) {
+    if (sr_tail_transfer.pending) sr_tail_fatal(where, sr_tail_transfer.target);
+}
+
 /* Tracing. When a trace file is open, the generated code reports each instruction. sr_begin
  * snapshots the register file and records pc/op; sr_end diffs and emits the line, with an
  * optional store (addr/size) read back from guest memory. Emit order follows PPSSPP: a branch
@@ -771,6 +858,9 @@ uint32_t sr_alloc_uid(void);
 
 /* sceGe display-list GPU (src/rt/ge.c): execute a GE command list, rasterising into VRAM. */
 uint32_t ge_run_list(uint32_t addr, int resume);
+/* SR_GE_TRANSITION_TRACE late-write check (issue #69): re-hash the vertex and index bytes of
+ * every weighted draw recorded since the last check; a no-op unless the trace is armed. */
+void ge_transition_trace_check(const char *why, uint32_t vcount);
 extern uint32_t g_ge_stall_addr;
 uint32_t ge_framebuffer(void);
 /* Last word written for GE command `cmd` (0..0xFF). Callers validate the index first
@@ -806,6 +896,10 @@ void     gui_init(const char *title);
 int      gui_on(void);
 uint32_t gui_buttons(void);
 void     gui_consume_button_pulses(void);          /* after one PSP VBLANK sample */
+/* Gamepad buttons that went down since the last call, as PSP button bits: the on-screen
+ * keyboard's pad input (osk_overlay.h). Taken every VBLANK whether or not it is open. Returns 0
+ * when no SDL3 presenter is up (the GDI and offscreen presenters have no SDL3 gamepad). */
+uint32_t gui_pad_pulses_take(void);
 void     gui_analog(uint8_t *lx, uint8_t *ly);   /* live left-stick (0..255, 128=centre) */
 int      gui_pad_present(void);                  /* 1 when a game controller is connected */
 /* Returns 1 only when the selected presenter accepted the validated frame. */
@@ -834,6 +928,43 @@ uint32_t sr_hle_resolve_late_import(uint32_t nid);
  * scheduler is off (per-function differential, plain driver) SR_YIELD is a cheap no-op that
  * changes nothing, so it does not affect the existing trace verification. */
 extern int     sr_sched_on;
+/* Host-stack probe the scheduler installs when it owns the guest fibers
+ * (sr_coro_stack_remaining). Defined in guest_interp.c, which every dispatcher
+ * build links; harnesses without the scheduler leave it NULL and the dispatcher's
+ * preflight stays off because sr_sched_on is 0 there. */
+extern int   (*sr_dispatch_host_stack_remaining)(size_t *remaining_out);
+/* The high end of the running stack, installed beside it (sr_coro_stack_top); may stay NULL. */
+extern int   (*sr_dispatch_host_stack_top)(uintptr_t *top_out);
+/* The same host-stack bound for direct compiled calls (#855). A `jal` to a known body is a
+ * native C call that never enters the dispatcher, so codegen opens every body that makes such
+ * a call with SR_HOST_STACK_CHECK; leaves and bodies whose calls all go through the dispatcher
+ * need none, since every native recursion of generated code passes through one or the other.
+ *
+ * The hot path is one test of the body's frame address against sr_host_stack_window: frame
+ * addresses on the running stack already known to leave the dispatcher's reserve. Frames in
+ * [low, low + span] pass; {0, 0} passes nothing. A frame outside it calls
+ * sr_host_stack_entry_slow (recomp.c), which takes the dispatcher's measurement: when the
+ * stack is exhausted (or its bounds are unknown) the run stops at the dispatcher's named
+ * boundary with the dispatcher's report; otherwise it refills the window for the running stack
+ * and returns. The window spans one stack and is never an estimate, so a frame on any other
+ * live stack falls outside it and refills it; the scheduler clears it when it creates a guest
+ * stack, which may reuse the range of a released one. A plain global: guest code runs on one
+ * OS thread (as for sr_tail_transfer). Defined in guest_interp.c. */
+typedef struct {
+    uintptr_t low;
+    uintptr_t span;
+} SrHostStackWindow;
+extern SrHostStackWindow sr_host_stack_window;
+void  sr_host_stack_entry_slow(uint32_t entry, uintptr_t frame);
+#define SR_HOST_STACK_CHECK(entry) do { \
+    uintptr_t _sr_frame = (uintptr_t)__builtin_frame_address(0); \
+    if (__builtin_expect(_sr_frame - sr_host_stack_window.low > sr_host_stack_window.span, 0)) \
+        sr_host_stack_entry_slow((entry), _sr_frame); \
+} while (0)
+static inline void sr_host_stack_window_clear(void) {
+    sr_host_stack_window.low = 0;
+    sr_host_stack_window.span = 0;
+}
 extern atomic_int_least32_t sr_timeslice;
 void sr_yield(CpuState *s);
 /* Returns 1 if the host wall-clock has crossed the vblank quantum since the last vblank
@@ -1104,6 +1235,9 @@ static inline uint32_t sr_callback_dispatch_one(CpuState *cpu, uint32_t entry, i
     dispatch_fn(cpu, entry);
     uint32_t ret = cpu->r[2];
     *cpu = save;
+    /* The interrupted thread resumes as after an exception return: its ll..sc
+     * window, if any, is over (MIPS32 LLbit is cleared by eret). */
+    sr_cpu_link_clear(cpu);
     return ret;
 }
 
@@ -1149,7 +1283,7 @@ extern jmp_buf g_hle_jmp;
 
 #ifdef __cplusplus
 #include "cpu.h"
-static_assert(SR_CPUSTATE_ABI_VERSION == 2u, "unsupported CpuState ABI version");
+static_assert(SR_CPUSTATE_ABI_VERSION == 3u, "unsupported CpuState ABI version");
 static_assert(sizeof(::CpuState) == sizeof(ref::CpuState), "CpuState structural layout drift detected!");
 #define SR_CPUSTATE_OFFSET_ASSERT(field) \
     static_assert(offsetof(::CpuState, field) == offsetof(ref::CpuState, field), \
@@ -1170,6 +1304,7 @@ SR_CPUSTATE_OFFSET_ASSERT(next_pc);
 SR_CPUSTATE_OFFSET_ASSERT(in_delay_slot);
 SR_CPUSTATE_OFFSET_ASSERT(flow_kind);
 SR_CPUSTATE_OFFSET_ASSERT(flow_target);
+SR_CPUSTATE_OFFSET_ASSERT(llbit);
 #undef SR_CPUSTATE_OFFSET_ASSERT
 #endif
 

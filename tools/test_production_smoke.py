@@ -36,6 +36,7 @@ import imports as imports_tool  # noqa: E402
 import nk_cli  # noqa: E402
 import prxload  # noqa: E402
 import title_codegen_plan  # noqa: E402
+from test_build_truth import _class_scratch_build_root  # noqa: E402
 from test_iso_parity import (  # noqa: E402
     build_plain_mips_elf,
     build_psp_container,
@@ -45,7 +46,7 @@ from test_iso_parity import (  # noqa: E402
 from test_import_name_safety import build_synthetic_import_prx  # noqa: E402
 from import_fixtures import SYSLIB_EXPORT, build_module_elf  # noqa: E402
 from nk_core import package_cache  # noqa: E402
-from nk_core.iso_inspect import runtime_registered_nids  # noqa: E402
+from nk_core.iso_inspect import PBP_BOUNDARY_CODES, runtime_registered_nids  # noqa: E402
 from nk_core.types import TitleProfile  # noqa: E402
 
 
@@ -612,6 +613,12 @@ class TestStagedRunFailClosed(unittest.TestCase):
 
 
 class TestProductionSmokePackage(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Probes and the packaging route build into one scratch BUILD_ROOT for the class
+        # (exported to the package planner's Make runs too), never the checkout's build/.
+        cls.binary_dir = _class_scratch_build_root(cls, "production-smoke-package")
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="nk-package-smoke-")
         self.addCleanup(self.temporary.cleanup)
@@ -677,7 +684,8 @@ class TestProductionSmokePackage(unittest.TestCase):
         """
         make_name = "mingw32-make" if os.name == "nt" else "make"
         probe = subprocess.run(
-            [make_name, "--no-print-directory", "sdl3-check"],
+            [make_name, "--no-print-directory", "sdl3-check",
+             f"BUILD_ROOT={self.binary_dir.as_posix()}"],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -931,7 +939,12 @@ class TestProductionSmokePackage(unittest.TestCase):
         self.assertEqual(package["schema_version"], 2)
         self.assertEqual(package["title"]["id"], self.manifest["id"])
         self.assertEqual(package["runtime"]["abi"], "CpuState")
-        self.assertEqual(package["runtime"]["abi_version"], 2)
+        # The package's ABI is the one the runtime header defines, not a value read back from
+        # the generator that wrote it (RuntimeAbiPinTests pins the flight schema the same way).
+        header = (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8")
+        match = re.search(r"^#define SR_CPUSTATE_ABI_VERSION (\d+)u$", header, re.MULTILINE)
+        self.assertIsNotNone(match, "recomp.h must define SR_CPUSTATE_ABI_VERSION <n>u")
+        self.assertEqual(package["runtime"]["abi_version"], int(match.group(1)))
         self.assertEqual(package["executable"]["path"], "production_smoke.exe")
         self.assertTrue((self.build_dir / package["executable"]["path"]).is_file())
         self.assertEqual(
@@ -998,11 +1011,12 @@ class TestProductionSmokePackage(unittest.TestCase):
         if ucrt_bin.is_dir():
             player_env["PATH"] = str(ucrt_bin) + os.pathsep + player_env.get("PATH", "")
         native_build = subprocess.run(
-            ["mingw32-make", "--no-print-directory", "player-state-test-bin"],
+            ["mingw32-make", "--no-print-directory", "player-state-test-bin",
+             f"BUILD_ROOT={self.binary_dir.as_posix()}"],
             cwd=ROOT, env=player_env, capture_output=True, text=True,
         )
         self.assertEqual(native_build.returncode, 0, native_build.stdout + native_build.stderr)
-        validator = ROOT / "build" / "test_player_state.exe"
+        validator = self.binary_dir / "test_player_state.exe"
         args = [str(validator), "--validate-package", str(user_root),
                 "ULUS99998", self.manifest["id"], "1", "EBOOT.BIN"]
         accepted = subprocess.run(args, cwd=ROOT, capture_output=True, text=True)
@@ -1136,6 +1150,231 @@ class TestProductionSmokePackage(unittest.TestCase):
         self.assertFalse((bad_output / "build-report.json").exists())
 
 
+class TestCodegenStageReuse(unittest.TestCase):
+    """Bring-up generates each title's code once: the package compiles the codegen
+    stage's output, but only after the checks the native-only reuse of a package's
+    generated C performs, and any refusal regenerates under a named reason."""
+
+    @classmethod
+    def setUpClass(cls):
+        # The borrowed skip helper builds its probe under the class scratch BUILD_ROOT,
+        # the same way TestProductionSmokePackage does, never the checkout's build/.
+        cls.binary_dir = _class_scratch_build_root(cls, "codegen-stage-reuse")
+
+    setUp = TestProductionSmokePackage.setUp
+    skip_if_toolchain_unusable = TestProductionSmokePackage.skip_if_toolchain_unusable
+    skip_if_sdl3_toolchain_unavailable = (
+        TestProductionSmokePackage.skip_if_sdl3_toolchain_unavailable
+    )
+    GAME = "production_smoke"
+
+    def require_make(self):
+        required = ("mingw32-make", "gcc", "pwsh") if os.name == "nt" else ("make", "gcc")
+        if not all(shutil.which(name) for name in required):
+            self.skipTest("the package route requires " + ", ".join(required))
+
+    def build(self, output_dir: Path, sink=None, **options):
+        stdout = sink if sink is not None else io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            result = title_codegen_plan.build_package(
+                self.manifest,
+                manifest_path=self.manifest_path,
+                game_elf=self.fixture_dir / "guest.prx",
+                psp_header=self.fixture_dir / "guest.psp",
+                output_dir=output_dir,
+                funcs_per_chunk=1,
+                public_safe=True,
+                **options,
+            )
+        return result, stdout.getvalue()
+
+    def make_stage(self, name: str = "codegen-stage") -> Path:
+        stage = self.root / name
+        result, _output = self.build(stage, aot_stage=True)
+        self.assertEqual(result["format"], "nakagawa-aot-stage")
+        self.assertTrue((stage / package_cache.COMPLETION_MANIFEST).is_file())
+        return stage
+
+    def generated_code(self, directory: Path) -> dict[str, bytes]:
+        if not directory.is_dir():
+            return {}
+        return {
+            path.name: path.read_bytes()
+            for path in directory.iterdir()
+            if path.is_file() and title_codegen_plan._is_aot_output(path.name, self.GAME)
+        }
+
+    def attempt(self, stage: Path, output_dir: Path, *, environment=None):
+        """Run the package route against ``stage`` with its Make call recorded, not run.
+
+        Returns the Make target and NK_AOT_PREGENERATED the route chose, and the
+        route's printed output. Make never runs, so the package is incomplete.
+        """
+        real_run = subprocess.run
+        calls = []
+        sink = io.StringIO()
+
+        def record_make(command, *args, **kwargs):
+            if "--no-print-directory" in command and command[-1] in {"all", "compile"}:
+                calls.append((command[-1], kwargs["env"]["NK_AOT_PREGENERATED"]))
+                return subprocess.CompletedProcess(command, 0)
+            return real_run(command, *args, **kwargs)
+
+        with (
+            mock.patch.dict(os.environ, environment or {}),
+            mock.patch.object(title_codegen_plan.subprocess, "run", side_effect=record_make),
+            self.assertRaises(title_codegen_plan.PackageRouteError) as caught,
+        ):
+            self.build(output_dir, sink=sink, reuse_aot_stage=stage)
+        self.assertEqual(caught.exception.code, "PACKAGE_BUILD_INCOMPLETE")
+        self.assertEqual(len(calls), 1, calls)
+        return calls[0], sink.getvalue()
+
+    def assert_refused(self, stage: Path, code: str, *, environment=None, name: str):
+        output_dir = self.root / name
+        make_call, output = self.attempt(stage, output_dir, environment=environment)
+        lines = [line for line in output.splitlines() if line.startswith("AOT_STAGE_REUSE:")]
+        self.assertEqual(len(lines), 1, output)
+        self.assertTrue(lines[0].startswith(f"AOT_STAGE_REUSE: REFUSED {code}"), lines[0])
+        # A refused stage is regenerated from source: the whole build, nothing copied.
+        self.assertEqual(make_call, ("all", "0"))
+        self.assertEqual(self.generated_code(output_dir), {})
+        return lines[0]
+
+    def test_stage_needs_an_empty_dedicated_directory(self):
+        stage = self.root / "occupied-stage"
+        stage.mkdir()
+        (stage / f"{self.GAME}_recomp_9.c").write_bytes(b"left over from an earlier run")
+        with self.assertRaises(title_codegen_plan.PackageRouteError) as caught:
+            self.build(stage, aot_stage=True)
+        self.assertEqual(caught.exception.code, "PACKAGE_OUTPUT_CONFLICT")
+        with self.assertRaises(title_codegen_plan.PackageRouteError) as caught:
+            self.build(self.root / "both", aot_stage=True, reuse_aot_stage=stage)
+        self.assertEqual(caught.exception.code, "PACKAGE_REUSE_INVALID")
+
+    def test_accepted_stage_is_compiled_without_generating_again(self):
+        self.require_make()
+        stage = self.make_stage()
+        output_dir = self.root / "accepted"
+        make_call, output = self.attempt(stage, output_dir)
+        self.assertIn("AOT_STAGE_REUSE: ACCEPTED AOT_STAGE_ACCEPTED", output)
+        self.assertEqual(make_call, ("compile", "1"))
+        copied = self.generated_code(output_dir)
+        self.assertEqual(copied, self.generated_code(stage))
+        self.assertTrue(set(title_codegen_plan._aot_required_outputs(self.GAME)) <= set(copied))
+
+    def test_every_mismatch_is_refused_by_name_and_regenerated(self):
+        self.require_make()
+        # A tampered stage output.
+        tampered = self.make_stage("tampered-stage")
+        chunk = sorted(tampered.glob(f"{self.GAME}_recomp_[0-9]*.c"))[0]
+        chunk.write_bytes(chunk.read_bytes() + b"\n/* edited */\n")
+        self.assert_refused(tampered, "AOT_STAGE_ARTIFACT_MISMATCH", name="tampered")
+
+        # A missing completion record (an interrupted stage).
+        unrecorded = self.make_stage("unrecorded-stage")
+        (unrecorded / package_cache.COMPLETION_MANIFEST).unlink()
+        self.assert_refused(unrecorded, "AOT_STAGE_RECORD_MISSING", name="unrecorded")
+
+        stage = self.make_stage()
+        # A changed input: the package is built from a manifest whose bytes differ.
+        original_manifest = self.manifest_path.read_bytes()
+        self.manifest_path.write_bytes(original_manifest + b"\n")
+        try:
+            line = self.assert_refused(stage, "AOT_STAGE_INPUT_CHANGED", name="input")
+        finally:
+            self.manifest_path.write_bytes(original_manifest)
+        self.assertIn("aot:manifest_sha256", line)
+
+        # Changed codegen flags.
+        line = self.assert_refused(
+            stage, "AOT_STAGE_OPTIONS_CHANGED",
+            environment={"CODEGEN_USER_ARGS": "--nan-trap"}, name="flags",
+        )
+        self.assertIn("aot:codegen_options_sha256", line)
+
+        # A changed code generator.
+        real_sha256_file = package_cache.sha256_file
+
+        def changed_generator(path):
+            if Path(path).name == "codegen.py":
+                return "c" * 64
+            return real_sha256_file(path)
+
+        with mock.patch.object(package_cache, "sha256_file", side_effect=changed_generator):
+            line = self.assert_refused(stage, "AOT_STAGE_GENERATOR_CHANGED", name="generator")
+        self.assertIn("aot:codegen_sha256", line)
+
+        # The stage itself was never modified by any refusal and is still accepted.
+        make_call, _output = self.attempt(stage, self.root / "still-accepted")
+        self.assertEqual(make_call, ("compile", "1"))
+
+    def test_stage_changed_after_its_check_is_refused_and_leaves_nothing(self):
+        self.require_make()
+        stage = self.make_stage()
+        real_evaluate = package_cache.evaluate_aot_stage
+
+        def evaluate_then_edit(*args, **kwargs):
+            decision = real_evaluate(*args, **kwargs)
+            chunk = sorted(stage.glob(f"{self.GAME}_recomp_[0-9]*.c"))[-1]
+            chunk.write_bytes(chunk.read_bytes() + b"\n/* edited after the check */\n")
+            return decision
+
+        destination = self.root / "raced"
+        key = package_cache.read_bounded_json(
+            stage / package_cache.COMPLETION_MANIFEST,
+            max_bytes=package_cache.MAX_CACHE_JSON_BYTES,
+            max_depth=package_cache.MAX_CACHE_JSON_DEPTH,
+            max_members=package_cache.MAX_CACHE_JSON_MEMBERS,
+            max_items=package_cache.MAX_CACHE_JSON_ITEMS,
+            max_nodes=package_cache.MAX_CACHE_JSON_NODES,
+        )["cache_key"]
+        with mock.patch.object(package_cache, "evaluate_aot_stage", side_effect=evaluate_then_edit):
+            decision = title_codegen_plan._accept_aot_stage(stage, key, destination, self.GAME)
+        self.assertFalse(decision.accepted)
+        self.assertEqual(decision.code, package_cache.AOT_STAGE_ARTIFACT_MISMATCH)
+        self.assertIn("completion artifact digest mismatch", decision.detail)
+        self.assertEqual(self.generated_code(destination), {})
+
+    def test_compiled_stage_packages_the_bytes_regeneration_packages(self):
+        """Failing-before: generation ran twice for one package (stage, then Make).
+
+        The package built from an accepted stage holds the same generated C,
+        objects and executable as the package built by generating again, at the
+        same path, from the same inputs.
+        """
+        self.require_make()
+        self.skip_if_sdl3_toolchain_unavailable()
+        stage = self.make_stage()
+        output_dir = self.root / "pkg"
+
+        def built_bytes(directory: Path) -> dict[str, bytes]:
+            return {
+                path.relative_to(directory).as_posix(): path.read_bytes()
+                for path in sorted(directory.rglob("*"))
+                if path.is_file() and (
+                    title_codegen_plan._is_aot_output(path.name, self.GAME)
+                    or path.suffix in {".o", ".exe"}
+                    or path.name in {"package.json", "build-report.json", self.GAME}
+                )
+            }
+
+        _package, regenerated_output = self.build(output_dir)
+        self.assertNotIn("AOT_STAGE_REUSE:", regenerated_output)
+        regenerated = built_bytes(output_dir)
+        shutil.move(output_dir, self.root / "regenerated")
+
+        _package, reused_output = self.build(output_dir, reuse_aot_stage=stage)
+        self.assertIn("AOT_STAGE_REUSE: ACCEPTED AOT_STAGE_ACCEPTED", reused_output)
+        reused = built_bytes(output_dir)
+        self.assertEqual(sorted(reused), sorted(regenerated))
+        for name, data in regenerated.items():
+            self.assertEqual(reused[name], data, name)
+        self.assertTrue(any(name.endswith(".o") for name in reused))
+        valid, reason = package_cache.validate_package_cache(output_dir)
+        self.assertTrue(valid, reason)
+
+
 class TestFlightSmokeProjection(unittest.TestCase):
     @staticmethod
     def _bundle(set_fb_args):
@@ -1235,6 +1474,75 @@ class TestPresenterContract(unittest.TestCase):
             r'if \(getenv\("SR_PRESENT_TRACE"\)\)\s*\{\s*'
             r'sr_gui_boot_event\("BOOT_EVENT phase=frame_present backend=offscreen',
         )
+
+    def test_osk_frame_syncs_guest_vram_before_host_copy(self):
+        """Source-shape check only (issue #827): no runtime is run. With the keyboard open the
+        GPU fast path is skipped, so the SDL3 branch must make guest VRAM current before
+        convert_fb reads it, and a failed sync must decline the frame instead of drawing the
+        keyboard over stale pixels."""
+        source = (ROOT / "src" / "rt" / "gui.c").read_text(encoding="utf-8")
+        presenter = source[source.index("int gui_present"):]
+        sdl = presenter[presenter.index("if (s_sdl3) {"):presenter.index("int present_result")]
+        # One keyboard decision gates both the skipped fast path and the sync that replaces it,
+        # so sync_sdl_input() cannot open or close the keyboard between the two.
+        self.assertIn("int osk_open = sr_osk_overlay_active();", sdl)
+        self.assertIn("int res = osk_open ? -1 : gegpu_present(fbaddr, fmt, stride);", sdl)
+        self.assertLess(sdl.index("if (osk_open) {"), sdl.index("gegpu_sync_guest_fb(&d)"))
+        self.assertLess(sdl.index("gegpu_sync_guest_fb(&d)"), sdl.index("convert_fb(fbaddr, fmt, stride);"))
+        # Only FAILED declines the frame; the failure is reported to the armed capture and the
+        # branch jumps to pacing before any conversion or present happens.
+        failed = sdl[sdl.index("GEGPU_SYNC_FAILED"):sdl.index("convert_fb(fbaddr, fmt, stride);")]
+        self.assertIn("sr_capture_fail(", failed)
+        self.assertIn("goto pace;", failed)
+        self.assertLess(sdl.index("GEGPU_SYNC_FAILED"), sdl.index("convert_fb(fbaddr, fmt, stride);"))
+
+    def test_target_failed_present_syncs_guest_vram_before_convert(self):
+        """Source-shape check only (issue #827). gegpu_present() returns
+        GEGPU_PRESENT_TARGET_FAILED when a GPU-valid target cannot be prepared or presented, so
+        its newest pixels may exist only in the Vulkan image. The SDL3 branch must sync guest
+        VRAM before the fall-through convert_fb, and decline the frame when that sync fails. The
+        other -1 declines (not resident, no GPU-valid target) must not take that path. The
+        present result is remapped only from -1; 0 (close) and 1 (shown) pass through."""
+        root = ROOT / "src" / "rt"
+        gui = (root / "gui.c").read_text(encoding="utf-8")
+        presenter = gui[gui.index("int gui_present"):]
+        sdl = presenter[presenter.index("if (s_sdl3) {"):presenter.index("int present_result")]
+        # The fall-through convert_fb reads guest VRAM. The target-failed branch must sync it
+        # first, and it must be the only branch that does so for the decline code.
+        marker = "if (res == GEGPU_PRESENT_TARGET_FAILED) {"
+        self.assertIn(marker, sdl)
+        self.assertLess(sdl.index(marker), sdl.index("convert_fb(fbaddr, fmt, stride);"))
+        branch = sdl[sdl.index(marker):sdl.index("convert_fb(fbaddr, fmt, stride);")]
+        self.assertIn("GeGpuFbDescriptor d = { fbaddr, (uint32_t)fmt, stride, PSP_W, PSP_H };", branch)
+        self.assertIn("if (gegpu_sync_guest_fb(&d) == GEGPU_SYNC_FAILED) {", branch)
+        # FAILED declines the frame: the failure is reported to the armed capture and the branch
+        # jumps to pacing before any conversion or present happens.
+        failed = branch[branch.index("GEGPU_SYNC_FAILED"):]
+        self.assertIn("sr_capture_fail(\"GPU present target failed: guest framebuffer sync failed\");", failed)
+        self.assertIn("goto pace;", failed)
+        self.assertIn("GPU present: target preparation or presentation FAILED", branch)
+        header = (root / "gpu_sdl3vk" / "ge_gpu.h").read_text(encoding="utf-8")
+        ge = (root / "gpu_sdl3vk" / "ge_gpu.c").read_text(encoding="utf-8")
+        self.assertIn("#define GEGPU_PRESENT_TARGET_FAILED (-2)", header)
+        self.assertIn(
+            "GEGPU_PRESENT_TARGET_FAILED: a GPU-valid target exists, but preparing or presenting it failed,",
+            header,
+        )
+        present = ge[ge.index("int gegpu_present("):ge.index("int gegpu_sync_guest_fb(")]
+        # Only -1 from sdl3vk_present_image_ex is remapped; 0 (close) and 1 (shown) are returned
+        # unchanged. The mapping is the last statement, after the present call.
+        self.assertIn(
+            "int pr = sdl3vk_present_image_ex((void *)t->img, DRAW_W * s_scale, FB_H * s_scale);",
+            present,
+        )
+        self.assertIn("    if (pr == -1) return GEGPU_PRESENT_TARGET_FAILED;\n    return pr;\n}", present)
+        # Only the two intended returns carry the code: the unprepared target and the failed present.
+        self.assertEqual(present.count("GEGPU_PRESENT_TARGET_FAILED"), 2)
+        self.assertIn("if (!target_prepare_present(t)) return GEGPU_PRESENT_TARGET_FAILED;", present)
+        self.assertIn("if (!is_vram(fbaddr)) { s_cnt_present_cpu++; return -1; }", present)
+        # The GE selftest drives the present-failure path through the existing fault seam.
+        self.assertIn("sdl3vk_present_fault_inject(VK_ERROR_OUT_OF_DATE_KHR);", ge)
+        self.assertIn("failed_present != GEGPU_PRESENT_TARGET_FAILED", ge)
 
     def test_display_smoke_offscreen_pins_inherited_sdl_selectors(self):
         inherited = {
@@ -1386,6 +1694,14 @@ class TestSanitizedBringup(unittest.TestCase):
 
         def fake_package_build(build_args, stage_observer=None):
             self.last_build_arguments = build_args
+            # The package build runs the codegen stage first (into build_args.aot_stage_dir).
+            stage_observer("codegen", "START", 0)
+            if failure == "codegen":
+                stage_observer("codegen", "FAIL", 3)
+                build_args.aot_stage_result = {"status": "NOT_RUN", "reason": "NONE"}
+                return 1
+            stage_observer("codegen", "PASS", 3)
+            build_args.aot_stage_result = {"status": "REUSED", "reason": "NONE"}
             if failure == "compile":
                 stage_observer("compile", "FAIL", 3)
                 return 1
@@ -1461,6 +1777,37 @@ class TestSanitizedBringup(unittest.TestCase):
         self.last_launch_env = launch_envs[-1] if launch_envs else None
         return status, json.loads(report_path.read_text(encoding="utf-8"))
 
+    def test_unsupported_opcodes_describe_the_packaged_stub_report(self):
+        """The report counts the stub report that shipped, not a separate codegen run."""
+        counted = []
+
+        def count(path, _sources):
+            counted.append(Path(path))
+            return {"SPECIAL": 1}
+
+        with mock.patch.object(nk_cli, "_count_unsupported_opcodes", side_effect=count):
+            status, report = self._run_case()
+        self.assertEqual(status, 0, report)
+        build_args = self.last_build_arguments
+        package_dir = build_args.user_data_root / "packages" / "ULUS99998"
+        self.assertEqual(counted, [package_dir / "runtime_recomp_stubs.txt"])
+        self.assertEqual(report["counts"]["unsupported_opcodes"], {"SPECIAL": 1})
+        # The codegen stage is handed to the package build, which reports its decision.
+        self.assertEqual(build_args.aot_stage_dir.name, "codegen-stage")
+        self.assertEqual(report["codegen_reuse"], {"status": "REUSED", "reason": "NONE"})
+        nk_cli.validate_bringup_report(report)
+
+        counted.clear()
+        with mock.patch.object(nk_cli, "_count_unsupported_opcodes", side_effect=count):
+            status, report = self._run_case("compile")
+        self.assertEqual(status, 1, report)
+        self.assertEqual(report["failure_class"], "COMPILE_FAILED")
+        # Nothing was packaged, so the generated stage output is what is described.
+        self.assertEqual(len(counted), 1)
+        self.assertEqual(counted[0].parent, self.last_build_arguments.aot_stage_dir)
+        self.assertTrue(counted[0].name.endswith("_recomp_stubs.txt"))
+        nk_cli.validate_bringup_report(report)
+
     def test_synthetic_consumer_stages_succeed_and_report_is_sanitized(self):
         status, report = self._run_case()
         self.assertEqual(status, 0, report)
@@ -1534,6 +1881,48 @@ class TestSanitizedBringup(unittest.TestCase):
                 self.assertEqual(report["stages"]["inspect"]["status"], "FAIL")
                 self.assertEqual(report["failure_class"], "EXECUTABLE_UNSUPPORTED")
                 self.assertEqual(report["issue_numbers"], [308])
+
+    def test_pbp_package_keeps_its_named_boundary_in_the_report(self):
+        from test_iso_parity import build_pbp_package
+
+        case_root = self.root / "pbp-package"
+        package = case_root / "store-package.iso"
+        case_root.mkdir(parents=True)
+        build_pbp_package(package, disc_id="ULUS99997", title="Store Package")
+        report_path = case_root / "bringup.json"
+        args = argparse.Namespace(
+            iso=str(package),
+            work_dir=str(case_root / "work"),
+            report=str(report_path),
+            launch_timeout=1,
+            instruction_trace=False,
+        )
+        with mock.patch("builtins.print"):
+            status = nk_cli.cmd_bringup(args)
+
+        self.assertEqual(status, 1)
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        nk_cli.validate_bringup_report(report)
+        self.assertEqual(report["reached_stage"], "inspect")
+        self.assertEqual(report["stages"]["inspect"]["status"], "FAIL")
+        self.assertEqual(report["failure_class"], "PBP_PACKAGE_UNSUPPORTED")
+
+    def test_every_identify_boundary_code_is_a_schema_failure_class(self):
+        # The sweep and the bring-up report only carry failure classes the schema
+        # enumerates; an unlisted identify boundary is silently replaced by
+        # INVALID_ISO, which hides the named refusal from every downstream reader.
+        schema = json.loads(nk_cli.BRINGUP_SCHEMA_PATH.read_text(encoding="utf-8"))
+        enumerated = set(schema["properties"]["failure_class"]["enum"])
+        # The expected set is the emitter's own registry, never a copy of it here.
+        self.assertTrue(PBP_BOUNDARY_CODES)
+        self.assertEqual(set(PBP_BOUNDARY_CODES) - enumerated, set())
+        for code in PBP_BOUNDARY_CODES:
+            with self.subTest(code=code):
+                report = nk_cli._new_bringup_report()
+                report["reached_stage"] = "inspect"
+                report["stages"]["inspect"] = {"status": "FAIL", "duration_ms": 0}
+                report["failure_class"] = code
+                nk_cli.validate_bringup_report(report)
 
     def test_sanitized_report_preserves_offscreen_backend_with_perf_timestamp(self):
         output = (
@@ -1697,6 +2086,77 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertNotRegex(summary, r"#[0-9]+")
         nk_cli.validate_bringup_report(report)
 
+    def test_run_budget_detection_needs_the_runtime_budget_event(self):
+        self.assertTrue(nk_cli._runtime_run_budget_ended(
+            "BOOT_EVENT phase=window_ready backend=offscreen\n"
+            "BOOT_EVENT phase=exit_at_vblank vblanks=6700 (SR_EXIT_AT_VBLANK=6700)\n"))
+        self.assertFalse(nk_cli._runtime_run_budget_ended(
+            "note: BOOT_EVENT phase=exit_at_vblank vblanks=6700 (SR_EXIT_AT_VBLANK=6700)"))
+        self.assertFalse(nk_cli._runtime_run_budget_ended(""))
+        self.assertFalse(nk_cli._runtime_run_budget_ended(None))
+
+    def test_budget_ended_live_guest_is_not_labelled_as_an_exit(self):
+        status, report = self._run_case(
+            flight_events=[{"class": "hle", "kind": 1, "arg0": 0x446D8DE6}],
+            launch_output=(
+                "BOOT_EVENT phase=window_ready backend=offscreen\n"
+                "BOOT_EVENT phase=exit_at_vblank vblanks=6700 (SR_EXIT_AT_VBLANK=6700)\n"
+            ),
+        )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP")
+        self.assertEqual(report["exit_classification"], "RUN_BUDGET_ENDED")
+        self.assertEqual(report["stages"]["launch"]["status"], "FAIL")
+        self.assertEqual(report["issue_numbers"], [308])
+        summary = nk_cli._bringup_human_summary(report)
+        self.assertIn("run budget ended", summary)
+        self.assertNotIn("exited zero", summary.casefold())
+        nk_cli.validate_bringup_report(report)
+
+    def test_budget_ended_before_any_hle_is_not_labelled_as_an_exit(self):
+        status, report = self._run_case(
+            flight_events=[],
+            launch_output="BOOT_EVENT phase=exit_at_vblank vblanks=6700 (SR_EXIT_AT_VBLANK=6700)\n",
+        )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(report["failure_class"], "RUN_BUDGET_ENDED_BEFORE_FRAMEBUFFER_SETUP")
+        self.assertEqual(report["exit_classification"], "RUN_BUDGET_ENDED")
+        nk_cli.validate_bringup_report(report)
+
+    def test_bounded_launch_output_keeps_both_ends_and_names_the_elision(self):
+        text = "HEAD" + ("x" * 1000) + "TAIL"
+        bounded = nk_cli._bounded_launch_output(text, 300)
+
+        self.assertLessEqual(len(bounded), 300)
+        self.assertTrue(bounded.startswith(b"HEAD"))
+        self.assertTrue(bounded.endswith(b"TAIL"))
+        self.assertIn(b"bytes elided", bounded)
+        short = nk_cli._bounded_launch_output("small\n", 300)
+        self.assertEqual(short, b"small\n")
+
+    def test_bringup_keeps_the_launch_log_in_the_work_dir(self):
+        self._run_case(launch_output="LAUNCH-LOG-MARKER\n")
+
+        log = self.root / "success" / "work" / nk_cli.BRINGUP_LAUNCH_LOG_NAME
+        self.assertIn(b"LAUNCH-LOG-MARKER", log.read_bytes())
+
+    def test_bringup_launch_log_is_bounded(self):
+        with mock.patch.object(nk_cli, "BRINGUP_LAUNCH_LOG_MAX_BYTES", 512):
+            self._run_case(launch_output="y" * 4000 + "LAUNCH-LOG-END\n")
+
+        log = self.root / "success" / "work" / nk_cli.BRINGUP_LAUNCH_LOG_NAME
+        data = log.read_bytes()
+        self.assertLessEqual(len(data), 512)
+        self.assertIn(b"LAUNCH-LOG-END", data)
+
+    def test_timed_out_launch_still_keeps_its_output(self):
+        self._run_case(timeout=True, launch_output="TIMEOUT-LOG-MARKER\n")
+
+        log = self.root / "success" / "work" / nk_cli.BRINGUP_LAUNCH_LOG_NAME
+        self.assertIn(b"TIMEOUT-LOG-MARKER", log.read_bytes())
+
     def test_zero_exit_with_dropped_flight_events_is_unverified(self):
         status, report = self._run_case(flight_events=[], flight_dropped=1)
 
@@ -1765,6 +2225,7 @@ class TestSanitizedBringup(unittest.TestCase):
         launch_envs: list | None = None,
         user_manifest: dict | None = None,
         native_stager=None,
+        package_build=None,
     ):
         work_dir = work_root / "work"
         report_path = work_root / "bringup.json"
@@ -1806,6 +2267,9 @@ class TestSanitizedBringup(unittest.TestCase):
 
         def fake_package_build(build_args, stage_observer=None):
             self.last_build_module_dir = build_args.module_dir
+            stage_observer("codegen", "START", 0)
+            stage_observer("codegen", "PASS", 1)
+            build_args.aot_stage_result = {"status": "REUSED", "reason": "NONE"}
             stage_observer("compile", "PASS", 1)
             package_dir = build_args.user_data_root / "packages" / "ULUS99998"
             package_dir.mkdir(parents=True, exist_ok=True)
@@ -1863,7 +2327,7 @@ class TestSanitizedBringup(unittest.TestCase):
                 nk_cli.subprocess, "Popen", side_effect=fake_popen
             ))
             stack.enter_context(mock.patch.object(
-                nk_cli, "cmd_build_package", side_effect=fake_package_build
+                nk_cli, "cmd_build_package", side_effect=package_build or fake_package_build
             ))
             if forbid_iso_executable:
                 stack.enter_context(mock.patch.object(
@@ -2417,6 +2881,9 @@ class TestSanitizedBringup(unittest.TestCase):
         BSS metadata from it, but bring-up's code generation did not, so such a
         title (the encrypted-executable case, with a user-supplied EBOOT.elf)
         failed with "psp_header is required" hidden behind CODEGEN_FAILED.
+        Bring-up's codegen stage now runs inside the package build, through the
+        same planner command as the package itself, so it is handed the disc
+        header the package build resolves.
         """
         from nk_core import PreparationResult
         from test_iso_parity import archive_title_manifest, create_archive_title_iso
@@ -2431,12 +2898,8 @@ class TestSanitizedBringup(unittest.TestCase):
         manifest["executable"]["entry"] = 0x08804000
         manifest["executable"]["bss_metadata_source"] = "psp-header"
         staged = work_root / "work" / "user-data" / "games" / "ULUS99998"
-        headers = []
-        real_build_plan = title_codegen_plan.build_plan
-
-        def recording_build_plan(*args, **kwargs):
-            headers.append(kwargs.get("psp_header"))
-            return real_build_plan(*args, **kwargs)
+        real_package_build = nk_cli.cmd_build_package
+        planner_commands = []
 
         def stager_factory(root, *args, **kwargs):
             def stage(iso, disc_id, progress):
@@ -2444,17 +2907,38 @@ class TestSanitizedBringup(unittest.TestCase):
                 return PreparationResult(success=True, disc_id=disc_id, prepared_root=staged)
             return stage
 
-        with mock.patch.object(title_codegen_plan, "build_plan", side_effect=recording_build_plan):
-            status, report = self._run_module_fixture(
-                iso_path, work_root, user_manifest=manifest, native_stager=stager_factory,
-                user_decrypted_eboot=bytes(build_synthetic_iso_elf()),
-            )
+        def record_planner(command, **_kwargs):
+            command = [str(part) for part in command]
+            if not any(part.endswith("title_codegen_plan.py") for part in command):
+                return subprocess.CompletedProcess(command, 0, "", "")
+            planner_commands.append(command)
+            # The stage succeeds; the package compile is refused so no package is needed.
+            code = 0 if "--aot-stage" in command else 2
+            return subprocess.CompletedProcess(command, code, "", "")
+
+        def package_build(build_args, stage_observer=None):
+            with mock.patch.object(nk_cli.subprocess, "run", side_effect=record_planner):
+                return real_package_build(build_args, stage_observer=stage_observer)
+
+        status, report = self._run_module_fixture(
+            iso_path, work_root, user_manifest=manifest, native_stager=stager_factory,
+            user_decrypted_eboot=bytes(build_synthetic_iso_elf()),
+            package_build=package_build,
+        )
 
         self.assertEqual(report["stages"]["codegen"]["status"], "PASS", report)
-        self.assertEqual(status, 0, report)
-        self.assertEqual(len(headers), 1)
-        self.assertIsNotNone(headers[0])
-        self.assertEqual(Path(headers[0]).read_bytes()[:4], b"~PSP")
+        self.assertEqual(report["stages"]["compile"]["status"], "FAIL", report)
+        self.assertEqual(status, 1, report)
+        stage, package = planner_commands
+        self.assertIn("--aot-stage", stage)
+        self.assertEqual(stage[stage.index("--output-dir") + 1],
+                         str(work_root.resolve() / "work" / "codegen-stage"))
+        header = Path(stage[stage.index("--psp-header") + 1])
+        self.assertEqual(header.read_bytes()[:4], b"~PSP")
+        # The package build is the same planner command, pointed at the stage.
+        self.assertEqual(package[package.index("--psp-header") + 1], str(header))
+        self.assertEqual(package[package.index("--reuse-aot-stage") + 1],
+                         stage[stage.index("--output-dir") + 1])
         nk_cli.validate_bringup_report(report)
 
     def test_archive_disc_staging_failure_is_a_named_bringup_boundary(self):

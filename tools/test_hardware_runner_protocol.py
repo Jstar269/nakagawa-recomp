@@ -312,8 +312,15 @@ class SimulatedPsplinkTransport:
         lock_held_checks: int | None = None,
         lock_refusal_status: str = "HARDWARE_LOCK_NOT_HELD",
         unfinished_cases: set[str] | None = None,
+        host0_driver_thread: bool = False,
+        fail_host0_warmup: bool = False,
     ):
         self.unfinished_cases = unfinished_cases or set()
+        # Synthetic model of the PSPLink host0 driver thread: created by the first
+        # host0 I/O after a shell start and kept until `reset`.
+        self.host0_driver_thread = host0_driver_thread
+        self.fail_host0_warmup = fail_host0_warmup
+        self._host0_driver_alive = False
         self.start_error = start_error
         self.lock_held_checks = lock_held_checks
         self.lock_refusal_status = lock_refusal_status
@@ -365,8 +372,14 @@ class SimulatedPsplinkTransport:
             2: ("0x88000000", 53687091, 33554432, 25165824),
         }
 
+    def _touch_host0_driver(self) -> None:
+        if self.host0_driver_thread:
+            self._host0_driver_alive = True
+
     def _snapshot_threads(self) -> str:
         threads = set(self._baseline_threads)
+        if self._host0_driver_alive:
+            threads.add(("0x00000004", "host0-driver"))
         if self._probe_loaded:
             threads.add(self._probe_thread)
         rows = "".join(
@@ -494,11 +507,17 @@ class SimulatedPsplinkTransport:
             return 0, "Version: 6.6.1 (0x06060110)\n", "", "PROCESS_EXITED"
         if command == "exprint":
             return 0, "Synthetic exception query is unqualified\n", "", "PROCESS_EXITED"
+        if command == "ls host0:/":
+            if self.fail_host0_warmup:
+                return None, "", "", "TIMEOUT"
+            self._touch_host0_driver()
+            return 0, "", "", "PROCESS_EXITED"
         if command.startswith("ldstart host0:/"):
             case_id = Path(command).name.removesuffix(".prx")
             self.current_case = case_id
             self.case_started = True
             self._probe_loaded = True
+            self._touch_host0_driver()
             if (
                 self.host0_root is not None
                 and case_id not in self.fail_host0_roundtrip_cases
@@ -593,6 +612,7 @@ class SimulatedPsplinkTransport:
             return None, "", "", "TIMEOUT"
         if command == "reset":
             self._probe_loaded = False
+            self._host0_driver_alive = False
             return self.reset_returncode, "Reset\n", "", "PROCESS_EXITED"
         raise AssertionError(f"unexpected PSPLINK command: {command}")
 
@@ -2194,9 +2214,11 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
                 binary = scratch / f"{case_id}.prx"
                 binary.write_bytes(b"synthetic PRX")
                 cases.append(CampaignCase(case_id, binary, 0.02))
+            # thlist calls per case: S0, baseline re-read, S1, S2. Call 7 is the
+            # model-profile S1 (case 1 uses 1-4, case 2 S0 and re-read use 5-6).
             transport = SimulatedPsplinkTransport(
                 fail_modstun_cases={"model-profile"},
-                fail_snapshot_call={"thlist": 5},
+                fail_snapshot_call={"thlist": 7},
             )
             transport.host0_root = scratch
             report = PsplinkCampaignRunner(
@@ -3072,13 +3094,16 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         for case_id, (test_id, contract) in _FIXED_CAMPAIGN_CASES.items():
             rows = []
             for row_id, out_count, statuses in contract:
-                status = sorted(statuses)[0]
+                # A complete stream: PASS where the contract allows it, with the
+                # completion result a PASS record carries.
+                status = "PASS" if "PASS" in statuses else sorted(statuses)[0]
+                row_result = "0x00000001" if status == "PASS" else "0x00000000"
                 fields = " ".join(
                     f"out{index}=0x{index + 1:08x}" for index in range(out_count)
                 )
                 rows.append(
                     f"NAKAGAWA_PSP_TEST schema=1 test_id={test_id} "
-                    f"case_id={row_id} status={status} result=0x00000000 {fields}\n"
+                    f"case_id={row_id} status={status} result={row_result} {fields}\n"
                 )
             stream = CAMPAIGN_META + "".join(rows)
             self.assertTrue(
@@ -3527,16 +3552,17 @@ class CampaignCheckpointTransitionTests(unittest.TestCase):
         self.assertEqual(final["failed_case_id"], "ge-break-continue")
 
     def test_launched_case_without_completion_record_waits_for_power_cycle(self):
+        kernel_index = CAMPAIGN_QUEUE_CASES.index("kernel-misc")
         launched = _checkpoint_case_started(
-            _checkpoint_state(next_case_index=7, host0_qualified=True),
-            7, "kernel-misc", "CASE_ACTIVE",
+            _checkpoint_state(next_case_index=kernel_index, host0_qualified=True),
+            kernel_index, "kernel-misc", "CASE_ACTIVE",
         )
         final = _checkpoint_after_run(
             launched, terminal_reason="CHECKPOINT_WRITE_FAILED", intervention_case_id=None,
             resume_case_index=None, case_count=self.CASES,
         )
         self.assertEqual(final["state"], "WAITING_FOR_POWER_CYCLE")
-        self.assertEqual(final["next_case_index"], 8)
+        self.assertEqual(final["next_case_index"], kernel_index + 1)
         self.assertEqual(final["failed_case_id"], "kernel-misc")
 
     def test_running_checkpoint_without_active_index_is_rejected(self):
@@ -4566,34 +4592,64 @@ class RealProbeContractTests(unittest.TestCase):
         with self.assertRaises(PspProtocolError):
             _parse_campaign_records("".join(regrouped), "display-wait-late")
 
-    def test_mutex_interrupt_trials_follow_their_recorded_interrupt_state(self):
+    @staticmethod
+    def _restate_superseded_verdicts(text: str) -> str:
+        """The archive's trial verdicts restated as the completion-only probe emits them.
+
+        Only the verdict words change: a completed trial is PASS with result 0x00000001.
+        Every recorded cell is kept as the probe wrote it."""
+        return text.replace(
+            " status=FAIL result=0x00000000 out0=", " status=PASS result=0x00000001 out0=")
+
+    @staticmethod
+    def _with_return_changed(text: str, trial: str, cell: str, value: str) -> str:
+        lines = text.split("\n")
+        for index, line in enumerate(lines):
+            if f"case_id=mutex-interrupt-context-{trial} " in line:
+                lines[index] = line.replace(f" {cell}=0x80020064", f" {cell}={value}", 1)
+        return "\n".join(lines)
+
+    def test_mutex_interrupt_trials_are_completion_only(self):
         text = _console_capture(self.MUTEX)
-        self.assertTrue(run_psplink_module._campaign_stream_complete(text, "mutex-interrupt-context"))
-        parsed = _parse_campaign_records(self._records(text), "mutex-interrupt-context")
+        # The archive was recorded under the superseded value rule: every trial reads FAIL with
+        # result 0 while its six returns are ILLEGAL_CONTEXT. Under the completion-only rule the
+        # same trials are complete, so only the verdict words are restated. Every recorded cell
+        # is kept as the probe wrote it.
+        self.assertEqual(self._records(text).count(" status=FAIL "), 20)
+        restated_text = self._restate_superseded_verdicts(text)
+        self.assertTrue(run_psplink_module._campaign_stream_complete(
+            restated_text, "mutex-interrupt-context"))
+        restated = self._records(restated_text)
+        parsed = _parse_campaign_records(restated, "mutex-interrupt-context")
         trials = [record for record in parsed.results if record.case_id.endswith(tuple(
             f"-t{index:02d}" for index in range(20)))]
         self.assertEqual(len(trials), 20)
         for record in trials:
-            values = dict(record.values)
-            # PSP-3000 / 6.6.1: every VBLANK handler trial saw interrupts enabled,
-            # so by the probe's design none counts; the mutex returns stay recorded.
-            self.assertEqual((record.status, values["out0"]), ("FAIL", "0x00000001"))
-            self.assertEqual(values["out1"], "0x80020064")
+            self.assertEqual(record.status, "PASS")
+        # No value expectations: a completed trial whose returned cells differ is still accepted.
+        _parse_campaign_records(
+            self._with_return_changed(restated, "t03", "out3", "0x800201c5"),
+            "mutex-interrupt-context")
+        # Completion and record order are checked.
         for forged in (
-            # A trial claiming to count while it recorded interrupts enabled.
-            self._records(text).replace(
-                "case_id=mutex-interrupt-context-t07 status=FAIL result=0x00000000",
-                "case_id=mutex-interrupt-context-t07 status=PASS result=0x00000001", 1),
-            # A trial that recorded interrupts disabled but was not counted.
-            self._records(text).replace(
-                "case_id=mutex-interrupt-context-t03 status=FAIL result=0x00000000 out0=0x00000001",
-                "case_id=mutex-interrupt-context-t03 status=FAIL result=0x00000000 out0=0x00000000",
-                1),
+            # A trial that did not complete.
+            restated.replace(
+                "case_id=mutex-interrupt-context-t07 status=PASS result=0x00000001",
+                "case_id=mutex-interrupt-context-t07 status=FAIL result=0x00000000", 1),
+            # A trial marked PASS without its completion result.
+            restated.replace(
+                "case_id=mutex-interrupt-context-t07 status=PASS result=0x00000001",
+                "case_id=mutex-interrupt-context-t07 status=PASS result=0x00000000", 1),
         ):
             with self.assertRaises(PspProtocolError):
                 _parse_campaign_records(forged, "mutex-interrupt-context")
+        # The archive as recorded is refused: its trials are FAIL, not completed PASS trials.
+        self.assertFalse(run_psplink_module._campaign_stream_complete(
+            text, "mutex-interrupt-context"))
+        with self.assertRaises(PspProtocolError):
+            _parse_campaign_records(self._records(text), "mutex-interrupt-context")
 
-    def test_mutex_interrupt_capture_is_qualified_but_not_eligible(self):
+    def test_superseded_mutex_capture_is_refused_by_the_current_checker(self):
         fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
         with tempfile.TemporaryDirectory(prefix="capture-mutex-", dir=fixture_dir) as name:
             runner, _transport, cases = ConsoleCaptureRegressionTests()._campaign(
@@ -4606,13 +4662,17 @@ class RealProbeContractTests(unittest.TestCase):
         envelope = report["envelopes"][1]
         self.assertIsNone(report["terminal_reason"])
         self.assertEqual(envelope["TEARDOWN_CHECK"]["status"], "PASS")
-        self.assertFalse(any(
+        # The archive was recorded under the superseded pass rule. The current checker refuses
+        # its FAIL verdicts, so strict protocol validation is a qualification blocker.
+        self.assertTrue(any(
             "strict protocol validation" in blocker
             for blocker in envelope["QUALIFICATION_BLOCKERS"]
         ))
         self.assertFalse(envelope["ACCEPTANCE_ELIGIBLE"])
-        self.assertIn("one or more scalar result records did not pass",
-                      envelope["ACCEPTANCE_BLOCKERS"])
+        self.assertTrue(any(
+            "is not a completed trial" in blocker
+            for blocker in envelope["ACCEPTANCE_BLOCKERS"]
+        ), envelope["ACCEPTANCE_BLOCKERS"])
 
 
 class Host0RemotePathTests(unittest.TestCase):
@@ -4666,6 +4726,329 @@ class Host0RemotePathTests(unittest.TestCase):
             outside.write_bytes(b"\x00")
             with self.assertRaises(ValueError):
                 run_psplink_module._host0_remote_path(outside, Path(root))
+
+
+class _HleFamilyTransport(SimulatedPsplinkTransport):
+    """A simulated HLE launch whose finish leaves the host0 round-trip file, or does not.
+
+    probe.c's teardown and the HLE families' hle_finish both write
+    host0:/nakagawa_transport_write.bin. Only the transport-write case gets the file from
+    the base class, so an HLE launch writes exactly what its own finish would.
+    """
+
+    def __init__(self, roundtrip: bytes | None):
+        super().__init__(transport_file_cases={"transport-write"})
+        self.roundtrip = roundtrip
+
+    def run(self, command, timeout):
+        if (
+            self.roundtrip is not None
+            and command.startswith("ldstart host0:/hle-")
+            and self.host0_root is not None
+        ):
+            (self.host0_root / "nakagawa_transport_write.bin").write_bytes(self.roundtrip)
+        return super().run(command, timeout)
+
+
+class HleFamilyHost0RoundTripTests(unittest.TestCase):
+    """An HLE family's launch must leave the host0 round-trip file the runner verifies."""
+
+    PROBE_HLE_SOURCE = (
+        Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle" / "probe_hle_measure.c"
+    )
+    PATTERN = "(uint8_t)(0x5Au ^ (i * 0x25u + (i >> 3)))"
+
+    def _launch(self, roundtrip: bytes | None):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(
+            prefix="runner-hle-roundtrip-", dir=fixture_dir
+        ) as scratch_name:
+            scratch = Path(scratch_name)
+            cases = []
+            for case_id in ("transport-write", "hle-kernel-status"):
+                binary = scratch / f"{case_id}.prx"
+                binary.write_bytes(b"synthetic PRX")
+                cases.append(CampaignCase(case_id, binary, 1.0))
+            transport = _HleFamilyTransport(roundtrip)
+            transport.host0_root = scratch
+            with patch("psp_oracle.run_psplink._check_source_tree", return_value=None):
+                report = PsplinkCampaignRunner(
+                    transport,
+                    console_model="PSP-3000-04g",
+                    source_commit=SOURCE_COMMIT,
+                    model_code=3,
+                ).run(cases)
+            left_behind = (scratch / "nakagawa_transport_write.bin").exists()
+        return report, left_behind
+
+    def test_round_trip_file_written_per_the_family_contract_passes_verification(self):
+        source = self.PROBE_HLE_SOURCE.read_text(encoding="utf-8")
+        self.assertTrue(self.PATTERN in source,
+                        "probe_hle_measure.c must write the round-trip byte pattern")
+        # The 64 bytes the family's expression produces, as _verify_host0_roundtrip expects.
+        roundtrip = bytes((0x5A ^ (index * 0x25 + (index >> 3))) & 0xFF for index in range(64))
+        report, left_behind = self._launch(roundtrip)
+
+        envelope = report["envelopes"][1]
+        self.assertEqual(envelope["CASE_ID"], "hle-kernel-status")
+        self.assertNotEqual(report["terminal_reason"], "HOST0_ROUNDTRIP_FAILED")
+        round_trip_issues = [
+            issue for issue in envelope["TEARDOWN_CHECK"]["issues"] if "host0 round-trip" in issue
+        ]
+        self.assertEqual(round_trip_issues, [])
+        self.assertFalse(left_behind)  # the runner verified the file and removed it
+
+    def test_family_without_the_round_trip_file_fails_the_runner_check(self):
+        report, _left_behind = self._launch(None)
+
+        envelope = report["envelopes"][1]
+        self.assertEqual(report["terminal_reason"], "HOST0_ROUNDTRIP_FAILED")
+        self.assertIn("host0 round-trip failed after unload",
+                      envelope["TEARDOWN_CHECK"]["issues"])
+        self.assertFalse(envelope["ACCEPTANCE_ELIGIBLE"])
+
+
+class _PostUnloadLinkTransport(SimulatedPsplinkTransport):
+    """After each `modstun`, `ver` answers only from attempt ``answer_on`` on.
+
+    Models the hardware settle race: the case completes and the stop/unload
+    handshake succeeds, then the link loses `ver` replies for a while.
+    ``answer_on=None`` never answers `ver` again after the unload.
+    """
+
+    def __init__(self, answer_on: int | None, **options):
+        super().__init__(**options)
+        self.answer_on = answer_on
+        self.post_unload_ver_attempts: int | None = None
+
+    def run(self, command, timeout):
+        if command == f"modstun {self._probe_uid}":
+            self.post_unload_ver_attempts = 0
+        elif command == "ver" and self.post_unload_ver_attempts is not None:
+            self.post_unload_ver_attempts += 1
+            if self.answer_on is None or self.post_unload_ver_attempts < self.answer_on:
+                self.commands.append((command, timeout))
+                return None, "", "", "TIMEOUT"
+        return super().run(command, timeout)
+
+
+# The post-launch command sequence of one passing case before the settle existed:
+# S1, the module thread query, the stop/unload handshake, S2, the shell
+# qualification and the exception query.
+_LAUNCH = "ldstart host0:/transport-write.prx"
+_UNLOAD_HANDSHAKE = ["modstun 0x04280001", "modinfo 0x04280001"]
+_PRE_UNLOAD = [_LAUNCH, "thlist", "meminfo", "modlist", "modinfo 0x04280001 t"]
+_POST_SETTLE = ["thlist", "meminfo", "modlist", "ver", "usbstat", "pwd", "exprint"]
+
+
+class PostUnloadSettleTests(unittest.TestCase):
+    """The link settles after the unload handshake, before S2, qualification and round-trip."""
+
+    def setUp(self):
+        source_check = patch("psp_oracle.run_psplink._check_source_tree", return_value=None)
+        source_check.start()
+        self.addCleanup(source_check.stop)
+
+    def _run_transport_write(self, transport, **run_options):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-settle-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            binary = scratch / "transport-write.prx"
+            binary.write_bytes(b"synthetic PRX")
+            transport.host0_root = scratch
+            return PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run([CampaignCase("transport-write", binary, 1.0)], **run_options)
+
+    @staticmethod
+    def _after_launch(transport) -> list[str]:
+        commands = [command for command, _timeout in transport.commands]
+        return commands[commands.index(_LAUNCH):]
+
+    @staticmethod
+    def _classification(report) -> dict[str, object]:
+        envelope = report["envelopes"][-1]
+        teardown = envelope["TEARDOWN_CHECK"]
+        return {
+            "state": report["state"],
+            "terminal_reason": report["terminal_reason"],
+            "intervention_case_id": report["intervention_case_id"],
+            "resume_case_index": report["resume_case_index"],
+            "teardown_status": teardown["status"],
+            "teardown_issues": teardown["issues"],
+            "recovery_eligible": teardown["recovery_eligible"],
+            "recovery_status": teardown["recovery_status"],
+            "shell_qualified": teardown["shell_qualified"],
+            "qualification_status": envelope["QUALIFICATION_STATUS"],
+            "qualification_blockers": envelope["QUALIFICATION_BLOCKERS"],
+            "session_qualification_status": envelope["SESSION_QUALIFICATION_STATUS"],
+            "acceptance_eligible": envelope["ACCEPTANCE_ELIGIBLE"],
+            "acceptance_blockers": envelope["ACCEPTANCE_BLOCKERS"],
+            "evidence_class": envelope["EVIDENCE_CLASS"],
+        }
+
+    def test_ver_answering_on_the_third_attempt_after_unload_passes_with_three_settle_attempts(self):
+        transport = _PostUnloadLinkTransport(answer_on=3)
+        report = self._run_transport_write(transport)
+
+        envelope = report["envelopes"][0]
+        teardown = envelope["TEARDOWN_CHECK"]
+        self.assertIsNone(report["terminal_reason"])
+        self.assertEqual(teardown["status"], "PASS")
+        self.assertEqual(teardown["settle_status"], "PASS")
+        self.assertEqual(teardown["settle_attempts"], 3)
+        self.assertTrue(teardown["shell_qualified"])
+        self.assertTrue(envelope["ACCEPTANCE_ELIGIBLE"])
+        settle_events = [
+            event for event in report["recovery_events"]
+            if event.startswith("post-unload settle: shell verification attempt ")
+        ]
+        self.assertEqual(len(settle_events), 3)
+        self.assertIn("reply timed out or was lost", settle_events[0])
+        self.assertIn("reply timed out or was lost", settle_events[1])
+        self.assertTrue(settle_events[2].endswith("attempt 3/3: PASS"))
+        # Settle attempts never count as shell qualification attempts: the
+        # initial and the post-unload qualification each passed on their first `ver`.
+        qualification_events = [
+            event for event in report["recovery_events"]
+            if event.startswith("shell verification attempt ")
+        ]
+        self.assertEqual(qualification_events, ["shell verification attempt 1/3: PASS"] * 2)
+
+    def test_a_settle_that_never_answers_keeps_todays_failure_classification(self):
+        for mode, run_options in (
+            ("campaign-case", {}),
+            ("campaign-plan", {"reset_between_cases": True, "stop_on_incomplete": True}),
+        ):
+            with self.subTest(mode=mode):
+                transport = _PostUnloadLinkTransport(answer_on=None)
+                report = self._run_transport_write(transport, **run_options)
+                # Today's runner: the same link without the settle step.
+                before = _PostUnloadLinkTransport(answer_on=None)
+                with patch.object(
+                    PsplinkCampaignRunner, "_settle_after_unload", return_value=("NOT_RUN", 0)
+                ):
+                    before_report = self._run_transport_write(before, **run_options)
+
+                teardown = report["envelopes"][0]["TEARDOWN_CHECK"]
+                self.assertEqual(teardown["settle_status"], "EXHAUSTED")
+                self.assertEqual(teardown["settle_attempts"], 3)
+                self.assertEqual(teardown["status"], "FAIL")
+                self.assertIn("PSPLink shell is not qualified after unload", teardown["issues"])
+                self.assertFalse(report["envelopes"][0]["ACCEPTANCE_ELIGIBLE"])
+                self.assertEqual(
+                    report["terminal_reason"],
+                    "TEARDOWN_RECOVERY_NOT_ELIGIBLE" if mode == "campaign-case"
+                    else "PHYSICAL_INTERVENTION_REQUIRED",
+                )
+                self.assertEqual(self._classification(report), self._classification(before_report))
+                # The exhausted settle adds its three `ver` attempts and nothing else.
+                settle_index = len(_PRE_UNLOAD) + len(_UNLOAD_HANDSHAKE)
+                commands = self._after_launch(transport)
+                self.assertEqual(commands[settle_index:settle_index + 3], ["ver"] * 3)
+                del commands[settle_index:settle_index + 3]
+                self.assertEqual(commands, self._after_launch(before))
+
+    def test_settle_commands_sit_between_the_unload_handshake_and_s2(self):
+        transport = _PostUnloadLinkTransport(answer_on=3)
+        self._run_transport_write(transport)
+        self.assertEqual(
+            self._after_launch(transport),
+            _PRE_UNLOAD + _UNLOAD_HANDSHAKE + ["ver", "ver", "ver"] + _POST_SETTLE,
+        )
+
+        # Every other command keeps its count and order: on a link that answers at
+        # once, removing the single settle `ver` leaves today's sequence.
+        settled = SimulatedPsplinkTransport()
+        self._run_transport_write(settled)
+        today = SimulatedPsplinkTransport()
+        with patch.object(
+            PsplinkCampaignRunner, "_settle_after_unload", return_value=("NOT_RUN", 0)
+        ):
+            self._run_transport_write(today)
+        settle_index = len(_PRE_UNLOAD) + len(_UNLOAD_HANDSHAKE)
+        settled_commands = self._after_launch(settled)
+        self.assertEqual(settled_commands[settle_index], "ver")
+        del settled_commands[settle_index]
+        self.assertEqual(settled_commands, self._after_launch(today))
+        self.assertEqual(self._after_launch(today), _PRE_UNLOAD + _UNLOAD_HANDSHAKE + _POST_SETTLE)
+
+    def test_no_settle_without_an_unload_handshake_or_after_the_session_stopped(self):
+        class NoModuleUidTransport(SimulatedPsplinkTransport):
+            def run(self, command, timeout):
+                returncode, stdout, stderr, status = super().run(command, timeout)
+                if command.startswith("ldstart "):
+                    stdout = stdout.replace(f"UID: {self._probe_uid}", "UID: none")
+                return returncode, stdout, stderr, status
+
+        transport = NoModuleUidTransport()
+        report = self._run_transport_write(transport)
+        teardown = report["envelopes"][0]["TEARDOWN_CHECK"]
+        self.assertEqual(teardown["settle_status"], "NOT_RUN")
+        self.assertEqual(teardown["settle_attempts"], 0)
+        self.assertEqual(
+            self._after_launch(transport),
+            [_LAUNCH, "thlist", "meminfo", "modlist"] + _POST_SETTLE,
+        )
+
+        stopped = SimulatedPsplinkTransport()
+        runner = PsplinkCampaignRunner(
+            stopped, console_model="PSP-3000-04g", source_commit=SOURCE_COMMIT
+        )
+        runner.terminal_reason = "TRANSPORT_RESULT_DISCARDED"
+        self.assertEqual(runner._settle_after_unload(), ("NOT_RUN", 0))
+        self.assertEqual(stopped.commands, [])
+        self.assertEqual(runner.recovery_events, [])
+
+
+class Host0DriverWarmupTests(unittest.TestCase):
+    """The host0 driver thread belongs to the S0 baseline, not to the teardown diff."""
+
+    def _run_transport_write(self, **transport_options):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-host0-warmup-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            binary = scratch / "transport-write.prx"
+            binary.write_bytes(b"synthetic PRX")
+            transport = SimulatedPsplinkTransport(**transport_options)
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run([CampaignCase("transport-write", binary, 1.0)])
+        return report, [command for command, _timeout in transport.commands]
+
+    def test_host0_driver_thread_created_by_first_host0_io_is_in_the_baseline(self):
+        report, commands = self._run_transport_write(host0_driver_thread=True)
+        teardown = report["envelopes"][0]["TEARDOWN_CHECK"]
+        self.assertEqual(teardown["issues"], [])
+        self.assertEqual(teardown["status"], "PASS")
+        self.assertEqual(teardown["s0_thread_count"], 3)
+        self.assertEqual(teardown["s2_thread_count"], 3)
+        ldstart = next(index for index, command in enumerate(commands)
+                       if command.startswith("ldstart host0:/"))
+        self.assertLess(commands.index("ls host0:/"), commands.index("thlist"))
+        self.assertLess(commands.index("ls host0:/"), ldstart)
+
+    def test_host0_driver_absent_on_this_device_still_passes(self):
+        report, _commands = self._run_transport_write(host0_driver_thread=False)
+        teardown = report["envelopes"][0]["TEARDOWN_CHECK"]
+        self.assertEqual(teardown["status"], "PASS")
+        self.assertEqual(teardown["s0_thread_count"], 2)
+
+    def test_failed_host0_warmup_blocks_before_any_probe_launch(self):
+        report, commands = self._run_transport_write(fail_host0_warmup=True)
+        envelope = report["envelopes"][0]
+        self.assertEqual(report["terminal_reason"], "TEARDOWN_S0_SNAPSHOT_FAILED")
+        self.assertEqual(envelope["TEARDOWN_CHECK"]["status"], "BLOCKED")
+        self.assertEqual(envelope["TEARDOWN_CHECK"]["stage"], "S0")
+        self.assertIn("ls host0:/", commands)
+        self.assertFalse([command for command in commands if command.startswith("ldstart")])
 
 
 if __name__ == "__main__":

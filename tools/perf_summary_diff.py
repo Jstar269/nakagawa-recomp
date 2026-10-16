@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from fractions import Fraction
 import math
 import sys
 from pathlib import Path
@@ -32,7 +33,15 @@ RANKING_PATHS = (
     "media.atrac_decode_ns",
     "audio.mix_ns",
     "audio.output_ns",
+    "ge.frontend_profile.stages.command_dispatch.estimated_ns",
+    "ge.frontend_profile.stages.draw_setup.estimated_ns",
+    "ge.frontend_profile.stages.vertex_fetch_decode.estimated_ns",
+    "ge.frontend_profile.stages.transform.estimated_ns",
+    "ge.frontend_profile.stages.lighting.estimated_ns",
+    "ge.frontend_profile.stages.clipping_acceptance.estimated_ns",
+    "ge.frontend_profile.stages.assembly.estimated_ns",
 )
+OPTIONAL_RANKING_PATHS = frozenset(RANKING_PATHS[-7:])
 REQUIRED_TOP_LEVEL = (
     "schema",
     "build",
@@ -117,8 +126,14 @@ def validate_summary(summary: Any) -> None:
         _require_integer(aot_instructions, "$.guest.aot_instruction_count")
     for path in RANKING_PATHS:
         value = root
+        missing = False
         for part in path.split("."):
-            value = value.get(part) if isinstance(value, dict) else None
+            if not isinstance(value, dict) or part not in value:
+                missing = True
+                break
+            value = value[part]
+        if missing and path in OPTIONAL_RANKING_PATHS:
+            continue
         _require_number(value, f"$.{path}")
     _require_keys(root["transitions"], ("aot_to_interpreter_count", "interpreter_to_aot_count", "top_pcs"), "$.transitions")
     top_pcs = _require_object(root["transitions"]["top_pcs"], "$.transitions.top_pcs")
@@ -165,8 +180,10 @@ def _close(before: Any, after: Any, tolerance: float) -> bool:
         return before == after
     if tolerance == 0.0:
         return before == after
-    delta = abs(float(after) - float(before))
-    return delta <= tolerance * max(1.0, abs(float(before)))
+    # str() is the shortest decimal that round-trips, so 0.3 means exactly 3/10 as typed,
+    # not its binary neighbour (which sits just below 3/10 and would flip the inclusive bound).
+    delta = abs(Fraction(after) - Fraction(before))
+    return delta <= Fraction(str(tolerance)) * max(Fraction(1), abs(Fraction(before)))
 
 
 def _change(path: str, before: Any, after: Any) -> dict[str, Any]:
@@ -225,7 +242,12 @@ def _compare_values(before: Any, after: Any, path: str, tolerance: float,
 def _ranking(summary: dict[str, Any]) -> list[dict[str, Any]]:
     values = []
     for path in RANKING_PATHS:
-        value = _value_at(summary, path)
+        try:
+            value = _value_at(summary, path)
+        except (KeyError, TypeError):
+            if path in OPTIONAL_RANKING_PATHS:
+                continue
+            raise
         if value:
             values.append({"metric": path, "ns": value})
     return sorted(values, key=lambda item: (-item["ns"], item["metric"]))

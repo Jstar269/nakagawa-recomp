@@ -41,6 +41,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
+import scratch_dir
 
 RT = ROOT / "src" / "rt"
 STALE_H = (RT / "stale_code.h").read_text(encoding="utf-8")
@@ -111,7 +112,7 @@ class TestStaleCodeSelftestC(unittest.TestCase):
         the selftest cannot pass against a neutered detector."""
         self.assertEqual(STALE_C.count(WORD_CMP_ANCHOR), 2,
                          "mutation anchor drifted; the mutant below would be vacuous")
-        with tempfile.TemporaryDirectory(prefix="stalecode_mut_") as tmp_dir:
+        with scratch_dir.TemporaryDirectory(prefix="stalecode_mut_") as tmp_dir:
             mutated = STALE_C.replace(WORD_CMP_ANCHOR, "if (actual == entry->expected) {")
             Path(tmp_dir, "stale_code.c").write_text(mutated, encoding="utf-8")
             Path(tmp_dir, "stale_code.h").write_text(STALE_H, encoding="utf-8")
@@ -154,7 +155,7 @@ class TestStaleCodeSelftestC(unittest.TestCase):
         intact, so only the invalidation-half assertions must fail."""
         self.assertEqual(STALE_C.count(FLAG_SET_ANCHOR), 3,
                          "flag-set anchor drifted; the mutant below would be vacuous")
-        with tempfile.TemporaryDirectory(prefix="stalecode_flagmut_") as tmp_dir:
+        with scratch_dir.TemporaryDirectory(prefix="stalecode_flagmut_") as tmp_dir:
             mutated = STALE_C.replace(FLAG_SET_ANCHOR, "->stale = 0;")
             Path(tmp_dir, "stale_code.c").write_text(mutated, encoding="utf-8")
             Path(tmp_dir, "stale_code.h").write_text(STALE_H, encoding="utf-8")
@@ -182,7 +183,7 @@ class TestStaleCodeSelftestC(unittest.TestCase):
         query = tail.split("\n}\n", 1)[0]
         self.assertIn("return 1;", query, "query must have a firing return to neuter")
         mutated = head + "int sr_stale_block_is_stale(uint32_t addr) {\n    (void)addr;\n    return 1;\n}\n" + tail.split("\n}\n", 1)[1]
-        with tempfile.TemporaryDirectory(prefix="stalecode_qmut_") as tmp_dir:
+        with scratch_dir.TemporaryDirectory(prefix="stalecode_qmut_") as tmp_dir:
             Path(tmp_dir, "stale_code.c").write_text(mutated, encoding="utf-8")
             Path(tmp_dir, "stale_code.h").write_text(STALE_H, encoding="utf-8")
             shutil.copy(SELFTEST_C, Path(tmp_dir, "stale_code_selftest.c"))
@@ -216,8 +217,18 @@ class TestStaleCodeWiring(unittest.TestCase):
                           f"{fn} must consult the gate before any guest-memory touch")
 
     def test_firing_check_names_block_word_and_values_then_aborts(self):
-        self.assertIn("STALE_CODE_DETECT block=0x%08x off=0x%08x expected=0x%08x actual=0x%08x", STALE_C)
-        self.assertIn("STALE_CODE_DETECT block=0x%08x nwords=%u expected_hash=0x%08x actual_hash=0x%08x", STALE_C)
+        # The block word and values are uint32_t, printed through PRI macros so the line is
+        # identical on hosts where uint32_t is unsigned long (format_portability_check.py).
+        self.assertIn(
+            'STALE_CODE_DETECT block=0x%08" PRIx32 " off=0x%08" PRIx32 " expected=0x%08" PRIx32'
+            ' " actual=0x%08" PRIx32 "',
+            STALE_C,
+        )
+        self.assertIn(
+            'STALE_CODE_DETECT block=0x%08" PRIx32 " nwords=%" PRIu32 " expected_hash=0x%08" PRIx32'
+            ' " actual_hash=0x%08" PRIx32 "',
+            STALE_C,
+        )
         for handler in ("h_CacheInvalidateAll", "h_CacheInvalidateRange", "sr_stale_note_cache_op"):
             self.assertIn(handler, HLE_C)
         self.assertIn("abort();", HLE_C)

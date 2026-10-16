@@ -9,6 +9,14 @@ do not exist, the interpreter answers UNSUPPORTED for syscall/break with no
 eret path, and the Makefile has no cpu-lle-selftest target. Every LLE test
 below fails there and passes here; the HLE-default tests pin the behavior
 that must not move.
+
+PR 5 (spec 6.1, issue #325) adds synthetic INTC pending/enable state and
+Cause.IP mirroring. Failing-before (origin/main 788465b2): cpu_lle.h declares
+no sr_intc_* API or SrIntcConfig, sr_cpu_lle_reset_config has no controller to
+reset, and mfc0/mtc0 Cause never consult one, so those IntcLleTests fail
+there. The poll, no-default-controller and fixture-emission tests pin what the
+base already had and this change must keep: sr_cpu_poll stays side-effect free
+until PR 6, and nothing in the runtime installs a guessed controller.
 """
 
 import re
@@ -16,7 +24,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -24,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
+import scratch_dir
 
 
 CPU_LLE_H = ROOT / "src" / "rt" / "cpu_lle.h"
@@ -98,6 +106,175 @@ def _emit_generated_fatal_flow_fixture():
         return "\n".join(generated)
     finally:
         codegen.LLE_CPU = previous_lle_cpu
+
+
+# LL/SC parity sequences (opcode 0x30/0x38). The same words are emitted as real
+# generated C here and run through the production interpreter by
+# src/rt/cpu_lle_selftest.c, which compares the two lanes and the expected values.
+LLSC_DEFAULT_ENTRY = 0x08810900   # default-lane emission of LLSC_SEQUENCE
+LLSC_LLE_ENTRY = 0x08810980       # --lle-cpu emission of LLSC_SEQUENCE
+LLSC_LLE_MISALIGNED_SC_ENTRY = 0x08810A00
+LLSC_LLE_MISALIGNED_LL_ENTRY = 0x08810A20
+A0, T0, T1, T2, T3, T4 = 4, 8, 9, 10, 11, 12
+
+
+def _ll(base, rt, offset):
+    return (0x30 << 26) | (base << 21) | (rt << 16) | (offset & 0xFFFF)
+
+
+def _sc(base, rt, offset):
+    return (0x38 << 26) | (base << 21) | (rt << 16) | (offset & 0xFFFF)
+
+
+def _addiu(rt, rs, immediate):
+    return (0x09 << 26) | (rs << 21) | (rt << 16) | (immediate & 0xFFFF)
+
+
+def _beq(rs, rt, offset_words):
+    return (0x04 << 26) | (rs << 21) | (rt << 16) | (offset_words & 0xFFFF)
+
+
+# Mirrored word-for-word by LLSC_SEQUENCE in src/rt/cpu_lle_selftest.c.
+LLSC_SEQUENCE = (
+    _sc(A0, T1, 0),          # 0x00 sc    t1, 0(a0)    link as seeded
+    _ll(A0, T2, 4),          # 0x04 ll    t2, 4(a0)
+    _addiu(T2, T2, 5),       # 0x08 addiu t2, t2, 5
+    _sc(A0, T2, 4),          # 0x0c sc    t2, 4(a0)    linked: stores, t2 = 1
+    _sc(A0, T3, 8),          # 0x10 sc    t3, 8(a0)    link left set: stores again
+    _ll(A0, 0, 12),          # 0x14 ll    zero, 12(a0) links, no register write
+    _ll(A0, T4, 20),         # 0x18 L: ll t4, 20(a0)
+    _addiu(T4, T4, 1),       # 0x1c addiu t4, t4, 1
+    _sc(A0, T4, 20),         # 0x20 sc    t4, 20(a0)
+    _beq(T4, 0, -4),         # 0x24 beq   t4, zero, L  (retry loop)
+    NOP,                     # 0x28
+    _sc(A0, A0, 24),         # 0x2c sc    a0, 24(a0)   rt == base
+    JR_RA,                   # 0x30
+    NOP,                     # 0x34
+)
+
+# The three link windows PSP-LLSC-001 measured on a PSP-3000 (fixtures/psp_oracle/probe.c,
+# run_llsc_link), one 16-byte row per cell with word A at +0 and word B at +4. Mirrored
+# word-for-word by LLSC_MEASURED_SEQUENCE in src/rt/cpu_lle_selftest.c, which pins both
+# lanes to the words the console returned.
+LLSC_MEASURED_DEFAULT_ENTRY = 0x08810B00
+LLSC_MEASURED_LLE_ENTRY = 0x08810B80
+T5, T6 = 13, 14
+LLSC_MEASURED_SEQUENCE = (
+    _ll(A0, T0, 0),          # 0x00 llsc-control:       ll t0, 0(a0)
+    _sc(A0, T1, 0),          # 0x04                     sc t1, 0(a0)
+    _ll(A0, T2, 16),         # 0x08 llsc-second-sc:     ll t2, 16(a0)
+    _sc(A0, T3, 16),         # 0x0c                     sc t3, 16(a0)
+    _sc(A0, T4, 16),         # 0x10                     sc t4, 16(a0), no new ll
+    _ll(A0, T5, 32),         # 0x14 llsc-other-address: ll t5, 32(a0)
+    _sc(A0, T6, 36),         # 0x18                     sc t6, 36(a0)
+    JR_RA,                   # 0x1c
+    NOP,                     # 0x20
+)
+
+
+def _emit_llsc_parity_fixture():
+    """Emit the LL/SC sequences in both CPU lanes for the native parity test."""
+    generated = []
+    previous_lle_cpu = codegen.LLE_CPU
+    try:
+        for entry, words, lle in (
+                (LLSC_DEFAULT_ENTRY, LLSC_SEQUENCE, False),
+                (LLSC_LLE_ENTRY, LLSC_SEQUENCE, True),
+                (LLSC_LLE_MISALIGNED_SC_ENTRY, (_sc(A0, T1, 2), JR_RA, NOP), True),
+                (LLSC_LLE_MISALIGNED_LL_ENTRY, (_ll(A0, T1, 1), JR_RA, NOP), True),
+                (LLSC_MEASURED_DEFAULT_ENTRY, LLSC_MEASURED_SEQUENCE, False),
+                (LLSC_MEASURED_LLE_ENTRY, LLSC_MEASURED_SEQUENCE, True)):
+            codegen.LLE_CPU = lle
+            image = {entry + 4 * i: word for i, word in enumerate(words)}
+            generated.extend(codegen.emit_function(
+                FakeElf(image), entry, [(entry, entry + 4 * len(words))], {entry},
+                lle_cpu=lle))
+    finally:
+        codegen.LLE_CPU = previous_lle_cpu
+    return "\n".join(generated)
+
+
+# INTC Cause.IP mirroring sequence (spec 6.1, PR 5). Emitted as --lle-cpu
+# generated C here and run through the production interpreter by
+# src/rt/cpu_lle_selftest.c (test_intc_cause_aot_interp_parity), which compares
+# both lanes with each other and with the expected values.
+INTC_CAUSE_ENTRY = 0x08810A40
+CP0_CAUSE = 13
+
+# Mirrored word-for-word by INTC_CAUSE_SEQUENCE in src/rt/cpu_lle_selftest.c.
+INTC_CAUSE_SEQUENCE = (
+    mfc0(T0, CP0_CAUSE),     # 0x00 mfc0 t0, Cause
+    mtc0(T1, CP0_CAUSE),     # 0x04 mtc0 t1, Cause   t1 = all ones
+    mfc0(T2, CP0_CAUSE),     # 0x08 mfc0 t2, Cause
+    mtc0(0, CP0_CAUSE),      # 0x0c mtc0 zero, Cause
+    mfc0(T3, CP0_CAUSE),     # 0x10 mfc0 t3, Cause
+    JR_RA,                   # 0x14
+    NOP,                     # 0x18
+)
+
+
+def _emit_intc_cause_parity_fixture():
+    """Emit the INTC Cause sequence in the --lle-cpu lane for the native parity test."""
+    previous_lle_cpu = codegen.LLE_CPU
+    try:
+        codegen.LLE_CPU = True
+        image = {INTC_CAUSE_ENTRY + 4 * i: word for i, word in enumerate(INTC_CAUSE_SEQUENCE)}
+        return "\n".join(codegen.emit_function(
+            FakeElf(image), INTC_CAUSE_ENTRY,
+            [(INTC_CAUSE_ENTRY, INTC_CAUSE_ENTRY + 4 * len(INTC_CAUSE_SEQUENCE))],
+            {INTC_CAUSE_ENTRY}, lle_cpu=True))
+    finally:
+        codegen.LLE_CPU = previous_lle_cpu
+
+
+class LlScLleCodegenTests(unittest.TestCase):
+    """ll/sc under --lle-cpu carry the same width-4 address guard as lw/sw.
+
+    Failing-before evidence: effect() raised Unsupported for opcodes 0x30 and
+    0x38 in both lanes, so no guard (and no translation) existed."""
+
+    def test_ll_guard_runs_before_the_load_and_the_link(self):
+        stmt, saddr, _ = codegen.effect(0x1000, _ll(A0, T1, 8), lle_cpu=True)
+        guard = stmt.index("sr_cpu_guard_access(s, _ea, 4u, 0, 0x00001000u, 0u, 0u)")
+        self.assertLess(guard, stmt.index("MEM_R32(_ea)"))
+        self.assertLess(guard, stmt.index("s->llbit = 1u;"))
+        self.assertIsNone(saddr)
+
+    def test_sc_guard_runs_before_the_link_is_consulted(self):
+        stmt, saddr, _ = codegen.effect(0x1000, _sc(A0, T1, 8), lle_cpu=True)
+        guard = stmt.index("sr_cpu_guard_access(s, _ea, 4u, 1, 0x00001000u, 0u, 0u)")
+        self.assertLess(guard, stmt.index("s->llbit != 0u"))
+        self.assertLess(guard, stmt.index("MEM_W32_PC(_ea,"))
+        self.assertIs(saddr, codegen.SELF_TRACED)
+
+    def test_delay_slot_ll_sc_carry_the_branch_pc(self):
+        for word, is_store in ((_ll(A0, T1, 8), 0), (_sc(A0, T1, 8), 1)):
+            with self.subTest(store=is_store):
+                body = "\n".join(codegen.delay_slot_lines(0x1004, word, 0x1000, lle_cpu=True))
+                self.assertIn(f"sr_cpu_guard_access(s, _ea, 4u, {is_store}, "
+                              "0x00001004u, 0x00001000u, 1u)", body)
+
+    def test_generated_parity_fixture_emits_both_lanes(self):
+        source = _emit_llsc_parity_fixture()
+        self.assertIn(f"void f_{LLSC_DEFAULT_ENTRY:08x}(CpuState *s)", source)
+        self.assertIn(f"void f_{LLSC_LLE_ENTRY:08x}(CpuState *s)", source)
+        self.assertNotIn("sr_unimplemented", source)
+        default = source.split(f"void f_{LLSC_LLE_ENTRY:08x}")[0]
+        self.assertNotIn("sr_cpu_guard_access", default)
+        # LLSC_SEQUENCE has three ll in each lane, the misaligned-ll body one, and the
+        # PSP-LLSC-001 windows three in each lane.
+        self.assertEqual(source.count("s->llbit = 1u;"), 2 * 3 + 1 + 2 * 3)
+        self.assertIn(f"void f_{LLSC_MEASURED_DEFAULT_ENTRY:08x}(CpuState *s)", source)
+        self.assertIn(f"void f_{LLSC_MEASURED_LLE_ENTRY:08x}(CpuState *s)", source)
+
+    def test_measured_windows_mirror_the_native_selftest(self):
+        # The interpreter lane of the PSP-LLSC-001 pin runs the C copy of these words; the
+        # two copies must be the same program or the lanes would measure different things.
+        text = (ROOT / "src" / "rt" / "cpu_lle_selftest.c").read_text(encoding="utf-8")
+        body = text.split("static const uint32_t LLSC_MEASURED_SEQUENCE[] = {", 1)[1]
+        body = body.split("};", 1)[0]
+        words = tuple(int(word, 16) for word in re.findall(r"0x([0-9A-Fa-f]{8})u,", body))
+        self.assertEqual(words, LLSC_MEASURED_SEQUENCE)
 
 
 class HleDefaultPreservedTests(unittest.TestCase):
@@ -361,75 +538,8 @@ static inline void SDL_DelayPrecise(uint64_t ns) {
 """
 
 
-@unittest.skipUnless(CC, "gcc is required for the generated scheduler ERET proof")
-class LleSchedulerIntegrationTests(unittest.TestCase):
-    """Run generated exception/ERET flow through real dispatch and scheduling."""
-
-    def test_generated_tail_eret_and_scheduler_reuse(self):
-        def addiu(rt, rs, immediate):
-            return (0x09 << 26) | (rs << 21) | (rt << 16) | (immediate & 0xFFFF)
-
-        def lw(rt, base, offset=0):
-            return (0x23 << 26) | (base << 21) | (rt << 16) | (offset & 0xFFFF)
-
-        def sw(rt, base, offset=0):
-            return (0x2B << 26) | (base << 21) | (rt << 16) | (offset & 0xFFFF)
-
-        def emit(entry, words, end):
-            return "\n".join(codegen.emit_function(
-                FakeElf(words), entry, [(entry, end)], {entry}, lle_cpu=True,
-            ))
-
-        outer = emit(0x1000, {
-            0x1000: _jal(0x2000), 0x1004: NOP,
-            0x1008: 0x3C080885,  # lui t0, 0x0885
-            0x100C: 0x3508F000,  # ori t0, t0, 0xf000 (linked continuation count)
-            0x1010: lw(9, 8),
-            0x1014: addiu(9, 9, 1),
-            0x1018: sw(9, 8),
-            0x101C: JR_RA, 0x1020: NOP,
-        }, 0x1024)
-        middle = emit(0x2000, {
-            0x2000: 0x24083000,  # addiu t0, zero, LEAF
-            0x2004: (8 << 21) | 8,  # jr t0, non-linking tail
-            0x2008: NOP,
-            0x200C: 0x3C080885,  # post-tail sentinel: increment 0x0885f004
-            0x2010: 0x3508F004,
-            0x2014: lw(9, 8),
-            0x2018: addiu(9, 9, 1),
-            0x201C: sw(9, 8),
-            0x2020: JR_RA, 0x2024: NOP,
-        }, 0x2028)
-        leaf = emit(0x3000, {0x3000: SYSCALL}, 0x3004)
-        eret_vector = emit(0x4000, {
-            0x4000: 0x3C080885,
-            0x4004: 0x3508F008,  # vector ERET count
-            0x4008: lw(9, 8),
-            0x400C: addiu(9, 9, 1),
-            0x4010: sw(9, 8),
-            0x4014: ERET,
-        }, 0x4018)
-        recovery = emit(0x5000, {
-            0x5000: 0x3C080885,
-            0x5004: 0x3508F00C,  # authorized recovery count
-            0x5008: lw(9, 8),
-            0x500C: addiu(9, 9, 1),
-            0x5010: sw(9, 8),
-            0x5014: NOP,
-        }, 0x5018)
-        followup = emit(0x6000, {
-            0x6000: addiu(2, 0, 0x321),
-            0x6004: JR_RA, 0x6008: NOP,
-        }, 0x600C)
-
-        self.assertIn("dispatch(s, _t);", middle)
-        tail_dispatch = middle.index("dispatch(s, _t);")
-        self.assertIn("return;", middle[tail_dispatch:])
-        self.assertNotIn("0x0000f004u", middle)
-        self.assertIn("sr_cpu_raise_exception(s, 8u", leaf)
-        self.assertIn("sr_cpu_eret(s, 0x00004014u)", eret_vector)
-
-        prefix = r'''#include "recomp.h"
+# Host stubs for fixtures that link the production dispatcher, scheduler and LLE core.
+_INTEGRATION_STUBS = r'''#include "recomp.h"
 #include "cpu_lle.h"
 #include "sr_coro.h"
 #include "title_config.h"
@@ -469,6 +579,7 @@ uint32_t sr_syscall(CpuState *s, uint32_t nid) {
 void sr_display_advance_vcount(uint32_t periods) { (void)periods; }
 uint32_t sr_vblank_handler(void) { return 0u; }
 uint32_t sr_vblank_arg(void) { return 0u; }
+uint32_t sr_vblank_no(void) { return 0u; }
 int sr_vblank_dispatch_registered(void) { return 0; }
 void sr_vblank_tick(void) {}
 void sr_callback_unregister_owner(uint32_t uid) { (void)uid; }
@@ -497,7 +608,249 @@ int sr_title_config_dispatch_alias(uint32_t from, uint32_t *to_addr) {
     (void)from; (void)to_addr; return 0;
 }
 
-#define OUTER 0x00001000u
+'''
+
+
+@unittest.skipUnless(CC, "gcc is required for the generated scheduler ERET proof")
+class LleSchedulerIntegrationTests(unittest.TestCase):
+    """Run generated exception/ERET flow through real dispatch and scheduling."""
+
+    def test_generated_tail_eret_and_scheduler_reuse(self):
+        self._run_generated_tail_eret_case(direct_tail=False)
+
+    def test_generated_direct_tail_eret_and_scheduler_reuse(self):
+        """A dispatched body's DIRECT tail into a raising leaf (#855 design review).
+
+        The tail is recorded and drained inside dispatch_call_aot, so the leaf's
+        exception flow is still seen by dispatch_after_aot and vectored exactly once;
+        draining after dispatch_after_aot would drop it.
+        """
+        self._run_generated_tail_eret_case(direct_tail=True)
+
+    def test_generated_mixed_tail_chain_eret_resumes_the_call_site(self):
+        """A direct CALL whose callee takes a computed tail to a body that takes a direct
+        tail into the raising leaf (#855 review).
+
+        The direct tail used to nest inside the computed tail's dispatch, so that dispatch
+        handled the exception and the CALL site went on. The computed step now drains its
+        direct successors inside its own dispatch, which keeps the CALL site's continuation
+        (OUTER_COUNT == 1); draining them in the enclosing loop lost it.
+        """
+        self._run_generated_tail_eret_case(direct_tail=False, mixed_chain=True)
+
+    def test_computed_step_passes_its_restore_up_to_a_chain_without_one(self):
+        """A resume body (it owes no SP restore) takes a computed tail to H, which lowers SP
+        and takes a direct tail to X, whose computed tail reaches F (#855 review).
+
+        Nested, F ran two returns deep at H's lowered SP, and H's restore was the last one
+        applied. The computed step H leaves X's pending transfer to the enclosing drain, so it
+        must pass H's restore up with it: the chain head has none of its own to apply.
+        """
+        bodies = (
+            (0x1000, (0x24191100, 0x03200008, NOP), "resume"),                   # t9 = H; jr t9
+            (0x1100, (0x27BDFFF0, (0x02 << 26) | (0x1200 >> 2), NOP), "callable"),  # sp -= 16; j X
+            (0x1200, (0x24191300, 0x03200008, NOP), "callable"),                 # t9 = F; jr t9
+            (0x1300, (0x03A01021, JR_RA, NOP), "callable"),                      # v0 = sp; jr ra
+        )
+        words, ranges = {}, []
+        for addr, body, _kind in bodies:
+            for index, word in enumerate(body):
+                words[addr + 4 * index] = word
+            ranges.append((addr, addr + 4 * len(body)))
+        known = {addr for addr, _body, _kind in bodies}
+        resume_owners = {addr: 0x0F00 for addr, _body, kind in bodies if kind == "resume"}
+        texts, decls, regs = [], [], []
+        for addr, _body, kind in bodies:
+            texts.append("\n".join(codegen.emit_function(
+                FakeElf(words), addr, ranges, known, resume_owners=resume_owners,
+                resumable=(kind == "resume"))))
+            symbol = codegen.entry_symbol(addr, resume_owners)
+            decls.append(f"void {symbol}(CpuState *s);\n")
+            regs.append(f"    sr_register(0x{addr:08x}u, {symbol});\n")
+        spans = "".join(
+            f"    if (!sr_exec_span_register(0x{a:08x}u, 0x{e:08x}u)) return 2;\n"
+            for a, e in ranges)
+        image = "".join(f"    MEM_W32(0x{a:08x}u, 0x{w:08x}u);\n" for a, w in sorted(words.items()))
+        main = ("int main(void) {\n    CpuState s;\n    memset(&s, 0, sizeof(s));\n"
+                "    sr_exec_span_reset();\n" + spans + "".join(regs) + "    sr_mem_init();\n"
+                + image + "    s.r[29] = 0x09000000u;\n    s.pc = 0x00001000u;\n"
+                "    dispatch(&s, 0x00001000u);\n"
+                '    printf("PASSUP v0=0x%08x sp=0x%08x\\n", s.r[2], s.r[29]);\n'
+                "    return 0;\n}\n")
+        source = "\n\n".join((_INTEGRATION_STUBS, "".join(decls), *texts, main))
+        ran = self._build_and_run_integration(source)
+        self.assertEqual(ran.returncode, 0, ran.stderr + ran.stdout)
+        # F saw H's lowered SP; the chain then restored H's entry SP, the outermost owed.
+        self.assertIn("PASSUP v0=0x08fffff0 sp=0x09000000", ran.stdout)
+
+    def _build_and_run_integration(self, source):
+        """Compile a fixture against the production runtime sources and run it."""
+        env = os.environ.copy()
+        compiler = CC
+        include_flags = []
+        # A host without SDL3 development headers (the hosted Python gate) gets a
+        # test-only timer shim below; sched.c reaches SDL for its monotonic clock
+        # and precise delay only, and the fixture runs with VBLANK pacing off.
+        sdl_available = os.name == "nt"
+        if os.name == "nt":
+            msys_bin = Path("C:/msys64/ucrt64/bin")
+            msys_usr_bin = Path("C:/msys64/usr/bin")
+            msys_gcc = msys_bin / "gcc.exe"
+            if msys_gcc.exists():
+                compiler = str(msys_gcc)
+                env["PATH"] = os.pathsep.join(
+                    [str(msys_bin), str(msys_usr_bin), env.get("PATH", "")]
+                )
+                include_flags.append(f"-I{msys_bin.parent / 'include'}")
+        else:
+            pkg_config = shutil.which("pkg-config")
+            if pkg_config:
+                sdl_flags = subprocess.run(
+                    [pkg_config, "--cflags", "sdl3"], capture_output=True, text=True,
+                )
+                if sdl_flags.returncode == 0:
+                    include_flags.extend(sdl_flags.stdout.split())
+                    sdl_available = True
+        env["SR_NOVBPACE"] = "1"
+
+        with scratch_dir.TemporaryDirectory(prefix="lle_sched_eret_") as tmp:
+            work = Path(tmp)
+            source_path = work / "fixture.c"
+            exe_path = work / "fixture.exe"
+            source_path.write_text(source, encoding="ascii", newline="\n")
+            if not sdl_available:
+                shim_dir = work / "sdl_timer_shim"
+                (shim_dir / "SDL3").mkdir(parents=True)
+                (shim_dir / "SDL3" / "SDL_timer.h").write_text(
+                    SDL_TIMER_SHIM, encoding="ascii", newline="\n")
+                include_flags.extend((f"-I{shim_dir}", "-D_POSIX_C_SOURCE=200809L"))
+            common = [
+                "-std=c11", "-O0", "-g", "-fno-strict-aliasing",
+                "-ffunction-sections", "-fdata-sections", "-Isrc/rt",
+                "-Isrc/core", *include_flags, "-DSR_SDL3VK",
+                "-D_CRT_SECURE_NO_WARNINGS", "-Wall", "-Wextra",
+                "-DSR_FLIGHT_RECORDER_LINKED", "-DPERF_AOT_INSTRUCTIONS=0",
+                "-DSR_PUBLIC_SAFE", '-DSR_BUILD_DIR="build/lle-integrated"',
+            ]
+
+            objects = []
+
+            def run_checked(args):
+                completed = subprocess.run(
+                    args, cwd=ROOT, env=env, capture_output=True, text=True,
+                )
+                self.assertEqual(
+                    completed.returncode, 0, completed.stderr + completed.stdout,
+                )
+
+            harness_obj = work / "fixture.o"
+            run_checked([compiler, *common, "-c", str(source_path), "-o", str(harness_obj)])
+            objects.append(harness_obj)
+            production_sources = (
+                "recomp.c", "sched.c", "sr_coro.c", "nested_frames.c",
+                "flight_recorder.c", "guest_interp.c", "cpu_lle.c",
+                "domain_mode.c", "stale_code.c", "vfpu_tables.c", "perf.c",
+            )
+            for name in production_sources:
+                obj = work / (Path(name).stem + ".o")
+                run_checked([
+                    compiler, *common, "-c", str(ROOT / "src" / "rt" / name),
+                    "-o", str(obj),
+                ])
+                objects.append(obj)
+
+            run_checked([
+                compiler, *(str(obj) for obj in objects), "-Wl,--gc-sections",
+                "-lm", "-o", str(exe_path),
+            ])
+            ran = subprocess.run(
+                [str(exe_path)], cwd=work, env=env,
+                capture_output=True, text=True, timeout=60,
+            )
+            return ran
+
+    def _run_generated_tail_eret_case(self, *, direct_tail, mixed_chain=False):
+        def addiu(rt, rs, immediate):
+            return (0x09 << 26) | (rs << 21) | (rt << 16) | (immediate & 0xFFFF)
+
+        def lw(rt, base, offset=0):
+            return (0x23 << 26) | (base << 21) | (rt << 16) | (offset & 0xFFFF)
+
+        def sw(rt, base, offset=0):
+            return (0x2B << 26) | (base << 21) | (rt << 16) | (offset & 0xFFFF)
+
+        def emit(entry, words, end, known=()):
+            return "\n".join(codegen.emit_function(
+                FakeElf(words), entry, [(entry, end)], {entry, *known}, lle_cpu=True,
+            ))
+
+        outer = emit(0x1000, {
+            0x1000: _jal(0x2000), 0x1004: NOP,
+            0x1008: 0x3C080885,  # lui t0, 0x0885
+            0x100C: 0x3508F000,  # ori t0, t0, 0xf000 (linked continuation count)
+            0x1010: lw(9, 8),
+            0x1014: addiu(9, 9, 1),
+            0x1018: sw(9, 8),
+            0x101C: JR_RA, 0x1020: NOP,
+        }, 0x1024, known=(0x2000,) if mixed_chain else ())
+        if mixed_chain:
+            # OUTER reaches MIDDLE by a direct generated CALL that drains at the call site.
+            self.assertIn("f_00002000(s); SR_TAIL_DRAIN(s);", outer)
+        hop = emit(0x7000, {
+            0x7000: (0x02 << 26) | (0x3000 >> 2),  # j LEAF, a direct tail after the computed one
+            0x7004: NOP, 0x7008: NOP,
+        }, 0x700C, known=(0x3000,)) if mixed_chain else ""
+        tail_words = (
+            {0x2000: (0x02 << 26) | (0x3000 >> 2),  # j LEAF, a direct tail
+             0x2004: NOP, 0x2008: NOP}
+            if direct_tail else
+            {0x2000: 0x24087000 if mixed_chain else 0x24083000,  # addiu t0, zero, HOP/LEAF
+             0x2004: (8 << 21) | 8,  # jr t0, non-linking tail
+             0x2008: NOP}
+        )
+        middle = emit(0x2000, {
+            **tail_words,
+            0x200C: 0x3C080885,  # post-tail sentinel: increment 0x0885f004
+            0x2010: 0x3508F004,
+            0x2014: lw(9, 8),
+            0x2018: addiu(9, 9, 1),
+            0x201C: sw(9, 8),
+            0x2020: JR_RA, 0x2024: NOP,
+        }, 0x2028, known=(0x3000,) if direct_tail else ())
+        leaf = emit(0x3000, {0x3000: SYSCALL}, 0x3004)
+        eret_vector = emit(0x4000, {
+            0x4000: 0x3C080885,
+            0x4004: 0x3508F008,  # vector ERET count
+            0x4008: lw(9, 8),
+            0x400C: addiu(9, 9, 1),
+            0x4010: sw(9, 8),
+            0x4014: ERET,
+        }, 0x4018)
+        recovery = emit(0x5000, {
+            0x5000: 0x3C080885,
+            0x5004: 0x3508F00C,  # authorized recovery count
+            0x5008: lw(9, 8),
+            0x500C: addiu(9, 9, 1),
+            0x5010: sw(9, 8),
+            0x5014: NOP,
+        }, 0x5018)
+        followup = emit(0x6000, {
+            0x6000: addiu(2, 0, 0x321),
+            0x6004: JR_RA, 0x6008: NOP,
+        }, 0x600C)
+
+        tail_record = (
+            "sr_tail_record(s, 0x00003000u, f_00003000," if direct_tail
+            else "sr_tail_record(s, _t, NULL,"
+        )
+        self.assertIn(tail_record, middle)
+        tail_dispatch = middle.index(tail_record)
+        self.assertIn("return;", middle[tail_dispatch:])
+        self.assertNotIn("0x0000f004u", middle)
+        self.assertIn("sr_cpu_raise_exception(s, 8u", leaf)
+        self.assertIn("sr_cpu_eret(s, 0x00004014u)", eret_vector)
+
+        prefix = _INTEGRATION_STUBS + r'''#define OUTER 0x00001000u
 #define MIDDLE 0x00002000u
 #define LEAF 0x00003000u
 #define VECTOR 0x00004000u
@@ -508,6 +861,7 @@ int sr_title_config_dispatch_alias(uint32_t from, uint32_t *to_addr) {
 #define VECTOR_COUNT 0x0885f008u
 #define RECOVERY_COUNT 0x0885f00cu
 
+void f_00003000(CpuState *s);
 void f_00004000(CpuState *s);
 void f_00006000(CpuState *s);
 static unsigned handler_calls;
@@ -581,93 +935,19 @@ int main(void) {
     return 0;
 }
 '''
+        if mixed_chain:
+            prefix += "void f_00002000(CpuState *s);\nvoid f_00007000(CpuState *s);\n"
+            suffix = suffix.replace(
+                "    sr_register(FOLLOWUP, followup_entry);\n",
+                "    sr_register(FOLLOWUP, followup_entry);\n"
+                "    if (!sr_exec_span_register(0x7000u, 0x700cu)) return 2;\n"
+                "    sr_register(0x7000u, f_00007000);\n", 1)
         source = "\n\n".join((
-            prefix, outer, middle, leaf, eret_vector, recovery, followup, suffix,
+            prefix, outer, middle, hop, leaf, eret_vector, recovery, followup, suffix,
         ))
-        env = os.environ.copy()
-        compiler = CC
-        include_flags = []
-        # A host without SDL3 development headers (the hosted Python gate) gets a
-        # test-only timer shim below; sched.c reaches SDL for its monotonic clock
-        # and precise delay only, and the fixture runs with VBLANK pacing off.
-        sdl_available = os.name == "nt"
-        if os.name == "nt":
-            msys_bin = Path("C:/msys64/ucrt64/bin")
-            msys_usr_bin = Path("C:/msys64/usr/bin")
-            msys_gcc = msys_bin / "gcc.exe"
-            if msys_gcc.exists():
-                compiler = str(msys_gcc)
-                env["PATH"] = os.pathsep.join(
-                    [str(msys_bin), str(msys_usr_bin), env.get("PATH", "")]
-                )
-                include_flags.append(f"-I{msys_bin.parent / 'include'}")
-        else:
-            pkg_config = shutil.which("pkg-config")
-            if pkg_config:
-                sdl_flags = subprocess.run(
-                    [pkg_config, "--cflags", "sdl3"], capture_output=True, text=True,
-                )
-                if sdl_flags.returncode == 0:
-                    include_flags.extend(sdl_flags.stdout.split())
-                    sdl_available = True
-        env["SR_NOVBPACE"] = "1"
-
-        with tempfile.TemporaryDirectory(prefix="lle_sched_eret_") as tmp:
-            work = Path(tmp)
-            source_path = work / "fixture.c"
-            exe_path = work / "fixture.exe"
-            source_path.write_text(source, encoding="ascii", newline="\n")
-            if not sdl_available:
-                shim_dir = work / "sdl_timer_shim"
-                (shim_dir / "SDL3").mkdir(parents=True)
-                (shim_dir / "SDL3" / "SDL_timer.h").write_text(
-                    SDL_TIMER_SHIM, encoding="ascii", newline="\n")
-                include_flags.extend((f"-I{shim_dir}", "-D_POSIX_C_SOURCE=200809L"))
-            common = [
-                "-std=c11", "-O0", "-g", "-fno-strict-aliasing",
-                "-ffunction-sections", "-fdata-sections", "-Isrc/rt",
-                "-Isrc/core", *include_flags, "-DSR_SDL3VK",
-                "-D_CRT_SECURE_NO_WARNINGS", "-Wall", "-Wextra",
-                "-DSR_FLIGHT_RECORDER_LINKED", "-DPERF_AOT_INSTRUCTIONS=0",
-                "-DSR_PUBLIC_SAFE", '-DSR_BUILD_DIR="build/lle-integrated"',
-            ]
-
-            objects = []
-
-            def run_checked(args):
-                completed = subprocess.run(
-                    args, cwd=ROOT, env=env, capture_output=True, text=True,
-                )
-                self.assertEqual(
-                    completed.returncode, 0, completed.stderr + completed.stdout,
-                )
-
-            harness_obj = work / "fixture.o"
-            run_checked([compiler, *common, "-c", str(source_path), "-o", str(harness_obj)])
-            objects.append(harness_obj)
-            production_sources = (
-                "recomp.c", "sched.c", "sr_coro.c", "nested_frames.c",
-                "flight_recorder.c", "guest_interp.c", "cpu_lle.c",
-                "domain_mode.c", "stale_code.c", "vfpu_tables.c", "perf.c",
-            )
-            for name in production_sources:
-                obj = work / (Path(name).stem + ".o")
-                run_checked([
-                    compiler, *common, "-c", str(ROOT / "src" / "rt" / name),
-                    "-o", str(obj),
-                ])
-                objects.append(obj)
-
-            run_checked([
-                compiler, *(str(obj) for obj in objects), "-Wl,--gc-sections",
-                "-lm", "-o", str(exe_path),
-            ])
-            ran = subprocess.run(
-                [str(exe_path)], cwd=work, env=env,
-                capture_output=True, text=True, timeout=60,
-            )
-            self.assertEqual(ran.returncode, 0, ran.stderr + ran.stdout)
-            self.assertIn("generated tail ERET and scheduler reuse: OK", ran.stdout)
+        ran = self._build_and_run_integration(source)
+        self.assertEqual(ran.returncode, 0, ran.stderr + ran.stdout)
+        self.assertIn("generated tail ERET and scheduler reuse: OK", ran.stdout)
 
 
 class CpuLleSourcesTests(unittest.TestCase):
@@ -726,6 +1006,84 @@ class CpuLleSourcesTests(unittest.TestCase):
         text = GUEST_INTERP_H.read_text(encoding="utf-8")
         self.assertIn("SR_GUEST_INTERP_EXCEPTION", text)
         self.assertIn("SR_GUEST_INTERP_ERET", text)
+
+
+def _c_function_body(text, signature):
+    """Return the brace body of the top-level C function whose definition starts with signature."""
+    start = text.index(signature)
+    open_brace = text.index("{", start)
+    end = text.index("\n}\n", open_brace)
+    return text[open_brace + 1:end]
+
+
+class IntcLleTests(unittest.TestCase):
+    """PR 5 (spec 6.1): synthetic INTC state, Cause.IP mirroring, no delivery yet.
+
+    The behavior is asserted natively by src/rt/cpu_lle_selftest.c; these pin
+    the source contract that keeps it fail-closed and tier-symmetric."""
+
+    def test_header_declares_the_intc_api(self):
+        text = CPU_LLE_H.read_text(encoding="utf-8")
+        for proto in (r"int\s+sr_intc_init\s*\(\s*const\s+SrIntcConfig\s*\*",
+                      r"void\s+sr_intc_reset\s*\(\s*void\s*\)",
+                      r"int\s+sr_intc_raise\s*\(\s*unsigned",
+                      r"int\s+sr_intc_clear\s*\(\s*unsigned",
+                      r"int\s+sr_intc_set_enable_mask\s*\(\s*uint32_t",
+                      r"uint32_t\s+sr_intc_pending_mask\s*\(\s*void\s*\)",
+                      r"uint32_t\s+sr_intc_enable_mask\s*\(\s*void\s*\)",
+                      r"int\s+sr_intc_cpu_pending\s*\(\s*struct\s+CpuState\s*\*"):
+            self.assertRegex(text, proto)
+        config = re.search(r"typedef struct SrIntcConfig \{(.*?)\} SrIntcConfig;", text, re.DOTALL)
+        self.assertIsNotNone(config)
+        self.assertIn("source_count", config.group(1))
+        self.assertIn("cpu_ip_bit", config.group(1))
+        # IP0/IP1 are the guest-writable software pair; the controller drives IP2..IP7.
+        self.assertRegex(text, r"#define SR_INTC_CPU_IP_MIN 2u")
+        self.assertRegex(text, r"#define SR_INTC_CPU_IP_MAX 7u")
+        self.assertRegex(text, r"#define SR_INTC_MAX_SOURCES 32u")
+
+    def test_no_runtime_source_installs_a_controller(self):
+        # Every PSP INTC property is unmeasured (spec 6.3), so nothing outside the
+        # selftests may configure one: the default stays unconfigured and fail-closed.
+        offenders = []
+        for path in sorted((ROOT / "src").rglob("*.c")):
+            if path.name.endswith("_selftest.c"):
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            text = re.sub(r"(?m)^int sr_intc_init\(", "", text)  # the definition itself
+            if re.search(r"\bsr_intc_init\s*\(", text):
+                offenders.append(str(path.relative_to(ROOT)))
+        self.assertEqual(offenders, [])
+
+    def test_reset_config_unconfigures_the_controller(self):
+        body = _c_function_body(CPU_LLE_C.read_text(encoding="utf-8"),
+                                "void sr_cpu_lle_reset_config(void)")
+        self.assertIn("sr_intc_reset();", body)
+
+    def test_poll_stays_free_of_side_effects_until_pr6(self):
+        body = _c_function_body(CPU_LLE_C.read_text(encoding="utf-8"),
+                                "int sr_cpu_poll(CpuState *s, uint32_t resume_pc)")
+        code = re.sub(r"/\*.*?\*/", "", body, flags=re.DOTALL)
+        self.assertIn("return 0;", code)
+        for forbidden in ("sr_intc_", "sr_cpu_raise_exception", "s->", "SR_FLOW_"):
+            self.assertNotIn(forbidden, code)
+
+    def test_cause_accesses_resync_the_line_in_both_directions(self):
+        text = CPU_LLE_C.read_text(encoding="utf-8")
+        for helper in ("int sr_cp0_mfc0(", "int sr_cp0_mtc0("):
+            with self.subTest(helper=helper):
+                body = _c_function_body(text, helper)
+                self.assertIn("case SR_CP0_CAUSE:", body)
+                cause_case = body.split("case SR_CP0_CAUSE:", 1)[1].split("break;", 1)[0]
+                self.assertIn("sr_intc_cpu_pending(s)", cause_case)
+
+    def test_generated_intc_fixture_uses_the_lle_cop0_helpers(self):
+        source = _emit_intc_cause_parity_fixture()
+        self.assertIn(f"void f_{INTC_CAUSE_ENTRY:08x}(CpuState *s)", source)
+        self.assertNotIn("sr_unimplemented", source)
+        self.assertEqual(len(re.findall(r"sr_cp0_mfc0\(s, \d+u, 13u, 0u,", source)), 3)
+        self.assertEqual(len(re.findall(r"sr_cp0_mtc0\(s, \d+u, 13u, 0u,", source)), 2)
+        self.assertIn("sr_cp0_mtc0(s, 0u, 13u, 0u,", source)
 
 
 class MakefileWiringTests(unittest.TestCase):
@@ -941,6 +1299,10 @@ if __name__ == "__main__":
         output.parent.mkdir(parents=True, exist_ok=True)
         with output.open("w", encoding="ascii", newline="\n") as generated_file:
             generated_file.write(_emit_generated_fatal_flow_fixture())
+            generated_file.write("\n")
+            generated_file.write(_emit_llsc_parity_fixture())
+            generated_file.write("\n")
+            generated_file.write(_emit_intc_cause_parity_fixture())
             generated_file.write("\n")
     elif len(sys.argv) == 1:
         unittest.main()

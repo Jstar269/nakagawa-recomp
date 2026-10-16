@@ -116,6 +116,20 @@ def _elf(
     return out
 
 
+def _module_info_record(module_attributes: int, name: bytes) -> bytes:
+    """A 52-byte SceModuleInfo with a NUL-terminated name and empty tables.
+
+    The name is required: a sectionless input locates its record through
+    phdr[0].p_paddr, and both parsers refuse a record without a printable name.
+    """
+    if not 0 < len(name) < 28:
+        raise ValueError("module name must fit the 28-byte field with its terminator")
+    return (
+        struct.pack("<H", module_attributes) + b"\0\0"
+        + name.ljust(28, b"\0") + b"\0" * 20
+    )
+
+
 def build_import_elf(
     libs: list[tuple[str, list[int]]],
     *,
@@ -163,7 +177,7 @@ def build_import_elf(
         seg.extend(b)
         return BASE_VADDR + off
 
-    modinfo_vaddr = alloc(struct.pack("<H", module_attributes) + b"\0" * 50)
+    modinfo_vaddr = alloc(_module_info_record(module_attributes, b"SynthImports"))
 
     name_vaddrs = []
     for name, _nids in libs:
@@ -305,7 +319,7 @@ def build_interleaved_import_elf(
         seg.extend(b)
         return BASE_VADDR + off
 
-    modinfo_vaddr = alloc(b"\0" * 52)
+    modinfo_vaddr = alloc(_module_info_record(0, b"SynthInterleaved"))
     name_vaddrs = [alloc(name.encode("ascii") + b"\0", 1) for name, _first, _count in windows]
     nid_array = alloc(b"".join(struct.pack("<I", n) for n in nids))
     nid_sec_size = 4 * total
@@ -511,6 +525,8 @@ def build_import_layout_elf(
     detached_gap_slots: int | None = None,
     stub_head_slots: int = 0,
     stub_tail_slots: int = 0,
+    padding_sections: int = 0,
+    duplicate_nid_section: bool = False,
 ) -> tuple[bytes, dict[int, tuple[str, int]]]:
     """Build a sectioned ELF for the retail import-table layouts.
 
@@ -530,7 +546,12 @@ def build_import_layout_elf(
           leave this many unused stub slots (and zero NID words) between
           consecutive detached windows, so they share one pairing offset;
       stub_head_slots / stub_tail_slots -- zero stub slots that no window
-          claims before / after the windows inside a single .sceStub.text.
+          claims before / after the windows inside a single .sceStub.text;
+      padding_sections -- empty named sections appended to the section table,
+          so the header count can exceed 512 (the table is file-bounded);
+      duplicate_nid_section -- a second, empty .rodata.sceNid header after
+          the real one: the first header of a name is the section (as in
+          tools/analyze.py Elf.sec), so the second must be ignored.
 
     Returns (ELF bytes, expected {stub address: (library, NID)}).
     """
@@ -622,6 +643,9 @@ def build_import_layout_elf(
     else:
         extra_sections.append((b".sceStub.text", stub_section, stub_section_end - stub_section))
     extra_sections.append((b".rodata.sceNid", nid_section, nid_section_end - nid_section))
+    if duplicate_nid_section:
+        extra_sections.append((b".rodata.sceNid", BASE_VADDR, 0))
+    extra_sections += [(b".padding", BASE_VADDR, 0)] * padding_sections
     return _elf(bytes(seg), modinfo, extra_sections=extra_sections), expected
 
 
@@ -698,3 +722,105 @@ def build_stripped_module_elf(
     if paddr is not None:
         p_paddr = paddr
     return _elf(bytes(seg), modinfo, sectionless=True, paddr_override=p_paddr), expected, modinfo
+
+
+# Placeholder bytes the retail image holds in an import stub before the loader
+# patches it: `jr $ra; nop`.
+STUB_PLACEHOLDER = struct.pack("<II", 0x03E00008, 0)
+
+
+def build_text_stub_run_elf(
+    stub_count: int = 4,
+    *,
+    library: str = "SynthTextLib",
+    first_nid: int = 0x7A000000,
+    late_callee: bool = False,
+    nids: list[int] | None = None,
+) -> tuple[bytes, list[int]]:
+    """Build a sectioned ELF whose import stubs lie after .text, outside .sceStub.text.
+
+    The layout follows the retail EBOOT image, not the .sceStub.text fixtures:
+
+    * a named .text section holds an entry function (a bare `jr $ra`) and an
+      orphan caller that is reached only from the analyzer's gap-fill pass
+      (it opens with an `addiu $sp,$sp,-N` prologue and no known caller). The
+      caller `jal`s every import stub, so each stub is a direct-call target
+      found in a late discovery phase;
+    * after .text, in the same executable PT_LOAD, a contiguous run of
+      `jr $ra; nop` placeholders, one per import stub, and the import tables
+      (SceModuleInfo, the PspLibStubEntry table, the library name, the NIDs).
+
+    Returns (ELF bytes, stub addresses in import-table order). Every stub is
+    outside the named code sections, so the analyzer must reach it through the
+    executable PT_LOAD alone.
+    """
+    if nids is not None:
+        nids = list(nids)
+        stub_count = len(nids)
+    if stub_count < 1:
+        raise ValueError("stub_count must be at least 1")
+    seg = bytearray()
+
+    def alloc(b: bytes, align: int = 4) -> int:
+        while len(seg) % align:
+            seg.append(0)
+        off = len(seg)
+        seg.extend(b)
+        return BASE_VADDR + off
+
+    # .text: entry `jr $ra; nop`, then the orphan caller. Its `jal` words are
+    # patched once the stub addresses exist.
+    caller_words = [
+        0x27BDFFE0,                     # addiu $sp,$sp,-32
+        0xAFBF001C,                     # sw    $ra,28($sp)
+    ]
+    for _ in range(stub_count):
+        caller_words += [0x0C000000, 0]  # jal <stub>; nop (patched below)
+    if late_callee:
+        # One more direct call from the orphan caller, to a plain function that lies in
+        # the same file-backed executable bytes as the stub run (not an import stub).
+        caller_words += [0x0C000000, 0]  # jal <late callee>; nop (patched below)
+    caller_words += [
+        0x8FBF001C,                     # lw    $ra,28($sp)
+        0x27BD0020,                     # addiu $sp,$sp,32
+        0x03E00008,                     # jr    $ra
+        0,                              # nop
+    ]
+    text = struct.pack("<2I", 0x03E00008, 0) + struct.pack(
+        f"<{len(caller_words)}I", *caller_words
+    )
+    text_vaddr = alloc(text)
+    assert text_vaddr == BASE_VADDR
+    caller_off = 8
+
+    modinfo_vaddr = alloc(struct.pack("<H", 0) + b"\0" * 50)
+    name_vaddr = alloc(library.encode("ascii") + b"\0", 1)
+    if nids is None:
+        nids = [first_nid + i for i in range(stub_count)]
+    nid_vaddr = alloc(b"".join(struct.pack("<I", n) for n in nids))
+    stub_base = alloc(STUB_PLACEHOLDER * stub_count)
+    stub_addrs = [stub_base + 8 * i for i in range(stub_count)]
+
+    for i, stub in enumerate(stub_addrs):
+        jal_off = caller_off + (2 + 2 * i) * 4
+        struct.pack_into("<I", seg, jal_off, 0x0C000000 | ((stub >> 2) & 0x03FFFFFF))
+
+    if late_callee:
+        # The callee sits right after the stub placeholders: addiu $v0,$zero,1; jr $ra; nop.
+        callee = alloc(struct.pack("<3I", 0x24020001, 0x03E00008, 0))
+        jal_off = caller_off + (2 + 2 * stub_count) * 4
+        struct.pack_into("<I", seg, jal_off, 0x0C000000 | ((callee >> 2) & 0x03FFFFFF))
+
+    entries = struct.pack(
+        "<IHHBBHII", name_vaddr, 0x0101, 0x0009, 5, 0, stub_count, nid_vaddr, stub_base
+    )
+    libstub = alloc(entries)
+    libstubend = libstub + len(entries)
+    struct.pack_into("<II", seg, (modinfo_vaddr - BASE_VADDR) + 44, libstub, libstubend)
+
+    elf = _elf(
+        bytes(seg),
+        modinfo_vaddr,
+        extra_sections=[(b".text", BASE_VADDR, len(text))],
+    )
+    return elf, stub_addrs

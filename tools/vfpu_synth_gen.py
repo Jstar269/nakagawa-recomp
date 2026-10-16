@@ -433,7 +433,7 @@ def _iter_viim_vfim() -> Iterator[int]:
 
 
 def _iter_vfpu3() -> Iterator[int]:
-    """Major opcode 0x1B — VFPU3: vcmp(0), vmin(2), vmax(3), vcmovt(6), vcmovf(7)."""
+    """Major opcode 0x1B — VFPU3: vcmp(0), vmin(2), vmax(3), vscmp(5), vsge(6), vslt(7)."""
     for sub in (0, 2, 3, 6, 7):
         for size in (0, 1, 2, 3):
             for vs in (0, 1, 8):

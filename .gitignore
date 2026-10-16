@@ -63,10 +63,9 @@ tools/vfpu_words.txt
 tools/vfpu_words_local.txt
 tools/vfpu_game_*.txt
 
-# Raw reverse-engineering/decompiler exports (facts may be documented separately)
-/docs/opengrip_ref/
-/opengrip_ref/
-/OpenGrip_For_Inspiration/
+# Raw reverse-engineering/decompiler exports and symbol references (untracked)
+/docs/symbol_ref/
+functions.csv
 EBOOT.BIN.dec*
 
 # Local third-party checkouts and redistributable runtime binaries
@@ -151,6 +150,7 @@ Desktop.ini
 
 # AI tool local/personal state. AGENTS.md is the only tracked agent authority;
 # per-tool caches, settings, and personal instruction files stay local.
+/.jules/
 /.claude/
 /.codex/
 /.codex-remote-attachments/

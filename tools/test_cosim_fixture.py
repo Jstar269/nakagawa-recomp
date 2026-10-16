@@ -12,9 +12,13 @@ import importlib.util
 import shutil
 import struct
 import subprocess
-import tempfile
 import unittest
 from pathlib import Path
+
+try:
+    import scratch_dir
+except ModuleNotFoundError:
+    from tools import scratch_dir
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +39,8 @@ def decode(word: int) -> tuple:
     if primary == 0x00:
         return ("special", word & 0x3F)
     if primary == 0x11:
+        if ((word >> 21) & 31) == 8:
+            return ("cop1_branch",)
         return ("cop1", (word >> 21) & 0x1F, word & 0x3F)
     return ("op", primary)
 
@@ -51,14 +57,26 @@ EXPECTED_FORMS = frozenset(
         ("op", 0x03),   # jal
         ("op", 0x04),   # beq
         ("op", 0x05),   # bne
+        ("op", 0x01),   # bltzl / bgezl
+        ("op", 0x14),   # beql
+        ("op", 0x15),   # bnel / bnezl
+        ("op", 0x16),   # blezl
+        ("op", 0x17),   # bgtzl
+        ("op", 0x1F),   # Allegrex ext/ins/seb/seh
         ("op", 0x20),   # lb
         ("op", 0x21),   # lh
+        ("op", 0x22),   # lwl
         ("op", 0x23),   # lw
         ("op", 0x24),   # lbu
         ("op", 0x25),   # lhu
         ("op", 0x28),   # sb
         ("op", 0x29),   # sh
+        ("op", 0x2A),   # swl
         ("op", 0x2B),   # sw
+        ("op", 0x2E),   # swr
+        ("op", 0x26),   # lwr
+        ("op", 0x30),   # ll
+        ("op", 0x38),   # sc
         ("op", 0x31),   # lwc1
         ("op", 0x39),   # swc1
         ("special", 0x00),  # sll (and the nop encoding)
@@ -66,6 +84,8 @@ EXPECTED_FORMS = frozenset(
         ("special", 0x03),  # sra
         ("special", 0x08),  # jr
         ("special", 0x09),  # jalr
+        ("special", 0x0A),  # movz
+        ("special", 0x0B),  # movn
         ("special", 0x10),  # mfhi
         ("special", 0x12),  # mflo
         ("special", 0x18),  # mult
@@ -79,9 +99,28 @@ EXPECTED_FORMS = frozenset(
         ("special", 0x2B),  # sltu
         ("cop1", 0x00, 0x00),  # mfc1
         ("cop1", 0x04, 0x00),  # mtc1
+        ("cop1_branch",),  # bc1f/t and likely forms share a branch group
         ("cop1", 0x10, 0x00),  # add.s
+        ("cop1", 0x10, 0x06),  # mov.s
         ("cop1", 0x10, 0x02),  # mul.s
         ("cop1", 0x10, 0x24),  # cvt.w.s
+        ("cop1", 0x10, 0x32),  # c.eq.s for the branch-likely FCC setup
+        ("cop1", 0x10, 0x30),  # c.f.s
+        ("cop1", 0x10, 0x31),  # c.un.s
+        ("cop1", 0x10, 0x34),  # c.olt.s
+        ("cop1", 0x10, 0x33),  # c.ueq.s
+        ("cop1", 0x10, 0x35),  # c.ult.s
+        ("cop1", 0x10, 0x36),  # c.ole.s
+        ("cop1", 0x10, 0x37),  # c.ule.s
+        ("cop1", 0x10, 0x38),  # signaling c.f.s variant
+        ("cop1", 0x10, 0x39),  # signaling c.un.s variant
+        ("cop1", 0x10, 0x3A),  # c.seq.s
+        ("cop1", 0x10, 0x3B),  # signaling c.ueq.s variant
+        ("cop1", 0x10, 0x3C),  # c.lt.s
+        ("cop1", 0x10, 0x3D),  # c.nge.s
+        ("cop1", 0x10, 0x3E),  # c.le.s
+        ("cop1", 0x10, 0x3F),  # c.ngt.s
+        ("cop1", 0x14, 0x20),  # cvt.s.w
     }
 )
 
@@ -143,7 +182,7 @@ class FpuOracleStructureTests(unittest.TestCase):
 @unittest.skipUnless(shutil.which("gcc"), "gcc is required for the C.cond truth-table regression")
 class FpuCcondTruthTableTests(unittest.TestCase):
     def test_predicates_match_the_mips_table_for_all_relation_classes(self):
-        with tempfile.TemporaryDirectory(prefix="cosim_ccond_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="cosim_ccond_") as tmp:
             work = Path(tmp)
             source = work / "ccond_truth.c"
             executable = work / "ccond_truth.exe"
@@ -179,6 +218,21 @@ static const struct RelationCase cases[] = {
     },
     {
         0x7fc00000u, 0x3f800000u, "unordered",
+        {0u, 1u, 0u, 1u, 0u, 1u, 0u, 1u,
+         0u, 1u, 0u, 1u, 0u, 1u, 0u, 1u}
+    },
+    {
+        0x3f800000u, 0x7fc12345u, "quiet NaN right",
+        {0u, 1u, 0u, 1u, 0u, 1u, 0u, 1u,
+         0u, 1u, 0u, 1u, 0u, 1u, 0u, 1u}
+    },
+    {
+        0x7f812345u, 0x3f800000u, "signaling NaN left",
+        {0u, 1u, 0u, 1u, 0u, 1u, 0u, 1u,
+         0u, 1u, 0u, 1u, 0u, 1u, 0u, 1u}
+    },
+    {
+        0x3f800000u, 0x7f812345u, "signaling NaN right",
         {0u, 1u, 0u, 1u, 0u, 1u, 0u, 1u,
          0u, 1u, 0u, 1u, 0u, 1u, 0u, 1u}
     },
@@ -281,7 +335,7 @@ class FixtureLayoutTests(unittest.TestCase):
         either lane.
         """
         register_tail = {"jrtail", "xtail"}
-        jump_tail = {"xtailmid"}
+        jump_tail = {"xtailmid", "jthunk"}
         for name, (_offset, words) in self.layout.items():
             if name in cosim.NON_PROGRAM_CELLS or name in cosim.AOT_ORACLE_ONLY_CELLS:
                 continue
@@ -438,6 +492,97 @@ class FixtureSemanticTests(unittest.TestCase):
         skipped = words[index + 2]
         self.assertEqual(skipped >> 26, 0x09, "the skipped word should be the addiu marker")
 
+    def test_branch_likely_cell_covers_taken_and_nullified_paths_for_each_form(self):
+        _offset, words = self.layout["branch_likely"]
+        counts = {"beql": 0, "bnel": 0, "bnezl": 0, "blezl": 0,
+                  "bgtzl": 0, "bltzl": 0, "bgezl": 0, "bc1tl": 0, "bc1fl": 0}
+        for index, word in enumerate(words):
+            primary = word >> 26
+            rt = (word >> 16) & 31
+            if primary == 0x14:
+                counts["beql"] += 1
+            elif primary == 0x15:
+                name = "bnezl" if rt == 0 else "bnel"
+                counts[name] += 1
+            elif primary == 0x16:
+                counts["blezl"] += 1
+            elif primary == 0x17:
+                counts["bgtzl"] += 1
+            elif primary == 0x01 and rt in (2, 3):
+                counts["bltzl" if rt == 2 else "bgezl"] += 1
+            elif primary == 0x11 and ((word >> 21) & 31) == 8 and (word & (1 << 17)):
+                counts["bc1tl" if ((word >> 16) & 1) else "bc1fl"] += 1
+            else:
+                continue
+            self.assertEqual(word & 0xFFFF, 2, "likely branch must skip its fallthrough marker when taken")
+            slot = words[index + 1]
+            self.assertIn(slot >> 26, (0x0D, 0x2B, 0x11),
+                          "the delay slot must have an observable register, memory, or FPU effect")
+        self.assertEqual(counts, {name: 2 for name in counts})
+
+    def test_bitops_cell_covers_field_edges_aliases_and_unsigned_conversion(self):
+        _offset, words = self.layout["bitops"]
+        special3 = [word for word in words if (word >> 26) == 0x1F]
+        ext_edges = {
+            ((word >> 6) & 31, ((word >> 11) & 31) + 1)
+            for word in special3 if (word & 63) == 0
+        }
+        ins_edges = {
+            ((word >> 6) & 31, ((word >> 11) & 31) - ((word >> 6) & 31) + 1)
+            for word in special3 if (word & 63) == 4
+        }
+        self.assertTrue({(0, 32), (31, 1), (1, 31)} <= ext_edges)
+        self.assertTrue({(0, 32), (31, 1), (1, 31), (4, 8)} <= ins_edges)
+        self.assertIn(0x10, {(word >> 6) & 31 for word in special3 if (word & 63) == 0x20})
+        self.assertIn(0x18, {(word >> 6) & 31 for word in special3 if (word & 63) == 0x20})
+
+        for funct in (0x0A, 0x0B):
+            shapes = [
+                ((word >> 21) & 31, (word >> 16) & 31, (word >> 11) & 31)
+                for word in words if (word >> 26) == 0 and (word & 63) == funct
+            ]
+            self.assertTrue(any(rs == rd for rs, _rt, rd in shapes), f"mov funct {funct:#x} lacks rd==rs")
+            self.assertTrue(any(rt == rd for _rs, rt, rd in shapes), f"mov funct {funct:#x} lacks rd==rt")
+            self.assertTrue(any(rd == 0 for _rs, _rt, rd in shapes), f"mov funct {funct:#x} lacks rd==$zero")
+
+        self.assertTrue(any((word >> 26) == 1 and ((word >> 16) & 31) == 2 for word in words),
+                        "unsigned conversion must use bltzl")
+        self.assertTrue(any((word >> 26) == 0x11 and ((word >> 21) & 31) == 0x14
+                            and (word & 63) == 0x20 for word in words),
+                        "unsigned conversion must first use cvt.s.w")
+        self.assertTrue(any((word >> 26) == 0x11 and ((word >> 21) & 31) == 0x10
+                            and (word & 63) == 0 for word in words),
+                        "unsigned conversion must add 2^32 in the likely slot")
+
+    def test_raw_fpu_move_cell_covers_nan_denormal_zero_and_integer_alias_words(self):
+        _offset, words = self.layout["fpu_moves"]
+        self.assertEqual(len(cosim.FPU_MOVE_PATTERNS), 8)
+        self.assertTrue(any(bits == 0x80000000 for bits in cosim.FPU_MOVE_PATTERNS))
+        self.assertTrue(any(bits & 0x7F800000 == 0x7F800000 and bits & 0x007FFFFF
+                            and not bits & 0x00400000 for bits in cosim.FPU_MOVE_PATTERNS))
+        self.assertTrue(any(bits & 0x7F800000 == 0x7F800000 and bits & 0x00400000
+                            for bits in cosim.FPU_MOVE_PATTERNS))
+        self.assertTrue(any(0 < (bits & 0x7FFFFFFF) < 0x00800000
+                            for bits in cosim.FPU_MOVE_PATTERNS))
+        self.assertEqual(sum((word >> 26) == 0x39 for word in words), len(cosim.FPU_MOVE_PATTERNS))
+        self.assertEqual(sum((word >> 26) == 0x31 for word in words), len(cosim.FPU_MOVE_PATTERNS))
+        self.assertEqual(sum((word >> 26) == 0x11 and ((word >> 21) & 31) == 0x10
+                             and (word & 63) == 0x06 for word in words), len(cosim.FPU_MOVE_PATTERNS))
+
+    def test_unordered_compare_cell_covers_both_nan_sides_and_signal_variants(self):
+        _offset, words = self.layout["fpu_compare"]
+        self.assertEqual(len(cosim.FPU_COMPARE_CASES), 32)
+        self.assertEqual({condition for condition, _bits, _left in cosim.FPU_COMPARE_CASES}, set(range(16)))
+        for condition in range(16):
+            rows = [row for row in cosim.FPU_COMPARE_CASES if row[0] == condition]
+            self.assertEqual({left for _condition, _bits, left in rows}, {True, False})
+        compare_conditions = {
+            word & 0xF for word in words
+            if (word >> 26) == 0x11 and ((word >> 21) & 31) == 0x10
+            and (word & 0x30) == 0x30
+        }
+        self.assertEqual(compare_conditions, set(range(16)))
+
     def test_scratch_and_stack_live_inside_the_observed_window(self):
         """A cell can only be compared on memory the harness actually seeds."""
         self.assertGreaterEqual(cosim.SCRATCH, cosim.WINDOW_LO)
@@ -469,6 +614,16 @@ class FixtureSemanticTests(unittest.TestCase):
             f"  added:   {sorted(seen - EXPECTED_FORMS)}\n"
             f"  dropped: {sorted(EXPECTED_FORMS - seen)}",
         )
+
+    def test_unaligned_merge_cell_covers_each_form_at_all_alignments(self):
+        _offset, words = self.layout["unaligned"]
+        for opcode in (0x22, 0x26, 0x2A, 0x2E):
+            with self.subTest(opcode=opcode):
+                immediates = [
+                    word & 0xFFFF for word in words if word >> 26 == opcode
+                ]
+                self.assertEqual(len(immediates), 4)
+                self.assertEqual({immediate & 3 for immediate in immediates}, {0, 1, 2, 3})
 
     def test_generated_form_list_matches_the_declared_inventory(self):
         """The C census consumes generate.py's list; both must say the same thing.

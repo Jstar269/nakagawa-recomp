@@ -668,8 +668,8 @@ try {
     function Find-Symbol {
         param([string]$Query)
         $csvCandidates = @(
-            "docs\opengrip_ref\functions.csv",
-            "OpenGrip_For_Inspiration\functions.csv"
+            "docs\symbol_ref\functions.csv",
+            "functions.csv"
         )
         $csvPath = $null
         foreach ($c in $csvCandidates) {

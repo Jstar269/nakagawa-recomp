@@ -14,7 +14,7 @@ policy rather than maintaining a second, drifting list; it fails closed to "in
 the surface" when the policy cannot be read.  It is intentionally not used to
 widen ``run_python`` here: every tracked file is published, so that would make
 the Python gate unconditional and buy nothing, because the publication audit
-already runs ungated in ``hygiene`` on every event.  The output is exported so a
+already runs ungated in the hygiene jobs on every event.  The output is exported so a
 local readiness check can route the same decision, where no ungated equivalent
 runs.
 """
@@ -606,11 +606,18 @@ def _parse_changed_paths(output: str) -> list[str]:
     return paths
 
 
+#: Events that always run the complete matrix, whatever the changed paths. A manual
+#: dispatch asks for the complete contract. A merge-queue group is a candidate for
+#: ``main``, so it is never path-gated: every required check runs on the group commit.
+FULL_MATRIX_EVENTS = frozenset({"workflow_dispatch", "merge_group"})
+
+
 def _diff_endpoints(event_name: str, event: Mapping[str, object]) -> tuple[str, str] | None:
     """Return the ``(left, right)`` revisions this event's change spans, or None.
 
     None means there is no left revision to diff against: a manual dispatch, or a
-    push whose ``before`` is absent or all zeros (a new ref).
+    push whose ``before`` is absent or all zeros (a new ref). A merge group names
+    both ends of its range in the payload, so it never uses the push fallback.
     """
 
     if event_name == "workflow_dispatch":
@@ -620,6 +627,15 @@ def _diff_endpoints(event_name: str, event: Mapping[str, object]) -> tuple[str, 
         pull_request = event.get("pull_request")
         base_sha = pull_request.get("base", {}).get("sha") if isinstance(pull_request, dict) else None
         return str(base_sha or "HEAD^"), sha
+    if event_name == "merge_group":
+        group = event.get("merge_group")
+        if not isinstance(group, dict):
+            return None
+        base_sha = group.get("base_sha")
+        head_sha = group.get("head_sha")
+        if not isinstance(base_sha, str) or not isinstance(head_sha, str) or not base_sha or not head_sha:
+            return None
+        return base_sha, head_sha
     left = os.environ.get("GITHUB_EVENT_BEFORE", "") or str(event.get("before") or "")
     if not left or set(left) == {"0"}:
         return None
@@ -632,6 +648,10 @@ def _changed_files_from_git(event_name: str, event: Mapping[str, object]) -> lis
 
     endpoints = _diff_endpoints(event_name, event)
     if endpoints is None:
+        if event_name == "merge_group":
+            # A merge group always names its range. Without it the change set is
+            # unknowable, so fail closed rather than diff one commit as if it were it.
+            return ["<history-unavailable>"]
         sha = os.environ.get("GITHUB_SHA", "HEAD")
         result = subprocess.run(
             ["git", "diff-tree", "--root", "--no-commit-id", "--name-status", "-r", sha],
@@ -717,8 +737,9 @@ def classify(
 
     files = sorted({_normalise(path) for path in paths if path.strip()})
     unknown_paths = any(not _is_recognised(path) for path in files)
-    force_full = event_name == "workflow_dispatch" or not files or "<history-unavailable>" in files or unknown_paths
-    docs_only = bool(files) and all(
+    force_full = event_name in FULL_MATRIX_EVENTS or not files or "<history-unavailable>" in files or unknown_paths
+    # A full-matrix run is never documentation-only, whatever its paths say.
+    docs_only = not force_full and bool(files) and all(
         _is_docs(path) or _is_generated_public_metadata(path) for path in files
     )
     workflow_ci = force_full or any(_is_workflow_ci(path) for path in files)
@@ -752,7 +773,7 @@ def classify(
     # ``public_surface`` deliberately does NOT widen this.  Every tracked file in
     # this repository is published, so routing on it would make ``run_python``
     # unconditional and buy nothing: the publication audit that protects the
-    # generated ledger and export runs in the ungated ``hygiene`` job on every
+    # generated ledger and export runs in the ungated hygiene jobs on every
     # event (see ``PublicationCoverageInvariantTests``).  The output is exported
     # so a local readiness check can route the same decision, where no ungated
     # equivalent runs.
@@ -770,8 +791,8 @@ def classify(
     # same path-applicable gates as ready pull requests, so progress does not
     # require a manual ready-for-review transition or workflow dispatch.
     is_main_push = event_name == "push" and os.environ.get("GITHUB_REF") == "refs/heads/main"
-    allow_substantive = event_name == "workflow_dispatch" or (not is_main_push or workflow_ci)
-    run_main_smoke = is_main_push or event_name == "workflow_dispatch"
+    allow_substantive = event_name in FULL_MATRIX_EVENTS or (not is_main_push or workflow_ci)
+    run_main_smoke = is_main_push or event_name in FULL_MATRIX_EVENTS
 
     return {
         "docs_only": str(docs_only).lower(),

@@ -215,6 +215,11 @@ class CiPathAdversarialTests(unittest.TestCase):
         "tools/nk_safety.ps1",
         "tools/pspdev_lock.py",
         "tests/native/test_player_ui.py",
+        # #308: the Windows staging smoke runs the player and the showcase disc writer, and
+        # only the Windows job runs it, so each input must reach that job.
+        "src/player/setup_staging.c",
+        "fixtures/showcase/showcase.py",
+        "fixtures/display_smoke/generate.py",
     )
 
     def test_every_native_relevant_path_runs_native_and_windows(self) -> None:
@@ -279,7 +284,8 @@ class CiPathAdversarialTests(unittest.TestCase):
                 self.assertEqual(result["docs_only"], "false")
 
     def test_workflow_and_classifier_changes_force_full_validation(self) -> None:
-        for path in (".github/workflows/ci.yml", "tools/ci_paths.py", "tools/test_ci_paths.py",
+        for path in (".github/workflows/ci.yml", ".github/workflows/codeql-wake.yml",
+                     "tools/ci_paths.py", "tools/test_ci_paths.py",
                      "tools/ci_test_shards.py", "tools/test_ci_test_shards.py"):
             with self.subTest(path=path):
                 result = classify([path])
@@ -498,6 +504,93 @@ class CiPathAdversarialTests(unittest.TestCase):
         self.assertEqual(classify(["src\\rt\\hle.c"])["run_native"], "true")
         self.assertEqual(classify(["./docs/CI.md"])["docs_only"], "true")
 
+
+
+class MergeGroupRoutingTests(unittest.TestCase):
+    """A merge-queue group is a candidate for main: the complete matrix, never path-gated."""
+
+    GATES = (
+        "run_python",
+        "run_native",
+        "run_windows",
+        "run_markdown",
+        "run_main_smoke",
+        "allow_substantive",
+    )
+
+    def test_merge_group_runs_the_complete_matrix_for_any_paths(self) -> None:
+        for paths in (["docs/CI.md"], ["README.md"], ["src/rt/hle.c"], ["tools/ci_paths.py"], []):
+            with self.subTest(paths=paths):
+                result = classify(paths, event_name="merge_group")
+                for key in self.GATES:
+                    self.assertEqual(result[key], "true", key)
+                self.assertEqual(result["security_publication"], "true")
+                self.assertEqual(result["python_scope"], "all")
+                self.assertEqual(result["python_num_shards"], "4")
+                self.assertEqual(result["docs_only"], "false")
+                self.assertEqual(result["draft"], "false")
+
+    def test_merge_group_is_classified_exactly_like_a_manual_dispatch(self) -> None:
+        for paths in (["docs/CI.md"], ["src/rt/hle.c"], ["new-tool-input.dat"]):
+            with self.subTest(paths=paths):
+                self.assertEqual(
+                    classify(paths, event_name="merge_group"),
+                    classify(paths, event_name="workflow_dispatch"),
+                )
+
+    def test_merge_group_diff_endpoints_come_from_the_payload(self) -> None:
+        event = {"merge_group": {"base_sha": "a" * 40, "head_sha": "b" * 40}}
+        self.assertEqual(ci_paths_module._diff_endpoints("merge_group", event), ("a" * 40, "b" * 40))
+
+    def test_merge_group_payload_without_endpoints_has_no_range(self) -> None:
+        for event in ({}, {"merge_group": None}, {"merge_group": {"base_sha": "a" * 40}}):
+            with self.subTest(event=event):
+                self.assertIsNone(ci_paths_module._diff_endpoints("merge_group", event))
+
+    @patch.object(ci_paths_module.subprocess, "run")
+    def test_merge_group_change_set_is_the_payload_range(self, run) -> None:
+        run.return_value.stdout = "M\tsrc/rt/hle.c\nA\tdocs/new.md\n"
+        event = {"merge_group": {"base_sha": "a" * 40, "head_sha": "b" * 40}}
+        paths = ci_paths_module._changed_files_from_git("merge_group", event)
+        self.assertEqual(paths, ["src/rt/hle.c", "docs/new.md"])
+        args = run.call_args.args[0]
+        self.assertEqual(args[-2:], ["a" * 40, "b" * 40])
+
+    @patch.object(ci_paths_module.subprocess, "run")
+    def test_merge_group_without_a_range_fails_closed_without_diffing(self, run) -> None:
+        self.assertEqual(ci_paths_module._changed_files_from_git("merge_group", {}), ["<history-unavailable>"])
+        run.assert_not_called()
+
+    def test_main_writes_full_matrix_outputs_for_a_merge_group_event(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            event_path = Path(scratch) / "event.json"
+            event_path.write_text(
+                json.dumps({"merge_group": {"base_sha": "a" * 40, "head_sha": "b" * 40}}),
+                encoding="utf-8",
+            )
+            output_path = Path(scratch) / "github_output"
+            with patch.object(ci_paths_module.subprocess, "run") as run, patch("sys.stdout"):
+                run.return_value.stdout = "M\tdocs/CI.md\n"
+                code = ci_paths_module.main([
+                    "--event-name", "merge_group",
+                    "--event-path", str(event_path),
+                    "--github-output", str(output_path),
+                ])
+            values = dict(
+                line.split("=", 1) for line in output_path.read_text(encoding="utf-8").splitlines()
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(values["run_main_smoke"], "true")
+        self.assertEqual(values["allow_substantive"], "true")
+        self.assertEqual(values["run_native"], "true")
+        self.assertEqual(values["docs_only"], "false")
+
+    def test_pull_request_docs_only_routing_is_unchanged(self) -> None:
+        result = classify(["docs/CI.md"], event_name="pull_request")
+        self.assertEqual(result["docs_only"], "true")
+        self.assertEqual(result["run_native"], "false")
+        self.assertEqual(result["run_main_smoke"], "false")
+        self.assertEqual(result["allow_substantive"], "true")
 
 
 class PublicSurfaceRoutingRegressionTests(unittest.TestCase):
@@ -905,6 +998,163 @@ class PrecommitPathCoverageTests(unittest.TestCase):
         ):
             with self.subTest(prefix=prefix):
                 self.assertIsNotNone(pattern.search(f"{prefix}/input.bin"))
+
+
+class CodeqlWorkflowCategoryTests(unittest.TestCase):
+    def test_codeql_workflow_declares_unique_matrix_categories(self) -> None:
+        workflow_path = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "codeql.yml"
+        self.assertTrue(workflow_path.is_file(), "codeql.yml must exist")
+        content = workflow_path.read_text(encoding="utf-8")
+
+        # Verify matrix languages
+        matrix_langs = re.findall(r"-\s+language:\s*([a-zA-Z0-9_-]+)", content)
+        self.assertEqual(sorted(matrix_langs), ["actions", "c-cpp", "python"])
+
+        # Verify category input is passed to analyze. GitHub stores a run under the
+        # part of automationDetails.id before its last "/", so the trailing slash is
+        # what keeps "/language:<lang>" from collapsing into the empty category.
+        self.assertIn('category: "/language:${{ matrix.language }}/"', content)
+
+        # Verify python step assigns distinct automationDetails id
+        self.assertIn('category = f"/language:{language}/"', content)
+        self.assertIn('run.setdefault("automationDetails", {})["id"] = category', content)
+
+        # Verify upload script checks the stored category, not only the raw id
+        self.assertIn("duplicate SARIF analysis category", content)
+        self.assertIn("would be stored under SARIF category", content)
+        self.assertIn('category.lastIndexOf("/")', content)
+        self.assertIn('const stored = cut > 0 ? category.slice(0, cut) : "";', content)
+        self.assertIn("if (stored !== `/language:${language}`) {", content)
+        self.assertIn("if (categories.has(stored)) {", content)
+        self.assertIn("categories.size !== expected.length", content)
+
+        # A restored TRAP cache once yielded an empty C/C++ database; scans extract from source.
+        self.assertIn("trap-caching: false", content)
+
+        # Every place the workflow writes a category must keep the trailing slash.
+        for writer in (
+            r'category: "/language:\$\{\{ matrix\.language \}\}(/?)"',
+            r'category = f"/language:\{language\}(/?)"',
+            r'\|\| `/language:\$\{language\}(/?)`',
+        ):
+            with self.subTest(writer=writer):
+                found = re.findall(writer, content)
+                self.assertEqual(found, ["/"], f"category writer {writer!r} must end in '/'")
+
+    def test_sarif_category_uniqueness_enforcement(self) -> None:
+        """Simulate combining multiple SARIF runs and assert duplicate categories are rejected."""
+        def combine_sarif_runs(runs_by_file: dict[str, list[dict]]) -> tuple[dict, set[str]]:
+            expected_languages = ["actions", "c-cpp", "python"]
+            self.assertEqual(sorted(runs_by_file.keys()), [f"{lang}.sarif" for lang in expected_languages])
+
+            categories: set[str] = set()
+            combined_runs: list[dict] = []
+            for filename, runs in sorted(runs_by_file.items()):
+                lang = filename.replace(".sarif", "")
+                for run in runs:
+                    self.assertEqual(run.get("tool", {}).get("driver", {}).get("name"), "CodeQL")
+                    run_id = run.get("automationDetails", {}).get("id") or f"/language:{lang}/"
+                    run.setdefault("automationDetails", {})["id"] = run_id
+                    cut = run_id.rfind("/")
+                    cat = run_id[:cut] if cut > 0 else ""
+                    if cat != f"/language:{lang}":
+                        raise ValueError(f"would be stored under SARIF category {cat!r}")
+                    if cat in categories:
+                        raise ValueError(f"duplicate SARIF analysis category: {cat}")
+                    categories.add(cat)
+                    combined_runs.append(run)
+
+            if len(categories) != len(expected_languages):
+                raise ValueError(f"expected {len(expected_languages)} distinct categories, found {len(categories)}")
+            return {"runs": combined_runs}, categories
+
+        # Positive case: 3 distinct categories
+        valid_input = {
+            "actions.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:actions/"}}],
+            "c-cpp.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:c-cpp/"}}],
+            "python.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:python/"}}],
+        }
+        sarif, cats = combine_sarif_runs(valid_input)
+        self.assertEqual(len(sarif["runs"]), 3)
+        self.assertEqual(cats, {"/language:actions", "/language:c-cpp", "/language:python"})
+
+        # Negative case: a run labelled with another language's category
+        mislabelled_input = {
+            "actions.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:python/"}}],
+            "c-cpp.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:c-cpp/"}}],
+            "python.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:python/"}}],
+        }
+        with self.assertRaises(ValueError) as cm:
+            combine_sarif_runs(mislabelled_input)
+        self.assertIn("would be stored under SARIF category", str(cm.exception))
+
+        # Negative case: two runs of one language share a category
+        duplicate_input = {
+            "actions.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:actions/"}}],
+            "c-cpp.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:c-cpp/"}}],
+            "python.sarif": [
+                {"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:python/"}},
+                {"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:python/"}},
+            ],
+        }
+        with self.assertRaises(ValueError) as cm:
+            combine_sarif_runs(duplicate_input)
+        self.assertIn("duplicate SARIF analysis category", str(cm.exception))
+
+        # The pre-fix shape: no trailing slash, so every run lands in the empty category.
+        slashless_input = {
+            "actions.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:actions"}}],
+            "c-cpp.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:c-cpp"}}],
+            "python.sarif": [{"tool": {"driver": {"name": "CodeQL"}}, "automationDetails": {"id": "/language:python"}}],
+        }
+        with self.assertRaises(ValueError) as cm:
+            combine_sarif_runs(slashless_input)
+        self.assertIn("would be stored under SARIF category ''", str(cm.exception))
+
+    def test_codeql_starts_from_the_wake_workflow_and_not_from_ci(self) -> None:
+        """The trusted analysis starts at push time (codeql-wake.yml), not after all of CI."""
+        workflows = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+        codeql = (workflows / "codeql.yml").read_text(encoding="utf-8")
+        self.assertIn('workflows: ["CodeQL wake"]', codeql)
+        self.assertNotIn("workflows: [CI]", codeql)
+        self.assertIn("types: [completed]", codeql)
+        # The prepare job still refuses any trigger that is not a pull request run.
+        self.assertIn("github.event.workflow_run.event == 'pull_request'", codeql)
+        self.assertIn('if (!run || run.event !== "pull_request") {', codeql)
+
+    def test_codeql_concurrency_groups_by_head_repository_and_branch(self) -> None:
+        """Superseded heads of a branch are cancelled; forks never share a group."""
+        codeql = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "codeql.yml").read_text(
+            encoding="utf-8")
+        self.assertIn("group: codeql-${{ github.event.workflow_run.head_repository.full_name || github.repository }}/", codeql)
+        self.assertIn("github.event.workflow_run.head_branch", codeql)
+        self.assertIn("cancel-in-progress: true", codeql)
+        # The per-run group it replaced would let every superseded head run to a refused upload.
+        self.assertNotIn("github.event.workflow_run.id", codeql)
+
+    def test_codeql_wake_workflow_is_signal_only(self) -> None:
+        """codeql-wake.yml emits a signal: no checkout, no secrets, no permissions, no repo code."""
+        wake = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "codeql-wake.yml").read_text(
+            encoding="utf-8")
+        self.assertIn("name: CodeQL wake\n", wake)
+        self.assertIn("on:\n  pull_request:\n    types: [opened, synchronize, reopened]\n", wake)
+        self.assertIn("permissions: {}\n", wake)
+        code = "\n".join(line for line in wake.splitlines() if not line.lstrip().startswith("#"))
+        for forbidden in ("uses:", "actions/checkout", "pull_request_target", "workflow_run", "secrets.",
+                          "contents:", "security-events"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, code)
+        # The run step interpolates nothing from the event or from the repository.
+        run_lines = [line for line in wake.splitlines() if line.lstrip().startswith("run:")]
+        self.assertTrue(run_lines)
+        for line in run_lines:
+            self.assertNotIn("${{", line)
+
+    def test_codeql_workflow_upload_step_guards_duplicate_categories(self) -> None:
+        """Assert upload step in codeql.yml requires distinct automationDetails.id categories."""
+        codeql_yml = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "codeql.yml").read_text(encoding="utf-8")
+        self.assertIn("duplicate SARIF analysis category", codeql_yml)
+        self.assertIn("categories.size !== expected.length", codeql_yml)
 
 
 if __name__ == "__main__":

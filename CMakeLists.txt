@@ -20,6 +20,8 @@ endif()
 # -----------------------------------------------------------------------------
 set(CORE_SOURCES
     src/core/nk_font.c
+    src/core/nk_pgf_host.c
+    src/rt/pgf_public.c
     src/core/nk_iso.c
     src/core/nk_library.c
     src/core/nk_launch.c
@@ -54,7 +56,15 @@ endif()
 target_include_directories(nakagawa_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core/generated
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/rt
 )
+
+# CMake has no private PGF/PGD/ISO/audio backend to select, so this library is always the
+# public-safe build. It selects the public PGF reader (src/rt/pgf_public.c), and the Makefile's
+# PUBLIC_SAFE=1 branch defines SR_PUBLIC_SAFE for every object. PUBLIC carries the same define to
+# the player and to the tests that link this library. tools/test_public_ci_wiring.py checks that
+# both build files agree.
+target_compile_definitions(nakagawa_core PUBLIC SR_PUBLIC_SAFE)
 
 # -----------------------------------------------------------------------------
 # Native Core Test Harness
@@ -96,6 +106,9 @@ add_executable(test_pgf_public
 target_include_directories(test_pgf_public PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/rt
 )
+# This target compiles src/rt/pgf_public.c itself instead of linking nakagawa_core, so it
+# carries the public-safe define directly.
+target_compile_definitions(test_pgf_public PRIVATE SR_PUBLIC_SAFE)
 add_test(NAME pgf_public_test COMMAND test_pgf_public)
 
 add_executable(test_xb_parser
@@ -128,6 +141,9 @@ target_include_directories(test_player_state PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/player
 )
 target_link_libraries(test_player_state PRIVATE nakagawa_core)
+if(WIN32)
+    target_link_libraries(test_player_state PRIVATE winhttp bcrypt)
+endif()
 add_test(NAME player_state_test COMMAND test_player_state)
 # The sample player state uses a source-relative fixture path, so this CTest
 # must run from the source tree just like the Makefile test target.
@@ -147,6 +163,9 @@ target_include_directories(test_package_builder PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/player
 )
 target_link_libraries(test_package_builder PRIVATE nakagawa_core)
+if(WIN32)
+    target_link_libraries(test_package_builder PRIVATE winhttp bcrypt)
+endif()
 # The test resolves the CLI relative to the working directory, so it must run
 # from the repository root (where tools/nk_cli.py lives), not from the build dir.
 add_test(NAME package_builder_test COMMAND test_package_builder)
@@ -221,6 +240,9 @@ if(BUILD_PLAYER)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/player
     )
     target_link_libraries(nakagawa_player PRIVATE nakagawa_core)
+    if(WIN32)
+        target_link_libraries(nakagawa_player PRIVATE winhttp bcrypt)
+    endif()
 
     if(TARGET SDL3::SDL3)
         target_link_libraries(nakagawa_player PRIVATE SDL3::SDL3)

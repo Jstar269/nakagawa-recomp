@@ -105,7 +105,7 @@ Corrections to the mission list:
    (`assets/public_source_profile.json`, `exclude_paths`) excludes them;
    the public build links project-authored seams instead
    (`iso_unavailable.c`, `audio_unavailable.c` and `pgd_unavailable.c`, all
-   `project_authored_attested`, and the clean-room PGF reader `pgf_public.c`,
+   `project_authored_attested`, and the project-authored PGF reader `pgf_public.c`,
    #349). They remain
    campaign items — a platform without ISO/VFS, audio, fonts, and
    install-data handling is incomplete — but the work is clean-room
@@ -125,8 +125,10 @@ Corrections to the mission list:
    upstream attribution. Maintainer decision (2026-10-01, #342): authorship
    of `evf.h` is unknown, so the derived attribution STAYS as the
    conservative claim; the remaining work is making the public
-   ledger/projection record that derived lineage and retiring the three
-   tool lineage exceptions separately (overlapping the #304 licensing
+   ledger/projection record that derived lineage and retiring the
+   remaining tool lineage exceptions (the two synthetic comparator test
+   suites test_funcdiff_cmp.py and test_nidseq.py were retired under #342;
+   gen_nidnames.py remains alongside evf.h, overlapping the #304 licensing
    decision);
    and the `guest_interp` record (`daybreak4-guest-interpreter`) was
    **unbacked** until the maintainer promoted the existing human-authored
@@ -152,8 +154,8 @@ Sizes at base.
 | --- | --- | --- | --- | --- | --- | --- |
 | G1 | Scheduler `src/rt/sched.c` (+ API declared in `src/rt/recomp.h`) | sal063 | 3,331 | `hle.c` thread/wait handlers, `driver.c` boot/run, `recomp.c` dispatch, `guest_interp.c` AOT-gap floor, LLE cpu/domain layers (PR 6 consumes its fatal signal) | `sched-selftest` (`sched_selftest.c`, ~50 cases), `tools/test_sched_invariants.py`, `hle-thread-selftest`, `test_callback_correctness.py`, `test_intr_waits_matrix.py`, `production-smoke-gap` | Highest: scheduling is one of the permanent host boundaries (§5 of the fidelity doc); every LLE domain switch crosses it |
 | G2 | ISO/VFS reader (excluded `src/rt/iso.c`; public backend `src/rt/iso_public.c` using `nk_iso`; seam `src/rt/iso.h` + `iso_unavailable.c` stub) | sal063 (excluded pending review); public backend project-authored | UNKNOWN in public tree (private history only) | `hle.c` IoFileMgr handlers, `driver.c`, production-smoke link, `nk_iso`/`xb` native helpers | `test_iso_parity.py`, `test_vfs_c.py`, `test_vfs_contained.py`, `test_extract_xb_*`, `xb_probe.py` (all against the seam + native helpers, not the excluded backend) | Highest: "program + ISO" route and transparent-archive VFS (§3.5 of the fidelity doc) |
-| G3 | PRX/ELF loader slice `tools/prxload.py` (1,529) + `tools/imports.py` (377) | sal063 | 1,906 | `analyze.py`, `codegen.py`, Makefile `pipeline`, `hle_manifest.py`, title codegen plan | `test_prxload_relocations.py`, `test_prxload_psp_header.py`, `test_imports.py`, `test_import_audit.py`, `test_production_smoke.py` | Highest: authentic loader/linker/relocation is the LLE pipeline entry (§3.2); KIRK/decrypt stage is a new clean-room item beside it |
-| G4 | PGF reader (excluded `src/rt/pgf.c`/`.h`; seam `pgf_api.h`) + project-owned PGF converter (new) + replacement payloads (new, excluded until review) | PPSSPP `Core/Font/PGF.cpp` lineage; payloads PPSSPP-camouflaged Ume/Adobe outlines | UNKNOWN in public tree | `hle.c` sceFont path (links `pgf_unavailable.c` today), guest `libfont.prx` metric-compatibility work | None against a backend (seam has no backend in public); converter/payload requirements in the font-origins record (route 2) | High: flagship UI text; LLE runs guest `libfont.prx` but host HLE + fallback need an honest reader; converter must be clean-room (pgftool has no licence — must not be adopted) |
+| G3 | PRX/ELF loader slice `tools/prxload.py` (1,529) + `tools/imports.py` (377) + `tools/import_stub_census.py` (project-authored census over the G3 layout model; its inputs follow G3) | sal063 (`prxload.py` and `imports.py` are `Derived from sal063` per their headers; `prxload.py` also ports PPSSPP `ElfReader::LoadRelocations`); `import_stub_census.py` is project-authored (its header) | 1,906 | `analyze.py`, `codegen.py`, Makefile `pipeline`, `hle_manifest.py`, title codegen plan | `test_prxload_relocations.py`, `test_prxload_psp_header.py`, `test_imports.py`, `test_import_audit.py`, `test_production_smoke.py` | Highest: authentic loader/linker/relocation is the LLE pipeline entry (§3.2); KIRK/decrypt stage is a new clean-room item beside it |
+| G4 | PGF reader (excluded `src/rt/pgf.c`/`.h`; public reader `src/rt/pgf_public.c`; seam `src/rt/pgf_api.h`) + project-owned PGF converter (new) + replacement payloads (new, excluded until review) + font-slot layout `src/core/nk_font_slots.h` and host stub `src/core/nk_pgf_host.c` (ledger class `project_authored_attested`; added 2026-10-09; the G4 rewrite target covers them) | PPSSPP `Core/Font/PGF.cpp` lineage for the excluded `pgf.c`; the public reader `pgf_public.c` is project-authored (its header); payloads PPSSPP-camouflaged Ume/Adobe outlines | UNKNOWN in public tree | `hle.c` sceFont path (the public-safe build compiles `src/rt/pgf_public.c` as its PGF backend), guest `libfont.prx` metric-compatibility work | `tests/native/test_pgf_public.c` (`native-core-tests`, synthetic fonts) and `tools/test_pgf_validate_parity.py` exercise `pgf_public.c`; nothing runs the excluded `pgf.c`. Converter/payload requirements are in the font-origins record (route 2) | High: flagship UI text; LLE runs guest `libfont.prx` but host HLE + fallback need an honest reader; converter must be clean-room (pgftool has no licence — must not be adopted) |
 | G5 | VFPU interpreter `src/rt/vfpu_interp.c` (681) + PPSSPP-origin tables `assets/vfpu/*.dat` + project-authored loader `vfpu_tables.c` | PPSSPP (`MIPSVFPUUtils.cpp`, `vcst`) | 681 + 15 data files | codegen VFPU fallback emission, `vfpu_fuzz.c` differential harness, production interpreter fallback | `vfpu-interp-selftest`, `vfpu_tables_selftest`, `test_vfpu_*` (nan_payload, synth_corpus, oracle, provenance, table_manifest, trace_bits), hardware Group A/B cells (measured, indexed in `HARDWARE_ORACLE.md`) | High: VFPU executes as guest code under LLE, but every host evaluation (fallback, fuzz, oracle comparison) needs independently established semantics |
 | G6 | Reference interpreter `src/ref/*` (5 files) | sal063 | 1,650 | `microtest_gate.py`, `codegen_gate.py` (`oracle=interp` mode), funcdiff flows; **not** linked into any game executable | `src/ref/selftest.cpp`, gates (need PPSSPP traces → BLOCKED without; `oracle=interp` self-modes run) | Medium: differential oracle for the pipeline; partly superseded by source-owned cosimulation (AOT vs production interpreter) |
 | G7 | Analyzer + codegen `tools/analyze.py` (2,473) + `tools/codegen.py` (2,468) + gates/tooling slice (~1,395) | sal063 | ~6,336 | Makefile `pipeline`, all generated C, `codegen_gate.py`, cosim fixtures, title codegen plan | `test_analyze_*`, `test_codegen_*` (continuations, entry, fp_convert, madd/msub, vfpu_fallback, transfer timing…), `production-smoke`, `cosim-selftest` + `cosim-mutants`, `test_nid_name_proof.py` | Highest: the translation core is the "definitive static-recompilation platform" claim; codegen gates are LLE-touched (ABI v2, flow metadata) |
@@ -162,7 +164,7 @@ Sizes at base.
 | G10 | Software GE rasterizer `src/rt/ge.c` (3,604) + `src/rt/ge_shared.h` (226) | PPSSPP (`GPU/Software/*`, `GPU/Common/VertexDecoder*`) | 3,830 | `gpu_sdl3vk` (consumes screen-space primitives via hooks), `ppmdiff.py` A/B, `ge_capture`/`ge_replay` | `ge_capture_selftest`, `gpu_capture/coherence-selftest`s, `test_ge_capture.py`, A/B snapshot agreement (local consistency only, never PSP truth) | Medium: host must present pixels regardless; software path is the comparison oracle, Vulkan path is the presentation path |
 | G11 | Vulkan backend `src/rt/gpu_sdl3vk/*` (sources + shaders + embeds) and the presenter-neutral capture service moved out of it, `src/rt/fbcap.c` + `src/rt/fbcap.h` | sal063 record, tier R (original-expression-over-derived-behaviour; see §1) | ~6,300 | Window/input/presentation ownership, `gui.c` forwarding, `SR_GPU_GE=1` runs | `gpu-coherence-selftest`, `gpu-capture-selftest`, `test_native_host_backends.py`, `test_shader_embed.py` | Medium: IS the hardware-domain boundary (submit/present stay host-side under LLE); pixel rules inherit G10's disposition |
 | G12 | Media `src/rt/mpeg.c` (623, PPSSPP `sceMpeg.cpp` port) + `src/rt/h264_mf.c` (497, sal063 MF glue) + `src/rt/savedata.c` (1,093, PPSSPP SavedataParam lineage) | PPSSPP / sal063 | 2,213 | `hle.c` sceMpeg/sceUtility/sceVideocodec handlers; `h264_null.c` is the project-authored null path | `test_mpeg_h264_bounds.py`, `test_savedata_security.py`, `test_savedata_spans.py`, `atrac3p-selftest`s (decoder side) | High for mpeg (LLE runs guest PSMF, host decodes at the `sceMpeg`/`sceVideocodec` boundary per fidelity §3.4); low for savedata (host-filesystem mapping is inherently host code) |
-| G13 | Host shell `src/rt/driver.c` (558) + `funcdiff.c` (157) + `gui.c` (349) + `osk_win.c` (96); VFPU fuzz harness `src/rt/vfpu_fuzz.c` (350) | sal063 | 1,510 | Final link of every title executable; verification flows (funcdiff, fuzz) | `test_native_driver_hardening.py`, `test_ref_run_elf_hardening.py`, production-smoke (real driver + registration table), fuzz harness runs | Low: host glue with no PSP semantics; ideal parallel clean-room filler |
+| G13 | Host shell `src/rt/driver.c` (558) + `funcdiff.c` (157) + `gui.c` (349) + `osk_win.c` (96); its project-authored in-window replacement `src/rt/osk_overlay.c`, `src/rt/osk_overlay.h`, `src/rt/osk_overlay_paint.c`, `src/rt/osk_overlay_paint.h`, and their selftests `src/rt/osk_overlay_selftest.c`, `src/rt/osk_overlay_paint_selftest.c` (added 2026-10-09; not inherited); VFPU fuzz harness `src/rt/vfpu_fuzz.c` (350) | sal063 | 1,510 | Final link of every title executable; verification flows (funcdiff, fuzz) | `test_native_driver_hardening.py`, `test_ref_run_elf_hardening.py`, production-smoke (real driver + registration table), fuzz harness runs | Low: host glue with no PSP semantics; ideal parallel clean-room filler |
 | G14 | PGD/amctrl (excluded `src/rt/pgd.c`/`.h`, `tools/pgd_decrypt.py` + pgd tests) | excluded pending qualified provenance/distribution review | UNKNOWN in public tree | `pgd_api.h` seam (`pgd_unavailable.c` linked) | Excluded tests only (`test_pgd_*`, harness — all excluded) | None today: stays excluded; see §4 disposition (c) |
 | G15 | Behaviour-hardening (no rewrite): `evf.h` (64), `fp_convert.h` (360), `guest_interp.c`/`.h` (704) | project-authored expression, PPSSPP-consulted (tiers R/R/S) | 1,128 | `hle.c` event-flag + float paths; AOT-gap execution floor; cosim lane | `evf_selftest` + `test_evf_c.py`, `fp-convert-selftest` + `test_fp_scalar_mutations.py`, cosim suite + `test_cosim_fixture.py` | Medium: `fp_convert` is nearest to independent (PSPAutotests pin + MIPS32 rationale already in its header); `guest_interp` blocked on the maintainer attestation item (§1.3) |
 
@@ -276,8 +278,9 @@ replacement by an LLE path that makes the component unnecessary ·
   maintainer decision (2026-10-01, #342) keeps the `Derived from PPSSPP`
   header attribution as the conservative claim; the remaining work is
   making the public ledger/projection record derived-from-PPSSPP instead
-  of project-authored with null upstream, then retiring the three tool
-  lineage exceptions separately — maintainer-paced, blocked on the trusted
+  of project-authored with null upstream, then retiring the remaining tool
+  lineage exceptions (test_funcdiff_cmp.py and test_nidseq.py retired under #342)
+  — maintainer-paced, blocked on the trusted
   record update and the #304 licensing decision.
   `fp_convert.h`: closest to done — PSPAutotests pin + MIPS32 rationale
   already in-header; remaining work is confirming the exact pin's licence
@@ -515,7 +518,8 @@ that authority.
    2026-10-01 maintainer decision (#342) — keep the derived header,
    correct the ledger/projection to derived-from-PPSSPP (blocked on the
    trusted-record update and the #304 licensing decision), and retire the
-   three tool lineage exceptions separately.
+   remaining tool lineage exceptions separately (test_funcdiff_cmp.py and
+   test_nidseq.py retired under #342).
 5. PGF payload admission ultimately needs counsel answers (font-origins
    §8: OFL aggregation vs GPL program, RFN rename sufficiency, metric
    reproduction exposure, camouflage-name redistribution). Is counsel

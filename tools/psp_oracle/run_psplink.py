@@ -81,6 +81,7 @@ try:
         parse_registry_font_output,
         parse_registry_readonly_output,
         parse_umd_io_output,
+        validate_hle_edram_restore,
     )
 except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocation
     from psp_oracle.parse_golden import (
@@ -100,6 +101,7 @@ except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocat
         parse_registry_font_output,
         parse_registry_readonly_output,
         parse_umd_io_output,
+        validate_hle_edram_restore,
     )
 
 
@@ -108,6 +110,7 @@ DEFAULT_RESULTS = ROOT / "oracle" / "hardware-results"
 DEFAULT_GE_CORPUS = ROOT / "fixtures" / "psp_oracle" / "ge_corpus.json"
 DEFAULT_GE_CORPUS_SCHEMA = ROOT / "assets" / "ge_corpus.schema.json"
 TERMINAL_OUTCOMES = frozenset({"HANG", "RESET"})
+RETIRED_CAMPAIGN_CASES = frozenset({"hle-null-out-pointers"})
 _TEST_RECORD_RE = re.compile(
     r"^NAKAGAWA_PSP_TEST\b.*\bstatus=([A-Z]+)\b", re.MULTILINE
 )
@@ -195,9 +198,11 @@ _FIXED_CAMPAIGN_CASES = {
         "PSP-MUTEX-001", [("mutex-priority-inheritance", 7, _PASS)]
     ),
     # Each trial records sceKernelIsCpuIntrEnable() from the VBLANK handler in
-    # out0 and the six mutex returns in out1..out6. By the probe's design a
-    # trial counts (PASS) only when out0 is 0; FAIL marks a trial that does not
-    # count. _check_mutex_interrupt_trial enforces that pairing exactly.
+    # out0 (context only) and the six mutex returns in out1..out6. The verdict is
+    # machinery-only: a trial is PASS with result 1 when the handler completed it.
+    # FAIL is admitted here only so that _check_mutex_interrupt_trial can name it;
+    # that check refuses any trial that is not a completed PASS. The returned
+    # values are observations and are not compared with expected values.
     "mutex-interrupt-context": _fixed_campaign_rows(
         "PSP-MUTEX-001",
         [("mutex-interrupt-context", 3, _PASS)]
@@ -208,17 +213,19 @@ _FIXED_CAMPAIGN_CASES = {
 
 
 def _check_mutex_interrupt_trial(record) -> None:
-    """A trial's status must follow its recorded interrupt state, nothing else."""
+    """A trial counts only when the VBLANK handler completed it (result 1).
+
+    Completion and record order are the contract. The returned values are not
+    compared with any expected value here; the conformance matrix does that.
+    """
 
     if not record.case_id.startswith("mutex-interrupt-context-t"):
         return
     values = dict(record.values)
-    interrupts_enabled = int(values["out0"], 0)
-    expected = "PASS" if interrupts_enabled == 0 else "FAIL"
-    if record.status != expected or int(values["result"], 0) != (expected == "PASS"):
+    if record.status != "PASS" or int(values["result"], 0) != 1:
         raise ProtocolError(
             f"mutex-interrupt-context: {record.case_id} status {record.status} "
-            f"disagrees with its interrupt state out0={values['out0']}"
+            f"result {values['result']} is not a completed trial"
         )
 
 
@@ -235,9 +242,12 @@ CAMPAIGN_QUEUE_CASES = (
     "ge-break-continue",
     "refer-status-size",
     "registry-readonly",
+    "llsc-link",
+    "kernel-misc",
+    "vfpu-compare",
+    "fpu-cc",
     "registry-font",
     "umd-io",
-    "kernel-misc",
     "smoke",
     "thread-exit-delete",
     "teardown-test",
@@ -270,9 +280,12 @@ CAMPAIGN_CASE_ESTIMATE_SECONDS = {
     "ge-break-continue": 180,
     "refer-status-size": 120,
     "registry-readonly": 240,
+    "llsc-link": 90,
+    "kernel-misc": 90,
+    "vfpu-compare": 90,
+    "fpu-cc": 90,
     "registry-font": 120,
     "umd-io": 60,
-    "kernel-misc": 90,
     "smoke": 60,
     "thread-exit-delete": 180,
     "teardown-test": 60,
@@ -325,6 +338,18 @@ _MODULE_THREAD_HEADER_RE = re.compile(r"^Module Thread \((\d+)\)$")
 _PROBE_COMPLETE_RE = re.compile(
     r"^NAKAGAWA_PSP_COMPLETE schema=1 status=(PASS|FAIL|NOT_RUN)$", re.MULTILINE
 )
+# Issue #698 recorded one capture where S2 had one more thread than S0. The initial
+# hypothesis was that first host0 I/O might start a PSPLink-side service thread that
+# persists until reset; the measurements below did not establish that mechanism. A
+# directory listing is read-only and writes nothing to host0 or device storage.
+# Measured on 2026-10-12 (session psp-session-1012, PSP-3000, PSPLink v3.2.1): after a
+# soft reset the shell listed 17 threads before any host0 access and 17 after this
+# listing, byte-identical, so that boot showed no new thread in `thlist`; teardown
+# also passed with the warm-up disabled and with both the warm-up and post-unload
+# settle disabled. The warm-up remains a pre-S0 guard: if first host0 I/O starts a
+# service thread on a particular boot, that thread is included in S0. The original
+# 17-vs-18 result did not reproduce in these campaigns.
+HOST0_WARMUP_COMMAND = "ls host0:/"
 
 
 def parse_psplink_thread_snapshot(text: str) -> frozenset[tuple[str, str]]:
@@ -889,6 +914,12 @@ def _validate_campaign_contract(text: str, case_id: str) -> None:
         validate_dmac_size_matrix(text)
     elif match := re.fullmatch(r"dmac-size-matrix-size-0x([0-9a-f]{8})", case_id):
         validate_dmac_size_matrix_size(text, int(match.group(1), 16))
+    elif case_id == "hle-ge-edram":
+        # Registered as a fixed-shape stream, plus the restore invariant: a
+        # stream that leaves the GE translation width changed is a protocol
+        # failure, not a measurement.
+        parse_campaign_probe_output(text, case_id, require_complete=True)
+        validate_hle_edram_restore(text)
     elif case_id in CAMPAIGN_PROBE_CASES:
         parse_campaign_probe_output(text, case_id, require_complete=True)
     elif case_id == "registry-readonly":
@@ -1654,6 +1685,35 @@ class PsplinkCampaignRunner:
             modules=parsed["modlist"],
         ), None
 
+    def _take_baseline(self) -> tuple[PsplinkSnapshot | None, str | None]:
+        """Read S0 after the host0 warm-up, once the thread set has settled.
+
+        Any thread the warm-up starts is already inside the baseline the teardown
+        check compares against, and a baseline whose thread set still moves is
+        refused, so the check can never pass against a moving reference.
+        """
+        result = self._request(HOST0_WARMUP_COMMAND, self.cleanup_timeout)
+        if not self._ok(result):
+            return None, "host0 warm-up (`ls host0:/`) failed before the S0 baseline"
+        before, problem = self._take_snapshot()
+        if before is None:
+            return None, problem
+        # The recorded discrepancy was a thread-set delta, so only `thlist` is
+        # re-read for warm-up stability; memory and module snapshots are captured once.
+        reread = self._request("thlist", self.cleanup_timeout)
+        if not self._ok(reread):
+            return None, "S0 baseline re-read failed (thlist)"
+        try:
+            reread_threads = parse_psplink_thread_snapshot(reread[1] + reread[2])
+        except ValueError as exc:
+            return None, f"S0 baseline re-read could not be parsed ({exc})"
+        if reread_threads != before.threads:
+            return None, "S0 thread set changed after host0 warm-up; baseline is not stable"
+        self.recovery_events.append(
+            f"S0: host0 warm-up done; {len(before.threads)} threads, baseline re-read stable"
+        )
+        return before, None
+
     def _module_threads(
         self, module_uid: str
     ) -> tuple[frozenset[tuple[str, str]], str | None]:
@@ -1768,6 +1828,35 @@ class PsplinkCampaignRunner:
     def _unload(self, module_uid: str) -> bool:
         """Compatibility predicate for callers that only need confirmed unload."""
         return self._unload_status(module_uid) == "PASS"
+
+    def _settle_after_unload(self) -> tuple[str, int]:
+        """Settle the link after `modstun` before any post-unload check uses it.
+
+        On 2026-10-10 seven single-case hardware runs captured complete data and
+        confirmed the unload, then failed the post-unload shell qualification and
+        host0 round-trip, the way `pspsh ver` fails right after USBHostFS
+        connects. The settle issues `ver` through the shared bounded verifier
+        until PSPLink answers, so S2 and the shell qualification run on a link
+        that has answered since the unload; the round-trip after them is a
+        host-side file check and issues no PSPLink command. The settle never
+        decides the teardown verdict: when it is exhausted those checks still
+        run and classify the case as they would without it. Its attempts carry
+        their own event prefix so they never count as qualification attempts.
+        """
+        if self.terminal_reason is not None:
+            # A stopped session issues no further PSPLink commands (see _request).
+            return "NOT_RUN", 0
+        verified, _version, attempts, _detail = _verify_psplink_shell(
+            self.transport.run,
+            self.shell_verification_timeout,
+            take_unknown_command_events=getattr(
+                self.transport, "take_unknown_command_events", None
+            ),
+            record_event=lambda event: self.recovery_events.append(
+                f"post-unload settle: {event}"
+            ),
+        )
+        return ("PASS" if verified else "EXHAUSTED"), attempts
 
     def _verify_host0_roundtrip(self) -> bool:
         root = getattr(self.transport, "host0_root", None)
@@ -2414,7 +2503,7 @@ class PsplinkCampaignRunner:
                 )
             )
             return False
-        before, snapshot_problem = self._take_snapshot()
+        before, snapshot_problem = self._take_baseline()
         progress.before = before
         if before is None:
             self.state = "STOPPED"
@@ -2572,6 +2661,11 @@ class PsplinkCampaignRunner:
             self._unload_status(module_uid) if module_uid else "BLOCKED"
         )
         progress.unload_status = unload_status
+        # Only an issued stop/unload handshake disturbs the link; without a UID
+        # no `modstun` ran and there is nothing to settle.
+        settle_status, settle_attempts = (
+            self._settle_after_unload() if module_uid else ("NOT_RUN", 0)
+        )
         after_unload, s2_problem = self._take_snapshot()
         shell_qualified = self._shell_qualified()
         exprint = self._request("exprint", self.cleanup_timeout)
@@ -2615,6 +2709,8 @@ class PsplinkCampaignRunner:
             exprint_command_status=exprint[3],
         )
         teardown_report["modstun_reply"] = self.last_modstun_reply
+        teardown_report["settle_status"] = settle_status
+        teardown_report["settle_attempts"] = settle_attempts
         for stage, problem in (("S1", s1_problem), ("S2", s2_problem)):
             if problem:
                 teardown_report["issues"].append(
@@ -4018,6 +4114,8 @@ def main(argv: list[str] | None = None) -> int:
             case_id, separator, raw_path = specification.partition("=")
             if not separator or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", case_id):
                 parser.error("--campaign-case must be CASE_ID=PRX_PATH with a simple case id")
+            if case_id in RETIRED_CAMPAIGN_CASES:
+                parser.error(f"campaign case {case_id} is retired and cannot be scheduled")
             if case_id in seen_case_ids:
                 parser.error(f"duplicate campaign case id: {case_id}")
             seen_case_ids.add(case_id)

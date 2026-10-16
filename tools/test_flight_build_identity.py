@@ -42,6 +42,14 @@ try:
     import flight_diff
 except ModuleNotFoundError:
     from tools import flight_diff
+try:
+    import scratch_dir
+except ModuleNotFoundError:
+    from tools import scratch_dir
+try:
+    from test_build_truth import _scratch_build_root
+except ModuleNotFoundError:
+    from tools.test_build_truth import _scratch_build_root
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC_RT = ROOT / "src" / "rt"
@@ -132,10 +140,11 @@ class RecorderBundleTests(unittest.TestCase):
     """The bundle's build block records the build's reproducible identity."""
 
     def _build_and_dump(
-        self, tmp_path: Path, name: str, defines: list[str]
+        self, tmp_path: Path, name: str, defines: list[str], *, source: str = HARNESS_MAIN,
+        classes: str = "hle", limit: int = 4,
     ) -> tuple[dict, str, str]:
         main_c = tmp_path / f"{name}.c"
-        main_c.write_text(HARNESS_MAIN, encoding="utf-8")
+        main_c.write_text(source, encoding="utf-8")
         exe = tmp_path / f"{name}{'.exe' if os.name == 'nt' else ''}"
         bundle_path = tmp_path / f"{name}.json"
         compile_result = subprocess.run(
@@ -161,7 +170,7 @@ class RecorderBundleTests(unittest.TestCase):
             compile_result.returncode, 0, compile_result.stdout + compile_result.stderr
         )
         env = dict(os.environ)
-        env["SR_FLIGHT"] = "hle;4"
+        env["SR_FLIGHT"] = f"{classes};{limit}"
         env["SR_FLIGHT_OUTPUT"] = str(bundle_path)
         run_result = subprocess.run(
             [str(exe)],
@@ -175,8 +184,60 @@ class RecorderBundleTests(unittest.TestCase):
         raw = bundle_path.read_text(encoding="utf-8")
         return json.loads(raw), raw, run_result.stderr
 
+    def test_named_refusals_from_the_c_recorder_are_events_until_the_real_terminal(self):
+        """Schema 5 written by the production C recorder: a refusal is counted, then the end wins."""
+        refusal_then_fatal = (
+            '#include "flight_recorder.h"\n'
+            "\n"
+            "int main(void) {\n"
+            "    uint64_t sequence;\n"
+            "    sr_flight_init();\n"
+            "    sequence = sr_flight_hle_import(0x1579a159u, 0u, 0u, 0x08900100u, 0u);\n"
+            "    sr_flight_hle_arguments(sequence, 1u, 2u, 3u, 4u);\n"
+            "    sr_flight_hle_return(sequence, 0x80110001u);\n"
+            "    sr_flight_unsupported(0x1579a159u, 0x80110001u, 0u, 0x08900100u);\n"
+            "    sr_flight_fatal(SR_FLIGHT_KIND_FATAL_RAW_SYSCALL, 0x08900200u, 0x0cu, 0u);\n"
+            "    return 0;\n"
+            "}\n"
+        )
+        refusal_then_exit = (
+            '#include "flight_recorder.h"\n'
+            "\n"
+            "int main(void) {\n"
+            "    sr_flight_init();\n"
+            "    sr_flight_unsupported(0x1579a159u, 0x80110001u, 0u, 0x08900100u);\n"
+            "    sr_flight_exit(3u);\n"
+            "    return 0;\n"
+            "}\n"
+        )
+        with scratch_dir.TemporaryDirectory() as tmp:
+            identity = [f'-DSR_BUILD_ID="{FAKE_COMMIT}"']
+            fatal_bundle, _, _ = self._build_and_dump(
+                Path(tmp), "refusal_fatal", identity, source=refusal_then_fatal,
+                classes="hle,unsupported,fatal", limit=8,
+            )
+            exit_bundle, _, _ = self._build_and_dump(
+                Path(tmp), "refusal_exit", identity, source=refusal_then_exit,
+                classes="unsupported", limit=8,
+            )
+        self.assertEqual(fatal_bundle["schema_version"], 5)
+        self.assertEqual(fatal_bundle["terminal"]["reason"], "fatal")
+        self.assertEqual(fatal_bundle["terminal"]["kind"], 12)
+        self.assertEqual(fatal_bundle["refusals"]["count"], 1)
+        self.assertEqual(fatal_bundle["refusals"]["first_nid"], 0x1579A159)
+        self.assertEqual(fatal_bundle["refusals"]["first_pc"], 0x08900100)
+        self.assertEqual(
+            fatal_bundle["refusals"]["nids"], [{"nid": 0x1579A159, "count": 1}]
+        )
+        flight_diff.validate_bundle(fatal_bundle)
+        self.assertEqual(exit_bundle["terminal"]["reason"], "exit")
+        self.assertEqual(exit_bundle["terminal"]["arg0"], 3)
+        self.assertEqual(exit_bundle["recorder"]["triggers"]["fired"], 0)
+        self.assertEqual(exit_bundle["refusals"]["count"], 1)
+        flight_diff.validate_bundle(exit_bundle)
+
     def test_source_date_epoch_and_build_id_are_recorded(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with scratch_dir.TemporaryDirectory() as tmp:
             bundle, raw, _ = self._build_and_dump(
                 Path(tmp),
                 "both",
@@ -186,7 +247,7 @@ class RecorderBundleTests(unittest.TestCase):
                 ],
             )
         build = bundle["build"]
-        self.assertEqual(bundle["schema_version"], 4)
+        self.assertEqual(bundle["schema_version"], 5)
         self.assertEqual(build["source_date_epoch"], int(FAKE_EPOCH))
         self.assertEqual(build["build_id"], FAKE_COMMIT)
         self.assertNotIn("compiled_date", build)
@@ -196,7 +257,7 @@ class RecorderBundleTests(unittest.TestCase):
         flight_diff.validate_bundle(bundle)
 
     def test_build_id_alone_is_a_valid_identity(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with scratch_dir.TemporaryDirectory() as tmp:
             bundle, _, _ = self._build_and_dump(
                 Path(tmp), "commit", [f'-DSR_BUILD_ID="{FAKE_COMMIT}"']
             )
@@ -205,7 +266,7 @@ class RecorderBundleTests(unittest.TestCase):
         flight_diff.validate_bundle(bundle)
 
     def test_unidentified_build_records_nulls_and_fails_closed(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with scratch_dir.TemporaryDirectory() as tmp:
             bundle, raw, _ = self._build_and_dump(Path(tmp), "bare", [])
         build = bundle["build"]
         self.assertIsNone(build["source_date_epoch"])
@@ -218,7 +279,7 @@ class RecorderBundleTests(unittest.TestCase):
             flight_diff.validate_bundle(bundle)
 
     def test_non_numeric_source_date_epoch_fails_closed_to_null(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with scratch_dir.TemporaryDirectory() as tmp:
             bundle, raw, stderr = self._build_and_dump(
                 Path(tmp),
                 "bad-epoch",
@@ -231,7 +292,7 @@ class RecorderBundleTests(unittest.TestCase):
         flight_diff.validate_bundle(bundle)
 
     def test_epoch_beyond_the_schema_maximum_fails_closed_to_null(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with scratch_dir.TemporaryDirectory() as tmp:
             bundle, raw, stderr = self._build_and_dump(
                 Path(tmp),
                 "huge-epoch",
@@ -243,7 +304,7 @@ class RecorderBundleTests(unittest.TestCase):
         flight_diff.validate_bundle(bundle)
 
     def test_uppercase_build_id_is_recorded_lowercase(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with scratch_dir.TemporaryDirectory() as tmp:
             bundle, _, _ = self._build_and_dump(
                 Path(tmp), "upper", [f'-DSR_BUILD_ID="{FAKE_COMMIT.upper()}"']
             )
@@ -274,7 +335,7 @@ int main(void) {
     return 0;
 }
 '''
-        with tempfile.TemporaryDirectory() as tmp:
+        with scratch_dir.TemporaryDirectory() as tmp:
             temp_path = Path(tmp)
             source = temp_path / "flight_diff_recorder_fixture.c"
             source.write_text(harness, encoding="utf-8")
@@ -389,7 +450,7 @@ int main(void) {
     return 0;
 }
 '''
-        with tempfile.TemporaryDirectory() as tmp:
+        with scratch_dir.TemporaryDirectory() as tmp:
             temp_path = Path(tmp)
             source = temp_path / "flight_media_recorder_fixture.c"
             source.write_text(harness, encoding="utf-8")
@@ -542,13 +603,13 @@ class MakeIdentityResolutionTests(unittest.TestCase):
         self.assertTrue(make, "GNU Make is required for the build-identity check")
         environment = dict(os.environ)
         environment.update(env or {})
+        # A scratch BUILD_ROOT: even a dry run parses the Makefile, and that writes the
+        # SDL3 discovery fragment beneath BUILD_ROOT, which must not be the checkout's
+        # build/. The scratch path is Make-safe (no whitespace) by construction.
+        build_root = _scratch_build_root(self, "identity-probe")
         result = subprocess.run(
             [make, "--no-print-directory", "-p", "-n", "clean-preview",
-             # Relative and space-free: BUILD_DIR must stay a form GNU Make can
-             # put in a target name, or the Makefile's whitespace guard fails
-             # closed -- which is exactly what a checkout under a path with
-             # spaces would do to an absolute BUILD_DIR (#368).
-             "BUILD_DIR=build/identity-probe", *overrides],
+             f"BUILD_ROOT={build_root.as_posix()}", *overrides],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -613,7 +674,7 @@ class MakeIdentityResolutionTests(unittest.TestCase):
                 make,
                 "--no-print-directory",
                 "--dry-run",
-                "BUILD_DIR=build/flight-media-identity-dry-run",
+                f"BUILD_ROOT={_scratch_build_root(self, 'flight-media-identity').as_posix()}",
                 f"SR_SOURCE_COMMIT={FAKE_COMMIT}",
                 "psmf-media-selftest",
             ],

@@ -19,12 +19,12 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
+import scratch_dir
 import title_runtime_config
 import title_manifest
 
@@ -115,6 +115,7 @@ def run_libfont_selftest(make: str, tmp_path: Path, manifest_path: Path,
         "hle-title-selftest-one",
         f"HLE_TITLE_CONFIG=synthetic-{tag}",
         f"HLE_TITLE_MANIFEST={manifest_path.as_posix()}",
+        f"BUILD_ROOT={tmp_path.as_posix()}",
         f"BUILD_DIR={out_dir.as_posix()}",
         f"HLE_TITLE_SELFTEST_DIR={out_dir.as_posix()}",
         f"HLE_TITLE_SELFTEST_HEADER={header.as_posix()}",
@@ -201,7 +202,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         make = shutil.which("mingw32-make")
         if not make:
             raise unittest.SkipTest("mingw32-make is not available")
-        with tempfile.TemporaryDirectory(prefix="nakagawa_hle_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="nakagawa_hle_") as tmp:
             tmp_path = Path(tmp)
             manifest = tmp_path / "synthetic-positive.json"
             positive_manifest = synthetic_manifest()
@@ -215,6 +216,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
                 "hle-title-selftest-one",
                 "HLE_TITLE_CONFIG=synthetic-positive",
                 f"HLE_TITLE_MANIFEST={manifest.as_posix()}",
+                f"BUILD_ROOT={tmp_path.as_posix()}",
                 f"BUILD_DIR={tmp_path.as_posix()}",
                 f"HLE_TITLE_SELFTEST_DIR={tmp_path.as_posix()}",
                 f"HLE_TITLE_SELFTEST_HEADER={header.as_posix()}",
@@ -259,7 +261,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         make = shutil.which("mingw32-make")
         if not make:
             raise unittest.SkipTest("mingw32-make is not available")
-        with tempfile.TemporaryDirectory(prefix="nakagawa_libfont_startup_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="nakagawa_libfont_startup_") as tmp:
             tmp_path = Path(tmp)
             manifest_path = libfont_selftest_manifest(tmp_path)
             result = run_libfont_selftest(make, tmp_path, manifest_path)
@@ -296,7 +298,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         make = shutil.which("mingw32-make")
         if not make:
             raise unittest.SkipTest("mingw32-make is not available")
-        with tempfile.TemporaryDirectory(prefix="nakagawa_libfont_gate_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="nakagawa_libfont_gate_") as tmp:
             tmp_path = Path(tmp)
             manifest_path = libfont_selftest_manifest(tmp_path)
             result = run_libfont_selftest(make, tmp_path, manifest_path)
@@ -327,7 +329,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         make = shutil.which("mingw32-make")
         if not make:
             raise unittest.SkipTest("mingw32-make is not available")
-        with tempfile.TemporaryDirectory(prefix="nakagawa_hle_module_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="nakagawa_hle_module_") as tmp:
             tmp_path = Path(tmp)
             module_root = tmp_path / "modules"
             module_root.mkdir()
@@ -350,6 +352,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
                 "hle-title-selftest-one",
                 "HLE_TITLE_CONFIG=synthetic-module",
                 f"HLE_TITLE_MANIFEST={manifest.as_posix()}",
+                f"BUILD_ROOT={tmp_path.as_posix()}",
                 f"BUILD_DIR={tmp_path.as_posix()}",
                 f"HLE_TITLE_SELFTEST_DIR={tmp_path.as_posix()}",
                 f"HLE_TITLE_SELFTEST_HEADER={header.as_posix()}",
@@ -396,7 +399,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         make = shutil.which("mingw32-make")
         if not make:
             raise unittest.SkipTest("mingw32-make is not available")
-        with tempfile.TemporaryDirectory(prefix="nakagawa_hle_runtime_module_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="nakagawa_hle_runtime_module_") as tmp:
             tmp_path = Path(tmp)
             module_root = tmp_path / "modules"
             module_root.mkdir()
@@ -425,6 +428,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
                 "hle-title-selftest-one",
                 "HLE_TITLE_CONFIG=synthetic-runtime-module",
                 f"HLE_TITLE_MANIFEST={manifest.as_posix()}",
+                f"BUILD_ROOT={tmp_path.as_posix()}",
                 f"BUILD_DIR={tmp_path.as_posix()}",
                 f"HLE_TITLE_SELFTEST_DIR={tmp_path.as_posix()}",
                 f"HLE_TITLE_SELFTEST_HEADER={header.as_posix()}",
@@ -457,7 +461,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         make = shutil.which("mingw32-make")
         if not make:
             raise unittest.SkipTest("mingw32-make is not available")
-        with tempfile.TemporaryDirectory(prefix="nakagawa_hle_generic_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="nakagawa_hle_generic_") as tmp:
             tmp_path = Path(tmp)
             header = tmp_path / "sr_title_config.h"
             exe = tmp_path / "hle_title_production_selftest_generic-negative.exe"
@@ -467,6 +471,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
                 "hle-title-selftest-one",
                 "HLE_TITLE_CONFIG=generic-negative",
                 "HLE_TITLE_MANIFEST=",
+                f"BUILD_ROOT={tmp_path.as_posix()}",
                 f"BUILD_DIR={tmp_path.as_posix()}",
                 f"HLE_TITLE_SELFTEST_DIR={tmp_path.as_posix()}",
                 f"HLE_TITLE_SELFTEST_HEADER={header.as_posix()}",
@@ -493,7 +498,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         make = shutil.which("mingw32-make")
         if not make:
             raise unittest.SkipTest("mingw32-make is not available")
-        with tempfile.TemporaryDirectory(prefix="nakagawa_hle_hst_nooptin_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="nakagawa_hle_hst_nooptin_") as tmp:
             tmp_path = Path(tmp)
             manifest = tmp_path / "synthetic-hst-nooptin.json"
             no_optin_manifest = synthetic_manifest()
@@ -507,6 +512,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
                 "hle-title-selftest-one",
                 "HLE_TITLE_CONFIG=hst-nooptin",
                 f"HLE_TITLE_MANIFEST={manifest.as_posix()}",
+                f"BUILD_ROOT={tmp_path.as_posix()}",
                 f"BUILD_DIR={tmp_path.as_posix()}",
                 f"HLE_TITLE_SELFTEST_DIR={tmp_path.as_posix()}",
                 f"HLE_TITLE_SELFTEST_HEADER={header.as_posix()}",

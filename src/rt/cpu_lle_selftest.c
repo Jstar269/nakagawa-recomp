@@ -22,10 +22,19 @@
 
 #include <stdlib.h>
 #include <string.h>
+
+/* Scratch root for the files this test writes: the checkout's build/ by default, or
+ * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
+ * touches the checkout. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
 #ifdef _WIN32
+#include <direct.h>
 #include <windows.h>
 #include <wchar.h>
 #else
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -1016,6 +1025,235 @@ static void test_cop0_roundtrip(void) {
     CHECK(s.flow_kind == SR_FLOW_NONE, "clean COP0 traffic must not set flow");
 }
 
+/* ---- INTC pending/enable state and Cause.IP mirroring (spec 6.1, PR 5) ----------------
+ *
+ * SYNTHETIC. The PSP INTC register map, source numbering, CPU line, polarity, priority
+ * and nesting rules are open hardware-oracle questions (spec 6.3) and interrupt pending
+ * state is NOT_MEASURED in docs/HARDWARE_ORACLE.md. The 8-source controller on Cause.IP2
+ * below is a fixture contract, not a retail claim. What these cases pin is the spec 6.1
+ * model: no configuration means fail closed, a masked source stays pending, the line is
+ * pending & enabled, it is mirrored into exactly one Cause.IP bit a guest mtc0 cannot
+ * forge, and sr_cpu_poll still delivers nothing (delivery is PR 6).
+ *
+ * Failing-before evidence: on the base tree (origin/main 788465b2) none of the sr_intc_*
+ * API exists, so this file fails to build; mfc0 Cause returned the stored word, so a
+ * stale copy of the hardware bits was what the guest read. */
+
+#define INTC_TEST_SOURCES 8u
+#define INTC_TEST_IP 2u
+#define INTC_TEST_IP_BIT (1u << (8u + INTC_TEST_IP))   /* Cause bit 10 */
+
+static void intc_configure_fixture(void) {
+    SrIntcConfig config;
+    config.source_count = INTC_TEST_SOURCES;
+    config.cpu_ip_bit = INTC_TEST_IP;
+    CHECK(sr_intc_init(&config) == 0, "synthetic INTC configuration rejected");
+}
+
+/* What the guest reads from Cause through the production mfc0 helper (kernel mode). */
+static uint32_t intc_guest_cause(CpuState *s) {
+    s->r[6] = 0xDEADBEEFu;
+    CHECK(sr_cp0_mfc0(s, 6u, SR_CP0_CAUSE, 0u, TEST_BASE) == 0, "kernel mfc0 Cause must succeed");
+    return s->r[6];
+}
+
+/* No configuration, no device model: every call fails closed and Cause is not touched. */
+static void test_intc_unconfigured_fails_closed(void) {
+    static const SrIntcConfig bad[] = {
+        { 0u, INTC_TEST_IP },    /* no sources */
+        { 33u, INTC_TEST_IP },   /* wider than the 32-bit state */
+        { 8u, 0u },              /* IP0/IP1 are the guest-writable software pair */
+        { 8u, 1u },
+        { 8u, 8u },              /* Cause.IP has eight bits */
+    };
+    SrIntcConfig config;
+    CpuState s;
+
+    fresh_state(&s);   /* resets the INTC to unconfigured */
+    CHECK(sr_intc_raise(0u) < 0 && sr_intc_clear(0u) < 0,
+          "unconfigured INTC must reject raise and clear");
+    CHECK(sr_intc_set_enable_mask(1u) < 0, "unconfigured INTC must reject an enable mask");
+    CHECK(sr_intc_pending_mask() == 0u && sr_intc_enable_mask() == 0u,
+          "unconfigured INTC must report nothing pending or enabled");
+    s.cop0[SR_CP0_CAUSE] = 0x0000FC00u;
+    CHECK(sr_intc_cpu_pending(&s) < 0, "unconfigured INTC must not report a line");
+    CHECK(s.cop0[SR_CP0_CAUSE] == 0x0000FC00u,
+          "unconfigured INTC must leave Cause untouched (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
+    CHECK(intc_guest_cause(&s) == 0x0000FC00u,
+          "unconfigured mfc0 Cause must read the stored word (got 0x%08x)", s.r[6]);
+    CHECK(sr_intc_cpu_pending(NULL) < 0, "a NULL CPU must be rejected");
+
+    CHECK(sr_intc_init(NULL) < 0, "a NULL configuration must be rejected");
+    for (unsigned i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        CHECK(sr_intc_init(&bad[i]) < 0, "configuration %u (sources %u, IP%u) must be rejected",
+              i, bad[i].source_count, bad[i].cpu_ip_bit);
+        CHECK(sr_intc_raise(0u) < 0, "rejected configuration %u must leave the INTC unconfigured", i);
+    }
+
+    /* A rejected re-configuration keeps the previous controller and its state. */
+    config.source_count = 4u;
+    config.cpu_ip_bit = 3u;
+    CHECK(sr_intc_init(&config) == 0, "4-source controller on IP3 must be accepted");
+    CHECK(sr_intc_raise(3u) == 0, "source 3 of 4 must be accepted");
+    CHECK(sr_intc_raise(4u) < 0, "source 4 of 4 must be rejected");
+    CHECK(sr_intc_init(&bad[1]) < 0 && sr_intc_pending_mask() == 0x8u,
+          "a rejected re-configuration must keep the previous state (pending 0x%08x)",
+          sr_intc_pending_mask());
+
+    /* Boundaries: 32 sources and IP7 are valid; init resets pending and enable. */
+    config.source_count = 32u;
+    config.cpu_ip_bit = 7u;
+    CHECK(sr_intc_init(&config) == 0 && sr_intc_pending_mask() == 0u &&
+          sr_intc_enable_mask() == 0u, "init must install an idle 32-source controller");
+    CHECK(sr_intc_raise(31u) == 0 && sr_intc_set_enable_mask(0x80000000u) == 0,
+          "source 31 must be raisable and enableable");
+    s.cop0[SR_CP0_CAUSE] = 0u;
+    CHECK(sr_intc_cpu_pending(&s) == 1 && s.cop0[SR_CP0_CAUSE] == 0x00008000u,
+          "an IP7 line must mirror into Cause bit 15 only (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
+
+    sr_cpu_lle_reset_config();
+    CHECK(sr_intc_raise(0u) < 0 && sr_intc_pending_mask() == 0u,
+          "sr_cpu_lle_reset_config must unconfigure the INTC");
+}
+
+/* A masked source stays pending; the line (and Cause.IP) is pending & enabled. */
+static void test_intc_masked_pending_retention(void) {
+    CpuState s;
+
+    fresh_state(&s);   /* Status 0: kernel mode, so mfc0 is legal */
+    intc_configure_fixture();
+    CHECK(sr_intc_pending_mask() == 0u && sr_intc_enable_mask() == 0u,
+          "a fresh INTC has nothing pending or enabled");
+
+    CHECK(sr_intc_raise(3u) == 0, "raise must accept source 3");
+    CHECK(sr_intc_pending_mask() == 0x08u, "raise must latch source 3 (pending 0x%08x)",
+          sr_intc_pending_mask());
+    CHECK((intc_guest_cause(&s) & SR_CAUSE_IP_MASK) == 0u,
+          "a masked source must not reach Cause.IP (read 0x%08x)", s.r[6]);
+
+    /* MIPS32: Cause.IP reports pending lines whatever Status.IE/IM say, and the CPU-side
+     * masks never reach the controller. */
+    s.cop0[SR_CP0_STATUS] = 0u;
+    CHECK(sr_intc_set_enable_mask(0x08u) == 0, "enable must accept source 3");
+    CHECK(intc_guest_cause(&s) == INTC_TEST_IP_BIT,
+          "an enabled pending source must read as IP2 with Status IE/IM clear (read 0x%08x)",
+          s.r[6]);
+
+    /* Mask again: the line drops, the source stays pending. */
+    CHECK(sr_intc_set_enable_mask(0u) == 0, "mask must be accepted");
+    CHECK((intc_guest_cause(&s) & SR_CAUSE_IP_MASK) == 0u,
+          "masking must drop the line (read 0x%08x)", s.r[6]);
+    CHECK(sr_intc_pending_mask() == 0x08u,
+          "masking must not discard the pending source (pending 0x%08x)", sr_intc_pending_mask());
+
+    /* Re-enable: the retained source reasserts without a new raise. */
+    CHECK(sr_intc_set_enable_mask(0x08u) == 0, "re-enable must be accepted");
+    CHECK(intc_guest_cause(&s) == INTC_TEST_IP_BIT,
+          "re-enabling must reassert the retained source (read 0x%08x)", s.r[6]);
+    CHECK(sr_intc_raise(3u) == 0 && sr_intc_pending_mask() == 0x08u,
+          "a second raise of a pending source must stay one latch");
+
+    /* Acknowledge: pending clears and the line drops although the source is enabled. */
+    CHECK(sr_intc_clear(3u) == 0, "clear must accept source 3");
+    CHECK(sr_intc_pending_mask() == 0u && sr_intc_enable_mask() == 0x08u,
+          "clear must drop pending only (pending 0x%08x enable 0x%08x)",
+          sr_intc_pending_mask(), sr_intc_enable_mask());
+    CHECK((intc_guest_cause(&s) & SR_CAUSE_IP_MASK) == 0u,
+          "an acknowledged source must drop the line (read 0x%08x)", s.r[6]);
+
+    /* Two sources: the line follows whichever enabled source is pending. */
+    CHECK(sr_intc_raise(1u) == 0 && sr_intc_raise(5u) == 0, "raise 1 and 5");
+    CHECK(sr_intc_set_enable_mask(0x20u) == 0, "enable source 5 only");
+    CHECK(intc_guest_cause(&s) == INTC_TEST_IP_BIT, "enabled source 5 must assert the line");
+    CHECK(sr_intc_clear(5u) == 0, "clear source 5");
+    CHECK((intc_guest_cause(&s) & SR_CAUSE_IP_MASK) == 0u,
+          "masked source 1 alone must not hold the line (read 0x%08x)", s.r[6]);
+    CHECK(sr_intc_pending_mask() == 0x02u, "masked source 1 must stay pending (pending 0x%08x)",
+          sr_intc_pending_mask());
+    CHECK(sr_intc_set_enable_mask(0x22u) == 0, "enable sources 1 and 5");
+    CHECK(intc_guest_cause(&s) == INTC_TEST_IP_BIT, "retained source 1 must assert once enabled");
+
+    /* Out-of-range input is rejected without side effects. */
+    CHECK(sr_intc_raise(INTC_TEST_SOURCES) < 0 && sr_intc_clear(INTC_TEST_SOURCES) < 0,
+          "source %u of %u must be rejected", INTC_TEST_SOURCES, INTC_TEST_SOURCES);
+    CHECK(sr_intc_set_enable_mask(0x100u) < 0, "an enable bit past the last source must be rejected");
+    CHECK(sr_intc_pending_mask() == 0x02u && sr_intc_enable_mask() == 0x22u,
+          "rejected calls must change nothing (pending 0x%08x enable 0x%08x)",
+          sr_intc_pending_mask(), sr_intc_enable_mask());
+    CHECK(s.flow_kind == SR_FLOW_NONE, "INTC traffic must not set flow");
+}
+
+/* Guest mtc0 Cause can neither set nor clear the INTC-owned bit; the write re-derives it. */
+static void test_intc_cause_guest_writes(void) {
+    CpuState s;
+
+    fresh_state(&s);
+    intc_configure_fixture();
+
+    /* Stale stored copy with every hardware bit set while the line is low: the INTC bit
+     * follows the line, IP3..IP7 (unmodeled lines) stay as stored, the SW pair lands. */
+    s.cop0[SR_CP0_CAUSE] = 0x0000FC00u;
+    s.r[8] = 0xFFFFFFFFu;
+    CHECK(sr_cp0_mtc0(&s, 8u, SR_CP0_CAUSE, 0u, TEST_BASE) == 0, "kernel mtc0 Cause must succeed");
+    CHECK(s.cop0[SR_CP0_CAUSE] == ((0x0000FC00u & ~INTC_TEST_IP_BIT) | SR_CAUSE_IP_SW_MASK),
+          "all-ones write: INTC bit must follow the low line (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
+
+    /* A write naming only the INTC bit cannot set it. */
+    s.cop0[SR_CP0_CAUSE] = 0u;
+    s.r[8] = INTC_TEST_IP_BIT;
+    CHECK(sr_cp0_mtc0(&s, 8u, SR_CP0_CAUSE, 0u, TEST_BASE) == 0, "kernel mtc0 Cause must succeed");
+    CHECK(s.cop0[SR_CP0_CAUSE] == 0u, "a guest write must not forge the INTC bit (got 0x%08x)",
+          s.cop0[SR_CP0_CAUSE]);
+
+    /* Line high and the stored copy missing it: writing zero clears the SW pair only. */
+    CHECK(sr_intc_raise(0u) == 0 && sr_intc_set_enable_mask(0x01u) == 0, "assert source 0");
+    s.cop0[SR_CP0_CAUSE] = SR_CAUSE_IP_SW_MASK;
+    CHECK(sr_cp0_mtc0(&s, 0u, SR_CP0_CAUSE, 0u, TEST_BASE) == 0, "kernel mtc0 Cause must succeed");
+    CHECK(s.cop0[SR_CP0_CAUSE] == INTC_TEST_IP_BIT,
+          "a guest write must not clear an asserted INTC bit (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
+
+    /* BD and ExcCode are not guest-writable, and the resync touches only its own bit. */
+    s.cop0[SR_CP0_CAUSE] = SR_CAUSE_BD | (SR_EXC_SYS << 2);
+    s.r[8] = 0u;
+    CHECK(sr_cp0_mtc0(&s, 8u, SR_CP0_CAUSE, 0u, TEST_BASE) == 0, "kernel mtc0 Cause must succeed");
+    CHECK(s.cop0[SR_CP0_CAUSE] == (SR_CAUSE_BD | (SR_EXC_SYS << 2) | INTC_TEST_IP_BIT),
+          "BD/ExcCode must survive the resync (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
+    CHECK(sr_intc_pending_mask() == 0x01u && sr_intc_enable_mask() == 0x01u,
+          "guest Cause writes must not touch controller state");
+
+    /* A user-mode write still traps before reaching Cause or the controller. */
+    fresh_state(&s);
+    intc_configure_fixture();
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER;
+    s.r[8] = 0xFFFFFFFFu;
+    CHECK(sr_cp0_mtc0(&s, 8u, SR_CP0_CAUSE, 0u, TEST_BASE) < 0 &&
+          CAUSE_EXCCODE(s.cop0[SR_CP0_CAUSE]) == SR_EXC_CPU,
+          "user mtc0 Cause must trap as CPU");
+    CHECK((s.cop0[SR_CP0_CAUSE] & SR_CAUSE_IP_MASK) == 0u,
+          "a trapping write must not set any IP bit (got 0x%08x)", s.cop0[SR_CP0_CAUSE]);
+}
+
+/* Every MIPS32 condition for taking the interrupt holds, and PR 5 still delivers nothing:
+ * the poll reports none and leaves CpuState and the controller exactly as they were. */
+static void test_intc_poll_reports_none(void) {
+    CpuState s;
+    CpuState before;
+
+    fresh_state(&s);
+    intc_configure_fixture();
+    CHECK(sr_intc_raise(2u) == 0 && sr_intc_set_enable_mask(0x04u) == 0, "assert source 2");
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_IE | SR_STATUS_IM_MASK;   /* kernel, EXL/ERL 0 */
+    s.cop0[SR_CP0_EPC] = 0x12345678u;
+    s.pc = TEST_BASE;
+    memcpy(&before, &s, sizeof s);
+    CHECK(sr_cpu_poll(&s, TEST_BASE) == 0, "poll must report no interrupt");
+    CHECK(memcmp(&s, &before, sizeof s) == 0,
+          "poll must not change CpuState (Cause 0x%08x, EPC 0x%08x, pc 0x%08x, flow %u)",
+          s.cop0[SR_CP0_CAUSE], s.cop0[SR_CP0_EPC], s.pc, s.flow_kind);
+    CHECK(sr_intc_pending_mask() == 0x04u && sr_intc_enable_mask() == 0x04u,
+          "poll must not consume or mask the pending source");
+}
+
 /* User-mode COP0 access traps; unsupported encodings raise RI. */
 static void test_cop0_traps(void) {
     CpuState s;
@@ -1717,7 +1955,15 @@ static void test_interp_flow_trace(void) {
     MEM_W32_PC(TEST_BASE + 0u, enc_mtc0(5u, SR_CP0_EPC), TEST_BASE);
     s.pc = TEST_BASE;
 
-    const char *trace_path = "build/mygame/test_interp_trace.txt";
+    /* The trace folder beneath the scratch root, created here since nothing else makes it. The
+     * Makefile creates the root itself; an existing folder is fine, and a folder that could
+     * not be made fails sr_trace_open below. */
+#ifdef _WIN32
+    (void)_mkdir(SR_SELFTEST_BUILD_ROOT "/mygame");
+#else
+    (void)mkdir(SR_SELFTEST_BUILD_ROOT "/mygame", 0755);
+#endif
+    const char *trace_path = SR_SELFTEST_BUILD_ROOT "/mygame/test_interp_trace.txt";
     CHECK(sr_trace_open(trace_path, "test", TEST_BASE) == 0, "sr_trace_open must succeed");
     SrGuestInterpResult r = sr_guest_interp_run(&s, TEST_BASE, &fault);
     sr_trace_close();
@@ -1875,6 +2121,572 @@ static void test_lle_gate_off_data_access(void) {
     CHECK(s.flow_kind == SR_FLOW_NONE, "gate-off kernel-segment lw must not set flow");
 }
 
+/* The left/right merge helpers access the aligned containing word.  A word
+ * beyond the flat guest arena is dropped by the generated MEM_* accessors;
+ * the interpreter must reject it before calling the helper or continuing. */
+static void test_unaligned_store_guarded_region(void) {
+    CpuState s;
+    SrGuestInterpFault fault;
+    SrGuestInterpResult r;
+    const uint32_t address = 0x0C000001u;
+
+    unsigned long reads_before_accessor = g_oor_reads;
+    unsigned long writes_before_accessor = g_oor_writes;
+    sr_swl_pc(address, 0xA1B2C3D4u, TEST_BASE);
+    CHECK(g_oor_reads == reads_before_accessor + 1u &&
+          g_oor_writes == writes_before_accessor + 1u,
+          "generated swl accessors must drop an out-of-range containing word");
+
+    fresh_state(&s);
+    MEM_W32_PC(TEST_BASE + 0u, enc_mem(0x2Au, 13u, 14u, 0u), TEST_BASE);
+    MEM_W32_PC(TEST_BASE + 4u, 0x03E00008u, TEST_BASE + 4u);  /* jr $ra */
+    MEM_W32_PC(TEST_BASE + 8u, 0x00000000u, TEST_BASE + 8u);
+    s.pc = TEST_BASE;
+    s.r[13] = address;
+    s.r[14] = 0xA1B2C3D4u;
+    s.r[31] = TEST_SPAN_END;
+    reads_before_accessor = g_oor_reads;
+    writes_before_accessor = g_oor_writes;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_MEMORY_FAULT,
+          "out-of-range swl must fail closed (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(fault.pc == TEST_BASE && fault.opcode_valid &&
+          fault.opcode == enc_mem(0x2Au, 13u, 14u, 0u) &&
+          fault.address == 0x0C000000u,
+          "out-of-range swl fault must name the aligned containing word");
+    CHECK(g_oor_reads == reads_before_accessor &&
+          g_oor_writes == writes_before_accessor,
+          "interpreter must reject before the generated accessors touch memory");
+}
+
+/* ---- ll / sc (opcode 0x30 / 0x38) ---------------------------------------------------
+ *
+ * The same words run in three ways: the generated C emitted by tools/test_cpu_lle.py
+ * (default lane and --lle-cpu lane), and the production interpreter over the same
+ * bytes at the same guest address (the AOT bodies are never registered, so dispatch
+ * cannot hand the interpreter back to them). Each lane is checked against explicit
+ * expected values, not only against the other lane, so an error both lanes shared
+ * would still fail.
+ *
+ * Failing-before evidence: on the base tree CpuState has no llbit, codegen raises
+ * Unsupported for both opcodes (the fixture would not even contain these bodies), and
+ * the interpreter answers SR_GUEST_INTERP_UNSUPPORTED at the first ll/sc word. */
+
+#define LLSC_DEFAULT_ENTRY 0x08810900u
+#define LLSC_LLE_ENTRY 0x08810980u
+#define LLSC_LLE_MISALIGNED_SC_ENTRY 0x08810A00u
+#define LLSC_LLE_MISALIGNED_LL_ENTRY 0x08810A20u
+#define LLSC_DATA 0x08812000u
+#define LLSC_WORDS 7u
+
+void f_08810900(CpuState *s);
+void f_08810980(CpuState *s);
+void f_08810a00(CpuState *s);
+void f_08810a20(CpuState *s);
+
+static uint32_t enc_ll(unsigned base, unsigned rt, uint16_t offset) {
+    return enc_mem(0x30u, base, rt, offset);
+}
+static uint32_t enc_sc(unsigned base, unsigned rt, uint16_t offset) {
+    return enc_mem(0x38u, base, rt, offset);
+}
+
+/* Word-for-word the LLSC_SEQUENCE tools/test_cpu_lle.py emits. */
+static const uint32_t LLSC_SEQUENCE[] = {
+    0xE0890000u,   /* 0x00 sc    t1, 0(a0)    link as seeded */
+    0xC08A0004u,   /* 0x04 ll    t2, 4(a0) */
+    0x254A0005u,   /* 0x08 addiu t2, t2, 5 */
+    0xE08A0004u,   /* 0x0c sc    t2, 4(a0)    linked: stores, t2 = 1 */
+    0xE08B0008u,   /* 0x10 sc    t3, 8(a0)    link left set: stores again */
+    0xC080000Cu,   /* 0x14 ll    zero, 12(a0) links, no register write */
+    0xC08C0014u,   /* 0x18 L: ll t4, 20(a0) */
+    0x258C0001u,   /* 0x1c addiu t4, t4, 1 */
+    0xE08C0014u,   /* 0x20 sc    t4, 20(a0) */
+    0x1180FFFCu,   /* 0x24 beq   t4, zero, L */
+    0x00000000u,   /* 0x28 nop */
+    0xE0840018u,   /* 0x2c sc    a0, 24(a0)   rt == base */
+    0x03E00008u,   /* 0x30 jr    ra */
+    0x00000000u,   /* 0x34 nop */
+};
+
+static void llsc_place(uint32_t entry, const uint32_t *words, unsigned count) {
+    for (unsigned i = 0; i < count; i++)
+        MEM_W32_PC(entry + 4u * i, words[i], entry + 4u * i);
+}
+
+static void llsc_seed(CpuState *s, uint32_t llbit) {
+    fresh_state(s);
+    for (unsigned i = 0; i < LLSC_WORDS; i++)
+        MEM_W32_PC(LLSC_DATA + 4u * i, 0x1000u + 0x111u * i, LLSC_DATA);
+    for (unsigned i = 1; i < 32u; i++)
+        s->r[i] = 0xAAAA0000u | i;
+    s->r[4] = LLSC_DATA;
+    s->r[31] = TEST_SPAN_END;   /* the interpreter stops cleanly on the return */
+    s->llbit = llbit;
+}
+
+typedef struct {
+    CpuState state;
+    uint32_t data[LLSC_WORDS];
+} LlscOutcome;
+
+static void llsc_capture(LlscOutcome *out, const CpuState *s) {
+    out->state = *s;
+    for (unsigned i = 0; i < LLSC_WORDS; i++)
+        out->data[i] = MEM_R32(LLSC_DATA + 4u * i);
+}
+
+static void llsc_check_expected(const LlscOutcome *o, uint32_t seed_llbit, const char *lane) {
+    const CpuState *s = &o->state;
+    if (seed_llbit) {
+        CHECK(s->r[9] == 1u && o->data[0] == 0xAAAA0009u,
+              "%s: sc with the link set must store t1 and report 1 (t1=0x%08x m0=0x%08x)",
+              lane, s->r[9], o->data[0]);
+    } else {
+        CHECK(s->r[9] == 0u && o->data[0] == 0x1000u,
+              "%s: sc with the link clear must store nothing and report 0 "
+              "(t1=0x%08x m0=0x%08x)", lane, s->r[9], o->data[0]);
+    }
+    CHECK(s->r[10] == 1u && o->data[1] == 0x1111u + 5u,
+          "%s: ll/addiu/sc must commit the increment (t2=0x%08x m1=0x%08x)",
+          lane, s->r[10], o->data[1]);
+    CHECK(s->r[11] == 1u && o->data[2] == 0xAAAA000Bu,
+          "%s: sc leaves LLbit set, so a second sc also stores (t3=0x%08x m2=0x%08x)",
+          lane, s->r[11], o->data[2]);
+    CHECK(s->r[0] == 0u, "%s: ll zero must not write r0", lane);
+    CHECK(o->data[3] == 0x1333u, "%s: ll must not write memory (m3=0x%08x)", lane, o->data[3]);
+    CHECK(s->r[12] == 1u && o->data[5] == 0x1555u + 1u,
+          "%s: the retry loop must complete in one pass (t4=0x%08x m5=0x%08x)",
+          lane, s->r[12], o->data[5]);
+    CHECK(o->data[6] == LLSC_DATA && s->r[4] == 1u,
+          "%s: sc a0,24(a0) must store the old base and then report 1 "
+          "(m6=0x%08x a0=0x%08x)", lane, o->data[6], s->r[4]);
+    CHECK(o->data[4] == 0x1444u, "%s: untouched word changed (m4=0x%08x)", lane, o->data[4]);
+    CHECK(s->llbit == 1u, "%s: the link must still be set at the end (llbit=%u)",
+          lane, s->llbit);
+    CHECK(s->flow_kind == SR_FLOW_NONE, "%s: clean ll/sc must not set flow", lane);
+}
+
+static void llsc_compare(const LlscOutcome *aot, const LlscOutcome *interp, const char *what) {
+    for (unsigned i = 0; i < 32u; i++)
+        CHECK(aot->state.r[i] == interp->state.r[i], "%s: r%u AOT=0x%08x INTERP=0x%08x",
+              what, i, aot->state.r[i], interp->state.r[i]);
+    CHECK(aot->state.llbit == interp->state.llbit, "%s: llbit AOT=%u INTERP=%u",
+          what, aot->state.llbit, interp->state.llbit);
+    for (unsigned i = 0; i < 32u; i++)
+        CHECK(aot->state.cop0[i] == interp->state.cop0[i],
+              "%s: cop0[%u] AOT=0x%08x INTERP=0x%08x",
+              what, i, aot->state.cop0[i], interp->state.cop0[i]);
+    CHECK(aot->state.flow_kind == interp->state.flow_kind &&
+          aot->state.flow_target == interp->state.flow_target,
+          "%s: flow AOT=%u/0x%08x INTERP=%u/0x%08x", what,
+          aot->state.flow_kind, aot->state.flow_target,
+          interp->state.flow_kind, interp->state.flow_target);
+    for (unsigned i = 0; i < LLSC_WORDS; i++)
+        CHECK(aot->data[i] == interp->data[i], "%s: m%u AOT=0x%08x INTERP=0x%08x",
+              what, i, aot->data[i], interp->data[i]);
+}
+
+/* Run one generated body and the interpreter over the same words. */
+static void llsc_run_both(RecompFn body, uint32_t entry, const uint32_t *words,
+                          unsigned count, uint32_t seed_llbit, int lle,
+                          LlscOutcome *aot, LlscOutcome *interp,
+                          SrGuestInterpResult *interp_result, SrGuestInterpFault *fault) {
+    CpuState s;
+    llsc_seed(&s, seed_llbit);
+    sr_cpu_lle_set_enabled(lle);
+    s.pc = entry;
+    body(&s);
+    llsc_capture(aot, &s);
+
+    llsc_seed(&s, seed_llbit);
+    sr_cpu_lle_set_enabled(lle);
+    llsc_place(entry, words, count);
+    s.pc = entry;
+    memset(fault, 0, sizeof *fault);
+    *interp_result = sr_guest_interp_run(&s, entry, fault);
+    llsc_capture(interp, &s);
+    sr_cpu_lle_set_enabled(0);
+}
+
+static void test_llsc_aot_interp_parity(void) {
+    const unsigned count = sizeof LLSC_SEQUENCE / sizeof LLSC_SEQUENCE[0];
+    static const struct {
+        RecompFn body;
+        uint32_t entry;
+        int lle;
+        const char *lane;
+    } lanes[] = {
+        { f_08810900, LLSC_DEFAULT_ENTRY, 0, "default" },
+        { f_08810980, LLSC_LLE_ENTRY, 1, "lle-cpu" },
+    };
+    for (unsigned l = 0; l < sizeof lanes / sizeof lanes[0]; l++) {
+        for (uint32_t seed = 0; seed <= 1u; seed++) {
+            LlscOutcome aot, interp;
+            SrGuestInterpResult r;
+            SrGuestInterpFault fault;
+            char what[64];
+            snprintf(what, sizeof what, "ll/sc %s lane, seed llbit %u", lanes[l].lane, seed);
+            llsc_run_both(lanes[l].body, lanes[l].entry, LLSC_SEQUENCE, count, seed,
+                          lanes[l].lle, &aot, &interp, &r, &fault);
+            CHECK(r == SR_GUEST_INTERP_FETCH_BOUNDARY && fault.pc == TEST_SPAN_END,
+                  "%s: interpreter must run to the jr $ra and stop there (got %s at 0x%08x)",
+                  what, sr_guest_interp_result_name(r), fault.pc);
+            llsc_check_expected(&aot, seed, what);
+            llsc_check_expected(&interp, seed, what);
+            llsc_compare(&aot, &interp, what);
+        }
+    }
+}
+
+/* Under --lle-cpu a misaligned ll/sc is an address error before the link is consulted:
+ * nothing is loaded or stored, rt and LLbit are untouched (architectural MIPS32 order;
+ * not separately measured on the PSP for ll/sc). Both lanes must agree on EPC/Cause/
+ * BadVAddr as well. */
+static void test_llsc_lle_misaligned(void) {
+    static const struct {
+        RecompFn body;
+        uint32_t entry;
+        uint32_t word;
+        unsigned code;
+        uint32_t ea;
+        const char *what;
+    } cases[] = {
+        { f_08810a00, LLSC_LLE_MISALIGNED_SC_ENTRY, 0xE0890002u, SR_EXC_ADES,
+          LLSC_DATA + 2u, "misaligned sc" },
+        { f_08810a20, LLSC_LLE_MISALIGNED_LL_ENTRY, 0xC0890001u, SR_EXC_ADEL,
+          LLSC_DATA + 1u, "misaligned ll" },
+    };
+    for (unsigned c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        const uint32_t words[3] = { cases[c].word, 0x03E00008u, 0x00000000u };
+        LlscOutcome aot, interp;
+        SrGuestInterpResult r;
+        SrGuestInterpFault fault;
+        CHECK(cases[c].word == (cases[c].code == SR_EXC_ADES ? enc_sc(4u, 9u, 2u)
+                                                              : enc_ll(4u, 9u, 1u)),
+              "%s: fixture word drifted from its encoding", cases[c].what);
+        llsc_run_both(cases[c].body, cases[c].entry, words, 3u, 1u, 1, &aot, &interp,
+                      &r, &fault);
+        CHECK(r == SR_GUEST_INTERP_EXCEPTION, "%s: interpreter must raise (got %s)",
+              cases[c].what, sr_guest_interp_result_name(r));
+        for (int lane = 0; lane < 2; lane++) {
+            const LlscOutcome *o = lane == 0 ? &aot : &interp;
+            const char *name = lane == 0 ? "AOT" : "INTERP";
+            CHECK(CAUSE_EXCCODE(o->state.cop0[SR_CP0_CAUSE]) == cases[c].code,
+                  "%s %s: ExcCode=%u", cases[c].what, name,
+                  CAUSE_EXCCODE(o->state.cop0[SR_CP0_CAUSE]));
+            CHECK(o->state.cop0[SR_CP0_EPC] == cases[c].entry,
+                  "%s %s: EPC=0x%08x", cases[c].what, name, o->state.cop0[SR_CP0_EPC]);
+            CHECK(o->state.cop0[SR_CP0_BADVADDR] == cases[c].ea,
+                  "%s %s: BadVAddr=0x%08x", cases[c].what, name,
+                  o->state.cop0[SR_CP0_BADVADDR]);
+            CHECK(o->state.r[9] == 0xAAAA0009u, "%s %s: rt changed", cases[c].what, name);
+            CHECK(o->state.llbit == 1u, "%s %s: an address error must not touch LLbit",
+                  cases[c].what, name);
+            CHECK(o->data[0] == 0x1000u, "%s %s: memory changed", cases[c].what, name);
+            CHECK(o->state.flow_kind == SR_FLOW_EXCEPTION && o->state.pc == TEST_VECTOR,
+                  "%s %s: must transfer to the vector", cases[c].what, name);
+        }
+        llsc_compare(&aot, &interp, cases[c].what);
+    }
+}
+
+/* PSP-LLSC-001 (PSP-3000 / 6.61, 2026-10-15, probe build e45e667b): the three link
+ * windows fixtures/psp_oracle/probe.c ran on the console, with its values. On the PSP:
+ *   llsc-control        ll A; sc A        -> ll loads A, sc stores and reports 1;
+ *   llsc-second-sc      ll A; sc A; sc A  -> the second sc, with no new ll, also stores
+ *                                            and reports 1 (sc does not clear the link);
+ *   llsc-other-address  ll A; sc B        -> sc stores at B and reports 1, A unchanged
+ *                                            (sc does not compare its address with ll's).
+ * Each row is 16 bytes, word A at +0 and word B at +4, as in the probe. Both generated
+ * lanes and the interpreter must return exactly those words. */
+#define LLSC_MEASURED_DEFAULT_ENTRY 0x08810B00u
+#define LLSC_MEASURED_LLE_ENTRY 0x08810B80u
+#define LLSC_MEASURED_DATA 0x08812100u
+
+void f_08810b00(CpuState *s);
+void f_08810b80(CpuState *s);
+
+/* Word-for-word the LLSC_MEASURED_SEQUENCE tools/test_cpu_lle.py emits. */
+static const uint32_t LLSC_MEASURED_SEQUENCE[] = {
+    0xC0880000u,   /* 0x00 ll t0, 0(a0)    llsc-control */
+    0xE0890000u,   /* 0x04 sc t1, 0(a0) */
+    0xC08A0010u,   /* 0x08 ll t2, 16(a0)   llsc-second-sc */
+    0xE08B0010u,   /* 0x0c sc t3, 16(a0) */
+    0xE08C0010u,   /* 0x10 sc t4, 16(a0)   no new ll */
+    0xC08D0020u,   /* 0x14 ll t5, 32(a0)   llsc-other-address */
+    0xE08E0024u,   /* 0x18 sc t6, 36(a0)   word B of the row */
+    0x03E00008u,   /* 0x1c jr ra */
+    0x00000000u,   /* 0x20 nop */
+};
+
+static void llsc_measured_seed(CpuState *s) {
+    fresh_state(s);
+    for (unsigned row = 0; row < 3u; row++) {
+        MEM_W32_PC(LLSC_MEASURED_DATA + 16u * row, 0x11111111u, LLSC_MEASURED_DATA);
+        MEM_W32_PC(LLSC_MEASURED_DATA + 16u * row + 4u, 0x44444444u, LLSC_MEASURED_DATA);
+    }
+    s->r[4] = LLSC_MEASURED_DATA;
+    s->r[9] = 0x22222222u;    /* llsc-control: the sc value */
+    s->r[11] = 0x22222222u;   /* llsc-second-sc: the first sc value */
+    s->r[12] = 0x33333333u;   /* llsc-second-sc: the second sc value */
+    s->r[14] = 0x55555555u;   /* llsc-other-address: the sc value */
+    s->r[31] = TEST_SPAN_END;
+    s->llbit = 0u;
+}
+
+static void llsc_measured_check(const CpuState *s, const char *lane) {
+    static const struct {
+        const char *cell;
+        unsigned loaded_reg, first_reg, last_reg;
+        uint32_t a, b;   /* words at A and B after the cell, as the PSP left them */
+    } cells[] = {
+        { "llsc-control", 8u, 9u, 9u, 0x22222222u, 0x44444444u },
+        { "llsc-second-sc", 10u, 11u, 12u, 0x33333333u, 0x44444444u },
+        { "llsc-other-address", 13u, 14u, 14u, 0x11111111u, 0x55555555u },
+    };
+    for (unsigned c = 0; c < 3u; c++) {
+        const uint32_t row = LLSC_MEASURED_DATA + 16u * c;
+        CHECK(s->r[cells[c].loaded_reg] == 0x11111111u,
+              "PSP-LLSC-001 %s %s: ll loaded 0x%08x, the PSP loaded 0x11111111",
+              lane, cells[c].cell, s->r[cells[c].loaded_reg]);
+        CHECK(s->r[cells[c].first_reg] == 1u && s->r[cells[c].last_reg] == 1u,
+              "PSP-LLSC-001 %s %s: sc reported %u/%u, the PSP reported 1/1",
+              lane, cells[c].cell, s->r[cells[c].first_reg], s->r[cells[c].last_reg]);
+        CHECK(MEM_R32(row) == cells[c].a && MEM_R32(row + 4u) == cells[c].b,
+              "PSP-LLSC-001 %s %s: A=0x%08x B=0x%08x, the PSP left 0x%08x 0x%08x",
+              lane, cells[c].cell, MEM_R32(row), MEM_R32(row + 4u), cells[c].a, cells[c].b);
+    }
+    CHECK(s->llbit == 1u, "PSP-LLSC-001 %s: no event ended the last window (llbit=%u)",
+          lane, s->llbit);
+}
+
+static void test_llsc_measured_windows(void) {
+    static const struct {
+        RecompFn body;
+        uint32_t entry;
+        int lle;
+        const char *lane;
+    } lanes[] = {
+        { f_08810b00, LLSC_MEASURED_DEFAULT_ENTRY, 0, "default" },
+        { f_08810b80, LLSC_MEASURED_LLE_ENTRY, 1, "lle-cpu" },
+    };
+    const unsigned count = sizeof LLSC_MEASURED_SEQUENCE / sizeof LLSC_MEASURED_SEQUENCE[0];
+    for (unsigned l = 0; l < sizeof lanes / sizeof lanes[0]; l++) {
+        CpuState s;
+        SrGuestInterpFault fault;
+        SrGuestInterpResult r;
+        char what[64];
+
+        llsc_measured_seed(&s);
+        sr_cpu_lle_set_enabled(lanes[l].lle);
+        s.pc = lanes[l].entry;
+        lanes[l].body(&s);
+        snprintf(what, sizeof what, "AOT %s", lanes[l].lane);
+        llsc_measured_check(&s, what);
+
+        llsc_measured_seed(&s);
+        sr_cpu_lle_set_enabled(lanes[l].lle);
+        llsc_place(lanes[l].entry, LLSC_MEASURED_SEQUENCE, count);
+        s.pc = lanes[l].entry;
+        memset(&fault, 0, sizeof fault);
+        r = sr_guest_interp_run(&s, lanes[l].entry, &fault);
+        snprintf(what, sizeof what, "INTERP %s", lanes[l].lane);
+        CHECK(r == SR_GUEST_INTERP_FETCH_BOUNDARY && fault.pc == TEST_SPAN_END,
+              "PSP-LLSC-001 %s: interpreter must run to the jr $ra (got %s at 0x%08x)",
+              what, sr_guest_interp_result_name(r), fault.pc);
+        llsc_measured_check(&s, what);
+        sr_cpu_lle_set_enabled(0);
+    }
+}
+
+/* Interpreter-only field forms and the default lane's fail-closed alignment. */
+static void test_llsc_interpreter(void) {
+    CpuState s;
+    SrGuestInterpFault fault;
+    SrGuestInterpResult r;
+
+    /* sc with rt = $zero still stores while linked; only the result is dropped. */
+    llsc_seed(&s, 1u);
+    MEM_W32_PC(TEST_BASE + 0u, enc_sc(4u, 0u, 4u), TEST_BASE);
+    MEM_W32_PC(TEST_BASE + 4u, 0x03E00008u, TEST_BASE + 4u);
+    MEM_W32_PC(TEST_BASE + 8u, 0x00000000u, TEST_BASE + 8u);
+    s.pc = TEST_BASE;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_FETCH_BOUNDARY, "sc zero: got %s",
+          sr_guest_interp_result_name(r));
+    CHECK(MEM_R32(LLSC_DATA + 4u) == 0u && s.r[0] == 0u,
+          "sc zero must store 0 and leave r0 zero (m1=0x%08x)", MEM_R32(LLSC_DATA + 4u));
+
+    /* Default lane: a misaligned ll/sc keeps the historical fail-closed abort, before
+     * any architectural effect -- the link included. */
+    for (int store = 0; store <= 1; store++) {
+        llsc_seed(&s, store ? 1u : 0u);
+        MEM_W32_PC(TEST_BASE + 0u, store ? enc_sc(4u, 9u, 2u) : enc_ll(4u, 9u, 2u), TEST_BASE);
+        s.pc = TEST_BASE;
+        r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+        CHECK(r == SR_GUEST_INTERP_MISALIGNED_DATA,
+              "gate-off misaligned %s must stay MISALIGNED_DATA (got %s)",
+              store ? "sc" : "ll", sr_guest_interp_result_name(r));
+        CHECK(s.r[9] == 0xAAAA0009u && s.llbit == (store ? 1u : 0u),
+              "gate-off misaligned %s must not touch rt or LLbit", store ? "sc" : "ll");
+        CHECK(MEM_R32(LLSC_DATA) == 0x1000u, "gate-off misaligned sc must not store");
+    }
+
+    /* An ll..sc window with an eret between them: the eret clears the link, so the
+     * sc after it fails (MIPS32 ERET semantics), in the interpreter's eret path. */
+    llsc_seed(&s, 0u);
+    sr_cpu_lle_set_enabled(1);
+    MEM_W32_PC(TEST_BASE + 0x00u, enc_ll(4u, 9u, 0u), TEST_BASE);
+    MEM_W32_PC(TEST_BASE + 0x04u, SR_OPCODE_ERET, TEST_BASE + 4u);
+    MEM_W32_PC(TEST_BASE + 0x10u, enc_sc(4u, 9u, 0u), TEST_BASE + 0x10u);
+    MEM_W32_PC(TEST_BASE + 0x14u, 0x03E00008u, TEST_BASE + 0x14u);
+    MEM_W32_PC(TEST_BASE + 0x18u, 0x00000000u, TEST_BASE + 0x18u);
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_EXL;
+    s.cop0[SR_CP0_EPC] = TEST_BASE + 0x10u;
+    s.pc = TEST_BASE;
+    r = sr_guest_interp_run(&s, TEST_BASE, &fault);
+    CHECK(r == SR_GUEST_INTERP_ERET, "ll; eret must report ERET (got %s)",
+          sr_guest_interp_result_name(r));
+    CHECK(s.llbit == 0u, "eret must clear the link set by ll (llbit=%u)", s.llbit);
+    r = sr_guest_interp_run(&s, s.pc, &fault);
+    CHECK(s.r[9] == 0u && MEM_R32(LLSC_DATA) == 0x1000u,
+          "sc after eret must fail and store nothing (t1=0x%08x m0=0x%08x)",
+          s.r[9], MEM_R32(LLSC_DATA));
+    sr_cpu_lle_set_enabled(0);
+    (void)r;
+}
+
+/* sr_cpu_eret is the one helper both CPU lanes call for an exception return. */
+static void test_eret_clears_link(void) {
+    CpuState s;
+    fresh_state(&s);
+    s.llbit = 1u;
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_EXL;
+    s.cop0[SR_CP0_EPC] = TEST_BASE + 0x10u;
+    CHECK(sr_cpu_eret(&s, TEST_BASE) < 0 && s.flow_kind == SR_FLOW_ERET,
+          "eret must return");
+    CHECK(s.llbit == 0u, "eret must clear LLbit");
+
+    /* A user-mode eret is a coprocessor-unusable trap, not a return: link kept. */
+    fresh_state(&s);
+    s.llbit = 1u;
+    s.cop0[SR_CP0_STATUS] = SR_STATUS_KSU_USER;
+    s.cop0[SR_CP0_EPC] = TEST_BASE + 0x10u;
+    CHECK(sr_cpu_eret(&s, TEST_BASE) < 0 && s.flow_kind == SR_FLOW_EXCEPTION,
+          "user eret must trap");
+    CHECK(s.llbit == 1u, "a trapping eret is not a return and must keep LLbit");
+
+    /* Exception entry is not a return either (MIPS32 clears LLbit on ERET only). */
+    fresh_state(&s);
+    s.llbit = 1u;
+    CHECK(sr_cpu_raise_exception(&s, SR_EXC_SYS, TEST_BASE, TEST_BASE, 0u, 0u, 0u) < 0,
+          "raise must transfer");
+    CHECK(s.llbit == 1u, "exception entry must keep LLbit for the handler's eret to clear");
+}
+
+/* INTC Cause.IP mirroring through both CPU tiers (spec 6.1, PR 5; synthetic controller,
+ * see the INTC block above). tools/test_cpu_lle.py emits INTC_CAUSE_SEQUENCE as real
+ * --lle-cpu generated C (f_08810a40) and this test runs the same words through the
+ * production interpreter. Each lane is checked against the expected values and against
+ * the other lane. Status has IE 1, EXL 0 and every IM bit set in kernel mode, so the
+ * interpreter's per-instruction poll sees an eligible asserted line at every safe point
+ * and must still deliver nothing (delivery is PR 6). */
+
+#define INTC_CAUSE_ENTRY 0x08810A40u
+
+void f_08810a40(CpuState *s);
+
+/* Word-for-word the INTC_CAUSE_SEQUENCE tools/test_cpu_lle.py emits. */
+static const uint32_t INTC_CAUSE_SEQUENCE[] = {
+    0x40086800u,   /* 0x00 mfc0 t0, Cause */
+    0x40896800u,   /* 0x04 mtc0 t1, Cause     t1 = all ones */
+    0x400A6800u,   /* 0x08 mfc0 t2, Cause */
+    0x40806800u,   /* 0x0c mtc0 zero, Cause */
+    0x400B6800u,   /* 0x10 mfc0 t3, Cause */
+    0x03E00008u,   /* 0x14 jr   ra */
+    0x00000000u,   /* 0x18 nop */
+};
+
+typedef struct {
+    int asserted;          /* source 4 enabled (line high) or masked (line low) */
+    uint32_t stale_cause;  /* stored Cause before the run: the opposite of the line */
+} IntcCauseLane;
+
+static void intc_cause_seed(CpuState *s, const IntcCauseLane *lane) {
+    fresh_state(s);
+    intc_configure_fixture();
+    CHECK(sr_intc_raise(4u) == 0, "raise source 4");
+    CHECK(sr_intc_set_enable_mask(lane->asserted ? 0x10u : 0u) == 0, "set the lane's mask");
+    sr_cpu_lle_set_enabled(1);
+    s->cop0[SR_CP0_STATUS] = SR_STATUS_IE | SR_STATUS_IM_MASK;
+    s->cop0[SR_CP0_CAUSE] = lane->stale_cause;
+    s->r[9] = 0xFFFFFFFFu;
+    s->r[31] = TEST_SPAN_END;   /* the interpreter stops cleanly on the return */
+    s->pc = INTC_CAUSE_ENTRY;
+}
+
+static void intc_cause_check_expected(const CpuState *s, const IntcCauseLane *lane,
+                                      const char *what) {
+    const uint32_t ip = lane->asserted ? INTC_TEST_IP_BIT : 0u;
+    CHECK(s->r[8] == ip, "%s: first read must see the line, not the stale copy (t0=0x%08x)",
+          what, s->r[8]);
+    CHECK(s->r[10] == (ip | SR_CAUSE_IP_SW_MASK),
+          "%s: an all-ones write must land the SW pair only (t2=0x%08x)", what, s->r[10]);
+    CHECK(s->r[11] == ip, "%s: a zero write must clear the SW pair only (t3=0x%08x)",
+          what, s->r[11]);
+    CHECK(s->cop0[SR_CP0_CAUSE] == ip, "%s: final Cause 0x%08x", what, s->cop0[SR_CP0_CAUSE]);
+    CHECK(s->cop0[SR_CP0_EPC] == 0u && s->flow_kind == SR_FLOW_NONE,
+          "%s: no interrupt may be taken (EPC 0x%08x, flow %u)", what,
+          s->cop0[SR_CP0_EPC], s->flow_kind);
+    CHECK(sr_intc_pending_mask() == 0x10u && sr_intc_enable_mask() == (lane->asserted ? 0x10u : 0u),
+          "%s: the run must not consume the source (pending 0x%08x enable 0x%08x)", what,
+          sr_intc_pending_mask(), sr_intc_enable_mask());
+}
+
+static void test_intc_cause_aot_interp_parity(void) {
+    static const IntcCauseLane lanes[] = {
+        { 1, 0u },                 /* line high, stored copy missing it */
+        { 0, INTC_TEST_IP_BIT },   /* line low (masked), stored copy claiming it */
+    };
+    const unsigned count = sizeof INTC_CAUSE_SEQUENCE / sizeof INTC_CAUSE_SEQUENCE[0];
+    for (unsigned l = 0; l < sizeof lanes / sizeof lanes[0]; l++) {
+        CpuState aot;
+        CpuState interp;
+        SrGuestInterpFault fault;
+        SrGuestInterpResult r;
+        char what[64];
+
+        snprintf(what, sizeof what, "INTC Cause %s lane",
+                 lanes[l].asserted ? "asserted" : "masked");
+        intc_cause_seed(&aot, &lanes[l]);
+        f_08810a40(&aot);
+        intc_cause_check_expected(&aot, &lanes[l], what);
+
+        intc_cause_seed(&interp, &lanes[l]);
+        llsc_place(INTC_CAUSE_ENTRY, INTC_CAUSE_SEQUENCE, count);
+        memset(&fault, 0, sizeof fault);
+        r = sr_guest_interp_run(&interp, INTC_CAUSE_ENTRY, &fault);
+        CHECK(r == SR_GUEST_INTERP_FETCH_BOUNDARY && fault.pc == TEST_SPAN_END,
+              "%s: interpreter must run to the jr $ra and stop there (got %s at 0x%08x)",
+              what, sr_guest_interp_result_name(r), fault.pc);
+        intc_cause_check_expected(&interp, &lanes[l], what);
+        sr_cpu_lle_set_enabled(0);
+
+        for (unsigned i = 0; i < 32u; i++)
+            CHECK(aot.r[i] == interp.r[i], "%s: r%u AOT=0x%08x INTERP=0x%08x",
+                  what, i, aot.r[i], interp.r[i]);
+        for (unsigned i = 0; i < 32u; i++)
+            CHECK(aot.cop0[i] == interp.cop0[i], "%s: cop0[%u] AOT=0x%08x INTERP=0x%08x",
+                  what, i, aot.cop0[i], interp.cop0[i]);
+        CHECK(aot.flow_kind == interp.flow_kind && aot.flow_target == interp.flow_target,
+              "%s: flow AOT=%u/0x%08x INTERP=%u/0x%08x", what, aot.flow_kind,
+              aot.flow_target, interp.flow_kind, interp.flow_target);
+    }
+    sr_intc_reset();
+}
+
 int main(int argc, char **argv) {
     sr_mem_init();
     setup_spans();
@@ -1906,6 +2718,7 @@ int main(int argc, char **argv) {
     test_hw_psp_a3_01_adel_through_load();
     test_lle_misaligned_data_access();
     test_lle_gate_off_data_access();
+    test_unaligned_store_guarded_region();
     test_nested_exceptions();
     test_vector_selection();
     test_unbacked_aot_target();
@@ -1915,6 +2728,16 @@ int main(int argc, char **argv) {
     test_cop0_traps();
     test_interp_lane();
     test_config();
+    test_eret_clears_link();
+    test_llsc_interpreter();
+    test_llsc_aot_interp_parity();
+    test_llsc_lle_misaligned();
+    test_intc_unconfigured_fails_closed();
+    test_intc_masked_pending_retention();
+    test_intc_cause_guest_writes();
+    test_intc_poll_reports_none();
+    test_intc_cause_aot_interp_parity();
+    test_llsc_measured_windows();
     sr_cpu_lle_reset_config();
     if (g_failed) {
         fprintf(stderr, "cpu-lle selftest: FAILED\n");

@@ -18,7 +18,6 @@ import shutil
 import struct
 import subprocess
 import sys
-import tempfile
 import unittest
 
 
@@ -27,6 +26,7 @@ CODEGEN = ROOT / "tools" / "codegen.py"
 CC = shutil.which("gcc")
 ENTRY = 0x00001000
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import scratch_dir  # noqa: E402
 codegen = importlib.import_module("codegen")
 
 # Isolated translation-unit contract for generated output: the same interface the
@@ -36,7 +36,7 @@ ISOLATED_RECOMP_H = """\
 #ifndef TEST_RECOMP_H
 #define TEST_RECOMP_H
 #include <stdint.h>
-#define SR_CPUSTATE_ABI_VERSION 2u
+#define SR_CPUSTATE_ABI_VERSION 3u
 #include "fp_convert.h"
 typedef struct CpuState {
     uint32_t r[32];
@@ -169,6 +169,17 @@ def _bc1(tf: int, offset_words: int) -> int:
     return (0x11 << 26) | (8 << 21) | ((tf & 1) << 16) | (offset_words & 0xFFFF)
 
 
+def _ccond_cc(ft: int, fs: int, cond: int, cc: int) -> int:
+    """c.cond.s with the MIPS IV condition-code field (bits 10..8) set to cc."""
+    return (0x11 << 26) | (0x10 << 21) | (ft << 16) | (fs << 11) | ((cc & 7) << 8) | (0x30 | cond)
+
+
+def _bc1_cc(tf: int, cc: int, offset_words: int) -> int:
+    """bc1f/bc1t with the MIPS IV condition-code field (bits 20..18) set to cc."""
+    return ((0x11 << 26) | (8 << 21) | ((cc & 7) << 18) | ((tf & 1) << 16)
+            | (offset_words & 0xFFFF))
+
+
 
 def _vf2i(mode: int, scale: int, vd: int) -> int:
     return (
@@ -213,7 +224,7 @@ class FpuFieldMappingTests(unittest.TestCase):
 class GeneratedFpConversionTests(unittest.TestCase):
     def test_generated_instructions_match_fixed_vectors_without_ub(self):
         assert CC is not None
-        with tempfile.TemporaryDirectory(prefix="codegen_fp_convert_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="codegen_fp_convert_") as tmp:
             work = Path(tmp)
             elf = work / "fp_convert.elf"
             generated = work / "fp_convert.c"
@@ -363,7 +374,7 @@ def _run_generated_fixture(test, name, words, harness_main, codegen_path=None):
     """
     assert CC is not None
     codegen_path = Path(codegen_path) if codegen_path else CODEGEN
-    with tempfile.TemporaryDirectory(prefix=f"codegen_fp_scalar_{name}_") as tmp:
+    with scratch_dir.TemporaryDirectory(prefix=f"codegen_fp_scalar_{name}_") as tmp:
         work = Path(tmp)
         elf = work / f"{name}.elf"
         generated = work / f"{name}.c"
@@ -412,6 +423,42 @@ def _run_generated_fixture(test, name, words, harness_main, codegen_path=None):
 # correctly-rounded binary32 words derived independently with rational
 # arithmetic in this repository; the mul.s row reproduces the hardware-published
 # RM anchors (18.386576 under RN/RP, 18.386574 under RZ/RM).
+
+_MOV_RAW_BITS_MAIN = r'''\
+#include <stdint.h>
+#include <stdio.h>
+#include <xmmintrin.h>
+#include "fp_raw_bits_funcs.h"
+
+int main(void) {
+    static const uint32_t inputs[] = {
+        0x7f800001u, 0xff812345u, 0x7fc12345u, 0xffc54321u,
+        0x00000001u, 0x807fffffu, 0x80000000u, 0xffffffffu,
+    };
+    const uint32_t original = _mm_getcsr();
+    const uint32_t hostile = original | (1u << 15) | (1u << 6); /* FTZ + DAZ */
+    unsigned failures = 0u;
+    for (unsigned i = 0u; i < sizeof inputs / sizeof inputs[0]; ++i) {
+        CpuState s = {0};
+        _mm_setcsr(hostile);
+        s.r[8] = inputs[i];
+        s.fcr31 = 0x01000000u; /* guest FS: moves must still preserve subnormals */
+        f_00001000(&s);
+        if (s.fi[0] != inputs[i] || s.fi[1] != inputs[i] || s.r[9] != inputs[i]) {
+            fprintf(stderr, "FAIL raw move %08x -> f0=%08x f1=%08x r9=%08x\\n",
+                    inputs[i], s.fi[0], s.fi[1], s.r[9]);
+            ++failures;
+        }
+        if (s.fcr31 != 0x01000000u || _mm_getcsr() != hostile) {
+            fprintf(stderr, "FAIL raw move changed guest FCR31 or host MXCSR\\n");
+            ++failures;
+        }
+    }
+    _mm_setcsr(original);
+    printf("generated_fp_raw_moves: %s\\n", failures == 0u ? "PASS" : "FAIL");
+    return failures == 0u ? 0 : 1;
+}
+'''
 
 _CELL1_MAIN = """\
 #include <fenv.h>
@@ -624,6 +671,86 @@ int main(void) {
 """
 
 
+def _cell5_words() -> list[int]:
+    """COP1 condition-code cells measured on a PSP-3000 (PSP-FPU-CC-001).
+
+    The PSP FPU has FCC0 only: a guest ctc1 of 0xFE800000 (FCC0..FCC7 on MIPS IV)
+    reads back 0x00800000, a c.eq.s with condition code 1..7 writes FCC0, and a
+    bc1t/bc1f with condition code 1..7 tests FCC0. The words are the probe's own
+    encodings (fixtures/psp_oracle/probe.c, run_fpu_cc) for the codes used here.
+    """
+    return [
+        _lui(8, 0xFE80),                # t0 = 0xFE800000: every MIPS IV condition bit
+        _ctc1(8),
+        _cfc1(9),                       # r9  = FCR31 (measured 0x00800000)
+        _bc1_cc(1, 7, 2),               # bc1t with cc 7 (0x451D0002): FCC0 set, taken
+        0x00000000,
+        _ori(12, 0xDEAD),               # skipped when taken
+        _lui(8, 0xFE00),                # t0 = 0xFE000000: FCC1..FCC7 only
+        _ctc1(8),
+        _cfc1(10),                      # r10 = FCR31 (measured 0)
+        _bc1_cc(1, 1, 2),               # bc1t with cc 1 (0x45050002): FCC0 clear, falls through
+        0x00000000,
+        _ori(13, 0xBEEF),               # runs when not taken
+        _ccond_cc(20, 20, 0x2, 3),      # c.eq.s with cc 3, equal operands
+        _cfc1(11),                      # r11 = FCR31 (FCC0 only)
+        _lui(8, 0xFE80),
+        _ctc1(8),
+        _ccond_cc(21, 20, 0x2, 5),      # c.eq.s with cc 5, unequal (measured FCR31 0)
+        _cfc1(16),                      # r16 = FCR31
+        0x03E00008, 0x00000000,
+    ]
+
+
+_CELL5_MAIN = """\
+#include <stdio.h>
+
+int main(void) {
+    int failures = 0;
+    CpuState s = {0};
+    s.fi[20] = 0x3f800000u;   /* 1.0 */
+    s.fi[21] = 0x40000000u;   /* 2.0 */
+    s.r[11] = 0xFFFFFFFFu;
+    s.r[16] = 0xFFFFFFFFu;
+    f_00001000(&s);
+    /* fpu-cc-fcr31-bits: writing 0xFE800000 reads back 0x00800000. */
+    if (s.r[9] != 0x00800000u) {
+        fprintf(stderr, "FAIL cell5 cfc1 after ctc1 0xFE800000: %08x (PSP 00800000)\\n", s.r[9]);
+        failures++;
+    }
+    if (s.r[12] == 0x0000deadu) {
+        fprintf(stderr, "FAIL cell5 bc1t cc7 not taken under FCC0\\n");
+        failures++;
+    }
+    /* Bits 25..31 alone are no condition: FCR31 reads 0 and bc1t falls through. */
+    if (s.r[10] != 0x00000000u) {
+        fprintf(stderr, "FAIL cell5 cfc1 after ctc1 0xFE000000: %08x (PSP 00000000)\\n", s.r[10]);
+        failures++;
+    }
+    if (s.r[13] != 0x0000beefu) {
+        fprintf(stderr, "FAIL cell5 bc1t cc1 taken without FCC0 (%08x)\\n", s.r[13]);
+        failures++;
+    }
+    /* fpu-cc<n>-ceq: an equal compare with code 3 sets FCC0 and nothing else. */
+    if (s.r[11] != 0x00800000u) {
+        fprintf(stderr, "FAIL cell5 c.eq.s cc3 equal: FCR31 %08x (PSP 00800000)\\n", s.r[11]);
+        failures++;
+    }
+    /* An unequal compare with code 5 from 0xFE800000 leaves FCR31 at 0. */
+    if (s.r[16] != 0x00000000u) {
+        fprintf(stderr, "FAIL cell5 c.eq.s cc5 unequal: FCR31 %08x (PSP 00000000)\\n", s.r[16]);
+        failures++;
+    }
+    if (s.fcr31 != 0x00000000u || s.fpcond != 0u) {
+        fprintf(stderr, "FAIL cell5 final FCR31 %08x fpcond %u\\n", s.fcr31, s.fpcond);
+        failures++;
+    }
+    printf("generated_fp_scalar_fcc_measured: %s\\n", failures == 0 ? "PASS" : "FAIL");
+    return failures == 0 ? 0 : 1;
+}
+"""
+
+
 _CELL_HOSTILE_MAIN = """\
 #include <fenv.h>
 #include <stdio.h>
@@ -734,18 +861,23 @@ int main(void) {
 class GeneratedScalarFcr31Tests(unittest.TestCase):
     """Guest-visible scalar COP1 semantics driven entirely through generated code.
 
-    Four cells from the research IF-1 packet, each exercising a real MIPS
-    instruction sequence (including the guest `ctc1` that installs FCR31):
+    Four cells from the research IF-1 packet and one hardware-measured cell,
+    each exercising a real MIPS instruction sequence (including the guest
+    `ctc1` that installs FCR31):
       CELL 1 - non-default RM directs add/sub/mul/div.s results.
       CELL 2 - FCR31.FS gates gradual underflow vs flush-to-zero.
       CELL 3 - c.cond.s results are visible to cfc1 as coherent FCC0 and to
                branch-on-FP-condition.
       CELL 4 - cvt.s.w honors guest RM near the float precision boundary.
+      CELL 5 - ctc1 drops FCR31 bits 25..31 and condition codes 1..7 alias
+               FCC0, as measured on a PSP-3000 (PSP-FPU-CC-001).
 
     Expectations are raw IEEE-754 words derived independently by rational
     arithmetic in this repository; the mul.s row additionally reproduces the
-    public PSP_HARDWARE RM anchors. The production interpreter floor has no
-    COP1 support yet, so these cells are AOT-executor scoped by design.
+    public PSP_HARDWARE RM anchors, and CELL 5 pins the project's own PSP-3000
+    measurement words. The bounded interpreter subset is exercised separately
+    by the two-tier cosim cells; this broad kernel oracle remains AOT-only for
+    scalar operations outside that subset.
     """
 
     def test_cell1_rounding_modes_direct_scalar_arithmetic(self):
@@ -763,6 +895,23 @@ class GeneratedScalarFcr31Tests(unittest.TestCase):
         self.assertIn("sr_fpu_add_s", emitted)
         self.assertIn("sr_fpu_sub_s", emitted)
         self.assertIn("sr_fpu_div_s", emitted)
+
+    def test_mov_s_is_a_raw_word_copy_under_hostile_host_and_guest_flush_modes(self):
+        """MOV.S moves a register word; it must not behave as an arithmetic op.
+
+        MIPS32 defines MOV.fmt as a non-arithmetic copy that raises no IEEE
+        exception, so signaling-NaN payloads, subnormals and negative zero must
+        cross it unchanged whatever the guest FS bit or the host MXCSR flush
+        modes say. No PSP measurement of MOV.S on a signaling NaN exists; this
+        pins the ISA statement against the generated host C.
+        """
+        words = [
+            _mtc1(8, 0),                         # mtc1 t0,f0
+            _fps(0, 1, 0x06),                   # mov.s f1,f0
+            _mfc1(9, 1),                         # mfc1 t1,f1
+            0x03E00008, 0x00000000,
+        ]
+        _run_generated_fixture(self, "fp_raw_bits", words, _MOV_RAW_BITS_MAIN)
 
     def test_cell2_fs_bit_gates_gradual_underflow(self):
         words: list[int] = [
@@ -803,6 +952,17 @@ class GeneratedScalarFcr31Tests(unittest.TestCase):
         ]
         emitted = _run_generated_fixture(self, "fp_scalar_cvtsw", words, _CELL4_MAIN)
         self.assertIn("sr_fpu_cvt_s_w", emitted)
+
+    def test_cell5_measured_condition_codes_alias_fcc0(self):
+        """CELL 5 - PSP-FPU-CC-001 (PSP-3000 / 6.61, 2026-10-15).
+
+        ctc1 drops FCR31 bits 25..31, so cfc1 never returns them; c.eq.s and
+        bc1t with condition codes 1..7 write and test FCC0. Failing before: ctc1
+        stored the guest word wholesale and cfc1 returned 0xFE800000.
+        """
+        emitted = _run_generated_fixture(
+            self, "fp_scalar_fcc_measured", _cell5_words(), _CELL5_MAIN)
+        self.assertIn("& ~0xfe000000u;", emitted)
 
     def test_hostile_host_environment_isolated_from_default_guest_ops(self):
         """Guest RM=RN/FS=0 must be isolated from a hostile host FP environment.

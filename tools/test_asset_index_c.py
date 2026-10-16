@@ -197,11 +197,12 @@ class TestAssetIndexSelftestC(unittest.TestCase):
                             "driver.c must call sr_host_data_prepare()")
         gui_idx = driver.find("gui_init(SR_APP_TITLE)")
         sched_idx = driver.find("sched_init(&s)")
-        fn_idx = driver.find("fn(&s);")
+        fn_idx = driver.find("sr_call_body(fn, &s);")
         boot_begin = driver.find("BOOT_EVENT phase=index_prepare_begin")
         self.assertLess(boot_begin, prepare_idx,
                         "preparation is announced before it runs")
-        for name, idx in (("gui_init", gui_idx), ("sched_init", sched_idx), ("fn(&s)", fn_idx)):
+        for name, idx in (("gui_init", gui_idx), ("sched_init", sched_idx),
+                          ("sr_call_body(fn, &s)", fn_idx)):
             self.assertNotEqual(idx, -1, f"driver.c anchor {name} missing")
             self.assertLess(prepare_idx, idx,
                             f"preparation must precede {name} (guest execution seam)")
@@ -220,6 +221,22 @@ class TestAssetIndexSelftestC(unittest.TestCase):
         self.assertIn("lookup refused before preparation reached a",
                       hle,
                       "a non-terminal observation fails closed with one bounded diagnostic")
+
+
+class TestHleFontSpecTable(unittest.TestCase):
+    """The sceFont shim keeps no font table of its own: it reads the measured slots and served headers."""
+
+    def test_shim_reads_metadata_from_the_measured_registry_view(self):
+        hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        # The removed per-index table held model values and hard-coded names; neither may return.
+        self.assertNotIn("s_font_specs", hle)
+        self.assertNotIn("SrFontSpec", hle)
+        # Index map, numeric codes, sizes, resolutions and the name come from flash0's registry view.
+        self.assertIn("sr_flash0_font_registry_info(", hle)
+        self.assertIn("sr_flash0_font_registry_slot(", hle)
+        # Font names reach guest memory only from the served file's header, never from a literal.
+        for literal in ("Nakagawa Open Japanese", "Nakagawa Open Latin", "Nakagawa Open Korean"):
+            self.assertNotIn(literal, hle)
 
 
 if __name__ == "__main__":

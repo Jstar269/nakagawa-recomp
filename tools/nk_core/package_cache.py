@@ -11,12 +11,11 @@ import json
 import math
 import os
 from pathlib import Path, PurePosixPath
-import platform
 import re
 import shutil
-import sysconfig
+import subprocess
 import tempfile
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 CACHE_FORMAT = "nakagawa-aot-cache"
 COMPLETION_FORMAT = "nakagawa-aot-cache-completion"
@@ -25,10 +24,24 @@ COMPLETION_SCHEMA_VERSION = 2
 TITLE_INPUT_IDENTITY_FORMAT = "nakagawa-title-input-identity"
 TITLE_INPUT_IDENTITY_SCHEMA_VERSION = 2
 ANALYZER_CODEGEN_SEMANTICS_EPOCH = "analyzer-codegen-v1"
-GENERATED_CODE_ABI_EPOCH = 1
-RUNTIME_ABI_EPOCH = 1
+GENERATED_CODE_ABI_EPOCH = 2
+RUNTIME_ABI_EPOCH = 2
+# The CpuState layout (src/rt/recomp.h SR_CPUSTATE_ABI_VERSION) is part of both contracts:
+# generated C addresses CpuState fields by offset, and the runtime package shares the struct
+# with the generated objects. Every layout version therefore names the epoch pair
+# (generated-code, runtime) that was current for it, and tools/test_package_cache.py pins the
+# header version, this table, the constants above and their native twins in
+# src/core/nk_title_manifest.h to each other, so a layout change cannot land without the bump.
+CPUSTATE_ABI_EPOCHS: dict[int, tuple[int, int]] = {
+    2: (1, 1),  # the 996-byte CpuState
+    3: (2, 2),  # #812 appended llbit (offset 996, size 1000)
+}
+# previous runtime epoch -> the runtime epochs whose packages may reuse its generated C with a
+# native recompile. A CpuState layout change is never compatible: the generated C carries the
+# old offsets and its own SR_CPUSTATE_ABI_VERSION guard.
 RUNTIME_ABI_COMPATIBILITY: dict[int, frozenset[int]] = {
     1: frozenset({1}),
+    2: frozenset({2}),
 }
 CACHE_ROOT_PARTS = ("cache", "packages")
 COMPLETION_MANIFEST = "completion-manifest.json"
@@ -818,6 +831,24 @@ def source_tree_digest(
     return digest.hexdigest()
 
 
+def _compiler_executable(
+    selected: str,
+    env: Mapping[str, str],
+    repository_root: Path | str | None,
+) -> str | None:
+    """The file a compiler name resolves to: PATH first, then a repository-relative path.
+
+    The identity and the target of the native objects must name the same compiler, so
+    both resolve ``CC`` through this one helper.
+    """
+    executable = shutil.which(selected, path=env.get("PATH"))
+    if executable is None and repository_root is not None:
+        candidate = Path(repository_root) / selected
+        if candidate.is_file():
+            executable = str(candidate)
+    return executable
+
+
 def compiler_identity(
     command: str | None = None,
     *,
@@ -826,11 +857,7 @@ def compiler_identity(
 ) -> str:
     env = os.environ if environment is None else environment
     selected = command or env.get("CC") or "gcc"
-    executable = shutil.which(selected, path=env.get("PATH"))
-    if executable is None and repository_root is not None:
-        candidate = Path(repository_root) / selected
-        if candidate.is_file():
-            executable = str(candidate)
+    executable = _compiler_executable(selected, env, repository_root)
     if executable is None:
         return f"{selected}:unavailable"
     path = Path(executable)
@@ -839,12 +866,44 @@ def compiler_identity(
     return f"{path.name}:{sha256_file(path)}"
 
 
-def compiler_target(environment: Mapping[str, str] | None = None) -> str:
+def compiler_target(
+    environment: Mapping[str, str] | None = None,
+    *,
+    repository_root: Path | str | None = None,
+) -> str:
+    """The machine triple the C compiler builds the native objects for.
+
+    The key names the target of the objects ``CC`` produces, so it is read from that
+    compiler (``-dumpmachine``) and never from the Python interpreter that plans the
+    build. Two interpreters on one machine report different platforms for the same
+    gcc (python.org: ``win-amd64``; MSYS2: ``mingw_x86_64_ucrt_gnu``), so an
+    interpreter-derived target changed the key between two builds of the same inputs.
+    ``NK_TARGET_TRIPLE`` or ``CC_TARGET`` still overrides it. ``repository_root`` lets a
+    relative ``CC`` resolve exactly as :func:`compiler_identity` resolves it.
+    """
     env = os.environ if environment is None else environment
     explicit = env.get("NK_TARGET_TRIPLE") or env.get("CC_TARGET")
     if explicit:
         return explicit
-    return f"{platform.machine()}-{sysconfig.get_platform()}"
+    selected = env.get("CC") or "gcc"
+    executable = _compiler_executable(selected, env, repository_root)
+    if executable is None:
+        return f"{selected}:unavailable"
+    try:
+        completed = subprocess.run(
+            [executable, "-dumpmachine"],
+            env=dict(env),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return f"{selected}:unavailable"
+    machine = completed.stdout.strip()
+    if completed.returncode != 0 or not machine:
+        return f"{selected}:unavailable"
+    return machine
 
 
 def native_compile_flags(
@@ -865,7 +924,22 @@ def native_compile_flags(
         env.get("STALE_CODE_POLICY", env.get("SR_STALE_POLICY", "")),
         "PUBLIC_SAFE=1" if public_safe else "PUBLIC_SAFE=0",
     )
-    return "|".join(values)
+    flags = "|".join(values)
+    # The NaN trap adds -DSR_NAN_TRAP inside the Makefile, where CFLAGS above cannot see it.
+    # It is appended only when on, so every untrapped key stays exactly what it was.
+    return flags + "|NAN_TRAP=1" if nan_trap_enabled(env) else flags
+
+
+def nan_trap_enabled(environment: Mapping[str, str] | None = None) -> bool:
+    """Whether a Make build in this environment turns on the NaN trap (issue #69).
+
+    `make NAN_TRAP=1` turns on both halves at once, `--nan-trap` codegen and `-DSR_NAN_TRAP`,
+    and it does so inside the Makefile (`ifeq ($(NAN_TRAP),1)`). So neither
+    CODEGEN_USER_ARGS nor CFLAGS in the environment shows it, and the cache key has to ask
+    for it by name: a trapped and an untrapped build must never share a cache entry.
+    """
+    env = os.environ if environment is None else environment
+    return env.get("NAN_TRAP", "").strip() == "1"
 
 
 def _input_sha(value: Any, label: str) -> str:
@@ -1087,9 +1161,26 @@ def compare_cache_keys(
     return CacheDecision("native-recompile", True, False, tuple(reasons))
 
 
-def _artifact_records(package_dir: Path) -> list[dict[str, str]]:
-    records: list[dict[str, str]] = []
-    for path in sorted(package_dir.rglob("*")):
+# A profile stamp is named by a hash over its entries, and the entries carry CFLAGS, which
+# carry the build directory (-DSR_BUILD_DIR). Two output roots that build the same inputs
+# therefore name the stamp differently, and a raw name sort would move the stamp relative
+# to its siblings with each root. Records are ordered by the name with that hash removed,
+# and by the full name only to break a tie between two stamps of one kind.
+_PROFILE_STAMP_HASH_RE = re.compile(
+    r"(\.(?:runtime-profile|codegen-profile|recomp-profile|title-config))-[0-9a-f]{4,}"
+)
+
+
+def _record_order(relative: str) -> tuple[str, str]:
+    return (_PROFILE_STAMP_HASH_RE.sub(r"\1", relative), relative)
+
+
+def _artifact_candidates(package_dir: Path) -> Iterator[tuple[str, Path]]:
+    """Yield (raw relative path, file) for each artifact in record order, without reading any bytes."""
+    for path in sorted(
+        package_dir.rglob("*"),
+        key=lambda item: _record_order(item.relative_to(package_dir).as_posix()),
+    ):
         if path.is_symlink():
             raise PackageCacheError("package contains a symlink artifact")
         if not path.is_file():
@@ -1097,6 +1188,12 @@ def _artifact_records(package_dir: Path) -> list[dict[str, str]]:
         relative = path.relative_to(package_dir).as_posix()
         if relative == COMPLETION_MANIFEST:
             continue
+        yield relative, path
+
+
+def _artifact_records(package_dir: Path) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    for relative, path in _artifact_candidates(package_dir):
         records.append({"path": _safe_relative(relative), "sha256": sha256_file(path)})
     return records
 
@@ -1158,58 +1255,102 @@ def write_completion_manifest(
     return destination
 
 
+# Failure classes of a completion check, so a caller can name why a record was refused
+# without parsing its message.
+_COMPLETION_OK = ""
+_COMPLETION_MISSING = "missing"
+_COMPLETION_INVALID = "invalid"
+_COMPLETION_KEY = "key"
+_COMPLETION_ARTIFACT = "artifact"
+_COMPLETION_UNCOVERED = "uncovered"
+
+
+def _digest_once(path: Path, digests: dict[Path, str] | None) -> str:
+    """Digest of one resolved package file, reusing a digest already taken in this validation."""
+    if digests is None:
+        return sha256_file(path)
+    digest = digests.get(path)
+    if digest is None:
+        digest = digests[path] = sha256_file(path)
+    return digest
+
+
 def validate_completion_manifest(
     package_dir: Path,
     *,
     expected_key: Mapping[str, Any] | None = None,
     required_paths: set[str] | None = None,
+    file_digests: dict[Path, str] | None = None,
 ) -> tuple[bool, str, dict[str, Any] | None]:
+    """Validate the completion manifest.
+
+    ``file_digests`` maps resolved artifact paths to digests computed earlier in the same
+    validation. Each listed artifact is still compared against its manifest digest; only
+    the second read of a file that was already digested is skipped.
+    The comparison therefore reflects the bytes as that validation read them: a file
+    rewritten between the package-level check and this one, inside the same call, is
+    not read a second time. A caller that wants a fresh read passes no digests.
+    """
+    failure, reason, document = _check_completion_manifest(
+        package_dir, expected_key=expected_key, required_paths=required_paths,
+        file_digests=file_digests,
+    )
+    return failure == _COMPLETION_OK, reason, document
+
+
+def _check_completion_manifest(
+    package_dir: Path,
+    *,
+    expected_key: Mapping[str, Any] | None = None,
+    required_paths: set[str] | None = None,
+    file_digests: dict[Path, str] | None = None,
+) -> tuple[str, str, dict[str, Any] | None]:
     package_dir = package_dir.resolve(strict=False)
     path = package_dir / COMPLETION_MANIFEST
     if not path.is_file() or path.is_symlink():
-        return False, "completion manifest is missing or not a regular file", None
+        return _COMPLETION_MISSING, "completion manifest is missing or not a regular file", None
     try:
         document = _read_json(path)
     except (OSError, ValueError) as exc:
-        return False, f"completion manifest is unreadable: {exc}", None  # includes BoundedJsonError
+        return _COMPLETION_INVALID, f"completion manifest is unreadable: {exc}", None  # includes BoundedJsonError
     if not isinstance(document, dict):
-        return False, "completion manifest must be a JSON object", None
+        return _COMPLETION_INVALID, "completion manifest must be a JSON object", None
     allowed = {"format", "schema_version", "status", "cache_key", "title_input_identity", "artifacts", "backends", "limits"}
     required = {"format", "schema_version", "status", "cache_key", "title_input_identity", "artifacts"}
     doc_keys = set(document)
     if not required.issubset(doc_keys) or not doc_keys.issubset(allowed):
-        return False, "completion manifest fields do not match the cache contract", None
+        return _COMPLETION_INVALID, "completion manifest fields do not match the cache contract", None
     if document["format"] != COMPLETION_FORMAT or document["schema_version"] != COMPLETION_SCHEMA_VERSION:
-        return False, "completion manifest format or schema is unsupported", None
+        return _COMPLETION_INVALID, "completion manifest format or schema is unsupported", None
     if document["status"] != "complete":
-        return False, "completion manifest does not mark a complete build", None
+        return _COMPLETION_INVALID, "completion manifest does not mark a complete build", None
     key = document["cache_key"]
     if not isinstance(key, dict):
-        return False, "completion manifest cache key is missing", None
+        return _COMPLETION_INVALID, "completion manifest cache key is missing", None
     try:
         _key_components(key, "aot")
         _key_components(key, "native")
     except PackageCacheError as exc:
-        return False, str(exc), None
+        return _COMPLETION_INVALID, str(exc), None
     if expected_key is not None and key != expected_key:
-        return False, "completion manifest cache key does not match the package", None
+        return _COMPLETION_KEY, "completion manifest cache key does not match the package", None
     try:
         identity = validate_title_input_identity(document["title_input_identity"])
     except PackageCacheError as exc:
-        return False, str(exc), None
+        return _COMPLETION_INVALID, str(exc), None
     try:
         aot_components, _ = _key_components(key, "aot")
     except PackageCacheError as exc:
-        return False, str(exc), None
+        return _COMPLETION_INVALID, str(exc), None
     if aot_components.get("title_input_identity_sha256") != title_input_identity_digest(identity):
-        return False, "completion manifest title input identity does not match the cache key", None
+        return _COMPLETION_INVALID, "completion manifest title input identity does not match the cache key", None
     artifacts = document["artifacts"]
     if not isinstance(artifacts, list) or not artifacts:
-        return False, "completion manifest artifact list is empty", None
+        return _COMPLETION_INVALID, "completion manifest artifact list is empty", None
     seen: set[str] = set()
     for record in artifacts:
         if not isinstance(record, dict) or set(record) != {"path", "sha256"}:
-            return False, "completion manifest artifact record is invalid", None
+            return _COMPLETION_INVALID, "completion manifest artifact record is invalid", None
         try:
             relative = _safe_relative(record["path"])
             digest = record["sha256"]
@@ -1217,24 +1358,27 @@ def validate_completion_manifest(
                 raise PackageCacheError("artifact digest is invalid")
             resolved = _resolve_within(package_dir, relative)
         except PackageCacheError as exc:
-            return False, str(exc), None
+            return _COMPLETION_INVALID, str(exc), None
         if relative in seen:
-            return False, f"completion manifest repeats artifact {relative}", None
+            return _COMPLETION_INVALID, f"completion manifest repeats artifact {relative}", None
         seen.add(relative)
         if not resolved.is_file() or resolved.is_symlink():
-            return False, f"completion artifact is missing: {relative}", None
-        if sha256_file(resolved) != digest:
-            return False, f"completion artifact digest mismatch: {relative}", None
-    for relative in required_paths or set():
+            return _COMPLETION_ARTIFACT, f"completion artifact is missing: {relative}", None
+        if _digest_once(resolved, file_digests) != digest:
+            return _COMPLETION_ARTIFACT, f"completion artifact digest mismatch: {relative}", None
+    for relative in sorted(required_paths or set()):
         if relative not in seen:
-            return False, f"completion manifest does not cover {relative}", None
+            return _COMPLETION_UNCOVERED, f"completion manifest does not cover {relative}", None
+    # Only the path set is compared here. The digests of unlisted files were
+    # computed and discarded, so enumerating without reading them keeps the
+    # same set check while removing a full second read of the package.
     try:
-        actual = {record["path"] for record in _artifact_records(package_dir)}
+        actual = {_safe_relative(relative) for relative, _ in _artifact_candidates(package_dir)}
     except PackageCacheError as exc:
-        return False, str(exc), None
+        return _COMPLETION_ARTIFACT, str(exc), None
     if actual != seen:
-        return False, "completion manifest artifact set does not match the package", None
-    return True, "", document
+        return _COMPLETION_ARTIFACT, "completion manifest artifact set does not match the package", None
+    return _COMPLETION_OK, "", document
 
 
 def package_cache_key(package_dir: Path) -> Mapping[str, Any] | None:
@@ -1345,11 +1489,14 @@ def validate_package_cache(
     executable_path = executable.get("path") if isinstance(executable, dict) else None
     if not isinstance(executable_path, str):
         return False, "package executable path is missing"
+    # Each executable and generated object is digested once here; the completion
+    # check below reuses these digests rather than reading the same bytes again.
+    file_digests: dict[Path, str] = {}
     try:
         executable_file = _resolve_within(package_dir, executable_path)
     except PackageCacheError as exc:
         return False, str(exc)
-    if not executable_file.is_file() or sha256_file(executable_file) != executable.get("sha256"):
+    if not executable_file.is_file() or _digest_once(executable_file, file_digests) != executable.get("sha256"):
         return False, "package executable digest is stale"
     image_path = str(Path(executable_path).with_name(
         f"{Path(executable_path).stem}_image.bin"
@@ -1372,16 +1519,114 @@ def validate_package_cache(
             object_file = _resolve_within(package_dir, object_path)
         except PackageCacheError as exc:
             return False, str(exc)
-        if not object_file.is_file() or sha256_file(object_file) != item.get("sha256"):
+        if not object_file.is_file() or _digest_once(object_file, file_digests) != item.get("sha256"):
             return False, f"package generated object digest is stale: {object_path}"
         required.add(object_path)
     valid, reason, completion = validate_completion_manifest(
         package_dir,
         expected_key=expected_key,
         required_paths=required,
+        file_digests=file_digests,
     )
     if not valid:
         return False, reason
     if completion is None or completion.get("title_input_identity") != identity:
         return False, "completion manifest title input identity does not match package.json"
     return True, ""
+
+
+# A generated-code stage is AOT output (generated C, its runtime image and import table)
+# written by one planner run and handed to a later package build of the same inputs, so
+# the package compiles it instead of generating it again. It carries the completion
+# record a package carries, written last, and the later build accepts it only after the
+# checks the native-only reuse of a package's generated C performs: the record is
+# complete and every byte it names is intact, and its cache key's generated-code
+# components equal the build's own. Every refusal is named, and a refused stage is
+# regenerated from source, never compiled.
+AOT_STAGE_ACCEPTED = "AOT_STAGE_ACCEPTED"
+AOT_STAGE_RECORD_MISSING = "AOT_STAGE_RECORD_MISSING"
+AOT_STAGE_RECORD_INVALID = "AOT_STAGE_RECORD_INVALID"
+AOT_STAGE_ARTIFACT_MISMATCH = "AOT_STAGE_ARTIFACT_MISMATCH"
+AOT_STAGE_INCOMPLETE = "AOT_STAGE_INCOMPLETE"
+AOT_STAGE_INPUT_CHANGED = "AOT_STAGE_INPUT_CHANGED"
+AOT_STAGE_GENERATOR_CHANGED = "AOT_STAGE_GENERATOR_CHANGED"
+AOT_STAGE_OPTIONS_CHANGED = "AOT_STAGE_OPTIONS_CHANGED"
+AOT_STAGE_REFUSAL_CODES = (
+    AOT_STAGE_RECORD_MISSING,
+    AOT_STAGE_RECORD_INVALID,
+    AOT_STAGE_ARTIFACT_MISMATCH,
+    AOT_STAGE_INCOMPLETE,
+    AOT_STAGE_INPUT_CHANGED,
+    AOT_STAGE_GENERATOR_CHANGED,
+    AOT_STAGE_OPTIONS_CHANGED,
+)
+_AOT_STAGE_COMPLETION_CODES = {
+    _COMPLETION_MISSING: AOT_STAGE_RECORD_MISSING,
+    _COMPLETION_INVALID: AOT_STAGE_RECORD_INVALID,
+    _COMPLETION_KEY: AOT_STAGE_RECORD_INVALID,
+    _COMPLETION_ARTIFACT: AOT_STAGE_ARTIFACT_MISMATCH,
+    _COMPLETION_UNCOVERED: AOT_STAGE_INCOMPLETE,
+}
+# The generated-code key components, grouped by what changed. A refusal names the
+# first group that changed, in this order, and lists every changed component.
+_AOT_STAGE_KEY_GROUPS = (
+    (AOT_STAGE_INPUT_CHANGED, frozenset({
+        "aot:executable_sha256", "aot:manifest_sha256", "aot:modules_sha256",
+        "aot:title_input_identity_sha256", "aot:psp_header_sha256",
+    })),
+    (AOT_STAGE_GENERATOR_CHANGED, frozenset({
+        "aot:analyzer_codegen_epoch", "aot:analyzer_sha256", "aot:codegen_sha256",
+        "aot:generated_code_abi_epoch", "aot:runtime_abi_epoch",
+    })),
+    (AOT_STAGE_OPTIONS_CHANGED, frozenset({"aot:codegen_options_sha256"})),
+)
+
+
+@dataclass(frozen=True)
+class AotStageDecision:
+    """Whether a generated-code stage may be compiled in place of regenerating it."""
+
+    accepted: bool
+    code: str
+    reasons: tuple[str, ...]
+    artifacts: Mapping[str, str]
+
+    @property
+    def detail(self) -> str:
+        return ", ".join(self.reasons)
+
+
+def _refused_stage(code: str, *reasons: str) -> AotStageDecision:
+    return AotStageDecision(False, code, tuple(reason for reason in reasons if reason), {})
+
+
+def evaluate_aot_stage(
+    stage_dir: Path,
+    current_key: Mapping[str, Any],
+    *,
+    required_paths: set[str],
+) -> AotStageDecision:
+    """Decide whether ``stage_dir`` holds generated code reusable under ``current_key``.
+
+    ``required_paths`` names the outputs a complete stage must record. An accepted
+    decision carries the SHA-256 of every recorded artifact, so the caller verifies the
+    bytes it copies against the record rather than against a second read of the stage.
+    """
+    stage = Path(stage_dir)
+    if stage.is_symlink() or not stage.is_dir():
+        return _refused_stage(AOT_STAGE_RECORD_MISSING, "generated-code stage directory is missing")
+    failure, reason, document = _check_completion_manifest(stage, required_paths=required_paths)
+    if failure != _COMPLETION_OK or document is None:
+        return _refused_stage(
+            _AOT_STAGE_COMPLETION_CODES.get(failure, AOT_STAGE_RECORD_INVALID), reason
+        )
+    decision = compare_cache_keys(document["cache_key"], current_key)
+    if not decision.generated_c_reusable:
+        changed = set(decision.reasons)
+        code = next(
+            (group for group, components in _AOT_STAGE_KEY_GROUPS if changed & components),
+            AOT_STAGE_RECORD_INVALID,
+        )
+        return _refused_stage(code, *(decision.reasons or ("cache key mismatch",)))
+    artifacts = {record["path"]: record["sha256"] for record in document["artifacts"]}
+    return AotStageDecision(True, AOT_STAGE_ACCEPTED, (), artifacts)

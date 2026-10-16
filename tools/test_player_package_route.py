@@ -50,6 +50,8 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 import nk_cli  # noqa: E402
+import scratch_dir  # noqa: E402
+from test_build_truth import _class_scratch_build_root  # noqa: E402
 from nk_core import package_cache  # noqa: E402
 from import_fixtures import BASE_VADDR, _elf  # noqa: E402
 from test_iso_parity import (  # noqa: E402
@@ -385,8 +387,15 @@ class TestSourceMediaIdentity(unittest.TestCase):
 
 
 class TestPlayerPackageRoute(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # The route's player and test binaries are built into one scratch BUILD_ROOT for
+        # the class (and the package planner's Make runs inherit it), never the checkout's
+        # build/ where a developer's private builds live.
+        cls.binary_dir = _class_scratch_build_root(cls, "player-route")
+
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix="nk-player-route-")
+        self.temporary = scratch_dir.TemporaryDirectory(prefix="nk-player-route-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.fixture_dir = self.root / "fixture"
@@ -395,11 +404,11 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.sandbox = self.root / "sandbox"
         for directory in (self.user_root, self.local_appdata, self.sandbox):
             directory.mkdir(parents=True)
-        self.player = ROOT / "build" / ("nakagawa_player.exe" if os.name == "nt" else "nakagawa_player")
-        self.harness = ROOT / "build" / (
+        self.player = self.binary_dir / ("nakagawa_player.exe" if os.name == "nt" else "nakagawa_player")
+        self.harness = self.binary_dir / (
             "test_package_builder.exe" if os.name == "nt" else "test_package_builder"
         )
-        self.validator = ROOT / "build" / (
+        self.validator = self.binary_dir / (
             "test_player_state.exe" if os.name == "nt" else "test_player_state"
         )
         self.manifest = self.generate_fixture()
@@ -504,7 +513,8 @@ class TestPlayerPackageRoute(unittest.TestCase):
         # is a SKIP carrying the Makefile's own remedy, not a failed route.
         make_name = "mingw32-make" if os.name == "nt" else "make"
         probe = subprocess.run(
-            [make_name, "--no-print-directory", "sdl3-check"],
+            [make_name, "--no-print-directory", "sdl3-check",
+             f"BUILD_ROOT={self.binary_dir.as_posix()}"],
             cwd=ROOT, capture_output=True, text=True,
         )
         self.skip_if_toolchain_unusable(probe)
@@ -512,7 +522,7 @@ class TestPlayerPackageRoute(unittest.TestCase):
             if not binary.is_file():
                 built = subprocess.run(
                     [make_name, "--no-print-directory", "player", "player-state-test-bin",
-                     "package-builder-test-bin"],
+                     "package-builder-test-bin", f"BUILD_ROOT={self.binary_dir.as_posix()}"],
                     cwd=ROOT, capture_output=True, text=True,
                 )
                 self.skip_if_toolchain_unusable(built)
@@ -1110,6 +1120,65 @@ class TestPlayerPackageRoute(unittest.TestCase):
 
         self.assertEqual(tracked_status(), before)
 
+    def test_package_staging_collision_retains_previously_valid_package_and_cleans_staging(self):
+        """A file-versus-directory collision during package build/staging fails closed,
+        names the collision, retains the previously valid package, and cleans up staging dirs."""
+        import argparse
+        import contextlib
+        import io
+
+        iso_path = self.root / "collision.iso"
+        executable = self.executable_bytes
+        create_test_iso_with_executables(
+            iso_path, executable, disc_id=DISC_ID,
+            title="Synthetic Experimental Disc",
+        )
+        user_root = self.root / "collision-user-data"
+        self.stage_library(user_root, native_legacy_experimental_manifest(), iso_path, executable)
+
+        # 1. First create a previously valid package in the user's packages directory
+        package_dir = user_root / "packages" / DISC_ID
+        package_dir.mkdir(parents=True, exist_ok=True)
+        (package_dir / "package.json").write_text('{"valid": true}')
+        (package_dir / "display_smoke.exe").write_bytes(b"previously valid package binary")
+
+        # 2. Stub only the compiler: the planner's output holds a regular file where
+        # the package's assets directory belongs. The real _stage_runtime_assets must
+        # then refuse it, so no mock stands between the build and the collision check.
+        def compile_with_a_file_named_assets(command, **kwargs):
+            if "--output-dir" in command:
+                output = Path(command[command.index("--output-dir") + 1])
+                output.mkdir(parents=True, exist_ok=True)
+                (output / "assets").write_bytes(b"not a directory")
+            return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=compile_with_a_file_named_assets):
+            args = argparse.Namespace(
+                disc_id=DISC_ID,
+                user_data_root=user_root,
+                module_dir=None,
+                psp_header=None,
+                instruction_trace=False,
+                register_local_compatibility_record=False,
+                progress_json=None,
+                log_file=None,
+            )
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                status = nk_cli.cmd_build_package(args)
+
+            self.assertNotEqual(status, 0)
+            self.assertIn("collision", stderr.getvalue().lower())
+            self.assertIn("assets is a file", stderr.getvalue().lower())
+
+        # 3. Verify the previously valid package is retained intact
+        self.assertTrue((package_dir / "package.json").is_file())
+        self.assertEqual((package_dir / "display_smoke.exe").read_bytes(), b"previously valid package binary")
+
+        # 4. Verify no orphan staging directory remains in packages root
+        staging_dirs = list((user_root / "packages").glob(f".{DISC_ID}.staging-*"))
+        self.assertEqual(staging_dirs, [], "no orphan staging directories must remain after a failed stage")
+
 
 class TestRuntimeDllStaging(unittest.TestCase):
     """Runtime staging ships SDL3_ttf, its resolved closure, and licences (#421).
@@ -1279,6 +1348,75 @@ class TestRuntimeDllStaging(unittest.TestCase):
             self.assertTrue((package / "vulkan-1.dll").is_file())
             self.assertIn("SDL3_ttf.dll could not be resolved", stderr.getvalue())
             self.assertIn("bitmap fallback", stderr.getvalue())
+
+    def test_stage_runtime_dlls_file_vs_directory_collision_raises_stage_error(self) -> None:
+        import stage_runtime_dlls
+
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "package"
+            package_dir.mkdir()
+            (package_dir / "SDL3.dll").mkdir()  # File-vs-directory collision
+            bin_dir = Path(tmp) / "toolchain-bin"
+            bin_dir.mkdir()
+            (bin_dir / "SDL3.dll").write_bytes(b"MZ\x00\x00synthetic-sdl3.dll")
+            imports_of, is_system = self.fake_resolver()
+
+            with self.assertRaises(stage_runtime_dlls.StagingCollisionError) as ctx:
+                stage_runtime_dlls.stage_runtime_dlls(
+                    package_dir,
+                    roots=["SDL3.dll"],
+                    search_dirs=[bin_dir],
+                    env={},
+                    imports_of=imports_of,
+                    is_system=is_system,
+                    notices=False,
+                )
+            self.assertIn("staging collision", str(ctx.exception).lower())
+            self.assertIn("sdl3.dll", str(ctx.exception).lower())
+
+    def test_closure_dll_collision_raises_staging_collision(self) -> None:
+        import stage_runtime_dlls
+
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "package"
+            package_dir.mkdir()
+            (package_dir / "libfreetype-6.dll").mkdir()  # a closure member, as a directory
+            bin_dir = Path(tmp) / "toolchain-bin"
+            self.write_fake_dlls(bin_dir)
+            imports_of, is_system = self.fake_resolver()
+
+            with self.assertRaises(stage_runtime_dlls.StagingCollisionError) as ctx:
+                stage_runtime_dlls.stage_runtime_dlls(
+                    package_dir,
+                    roots=["SDL3_ttf.dll"],
+                    search_dirs=[bin_dir],
+                    env={},
+                    imports_of=imports_of,
+                    is_system=is_system,
+                    notices=False,
+                )
+            self.assertIn("libfreetype-6.dll staging collision", str(ctx.exception))
+
+    def test_runtime_package_refuses_a_font_dll_collision_instead_of_warning(self) -> None:
+        """A directory named SDL3_ttf.dll is a staging collision, not an absent optional
+        font: the real package staging step refuses the build with a named error."""
+        with tempfile.TemporaryDirectory(prefix="nk-ttf-collision-") as temporary:
+            root = Path(temporary)
+            provider = root / "ucrt64"
+            (provider / "bin").mkdir(parents=True)
+            for name in ("SDL3.dll", "libiconv-2.dll", "vulkan-1.dll"):
+                (provider / "bin" / name).write_bytes(b"source-owned synthetic test payload")
+            package = root / "package"
+            (package / "SDL3_ttf.dll").mkdir(parents=True)
+            # Only the provider is searched, so a host whose toolchain has no SDL3_ttf
+            # cannot turn the collision into an ordinary "not staged" warning.
+            with patch.dict(os.environ, {
+                "SDL3_DIR": str(provider), "SDL3_DLL": "", "VULKAN_SDK": str(provider),
+            }), patch("nk_cli._windows_host", return_value=True), patch.object(
+                nk_cli._runtime_dlls, "default_search_dirs", return_value=[provider / "bin"],
+            ):
+                with self.assertRaisesRegex(nk_cli.PackageBuildError, "SDL3_ttf.dll staging collision"):
+                    nk_cli._stage_runtime_assets(package)
 
 
 if __name__ == "__main__":

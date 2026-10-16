@@ -916,11 +916,6 @@ def load_program_image(path, base=0, psp_header=None):
                 "alignment-invalid", "error", f"PT_LOAD[{spec['idx']}].p_align",
                 f"alignment 0x{align:x} is not a power of two",
             ))
-        if align > 1 and (spec["off"] - spec["vaddr"]) % align:
-            findings.append(ProgramImageFinding(
-                "alignment-invalid", "error", f"PT_LOAD[{spec['idx']}].p_align",
-                "file offset and virtual address are not congruent at p_align",
-            ))
         try:
             checked_span(len(data), spec["off"], spec["filesz"], f"PT_LOAD[{spec['idx']}] source")
         except ValueError as exc:
@@ -1205,8 +1200,40 @@ def read_psp_segment_sizes(path, expected_segments):
             f"ELF has {expected_segments}"
         )
 
+    elf_size, psp_size = struct.unpack_from("<II", header, 0x28)
+    if psp_size != 0 and psp_size < 0x64:
+        raise ValueError(
+            f"{input_label}: declared container size 0x{psp_size:x} "
+            f"is smaller than the minimum ~PSP header size"
+        )
+    # A compressed module (0x06 bit 0) expands to elf_size past its container,
+    # so the size relation only holds for uncompressed headers.
+    compressed = (header[0x06] & 1) != 0
+    if not compressed and elf_size != 0 and psp_size != 0 and elf_size > psp_size:
+        raise ValueError(
+            f"{input_label}: declared ELF payload size 0x{elf_size:x} "
+            f"exceeds container size 0x{psp_size:x}"
+        )
+
     bss_size = struct.unpack_from("<I", header, 0x38)[0]
+    if bss_size > MAX_ELF_IMAGE_BYTES:
+        raise ValueError(f"{input_label}: invalid BSS size 0x{bss_size:x}")
+
+    # Each segment must be within the ELF image cap (a size with the sign bit set,
+    # read as signed by some tools, is far above the cap), and their sum must stay
+    # within the 256 MiB extent, mirroring validate_psp in C. A zero-size segment
+    # is a valid layout (#1006).
     segment_sizes = list(struct.unpack_from("<4I", header, 0x54))[:segment_count]
+    max_seg_bytes = 256 * 1024 * 1024
+    total_seg = 0
+    for i, sz in enumerate(segment_sizes):
+        if sz > MAX_ELF_IMAGE_BYTES:
+            raise ValueError(f"{input_label}: segment {i} has invalid memory size 0x{sz:x}")
+        if sz > max_seg_bytes or total_seg > max_seg_bytes - sz:
+            raise ValueError(
+                f"{input_label}: segment {i} size 0x{sz:x} is invalid or causes extent overflow"
+            )
+        total_seg += sz
     return segment_sizes, bss_size
 
 

@@ -30,6 +30,7 @@
 #include "nk_title_manifest.h"
 #include "nk_platform.h"
 #include "native_test_isolation.h"
+#include "pgf_golden_vectors.h"
 #include "../../src/rt/recomp.h"
 
 /* The per-run root setup and its recursive cleanup run inside assert(); keep
@@ -45,6 +46,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+
+/* Scratch root for the files this test writes: the checkout's build/ by default, or
+ * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
+ * touches the checkout. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <direct.h>
@@ -174,6 +182,13 @@ static void write_iso_with_fixture_eboot(const char *path) {
     FILE *file = fopen(path, "wb");
     assert(file != NULL);
     assert(fwrite(image, 1, sizeof(image), file) == sizeof(image));
+    assert(fclose(file) == 0);
+}
+
+static void write_binary_file(const char *path, const unsigned char *bytes, size_t size) {
+    FILE *file = fopen(path, "wb");
+    assert(file != NULL);
+    assert(fwrite(bytes, 1, size, file) == size);
     assert(fclose(file) == 0);
 }
 
@@ -399,7 +414,13 @@ static bool test_remove_tree(const char *path) {
         } while (FindNextFileA(find, &data));
         FindClose(find);
     }
-    return RemoveDirectoryA(path) != 0 || GetLastError() == ERROR_PATH_NOT_FOUND;
+    /* A missing tree counts as removed, as the POSIX branch's ENOENT does: a missing leaf is
+       ERROR_FILE_NOT_FOUND, a missing parent ERROR_PATH_NOT_FOUND. */
+    if (RemoveDirectoryA(path) != 0) return true;
+    {
+        DWORD error = GetLastError();
+        return error == ERROR_PATH_NOT_FOUND || error == ERROR_FILE_NOT_FOUND;
+    }
 #else
     DIR *directory = opendir(path);
     if (directory == NULL) return errno == ENOENT;
@@ -624,6 +645,19 @@ static bool git_status_snapshot(const char *out_path) {
                            "git status --porcelain > \"%s\" 2>&1", out_path);
     if (written <= 0 || (size_t)written >= sizeof(command)) return false;
     return system(command) == 0;
+}
+
+/* Reads a small file whole into out. Returns its length, or -1 when it cannot be read or
+ * does not fit. */
+static long read_small_file(const char *path, char *out, size_t max) {
+    FILE *file = fopen(path, "rb");
+    size_t length;
+    bool failed;
+    if (!file) return -1;
+    length = fread(out, 1, max, file);
+    failed = ferror(file) != 0 || length == max;
+    fclose(file);
+    return failed ? -1 : (long)length;
 }
 
 static bool files_identical(const char *left, const char *right) {
@@ -941,33 +975,6 @@ static void write_guest_module_iso(const char *path, const char *name,
     free(image);
 }
 
-static void write_synthetic_pgf(const char *path, uint16_t header_offset, uint16_t header_size,
-                                const char magic[4], uint16_t first_glyph, uint16_t last_glyph,
-                                size_t total_size) {
-    FILE *file = fopen(path, "wb");
-    assert(file != NULL);
-    uint8_t *buf = (uint8_t *)calloc(1, total_size);
-    assert(buf != NULL);
-    if (total_size >= 4) {
-        buf[0] = (uint8_t)(header_offset & 0xFF);
-        buf[1] = (uint8_t)((header_offset >> 8) & 0xFF);
-        buf[2] = (uint8_t)(header_size & 0xFF);
-        buf[3] = (uint8_t)((header_size >> 8) & 0xFF);
-    }
-    if (total_size >= (size_t)header_offset + 8u) {
-        memcpy(buf + header_offset + 4, magic, 4);
-    }
-    if (total_size >= (size_t)header_offset + 186u) {
-        buf[header_offset + 182] = (uint8_t)(first_glyph & 0xFF);
-        buf[header_offset + 183] = (uint8_t)((first_glyph >> 8) & 0xFF);
-        buf[header_offset + 184] = (uint8_t)(last_glyph & 0xFF);
-        buf[header_offset + 185] = (uint8_t)((last_glyph >> 8) & 0xFF);
-    }
-    assert(fwrite(buf, 1, total_size, file) == total_size);
-    free(buf);
-    assert(fclose(file) == 0);
-}
-
 static const char *const FIXTURE_SHA256 =
     "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d";
 
@@ -1036,17 +1043,17 @@ static void write_runtime_package_fixture_with_options(
         "{\"analyzer_codegen_epoch\":\"analyzer-codegen-v1\","
         "\"analyzer_sha256\":\"%064d\",\"codegen_options_sha256\":\"%s\","
         "\"codegen_sha256\":\"%064d\",\"executable_sha256\":\"%s\","
-        "\"generated_code_abi_epoch\":1,\"manifest_sha256\":\"%064d\","
+        "\"generated_code_abi_epoch\":%d,\"manifest_sha256\":\"%064d\","
         "\"modules_sha256\":\"%s\",\"psp_header_sha256\":null,"
-        "\"runtime_abi_epoch\":1,\"title_input_identity_sha256\":\"%s\"}",
-        0, codegen_options_digest, 0, input_executable_sha256, 0, modules_digest,
-        identity_digest);
+        "\"runtime_abi_epoch\":%d,\"title_input_identity_sha256\":\"%s\"}",
+        0, codegen_options_digest, 0, input_executable_sha256, NK_AOT_GENERATED_CODE_ABI_EPOCH, 0,
+        modules_digest, NK_AOT_RUNTIME_ABI_EPOCH, identity_digest);
     assert(aot_components_length > 0 && (size_t)aot_components_length < sizeof(aot_components_json));
     int native_components_length = snprintf(native_components_json, sizeof(native_components_json),
         "{\"compile_flags\":\"\",\"compiler_identity\":\"gcc-fixture\","
         "\"compiler_target\":\"fixture-target\",\"generated_code_digest\":\"%064d\","
-        "\"link_flags\":\"\",\"runtime_abi_epoch\":1,\"runtime_source_digest\":\"%064d\"}",
-        0, 0);
+        "\"link_flags\":\"\",\"runtime_abi_epoch\":%d,\"runtime_source_digest\":\"%064d\"}",
+        0, NK_AOT_RUNTIME_ABI_EPOCH, 0);
     assert(native_components_length > 0 && (size_t)native_components_length < sizeof(native_components_json));
     int aot_hash_length = snprintf(aot_hash_input, sizeof(aot_hash_input), "%s\n", aot_components_json);
     int native_hash_length = snprintf(native_hash_input, sizeof(native_hash_input), "%s\n", native_components_json);
@@ -1062,8 +1069,8 @@ static void write_runtime_package_fixture_with_options(
     int cache_length = snprintf(cache_json, sizeof(cache_json),
         "{\"format\":\"nakagawa-aot-cache\",\"schema_version\":2,\"key\":%s,"
         "\"codegen_options\":{},\"runtime_abi_compatibility\":{"
-        "\"current_epoch\":1,\"generated_code_reusable\":true}}",
-        cache_key_json);
+        "\"current_epoch\":%d,\"generated_code_reusable\":true}}",
+        cache_key_json, NK_AOT_RUNTIME_ABI_EPOCH);
     assert(cache_length > 0 && (size_t)cache_length < sizeof(cache_json));
     int report_length = snprintf(report_json, sizeof(report_json),
         "{\"format\":\"nakagawa-build-report\",\"schema_version\":1,"
@@ -1357,6 +1364,14 @@ static int repeat_launch_child_mode(void) {
                    events) >= 0;
         if (fclose(events) != 0) ok = 0;
         if (!ok) return 6;
+    } else if (stop_reason && strcmp(stop_reason, "host-fiber-stack-exhausted") == 0 &&
+               boot_event_path && *boot_event_path) {
+        FILE *events = fopen(boot_event_path, "ab");
+        if (!events) return 6;
+        ok = fputs("BOOT_EVENT phase=stop reason=semantic-boundary "
+                   "boundary=host-fiber-stack-exhausted\n", events) >= 0;
+        if (fclose(events) != 0) ok = 0;
+        if (!ok) return 6;
     }
     if (marker[0]) {
         FILE *save = fopen(marker, "ab");
@@ -1500,6 +1515,200 @@ static void test_source_iso_member_path_validation(void) {
 }
 #endif
 
+/* The bitmap fallback (SDL_RenderDebugText) draws ASCII only. Every UTF-8 text
+ * it draws goes through player_text_for_bitmap_font, so a title that the system
+ * font can draw (the trademark sign) is readable there too, and nothing else
+ * reaches the debug font as raw bytes. */
+static void test_bitmap_font_text_fallback(void) {
+    char out[64];
+    size_t n = player_text_for_bitmap_font("Fixture\xE2\x84\xA2", out, sizeof(out));
+    assert(strcmp(out, "FixtureTM") == 0);
+    assert(n == strlen(out));
+
+    player_text_for_bitmap_font("caf\xC3\xA9", out, sizeof(out));
+    assert(strcmp(out, "caf?") == 0);
+
+    /* A truncated sequence and a stray continuation byte each become one '?'. */
+    player_text_for_bitmap_font("a\xE2\x84", out, sizeof(out));
+    assert(strcmp(out, "a??") == 0);
+    player_text_for_bitmap_font("\x80" "b", out, sizeof(out));
+    assert(strcmp(out, "?b") == 0);
+
+    player_text_for_bitmap_font("tab\there\x7f", out, sizeof(out));
+    assert(strcmp(out, "tab here?") == 0);
+
+    /* Output never overruns its buffer; the cut is at a whole glyph. */
+    char small[4];
+    n = player_text_for_bitmap_font("abcdef", small, sizeof(small));
+    assert(strcmp(small, "abc") == 0);
+    assert(n == 3);
+    char tiny[3];
+    n = player_text_for_bitmap_font("\xE2\x84\xA2" "x", tiny, sizeof(tiny));
+    assert(strcmp(tiny, "TM") == 0);
+    assert(n == 2);
+
+    printf("[PLAYER_STATE_TEST] bitmap font text fallback PASS\n");
+}
+
+/* Paths under the user's profile are shown with the profile folder replaced by
+ * "~" (the stored path is untouched). The profile folder is matched on whole
+ * path components only, so a profile name that is a prefix of another folder
+ * name is left alone. */
+static void test_display_path_hides_profile_folder(void) {
+    /* Each platform's own path spelling: the profile folder and its separator. */
+#if defined(_WIN32) || defined(_WIN64)
+#define TP_HOME "C:\\path\\synthetic-user"
+#define TP_OTHER "D:"
+#define TP_SEP "\\"
+#else
+#define TP_HOME "/srv/synthetic-user"
+#define TP_OTHER "/media"
+#define TP_SEP "/"
+#endif
+    char out[160];
+    const char *home = TP_HOME;
+
+    /* The saves root from the Settings screen. */
+    size_t n = player_display_text_with_home(
+        TP_HOME TP_SEP "AppData" TP_SEP "Local" TP_SEP "Nakagawa" TP_SEP "saves", home,
+        out, sizeof(out));
+    assert(strcmp(out, "~" TP_SEP "AppData" TP_SEP "Local" TP_SEP "Nakagawa" TP_SEP "saves") == 0);
+    assert(n == strlen(out));
+
+    /* Exactly the profile folder, a trailing separator on the profile, and a
+     * path embedded in a sentence. */
+    player_display_text_with_home(TP_HOME, home, out, sizeof(out));
+    assert(strcmp(out, "~") == 0);
+    player_display_text_with_home(TP_HOME TP_SEP "Games" TP_SEP "disc.iso",
+                                  TP_HOME TP_SEP, out, sizeof(out));
+    assert(strcmp(out, "~" TP_SEP "Games" TP_SEP "disc.iso") == 0);
+    player_display_text_with_home("Promoted to " TP_HOME TP_SEP "AppData, done.",
+                                  home, out, sizeof(out));
+    assert(strcmp(out, "Promoted to ~" TP_SEP "AppData, done.") == 0);
+
+    /* A sibling folder whose name only starts with the profile name is untouched,
+     * and so is a path outside the profile. */
+    player_display_text_with_home(TP_HOME "2" TP_SEP "Games", home, out, sizeof(out));
+    assert(strcmp(out, TP_HOME "2" TP_SEP "Games") == 0);
+    player_display_text_with_home(TP_OTHER TP_SEP "Games" TP_SEP "disc.iso", home,
+                                  out, sizeof(out));
+    assert(strcmp(out, TP_OTHER TP_SEP "Games" TP_SEP "disc.iso") == 0);
+
+    /* No profile known: nothing is rewritten. */
+    player_display_text_with_home(TP_HOME TP_SEP "x", "", out, sizeof(out));
+    assert(strcmp(out, TP_HOME TP_SEP "x") == 0);
+    player_display_text_with_home(TP_HOME TP_SEP "x", NULL, out, sizeof(out));
+    assert(strcmp(out, TP_HOME TP_SEP "x") == 0);
+
+    /* The buffer bound holds: the cut is never past the end. */
+    char tiny[6];
+    player_display_text_with_home(TP_HOME TP_SEP "AppData", home, tiny, sizeof(tiny));
+    assert(strlen(tiny) < sizeof(tiny));
+    assert(strcmp(tiny, "~" TP_SEP "App") == 0);
+#undef TP_HOME
+#undef TP_OTHER
+#undef TP_SEP
+
+#if defined(_WIN32) || defined(_WIN64)
+    /* Windows paths compare case-insensitively and accept either separator. */
+    player_display_text_with_home("c:/PATH/SYNTHETIC-USER/Games/disc.iso", home,
+                                  out, sizeof(out));
+    assert(strcmp(out, "~/Games/disc.iso") == 0);
+#endif
+
+    printf("[PLAYER_STATE_TEST] display path hides the profile folder PASS\n");
+}
+
+/* A library card says what is true of the title's package now. A title whose
+ * package has not been checked yet is "checking", never "Not prepared"; a
+ * package that cannot be used says why, with the validator's first sentence. */
+static void test_library_card_status_text(void) {
+    char out[256];
+    size_t n = player_library_status_text(true, false, false, false, 0, NULL,
+                                          out, sizeof(out));
+    assert(strcmp(out, "Status: Prepared") == 0);
+    assert(n == strlen(out));
+
+    player_library_status_text(false, true, false, false, 0, NULL, out, sizeof(out));
+    assert(strcmp(out, "Status: Checking package...") == 0);
+
+    /* The reason from a copied library: the identity record is missing. */
+    const char *reason =
+        "Title input identity record is missing or unreadable; source media cannot be qualified. "
+        "Cache component/epoch mismatch or incomplete entry; build it from the library.";
+    player_library_status_text(false, false, false, false, 0, reason, out, sizeof(out));
+    assert(strcmp(out, "Not prepared: Title input identity record is missing or unreadable; "
+                       "source media cannot be qualified") == 0);
+
+    player_library_status_text(false, false, false, false, 0,
+                               "Runtime package is missing.", out, sizeof(out));
+    assert(strcmp(out, "Not prepared: Runtime package is missing") == 0);
+
+    player_library_status_text(false, false, true, false, 0,
+                               "Runtime package is missing.", out, sizeof(out));
+    assert(strcmp(out, "Check failed: Runtime package is missing") == 0);
+
+    player_library_status_text(false, false, false, false, 0, NULL, out, sizeof(out));
+    assert(strcmp(out, "Status: Not prepared") == 0);
+
+    /* Staged assets keep their count, and say why the runtime is still missing. */
+    player_library_status_text(false, false, false, true, 12, NULL, out, sizeof(out));
+    assert(strcmp(out, "Assets staged: 12") == 0);
+    player_library_status_text(false, false, false, true, 12,
+                               "Runtime package is missing.", out, sizeof(out));
+    assert(strcmp(out, "Assets staged: 12. Runtime package is missing") == 0);
+
+    /* A small buffer is never overrun. */
+    char tiny[8];
+    n = player_library_status_text(true, false, false, false, 0, NULL, tiny, sizeof(tiny));
+    assert(strcmp(tiny, "Status:") == 0);
+    assert(n == strlen(tiny));
+
+    printf("[PLAYER_STATE_TEST] library card status text PASS\n");
+}
+
+/* The bundled sample entries (the UI fixtures from player_app_populate_sample_games)
+ * live in memory only. Every library save writes library.json, so a save made for
+ * a real title (an add, or the last-played record after a launch) must leave the
+ * samples out of the file. The file is redirected to a disposable path. */
+static void test_sample_entries_never_reach_library_json(void) {
+    printf("[PLAYER_STATE_TEST] Subtest: sample entries never reach library.json\n");
+    char cache[512];
+    assert(nk_platform_get_path(NK_PATH_CACHE, cache, sizeof(cache)));
+    char path[1024];
+    snprintf(path, sizeof(path), "%s%csample_isolation.json", cache,
+             nk_platform_path_separator());
+    remove(path);
+
+    PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(app != NULL);
+    nk_library_init(&app->library);
+    assert(strlen(path) < sizeof(app->library.library_path));
+    strcpy(app->library.library_path, path);
+
+    /* The samples enter the in-memory library, as they do for --demo runs. */
+    player_app_populate_sample_games(app);
+    assert(app->library.count >= 2);
+
+    /* A real title is added, which saves the library. */
+    GameRecord user;
+    memset(&user, 0, sizeof(user));
+    seed_entry(&user, "TEST00041", "Synthetic User Title");
+    assert(player_app_add_game(app, &user));
+
+    NkLibrary loaded;
+    nk_library_init(&loaded);
+    assert(nk_library_load(&loaded, path) == NK_OK);
+    assert(nk_library_count(&loaded) == 1);
+    assert(nk_library_find_by_disc_id(&loaded, "TEST00041") != NULL);
+    assert(nk_library_find_by_disc_id(&loaded, "TEST00005") == NULL);
+    assert(nk_library_find_by_disc_id(&loaded, "TEST00006") == NULL);
+
+    remove(path);
+    free(app);
+    printf("[PLAYER_STATE_TEST] sample entries stay out of library.json PASS\n");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
@@ -1535,9 +1744,32 @@ int main(int argc, char **argv) {
      * cache, save and boot-event paths inside a temporary root, never inside
      * the developer's real per-user directories. */
     native_test_create_root("player-state");
+    {
+        /* A developer machine may point NAKAGAWA_PSP_KEY_FILE at the real key
+         * file. Plant a decoy override that names an existing file: unless the
+         * isolation clears it, the no-key-file preflight check below consults
+         * the decoy instead of the isolated user-data root and fails. */
+        char decoy_key[NATIVE_TEST_PATH_MAX + 32];
+        int written = snprintf(decoy_key, sizeof(decoy_key), "%s%cdeveloper-keyfile.json",
+                               native_test_get_root(), nk_platform_path_separator());
+        assert(written > 0 && (size_t)written < sizeof(decoy_key));
+        write_text_file(decoy_key, "{\"format\":\"nakagawa-psp-keystore-1\",\"entries\":{}}");
+        native_test_set_env("NAKAGAWA_PSP_KEY_FILE", decoy_key);
+    }
     native_test_isolate_user_data_roots();
+    {
+        const char *key_override = getenv("NAKAGAWA_PSP_KEY_FILE");
+        assert(key_override == NULL || key_override[0] == '\0');
+    }
     native_test_assert_cache_root_isolated();
     native_test_assert_config_root_isolated();
+
+    test_bitmap_font_text_fallback();
+    test_display_path_hides_profile_folder();
+    test_library_card_status_text();
+    /* Saves a library file under the cache root, so it runs only once that
+     * root is the temporary one. */
+    test_sample_entries_never_reach_library_json();
 
     /* PlayerApp holds 64 game records twice over; keep it off the stack. */
     PlayerApp *app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
@@ -1746,7 +1978,7 @@ int main(int argc, char **argv) {
     snprintf(fixture_data_root, sizeof(fixture_data_root), "%s%cfixtures%cdisplay_smoke",
              fixture_root, nk_platform_path_separator(), nk_platform_path_separator());
     assert(nk_platform_mkdir_p(fixture_data_root));
-    write_runtime_package_fixture(fixture_root, "TEST00006", "display-smoke-v1", 2,
+    write_runtime_package_fixture(fixture_root, "TEST00006", "display-smoke-v1", SR_CPUSTATE_ABI_VERSION,
                                   "display-smoke-v1.exe", FIXTURE_SHA256, NULL);
     player_app_set_runtime_root(fresh, fixture_root);
 
@@ -1895,7 +2127,7 @@ int main(int argc, char **argv) {
          * Makefile target runs from the source tree, where build/ is the
          * conventional scratch directory. */
         const char *scratch_dir = getenv("NK_TEST_SCRATCH_DIR");
-        if (scratch_dir == NULL || scratch_dir[0] == '\0') scratch_dir = "build";
+        if (scratch_dir == NULL || scratch_dir[0] == '\0') scratch_dir = SR_SELFTEST_BUILD_ROOT;
         char global_profile[NK_MAX_PATH];
         snprintf(global_profile, sizeof(global_profile),
                  "%s/test_launch_global_profile.json", scratch_dir);
@@ -2125,7 +2357,7 @@ int main(int argc, char **argv) {
         stops->wizard.step = WIZARD_STEP_INSPECT_VERIFY;
         assert(player_app_focus_count(stops) == 3);
         stops->wizard.step = WIZARD_STEP_SYSTEM_FONTS;
-        assert(player_app_focus_count(stops) == 4);
+        assert(player_app_focus_count(stops) == 6); /* accept, cycle, back, cancel, import, remove */
         stops->wizard.step = WIZARD_STEP_READY_LAUNCH;
         assert(player_app_focus_count(stops) == 3);
         free(stops);
@@ -2239,6 +2471,7 @@ int main(int argc, char **argv) {
            fallback and every current pre-launch boundary without touching a
            real title or runtime package. */
         char preflight_root[640], font_dir[720], font_path[800];
+        char latin_font_path[800], korean_font_path[800];
         char preflight_fixtures_root[900], preflight_data_root[1024];
         unsigned long preflight_run_id;
 #if defined(_WIN32) || defined(_WIN64)
@@ -2257,7 +2490,11 @@ int main(int argc, char **argv) {
                  preflight_fixtures_root, nk_platform_path_separator());
         snprintf(font_dir, sizeof(font_dir), "%s%cfont", preflight_root,
                  nk_platform_path_separator());
-        snprintf(font_path, sizeof(font_path), "%s%cjpn0.pgf", font_dir,
+        snprintf(font_path, sizeof(font_path), "%s%cnkjpn.pgf", font_dir,
+                 nk_platform_path_separator());
+        snprintf(latin_font_path, sizeof(latin_font_path), "%s%cnkltn.pgf", font_dir,
+                 nk_platform_path_separator());
+        snprintf(korean_font_path, sizeof(korean_font_path), "%s%cnkkr.pgf", font_dir,
                  nk_platform_path_separator());
         NkTitleEntrySnapshot synthetic_snapshot = {0};
         assert(nk_title_catalog_find_by_id("synthetic-allegrex-v1",
@@ -2293,6 +2530,8 @@ int main(int argc, char **argv) {
         remove(package_json);
         remove(package_report);
         remove(font_path);
+        remove(latin_font_path);
+        remove(korean_font_path);
         player_app_set_runtime_root(wiz, preflight_root);
         snprintf(wiz->inspecting_game.disc_id, sizeof(wiz->inspecting_game.disc_id),
                  "%s", synthetic_disc_id);
@@ -2370,7 +2609,7 @@ int main(int argc, char **argv) {
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
         assert(check && check->status == PREFLIGHT_MISSING);
         write_runtime_package_fixture(preflight_root, synthetic_disc_id,
-                                      "synthetic-allegrex-v1", 2,
+                                      "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
         assert(!player_app_game_has_runtime(wiz, &wiz->inspecting_game));
         snprintf(preflight_data_root, sizeof(preflight_data_root), "%s%cfixtures%cprofile_zero",
@@ -2378,7 +2617,9 @@ int main(int argc, char **argv) {
                  nk_platform_path_separator());
         assert(nk_platform_mkdir_p(preflight_data_root));
         assert(nk_platform_mkdir_p(font_dir));
-        write_file(font_path);
+        write_binary_file(font_path, kGoldenJapanesePgf, sizeof(kGoldenJapanesePgf));
+        write_binary_file(latin_font_path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        write_binary_file(korean_font_path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
         assert(player_app_game_has_runtime(wiz, &wiz->inspecting_game));
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
@@ -2526,6 +2767,24 @@ int main(int argc, char **argv) {
             module_check = find_preflight_check(&wiz->wizard.preflight, "GUEST_MODULES");
             assert(module_check && module_check->status == PREFLIGHT_OK);
             assert(strstr(module_check->message, "Guest modules: 1 of 1 ready.") != NULL);
+
+            /* A valid PRX whose PT_LOAD file offset (84) and address (0) differ
+               modulo p_align 0x10 is ready: segment bytes are copied from the file
+               offset, so the layout rule has no congruence term. */
+            {
+                unsigned char offset_prx[88];
+                build_synthetic_guest_prx(offset_prx);
+                offset_prx[80] = 0x10; /* p_align */
+                write_guest_module_iso(module_iso_path, "libfont.prx", offset_prx,
+                                       sizeof(offset_prx));
+                remove(module_copy);
+                player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+                module_check = find_preflight_check(&wiz->wizard.preflight, "GUEST_MODULES");
+                assert(module_check && module_check->status == PREFLIGHT_OK);
+                assert(strstr(module_check->message, "Guest modules: 1 of 1 ready.") != NULL);
+                write_guest_module_iso(module_iso_path, "libfont.prx", prx_bytes,
+                                       sizeof(prx_bytes));
+            }
 
             /* A user-supplied decrypted copy that is a valid PRX is ready. */
             write_synthetic_guest_prx(module_copy, sizeof(prx_bytes));
@@ -2701,7 +2960,7 @@ int main(int argc, char **argv) {
                       "Synthetic experiment") == 0);
         nk_title_catalog_snapshot_release(&profile_snapshot);
         write_runtime_package_fixture(preflight_root, "ULUS99998",
-                                      "experimental-ulus99998", 2,
+                                      "experimental-ulus99998", SR_CPUSTATE_ABI_VERSION,
                                       "experimental-ulus99998.exe", FIXTURE_SHA256, NULL);
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
@@ -2713,11 +2972,11 @@ int main(int argc, char **argv) {
         assert(strstr(check->message, "build it from the library") != NULL);
         assert(strstr(check->message, "#") == NULL);
         write_runtime_package_fixture(preflight_root, "ULUS99998",
-                                      "experimental-ulus99998", 2,
+                                      "experimental-ulus99998", SR_CPUSTATE_ABI_VERSION,
                                       "experimental-ulus99998.exe", FIXTURE_SHA256, NULL);
 
         write_runtime_package_fixture(preflight_root, "ULUS99998",
-                                      "experimental-ulus99998", 2,
+                                      "experimental-ulus99998", SR_CPUSTATE_ABI_VERSION,
                                       "experimental-ulus99998.exe",
                                       "0000000000000000000000000000000000000000000000000000000000000000",
                                       NULL);
@@ -2733,7 +2992,7 @@ int main(int argc, char **argv) {
         assert(check && check->status == PREFLIGHT_INCOMPATIBLE);
 
         write_runtime_package_fixture(preflight_root, "ULUS99998",
-                                      "experimental-ulus99998", 2,
+                                      "experimental-ulus99998", SR_CPUSTATE_ABI_VERSION,
                                       "../escape.exe", FIXTURE_SHA256, NULL);
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "RUNTIME_PACKAGE");
@@ -2773,98 +3032,200 @@ int main(int argc, char **argv) {
         free(wiz);
     }
 
-    /* 14. Font cache provisioning: validation, manifest checking, and preflight status. */
-    printf("[PLAYER_STATE_TEST] Subtest 14: font cache validation and preflight status\n");
+    /* 14. PSP system fonts: the native reader's verdict, slot import, manifest v2, removal,
+       per-slot preflight, and the Fonts & System status text. The fonts are the golden
+       two-glyph images generated by tools/pgf_writer.py (pgf_golden_vectors.h), never real fonts. */
+    printf("[PLAYER_STATE_TEST] Subtest 14: PSP system font import and per-slot preflight\n");
     fflush(stdout);
     {
         char cache_test_root[512];
-        char cache_dir[640];
-        char fonts_v1_dir[768];
-        char manifest_path[896];
-        char installed_font[896];
-        char pgf_valid[800];
-        char pgf_trunc[800];
-        char pgf_bad_magic[800];
-        char pgf_corrupt_glyph[800];
-        char err[256];
+        char font_root[640];
+        char check_dir[768];
+        char source_dir[768];
+        char path[1024];
+        char err[512];
         char sha[65];
+        char msg[512];
         uint64_t font_size = 0;
+        NkFontSlotState states[NK_FONT_SLOT_COUNT];
+        NkFontImportResult result;
+        const char sep = nk_platform_path_separator();
+        const char *no_choice[NK_FONT_SLOT_COUNT] = { NULL, NULL, NULL };
+        const char *choose_b[NK_FONT_SLOT_COUNT] = { NULL, "dupe_b.pgf", NULL };
+        bool remove_all[NK_FONT_SLOT_COUNT] = { true, true, true };
+        bool remove_korean[NK_FONT_SLOT_COUNT] = { false, false, true };
+        unsigned char mutated[sizeof(kGoldenLatinPgf)];
+
         assert(nk_platform_get_path(NK_PATH_CACHE, cache_test_root, sizeof(cache_test_root)));
-        snprintf(cache_dir, sizeof(cache_dir), "%s%cplayer_font_test",
-                 cache_test_root, nk_platform_path_separator());
-        assert(nk_platform_mkdir_p(cache_dir));
+        snprintf(font_root, sizeof(font_root), "%s%cplayer_font_test", cache_test_root, sep);
+        snprintf(check_dir, sizeof(check_dir), "%s%ccheck", font_root, sep);
+        snprintf(source_dir, sizeof(source_dir), "%s%csource", font_root, sep);
+        /* The helper refuses a missing leaf on Windows, so the root is made first. */
+        assert(nk_platform_mkdir_p(font_root));
+        assert(test_remove_tree(font_root));
+        assert(nk_platform_mkdir_p(check_dir));
+        assert(nk_platform_mkdir_p(source_dir));
 
-        snprintf(pgf_valid, sizeof(pgf_valid), "%s%cvalid.pgf", cache_dir, nk_platform_path_separator());
-        snprintf(pgf_trunc, sizeof(pgf_trunc), "%s%ctrunc.pgf", cache_dir, nk_platform_path_separator());
-        snprintf(pgf_bad_magic, sizeof(pgf_bad_magic), "%s%cbad_magic.pgf", cache_dir, nk_platform_path_separator());
-        snprintf(pgf_corrupt_glyph, sizeof(pgf_corrupt_glyph), "%s%ccorrupt_glyph.pgf", cache_dir, nk_platform_path_separator());
-
-        /* 14a: Structural PGF validation */
-        write_synthetic_pgf(pgf_valid, 0, 392, "PGF0", 0, 10, 512);
-        assert(nk_font_validate_pgf(pgf_valid, &font_size, sha, err, sizeof(err)) == true);
-        assert(font_size == 512);
+        /* 14a: the reader's verdict on a golden font, and on each refusal the task names. */
+        snprintf(path, sizeof(path), "%s%cgolden_latin.pgf", check_dir, sep);
+        write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        assert(nk_font_validate_pgf(path, &font_size, sha, err, sizeof(err)) == true);
+        assert(font_size == sizeof(kGoldenLatinPgf));
         assert(strlen(sha) == 64);
+        {
+            NkFontInspection inspection;
+            assert(nk_font_inspect_pgf(path, &inspection, err, sizeof(err)) == true);
+            assert(inspection.slot == NK_FONT_SLOT_LATIN);
+            assert(inspection.verdict.has_latin == 1u);
+            assert(inspection.verdict.glyph_count == 2u);
+        }
 
-        /* Truncated: header declares 392 bytes, file only 100 bytes */
-        write_synthetic_pgf(pgf_trunc, 0, 392, "PGF0", 0, 10, 100);
-        assert(nk_font_validate_pgf(pgf_trunc, &font_size, sha, err, sizeof(err)) == false);
+        snprintf(path, sizeof(path), "%s%cbad_truncated.pgf", check_dir, sep);
+        write_binary_file(path, kGoldenLatinPgf, 100u);
+        assert(nk_font_validate_pgf(path, &font_size, sha, err, sizeof(err)) == false);
         assert(strstr(err, "truncated") != NULL);
 
-        /* Bad magic: magic is "BAD0" */
-        write_synthetic_pgf(pgf_bad_magic, 0, 392, "BAD0", 0, 10, 512);
-        assert(nk_font_validate_pgf(pgf_bad_magic, &font_size, sha, err, sizeof(err)) == false);
+        memcpy(mutated, kGoldenLatinPgf, sizeof(mutated));
+        memcpy(mutated + 4, "BAD0", 4u);
+        snprintf(path, sizeof(path), "%s%cbad_magic.pgf", check_dir, sep);
+        write_binary_file(path, mutated, sizeof(mutated));
+        assert(nk_font_validate_pgf(path, &font_size, sha, err, sizeof(err)) == false);
         assert(strstr(err, "invalid PGF magic") != NULL);
 
-        /* Corrupt glyphs: first_glyph 20 > last_glyph 10 */
-        write_synthetic_pgf(pgf_corrupt_glyph, 0, 392, "PGF0", 20, 10, 512);
-        assert(nk_font_validate_pgf(pgf_corrupt_glyph, &font_size, sha, err, sizeof(err)) == false);
+        memcpy(mutated, kGoldenLatinPgf, sizeof(mutated));
+        mutated[0xb6] = 0x62; /* first glyph 0x62 > last glyph 0x61 */
+        mutated[0xb7] = 0x00;
+        snprintf(path, sizeof(path), "%s%cbad_range.pgf", check_dir, sep);
+        write_binary_file(path, mutated, sizeof(mutated));
+        assert(nk_font_validate_pgf(path, &font_size, sha, err, sizeof(err)) == false);
         assert(strstr(err, "corrupt glyph indices") != NULL);
 
-        /* 14b: Cache directory and manifest inspection */
-        snprintf(fonts_v1_dir, sizeof(fonts_v1_dir), "%s%cfonts%cv1",
-                 cache_dir, nk_platform_path_separator(), nk_platform_path_separator());
-        assert(nk_platform_mkdir_p(fonts_v1_dir));
-        snprintf(manifest_path, sizeof(manifest_path), "%s%cmanifest.json",
-                 fonts_v1_dir, nk_platform_path_separator());
-        snprintf(installed_font, sizeof(installed_font), "%s%cjpn0.pgf",
-                 fonts_v1_dir, nk_platform_path_separator());
+        memcpy(mutated, kGoldenLatinPgf, sizeof(mutated));
+        mutated[8] = 4; /* revision 4 */
+        snprintf(path, sizeof(path), "%s%cbad_revision.pgf", check_dir, sep);
+        write_binary_file(path, mutated, sizeof(mutated));
+        assert(nk_font_validate_pgf(path, &font_size, sha, err, sizeof(err)) == false);
+        assert(strstr(err, "unsupported revision") != NULL);
 
-        char msg[512];
-        /* Without manifest and without fallback: MISSING */
-        remove(manifest_path);
-        remove(installed_font);
-        assert(nk_font_check_cache(cache_dir, NULL, msg, sizeof(msg)) == NK_FONT_STATUS_MISSING);
+        memcpy(mutated, kGoldenLatinPgf, sizeof(mutated));
+        mutated[2] = 0x9c; /* a 412-byte header declared under revision 2 */
+        mutated[3] = 0x01;
+        snprintf(path, sizeof(path), "%s%cbad_header_412.pgf", check_dir, sep);
+        write_binary_file(path, mutated, sizeof(mutated));
+        assert(nk_font_validate_pgf(path, &font_size, sha, err, sizeof(err)) == false);
+        assert(strstr(err, "header size") != NULL);
 
-        /* Install synthetic jpn0.pgf */
-        write_synthetic_pgf(installed_font, 0, 392, "PGF0", 0, 10, 512);
-        assert(nk_font_validate_pgf(installed_font, &font_size, sha, err, sizeof(err)) == true);
+        snprintf(path, sizeof(path), "%s%coversize.pgf", check_dir, sep);
+        {
+            FILE *big = fopen(path, "wb");
+            assert(big != NULL);
+            assert(fseek(big, (long)NK_FONT_PGF_MAX_BYTES, SEEK_SET) == 0);
+            assert(fputc(0, big) == 0);
+            assert(fclose(big) == 0);
+        }
+        assert(nk_font_validate_pgf(path, &font_size, sha, err, sizeof(err)) == false);
+        assert(strstr(err, "16 MiB") != NULL);
 
-        /* Corrupt manifest: invalid JSON */
-        write_text_file(manifest_path, "{ broken json: true ");
-        assert(nk_font_check_cache(cache_dir, NULL, msg, sizeof(msg)) == NK_FONT_STATUS_INVALID);
+        /* 14b: a folder with one file per slot, a refused file, and a file that is not a font.
+           Names do not decide the slot; the coverage does. */
+        snprintf(path, sizeof(path), "%s%cnotes.txt", source_dir, sep);
+        write_text_file(path, "not a font");
+        snprintf(path, sizeof(path), "%s%cdump_one.pgf", source_dir, sep);
+        write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        snprintf(path, sizeof(path), "%s%cdump_two.pgf", source_dir, sep);
+        write_binary_file(path, kGoldenJapanesePgf, sizeof(kGoldenJapanesePgf));
+        snprintf(path, sizeof(path), "%s%cdump_three.pgf", source_dir, sep);
+        write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
+        snprintf(path, sizeof(path), "%s%cdump_broken.pgf", source_dir, sep);
+        write_binary_file(path, kGoldenLatinPgf, 100u);
 
-        /* Manifest with hash mismatch */
-        char bad_manifest[1024];
-        snprintf(bad_manifest, sizeof(bad_manifest),
-                 "{\"schema_version\":1,\"files\":{\"jpn0.pgf\":{\"size\":512,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}}}");
-        write_text_file(manifest_path, bad_manifest);
-        assert(nk_font_check_cache(cache_dir, NULL, msg, sizeof(msg)) == NK_FONT_STATUS_INVALID);
+        assert(nk_font_check_cache(font_root, msg, sizeof(msg)) == NK_FONT_STATUS_MISSING);
+        memset(&result, 0, sizeof(result));
+        assert(nk_font_import_folder(font_root, source_dir, no_choice, &result, err, sizeof(err)));
+        assert(result.file_count == 4);
+        assert(result.imported_count == 3);
+        assert(result.slot_imported[NK_FONT_SLOT_JAPANESE]);
+        assert(result.slot_imported[NK_FONT_SLOT_LATIN]);
+        assert(result.slot_imported[NK_FONT_SLOT_KOREAN]);
 
-        /* Valid manifest */
-        char good_manifest[1024];
-        snprintf(good_manifest, sizeof(good_manifest),
-                 "{\"schema_version\":1,\"import_time\":12345,\"files\":{\"jpn0.pgf\":{\"size\":512,\"sha256\":\"%s\"}}}",
-                 sha);
-        write_text_file(manifest_path, good_manifest);
-        assert(nk_font_check_cache(cache_dir, NULL, msg, sizeof(msg)) == NK_FONT_STATUS_OK);
+        /* The cache is fonts/v2 with the served names, and the manifest lists them. */
+        snprintf(path, sizeof(path), "%s%cfonts%cv2%cmanifest.json", font_root, sep, sep, sep);
+        assert(nk_platform_file_exists(path));
+        assert(nk_font_check_cache(font_root, msg, sizeof(msg)) == NK_FONT_STATUS_OK);
+        snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkltn.pgf", font_root, sep, sep, sep);
+        assert(nk_platform_file_exists(path));
+        snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkjpn.pgf", font_root, sep, sep, sep);
+        assert(nk_platform_file_exists(path));
+        snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkkr.pgf", font_root, sep, sep, sep);
+        assert(nk_platform_file_exists(path));
 
-        /* 14c: Compatibility preflight with player app */
+        /* Per-slot status: every slot is the user's, with plain-language text. */
+        nk_font_slot_states(font_root, font_root, states);
+        for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
+            assert(states[slot].source == NK_FONT_SOURCE_USER);
+        }
+        assert(strstr(states[NK_FONT_SLOT_JAPANESE].detail, "imported from your PSP") != NULL);
+
+        /* 14c: removal drops only the cache's slot files and the manifest; originals stay. */
+        assert(nk_font_remove_imports(font_root, remove_all, err, sizeof(err)) == 3);
+        assert(nk_font_check_cache(font_root, msg, sizeof(msg)) == NK_FONT_STATUS_MISSING);
+        snprintf(path, sizeof(path), "%s%cdump_one.pgf", source_dir, sep);
+        assert(nk_platform_file_exists(path));
+        nk_font_slot_states(font_root, font_root, states);
+        for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
+            assert(states[slot].source == NK_FONT_SOURCE_NONE);
+            assert(strstr(states[slot].detail, "missing") != NULL);
+        }
+
+        /* 14d: two files name the Latin slot and none is chosen: the slot is left alone. A
+           choice imports exactly the chosen file. */
+        snprintf(path, sizeof(path), "%s%cdump_two.pgf", source_dir, sep);
+        remove(path);
+        snprintf(path, sizeof(path), "%s%cdump_three.pgf", source_dir, sep);
+        remove(path);
+        snprintf(path, sizeof(path), "%s%cdump_one.pgf", source_dir, sep);
+        remove(path);
+        snprintf(path, sizeof(path), "%s%cdupe_a.pgf", source_dir, sep);
+        write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        snprintf(path, sizeof(path), "%s%cdupe_b.pgf", source_dir, sep);
+        write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        memset(&result, 0, sizeof(result));
+        assert(nk_font_import_folder(font_root, source_dir, no_choice, &result, err, sizeof(err)));
+        assert(result.imported_count == 0);
+        assert(!result.slot_imported[NK_FONT_SLOT_LATIN]);
+        {
+            bool said_choose = false;
+            for (int i = 0; i < result.file_count; i++) {
+                if (strstr(result.files[i].detail, "choose one") != NULL) said_choose = true;
+            }
+            assert(said_choose);
+        }
+        memset(&result, 0, sizeof(result));
+        assert(nk_font_import_folder(font_root, source_dir, choose_b, &result, err, sizeof(err)));
+        assert(result.imported_count == 1);
+        assert(result.slot_imported[NK_FONT_SLOT_LATIN]);
+        assert(nk_font_remove_imports(font_root, remove_all, err, sizeof(err)) == 1);
+
+        /* 14e: a folder with no .pgf file is refused by name. */
+        {
+            char empty_dir[800];
+            snprintf(empty_dir, sizeof(empty_dir), "%s%cempty", font_root, sep);
+            assert(nk_platform_mkdir_p(empty_dir));
+            memset(&result, 0, sizeof(result));
+            assert(!nk_font_import_folder(font_root, empty_dir, no_choice, &result, err, sizeof(err)));
+            assert(strstr(err, "no .pgf files") != NULL);
+        }
+
+        /* 14f: the wizard's status text and preflight, through the player's own functions. The
+           folder now holds two Latin files and a refused one, so the first import imports nothing. */
+        /* The Fonts step reads and writes the per-user data directory, so this block points that
+           directory at its own font root, the same folder the runtime root names here. */
+        assert(nk_platform_set_app_data_dir_override(font_root));
         PlayerApp *font_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
         assert(font_app != NULL);
         nk_library_init(&font_app->library);
-        player_app_set_runtime_root(font_app, cache_dir);
-        snprintf(font_app->inspecting_game.disc_id, sizeof(font_app->inspecting_game.disc_id),
-                 "UCUS98701");
+        player_app_set_runtime_root(font_app, font_root);
+        snprintf(font_app->inspecting_game.disc_id, sizeof(font_app->inspecting_game.disc_id), "UCUS98701");
         snprintf(font_app->inspecting_game.title_id, sizeof(font_app->inspecting_game.title_id),
                  "synthetic-allegrex-v1");
         NkIsoExecutableReport exec_rep;
@@ -2875,26 +3236,381 @@ int main(int argc, char **argv) {
         exec_rep.boot_fallback = true;
         snprintf(exec_rep.selected_path, sizeof(exec_rep.selected_path), "BOOT.BIN");
 
-        /* Preflight with valid manifest -> PREFLIGHT_OK */
-        player_app_build_compatibility_preflight(font_app, true, true, &exec_rep);
-        const PlayerPreflightCheck *fcheck = find_preflight_check(&font_app->wizard.preflight, "SYSTEM_FONTS");
-        assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+        assert(player_app_fonts_import_folder(font_app, source_dir) == false);
+        assert(strstr(font_app->wizard.font_message, "No font was imported") != NULL);
+        snprintf(path, sizeof(path), "%s%cdupe_a.pgf", source_dir, sep);
+        remove(path);
+        snprintf(path, sizeof(path), "%s%cdupe_b.pgf", source_dir, sep);
+        remove(path);
 
-        /* Preflight with corrupt manifest -> PREFLIGHT_INVALID */
-        write_text_file(manifest_path, bad_manifest);
-        player_app_build_compatibility_preflight(font_app, true, true, &exec_rep);
-        fcheck = find_preflight_check(&font_app->wizard.preflight, "SYSTEM_FONTS");
-        assert(fcheck != NULL && fcheck->status == PREFLIGHT_INVALID);
-        assert(fcheck->issue_count == 1 && fcheck->issue_numbers[0] == 313);
+        snprintf(path, sizeof(path), "%s%cdump_one.pgf", source_dir, sep);
+        write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        snprintf(path, sizeof(path), "%s%cdump_two.pgf", source_dir, sep);
+        write_binary_file(path, kGoldenJapanesePgf, sizeof(kGoldenJapanesePgf));
+        snprintf(path, sizeof(path), "%s%cdump_three.pgf", source_dir, sep);
+        write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
+        assert(player_app_fonts_import_folder(font_app, source_dir));
+        assert(strstr(font_app->wizard.font_message, "Imported 3 PSP font slot(s)") != NULL);
+        assert(strstr(font_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN], "imported from your PSP") != NULL);
 
-        /* Clean up */
+        /* Korean removed on its own: preflight is MISSING and names the slot. */
+        assert(nk_font_remove_imports(font_root, remove_korean, err, sizeof(err)) == 1);
+        player_app_refresh_font_status(font_app);
+        player_app_build_compatibility_preflight(font_app, true, true, &exec_rep);
+        {
+            const PlayerPreflightCheck *fcheck = find_preflight_check(&font_app->wizard.preflight, "SYSTEM_FONTS");
+            assert(fcheck != NULL && fcheck->status == PREFLIGHT_MISSING);
+            assert(strstr(fcheck->message, "Korean: missing") != NULL);
+        }
+
+        /* A project font fills the Korean slot: preflight is then complete. */
+        snprintf(path, sizeof(path), "%s%cfont", font_root, sep);
+        assert(nk_platform_mkdir_p(path));
+        snprintf(path, sizeof(path), "%s%cfont%cnkkr.pgf", font_root, sep, sep);
+        write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
+        player_app_refresh_font_status(font_app);
+        assert(strstr(font_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN], "project font") != NULL);
+        player_app_build_compatibility_preflight(font_app, true, true, &exec_rep);
+        {
+            const PlayerPreflightCheck *fcheck = find_preflight_check(&font_app->wizard.preflight, "SYSTEM_FONTS");
+            assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+            assert(strstr(fcheck->message, "Korean: project font") != NULL);
+            assert(strstr(fcheck->message, "Japanese: imported from your PSP") != NULL);
+        }
+        assert(player_app_fonts_remove_imports(font_app));
+        assert(strstr(font_app->wizard.font_message, "Removed 2 imported PSP font file(s)") != NULL);
+
+        /* 14g: a slot file that cannot be deleted keeps its manifest entry. The Japanese file is
+           replaced by a directory holding a file, so the delete fails for a reason other than the
+           file being missing, on POSIX (unlink) and Win32 (DeleteFileW) alike. Japanese is named
+           first, so the call must go on past it: the Latin file is removed and its entry dropped,
+           and the manifest keeps the entries whose files remain. */
+        {
+            char blocker[NATIVE_TEST_PATH_MAX + 32];
+            const bool remove_japanese_and_latin[NK_FONT_SLOT_COUNT] = { true, true, false };
+            int rc;
+            memset(&result, 0, sizeof(result));
+            assert(nk_font_import_folder(font_root, source_dir, no_choice, &result, err, sizeof(err)));
+            assert(result.imported_count == 3);
+            snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkjpn.pgf", font_root, sep, sep, sep);
+            assert(remove(path) == 0);
+            assert(nk_platform_mkdir_p(path));
+            snprintf(blocker, sizeof(blocker), "%s%cblock.txt", path, sep);
+            write_text_file(blocker, "a directory is not removed by the slot delete");
+
+            rc = nk_font_remove_imports(font_root, remove_japanese_and_latin, err, sizeof(err));
+            assert(rc == -1);
+            assert(strstr(err, "could not delete the Japanese font file") != NULL);
+            snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkltn.pgf", font_root, sep, sep, sep);
+            assert(!nk_platform_file_exists(path));
+            snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkjpn.pgf", font_root, sep, sep, sep);
+            assert(nk_platform_dir_exists(path));
+            snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkkr.pgf", font_root, sep, sep, sep);
+            assert(nk_platform_file_exists(path));
+
+            /* Read back through the API: the manifest still lists Japanese, so the cache is
+               INVALID and names it; Korean is still served; Latin is gone. */
+            assert(nk_font_check_cache(font_root, msg, sizeof(msg)) == NK_FONT_STATUS_INVALID);
+            assert(strstr(msg, "Japanese") != NULL);
+            nk_font_slot_states(font_root, font_root, states);
+            assert(states[NK_FONT_SLOT_LATIN].source == NK_FONT_SOURCE_NONE);
+            assert(states[NK_FONT_SLOT_JAPANESE].source != NK_FONT_SOURCE_USER);
+            assert(strstr(states[NK_FONT_SLOT_JAPANESE].detail, "missing") != NULL);
+            assert(states[NK_FONT_SLOT_KOREAN].source == NK_FONT_SOURCE_USER);
+
+            /* The player's Fonts step reports the same outcome: Korean, which is healthy, is
+               removed, and the message names the Japanese file that stayed. */
+            assert(!player_app_fonts_remove_imports(font_app));
+            assert(strstr(font_app->wizard.font_message, "Could not remove the imported fonts") != NULL);
+            assert(strstr(font_app->wizard.font_message, "Japanese") != NULL);
+            snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkkr.pgf", font_root, sep, sep, sep);
+            assert(!nk_platform_file_exists(path));
+            assert(nk_font_check_cache(font_root, msg, sizeof(msg)) == NK_FONT_STATUS_INVALID);
+            assert(strstr(msg, "Japanese") != NULL);
+
+            /* Once the blocker is gone the file is missing, which is not a failure: the entry is
+               dropped, nothing is left, and the manifest is removed. */
+            snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkjpn.pgf", font_root, sep, sep, sep);
+            assert(test_remove_tree(path));
+            assert(nk_font_remove_imports(font_root, remove_all, err, sizeof(err)) == 0);
+            assert(nk_font_check_cache(font_root, msg, sizeof(msg)) == NK_FONT_STATUS_MISSING);
+        }
+
+        /* 14h: when every named delete fails, nothing changed, so the manifest is not rewritten:
+           its bytes are the same afterwards, and the call fails naming all three slots. */
+        {
+            char blocker[NATIVE_TEST_PATH_MAX + 32];
+            char manifest_file[1024];
+            char before[4096];
+            char after[4096];
+            long before_length;
+            long after_length;
+            const char *slot_files[NK_FONT_SLOT_COUNT] = {
+                NK_FONT_SLOT_JAPANESE_FILE, NK_FONT_SLOT_LATIN_FILE, NK_FONT_SLOT_KOREAN_FILE
+            };
+            memset(&result, 0, sizeof(result));
+            assert(nk_font_import_folder(font_root, source_dir, no_choice, &result, err, sizeof(err)));
+            assert(result.imported_count == 3);
+            for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
+                snprintf(path, sizeof(path), "%s%cfonts%cv2%c%s", font_root, sep, sep, sep, slot_files[slot]);
+                assert(remove(path) == 0);
+                assert(nk_platform_mkdir_p(path));
+                snprintf(blocker, sizeof(blocker), "%s%cblock.txt", path, sep);
+                write_text_file(blocker, "a directory is not removed by the slot delete");
+            }
+            snprintf(manifest_file, sizeof(manifest_file), "%s%cfonts%cv2%cmanifest.json", font_root, sep, sep, sep);
+            before_length = read_small_file(manifest_file, before, sizeof(before));
+            assert(before_length > 0);
+            assert(nk_font_remove_imports(font_root, remove_all, err, sizeof(err)) == -1);
+            assert(strstr(err, "Japanese") != NULL);
+            assert(strstr(err, "Latin") != NULL);
+            assert(strstr(err, "Korean") != NULL);
+            after_length = read_small_file(manifest_file, after, sizeof(after));
+            assert(after_length == before_length);
+            assert(memcmp(before, after, (size_t)before_length) == 0);
+            assert(nk_font_check_cache(font_root, msg, sizeof(msg)) == NK_FONT_STATUS_INVALID);
+
+            /* Clear the blockers: the same call then drops every entry and removes the manifest. */
+            for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
+                snprintf(path, sizeof(path), "%s%cfonts%cv2%c%s", font_root, sep, sep, sep, slot_files[slot]);
+                assert(test_remove_tree(path));
+            }
+            assert(nk_font_remove_imports(font_root, remove_all, err, sizeof(err)) == 0);
+            assert(nk_font_check_cache(font_root, msg, sizeof(msg)) == NK_FONT_STATUS_MISSING);
+        }
+
+        /* 14i: the manifest's staging name is blocked, so the rewrite fails after the Latin file
+           is gone. The call reports that the manifest could not be rewritten, and the manifest
+           still lists Latin until a later call drops the entry. */
+        {
+            const bool remove_latin[NK_FONT_SLOT_COUNT] = { false, true, false };
+            int rc;
+            memset(&result, 0, sizeof(result));
+            assert(nk_font_import_folder(font_root, source_dir, no_choice, &result, err, sizeof(err)));
+            assert(result.imported_count == 3);
+            snprintf(path, sizeof(path), "%s%cfonts%cv2%cmanifest.json.tmp", font_root, sep, sep, sep);
+            assert(nk_platform_mkdir_p(path));
+            rc = nk_font_remove_imports(font_root, remove_latin, err, sizeof(err));
+            assert(rc == -1);
+            assert(strstr(err, "the font manifest could not be rewritten") != NULL);
+            snprintf(path, sizeof(path), "%s%cfonts%cv2%cnkltn.pgf", font_root, sep, sep, sep);
+            assert(!nk_platform_file_exists(path));
+            assert(nk_font_check_cache(font_root, msg, sizeof(msg)) == NK_FONT_STATUS_INVALID);
+            assert(strstr(msg, "Latin") != NULL);
+            snprintf(path, sizeof(path), "%s%cfonts%cv2%cmanifest.json.tmp", font_root, sep, sep, sep);
+            assert(test_remove_tree(path));
+            assert(nk_font_remove_imports(font_root, remove_all, err, sizeof(err)) == 2);
+            assert(nk_font_check_cache(font_root, msg, sizeof(msg)) == NK_FONT_STATUS_MISSING);
+        }
+
+        /* A corrupt manifest is INVALID, and the preflight names the issue (#313). */
+        snprintf(path, sizeof(path), "%s%cfonts%cv2", font_root, sep, sep);
+        assert(nk_platform_mkdir_p(path));
+        snprintf(path, sizeof(path), "%s%cfonts%cv2%cmanifest.json", font_root, sep, sep, sep);
+        write_text_file(path, "{ broken json: true ");
+        player_app_build_compatibility_preflight(font_app, true, true, &exec_rep);
+        {
+            const PlayerPreflightCheck *fcheck = find_preflight_check(&font_app->wizard.preflight, "SYSTEM_FONTS");
+            assert(fcheck != NULL && fcheck->status == PREFLIGHT_INVALID);
+            assert(fcheck->issue_count == 1 && fcheck->issue_numbers[0] == 313);
+        }
         free(font_app);
-        remove(pgf_valid);
-        remove(pgf_trunc);
-        remove(pgf_bad_magic);
-        remove(pgf_corrupt_glyph);
-        remove(manifest_path);
-        remove(installed_font);
+        assert(nk_platform_set_app_data_dir_override(NULL));
+        assert(test_remove_tree(font_root));
+    }
+
+    /* 14r: a runtime root does not move the fonts. Under --runtime-root the Fonts step imports into
+       and reads from the per-user data directory (the --user-data-root override here), and the
+       runtime root's own fonts/v2 is neither written nor read. */
+    printf("[PLAYER_STATE_TEST] Subtest 14r: Fonts step under a runtime root uses the per-user directory\n");
+    fflush(stdout);
+    {
+        char rt_base[512];
+        char per_user[768];
+        char runtime_only[768];
+        char source[768];
+        char path[1024];
+        const char sep = nk_platform_path_separator();
+
+        assert(nk_platform_get_path(NK_PATH_CACHE, rt_base, sizeof(rt_base)));
+        snprintf(per_user, sizeof(per_user), "%s%cfont_root_per_user", rt_base, sep);
+        snprintf(runtime_only, sizeof(runtime_only), "%s%cfont_root_runtime", rt_base, sep);
+        snprintf(source, sizeof(source), "%s%cfont_root_source", rt_base, sep);
+        assert(test_remove_tree(per_user));
+        assert(test_remove_tree(runtime_only));
+        assert(test_remove_tree(source));
+        assert(nk_platform_mkdir_p(per_user));
+        assert(nk_platform_mkdir_p(runtime_only));
+        assert(nk_platform_mkdir_p(source));
+        snprintf(path, sizeof(path), "%s%cdump_latin.pgf", source, sep);
+        write_binary_file(path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+
+        assert(nk_platform_set_app_data_dir_override(per_user));
+        PlayerApp *runtime_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(runtime_app != NULL);
+        nk_library_init(&runtime_app->library);
+        player_app_set_runtime_root(runtime_app, runtime_only);
+
+        assert(player_app_fonts_import_folder(runtime_app, source));
+        assert(strstr(runtime_app->wizard.font_message, "Imported 1 PSP font slot(s)") != NULL);
+        snprintf(path, sizeof(path), "%s%cfonts%cv2%cmanifest.json", per_user, sep, sep, sep);
+        assert(nk_platform_file_exists(path));
+        snprintf(path, sizeof(path), "%s%cfonts", runtime_only, sep);
+        assert(!nk_platform_dir_exists(path));
+
+        player_app_refresh_font_status(runtime_app);
+        assert(strstr(runtime_app->wizard.font_slot_detail[NK_FONT_SLOT_LATIN],
+                      "imported from your PSP") != NULL);
+        assert(player_app_fonts_remove_imports(runtime_app));
+        free(runtime_app);
+
+        /* 14r-b (#827 review): the runtime root holds the project latin font and the per-user
+           directory holds no import. The Fonts step and the SYSTEM_FONTS preflight must both name
+           that project font, read from <runtime root>/font, not from the per-user directory. */
+        {
+            char project_font_dir[1024];
+            char project_latin[1100];
+            NkIsoExecutableReport project_exec;
+            snprintf(project_font_dir, sizeof(project_font_dir), "%s%cfont", runtime_only, sep);
+            assert(nk_platform_mkdir_p(project_font_dir));
+            snprintf(project_latin, sizeof(project_latin), "%s%cnkltn.pgf", project_font_dir, sep);
+            write_binary_file(project_latin, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+
+            PlayerApp *project_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+            assert(project_app != NULL);
+            nk_library_init(&project_app->library);
+            player_app_set_runtime_root(project_app, runtime_only);
+            snprintf(project_app->inspecting_game.disc_id,
+                     sizeof(project_app->inspecting_game.disc_id), "TEST80001");
+            snprintf(project_app->inspecting_game.title_id,
+                     sizeof(project_app->inspecting_game.title_id), "synthetic-allegrex-v1");
+            memset(&project_exec, 0, sizeof(project_exec));
+            project_exec.eboot.kind = NK_ISO_EXEC_PSP_ENCRYPTED;
+            project_exec.boot.kind = NK_ISO_EXEC_MIPS_ELF32;
+            project_exec.selected = NK_ISO_EXEC_SELECTION_BOOT;
+            project_exec.boot_fallback = true;
+            snprintf(project_exec.selected_path, sizeof(project_exec.selected_path), "BOOT.BIN");
+
+            player_app_refresh_font_status(project_app);
+            assert(strstr(project_app->wizard.font_slot_detail[NK_FONT_SLOT_LATIN],
+                          "Latin: project font.") != NULL);
+            player_app_build_compatibility_preflight(project_app, true, true, &project_exec);
+            {
+                const PlayerPreflightCheck *fcheck =
+                    find_preflight_check(&project_app->wizard.preflight, "SYSTEM_FONTS");
+                assert(fcheck != NULL);
+                assert(strstr(fcheck->message, "Latin: project font.") != NULL);
+            }
+            free(project_app);
+            assert(test_remove_tree(project_font_dir));
+        }
+
+        assert(nk_platform_set_app_data_dir_override(NULL));
+        assert(test_remove_tree(per_user));
+        assert(test_remove_tree(runtime_only));
+        assert(test_remove_tree(source));
+    }
+
+    /* 14g: no configured runtime root. The preflight falls back to the app-data directory, and
+       the Fonts step must read and write that same directory. The directory is also the project
+       root the preflight checks, so a project font there is named by both surfaces. */
+    printf("[PLAYER_STATE_TEST] Subtest 14g: Fonts step and preflight with no runtime root\n");
+    fflush(stdout);
+    {
+        char app_data[1024];
+        char cache_root[1024];
+        char project_dir[1200];
+        char project_path[1300];
+        char fonts_dir[1300];
+        char manifest_path[1400];
+        char source_dir[1300];
+        char source_path[1400];
+        const char sep = nk_platform_path_separator();
+        NkIsoExecutableReport exec_rep;
+
+        assert(nk_platform_get_app_data_dir(app_data, sizeof(app_data)));
+        assert(nk_platform_get_path(NK_PATH_CACHE, cache_root, sizeof(cache_root)));
+        snprintf(project_dir, sizeof(project_dir), "%s%cfont", app_data, sep);
+        snprintf(project_path, sizeof(project_path), "%s%cnkkr.pgf", project_dir, sep);
+        snprintf(fonts_dir, sizeof(fonts_dir), "%s%cfonts", app_data, sep);
+        snprintf(manifest_path, sizeof(manifest_path), "%s%cfonts%cv2%cmanifest.json",
+                 app_data, sep, sep, sep);
+        snprintf(source_dir, sizeof(source_dir), "%s%cplayer_font_fallback_source",
+                 cache_root, sep);
+
+        /* Start with no project or imported fonts under the app-data directory. */
+        assert(test_remove_tree(project_dir));
+        assert(test_remove_tree(fonts_dir));
+        assert(test_remove_tree(source_dir));
+        assert(nk_platform_mkdir_p(project_dir));
+        assert(nk_platform_mkdir_p(source_dir));
+        write_binary_file(project_path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
+        snprintf(source_path, sizeof(source_path), "%s%cdump_one.pgf", source_dir, sep);
+        write_binary_file(source_path, kGoldenLatinPgf, sizeof(kGoldenLatinPgf));
+        snprintf(source_path, sizeof(source_path), "%s%cdump_two.pgf", source_dir, sep);
+        write_binary_file(source_path, kGoldenJapanesePgf, sizeof(kGoldenJapanesePgf));
+        snprintf(source_path, sizeof(source_path), "%s%cdump_three.pgf", source_dir, sep);
+        write_binary_file(source_path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
+
+        PlayerApp *fallback_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+        assert(fallback_app != NULL);
+        nk_library_init(&fallback_app->library);
+        assert(fallback_app->runtime_root[0] == '\0');
+        snprintf(fallback_app->inspecting_game.disc_id,
+                 sizeof(fallback_app->inspecting_game.disc_id), "TEST80001");
+        snprintf(fallback_app->inspecting_game.title_id,
+                 sizeof(fallback_app->inspecting_game.title_id), "synthetic-allegrex-v1");
+        memset(&exec_rep, 0, sizeof(exec_rep));
+        exec_rep.eboot.kind = NK_ISO_EXEC_PSP_ENCRYPTED;
+        exec_rep.boot.kind = NK_ISO_EXEC_MIPS_ELF32;
+        exec_rep.selected = NK_ISO_EXEC_SELECTION_BOOT;
+        exec_rep.boot_fallback = true;
+        snprintf(exec_rep.selected_path, sizeof(exec_rep.selected_path), "BOOT.BIN");
+
+        /* 1. The app-data project font is named by both the Fonts step and the preflight. */
+        player_app_refresh_font_status(fallback_app);
+        assert(strstr(fallback_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN],
+                      "Korean: project font.") != NULL);
+        player_app_build_compatibility_preflight(fallback_app, true, true, &exec_rep);
+        {
+            const PlayerPreflightCheck *fcheck =
+                find_preflight_check(&fallback_app->wizard.preflight, "SYSTEM_FONTS");
+            assert(fcheck != NULL && fcheck->status == PREFLIGHT_MISSING);
+            assert(strstr(fcheck->message, "Korean: project font.") != NULL);
+        }
+
+        /* 2. The import writes the cache under app-data, and the preflight reads it there. */
+        assert(player_app_fonts_import_folder(fallback_app, source_dir));
+        assert(strstr(fallback_app->wizard.font_message, "Imported 3 PSP font slot(s)") != NULL);
+        assert(nk_platform_file_exists(manifest_path));
+        assert(strstr(fallback_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN],
+                      "Korean: imported from your PSP.") != NULL);
+        player_app_build_compatibility_preflight(fallback_app, true, true, &exec_rep);
+        {
+            const PlayerPreflightCheck *fcheck =
+                find_preflight_check(&fallback_app->wizard.preflight, "SYSTEM_FONTS");
+            assert(fcheck != NULL && fcheck->status == PREFLIGHT_OK);
+            assert(strstr(fcheck->message, "Korean: imported from your PSP.") != NULL);
+        }
+
+        /* 3. Removing the imports leaves the project font, and both surfaces name it again. */
+        assert(player_app_fonts_remove_imports(fallback_app));
+        assert(strstr(fallback_app->wizard.font_message,
+                      "Removed 3 imported PSP font file(s)") != NULL);
+        assert(strstr(fallback_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN],
+                      "Korean: project font.") != NULL);
+        player_app_build_compatibility_preflight(fallback_app, true, true, &exec_rep);
+        {
+            const PlayerPreflightCheck *fcheck =
+                find_preflight_check(&fallback_app->wizard.preflight, "SYSTEM_FONTS");
+            assert(fcheck != NULL && fcheck->status == PREFLIGHT_MISSING);
+            assert(strstr(fcheck->message, "Korean: project font.") != NULL);
+        }
+
+        free(fallback_app);
+        assert(test_remove_tree(fonts_dir));
+        assert(test_remove_tree(project_dir));
+        assert(test_remove_tree(source_dir));
     }
 
     /* 15. Player settings persistence.
@@ -3456,7 +4172,7 @@ int main(int argc, char **argv) {
                                        "synthetic-allegrex-v1");
         assert(nk_platform_mkdir_p(package_dir));
         write_runtime_package_fixture_with_report_size(
-            validation_root, cached_disc_id, "synthetic-allegrex-v1", 2,
+            validation_root, cached_disc_id, "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
             "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL,
             (size_t)NK_MANIFEST_MAX_BYTES + 1u);
         assert(fixture_file_size(report_json) > NK_MANIFEST_MAX_BYTES);
@@ -3494,7 +4210,7 @@ int main(int argc, char **argv) {
         assert(!changed_report_info.validation_cache_hit);
 
         write_runtime_package_fixture(validation_root, cached_disc_id,
-                                      "synthetic-allegrex-v1", 2,
+                                      "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
         NkRuntimePackageInfo refreshed_info;
         NkRuntimePackageStatus refreshed_status;
@@ -3517,7 +4233,7 @@ int main(int argc, char **argv) {
         assert(missing_image_status == NK_RUNTIME_PACKAGE_STALE);
         assert(!missing_image_info.validation_cache_hit);
         write_runtime_package_fixture(validation_root, cached_disc_id,
-                                      "synthetic-allegrex-v1", 2,
+                                      "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
         refreshed_status = nk_launch_validate_runtime_package(
             validation_root, &game, &refreshed_info, reason, sizeof(reason));
@@ -3537,7 +4253,7 @@ int main(int argc, char **argv) {
         assert(!changed_package_info.validation_cache_hit);
 
         write_runtime_package_fixture(validation_root, cached_disc_id,
-                                      "synthetic-allegrex-v1", 2,
+                                      "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
         refreshed_status = nk_launch_validate_runtime_package(
             validation_root, &game, &refreshed_info, reason, sizeof(reason));
@@ -3548,6 +4264,52 @@ int main(int argc, char **argv) {
                    validation_root, &game, &cached_info, reason,
                    sizeof(reason)) == NK_RUNTIME_PACKAGE_OK);
         assert(cached_info.validation_cache_hit);
+
+        /* A complete, self-consistent package built for the previous CpuState
+           ABI: the player refuses it by name through the same validation route
+           it uses before a launch, never from the validation cache, and leaves
+           no launchable paths behind. The validation cache keys on file
+           identities (size, write time, change time), not on bytes, so a
+           rewrite that only flips the ABI digit and lands inside the write
+           timestamp tick of the accepted fixture would be served from the
+           entry that validated that fixture (the same-size case is #683's and
+           is asserted on its own below). A package built by an older player is
+           a different build with a different size, so this one carries a
+           larger build report: the identity cannot miss it on any host, and
+           the refusal can then only come from the runtime ABI check. */
+        long accepted_report_size = fixture_file_size(report_json);
+        assert(accepted_report_size > 0);
+        char accepted_identity[65];
+        assert(nk_launch_runtime_package_cache_identity(
+            validation_root, &game, accepted_identity));
+        write_runtime_package_fixture_with_report_size(
+            validation_root, cached_disc_id, "synthetic-allegrex-v1",
+            SR_CPUSTATE_ABI_VERSION - 1u, "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL,
+            (size_t)accepted_report_size + 64u);
+        assert(fixture_file_size(report_json) == accepted_report_size + 64);
+        char previous_abi_identity[65];
+        assert(nk_launch_runtime_package_cache_identity(
+            validation_root, &game, previous_abi_identity));
+        assert(strcmp(accepted_identity, previous_abi_identity) != 0);
+        NkRuntimePackageInfo previous_abi_info;
+        memset(&previous_abi_info, 0xA5, sizeof(previous_abi_info));
+        reason[0] = '\0';
+        assert(nk_launch_validate_runtime_package(
+                   validation_root, &game, &previous_abi_info, reason,
+                   sizeof(reason)) == NK_RUNTIME_PACKAGE_INCOMPATIBLE);
+        assert(!previous_abi_info.validation_cache_hit);
+        assert(strstr(reason, "runtime ABI is incompatible with this player build") != NULL);
+        assert(previous_abi_info.package_root[0] == '\0');
+        assert(previous_abi_info.executable_path[0] == '\0');
+        assert(previous_abi_info.image_path[0] == '\0');
+        write_runtime_package_fixture(validation_root, cached_disc_id,
+                                      "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
+                                      "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
+        refreshed_status = nk_launch_validate_runtime_package(
+            validation_root, &game, &refreshed_info, reason, sizeof(reason));
+        assert_repaired_validation(validation_root, &game, identity_before,
+                                   refreshed_status,
+                                   &refreshed_info);
 
         assert(nk_launch_runtime_package_cache_identity(
             validation_root, &game, identity_before));
@@ -3575,7 +4337,7 @@ int main(int argc, char **argv) {
            invalidate the entry; when that filesystem timestamp also stays in
            one tick, the metadata identity can still collide. */
         write_runtime_package_fixture(validation_root, cached_disc_id,
-                                      "synthetic-allegrex-v1", 2,
+                                      "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
         NkRuntimePackageInfo pinned_entry_info;
         NkRuntimePackageStatus pinned_entry_status = nk_launch_validate_runtime_package(
@@ -3620,7 +4382,7 @@ int main(int argc, char **argv) {
         }
 
         write_runtime_package_fixture_with_report_size(
-            validation_root, cached_disc_id, "synthetic-allegrex-v1", 2,
+            validation_root, cached_disc_id, "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
             "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL,
             (size_t)NK_BUILD_REPORT_MAX_BYTES + 1u);
         assert(fixture_file_size(report_json) ==
@@ -3699,7 +4461,7 @@ int main(int argc, char **argv) {
         remove_runtime_package_fixture(epoch_root, epoch_disc_id,
                                        "synthetic-allegrex-v1");
         write_runtime_package_fixture(epoch_root, epoch_disc_id,
-                                      "synthetic-allegrex-v1", 2,
+                                      "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
                                       "synthetic-allegrex-v1.exe", FIXTURE_SHA256, NULL);
 
         NkGameEntry epoch_game;
@@ -3869,7 +4631,7 @@ int main(int argc, char **argv) {
             "{\"executable\":{\"path\":\"PSP_GAME/SYSDIR/EBOOT.BIN\","
             "\"sha256\":\"%s\"},\"modules\":[]}", FIXTURE_SHA256);
         write_runtime_package_fixture_with_source_media(
-            user_root, disc_id, "synthetic-allegrex-v1", 2,
+            user_root, disc_id, "synthetic-allegrex-v1", SR_CPUSTATE_ABI_VERSION,
             "synthetic-allegrex-v1.exe", FIXTURE_SHA256, self_path,
             source_media_json);
         char package_exe[1100];
@@ -4133,6 +4895,24 @@ int main(int argc, char **argv) {
         assert(strcmp(rep->last_error.log_file_path, stop_event_path) == 0);
         assert(nk_platform_file_exists(stop_event_path));
         remove(stop_event_path);
+        set_environment_value("NK_REPEAT_LAUNCH_STOP_REASON", "");
+
+        /* Runtime stack exhaustion has no tracker issue and must still reach the
+           same named, plain-language player boundary. */
+        set_environment_value("NK_REPEAT_LAUNCH_STOP_REASON",
+                              "host-fiber-stack-exhausted");
+        assert(player_app_launch_game(rep, 0));
+        rep->launch_time_ms = 17000;
+        assert(nk_launch_wait(&rep->launch_session, 10000) == 9);
+        assert(player_app_monitor_game_session(rep, 18000));
+        assert(strcmp(rep->last_error.error_code, "RUNTIME_SEMANTIC_BOUNDARY") == 0);
+        assert(strstr(rep->last_error.boundary_text,
+                      "host-fiber-stack-exhausted") != NULL);
+        assert(strstr(rep->last_error.boundary_text, "not supported yet") != NULL);
+        assert(strchr(rep->last_error.boundary_text, '#') == NULL);
+        assert(strcmp(rep->last_error.message,
+                      "This part of the game isn't supported yet. Check the details below and try again after an update.") == 0);
+        if (stop_event_path[0]) remove(stop_event_path);
         set_environment_value("NK_REPEAT_LAUNCH_STOP_REASON", "");
         /* Final recovery launch: the session is never stuck. */
         set_environment_value("NK_REPEAT_LAUNCH_EXIT_CODE", "0");

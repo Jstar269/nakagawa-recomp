@@ -133,3 +133,12 @@ publication-excluded via `assets/public_source_profile.json`, with an explicit
 consume a local copy of that manifest;
 that does not make the runtime generic or prove portability/correctness for
 another title.
+
+## Qualification
+
+[`docs/TITLE_TESTING.md`](../../docs/TITLE_TESTING.md) describes the public route that
+validates a checked-in manifest, stages its public input profile from
+[`assets/input_profiles/`](../input_profiles/), launches it through the native player
+and writes a bring-up-schema report. `mingw32-make title-qualification` validates every
+manifest here without building; `mingw32-make title-qualification-smoke` runs the
+display fixture end to end.

@@ -155,6 +155,12 @@ and `sceDisplayWaitVblankStartCB` now resolve to dedicated production handlers
 `h_DisplayWaitVblankCB`, `h_DisplayWaitVblankStartCB`, issue #339). Live registration
 status is regenerated in [`PSP_INTR_WAITS_CENSUS.md`](PSP_INTR_WAITS_CENSUS.md).
 
+**Snapshot note (audio SRC superseded).** `sceAudioSRCChReserve`, `sceAudioSRCChRelease` and
+`sceAudioSRCOutputBlocking` now resolve to dedicated production handlers
+(`h_AudioSRCChReserve`, `h_AudioSRCChRelease`, `h_AudioSRCOutputBlocking`, issue #339),
+which return the words a PSP-3000 measured in `PSP-HLE-AUDIO-SRC-001`. Live registration
+status is regenerated in [`PSP_INTR_WAITS_CENSUS.md`](PSP_INTR_WAITS_CENSUS.md).
+
 Of the registered remainder the harness covers 54 probe cases. The registered APIs
 deliberately left out of the executable matrix, with their reasons:
 

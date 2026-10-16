@@ -114,6 +114,8 @@ struct CpuState {
 	uint32_t in_delay_slot = 0;
 	uint32_t flow_kind = 0;
 	uint32_t flow_target = 0;
+	// MIPS32 LLbit, set by ll and read by sc (CpuState ABI v3).
+	uint32_t llbit = 0;
 
 	CpuState() {
 		for (int i = 0; i < 32; i++) fi[i] = 0;
@@ -129,6 +131,7 @@ static_assert(offsetof(CpuState, in_delay_slot) == 984,
 static_assert(offsetof(CpuState, flow_kind) == 988, "ref::CpuState flow_kind offset drift");
 static_assert(offsetof(CpuState, flow_target) == 992,
 	              "ref::CpuState flow_target offset drift");
-static_assert(sizeof(CpuState) == 996, "ref::CpuState size drift");
+static_assert(offsetof(CpuState, llbit) == 996, "ref::CpuState llbit offset drift");
+static_assert(sizeof(CpuState) == 1000, "ref::CpuState size drift");
 
 }  // namespace ref

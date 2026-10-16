@@ -119,6 +119,10 @@ void StoreInfo(const CpuState *s, uint32_t op, uint32_t *addr, int *size) {
 		case 0x2A: *size = 4; break;   // swl (records the touched word)
 		case 0x2E: *size = 4; break;   // swr
 		case 0x39: *size = 4; break;   // swc1
+		case 0x38:                     // sc writes memory only while the link is set
+			if (!s->llbit) return;
+			*size = 4;
+			break;
 		default: return;
 	}
 	*addr = s->r[Rs(op)] + SImm(op);
@@ -355,15 +359,17 @@ static StopReason Execute(CpuState *s, Memory *mem, uint32_t op) {
 			mem->Write32(aligned, result);
 			return StopReason::kRunning;
 		}
-		case 0x30: {  // ll: load-linked (single-thread emulation: plain read with upper-bit set on failure)
+		case 0x30: {  // ll: load the word and set the link (MIPS32 LLbit)
 			uint32_t addr = s->r[Rs(op)] + SImm(op);
 			SetR(s, Rt(op), mem->Read32(addr));
+			s->llbit = 1;
 			return StopReason::kRunning;
 		}
-		case 0x38: {  // sc: store-conditional (single-thread emulation: always succeeds)
+		case 0x38: {  // sc: store and report 1 only while the link is set, else 0
 			uint32_t addr = s->r[Rs(op)] + SImm(op);
-			mem->Write32(addr, s->r[Rt(op)]);
-			SetR(s, Rt(op), 1);  // success
+			const uint32_t linked = s->llbit != 0 ? 1u : 0u;
+			if (linked) mem->Write32(addr, s->r[Rt(op)]);
+			SetR(s, Rt(op), linked);
 			return StopReason::kRunning;
 		}
 		case 0x11: {  // COP1 (single-precision FPU)
@@ -378,10 +384,12 @@ static StopReason Execute(CpuState *s, Memory *mem, uint32_t op) {
 					return StopReason::kRunning;
 				case 0x04: s->fi[fs] = s->r[ft]; return StopReason::kRunning;     // mtc1
 				case 0x06:
-					// ctc1 stores the guest FCSR wholesale; the cached fpcond
+					// ctc1 stores the guest FCSR except bits 25..31, which the
+					// PSP FPU does not implement (PSP-FPU-CC-001: a ctc1 of
+					// 0xFE800000 reads back 0x00800000). The cached fpcond
 					// mirror resyncs so FCC0 stays architectural in fcr31.
 					if (fs == 31) {
-						s->fcr31 = s->r[ft];
+						s->fcr31 = s->r[ft] & ~SR_FCR31_CTC1_UNWRITABLE;
 						s->fpcond = (s->fcr31 >> 23) & 1u;
 					}
 					return StopReason::kRunning;  // ctc1

@@ -121,10 +121,78 @@ class TestDCOPolicy(unittest.TestCase):
 class TestGovernanceSurfaces(unittest.TestCase):
     """Small fail-closed checks for the public agent/configuration contract."""
 
-    def test_agents_contract_stays_concise(self):
-        lines = (ROOT / "AGENTS.md").read_text(encoding="utf-8").splitlines()
-        self.assertGreaterEqual(len(lines), 180)
-        self.assertLessEqual(len(lines), 250)
+    def test_agents_contract_pins_required_content(self):
+        content = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        lines = content.splitlines()
+        self.assertIn("## Where to start", lines)
+        for section in range(1, 12):
+            with self.subTest(section=section):
+                self.assertRegex(content, rf"(?m)^## {section}\.\s")
+
+        self.assertIn(
+            "- End agent commits with `Assisted-by: <tool> (<model>)`, never "
+            "`Co-Authored-By:` ([form and tools](docs/AI_USAGE.md#disclosing-ai-help-in-commits)).",
+            lines,
+        )
+
+        hard_stops = (
+            "provenance attestation or legal clearance on a maintainer's behalf;",
+            "inventing a contributor identity, `Signed-off-by:`, DCO attestation, or source lineage;",
+            "destructive history rewriting, shared-branch force-push, or deleting another agent's work;",
+            "repository security/settings changes unless the mission names the exact setting;",
+            "firmware, flash, NAND, idStorage, PSPLink, physical PSP, or other hardware actions;",
+            "disclosing private inputs, routes, saves, captures, traces, keys, paths, or derived bytes.",
+        )
+        for rule in hard_stops:
+            with self.subTest(hard_stop=rule):
+                self.assertIn(f"- {rule}", lines)
+
+        section_7_start = re.search(r"(?m)^## 7\.", content)
+        section_8_start = re.search(r"(?m)^## 8\.", content)
+        self.assertIsNotNone(section_7_start)
+        self.assertIsNotNone(section_8_start)
+        section_7 = content[section_7_start.start() : section_8_start.start()]
+        normalized_section_7 = " ".join(section_7.split())
+        execution_contracts = (
+            "the production interpreter is a fail-closed AOT-gap correctness floor. "
+            "Only analyzer-owned executable spans have executable authority; unsupported interpreter "
+            "forms fail closed. It is not an all-Allegrex interpreter.",
+            "a computed `jr`/`jalr` target is latched at transfer before link writes "
+            "and the delay slot, so later register mutation cannot redirect it.",
+            "linked calls carry explicit `target` and `resume_pc` through `dispatch_call`; "
+            "CALL and TAIL crossings differ, and live `$ra` is not a resume descriptor.",
+            "source-owned cosimulation compares AOT/interpreter traces, writes, memory, "
+            "and architectural state, including cross-tier CALL/TAIL cells. Its negative corpus fails "
+            "closed; a build-only mutant is not a valid semantic kill.",
+        )
+        last_contract_position = -1
+        for contract in execution_contracts:
+            with self.subTest(contract=contract):
+                match = re.search(rf"- \*\*PR #\d+:\*\* {re.escape(contract)}", normalized_section_7)
+                self.assertIsNotNone(match)
+                self.assertGreater(match.start(), last_contract_position)
+                last_contract_position = match.start()
+
+        report_block = """```text
+LANE:
+MISSION:
+BASE_SHA:
+HEAD_SHA:
+PR:
+STATUS: DRAFT / BLOCKED / READY-QUALITY
+RESULT:
+ROOT_CAUSE:
+CHANGED_FILES:
+NEW_PATH_PROVENANCE:
+FAILING_BEFORE:
+TESTS:
+PRIVATE_ACCEPTANCE:
+HARDWARE:
+UNRESOLVED:
+DISCOVERED_FOLLOWUPS:
+READY_QUALITY: YES/NO
+```"""
+        self.assertIn(report_block, content)
 
     def test_release_safety_rule_is_present_and_not_contradicted(self):
         required = (
@@ -144,6 +212,7 @@ class TestGovernanceSurfaces(unittest.TestCase):
             )
         )
         self.assertIn(required, policy_text)
+        self.assertIn(required, (ROOT / "AGENTS.md").read_text(encoding="utf-8").splitlines())
         self.assertNotRegex(
             policy_text,
             r"(?im)^[ \t-]*agents?\s+(?:may|can)\s+(?:create|edit|publish|delete).*\b(?:tag|release)",

@@ -158,14 +158,53 @@ else ifeq ($(CASE),registry-readonly)
 CASE_ID = 66
 else ifeq ($(CASE),kernel-misc)
 CASE_ID = 67
-else ifeq ($(CASE),registry-font)
+else ifeq ($(CASE),vfpu-compare)
 CASE_ID = 68
-else ifeq ($(CASE),font-files)
-CASE_ID = 69
-else ifeq ($(CASE),umd-io)
-CASE_ID = 70
-else ifeq ($(CASE),font-list)
+else ifeq ($(CASE),vfpu-transcendental-corpus)
 CASE_ID = 71
+# 90-103: the H-oracle HLE measurement families (probe_hle_measure.c). They are
+# numbered apart from the sequential probe.c cases so that new sequential
+# cases cannot collide with them; 97-103 are single-launch NOT_RUN cases.
+else ifeq ($(CASE),hle-kernel-status)
+CASE_ID = 90
+else ifeq ($(CASE),hle-vtimer)
+CASE_ID = 91
+else ifeq ($(CASE),hle-power-clock)
+CASE_ID = 92
+else ifeq ($(CASE),hle-hprm)
+CASE_ID = 93
+else ifeq ($(CASE),hle-ctrl-latch)
+CASE_ID = 94
+else ifeq ($(CASE),hle-sysparam)
+CASE_ID = 95
+else ifeq ($(CASE),hle-ge-edram)
+CASE_ID = 96
+else ifeq ($(CASE),hle-vtimer-unit)
+CASE_ID = 97
+else ifeq ($(CASE),hle-vtimer-errors)
+CASE_ID = 98
+else ifeq ($(CASE),hle-kernel-pool-bounds)
+CASE_ID = 99
+else ifeq ($(CASE),hle-power-float-v0)
+CASE_ID = 100
+else ifeq ($(CASE),hle-null-out-pointers)
+CASE_ID = 101
+else ifeq ($(CASE),hle-audio-src)
+CASE_ID = 102
+else ifeq ($(CASE),hle-timer-order)
+CASE_ID = 103
+else ifeq ($(CASE),llsc-link)
+CASE_ID = 69
+else ifeq ($(CASE),fpu-cc)
+CASE_ID = 70
+else ifeq ($(CASE),registry-font)
+CASE_ID = 72
+else ifeq ($(CASE),font-files)
+CASE_ID = 73
+else ifeq ($(CASE),umd-io)
+CASE_ID = 74
+else ifeq ($(CASE),font-list)
+CASE_ID = 75
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -295,6 +334,52 @@ else ifeq ($(CASE),kernel-b3)
 TARGET = $(BUILD_DIR)/psp_b3
 OBJS = $(BUILD_DIR)/psp_b3.o $(BUILD_DIR)/threadman_user_imports.o
 CFLAGS += -DB3_BUILD_COMMIT=\"$(PROBE_BUILD_COMMIT)\"
+# HLE measurement families (hle-*): one PRX per family, all in
+# probe_hle_measure.c. Each links the complete ThreadManForUser block (module
+# lifecycle, and the ReferSystemStatus / VTimer / FPL NIDs) plus only its own
+# library block, so every PRX's import table is exactly its family's.
+else ifeq ($(CASE),hle-kernel-status)
+TARGET = $(BUILD_DIR)/hle_kernel_status
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),hle-vtimer)
+TARGET = $(BUILD_DIR)/hle_vtimer
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),hle-power-clock)
+TARGET = $(BUILD_DIR)/hle_power_clock
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/hle_power_imports.o
+else ifeq ($(CASE),hle-hprm)
+TARGET = $(BUILD_DIR)/hle_hprm
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/hle_hprm_imports.o
+else ifeq ($(CASE),hle-ctrl-latch)
+TARGET = $(BUILD_DIR)/hle_ctrl_latch
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/hle_ctrl_imports.o
+else ifeq ($(CASE),hle-sysparam)
+TARGET = $(BUILD_DIR)/hle_sysparam
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/hle_utility_imports.o
+else ifeq ($(CASE),hle-ge-edram)
+TARGET = $(BUILD_DIR)/hle_ge_edram
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/hle_ge_imports.o
+else ifeq ($(CASE),hle-vtimer-unit)
+TARGET = $(BUILD_DIR)/hle_vtimer_unit
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),hle-vtimer-errors)
+TARGET = $(BUILD_DIR)/hle_vtimer_errors
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),hle-kernel-pool-bounds)
+TARGET = $(BUILD_DIR)/hle_kernel_pool_bounds
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),hle-power-float-v0)
+TARGET = $(BUILD_DIR)/hle_power_float_v0
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/hle_power_imports.o
+else ifeq ($(CASE),hle-null-out-pointers)
+TARGET = $(BUILD_DIR)/hle_null_out_pointers
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),hle-audio-src)
+TARGET = $(BUILD_DIR)/hle_audio_src
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),hle-timer-order)
+TARGET = $(BUILD_DIR)/hle_timer_order
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
 endif
 CXXFLAGS = $(CFLAGS)
 ASFLAGS = $(CFLAGS)
@@ -353,6 +438,11 @@ endif
 ifneq ($(filter $(BUILD_DIR)/probe.o,$(OBJS)),)
 PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
 endif
+# The HLE measurement probe (probe_hle_measure.c) has the same lifecycle, so it
+# exports module_stop from the same generated table.
+ifneq ($(filter $(BUILD_DIR)/probe_hle_measure.o,$(OBJS)),)
+PRX_EXPORTS = $(BUILD_DIR)/probe_exports.exp
+endif
 
 PSPSDK = $(shell psp-config --pspsdk-path)
 ifeq ($(strip $(PSPSDK)),)
@@ -391,6 +481,24 @@ $(BUILD_DIR)/display_user_imports.o: display_user_imports.S
 	$(CC) $(ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/libfont_imports.o: libfont_imports.S
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/probe_hle_measure.o: probe_hle_measure.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/hle_power_imports.o: hle_power_imports.S
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/hle_hprm_imports.o: hle_hprm_imports.S
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/hle_ctrl_imports.o: hle_ctrl_imports.S
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/hle_utility_imports.o: hle_utility_imports.S
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/hle_ge_imports.o: hle_ge_imports.S
 	$(CC) $(ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/probe_exception_a1.o: probe_exception_a1.c

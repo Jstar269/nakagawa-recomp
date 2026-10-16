@@ -20,6 +20,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import hle_manifest
+import scratch_dir
 from import_fixtures import (
     INTERLEAVED_NIDS,
     INTERLEAVED_SHAPE,
@@ -30,6 +31,7 @@ from psp_import_table import UNATTRIBUTED_LIBRARY
 from psp_oracle import user_mode_imports
 from psp_oracle.protocol import (
     ProtocolError,
+    STATUSES,
     ge_corpus_report,
     PSP_MODEL_INTERPRETATION_RULE,
     compare_texts,
@@ -62,6 +64,7 @@ from psp_oracle.run_psplink import (
     parse_psplink_module_threads,
     parse_psplink_thread_snapshot,
     parse_probe_completion_sentinel,
+    _validate_campaign_contract,
 )
 from psp_oracle.parse_golden import (
     AUDIO_OUT_COUNTS,
@@ -75,6 +78,8 @@ from psp_oracle.parse_golden import (
     GE_NAN_OUT_COUNTS,
     GE_NAN_SPEC,
     GE_NAN_WORDS,
+    VFPU_TRANSCENDENTAL_OPS,
+    VFPU_TRANSCENDENTAL_SEMANTIC_CASES,
     parse_audio_query_output,
     parse_campaign_probe_output,
     parse_delay_zero_output,
@@ -88,6 +93,7 @@ from psp_oracle.parse_golden import (
     parse_umd_io_output,
     UMDIO_DOPENS,
     UMDIO_OPENS,
+    validate_hle_edram_restore,
 )
 
 
@@ -1503,6 +1509,38 @@ class PspOracleRunnerTests(unittest.TestCase):
         self.assertIn("tools/psp_oracle/build_nakagawa_smoke.py", makefile)
         self.assertIn("psp-oracle-nakagawa-smoke", makefile)
 
+    def test_smoke_compile_recipe_has_no_blanket_warning_suppression(self) -> None:
+        # A bare -w hides every warning from the smoke compile, including the
+        # ATRAC3P sources it builds in-line. Narrow -Wno-<warning> flags stay
+        # allowed because each one names the single warning it hides.
+        lines = (Path(__file__).resolve().parents[1] / "Makefile").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        rules = [
+            index for index, line in enumerate(lines)
+            if line.startswith("$(PSP_ORACLE_SMOKE_EXE):")
+        ]
+        self.assertEqual(len(rules), 1)
+        recipe: list[str] = []
+        for line in lines[rules[0] + 1:]:
+            if not line.startswith("\t"):
+                break
+            recipe.append(line)
+        tokens = " ".join(recipe).replace("\\", " ").split()
+        self.assertIn("-DSR_PSP_ORACLE_SMOKE", tokens)
+        self.assertNotIn("-w", tokens)
+
+    def test_selftest_defines_profile_hooks_once_for_the_smoke_build(self) -> None:
+        # The smoke define used to add a second sr_profile_block/g_prof_enabled pair
+        # on top of the unconditional ones, which broke the smoke compile.
+        source = (
+            Path(__file__).resolve().parents[1] / "src" / "rt" / "hle_thread_selftest.c"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(
+            source.count("void sr_profile_block(uint32_t target_pc) { (void)target_pc; }"), 1
+        )
+        self.assertEqual(source.count("int g_prof_enabled;"), 1)
+
     def test_smoke_builder_is_source_owned_and_does_not_emit_records(self) -> None:
         builder = Path(__file__).resolve().parent / "psp_oracle" / "build_nakagawa_smoke.py"
         text = builder.read_text(encoding="utf-8")
@@ -1635,6 +1673,138 @@ class PspLinkTeardownSnapshotTests(unittest.TestCase):
             [entry.args[0] for entry in request.call_args_list],
             ["thlist", "meminfo", "modlist"],
         )
+
+    # Synthetic copies shaped like the recorded PSP-3000 `thlist` captures: 17
+    # rows, system names replaced by placeholders, UIDs invented. Not device output.
+    RECORDED_SHAPE_ROWS = frozenset(
+        [(f"0x00a0{number:04x}", f"sys-thread-{number:02d}") for number in range(15)]
+        + [("0x04310001", "PspLink"), ("0x04310002", "USBThread")]
+    )
+    PROBE_MODULE = ("0x04280001", "NAKAGAWA_PSP_ORACLE")
+    PROBE_MAIN = ("0x04280002", "user_main")
+    # Stand-in row for the host0 driver thread until hardware names it.
+    DRIVER_ROW = ("0x00000004", "host0-driver")
+
+    @staticmethod
+    def thlist(rows) -> str:
+        return f"<Thread List ({len(rows)} entries)>\n" + "".join(
+            f"UID: {uid} - Name: {name}\n" for uid, name in sorted(rows)
+        )
+
+    def probe_triplet(self, baseline_threads, *, unload_threads=None):
+        before = self.snapshot(threads=baseline_threads)
+        after_probe = self.snapshot(
+            threads=set(baseline_threads) | {self.PROBE_MAIN},
+            modules={("0x00000003", "PspLink"), self.PROBE_MODULE},
+        )
+        after_unload = self.snapshot(
+            threads=baseline_threads if unload_threads is None else unload_threads
+        )
+        return before, after_probe, after_unload
+
+    def evaluate(self, before, after_probe, after_unload):
+        return evaluate_teardown_snapshots(
+            before, after_probe, after_unload, self.PROBE_MODULE[0], {self.PROBE_MAIN},
+            unload_confirmed=True, sentinel_status="PASS", shell_qualified=True,
+            host0_roundtrip=True,
+        )
+
+    def test_recorded_shape_thread_lists_parse_and_probe_main_is_the_only_delta(self) -> None:
+        s0 = parse_psplink_thread_snapshot(self.thlist(self.RECORDED_SHAPE_ROWS))
+        s1 = parse_psplink_thread_snapshot(
+            self.thlist(self.RECORDED_SHAPE_ROWS | {self.PROBE_MAIN})
+        )
+        self.assertEqual(len(s0), 17)
+        self.assertEqual(s1 - s0, {self.PROBE_MAIN})
+        self.assertEqual(s0 - s1, set())
+
+    def test_unwarmed_baseline_reproduces_the_recorded_teardown_failure(self) -> None:
+        # The recorded transport-write run read S0 before the driver existed:
+        # S0 17, S1 18, S2 18, and the verifier reported this exact issue.
+        before, after_probe, after_unload = self.probe_triplet(
+            self.RECORDED_SHAPE_ROWS,
+            unload_threads=self.RECORDED_SHAPE_ROWS | {self.DRIVER_ROW},
+        )
+        report = self.evaluate(before, after_probe, after_unload)
+        self.assertEqual(report["status"], "FAIL")
+        self.assertEqual(report["issues"], ["post-unload thread set differs from S0"])
+        self.assertEqual(report["s0_thread_count"], 17)
+        self.assertEqual(report["s2_thread_count"], 18)
+
+    def test_warmed_baseline_passes_when_the_driver_thread_survives_unload(self) -> None:
+        warmed = self.RECORDED_SHAPE_ROWS | {self.DRIVER_ROW}
+        report = self.evaluate(*self.probe_triplet(warmed))
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(report["issues"], [])
+        self.assertEqual((report["s0_thread_count"], report["s2_thread_count"]), (18, 18))
+
+    def test_warmed_baseline_still_fails_on_a_genuine_post_unload_leak(self) -> None:
+        warmed = self.RECORDED_SHAPE_ROWS | {self.DRIVER_ROW}
+        leaked = ("0x04290009", "stray-thread")
+        report = self.evaluate(*self.probe_triplet(warmed, unload_threads=warmed | {leaked}))
+        self.assertEqual(report["status"], "FAIL")
+        self.assertIn("post-unload thread set differs from S0", report["issues"])
+        self.assertNotIn(
+            "probe main thread survived module stop/unload; "
+            "the probe's module_stop did not end and delete it",
+            report["issues"],
+        )
+        self.assertEqual(report["s2_leftover_threads"], [list(leaked)])
+
+    def test_baseline_warms_host0_driver_before_reading_s0_and_rereads_threads(self) -> None:
+        runner = PsplinkCampaignRunner(
+            SimpleNamespace(), console_model="synthetic", source_commit="0" * 40
+        )
+        warmed = self.thlist(self.RECORDED_SHAPE_ROWS | {self.DRIVER_ROW})
+        outputs = [
+            (0, "", "", "PROCESS_EXITED"),
+            (0, warmed, "", "PROCESS_EXITED"),
+            (0, self.MEMORY, "", "PROCESS_EXITED"),
+            (0, self.MODULES, "", "PROCESS_EXITED"),
+            (0, warmed, "", "PROCESS_EXITED"),
+        ]
+        with patch.object(runner, "_request", side_effect=outputs) as request:
+            snapshot, problem = runner._take_baseline()
+        self.assertIsNone(problem)
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(snapshot.threads, self.RECORDED_SHAPE_ROWS | {self.DRIVER_ROW})
+        self.assertEqual(
+            [entry.args[0] for entry in request.call_args_list],
+            ["ls host0:/", "thlist", "meminfo", "modlist", "thlist"],
+        )
+
+    def test_baseline_refuses_when_the_host0_warm_up_fails(self) -> None:
+        runner = PsplinkCampaignRunner(
+            SimpleNamespace(), console_model="synthetic", source_commit="0" * 40
+        )
+        with patch.object(
+            runner, "_request", side_effect=[(None, "", "", "TIMEOUT")]
+        ) as request:
+            snapshot, problem = runner._take_baseline()
+        self.assertIsNone(snapshot)
+        self.assertIn("warm-up", problem)
+        self.assertEqual(request.call_count, 1)
+
+    def test_baseline_refuses_a_thread_set_that_moves_after_warm_up(self) -> None:
+        runner = PsplinkCampaignRunner(
+            SimpleNamespace(), console_model="synthetic", source_commit="0" * 40
+        )
+        warmed_rows = self.RECORDED_SHAPE_ROWS | {self.DRIVER_ROW}
+        moved_rows = (warmed_rows - {("0x04310002", "USBThread")}) | {
+            ("0x04310009", "USBThread")
+        }
+        outputs = [
+            (0, "", "", "PROCESS_EXITED"),
+            (0, self.thlist(warmed_rows), "", "PROCESS_EXITED"),
+            (0, self.MEMORY, "", "PROCESS_EXITED"),
+            (0, self.MODULES, "", "PROCESS_EXITED"),
+            (0, self.thlist(moved_rows), "", "PROCESS_EXITED"),
+        ]
+        with patch.object(runner, "_request", side_effect=outputs) as request:
+            snapshot, problem = runner._take_baseline()
+        self.assertIsNone(snapshot)
+        self.assertIn("not stable", problem)
+        self.assertEqual(request.call_count, 5)
 
     def test_three_snapshot_check_passes_clean_unload(self) -> None:
         before, after_probe, after_unload, module_main = self.clean_triplet()
@@ -1928,7 +2098,7 @@ int main(void) {
 }
 '''
         fixture = root / "fixtures" / "psp_oracle"
-        with tempfile.TemporaryDirectory(prefix="interrupt-resume-host-", dir=fixture) as scratch:
+        with scratch_dir.TemporaryDirectory(prefix="interrupt-resume-host-", dir=fixture) as scratch:
             source_path = Path(scratch) / "interrupt_resume_host.c"
             binary_path = Path(scratch) / "interrupt_resume_host.exe"
             source_path.write_text(harness, encoding="utf-8")
@@ -2064,7 +2234,7 @@ int main(void) {
 }
 '''
         fixture = root / "fixtures" / "psp_oracle"
-        with tempfile.TemporaryDirectory(prefix="child-teardown-host-", dir=fixture) as scratch:
+        with scratch_dir.TemporaryDirectory(prefix="child-teardown-host-", dir=fixture) as scratch:
             source_path = Path(scratch) / "child_teardown_host.c"
             binary_path = Path(scratch) / "child_teardown_host.exe"
             source_path.write_text(harness, encoding="utf-8")
@@ -2216,15 +2386,27 @@ class PspOracleBuildRouteTests(unittest.TestCase):
             self.makefile,
             re.MULTILINE,
         )
-        self.assertEqual(len(routes), 71)
+        # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
+        # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
+        self.assertEqual(len(routes), 89)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(ids), set(range(1, 72)))
+        self.assertEqual(set(range(1, 76)) | set(range(90, 104)), set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
+
+    def test_vfpu_compare_route_has_its_own_case_id(self) -> None:
+        # Each probe added after 67 also pins its own route here, so a wrong id names the
+        # case rather than only failing the shared count above.
+        routes = dict(re.findall(
+            r"^else ifeq \(\$\(CASE\),([^\)]+)\)\nCASE_ID = (\d+)$",
+            self.makefile,
+            re.MULTILINE,
+        ))
+        self.assertEqual(routes.get("vfpu-compare"), "68")
 
     def test_mutex_import_block_is_limited_to_mutex_cases(self) -> None:
         self.assertIn("OBJS = $(BUILD_DIR)/probe.o\n", self.makefile)
@@ -2263,6 +2445,26 @@ class PspOracleBuildRouteTests(unittest.TestCase):
             self.assertFalse((self.fixture / f"{stem}_imports.S").exists())
         self.assertEqual(len(re.findall(r"^\$\(BUILD_DIR\)/threadman_user_imports\.o:", self.makefile, re.MULTILINE)), 1)
         self.assertIn("threadman_user_imports.S", self.makefile)
+
+
+    def test_llsc_link_route_has_its_own_case_id(self) -> None:
+        routes = dict(re.findall(
+            r"^else ifeq \(\$\(CASE\),([^\)]+)\)\nCASE_ID = (\d+)$",
+            self.makefile,
+            re.MULTILINE,
+        ))
+        self.assertEqual(routes.get("llsc-link"), "69")
+
+    def test_fpu_cc_route_has_its_own_case_id(self) -> None:
+        routes = dict(re.findall(
+            r"^else ifeq \(\$\(CASE\),([^\)]+)\)\nCASE_ID = (\d+)$",
+            self.makefile,
+            re.MULTILINE,
+        ))
+        self.assertEqual(routes.get("fpu-cc"), "70")
+        probe = (Path(__file__).resolve().parent.parent / "fixtures" / "psp_oracle"
+                 / "probe.c").read_text(encoding="utf-8")
+        self.assertIn("#define PSP_ORACLE_CASE_FPU_CC 70", probe)
 
 
 class PspDmacProbeTests(unittest.TestCase):
@@ -2525,30 +2727,39 @@ class PspDmacProbeTests(unittest.TestCase):
             entry for entry in self._oracle_manifest()["tests"] if entry["id"] == "PSP-SYSTEM-001"
         )
         self.assertEqual(system["status"], "implemented")
-        self.assertEqual(system["hardware_evidence"], "CAPTURED")
+        self.assertEqual(system["hardware_evidence"], "MEASURED")
         self.assertEqual(system["case_ids"], ["model-profile"])
+        self.assertEqual(system["evidence_cases"][0], "model-profile")
 
     def test_implemented_status_alone_is_not_accepted_hardware_evidence(self) -> None:
         """`status: implemented` is probe-source prose, never hardware evidence."""
         manifest = self._oracle_manifest()
         oracle_apis = hle_manifest.oracle_exercised_apis(manifest)
-        for test_id in ("PSP-TRANSPORT-001", "PSP-SYSTEM-001"):
+        for test_id in ("PSP-SYSTEM-001",):
             entry = next(item for item in manifest["tests"] if item["id"] == test_id)
             self.assertEqual(entry["status"], "implemented")
-            self.assertEqual(entry["hardware_evidence"], "CAPTURED")
+            self.assertEqual(entry["hardware_evidence"], "MEASURED")
+            # Status alone grants nothing: an API is granted only when the cited run names it.
             for api in entry["apis"]:
-                self.assertNotIn(
-                    api,
-                    oracle_apis,
-                    f"{api} reaches HARDWARE_MEASURED from a probe source, not a run",
+                self.assertEqual(
+                    api in oracle_apis,
+                    api in entry["evidence_cases"],
+                    f"{api} tier must follow the cited run, not the probe source",
                 )
 
-    def test_fpu_and_cache_probe_families_are_named_as_not_run(self) -> None:
+    def test_fpu_and_cache_probe_families_are_measured_by_the_campaign(self) -> None:
+        """`status` stays probe-source prose; the hardware tier comes from the cited run."""
         manifest = self._oracle_manifest()
         by_id = {entry["id"]: entry for entry in manifest["tests"]}
         for test_id in ("PSP-FPU-001", "PSP-CACHE-001"):
             self.assertEqual(by_id[test_id]["status"], "planned")
-            self.assertEqual(by_id[test_id]["hardware_evidence"], "NOT_RUN")
+            self.assertEqual(by_id[test_id]["hardware_evidence"], "MEASURED")
+            self.assertEqual(
+                by_id[test_id]["evidence_ref"],
+                "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+            )
+            self.assertEqual(by_id[test_id]["evidence_cases"], by_id[test_id]["case_ids"])
+            self.assertIn("f6ccfb33", by_id[test_id]["measurement_note"])
         self.assertEqual(len(by_id), len(manifest["tests"]))
 
     def test_manifest_hardware_evidence_uses_closed_vocabulary(self) -> None:
@@ -2563,13 +2774,44 @@ class PspDmacProbeTests(unittest.TestCase):
     def test_only_documented_measured_groups_claim_hardware_evidence(self) -> None:
         manifest = self._oracle_manifest()
         evidence = {entry["id"]: entry["hardware_evidence"] for entry in manifest["tests"]}
+        # Rows measured before the 2026-10-10 campaign keep their own citations; the campaign
+        # on f6ccfb33 measured eighteen others and captured two without acceptance, and the
+        # 2026-10-15 runs of build e45e667b measured the HLE single-case probes and the three
+        # CPU-semantics probes.
         self.assertEqual(
             {test_id for test_id, value in evidence.items() if value == "MEASURED"},
-            {"PSP-DMAC-001", "PSP-DISPLAY-001", "PSP-EXCEPTION-001", "PSP-KERNEL-002"},
+            {
+                "PSP-DMAC-001", "PSP-DISPLAY-001", "PSP-EXCEPTION-001", "PSP-KERNEL-002",
+                "PSP-TRANSPORT-001", "PSP-ALARM-001", "PSP-THREAD-003", "PSP-WAIT-001",
+                "PSP-KERNEL-STATUS-001", "PSP-REGISTRY-001", "PSP-KERNEL-MISC-001", "PSP-SMOKE-001",
+                "PSP-THREAD-EXIT-001", "PSP-IO-001", "PSP-DISPLAY-002", "PSP-DISPLAY-003",
+                "PSP-DISPLAY-004", "PSP-FPU-001", "PSP-CACHE-001", "PSP-AUDIO-001", "PSP-GE-001",
+                "PSP-MUTEX-001", "PSP-KERNEL-001", "PSP-SYSTEM-001",
+                # The 2026-10-15 single-case runs on e45e667b were acceptance-eligible.
+                "PSP-HLE-KERNEL-STATUS-001", "PSP-HLE-VTIMER-001", "PSP-HLE-POWER-001",
+                "PSP-HLE-HPRM-001", "PSP-HLE-CTRL-LATCH-001", "PSP-HLE-SYSPARAM-001",
+                "PSP-HLE-GE-EDRAM-001",
+                # The 2026-10-15 CPU-semantics runs of build e45e667b.
+                "PSP-FPU-CC-001", "PSP-VFPU-CMP-001", "PSP-LLSC-001",
+                # The 2026-10-15 re-run of the revised ge-break-continue probe (c642039a).
+                "PSP-GE-CONTROL-001",
+                # The 2026-10-15 single-case runs of build b5d6fc5b (#1020 cases).
+                "PSP-HLE-VTIMER-002", "PSP-HLE-VTIMER-003", "PSP-HLE-POWER-002",
+                # The 2026-10-15 single-case runs of the #1037 probes: the VFPU corpus and the
+                # timer-order case from 22b027f6, the audio SRC case from 7fc1641e.
+                "PSP-VFPU-TRANSCENDENTAL-001", "PSP-HLE-TIMER-ORDER-001",
+                "PSP-HLE-AUDIO-SRC-001",
+            },
         )
         self.assertEqual(
             {test_id for test_id, value in evidence.items() if value == "CAPTURED"},
-            {"PSP-KERNEL-001", "PSP-TRANSPORT-001", "PSP-SYSTEM-001"},
+            {
+                # Captured only: the runner classified its envelope as not acceptance-eligible.
+                "PSP-TEARDOWN-001",
+                # b5d6fc5b, 2026-10-15: an incomplete NULL-pointer stream. (The pool-bounds
+                # capture of the same day belongs to a revision since replaced; NOT_RUN.)
+                "PSP-HLE-NULL-OUT-001",
+            },
         )
 
     def test_measured_rows_cite_a_public_document_and_the_cases_it_measures(self) -> None:
@@ -2660,8 +2902,13 @@ class PspDmacProbeTests(unittest.TestCase):
         kernel = next(
             entry for entry in manifest["tests"] if entry["id"] == "PSP-KERNEL-001"
         )
-        self.assertIn("mbx-delete-wait", kernel["diagnostic_case_ids"])
-        self.assertIn("mbx-timeout-control", kernel["diagnostic_case_ids"])
+        self.assertIn("mbx-delete-wait", kernel["case_ids"])
+        self.assertIn("mbx-timeout-control", kernel["case_ids"])
+        self.assertEqual(kernel["hardware_evidence"], "MEASURED")
+        self.assertEqual(
+            kernel["uncited_cases"],
+            ["callback-notify-check", "wait-cancel", "thread-lifecycle"],
+        )
         self.assertIn(339, kernel["issues"])
         self.assertIn(341, kernel["issues"])
         for api in (
@@ -2691,7 +2938,8 @@ class PspDmacProbeTests(unittest.TestCase):
                     self.assertEqual(entry["case_ids"], list(spec.ordered_cases))
                 if test_id in {"PSP-AUDIO-001", "PSP-GE-001"}:
                     self.assertEqual(entry["status"], "planned")
-                    self.assertEqual(entry["hardware_evidence"], "NOT_RUN")
+                    self.assertEqual(entry["hardware_evidence"], "MEASURED")
+                    self.assertEqual(entry["evidence_cases"], entry["case_ids"])
         for case_id in ("audio-query", "ge-nan", "dma-cells", "delay-zero"):
             self.assertIn(f"else ifeq ($(CASE),{case_id})", self.makefile)
         delay_zero = by_id["PSP-KERNEL-002"]
@@ -2927,7 +3175,7 @@ int main(void) {
 '''.replace("/* MAILBOX PROBE SNIPPET */", mailbox_probe)
 
         fixture = root / "fixtures" / "psp_oracle"
-        with tempfile.TemporaryDirectory(prefix="mbx-cleanup-host-", dir=fixture) as scratch:
+        with scratch_dir.TemporaryDirectory(prefix="mbx-cleanup-host-", dir=fixture) as scratch:
             source_path = Path(scratch) / "mbx_cleanup_host.c"
             binary_path = Path(scratch) / "mbx_cleanup_host.exe"
             source_path.write_text(harness, encoding="utf-8")
@@ -3179,7 +3427,7 @@ class ProbeProgressAndBoundedWaitTests(unittest.TestCase):
     """Step markers, bounded waits and record shapes of the campaign probes."""
 
     NEW_CASES = ("KERNEL_ALARM", "THREAD_SCHEDULER", "WAIT_OUTCOMES", "GE_BREAK_CONTINUE",
-                 "REFER_STATUS_SIZE", "REGISTRY_READONLY", "KERNEL_MISC")
+                 "REFER_STATUS_SIZE", "REGISTRY_READONLY", "KERNEL_MISC", "VFPU_COMPARE")
 
     def setUp(self) -> None:
         self.root = Path(__file__).resolve().parents[1]
@@ -3258,6 +3506,31 @@ class ProbeProgressAndBoundedWaitTests(unittest.TestCase):
         report = parse_campaign_probe_output(self._stream(rows), "ge-break-continue")
         statuses = {record.case_id: record.status for record in report.results.values()}
         self.assertEqual(statuses["ge-continue-drain"], "TIMEOUT")
+
+    def test_ge_break_continue_resets_before_any_dequeue(self) -> None:
+        # The reset cell is separable only if the sceGeBreak(1) reset cell comes before every
+        # sceGeListDeQueue cell, and the cancelled-list cells are read after that reset.
+        spec, _ = CAMPAIGN_PROBE_CASES["ge-break-continue"]
+        order = spec.ordered_cases
+        reset = order.index("ge-break-reset-no-dequeue")
+        cancelled = order.index("ge-list-sync-cancelled")
+        dequeue = order.index("ge-list-dequeue-stalled")
+        self.assertLess(reset, cancelled)
+        self.assertLess(cancelled, dequeue)
+
+    def test_ge_break_continue_busy_dequeue_is_a_pass_cell_that_gates_nothing(self) -> None:
+        # The stalled-list dequeue result is a measured cell (the eligible 2026-10-15 re-run
+        # read BUSY 0x80000021). Its status is PASS whatever it
+        # returns, so the cancelled cells and the envelope stay eligible.
+        rows = self._campaign_rows("ge-break-continue")
+        busy = [
+            row.replace("status=PASS result=0x0", "status=PASS result=0x80000021", 1)
+            if "case_id=ge-list-dequeue-stalled " in row else row
+            for row in rows
+        ]
+        report = parse_campaign_probe_output(self._stream(busy), "ge-break-continue")
+        statuses = {record.case_id: record.status for record in report.results.values()}
+        self.assertEqual(set(statuses.values()), {"PASS"})
 
     def test_campaign_specs_match_the_records_the_probe_emits(self) -> None:
         defines = {name: int(value) for name, value in
@@ -3373,6 +3646,1815 @@ class CampaignHost0LogTests(unittest.TestCase):
             body = body[:body.index("\n}\n")]
             self.assertIn("probe_emit_durable(emulated, line,", body, emitter)
 
+
+
+
+class VfpuCompareProbeTests(unittest.TestCase):
+    """PSP-VFPU-CMP-001: vscmp.s, vsge.s and vslt.s cells against the project's model.
+
+    A PSP-3000 measured all 45 cells on 2026-10-15 (build e45e667b). These tests pin the
+    measured words, the probe's operand table to an independent Python copy of the
+    interpreter's lane compares (VFPU3 sub-ops 5, 6 and 7 in src/rt/vfpu_interp.c), the
+    agreement of that model with every measured word, the fixed record shape the parser
+    registry expects, the emission order, and the case's wiring (Makefile number, host0
+    log, queue slot, manifest row, documentation).
+    """
+
+    CASE = "vfpu-compare"
+    TEST_ID = "PSP-VFPU-CMP-001"
+    OPS = ("vscmp", "vsge", "vslt")
+    PAIRS = (
+        ("lt", 0x3FC00000, 0x40200000),
+        ("eq", 0x3FC00000, 0x3FC00000),
+        ("gt", 0x40200000, 0x3FC00000),
+        ("zero-pos-neg", 0x00000000, 0x80000000),
+        ("zero-neg-pos", 0x80000000, 0x00000000),
+        ("nan-left-quiet", 0x7FC00000, 0x3FC00000),
+        ("nan-right-quiet", 0x3FC00000, 0x7FC00000),
+        ("nan-left-signal", 0x7F800001, 0x3FC00000),
+        ("nan-right-signal", 0x3FC00000, 0x7F800001),
+        ("nan-left-negative", 0xFFC00000, 0x3FC00000),
+        ("inf-pos-neg", 0x7F800000, 0xFF800000),
+        ("inf-neg-pos", 0xFF800000, 0x7F800000),
+        ("inf-pos-pos", 0x7F800000, 0x7F800000),
+        ("inf-neg-neg", 0xFF800000, 0xFF800000),
+        ("inf-pos-finite", 0x7F800000, 0x3FC00000),
+    )
+
+    @classmethod
+    def cells(cls) -> tuple[str, ...]:
+        return tuple(f"{op}-{pair[0]}" for op in cls.OPS for pair in cls.PAIRS)
+
+    # The 45 result words the console returned, per pair: (vscmp.s, vsge.s, vslt.s).
+    MEASURED = {
+        "lt": (0xBF800000, 0x00000000, 0x3F800000),
+        "eq": (0x00000000, 0x3F800000, 0x00000000),
+        "gt": (0x3F800000, 0x3F800000, 0x00000000),
+        "zero-pos-neg": (0x00000000, 0x3F800000, 0x00000000),
+        "zero-neg-pos": (0x00000000, 0x3F800000, 0x00000000),
+        "nan-left-quiet": (0x3F800000, 0x00000000, 0x00000000),
+        "nan-right-quiet": (0xBF800000, 0x00000000, 0x00000000),
+        "nan-left-signal": (0x3F800000, 0x00000000, 0x00000000),
+        "nan-right-signal": (0xBF800000, 0x00000000, 0x00000000),
+        "nan-left-negative": (0xBF800000, 0x00000000, 0x00000000),
+        "inf-pos-neg": (0x3F800000, 0x3F800000, 0x00000000),
+        "inf-neg-pos": (0xBF800000, 0x00000000, 0x3F800000),
+        "inf-pos-pos": (0x00000000, 0x3F800000, 0x00000000),
+        "inf-neg-neg": (0x00000000, 0x3F800000, 0x00000000),
+        "inf-pos-finite": (0x3F800000, 0x3F800000, 0x00000000),
+    }
+
+    @classmethod
+    def model_word(cls, op: str, a: int, b: int) -> int:
+        """The project's model for one lane.
+
+        vsge and vslt are IEEE comparisons, so a NaN compares false. vscmp orders a lane
+        with a NaN by sign and magnitude of the raw words, as the console does.
+        """
+        import struct
+
+        x = struct.unpack("<f", struct.pack("<I", a))[0]
+        y = struct.unpack("<f", struct.pack("<I", b))[0]
+        if op == "vscmp" and ((a & 0x7FFFFFFF) > 0x7F800000 or (b & 0x7FFFFFFF) > 0x7F800000):
+            def key(word: int) -> int:
+                return -(word & 0x7FFFFFFF) if word >> 31 else word & 0x7FFFFFFF
+            value = -1.0 if key(a) < key(b) else (1.0 if key(a) > key(b) else 0.0)
+        elif op == "vscmp":
+            value = -1.0 if x < y else (1.0 if x > y else 0.0)
+        elif op == "vsge":
+            value = 1.0 if x >= y else 0.0
+        else:
+            value = 1.0 if x < y else 0.0
+        return struct.unpack("<I", struct.pack("<f", value))[0]
+
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.fixture = self.root / "fixtures" / "psp_oracle"
+        self.probe = (self.fixture / "probe.c").read_text(encoding="utf-8")
+        self.makefile = (self.fixture / "Makefile").read_text(encoding="utf-8")
+
+    def _block(self) -> str:
+        start = self.probe.index(f"#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_{self.CASE.upper().replace('-', '_')}\n")
+        return self.probe[start:self.probe.index("\n#endif", start)]
+
+    def _stream(self, rows: list[str]) -> str:
+        return META.format(
+            source="psp", model="PSP-3000", firmware="6.61-ARK",
+            binary=MEASURED_SHA, commit=MEASURED_COMMIT,
+        ) + "".join(rows)
+
+    def _rows(self, statuses: dict[str, str] | None = None) -> list[str]:
+        spec, counts = CAMPAIGN_PROBE_CASES[self.CASE]
+        rows = []
+        for index, case_id in enumerate(spec.semantic_cases):
+            status = (statuses or {}).get(case_id, "PASS" if index % 2 else "FAIL")
+            outs = "".join(f" out{i}=0x{i:08x}" for i in range(3))
+            rows.append(
+                f"NAKAGAWA_PSP_TEST schema=1 test_id={self.TEST_ID} case_id={case_id} "
+                f"status={status} result=0x{index:08x}{outs}\n"
+            )
+        rows.append(
+            f"NAKAGAWA_PSP_TEST schema=1 test_id={self.TEST_ID} case_id={spec.terminal_case} "
+            f"status=PASS result=0x0 out0=0x{spec.terminal_count:x}\n"
+        )
+        return rows
+
+    def test_probe_table_matches_the_project_model(self) -> None:
+        words = {"VFPU_COMPARE_ONE": 0x3F800000, "VFPU_COMPARE_MINUS_ONE": 0xBF800000}
+        table = self.probe[self.probe.index("static const struct vfpu_compare_pair s_vfpu_compare_pairs"):]
+        table = table[:table.index("};")]
+        rows = re.findall(
+            r'\{"([a-z-]+)", (0x[0-9a-fA-F]+)u, (0x[0-9a-fA-F]+)u, \{([^}]*)\}\}', table
+        )
+        self.assertEqual(len(rows), len(self.PAIRS))
+        for (name, a, b, expect), (want_name, want_a, want_b) in zip(rows, self.PAIRS, strict=True):
+            with self.subTest(pair=name):
+                self.assertEqual(name, want_name)
+                self.assertEqual(int(a, 16), want_a)
+                self.assertEqual(int(b, 16), want_b)
+                words_in_row = [
+                    words[token.strip()] if token.strip() in words else int(token.strip().rstrip("u"), 0)
+                    for token in expect.split(",")
+                ]
+                self.assertEqual(
+                    words_in_row,
+                    [self.model_word(op, want_a, want_b) for op in self.OPS],
+                )
+
+    def test_model_returns_every_measured_word(self) -> None:
+        # PSP-VFPU-CMP-001: the model the interpreter, the generated code and the probe
+        # table carry must be the 45 words the console returned.
+        self.assertEqual(tuple(self.MEASURED), tuple(pair[0] for pair in self.PAIRS))
+        for name, a, b in self.PAIRS:
+            for index, op in enumerate(self.OPS):
+                with self.subTest(cell=f"{op}-{name}"):
+                    self.assertEqual(self.model_word(op, a, b), self.MEASURED[name][index])
+
+    def test_registered_spec_is_the_op_major_cell_list_with_a_terminal_count(self) -> None:
+        spec, counts = CAMPAIGN_PROBE_CASES[self.CASE]
+        self.assertEqual(spec.test_id, self.TEST_ID)
+        self.assertEqual(spec.semantic_cases, self.cells())
+        self.assertEqual(spec.terminal_case, "vfpu-compare-done")
+        self.assertEqual(spec.terminal_count, 45)
+        self.assertEqual(set(counts), set(spec.ordered_cases))
+        self.assertEqual({counts[case] for case in spec.semantic_cases}, {3})
+        self.assertEqual(counts[spec.terminal_case], 1)
+        self.assertEqual(_campaign_completeness_contract(self.CASE), "strict-golden-sequence")
+
+    def test_probe_names_each_cell_from_the_op_and_pair_tables(self) -> None:
+        self.assertIn('static const char *const op_names[VFPU_COMPARE_OPS] = {"vscmp", "vsge", "vslt"};',
+                      self.probe)
+        self.assertIn('snprintf(case_id, sizeof(case_id), "%s-%s", op_names[op], pair->name);',
+                      self.probe)
+        self.assertIn('emit_record_extended(emulated, "PSP-VFPU-CMP-001", "vfpu-compare-done",',
+                      self.probe)
+        self.assertIn("#define VFPU_COMPARE_PAIRS 15u", self.probe)
+        self.assertEqual(len(self.PAIRS), 15)
+
+    def test_measured_span_has_no_host_io_and_uses_only_the_vfpu_compare_instructions(self) -> None:
+        block = self._block()
+        cells = block[block.index('probe_step(emulated, "vfpu-compare", "cells");'):]
+        cells = cells[:cells.index("for (uint32_t op = 0; op < VFPU_COMPARE_OPS; op++) {\n        for (uint32_t p = 0; p < VFPU_COMPARE_PAIRS; p++) {\n            const struct vfpu_compare_pair *pair = &s_vfpu_compare_pairs[p];\n            const uint32_t index")]
+        self.assertNotIn("emit_", cells)
+        self.assertNotIn("snprintf", cells)
+        self.assertNotIn("for (;;)", block)
+        for mnemonic in ("vscmp.s S002, S000, S001", "vsge.s S002, S000, S001",
+                         "vslt.s S002, S000, S001"):
+            self.assertEqual(self.probe.count(mnemonic), 1, mnemonic)
+        self.assertIn('__asm__ volatile("ctc1 $0, $31" ::: "memory");', block)
+        self.assertIn("#define VFPU_COMPARE_SENTINEL 0x7a5a5a5au", block)
+
+    def test_status_says_the_cell_measured_not_that_it_matched_the_model(self) -> None:
+        # The runner accepts a capture only when every record is PASS, so a console that
+        # disagrees with the model must still produce PASS records: the status
+        # marks a written destination, and agreement is result against out0.
+        block = self._block()
+        self.assertIn('observed[index] == VFPU_COMPARE_SENTINEL ? "FAIL" : "PASS",', block)
+        self.assertNotIn("== expect ?", block)
+        self.assertIn("const uint32_t out[] = {expect, pair->a, pair->b};", block)
+
+    def test_the_case_runs_with_the_vfpu_thread_attribute(self) -> None:
+        # The attribute chain is `#elif GE_NAN || VFPU_COMPARE`, so the VFPU case is on
+        # a continuation line; its PSP_MAIN_THREAD_ATTR must carry THREAD_ATTR_VFPU.
+        start = self.probe.index(
+            "#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \\\n"
+            "      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE || \\\n"
+            "      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS\n"
+        )
+        attr = self.probe[start:self.probe.index("#else", start)]
+        self.assertIn("PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);", attr)
+
+    def test_complete_stream_parses_with_every_cell_pass_fail_or_skip(self) -> None:
+        statuses = {case: "SKIP" for case in self.cells()[:2]}
+        report = parse_campaign_probe_output(self._stream(self._rows(statuses)), self.CASE)
+        self.assertTrue(report.complete)
+        self.assertTrue(report.terminal_present)
+        self.assertEqual(report.record_count, 46)
+        seen = {record.status for case_id, record in report.results.items()
+                if case_id in self.cells()}
+        self.assertEqual(seen, {"PASS", "FAIL", "SKIP"})
+        self.assertEqual(report.results["vscmp-lt"].status, "SKIP")
+
+    def test_missing_extra_out_of_order_and_unknown_cells_are_refused(self) -> None:
+        rows = self._rows()
+        cases = [row.split("case_id=")[1].split()[0] for row in rows]
+        self.assertEqual(cases[10], "vscmp-inf-pos-neg")
+        duplicate = rows[:10] + [rows[10]] + rows[10:]
+        swapped = rows[:10] + [rows[11], rows[10]] + rows[12:]
+        unknown = rows[:10] + [rows[10].replace(cases[10], "vscmp-bogus")] + rows[11:]
+        foreign = rows[:10] + [rows[10].replace(self.TEST_ID, "PSP-VFPU-CMP-002")] + rows[11:]
+        short_terminal = rows[:-1] + [rows[-1].replace("out0=0x2d", "out0=0x2c")]
+        # Both strictness modes refuse these shapes: none of them is a truncation.
+        for name, body in (("duplicate", duplicate), ("swapped", swapped),
+                           ("unknown", unknown), ("foreign", foreign),
+                           ("short-terminal", short_terminal)):
+            with self.subTest(shape=name):
+                with self.assertRaises(ProtocolError):
+                    parse_campaign_probe_output(self._stream(body), self.CASE)
+                with self.assertRaises(ProtocolError):
+                    parse_campaign_probe_output(self._stream(body), self.CASE,
+                                                require_complete=False)
+        # A missing middle cell is a truncation shape: strict mode refuses it and the
+        # inspection mode reports it incomplete without passing it.
+        missing = rows[:10] + rows[11:]
+        with self.assertRaises(ProtocolError):
+            parse_campaign_probe_output(self._stream(missing), self.CASE)
+        self.assertFalse(parse_campaign_probe_output(
+            self._stream(missing), self.CASE, require_complete=False).complete)
+
+    def test_manifest_row_is_measured_and_cites_every_cell(self) -> None:
+        manifest = json.loads((self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
+            encoding="utf-8"))
+        row = next(test for test in manifest["tests"] if test["id"] == self.TEST_ID)
+        spec, _counts = CAMPAIGN_PROBE_CASES[self.CASE]
+        self.assertEqual(row["hardware_evidence"], "MEASURED")
+        self.assertEqual(row["status"], "implemented")
+        self.assertEqual(row["case_ids"], list(spec.ordered_cases))
+        self.assertEqual(row["evidence_cases"], row["case_ids"])
+        self.assertEqual(
+            row["evidence_ref"],
+            "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+        )
+        self.assertIn("e45e667b", row["measurement_note"])
+        self.assertNotIn("evidence_note", row)
+        # The citation must name every cell verbatim; instruction rows grant no HLE tier.
+        section = hle_manifest.measured_evidence_section(row)
+        self.assertIn(f"`{self.TEST_ID}`", section)
+
+    def test_case_is_wired_into_the_makefile_queue_and_documentation(self) -> None:
+        from psp_oracle.run_psplink import CAMPAIGN_CASE_ESTIMATE_SECONDS
+
+        self.assertIn("#define PSP_ORACLE_CASE_VFPU_COMPARE 68", self.probe)
+        self.assertIn("else ifeq ($(CASE),vfpu-compare)\nCASE_ID = 68\n", self.makefile)
+        self.assertEqual(_campaign_host0_log_path(Path("host0"), self.CASE).name,
+                         "vfpu_compare_log.txt")
+        self.assertIn('#define PROBE_HOST0_LOG "host0:/vfpu_compare_log.txt"', self.probe)
+        queue = list(CAMPAIGN_QUEUE_CASES)
+        self.assertEqual(queue[queue.index("kernel-misc") + 1], self.CASE)
+        self.assertIn(self.CASE, CAMPAIGN_CASE_ESTIMATE_SECONDS)
+        oracle_doc = (self.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
+        self.assertIn("| `vfpu-compare` | `PSP-VFPU-CMP-001` | `MEASURED` (2026-10-15, `e45e667b`)",
+                      oracle_doc)
+        readme = (self.fixture / "README.md").read_text(encoding="utf-8")
+        self.assertIn("| `vfpu-compare` | `PSP-VFPU-CMP-001` |", readme)
+
+
+class VfpuTranscendentalParserFormatTests(unittest.TestCase):
+    """Parser/format-only checks for the raw PSP-VFPU-TRANSCENDENTAL-001 corpus.
+
+    The synthetic records use arbitrary words. This class checks how those words are
+    mapped to the interpreter's scalar-op family and transport chunks; it does not
+    compare a result to a PSP or interpreter value.
+    """
+
+    CASE = "vfpu-transcendental-corpus"
+    TEST_ID = "PSP-VFPU-TRANSCENDENTAL-001"
+    OPS = VFPU_TRANSCENDENTAL_OPS
+    CASES = VFPU_TRANSCENDENTAL_SEMANTIC_CASES
+
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.fixture = self.root / "fixtures" / "psp_oracle"
+        self.probe = (self.fixture / "probe.c").read_text(encoding="utf-8")
+        self.makefile = (self.fixture / "Makefile").read_text(encoding="utf-8")
+        self.interpreter = (self.root / "src" / "rt" / "vfpu_interp.c").read_text(
+            encoding="utf-8")
+        self.manifest = json.loads(
+            (self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
+                encoding="utf-8"))
+
+    def _synthetic_stream(self, first_status: str = "PASS") -> tuple[str, dict[str, list[int]]]:
+        spec, _counts = CAMPAIGN_PROBE_CASES[self.CASE]
+        rows: list[str] = []
+        expected: dict[str, list[int]] = {}
+        for op_index, op in enumerate(self.OPS):
+            for chunk in range(8):
+                case_id = f"{op}-chunk-{chunk:02d}"
+                first = chunk * 8
+                count = 7 if chunk == 7 else 8
+                words = [0xA5000000 + op_index * 0x1000 + first + lane
+                         for lane in range(count)]
+                expected[case_id] = words
+                outs = "".join(f" out{lane}=0x{word:08x}"
+                               for lane, word in enumerate(words))
+                status = first_status if not rows else "PASS"
+                rows.append(
+                    f"NAKAGAWA_PSP_TEST schema=1 test_id={self.TEST_ID} "
+                    f"case_id={case_id} status={status} result=0x{first:08x}{outs}\n"
+                )
+        rows.append(
+            f"NAKAGAWA_PSP_TEST schema=1 test_id={self.TEST_ID} "
+            f"case_id={spec.terminal_case} status=PASS result=0x0 "
+            f"out0=0x{spec.terminal_count:x}\n"
+        )
+        header = META.format(
+            source="psp", model="unknown", firmware="unknown",
+            binary="0" * 64, commit="1" * 40,
+        )
+        return header + "".join(rows), expected
+
+    def test_parser_format_preserves_raw_words_and_cross_references_interpreter_ops(self) -> None:
+        """Cross-reference labels and field positions only, never numeric semantics."""
+        spec, _counts = CAMPAIGN_PROBE_CASES[self.CASE]
+        for operation in (
+            "sr_vfpu_rcp(v[i])", "sr_vfpu_rsqrt(v[i])", "sr_vfpu_sin(v[i])",
+            "sr_vfpu_cos(v[i])", "sr_vfpu_exp2(v[i])", "sr_vfpu_log2(v[i])",
+            "sr_vfpu_sqrt(v[i])", "sr_vfpu_asin(v[i])",
+        ):
+            with self.subTest(operation=operation):
+                self.assertIn(operation, self.interpreter)
+
+        text, expected = self._synthetic_stream()
+        parsed = parse_campaign_probe_output(text, self.CASE)
+        self.assertTrue(parsed.complete)
+        self.assertEqual(parsed.record_count, 89)
+        self.assertEqual(
+            [case for case in parsed.results if case != spec.terminal_case],
+            list(self.CASES),
+        )
+        for case_id, words in expected.items():
+            values = dict(parsed.results[case_id].values)
+            self.assertEqual(int(values["result"], 0), int(case_id[-2:]) * 8)
+            self.assertEqual(
+                [int(values[f"out{lane}"], 0) for lane in range(len(words))],
+                words,
+            )
+        # A5-prefixed synthetic words are transport sentinels, not model or hardware
+        # expectations. Parsing must retain them without interpretation.
+        self.assertEqual(
+            int(dict(parsed.results["vsin-chunk-00"].values)["out0"], 0), 0xA5000000
+        )
+
+    def test_raw_record_status_and_shape_fail_closed(self) -> None:
+        text, _expected = self._synthetic_stream(first_status="FAIL")
+        with self.assertRaises(ProtocolError):
+            parse_campaign_probe_output(text, self.CASE)
+
+        text, _expected = self._synthetic_stream()
+        malformed = text.replace("out7=0xa5000007", "out6=0xa5000007", 1)
+        with self.assertRaises(ProtocolError):
+            parse_campaign_probe_output(malformed, self.CASE)
+
+    def test_constant_grids_are_complete_and_do_not_repeat_measured_vasin_inputs(self) -> None:
+        special_match = re.search(
+            r"s_vfpu_trans_specials\[VFPU_TRANS_SPECIAL_COUNT\]\s*=\s*\{([^}]*)\}",
+            self.probe,
+        )
+        asin_special_match = re.search(
+            r"s_vfpu_trans_asin_specials\[VFPU_TRANS_SPECIAL_COUNT\]\s*=\s*\{([^}]*)\}",
+            self.probe,
+        )
+        self.assertIsNotNone(special_match)
+        self.assertIsNotNone(asin_special_match)
+
+        def words(body: str) -> list[int]:
+            return [int(word, 16) for word in re.findall(r"0x([0-9a-fA-F]{8})u", body)]
+
+        shared_specials = words(special_match.group(1))
+        asin_specials = words(asin_special_match.group(1))
+        self.assertEqual(len(shared_specials), 20)
+        self.assertEqual(len(asin_specials), 20)
+        self.assertTrue({
+            0x00000000, 0x80000000, 0x00000001, 0x80000001,
+            0x3f800000, 0xbf800000, 0x3f000000, 0xbf000000,
+            0x40000000, 0xc0000000, 0x7f800000, 0xff800000,
+            0x7fc00000, 0xffc00000, 0x7f800001, 0xff800001,
+        }.issubset(shared_specials))
+
+        domains: dict[str, list[int]] = {}
+        for name in (
+            "angle", "exp", "log", "root", "recip", "asin",
+        ):
+            match = re.search(
+                rf"s_vfpu_trans_{name}_domain\[VFPU_TRANS_DOMAIN_COUNT\]\s*=\s*\{{([^}}]*)\}}",
+                self.probe,
+            )
+            self.assertIsNotNone(match, name)
+            domains[name] = words(match.group(1))
+            self.assertEqual(len(domains[name]), 43, name)
+
+        old_probe = (self.root / "fixtures" / "vfpu_oracle" / "vfpu_probe.c").read_text(
+            encoding="utf-8")
+        old_match = re.search(r"VASIN_DOMAIN_INPUTS\[\]\s*=\s*\{([^}]*)\}", old_probe)
+        self.assertIsNotNone(old_match)
+        measured_vasin_inputs = set(words(old_match.group(1)))
+        self.assertFalse(
+            measured_vasin_inputs & (set(asin_specials) | set(domains["asin"])),
+            "the new VASIN input grid must not repeat its measured edge corpus",
+        )
+        for op, domain_name in (
+            ("vsin", "angle"), ("vcos", "angle"), ("vexp2", "exp"),
+            ("vlog2", "log"), ("vrsq", "root"), ("vrcp", "recip"),
+            ("vsqrt", "root"), ("vasin", "asin"), ("vnrcp", "recip"),
+            ("vnsin", "angle"), ("vrexp2", "exp"),
+        ):
+            specials = asin_specials if op == "vasin" else shared_specials
+            grid = specials + domains[domain_name]
+            with self.subTest(operation=op):
+                self.assertEqual(len(grid), 63)
+                self.assertEqual(len(set(grid)), 63, "input word repeated in its grid")
+
+    def test_case_is_measured_outside_the_queue_and_has_the_full_raw_word_stream(self) -> None:
+        spec, counts = CAMPAIGN_PROBE_CASES[self.CASE]
+        row = next(test for test in self.manifest["tests"] if test["id"] == self.TEST_ID)
+        self.assertEqual(spec.semantic_cases, self.CASES)
+        self.assertEqual(spec.terminal_case, "vfpu-transcendental-corpus-done")
+        self.assertEqual(spec.terminal_count, 88)
+        self.assertEqual(len(spec.ordered_cases), 89)
+        self.assertEqual(set(counts.values()), {1, 7, 8})
+        # The 2026-10-15 run of 22b027f6 was complete and acceptance-eligible, so every one of
+        # the 89 records is cited; the words themselves stay in the private campaign directory.
+        self.assertEqual(row["status"], "implemented")
+        self.assertEqual(row["hardware_evidence"], "MEASURED")
+        self.assertEqual(
+            row["evidence_ref"],
+            "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize")
+        self.assertEqual(row["evidence_cases"], list(spec.ordered_cases))
+        self.assertNotIn("uncited_cases", row)
+        self.assertNotIn("evidence_note", row)
+        for word in ("2026-10-15", "22b027f6", "acceptance-eligible with 0 blockers",
+                     "88 data records", "693 words", "compares no value"):
+            self.assertIn(word, row["measurement_note"])
+        self.assertEqual(row["case_ids"], list(spec.ordered_cases))
+        self.assertNotIn(self.CASE, CAMPAIGN_QUEUE_CASES)
+
+        self.assertIn("#define PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS 71", self.probe)
+        self.assertIn("else ifeq ($(CASE),vfpu-transcendental-corpus)\nCASE_ID = 71\n",
+                      self.makefile)
+        self.assertIn(
+            '#define PROBE_HOST0_LOG "host0:/vfpu_transcendental_corpus_log.txt"',
+            self.probe,
+        )
+        self.assertIn("s_vfpu_transcendental_observed", self.probe)
+        self.assertIn("DEFERRED_MAX_RECORDS 128", self.probe)
+        start = self.probe.index(
+            "#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS\n")
+        end = self.probe.index("\n#endif", start)
+        self.assertNotIn("sr_vfpu_", self.probe[start:end])
+
+        hardware = (self.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
+        readme = (self.fixture / "README.md").read_text(encoding="utf-8")
+        self.assertIn("vfpu-transcendental-corpus", hardware)
+        self.assertIn("vfpu-transcendental-corpus", readme)
+
+
+# ---- probe_hle_measure.c analysis: out-word counts per cell -----------------------
+#
+# A cell's out-word count is the last argument of its hle_record call, or the second
+# argument of hle_skip. The cell name and the count reach those calls through helper
+# parameters, so the analysis walks hle_run and every helper it calls inside one
+# family's #if section, substituting the literal arguments of each call. Both branches
+# of a helper are walked. A cell reached twice must carry one count, or the probe is
+# refused as inconsistent.
+
+_C_NOT_CALLS = frozenset({"if", "for", "while", "switch", "return", "sizeof", "do"})
+_C_CALL_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
+_C_STRING_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+_C_INT_RE = re.compile(r"(0x[0-9A-Fa-f]+|\d+)[uUlL]*")
+
+
+def _c_code(text: str) -> str:
+    """The C text with its comments removed."""
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
+    return re.sub(r"//[^\n]*", "", text)
+
+
+def _c_close(text: str, open_at: int) -> int:
+    """Index of the bracket that closes the one at open_at; string literals are skipped."""
+    closer = {"(": ")", "{": "}", "[": "]"}[text[open_at]]
+    opener = text[open_at]
+    depth = 0
+    i = open_at
+    while i < len(text):
+        ch = text[i]
+        if ch == '"':
+            i += 1
+            while text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+        elif ch == opener:
+            depth += 1
+        elif ch == closer:
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    raise ValueError("unbalanced brackets in the probe source")
+
+
+def _c_split(text: str) -> list[str]:
+    """The top-level comma-separated pieces of an argument list."""
+    pieces = []
+    depth = 0
+    start = 0
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == '"':
+            i += 1
+            while text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            pieces.append(text[start:i].strip())
+            start = i + 1
+        i += 1
+    tail = text[start:].strip()
+    if tail:
+        pieces.append(tail)
+    return pieces
+
+
+def _c_functions(section: str) -> dict[str, tuple[list[str], str]]:
+    """Name -> (parameter names, body) for each static function defined in a section."""
+    found: dict[str, tuple[list[str], str]] = {}
+    for match in re.finditer(r"^static [^\n;{}]*?\b(\w+)\s*\(", section, re.M):
+        open_paren = match.end() - 1
+        close_paren = _c_close(section, open_paren)
+        brace = section.find("{", close_paren)
+        if brace < 0 or section[close_paren + 1:brace].strip():
+            continue  # a prototype, not a definition
+        raw = section[open_paren + 1:close_paren].strip()
+        params: list[str] = []
+        if raw not in ("", "void"):
+            for piece in _c_split(raw):
+                named = (re.search(r"\(\*\s*(\w+)\s*\)", piece)
+                         or re.search(r"(\w+)\s*(\[[^\]]*\])?\s*$", piece))
+                params.append(named.group(1))
+        found[match.group(1)] = (params, section[brace + 1:_c_close(section, brace)])
+    return found
+
+
+def _c_value(arg: str, env: dict, defines: dict, arrays: dict):
+    """(kind, value): ("str", text), ("strs", [texts]), ("int", n) or ("unknown", text)."""
+    arg = arg.strip()
+    if _C_STRING_RE.fullmatch(arg):
+        return ("str", arg[1:-1])
+    if _C_INT_RE.fullmatch(arg):
+        return ("int", int(_C_INT_RE.fullmatch(arg).group(1), 0))
+    if re.fullmatch(r"\w+", arg):
+        if arg in env:
+            return env[arg]
+        if arg in defines:
+            return ("int", defines[arg])
+    indexed = re.fullmatch(r"(\w+)\s*\[\s*\w+\s*\]", arg)
+    if indexed and indexed.group(1) in arrays:
+        return ("strs", arrays[indexed.group(1)])
+    cast = re.fullmatch(r"\(\s*\w+\s*\)\s*(.+)", arg)
+    if cast:
+        return _c_value(cast.group(1), env, defines, arrays)
+    return ("unknown", arg)
+
+
+def _c_walk(name, env, functions, defines, arrays, emit, active=()):
+    if name in active:
+        raise AssertionError(f"helper {name} calls itself")
+    body = functions[name][1]
+    for match in _C_CALL_RE.finditer(body):
+        callee = match.group(1)
+        if callee in _C_NOT_CALLS:
+            continue
+        close = _c_close(body, match.end() - 1)
+        args = _c_split(body[match.end():close])
+        if callee == "hle_record" and len(args) == 5:
+            emit("record", _c_value(args[0], env, defines, arrays),
+                 _c_value(args[4], env, defines, arrays), name)
+        elif callee == "hle_skip" and len(args) == 2:
+            emit("record", _c_value(args[0], env, defines, arrays),
+                 _c_value(args[1], env, defines, arrays), name)
+        elif callee == "hle_step":
+            emit("step", None, None, name)
+        elif callee in functions:
+            params = functions[callee][0]
+            inner = {p: _c_value(a, env, defines, arrays)
+                     for p, a in zip(params, args, strict=False)}
+            _c_walk(callee, inner, functions, defines, arrays, emit, active + (name,))
+
+
+def _probe_cells(probe: str, macro: str) -> tuple[list[tuple[str, int]], int]:
+    """The (cell, out-word count) pairs a family's record calls can emit, in source order,
+    and the number of hle_step calls the walk reaches. A cell can appear more than once
+    when a skip branch and a record branch both emit it."""
+    anchor = re.search(rf"\*/\n#if PSP_ORACLE_CASE == {macro}\n", probe)
+    if anchor is None:
+        raise AssertionError(f"no family section for {macro}")
+    end_marker = f"#endif /* {macro} */"
+    end = probe.index(end_marker, anchor.start()) + len(end_marker)
+    section = _c_code(probe[anchor.start():end])
+    code = _c_code(probe)
+    defines = {name: int(value, 0) for name, value in re.findall(
+        r"^#define\s+(\w+)\s+(0x[0-9A-Fa-f]+|\d+)[uUlL]*\s*$", code, re.M)}
+    arrays = {name: _C_STRING_RE.findall(body) for name, body in re.findall(
+        r"\b(\w+)\s*\[[^\]]*\]\s*=\s*\{([^}]*)\}", code)}
+    functions = _c_functions(section)
+    emitted: list[tuple[str, int]] = []
+    steps: list[str] = []
+
+    def emit(kind, case, count, where):
+        if kind == "step":
+            steps.append(where)
+            return
+        if case[0] == "str":
+            names = [case[1]]
+        elif case[0] == "strs":
+            names = list(case[1])
+        else:
+            raise AssertionError(f"{macro}: cell name in {where} is not a literal: {case[1]}")
+        if count[0] != "int":
+            raise AssertionError(f"{macro}: out-word count in {where} is not a constant: "
+                                 f"{count[1]}")
+        emitted.extend((name, count[1]) for name in names)
+
+    _c_walk("hle_run", {}, functions, defines, arrays, emit)
+    return emitted, len(steps)
+
+
+def _out_count_mismatches(probe: str, campaign: str, macro: str) -> list[str]:
+    """Differences between the counts the probe source yields and the parser registry."""
+    spec, registry = CAMPAIGN_PROBE_CASES[campaign]
+    cells, _steps = _probe_cells(probe, macro)
+    by_name: dict[str, set[int]] = {}
+    for name, count in cells:
+        by_name.setdefault(name, set()).add(count)
+    problems = [f"{name}: conflicting counts {sorted(values)}"
+                for name, values in by_name.items() if len(values) != 1]
+    derived = {name: next(iter(values)) for name, values in by_name.items() if len(values) == 1}
+    expected = {name: count for name, count in registry.items() if name != spec.terminal_case}
+    for name in sorted(set(derived) | set(expected)):
+        if derived.get(name) != expected.get(name):
+            problems.append(f"{name}: source {derived.get(name)} != registry {expected.get(name)}")
+    if list(by_name) != list(spec.semantic_cases):
+        problems.append("cell order in the source differs from the registry")
+    return problems
+
+
+class HleMeasureProbeTests(unittest.TestCase):
+    """H-oracle-hle-measure-1009: seven one-launch HLE measurement families.
+
+    The probes measure what the console returns. These tests pin what makes each
+    launch safe and parseable: the Makefile case table and the import block each
+    PRX links, NIDs derived from their names, the source rules (user imports only,
+    a STEP marker before each measured call, no state-changing Set call except the
+    restored GE width), the host0 log each family writes, the fixed record shape
+    the parser registry expects, and the GE restore invariant.
+    """
+
+    FAMILIES = (
+        # campaign case, CASE_ID, PRX stem, family import block, probe section macro, test id
+        ("hle-kernel-status", 90, "hle_kernel_status", None,
+         "HLE_CASE_KERNEL_STATUS", "PSP-HLE-KERNEL-STATUS-001"),
+        ("hle-vtimer", 91, "hle_vtimer", None, "HLE_CASE_VTIMER", "PSP-HLE-VTIMER-001"),
+        ("hle-power-clock", 92, "hle_power_clock", "hle_power_imports.S",
+         "HLE_CASE_POWER_CLOCK", "PSP-HLE-POWER-001"),
+        ("hle-hprm", 93, "hle_hprm", "hle_hprm_imports.S", "HLE_CASE_HPRM", "PSP-HLE-HPRM-001"),
+        ("hle-ctrl-latch", 94, "hle_ctrl_latch", "hle_ctrl_imports.S",
+         "HLE_CASE_CTRL_LATCH", "PSP-HLE-CTRL-LATCH-001"),
+        ("hle-sysparam", 95, "hle_sysparam", "hle_utility_imports.S",
+         "HLE_CASE_SYSPARAM", "PSP-HLE-SYSPARAM-001"),
+        ("hle-ge-edram", 96, "hle_ge_edram", "hle_ge_imports.S",
+         "HLE_CASE_GE_EDRAM", "PSP-HLE-GE-EDRAM-001"),
+    )
+    # The seven single-launch cases in the same file (97-103), added after the families above.
+    # They build, link and parse like those families; their pass rule is machinery only. Their
+    # recorded hardware outcomes for cases 97-101 are pinned by HleSingleLaunchProbeTests.
+    SINGLE_LAUNCH_FAMILIES = (
+        ("hle-vtimer-unit", 97, "hle_vtimer_unit", None,
+         "HLE_CASE_VTIMER_UNIT", "PSP-HLE-VTIMER-002"),
+        ("hle-vtimer-errors", 98, "hle_vtimer_errors", None,
+         "HLE_CASE_VTIMER_ERRORS", "PSP-HLE-VTIMER-003"),
+        ("hle-kernel-pool-bounds", 99, "hle_kernel_pool_bounds", None,
+         "HLE_CASE_KERNEL_POOL_BOUNDS", "PSP-HLE-KERNEL-STATUS-002"),
+        ("hle-power-float-v0", 100, "hle_power_float_v0", "hle_power_imports.S",
+         "HLE_CASE_POWER_FLOAT_V0", "PSP-HLE-POWER-002"),
+        ("hle-null-out-pointers", 101, "hle_null_out_pointers", None,
+         "HLE_CASE_NULL_OUT_POINTERS", "PSP-HLE-NULL-OUT-001"),
+        ("hle-audio-src", 102, "hle_audio_src", None,
+         "HLE_CASE_AUDIO_SRC", "PSP-HLE-AUDIO-SRC-001"),
+        ("hle-timer-order", 103, "hle_timer_order", None,
+         "HLE_CASE_TIMER_ORDER", "PSP-HLE-TIMER-ORDER-001"),
+    )
+    ALL_FAMILIES = FAMILIES + SINGLE_LAUNCH_FAMILIES
+    # Every family block: file -> (library, version word, {function: NID}). The
+    # version word 0x40010000 is the one the PSPSDK import stubs carry.
+    PINNED_BLOCKS = {
+        "hle_power_imports.S": ("scePower", 0x40010000, {
+            "scePowerGetPllClockFrequencyInt": 0x34F9C463,
+            "scePowerGetPllClockFrequencyFloat": 0xEA382A27,
+            "scePowerGetCpuClockFrequency": 0xFEE03A2F,
+            "scePowerGetCpuClockFrequencyInt": 0xFDB5BFE9,
+            "scePowerGetCpuClockFrequencyFloat": 0xB1A52C83,
+            "scePowerGetBusClockFrequency": 0x478FE6F5,
+            "scePowerGetBusClockFrequencyInt": 0xBD681969,
+            "scePowerGetBusClockFrequencyFloat": 0x9BADB3EB,
+        }),
+        "hle_hprm_imports.S": ("sceHprm", 0x40010000, {
+            "sceHprmIsRemoteExist": 0x208DB1BD,
+            "sceHprmIsHeadphoneExist": 0x7E69EDA4,
+            "sceHprmIsMicrophoneExist": 0x219C58F1,
+        }),
+        "hle_ctrl_imports.S": ("sceCtrl", 0x40010000, {
+            "sceCtrlReadLatch": 0x0B588501,
+            "sceCtrlPeekLatch": 0xB1D0E5CD,
+        }),
+        "hle_utility_imports.S": ("sceUtility", 0x40010000, {
+            "sceUtilityGetSystemParamInt": 0xA5DA2406,
+            "sceUtilityGetSystemParamString": 0x34B78343,
+        }),
+        "hle_ge_imports.S": ("sceGe_user", 0x40010000, {
+            "sceGeEdramGetSize": 0x1F6752AD,
+            "sceGeEdramGetAddr": 0xE47E40E4,
+            "sceGeEdramSetAddrTranslation": 0xB77905EA,
+        }),
+    }
+    # Calls supplied by the SDK's default IO/audio libraries, not by the hand-written
+    # ThreadMan import block. Libc and CRT helpers are not sce-prefixed.
+    SDK_DEFAULT_CALLS = frozenset({
+        "sceIoOpen", "sceIoWrite", "sceIoRead", "sceIoClose",
+        "sceAudioSRCChReserve", "sceAudioSRCChRelease", "sceAudioSRCOutputBlocking",
+        "sceAudioOutput2Reserve", "sceAudioOutput2Release",
+    })
+    MEASURED_CALL_RE = re.compile(
+        r"\b(sceKernel(?:ReferSystemStatus|ReferFplStatus|CreateFpl|TryAllocateFpl|FreeFpl|"
+        r"DeleteFpl|CreateVTimer|ReferVTimerStatus|GetVTimerTime|StartVTimer|StopVTimer|"
+        r"DeleteVTimer|DelayThread|GetVTimerBase|GetSystemTimeWide|CreateVpl|TryAllocateVpl|"
+        r"FreeVpl|DeleteVpl|SetAlarm|CancelAlarm|SetVTimerHandler)|"
+        r"sceAudio(?:SRC(?:ChReserve|ChRelease|OutputBlocking)|Output2(?:Reserve|Release))|"
+        r"scePowerGet\w+|sceHprmIs\w+|sceCtrl\w*Latch|"
+        r"sceUtilityGetSystemParam\w+|sceGeEdram\w+)\s*\("
+    )
+    # A line that is nothing but a whole `int|float|void sce...(...);` declaration.
+    # Only such a line is skipped as "not a call"; a declaration that shares its line
+    # with a call is still scanned.
+    PROTOTYPE_LINE_RE = re.compile(r"\s*(?:int|float|void)\s+sce\w+\s*\([^;]*\);\s*")
+    GE_UNSET_OVERRIDES = {
+        "edram-width-query-initial": ("PASS", 0x0, None),
+        **{name: ("SKIP", 0, [0]) for name in (
+            "edram-width-set-512", "edram-width-set-1024", "edram-width-set-2048",
+            "edram-width-set-4096", "edram-width-restore")},
+        "edram-width-query-final": ("PASS", 0x0, None),
+    }
+    # The behaviour captured on the PSP-3000 on 2026-10-10 (initial width 0x400; CAPTURED, the
+    # run was not acceptance-eligible) through the revised probe: sceGeEdramSetAddrTranslation(w)
+    # sets the width to w and returns the width it replaced, so each Set after a Set(0) returns
+    # 0; the restore's verifying Set(initial) returns the restored width and keeps it, and the
+    # final Set(initial) returns it again.
+    GE_MEASURED_OVERRIDES = {
+        "edram-width-query-initial": ("PASS", 0x400, None),
+        "edram-width-set-512": ("PASS", 0x0, [0x200]),
+        "edram-width-set-1024": ("PASS", 0x0, [0x400]),
+        "edram-width-set-2048": ("PASS", 0x0, [0x800]),
+        "edram-width-set-4096": ("PASS", 0x0, [0x1000]),
+        "edram-width-restore": ("PASS", 0x0, [0x400]),
+        "edram-width-query-final": ("PASS", 0x400, [0x400]),
+    }
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.root = Path(__file__).resolve().parents[1]
+        cls.fixture = cls.root / "fixtures" / "psp_oracle"
+        cls.makefile = (cls.fixture / "Makefile").read_text(encoding="utf-8")
+        cls.probe = (cls.fixture / "probe_hle_measure.c").read_text(encoding="utf-8")
+        cls.threadman = (cls.fixture / "threadman_user_imports.S").read_text(encoding="utf-8")
+        cls.manifest = json.loads((cls.root / "tools" / "psp_oracle" / "manifest.json")
+                                  .read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _nid(name: str) -> int:
+        return int.from_bytes(hashlib.sha1(name.encode("ascii")).digest()[:4], "little")
+
+    @staticmethod
+    def _imports(text: str) -> list[tuple[str, int, str]]:
+        return [
+            (library, int(nid, 16), name)
+            for library, nid, name in re.findall(
+                r'IMPORT_FUNC\s+"([^"]+)",\s*0x([0-9A-Fa-f]+),\s*(\w+)', text)
+        ]
+
+    def _block_text(self, block: str) -> str:
+        return (self.fixture / block).read_text(encoding="utf-8")
+
+    def _declared_names(self, block: str | None) -> set[str]:
+        names = {name for _lib, _nid, name in self._imports(self.threadman)}
+        if block is not None:
+            names |= {name for _lib, _nid, name in self._imports(self._block_text(block))}
+        return names
+
+    @staticmethod
+    def _family_span(text: str, macro: str) -> tuple[int, int]:
+        # Each family section opens right after its separator comment; the header
+        # #if chain that names the same macro does not, so it is never matched.
+        match = re.search(rf"\*/\n#if PSP_ORACLE_CASE == {macro}\n", text)
+        if match is None:
+            raise AssertionError(f"no family section for {macro}")
+        end_marker = f"#endif /* {macro} */"
+        end = text.index(end_marker, match.start()) + len(end_marker)
+        return match.start(), end
+
+    def _section(self, macro: str) -> str:
+        start, end = self._family_span(self.probe, macro)
+        return self.probe[start:end]
+
+    def _shared_section(self) -> str:
+        """Probe text outside every family section (common helpers and main)."""
+        text = self.probe
+        for _case, _cid, _stem, _block, macro, _test in reversed(self.ALL_FAMILIES):
+            start, end = self._family_span(text, macro)
+            text = text[:start] + text[end:]
+        return text
+
+    # ---- Makefile wiring ---------------------------------------------------------
+
+    def test_case_ids_are_registered_once_and_match_the_families(self) -> None:
+        pairs = re.findall(r"else ifeq \(\$\(CASE\),(hle-[a-z0-9-]+)\)\nCASE_ID = (\d+)",
+                           self.makefile)
+        self.assertEqual(sorted(pairs),
+                         sorted((case, str(case_id)) for case, case_id, *_ in self.ALL_FAMILIES))
+        all_ids = re.findall(r"^CASE_ID = (\d+)$", self.makefile, re.MULTILINE)
+        self.assertEqual(len(all_ids), len(set(all_ids)), "duplicate CASE_ID in Makefile")
+
+    def test_each_family_links_the_probe_threadman_block_and_only_its_own_block(self) -> None:
+        for case, _cid, stem, block, _macro, _test in self.ALL_FAMILIES:
+            with self.subTest(case=case):
+                match = re.search(
+                    rf"else ifeq \(\$\(CASE\),{case}\)\nTARGET = \$\(BUILD_DIR\)/{stem}\n"
+                    r"OBJS = (.*)\n",
+                    self.makefile)
+                self.assertIsNotNone(match, f"no TARGET/OBJS branch for {case}")
+                expected = ["$(BUILD_DIR)/probe_hle_measure.o",
+                            "$(BUILD_DIR)/threadman_user_imports.o"]
+                if block is not None:
+                    expected.append("$(BUILD_DIR)/" + block.replace(".S", ".o"))
+                self.assertEqual(match.group(1).split(), expected)
+
+    def test_module_stop_is_exported_for_the_probe_object(self) -> None:
+        self.assertRegex(
+            self.makefile,
+            r"ifneq \(\$\(filter \$\(BUILD_DIR\)/probe_hle_measure\.o,\$\(OBJS\)\),\)\n"
+            r"PRX_EXPORTS = \$\(BUILD_DIR\)/probe_exports\.exp\nendif\n",
+        )
+        self.assertIn("module_stop", self.probe)
+
+    def test_hle_sources_have_compile_rules(self) -> None:
+        for block in self.PINNED_BLOCKS:
+            with self.subTest(block=block):
+                self.assertIn(f"$(BUILD_DIR)/{block.replace('.S', '.o')}: {block}\n",
+                              self.makefile)
+        self.assertIn("$(BUILD_DIR)/probe_hle_measure.o: probe_hle_measure.c\n", self.makefile)
+
+    # ---- import tables -----------------------------------------------------------
+
+    def test_pinned_import_blocks_match_declared_nids_and_the_name_derivation(self) -> None:
+        for block, (library, flags, pins) in self.PINNED_BLOCKS.items():
+            with self.subTest(block=block):
+                text = self._block_text(block)
+                self.assertEqual(
+                    re.findall(r'IMPORT_START\s+"([^"]+)",\s*0x([0-9A-Fa-f]+)', text),
+                    [(library, f"{flags:08X}")])
+                declared = self._imports(text)
+                self.assertEqual({name: nid for _lib, nid, name in declared}, pins)
+                for lib, nid, name in declared:
+                    self.assertEqual(lib, library)
+                    self.assertEqual(nid, self._nid(name), name)
+
+    def test_threadman_block_declares_the_shared_reference_and_refer_status(self) -> None:
+        self.assertEqual(
+            [nid for _lib, nid, name in self._imports(self.threadman)
+             if name == "sceKernelReferSystemStatus"],
+            [0x627E6F3A],
+        )
+        self.assertEqual(self._nid("sceKernelReferSystemStatus"), 0x627E6F3A)
+
+    def test_every_stub_the_probe_calls_is_declared_by_its_own_prx_import_tables(self) -> None:
+        shared_defined = set(re.findall(r"^(?:int|float|void)\s+(sce\w+)\s*\(",
+                                        self.probe, re.MULTILINE))
+        shared_calls = set(re.findall(r"\b(sce\w+)\s*\(", self._shared_section()))
+        self.assertEqual(
+            sorted(shared_calls - self._declared_names(None) - self.SDK_DEFAULT_CALLS
+                   - shared_defined),
+            [],
+        )
+        for case, _cid, _stem, block, macro, _test in self.ALL_FAMILIES:
+            with self.subTest(case=case):
+                section = self._section(macro)
+                called = self._calls_in(section)
+                defined = set(re.findall(r"^(?:int|float|void)\s+(sce\w+)\s*\(", section,
+                                         re.MULTILINE))
+                undeclared = sorted(called - self._declared_names(block)
+                                    - self.SDK_DEFAULT_CALLS - defined)
+                self.assertEqual(undeclared, [], f"{block} does not declare {undeclared}")
+
+    def test_each_family_table_passes_the_user_mode_gate_and_names_only_user_libraries(self) -> None:
+        for case, _cid, _stem, block, _macro, _test in self.ALL_FAMILIES:
+            with self.subTest(case=case):
+                tables: dict[str, list[int]] = {
+                    "ThreadManForUser": [nid for _lib, nid, _name in self._imports(self.threadman)],
+                }
+                if block is not None:
+                    library, _flags, _pins = self.PINNED_BLOCKS[block]
+                    tables[library] = [nid for _lib, nid, _name in
+                                       self._imports(self._block_text(block))]
+                result = user_mode_imports.check_module(
+                    build_import_elf(sorted(tables.items())))
+                self.assertTrue(result.passed, result)
+                self.assertFalse(result.kernel_mode)
+                self.assertEqual(set(result.libraries), set(tables))
+
+    def test_built_probe_import_tables_pass_the_gate_when_a_local_build_exists(self) -> None:
+        build = self.fixture / "build"
+        present = [build / f"{stem}.elf" for _c, _i, stem, _b, _m, _t in self.ALL_FAMILIES
+                   if (build / f"{stem}.elf").is_file()]
+        if not present:
+            self.skipTest("no local hle_*.elf build; make CASE=<case> produces one to check")
+        for path in present:
+            with self.subTest(elf=path.name):
+                result = user_mode_imports.check_module(path.read_bytes())
+                self.assertTrue(result.passed)
+                self.assertIn("ThreadManForUser", result.libraries)
+
+    def test_no_stub_names_a_set_install_or_remove_function_except_the_restored_ge_width(
+            self) -> None:
+        forbidden = re.compile(r"sce\w*(?:Set|Install|Remove|Flush|Register|Reset)\w*")
+        names = set(re.findall(r"\b(sce\w+)\b", self.probe))
+        self.assertEqual({name for name in names if forbidden.fullmatch(name)},
+                         {"sceGeEdramSetAddrTranslation", "sceKernelSetAlarm",
+                          "sceKernelSetVTimerHandler"})
+        for _library, _flags, pins in self.PINNED_BLOCKS.values():
+            for name in pins:
+                if name != "sceGeEdramSetAddrTranslation":
+                    self.assertIsNone(forbidden.fullmatch(name), name)
+
+    # ---- probe source rules ------------------------------------------------------
+
+    def test_every_measured_call_follows_a_step_marker_within_three_lines(self) -> None:
+        lines = self.probe.splitlines()
+        callback_start = self.probe.index("static void hle_timer_order_capture(")
+        callback_end = self.probe.index("\n}\n", callback_start)
+        callback_clock_line = "const uint64_t now = (uint64_t)sceKernelGetSystemTimeWide();"
+        checked = 0
+        for index, line in enumerate(lines):
+            if not self.MEASURED_CALL_RE.search(line):
+                continue
+            if self.PROTOTYPE_LINE_RE.fullmatch(line):
+                continue  # a whole-line prototype, not a call
+            if callback_start <= self.probe.find(line) < callback_end and callback_clock_line in line:
+                continue  # the callback samples time; host logging is unsafe there
+            checked += 1
+            window = lines[max(0, index - 3):index]
+            self.assertTrue(any("hle_step(" in previous for previous in window),
+                            f"line {index + 1} has no hle_step before it: {line.strip()}")
+        self.assertGreaterEqual(checked, 40)
+
+    def test_timer_callback_samples_only_the_clock_and_owned_capture(self) -> None:
+        start = self.probe.index("static void hle_timer_order_capture(")
+        body = self.probe[start:self.probe.index("\n}\n", start)]
+        self.assertIn("sceKernelGetSystemTimeWide()", body)
+        self.assertIn("capture->sequence = sequence;", body)
+        self.assertNotIn("hle_step(", body)
+        self.assertNotIn("hle_write(", body)
+        self.assertNotIn("hle_record(", body)
+
+    def test_new_probes_use_only_probe_owned_pointers_and_finite_waits(self) -> None:
+        audio = self._section("HLE_CASE_AUDIO_SRC")
+        timer = self._section("HLE_CASE_TIMER_ORDER")
+        for section in (audio, timer):
+            with self.subTest(section=section[:36]):
+                self.assertEqual(
+                    set(re.findall(r"\b(sce\w+)\s*\([^;]*\bNULL\b", section)), set()
+                )
+        self.assertIn("static int16_t s_hle_asrc_silence", audio)
+        self.assertIn("__attribute__((aligned(64)))", audio)
+        self.assertIn("memset(s_hle_asrc_silence, 0, sizeof(s_hle_asrc_silence));", audio)
+        self.assertIn("sceAudioSRCOutputBlocking(PSP_AUDIO_VOLUME_MAX, s_hle_asrc_silence)",
+                      audio)
+        self.assertIn("&s_hle_vtimer_options", timer)
+        self.assertIn("&s_hle_vtimer_due", timer)
+        self.assertIn("&s_hle_vtimer_event", timer)
+        self.assertIn("sceKernelDelayThread(timeout_us);", timer)
+        self.assertRegex(timer, r"#define HLE_TIMER_WAIT_LIMIT_US 250000u")
+        self.assertRegex(timer, r"#define HLE_TIMER_ZERO_WAIT_US 100000u")
+        self.assertIn("sceKernelCancelAlarm(uid)", timer)
+        self.assertIn("sceKernelDeleteVTimer(vtimer)", timer)
+
+        nids = json.loads((self.root / "tools" / "nid_corpus.json").read_text(
+            encoding="utf-8"))["entries"]
+        audio_names = {entry["name"] for entry in nids
+                       if entry["name"].startswith("sceAudioSRC")}
+        self.assertEqual(audio_names, {
+            "sceAudioSRCChReserve", "sceAudioSRCChRelease", "sceAudioSRCOutputBlocking",
+        })
+
+    def test_every_loop_is_bounded_except_the_module_stop_park(self) -> None:
+        self.assertEqual(self.probe.count("while ("), 2)
+        self.assertIn("while (!s_hle_stop_requested)", self.probe)
+        self.assertIn("while (offset < length)", self.probe)
+        self.assertIn("for (uint32_t i = 0; i < HLE_POLL_ITERATIONS; i++) {", self.probe)
+        self.assertRegex(self.probe, r"#define HLE_POLL_ITERATIONS 200u")
+        self.assertRegex(self.probe, r"#define HLE_POLL_DELAY_US 10000u")
+        self.assertNotIn("malloc(", self.probe)
+        self.assertNotIn("sceKernelAllocPartitionMemory", self.probe)
+
+    def test_string_nickname_bytes_never_reach_a_protocol_record(self) -> None:
+        body = self.probe[self.probe.index("static void hle_string_param("):]
+        body = body[:body.index("\n}\n")]
+        self.assertIn('hle_record(case_id, "PASS", (uint32_t)rc, out, 3);', body)
+        self.assertIn("hle_private_nickname_write(buf, nul);", body)
+        private = self.probe[self.probe.index("static void hle_private_nickname_write("):]
+        private = private[:private.index("\n}\n")]
+        self.assertIn("host0:/hle_sysparam_private_strings.txt", private)
+        self.assertNotIn("hle_record", private)
+        self.assertNotIn("hle_emit", private)
+
+    def test_probe_emits_the_protocol_lines_and_the_log_the_runner_reads(self) -> None:
+        for marker in ("NAKAGAWA_PSP_META schema=1", "NAKAGAWA_PSP_STEP schema=1 case_id=",
+                       "NAKAGAWA_PSP_TEST schema=1 test_id=",
+                       "NAKAGAWA_PSP_COMPLETE schema=1 status="):
+            self.assertIn(marker, self.probe)
+        registrations = {
+            case: (test_id, log) for case, test_id, log in re.findall(
+                r'#define HLE_CAMPAIGN_ID "(hle-[a-z0-9-]+)"\n#define HLE_TEST_ID "([A-Z0-9-]+)"\n'
+                r'#define HLE_LOG "host0:/([a-z0-9_]+\.txt)"', self.probe)
+        }
+        self.assertEqual(len(registrations), len(self.ALL_FAMILIES))
+        for case, _cid, _stem, _block, _macro, test_id in self.ALL_FAMILIES:
+            with self.subTest(case=case):
+                self.assertEqual(registrations[case][0], test_id)
+                self.assertEqual(registrations[case][1],
+                                 _campaign_host0_log_path(Path("/scratch"), case).name)
+
+    # ---- host0 round trip ---------------------------------------------------------
+
+    @staticmethod
+    def _function_body(text: str, signature: str) -> str:
+        """A function body with its whitespace collapsed, so line wrapping does not matter."""
+        start = text.index(signature)
+        return " ".join(text[start:text.index("\n}\n", start)].split())
+
+    def test_every_family_finishes_with_the_round_trip_file_probe_c_writes(self) -> None:
+        """The runner's _verify_host0_roundtrip fails a case whose round-trip file is absent.
+
+        probe.c's teardown writes host0:/nakagawa_transport_write.bin and folds the result
+        into its COMPLETE status. The HLE families have no teardown of their own, so
+        hle_finish runs the same round trip once, in the shared section, after every
+        measurement. probe.c is a separate translation unit, so both copies are pinned here.
+        """
+        probe_c = (self.fixture / "probe.c").read_text(encoding="utf-8")
+        probe_path = re.search(r'#define PROBE_HOST0_ROUNDTRIP_PATH "([^"]+)"', probe_c)
+        hle_path = re.search(r'#define HLE_ROUNDTRIP_PATH "([^"]+)"', self.probe)
+        self.assertIsNotNone(probe_path)
+        self.assertIsNotNone(hle_path)
+        self.assertEqual(probe_path.group(1), "host0:/nakagawa_transport_write.bin")
+        self.assertEqual(hle_path.group(1), probe_path.group(1))
+        self.assertIn("#define HLE_ROUNDTRIP_BYTES 64u", self.probe)
+        self.assertIn("static int hle_host0_roundtrip(void)", self._shared_section())
+
+        probe_body = self._function_body(probe_c, "static int probe_host0_roundtrip(void)")
+        hle_body = self._function_body(self.probe, "static int hle_host0_roundtrip(void)")
+        for statement in (
+            "for (size_t i = 0; i < sizeof(expected); i++) {",
+            "expected[i] = (uint8_t)(0x5Au ^ (i * 0x25u + (i >> 3)));",
+            "PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);",
+            "written = sceIoWrite(fd, expected, (SceSize)sizeof(expected));",
+            "written != (int)sizeof(expected) || write_close < 0",
+            "PSP_O_RDONLY, 0);",
+            "read = sceIoRead(fd, observed, (SceSize)sizeof(observed));",
+            "read == (int)sizeof(observed) && read_close >= 0",
+            "memcmp(expected, observed, sizeof(expected)) == 0",
+        ):
+            with self.subTest(statement=statement):
+                self.assertIn(statement, probe_body)
+                self.assertIn(statement, hle_body)
+
+        finish = self._function_body(self.probe, "static void hle_finish(int ok)")
+        self.assertIn("hle_host0_roundtrip()", finish)
+        self.assertIn('(ok && !s_log_failed && roundtrip) ? "PASS" : "FAIL"', finish)
+        main = self._function_body(self.probe, "int main(int argc, char **argv)")
+        self.assertLess(main.index("hle_run()"), main.index("hle_finish(ok)"))
+
+    # ---- registry, manifest, and the parser contract -----------------------------
+
+    def test_each_family_is_a_fixed_shape_strict_stream_in_the_registry(self) -> None:
+        for case, _cid, _stem, _block, _macro, test_id in self.ALL_FAMILIES:
+            with self.subTest(case=case):
+                spec, counts = CAMPAIGN_PROBE_CASES[case]
+                self.assertEqual(spec.test_id, test_id)
+                self.assertEqual(spec.terminal_case, f"{case}-done")
+                self.assertEqual(_campaign_completeness_contract(case), "strict-golden-sequence")
+                self.assertEqual(set(counts), set(spec.ordered_cases))
+                self.assertEqual(counts[spec.terminal_case], 1)
+                for semantic in spec.semantic_cases:
+                    self.assertIn(f'"{semantic}"', self.probe, semantic)
+
+    def test_out_word_counts_match_the_parser_registry_for_every_family(self) -> None:
+        """Each cell's out-word count, read from the record call that emits it, equals the
+        parser registry's count, and the cells come in registry order, for families 90
+        through 101."""
+        for case, _cid, _stem, _block, macro, _test in self.ALL_FAMILIES:
+            with self.subTest(case=case):
+                self.assertEqual(_out_count_mismatches(self.probe, case, macro), [])
+
+    def test_a_count_mutant_is_refused_by_the_same_comparison(self) -> None:
+        """Mutant: the no-slot create record declares one out word where it writes two."""
+        original = 'hle_record("vtimer-err-noslot-create", "PASS", refusal, create_out, 2);'
+        mutant = self.probe.replace(original, original.replace(", 2);", ", 1);"))
+        self.assertNotEqual(mutant, self.probe)
+        problems = _out_count_mismatches(mutant, "hle-vtimer-errors", "HLE_CASE_VTIMER_ERRORS")
+        self.assertIn("vtimer-err-noslot-create: source 1 != registry 2", problems)
+
+    def test_manifest_entries_are_captured_and_cite_the_registry(self) -> None:
+        """The 2026-10-15 single-case runs on e45e667b measured every family (acceptance-eligible)."""
+        by_id = {test["id"]: test for test in self.manifest["tests"]}
+        for case, _cid, stem, _block, _macro, test_id in self.FAMILIES:
+            with self.subTest(case=case):
+                entry = by_id[test_id]
+                spec, _counts = CAMPAIGN_PROBE_CASES[case]
+                self.assertEqual(entry["hardware_evidence"], "MEASURED")
+                self.assertEqual(
+                    entry["evidence_ref"],
+                    "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+                )
+                self.assertTrue(set(entry["case_ids"]).issubset(entry["evidence_cases"]))
+                self.assertIn("2026-10-15", entry["measurement_note"])
+                self.assertIn("acceptance-eligible", entry["measurement_note"])
+                self.assertEqual(entry["status"], "implemented")
+                self.assertEqual(entry["source"], "fixtures/psp_oracle/probe_hle_measure.c")
+                self.assertEqual(entry["prx"], f"{stem}.prx")
+                self.assertEqual(entry["case_ids"], list(spec.ordered_cases))
+                self.assertEqual(entry["diagnostic_case_ids"], [case])
+                self.assertEqual(entry["issues"], [])
+
+    # A raw-wrapper invocation names its target stub as its second argument.
+    WRAPPER_CALL_RE = re.compile(r"\bHLE_PFV_WRAPPER\(\s*\w+\s*,\s*(sce\w+)\s*\)")
+
+    @classmethod
+    def _calls_in(cls, text: str) -> set[str]:
+        """Stub names a probe text calls: direct calls, raw `jal` targets, and the
+        targets named in HLE_PFV_WRAPPER invocations."""
+        return (set(re.findall(r"\b(sce\w+)\s*\(", text))
+                | set(re.findall(r"\bjal\s+(sce\w+)", text))
+                | set(cls.WRAPPER_CALL_RE.findall(text)))
+
+    def _probe_calls(self, macro: str) -> set[str]:
+        """The sce stubs one family PRX calls: its own section plus the shared probe code.
+
+        The shared code (main, the module lifecycle and the log writer) is linked into
+        every family PRX, so its calls are imports of every family. Prototype lines are
+        declarations, not calls, and are dropped before the scan.
+        """
+        text = self._shared_section() + self._section(macro)
+        calls = "\n".join(line for line in text.splitlines()
+                          if not self.PROTOTYPE_LINE_RE.fullmatch(line))
+        return self._calls_in(calls)
+
+    def test_manifest_apis_name_every_import_each_family_calls(self) -> None:
+        """A family's `apis` are exactly the sce stubs its PRX calls.
+
+        Each import block the family links must be fully called, so a stub it declares
+        but never uses cannot hide in the manifest.
+        """
+        by_id = {test["id"]: test for test in self.manifest["tests"]}
+        for case, _cid, _stem, block, macro, test_id in self.FAMILIES:
+            with self.subTest(case=case):
+                called = self._probe_calls(macro)
+                listed = {api for api in by_id[test_id]["apis"] if api.startswith("sce")}
+                self.assertEqual(sorted(listed), sorted(called))
+                if block is not None:
+                    declared = {name for _lib, _nid, name in
+                                self._imports(self._block_text(block))}
+                    self.assertEqual(sorted(declared - called), [])
+
+    def _stream(self, case: str, overrides: dict | None = None) -> str:
+        """A complete synthetic stream: every cell PASS with zero fields unless overridden."""
+        spec, counts = CAMPAIGN_PROBE_CASES[case]
+        if overrides is None:
+            overrides = self.GE_UNSET_OVERRIDES if case == "hle-ge-edram" else {}
+        lines = [
+            "NAKAGAWA_PSP_META schema=1 source=psp model=unknown firmware=unknown "
+            "binary_sha256=" + "0" * 64 + " source_commit=" + "b" * 40 + " fixture=hle-measure",
+        ]
+        for semantic in spec.semantic_cases:
+            lines.append(f"NAKAGAWA_PSP_STEP schema=1 case_id={case} step={semantic}")
+            status, result, outs = overrides.get(semantic, ("PASS", 0, None))
+            outs = list(outs) if outs is not None else [0] * counts[semantic]
+            fields = " ".join(f"out{i}=0x{value:x}" for i, value in enumerate(outs))
+            lines.append(f"NAKAGAWA_PSP_TEST schema=1 test_id={spec.test_id} case_id={semantic} "
+                         f"status={status} result=0x{result:x} {fields}".rstrip())
+        lines.append(f"NAKAGAWA_PSP_TEST schema=1 test_id={spec.test_id} "
+                     f"case_id={spec.terminal_case} status=PASS result=0x0 "
+                     f"out0=0x{len(spec.semantic_cases):x}")
+        lines.append("NAKAGAWA_PSP_COMPLETE schema=1 status=PASS")
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _body(text: str) -> str:
+        """The record stream without its COMPLETE sentinel, as the runner parses it."""
+        return text.split("NAKAGAWA_PSP_COMPLETE")[0]
+
+    def test_parser_accepts_each_complete_stream_and_rejects_shape_damage(self) -> None:
+        for case, *_rest in self.ALL_FAMILIES:
+            with self.subTest(case=case):
+                text = self._stream(case)
+                self.assertTrue(parse_campaign_probe_output(self._body(text), case).complete)
+                self.assertTrue(_campaign_stream_complete(text, case))
+                self.assertEqual(parse_probe_completion_sentinel(text), "PASS")
+                spec, _counts = CAMPAIGN_PROBE_CASES[case]
+                truncated = "\n".join(text.splitlines()[:-3]) + "\n"
+                self.assertFalse(_campaign_stream_complete(truncated, case))
+                with self.assertRaises(ProtocolError):
+                    parse_campaign_probe_output(self._body(truncated), case)
+                damaged = text.replace(f"case_id={spec.semantic_cases[0]} ",
+                                       f"case_id={spec.semantic_cases[0]}x ", 1)
+                self.assertFalse(_campaign_stream_complete(damaged, case))
+                foreign = text.replace(f"test_id={spec.test_id}", "test_id=PSP-OTHER-001", 1)
+                with self.assertRaises(ProtocolError):
+                    parse_campaign_probe_output(self._body(foreign), case)
+
+    def test_ge_restore_invariant_accepts_a_restored_width_and_rejects_a_changed_one(self) -> None:
+        case = "hle-ge-edram"
+        # Initial width 0x200 under set-returning-previous: each Set returns the 0 that
+        # the preceding Set(0) left, the restore returns 0 with out0 0x200 read back by
+        # Set(0x200), and the final Set(0x200) returns the restored 0x200.
+        restored = {
+            "edram-width-query-initial": ("PASS", 0x200, None),
+            "edram-width-set-512": ("PASS", 0x0, [0x200]),
+            "edram-width-set-1024": ("PASS", 0x0, [0x400]),
+            "edram-width-set-2048": ("PASS", 0x0, [0x800]),
+            "edram-width-set-4096": ("PASS", 0x0, [0x1000]),
+            "edram-width-restore": ("PASS", 0x0, [0x200]),
+            "edram-width-query-final": ("PASS", 0x200, [0x200]),
+        }
+        validate_hle_edram_restore(self._body(self._stream(case, restored)))
+        self.assertIsNone(_validate_campaign_contract(self._body(self._stream(case, restored)), case))
+
+        wrong_restore = dict(restored)
+        wrong_restore["edram-width-restore"] = ("PASS", 0x0, [0x400])
+        with self.assertRaises(ProtocolError):
+            validate_hle_edram_restore(self._body(self._stream(case, wrong_restore)))
+        with self.assertRaises(ProtocolError):
+            _validate_campaign_contract(self._body(self._stream(case, wrong_restore)), case)
+
+        changed_final = dict(restored)
+        # A final read of 0 is what the previous probe revision produced: its verifying
+        # Set(0) undid the restore. The parser must refuse it.
+        changed_final["edram-width-query-final"] = ("PASS", 0x0, [0x200])
+        with self.assertRaises(ProtocolError):
+            validate_hle_edram_restore(self._body(self._stream(case, changed_final)))
+
+    def test_measured_ge_sequence_is_accepted_under_set_returning_previous(self) -> None:
+        case = "hle-ge-edram"
+        body = self._body(self._stream(case, self.GE_MEASURED_OVERRIDES))
+        validate_hle_edram_restore(body)
+        self.assertIsNone(_validate_campaign_contract(body, case))
+
+    def test_final_read_not_returning_the_restored_width_is_rejected_by_the_rule(self) -> None:
+        """The final read is Set(initial): a 0 (the previous probe revision's destructive
+        Set(0) verify, which undid the restore) or another width is refuted."""
+        case = "hle-ge-edram"
+        for final in (0x0, 0x200):
+            with self.subTest(final=hex(final)):
+                overrides = dict(self.GE_MEASURED_OVERRIDES)
+                overrides["edram-width-query-final"] = ("PASS", final, [0x400])
+                with self.assertRaisesRegex(ProtocolError, "set-returning-previous"):
+                    validate_hle_edram_restore(self._body(self._stream(case, overrides)))
+
+    def test_ge_width_cells_skip_when_the_original_width_is_not_restorable(self) -> None:
+        case = "hle-ge-edram"
+        validate_hle_edram_restore(self._body(self._stream(case, self.GE_UNSET_OVERRIDES)))
+        ran_anyway = dict(self.GE_UNSET_OVERRIDES)
+        ran_anyway["edram-width-set-512"] = ("PASS", 0x0, [0x200])
+        with self.assertRaises(ProtocolError):
+            validate_hle_edram_restore(self._body(self._stream(case, ran_anyway)))
+
+
+class HleSingleLaunchProbeTests(unittest.TestCase):
+    """The seven single-launch HLE cases (97-103) in probe_hle_measure.c.
+
+    These tests pin what keeps them machinery-only: the Makefile routes, their absence
+    from the campaign queue, the host0 records, the bounded loops and their cleanup, the
+    stream length the default runner timeout has to cover, where NULL is passed (a
+    mandatory out pointer only in the null-out-pointers case), the raw `jal` wrapper of
+    the power getters, and the parser's refusal of every status but PASS and SKIP. They
+    also pin the manifest and docs rows: cases 97-101 have recorded runs from the
+    2026-10-15 PSP-3000 session on b5d6fc5b (three measured, one earlier revision
+    captured only, and one incomplete), and cases 102-103 were measured the same day (the
+    timer-order case from 22b027f6, the audio SRC case from 7fc1641e after a first run of
+    22b027f6 that was captured only).
+    """
+
+    SINGLE = HleMeasureProbeTests.SINGLE_LAUNCH_FAMILIES
+    # Manifest hardware_evidence per case after the 2026-10-15 runs. The pool-bounds probe was
+    # revised after its captured run, so its revised form is NOT_RUN.
+    HARDWARE = {
+        "hle-vtimer-unit": "MEASURED",
+        "hle-vtimer-errors": "MEASURED",
+        "hle-kernel-pool-bounds": "NOT_RUN",
+        "hle-power-float-v0": "MEASURED",
+        "hle-null-out-pointers": "CAPTURED",
+        "hle-audio-src": "MEASURED",
+        "hle-timer-order": "MEASURED",
+    }
+    # The public commit each MEASURED case's cited run was built from.
+    RUN_COMMIT = {
+        "hle-vtimer-unit": "b5d6fc5b",
+        "hle-vtimer-errors": "b5d6fc5b",
+        "hle-power-float-v0": "b5d6fc5b",
+        "hle-audio-src": "7fc1641e",
+        "hle-timer-order": "22b027f6",
+    }
+    # The pending-campaign status cell each case carries in docs/HARDWARE_ORACLE.md.
+    DOC_STATUS = {
+        "hle-vtimer-unit": "`MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the "
+                           "campaign queue)",
+        "hle-vtimer-errors": "`MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the "
+                             "campaign queue)",
+        "hle-kernel-pool-bounds": "`NOT_RUN` (revised form; single launch, not in the campaign "
+                                  "queue; the earlier revision's 2026-10-15 `b5d6fc5b` run was "
+                                  "captured only)",
+        "hle-power-float-v0": "`MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the "
+                              "campaign queue)",
+        "hle-null-out-pointers": "`CAPTURED` (2026-10-15, `b5d6fc5b`; incomplete, not measured; "
+                                 "retired, never to be scheduled)",
+        "hle-audio-src": "`MEASURED` (2026-10-15, `7fc1641e`; the earlier run of `22b027f6` "
+                         "was captured only; single launch, not in the campaign queue)",
+        "hle-timer-order": "`MEASURED` (2026-10-15, `22b027f6`; single launch, not in the "
+                           "campaign queue)",
+    }
+    NULL_CASE = "hle-null-out-pointers"
+    OBJECT_CASES = frozenset({"hle-vtimer-unit", "hle-vtimer-errors",
+                              "hle-kernel-pool-bounds", "hle-null-out-pointers",
+                              "hle-audio-src", "hle-timer-order"})
+    HOST0_LOGS = {
+        "hle-vtimer-unit": "hle_vtimer_unit_log.txt",
+        "hle-vtimer-errors": "hle_vtimer_errors_log.txt",
+        "hle-kernel-pool-bounds": "hle_kernel_pool_bounds_log.txt",
+        "hle-power-float-v0": "hle_power_float_v0_log.txt",
+        "hle-null-out-pointers": "hle_null_out_pointers_log.txt",
+        "hle-audio-src": "hle_audio_src_log.txt",
+        "hle-timer-order": "hle_timer_order_log.txt",
+    }
+    POWER_FLOAT_GETTERS = frozenset({
+        "scePowerGetPllClockFrequencyFloat", "scePowerGetCpuClockFrequencyFloat",
+        "scePowerGetBusClockFrequencyFloat",
+    })
+    # Declared in hle_power_imports.S and never called by the float family.
+    POWER_UNCALLED = frozenset({
+        "scePowerGetPllClockFrequencyInt", "scePowerGetCpuClockFrequency",
+        "scePowerGetCpuClockFrequencyInt", "scePowerGetBusClockFrequency",
+        "scePowerGetBusClockFrequencyInt",
+    })
+    # Calls whose out pointer pspthreadman.h makes a mandatory output. Only the
+    # null-out-pointers case passes NULL to them.
+    MANDATORY_NULL_CALLS = frozenset({
+        "sceKernelReferSystemStatus", "sceKernelGetVTimerTime", "sceKernelGetVTimerBase",
+        "sceKernelReferVTimerStatus",
+    })
+    # Calls that take a NULL option pointer, which is the API's optional argument.
+    OPTIONAL_NULL_CALLS = frozenset({"sceKernelCreateVTimer", "sceKernelCreateFpl",
+                                     "sceKernelCreateVpl"})
+    NULL_RISK = ("high: retired and never to be scheduled; PSP-3000 hangs on the first call, "
+                 "sceKernelReferSystemStatus(NULL), because address 0 is not rejected by the "
+                 "kernel pointer check and the call writes through NULL.")
+    # Worst-case lines per launch: META, one STEP per reached call, one record per cell,
+    # the `-done` record and COMPLETE. Pinned so a change to a stream shows up here.
+    WORST_CASE_LINES = {
+        "hle-vtimer-unit": 29, "hle-vtimer-errors": 23, "hle-kernel-pool-bounds": 19,
+        "hle-power-float-v0": 9, "hle-null-out-pointers": 15,
+        "hle-audio-src": 49, "hle-timer-order": 41,
+    }
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        HleMeasureProbeTests.setUpClass()
+        # Its helpers read the probe, Makefile and manifest that setUpClass just loaded.
+        cls.h = HleMeasureProbeTests("test_case_ids_are_registered_once_and_match_the_families")
+
+    def test_routes_are_97_to_103_and_each_links_its_own_prx(self) -> None:
+        pairs = re.findall(r"else ifeq \(\$\(CASE\),(hle-[a-z0-9-]+)\)\nCASE_ID = (\d+)",
+                           self.h.makefile)
+        routed = sorted((case, int(case_id)) for case, case_id in pairs
+                        if case in self.HOST0_LOGS)
+        self.assertEqual(routed, sorted((case, case_id) for case, case_id, *_ in self.SINGLE))
+        self.assertEqual(sorted(case_id for _case, case_id in routed),
+                         [97, 98, 99, 100, 101, 102, 103])
+        for case, _cid, stem, _block, _macro, _test in self.SINGLE:
+            with self.subTest(case=case):
+                self.assertRegex(
+                    self.h.makefile,
+                    rf"else ifeq \(\$\(CASE\),{case}\)\nTARGET = \$\(BUILD_DIR\)/{stem}\n")
+
+    def test_none_of_the_single_launch_cases_is_in_the_campaign_queue(self) -> None:
+        for case, *_rest in self.SINGLE:
+            with self.subTest(case=case):
+                self.assertNotIn(case, CAMPAIGN_QUEUE_CASES)
+
+    def test_host0_records_carry_each_case_its_own_test_id_and_log(self) -> None:
+        for case, _cid, _stem, _block, _macro, test_id in self.SINGLE:
+            with self.subTest(case=case):
+                log = self.HOST0_LOGS[case]
+                self.assertIn(
+                    f'#define HLE_CAMPAIGN_ID "{case}"\n#define HLE_TEST_ID "{test_id}"\n'
+                    f'#define HLE_LOG "host0:/{log}"',
+                    self.h.probe)
+                spec, _counts = CAMPAIGN_PROBE_CASES[case]
+                self.assertEqual(spec.test_id, test_id)
+                self.assertEqual(spec.terminal_case, f"{case}-done")
+                self.assertEqual(_campaign_host0_log_path(Path("/scratch"), case).name, log)
+
+    def test_each_cell_records_pass_or_skip_and_never_fail(self) -> None:
+        for case, _cid, _stem, _block, macro, _test in self.SINGLE:
+            with self.subTest(case=case):
+                section = self.h._section(macro)
+                self.assertNotIn('"FAIL"', section)
+                self.assertEqual(
+                    set(re.findall(r'hle_record\(\s*[^,]+,\s*"([A-Z]+)"', section)), {"PASS"})
+                # SKIP is recorded only by hle_skip, which the object-holding cases reach
+                # when a UID was not obtained; the float family holds no object.
+                self.assertEqual(bool(re.search(r"\bhle_skip\(", section)),
+                                 case in self.OBJECT_CASES)
+
+    def test_loops_are_capped_and_every_object_they_make_is_deleted(self) -> None:
+        vte = self.h._section("HLE_CASE_VTIMER_ERRORS")
+        self.assertIn("#define HLE_VTE_NOSLOT_CAP 64u", vte)
+        self.assertIn("for (uint32_t i = 0; i < HLE_VTE_NOSLOT_CAP; i++) {", vte)
+        self.assertIn("for (uint32_t i = 0; i < created; i++) {", vte)
+        self.assertIn("sceKernelDeleteVTimer(slots[i])", vte)
+        pool = self.h._section("HLE_CASE_KERNEL_POOL_BOUNDS")
+        self.assertIn("#define HLE_KSN_VPL_CAP 64u", pool)
+        self.assertIn("for (uint32_t i = 0; i < HLE_KSN_VPL_CAP; i++) {", pool)
+        self.assertIn("for (uint32_t i = 0; i < taken; i++) {", pool)
+        self.assertIn("sceKernelFreeVpl(vpl, blocks[i])", pool)
+        self.assertIn("sceKernelDeleteVpl(vpl)", pool)
+        self.assertIn("sceKernelDeleteFpl(uid)", pool)
+
+    def test_no_step_marker_sits_inside_a_loop(self) -> None:
+        """A step per iteration would scale the stream with the loop cap (64)."""
+        for case, _cid, _stem, _block, macro, _test in self.SINGLE:
+            with self.subTest(case=case):
+                section = _c_code(self.h._section(macro))
+                for loop in re.finditer(r"\bfor\s*\(", section):
+                    brace = section.index("{", loop.end())
+                    body = section[brace + 1:_c_close(section, brace)]
+                    self.assertNotIn("hle_step(", body)
+
+    def test_vtimer_errors_deletes_the_stale_timer_before_the_live_cells(self) -> None:
+        section = _c_code(self.h._section("HLE_CASE_VTIMER_ERRORS"))
+        run = HleMeasureProbeTests._function_body(section, "static int hle_run(")
+        time_valid = run.index('hle_vte_time_valid("vtimer-err-time-deleted", stale);')
+        cleanup = run.index("hle_vte_cleanup_stale(stale);")
+        live = run.index('hle_vte_create("vtimer-err-create-live")')
+        self.assertLess(time_valid, cleanup)
+        self.assertLess(cleanup, live)
+        body = HleMeasureProbeTests._function_body(section, "static void hle_vte_cleanup_stale(")
+        self.assertIn("sceKernelDeleteVTimer(uid);", body)
+        self.assertNotIn("if (uid", body)  # unconditional: the delete cell may have failed
+        self.assertNotIn("return issued == created;", section)
+
+    def test_stream_lengths_are_pinned_and_fit_the_default_runner_timeout(self) -> None:
+        """The default --timeout is 30 s for the whole launch, so a stream of N lines
+        needs each host0 operation (open, write, close: three per line, plus the
+        round trip) under 30 s / (3N + 6) on the console. No measured host0 operation
+        cost exists in this repository, so the bound is an assumption to measure."""
+        for case, _cid, _stem, _block, macro, _test in self.SINGLE:
+            with self.subTest(case=case):
+                spec, _counts = CAMPAIGN_PROBE_CASES[case]
+                _cells, steps = _probe_cells(self.h.probe, macro)
+                lines = steps + len(spec.semantic_cases) + 3
+                self.assertEqual(lines, self.WORST_CASE_LINES[case])
+                self.assertLessEqual(lines, 64)
+
+    def test_null_is_passed_to_mandatory_outs_only_in_the_null_case(self) -> None:
+        for case, _cid, _stem, _block, macro, _test in self.SINGLE:
+            with self.subTest(case=case):
+                section = self.h._section(macro)
+                with_null = set(re.findall(r"\b(sce\w+)\s*\([^;]*\bNULL\b", section))
+                if case == self.NULL_CASE:
+                    self.assertEqual(with_null,
+                                     self.MANDATORY_NULL_CALLS | {"sceKernelCreateVTimer"})
+                else:
+                    self.assertTrue(with_null <= self.OPTIONAL_NULL_CALLS, with_null)
+                    self.assertEqual(with_null & self.MANDATORY_NULL_CALLS, set())
+
+    def test_null_out_pointer_cells_are_one_call_each_after_a_step(self) -> None:
+        section = _c_code(self.h._section("HLE_CASE_NULL_OUT_POINTERS"))
+        run = HleMeasureProbeTests._function_body(section, "static int hle_run(")
+        order = [run.index(call) for call in (
+            "hle_null_vtimer_create();", "hle_null_sys_status();", "hle_null_time(vt);",
+            "hle_null_base(vt);", "hle_null_refer(vt);", "hle_null_delete(vt);")]
+        self.assertEqual(order, sorted(order))
+        for helper, call in (("static void hle_null_sys_status(", "sceKernelReferSystemStatus(NULL)"),
+                             ("static void hle_null_time(", "sceKernelGetVTimerTime(uid, NULL)"),
+                             ("static void hle_null_base(", "sceKernelGetVTimerBase(uid, NULL)"),
+                             ("static void hle_null_refer(", "sceKernelReferVTimerStatus(uid, NULL)")):
+            with self.subTest(helper=helper):
+                body = HleMeasureProbeTests._function_body(section, helper)
+                self.assertEqual(body.count("sce"), 1)
+                self.assertIn(call, body)
+                self.assertLess(body.index("hle_step("), body.index(call))
+                self.assertEqual(body.count("hle_record("), 1)
+                self.assertIn("NULL, 0);", body)  # the record holds only the return code
+
+    def test_power_float_wrapper_is_one_jal_per_getter_and_stores_v0_and_f0(self) -> None:
+        section = self.h._section("HLE_CASE_POWER_FLOAT_V0")
+        for fragment in (r'".pushsection .text\n\t"', r'".set noreorder\n\t"',
+                         r'"li $t1, " HLE_SENTINEL_HEX "\n\t"', r'"mtc1 $t1, $f0\n\t"',
+                         r'"jal " #target "\n\t"', r'"mfc1 $t1, $f0\n\t"',
+                         r'"sw $v0, 0($t0)\n\t"', r'"sw $t1, 4($t0)\n\t"',
+                         r'"sw $ra, 28($sp)\n\t"', r'"jr $ra\n\t"', r'".popsection\n")'):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, section)
+        # $f0 is preset to the sentinel before the jal, so an untouched $f0 is recorded.
+        self.assertLess(section.index('"mtc1 $t1, $f0'), section.index('"jal " #target'))
+        sentinel_text = re.search(r'#define HLE_SENTINEL_HEX "(0x[0-9A-Fa-f]+)"', self.h.probe)
+        self.assertEqual(int(sentinel_text.group(1), 16), 0xA5A5A5A5)
+        self.assertIn("#define HLE_SENTINEL 0xA5A5A5A5u", self.h.probe)
+        self.assertEqual(
+            re.findall(r"^HLE_PFV_WRAPPER\((\w+), (\w+)\);$", section, re.MULTILINE),
+            [("hle_pfv_raw_pll", "scePowerGetPllClockFrequencyFloat"),
+             ("hle_pfv_raw_cpu", "scePowerGetCpuClockFrequencyFloat"),
+             ("hle_pfv_raw_bus", "scePowerGetBusClockFrequencyFloat")])
+        cell = HleMeasureProbeTests._function_body(section, "static void hle_pfv_cell(")
+        self.assertLess(cell.index("hle_step(case_id);"), cell.index("raw(words);"))
+        self.assertIn('hle_record(case_id, "PASS", v0, &f0, 1);', cell)
+
+    def test_power_float_declares_five_getters_it_never_calls(self) -> None:
+        declared = {name for _lib, _nid, name in
+                    self.h._imports(self.h._block_text("hle_power_imports.S"))}
+        called = self.h._probe_calls("HLE_CASE_POWER_FLOAT_V0")
+        self.assertLessEqual(self.POWER_FLOAT_GETTERS, called)
+        self.assertEqual(declared - called, self.POWER_UNCALLED)
+
+    def test_parser_accepts_arbitrary_machinery_values(self) -> None:
+        for case, _cid, _stem, _block, _macro, _test in self.SINGLE:
+            with self.subTest(case=case):
+                spec, counts = CAMPAIGN_PROBE_CASES[case]
+                cells = {name: ("PASS", 0xFFFFFFFF, [0xDEADBEEF] * counts[name])
+                         for name in spec.semantic_cases}
+                first = spec.semantic_cases[0]
+                cells[first] = ("SKIP", 0, None)
+                if case == self.POOL_CASE:
+                    # Only the fixed-pool delete bookkeeping is constrained: with no pool
+                    # the delete cell made no call; with one, it issued a delete.
+                    cells["fpl-delete-size-0x00"] = ("PASS", 0, [0])
+                    cells["fpl-create-size-0x7fffffff"] = ("PASS", 0xFFFFFFFF, [1])
+                    cells["fpl-delete-size-0x7fffffff"] = ("PASS", 0xFFFFFFFF, [1])
+                accepted = parse_campaign_probe_output(
+                    self.h._stream(case, cells).split("NAKAGAWA_PSP_COMPLETE")[0], case)
+                self.assertTrue(accepted.complete)
+
+    POOL_CASE = "hle-kernel-pool-bounds"
+    # A refused create (any negative word, out0 0) followed by a delete cell with no pool,
+    # and a created pool (a UID, out0 1) followed by an issued delete.
+    POOL_REFUSED = {
+        "fpl-create-size-0x00": ("PASS", 0x800201B7, [0]),
+        "fpl-delete-size-0x00": ("PASS", 0, [0]),
+        "fpl-create-size-0x7fffffff": ("PASS", 0x80020190, [0]),
+        "fpl-delete-size-0x7fffffff": ("PASS", 0, [0]),
+    }
+    POOL_CREATED = {
+        "fpl-create-size-0x00": ("PASS", 0x04300001, [1]),
+        "fpl-delete-size-0x00": ("PASS", 0, [1]),
+        "fpl-create-size-0x7fffffff": ("PASS", 0x04300003, [1]),
+        "fpl-delete-size-0x7fffffff": ("PASS", 0, [1]),
+    }
+
+    def _pool_body(self, overrides: dict) -> str:
+        return self.h._stream(self.POOL_CASE, overrides).split("NAKAGAWA_PSP_COMPLETE")[0]
+
+    def test_pool_delete_without_a_pool_is_a_pass_that_issues_no_delete(self) -> None:
+        """A refused fixed-pool create is the measured outcome, so the delete cell after it
+        is PASS with out0 0 and makes no call; a SKIP there made the 2026-10-15 envelope
+        ineligible."""
+        section = _c_code(self.h._section("HLE_CASE_KERNEL_POOL_BOUNDS"))
+        body = HleMeasureProbeTests._function_body(section, "static void hle_ksn_fpl_delete(")
+        self.assertNotIn("hle_skip(", body)
+        branch = body[body.index("if (uid < 0) {"):body.index("return; }")]
+        self.assertIn("const uint32_t no_object = 0;", branch)
+        self.assertIn('hle_record(case_id, "PASS", 0u, &no_object, 1);', branch)
+        self.assertNotIn("sceKernelDeleteFpl", branch)
+        self.assertNotIn("hle_step(", branch)
+        issued = body[body.index("return; }"):]
+        self.assertIn("const uint32_t issued = 1;", issued)
+        self.assertLess(issued.index("hle_step(case_id);"), issued.index("sceKernelDeleteFpl(uid)"))
+        self.assertIn('hle_record(case_id, "PASS", (uint32_t)rc, &issued, 1);', issued)
+        # The VPL cells keep their SKIP: a VPL that was not obtained is a missing object.
+        self.assertIn('hle_skip("vpl-try-alloc-refusal", 2);', section)
+
+    def test_parser_accepts_refused_and_created_pools_with_matching_deletes(self) -> None:
+        for name, overrides in (("refused", self.POOL_REFUSED), ("created", self.POOL_CREATED)):
+            with self.subTest(pools=name):
+                accepted = parse_campaign_probe_output(self._pool_body(overrides), self.POOL_CASE)
+                self.assertTrue(accepted.complete)
+                self.assertTrue(all(record.status == "PASS"
+                                    for record in accepted.results.values()))
+
+    def test_parser_refuses_a_skip_or_mismatched_fixed_pool_delete(self) -> None:
+        refused = self.POOL_REFUSED
+        cases = {
+            # The earlier revision's shape: a SKIP delete after a refused create.
+            "skip": {**refused, "fpl-delete-size-0x00": ("SKIP", 0, [0])},
+            # A delete cell that claims a call although its create returned no pool.
+            "issued-without-pool": {**refused, "fpl-delete-size-0x7fffffff": ("PASS", 0, [1])},
+            # A delete cell that claims no pool although its create returned one.
+            "no-object-after-create": {**self.POOL_CREATED,
+                                       "fpl-delete-size-0x00": ("PASS", 0, [0])},
+            # No pool, so no call was made, yet a result was recorded.
+            "result-without-call": {**refused,
+                                    "fpl-delete-size-0x00": ("PASS", 0x8002019D, [0])},
+            "out0-not-a-flag": {**self.POOL_CREATED,
+                                "fpl-create-size-0x00": ("PASS", 0x04300001, [2]),
+                                "fpl-delete-size-0x00": ("PASS", 0, [2])},
+        }
+        for name, overrides in cases.items():
+            with self.subTest(mutant=name):
+                with self.assertRaisesRegex(ProtocolError, "fpl-delete-size"):
+                    parse_campaign_probe_output(self._pool_body(overrides), self.POOL_CASE)
+
+    def test_the_pool_delete_check_compares_no_psp_value(self) -> None:
+        """Any create word is accepted; only the probe's own create/delete flags must agree."""
+        for create_word in (0x0, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF, 0x800201B7):
+            with self.subTest(create=hex(create_word)):
+                overrides = {
+                    "fpl-create-size-0x00": ("PASS", create_word, [0]),
+                    "fpl-delete-size-0x00": ("PASS", 0, [0]),
+                    "fpl-create-size-0x7fffffff": ("PASS", create_word, [1]),
+                    "fpl-delete-size-0x7fffffff": ("PASS", 0xDEADBEEF, [1]),
+                }
+                parse_campaign_probe_output(self._pool_body(overrides), self.POOL_CASE)
+
+    def test_parser_refuses_every_status_other_than_pass_and_skip(self) -> None:
+        """A check that names one status (FAIL) lets the others through; the refusal
+        must cover every status the protocol knows, except the two machinery values."""
+        for case, _cid, _stem, _block, _macro, _test in self.SINGLE:
+            spec, counts = CAMPAIGN_PROBE_CASES[case]
+            base = {name: ("PASS", 0, [0] * counts[name]) for name in spec.semantic_cases}
+            first = spec.semantic_cases[0]
+            for status in sorted(STATUSES - {"PASS", "SKIP"}):
+                with self.subTest(case=case, status=status):
+                    refused = dict(base)
+                    refused[first] = (status, 0, None)
+                    with self.assertRaises(ProtocolError) as raised:
+                        parse_campaign_probe_output(
+                            self.h._stream(case, refused).split("NAKAGAWA_PSP_COMPLETE")[0],
+                            case)
+                    self.assertTrue("machinery-only" in str(raised.exception)
+                                    or status in str(raised.exception), str(raised.exception))
+
+    def test_manifest_rows_record_the_2026_10_15_outcome_of_each_case(self) -> None:
+        tests = self.h.manifest["tests"]
+        anchor = "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize"
+        for case, _cid, stem, _block, macro, test_id in self.SINGLE:
+            with self.subTest(case=case):
+                self.assertEqual(sum(1 for test in tests if test["id"] == test_id), 1)
+                row = next(test for test in tests if test["id"] == test_id)
+                spec, _counts = CAMPAIGN_PROBE_CASES[case]
+                self.assertEqual(row["status"], "implemented")
+                self.assertEqual(row["hardware_evidence"], self.HARDWARE[case])
+                if self.HARDWARE[case] == "MEASURED":
+                    # Every cell of the complete, acceptance-eligible stream is cited.
+                    self.assertEqual(row["evidence_ref"], anchor)
+                    self.assertEqual(row["evidence_cases"][:len(spec.ordered_cases)],
+                                     list(spec.ordered_cases))
+                    self.assertNotIn("uncited_cases", row)
+                    self.assertNotIn("evidence_note", row)
+                    for word in ("2026-10-15", self.RUN_COMMIT[case],
+                                 "acceptance-eligible with 0 blockers"):
+                        self.assertIn(word, row["measurement_note"])
+                else:
+                    # A capture that was not acceptance-eligible, or a revision with no
+                    # capture, cites nothing.
+                    self.assertNotIn("evidence_ref", row)
+                    self.assertNotIn("evidence_cases", row)
+                    self.assertNotIn("measurement_note", row)
+                    self.assertIn("not in the campaign queue", row["evidence_note"])
+                    if self.HARDWARE[case] == "CAPTURED":
+                        for word in ("2026-10-15", "b5d6fc5b",
+                                     "establishes nothing about PSP behaviour"):
+                            self.assertIn(word, row["evidence_note"])
+                    elif case == "hle-kernel-pool-bounds":
+                        self.assertIn("No hardware capture of this revision exists",
+                                      row["evidence_note"])
+                    else:
+                        self.assertIn("No hardware capture exists",
+                                      row["evidence_note"])
+                self.assertEqual(row["source"], "fixtures/psp_oracle/probe_hle_measure.c")
+                self.assertEqual(row["prx"], f"{stem}.prx")
+                self.assertEqual(row["case_ids"], list(spec.ordered_cases))
+                self.assertEqual(row["diagnostic_case_ids"], [case])
+                expected_issues = {
+                    "hle-audio-src": [339],
+                    "hle-timer-order": [325],
+                }.get(case, [])
+                self.assertEqual(row["issues"], expected_issues)
+                self.assertEqual(row["reset"],
+                                 "one PRX launch; PSPLink soft reset before the next launch")
+                listed = {api for api in row["apis"] if api.startswith("sce")}
+                self.assertEqual(sorted(listed), sorted(self.h._probe_calls(macro)))
+                self.assertNotIn("until refusal", json.dumps(row))
+
+    def test_vtimer_unit_row_does_not_claim_a_precise_rate(self) -> None:
+        """The VTimer and system-clock intervals are offset by host0 writes, so the unit is
+        recorded as consistent with microseconds, never as a measured rate."""
+        row = next(test for test in self.h.manifest["tests"] if test["id"] == "PSP-HLE-VTIMER-002")
+        hardware = (self.h.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
+        for text in (row["measurement_note"], hardware):
+            self.assertIn("204,379", text)
+            self.assertIn("220,608", text)
+            self.assertIn("not a precise rate measurement", text)
+        self.assertNotIn("time unit is measured", row["measurement_note"])
+
+    def test_the_incomplete_null_capture_cites_no_cell(self) -> None:
+        """The null-out-pointers stream stopped at its first NULL call's step: a run fact
+        that no MEASURED row may cite."""
+        cells = set(CAMPAIGN_PROBE_CASES[self.NULL_CASE][0].ordered_cases)
+        for test in self.h.manifest["tests"]:
+            if test.get("hardware_evidence") == "MEASURED":
+                with self.subTest(test_id=test["id"]):
+                    self.assertEqual(cells & set(test["evidence_cases"]), set())
+        row = next(test for test in self.h.manifest["tests"]
+                   if test["id"] == "PSP-HLE-NULL-OUT-001")
+        self.assertEqual(row["hardware_evidence"], "CAPTURED")
+        for word in ("null-sys-status", "0.9 s after launch", "240 s case timeout",
+                     "power cycle", "does not show whether that call faulted"):
+            self.assertIn(word, row["evidence_note"])
+
+    def test_null_out_pointer_case_is_retired_and_never_scheduled(self) -> None:
+        tests = self.h.manifest["tests"]
+        row = next(test for test in tests if test["id"] == "PSP-HLE-NULL-OUT-001")
+        self.assertEqual(row["risk"], self.NULL_RISK)
+        hardware = (self.h.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
+        readme = (self.h.fixture / "README.md").read_text(encoding="utf-8")
+        hardware_row = next(line for line in hardware.splitlines()
+                            if "| `hle-null-out-pointers` |" in line)
+        readme_row = next(line for line in readme.splitlines()
+                          if "| `hle-null-out-pointers` |" in line)
+        self.assertIn("retired and must never be scheduled", hardware)
+        self.assertIn("Retired and never to be scheduled", readme)
+        self.assertIn("writes through NULL and faults", hardware)
+        self.assertIn("writes through NULL and faults", readme)
+        self.assertNotIn("schedule last", hardware_row)
+        self.assertNotIn("schedule last", readme_row)
+        for text in (row["risk"], row["evidence_note"]):
+            self.assertNotIn("NULL is the only invalid pointer", text)
+        for case, _cid, _stem, _block, _macro, _test in self.SINGLE:
+            if case != self.NULL_CASE:
+                other = next(test for test in tests if test.get("diagnostic_case_ids") == [case])
+                if case != "hle-audio-src":
+                    self.assertNotIn("high:", other["risk"])
+                self.assertNotIn("NULL is the only invalid pointer", other["risk"])
+
+    def test_manual_campaign_refuses_retired_null_out_case(self) -> None:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(self.h.root / "tools" / "psp_oracle" / "run_psplink.py"),
+                "--campaign-case", f"{self.NULL_CASE}=not-present.prx",
+                "--source-commit", "0" * 40,
+                "--model", "PSP-3000",
+                "--firmware", "6.6.1",
+                "--host0-root", str(self.h.fixture),
+                "--session-id", "test-retired-case",
+            ],
+            cwd=self.h.root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("retired and cannot be scheduled", completed.stderr)
+        self.assertNotIn("campaign PRX is missing", completed.stderr)
+
+    def test_docs_list_each_case_with_its_outcome_outside_the_queue(self) -> None:
+        hardware = (self.h.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
+        readme = (self.h.fixture / "README.md").read_text(encoding="utf-8")
+        for case, _cid, _stem, _block, _macro, test_id in self.SINGLE:
+            with self.subTest(case=case):
+                self.assertIn(f"| `{case}` | `{test_id}` | {self.DOC_STATUS[case]} |", hardware)
+                self.assertIn(f"| `{case}` | `{test_id}` |", readme)
+        self.assertNotIn("until refusal", hardware)
+        self.assertNotIn("until refusal", readme)
+        self.assertIn("up to 64 creates; out1 records whether a refusal occurred", hardware)
+        self.assertIn("up to 64 creates; out1 records whether a refusal occurred", readme)
 
 if __name__ == "__main__":
     unittest.main()
@@ -3771,7 +5853,7 @@ class RegistryFontWalkHostTests(unittest.TestCase):
         self.assertFalse(_campaign_stream_complete(cut, "registry-font"))
         self.assertIn("registry-font", CAMPAIGN_QUEUE_CASES)
         self.assertEqual(CAMPAIGN_QUEUE_CASES.index("registry-font"),
-                         CAMPAIGN_QUEUE_CASES.index("registry-readonly") + 1)
+                         CAMPAIGN_QUEUE_CASES.index("fpu-cc") + 1)
 
 
 class RegistryFontSourceTests(unittest.TestCase):
@@ -3810,7 +5892,7 @@ class RegistryFontSourceTests(unittest.TestCase):
         fixup = next(line for line in self.makefile.splitlines() if line.startswith("FIXUP = "))
         self.assertIn('"$(USER_MODE_IMPORT_GATE)" $(USER_MODE_IMPORT_GATE_ARGS) "$$1"', fixup)
         self.assertIn("$(BUILD_DIR)/probe.o: probe.c registry_walk.h", self.makefile)
-        self.assertRegex(self.makefile, r"(?m)^else ifeq \(\$\(CASE\),registry-font\)\nCASE_ID = 68$")
+        self.assertRegex(self.makefile, r"(?m)^else ifeq \(\$\(CASE\),registry-font\)\nCASE_ID = 72$")
         self.assertIn('#define PROBE_HOST0_LOG "host0:/registry_font_log.txt"', self.probe)
 
     def _gate(self, libs: list[tuple[str, list[int]]], *extra: str,
@@ -4152,8 +6234,8 @@ class IoCasesSourceTests(unittest.TestCase):
         self.assertEqual(line.split("sceUmdUser=", 1)[1], "0x46EBB729,0x6B4A146C")
 
     def test_cases_are_wired_like_the_others(self) -> None:
-        for case, case_id, log in (("font-files", 69, "font_files_log.txt"),
-                                   ("umd-io", 70, "umd_io_log.txt")):
+        for case, case_id, log in (("font-files", 73, "font_files_log.txt"),
+                                   ("umd-io", 74, "umd_io_log.txt")):
             self.assertRegex(self.makefile,
                              rf"(?m)^else ifeq \(\$\(CASE\),{case}\)\nCASE_ID = {case_id}$")
             self.assertIn(f'#define PROBE_HOST0_LOG "host0:/{log}"', self.probe)
@@ -4400,13 +6482,13 @@ class FontListImportGateTests(unittest.TestCase):
         self.assertIn("--exact-library sceLibFont=" + ",".join(f"0x{nid:08X}" for nid in FONT_LIST_NIDS),
                       block)
         self.assertIn("--forbid-library sceReg", block)
-        self.assertIn("else ifeq ($(CASE),font-list)\nCASE_ID = 71\n", makefile)
+        self.assertIn("else ifeq ($(CASE),font-list)\nCASE_ID = 75\n", makefile)
         stubs = (fixture / "libfont_imports.S").read_text(encoding="utf-8")
         declared = [int(nid, 16) for nid in re.findall(r'IMPORT_FUNC\s+"sceLibFont",\s*(0x[0-9A-Fa-f]{8})', stubs)]
         self.assertEqual(declared, FONT_LIST_NIDS)
         self.assertEqual(stubs.count("IMPORT_START"), 1)
         probe = (fixture / "probe.c").read_text(encoding="utf-8")
-        self.assertIn("#define PSP_ORACLE_CASE_FONT_LIST 71", probe)
+        self.assertIn("#define PSP_ORACLE_CASE_FONT_LIST 75", probe)
         self.assertIn('#define PROBE_HOST0_LOG "host0:/font_list_log.txt"', probe)
 
     def test_font_list_header_makes_no_registry_or_file_call(self) -> None:
@@ -4420,3 +6502,399 @@ class FontListImportGateTests(unittest.TestCase):
         for name in ("sceFontNewLib", "sceFontGetNumFontList", "sceFontGetFontList",
                      "sceFontGetFontInfoByIndexNumber", "sceFontDoneLib"):
             self.assertIn(f"{name}(", code)
+
+
+class LlscLinkProbeTests(unittest.TestCase):
+    """PSP-LLSC-001: the two sc behaviours PR #812 named as unmeasured on the console.
+
+    A second sc after a successful sc also stores, and an sc does not compare its address
+    with the one ll linked. Both follow the MIPS32 operation text and the project's model
+    (src/rt/guest_interp.c), and a PSP-3000 measured both on 2026-10-15 (build e45e667b):
+    every sc reported 1 and stored. The probe is single-threaded register and memory state, so
+    these tests pin its cells, the shape of each link window, the model words, the fixed
+    record shape the parser registry expects, and the case's wiring.
+    """
+
+    CASE = "llsc-link"
+    TEST_ID = "PSP-LLSC-001"
+    CELLS = ("llsc-control", "llsc-second-sc", "llsc-other-address")
+
+    @staticmethod
+    def model_words(case_id: str) -> tuple[int, int]:
+        """The model's (word A, word B) after the cell; A starts at 0x11111111, B at 0x44444444."""
+        a_init, b_init = 0x11111111, 0x44444444
+        if case_id == "llsc-control":
+            return 0x22222222, b_init
+        if case_id == "llsc-second-sc":
+            return 0x33333333, b_init
+        return a_init, 0x55555555
+
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.fixture = self.root / "fixtures" / "psp_oracle"
+        self.probe = (self.fixture / "probe.c").read_text(encoding="utf-8")
+        self.makefile = (self.fixture / "Makefile").read_text(encoding="utf-8")
+
+    def _block(self) -> str:
+        start = self.probe.index("#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_LLSC_LINK\n")
+        return self.probe[start:self.probe.index("\n#endif", start)]
+
+    def _run_body(self) -> str:
+        start = self.probe.index("static void run_llsc_link(int emulated) {")
+        return self.probe[start:self.probe.index("\n}\n", start)]
+
+    def _stream(self, rows: list[str]) -> str:
+        return META.format(
+            source="psp", model="PSP-3000", firmware="6.61-ARK",
+            binary=MEASURED_SHA, commit=MEASURED_COMMIT,
+        ) + "".join(rows)
+
+    def _rows(self, statuses: dict[str, str] | None = None) -> list[str]:
+        spec, _counts = CAMPAIGN_PROBE_CASES[self.CASE]
+        rows = []
+        for index, case_id in enumerate(spec.semantic_cases):
+            status = (statuses or {}).get(case_id, "PASS" if index % 2 else "FAIL")
+            outs = "".join(f" out{i}=0x{i:08x}" for i in range(6))
+            rows.append(
+                f"NAKAGAWA_PSP_TEST schema=1 test_id={self.TEST_ID} case_id={case_id} "
+                f"status={status} result=0x{index:08x}{outs}\n"
+            )
+        rows.append(
+            f"NAKAGAWA_PSP_TEST schema=1 test_id={self.TEST_ID} case_id={spec.terminal_case} "
+            f"status=PASS result=0x0 out0=0x{spec.terminal_count:x}\n"
+        )
+        return rows
+
+    def test_probe_model_words_match_the_project_model(self) -> None:
+        constants = {name: int(value, 16) for name, value in re.findall(
+            r"^#define LLSC_LINK_(\w+) (0x[0-9a-fA-F]+)u$", self.probe, re.MULTILINE)}
+        model_a = re.search(r"const uint32_t model_a\[LLSC_LINK_CELLS\] = \{\s*([^}]*)\}",
+                            self.probe).group(1)
+        model_b = re.search(r"const uint32_t model_b\[LLSC_LINK_CELLS\] = \{\s*([^}]*)\}",
+                            self.probe).group(1)
+        names = {"FIRST": constants["FIRST"], "SECOND": constants["SECOND"],
+                 "A_INIT": constants["A_INIT"], "B_INIT": constants["B_INIT"],
+                 "OTHER": constants["OTHER"]}
+        def words(text: str) -> list[int]:
+            return [names[token.strip().removeprefix("LLSC_LINK_")]
+                    for token in text.split(",") if token.strip()]
+        self.assertEqual(words(model_a), [self.model_words(c)[0] for c in self.CELLS])
+        self.assertEqual(words(model_b), [self.model_words(c)[1] for c in self.CELLS])
+        self.assertEqual(constants["A_INIT"], 0x11111111)
+        self.assertEqual(constants["B_INIT"], 0x44444444)
+
+    def test_status_says_the_window_ran_not_that_the_console_matched_the_model(self) -> None:
+        # The runner accepts a capture only when every record is PASS. Only the control is
+        # judged against the model (a plain pair must store, or nothing else means anything);
+        # the two measured cells pass once their window ran as designed, and what their sc did
+        # is read from the record's words against out4/out5.
+        block = self._block()
+        status = block[block.index("int pass = loaded[c] == LLSC_LINK_A_INIT;"):]
+        status = status[:status.index("const uint32_t out[LLSC_LINK_OUTS]")]
+        self.assertIn(
+            "if (c == 0u) {\n"
+            "            pass = pass && first[0] == 1u && a_after[0] == model_a[0] &&\n"
+            "                   b_after[0] == model_b[0];\n"
+            "        } else if (c == 1u) {\n"
+            "            pass = pass && first[1] == 1u;\n"
+            "        }",
+            status,
+        )
+        self.assertNotIn("last[c]", status)
+        self.assertNotIn("model_a[c]", status)
+        self.assertNotIn("model_b[c]", status)
+
+    def test_each_link_window_is_one_asm_block_of_ll_and_sc_only(self) -> None:
+        block = self._block()
+        windows = [body for body in re.findall(r"__asm__ volatile\((.*?)\);", block, re.DOTALL)
+                   if '"ll %' in body]
+        self.assertEqual(len(windows), 3)
+        expected = [["ll", "sc"], ["ll", "sc", "sc"], ["ll", "sc"]]
+        for body, want in zip(windows, expected, strict=True):
+            template = body.split(': "', 1)[0]
+            mnemonics = [m for m in re.findall(r'"(\.?[a-z]+)', template) if m != ".set"]
+            with self.subTest(window=want):
+                self.assertEqual(mnemonics, want)
+                self.assertNotIn("syscall", template)
+                self.assertNotIn("jal", template)
+                self.assertNotIn("break", template)
+
+    def test_every_window_is_bracketed_by_suspend_and_resume_with_no_host_io_inside(self) -> None:
+        body = self._run_body()
+        suspends = [m.start() for m in re.finditer(r"sceKernelCpuSuspendIntr\(\)", body)]
+        resumes = [m.start() for m in re.finditer(r"sceKernelCpuResumeIntr\(token\)", body)]
+        calls = [body.index(name) for name in (
+            "llsc_window_one(&", "llsc_window_twice(&", "llsc_window_other(&")]
+        self.assertEqual(len(suspends), 3)
+        self.assertEqual(len(resumes), 3)
+        for suspend, call, resume in zip(suspends, calls, resumes, strict=True):
+            self.assertLess(suspend, call)
+            self.assertLess(call, resume)
+        self.assertLess(resumes[-1], body.index("emit_record_extended("))
+        self.assertNotIn("for (;;)", self._block())
+        self.assertNotIn("while (", self._block().split("static void run_llsc_link")[1])
+
+    def test_each_cell_writes_its_sentinels_and_steps_before_its_window(self) -> None:
+        body = self._run_body()
+        window = [body.index(name) for name in (
+            "llsc_window_one(&", "llsc_window_twice(&", "llsc_window_other(&")]
+        for index, case_id in enumerate(self.CELLS):
+            with self.subTest(cell=case_id):
+                step = body.index(f'probe_step(emulated, "llsc-link", "{case_id}");')
+                sentinel = body.index(f"s_llsc_mem[{index}][0] = LLSC_LINK_A_INIT;")
+                suspend = body.index("sceKernelCpuSuspendIntr()", step)
+                self.assertLess(step, sentinel)
+                self.assertLess(sentinel, suspend)
+                self.assertLess(suspend, window[index])
+
+    def test_record_names_follow_the_registered_cell_order(self) -> None:
+        self.assertRegex(
+            self._run_body(),
+            r'static const char \*const names\[LLSC_LINK_CELLS\] = \{\s*'
+            r'"llsc-control", "llsc-second-sc", "llsc-other-address",\s*\};',
+        )
+        self.assertIn('emit_record_extended(emulated, "PSP-LLSC-001", "llsc-link-done", "PASS",',
+                      self._run_body())
+
+    def test_registered_spec_is_three_cells_with_six_words_each(self) -> None:
+        spec, counts = CAMPAIGN_PROBE_CASES[self.CASE]
+        self.assertEqual(spec.test_id, self.TEST_ID)
+        self.assertEqual(spec.semantic_cases, self.CELLS)
+        self.assertEqual(spec.terminal_case, "llsc-link-done")
+        self.assertEqual(spec.terminal_count, 3)
+        self.assertEqual({counts[case] for case in self.CELLS}, {6})
+        self.assertEqual(counts[spec.terminal_case], 1)
+        self.assertEqual(_campaign_completeness_contract(self.CASE), "strict-golden-sequence")
+
+    def test_complete_stream_parses_with_every_cell_pass_fail_or_skip(self) -> None:
+        report = parse_campaign_probe_output(
+            self._stream(self._rows({"llsc-second-sc": "SKIP"})), self.CASE)
+        self.assertTrue(report.complete)
+        self.assertTrue(report.terminal_present)
+        self.assertEqual(report.record_count, 4)
+        self.assertEqual(report.results["llsc-second-sc"].status, "SKIP")
+        self.assertEqual(report.results["llsc-control"].status, "FAIL")
+
+    def test_missing_extra_out_of_order_and_unknown_cells_are_refused(self) -> None:
+        rows = self._rows()
+        duplicate = rows[:1] + [rows[0]] + rows[1:]
+        swapped = [rows[1], rows[0]] + rows[2:]
+        unknown = [rows[0], rows[1].replace("llsc-second-sc", "llsc-bogus")] + rows[2:]
+        foreign = [rows[0].replace(self.TEST_ID, "PSP-LLSC-002")] + rows[1:]
+        short_terminal = rows[:-1] + [rows[-1].replace("out0=0x3", "out0=0x2")]
+        for name, body in (("duplicate", duplicate), ("swapped", swapped),
+                           ("unknown", unknown), ("foreign", foreign),
+                           ("short-terminal", short_terminal)):
+            with self.subTest(shape=name):
+                with self.assertRaises(ProtocolError):
+                    parse_campaign_probe_output(self._stream(body), self.CASE)
+                with self.assertRaises(ProtocolError):
+                    parse_campaign_probe_output(self._stream(body), self.CASE,
+                                                require_complete=False)
+        missing = rows[:1] + rows[2:]
+        with self.assertRaises(ProtocolError):
+            parse_campaign_probe_output(self._stream(missing), self.CASE)
+        self.assertFalse(parse_campaign_probe_output(
+            self._stream(missing), self.CASE, require_complete=False).complete)
+
+    def test_manifest_row_is_measured_and_cites_every_cell(self) -> None:
+        manifest = json.loads((self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
+            encoding="utf-8"))
+        row = next(test for test in manifest["tests"] if test["id"] == self.TEST_ID)
+        spec, _counts = CAMPAIGN_PROBE_CASES[self.CASE]
+        self.assertEqual(row["hardware_evidence"], "MEASURED")
+        self.assertEqual(row["status"], "implemented")
+        self.assertEqual(row["case_ids"], list(spec.ordered_cases))
+        self.assertEqual(row["evidence_cases"], row["case_ids"])
+        self.assertEqual(
+            row["evidence_ref"],
+            "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize",
+        )
+        self.assertIn("e45e667b", row["measurement_note"])
+        self.assertNotIn("evidence_note", row)
+        # The citation must name every cell verbatim; instruction rows grant no HLE tier.
+        section = hle_manifest.measured_evidence_section(row)
+        self.assertIn(f"`{self.TEST_ID}`", section)
+
+    def test_case_is_wired_into_the_makefile_queue_and_documentation(self) -> None:
+        from psp_oracle.run_psplink import CAMPAIGN_CASE_ESTIMATE_SECONDS
+
+        self.assertIn("#define PSP_ORACLE_CASE_LLSC_LINK 69", self.probe)
+        self.assertIn("else ifeq ($(CASE),llsc-link)\nCASE_ID = 69\n", self.makefile)
+        self.assertIn('#define PROBE_HOST0_LOG "host0:/llsc_link_log.txt"', self.probe)
+        self.assertEqual(_campaign_host0_log_path(Path("host0"), self.CASE).name,
+                         "llsc_link_log.txt")
+        queue = list(CAMPAIGN_QUEUE_CASES)
+        self.assertEqual(queue[queue.index("registry-readonly") + 1], self.CASE)
+        self.assertEqual(queue[queue.index(self.CASE) + 1], "kernel-misc")
+        self.assertIn(self.CASE, CAMPAIGN_CASE_ESTIMATE_SECONDS)
+        oracle_doc = (self.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
+        self.assertIn("| `llsc-link` | `PSP-LLSC-001` | `MEASURED` (2026-10-15, `e45e667b`)",
+                      oracle_doc)
+        readme = (self.fixture / "README.md").read_text(encoding="utf-8")
+        self.assertIn("| `llsc-link` | `PSP-LLSC-001` |", readme)
+
+
+class Record20261015Tests(unittest.TestCase):
+    """The 2026-10-15 PSP-3000 runs recorded in the public tree.
+
+    Covers the three #1037 probes (the VFPU corpus and timer-order case from 22b027f6, the
+    audio SRC case from 7fc1641e), the 32-case requalification of the campaign queue on
+    f2d6c91a, and the words of the 2026-10-10 ge-nan run that the index cited without
+    publishing. The raw envelopes and logs are private; these tests pin what the public
+    rows, index entries and notes say, and that each says no more than the cells show.
+    """
+
+    ANCHOR = "docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize"
+    # Campaign case -> the oracle row its campaign case measured.
+    REQUALIFIED = {
+        "audio-query": "PSP-AUDIO-001", "cache-alias": "PSP-CACHE-001",
+        "display-mask-duty": "PSP-DISPLAY-001", "display-vblank-window": "PSP-DISPLAY-004",
+        "display-wait-late": "PSP-DISPLAY-002", "display-wait-priority": "PSP-DISPLAY-003",
+        "dma-cells": "PSP-DMAC-001", "fpu-cc": "PSP-FPU-CC-001", "fpu-vector": "PSP-FPU-001",
+        "ge-break-continue": "PSP-GE-CONTROL-001", "ge-nan": "PSP-GE-001",
+        "io-matrix": "PSP-IO-001", "kernel-alarm": "PSP-ALARM-001",
+        "kernel-misc": "PSP-KERNEL-MISC-001", "llsc-link": "PSP-LLSC-001",
+        "mutex-interrupt-context": "PSP-MUTEX-001", "mutex-priority-inheritance": "PSP-MUTEX-001",
+        "mutex-refer-unlocked": "PSP-MUTEX-001", "mutex-timeout-quanta": "PSP-MUTEX-001",
+        "refer-status-size": "PSP-KERNEL-STATUS-001", "registry-readonly": "PSP-REGISTRY-001",
+        "smoke": "PSP-SMOKE-001", "thread-exit-delete": "PSP-THREAD-EXIT-001",
+        "thread-scheduler": "PSP-THREAD-003", "vfpu-compare": "PSP-VFPU-CMP-001",
+        "wait-outcomes": "PSP-WAIT-001",
+    }
+    NOT_ELIGIBLE = (
+        "teardown-test", "dma-invalid-tail-s0", "dma-invalid-tail-memcpy-src",
+        "dma-invalid-tail-memcpy-dst", "dma-invalid-tail-try-src", "dma-invalid-tail-try-dst",
+    )
+
+    def setUp(self) -> None:
+        self.root = Path(__file__).resolve().parents[1]
+        self.manifest = json.loads(
+            (self.root / "tools" / "psp_oracle" / "manifest.json").read_text(encoding="utf-8"))
+        self.rows = {test["id"]: test for test in self.manifest["tests"]}
+        self.doc = (self.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
+        self.readme = (self.root / "fixtures" / "psp_oracle" / "README.md").read_text(
+            encoding="utf-8")
+
+    def _entry(self, heading: str) -> str:
+        """The index entry that starts with `heading`, up to the next top-level entry."""
+        start = self.doc.index(heading)
+        end = self.doc.index("\n- **", start + 1)
+        return self.doc[start:end]
+
+    def test_the_three_new_rows_cite_a_section_that_names_every_cell(self) -> None:
+        for test_id in ("PSP-VFPU-TRANSCENDENTAL-001", "PSP-HLE-TIMER-ORDER-001",
+                        "PSP-HLE-AUDIO-SRC-001"):
+            with self.subTest(test_id=test_id):
+                row = self.rows[test_id]
+                self.assertEqual(row["hardware_evidence"], "MEASURED")
+                self.assertEqual(row["evidence_ref"], self.ANCHOR)
+                self.assertEqual(row["evidence_cases"][:len(row["case_ids"])], row["case_ids"])
+                self.assertNotIn("evidence_note", row)
+                hle_manifest.measured_evidence_section(row)
+
+    def test_the_audio_src_row_cites_the_re_run_and_not_the_captured_first_run(self) -> None:
+        row = self.rows["PSP-HLE-AUDIO-SRC-001"]
+        note = row["measurement_note"]
+        self.assertIn("7fc1641e", note)
+        self.assertIn("acceptance-eligible with 0 blockers", note)
+        self.assertIn("not acceptance-eligible and is not cited", note)
+        for word in ("0x80260008", "0x80268002", "0x400", "0x80000104", "0x80000003"):
+            self.assertIn(word, note)
+            self.assertIn(word, self.doc)
+        self.assertIn("16 records PASS and 2 SKIP", self.doc)
+        self.assertIn("`src-final-cleanup` and `out2-final-cleanup`", self.doc)
+
+    def test_the_timer_order_row_claims_no_tie_break_and_no_absolute_delay(self) -> None:
+        row = self.rows["PSP-HLE-TIMER-ORDER-001"]
+        note = row["measurement_note"]
+        for word in ("17,125", "53,561", "13,579", "0x8002019F",
+                     "do not measure a tie-break at equal due time", "No absolute delay is cited"):
+            self.assertIn(word, note)
+        self.assertIn("do not show how two alarms with the same due time are ordered", self.doc)
+        for text in (note, self.doc):
+            self.assertNotIn("alarms with equal due times run in set order", text)
+
+    def test_the_ge_nan_words_are_published_without_a_raster_rule(self) -> None:
+        row = self.rows["PSP-GE-001"]
+        self.assertEqual(row["hardware_evidence"], "MEASURED")
+        self.assertIn("f2d6c91a", row["measurement_note"])
+        self.assertIn("do not establish a rasterization rule", row["measurement_note"])
+        entry = self._entry("- **PSP-3000 requalification of the 32-case campaign queue")
+        for line in (
+            "| `0x7FC00000` (qNaN) | `0x7F800001` | `0x7F800001` |",
+            "| `0x7F800000` (+Inf) | `0x7F800000` | `0x7F800000` |",
+            "| `0xFF800000` (-Inf) | `0xFF800000` | `0xFF800000` |",
+            "| `0x80000000` (-0) | `0x00000000` | `0x80000000` |",
+            "| `0x00000001` (minimum positive denormal) | `0x00000000` | `0x00000000` |",
+            "| `0x7FC00000` (qNaN) | `0x2B6647A7` | `0x9DBEB5C5` | `0x9DBEB5C5` |",
+            "| `0xFF800000` (-Inf) | `0xA1F002BD` | `0x9DBEB5C5` | `0x9DBEB5C5` |",
+            "| `0x80000000` (-0) | `0xA929B835` | `0x9DBEB5C5` | `0x9DBEB5C5` |",
+        ):
+            self.assertIn(line, entry)
+        self.assertIn("A hash is a function of the whole scanned frame", entry)
+        self.assertIn("that verdict stays NOT_MEASURED", entry)
+        # The stale "no run yet" / NOT_RUN text of the 2026-10-10 probe description is gone.
+        self.assertNotIn("This probe is `NOT_RUN` pending the physical", self.doc)
+        self.assertNotIn("(issue #69; no run\n  yet)", self.doc)
+
+    def test_the_requalification_run_is_a_newer_citation_for_every_eligible_case(self) -> None:
+        entry = self._entry("- **PSP-3000 requalification of the 32-case campaign queue")
+        self.assertIn("26 case envelopes are acceptance-eligible", entry)
+        for case, test_id in self.REQUALIFIED.items():
+            with self.subTest(case=case):
+                self.assertIn(f"| `{case}` | `{test_id}` |", entry)
+                row = self.rows[test_id]
+                self.assertEqual(row["hardware_evidence"], "MEASURED")
+                self.assertIn("f2d6c91a", row["measurement_note"])
+        for case in self.NOT_ELIGIBLE:
+            with self.subTest(case=case):
+                self.assertIn(f"`{case}`", entry)
+                self.assertNotIn(f"| `{case}` |", entry)
+        # Captured-only rows stay captured: the requalification run adds no measured cell.
+        self.assertEqual(self.rows["PSP-TEARDOWN-001"]["hardware_evidence"], "CAPTURED")
+        self.assertIn("f2d6c91a", self.rows["PSP-TEARDOWN-001"]["evidence_note"])
+        self.assertIn("f2d6c91a", self.rows["PSP-DMAC-001"]["measurement_note"])
+        self.assertEqual(len(self.REQUALIFIED) + len(self.NOT_ELIGIBLE), 32)
+
+    def test_readme_and_index_agree_on_the_status_of_the_new_probes(self) -> None:
+        self.assertIn("`MEASURED` on 2026-10-15 (`7fc1641e`)", self.readme)
+        self.assertEqual(self.readme.count("`MEASURED` on 2026-10-15 (`22b027f6`)"), 2)
+        self.assertNotIn("## Bounded follow-up probes (hardware NOT_RUN)", self.readme)
+        self.assertNotIn("are single-launch NOT_RUN probes", self.readme)
+
+    def test_the_audio_src_and_timer_comparisons_are_recorded_and_pinned(self) -> None:
+        for phrase in ("`test_audio_src_matches_the_measured_contract`",
+                       "`test_alarm_delivery_order_matches_the_timer_order_probe`",
+                       "The runtime had no SRC handlers before this entry",
+                       "The VTimer handler\n    cells do not match"):
+            self.assertIn(phrase, self.doc)
+        selftest = (self.root / "src" / "rt" / "hle_thread_selftest.c").read_text(
+            encoding="utf-8")
+        for name in ("test_audio_src_matches_the_measured_contract",
+                     "test_alarm_delivery_order_matches_the_timer_order_probe"):
+            self.assertEqual(selftest.count(f"static void {name}(void)"), 1)
+            self.assertEqual(selftest.count(f"    {name}();"), 1)
+        hle = (self.root / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
+        for nid, name in ((0x38553111, "sceAudioSRCChReserve"), (0x5c37c0ae, "sceAudioSRCChRelease"),
+                          (0xe0727056, "sceAudioSRCOutputBlocking")):
+            self.assertIn(f'sr_hle_register(0x{nid:08x}, "{name}", h_', hle)
+
+    def test_the_transcendental_comparison_is_recorded_and_vrexp2_is_pinned(self) -> None:
+        for phrase in ("ten operations matched on all 63 inputs", "`vrexp2.s` matched on none",
+                       "Both paths now compute `exp2(-x)`", "are unmeasured"):
+            self.assertIn(phrase, self.doc)
+        selftest = (self.root / "src" / "rt" / "vfpu_interp_selftest.c").read_text(
+            encoding="utf-8")
+        start = selftest.index("static int check_vrexp2_measured_words(void)")
+        body = selftest[start:selftest.index("\nint main(void)", start)]
+        pairs = re.findall(r"\{0x([0-9a-f]{8})u, 0x([0-9a-f]{8})u\}", body)
+        self.assertEqual(len(pairs), 63)
+        # exp2(-x): 1.0 for zero (the first special), 2.0 for -1.0 and just under 0.5 for +1.0.
+        words = {int(a, 16): int(b, 16) for a, b in pairs}
+        self.assertEqual(words[0x00000000], 0x3F800000)
+        self.assertEqual(words[0xBF800000], 0x40000000)
+        self.assertEqual(words[0x3F800000], 0x3EFFFFFC)
+        interp = (self.root / "src" / "rt" / "vfpu_interp.c").read_text(encoding="utf-8")
+        self.assertIn("case 28: d[i] = sr_vfpu_exp2(-v[i]); break;", interp)
+        self.assertNotIn("-sr_vfpu_exp2(v[i])", interp)

@@ -26,8 +26,8 @@ The CLI writes no file until every stage has succeeded.
 Scope boundaries (see the specification): TrueType ``glyf`` outlines only (no
 CFF, no variable fonts), no hint execution, no kerning pairs (PGF carries
 per-glyph advances only), and honest project-owned output names -- firmware
-font names, the recorded Fontworks/Sony camouflage names, and reserved font
-names are refused rather than reproduced.
+font names, vendor camouflage names, and reserved or trademark font names are
+refused rather than reproduced (the denylist lives in ``pgf_writer``).
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import struct
 import sys
 from dataclasses import dataclass
@@ -69,6 +70,7 @@ DEFAULT_PPEM = 12
 DEFAULT_CODES = "0x20-0x7E"
 DEFAULT_FONT_NAME = "Nakagawa Open Latin"
 DEFAULT_FONT_TYPE = "Regular"
+JAPANESE_CODE_POINTS_SHA256 = "abc5302681a3c700179f29ac22a7c8082ed087a07b4cf8c3de4de5f73e7e0889"
 
 SCALER_TRUE = 0x00010000
 SCALER_APPLE_TRUE = 0x74727565  # 'true'
@@ -81,11 +83,6 @@ SUPPORTED_CMAP_FORMATS = (0, 4, 6, 12)
 #: Deterministic subtable preference: Unicode platforms first, then Microsoft
 #: full-repertoire, Microsoft BMP, Microsoft symbol, then legacy records.
 CMAP_PRIORITY = ((0, 3), (0, 4), (0, 2), (0, 1), (0, 0), (3, 10), (3, 1), (3, 6), (3, 0), (1, 0))
-
-#: Fontworks/Sony camouflage markers recorded in docs/provenance/FONT_ORIGINS.md.
-CAMOUFLAGE_SUBSTRINGS = ("ftt-newrodin", "asiaknhh")
-#: Adobe's OFL Reserved Font Name "Source" plus any names a source pin lists.
-RFN_SUBSTRINGS = ("source",)
 
 MAX_TABLE_COUNT = 512
 MAX_CODE = 0xFFFF
@@ -235,21 +232,16 @@ def load_pin(pin_path: Path, input_bytes: bytes) -> SourcePin:
 
 
 def validate_output_name(name: str, pin: SourcePin | None) -> None:
-    """Refuse firmware, camouflage, and reserved names before anything is written."""
+    """Refuse firmware, camouflage, vendor, and reserved names before anything is written."""
+    reason = pgf_writer.denied_font_name(name)
+    if reason is not None:
+        detail = (
+            "reproduces a vendor camouflage marker"
+            if reason == "camouflage-font-name"
+            else "contains a reserved or trademark font name"
+        )
+        raise _refuse(reason, f"{name!r} {detail} (see docs/provenance/FONT_ORIGINS.md)")
     lowered = name.casefold()
-    for needle in CAMOUFLAGE_SUBSTRINGS:
-        if needle in lowered:
-            raise _refuse(
-                "camouflage-font-name",
-                f"{name!r} reproduces the recorded Fontworks/Sony camouflage marker {needle!r}",
-            )
-    for needle in RFN_SUBSTRINGS:
-        if needle in lowered:
-            raise _refuse(
-                "reserved-font-name",
-                f"{name!r} contains {needle!r}, the Adobe OFL Reserved Font Name recorded in "
-                "docs/provenance/FONT_ORIGINS.md",
-            )
     if pin is not None:
         for reserved in pin.reserved_font_names:
             if reserved.casefold() in lowered:
@@ -1076,6 +1068,154 @@ def parse_code_range(spec: str) -> tuple[int, int]:
 
 
 @dataclass(frozen=True)
+class CodePointSet:
+    """A strictly ascending code-point list from a file or a built-in mapping."""
+
+    codes: tuple[int, ...]
+    sha256: str
+    #: The file leaf name or built-in mapping id; the manifest never records a host path.
+    source: str
+
+
+def load_code_points(path: Path) -> CodePointSet:
+    """Read one code point per line (``0x41``, ``U+0041`` or decimal); ``#`` starts a comment.
+
+    The ``0x`` and ``U+`` prefixes and the hex digits are accepted in either case.
+
+    The list must be strictly ascending, so a set has exactly one reading and the
+    output is independent of how the file was written.
+    """
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise _refuse("bad-codepoint-list", f"cannot read {path.name}: {exc}") from exc
+    try:
+        text = data.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise _refuse("bad-codepoint-list", f"{path.name} is not plain ASCII text") from exc
+    codes: list[int] = []
+    for number, raw in enumerate(text.splitlines(), start=1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        token = line.upper()
+        try:
+            if token.startswith("U+") or token.startswith("0X"):
+                value = int(token[2:], 16)
+            else:
+                value = int(token, 10)
+        except ValueError as exc:
+            raise _refuse(
+                "bad-codepoint-list", f"{path.name} line {number}: {line!r} is not a code point"
+            ) from exc
+        if not 0 <= value <= MAX_CODE:
+            raise _refuse(
+                "bad-codepoint-list", f"{path.name} line {number}: {line!r} leaves the 16-bit character space"
+            )
+        if codes and value <= codes[-1]:
+            raise _refuse(
+                "codepoints-unsorted",
+                f"{path.name} line {number}: U+{value:04X} does not follow U+{codes[-1]:04X}; "
+                "list code points in ascending order without repeats",
+            )
+        codes.append(value)
+    if not codes:
+        raise _refuse("empty-codepoint-set", f"{path.name} lists no code points")
+    return CodePointSet(codes=tuple(codes), sha256=hashlib.sha256(data).hexdigest(), source=path.name)
+
+
+def _jis_x_0208_rows(rows: range) -> tuple[int, ...]:
+    """Decode assigned JIS X 0208 cells through Python's standard EUC-JP table."""
+    codes: list[int] = []
+    for row in rows:
+        for cell in range(1, 95):
+            try:
+                character = bytes((row + 0xA0, cell + 0xA0)).decode("euc_jp")
+            except UnicodeDecodeError:
+                continue
+            except LookupError as exc:
+                raise _refuse("japanese-codec-unavailable", "Python's euc_jp codec is unavailable") from exc
+            if len(character) != 1:
+                raise _refuse(
+                    "japanese-mapping-invalid",
+                    f"row {row:02d}, cell {cell:02d} maps to {len(character)} Unicode characters",
+                )
+            codes.append(ord(character))
+    return tuple(codes)
+
+
+def _jis_x_0201_roman_codes() -> tuple[int, ...]:
+    """Decode the JIS X 0201 Roman repertoire from the standard ASCII codec."""
+    try:
+        return tuple(ord(character) for character in bytes(range(0x20, 0x7F)).decode("ascii"))
+    except LookupError as exc:  # pragma: no cover - ASCII is a required Python codec
+        raise _refuse("japanese-codec-unavailable", "Python's ascii codec is unavailable") from exc
+
+
+def _jis_x_0201_half_width_katakana_codes() -> tuple[int, ...]:
+    """Decode JIS X 0201 half-width katakana through the standard EUC-JP codec."""
+    codes: list[int] = []
+    for value in range(0xA1, 0xE0):
+        try:
+            character = bytes((0x8E, value)).decode("euc_jp")
+        except UnicodeDecodeError as exc:
+            raise _refuse(
+                "japanese-mapping-invalid",
+                f"JIS X 0201 half-width byte 0x{value:02X} is unassigned in Python's euc_jp codec",
+            ) from exc
+        except LookupError as exc:  # pragma: no cover - euc_jp is a standard Python codec
+            raise _refuse("japanese-codec-unavailable", "Python's euc_jp codec is unavailable") from exc
+        if len(character) != 1:
+            raise _refuse(
+                "japanese-mapping-invalid",
+                f"JIS X 0201 half-width byte 0x{value:02X} maps to {len(character)} Unicode characters",
+            )
+        codes.append(ord(character))
+    return tuple(codes)
+
+
+def jis_x_0208_japanese_code_points() -> CodePointSet:
+    """Return the Japanese project-font repertoire as one pinned sparse set.
+
+    This combines JIS X 0201 Roman (95 ASCII code points) and half-width
+    katakana (63 code points) with JIS X 0208 rows 1..8 (524 assigned
+    non-kanji code points) and rows 16..47 (2,965 level-1 kanji). Python's
+    built-in ASCII and EUC-JP codecs supply the standard mappings; no vendor
+    table is downloaded. A canonical digest makes mapping drift a named refusal.
+    """
+    nonkanji = set(_jis_x_0208_rows(range(1, 9)))
+    level1 = set(_jis_x_0208_rows(range(16, 48)))
+    roman = set(_jis_x_0201_roman_codes())
+    half_width_katakana = set(_jis_x_0201_half_width_katakana_codes())
+    if (
+        len(nonkanji) != 524
+        or len(level1) != 2965
+        or roman != set(range(0x20, 0x7F))
+        or half_width_katakana != set(range(0xFF61, 0xFFA0))
+    ):
+        raise _refuse(
+            "japanese-mapping-invalid",
+            f"the built-in tables produced {len(nonkanji)} JIS X 0208 non-kanji, "
+            f"{len(level1)} level-1 kanji, {len(roman)} JIS X 0201 Roman, and "
+            f"{len(half_width_katakana)} half-width katakana code points; expected 524, 2965, 95, and 63",
+        )
+    codes = tuple(sorted(nonkanji | level1 | roman | half_width_katakana))
+    if len(codes) != 3647:
+        raise _refuse(
+            "japanese-mapping-invalid",
+            f"the built-in tables produced {len(codes)} unique code points; expected 3647",
+        )
+    canonical = "".join(f"U+{code:04X}\n" for code in codes).encode("ascii")
+    digest = hashlib.sha256(canonical).hexdigest()
+    if digest != JAPANESE_CODE_POINTS_SHA256:
+        raise _refuse(
+            "japanese-mapping-invalid",
+            f"the built-in code-point mapping SHA-256 is {digest}, expected {JAPANESE_CODE_POINTS_SHA256}",
+        )
+    return CodePointSet(codes=codes, sha256=digest, source="builtin:jis-x-0208-jis-x-0201-japanese")
+
+
+@dataclass(frozen=True)
 class _MetricTargets:
     ascender_px: float
     descender_px: float
@@ -1125,14 +1265,17 @@ def load_metric_targets(path: Path) -> _MetricTargets:
 
 
 class _Planner:
-    """Builds glyph plans and metric-target searches for one font and code range."""
+    """Builds glyph plans and metric-target searches for one font and code list.
 
-    def __init__(self, font: _Ttf, first: int, last: int) -> None:
+    The code list is ascending and may be sparse: its span can be far wider than the
+    number of glyphs it names.
+    """
+
+    def __init__(self, font: _Ttf, codes: list[int] | tuple[int, ...]) -> None:
         self.font = font
-        self.first = first
-        self.last = last
+        self.codes = tuple(codes)
         gids: dict[int, int] = {}
-        for code in range(first, last + 1):
+        for code in self.codes:
             gid = font.glyph_id(code)
             if gid is None:
                 raise _refuse(
@@ -1161,7 +1304,7 @@ class _Planner:
         """
         ascender = 0
         descender = 0
-        for code in range(self.first, self.last + 1):
+        for code in self.codes:
             raster = self.raster_at(code, ppem)
             if raster.width <= 0 or raster.height <= 0:
                 continue
@@ -1173,7 +1316,7 @@ class _Planner:
         """Predicted extents from scaled control points (an upper bound box)."""
         ascender = 0
         descender = 0
-        for code in range(self.first, self.last + 1):
+        for code in self.codes:
             contours = self.font.outline(self.gids[code])
             if not contours:
                 continue
@@ -1228,7 +1371,8 @@ def convert(
     *,
     input_path: str,
     output_path: str,
-    codes: tuple[int, int],
+    codes: tuple[int, int] | None = None,
+    code_points: CodePointSet | None = None,
     ppem: int | None = None,
     metric_targets: _MetricTargets | None = None,
     font_name: str = DEFAULT_FONT_NAME,
@@ -1237,11 +1381,24 @@ def convert(
 ) -> Conversion:
     """Convert one pinned TrueType font into a PGF image plus its manifest.
 
-    Every stage validates before the next runs; the returned bytes are final.
-    Raises :class:`TtfConvertError` naming the refusal on any malformed,
-    unsupported, or policy-violating input.
+    The code points come either from an inclusive ``codes`` range or from an explicit
+    ``code_points`` set (a sparse set is written as a sparse character map). Every stage
+    validates before the next runs; the returned bytes are final. Raises
+    :class:`TtfConvertError` naming the refusal on any malformed, unsupported, or
+    policy-violating input.
     """
-    first, last = codes
+    if codes is not None and code_points is not None:
+        raise _refuse("conflicting-parameters", "--codes and --codepoints are mutually exclusive")
+    if code_points is not None:
+        code_list = list(code_points.codes)
+        if not code_list:
+            raise _refuse("empty-codepoint-set", "the code-point set lists no code points")
+    else:
+        first, last = codes if codes is not None else parse_code_range(DEFAULT_CODES)
+        if first > last:
+            raise _refuse("bad-code-range", f"U+{first:04X}..U+{last:04X} starts after it ends")
+        code_list = list(range(first, last + 1))
+    first, last = code_list[0], code_list[-1]
     if metric_targets is not None and ppem is not None:
         raise _refuse("conflicting-parameters", "--ppem and --metric-targets are mutually exclusive")
     if ppem is None and metric_targets is None:
@@ -1252,7 +1409,7 @@ def convert(
     validate_output_name(font_name, pin)
 
     font = _Ttf(data)
-    planner = _Planner(font, first, last)
+    planner = _Planner(font, code_list)
 
     chosen_targets: dict | None = None
     if metric_targets is not None:
@@ -1271,7 +1428,7 @@ def convert(
     glyphs: list[pgf_writer.Glyph] = []
     zero_area: list[int] = []
     max_width = max_height = 0
-    for code in range(first, last + 1):
+    for code in planner.codes:
         raster = planner.raster_at(code, ppem)
         if raster.width > pgf_writer.MAX_EDGE or raster.height > pgf_writer.MAX_EDGE:
             raise _refuse(
@@ -1305,7 +1462,12 @@ def convert(
         )
 
     try:
-        image = pgf_writer.build_pgf(glyphs, font_name=font_name, font_type=font_type)
+        image = pgf_writer.build_pgf(
+            glyphs,
+            font_name=font_name,
+            font_type=font_type,
+            nominal_em_26_6=ppem * 64,
+        )
     except pgf_writer.PgfWriteError as exc:
         prefix = f"{exc.reason}: "
         detail = str(exc)[len(prefix) :] if str(exc).startswith(prefix) else str(exc)
@@ -1316,7 +1478,8 @@ def convert(
         image=image,
         font=font,
         planner=planner,
-        codes=codes,
+        codes=(first, last),
+        code_points=code_points,
         ppem=ppem,
         glyphs=glyphs,
         zero_area=zero_area,
@@ -1344,6 +1507,8 @@ def _read_header_fields(image: bytes) -> dict:
         "revision": struct.unpack_from("<i", image, 0x08)[0],
         "first_glyph": struct.unpack_from("<H", image, 0xB6)[0],
         "last_glyph": struct.unpack_from("<H", image, 0xB8)[0],
+        "horizontal_size_26_6": struct.unpack_from("<i", image, 0x24)[0],
+        "vertical_size_26_6": struct.unpack_from("<i", image, 0x28)[0],
         "ascender_26_6": struct.unpack_from("<i", image, 0xD4)[0],
         "descender_26_6": struct.unpack_from("<i", image, 0xD8)[0],
         "max_width_26_6": struct.unpack_from("<i", image, 0xF4)[0],
@@ -1359,6 +1524,7 @@ def _build_manifest(
     font: _Ttf,
     planner: _Planner,
     codes: tuple[int, int],
+    code_points: CodePointSet | None,
     ppem: int,
     glyphs: list[pgf_writer.Glyph],
     zero_area: list[int],
@@ -1394,8 +1560,16 @@ def _build_manifest(
         "coverage": {
             "first": first,
             "last": last,
-            "count": last - first + 1,
+            "count": len(glyphs),
+            "span": last - first + 1,
             "range": f"U+{first:04X}..U+{last:04X}",
+        },
+        "code_points": None
+        if code_points is None
+        else {
+            "count": len(code_points.codes),
+            "path": code_points.source,
+            "sha256": code_points.sha256,
         },
         "glyphs": {
             "count": len(glyphs),
@@ -1404,7 +1578,7 @@ def _build_manifest(
             "max_height_px": max_height,
         },
         "input": {
-            "path": input_path,
+            "path": _leaf_name(input_path),
             "sha256": hashlib.sha256(data).hexdigest(),
             "size_bytes": len(data),
             "units_per_em": font.units_per_em,
@@ -1415,7 +1589,7 @@ def _build_manifest(
         "license": license_block,
         "metric_targets": metric_targets,
         "output": {
-            "path": output_path,
+            "path": _leaf_name(output_path),
             "sha256": hashlib.sha256(image).hexdigest(),
             "size_bytes": len(image),
             "font_name": font_name,
@@ -1424,6 +1598,7 @@ def _build_manifest(
         },
         "parameters": {
             "ppem": ppem,
+            "nominal_em_26_6": ppem * 64,
             "supersample": SUPERSAMPLE,
             "coverage_bits": 4,
             "rounding": "scale: floor(x * ppem * 64 / upem + 1/2); coverage: floor((n * 15 + 32) / 64)",
@@ -1431,6 +1606,15 @@ def _build_manifest(
             "advance_rounding": "26.6, half-up from font units",
         },
     }
+
+
+def _leaf_name(path: str) -> str:
+    """The final path component under either host separator.
+
+    The manifest records file names only, so a build run from another directory, or on another
+    host, writes the same bytes (plan 6.2).
+    """
+    return re.split(r"[\\/]", path)[-1]
 
 
 def manifest_bytes(manifest: dict) -> bytes:
@@ -1451,7 +1635,18 @@ def _main(argv: list[str]) -> int:
     parser.add_argument("input", type=Path, help="source .ttf path")
     parser.add_argument("--pin", type=Path, help="font-pin/v1 JSON binding the input digest and licence")
     parser.add_argument("--manifest", type=Path, help="conversion manifest output (requires --pin)")
-    parser.add_argument("--codes", default=DEFAULT_CODES, help="code or START-END range (default 0x20-0x7E)")
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--codes", default=None, help="code or START-END range (default 0x20-0x7E)")
+    source.add_argument(
+        "--codepoints",
+        type=Path,
+        help="file listing code points, one per line, strictly ascending (sparse output)",
+    )
+    source.add_argument(
+        "--jis-x-0208-japanese",
+        action="store_true",
+        help="use JIS X 0201 Roman/half-width katakana and JIS X 0208 rows 1-8/16-47 (sparse output)",
+    )
     size = parser.add_mutually_exclusive_group()
     size.add_argument("--ppem", type=int, help=f"pixel size of the em (default {DEFAULT_PPEM})")
     size.add_argument("--metric-targets", type=Path, help="metric-target policy JSON; selects the ppem")
@@ -1463,7 +1658,13 @@ def _main(argv: list[str]) -> int:
         parser.error("--manifest requires --pin so the manifest can carry attribution and licence material")
 
     try:
-        codes = parse_code_range(args.codes)
+        if args.codepoints is not None:
+            code_points = load_code_points(args.codepoints)
+        elif args.jis_x_0208_japanese:
+            code_points = jis_x_0208_japanese_code_points()
+        else:
+            code_points = None
+        codes = None if code_points is not None else parse_code_range(args.codes or DEFAULT_CODES)
         data = args.input.read_bytes()
         pin = load_pin(args.pin, data) if args.pin is not None else None
         targets = load_metric_targets(args.metric_targets) if args.metric_targets is not None else None
@@ -1472,6 +1673,7 @@ def _main(argv: list[str]) -> int:
             input_path=str(args.input),
             output_path=str(args.output),
             codes=codes,
+            code_points=code_points,
             ppem=args.ppem,
             metric_targets=targets,
             font_name=args.font_name,

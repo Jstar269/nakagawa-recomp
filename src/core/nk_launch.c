@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
 #include "nk_launch.h"
+#include "nk_font_slots.h"
 #include "generated/nk_title_catalog.h"
 #include "../rt/recomp.h"
 #include <stdio.h>
@@ -723,10 +724,10 @@ NkResult nk_launch_validate_staged_executable(const NkGameEntry *game,
             goto staged_elf_cleanup;
         }
         uint64_t memory_end = (uint64_t)virtual_address + memory_size;
+        /* Segment bytes are copied from source_offset, so the offset and the
+           virtual address need not be congruent modulo the alignment. */
         if (memory_end > (uint64_t)UINT32_MAX ||
-            (alignment > 1 && (alignment & (alignment - 1u)) != 0) ||
-            (alignment > 1 && ((uint64_t)source_offset % alignment) !=
-                              ((uint64_t)virtual_address % alignment))) {
+            (alignment > 1 && (alignment & (alignment - 1u)) != 0)) {
             launch_error(error_message, error_message_size,
                          "staged ELF PT_LOAD has invalid address or alignment geometry");
             goto staged_elf_cleanup;
@@ -975,10 +976,10 @@ NkResult nk_launch_prepare_session(
         return NK_ERROR_INVALID_EXECUTABLE;
     }
 
-    char user_data_root[NK_MAX_PATH];
+    char default_root[NK_MAX_PATH];
     const char *root = (repo_or_install_root && *repo_or_install_root) ? repo_or_install_root : NULL;
     if (!root) {
-        if (nk_platform_get_app_data_dir(user_data_root, sizeof(user_data_root))) root = user_data_root;
+        if (nk_platform_get_app_data_dir(default_root, sizeof(default_root))) root = default_root;
         else root = ".";
     }
     /* #366: `root` is a directory by contract. A direct file path is not an
@@ -988,7 +989,12 @@ NkResult nk_launch_prepare_session(
        support that path. Assets resolve relative to the root the caller
        named. */
     snprintf(session->working_directory, sizeof(session->working_directory), "%s", root);
-    snprintf(session->user_data_root, sizeof(session->user_data_root), "%s", root);
+    snprintf(session->package_root, sizeof(session->package_root), "%s", root);
+    /* Fonts have one root whatever package root the caller named: the per-user data directory
+       (the platform's, which honours --user-data-root). A runtime root or a showcase root does not
+       move the font cache, so the importer, this launcher and the runtime all read <that>/fonts/v2. */
+    if (!nk_platform_get_app_data_dir(session->user_data_root, sizeof(session->user_data_root)))
+        session->user_data_root[0] = '\0';
     snprintf(session->title_id, sizeof(session->title_id), "%s", game->title_id);
     snprintf(session->disc_id, sizeof(session->disc_id), "%s", game->disc_id);
     int boot_written = snprintf(session->boot_executable,
@@ -1133,7 +1139,7 @@ NkResult nk_launch_prepare_session(
        player's readiness checks, so an absent folder cannot look launchable. */
     char sep = nk_platform_path_separator();
     const char *asset_root = session->package_launch
-        ? session->user_data_root : session->working_directory;
+        ? session->package_root : session->working_directory;
     NkLaunchDataRootStatus data_status = launch_resolve_data_root(
         game, entry, asset_root, session->dataroot_path,
         sizeof(session->dataroot_path));
@@ -1160,28 +1166,11 @@ NkResult nk_launch_prepare_session(
         return NK_ERROR_FILE_NOT_FOUND;
     }
 
-    /* 5. Resolve font directory: check user-data cache (<user_data>/fonts/v1), falling back to <asset_root>/font */
-    char cache_font[640];
-    char user_data_base[NK_MAX_PATH];
-    const char *ud_root = session->user_data_root;
-    if (!ud_root || !*ud_root) {
-        if (nk_platform_get_path(NK_PATH_DATA, user_data_base, sizeof(user_data_base))) {
-            ud_root = user_data_base;
-        }
-    }
-    bool found_cache = false;
-    if (ud_root && *ud_root) {
-        int cw = snprintf(cache_font, sizeof(cache_font), "%s%cfonts%cv1", ud_root, sep, sep);
-        if (cw > 0 && (size_t)cw < sizeof(cache_font)) {
-            char manifest_file[1024];
-            snprintf(manifest_file, sizeof(manifest_file), "%s%cmanifest.json", cache_font, sep);
-            if (nk_platform_file_exists(manifest_file)) {
-                safe_copy_path(session->font_dir, sizeof(session->font_dir), cache_font);
-                found_cache = true;
-            }
-        }
-    }
-    if (!found_cache) {
+    /* 5. Resolve the project font directory, <asset_root>/font. The user-imported cache is not
+       named here: SR_USER_DATA_ROOT carries that root to the runtime, which reads the import through
+       it. Naming the cache as SR_FONTDIR would make the runtime refuse the project source, so a
+       partial import would drop the slots it does not cover. */
+    {
         char cand_font[NK_MAX_PATH * 2];
         int fw = snprintf(cand_font, sizeof(cand_font), "%s%cfont", asset_root, sep);
         if (fw > 0 && (size_t)fw < sizeof(cand_font) && nk_platform_dir_exists(cand_font)) {
@@ -1300,7 +1289,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
                  session->iso_path);
         identity.is_experimental = session->experimental_package;
         NkRuntimePackageStatus status = nk_launch_validate_runtime_package(
-            session->user_data_root, &identity, &current, gate_error,
+            session->package_root, &identity, &current, gate_error,
             sizeof(gate_error));
         if (status != NK_RUNTIME_PACKAGE_OK ||
             strcmp(current.package_root, session->working_directory) != 0 ||
@@ -1356,6 +1345,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_dataroot[NK_MAX_PATH + 16];
     char env_loose_content_roots[NK_LAUNCH_LOOSE_ROOTS_ENV_CAPACITY + 32];
     char env_font[NK_MAX_PATH + 16];
+    char env_user_data_root[NK_MAX_PATH + 32];
     char env_fs[32];
     char env_memstick[NK_MAX_PATH + 16];
     char env_modules[NK_MAX_PATH * 2 + 32];
@@ -1427,6 +1417,13 @@ NkResult nk_launch_start(NkLaunchSession *session) {
         snprintf(env_font, sizeof(env_font), "SR_FONTDIR=%s", session->font_dir);
         envp[env_count++] = env_font;
     }
+    /* The per-user data directory the user-imported fonts live under. Always exported, cache or not, so
+     * the runtime reads the root the launcher resolved and never its own platform default (which differs
+     * under --user-data-root). An empty value masks an inherited one; the runtime names it and skips the
+     * user source rather than falling back. */
+    snprintf(env_user_data_root, sizeof(env_user_data_root), "SR_USER_DATA_ROOT=%s",
+             session->user_data_root);
+    envp[env_count++] = env_user_data_root;
 
     /* A setup transaction promotes already-decrypted support modules below
      * the selected game's private root. Tell the runtime's late-import loader

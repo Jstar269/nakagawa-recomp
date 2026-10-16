@@ -1,0 +1,1886 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 the Nakagawa Recomp authors
+//
+// HLE measurement probes for the PSP-3000 oracle: one PRX per family, one launch
+// per family (CASE=hle-kernel-status, hle-vtimer, hle-power-clock, hle-hprm,
+// hle-ctrl-latch, hle-sysparam, hle-ge-edram). The only state a family changes
+// is the GE eDRAM translation width, which the hle-ge-edram family restores
+// before it exits. Every import is user-mode and comes from a per-family import
+// block (hle_*_imports.S) or the shared threadman_user_imports.S.
+//
+// Seven single-launch cases share this file: CASE=hle-vtimer-unit
+// (PSP-HLE-VTIMER-002), hle-vtimer-errors (PSP-HLE-VTIMER-003),
+// hle-kernel-pool-bounds (PSP-HLE-KERNEL-STATUS-002), hle-power-float-v0
+// (PSP-HLE-POWER-002), hle-null-out-pointers (PSP-HLE-NULL-OUT-001),
+// hle-audio-src (PSP-HLE-AUDIO-SRC-001) and hle-timer-order
+// (PSP-HLE-TIMER-ORDER-001). Cases 97-101 have recorded PSP-3000 runs from
+// 2026-10-15: the VTimer and power cases were measured; pool-bounds was captured
+// only in its earlier revision, and the revised form has not run; null-out was
+// captured incomplete. Cases 102-103 have not run on hardware.
+// Their pass rule is machinery only: a record is PASS when its calls completed and were
+// recorded in order, and SKIP only when the object a cell needs (a timer, pool or
+// block UID) was not obtained. A fixed-pool delete after a refused create is PASS
+// with out0 0 and issues no delete, because the refusal is what that create measures.
+// No returned value is compared with an expected PSP value, here, in the host checker
+// or in the parser. hle-null-out-pointers passes NULL as a mandatory out pointer,
+// which may fault in kernel mode, so it is scheduled last in a session.
+//
+// Record stream (tools/psp_oracle/protocol.py): NAKAGAWA_PSP_META, then one
+// NAKAGAWA_PSP_STEP before each risky call, one NAKAGAWA_PSP_TEST per
+// measurement, a `<case>-done` terminal record whose out0 counts the
+// measurements, and a final NAKAGAWA_PSP_COMPLETE line. Every line is appended to
+// the case's host0 log durably (open, append, close). A bounded wait never waits
+// longer than its stated bound, and a family records SKIP rather than omitting a
+// cell when its prerequisite did not hold. After the last record the probe runs the
+// host0 round trip that probe.c's teardown runs (hle_host0_roundtrip). COMPLETE
+// reports FAIL when that round trip fails, and the runner verifies the file it leaves.
+
+#include <pspkernel.h>
+#include <pspthreadman.h>
+#include <pspiofilemgr.h>
+#include <pspiofilemgr_fcntl.h>
+#include <pspaudio.h>
+#include <psppower.h>
+#include <psphprm.h>
+#include <pspctrl.h>
+#include <psputility_sysparam.h>
+#include <pspge.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+PSP_MODULE_INFO("PSP_HLE_MEASURE", 0, 1, 0);
+PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
+PSP_HEAP_SIZE_KB(64);
+
+#ifndef PROBE_BUILD_COMMIT
+#error PROBE_BUILD_COMMIT is required
+#endif
+
+#define HLE_CASE_KERNEL_STATUS 90
+#define HLE_CASE_VTIMER 91
+#define HLE_CASE_POWER_CLOCK 92
+#define HLE_CASE_HPRM 93
+#define HLE_CASE_CTRL_LATCH 94
+#define HLE_CASE_SYSPARAM 95
+#define HLE_CASE_GE_EDRAM 96
+#define HLE_CASE_VTIMER_UNIT 97
+#define HLE_CASE_VTIMER_ERRORS 98
+#define HLE_CASE_KERNEL_POOL_BOUNDS 99
+#define HLE_CASE_POWER_FLOAT_V0 100
+#define HLE_CASE_NULL_OUT_POINTERS 101
+#define HLE_CASE_AUDIO_SRC 102
+#define HLE_CASE_TIMER_ORDER 103
+
+#if PSP_ORACLE_CASE == HLE_CASE_KERNEL_STATUS
+#define HLE_CAMPAIGN_ID "hle-kernel-status"
+#define HLE_TEST_ID "PSP-HLE-KERNEL-STATUS-001"
+#define HLE_LOG "host0:/hle_kernel_status_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_VTIMER
+#define HLE_CAMPAIGN_ID "hle-vtimer"
+#define HLE_TEST_ID "PSP-HLE-VTIMER-001"
+#define HLE_LOG "host0:/hle_vtimer_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_POWER_CLOCK
+#define HLE_CAMPAIGN_ID "hle-power-clock"
+#define HLE_TEST_ID "PSP-HLE-POWER-001"
+#define HLE_LOG "host0:/hle_power_clock_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_HPRM
+#define HLE_CAMPAIGN_ID "hle-hprm"
+#define HLE_TEST_ID "PSP-HLE-HPRM-001"
+#define HLE_LOG "host0:/hle_hprm_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_CTRL_LATCH
+#define HLE_CAMPAIGN_ID "hle-ctrl-latch"
+#define HLE_TEST_ID "PSP-HLE-CTRL-LATCH-001"
+#define HLE_LOG "host0:/hle_ctrl_latch_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_SYSPARAM
+#define HLE_CAMPAIGN_ID "hle-sysparam"
+#define HLE_TEST_ID "PSP-HLE-SYSPARAM-001"
+#define HLE_LOG "host0:/hle_sysparam_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_GE_EDRAM
+#define HLE_CAMPAIGN_ID "hle-ge-edram"
+#define HLE_TEST_ID "PSP-HLE-GE-EDRAM-001"
+#define HLE_LOG "host0:/hle_ge_edram_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_VTIMER_UNIT
+#define HLE_CAMPAIGN_ID "hle-vtimer-unit"
+#define HLE_TEST_ID "PSP-HLE-VTIMER-002"
+#define HLE_LOG "host0:/hle_vtimer_unit_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_VTIMER_ERRORS
+#define HLE_CAMPAIGN_ID "hle-vtimer-errors"
+#define HLE_TEST_ID "PSP-HLE-VTIMER-003"
+#define HLE_LOG "host0:/hle_vtimer_errors_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_KERNEL_POOL_BOUNDS
+#define HLE_CAMPAIGN_ID "hle-kernel-pool-bounds"
+#define HLE_TEST_ID "PSP-HLE-KERNEL-STATUS-002"
+#define HLE_LOG "host0:/hle_kernel_pool_bounds_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_POWER_FLOAT_V0
+#define HLE_CAMPAIGN_ID "hle-power-float-v0"
+#define HLE_TEST_ID "PSP-HLE-POWER-002"
+#define HLE_LOG "host0:/hle_power_float_v0_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_NULL_OUT_POINTERS
+#define HLE_CAMPAIGN_ID "hle-null-out-pointers"
+#define HLE_TEST_ID "PSP-HLE-NULL-OUT-001"
+#define HLE_LOG "host0:/hle_null_out_pointers_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_AUDIO_SRC
+#define HLE_CAMPAIGN_ID "hle-audio-src"
+#define HLE_TEST_ID "PSP-HLE-AUDIO-SRC-001"
+#define HLE_LOG "host0:/hle_audio_src_log.txt"
+#elif PSP_ORACLE_CASE == HLE_CASE_TIMER_ORDER
+#define HLE_CAMPAIGN_ID "hle-timer-order"
+#define HLE_TEST_ID "PSP-HLE-TIMER-ORDER-001"
+#define HLE_LOG "host0:/hle_timer_order_log.txt"
+#else
+#error probe_hle_measure.c has no family for this PSP_ORACLE_CASE
+#endif
+#define HLE_DONE_ID HLE_CAMPAIGN_ID "-done"
+
+#define HLE_SENTINEL 0xA5A5A5A5u
+/* The same value as text, for the assembly wrappers (HLE_PFV_WRAPPER). */
+#define HLE_SENTINEL_HEX "0xA5A5A5A5"
+#define HLE_MAX_WORDS 18u
+#define HLE_POLL_ITERATIONS 200u
+#define HLE_POLL_DELAY_US 10000u
+#define HLE_DELAY_US 20000u
+
+static int s_log_failed;
+static uint32_t s_records;
+
+/* Durable line writer: open, write everything, close. A later hang or fault
+   keeps every line already written. `truncate` starts a fresh log. */
+static void hle_write(const char *line, int truncate)
+{
+    const int flags = PSP_O_WRONLY | PSP_O_CREAT | (truncate ? PSP_O_TRUNC : PSP_O_APPEND);
+    const SceUID fd = sceIoOpen(HLE_LOG, flags, 0777);
+    if (fd < 0) {
+        s_log_failed = 1;
+        return;
+    }
+    const size_t length = strlen(line);
+    size_t offset = 0;
+    while (offset < length) {
+        const int wrote = sceIoWrite(fd, line + offset, (SceSize)(length - offset));
+        if (wrote <= 0) {
+            s_log_failed = 1;
+            break;
+        }
+        offset += (size_t)wrote;
+    }
+    if (sceIoClose(fd) < 0) {
+        s_log_failed = 1;
+    }
+}
+
+static void hle_begin(void)
+{
+    static const char meta[] =
+        "NAKAGAWA_PSP_META schema=1 source=psp model=unknown firmware=unknown "
+        "binary_sha256=0000000000000000000000000000000000000000000000000000000000000000 "
+        "source_commit=" PROBE_BUILD_COMMIT " fixture=hle-measure\n";
+    hle_write(meta, 1);
+}
+
+/* Progress marker written durably before a call that could hang or fault. The
+   step name is the measurement case about to run, so a hang names its cell. */
+static void hle_step(const char *step)
+{
+    static char line[200];
+    snprintf(line, sizeof(line), "NAKAGAWA_PSP_STEP schema=1 case_id=%s step=%s\n",
+             HLE_CAMPAIGN_ID, step);
+    hle_write(line, 0);
+}
+
+static void hle_emit(const char *case_id, const char *status, uint32_t result,
+                     const uint32_t *out, uint32_t count)
+{
+    static char line[700];
+    int n = snprintf(line, sizeof(line),
+                     "NAKAGAWA_PSP_TEST schema=1 test_id=%s case_id=%s status=%s result=0x%08x",
+                     HLE_TEST_ID, case_id, status, (unsigned int)result);
+    for (uint32_t i = 0; i < count && n > 0 && n < (int)sizeof(line) - 32; i++) {
+        n += snprintf(line + n, sizeof(line) - (size_t)n, " out%u=0x%08x", (unsigned int)i,
+                      (unsigned int)out[i]);
+    }
+    if (n > 0 && n < (int)sizeof(line) - 2) {
+        line[n] = '\n';
+        line[n + 1] = '\0';
+        hle_write(line, 0);
+    }
+}
+
+static void hle_record(const char *case_id, const char *status, uint32_t result,
+                       const uint32_t *out, uint32_t count)
+{
+    s_records++;
+    hle_emit(case_id, status, result, out, count);
+}
+
+__attribute__((unused)) static void hle_skip(const char *case_id, uint32_t count)
+{
+    uint32_t zeros[HLE_MAX_WORDS] = {0};
+    hle_record(case_id, "SKIP", 0, zeros, count);
+}
+
+__attribute__((unused)) static void hle_prefill(uint32_t *buf, uint32_t words, uint32_t size_word)
+{
+    for (uint32_t i = 0; i < words; i++) {
+        buf[i] = HLE_SENTINEL;
+    }
+    buf[0] = size_word;
+}
+
+/* The host0 round trip probe.c's teardown performs (PROBE_HOST0_ROUNDTRIP_PATH and
+   probe_host0_roundtrip there): 64 bytes, byte i = (0x5A ^ (i * 0x25 + (i >> 3))) & 0xFF,
+   written with truncate, then read back and compared. The runner's
+   _verify_host0_roundtrip reads the file after unload, so every family leaves it.
+   probe.c is a separate translation unit, so the contract is repeated here and
+   tools/test_psp_oracle.py pins both copies. */
+#define HLE_ROUNDTRIP_PATH "host0:/nakagawa_transport_write.bin"
+#define HLE_ROUNDTRIP_BYTES 64u
+
+static int hle_host0_roundtrip(void)
+{
+    uint8_t expected[HLE_ROUNDTRIP_BYTES];
+    uint8_t observed[HLE_ROUNDTRIP_BYTES];
+    for (size_t i = 0; i < sizeof(expected); i++) {
+        expected[i] = (uint8_t)(0x5Au ^ (i * 0x25u + (i >> 3)));
+    }
+    memset(observed, 0, sizeof(observed));
+    SceUID fd = sceIoOpen(HLE_ROUNDTRIP_PATH, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+    if (fd < 0) {
+        return 0;
+    }
+    const int written = sceIoWrite(fd, expected, (SceSize)sizeof(expected));
+    const int write_close = sceIoClose(fd);
+    if (written != (int)sizeof(expected) || write_close < 0) {
+        return 0;
+    }
+    fd = sceIoOpen(HLE_ROUNDTRIP_PATH, PSP_O_RDONLY, 0);
+    if (fd < 0) {
+        return 0;
+    }
+    const int read = sceIoRead(fd, observed, (SceSize)sizeof(observed));
+    const int read_close = sceIoClose(fd);
+    return read == (int)sizeof(observed) && read_close >= 0 &&
+           memcmp(expected, observed, sizeof(expected)) == 0;
+}
+
+/* Shared end of run, after every measurement and the GE width restore. The round trip
+   is host I/O only, so it cannot change a cell already recorded. As in probe.c's
+   teardown, a failed round trip makes the completion status FAIL. */
+static void hle_finish(int ok)
+{
+    const uint32_t count = s_records;
+    hle_emit(HLE_DONE_ID, "PASS", 0, &count, 1);
+    const int roundtrip = hle_host0_roundtrip();
+    static char line[96];
+    snprintf(line, sizeof(line), "NAKAGAWA_PSP_COMPLETE schema=1 status=%s\n",
+             (ok && !s_log_failed && roundtrip) ? "PASS" : "FAIL");
+    hle_write(line, 0);
+}
+
+/* Module lifecycle, as in probe.c: main parks until module_stop asks it to end,
+   then runs the CRT's de-initialisation and exits; module_stop deletes it. */
+static volatile SceUID s_hle_main_thread = -1;
+static volatile int s_hle_stop_requested;
+extern void _fini(void);
+extern void __libcglue_deinit(void);
+#define HLE_MAIN_STOP_TIMEOUT_US 1000000u
+
+static void hle_park_until_stop(void)
+{
+    while (!s_hle_stop_requested) {
+        sceKernelSleepThread();
+    }
+    _fini();
+    __libcglue_deinit();
+    sceKernelExitThread(0);
+}
+
+int module_stop(SceSize args, void *argp)
+{
+    (void)args;
+    (void)argp;
+    const SceUID main_thread = s_hle_main_thread;
+    if (main_thread < 0) {
+        return 1;
+    }
+    s_hle_stop_requested = 1;
+    (void)sceKernelWakeupThread(main_thread);
+    SceUInt timeout = HLE_MAIN_STOP_TIMEOUT_US;
+    if (sceKernelWaitThreadEnd(main_thread, &timeout) < 0) {
+        return 1;
+    }
+    if (sceKernelDeleteThread(main_thread) < 0) {
+        return 1;
+    }
+    s_hle_main_thread = -1;
+    return 0;
+}
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_KERNEL_STATUS
+
+#define HLE_SYS_WORDS 8u
+#define HLE_FPL_WORDS 14u
+
+static void hle_sys_refer(const char *case_id, uint32_t size_word)
+{
+    uint32_t buf[HLE_SYS_WORDS];
+    hle_prefill(buf, HLE_SYS_WORDS, size_word);
+    hle_step(case_id);
+    const int rc = sceKernelReferSystemStatus((SceKernelSystemStatus *)buf);
+    hle_record(case_id, "PASS", (uint32_t)rc, buf, HLE_SYS_WORDS);
+}
+
+static void hle_fpl_refer(const char *case_id, SceUID uid, uint32_t size_word)
+{
+    if (uid < 0) {
+        hle_skip(case_id, HLE_FPL_WORDS);
+        return;
+    }
+    uint32_t buf[HLE_FPL_WORDS];
+    hle_prefill(buf, HLE_FPL_WORDS, size_word);
+    hle_step(case_id);
+    const int rc = sceKernelReferFplStatus(uid, (SceKernelFplInfo *)buf);
+    hle_record(case_id, "PASS", (uint32_t)rc, buf, HLE_FPL_WORDS);
+}
+
+static void hle_fpl_alloc(const char *case_id, SceUID uid, void **slot)
+{
+    if (uid < 0) {
+        hle_skip(case_id, 1);
+        return;
+    }
+    hle_step(case_id);
+    const int rc = sceKernelTryAllocateFpl(uid, slot);
+    const uint32_t got = (*slot != NULL) ? 1u : 0u;
+    hle_record(case_id, "PASS", (uint32_t)rc, &got, 1);
+}
+
+static int hle_fpl_free(const char *case_id, SceUID uid, void *block)
+{
+    if (uid < 0 || block == NULL) {
+        hle_skip(case_id, 1);
+        return 1;
+    }
+    hle_step(case_id);
+    const int rc = sceKernelFreeFpl(uid, block);
+    const uint32_t zero = 0;
+    hle_record(case_id, "PASS", (uint32_t)rc, &zero, 1);
+    return rc == 0;
+}
+
+static int hle_run(void)
+{
+    int ok = 1;
+    hle_sys_refer("sys-status-size-0x1c", 0x1cu);
+    hle_sys_refer("sys-status-size-0x20", 0x20u);
+    hle_sys_refer("sys-status-size-0x08", 0x08u);
+    hle_sys_refer("sys-status-size-0x00", 0x00u);
+
+    /* Probe-owned fixed-size pool in user partition 2: two 64-byte blocks. */
+    hle_step("fpl-create");
+    const SceUID fpl = sceKernelCreateFpl("hlefpl", 2, 0, 64, 2, NULL);
+    const uint32_t created = (fpl >= 0) ? 1u : 0u;
+    hle_record("fpl-create", (fpl >= 0) ? "PASS" : "FAIL", (uint32_t)fpl, &created, 1);
+
+    hle_fpl_refer("fpl-refer-full-all-free", fpl, 0x38u);
+    void *block_a = NULL;
+    void *block_b = NULL;
+    void *block_x = NULL;
+    hle_fpl_alloc("fpl-try-alloc-a", fpl, &block_a);
+    hle_fpl_alloc("fpl-try-alloc-b", fpl, &block_b);
+    hle_fpl_alloc("fpl-try-alloc-exhausted", fpl, &block_x);
+    hle_fpl_refer("fpl-refer-full-two-held", fpl, 0x38u);
+    hle_fpl_refer("fpl-refer-size-0x08-two-held", fpl, 0x08u);
+    hle_fpl_refer("fpl-refer-size-0x00-two-held", fpl, 0x00u);
+    ok &= hle_fpl_free("fpl-free-a", fpl, block_a);
+    hle_fpl_refer("fpl-refer-full-one-free", fpl, 0x38u);
+    ok &= hle_fpl_free("fpl-free-b", fpl, block_b);
+
+    hle_step("fpl-delete");
+    const int deleted = (fpl >= 0) ? sceKernelDeleteFpl(fpl) : -1;
+    const uint32_t zero = 0;
+    if (fpl >= 0) {
+        hle_record("fpl-delete", "PASS", (uint32_t)deleted, &zero, 1);
+        ok &= (deleted == 0);
+    } else {
+        hle_skip("fpl-delete", 1);
+    }
+    /* The stale UID shows what a refer on a deleted pool reports. */
+    hle_fpl_refer("fpl-refer-full-after-delete", fpl, 0x38u);
+    return ok;
+}
+
+#endif /* HLE_CASE_KERNEL_STATUS */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_VTIMER
+
+#define HLE_VT_WORDS 18u
+
+static void hle_vt_refer(const char *case_id, SceUID uid, uint32_t size_word)
+{
+    if (uid < 0) {
+        hle_skip(case_id, HLE_VT_WORDS);
+        return;
+    }
+    uint32_t buf[HLE_VT_WORDS];
+    hle_prefill(buf, HLE_VT_WORDS, size_word);
+    hle_step(case_id);
+    const int rc = sceKernelReferVTimerStatus(uid, (SceKernelVTimerInfo *)buf);
+    hle_record(case_id, "PASS", (uint32_t)rc, buf, HLE_VT_WORDS);
+}
+
+static void hle_vt_time(const char *case_id, SceUID uid)
+{
+    if (uid < 0) {
+        hle_skip(case_id, 2);
+        return;
+    }
+    SceKernelSysClock clock;
+    clock.low = HLE_SENTINEL;
+    clock.hi = HLE_SENTINEL;
+    hle_step(case_id);
+    const int rc = sceKernelGetVTimerTime(uid, &clock);
+    const uint32_t out[2] = {clock.low, clock.hi};
+    hle_record(case_id, "PASS", (uint32_t)rc, out, 2);
+}
+
+/* Start (`stop` = 0) or stop (`stop` = 1) a VTimer and record the return. */
+static void hle_vt_control(const char *case_id, SceUID uid, int stop)
+{
+    if (uid < 0) {
+        hle_skip(case_id, 1);
+        return;
+    }
+    hle_step(case_id);
+    const int rc = stop ? sceKernelStopVTimer(uid) : sceKernelStartVTimer(uid);
+    const uint32_t zero = 0;
+    hle_record(case_id, "PASS", (uint32_t)rc, &zero, 1);
+}
+
+static void hle_delay(const char *case_id)
+{
+    hle_step(case_id);
+    const int rc = sceKernelDelayThread(HLE_DELAY_US);
+    const uint32_t out = HLE_DELAY_US;
+    hle_record(case_id, "PASS", (uint32_t)rc, &out, 1);
+}
+
+static int hle_run(void)
+{
+    int ok = 1;
+    hle_step("vtimer-create");
+    const SceUID vt = sceKernelCreateVTimer("hlevt", NULL);
+    const uint32_t created = (vt >= 0) ? 1u : 0u;
+    hle_record("vtimer-create", (vt >= 0) ? "PASS" : "FAIL", (uint32_t)vt, &created, 1);
+
+    hle_vt_refer("vtimer-refer-created", vt, 0x48u);
+    hle_vt_control("vtimer-stop-not-started", vt, 1);
+    hle_vt_control("vtimer-start", vt, 0);
+    hle_vt_time("vtimer-time-running-early", vt);
+    hle_vt_refer("vtimer-refer-running-early", vt, 0x48u);
+    hle_delay("vtimer-delay-20ms");
+    hle_vt_time("vtimer-time-running-20ms", vt);
+    hle_vt_control("vtimer-stop", vt, 1);
+    hle_vt_time("vtimer-time-stopped", vt);
+    hle_vt_refer("vtimer-refer-stopped", vt, 0x48u);
+    hle_delay("vtimer-delay-20ms-stopped");
+    hle_vt_time("vtimer-time-stopped-later", vt);
+    hle_vt_control("vtimer-start-restart", vt, 0);
+    hle_vt_refer("vtimer-refer-size-0x08", vt, 0x08u);
+
+    hle_step("vtimer-delete-running");
+    const int deleted = (vt >= 0) ? sceKernelDeleteVTimer(vt) : -1;
+    const uint32_t zero = 0;
+    if (vt >= 0) {
+        hle_record("vtimer-delete-running", "PASS", (uint32_t)deleted, &zero, 1);
+        ok &= (deleted == 0);
+    } else {
+        hle_skip("vtimer-delete-running", 1);
+    }
+    /* The stale UID shows what a refer and a second delete report after delete. */
+    hle_vt_refer("vtimer-refer-after-delete", vt, 0x48u);
+    if (vt >= 0) {
+        hle_step("vtimer-delete-again");
+        const int again = sceKernelDeleteVTimer(vt);
+        hle_record("vtimer-delete-again", "PASS", (uint32_t)again, &zero, 1);
+    } else {
+        hle_skip("vtimer-delete-again", 1);
+    }
+    return ok;
+}
+
+#endif /* HLE_CASE_VTIMER */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_POWER_CLOCK
+
+/* Declared here because PSPSDK does not ship the PLL stubs; see
+   hle_power_imports.S for the NID source. */
+int scePowerGetPllClockFrequencyInt(void);
+float scePowerGetPllClockFrequencyFloat(void);
+
+static uint32_t hle_float_bits(float value)
+{
+    union {
+        float f;
+        uint32_t u;
+    } bits;
+    bits.f = value;
+    return bits.u;
+}
+
+/* Integer part of a clock value; out-of-range or NaN input reads as all ones. */
+static uint32_t hle_float_trunc(float value)
+{
+    if (value > -2147483648.0f && value < 2147483648.0f) {
+        return (uint32_t)(int32_t)value;
+    }
+    return 0xFFFFFFFFu;
+}
+
+static void hle_clock_int(const char *case_id, int value)
+{
+    const uint32_t out = (uint32_t)value;
+    hle_record(case_id, "PASS", (uint32_t)value, &out, 1);
+}
+
+static void hle_clock_float(const char *case_id, float value)
+{
+    const uint32_t out = hle_float_trunc(value);
+    hle_record(case_id, "PASS", hle_float_bits(value), &out, 1);
+}
+
+static int hle_run(void)
+{
+    hle_step("pll-clock-int");
+    hle_clock_int("pll-clock-int", scePowerGetPllClockFrequencyInt());
+    hle_step("pll-clock-float");
+    hle_clock_float("pll-clock-float", scePowerGetPllClockFrequencyFloat());
+    hle_step("cpu-clock-int");
+    hle_clock_int("cpu-clock-int", scePowerGetCpuClockFrequencyInt());
+    hle_step("cpu-clock-float");
+    hle_clock_float("cpu-clock-float", scePowerGetCpuClockFrequencyFloat());
+    hle_step("cpu-clock-alias");
+    hle_clock_int("cpu-clock-alias", scePowerGetCpuClockFrequency());
+    hle_step("bus-clock-int");
+    hle_clock_int("bus-clock-int", scePowerGetBusClockFrequencyInt());
+    hle_step("bus-clock-float");
+    hle_clock_float("bus-clock-float", scePowerGetBusClockFrequencyFloat());
+    hle_step("bus-clock-alias");
+    hle_clock_int("bus-clock-alias", scePowerGetBusClockFrequency());
+    hle_step("cpu-clock-int-repeat");
+    hle_clock_int("cpu-clock-int-repeat", scePowerGetCpuClockFrequencyInt());
+    return 1;
+}
+
+#endif /* HLE_CASE_POWER_CLOCK */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_HPRM
+
+static void hle_flag(const char *case_id, int value)
+{
+    const uint32_t out = (uint32_t)value;
+    hle_record(case_id, "PASS", (uint32_t)value, &out, 1);
+}
+
+static int hle_run(void)
+{
+    hle_step("hprm-remote-first");
+    hle_flag("hprm-remote-first", sceHprmIsRemoteExist());
+    hle_step("hprm-headphone-first");
+    hle_flag("hprm-headphone-first", sceHprmIsHeadphoneExist());
+    hle_step("hprm-microphone-first");
+    hle_flag("hprm-microphone-first", sceHprmIsMicrophoneExist());
+    hle_step("hprm-remote-second");
+    hle_flag("hprm-remote-second", sceHprmIsRemoteExist());
+    hle_step("hprm-headphone-second");
+    hle_flag("hprm-headphone-second", sceHprmIsHeadphoneExist());
+    hle_step("hprm-microphone-second");
+    hle_flag("hprm-microphone-second", sceHprmIsMicrophoneExist());
+    return 1;
+}
+
+#endif /* HLE_CASE_HPRM */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_CTRL_LATCH
+
+static void hle_latch_prefill(SceCtrlLatch *latch, uint32_t value)
+{
+    latch->uiMake = value;
+    latch->uiBreak = value;
+    latch->uiPress = value;
+    latch->uiRelease = value;
+}
+
+static void hle_latch_record(const char *case_id, int rc, const SceCtrlLatch *latch)
+{
+    const uint32_t out[4] = {latch->uiMake, latch->uiBreak, latch->uiPress, latch->uiRelease};
+    hle_record(case_id, "PASS", (uint32_t)rc, out, 4);
+}
+
+static uint32_t hle_latch_nonzero(const SceCtrlLatch *latch)
+{
+    return (latch->uiMake | latch->uiBreak | latch->uiPress | latch->uiRelease) ? 1u : 0u;
+}
+
+static int hle_run(void)
+{
+    SceCtrlLatch latch;
+    SceCtrlLatch copy;
+    hle_latch_prefill(&latch, HLE_SENTINEL);
+    hle_step("latch-read-initial");
+    int rc = sceCtrlReadLatch(&latch);
+    hle_latch_record("latch-read-initial", rc, &latch);
+
+    hle_latch_prefill(&latch, HLE_SENTINEL);
+    hle_step("latch-peek-initial");
+    rc = sceCtrlPeekLatch(&latch);
+    hle_latch_record("latch-peek-initial", rc, &latch);
+
+    /* Bounded poll: at most HLE_POLL_ITERATIONS peeks, each followed by a
+       HLE_POLL_DELAY_US wait. Observation only; no input is generated. The
+       first non-zero latch triggers the Read/Peek semantics sequence. */
+    uint32_t nonzero_count = 0;
+    uint32_t or_make = 0;
+    uint32_t or_break = 0;
+    uint32_t or_press = 0;
+    uint32_t or_release = 0;
+    int have_semantics = 0;
+    uint32_t semantics[5] = {0, 0, 0, 0, 0};
+    for (uint32_t i = 0; i < HLE_POLL_ITERATIONS; i++) {
+        hle_latch_prefill(&latch, 0);
+        hle_step("latch-poll-window");
+        rc = sceCtrlPeekLatch(&latch);
+        or_make |= latch.uiMake;
+        or_break |= latch.uiBreak;
+        or_press |= latch.uiPress;
+        or_release |= latch.uiRelease;
+        if (hle_latch_nonzero(&latch)) {
+            nonzero_count++;
+            if (!have_semantics) {
+                have_semantics = 1;
+                semantics[0] = hle_latch_nonzero(&latch);
+                hle_latch_prefill(&copy, 0);
+                hle_step("latch-semantics-peek-2");
+                (void)sceCtrlPeekLatch(&copy);
+                semantics[1] = hle_latch_nonzero(&copy);
+                hle_latch_prefill(&copy, 0);
+                hle_step("latch-semantics-read-1");
+                (void)sceCtrlReadLatch(&copy);
+                semantics[2] = hle_latch_nonzero(&copy);
+                hle_latch_prefill(&copy, 0);
+                hle_step("latch-semantics-read-2");
+                (void)sceCtrlReadLatch(&copy);
+                semantics[3] = hle_latch_nonzero(&copy);
+                hle_latch_prefill(&copy, 0);
+                hle_step("latch-semantics-peek-3");
+                (void)sceCtrlPeekLatch(&copy);
+                semantics[4] = hle_latch_nonzero(&copy);
+            }
+        }
+        hle_step("latch-poll-delay");
+        (void)sceKernelDelayThread(HLE_POLL_DELAY_US);
+    }
+    const uint32_t poll[6] = {
+        HLE_POLL_ITERATIONS, nonzero_count, or_make, or_break, or_press, or_release,
+    };
+    hle_record("latch-poll-window", "PASS", (uint32_t)rc, poll, 6);
+
+    hle_latch_prefill(&latch, HLE_SENTINEL);
+    hle_step("latch-read-after-poll");
+    rc = sceCtrlReadLatch(&latch);
+    hle_latch_record("latch-read-after-poll", rc, &latch);
+
+    hle_latch_prefill(&latch, HLE_SENTINEL);
+    hle_step("latch-peek-after-poll");
+    rc = sceCtrlPeekLatch(&latch);
+    hle_latch_record("latch-peek-after-poll", rc, &latch);
+
+    if (have_semantics) {
+        hle_record("latch-read-clears-peek-keeps", "PASS", 0, semantics, 5);
+    } else {
+        hle_skip("latch-read-clears-peek-keeps", 5);
+    }
+    return 1;
+}
+
+#endif /* HLE_CASE_CTRL_LATCH */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_SYSPARAM
+
+/* Private string bytes go to their own host0 file, never into a TEST record. */
+static void hle_private_nickname_write(const uint8_t *bytes, uint32_t length)
+{
+    const SceUID fd = sceIoOpen("host0:/hle_sysparam_private_strings.txt",
+                                PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+    if (fd < 0) {
+        s_log_failed = 1;
+        return;
+    }
+    static char header[64];
+    snprintf(header, sizeof(header), "NICKNAME_BYTES=%u\n", (unsigned int)length);
+    (void)sceIoWrite(fd, header, strlen(header));
+    if (length > 0) {
+        (void)sceIoWrite(fd, bytes, (SceSize)length);
+    }
+    if (sceIoClose(fd) < 0) {
+        s_log_failed = 1;
+    }
+}
+
+static void hle_int_param(const char *case_id, int id)
+{
+    uint32_t raw = HLE_SENTINEL;
+    int value = 0;
+    memcpy(&value, &raw, sizeof(value));
+    hle_step(case_id);
+    const int rc = sceUtilityGetSystemParamInt(id, &value);
+    uint32_t out = 0;
+    memcpy(&out, &value, sizeof(out));
+    hle_record(case_id, "PASS", (uint32_t)rc, &out, 1);
+}
+
+#define HLE_STRING_BYTES 256u
+
+static void hle_string_param(const char *case_id, int id, int length, int keep_private)
+{
+    static uint8_t buf[HLE_STRING_BYTES];
+    memset(buf, 0xA5, sizeof(buf));
+    hle_step(case_id);
+    const int rc = sceUtilityGetSystemParamString(id, (char *)buf, length);
+    uint32_t nul = HLE_STRING_BYTES;
+    uint32_t extent = 0;
+    for (uint32_t i = 0; i < HLE_STRING_BYTES; i++) {
+        if (buf[i] == 0 && nul == HLE_STRING_BYTES) {
+            nul = i;
+        }
+        if (buf[i] != 0xA5) {
+            extent = i + 1;
+        }
+    }
+    const uint32_t out[3] = {nul, extent, (uint32_t)length};
+    hle_record(case_id, "PASS", (uint32_t)rc, out, 3);
+    if (keep_private) {
+        hle_private_nickname_write(buf, nul);
+    }
+}
+
+static int hle_run(void)
+{
+    hle_int_param("int-id-2", 2);
+    hle_int_param("int-id-3", 3);
+    hle_int_param("int-id-4", 4);
+    hle_int_param("int-id-5", 5);
+    hle_int_param("int-id-6", 6);
+    hle_int_param("int-id-7", 7);
+    hle_int_param("int-id-8", 8);
+    hle_int_param("int-id-9", 9);
+    hle_int_param("int-unknown-0", 0);
+    hle_int_param("int-unknown-10", 10);
+    hle_int_param("int-unknown-64", 64);
+    hle_string_param("string-id-1-len-0x80", 1, 0x80, 1);
+    hle_string_param("string-id-1-len-0x04", 1, 0x04, 0);
+    return 1;
+}
+
+#endif /* HLE_CASE_SYSPARAM */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_GE_EDRAM
+
+static const int s_widths[4] = {512, 1024, 2048, 4096};
+static const char *const s_width_cases[4] = {
+    "edram-width-set-512", "edram-width-set-1024",
+    "edram-width-set-2048", "edram-width-set-4096",
+};
+
+static int hle_run(void)
+{
+    int ok = 1;
+    const uint32_t zero = 0;
+
+    hle_step("edram-size");
+    const uint32_t size = sceGeEdramGetSize();
+    hle_record("edram-size", "PASS", size, &size, 1);
+
+    hle_step("edram-addr");
+    const void *addr = sceGeEdramGetAddr();
+    const uint32_t addr_bits = (uint32_t)(uintptr_t)addr;
+    hle_record("edram-addr", "PASS", addr_bits, &addr_bits, 1);
+
+    /* PSPSDK documents width 0 as "do not set". The PSP-3000 capture of 2026-10-10 (not
+       acceptance-eligible, so CAPTURED only) showed Set(0) setting 0 and returning the
+       previous width like every other value: this read already leaves 0 behind, and the
+       restore below puts the original back when it is a documented width. */
+    hle_step("edram-width-query-initial");
+    const int initial = sceGeEdramSetAddrTranslation(0);
+    hle_record("edram-width-query-initial", "PASS", (uint32_t)initial, &zero, 1);
+
+    /* A width outside the documented four cannot be set back, so the width cells
+       run only when the original width is a documented one. */
+    const int restorable = (initial == 512 || initial == 1024 ||
+                            initial == 2048 || initial == 4096);
+    for (int i = 0; i < 4; i++) {
+        if (!restorable) {
+            hle_skip(s_width_cases[i], 1);
+            continue;
+        }
+        hle_step(s_width_cases[i]);
+        const int previous = sceGeEdramSetAddrTranslation(s_widths[i]);
+        hle_step("edram-width-post-query");
+        const uint32_t after = (uint32_t)sceGeEdramSetAddrTranslation(0);
+        hle_record(s_width_cases[i], "PASS", (uint32_t)previous, &after, 1);
+    }
+
+    /* Under the captured behaviour (Set(w) sets w and returns the width it replaced, width 0
+       included) a Set(0) reports the current width and undoes it in the same call. The restore
+       therefore ends with Set(initial) and verifies it with a second Set(initial), which returns
+       the width now set and leaves it in place. The previous revision verified with Set(0): its
+       own final read then saw 0, every run ended FAIL, and the console was left at width 0. */
+    if (!restorable) {
+        hle_skip("edram-width-restore", 1);
+    } else {
+        hle_step("edram-width-restore");
+        const int previous = sceGeEdramSetAddrTranslation(initial);
+        hle_step("edram-width-restore-verify");
+        const uint32_t after = (uint32_t)sceGeEdramSetAddrTranslation(initial);
+        hle_record("edram-width-restore", "PASS", (uint32_t)previous, &after, 1);
+        ok &= ((int)after == initial);
+    }
+
+    /* The final read is Set(initial) when the width was restorable (returns initial, leaves
+       initial) and Set(0) otherwise: the initial read already left 0 and nothing can put a
+       non-documented width back; the case's soft reset restores the console. out0 records
+       the argument. */
+    hle_step("edram-width-query-final");
+    const uint32_t final_arg = restorable ? (uint32_t)initial : 0u;
+    const int final_width = sceGeEdramSetAddrTranslation((int)final_arg);
+    hle_record("edram-width-query-final", "PASS", (uint32_t)final_width, &final_arg, 1);
+    ok &= (final_width == (restorable ? initial : 0));
+    return ok;
+}
+
+#endif /* HLE_CASE_GE_EDRAM */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_VTIMER_UNIT
+
+/* The VTimer time unit (PSP-HLE-VTIMER-002). One timer is created and started, two
+   raw clock readings are taken either side of one bounded 20 ms delay, the base and
+   the Refer base field are read while running, then the timer is stopped, the base
+   and Refer base field are read again, and the timer is deleted. Every 64-bit clock
+   is recorded as its low word then its high word. sceKernelGetSystemTimeWide returns
+   the 64-bit value in $v0:$v1, so its result word is the low word. The pass rule is
+   machinery only: a cell is PASS when its calls completed and were recorded, and SKIP
+   when the timer UID it needs was not obtained. */
+
+#define HLE_VTU_INFO_BYTES ((uint32_t)sizeof(SceKernelVTimerInfo))
+#define HLE_VTU_INFO_WORDS 18u
+_Static_assert(HLE_VTU_INFO_BYTES == HLE_VTU_INFO_WORDS * sizeof(uint32_t),
+               "SceKernelVTimerInfo must fill the 18-word probe buffer");
+
+static void hle_vtu_clock(const char *case_id, uint32_t result, const SceKernelSysClock *clock)
+{
+    const uint32_t out[2] = {clock->low, clock->hi};
+    hle_record(case_id, "PASS", result, out, 2);
+}
+
+static SceUID hle_vtu_create(void)
+{
+    hle_step("vtimer-unit-create");
+    const SceUID uid = sceKernelCreateVTimer("hlevtu", NULL);
+    const uint32_t created = (uid >= 0) ? 1u : 0u;
+    hle_record("vtimer-unit-create", "PASS", (uint32_t)uid, &created, 1);
+    return uid;
+}
+
+/* Start (`stop` = 0) or stop (`stop` = 1) the timer; out0 is 0. */
+static void hle_vtu_control(const char *case_id, SceUID uid, int stop)
+{
+    if (uid < 0) {
+        hle_skip(case_id, 1);
+        return;
+    }
+    const uint32_t zero = 0;
+    hle_step(case_id);
+    const int rc = stop ? sceKernelStopVTimer(uid) : sceKernelStartVTimer(uid);
+    hle_record(case_id, "PASS", (uint32_t)rc, &zero, 1);
+}
+
+static void hle_vtu_time(const char *case_id, SceUID uid)
+{
+    if (uid < 0) {
+        hle_skip(case_id, 2);
+        return;
+    }
+    SceKernelSysClock clock;
+    clock.low = HLE_SENTINEL;
+    clock.hi = HLE_SENTINEL;
+    hle_step(case_id);
+    const int rc = sceKernelGetVTimerTime(uid, &clock);
+    hle_vtu_clock(case_id, (uint32_t)rc, &clock);
+}
+
+static void hle_vtu_systime(const char *case_id)
+{
+    hle_step(case_id);
+    const SceInt64 now = sceKernelGetSystemTimeWide();
+    SceKernelSysClock clock;
+    clock.low = (SceUInt32)((uint64_t)now & 0xFFFFFFFFu);
+    clock.hi = (SceUInt32)((uint64_t)now >> 32);
+    hle_vtu_clock(case_id, clock.low, &clock);
+}
+
+static void hle_vtu_delay(const char *case_id)
+{
+    const uint32_t requested = HLE_DELAY_US;
+    hle_step(case_id);
+    const int rc = sceKernelDelayThread(HLE_DELAY_US);
+    hle_record(case_id, "PASS", (uint32_t)rc, &requested, 1);
+}
+
+static void hle_vtu_base(const char *case_id, SceUID uid)
+{
+    if (uid < 0) {
+        hle_skip(case_id, 2);
+        return;
+    }
+    SceKernelSysClock base;
+    base.low = HLE_SENTINEL;
+    base.hi = HLE_SENTINEL;
+    hle_step(case_id);
+    const int rc = sceKernelGetVTimerBase(uid, &base);
+    hle_vtu_clock(case_id, (uint32_t)rc, &base);
+}
+
+/* ReferVTimerStatus into an 18-word buffer; the record carries only the base field
+   (SceKernelVTimerInfo.base). The buffer is prefilled with the sentinel. */
+static void hle_vtu_refer_base(const char *case_id, SceUID uid)
+{
+    if (uid < 0) {
+        hle_skip(case_id, 2);
+        return;
+    }
+    uint32_t buf[HLE_VTU_INFO_WORDS];
+    hle_prefill(buf, HLE_VTU_INFO_WORDS, HLE_VTU_INFO_BYTES);
+    hle_step(case_id);
+    const int rc = sceKernelReferVTimerStatus(uid, (SceKernelVTimerInfo *)buf);
+    const SceKernelVTimerInfo *info = (const SceKernelVTimerInfo *)buf;
+    hle_vtu_clock(case_id, (uint32_t)rc, &info->base);
+}
+
+static void hle_vtu_delete(SceUID uid)
+{
+    if (uid < 0) {
+        hle_skip("vtimer-unit-delete", 1);
+        return;
+    }
+    const uint32_t zero = 0;
+    hle_step("vtimer-unit-delete");
+    const int rc = sceKernelDeleteVTimer(uid);
+    hle_record("vtimer-unit-delete", "PASS", (uint32_t)rc, &zero, 1);
+}
+
+static int hle_run(void)
+{
+    const SceUID vt = hle_vtu_create();
+    hle_vtu_control("vtimer-unit-start", vt, 0);
+    hle_vtu_time("vtimer-unit-time-a", vt);
+    hle_vtu_systime("vtimer-unit-systime-a");
+    hle_vtu_delay("vtimer-unit-delay");
+    hle_vtu_time("vtimer-unit-time-b", vt);
+    hle_vtu_systime("vtimer-unit-systime-b");
+    hle_vtu_base("vtimer-unit-base-running", vt);
+    hle_vtu_refer_base("vtimer-unit-refer-running", vt);
+    hle_vtu_control("vtimer-unit-stop", vt, 1);
+    hle_vtu_base("vtimer-unit-base-stopped", vt);
+    hle_vtu_refer_base("vtimer-unit-refer-stopped", vt);
+    hle_vtu_delete(vt);
+    return 1;
+}
+
+#endif /* HLE_CASE_VTIMER_UNIT */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_VTIMER_ERRORS
+
+/* VTimer cells that pass a UID already deleted in this run, and create up to
+   HLE_VTE_NOSLOT_CAP timers (PSP-HLE-VTIMER-003). The stale UID is deleted by a cleanup
+   cell after its last use, whatever the delete cell returned, so a delete that failed
+   cannot leave that timer running for the cells after it. The NULL that CreateVTimer
+   takes as its option pointer is an optional argument. The pass rule is machinery only:
+   a cell is PASS when its calls completed and were recorded, and SKIP when the UID it
+   needs was not obtained. */
+
+#define HLE_VTE_NOSLOT_CAP 64u
+#define HLE_VTE_NAME "hlevte"
+
+static SceUID hle_vte_create(const char *case_id)
+{
+    hle_step(case_id);
+    const SceUID uid = sceKernelCreateVTimer(HLE_VTE_NAME, NULL);
+    const uint32_t created = (uid >= 0) ? 1u : 0u;
+    hle_record(case_id, "PASS", (uint32_t)uid, &created, 1);
+    return uid;
+}
+
+static void hle_vte_control(const char *case_id, SceUID uid, int stop)
+{
+    if (uid < 0) {
+        hle_skip(case_id, 1);
+        return;
+    }
+    const uint32_t zero = 0;
+    hle_step(case_id);
+    const int rc = stop ? sceKernelStopVTimer(uid) : sceKernelStartVTimer(uid);
+    hle_record(case_id, "PASS", (uint32_t)rc, &zero, 1);
+}
+
+static void hle_vte_delete(const char *case_id, SceUID uid)
+{
+    if (uid < 0) {
+        hle_skip(case_id, 1);
+        return;
+    }
+    const uint32_t zero = 0;
+    hle_step(case_id);
+    const int rc = sceKernelDeleteVTimer(uid);
+    hle_record(case_id, "PASS", (uint32_t)rc, &zero, 1);
+}
+
+/* GetVTimerTime with a valid out pointer records the clock that came back. */
+static void hle_vte_time_valid(const char *case_id, SceUID uid)
+{
+    if (uid < 0) {
+        hle_skip(case_id, 2);
+        return;
+    }
+    SceKernelSysClock clock;
+    clock.low = HLE_SENTINEL;
+    clock.hi = HLE_SENTINEL;
+    hle_step(case_id);
+    const int rc = sceKernelGetVTimerTime(uid, &clock);
+    const uint32_t out[2] = {clock.low, clock.hi};
+    hle_record(case_id, "PASS", (uint32_t)rc, out, 2);
+}
+
+/* Deletes the stale UID after its last use, whatever the delete cell returned. The
+   record holds only the return code, so it carries no out words (count 0). */
+static void hle_vte_cleanup_stale(SceUID uid)
+{
+    hle_step("vtimer-err-cleanup-stale");
+    const int rc = sceKernelDeleteVTimer(uid);
+    hle_record("vtimer-err-cleanup-stale", "PASS", (uint32_t)rc, NULL, 0);
+}
+
+/* Up to HLE_VTE_NOSLOT_CAP creates, stopping at the first negative code. The create
+   cell's result is the first refusal code (0 when none came within the cap); out0
+   counts the timers created and out1 records whether a refusal occurred. The cleanup
+   cell's result is the first delete return; out0 is the count created and out1 the
+   number of delete calls issued. Returns 1 once both cells are recorded. */
+static int hle_vte_noslot(void)
+{
+    SceUID slots[HLE_VTE_NOSLOT_CAP];
+    uint32_t created = 0;
+    uint32_t refusal = 0;
+    uint32_t refused = 0;
+    hle_step("vtimer-err-noslot-create");
+    for (uint32_t i = 0; i < HLE_VTE_NOSLOT_CAP; i++) {
+        const SceUID uid = sceKernelCreateVTimer(HLE_VTE_NAME, NULL);
+        if (uid < 0) {
+            refusal = (uint32_t)uid;
+            refused = 1;
+            break;
+        }
+        slots[created] = uid;
+        created++;
+    }
+    const uint32_t create_out[2] = {created, refused};
+    hle_record("vtimer-err-noslot-create", "PASS", refusal, create_out, 2);
+
+    uint32_t issued = 0;
+    uint32_t first = 0;
+    hle_step("vtimer-err-noslot-cleanup");
+    for (uint32_t i = 0; i < created; i++) {
+        const int rc = sceKernelDeleteVTimer(slots[i]);
+        if (issued == 0) {
+            first = (uint32_t)rc;
+        }
+        issued++;
+    }
+    const uint32_t cleanup_out[2] = {created, issued};
+    hle_record("vtimer-err-noslot-cleanup", "PASS", first, cleanup_out, 2);
+    return 1;
+}
+
+static int hle_run(void)
+{
+    /* A timer created and deleted here gives the stale UID for the cells below. */
+    const SceUID stale = hle_vte_create("vtimer-err-create-stale");
+    hle_vte_delete("vtimer-err-delete-stale", stale);
+    hle_vte_control("vtimer-err-start-deleted", stale, 0);
+    hle_vte_control("vtimer-err-stop-deleted", stale, 1);
+    hle_vte_time_valid("vtimer-err-time-deleted", stale);
+    hle_vte_cleanup_stale(stale);
+
+    const SceUID live = hle_vte_create("vtimer-err-create-live");
+    hle_vte_delete("vtimer-err-delete-live", live);
+
+    return hle_vte_noslot();
+}
+
+#endif /* HLE_CASE_VTIMER_ERRORS */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_KERNEL_POOL_BOUNDS
+
+/* Zero-size and maximum-size fixed pools, and a small variable pool exhausted by
+   TryAllocateVpl (PSP-HLE-KERNEL-STATUS-002). The pool creates pass a NULL option
+   pointer, the optional argument. Every fixed pool created is deleted; a fixed-pool
+   create that is refused leaves no pool, and its delete cell records that as a PASS with
+   out0 0 instead of a SKIP, so a refusal, which is what these creates measure, keeps the
+   envelope eligible. The VPL blocks are freed, bounded at HLE_KSN_VPL_CAP allocations,
+   before the VPL is deleted. The pass rule is machinery only: completion and cleanup. */
+
+#define HLE_KSN_PART 2
+#define HLE_KSN_VPL_POOL 0x1000u
+#define HLE_KSN_VPL_REQUEST 0x100u
+#define HLE_KSN_VPL_CAP 64u
+
+static SceUID hle_ksn_fpl_create(const char *case_id, uint32_t block_size, uint32_t blocks)
+{
+    hle_step(case_id);
+    const SceUID uid = sceKernelCreateFpl("hlefplk", HLE_KSN_PART, 0, block_size, blocks, NULL);
+    const uint32_t created = (uid >= 0) ? 1u : 0u;
+    hle_record(case_id, "PASS", (uint32_t)uid, &created, 1);
+    return uid;
+}
+
+/* Deletes the pool its create returned. out0 is 1 when a delete was issued, and the result
+   is its return. With no pool (the create was refused) the cell issues no call and records
+   PASS with result 0 and out0 0: there is no object to delete. */
+static void hle_ksn_fpl_delete(const char *case_id, SceUID uid)
+{
+    if (uid < 0) {
+        const uint32_t no_object = 0;
+        hle_record(case_id, "PASS", 0u, &no_object, 1);
+        return;
+    }
+    const uint32_t issued = 1;
+    hle_step(case_id);
+    const int rc = sceKernelDeleteFpl(uid);
+    hle_record(case_id, "PASS", (uint32_t)rc, &issued, 1);
+}
+
+static SceUID hle_ksn_vpl_create(void)
+{
+    hle_step("vpl-create");
+    const SceUID uid = sceKernelCreateVpl("hlevpl", HLE_KSN_PART, 0, HLE_KSN_VPL_POOL, NULL);
+    const uint32_t created = (uid >= 0) ? 1u : 0u;
+    hle_record("vpl-create", "PASS", (uint32_t)uid, &created, 1);
+    return uid;
+}
+
+/* TryAllocateVpl until a negative code, at most HLE_KSN_VPL_CAP times. The result is
+   the first refusal code (0 when none came within the cap); out0 counts the blocks
+   taken and out1 is 1 when a refusal was seen. Returns the number of blocks taken. */
+static uint32_t hle_ksn_vpl_alloc(SceUID vpl, void **blocks)
+{
+    if (vpl < 0) {
+        hle_skip("vpl-try-alloc-refusal", 2);
+        return 0;
+    }
+    uint32_t taken = 0;
+    uint32_t refusal = 0;
+    uint32_t refused = 0;
+    void *block = NULL;
+    hle_step("vpl-try-alloc-refusal");
+    for (uint32_t i = 0; i < HLE_KSN_VPL_CAP; i++) {
+        const int rc = sceKernelTryAllocateVpl(vpl, HLE_KSN_VPL_REQUEST, &block);
+        if (rc < 0) {
+            refusal = (uint32_t)rc;
+            refused = 1;
+            break;
+        }
+        blocks[taken] = block;
+        taken++;
+    }
+    const uint32_t out[2] = {taken, refused};
+    hle_record("vpl-try-alloc-refusal", "PASS", refusal, out, 2);
+    return taken;
+}
+
+/* Frees the `taken` blocks. The result is the first free return; out0 counts the blocks
+   taken and out1 the free calls issued, which must match for a full cleanup. */
+static void hle_ksn_vpl_free(SceUID vpl, void **blocks, uint32_t taken)
+{
+    if (vpl < 0) {
+        hle_skip("vpl-free-all", 2);
+        return;
+    }
+    uint32_t issued = 0;
+    uint32_t first = 0;
+    hle_step("vpl-free-all");
+    for (uint32_t i = 0; i < taken; i++) {
+        const int rc = sceKernelFreeVpl(vpl, blocks[i]);
+        if (issued == 0) {
+            first = (uint32_t)rc;
+        }
+        issued++;
+    }
+    const uint32_t out[2] = {taken, issued};
+    hle_record("vpl-free-all", "PASS", first, out, 2);
+}
+
+static void hle_ksn_vpl_delete(SceUID vpl)
+{
+    if (vpl < 0) {
+        hle_skip("vpl-delete", 1);
+        return;
+    }
+    const uint32_t zero = 0;
+    hle_step("vpl-delete");
+    const int rc = sceKernelDeleteVpl(vpl);
+    hle_record("vpl-delete", "PASS", (uint32_t)rc, &zero, 1);
+}
+
+static int hle_run(void)
+{
+    const SceUID fpl_zero = hle_ksn_fpl_create("fpl-create-size-0x00", 0u, 1u);
+    hle_ksn_fpl_delete("fpl-delete-size-0x00", fpl_zero);
+    const SceUID fpl_max = hle_ksn_fpl_create("fpl-create-size-0x7fffffff", 0x7fffffffu, 1u);
+    hle_ksn_fpl_delete("fpl-delete-size-0x7fffffff", fpl_max);
+
+    const SceUID vpl = hle_ksn_vpl_create();
+    void *blocks[HLE_KSN_VPL_CAP] = {NULL};
+    const uint32_t taken = hle_ksn_vpl_alloc(vpl, blocks);
+    hle_ksn_vpl_free(vpl, blocks, taken);
+    hle_ksn_vpl_delete(vpl);
+    return 1;
+}
+
+#endif /* HLE_CASE_KERNEL_POOL_BOUNDS */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_NULL_OUT_POINTERS
+
+/* NULL as a mandatory out pointer (PSP-HLE-NULL-OUT-001). Four calls pass NULL where
+   pspthreadman.h makes the pointer a mandatory output: sceKernelReferSystemStatus,
+   sceKernelGetVTimerTime, sceKernelGetVTimerBase and sceKernelReferVTimerStatus. The
+   kernel's user-pointer check only tests the sign bit, so a NULL may fault in kernel
+   mode and hang the PSP, and a fault loses every later cell in the launch. This case
+   is scheduled last in a session, after every other case. It creates one live VTimer
+   for the three VTimer calls, deletes it at the end, and records only return codes
+   (count 0). The pass rule is machinery only: a cell is PASS when its call returned and
+   was recorded, and SKIP when the timer UID it needs was not obtained. */
+
+static SceUID hle_null_vtimer_create(void)
+{
+    hle_step("null-vtimer-create");
+    const SceUID uid = sceKernelCreateVTimer("hlenul", NULL);
+    hle_record("null-vtimer-create", "PASS", (uint32_t)uid, NULL, 0);
+    return uid;
+}
+
+static void hle_null_sys_status(void)
+{
+    hle_step("null-sys-status");
+    const int rc = sceKernelReferSystemStatus(NULL);
+    hle_record("null-sys-status", "PASS", (uint32_t)rc, NULL, 0);
+}
+
+static void hle_null_time(SceUID uid)
+{
+    if (uid < 0) {
+        hle_skip("null-vtimer-time", 0);
+        return;
+    }
+    hle_step("null-vtimer-time");
+    const int rc = sceKernelGetVTimerTime(uid, NULL);
+    hle_record("null-vtimer-time", "PASS", (uint32_t)rc, NULL, 0);
+}
+
+static void hle_null_base(SceUID uid)
+{
+    if (uid < 0) {
+        hle_skip("null-vtimer-base", 0);
+        return;
+    }
+    hle_step("null-vtimer-base");
+    const int rc = sceKernelGetVTimerBase(uid, NULL);
+    hle_record("null-vtimer-base", "PASS", (uint32_t)rc, NULL, 0);
+}
+
+static void hle_null_refer(SceUID uid)
+{
+    if (uid < 0) {
+        hle_skip("null-vtimer-refer", 0);
+        return;
+    }
+    hle_step("null-vtimer-refer");
+    const int rc = sceKernelReferVTimerStatus(uid, NULL);
+    hle_record("null-vtimer-refer", "PASS", (uint32_t)rc, NULL, 0);
+}
+
+static void hle_null_delete(SceUID uid)
+{
+    if (uid < 0) {
+        hle_skip("null-vtimer-delete", 0);
+        return;
+    }
+    hle_step("null-vtimer-delete");
+    const int rc = sceKernelDeleteVTimer(uid);
+    hle_record("null-vtimer-delete", "PASS", (uint32_t)rc, NULL, 0);
+}
+
+static int hle_run(void)
+{
+    const SceUID vt = hle_null_vtimer_create();
+    hle_null_sys_status();
+    hle_null_time(vt);
+    hle_null_base(vt);
+    hle_null_refer(vt);
+    hle_null_delete(vt);
+    return 1;
+}
+
+#endif /* HLE_CASE_NULL_OUT_POINTERS */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_POWER_FLOAT_V0
+
+/* Raw registers of the three scePower Float getters (PSP-HLE-POWER-002). A getter's
+   integer return register is $v0 and its float return register is $f0, so no C call
+   reads both. Each wrapper below is a few instructions of assembly: it saves $ra and
+   its output pointer in a 32-byte frame, presets $f0 to HLE_SENTINEL, makes one `jal`
+   to its import, stores $v0 and the raw bits of $f0 to the output words, and returns.
+   A getter that leaves $f0 untouched therefore records the sentinel bits in out0. It
+   touches no other register the caller can observe. The record carries $v0 as result
+   and the $f0 bits as out0. The code is placed in .text whatever section is current.
+   hle_power_imports.S supplies the NIDs; that block also declares the other five
+   getters, which this family does not call. */
+
+#define HLE_PFV_WRAPPER(wrapper, target)                                      \
+    __asm__(                                                                  \
+        ".pushsection .text\n\t"                                              \
+        ".set push\n\t"                                                       \
+        ".set noreorder\n\t"                                                  \
+        ".globl " #wrapper "\n\t"                                             \
+        ".ent " #wrapper "\n"                                                 \
+        #wrapper ":\n\t"                                                      \
+        "addiu $sp, $sp, -32\n\t"                                             \
+        "sw $ra, 28($sp)\n\t"                                                 \
+        "sw $a0, 24($sp)\n\t"                                                 \
+        "li $t1, " HLE_SENTINEL_HEX "\n\t"                                    \
+        "mtc1 $t1, $f0\n\t"                                                   \
+        "jal " #target "\n\t"                                                 \
+        "nop\n\t"                                                             \
+        "lw $t0, 24($sp)\n\t"                                                 \
+        "mfc1 $t1, $f0\n\t"                                                   \
+        "sw $v0, 0($t0)\n\t"                                                  \
+        "sw $t1, 4($t0)\n\t"                                                  \
+        "lw $ra, 28($sp)\n\t"                                                 \
+        "addiu $sp, $sp, 32\n\t"                                              \
+        "jr $ra\n\t"                                                          \
+        "nop\n\t"                                                             \
+        ".end " #wrapper "\n\t"                                               \
+        ".set pop\n\t"                                                        \
+        ".popsection\n")
+
+HLE_PFV_WRAPPER(hle_pfv_raw_pll, scePowerGetPllClockFrequencyFloat);
+HLE_PFV_WRAPPER(hle_pfv_raw_cpu, scePowerGetCpuClockFrequencyFloat);
+HLE_PFV_WRAPPER(hle_pfv_raw_bus, scePowerGetBusClockFrequencyFloat);
+
+void hle_pfv_raw_pll(uint32_t *out);
+void hle_pfv_raw_cpu(uint32_t *out);
+void hle_pfv_raw_bus(uint32_t *out);
+
+static void hle_pfv_cell(const char *case_id, void (*raw)(uint32_t *out))
+{
+    uint32_t words[2] = {HLE_SENTINEL, HLE_SENTINEL};
+    hle_step(case_id);
+    raw(words);
+    const uint32_t v0 = words[0];
+    const uint32_t f0 = words[1];
+    hle_record(case_id, "PASS", v0, &f0, 1);
+}
+
+static int hle_run(void)
+{
+    hle_pfv_cell("pll-clock-float-v0", hle_pfv_raw_pll);
+    hle_pfv_cell("cpu-clock-float-v0", hle_pfv_raw_cpu);
+    hle_pfv_cell("bus-clock-float-v0", hle_pfv_raw_bus);
+    return 1;
+}
+
+#endif /* HLE_CASE_POWER_FLOAT_V0 */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_AUDIO_SRC
+
+/* SRC and Output2 return words are observations only. The only output buffers
+   are this probe-owned, aligned, all-zero stereo block. SRC has no rest-sample
+   query in the project's public NID corpus, so the blocking call itself is the
+   drain boundary. Every acquired reservation is released immediately when a
+   shape probe unexpectedly succeeds and is retried once during final cleanup
+   if an earlier release did not return success. */
+#define HLE_ASRC_SAMPLES 1024u
+#define HLE_ASRC_FREQUENCY 44100u
+#define HLE_ASRC_CHANNELS 2u
+#define HLE_ASRC_OUTPUT2_SAMPLES 512u
+#define HLE_ASRC_NOT_CALLED 0xffffffffu
+
+static int16_t s_hle_asrc_silence[HLE_ASRC_SAMPLES * HLE_ASRC_CHANNELS]
+    __attribute__((aligned(64)));
+static int s_hle_asrc_src_reserved;
+static int s_hle_asrc_output2_reserved;
+
+static int hle_asrc_release_src(const char *case_id)
+{
+    hle_step(case_id);
+    const int rc = sceAudioSRCChRelease();
+    hle_record(case_id, "PASS", (uint32_t)rc, NULL, 0);
+    if (rc >= 0) {
+        s_hle_asrc_src_reserved = 0;
+    }
+    return rc;
+}
+
+static int hle_asrc_release_output2(const char *case_id)
+{
+    hle_step(case_id);
+    const int rc = sceAudioOutput2Release();
+    hle_record(case_id, "PASS", (uint32_t)rc, NULL, 0);
+    if (rc >= 0) {
+        s_hle_asrc_output2_reserved = 0;
+    }
+    return rc;
+}
+
+static void hle_asrc_invalid_reserve(const char *case_id, uint32_t samples,
+                                     uint32_t frequency, uint32_t channels)
+{
+    if (s_hle_asrc_src_reserved) {
+        hle_skip(case_id, 4);
+        return;
+    }
+    hle_step(case_id);
+    const int rc = sceAudioSRCChReserve((int)samples, (int)frequency, (int)channels);
+    uint32_t release_rc = HLE_ASRC_NOT_CALLED;
+    if (rc >= 0) {
+        s_hle_asrc_src_reserved = 1;
+        char step[72];
+        snprintf(step, sizeof(step), "%s-release", case_id);
+        hle_step(step);
+        release_rc = (uint32_t)sceAudioSRCChRelease();
+        if ((int32_t)release_rc >= 0) {
+            s_hle_asrc_src_reserved = 0;
+        }
+    }
+    const uint32_t out[4] = {samples, frequency, channels, release_rc};
+    hle_record(case_id, "PASS", (uint32_t)rc, out, 4);
+}
+
+static void hle_asrc_output2_then_src(void)
+{
+    if (s_hle_asrc_src_reserved || s_hle_asrc_output2_reserved) {
+        hle_skip("out2-then-src-reserve", 3);
+        return;
+    }
+    hle_step("out2-then-src-output2-reserve");
+    const int output2_rc = sceAudioOutput2Reserve((int)HLE_ASRC_OUTPUT2_SAMPLES);
+    int src_rc = (int)HLE_ASRC_NOT_CALLED;
+    int src_release_rc = (int)HLE_ASRC_NOT_CALLED;
+    int output2_release_rc = (int)HLE_ASRC_NOT_CALLED;
+    if (output2_rc >= 0) {
+        s_hle_asrc_output2_reserved = 1;
+        hle_step("out2-then-src-src-reserve");
+        src_rc = sceAudioSRCChReserve((int)HLE_ASRC_SAMPLES,
+                                      (int)HLE_ASRC_FREQUENCY,
+                                      (int)HLE_ASRC_CHANNELS);
+        if (src_rc >= 0) {
+            s_hle_asrc_src_reserved = 1;
+            hle_step("out2-then-src-src-release");
+            src_release_rc = sceAudioSRCChRelease();
+            if (src_release_rc >= 0) {
+                s_hle_asrc_src_reserved = 0;
+            }
+        }
+        hle_step("out2-then-src-output2-release");
+        output2_release_rc = sceAudioOutput2Release();
+        if (output2_release_rc >= 0) {
+            s_hle_asrc_output2_reserved = 0;
+        }
+    }
+    const uint32_t out[3] = {(uint32_t)output2_rc, (uint32_t)src_release_rc,
+                             (uint32_t)output2_release_rc};
+    hle_record("out2-then-src-reserve", output2_rc < 0 ? "SKIP" : "PASS",
+               (uint32_t)src_rc, out, 3);
+}
+
+static void hle_asrc_src_then_output2(void)
+{
+    if (s_hle_asrc_src_reserved || s_hle_asrc_output2_reserved) {
+        hle_skip("src-then-out2-reserve", 3);
+        return;
+    }
+    hle_step("src-then-out2-src-reserve");
+    const int src_rc = sceAudioSRCChReserve((int)HLE_ASRC_SAMPLES,
+                                            (int)HLE_ASRC_FREQUENCY,
+                                            (int)HLE_ASRC_CHANNELS);
+    int output2_rc = (int)HLE_ASRC_NOT_CALLED;
+    int src_release_rc = (int)HLE_ASRC_NOT_CALLED;
+    int output2_release_rc = (int)HLE_ASRC_NOT_CALLED;
+    if (src_rc >= 0) {
+        s_hle_asrc_src_reserved = 1;
+        hle_step("src-then-out2-output2-reserve");
+        output2_rc = sceAudioOutput2Reserve((int)HLE_ASRC_OUTPUT2_SAMPLES);
+        if (output2_rc >= 0) {
+            s_hle_asrc_output2_reserved = 1;
+        }
+        hle_step("src-then-out2-src-release");
+        src_release_rc = sceAudioSRCChRelease();
+        if (src_release_rc >= 0) {
+            s_hle_asrc_src_reserved = 0;
+        }
+        if (output2_rc >= 0) {
+            hle_step("src-then-out2-output2-release");
+            output2_release_rc = sceAudioOutput2Release();
+            if (output2_release_rc >= 0) {
+                s_hle_asrc_output2_reserved = 0;
+            }
+        }
+    }
+    const uint32_t out[3] = {(uint32_t)src_rc, (uint32_t)src_release_rc,
+                             (uint32_t)output2_release_rc};
+    hle_record("src-then-out2-reserve", src_rc < 0 ? "SKIP" : "PASS",
+               (uint32_t)output2_rc, out, 3);
+}
+
+static int hle_run(void)
+{
+    memset(s_hle_asrc_silence, 0, sizeof(s_hle_asrc_silence));
+
+    hle_asrc_release_src("src-release-unreserved");
+    const uint32_t unreserved_out[2] = {HLE_ASRC_SAMPLES,
+                                        (uint32_t)sizeof(s_hle_asrc_silence)};
+    hle_step("src-output-unreserved");
+    const int unreserved_output =
+        sceAudioSRCOutputBlocking(PSP_AUDIO_VOLUME_MAX, s_hle_asrc_silence);
+    hle_record("src-output-unreserved", "PASS", (uint32_t)unreserved_output,
+               unreserved_out, 2);
+
+    hle_step("src-reserve-valid");
+    const int reserve_rc = sceAudioSRCChReserve((int)HLE_ASRC_SAMPLES,
+                                                (int)HLE_ASRC_FREQUENCY,
+                                                (int)HLE_ASRC_CHANNELS);
+    if (reserve_rc >= 0) {
+        s_hle_asrc_src_reserved = 1;
+    }
+    const uint32_t reserve_out[3] = {HLE_ASRC_SAMPLES, HLE_ASRC_FREQUENCY,
+                                     HLE_ASRC_CHANNELS};
+    hle_record("src-reserve-valid", "PASS", (uint32_t)reserve_rc, reserve_out, 3);
+
+    if (reserve_rc < 0) {
+        hle_skip("src-reserve-already-held", 3);
+        hle_skip("src-output-blocking-0", 2);
+        hle_skip("src-release-after-output", 0);
+    } else {
+        hle_step("src-reserve-already-held");
+        const int second_rc = sceAudioSRCChReserve((int)HLE_ASRC_SAMPLES,
+                                                   (int)HLE_ASRC_FREQUENCY,
+                                                   (int)HLE_ASRC_CHANNELS);
+        hle_record("src-reserve-already-held", "PASS", (uint32_t)second_rc,
+                   reserve_out, 3);
+        const uint32_t block_out[2] = {HLE_ASRC_SAMPLES,
+                                       (uint32_t)sizeof(s_hle_asrc_silence)};
+        hle_step("src-output-blocking-0");
+        const int output_rc =
+            sceAudioSRCOutputBlocking(PSP_AUDIO_VOLUME_MAX, s_hle_asrc_silence);
+        hle_record("src-output-blocking-0", "PASS", (uint32_t)output_rc,
+                   block_out, 2);
+        hle_asrc_release_src("src-release-after-output");
+    }
+    hle_asrc_release_src("src-release-again");
+
+    hle_asrc_invalid_reserve("src-reserve-invalid-samples-zero", 0u,
+                             HLE_ASRC_FREQUENCY, HLE_ASRC_CHANNELS);
+    hle_asrc_invalid_reserve("src-reserve-invalid-samples-65", 65u,
+                             HLE_ASRC_FREQUENCY, HLE_ASRC_CHANNELS);
+    hle_asrc_invalid_reserve("src-reserve-invalid-samples-4096", 4096u,
+                             HLE_ASRC_FREQUENCY, HLE_ASRC_CHANNELS);
+    hle_asrc_invalid_reserve("src-reserve-invalid-frequency", HLE_ASRC_SAMPLES,
+                             48000u, HLE_ASRC_CHANNELS);
+    hle_asrc_invalid_reserve("src-reserve-invalid-channels-1", HLE_ASRC_SAMPLES,
+                             HLE_ASRC_FREQUENCY, 1u);
+    hle_asrc_invalid_reserve("src-reserve-invalid-channels-4", HLE_ASRC_SAMPLES,
+                             HLE_ASRC_FREQUENCY, 4u);
+    hle_asrc_output2_then_src();
+    hle_asrc_src_then_output2();
+
+    /* Nothing left reserved is the expected end state, not a skipped cell: the record passes
+       with the NOT_CALLED word, so a clean run stays acceptance-eligible (the 2026-10-15 run on
+       22b027f6 recorded these two as SKIP, which made a complete capture ineligible). */
+    int cleanup_ok = 1;
+    if (s_hle_asrc_src_reserved) {
+        cleanup_ok &= hle_asrc_release_src("src-final-cleanup") >= 0;
+    } else {
+        hle_record("src-final-cleanup", "PASS", HLE_ASRC_NOT_CALLED, NULL, 0);
+    }
+    if (s_hle_asrc_output2_reserved) {
+        cleanup_ok &= hle_asrc_release_output2("out2-final-cleanup") >= 0;
+    } else {
+        hle_record("out2-final-cleanup", "PASS", HLE_ASRC_NOT_CALLED, NULL, 0);
+    }
+    return cleanup_ok && !s_hle_asrc_src_reserved &&
+           !s_hle_asrc_output2_reserved;
+}
+
+#endif /* HLE_CASE_AUDIO_SRC */
+
+/* ------------------------------------------------------------------------- */
+#if PSP_ORACLE_CASE == HLE_CASE_TIMER_ORDER
+
+/* Timer ordering only: callback sequence and the system-time words sampled
+   inside each callback are observations, not deadlines or timing claims. The
+   callback common words and VTimer target are probe-owned storage. Each wait is
+   one finite DelayThread duration, with no unbounded polling loop. */
+#define HLE_TIMER_WAIT_LIMIT_US 250000u
+#define HLE_TIMER_EQUAL_DELAY_US 50000u
+#define HLE_TIMER_LONG_DELAY_US 100000u
+#define HLE_TIMER_SHORT_DELAY_US 30000u
+#define HLE_TIMER_VTIMER_DELAY_US 60000u
+#define HLE_TIMER_ZERO_WAIT_US 100000u
+#define HLE_TIMER_NO_TIME 0xffffffffu
+
+struct hle_timer_order_capture {
+    volatile uint32_t sequence;
+    volatile uint32_t low;
+    volatile uint32_t high;
+};
+
+static volatile uint32_t s_hle_timer_order_sequence;
+static struct hle_timer_order_capture s_hle_alarm_same_a;
+static struct hle_timer_order_capture s_hle_alarm_same_b;
+static struct hle_timer_order_capture s_hle_alarm_long;
+static struct hle_timer_order_capture s_hle_alarm_short;
+static struct hle_timer_order_capture s_hle_vtimer_event;
+static struct hle_timer_order_capture s_hle_vtimer_alarm_event;
+static struct hle_timer_order_capture s_hle_alarm_zero;
+static SceKernelSysClock s_hle_vtimer_due;
+static struct SceKernelVTimerOptParam s_hle_vtimer_options = {
+    sizeof(struct SceKernelVTimerOptParam)
+};
+
+static void hle_timer_order_capture(struct hle_timer_order_capture *capture)
+{
+    const uint32_t sequence = ++s_hle_timer_order_sequence;
+    const uint64_t now = (uint64_t)sceKernelGetSystemTimeWide();
+    capture->low = (uint32_t)now;
+    capture->high = (uint32_t)(now >> 32);
+    capture->sequence = sequence;
+}
+
+static SceUInt hle_alarm_same_a(void *common)
+{
+    hle_timer_order_capture((struct hle_timer_order_capture *)common);
+    return 0;
+}
+
+static SceUInt hle_alarm_same_b(void *common)
+{
+    hle_timer_order_capture((struct hle_timer_order_capture *)common);
+    return 0;
+}
+
+static SceUInt hle_alarm_long(void *common)
+{
+    hle_timer_order_capture((struct hle_timer_order_capture *)common);
+    return 0;
+}
+
+static SceUInt hle_alarm_short(void *common)
+{
+    hle_timer_order_capture((struct hle_timer_order_capture *)common);
+    return 0;
+}
+
+static SceUInt hle_alarm_vtimer_equal(void *common)
+{
+    hle_timer_order_capture((struct hle_timer_order_capture *)common);
+    return 0;
+}
+
+static SceUInt hle_alarm_zero(void *common)
+{
+    hle_timer_order_capture((struct hle_timer_order_capture *)common);
+    return 0;
+}
+
+static SceUInt hle_vtimer_order_handler(SceUID uid, SceKernelSysClock *current,
+                                        SceKernelSysClock *scheduled, void *common)
+{
+    (void)uid;
+    (void)current;
+    (void)scheduled;
+    hle_timer_order_capture((struct hle_timer_order_capture *)common);
+    return 0;
+}
+
+static void hle_timer_order_wait(const char *step, uint32_t timeout_us)
+{
+    hle_step(step);
+    sceKernelDelayThread(timeout_us);
+}
+
+static void hle_timer_order_event(const char *case_id,
+                                  const struct hle_timer_order_capture *capture,
+                                  int scheduled)
+{
+    if (!scheduled) {
+        hle_skip(case_id, 2);
+        return;
+    }
+    const uint32_t out[2] = {
+        capture->sequence != 0u ? capture->low : HLE_TIMER_NO_TIME,
+        capture->sequence != 0u ? capture->high : HLE_TIMER_NO_TIME,
+    };
+    hle_record(case_id, "PASS", capture->sequence, out, 2);
+}
+
+static uint32_t hle_timer_order_cancel(SceUID uid, const char *step)
+{
+    if (uid < 0) {
+        return HLE_TIMER_NO_TIME;
+    }
+    hle_step(step);
+    return (uint32_t)sceKernelCancelAlarm(uid);
+}
+
+static int hle_run(void)
+{
+    hle_step("timer-order-set-same-a");
+    const SceUID alarm_same_a = sceKernelSetAlarm(HLE_TIMER_EQUAL_DELAY_US,
+                                                   hle_alarm_same_a,
+                                                   &s_hle_alarm_same_a);
+    hle_step("timer-order-set-same-b");
+    const SceUID alarm_same_b = sceKernelSetAlarm(HLE_TIMER_EQUAL_DELAY_US,
+                                                   hle_alarm_same_b,
+                                                   &s_hle_alarm_same_b);
+    const uint32_t same_set_out[1] = {(uint32_t)alarm_same_b};
+    hle_record("alarm-same-delay-set", "PASS", (uint32_t)alarm_same_a,
+               same_set_out, 1);
+    hle_timer_order_wait("timer-order-wait-same", HLE_TIMER_WAIT_LIMIT_US);
+    hle_timer_order_event("alarm-same-delay-a", &s_hle_alarm_same_a,
+                          alarm_same_a >= 0);
+    hle_timer_order_event("alarm-same-delay-b", &s_hle_alarm_same_b,
+                          alarm_same_b >= 0);
+
+    hle_step("timer-order-set-long");
+    const SceUID alarm_long = sceKernelSetAlarm(HLE_TIMER_LONG_DELAY_US,
+                                                 hle_alarm_long, &s_hle_alarm_long);
+    hle_step("timer-order-set-short");
+    const SceUID alarm_short = sceKernelSetAlarm(HLE_TIMER_SHORT_DELAY_US,
+                                                  hle_alarm_short, &s_hle_alarm_short);
+    const uint32_t order_set_out[1] = {(uint32_t)alarm_short};
+    hle_record("alarm-long-then-short-set", "PASS", (uint32_t)alarm_long,
+               order_set_out, 1);
+    hle_timer_order_wait("timer-order-wait-long-short", HLE_TIMER_WAIT_LIMIT_US);
+    hle_timer_order_event("alarm-long-event", &s_hle_alarm_long, alarm_long >= 0);
+    hle_timer_order_event("alarm-short-event", &s_hle_alarm_short, alarm_short >= 0);
+
+    hle_step("timer-order-vtimer-create");
+    const SceUID vtimer = sceKernelCreateVTimer("hleord", &s_hle_vtimer_options);
+    const uint32_t vtimer_created = vtimer >= 0 ? 1u : 0u;
+    hle_record("timer-order-vtimer-create", "PASS", (uint32_t)vtimer,
+               &vtimer_created, 1);
+    int vtimer_handler_rc = -1;
+    int vtimer_start_rc = -1;
+    SceUID vtimer_alarm = (SceUID)-1;
+    if (vtimer >= 0) {
+        s_hle_vtimer_due.low = HLE_TIMER_VTIMER_DELAY_US;
+        s_hle_vtimer_due.hi = 0;
+        hle_step("timer-order-vtimer-handler");
+        vtimer_handler_rc = sceKernelSetVTimerHandler(
+            vtimer, &s_hle_vtimer_due, hle_vtimer_order_handler, &s_hle_vtimer_event);
+        hle_step("timer-order-vtimer-start");
+        vtimer_start_rc = sceKernelStartVTimer(vtimer);
+        if (vtimer_handler_rc >= 0 && vtimer_start_rc >= 0) {
+            hle_step("timer-order-vtimer-alarm");
+            vtimer_alarm = sceKernelSetAlarm(HLE_TIMER_VTIMER_DELAY_US,
+                                               hle_alarm_vtimer_equal,
+                                               &s_hle_vtimer_alarm_event);
+        }
+    }
+    const uint32_t vtimer_setup_out[1] = {(uint32_t)vtimer_start_rc};
+    hle_record("timer-order-vtimer-handler", vtimer < 0 ? "SKIP" : "PASS",
+               (uint32_t)vtimer_handler_rc, vtimer_setup_out, 1);
+    const uint32_t vtimer_alarm_out[1] = {HLE_TIMER_VTIMER_DELAY_US};
+    hle_record("timer-order-vtimer-alarm-set",
+               vtimer_handler_rc < 0 || vtimer_start_rc < 0 ? "SKIP" : "PASS",
+               (uint32_t)vtimer_alarm, vtimer_alarm_out, 1);
+    hle_timer_order_wait("timer-order-wait-vtimer-alarm", HLE_TIMER_WAIT_LIMIT_US);
+    hle_timer_order_event("timer-order-vtimer-event", &s_hle_vtimer_event,
+                          vtimer_handler_rc >= 0 && vtimer_start_rc >= 0);
+    hle_timer_order_event("timer-order-vtimer-alarm-event",
+                          &s_hle_vtimer_alarm_event, vtimer_alarm >= 0);
+
+    hle_step("timer-order-alarm-zero");
+    const SceUID alarm_zero = sceKernelSetAlarm(0u, hle_alarm_zero,
+                                                 &s_hle_alarm_zero);
+    hle_timer_order_wait("timer-order-wait-zero", HLE_TIMER_ZERO_WAIT_US);
+    const uint32_t zero_ran = s_hle_alarm_zero.sequence != 0u ? 1u : 0u;
+    hle_record("alarm-zero-set", "PASS", (uint32_t)alarm_zero, &zero_ran, 1);
+    hle_timer_order_event("alarm-zero-event", &s_hle_alarm_zero, alarm_zero >= 0);
+
+    const uint32_t same_cleanup[2] = {
+        hle_timer_order_cancel(alarm_same_a, "timer-order-cancel-same-a"),
+        hle_timer_order_cancel(alarm_same_b, "timer-order-cancel-same-b"),
+    };
+    hle_record("alarm-same-delay-cleanup", "PASS", 0u, same_cleanup, 2);
+    const uint32_t order_cleanup[2] = {
+        hle_timer_order_cancel(alarm_long, "timer-order-cancel-long"),
+        hle_timer_order_cancel(alarm_short, "timer-order-cancel-short"),
+    };
+    hle_record("alarm-long-short-cleanup", "PASS", 0u, order_cleanup, 2);
+    uint32_t vtimer_cleanup[3] = {
+        hle_timer_order_cancel(vtimer_alarm, "timer-order-cancel-vtimer-alarm"),
+        HLE_TIMER_NO_TIME,
+        HLE_TIMER_NO_TIME,
+    };
+    int cleanup_ok = 1;
+    if (vtimer >= 0) {
+        hle_step("timer-order-vtimer-stop");
+        vtimer_cleanup[1] = (uint32_t)sceKernelStopVTimer(vtimer);
+        hle_step("timer-order-vtimer-delete");
+        vtimer_cleanup[2] = (uint32_t)sceKernelDeleteVTimer(vtimer);
+        cleanup_ok = (int32_t)vtimer_cleanup[2] >= 0;
+    }
+    hle_record("timer-order-vtimer-cleanup", "PASS", 0u, vtimer_cleanup, 3);
+    const uint32_t zero_cleanup[1] = {
+        hle_timer_order_cancel(alarm_zero, "timer-order-cancel-zero"),
+    };
+    hle_record("alarm-zero-cleanup", "PASS", 0u, zero_cleanup, 1);
+    return cleanup_ok;
+}
+
+#endif /* HLE_CASE_TIMER_ORDER */
+
+/* ------------------------------------------------------------------------- */
+
+int main(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    s_hle_main_thread = sceKernelGetThreadId();
+    hle_begin();
+    const int ok = hle_run();
+    hle_finish(ok);
+    hle_park_until_stop();
+    return 0;
+}

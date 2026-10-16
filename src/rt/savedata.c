@@ -625,7 +625,7 @@ static uint32_t do_save(uint32_t param, const char *game, const char *save) {
     write_filedata(dir, "ICON1.PMF", param + SDP_icon1);
     write_filedata(dir, "PIC1.PNG", param + SDP_pic1);
     write_filedata(dir, "SND0.AT3", param + SDP_snd0);
-    if (sdlog()) fprintf(stderr, "savedata: SAVE %s\\%s (%u bytes)\n", dir, fileName, dataSize);
+    if (sdlog()) fprintf(stderr, "savedata: SAVE %s\\%s (%" PRIu32 " bytes)\n", dir, fileName, dataSize);
     return 0;
 }
 
@@ -718,7 +718,7 @@ static uint32_t do_load(uint32_t param, const char *game, const char *save) {
             uint8_t b1 = (p && rd > 1) ? p[1] : 0;
             uint8_t b2 = (p && rd > 2) ? p[2] : 0;
             uint8_t b3 = (p && rd > 3) ? p[3] : 0;
-            fprintf(stderr, "savedata: LOAD %s (%u bytes) -> buf=0x%08x cap=%u first=%02x%02x%02x%02x\n",
+            fprintf(stderr, "savedata: LOAD %s (%u bytes) -> buf=0x%08" PRIx32 " cap=%" PRIu32 " first=%02x%02x%02x%02x\n",
                     dir, (unsigned)rd, dataBuf, cap, b0, b1, b2, b3);
         }
     } else if (sdlog()) {
@@ -822,7 +822,7 @@ static uint32_t do_list(uint32_t param, const char *game) {
     }
     if (count > maxCount) count = maxCount;
     MEM_W32(idList + 4, count);                           /* resultCount */
-    if (sdlog()) fprintf(stderr, "savedata: LIST %s* -> %u saves\n", game, count);
+    if (sdlog()) fprintf(stderr, "savedata: LIST %s* -> %" PRIu32 " saves\n", game, count);
     return 0;
 }
 
@@ -1058,7 +1058,7 @@ uint32_t sr_savedata_execute(uint32_t param) {
     char game[16], save[24];
     rd_cstr(param + SDP_gameName, game, 14);
     resolve_save(param, mode, game, save, 21);
-    if (sdlog()) fprintf(stderr, "savedata: mode=%u game='%s' save='%s'\n", mode, game, save);
+    if (sdlog()) fprintf(stderr, "savedata: mode=%" PRIu32 " game='%s' save='%s'\n", mode, game, save);
     switch (mode) {
         case SD_AUTOSAVE: case SD_SAVE: case SD_LISTSAVE:
         case SD_MAKEDATA: case SD_MAKEDATASECURE:
@@ -1094,7 +1094,7 @@ uint32_t sr_savedata_execute(uint32_t param) {
         case SD_GETSIZE:
             return do_getsize(param);
         default:
-            if (sdlog()) fprintf(stderr, "savedata: UNHANDLED mode=%u\n", mode);
+            if (sdlog()) fprintf(stderr, "savedata: UNHANDLED mode=%" PRIu32 "\n", mode);
             return 0;
     }
 }

@@ -16,6 +16,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import random
 import shutil
 from contextlib import redirect_stderr
 from pathlib import Path
@@ -32,6 +33,7 @@ sys.path.insert(0, str(TOOLS))
 
 import analyze  # noqa: E402
 import codegen  # noqa: E402
+import scratch_dir  # noqa: E402
 from nk_core import package_cache  # noqa: E402
 
 # A wholly synthetic span standing in for "some other title's configuration". It is
@@ -326,7 +328,7 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         self._saved_environ = os.environ.copy()
         for name in ("TITLE_EXTRA_SPANS", "HST_EXTRA_SPANS", "GAME_BASE"):
             os.environ.pop(name, None)
-        self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-span-scope-")
+        self.temp = scratch_dir.TemporaryDirectory(prefix="nakagawa-span-scope-")
         self.addCleanup(self.temp.cleanup)
         self.addCleanup(self._restore_environ)
         self.root = Path(self.temp.name)
@@ -375,10 +377,10 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
 
         original_trace = analyze.trace_function
 
-        def trace_and_record_calls(elf, start, ranges, covered, calls, hc):
+        def trace_and_record_calls(elf, start, ranges, covered, calls, hc, walked=None):
             if tracked_calls[0] is None:
                 tracked_calls[0] = calls
-            return original_trace(elf, start, ranges, covered, calls, hc)
+            return original_trace(elf, start, ranges, covered, calls, hc, walked=walked)
 
         with redirect_stderr(io.StringIO()), \
              mock.patch.object(analyze, "set", counted_set, create=True), \
@@ -714,6 +716,83 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         self.assertIn("ownership-gap", {finding["code"] for finding in findings})
         self.assertTrue(any("0x00001010" in finding["message"] for finding in findings))
 
+    # --- #968: a linking branch to a callable is a call in discovery too -----------
+
+    #: Issue #968's program: the entry calls 0x1010, whose `bal` targets 0x1030, a leaf
+    #: placed after the caller's return, inside the caller's span.
+    ISSUE_968_WORDS = (
+        0x0C000404, 0x00000000, 0x03E00008, 0x03A01821,  # 0x1000 jal 0x1010; jr ra; addu v1, sp
+        0x27BDFFF0, 0xAFBF0000,                          # 0x1010 addiu sp, -16; sw ra, 0(sp)
+        0x04110005, 0x00000000,                          # 0x1018 bal 0x1030; nop
+        0x2442000A, 0x8FBF0000, 0x03E00008, 0x27BD0010,  # 0x1020 the continuation, return
+        0x24420001, 0x03E00008, 0x00000000,              # 0x1030 the callee
+    )
+    #: The entry calls a frameless body (0x1018) that only reads its PC with
+    #: `bal .+8` (0x101c -> 0x1024), and a framed one (0x1034) whose `bal`
+    #: (0x103c -> 0x1048) jumps over an inline data word into its own
+    #: frame-releasing tail. Neither branch is a call.
+    NOT_A_CALL_WORDS = (
+        0x0C000406, 0x00000000, 0x0C00040D, 0x00000000,  # 0x1000 jal 0x1018; jal 0x1034
+        0x03E00008, 0x00000000,                          # 0x1010 jr ra
+        0x03E04021,                                      # 0x1018 addu t0, ra, zero
+        0x04110001,                                      # 0x101c bal .+8 (0x1024)
+        0x24420064,                                      # 0x1020 addiu v0, v0, 100
+        0x03E02021,                                      # 0x1024 addu a0, ra, zero
+        0x0100F821, 0x03E00008, 0x2442000A,              # 0x1028 addu ra, t0; jr ra; slot
+        0x27BDFFF0, 0xAFBF0000,                          # 0x1034 addiu sp, -16; sw ra, 0(sp)
+        0x04110002,                                      # 0x103c bal 0x1048
+        0x24420064,                                      # 0x1040 addiu v0, v0, 100
+        0x24424000,                                      # 0x1044 inline data, never run
+        0x03E02021,                                      # 0x1048 addu a0, ra, zero
+        0x8FBF0000, 0x03E00008, 0x27BD0010,              # 0x104c lw ra; jr ra; addiu sp, 16
+    )
+
+    def _analyze_words(self, name: str, words) -> tuple[analyze.Elf, set, list]:
+        elf_path = self.root / f"{name}.elf"
+        write_elf(elf_path, words=words)
+        image = analyze.Elf(str(elf_path), base=0)
+        functions, ranges = analyze.analyze(image)
+        return image, set(functions), ranges
+
+    def test_in_body_linked_call_target_is_an_entry_not_the_callers_interior(self) -> None:
+        # Before: the caller's trace absorbed 0x1030 and nothing made it an entry.
+        image, functions, ranges = self._analyze_words("issue-968", self.ISSUE_968_WORDS)
+        self.assertIn(0x1030, functions, "the callee must be an analyzer-owned entry")
+        covered, calls = set(), set()
+        analyze.trace_function(image, 0x1010, ranges, covered, calls, set())
+        self.assertNotIn(0x1030, covered, "the callee is not the caller's interior")
+        self.assertIn(0x1030, calls)
+        self.assertTrue({0x1020, 0x1024, 0x1028, 0x102C} <= covered, "the link continues")
+
+    def test_read_the_pc_and_a_continuation_target_stay_interior(self) -> None:
+        image, functions, ranges = self._analyze_words("not-a-call", self.NOT_A_CALL_WORDS)
+        self.assertTrue({0x1018, 0x1034} <= functions, sorted(map(hex, functions)))
+        for caller, target in ((0x1018, 0x1024), (0x1034, 0x1048)):
+            with self.subTest(target=hex(target)):
+                self.assertNotIn(target, functions)
+                covered, calls = set(), set()
+                analyze.trace_function(image, caller, ranges, covered, calls, set())
+                self.assertIn(target, covered)
+                self.assertNotIn(target, calls)
+
+    def test_cfg_gate_owns_the_in_body_linked_call_target(self) -> None:
+        # The canonical CFG already models the link as a call edge; with the callee
+        # discovered as an entry, the opt-in gate owns it. Before: ownership-gap.
+        image, functions, ranges = self._analyze_words("issue-968-cfg", self.ISSUE_968_WORDS)
+        report = analyze.canonical_cfg_report(image, ranges=ranges, entries=sorted(functions))
+        self.assertEqual(analyze.canonical_cfg_gate(report), [])
+        elf_path = self.root / "issue-968-cfg.elf"
+        proc = subprocess.run(
+            [
+                sys.executable, str(TOOLS / "codegen.py"), str(elf_path),
+                str(self.root / "issue-968-cfg.c"),
+                "--base=0", "--profile=none", "--funcs-per-chunk=2000", "--cfg-gate",
+            ],
+            cwd=ROOT, env=self._clean_env(), capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("CFG_GATE PASS", proc.stdout)
+
     def test_codegen_gate_kills_analyzer_mutation_before_emission(self) -> None:
         # Force the production codegen seam to lose the direct-call root. The
         # independent CFG walk still sees the in-image call edge and must stop
@@ -837,6 +916,52 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         self.assertEqual(by_address[PRIMARY_BASE + 12]["owners"], [])
         self.assertEqual(by_address[PRIMARY_BASE + 12]["classification"], "unowned-executable")
 
+    def test_branch_target_outside_authorized_code_fails_closed(self) -> None:
+        # A branch or jump target resolving outside authorized code fails closed.
+        # The target is never converted into a callable entry point, and the edge is
+        # classified as an out-of-range dispatch transfer.
+        out_of_range_target = 0x00800000
+        near_oor_target = PRIMARY_BASE + 0x1000
+        branch_offset = (near_oor_target - (PRIMARY_BASE + 0x14)) // 4
+        words = [
+            0x08000000 | ((out_of_range_target >> 2) & 0x03FFFFFF),  # j 0x00800000
+            0x00000000,
+            0x0C000000 | ((out_of_range_target >> 2) & 0x03FFFFFF),  # jal 0x00800000
+            0x00000000,
+            (0x04 << 26) | (branch_offset & 0xFFFF),                 # beq $0, $0, target 0x00002000
+            0x00000000,
+            0x03E00008,                                             # jr $ra
+            0x00000000,
+        ]
+        elf_path = self.root / "oor-branch-target.elf"
+        write_elf(elf_path, words=words)
+        image = analyze.Elf(str(elf_path), base=0)
+
+        starts, ranges = analyze.analyze(image)
+
+        self.assertNotIn(out_of_range_target, starts)
+        self.assertNotIn(near_oor_target, starts)
+
+        report = analyze.canonical_cfg_report(image, ranges=ranges, entries=starts)
+        self.assertEqual(analyze.canonical_cfg_gate(report), [])
+
+        classifications = {
+            (row["source"], row["target"], row["kind"]): row["classification"]
+            for row in report["successor_classifications"]
+        }
+        self.assertEqual(
+            classifications[(PRIMARY_BASE, out_of_range_target, "direct-jump")],
+            "inter-function-handoff-dispatch",
+        )
+        self.assertEqual(
+            classifications[(PRIMARY_BASE + 8, out_of_range_target, "call")],
+            "inter-function-handoff-dispatch",
+        )
+        self.assertEqual(
+            classifications[(PRIMARY_BASE + 16, near_oor_target, "direct-branch")],
+            "inter-function-handoff-dispatch",
+        )
+
     @unittest.skipUnless(CC, "gcc is required for the analyzer semantic mutation proof")
     def test_cfg_gate_kills_generated_direct_call_root_mutation(self) -> None:
         words = (
@@ -959,6 +1084,7 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
                 str(harness), str(out_c), str(out_dir / "mutant_0.c"),
                 str(ROOT / "src" / "rt" / "guest_interp.c"),
                 str(ROOT / "src" / "rt" / "perf.c"),
+                str(ROOT / "src" / "rt" / "sr_coro.c"),
                 str(ROOT / "src" / "rt" / "cpu_lle.c"),
                 str(ROOT / "src" / "rt" / "domain_mode.c"),
                 str(ROOT / "src" / "rt" / "stale_code.c"),
@@ -1518,23 +1644,258 @@ class MakefileSpanBindingTests(unittest.TestCase):
 
     def test_span_participates_in_the_codegen_profile_hash(self) -> None:
         # Changing the span must invalidate previously generated code. The codegen
-        # profile's entries are NK_CODEGEN_PROFILE_ENTRIES; the span is one of them,
-        # the parse-time hash reads them through profile_hash and the record recipe
-        # from its environment.
+        # profile's entries are NK_CODEGEN_PROFILE_ENTRIES; the span is one of them.
+        # Normal build parses hash the exported entries in a batch, with the
+        # individual profile_hash path retained for parses before the build directory
+        # is ready. The record recipe reads the same entries from its environment.
         export_line = next(
             line for line in self.makefile.splitlines()
             if line.startswith("export NK_CODEGEN_PROFILE_ENTRIES :=")
         )
         self.assertIn("EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)", export_line)
-        hash_line = next(
+        hash_lines = [
             line for line in self.makefile.splitlines()
             if line.startswith("CODEGEN_PROFILE_HASH :=")
+        ]
+        self.assertIn(
+            "CODEGEN_PROFILE_HASH := $(word 1,$(_PROFILE_HASHES))", hash_lines
         )
-        self.assertIn("$(call profile_hash,NK_CODEGEN_PROFILE_ENTRIES,", hash_line)
+        self.assertTrue(any(
+            "$(call profile_hash,NK_CODEGEN_PROFILE_ENTRIES," in line
+            for line in hash_lines
+        ))
+        self.assertIn(
+            "$(file >$(BUILD_DIR)/.codegen-profile-entries,$(NK_CODEGEN_PROFILE_ENTRIES))",
+            self.makefile,
+        )
+        self.assertTrue(any(
+            "hash-profiles" in line
+            and '--codegen-entries-file "$(BUILD_DIR)/.codegen-profile-entries"' in line
+            for line in self.makefile.splitlines()
+        ))
         record_line = next(
             line for line in self.makefile.splitlines() if "--section codegen" in line
         )
         self.assertIn("--entries-env NK_CODEGEN_PROFILE_ENTRIES", record_line)
+
+
+MIPS_JR_RA = 0x03E00008
+MIPS_NOP = 0x00000000
+MIPS_ADDU_T0 = 0x01094021  # addu $t0, $t0, $t1
+MIPS_PROLOGUE = 0x27BDFFF0  # addiu $sp, $sp, -16
+RANDOM_CODE_IMAGES = 48
+
+
+def write_words_elf(path: Path, words, *, base: int = PRIMARY_BASE, entry: int | None = None,
+                    text_words: int | None = None) -> None:
+    """Fabricate a little-endian ET_EXEC whose one executable PT_LOAD holds `words`.
+
+    The section table names .text over the first `text_words` words only, so the words after
+    it are executable file bytes outside the named code section. That is the case which gives
+    a trace merged ranges.
+    """
+    if text_words is None:
+        text_words = len(words)
+    payload_off = 52 + 32
+    filesz = len(words) * 4
+    shstr = b"\x00.text\x00.shstrtab\x00"
+    shstr_off = payload_off + filesz
+    shoff = shstr_off + len(shstr)
+    blob = bytearray(shoff + 3 * 40)
+    blob[:8] = b"\x7fELF\x01\x01\x01\x00"
+    struct.pack_into(
+        "<HHIIIIIHHHHHH", blob, 16,
+        2, 8, 1, base if entry is None else entry, 52, shoff, 0, 52, 32, 1, 40, 3, 2,
+    )
+    struct.pack_into("<8I", blob, 52, 1, payload_off, base, base, filesz, filesz, 5, 4)
+    for index, word in enumerate(words):
+        struct.pack_into("<I", blob, payload_off + index * 4, word & 0xFFFFFFFF)
+    blob[shstr_off:shstr_off + len(shstr)] = shstr
+    struct.pack_into(
+        "<10I", blob, shoff + 40,
+        1, 1, 6, base, payload_off, text_words * 4, 0, 0, 4, 0,
+    )
+    struct.pack_into(
+        "<10I", blob, shoff + 80,
+        7, 3, 0, 0, shstr_off, len(shstr), 0, 0, 1, 0,
+    )
+    path.write_bytes(blob)
+
+
+def random_code_words(rng: random.Random, base: int, count: int) -> list[int]:
+    """Words drawn from the shapes the trace branches on, with targets around the image."""
+
+    def target() -> int:
+        # Mostly inside the image, sometimes just past it.
+        return base + 4 * rng.randrange(0, count + 16)
+
+    words: list[int] = []
+    while len(words) < count:
+        pick = rng.random()
+        if pick < 0.14:
+            words.append(0x0C000000 | ((target() >> 2) & 0x03FFFFFF))  # jal
+        elif pick < 0.24:
+            words.append(0x08000000 | ((target() >> 2) & 0x03FFFFFF))  # j
+        elif pick < 0.36:
+            if rng.random() < 0.25:
+                words.append(0x10000000 | (rng.randrange(-24, 25) & 0xFFFF))  # b
+            else:
+                op = rng.choice((0x04, 0x05, 0x06, 0x07))  # beq, bne, blez, bgtz
+                rs, rt = rng.randrange(4), rng.randrange(4)
+                words.append((op << 26) | (rs << 21) | (rt << 16)
+                             | (rng.randrange(-24, 25) & 0xFFFF))
+        elif pick < 0.40:
+            rt = rng.choice((0x00, 0x01, 0x10, 0x11))  # bltz, bgez, bltzal, bgezal
+            words.append((0x01 << 26) | (rt << 16) | (rng.randrange(-24, 25) & 0xFFFF))
+        elif pick < 0.50:
+            words.append(rng.choice((MIPS_JR_RA, 0x03200008, 0x0040F809)))  # jr $ra, jr $t9, jalr
+        elif pick < 0.62:
+            words.append(0x27BD0000 | ((-8 * rng.randrange(1, 17)) & 0xFFFF))  # addiu $sp, -N
+        elif pick < 0.70:
+            words.append(MIPS_NOP)
+        elif pick < 0.80:
+            reg = rng.randrange(1, 8)
+            address = target()
+            words.append(0x3C000000 | (reg << 16) | (address >> 16))  # lui
+            words.append(0x24000000 | (reg << 21) | (reg << 16) | (address & 0xFFFF))  # addiu
+        else:
+            words.append(rng.getrandbits(32))
+    return words[:count]
+
+
+class TraceMemoTests(unittest.TestCase):
+    """The memoized trace walk reproduces the uncached walk, and expands each word once."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-trace-memo-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def _walk(self, image_bytes: bytes, *, trace_memo: bool) -> dict:
+        """Every trace's start, owned ranges and call results, plus the analysis outputs."""
+        image = analyze.Elf(image_bytes, base=0)
+        steps = []
+        final: dict = {}
+        original = analyze.trace_function
+
+        def recording_trace(elf, start, ranges, covered, calls, hc, walked=None):
+            new_calls = original(elf, start, ranges, covered, calls, hc, walked=walked)
+            steps.append((start, tuple(ranges), tuple(new_calls)))
+            final["covered"] = covered
+            final["calls"] = calls
+            return new_calls
+
+        with redirect_stderr(io.StringIO()), \
+             mock.patch.object(analyze, "trace_function", recording_trace):
+            starts, ranges = analyze.analyze(image, trace_memo=trace_memo)
+        return {
+            "steps": steps,
+            "covered": sorted(final.get("covered", ())),
+            "calls": sorted(final.get("calls", ())),
+            "starts": sorted(starts),
+            "ranges": list(ranges),
+        }
+
+    def test_memoized_walk_matches_uncached_walk_on_fixtures(self) -> None:
+        for writer in (
+            write_elf_with_called_code_outside_text,
+            write_elf_with_entry_outside_text,
+            write_elf_with_segment_start_trampoline,
+            write_elf_with_unusual_section_code_pointer,
+            write_elf_with_data_jal_in_text_to_rodata,
+        ):
+            path = self.root / f"{writer.__name__}.elf"
+            writer(path)
+            image_bytes = path.read_bytes()
+            with self.subTest(fixture=writer.__name__):
+                self.assertEqual(
+                    self._walk(image_bytes, trace_memo=True),
+                    self._walk(image_bytes, trace_memo=False),
+                )
+
+    def test_memoized_walk_matches_uncached_walk_on_random_code(self) -> None:
+        merged_steps = 0
+        for seed in range(RANDOM_CODE_IMAGES):
+            rng = random.Random(seed)
+            count = rng.randrange(40, 129)
+            words = random_code_words(rng, PRIMARY_BASE, count)
+            path = self.root / f"random-{seed}.elf"
+            write_words_elf(path, words, text_words=rng.randrange(count // 2, count + 1))
+            image_bytes = path.read_bytes()
+            with self.subTest(seed=seed):
+                memoized = self._walk(image_bytes, trace_memo=True)
+                self.assertEqual(memoized, self._walk(image_bytes, trace_memo=False))
+                primary = tuple(analyze.exec_ranges(analyze.Elf(image_bytes, base=0)))
+                merged_steps += sum(1 for _start, ranges, _calls in memoized["steps"]
+                                    if ranges != primary)
+        # The corpus must exercise traces over merged ranges, not only the primary ones.
+        self.assertGreater(merged_steps, 0)
+
+    def test_shared_tail_is_expanded_once_across_starts(self) -> None:
+        """Every function jumps into one shared tail; the tail is walked once, not per function."""
+        shared_words = 256
+        functions = 32
+        shared = PRIMARY_BASE
+        words = [MIPS_ADDU_T0] * shared_words + [MIPS_JR_RA, MIPS_NOP]
+        function_starts = []
+        for _ in range(functions):
+            function_starts.append(PRIMARY_BASE + 4 * len(words))
+            words += [MIPS_PROLOGUE, 0x08000000 | ((shared >> 2) & 0x03FFFFFF), MIPS_NOP]
+        path = self.root / "shared-tail.elf"
+        write_words_elf(path, words, entry=function_starts[0])
+        image = analyze.Elf(str(path), base=0)
+        reads = 0
+        read_word = image.read_at_vaddr
+
+        def counting_read(vaddr, n):
+            nonlocal reads
+            reads += 1
+            return read_word(vaddr, n)
+
+        image.read_at_vaddr = counting_read
+        with redirect_stderr(io.StringIO()):
+            starts, _ranges = analyze.analyze(image)
+        for function_start in function_starts:
+            self.assertIn(function_start, starts)
+        self.assertLessEqual(
+            reads, 4 * (shared_words + 3 * functions) + 64,
+            "a shared tail must be expanded once, not once per function",
+        )
+
+
+class SpanIndexMembershipTests(unittest.TestCase):
+    """The trace's indexed membership answers exactly as the linear in_ranges scan."""
+
+    CASES = (
+        [],
+        [(0, 0)],
+        [(16, 16), (20, 12)],
+        [(0x100, 0x110)],
+        [(0x100, 0x110), (0x110, 0x120)],
+        [(0x100, 0x140), (0x120, 0x130), (0x200, 0x204)],
+        [(0x200, 0x204), (0x100, 0x110), (0x108, 0x104)],
+        [(0x100, 0x110), (0x100, 0x110)],
+        [(0x0, 0x8), (0x8, 0x10), (0x18, 0x20)],
+    )
+
+    def test_membership_matches_in_ranges_at_every_boundary(self) -> None:
+        for ranges in self.CASES:
+            index = analyze._SpanIndex(ranges)
+            probes = {-1, 0, 0xFFFFFFFF + 1}
+            for lo, hi in ranges:
+                probes.update({lo - 1, lo, lo + 1, hi - 1, hi, hi + 1})
+            for addr in sorted(probes):
+                with self.subTest(ranges=ranges, addr=addr):
+                    self.assertEqual(
+                        addr in index,
+                        analyze.in_ranges(addr, ranges),
+                    )
+
+    def test_in_ranges_accepts_an_index_as_its_range_set(self) -> None:
+        ranges = [(0x100, 0x110), (0x200, 0x204)]
+        index = analyze._SpanIndex(ranges)
+        for addr in (0xFF, 0x100, 0x10F, 0x110, 0x200, 0x204):
+            self.assertEqual(analyze.in_ranges(addr, index), analyze.in_ranges(addr, ranges))
 
 
 if __name__ == "__main__":

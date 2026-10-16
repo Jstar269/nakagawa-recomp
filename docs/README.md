@@ -19,6 +19,7 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
 | Check title and subsystem compatibility | [`COMPATIBILITY.md`](COMPATIBILITY.md) |
 | Audit user-supplied parser limits and hostile-input evidence | [`PARSER_SAFETY_INVENTORY.json`](PARSER_SAFETY_INVENTORY.json) — per-boundary evidence for #319; an inventory is not issue completion |
 | Run the release smoke test on a build | [`SMOKE_TEST.md`](SMOKE_TEST.md) |
+| Qualify a public title through the native player | [`TITLE_TESTING.md`](TITLE_TESTING.md) |
 | Change runtime, codegen, or the two-phase build | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 | Pick up work, or check whether something is already known | [`ISSUES.md`](../ISSUES.md) (live GitHub Issues win) |
 | **Add a tracked file that did not exist before** | [`PROVENANCE_MERGE_GATE.md`](PROVENANCE_MERGE_GATE.md) — a new implementation path needs its *own* record; blanket records such as `tools/*` are deliberately inert and will not cover it |
@@ -182,6 +183,7 @@ Every substantial document carries one status.
 | `YOUR_OWN_GAMES.md` | CURRENT | User guide: own-game input, unencrypted files, ownership and in-the-works boundaries |
 | `COMPATIBILITY.md` | CURRENT | Per-title and subsystem compatibility states and semantic boundaries |
 | `SMOKE_TEST.md` | CURRENT | Numbered pass/fail release smoke test for the native player |
+| `TITLE_TESTING.md` | CURRENT | Public title qualification: manifest and input-profile validation, sandboxed native-player smoke, bring-up-schema report and sweep vocabulary (#699) |
 | `SHOWCASE.md` | CURRENT | Source-owned showcase demos: sources, packaging, player discovery and notices (#309) |
 | `CI.md` | CURRENT | Hosted-check routing and evidence limits |
 | `PARSER_SAFETY_INVENTORY.json` | CURRENT | Per-boundary hostile-input/resource and campaign inventory (#319); does not establish issue completion |
@@ -231,6 +233,7 @@ Every substantial document carries one status.
 | `research/PSP_THREADING_SEMANTICS.md` | REFERENCE | Frozen design + measured-scope table; CT/ST oracle HARDWARE_MEASURED |
 | `PSP_INTR_WAITS_MATRIX.md` | HISTORICAL | Snapshot table; live counts in `src/rt/intr_conformance.h` |
 | `PSP_INTR_WAITS_CENSUS.md` | CURRENT | Generated registration census for the waits matrix; regenerate with `tools/waits_census.py` |
+| `RECOMP_HELPER_INVENTORY.md` | CURRENT | Generated helper inventory of `src/rt/recomp.c` and `src/rt/recomp.h` for #346 (names, defining files, header declaration, reach and provenance class; no line numbers or call counts); regenerate with `tools/recomp_helper_inventory.py`, and `--details` prints lines and counts |
 | `provenance/MODIFIED_FILE_NOTICES.md` | HISTORICAL | Retained notice contract, capture-time scope |
 
 Meanings: CURRENT is maintained contract — update it with the change.

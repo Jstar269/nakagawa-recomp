@@ -162,16 +162,19 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `import_audit.py` | Classify a PSP ELF's imports against the HLE registration manifest. |
 | `import_audit_gate.py` | Public CI gate for import coverage and fake-success regressions. |
 | `import_fixtures.py` | Synthetic PSP ELF fixtures for the import-coverage audit gate. |
+| `import_stub_census.py` | Import-stub census: every import-table stub of an image is owned, bodied and reaches the HLE (or a named refusal). |
 | `psp_import_table.py` | Defensive PSP ELF import-table parser for the import-coverage gate. |
 | `flight_diff.py` | Compare two source-safe flight-recorder bundles. |
 | `ge_transition_diff.py` | Offline diff for the narrow GE transition trace. |
 | `ge_replay_metrics.py` | Strict parsers for aggregate GE replay CPU-profile summaries. |
 | `ge_stat_windows.py` | Read the runtime's `SR_GESTAT` windows by the vblank that closed them, for gates such as the showcase smoke. |
 | `perf_summary_diff.py` | Compare two runtime performance summaries within a tolerance. |
+| `perf_attribution.py` | Present cadence (flips, re-presents, vblanks per new frame, implied fps) and cost shares for one `SR_PERF` run, or a diff of two runs. |
 | `pgf_writer.py` | Deterministic PGF writer for project-generated glyph bitmaps (a fixture generator, never an authenticity claim). |
 | `ttf2pgf.py` | Deterministic OpenType/TTF to PGF converter for pinned public fixtures; behaviour contract and independence record in `docs/cleanroom/PGF_CONVERTER_SPEC.md` (issue #313). |
 | `evidence_model.py` | Fail-closed evidence grading and revision identity primitives. |
 | `waits_census.py` | Regenerate the interrupt/dispatch waits-matrix registration census. |
+| `recomp_helper_inventory.py` | Regenerate and drift-check the `recomp.c`/`recomp.h` helper inventory (reach and provenance class per helper; #346). |
 | `vblank_ledger.py` | Judge one run's VBLANK delivery against the display source that owed it. |
 | `boot_gate.py` | Summarize machine-readable native boot milestones from a runtime log. |
 | `soak_audit.py` | Judge one soak run from the telemetry the runtime already writes. |
@@ -207,6 +210,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `hst_test_fixtures.py` | Small source-owned ELF, PSP-header and ISO envelope fixtures for the doctor tests. |
 | `nk_clean.py` | Preview-first workspace cleaner for allowlisted output roots. |
 | `title_manifest.py` | Validate and deterministically normalize public title manifests. |
+| `title_qualification.py` | Qualify public titles: validate manifests, input profiles and bring-up reports, and smoke-launch a public title through the native player in a sandbox. |
 | `title_codegen_plan.py` | Build a deterministic code-generation plan or AOT package from a title manifest. |
 | `title_catalog_codegen.py` | Deterministic C generator for the native public title catalog. |
 | `title_runtime_config.py` | Emit the build-local runtime title configuration consumed by the runtime. |
@@ -250,7 +254,10 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `lint_docs.py` | Deterministic offline documentation freshness and staleness linter. |
 | `audit_public_issue_links.py` | Networked audit of public Issue and PR references in tracked Markdown. |
 | `contrib_check.py` | Run only the local gates that apply to the files you changed. |
+| `contrib_refresh.py` | Reproduce the two public provenance controls for the changed paths that already have public entries, from the committed public ledger alone; refuses new, removed, unresolved or policy-changing paths. |
 | `discovery_contract.py` | Inventory and verify the repository's unittest discovery contract. |
+| `scratch_dir.py` | `TemporaryDirectory` for tests that run a program from inside it: cleanup waits out a short-lived Windows file lock for a bounded time, then raises the real error. |
+| `format_portability_check.py` | Compile the portable core against a 32-bit newlib-shaped `stdint.h` shim with `-Werror=format`, so a fixed-width value printed with a plain `%u`/`%x`/`%d` fails on every host. |
 | `ci_paths.py` | Classify a change for the path-gated public CI workflow. |
 | `ci_required.py` | Evaluate the stable aggregate status for the path-gated CI workflow. |
 | `ci_test_shards.py` | Deterministic cost-weighted partition of the Python test modules into CI shards; weights in `tools/ci_test_weights.json`. |
@@ -304,6 +311,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | Module | Purpose |
 | --- | --- |
 | `test_analyze_tailcall.py` | Regression tests for the analyzer's tail-call promotion. |
+| `test_analyze_import_stub_entries.py` | Import-table stubs outside the named code sections are owned function entries, with codegen bodies. |
 | `test_analyze_toml_emit.py` | Locks the analyzer TOML emitter's fail-closed string contract. |
 | `test_analyzer_span_scope.py` | Regression tests for analyzer executable-span ownership. |
 | `test_codegen_continuations.py` | Linked transfers carry a resume boundary; unlinked ones stay tail dispatches. |
@@ -334,6 +342,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_hle_umd_wakeup.py` | The ready signal must wake only UMD waiters; a plain wait creates no drive event. |
 | `test_import_audit.py` | Tests for the import-table parser, classifier and CI gate. |
 | `test_import_name_safety.py` | Synthetic regressions for untrusted PSP import-library metadata. |
+| `test_import_stub_census.py` | The import-stub census over synthetic images, including the late-pass regression guard. |
 | `test_imports.py` | Tests for the trusted code-generation import-map compatibility path. |
 | `test_nid_name_proof.py` | Tests for the independent NID-name verifier. |
 | `test_nidseq.py` | Fail-closed import-sequence extraction and oracle comparison. |
@@ -358,6 +367,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_native_driver_hardening.py` | Malformed-input regression tests for the native runtime driver. |
 | `test_native_gate_stub_link.py` | Keep the headless gate link surface synchronized with the runtime. |
 | `test_native_host_backends.py` | Run the host-backend native tests from the Python gate. |
+| `test_flash0_font.py` | The read-only flash0: font device selftest, through the built runtime. |
 | `test_platform_ladder.py` | Regressions for the source-owned second-platform workload ladder. |
 | `test_prx_loader_cleanroom.py` | Clean-room black-box tests for the PRX loader. |
 | `test_prx_reloc_model.py` | Pins the relocation model to the runtime PRX loader byte for byte at several bases. |
@@ -418,6 +428,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_title_manager_plan.py` | Bounded manager plan fields, generic profile and fail-closed conflicts. |
 | `test_title_manifest.py` | Manifest schema, canonicalization, native identity and guest module bases. |
 | `test_title_manifest_parity.py` | Differential parity between the Python manifest tool and the native C validator. |
+| `test_title_qualification.py` | Title qualification: validation refusals, the sandboxed smoke launch, exit codes and report shape. |
 | `test_title_protected_digest.py` | Contract tests for the protected title-manifest digest. |
 | `test_title_pspdev_phase5.py` | A second wholly source-owned title must prove multi-title planning. |
 | `test_title_runtime_config.py` | Tests for the runtime title configuration path. |
@@ -459,7 +470,9 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_parse_fuzz.py` | Seeded, deterministic mutation fuzzing over the public offline parsers. |
 | `test_padscript_from_log.py` | Controller log to pad script conversion: press widths and mask-change spans. |
 | `test_perf_summary_diff.py` | Performance summary comparison within a tolerance. |
+| `test_perf_attribution.py` | Synthetic regressions for the present-cadence and cost attribution report, including source pins on the emitter formats. |
 | `test_pgf_writer.py` | PGF writer determinism and public-reader round trip over generated glyph sets. |
+| `test_pgf_validate_parity.py` | Field-by-field parity of the native PGF validator and its Python mirror on seeded images and mutations. |
 | `test_ttf2pgf.py` | Converter determinism, manifest/pin binding, named refusals, and public-reader round trip over the pinned font fixture. |
 | `test_ppmdiff_coverage.py` | Fail-closed coverage tests for the framebuffer diff. |
 | `test_frame_capture_check.py` | Frame-capture accounting plus the emitted-format contract that pins the FBSNAP/WATCHDOG patterns to the current runtime strings. |
@@ -474,6 +487,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_telemetry_export_security.py` | Telemetry export must not leak private diagnostic data. |
 | `test_visual_oracle.py` | Visual-oracle runner guarantees. |
 | `test_waits_census.py` | Tests for the waits-matrix census generator. |
+| `test_recomp_helper_inventory.py` | Tests for the recomp helper inventory generator and its drift check. |
 | `test_xb_probe.py` | Synthetic, retail-free coverage for the direct archive probe. |
 
 ### Regression tests: publication, provenance and supply chain
@@ -507,6 +521,7 @@ harness changes no compiler default. Findings belong in issue #317.
 
 | Module | Purpose |
 | --- | --- |
+| `test_native_core_build.py` | Pins the native-core-tests dry run: the same test binaries and arguments, one compile per flag set. |
 | `test_build_graph_snapshot.py` | Tests for the read-only build graph snapshot. |
 | `test_build_system_parity.py` | Machine-checkable parity between the Makefile and the CMake build. |
 | `test_ci_paths.py` | Path-gated CI classification tests. |
@@ -514,7 +529,9 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_ci_test_shards.py` | CI test-shard planner: exactly-once coverage, separation and workflow wiring. |
 | `test_compiler_compare.py` | The compiler comparison must not publish a timing its semantic veto did not earn. |
 | `test_contrib_check.py` | The contribution gate must route, and must never turn a skip into a pass. |
+| `test_contrib_refresh.py` | The contributor refresh equals the maintainer generator byte for byte on a synthetic repository, and every refusal fails closed. |
 | `test_discovery_contract.py` | Parallel test execution and discovery contract verification. |
+| `test_format_portability_check.py` | The format portability checker fails a synthetic `%u`/`%d` on a fixed-width value and passes PRI macros and casts, through the API and the CLI. |
 | `test_hst_doctor.py` | Doctor checks: data directories, ELF validation, private inputs, repository contract. |
 | `test_hst_doctor_hardening.py` | Doctor hardening: commit identity and the fresh-clone setup matrix. |
 | `test_manager_symbol_docs.py` | Keep the manager symbol guidance aligned with the public documentation. |
@@ -526,6 +543,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_public_ci_wiring.py` | Regression checks for public and clean-checkout CI wiring. |
 | `test_readme_images.py` | Deterministic checks on the published showcase screenshots. |
 | `test_relocated_clone.py` | Contributor quick check in a checkout whose own path contains spaces. |
+| `test_scratch_dir.py` | The scratch directory retries only Windows lock errors, within its bound; on Windows a real held file reproduces the WinError 32 cleanup failure. |
 | `test_text_write_newlines.py` | A tool that emits a tracked text file must pin its line endings. |
 | `test_tree_lint.py` | Offline deterministic tests for `tools/tree_lint.py`. |
 | `test_validate_assets.py` | Synthetic, retail-free hostile coverage for the asset validator. |

@@ -18,7 +18,9 @@
  * boot threads the way the game's startup expects, not a cycle-accurate kernel.
  */
 
+#ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
+#endif
 #include "recomp.h"
 #include "sr_coro.h"     /* portable cooperative-coroutine primitive (replaces Win32 fibers) */
 #include "perf.h"
@@ -237,6 +239,7 @@ static int      s_dispatch_enabled = 1;
  * and one masked period are indistinguishable to the guest.  See
  * sched_resume_interrupts(). */
 static int      s_vblank_masked_pending;
+static int      s_vblank_resume_anchor_pending;
 /* Interrupt state is a gate on delivery, not a gate on the scheduler clock.  A
  * source bit remains latched until the eligible handler consumes it. */
 static uint32_t s_pending_interrupts;
@@ -597,6 +600,8 @@ void sched_init(CpuState *cpu) {
     sr_rt_uid_fn = sr_rt_current_uid;
     if (cpu->r[28] != 0u) s_gp = cpu->r[28];           /* the driver seeded gp from the module's # init */
     s_sched_coro = sr_coro_main();
+    sr_dispatch_host_stack_remaining = sr_coro_stack_remaining;
+    sr_dispatch_host_stack_top = sr_coro_stack_top;
     sr_sched_on = 1;
     s_interrupts_enabled = 1;
     s_dispatch_enabled = 1;
@@ -753,6 +758,7 @@ void sched_resume_interrupts(uint32_t state) {
             s_pending_vblanks++;
             sr_perf_vblank_coalesced();
         }
+        s_vblank_resume_anchor_pending = 1;
         s_vblank_masked_pending = 0;
     }
     if (was_enabled)
@@ -964,6 +970,7 @@ void sched_dump_threads(void) {
  * when no thread is runnable (i.e. once per simulated frame). */
 uint32_t sr_vblank_handler(void);
 uint32_t sr_vblank_arg(void);
+uint32_t sr_vblank_no(void);
 /* The deadline a thread carries when nothing but a signal can release it.
  * Named so the "infinite waits never expire" rule in
  * sched_promote_expired_waits() is checkable rather than a bare -1. */
@@ -977,10 +984,17 @@ uint32_t sr_vblank_arg(void);
 #define SCHED_IDLE_NO_PROGRESS_LIMIT 64
 
 static uint64_t s_vbl_count = 0;     /* vblanks delivered so far */
-/* Guest-time stamp of the most recent delivered VBLANK. The guest-visible vblank
- * interval is measured from this edge (see sched_display_is_vblank), so it has to
- * track real delivery rather than a free-running phase. */
+/* Guest-time stamp of the most recent delivered VBLANK. Retained separately from
+ * the scheduled source edge for diagnostics and the interrupt-masked scope rule. */
 static uint64_t s_vbl_last_us = 0;
+/* The newest scheduled edge latched while interrupts were enabled. Catch-up service
+ * can happen well after this edge, but must not move the measured interval to now. */
+static uint64_t s_vbl_edge_us;
+static int s_vbl_edge_valid;
+/* Delivery time is an alternate interval anchor only when the edge woke a blocked
+ * waiter or was the coalesced edge released when interrupt masking ended. */
+static uint64_t s_vbl_delivery_anchor_us;
+static int s_vbl_delivery_anchor_valid;
 /* Host stamp of the previous display-source latch.  The gap between consecutive
  * latches IS the service-point granularity: a gap wider than one display period
  * means periods came due with no eligible point to service them. */
@@ -998,9 +1012,9 @@ static uint32_t sr_rt_current_uid(void) {
  * `display-wait-late`, `display-vblank-window`; records PSP-DISPLAY-002 and
  * PSP-DISPLAY-004).
  *
- * There is no missed-edge memory. The scheduler used to carry a per-thread
- * `vbl_seen` latch: if a VBLANK had been delivered since this thread last
- * completed a display wait, the wait returned immediately and consumed the
+ * There is no per-thread missed-edge memory. The scheduler used to carry a
+ * per-thread `vbl_seen` latch: if a VBLANK had been delivered since this thread
+ * last completed a display wait, the wait returned immediately and consumed the
  * missed edge, on the theory that blocking would hard-quantize a frame whose
  * work crossed the period. Hardware says otherwise, and says it without
  * ambiguity. With 0.25, 0.75, 1.25, 1.75 and 2.5 periods of un-yielded CPU spin
@@ -1009,6 +1023,15 @@ static uint32_t sr_rt_current_uid(void) {
  * exactly 1 -- never 0, and never 2 even when two whole edges had been missed.
  * A late caller is not owed the edges it slept through. The latch is therefore
  * gone, along with the TCB field that backed it.
+ *
+ * The source itself is not memoryless, though. Edges are latched at a service
+ * point, so an edge that falls due during a stretch with no service point stays
+ * owed until the scheduler next runs one. If the caller registered first, the
+ * idle path would deliver that owed edge after registration and release the
+ * caller about one period early, which is the behaviour the hardware rules out.
+ * sched_vblank_block() closes that window: it samples the clock and delivers the
+ * owed edges before the caller registers, so they wake only threads that were
+ * already waiting.
  *
  * The two NIDs differ in exactly one place. At every phase OUTSIDE the vblank
  * interval the two calls are indistinguishable (240/240 trials each: blocked,
@@ -1022,6 +1045,15 @@ static uint32_t sr_rt_current_uid(void) {
  * semantic and is not expressible on hardware; see the D2 record
  * (PSP-DISPLAY-003) quoted above sched_run's idle handling. */
 static void sched_vblank_block(void) {
+    /* Sample the clock, latch any edge that has fallen due, and deliver the edges owed
+     * from before this call. All of it runs before the caller registers, so the owed
+     * edges wake only threads already waiting and this caller is not released by an
+     * edge that passed before it called (PSP-DISPLAY-002). vtime_refresh() rather than
+     * scheduler_progress_time(): in turbo the latter injects its fixed quantum, and an
+     * observation point must not move the turbo clock. In paced mode the two are the
+     * same host-clock sample and latch. */
+    vtime_refresh();
+    scheduler_service_pending();
     sched_block_on(VBLANK_WAIT_OBJ);
 }
 
@@ -1237,6 +1269,13 @@ static void scheduler_latch_due_events(void) {
          * a quarter of a display period up to three.  No N-period catch-up is
          * applied, and no increment at all when no period became pending. */
         if (s_interrupts_enabled) {
+            __uint128_t last_edge_offset = scheduler_vblank_delta(
+                count - 1u, s_vbl_event_period_rem, NULL);
+            s_vbl_edge_us = last_edge_offset >
+                                    (__uint128_t)(UINT64_MAX - s_vbl_next_us)
+                                ? UINT64_MAX
+                                : s_vbl_next_us + (uint64_t)last_edge_offset;
+            s_vbl_edge_valid = 1;
             sr_display_advance_vcount((uint32_t)count);
             /* count is 64-bit and the tallies are 32-bit: compare against the
              * headroom, because a 64-bit sum can never wrap and a truncating
@@ -1446,6 +1485,19 @@ static void deliver_vblank(void) {
     }
     g_frame_prims = 0;
 
+    int wakes_display_waiter = 0;
+    for (int i = 0; i < s_ntcb; i++) {
+        TCB *t = &s_tcb[i];
+        if (!t->deleted && t->state == TH_WAIT_OBJ && t->wait_obj == VBLANK_WAIT_OBJ) {
+            wakes_display_waiter = 1;
+            break;
+        }
+    }
+    if (wakes_display_waiter || s_vblank_resume_anchor_pending) {
+        s_vbl_delivery_anchor_us = s_vtime_us;
+        s_vbl_delivery_anchor_valid = 1;
+    }
+    s_vblank_resume_anchor_pending = 0;
     sched_wake(VBLANK_WAIT_OBJ);
     if (getenv("SR_PCSAMPLE")) {
         static unsigned long n = 0;
@@ -1460,7 +1512,13 @@ static void deliver_vblank(void) {
     memcpy(s_cpu, &save, sizeof(CpuState));
     s_cpu->r[29] = SR_VBLANK_STACK_TOP; /* dedicated interrupt stack (above thread stacks, below nested frames) */
     s_cpu->r[28] = s_gp;
-    s_cpu->r[4] = sr_vblank_arg();       /* a0 = registered arg */
+    /* A sub-interrupt handler is called as handler(no, arg): a0 is the sub-interrupt number
+     * the guest registered and a1 is its arg (PSPSDK pspintrman.h; the SDK vsync sample
+     * declares `void on_vblank(int sub, void *data)`). A retail title's handler reads its
+     * event-flag id from 4(a1) and ignores a0; with the arg in a0 it set event flag 0 every
+     * vblank (UNKNOWN_EVFID) and its movie threads waited forever. */
+    s_cpu->r[4] = sr_vblank_no();
+    s_cpu->r[5] = sr_vblank_arg();
     s_cpu->r[31] = 0;
     s_cpu->vfpuCtrl[0] = 0xe4; s_cpu->vfpuCtrl[1] = 0xe4;
     s_cpu->pc = h;
@@ -1488,6 +1546,8 @@ static void deliver_vblank(void) {
 
     s_cur = save_cur;
     memcpy(s_cpu, &save, sizeof(CpuState));
+    /* Interrupt return: the interrupted ll..sc window, if any, is over. */
+    sr_cpu_link_clear(s_cpu);
     extern void sr_vblank_tick(void);
     sr_vblank_tick();
 
@@ -1679,6 +1739,8 @@ static void scheduler_alarm_deliver(int slot) {
     const uint32_t period = s_cpu->r[2];
     s_cur = save_cur;
     memcpy(s_cpu, &save, sizeof(CpuState));
+    /* Interrupt return: the interrupted ll..sc window, if any, is over. */
+    sr_cpu_link_clear(s_cpu);
 
     /* The handler may have cancelled this very alarm, and the slot may even have been
      * reused: only the UID says whether the alarm is still the one that was delivered. */
@@ -1840,6 +1902,9 @@ static void coro_body(void *param) {
              * here: leaving them held would retire pool slots permanently and
              * make this thread's later nested calls fail closed for no reason. */
             unsigned reclaimed = sr_nested_frame_release_owner(t->uid);
+            /* A recorded tail transfer is consumed before guest code runs, so none can
+             * be live when guest code unwinds the thread (#855). */
+            sr_tail_assert_empty("tail-transfer-live-at-unwind");
             if (sched_uid_is_worker(t->uid)) fprintf(stderr, "FIBER_UNWIND: uid=0x%x cleanly unwound\n", t->uid);
             if (reclaimed)
                 fprintf(stderr,
@@ -2540,6 +2605,28 @@ static uint32_t sched_perf_uid(void) {
     return s_cur >= 0 && s_cur < s_ntcb ? s_tcb[s_cur].uid : 0u;
 }
 
+/* Switch thread t in: load its saved registers into the live CpuState. This is the only
+ * place sched_run() resumes a guest thread, so it is where a context switch takes effect.
+ *
+ * A context switch ends the incoming thread's ll..sc window: on the PSP a thread is only
+ * ever switched through an exception (a syscall that blocks or yields, or an interrupt
+ * that preempts), and the exception return clears LLbit (MIPS32 ERET). Clearing here --
+ * rather than when the outgoing thread is saved -- covers every path that parks a thread
+ * (sr_yield, a blocking HLE wait, preemption) without each having to remember it. */
+static void sched_load_thread_context(TCB *t) {
+    memcpy(s_cpu, &t->saved, sizeof(CpuState));
+    /* FRONTIER: r26/k0 is the PSP per-thread kernel-context pointer; libc's _getmodreent
+     * reads it via the recompiled f_0000fe3c. The codegen treats r26 as caller-saved
+     * scratch, so it may end as 0xDEADBEEF or 0 in the saved state. Real PSP thread
+     * bodies don't use r26 as scratch -- it's preserved per-thread. Restore it on every
+     * resume so the libc main-thread check never sees r26=0. */
+    if (t->k0_init) {
+        s_cpu->r[26] = t->k0_init;
+        t->saved.r[26] = t->k0_init;
+    }
+    sr_cpu_link_clear(s_cpu);
+}
+
 /* Save the running thread's registers, return to the scheduler, which selects and resumes the
  * next thread. Called from a thread fiber. */
 static void switch_to_scheduler(void) {
@@ -2597,6 +2684,9 @@ void sr_t111_dump(void) {
 }
 
 void sr_yield(CpuState *s) {
+    /* A fiber switch with a recorded tail transfer would let another thread's drain run
+     * it on the wrong guest state (#855). */
+    sr_tail_assert_empty("tail-transfer-live-at-yield");
     if (s->r[28] != 0u) {
         s_gp = s->r[28];
     }
@@ -3278,41 +3368,32 @@ uint32_t sched_display_accumulated_hcount(void) {
     return (uint32_t)scheduler_display_hcount_total();
 }
 
-/* The vblank interval BEGINS at the vblank start edge; it does not end there.
- *
- * Measured on PSP-3001/6.61-ARK (probe case `display-vblank-window`, record
- * PSP-DISPLAY-004): immediately after sceDisplayWaitVblankStart returned,
- * sceDisplayIsVblank() was true on 48 of 48 trials, and stayed true for
- * 721..734 us (mean 729) before falling. In the display's own units the
- * interval was entered at hcount 1 and left at hcount 14, i.e. it occupies the
- * first ~13 of the 286 lines in a frame. The same placement follows
- * independently from PSP-DISPLAY-002: a sceDisplayWaitVblankStart issued while
- * IsVblank() was true waited a FULL period, which is only possible if the caller
- * had just crossed a start edge rather than being about to reach one.
- *
- * This previously tested the LAST 1500 us before the next edge -- the opposite
- * end of the period, and roughly twice too wide. Anchor it to the delivery the
- * scheduler actually made, not to a free-running phase: the guest-visible
- * interval is the window immediately following the VBLANK the runtime
- * delivered, which is what a guest polling IsVblank() after a display wait
- * observes on hardware. Before the first delivery there is no interval to be
- * inside of.
- *
- * Scope, stated rather than implied. Delivery-anchoring makes the measured
- * primary invariant exact -- a caller that just returned from a display wait is
- * inside the interval, which is what the WaitVblank fast return depends on --
- * and it stays exact when the runtime falls behind and the source coalesces,
- * where a free-running phase would report `false` immediately after a late
- * delivery. The cost is the interrupt-masked regime: real scanout keeps running
- * under a CPU interrupt mask (the #88 measurements show AccumulatedHcount
- * free-running through one), so hardware's IsVblank keeps toggling there while
- * this predicate holds still until service resumes. Masks were measured at ~0.1%
- * of wall time with no guest execution inside them, so that regime is left to
- * the interrupt-context work rather than modelled by guessing here. */
+/* The vblank interval begins at the scheduled start edge and lasts 721..734 us
+ * (mean 729; PSP-3001/6.61-ARK, PSP-DISPLAY-004). Observations sample and latch
+ * due edges before this comparison, so an unserviced edge has a live VCOUNT and
+ * pending source without running its handler. The scheduled time of the newest
+ * such edge anchors ordinary observations and late catch-up deliveries. A delivery
+ * stamp extends the interval only when that edge woke an already-blocked display
+ * waiter, preserving IsVblank immediately after a wait despite host wake latency.
+ * While interrupts are masked, retain delivery anchoring until service resumes;
+ * the coalesced masked edge also keeps its resume delivery stamp. This preserves
+ * the existing interrupt-masked scope: hardware scanout continues there, while
+ * this predicate holds its prior value until the interrupt source can be serviced.
+ * Before any edge has been latched or delivered, there is no interval to observe. */
 int sched_display_is_vblank(void) {
-    if (!s_vbl_count) return 0;          /* no edge delivered yet */
-    if (s_vtime_us < s_vbl_last_us) return 0;
-    return (s_vtime_us - s_vbl_last_us) < (uint64_t)SCHED_DISPLAY_VBLANK_WINDOW_US;
+    vtime_refresh();
+    if (!s_vbl_count && !s_vbl_edge_valid) return 0;
+
+    uint64_t anchor;
+    if (!s_interrupts_enabled || !s_vbl_edge_valid) {
+        anchor = s_vbl_last_us;
+    } else {
+        anchor = s_vbl_edge_us;
+        if (s_vbl_delivery_anchor_valid && s_vbl_delivery_anchor_us > anchor)
+            anchor = s_vbl_delivery_anchor_us;
+    }
+    if (s_vtime_us < anchor) return 0;
+    return (s_vtime_us - anchor) < (uint64_t)SCHED_DISPLAY_VBLANK_WINDOW_US;
 }
 
 void sched_set_current_cb_wait(int cb_wait) {
@@ -3941,16 +4022,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         s_cur = idx;
         SCHED_LIVENESS_OWNER(t->uid);
         t->state = TH_RUNNING;
-        memcpy(s_cpu, &t->saved, sizeof(CpuState));   /* load this thread's registers */
-        /* FRONTIER: r26/k0 is the PSP per-thread kernel-context pointer; libc's _getmodreent
-         * reads it via the recompiled f_0000fe3c. The codegen treats r26 as caller-saved
-         * scratch, so it may end as 0xDEADBEEF or 0 in the saved state. Real PSP thread
-         * bodies don't use r26 as scratch -- it's preserved per-thread. Restore it on every
-         * resume so the libc main-thread check never sees r26=0. */
-        if (t->k0_init) {
-            s_cpu->r[26] = t->k0_init;
-            t->saved.r[26] = t->k0_init;
-        }
+        sched_load_thread_context(t);      /* load this thread's registers */
         atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);          /* a fresh slice for this run (the counter is global) */
         if (!t->started) {
             t->started = 1;
@@ -3964,7 +4036,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
              * SwitchToFiber -- a NULL fiber would deref garbage and tear the process down.
              * On failure we surface a clean error and abort (there's no game-state left to
              * save -- the scheduler loop has no way to recover a thread that never started). */
-            t->coro = sr_coro_create(coro_body, t, (size_t)64 << 20);
+            t->coro = sr_coro_create(coro_body, t, SR_GUEST_FIBER_STACK_SIZE);
             if (!t->coro) {
                 fprintf(stderr, "sched_run: sr_coro_create failed for uid=0x%x entry=0x%08x "
                         "-- cannot continue\n",
@@ -3972,6 +4044,9 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
                 fflush(stderr);
                 abort();
             }
+            /* The new stack may reuse the range of one released earlier, which a cached
+             * direct-call host-stack window could still describe (#855, recomp.h). */
+            sr_host_stack_window_clear();
         }
         extern int g_hle_depth;
         g_hle_depth = t->hle_depth;

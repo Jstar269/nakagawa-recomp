@@ -42,6 +42,15 @@ build ran, and the toolchain copies them into its own output:
     A ``sha256`` the package's own JSON records for a file that differs only by
     the rules above. A recorded digest is a consequence, not a new difference.
 
+Three toolchain files, the link's response file, the runtime profile-entries file and
+the list of runtime objects the profile stamp invalidates, also record the cache entry
+the objects are written into. Across two manifests they differ in that entry and
+nothing else, which ``PATH_ECHOES`` checks on its own. Make writes all three with
+``$(file >...)``, and every file it writes that way into the build directory must be
+classified here. The build class needs the Windows toolchain and every hosted runner
+skips it, so ``TestMakeWrittenFilesAreClassified`` checks that inventory from the
+makefiles themselves, on every host.
+
 **Public-export exclusion.** The route writes nothing the public export or
 ``git status`` could pick up, and the public scope refuses the output root even
 when someone points it there by mistake.
@@ -76,6 +85,8 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 import publication_policy  # noqa: E402
+import scratch_dir  # noqa: E402
+from test_build_truth import _class_scratch_build_root  # noqa: E402
 from test_player_package_route import (  # noqa: E402
     DISC_ID,
     FRAMES,
@@ -143,12 +154,63 @@ GUEST_DERIVED_SUFFIXES = (".c", ".h", ".bin", ".toml")
 # The package files that record the manifest's own identity. Two routes that bind
 # the same guest to two different manifests must differ in exactly these.
 MANIFEST_IDENTIFIED = ("build-report.json", "package.json", "completion-manifest.json")
+# Toolchain files that record where the objects were written rather than what was
+# compiled: the response file the title link reads (#724), the profile-entries file
+# the runtime stamp is hashed from (CFLAGS carries -DSR_BUILD_DIR), and the list of
+# runtime objects the stamp's recipe hands tools/build_profile.py to invalidate (#783).
+# Each names the content-addressed cache entry, so two manifests differ in them exactly
+# where they differ in the compiled artifacts, and two roots differ in them by the root
+# alone.
+#
+# They are package files because the package is the whole build directory: the planner
+# promotes it with one copytree and the completion manifest records every file in it.
+# The invalidation list is the same kind of file as the link's response file, an
+# argument list Make writes to a file because inline it overran the command line under
+# a long BUILD_DIR, so it is compared the same way rather than dropped on its own.
+PATH_ECHOES = ("link-objects.rsp", ".runtime-profile-entries", ".runtime-invalidate.lst")
+# A cache entry directory, <AOT digest>/<native digest>, in its long spelling or in the
+# Windows 8.3 spelling the planner's workspace path is echoed with (for example
+# "7B48E1~1" for "7b48e18b9f...").
+#
+# The 8.3 suffix is ``~N`` with N counting collisions, so it reaches ``~10`` and beyond.
+#
+# Separators: only forward slashes are matched, on purpose. No writer of these files
+# echoes a backslash: the Makefile's CFLAGS carry
+# ``-DSR_BUILD_DIR=\"$(subst \,/,$(BUILD_DIR))\"`` (the runtime profile entries are
+# hashed from CFLAGS), and the link response file is written as
+# ``$(file >$(LINK_OBJECTS_RSP),$(subst \,/,$(LINK_OBJECTS)))``. The invalidation list
+# is written without a substitution, as ``$(RT_GE_O) $(RT_OBJS)``, but each of those is
+# ``$(BUILD_DIR)/<name>.o`` and the planner hands Make ``BUILD_DIR`` as
+# ``build_workspace.as_posix()``. A backslash echo would therefore not be rewritten
+# here, and the two manifests' differing digests would fail the equality check in the
+# test, so the assumption fails closed.
+_CACHE_ENTRY_RE = re.compile(rb"/entries/(?:[0-9a-f]{64}|[0-9A-F]{6}~[0-9]+)/"
+                             rb"(?:[0-9a-f]{64}|[0-9A-F]{6}~[0-9]+)/")
 # The package files whose content names the title or the artifact stem. These are
 # left out of the byte comparison, because a route may legitimately name a
 # different title; the generated-manifest test then states which of them must still
 # agree, since the stem is a property of the guest.
 TITLE_IDENTIFIED = MANIFEST_IDENTIFIED + ("THIRD_PARTY_NOTICES.txt", "SOURCE.txt",
                                           "codegen_profile.json", "recomp_profile.json")
+# The other files the Makefile writes into BUILD_DIR with ``$(file >...)``. The codegen
+# profile's entries name the artifact stem, the guest's base, the codegen options, the
+# profile argument and any extra modules. This fixture has no extra module and no
+# profile, so the file names no path and two routes must write it byte for byte. The
+# PSMF media selftest's response file is written only by that selftest's link, which no
+# package build runs. With the path echoes above, these are every such write, which
+# TestMakeWrittenFilesAreClassified checks on every host.
+MAKE_WRITTEN_IDENTICAL = (".codegen-profile-entries",)
+MAKE_WRITTEN_UNPACKAGED = ("psmf_media_selftest.rsp",)
+
+
+def path_echo_content(rules: "PackageNormalizer", name: str, data: bytes) -> bytes:
+    """A path echo under the documented rules, with its cache entry read as one.
+
+    Only the cache-entry digests are added to the rules, and only for these files:
+    they are the one part of the path that the manifest, not the root, determines.
+    """
+    normalized, _ = rules.apply(name, data)
+    return _CACHE_ENTRY_RE.sub(b"/entries/<ENTRY>/", normalized)
 
 
 def names_the_title(relative: str) -> bool:
@@ -371,7 +433,8 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
             raise unittest.SkipTest(
                 "the player package route requires " + ", ".join(missing) + " on PATH")
         make_name = "mingw32-make" if os.name == "nt" else "make"
-        probe = subprocess.run([make_name, "--no-print-directory", "sdl3-check"],
+        probe = subprocess.run([make_name, "--no-print-directory", "sdl3-check",
+                                f"BUILD_ROOT={cls.binary_dir.as_posix()}"],
                                cwd=ROOT, capture_output=True, text=True)
         output = probe.stdout + probe.stderr
         if probe.returncode != 0 and "sdl3 dependency is missing" in output.lower():
@@ -379,7 +442,7 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
                           if "sdl3 dependency is missing" in line.lower())
             raise unittest.SkipTest(reason.strip())
         suffix = ".exe" if os.name == "nt" else ""
-        required = [ROOT / "build" / name for name in
+        required = [cls.binary_dir / name for name in
                     (f"test_package_builder{suffix}", f"test_player_state{suffix}",
                      f"nakagawa_player{suffix}")]
         cls.harness, cls.validator, cls.player = required
@@ -387,7 +450,7 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
             return
         built = subprocess.run(
             [make_name, "--no-print-directory", "player", "player-state-test-bin",
-             "package-builder-test-bin"],
+             "package-builder-test-bin", f"BUILD_ROOT={cls.binary_dir.as_posix()}"],
             cwd=ROOT, capture_output=True, text=True,
         )
         if all(binary.is_file() for binary in required):
@@ -401,10 +464,13 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.temporary = tempfile.TemporaryDirectory(prefix="nk-player-determinism-")
+        cls.temporary = scratch_dir.TemporaryDirectory(prefix="nk-player-determinism-")
         cls.addClassCleanup(cls.temporary.cleanup)
         cls.workspace = Path(cls.temporary.name)
         cls.before = cls.repo_status()
+        # The probe's binaries are built into a scratch BUILD_ROOT for the class, which the
+        # package planner's Make runs inherit; the checkout's build/ is never written.
+        cls.binary_dir = _class_scratch_build_root(cls, "player-determinism")
         cls.probe_toolchain()
         # Roots A and B receive byte-identical inputs; root C receives the same
         # guest bound to the analyzer-generated manifest variant.
@@ -496,6 +562,12 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
                 "is_experimental": True,
             }],
         }), encoding="utf-8")
+        # The launcher refuses a title whose declared data folder is absent. The route
+        # test stages the same empty folder beside the library, so the launch half
+        # reads the same runtime root on both routes.
+        data_root = manifest.get("filesystem", {}).get("data_root")
+        if data_root:
+            (user_root / data_root).mkdir(parents=True, exist_ok=True)
 
     @staticmethod
     def generated_manifest(fixture: Path, executable: bytes) -> dict:
@@ -553,7 +625,7 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
 
     # -- the launch half ------------------------------------------------------
 
-    def launch(self, name: str) -> tuple[subprocess.CompletedProcess, Path, Path]:
+    def launch(self, name: str) -> tuple[subprocess.CompletedProcess, Path]:
         """PLAY NOW, headless, through the player's own launch session."""
         local_appdata = self.roots[name].parent / "localappdata"
         library_dir = local_appdata / "Nakagawa" / "data"
@@ -561,11 +633,9 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
         (library_dir / "library.json").write_bytes(
             (self.roots[name] / "library.json").read_bytes())
         sandbox = self.roots[name].parent / "sandbox"
-        boot_log = sandbox / f"{name}-boot-events.log"
         perf_csv = sandbox / f"{name}-perf.csv"
         environment = os.environ.copy()
         environment["LOCALAPPDATA"] = str(local_appdata)
-        environment["SR_BOOT_EVENT_FILE"] = str(boot_log)
         environment["SR_PERF"] = "1"
         environment["SR_PERF_CSV"] = str(perf_csv)
         ucrt_bin = Path("C:/msys64/ucrt64/bin")
@@ -577,15 +647,22 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
             cwd=ROOT, env=environment, capture_output=True, text=True,
             timeout=LAUNCH_TIMEOUT_MS,
         )
-        return launched, boot_log, perf_csv
+        return launched, perf_csv
 
     def assert_launched(self, name: str) -> None:
-        launched, boot_log, perf_csv = self.launch(name)
+        launched, perf_csv = self.launch(name)
         self.assertEqual(launched.returncode, 0,
                          launched.stdout[-4000:] + launched.stderr[-4000:])
         self.assertIn("[PLAYER] Launch index 0: PLAY NOW available", launched.stdout)
         self.assertIn("[PLAYER] Headless launch child exited with code 0", launched.stdout)
-        events = boot_log.read_text(encoding="utf-8", errors="replace")
+        # The player owns the child's boot evidence: it writes one file under the per-user
+        # cache, and an inherited SR_BOOT_EVENT_FILE does not redirect it (the route test
+        # reads the same file the same way).
+        boot_logs = sorted((self.roots[name].parent / "localappdata" / "Nakagawa" / "cache")
+                           .glob("player-boot-*.events"))
+        self.assertEqual(len(boot_logs), 1,
+                         "the player did not retain the child's boot evidence")
+        events = boot_logs[0].read_text(encoding="utf-8", errors="replace")
         for milestone in ("BOOT_EVENT phase=image_loaded",
                           "BOOT_EVENT phase=runtime_registered",
                           "BOOT_EVENT phase=guest_start mode=scheduler"):
@@ -777,16 +854,38 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
                         "reason two builds of identical inputs did not share: "
                         f"{sorted(pair.rules_for(EXECUTABLE))}")
 
-        # The only artifacts allowed to differ are the ones that record a manifest's
-        # own identity. Everything the toolchain derives from the *guest* must match
-        # byte for byte, with no rule applied.
+        # The only artifacts allowed to differ, by name, are the ones that record a
+        # manifest's own identity, the compiled artifacts, and the path echoes checked
+        # next. Everything the toolchain derives from the *guest* must match byte for
+        # byte, with no rule applied.
         self.assertEqual(
             sorted(name for name in pair.differing
                    if not name.endswith((".d", ".o", ".map"))
-                   and name not in (".game-inputs", "runtime_profile.json", EXECUTABLE)),
+                   and name not in (".game-inputs", "runtime_profile.json", EXECUTABLE)
+                   and name not in PATH_ECHOES),
             sorted(MANIFEST_IDENTIFIED),
             "these artifacts differ between the two manifest routes, and the difference "
             "is neither the manifest's own recorded identity nor a compiled artifact")
+        # A path echo may differ between the routes only where its cache entry does. With
+        # the workspace root, the scratch name and the cache-entry digests read as one,
+        # it must then be byte-identical: a difference in its content is not explained.
+        for name in PATH_ECHOES:
+            self.assertIn(name, pair.identity, f"the package no longer contains {name}")
+            self.assertEqual(
+                path_echo_content(pair.left_rules, name, pair.left_by_name[name]),
+                path_echo_content(pair.right_rules, name, pair.right_by_name[name]),
+                f"{name} differs between the two manifest routes by more than the "
+                "workspace root and its cache entry")
+        # The other files Make writes with $(file >...) are held to what the inventory
+        # declares: a strict one is in both packages and byte-identical with no rule, and
+        # one that is not a package file is in neither.
+        for name in MAKE_WRITTEN_IDENTICAL:
+            self.assertIn(name, pair.identical,
+                          f"{name} is missing from a package or differs between the two "
+                          "manifest routes")
+        for name in MAKE_WRITTEN_UNPACKAGED:
+            self.assertNotIn(name, pair.left_names | pair.right_names,
+                             f"{name} is in a package, so it needs a comparison rule")
 
         # The compiled artifacts do differ, because the two manifests carry different
         # content-addressed cache keys, and every one of them is a file two builds of
@@ -823,6 +922,195 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
         # And the launch is the same guest-visible run on both routes.
         self.assert_launched("a")
         self.assert_launched("c")
+
+
+# -- the Makefile's own file writes -------------------------------------------
+
+# Indented lines count too, recipe lines included, and so do ``+=`` and ``!=``: a spurious
+# extra definition can only make a target ambiguous, which the reader refuses, never
+# resolve it to a wrong file. Leaving one out could: ``X := a`` with ``X += b`` would read
+# as the single value ``a``.
+_MAKE_ASSIGNMENT_RE = re.compile(
+    r"^\s*(?:override\s+)?(?:export\s+)?([A-Za-z0-9_]+)\s*(::?=|\?=|\+=|!=|=)\s*(.*?)\s*$")
+_MAKE_VARIABLE_RE = re.compile(r"\$\(([A-Za-z0-9_]+)\)")
+_MAKE_CALL_ARGUMENT_RE = re.compile(r"\$\(([0-9]+)\)")
+_BUILD_DIR_FILE_RE = re.compile(r"\$\(BUILD_DIR\)/([^\s$()/]+)")
+_MAKE_INCLUDE_RE = re.compile(r"^[ \t]*-?include[ \t]+(.+)$", re.MULTILINE)
+# How many rounds of variable substitution a target may take. Every write today settles
+# within two; a target still changing after this many is a cycle or a chain the reader
+# refuses rather than follows.
+_MAKE_EXPANSION_ROUNDS = 16
+
+
+def makefile_sources(root: Path) -> str:
+    """The Makefile and every in-tree makefile it includes by a literal path.
+
+    An include through a variable names a file the build itself generates in the build
+    tree (the SDL3 discovery fragment, the profile stamps, the dependency files), which
+    holds no ``$(file >...)`` recipe of the project's own.
+    """
+    makefile = (root / "Makefile").read_text(encoding="utf-8")
+    sources = [makefile]
+    for include in _MAKE_INCLUDE_RE.finditer(makefile):
+        for word in include.group(1).split():
+            if "$" not in word:
+                sources.append((root / word).read_text(encoding="utf-8"))
+    return "\n".join(sources)
+
+
+def _make_reference(text: str, start: int) -> str:
+    """The whole ``$(...)`` reference starting at ``start``, matched as Make matches it."""
+    depth = 0
+    for index in range(start + 1, len(text)):
+        depth += {"(": 1, ")": -1}.get(text[index], 0)
+        if depth == 0:
+            return text[start:index + 1]
+    raise ValueError(f"unbalanced Make reference at offset {start}")
+
+
+def _make_arguments(reference: str) -> list[str]:
+    """``$(name a,b,...)`` split at its top-level commas: ``["name a", "b", ...]``."""
+    arguments, current, depth = [], [], 0
+    for char in reference[2:-1]:
+        if char == "," and depth == 0:
+            arguments.append("".join(current))
+            current = []
+            continue
+        depth += {"(": 1, ")": -1}.get(char, 0)
+        current.append(char)
+    arguments.append("".join(current))
+    return arguments
+
+
+def make_file_writes(makefile: str) -> dict[str, str]:
+    """Each file a Makefile writes into ``$(BUILD_DIR)`` with ``$(file >...)`` or ``>>``.
+
+    Maps the file's name to the line that writes it; the search for ``$(file >`` is a
+    prefix of the append form, so both are found. The target is resolved through
+    variables with a single definition and through the arguments of each ``$(call)``
+    of the variable the write is defined in. A target that does not resolve to
+    ``$(BUILD_DIR)/<name>`` raises, so a write this reader cannot place fails the
+    inventory instead of escaping it.
+    """
+    lines = [line for line in makefile.splitlines() if not line.lstrip().startswith("#")]
+    text = "\n".join(lines)
+    definitions: dict[str, set[str]] = {}
+    for line in lines:
+        assignment = _MAKE_ASSIGNMENT_RE.match(line)
+        if assignment:
+            name, operator, value = assignment.groups()
+            # An append or a shell assignment is never the same definition as a plain
+            # value, even with equal text.
+            if operator in ("+=", "!="):
+                value = f"{operator} {value}"
+            definitions.setdefault(name, set()).add(value)
+
+    def expand(name: str) -> str:
+        values = definitions.get(name, set())
+        if len(values) != 1:
+            raise ValueError(f"$({name}) has {len(values)} definitions, so a write to it "
+                             "cannot be placed")
+        return next(iter(values))
+
+    def resolve(target: str) -> str:
+        for _ in range(_MAKE_EXPANSION_ROUNDS):
+            expanded = _MAKE_VARIABLE_RE.sub(
+                lambda m: m.group(0) if m.group(1) == "BUILD_DIR" else expand(m.group(1)),
+                target)
+            if expanded == target:
+                return target.strip()
+            target = expanded
+        raise ValueError(f"{target!r} is still expanding after {_MAKE_EXPANSION_ROUNDS} "
+                         "rounds: a cycle, or a chain this reader refuses to follow")
+
+    writes: dict[str, str] = {}
+    for found in re.finditer(r"\$\(file >", text):
+        start = text.rfind("\n", 0, found.start()) + 1
+        end = text.find("\n", found.start())
+        line = text[start:end if end >= 0 else len(text)].strip()
+        target = _make_arguments(_make_reference(text, found.start()))[0]
+        target = target[len("file "):].lstrip(">").strip()
+        argument = _MAKE_CALL_ARGUMENT_RE.fullmatch(target)
+        if argument is None:
+            targets = [target]
+        else:
+            owner = _MAKE_ASSIGNMENT_RE.match(line)
+            if owner is None:
+                raise ValueError(f"{line!r} writes a $(call) argument outside an assignment")
+            calls = re.finditer(r"\$\(call " + re.escape(owner.group(1)) + ",", text)
+            targets = [_make_arguments(_make_reference(text, call.start()))
+                       [int(argument.group(1))] for call in calls]
+        for each in targets:
+            resolved = resolve(each)
+            named = _BUILD_DIR_FILE_RE.fullmatch(resolved)
+            if named is None:
+                raise ValueError(f"{line!r} writes {resolved!r}, which is not a file "
+                                 "directly in $(BUILD_DIR)")
+            writes[named.group(1)] = line
+    return writes
+
+
+class TestMakeWrittenFilesAreClassified(unittest.TestCase):
+    """Every file Make writes into the build directory with ``$(file >...)`` is classified.
+
+    A package is the whole build directory, so each such file is a package file the
+    determinism contract must know how to compare. The build class above compares them,
+    but it needs the Windows toolchain and every hosted runner skips it, which is how
+    #783's runtime invalidation list reached main unclassified. This inventory reads the
+    Makefile and the in-tree makefiles it includes, and runs on every host.
+    """
+
+    def test_every_make_written_build_file_has_a_comparison(self):
+        try:
+            written = make_file_writes(makefile_sources(ROOT))
+        except ValueError as error:
+            self.fail(f"the Makefile's $(file >...) writes cannot be inventoried: {error}")
+        classified = {*PATH_ECHOES, *MAKE_WRITTEN_IDENTICAL, *MAKE_WRITTEN_UNPACKAGED}
+        self.assertEqual(
+            {name: line for name, line in written.items() if name not in classified}, {},
+            "the Makefile writes these files into BUILD_DIR, and the package determinism "
+            "contract does not say how to compare them: add each to PATH_ECHOES, "
+            "MAKE_WRITTEN_IDENTICAL or MAKE_WRITTEN_UNPACKAGED with its reason")
+        self.assertEqual(
+            sorted({*MAKE_WRITTEN_IDENTICAL, *MAKE_WRITTEN_UNPACKAGED} - set(written)), [],
+            "these are classified as $(file >...) writes, but the Makefile no longer "
+            "writes them that way")
+
+    def test_the_reader_resolves_writes_and_refuses_what_it_cannot_place(self):
+        synthetic = ("LIST := $(BUILD_DIR)/objects.lst\n"
+                     "record = $(file >$(2),$($(1)))\n"
+                     "HASH := $(call record,ENTRIES,$(BUILD_DIR)/.entries)\n"
+                     "out:\n\t$(file >$(LIST),$(subst \\,/,$(OBJS)))\n"
+                     "\t$(file >>$(BUILD_DIR)/appended.lst,$(OBJS))\n")
+        self.assertEqual(sorted(make_file_writes(synthetic)),
+                         [".entries", "appended.lst", "objects.lst"])
+        for unplaced in ("out:\n\t$(file >$@,x)\n",
+                         "out:\n\t$(file >$(BUILD_ROOT)/x.lst,x)\n",
+                         "out:\n\t$(file >$(BUILD_DIR)/sub/x.lst,x)\n",
+                         # An appended or shell-assigned target is not one plain value,
+                         # even when the appended text repeats the first definition.
+                         "L := $(BUILD_DIR)/x.lst\nL += $(BUILD_DIR)/x.lst\n"
+                         "out:\n\t$(file >$(L),x)\n",
+                         "L := $(BUILD_DIR)/x.lst\nL += $(BUILD_DIR)/y.lst\n"
+                         "out:\n\t$(file >$(L),x)\n",
+                         "L != echo $(BUILD_DIR)/x.lst\nout:\n\t$(file >$(L),x)\n"):
+            with self.subTest(unplaced=unplaced), self.assertRaises(ValueError):
+                make_file_writes(unplaced)
+
+    def test_the_inventory_reads_the_makefiles_the_build_includes(self):
+        with tempfile.TemporaryDirectory(prefix="nk-make-inventory-") as temporary:
+            root = Path(temporary)
+            (root / "mk").mkdir()
+            (root / "mk" / "part.mk").write_text(
+                "out:\n\t$(file >$(BUILD_DIR)/part.lst,$(OBJS))\n", encoding="utf-8")
+            (root / "mk" / "indented.mk").write_text(
+                "more:\n\t$(file >$(BUILD_DIR)/indented.lst,$(OBJS))\n", encoding="utf-8")
+            (root / "Makefile").write_text(
+                "include $(GENERATED_FRAGMENT)\ninclude mk/part.mk\n-include $(DEP_FILES)\n"
+                "ifeq ($(MORE),1)\n  include mk/indented.mk\nendif\n",
+                encoding="utf-8")
+            self.assertEqual(sorted(make_file_writes(makefile_sources(root))),
+                             ["indented.lst", "part.lst"])
 
 
 if __name__ == "__main__":

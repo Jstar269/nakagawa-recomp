@@ -599,6 +599,46 @@ int main(void) {
             fprintf(stderr, "FAIL %-30s got=\"%s\"\n", "printf mode 64-bit pair", line);
         }
 
+        /* A 64-bit value that starts at an odd argument register skips it.
+         * With printf's first vararg in $a1, two preceding words leave $a3
+         * odd, so the pair must land in $t0/$t1. */
+        put_string(FMT, "%d %d %lld");
+        memset(cpu.r, 0, sizeof cpu.r);
+        cpu.r[4] = FMT;
+        cpu.r[5] = 1u;
+        cpu.r[6] = 2u;
+        cpu.r[7] = 0xdeadbeefu; /* skipped odd register */
+        cpu.r[8] = 2u;
+        cpu.r[9] = 1u;
+        cpu.r[29] = STACK;
+        n = sr_guest_format_host(&cpu, FMT, 5u, line, (int)sizeof line);
+        checks++;
+        if (strcmp(line, "1 2 4294967298") != 0 || n != 14) {
+            failures++;
+            fprintf(stderr, "FAIL %-30s got=\"%s\" n=%d\n",
+                    "printf odd pair to t0/t1", line, n);
+        }
+
+        /* After four word varargs, $t1 is also odd; the even pair is $t2/$t3. */
+        put_string(FMT, "%d %d %d %d %lld");
+        memset(cpu.r, 0, sizeof cpu.r);
+        cpu.r[4] = FMT;
+        cpu.r[5] = 1u;
+        cpu.r[6] = 2u;
+        cpu.r[7] = 3u;
+        cpu.r[8] = 4u;
+        cpu.r[9] = 0xdeadbeefu; /* skipped odd register */
+        cpu.r[10] = 2u;
+        cpu.r[11] = 1u;
+        cpu.r[29] = STACK;
+        n = sr_guest_format_host(&cpu, FMT, 5u, line, (int)sizeof line);
+        checks++;
+        if (strcmp(line, "1 2 3 4 4294967298") != 0 || n != 18) {
+            failures++;
+            fprintf(stderr, "FAIL %-30s got=\"%s\" n=%d\n",
+                    "printf odd pair to t2/t3", line, n);
+        }
+
         /* A short host buffer truncates the text but returns the full length. */
         char tiny[4];
         put_string(FMT, "%s");

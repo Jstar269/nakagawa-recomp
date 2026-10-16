@@ -14,6 +14,12 @@ based on unvalidated lengths. Nothing here executes or disassembles guest
 code; the output is (library name, function NID) pairs plus stub addresses
 for imports, and (library name, attributes, exported NIDs) for exports.
 
+The reading and the structural checks are this module's own. The layout
+model that pairs stub slots with NIDs (layout_import_windows) is shared with
+tools/imports.py, the analyzer's code-generation import map, so both parsers
+accept and refuse the same retail layouts and map their slots identically.
+The parity tests are AuditAnalyzerParityTests in tools/test_imports.py.
+
 Layout references: psp-fixup-imports (pspsdk/tools) builds the table the PSP
 kernel loader consumes: .sceStub.text holds one 8-byte slot per imported
 function, .rodata.sceNid holds one 4-byte NID per function, and the two
@@ -42,14 +48,19 @@ module_info, ...) has the syslib attribute and is never importable.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 import struct
+from typing import NamedTuple
 
 # Hard resource caps. A malformed header must not be able to request work or
 # memory proportional to a forged length field.
 MAX_FILE_SIZE = 256 * 1024 * 1024
 MAX_SEGMENTS = 512
-MAX_SECTIONS = 512
+# e_shnum is a 16-bit field and the section-header table must lie inside the
+# file (checked below), which bounds the work for any count; the analyzer's ELF
+# envelope (tools/elf_bounds.py) imposes no lower count cap, so neither does this.
+MAX_SECTIONS = 0xFFFF
 MAX_LIBRARIES = 256
 MAX_FUNCS_PER_LIB = 4096
 MAX_TOTAL_FUNCS = 65536
@@ -77,6 +88,7 @@ LIB_ATTR_SYSLIB = 0x8000
 
 MODULE_INFO_SECTION = b".rodata.sceModuleInfo"
 MODULE_INFO_SIZE = 52
+MODULE_NAME_BYTES = 28
 STUB_ENTRY_HEADER_SIZE = 20
 STUB_SECTION = b".sceStub.text"
 NID_SECTION = b".rodata.sceNid"
@@ -87,9 +99,25 @@ U32_MAX = 0xFFFFFFFF
 # literal can never collide with a real guest name.
 UNATTRIBUTED_LIBRARY = "(unattributed)"
 
+# Boundary codes the analyzer (tools/imports.py) also names. Only refusals that
+# the shared layout model or the shared variable check raise carry one.
+CODE_TABLE_INVALID = "ANALYZER_IMPORT_TABLE_INVALID"
+CODE_NID_TABLE_MISSING = "ANALYZER_IMPORT_NID_TABLE_MISSING"
+CODE_LIBRARY_NAME_UNMAPPED = "ANALYZER_IMPORT_LIBRARY_NAME_UNMAPPED"
+CODE_REGIONS_MISMATCH = "ANALYZER_IMPORT_REGIONS_MISMATCH"
+CODE_VARIABLE_IMPORTS_UNSUPPORTED = "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED"
+
 
 class ImportTableError(Exception):
-    """Malformed or out-of-policy input. Always carries a human-usable message."""
+    """Malformed or out-of-policy input. Always carries a human-usable message.
+
+    code is the analyzer's boundary code when the refusal is one the analyzer
+    also names, else None.
+    """
+
+    def __init__(self, message: str, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -233,9 +261,19 @@ def _parse_elf_maps(data: bytes) -> tuple[_GuestMap, int | None, int | None, dic
             raise ImportTableError(f"e_phentsize {e_phentsize} is not 32")
         for i in range(e_phnum):
             ph = _need(data, e_phoff + i * 32, 32, f"program header {i}")
-            p_type, p_offset, p_vaddr, p_paddr, p_filesz = struct.unpack_from("<IIIII", ph, 0)
+            p_type, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz = struct.unpack_from("<IIIIII", ph, 0)
             if i == 0:
                 phdr0_paddr = p_paddr
+            # Same envelope as tools/elf_bounds.py: every segment's file span is
+            # checked, even an empty one, and a PT_LOAD cannot carry more file
+            # bytes than memory.
+            if p_offset + p_filesz > len(data):
+                raise ImportTableError(
+                    f"program header {i}: file range {p_offset:#x}+{p_filesz:#x} "
+                    f"exceeds file size {len(data):#x}"
+                )
+            if p_type == 1 and p_filesz > p_memsz:  # PT_LOAD
+                raise ImportTableError(f"program header {i}: PT_LOAD filesz exceeds memsz")
             if p_type == 1:  # PT_LOAD
                 gmap.add(p_vaddr, p_filesz, p_offset, len(data), f"program header {i}")
 
@@ -258,13 +296,25 @@ def _parse_elf_maps(data: bytes) -> tuple[_GuestMap, int | None, int | None, dic
         strtab = _need(data, str_off, str_size, "section name string table")
         for i, sh in enumerate(shdrs):
             sh_name, sh_type, sh_flags, sh_addr, sh_offset, sh_size = sh[0], sh[1], sh[2], sh[3], sh[4], sh[5]
+            # SHT_NOBITS (8) occupies no file bytes; every other section with a
+            # size must be fully file-backed, as in tools/elf_bounds.py.
+            if sh_type != 8 and sh_size:
+                if sh_offset + sh_size > len(data):
+                    raise ImportTableError(
+                        f"section header {i}: file range {sh_offset:#x}+{sh_size:#x} "
+                        f"exceeds file size {len(data):#x}"
+                    )
+            elif sh_offset > len(data):
+                raise ImportTableError(f"section header {i}: offset {sh_offset:#x} is outside the file")
             if sh_name >= len(strtab) and sh_size:
                 raise ImportTableError(f"section header {i}: name offset {sh_name:#x} outside shstrtab")
             end = strtab.find(b"\0", sh_name)
             name = strtab[sh_name : end if end >= 0 else len(strtab)]
+            # The first section of a name wins, as in tools/analyze.py Elf.sec(); a
+            # relocated PRX can carry a second copy of a pairing section.
             if name:
-                sections[name] = (sh_addr, sh_size)
-            if name == MODULE_INFO_SECTION:
+                sections.setdefault(name, (sh_addr, sh_size))
+            if name == MODULE_INFO_SECTION and modinfo_vaddr is None:
                 if sh_size < MODULE_INFO_SIZE:
                     raise ImportTableError(
                         f"{MODULE_INFO_SECTION.decode()} is {sh_size} bytes; need {MODULE_INFO_SIZE}"
@@ -278,6 +328,32 @@ def _parse_elf_maps(data: bytes) -> tuple[_GuestMap, int | None, int | None, dic
     if not gmap.ranges:
         raise ImportTableError("no PT_LOAD segments or allocatable PROGBITS sections to map guest memory")
     return gmap, modinfo_vaddr, phdr0_paddr, sections
+
+
+def _span_file_backed(gmap: _GuestMap, start: int, end: int) -> bool:
+    """True when [start, end) is empty at (0, 0) or lies inside one loaded range."""
+    if start == 0 and end == 0:
+        return True
+    if end < start or end > U32_MAX + 1:
+        return False
+    return any(base <= start and end <= base + size for base, size, _off in gmap.ranges)
+
+
+def _is_structural_module_info(gmap: _GuestMap, record: bytes) -> bool:
+    """The record check the analyzer applies to a p_paddr-located SceModuleInfo.
+
+    Mirrors tools/analyze.py _decode_module_info: a non-empty, NUL-terminated,
+    printable-ASCII name inside its 28-byte field, word-aligned export and import
+    tables, and table spans that are empty or fully file-backed.
+    """
+    name_field = record[4:4 + MODULE_NAME_BYTES]
+    name_len = name_field.find(b"\x00")
+    if name_len <= 0 or not all(0x20 <= c < 0x7F for c in name_field[:name_len]):
+        return False
+    _gp, ent, entend, stub, stubend = struct.unpack_from("<5I", record, 32)
+    if ent % 4 or stub % 4:
+        return False
+    return _span_file_backed(gmap, ent, entend) and _span_file_backed(gmap, stub, stubend)
 
 
 def _find_module_info(
@@ -300,7 +376,13 @@ def _find_module_info(
     file_off = phdr0_paddr & 0x7FFFFFFF
     for _base, size, range_off in gmap.ranges:
         if range_off <= file_off and file_off + MODULE_INFO_SIZE <= range_off + size:
-            return _need(data, file_off, MODULE_INFO_SIZE, "sectionless SceModuleInfo")
+            record = _need(data, file_off, MODULE_INFO_SIZE, "sectionless SceModuleInfo")
+            if not _is_structural_module_info(gmap, record):
+                raise ImportTableError(
+                    f"sectionless SceModuleInfo at file offset {file_off:#x} is not a "
+                    "structurally valid record (name, table alignment, or table span)"
+                )
+            return record
     raise ImportTableError(
         f"sectionless SceModuleInfo file offset {file_off:#x} (from phdr[0].p_paddr "
         f"{phdr0_paddr:#x}) is not inside any loaded file range"
@@ -379,6 +461,323 @@ def parse_export_table(data: bytes) -> ExportTable | None:
     return ExportTable(module_attributes, tuple(libraries))
 
 
+def variable_imports_message(tables: Sequence[tuple[str, int]]) -> str:
+    """The analyzer's named boundary text for a table that declares variables."""
+    total = sum(count for _library, count in tables)
+    summary = ", ".join(f"{library} x{count}" for library, count in tables)
+    return (
+        f"import table declares {total} variable imports ({summary}); "
+        "variable imports are not supported yet"
+    )
+
+
+class ImportWindow(NamedTuple):
+    """One PspLibStubEntry window: a library's run of numFuncs stub slots.
+
+    library is None for a window that imports nothing (its name is never read).
+    """
+
+    library: str | None
+    count: int  # numFuncs
+    nid_data: int  # nidData: the first NID of the run
+    first_sym: int  # firstSym: the first stub slot of the run
+
+
+@dataclass(frozen=True)
+class _PairingRegion:
+    """One psp-fixup-imports pairing region: stub slots and NIDs that pair 1:1."""
+
+    primary: bool
+    windows: tuple[ImportWindow, ...]
+    stub_base: int
+    stub_end: int
+    nid_base: int
+    nid_end: int
+    finding: str | None
+
+
+def _section_span(section: tuple[int, int] | None, unit: int, name: str) -> tuple[int, int] | None:
+    if section is None:
+        return None
+    address, size = section
+    if size % unit:
+        raise ImportTableError(f"{name} size {size} is not a multiple of {unit}")
+    return address, address + size
+
+
+def _spans_overlap(a: tuple[int, int], b: tuple[int, int] | None) -> bool:
+    """True when half-open span ``a`` shares an address with ``b`` (``b`` may be None)."""
+    return b is not None and a[0] < b[1] and b[0] < a[1]
+
+
+def _byte_count(nbytes: int, unit: int, label: str) -> str:
+    """Name ``nbytes`` in whole ``label`` units of ``unit`` bytes, else in bytes."""
+    if nbytes % unit:
+        return f"{nbytes} bytes"
+    count = nbytes // unit
+    return f"{count} {label}{'' if count == 1 else 's'}"
+
+
+def _window_region(windows: Sequence[ImportWindow]) -> _PairingRegion:
+    """A pairing region bounded by the union of its windows' runs."""
+    return _PairingRegion(
+        primary=False,
+        windows=tuple(windows),
+        stub_base=min(w.first_sym for w in windows),
+        stub_end=max(w.first_sym + w.count * 8 for w in windows),
+        nid_base=min(w.nid_data for w in windows),
+        nid_end=max(w.nid_data + w.count * 4 for w in windows),
+        finding=None,
+    )
+
+
+def _primary_region(
+    windows: Sequence[ImportWindow],
+    section_stub: tuple[int, int] | None,
+    section_nid: tuple[int, int] | None,
+) -> _PairingRegion:
+    """The psp-fixup-imports pairing region and the windows in it.
+
+    Prefer the named sections; fall back to the union of the windows' runs for a
+    section the input does not name.
+    """
+    window = _window_region(windows)
+    stub_base, stub_end = section_stub or (window.stub_base, window.stub_end)
+    nid_base, nid_end = section_nid or (window.nid_base, window.nid_end)
+    finding = None
+
+    # When the named sections do not pair 1:1, only the windows' own runs can be
+    # paired. The two sections then differ in kind:
+    #   * .rodata.sceNid words outside the window run are data the loader never
+    #     reads, so unreferenced words may sit before it (a head) or after it (a
+    #     tail); retail executables carry zero-filled ones on both sides.
+    #   * .sceStub.text slots are code. A slot no window claims is a possible call
+    #     target that the loader never patches, and without a 1:1 section pairing
+    #     it has no NID, so any unreferenced stub slot on either side fails closed.
+    if stub_end - stub_base != 2 * (nid_end - nid_base):
+        if (window.stub_end - window.stub_base != 2 * (window.nid_end - window.nid_base)
+                or not stub_base <= window.stub_base <= window.stub_end <= stub_end
+                or not nid_base <= window.nid_base <= window.nid_end <= nid_end
+                or (window.nid_base - nid_base) % 4):
+            raise ImportTableError(
+                "import stub region size does not match NID region size "
+                "(psp-fixup-imports requires stub slots to pair 1:1 with NIDs)",
+                code=CODE_REGIONS_MISMATCH,
+            )
+        stub_head, stub_tail = window.stub_base - stub_base, stub_end - window.stub_end
+        if stub_head or stub_tail:
+            raise ImportTableError(
+                f".sceStub.text has {_byte_count(stub_head, 8, 'stub slot')} before and "
+                f"{_byte_count(stub_tail, 8, 'stub slot')} after the import windows that no "
+                "window claims, and .rodata.sceNid does not pair 1:1 with it, so those "
+                "slots have no NID",
+                code=CODE_REGIONS_MISMATCH,
+            )
+        nid_head, nid_tail = window.nid_base - nid_base, nid_end - window.nid_end
+        parts = []
+        if nid_head:
+            parts.append(f"head of {_byte_count(nid_head, 4, 'NID word')}")
+        if nid_tail:
+            parts.append(f"tail of {_byte_count(nid_tail, 4, 'NID word')}")
+        finding = (
+            f".rodata.sceNid has an unreferenced {' and a '.join(parts)}; using the "
+            f"window-paired run ({(window.stub_end - window.stub_base) // 8} slots)"
+        )
+        stub_base, stub_end = window.stub_base, window.stub_end
+        nid_base, nid_end = window.nid_base, window.nid_end
+    return _PairingRegion(
+        primary=True,
+        windows=tuple(windows),
+        stub_base=stub_base,
+        stub_end=stub_end,
+        nid_base=nid_base,
+        nid_end=nid_end,
+        finding=finding,
+    )
+
+
+def _pairing_groups(windows: Sequence[ImportWindow]) -> list[list[ImportWindow]]:
+    """Group windows by pairing offset, in first-appearance order.
+
+    Inside one pairing region stub slot p sits at stub_base + 8*p and its NID at
+    nid_base + 4*p, so firstSym - 2*nidData is the same for every window of the
+    region; windows with different offsets can never share a region.
+    """
+    groups: dict[int, list[ImportWindow]] = {}
+    for w in windows:
+        groups.setdefault(w.first_sym - 2 * w.nid_data, []).append(w)
+    return list(groups.values())
+
+
+def _contiguous_runs(windows: Sequence[ImportWindow]) -> list[list[ImportWindow]]:
+    """Split same-offset windows into runs whose stub slots touch or overlap.
+
+    Each run keeps its windows in table order, so the last claimer of a slot
+    stays the one later in the table.
+    """
+    runs: list[list] = []  # [[table indices], stub end]
+    # Visit windows by first stub slot, so a window either overlaps or touches the
+    # run being built (extend it to the furthest end seen) or starts a new run
+    # after a gap. Ties keep table order (sorted() is stable); a tie cannot change
+    # the runs because each run's end is the maximum over its windows.
+    order = sorted(range(len(windows)), key=lambda i: windows[i].first_sym)
+    for i in order:
+        w = windows[i]
+        if runs and w.first_sym <= runs[-1][1]:
+            runs[-1][0].append(i)
+            runs[-1][1] = max(runs[-1][1], w.first_sym + w.count * 8)
+        else:
+            runs.append([[i], w.first_sym + w.count * 8])
+    return [[windows[i] for i in sorted(indices)] for indices, _end in runs]
+
+
+def _pair_region(
+    region: _PairingRegion,
+    read_nids: Callable[[int, int], Sequence[int]],
+    prefix: str,
+) -> tuple[dict[int, tuple[str, int]], list[str]]:
+    """Return ({stub address: (library, NID)}, findings) for one pairing region."""
+    stub_base, stub_end = region.stub_base, region.stub_end
+    nid_base, nid_end = region.nid_base, region.nid_end
+    stub_count = (stub_end - stub_base) // 8
+    nid_count = (nid_end - nid_base) // 4
+    if stub_count != nid_count or nid_count <= 0:
+        raise ImportTableError(f"impossible import region: {stub_count} stub slots vs {nid_count} NIDs")
+
+    nids = tuple(read_nids(nid_base, nid_count))
+    if len(nids) != nid_count:
+        raise ImportTableError(f"truncated import NID region at 0x{nid_base:08x}")
+
+    claims: dict[int, str] = {}  # position -> library name (last claimer wins)
+    claimers: dict[int, list[str]] = {}  # position -> libraries in table order
+    for w in region.windows:
+        if w.first_sym % 4:
+            raise ImportTableError(f"import stub area 0x{w.first_sym:08x} is not 4-byte aligned")
+        if w.first_sym + w.count * 8 > U32_MAX or w.nid_data + w.count * 4 > U32_MAX:
+            raise ImportTableError("import table address arithmetic exceeds 32-bit guest space")
+        if w.first_sym < stub_base or (w.first_sym - stub_base) % 8:
+            raise ImportTableError(
+                f"import stub address 0x{w.first_sym:08x} is not an 8-byte slot of the stub region")
+        if w.nid_data < nid_base or (w.nid_data - nid_base) % 4:
+            raise ImportTableError(
+                f"import NID table 0x{w.nid_data:08x} is not a 4-byte slot of the NID region")
+        first_pos = (w.first_sym - stub_base) // 8
+        nid_pos = (w.nid_data - nid_base) // 4
+        if first_pos != nid_pos:
+            raise ImportTableError(
+                f"inconsistent import window {w.library}: stub slot {first_pos} "
+                f"but NID slot {nid_pos}")
+        if first_pos + w.count > stub_count:
+            raise ImportTableError(
+                f"import window {w.library} with {w.count} functions runs past "
+                f"the stub region ({stub_count} slots)")
+        for i in range(w.count):
+            claims[first_pos + i] = w.library
+            claimers.setdefault(first_pos + i, []).append(w.library)
+
+    stubs = {stub_base + p * 8: (claims.get(p, UNATTRIBUTED_LIBRARY), nids[p]) for p in range(nid_count)}
+    findings = [region.finding] if region.finding else []
+    unclaimed = [p for p in range(nid_count) if p not in claims]
+    if unclaimed:
+        findings.append(
+            f"{prefix}stub slots not covered by any library window: {len(unclaimed)} "
+            f"positions {unclaimed}")
+    ambiguous = sorted(p for p, libs in claimers.items() if len(libs) > 1)
+    if ambiguous:
+        findings.append(
+            f"{prefix}stub slots claimed by multiple library windows: {len(ambiguous)} "
+            f"positions {ambiguous}")
+    return stubs, findings
+
+
+def layout_import_windows(
+    windows: Sequence[ImportWindow],
+    stub_section: tuple[int, int] | None,
+    nid_section: tuple[int, int] | None,
+    read_nids: Callable[[int, int], Sequence[int]],
+    *,
+    max_positions: int | None = None,
+) -> tuple[dict[int, tuple[str, int]], list[str]]:
+    """Pair every import stub slot with its NID: the layout model both parsers share.
+
+    stub_section and nid_section are the (address, size) of .sceStub.text and
+    .rodata.sceNid, or None when the input names no such section. read_nids(address,
+    count) returns count NID words from guest memory and raises when they are not
+    mapped. Returns ({stub address: (library, NID)}, findings); a slot no window
+    claims maps to UNATTRIBUTED_LIBRARY.
+
+    The loader patches only the slots its windows name, and psp-fixup-imports pairs
+    the stub and NID sections globally, so:
+      * a window whose stub run and NID run both lie outside the named sections is
+        detached: windows are grouped by pairing offset and each contiguous run is
+        paired by its own slots; overlapping runs with different offsets fail closed;
+      * the primary region pairs the sections 1:1 when their sizes allow, and
+        otherwise pairs the windows' own runs: unreferenced NID words before or after
+        them are accepted (and reported), unreferenced stub slots fail closed;
+      * without named sections the single region is the union of the window runs.
+
+    Raises ImportTableError; the boundary codes are the analyzer's.
+    """
+    if not windows:
+        if (stub_section is not None and stub_section[1]) or (nid_section is not None and nid_section[1]):
+            raise ImportTableError("import stub table is empty")
+        return {}, ["module declares an empty import table"]
+    function_windows = [w for w in windows if w.count > 0]
+    if not function_windows:
+        raise ImportTableError("import stub table has no function windows", code=CODE_TABLE_INVALID)
+
+    section_stub = _section_span(stub_section, 8, ".sceStub.text")
+    section_nid = _section_span(nid_section, 4, ".rodata.sceNid")
+    primary: list[ImportWindow] = function_windows
+    detached: list[ImportWindow] = []
+    if section_stub is not None or section_nid is not None:
+        primary = []
+        for w in function_windows:
+            stub_run = (w.first_sym, w.first_sym + w.count * 8)
+            nid_run = (w.nid_data, w.nid_data + w.count * 4)
+            if _spans_overlap(stub_run, section_stub) or _spans_overlap(nid_run, section_nid):
+                primary.append(w)
+            else:
+                detached.append(w)
+        if not primary:
+            raise ImportTableError(
+                "no import window lies in the named import sections", code=CODE_TABLE_INVALID)
+
+    regions = [_primary_region(primary, section_stub, section_nid)]
+    for group in _pairing_groups(detached):
+        for run in _contiguous_runs(group):
+            regions.append(_window_region(run))
+
+    # Two pairing regions with different offsets must never claim one stub slot:
+    # the slot would pair with two different NIDs.
+    ordered = sorted(regions, key=lambda r: (r.stub_base, r.stub_end))
+    for left, right in zip(ordered, ordered[1:], strict=False):
+        if right.stub_base < left.stub_end:
+            raise ImportTableError(
+                f"import stub runs at 0x{left.stub_base:08x} and 0x{right.stub_base:08x} overlap "
+                "but pair with different NID positions",
+                code=CODE_REGIONS_MISMATCH,
+            )
+    positions = sum((r.stub_end - r.stub_base) // 8 for r in regions)
+    if max_positions is not None and positions > max_positions:
+        raise ImportTableError(f"more than {max_positions} imported functions")
+
+    stubs: dict[int, tuple[str, int]] = {}
+    findings: list[str] = []
+    for region in regions:
+        prefix = "" if region.primary else f"import run at 0x{region.stub_base:08x}: "
+        region_stubs, region_findings = _pair_region(region, read_nids, prefix)
+        stubs.update(region_stubs)
+        findings.extend(region_findings)
+    if detached:
+        findings.append(
+            "import windows outside the named import sections: "
+            f"{len(detached)} windows, "
+            f"{sum((r.stub_end - r.stub_base) // 8 for r in regions[1:])} slots "
+            "paired by their own runs")
+    return stubs, findings
+
+
 def parse_import_table(data: bytes) -> ImportTable:
     """Parse (library, NID, stub address) triples out of a PSP ELF byte buffer."""
     gmap, modinfo_vaddr, phdr0_paddr, sections = _parse_elf_maps(data)
@@ -393,7 +792,8 @@ def parse_import_table(data: bytes) -> ImportTable:
 
     table = ImportTable(module_attributes=struct.unpack_from("<H", mi, 0)[0])
     seen_libs: set[str] = set()
-    windows = []  # (library name, numFuncs, nidData, firstSymAddr)
+    windows: list[ImportWindow] = []
+    variable_tables: list[tuple[str, int]] = []  # (library, count) per declaring window
     pos = libstub
     entry_index = 0
     while pos < libstubend:
@@ -412,20 +812,38 @@ def parse_import_table(data: bytes) -> ImportTable:
         next_pos = pos + size_words * 4
         if next_pos > libstubend:
             raise ImportTableError(f"{what}: entry size {size_words} words runs past libstubend {libstubend:#x}")
-        if name_ptr == 0:
-            raise ImportTableError(f"{what}: null library name pointer")
-        libname = _read_guest_cstr(data, gmap, name_ptr, f"{what} library name")
-        # Duplicate library entries are tolerated (some linkers emit split
-        # blocks for one library); duplicate NIDs are surfaced by the auditor.
-        seen_libs.add(libname)
-        if len(seen_libs) > MAX_LIBRARIES:
-            raise ImportTableError(f"more than {MAX_LIBRARIES} import libraries")
+        # A window that imports nothing claims no stubs and the loader never reads
+        # its name, so the name is read only for a window that imports something.
+        libname = None
+        if num_funcs or num_vars:
+            if name_ptr == 0:
+                raise ImportTableError(
+                    f"{what}: null library name pointer", code=CODE_LIBRARY_NAME_UNMAPPED)
+            libname = _read_guest_cstr(data, gmap, name_ptr, f"{what} library name")
+            # Duplicate library entries are tolerated (some linkers emit split
+            # blocks for one library); duplicate NIDs are surfaced by the auditor.
+            seen_libs.add(libname)
+            if len(seen_libs) > MAX_LIBRARIES:
+                raise ImportTableError(f"more than {MAX_LIBRARIES} import libraries")
         if num_funcs > MAX_FUNCS_PER_LIB:
             raise ImportTableError(f"{what}: {num_funcs} functions exceeds cap {MAX_FUNCS_PER_LIB}")
         if num_funcs and nid_data == 0:
-            raise ImportTableError(f"{what}: {num_funcs} functions but null NID table pointer")
-        _ = num_vars  # variable imports carry no NIDs we audit; presence is fine
-        table.libraries.append(libname)
+            raise ImportTableError(
+                f"{what}: {num_funcs} functions but null NID table pointer", code=CODE_NID_TABLE_MISSING)
+        if num_vars:
+            # SceLibraryStubTable.vstubtable follows the function-stub pointer, so a
+            # declaring entry must be six words long and point at a mapped table.
+            if size_words < 6:
+                raise ImportTableError(
+                    f"{what} declares {num_vars} variables but its {size_words}-word entry "
+                    "has no variable-stub table", code=CODE_TABLE_INVALID)
+            (vstub_table,) = struct.unpack("<I", _read_guest(data, gmap, pos + 20, 4, what))
+            if vstub_table == 0 or vstub_table % 4:
+                raise ImportTableError(
+                    f"{what} declares {num_vars} variables but its variable-stub table "
+                    f"pointer 0x{vstub_table:08x} is null or misaligned", code=CODE_TABLE_INVALID)
+            _read_guest(data, gmap, vstub_table, 4, f"{what} variable-stub table")
+            variable_tables.append((libname, num_vars))
         if num_funcs:
             # Per-window pointer validation. The stub span check (first_sym ..
             # first_sym + num_funcs*8) requires 4-byte alignment, no 32-bit
@@ -437,96 +855,31 @@ def parse_import_table(data: bytes) -> ImportTable:
             if first_sym + num_funcs * 8 > U32_MAX + 1:
                 raise ImportTableError(f"{what}: stub area {first_sym:#x} wraps the 32-bit space")
             gmap.to_off(first_sym, num_funcs * 8, f"{what} function stub span")
-        windows.append((libname, num_funcs, nid_data, first_sym))
+            table.libraries.append(libname)
+        windows.append(ImportWindow(libname, num_funcs, nid_data, first_sym))
         pos = next_pos
         entry_index += 1
-    if not windows:
-        return table
 
-    # Full stub/NID region extents. The pairing regions are .sceStub.text and
-    # .rodata.sceNid when section headers name them; stripped inputs fall back
-    # to the union of the window runs (which is the loader's view: it can only
-    # patch positions some window claims).
-    st = sections.get(STUB_SECTION)
-    ns = sections.get(NID_SECTION)
-    stub_base = stub_end = None
-    nid_base = nid_end = None
-    if st is not None:
-        addr, size = st
-        if size % 8:
-            raise ImportTableError(
-                f"{STUB_SECTION.decode()} size {size:#x} is not a multiple of 8 (stub slots are 8 bytes)")
-        stub_base, stub_end = addr, addr + size
-    if ns is not None:
-        addr, size = ns
-        if size % 4:
-            raise ImportTableError(f"{NID_SECTION.decode()} size {size:#x} is not a multiple of 4")
-        nid_base, nid_end = addr, addr + size
-    if stub_base is None:
-        stub_base = min(w[3] for w in windows)
-        stub_end = max(w[3] + w[1] * 8 for w in windows)
-    if nid_base is None:
-        func_windows = [w for w in windows if w[1]]
-        if func_windows:
-            nid_base = min(w[2] for w in func_windows)
-            nid_end = max(w[2] + w[1] * 4 for w in func_windows)
-    if stub_end - stub_base != 2 * (nid_end - nid_base):
+    # The analyzer refuses a table that declares variables at its named boundary;
+    # the audit refuses it the same way rather than report functions alone.
+    if variable_tables:
         raise ImportTableError(
-            "import stub region size does not match NID region size "
-            "(psp-fixup-imports requires stub slots to pair 1:1 with NIDs)"
-        )
-    stub_count = (stub_end - stub_base) // 8
-    nid_count = (nid_end - nid_base) // 4
-    if stub_count != nid_count or nid_count <= 0:
-        raise ImportTableError(f"impossible import region: {stub_count} stub slots vs {nid_count} NIDs")
-    if nid_count > MAX_TOTAL_FUNCS:
-        raise ImportTableError(f"more than {MAX_TOTAL_FUNCS} imported functions")
-    nid_blob = _read_guest(data, gmap, nid_base, nid_count * 4, "global NID region")
-    nids = struct.unpack_from(f"<{nid_count}I", nid_blob)
+            variable_imports_message(variable_tables), code=CODE_VARIABLE_IMPORTS_UNSUPPORTED)
 
-    # Lay window claims over global positions; the global pairing fixes each
-    # position's NID, so overlapping claims agree and the last claimer owns
-    # the library attribution (the toolchain emits each library's run from
-    # its first slot, so the last window to reach a position is its owner).
-    claims: dict[int, str] = {}
-    claimers: dict[int, list[str]] = {}
-    for libname, num_funcs, nid_data, first_sym in windows:
-        if num_funcs == 0:
-            continue
-        if first_sym < stub_base or (first_sym - stub_base) % 8:
-            raise ImportTableError(
-                f"import stub address 0x{first_sym:08x} is not an 8-byte slot of the stub region")
-        if nid_data < nid_base or (nid_data - nid_base) % 4:
-            raise ImportTableError(
-                f"import NID table 0x{nid_data:08x} is not a 4-byte slot of the NID region")
-        first_pos = (first_sym - stub_base) // 8
-        nid_pos = (nid_data - nid_base) // 4
-        if first_pos != nid_pos:
-            raise ImportTableError(
-                f"inconsistent import window {libname}: stub slot {first_pos} "
-                f"but NID slot {nid_pos}")
-        if first_pos + num_funcs > stub_count:
-            raise ImportTableError(
-                f"import window {libname} with {num_funcs} functions runs past "
-                f"the stub region ({stub_count} slots)")
-        for i in range(num_funcs):
-            p = first_pos + i
-            claims[p] = libname
-            claimers.setdefault(p, []).append(libname)
+    def read_nids(address: int, count: int) -> tuple[int, ...]:
+        blob = _read_guest(data, gmap, address, count * 4, "global NID region")
+        return struct.unpack_from(f"<{count}I", blob)
 
-    for p in range(nid_count):
-        table.funcs.append(
-            ImportedFunc(claims.get(p, UNATTRIBUTED_LIBRARY), nids[p], stub_base + p * 8)
-        )
-
-    unclaimed = [p for p in range(nid_count) if p not in claims]
-    if unclaimed:
-        table.findings.append(
-            f"stub slots not covered by any library window: {len(unclaimed)} positions {unclaimed}"
-        )
-    ambiguous = sorted(p for p, libs in claimers.items() if len(libs) > 1)
-    if ambiguous:
-        table.findings.append(
-            f"stub slots claimed by multiple library windows: {len(ambiguous)} positions {ambiguous}"
-        )
+    stubs, findings = layout_import_windows(
+        windows,
+        sections.get(STUB_SECTION),
+        sections.get(NID_SECTION),
+        read_nids,
+        max_positions=MAX_TOTAL_FUNCS,
+    )
+    table.funcs = [
+        ImportedFunc(library, nid, stub_addr)
+        for stub_addr, (library, nid) in sorted(stubs.items())
+    ]
+    table.findings = findings
     return table

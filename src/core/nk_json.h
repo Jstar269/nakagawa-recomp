@@ -73,6 +73,21 @@ typedef NkJsonNumber JsonNumber;
 /* UTF-8 Validation */
 bool nk_json_validate_utf8(const uint8_t *s, size_t len);
 
+/* JSON string escapes, shared by every reader that decodes a string literal.
+ * `src` points at the byte just after a backslash and `avail` counts the bytes
+ * readable from there; at most 11 are ever needed (a surrogate pair). On
+ * success returns NULL, stores the decoded code point in *out_cp and the number
+ * of bytes consumed after the backslash in *out_len. On a malformed escape
+ * returns a static message naming the defect and stores nothing. \u0000 decodes
+ * to a NUL byte, as it always has: a C-string consumer sees the value end
+ * there, and no bytes are invented. */
+const char *nk_json_decode_escape(const char *src, size_t avail,
+                                  uint32_t *out_cp, size_t *out_len);
+
+/* Writes the UTF-8 encoding of a Unicode scalar value into out[0..3] and
+ * returns its length (1 to 4). */
+size_t nk_json_utf8_encode(uint32_t cp, char out[4]);
+
 /* Parsing and Destruction */
 NkJsonNode *nk_json_parse(const char *src, size_t len, char *err_buf, size_t err_len);
 void nk_json_free(NkJsonNode *node);

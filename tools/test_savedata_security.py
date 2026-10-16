@@ -13,8 +13,12 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import tempfile
 import unittest
+
+try:
+    import scratch_dir
+except ModuleNotFoundError:
+    from tools import scratch_dir
 
 ROOT = Path(__file__).resolve().parent.parent
 SAVEDATA_C = ROOT / "src" / "rt" / "savedata.c"
@@ -360,6 +364,48 @@ static void check_open_cases(const char *base) {
     }
     sr_cd_root_close(&bound);
 
+    /* Symlinked parent directory: replacing the save slot directory (ULUS99999SLOT00)
+     * with a symlink to an outside directory must fail closed on SAVE and leave
+     * earlier valid saves intact once restored. */
+    snprintf(root, sizeof(root), "%s/symparent", base);
+    snprintf(outside, sizeof(outside), "%s/symparent-outside", base);
+    CHECK(make_savedata_tree(root) && make_dir(outside), "symparent fixture");
+    snprintf(path, sizeof(path), "%s/PSP/SAVEDATA/ULUS99999SLOT00/DATA.BIN", root);
+    CHECK(run_save(root, "DATA.BIN", "VALID_PREVIOUS") == 0, "earlier valid save must succeed");
+    CHECK(read_file(path, content, sizeof(content)) && !strcmp(content, "VALID_PREVIOUS"),
+          "earlier valid save must be written in-root");
+
+    char slot_dir[512], slot_bak[512], outside_file[512];
+    snprintf(slot_dir, sizeof(slot_dir), "%s/PSP/SAVEDATA/ULUS99999SLOT00", root);
+    snprintf(slot_bak, sizeof(slot_bak), "%s/PSP/SAVEDATA/ULUS99999SLOT00_BAK", root);
+    snprintf(target, sizeof(target), "%s/target_slot", outside);
+    CHECK(make_dir(target), "symparent target dir setup");
+    snprintf(outside_file, sizeof(outside_file), "%s/DATA.BIN", target);
+    CHECK(write_file(outside_file, "OUTSIDE_INITIAL"), "outside file setup");
+
+    CHECK(rename(slot_dir, slot_bak) == 0, "backup valid slot dir");
+    CHECK(symlink(target, slot_dir) == 0, "symlink slot dir to outside target");
+
+    CHECK(run_save(root, "DATA.BIN", "ATTACK") != 0,
+          "SAVE through symlinked parent directory must fail closed");
+    CHECK(read_file(outside_file, content, sizeof(content)) && !strcmp(content, "OUTSIDE_INITIAL"),
+          "symlinked parent SAVE must not modify outside target file");
+
+    CHECK(unlink(slot_dir) == 0 && rename(slot_bak, slot_dir) == 0, "restore valid slot dir");
+    memset(content, 0, sizeof(content));
+    CHECK(run_load(root, "DATA.BIN", content, sizeof(content)) == 0 && !strcmp(content, "VALID_PREVIOUS"),
+          "earlier valid save must remain intact");
+
+    /* Reserved DOS device name: attempted save using a reserved name (NUL, CON)
+     * must fail closed without modifying earlier valid saves. */
+    snprintf(root, sizeof(root), "%s/reserved", base);
+    CHECK(run_save(root, "DATA.BIN", "VALID_PREVIOUS") == 0, "reserved test initial save");
+    CHECK(run_save(root, "NUL", "ATTACK") != 0, "reserved name NUL SAVE must fail closed");
+    CHECK(run_save(root, "CON", "ATTACK") != 0, "reserved name CON SAVE must fail closed");
+    memset(content, 0, sizeof(content));
+    CHECK(run_load(root, "DATA.BIN", content, sizeof(content)) == 0 && !strcmp(content, "VALID_PREVIOUS"),
+          "earlier valid save must remain intact after reserved name attempt");
+
 #if defined(SR_CD_TEST_HOOKS)
     /* Deterministic replacement after validation: the hook swaps the final
      * name for an outside symlink immediately before openat(). */
@@ -662,7 +708,7 @@ class TestSavedataSecurityShape(unittest.TestCase):
 class TestSavedataSecurityProduction(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "POSIX descriptor cases run in the WSL POSIX lane")
     def test_posix_open_and_symlink_regressions(self):
-        with tempfile.TemporaryDirectory(prefix="savedata_open_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="savedata_open_") as tmp:
             exe = _build(tmp, hooks=True)
             run = _run(exe, "open", tmp)
             self.assertIsNotNone(run, "POSIX open selftest timed out")
@@ -671,7 +717,7 @@ class TestSavedataSecurityProduction(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "write-order instrumentation runs in the WSL POSIX lane")
     def test_write_order_regressions(self):
-        with tempfile.TemporaryDirectory(prefix="savedata_order_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="savedata_order_") as tmp:
             exe = _build(tmp, order=True)
             run = _run(exe, "order", tmp)
             self.assertIsNotNone(run, "write-order selftest timed out")
@@ -680,7 +726,7 @@ class TestSavedataSecurityProduction(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "GETSIZE production harness runs in the WSL POSIX lane")
     def test_getsize_regressions(self):
-        with tempfile.TemporaryDirectory(prefix="savedata_getsize_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="savedata_getsize_") as tmp:
             exe = _build(tmp)
             run = _run(exe, "getsize")
             self.assertIsNotNone(run, "bounded GETSIZE selftest timed out")
@@ -689,7 +735,7 @@ class TestSavedataSecurityProduction(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "unsupported POSIX-host build runs in the WSL lane")
     def test_unsupported_host_is_explicitly_fail_closed(self):
-        with tempfile.TemporaryDirectory(prefix="savedata_unsupported_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="savedata_unsupported_") as tmp:
             exe = _build(tmp, unsupported=True)
             run = _run(exe, "unsupported")
             self.assertIsNotNone(run)
@@ -749,7 +795,7 @@ class TestSavedataSecurityProduction(unittest.TestCase):
         survivors = []
         outcomes = {}
         for name, savedata, seam, mode in mutants:
-            with tempfile.TemporaryDirectory(prefix="savedata_mutant_") as tmp:
+            with scratch_dir.TemporaryDirectory(prefix="savedata_mutant_") as tmp:
                 exe = _build(tmp, savedata_override=savedata, seam_override=seam,
                              hooks=(mode == "open"))
                 run = _run(exe, mode, tmp, timeout=3)
@@ -822,7 +868,7 @@ class TestSavedataSecurityProduction(unittest.TestCase):
         survivors = []
         outcomes = {}
         for name, seam, savedata, mode, instrumented in mutants:
-            with tempfile.TemporaryDirectory(prefix="savedata_order_mutant_") as tmp:
+            with scratch_dir.TemporaryDirectory(prefix="savedata_order_mutant_") as tmp:
                 exe = _build(tmp, savedata_override=savedata, seam_override=seam,
                              hooks=(mode == "open"), order=instrumented)
                 run = _run(exe, mode, tmp, timeout=10)

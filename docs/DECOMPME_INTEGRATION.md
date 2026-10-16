@@ -67,6 +67,52 @@ python tools/decompme_export.py place_game_here/EBOOT.elf --function 0x0005A648
   context yields better automatic decompilation.
 - **`metadata.json`** records provenance (address, size, byte sha256, source-input
   sha256, commit) so a match can later be re-verified independently.
+- **`--with-cfg`** additionally emits **`cfg.json`**, an advisory function view
+  from `analyze.canonical_cfg_report`. It uses the same legacy analyzer entry set
+  as byte extraction; it does not enable `--cfg-gate` or change the extracted
+  extent. The default bundle remains unchanged.
+- Re-exporting into the same output directory rewrites every bundle file and removes
+  the optional outputs (`cfg.json`, `target.s`, `target.s.note`) that the current run
+  does not produce, so a reused directory never mixes files from two runs.
+
+### Function CFG view
+
+```powershell
+python tools/decompme_export.py place_game_here/EBOOT.elf --function 0x0005A648 --with-cfg
+```
+
+`cfg.json` uses schema `nakagawa.decomp-function-cfg`, version 1, and records the
+underlying canonical CFG schema version. Its `evidence` binds the source-input
+SHA-256 and tool commit and labels the result `ANALYZER_INFERRED`. The bundle's
+`metadata.json` binds the exact `cfg.json` bytes by SHA-256. These bindings identify
+inputs and artifacts; they do not attest correctness, provenance, or a compiler match.
+
+The view contains the instructions inside the approximate bundle extent **plus**
+all instructions the canonical CFG assigns to the selected entry. This exposes
+shared epilogues and other code beyond the next discovered start without silently
+enlarging `function.bin` or `target.o`. `owned_outside_extent` and `extent_not_owned`
+make the difference between matching bytes and inferred ownership explicit.
+
+Outgoing `edges` and `successor_classifications` retain canonical call, tail-call,
+continuation/resume, and fail-closed indirect classifications. `incoming_edges`
+provides cross-references from outside the view; `boundary_instructions` records
+the known owners and classifications at external endpoints. Delay-slot/likely
+annulment flags, conflicting owners, interior entries, unresolved indirect edges,
+and jump-table ownership observations remain visible. An unknown indirect target
+stays `null`; no function boundary or target is invented to make the view complete.
+Edges are listed for every instruction in the view, including extent instructions
+that another entry owns, so attribute an edge to a function through its source
+instruction's `owners`, never through its presence in the view.
+
+The exporter checks the full canonical report's structural consistency before
+writing the bundle. That check covers the whole executable image, not only the
+selected function, and its cost grows linearly with the image's instruction count:
+small modules export in seconds, and a 2 MiB synthetic executable takes under a
+minute end to end. The function view is a projection, **not** a standalone
+canonical report accepted by `canonical_cfg_gate`. Ownership conflicts are retained
+as observations, not repaired or promoted into execution authority. This is a
+bounded step toward issue #305; typed dataflow, imported annotations, and pseudocode
+recovery remain future work. CFG output inherits the input's privacy boundary.
 
 Local verification stays canonical: when a scratch reaches 100%, recompile the
 matched source with the identified PSP compiler locally and byte-compare against the

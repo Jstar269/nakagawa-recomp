@@ -11,6 +11,13 @@
  * other backend, and only builds where that backend does.
  */
 
+/* Scratch root for the files this test writes: the checkout's build/ by default, or
+ * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
+ * touches the checkout. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+
 #if defined(_WIN32) || defined(_WIN64)
 
 #include <stdio.h>
@@ -181,7 +188,7 @@ int main(void) {
     printf("[POSIX_PROCESS_TEST] Subtest 7: process tree termination stops grandchildren\n");
     fflush(stdout);
 
-    const char *posix_pid_file = "build/test_posix_grandchild.pid";
+    const char *posix_pid_file = SR_SELFTEST_BUILD_ROOT "/test_posix_grandchild.pid";
     remove(posix_pid_file);
 
     NkProcessHandle tree_proc;
@@ -189,7 +196,7 @@ int main(void) {
     const char *tree_argv[] = {
         "/bin/sh",
         "-c",
-        "sleep 60 & echo $! > build/test_posix_grandchild.pid; wait",
+        "sleep 60 & echo $! > " SR_SELFTEST_BUILD_ROOT "/test_posix_grandchild.pid; wait",
         NULL
     };
     assert(nk_platform_spawn_process("/bin/sh", tree_argv, NULL, NULL, &tree_proc));
@@ -233,6 +240,37 @@ int main(void) {
     }
     remove(posix_pid_file);
     printf("[POSIX_PROCESS_TEST] Grandchild PID %d terminated successfully.\n", (int)grandchild_pid);
+
+    /* 8. nk_platform_get_file_size POSIX file size queries. */
+    printf("[POSIX_PROCESS_TEST] Subtest 8: nk_platform_get_file_size file size queries\n");
+    fflush(stdout);
+
+    /* 8a. NULL path handling returns -1 */
+    assert(nk_platform_get_file_size(NULL) == -1);
+
+    /* 8b. Non-existent file path returns -1 */
+    const char *nonexistent_path = SR_SELFTEST_BUILD_ROOT "/test_posix_nonexistent_12345.tmp";
+    remove(nonexistent_path);
+    assert(nk_platform_get_file_size(nonexistent_path) == -1);
+
+    /* 8c. Empty file returns 0 */
+    const char *empty_path = SR_SELFTEST_BUILD_ROOT "/test_posix_empty.tmp";
+    FILE *f_empty = fopen(empty_path, "wb");
+    assert(f_empty != NULL);
+    fclose(f_empty);
+    assert(nk_platform_get_file_size(empty_path) == 0);
+    remove(empty_path);
+
+    /* 8d. Regular file with known size */
+    const char *data_path = SR_SELFTEST_BUILD_ROOT "/test_posix_data.tmp";
+    FILE *f_data = fopen(data_path, "wb");
+    assert(f_data != NULL);
+    char test_buf[2048];
+    memset(test_buf, 0x5A, sizeof(test_buf));
+    assert(fwrite(test_buf, 1, sizeof(test_buf), f_data) == sizeof(test_buf));
+    fclose(f_data);
+    assert(nk_platform_get_file_size(data_path) == (int64_t)sizeof(test_buf));
+    remove(data_path);
 
     printf("[POSIX_PROCESS_TEST] ALL POSIX PROCESS TESTS PASSED!\n");
     return 0;

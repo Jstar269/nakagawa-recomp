@@ -18,11 +18,13 @@
 #
 # Usage: analyze.py <elf> [--toml out.toml] [--quiet]
 
+import bisect
 import hashlib
 import os
 import struct
 import sys
 from array import array
+from collections.abc import Iterable
 
 import tomllib
 
@@ -518,7 +520,46 @@ def exec_ranges(elf, extra_spans=None):
 
 
 def in_ranges(addr, ranges):
+    if isinstance(ranges, _SpanIndex):
+        return addr in ranges
     return any(lo <= addr < hi for lo, hi in ranges)
+
+
+class _SpanIndex:
+    """Membership over half-open ``(lo, hi)`` spans, answering exactly as ``in_ranges``.
+
+    The spans are merged once into disjoint, sorted intervals, so a lookup is a
+    binary search instead of a scan of every span. Empty spans (``lo >= hi``)
+    can contain no address and are dropped; touching spans merge, which leaves
+    the covered set of integers unchanged.
+    """
+
+    __slots__ = ("starts", "ends")
+
+    def __init__(self, ranges):
+        self.starts = []
+        self.ends = []
+        for lo, hi in sorted((lo, hi) for lo, hi in ranges if lo < hi):
+            if self.ends and lo <= self.ends[-1]:
+                if hi > self.ends[-1]:
+                    self.ends[-1] = hi
+            else:
+                self.starts.append(lo)
+                self.ends.append(hi)
+
+    def __contains__(self, addr):
+        i = bisect.bisect_right(self.starts, addr) - 1
+        return i >= 0 and addr < self.ends[i]
+
+
+def span_key(ranges):
+    """A hashable key for ``ranges`` (a span list or a :class:`_SpanIndex`).
+
+    It is the merged, sorted, non-empty span tuple, so two range lists covering
+    the same addresses have the same key, whichever form they arrive in.
+    """
+    index = ranges if isinstance(ranges, _SpanIndex) else _SpanIndex(ranges)
+    return tuple(zip(index.starts, index.ends, strict=True))
 
 
 def _file_backed_exec_ranges(elf):
@@ -534,13 +575,50 @@ def _file_backed_exec_ranges(elf):
     return cached
 
 
-def trace_function(elf, start, ranges, covered, calls, hc):
+def file_backed_exec_ranges(elf):
+    """The file-backed executable PT_LOAD ranges of `elf`: the public entry other tools use.
+
+    The list is computed once per Elf and cached on the elf object (see
+    _file_backed_exec_ranges), so repeated calls return the same list without re-walking
+    the segment table. Callers must not mutate it.
+    """
+    return _file_backed_exec_ranges(elf)
+
+
+def has_import_table(elf):
+    """The analyzer's gate for parsing imports: a module-info section, or a stub section
+    with relocations. Shared with the import-stub census so the two never disagree."""
+    return elf.sec(".rodata.sceModuleInfo") is not None or (
+        elf.sec(".sceStub.text") is not None and elf.reloc is not None)
+
+
+def _import_stub_is_file_executable(addr, file_exec_ranges):
+    """True when an import stub's two words are both file-backed executable bytes."""
+    return ((addr & 3) == 0 and in_ranges(addr, file_exec_ranges)
+            and in_ranges(addr + 4, file_exec_ranges))
+
+
+def trace_function(elf, start, ranges, covered, calls, hc, walked=None):
     # Recursive descent over one function's intra-procedural control flow from `start`.
-    # Adds every instruction address reached to `covered`, and every direct-call (jal) target
-    # to `calls`. Returns newly found targets so callers can extend their worklists without
-    # rescanning all prior calls. Calls return, so execution continues after the delay slot;
-    # jr and j and an unconditional b end a path (no fall-through). Conditional branches
-    # fork: follow the target and continue past the delay slot.
+    # Adds every instruction address reached to `covered`, and every direct-call target (jal,
+    # or a linking branch to a callable, #968) to `calls`. Returns newly found targets so
+    # callers can extend their worklists without rescanning all prior calls. Calls return,
+    # so execution continues after the delay slot; jr and j and an unconditional b end a
+    # path (no fall-through). Conditional branches fork: follow the target and continue
+    # past the delay slot.
+    # The range membership tests below run once per traced instruction, so they use an
+    # index built once per trace (same answers as in_ranges over the plain list).
+    # `walked` is the set of instruction addresses that earlier traces over these same
+    # ranges already expanded (analyze owns it). Expanding an address depends only on its
+    # encoding and the ranges; the start exception and the `calls` stop test are the only
+    # trace-dependent parts, and both can only stop an expansion that an earlier trace
+    # already did or stopped. An address in `walked` therefore ends this path: the
+    # covered addresses, call targets and successors it would add are already present.
+    # Without the memo every start re-expands the whole shared tail it reaches: a profiled
+    # run of one large executable expanded each word about 190 times. `walked=None` is the
+    # uncached walk, kept so tests can pin the memoized walk against it.
+    if not isinstance(ranges, _SpanIndex):
+        ranges = _SpanIndex(ranges)
     stack = [start]
     local = set()
     new_calls = []
@@ -568,6 +646,8 @@ def trace_function(elf, start, ranges, covered, calls, hc):
         # below (for hoisted trailing epilogues) still runs for pc+8 addresses that are not
         # treated as boundaries here.
         while in_ranges(pc, ranges) and pc not in local:
+            if walked is not None and pc in walked:
+                break
             if pc != start and pc in hc:
                 insn_bytes = elf.read_at_vaddr(pc, 4)
                 stop = True
@@ -581,6 +661,8 @@ def trace_function(elf, start, ranges, covered, calls, hc):
                 if stop:
                     break
             local.add(pc)
+            if walked is not None:
+                walked.add(pc)
             covered.add(pc)
             wb = elf.read_at_vaddr(pc, 4)
             if wb is None or len(wb) < 4:
@@ -594,6 +676,22 @@ def trace_function(elf, start, ranges, covered, calls, hc):
                     if target not in calls:
                         calls.add(target)
                         new_calls.append(target)
+                covered.add(pc + 4)
+                pc += 8
+                continue
+            if (op == 1 and ((word >> 16) & 0x1F) in REGIMM_LINK_RT
+                    and _linked_branch_is_call(elf, pc, word, ranges)):
+                # bal/bgezal/bltzal (and the likely forms) to a callable: a call wearing
+                # a branch encoding (#968). Its target is a function entry like a jal
+                # target, never this function's interior, and both paths continue past
+                # the delay slot. `bal .+8` and a frame-releasing continuation target
+                # are not calls and fork below, exactly as before.
+                target = branch_target(pc, word)
+                if target not in calls and (
+                    in_ranges(target, ranges) or in_ranges(target, _file_backed_exec_ranges(elf))
+                ):
+                    calls.add(target)
+                    new_calls.append(target)
                 covered.add(pc + 4)
                 pc += 8
                 continue
@@ -650,11 +748,21 @@ def trace_function(elf, start, ranges, covered, calls, hc):
 
 def _is_hard_terminator(word):
     # True for instructions after which control never falls through to the next
-    # slot-pair: `j`, any `jr`, or the unconditional `b` idiom (beq $0,$0).
-    # `jal`/`jalr`/`bal` return, so they are NOT terminators here.
+    # slot-pair: `j`, any `jr`, unlinked `jalr $zero, $rs`, or the unconditional `b` idiom (beq $0,$0).
+    # `jal`/linked `jalr`/`bal` return, so they are NOT terminators here.
     op = word >> 26
-    return (op == 2 or (op == 0 and (word & 0x3F) == 0x08)
-            or (op == 4 and ((word >> 21) & 0x1F) == 0 and ((word >> 16) & 0x1F) == 0))
+    if op == 2:
+        return True
+    if op == 0:
+        fn = word & 0x3F
+        if fn == 0x08:  # jr rs
+            return True
+        if fn == 0x09 and ((word >> 11) & 0x1F) == 0:  # jalr $zero, rs
+            return True
+        return False
+    if op == 4 and ((word >> 21) & 0x1F) == 0 and ((word >> 16) & 0x1F) == 0:
+        return True
+    return False
 
 
 #: Public alias. The entry-role audit needs exactly this fall-through rule to
@@ -731,15 +839,41 @@ def direct_j_edges(elf, ranges, targets=None):
 #: REGIMM ``rt`` is a trap-immediate (``tgei``, ``tlti``, ``teqi``, ...) or
 #: ``synci``, whose immediate field is a trap code -- decoding it as a branch
 #: displacement manufactures an edge that does not exist.  ``trace_function``
-#: above is deliberately left alone: widening or narrowing its notion of a
+#: above still decodes those trap forms as branches: narrowing its notion of a
 #: branch would move recovered function extents, which is a separate change.
-#: The evidence census below has no such coupling and is therefore exact.
+#: (It does treat a linking branch to a callable as a call, #968.)  The
+#: evidence census below has no such coupling and is therefore exact.
 REGIMM_BRANCH_RT = frozenset({0x00, 0x01, 0x02, 0x03, 0x10, 0x11, 0x12, 0x13})
 
 #: The subset of :data:`REGIMM_BRANCH_RT` that writes ``$ra``.  ``bal`` is
 #: ``bgezal $zero``; these are *calls* wearing a branch encoding, so their
 #: target is a callable boundary and never continuation evidence.
 REGIMM_LINK_RT = frozenset({0x10, 0x11, 0x12, 0x13})
+
+
+def linked_branch_target(source, word):
+    """Target of a linking REGIMM branch that can be a call, or ``None``.
+
+    ``None`` for every word that is not ``bltzal``/``bgezal``/``bltzall``/
+    ``bgezall`` (``bal`` is ``bgezal $zero``), and for the read-the-PC idiom
+    ``bal .+8``: a target equal to the link is the caller's own next pair, so
+    that branch only materializes the PC and is never a call (#968).  Whether a
+    returned target *is* a call also depends on the target's frame role; see
+    :func:`entry_frame_balance.linked_branch_is_call`, which every walker uses.
+    """
+    if word >> 26 != 1 or ((word >> 16) & 0x1F) not in REGIMM_LINK_RT:
+        return None
+    target = branch_target(source, word)
+    if target == (source + 8) & 0xFFFFFFFF:
+        return None
+    return target
+
+
+def _linked_branch_is_call(elf, source, word, ranges):
+    # entry_frame_balance imports this module, so it is imported where it is used.
+    import entry_frame_balance
+    return entry_frame_balance.linked_branch_is_call(elf, source, word, ranges)
+
 
 #: Branch edge kinds reported by :func:`direct_branch_edges`.
 BRANCH_COND = "cond"          # an ordinary two-way conditional branch
@@ -777,8 +911,11 @@ def branch_target(source, word):
     if op == 1:
         if ((word >> 16) & 0x1F) not in REGIMM_BRANCH_RT:
             return None
-    elif op in (4, 5, 6, 7, 20, 21, 22, 23):
+    elif op in (4, 5, 20, 21):
         pass
+    elif op in (6, 7, 22, 23):
+        if ((word >> 16) & 0x1F) != 0:
+            return None
     elif op in (0x11, 0x12) and ((word >> 21) & 0x1F) == 8:
         pass
     else:
@@ -1150,7 +1287,13 @@ def _canonical_cfg_report_reference(image, ranges=None, entries=None):
             for owner in node_owners
         ]
         node["edges"] = sorted(
-            node["edges"], key=lambda edge: (edge["kind"], edge["target"] is None, edge["target"] or 0)
+            node["edges"],
+            key=lambda edge: (
+                edge["kind"],
+                edge["target"] is None,
+                edge["target"] or 0,
+                edge.get("detail", ""),
+            ),
         )
 
     data_spans = []
@@ -1202,17 +1345,17 @@ def _canonical_cfg_report_reference(image, ranges=None, entries=None):
         "unmapped_entries": unmapped_entries,
         "instructions": [nodes[address] for address in sorted(nodes)],
         "edges": sorted(edge_rows, key=lambda edge: (
-            edge["source"], edge["kind"], edge["target"] is None, edge["target"] or 0
+            edge["source"], edge["kind"], edge["target"] is None, edge["target"] or 0, edge.get("detail", ""),
         )),
         "direct_edges": sorted(direct_edges, key=lambda edge: (
-            edge["source"], edge["kind"], edge["target"] or 0
+            edge["source"], edge["kind"], edge["target"] or 0, edge.get("detail", ""),
         )),
-        "call_edges": sorted(call_edges, key=lambda edge: (edge["source"], edge["target"] or 0)),
-        "tail_call_edges": sorted(tail_call_edges, key=lambda edge: (edge["source"], edge["target"] or 0)),
-        "fallthrough_edges": sorted(fallthrough_edges, key=lambda edge: (edge["source"], edge["target"] or 0)),
+        "call_edges": sorted(call_edges, key=lambda edge: (edge["source"], edge["target"] or 0, edge.get("detail", ""))),
+        "tail_call_edges": sorted(tail_call_edges, key=lambda edge: (edge["source"], edge["target"] or 0, edge.get("detail", ""))),
+        "fallthrough_edges": sorted(fallthrough_edges, key=lambda edge: (edge["source"], edge["target"] or 0, edge.get("detail", ""))),
         "continuation_edges": sorted(continuation_edges, key=lambda edge: (edge["source"], edge["target"])),
-        "interior_entries": sorted(interior_entries, key=lambda item: (item["address"], item["source"], item["owner"])),
-        "unresolved_indirect_edges": sorted(unresolved, key=lambda edge: edge["source"]),
+        "interior_entries": sorted(interior_entries, key=lambda item: (item["address"], item["source"], item["owner"], item.get("reason", ""))),
+        "unresolved_indirect_edges": sorted(unresolved, key=lambda edge: (edge["source"], edge.get("detail", ""))),
         "ownership_conflicts": conflicts,
         "ownership_map": [
             {
@@ -1267,19 +1410,36 @@ _CFG_REASON_NAMES = ("entry",) + _CFG_KIND_NAMES
 _CFG_REASON_BITS = {name: 1 << index for index, name in enumerate(_CFG_REASON_NAMES)}
 
 
+def _cfg_address_comparable(value):
+    """Return whether a value can compare equal to an integer address.
+
+    ``bool`` is included on purpose: these checks compared with ``==``, where
+    ``True == 1``, so excluding it would change their findings. A malformed
+    address of any type is already reported where it is read.
+    """
+    return isinstance(value, (int, float))
+
+
 def _cfg_successor_classifications(report):
     """Classify every CFG edge using only the serialized ownership model."""
+    def rows(name):
+        # The verifier reports a malformed field; a scalar here must not raise.
+        # A string or object still iterates to strings, which every loop below
+        # skips exactly as before, so only non-iterables need replacing.
+        value = report.get(name, ())
+        return value if isinstance(value, Iterable) else ()
+
     nodes = {
         row.get("address"): row
-        for row in report.get("instructions", ())
+        for row in rows("instructions")
         if isinstance(row, dict) and type(row.get("address")) is int
     }
     entries = {
-        entry for entry in report.get("entries", ())
+        entry for entry in rows("entries")
         if type(entry) is int
     }
     interior = set()
-    for row in report.get("interior_entries", ()):
+    for row in rows("interior_entries"):
         if not isinstance(row, dict):
             continue
         source, target, kind = row.get("source"), row.get("address"), row.get("reason")
@@ -1288,7 +1448,7 @@ def _cfg_successor_classifications(report):
 
     classifications = []
     external_transfer_kinds = {"call", "direct-jump", "direct-branch", "branch", "tail-call"}
-    for edge in report.get("edges", ()):
+    for edge in rows("edges"):
         if not isinstance(edge, dict):
             continue
         source, target, kind = edge.get("source"), edge.get("target"), edge.get("kind")
@@ -1321,7 +1481,10 @@ def _cfg_successor_classifications(report):
                 if isinstance(kind, str) and kind in external_transfer_kinds
                 else "invalid-unowned"
             )
-        elif (source, target, kind) in interior:
+        elif (
+            _cfg_address_comparable(source) and isinstance(kind, str)
+            and (source, target, kind) in interior
+        ):
             classification = "continuation-resume-entry"
         elif source_owners.intersection(target_owners):
             classification = "same-region"
@@ -1528,7 +1691,12 @@ class CanonicalCfgState:
                 "content_classification": "padding" if self.words[index] == 0 else "instruction-word",
                 "edges": sorted(
                     edges_by_node[index],
-                    key=lambda edge: (edge["kind"], edge["target"] is None, edge["target"] or 0),
+                    key=lambda edge: (
+                        edge["kind"],
+                        edge["target"] is None,
+                        edge["target"] or 0,
+                        edge.get("detail", ""),
+                    ),
                 ),
                 "classification": self._classification(index),
                 "owners": owners,
@@ -1573,14 +1741,14 @@ class CanonicalCfgState:
             "unmapped_entries": list(self.unmapped_entries),
             "instructions": instructions,
             "edges": sorted(edge_rows, key=lambda edge: (
-                edge["source"], edge["kind"], edge["target"] is None, edge["target"] or 0,
+                edge["source"], edge["kind"], edge["target"] is None, edge["target"] or 0, edge.get("detail", ""),
             )),
             "direct_edges": sorted(direct_edges, key=lambda edge: (
-                edge["source"], edge["kind"], edge["target"] or 0,
+                edge["source"], edge["kind"], edge["target"] or 0, edge.get("detail", ""),
             )),
-            "call_edges": sorted(call_edges, key=lambda edge: (edge["source"], edge["target"] or 0)),
-            "tail_call_edges": sorted(tail_call_edges, key=lambda edge: (edge["source"], edge["target"] or 0)),
-            "fallthrough_edges": sorted(fallthrough_edges, key=lambda edge: (edge["source"], edge["target"] or 0)),
+            "call_edges": sorted(call_edges, key=lambda edge: (edge["source"], edge["target"] or 0, edge.get("detail", ""))),
+            "tail_call_edges": sorted(tail_call_edges, key=lambda edge: (edge["source"], edge["target"] or 0, edge.get("detail", ""))),
+            "fallthrough_edges": sorted(fallthrough_edges, key=lambda edge: (edge["source"], edge["target"] or 0, edge.get("detail", ""))),
             "continuation_edges": [
                 {"source": source, "target": target, "owner": owner}
                 for source, target, owner in sorted(self.continuation_edges)
@@ -1589,7 +1757,7 @@ class CanonicalCfgState:
                 {"address": address, "source": source, "owner": owner, "reason": _CFG_KIND_NAMES[reason]}
                 for address, source, owner, reason in sorted(self.interior_entries)
             ],
-            "unresolved_indirect_edges": sorted(unresolved, key=lambda edge: edge["source"]),
+            "unresolved_indirect_edges": sorted(unresolved, key=lambda edge: (edge["source"], edge.get("detail", ""))),
             "ownership_conflicts": conflicts,
             "ownership_map": [
                 {
@@ -1910,6 +2078,20 @@ def verify_canonical_cfg_report(report):
     def finding(code, value):
         findings.append({"code": code, "message": repr(value)})
 
+    def known(value, names):
+        """Test a string-name set without hashing an unhashable JSON value."""
+        return isinstance(value, str) and value in names
+
+    def owner_projection(owners):
+        """Project node owners for the ownership-map comparison.
+
+        A non-list value is already a node-owners-invalid finding. An iterable
+        keeps the tuple() comparison it always had. A scalar such as 5 or None
+        cannot become a tuple, so it is compared as-is: it never equals a row's
+        owner tuple, which keeps the projection mismatch instead of raising.
+        """
+        return tuple(owners) if isinstance(owners, Iterable) else owners
+
     def list_field(name):
         value = report.get(name, [])
         if not isinstance(value, list):
@@ -1981,7 +2163,7 @@ def verify_canonical_cfg_report(report):
         node_by_address[address] = node
         if address not in interval_addresses:
             finding("node-outside-executable", node)
-        if node.get("classification") not in allowed_classifications:
+        if not known(node.get("classification"), allowed_classifications):
             finding("node-unclassified", node)
         node_edges = node.get("edges", [])
         if not isinstance(node_edges, list):
@@ -1996,14 +2178,17 @@ def verify_canonical_cfg_report(report):
             kind = edge.get("kind")
             if source != address:
                 finding("edge-source-mismatch", edge)
-            if kind not in allowed_edge_kinds:
+            if not known(kind, allowed_edge_kinds):
                 finding("edge-kind-invalid", edge)
             if target is not None and (
                 type(target) is not int or target < 0 or target > UINT32_END_MAX - 1
             ):
                 finding("edge-target-invalid", edge)
                 continue
-            if target is not None and target not in interval_addresses and kind not in external_edge_kinds:
+            if (
+                target is not None and target not in interval_addresses
+                and not known(kind, external_edge_kinds)
+            ):
                 finding("edge-target-invalid", edge)
             if type(source) is int and (target is None or type(target) is int) and isinstance(kind, str):
                 node_edge_keys.append((source, target, kind, edge.get("detail")))
@@ -2029,7 +2214,7 @@ def verify_canonical_cfg_report(report):
         if start in byte_starts:
             finding("duplicate-byte-classification", row)
         byte_starts.add(start)
-        if row.get("classification") not in allowed_byte_classifications:
+        if not known(row.get("classification"), allowed_byte_classifications):
             finding("byte-classification-invalid", row)
     if byte_starts != interval_addresses:
         findings.append({
@@ -2052,7 +2237,10 @@ def verify_canonical_cfg_report(report):
             finding("edge-target-invalid", edge)
         elif target in interval_addresses and target not in node_by_address:
             finding("edge-target-missing", edge)
-        elif target not in interval_addresses and kind not in external_edge_kinds and target is not None:
+        elif (
+            target not in interval_addresses and not known(kind, external_edge_kinds)
+            and target is not None
+        ):
             finding("edge-target-invalid", edge)
         if type(source) is int and (target is None or type(target) is int) and isinstance(kind, str):
             global_edge_keys.append((source, target, kind, edge.get("detail")))
@@ -2068,7 +2256,7 @@ def verify_canonical_cfg_report(report):
         if not isinstance(successor, dict):
             finding("successor-classification-invalid", successor)
             continue
-        if successor.get("classification") not in CFG_SUCCESSOR_CLASSIFICATIONS:
+        if not known(successor.get("classification"), CFG_SUCCESSOR_CLASSIFICATIONS):
             finding("successor-classification-invalid", successor)
     if successor_rows != _cfg_successor_classifications(report):
         finding(
@@ -2108,6 +2296,11 @@ def verify_canonical_cfg_report(report):
     interior_keys = []
     interior_addresses = set()
     valid_entries = {entry for entry in entries if type(entry) is int}
+    # Membership index for the per-row edge check; scanning the edge list for
+    # each interior entry made verification quadratic in image size.
+    global_edge_triples = {
+        (source, target, kind) for source, target, kind, _detail in global_edge_keys
+    }
     for item in interior_rows:
         if not isinstance(item, dict):
             finding("interior-entry-invalid", item)
@@ -2122,10 +2315,7 @@ def verify_canonical_cfg_report(report):
             finding("interior-entry-node-missing", item)
         if owner not in valid_entries:
             finding("interior-entry-owner-missing", item)
-        if not any(
-            edge_source == source and edge_target == address and edge_kind == reason
-            for edge_source, edge_target, edge_kind, _detail in global_edge_keys
-        ):
+        if (source, address, reason) not in global_edge_triples:
             finding("interior-entry-edge-missing", item)
         interior_keys.append((address, source, owner, reason))
         interior_addresses.add(address)
@@ -2154,13 +2344,14 @@ def verify_canonical_cfg_report(report):
         for source, target, kind, _detail in global_edge_keys
         if kind == "delay-slot" and target is not None
     }
+    delay_targets = {target for _source, target in delay_edge_pairs}
     for address, node in node_by_address.items():
         branch_likely = node.get("branch_likely")
         if type(branch_likely) is not bool:
             finding("branch-likely-invalid", node)
         predecessor = node.get("delay_slot_of")
         if predecessor is None:
-            if any(target == address for _source, target in delay_edge_pairs):
+            if address in delay_targets:
                 finding("delay-slot-projection-mismatch", node)
             continue
         if type(predecessor) is not int or predecessor not in node_by_address:
@@ -2214,7 +2405,12 @@ def verify_canonical_cfg_report(report):
         address for address, node in node_by_address.items()
         if isinstance(node.get("owners"), list) and len(node["owners"]) > 1
     )
-    if sorted(actual_conflict_addresses) != expected_conflict_addresses:
+    # Any other value already has a conflict-node-missing finding and can never
+    # equal a node address; it must not be ordered against integers.
+    if (
+        not all(_cfg_address_comparable(address) for address in actual_conflict_addresses)
+        or sorted(actual_conflict_addresses) != expected_conflict_addresses
+    ):
         finding("conflict-projection-mismatch", actual_conflict_addresses)
     for _address, node in node_by_address.items():
         owners = node.get("owners")
@@ -2245,7 +2441,7 @@ def verify_canonical_cfg_report(report):
                 if address in seen_ownership:
                     finding("ownership-map-duplicate", row)
                 seen_ownership.add(address)
-                if classification not in allowed_classifications:
+                if not known(classification, allowed_classifications):
                     finding("ownership-map-classification-invalid", row)
                 if not isinstance(owners, list) or any(type(owner) is not int for owner in owners):
                     finding("ownership-map-owners-invalid", row)
@@ -2255,14 +2451,16 @@ def verify_canonical_cfg_report(report):
                     finding("ownership-map-node-mismatch", row)
                 actual_ownership.append((address, classification, tuple(owners)))
             expected_ownership = [
-                (address, node.get("classification"), tuple(node.get("owners", ())))
+                (address, node.get("classification"), owner_projection(node.get("owners", ())))
                 for address, node in sorted(node_by_address.items())
             ]
-            if sorted(actual_ownership) != expected_ownership:
+            # Expected addresses are unique, so ordering by address alone is
+            # enough; a duplicate row is a mismatch whatever its other fields.
+            if sorted(actual_ownership, key=lambda item: item[0]) != expected_ownership:
                 finding("ownership-map-projection-mismatch", ownership_rows)
     for conflict in conflicts:
         address = conflict.get("address") if isinstance(conflict, dict) else None
-        node = node_by_address.get(address)
+        node = node_by_address.get(address) if _cfg_address_comparable(address) else None
         if node is not None and isinstance(conflict.get("owners"), list) and conflict["owners"] != node.get("owners"):
             finding("conflict-owner-mismatch", conflict)
 
@@ -2428,7 +2626,12 @@ def code_pointer_evidence(elf, ranges):
     return {kind: frozenset(values) for kind, values in evidence.items()}
 
 
-def analyze(elf, extra_spans=None, cfg_gate=False):
+def analyze(elf, extra_spans=None, cfg_gate=False, trace_memo=True, report=None):
+    # trace_memo=False runs the uncached per-start walks; the output is the same either way
+    # (tests pin the two against each other).
+    # `report`, when a dict, receives the discovery state the import-stub census reads:
+    # covered (every traced instruction address), calls (every direct-call target seen),
+    # and hc (the high-confidence seeds). The return value is unchanged.
     ranges = exec_ranges(elf, extra_spans=extra_spans)
     file_exec_ranges = _file_backed_exec_ranges(elf)
 
@@ -2547,13 +2750,24 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
 
     # Reconstruct stubs from .sceStub.text or imports
     stubs_sec = elf.sec(".sceStub.text")
-    has_module_info = elf.sec(".rodata.sceModuleInfo") is not None
-    if has_module_info or (stubs_sec and elf.reloc is not None):
+    if has_import_table(elf):
         try:
             from imports import ImportTableError, parse_imports
             impmap = parse_imports(elf)
             for a in impmap.keys():
                 if in_ranges(a, ranges) and (a & 3) == 0:
+                    hc.add(a)
+                elif _import_stub_is_file_executable(a, file_exec_ranges):
+                    # A retail import stub lives in executable PT_LOAD bytes outside the
+                    # named code sections (.text, .sceStub.text), so `ranges` never holds
+                    # it. The late discovery passes (tail promotion and gap fill) keep a
+                    # callee only when it is inside `ranges`, so a stub that was reached
+                    # only through a direct call from an orphan function was dropped
+                    # there. Codegen then emitted no body, and the call dispatched to the
+                    # image's `jr $ra; nop` placeholder, which returns a stale $v0 with no
+                    # HLE event. Seeding the stub as an entry here makes it a traced
+                    # function that owns its two words before the gap-fill safety nets
+                    # run. Stubs that are not file-backed executable bytes are not seeded.
                     hc.add(a)
         except Exception as e:
             from imports import ImportTableError
@@ -2710,15 +2924,37 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
     # weak signals that land inside a function body (internal blocks) can be discarded.
     covered = set()
     calls = set()
+    # Words expanded by earlier traces, one set per range list (see trace_function's
+    # `walked`). Traces share a set only when their ranges are equal, so a word expanded
+    # under one range list is never skipped under another.
+    walked_by_ranges = {} if trace_memo else None
+
+    def trace(entry, entry_ranges):
+        walked = None
+        if walked_by_ranges is not None:
+            walked = walked_by_ranges.setdefault(tuple(entry_ranges), set())
+        return trace_function(
+            elf, entry, entry_ranges, covered, calls, hc, walked=walked,
+        )
+
+    def callable_target(addr):
+        # The worklist's rule for a direct-call or jump target, shared by the late passes:
+        # named code, or file-backed executable bytes outside the named sections. The late
+        # passes tested the named ranges alone, so a callee in those bytes that only a late
+        # pass reached was dropped and got no body (the follow-up to the import-stub seed).
+        # The two tests are deliberately asymmetric. `ranges` already carries the title's
+        # extra executable spans (exec_ranges), which need not be file-backed, while
+        # `file_exec_ranges` is only the file-backed PT_LOAD executable set. So a target in
+        # an extra span that is not file-backed is accepted through `ranges` alone.
+        return in_ranges(addr, ranges) or in_ranges(addr, file_exec_ranges)
+
     functions = set(hc)
     work = list(hc)
     while work:
         s = work.pop()
         new_calls = []
         if in_ranges(s, ranges) or in_ranges(s, file_exec_ranges):
-            new_calls = trace_function(
-                elf, s, trace_ranges_for_entry(s), covered, calls, hc
-            )
+            new_calls = trace(s, trace_ranges_for_entry(s))
         for t in new_calls:
             if t not in functions and (
                 in_ranges(t, ranges) or in_ranges(t, file_exec_ranges)
@@ -2738,7 +2974,7 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
     # entry and emits a continuation call, so both owners stay correct.
     pending_tail_calls = []
     for t in sorted(jtails):
-        if t in functions or not in_ranges(t, ranges):
+        if t in functions or not callable_target(t):
             continue
         wb = elf.read_at_vaddr(t - 8, 4)
         if wb is None or len(wb) < 4:
@@ -2746,17 +2982,13 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
         if not _is_hard_terminator(int.from_bytes(wb, 'little')):
             continue
         functions.add(t)
-        pending_tail_calls.extend(
-            trace_function(elf, t, ranges, covered, calls, hc)
-        )
+        pending_tail_calls.extend(trace(t, trace_ranges_for_entry(t)))
         tail_call_batch = pending_tail_calls
         pending_tail_calls = []
         for c in tail_call_batch:
-            if c not in functions and in_ranges(c, ranges):
+            if c not in functions and callable_target(c):
                 functions.add(c)
-                pending_tail_calls.extend(
-                    trace_function(elf, c, ranges, covered, calls, hc)
-                )
+                pending_tail_calls.extend(trace(c, trace_ranges_for_entry(c)))
 
     # Gap fill: a weak-signal address that no known function covers is an indirect-only
     # function (reached through a register the call graph could not resolve). Add it and trace
@@ -2789,15 +3021,13 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
                         covered.add(c + 4)
                         continue
                 functions.add(c)
-                new_calls = trace_function(elf, c, ranges, covered, calls, hc)
+                new_calls = trace(c, ranges)
                 gap_call_batch = pending_gap_calls + new_calls
                 pending_gap_calls = []
                 for t in gap_call_batch:
-                    if t not in functions and in_ranges(t, ranges):
+                    if t not in functions and callable_target(t):
                         functions.add(t)
-                        pending_gap_calls.extend(
-                            trace_function(elf, t, ranges, covered, calls, hc)
-                        )
+                        pending_gap_calls.extend(trace(t, trace_ranges_for_entry(t)))
                 changed = True
 
     # A direct call can prove that code exists outside named .text sections. Grant the
@@ -2827,6 +3057,8 @@ def analyze(elf, extra_spans=None, cfg_gate=False):
             merged_ranges[-1] = (merged_ranges[-1][0], max(merged_ranges[-1][1], hi))
         else:
             merged_ranges.append((lo, hi))
+    if report is not None:
+        report.update(covered=covered, calls=calls, hc=hc)
     return functions, merged_ranges
 
 
@@ -2877,9 +3109,18 @@ def emit_toml(model, path):
         f'entry = {_fmt_value("entry", model["entry"])}',
         "",
     ]
-    for fn in model["functions"]:
+    functions = sorted(
+        model["functions"],
+        key=lambda fn: (
+            isinstance(fn.get("addr"), (int, float)),
+            int(fn.get("addr")) if isinstance(fn.get("addr"), (int, float)) else 0,
+            str(fn.get("addr", "")),
+        ),
+    )
+    for fn in functions:
         lines.append("[[function]]")
-        keys = [k for k in _FUNC_ORDER if k in fn] + [k for k in fn if k not in _FUNC_ORDER]
+        extra_keys = sorted(k for k in fn if k not in _FUNC_ORDER)
+        keys = [k for k in _FUNC_ORDER if k in fn] + extra_keys
         for k in keys:
             lines.append(f"{k} = {_fmt_value(k, fn[k])}")
         lines.append("")

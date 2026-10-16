@@ -74,6 +74,9 @@ typedef struct {
     uint32_t extracted_visual_count;
     uint32_t extracted_layout_count;
     char last_played[32];
+    /* A bundled demo or UI fixture, shown as SAMPLE. It exists only in memory:
+       nk_library_save never writes it, so it cannot reach the user's library.json. */
+    bool is_sample;
 } NkGameEntry;
 
 #ifdef __cplusplus

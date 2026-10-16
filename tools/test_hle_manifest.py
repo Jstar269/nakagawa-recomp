@@ -80,6 +80,7 @@ static void init(void) {
                 "handler": "h_ControlledUnsupported",
                 "origin": "static_unsupported",
                 "refusal_error": 0x80010086,
+                "owner_file": None,
             }],
         )
 
@@ -233,6 +234,110 @@ static void more(void) {
         origins = {r["origin"] for r in regs}
         self.assertIn("static", origins)
         self.assertIn("static_unsupported", origins)
+
+
+class PowerRegistrationOwnershipTests(unittest.TestCase):
+    """scePower and sceKernelPower NIDs are registered from src/rt/hle_power.c (issue #307).
+
+    Their handlers already live in hle_power.c, so the registrations must too: one
+    obvious owner per NID, with hle.c left as composition glue. The NID set is pinned
+    here rather than derived from hle.c, so the test cannot pass by reading the old
+    location. scePower_469989ad stays in hle.c: its refusal uses hle.c's private
+    sr_hle_register_unsupported(), which hle_power.c cannot call.
+    """
+
+    POWER_NIDS = frozenset({
+        0x34F9C463, 0xFDB5BFE9, 0x478FE6F5, 0x737486F2, 0xEBD177D6, 0xD3075926,  # clock and low battery
+        0xEADB1BD7, 0x3AEE7261, 0x090CCB3F,                                      # sceKernelPower Lock/Unlock/Tick
+        0x04B7766E,                                                              # scePowerRegisterCallback
+        0x2085D15D, 0x1E490401, 0x0AFD0D8B, 0x87440F5E,                          # battery and power online
+        0xFEE03A2F, 0xBD681969, 0xEA382A27, 0xB1A52C83, 0x9BADB3EB,              # measured clock alias, Int and Float getters (PSP-3000 6.61 oracle 2026-10-15, PSP-HLE-POWER-001)
+    })
+
+    def test_power_registrations_are_owned_by_hle_power_c(self) -> None:
+        """The live manifest's owner_file puts exactly the power NIDs in hle_power.c."""
+        owned = {
+            r["nid"] for r in build_manifest()["registrations"] if r["owner_file"] == "src/rt/hle_power.c"
+        }
+        self.assertEqual(owned, {f"0x{n:08x}" for n in self.POWER_NIDS})
+
+    def test_hle_c_registers_no_power_nid(self) -> None:
+        active = hle_manifest.active_source(hle_manifest.HLE_C.read_text(encoding="utf-8"))
+        registered = {
+            int(m.group(1), 16)
+            for m in re.finditer(
+                r"sr_hle_register(?:_unsupported)?\s*\(\s*0x([0-9a-fA-F]{1,8})[uU]?\s*,", active
+            )
+        }
+        self.assertEqual(registered & self.POWER_NIDS, set())
+
+
+class RegistrationOwnerFileTests(unittest.TestCase):
+    """Every registration has exactly one owner file; none is registered outside the manifest.
+
+    A NID registered from two runtime units is rejected by extract_registrations'
+    duplicate check, pinned here per file. A registration call in a production file
+    the manifest does not read is a NID with no owner at all, so the live tree must
+    have none.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.manifest = build_manifest()
+
+    def test_every_registration_has_a_composed_owner_file(self) -> None:
+        composed = {path for path, _ in hle_manifest.runtime_hle_sources()}
+        for r in self.manifest["registrations"]:
+            self.assertIn(r["owner_file"], composed, f"{r['nid']} {r['name']} has no owner file")
+
+    def test_live_production_tree_registers_only_from_composed_sources(self) -> None:
+        composed = [path for path, _ in hle_manifest.runtime_hle_sources()]
+        files = {
+            p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8")
+            for p in sorted((ROOT / "src").rglob("*.c"))
+        }
+        self.assertEqual(hle_manifest.registration_calls_outside(files, composed), [])
+
+    def test_nid_registered_from_two_runtime_units_is_rejected(self) -> None:
+        a = (
+            "static uint32_t h_A(CpuState *s) { (void)s; return 0; }\n"
+            'static void init_a(void) { sr_hle_register(0x00000010u, "synthA", h_A); }\n'
+        )
+        b = (
+            "static uint32_t h_B(CpuState *s) { (void)s; return 0; }\n"
+            'static void init_b(void) { sr_hle_register(0x00000010u, "synthB", h_B); }\n'
+        )
+        sources = [("src/rt/hle.c", a), ("src/rt/hle_power.c", b)]
+        with self.assertRaises(ManifestError) as ctx:
+            extract_registrations("\n".join(text for _, text in sources), sources)
+        self.assertIn("duplicate NID", str(ctx.exception))
+        self.assertIn("0x00000010", str(ctx.exception))
+
+    def test_registration_call_outside_the_composed_sources_is_reported(self) -> None:
+        files = {
+            "src/rt/hle.c": SYNTH_SOURCE,
+            "src/rt/hle_fs.c": 'static void init_fs(void) {\n    sr_hle_register(0x00000070u, "synthFs", h_Fs);\n}\n',
+        }
+        self.assertEqual(hle_manifest.registration_calls_outside(files, ["src/rt/hle.c"]), ["src/rt/hle_fs.c:2"])
+
+    def test_owner_file_follows_the_unit_each_call_sits_in(self) -> None:
+        a = (
+            "static uint32_t h_A(CpuState *s) { (void)s; return 0; }\n"
+            'static void init_a(void) { sr_hle_register(0x00000010u, "synthA", h_A); }\n'
+        )
+        b = (
+            "static uint32_t h_B(CpuState *s) { (void)s; return 0; }\n"
+            'static void init_b(void) { sr_hle_register(0x00000020u, "synthB", h_B); }\n'
+        )
+        sources = [("src/rt/a.c", a), ("src/rt/b.c", b)]
+        regs = extract_registrations("\n".join(text for _, text in sources), sources)
+        self.assertEqual(
+            [(r["nid"], r["owner_file"]) for r in regs], [(0x10, "src/rt/a.c"), (0x20, "src/rt/b.c")]
+        )
+
+    def test_sources_must_be_the_text_that_is_extracted(self) -> None:
+        with self.assertRaises(ValueError):
+            extract_registrations(SYNTH_SOURCE, [("src/rt/hle.c", "static void other(void) {}\n")])
 
 
 class LiveManifestTests(unittest.TestCase):
@@ -438,8 +543,9 @@ class LiveManifestTests(unittest.TestCase):
             0x9944F31F: ("sceKernelSuspendThread", "h_SuspendThread", "dedicated"),
             0x6652B8CA: ("sceKernelSetAlarm", "h_SetAlarm", "dedicated"),
             0xBA6B92E2: ("sceKernelSysClock2USec", "h_SysClock2USec", "dedicated"),
+            0x110DEC9A: ("sceKernelUSec2SysClock", "h_USec2SysClock", "dedicated"),
             0x7E65B999: ("sceKernelCancelAlarm", "h_CancelAlarm", "dedicated"),
-            0x034A921F: ("sceKernelGetVTimerTime", "h_ControlledUnsupported", "controlled_unsupported"),
+            0x034A921F: ("sceKernelGetVTimerTime", "h_GetVTimerTime", "dedicated"),
             0x50F61D8A: ("sceKernelFreeMemoryBlock", "h_FreeMemoryBlock", "dedicated"),
             0xDB83A952: ("sceKernelGetMemoryBlockAddr", "h_GetMemoryBlockAddr", "dedicated"),
             0xFE707FDF: ("sceKernelAllocMemoryBlock", "h_AllocMemoryBlock", "dedicated"),
@@ -456,7 +562,7 @@ class LiveManifestTests(unittest.TestCase):
             0x0CAE832B: ("sceRegCloseCategory", "h_RegCloseCategory", "dedicated"),
             0x1D8A762E: ("sceRegOpenCategory", "h_RegOpenCategory", "dedicated"),
         }
-        self.assertEqual(len(expected), 23)
+        self.assertEqual(len(expected), 24)
         for nid, (name, handler, classification) in expected.items():
             with self.subTest(nid=f"0x{nid:08x}"):
                 if nid not in self.regs:
@@ -467,6 +573,20 @@ class LiveManifestTests(unittest.TestCase):
                 self.assertEqual(registration["classification"], classification)
                 if classification == "controlled_unsupported" and nid not in (0x0CAE832B, 0x1D8A762E):
                     self.assertEqual(int(registration["refusal_error"], 16), 0x80020002)
+
+    def test_usec_sysclock_wide_and_umd_unregister_routes_are_dedicated(self) -> None:
+        expected = {
+            0xC8CD158C: ("sceKernelUSec2SysClockWide", "h_USec2SysClockWide"),
+            0xBD2BDE07: ("sceUmdUnRegisterUMDCallBack", "h_UmdUnRegisterUMDCallBack"),
+        }
+        for nid, (name, handler) in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["name"], name)
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+        self.assertIn("project choice", meta.HANDLER_LIMITATIONS["h_UmdUnRegisterUMDCallBack"])
 
     def test_findings_and_waivers_are_in_exact_balance(self) -> None:
         findings = [{**f, "nid": int(f["nid"], 16)} for f in self.manifest["findings"]]
@@ -659,21 +779,27 @@ static uint32_t h_SynthReal(CpuState *s) {
             unsupported,
             {
                 "0x0282a3bd": ("sceHttpGetContentLength", "0x80010086"),
-                "0x034a921f": ("sceKernelGetVTimerTime", "0x80020002"),
                 "0x03d9526f": ("sceHttpSetResolveRetry", "0x80010086"),
                 "0x0bf0a3ae": ("sceNetGetLocalEtherAddr", "0x80010086"),
                 "0x0c116e1b": ("sceAtracLowLevelDecode", "0x80630004"),
                 "0x1575d64b": ("sceAtracLowLevelInitDecoder", "0x80630004"),
                 "0x1579a159": ("sceUtilityLoadNetModule", "0x80110001"),
                 "0x1f0fc3e3": ("sceHttpSetRecvTimeOut", "0x80010086"),
-                "0x20fff560": ("sceKernelCreateVTimer", "0x80020002"),
                 "0x2255551e": ("sceHttpGetNetworkPspError", "0x80010086"),
                 "0x231fc6b7": ("_sceAtracGetContextAddress", "0x80630003"),
                 "0x29681260": ("sceAudiocodecReleaseEDRAM", "0x80010086"),
-                "0x328f9e52": ("sceKernelDeleteVTimer", "0x80020002"),
+                "0x011f03c1": ("sceRtcGetAccumulativeTime", "0x80020002"),
+                "0x191cdeff": ("sceSslEnd", "0x80010086"),
+                "0x5963991b": ("sceNetApctlDelHandler", "0x80010086"),
+                "0x39af39a6": ("sceNetInit", "0x80010086"),
+                "0xf9d8eb63": ("sceHttpsEnd", "0x80010086"),
                 "0x3a20a200": ("sceAudiocodecGetEDRAM", "0x80010086"),
+                "0x469989ad": ("scePower_469989ad", "0x80020002"),
                 "0x3eaba285": ("sceHttpAddExtraHeader", "0x80010086"),
                 "0x542ad630": ("sceKernelSetVTimerTime", "0x80020002"),
+                "0x53b00e9a": ("sceKernelSetVTimerHandlerWide", "0x80020002"),
+                "0xd2d615ef": ("sceKernelCancelVTimerHandler", "0x80020002"),
+                "0xd8b299ae": ("sceKernelSetVTimerHandler", "0x80020002"),
                 "0x5b37eb1d": ("sceAudiocodecInit", "0x80010086"),
                 "0x438a385a": ("sceGeSaveContext", "0x80020002"),
                 "0x0bf608fb": ("sceGeRestoreContext", "0x80020002"),
@@ -686,7 +812,6 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x8c943191": ("sceImposeGetBatteryIconStatus", "0x80010086"),
                 "0xab1abe07": ("sceHttpInit", "0x80010086"),
                 "0xbd2f1094": ("sceKernelLoadExec", "0x80020002"),
-                "0xc68d9437": ("sceKernelStartVTimer", "0x80020002"),
                 "0xd1c8945e": ("sceHttpEnd", "0x80010086"),
                 "0xd1f59fdb": ("sceAtracStartEntry", "0x80630004"),
                 "0xd675ebb8": ("sceKernelSelfStopUnloadModule", "0x80020002"),
@@ -1037,7 +1162,20 @@ class EvidenceTierTests(unittest.TestCase):
         promoted = hle_manifest.oracle_exercised_apis(document)
         self.assertEqual(
             sorted(t["id"] for t in document["tests"] if t.get("hardware_evidence") == "MEASURED"),
-            ["PSP-DISPLAY-001", "PSP-DMAC-001", "PSP-EXCEPTION-001", "PSP-KERNEL-002"],
+            [
+                "PSP-ALARM-001", "PSP-AUDIO-001", "PSP-CACHE-001", "PSP-DISPLAY-001",
+                "PSP-DISPLAY-002", "PSP-DISPLAY-003", "PSP-DISPLAY-004", "PSP-DMAC-001",
+                "PSP-EXCEPTION-001", "PSP-FPU-001", "PSP-FPU-CC-001", "PSP-GE-001",
+                "PSP-GE-CONTROL-001", "PSP-HLE-AUDIO-SRC-001", "PSP-HLE-CTRL-LATCH-001",
+                "PSP-HLE-GE-EDRAM-001", "PSP-HLE-HPRM-001", "PSP-HLE-KERNEL-STATUS-001",
+                "PSP-HLE-POWER-001", "PSP-HLE-POWER-002", "PSP-HLE-SYSPARAM-001",
+                "PSP-HLE-TIMER-ORDER-001", "PSP-HLE-VTIMER-001", "PSP-HLE-VTIMER-002",
+                "PSP-HLE-VTIMER-003", "PSP-IO-001", "PSP-KERNEL-001",
+                "PSP-KERNEL-002", "PSP-KERNEL-MISC-001", "PSP-KERNEL-STATUS-001", "PSP-LLSC-001",
+                "PSP-MUTEX-001", "PSP-REGISTRY-001", "PSP-SMOKE-001", "PSP-SYSTEM-001",
+                "PSP-THREAD-003", "PSP-THREAD-EXIT-001", "PSP-TRANSPORT-001", "PSP-VFPU-CMP-001",
+                "PSP-VFPU-TRANSCENDENTAL-001", "PSP-WAIT-001",
+            ],
         )
         self.assertIn("sceDmacTryMemcpy", promoted)
         rows = {t["id"]: t for t in document["tests"]}
@@ -1395,6 +1533,15 @@ class CensusTests(unittest.TestCase):
             with self.assertRaises(ManifestError) as ctx:
                 hle_manifest.validate_meta(self.raw_regs)
             self.assertIn("has no evidence metadata", str(ctx.exception))
+
+    def test_complete_without_executable_evidence_is_rejected(self) -> None:
+        with mock.patch.dict(
+            meta.HANDLER_EVIDENCE,
+            {"h_DisplayGetFramePerSec": ["public ABI contract (sceDisplayGetFramePerSec)"]},
+        ):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+            self.assertIn("has no named executable evidence", str(ctx.exception))
 
     def test_complete_with_nonexistent_evidence_file_is_rejected(self) -> None:
         with mock.patch.dict(

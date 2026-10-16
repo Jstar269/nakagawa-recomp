@@ -717,6 +717,24 @@
         "sha256": "a4b5410090a821ea17021627312babdf3d8db0271217fd8c4d9f629ef0a2d90b"
       },
       "comment": "Retrieved from google/fonts ofl/gudea/Gudea-Regular.ttf; byte-identical pinned fixture for the deterministic OpenType/TTF to PGF converter (#313). Shipped beside its OFL license text."
+    },
+    {
+      "id": "fixture-fonts-mplus1p-regular",
+      "name": "Pinned permissively redistributable Japanese font source: MPLUS1p-Regular.ttf",
+      "source_path": "fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "upstream_origin": "https://github.com/google/fonts",
+      "license": "OFL-1.1",
+      "notice_path": "fixtures/fonts/mplus1p/OFL.txt",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "2f294ad496432b1608f070d310e3aa2adcf1de4af429f4901df97ec4bd361ed1"
+      },
+      "comment": "Retrieved from google/fonts ofl/mplus1p/MPLUS1p-Regular.ttf at d714b17ce2379f06daf6295617f961df605dccb5; byte-identical pinned source for the build-time project Japanese PGF at font index 0. Shipped beside its OFL license text."
     }
   ]
 }

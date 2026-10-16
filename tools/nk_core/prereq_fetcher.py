@@ -15,9 +15,7 @@ import sys
 import tarfile
 import tempfile
 from typing import Callable
-from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
 import zipfile
 
 
@@ -95,24 +93,32 @@ def _validated_item(item: dict, *, allow_http: bool) -> tuple[str, int, str, set
     return url, size, digest, hosts
 
 
-class _AllowListedRedirects(HTTPRedirectHandler):
-    def __init__(self, hosts: set[str], *, allow_http: bool) -> None:
-        super().__init__()
-        self.hosts = hosts
-        self.allow_http = allow_http
+def _allow_listed_opener(hosts: set[str], *, allow_http: bool):
+    # urllib.request pulls in http.client and the email parser, about 0.7 s of
+    # interpreter start-up on every CLI invocation. Only a real download needs
+    # it, so the import is deferred to here and never runs on the cached path.
+    from urllib.request import HTTPRedirectHandler, build_opener
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        old = urlsplit(req.full_url)
-        target = urlsplit(urljoin(req.full_url, newurl))
-        host = (target.hostname or "").lower().rstrip(".")
-        allowed_schemes = {"https", "http"} if self.allow_http else {"https"}
-        if target.scheme not in allowed_schemes or host not in self.hosts:
-            raise PrerequisiteFetchError(
-                f"REDIRECT_REJECTED: {req.full_url} redirected outside its HTTPS host allow-list."
-            )
-        if old.scheme == "https" and target.scheme != "https":
-            raise PrerequisiteFetchError("REDIRECT_REJECTED: HTTPS downgrade redirects are not allowed.")
-        return super().redirect_request(req, fp, code, msg, headers, target.geturl())
+    class _AllowListedRedirects(HTTPRedirectHandler):
+        def __init__(self, hosts: set[str], *, allow_http: bool) -> None:
+            super().__init__()
+            self.hosts = hosts
+            self.allow_http = allow_http
+
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            old = urlsplit(req.full_url)
+            target = urlsplit(urljoin(req.full_url, newurl))
+            host = (target.hostname or "").lower().rstrip(".")
+            allowed_schemes = {"https", "http"} if self.allow_http else {"https"}
+            if target.scheme not in allowed_schemes or host not in self.hosts:
+                raise PrerequisiteFetchError(
+                    f"REDIRECT_REJECTED: {req.full_url} redirected outside its HTTPS host allow-list."
+                )
+            if old.scheme == "https" and target.scheme != "https":
+                raise PrerequisiteFetchError("REDIRECT_REJECTED: HTTPS downgrade redirects are not allowed.")
+            return super().redirect_request(req, fp, code, msg, headers, target.geturl())
+
+    return build_opener(_AllowListedRedirects(hosts, allow_http=allow_http))
 
 
 def _sha256_file(path: Path) -> str:
@@ -147,7 +153,10 @@ def download_verified_item(
             return destination
         destination.unlink()
 
-    opener = build_opener(_AllowListedRedirects(hosts, allow_http=allow_http))
+    from urllib.error import HTTPError, URLError
+    from urllib.request import Request
+
+    opener = _allow_listed_opener(hosts, allow_http=allow_http)
     last_error: Exception | None = None
     for attempt in range(1, retries + 1):
         partial.unlink(missing_ok=True)

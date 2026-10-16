@@ -591,13 +591,16 @@ _register_campaign_probe(
     ("ge-break-no-active-list", "ge-continue-no-paused-list",
      "ge-break-invalid-mode", "ge-list-sync-paused", "ge-draw-sync-paused",
      "ge-continue-drain", "ge-quiesce-after-continue",
-     "ge-list-sync-cancelled", "ge-draw-sync-cancelled",
-     "ge-quiesce-after-cancel"),
+     "ge-break-reset-no-dequeue", "ge-list-sync-cancelled",
+     "ge-draw-sync-cancelled", "ge-quiesce-after-cancel",
+     "ge-list-dequeue-stalled", "ge-quiesce-after-dequeue"),
     {"ge-break-no-active-list": 2, "ge-continue-no-paused-list": 1,
      "ge-break-invalid-mode": 2, "ge-list-sync-paused": 3,
      "ge-draw-sync-paused": 3, "ge-continue-drain": 5,
-     "ge-quiesce-after-continue": 4, "ge-list-sync-cancelled": 3,
-     "ge-draw-sync-cancelled": 3, "ge-quiesce-after-cancel": 4},
+     "ge-quiesce-after-continue": 4, "ge-break-reset-no-dequeue": 2,
+     "ge-list-sync-cancelled": 3, "ge-draw-sync-cancelled": 3,
+     "ge-quiesce-after-cancel": 4, "ge-list-dequeue-stalled": 4,
+     "ge-quiesce-after-dequeue": 4},
 )
 _register_campaign_probe(
     "kernel-misc", "PSP-KERNEL-MISC-001",
@@ -607,6 +610,372 @@ _register_campaign_probe(
      "global-profiler": 2, "vtimer-basic": 13, "display-basic": 4,
      "impose-basic": 5},
 )
+# vfpu-compare: 15 operand pairs for each of vscmp.s, vsge.s and vslt.s, emitted
+# op-major (every vscmp.s cell, then vsge.s, then vslt.s), each with three
+# words: the model word, then the two operands. PASS means the compare wrote its
+# destination; agreement with the model is the result word against out0, which a
+# report reads (the status does not judge it). The parser checks shape.
+_VFPU_COMPARE_PAIRS = (
+    "lt", "eq", "gt", "zero-pos-neg", "zero-neg-pos", "nan-left-quiet",
+    "nan-right-quiet", "nan-left-signal", "nan-right-signal", "nan-left-negative",
+    "inf-pos-neg", "inf-neg-pos", "inf-pos-pos", "inf-neg-neg", "inf-pos-finite",
+)
+_register_campaign_probe(
+    "vfpu-compare", "PSP-VFPU-CMP-001",
+    tuple(f"{op}-{pair}" for op in ("vscmp", "vsge", "vslt") for pair in _VFPU_COMPARE_PAIRS),
+    {f"{op}-{pair}": 3 for op in ("vscmp", "vsge", "vslt") for pair in _VFPU_COMPARE_PAIRS},
+)
+
+
+# HLE measurement families (probe_hle_measure.c; H-oracle-hle-measure-1009).
+# Every cell is emitted, as PASS, FAIL or SKIP, so each stream has a fixed shape
+# and order. The contracts check shape and order only: no PSP return value is
+# asserted, because these probes exist to measure what the console returns. The one
+# exception is validate_hle_edram_restore, which checks the GE probe's own restore
+# of the state it changed, not a console semantic.
+_register_campaign_probe(
+    "hle-kernel-status", "PSP-HLE-KERNEL-STATUS-001",
+    ("sys-status-size-0x1c", "sys-status-size-0x20", "sys-status-size-0x08",
+     "sys-status-size-0x00", "fpl-create", "fpl-refer-full-all-free",
+     "fpl-try-alloc-a", "fpl-try-alloc-b", "fpl-try-alloc-exhausted",
+     "fpl-refer-full-two-held", "fpl-refer-size-0x08-two-held",
+     "fpl-refer-size-0x00-two-held", "fpl-free-a", "fpl-refer-full-one-free",
+     "fpl-free-b", "fpl-delete", "fpl-refer-full-after-delete"),
+    {"sys-status-size-0x1c": 8, "sys-status-size-0x20": 8,
+     "sys-status-size-0x08": 8, "sys-status-size-0x00": 8,
+     "fpl-create": 1, "fpl-refer-full-all-free": 14,
+     "fpl-try-alloc-a": 1, "fpl-try-alloc-b": 1, "fpl-try-alloc-exhausted": 1,
+     "fpl-refer-full-two-held": 14, "fpl-refer-size-0x08-two-held": 14,
+     "fpl-refer-size-0x00-two-held": 14, "fpl-free-a": 1,
+     "fpl-refer-full-one-free": 14, "fpl-free-b": 1, "fpl-delete": 1,
+     "fpl-refer-full-after-delete": 14},
+)
+_register_campaign_probe(
+    "hle-vtimer", "PSP-HLE-VTIMER-001",
+    ("vtimer-create", "vtimer-refer-created", "vtimer-stop-not-started",
+     "vtimer-start", "vtimer-time-running-early", "vtimer-refer-running-early",
+     "vtimer-delay-20ms", "vtimer-time-running-20ms", "vtimer-stop",
+     "vtimer-time-stopped", "vtimer-refer-stopped", "vtimer-delay-20ms-stopped",
+     "vtimer-time-stopped-later", "vtimer-start-restart", "vtimer-refer-size-0x08",
+     "vtimer-delete-running", "vtimer-refer-after-delete", "vtimer-delete-again"),
+    {"vtimer-create": 1, "vtimer-refer-created": 18, "vtimer-stop-not-started": 1,
+     "vtimer-start": 1, "vtimer-time-running-early": 2,
+     "vtimer-refer-running-early": 18, "vtimer-delay-20ms": 1,
+     "vtimer-time-running-20ms": 2, "vtimer-stop": 1, "vtimer-time-stopped": 2,
+     "vtimer-refer-stopped": 18, "vtimer-delay-20ms-stopped": 1,
+     "vtimer-time-stopped-later": 2, "vtimer-start-restart": 1,
+     "vtimer-refer-size-0x08": 18, "vtimer-delete-running": 1,
+     "vtimer-refer-after-delete": 18, "vtimer-delete-again": 1},
+)
+# hle-power-clock: the scePower getters return the clock, so for the Int and bare
+# getters the record's result IS the value (the frequency) and out0 repeats it. For
+# the Float getters result is the IEEE-754 bit pattern and out0 the truncated integer
+# part (all ones when out of range or NaN). The contract checks field shape only, so
+# result is never read here as a return code.
+_register_campaign_probe(
+    "hle-power-clock", "PSP-HLE-POWER-001",
+    ("pll-clock-int", "pll-clock-float", "cpu-clock-int", "cpu-clock-float",
+     "cpu-clock-alias", "bus-clock-int", "bus-clock-float", "bus-clock-alias",
+     "cpu-clock-int-repeat"),
+    {case_id: 1 for case_id in (
+        "pll-clock-int", "pll-clock-float", "cpu-clock-int", "cpu-clock-float",
+        "cpu-clock-alias", "bus-clock-int", "bus-clock-float", "bus-clock-alias",
+        "cpu-clock-int-repeat",
+    )},
+)
+_register_campaign_probe(
+    "hle-hprm", "PSP-HLE-HPRM-001",
+    ("hprm-remote-first", "hprm-headphone-first", "hprm-microphone-first",
+     "hprm-remote-second", "hprm-headphone-second", "hprm-microphone-second"),
+    {case_id: 1 for case_id in (
+        "hprm-remote-first", "hprm-headphone-first", "hprm-microphone-first",
+        "hprm-remote-second", "hprm-headphone-second", "hprm-microphone-second",
+    )},
+)
+_register_campaign_probe(
+    "hle-ctrl-latch", "PSP-HLE-CTRL-LATCH-001",
+    ("latch-read-initial", "latch-peek-initial", "latch-poll-window",
+     "latch-read-after-poll", "latch-peek-after-poll",
+     "latch-read-clears-peek-keeps"),
+    {"latch-read-initial": 4, "latch-peek-initial": 4, "latch-poll-window": 6,
+     "latch-read-after-poll": 4, "latch-peek-after-poll": 4,
+     "latch-read-clears-peek-keeps": 5},
+)
+_register_campaign_probe(
+    "hle-sysparam", "PSP-HLE-SYSPARAM-001",
+    ("int-id-2", "int-id-3", "int-id-4", "int-id-5", "int-id-6", "int-id-7",
+     "int-id-8", "int-id-9", "int-unknown-0", "int-unknown-10", "int-unknown-64",
+     "string-id-1-len-0x80", "string-id-1-len-0x04"),
+    {**{f"int-id-{i}": 1 for i in range(2, 10)},
+     "int-unknown-0": 1, "int-unknown-10": 1, "int-unknown-64": 1,
+     "string-id-1-len-0x80": 3, "string-id-1-len-0x04": 3},
+)
+_register_campaign_probe(
+    "hle-ge-edram", "PSP-HLE-GE-EDRAM-001",
+    ("edram-size", "edram-addr", "edram-width-query-initial",
+     "edram-width-set-512", "edram-width-set-1024", "edram-width-set-2048",
+     "edram-width-set-4096", "edram-width-restore", "edram-width-query-final"),
+    {case_id: 1 for case_id in (
+        "edram-size", "edram-addr", "edram-width-query-initial",
+        "edram-width-set-512", "edram-width-set-1024", "edram-width-set-2048",
+        "edram-width-set-4096", "edram-width-restore", "edram-width-query-final",
+    )},
+)
+
+# Single-launch HLE cases (probe_hle_measure.c, one launch each). Shape only: a cell
+# is PASS when its calls completed, SKIP when the object it needs was not obtained,
+# and every out word is an observation. Nothing here compares a value with a PSP
+# expectation. The fixed-pool delete cells of hle-kernel-pool-bounds are PASS with
+# out0 0 when their create was refused (validate_hle_pool_bounds_deletes).
+_register_campaign_probe(
+    "hle-vtimer-unit", "PSP-HLE-VTIMER-002",
+    ("vtimer-unit-create", "vtimer-unit-start", "vtimer-unit-time-a",
+     "vtimer-unit-systime-a", "vtimer-unit-delay", "vtimer-unit-time-b",
+     "vtimer-unit-systime-b", "vtimer-unit-base-running",
+     "vtimer-unit-refer-running", "vtimer-unit-stop", "vtimer-unit-base-stopped",
+     "vtimer-unit-refer-stopped", "vtimer-unit-delete"),
+    {"vtimer-unit-create": 1, "vtimer-unit-start": 1, "vtimer-unit-time-a": 2,
+     "vtimer-unit-systime-a": 2, "vtimer-unit-delay": 1, "vtimer-unit-time-b": 2,
+     "vtimer-unit-systime-b": 2, "vtimer-unit-base-running": 2,
+     "vtimer-unit-refer-running": 2, "vtimer-unit-stop": 1,
+     "vtimer-unit-base-stopped": 2, "vtimer-unit-refer-stopped": 2,
+     "vtimer-unit-delete": 1},
+)
+_register_campaign_probe(
+    "hle-vtimer-errors", "PSP-HLE-VTIMER-003",
+    ("vtimer-err-create-stale", "vtimer-err-delete-stale",
+     "vtimer-err-start-deleted", "vtimer-err-stop-deleted",
+     "vtimer-err-time-deleted", "vtimer-err-cleanup-stale",
+     "vtimer-err-create-live", "vtimer-err-delete-live",
+     "vtimer-err-noslot-create", "vtimer-err-noslot-cleanup"),
+    {"vtimer-err-create-stale": 1, "vtimer-err-delete-stale": 1,
+     "vtimer-err-start-deleted": 1, "vtimer-err-stop-deleted": 1,
+     "vtimer-err-time-deleted": 2, "vtimer-err-cleanup-stale": 0,
+     "vtimer-err-create-live": 1, "vtimer-err-delete-live": 1,
+     "vtimer-err-noslot-create": 2, "vtimer-err-noslot-cleanup": 2},
+)
+_register_campaign_probe(
+    "hle-kernel-pool-bounds", "PSP-HLE-KERNEL-STATUS-002",
+    ("fpl-create-size-0x00", "fpl-delete-size-0x00",
+     "fpl-create-size-0x7fffffff", "fpl-delete-size-0x7fffffff", "vpl-create",
+     "vpl-try-alloc-refusal", "vpl-free-all", "vpl-delete"),
+    {"fpl-create-size-0x00": 1, "fpl-delete-size-0x00": 1,
+     "fpl-create-size-0x7fffffff": 1, "fpl-delete-size-0x7fffffff": 1,
+     "vpl-create": 1, "vpl-try-alloc-refusal": 2, "vpl-free-all": 2,
+     "vpl-delete": 1},
+)
+_register_campaign_probe(
+    "hle-null-out-pointers", "PSP-HLE-NULL-OUT-001",
+    ("null-vtimer-create", "null-sys-status", "null-vtimer-time", "null-vtimer-base",
+     "null-vtimer-refer", "null-vtimer-delete"),
+    {"null-vtimer-create": 0, "null-sys-status": 0, "null-vtimer-time": 0,
+     "null-vtimer-base": 0, "null-vtimer-refer": 0, "null-vtimer-delete": 0},
+)
+_register_campaign_probe(
+    "hle-power-float-v0", "PSP-HLE-POWER-002",
+    ("pll-clock-float-v0", "cpu-clock-float-v0", "bus-clock-float-v0"),
+    {"pll-clock-float-v0": 1, "cpu-clock-float-v0": 1, "bus-clock-float-v0": 1},
+)
+_HLE_AUDIO_SRC_INVALID_CASES = (
+    "src-reserve-invalid-samples-zero", "src-reserve-invalid-samples-65",
+    "src-reserve-invalid-samples-4096", "src-reserve-invalid-frequency",
+    "src-reserve-invalid-channels-1", "src-reserve-invalid-channels-4",
+)
+_HLE_AUDIO_SRC_CASES = (
+    "src-release-unreserved", "src-output-unreserved", "src-reserve-valid",
+    "src-reserve-already-held", "src-output-blocking-0", "src-release-after-output",
+    "src-release-again", *_HLE_AUDIO_SRC_INVALID_CASES, "out2-then-src-reserve",
+    "src-then-out2-reserve", "src-final-cleanup", "out2-final-cleanup",
+)
+_register_campaign_probe(
+    "hle-audio-src", "PSP-HLE-AUDIO-SRC-001", _HLE_AUDIO_SRC_CASES,
+    {
+        "src-release-unreserved": 0, "src-output-unreserved": 2,
+        "src-reserve-valid": 3, "src-reserve-already-held": 3,
+        "src-output-blocking-0": 2, "src-release-after-output": 0,
+        "src-release-again": 0,
+        **{case_id: 4 for case_id in _HLE_AUDIO_SRC_INVALID_CASES},
+        "out2-then-src-reserve": 3, "src-then-out2-reserve": 3,
+        "src-final-cleanup": 0, "out2-final-cleanup": 0,
+    },
+)
+_HLE_TIMER_ORDER_CASES = (
+    "alarm-same-delay-set", "alarm-same-delay-a", "alarm-same-delay-b",
+    "alarm-long-then-short-set", "alarm-long-event", "alarm-short-event",
+    "timer-order-vtimer-create", "timer-order-vtimer-handler",
+    "timer-order-vtimer-alarm-set", "timer-order-vtimer-event",
+    "timer-order-vtimer-alarm-event", "alarm-zero-set", "alarm-zero-event",
+    "alarm-same-delay-cleanup", "alarm-long-short-cleanup",
+    "timer-order-vtimer-cleanup", "alarm-zero-cleanup",
+)
+_register_campaign_probe(
+    "hle-timer-order", "PSP-HLE-TIMER-ORDER-001", _HLE_TIMER_ORDER_CASES,
+    {
+        "alarm-same-delay-set": 1, "alarm-same-delay-a": 2,
+        "alarm-same-delay-b": 2, "alarm-long-then-short-set": 1,
+        "alarm-long-event": 2, "alarm-short-event": 2,
+        "timer-order-vtimer-create": 1, "timer-order-vtimer-handler": 1,
+        "timer-order-vtimer-alarm-set": 1, "timer-order-vtimer-event": 2,
+        "timer-order-vtimer-alarm-event": 2, "alarm-zero-set": 1,
+        "alarm-zero-event": 2, "alarm-same-delay-cleanup": 2,
+        "alarm-long-short-cleanup": 2, "timer-order-vtimer-cleanup": 3,
+        "alarm-zero-cleanup": 1,
+    },
+)
+
+VFPU_TRANSCENDENTAL_OPS = (
+    "vsin", "vcos", "vexp2", "vlog2", "vrsq", "vrcp", "vsqrt", "vasin",
+    "vnrcp", "vnsin", "vrexp2",
+)
+VFPU_TRANSCENDENTAL_CHUNKS = 8
+VFPU_TRANSCENDENTAL_SEMANTIC_CASES = tuple(
+    f"{op}-chunk-{chunk:02d}"
+    for op in VFPU_TRANSCENDENTAL_OPS
+    for chunk in range(VFPU_TRANSCENDENTAL_CHUNKS)
+)
+_register_campaign_probe(
+    "vfpu-transcendental-corpus", "PSP-VFPU-TRANSCENDENTAL-001",
+    VFPU_TRANSCENDENTAL_SEMANTIC_CASES,
+    {
+        case_id: (7 if case_id.endswith("-chunk-07") else 8)
+        for case_id in VFPU_TRANSCENDENTAL_SEMANTIC_CASES
+    },
+)
+
+# llsc-link: three link windows and the sc behaviours they measure (see probe.c,
+# run_llsc_link). Six words per cell: loaded, first sc result, A and B after the
+# cell, and the model words for A and B. The parser checks shape only.
+_register_campaign_probe(
+    "llsc-link", "PSP-LLSC-001",
+    ("llsc-control", "llsc-second-sc", "llsc-other-address"),
+    {"llsc-control": 6, "llsc-second-sc": 6, "llsc-other-address": 6},
+)
+
+# fpu-cc: COP1 condition-code facts (see probe.c, run_fpu_cc). One FCR31 writability
+# cell, then for each condition code 0..7 a c.eq.s cell (one word) and a bc1t/bc1f cell
+# (four words). The condition code 0 cells are controls; the parser checks shape only.
+_FPU_CC_CELLS = ("fpu-cc-fcr31-bits",) + tuple(
+    f"fpu-cc{n}-{kind}" for n in range(8) for kind in ("ceq", "branch"))
+_register_campaign_probe(
+    "fpu-cc", "PSP-FPU-CC-001", _FPU_CC_CELLS,
+    {cell: (2 if cell == "fpu-cc-fcr31-bits" else 1 if cell.endswith("-ceq") else 4)
+     for cell in _FPU_CC_CELLS},
+)
+
+
+#: Documented GE eDRAM translation widths (pspge.h: 0 = do not set, else these).
+HLE_EDRAM_WIDTHS = (512, 1024, 2048, 4096)
+
+
+def validate_hle_edram_restore(text: str) -> None:
+    """Fail closed unless the GE translation width was restored to its original value.
+
+    The probe changes GE state only through sceGeEdramSetAddrTranslation and
+    restores the width it found. sceGeEdramSetAddrTranslation(w) sets the width to w
+    and returns the width it replaced (set-returning-previous, as captured on the
+    PSP-3000 on 2026-10-10; that run was not acceptance-eligible, so the behaviour is
+    CAPTURED, not MEASURED), so a read by Set(0) is itself a set to 0. The probe
+    therefore verifies its restore with Set(initial), which returns the width now set
+    and leaves it in place, and its final read is Set(initial) too. When the restore
+    cell ran, its out0 and the final read must both equal the initial width. When the
+    initial width was not restorable, every width cell must be SKIP and the final
+    read, a Set(0), must return the 0 that the initial read left: the probe cannot put
+    a non-documented width back, and says so by that 0.
+    """
+
+    parsed = parse_output(text)
+    results = {record.case_id: record for record in parsed.results}
+    try:
+        initial = int(dict(results["edram-width-query-initial"].values)["result"], 0)
+        final = int(dict(results["edram-width-query-final"].values)["result"], 0)
+    except KeyError as exc:
+        raise ProtocolError(f"PSP-HLE-GE-EDRAM-001: missing record {exc}") from exc
+    width_cases = [f"edram-width-set-{width}" for width in HLE_EDRAM_WIDTHS]
+    restorable = initial in HLE_EDRAM_WIDTHS
+    if not restorable:
+        if any(results[case].status != "SKIP" for case in width_cases + ["edram-width-restore"]):
+            raise ProtocolError(
+                "PSP-HLE-GE-EDRAM-001: a width cell ran although the original width "
+                f"{initial:#x} is not restorable"
+            )
+        if final != 0:
+            raise ProtocolError(
+                f"PSP-HLE-GE-EDRAM-001: final read returned {final:#x}, not 0; with no restore "
+                "cell the initial Set(0) left 0 and the final Set(0) must report that 0"
+            )
+        return
+    if any(results[case].status == "SKIP" for case in width_cases + ["edram-width-restore"]):
+        raise ProtocolError("PSP-HLE-GE-EDRAM-001: a restorable width cell was skipped")
+    # The restore record's `result` holds the pre-restore width (the value its
+    # Set(initial) returned) and its `out0` the verifying read (the value a second
+    # Set(initial) returned), exactly as the probe records them. Both the verify and
+    # the final read are Set(initial): under set-returning-previous each returns the
+    # width the restore left and keeps it, so both must equal the original width.
+    restore = dict(results["edram-width-restore"].values)
+    if int(restore["out0"], 0) != initial:
+        raise ProtocolError(
+            f"PSP-HLE-GE-EDRAM-001: restore left width {int(restore['out0'], 0):#x}, "
+            f"not the original {initial:#x}"
+        )
+    if final != initial:
+        raise ProtocolError(
+            f"PSP-HLE-GE-EDRAM-001: final read returned {final:#x}, not the restored "
+            f"{initial:#x}; sceGeEdramSetAddrTranslation sets the width and returns the width "
+            "it replaced (set-returning-previous), so the final Set(initial) must return the "
+            "width the restore left"
+        )
+
+
+#: Single-launch HLE cases whose status is machinery-only: a record is PASS when its calls
+#: completed and SKIP when the object it needs was not obtained, and never FAIL.
+HLE_MACHINERY_STATUS_CASES = frozenset({
+    "hle-vtimer-unit", "hle-vtimer-errors", "hle-kernel-pool-bounds", "hle-power-float-v0",
+    "hle-null-out-pointers", "hle-audio-src", "hle-timer-order",
+})
+VFPU_RAW_WORD_CASES = frozenset({"vfpu-transcendental-corpus"})
+
+#: hle-kernel-pool-bounds fixed-pool (create, delete) cell pairs.
+HLE_POOL_BOUNDS_FPL_PAIRS = (
+    ("fpl-create-size-0x00", "fpl-delete-size-0x00"),
+    ("fpl-create-size-0x7fffffff", "fpl-delete-size-0x7fffffff"),
+)
+
+
+def validate_hle_pool_bounds_deletes(sequence: SequenceReport) -> None:
+    """Fail closed unless each fixed-pool delete cell agrees with its own create cell.
+
+    A refused create is what these creates measure, so the delete cell after it is PASS,
+    not SKIP: its out0 is 1 when it issued a delete (the create's out0 says a pool was
+    created) and 0 when there was no pool, in which case it made no call and its result
+    is 0. This checks the probe's own bookkeeping, like validate_hle_edram_restore; it
+    compares no value with a PSP expectation. A pair with a record still missing from a
+    partial stream is not checked.
+    """
+
+    results = sequence.results
+    test_id = sequence.spec.test_id
+    for create_id, delete_id in HLE_POOL_BOUNDS_FPL_PAIRS:
+        if create_id not in results or delete_id not in results:
+            continue
+        delete = results[delete_id]
+        if delete.status != "PASS":
+            raise ProtocolError(
+                f"{test_id}: {delete_id} status {delete.status!r}; a fixed-pool delete cell is "
+                "PASS whether or not its create returned a pool"
+            )
+        created = int(dict(results[create_id].values)["out0"], 0)
+        values = dict(delete.values)
+        issued = int(values["out0"], 0)
+        if issued not in (0, 1) or issued != created:
+            raise ProtocolError(
+                f"{test_id}: {delete_id} out0 {issued:#x} must equal {create_id} out0 "
+                f"{created:#x} (1 when a pool was created and deleted, 0 when there was none)"
+            )
+        if issued == 0 and int(values["result"], 0) != 0:
+            raise ProtocolError(
+                f"{test_id}: {delete_id} recorded no pool (out0 0) but a non-zero result; "
+                "with no pool the cell makes no call"
+            )
 
 
 def parse_campaign_probe_output(
@@ -620,6 +989,21 @@ def parse_campaign_probe_output(
         raise ProtocolError(f"unknown campaign probe {campaign_case!r}") from exc
     sequence = parse_sequence(text, spec, require_complete=require_complete)
     _validate_scalar_shape(sequence, counts)
+    if campaign_case in HLE_MACHINERY_STATUS_CASES:
+        for record in sequence.results.values():
+            if record.status not in ("PASS", "SKIP"):
+                raise ProtocolError(
+                    f"{spec.test_id}: {record.case_id} status {record.status!r} is not "
+                    "machinery-only (a cell is PASS or SKIP, never FAIL)"
+                )
+    if campaign_case == "hle-kernel-pool-bounds":
+        validate_hle_pool_bounds_deletes(sequence)
+    if campaign_case in VFPU_RAW_WORD_CASES:
+        for record in sequence.results.values():
+            if record.status != "PASS":
+                raise ProtocolError(
+                    f"{spec.test_id}: {record.case_id} must carry a produced raw-word record"
+                )
     return sequence
 
 

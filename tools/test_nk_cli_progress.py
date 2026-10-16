@@ -22,6 +22,26 @@ CLI_PATH = ROOT / "tools" / "nk_cli.py"
 
 
 class NkCliProgressTests(unittest.TestCase):
+    def test_cli_start_defers_the_runtime_dll_stager_until_a_build_needs_it(self) -> None:
+        # The runtime DLL stager loads the third-party notice inventory and the codegen
+        # planner when it is imported. Only a package build stages DLLs, so importing
+        # the CLI in a clean interpreter must not load them. A subprocess keeps an
+        # earlier test in this process from loading them first.
+        probe = (
+            "import json, sys\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "import nk_cli\n"
+            "print(json.dumps(sorted(sys.modules)))\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-I", "-c", probe, str(ROOT / "tools")],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        loaded = set(json.loads(proc.stdout.strip().splitlines()[-1]))
+        for name in ("stage_runtime_dlls", "package_notices", "title_codegen_plan"):
+            self.assertNotIn(name, loaded)
+
     def test_sweep_progress_writer_persists_stage_start_and_finish(self) -> None:
         import nk_cli
 
@@ -76,6 +96,7 @@ class NkCliProgressTests(unittest.TestCase):
                 profile="Standard",
                 fps_cap=30,
                 software=False,
+                user_data_root=None,
             )
             stdout = StringIO()
             stderr = StringIO()
@@ -128,8 +149,10 @@ class NkCliProgressTests(unittest.TestCase):
         import nk_cli
 
         source = inspect.getsource(nk_cli.cmd_bringup)
-        self.assertIn('env.pop("SR_DATAROOT", None)', source)
-        self.assertIn('env.pop("SR_LOOSE_CONTENT_ROOTS", None)', source)
+        child_env = inspect.getsource(nk_cli._bringup_child_environment)
+        self.assertIn("_bringup_child_environment(user_root)", source)
+        self.assertIn('env.pop("SR_DATAROOT", None)', child_env)
+        self.assertIn('env.pop("SR_LOOSE_CONTENT_ROOTS", None)', child_env)
         self.assertIn('title_manifest.encode_loose_content_roots(manifest, data_root)', source)
         self.assertIn('"SR_DATAROOT": str(data_root)', source)
         self.assertIn('"SR_LOOSE_CONTENT_ROOTS": loose_roots', source)

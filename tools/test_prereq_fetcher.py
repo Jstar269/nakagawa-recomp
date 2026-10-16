@@ -11,6 +11,7 @@ import io
 import os
 from pathlib import Path, PurePosixPath
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -255,6 +256,40 @@ class TestPrerequisiteFetcher(unittest.TestCase):
         self.assertEqual(cached, destination)
         self.assertEqual(_PayloadHandler.requests, first_request_count)
         self.assertEqual(progress, [(item["id"], item["size_bytes"], item["size_bytes"])])
+
+    def test_cached_archive_never_loads_urllib_and_a_download_still_does(self) -> None:
+        # Fast path: a verified cached archive is served in a fresh interpreter
+        # without urllib.request ever being imported. Slow path: the same item,
+        # when absent, is fetched by that interpreter, makes exactly one request,
+        # loads urllib, and verifies to the same bytes.
+        destination = download_verified_item(self.item(), self.root / "payload.zip", allow_http=True)
+        item = self.item()
+        probe = (
+            "import json, sys\n"
+            "from pathlib import Path\n"
+            "sys.path.insert(0, sys.argv[1])\n"
+            "from nk_core.prereq_fetcher import download_verified_item\n"
+            "dest = download_verified_item(json.loads(sys.argv[2]), Path(sys.argv[3]), allow_http=True)\n"
+            "print(json.dumps({'path': str(dest), 'urllib_loaded': 'urllib.request' in sys.modules}))\n"
+        )
+        tools = str(Path(__file__).resolve().parent)
+
+        def run_probe(target: Path) -> dict:
+            result = subprocess.run(
+                [sys.executable, "-c", probe, tools, json.dumps(item), str(target)],
+                capture_output=True, text=True, check=True,
+            )
+            return json.loads(result.stdout)
+
+        before = _PayloadHandler.requests
+        self.assertEqual(run_probe(destination),
+                         {"path": str(destination), "urllib_loaded": False})
+        self.assertEqual(_PayloadHandler.requests, before)
+
+        fetched = self.root / "fetched.zip"
+        self.assertEqual(run_probe(fetched), {"path": str(fetched), "urllib_loaded": True})
+        self.assertEqual(_PayloadHandler.requests, before + 1)
+        self.assertEqual(fetched.read_bytes(), destination.read_bytes())
 
     def test_cancel_during_transfer_discards_partial_archive(self) -> None:
         item = self.item()

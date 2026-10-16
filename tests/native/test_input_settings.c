@@ -24,6 +24,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Scratch root for the files this test writes: the checkout's build/ by default, or
+ * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
+ * touches the checkout. */
+#ifndef SR_SELFTEST_BUILD_ROOT
+#define SR_SELFTEST_BUILD_ROOT "build"
+#endif
+
 #if defined(_WIN32) || defined(_WIN64)
 #include <direct.h>
 #include <windows.h>
@@ -59,7 +66,7 @@ static void test_default_load(void) {
     }
 
     /* Point to non-existent file */
-    NkResult res = input_settings_load(&state, "build/nonexistent_profile_12345.json");
+    NkResult res = input_settings_load(&state, SR_SELFTEST_BUILD_ROOT "/nonexistent_profile_12345.json");
     assert(res == NK_OK);
     assert(!state.loaded_from_file);
     assert(!state.has_load_diagnostic);
@@ -87,7 +94,7 @@ static void test_default_load(void) {
 static void test_corrupt_file_load_diagnostic(void) {
     printf("[INPUT_SETTINGS_TEST] Subtest 2: Corrupt file gives defaults + diagnostic...\n");
 
-    const char *corrupt_path = "build/test_corrupt_profile.json";
+    const char *corrupt_path = SR_SELFTEST_BUILD_ROOT "/test_corrupt_profile.json";
     FILE *f = fopen(corrupt_path, "wb");
     assert(f != NULL);
     fputs("{\n  \"schema_version\": 999,\n  \"invalid\": true\n}\n", f);
@@ -192,7 +199,7 @@ static void test_conflict_detection(void) {
     assert(strstr(summary, "Circle") != NULL || strstr(summary, "CIRCLE") != NULL);
 
     /* Saving with conflict should fail validation and set diagnostic */
-    const char *tmp_save = "build/test_conflict_save.json";
+    const char *tmp_save = SR_SELFTEST_BUILD_ROOT "/test_conflict_save.json";
     NkResult save_res = input_settings_save(&state, tmp_save);
     assert(save_res != NK_OK);
     assert(state.has_save_diagnostic);
@@ -287,7 +294,7 @@ static void test_reset_to_defaults(void) {
 static void test_save_load_roundtrip(void) {
     printf("[INPUT_SETTINGS_TEST] Subtest 7: Save/load round trip...\n");
 
-    const char *tmp_file = "build/test_roundtrip_profile.json";
+    const char *tmp_file = SR_SELFTEST_BUILD_ROOT "/test_roundtrip_profile.json";
     InputSettingsState state;
     input_settings_init(&state);
 
@@ -348,10 +355,10 @@ static void test_sr_padscript_semantics_untouched(void) {
 
     /* Path resolution helper resolves correctly under environment overrides */
     char path_buf[512] = {0};
-    test_setenv("NK_INPUT_PROFILE", "build/override_profile.json");
+    test_setenv("NK_INPUT_PROFILE", SR_SELFTEST_BUILD_ROOT "/override_profile.json");
     NkResult res = nk_input_profile_resolve_path(path_buf, sizeof(path_buf));
     assert(res == NK_OK);
-    assert(strcmp(path_buf, "build/override_profile.json") == 0);
+    assert(strcmp(path_buf, SR_SELFTEST_BUILD_ROOT "/override_profile.json") == 0);
 
     test_setenv("NK_INPUT_PROFILE", NULL);
     test_setenv("SR_PADSCRIPT", NULL);
@@ -512,7 +519,7 @@ static void test_guided_calibration_and_resting_extremes(void) {
     assert(state.profile.trigger_extreme == 31200);
 
     /* 9d. Save/load round-trip preserves calibrated fields */
-    const char *calib_file = "build/test_calib_profile.json";
+    const char *calib_file = SR_SELFTEST_BUILD_ROOT "/test_calib_profile.json";
     assert(input_settings_save(&state, calib_file) == NK_OK);
 
     InputSettingsState loaded;
@@ -525,7 +532,7 @@ static void test_guided_calibration_and_resting_extremes(void) {
     remove(calib_file);
 
     /* 9e. Backward compatibility: load profile without calibration fields */
-    const char *legacy_file = "build/test_legacy_profile.json";
+    const char *legacy_file = SR_SELFTEST_BUILD_ROOT "/test_legacy_profile.json";
     FILE *lf = fopen(legacy_file, "w");
     assert(lf != NULL);
     fputs("{\n"
@@ -573,7 +580,7 @@ static void test_guided_calibration_and_resting_extremes(void) {
 static void test_per_title_scope_and_atomic_save(void) {
     printf("[INPUT_SETTINGS_TEST] Subtest 10: per-title scope, global isolation, atomic save...\n");
 
-    const char *file_path = "build/test_per_title_settings.json";
+    const char *file_path = SR_SELFTEST_BUILD_ROOT "/test_per_title_settings.json";
     remove(file_path);
 
     /* A fresh state edits the global mapping and owns no per-title entry. */
@@ -661,8 +668,10 @@ static void test_per_title_scope_and_atomic_save(void) {
     /* An interrupted write leaves the previous file intact: the temporary file
      * cannot be opened, so the rename never happens and the saved document on
      * disk is still the one that was there. */
-    char blocker[64];
-    snprintf(blocker, sizeof(blocker), "%s.tmp", file_path);
+    /* Sized for an absolute BUILD_ROOT: a scratch path is much longer than the default. */
+    char blocker[NATIVE_TEST_PATH_MAX];
+    int blocker_len = snprintf(blocker, sizeof(blocker), "%s.tmp", file_path);
+    assert(blocker_len > 0 && (size_t)blocker_len < sizeof(blocker));
 #if defined(_WIN32) || defined(_WIN64)
     assert(CreateDirectoryA(blocker, NULL) != 0);
 #else
@@ -713,7 +722,7 @@ static void test_per_title_scope_and_atomic_save(void) {
      * not a silently global launch. Point the per-user config location at a
      * regular file so creating the profile directory cannot succeed. */
     {
-        const char *blocker_file = "build/test_config_blocker";
+        const char *blocker_file = SR_SELFTEST_BUILD_ROOT "/test_config_blocker";
         FILE *bf = fopen(blocker_file, "wb");
         assert(bf != NULL);
         fputs("not a directory\n", bf);
@@ -820,9 +829,9 @@ static void test_hostile_profile_files(void) {
     static const char *const kRawNulFile =
         "{\"schema_version\":2,\"device\":{\"guid\":\"g\0h\"}}";
     size_t hostile_count = sizeof(kHostileFiles) / sizeof(kHostileFiles[0]);
-    const char *path = "build/test_hostile_settings.json";
+    const char *path = SR_SELFTEST_BUILD_ROOT "/test_hostile_settings.json";
 
-    assert(nk_platform_mkdir_p("build"));
+    assert(nk_platform_mkdir_p(SR_SELFTEST_BUILD_ROOT));
 
     for (size_t i = 0; i < hostile_count; i++) {
         InputSettingsState state;

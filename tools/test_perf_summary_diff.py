@@ -19,6 +19,10 @@ try:
     import perf_summary_diff
 except ModuleNotFoundError:
     from tools import perf_summary_diff
+try:
+    import scratch_dir
+except ModuleNotFoundError:
+    from tools import scratch_dir
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -129,6 +133,31 @@ class PerfSummaryDiffTests(unittest.TestCase):
         self.assertEqual([item["metric"] for item in ranking],
                          ["vulkan.wait_ns", "vulkan.readback_ns", "storage.vfs_read_ns"])
 
+    def test_ge_frontend_estimates_are_ranked_and_old_summaries_remain_valid(self):
+        value = summary()
+        stages = {
+            "command_dispatch": {"estimated_ns": 12},
+            "draw_setup": {"estimated_ns": 7},
+            "vertex_fetch_decode": {"estimated_ns": 0},
+            "transform": {"estimated_ns": 31},
+            "lighting": {"estimated_ns": 0},
+            "clipping_acceptance": {"estimated_ns": 4},
+            "assembly": {"estimated_ns": 0},
+        }
+        value["ge"]["frontend_profile"] = {"stages": stages}
+        ranking = perf_summary_diff.diff_summaries(value, value)["ranking"]
+        self.assertEqual(
+            [item["metric"] for item in ranking
+             if item["metric"].startswith("ge.frontend_profile.")],
+            ["ge.frontend_profile.stages.transform.estimated_ns",
+             "ge.frontend_profile.stages.command_dispatch.estimated_ns",
+             "ge.frontend_profile.stages.draw_setup.estimated_ns",
+             "ge.frontend_profile.stages.clipping_acceptance.estimated_ns"],
+        )
+        old_ranking = perf_summary_diff.diff_summaries(summary(), summary())["ranking"]
+        self.assertFalse(any(item["metric"].startswith("ge.frontend_profile.")
+                             for item in old_ranking))
+
     def test_rejects_nonfinite_tolerance(self):
         before = summary()
         after = copy.deepcopy(before)
@@ -150,6 +179,39 @@ class PerfSummaryDiffTests(unittest.TestCase):
                 with self.assertRaisesRegex(perf_summary_diff.PerfSummaryError, "finite"):
                     perf_summary_diff.load_summary(path)
 
+    def test_tolerance_handling_with_large_integers(self):
+        before = summary()
+        after = copy.deepcopy(before)
+        before["guest"]["aot_ns"] = 10**20
+        after["guest"]["aot_ns"] = 10**20 + 1000
+
+        result = perf_summary_diff.diff_summaries(before, after, tolerance=1e-18)
+
+        changed_paths = {change["path"] for change in result["changes"]}
+        self.assertIn("$.guest.aot_ns", changed_paths)
+
+    def test_tolerance_boundary_uses_the_decimal_value_typed(self):
+        # 0.3 is not exact in binary. A change of exactly 30% of 10 is within --tolerance 0.3.
+        for after_value in (13, 7):
+            with self.subTest(after=after_value):
+                before = summary()
+                after = copy.deepcopy(before)
+                before["guest"]["aot_ns"] = 10
+                after["guest"]["aot_ns"] = after_value
+                result = perf_summary_diff.diff_summaries(before, after, tolerance=0.3)
+                self.assertNotIn("$.guest.aot_ns", {change["path"] for change in result["changes"]})
+
+    def test_tolerance_handles_integers_beyond_float_range(self):
+        before = summary()
+        after = copy.deepcopy(before)
+        before["guest"]["aot_ns"] = 10**400
+        after["guest"]["aot_ns"] = 10**400 + 1
+        close = perf_summary_diff.diff_summaries(before, after, tolerance=1e-18)
+        self.assertNotIn("$.guest.aot_ns", {change["path"] for change in close["changes"]})
+        after["guest"]["aot_ns"] = 10**400 + 10**390
+        far = perf_summary_diff.diff_summaries(before, after, tolerance=1e-18)
+        self.assertIn("$.guest.aot_ns", {change["path"] for change in far["changes"]})
+
     def test_zero_tolerance_preserves_adjacent_large_integer_differences(self):
         before = summary()
         after = copy.deepcopy(before)
@@ -168,7 +230,7 @@ class PerfSummaryDiffTests(unittest.TestCase):
         compiler = shutil.which("gcc")
         if compiler is None:
             self.skipTest("gcc is not available")
-        with tempfile.TemporaryDirectory() as temp:
+        with scratch_dir.TemporaryDirectory() as temp:
             root = Path(temp)
             source = root / "perf_harness.c"
             executable = root / ("perf_harness.exe" if os.name == "nt" else "perf_harness")

@@ -15,6 +15,7 @@
 #define GE_SHARED_H
 
 #include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 
 typedef struct {
@@ -175,6 +176,9 @@ typedef struct GeCpuProfileStats {
      * timed.  The replay reporter scales the raw samples by that ratio. */
     uint32_t primitive_profile_stride;
     uint64_t primitive_profile_timer_pair_ns;
+    GeCpuPhaseStats primitive_profile_draw_setup;
+    uint64_t primitive_profile_draw_setup_eligible;
+    uint64_t primitive_profile_assembly_eligible;
     uint64_t primitive_profile_vertices;
     uint64_t primitive_profile_transform_vertices;
     uint64_t primitive_profile_triangle_candidates;
@@ -206,6 +210,32 @@ typedef struct GeCpuProfileStats {
     GeCpuPhaseStats primitive_profile_sampled_total;
     GeCpuPhaseStats primitive_profile_empty_control;
 } GeCpuProfileStats;
+
+/* Relations that ge.c's profile producers establish by construction, checked by
+ * ge_cpu_profile_validate().  Each value is a bit index in the returned failure mask
+ * (GE_PROFILE_CHECK_MASK).  A relation between the coarse and sparse profiles is
+ * checked only when both were enabled; every relation holds for an all-zero block. */
+typedef enum GeProfileCheck {
+    GE_PROFILE_CHECK_PHASE_NESTING = 0,     /* sub-phase time exceeds its enclosing time */
+    GE_PROFILE_CHECK_PHASE_CALLS,           /* phase call counts disagree with their events */
+    GE_PROFILE_CHECK_COMMAND_BOUND,         /* per-kind command counts exceed commands */
+    GE_PROFILE_CHECK_PRIMITIVE_TYPES,       /* primitive_type[] disagrees with primitive_commands */
+    GE_PROFILE_CHECK_PROFILE_AGREEMENT,     /* coarse and sparse profiles count draws differently */
+    GE_PROFILE_CHECK_SUBMITTED_SPLIT,       /* submitted != non-triangle + triangle candidates */
+    GE_PROFILE_CHECK_TRIANGLE_MODE_SPLIT,   /* through + transform candidates != candidates */
+    GE_PROFILE_CHECK_REFERENCE_SPLIT,       /* triangle + non-triangle references != references */
+    GE_PROFILE_CHECK_USE_SPLIT,             /* a vertex-use split does not sum to vertex uses */
+    GE_PROFILE_CHECK_REFERENCES_COVER_USES, /* vertex uses exceed vertex references */
+    GE_PROFILE_CHECK_REJECT_BOUND,          /* rejects exceed non-triangle references */
+    GE_PROFILE_CHECK_DECODE_SPLIT,          /* through + transformed decodes != decodes */
+    GE_PROFILE_CHECK_DECODE_COVERAGE,       /* decodes disagree with the uses that drive them */
+    GE_PROFILE_CHECK_TRIANGLE_DECISIONS,    /* drawn + clipped + rejected != transform candidates */
+    GE_PROFILE_CHECK_SAMPLE_BOUND,          /* a sampled phase exceeds its eligible population */
+    GE_PROFILE_CHECK_CALIBRATION_BOUND,     /* a calibration sample exceeds its population */
+    GE_PROFILE_CHECK_COUNT
+} GeProfileCheck;
+
+#define GE_PROFILE_CHECK_MASK(check) (UINT32_C(1) << (unsigned)(check))
 
 /* GPU rasterizer hooks. The primitive hooks return 1 when the primitive was taken by
  * the GPU backend (the software rasterizer is skipped) — in the full GPU renderer they
@@ -248,6 +278,18 @@ void      ge_decode_tex_rgba(uint32_t *out);
 void      ge_replay_restore(const GeState *state, const uint16_t *zbuf);
 void      ge_cpu_profile_reset(void);
 void      ge_cpu_profile_get(GeCpuProfileStats *out);
+/* Check a ge_cpu_profile_get() snapshot against every GeProfileCheck relation and return
+ * the mask of failed checks (0 when consistent; every bit when stats is NULL).  Pure: no
+ * I/O, environment, or global state, so it adds nothing to the GE paths that produce the
+ * counters.  Sums are compared exactly, never modulo 2^64.  The relations hold for a
+ * snapshot taken between ge_run_list() calls (ge_replay reads it after its lists end); one
+ * taken from inside a GPU hook can see a draw half counted.  When detail is non-NULL it
+ * receives a NUL-terminated description of the lowest-numbered failed check, or an empty
+ * string. */
+uint32_t  ge_cpu_profile_validate(const GeCpuProfileStats *stats, char *detail,
+                                  size_t detail_size);
+/* Stable lower-case name of a check, or "unknown". */
+const char *ge_profile_check_name(GeProfileCheck check);
 /* Capture one bounded, present-aligned VRAM image and its GE state sidecar. */
 int       ge_vramdump_write(const char *directory, uint32_t vblank,
                             uint32_t display_addr, uint32_t display_stride,

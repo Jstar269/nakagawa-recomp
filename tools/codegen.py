@@ -36,7 +36,7 @@ import entry_frame_balance
 from imports import ImportTableError, format_boundary
 
 
-CPU_STATE_ABI_VERSION = 2
+CPU_STATE_ABI_VERSION = 3
 EMITTED_OWNERSHIP_SCHEMA_VERSION = 1
 
 # LLE CPU mode (PR 2): when True, generated SYSCALL/BREAK raise guest
@@ -180,7 +180,8 @@ class AddressSpace:
 # loads and stores, cache, and lwc1/swc1.
 _RELOCATABLE_IMMEDIATE_OPS = frozenset(
     list(range(0x08, 0x10)) + [0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26,
-                               0x28, 0x29, 0x2A, 0x2B, 0x2E, 0x2F, 0x31, 0x39]
+                               0x28, 0x29, 0x2A, 0x2B, 0x2E, 0x2F, 0x30, 0x31,
+                               0x38, 0x39]
 )
 
 ADDRESS_SPACE = AddressSpace()
@@ -248,8 +249,9 @@ class _OmitAot:
     An omitted address stays in the guest image and in analyzer discovery, but is
     removed from the emission/registration catalog, so generated callers reach it
     through the ordinary production dispatcher instead of a direct C call. A linked
-    call carries its resume PC with ``dispatch_call``; a tail transfer uses
-    ``dispatch`` with no native resume boundary. This is the seam an interpreter
+    call carries its resume PC with ``dispatch_call``; a tail transfer records a
+    pending transfer with no native resume boundary, which the invoker drains through
+    the dispatcher. This is the seam an interpreter
     fallback plugs into; with no interpreter it fails closed at the dispatch miss.
     """
 
@@ -551,6 +553,39 @@ def emit_host_return(resumable, comment=None, stack_census=False):
     return "s->r[29] = _sp_entry; return;"
 
 
+def emit_tail_transfer(target_expr, fn_symbol, resumable, stack_census=False, comment=None):
+    """A guest TAIL transfer (#855): record it and leave; the invoker drains it.
+
+    The transfer never nests a native call, so a guest loop of tail transfers runs in
+    constant host stack. A callable body still owes its entry-SP restore; it travels with
+    the transfer and the drain applies it once the chain completes, exactly where the
+    nested native return used to apply it. A resume body owes none, and under the stack
+    census the wrapper restores after its own drain. ``fn_symbol`` keeps a known target's
+    direct call (no dispatcher entry); ``None`` keeps a computed or unknown target's
+    dispatch, which also keeps that path's timeslice tick and guards.
+    """
+    fn = fn_symbol if fn_symbol else "NULL"
+    suffix = f" /* {comment} */" if comment else ""
+    if resumable or stack_census:
+        return f"sr_tail_record(s, {target_expr}, {fn}, 0u, 0u); return;{suffix}"
+    return f"sr_tail_record(s, {target_expr}, {fn}, _sp_entry, 1u); return;{suffix}"
+
+
+#: The statement that ends every direct CALL of a native body (`emit_body_call`). Inside a
+#: generated body nothing else drains, so a body whose text contains it makes a direct call.
+BODY_CALL_DRAIN = "SR_TAIL_DRAIN(s);"
+
+
+def emit_body_call(symbol):
+    """A direct CALL of a native body completes the callee's tail chain before going on."""
+    return f"{symbol}(s); {BODY_CALL_DRAIN}"
+
+
+def emit_host_stack_check(entry_expr):
+    """The entry statement of a body that makes a direct CALL (#855): bound its host stack."""
+    return f"    SR_HOST_STACK_CHECK({entry_expr});"
+
+
 def emit_host_fallthrough(resumable, stack_census=False):
     """Natural C fallthrough follows the same entry contract without a fake guest return."""
     if resumable:
@@ -594,6 +629,7 @@ def wrap_stack_census_functions(func_texts, emitted, resume_owners):
             f"    uint32_t _sr_census_entry_sp = s->r[29];\n"
             f"    sr_stack_census_enter(0x{addr:08x}u);\n"
             f"    {body}(s);\n"
+            "    SR_TAIL_DRAIN(s);\n"
             f"    sr_stack_census_exit(0x{addr:08x}u, _sr_census_entry_sp, "
             "s->r[29], s->flow_kind);\n"
             "    if (s->flow_kind == 0u) s->r[29] = _sr_census_entry_sp;\n"
@@ -848,6 +884,52 @@ def _lle_access_stmt(addr, w, op, delay_branch_pc):
     return stmt, saddr, (width if is_store else 0)
 
 
+# Sentinel store-address result from effect(): the statement closes its own
+# instruction trace (it calls sr_end itself), so normal_line() must not append a
+# second sr_end. Only `sc` uses it: whether it stores is known only at run time,
+# and its result write may overwrite the base register the address came from.
+SELF_TRACED = "<self-traced>"
+
+
+def _ll_sc_stmt(addr, w, op, lle_cpu, delay_branch_pc):
+    """`ll` (0x30) and `sc` (0x38): MIPS32 load-linked / store-conditional.
+
+    Public MIPS32 contract (Architecture for Programmers Vol. II, LL and SC):
+      ll  rt, off(base)   rt = word at base+off; LLbit = 1
+      sc  rt, off(base)   if LLbit: word at base+off = rt; rt = LLbit (0 or 1)
+    `sc` leaves LLbit as it found it (the Release 2 operation). The runtime
+    clears LLbit only at the events listed in docs/ARCHITECTURE.md
+    ("LL/SC link state"); nothing here clears it.
+
+    Every field form decodes: `rs`, `rt` and the 16-bit offset are all operands
+    and the encodings have no reserved bits. rt = $zero still links (`ll`) and
+    still stores (`sc`); only the register write is dropped, exactly like the
+    other loads. The word access is aligned like `lw`/`sw`: under --lle-cpu the
+    same width-4 sr_cpu_guard_access() check runs first, before the link is
+    consulted, so an address error leaves rt, memory and LLbit untouched. That
+    check order follows the MIPS32 operation sections; PSP alignment for ll/sc
+    specifically is architectural, not separately measured.
+    """
+    base = f"{R(rs(w))} + {simm(w)}"
+    is_store = 1 if op == 0x38 else 0
+    if lle_cpu:
+        in_delay = 1 if delay_branch_pc is not None else 0
+        branch = G(delay_branch_pc) if delay_branch_pc is not None else "0u"
+        guard = (f"if (sr_cpu_guard_access(s, _ea, 4u, {is_store}, {G(addr)}, {branch}, "
+                 f"{in_delay}u)) {{ sr_end(s, 0u, 0); return; }} ")
+    else:
+        guard = ""
+    if op == 0x30:  # ll
+        load = "(void)_ea;" if rt(w) == 0 else wr(rt(w), "MEM_R32(_ea)")
+        return (f"{{ uint32_t _ea = {base}; {guard}{load} "
+                f"s->llbit = 1u; }}"), None, 0
+    # sc: the store and the trace's memory token happen only while linked; the
+    # address is latched before rt (which may also be the base) is overwritten.
+    return (f"{{ uint32_t _ea = {base}; {guard}uint32_t _sc = s->llbit != 0u ? 1u : 0u; "
+            f"if (_sc) {{ MEM_W32_PC(_ea, {R(rt(w))}, {G(addr)}); }} {wr(rt(w), '_sc')} "
+            f"sr_end(s, _ea, _sc ? 4 : 0); }}"), SELF_TRACED, 0
+
+
 def effect(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
     op = w >> 26
     if op == 0x10:  # COP0 (spec 3.4)
@@ -919,6 +1001,12 @@ def effect(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
         if fn == 0x2D: return wr(d, f"({{int32_t _x=(int32_t){R(a)},_y=(int32_t){R(b)}; (uint32_t)(_x<_y?_x:_y);}})"), None, 0  # min
         if fn == 0x2E: return f"{{ uint64_t _acc=((uint64_t)s->hi<<32)|s->lo; uint64_t _prod=(uint64_t)((int64_t)(int32_t){R(a)}*(int64_t)(int32_t){R(b)}); _acc-=_prod; s->lo=(uint32_t)_acc; s->hi=(uint32_t)(_acc>>32);}}", None, 0  # msub
         if fn == 0x2F: return f"{{ uint64_t _acc=((uint64_t)s->hi<<32)|s->lo; _acc-=(uint64_t){R(a)}*(uint64_t){R(b)}; s->lo=(uint32_t)_acc; s->hi=(uint32_t)(_acc>>32);}}", None, 0  # msubu
+        if fn == 0x0F:  # sync, stype 0 (full barrier). This runtime is single-hart and
+            # sequentially consistent, so the barrier orders nothing: no effect. Only the
+            # all-zero form is accepted; rs/rt/rd and nonzero stype stay fail-closed until measured.
+            if (w & 0x03FFFFC0) != 0:
+                raise Unsupported(f"SYNC with reserved or nonzero-stype bits at 0x{addr:08x}")
+            return "(void)0;", None, 0
         raise Unsupported(f"SPECIAL funct 0x{fn:02x} at 0x{addr:08x}")
     if op == 0x08 or op == 0x09: return wr(rt(w), f"({R(rs(w))} + {simm(w)})"), None, 0  # addi/addiu
     if op == 0x0A: return wr(rt(w), f"((int32_t){R(rs(w))} < (int32_t){simm(w)} ? 1u : 0u)"), None, 0  # slti
@@ -969,6 +1057,7 @@ def effect(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None):
     if op == 0x26: return wr(rt(w), f"sr_lwr({R(rt(w))}, {R(rs(w))} + {simm(w)})"), None, 0   # lwr
     if op == 0x2A: return f"sr_swl_pc({R(rs(w))} + {simm(w)}, {R(rt(w))}, {G(addr)});", f"(({R(rs(w))} + {simm(w)}) & ~3u)", 4  # swl
     if op == 0x2E: return f"sr_swr_pc({R(rs(w))} + {simm(w)}, {R(rt(w))}, {G(addr)});", f"(({R(rs(w))} + {simm(w)}) & ~3u)", 4  # swr
+    if op in (0x30, 0x38): return _ll_sc_stmt(addr, w, op, lle_cpu, delay_branch_pc)  # ll / sc
     if op == 0x31: return f"s->fi[{rt(w)}] = MEM_R32({R(rs(w))} + {simm(w)});", None, 0  # lwc1
     if op == 0x39: return f"MEM_W32_PC({R(rs(w))} + {simm(w)}, s->fi[{rt(w)}], {G(addr)});", f"({R(rs(w))} + {simm(w)})", 4  # swc1
     if op == 0x11: return fpu_effect(addr, w)
@@ -1220,13 +1309,16 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                     + _nanv(addr, "vv2op.s", vd, "_d", n, "_s", n)
                     + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
+        # Optype 28 is vrexp2, which a PSP-3000 measured as exp2(-x) (PSP-VFPU-TRANSCENDENTAL-001,
+        # 2026-10-15), not a negated exp2. The other negated entries (25, 27, 29, 30, 31) are
+        # encodings no probe has covered; they keep the negation of the positive operation.
         _TRANS = {16: "sr_vfpu_rcp(_s[_i])", 17: "sr_vfpu_rsqrt(_s[_i])",
                   18: "sr_vfpu_sin(_s[_i])", 19: "sr_vfpu_cos(_s[_i])",
                   20: "sr_vfpu_exp2(_s[_i])", 21: "sr_vfpu_log2(_s[_i])",
                   22: "sr_vfpu_sqrt(_s[_i])", 23: "sr_vfpu_asin(_s[_i])",
                   24: "-sr_vfpu_rcp(_s[_i])", 25: "-sr_vfpu_rsqrt(_s[_i])",
                   26: "-sr_vfpu_sin(_s[_i])", 27: "-sr_vfpu_cos(_s[_i])",
-                  28: "-sr_vfpu_exp2(_s[_i])", 29: "-sr_vfpu_log2(_s[_i])",
+                  28: "sr_vfpu_exp2(-_s[_i])", 29: "-sr_vfpu_log2(_s[_i])",
                   30: "-sr_vfpu_sqrt(_s[_i])", 31: "-sr_vfpu_asin(_s[_i])"}
         if optype in _TRANS:
             si = vreg_indices(vs, n)
@@ -1365,24 +1457,34 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
                             "_a", n, "_b", n)
                     + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
             return "{ " + body + " }", None, 0
-        if sub in (6, 7): # vcmovt / vcmovf
-            tf = sub & 1
-            imm3 = (w >> 16) & 7
-            lines = [
-                f"float _s[4], _d[4];",
-                f"sr_vread(_s, s, {_arr(si)}, {n}, s->vfpuCtrl[0]);",
-                f"sr_vread(_d, s, {_arr(di)}, {n}, s->vfpuCtrl[1]);"
-            ]
-            if imm3 < 6:
-                lines.append(f"if (((s->vfpuCtrl[3] >> {imm3}) & 1u) == {1 - tf}u) {{ for (int _i = 0; _i < {n}; _i++) _d[_i] = _s[_i]; }}")
-            elif imm3 == 6:
-                lines.append(f"for (int _i = 0; _i < {n}; _i++) if (((s->vfpuCtrl[3] >> _i) & 1u) == {1 - tf}u) _d[_i] = _s[_i];")
-            else:
-                raise Unsupported(f"vcmov imm3 {imm3} at 0x{addr:08x}")
-            lines.append(_nanv(addr, "vcmovt.s" if tf == 0 else "vcmovf.s",
-                               vd, "_d", n, "_s", n, "_d", n)
-                         + f"sr_vwrite(s, {_arr(di)}, _d, {n}, s->vfpuCtrl[2]);{_EAT}")
-            return "{ " + " ".join(lines) + " }", None, 0
+        if sub in (5, 6, 7):  # vscmp / vsge / vslt: compare lanes, write -1/0/1 or 1/0 as floats
+            # PSP VFPU3 (major 0x1B) by bits 25..23: 0 vcmp, 2 vmin, 3 vmax, 5 vscmp, 6 vsge, 7 vslt.
+            # These slots were decoded as vcmovt/vcmovf before 2026-10-10; the conditional moves
+            # are the VFPU4 vcmov (jump 0x15) handled above. The flagship's quaternion slerp uses
+            # vsge to build its sign term (2 * (dot >= 0) - 1), and the wrong decode multiplied its
+            # dot product by stale scratch lanes, which is the one-frame skinned-model corruption
+            # of issue #69. vsge and vslt treat a NaN operand as unordered and write 0.0; vscmp
+            # does not: a PSP-3000 orders a lane with a NaN by sign and magnitude of the raw
+            # words, so NaN vs 1.5 writes +1.0, 1.5 vs NaN writes -1.0 and -NaN vs 1.5 writes
+            # -1.0, quiet or signalling (PSP-VFPU-CMP-001, measured 2026-10-15; every other cell
+            # of that probe agrees with the plain float compares below). A pair of NaNs follows
+            # the same order and is UNMEASURED. src/rt/vfpu_interp.c (vscmp_lane) is the twin.
+            name = {5: "vscmp.s", 6: "vsge.s", 7: "vslt.s"}[sub]
+            mag_a = "(int64_t)(_ab&0x7fffffffu)"
+            mag_b = "(int64_t)(_bb&0x7fffffffu)"
+            expr = {5: ("{ uint32_t _ab,_bb; memcpy(&_ab,&_a[_i],4); memcpy(&_bb,&_b[_i],4); "
+                        "if((_ab&0x7fffffffu)>0x7f800000u||(_bb&0x7fffffffu)>0x7f800000u){ "
+                        f"int64_t _ka=(_ab>>31)?-{mag_a}:{mag_a},_kb=(_bb>>31)?-{mag_b}:{mag_b}; "
+                        "_d[_i]=(_ka<_kb)?-1.0f:((_ka>_kb)?1.0f:0.0f); } "
+                        "else _d[_i]=(_a[_i]<_b[_i])?-1.0f:((_a[_i]>_b[_i])?1.0f:0.0f); }"),
+                    6: "_d[_i]=(_a[_i]>=_b[_i])?1.0f:0.0f;",
+                    7: "_d[_i]=(_a[_i]<_b[_i])?1.0f:0.0f;"}[sub]
+            body = (f"float _a[4],_b[4],_d[4]; sr_vread(_a,s,{_arr(si)},{n},s->vfpuCtrl[0]); "
+                    f"sr_vread(_b,s,{_arr(ti)},{n},s->vfpuCtrl[1]); "
+                    f"for(int _i=0;_i<{n};_i++) {expr} "
+                    + _nanv(addr, name, vd, "_d", n, "_a", n, "_b", n)
+                    + f"sr_vwrite(s,{_arr(di)},_d,{n},s->vfpuCtrl[2]);{_EAT}")
+            return "{ " + body + " }", None, 0
         raise Unsupported(f"VFPU3 sub {sub} at 0x{addr:08x}")
     if op == 0x3c and sub == 7 and ((w >> 21) & 0x1F) == 28:
         which = (w >> 16) & 0xF
@@ -1600,9 +1702,13 @@ def fpu_effect(addr, w):
     if fmt == 0x00: return wr(rt(w), f"s->fi[{fs}]"), None, 0          # mfc1
     if fmt == 0x02: return wr(rt(w), f"({fs} == 31 ? s->fcr31 : ({fs} == 0 ? 0x00003351u : 0u))"), None, 0  # cfc1
     if fmt == 0x04: return f"s->fi[{fs}] = {R(rt(w))};", None, 0       # mtc1
-    # ctc1 stores the guest FCSR wholesale; FCC0 is the architectural compare
-    # condition, so the cached fpcond mirror resyncs from the written bits.
-    if fmt == 0x06: return (f"if ({fs} == 31) {{ s->fcr31 = {R(rt(w))}; "
+    # ctc1 stores the guest FCSR except bits 25..31: the PSP FPU has FCC0 only, and
+    # a ctc1 of 0xFE800000 reads back 0x00800000 (PSP-FPU-CC-001, measured on a
+    # PSP-3000). No other bit was measured as unwritable, so no other bit is
+    # masked; src/rt/fp_convert.h names the word SR_FCR31_CTC1_UNWRITABLE. FCC0 is
+    # the architectural compare condition, so the cached fpcond mirror resyncs
+    # from the written bits.
+    if fmt == 0x06: return (f"if ({fs} == 31) {{ s->fcr31 = {R(rt(w))} & ~0xfe000000u; "
                             f"s->fpcond = (s->fcr31 >> 23) & 1u; }}"), None, 0
     if fmt == 0x10:
         fn = funct(w)
@@ -1658,18 +1764,30 @@ def fpu_effect(addr, w):
 
 def is_cond_branch(w):
     op = w >> 26
-    return op in (4, 5, 6, 7, 20, 21, 22, 23) or op == 1 or (op == 0x11 and rs(w) == 8) or (op == 0x12 and rs(w) == 8)
+    if op in (4, 5, 20, 21):
+        return True
+    if op in (6, 7, 22, 23):
+        return rt(w) == 0
+    if op == 1:
+        # REGIMM trap-immediates (tgei..tnei) are not branches. BLTZALL/BGEZALL
+        # (rt 0x12/0x13) are left out too: no codegen semantics test pins their link
+        # and nullify behaviour, so they reach effect() and are refused there, as on
+        # origin/main.
+        return rt(w) in (0, 1, 2, 3, 0x10, 0x11)
+    if op in (0x11, 0x12) and rs(w) == 8:
+        return True
+    return False
 
 def cond_expr(w):
     op = w >> 26
     if op == 4: return f"({R(rs(w))} == {R(rt(w))})"          # beq
     if op == 5: return f"({R(rs(w))} != {R(rt(w))})"          # bne
-    if op == 6: return f"((int32_t){R(rs(w))} <= 0)"          # blez
-    if op == 7: return f"((int32_t){R(rs(w))} > 0)"           # bgtz
+    if op == 6 and rt(w) == 0: return f"((int32_t){R(rs(w))} <= 0)"   # blez
+    if op == 7 and rt(w) == 0: return f"((int32_t){R(rs(w))} > 0)"    # bgtz
     if op == 20: return f"({R(rs(w))} == {R(rt(w))})"         # beql
     if op == 21: return f"({R(rs(w))} != {R(rt(w))})"         # bnel
-    if op == 22: return f"((int32_t){R(rs(w))} <= 0)"         # blezl
-    if op == 23: return f"((int32_t){R(rs(w))} > 0)"          # bgtzl
+    if op == 22 and rt(w) == 0: return f"((int32_t){R(rs(w))} <= 0)"  # blezl
+    if op == 23 and rt(w) == 0: return f"((int32_t){R(rs(w))} > 0)"   # bgtzl
     if op == 1:
         sub = rt(w)
         if sub in (0, 2, 0x10): return f"((int32_t){R(rs(w))} < 0)"   # bltz/bltzl/bltzal
@@ -1689,6 +1807,16 @@ def is_likely(w):
 
 def is_link(w):  # branch that also writes $ra
     return (w >> 26) == 1 and rt(w) in (0x10, 0x11)
+
+def is_linked_call(elf, addr, w, ranges):
+    """#968: is the linking branch ``w`` at ``addr`` a CALL of its target?
+
+    One answer for ``function_flow`` and ``emit_function`` (and, through the same
+    predicate, for the analyzer and the frame walk): see
+    ``entry_frame_balance.linked_branch_is_call``.  ``bal .+8`` and a
+    frame-releasing continuation target are not calls.
+    """
+    return (w >> 26) == 1 and entry_frame_balance.linked_branch_is_call(elf, addr, w, ranges)
 
 def branch_target(addr, w):
     return (addr + 4 + (s16(w) << 2)) & 0xFFFFFFFF
@@ -1831,7 +1959,9 @@ def function_flow(elf, start, ranges, known, resume_owners=None,
                 t = jump_target(pc, w)
                 insns.add(pc + 4)
                 seen.add(pc + 4)
-                if not is_jump_boundary(t) and in_ranges(t, ranges):  # intra goto
+                if t == pc:  # a self-loop is an in-function edge, never a native call to this function
+                    labels.add(t)
+                elif not is_jump_boundary(t) and in_ranges(t, ranges):  # intra goto
                     labels.add(t)
                     stack.append(t)
                 break
@@ -1843,6 +1973,18 @@ def function_flow(elf, start, ranges, known, resume_owners=None,
                 break
             if is_eret(w):  # eret: LLE transfer, no delay slot, no fall-through
                 break
+            if is_linked_call(elf, pc, w, ranges):
+                # bal/bgezal/bltzal to a callable is a CALL shaped exactly like `jal`
+                # (#968): its target is an entry, never a label of this body, and both
+                # paths continue at the link. `bal .+8` and a frame-releasing
+                # continuation target are jumps with a link and stay two-way branches.
+                insns.add(pc + 4)
+                seen.add(pc + 4)
+                next_pc = pc + 8
+                if stop_at_continuation(pc, next_pc):
+                    break
+                pc = next_pc
+                continue
             if is_cond_branch(w):
                 t = branch_target(pc, w)
                 # A conditional target is a native label only when it remains
@@ -1877,6 +2019,8 @@ def normal_line(addr, w, hst_profile=False, lle_cpu=False, delay_branch_pc=None)
             raise
         eff = _vfpu_interp_stmt(addr, w)
         saddr, ssize = None, 0
+    if saddr is SELF_TRACED:
+        return f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); {eff}"
     return f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); {eff} sr_end(s, {saddr if saddr else '0u'}, {ssize});"
 
 def _cop0_fields(w):
@@ -2068,6 +2212,7 @@ def _sv_step(w, regs, written):
         if fn == 0x27: bin2(d, regs[a], regs[b], lambda x, y: ~(x | y)); return
         if fn == 0x2A: bin2(d, regs[a], regs[b], lambda x, y: 1 if _sv_s32(x) < _sv_s32(y) else 0); return  # slt
         if fn == 0x2B: bin2(d, regs[a], regs[b], lambda x, y: 1 if x < y else 0); return      # sltu
+        if fn == 0x0F: return                                                                 # sync (no GPR write)
     elif op in (0x08, 0x09):   # addi/addiu
         W(b, regs[a] + s16(w) if regs[a] is not None else None); return
     elif op == 0x0A:           # slti
@@ -2078,7 +2223,8 @@ def _sv_step(w, regs, written):
     elif op == 0x0D: W(b, regs[a] | (w & 0xFFFF) if regs[a] is not None else None); return    # ori
     elif op == 0x0E: W(b, regs[a] ^ (w & 0xFFFF) if regs[a] is not None else None); return    # xori
     elif op == 0x0F: W(b, (w & 0xFFFF) << 16); return                                         # lui
-    elif op in _SV_RT_UNKNOWN_OPS: W(b, None); return   # loads: runtime-dependent
+    elif op in _SV_RT_UNKNOWN_OPS: W(b, None); return   # loads (and ll): runtime-dependent
+    elif op == 0x38: W(b, None); return   # sc: rt = 0/1 from the run-time link state
     elif op == 0x10:   # COP0 (spec 3.4): MFC0 destinations are unknown; MTC0,
         if ((w >> 21) & 0x1F) == 0x00: W(b, None)    # syscall/break/eret may
         else:                                        # mutate anything: flush.
@@ -2486,7 +2632,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); s->r[31] = {G((addr + 8) & 0xFFFFFFFF)}; sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
             if target in known or target in resume_owners:
-                out.append(f"    {ADDRESS_SPACE.symbol(target, resume_owners)}(s);")
+                out.append(f"    {emit_body_call(ADDRESS_SPACE.symbol(target, resume_owners))}")
                 if lle_cpu:
                     out.append(f"    {_flow_return(resumable)}")
             else:
@@ -2520,7 +2666,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                     out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline; skip its labelled duplicate */")
             else:
                 out.append(
-                    f"      dispatch(s, _t); {emit_host_return(resumable, stack_census=stack_census)} }}"
+                    f"      {emit_tail_transfer('_t', None, resumable, stack_census)} }}"
                 )
             continue
         if op == 0 and fn == 0x08:  # jr rs
@@ -2538,7 +2684,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                     out.append(f"    {emit_host_return(resumable, stack_census=stack_census)}")
                 else:
                     out.append(f"    {{ uint32_t _t = {R(a)};")
-                    out.append(f"      dispatch(s, _t); {emit_host_return(resumable, stack_census=stack_census)} }}")
+                    out.append(f"      {emit_tail_transfer('_t', None, resumable, stack_census)} }}")
             elif a == 31:
                 # `jr $ra` IS the host return; $ra is read at the transfer by
                 # construction, so a slot that rewrites it cannot redirect this.
@@ -2552,22 +2698,26 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
                 out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable,
                                             indent="      "))
-                out.append(f"      dispatch(s, _t); {emit_host_return(resumable, stack_census=stack_census)} }}")
+                out.append(f"      {emit_tail_transfer('_t', None, resumable, stack_census)} }}")
             continue
         if op == 2:  # j
             ADDRESS_SPACE.check_jump(addr, w)
             target = jump_target(addr, w)
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
-            if (target in known or target in resume_owners) and not (
+            if target == addr:
+                # Self-loop (a spin wait): the native call below would recurse on the host
+                # stack once per iteration. Keep it a backward goto with the preemption point.
+                out.append(f"    SR_YIELD(s, {G(addr)}); goto L_{target:08x};")
+            elif (target in known or target in resume_owners) and not (
                 target in resume_owners and target in labels
             ):
-                out.append(f"    {ADDRESS_SPACE.symbol(target, resume_owners)}(s); {emit_host_return(resumable, stack_census=stack_census)}")
+                out.append(f"    {emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners), resumable, stack_census)}")
             elif target in labels:
                 y = f"SR_YIELD(s, {G(addr)}); " if target <= addr else ""   # backward j: loop edge
                 out.append(f"    {y}goto L_{target:08x};")
             else:
-                out.append(f"    {{ uint32_t _t = {G(target)}; dispatch(s, _t); {emit_host_return(resumable, stack_census=stack_census)} }}")
+                out.append(f"    {{ uint32_t _t = {G(target)}; {emit_tail_transfer('_t', None, resumable, stack_census)} }}")
             continue
         # conditional branch
         target = branch_target(addr, w)
@@ -2588,6 +2738,28 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); {link}sr_end(s, 0u, 0);")
         _delay = delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable)
         _delay_inline = " ".join(line.strip() for line in _delay)
+        if is_linked_call(elf, addr, w, ranges):
+            # bltzal/bgezal (bal = bgezal $zero) to a callable is a CALL (#968), inside
+            # or outside this body: the taken path calls the target exactly as `jal`
+            # (known target) or `jalr rd` (dispatch with the resume PC) does, so the
+            # callee's `jr $ra` returns here and both paths continue at addr + 8.
+            # function_flow never labels the target for this site; another branch may
+            # still label it, so this test comes before the label test. The link and
+            # the delay slot above run once on either path; cond_expr refuses the
+            # branch-likely linked forms, so no annulled slot reaches this point.
+            if target in known or target in resume_owners:
+                call = emit_body_call(ADDRESS_SPACE.symbol(target, resume_owners))
+                if lle_cpu:
+                    call += f" {_flow_return(resumable)}"
+            else:
+                call = f"dispatch_call(s, {G(target)}, {G((addr + 8) & 0xFFFFFFFF)});"
+            out.extend("   " + line for line in _delay)
+            out.append(f"      if (_c) {{ {call} }} }}")
+            if addr in continuations:
+                out.append(f"    goto _sr_cont_{continuations[addr]:08x};")
+            elif addr in dup_slot_skips:
+                out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline; skip its labelled duplicate */")
+            continue
         if target in labels:
             if is_likely(w):
                 out.append(f"      if (_c) {{ {_delay_inline} {y}goto L_{target:08x}; }} }}")
@@ -2596,10 +2768,10 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 out.append(f"      if (_c) {{ {y}goto L_{target:08x}; }} }}")
         else:
             if is_likely(w):
-                out.append(f"      if (_c) {{ {_delay_inline} {{ s->pc = {G(target)}; dispatch(s, s->pc); {emit_host_return(resumable, stack_census=stack_census)} }} }} }}")
+                out.append(f"      if (_c) {{ {_delay_inline} {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable, stack_census)} }} }} }}")
             else:
                 out.extend("   " + line for line in _delay)
-                out.append(f"      if (_c) {{ {{ s->pc = {G(target)}; dispatch(s, s->pc); {emit_host_return(resumable, stack_census=stack_census)} }} }} }}")
+                out.append(f"      if (_c) {{ {{ s->pc = {G(target)}; {emit_tail_transfer('s->pc', None, resumable, stack_census)} }} }} }}")
         if addr in dup_slot_skips:
             out.append(f"    goto L_{dup_slot_skips[addr]:08x}; /* slot already ran inline (or was annulled); skip its labelled duplicate */")
     if continuations:
@@ -2614,16 +2786,23 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 # is no native symbol to call, and this edge is a tail-shaped transfer:
                 # dispatch the guest target and then leave the current native body.
                 out.append(
-                    f"    {{ uint32_t _t = {G(target)}; dispatch(s, _t); "
-                    f"{emit_host_return(resumable, stack_census=stack_census)} }}"
+                    f"    {{ uint32_t _t = {G(target)}; "
+                    f"{emit_tail_transfer('_t', None, resumable, stack_census)} }}"
                 )
             else:
-                out.append(f"    {ADDRESS_SPACE.symbol(target, resume_owners)}(s);")
-                out.append(f"    {emit_host_return(resumable, 'synthetic boundary: restore the owning entry frame', stack_census=stack_census)}")
+                out.append(f"    {emit_tail_transfer(G(target), ADDRESS_SPACE.symbol(target, resume_owners), resumable, stack_census, 'synthetic boundary: the owning entry frame is restored after the chain')}")
         out.append("  _sr_fallthrough_return: ;")
     out.append(f"    {emit_host_fallthrough(resumable, stack_census=stack_census)}")
     out.append("}")
     out.append("")
+    if any(BODY_CALL_DRAIN in line for line in out):
+        # A direct CALL nests a native frame without entering the dispatcher, so the body
+        # applies the dispatcher's host-stack bound itself, before anything else (the
+        # dispatcher preflights before its own SR_YIELD). Every native recursion of
+        # generated code passes through a direct CALL or the dispatcher, so leaves and
+        # dispatch-only bodies stay unchecked. Keyed on the CALL's own drain, so every
+        # call form that uses emit_body_call is covered. See SR_HOST_STACK_CHECK in recomp.h.
+        out.insert(1, emit_host_stack_check(G(start)))
     return out
 
 #: ``--extra-elf=<module>@runtime``: the module is placed by the runtime's guest
@@ -3224,6 +3403,7 @@ def main(argv):
     for (;;) {
         SR_YIELD(s, 0x000468c8u);
         f_000468c8_real(s);
+        SR_TAIL_DRAIN(s);
     }
 }"""
             func_texts.append(text); emitted.append(a); continue
@@ -3246,6 +3426,7 @@ def main(argv):
                 "void f_001d9eb0(CpuState *s)", "void f_001d9eb0_real(CpuState *s)")
             text = """void f_001d9eb0(CpuState *s) {  /* title backdrop selector postcondition */
     f_001d9eb0_real(s);
+    SR_TAIL_DRAIN(s);
     if (s->r[2] == 0u) {
         static int warned = 0;
         if (!warned) {

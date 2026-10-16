@@ -51,6 +51,34 @@ are disabled. Runtime seams use one predicted `sr_perf_enabled` branch; `PERF_AO
 removes the generated per-instruction hook entirely. The benchmark command measures the remaining
 runtime branch cost rather than assuming a zero-cost binary.
 
+For sparse GE front-end attribution, build with `GE_FRONTEND_PROFILE=1` (the default is `0`) and
+run with `SR_PERF=1` and `SR_GE_CPU_PROFILE=1`; `command_dispatch` is exported with those two, and
+the per-primitive stages (`draw_setup` through `assembly`, `triangle_total`, `empty_control`) also
+need `SR_GE_PRIM_PROFILE=1`. The build flag compiles the additional
+draw-setup timer and exports per-interval phase samples to `perf.csv`, `perf.json`, and a
+`PERF_GE_FRONTEND` stderr line. `SR_GE_PRIM_PROFILE_STRIDE` selects the sparse sample interval
+(default `512`); `SR_GE_PRIM_CALIBRATION=1` also records the triangle-total sample and empty timer
+control. With the build flag off, the new GE timers and export calls are absent from `ge.c`.
+
+The per-stage `estimated_ns` is `sample_ns * eligible / samples`. `samples` counts timed sparse
+events; `eligible` counts the corresponding list, draw, vertex, or triangle operations and can be
+divided by new frames for an operations-per-frame rate. `clipping_acceptance` includes cull-order
+reordering and triangle acceptance; `assembly` is the accepted screen-space projection work.
+`triangle_total` overlaps those two stages, and `empty_control` measures sampling overhead; neither
+is an additional front-end stage. These timers add measurement overhead and are for attribution
+runs, not absolute cadence claims.
+
+`ge_cpu_profile_validate()` checks a `ge_cpu_profile_get()` snapshot against the relations the GE's
+own counting code establishes: sub-phase time inside list time, phase calls against their
+command counters, the coarse and sparse profiles' per-draw counts against each other, the sparse
+population splits, decodes against the vertex uses that drive them, one acceptance verdict per
+transform triangle candidate, and samples within their eligible populations. A violation means
+the counters are wrong, not that the GE is slow; a pass says nothing about whether the times are
+accurate. The check reads only the snapshot, so the profiled GE paths do no extra work.
+`ge_replay` prints `GE_REPLAY_GE_CPU_VALIDATION status=PASS|FAIL failed=<checks>` whenever a GE
+CPU profile is enabled, exits with status 4 after printing the numbers when the check fails, and
+`tools/ge_replay_metrics.py` refuses to parse a profile the replay reported as `FAIL`.
+
 The summary fields mean:
 
 - `guest.ns` is inclusive guest execution time. `guest.aot_ns` and `guest.interpreter_ns` are
@@ -68,9 +96,11 @@ The summary fields mean:
   context-switch selections. It is sampled at scheduler boundaries, not a sum of simultaneous
   per-thread lifetimes; a wake that remains preempted is accounted for at the next scheduler
   boundary.
-- `ge.cpu_ns` covers the GE command-list CPU boundary. `transform_sample_ns` and `primitive_ns`
-  are only the existing sampled GE CPU profiler's deltas; they are not inferred from frame time and
-  are in the works for a complete phase breakdown (#282).
+- `ge.cpu_ns` covers the GE command-list CPU boundary. The optional
+  `ge.frontend_profile.stages` estimates exclusive command dispatch, draw setup, vertex fetch/decode,
+  transform, lighting, clipping/acceptance, and assembly time from sparse timers; `sample_ns`,
+  `samples`, and `eligible` preserve the raw evidence. Compare stage estimates with `ge.cpu_ns`, but
+  do not add `triangle_total` or `empty_control` to the stage sum.
 - `vulkan.submit_ns`, `wait_ns`, `readback_ns`, and `pipeline_creation_ns` measure separate host
   API regions. Readback and general wait can overlap and are intentionally not additive;
   `readbacks` counts completed CPU readback commits, not every fence poll.
@@ -99,8 +129,9 @@ mingw32-make BUILD_DIR=build/perf-282 perf-benchmark
 It runs the AOT-gap production smoke, cosimulation, PSMF media, audio, ATRAC bridge, platform-ladder
 AOT-gap, platform-ladder scheduler, and platform-ladder VFS workloads, records per-run status and
 JSON paths, and
-measures disabled/enabled overhead from repeated direct runs of one public production-smoke build
-in `build/perf-282/perf-benchmark/benchmark.json`. Exit 77 is reported as `SKIP`, never as a pass.
+measures disabled/enabled overhead from alternating direct runs (disabled, enabled, disabled, ...) of
+one public production-smoke build in `build/perf-282/perf-benchmark/benchmark.json`. Measured results
+and the verdict rule are in the next section. Exit 77 is reported as `SKIP`, never as a pass.
 Compare two summaries without treating wall-clock metadata as a regression:
 
 ```powershell
@@ -110,6 +141,93 @@ python tools/perf_summary_diff.py before.json after.json --tolerance 0.02
 The diff tool compares transition PCs by `(pc, reason)`, preserves `null` as not compiled, and
 ranks non-zero subsystem costs without summing overlapping intervals. A private HST profile may
 add a real-workload route, but it is supplemental and must not replace the public matrix.
+
+Present cadence and cost attribution for one run read the perf summary together with its stderr log.
+Capture the log with both `SR_PERF=1` (the one-second `PERF` and `PERF_ATTRIB` lines) and
+`SR_PRESENT_TRACE=1` (one `HOST_PRESENT_SUBMITTED` line per presented frame):
+
+```powershell
+python tools/perf_attribution.py --perf run.json --stderr run.log
+python tools/perf_attribution.py --diff a.json a.log b.json b.log --format json
+```
+
+The tool's docstring defines flips, re-presents, vblanks per new frame, implied fps and the
+`cpu_ms`, `ge_cpu_ms` and `aot_ms` shares. Those cost shares overlap and must not be added together.
+
+### Measured overhead of the perf counters (#282)
+
+Two switches exist. `SR_PERF=1` turns the counters and one-second telemetry on at run time, and
+`SR_HUD=1` turns on counter collection for the overlay. No build switch removes the counter calls:
+with the counters off, each seam costs one predicted-false `sr_perf_enabled` branch. The one
+compile-time switch is `PERF_AOT_INSTRUCTIONS`, which compiles the per-instruction hook into
+generated AOT code. "Switched off versus on" therefore means `SR_PERF=0` versus `SR_PERF=1`, and
+"compiled in versus out" means `PERF_AOT_INSTRUCTIONS=1` versus `0`.
+
+Method. The workload is `production-smoke-gap` (public synthetic guest, `aot-gap` mode), the one the
+`--overhead` check uses. Five arms ran round-robin, with the start arm rotated each round: 30
+rounds, 150 runs, no failures. The arms are `P0-off` and `P0-on` (default build), and `P1-off` and
+`P1-on` (`PERF_AOT_INSTRUCTIONS=1`). `N-off` is the recorder-absent build used in the flight
+recorder section below. Each run is timed two ways. The harness metric is the wall time of
+`fixtures/production_smoke/generate.py run`, which includes Python start-up and the fixture's
+checks. The direct metric is the same executable, with the same arguments and mode environment as
+that fixture passes, and no Python wrapper. A difference is reported as a percentage only when it
+exceeds the larger arm's interquartile range and a two-sided permutation test on the medians gives
+p < 0.05. Otherwise the result reads "not distinguishable from noise at N runs", with a 95% bootstrap
+interval on the median difference in milliseconds.
+
+| Arm | Direct median, IQR (ms) | Harness median, IQR (ms) |
+| --- | --- | --- |
+| `P0-off` | 28.54, 4.75 | 177.59, 7.59 |
+| `P0-on` | 28.89, 3.28 | 180.24, 9.57 |
+| `P1-off` | 28.43, 4.28 | 179.98, 10.26 |
+| `P1-on` | 28.81, 3.41 | 181.14, 7.64 |
+
+| Comparison | Direct 95% interval (ms) | Harness 95% interval (ms) | Result |
+| --- | --- | --- | --- |
+| `SR_PERF` on minus off, default build | [-1.6, +2.6] | [-1.0, +7.8] | not distinguishable from noise at 30 runs |
+| `PERF_AOT_INSTRUCTIONS` 1 minus 0, counters off | [-2.5, +2.0] | [-2.3, +7.3] | not distinguishable from noise at 30 runs |
+| `PERF_AOT_INSTRUCTIONS` 1 minus 0, counters on | [-1.7, +1.3] | [-4.2, +4.4] | not distinguishable from noise at 30 runs |
+
+The counters are deterministic for this workload, as far as one pair shows. Two counter-on runs of one
+build (rounds 0 and 1) differed only in timing fields (`perf_summary_diff`); the count fields matched.
+`PERF_AOT_INSTRUCTIONS=1` changed only `guest.aot_instruction_count` (null to 34), the hook flags, and
+timing, in the one pair compared.
+
+What this does not show. The smoke guest executes 34 AOT and 7 interpreter instructions. In the runs
+inspected its counted guest region was about 5 to 6 ms, and the runtime's own `wall_ns` was 10 to 13 ms
+inside a 178 ms harness run. Its GE, Vulkan and texture counters are all zero. A null result here bounds
+the counter cost only for a workload this small. The platform-ladder fixtures delete every ambient `SR_*`
+variable (the "SR_* namespace rule" in `fixtures/platform_ladder/generate.py`), so their `SR_PERF=1` runs
+stay counter-off. Of 60 such runs, none printed `PERF enabled`, and the harness's summary check flags
+them FAIL because no summary is written. `cosim-selftest` builds with `TRACE=1`, which measures a
+different instrumentation. So the cost of the counters on a workload with substantial guest work is not
+measured here.
+
+Environment. Host: AMD Ryzen 9 5900X (12 cores, 24 threads), Windows 11 Home 10.0.26300, shared with
+other agent sessions and MCP servers, so not idle. Total CPU over the smoke series had a median of 24%
+across run windows (window means 16% to 39%), and no run window averaged above 50%. Toolchain: gcc 16.1.0 (MSYS2 UCRT64),
+GNU Make 4.4.1, Python 3.14.7. Flags are the Makefile defaults: `RUNTIME_OPT=-O0`,
+`-fno-strict-aliasing -Wall -Wextra`, `RECOMP_OPT=-O0`, `FUNCS_PER_CHUNK=1 PUBLIC_SAFE=1`, and
+`SR_FLIGHT_RECORDER_LINKED` plus `PERF_AOT_INSTRUCTIONS` as stated per build. Base commit `788465b2`.
+
+```powershell
+# default build (P0 arms and the recorder-disabled arm); also the source of the harness metric
+mingw32-make BUILD_DIR=build/perf-282/p0/overhead-build BUILD_ROOT=build/perf-282/p0 production-smoke-gap
+# compile-time AOT instruction hook (P1 arms)
+$env:PERF_AOT_INSTRUCTIONS = "1"
+mingw32-make BUILD_DIR=build/perf-282/p1/p1-build BUILD_ROOT=build/perf-282/p1 production-smoke-gap
+Remove-Item Env:PERF_AOT_INSTRUCTIONS
+```
+
+The harness metric and the direct metric were run from a scratch driver that imports the fixture's
+constants and the harness's `_run_one` and `_run_direct`. That driver is not committed.
+
+Harness changes made for this measurement. `--overhead` now builds with `BUILD_ROOT` set to the build
+prefix. Before, the smoke build landed in `build/production-smoke-gap`, while the overhead runs read
+`<prefix>/production-smoke-gap`, so a fresh tree failed with `[WinError 2]`. It also now alternates
+disabled and enabled runs (A B A B), where it used to run all disabled runs before all enabled runs.
+The JSON `ratio` is a bare median ratio with no spread. Judge it with the per-run durations and the
+rule above.
 
 ## VBLANK delivery ledger (is the guest told about too many vblanks?)
 
@@ -226,8 +344,9 @@ should ignore the trailing uid/vblank columns.
 | `SR_RTRACE_FRAMES=N` | Frames traced per stat window (default 2) |
 | `SR_TEXDUMP=1` | Write each distinct sampled texture from transform- or through-mode draws once as `tex_ADDR_fF_WxH.ppm` decoded through the real sampler (swizzle + CLUT), and log its CLUT address/format. First 32 distinct addresses per run |
 | `SR_TEXDUMP_AFTER=N` | Defer texture dumping until GE frame `N`, preserving the fixed distinct-texture budget for a late deterministic scene |
-| `SR_GE_TRANSITION_TRACE=PATH` | Narrow one-frame-corruption harness (issue #69): one JSONL record per weighted `PRIM` draw with frame/draw ordinal, list id, command address, bone/world/view/proj matrices as both last guest writes and draw-time state, `non_finite` (non-finite values among the four effective matrices, so the record names what the GE drops), decoded `VTYPE`, bases/count/prim, render target, bound texture, and stable `draw_id`. `1` selects `logs/ge_transition_trace.jsonl`. Off by default; zero cost when off. Diff offline with `python tools/ge_transition_diff.py TRACE --frames GOOD:BAD`. A non-finite matrix entry is emitted as JSON `null` (printf's `-nan(ind)` is not JSON) and the diff flags it on its own line as `NON_FINITE in bone_written[0..35]` |
+| `SR_GE_TRANSITION_TRACE=PATH` | Narrow one-frame-corruption harness (issue #69): one JSONL record per weighted `PRIM` draw with frame/draw ordinal, list id, command address, bone/world/view/proj matrices as both last guest writes and draw-time state, `non_finite` (non-finite values among the four effective matrices, so the record names what the GE drops), decoded `VTYPE`, bases/count/prim, render target, bound texture, and stable `draw_id`. `1` selects `logs/ge_transition_trace.jsonl`. Off by default; zero cost when off. Diff offline with `python tools/ge_transition_diff.py TRACE --frames GOOD:BAD`. A non-finite matrix entry is emitted as JSON `null` (printf's `-nan(ind)` is not JSON) and the diff flags it on its own line as `NON_FINITE in bone_written[0..35]` Also one `{"kind":"late_write"}` record per weighted draw whose vertex or index bytes changed between the draw and the next present, `sceGeDrawSync` wait or completed `sceGeListSync` (the runtime reads those bytes at enqueue, earlier than the console's GE would): `vertex_span`/`index_span`, both hashes, `check` and `check_vblank`; mirrored as a `GE_LATE_WRITE` stderr line. A late write is a candidate cause, not proof. |
 | `SR_NAN_TRAP_LIMIT=N` | Report limit for the `SR_NAN_TRAP` build option below (default 20; `0` silences it). Only has an effect in a package built with `make NAN_TRAP=1` |
+| `SR_NAN_TRAP_CONTEXT=1` | After each `NAN_TRAP` line, a `NAN_TRAP_CTX` line with `ra`, `v0`, `a0`..`a3`, `t0`, `s0`, `s1` and `f12`, then one line per readable 16-byte span behind `v0` and `a0`..`a3` (four floats), so an origin instruction's inputs in guest memory can be read without editing generated code. Same build requirement as the limit. |
 
 ### Locating the instruction that produced a NaN (issue #69)
 
@@ -307,7 +426,7 @@ mingw32-make all NAN_TRAP=1          # adds --nan-trap and -DSR_NAN_TRAP togethe
 
 Coverage boundary: every FPU result write and every VFPU *value-producing* lane form is checked —
 `add.s`/`sub.s`/`mul.s`/`div.s`/`sqrt.s`/`abs.s`/`mov.s`/`neg.s`, `vadd/vsub/vmul/vdiv`, `vdot`,
-`vhdp`, `vcrs`, `vscl`, `vmin`/`vmax`, `vcmov`/`vcmovt`/`vcmovf`, `vocp`, the VV2Op scalar set and
+`vhdp`, `vcrs`, `vscl`, `vmin`/`vmax`, `vscmp`/`vsge`/`vslt`, `vcmov`/`vcmovt`/`vcmovf`, `vocp`, the VV2Op scalar set and
 the transcendental set (`vrcp`/`vrsqrt`/`vsin`/`vcos`/`vexp2`/`vlog2`/`vsqrt`/`vasin`), `vmmul`,
 `vtfm`, `vmscl`, `vcrsp`/`vqmul`, and `vrot`. Not checked, by construction: constant broadcasts
 (`viim`/`vfim`/`vcst`/`vzero`/`vone`/`vidt`/`vmidt`/`vmzero`/`vmone`, which have no operand to be
@@ -315,6 +434,13 @@ non-finite relative to), the integer reinterpretations (`vs2i`/`vi2uc`/`vi2c`/`v
 `vf2i*`, which write integer words), `vi2f` (a signed 32-bit integer always widens to a finite
 float32), the `lv`/`sv` memory forms (guest data, not a computed result), and the raw per-element
 `v[]` row copies of `VFPUMatrix1` (`vmmov`/`vmscl` rows, which move an existing lane).
+
+With the flight recorder armed and its `fault` class enabled (`SR_FLIGHT=fault,...;N`), each printed
+origin is also one `nan-origin` event (bundle kind 30, issue #320). It records the guest pc, the domain
+(FPU or VFPU), the result (NaN, +Inf or -Inf), the destination register, the lane (the first non-finite
+word of the reported output) and the VBLANK count. It follows the same `SR_NAN_TRAP_LIMIT` budget as the
+printed line and never triggers the recorder, so the run continues. `tools/flight_diff.py` localises the
+first one against a clean run. With the recorder disarmed the report is unchanged and nothing is recorded.
 
 > [!IMPORTANT]
 > **`SR_RTRACE` re-arms only when `SR_GESTAT` is also set.** Its per-window frame budget is reset
@@ -346,7 +472,7 @@ The diagnostic does not skip guest work or change GE execution.
 | `SR_PADWIDTH=N` | Automatic pad-pulse width in vblanks (default 4); each pulse is held until the guest has read it (see [Scripted input is delivered in guest time](#scripted-input-is-delivered-in-guest-time)) |
 | `SR_PADSTART=N` | Pad override start frame |
 | `SR_PADSCRIPT=FILE` | Scripted pad input: a state-qualified route program, or the legacy `frame hexmask width` table |
-| `SR_PADSCRIPT_READ_BUDGET=N` | Vblanks a scripted press may wait for the guest to read it before the run fails (default 1800); not a whole number >= 1 refuses the script |
+| `SR_PADSCRIPT_READ_BUDGET=N` | Vblanks a scripted press may wait for the guest to read it before the run fails (default 1800; a press whose width is in guest reads may wait for all of them); not a whole number >= 1 refuses the script |
 | `SR_OSK_SCRIPT=FILE` | Scripted on-screen-keyboard answers, one per input field in order (`CANCEL` answers that field as cancelled) |
 | `SR_OSK_TEXT=TEXT` | Answer every on-screen-keyboard field with the same text |
 | `SR_NOINPUT=1` | Disable the automatic START pulse; live and scripted input still work |
@@ -382,7 +508,8 @@ legacy `SR_PADSCRIPT` table, the route program's `PRESS`, `DELAY`, `PRESS_UNTIL`
 stretches. Each stretch ends only when both of these hold:
 
 - it has been latched for its authored width in controller samples (one sample per serviced
-  vblank);
+  vblank). A width written in guest reads ([below](#widths-in-guest-reads)) replaces this
+  condition with the number of guest reads it asks for;
 - the guest has read the controller (`sceCtrlReadBufferPositive` or
   `sceCtrlPeekBufferPositive`) and been handed a sample of it.
 
@@ -400,17 +527,50 @@ A press the guest does not read within `SR_PADSCRIPT_READ_BUDGET` vblanks (defau
 fails the run with `ROUTE_FAIL` naming the buttons, the step and the vblanks waited. That
 covers a legacy row and a `PRESS` step. A release waits without a budget, because a guest
 that is not polling cannot be pressed. So does a `PRESS_UNTIL` / `PRESS_WHILE` pulse, whose
-step timeout already bounds it.
+step timeout already bounds it. A press whose width is in guest reads
+([below](#widths-in-guest-reads)) has the same budget for the whole wait for its reads.
 `SR_INLOG=1` adds a `ctrl_read: vcount=<n> guest read scripted <mask>` line when the guest
 first reads each scripted state.
+
+### The keyboard in the game window
+
+On the SDL3/Vulkan presenter (the default window) the keyboard a title opens is drawn in the
+game window (`src/rt/osk_overlay.c` for the state, `src/rt/osk_overlay_paint.c` for the
+drawing), and a person answers it with the pad or the keyboard: the d-pad or arrow keys move,
+Cross or Enter types the highlighted key, Circle or Esc cancels, Start or Tab confirms, and
+L/R switch letter case. A physical keyboard also types directly, and Backspace deletes. The
+field's maximum length and its inputtype (`SceUtilityOskData` at +0x10, PSPSDK layout) limit
+what it accepts. While it is open the title's pad reads nothing, including the sample whose
+press confirms or cancels it, and guest time keeps running.
+
+A route answers the in-window keyboard with ordinary `PRESS` steps. The keyboard reads every
+controller sample while it is open, as the system keyboard polls the pad on a PSP, so a press
+it takes counts as read by the route. `SR_OSK_TEXT` and `SR_OSK_SCRIPT` are not needed for it.
+`SR_WINDOW_HIDDEN=1` runs the same presenter with a hidden window, so a headless route keeps the
+window's keyboard and its frame capture without a visible window. Under the offscreen presenter
+the overlay is not drawn, and the variables below still answer. Where the presenter cannot draw
+the keyboard, the native input box is the fallback. If SDL refuses the frame's surface or its
+renderer after a request opened, the request is dropped, one stderr line names the SDL error,
+and the field falls back to the native input path (the Windows input box) for the rest of the
+run.
 
 ### Scripted keyboard answers
 
 `SR_PADSCRIPT` decides what a person *presses*; `SR_OSK_SCRIPT` decides what they *type*. The
-on-screen keyboard a title opens for a name is otherwise answered by a modal Windows input box,
-which an automated route cannot reach: it has to find that window and type into it, and the
-attempt races the game's own dialog timing. Both variables are off unless set, and neither
-changes how a person plays.
+on-screen keyboard a title opens for a name is otherwise answered by a person in a native
+Windows input box, which an automated route cannot reach: it has to find that window and type
+into it, and the attempt races the game's own dialog timing. Both variables are off unless set,
+and neither changes how a person plays.
+
+The keyboard never stops guest time, scripted or not. On the PSP it is a system overlay: the
+title keeps running underneath it, polling `sceUtilityOskGetStatus` once per frame. Every guest
+thread here runs on the one scheduler thread, so the input box is shown on a worker thread
+(`src/rt/osk_text_entry.c`) and each poll returns at once with `VISIBLE` until the person
+presses OK or Cancel; vblanks, frames, audio and the title's other threads carry on meanwhile.
+Under the offscreen presenter (`SR_VIDEO=offscreen`, headless bring-up) nobody can answer, so
+no window is opened at all: the keyboard stays open while the title keeps running, which is
+what a PSP nobody is typing at does, and stderr says so once. A headless route that has to get
+past a name entry answers it with one of the variables below.
 
 `SR_OSK_SCRIPT=FILE` holds one answer per keyboard field, in the order the keyboard presents
 them. Each line is the text to enter, or the keyword `CANCEL` to answer that field as
@@ -430,14 +590,16 @@ vanishing.
 
 While either variable is set **no native input box is ever opened**. A field the script does
 not cover is answered `CANCELLED` and the shortfall is named on stderr, because an automated
-run that reached an unanswered keyboard would otherwise block on a window nothing is going to
-dismiss. `SR_DLGLOG` logs the same `osk: field N ...` line either way, so a scripted run and a
+run that reached an unanswered keyboard would otherwise wait at it for a person who is not
+there. `SR_DLGLOG` logs the same `osk: field N ...` line either way, so a scripted run and a
 played one are read the same way.
 
 A scripted answer follows the same status sequence as a person's. `sceUtilityOskGetStatus`
-returns the common dialog state from the PSPSDK headers: `INIT`, then `VISIBLE`, then `QUIT`
-(whether the text was confirmed or cancelled; each field's result tells them apart) until the
-title calls `sceUtilityOskShutdownStart`, then `FINISHED` once and `NONE`.
+returns the common dialog state from the PSPSDK headers: `INIT`, then `VISIBLE` (for as many
+frames as the person takes; one poll for a scripted answer), then `QUIT` (whether the text was
+confirmed or cancelled; each field's result tells them apart) until the title calls
+`sceUtilityOskShutdownStart`, then `FINISHED` once and `NONE`. A keyboard the title shuts down,
+or replaces with a new one, before the person answered closes its input box and writes nothing.
 `sceUtilityOskUpdate` itself keeps its named no-dialog compatibility result
 ([#281](https://github.com/Jstar269/nakagawa-recomp/issues/281)); the runtime owns the
 progression instead.
@@ -469,6 +631,9 @@ keeps the original behaviour exactly, and a file mixing the two is refused.
 | `PRESS_WHILE <NAME> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press the same way while `NAME` is observed; complete when it is not |
 | `DELAY <n>` | Release the pad for `n` samples and until the guest has read the release (input cadence *within* one screen) |
 | `WAIT_NID <import\|0xNID> <timeout>` | Block until the guest calls that import; fail the run on timeout |
+| `PRESS_UNTIL_NID <import\|0xNID> <hexmask\|buttons> <width> <period> <timeout>` | Repeat the press (held `width`, released for the rest of `period`) until the guest calls that import; fail on timeout. Use it where a press may land without changing the screen, such as a message box or a Yes/No that waits on a savedata check, because the import is the event that says the press was taken |
+| `WIDTHS VBLANKS\|READS` | The unit the widths of `PRESS`, `DELAY`, `PRESS_UNTIL`, `PRESS_WHILE` and `PRESS_UNTIL_NID` count in, for the whole file (default `VBLANKS`); must precede every step, and may appear once |
+| `READS <step>` / `VBLANKS <step>` | The unit of that one `PRESS`, `DELAY`, `PRESS_UNTIL`, `PRESS_WHILE` or `PRESS_UNTIL_NID` line; overrides `WIDTHS` |
 | `END` | Route complete |
 
 A mask is either a button name (see [Naming the buttons a route presses](#naming-the-buttons-a-route-presses))
@@ -529,6 +694,56 @@ Two habits keep a program honest. Gate every screen *transition* with `WAIT`, an
 only for input cadence inside one screen — a `DELAY` standing in for a transition is the
 fixed-vblank bet again. And put an `EXPECT` after a press whose effect you care about: `WAIT`
 proves you arrived, `EXPECT` proves the press did what the route claims.
+
+### Widths in guest reads
+
+A press or a release is normally held for its width in vblanks. On a host that falls behind,
+one batch can cover several vblanks before the guest reads the pad again, so a press of four
+vblanks may reach the guest in a single read, and a menu that needs three frames of hold to
+move one step sees it once. A width given in guest reads does not depend on the host's pace:
+the press is held until the guest has read it that many times. `WIDTHS READS` states that for
+the whole file:
+
+```text
+WIDTHS READS
+PRESS DOWN 3          # DOWN until the guest has read it three times
+DELAY 2               # released until the guest has read the release twice
+PRESS DOWN 3
+END
+```
+
+A line may name its own unit with a word in front of the step, so one file can mix the two.
+Each stretch counts in the unit its line names:
+
+```text
+PRESS START 4         # four vblanks, the default for this file
+READS PRESS CROSS 2   # two guest reads
+VBLANKS DELAY 1       # one vblank
+```
+
+Only these rules differ from the vblank widths above:
+
+- A read counts when the guest's controller read (`sceCtrlReadBufferPositive` or
+  `sceCtrlPeekBufferPositive`) hands it a sample latched while that stretch was current. A
+  read that hands over several samples counts once, and a read that comes before the stretch's
+  first sample is latched counts for nothing.
+- A release is counted the same way: a `DELAY` in reads waits for that many reads that observe
+  the release.
+- The release is latched at the next vblank. A guest that reads once per vblank, which is what
+  most titles do, gets exactly the count. A guest that reads twice in one vblank may see the
+  last press in one of its extra reads.
+- `SR_PADSCRIPT_READ_BUDGET` bounds the whole wait for the reads. A read-width press that the
+  guest reads fewer times than it asked for fails the run, naming how many reads it got.
+- The timeouts of `WAIT`, `EXPECT`, `WAIT_NID`, `PRESS_UNTIL` / `PRESS_WHILE` and
+  `PRESS_UNTIL_NID` stay in vblanks, because they are time limits. `PRESS_UNTIL`,
+  `PRESS_WHILE` and `PRESS_UNTIL_NID` take their width and period in reads when they say
+  `READS`.
+- `WIDTHS` must precede every step and may appear only once. `READS` and `VBLANKS` apply to
+  `PRESS`, `DELAY`, `PRESS_UNTIL`, `PRESS_WHILE` and `PRESS_UNTIL_NID` only, and anything
+  else that names a unit is refused at load, naming the line. No existing route starts a
+  line with either word, so an existing route parses and replays exactly as it did.
+- The legacy `frame hexmask width` table has no keyword lines, so it stays in vblanks. Write a
+  route program to use reads.
 
 ### Naming the buttons a route presses
 
@@ -881,7 +1096,7 @@ committed.
 
 | Variable | Description |
 | ---------- | ------------- |
-| `SR_FONTLOG=1` | Log font operations |
+| `SR_FONTLOG=1` | Log font operations: each slot's source, and the guest's reads of the generated `/DATA/FONT` registry subtree (the keys it asks for, the categories it opens, and each font index served) |
 | `SR_MPEGLOG=1` | Log mpeg operations. The PSMF media producer also logs one bounded counter line per reporting interval: bytes read, packs, PES packets, per-track PES and access-unit counts, access units that carried no presentation time, resync bytes, both compressed-queue depths, EOF state and failure offset, the disposition census of both tracks (submitted, decoded, delivered, warm-up-held, eos-drained, rejected — plus audio format rejects `arejf` and mono upmixes `aupm`), decoder-error counts, the pipeline presentation clocks (`vpts`/`apts`), the guest-facing presentation points at the getters (`vts`/`ats`), the A/V separation between those comparable points (`avgap`, `vts-ats`), submitted-minus-delivered (`vlead`, the pipeline distance inside the output ring), displaced ring times (`vlost`), the last `displaypts`, and the drain flags — enough to classify every decoded picture and locate the first boundary that stops a movie without attaching a debugger |
 | `SR_DLGLOG=1` | Log dialog operations |
 | `SR_CBLOG=1` | Log callback operations |
@@ -889,7 +1104,8 @@ committed.
 | `SR_WAKELOG=1` | Log thread wakeup events |
 | `SR_HLE_DIAGNOSTICS=1` | Enable the retained title-scoped HLE diagnostic reads only for a validated `codegen_profile: "hst"` build; generic and public fixture profiles remain inert |
 | `SR_REAL_MODULE_START` | `sceKernelStartModule` entry gate, tri-state. `1` runs a translated/real `module_start` for any module; unset (the default) runs it for `libfont.prx` only, so the guest owns its own readiness while `psmf.prx`, `libpsmfplayer.prx` and unknown paths keep the host bypass; `0` is the environmental kill switch and runs no `module_start` for any module, For libfont, disabled or unavailable startup reports `LIBFONT_STARTUP_UNAVAILABLE`, returns `SCE_KERNEL_ERROR_NOTIMP`, and does not write readiness. Any other value is refused with one diagnostic and the default is used. `sceKernelStopModule`/`sceKernelUnloadModule` still require `1` |
-| `SR_FONTDIR=ABSOLUTE_PATH` | Override font directory (relative values are rejected; unset uses the executable's sibling `font`) |
+| `SR_USER_DATA_ROOT=ABSOLUTE_PATH` | The per-user data directory, which is the one font root: the runtime reads the imported font cache at `<this>/fonts/v2` for the `flash0:` font device and the HLE `sceFont` shim. The launcher sets it for the child, overriding any inherited value. Unset uses the platform per-user directory; a runtime root does not move it. A relative or empty value is named once on stderr (`flash0: SR_USER_DATA_ROOT ...`) and skips the user-imported source, so the project font is served; it never falls back to another root. "Unreadable" means the environment read itself failed (the process could not read its own environment); that is named the same way, and skips the source too. Only an absent variable takes the platform directory. |
+| `SR_FONTDIR=ABSOLUTE_PATH` | Override the project font directory (relative values are rejected; unset uses the executable's sibling `font`). The `flash0:` font device and the HLE `sceFont` shim both serve the slot files named in `src/core/nk_font_slots.h`, from the user-imported cache first and then from this directory. A cache file is served only when its manifest vouches for it (listed, size and SHA-256 match, accepted by the reader as that slot); otherwise the slot falls through to this directory with a named `flash0:` refusal. This directory never serves files from an imported cache (a directory holding `manifest.json`, or the cache itself); `SR_FONTLOG=1` names each slot's source |
 | `SR_DATAROOT=ABSOLUTE_PATH` | Override the extracted-XB data root (relative values are rejected; unset uses the executable-anchored HST tree). The executable-anchored root and walked descendants reject reparse points; an explicitly configured root is operator-trusted and may be a junction for a staged long-path fixture. Access-time replacement races inside that trusted root are not a containment boundary. |
 | `SR_FSDIR=PATH` | Legacy flat `fs/` source for one-time read-open import into the unified Memory Stick root; relative paths, including `.`/`..`, are resolved against the current directory. Write/create never creates under this root |
 | `SR_MEMSTICK=PATH` | Canonical host Memory Stick root shared by ordinary `sceIo*` `ms0:` I/O and savedata (default `memstick/`) |
@@ -904,6 +1120,7 @@ committed.
 | `SR_NO_RELAUNCH=1` | Disable thread relaunch |
 | `SR_NO_THREAD_REUSE=1` | Disable thread reuse |
 | `SR_NOAUDIO=1` | Disable audio output |
+| `SR_AUDIODUMP=PATH` | Debug only, off by default. Write the device mix (every channel's stream after the master gain, as SDL is about to submit it) to a 16-bit PCM WAV at the device's own rate and channel count. The header is patched once per second of audio data and at close, and a stats line (`AUDIODUMP: ... frames= silent_frames= clipped_samples= peak= dropped_frames=`) is printed there. `dropped_frames` counts the frames the dump was offered but did not write, whether past its size limit, after a changed device format, or after a failed write; the first refusal prints one line. The file is closed at a normal exit and at `SR_EXIT_AT_VBLANK`, with or without `SR_AUDIOSTAT`; a runtime that is killed, crashes, or ends on another path that skips `atexit` (`sceKernelExitGame`, the watchdog, a route failure) keeps the last once-a-second patch, so up to a second at the end lies past the header's length. It runs on SDL's audio thread and does file I/O there, so it changes host pacing; never compare timing with it on. Audit the file for silence, clipping, gaps and sample rate |
 | `SR_POSTUMD=1` | Post-UMD processing |
 | `SR_HEAP_BASE=HEX` | Override heap base address |
 | `SR_PARTITION_TOP=HEX` | Override partition top |
@@ -1040,6 +1257,74 @@ To correlate a decoded through-sprite with the guest code that builds its dynami
 write watches for both source vertex records. Later reuse of those records is reported through
 the normal `MEM_WATCH[...]` log with the exact guest writer PC. The shared 16-range watch limit
 still applies, and the option never changes vertex data or rendering.
+
+## Flight Recorder (`SR_FLIGHT`)
+
+`SR_FLIGHT=<classes>;<limit>` retains the last `<limit>` (at most 4096) structured events of the
+named classes (`hle`, `unsupported`, `sched`, `prx`, `fault`, `fatal`, `media`, `ge`, `present`)
+and writes a bundle to `SR_FLIGHT_OUTPUT` (default `flight-recorder.json`). The schema is
+`assets/flight_recorder_schema.json`; `tools/flight_diff.py` validates and compares bundles. A build
+with `NAN_TRAP=1` also records each `SR_NAN_TRAP` origin into the `fault` class (see the NaN section).
+
+`terminal.reason` names what ended the run:
+
+| Reason | Meaning |
+| --- | --- |
+| `running` | No terminal yet. The bundle is rewritten at each named refusal (at each power of two of the refusal count), so a run killed later reads as still running. |
+| `exit` | Normal exit; `arg0` is the exit status. |
+| `budget` | `SR_EXIT_AT_VBLANK` was reached; `arg0` is the vblank. |
+| `hang` | The no-frame watchdog (`SR_WATCHDOG_EXIT`) aborted; `arg0` is the vblanks without a new frame. |
+| `fatal` | A fatal event; `kind` names it. |
+| `unsupported-nid` | An NID with no handler ended the run (`kind` 13). |
+
+A named refusal is a call answered with its registered error while the guest keeps running. It is
+never the terminal record. It is an `unsupported` event, counted in the bundle's `refusals` block:
+`count`, `first_nid` and `first_pc` (the first refusal, in its own fields), and `nids`, the distinct
+refused NIDs in first-seen order with a count each (up to 32; further NIDs are counted in
+`nids_unlisted`). Schema 1 to 4 bundles froze at their first refusal (`unsupported-nid`, kind 2), so
+they cannot show what ran after it. The private triage tooling reports those as frozen at
+a refusal; that grouping is not part of this repository.
+
+### Disabled-recorder overhead (#320)
+
+Switches. `SR_FLIGHT_RECORDER_LINKED` is a compile-time define that the Makefile adds to the runtime, generated-code
+and GE compile flags. When it is defined, each `SR_FLIGHT_RECORD_CLASS` site calls `sr_flight_class_enabled()`,
+and guest store helpers test `g_sr_watch_enabled` first. `SR_FLIGHT` arms the recorder at run time, and
+with it unset the recorder stays disarmed. The Makefile has no switch that omits the define, so the
+recorder-absent build passes `-USR_FLIGHT_RECORDER_LINKED` through an overridden `DEPFLAGS`. The compile rules place
+`DEPFLAGS` after `CFLAGS`, `RECOMP_FLAGS` and `GE_CFLAGS`, so the undefine wins on the compile lines the
+smoke build uses (48 of 48 `gcc -c` lines). Check: in that build no object references a `sr_flight_*`
+symbol (0 of 57 objects; the default build has 9 that do).
+`flight_recorder.c` redefines the switch for its own translation unit, so its object still links,
+but nothing calls into it.
+
+```powershell
+mingw32-make BUILD_DIR=build/perf-282/nolink/p-build BUILD_ROOT=build/perf-282/nolink 'DEPFLAGS=-MMD -MP -MF $(@:.o=.d) -MT $@ -USR_FLIGHT_RECORDER_LINKED' production-smoke-gap
+```
+
+Method. The recorder-disabled arm is `P0-off` (default build, `SR_FLIGHT` unset, counters off). The
+recorder-absent arm is `N-off`. The smoke rows come from the interleaved #282 series (30 rounds, no
+failures). The ladder row comes from a separate 30-round series with the same arms and design. Statistics
+and the verdict rule are those in the #282 section, and the build, toolchain and host are the same. The
+first table gives medians, and the second the intervals on (linked minus absent).
+
+| Workload and timing | Linked, disabled (ms) | Absent (ms) |
+| --- | --- | --- |
+| `production-smoke-gap`, direct executable | 28.54 | 27.95 |
+| `production-smoke-gap`, harness metric | 177.59 | 179.44 |
+| `platform-ladder-sched`, harness metric | 211.24 | 210.09 |
+
+| Workload and timing | 95% interval on linked minus absent (ms) | Result |
+| --- | --- | --- |
+| `production-smoke-gap`, direct executable | [-1.1, +2.6] | not distinguishable from noise at 30 runs |
+| `production-smoke-gap`, harness metric | [-6.2, +0.7] | not distinguishable from noise at 30 runs |
+| `platform-ladder-sched`, harness metric | [-6.4, +7.7] | not distinguishable from noise at 30 runs |
+
+The ladder rows run with `SR_FLIGHT` and `SR_PERF` both removed by the fixture's `SR_*` rule, so
+they measure the compiled-in cost with the recorder disarmed, as the smoke rows do. The direct
+executable interval is the tightest bound. Neither workload is a GE or presentation workload (the
+smoke summary shows zero GE and Vulkan calls), so the recorder sites in
+`src/rt/gpu_sdl3vk/ge_gpu.c` are not measured here.
 
 ## Crash Reporter
 

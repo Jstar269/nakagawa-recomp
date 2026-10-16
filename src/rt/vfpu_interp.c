@@ -99,6 +99,26 @@ static void eat_prefix(CpuState *s) {
     s->vfpuCtrl[2] = 0u;
 }
 
+/* One vscmp lane: -1.0, 0.0 or +1.0 for a < b, a == b, a > b. A NaN operand is not
+ * unordered here, unlike vsge/vslt: the PSP orders the raw words by sign and
+ * magnitude, so a NaN with a clear sign bit is above every non-NaN value and one with
+ * a set sign bit below. Measured on a PSP-3000 (PSP-VFPU-CMP-001, 2026-10-15) for a
+ * quiet or signalling NaN against 1.5 on either side and a negative quiet NaN on the
+ * left; a pair of NaNs follows the same order and is UNMEASURED. Lanes without a NaN
+ * are plain float compares, so +0 and -0 are equal (also measured). The generated
+ * code (tools/codegen.py, VFPU3 sub-op 5) emits the same lane. */
+static float vscmp_lane(float a, float b) {
+    uint32_t ab, bb;
+    memcpy(&ab, &a, 4);
+    memcpy(&bb, &b, 4);
+    if ((ab & 0x7fffffffu) > 0x7f800000u || (bb & 0x7fffffffu) > 0x7f800000u) {
+        const int64_t ka = (ab >> 31) ? -(int64_t)(ab & 0x7fffffffu) : (int64_t)(ab & 0x7fffffffu);
+        const int64_t kb = (bb >> 31) ? -(int64_t)(bb & 0x7fffffffu) : (int64_t)(bb & 0x7fffffffu);
+        return ka < kb ? -1.0f : (ka > kb ? 1.0f : 0.0f);
+    }
+    return (a < b) ? -1.0f : ((a > b) ? 1.0f : 0.0f);
+}
+
 /* vcst constant table, computed with the same float expressions as PPSSPP (MIPS.cpp). */
 static float sr_cst[32];
 static int sr_cst_init = 0;
@@ -277,7 +297,7 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
     int vd = w & 0x7F, vs = (w >> 8) & 0x7F, vt = (w >> 16) & 0x7F;
     uint8_t di[4], si[4], ti[4];
 
-    if (op == 0x1b) {  /* VFPU3: vcmp (CC) / vmin / vmax */
+    if (op == 0x1b) {  /* VFPU3: vcmp (CC) / vmin / vmax / vscmp / vsge / vslt */
         int s3 = (w >> 23) & 7;
         if (s3 == 0) {  /* vcmp: set the CC register, no v[] output */
             int cond = w & 0xF;
@@ -325,22 +345,23 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
             VFPU_NAN(s3 == 2 ? "vmin.s" : "vmax.s", d, n, a, n, b, n);
             sr_vwrite(s, di, d, n, s->vfpuCtrl[2]); eat_prefix(s); return SR_VFPU_COMPUTE;
         }
-        if (s3 == 6 || s3 == 7) {  /* vcmovt / vcmovf */
-            int tf = s3 & 1, imm3 = (w >> 16) & 7;
-            if (imm3 == 7) return SR_VFPU_OTHER;
-            float sv[4], d[4];
-            vreg_idx(vs, n, si); vreg_idx(vd, n, di);
-            sr_vread(sv, s, si, n, s->vfpuCtrl[0]);
-            sr_vread(d, s, di, n, s->vfpuCtrl[1]);
-            uint32_t cc = s->vfpuCtrl[3];
-            if (imm3 < 6) {
-                if ((int)((cc >> imm3) & 1) == !tf)
-                    for (int i = 0; i < n; i++) d[i] = sv[i];
-            } else {
-                for (int i = 0; i < n; i++)
-                    if ((int)((cc >> i) & 1) == !tf) d[i] = sv[i];
+        if (s3 == 5 || s3 == 6 || s3 == 7) {  /* vscmp / vsge / vslt: lane compares as floats */
+            /* Major 0x1B by bits 25..23: 0 vcmp, 2 vmin, 3 vmax, 5 vscmp, 6 vsge, 7 vslt. Slots 6/7
+             * were decoded as vcmovt/vcmovf before 2026-10-10 (the conditional moves are the VFPU4
+             * vcmov below), which broke the flagship's slerp sign term (issue #69). vsge and vslt
+             * treat a NaN operand as unordered and write 0.0; vscmp orders a NaN lane by sign and
+             * magnitude (vscmp_lane). All 45 cells of PSP-VFPU-CMP-001 (PSP-3000, 2026-10-15)
+             * match these lanes. */
+            float a[4], b[4], d[4];
+            vreg_idx(vd, n, di); vreg_idx(vs, n, si); vreg_idx(vt, n, ti);
+            sr_vread(a, s, si, n, s->vfpuCtrl[0]);
+            sr_vread(b, s, ti, n, s->vfpuCtrl[1]);
+            for (int i = 0; i < n; i++) {
+                if (s3 == 5) d[i] = vscmp_lane(a[i], b[i]);
+                else if (s3 == 6) d[i] = (a[i] >= b[i]) ? 1.0f : 0.0f;
+                else d[i] = (a[i] < b[i]) ? 1.0f : 0.0f;
             }
-            VFPU_NAN(s3 == 6 ? "vcmovt.s" : "vcmovf.s", d, n, sv, n, d, n);
+            VFPU_NAN(s3 == 5 ? "vscmp.s" : s3 == 6 ? "vsge.s" : "vslt.s", d, n, a, n, b, n);
             sr_vwrite(s, di, d, n, s->vfpuCtrl[2]); eat_prefix(s); return SR_VFPU_COMPUTE;
         }
         return SR_VFPU_OTHER;
@@ -514,7 +535,9 @@ int sr_vfpu_interp(CpuState *s, uint32_t w) {
                 case 25: d[i] = -sr_vfpu_rsqrt(v[i]); break;
                 case 26: d[i] = -sr_vfpu_sin(v[i]); break;
                 case 27: d[i] = -sr_vfpu_cos(v[i]); break;
-                case 28: d[i] = -sr_vfpu_exp2(v[i]); break;
+                /* optype 28 is vrexp2, exp2(-x), not a negated exp2: a PSP-3000 returned 1.0
+                 * for zero and 2.0 for -1.0 (PSP-VFPU-TRANSCENDENTAL-001, 2026-10-15). */
+                case 28: d[i] = sr_vfpu_exp2(-v[i]); break;
                 case 29: d[i] = -sr_vfpu_log2(v[i]); break;
                 case 30: d[i] = -sr_vfpu_sqrt(v[i]); break;
                 case 31: d[i] = -sr_vfpu_asin(v[i]); break;

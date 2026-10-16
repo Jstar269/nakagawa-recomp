@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -48,7 +49,7 @@ def make_bundle(events, *, recorded=None, dropped=0, terminal_reason="exit",
         }
     return {
         "schema_version": version,
-        "runtime": {"name": "nakagawa-recomp", "cpu_state_abi": 2},
+        "runtime": {"name": "nakagawa-recomp", "cpu_state_abi": 3},
         "build": build,
         "recorder": {
             "enabled_classes": ["hle", "unsupported", "sched", "prx", "fault", "fatal", "media"]
@@ -208,6 +209,32 @@ class ComparabilityContractTests(unittest.TestCase):
         self.assertIsNotNone(divergence)
         self.assertEqual(divergence[0], "terminal kind")
 
+    def test_truncated_tail_reports_terminal_divergence(self):
+        # A run that stopped earlier (e.g. fatal on event 2) compared to a run that kept going (exit on event 3)
+        # with identical shared events (1..2) must report a terminal divergence, not a sequence event divergence.
+        baseline = make_bundle(
+            [event(1, "sched", arg0=1, version=3),
+             event(2, "hle", arg0=2, version=3, arguments=[7, 0, 0, 0], return_value=None),
+             event(3, "prx", arg0=3, version=3)],
+            version=3,
+        )
+        candidate = make_bundle(
+            [event(1, "sched", arg0=1, version=3),
+             event(2, "hle", arg0=2, version=3, arguments=[7, 0, 0, 0], return_value=None)],
+            terminal_reason="fatal",
+            terminal_sequence=2,
+            version=3,
+        )
+        candidate["recorder"]["triggers"]["fired"] = 1
+
+        for align in ("sequence", "class"):
+            with self.subTest(align=align):
+                divergence = flight_diff.diff_bundles(baseline, candidate, align)
+                self.assertIsNotNone(divergence)
+                self.assertEqual(divergence[0], "terminal reason")
+                self.assertEqual(divergence[1]["reason"], "exit")
+                self.assertEqual(divergence[2]["reason"], "fatal")
+
     def test_same_events_different_terminal_semantics_diverge(self):
         baseline, candidate = self._comparable_pair()
         # Both terminals must be individually valid: a fatal outcome pairs with
@@ -231,6 +258,16 @@ class ComparabilityContractTests(unittest.TestCase):
         candidate2["terminal"]["arg0"] = 9
         divergence = flight_diff.diff_bundles(baseline2, candidate2, "sequence")
         self.assertEqual(divergence[0], "terminal arg0")
+
+    def test_cli_names_a_terminal_divergence_without_a_traceback(self):
+        # A terminal is a block, not an event: the report names the field and prints both
+        # terminals, and never runs the event identity lines over them.
+        baseline, candidate = self._comparable_pair()
+        candidate["terminal"]["arg0"] = 9
+        result = self._run_cli(baseline, candidate)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("DIVERGENCE: terminal arg0", result.stdout)
+        self.assertEqual(result.stderr, "")
 
     def test_unfinished_running_capture_is_a_terminal_divergence(self):
         # A running terminal is only schema-valid beside a fired trigger (the
@@ -272,13 +309,13 @@ class ComparabilityContractTests(unittest.TestCase):
         # that do not see the schema, and is asserted on the raw reasoning
         # function with minimal hand-built record shapes.
         left = {"schema_version": 3,
-                "runtime": {"name": "nakagawa-recomp", "cpu_state_abi": 2},
+                "runtime": {"name": "nakagawa-recomp", "cpu_state_abi": 3},
                 "recorder": {"enabled_classes": ["sched"], "dropped": 0,
                              "triggers": {"first_fatal": True,
                                           "first_unsupported_nid": True,
                                           "fired": 0}},
                 "terminal": {"reason": "exit"}}
-        right = {**left, "runtime": {"name": "nakagawa-recomp", "cpu_state_abi": 3}}
+        right = {**left, "runtime": {"name": "nakagawa-recomp", "cpu_state_abi": 4}}
         reasons = flight_diff._comparability_reasons(left, right)
         self.assertTrue(any("runtime" in reason for reason in reasons))
 
@@ -590,6 +627,391 @@ class FlightBundleTests(unittest.TestCase):
             )
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("DIVERGENCE: sequence 1", result.stdout)
+
+
+REFUSED_NID = 0x1579A159
+SECOND_REFUSED_NID = 0x34B78343
+THIRD_REFUSED_NID = 0x64D50C56
+REFUSAL_RETURN = 0x80110001
+
+
+def v5_refusals(nids, *, unlisted=0, first_pc=0x08900100, first_sequence=2):
+    """A schema-5 refusals block built from per-NID counts (first refusal first)."""
+    count = sum(entry["count"] for entry in nids) + unlisted
+    return {
+        "count": count,
+        "first_nid": nids[0]["nid"] if count else None,
+        "first_pc": first_pc if count else None,
+        "first_sequence": first_sequence if count else 0,
+        "nids": nids,
+        "nids_unlisted": unlisted,
+    }
+
+
+def v5_bundle(events, *, reason, kind=0, arg0=0, sequence=None, fired=0, refusals):
+    bundle = make_bundle(
+        events, recorded=len(events), terminal_reason=reason, terminal_sequence=sequence,
+        terminal_kind=kind, terminal_arg0=arg0, version=5,
+        triggers={"first_fatal": True, "first_unsupported_nid": True, "fired": fired},
+    )
+    bundle["refusals"] = refusals
+    return bundle
+
+
+def v5_hle(sequence, nid=REFUSED_NID):
+    return event(sequence, "hle", kind=1, arg0=nid, arg1=0, arg2=0, arg3=0, version=5,
+                 arguments=[0, 0, 0, 0], return_value=REFUSAL_RETURN)
+
+
+def v5_refused(sequence, nid=REFUSED_NID, pc=0x08900100):
+    return event(sequence, "unsupported", kind=2, arg0=nid, arg1=REFUSAL_RETURN, arg2=0,
+                 arg3=pc, version=5)
+
+
+class RefusalTerminalSchemaTests(unittest.TestCase):
+    """Schema 5: a named refusal is a counted event, and the terminal is what ended the run."""
+
+    def test_refusal_then_later_fatal_terminates_at_the_fatal(self):
+        events = [
+            v5_hle(1),
+            v5_refused(2),
+            event(3, "fatal", kind=12, arg0=0x08900100, arg1=0x0C, arg2=0, arg3=0, version=5),
+        ]
+        bundle = v5_bundle(events, reason="fatal", kind=12, arg0=0x0C, sequence=3, fired=1,
+                           refusals=v5_refusals([{"nid": REFUSED_NID, "count": 1}]))
+        flight_diff.validate_bundle(bundle)
+        self.assertEqual(bundle["terminal"]["reason"], "fatal")
+        self.assertEqual(bundle["refusals"]["first_nid"], REFUSED_NID)
+
+    def test_refusal_then_clean_exit_terminates_at_the_exit(self):
+        events = [v5_hle(1), v5_refused(2)]
+        bundle = v5_bundle(events, reason="exit", arg0=7, sequence=2, fired=0,
+                           refusals=v5_refusals([{"nid": REFUSED_NID, "count": 1}]))
+        flight_diff.validate_bundle(bundle)
+        self.assertEqual(bundle["terminal"]["reason"], "exit")
+
+    def test_refusal_before_any_terminal_is_a_running_record(self):
+        events = [v5_hle(1), v5_refused(2)]
+        bundle = v5_bundle(events, reason="running", sequence=2, fired=0,
+                           refusals=v5_refusals([{"nid": REFUSED_NID, "count": 1}]))
+        flight_diff.validate_bundle(bundle)
+
+    def test_budget_and_watchdog_hang_are_their_own_terminals(self):
+        budget = v5_bundle([v5_hle(1)], reason="budget", arg0=41200, sequence=1, fired=0,
+                           refusals=v5_refusals([]))
+        flight_diff.validate_bundle(budget)
+        hang_events = [
+            v5_hle(1),
+            event(2, "fatal", kind=17, arg0=0, arg1=600, arg2=600, arg3=0, version=5),
+        ]
+        hang = v5_bundle(hang_events, reason="hang", kind=17, arg0=600, sequence=2, fired=1,
+                         refusals=v5_refusals([]))
+        flight_diff.validate_bundle(hang)
+
+    def test_budget_stop_cannot_be_a_fired_trigger(self):
+        bundle = v5_bundle([v5_hle(1)], reason="budget", arg0=41200, sequence=1, fired=1,
+                           refusals=v5_refusals([]))
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "without a fired trigger"):
+            flight_diff.validate_bundle(bundle)
+
+    def test_watchdog_hang_must_be_a_fired_trigger(self):
+        bundle = v5_bundle([v5_hle(1)], reason="hang", kind=17, arg0=600, sequence=1, fired=0,
+                           refusals=v5_refusals([]))
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "is a fired trigger"):
+            flight_diff.validate_bundle(bundle)
+
+    def test_refusal_counts_must_account_for_every_refusal(self):
+        bogus = v5_refusals([{"nid": REFUSED_NID, "count": 1}])
+        bogus["count"] = 2
+        bundle = v5_bundle([v5_hle(1), v5_refused(2)], reason="exit", arg0=0, sequence=2,
+                           fired=0, refusals=bogus)
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "must account for every refusal"):
+            flight_diff.validate_bundle(bundle)
+
+    def test_unlisted_refusals_are_accounted_for(self):
+        refusals = v5_refusals([{"nid": REFUSED_NID, "count": 1}], unlisted=2)
+        bundle = v5_bundle([v5_hle(1), v5_refused(2)], reason="exit", arg0=0, sequence=2,
+                           fired=0, refusals=refusals)
+        flight_diff.validate_bundle(bundle)
+        self.assertEqual(bundle["refusals"]["count"], 3)
+
+    def test_refusal_with_no_first_nid_is_malformed(self):
+        refusals = v5_refusals([])
+        refusals["count"] = 1
+        bundle = v5_bundle([v5_hle(1)], reason="exit", arg0=0, sequence=1, fired=0,
+                           refusals=refusals)
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "first refused NID"):
+            flight_diff.validate_bundle(bundle)
+
+    def test_schema_4_frozen_refusal_bundle_still_reads(self):
+        # Pre-fix bundles froze at their first refusal; they keep validating, and carry no
+        # refusals block of their own.
+        events = [
+            event(1, "hle", kind=1, arg0=REFUSED_NID, arg1=0, arg2=0, arg3=0, version=4,
+                  arguments=[0, 0, 0, 0], return_value=REFUSAL_RETURN),
+            event(2, "unsupported", kind=2, arg0=REFUSED_NID, arg1=REFUSAL_RETURN, arg2=0,
+                  arg3=0x08900100, version=4),
+        ]
+        bundle = make_bundle(events, terminal_reason="unsupported-nid", terminal_kind=2,
+                             terminal_arg0=REFUSED_NID, version=4)
+        flight_diff.validate_bundle(bundle)
+        self.assertNotIn("refusals", bundle)
+
+    def test_schema_4_rejects_schema_5_terminals_and_blocks(self):
+        bundle = make_bundle([event(1, "hle", kind=1, arg0=1, arg1=0, arg2=0, arg3=0, version=4,
+                                    arguments=[0, 0, 0, 0], return_value=0)],
+                             terminal_reason="exit", version=4)
+        bundle["terminal"]["reason"] = "budget"
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "terminal.reason"):
+            flight_diff.validate_bundle(bundle)
+
+
+class RuntimeAbiPinTests(unittest.TestCase):
+    """The schema's ``cpu_state_abi`` pin follows the one header definition the recorder stamps.
+
+    #812 moved CpuState to v3 while the recorder kept writing the literal 2 and the schema kept
+    pinning 2, so flight_diff compared v2 and v3 bundles as the same runtime. The number has
+    one source (src/rt/recomp.h); this test fails the moment the schema or a recorder literal
+    drifts from it.
+    """
+
+    def test_schema_pins_the_header_version_and_the_recorder_stamps_the_macro(self):
+        header = (ROOT / "src" / "rt" / "recomp.h").read_text(encoding="utf-8")
+        match = re.search(r"^#define SR_CPUSTATE_ABI_VERSION (\d+)u$", header, re.MULTILINE)
+        self.assertIsNotNone(match, "recomp.h must define SR_CPUSTATE_ABI_VERSION <n>u")
+        schema = json.loads(flight_diff.SCHEMA_PATH.read_text(encoding="utf-8"))
+        pinned = schema["properties"]["runtime"]["properties"]["cpu_state_abi"]["const"]
+        self.assertEqual(pinned, int(match.group(1)))
+        recorder = (ROOT / "src" / "rt" / "flight_recorder.c").read_text(encoding="utf-8")
+        self.assertIn('#include "recomp.h"', recorder)
+        # The one and only mention of the field in the recorder is the %u stamp of the macro.
+        self.assertIn('\\"cpu_state_abi\\": %u},\\n",', recorder)
+        self.assertIn("(unsigned)SR_CPUSTATE_ABI_VERSION) >= 0;", recorder)
+        self.assertEqual(recorder.count("cpu_state_abi"), 1, "a second cpu_state_abi token would be a literal")
+
+
+class RefusalComparisonTests(unittest.TestCase):
+    """Schema 5: the refusals block is compared after the terminal, field by field."""
+
+    FIELDS = ("count", "first_nid", "first_pc", "first_sequence", "nids")
+
+    def _pair(self):
+        events = [v5_hle(1), v5_refused(2), v5_hle(3, SECOND_REFUSED_NID),
+                  v5_refused(4, SECOND_REFUSED_NID, pc=0x08900200)]
+        refusals = v5_refusals([{"nid": REFUSED_NID, "count": 1},
+                                {"nid": SECOND_REFUSED_NID, "count": 1}])
+        baseline = v5_bundle(events, reason="exit", arg0=0, sequence=4, fired=0,
+                             refusals=refusals)
+        return baseline, copy.deepcopy(baseline)
+
+    def _candidate_differing_in(self, field):
+        """A candidate whose events and terminal match the baseline; only the block moves."""
+        baseline, candidate = self._pair()
+        refusals = candidate["refusals"]
+        if field == "count":
+            refusals["nids_unlisted"] = 1
+            refusals["count"] = 3
+        elif field == "first_nid":
+            refusals["first_nid"] = SECOND_REFUSED_NID
+            refusals["nids"].reverse()
+        elif field == "first_pc":
+            refusals["first_pc"] = 0x08900300
+        elif field == "first_sequence":
+            refusals["first_sequence"] = 3
+        else:
+            refusals["nids"][1] = {"nid": THIRD_REFUSED_NID, "count": 1}
+        flight_diff.validate_bundle(baseline)
+        flight_diff.validate_bundle(candidate)
+        return baseline, candidate
+
+    def test_identical_refusals_match_under_schema_5(self):
+        baseline, candidate = self._pair()
+        for align in ("sequence", "class"):
+            with self.subTest(align=align):
+                self.assertIsNone(flight_diff.diff_bundles(baseline, candidate, align))
+        result = self._run_cli(baseline, candidate)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("MATCH:", result.stdout)
+
+    def test_refusals_only_difference_diverges_under_schema_5(self):
+        for field in self.FIELDS:
+            for align in ("sequence", "class"):
+                with self.subTest(field=field, align=align):
+                    baseline, candidate = self._candidate_differing_in(field)
+                    self.assertEqual(baseline["events"], candidate["events"])
+                    divergence = flight_diff.diff_bundles(baseline, candidate, align)
+                    self.assertIsNotNone(divergence)
+                    self.assertEqual(divergence[0], f"refusals.{field}")
+                    self.assertEqual(divergence[1], baseline["refusals"])
+                    self.assertEqual(divergence[2], candidate["refusals"])
+
+    def test_cli_names_the_refusals_field_that_differs(self):
+        for field in self.FIELDS:
+            with self.subTest(field=field):
+                baseline, candidate = self._candidate_differing_in(field)
+                result = self._run_cli(baseline, candidate)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(f"DIVERGENCE: refusals.{field}", result.stdout)
+                self.assertNotIn("event index", result.stdout)
+                self.assertIn(
+                    json.dumps(candidate["refusals"], sort_keys=True, separators=(",", ":")),
+                    result.stdout,
+                )
+                self.assertEqual(result.stderr, "")
+
+    def test_terminal_difference_is_reported_before_refusals(self):
+        baseline, candidate = self._candidate_differing_in("first_pc")
+        candidate["terminal"]["arg0"] = 9
+        divergence = flight_diff.diff_bundles(baseline, candidate, "sequence")
+        self.assertEqual(divergence[0], "terminal arg0")
+
+    def test_schema_4_bundles_without_a_block_compare_through_their_events(self):
+        events = [
+            event(1, "hle", kind=1, arg0=REFUSED_NID, arg1=0, arg2=0, arg3=0, version=4,
+                  arguments=[0, 0, 0, 0], return_value=REFUSAL_RETURN),
+            event(2, "unsupported", kind=2, arg0=REFUSED_NID, arg1=REFUSAL_RETURN, arg2=0,
+                  arg3=0x08900100, version=4),
+        ]
+        baseline = make_bundle(events, terminal_reason="unsupported-nid", terminal_kind=2,
+                               terminal_arg0=REFUSED_NID, version=4)
+        self.assertIsNone(
+            flight_diff.diff_bundles(baseline, copy.deepcopy(baseline), "sequence"))
+        candidate = copy.deepcopy(baseline)
+        candidate["events"][1]["arg3"] = 0x08900200
+        divergence = flight_diff.diff_bundles(baseline, candidate, "sequence")
+        self.assertEqual(divergence[0], "sequence 2")
+
+    def _run_cli(self, left, right) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            left_path = temp_path / "left.json"
+            right_path = temp_path / "right.json"
+            left_path.write_text(json.dumps(left), encoding="utf-8")
+            right_path.write_text(json.dumps(right), encoding="utf-8")
+            return subprocess.run(
+                [sys.executable, str(ROOT / "tools" / "flight_diff.py"),
+                 str(left_path), str(right_path)],
+                capture_output=True, text=True, check=False,
+            )
+
+
+def v5_nan_origin(sequence, *, pc=0x08900010, domain=2, result=1, register=5, lane=2, vbl=1180):
+    """A schema 5 SR_NAN_TRAP origin: arg1 packs domain, result class and destination."""
+    packed = domain | (result << 8) | (register << 16)
+    return event(sequence, "fault", kind=30, arg0=pc, arg1=packed, arg2=lane, arg3=vbl,
+                 version=5)
+
+
+class NanOriginFlightTests(unittest.TestCase):
+    """Issue #320: an SR_NAN_TRAP origin is a fault-class event, and the first one localises.
+
+    The origin is recorded where the trap reports it, before any later value it corrupts, so
+    a first-divergence comparison names the origin rather than the draw that showed it.
+    """
+
+    def _clean_run(self):
+        events = [
+            v5_hle(1),
+            event(2, "ge", kind=25, arg0=0x08900000, arg1=0x08900018, arg2=6, arg3=6, version=5),
+            event(3, "ge", kind=25, arg0=0x08900000, arg1=0x08900018, arg2=6, arg3=6, version=5),
+        ]
+        return v5_bundle(events, reason="exit", arg0=0, sequence=3, fired=0,
+                         refusals=v5_refusals([]))
+
+    def _origin_run(self):
+        """The origin at sequence 2 and the draw it corrupts at sequence 3."""
+        events = [
+            v5_hle(1),
+            v5_nan_origin(2),
+            event(3, "ge", kind=25, arg0=0x08900000, arg1=0x08900018, arg2=6, arg3=2, version=5),
+        ]
+        return v5_bundle(events, reason="exit", arg0=0, sequence=3, fired=0,
+                         refusals=v5_refusals([]))
+
+    def test_nan_origin_is_schema_valid_and_decodes_its_operands(self):
+        vfpu = v5_nan_origin(2)
+        flight_diff.validate_bundle(v5_bundle([v5_hle(1), vfpu], reason="exit", arg0=0,
+                                              sequence=2, fired=0, refusals=v5_refusals([])))
+        identity = flight_diff._event_identity(vfpu)
+        self.assertIn("class=fault kind=nan-origin (30) sequence=2", identity)
+        self.assertIn("pc=0x08900010 domain=vfpu dst=v5 result=nan lane=2 vbl=1180", identity)
+        scalar = v5_nan_origin(2, pc=0x08900020, domain=1, result=3, register=3, lane=0)
+        self.assertIn("pc=0x08900020 domain=fpu dst=f3 result=-inf lane=0 vbl=1180",
+                      flight_diff._event_identity(scalar))
+
+    def test_first_nan_origin_is_localised_before_its_symptom(self):
+        baseline = self._clean_run()
+        candidate = self._origin_run()
+        flight_diff.validate_bundle(candidate)
+        divergence = flight_diff.diff_bundles(baseline, candidate, "sequence")
+        self.assertIsNotNone(divergence)
+        self.assertEqual(divergence[0], "sequence 2")
+        self.assertEqual(divergence[2]["kind"], 30)
+        result = self._run_cli(baseline, candidate)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("DIVERGENCE: sequence 2", result.stdout)
+        self.assertIn("candidate event: event index 1 class=fault kind=nan-origin (30) "
+                      "sequence=2 pc=0x08900010 domain=vfpu dst=v5 result=nan lane=2 vbl=1180",
+                      result.stdout)
+
+    def test_class_alignment_names_the_first_nan_origin_occurrence(self):
+        baseline, candidate = self._clean_run(), self._origin_run()
+        divergence = flight_diff.diff_bundles(baseline, candidate, "class")
+        self.assertIsNotNone(divergence)
+        self.assertEqual(divergence[0], "class fault occurrence 0")
+        self.assertEqual(divergence[2]["kind"], 30)
+        result = self._run_cli_aligned(baseline, candidate, "class")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("DIVERGENCE: class fault occurrence 0", result.stdout)
+        self.assertIn("pc=0x08900010 domain=vfpu dst=v5 result=nan lane=2 vbl=1180", result.stdout)
+
+    def test_nan_origin_outside_the_fault_class_is_malformed(self):
+        bundle = self._origin_run()
+        bundle["events"][1]["class"] = "ge"
+        with self.assertRaises(flight_diff.FlightDiffError):
+            flight_diff.validate_bundle(bundle)
+        # The schema rule runs first in validate_bundle; the validator's own rule is checked too.
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "belongs to the fault class"):
+            flight_diff._validate_nan_origin_events(bundle["events"])
+
+    def test_nan_origin_operands_are_range_checked(self):
+        cases = {
+            "unknown domain": dict(domain=3),
+            "unknown result class": dict(result=0),
+            "fpu register past f31": dict(domain=1, register=32, lane=0),
+            "fpu lane past its single result": dict(domain=1, register=3, lane=1),
+            "vfpu lane past the sixteen lanes of a matrix": dict(lane=16),
+            "vfpu register past v127": dict(register=128),
+        }
+        for label, fields in cases.items():
+            with self.subTest(case=label):
+                bundle = v5_bundle([v5_hle(1), v5_nan_origin(2, **fields)], reason="exit",
+                                   arg0=0, sequence=2, fired=0, refusals=v5_refusals([]))
+                with self.assertRaises(flight_diff.FlightDiffError):
+                    flight_diff.validate_bundle(bundle)
+
+    def test_nan_origin_packing_leaves_no_stray_bits(self):
+        bundle = v5_bundle([v5_hle(1), v5_nan_origin(2)], reason="exit", arg0=0, sequence=2,
+                           fired=0, refusals=v5_refusals([]))
+        bundle["events"][1]["arg1"] |= 1 << 24
+        with self.assertRaisesRegex(flight_diff.FlightDiffError, "above its packed"):
+            flight_diff.validate_bundle(bundle)
+
+    def _run_cli(self, left, right):
+        return self._run_cli_aligned(left, right, "sequence")
+
+    def _run_cli_aligned(self, left, right, align):
+        with tempfile.TemporaryDirectory() as temp:
+            temp_path = Path(temp)
+            left_path = temp_path / "left.json"
+            right_path = temp_path / "right.json"
+            left_path.write_text(json.dumps(left), encoding="utf-8")
+            right_path.write_text(json.dumps(right), encoding="utf-8")
+            return subprocess.run(
+                [sys.executable, str(ROOT / "tools" / "flight_diff.py"),
+                 str(left_path), str(right_path), "--align", align],
+                capture_output=True, text=True, check=False,
+            )
 
 
 if __name__ == "__main__":

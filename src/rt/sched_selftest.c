@@ -90,16 +90,35 @@ static unsigned g_test_handler_calls;
 static int g_test_handler_raise_ge;
 static uint32_t g_test_handler_wake_obj;
 static CpuState g_test_handler_seen;
+static uint32_t g_test_vblank_no, g_test_vblank_arg;
 uint32_t sr_vblank_handler(void) { return g_test_vblank_handler; }
-uint32_t sr_vblank_arg(void) { return 0; }
+uint32_t sr_vblank_arg(void) { return g_test_vblank_arg; }
+uint32_t sr_vblank_no(void) { return g_test_vblank_no; }
 int sr_vblank_dispatch_registered(void) { return 0; }
 static unsigned g_test_vblank_delivered;
 void sr_vblank_tick(void) { g_test_vblank_delivered++; }
-void sr_display_advance_vcount(uint32_t elapsed_periods) { (void)elapsed_periods; }
+/* Guest VCOUNT is advanced only through this seam (hle.c owns the real counter), so
+ * the harness counts it to observe what a display wait does to VCOUNT. */
+static uint64_t g_test_vcount;
+void sr_display_advance_vcount(uint32_t elapsed_periods) { g_test_vcount += elapsed_periods; }
 void sr_callback_unregister_owner(uint32_t thread_uid) { (void)thread_uid; }
 void sr_hle_release_thread_resources(uint32_t thread_uid) { (void)thread_uid; }
 
 int sr_perf_enabled;
+/* sched.c installs the dispatcher's stack probe at scheduler start; this harness links
+ * neither the dispatcher nor the interpreter, so it carries the variable itself. */
+int (*sr_dispatch_host_stack_remaining)(size_t *remaining_out) = NULL;
+int (*sr_dispatch_host_stack_top)(uintptr_t *top_out) = NULL;
+/* sched.c clears the direct-call host-stack window when it creates a guest stack (#855). */
+SrHostStackWindow sr_host_stack_window;
+/* sched.c refuses a live TAIL transfer at every yield and unwind (#855); without the
+ * interpreter this harness carries the slot, and a fault here is a harness defect. */
+SrTailTransfer sr_tail_transfer;
+void sr_tail_fatal(const char *what, uint32_t target) {
+    fprintf(stderr, "sched-selftest: unexpected tail-transfer fault %s target=0x%08x\n",
+            what, (unsigned)target);
+    abort();
+}
 uint64_t sr_perf_now_ns_impl(void) { return 0; }
 void sr_perf_guest_begin(void) {}
 void sr_perf_guest_end(void) {}
@@ -206,9 +225,15 @@ static void reset_sched(void) {
     s_vbl_next_us = 0;
     s_vbl_count = 0;
     s_vbl_last_us = 0;
+    s_vbl_edge_us = 0;
+    s_vbl_edge_valid = 0;
+    s_vbl_delivery_anchor_us = 0;
+    s_vbl_delivery_anchor_valid = 0;
+    s_vblank_resume_anchor_pending = 0;
     s_vblank_q_us = -1;
     s_last_vblank_ns = 0;
     g_test_vblank_delivered = 0;
+    g_test_vcount = 0;
     g_test_vblank_handler = 0;
     g_test_handler_calls = 0;
     g_test_handler_raise_ge = 0;
@@ -282,16 +307,12 @@ static int index_of_uid(uint32_t uid) {
 }
 
 /* Mirror of sched_run's resume block: run one slice of thread s_tcb[idx] until it
- * yields, blocks, or exits. */
+ * yields, blocks, or exits. The register load is the production switch-in itself. */
 static void run_one_slice(int idx) {
     TCB *t = &s_tcb[idx];
     s_cur = idx;
     t->state = TH_RUNNING;
-    memcpy(s_cpu, &t->saved, sizeof(CpuState));
-    if (t->k0_init) {
-        s_cpu->r[26] = t->k0_init;
-        t->saved.r[26] = t->k0_init;
-    }
+    sched_load_thread_context(t);
     atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
     if (!t->started) {
         t->started = 1;
@@ -1454,6 +1475,7 @@ static void test_callback_dispatch_one_preserves_context(void) {
     cpu.cop0[SR_CP0_STATUS] = 0x8001u;
     cpu.next_pc = 0x8002u; cpu.in_delay_slot = 0x8003u;
     cpu.flow_kind = 0x8004u; cpu.flow_target = 0x8005u;
+    cpu.llbit = 1u;   /* an ll..sc window open in the interrupted thread */
 
     CpuState pre = cpu;
     memset(&s_ctx_test_dispatch, 0, sizeof(s_ctx_test_dispatch));
@@ -1487,6 +1509,10 @@ static void test_callback_dispatch_one_preserves_context(void) {
     /* Once the callback returns, the interrupted thread's full context is restored --
      * including the return value ($v0), $s0, HI/LO, FPU and VFPU state the callback body
      * (intentionally, in this test) clobbered. */
+    /* The single intended difference: returning from the callback ends the
+     * interrupted thread's ll..sc window (MIPS32 LLbit is cleared by eret). */
+    expect(cpu.llbit == 0u, "callback return clears the interrupted thread's LLbit");
+    pre.llbit = 0u;
     expect(memcmp(&cpu, &pre, sizeof(CpuState)) == 0,
            "cpu context after sr_callback_dispatch_one matches the pre-call snapshot exactly");
 }
@@ -1844,8 +1870,12 @@ static void test_interrupt_frame_is_restored(void) {
     int running = mk(0x220u, TH_RUNNING, 20);
     s_cur = running;
     g_test_vblank_handler = 0x00001234u;
+    g_test_vblank_no = 7u;
+    g_test_vblank_arg = 0x0abcd000u;
     g_test_handler_raise_ge = 1;
     g_cpu_store.pc = 0x11112222u;
+    g_cpu_store.r[4] = 0xdead0004u;   /* the interrupted frame's own a0/a1 must not leak in */
+    g_cpu_store.r[5] = 0xdead0005u;
     g_cpu_store.r[16] = 0x33334444u;
     g_cpu_store.r[28] = 0x55556666u;
     g_cpu_store.r[29] = 0x77778888u;
@@ -1866,6 +1896,10 @@ static void test_interrupt_frame_is_restored(void) {
            "handler sees the preserved interrupted frame plus kernel entry state");
     expect(memcmp(&g_cpu_store, &interrupted, sizeof(interrupted)) == 0,
            "handler register mutations do not leak into the interrupted thread");
+    /* handler(no, arg): the PSP sub-interrupt handler signature (PSPSDK pspintrman.h). A
+     * retail handler reads its event-flag id from 4(a1); with the arg in a0 it set flag 0. */
+    expect(g_test_handler_seen.r[4] == 7u && g_test_handler_seen.r[5] == 0x0abcd000u,
+           "handler receives (sub-interrupt number, arg) in (a0, a1)");
     expect((sched_pending_interrupts() & SCHED_INTR_GE) != 0u,
            "a source raised by the handler remains pending for its own service path");
 
@@ -2181,11 +2215,15 @@ static void test_masked_window_keeps_the_enabled_backlog(void) {
            "a period that elapses under the mask raises the coalesced pending level");
     expect(s_pending_vblanks == 2u,
            "a period under the mask adds no episode of its own");
+    expect(!sched_display_is_vblank(),
+           "IsVblank keeps its prior delivery anchor while interrupts are masked");
 
     sched_resume_interrupts(token);
     expect(g_test_vblank_delivered == 3u,
            "resume delivers the enabled backlog plus the one coalesced masked episode");
     expect(s_pending_vblanks == 0u, "the batch is fully delivered at resume");
+    expect(sched_display_is_vblank(),
+           "the coalesced masked edge keeps its resume delivery anchor");
     s_host_ns_fn = NULL;
 }
 
@@ -2779,6 +2817,9 @@ static void test_display_wait_nid_split(void) {
     /* Inside the interval. */
     s_vbl_count = 1;
     s_vbl_last_us = 1000u;
+    s_vbl_edge_us = 1000u;
+    s_vbl_edge_valid = 1;
+    s_vbl_next_us = UINT64_MAX;
     s_vtime_us = 1000u;
     expect(sched_display_is_vblank(), "fixture is inside the vblank interval");
 
@@ -2805,6 +2846,9 @@ static void test_display_wait_nid_split(void) {
     reset_sched();
     s_vbl_count = 1;
     s_vbl_last_us = 1000u;
+    s_vbl_edge_us = 1000u;
+    s_vbl_edge_valid = 1;
+    s_vbl_next_us = UINT64_MAX;
     s_vtime_us = 1000u + SCHED_DISPLAY_VBLANK_WINDOW_US;
     expect(!sched_display_is_vblank(), "fixture has left the vblank interval");
     TCB *o = &s_tcb[mk(0x301u, TH_RUNNING, 32)];
@@ -2900,6 +2944,251 @@ static void test_display_wait_hands_over_only_while_blocked(void) {
     expect(s_tcb[ihi].state == TH_WAIT_OBJ, "the stronger thread blocked in the display wait");
     expect(pick_next() == ilo,
            "the weaker thread runs only because the display wait genuinely blocked");
+}
+
+/* G) A late display wait is owed none of the edges it slept through.
+ *
+ * Hardware (PSP-DISPLAY-002, probe cases `late-waitvblankstart-*` and
+ * `late-waitvblank-*`): after an un-yielded spin of 1.25, 1.75 or 2.5 periods past
+ * an edge, both NIDs blocked to the first edge strictly after the call, waited the
+ * remainder of the period in progress (12.49..12.53 ms after 1.25 periods, 8.31..
+ * 8.34 ms after 2.5), and advanced VCOUNT by exactly 1. The edges that passed during
+ * the spin count toward VCOUNT but are not handed to the caller.
+ *
+ * Timeline: the source runs at 60000/1001 Hz, so edge k after the origin is at
+ * floor(k * 1001000 / 60) us, the same schedule rational_vblanks_through() asserts.
+ * The origin edge is delivered at 0. A service point at 1000 us delivers nothing and
+ * stamps the last service. The thread then spins with no service point until the
+ * call, so the edges due before the call are only latched by it.
+ *
+ * MUTANT: remove scheduler_service_pending() from sched_vblank_block -- the owed edges
+ *   are latched but not delivered before the caller registers, so the service point
+ *   at the call time wakes the caller at once and the cells fail.
+ * MUTANT: remove the latch (vtime_refresh) from sched_vblank_block -- the caller
+ *   registers with nothing owed, the next service point wakes it early, and the cells
+ *   fail the VCOUNT check at the call and the release check. */
+static uint64_t dw_edge_us(uint64_t k) { return (k * 1001000ull) / 60ull; }
+
+static int g_dw_body_start_nid;   /* 1: sceDisplayWaitVblankStart shape, 0: sceDisplayWaitVblank */
+static int g_dw_body_ret;
+static int g_dw_body_vblank;
+static void dw_body_wait_either(CpuState *s) {
+    (void)s;
+    g_dw_body_calls++;
+    if (g_dw_body_start_nid) sched_wait_vblank_start();
+    else g_dw_body_ret = sched_wait_vblank();
+    g_dw_body_returned++;
+}
+
+static void dw_body_wait_start_then_check_vblank(CpuState *s) {
+    (void)s;
+    g_dw_body_calls++;
+    sched_wait_vblank_start();
+    g_dw_body_vblank = sched_display_is_vblank();
+    g_dw_body_returned++;
+}
+
+static void expect_late_cell(int cond, int start_nid, unsigned phase8, const char *what) {
+    char buf[256];
+    snprintf(buf, sizeof buf, "%s at %u/8 of a period: %s",
+             start_nid ? "sceDisplayWaitVblankStart" : "sceDisplayWaitVblank", phase8, what);
+    expect(cond, buf);
+}
+
+static void test_display_wait_late_owes_no_edges(void) {
+    static const unsigned phase8_cells[3] = { 10u, 14u, 20u };
+    for (int nid = 0; nid < 2; nid++) {
+        for (int c = 0; c < 3; c++) {
+            const unsigned phase8 = phase8_cells[c];
+            reset_sched();
+            begin_clock_fixture(1, 0);          /* paced: guest time follows host time */
+            g_dw_body_calls = g_dw_body_returned = 0;
+            g_dw_body_ret = -1;
+            g_dw_body_start_nid = nid;
+            g_test_body = dw_body_wait_either;
+
+            scheduler_progress_time();          /* the origin edge, delivered at 0 */
+            scheduler_service_pending();
+            expect_late_cell(s_vbl_count == 1u && s_vbl_next_us == dw_edge_us(1), nid, phase8,
+                             "the origin edge is delivered and the next edge is on the 60000/1001 Hz schedule");
+            set_host_us(1000u);                 /* a service point that delivers nothing */
+            scheduler_progress_time();
+            scheduler_service_pending();
+
+            uint32_t uid = sched_create_thread(0x3600u, 32, 0);
+            int idx = index_of_uid(uid);
+            expect_late_cell(idx >= 0, nid, phase8, "late display-wait fixture thread created");
+            sched_start_thread(uid, 0, 0);
+
+            /* The un-yielded spin: the call arrives phase8/8 of a period after the origin. */
+            const uint64_t call_us = ((uint64_t)phase8 * 1001000ull) / 480ull;
+            set_host_us(call_us);
+            uint64_t owed = 0;                  /* edges that passed before the call */
+            while (dw_edge_us(owed + 1u) <= call_us) owed++;
+            const uint64_t release_us = dw_edge_us(owed + 1u);
+
+            run_one_slice(idx);
+            expect_late_cell(g_dw_body_calls == 1 && g_dw_body_returned == 0, nid, phase8,
+                             "the late call does not return without an edge");
+            expect_late_cell(s_tcb[idx].state == TH_WAIT_OBJ && s_tcb[idx].wait_obj == VBLANK_WAIT_OBJ,
+                             nid, phase8, "the late call parks on the VBLANK object");
+            expect_late_cell(g_test_vcount == 1u + owed, nid, phase8,
+                             "VCOUNT already counts the edges that passed during the spin");
+
+            scheduler_progress_time();          /* the service point at the call time */
+            scheduler_service_pending();
+            expect_late_cell(s_tcb[idx].state == TH_WAIT_OBJ, nid, phase8,
+                             "the edges that passed during the spin do not release the caller");
+
+            set_host_us(release_us - 1u);
+            scheduler_progress_time();
+            scheduler_service_pending();
+            expect_late_cell(s_tcb[idx].state == TH_WAIT_OBJ, nid, phase8,
+                             "the caller stays blocked until the first edge after the call");
+
+            set_host_us(release_us);
+            scheduler_progress_time();
+            scheduler_service_pending();
+            expect_late_cell(s_tcb[idx].state == TH_READY, nid, phase8,
+                             "the first edge after the call releases the caller");
+            expect_late_cell(g_test_vcount == 2u + owed, nid, phase8,
+                             "VCOUNT advances by exactly 1 across the call, from the serviced value");
+
+            run_one_slice(idx);
+            expect_late_cell(g_dw_body_returned == 1 && (nid == 1 || g_dw_body_ret == 0), nid, phase8,
+                             "the released call returns, and sceDisplayWaitVblank reports 0 because it blocked");
+        }
+    }
+}
+
+/* Live display observations latch elapsed edges without delivering their handlers.
+ * GetVcount uses sched_vtime_refresh() directly; IsVblank uses the same refresh
+ * before comparing the scheduled edge with the measured 729-us window. */
+static void test_display_vcount_observation_latches_due_edge(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    scheduler_progress_time();
+    scheduler_service_pending();
+    expect(g_test_vcount == 1u && s_vbl_count == 1u,
+           "the origin edge is latched and delivered before the observation");
+
+    const uint64_t phase10_us = (10u * 1001000ull) / 480ull;
+    set_host_us(phase10_us);
+    sched_vtime_refresh();
+    expect(g_test_vcount == 2u,
+           "sceDisplayGetVcount observes the edge crossed during un-yielded work");
+    expect(s_pending_vblanks == 1u && s_vbl_count == 1u && g_test_vblank_delivered == 1u,
+           "a VCOUNT observation latches the edge without delivering its handler");
+}
+
+static void test_display_isvblank_uses_live_edge_time(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    scheduler_progress_time();
+    scheduler_service_pending();
+
+    const uint64_t phase10_us = (10u * 1001000ull) / 480ull;
+    set_host_us(phase10_us);
+    expect(!sched_display_is_vblank(),
+           "IsVblank is false at 10/8 of a period after the aligned edge");
+    expect(g_test_vcount == 2u && s_pending_vblanks == 1u && s_vbl_count == 1u,
+           "the late IsVblank read latches VCOUNT without delivering the edge");
+
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    scheduler_progress_time();
+    scheduler_service_pending();
+    set_host_us(dw_edge_us(1u) + 500u);
+    expect(sched_display_is_vblank(),
+           "IsVblank is true just after an un-serviced edge within the measured window");
+    expect(g_test_vcount == 2u && s_vbl_count == 1u,
+           "the in-window IsVblank read observes VCOUNT without running handlers");
+}
+
+static void test_display_wait_uses_live_window_before_blocking(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    scheduler_progress_time();
+    scheduler_service_pending();
+
+    TCB *t = &s_tcb[mk(0x341u, TH_RUNNING, 32)];
+    s_cur = (int)(t - s_tcb);
+    set_host_us(dw_edge_us(1u) + 500u);
+    expect(sched_wait_vblank() == 1,
+           "WaitVblank returns 1 when its live observation is inside the interval");
+    expect(t->state == TH_RUNNING && t->wait_obj == 0u,
+           "the true in-window WaitVblank result does not block");
+    expect(g_test_vcount == 2u && s_pending_vblanks == 1u && s_vbl_count == 1u,
+           "the WaitVblank fast return latches but does not deliver the edge");
+}
+
+static void test_display_wait_ignores_late_delivery_anchor(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    scheduler_progress_time();
+    scheduler_service_pending();
+    g_dw_body_calls = g_dw_body_returned = 0;
+    g_dw_body_ret = -1;
+    g_dw_body_start_nid = 0;
+    g_test_body = dw_body_wait_either;
+
+    uint32_t uid = sched_create_thread(0x3410u, 32, 0);
+    int idx = index_of_uid(uid);
+    expect(idx >= 0, "late WaitVblank fixture thread created");
+    sched_start_thread(uid, 0, 0);
+
+    const uint64_t phase10_us = (10u * 1001000ull) / 480ull;
+    set_host_us(phase10_us);
+    scheduler_progress_time();
+    scheduler_service_pending();
+    expect(s_vbl_last_us == phase10_us,
+           "the catch-up delivery retains its actual delivery stamp for diagnostics");
+    expect(!sched_display_is_vblank(),
+           "catch-up delivery remains outside the in-window interval at its late stamp");
+
+    run_one_slice(idx);
+    expect(g_dw_body_returned == 0 && s_tcb[idx].state == TH_WAIT_OBJ &&
+               s_tcb[idx].wait_obj == VBLANK_WAIT_OBJ,
+           "WaitVblank blocks instead of using the stale in-window delivery stamp");
+
+    set_host_us(dw_edge_us(2u));
+    scheduler_progress_time();
+    scheduler_service_pending();
+    expect(s_tcb[idx].state == TH_READY,
+           "the next scheduled edge wakes the caller that blocked late");
+    run_one_slice(idx);
+    expect(g_dw_body_returned == 1 && g_dw_body_ret == 0,
+           "the blocked WaitVblank resumes with return value 0");
+}
+
+static void test_display_waiter_keeps_delivery_anchor(void) {
+    reset_sched();
+    begin_clock_fixture(1, 0u);
+    scheduler_progress_time();
+    scheduler_service_pending();
+    g_dw_body_calls = g_dw_body_returned = 0;
+    g_dw_body_vblank = 0;
+    g_test_body = dw_body_wait_start_then_check_vblank;
+
+    uint32_t uid = sched_create_thread(0x3411u, 32, 0);
+    int idx = index_of_uid(uid);
+    expect(idx >= 0, "WaitVblankStart waiter fixture thread created");
+    sched_start_thread(uid, 0, 0);
+    run_one_slice(idx);
+    expect(s_tcb[idx].state == TH_WAIT_OBJ && s_tcb[idx].wait_obj == VBLANK_WAIT_OBJ,
+           "WaitVblankStart registers before the next edge");
+
+    const uint64_t wake_us = 20000u;
+    expect(wake_us - dw_edge_us(1u) > SCHED_DISPLAY_VBLANK_WINDOW_US,
+           "the simulated host wake latency exceeds the measured interval");
+    set_host_us(wake_us);
+    scheduler_progress_time();
+    scheduler_service_pending();
+    expect(s_tcb[idx].state == TH_READY,
+           "the late delivered edge wakes the existing waiter");
+    run_one_slice(idx);
+    expect(g_dw_body_returned == 1 && g_dw_body_vblank,
+           "a woken waiter still observes IsVblank at once despite host wake latency");
 }
 
 /* D) A VBLANK-only wait set is not a deadlock: the source is runtime-owned.
@@ -3319,6 +3608,172 @@ static void test_alarm_table_capacity_and_reset(void) {
            "reset drops every alarm");
 }
 
+/* ---- ll/sc link state across scheduler events ----------------------------------------
+ *
+ * The guest-side statements below are the shapes tools/codegen.py emits for
+ * `ll rt, 0(base)` and `sc rt, 0(base)` (pinned there by
+ * tools/test_codegen_madd_msub.py and run as real generated code against the
+ * interpreter by cpu-lle-selftest). What is under test here is the runtime: which
+ * scheduler events end an ll..sc window and which must not.
+ *
+ * Failing-before evidence: on the base tree there is no llbit, and with the field but
+ * without the switch-in clear in sched_load_thread_context(), thread A's stale sc in
+ * test_llsc_context_switch_breaks_the_window succeeds and the lock word ends at 1
+ * (thread B's update is lost) instead of 101. */
+
+#define LLSC_LOCK 0x08900000u
+
+static void guest_ll(CpuState *s, unsigned rt, uint32_t ea) {
+    s->r[rt] = MEM_R32(ea);
+    s->llbit = 1u;
+}
+
+static uint32_t guest_sc(CpuState *s, unsigned rt, uint32_t ea) {
+    uint32_t sc = s->llbit != 0u ? 1u : 0u;
+    if (sc) MEM_W32(ea, s->r[rt]);
+    s->r[rt] = sc;
+    return sc;
+}
+
+static uint32_t g_llsc_a_uid, g_llsc_b_uid;
+static int g_llsc_yield_in_window;   /* attempt number whose window contains a yield */
+static unsigned g_llsc_a_attempts;
+static uint32_t g_llsc_a_results[8];
+
+/* Thread A: an atomic increment as a retry loop, `L: ll; addiu 1; sc; beqz L`. */
+static void llsc_thread_a(CpuState *s) {
+    for (;;) {
+        unsigned attempt = ++g_llsc_a_attempts;
+        guest_ll(s, 8u, LLSC_LOCK);
+        s->r[8] += 1u;
+        if ((int)attempt == g_llsc_yield_in_window)
+            sr_yield(s);                     /* the timeslice expires inside the window */
+        uint32_t ok = guest_sc(s, 8u, LLSC_LOCK);
+        if (attempt <= 8u) g_llsc_a_results[attempt - 1u] = ok;
+        if (ok || attempt >= 8u) return;     /* 8 is a test bound, never reached */
+    }
+}
+
+/* Thread B: one uncontended atomic add of 100. */
+static void llsc_thread_b(CpuState *s) {
+    guest_ll(s, 9u, LLSC_LOCK);
+    s->r[9] += 100u;
+    (void)guest_sc(s, 9u, LLSC_LOCK);
+}
+
+static void llsc_body(CpuState *s) {
+    if (sched_current_uid() == g_llsc_a_uid) llsc_thread_a(s);
+    else if (sched_current_uid() == g_llsc_b_uid) llsc_thread_b(s);
+}
+
+static void llsc_reset(void) {
+    reset_sched();
+    disable_vblank_sources();   /* isolate the switch: no interrupt may clear the link */
+    g_llsc_a_attempts = 0;
+    memset(g_llsc_a_results, 0, sizeof(g_llsc_a_results));
+    MEM_W32(LLSC_LOCK, 0u);
+    g_test_body = llsc_body;
+}
+
+/* A context switch between ll and sc makes the sc fail, the loser's stale value never
+ * reaches memory, and the retry completes on its next pass. */
+static void test_llsc_context_switch_breaks_the_window(void) {
+    llsc_reset();
+    g_llsc_yield_in_window = 1;
+    g_llsc_a_uid = sched_create_thread(0x4000u, 32, 0);
+    g_llsc_b_uid = sched_create_thread(0x4100u, 32, 0);
+    int ia = index_of_uid(g_llsc_a_uid), ib = index_of_uid(g_llsc_b_uid);
+    sched_start_thread(g_llsc_a_uid, 0, 0);
+    sched_start_thread(g_llsc_b_uid, 0, 0);
+
+    run_one_slice(ia);                       /* A: ll, then yields inside its window */
+    expect(s_tcb[ia].state == TH_READY && g_llsc_a_attempts == 1u,
+           "thread A was switched out between its ll and sc");
+    expect(s_tcb[ia].saved.llbit == 1u,
+           "the switched-out thread's saved context still holds its own link");
+    run_one_slice(ib);                       /* B: a complete ll/sc while A is parked */
+    expect(MEM_R32(LLSC_LOCK) == 100u, "the other thread's ll/sc committed");
+    run_one_slice(ia);                       /* A resumes after the yield, at its sc */
+    expect(g_llsc_a_results[0] == 0u,
+           "an sc after a context switch inside the ll..sc window fails");
+    expect(g_llsc_a_attempts == 2u && g_llsc_a_results[1] == 1u,
+           "the retry loop completes on its next pass (forward progress)");
+    expect(MEM_R32(LLSC_LOCK) == 101u,
+           "no update is lost: both increments land (101), not A's stale 1");
+}
+
+/* Not clearing too often: a yield that switches nothing and delivers nothing is not an
+ * exception on the PSP, so the window survives it and the first sc succeeds. */
+static void test_llsc_yield_without_switch_keeps_the_window(void) {
+    llsc_reset();
+    g_llsc_yield_in_window = 1;
+    g_llsc_a_uid = sched_create_thread(0x4000u, 32, 0);
+    g_llsc_b_uid = 0xFFFFFFFFu;
+    int ia = index_of_uid(g_llsc_a_uid);
+    sched_start_thread(g_llsc_a_uid, 0, 0);
+    run_one_slice(ia);
+    expect(g_llsc_a_attempts == 1u && g_llsc_a_results[0] == 1u,
+           "a yield with no other runnable thread and no interrupt leaves the link set");
+    expect(MEM_R32(LLSC_LOCK) == 1u, "the uncontended increment committed once");
+}
+
+/* Interrupt delivery between ll and sc ends the window even without a thread switch:
+ * the handler runs on the interrupted register file and returns as from an exception. */
+static void test_llsc_interrupt_breaks_the_window(void) {
+    reset_sched();
+    s_pace_on = 0;
+    s_vbl_next_us = UINT64_MAX;
+    int running = mk(0x240u, TH_RUNNING, 20);
+    s_cur = running;
+    g_test_vblank_handler = 0x00001234u;
+    MEM_W32(LLSC_LOCK, 7u);
+
+    guest_ll(&g_cpu_store, 8u, LLSC_LOCK);
+    sched_raise_interrupt(SCHED_INTR_VBLANK);
+    sched_resume_interrupts(1u);             /* eligible: the handler runs here */
+    expect(g_test_handler_calls == 1u, "the VBLANK handler ran inside the window");
+    expect(g_cpu_store.llbit == 0u, "interrupt return clears the interrupted link");
+    g_cpu_store.r[8] = 99u;
+    expect(guest_sc(&g_cpu_store, 8u, LLSC_LOCK) == 0u && MEM_R32(LLSC_LOCK) == 7u,
+           "the sc after an interrupt fails and stores nothing");
+}
+
+/* The alarm handler is the other interrupt episode sched.c delivers itself. */
+static void test_llsc_alarm_breaks_the_window(void) {
+    reset_sched();
+    disable_vblank_sources();
+    int running = mk(0x241u, TH_RUNNING, 20);
+    s_cur = running;
+    guest_ll(&g_cpu_store, 8u, LLSC_LOCK);
+    int slot = 0;
+    memset(&s_alarms[slot], 0, sizeof(s_alarms[slot]));
+    s_alarms[slot].uid = 0x77u;
+    s_alarms[slot].handler = 0x00005678u;
+    s_alarms[slot].deadline = s_vtime_us;
+    s_alarm_live++;
+    scheduler_alarm_deliver(slot);
+    expect(g_cpu_store.llbit == 0u, "an alarm handler's return clears the interrupted link");
+    sched_alarm_reset();
+}
+
+/* A callback run as a nested call on the thread returns like an exception return. */
+static unsigned g_llsc_cb_calls;
+static void llsc_cb_dispatch(CpuState *s, uint32_t entry) {
+    (void)entry;
+    g_llsc_cb_calls++;
+    s->r[2] = 0u;
+}
+
+static void test_llsc_callback_breaks_the_window(void) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.llbit = 1u;
+    g_llsc_cb_calls = 0;
+    (void)sr_callback_dispatch_one(&cpu, 0x08900100u, 1, 0u, 0u, llsc_cb_dispatch);
+    expect(g_llsc_cb_calls == 1u, "the callback ran");
+    expect(cpu.llbit == 0u, "callback return clears the interrupted link");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--test-pace-setup") == 0) {
         s_pace_on = -1;
@@ -3380,6 +3835,11 @@ int main(int argc, char **argv) {
     test_libc_thread_relocation();
     test_coro_self_switch_and_park();
     test_callback_abi_packing();
+    test_llsc_context_switch_breaks_the_window();
+    test_llsc_yield_without_switch_keeps_the_window();
+    test_llsc_interrupt_breaks_the_window();
+    test_llsc_alarm_breaks_the_window();
+    test_llsc_callback_breaks_the_window();
     test_callback_dispatch_one_preserves_context();
     test_callbacks_behavioral();
     test_callback_renotifies_itself_dispatched_same_pass();
@@ -3411,6 +3871,12 @@ int main(int argc, char **argv) {
     /* PSP display-wait semantics (hardware-pinned; see the block above these). */
     test_waitvblankstart_always_blocks();
     test_display_wait_nid_split();
+    test_display_wait_late_owes_no_edges();
+    test_display_vcount_observation_latches_due_edge();
+    test_display_isvblank_uses_live_edge_time();
+    test_display_wait_uses_live_window_before_blocking();
+    test_display_wait_ignores_late_delivery_anchor();
+    test_display_waiter_keeps_delivery_anchor();
     test_display_wait_ignores_other_ready_threads();
     test_display_wait_hands_over_only_while_blocked();
     test_vblank_only_wait_is_not_deadlock();

@@ -181,41 +181,72 @@ header to an honest project-owned name is a further modification that must
 then satisfy OFL §3 (avoid 'Source') and Ume attribution simultaneously.
 Either direction needs counsel before any redistribution (§6).
 
-## 6. Route decision
+## 6. Project Japanese font route
 
-Among (1) redistribute PPSSPP payloads with notices, (2) generate our own
-PGFs from pinned OFL sources with a project-owned reproducible converter,
-(3) keep excluding and require user-supplied fonts:
+The opaque PGF route remains excluded. The project now builds its Japanese
+slot from a pinned OFL source with the project-owned converter
+(`tools/ttf2pgf.py`, `tools/pgf_writer.py`) and the public PGF reader
+(`src/rt/pgf_public.c`). The generated file is a project conversion, not a
+claim that it is an authentic firmware font.
 
-- **(1) is rejected.** Notices alone cannot cure the false Sony/Fontworks
-  designation, and honest renaming cannot be validated without the exact input
-  releases (both UNKNOWN, §5.1/§5.2). Redistributing opaque third-party
-  binaries whose inputs we cannot pin contradicts the project's
-  byte-provenance standard (cf. `src/rt/atrac3p/PROVENANCE.md`,
-  `assets/vfpu/PROVENANCE.json`).
-- **(2) is the target.** A project-owned, deterministic converter that builds
-  PGF payloads from pinned OFL/Ume inputs. Requirements: fixed field order and
-  no timestamps (byte-identical rebuilds); refusal of Sony/Fontworks
-  camouflage names and of the Adobe Reserved Font Name "Source" in the output
-  name; a manifest recording input SHA-256, codepoint coverage, output SHA-256
-  and the licence texts that must ship with the payload; CJK-scale coverage and
-  the metric targets discussed upstream. The converter's behaviour contract and
-  independence record are published as `docs/cleanroom/PGF_CONVERTER_SPEC.md`
-  (#313, implemented in `tools/pgf_writer.py` and `tools/ttf2pgf.py`) so that it
-  carries no emulator-derived code. This record adds no generated payload: the
-  pinned public input fixture lives under `fixtures/fonts/gudea/`, and generated
-  PGFs stay in test temporaries and `build/`.
-- **(3) is the interim.** Payloads stay excluded. The public source tree reads
-  user-supplied fonts through the project-authored reader
-  (`src/rt/pgf_public.c`, written from `docs/cleanroom/PGF_SPEC.md`, #349); the
-  lineage-sensitive reader stays excluded. A converter-produced
-  payload may only enter the tree after: pinned OFL inputs with SHA-256, OFL
-  §2 texts shipped alongside, an honest non-RFN name, qualified review, and a
-  path-specific provenance record.
+### 6.1 Source selection and coverage
 
-RULE (licence-text hygiene): OFL/Ume licence texts may be added under
-`THIRD_PARTY_LICENSES/` only when a corresponding payload is actually shipped
-in the public tree. Nothing is shipped today, so no text is added today.
+Sawarabi Gothic was evaluated first from Google Fonts commit
+[`7bfa8c0bdd1a33f4b34dd05aba830ad40742ef1e`](https://github.com/google/fonts/tree/7bfa8c0bdd1a33f4b34dd05aba830ad40742ef1e/ofl/sawarabigothic).
+It covers all 2,965 level-1 kanji but misses 80 of the 524 non-kanji code points
+in JIS X 0208 rows 1-8, including Greek and mathematical symbols. It therefore
+does not meet the required repertoire.
+
+The selected fallback is M PLUS 1p Regular, pinned from Google Fonts commit
+[`d714b17ce2379f06daf6295617f961df605dccb5`](https://github.com/google/fonts/tree/d714b17ce2379f06daf6295617f961df605dccb5/ofl/mplus1p):
+
+| Input | Upstream size / SHA-256 | Pinned local size / SHA-256 |
+| --- | --- | --- |
+| `MPLUS1p-Regular.ttf` | 1,758,688 / `2f294ad496432b1608f070d310e3aa2adcf1de4af429f4901df97ec4bd361ed1` | 1,758,688 / `2f294ad496432b1608f070d310e3aa2adcf1de4af429f4901df97ec4bd361ed1` |
+| `OFL.txt` | 4,389 / `da15da6b1496d4de18f97e2ad1b722ef8a1c121149c2c93b2cf7eac6ac27b35c` | 4,388 / `9606aafb46de3f65c701d2ce5f2377b224b1355d06ada6171951a957e4d48278` |
+
+The downloaded licence is SIL OFL 1.1 and its copyright notice is
+`Copyright 2016 The M+ Project Authors.` It declares no Reserved Font Name; the
+pin records an empty Reserved Font Names list. The upstream licence file has
+one trailing ASCII space at the end of line 21; the local copy removes that
+space without changing any licence wording. `PIN.json` records both the
+downloaded and local licence digests. The full licence text is kept beside the
+TTF and copied beside each generated PGF.
+
+The built-in `--jis-x-0208-japanese` repertoire combines Python's standard
+ASCII mapping for JIS X 0201 Roman U+0020-U+007E (95 code points), EUC-JP
+mapping for JIS X 0201 half-width katakana U+FF61-U+FF9F (63), and assigned
+JIS X 0208 cells in rows 1-8 (524 non-kanji code points) and rows 16-47
+(2,965 level-1 kanji). The set contains 3,647 unique Unicode points; its
+canonical point-list SHA-256 is
+`abc5302681a3c700179f29ac22a7c8082ed087a07b4cf8c3de4de5f73e7e0889`. The
+pinned input covers every code point in this set.
+
+### 6.2 Conversion and runtime naming
+
+`make project-japanese-font` and the runtime `compile` target convert the TTF
+at 12 ppem into a sparse PGF named `nkjpn.pgf`. The generated PGF name and
+style are `Nakagawa Open Japanese` and `Regular`; the source family name is
+not copied into PGF naming fields. The conversion manifest records the input,
+point-set and output digests plus the licence text. Generated files live under
+the build output and are not committed. Two independent Make builds produced
+identical outputs:
+
+| Output | Size | SHA-256 |
+| --- | ---: | --- |
+| `nkjpn.pgf` | 379,630 bytes | `49a3b3b4160f82410226edbe6061d770c484d0c9cea27a04b68ba9902099fab3` |
+| `nkjpn.json` | 6,841 bytes | `aa7ccb47da6ddf02ab54f164251ef021df9029cc424d4bcf47b9b05a93ba8123` |
+
+The measurement-backed flash0 table maps index 0 to the Japanese slot, and the
+device and registry resolve the user's imported font before the project file.
+The native HLE selftest covers index 0 with no Japanese import, project-file
+fallback, and registry header fields. The built PGF is also validated by the
+public reader; a sparse round-trip fixture includes ASCII `A` and half-width
+katakana U+FF76. No retail-title or hardware run was part of this source task.
+
+RULE (licence-text hygiene): the OFL text stays alongside the generated build
+payload. It is not added under `THIRD_PARTY_LICENSES/` unless a corresponding
+payload is admitted to the public source tree.
 
 ## 7. Residual unknowns (all marked; none block the chosen route)
 

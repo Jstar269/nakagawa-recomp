@@ -3,8 +3,9 @@
 
 """Tests for the trusted code-generation import-map compatibility path.
 
-The security/audit parser in :mod:`psp_import_table` remains strict about the
-full named sections.  ``tools/imports.py`` also has to consume the retail
+The strict audit parser in :mod:`psp_import_table` pairs stub slots through the
+same layout model, so AuditAnalyzerParityTests checks it against the layouts
+below.  ``tools/imports.py`` has to consume the retail
 layouts the PSP loader accepts: named NID sections with unreferenced words
 before or after the window-paired run, per-library stub sections, windows
 detached from the named sections, and section-less inputs whose SceModuleInfo
@@ -28,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import analyze
 from analyze import Elf
 import imports
+import psp_import_table
 from import_fixtures import (
     BASE_VADDR,
     DATA_FILE_OFF,
@@ -313,6 +315,166 @@ class StrippedModuleInfoTests(unittest.TestCase):
         elf = Elf(blob, base=0)
         self.assertEqual(elf.sec(".rodata.sceModuleInfo")["addr"], modinfo)
         self.assertEqual(imports.parse_imports(elf), expected)
+
+
+def _section_header_offset(blob: bytes, name: bytes) -> int:
+    """File offset of the section header named ``name`` in an ELF32 image."""
+    e_shoff = struct.unpack_from("<I", blob, 32)[0]
+    e_shnum, e_shstrndx = struct.unpack_from("<HH", blob, 48)
+    str_hdr = e_shoff + 40 * e_shstrndx
+    str_off, str_size = struct.unpack_from("<II", blob, str_hdr + 16)
+    names = blob[str_off:str_off + str_size]
+    for index in range(e_shnum):
+        header = e_shoff + 40 * index
+        start = struct.unpack_from("<I", blob, header)[0]
+        end = names.find(b"\0", start)
+        if names[start:end] == name:
+            return header
+    raise KeyError(name)
+
+
+class AuditAnalyzerParityTests(unittest.TestCase):
+    """The strict audit parser and the analyzer agree on every #773 layout.
+
+    Both parsers pair stub slots with NIDs through one layout model. A layout the
+    analyzer maps must be mapped identically by the audit (same stub map and the
+    same findings). A layout the analyzer refuses must be refused by the audit too,
+    with the same boundary code wherever the audit names one.
+    """
+
+    def _analyze(self, blob: bytes):
+        """Return ("accepted", stubs, findings) or ("refused", code or None)."""
+        try:
+            stubs, findings = imports._import_model(Elf(blob, base=0))
+        except imports.ImportTableError as exc:
+            return ("refused", exc.code)
+        except ValueError:
+            # Rejected by the ELF envelope before the import model runs.
+            return ("refused", None)
+        return ("accepted", stubs, findings)
+
+    def assertParity(self, blob: bytes, *, accepted: bool, label: str) -> None:
+        with self.subTest(label):
+            model = self._analyze(blob)
+            if model[0] == "refused":
+                self.assertFalse(accepted, f"analyzer refused a layout that must map: {model[1]}")
+                with self.assertRaises(psp_import_table.ImportTableError) as audit:
+                    psp_import_table.parse_import_table(blob)
+                audit_code = getattr(audit.exception, "code", None)
+                if model[1] is not None and audit_code is not None:
+                    self.assertEqual(audit_code, model[1])
+                return
+            self.assertTrue(accepted, "analyzer accepted a layout that must be refused")
+            _kind, stubs, findings = model
+            table = psp_import_table.parse_import_table(blob)
+            self.assertEqual({f.stub_addr: (f.library, f.nid) for f in table.funcs}, stubs)
+            self.assertEqual(table.findings, findings)
+
+    def test_accepted_layouts_map_identically(self) -> None:
+        nids = [0x11000001, 0x11000002, 0x11000003]
+        cases = {
+            "plain sectioned": build_import_layout_elf(PRIMARY),
+            "nid head, per-library stubs, reversed": build_import_layout_elf(
+                PRIMARY, nid_head_words=6, per_library_stub_sections=True,
+                reverse_primary_layout=True),
+            "nid head and tail": build_import_layout_elf(PRIMARY, nid_head_words=2, nid_tail_words=3),
+            "nid tail": build_import_layout_elf(PRIMARY, nid_tail_words=1),
+            "stub tail with a paired nid tail": build_import_layout_elf(
+                PRIMARY, stub_tail_slots=1, nid_tail_words=1),
+            "detached runs": build_import_layout_elf(PRIMARY, detached=DETACHED),
+            "detached runs with a gap": build_import_layout_elf(
+                PRIMARY, detached=DETACHED, detached_gap_slots=1),
+            "padded section table": build_import_layout_elf(PRIMARY, padding_sections=600),
+            "duplicate nid section header": build_import_layout_elf(
+                PRIMARY, duplicate_nid_section=True),
+        }
+        for label, (blob, expected) in cases.items():
+            self.assertParity(blob, accepted=True, label=label)
+            if label == "stub tail with a paired nid tail":
+                # The one extra stub slot pairs with the extra NID word, unclaimed.
+                expected = {**expected, max(expected) + 8: (imports.UNATTRIBUTED_LIBRARY, 0)}
+            self.assertEqual(self._analyze(blob)[1], expected, label)
+        self.assertParity(
+            build_interleaved_import_elf([("SynthAlpha", 0, 2), ("SynthBeta", 2, 1)], nids,
+                                         corrupt="nid_region_mismatch"),
+            accepted=True, label="interleaved window prefix with nid tail")
+        self.assertParity(build_interleaved_import_elf(INTERLEAVED_SHAPE, INTERLEAVED_NIDS),
+                          accepted=True, label="interleaved shape, sectioned")
+        self.assertParity(build_interleaved_import_elf(INTERLEAVED_SHAPE, INTERLEAVED_NIDS,
+                                                       sectionless=True),
+                          accepted=True, label="interleaved shape, sectionless")
+
+    def test_stripped_module_info_layouts_map_identically(self) -> None:
+        for label, kwargs in (
+            ("stripped gp zero", {}),
+            ("stripped gp set with decoy", {"gp": 0x8000, "decoy": True}),
+            ("stripped kernel bit", {"kernel_bit": True}),
+        ):
+            blob, expected, _modinfo = build_stripped_module_elf(PRIMARY, **kwargs)
+            self.assertParity(blob, accepted=True, label=label)
+            self.assertEqual(self._analyze(blob)[1], expected, label)
+
+    def test_refused_layouts_are_refused_by_both(self) -> None:
+        blob, _expected = build_import_layout_elf(PRIMARY, detached=DETACHED)
+        overlapping = bytearray(blob)
+        first = _entry_offset(blob, len(PRIMARY))
+        second = _entry_offset(blob, len(PRIMARY) + 1)
+        struct.pack_into("<I", overlapping, second + 16,
+                         struct.unpack_from("<I", overlapping, first + 16)[0] + 8)
+
+        half_inside = bytearray(blob)
+        struct.pack_into("<I", half_inside, _entry_offset(blob, 1) + 16,
+                         struct.unpack_from("<I", blob, _entry_offset(blob, len(PRIMARY)) + 16)[0])
+
+        stripped, _expected, _modinfo = build_stripped_module_elf(PRIMARY, gp=0x8000)
+        mixed = bytearray(stripped)
+        struct.pack_into("<I", mixed, _entry_offset(stripped, 2) + 12,
+                         struct.unpack_from("<I", stripped, _entry_offset(stripped, 0) + 12)[0])
+
+        cases = {
+            "stub head slots": build_import_layout_elf(PRIMARY, stub_head_slots=2)[0],
+            "stub tail slots": build_import_layout_elf(PRIMARY, stub_tail_slots=1)[0],
+            "overlapping detached runs": bytes(overlapping),
+            "window half inside the named sections": bytes(half_inside),
+            "no window in the named sections": build_import_layout_elf([], detached=DETACHED)[0],
+            "sectionless windows at mixed offsets": bytes(mixed),
+            "interleaved stub tail with nid tail": build_interleaved_import_elf(
+                INTERLEAVED_SHAPE, INTERLEAVED_NIDS, corrupt="nid_region_mismatch"),
+            "interleaved nid tail, sectionless variable window": build_interleaved_import_elf(
+                INTERLEAVED_SHAPE, INTERLEAVED_NIDS, sectionless=True,
+                corrupt="nid_region_mismatch"),
+        }
+        for label, case in cases.items():
+            self.assertParity(case, accepted=False, label=label)
+
+    def test_variable_imports_are_a_named_boundary_in_both(self) -> None:
+        # The interleaved builder emits a variable-only entry (numVars 1, six words)
+        # with a null variable-stub pointer; map that pointer to the module info.
+        blob = bytearray(build_interleaved_import_elf(
+            [("SynthAlpha", 0, 1), ("SynthVariables", 1, 0)], [0x11000001]))
+        struct.pack_into("<I", blob, _entry_offset(bytes(blob), 1) + 20, BASE_VADDR)
+        self.assertEqual(self._analyze(bytes(blob)),
+                         ("refused", "ANALYZER_VARIABLE_IMPORTS_UNSUPPORTED"))
+        self.assertParity(bytes(blob), accepted=False, label="variable imports")
+
+    def test_malformed_envelopes_are_refused_by_both(self) -> None:
+        blob, _expected = build_import_layout_elf(PRIMARY)
+        past_eof = bytearray(blob)
+        header = _section_header_offset(blob, b".rodata.sceNid")
+        struct.pack_into("<I", past_eof, header + 20, len(blob) + 0x100)
+        filesz_over_memsz = bytearray(blob)
+        struct.pack_into("<I", filesz_over_memsz, 52 + 20,
+                         struct.unpack_from("<I", blob, 52 + 16)[0] - 4)
+        self.assertParity(bytes(past_eof), accepted=False, label="section past end of file")
+        self.assertParity(bytes(filesz_over_memsz), accepted=False, label="PT_LOAD filesz above memsz")
+
+    def test_module_info_scan_fallback_is_analyzer_only(self) -> None:
+        # The analyzer scans for a consistent SceModuleInfo when p_paddr names no
+        # record; the audit does not mirror the scan and refuses such an input.
+        blob, expected, _modinfo = build_stripped_module_elf(PRIMARY, gp=0x8000, paddr=BASE_VADDR)
+        self.assertEqual(self._analyze(blob)[1], expected)
+        with self.assertRaisesRegex(psp_import_table.ImportTableError, "not inside any loaded file range"):
+            psp_import_table.parse_import_table(blob)
 
 
 if __name__ == "__main__":

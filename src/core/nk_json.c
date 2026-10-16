@@ -72,6 +72,101 @@ void nk_json_free(NkJsonNode *node) {
 }
 
 /* -----------------------------------------------------------------------------
+ * String escapes (shared by every JSON string reader in the tree)
+ * -------------------------------------------------------------------------- */
+
+static int json_hex_digit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static bool json_read_hex4(const char *s, size_t avail, uint32_t *out) {
+    if (avail < 4) return false;
+    uint32_t value = 0;
+    for (int i = 0; i < 4; i++) {
+        int digit = json_hex_digit(s[i]);
+        if (digit < 0) return false;
+        value = (value << 4) | (uint32_t)digit;
+    }
+    *out = value;
+    return true;
+}
+
+size_t nk_json_utf8_encode(uint32_t cp, char out[4]) {
+    if (cp <= 0x7F) {
+        out[0] = (char)cp;
+        return 1;
+    }
+    if (cp <= 0x7FF) {
+        out[0] = (char)(0xC0 | (cp >> 6));
+        out[1] = (char)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cp <= 0xFFFF) {
+        out[0] = (char)(0xE0 | (cp >> 12));
+        out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[2] = (char)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    out[0] = (char)(0xF0 | (cp >> 18));
+    out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+    out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+    out[3] = (char)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
+const char *nk_json_decode_escape(const char *src, size_t avail,
+                                  uint32_t *out_cp, size_t *out_len) {
+    if (!src || !out_cp || !out_len || avail < 1) return "truncated escape sequence";
+    uint32_t cp = 0;
+    size_t used = 1;
+    switch (src[0]) {
+    case '"':  cp = '"';  break;
+    case '\\': cp = '\\'; break;
+    case '/':  cp = '/';  break;
+    case 'b':  cp = '\b'; break;
+    case 'f':  cp = '\f'; break;
+    case 'n':  cp = '\n'; break;
+    case 'r':  cp = '\r'; break;
+    case 't':  cp = '\t'; break;
+    case 'u': {
+        uint32_t unit = 0;
+        if (!json_read_hex4(src + 1, avail - 1, &unit)) {
+            return "invalid \\u escape: expected four hex digits";
+        }
+        used = 5;
+        if (unit >= 0xDC00 && unit <= 0xDFFF) {
+            return "unpaired low surrogate in \\u escape";
+        }
+        if (unit >= 0xD800 && unit <= 0xDBFF) {
+            if (avail < 7 || src[5] != '\\' || src[6] != 'u') {
+                return "unpaired high surrogate in \\u escape";
+            }
+            uint32_t low = 0;
+            if (!json_read_hex4(src + 7, avail - 7, &low)) {
+                return "invalid \\u escape: expected four hex digits";
+            }
+            if (low < 0xDC00 || low > 0xDFFF) {
+                return "high surrogate not followed by a low surrogate";
+            }
+            cp = 0x10000 + (((unit - 0xD800) << 10) | (low - 0xDC00));
+            used = 11;
+        } else {
+            cp = unit;
+        }
+        break;
+    }
+    default:
+        return "invalid escape sequence";
+    }
+    *out_cp = cp;
+    *out_len = used;
+    return NULL;
+}
+
+/* -----------------------------------------------------------------------------
  * Parser State and Internals
  * -------------------------------------------------------------------------- */
 
@@ -154,95 +249,19 @@ static char *parse_json_string(JsonParser *p) {
                 free(buf);
                 return NULL;
             }
-            char esc = p->src[p->pos++];
-            if (esc == '"') APPEND_CHAR('"');
-            else if (esc == '\\') APPEND_CHAR('\\');
-            else if (esc == '/') APPEND_CHAR('/');
-            else if (esc == 'b') APPEND_CHAR('\b');
-            else if (esc == 'f') APPEND_CHAR('\f');
-            else if (esc == 'n') APPEND_CHAR('\n');
-            else if (esc == 'r') APPEND_CHAR('\r');
-            else if (esc == 't') APPEND_CHAR('\t');
-            else if (esc == 'u') {
-                if (p->pos + 4 > p->len) {
-                    set_error(p, "Incomplete unicode escape");
-                    free(buf);
-                    return NULL;
-                }
-                uint32_t cp = 0;
-                for (int h = 0; h < 4; h++) {
-                    char hc = p->src[p->pos++];
-                    cp <<= 4;
-                    if (hc >= '0' && hc <= '9') cp |= (uint32_t)(hc - '0');
-                    else if (hc >= 'a' && hc <= 'f') cp |= (uint32_t)(hc - 'a' + 10);
-                    else if (hc >= 'A' && hc <= 'F') cp |= (uint32_t)(hc - 'A' + 10);
-                    else {
-                        set_error(p, "Invalid hex in unicode escape");
-                        free(buf);
-                        return NULL;
-                    }
-                }
-                /* Handle UTF-16 surrogate pairs */
-                if (cp >= 0xD800 && cp <= 0xDBFF) {
-                    /* High surrogate: must be immediately followed by \uDC00..\uDFFF */
-                    if (p->pos + 6 <= p->len && p->src[p->pos] == '\\' && p->src[p->pos + 1] == 'u') {
-                        p->pos += 2;
-                        uint32_t low_cp = 0;
-                        for (int h = 0; h < 4; h++) {
-                            char hc = p->src[p->pos++];
-                            low_cp <<= 4;
-                            if (hc >= '0' && hc <= '9') low_cp |= (uint32_t)(hc - '0');
-                            else if (hc >= 'a' && hc <= 'f') low_cp |= (uint32_t)(hc - 'a' + 10);
-                            else if (hc >= 'A' && hc <= 'F') low_cp |= (uint32_t)(hc - 'A' + 10);
-                            else {
-                                set_error(p, "Invalid hex in unicode surrogate low escape");
-                                free(buf);
-                                return NULL;
-                            }
-                        }
-                        if (low_cp >= 0xDC00 && low_cp <= 0xDFFF) {
-                            cp = 0x10000 + (((cp - 0xD800) << 10) | (low_cp - 0xDC00));
-                        } else {
-                            set_error(p, "Invalid low surrogate in unicode surrogate pair");
-                            free(buf);
-                            return NULL;
-                        }
-                    } else {
-                        set_error(p, "Unpaired high surrogate in unicode escape");
-                        free(buf);
-                        return NULL;
-                    }
-                } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
-                    set_error(p, "Unpaired low surrogate in unicode escape");
-                    free(buf);
-                    return NULL;
-                }
-
-                /* Encode valid codepoint to UTF-8 */
-                if (cp <= 0x7F) {
-                    APPEND_CHAR((uint8_t)cp);
-                } else if (cp <= 0x7FF) {
-                    APPEND_CHAR((uint8_t)(0xC0 | (cp >> 6)));
-                    APPEND_CHAR((uint8_t)(0x80 | (cp & 0x3F)));
-                } else if (cp <= 0xFFFF) {
-                    APPEND_CHAR((uint8_t)(0xE0 | (cp >> 12)));
-                    APPEND_CHAR((uint8_t)(0x80 | ((cp >> 6) & 0x3F)));
-                    APPEND_CHAR((uint8_t)(0x80 | (cp & 0x3F)));
-                } else if (cp <= 0x10FFFF) {
-                    APPEND_CHAR((uint8_t)(0xF0 | (cp >> 18)));
-                    APPEND_CHAR((uint8_t)(0x80 | ((cp >> 12) & 0x3F)));
-                    APPEND_CHAR((uint8_t)(0x80 | ((cp >> 6) & 0x3F)));
-                    APPEND_CHAR((uint8_t)(0x80 | (cp & 0x3F)));
-                } else {
-                    set_error(p, "Unicode codepoint out of range");
-                    free(buf);
-                    return NULL;
-                }
-            } else {
-                set_error(p, "Invalid escape sequence");
+            uint32_t cp = 0;
+            size_t used = 0;
+            const char *escape_error = nk_json_decode_escape(
+                p->src + p->pos, p->len - p->pos, &cp, &used);
+            if (escape_error) {
+                set_error(p, escape_error);
                 free(buf);
                 return NULL;
             }
+            p->pos += used;
+            char encoded[4];
+            size_t encoded_len = nk_json_utf8_encode(cp, encoded);
+            for (size_t i = 0; i < encoded_len; i++) APPEND_CHAR(encoded[i]);
         } else {
             APPEND_CHAR(c);
         }

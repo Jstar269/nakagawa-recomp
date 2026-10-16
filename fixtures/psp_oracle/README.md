@@ -326,8 +326,10 @@ numbers show.
 `CASE=display-mask-duty` is the same question asked as a sustained duty cycle —
 repeated 33 ms or 66 ms masks separated by 2 ms servicing gaps across a 2 s
 window — where the three candidate semantics separate by a factor of about four
-in accumulated VCOUNT. It is built and warning-free but was not needed once the
-per-trial case came back unanimous, and no result from it is recorded.
+in accumulated VCOUNT. It was run on 2026-10-15 on commit `e45e667b` (firmware
+6.6.1): both records PASS, which is machinery only. The result is indexed in
+`docs/HARDWARE_ORACLE.md` and is not granted through `PSP-DISPLAY-001`, which cites
+`docs/ARCHITECTURE.md#clocks`.
 
 `CASE=display-ge-mask` asks whether the GE keeps executing while CPU interrupts
 are masked, and is deliberately stall-gated so that "the GE simply finished
@@ -378,14 +380,26 @@ out-of-order stub warnings (issue #400). `probe.c` mirrors the documented
   from main and `GetThreadCurrentPriority` from the owner itself), deciding
   whether PSP boosts the owner.
 - `CASE=mutex-interrupt-context` — registers a VBLANK sub-interrupt handler
-  that samples 20 firings; each firing first records
-  `sceKernelIsCpuIntrEnable()` (a trial counts only when it is 0, meaning the
-  handler ran with CPU interrupts disabled), then measures `LockMutex`/
-  `LockMutexCB`/`TryLockMutex` return precedence across bad UID, bad count,
-  valid-unlocked, and non-owner unlock cells. One header record and one record
-  per trial are emitted (`mutex-interrupt-context-t00`..`t19`). The kernel
-  query `sceKernelIsIntrContext()` is not used: it lives in the kernel-only
-  library InterruptManagerForKernel, which a user-mode probe cannot import.
+  that samples 20 firings. The header record carries the raw
+  `sceKernelRegisterSubIntrHandler` and `sceKernelEnableSubIntr` returns (context)
+  and the completed trial count. Each trial record is machinery-only: it reads
+  `status=PASS result=0x00000001` when the handler reached the end of its body, so
+  all six mutex cells were written and the trial was stored. `out0` is the raw
+  `sceKernelIsCpuIntrEnable()` return (context only). `out1`..`out6` are the raw
+  returns of `LockMutex` (bad UID, bad count, valid unlocked), `LockMutexCB`,
+  `TryLockMutex` and `UnlockMutex` (non-owner). Neither the probe nor the host
+  checker compares a returned value with an expected value; the runtime's tests do
+  that (the interrupt conformance matrix in `src/rt/intr_conformance.h` and the
+  interrupt-context mutex cells of `hle-thread-selftest`). Interrupt context
+  is established by construction: a trial exists only because the VBLANK
+  sub-interrupt dispatch ran `oracle_subintr_handler`. The kernel query
+  `sceKernelIsIntrContext()` is not used: it lives in the kernel-only library
+  InterruptManagerForKernel, which a user-mode probe cannot import.
+  The rule was corrected on 2026-10-15 from a value rule to this completion rule.
+  Archives recorded under the value rule (each trial FAIL with result 0) are refused
+  by the current checker. The corrected probe, built from `ec5dd563`, was re-run on a
+  PSP-3000 (6.61) on 2026-10-15. The run is acceptance-eligible, and all 20 trials
+  completed.
 
 All four emit `PSP-MUTEX-001` records. `status=PASS` means only that the
 machinery ran and every scalar was captured; it makes no claim that any host
@@ -440,7 +454,12 @@ package it. Use the user library that exports the same NIDs (for example
 `*_driver` archive into a probe. The gate can also be run by hand on a PRX:
 `python3 tools/psp_oracle/user_mode_imports.py build/nakagawa_psp_oracle.prx`.
 
-## Bounded follow-up probes (hardware NOT_RUN)
+## Bounded follow-up probes
+
+Their hardware status is in the
+[measured index](../../docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize):
+`ge-nan` and `audio-query` ran on a PSP-3000 on 2026-10-10 (`f6ccfb33`) and again on
+2026-10-15 (`f2d6c91a`).
 
 These probes write only scalar records to `host0:`. No `ms0:` output or private
 input is used. Their ordered result streams have strict completion parsers in
@@ -486,10 +505,12 @@ validation and K3/K4 remain `NOT_RUN` under #303.
 
 ## Pending PSP-3000 campaign
 
-The nine cases below are new synthetic probes. Their hardware expectations
-remain `NOT_RUN`; a complete parser only proves that the record stream is
+The cases below are synthetic probes. A case's hardware status is `NOT_RUN` until a run is cited; a complete parser only proves that the record stream is
 complete and well formed. It does not decide which PSP return values or
-ordering semantics are correct.
+ordering semantics are correct. `llsc-link`, `vfpu-compare` and `fpu-cc` were measured on a
+PSP-3000 on 2026-10-15 (build `e45e667b`); the
+[measured index](../../docs/HARDWARE_ORACLE.md#measured-to-date-index-exact-cells-only-do-not-generalize)
+publishes their words.
 
 | Case | Test id | Measurements |
 | --- | --- | --- |
@@ -499,9 +520,41 @@ ordering semantics are correct.
 | `ge-break-continue` | `PSP-GE-CONTROL-001` | Break without an active list, continue without a paused list, invalid break mode, list/draw sync statuses for paused work, the continue result with a bounded drain (`ge-continue-drain`, `TIMEOUT` with the last states if the GE does not go idle), a queue reset when needed (`ge-quiesce-after-continue`), cancelled work, and a final quiesce (`ge-quiesce-after-cancel`). |
 | `refer-status-size` | `PSP-KERNEL-STATUS-001` | Semaphore, event-flag, and mailbox status structures with size words 0, 8, 40, and full size; records the changed bytes and returned size word. |
 | `registry-readonly` | `PSP-REGISTRY-001` | Read-only registry/category enumeration under `/CONFIG`, key names/types/sizes, modeled setting values only, and unknown-category/key, small-buffer, and handle-exhaustion results (`registry-errors`; at most 256 opens, `out6` says whether an open failed first), then the forged-handle call last (`registry-bad-handle`). |
-| `umd-io` | `PSP-UMDIO-001` | Fixed lists of `sceIoOpen` (`PSP_O_RDONLY`, or `PSP_O_RDONLY` with the `0x000f0000` bits a title passes for `umd0:`) and `sceIoDopen` paths: `umd0:`, `umd1:`, `umd:`, `umd0:/`, `umd1:/`, `disc0:` with and without a path, and `msstor0p1:/` (`io-open-*`, `io-dopen-*`, each with its close result), with `sceUmdCheckMedium`/`sceUmdGetDriveStat` before and after (`umd-state-*`). |
-| `registry-font` | `PSP-REGISTRY-002` | Read-only walk of `/DATA/FONT` (with `PROPERTY/INFO<n>`) and `/SYSPROFILE/RESOLUTION`: whether the registry handle lists the root (`font-category-0000`), then every key's name, type, size, value and enumeration order (`font-category-*`, `font-key-*`), and `font-registry-done` with the record, open and refusal counts. |
+| `llsc-link` | `PSP-LLSC-001` | A plain `ll`/`sc` pair (control), a second `sc` after a successful `sc` with no new `ll`, and an `sc` to an address other than the one `ll` linked. Each record carries the `sc` result, the word `ll` loaded, both words after the cell, and the project's model words. Measured: every `sc` reported 1 and stored, matching the model. |
 | `kernel-misc` | `PSP-KERNEL-MISC-001` | Wide system-clock conversion, default controller mode, thread/global profiler returns, basic VTimer behavior, display calls, battery-icon status, and UMD-popup return values. |
+| `vfpu-compare` | `PSP-VFPU-CMP-001` | `vscmp.s`, `vsge.s`, and `vslt.s` on 15 operand pairs (less-than, equal, greater, signed zeros in both orders, quiet, signalling, and negative NaN on each side, infinities). Each record carries the observed word, the project's model word at build time, and both operands. Measured: `vsge.s`/`vslt.s` write 0.0 for a NaN; `vscmp.s` orders a NaN by sign and magnitude, which the model now does. |
+| `fpu-cc` | `PSP-FPU-CC-001` | COP1 condition codes 0..7: FCR31 condition-bit writability, the FCR31 word after an equal and an unequal `c.eq.s` with each code, and whether `bc1t`/`bc1f` with each code are taken under FCC0, no flag, and the code's own flag. A reserved encoding may end the launch with an exception; the last STEP line names the cell. Measured: no exception; only FCC0 exists, and every code writes and tests it. |
+| `vfpu-transcendental-corpus` | `PSP-VFPU-TRANSCENDENTAL-001` | Raw result words for vsin, vcos, vexp2, vlog2, vrsq, vrcp, vsqrt, vasin, vnrcp, vnsin, and vrexp2 over 63 deterministic input words per operation. The VASIN special table substitutes three in-domain words for its already measured edge inputs. Records use 8-word chunks (7 words in each final chunk): 88 data records plus one completion record; the parser checks format only. `MEASURED` on 2026-10-15 (`22b027f6`). |
+| `registry-font` | `PSP-REGISTRY-002` | Read-only walk of `/DATA/FONT` (with `PROPERTY/INFO<n>`) and `/SYSPROFILE/RESOLUTION`: whether the registry handle lists the root (`font-category-0000`), then every key's name, type, size, value and enumeration order (`font-category-*`, `font-key-*`), and `font-registry-done` with the record, open and refusal counts. |
+| `umd-io` | `PSP-UMDIO-001` | Fixed lists of `sceIoOpen` (`PSP_O_RDONLY`, or `PSP_O_RDONLY` with the `0x000f0000` bits a title passes for `umd0:`) and `sceIoDopen` paths: `umd0:`, `umd1:`, `umd:`, `umd0:/`, `umd1:/`, `disc0:` with and without a path, and `msstor0p1:/` (`io-open-*`, `io-dopen-*`, each with its close result), with `sceUmdCheckMedium`/`sceUmdGetDriveStat` before and after (`umd-state-*`). |
+| `hle-vtimer-unit` | `PSP-HLE-VTIMER-002` | One VTimer: start; a `sceKernelGetVTimerTime` and a system-clock reading either side of a bounded 20 ms delay; the VTimer base and Refer base field while running and after stop; stop; delete. Each 64-bit clock is recorded as its low word then its high word. |
+| `hle-vtimer-errors` | `PSP-HLE-VTIMER-003` | Start, stop, and `sceKernelGetVTimerTime` on a deleted UID, then a cleanup delete of that UID after its last use; a live timer created and deleted; up to 64 creates; out1 records whether a refusal occurred; every created timer deleted. The NULL option pointer of `sceKernelCreateVTimer` is the optional argument. |
+| `hle-kernel-pool-bounds` | `PSP-HLE-KERNEL-STATUS-002` | FPL creation with block size 0 and with a 0x7fffffff-byte block, each deleted when its create returned a pool; a refused create gives a PASS delete cell with out0 0 and no delete call; VPL allocation: up to 64 allocations; out1 records whether a refusal occurred; every block freed and the VPL deleted. The NULL option pointers of the pool creates are the optional argument. |
+| `hle-power-float-v0` | `PSP-HLE-POWER-002` | Raw `$v0` and `$f0` bits of `scePowerGetPllClockFrequencyFloat`, `scePowerGetCpuClockFrequencyFloat`, and `scePowerGetBusClockFrequencyFloat`, one call each, through a short assembly wrapper. |
+| `hle-null-out-pointers` | `PSP-HLE-NULL-OUT-001` | Retired and never to be scheduled. The captured run stopped at `sceKernelReferSystemStatus(NULL)` and required a power cycle. The kernel pointer check does not reject address 0, so the call writes through NULL and faults; the VTimer getters also write through their output pointers. No game can rely on these results. |
+| `hle-audio-src` | `PSP-HLE-AUDIO-SRC-001` | No-reservation release/output, a 1024-sample/44100-Hz/stereo reservation, second reserve, one silent output block, release after drain and release again; six invalid shapes with immediate release on unexpected success; Output2/SRC reservations in both orders with cleanup. One launch, 18 result records, `MEASURED` on 2026-10-15 (`7fc1641e`); the public NID corpus has no SRC rest-sample query. |
+| `hle-timer-order` | `PSP-HLE-TIMER-ORDER-001` | Same-delay A/B alarms, longer-then-shorter alarms, a nominally equal VTimer/alarm pair, and SetAlarm(0); each callback stores one shared sequence number and system-time low/high words. Waits are bounded and all alarms are canceled; the VTimer is stopped and deleted. Ordering only, no absolute-time claim; one launch, `MEASURED` on 2026-10-15 (`22b027f6`). |
+
+The seven `hle-*` rows are single-launch probes built from `probe_hle_measure.c`, and they are
+not in the campaign queue. Five cases ran on a PSP-3000 on 2026-10-15 (build `b5d6fc5b`):
+`hle-vtimer-unit`, `hle-vtimer-errors` and `hle-power-float-v0` were measured, and the measured
+index publishes their words; `hle-kernel-pool-bounds` was captured only, and its revised
+form has not run; `hle-null-out-pointers` did not complete and is retired, never to be scheduled. Cases `hle-audio-src`
+(from `7fc1641e`, after a first run from `22b027f6` that was captured only) and `hle-timer-order`
+(from `22b027f6`) ran on 2026-10-15 and were measured, as was the `vfpu-transcendental-corpus`
+launch from `22b027f6`. The `hle-audio-src` stream is bounded at
+49 progress/result lines (18 result records); `hle-timer-order` is bounded at 39 lines
+(18 result records); the earlier five launches write at most 29 lines (STEP, TEST, META,
+the `-done` record and COMPLETE). At three host0 operations per line plus the six-operation
+round trip, the 49-line launch fits the default 30 s timeout only if each host0 operation
+averages under about 0.2 s (for the 29-line `hle-vtimer-unit` launch, under about 0.3 s;
+that launch was the binding one among the first five). No host0 operation cost has been
+measured, so measure it in the first session and raise `--timeout` for these cases if it
+is higher (the 2026-10-15 session used a 240 s case timeout). The audio case makes two silent
+blocking SRC calls, at most one 1024-sample stereo block each. Timer waits are bounded by
+250 ms elapsed-time deadlines. The VFPU corpus has no host I/O during its instruction span
+and records 89 result records. `hle-null-out-pointers` passes NULL as a mandatory out pointer.
+Risk high: a NULL mandatory out-pointer may fault in kernel mode; schedule last in a session, after every other case. On 2026-10-15 the stream stopped at the first NULL call's step and the console needed a power cycle, so plan one after this case.
 
 The registry case opens the registry and every category in read mode. It never
 calls a set, create, remove, or flush API. It records values only for the
@@ -570,7 +623,7 @@ for the tests in `tools/test_psp_oracle.py`.
 
 The host campaign plan requires one staged PRX for each queued case. It launches
 one PRX per boot and issues a PSPLink soft reset between completed cases. The
-queue starts with `transport-write`, then runs the nine new cases in the table
+queue starts with `transport-write`, then runs the new cases in the table
 order, then every remaining README `NOT_RUN` probe: `smoke`,
 `thread-exit-delete`, `teardown-test`, `io-matrix`, `display-mask-duty`,
 `display-wait-late`, `display-wait-priority`, `display-vblank-window`,

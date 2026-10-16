@@ -205,35 +205,38 @@ static void test_clut(void) {
     SrGeTexParams sm = params(), ms = params();
     uint32_t idx, raw;
     int bad = 0;
-    uint32_t entries[16];
+    uint32_t entries[64];
     SrGeClut clut;
     SrGeRgba8 c;
     unsigned i;
     ms.clut_order = SR_GE_CLUT_MASK_THEN_SHIFT;
 
     /* B3: the two orders disagree on raw 0xAB, shift 4, mask 0x0F */
-    sr_ge_clut_index(&sm, 0xABu, 4, 0x0Fu, &idx);
+    sr_ge_clut_index(&sm, 0xABu, 4, 0x0Fu, 0, &idx);
     CHECK(idx == 0x0Au, "shift-then-mask -> %#x", idx);
-    sr_ge_clut_index(&ms, 0xABu, 4, 0x0Fu, &idx);
+    sr_ge_clut_index(&ms, 0xABu, 4, 0x0Fu, 0, &idx);
     CHECK(idx == 0x00u, "mask-then-shift -> %#x", idx);
-    sr_ge_clut_index(&ms, 0xABu, 4, 0xF0u, &idx);
+    sr_ge_clut_index(&ms, 0xABu, 4, 0xF0u, 0, &idx);
     CHECK(idx == 0x0Au, "mask-then-shift with a high mask -> %#x", idx);
     /* boundaries: identity, full shift, empty mask, every 8-bit raw */
     for (raw = 0; raw < 256; ++raw) {
         uint32_t a, bb;
-        sr_ge_clut_index(&sm, raw, 0, 0xFFu, &a);
-        sr_ge_clut_index(&ms, raw, 0, 0xFFu, &bb);
+        sr_ge_clut_index(&sm, raw, 0, 0xFFu, 0, &a);
+        sr_ge_clut_index(&ms, raw, 0, 0xFFu, 0, &bb);
         if (a != raw || bb != raw) {
             ++bad;
         }
     }
     CHECK(bad == 0, "shift 0 / mask 0xFF must be the identity under both orders");
-    sr_ge_clut_index(&sm, 0x80000000u, 31, 1u, &idx);
+    sr_ge_clut_index(&sm, 0x80000000u, 31, 1u, 0, &idx);
     CHECK(idx == 1u, "shift 31");
-    sr_ge_clut_index(&sm, 0xFFFFFFFFu, 3, 0u, &idx);
+    sr_ge_clut_index(&sm, 0xFFFFFFFFu, 3, 0u, 0, &idx);
     CHECK(idx == 0u, "empty mask");
     idx = 99;
-    CHECK(sr_ge_clut_index(&sm, 1, 32, 1, &idx) == SR_GE_TEX_FLAG_INVALID && idx == 0, "shift 32 rejected, index 0");
+    CHECK(sr_ge_clut_index(&sm, 1, 32, 1, 0, &idx) == SR_GE_TEX_FLAG_INVALID && idx == 0, "shift 32 rejected, index 0");
+    idx = 99;
+    CHECK(sr_ge_clut_index(&sm, 1, 0, 0xFFu, 0x100u, &idx) == SR_GE_TEX_FLAG_INVALID && idx == 0,
+          "CSA outside its 8-bit SDK argument field fails closed");
 
     for (i = 0; i < 16; ++i) {
         entries[i] = (i << 12) | (i << 8) | (i << 4) | i; /* 4444 grey ramp */
@@ -243,6 +246,7 @@ static void test_clut(void) {
     clut.format = SR_GE_TEX_4444;
     clut.shift = 0;
     clut.mask = 0xFFu;
+    clut.csa = 0;
     CHECK(sr_ge_clut_lookup(&sm, &clut, 7, &c) == 0 && rgba_eq(c, 119, 119, 119, 119), "entry 7");
     CHECK(sr_ge_clut_lookup(&sm, &clut, 16, &c) == SR_GE_TEX_FLAG_INVALID && rgba_eq(c, 0, 0, 0, 0),
           "index past the CLUT fails closed");
@@ -258,6 +262,44 @@ static void test_clut(void) {
     CHECK(sr_ge_clut_lookup(&ms, &clut, 0xA3u, &c) == 0 && c.r == 0, "lookup mask-then-shift -> entry 0");
     clut.format = SR_GE_TEX_INDEX8;
     CHECK(sr_ge_clut_lookup(&sm, &clut, 1, &c) == SR_GE_TEX_FLAG_INVALID, "CLUT entries must be direct colour");
+
+    /* PSPSDK documents csa as an ORed bank offset after shift and mask.
+       These synthetic entries demonstrate the documented index shape only;
+       the PSP result remains HARDWARE_UNKNOWN. */
+    for (i = 0; i < 64; ++i) {
+        entries[i] = 0xFF000000u | i;
+    }
+    clut.count = 64;
+    clut.format = SR_GE_TEX_8888;
+    clut.shift = 4;
+    clut.mask = 0x0Fu;
+    clut.csa = 2;
+    CHECK(sr_ge_clut_index(&sm, 0xABu, 4, 0x0Fu, 2, &idx) == 0 && idx == 0x2Au,
+          "shift-mask then CSA offset -> %#x", idx);
+    CHECK(sr_ge_clut_lookup(&sm, &clut, 0xABu, &c) == 0 && c.r == 42 && c.a == 255,
+          "shift-mask lookup selects banked entry 0x2A");
+    CHECK(sr_ge_clut_index(&ms, 0xABu, 4, 0x0Fu, 2, &idx) == 0 && idx == 0x20u,
+          "candidate mask-shift order still applies CSA -> %#x", idx);
+    CHECK(sr_ge_clut_lookup(&ms, &clut, 0xABu, &c) == 0 && c.r == 32,
+          "candidate mask-shift lookup selects banked entry 0x20");
+    clut.mask = 0xF0u;
+    CHECK(sr_ge_clut_lookup(&ms, &clut, 0xABu, &c) == 0 && c.r == 42,
+          "candidate mask-shift with high mask plus CSA selects 0x2A");
+    clut.csa = 0xFFu;
+    CHECK(sr_ge_clut_lookup(&sm, &clut, 0xABu, &c) == SR_GE_TEX_FLAG_INVALID && rgba_eq(c, 0, 0, 0, 0),
+          "banked index beyond available CLUT fails closed");
+    /* Out-of-range synthetic CSA/palette cases (#703): a CSA offset that moves an in-range
+       raw index past the loaded palette, and an extreme uint32_t index with a CSA offset. */
+    clut.shift = 0;
+    clut.csa = 4; /* (4 << 4) = 64 offset */
+    clut.mask = 0x3Fu;
+    clut.count = 64;
+    CHECK(sr_ge_clut_lookup(&sm, &clut, 0x10u, &c) == SR_GE_TEX_FLAG_INVALID && rgba_eq(c, 0, 0, 0, 0),
+          "CSA offset moving an in-range index (0x10 | 0x40) past the palette fails closed");
+    clut.csa = 0x0Fu;
+    clut.mask = 0xFFFFFFFFu;
+    CHECK(sr_ge_clut_lookup(&sm, &clut, 0xFFFFFFFFu, &c) == SR_GE_TEX_FLAG_INVALID && rgba_eq(c, 0, 0, 0, 0),
+          "extreme 32-bit index with CSA offset beyond palette table fails closed");
 }
 
 static void test_address(void) {
@@ -427,6 +469,7 @@ static void test_textures(void) {
     clut.format = SR_GE_TEX_4444;
     clut.shift = 0;
     clut.mask = 0xFFu;
+    clut.csa = 0;
     memset(&tex, 0, sizeof tex);
     tex.data = idx4;
     tex.size = sizeof idx4;
@@ -545,6 +588,7 @@ static void test_textures_2d(void) {
     clut.entries = entries;
     clut.count = 16;
     clut.format = SR_GE_TEX_4444;
+    clut.csa = 0;
     /* 16-bit indices: raw 0x1234 */
     clut.shift = 8;
     clut.mask = 0x0Fu;

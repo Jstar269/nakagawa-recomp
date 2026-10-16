@@ -339,7 +339,15 @@ class InterleavedImportTests(unittest.TestCase):
         self.assertEqual(a.libraries, b.libraries)
 
     def test_nid_region_mismatch_fails_closed(self) -> None:
-        for sectionless in (False, True):
+        # The NID section outlives the stub section by one word, and this shape
+        # leaves 15 stub slots after the windows unclaimed. Those slots have no
+        # NID, so the sectioned input is refused. Without sections the extra slot
+        # is a variable-only window whose variable-stub table is null.
+        cases = (
+            (False, "ANALYZER_IMPORT_REGIONS_MISMATCH", "stub slots after the import windows"),
+            (True, None, "variable-stub table"),
+        )
+        for sectionless, code, fragment in cases:
             with self.subTest(sectionless=sectionless):
                 blob = build_interleaved_import_elf(
                     INTERLEAVED_SHAPE, INTERLEAVED_NIDS,
@@ -347,7 +355,9 @@ class InterleavedImportTests(unittest.TestCase):
                 )
                 with self.assertRaises(ImportTableError) as ctx:
                     parse_import_table(blob)
-                self.assertIn("does not match NID region size", str(ctx.exception))
+                self.assertIn(fragment, str(ctx.exception))
+                if code is not None:
+                    self.assertEqual(ctx.exception.code, code)
 
     def test_audit_report_surfaces_structural_findings(self) -> None:
         table = parse_import_table(build_interleaved_import_elf(INTERLEAVED_SHAPE, INTERLEAVED_NIDS))

@@ -22,6 +22,7 @@ if str(TOOLS) not in sys.path:
 
 import library_sweep  # noqa: E402
 import nk_cli  # noqa: E402
+from nk_core.iso_inspect import PBP_BOUNDARY_CODES  # noqa: E402
 from test_iso_parity import build_psp_container, create_test_iso_with_executables  # noqa: E402
 
 
@@ -91,6 +92,14 @@ class LibrarySweepTests(unittest.TestCase):
             "poll_seconds": 1,
             "max_wait_seconds": 0,
         }
+
+    def test_identify_refusals_are_source_backed_sweep_blocker_codes(self) -> None:
+        # A PlayStation Store package is refused at identify by name. The sweep
+        # only records blocker codes its public vocabulary accepts, so every
+        # identify code from the emitter's registry must be in that vocabulary
+        # or the row is rejected.
+        self.assertTrue(PBP_BOUNDARY_CODES)
+        self.assertEqual(set(PBP_BOUNDARY_CODES) - library_sweep._PUBLIC_BLOCKER_CODES, set())
 
     def test_interrupted_run_resumes_only_unrecorded_titles(self) -> None:
         first = _write_iso(self.iso_dir, "one.iso", "UCUS99991", "Resume Sentinel One")

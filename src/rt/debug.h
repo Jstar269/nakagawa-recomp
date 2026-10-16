@@ -25,6 +25,7 @@
 #define PSP_RECOMP_RT_DEBUG_H
 
 #include <stdint.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -77,44 +78,44 @@ static inline uint32_t sr_debug_init(void) {
 
 static inline void dbg_mem(uint32_t addr, uint32_t val, int write, uint32_t pc) {
     if (SR_DBG(SR_DBG_MEM)) {
-        fprintf(stderr, "MEM_%s: addr=0x%08x val=0x%08x pc=0x%08x\n",
+        fprintf(stderr, "MEM_%s: addr=0x%08" PRIx32 " val=0x%08" PRIx32 " pc=0x%08" PRIx32 "\n",
                 write ? "W" : "R", addr, val, pc);
     }
 }
 
 static inline void dbg_hle(uint32_t nid, const char *name, uint32_t pc) {
     if (SR_DBG(SR_DBG_HLE)) {
-        fprintf(stderr, "HLE: nid=0x%08x(%s) pc=0x%08x\n", nid, name ? name : "?", pc);
+        fprintf(stderr, "HLE: nid=0x%08" PRIx32 "(%s) pc=0x%08" PRIx32 "\n", nid, name ? name : "?", pc);
     }
 }
 
 static inline void dbg_sched(const char *event, uint32_t uid, uint32_t detail) {
     if (SR_DBG(SR_DBG_SCHED)) {
-        fprintf(stderr, "SCHED: %s uid=0x%x detail=0x%x\n", event, uid, detail);
+        fprintf(stderr, "SCHED: %s uid=0x%" PRIx32 " detail=0x%" PRIx32 "\n", event, uid, detail);
     }
 }
 
 static inline void dbg_ge(const char *event, uint32_t param) {
     if (SR_DBG(SR_DBG_GE)) {
-        fprintf(stderr, "GE: %s param=0x%08x\n", event, param);
+        fprintf(stderr, "GE: %s param=0x%08" PRIx32 "\n", event, param);
     }
 }
 
 static inline void dbg_input(uint32_t buttons) {
     if (SR_DBG(SR_DBG_INPUT)) {
-        fprintf(stderr, "INPUT: buttons=0x%08x\n", buttons);
+        fprintf(stderr, "INPUT: buttons=0x%08" PRIx32 "\n", buttons);
     }
 }
 
 static inline void dbg_fs(const char *op, const char *path, uint32_t result) {
     if (SR_DBG(SR_DBG_FS)) {
-        fprintf(stderr, "FS: %s(%s) -> 0x%08x\n", op, path ? path : "?", result);
+        fprintf(stderr, "FS: %s(%s) -> 0x%08" PRIx32 "\n", op, path ? path : "?", result);
     }
 }
 
 static inline void dbg_video(const char *event, uint32_t param) {
     if (SR_DBG(SR_DBG_VIDEO)) {
-        fprintf(stderr, "VIDEO: %s param=0x%08x\n", event, param);
+        fprintf(stderr, "VIDEO: %s param=0x%08" PRIx32 "\n", event, param);
     }
 }
 
@@ -184,7 +185,7 @@ static inline int sr_check_mem_watch(uint32_t addr, uint32_t val, int write, uin
             ? val == watch->value
             : addr >= watch->start && addr < watch->end;
         if (matched) {
-            fprintf(stderr, "%s[%s]: %s addr=0x%08x val=0x%08x pc=0x%08x\n",
+            fprintf(stderr, "%s[%s]: %s addr=0x%08" PRIx32 " val=0x%08" PRIx32 " pc=0x%08" PRIx32 "\n",
                     watch->match_value ? "MEM_VALUE_WATCH" : "MEM_WATCH",
                     g_sr_mem_watches[i].label,
                     write ? "WRITE" : "READ",

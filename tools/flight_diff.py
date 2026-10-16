@@ -45,7 +45,18 @@ EVENT_KIND_NAMES = {
     27: "ge-finish-command",
     28: "present-set-framebuf",
     29: "present-frame",
+    30: "nan-origin",
 }
+
+# SR_FLIGHT_KIND_NAN_ORIGIN (issue #320): arg1 packs domain (bits 0-7), result class
+# (bits 8-15) and destination register (bits 16-23); arg0 is the guest pc, arg2 the lane,
+# arg3 the VBLANK count. The limits are the register file and vector lane count per domain.
+NAN_ORIGIN_KIND = 30
+NAN_ORIGIN_CLASS = "fault"
+NAN_DOMAIN_NAMES = {1: "fpu", 2: "vfpu"}
+NAN_DOMAIN_REGISTERS = {1: ("f", 32), 2: ("v", 128)}
+NAN_DOMAIN_LANES = {1: 1, 2: 16}
+NAN_RESULT_NAMES = {1: "nan", 2: "+inf", 3: "-inf"}
 
 # Verdict tokens of the comparison contract. MATCH is printed only when the two
 # bundles are comparable and every compared field agrees; the full contract is
@@ -222,12 +233,81 @@ def validate_bundle(bundle: Any, schema: dict[str, Any] | None = None) -> None:
     enabled = set(recorder["enabled_classes"])
     if any(event["class"] not in enabled for event in events):
         _fail("$.events", "event class is not enabled")
+    _validate_nan_origin_events(events)
     if bundle["terminal"]["sequence"] and bundle["terminal"]["sequence"] not in sequences:
         _fail("$.terminal", "terminal sequence is not retained")
-    if recorder["triggers"]["fired"] and bundle["terminal"]["reason"] == "exit":
-        _fail("$.terminal", "a triggered bundle cannot have an exit terminal reason")
-    if not recorder["triggers"]["fired"] and bundle["terminal"]["reason"] != "exit":
-        _fail("$.terminal", "an untriggered bundle must terminate at exit")
+    fired = recorder["triggers"]["fired"]
+    reason = bundle["terminal"]["reason"]
+    if version >= 5:
+        _validate_schema5_terminal(fired, reason)
+        _validate_refusals(bundle["refusals"])
+    else:
+        if fired and reason == "exit":
+            _fail("$.terminal", "a triggered bundle cannot have an exit terminal reason")
+        if not fired and reason != "exit":
+            _fail("$.terminal", "an untriggered bundle must terminate at exit")
+
+
+def _nan_origin_operands(event: dict[str, Any]) -> tuple[int, int, int]:
+    """(domain, result, destination register) packed into a nan-origin event's arg1."""
+    packed = event["arg1"]
+    return packed & 0xFF, (packed >> 8) & 0xFF, (packed >> 16) & 0xFF
+
+
+def _validate_nan_origin_events(events: list[dict[str, Any]]) -> None:
+    """A nan-origin event is an SR_NAN_TRAP origin; its operands must fit the packing."""
+    for index, event in enumerate(events):
+        if event["kind"] != NAN_ORIGIN_KIND:
+            continue
+        path = f"$.events[{index}]"
+        if event["class"] != NAN_ORIGIN_CLASS:
+            _fail(path, "a nan-origin event belongs to the fault class")
+        if event["arg1"] >> 24:
+            _fail(path, "nan-origin arg1 has bits above its packed domain, result and register")
+        domain, result, register = _nan_origin_operands(event)
+        if domain not in NAN_DOMAIN_NAMES:
+            _fail(path, "nan-origin domain must be fpu (1) or vfpu (2)")
+        if result not in NAN_RESULT_NAMES:
+            _fail(path, "nan-origin result must be nan (1), +inf (2) or -inf (3)")
+        if register >= NAN_DOMAIN_REGISTERS[domain][1]:
+            _fail(path, "nan-origin destination register is out of range for its domain")
+        if event["arg2"] >= NAN_DOMAIN_LANES[domain]:
+            _fail(path, "nan-origin lane is out of range for its domain")
+
+
+# A schema 5 terminal is what ended the run. Only a fatal, an unknown NID with no handler, or a
+# watchdog hang fires a trigger; a clean exit, a vblank budget stop, or a record still running
+# (a provisional write) does not. A named refusal never ends the record at all.
+SCHEMA5_FIRED_REASONS = frozenset({"fatal", "unsupported-nid", "hang"})
+SCHEMA5_UNFIRED_REASONS = frozenset({"exit", "budget", "running"})
+
+
+def _validate_schema5_terminal(fired: int, reason: str) -> None:
+    if fired:
+        if reason == "budget":
+            _fail("$.terminal", "a budget stop ends without a fired trigger")
+        if reason not in SCHEMA5_FIRED_REASONS:
+            _fail("$.terminal", "a fired trigger must end in a fatal, unsupported-nid or hang terminal")
+        return
+    if reason == "hang":
+        _fail("$.terminal", "a watchdog hang is a fired trigger")
+    if reason not in SCHEMA5_UNFIRED_REASONS:
+        _fail("$.terminal", "an untriggered bundle must terminate at exit, budget or running")
+
+
+def _validate_refusals(refusals: dict[str, Any]) -> None:
+    nids = refusals["nids"]
+    if refusals["count"] == 0:
+        if refusals["first_nid"] is not None or refusals["first_pc"] is not None:
+            _fail("$.refusals", "a bundle with no refusals cannot name a first refused NID")
+    elif refusals["first_nid"] is None or refusals["first_pc"] is None:
+        _fail("$.refusals", "a first refused NID and pc must be recorded when refusals are counted")
+    if nids and nids[0]["nid"] != refusals["first_nid"]:
+        _fail("$.refusals", "the first listed NID must be the first refused NID")
+    if sum(entry["count"] for entry in nids) + refusals["nids_unlisted"] != refusals["count"]:
+        _fail("$.refusals", "refusal counts must account for every refusal (listed plus unlisted)")
+    if len({entry["nid"] for entry in nids}) != len(nids):
+        _fail("$.refusals", "each refused NID is listed once")
 
 
 def load_bundle(path: Path) -> dict[str, Any]:
@@ -248,10 +328,10 @@ def _first_sequence_divergence(
 ) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None] | None:
     left = {event["sequence"]: event for event in baseline["events"]}
     right = {event["sequence"]: event for event in candidate["events"]}
-    for sequence in sorted(set(left) | set(right)):
-        first = left.get(sequence)
-        second = right.get(sequence)
-        if first is None or second is None or not _event_equal(first, second):
+    for sequence in sorted(set(left) & set(right)):
+        first = left[sequence]
+        second = right[sequence]
+        if not _event_equal(first, second):
             return f"sequence {sequence}", first, second
     return None
 
@@ -259,6 +339,10 @@ def _first_sequence_divergence(
 def _first_class_divergence(
     baseline: dict[str, Any], candidate: dict[str, Any]
 ) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None] | None:
+    max_common_sequence = min(
+        max((event["sequence"] for event in baseline["events"]), default=0),
+        max((event["sequence"] for event in candidate["events"]), default=0),
+    )
     candidates: list[tuple[int, str, dict[str, Any] | None, dict[str, Any] | None]] = []
     for event_class in CLASS_ORDER:
         left = [event for event in baseline["events"] if event["class"] == event_class]
@@ -267,7 +351,8 @@ def _first_class_divergence(
             if first is None or second is None or not _event_equal(first, second):
                 sequences = [event["sequence"] for event in (first, second) if event is not None]
                 order = min(sequences, default=0)
-                candidates.append((order, f"class {event_class} occurrence {occurrence}", first, second))
+                if order <= max_common_sequence:
+                    candidates.append((order, f"class {event_class} occurrence {occurrence}", first, second))
                 break
     if not candidates:
         return None
@@ -279,13 +364,29 @@ def _format_event(event: dict[str, Any] | None) -> str:
     return "<absent>" if event is None else json.dumps(event, sort_keys=True, separators=(",", ":"))
 
 
+# Event divergences are labelled "sequence N" or "class C occurrence N". The terminal and
+# refusals labels name a field of a block, and their values are blocks rather than events.
+_EVENT_LABEL_PREFIXES = ("sequence ", "class ")
+
+
+def _nan_origin_detail(event: dict[str, Any]) -> str:
+    """The decoded origin of a nan-origin event: where it ran, what it produced, which lane."""
+    if event["kind"] != NAN_ORIGIN_KIND or event["class"] != NAN_ORIGIN_CLASS:
+        return ""
+    domain, result, register = _nan_origin_operands(event)
+    prefix, _ = NAN_DOMAIN_REGISTERS.get(domain, ("?", 0))
+    return (f" pc=0x{event['arg0']:08x} domain={NAN_DOMAIN_NAMES.get(domain, 'unknown')} "
+            f"dst={prefix}{register} result={NAN_RESULT_NAMES.get(result, 'unknown')} "
+            f"lane={event['arg2']} vbl={event['arg3']}")
+
+
 def _event_identity(event: dict[str, Any] | None) -> str:
     if event is None:
         return "<absent>"
     kind = event["kind"]
     name = EVENT_KIND_NAMES.get(kind, "unknown-kind")
     return f"event index {event['sequence'] - 1} class={event['class']} kind={name} ({kind}) " \
-           f"sequence={event['sequence']}"
+           f"sequence={event['sequence']}" + _nan_origin_detail(event)
 
 
 def _event_field_differences(
@@ -357,6 +458,32 @@ def _terminal_divergence(
     return None
 
 
+# The schema 5 refusals fields that are compared, in order. nids_unlisted is implied: the
+# validator pins count to the sum of the nids counts plus nids_unlisted, so equal count and
+# nids force it equal. first_sequence is compared because the validator does not tie it to
+# the events, so the block alone can carry a difference.
+_REFUSALS_FIELDS = ("count", "first_nid", "first_pc", "first_sequence", "nids")
+
+
+def _refusals_divergence(
+    baseline: dict[str, Any], candidate: dict[str, Any]
+) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None] | None:
+    """First differing refusals field; a schema 5 block is evidence like the terminal.
+
+    Schema 1 to 4 bundles carry no block: their named refusals are the kind-2 events and
+    the frozen terminal, which the earlier checks already compare. Comparability pins equal
+    schema versions, so either both bundles carry the block or neither does.
+    """
+    if "refusals" not in baseline or "refusals" not in candidate:
+        return None
+    left = baseline["refusals"]
+    right = candidate["refusals"]
+    for field in _REFUSALS_FIELDS:
+        if left[field] != right[field]:
+            return f"refusals.{field}", left, right
+    return None
+
+
 def diff_bundles(
     baseline: dict[str, Any], candidate: dict[str, Any], align: str
 ) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None] | None:
@@ -378,8 +505,11 @@ def diff_bundles(
        on both sides the retained window is the complete execution regardless
        of each limit. The CLI reports identities on stdout.
     4. Events are compared first (sequence or class alignment), then the
-       terminal reason/sequence/kind/arg0. Any difference is DIVERGENCE
-       (exit 1); only full agreement prints MATCH (exit 0).
+       terminal reason/sequence/kind/arg0, then, when both bundles carry a
+       schema 5 ``refusals`` block, its count, first_nid, first_pc,
+       first_sequence and nids (nids_unlisted follows from count and nids).
+       Any difference is DIVERGENCE (exit 1); only full agreement prints
+       MATCH (exit 0).
     """
     validate_bundle(baseline)
     validate_bundle(candidate)
@@ -391,7 +521,9 @@ def diff_bundles(
     else:
         divergence = _first_class_divergence(baseline, candidate)
     if divergence is None:
-        return _terminal_divergence(baseline, candidate)
+        divergence = _terminal_divergence(baseline, candidate)
+    if divergence is None:
+        divergence = _refusals_divergence(baseline, candidate)
     return divergence
 
 
@@ -443,7 +575,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_MATCH
     label, first, second = divergence
     print(f"{DIVERGENCE}: {label}")
-    if first is not None or second is not None:
+    if label.startswith(_EVENT_LABEL_PREFIXES):
         print(f"  baseline event: {_event_identity(first)}")
         print(f"  candidate event: {_event_identity(second)}")
         differences = _event_field_differences(first, second)

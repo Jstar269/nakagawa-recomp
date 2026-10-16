@@ -20,6 +20,8 @@ typedef enum SrGuestInterpResult {
     SR_GUEST_INTERP_MEMORY_FAULT      = -5,
     SR_GUEST_INTERP_MISALIGNED_DATA   = -6,
     SR_GUEST_INTERP_FLOW_FATAL        = -7,
+    SR_GUEST_INTERP_HOST_STACK_EXHAUSTED = -8,
+    SR_GUEST_INTERP_HOST_STACK_BOUNDS_UNAVAILABLE = -9,
 } SrGuestInterpResult;
 
 typedef struct SrGuestInterpFault {
@@ -38,8 +40,9 @@ typedef struct SrGuestInterpCallBoundary {
     uint32_t resume_pc;
 } SrGuestInterpCallBoundary;
 
-/* Execute from entry until control reaches a registered AOT destination or a
- * fail-closed boundary. There is deliberately no instruction-count escape hatch:
+/* Execute from entry until an unlinked transfer reaches a registered AOT destination
+ * or a fail-closed boundary. A linked transfer into a registered body is a CALL: the
+ * body runs as a nested native frame and interpretation resumes at the link address. There is deliberately no instruction-count escape hatch:
  * a guest loop is guest behavior, not permission to fabricate completion.
  *
  * IMPLEMENTED INSTRUCTION SET
@@ -53,7 +56,10 @@ typedef struct SrGuestInterpCallBoundary {
  *
  *   ALU        sll srl sra addu subu and or xor slt sltu / addiu ori lui
  *   HI/LO      mult multu mfhi mflo
- *   memory     lb lbu lh lhu lw / sb sh sw / lwc1 swc1
+ *   memory     lb lbu lh lhu lw / sb sh sw / lwl lwr swl swr / lwc1 swc1
+ *   atomic     ll sc (CpuState.llbit: ll sets it; sc stores and writes 1 only
+ *              while it is set, else writes 0; same width-4 alignment and span
+ *              checks as lw/sw, run before the link is consulted)
  *   control    beq bne j jal jr jalr
  *   scalar FPU mfc1 mtc1 add.s mul.s cvt.w.s   (via the src/rt/fp_convert.h
  *              helpers the generated code also calls, so guest FCR31 selects

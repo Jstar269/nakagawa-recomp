@@ -4,13 +4,13 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen
+import scratch_dir
 
 
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
@@ -63,7 +63,7 @@ static void sr_unimplemented(uint32_t pc, const char *reason) {{ (void)pc; (void
 static void generated(CpuState *s) {{ {line} s->r[0] = 0xdeadbeefu; }}
 int main(void) {{ CpuState s = {{0}}; generated(&s); return unsupported == 1 && s.r[0] == 0u ? 0 : 1; }}
 '''
-        with tempfile.TemporaryDirectory(prefix="vfpu_census_fallback_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="vfpu_census_fallback_") as tmp:
             root = Path(tmp)
             source_path = root / "fallback.c"
             exe_path = root / ("fallback.exe" if Path(CC).suffix.lower() == ".exe" else "fallback")
@@ -99,6 +99,19 @@ int main(void) {{ CpuState s = {{0}}; generated(&s); return unsupported == 1 && 
         effect,_,_=codegen.vfpu_effect(0x4000,word)
         self.assertIn("sr_vfpu_cos(_d[0])",effect)
         self.assertRegex(effect,r"vfpuCtrl\[2\]&~0x[0-9a-f]+u")
+
+    def test_vrexp2_is_exp2_of_the_negated_operand_at_every_width(self):
+        # PSP-VFPU-TRANSCENDENTAL-001: a PSP-3000 returned exp2(-x) for vrexp2.s (1.0 for
+        # zero, 2.0 for -1.0). Optype 28 of the VV2 group is that instruction, not a negated
+        # exp2; vexp2 (optype 20) stays the plain exp2.
+        for size in (1, 2, 3, 4):
+            lo, hi = (size - 1) & 1, (size - 1) >> 1
+            for optype, want in ((28, "sr_vfpu_exp2(-_s[_i])"), (20, "sr_vfpu_exp2(_s[_i])")):
+                word = ((0x34 << 26) | (optype << 16) | (0 << 8) | 0x40 | (lo << 7) | (hi << 15))
+                with self.subTest(size=size, optype=optype):
+                    effect, _, _ = codegen.vfpu_effect(0x4200, word)
+                    self.assertIn(want, effect)
+                    self.assertNotIn("-sr_vfpu_exp2(", effect)
 
     def test_vrot_overlap_ignores_inactive_lanes(self):
         # A scalar source register 0 must not match a zero-filled inactive

@@ -53,11 +53,11 @@ DATA_SEGMENT_OFFSET = 0x1000
 # Guest scratch the cells load/store through. It lives in the .bss extent so the
 # fixture never ships initialized data that a cell then merely reads back.
 SCRATCH = BASE + DATA_SEGMENT_OFFSET + 0x40
-SCRATCH_SIZE = 0x40
+SCRATCH_SIZE = 0x100
 # Guest stack for the cells that must preserve $ra across a call. It sits above
 # the loaded image inside the flat arena; the harness seeds and compares the
 # whole observed window below, so both lanes start from identical bytes.
-STACK = BASE + DATA_SEGMENT_OFFSET + 0x100
+STACK = BASE + DATA_SEGMENT_OFFSET + 0x180
 WINDOW_LO = BASE + DATA_SEGMENT_OFFSET
 WINDOW_HI = BASE + DATA_SEGMENT_OFFSET + 0x200
 
@@ -114,6 +114,10 @@ def _ccond(ft: int, fs: int, condition: int) -> int:
     return _fp(0x10, ft, fs, 0, 0x30 | (condition & 0xF))
 
 
+def _ccond_cc(ft: int, fs: int, condition: int, cc: int) -> int:
+    return _fp(0x10, ft, fs, (cc & 7) << 2, 0x30 | (condition & 0xF))
+
+
 def _cfc1(rt: int) -> int:
     return _fp(0x02, rt, 31, 0, 0)
 
@@ -126,10 +130,40 @@ def _bc1(tf: int, offset_words: int) -> int:
     return (0x11 << 26) | (8 << 21) | ((tf & 1) << 16) | (offset_words & 0xFFFF)
 
 
+def _bc1_cc(tf: int, cc: int, offset_words: int) -> int:
+    return (
+        (0x11 << 26) | (8 << 21) | ((cc & 7) << 18)
+        | ((tf & 1) << 16) | (offset_words & 0xFFFF)
+    )
+
+
+def _bc1_likely(tf: int, cc: int, offset_words: int) -> int:
+    return _bc1_cc(tf, cc, offset_words) | (1 << 17)
+
+
+def _ext(rs: int, rt: int, pos: int, size: int) -> int:
+    return (0x1F << 26) | (rs << 21) | (rt << 16) | ((size - 1) << 11) | (pos << 6)
+
+
+def _ins(rs: int, rt: int, pos: int, size: int) -> int:
+    return (
+        (0x1F << 26) | (rs << 21) | (rt << 16)
+        | ((pos + size - 1) << 11) | (pos << 6) | 0x04
+    )
+
+
+def _special3_sign_extend(rt: int, rd: int, sub: int) -> int:
+    return (0x1F << 26) | (rt << 16) | (rd << 11) | (sub << 6) | 0x20
+
+
+def _regimm(rs: int, sub: int, offset_words: int) -> int:
+    return (0x01 << 26) | (rs << 21) | (sub << 16) | (offset_words & 0xFFFF)
+
+
 # Register numbers used by the cells.
 ZERO, AT, V0, V1, A0, A1 = 0, 1, 2, 3, 4, 5
 T0, T1, T2, T3, T4, T5, T6, T7 = 8, 9, 10, 11, 12, 13, 14, 15
-S0, S1, S2, S3 = 16, 17, 18, 19
+S0, S1, S2, S3, S4, S5, S6, S7 = 16, 17, 18, 19, 20, 21, 22, 23
 T8, T9 = 24, 25
 SP, RA = 29, 31
 
@@ -229,6 +263,44 @@ def _cell_ldst() -> list[int]:
     ]
 
 
+def _cell_unaligned_merge() -> list[int]:
+    """Little-endian lwl/lwr/swl/swr merges at every byte alignment.
+
+    The eight loads start from the same poisoned register value and read from
+    two distinct known words.  Each store writes one distinct prefilled word,
+    so the harness can check every alignment independently in both lanes.
+    """
+    words = [
+        _i(0x0F, ZERO, T1, 0xA1B2),        # lui   t1, 0xa1b2
+        _i(0x0D, T1, T1, 0xC3D4),          # ori   t1, t1, 0xc3d4
+        _i(0x0F, ZERO, T0, 0x1122),        # lui   t0, 0x1122
+        _i(0x0D, T0, T0, 0x3344),          # ori   t0, t0, 0x3344
+        _i(0x2B, A0, T0, 0),               # sw    t0, 0(a0)
+        _i(0x0F, ZERO, T0, 0x5566),        # lui   t0, 0x5566
+        _i(0x0D, T0, T0, 0x7788),          # ori   t0, t0, 0x7788
+        _i(0x2B, A0, T0, 4),               # sw    t0, 4(a0)
+        _i(0x0F, ZERO, T0, 0x1122),        # lui   t0, 0x1122
+        _i(0x0D, T0, T0, 0x3344),          # ori   t0, t0, 0x3344
+    ]
+    words.extend(_i(0x2B, A0, T0, 8 + 4 * i) for i in range(8))
+
+    # Keep each merged result live in a distinct register for the expected-value
+    # oracle.  LWL covers offsets 0..3 in the first word; LWR covers 0..3 in
+    # the second word.
+    for rt, offset in zip((T2, T3, T4, T5), range(4), strict=True):
+        words.append(_r(T1, ZERO, rt, 0, 0x21))
+        words.append(_i(0x22, A0, rt, offset))  # lwl
+    for rt, offset in zip((T6, T7, T8, T9), range(4, 8), strict=True):
+        words.append(_r(T1, ZERO, rt, 0, 0x21))
+        words.append(_i(0x26, A0, rt, offset))  # lwr
+
+    # Distinct aligned words preserve the result for each store alignment.
+    words.extend(_i(0x2A, A0, T1, 8 + 4 * i + i) for i in range(4))   # swl
+    words.extend(_i(0x2E, A0, T1, 24 + 4 * i + i) for i in range(4))  # swr
+    words.extend((JR_RA, NOP))
+    return words
+
+
 def _cell_branch() -> list[int]:
     """Conditional branch ownership of its delay slot.
 
@@ -259,6 +331,149 @@ def _cell_branch() -> list[int]:
     return words
 
 
+def _cell_branch_likely() -> list[int]:
+    """Taken likely branches run their real slot; not-taken likely branches annul it.
+
+    Each of the nine compiler forms runs once false and once true. False slots
+    contain an `ori` into a distinct register; true slots store a marker, except
+    `bc1tl`, whose taken slot adds two floats. The not-taken path increments
+    `$v0`, while every branch target increments `$v1`, making both outcomes
+    independently visible in both execution tiers.
+    """
+    def compare_setup(equal: bool) -> list[int]:
+        return [
+            _i(0x0F, ZERO, T0, 0x3F80),
+            _i(0x0F, ZERO, T1, 0x3F80 if equal else 0x4000),
+            _fp(0x04, T0, 0, 0, 0),                 # mtc1 t0, f0
+            _fp(0x04, T1, 1, 0, 0),                 # mtc1 t1, f1
+            _ccond_cc(1, 0, 0x02, 3),               # c.eq.s cc=3 (PSP FCC0)
+        ]
+
+    cases = (
+        ("beql", lambda off: _i(0x14, T0, T1, off),
+         [_i(0x09, ZERO, T0, 1), _i(0x09, ZERO, T1, 2)],
+         [_i(0x09, ZERO, T0, 2), _i(0x09, ZERO, T1, 2)]),
+        ("bnel", lambda off: _i(0x15, T0, T1, off),
+         [_i(0x09, ZERO, T0, 1), _i(0x09, ZERO, T1, 1)],
+         [_i(0x09, ZERO, T0, 1), _i(0x09, ZERO, T1, 2)]),
+        # bnezl is the standard `bnel rs, $zero` encoding.
+        ("bnezl", lambda off: _i(0x15, T0, ZERO, off),
+         [_i(0x09, ZERO, T0, 0)], [_i(0x09, ZERO, T0, 1)]),
+        ("blezl", lambda off: _i(0x16, T0, ZERO, off),
+         [_i(0x09, ZERO, T0, 1)], [_i(0x09, ZERO, T0, 0)]),
+        ("bgtzl", lambda off: _i(0x17, T0, ZERO, off),
+         [_i(0x09, ZERO, T0, 0)], [_i(0x09, ZERO, T0, 1)]),
+        ("bltzl", lambda off: _regimm(T0, 2, off),
+         [_i(0x09, ZERO, T0, 0)], [_i(0x09, ZERO, T0, -1)]),
+        ("bgezl", lambda off: _regimm(T0, 3, off),
+         [_i(0x09, ZERO, T0, -1)], [_i(0x09, ZERO, T0, 0)]),
+        ("bc1tl", lambda off: _bc1_likely(1, 7, off),
+         compare_setup(False), compare_setup(True)),
+        ("bc1fl", lambda off: _bc1_likely(0, 7, off),
+         compare_setup(True), compare_setup(False)),
+    )
+    not_taken_outputs = (T2, T3, T4, T5, T6, T7, T8, T9, S0)
+    words = [_i(0x09, ZERO, V0, 0), _i(0x09, ZERO, V1, 0)]
+    for index, (name, branch, false_setup, true_setup) in enumerate(cases):
+        out = not_taken_outputs[index]
+        words.extend(false_setup)
+        words.extend((
+            _i(0x09, ZERO, out, 0),
+            branch(2),
+            _i(0x0D, ZERO, out, 0xD000 + index),  # annulled when not taken
+            _i(0x09, V0, V0, 1),                 # not-taken path marker
+            _i(0x09, V1, V1, 1),                 # branch target marker
+        ))
+        words.extend(true_setup)
+        words.append(_i(0x0D, ZERO, S1, 0xC100 + index))
+        words.append(branch(2))
+        if name == "bc1tl":
+            words.append(_fp(0x10, 1, 0, 2, 0x00))   # taken slot: add.s f2,f0,f1
+        else:
+            words.append(_i(0x2B, A0, S1, index * 4))  # taken slot: store marker
+        words.extend((
+            _i(0x09, V0, V0, 0x100),             # skipped by a taken branch
+            _i(0x09, V1, V1, 1),                 # branch target marker
+        ))
+    words.extend((JR_RA, NOP))
+    return words
+
+
+def _cell_bitops() -> list[int]:
+    """Allegrex field/extend/move edges and the unsigned-to-float compiler idiom."""
+    def load(reg: int, value: int) -> list[int]:
+        return [
+            _i(0x0F, ZERO, reg, (value >> 16) & 0xFFFF),
+            _i(0x0D, reg, reg, value & 0xFFFF),
+        ]
+
+    words: list[int] = []
+    words.extend(load(T0, 0x89ABCDEF))
+    words.extend(load(T1, 0x01234567))
+    words.extend(load(T2, 0xFEDCBA98))
+    words.extend((
+        _ext(T0, S6, 0, 32),                     # full-word ext
+        _ext(T0, S7, 31, 1),                     # final single bit
+        _ext(T0, T8, 1, 31),                     # 31-bit field
+        _ext(T1, T9, 4, 28),                     # high edge field
+        _ins(T1, T2, 0, 32),                     # full-word ins
+        _i(0x2B, A0, T2, 0x00),                  # retain the full-word result
+    ))
+    words.extend(load(T3, 0x7FFFFFFF))
+    words.append(_ins(T1, T3, 31, 1))            # one bit at position 31
+    words.append(_i(0x2B, A0, T3, 0x04))         # retain the bit-31 result
+    words.extend(load(T4, 0xFFFFFFFF))
+    words.append(_ins(T1, T4, 1, 31))            # all bits except bit zero
+    words.extend(load(T5, 0xFFFFFFFF))
+    words.append(_ins(ZERO, T5, 4, 8))           # insert zero: clear a field
+
+    for value, dest, sub in (
+        (0x7F, S0, 0x10), (0x80, S1, 0x10), (0xFF, S2, 0x10),
+        (0x7FFF, S3, 0x18), (0x8000, S4, 0x18), (0xFFFF, S5, 0x18),
+    ):
+        words.extend(load(T0, value))
+        words.append(_special3_sign_extend(T0, dest, sub))
+
+    # movn/movz: destination aliases each source role and may be $zero.
+    words.extend(load(T0, 0x1111))
+    words.append(_i(0x09, ZERO, T1, 1))
+    words.append(_r(T0, T1, T0, 0, 0x0B))         # movn rd==rs
+    words.append(_r(T0, ZERO, V0, 0, 0x21))
+    words.extend(load(T0, 0x2222))
+    words.append(_i(0x09, ZERO, T1, 0))
+    words.append(_r(T0, T1, T0, 0, 0x0A))         # movz rd==rs
+    words.append(_r(T0, ZERO, V1, 0, 0x21))
+    words.extend(load(T0, 0x3333))
+    words.append(_i(0x09, ZERO, T1, 1))
+    words.append(_r(T0, T1, T1, 0, 0x0B))         # movn rd==rt
+    words.append(_r(T1, ZERO, 26, 0, 0x21))
+    words.extend(load(T0, 0x4444))
+    words.append(_i(0x09, ZERO, T1, 0))
+    words.append(_r(T0, T1, T1, 0, 0x0A))         # movz rd==rt
+    words.append(_r(T1, ZERO, 27, 0, 0x21))
+    words.extend(load(T0, 0x5555))
+    words.append(_i(0x09, ZERO, T1, 1))
+    words.append(_r(T0, T1, ZERO, 0, 0x0B))       # movn to $zero
+    words.append(_i(0x09, ZERO, T1, 0))
+    words.append(_r(T0, T1, ZERO, 0, 0x0A))       # movz to $zero
+
+    # uint32_t -> float: convert the signed word, and add 2^32 in the
+    # *taken likely branch slot* when the original unsigned sign bit was set.
+    words.extend(load(T0, 0x4F800000))
+    words.append(_fp(0x04, T0, 0, 0, 0))          # mtc1 t0, f0 = 2^32
+    for index, value in enumerate((0x7FFFFFFF, 0x80000000, 0xFFFFFFFF)):
+        words.extend(load(T1, value))
+        words.append(_ext(T1, T2, 0, 32))          # ext t2,t1,0,32
+        words.append(_fp(0x04, T2, 2, 0, 0))       # mtc1 t2, f2
+        words.append(_fp(0x14, 0, 2, 2, 0x20))     # cvt.s.w f2,f2
+        words.append(_regimm(T2, 2, 1))             # bltzl t2, after the slot
+        words.append(_fp(0x10, 0, 2, 2, 0x00))     # add.s f2,f2,f0 (2^32)
+        words.append(_fp(0x00, T3, 2, 0, 0))        # mfc1 t3,f2
+        words.append(_i(0x2B, A0, T3, 0x30 + 4 * index))
+    words.extend((JR_RA, NOP))
+    return words
+
+
 def _cell_jump(return_slot_value: int = 16) -> list[int]:
     """Direct `j` with its delay slot, and an architecturally unreachable word.
 
@@ -273,6 +488,23 @@ def _cell_jump(return_slot_value: int = 16) -> list[int]:
         _i(0x09, V0, V0, 2),                # 0x10 addiu v0, v0, 2
         JR_RA,                              # 0x14
         _i(0x09, V0, V0, return_slot_value),  # 0x18 return slot
+    ]
+
+
+def _cell_jthunk() -> list[int]:
+    """A two-instruction this-adjusting thunk whose direct `j` crosses entries."""
+    return [
+        _j(0x02, 0),                              # j jtarget (patched, then relocated)
+        _i(0x09, A0, A0, -0x20),                 # delay slot: adjust `this`
+    ]
+
+
+def _cell_jtarget() -> list[int]:
+    """Target entry for the this-adjusting thunk; return the observed `$a0`."""
+    return [
+        _r(A0, ZERO, V0, 0, 0x21),               # addu v0, a0, zero
+        JR_RA,
+        NOP,
     ]
 
 
@@ -406,12 +638,13 @@ def _cell_xstore() -> list[int]:
     that is still live -- the shape every existing AOT-gap gate avoids.
     """
     return [
-        _i(0x09, ZERO, T1, 0x05A5),         # 0x00 addiu t1, zero, 0x5a5
-        _i(0x2B, A0, T1, 0x20),             # 0x04 sw    t1, 0x20(a0)
-        _i(0x23, A0, T2, 0x20),             # 0x08 lw    t2, 0x20(a0)  (own store)
-        _i(0x09, V0, V0, 7),                # 0x0c addiu v0, v0, 7
-        JR_RA,                              # 0x10 jr    ra -> interior of the caller
-        _i(0x09, V0, V0, 1),                # 0x14 addiu v0, v0, 1 (slot)
+        _fp(0x10, 0, 12, 0, 0x06),          # 0x00 mov.s f0, f12 (float arg in f12 -> result in f0)
+        _i(0x09, ZERO, T1, 0x05A5),         # 0x04 addiu t1, zero, 0x5a5
+        _i(0x2B, A0, T1, 0x20),             # 0x08 sw    t1, 0x20(a0)
+        _i(0x23, A0, T2, 0x20),             # 0x0c lw    t2, 0x20(a0)  (own store)
+        _i(0x09, V0, V0, 7),                # 0x10 addiu v0, v0, 7
+        JR_RA,                              # 0x14 jr    ra -> interior of the caller
+        _i(0x09, V0, V0, 1),                # 0x18 addiu v0, v0, 1 (slot)
     ]
 
 
@@ -436,11 +669,12 @@ def _cell_xcall() -> list[int]:
         _i(0x0D, T0, T0, 0),                # 0x10 ori   t0, t0, %lo(xstore)
         _r(T0, 0, RA, 0, 0x09),             # 0x14 jalr  ra, t0
         NOP,                                # 0x18 slot
-        _i(0x23, A0, V1, 0x20),             # 0x1c lw    v1, 0x20(a0)  CROSS-TIER READ
-        _i(0x09, V0, V0, 0x100),            # 0x20 addiu v0, v0, 256   continuation mark
-        _i(0x23, SP, RA, 12),               # 0x24 lw    ra, 12(sp)
-        JR_RA,                              # 0x28
-        _i(0x09, SP, SP, 16),               # 0x2c addiu sp, sp, 16 (return slot)
+        _fp(0x00, S0, 0, 0, 0),             # 0x1c mfc1  s0, f0 (observe the callee's float result)
+        _i(0x23, A0, V1, 0x20),             # 0x20 lw    v1, 0x20(a0)  CROSS-TIER READ
+        _i(0x09, V0, V0, 0x100),            # 0x24 addiu v0, v0, 256   continuation mark
+        _i(0x23, SP, RA, 12),               # 0x28 lw    ra, 12(sp)
+        JR_RA,                              # 0x2c
+        _i(0x09, SP, SP, 16),               # 0x30 addiu sp, sp, 16 (return slot)
     ]
 
 
@@ -488,6 +722,59 @@ def _cell_xtail() -> list[int]:
     ]
 
 
+def _cell_xnestleaf() -> list[int]:
+    """CROSS-TIER nested call destination: a REGISTERED leaf the interpreter calls."""
+    return [
+        _i(0x09, ZERO, V1, 0x0D17),         # 0x00 addiu v1, zero, 0xd17
+        _i(0x09, V0, V0, 0x10),             # 0x04 addiu v0, v0, 16
+        JR_RA,                              # 0x08 jr    ra -> the interpreted caller
+        _i(0x09, V0, V0, 1),                # 0x0c addiu v0, v0, 1 (slot)
+    ]
+
+
+def _cell_xnestmid() -> list[int]:
+    """CROSS-TIER: an interpreted RETURNING caller of a registered native leaf.
+
+    In lane MIXED this body is omitted, so the production interpreter runs it. Its
+    `jalr` lands on a registered entry; the guest then expects THIS function to
+    resume at the link address, mark the accumulator, and unwind its own frame.
+    A handoff that never comes back drops that continuation silently.
+    """
+    return [
+        _i(0x09, SP, SP, -8),               # 0x00 addiu sp, sp, -8
+        _i(0x2B, SP, RA, 4),                # 0x04 sw    ra, 4(sp)
+        _i(0x0F, 0, T0, 0),                 # 0x08 lui   t0, %hi(xnestleaf) (patched)
+        _i(0x0D, T0, T0, 0),                # 0x0c ori   t0, t0, %lo(xnestleaf)
+        _r(T0, 0, RA, 0, 0x09),             # 0x10 jalr  ra, t0  (interpreted CALL)
+        NOP,                                # 0x14 slot
+        _i(0x09, V0, V0, 0x200),            # 0x18 addiu v0, v0, 512  continuation mark
+        _i(0x23, SP, RA, 4),                # 0x1c lw    ra, 4(sp)
+        JR_RA,                              # 0x20 jr    ra -> the native caller
+        _i(0x09, SP, SP, 8),                # 0x24 addiu sp, sp, 8 (return slot)
+    ]
+
+
+def _cell_xnest() -> list[int]:
+    """CROSS-TIER nested CALL: AOT caller -> interpreted caller -> AOT leaf -> back.
+
+    The middle is omitted in lane MIXED. Both continuation marks ($v0 += 0x200 in
+    the middle, += 0x100 here) and both frames ($sp, $ra) must match lane AOT.
+    """
+    return [
+        _i(0x09, SP, SP, -16),              # 0x00 addiu sp, sp, -16
+        _i(0x2B, SP, RA, 12),               # 0x04 sw    ra, 12(sp)
+        _i(0x09, ZERO, V0, 2),              # 0x08 addiu v0, zero, 2
+        _i(0x0F, 0, T0, 0),                 # 0x0c lui   t0, %hi(xnestmid) (patched)
+        _i(0x0D, T0, T0, 0),                # 0x10 ori   t0, t0, %lo(xnestmid)
+        _r(T0, 0, RA, 0, 0x09),             # 0x14 jalr  ra, t0
+        NOP,                                # 0x18 slot
+        _i(0x09, V0, V0, 0x100),            # 0x1c addiu v0, v0, 256  continuation mark
+        _i(0x23, SP, RA, 12),               # 0x20 lw    ra, 12(sp)
+        JR_RA,                              # 0x24
+        _i(0x09, SP, SP, 16),               # 0x28 addiu sp, sp, 16 (return slot)
+    ]
+
+
 def _cell_hilo() -> list[int]:
     """HI/LO through signed and unsigned multiply.
 
@@ -507,6 +794,35 @@ def _cell_hilo() -> list[int]:
         _r(T4, T1, 0, 0, 0x18),             # mult  t4, t1       (signed, same bits)
         _r(0, 0, V0, 0, 0x10),              # mfhi  v0           -> differs from t5
         _r(0, 0, V1, 0, 0x12),              # mflo  v1           -> equals t6
+        JR_RA,
+        NOP,
+    ]
+
+
+def _cell_llsc() -> list[int]:
+    """`ll`/`sc` and the MIPS32 link bit (CpuState.llbit).
+
+    Every lane starts from a seeded llbit of 0, so the first `sc` must fail: no
+    store, rt = 0. A linked `sc` stores and reports 1; a second `sc` with no new
+    `ll` stores again, because `sc` leaves LLbit as it found it. `ll $zero` still
+    links. The retry loop is the canonical atomic increment and must complete in
+    one pass (no window-ending event occurs inside it). The last `sc` names the
+    base register as rt, so a lane that writes the result before latching the
+    address stores to the wrong place.
+    """
+    return [
+        _i(0x38, A0, T1, 0),                # sc    t1, 0(a0)    link clear: fails
+        _i(0x30, A0, T2, 4),                # ll    t2, 4(a0)
+        _i(0x09, T2, T2, 5),                # addiu t2, t2, 5
+        _i(0x38, A0, T2, 4),                # sc    t2, 4(a0)    linked: stores, t2 = 1
+        _i(0x38, A0, T3, 8),                # sc    t3, 8(a0)    still linked: stores
+        _i(0x30, A0, ZERO, 12),             # ll    zero, 12(a0)
+        _i(0x30, A0, T4, 16),               # L: ll t4, 16(a0)
+        _i(0x09, T4, T4, 1),                # addiu t4, t4, 1
+        _i(0x38, A0, T4, 16),               # sc    t4, 16(a0)
+        _i(0x04, T4, ZERO, -4),             # beq   t4, zero, L
+        NOP,
+        _i(0x38, A0, A0, 20),               # sc    a0, 20(a0)   rt == base
         JR_RA,
         NOP,
     ]
@@ -537,6 +853,69 @@ def _cell_fpu() -> list[int]:
         JR_RA,                              # 0x34
         NOP,                                # 0x38
     ]
+
+
+FPU_MOVE_PATTERNS: tuple[int, ...] = (
+    0x7F800001, 0xFF812345,   # signaling NaNs with distinct signs/payloads
+    0x7FC12345, 0xFFC54321,   # quiet NaNs with distinct signs/payloads
+    0x00000001, 0x807FFFFF,   # positive min-subnormal, negative max-subnormal
+    0x80000000, 0xFFFFFFFF,   # negative zero, integer word that aliases a NaN
+)
+
+
+def _cell_fpu_moves() -> list[int]:
+    """Raw words cross mtc1/mov.s/mfc1 and the lwc1/swc1 memory path."""
+    moved_regs = (T1, T2, T3, T4, T5, T6, T7, T8)
+    loaded_regs = (S0, S1, S2, S3, S4, S5, S6, S7)
+    words: list[int] = []
+    for index, bits in enumerate(FPU_MOVE_PATTERNS):
+        words.extend((
+            _i(0x0F, ZERO, T0, bits >> 16),
+            _i(0x0D, T0, T0, bits & 0xFFFF),
+            _fp(0x04, T0, 0, 0, 0),                 # mtc1 t0,f0
+            _fp(0x10, 0, 0, 1, 0x06),               # mov.s f1,f0
+            _fp(0x00, moved_regs[index], 1, 0, 0),  # mfc1 moved value
+            _i(0x39, A0, 1, 4 * index),             # swc1 f1,off(a0)
+            _i(0x31, A0, 2, 4 * index),             # lwc1 f2,off(a0)
+            _fp(0x00, loaded_regs[index], 2, 0, 0), # mfc1 reloaded value
+        ))
+    words.extend((JR_RA, NOP))
+    return words
+
+
+FPU_COMPARE_CASES: tuple[tuple[int, int, bool], ...] = tuple(
+    (condition, bits, nan_left)
+    for conditions, bits in (
+        ((1, 3, 5, 7), 0x7FC12345),       # c.un/ueq/ult/ule with a quiet NaN
+        ((9, 11, 13, 15), 0x7F812345),    # signaling variants, signaling NaN
+        ((0, 2, 4, 6), 0x7FC12345),       # ordered predicates with a quiet NaN
+        ((8, 10, 12, 14), 0x7F812345),    # signaling ordered predicates
+    )
+    for condition in conditions
+    for nan_left in (True, False)
+)
+
+
+def _cell_fpu_compare() -> list[int]:
+    """Unordered and signaling C.cond predicates, with NaNs on either side."""
+    words = [
+        _i(0x0F, ZERO, T1, 0x3F80),        # finite 1.0 operand
+        _i(0x09, ZERO, T2, 1),             # true result marker
+    ]
+    for index, (condition, nan_bits, nan_left) in enumerate(FPU_COMPARE_CASES):
+        words.extend((
+            _i(0x0F, ZERO, T0, nan_bits >> 16),
+            _i(0x0D, T0, T0, nan_bits & 0xFFFF),
+            _fp(0x04, T1, 0, 0, 0),         # initialize f0 to finite 1.0
+            _fp(0x04, T1, 1, 0, 0),         # initialize f1 to finite 1.0
+            _fp(0x04, T0, 0 if nan_left else 1, 0, 0),
+            _ccond_cc(1, 0, condition, 3),  # compare through measured FCC0 alias
+            _bc1_cc(0, 7, 2),               # bc1f cc=7, measured FCC0 alias
+            _i(0x2B, A0, ZERO, 4 * index),  # always-executed delay-slot store
+            _i(0x2B, A0, T2, 4 * index),    # write one only when predicate is true
+        ))
+    words.extend((JR_RA, NOP))
+    return words
 
 
 def _cell_fpu_aot() -> list[int]:
@@ -637,8 +1016,13 @@ CELLS: tuple[tuple[str, str, object], ...] = (
     ("alu", "ordinary ALU", _cell_alu),
     ("r0", "r0 write suppression", _cell_r0),
     ("ldst", "load/store width and extension", _cell_ldst),
+    ("unaligned", "lwl/lwr/swl/swr byte merges", _cell_unaligned_merge),
     ("branch", "conditional branch + delay slot", _cell_branch),
+    ("branch_likely", "taken and nullified branch-likely slots", _cell_branch_likely),
+    ("bitops", "Allegrex bit fields and unsigned-to-float idiom", _cell_bitops),
     ("jump", "direct jump + delay slot", _cell_jump),
+    ("jthunk", "direct-j this-adjusting tail thunk", _cell_jthunk),
+    ("jtarget", "known entry reached by the direct-j thunk", _cell_jtarget),
     ("link_leaf", "leaf A: the correct call destination", _cell_link_leaf),
     ("link_leaf_b", "leaf B: a late-resolved call destination", _cell_link_leaf_b),
     ("link", "jal link semantics", _cell_link),
@@ -652,8 +1036,17 @@ CELLS: tuple[tuple[str, str, object], ...] = (
      _cell_xcall),
     ("xtail", "cross-tier TAIL transfer across the AOT/interpreter seam",
      _cell_xtail),
+    ("xnestleaf", "cross-tier: the registered leaf an interpreted caller calls",
+     _cell_xnestleaf),
+    ("xnestmid", "cross-tier: the interpreted caller of a registered leaf",
+     _cell_xnestmid),
+    ("xnest", "cross-tier CALL from interpreted code into a registered body",
+     _cell_xnest),
     ("hilo", "HI/LO multiply", _cell_hilo),
+    ("llsc", "ll/sc and the link bit", _cell_llsc),
     ("fpu", "scalar FPU over the #120 helper path", _cell_fpu),
+    ("fpu_moves", "raw scalar-FPU register and memory moves", _cell_fpu_moves),
+    ("fpu_compare", "unordered COP1 compare predicates", _cell_fpu_compare),
     ("fpu_aot", "AOT-only scalar FPU oracle cell", _cell_fpu_aot),
     ("spleak", "positive control: unbalanced $sp epilogue", _cell_spleak),
     ("negpad", "fail-closed negative corpus scratch", _cell_negpad),
@@ -663,7 +1056,8 @@ CELLS: tuple[tuple[str, str, object], ...] = (
 # Cells omitted from the two-lane comparison list. Most are reached through calls
 # under test; the AOT/reference oracle enters its generated body directly.
 NON_ENTRY_CELLS = frozenset(
-    {"link_leaf", "link_leaf_b", "ret", "negpad", "xstore", "xtailmid", "xread", "fpu_aot"}
+    {"link_leaf", "link_leaf_b", "ret", "negpad", "xstore", "xtailmid", "xread", "fpu_aot",
+     "xnestmid", "xnestleaf"}
 )
 
 # Discovered so codegen emits a native body, but entered only by the independent
@@ -681,6 +1075,7 @@ NON_PROGRAM_CELLS = frozenset({"negpad"})
 CROSS_TIER_OMISSIONS: dict[str, str] = {
     "xcall": "xstore",
     "xtail": "xtailmid",
+    "xnest": "xnestmid",
 }
 
 # The trampoline is deliberately NOT called from the fixture entry: nothing in
@@ -779,9 +1174,13 @@ def build_text_segment() -> bytes:
     leaf_b = BASE + layout["link_leaf_b"][0]
     xstore = BASE + layout["xstore"][0]
     xtailmid = BASE + layout["xtailmid"][0]
+    xnestmid = BASE + layout["xnestmid"][0]
+    xnestleaf = BASE + layout["xnestleaf"][0]
     for cell, slot, address in (
         ("xcall", 0x0C, xstore),
         ("xtail", 0x04, xtailmid),
+        ("xnest", 0x0C, xnestmid),
+        ("xnestmid", 0x08, xnestleaf),
         ("linkr", 0x0C, leaf_a),
         ("jrslot", 0x0C, leaf_a),
         ("jrslot", 0x14, leaf_b),
@@ -801,6 +1200,9 @@ def build_text_segment() -> bytes:
     )
     struct.pack_into(
         "<I", text, layout["jump"][0] + 0x04, _j(0x02, layout["jump"][0] + 0x10)
+    )
+    struct.pack_into(
+        "<I", text, layout["jthunk"][0], _j(0x02, layout["jtarget"][0])
     )
     struct.pack_into(
         "<I", text, layout["xtailmid"][0] + 0x08, _j(0x02, layout["xread"][0])
@@ -979,6 +1381,8 @@ def decode_form(word: int) -> tuple:
     if primary == 0x00:
         return ("special", word & 0x3F)
     if primary == 0x11:
+        if ((word >> 21) & 31) == 8:
+            return ("cop1_branch",)
         return ("cop1", (word >> 21) & 0x1F, word & 0x3F)
     return ("op", primary)
 
@@ -1000,6 +1404,8 @@ def fixture_forms() -> set:
 def _form_literal(form: tuple) -> str:
     if form[0] == "special":
         return f'X(SPECIAL, 0x{form[1]:02x}u, 0x00u, "special:0x{form[1]:02x}")'
+    if form[0] == "cop1_branch":
+        return 'X(COP1_BRANCH, 0x00u, 0x00u, "cop1 branch group")'
     if form[0] == "cop1":
         return (
             f'X(COP1, 0x{form[1]:02x}u, 0x{form[2]:02x}u, '
@@ -1219,6 +1625,14 @@ def verify(build_dir: Path) -> int:
             f"link cell jal decodes to 0x{link_target:08x}, expected leaf 0x{leaf:08x}"
         )
 
+    jthunk = struct.unpack_from("<I", image, layout["jthunk"][0])[0]
+    jthunk_target = ((jthunk & 0x03FFFFFF) << 2) | (BASE & 0xF0000000)
+    if (jthunk >> 26) != 2 or jthunk_target != BASE + layout["jtarget"][0]:
+        problems.append(
+            f"jthunk tail decodes to 0x{jthunk_target:08x}, expected jtarget at "
+            f"0x{BASE + layout['jtarget'][0]:08x}"
+        )
+
     # The aliasing cell is only meaningful while its two leaf pointers actually
     # differ; a generator change that collapsed them would make the cell pass
     # vacuously in both lanes.
@@ -1238,7 +1652,12 @@ def verify(build_dir: Path) -> int:
     # The cross-tier cells are only meaningful while their pointer pairs name the
     # cell lane MIXED actually drops; a generator change that desynchronised them
     # would make both lanes run the same tier and pass vacuously.
-    for entry, target, slot in (("xcall", "xstore", 0x0C), ("xtail", "xtailmid", 0x04)):
+    for entry, target, slot in (
+        ("xcall", "xstore", 0x0C),
+        ("xtail", "xtailmid", 0x04),
+        ("xnest", "xnestmid", 0x0C),
+        ("xnestmid", "xnestleaf", 0x08),
+    ):
         expected = BASE + layout[target][0]
         base = layout[entry][0] + slot
         hi = struct.unpack_from("<I", image, base)[0] & 0xFFFF

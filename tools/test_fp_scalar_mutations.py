@@ -38,7 +38,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -46,6 +45,9 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
+
+import scratch_dir  # noqa: E402
+
 CC = shutil.which("gcc")
 
 HEADER = ROOT / "src" / "rt" / "fp_convert.h"
@@ -121,7 +123,7 @@ def classify_mutant_run(staged: StagedRun, expected_diagnostics: tuple[str, ...]
 def _build_mutated_selftest(header_text: str) -> StagedRun:
     """Compile and run the real selftest against a mutated header copy at -O2."""
     assert CC is not None
-    with tempfile.TemporaryDirectory(prefix="fp_scalar_mut_") as tmp:
+    with scratch_dir.TemporaryDirectory(prefix="fp_scalar_mut_") as tmp:
         work = Path(tmp)
         (work / "fp_convert.h").write_text(header_text, encoding="utf-8", newline="\n")
         shutil.copyfile(SELFTEST, work / "fp_convert_selftest.c")
@@ -442,7 +444,7 @@ int main(void) {
 """
 
         def build_and_run(header_text: str, tag: str):
-            with tempfile.TemporaryDirectory(prefix=f"fp_scalar_m13_{tag}_") as tmp:
+            with scratch_dir.TemporaryDirectory(prefix=f"fp_scalar_m13_{tag}_") as tmp:
                 work = Path(tmp)
                 (work / "fp_convert.h").write_text(header_text, encoding="utf-8", newline="\n")
                 (work / "m13_harness.c").write_text(harness_c, encoding="utf-8", newline="\n")
@@ -574,7 +576,7 @@ class FastPathRemovedStructuralTests(unittest.TestCase):
                            's->fi[{fdv}]=0x7fc00000u; "'))
         self.assertNotEqual(mutant, original, "mutant construction produced no change")
 
-        with tempfile.TemporaryDirectory(prefix="fp_scalar_codegen_mut_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="fp_scalar_codegen_mut_") as tmp:
             tmp_codegen = Path(tmp) / "mutant_codegen.py"
             tmp_codegen.write_text(mutant, encoding="utf-8", newline="\n")
 
@@ -681,6 +683,89 @@ class FastPathRemovedStructuralTests(unittest.TestCase):
         self.assertIn(
             "SHARED_HELPER", text,
             "reference model must disclose shared-helper evidence class")
+
+
+class Ctc1MeasuredMaskTests(unittest.TestCase):
+    """ctc1 drops FCR31 bits 25..31 (PSP-FPU-CC-001, measured on a PSP-3000).
+
+    A guest ctc1 of 0xFE800000 reads back 0x00800000 on the console. The
+    generated code, the reference interpreter and the named constant must
+    agree on exactly that word, and a generator COPY restored to the old
+    wholesale store must be killed by the measured generated-code cell.
+    """
+
+    EMITTED = 'f"if ({fs} == 31) {{ s->fcr31 = {R(rt(w))} & ~0xfe000000u; "'
+    WHOLESALE = 'f"if ({fs} == 31) {{ s->fcr31 = {R(rt(w))}; "'
+
+    def test_every_ctc1_model_drops_exactly_the_measured_bits(self):
+        self.assertIn(self.EMITTED, CODEGEN.read_text(encoding="utf-8"))
+        self.assertIn("#define SR_FCR31_CTC1_UNWRITABLE 0xfe000000u",
+                      HEADER.read_text(encoding="utf-8"))
+        self.assertIn("s->fcr31 = s->r[ft] & ~SR_FCR31_CTC1_UNWRITABLE;",
+                      REF_INTERP.read_text(encoding="utf-8"))
+
+    def test_behavioral_wholesale_ctc1_mutant_is_killed(self):
+        """The pre-measurement emission (ctc1 stores the guest word wholesale)
+        must generate, compile, run and fail CELL 5 on the cfc1 read-back.
+
+        The mutation is applied to a TEMP COPY of codegen.py; tracked bytes are
+        never touched. Generation or compilation failure is not a kill.
+        """
+        if CC is None:
+            self.skipTest("gcc required")
+        original = CODEGEN.read_text(encoding="utf-8")
+        original_sha = hashlib.sha256(original.encode("utf-8")).hexdigest()
+        self.assertEqual(original.count(self.EMITTED), 1, "ctc1 emission anchor drifted")
+        mutant = original.replace(self.EMITTED, self.WHOLESALE)
+        self.assertNotEqual(mutant, original, "mutant construction produced no change")
+
+        import tools.test_codegen_fp_convert as fixture
+
+        with scratch_dir.TemporaryDirectory(prefix="fp_ctc1_codegen_mut_") as tmp:
+            work = Path(tmp)
+            tmp_codegen = work / "mutant_codegen.py"
+            tmp_codegen.write_text(mutant, encoding="utf-8", newline="\n")
+            elf_path = work / "m.elf"
+            elf_path.write_bytes(fixture._synthetic_elf(fixture._cell5_words()))
+            env = dict(os.environ)
+            env["PYTHONPATH"] = str(ROOT / "tools") + os.pathsep + env.get("PYTHONPATH", "")
+            gen_proc = subprocess.run(
+                [sys.executable, str(tmp_codegen), str(elf_path),
+                 str(work / "m.c"), "--profile=hst"],
+                cwd=ROOT, env=env, capture_output=True, text=True)
+            self.assertEqual(gen_proc.returncode, 0,
+                             "MUTANT_GENERATION_FAILED\n" + gen_proc.stderr[-1500:])
+            emitted = "\n".join(p.read_text(encoding="ascii")
+                                for p in sorted(work.glob("m*.c")))
+            self.assertNotIn("0xfe000000u", emitted, "mutant still masks ctc1")
+
+            (work / "recomp.h").write_text(fixture.ISOLATED_RECOMP_H, encoding="ascii")
+            (work / "harness.c").write_text(
+                '#include "m_funcs.h"\n' + fixture.ISOLATED_STUBS_C + fixture._CELL5_MAIN,
+                encoding="ascii")
+            exe = work / "mutant_test.exe"
+            command = [CC, "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
+                       "-I", str(work), "-I", str(ROOT / "src" / "rt"),
+                       str(work / "harness.c"), str(work / "m.c"),
+                       *(str(p) for p in sorted(work.glob("m_*.c"))), "-lm", "-o", str(exe)]
+            compiled = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(
+                compiled.returncode, 0,
+                "MUTANT_BUILD_FAILED: a build failure is not a semantic kill\n"
+                + (compiled.stderr + compiled.stdout)[-1500:])
+
+            ran = subprocess.run([str(exe)], capture_output=True, text=True)
+            self.assertNotEqual(ran.returncode, 0, "MUTANT_SURVIVED: wholesale ctc1 passed CELL 5")
+            combined = ran.stderr + ran.stdout
+            self.assertIn(
+                "FAIL cell5 cfc1 after ctc1 0xFE800000: fe800000", combined,
+                "MUTANT_NON_SEMANTIC_FAILURE: CELL 5 failed without the measured "
+                "read-back diagnostic\n" + combined[-800:])
+            print("MUTANT_EXECUTED_AND_SEMANTIC_TEST_FAILED (valid behavioral kill)")
+
+        final_sha = hashlib.sha256(CODEGEN.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
+        self.assertEqual(final_sha, original_sha,
+                         "tracked tools/codegen.py bytes changed by mutation test")
 
 
 if __name__ == "__main__":

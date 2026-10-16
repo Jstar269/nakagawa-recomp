@@ -194,7 +194,7 @@ static void trace_load(CosimTrace *trace, const char *path) {
  * separately, per lane, against its documented value.
  */
 
-#define COSIM_FIELD_COUNT (32 + 2 + 2 + 32 + 128 + 16 + 32 + 4)
+#define COSIM_FIELD_COUNT (32 + 2 + 2 + 32 + 128 + 16 + 32 + 5)
 
 typedef struct {
     char name[12];
@@ -249,6 +249,7 @@ static void vector_build(CosimVector *vector, const CpuState *s) {
     vector_push(vector, "delayslot", s->in_delay_slot);
     vector_push(vector, "flow_kind", s->flow_kind);
     vector_push(vector, "flow_target", s->flow_target);
+    vector_push(vector, "llbit", s->llbit);
 }
 
 /* ---- lane execution ------------------------------------------------------------- */
@@ -426,6 +427,7 @@ static void seed_state(CpuState *s, const CosimCase *test) {
     s->in_delay_slot = 0u;
     s->flow_kind = 0u;
     s->flow_target = 0u;
+    s->llbit = 0u;   /* no ll..sc window is open at a cell's entry */
 }
 
 static void seed_window(void) {
@@ -505,6 +507,18 @@ static void report_fail(const CosimCase *test, const char *what) {
     g_failures++;
     fprintf(stderr, "\nCOSIM DIVERGENCE cell=%s (%s)\n  %s\n",
             test->name, test->description, what);
+}
+
+static void expect_lane_word(const CosimCase *test, const CosimLane *lane,
+                             const char *field, uint32_t got, uint32_t want,
+                             int *failed) {
+    if (got == want) return;
+    char message[192];
+    snprintf(message, sizeof message,
+             "lane %s expected %s=0x%08x, got 0x%08x",
+             lane->lane, field, want, got);
+    report_fail(test, message);
+    *failed = 1;
 }
 
 static void dump_cell_program(const CosimCase *test) {
@@ -719,6 +733,35 @@ static int compare_windows(const CosimCase *test, const CosimLane *a, const Cosi
     return 0;
 }
 
+static uint32_t lane_window_word(const CosimLane *lane, uint32_t address) {
+    const unsigned offset = (unsigned)(address - (uint32_t)COSIM_WINDOW_LO);
+    return (uint32_t)lane->window[offset] |
+           ((uint32_t)lane->window[offset + 1u] << 8) |
+           ((uint32_t)lane->window[offset + 2u] << 16) |
+           ((uint32_t)lane->window[offset + 3u] << 24);
+}
+
+static int unaligned_matches_expected(const CosimLane *lane,
+                                      const uint32_t expected_gprs[8]) {
+    static const unsigned registers[8] = { 10u, 11u, 12u, 13u, 14u, 15u, 24u, 25u };
+    static const uint32_t memory_offsets[10] = {
+        0u, 4u, 8u, 12u, 16u, 20u, 24u, 28u, 32u, 36u
+    };
+    static const uint32_t expected_memory[10] = {
+        0x11223344u, 0x55667788u,
+        0x112233A1u, 0x1122A1B2u, 0x11A1B2C3u, 0xA1B2C3D4u,
+        0xA1B2C3D4u, 0xB2C3D444u, 0xC3D43344u, 0xD4223344u
+    };
+    for (unsigned i = 0; i < 8u; i++) {
+        if (lane->state.r[registers[i]] != expected_gprs[i]) return 0;
+    }
+    for (unsigned i = 0; i < 10u; i++) {
+        if (lane_window_word(lane, (uint32_t)COSIM_SCRATCH + memory_offsets[i]) !=
+            expected_memory[i]) return 0;
+    }
+    return 1;
+}
+
 /* ---- precise PC contract -------------------------------------------------------- */
 /*
  * CpuState.pc is NOT a shared architectural field between the lanes, and the
@@ -894,6 +937,11 @@ static void qualify_cases(void) {
         if (strcmp(test->name, "spleak") == 0) {
             test->known_defect = &SPLEAK_DEFECT;
         }
+        if (strcmp(test->name, "fpu_moves") == 0) {
+            /* Raw register moves must ignore the guest flush-subnormal mode: run
+             * the cell with FCR31.FS set so a lane that flushed would show it. */
+            test->fcr31 = 0x01000000u;
+        }
     }
 }
 
@@ -963,6 +1011,143 @@ static int run_case(const CosimCase *test, const char *trace_dir) {
     failed |= compare_write_logs(test, &aot, &interp);
     failed |= compare_windows(test, &aot, &interp);
     failed |= compare_vectors(test, &aot, &interp);
+    if (strcmp(test->name, "jthunk") == 0) {
+        const CosimLane *lanes[2] = {&aot, &interp};
+        for (unsigned i = 0u; i < 2u; i++) {
+            expect_lane_word(test, lanes[i], "callee a0", lanes[i]->state.r[4],
+                             COSIM_SCRATCH - 0x20u, &failed);
+            expect_lane_word(test, lanes[i], "callee v0", lanes[i]->state.r[2],
+                             COSIM_SCRATCH - 0x20u, &failed);
+        }
+    } else if (strcmp(test->name, "jtarget") == 0) {
+        expect_lane_word(test, &aot, "v0", aot.state.r[2], COSIM_SCRATCH, &failed);
+        expect_lane_word(test, &interp, "v0", interp.state.r[2], COSIM_SCRATCH, &failed);
+    } else if (strcmp(test->name, "branch_likely") == 0) {
+        static const unsigned annulled_gprs[] = {10u, 11u, 12u, 13u, 14u, 15u, 24u, 25u, 16u};
+        const CosimLane *lanes[2] = {&aot, &interp};
+        for (unsigned li = 0u; li < 2u; li++) {
+            const CosimLane *lane = lanes[li];
+            expect_lane_word(test, lane, "v0 not-taken count", lane->state.r[2], 9u, &failed);
+            expect_lane_word(test, lane, "v1 branch-target count", lane->state.r[3], 18u, &failed);
+            expect_lane_word(test, lane, "taken bc1tl slot f2", lane->state.fi[2],
+                             0x40000000u, &failed);
+            for (unsigned i = 0u; i < sizeof annulled_gprs / sizeof annulled_gprs[0]; i++) {
+                char field[48];
+                snprintf(field, sizeof field, "annulled register r%u", annulled_gprs[i]);
+                expect_lane_word(test, lane, field, lane->state.r[annulled_gprs[i]], 0u, &failed);
+            }
+            for (unsigned i = 0u; i < 9u; i++) {
+                const uint32_t address = COSIM_SCRATCH + 4u * i;
+                const uint32_t want = i == 7u
+                    ? (0xdead0000u | (address - COSIM_WINDOW_LO))
+                    : 0xC100u + i;
+                char field[48];
+                snprintf(field, sizeof field, "taken slot memory[%u]", i);
+                expect_lane_word(test, lane, field, lane_window_word(lane, address), want, &failed);
+            }
+        }
+    } else if (strcmp(test->name, "bitops") == 0) {
+        static const struct { unsigned reg; uint32_t value; const char *name; } expected[] = {
+            {22u, 0x89abcdefu, "ext full word"}, {23u, 1u, "ext bit 31"},
+            {24u, 0x44d5e6f7u, "ext 31 bits"}, {25u, 0x00123456u, "ext high field"},
+            {12u, 0x02468acfu, "ins edge field"}, {13u, 0xfffff00fu, "ins zero clears field"},
+            {16u, 0x0000007fu, "seb +127"}, {17u, 0xffffff80u, "seb -128"},
+            {18u, 0xffffffffu, "seb -1"}, {19u, 0x00007fffu, "seh +32767"},
+            {20u, 0xffff8000u, "seh -32768"}, {21u, 0xffffffffu, "seh -1"},
+            {2u, 0x00001111u, "movn rd==rs"}, {3u, 0x00002222u, "movz rd==rs"},
+            {26u, 0x00003333u, "movn rd==rt"}, {27u, 0x00004444u, "movz rd==rt"},
+            {0u, 0u, "movn/movz rd==$zero"},
+        };
+        const CosimLane *lanes[2] = {&aot, &interp};
+        for (unsigned li = 0u; li < 2u; li++) {
+            const CosimLane *lane = lanes[li];
+            for (unsigned i = 0u; i < sizeof expected / sizeof expected[0]; i++) {
+                expect_lane_word(test, lane, expected[i].name,
+                                 lane->state.r[expected[i].reg], expected[i].value, &failed);
+            }
+            expect_lane_word(test, lane, "ins full word memory",
+                             lane_window_word(lane, COSIM_SCRATCH), 0x01234567u, &failed);
+            expect_lane_word(test, lane, "ins bit 31 memory",
+                             lane_window_word(lane, COSIM_SCRATCH + 4u), 0xffffffffu, &failed);
+            expect_lane_word(test, lane, "unsigned 0x7fffffff to float",
+                             lane_window_word(lane, COSIM_SCRATCH + 0x30u), 0x4f000000u, &failed);
+            expect_lane_word(test, lane, "unsigned 0x80000000 to float",
+                             lane_window_word(lane, COSIM_SCRATCH + 0x34u), 0x4f000000u, &failed);
+            expect_lane_word(test, lane, "unsigned 0xffffffff to float",
+                             lane_window_word(lane, COSIM_SCRATCH + 0x38u), 0x4f800000u, &failed);
+        }
+    } else if (strcmp(test->name, "fpu_moves") == 0) {
+        static const uint32_t expected_bits[] = {
+            0x7f800001u, 0xff812345u, 0x7fc12345u, 0xffc54321u,
+            0x00000001u, 0x807fffffu, 0x80000000u, 0xffffffffu,
+        };
+        static const unsigned moved_regs[] = {9u, 10u, 11u, 12u, 13u, 14u, 15u, 24u};
+        static const unsigned loaded_regs[] = {16u, 17u, 18u, 19u, 20u, 21u, 22u, 23u};
+        const CosimLane *lanes[2] = {&aot, &interp};
+        for (unsigned li = 0u; li < 2u; li++) {
+            const CosimLane *lane = lanes[li];
+            expect_lane_word(test, lane, "guest FCR31 FS", lane->state.fcr31,
+                             0x01000000u, &failed);
+            for (unsigned i = 0u; i < sizeof expected_bits / sizeof expected_bits[0]; i++) {
+                char field[48];
+                snprintf(field, sizeof field, "mfc1 after mov.s r%u", moved_regs[i]);
+                expect_lane_word(test, lane, field, lane->state.r[moved_regs[i]],
+                                 expected_bits[i], &failed);
+                snprintf(field, sizeof field, "mfc1 after lwc1 r%u", loaded_regs[i]);
+                expect_lane_word(test, lane, field, lane->state.r[loaded_regs[i]],
+                                 expected_bits[i], &failed);
+                snprintf(field, sizeof field, "swc1 raw word %u", i);
+                expect_lane_word(test, lane, field,
+                                 lane_window_word(lane, COSIM_SCRATCH + 4u * i),
+                                 expected_bits[i], &failed);
+            }
+        }
+    } else if (strcmp(test->name, "fpu_compare") == 0) {
+        const CosimLane *lanes[2] = {&aot, &interp};
+        for (unsigned li = 0u; li < 2u; li++) {
+            const CosimLane *lane = lanes[li];
+            for (unsigned i = 0u; i < 32u; i++) {
+                char field[48];
+                snprintf(field, sizeof field, "C.cond predicate result %u", i);
+                expect_lane_word(test, lane, field,
+                                 lane_window_word(lane, COSIM_SCRATCH + 4u * i),
+                                 i < 16u ? 1u : 0u, &failed);
+            }
+            expect_lane_word(test, lane, "FCC0 after final ordered signaling compare",
+                             lane->state.fpcond, 0u, &failed);
+            expect_lane_word(test, lane, "FCR31 FCC0 after final compare",
+                             lane->state.fcr31 & 0x00800000u, 0u, &failed);
+        }
+    } else if (strcmp(test->name, "xcall") == 0) {
+        expect_lane_word(test, &aot, "float result from f12 in f0", aot.state.r[16],
+                         aot.state.fi[12], &failed);
+        expect_lane_word(test, &interp, "float result from f12 in f0", interp.state.r[16],
+                         interp.state.fi[12], &failed);
+    }
+    if (strcmp(test->name, "unaligned") == 0) {
+        static const uint32_t expected_gprs[8] = {
+            0x44B2C3D4u, 0x3344C3D4u, 0x223344D4u, 0x11223344u,
+            0x55667788u, 0xA1556677u, 0xA1B25566u, 0xA1B2C355u
+        };
+        uint32_t deliberately_wrong_gprs[8];
+        memcpy(deliberately_wrong_gprs, expected_gprs, sizeof deliberately_wrong_gprs);
+        deliberately_wrong_gprs[0] ^= 1u;
+        if (!unaligned_matches_expected(&aot, expected_gprs)) {
+            report_fail(test, "AOT merge outputs do not match the independent byte oracle");
+            failed = 1;
+        }
+        if (!unaligned_matches_expected(&interp, expected_gprs)) {
+            report_fail(test, "interpreter merge outputs do not match the independent byte oracle");
+            failed = 1;
+        }
+        if (unaligned_matches_expected(&aot, deliberately_wrong_gprs)) {
+            report_fail(test, "positive control accepted a deliberately wrong merge expectation");
+            failed = 1;
+        } else {
+            fprintf(stderr,
+                    "  cosim: unaligned merge expectation positive control rejected the wrong value\n");
+        }
+    }
 
     if (g_failures != before) {
         dump_termination(&aot);
@@ -1130,8 +1315,11 @@ static int run_fpu_reference_oracle(void) {
                     state.fi[0] = a;
                     state.fi[1] = b;
                     state.r[8] = g_fpu_values[ai].cvt_source;
-                    state.r[14] = fcr31 | 0x00800000u;
-                    state.r[15] = fcr31;
+                    /* The two ctc1 seeds also carry FCR31 bits 25..31, which the
+                     * PSP FPU does not implement (PSP-FPU-CC-001): the guest
+                     * writes them and the cell's last ctc1 must drop them. */
+                    state.r[14] = fcr31 | 0xfe800000u;
+                    state.r[15] = fcr31 | 0xfe000000u;
                     state.fcr31 = fcr31;
                     s_cpu = &state;
                     COSIM_FPU_ORACLE_FN(&state);
@@ -1213,6 +1401,9 @@ static int run_fpu_reference_oracle(void) {
                         fpu_reference_bc1(0u, (state.r[15] >> 23) & 1u)
                             ? 0x33u : 0x44u,
                         COSIM_FPU_REFERENCE_OK);
+                    fpu_oracle_expect(
+                        "ctc1/FCR31", state.r[15], 0u, fcr31, state.fcr31,
+                        fpu_reference_ctc1(state.r[15]), COSIM_FPU_REFERENCE_OK);
                 }
             }
         }
@@ -1514,8 +1705,10 @@ static int run_control_encoding_sweep(void) {
 static int run_link_register_shape(void) {
     install_lane(0);
     seed_window();
-    /* jalr $t1, $t0 with $t0 = the registered trampoline, so the transfer lands
-     * on a handoff immediately and the run ends without interpreting further. */
+    /* jalr $t1, $t0 with $t0 = the registered trampoline. A linked transfer into a
+     * registered body is a CALL, as in generated code: the trampoline runs once and
+     * the interpreter resumes at the link address, where the break sentinel stops
+     * the run fail-closed. */
     MEM_W32(COSIM_NEGPAD + 0u, enc_r(8u, 0u, 9u, 0u, 0x09u));
     MEM_W32(COSIM_NEGPAD + 4u, 0u);
     MEM_W32(COSIM_NEGPAD + 8u, enc_r(0u, 0u, 0u, 0u, 0x0Du));   /* break sentinel */
@@ -1528,15 +1721,25 @@ static int run_link_register_shape(void) {
 
     SrGuestInterpFault fault;
     memset(&fault, 0, sizeof fault);
+    g_trampoline_hits = 0;
     s_cpu = &state;
     const SrGuestInterpResult result =
         sr_guest_interp_run(&state, (uint32_t)COSIM_NEGPAD, &fault);
     s_cpu = NULL;
 
     int failures = 0;
-    if (result != SR_GUEST_INTERP_AOT_HANDOFF) {
-        fprintf(stderr, "COSIM LINKSHAPE FAIL: result=%s" NEWLINE,
-                sr_guest_interp_result_name(result));
+    if (g_trampoline_hits != 1) {
+        fprintf(stderr, "COSIM LINKSHAPE FAIL: the registered callee ran %d time(s), "
+                "expected exactly once" NEWLINE, g_trampoline_hits);
+        failures++;
+    }
+    if (result != SR_GUEST_INTERP_UNSUPPORTED ||
+        fault.pc != (uint32_t)COSIM_NEGPAD + 8u) {
+        fprintf(stderr, "COSIM LINKSHAPE FAIL: result=%s at 0x%08x, expected the break "
+                "sentinel at the link address 0x%08x -- the call did not resume its "
+                "interpreted caller" NEWLINE,
+                sr_guest_interp_result_name(result), fault.pc,
+                (uint32_t)COSIM_NEGPAD + 8u);
         failures++;
     }
     if (state.r[9] != (uint32_t)COSIM_NEGPAD + 8u) {
@@ -1554,8 +1757,8 @@ static int run_link_register_shape(void) {
         failures++;
     }
     if (failures == 0) {
-        fprintf(stderr, "cosim: jalr link-register shape OK ($t1 linked, $ra untouched)"
-                NEWLINE);
+        fprintf(stderr, "cosim: jalr link-register shape OK ($t1 linked, $ra untouched, "
+                "caller resumed at the link)" NEWLINE);
     }
     return failures;
 }
@@ -1574,7 +1777,7 @@ static int run_link_register_shape(void) {
  * anything else means it was decoded (a decoded form may still reject its
  * operands -- a bad address is a memory fault, not an unknown opcode).
  */
-typedef enum { FORM_PRIMARY, FORM_SPECIAL, FORM_COP1 } CosimFormKind;
+typedef enum { FORM_PRIMARY, FORM_SPECIAL, FORM_COP1, FORM_COP1_BRANCH } CosimFormKind;
 
 static uint32_t form_probe_word(CosimFormKind kind, uint32_t a, uint32_t b) {
     switch (kind) {
@@ -1591,7 +1794,13 @@ static uint32_t form_probe_word(CosimFormKind kind, uint32_t a, uint32_t b) {
     case FORM_COP1:
         /* fmt in rs, funct in the low bits, ft/fs/fd all f0. */
         return (0x11u << 26) | ((a & 31u) << 21) | (b & 63u);
+    case FORM_COP1_BRANCH:
+        /* The low 16 bits are a branch displacement, not a function field. */
+        return enc_i(0x11u, 8u, 0u, 1u); /* bc1f +4 */
     default:
+        if (a == 0x01u) return enc_i(a, 8u, 2u, 1u); /* bltzl */
+        if (a == 0x06u || a == 0x07u || a == 0x16u || a == 0x17u)
+            return enc_i(a, 8u, 0u, 1u);          /* blez/bgtz, including likely */
         /* rs = $a0 (the seeded scratch pointer) so a load/store form addresses
          * memory that exists and cannot be refused for its operand. */
         return enc_i(a, 4u, 8u, 0u);
@@ -1700,7 +1909,20 @@ static int run_form_census(void) {
             extra++;
         }
     }
+    if (interpreter_decodes(FORM_COP1_BRANCH, 0u, 0u)) {
+        int declared = 0;
+        for (unsigned i = 0; i < required_count; i++) {
+            if (required[i].kind == FORM_COP1_BRANCH) declared = 1;
+        }
+        if (!declared) {
+            fprintf(stderr,
+                    "COSIM CENSUS FAIL: the interpreter decodes COP1 branch instructions, "
+                    "which NO fixture cell executes" NEWLINE);
+            extra++;
+        }
+    }
     for (uint32_t fmt = 0u; fmt < 32u; fmt++) {
+        if (fmt == 8u) continue; /* COP1 branch displacement bits are not funct values. */
         for (uint32_t funct = 0u; funct < 64u; funct++) {
             if (!interpreter_decodes(FORM_COP1, fmt, funct)) {
                 continue;
@@ -1872,16 +2094,20 @@ int main(int argc, char **argv) {
             < stack_census.first_mismatch_actual_sp
         || stack_census.first_mismatch_expected_sp
             - stack_census.first_mismatch_actual_sp != 32u) {
+        /* A failed control is a gate failure like any divergence: count it so the
+         * run still ends with the summary and its FAIL marker, which is what lets
+         * a mutant that also unbalances an observed frame be classified. */
         sr_stack_census_report();
         fprintf(stderr,
                 "cosim: stack census positive control failed or expected-entry coverage was unknown\n");
-        return 1;
+        g_failures++;
+    } else {
+        sr_stack_census_report();
+        fprintf(stderr,
+                "cosim: stack census caught the declared spleak control at 0x%08x; "
+                "unobserved=%u, all other observed entries balanced\n",
+                stack_leak_control->address, stack_census.unobserved);
     }
-    sr_stack_census_report();
-    fprintf(stderr,
-            "cosim: stack census caught the declared spleak control at 0x%08x; "
-            "unobserved=%u, all other observed entries balanced\n",
-            stack_leak_control->address, stack_census.unobserved);
 #endif
     fprintf(stderr, "\ncosim: %u comparison cases, %d divergence report(s)\n",
             executed, g_failures);
