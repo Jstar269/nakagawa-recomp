@@ -6484,7 +6484,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "08ffb0d2668a68f0b1d5c14791cf5a99b9daea266867e498ceb483bb67c7bbdc"
+      "sha256": "744a59455c11d8732c4e0f219127a94508a914ae69e5697a47f7de491f9d6bec"
     },
     {
       "path": "tools/decompme_export.py",
@@ -10552,7 +10552,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1df518f44cd39b2644e0e11bb312d68355ce018ceb76f5848a7797e392cef0dc"
+      "sha256": "8aaf322e474457778fc508bd7ef01c4186e687b3a4d3f29ce935c9cd92fc8543"
     },
     {
       "path": "tools/validate_assets.py",
