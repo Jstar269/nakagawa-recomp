@@ -340,7 +340,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "983ace3dce81260eec73f15b5d48dd2013d1003fe3bbe069955f7c66d2c3cb8b"
+      "sha256": "5de2da97643a1b2cf325a04374796296a7aaf2a2bdb3fed8f4cba8df4689cacb"
     },
     {
       "path": "NOTICE.md",
@@ -6630,7 +6630,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "876d060e3d10dfc1eac45235a1ed35a290239e31c079f7c3a2b8df7b9dd622a6"
+      "sha256": "1f26183f1094584f8baa9a698166da50037a876a26fe7b3bd3d5fce9f80d835a"
     },
     {
       "path": "tools/decompme_export.py",
