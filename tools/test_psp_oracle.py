@@ -29,6 +29,7 @@ from import_fixtures import (
 )
 from psp_import_table import UNATTRIBUTED_LIBRARY
 from psp_oracle import user_mode_imports
+from psp_oracle import parse_golden
 from psp_oracle.protocol import (
     ProtocolError,
     STATUSES,
@@ -2388,12 +2389,12 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 89)
+        self.assertEqual(len(routes), 90)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(range(1, 76)) | set(range(90, 104)), set(ids))
+        self.assertEqual(set(range(1, 77)) | set(range(90, 104)), set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -2929,6 +2930,7 @@ class PspDmacProbeTests(unittest.TestCase):
             "PSP-GE-001": (GE_NAN_SPEC, "ge-nan"),
             "PSP-KERNEL-002": (None, "delay-zero"),
             "PSP-DMAC-001": (None, "dma-cells"),
+            "PSP-VRAM-MIRROR-001": (parse_golden.VRAM_MIRROR_SPEC, "vram-mirror"),
         }
         for test_id, (spec, campaign_case) in expected.items():
             with self.subTest(test_id=test_id):
@@ -2940,7 +2942,8 @@ class PspDmacProbeTests(unittest.TestCase):
                     self.assertEqual(entry["status"], "planned")
                     self.assertEqual(entry["hardware_evidence"], "MEASURED")
                     self.assertEqual(entry["evidence_cases"], entry["case_ids"])
-        for case_id in ("audio-query", "ge-nan", "dma-cells", "delay-zero"):
+        for case_id in ("audio-query", "ge-nan", "dma-cells", "delay-zero",
+                        "vram-mirror"):
             self.assertIn(f"else ifeq ($(CASE),{case_id})", self.makefile)
         delay_zero = by_id["PSP-KERNEL-002"]
         self.assertEqual(delay_zero["status"], "implemented")
@@ -5455,6 +5458,208 @@ class HleSingleLaunchProbeTests(unittest.TestCase):
         self.assertNotIn("until refusal", readme)
         self.assertIn("up to 64 creates; out1 records whether a refusal occurred", hardware)
         self.assertIn("up to 64 creates; out1 records whether a refusal occurred", readme)
+
+class VramMirrorParserTests(unittest.TestCase):
+    TEST_ID = "PSP-VRAM-MIRROR-001"
+    BASES = (
+        0x04000000, 0x04200000, 0x04400000, 0x04600000,
+        0x44000000, 0x44200000, 0x44400000, 0x44600000,
+    )
+    WRITE_BASES = (0x04200000, 0x04400000, 0x04600000,
+                   0x44200000, 0x44400000, 0x44600000)
+    SCATTER = tuple(0xD0000 + index * 0x13000 for index in range(16))
+
+    def test_vram_mirror_parser_is_registered(self) -> None:
+        self.assertTrue(callable(getattr(parse_golden, "parse_vram_mirror_output", None)))
+
+    def _record(self, case_id: str, outputs: tuple[int, ...] = (), *,
+                status: str = "PASS", result: int = 0) -> str:
+        fields = " ".join(
+            f"out{index}=0x{value:08x}" for index, value in enumerate(outputs)
+        )
+        suffix = f" {fields}" if fields else ""
+        return (
+            f"NAKAGAWA_PSP_TEST schema=1 test_id={self.TEST_ID} "
+            f"case_id={case_id} status={status} result=0x{result:08x}{suffix}\n"
+        )
+
+    def _address_pairs(self, offsets: tuple[int, ...], value: int) -> tuple[int, ...]:
+        return tuple(
+            field
+            for offset in offsets
+            for base in self.BASES
+            for field in (base + offset, value)
+        )
+
+    def _stream(self, *, observed_word: int = 0xDEADBEEF, skipped: bool = False) -> str:
+        spec = parse_golden.VRAM_MIRROR_SPEC
+        info = (
+            0x04000000, 0x44000000, 0, 0x44000, 512, 0,
+            0x44000, parse_golden.VRAM_MIRROR_FRAME_BYTES, 0x88000, 16,
+            *self.SCATTER,
+        )
+        rows = [META.format(
+            source="psp", model="PSP-3000", firmware="6.61-ARK",
+            binary=MEASURED_SHA, commit=MEASURED_COMMIT,
+        )]
+        for case_id in spec.ordered_cases:
+            if skipped:
+                terminal = case_id == spec.terminal_case
+                rows.append(self._record(
+                    case_id,
+                    (len(spec.semantic_cases),) if terminal else (),
+                    status="SKIP", result=4,
+                ))
+                continue
+            if case_id == "vram-mirror-info":
+                outputs = info
+            elif match := re.fullmatch(r"vram-cpu-base-row([01])-(\d{2})", case_id):
+                row, chunk = (int(part) for part in match.groups())
+                start = (info[6] if row == 0 else info[8]) + chunk * 8 * 4
+                offsets = tuple(start + index * 4 for index in range(8))
+                outputs = self._address_pairs(offsets, observed_word)
+            elif match := re.fullmatch(r"vram-cpu-base-scatter-(\d{2})", case_id):
+                chunk = int(match.group(1))
+                offsets = self.SCATTER[chunk * 8:(chunk + 1) * 8]
+                outputs = self._address_pairs(offsets, observed_word)
+            elif match := re.fullmatch(r"vram-cpu-write-mirror-(\d{2})-(\d{2})", case_id):
+                alias, chunk = (int(part) for part in match.groups())
+                reverse = (info[6], info[6] + 0x3FC, info[8], info[8] + 0x3FC,
+                           *self.SCATTER[:8])
+                outputs = tuple(
+                    field
+                    for offset in reverse[chunk * 4:(chunk + 1) * 4]
+                    for field in (
+                        self.WRITE_BASES[alias] + offset,
+                        0xB6000000 | (alias << 21) | offset,
+                        0x44000000 + offset,
+                        observed_word,
+                    )
+                )
+            elif case_id in ("vram-ge-flat-sync", "vram-ge-gradient-sync"):
+                gradient = case_id == "vram-ge-gradient-sync"
+                outputs = (
+                    0, 0, 4, 123, 1, 0, 1, 0, 0x3E800000,
+                    0x3F400000 if gradient else 0x3E800000,
+                    1 if gradient else 0, 1,
+                )
+            elif match := re.fullmatch(r"vram-ge-flat-(\d{2})", case_id):
+                chunk = int(match.group(1))
+                offsets = tuple(
+                    info[8] + (24 * 512 + 16 + chunk * 8 + index) * 2
+                    for index in range(8)
+                )
+                outputs = self._address_pairs(offsets, 0x1234)
+            elif match := re.fullmatch(r"vram-ge-gradient-(\d{2})", case_id):
+                chunk = int(match.group(1))
+                offsets = tuple(
+                    info[8] + (24 * 512 + 64 + chunk * 8 + index) * 2
+                    for index in range(8)
+                )
+                outputs = self._address_pairs(offsets, 0xABCD)
+            elif case_id == "vram-restore":
+                outputs = (0x44000000, 0x200000, 0, 0, 1)
+            else:
+                outputs = (len(spec.semantic_cases),)
+            rows.append(self._record(case_id, outputs))
+        return "".join(rows)
+
+    def test_complete_stream_checks_shape_and_keeps_hardware_words_unpinned(self) -> None:
+        parse = parse_golden.parse_vram_mirror_output
+        report = parse(self._stream(), require_complete=True)
+        self.assertTrue(report.complete)
+        self.assertTrue(report.all_passed)
+        changed = parse(self._stream(observed_word=0x13579BDF), require_complete=True)
+        self.assertTrue(changed.all_passed)
+
+    def test_wrong_addresses_and_truncated_chunks_are_rejected(self) -> None:
+        stream = self._stream()
+        lines = stream.splitlines()
+        sample_index = next(
+            index for index, line in enumerate(lines)
+            if "case_id=vram-cpu-base-row0-00 " in line
+        )
+        lines[sample_index] = lines[sample_index].replace(
+            "out0=0x04044000", "out0=0x04044004", 1
+        )
+        with self.assertRaises(ProtocolError):
+            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
+
+        lines = stream.splitlines()
+        sample_index = next(
+            index for index, line in enumerate(lines)
+            if "case_id=vram-cpu-base-row0-00 " in line
+        )
+        lines[sample_index] = re.sub(r" out127=0x[0-9a-f]+$", "", lines[sample_index])
+        with self.assertRaises(ProtocolError):
+            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
+
+        lines = self._stream().splitlines()
+        info_index = next(
+            index for index, line in enumerate(lines)
+            if "case_id=vram-mirror-info " in line
+        )
+        lines[info_index] = lines[info_index].replace(
+            "out3=0x00044000", "out3=0x00044100", 1
+        )
+        with self.assertRaises(ProtocolError):
+            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
+
+    def test_setup_skip_is_complete_but_never_reports_a_pass(self) -> None:
+        report = parse_golden.parse_vram_mirror_output(
+            self._stream(skipped=True), require_complete=True
+        )
+        self.assertTrue(report.complete)
+        self.assertFalse(report.all_passed)
+
+    def test_probe_case_is_in_the_build_and_runner_registry(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        makefile = (root / "fixtures" / "psp_oracle" / "Makefile").read_text(
+            encoding="utf-8"
+        )
+        probe = (root / "fixtures" / "psp_oracle" / "probe.c").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("else ifeq ($(CASE),vram-mirror)\nCASE_ID = 76\n", makefile)
+        self.assertIn("#define PSP_ORACLE_CASE_VRAM_MIRROR 76", probe)
+        self.assertIn('#define PROBE_HOST0_LOG "host0:/vram_mirror_log.txt"', probe)
+        self.assertIn("vram-mirror", CAMPAIGN_QUEUE_CASES)
+        from psp_oracle.run_psplink import CAMPAIGN_CASE_ESTIMATE_SECONDS
+
+        self.assertIn("vram-mirror", CAMPAIGN_CASE_ESTIMATE_SECONDS)
+        self.assertEqual(_campaign_completeness_contract("vram-mirror"),
+                         "strict-golden-sequence")
+        self.assertEqual(_campaign_host0_log_path(Path("host0"), "vram-mirror").name,
+                         "vram_mirror_log.txt")
+        self.assertTrue(_campaign_stream_complete(self._stream(), "vram-mirror"))
+
+    def test_manifest_and_docs_keep_the_hardware_result_not_run(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        manifest = json.loads(
+            (root / "tools" / "psp_oracle" / "manifest.json").read_text(encoding="utf-8")
+        )
+        row = next(test for test in manifest["tests"]
+                   if test["id"] == self.TEST_ID)
+        self.assertEqual(row["hardware_evidence"], "NOT_RUN")
+        self.assertEqual(row["case_ids"], list(parse_golden.VRAM_MIRROR_SPEC.ordered_cases))
+        self.assertIn("No physical PSP run has been performed", row["evidence_note"])
+        readme = (root / "fixtures" / "psp_oracle" / "README.md").read_text(
+            encoding="utf-8"
+        )
+        doc = (root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
+        self.assertIn("| `vram-mirror` | `PSP-VRAM-MIRROR-001` |", readme)
+        self.assertIn("| `vram-mirror` | `PSP-VRAM-MIRROR-001` | `NOT_RUN` |", doc)
+
+    def test_probe_snapshots_and_verifies_full_edram_restore(self) -> None:
+        probe = (Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+                 / "probe.c").read_text(encoding="utf-8")
+        self.assertIn("malloc(VRAM_MIRROR_SIZE)", probe)
+        self.assertIn("memcpy((void *)(uintptr_t)0x44000000u, backup, VRAM_MIRROR_SIZE)", probe)
+        self.assertIn("restore_mismatches += restored[byte] != backup[byte]", probe)
+        self.assertIn("sceGuDisable(GU_DEPTH_TEST)", probe)
+        self.assertIn("sceGuDepthMask(GU_FALSE)", probe)
+        self.assertIn("sceGeDrawSync(1)", probe)
+
 
 if __name__ == "__main__":
     unittest.main()

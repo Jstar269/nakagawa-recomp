@@ -778,7 +778,7 @@ One console is one data point; see §11. Nothing here closes issue #70
 
 ## Pending PSP-3000 measurement campaign
 
-The following twenty source-owned cases are built for a future PSP-3000 / 6.61
+The following twenty-one source-owned cases are built for a future PSP-3000 / 6.61
 session. Six were measured by the 2026-10-10 campaign on `f6ccfb33`; `ge-break-continue`
 was measured by its acceptance-eligible 2026-10-15 re-run on `c642039a` after two
 captured-only runs; `llsc-link`, `vfpu-compare` and `fpu-cc` were measured on
@@ -800,6 +800,7 @@ not expected PSP values.
 | `thread-scheduler` | `PSP-THREAD-003` | `MEASURED` (2026-10-10, `f6ccfb33`) | Suspend UID 0 and self; resume UID 0; invalid ready-queue priority; ready-thread ordering after rotation; a timed wait expiring while its thread is suspended. |
 | `wait-outcomes` | `PSP-WAIT-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Semaphore and event-flag signal/cancel before the timeout deadline, followed by dispatch after that deadline. |
 | `ge-break-continue` | `PSP-GE-CONTROL-001` | `MEASURED` (2026-10-15, `c642039a`; the earlier revision's 2026-10-10 `f6ccfb33` and 2026-10-15 `e45e667b` runs were not acceptance-eligible) | `sceGeBreak`/`sceGeContinue` return values without active/paused lists, invalid break mode, list/draw sync states for paused/cancelled lists, and a bounded continue drain and queue quiesce (`TIMEOUT` instead of a hang). The probe was revised after that capture: the cancelled-list cells are read after a `sceGeBreak(1)` reset, a stalled-list `sceGeListDeQueue` is a PASS cell whatever it returns, and `sceGeBreak(1)` with no prior dequeue is its own cell. |
+| `vram-mirror` | `PSP-VRAM-MIRROR-001` | `NOT_RUN` | CPU pattern reads through four cached and four uncached EDRAM aliases, writes through the six mirror forms and reads back through base, then GE depth samples through all eight aliases. Two complete 0x400-byte rows plus distributed offsets are sampled; the flat draw uses Z 0.25 with depth testing disabled while allowing writes, followed by a two-triangle Z gradient from 0.25 to 0.75. The probe snapshots all 2 MiB of EDRAM and checks the restored bytes. The parser checks order, addresses and scalar shape only; PSP words are unmeasured. |
 | `refer-status-size` | `PSP-KERNEL-STATUS-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Bytes written and size-word results for `ReferSemaStatus`, `ReferEventFlagStatus`, and `ReferMbxStatus` at size 0, 8, 40, and full size. |
 | `registry-readonly` | `PSP-REGISTRY-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Read-only root/category opening and `/CONFIG` category/key enumeration, metadata, selected modeled settings, error returns, handle exhaustion capped at 256 opens, and the forged-handle call last. |
 | `llsc-link` | `PSP-LLSC-001` | `MEASURED` (2026-10-15, `e45e667b`) | Three ll/sc link windows: a plain ll and sc pair (control), a second sc after a successful sc with no new ll, and an sc to an address other than the one ll linked. Each record is the sc result, the word ll loaded, the words at both addresses, and the project's model words; all three cells match the model. |

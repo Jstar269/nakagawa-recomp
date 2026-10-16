@@ -128,6 +128,7 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_FONT_FILES 73
 #define PSP_ORACLE_CASE_UMD_IO 74
 #define PSP_ORACLE_CASE_FONT_LIST 75
+#define PSP_ORACLE_CASE_VRAM_MIRROR 76
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -330,6 +331,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/llsc_link_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_CC
 #define PROBE_HOST0_LOG "host0:/fpu_cc_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
+#define PROBE_HOST0_LOG "host0:/vram_mirror_log.txt"
 #endif
 
 /* Durable line writer: every record, step marker and the metadata line goes
@@ -739,7 +742,11 @@ static void emit_record_extended(int emulated, const char *test_id,
                                  const char *case_id, const char *status,
                                  uint32_t result, const uint32_t *out,
                                  size_t out_count) {
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
+    char line[3072];
+#else
     char line[1024];
+#endif
     int used = snprintf(line, sizeof(line),
                         "NAKAGAWA_PSP_TEST schema=1 test_id=%s "
                         "case_id=%s status=%s result=0x%08x",
@@ -765,7 +772,8 @@ static void emit_record_extended(int emulated, const char *test_id,
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CELLS || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_DELAY_ZERO || \
-    PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
 /* Deferred record buffer.
    The IO matrix measures IoFileMgr itself and the cache matrix measures
    dcache line residency across cells.  Emitting a record inside the measured
@@ -783,6 +791,9 @@ static void emit_record_extended(int emulated, const char *test_id,
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CELLS
 #define DEFERRED_MAX_RECORDS 128
 #define DEFERRED_MAX_OUT 10
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
+#define DEFERRED_MAX_RECORDS 128
+#define DEFERRED_MAX_OUT 128
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN
 #define DEFERRED_MAX_RECORDS 24
 #define DEFERRED_MAX_OUT 6
@@ -2721,7 +2732,8 @@ static void run_display_mask_duty(int emulated) {
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_GE_MASK || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE || \
-    PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
 /* Bounded GE waits.  A probe never blocks on the GE without a bound: on a
  * PSP-3000 a blocking sceGeListSync(qid, 0) after sceGeBreak/sceGeContinue
  * never returned, and the rest of the case and its completion record were
@@ -4432,6 +4444,553 @@ static void run_ge_nan(int emulated) {
     const uint32_t done_out[1] = {20u};
     defer_record("ge-nan-done", "PASS", 0u, done_out, 1);
     flush_deferred(emulated, "PSP-GE-001");
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
+#define VRAM_MIRROR_SIZE 0x00200000u
+#define VRAM_MIRROR_ROW_BYTES 0x400u
+#define VRAM_MIRROR_ROW_WORDS (VRAM_MIRROR_ROW_BYTES / 4u)
+#define VRAM_MIRROR_ROW_CHUNK_WORDS 8u
+#define VRAM_MIRROR_ROW_CHUNKS (VRAM_MIRROR_ROW_WORDS / VRAM_MIRROR_ROW_CHUNK_WORDS)
+#define VRAM_MIRROR_SCATTER_COUNT 16u
+#define VRAM_MIRROR_SCATTER_CHUNKS 2u
+#define VRAM_MIRROR_WRITE_SAMPLE_COUNT 12u
+#define VRAM_MIRROR_WRITE_CHUNK_WORDS 4u
+#define VRAM_MIRROR_WRITE_CHUNKS 3u
+#define VRAM_MIRROR_FRAME_BYTES (512u * 272u * 2u)
+#define VRAM_MIRROR_FLAT_WORDS 32u
+#define VRAM_MIRROR_FLAT_CHUNKS 4u
+#define VRAM_MIRROR_GRADIENT_WORDS 64u
+#define VRAM_MIRROR_GRADIENT_CHUNKS 8u
+#define VRAM_MIRROR_SEMANTIC_RECORDS 100u
+
+_Static_assert(DEFERRED_MAX_RECORDS >= VRAM_MIRROR_SEMANTIC_RECORDS + 1u,
+               "VRAM mirror stream must fit its deferred record buffer");
+_Static_assert(DEFERRED_MAX_OUT >= 128u,
+               "VRAM mirror address/value chunks must fit deferred records");
+_Static_assert(
+    1u + 2u * VRAM_MIRROR_ROW_CHUNKS + VRAM_MIRROR_SCATTER_CHUNKS +
+        6u * VRAM_MIRROR_WRITE_CHUNKS + 1u + VRAM_MIRROR_FLAT_CHUNKS +
+        1u + VRAM_MIRROR_GRADIENT_CHUNKS + 1u == VRAM_MIRROR_SEMANTIC_RECORDS,
+    "VRAM mirror semantic record count must match its protocol");
+
+static const uint32_t s_vram_mirror_aliases[8] = {
+    0x04000000u, 0x04200000u, 0x04400000u, 0x04600000u,
+    0x44000000u, 0x44200000u, 0x44400000u, 0x44600000u,
+};
+static const uint32_t s_vram_mirror_write_aliases[6] = {
+    0x04200000u, 0x04400000u, 0x04600000u,
+    0x44200000u, 0x44400000u, 0x44600000u,
+};
+
+struct vram_mirror_vertex {
+    float x;
+    float y;
+    float z;
+};
+
+typedef struct {
+    int completed;
+    int ge_idle;
+} VramMirrorGeOutcome;
+
+static uint32_t s_vram_mirror_list[4096] __attribute__((aligned(64)));
+static struct vram_mirror_vertex s_vram_mirror_vertices[6]
+    __attribute__((aligned(16)));
+
+static int vram_mirror_ranges_overlap(uint32_t first, uint32_t first_bytes,
+                                     uint32_t second, uint32_t second_bytes) {
+    return first < second + second_bytes && second < first + first_bytes;
+}
+
+static int vram_mirror_offset_available(uint32_t offset,
+                                        uint32_t display_offset,
+                                        uint32_t display_bytes,
+                                        uint32_t scratch_offset,
+                                        uint32_t scratch_bytes,
+                                        const uint32_t *chosen,
+                                        uint32_t chosen_count) {
+    if ((offset & 3u) != 0u || offset + 4u > VRAM_MIRROR_SIZE ||
+        vram_mirror_ranges_overlap(offset, 4u, display_offset, display_bytes) ||
+        vram_mirror_ranges_overlap(offset, 4u, scratch_offset, scratch_bytes)) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < chosen_count; i++) {
+        if (chosen[i] == offset) return 0;
+    }
+    return 1;
+}
+
+static int vram_mirror_cache_range(uint32_t offset, uint32_t bytes,
+                                  int writeback_invalidate) {
+    int result = 0;
+    for (uint32_t alias = 0; alias < 4u; alias++) {
+        const uint32_t address = s_vram_mirror_aliases[alias] + offset;
+        const int rc = writeback_invalidate
+            ? sceKernelDcacheWritebackInvalidateRange(
+                  (void *)(uintptr_t)address, bytes)
+            : sceKernelDcacheInvalidateRange((void *)(uintptr_t)address, bytes);
+        if (result == 0 && rc < 0) result = rc;
+    }
+    return result;
+}
+
+static int vram_mirror_choose_scatter(uint32_t display_offset,
+                                      uint32_t display_bytes,
+                                      uint32_t scratch_offset,
+                                      uint32_t scratch_bytes,
+                                      uint32_t offsets[VRAM_MIRROR_SCATTER_COUNT]) {
+    for (uint32_t sample = 0; sample < VRAM_MIRROR_SCATTER_COUNT; sample++) {
+        const uint32_t target = (uint32_t)(
+            ((uint64_t)sample * (VRAM_MIRROR_SIZE - 4u)) /
+            (VRAM_MIRROR_SCATTER_COUNT - 1u)) & ~3u;
+        int found = 0;
+        for (uint32_t distance = 0; distance < VRAM_MIRROR_SIZE; distance += 4u) {
+            if (target + distance < VRAM_MIRROR_SIZE &&
+                vram_mirror_offset_available(target + distance, display_offset,
+                                             display_bytes, scratch_offset,
+                                             scratch_bytes, offsets, sample)) {
+                offsets[sample] = target + distance;
+                found = 1;
+                break;
+            }
+            if (distance != 0u && target >= distance &&
+                vram_mirror_offset_available(target - distance, display_offset,
+                                             display_bytes, scratch_offset,
+                                             scratch_bytes, offsets, sample)) {
+                offsets[sample] = target - distance;
+                found = 1;
+                break;
+            }
+        }
+        if (!found) return 0;
+    }
+
+    for (uint32_t i = 1; i < VRAM_MIRROR_SCATTER_COUNT; i++) {
+        const uint32_t value = offsets[i];
+        uint32_t index = i;
+        while (index > 0u && offsets[index - 1u] > value) {
+            offsets[index] = offsets[index - 1u];
+            index--;
+        }
+        offsets[index] = value;
+    }
+    return offsets[VRAM_MIRROR_SCATTER_COUNT - 1u] - offsets[0] >= 0x00080000u;
+}
+
+static void vram_mirror_skip_stream(int emulated, uint32_t reason) {
+    char case_id[64];
+    const uint32_t done = VRAM_MIRROR_SEMANTIC_RECORDS;
+    defer_record("vram-mirror-info", "SKIP", reason, NULL, 0);
+    for (uint32_t row = 0; row < 2u; row++) {
+        for (uint32_t chunk = 0; chunk < VRAM_MIRROR_ROW_CHUNKS; chunk++) {
+            snprintf(case_id, sizeof(case_id), "vram-cpu-base-row%u-%02u",
+                     (unsigned int)row, (unsigned int)chunk);
+            defer_record(case_id, "SKIP", reason, NULL, 0);
+        }
+    }
+    for (uint32_t chunk = 0; chunk < VRAM_MIRROR_SCATTER_CHUNKS; chunk++) {
+        snprintf(case_id, sizeof(case_id), "vram-cpu-base-scatter-%02u",
+                 (unsigned int)chunk);
+        defer_record(case_id, "SKIP", reason, NULL, 0);
+    }
+    for (uint32_t alias = 0; alias < 6u; alias++) {
+        for (uint32_t chunk = 0; chunk < VRAM_MIRROR_WRITE_CHUNKS; chunk++) {
+            snprintf(case_id, sizeof(case_id), "vram-cpu-write-mirror-%02u-%02u",
+                     (unsigned int)alias, (unsigned int)chunk);
+            defer_record(case_id, "SKIP", reason, NULL, 0);
+        }
+    }
+    defer_record("vram-ge-flat-sync", "SKIP", reason, NULL, 0);
+    for (uint32_t chunk = 0; chunk < VRAM_MIRROR_FLAT_CHUNKS; chunk++) {
+        snprintf(case_id, sizeof(case_id), "vram-ge-flat-%02u", (unsigned int)chunk);
+        defer_record(case_id, "SKIP", reason, NULL, 0);
+    }
+    defer_record("vram-ge-gradient-sync", "SKIP", reason, NULL, 0);
+    for (uint32_t chunk = 0; chunk < VRAM_MIRROR_GRADIENT_CHUNKS; chunk++) {
+        snprintf(case_id, sizeof(case_id), "vram-ge-gradient-%02u",
+                 (unsigned int)chunk);
+        defer_record(case_id, "SKIP", reason, NULL, 0);
+    }
+    defer_record("vram-restore", "SKIP", reason, NULL, 0);
+    defer_record("vram-mirror-done", "SKIP", reason, &done, 1);
+    flush_deferred(emulated, "PSP-VRAM-MIRROR-001");
+}
+
+static void vram_mirror_read_words(const uint32_t *offsets, uint32_t word_count,
+                                   uint32_t out[128]) {
+    uint32_t output = 0;
+    for (uint32_t word = 0; word < word_count; word++) {
+        for (uint32_t alias = 0; alias < 8u; alias++) {
+            const uint32_t address = s_vram_mirror_aliases[alias] + offsets[word];
+            out[output++] = address;
+            out[output++] = *(volatile uint32_t *)(uintptr_t)address;
+        }
+    }
+}
+
+static void vram_mirror_defer_base_samples(uint32_t scatter[VRAM_MIRROR_SCATTER_COUNT],
+                                           uint32_t color_offset,
+                                           uint32_t depth_offset,
+                                           int cache_rc) {
+    uint32_t offsets[VRAM_MIRROR_ROW_CHUNK_WORDS];
+    uint32_t out[128];
+    char case_id[64];
+    const char *const status = cache_rc >= 0 ? "PASS" : "FAIL";
+
+    for (uint32_t row = 0; row < 2u; row++) {
+        const uint32_t row_offset = row == 0u ? color_offset : depth_offset;
+        for (uint32_t chunk = 0; chunk < VRAM_MIRROR_ROW_CHUNKS; chunk++) {
+            for (uint32_t word = 0; word < VRAM_MIRROR_ROW_CHUNK_WORDS; word++) {
+                offsets[word] = row_offset +
+                    (chunk * VRAM_MIRROR_ROW_CHUNK_WORDS + word) * 4u;
+            }
+            vram_mirror_read_words(offsets, VRAM_MIRROR_ROW_CHUNK_WORDS, out);
+            snprintf(case_id, sizeof(case_id), "vram-cpu-base-row%u-%02u",
+                     (unsigned int)row, (unsigned int)chunk);
+            defer_record(case_id, status, (uint32_t)cache_rc, out, 128);
+        }
+    }
+    for (uint32_t chunk = 0; chunk < VRAM_MIRROR_SCATTER_CHUNKS; chunk++) {
+        for (uint32_t word = 0; word < VRAM_MIRROR_ROW_CHUNK_WORDS; word++) {
+            offsets[word] = scatter[chunk * VRAM_MIRROR_ROW_CHUNK_WORDS + word];
+        }
+        vram_mirror_read_words(offsets, VRAM_MIRROR_ROW_CHUNK_WORDS, out);
+        snprintf(case_id, sizeof(case_id), "vram-cpu-base-scatter-%02u",
+                 (unsigned int)chunk);
+        defer_record(case_id, status, (uint32_t)cache_rc, out, 128);
+    }
+}
+
+static void vram_mirror_reverse_writes(uint32_t color_offset,
+                                       uint32_t depth_offset,
+                                       uint32_t scatter[VRAM_MIRROR_SCATTER_COUNT]) {
+    uint32_t offsets[VRAM_MIRROR_WRITE_SAMPLE_COUNT] = {
+        color_offset, color_offset + VRAM_MIRROR_ROW_BYTES - 4u,
+        depth_offset, depth_offset + VRAM_MIRROR_ROW_BYTES - 4u,
+    };
+    uint32_t output[16];
+    char case_id[64];
+
+    memcpy(&offsets[4], scatter, 8u * sizeof(scatter[0]));
+    for (uint32_t alias = 0; alias < 6u; alias++) {
+        const uint32_t write_base = s_vram_mirror_write_aliases[alias];
+        const int uncached = (write_base & 0x40000000u) != 0u;
+        const uint32_t cache_base = uncached ? write_base & ~0x40000000u : write_base;
+        for (uint32_t chunk = 0; chunk < VRAM_MIRROR_WRITE_CHUNKS; chunk++) {
+            int operation_rc = 0;
+            uint32_t output_index = 0;
+            for (uint32_t word = 0; word < VRAM_MIRROR_WRITE_CHUNK_WORDS; word++) {
+                const uint32_t offset =
+                    offsets[chunk * VRAM_MIRROR_WRITE_CHUNK_WORDS + word];
+                const uint32_t write_address = write_base + offset;
+                const uint32_t pattern =
+                    0xB6000000u | (alias << 21) | (offset & 0x001fffffu);
+                *(volatile uint32_t *)(uintptr_t)write_address = pattern;
+                int rc = uncached
+                    ? sceKernelDcacheInvalidateRange(
+                          (void *)(uintptr_t)(cache_base + offset), 4u)
+                    : sceKernelDcacheWritebackInvalidateRange(
+                          (void *)(uintptr_t)write_address, 4u);
+                const int base_rc = sceKernelDcacheInvalidateRange(
+                    (void *)(uintptr_t)(0x04000000u + offset), 4u);
+                if (operation_rc == 0 && rc < 0) operation_rc = rc;
+                if (operation_rc == 0 && base_rc < 0) operation_rc = base_rc;
+                const uint32_t read_address = 0x44000000u + offset;
+                const uint32_t observed =
+                    *(volatile uint32_t *)(uintptr_t)read_address;
+                output[output_index++] = write_address;
+                output[output_index++] = pattern;
+                output[output_index++] = read_address;
+                output[output_index++] = observed;
+            }
+            snprintf(case_id, sizeof(case_id), "vram-cpu-write-mirror-%02u-%02u",
+                     (unsigned int)alias, (unsigned int)chunk);
+            defer_record(case_id, operation_rc >= 0 ? "PASS" : "FAIL",
+                         (uint32_t)operation_rc, output, output_index);
+        }
+    }
+}
+
+static VramMirrorGeOutcome vram_mirror_draw(uint32_t color_offset,
+                                            uint32_t depth_offset, int gu_init_rc,
+                                            int gradient, int start_allowed) {
+    const int start_rc = !start_allowed ? -1 : gu_init_rc >= 0
+        ? sceGuStart(GU_DIRECT, s_vram_mirror_list) : gu_init_rc;
+    int finish_rc = -1;
+    int reset_rc = 0;
+    int reset_idle = 1;
+    GeIdleWait wait = {-1, -1, 0u, 0};
+    int invalidate_rc = -1;
+    uint32_t out[8];
+    const char *const sync_case = gradient
+        ? "vram-ge-gradient-sync" : "vram-ge-flat-sync";
+
+    if (start_rc >= 0) {
+        sceGuDrawBuffer(GU_PSM_5650, (void *)(uintptr_t)color_offset, 512);
+        sceGuDepthBuffer((void *)(uintptr_t)depth_offset, 512);
+        sceGuOffset(2048 - 256, 2048 - 136);
+        sceGuViewport(2048, 2048, 512, 272);
+        sceGuDepthRange(65535, 0);
+        sceGuScissor(0, 0, 512, 272);
+        sceGuEnable(GU_SCISSOR_TEST);
+        sceGuDisable(GU_CULL_FACE);
+        sceGuDisable(GU_BLEND);
+        sceGuDisable(GU_TEXTURE_2D);
+        sceGuDisable(GU_LIGHTING);
+        sceGuDepthMask(GU_FALSE);
+        sceGuDepthFunc(GU_ALWAYS);
+        if (gradient) {
+            sceGuEnable(GU_DEPTH_TEST);
+            sceGuShadeModel(GU_SMOOTH);
+        } else {
+            sceGuDisable(GU_DEPTH_TEST);
+            sceGuShadeModel(GU_FLAT);
+        }
+        sceGuColor(0xffffffffu);
+        sceGumMatrixMode(GU_PROJECTION);
+        sceGumLoadIdentity();
+        sceGumOrtho(0.0f, 512.0f, 272.0f, 0.0f, -1.0f, 1.0f);
+        sceGumMatrixMode(GU_VIEW);
+        sceGumLoadIdentity();
+        sceGumMatrixMode(GU_MODEL);
+        sceGumLoadIdentity();
+
+        if (gradient) {
+            s_vram_mirror_vertices[0] = (struct vram_mirror_vertex){64.0f, 16.0f, 0.25f};
+            s_vram_mirror_vertices[1] = (struct vram_mirror_vertex){128.0f, 16.0f, 0.75f};
+            s_vram_mirror_vertices[2] = (struct vram_mirror_vertex){128.0f, 32.0f, 0.75f};
+            s_vram_mirror_vertices[3] = (struct vram_mirror_vertex){64.0f, 16.0f, 0.25f};
+            s_vram_mirror_vertices[4] = (struct vram_mirror_vertex){128.0f, 32.0f, 0.75f};
+            s_vram_mirror_vertices[5] = (struct vram_mirror_vertex){64.0f, 32.0f, 0.25f};
+        } else {
+            s_vram_mirror_vertices[0] = (struct vram_mirror_vertex){16.0f, 16.0f, 0.25f};
+            s_vram_mirror_vertices[1] = (struct vram_mirror_vertex){48.0f, 16.0f, 0.25f};
+            s_vram_mirror_vertices[2] = (struct vram_mirror_vertex){48.0f, 32.0f, 0.25f};
+            s_vram_mirror_vertices[3] = (struct vram_mirror_vertex){16.0f, 16.0f, 0.25f};
+            s_vram_mirror_vertices[4] = (struct vram_mirror_vertex){48.0f, 32.0f, 0.25f};
+            s_vram_mirror_vertices[5] = (struct vram_mirror_vertex){16.0f, 32.0f, 0.25f};
+        }
+        sceKernelDcacheWritebackRange(s_vram_mirror_vertices,
+                                      sizeof(s_vram_mirror_vertices));
+        sceGuDrawArray(GU_TRIANGLES, GU_VERTEX_32BITF | GU_TRANSFORM_3D,
+                       6, NULL, s_vram_mirror_vertices);
+        finish_rc = sceGuFinish();
+    }
+
+    wait = ge_wait_idle(-1, GE_IDLE_DEADLINE_US);
+    if (!wait.idle) {
+        GeIdleWait after_reset;
+        reset_rc = ge_reset_queues(&after_reset);
+        reset_idle = after_reset.idle;
+    }
+    invalidate_rc = vram_mirror_cache_range(depth_offset,
+                                            VRAM_MIRROR_FRAME_BYTES, 0);
+    out[0] = (uint32_t)start_rc;
+    out[1] = (uint32_t)finish_rc;
+    out[2] = (uint32_t)wait.draw_state;
+    out[3] = wait.elapsed_us;
+    out[4] = wait.idle ? 1u : 0u;
+    out[5] = (uint32_t)reset_rc;
+    out[6] = reset_idle ? 1u : 0u;
+    out[7] = (uint32_t)invalidate_rc;
+    out[8] = 0x3e800000u;
+    out[9] = gradient ? 0x3f400000u : 0x3e800000u;
+    out[10] = gradient ? 1u : 0u;
+    out[11] = 1u;
+    const int completed = start_rc >= 0 && finish_rc >= 0 && wait.idle &&
+        reset_idle && invalidate_rc >= 0;
+    defer_record(sync_case,
+                 !wait.idle ? "TIMEOUT" : completed ? "PASS" : "FAIL",
+                 (uint32_t)(finish_rc < 0 ? finish_rc : start_rc), out, 12);
+    return (VramMirrorGeOutcome){completed, reset_idle};
+}
+
+static void vram_mirror_defer_depth(uint32_t depth_offset, uint32_t first_x,
+                                    uint32_t chunk_count,
+                                    const char *case_prefix, int read_ok) {
+    uint32_t out[128];
+    char case_id[64];
+    const char *const status = read_ok ? "PASS" : "FAIL";
+    const uint32_t chunk_words = 8u;
+    for (uint32_t chunk = 0; chunk < chunk_count; chunk++) {
+        uint32_t output = 0;
+        for (uint32_t word = 0; word < chunk_words; word++) {
+            const uint32_t pixel =
+                VRAM_MIRROR_DEPTH_ROW * 512u + first_x + chunk * chunk_words + word;
+            const uint32_t offset = depth_offset + pixel * 2u;
+            for (uint32_t alias = 0; alias < 8u; alias++) {
+                const uint32_t address = s_vram_mirror_aliases[alias] + offset;
+                out[output++] = address;
+                out[output++] = *(volatile uint16_t *)(uintptr_t)address;
+            }
+        }
+        snprintf(case_id, sizeof(case_id), "%s%02u", case_prefix, (unsigned int)chunk);
+        defer_record(case_id, status, read_ok ? 0u : 0xffffffffu, out, output);
+    }
+}
+
+static void run_vram_mirror(int emulated) {
+    void *display_address = NULL;
+    int display_stride = 0;
+    int display_format = 0;
+    const uint32_t raw_vram_base = (uint32_t)(uintptr_t)sceGeEdramGetAddr();
+    const uint32_t vram_base = raw_vram_base & ~0x40000000u;
+    int skip_reason = 0;
+    int display_rc = -1;
+    uint32_t display_offset = 0;
+    uint32_t display_bytes = 0;
+    uint32_t color_offset = 0;
+    uint32_t depth_offset = 0;
+    uint32_t scatter[VRAM_MIRROR_SCATTER_COUNT];
+    uint8_t *backup = NULL;
+    int final_ge_idle = 1;
+    uint32_t restore_mismatches = 0;
+
+    probe_step(emulated, "vram-mirror", "setup");
+    if (vram_base != 0x04000000u) {
+        skip_reason = 1u;
+    } else {
+        display_rc = sceDisplayGetFrameBuf(&display_address, &display_stride,
+                                           &display_format,
+                                           PSP_DISPLAY_SETBUF_IMMEDIATE);
+        if (display_rc < 0 || display_address == NULL || display_stride <= 0 ||
+            display_format < 0 || display_format > 3) {
+            skip_reason = 2u;
+        }
+    }
+    if (skip_reason == 0) {
+        const uint32_t raw_display = (uint32_t)(uintptr_t)display_address;
+        const uint32_t canonical_display = raw_display & ~0x40000000u;
+        const uint32_t bytes_per_pixel = display_format == 3 ? 4u : 2u;
+        const uint64_t display_span =
+            (uint64_t)(uint32_t)display_stride * 272u * bytes_per_pixel;
+        if (canonical_display < vram_base ||
+            canonical_display >= vram_base + VRAM_MIRROR_SIZE ||
+            display_span == 0u || display_span > VRAM_MIRROR_SIZE) {
+            skip_reason = 3u;
+        } else {
+            display_offset = canonical_display - vram_base;
+            display_bytes = (uint32_t)display_span;
+            color_offset = (display_offset + display_bytes +
+                            VRAM_MIRROR_ROW_BYTES - 1u) &
+                ~(VRAM_MIRROR_ROW_BYTES - 1u);
+            depth_offset = color_offset + VRAM_MIRROR_FRAME_BYTES;
+            if (color_offset + 2u * VRAM_MIRROR_FRAME_BYTES > VRAM_MIRROR_SIZE) {
+                skip_reason = 4u;
+            }
+        }
+    }
+    if (skip_reason == 0 &&
+        !vram_mirror_choose_scatter(display_offset, display_bytes, color_offset,
+                                    2u * VRAM_MIRROR_FRAME_BYTES, scatter)) {
+        skip_reason = 5u;
+    }
+    if (skip_reason == 0) {
+        backup = (uint8_t *)malloc(VRAM_MIRROR_SIZE);
+        if (backup == NULL) skip_reason = 6u;
+    }
+    if (skip_reason == 0) {
+        const GeIdleWait before = ge_wait_idle(-1, GE_IDLE_DEADLINE_US);
+        if (!before.idle) skip_reason = 7u;
+    }
+    if (skip_reason == 0) {
+        const int snapshot_rc = vram_mirror_cache_range(
+            0u, VRAM_MIRROR_SIZE, 1);
+        if (snapshot_rc < 0) {
+            skip_reason = 8u;
+        } else {
+            memcpy(backup, (const void *)(uintptr_t)0x44000000u,
+                   VRAM_MIRROR_SIZE);
+        }
+    }
+    if (skip_reason != 0) {
+        free(backup);
+        vram_mirror_skip_stream(emulated, (uint32_t)skip_reason);
+        return;
+    }
+
+    uint32_t info[26] = {
+        vram_base, 0x44000000u, display_offset, display_bytes,
+        (uint32_t)display_stride, (uint32_t)display_format,
+        color_offset, VRAM_MIRROR_FRAME_BYTES, depth_offset,
+        VRAM_MIRROR_SCATTER_COUNT,
+    };
+    memcpy(&info[10], scatter, sizeof(scatter));
+    defer_record("vram-mirror-info", "PASS", (uint32_t)display_rc, info, 26);
+
+    probe_step(emulated, "vram-mirror", "cpu-base-pattern");
+    for (uint32_t row = 0; row < 2u; row++) {
+        const uint32_t row_offset = row == 0u ? color_offset : depth_offset;
+        for (uint32_t word = 0; word < VRAM_MIRROR_ROW_WORDS; word++) {
+            const uint32_t offset = row_offset + word * 4u;
+            *(volatile uint32_t *)(uintptr_t)(vram_base + offset) =
+                0xA5000000u | offset;
+        }
+    }
+    for (uint32_t sample = 0; sample < VRAM_MIRROR_SCATTER_COUNT; sample++) {
+        const uint32_t offset = scatter[sample];
+        *(volatile uint32_t *)(uintptr_t)(vram_base + offset) =
+            0xA5000000u | offset;
+    }
+    const int base_cache_rc = vram_mirror_cache_range(
+        0u, VRAM_MIRROR_SIZE, 1);
+    vram_mirror_defer_base_samples(scatter, color_offset, depth_offset,
+                                   base_cache_rc);
+
+    probe_step(emulated, "vram-mirror", "cpu-mirror-writes");
+    vram_mirror_reverse_writes(color_offset, depth_offset, scatter);
+
+    probe_step(emulated, "vram-mirror", "ge-flat-rectangle");
+    volatile uint16_t *depth_words =
+        (volatile uint16_t *)(uintptr_t)(0x44000000u + depth_offset);
+    for (uint32_t word = 0; word < VRAM_MIRROR_FRAME_BYTES / 2u; word++) {
+        depth_words[word] = 0xA5A5u;
+    }
+    const int depth_seed_rc = vram_mirror_cache_range(
+        depth_offset, VRAM_MIRROR_FRAME_BYTES, 0);
+    const int gu_init_rc = depth_seed_rc >= 0 ? sceGuInit() : depth_seed_rc;
+    VramMirrorGeOutcome flat = vram_mirror_draw(
+        color_offset, depth_offset, gu_init_rc, 0, 1);
+    vram_mirror_defer_depth(depth_offset, 16u, VRAM_MIRROR_FLAT_CHUNKS,
+                            "vram-ge-flat-",
+                            flat.completed);
+
+    probe_step(emulated, "vram-mirror", "ge-z-gradient");
+    VramMirrorGeOutcome gradient = vram_mirror_draw(
+        color_offset, depth_offset, gu_init_rc, 1, flat.ge_idle);
+    vram_mirror_defer_depth(depth_offset, 64u, VRAM_MIRROR_GRADIENT_CHUNKS,
+                            "vram-ge-gradient-",
+                            gradient.completed);
+    final_ge_idle = gradient.ge_idle;
+
+    probe_step(emulated, "vram-mirror", "restore-vram");
+    const int restore_cache_rc = vram_mirror_cache_range(
+        0u, VRAM_MIRROR_SIZE, 1);
+    memcpy((void *)(uintptr_t)0x44000000u, backup, VRAM_MIRROR_SIZE);
+    const int restore_invalidate_rc = vram_mirror_cache_range(
+        0u, VRAM_MIRROR_SIZE, 0);
+    const volatile uint8_t *restored =
+        (const volatile uint8_t *)(uintptr_t)0x44000000u;
+    for (uint32_t byte = 0; byte < VRAM_MIRROR_SIZE; byte++) {
+        restore_mismatches += restored[byte] != backup[byte];
+    }
+    const int restore_ok = restore_cache_rc >= 0 && restore_invalidate_rc >= 0 &&
+        restore_mismatches == 0u && final_ge_idle;
+    const uint32_t restore_out[5] = {
+        0x44000000u, VRAM_MIRROR_SIZE, (uint32_t)restore_invalidate_rc,
+        restore_mismatches, final_ge_idle ? 1u : 0u,
+    };
+    defer_record("vram-restore", restore_ok ? "PASS" : "FAIL",
+                 (uint32_t)(restore_invalidate_rc < 0
+                               ? restore_invalidate_rc : restore_cache_rc),
+                 restore_out, 5);
+    free(backup);
+    const uint32_t done = VRAM_MIRROR_SEMANTIC_RECORDS;
+    defer_record("vram-mirror-done", restore_ok ? "PASS" : "FAIL",
+                 restore_ok ? 0u : 1u, &done, 1);
+    flush_deferred(emulated, "PSP-VRAM-MIRROR-001");
 }
 #endif
 
@@ -7750,6 +8309,8 @@ int main(int argc, char *argv[]) {
     run_umd_io(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_LIST
     run_font_list(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
+    run_vram_mirror(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

@@ -222,6 +222,353 @@ def parse_ge_nan_output(text: str, *, require_complete: bool = True) -> Sequence
 
 
 # ---------------------------------------------------------------------------
+# PSP-VRAM-MIRROR-001 raw EDRAM mirror and depth-buffer observations
+# ---------------------------------------------------------------------------
+
+VRAM_MIRROR_BASES = (
+    0x04000000, 0x04200000, 0x04400000, 0x04600000,
+    0x44000000, 0x44200000, 0x44400000, 0x44600000,
+)
+VRAM_MIRROR_WRITE_BASES = (
+    0x04200000, 0x04400000, 0x04600000,
+    0x44200000, 0x44400000, 0x44600000,
+)
+VRAM_MIRROR_BYTES = 0x00200000
+VRAM_MIRROR_ROW_BYTES = 0x400
+VRAM_MIRROR_ROW_WORDS = VRAM_MIRROR_ROW_BYTES // 4
+VRAM_MIRROR_ROW_CHUNK_WORDS = 8
+VRAM_MIRROR_ROW_CHUNKS = VRAM_MIRROR_ROW_WORDS // VRAM_MIRROR_ROW_CHUNK_WORDS
+VRAM_MIRROR_SCATTER_COUNT = 16
+VRAM_MIRROR_SCATTER_CHUNKS = VRAM_MIRROR_SCATTER_COUNT // VRAM_MIRROR_ROW_CHUNK_WORDS
+VRAM_MIRROR_WRITE_SAMPLE_COUNT = 12
+VRAM_MIRROR_WRITE_CHUNK_WORDS = 4
+VRAM_MIRROR_WRITE_CHUNKS = (
+    VRAM_MIRROR_WRITE_SAMPLE_COUNT // VRAM_MIRROR_WRITE_CHUNK_WORDS
+)
+VRAM_MIRROR_FRAME_BYTES = 512 * 272 * 2
+VRAM_MIRROR_DEPTH_ROW = 24
+VRAM_MIRROR_DEPTH_STRIDE = 512
+VRAM_MIRROR_FLAT_X = 16
+VRAM_MIRROR_FLAT_WORDS = 32
+VRAM_MIRROR_FLAT_CHUNK_WORDS = 8
+VRAM_MIRROR_FLAT_CHUNKS = VRAM_MIRROR_FLAT_WORDS // VRAM_MIRROR_FLAT_CHUNK_WORDS
+VRAM_MIRROR_GRADIENT_X = 64
+VRAM_MIRROR_GRADIENT_WORDS = 64
+VRAM_MIRROR_GRADIENT_CHUNK_WORDS = 8
+VRAM_MIRROR_GRADIENT_CHUNKS = (
+    VRAM_MIRROR_GRADIENT_WORDS // VRAM_MIRROR_GRADIENT_CHUNK_WORDS
+)
+VRAM_MIRROR_INFO_OUT_COUNT = 10 + VRAM_MIRROR_SCATTER_COUNT
+VRAM_MIRROR_SEMANTIC_CASES = (
+    ("vram-mirror-info",)
+    + tuple(
+        f"vram-cpu-base-row{row}-{chunk:02d}"
+        for row in range(2)
+        for chunk in range(VRAM_MIRROR_ROW_CHUNKS)
+    )
+    + tuple(
+        f"vram-cpu-base-scatter-{chunk:02d}"
+        for chunk in range(VRAM_MIRROR_SCATTER_CHUNKS)
+    )
+    + tuple(
+        f"vram-cpu-write-mirror-{alias:02d}-{chunk:02d}"
+        for alias in range(len(VRAM_MIRROR_WRITE_BASES))
+        for chunk in range(VRAM_MIRROR_WRITE_CHUNKS)
+    )
+    + ("vram-ge-flat-sync",)
+    + tuple(f"vram-ge-flat-{chunk:02d}" for chunk in range(VRAM_MIRROR_FLAT_CHUNKS))
+    + ("vram-ge-gradient-sync",)
+    + tuple(
+        f"vram-ge-gradient-{chunk:02d}"
+        for chunk in range(VRAM_MIRROR_GRADIENT_CHUNKS)
+    )
+    + ("vram-restore",)
+)
+VRAM_MIRROR_SPEC = StreamSpec(
+    test_id="PSP-VRAM-MIRROR-001",
+    semantic_cases=VRAM_MIRROR_SEMANTIC_CASES,
+    terminal_case="vram-mirror-done",
+)
+VRAM_MIRROR_OUT_COUNTS = {
+    "vram-mirror-info": VRAM_MIRROR_INFO_OUT_COUNT,
+    **{
+        f"vram-cpu-base-row{row}-{chunk:02d}":
+            VRAM_MIRROR_ROW_CHUNK_WORDS * len(VRAM_MIRROR_BASES) * 2
+        for row in range(2)
+        for chunk in range(VRAM_MIRROR_ROW_CHUNKS)
+    },
+    **{
+        f"vram-cpu-base-scatter-{chunk:02d}":
+            VRAM_MIRROR_ROW_CHUNK_WORDS * len(VRAM_MIRROR_BASES) * 2
+        for chunk in range(VRAM_MIRROR_SCATTER_CHUNKS)
+    },
+    **{
+        f"vram-cpu-write-mirror-{alias:02d}-{chunk:02d}":
+            VRAM_MIRROR_WRITE_CHUNK_WORDS * 4
+        for alias in range(len(VRAM_MIRROR_WRITE_BASES))
+        for chunk in range(VRAM_MIRROR_WRITE_CHUNKS)
+    },
+    "vram-ge-flat-sync": 12,
+    **{
+        f"vram-ge-flat-{chunk:02d}":
+            VRAM_MIRROR_FLAT_CHUNK_WORDS * len(VRAM_MIRROR_BASES) * 2
+        for chunk in range(VRAM_MIRROR_FLAT_CHUNKS)
+    },
+    "vram-ge-gradient-sync": 12,
+    **{
+        f"vram-ge-gradient-{chunk:02d}":
+            VRAM_MIRROR_GRADIENT_CHUNK_WORDS * len(VRAM_MIRROR_BASES) * 2
+        for chunk in range(VRAM_MIRROR_GRADIENT_CHUNKS)
+    },
+    "vram-restore": 5,
+    "vram-mirror-done": 1,
+}
+
+
+def _vram_mirror_integer(record: TestResult, field: str) -> int:
+    try:
+        value = int(dict(record.values)[field], 0)
+    except (KeyError, ValueError) as exc:
+        raise ProtocolError(
+            f"PSP-VRAM-MIRROR-001: {record.case_id} {field} is not an integer"
+        ) from exc
+    if not 0 <= value <= 0xFFFFFFFF:
+        raise ProtocolError(
+            f"PSP-VRAM-MIRROR-001: {record.case_id} {field} is outside a raw word"
+        )
+    return value
+
+
+def _validate_vram_mirror_shapes(sequence: SequenceReport) -> None:
+    for case_id, record in sequence.results.items():
+        values = dict(record.values)
+        if record.status == "SKIP":
+            expected = {"result"}
+            if case_id == VRAM_MIRROR_SPEC.terminal_case:
+                expected.add("out0")
+        else:
+            expected = {
+                "result",
+                *(f"out{index}" for index in range(VRAM_MIRROR_OUT_COUNTS[case_id])),
+            }
+        if set(values) != expected:
+            raise ProtocolError(
+                f"PSP-VRAM-MIRROR-001: {case_id} fields must be "
+                f"{sorted(expected)}, got {sorted(values)}"
+            )
+        for field in values:
+            _vram_mirror_integer(record, field)
+
+
+def _vram_mirror_expected_reverse_offsets(info: tuple[int, ...]) -> tuple[int, ...]:
+    color_base = info[6]
+    depth_base = info[8]
+    return (
+        color_base,
+        color_base + VRAM_MIRROR_ROW_BYTES - 4,
+        depth_base,
+        depth_base + VRAM_MIRROR_ROW_BYTES - 4,
+        *info[10:18],
+    )
+
+
+def _vram_mirror_validate_address_pairs(
+    record: TestResult, expected_addresses: tuple[int, ...], *, value_max: int = 0xFFFFFFFF
+) -> None:
+    for index, expected_address in enumerate(expected_addresses):
+        address = _vram_mirror_integer(record, f"out{index * 2}")
+        sample = _vram_mirror_integer(record, f"out{index * 2 + 1}")
+        if address != expected_address:
+            raise ProtocolError(
+                f"PSP-VRAM-MIRROR-001: {record.case_id} out{index * 2} "
+                f"must name address {expected_address:#010x}, got {address:#010x}"
+            )
+        if sample > value_max:
+            raise ProtocolError(
+                f"PSP-VRAM-MIRROR-001: {record.case_id} raw sample "
+                f"{sample:#010x} exceeds {value_max:#x}"
+            )
+
+
+def parse_vram_mirror_output(
+    text: str, *, require_complete: bool = True
+) -> SequenceReport:
+    """Parse raw VRAM mirror observations without asserting hardware values."""
+
+    sequence = parse_sequence(text, VRAM_MIRROR_SPEC, require_complete=require_complete)
+    _validate_vram_mirror_shapes(sequence)
+    info_record = sequence.results.get("vram-mirror-info")
+    if info_record is None:
+        return sequence
+    if info_record.status == "SKIP":
+        if any(
+            record.status != "SKIP"
+            for case_id, record in sequence.results.items()
+            if case_id != "vram-mirror-info"
+        ):
+            raise ProtocolError("PSP-VRAM-MIRROR-001: skipped setup has measured records")
+        return sequence
+    if info_record.status != "PASS":
+        raise ProtocolError("PSP-VRAM-MIRROR-001: setup must PASS or SKIP")
+
+    info = tuple(
+        _vram_mirror_integer(info_record, f"out{index}")
+        for index in range(VRAM_MIRROR_INFO_OUT_COUNT)
+    )
+    (
+        cached_base,
+        uncached_base,
+        display_offset,
+        display_bytes,
+        display_stride,
+        display_format,
+        color_offset,
+        frame_bytes,
+        depth_offset,
+        scatter_count,
+        *scatter,
+    ) = info
+    if cached_base != VRAM_MIRROR_BASES[0] or uncached_base != VRAM_MIRROR_BASES[4]:
+        raise ProtocolError("PSP-VRAM-MIRROR-001: base address fields are not PSP VRAM aliases")
+    if (
+        display_bytes == 0
+        or display_stride == 0
+        or display_format > 3
+        or display_offset + display_bytes > VRAM_MIRROR_BYTES
+    ):
+        raise ProtocolError("PSP-VRAM-MIRROR-001: display span is outside 2 MiB VRAM")
+    display_bytes_per_pixel = 4 if display_format == 3 else 2
+    if display_bytes != display_stride * 272 * display_bytes_per_pixel:
+        raise ProtocolError("PSP-VRAM-MIRROR-001: display span does not match its format")
+    if (
+        color_offset % VRAM_MIRROR_ROW_BYTES != 0
+        or color_offset < display_offset + display_bytes
+        or frame_bytes != VRAM_MIRROR_FRAME_BYTES
+        or depth_offset != color_offset + frame_bytes
+        or depth_offset + frame_bytes > VRAM_MIRROR_BYTES
+    ):
+        raise ProtocolError("PSP-VRAM-MIRROR-001: scratch color/depth spans are invalid")
+    if scatter_count != VRAM_MIRROR_SCATTER_COUNT or len(scatter) != scatter_count:
+        raise ProtocolError("PSP-VRAM-MIRROR-001: scattered sample count is invalid")
+    if tuple(sorted(scatter)) != tuple(scatter) or len(set(scatter)) != scatter_count:
+        raise ProtocolError("PSP-VRAM-MIRROR-001: scattered offsets are not unique and ordered")
+    scratch_end = depth_offset + frame_bytes
+    for offset in scatter:
+        if offset % 4 or offset + 4 > VRAM_MIRROR_BYTES:
+            raise ProtocolError("PSP-VRAM-MIRROR-001: scattered offset is outside VRAM")
+        if display_offset <= offset < display_offset + display_bytes:
+            raise ProtocolError("PSP-VRAM-MIRROR-001: scattered offset overlaps display memory")
+        if color_offset <= offset < scratch_end:
+            raise ProtocolError("PSP-VRAM-MIRROR-001: scattered offset overlaps GE scratch")
+    if scatter[-1] - scatter[0] < 0x00080000:
+        raise ProtocolError("PSP-VRAM-MIRROR-001: scattered offsets do not span the EDRAM")
+
+    for row in range(2):
+        base = color_offset if row == 0 else depth_offset
+        for chunk in range(VRAM_MIRROR_ROW_CHUNKS):
+            record = sequence.results[f"vram-cpu-base-row{row}-{chunk:02d}"]
+            offsets = tuple(
+                base + (chunk * VRAM_MIRROR_ROW_CHUNK_WORDS + word) * 4
+                for word in range(VRAM_MIRROR_ROW_CHUNK_WORDS)
+            )
+            addresses = tuple(
+                alias + offset for offset in offsets for alias in VRAM_MIRROR_BASES
+            )
+            _vram_mirror_validate_address_pairs(record, addresses)
+
+    for chunk in range(VRAM_MIRROR_SCATTER_CHUNKS):
+        record = sequence.results[f"vram-cpu-base-scatter-{chunk:02d}"]
+        offsets = scatter[
+            chunk * VRAM_MIRROR_ROW_CHUNK_WORDS:
+            (chunk + 1) * VRAM_MIRROR_ROW_CHUNK_WORDS
+        ]
+        addresses = tuple(
+            alias + offset for offset in offsets for alias in VRAM_MIRROR_BASES
+        )
+        _vram_mirror_validate_address_pairs(record, addresses)
+
+    reverse_offsets = _vram_mirror_expected_reverse_offsets(info)
+    for alias_index, write_base in enumerate(VRAM_MIRROR_WRITE_BASES):
+        for chunk in range(VRAM_MIRROR_WRITE_CHUNKS):
+            record = sequence.results[
+                f"vram-cpu-write-mirror-{alias_index:02d}-{chunk:02d}"
+            ]
+            values = tuple(
+                _vram_mirror_integer(record, f"out{index}")
+                for index in range(VRAM_MIRROR_OUT_COUNTS[record.case_id])
+            )
+            offsets = reverse_offsets[
+                chunk * VRAM_MIRROR_WRITE_CHUNK_WORDS:
+                (chunk + 1) * VRAM_MIRROR_WRITE_CHUNK_WORDS
+            ]
+            for word, offset in enumerate(offsets):
+                index = word * 4
+                expected_write = write_base + offset
+                expected_pattern = (
+                    0xB6000000 | (alias_index << 21) | (offset & 0x001FFFFF)
+                )
+                expected_read = VRAM_MIRROR_BASES[4] + offset
+                if values[index:index + 3] != (
+                    expected_write, expected_pattern, expected_read
+                ):
+                    raise ProtocolError(
+                        f"PSP-VRAM-MIRROR-001: {record.case_id} address/pattern fields "
+                        "do not match the named mirror write"
+                    )
+
+    for case_id in ("vram-ge-flat-sync", "vram-ge-gradient-sync"):
+        record = sequence.results[case_id]
+        if any(_vram_mirror_integer(record, f"out{index}") > 1
+               for index in (4, 6, 10, 11)):
+            raise ProtocolError(
+                f"PSP-VRAM-MIRROR-001: {case_id} state fields are not booleans"
+            )
+
+    for case_id, first_x, chunk_words, chunks in (
+        (
+            "vram-ge-flat-",
+            VRAM_MIRROR_FLAT_X,
+            VRAM_MIRROR_FLAT_CHUNK_WORDS,
+            VRAM_MIRROR_FLAT_CHUNKS,
+        ),
+        (
+            "vram-ge-gradient-",
+            VRAM_MIRROR_GRADIENT_X,
+            VRAM_MIRROR_GRADIENT_CHUNK_WORDS,
+            VRAM_MIRROR_GRADIENT_CHUNKS,
+        ),
+    ):
+        for chunk in range(chunks):
+            record = sequence.results[f"{case_id}{chunk:02d}"]
+            offsets = tuple(
+                depth_offset + (
+                    VRAM_MIRROR_DEPTH_ROW * VRAM_MIRROR_DEPTH_STRIDE
+                    + first_x + chunk * chunk_words + word
+                ) * 2
+                for word in range(chunk_words)
+            )
+            addresses = tuple(
+                alias + offset for offset in offsets for alias in VRAM_MIRROR_BASES
+            )
+            _vram_mirror_validate_address_pairs(record, addresses, value_max=0xFFFF)
+
+    restore = sequence.results["vram-restore"]
+    restore_values = tuple(
+        _vram_mirror_integer(restore, f"out{index}") for index in range(5)
+    )
+    if restore_values[0:2] != (VRAM_MIRROR_BASES[4], VRAM_MIRROR_BYTES):
+        raise ProtocolError("PSP-VRAM-MIRROR-001: restore record does not cover all VRAM")
+    if restore_values[4] > 1:
+        raise ProtocolError("PSP-VRAM-MIRROR-001: restore GE idle field is not boolean")
+    if restore.status == "PASS" and restore_values[3] != 0:
+        raise ProtocolError("PSP-VRAM-MIRROR-001: passing restore has byte mismatches")
+    done = sequence.results[VRAM_MIRROR_SPEC.terminal_case]
+    if restore.status != "PASS" and done.status == "PASS":
+        raise ProtocolError("PSP-VRAM-MIRROR-001: terminal PASS contradicts failed restore")
+    return sequence
+
+
+# ---------------------------------------------------------------------------
 # PSP-DMAC-001 safe alignment/overlap cells and isolated invalid-tail launches
 # ---------------------------------------------------------------------------
 
