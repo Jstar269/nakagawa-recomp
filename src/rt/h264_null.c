@@ -22,6 +22,21 @@ static int s_unavailable_reported;
 #if defined(_WIN32)
 extern const SrH264Backend sr_h264_mf_backend;
 #endif
+#if defined(SR_H264_FFMPEG)
+extern const SrH264Backend sr_h264_ffmpeg_backend;
+#endif
+
+/* The real decoder this build defaults to: Media Foundation on Windows, FFmpeg where the build
+ * enabled it (H264_FFMPEG=1), otherwise none and every movie fails closed. */
+static const SrH264Backend *platform_backend(void) {
+#if defined(_WIN32)
+    return &sr_h264_mf_backend;
+#elif defined(SR_H264_FFMPEG)
+    return &sr_h264_ffmpeg_backend;
+#else
+    return NULL;
+#endif
+}
 
 static int null_create(void) { return -1; }
 static void null_destroy(int id) { (void)id; }
@@ -65,35 +80,35 @@ static const SrH264Backend *named_backend(const char *name) {
         strcmp(name, "media_foundation") == 0)
         return &sr_h264_mf_backend;
 #endif
+#if defined(SR_H264_FFMPEG)
+    if (strcmp(name, "ffmpeg") == 0 || strcmp(name, "libavcodec") == 0)
+        return &sr_h264_ffmpeg_backend;
+#endif
     return NULL;
 }
 
+static const SrH264Backend *s_selected_named;   /* backend chosen by name, if any */
+
 static const SrH264Backend *selected_backend(void) {
     if (s_selection >= 0) {
-        return s_selection == 0 ? &s_null_backend :
-#if defined(_WIN32)
-               &sr_h264_mf_backend;
-#else
-               &s_null_backend;
-#endif
+        if (s_selection == 0) return &s_null_backend;
+        if (s_selected_named) return s_selected_named;
+        return platform_backend() ? platform_backend() : &s_null_backend;
     }
-#if defined(_WIN32)
-    if (!getenv("SR_NOH264")) s_selection = 1;
-    else s_selection = 0;
-#else
-    s_selection = 0;
-#endif
+    s_selection = (platform_backend() && !getenv("SR_NOH264")) ? 1 : 0;
     return selected_backend();
 }
 
 int sr_h264_select_backend(const char *name) {
     if (!name || !*name || strcmp(name, "auto") == 0) {
         s_selection = -1;
+        s_selected_named = NULL;
         return 1;
     }
     const SrH264Backend *backend = named_backend(name);
     if (!backend) return 0;
     s_selection = backend == &s_null_backend ? 0 : 1;
+    s_selected_named = backend == &s_null_backend ? NULL : backend;
     return 1;
 }
 
