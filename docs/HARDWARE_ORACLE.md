@@ -1585,7 +1585,7 @@ not expected PSP values.
 | `vfpu-transcendental-corpus` | `PSP-VFPU-TRANSCENDENTAL-001` | `MEASURED` (2026-10-15, `22b027f6`; single launch, not in the campaign queue) | Raw single-lane result words for vsin, vcos, vexp2, vlog2, vrsq, vrcp, vsqrt, vasin, vnrcp, vnsin, and vrexp2. Each operation uses 63 raw-word inputs: 20 special encodings and 43 evenly spaced domain constants. VASIN substitutes three in-domain words for its previously measured edge inputs. Eight-word chunks produce 88 data records plus one completion record (89 result records total); parsing checks format only and asserts no hardware values. |
 | `registry-font` | `PSP-REGISTRY-002` | `NOT_RUN` | Whether the registry handle lists the root, then the `/DATA/FONT` and `/SYSPROFILE/RESOLUTION` subtrees: every key's name, type, size, value and enumeration order, reached only through categories the console listed first. |
 | `umd-io` | `PSP-UMDIO-001` | `MEASURED` (2026-10-17, PSP-3000 / 6.61 / ARK CFW; `e2180970`) | `sceIoOpen` and `sceIoDopen` results for bare UMD devices, disc paths, the two extra-flag opens, and `msstor0p1:/`; successful descriptors were closed with result 0. The UMD remained inserted and was not activated or changed. |
-| `umd-raw-read` | `PSP-UMDRAW-001` | `NOT_RUN` | Read-only umd0: seeks and bounded reads, including size edges, byte-position advancement, async read/poll/wait, and sceIoGetstat. Only scalar results and the first eight bytes of designated sector-16 reads are emitted; the host fixture is synthetic and does not establish console behavior. |
+| `umd-raw-read` | `PSP-UMDRAW-001` | `CAPTURED` (2026-10-17, incomplete; local source `6a9a39aa`) | 31 result records ended at `size-4096-read`; the last progress marker was `size-32768-read`. No result or terminal record arrived within the 360-second case timeout, and teardown could not be verified. No raw UMD read or seek semantics are measured. A fresh power-cycle is required before another launch. |
 | `hle-vtimer-unit` | `PSP-HLE-VTIMER-002` | `MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the campaign queue) | One VTimer: start; a `sceKernelGetVTimerTime` and a system-clock reading either side of a bounded 20 ms delay; the VTimer base and Refer base field while running and after stop; stop; delete. Each 64-bit clock is recorded as its low word then its high word. |
 | `hle-vtimer-errors` | `PSP-HLE-VTIMER-003` | `MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the campaign queue) | Start, stop, and `sceKernelGetVTimerTime` on a deleted UID, then a cleanup delete of that UID after its last use; a live timer created and deleted; up to 64 creates; out1 records whether a refusal occurred; every created timer deleted. The NULL option pointer of `sceKernelCreateVTimer` is the optional argument. |
 | `hle-kernel-pool-bounds` | `PSP-HLE-KERNEL-STATUS-002` | `NOT_RUN` (revised form; single launch, not in the campaign queue; the earlier revision's 2026-10-15 `b5d6fc5b` run was captured only) | FPL creation with block size 0 and with a 0x7fffffff-byte block, each deleted when its create returned a pool; a refused create gives a PASS delete cell with out0 0 and no delete call; VPL allocation: up to 64 allocations; out1 records whether a refusal occurred; every block freed and the VPL deleted. The NULL option pointers of the pool creates are the optional argument. |
@@ -1635,7 +1635,7 @@ The recorded cells are `umd-state-before`, `io-open-0000`, `io-open-0001`,
 
 ### PSP-UMDRAW-001 raw UMD read probe
 
-Status: NOT_RUN. The source-owned case opens only umd0: with read-only flags.
+Status: CAPTURED, not measured. The source-owned case opens only umd0: with read-only flags.
 It records 64-bit seek results as low then high words, sceIoLseek32 results,
 read counts, the single immediate async poll and its following wait,
 sceIoGetstat, and UMD state before and after. Reads request at most 32,768
@@ -1643,6 +1643,29 @@ bytes. The only disc bytes emitted are the first eight bytes of designated
 sector-16 reads, plus a whole-buffer-zero flag; no checksum or other payload is
 recorded. The async request is waited before the descriptor closes. The host
 fixture uses a synthetic byte-addressed disc and is not hardware evidence.
+
+An incomplete PSP-3000 run used local source commit 6a9a39aa. It emitted 31
+result records through size-4096-read. The final durable progress marker was
+size-32768-read, but the marker precedes that cell's seek/read pair, so the
+capture does not identify which call failed to return. The case timed out at
+360 seconds without umdraw-done; the runner could not verify module unload or
+the host0 round-trip and stopped. The only conclusion is that this run was
+incomplete. Do not reuse it to model UMD descriptor semantics; a fresh physical
+power-cycle is required before any new launch.
+The current source separates the progress markers for each seek and read; this
+source-only refinement has not been run on hardware.
+
+Captured result-record IDs:
+
+```text
+umd-state-before, raw-open-extra, seek-set-0, seek-set-16, seek-set-32768,
+seek-cur-0, seek-end-0, seek-set-1, seek-set-neg1, seek32-set-0,
+seek32-set-16, seek32-set-32768, seek32-end-0, pos-advance-seek,
+pos-advance-first, pos-advance-second, pos-advance-cur, byte-sector16-seek,
+byte-sector16-read, size-1-seek, size-1-read, size-512-seek, size-512-read,
+size-2047-seek, size-2047-read, size-2048-seek, size-2048-read,
+size-2049-seek, size-2049-read, size-4096-seek, size-4096-read
+```
 
 The fixed output sequence is umd-state-before, raw-open-extra, seven 64-bit
 seek cells, four 32-bit seek cells, pos-advance-seek plus two consecutive reads

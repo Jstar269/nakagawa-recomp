@@ -2866,6 +2866,8 @@ class PspDmacProbeTests(unittest.TestCase):
                 # b5d6fc5b, 2026-10-15: an incomplete NULL-pointer stream. (The pool-bounds
                 # capture of the same day belongs to a revision since replaced; NOT_RUN.)
                 "PSP-HLE-NULL-OUT-001",
+                # 2026-10-17: raw UMD capture stopped before the 32768-byte seek/read result.
+                "PSP-UMDRAW-001",
             },
         )
 
@@ -6983,6 +6985,27 @@ class IoCasesSourceTests(unittest.TestCase):
                             for value in pin.split("IoFileMgrForUser=", 1)[1].split(","))
         self.assertEqual(actual_nids, UMDRAW_IOFILEMGR_NIDS)
 
+    def test_raw_read_cells_mark_seek_and_read_separately(self) -> None:
+        raw = self._code(self.umd[self.umd.index("#define UMDRAW_TEST_ID"):])
+        read_at = raw[raw.index("static void umdraw_read_at("):]
+        read_at = read_at[:read_at.index("\nstatic void umdraw_skip_primary")]
+        self.assertLess(read_at.index("umdraw_step(u, seek_case);"),
+                        read_at.index("sceIoLseek("))
+        self.assertLess(read_at.index("umdraw_step(u, read_case);"),
+                        read_at.index("sceIoRead("))
+
+        run = raw[raw.index("static void umdraw_run("):]
+        run = run[:run.index("\n}")]
+        self.assertIn('umdraw_step(u, "pos-advance-seek");', run)
+        self.assertIn('umdraw_step(u, "pos-advance-read-pair");', run)
+        self.assertIn('umdraw_step(u, "pos-advance-cur");', run)
+        read_async = run.index("sceIoReadAsync(")
+        poll_async = run.index("sceIoPollAsync(")
+        wait_async = run.index("sceIoWaitAsync(")
+        self.assertLess(read_async, poll_async)
+        self.assertNotIn("umdraw_step(", run[read_async:poll_async])
+        self.assertLess(run.index('umdraw_step(u, "async-wait");'), wait_async)
+
     def test_raw_device_import_pin_rejects_unexpected_io_and_umd_imports(self) -> None:
         io_pin = "IoFileMgrForUser=" + ",".join(
             f"0x{nid:08X}" for nid in UMDRAW_IOFILEMGR_NIDS)
@@ -7080,17 +7103,29 @@ class IoCasesSourceTests(unittest.TestCase):
             block = block[:block.index("\n#endif")]
             self.assertNotRegex(block, r"\bsce\w+\s*\(")
 
-    def test_raw_device_case_manifest_matches_its_not_run_record_contract(self) -> None:
+    def test_raw_device_case_manifest_matches_its_captured_record_contract(self) -> None:
         manifest = json.loads((self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
             encoding="utf-8"))
         entry = next(item for item in manifest["tests"] if item["id"] == "PSP-UMDRAW-001")
-        self.assertEqual(entry["status"], "planned")
-        self.assertEqual(entry["hardware_evidence"], "NOT_RUN")
+        self.assertEqual(entry["status"], "implemented")
+        self.assertEqual(entry["hardware_evidence"], "CAPTURED")
         self.assertEqual(entry["case_ids"], list(UMDRAW_CASES))
-        self.assertEqual(entry["evidence_cases"], list(UMDRAW_CASES))
+        captured = (
+            "umd-state-before", "raw-open-extra", "seek-set-0", "seek-set-16",
+            "seek-set-32768", "seek-cur-0", "seek-end-0", "seek-set-1",
+            "seek-set-neg1", "seek32-set-0", "seek32-set-16", "seek32-set-32768",
+            "seek32-end-0", "pos-advance-seek", "pos-advance-first",
+            "pos-advance-second", "pos-advance-cur", "byte-sector16-seek",
+            "byte-sector16-read", "size-1-seek", "size-1-read", "size-512-seek",
+            "size-512-read", "size-2047-seek", "size-2047-read", "size-2048-seek",
+            "size-2048-read", "size-2049-seek", "size-2049-read", "size-4096-seek",
+            "size-4096-read",
+        )
+        self.assertEqual(entry["evidence_cases"], list(captured))
         oracle_docs = (self.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
         self.assertIn("PSP-UMDRAW-001", oracle_docs)
-        self.assertIn("NOT_RUN", oracle_docs)
+        self.assertIn("| `umd-raw-read` | `PSP-UMDRAW-001` | `CAPTURED`", oracle_docs)
+        self.assertIn("size-32768-read", oracle_docs)
 
     def test_umd_pin_refuses_an_activation_import(self) -> None:
         pin = ["--exact-library", "sceUmdUser=0x46EBB729,0x6B4A146C"]

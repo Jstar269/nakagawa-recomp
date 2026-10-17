@@ -271,8 +271,9 @@ static void umdraw_seek32(UmdRawRead *u, SceUID fd, const char *case_id,
 static void umdraw_read_at(UmdRawRead *u, SceUID fd, const char *seek_case,
                            const char *read_case, SceOff offset,
                            uint32_t requested, int include_header) {
-    umdraw_step(u, read_case);
+    umdraw_step(u, seek_case);
     const SceOff seek_result = sceIoLseek(fd, offset, SEEK_SET);
+    umdraw_step(u, read_case);
     memset(s_umdraw_buffer, 0, sizeof(s_umdraw_buffer));
     const int read_result = sceIoRead(fd, s_umdraw_buffer, (SceSize)requested);
     umdraw_record_off(u, seek_case, seek_result);
@@ -325,8 +326,9 @@ static void umdraw_run(UmdRawRead *u) {
     umdraw_seek32(u, fd, "seek32-end-0", 0, SEEK_END);
 
     /* Keep the two reads and the position query adjacent: no host0 record write is interposed. */
-    umdraw_step(u, "pos-advance");
+    umdraw_step(u, "pos-advance-seek");
     const SceOff pos_seek = sceIoLseek(fd, 16, SEEK_SET);
+    umdraw_step(u, "pos-advance-read-pair");
     memset(s_umdraw_buffer, 0, sizeof(s_umdraw_buffer));
     const int first_read = sceIoRead(fd, s_umdraw_buffer, 2048u);
     const uint32_t first_low = (uint32_t)s_umdraw_buffer[0]
@@ -355,6 +357,7 @@ static void umdraw_run(UmdRawRead *u) {
     for (uint32_t i = 0u; i < UMDRAW_BUFFER_BYTES; i++) {
         if (s_umdraw_buffer[i] != 0u) { second_zero = 0u; break; }
     }
+    umdraw_step(u, "pos-advance-cur");
     const SceOff current_after_reads = sceIoLseek(fd, 0, SEEK_CUR);
     umdraw_record_off(u, "pos-advance-seek", pos_seek);
     umdraw_record(u, "pos-advance-first", "PASS",
@@ -388,13 +391,15 @@ static void umdraw_run(UmdRawRead *u) {
     umdraw_read_at(u, fd, "far-seek", "far-read", 0x7fffffff, 2048u, 0);
 
     /* No host0 write separates sceIoReadAsync from its single immediate poll. */
-    umdraw_step(u, "async-read-poll-wait");
+    umdraw_step(u, "async-seek");
     const SceOff async_seek = sceIoLseek(fd, 16, SEEK_SET);
     memset(s_umdraw_buffer, 0, sizeof(s_umdraw_buffer));
+    umdraw_step(u, "async-read");
     const int async_result = sceIoReadAsync(fd, s_umdraw_buffer, 2048u);
     SceOff poll_value = 0;
     const int poll_result = sceIoPollAsync(fd, &poll_value);
     SceOff wait_value = 0;
+    umdraw_step(u, "async-wait");
     const int wait_result = sceIoWaitAsync(fd, &wait_value);
     const uint32_t async_low = (uint32_t)s_umdraw_buffer[0]
         | ((uint32_t)s_umdraw_buffer[1] << 8)

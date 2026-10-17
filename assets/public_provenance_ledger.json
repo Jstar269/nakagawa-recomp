@@ -1162,7 +1162,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a2e345027da48587c3e7e0d6cfdc0cec4ea01c7e061b752c995d496d266aa327"
+      "sha256": "0daeb738d6523d15698e03b891035e3ececdf8fb9bf633971978332f17ad824c"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -1994,7 +1994,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "8dc377d3a68a0fd77c0340965bb031753dcbec6c05385c706a8f62306647e4a3"
+      "sha256": "cd8c48dd62e548b33ae9430b67ee0317f028ad2599694694c97319af79d20491"
     },
     {
       "path": "fixtures/psp_oracle/display_user_imports.S",
@@ -2273,7 +2273,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "77c10579575f88d06a1e475ae192cc6bd795cdabc7fbe328f26481e732849c8d"
+      "sha256": "2c9fe10613239052af69d5d4adca57ec4bfe63df21ea4fd5974ab56cfbff7200"
     },
     {
       "path": "fixtures/psp_oracle_captures/display_wait_late.20261008-run5.txt",
@@ -7694,7 +7694,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "eb6afc11bdc27e0d3e7a054ac8b49c4785ce4cad620340e309545bee2aee1924"
+      "sha256": "6684e84f9f787230f1e5f68184b30113fe675ce12cb0acca2005d66e339b5e3e"
     },
     {
       "path": "tools/psp_oracle/parse_golden.py",
@@ -9736,7 +9736,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c66243f30f1ad801a3965c4722ce7a498ec4a2955b09bc47333163e01c1f0ebb"
+      "sha256": "ab529f8be1decf802075f4908beb5fd925ea9e9d95772c1ae23b935e0e0bb175"
     },
     {
       "path": "tools/test_psp_parsers.py",
