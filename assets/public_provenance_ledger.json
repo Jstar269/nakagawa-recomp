@@ -7211,7 +7211,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "429b3f53bed50e3af3e6fc8b7c25b1f3f950d6bb638da792785c95c85ad6e398"
+      "sha256": "630bceb9879f5c7e9e853849d1f0bcb9228864e934221d2656c65d31c5248293"
     },
     {
       "path": "tools/nk_core/__init__.py",
@@ -7283,7 +7283,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "979a645b7bba87693e6e5378b666231edc3b6b075393476dd689ed9008b06751"
+      "sha256": "3c182beb8978a8b8bc79d3170b46c4ce5f4ec4755d5d9ed718c445e5f99e4947"
     },
     {
       "path": "tools/nk_core/launcher.py",
@@ -7634,7 +7634,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "ac94bb5f826b4a6589ea6329ea783984c9bb0cecc688d6b4c0f664cd129385ba"
+      "sha256": "b33a75ea757ca33ce02eca3491afec447c8c1f91fab0bab0d0c3e871a9b1968e"
     },
     {
       "path": "tools/psp_import_table.py",
@@ -8583,7 +8583,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "665be86dae18654fd405b6e4ce92142cfebf0a81d241a95bce87c166c0477f8f"
+      "sha256": "32cb9d07f2fe672ce6f98f28d3254b8c21187fb035b1b0a528cbc5421c7e847f"
     },
     {
       "path": "tools/test_enhancement_package.py",
@@ -9100,7 +9100,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c3ea4b0a7e258791359985086695ab63cc93d8da6597771f350cb7bc284de6fe"
+      "sha256": "0a093143ca5332870a1d60f7267ff12ab37b2817eebc1a5cac7985034544b835"
     },
     {
       "path": "tools/test_key_scrub_tools.py",
@@ -9472,7 +9472,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "70224cf65e3d1ca63e6a43cb80dda564fab41d873123a83b3f159bb31e81af67"
+      "sha256": "9e38d0bc11ed2e7f4a832bd01673e1c5c6cd4e622deb1142c54e5d328b8677b8"
     },
     {
       "path": "tools/test_portability_inventory.py",
@@ -9532,7 +9532,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dbedd765d06a8b44258f538581ad544662be77ee45a5a26adb8dda501b0b9854"
+      "sha256": "921cb86a62975f7aa64ead9569c93d09d08eefeef0ca7b97bfa72df42b2ae61d"
     },
     {
       "path": "tools/test_profile_zero_e2e.py",

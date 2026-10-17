@@ -1651,7 +1651,8 @@ class TestSanitizedBringup(unittest.TestCase):
         self.root = Path(self.temporary.name)
         executable, _stub = build_synthetic_import_prx(b"sceSynthetic", 0)
         executable = bytearray(executable)
-        struct.pack_into("<H", executable, 16, 2)
+        # Keep the import fixture as its source PRX. A zero-address ET_EXEC is
+        # an unbound executable and is covered by a separate fail-closed case.
         phoff = struct.unpack_from("<I", executable, 28)[0]
         struct.pack_into("<I", executable, phoff + 28, 0x100)
         self.iso = self.root / "synthetic.iso"
@@ -2677,7 +2678,10 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(report["reached_stage"], "prepare_import")
         self.assertEqual(report["failure_class"], "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE")
-        self.assertEqual(report["counts"]["modules"], 1)
+        self.assertIsNone(
+            report["counts"]["modules"],
+            "the fixed main image is refused before disc-module discovery",
+        )
         self.assertEqual(report["stages"]["analyze"]["status"], "NOT_RUN")
         self.assertIn(308, report["issue_numbers"])
         nk_cli.validate_bringup_report(report)
