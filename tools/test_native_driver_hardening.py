@@ -54,6 +54,16 @@ int sr_hit_hle = 0;
 int g_sr_metadata_watch = 0;
 int g_hle_depth = 0;
 CpuState *s_cpu = NULL;
+volatile int g_sr_vram_read_pending = 0;
+void sr_ge_vram_read_prepare(uint32_t address, uint32_t bytes) {{
+    (void)address; (void)bytes;
+}}
+void sr_ge_vram_write_prepare(uint32_t address, uint32_t bytes) {{
+    (void)address; (void)bytes;
+}}
+void sr_ge_vram_write_commit(uint32_t address, uint32_t bytes) {{
+    (void)address; (void)bytes;
+}}
 void sr_oor(uint32_t address, uint32_t value, int store) {{
     (void)address; (void)value; (void)store;
 }}

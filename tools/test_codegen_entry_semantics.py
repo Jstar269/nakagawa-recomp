@@ -45,13 +45,16 @@ FRAME_SIZE = 0x70
 # The #855 TAIL transfer protocol, as the stand-in recomp.h below declares it and the
 # stand-in harnesses implement it: the same slot, drain and first-restore-wins rule as
 # src/rt/recomp.h and src/rt/guest_interp.c, with the stand-in dispatch() running a
-# computed target to completion.
+# computed target to completion. The header also stands in for the entry host-stack check
+# of bodies that make direct calls (#855): these harnesses run no scheduler or guest fiber,
+# where the production check has nothing to bound either.
 _TAIL_PROTOCOL_HEADER = """\
 typedef void (*TestBodyFn)(CpuState *);
 void sr_tail_record(CpuState *s, uint32_t target, TestBodyFn fn,
                     uint32_t restore_sp, uint32_t owes_restore);
 void sr_tail_drain(CpuState *s);
 #define SR_TAIL_DRAIN(s) sr_tail_drain(s)
+#define SR_HOST_STACK_CHECK(entry) ((void)(entry))
 """
 _TAIL_PROTOCOL_IMPL = """\
 static struct {
@@ -441,6 +444,55 @@ int main(void) {{
             self.assertEqual(compiled.returncode, 0, compiled.stderr + compiled.stdout)
             ran = subprocess.run([str(work / "direct_j_semantics.exe")], capture_output=True, text=True)
             self.assertEqual(ran.returncode, 0, ran.stderr + ran.stdout)
+
+    def test_direct_j_to_known_entry_is_tail_after_this_adjustment_slot(self):
+        owner = 0x00001000
+        target = 0x00001010
+        words = {
+            owner: (0x02 << 26) | ((target >> 2) & 0x03FFFFFF),  # j target
+            owner + 4: 0x2484FFE0,                              # addiu a0,a0,-32
+            owner + 8: 0x03E00008,                              # unreachable return
+            owner + 12: 0x00000000,
+            target: 0x00801021,                                 # addu v0,a0,zero
+            target + 4: 0x03E00008,
+            target + 8: 0x00000000,
+        }
+        with scratch_dir.TemporaryDirectory(prefix="known_j_tail_") as tmp:
+            path = Path(tmp) / "known_j_tail.elf"
+            path.write_bytes(_synthetic_elf(words, owner))
+            elf = analyze.Elf(os.fspath(path))
+            starts, ranges = analyze.analyze(elf)
+            self.assertIn(target, starts, "the direct-j callee must be an analyzer-owned entry")
+            body = "\n".join(codegen.emit_function(elf, owner, ranges, starts))
+            slot = body.find("s->r[4] =")
+            tail = body.find(f"sr_tail_record(s, 0x{target:08x}u,")
+            self.assertGreaterEqual(slot, 0, body)
+            self.assertGreaterEqual(tail, 0, body)
+            self.assertLess(slot, tail, "the this-adjustment delay slot must run before the TAIL record")
+            self.assertNotIn(f"goto L_{target:08x}", body,
+                             "a known function entry must not be treated as an intra-function label")
+
+    def test_variadic_argument_save_stub_is_an_ordinary_analyzed_function(self):
+        owner = 0x00001000
+        words = {owner: 0x27BDFFE0}  # addiu sp,sp,-32
+        for index, register in enumerate(range(4, 12)):
+            words[owner + 4 + 4 * index] = (
+                (0x2B << 26) | (29 << 21) | (register << 16) | (index * 4)
+            )
+        words[owner + 36] = 0x03E00008               # jr ra
+        words[owner + 40] = 0x27BD0020               # addiu sp,sp,32
+
+        with scratch_dir.TemporaryDirectory(prefix="variadic_save_entry_") as tmp:
+            path = Path(tmp) / "variadic_save.elf"
+            path.write_bytes(_synthetic_elf(words, owner))
+            elf = analyze.Elf(os.fspath(path))
+            starts, ranges = analyze.analyze(elf)
+            self.assertIn(owner, starts)
+            self.assertTrue(analyze.in_ranges(owner, ranges))
+            body = "\n".join(codegen.emit_function(elf, owner, ranges, starts))
+            self.assertEqual(body.count("MEM_W32_PC("), 8, body)
+            for offset in range(0, 32, 4):
+                self.assertIn(f"s->r[29] + 0x{offset:08x}u", body)
 
     def test_omitted_direct_j_target_reaches_runtime_dispatch(self):
         """An omitted direct-j target must not be absorbed into its AOT caller.

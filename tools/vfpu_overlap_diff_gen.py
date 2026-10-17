@@ -37,6 +37,19 @@ def _bin_word(op6: int, sub: int, size: int, vd: int, vs: int, vt: int) -> int:
     )
 
 
+def _vv2_word(optype: int, size: int, vd: int, vs: int) -> int:
+    """A VFPU4 unary-group word (vsin.s, vrexp2.s, ...): optype in bits 16..20."""
+    lo, hi = (size - 1) & 1, (size - 1) >> 1
+    return (
+        (0x34 << 26)
+        | ((optype & 0x1F) << 16)
+        | ((vs & 0x7F) << 8)
+        | (vd & 0x7F)
+        | (lo << 7)
+        | (hi << 15)
+    )
+
+
 def _matrix1_word(which: int, size: int, vd: int, vs: int) -> int:
     lo, hi = (size - 1) & 1, (size - 1) >> 1
     return (
@@ -65,6 +78,17 @@ def build_cases() -> tuple[list[tuple[int, str, int]], int, tuple[int, int]]:
     # the historical chained expression does not.
     exotic_index = len(cases)
     cases.append((_bin_word(0x19, 4, 3, 0x08, 0x00, 0x04), "vhdp-t-signed-zero", 5))
+
+    # The PSP-VFPU-CMP-001 probe words: vscmp.s / vsge.s / vslt.s S002, S000, S001
+    # (VFPU3 sub 5/6/7, vd=0x40, vs=0x00, vt=0x20). check_vfpu_compare_measured_words()
+    # finds them by name and pins both lanes to the 45 words a PSP-3000 returned.
+    for sub, op in ((5, "vscmp"), (6, "vsge"), (7, "vslt")):
+        cases.append((_bin_word(0x1B, sub, 1, 0x40, 0x00, 0x20), f"{op}-s-measured", 1))
+
+    # The PSP-VFPU-TRANSCENDENTAL-001 probe word for vrexp2.s S002, S000 (optype 28).
+    # check_vrexp2_measured_words() finds it by name and pins both lanes to the 63 words a
+    # PSP-3000 returned.
+    cases.append((_vv2_word(28, 1, 0x40, 0x00), "vrexp2-s-measured", 1))
 
     # vmscl.t (op 0x3C sub 4 size 3): scalar inside destination matrix
     cases.append((_bin_word(0x3C, 4, 3, 0x20, 0x20, 0x00), "vmscl-t-scalar-in-dest", 2))

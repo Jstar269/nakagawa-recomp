@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "fixtures" / "showcase"))
 
+import ci_required  # noqa: E402
 import showcase as showcase_cli  # noqa: E402
 
 
@@ -386,6 +387,7 @@ _WINDOWS_SERIAL_GATES = {
     "Run native core test suite on Windows": "mingw32-make --no-print-directory CC=gcc native-core-tests",
     "Build and link the native player": "VULKAN_SDK=/ucrt64 player-ui-tests",
     "Run native player UI regressions headlessly on Windows": "VULKAN_SDK=/ucrt64 player-ui-regressions",
+    "Smoke the Windows player staging headlessly": '"--iso=$smoke/disc/TEST00007.iso" --stage-only)',
     "Stage and run production smoke outside its build directory": "VULKAN_SDK=/ucrt64 production-smoke-staged",
     "Build and run the full platform ladder": "VULKAN_SDK=/ucrt64 platform-ladder",
     "Build and run profile-zero production routes": "VULKAN_SDK=/ucrt64 profile-zero-e2e",
@@ -469,6 +471,61 @@ class WindowsRuntimePartitionTests(unittest.TestCase):
             _ci_step_index(self.block, "Build and run full production pipeline smoke"),
             _ci_step_index(self.block, "Stage and run production smoke outside its build directory"),
         )
+
+
+class WindowsPlayerStageSmokeTests(unittest.TestCase):
+    """#308: the Windows player's headless staging smoke, the counterpart of the Linux gate.
+
+    The Linux native_tools job stages a TEST00007 disc through the built player's
+    --stage-only route. The Windows job builds the same player but never ran that route,
+    so a Windows-only staging regression reached no hosted gate.
+    """
+
+    STEP = "Smoke the Windows player staging headlessly"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.block = _ci_job_blocks()["windows_runtime"]
+        cls.step = _ci_step(cls.block, cls.STEP)
+        cls.text = "\n".join(cls.step or [])
+
+    def test_step_runs_in_the_smoke_part_after_the_player_is_built(self) -> None:
+        self.assertIsNotNone(self.step, f"windows_runtime no longer runs {self.STEP!r}")
+        self.assertIn("if: matrix.part == 'smoke'", self.text)
+        self.assertIn("shell: msys2 {0}", self.text)
+        index = _ci_step_index(self.block, self.STEP)
+        for earlier in ("Build and link the native player",
+                        "Run native player UI regressions headlessly on Windows"):
+            self.assertLess(_ci_step_index(self.block, earlier), index)
+        # It runs the executable the link step built; it does not build a second one.
+        self.assertIn("build/nakagawa_player.exe", self.text)
+        self.assertNotIn("mingw32-make", self.text)
+
+    def test_step_stages_a_test00007_disc_through_the_stage_only_route(self) -> None:
+        self.assertIn("python fixtures/showcase/showcase.py stage-iso --out-dir", self.text)
+        self.assertIn('"--iso=$smoke/disc/TEST00007.iso" --stage-only)', self.text)
+        self.assertIn('grep -Fq "STAGING_RESULT status=PASS"', self.text)
+        self.assertIn("timeout 60s", self.text)
+        self.assertIn("SDL_VIDEODRIVER=offscreen", self.text)
+
+    def test_step_redirects_every_user_data_root_under_runner_temp(self) -> None:
+        self.assertIn('smoke="$(cygpath -m "$RUNNER_TEMP")/windows-stage-smoke"', self.text)
+        invocation = self.text[
+            self.text.index("stage_output=$(") : self.text.index("--stage-only)")
+        ]
+        for assignment in (
+            'LOCALAPPDATA="$smoke/localappdata"',
+            'APPDATA="$smoke/appdata"',
+            'USERPROFILE="$smoke/userprofile"',
+        ):
+            self.assertIn(assignment, invocation)
+        for directory in ("disc", "localappdata", "appdata", "userprofile"):
+            self.assertIn(f'"$smoke/{directory}"', self.text)
+
+    def test_disc_writer_action_is_the_one_the_step_calls(self) -> None:
+        showcase = (ROOT / "fixtures" / "showcase" / "showcase.py").read_text(encoding="utf-8")
+        self.assertIn('choices=("build", "smoke", "stage-iso")', showcase)
+        self.assertIn("def stage_iso(out_dir: Path) -> Path:", showcase)
 
 
 class VfpuFuzzShardTests(unittest.TestCase):
@@ -886,6 +943,98 @@ class MergeQueueWakeWiringTests(unittest.TestCase):
         self.assertIn("permissions: {}\n", self.wake)
         self.assertNotIn("actions/checkout", self.wake)
         self.assertNotIn("actions/upload-artifact", self.wake)
+
+
+# Read-only snapshot of the live `main-minimal` ruleset (id 20662430, last updated
+# 2026-10-13T01:50:04-04:00), taken 2026-10-15 with
+# `gh api repos/Jstar269/nakagawa-recomp/rulesets/20662430`. Refresh it only by reading the
+# ruleset again; nothing in the repository writes to GitHub. Each value is the integration id
+# the ruleset pins for that context (15368 is GitHub Actions).
+MAIN_RULESET_SNAPSHOT: dict[str, object] = {
+    "strict_required_status_checks_policy": True,
+    "required_status_checks": {
+        "CI required": 15368,
+        "OSV Vulnerability Scan": 15368,
+        "dependency-review": 15368,
+        "Hygiene and security": 15368,
+        "CodeQL": 57789,
+    },
+}
+
+# Not a required check until its producer identity is bound (docs/PROVENANCE_MERGE_GATE.md,
+# Maintainer configuration, item 3). Adding it requires that proof, not only this edit.
+TRUSTED_PROVENANCE_CONTEXT = "Trusted provenance attestation"
+
+
+def _prose(text: str) -> str:
+    """Collapse line breaks and runs of spaces so a sentence can be matched as one string."""
+    return re.sub(r"\s+", " ", text)
+
+
+def _backticked(fragment: str) -> set[str]:
+    return set(re.findall(r"`([^`]+)`", fragment))
+
+
+class MainRulesetClaimsTests(unittest.TestCase):
+    """The written claims about main's required checks, and the aggregate behind them, must match the snapshot."""
+
+    def setUp(self) -> None:
+        self.required = set(MAIN_RULESET_SNAPSHOT["required_status_checks"])
+        self.strict = MAIN_RULESET_SNAPSHOT["strict_required_status_checks_policy"]
+
+    def test_ci_doc_names_exactly_the_snapshot_required_checks(self) -> None:
+        doc = _prose((ROOT / "docs" / "CI.md").read_text(encoding="utf-8"))
+        match = re.search(r"The `main` ruleset requires (.+?) on exact pull-request heads\.", doc)
+        self.assertIsNotNone(match, "docs/CI.md no longer states which checks main requires")
+        assert match is not None
+        self.assertEqual(_backticked(match.group(1)), self.required)
+
+    def test_provenance_gate_doc_names_exactly_the_snapshot_required_checks(self) -> None:
+        doc = _prose((ROOT / "docs" / "PROVENANCE_MERGE_GATE.md").read_text(encoding="utf-8"))
+        match = re.search(r"ruleset requires [a-z]+ checks \(([^)]*)\)", doc)
+        self.assertIsNotNone(match, "docs/PROVENANCE_MERGE_GATE.md no longer states which checks main requires")
+        assert match is not None
+        self.assertEqual(_backticked(match.group(1)), self.required)
+
+    def test_provenance_workflow_comment_names_exactly_the_snapshot_required_checks(self) -> None:
+        comment = _prose(re.sub(r"(?m)^\s*#", "", _workflow_text("provenance-attestation.yml")))
+        match = re.search(r"which are: ([^.]*)\.", comment)
+        self.assertIsNotNone(match, "provenance-attestation.yml no longer lists the ruleset's checks")
+        assert match is not None
+        self.assertEqual({name.strip() for name in match.group(1).split(",")}, self.required)
+
+    def test_strict_policy_claims_match_the_snapshot(self) -> None:
+        doc = _prose((ROOT / "docs" / "PROVENANCE_MERGE_GATE.md").read_text(encoding="utf-8"))
+        claims = re.findall(
+            r"`strict_required_status_checks_policy` is (?:already )?\*{0,2}`(true|false)`", doc
+        )
+        self.assertTrue(claims, "docs/PROVENANCE_MERGE_GATE.md no longer records the strict-policy value")
+        self.assertEqual(set(claims), {"true" if self.strict else "false"})
+
+    def test_trusted_provenance_context_is_not_in_the_required_snapshot(self) -> None:
+        self.assertNotIn(
+            TRUSTED_PROVENANCE_CONTEXT,
+            self.required,
+            "Trusted provenance attestation may be required only after its producer identity is bound "
+            "(docs/PROVENANCE_MERGE_GATE.md, Maintainer configuration, item 3).",
+        )
+
+    def test_ci_required_aggregates_exactly_the_results_its_script_reads(self) -> None:
+        block = "\n".join(_ci_job_blocks()["ci_required"])
+        needs = re.search(r"(?m)^    needs: \[([^\]]*)\]$", block)
+        self.assertIsNotNone(needs)
+        assert needs is not None
+        needed = {job.strip() for job in needs.group(1).split(",")}
+        wired = dict(
+            re.findall(r"(?m)^      ([A-Z_]+_RESULT): \$\{\{ needs\.([a-z_]+)\.result \}\}$", block)
+        )
+        read = {result for _name, result, _run in ci_required._GATES} | {
+            "CLASSIFY_RESULT",
+            "HYGIENE_RESULT",
+            "PUBLIC_EXPORT_RESULT",
+        }
+        self.assertEqual(set(wired), read)
+        self.assertEqual({wired[key] for key in read}, needed)
 
 
 if __name__ == "__main__":

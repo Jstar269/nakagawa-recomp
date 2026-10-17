@@ -3094,13 +3094,16 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         for case_id, (test_id, contract) in _FIXED_CAMPAIGN_CASES.items():
             rows = []
             for row_id, out_count, statuses in contract:
-                status = sorted(statuses)[0]
+                # A complete stream: PASS where the contract allows it, with the
+                # completion result a PASS record carries.
+                status = "PASS" if "PASS" in statuses else sorted(statuses)[0]
+                row_result = "0x00000001" if status == "PASS" else "0x00000000"
                 fields = " ".join(
                     f"out{index}=0x{index + 1:08x}" for index in range(out_count)
                 )
                 rows.append(
                     f"NAKAGAWA_PSP_TEST schema=1 test_id={test_id} "
-                    f"case_id={row_id} status={status} result=0x00000000 {fields}\n"
+                    f"case_id={row_id} status={status} result={row_result} {fields}\n"
                 )
             stream = CAMPAIGN_META + "".join(rows)
             self.assertTrue(
@@ -4589,34 +4592,64 @@ class RealProbeContractTests(unittest.TestCase):
         with self.assertRaises(PspProtocolError):
             _parse_campaign_records("".join(regrouped), "display-wait-late")
 
-    def test_mutex_interrupt_trials_follow_their_recorded_interrupt_state(self):
+    @staticmethod
+    def _restate_superseded_verdicts(text: str) -> str:
+        """The archive's trial verdicts restated as the completion-only probe emits them.
+
+        Only the verdict words change: a completed trial is PASS with result 0x00000001.
+        Every recorded cell is kept as the probe wrote it."""
+        return text.replace(
+            " status=FAIL result=0x00000000 out0=", " status=PASS result=0x00000001 out0=")
+
+    @staticmethod
+    def _with_return_changed(text: str, trial: str, cell: str, value: str) -> str:
+        lines = text.split("\n")
+        for index, line in enumerate(lines):
+            if f"case_id=mutex-interrupt-context-{trial} " in line:
+                lines[index] = line.replace(f" {cell}=0x80020064", f" {cell}={value}", 1)
+        return "\n".join(lines)
+
+    def test_mutex_interrupt_trials_are_completion_only(self):
         text = _console_capture(self.MUTEX)
-        self.assertTrue(run_psplink_module._campaign_stream_complete(text, "mutex-interrupt-context"))
-        parsed = _parse_campaign_records(self._records(text), "mutex-interrupt-context")
+        # The archive was recorded under the superseded value rule: every trial reads FAIL with
+        # result 0 while its six returns are ILLEGAL_CONTEXT. Under the completion-only rule the
+        # same trials are complete, so only the verdict words are restated. Every recorded cell
+        # is kept as the probe wrote it.
+        self.assertEqual(self._records(text).count(" status=FAIL "), 20)
+        restated_text = self._restate_superseded_verdicts(text)
+        self.assertTrue(run_psplink_module._campaign_stream_complete(
+            restated_text, "mutex-interrupt-context"))
+        restated = self._records(restated_text)
+        parsed = _parse_campaign_records(restated, "mutex-interrupt-context")
         trials = [record for record in parsed.results if record.case_id.endswith(tuple(
             f"-t{index:02d}" for index in range(20)))]
         self.assertEqual(len(trials), 20)
         for record in trials:
-            values = dict(record.values)
-            # PSP-3000 / 6.6.1: every VBLANK handler trial saw interrupts enabled,
-            # so by the probe's design none counts; the mutex returns stay recorded.
-            self.assertEqual((record.status, values["out0"]), ("FAIL", "0x00000001"))
-            self.assertEqual(values["out1"], "0x80020064")
+            self.assertEqual(record.status, "PASS")
+        # No value expectations: a completed trial whose returned cells differ is still accepted.
+        _parse_campaign_records(
+            self._with_return_changed(restated, "t03", "out3", "0x800201c5"),
+            "mutex-interrupt-context")
+        # Completion and record order are checked.
         for forged in (
-            # A trial claiming to count while it recorded interrupts enabled.
-            self._records(text).replace(
-                "case_id=mutex-interrupt-context-t07 status=FAIL result=0x00000000",
-                "case_id=mutex-interrupt-context-t07 status=PASS result=0x00000001", 1),
-            # A trial that recorded interrupts disabled but was not counted.
-            self._records(text).replace(
-                "case_id=mutex-interrupt-context-t03 status=FAIL result=0x00000000 out0=0x00000001",
-                "case_id=mutex-interrupt-context-t03 status=FAIL result=0x00000000 out0=0x00000000",
-                1),
+            # A trial that did not complete.
+            restated.replace(
+                "case_id=mutex-interrupt-context-t07 status=PASS result=0x00000001",
+                "case_id=mutex-interrupt-context-t07 status=FAIL result=0x00000000", 1),
+            # A trial marked PASS without its completion result.
+            restated.replace(
+                "case_id=mutex-interrupt-context-t07 status=PASS result=0x00000001",
+                "case_id=mutex-interrupt-context-t07 status=PASS result=0x00000000", 1),
         ):
             with self.assertRaises(PspProtocolError):
                 _parse_campaign_records(forged, "mutex-interrupt-context")
+        # The archive as recorded is refused: its trials are FAIL, not completed PASS trials.
+        self.assertFalse(run_psplink_module._campaign_stream_complete(
+            text, "mutex-interrupt-context"))
+        with self.assertRaises(PspProtocolError):
+            _parse_campaign_records(self._records(text), "mutex-interrupt-context")
 
-    def test_mutex_interrupt_capture_is_qualified_but_not_eligible(self):
+    def test_superseded_mutex_capture_is_refused_by_the_current_checker(self):
         fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
         with tempfile.TemporaryDirectory(prefix="capture-mutex-", dir=fixture_dir) as name:
             runner, _transport, cases = ConsoleCaptureRegressionTests()._campaign(
@@ -4629,13 +4662,17 @@ class RealProbeContractTests(unittest.TestCase):
         envelope = report["envelopes"][1]
         self.assertIsNone(report["terminal_reason"])
         self.assertEqual(envelope["TEARDOWN_CHECK"]["status"], "PASS")
-        self.assertFalse(any(
+        # The archive was recorded under the superseded pass rule. The current checker refuses
+        # its FAIL verdicts, so strict protocol validation is a qualification blocker.
+        self.assertTrue(any(
             "strict protocol validation" in blocker
             for blocker in envelope["QUALIFICATION_BLOCKERS"]
         ))
         self.assertFalse(envelope["ACCEPTANCE_ELIGIBLE"])
-        self.assertIn("one or more scalar result records did not pass",
-                      envelope["ACCEPTANCE_BLOCKERS"])
+        self.assertTrue(any(
+            "is not a completed trial" in blocker
+            for blocker in envelope["ACCEPTANCE_BLOCKERS"]
+        ), envelope["ACCEPTANCE_BLOCKERS"])
 
 
 class Host0RemotePathTests(unittest.TestCase):

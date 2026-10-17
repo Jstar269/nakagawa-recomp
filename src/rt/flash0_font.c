@@ -12,20 +12,25 @@
  * CREAT=0x0200, TRUNC=0x0400. Any of them is a write intent. */
 #define FLASH0_WRITE_INTENT_FLAGS 0x0702u
 
-/* PENDING MEASUREMENT. One entry per slot, indexed by NkFontSlot. served_name is the
- * flash0:/font/ name, and it is also the cache and project file name (nk_font_slots.h).
- * Every entry is pending (measured 0) until the console measurement fixes the lookup (FONT_PLAN
- * M4) and the slot order (M2). A pending entry fails closed: it is not listed and no open of it
- * succeeds. The only writer of measured is the selftest seam. */
+/* One entry per slot, indexed by NkFontSlot. served_name is the flash0:/font/ name, and it is
+ * also the cache and project file name (nk_font_slots.h). A pending entry (measured 0) fails
+ * closed: it is not listed and no open of it succeeds.
+ *
+ * MEASURED: PSP-3000, firmware 6.6.1. The console's font directory listing (2026-10-10) and its
+ * font library's list of system fonts (2026-10-15, 18 fonts) fix which indices exist and which
+ * slot each one is (the registry view below). That settles the slot order, so all three slots
+ * are served. NOT MEASURED: whether the console's device matches names without regard to case
+ * (ascii_ci_equal is a project choice), and the registry's path_name string. The selftest seam
+ * is the only writer of measured. */
 typedef struct {
     const char *served_name;
     int measured;
 } Flash0SlotEntry;
 
 static Flash0SlotEntry s_flash0_slots[NK_FONT_SLOT_COUNT] = {
-    [NK_FONT_SLOT_JAPANESE] = { NK_FONT_SLOT_JAPANESE_FILE, 0 },
-    [NK_FONT_SLOT_LATIN]    = { NK_FONT_SLOT_LATIN_FILE, 0 },
-    [NK_FONT_SLOT_KOREAN]   = { NK_FONT_SLOT_KOREAN_FILE, 0 },
+    [NK_FONT_SLOT_JAPANESE] = { NK_FONT_SLOT_JAPANESE_FILE, 1 },
+    [NK_FONT_SLOT_LATIN]    = { NK_FONT_SLOT_LATIN_FILE, 1 },
+    [NK_FONT_SLOT_KOREAN]   = { NK_FONT_SLOT_KOREAN_FILE, 1 },
 };
 
 typedef enum {
@@ -407,6 +412,153 @@ uint32_t sr_flash0_font_list_dir(const char *guest_path, const Flash0Sources *so
     }
     sr_vfs_dirlist_sort(list);
     return 0u;
+}
+
+/* ---- Registry view (FONT_PLAN section 4); see flash0_font.h for what is and is not measured ---- */
+
+/* The PSP SDK's style values (PGF_SPEC section 3.8): regular 1, italic 2, bold 5, bold italic 6.
+ * The console's list also carries 103 on its Japanese font; that is kept as the index's code and
+ * has no italic or bold counterpart in the project's fonts. */
+#define FLASH0_STYLE_REGULAR 1u
+#define FLASH0_STYLE_ITALIC 2u
+#define FLASH0_STYLE_BOLD 5u
+#define FLASH0_STYLE_BOLD_ITALIC 6u
+
+/* MEASURED: the system font list of a PSP-3000, firmware 6.6.1 (2026-10-15): 18 fonts, in this
+ * order. Each row is the slot that serves the index and the index's numeric codes. Every index has
+ * sub-style 0 and region 0; weight, attributes and expiry are 0 for all 18 (see the info fill
+ * below). Language codes are 1 Japanese, 2 Latin, 3 Korean; family 1 is sans-serif and 2 serif;
+ * country is 1 for the Japanese and Latin fonts and 3 for the Korean one. Indices 1 to 8 and 9 to
+ * 16 are two sets of the same eight Latin family and style combinations, one nominal size each. */
+typedef struct {
+    uint8_t slot;
+    uint16_t family, style, sub_style, language, region, country;
+} Flash0RegistryRow;
+
+#define FLASH0_LATIN(family, style) \
+    { NK_FONT_SLOT_LATIN, (family), (style), 0u, 2u, 0u, 1u }
+
+static const Flash0RegistryRow s_flash0_registry_rows[SR_FONT_REGISTRY_COUNT] = {
+    { NK_FONT_SLOT_JAPANESE, 1u, 103u, 0u, 1u, 0u, 1u },
+    FLASH0_LATIN(1u, FLASH0_STYLE_REGULAR),     FLASH0_LATIN(2u, FLASH0_STYLE_REGULAR),
+    FLASH0_LATIN(1u, FLASH0_STYLE_ITALIC),      FLASH0_LATIN(2u, FLASH0_STYLE_ITALIC),
+    FLASH0_LATIN(1u, FLASH0_STYLE_BOLD),        FLASH0_LATIN(2u, FLASH0_STYLE_BOLD),
+    FLASH0_LATIN(1u, FLASH0_STYLE_BOLD_ITALIC), FLASH0_LATIN(2u, FLASH0_STYLE_BOLD_ITALIC),
+    FLASH0_LATIN(1u, FLASH0_STYLE_REGULAR),     FLASH0_LATIN(2u, FLASH0_STYLE_REGULAR),
+    FLASH0_LATIN(1u, FLASH0_STYLE_ITALIC),      FLASH0_LATIN(2u, FLASH0_STYLE_ITALIC),
+    FLASH0_LATIN(1u, FLASH0_STYLE_BOLD),        FLASH0_LATIN(2u, FLASH0_STYLE_BOLD),
+    FLASH0_LATIN(1u, FLASH0_STYLE_BOLD_ITALIC), FLASH0_LATIN(2u, FLASH0_STYLE_BOLD_ITALIC),
+    { NK_FONT_SLOT_KOREAN, 1u, FLASH0_STYLE_REGULAR, 0u, 3u, 0u, 3u },
+};
+
+/* The device directory the fonts sit in, without a trailing separator: the guest's own library
+ * joins it to a file name with a '/' of its own (it was seen opening <path_name>/<file_name>), and a
+ * root ending in '/' produced a doubled separator the device refuses. The console's own string is
+ * not measured; this is the generic device path, which the device serves. */
+#define FLASH0_DEVICE_ROOT "flash0:/font"
+
+const char *sr_flash0_font_registry_path_name(void) {
+    return FLASH0_DEVICE_ROOT;
+}
+
+const char *sr_flash0_font_registry_status_text(SrFontRegistryStatus status) {
+    switch (status) {
+    case SR_FONT_REGISTRY_PRESENT:         return "present";
+    case SR_FONT_REGISTRY_NO_SOURCE:
+        return "its slot has no user-imported or project font";
+    case SR_FONT_REGISTRY_HEADER_TRUNCATED:
+        return "the served file is shorter than a PGF header";
+    case SR_FONT_REGISTRY_HEADER_SHAPE:
+        return "the served file's header offset, size or magic is not a PGF header's";
+    case SR_FONT_REGISTRY_HEADER_SIZES:
+        return "the served file's header has a nominal size or resolution that is not positive";
+    case SR_FONT_REGISTRY_HEADER_NAME:
+        return "the served file's header has no font name, or one that is not printable ASCII";
+    case SR_FONT_REGISTRY_BAD_INDEX:       return "there is no such font index";
+    }
+    return "unknown";
+}
+
+static int32_t flash0_le32s(const uint8_t *p) {
+    return (int32_t)((uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+                     ((uint32_t)p[3] << 24));
+}
+
+/* The header facts the registry reports (PGF_SPEC section 3.1): header offset 0 and size 392 or
+ * 412 at 0x00 and 0x02, the magic at 0x04, the nominal sizes and resolutions at 0x24 to 0x30, and
+ * the font name at 0x35. This is a field check, not the reader's full validation: the guest's own
+ * library parses the file it opens. */
+static SrFontRegistryStatus flash0_registry_read_header(FILE *fp, uint32_t file_size,
+                                                        SrFontRegistryInfo *info) {
+    uint8_t h[412];
+    size_t want = file_size < sizeof(h) ? (size_t)file_size : sizeof(h);
+    uint32_t header_size;
+    size_t name_len = 0;
+    if (want < 392u || fseek(fp, 0, SEEK_SET) != 0 || fread(h, 1u, want, fp) != want)
+        return SR_FONT_REGISTRY_HEADER_TRUNCATED;
+    header_size = (uint32_t)h[2] | ((uint32_t)h[3] << 8);
+    if (h[0] != 0u || h[1] != 0u || memcmp(h + 4, "PGF0", 4u) != 0 ||
+        (header_size != 392u && header_size != 412u))
+        return SR_FONT_REGISTRY_HEADER_SHAPE;
+    if (header_size > want) return SR_FONT_REGISTRY_HEADER_TRUNCATED;
+    info->h_size = flash0_le32s(h + 0x24);
+    info->v_size = flash0_le32s(h + 0x28);
+    info->h_resolution = flash0_le32s(h + 0x2c);
+    info->v_resolution = flash0_le32s(h + 0x30);
+    if (info->h_size <= 0 || info->v_size <= 0 || info->h_resolution <= 0 || info->v_resolution <= 0)
+        return SR_FONT_REGISTRY_HEADER_SIZES;
+    /* The field is 64 bytes; a name with no NUL in it is cut to 63 characters. */
+    while (name_len < SR_FONT_REGISTRY_NAME_BYTES - 1u && h[0x35 + name_len] != 0u) name_len++;
+    if (name_len == 0u) return SR_FONT_REGISTRY_HEADER_NAME;
+    for (size_t i = 0; i < name_len; i++)
+        if (h[0x35 + i] < 0x20u || h[0x35 + i] > 0x7eu) return SR_FONT_REGISTRY_HEADER_NAME;
+    memcpy(info->font_name, h + 0x35, name_len);
+    info->font_name[name_len] = '\0';
+    return SR_FONT_REGISTRY_PRESENT;
+}
+
+int sr_flash0_font_registry_slot(uint32_t index, NkFontSlot *slot_out) {
+    if (index >= SR_FONT_REGISTRY_COUNT || !slot_out) return 0;
+    *slot_out = (NkFontSlot)s_flash0_registry_rows[index].slot;
+    return 1;
+}
+
+SrFontRegistryStatus sr_flash0_font_registry_info(const Flash0Sources *sources, uint32_t index,
+                                                  SrFontRegistryInfo *info) {
+    if (!info) return SR_FONT_REGISTRY_BAD_INDEX;
+    memset(info, 0, sizeof(*info));
+    if (index >= SR_FONT_REGISTRY_COUNT) return SR_FONT_REGISTRY_BAD_INDEX;
+    const Flash0RegistryRow *row = &s_flash0_registry_rows[index];
+    NkFontSlot slot = (NkFontSlot)row->slot;
+    if (!s_flash0_slots[slot].measured) return SR_FONT_REGISTRY_NO_SOURCE;
+    FILE *fp = NULL;
+    uint32_t size = 0;
+    Flash0Source source = flash0_resolve(sources, slot, &fp, &size);
+    if (source == FLASH0_SOURCE_NONE) return SR_FONT_REGISTRY_NO_SOURCE;
+    SrFontRegistryStatus status = flash0_registry_read_header(fp, size, info);
+    fclose(fp);
+    if (status != SR_FONT_REGISTRY_PRESENT) {
+        memset(info, 0, sizeof(*info));
+        return status;
+    }
+    info->slot = slot;
+    info->source = source == FLASH0_SOURCE_USER ? "user-imported" : "project";
+    info->file_name = s_flash0_slots[slot].served_name;
+    info->family_code = row->family;
+    /* No project font is bold or italic (FONT_PLAN D10): such an index serves the slot's regular
+     * face and says so, instead of reporting a style the face does not have. */
+    info->served_as_regular = row->style == FLASH0_STYLE_ITALIC || row->style == FLASH0_STYLE_BOLD ||
+                              row->style == FLASH0_STYLE_BOLD_ITALIC;
+    info->style = info->served_as_regular ? FLASH0_STYLE_REGULAR : row->style;
+    info->sub_style = row->sub_style;
+    info->language_code = row->language;
+    info->region_code = row->region;
+    info->country_code = row->country;
+    /* MEASURED zero on all 18 indices: the weight, the attributes word and the expiry word. */
+    info->weight = 0u;
+    info->extra_attributes = 0u;
+    info->expire_date = 0u;
+    return SR_FONT_REGISTRY_PRESENT;
 }
 
 #ifdef SR_HLE_THREAD_SELFTEST

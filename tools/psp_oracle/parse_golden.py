@@ -222,6 +222,888 @@ def parse_ge_nan_output(text: str, *, require_complete: bool = True) -> Sequence
 
 
 # ---------------------------------------------------------------------------
+# PSP-VRAM-MIRROR-001 raw EDRAM mirror and depth-buffer observations
+# ---------------------------------------------------------------------------
+
+VRAM_MIRROR_BASES = (
+    0x04000000, 0x04200000, 0x04400000, 0x04600000,
+    0x44000000, 0x44200000, 0x44400000, 0x44600000,
+)
+VRAM_MIRROR_WRITE_BASES = (
+    0x04200000, 0x04400000, 0x04600000,
+    0x44200000, 0x44400000, 0x44600000,
+)
+VRAM_MIRROR_CACHED_ALIAS_COUNT = len(VRAM_MIRROR_BASES) // 2
+VRAM_MIRROR_BYTES = 0x00200000
+VRAM_MIRROR_ROW_BYTES = 0x400
+VRAM_MIRROR_ROW_WORDS = VRAM_MIRROR_ROW_BYTES // 4
+VRAM_MIRROR_DENSE_OFFSET = 0x00088000
+VRAM_MIRROR_DENSE_ROWS = 8
+VRAM_MIRROR_PAIR_BASES = (0x00000000, 0x00044000, 0x00100000, 0x001FF800)
+VRAM_MIRROR_PAIR_ROWS = 2
+VRAM_MIRROR_SWEEP_FIRST_BIT = 2
+VRAM_MIRROR_SWEEP_LAST_BIT = 20
+VRAM_MIRROR_SAMPLE_CHUNK_WORDS = 8
+VRAM_MIRROR_CPU_SAMPLE_WORD_COUNT = (
+    VRAM_MIRROR_DENSE_ROWS * VRAM_MIRROR_ROW_WORDS
+    + len(VRAM_MIRROR_PAIR_BASES) * VRAM_MIRROR_PAIR_ROWS * VRAM_MIRROR_ROW_WORDS
+    + 2 * (VRAM_MIRROR_SWEEP_LAST_BIT - VRAM_MIRROR_SWEEP_FIRST_BIT + 1)
+)
+VRAM_MIRROR_CPU_SAMPLE_CHUNK_COUNT = (
+    (VRAM_MIRROR_CPU_SAMPLE_WORD_COUNT + VRAM_MIRROR_SAMPLE_CHUNK_WORDS - 1)
+    // VRAM_MIRROR_SAMPLE_CHUNK_WORDS
+)
+VRAM_MIRROR_WRITE_OFFSETS = (0x000100, 0x044100, 0x088100)
+VRAM_MIRROR_MARKER_PREFIX = 0xB6000000
+VRAM_MIRROR_PATTERN_PREFIX = 0xA5000000
+VRAM_MIRROR_FRAME_BYTES = 512 * 272 * 2
+VRAM_MIRROR_DEPTH_STRIDE = 512
+VRAM_MIRROR_DEPTH_ROWS = (0, 7, 8, 9, 15, 16, 100, 101, 108, 109)
+VRAM_MIRROR_DEPTH_ROW_COUNT = len(VRAM_MIRROR_DEPTH_ROWS)
+VRAM_MIRROR_DEPTH_ALIASES = (VRAM_MIRROR_BASES[4], VRAM_MIRROR_BASES[5])
+VRAM_MIRROR_DEPTH_CHUNK_PIXELS = 32
+VRAM_MIRROR_DEPTH_ROW_CHUNK_COUNT = (
+    VRAM_MIRROR_DEPTH_STRIDE // VRAM_MIRROR_DEPTH_CHUNK_PIXELS
+)
+VRAM_MIRROR_COLOR_ROWS = (0, 8, 100)
+VRAM_MIRROR_COLOR_CHUNK_PIXELS = 64
+VRAM_MIRROR_COLOR_ROW_CHUNK_COUNT = (
+    VRAM_MIRROR_DEPTH_STRIDE // VRAM_MIRROR_COLOR_CHUNK_PIXELS
+)
+VRAM_MIRROR_COLOR_ALIAS = VRAM_MIRROR_BASES[4]
+VRAM_MIRROR_CLEAR_DEPTH = 0x5A5A
+VRAM_MIRROR_DEPTH_FUNCTION_ALWAYS = 1
+VRAM_MIRROR_DEPTH_MASK_WRITE_ENABLE = 0
+VRAM_MIRROR_DEPTH_RANGE_NEAR = 0xFFFF
+VRAM_MIRROR_DEPTH_RANGE_FAR = 0
+VRAM_MIRROR_GU_SPRITES = 6
+VRAM_MIRROR_GU_VERTEX_TYPE = (7 << 2) | (2 << 7) | (1 << 23)
+VRAM_MIRROR_GE_SYNC_CASES = (
+    ("vram-ge-clear-sync", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+    ("vram-ge-sprite-a-sync", 1, 0, 0, 0x1111, 32, 16, 0x1111,
+     0xFFFF0000, 2, VRAM_MIRROR_GU_SPRITES, VRAM_MIRROR_GU_VERTEX_TYPE),
+    ("vram-ge-sprite-b-sync", 2, 64, 8, 0x2222, 96, 12, 0x2222,
+     0xFF00FF00, 2, VRAM_MIRROR_GU_SPRITES, VRAM_MIRROR_GU_VERTEX_TYPE),
+    ("vram-ge-sprite-c-sync", 3, 200, 100, 0x3333, 208, 101, 0x3333,
+     0xFF0000FF, 2, VRAM_MIRROR_GU_SPRITES, VRAM_MIRROR_GU_VERTEX_TYPE),
+)
+VRAM_MIRROR_GE_SYNC_OUT_COUNT = 27
+VRAM_MIRROR_INFO_FIELDS = (
+    "cached_base", "uncached_base", "display_offset", "display_bytes",
+    "display_stride", "display_format", "color_offset", "color_frame_bytes",
+    "depth_offset", "depth_frame_bytes", "vram_bytes", "cpu_sample_word_count",
+    "cpu_dense_offset", "cpu_dense_rows", "cpu_row_bytes", "cpu_pair_region_count",
+    "cpu_pair_rows", "cpu_sweep_first_bit", "cpu_sweep_last_bit",
+    "write_alias_count", "write_sample_count", "write_offset_0", "write_offset_1",
+    "write_offset_2", "write_scan_bytes", "depth_stride", "depth_row_count",
+    *(f"depth_row_y{row}" for row in range(VRAM_MIRROR_DEPTH_ROW_COUNT)),
+    "depth_alias_count", "depth_chunk_pixels", "color_row_count",
+    *(f"color_row_y{row}" for row in range(len(VRAM_MIRROR_COLOR_ROWS))),
+    "color_chunk_pixels",
+    "depth_test_enabled", "depth_function", "depth_mask", "depth_range_near",
+    "depth_range_far", "clear_depth", "pattern_prefix", "marker_prefix",
+    "cached_alias_count",
+)
+VRAM_MIRROR_INFO_OUT_COUNT = len(VRAM_MIRROR_INFO_FIELDS)
+VRAM_MIRROR_SEMANTIC_CASES = (
+    ("vram-mirror-info",)
+    + tuple(
+        f"vram-cpu-pattern-{chunk:03d}"
+        for chunk in range(VRAM_MIRROR_CPU_SAMPLE_CHUNK_COUNT)
+    )
+    + tuple(
+        f"vram-cpu-write-mirror-{alias:02d}-{sample:02d}"
+        for alias in range(len(VRAM_MIRROR_WRITE_BASES))
+        for sample in range(len(VRAM_MIRROR_WRITE_OFFSETS))
+    )
+    + tuple(
+        sync_case[0] for sync_case in VRAM_MIRROR_GE_SYNC_CASES
+    )
+    + tuple(
+        f"vram-ge-depth-row{row}-{chunk:02d}"
+        for row in range(len(VRAM_MIRROR_DEPTH_ROWS))
+        for chunk in range(VRAM_MIRROR_DEPTH_ROW_CHUNK_COUNT)
+    )
+    + tuple(
+        f"vram-ge-color-row{row}-{chunk:02d}"
+        for row in range(len(VRAM_MIRROR_COLOR_ROWS))
+        for chunk in range(VRAM_MIRROR_COLOR_ROW_CHUNK_COUNT)
+    )
+    + ("vram-restore",)
+)
+VRAM_MIRROR_SPEC = StreamSpec(
+    test_id="PSP-VRAM-MIRROR-001",
+    semantic_cases=VRAM_MIRROR_SEMANTIC_CASES,
+    terminal_case="vram-mirror-done",
+)
+VRAM_MIRROR_OUT_COUNTS = {
+    "vram-mirror-info": VRAM_MIRROR_INFO_OUT_COUNT,
+    **{
+        f"vram-cpu-pattern-{chunk:03d}":
+            min(
+                VRAM_MIRROR_SAMPLE_CHUNK_WORDS,
+                VRAM_MIRROR_CPU_SAMPLE_WORD_COUNT
+                - chunk * VRAM_MIRROR_SAMPLE_CHUNK_WORDS,
+            ) * len(VRAM_MIRROR_BASES) * 2
+        for chunk in range(VRAM_MIRROR_CPU_SAMPLE_CHUNK_COUNT)
+    },
+    **{
+        f"vram-cpu-write-mirror-{alias:02d}-{sample:02d}": 4
+        for alias in range(len(VRAM_MIRROR_WRITE_BASES))
+        for sample in range(len(VRAM_MIRROR_WRITE_OFFSETS))
+    },
+    **{
+        sync_case[0]: VRAM_MIRROR_GE_SYNC_OUT_COUNT
+        for sync_case in VRAM_MIRROR_GE_SYNC_CASES
+    },
+    **{
+        f"vram-ge-depth-row{row}-{chunk:02d}":
+            VRAM_MIRROR_DEPTH_CHUNK_PIXELS * len(VRAM_MIRROR_DEPTH_ALIASES) * 2
+        for row in range(len(VRAM_MIRROR_DEPTH_ROWS))
+        for chunk in range(VRAM_MIRROR_DEPTH_ROW_CHUNK_COUNT)
+    },
+    **{
+        f"vram-ge-color-row{row}-{chunk:02d}":
+            VRAM_MIRROR_COLOR_CHUNK_PIXELS * 2
+        for row in range(len(VRAM_MIRROR_COLOR_ROWS))
+        for chunk in range(VRAM_MIRROR_COLOR_ROW_CHUNK_COUNT)
+    },
+    "vram-restore": 5,
+    "vram-mirror-done": 1,
+}
+
+
+def _vram_mirror_integer(record: TestResult, field: str) -> int:
+    try:
+        value = int(dict(record.values)[field], 0)
+    except (KeyError, ValueError) as exc:
+        raise ProtocolError(
+            f"PSP-VRAM-MIRROR-001: {record.case_id} {field} is not an integer"
+        ) from exc
+    if not 0 <= value <= 0xFFFFFFFF:
+        raise ProtocolError(
+            f"PSP-VRAM-MIRROR-001: {record.case_id} {field} is outside a raw word"
+        )
+    return value
+
+
+def _validate_vram_mirror_shapes(sequence: SequenceReport) -> None:
+    for case_id, record in sequence.results.items():
+        values = dict(record.values)
+        if record.status == "SKIP":
+            expected = {"result"}
+            if case_id == VRAM_MIRROR_SPEC.terminal_case:
+                expected.add("out0")
+        else:
+            expected = {
+                "result",
+                *(f"out{index}" for index in range(VRAM_MIRROR_OUT_COUNTS[case_id])),
+            }
+        if set(values) != expected:
+            raise ProtocolError(
+                f"PSP-VRAM-MIRROR-001: {case_id} fields must be "
+                f"{sorted(expected)}, got {sorted(values)}"
+            )
+        for field in values:
+            _vram_mirror_integer(record, field)
+
+
+def _vram_mirror_sample_offsets() -> tuple[int, ...]:
+    offsets = [
+        VRAM_MIRROR_DENSE_OFFSET + word * 4
+        for word in range(VRAM_MIRROR_DENSE_ROWS * VRAM_MIRROR_ROW_WORDS)
+    ]
+    for base in VRAM_MIRROR_PAIR_BASES:
+        for row in range(VRAM_MIRROR_PAIR_ROWS):
+            offsets.extend(
+                base + row * VRAM_MIRROR_ROW_BYTES + word * 4
+                for word in range(VRAM_MIRROR_ROW_WORDS)
+            )
+    for bit in range(VRAM_MIRROR_SWEEP_FIRST_BIT, VRAM_MIRROR_SWEEP_LAST_BIT + 1):
+        power = 1 << bit
+        offsets.extend((VRAM_MIRROR_DENSE_OFFSET ^ power, power))
+    if len(offsets) != VRAM_MIRROR_CPU_SAMPLE_WORD_COUNT:
+        raise ProtocolError("PSP-VRAM-MIRROR-001: sample plan count is inconsistent")
+    return tuple(offsets)
+
+
+def _vram_mirror_validate_address_pairs(
+    record: TestResult, expected_addresses: tuple[int, ...], *, value_max: int = 0xFFFFFFFF
+) -> None:
+    for index, expected_address in enumerate(expected_addresses):
+        address = _vram_mirror_integer(record, f"out{index * 2}")
+        sample = _vram_mirror_integer(record, f"out{index * 2 + 1}")
+        if address != expected_address:
+            raise ProtocolError(
+                f"PSP-VRAM-MIRROR-001: {record.case_id} out{index * 2} "
+                f"must name address {expected_address:#010x}, got {address:#010x}"
+            )
+        if sample > value_max:
+            raise ProtocolError(
+                f"PSP-VRAM-MIRROR-001: {record.case_id} raw sample "
+                f"{sample:#010x} exceeds {value_max:#x}"
+            )
+
+
+def parse_vram_mirror_output(
+    text: str, *, require_complete: bool = True
+) -> SequenceReport:
+    """Parse raw VRAM mirror observations without asserting hardware values."""
+
+    sequence = parse_sequence(text, VRAM_MIRROR_SPEC, require_complete=require_complete)
+    _validate_vram_mirror_shapes(sequence)
+    info_record = sequence.results.get("vram-mirror-info")
+    if info_record is None:
+        return sequence
+    if info_record.status == "SKIP":
+        if any(
+            record.status != "SKIP"
+            for case_id, record in sequence.results.items()
+            if case_id != "vram-mirror-info"
+        ):
+            raise ProtocolError("PSP-VRAM-MIRROR-001: skipped setup has measured records")
+        return sequence
+    if info_record.status != "PASS":
+        raise ProtocolError("PSP-VRAM-MIRROR-001: setup must PASS or SKIP")
+
+    info_words = tuple(
+        _vram_mirror_integer(info_record, f"out{index}")
+        for index in range(VRAM_MIRROR_INFO_OUT_COUNT)
+    )
+    info = dict(zip(VRAM_MIRROR_INFO_FIELDS, info_words, strict=True))
+    cached_base = info["cached_base"]
+    uncached_base = info["uncached_base"]
+    display_offset = info["display_offset"]
+    display_bytes = info["display_bytes"]
+    display_stride = info["display_stride"]
+    display_format = info["display_format"]
+    color_offset = info["color_offset"]
+    depth_offset = info["depth_offset"]
+    frame_bytes = info["color_frame_bytes"]
+    if cached_base != VRAM_MIRROR_BASES[0] or uncached_base != VRAM_MIRROR_BASES[4]:
+        raise ProtocolError("PSP-VRAM-MIRROR-001: base address fields are not PSP VRAM aliases")
+    if (
+        display_bytes == 0
+        or display_stride == 0
+        or display_format > 3
+        or display_offset + display_bytes > VRAM_MIRROR_BYTES
+    ):
+        raise ProtocolError("PSP-VRAM-MIRROR-001: display span is outside 2 MiB VRAM")
+    display_bytes_per_pixel = 4 if display_format == 3 else 2
+    if display_bytes != display_stride * 272 * display_bytes_per_pixel:
+        raise ProtocolError("PSP-VRAM-MIRROR-001: display span does not match its format")
+    if (
+        color_offset % VRAM_MIRROR_ROW_BYTES != 0
+        or color_offset < display_offset + display_bytes
+        or frame_bytes != VRAM_MIRROR_FRAME_BYTES
+        or info["depth_frame_bytes"] != VRAM_MIRROR_FRAME_BYTES
+        or depth_offset != color_offset + frame_bytes
+        or depth_offset + info["depth_frame_bytes"] > VRAM_MIRROR_BYTES
+    ):
+        raise ProtocolError("PSP-VRAM-MIRROR-001: scratch color/depth spans are invalid")
+    expected_info = {
+        "vram_bytes": VRAM_MIRROR_BYTES,
+        "cpu_sample_word_count": VRAM_MIRROR_CPU_SAMPLE_WORD_COUNT,
+        "cpu_dense_offset": VRAM_MIRROR_DENSE_OFFSET,
+        "cpu_dense_rows": VRAM_MIRROR_DENSE_ROWS,
+        "cpu_row_bytes": VRAM_MIRROR_ROW_BYTES,
+        "cpu_pair_region_count": len(VRAM_MIRROR_PAIR_BASES),
+        "cpu_pair_rows": VRAM_MIRROR_PAIR_ROWS,
+        "cpu_sweep_first_bit": VRAM_MIRROR_SWEEP_FIRST_BIT,
+        "cpu_sweep_last_bit": VRAM_MIRROR_SWEEP_LAST_BIT,
+        "write_alias_count": len(VRAM_MIRROR_WRITE_BASES),
+        "write_sample_count": len(VRAM_MIRROR_WRITE_OFFSETS),
+        "write_offset_0": VRAM_MIRROR_WRITE_OFFSETS[0],
+        "write_offset_1": VRAM_MIRROR_WRITE_OFFSETS[1],
+        "write_offset_2": VRAM_MIRROR_WRITE_OFFSETS[2],
+        "write_scan_bytes": VRAM_MIRROR_BYTES,
+        "depth_stride": VRAM_MIRROR_DEPTH_STRIDE,
+        "depth_row_count": len(VRAM_MIRROR_DEPTH_ROWS),
+        **{
+            f"depth_row_y{row}": y
+            for row, y in enumerate(VRAM_MIRROR_DEPTH_ROWS)
+        },
+        "depth_alias_count": len(VRAM_MIRROR_DEPTH_ALIASES),
+        "depth_chunk_pixels": VRAM_MIRROR_DEPTH_CHUNK_PIXELS,
+        "color_row_count": len(VRAM_MIRROR_COLOR_ROWS),
+        **{
+            f"color_row_y{row}": y
+            for row, y in enumerate(VRAM_MIRROR_COLOR_ROWS)
+        },
+        "color_chunk_pixels": VRAM_MIRROR_COLOR_CHUNK_PIXELS,
+        "depth_test_enabled": 1,
+        "depth_function": VRAM_MIRROR_DEPTH_FUNCTION_ALWAYS,
+        "depth_mask": VRAM_MIRROR_DEPTH_MASK_WRITE_ENABLE,
+        "depth_range_near": VRAM_MIRROR_DEPTH_RANGE_NEAR,
+        "depth_range_far": VRAM_MIRROR_DEPTH_RANGE_FAR,
+        "clear_depth": VRAM_MIRROR_CLEAR_DEPTH,
+        "pattern_prefix": VRAM_MIRROR_PATTERN_PREFIX,
+        "marker_prefix": VRAM_MIRROR_MARKER_PREFIX,
+        "cached_alias_count": VRAM_MIRROR_CACHED_ALIAS_COUNT,
+    }
+    if any(info[field] != expected for field, expected in expected_info.items()):
+        raise ProtocolError("PSP-VRAM-MIRROR-001: probe plan metadata does not match the contract")
+    write_offsets = tuple(info[f"write_offset_{index}"]
+                          for index in range(len(VRAM_MIRROR_WRITE_OFFSETS)))
+    if (
+        len(set(write_offsets)) != len(write_offsets)
+        or any(offset & 3 or offset >= 0x00100000 for offset in write_offsets)
+    ):
+        raise ProtocolError("PSP-VRAM-MIRROR-001: write scan offsets are invalid")
+
+    sample_offsets = _vram_mirror_sample_offsets()
+    for chunk in range(VRAM_MIRROR_CPU_SAMPLE_CHUNK_COUNT):
+        first = chunk * VRAM_MIRROR_SAMPLE_CHUNK_WORDS
+        offsets = sample_offsets[first:first + VRAM_MIRROR_SAMPLE_CHUNK_WORDS]
+        record = sequence.results[f"vram-cpu-pattern-{chunk:03d}"]
+        addresses = tuple(
+            alias + offset for offset in offsets for alias in VRAM_MIRROR_BASES
+        )
+        _vram_mirror_validate_address_pairs(record, addresses)
+
+    write_offsets = tuple(info[f"write_offset_{index}"]
+                          for index in range(len(VRAM_MIRROR_WRITE_OFFSETS)))
+    for alias_index, write_base in enumerate(VRAM_MIRROR_WRITE_BASES):
+        for sample_index, offset in enumerate(write_offsets):
+            record = sequence.results[
+                f"vram-cpu-write-mirror-{alias_index:02d}-{sample_index:02d}"
+            ]
+            values = tuple(
+                _vram_mirror_integer(record, f"out{index}") for index in range(4)
+            )
+            expected_address = write_base + offset
+            expected_marker = (
+                VRAM_MIRROR_MARKER_PREFIX | (alias_index << 20) | offset
+            )
+            if values[0:2] != (expected_address, expected_marker):
+                raise ProtocolError(
+                    f"PSP-VRAM-MIRROR-001: {record.case_id} write address/marker "
+                    "does not match the named mirror write"
+                )
+            found_offset, found_count = values[2:4]
+            if found_count > VRAM_MIRROR_BYTES // 4:
+                raise ProtocolError(
+                    f"PSP-VRAM-MIRROR-001: {record.case_id} match count exceeds VRAM"
+                )
+            if found_count == 0:
+                if found_offset != 0xFFFFFFFF:
+                    raise ProtocolError(
+                        f"PSP-VRAM-MIRROR-001: {record.case_id} no-match sentinel is invalid"
+                    )
+            elif found_offset == 0xFFFFFFFF or found_offset & 3 or found_offset >= VRAM_MIRROR_BYTES:
+                raise ProtocolError(
+                    f"PSP-VRAM-MIRROR-001: {record.case_id} first match offset is invalid"
+                )
+
+    for sync_case in VRAM_MIRROR_GE_SYNC_CASES:
+        case_id = sync_case[0]
+        record = sequence.results[case_id]
+        if record.status == "SKIP":
+            continue
+        values = tuple(
+            _vram_mirror_integer(record, f"out{index}")
+            for index in range(VRAM_MIRROR_GE_SYNC_OUT_COUNT)
+        )
+        if values[7:16] != (
+            VRAM_MIRROR_CACHED_ALIAS_COUNT,
+            depth_offset,
+            VRAM_MIRROR_DEPTH_STRIDE,
+            info["depth_range_near"],
+            info["depth_range_far"],
+            info["depth_function"],
+            info["depth_mask"],
+            info["depth_test_enabled"],
+            info["clear_depth"],
+        ):
+            raise ProtocolError(
+                f"PSP-VRAM-MIRROR-001: {case_id} GE state metadata disagrees with setup"
+            )
+        if values[16:] != sync_case[1:]:
+            raise ProtocolError(
+                f"PSP-VRAM-MIRROR-001: {case_id} operation/vertex metadata is invalid"
+            )
+        if values[4] > 1 or values[6] > 1:
+            raise ProtocolError(
+                f"PSP-VRAM-MIRROR-001: {case_id} idle fields are not booleans"
+            )
+
+    depth_rows_y = tuple(info[f"depth_row_y{row}"]
+                         for row in range(VRAM_MIRROR_DEPTH_ROW_COUNT))
+    for row, y in enumerate(depth_rows_y):
+        for chunk in range(VRAM_MIRROR_DEPTH_ROW_CHUNK_COUNT):
+            record = sequence.results[f"vram-ge-depth-row{row}-{chunk:02d}"]
+            if record.status == "SKIP":
+                continue
+            offsets = tuple(
+                depth_offset + (y * VRAM_MIRROR_DEPTH_STRIDE
+                                + chunk * VRAM_MIRROR_DEPTH_CHUNK_PIXELS + pixel) * 2
+                for pixel in range(VRAM_MIRROR_DEPTH_CHUNK_PIXELS)
+            )
+            addresses = tuple(
+                alias + offset
+                for offset in offsets
+                for alias in VRAM_MIRROR_DEPTH_ALIASES
+            )
+            _vram_mirror_validate_address_pairs(record, addresses, value_max=0xFFFF)
+
+    for row, y in enumerate(VRAM_MIRROR_COLOR_ROWS):
+        for chunk in range(VRAM_MIRROR_COLOR_ROW_CHUNK_COUNT):
+            record = sequence.results[f"vram-ge-color-row{row}-{chunk:02d}"]
+            if record.status == "SKIP":
+                continue
+            offsets = tuple(
+                color_offset + (
+                    y * VRAM_MIRROR_DEPTH_STRIDE
+                    + chunk * VRAM_MIRROR_COLOR_CHUNK_PIXELS + pixel
+                ) * 2
+                for pixel in range(VRAM_MIRROR_COLOR_CHUNK_PIXELS)
+            )
+            addresses = tuple(VRAM_MIRROR_COLOR_ALIAS + offset for offset in offsets)
+            _vram_mirror_validate_address_pairs(record, addresses, value_max=0xFFFF)
+
+    restore = sequence.results["vram-restore"]
+    if restore.status != "SKIP":
+        restore_values = tuple(
+            _vram_mirror_integer(restore, f"out{index}") for index in range(5)
+        )
+        if restore_values[0:2] != (VRAM_MIRROR_BASES[4], VRAM_MIRROR_BYTES):
+            raise ProtocolError("PSP-VRAM-MIRROR-001: restore record does not cover all VRAM")
+        if restore_values[2] != 2 * VRAM_MIRROR_CACHED_ALIAS_COUNT:
+            raise ProtocolError(
+                "PSP-VRAM-MIRROR-001: restore record must maintain every cached VRAM alias"
+            )
+        if restore_values[4] > 1:
+            raise ProtocolError("PSP-VRAM-MIRROR-001: restore GE idle field is not boolean")
+        if restore.status == "PASS" and restore_values[3] != 0:
+            raise ProtocolError("PSP-VRAM-MIRROR-001: passing restore has byte mismatches")
+        done = sequence.results[VRAM_MIRROR_SPEC.terminal_case]
+        if restore.status != "PASS" and done.status == "PASS":
+            raise ProtocolError("PSP-VRAM-MIRROR-001: terminal PASS contradicts failed restore")
+    done = sequence.results[VRAM_MIRROR_SPEC.terminal_case]
+    if done.status != "SKIP" and _vram_mirror_integer(done, "out0") != len(
+        VRAM_MIRROR_SEMANTIC_CASES
+    ):
+        raise ProtocolError("PSP-VRAM-MIRROR-001: terminal record count is invalid")
+    return sequence
+
+
+@dataclass(frozen=True)
+class VramMirrorAddressTransform:
+    """Affine VRAM byte-offset mapping learned from position-encoded CPU reads.
+
+    ``column_map[b]`` is the output bit mask contributed by input bit ``b``.
+    The probe samples word-aligned offsets, so columns 0 and 1 are deliberately
+    ``None`` rather than guessed from the unmeasured sub-word bits.
+    """
+
+    alias_base: int
+    constant: int
+    column_map: tuple[int | None, ...]
+    sample_count: int
+
+    def apply(self, offset: int) -> int:
+        if offset < 0 or offset >= VRAM_MIRROR_BYTES or offset & 3:
+            raise ProtocolError(
+                f"PSP-VRAM-MIRROR-001: alias {self.alias_base:#010x} "
+                f"cannot map unmeasured/non-VRAM offset {offset:#x}"
+            )
+        physical = self.constant
+        for bit in range(2, VRAM_MIRROR_BYTES.bit_length() - 1):
+            if offset & (1 << bit):
+                column = self.column_map[bit]
+                if column is None:
+                    raise ProtocolError(
+                        f"PSP-VRAM-MIRROR-001: alias {self.alias_base:#010x} "
+                        f"has no measured column for bit {bit}"
+                    )
+                physical ^= column
+        if physical < 0 or physical >= VRAM_MIRROR_BYTES:
+            raise ProtocolError(
+                f"PSP-VRAM-MIRROR-001: alias {self.alias_base:#010x} "
+                f"mapped outside VRAM to {physical:#x}"
+            )
+        return physical
+
+
+@dataclass(frozen=True)
+class VramMirrorWriteLanding:
+    case_id: str
+    alias_base: int
+    requested_offset: int
+    predicted_offset: int
+    marker: int
+    first_found_offset: int | None
+    found_count: int
+
+    @property
+    def unique_match_agrees_with_read_transform(self) -> bool | None:
+        if self.found_count != 1:
+            return None
+        return self.first_found_offset == self.predicted_offset
+
+
+@dataclass(frozen=True)
+class VramMirrorDepthStorage:
+    relative_xor_candidates: tuple[int, ...]
+    absolute_xor_candidates: tuple[int, ...]
+    observed_sprite_pixels: int
+    alias_crosschecked_words: int
+
+    @staticmethod
+    def _common_bits(candidates: tuple[int, ...]) -> int:
+        if not candidates:
+            return 0
+        common = candidates[0]
+        for candidate in candidates[1:]:
+            common &= candidate
+        return common
+
+    @property
+    def relative_xor_common_bits(self) -> int:
+        return self._common_bits(self.relative_xor_candidates)
+
+    @property
+    def absolute_xor_common_bits(self) -> int:
+        return self._common_bits(self.absolute_xor_candidates)
+
+    @property
+    def absolute_vs_relative_scope_ambiguous(self) -> bool:
+        return self.relative_xor_candidates == self.absolute_xor_candidates
+
+
+@dataclass(frozen=True)
+class VramMirrorAnalysis:
+    address_transforms: tuple[VramMirrorAddressTransform, ...]
+    write_landings: tuple[VramMirrorWriteLanding, ...]
+    depth_storage: VramMirrorDepthStorage
+
+
+def _vram_mirror_affine_transforms(
+    sequence: SequenceReport,
+) -> tuple[VramMirrorAddressTransform, ...]:
+    info_record = sequence.results["vram-mirror-info"]
+    info = {
+        name: _vram_mirror_integer(info_record, f"out{index}")
+        for index, name in enumerate(VRAM_MIRROR_INFO_FIELDS)
+    }
+    pattern_prefix = info["pattern_prefix"]
+    offset_mask = VRAM_MIRROR_BYTES - 1
+    prefix_mask = 0xFFFFFFFF ^ offset_mask
+    observations: list[dict[int, int]] = [dict() for _ in VRAM_MIRROR_BASES]
+
+    sample_offsets = _vram_mirror_sample_offsets()
+    for chunk in range(VRAM_MIRROR_CPU_SAMPLE_CHUNK_COUNT):
+        first = chunk * VRAM_MIRROR_SAMPLE_CHUNK_WORDS
+        offsets = sample_offsets[first:first + VRAM_MIRROR_SAMPLE_CHUNK_WORDS]
+        record = sequence.results[f"vram-cpu-pattern-{chunk:03d}"]
+        if record.status != "PASS":
+            raise ProtocolError(
+                f"PSP-VRAM-MIRROR-001: cannot analyze {record.case_id} with "
+                f"status {record.status}"
+            )
+        for word_index, offset in enumerate(offsets):
+            for alias_index, alias_base in enumerate(VRAM_MIRROR_BASES):
+                output_index = (word_index * len(VRAM_MIRROR_BASES) + alias_index) * 2
+                address = _vram_mirror_integer(record, f"out{output_index}")
+                value = _vram_mirror_integer(record, f"out{output_index + 1}")
+                if address != alias_base + offset:
+                    raise ProtocolError(
+                        f"PSP-VRAM-MIRROR-001: {record.case_id} address changed "
+                        f"while analyzing alias {alias_base:#010x}"
+                    )
+                physical = value & offset_mask
+                if value != (pattern_prefix | physical) or value & prefix_mask != pattern_prefix:
+                    raise ProtocolError(
+                        f"PSP-VRAM-MIRROR-001: {record.case_id} value does not carry "
+                        f"the position pattern for alias {alias_base:#010x}"
+                    )
+                previous = observations[alias_index].setdefault(offset, physical)
+                if previous != physical:
+                    raise ProtocolError(
+                        f"PSP-VRAM-MIRROR-001: alias {alias_base:#010x} maps "
+                        f"offset {offset:#x} inconsistently"
+                    )
+
+    basis_offsets = (0,) + tuple(
+        1 << bit for bit in range(2, VRAM_MIRROR_BYTES.bit_length() - 1)
+    )
+    transforms: list[VramMirrorAddressTransform] = []
+    for alias_index, alias_base in enumerate(VRAM_MIRROR_BASES):
+        mapping = observations[alias_index]
+        missing = tuple(offset for offset in basis_offsets if offset not in mapping)
+        if missing:
+            raise ProtocolError(
+                f"PSP-VRAM-MIRROR-001: alias {alias_base:#010x} lacks affine "
+                f"basis samples {tuple(hex(offset) for offset in missing)}"
+            )
+        constant = mapping[0]
+        columns: list[int | None] = [None, None]
+        columns.extend(mapping[1 << bit] ^ constant for bit in range(2, 21))
+        for offset, physical in mapping.items():
+            predicted = constant
+            for bit in range(2, 21):
+                if offset & (1 << bit):
+                    column = columns[bit]
+                    if column is None:
+                        raise ProtocolError(
+                            "PSP-VRAM-MIRROR-001: affine column map is incomplete"
+                        )
+                    predicted ^= column
+            if predicted != physical:
+                raise ProtocolError(
+                    f"PSP-VRAM-MIRROR-001: alias {alias_base:#010x} is not affine "
+                    f"over GF(2) at offset {offset:#x}"
+                )
+        transforms.append(VramMirrorAddressTransform(
+            alias_base=alias_base,
+            constant=constant,
+            column_map=tuple(columns),
+            sample_count=len(mapping),
+        ))
+    return tuple(transforms)
+
+
+def _vram_mirror_depth_storage(
+    sequence: SequenceReport,
+    info: dict[str, int],
+    transforms: dict[int, VramMirrorAddressTransform],
+) -> VramMirrorDepthStorage:
+    depth_offset = info["depth_offset"]
+    row_bytes = VRAM_MIRROR_DEPTH_STRIDE * 2
+    depth_rows = tuple(
+        info[f"depth_row_y{row}"] for row in range(VRAM_MIRROR_DEPTH_ROW_COUNT)
+    )
+    samples: dict[int, dict[tuple[int, int], int]] = {
+        alias: {} for alias in VRAM_MIRROR_DEPTH_ALIASES
+    }
+    for row_index, y in enumerate(depth_rows):
+        for chunk in range(VRAM_MIRROR_DEPTH_ROW_CHUNK_COUNT):
+            record = sequence.results[f"vram-ge-depth-row{row_index}-{chunk:02d}"]
+            if record.status != "PASS":
+                raise ProtocolError(
+                    f"PSP-VRAM-MIRROR-001: cannot analyze {record.case_id} with "
+                    f"status {record.status}"
+                )
+            for pixel in range(VRAM_MIRROR_DEPTH_CHUNK_PIXELS):
+                x = chunk * VRAM_MIRROR_DEPTH_CHUNK_PIXELS + pixel
+                logical_offset = depth_offset + y * row_bytes + 2 * x
+                for alias_index, alias_base in enumerate(VRAM_MIRROR_DEPTH_ALIASES):
+                    output_index = (pixel * len(VRAM_MIRROR_DEPTH_ALIASES) + alias_index) * 2
+                    address = _vram_mirror_integer(record, f"out{output_index}")
+                    value = _vram_mirror_integer(record, f"out{output_index + 1}")
+                    if address != alias_base + logical_offset:
+                        raise ProtocolError(
+                            f"PSP-VRAM-MIRROR-001: {record.case_id} has a wrong depth address"
+                        )
+                    samples[alias_base][(y, x)] = value
+
+    sprite_sources: dict[int, tuple[int, ...]] = {}
+    for sync_case in VRAM_MIRROR_GE_SYNC_CASES:
+        operation = sync_case[1]
+        if operation == 0:
+            continue
+        x0, y0, z0, x1, y1, z1 = sync_case[2:8]
+        if z0 != z1 or x0 >= x1 or y0 >= y1:
+            raise ProtocolError(
+                f"PSP-VRAM-MIRROR-001: {sync_case[0]} does not describe a flat-Z sprite"
+            )
+        if z0 in sprite_sources:
+            raise ProtocolError(
+                "PSP-VRAM-MIRROR-001: sprite Z values must distinguish the probe sprites"
+            )
+        sprite_sources[z0] = tuple(
+            row * row_bytes + 2 * x
+            for row in range(y0, y1)
+            for x in range(x0, x1)
+        )
+    sprite_z_values = frozenset(sprite_sources)
+    base_samples = samples[VRAM_MIRROR_BASES[4]]
+    observed_hits = {
+        (y, x, value)
+        for (y, x), value in base_samples.items()
+        if value in sprite_z_values
+    }
+    observed_z_values = frozenset(value for _y, _x, value in observed_hits)
+    if observed_z_values != sprite_z_values:
+        raise ProtocolError(
+            "PSP-VRAM-MIRROR-001: sampled base rows do not contain every raw-Z sprite"
+        )
+
+    relative_candidates: set[int] | None = None
+    absolute_candidates: set[int] | None = None
+    for y, x, z_value in observed_hits:
+        observed_linear = y * row_bytes + 2 * x
+        source_offsets = sprite_sources[z_value]
+        relative_for_hit = {observed_linear ^ source for source in source_offsets}
+        absolute_for_hit = {
+            (depth_offset + observed_linear) ^ (depth_offset + source)
+            for source in source_offsets
+        }
+        relative_candidates = (
+            relative_for_hit if relative_candidates is None
+            else relative_candidates & relative_for_hit
+        )
+        absolute_candidates = (
+            absolute_for_hit if absolute_candidates is None
+            else absolute_candidates & absolute_for_hit
+        )
+
+    if not relative_candidates or not absolute_candidates:
+        raise ProtocolError(
+            "PSP-VRAM-MIRROR-001: raw-Z sprites do not share one depth-storage XOR"
+        )
+
+    def matches_sampled_depth(candidate: int, *, absolute: bool) -> tuple[bool, dict[int, int]]:
+        expected_by_physical: dict[int, int] = {}
+        for z_value, source_offsets in sprite_sources.items():
+            for source in source_offsets:
+                physical = (
+                    (depth_offset + source) ^ candidate
+                    if absolute else depth_offset + (source ^ candidate)
+                )
+                if physical < depth_offset or physical >= depth_offset + info["depth_frame_bytes"]:
+                    return False, {}
+                previous = expected_by_physical.setdefault(physical, z_value)
+                if previous != z_value:
+                    return False, {}
+        predicted_hits: set[tuple[int, int, int]] = set()
+        sampled_rows = set(depth_rows)
+        for physical, z_value in expected_by_physical.items():
+            linear = physical - depth_offset
+            if linear & 1:
+                return False, {}
+            y, row_byte_offset = divmod(linear, row_bytes)
+            x, pixel_remainder = divmod(row_byte_offset, 2)
+            if pixel_remainder or x >= VRAM_MIRROR_DEPTH_STRIDE:
+                return False, {}
+            if y in sampled_rows:
+                predicted_hits.add((y, x, z_value))
+        if predicted_hits != observed_hits:
+            return False, {}
+        for (y, x), value in base_samples.items():
+            physical = depth_offset + y * row_bytes + 2 * x
+            expected = expected_by_physical.get(physical)
+            if expected is not None and value != expected:
+                return False, {}
+            if value in sprite_z_values and expected != value:
+                return False, {}
+
+        mirror_transform = transforms[VRAM_MIRROR_DEPTH_ALIASES[1]]
+        mirror_samples = samples[VRAM_MIRROR_DEPTH_ALIASES[1]]
+        for (y, x), value in mirror_samples.items():
+            virtual = depth_offset + y * row_bytes + 2 * x
+            if virtual & 3:
+                continue
+            physical = mirror_transform.apply(virtual)
+            expected = expected_by_physical.get(physical)
+            if expected is not None and value != expected:
+                return False, {}
+            if value in sprite_z_values and expected != value:
+                return False, {}
+        return True, expected_by_physical
+
+    relative_matches: list[int] = []
+    absolute_matches: list[int] = []
+    for candidate in sorted(relative_candidates):
+        if matches_sampled_depth(candidate, absolute=False)[0]:
+            relative_matches.append(candidate)
+    for candidate in sorted(absolute_candidates):
+        if matches_sampled_depth(candidate, absolute=True)[0]:
+            absolute_matches.append(candidate)
+    if not relative_matches or not absolute_matches:
+        raise ProtocolError(
+            "PSP-VRAM-MIRROR-001: depth-storage XOR candidates do not explain "
+            "the sampled raw-Z rows"
+        )
+
+    alias_crosschecked_words = 0
+    base_by_physical = {
+        depth_offset + y * row_bytes + 2 * x: value
+        for (y, x), value in base_samples.items()
+    }
+    mirror_transform = transforms[VRAM_MIRROR_DEPTH_ALIASES[1]]
+    mirror_samples = samples[VRAM_MIRROR_DEPTH_ALIASES[1]]
+    for (y, x), value in mirror_samples.items():
+        virtual = depth_offset + y * row_bytes + 2 * x
+        if virtual & 3:
+            continue
+        physical = mirror_transform.apply(virtual)
+        base_value = base_by_physical.get(physical)
+        if base_value is not None:
+            if value != base_value:
+                raise ProtocolError(
+                    "PSP-VRAM-MIRROR-001: 0x44200000 depth sample disagrees with "
+                    "the decoded base alias"
+                )
+            alias_crosschecked_words += 1
+
+    return VramMirrorDepthStorage(
+        relative_xor_candidates=tuple(relative_matches),
+        absolute_xor_candidates=tuple(absolute_matches),
+        observed_sprite_pixels=len(observed_hits),
+        alias_crosschecked_words=alias_crosschecked_words,
+    )
+
+
+def analyze_vram_mirror_run(sequence: SequenceReport) -> VramMirrorAnalysis:
+    """Derive alias maps, write landings, and the GE depth XOR from one parsed run.
+
+    This analysis consumes only the position pattern and raw probe outputs. It
+    does not compare them with a pinned hardware result; measured expectations
+    belong in source-owned tests, while this function reports what each run says.
+    """
+
+    if sequence.spec.test_id != VRAM_MIRROR_SPEC.test_id:
+        raise ProtocolError(
+            f"expected {VRAM_MIRROR_SPEC.test_id}, got {sequence.spec.test_id}"
+        )
+    if not sequence.complete or not sequence.all_passed:
+        raise ProtocolError(
+            "PSP-VRAM-MIRROR-001: analysis requires a complete all-PASS run"
+        )
+    info_record = sequence.results.get("vram-mirror-info")
+    if info_record is None or info_record.status != "PASS":
+        raise ProtocolError("PSP-VRAM-MIRROR-001: analysis requires PASS setup metadata")
+    info = {
+        name: _vram_mirror_integer(info_record, f"out{index}")
+        for index, name in enumerate(VRAM_MIRROR_INFO_FIELDS)
+    }
+    transforms = _vram_mirror_affine_transforms(sequence)
+    transforms_by_base = {item.alias_base: item for item in transforms}
+
+    write_landings: list[VramMirrorWriteLanding] = []
+    write_offsets = tuple(
+        info[f"write_offset_{index}"] for index in range(len(VRAM_MIRROR_WRITE_OFFSETS))
+    )
+    for alias_index, alias_base in enumerate(VRAM_MIRROR_WRITE_BASES):
+        transform = transforms_by_base[alias_base]
+        for sample_index, requested_offset in enumerate(write_offsets):
+            case_id = f"vram-cpu-write-mirror-{alias_index:02d}-{sample_index:02d}"
+            record = sequence.results[case_id]
+            write_address = _vram_mirror_integer(record, "out0")
+            marker = _vram_mirror_integer(record, "out1")
+            first = _vram_mirror_integer(record, "out2")
+            count = _vram_mirror_integer(record, "out3")
+            predicted = transform.apply(requested_offset)
+            write_landings.append(VramMirrorWriteLanding(
+                case_id=case_id,
+                alias_base=alias_base,
+                requested_offset=write_address - alias_base,
+                predicted_offset=predicted,
+                marker=marker,
+                first_found_offset=None if count == 0 else first,
+                found_count=count,
+            ))
+
+    depth_storage = _vram_mirror_depth_storage(sequence, info, transforms_by_base)
+    return VramMirrorAnalysis(
+        address_transforms=transforms,
+        write_landings=tuple(write_landings),
+        depth_storage=depth_storage,
+    )
+
+
+# ---------------------------------------------------------------------------
 # PSP-DMAC-001 safe alignment/overlap cells and isolated invalid-tail launches
 # ---------------------------------------------------------------------------
 
@@ -591,13 +1473,16 @@ _register_campaign_probe(
     ("ge-break-no-active-list", "ge-continue-no-paused-list",
      "ge-break-invalid-mode", "ge-list-sync-paused", "ge-draw-sync-paused",
      "ge-continue-drain", "ge-quiesce-after-continue",
-     "ge-list-sync-cancelled", "ge-draw-sync-cancelled",
-     "ge-quiesce-after-cancel"),
+     "ge-break-reset-no-dequeue", "ge-list-sync-cancelled",
+     "ge-draw-sync-cancelled", "ge-quiesce-after-cancel",
+     "ge-list-dequeue-stalled", "ge-quiesce-after-dequeue"),
     {"ge-break-no-active-list": 2, "ge-continue-no-paused-list": 1,
      "ge-break-invalid-mode": 2, "ge-list-sync-paused": 3,
      "ge-draw-sync-paused": 3, "ge-continue-drain": 5,
-     "ge-quiesce-after-continue": 4, "ge-list-sync-cancelled": 3,
-     "ge-draw-sync-cancelled": 3, "ge-quiesce-after-cancel": 4},
+     "ge-quiesce-after-continue": 4, "ge-break-reset-no-dequeue": 2,
+     "ge-list-sync-cancelled": 3, "ge-draw-sync-cancelled": 3,
+     "ge-quiesce-after-cancel": 4, "ge-list-dequeue-stalled": 4,
+     "ge-quiesce-after-dequeue": 4},
 )
 _register_campaign_probe(
     "kernel-misc", "PSP-KERNEL-MISC-001",
@@ -719,6 +1604,126 @@ _register_campaign_probe(
     )},
 )
 
+# Single-launch HLE cases (probe_hle_measure.c, one launch each). Shape only: a cell
+# is PASS when its calls completed, SKIP when the object it needs was not obtained,
+# and every out word is an observation. Nothing here compares a value with a PSP
+# expectation. The fixed-pool delete cells of hle-kernel-pool-bounds are PASS with
+# out0 0 when their create was refused (validate_hle_pool_bounds_deletes).
+_register_campaign_probe(
+    "hle-vtimer-unit", "PSP-HLE-VTIMER-002",
+    ("vtimer-unit-create", "vtimer-unit-start", "vtimer-unit-time-a",
+     "vtimer-unit-systime-a", "vtimer-unit-delay", "vtimer-unit-time-b",
+     "vtimer-unit-systime-b", "vtimer-unit-base-running",
+     "vtimer-unit-refer-running", "vtimer-unit-stop", "vtimer-unit-base-stopped",
+     "vtimer-unit-refer-stopped", "vtimer-unit-delete"),
+    {"vtimer-unit-create": 1, "vtimer-unit-start": 1, "vtimer-unit-time-a": 2,
+     "vtimer-unit-systime-a": 2, "vtimer-unit-delay": 1, "vtimer-unit-time-b": 2,
+     "vtimer-unit-systime-b": 2, "vtimer-unit-base-running": 2,
+     "vtimer-unit-refer-running": 2, "vtimer-unit-stop": 1,
+     "vtimer-unit-base-stopped": 2, "vtimer-unit-refer-stopped": 2,
+     "vtimer-unit-delete": 1},
+)
+_register_campaign_probe(
+    "hle-vtimer-errors", "PSP-HLE-VTIMER-003",
+    ("vtimer-err-create-stale", "vtimer-err-delete-stale",
+     "vtimer-err-start-deleted", "vtimer-err-stop-deleted",
+     "vtimer-err-time-deleted", "vtimer-err-cleanup-stale",
+     "vtimer-err-create-live", "vtimer-err-delete-live",
+     "vtimer-err-noslot-create", "vtimer-err-noslot-cleanup"),
+    {"vtimer-err-create-stale": 1, "vtimer-err-delete-stale": 1,
+     "vtimer-err-start-deleted": 1, "vtimer-err-stop-deleted": 1,
+     "vtimer-err-time-deleted": 2, "vtimer-err-cleanup-stale": 0,
+     "vtimer-err-create-live": 1, "vtimer-err-delete-live": 1,
+     "vtimer-err-noslot-create": 2, "vtimer-err-noslot-cleanup": 2},
+)
+_register_campaign_probe(
+    "hle-kernel-pool-bounds", "PSP-HLE-KERNEL-STATUS-002",
+    ("fpl-create-size-0x00", "fpl-delete-size-0x00",
+     "fpl-create-size-0x7fffffff", "fpl-delete-size-0x7fffffff", "vpl-create",
+     "vpl-try-alloc-refusal", "vpl-free-all", "vpl-delete"),
+    {"fpl-create-size-0x00": 1, "fpl-delete-size-0x00": 1,
+     "fpl-create-size-0x7fffffff": 1, "fpl-delete-size-0x7fffffff": 1,
+     "vpl-create": 1, "vpl-try-alloc-refusal": 2, "vpl-free-all": 2,
+     "vpl-delete": 1},
+)
+_register_campaign_probe(
+    "hle-null-out-pointers", "PSP-HLE-NULL-OUT-001",
+    ("null-vtimer-create", "null-sys-status", "null-vtimer-time", "null-vtimer-base",
+     "null-vtimer-refer", "null-vtimer-delete"),
+    {"null-vtimer-create": 0, "null-sys-status": 0, "null-vtimer-time": 0,
+     "null-vtimer-base": 0, "null-vtimer-refer": 0, "null-vtimer-delete": 0},
+)
+_register_campaign_probe(
+    "hle-power-float-v0", "PSP-HLE-POWER-002",
+    ("pll-clock-float-v0", "cpu-clock-float-v0", "bus-clock-float-v0"),
+    {"pll-clock-float-v0": 1, "cpu-clock-float-v0": 1, "bus-clock-float-v0": 1},
+)
+_HLE_AUDIO_SRC_INVALID_CASES = (
+    "src-reserve-invalid-samples-zero", "src-reserve-invalid-samples-65",
+    "src-reserve-invalid-samples-4096", "src-reserve-invalid-frequency",
+    "src-reserve-invalid-channels-1", "src-reserve-invalid-channels-4",
+)
+_HLE_AUDIO_SRC_CASES = (
+    "src-release-unreserved", "src-output-unreserved", "src-reserve-valid",
+    "src-reserve-already-held", "src-output-blocking-0", "src-release-after-output",
+    "src-release-again", *_HLE_AUDIO_SRC_INVALID_CASES, "out2-then-src-reserve",
+    "src-then-out2-reserve", "src-final-cleanup", "out2-final-cleanup",
+)
+_register_campaign_probe(
+    "hle-audio-src", "PSP-HLE-AUDIO-SRC-001", _HLE_AUDIO_SRC_CASES,
+    {
+        "src-release-unreserved": 0, "src-output-unreserved": 2,
+        "src-reserve-valid": 3, "src-reserve-already-held": 3,
+        "src-output-blocking-0": 2, "src-release-after-output": 0,
+        "src-release-again": 0,
+        **{case_id: 4 for case_id in _HLE_AUDIO_SRC_INVALID_CASES},
+        "out2-then-src-reserve": 3, "src-then-out2-reserve": 3,
+        "src-final-cleanup": 0, "out2-final-cleanup": 0,
+    },
+)
+_HLE_TIMER_ORDER_CASES = (
+    "alarm-same-delay-set", "alarm-same-delay-a", "alarm-same-delay-b",
+    "alarm-long-then-short-set", "alarm-long-event", "alarm-short-event",
+    "timer-order-vtimer-create", "timer-order-vtimer-handler",
+    "timer-order-vtimer-alarm-set", "timer-order-vtimer-event",
+    "timer-order-vtimer-alarm-event", "alarm-zero-set", "alarm-zero-event",
+    "alarm-same-delay-cleanup", "alarm-long-short-cleanup",
+    "timer-order-vtimer-cleanup", "alarm-zero-cleanup",
+)
+_register_campaign_probe(
+    "hle-timer-order", "PSP-HLE-TIMER-ORDER-001", _HLE_TIMER_ORDER_CASES,
+    {
+        "alarm-same-delay-set": 1, "alarm-same-delay-a": 2,
+        "alarm-same-delay-b": 2, "alarm-long-then-short-set": 1,
+        "alarm-long-event": 2, "alarm-short-event": 2,
+        "timer-order-vtimer-create": 1, "timer-order-vtimer-handler": 1,
+        "timer-order-vtimer-alarm-set": 1, "timer-order-vtimer-event": 2,
+        "timer-order-vtimer-alarm-event": 2, "alarm-zero-set": 1,
+        "alarm-zero-event": 2, "alarm-same-delay-cleanup": 2,
+        "alarm-long-short-cleanup": 2, "timer-order-vtimer-cleanup": 3,
+        "alarm-zero-cleanup": 1,
+    },
+)
+
+VFPU_TRANSCENDENTAL_OPS = (
+    "vsin", "vcos", "vexp2", "vlog2", "vrsq", "vrcp", "vsqrt", "vasin",
+    "vnrcp", "vnsin", "vrexp2",
+)
+VFPU_TRANSCENDENTAL_CHUNKS = 8
+VFPU_TRANSCENDENTAL_SEMANTIC_CASES = tuple(
+    f"{op}-chunk-{chunk:02d}"
+    for op in VFPU_TRANSCENDENTAL_OPS
+    for chunk in range(VFPU_TRANSCENDENTAL_CHUNKS)
+)
+_register_campaign_probe(
+    "vfpu-transcendental-corpus", "PSP-VFPU-TRANSCENDENTAL-001",
+    VFPU_TRANSCENDENTAL_SEMANTIC_CASES,
+    {
+        case_id: (7 if case_id.endswith("-chunk-07") else 8)
+        for case_id in VFPU_TRANSCENDENTAL_SEMANTIC_CASES
+    },
+)
+
 # llsc-link: three link windows and the sc behaviours they measure (see probe.c,
 # run_llsc_link). Six words per cell: loaded, first sc result, A and B after the
 # cell, and the model words for A and B. The parser checks shape only.
@@ -726,6 +1731,17 @@ _register_campaign_probe(
     "llsc-link", "PSP-LLSC-001",
     ("llsc-control", "llsc-second-sc", "llsc-other-address"),
     {"llsc-control": 6, "llsc-second-sc": 6, "llsc-other-address": 6},
+)
+
+# fpu-cc: COP1 condition-code facts (see probe.c, run_fpu_cc). One FCR31 writability
+# cell, then for each condition code 0..7 a c.eq.s cell (one word) and a bc1t/bc1f cell
+# (four words). The condition code 0 cells are controls; the parser checks shape only.
+_FPU_CC_CELLS = ("fpu-cc-fcr31-bits",) + tuple(
+    f"fpu-cc{n}-{kind}" for n in range(8) for kind in ("ceq", "branch"))
+_register_campaign_probe(
+    "fpu-cc", "PSP-FPU-CC-001", _FPU_CC_CELLS,
+    {cell: (2 if cell == "fpu-cc-fcr31-bits" else 1 if cell.endswith("-ceq") else 4)
+     for cell in _FPU_CC_CELLS},
 )
 
 
@@ -792,6 +1808,58 @@ def validate_hle_edram_restore(text: str) -> None:
         )
 
 
+#: Single-launch HLE cases whose status is machinery-only: a record is PASS when its calls
+#: completed and SKIP when the object it needs was not obtained, and never FAIL.
+HLE_MACHINERY_STATUS_CASES = frozenset({
+    "hle-vtimer-unit", "hle-vtimer-errors", "hle-kernel-pool-bounds", "hle-power-float-v0",
+    "hle-null-out-pointers", "hle-audio-src", "hle-timer-order",
+})
+VFPU_RAW_WORD_CASES = frozenset({"vfpu-transcendental-corpus"})
+
+#: hle-kernel-pool-bounds fixed-pool (create, delete) cell pairs.
+HLE_POOL_BOUNDS_FPL_PAIRS = (
+    ("fpl-create-size-0x00", "fpl-delete-size-0x00"),
+    ("fpl-create-size-0x7fffffff", "fpl-delete-size-0x7fffffff"),
+)
+
+
+def validate_hle_pool_bounds_deletes(sequence: SequenceReport) -> None:
+    """Fail closed unless each fixed-pool delete cell agrees with its own create cell.
+
+    A refused create is what these creates measure, so the delete cell after it is PASS,
+    not SKIP: its out0 is 1 when it issued a delete (the create's out0 says a pool was
+    created) and 0 when there was no pool, in which case it made no call and its result
+    is 0. This checks the probe's own bookkeeping, like validate_hle_edram_restore; it
+    compares no value with a PSP expectation. A pair with a record still missing from a
+    partial stream is not checked.
+    """
+
+    results = sequence.results
+    test_id = sequence.spec.test_id
+    for create_id, delete_id in HLE_POOL_BOUNDS_FPL_PAIRS:
+        if create_id not in results or delete_id not in results:
+            continue
+        delete = results[delete_id]
+        if delete.status != "PASS":
+            raise ProtocolError(
+                f"{test_id}: {delete_id} status {delete.status!r}; a fixed-pool delete cell is "
+                "PASS whether or not its create returned a pool"
+            )
+        created = int(dict(results[create_id].values)["out0"], 0)
+        values = dict(delete.values)
+        issued = int(values["out0"], 0)
+        if issued not in (0, 1) or issued != created:
+            raise ProtocolError(
+                f"{test_id}: {delete_id} out0 {issued:#x} must equal {create_id} out0 "
+                f"{created:#x} (1 when a pool was created and deleted, 0 when there was none)"
+            )
+        if issued == 0 and int(values["result"], 0) != 0:
+            raise ProtocolError(
+                f"{test_id}: {delete_id} recorded no pool (out0 0) but a non-zero result; "
+                "with no pool the cell makes no call"
+            )
+
+
 def parse_campaign_probe_output(
     text: str, campaign_case: str, *, require_complete: bool = True
 ) -> SequenceReport:
@@ -803,6 +1871,21 @@ def parse_campaign_probe_output(
         raise ProtocolError(f"unknown campaign probe {campaign_case!r}") from exc
     sequence = parse_sequence(text, spec, require_complete=require_complete)
     _validate_scalar_shape(sequence, counts)
+    if campaign_case in HLE_MACHINERY_STATUS_CASES:
+        for record in sequence.results.values():
+            if record.status not in ("PASS", "SKIP"):
+                raise ProtocolError(
+                    f"{spec.test_id}: {record.case_id} status {record.status!r} is not "
+                    "machinery-only (a cell is PASS or SKIP, never FAIL)"
+                )
+    if campaign_case == "hle-kernel-pool-bounds":
+        validate_hle_pool_bounds_deletes(sequence)
+    if campaign_case in VFPU_RAW_WORD_CASES:
+        for record in sequence.results.values():
+            if record.status != "PASS":
+                raise ProtocolError(
+                    f"{spec.test_id}: {record.case_id} must carry a produced raw-word record"
+                )
     return sequence
 
 
@@ -942,6 +2025,801 @@ def _validate_registry_name(value: str, *, category: bool) -> None:
         raise ProtocolError(f"{REGISTRY_TEST_ID}: unsafe registry name {value!r}")
     if category and value != "CONFIG" and not value.startswith("CONFIG/"):
         raise ProtocolError(f"{REGISTRY_TEST_ID}: category is outside /CONFIG: {value!r}")
+
+
+# ---------------------------------------------------------------------------
+# PSP-REGISTRY-002 read-only font-registry walk (fixtures/psp_oracle/registry_walk.h)
+#
+# The stream is font-registry-open, then font-category/font-key records in the
+# walk's enumeration order, then font-registry-done. The parser re-checks the
+# walk's safety contract on the evidence itself: a category appears only right
+# after the key record that listed it as an on-route directory with a name
+# that round-trips, the root is never opened (it is listed through the registry
+# handle, and its children are opened only when that listing showed /CONFIG as
+# a directory), values appear only inside /DATA/FONT and
+# /SYSPROFILE/RESOLUTION, and every listed key is accounted for in order. It
+# does not decide PSP values.
+# ---------------------------------------------------------------------------
+
+REGISTRY_FONT_TEST_ID = "PSP-REGISTRY-002"
+REGISTRY_FONT_HOST0_LOG = "host0:/registry_font_log.txt"
+REGISTRY_FONT_ROUTES = (("DATA", "FONT"), ("SYSPROFILE", "RESOLUTION"))
+REGISTRY_FONT_NAME_MAX = 26
+REGISTRY_FONT_KEYS_MAX = 64
+REGISTRY_FONT_DEPTH_MAX = 6
+REGISTRY_FONT_VALUE_MAX = 1024
+REGISTRY_FONT_ERROR = 0xFFFFFFFF
+REGISTRY_FONT_TYPE_DIR = 1
+REGISTRY_FONT_KEY_METADATA = 0
+REGISTRY_FONT_KEY_VALUE = 1
+REGISTRY_FONT_KEY_OPENED = 2
+REGISTRY_FONT_KEY_OFF_ROUTE = 3
+REGISTRY_FONT_KEY_NAME_REFUSED = 4
+REGISTRY_FONT_KEY_DEPTH_LIMIT = 5
+REGISTRY_FONT_KEY_OPEN_LIMIT = 6
+REGISTRY_FONT_KEY_VALUE_SIZE = 7
+REGISTRY_FONT_KEY_INFO_FAILED = 8
+REGISTRY_FONT_KEY_NAME_UNSAFE = 9
+REGISTRY_FONT_KEY_ROOT_UNVERIFIED = 10
+REGISTRY_FONT_ROOT_ANCHOR = "/CONFIG"
+_REGISTRY_FONT_REFUSALS = frozenset({
+    REGISTRY_FONT_KEY_NAME_REFUSED, REGISTRY_FONT_KEY_DEPTH_LIMIT, REGISTRY_FONT_KEY_OPEN_LIMIT,
+    REGISTRY_FONT_KEY_ROOT_UNVERIFIED,
+})
+_REGISTRY_FONT_NAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,26}")
+
+
+@dataclass(frozen=True)
+class RegistryFontKey:
+    path: str
+    index: int
+    type: int
+    size: int
+    disposition: int
+    value: bytes | None
+
+
+@dataclass(frozen=True)
+class RegistryFontReport:
+    parsed: object
+    complete: bool
+    registry_opened: bool
+    root_enumerated: bool
+    root_verified: bool
+    categories: tuple[str, ...]
+    opened: tuple[str, ...]
+    keys: tuple[RegistryFontKey, ...]
+
+
+def _font_components(path: str) -> list[str]:
+    if path == "/":
+        return []
+    if not path.startswith("/") or path.endswith("/"):
+        raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: malformed registry path {path!r}")
+    parts = path[1:].split("/")
+    if any(not _REGISTRY_FONT_NAME_RE.fullmatch(part) for part in parts):
+        raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: unsafe registry path {path!r}")
+    return parts
+
+
+def _font_on_route(parts: list[str]) -> bool:
+    """Whether a directory at ``parts`` may be entered: a route prefix or below a route."""
+
+    span = min(len(parts), 2)
+    return bool(parts) and any(tuple(parts[:span]) == route[:span] for route in REGISTRY_FONT_ROUTES)
+
+
+def _font_value_subtree(parent: list[str]) -> bool:
+    """Whether keys of the directory ``parent`` are inside a value subtree."""
+
+    return len(parent) >= 2 and tuple(parent[:2]) in REGISTRY_FONT_ROUTES
+
+
+def _font_reopenable(name: str) -> bool:
+    return 0 < len(name) < REGISTRY_FONT_NAME_MAX and not name.startswith("__NAKAGAWA")
+
+
+def _font_fields(record, expected: set[str]) -> dict[str, int | str]:
+    values = dict(record.values)
+    if set(values) != expected:
+        raise ProtocolError(
+            f"{REGISTRY_FONT_TEST_ID}: {record.case_id} fields must be {sorted(expected)}, "
+            f"got {sorted(values)}"
+        )
+    out: dict[str, int | str] = {}
+    for field, value in values.items():
+        if field in {"detail", "value_hex", "name_hex"}:
+            if field != "detail" and not re.fullmatch(r"(?:[0-9a-f]{2})*", value):
+                raise ProtocolError(
+                    f"{REGISTRY_FONT_TEST_ID}: {record.case_id} {field} is not byte encoded"
+                )
+            out[field] = value
+            continue
+        try:
+            out[field] = int(value, 0)
+        except ValueError as exc:
+            raise ProtocolError(
+                f"{REGISTRY_FONT_TEST_ID}: {record.case_id} {field} is not an integer"
+            ) from exc
+    return out
+
+
+def parse_registry_font_output(
+    text: str, *, require_complete: bool = True
+) -> RegistryFontReport:
+    """Validate the read-only font-registry walk and its safety contract."""
+
+    parsed = parse_output(text)
+    records = list(parsed.results)
+    if any(record.test_id != REGISTRY_FONT_TEST_ID for record in records):
+        raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: foreign test_id in font-registry stream")
+    if records[0].case_id != "font-registry-open":
+        raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: stream must start with font-registry-open")
+    opening = _font_fields(records[0], {"result", "out0", "out1"})
+    registry_opened = opening["result"] == 0
+    if (records[0].status == "PASS") != registry_opened:
+        raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: font-registry-open status disagrees")
+    terminal = records[-1].case_id == "font-registry-done" and len(records) > 1
+    body = records[1:-1] if terminal else records[1:]
+    if not registry_opened and body:
+        raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: records after a failed registry open")
+
+    categories: list[str] = []
+    opened: list[str] = []
+    keys: list[RegistryFontKey] = []
+    stack: list[list] = []  # [path, count, next index]
+    pending_open: str | None = None
+    root_enumerated = False
+    for record in body:
+        if record.case_id.startswith("font-category-"):
+            if record.case_id != f"font-category-{len(categories):04d}":
+                raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} is out of sequence")
+            values = _font_fields(record, {"result", "out0", "out1", "out2", "out3", "detail"})
+            path = str(values["detail"])
+            parts = _font_components(path)
+            usable = (values["result"] == 0 and values["out0"] == 0
+                      and values["out1"] <= REGISTRY_FONT_KEYS_MAX
+                      and (values["out1"] == 0 or values["out2"] == 0))
+            if (record.status == "PASS") != usable:
+                raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} status disagrees")
+            if values["out3"] != len(parts):
+                raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} depth disagrees")
+            if not categories:
+                if path != "/" or values["result"] != 0:
+                    raise ProtocolError(
+                        f"{REGISTRY_FONT_TEST_ID}: the first category must be the root listing"
+                    )
+                root_enumerated = usable
+            else:
+                # Safety: a category exists in the evidence only because the key record just
+                # before it listed it as an on-route directory whose name round-trips.
+                if pending_open != path:
+                    raise ProtocolError(
+                        f"{REGISTRY_FONT_TEST_ID}: {path} was opened without being listed "
+                        "as an on-route directory just before"
+                    )
+                if (not _font_on_route(parts) or len(parts) > REGISTRY_FONT_DEPTH_MAX
+                        or not all(_font_reopenable(part) for part in parts)):
+                    raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {path} must never be opened")
+                if values["result"] == 0:
+                    opened.append(path)
+            pending_open = None
+            categories.append(path)
+            if usable and values["out1"] > 0:
+                stack.append([path, values["out1"], 0])
+            continue
+
+        if not record.case_id.startswith("font-key-"):
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: unexpected record {record.case_id!r}")
+        if pending_open is not None:
+            raise ProtocolError(
+                f"{REGISTRY_FONT_TEST_ID}: {pending_open} was listed as opened but has no category"
+            )
+        if record.case_id != f"font-key-{len(keys):04d}":
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} is out of sequence")
+        base = {"result", "out0", "out1", "out2", "out3", "out4", "detail"}
+        raw = dict(record.values)
+        extra = set(raw) - base
+        if extra not in (set(), {"value_hex"}, {"name_hex"}):
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} has invalid fields")
+        values = _font_fields(record, base | extra)
+        while stack and stack[-1][2] >= stack[-1][1]:
+            stack.pop()
+        if not stack:
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} has no listing parent")
+        parent_path, _count, index = stack[-1]
+        if values["out2"] != index:
+            raise ProtocolError(
+                f"{REGISTRY_FONT_TEST_ID}: {record.case_id} breaks the enumeration order"
+            )
+        stack[-1][2] += 1
+        disposition = values["out3"]
+        path = str(values["detail"])
+        if disposition == REGISTRY_FONT_KEY_NAME_UNSAFE:
+            # name_hex is the whole listing slot; a usable name is NUL-terminated inside it.
+            slot = bytes.fromhex(str(values.get("name_hex", "")))
+            name = slot.split(b"\0", 1)[0] if b"\0" in slot else None
+            if ("name_hex" not in values or len(slot) != REGISTRY_FONT_NAME_MAX + 1
+                    or path != parent_path or values["result"] != REGISTRY_FONT_ERROR
+                    or record.status != "FAIL"
+                    or (name is not None
+                        and _REGISTRY_FONT_NAME_RE.fullmatch(name.decode("latin-1")))):
+                raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} unsafe-name record")
+            keys.append(RegistryFontKey(parent_path, index, REGISTRY_FONT_ERROR,
+                                        REGISTRY_FONT_ERROR, disposition, None))
+            continue
+        if "name_hex" in values:
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} has a stray name_hex")
+        parts = _font_components(path)
+        parent_parts = _font_components(parent_path)
+        if parts[:-1] != parent_parts or not parts:
+            raise ProtocolError(
+                f"{REGISTRY_FONT_TEST_ID}: {record.case_id} is not a child of {parent_path}"
+            )
+        is_dir = values["out0"] == REGISTRY_FONT_TYPE_DIR
+        in_values = _font_value_subtree(parent_parts)
+        value = None
+        if "value_hex" in values:
+            if disposition != REGISTRY_FONT_KEY_VALUE or values["out4"] != 0 or not in_values:
+                raise ProtocolError(
+                    f"{REGISTRY_FONT_TEST_ID}: {record.case_id} carries a value it must not have"
+                )
+            value = bytes.fromhex(str(values["value_hex"]))
+            if len(value) != values["out1"]:
+                raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} value size disagrees")
+        ok = values["result"] == 0
+        if (record.status == "PASS") != ok:
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: {record.case_id} status disagrees")
+        if disposition == REGISTRY_FONT_KEY_INFO_FAILED:
+            consistent = not ok
+        elif not ok:
+            consistent = False
+        elif disposition == REGISTRY_FONT_KEY_METADATA:
+            consistent = not is_dir and not in_values and values["out4"] == REGISTRY_FONT_ERROR
+        elif disposition == REGISTRY_FONT_KEY_VALUE:
+            consistent = (not is_dir and in_values
+                          and 0 < values["out1"] <= REGISTRY_FONT_VALUE_MAX
+                          and (values["out4"] == 0) == (value is not None))
+        elif disposition == REGISTRY_FONT_KEY_VALUE_SIZE:
+            consistent = (not is_dir and in_values and values["out4"] == REGISTRY_FONT_ERROR
+                          and not 0 < values["out1"] <= REGISTRY_FONT_VALUE_MAX)
+        elif disposition == REGISTRY_FONT_KEY_OPENED:
+            consistent = (is_dir and _font_on_route(parts) and _font_reopenable(parts[-1])
+                          and len(parts) <= REGISTRY_FONT_DEPTH_MAX)
+            pending_open = path
+        elif disposition == REGISTRY_FONT_KEY_OFF_ROUTE:
+            consistent = is_dir and not _font_on_route(parts)
+        elif disposition == REGISTRY_FONT_KEY_NAME_REFUSED:
+            consistent = is_dir and _font_on_route(parts) and not _font_reopenable(parts[-1])
+        elif disposition in (REGISTRY_FONT_KEY_DEPTH_LIMIT, REGISTRY_FONT_KEY_OPEN_LIMIT):
+            consistent = is_dir and _font_on_route(parts)
+        elif disposition == REGISTRY_FONT_KEY_ROOT_UNVERIFIED:
+            consistent = is_dir and _font_on_route(parts) and len(parts) == 1
+        else:
+            consistent = False
+        if not consistent:
+            raise ProtocolError(
+                f"{REGISTRY_FONT_TEST_ID}: {record.case_id} disposition {disposition} "
+                "disagrees with its key"
+            )
+        keys.append(RegistryFontKey(path, index, values["out0"], values["out1"],
+                                    disposition, value))
+
+    if pending_open is not None:
+        raise ProtocolError(
+            f"{REGISTRY_FONT_TEST_ID}: {pending_open} was listed as opened but has no category"
+        )
+    anchor_listed = any(key.path == REGISTRY_FONT_ROOT_ANCHOR
+                        and key.type == REGISTRY_FONT_TYPE_DIR for key in keys)
+    root_opened = any(key.disposition == REGISTRY_FONT_KEY_OPENED
+                      and key.path.count("/") == 1 for key in keys)
+    root_refused = any(key.disposition == REGISTRY_FONT_KEY_ROOT_UNVERIFIED for key in keys)
+    if root_opened and not anchor_listed:
+        raise ProtocolError(
+            f"{REGISTRY_FONT_TEST_ID}: a root category was opened although the listing did not "
+            f"show {REGISTRY_FONT_ROOT_ANCHOR} as a directory"
+        )
+    root_verified = False
+    if terminal:
+        done = _font_fields(records[-1], {
+            "result", "out0", "out1", "out2", "out3", "out4", "out5", "out6",
+        })
+        root_verified = done["out6"] == 1
+        if (done["out6"] not in (0, 1)
+                or (root_verified and (root_refused or not anchor_listed))
+                or (not root_verified and root_opened)):
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: font-registry-done root check disagrees")
+        while stack and stack[-1][2] >= stack[-1][1]:
+            stack.pop()
+        if stack:
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: listed keys are missing before done")
+        refused = sum(1 for key in keys if key.disposition in _REGISTRY_FONT_REFUSALS)
+        expected = {
+            "out0": len(categories), "out1": len(keys), "out2": len(records) - 1,
+            "out3": len(opened), "out4": refused, "out5": int(root_enumerated),
+        }
+        if any(done[field] != value for field, value in expected.items()):
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: font-registry-done counts disagree")
+        if not registry_opened and done["result"] != REGISTRY_FONT_ERROR:
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: registry closed without being opened")
+        if registry_opened and not categories:
+            raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: the root listing record is missing")
+    elif require_complete:
+        raise ProtocolError(f"{REGISTRY_FONT_TEST_ID}: stream is missing font-registry-done")
+    return RegistryFontReport(
+        parsed=parsed,
+        complete=terminal,
+        registry_opened=registry_opened,
+        root_enumerated=root_enumerated,
+        root_verified=root_verified,
+        categories=tuple(categories),
+        opened=tuple(opened),
+        keys=tuple(keys),
+    )
+
+
+def _s32(value: int) -> int:
+    return value - (1 << 32) if value & 0x80000000 else value
+
+
+# ---------------------------------------------------------------------------
+# PSP-FONTFILES-001 read-only copy of flash0:/font (fixtures/psp_oracle/font_files.h)
+#
+# font-dir-open, then (when the listing opened) font-mkdir, font-entry-NNNN in
+# listing order, font-dir-close, one font-copy-NNNN per copy candidate, and
+# font-files-done. The parser checks the order, that only regular files with
+# safe names inside the size bound were copied, and that a copy passes only
+# when its three digests and byte counts agree. The copies and digests are
+# private evidence; this parser never decides what a console should hold.
+# ---------------------------------------------------------------------------
+
+FONT_FILES_TEST_ID = "PSP-FONTFILES-001"
+FONT_FILES_HOST0_LOG = "host0:/font_files_log.txt"
+FONT_FILES_ENTRIES_MAX = 64
+FONT_FILES_FILE_MAX = 16 * 1024 * 1024
+FONT_FILES_MATCH_ALL = 7
+_FONT_FILES_NAME_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,62}")
+_SHA256_TEXT_RE = re.compile(r"[0-9a-f]{64}")
+
+
+@dataclass(frozen=True)
+class FontFileEntry:
+    name: str | None
+    name_hex: str | None
+    mode: int
+    attr: int
+    size: int
+    disposition: int
+
+
+@dataclass(frozen=True)
+class FontFileCopy:
+    name: str
+    size: int
+    sha256: str
+    readback_sha256: str
+    reread_sha256: str
+    match: int
+    verified: bool
+
+
+@dataclass(frozen=True)
+class FontFilesReport:
+    parsed: object
+    complete: bool
+    listed: bool
+    entries: tuple[FontFileEntry, ...]
+    copies: tuple[FontFileCopy, ...]
+
+
+def _io_fields(test_id: str, record, expected: set[str], text: set[str]) -> dict[str, object]:
+    values = dict(record.values)
+    if set(values) != expected:
+        raise ProtocolError(
+            f"{test_id}: {record.case_id} fields must be {sorted(expected)}, got {sorted(values)}"
+        )
+    out: dict[str, object] = {}
+    for field, value in values.items():
+        if field in text:
+            out[field] = value
+            continue
+        try:
+            out[field] = int(value, 0)
+        except ValueError as exc:
+            raise ProtocolError(f"{test_id}: {record.case_id} {field} is not an integer") from exc
+    return out
+
+
+def parse_font_files_output(text: str, *, require_complete: bool = True) -> FontFilesReport:
+    """Validate the flash0:/font listing-and-copy stream."""
+
+    tid = FONT_FILES_TEST_ID
+    parsed = parse_output(text)
+    records = list(parsed.results)
+    if any(record.test_id != tid for record in records):
+        raise ProtocolError(f"{tid}: foreign test_id in font-files stream")
+    if records[0].case_id != "font-dir-open":
+        raise ProtocolError(f"{tid}: stream must start with font-dir-open")
+    opening = _io_fields(tid, records[0], {"result", "out0", "out1"}, set())
+    listed = _s32(opening["result"]) >= 0
+    if (records[0].status == "PASS") != listed:
+        raise ProtocolError(f"{tid}: font-dir-open status disagrees")
+    terminal = len(records) > 1 and records[-1].case_id == "font-files-done"
+    body = records[1:-1] if terminal else records[1:]
+    entries: list[FontFileEntry] = []
+    copies: list[FontFileCopy] = []
+    candidates: list[FontFileEntry] = []
+    closed = False
+    if not listed and body:
+        raise ProtocolError(f"{tid}: records after a listing that did not open")
+    if body:
+        if body[0].case_id != "font-mkdir":
+            raise ProtocolError(f"{tid}: font-mkdir must follow an opened listing")
+        _io_fields(tid, body[0], {"result"}, set())
+    for record in body[1:]:
+        if record.case_id.startswith("font-entry-"):
+            if closed or record.case_id != f"font-entry-{len(entries):04d}":
+                raise ProtocolError(f"{tid}: {record.case_id} is out of sequence")
+            raw = dict(record.values)
+            name_field = {"detail"} if "detail" in raw else {"name_hex"}
+            values = _io_fields(tid, record, {"result", "out0", "out1", "out2", "out3", "out4"}
+                                | name_field, {"detail", "name_hex"})
+            name = values.get("detail")
+            name_hex = values.get("name_hex")
+            if name is not None and not _FONT_FILES_NAME_RE.fullmatch(str(name)):
+                raise ProtocolError(f"{tid}: {record.case_id} prints an unsafe name")
+            if name_hex is not None and not re.fullmatch(r"(?:[0-9a-f]{2}){1,64}", str(name_hex)):
+                raise ProtocolError(f"{tid}: {record.case_id} name_hex is not byte encoded")
+            size = values["out2"] | (values["out3"] << 32)
+            if size & (1 << 63):
+                size -= 1 << 64
+            regular = (values["out0"] & 0xF000) == 0x2000
+            disposition = values["out4"]
+            consistent = {
+                0: regular and name is not None and 0 <= size <= FONT_FILES_FILE_MAX,
+                1: not regular,
+                2: regular and name is None,
+                3: regular and name is not None and not 0 <= size <= FONT_FILES_FILE_MAX,
+            }.get(disposition, False)
+            if not consistent or values["result"] <= 0 or record.status != "PASS":
+                raise ProtocolError(f"{tid}: {record.case_id} disposition {disposition} disagrees")
+            entry = FontFileEntry(None if name is None else str(name),
+                                  None if name_hex is None else str(name_hex),
+                                  values["out0"], values["out1"], size, disposition)
+            entries.append(entry)
+            if disposition == 0:
+                candidates.append(entry)
+        elif record.case_id == "font-dir-close":
+            if closed:
+                raise ProtocolError(f"{tid}: font-dir-close repeats")
+            values = _io_fields(tid, record, {"result", "out0", "out1"}, set())
+            if values["out0"] != len(entries):
+                raise ProtocolError(f"{tid}: font-dir-close entry count disagrees")
+            if values["out1"] == 0xFFFFFFFF and len(entries) != FONT_FILES_ENTRIES_MAX:
+                raise ProtocolError(f"{tid}: font-dir-close end result disagrees")
+            if (record.status == "PASS") != (values["result"] == 0 and values["out1"] == 0):
+                raise ProtocolError(f"{tid}: font-dir-close status disagrees")
+            closed = True
+        elif record.case_id.startswith("font-copy-"):
+            index = len(copies)
+            if not closed or record.case_id != f"font-copy-{index:04d}" or index >= len(candidates):
+                raise ProtocolError(f"{tid}: {record.case_id} is out of sequence")
+            values = _io_fields(
+                tid, record,
+                {"result", *(f"out{i}" for i in range(9)), "detail", "sha256",
+                 "readback_sha256", "reread_sha256"},
+                {"detail", "sha256", "readback_sha256", "reread_sha256"},
+            )
+            entry = candidates[index]
+            if values["detail"] != entry.name:
+                raise ProtocolError(f"{tid}: {record.case_id} copies a file it did not list")
+            digests = [str(values[field]) for field in ("sha256", "readback_sha256", "reread_sha256")]
+            if not all(_SHA256_TEXT_RE.fullmatch(digest) for digest in digests):
+                raise ProtocolError(f"{tid}: {record.case_id} digests are malformed")
+            match = values["out8"]
+            expected = 0
+            read_a = _s32(values["out1"])
+            if read_a >= 0 and values["out3"] == values["out1"] and values["out5"] == values["out1"] \
+                    and digests[0] == digests[1]:
+                expected |= 1
+            if read_a >= 0 and values["out7"] == values["out1"] and digests[0] == digests[2]:
+                expected |= 2
+            if read_a >= 0 and read_a == entry.size:
+                expected |= 4
+            # A failed write leaves fewer bytes written than read, so the counts decide bit 0 too.
+            if match != expected:
+                raise ProtocolError(f"{tid}: {record.case_id} match bits disagree with its counts")
+            verified = match == FONT_FILES_MATCH_ALL
+            if verified != (values["result"] == 0) or (record.status == "PASS") != verified:
+                raise ProtocolError(f"{tid}: {record.case_id} status disagrees with its checks")
+            copies.append(FontFileCopy(entry.name or "", entry.size, digests[0], digests[1],
+                                       digests[2], match, verified))
+        else:
+            raise ProtocolError(f"{tid}: unexpected record {record.case_id!r}")
+    if terminal:
+        if listed and (not closed or len(copies) != len(candidates)):
+            raise ProtocolError(f"{tid}: listing or copies incomplete before font-files-done")
+        done = _io_fields(tid, records[-1], {"result", "out0", "out1", "out2", "out3"}, set())
+        expected_done = {
+            "out0": len(entries), "out1": len(candidates),
+            "out2": sum(1 for copy in copies if copy.verified), "out3": len(records) - 1,
+        }
+        if any(done[field] != value for field, value in expected_done.items()):
+            raise ProtocolError(f"{tid}: font-files-done counts disagree")
+    elif require_complete:
+        raise ProtocolError(f"{tid}: stream is missing font-files-done")
+    return FontFilesReport(parsed, terminal, listed, tuple(entries), tuple(copies))
+
+
+# ---------------------------------------------------------------------------
+# PSP-FONTLIST-001 the system font list as the console's own font library reports
+# it (fixtures/psp_oracle/font_list.h)
+#
+# font-list-newlib, then (when the library opened) font-list-count, and when the
+# count is positive font-list-list, font-list-entry-NNNN for every requested
+# index, font-info-NNNN for the same indices, then font-list-donelib and
+# font-list-done. Entries carry the raw style bytes as raw_hex with words 0-7
+# and 40-41 as out0-out9. The parser checks the order, the field sets, each
+# record's own consistency and the counts; it never decides what fonts a console
+# should hold. Names inside the entries are console strings and stay private.
+# ---------------------------------------------------------------------------
+
+FONT_LIST_TEST_ID = "PSP-FONTLIST-001"
+FONT_LIST_HOST0_LOG = "host0:/font_list_log.txt"
+FONT_LIST_ENTRIES_MAX = 64
+FONT_LIST_STYLE_BYTES = 168
+FONT_LIST_UNTOUCHED = 0xA5A5A5A5
+_FONT_LIST_WORD_FIELDS = frozenset(f"out{i}" for i in range(10))
+_FONT_LIST_RAW_RE = re.compile(r"(?:[0-9a-f]{2}){168}")
+
+
+@dataclass(frozen=True)
+class FontListEntry:
+    index: int
+    words: tuple[int, ...]
+    raw: bytes
+    ok: bool
+    result: int
+
+
+@dataclass(frozen=True)
+class FontListReport:
+    parsed: object
+    complete: bool
+    library: int
+    library_ok: bool
+    count: int | None
+    requested: int
+    entries: tuple[FontListEntry, ...]
+    infos: tuple[FontListEntry, ...]
+    failures: int | None
+
+
+def _font_list_error_clean(error: int) -> bool:
+    """An error word the library wrote as 0, or never wrote (the probe's untouched marker)."""
+    return error in (0, FONT_LIST_UNTOUCHED)
+
+
+def _font_list_entry(tid: str, record, prefix: str, index: int) -> FontListEntry:
+    expected_id = f"{prefix}{index:04d}"
+    if record.case_id != expected_id:
+        raise ProtocolError(f"{tid}: {record.case_id} is out of sequence; expected {expected_id}")
+    values = _io_fields(tid, record, {"result", "raw_hex", *_FONT_LIST_WORD_FIELDS}, {"raw_hex"})
+    raw_hex = str(values["raw_hex"])
+    if not _FONT_LIST_RAW_RE.fullmatch(raw_hex):
+        raise ProtocolError(f"{tid}: {record.case_id} raw_hex is not {FONT_LIST_STYLE_BYTES} bytes")
+    raw = bytes.fromhex(raw_hex)
+    words = tuple(values[f"out{i}"] for i in range(10))
+    expected = tuple(int.from_bytes(raw[4 * i:4 * i + 4], "little") for i in range(8)) + (
+        int.from_bytes(raw[0xA0:0xA4], "little"), int.from_bytes(raw[0xA4:0xA8], "little"))
+    if words != expected:
+        raise ProtocolError(f"{tid}: {record.case_id} out words disagree with raw_hex")
+    return FontListEntry(index, words, raw, record.status == "PASS", values["result"])
+
+
+def parse_font_list_output(text: str, *, require_complete: bool = True) -> FontListReport:
+    """Validate the font-library list stream."""
+
+    tid = FONT_LIST_TEST_ID
+    parsed = parse_output(text)
+    records = list(parsed.results)
+    if not records:
+        raise ProtocolError(f"{tid}: empty font-list stream")
+    if any(record.test_id != tid for record in records):
+        raise ProtocolError(f"{tid}: foreign test_id in font-list stream")
+    if records[0].case_id != "font-list-newlib":
+        raise ProtocolError(f"{tid}: stream must start with font-list-newlib")
+    newlib = _io_fields(tid, records[0], {"result", "out0", "out1", "out2", "out3", "out4"}, set())
+    library = newlib["result"]
+    library_ok = library != 0 and _font_list_error_clean(newlib["out0"])
+    if (records[0].status == "PASS") != library_ok:
+        raise ProtocolError(f"{tid}: font-list-newlib status disagrees")
+    terminal = len(records) > 1 and records[-1].case_id == "font-list-done"
+    body = records[1:-1] if terminal else records[1:]
+    failures = 0 if library_ok else 1
+    count: int | None = None
+    requested = 0
+    entries: list[FontListEntry] = []
+    infos: list[FontListEntry] = []
+    donelib_seen = False
+    position = 0
+    if library == 0:
+        if body:
+            raise ProtocolError(f"{tid}: records after a library that did not open")
+    else:
+        if position < len(body):
+            record = body[position]
+            position += 1
+            if record.case_id != "font-list-count":
+                raise ProtocolError(f"{tid}: font-list-count must follow font-list-newlib")
+            values = _io_fields(tid, record, {"result", "out0", "out1"}, set())
+            count = _s32(values["result"])
+            requested = values["out1"]
+            count_ok = 0 <= count <= FONT_LIST_ENTRIES_MAX and _font_list_error_clean(values["out0"])
+            if (record.status == "PASS") != count_ok:
+                raise ProtocolError(f"{tid}: font-list-count status disagrees")
+            if requested != min(max(count, 0), FONT_LIST_ENTRIES_MAX):
+                raise ProtocolError(f"{tid}: font-list-count requested count disagrees with the count")
+            if not count_ok:
+                failures += 1
+        elif require_complete:
+            raise ProtocolError(f"{tid}: stream is missing font-list-count")
+        if requested > 0 and position < len(body):
+            record = body[position]
+            position += 1
+            if record.case_id != "font-list-list":
+                raise ProtocolError(f"{tid}: font-list-list must follow font-list-count")
+            values = _io_fields(tid, record, {"result", "out0"}, set())
+            if values["out0"] != requested:
+                raise ProtocolError(f"{tid}: font-list-list requested count disagrees")
+            list_ok = _s32(values["result"]) >= 0
+            if (record.status == "PASS") != list_ok:
+                raise ProtocolError(f"{tid}: font-list-list status disagrees")
+            if not list_ok:
+                failures += 1
+            for index in range(requested):
+                if position >= len(body):
+                    break
+                entry = _font_list_entry(tid, body[position], "font-list-entry-", index)
+                position += 1
+                if entry.ok != list_ok or entry.result != 0:
+                    raise ProtocolError(f"{tid}: {body[position - 1].case_id} disagrees with font-list-list")
+                entries.append(entry)
+            for index in range(requested):
+                if position >= len(body):
+                    break
+                info = _font_list_entry(tid, body[position], "font-info-", index)
+                position += 1
+                if info.ok != (info.result == 0):
+                    raise ProtocolError(f"{tid}: {body[position - 1].case_id} status disagrees")
+                if not info.ok:
+                    failures += 1
+                infos.append(info)
+        if position < len(body):
+            record = body[position]
+            position += 1
+            if record.case_id != "font-list-donelib":
+                raise ProtocolError(f"{tid}: {record.case_id} is out of sequence; expected font-list-donelib")
+            values = _io_fields(tid, record, {"result", "out0", "out1"}, set())
+            donelib_ok = values["result"] == 0
+            if (record.status == "PASS") != donelib_ok:
+                raise ProtocolError(f"{tid}: font-list-donelib status disagrees")
+            if not donelib_ok:
+                failures += 1
+            donelib_seen = True
+        if position < len(body):
+            raise ProtocolError(f"{tid}: unexpected record {body[position].case_id}")
+    done_failures: int | None = None
+    if terminal:
+        values = _io_fields(tid, records[-1],
+                            {"result", "out0", "out1", "out2", "out3", "out4", "out5", "out6"}, set())
+        if library != 0 and not donelib_seen:
+            raise ProtocolError(f"{tid}: font-list-done before font-list-donelib")
+        if len(entries) != requested or len(infos) != requested:
+            raise ProtocolError(f"{tid}: entries or infos incomplete before font-list-done")
+        if values["out0"] != len(entries) or values["out1"] != sum(1 for info in infos if info.ok):
+            raise ProtocolError(f"{tid}: font-list-done counts disagree")
+        if values["out6"] != failures:
+            raise ProtocolError(f"{tid}: font-list-done failure count disagrees")
+        if (records[-1].status == "PASS") != (failures == 0):
+            raise ProtocolError(f"{tid}: font-list-done status disagrees")
+        done_failures = values["out6"]
+    elif require_complete:
+        raise ProtocolError(f"{tid}: stream is missing font-list-done")
+    return FontListReport(parsed, terminal, library, library_ok, count, requested,
+                          tuple(entries), tuple(infos), done_failures)
+
+
+# ---------------------------------------------------------------------------
+# PSP-UMDIO-001 bare-device and disc open results (fixtures/psp_oracle/umd_io.h)
+#
+# umd-state-before, io-open-NNNN for each fixed open, io-dopen-NNNN for each
+# fixed dopen, umd-state-after, umdio-done. The path lists below mirror the
+# probe source (a test keeps them equal); the parser records results and never
+# decides which answer is correct.
+# ---------------------------------------------------------------------------
+
+UMDIO_TEST_ID = "PSP-UMDIO-001"
+UMDIO_HOST0_LOG = "host0:/umd_io_log.txt"
+UMDIO_OPENS = (
+    ("umd0:", 0x1), ("umd1:", 0x1), ("umd:", 0x1), ("umd0:/", 0x1), ("umd1:/", 0x1),
+    ("disc0:", 0x1), ("disc0:/", 0x1), ("disc0:/PSP_GAME", 0x1),
+    ("disc0:/PSP_GAME/SYSDIR", 0x1), ("disc0:/UMD_DATA.BIN", 0x1),
+    ("umd0:", 0xF0001), ("umd1:", 0xF0001), ("msstor0p1:/", 0x1),
+)
+UMDIO_DOPENS = ("umd0:", "umd1:", "umd:", "disc0:", "disc0:/", "disc0:/PSP_GAME")
+
+
+@dataclass(frozen=True)
+class UmdIoReport:
+    parsed: object
+    complete: bool
+    before: tuple[int, int]
+    after: tuple[int, int] | None
+    opens: tuple[tuple[str, int, int, int], ...]
+    dopens: tuple[tuple[str, int, int], ...]
+
+
+def parse_umd_io_output(text: str, *, require_complete: bool = True) -> UmdIoReport:
+    """Validate the fixed bare-device open/dopen stream."""
+
+    tid = UMDIO_TEST_ID
+    parsed = parse_output(text)
+    records = list(parsed.results)
+    if any(record.test_id != tid for record in records):
+        raise ProtocolError(f"{tid}: foreign test_id in umd-io stream")
+    expected = (["umd-state-before"]
+                + [f"io-open-{i:04d}" for i in range(len(UMDIO_OPENS))]
+                + [f"io-dopen-{i:04d}" for i in range(len(UMDIO_DOPENS))]
+                + ["umd-state-after", "umdio-done"])
+    observed = [record.case_id for record in records]
+    if observed != expected[:len(observed)]:
+        raise ProtocolError(f"{tid}: records out of order: {observed}")
+    complete = len(observed) == len(expected)
+    if not complete and require_complete:
+        raise ProtocolError(f"{tid}: stream is missing umdio-done")
+    before = after = None
+    opens: list[tuple[str, int, int, int]] = []
+    dopens: list[tuple[str, int, int]] = []
+    for record in records:
+        if record.status != "PASS":
+            raise ProtocolError(f"{tid}: {record.case_id} must be PASS (results are recorded)")
+        if record.case_id.startswith("umd-state-"):
+            values = _io_fields(tid, record, {"result", "out0"}, set())
+            state = (values["result"], values["out0"])
+            if record.case_id == "umd-state-before":
+                before = state
+            else:
+                after = state
+        elif record.case_id.startswith("io-open-"):
+            values = _io_fields(tid, record, {"result", "out0", "out1", "detail"}, {"detail"})
+            path, flags = UMDIO_OPENS[len(opens)]
+            if values["detail"] != path or values["out0"] != flags:
+                raise ProtocolError(f"{tid}: {record.case_id} is not the source's open {path}")
+            if (_s32(values["result"]) < 0) != (values["out1"] == 0xFFFFFFFF):
+                raise ProtocolError(f"{tid}: {record.case_id} close result disagrees")
+            opens.append((path, flags, values["result"], values["out1"]))
+        elif record.case_id.startswith("io-dopen-"):
+            values = _io_fields(tid, record, {"result", "out0", "detail"}, {"detail"})
+            path = UMDIO_DOPENS[len(dopens)]
+            if values["detail"] != path:
+                raise ProtocolError(f"{tid}: {record.case_id} is not the source's dopen {path}")
+            if (_s32(values["result"]) < 0) != (values["out0"] == 0xFFFFFFFF):
+                raise ProtocolError(f"{tid}: {record.case_id} close result disagrees")
+            dopens.append((path, values["result"], values["out0"]))
+        elif record.case_id == "umdio-done":
+            values = _io_fields(tid, record, {"result", "out0", "out1", "out2", "out3", "out4"},
+                                set())
+            counts = {
+                "out0": len(UMDIO_OPENS),
+                "out1": sum(1 for item in opens if _s32(item[2]) >= 0),
+                "out2": len(UMDIO_DOPENS),
+                "out3": sum(1 for item in dopens if _s32(item[1]) >= 0),
+                "out4": len(records) - 1,
+            }
+            if any(values[field] != value for field, value in counts.items()):
+                raise ProtocolError(f"{tid}: umdio-done counts disagree")
+    return UmdIoReport(parsed, complete, before, after, tuple(opens), tuple(dopens))
 
 
 # ---------------------------------------------------------------------------

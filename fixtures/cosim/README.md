@@ -202,12 +202,17 @@ returns through its callee's `jr $ra` instead.
 | `r0` | `$r0` write suppression across the immediate, register and shift forms |
 | `ldst` | word/half/byte traffic, sign vs zero extension, sub-word store lanes |
 | `branch` | conditional branch delay-slot ownership, taken and not taken, condition read before the slot |
+| `branch_likely` | all nine compiler branch-likely forms, with real taken slots and annulled not-taken slots |
+| `bitops` | `ext`/`ins` edge sizes, `seb`/`seh`, aliased `movn`/`movz`, and unsigned-to-float via `bltzl` |
 | `jump` | direct `j` with its slot, and a word only a mis-computed target could reach |
+| `jthunk` / `jtarget` | a known-entry direct `j` tail crossing with a this-adjusting delay slot |
 | `link` / `linkr` | `jal` and `jalr` link semantics with a conventional `$ra`-preserving frame |
 | `jrslot` / `jrtail` | a computed call and a computed tail call whose delay slots rewrite the target register |
 | `hilo` | `HI`/`LO` through signed and unsigned multiply (they differ in the high word only) |
 | `llsc` | `ll`/`sc` and the link bit: an unlinked `sc` fails, a linked one stores and reports 1, `sc` leaves the link set, `ll $zero` links, an atomic-increment retry loop, and `sc` whose `rt` is its own base |
 | `fpu` | scalar FPU over the #120 helper path, re-run under all four FCR31 rounding modes and with FS set |
+| `fpu_moves` | raw `mtc1`/`mov.s`/`mfc1` and `swc1`/`lwc1` traffic for NaNs, denormals, negative zero and integer aliases |
+| `fpu_compare` | all `c.cond.s` predicates with quiet/signaling NaNs on either operand side; checks FCC0 results |
 | `fpu_aot` | AOT-only instruction inventory checked against the independent scalar-FPU reference |
 | `xcall` / `xtail` / `xnest` | **cross-tier** — a returning call and a tail transfer that each drop into the interpreter mid-run and hand back, and an interpreted caller that calls back into a registered body |
 | `spleak` | **positive control** — an unbalanced `$sp` epilogue |
@@ -236,10 +241,15 @@ results, FCC0 and FCR31 flow with the reference. It covers `add.s`, `sub.s`,
 `bc1t`, `bc1f`, `cfc1.s` and `ctc1.s`. Direct helper checks cover the same
 production kernels without letting shared code provide its own expected result.
 
-The existing `fpu` cell remains the two-tier check for `add.s`, `mul.s` and
-`cvt.w.s`, the three scalar forms both AOT and the interpreter currently share.
-The oracle adds AOT-only coverage for `sub.s`, `div.s`, unary operations,
-rounding/ceiling/floor forms, `cvt.s.w`, all comparisons and both branches.
+The two-tier `fpu` cell checks `add.s`, `mul.s` and `cvt.w.s`; `fpu_moves` checks
+raw scalar-FPU transfers (`mtc1`, `mfc1`, `mov.s`, `lwc1`, `swc1`), `fpu_compare`
+checks all sixteen `c.cond.s` predicates through FCC0 and `bc1f`, and `bitops`
+checks `cvt.s.w` in the unsigned-to-float idiom. The two-tier `branch_likely`
+cell also executes `bc1tl`/`bc1fl`. These cells run the project-owned AOT and
+interpreter implementations over the same guest words.
+The oracle adds AOT-only coverage for `sub.s`, `div.s`, unary operations and
+rounding/ceiling/floor forms, and the independent reference values for `cvt.s.w`
+and the comparisons.
 There is no scalar FPU madd/msub implementation to claim: the similarly named
 instructions in the fixture are integer HI/LO `madd`/`msub`.
 
@@ -298,6 +308,11 @@ computed-transfer emission order — the exact production defect this fixture wa
 built to find — and `jrslot`/`jrtail` must both diverge. Four additional
 `fp-convert` mutants break nearest-even ties, positive conversion saturation,
 infinity-times-zero canonicalization and the unordered `C.cond` predicate.
+The branch-likely and Allegrex bit-operation cells carry their own interpreter
+mutants (an unannulled slot, an inverted `bc1` sense, an inverted `movn`, an
+off-by-one `ext` size, an `ins` that ORs instead of replacing, a `seb` that does not
+sign-extend, and a `mov.s` that quiets a signaling NaN) and two generator mutants (a
+branch-likely slot that always runs, an `ins` that keeps the old field).
 
 Two interpreter guards are not killed by this gate, and each is layering rather than a
 hole:

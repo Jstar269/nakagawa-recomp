@@ -302,6 +302,38 @@ class TestImportNameSafety(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, "ANALYZER_IMPORT_NID_TABLE_MISSING")
 
+    def test_prepatch_sce_stub_return_placeholder_remains_an_import_entry(self):
+        base = 0x08804000
+        blob, stub = build_synthetic_import_prx(b"sceSynthetic", base)
+        self.assertEqual(struct.unpack_from("<2I", blob, 0x100 + 0x80),
+                         (0x03E00008, 0))  # jr ra; nop before NID patching
+        elf = imports_tool.Elf(bytes(blob), base=base)
+        starts, ranges = analyze_tool.analyze(elf)
+        self.assertIn(stub, starts)
+        self.assertTrue(analyze_tool.in_ranges(stub, ranges))
+        self.assertTrue(analyze_tool.in_ranges(stub + 4, ranges))
+
+        import codegen
+        with tempfile.TemporaryDirectory(prefix="prepatch-sce-stub-") as temp:
+            path = Path(temp) / "synthetic.elf"
+            out = Path(temp) / "synthetic.c"
+            path.write_bytes(blob)
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                status = codegen.main([
+                    "codegen.py", os.fspath(path), os.fspath(out),
+                    f"--base={base:08x}", "--profile=none",
+                ])
+            self.assertEqual(status, 0)
+            emitted = "\n".join(
+                candidate.read_text(encoding="ascii")
+                for candidate in sorted(Path(temp).glob("synthetic*.c"))
+            )
+        self.assertRegex(
+            emitted,
+            rf"void f_{stub:08x}\(CpuState \*s\) \{{  /\* import: sceSynthetic nid 0x12345678 \*/",
+        )
+
     def test_analyzer_checks_import_metadata_when_section_names_are_missing(self):
         base = 0x08804000
         blob, _stub = build_synthetic_import_prx(b"sceSynthetic", base)

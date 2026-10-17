@@ -43,8 +43,11 @@ _Static_assert(
 #include <pspaudio.h>
 #include <pspgu.h>
 #include <pspgum.h>
-#if PSP_ORACLE_CASE == 66
+#if PSP_ORACLE_CASE == 66 || PSP_ORACLE_CASE == 72
 #include <pspreg.h>
+#endif
+#if PSP_ORACLE_CASE == 74
+#include <pspumd.h>
 #endif
 #if PSP_ORACLE_CASE == 67
 /* User-mode sceDisplay and sceImpose functions only: a user-mode PRX that
@@ -120,6 +123,12 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_REGISTRY_READONLY 66
 #define PSP_ORACLE_CASE_KERNEL_MISC 67
 #define PSP_ORACLE_CASE_VFPU_COMPARE 68
+#define PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS 71
+#define PSP_ORACLE_CASE_REGISTRY_FONT 72
+#define PSP_ORACLE_CASE_FONT_FILES 73
+#define PSP_ORACLE_CASE_UMD_IO 74
+#define PSP_ORACLE_CASE_FONT_LIST 75
+#define PSP_ORACLE_CASE_VRAM_MIRROR 76
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -132,6 +141,7 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_MUTEX_PRIORITY_INHERITANCE 21
 #define PSP_ORACLE_CASE_MUTEX_INTERRUPT_CONTEXT 22
 #define PSP_ORACLE_CASE_LLSC_LINK 69
+#define PSP_ORACLE_CASE_FPU_CC 70
 
 /* Plain mutex syscalls are absent from the installed PSPSDK headers, so the
    probe declares the exact ABI it imports via fixtures/psp_oracle/
@@ -161,7 +171,8 @@ int sceKernelReferMutexStatus(SceUID mutexid, SceKernelMutexInfo *info);
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CONCURRENCY
 PSP_MAIN_THREAD_PARAMS(0x20, 32, THREAD_ATTR_USER);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \
-      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE
+      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE || \
+      PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS
 /* vadd.s/vmul.s run on the main thread; without the VFPU attribute the first
  * VFPU instruction traps (measured on PSP-3001 6.6.1: the thread stops after META).
  * The VFPU compare case runs vscmp.s/vsge.s/vslt.s there for the same reason. */
@@ -284,6 +295,16 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/kernel_misc_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE
 #define PROBE_HOST0_LOG "host0:/vfpu_compare_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS
+#define PROBE_HOST0_LOG "host0:/vfpu_transcendental_corpus_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_REGISTRY_FONT
+#define PROBE_HOST0_LOG "host0:/registry_font_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_FILES
+#define PROBE_HOST0_LOG "host0:/font_files_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_UMD_IO
+#define PROBE_HOST0_LOG "host0:/umd_io_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_LIST
+#define PROBE_HOST0_LOG "host0:/font_list_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SMOKE
 #define PROBE_HOST0_LOG "host0:/smoke_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_THREAD_EXIT_DELETE
@@ -308,6 +329,10 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/mutex_interrupt_context_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_LLSC_LINK
 #define PROBE_HOST0_LOG "host0:/llsc_link_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_CC
+#define PROBE_HOST0_LOG "host0:/fpu_cc_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
+#define PROBE_HOST0_LOG "host0:/vram_mirror_log.txt"
 #endif
 
 /* Durable line writer: every record, step marker and the metadata line goes
@@ -717,7 +742,11 @@ static void emit_record_extended(int emulated, const char *test_id,
                                  const char *case_id, const char *status,
                                  uint32_t result, const uint32_t *out,
                                  size_t out_count) {
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
+    char line[3072];
+#else
     char line[1024];
+#endif
     int used = snprintf(line, sizeof(line),
                         "NAKAGAWA_PSP_TEST schema=1 test_id=%s "
                         "case_id=%s status=%s result=0x%08x",
@@ -742,7 +771,9 @@ static void emit_record_extended(int emulated, const char *test_id,
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_AUDIO_QUERY || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CELLS || \
-    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DELAY_ZERO
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_DELAY_ZERO || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
 /* Deferred record buffer.
    The IO matrix measures IoFileMgr itself and the cache matrix measures
    dcache line residency across cells.  Emitting a record inside the measured
@@ -760,6 +791,78 @@ static void emit_record_extended(int emulated, const char *test_id,
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DMAC_CELLS
 #define DEFERRED_MAX_RECORDS 128
 #define DEFERRED_MAX_OUT 10
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
+#define DEFERRED_MAX_OUT 128
+#define VRAM_MIRROR_SIZE 0x00200000u
+#define VRAM_MIRROR_ROW_BYTES 0x400u
+#define VRAM_MIRROR_ROW_WORDS (VRAM_MIRROR_ROW_BYTES / 4u)
+#define VRAM_MIRROR_CPU_DENSE_OFFSET 0x00088000u
+#define VRAM_MIRROR_CPU_DENSE_ROWS 8u
+#define VRAM_MIRROR_CPU_PAIR_REGION_COUNT 4u
+#define VRAM_MIRROR_CPU_PAIR_ROWS 2u
+#define VRAM_MIRROR_CPU_SWEEP_FIRST_BIT 2u
+#define VRAM_MIRROR_CPU_SWEEP_LAST_BIT 20u
+#define VRAM_MIRROR_CPU_SWEEP_BIT_COUNT \
+    (VRAM_MIRROR_CPU_SWEEP_LAST_BIT - VRAM_MIRROR_CPU_SWEEP_FIRST_BIT + 1u)
+#define VRAM_MIRROR_CPU_SAMPLE_CHUNK_WORDS 8u
+#define VRAM_MIRROR_CPU_SAMPLE_WORD_COUNT \
+    (VRAM_MIRROR_CPU_DENSE_ROWS * VRAM_MIRROR_ROW_WORDS + \
+     VRAM_MIRROR_CPU_PAIR_REGION_COUNT * VRAM_MIRROR_CPU_PAIR_ROWS * \
+         VRAM_MIRROR_ROW_WORDS + \
+     2u * VRAM_MIRROR_CPU_SWEEP_BIT_COUNT)
+#define VRAM_MIRROR_CPU_SAMPLE_CHUNK_COUNT \
+    ((VRAM_MIRROR_CPU_SAMPLE_WORD_COUNT + VRAM_MIRROR_CPU_SAMPLE_CHUNK_WORDS - 1u) / \
+     VRAM_MIRROR_CPU_SAMPLE_CHUNK_WORDS)
+#define VRAM_MIRROR_WRITE_ALIAS_COUNT 6u
+#define VRAM_MIRROR_WRITE_SAMPLE_COUNT 3u
+#define VRAM_MIRROR_WRITE_RECORD_COUNT \
+    (VRAM_MIRROR_WRITE_ALIAS_COUNT * VRAM_MIRROR_WRITE_SAMPLE_COUNT)
+#define VRAM_MIRROR_FRAME_BYTES (512u * 272u * 2u)
+#define VRAM_MIRROR_DEPTH_STRIDE 512u
+#define VRAM_MIRROR_DEPTH_ROW_COUNT 10u
+#define VRAM_MIRROR_DEPTH_ALIAS_COUNT 2u
+#define VRAM_MIRROR_DEPTH_CHUNK_PIXELS 32u
+#define VRAM_MIRROR_DEPTH_ROW_CHUNK_COUNT \
+    (VRAM_MIRROR_DEPTH_STRIDE / VRAM_MIRROR_DEPTH_CHUNK_PIXELS)
+#define VRAM_MIRROR_DEPTH_RECORD_COUNT \
+    (VRAM_MIRROR_DEPTH_ROW_COUNT * VRAM_MIRROR_DEPTH_ROW_CHUNK_COUNT)
+#define VRAM_MIRROR_COLOR_ROW_COUNT 3u
+#define VRAM_MIRROR_COLOR_CHUNK_PIXELS 64u
+#define VRAM_MIRROR_COLOR_ROW_CHUNK_COUNT \
+    (VRAM_MIRROR_DEPTH_STRIDE / VRAM_MIRROR_COLOR_CHUNK_PIXELS)
+#define VRAM_MIRROR_COLOR_RECORD_COUNT \
+    (VRAM_MIRROR_COLOR_ROW_COUNT * VRAM_MIRROR_COLOR_ROW_CHUNK_COUNT)
+#define VRAM_MIRROR_GE_SYNC_COUNT 4u
+#define VRAM_MIRROR_INFO_OUT_COUNT 53u
+#define VRAM_MIRROR_SYNC_OUT_COUNT 27u
+#define VRAM_MIRROR_CLEAR_DEPTH 0x5a5au
+#define VRAM_MIRROR_PATTERN_PREFIX 0xa5000000u
+#define VRAM_MIRROR_MARKER_PREFIX 0xb6000000u
+#define VRAM_MIRROR_WRITE_OFFSET_0 0x000100u
+#define VRAM_MIRROR_WRITE_OFFSET_1 0x044100u
+#define VRAM_MIRROR_WRITE_OFFSET_2 0x088100u
+#define VRAM_MIRROR_CACHED_ALIAS_COUNT 4u
+#define VRAM_MIRROR_DEPTH_ROW_Y0 0u
+#define VRAM_MIRROR_DEPTH_ROW_Y1 7u
+#define VRAM_MIRROR_DEPTH_ROW_Y2 8u
+#define VRAM_MIRROR_DEPTH_ROW_Y3 9u
+#define VRAM_MIRROR_DEPTH_ROW_Y4 15u
+#define VRAM_MIRROR_DEPTH_ROW_Y5 16u
+#define VRAM_MIRROR_DEPTH_ROW_Y6 100u
+#define VRAM_MIRROR_DEPTH_ROW_Y7 101u
+#define VRAM_MIRROR_DEPTH_ROW_Y8 108u
+#define VRAM_MIRROR_DEPTH_ROW_Y9 109u
+#define VRAM_MIRROR_COLOR_ROW_Y0 0u
+#define VRAM_MIRROR_COLOR_ROW_Y1 8u
+#define VRAM_MIRROR_COLOR_ROW_Y2 100u
+#define VRAM_MIRROR_DEPTH_RANGE_NEAR 65535u
+#define VRAM_MIRROR_DEPTH_RANGE_FAR 0u
+#define VRAM_MIRROR_DEPTH_TEST_ENABLED 1u
+#define VRAM_MIRROR_SEMANTIC_RECORDS \
+    (1u + VRAM_MIRROR_CPU_SAMPLE_CHUNK_COUNT + VRAM_MIRROR_WRITE_RECORD_COUNT + \
+     VRAM_MIRROR_GE_SYNC_COUNT + VRAM_MIRROR_DEPTH_RECORD_COUNT + \
+     VRAM_MIRROR_COLOR_RECORD_COUNT + 1u)
+#define DEFERRED_MAX_RECORDS (VRAM_MIRROR_SEMANTIC_RECORDS + 1u)
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN
 #define DEFERRED_MAX_RECORDS 24
 #define DEFERRED_MAX_OUT 6
@@ -768,6 +871,9 @@ static void emit_record_extended(int emulated, const char *test_id,
 #define DEFERRED_MAX_OUT 8
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_DELAY_ZERO
 #define DEFERRED_MAX_RECORDS 4
+#define DEFERRED_MAX_OUT 10
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS
+#define DEFERRED_MAX_RECORDS 128
 #define DEFERRED_MAX_OUT 10
 #else
 #define DEFERRED_MAX_RECORDS 8
@@ -2695,7 +2801,8 @@ static void run_display_mask_duty(int emulated) {
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_DISPLAY_GE_MASK || \
     PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE || \
-    PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_NAN || \
+    PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
 /* Bounded GE waits.  A probe never blocks on the GE without a bound: on a
  * PSP-3000 a blocking sceGeListSync(qid, 0) after sceGeBreak/sceGeContinue
  * never returned, and the rest of the case and its completion record were
@@ -3604,10 +3711,13 @@ static void run_fpu_vector(int emulated, uint32_t boot_fcr31) {
    cannot pass as a measured word.
 
    The expected words are the project's model, not console behaviour. They
-   follow src/rt/vfpu_interp.c (VFPU3 sub-ops 5, 6 and 7, PPSSPP's Int_Vscmp,
-   Int_Vsge and Int_Vslt): vscmp.s yields -1.0, 0.0 or +1.0, vsge.s and vslt.s
-   yield 1.0 or 0.0, and a NaN operand compares false and yields 0.0. The
-   console's NaN results are UNMEASURED. Every record carries result = the
+   follow src/rt/vfpu_interp.c (VFPU3 sub-ops 5, 6 and 7): vscmp.s yields -1.0,
+   0.0 or +1.0, vsge.s and vslt.s yield 1.0 or 0.0, and a NaN operand makes
+   vsge.s and vslt.s yield 0.0. A PSP-3000 measured all 45 cells on 2026-10-15
+   from build e45e667b (PSP-VFPU-CMP-001, docs/HARDWARE_ORACLE.md): that build's
+   model wrote 0.0 for the five vscmp NaN cells, the console orders a NaN by sign
+   and magnitude instead, and the model below now carries the measured words.
+   Every record carries result = the
    observed word, out0 = the model word, and out1/out2 = the operands; whether
    the console agrees with the model is result against out0. The status does
    not judge that, as in the fpu-vector family: the campaign runner accepts a
@@ -3640,11 +3750,11 @@ static const struct vfpu_compare_pair s_vfpu_compare_pairs[VFPU_COMPARE_PAIRS] =
     {"gt", 0x40200000u, 0x3fc00000u, {VFPU_COMPARE_ONE, VFPU_COMPARE_ONE, 0u}},
     {"zero-pos-neg", 0x00000000u, 0x80000000u, {0u, VFPU_COMPARE_ONE, 0u}},
     {"zero-neg-pos", 0x80000000u, 0x00000000u, {0u, VFPU_COMPARE_ONE, 0u}},
-    {"nan-left-quiet", 0x7fc00000u, 0x3fc00000u, {0u, 0u, 0u}},
-    {"nan-right-quiet", 0x3fc00000u, 0x7fc00000u, {0u, 0u, 0u}},
-    {"nan-left-signal", 0x7f800001u, 0x3fc00000u, {0u, 0u, 0u}},
-    {"nan-right-signal", 0x3fc00000u, 0x7f800001u, {0u, 0u, 0u}},
-    {"nan-left-negative", 0xffc00000u, 0x3fc00000u, {0u, 0u, 0u}},
+    {"nan-left-quiet", 0x7fc00000u, 0x3fc00000u, {VFPU_COMPARE_ONE, 0u, 0u}},
+    {"nan-right-quiet", 0x3fc00000u, 0x7fc00000u, {VFPU_COMPARE_MINUS_ONE, 0u, 0u}},
+    {"nan-left-signal", 0x7f800001u, 0x3fc00000u, {VFPU_COMPARE_ONE, 0u, 0u}},
+    {"nan-right-signal", 0x3fc00000u, 0x7f800001u, {VFPU_COMPARE_MINUS_ONE, 0u, 0u}},
+    {"nan-left-negative", 0xffc00000u, 0x3fc00000u, {VFPU_COMPARE_MINUS_ONE, 0u, 0u}},
     {"inf-pos-neg", 0x7f800000u, 0xff800000u, {VFPU_COMPARE_ONE, VFPU_COMPARE_ONE, 0u}},
     {"inf-neg-pos", 0xff800000u, 0x7f800000u, {VFPU_COMPARE_MINUS_ONE, 0u, VFPU_COMPARE_ONE}},
     {"inf-pos-pos", 0x7f800000u, 0x7f800000u, {0u, VFPU_COMPARE_ONE, 0u}},
@@ -3727,6 +3837,205 @@ static void run_vfpu_compare(int emulated) {
     uint32_t done = VFPU_COMPARE_CELLS;
     emit_record_extended(emulated, "PSP-VFPU-CMP-001", "vfpu-compare-done",
                          "PASS", 0, &done, 1);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS
+
+/* One deterministic 63-word grid per scalar operation: twenty shared special
+   encodings followed by forty-three operation-domain values stored as raw
+   binary32 words. The 11 operations produce 693 result words, packed into
+   eighty-eight records of at most eight words plus one completion record. */
+#define VFPU_TRANS_SPECIAL_COUNT 20u
+#define VFPU_TRANS_DOMAIN_COUNT 43u
+#define VFPU_TRANS_INPUT_COUNT (VFPU_TRANS_SPECIAL_COUNT + VFPU_TRANS_DOMAIN_COUNT)
+#define VFPU_TRANS_CHUNK_SIZE 8u
+#define VFPU_TRANS_CHUNK_COUNT ((VFPU_TRANS_INPUT_COUNT + VFPU_TRANS_CHUNK_SIZE - 1u) / \
+                                VFPU_TRANS_CHUNK_SIZE)
+#define VFPU_TRANS_OP_COUNT 11u
+#define VFPU_TRANS_RECORD_COUNT (VFPU_TRANS_OP_COUNT * VFPU_TRANS_CHUNK_COUNT)
+
+static const uint32_t s_vfpu_trans_specials[VFPU_TRANS_SPECIAL_COUNT] = {
+    0x00000000u, 0x80000000u, 0x00000001u, 0x80000001u,
+    0x3f800000u, 0xbf800000u, 0x3f000000u, 0xbf000000u,
+    0x40000000u, 0xc0000000u, 0x00800000u, 0x80800000u,
+    0x7f000000u, 0xff000000u, 0x7f800000u, 0xff800000u,
+    0x7fc00000u, 0xffc00000u, 0x7f800001u, 0xff800001u,
+};
+
+/* Replace the three VASIN specials already present in VASIN_DOMAIN_INPUTS
+   with distinct in-domain values. The other operations keep the shared set. */
+static const uint32_t s_vfpu_trans_asin_specials[VFPU_TRANS_SPECIAL_COUNT] = {
+    0x00000000u, 0x80000000u, 0x00000001u, 0x80000001u,
+    0x3f400000u, 0xbf400000u, 0x3f000000u, 0xbf000000u,
+    0x40000000u, 0x3f600000u, 0x00800000u, 0x80800000u,
+    0x7f000000u, 0xff000000u, 0x7f800000u, 0xff800000u,
+    0x7fc00000u, 0xffc00000u, 0x7f800001u, 0xff800001u,
+};
+
+/* Evenly spaced angles: -3.84375 through +4.03125 in 0.1875 increments. */
+static const uint32_t s_vfpu_trans_angle_domain[VFPU_TRANS_DOMAIN_COUNT] = {
+    0xc0760000u, 0xc06a0000u, 0xc05e0000u, 0xc0520000u, 0xc0460000u, 0xc03a0000u,
+    0xc02e0000u, 0xc0220000u, 0xc0160000u, 0xc00a0000u, 0xbffc0000u, 0xbfe40000u,
+    0xbfcc0000u, 0xbfb40000u, 0xbf9c0000u, 0xbf840000u, 0xbf580000u, 0xbf280000u,
+    0xbef00000u, 0xbe900000u, 0xbdc00000u, 0x3dc00000u, 0x3e900000u, 0x3ef00000u,
+    0x3f280000u, 0x3f580000u, 0x3f840000u, 0x3f9c0000u, 0x3fb40000u, 0x3fcc0000u,
+    0x3fe40000u, 0x3ffc0000u, 0x400a0000u, 0x40160000u, 0x40220000u, 0x402e0000u,
+    0x403a0000u, 0x40460000u, 0x40520000u, 0x405e0000u, 0x406a0000u, 0x40760000u,
+    0x40810000u,
+};
+
+/* Evenly spaced powers-of-two exponents: -15.375 through +16.125 by 0.75. */
+static const uint32_t s_vfpu_trans_exp_domain[VFPU_TRANS_DOMAIN_COUNT] = {
+    0xc1760000u, 0xc16a0000u, 0xc15e0000u, 0xc1520000u, 0xc1460000u, 0xc13a0000u,
+    0xc12e0000u, 0xc1220000u, 0xc1160000u, 0xc10a0000u, 0xc0fc0000u, 0xc0e40000u,
+    0xc0cc0000u, 0xc0b40000u, 0xc09c0000u, 0xc0840000u, 0xc0580000u, 0xc0280000u,
+    0xbff00000u, 0xbf900000u, 0xbec00000u, 0x3ec00000u, 0x3f900000u, 0x3ff00000u,
+    0x40280000u, 0x40580000u, 0x40840000u, 0x409c0000u, 0x40b40000u, 0x40cc0000u,
+    0x40e40000u, 0x40fc0000u, 0x410a0000u, 0x41160000u, 0x41220000u, 0x412e0000u,
+    0x413a0000u, 0x41460000u, 0x41520000u, 0x415e0000u, 0x416a0000u, 0x41760000u,
+    0x41810000u,
+};
+
+/* Evenly spaced positive log arguments: 0.0703125 through 5.3203125 by 0.125. */
+static const uint32_t s_vfpu_trans_log_domain[VFPU_TRANS_DOMAIN_COUNT] = {
+    0x3d900000u, 0x3e480000u, 0x3ea40000u, 0x3ee40000u, 0x3f120000u, 0x3f320000u,
+    0x3f520000u, 0x3f720000u, 0x3f890000u, 0x3f990000u, 0x3fa90000u, 0x3fb90000u,
+    0x3fc90000u, 0x3fd90000u, 0x3fe90000u, 0x3ff90000u, 0x40048000u, 0x400c8000u,
+    0x40148000u, 0x401c8000u, 0x40248000u, 0x402c8000u, 0x40348000u, 0x403c8000u,
+    0x40448000u, 0x404c8000u, 0x40548000u, 0x405c8000u, 0x40648000u, 0x406c8000u,
+    0x40748000u, 0x407c8000u, 0x40824000u, 0x40864000u, 0x408a4000u, 0x408e4000u,
+    0x40924000u, 0x40964000u, 0x409a4000u, 0x409e4000u, 0x40a24000u, 0x40a64000u,
+    0x40aa4000u,
+};
+
+/* Evenly spaced positive square-root/reciprocal-root inputs share log's domain. */
+static const uint32_t s_vfpu_trans_root_domain[VFPU_TRANS_DOMAIN_COUNT] = {
+    0x3d900000u, 0x3e480000u, 0x3ea40000u, 0x3ee40000u, 0x3f120000u, 0x3f320000u,
+    0x3f520000u, 0x3f720000u, 0x3f890000u, 0x3f990000u, 0x3fa90000u, 0x3fb90000u,
+    0x3fc90000u, 0x3fd90000u, 0x3fe90000u, 0x3ff90000u, 0x40048000u, 0x400c8000u,
+    0x40148000u, 0x401c8000u, 0x40248000u, 0x402c8000u, 0x40348000u, 0x403c8000u,
+    0x40448000u, 0x404c8000u, 0x40548000u, 0x405c8000u, 0x40648000u, 0x406c8000u,
+    0x40748000u, 0x407c8000u, 0x40824000u, 0x40864000u, 0x408a4000u, 0x408e4000u,
+    0x40924000u, 0x40964000u, 0x409a4000u, 0x409e4000u, 0x40a24000u, 0x40a64000u,
+    0x40aa4000u,
+};
+
+/* Evenly spaced reciprocal inputs: -2.5625 through +2.6875 by 0.125. */
+static const uint32_t s_vfpu_trans_recip_domain[VFPU_TRANS_DOMAIN_COUNT] = {
+    0xc0240000u, 0xc01c0000u, 0xc0140000u, 0xc00c0000u, 0xc0040000u, 0xbff80000u,
+    0xbfe80000u, 0xbfd80000u, 0xbfc80000u, 0xbfb80000u, 0xbfa80000u, 0xbf980000u,
+    0xbf880000u, 0xbf700000u, 0xbf500000u, 0xbf300000u, 0xbf100000u, 0xbee00000u,
+    0xbea00000u, 0xbe400000u, 0xbd800000u, 0x3d800000u, 0x3e400000u, 0x3ea00000u,
+    0x3ee00000u, 0x3f100000u, 0x3f300000u, 0x3f500000u, 0x3f700000u, 0x3f880000u,
+    0x3f980000u, 0x3fa80000u, 0x3fb80000u, 0x3fc80000u, 0x3fd80000u, 0x3fe80000u,
+    0x3ff80000u, 0x40040000u, 0x400c0000u, 0x40140000u, 0x401c0000u, 0x40240000u,
+    0x402c0000u,
+};
+
+/* Evenly spaced VASIN inputs: -0.640625 through +0.671875 by 0.03125. */
+static const uint32_t s_vfpu_trans_asin_domain[VFPU_TRANS_DOMAIN_COUNT] = {
+    0xbf240000u, 0xbf1c0000u, 0xbf140000u, 0xbf0c0000u, 0xbf040000u, 0xbef80000u,
+    0xbee80000u, 0xbed80000u, 0xbec80000u, 0xbeb80000u, 0xbea80000u, 0xbe980000u,
+    0xbe880000u, 0xbe700000u, 0xbe500000u, 0xbe300000u, 0xbe100000u, 0xbde00000u,
+    0xbda00000u, 0xbd400000u, 0xbc800000u, 0x3c800000u, 0x3d400000u, 0x3da00000u,
+    0x3de00000u, 0x3e100000u, 0x3e300000u, 0x3e500000u, 0x3e700000u, 0x3e880000u,
+    0x3e980000u, 0x3ea80000u, 0x3eb80000u, 0x3ec80000u, 0x3ed80000u, 0x3ee80000u,
+    0x3ef80000u, 0x3f040000u, 0x3f0c0000u, 0x3f140000u, 0x3f1c0000u, 0x3f240000u,
+    0x3f2c0000u,
+};
+
+typedef uint32_t (*vfpu_transcendental_fn)(uint32_t input);
+
+#define VFPU_TRANS_OP(name, opcode)                                      \
+    static uint32_t vfpu_trans_##name(uint32_t input) {                  \
+        uint32_t result;                                                 \
+        __asm__ volatile(                                                \
+            "mtv %1, S000\n"                                             \
+            opcode " S002, S000\n"                                       \
+            "mfv %0, S002\n"                                             \
+            : "=r"(result) : "r"(input) : "memory");                    \
+        return result;                                                   \
+    }
+
+VFPU_TRANS_OP(vsin, "vsin.s")
+VFPU_TRANS_OP(vcos, "vcos.s")
+VFPU_TRANS_OP(vexp2, "vexp2.s")
+VFPU_TRANS_OP(vlog2, "vlog2.s")
+VFPU_TRANS_OP(vrsq, "vrsq.s")
+VFPU_TRANS_OP(vrcp, "vrcp.s")
+VFPU_TRANS_OP(vsqrt, "vsqrt.s")
+VFPU_TRANS_OP(vasin, "vasin.s")
+VFPU_TRANS_OP(vnrcp, "vnrcp.s")
+VFPU_TRANS_OP(vnsin, "vnsin.s")
+VFPU_TRANS_OP(vrexp2, "vrexp2.s")
+
+#undef VFPU_TRANS_OP
+
+struct vfpu_transcendental_op {
+    const char *name;
+    vfpu_transcendental_fn apply;
+    const uint32_t *specials;
+    const uint32_t *domain;
+};
+
+static const struct vfpu_transcendental_op s_vfpu_transcendental_ops[VFPU_TRANS_OP_COUNT] = {
+    {"vsin", vfpu_trans_vsin, s_vfpu_trans_specials, s_vfpu_trans_angle_domain},
+    {"vcos", vfpu_trans_vcos, s_vfpu_trans_specials, s_vfpu_trans_angle_domain},
+    {"vexp2", vfpu_trans_vexp2, s_vfpu_trans_specials, s_vfpu_trans_exp_domain},
+    {"vlog2", vfpu_trans_vlog2, s_vfpu_trans_specials, s_vfpu_trans_log_domain},
+    {"vrsq", vfpu_trans_vrsq, s_vfpu_trans_specials, s_vfpu_trans_root_domain},
+    {"vrcp", vfpu_trans_vrcp, s_vfpu_trans_specials, s_vfpu_trans_recip_domain},
+    {"vsqrt", vfpu_trans_vsqrt, s_vfpu_trans_specials, s_vfpu_trans_root_domain},
+    {"vasin", vfpu_trans_vasin, s_vfpu_trans_asin_specials, s_vfpu_trans_asin_domain},
+    {"vnrcp", vfpu_trans_vnrcp, s_vfpu_trans_specials, s_vfpu_trans_recip_domain},
+    {"vnsin", vfpu_trans_vnsin, s_vfpu_trans_specials, s_vfpu_trans_angle_domain},
+    {"vrexp2", vfpu_trans_vrexp2, s_vfpu_trans_specials, s_vfpu_trans_exp_domain},
+};
+
+static uint32_t s_vfpu_transcendental_observed[VFPU_TRANS_OP_COUNT]
+                                               [VFPU_TRANS_INPUT_COUNT];
+
+_Static_assert(DEFERRED_MAX_RECORDS >= VFPU_TRANS_RECORD_COUNT + 1u,
+               "VFPU transcendental records fit the deferred buffer");
+_Static_assert(DEFERRED_MAX_OUT >= VFPU_TRANS_CHUNK_SIZE,
+               "VFPU transcendental chunk fits each deferred record");
+
+static void run_vfpu_transcendental_corpus(int emulated) {
+    __asm__ volatile("ctc1 $0, $31" ::: "memory");
+    probe_step(emulated, "vfpu-transcendental-corpus", "cells");
+
+    for (uint32_t op = 0; op < VFPU_TRANS_OP_COUNT; op++) {
+        const struct vfpu_transcendental_op *entry = &s_vfpu_transcendental_ops[op];
+        for (uint32_t index = 0; index < VFPU_TRANS_INPUT_COUNT; index++) {
+            const uint32_t input = index < VFPU_TRANS_SPECIAL_COUNT
+                ? entry->specials[index]
+                : entry->domain[index - VFPU_TRANS_SPECIAL_COUNT];
+            s_vfpu_transcendental_observed[op][index] = entry->apply(input);
+        }
+    }
+
+    for (uint32_t op = 0; op < VFPU_TRANS_OP_COUNT; op++) {
+        const struct vfpu_transcendental_op *entry = &s_vfpu_transcendental_ops[op];
+        for (uint32_t chunk = 0; chunk < VFPU_TRANS_CHUNK_COUNT; chunk++) {
+            const uint32_t first = chunk * VFPU_TRANS_CHUNK_SIZE;
+            uint32_t count = VFPU_TRANS_INPUT_COUNT - first;
+            uint32_t out[VFPU_TRANS_CHUNK_SIZE];
+            if (count > VFPU_TRANS_CHUNK_SIZE) {
+                count = VFPU_TRANS_CHUNK_SIZE;
+            }
+            for (uint32_t word = 0; word < count; word++) {
+                out[word] = s_vfpu_transcendental_observed[op][first + word];
+            }
+            char case_id[48];
+            snprintf(case_id, sizeof(case_id), "%s-chunk-%02u", entry->name,
+                     (unsigned int)chunk);
+            defer_record(case_id, "PASS", first, out, count);
+        }
+    }
+    const uint32_t done = VFPU_TRANS_RECORD_COUNT;
+    defer_record("vfpu-transcendental-corpus-done", "PASS", 0u, &done, 1);
+    flush_deferred(emulated, "PSP-VFPU-TRANSCENDENTAL-001");
 }
 #endif
 
@@ -4204,6 +4513,607 @@ static void run_ge_nan(int emulated) {
     const uint32_t done_out[1] = {20u};
     defer_record("ge-nan-done", "PASS", 0u, done_out, 1);
     flush_deferred(emulated, "PSP-GE-001");
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
+_Static_assert(DEFERRED_MAX_RECORDS == VRAM_MIRROR_SEMANTIC_RECORDS + 1u,
+               "VRAM mirror stream must fit its deferred record buffer");
+_Static_assert(VRAM_MIRROR_CPU_SAMPLE_WORD_COUNT == 4134u,
+               "VRAM mirror sample set must include every requested position");
+_Static_assert(VRAM_MIRROR_CPU_SAMPLE_CHUNK_COUNT == 517u,
+               "VRAM mirror sample chunk count must match the host protocol");
+_Static_assert(VRAM_MIRROR_DEPTH_ROW_CHUNK_COUNT == 16u,
+               "VRAM mirror depth rows must be split into bounded chunks");
+_Static_assert(VRAM_MIRROR_COLOR_ROW_CHUNK_COUNT == 8u,
+               "VRAM mirror color rows must be split into bounded chunks");
+_Static_assert(VRAM_MIRROR_SEMANTIC_RECORDS == 725u,
+               "VRAM mirror record count must match the host protocol");
+_Static_assert(VRAM_MIRROR_WRITE_OFFSET_2 < 0x00100000u,
+               "VRAM mirror marker alias bits must not overlap sample offsets");
+_Static_assert(VRAM_MIRROR_CPU_SAMPLE_CHUNK_WORDS * 8u * 2u <= DEFERRED_MAX_OUT,
+               "VRAM mirror alias samples must fit deferred records");
+_Static_assert(VRAM_MIRROR_DEPTH_CHUNK_PIXELS *
+                   VRAM_MIRROR_DEPTH_ALIAS_COUNT * 2u == DEFERRED_MAX_OUT,
+               "VRAM mirror depth rows must fill deferred records");
+_Static_assert(VRAM_MIRROR_COLOR_CHUNK_PIXELS * 2u == DEFERRED_MAX_OUT,
+               "VRAM mirror color rows must fill deferred records");
+
+static const uint32_t s_vram_mirror_aliases[8] = {
+    0x04000000u, 0x04200000u, 0x04400000u, 0x04600000u,
+    0x44000000u, 0x44200000u, 0x44400000u, 0x44600000u,
+};
+static const uint32_t s_vram_mirror_write_aliases[6] = {
+    0x04200000u, 0x04400000u, 0x04600000u,
+    0x44200000u, 0x44400000u, 0x44600000u,
+};
+
+static const uint32_t s_vram_mirror_depth_aliases[VRAM_MIRROR_DEPTH_ALIAS_COUNT] = {
+    0x44000000u, 0x44200000u,
+};
+static const uint32_t s_vram_mirror_color_alias = 0x44000000u;
+
+static const uint32_t s_vram_mirror_depth_rows[VRAM_MIRROR_DEPTH_ROW_COUNT] = {
+    VRAM_MIRROR_DEPTH_ROW_Y0, VRAM_MIRROR_DEPTH_ROW_Y1,
+    VRAM_MIRROR_DEPTH_ROW_Y2, VRAM_MIRROR_DEPTH_ROW_Y3,
+    VRAM_MIRROR_DEPTH_ROW_Y4, VRAM_MIRROR_DEPTH_ROW_Y5,
+    VRAM_MIRROR_DEPTH_ROW_Y6, VRAM_MIRROR_DEPTH_ROW_Y7,
+    VRAM_MIRROR_DEPTH_ROW_Y8, VRAM_MIRROR_DEPTH_ROW_Y9,
+};
+static const uint32_t s_vram_mirror_color_rows[VRAM_MIRROR_COLOR_ROW_COUNT] = {
+    VRAM_MIRROR_COLOR_ROW_Y0, VRAM_MIRROR_COLOR_ROW_Y1,
+    VRAM_MIRROR_COLOR_ROW_Y2,
+};
+
+typedef struct {
+    uint16_t x0;
+    uint16_t y0;
+    uint16_t z0;
+    uint16_t x1;
+    uint16_t y1;
+    uint16_t z1;
+    uint32_t color;
+} VramMirrorSprite;
+
+static const VramMirrorSprite s_vram_mirror_sprites[3] = {
+    {0u, 0u, 0x1111u, 32u, 16u, 0x1111u, 0xffff0000u},
+    {64u, 8u, 0x2222u, 96u, 12u, 0x2222u, 0xff00ff00u},
+    {200u, 100u, 0x3333u, 208u, 101u, 0x3333u, 0xff0000ffu},
+};
+
+struct vram_mirror_sprite_vertex {
+    uint32_t color;
+    int16_t x;
+    int16_t y;
+    int16_t z;
+};
+_Static_assert(sizeof(struct vram_mirror_sprite_vertex) == 12u,
+               "GU 16-bit through-mode sprite vertices have a 12-byte stride");
+
+typedef struct {
+    int completed;
+    int ge_idle;
+} VramMirrorGeOutcome;
+
+static uint32_t s_vram_mirror_list[4096] __attribute__((aligned(64)));
+static struct vram_mirror_sprite_vertex s_vram_mirror_vertices[6]
+    __attribute__((aligned(16)));
+
+static void vram_mirror_cache_range(uint32_t offset, uint32_t bytes,
+                                   int writeback_invalidate) {
+    for (uint32_t alias = 0; alias < VRAM_MIRROR_CACHED_ALIAS_COUNT; alias++) {
+        const uint32_t address = s_vram_mirror_aliases[alias] + offset;
+        if (writeback_invalidate) {
+            sceKernelDcacheWritebackInvalidateRange(
+                (void *)(uintptr_t)address, bytes);
+        } else {
+            sceKernelDcacheInvalidateRange((void *)(uintptr_t)address, bytes);
+        }
+    }
+}
+
+static uint32_t s_vram_mirror_sample_offsets[VRAM_MIRROR_CPU_SAMPLE_WORD_COUNT];
+
+static int vram_mirror_build_sample_offsets(void) {
+    static const uint32_t pair_bases[VRAM_MIRROR_CPU_PAIR_REGION_COUNT] = {
+        0x00000000u, 0x00044000u, 0x00100000u, 0x001ff800u,
+    };
+    uint32_t sample = 0;
+
+    for (uint32_t row = 0; row < VRAM_MIRROR_CPU_DENSE_ROWS; row++) {
+        for (uint32_t word = 0; word < VRAM_MIRROR_ROW_WORDS; word++) {
+            s_vram_mirror_sample_offsets[sample++] =
+                VRAM_MIRROR_CPU_DENSE_OFFSET + row * VRAM_MIRROR_ROW_BYTES +
+                word * 4u;
+        }
+    }
+    for (uint32_t region = 0; region < VRAM_MIRROR_CPU_PAIR_REGION_COUNT; region++) {
+        for (uint32_t row = 0; row < VRAM_MIRROR_CPU_PAIR_ROWS; row++) {
+            for (uint32_t word = 0; word < VRAM_MIRROR_ROW_WORDS; word++) {
+                s_vram_mirror_sample_offsets[sample++] = pair_bases[region] +
+                    row * VRAM_MIRROR_ROW_BYTES + word * 4u;
+            }
+        }
+    }
+    for (uint32_t bit = VRAM_MIRROR_CPU_SWEEP_FIRST_BIT;
+         bit <= VRAM_MIRROR_CPU_SWEEP_LAST_BIT; bit++) {
+        const uint32_t power = 1u << bit;
+        s_vram_mirror_sample_offsets[sample++] =
+            VRAM_MIRROR_CPU_DENSE_OFFSET ^ power;
+        s_vram_mirror_sample_offsets[sample++] = power;
+    }
+    return sample == VRAM_MIRROR_CPU_SAMPLE_WORD_COUNT;
+}
+
+static void vram_mirror_skip_stream(int emulated, uint32_t reason) {
+    char case_id[64];
+    const uint32_t done = VRAM_MIRROR_SEMANTIC_RECORDS;
+    defer_record("vram-mirror-info", "SKIP", reason, NULL, 0);
+    for (uint32_t chunk = 0; chunk < VRAM_MIRROR_CPU_SAMPLE_CHUNK_COUNT; chunk++) {
+        snprintf(case_id, sizeof(case_id), "vram-cpu-pattern-%03u",
+                 (unsigned int)chunk);
+        defer_record(case_id, "SKIP", reason, NULL, 0);
+    }
+    for (uint32_t alias = 0; alias < VRAM_MIRROR_WRITE_ALIAS_COUNT; alias++) {
+        for (uint32_t sample = 0; sample < VRAM_MIRROR_WRITE_SAMPLE_COUNT; sample++) {
+            snprintf(case_id, sizeof(case_id), "vram-cpu-write-mirror-%02u-%02u",
+                     (unsigned int)alias, (unsigned int)sample);
+            defer_record(case_id, "SKIP", reason, NULL, 0);
+        }
+    }
+    defer_record("vram-ge-clear-sync", "SKIP", reason, NULL, 0);
+    defer_record("vram-ge-sprite-a-sync", "SKIP", reason, NULL, 0);
+    defer_record("vram-ge-sprite-b-sync", "SKIP", reason, NULL, 0);
+    defer_record("vram-ge-sprite-c-sync", "SKIP", reason, NULL, 0);
+    for (uint32_t row = 0; row < VRAM_MIRROR_DEPTH_ROW_COUNT; row++) {
+        for (uint32_t chunk = 0; chunk < VRAM_MIRROR_DEPTH_ROW_CHUNK_COUNT; chunk++) {
+            snprintf(case_id, sizeof(case_id), "vram-ge-depth-row%u-%02u",
+                     (unsigned int)row, (unsigned int)chunk);
+            defer_record(case_id, "SKIP", reason, NULL, 0);
+        }
+    }
+    for (uint32_t row = 0; row < VRAM_MIRROR_COLOR_ROW_COUNT; row++) {
+        for (uint32_t chunk = 0; chunk < VRAM_MIRROR_COLOR_ROW_CHUNK_COUNT; chunk++) {
+            snprintf(case_id, sizeof(case_id), "vram-ge-color-row%u-%02u",
+                     (unsigned int)row, (unsigned int)chunk);
+            defer_record(case_id, "SKIP", reason, NULL, 0);
+        }
+    }
+    defer_record("vram-restore", "SKIP", reason, NULL, 0);
+    defer_record("vram-mirror-done", "SKIP", reason, &done, 1);
+    flush_deferred(emulated, "PSP-VRAM-MIRROR-001");
+}
+
+static void vram_mirror_read_words(const uint32_t *offsets, uint32_t word_count,
+                                   uint32_t out[128]) {
+    uint32_t output = 0;
+    for (uint32_t word = 0; word < word_count; word++) {
+        for (uint32_t alias = 0; alias < 8u; alias++) {
+            const uint32_t address = s_vram_mirror_aliases[alias] + offsets[word];
+            out[output++] = address;
+            out[output++] = *(volatile uint32_t *)(uintptr_t)address;
+        }
+    }
+}
+
+static void vram_mirror_defer_pattern_samples(void) {
+    uint32_t offsets[VRAM_MIRROR_CPU_SAMPLE_CHUNK_WORDS];
+    uint32_t out[DEFERRED_MAX_OUT];
+    char case_id[64];
+
+    for (uint32_t chunk = 0; chunk < VRAM_MIRROR_CPU_SAMPLE_CHUNK_COUNT; chunk++) {
+        const uint32_t first = chunk * VRAM_MIRROR_CPU_SAMPLE_CHUNK_WORDS;
+        uint32_t word_count = VRAM_MIRROR_CPU_SAMPLE_WORD_COUNT - first;
+        if (word_count > VRAM_MIRROR_CPU_SAMPLE_CHUNK_WORDS) {
+            word_count = VRAM_MIRROR_CPU_SAMPLE_CHUNK_WORDS;
+        }
+        for (uint32_t word = 0; word < word_count; word++) {
+            offsets[word] = s_vram_mirror_sample_offsets[first + word];
+        }
+        vram_mirror_read_words(offsets, word_count, out);
+        snprintf(case_id, sizeof(case_id), "vram-cpu-pattern-%03u",
+                 (unsigned int)chunk);
+        defer_record(case_id, "PASS", 0u, out, word_count * 8u * 2u);
+    }
+}
+
+static void vram_mirror_probe_writes(void) {
+    static const uint32_t offsets[VRAM_MIRROR_WRITE_SAMPLE_COUNT] = {
+        VRAM_MIRROR_WRITE_OFFSET_0,
+        VRAM_MIRROR_WRITE_OFFSET_1,
+        VRAM_MIRROR_WRITE_OFFSET_2,
+    };
+    char case_id[64];
+
+    for (uint32_t alias = 0; alias < VRAM_MIRROR_WRITE_ALIAS_COUNT; alias++) {
+        const uint32_t write_base = s_vram_mirror_write_aliases[alias];
+        const int uncached = (write_base & 0x40000000u) != 0u;
+        for (uint32_t sample = 0; sample < VRAM_MIRROR_WRITE_SAMPLE_COUNT; sample++) {
+            const uint32_t offset = offsets[sample];
+            const uint32_t write_address = write_base + offset;
+            const uint32_t marker = VRAM_MIRROR_MARKER_PREFIX |
+                (alias << 20) | offset;
+            uint32_t first_found = 0xffffffffu;
+            uint32_t found_count = 0u;
+
+            vram_mirror_cache_range(0u, VRAM_MIRROR_SIZE, 0);
+            *(volatile uint32_t *)(uintptr_t)write_address = marker;
+            if (!uncached) {
+                sceKernelDcacheWritebackInvalidateRange(
+                    (void *)(uintptr_t)write_address, sizeof(marker));
+            }
+            vram_mirror_cache_range(0u, VRAM_MIRROR_SIZE, 0);
+
+            volatile uint32_t *const base_words =
+                (volatile uint32_t *)(uintptr_t)0x44000000u;
+            for (uint32_t scan_offset = 0; scan_offset < VRAM_MIRROR_SIZE;
+                 scan_offset += sizeof(uint32_t)) {
+                if (base_words[scan_offset / sizeof(uint32_t)] == marker) {
+                    if (found_count == 0u) first_found = scan_offset;
+                    found_count++;
+                    base_words[scan_offset / sizeof(uint32_t)] =
+                        VRAM_MIRROR_PATTERN_PREFIX | scan_offset;
+                }
+            }
+            vram_mirror_cache_range(0u, VRAM_MIRROR_SIZE, 0);
+
+            const uint32_t out[4] = {
+                write_address, marker, first_found, found_count,
+            };
+            snprintf(case_id, sizeof(case_id), "vram-cpu-write-mirror-%02u-%02u",
+                     (unsigned int)alias, (unsigned int)sample);
+            defer_record(case_id, "PASS", 0u, out, 4u);
+        }
+    }
+}
+
+enum {
+    VRAM_MIRROR_GE_CLEAR = 0,
+    VRAM_MIRROR_GE_SPRITE_A = 1,
+    VRAM_MIRROR_GE_SPRITE_B = 2,
+    VRAM_MIRROR_GE_SPRITE_C = 3,
+};
+
+static VramMirrorGeOutcome vram_mirror_ge_step(uint32_t color_offset,
+                                               uint32_t depth_offset,
+                                               int gu_init_rc,
+                                               uint32_t operation,
+                                               int start_allowed) {
+    static const char *const sync_cases[VRAM_MIRROR_GE_SYNC_COUNT] = {
+        "vram-ge-clear-sync",
+        "vram-ge-sprite-a-sync",
+        "vram-ge-sprite-b-sync",
+        "vram-ge-sprite-c-sync",
+    };
+    const int start_rc = !start_allowed ? -1 : gu_init_rc >= 0
+        ? sceGuStart(GU_DIRECT, s_vram_mirror_list) : gu_init_rc;
+    int finish_rc = -1;
+    int reset_rc = 0;
+    int reset_idle = 1;
+    GeIdleWait wait = {-1, -1, 0u, 0};
+    uint32_t out[VRAM_MIRROR_SYNC_OUT_COUNT] = {0};
+    const VramMirrorSprite *sprite = operation == VRAM_MIRROR_GE_CLEAR
+        ? NULL : &s_vram_mirror_sprites[operation - 1u];
+    const uint32_t vertex_type =
+        GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D;
+
+    if (start_rc >= 0) {
+        sceGuDrawBuffer(GU_PSM_5650, (void *)(uintptr_t)color_offset,
+                        VRAM_MIRROR_DEPTH_STRIDE);
+        sceGuDepthBuffer((void *)(uintptr_t)depth_offset,
+                         VRAM_MIRROR_DEPTH_STRIDE);
+        sceGuOffset(2048 - 256, 2048 - 136);
+        sceGuViewport(2048, 2048, VRAM_MIRROR_DEPTH_STRIDE, 272);
+        sceGuDepthRange(VRAM_MIRROR_DEPTH_RANGE_NEAR,
+                        VRAM_MIRROR_DEPTH_RANGE_FAR);
+        sceGuScissor(0, 0, VRAM_MIRROR_DEPTH_STRIDE, 272);
+        sceGuEnable(GU_SCISSOR_TEST);
+        sceGuDisable(GU_CULL_FACE);
+        sceGuDisable(GU_BLEND);
+        sceGuDisable(GU_TEXTURE_2D);
+        sceGuDisable(GU_LIGHTING);
+        sceGuDisable(GU_ALPHA_TEST);
+        sceGuDisable(GU_STENCIL_TEST);
+        sceGuDisable(GU_COLOR_TEST);
+        sceGuDisable(GU_COLOR_LOGIC_OP);
+        sceGuEnable(GU_DEPTH_TEST);
+        sceGuDepthFunc(GU_ALWAYS);
+        sceGuDepthMask(GU_FALSE);
+
+        if (operation == VRAM_MIRROR_GE_CLEAR) {
+            sceGuClearDepth(VRAM_MIRROR_CLEAR_DEPTH);
+            sceGuClear(GU_DEPTH_BUFFER_BIT);
+        } else {
+            const uint32_t vertex_index =
+                (operation - VRAM_MIRROR_GE_SPRITE_A) * 2u;
+            s_vram_mirror_vertices[vertex_index] =
+                (struct vram_mirror_sprite_vertex){
+                    sprite->color, (int16_t)sprite->x0, (int16_t)sprite->y0,
+                    (int16_t)sprite->z0,
+                };
+            s_vram_mirror_vertices[vertex_index + 1u] =
+                (struct vram_mirror_sprite_vertex){
+                    sprite->color, (int16_t)sprite->x1, (int16_t)sprite->y1,
+                    (int16_t)sprite->z1,
+                };
+            sceKernelDcacheWritebackRange(s_vram_mirror_vertices,
+                                          sizeof(s_vram_mirror_vertices));
+            sceGuDrawArray(GU_SPRITES, vertex_type, 2, NULL,
+                           &s_vram_mirror_vertices[vertex_index]);
+        }
+        finish_rc = sceGuFinish();
+    }
+
+    wait = ge_wait_idle(-1, GE_IDLE_DEADLINE_US);
+    if (!wait.idle) {
+        GeIdleWait after_reset;
+        reset_rc = ge_reset_queues(&after_reset);
+        reset_idle = after_reset.idle;
+    }
+    vram_mirror_cache_range(depth_offset, VRAM_MIRROR_FRAME_BYTES, 0);
+    out[0] = (uint32_t)start_rc;
+    out[1] = (uint32_t)finish_rc;
+    out[2] = (uint32_t)wait.draw_state;
+    out[3] = wait.elapsed_us;
+    out[4] = wait.idle ? 1u : 0u;
+    out[5] = (uint32_t)reset_rc;
+    out[6] = reset_idle ? 1u : 0u;
+    out[7] = VRAM_MIRROR_CACHED_ALIAS_COUNT;
+    out[8] = depth_offset;
+    out[9] = VRAM_MIRROR_DEPTH_STRIDE;
+    out[10] = VRAM_MIRROR_DEPTH_RANGE_NEAR;
+    out[11] = VRAM_MIRROR_DEPTH_RANGE_FAR;
+    out[12] = GU_ALWAYS;
+    out[13] = GU_FALSE;
+    out[14] = VRAM_MIRROR_DEPTH_TEST_ENABLED;
+    out[15] = VRAM_MIRROR_CLEAR_DEPTH;
+    out[16] = operation;
+    if (sprite != NULL) {
+        out[17] = sprite->x0;
+        out[18] = sprite->y0;
+        out[19] = sprite->z0;
+        out[20] = sprite->x1;
+        out[21] = sprite->y1;
+        out[22] = sprite->z1;
+        out[23] = sprite->color;
+        out[24] = 2u;
+        out[25] = GU_SPRITES;
+        out[26] = vertex_type;
+    }
+    const int completed = start_rc >= 0 && finish_rc >= 0 && wait.idle && reset_idle;
+    const int ge_idle = wait.idle ? 1 : reset_idle;
+    defer_record(sync_cases[operation],
+                 !wait.idle ? "TIMEOUT" : completed ? "PASS" : "FAIL",
+                 (uint32_t)(finish_rc < 0 ? finish_rc : start_rc), out,
+                 VRAM_MIRROR_SYNC_OUT_COUNT);
+    return (VramMirrorGeOutcome){completed, ge_idle};
+}
+
+static void vram_mirror_defer_depth_rows(uint32_t depth_offset, int ge_idle,
+                                         int ge_sequence_complete) {
+    uint32_t out[DEFERRED_MAX_OUT];
+    char case_id[64];
+
+    for (uint32_t row = 0; row < VRAM_MIRROR_DEPTH_ROW_COUNT; row++) {
+        for (uint32_t chunk = 0; chunk < VRAM_MIRROR_DEPTH_ROW_CHUNK_COUNT; chunk++) {
+            snprintf(case_id, sizeof(case_id), "vram-ge-depth-row%u-%02u",
+                     (unsigned int)row, (unsigned int)chunk);
+            if (!ge_idle) {
+                defer_record(case_id, "SKIP", 7u, NULL, 0);
+                continue;
+            }
+            uint32_t output = 0;
+            for (uint32_t pixel = 0; pixel < VRAM_MIRROR_DEPTH_CHUNK_PIXELS; pixel++) {
+                const uint32_t x = chunk * VRAM_MIRROR_DEPTH_CHUNK_PIXELS + pixel;
+                const uint32_t offset =
+                    depth_offset +
+                    (s_vram_mirror_depth_rows[row] * VRAM_MIRROR_DEPTH_STRIDE + x) * 2u;
+                for (uint32_t alias = 0;
+                     alias < VRAM_MIRROR_DEPTH_ALIAS_COUNT; alias++) {
+                    const uint32_t address =
+                        s_vram_mirror_depth_aliases[alias] + offset;
+                    out[output++] = address;
+                    out[output++] = *(volatile uint16_t *)(uintptr_t)address;
+                }
+            }
+            defer_record(case_id, ge_sequence_complete ? "PASS" : "FAIL",
+                         ge_sequence_complete ? 0u : 1u, out, output);
+        }
+    }
+}
+
+static void vram_mirror_defer_color_rows(uint32_t color_offset, int ge_idle,
+                                         int ge_sequence_complete) {
+    uint32_t out[DEFERRED_MAX_OUT];
+    char case_id[64];
+
+    for (uint32_t row = 0; row < VRAM_MIRROR_COLOR_ROW_COUNT; row++) {
+        for (uint32_t chunk = 0; chunk < VRAM_MIRROR_COLOR_ROW_CHUNK_COUNT; chunk++) {
+            snprintf(case_id, sizeof(case_id), "vram-ge-color-row%u-%02u",
+                     (unsigned int)row, (unsigned int)chunk);
+            if (!ge_idle) {
+                defer_record(case_id, "SKIP", 7u, NULL, 0);
+                continue;
+            }
+            uint32_t output = 0;
+            for (uint32_t pixel = 0; pixel < VRAM_MIRROR_COLOR_CHUNK_PIXELS; pixel++) {
+                const uint32_t x = chunk * VRAM_MIRROR_COLOR_CHUNK_PIXELS + pixel;
+                const uint32_t offset =
+                    color_offset +
+                    (s_vram_mirror_color_rows[row] * VRAM_MIRROR_DEPTH_STRIDE + x) * 2u;
+                const uint32_t address = s_vram_mirror_color_alias + offset;
+                out[output++] = address;
+                out[output++] = *(volatile uint16_t *)(uintptr_t)address;
+            }
+            defer_record(case_id, ge_sequence_complete ? "PASS" : "FAIL",
+                         ge_sequence_complete ? 0u : 1u, out, output);
+        }
+    }
+}
+
+static void run_vram_mirror(int emulated) {
+    void *display_address = NULL;
+    int display_stride = 0;
+    int display_format = 0;
+    const uint32_t raw_vram_base = (uint32_t)(uintptr_t)sceGeEdramGetAddr();
+    const uint32_t vram_base = raw_vram_base & ~0x40000000u;
+    int skip_reason = 0;
+    int display_rc = -1;
+    uint32_t display_offset = 0;
+    uint32_t display_bytes = 0;
+    uint32_t color_offset = 0;
+    uint32_t depth_offset = 0;
+    uint8_t *backup = NULL;
+    uint32_t restore_mismatches = 0;
+
+    probe_step(emulated, "vram-mirror", "setup");
+    if (vram_base != 0x04000000u) {
+        skip_reason = 1u;
+    } else {
+        display_rc = sceDisplayGetFrameBuf(&display_address, &display_stride,
+                                           &display_format,
+                                           PSP_DISPLAY_SETBUF_IMMEDIATE);
+        if (display_rc < 0 || display_address == NULL || display_stride <= 0 ||
+            display_format < 0 || display_format > 3) {
+            skip_reason = 2u;
+        }
+    }
+    if (skip_reason == 0) {
+        const uint32_t raw_display = (uint32_t)(uintptr_t)display_address;
+        const uint32_t canonical_display = raw_display & ~0x40000000u;
+        const uint32_t bytes_per_pixel = display_format == 3 ? 4u : 2u;
+        const uint64_t display_span =
+            (uint64_t)(uint32_t)display_stride * 272u * bytes_per_pixel;
+        if (canonical_display < vram_base ||
+            canonical_display >= vram_base + VRAM_MIRROR_SIZE ||
+            display_span == 0u || display_span > VRAM_MIRROR_SIZE) {
+            skip_reason = 3u;
+        } else {
+            display_offset = canonical_display - vram_base;
+            display_bytes = (uint32_t)display_span;
+            color_offset = (display_offset + display_bytes +
+                            VRAM_MIRROR_ROW_BYTES - 1u) &
+                ~(VRAM_MIRROR_ROW_BYTES - 1u);
+            depth_offset = color_offset + VRAM_MIRROR_FRAME_BYTES;
+            if (color_offset + 2u * VRAM_MIRROR_FRAME_BYTES > VRAM_MIRROR_SIZE) {
+                skip_reason = 4u;
+            }
+        }
+    }
+    if (skip_reason == 0 && !vram_mirror_build_sample_offsets()) {
+        skip_reason = 5u;
+    }
+    if (skip_reason == 0) {
+        backup = (uint8_t *)malloc(VRAM_MIRROR_SIZE);
+        if (backup == NULL) skip_reason = 6u;
+    }
+    if (skip_reason == 0) {
+        const GeIdleWait before = ge_wait_idle(-1, GE_IDLE_DEADLINE_US);
+        if (!before.idle) skip_reason = 7u;
+    }
+    if (skip_reason == 0) {
+        vram_mirror_cache_range(0u, VRAM_MIRROR_SIZE, 1);
+        memcpy(backup, (const void *)(uintptr_t)0x44000000u,
+               VRAM_MIRROR_SIZE);
+    }
+    if (skip_reason != 0) {
+        free(backup);
+        vram_mirror_skip_stream(emulated, (uint32_t)skip_reason);
+        return;
+    }
+
+    const uint32_t info[VRAM_MIRROR_INFO_OUT_COUNT] = {
+        vram_base, 0x44000000u, display_offset, display_bytes,
+        (uint32_t)display_stride, (uint32_t)display_format,
+        color_offset, VRAM_MIRROR_FRAME_BYTES, depth_offset,
+        VRAM_MIRROR_FRAME_BYTES, VRAM_MIRROR_SIZE,
+        VRAM_MIRROR_CPU_SAMPLE_WORD_COUNT,
+        VRAM_MIRROR_CPU_DENSE_OFFSET, VRAM_MIRROR_CPU_DENSE_ROWS,
+        VRAM_MIRROR_ROW_BYTES, VRAM_MIRROR_CPU_PAIR_REGION_COUNT,
+        VRAM_MIRROR_CPU_PAIR_ROWS,
+        VRAM_MIRROR_CPU_SWEEP_FIRST_BIT,
+        VRAM_MIRROR_CPU_SWEEP_LAST_BIT,
+        VRAM_MIRROR_WRITE_ALIAS_COUNT, VRAM_MIRROR_WRITE_SAMPLE_COUNT,
+        VRAM_MIRROR_WRITE_OFFSET_0, VRAM_MIRROR_WRITE_OFFSET_1,
+        VRAM_MIRROR_WRITE_OFFSET_2, VRAM_MIRROR_SIZE,
+        VRAM_MIRROR_DEPTH_STRIDE, VRAM_MIRROR_DEPTH_ROW_COUNT,
+        VRAM_MIRROR_DEPTH_ROW_Y0, VRAM_MIRROR_DEPTH_ROW_Y1,
+        VRAM_MIRROR_DEPTH_ROW_Y2, VRAM_MIRROR_DEPTH_ROW_Y3,
+        VRAM_MIRROR_DEPTH_ROW_Y4, VRAM_MIRROR_DEPTH_ROW_Y5,
+        VRAM_MIRROR_DEPTH_ROW_Y6, VRAM_MIRROR_DEPTH_ROW_Y7,
+        VRAM_MIRROR_DEPTH_ROW_Y8, VRAM_MIRROR_DEPTH_ROW_Y9,
+        VRAM_MIRROR_DEPTH_ALIAS_COUNT, VRAM_MIRROR_DEPTH_CHUNK_PIXELS,
+        VRAM_MIRROR_COLOR_ROW_COUNT, VRAM_MIRROR_COLOR_ROW_Y0,
+        VRAM_MIRROR_COLOR_ROW_Y1, VRAM_MIRROR_COLOR_ROW_Y2,
+        VRAM_MIRROR_COLOR_CHUNK_PIXELS,
+        VRAM_MIRROR_DEPTH_TEST_ENABLED, GU_ALWAYS, GU_FALSE,
+        VRAM_MIRROR_DEPTH_RANGE_NEAR, VRAM_MIRROR_DEPTH_RANGE_FAR,
+        VRAM_MIRROR_CLEAR_DEPTH, VRAM_MIRROR_PATTERN_PREFIX,
+        VRAM_MIRROR_MARKER_PREFIX, VRAM_MIRROR_CACHED_ALIAS_COUNT,
+    };
+    defer_record("vram-mirror-info", "PASS", (uint32_t)display_rc, info,
+                 VRAM_MIRROR_INFO_OUT_COUNT);
+
+    probe_step(emulated, "vram-mirror", "fill-full-position-pattern");
+    volatile uint32_t *const base_words = (volatile uint32_t *)(uintptr_t)vram_base;
+    for (uint32_t offset = 0; offset < VRAM_MIRROR_SIZE; offset += sizeof(uint32_t)) {
+        base_words[offset / sizeof(uint32_t)] =
+            VRAM_MIRROR_PATTERN_PREFIX | offset;
+    }
+    vram_mirror_cache_range(0u, VRAM_MIRROR_SIZE, 1);
+    vram_mirror_defer_pattern_samples();
+
+    probe_step(emulated, "vram-mirror", "cpu-mirror-write-scan");
+    vram_mirror_probe_writes();
+
+    probe_step(emulated, "vram-mirror", "ge-depth-clear");
+    const int gu_init_rc = sceGuInit();
+    const VramMirrorGeOutcome clear = vram_mirror_ge_step(
+        color_offset, depth_offset, gu_init_rc, VRAM_MIRROR_GE_CLEAR, 1);
+    probe_step(emulated, "vram-mirror", "ge-through-sprite-a");
+    const VramMirrorGeOutcome sprite_a = vram_mirror_ge_step(
+        color_offset, depth_offset, gu_init_rc, VRAM_MIRROR_GE_SPRITE_A,
+        clear.completed);
+    probe_step(emulated, "vram-mirror", "ge-through-sprite-b");
+    const VramMirrorGeOutcome sprite_b = vram_mirror_ge_step(
+        color_offset, depth_offset, gu_init_rc, VRAM_MIRROR_GE_SPRITE_B,
+        sprite_a.completed);
+    probe_step(emulated, "vram-mirror", "ge-through-sprite-c");
+    const VramMirrorGeOutcome sprite_c = vram_mirror_ge_step(
+        color_offset, depth_offset, gu_init_rc, VRAM_MIRROR_GE_SPRITE_C,
+        sprite_b.completed);
+    const int ge_idle = sprite_c.ge_idle;
+    const int ge_sequence_complete = clear.completed && sprite_a.completed &&
+        sprite_b.completed && sprite_c.completed;
+
+    probe_step(emulated, "vram-mirror", "ge-depth-and-color-row-samples");
+    vram_mirror_cache_range(color_offset, VRAM_MIRROR_FRAME_BYTES, 0);
+    vram_mirror_cache_range(depth_offset, VRAM_MIRROR_FRAME_BYTES, 0);
+    vram_mirror_defer_depth_rows(depth_offset, ge_idle, ge_sequence_complete);
+    vram_mirror_defer_color_rows(color_offset, ge_idle, ge_sequence_complete);
+
+    probe_step(emulated, "vram-mirror", "restore-vram");
+    vram_mirror_cache_range(0u, VRAM_MIRROR_SIZE, 1);
+    memcpy((void *)(uintptr_t)0x44000000u, backup, VRAM_MIRROR_SIZE);
+    vram_mirror_cache_range(0u, VRAM_MIRROR_SIZE, 0);
+    const volatile uint8_t *restored =
+        (const volatile uint8_t *)(uintptr_t)0x44000000u;
+    for (uint32_t byte = 0; byte < VRAM_MIRROR_SIZE; byte++) {
+        restore_mismatches += restored[byte] != backup[byte];
+    }
+    const int restore_ok = restore_mismatches == 0u && ge_idle;
+    const uint32_t restore_out[5] = {
+        0x44000000u, VRAM_MIRROR_SIZE,
+        2u * VRAM_MIRROR_CACHED_ALIAS_COUNT,
+        restore_mismatches, ge_idle ? 1u : 0u,
+    };
+    defer_record("vram-restore", restore_ok ? "PASS" : "FAIL",
+                 restore_ok ? 0u : 1u, restore_out, 5);
+    free(backup);
+    const uint32_t done = VRAM_MIRROR_SEMANTIC_RECORDS;
+    defer_record("vram-mirror-done", restore_ok ? "PASS" : "FAIL",
+                 restore_ok ? 0u : 1u, &done, 1);
+    flush_deferred(emulated, "PSP-VRAM-MIRROR-001");
 }
 #endif
 
@@ -5103,15 +6013,19 @@ static uint32_t run_mutex_priority_inheritance_case(uint32_t *out0, uint32_t *ou
 #endif
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MUTEX_INTERRUPT_CONTEXT
-/* Interrupt-state proof from user mode. This probe is a user-mode module, so
+/* Interrupt-context proof from user mode. This probe is a user-mode module, so
    it cannot import InterruptManagerForKernel (sceKernelIsIntrContext): the PSP
-   refuses to load a user-mode PRX that imports a kernel-only library. The
-   handler instead records the raw return of sceKernelIsCpuIntrEnable(), the
-   user Kernel_Library export from pspintrman.h and the PSPSDK libpspuser.a
-   (the kernel-alarm case samples the same call inside its alarm handler).
-   A trial counts only when it is 0, meaning the handler body ran with CPU
-   interrupts disabled, as the interrupt dispatcher runs it, before any mutex
-   call was made. */
+   refuses to load a user-mode PRX that imports a kernel-only library. The proof
+   is by construction instead: each trial is written by oracle_subintr_handler,
+   which only the VBLANK sub-interrupt dispatch calls. The handler also records
+   the raw return of sceKernelIsCpuIntrEnable() (the user Kernel_Library export
+   from pspintrman.h) as context only.
+   Pass rule (machinery only, corrected 2026-10-15): a trial is PASS with result 1
+   when the handler reached the end of its body, so all six mutex cells were
+   written and the trial was stored. No returned value is compared with an
+   expected value in this probe or in the host checker; the conformance matrix in
+   src/rt/intr_conformance.h compares them with measured cells. The corrected
+   probe is re-measured at the next PSP session. */
 
 /* MUTEX_INTR_TRIALS: number of VBLANK firings to sample.  Each firing emits
    one protocol record with a trial-indexed case_id (mutex-interrupt-context-t00
@@ -5130,6 +6044,7 @@ typedef struct {
     uint32_t r_lock_cb;   /* LockMutexCB(valid_unlocked, 1, NULL)                */
     uint32_t r_try;       /* TryLockMutex(valid_unlocked, 1)                     */
     uint32_t r_unlock;    /* UnlockMutex(main_owned, 1) -- non-owner unlock      */
+    uint32_t done;        /* set last: every cell above is written and the trial is stored */
 } IntrTrial;
 
 static volatile int s_subintr_count;
@@ -5139,9 +6054,9 @@ static IntrTrial s_trials[MUTEX_INTR_TRIALS];
 
 /* VBLANK sub-interrupt handler.  Fires once per vertical blank (~60 Hz).
    Increments s_subintr_count only after writing all six cell results so the
-   main thread can use s_subintr_count as the ready sentinel.  Samples
-   sceKernelIsCpuIntrEnable() as the first call -- before any mutex
-   operation -- as proof that the body runs with CPU interrupts disabled. */
+   main thread can use s_subintr_count as the ready sentinel.  Records
+   sceKernelIsCpuIntrEnable() as the first call, before any mutex operation,
+   as context only. */
 static int oracle_subintr_handler(int subintr, void *arg) {
     (void)subintr;
     (void)arg;
@@ -5150,7 +6065,7 @@ static int oracle_subintr_handler(int subintr, void *arg) {
         return 0;
     }
     IntrTrial t;
-    /* Interrupt-state proof: 0 when CPU interrupts are disabled here. */
+    /* Context only: the value is recorded, and the pass rule does not read it. */
     t.intr_enabled = (uint32_t)sceKernelIsCpuIntrEnable();
     /* Cell A: bad UID.  PRX must already have context-check before lookup. */
     t.r_bad_uid  = (uint32_t)sceKernelLockMutex(0x7fffffff, 1, NULL);
@@ -5164,15 +6079,18 @@ static int oracle_subintr_handler(int subintr, void *arg) {
     t.r_try      = (uint32_t)sceKernelTryLockMutex((SceUID)s_intr_m_unlocked, 1);
     /* Cell F: unlock a mutex owned by the main thread -- non-owner unlock. */
     t.r_unlock   = (uint32_t)sceKernelUnlockMutex((SceUID)s_intr_m_main_owned, 1);
+    t.done = 1u;
     s_trials[idx] = t;
     /* Barrier: write count last so main only reads a complete trial. */
     s_subintr_count = idx + 1;
     return 0;
 }
 
-/* Emit one protocol record per completed trial.
+/* Emit one protocol record per trial.
    case_id format: mutex-interrupt-context-tNN (NN = zero-padded trial index).
-   out0 = intr_enabled, out1..out6 = six cell raw return values. */
+   out0 = intr_enabled (context only), out1..out6 = six cell raw return values.
+   Machinery-only verdict: PASS with result 1 when the handler completed the trial.
+   The returned values are not compared with any expected value here. */
 static void emit_intr_trial(int emulated, int trial, const IntrTrial *t) {
     char case_id[48];
     snprintf(case_id, sizeof(case_id), "mutex-interrupt-context-t%02d", trial);
@@ -5184,15 +6102,15 @@ static void emit_intr_trial(int emulated, int trial, const IntrTrial *t) {
     out[4] = t->r_lock_cb;
     out[5] = t->r_try;
     out[6] = t->r_unlock;
-    /* pass iff the handler ran with CPU interrupts disabled (intr_enabled == 0) */
-    int pass = (t->intr_enabled == 0u);
+    /* pass iff the handler completed the trial: every cell above is written and the trial is stored. */
+    int pass = (t->done == 1u);
     emit_mutex_test(emulated, case_id, pass, pass ? 1u : 0u, out, 7);
 }
 
 static uint32_t run_mutex_interrupt_context_case(int emulated) {
     s_subintr_count = 0;
     for (int i = 0; i < MUTEX_INTR_TRIALS; i++) {
-        IntrTrial z = {0, 0, 0, 0, 0, 0, 0};
+        IntrTrial z = {0, 0, 0, 0, 0, 0, 0, 0};
         s_trials[i] = z;
     }
 
@@ -5222,13 +6140,13 @@ static uint32_t run_mutex_interrupt_context_case(int emulated) {
     if (s_intr_m_unlocked >= 0)   sceKernelDeleteMutex((SceUID)s_intr_m_unlocked);
     if (s_intr_m_main_owned >= 0) sceKernelDeleteMutex((SceUID)s_intr_m_main_owned);
 
-    /* Emit header record: reg/enable/count summary. */
+    /* Emit header record: raw register and enable returns as context, then the completed count. */
     {
         uint32_t hdr[3];
-        hdr[0] = (uint32_t)(reg == 0);
-        hdr[1] = (uint32_t)(ena == 0);
+        hdr[0] = (uint32_t)reg;
+        hdr[1] = (uint32_t)ena;
         hdr[2] = (uint32_t)s_subintr_count;
-        int pass = (reg == 0 && ena == 0 && s_subintr_count == MUTEX_INTR_TRIALS);
+        int pass = (s_subintr_count == MUTEX_INTR_TRIALS);
         emit_mutex_test(emulated, "mutex-interrupt-context", pass, pass ? 1u : 0u,
                         hdr, 3);
     }
@@ -5240,7 +6158,7 @@ static uint32_t run_mutex_interrupt_context_case(int emulated) {
         emit_intr_trial(emulated, i, (const IntrTrial *)&s_trials[i]);
     }
 
-    return (uint32_t)(reg == 0 && ena == 0 && s_subintr_count == MUTEX_INTR_TRIALS);
+    return (uint32_t)(s_subintr_count == MUTEX_INTR_TRIALS);
 }
 #endif
 
@@ -6285,8 +7203,9 @@ static void run_refer_status_size(int emulated) {
 
    The expected words are the project's model (src/rt/guest_interp.c: sc stores
    and reports 1 only while the link is set, leaves the link as found, and does
-   not compare its address with ll's). That follows the MIPS32 operation text and
-   is UNMEASURED on the console. result is the sc result of the last sc, out0 the
+   not compare its address with ll's). That follows the MIPS32 operation text; a
+   PSP-3000 measured all three cells on 2026-10-15 (PSP-LLSC-001,
+   docs/HARDWARE_ORACLE.md) and agrees. result is the sc result of the last sc, out0 the
    word ll loaded, out1 the result of the first sc, out2 and out3 the words at A
    and B after the cell, and out4 and out5 the model words for A and B; the model
    reports 1 for every sc. Whether the console agrees with the model is read from
@@ -6439,6 +7358,180 @@ static void run_llsc_link(int emulated) {
     uint32_t done = LLSC_LINK_CELLS;
     emit_record_extended(emulated, "PSP-LLSC-001", "llsc-link-done", "PASS",
                          0, &done, 1);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_CC
+/* COP1 condition codes (main thread only, no threads created). MIPS IV gives c.cond.s and
+   bc1f/bc1t a 3-bit condition code (instruction bits 10..8 and 20..18) selecting FCC0..FCC7
+   (FCR31 bit 23, then bits 25..31); MIPS II has one flag, FCC0, and the field reserved.
+   The project's tools decide how to translate a nonzero condition code from what the PSP's
+   FPU implements (issue #934 review). A PSP-3000 measured it on 2026-10-15 (PSP-FPU-CC-001,
+   docs/HARDWARE_ORACLE.md): only FCC0 exists, bits 25..31 are not stored, and every
+   condition code writes and tests FCC0. Every encoding below is emitted as a .word so the
+   assembler cannot rewrite it.
+
+   FCR31 is only ever written with condition bits (no trap enable, RM=RN), and is cleared
+   before every cell and before exit. Each cell is emitted as soon as it ran, after a
+   step marker, so a cell that raises an exception (a reserved condition-code encoding
+   would) is named by the last STEP line and every earlier record stays durable.
+
+   Records:
+   - fpu-cc-fcr31-bits: result = FCR31 read back after writing 0xFE800000 (FCC0..FCC7 on
+     MIPS IV); out0 = the word written; out1 = read back after writing 0x00800000 (FCC0 only).
+   - fpu-cc<n>-ceq: c.eq.s with condition code n. result = FCR31 after an equal compare
+     from FCR31 = 0; out0 = FCR31 after an unequal compare from FCR31 = 0xFE800000.
+   - fpu-cc<n>-branch: taken flags (1 taken, 0 not) for bc1t with condition code n under
+     FCR31 = FCC0 only (result), = 0 (out0), = FCCn only (out1; FCC0 only for n = 0), and
+     for bc1f with condition code n under FCC0 only (out2) and 0 (out3).
+   The n = 0 cells are the controls and must behave as MIPS defines condition code 0; the
+   n = 1..7 cells are the measurement and pass once they ran. */
+#define FPU_CC_FCC0 0x00800000u
+#define FPU_CC_ALL 0xFE800000u
+
+static inline uint32_t fpu_cc_get_fcr31(void) {
+    uint32_t v;
+    __asm__ volatile("cfc1 %0, $31" : "=r"(v) :: "memory");
+    return v;
+}
+
+static inline void fpu_cc_set_fcr31(uint32_t v) {
+    __asm__ volatile("ctc1 %0, $31\n\tnop\n\tnop" :: "r"(v) : "memory");
+}
+
+/* c.eq.s $f12, $f13 with condition code n, starting from FCR31 = start. */
+#define FPU_CC_CEQ_FN(name, word)                                                    \
+    static uint32_t name(uint32_t start, uint32_t a, uint32_t b) {                    \
+        uint32_t after;                                                                \
+        __asm__ volatile(".set push\n\t.set noreorder\n\t"                            \
+                         "ctc1 %1, $31\n\t"                                           \
+                         "mtc1 %2, $f12\n\t"                                          \
+                         "mtc1 %3, $f13\n\t"                                          \
+                         "nop\n\tnop\n\t"                                             \
+                         ".word " #word "\n\t"                                        \
+                         "nop\n\tnop\n\t"                                             \
+                         "cfc1 %0, $31\n\t"                                           \
+                         ".set pop\n\t"                                               \
+                         : "=r"(after)                                                \
+                         : "r"(start), "r"(a), "r"(b)                                 \
+                         : "$f12", "$f13", "memory");                                 \
+        return after;                                                                  \
+    }
+
+/* A bc1f/bc1t word with offset 2 skips the instruction after its delay slot: taken
+   leaves the flag at 1, not taken clears it. */
+#define FPU_CC_BRANCH_FN(name, word)                                                 \
+    static uint32_t name(uint32_t fcr31) {                                             \
+        uint32_t taken = 1u;                                                           \
+        __asm__ volatile(".set push\n\t.set noreorder\n\t"                            \
+                         "ctc1 %1, $31\n\t"                                           \
+                         "nop\n\tnop\n\t"                                             \
+                         ".word " #word "\n\t"                                        \
+                         "nop\n\t"                                                    \
+                         "move %0, $0\n\t"                                            \
+                         ".set pop\n\t"                                               \
+                         : "+r"(taken)                                                \
+                         : "r"(fcr31)                                                 \
+                         : "memory");                                                 \
+        return taken;                                                                  \
+    }
+
+/* c.eq.s fs=$f12 ft=$f13: 0x460D6032 | (cc << 8). */
+FPU_CC_CEQ_FN(fpu_cc0_ceq, 0x460D6032)
+FPU_CC_CEQ_FN(fpu_cc1_ceq, 0x460D6132)
+FPU_CC_CEQ_FN(fpu_cc2_ceq, 0x460D6232)
+FPU_CC_CEQ_FN(fpu_cc3_ceq, 0x460D6332)
+FPU_CC_CEQ_FN(fpu_cc4_ceq, 0x460D6432)
+FPU_CC_CEQ_FN(fpu_cc5_ceq, 0x460D6532)
+FPU_CC_CEQ_FN(fpu_cc6_ceq, 0x460D6632)
+FPU_CC_CEQ_FN(fpu_cc7_ceq, 0x460D6732)
+/* bc1t offset 2: 0x45010002 | (cc << 18); bc1f: 0x45000002 | (cc << 18). */
+FPU_CC_BRANCH_FN(fpu_cc0_bc1t, 0x45010002)
+FPU_CC_BRANCH_FN(fpu_cc1_bc1t, 0x45050002)
+FPU_CC_BRANCH_FN(fpu_cc2_bc1t, 0x45090002)
+FPU_CC_BRANCH_FN(fpu_cc3_bc1t, 0x450D0002)
+FPU_CC_BRANCH_FN(fpu_cc4_bc1t, 0x45110002)
+FPU_CC_BRANCH_FN(fpu_cc5_bc1t, 0x45150002)
+FPU_CC_BRANCH_FN(fpu_cc6_bc1t, 0x45190002)
+FPU_CC_BRANCH_FN(fpu_cc7_bc1t, 0x451D0002)
+FPU_CC_BRANCH_FN(fpu_cc0_bc1f, 0x45000002)
+FPU_CC_BRANCH_FN(fpu_cc1_bc1f, 0x45040002)
+FPU_CC_BRANCH_FN(fpu_cc2_bc1f, 0x45080002)
+FPU_CC_BRANCH_FN(fpu_cc3_bc1f, 0x450C0002)
+FPU_CC_BRANCH_FN(fpu_cc4_bc1f, 0x45100002)
+FPU_CC_BRANCH_FN(fpu_cc5_bc1f, 0x45140002)
+FPU_CC_BRANCH_FN(fpu_cc6_bc1f, 0x45180002)
+FPU_CC_BRANCH_FN(fpu_cc7_bc1f, 0x451C0002)
+
+typedef uint32_t (*FpuCcCeqFn)(uint32_t, uint32_t, uint32_t);
+typedef uint32_t (*FpuCcBranchFn)(uint32_t);
+
+static void run_fpu_cc(int emulated) {
+    static const FpuCcCeqFn ceq[8] = {
+        fpu_cc0_ceq, fpu_cc1_ceq, fpu_cc2_ceq, fpu_cc3_ceq,
+        fpu_cc4_ceq, fpu_cc5_ceq, fpu_cc6_ceq, fpu_cc7_ceq,
+    };
+    static const FpuCcBranchFn bc1t[8] = {
+        fpu_cc0_bc1t, fpu_cc1_bc1t, fpu_cc2_bc1t, fpu_cc3_bc1t,
+        fpu_cc4_bc1t, fpu_cc5_bc1t, fpu_cc6_bc1t, fpu_cc7_bc1t,
+    };
+    static const FpuCcBranchFn bc1f[8] = {
+        fpu_cc0_bc1f, fpu_cc1_bc1f, fpu_cc2_bc1f, fpu_cc3_bc1f,
+        fpu_cc4_bc1f, fpu_cc5_bc1f, fpu_cc6_bc1f, fpu_cc7_bc1f,
+    };
+    const uint32_t one = 0x3f800000u, two = 0x40000000u;
+    uint32_t cells = 0;
+
+    probe_step(emulated, "fpu-cc", "fpu-cc-fcr31-bits");
+    fpu_cc_set_fcr31(FPU_CC_ALL);
+    const uint32_t all_back = fpu_cc_get_fcr31();
+    fpu_cc_set_fcr31(FPU_CC_FCC0);
+    const uint32_t fcc0_back = fpu_cc_get_fcr31();
+    fpu_cc_set_fcr31(0);
+    {
+        const uint32_t out[] = {FPU_CC_ALL, fcc0_back};
+        emit_record_extended(emulated, "PSP-FPU-CC-001", "fpu-cc-fcr31-bits",
+                             fcc0_back == FPU_CC_FCC0 ? "PASS" : "FAIL", all_back, out, 2);
+        cells++;
+    }
+
+    for (uint32_t n = 0; n < 8u; n++) {
+        char cid[32];
+        snprintf(cid, sizeof(cid), "fpu-cc%u-ceq", (unsigned int)n);
+        probe_step(emulated, "fpu-cc", cid);
+        const uint32_t eq_from_zero = ceq[n](0u, one, one);
+        fpu_cc_set_fcr31(0);
+        const uint32_t ne_from_all = ceq[n](FPU_CC_ALL, one, two);
+        fpu_cc_set_fcr31(0);
+        int pass = 1;
+        if (n == 0u) pass = eq_from_zero == FPU_CC_FCC0 && (ne_from_all & FPU_CC_FCC0) == 0u;
+        {
+            const uint32_t out[] = {ne_from_all};
+            emit_record_extended(emulated, "PSP-FPU-CC-001", cid, pass ? "PASS" : "FAIL",
+                                 eq_from_zero, out, 1);
+            cells++;
+        }
+
+        snprintf(cid, sizeof(cid), "fpu-cc%u-branch", (unsigned int)n);
+        probe_step(emulated, "fpu-cc", cid);
+        const uint32_t own = n == 0u ? FPU_CC_FCC0 : (1u << (24u + n));
+        const uint32_t t_fcc0 = bc1t[n](FPU_CC_FCC0);
+        const uint32_t t_none = bc1t[n](0u);
+        const uint32_t t_own = bc1t[n](own);
+        const uint32_t f_fcc0 = bc1f[n](FPU_CC_FCC0);
+        const uint32_t f_none = bc1f[n](0u);
+        fpu_cc_set_fcr31(0);
+        pass = 1;
+        if (n == 0u) pass = t_fcc0 == 1u && t_none == 0u && f_fcc0 == 0u && f_none == 1u;
+        {
+            const uint32_t out[] = {t_none, t_own, f_fcc0, f_none};
+            emit_record_extended(emulated, "PSP-FPU-CC-001", cid, pass ? "PASS" : "FAIL",
+                                 t_fcc0, out, 4);
+            cells++;
+        }
+    }
+    fpu_cc_set_fcr31(0);
+    emit_record_extended(emulated, "PSP-FPU-CC-001", "fpu-cc-done", "PASS", 0, &cells, 1);
 }
 #endif
 
@@ -6787,6 +7880,126 @@ static void run_registry_readonly(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_REGISTRY_FONT
+/* Read-only walk of /DATA/FONT and /SYSPROFILE/RESOLUTION (PSP-REGISTRY-002). The walk, its
+ * safety rules and its record format live in registry_walk.h, which a host harness also runs
+ * against a fake registry (tools/test_psp_oracle.py). Records and step markers go through the
+ * durable host0 writer; every walk buffer is static. */
+#include "registry_walk.h"
+
+static int s_registry_font_emulated;
+
+static void registry_font_emit(void *ctx, const char *line, size_t length) {
+    (void)ctx;
+    probe_emit_durable(s_registry_font_emulated, line, length);
+}
+
+static void registry_font_step(void *ctx, const char *step) {
+    (void)ctx;
+    probe_step(s_registry_font_emulated, "registry-font", step);
+}
+
+static RegWalk s_registry_font_walk;
+
+static void run_registry_font(int emulated) {
+    s_registry_font_emulated = emulated;
+    memset(&s_registry_font_walk, 0, sizeof(s_registry_font_walk));
+    s_registry_font_walk.emit = registry_font_emit;
+    s_registry_font_walk.step = registry_font_step;
+    regwalk_run(&s_registry_font_walk);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_FILES
+/* Read-only copy of flash0:/font to host0:/fonts (PSP-FONTFILES-001). The listing, copy and
+ * verification live in font_files.h, which a host harness also runs against a fake file system
+ * (tools/test_psp_oracle.py). Records and step markers go through the durable host0 writer; the
+ * copies are opened with sceIoOpen directly so probe teardown never removes them. */
+#include "font_files.h"
+
+static int s_font_files_emulated;
+
+static void font_files_emit(void *ctx, const char *line, size_t length) {
+    (void)ctx;
+    probe_emit_durable(s_font_files_emulated, line, length);
+}
+
+static void font_files_step(void *ctx, const char *step) {
+    (void)ctx;
+    probe_step(s_font_files_emulated, "font-files", step);
+}
+
+static FontFiles s_font_files;
+
+static void run_font_files(int emulated) {
+    s_font_files_emulated = emulated;
+    memset(&s_font_files, 0, sizeof(s_font_files));
+    s_font_files.emit = font_files_emit;
+    s_font_files.step = font_files_step;
+    fontfiles_run(&s_font_files);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_UMD_IO
+/* Bare-device and disc open results (PSP-UMDIO-001). The fixed path lists and the calls live in
+ * umd_io.h, which a host harness also runs (tools/test_psp_oracle.py). No UMD activation. */
+#include "umd_io.h"
+
+static int s_umd_io_emulated;
+
+static void umd_io_emit(void *ctx, const char *line, size_t length) {
+    (void)ctx;
+    probe_emit_durable(s_umd_io_emulated, line, length);
+}
+
+static void umd_io_step(void *ctx, const char *step) {
+    (void)ctx;
+    probe_step(s_umd_io_emulated, "umd-io", step);
+}
+
+static UmdIo s_umd_io;
+
+static void run_umd_io(int emulated) {
+    s_umd_io_emulated = emulated;
+    memset(&s_umd_io, 0, sizeof(s_umd_io));
+    s_umd_io.emit = umd_io_emit;
+    s_umd_io.step = umd_io_step;
+    umdio_run(&s_umd_io);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_LIST
+/* The system font list as the console's own font library reports it (PSP-FONTLIST-001).
+ * The calls, the arena allocator and the record format live in font_list.h, which a host
+ * harness also runs against a fake library (tools/test_psp_oracle.py). The five sceLibFont
+ * stubs come from libfont_imports.S; the build-time gate refuses any sceReg import in this
+ * case, so the probe itself cannot open or create a registry category. Records and step
+ * markers go through the durable host0 writer. */
+#include "font_list.h"
+
+static int s_font_list_emulated;
+
+static void font_list_emit(void *ctx, const char *line, size_t length) {
+    (void)ctx;
+    probe_emit_durable(s_font_list_emulated, line, length);
+}
+
+static void font_list_step(void *ctx, const char *step) {
+    (void)ctx;
+    probe_step(s_font_list_emulated, "font-list", step);
+}
+
+static FontList s_font_list;
+
+static void run_font_list(int emulated) {
+    s_font_list_emulated = emulated;
+    memset(&s_font_list, 0, sizeof(s_font_list));
+    s_font_list.emit = font_list_emit;
+    s_font_list.step = font_list_step;
+    fontlist_run(&s_font_list);
+}
+#endif
+
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_GE_BREAK_CONTINUE
 static void emit_ge_control(int emulated, const char *case_id, const char *status,
                             uint32_t result, const uint32_t *out, size_t count) {
@@ -6887,26 +8100,53 @@ static void run_ge_break_continue(int emulated) {
                     (uint32_t)continue_rc, drain_out, 5);
     emit_ge_quiesce(emulated, "ge-quiesce-after-continue");
 
-    probe_step(emulated, "ge-break-continue", "cancel-stalled-list");
+    /* Item 10: sceGeBreak(1) reset with no sceGeListDeQueue earlier in this case.
+       The reset is the only control call made on this stalled list, so its result
+       is not mixed with a dequeue's side effect.  The cancelled-list sync cells are
+       read after this same reset, so they do not depend on a successful dequeue. */
+    probe_step(emulated, "ge-break-continue", "reset-no-dequeue");
     qid = sceGeListEnQueue((const void *)(uintptr_t)list,
                            (void *)(uintptr_t)list, -1, NULL);
-    const int cancel_rc = qid >= 0 ? sceGeListDeQueue(qid) : qid;
+    memset(&param, 0, sizeof(param));
+    const int reset_rc = qid >= 0 ? sceGeBreak(1, &param) : qid;
+    uint32_t reset_out[2] = {(uint32_t)qid, (uint32_t)reset_rc};
+    emit_ge_control(emulated, "ge-break-reset-no-dequeue",
+                    qid >= 0 ? "PASS" : "SKIP", (uint32_t)reset_rc, reset_out, 2);
+
     list_state = qid >= 0 ? sceGeListSync(qid, 1) : qid;
     draw_state = qid >= 0 ? sceGeDrawSync(1) : qid;
     list_out[0] = (uint32_t)qid;
-    list_out[1] = (uint32_t)cancel_rc;
+    list_out[1] = (uint32_t)reset_rc;
     list_out[2] = (uint32_t)list_state;
     draw_out[0] = (uint32_t)qid;
-    draw_out[1] = (uint32_t)cancel_rc;
+    draw_out[1] = (uint32_t)reset_rc;
     draw_out[2] = (uint32_t)draw_state;
-    const char *cancel_status = qid >= 0 && cancel_rc >= 0 ? "PASS" : "SKIP";
+    const char *cancel_status = qid >= 0 ? "PASS" : "SKIP";
     emit_ge_control(emulated, "ge-list-sync-cancelled", cancel_status,
                     (uint32_t)list_state, list_out, 3);
     emit_ge_control(emulated, "ge-draw-sync-cancelled", cancel_status,
                     (uint32_t)draw_state, draw_out, 3);
     emit_ge_quiesce(emulated, "ge-quiesce-after-cancel");
 
-    uint32_t done = 10;
+    /* sceGeListDeQueue on a stalled list is a measured cell.  The 2026-10-10 and
+       2026-10-15 captures (not acceptance-eligible) read BUSY (0x80000021) here,
+       which is why the cancelled-list cells no longer depend on this dequeue.  The
+       status records only that the call completed, whatever it returned, so this
+       cell never gates another cell.  The quiesce afterwards resets any list left
+       queued. */
+    probe_step(emulated, "ge-break-continue", "dequeue-stalled-list");
+    qid = sceGeListEnQueue((const void *)(uintptr_t)list,
+                           (void *)(uintptr_t)list, -1, NULL);
+    const int dequeue_rc = qid >= 0 ? sceGeListDeQueue(qid) : qid;
+    list_state = qid >= 0 ? sceGeListSync(qid, 1) : qid;
+    draw_state = qid >= 0 ? sceGeDrawSync(1) : qid;
+    uint32_t dequeue_out[4] = {(uint32_t)qid, (uint32_t)dequeue_rc,
+                               (uint32_t)list_state, (uint32_t)draw_state};
+    emit_ge_control(emulated, "ge-list-dequeue-stalled",
+                    qid >= 0 ? "PASS" : "SKIP", (uint32_t)dequeue_rc, dequeue_out, 4);
+    emit_ge_quiesce(emulated, "ge-quiesce-after-dequeue");
+
+    uint32_t done = 13;
     emit_record_extended(emulated, "PSP-GE-CONTROL-001", "ge-break-continue-done",
                          "PASS", 0, &done, 1);
 }
@@ -7001,7 +8241,7 @@ int main(int argc, char *argv[]) {
     __asm__ volatile("cfc1 %0, $31" : "=r"(boot_fcr31) :: "memory");
     s_boot_fcr31 = boot_fcr31;
     s_have_fcr31_state = 1;
-#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR || PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_CC
     __asm__ volatile("ctc1 $0, $31" ::: "memory");
 #endif
 #endif
@@ -7125,6 +8365,8 @@ int main(int argc, char *argv[]) {
     run_fpu_vector(emulated, boot_fcr31);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_COMPARE
     run_vfpu_compare(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VFPU_TRANSCENDENTAL_CORPUS
+    run_vfpu_transcendental_corpus(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_TEARDOWN_TEST
     run_teardown_test(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_IO_MATRIX
@@ -7180,6 +8422,18 @@ int main(int argc, char *argv[]) {
     run_kernel_misc(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_LLSC_LINK
     run_llsc_link(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_CC
+    run_fpu_cc(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_REGISTRY_FONT
+    run_registry_font(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_FILES
+    run_font_files(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_UMD_IO
+    run_umd_io(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_LIST
+    run_font_list(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
+    run_vram_mirror(emulated);
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

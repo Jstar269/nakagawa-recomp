@@ -31,6 +31,21 @@
 #define HELPER_GLYPH_IMAGE_SIZE 0x18u
 
 uint8_t *g_mem;
+volatile int g_sr_vram_read_pending;
+
+void sr_ge_vram_read_prepare(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
+void sr_ge_vram_write_prepare(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
+void sr_ge_vram_write_commit(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
+void sr_oor(uint32_t address, uint32_t value, int store) {
+    (void)address; (void)value; (void)store;
+    abort();
+}
 
 void sr_gpu_vram_dirty(uint32_t address, uint32_t bytes) {
     (void)address;

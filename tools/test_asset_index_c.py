@@ -5,7 +5,6 @@
 
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
@@ -16,6 +15,7 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 SELFTEST_C = ROOT / "src" / "rt" / "asset_index_selftest.c"
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
+POWERSHELL = shutil.which("powershell") or shutil.which("pwsh")
 
 
 @unittest.skipUnless(CC, "no C compiler on PATH")
@@ -132,6 +132,69 @@ class TestAssetIndexSelftestC(unittest.TestCase):
             )
             self.assertEqual(long_inventory[(deep_relative / "deep.to").as_posix()], b"deep")
 
+
+class TestProjectFontBuildWiring(unittest.TestCase):
+    def test_makefile_uses_one_rule_family_for_all_project_slots(self):
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("define PROJECT_FONT_RULE", makefile)
+        for target in ("japanese", "latin", "korean"):
+            self.assertIn(f"PROJECT_FONT_RULE,{target},", makefile)
+            self.assertIn(f"project-{target}-font", makefile)
+        self.assertIn("project-fonts: $(PROJECT_FONT_SLOT_TARGETS)", makefile)
+        self.assertIn("compile: | project-fonts", makefile)
+
+
+@unittest.skipUnless(POWERSHELL, "PowerShell is required to exercise tools/copy_build_assets.ps1")
+class TestProjectFontAssetCopy(unittest.TestCase):
+    OUTPUTS = (
+        "nkjpn.pgf", "nkjpn.json", "nkjpn-OFL.txt",
+        "nkltn.pgf", "nkltn.json", "nkltn-OFL.txt",
+        "nkkr.pgf", "nkkr.json", "nkkr-OFL.txt",
+    )
+
+    def _run_copy(self, build_dir: Path) -> subprocess.CompletedProcess[str]:
+        assert POWERSHELL is not None
+        return subprocess.run(
+            [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+             str(ROOT / "tools" / "copy_build_assets.ps1"), "-BuildDir", str(build_dir),
+             "-ExcludeOptionalFonts"],
+            cwd=build_dir.parent,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_all_project_slot_outputs_are_staged_with_their_own_licence(self):
+        with tempfile.TemporaryDirectory(prefix="project-font-assets-") as tmp:
+            build = Path(tmp) / "build"
+            generated = build / "project-font"
+            generated.mkdir(parents=True)
+            expected = {}
+            for name in self.OUTPUTS:
+                content = f"synthetic project asset: {name}\n".encode("ascii")
+                (generated / name).write_bytes(content)
+                expected[name] = content
+            result = self._run_copy(build)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            runtime = build / "font"
+            self.assertEqual(
+                {name: (runtime / name).read_bytes() for name in self.OUTPUTS},
+                expected,
+            )
+
+    def test_missing_project_slot_output_fails_by_name(self):
+        with tempfile.TemporaryDirectory(prefix="project-font-missing-") as tmp:
+            build = Path(tmp) / "build"
+            generated = build / "project-font"
+            generated.mkdir(parents=True)
+            for name in self.OUTPUTS:
+                if name != "nkkr.pgf":
+                    (generated / name).write_bytes(b"synthetic\n")
+            result = self._run_copy(build)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("PROJECT_FONT_OUTPUT_INCOMPLETE", result.stdout + result.stderr)
+            self.assertIn("nkkr.pgf", result.stdout + result.stderr)
+
     def test_production_font_policy_has_distinct_configured_and_absent_roots(self):
         hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
         self.assertIn("font_load: SR_FONTDIR is configured but is not a valid absolute path", hle)
@@ -225,24 +288,19 @@ class TestAssetIndexSelftestC(unittest.TestCase):
 
 
 class TestHleFontSpecTable(unittest.TestCase):
-    """The HLE font table reports project-owned names; its numeric fields are unchanged."""
+    """The sceFont shim keeps no font table of its own: it reads the measured slots and served headers."""
 
-    ROW = re.compile(r'\[(\d+)\]\s*=\s*\{"([^"]*)",\s*"([^"]*)",\s*([^}]*)\}')
-
-    def test_font_specs_report_project_names_and_unchanged_numbers(self):
+    def test_shim_reads_metadata_from_the_measured_registry_view(self):
         hle = (ROOT / "src" / "rt" / "hle.c").read_text(encoding="utf-8")
-        start = hle.index("static const SrFontSpec s_font_specs[18] = {")
-        table = hle[start:hle.index("};", start)]
-        rows = {int(index): (file_name, font_name, numbers)
-                for index, file_name, font_name, numbers in self.ROW.findall(table)}
-        self.assertEqual(rows, {
-            0: ("nkjpn.pgf", "Nakagawa Open Japanese",
-                "0, 2, 0, 1, 0, 1, 10.125f, 10.125f, 128.f, 128.f"),
-            9: ("nkltn.pgf", "Nakagawa Open Latin",
-                "0, 0, 0, 2, 0, 1, 7.f, 7.f, 128.f, 128.f"),
-            17: ("nkkr.pgf", "Nakagawa Open Korean",
-                 "0, 0, 0, 3, 0, 3, 10.125f, 10.125f, 128.f, 128.f"),
-        })
+        # The removed per-index table held model values and hard-coded names; neither may return.
+        self.assertNotIn("s_font_specs", hle)
+        self.assertNotIn("SrFontSpec", hle)
+        # Index map, numeric codes, sizes, resolutions and the name come from flash0's registry view.
+        self.assertIn("sr_flash0_font_registry_info(", hle)
+        self.assertIn("sr_flash0_font_registry_slot(", hle)
+        # Font names reach guest memory only from the served file's header, never from a literal.
+        for literal in ("Nakagawa Open Japanese", "Nakagawa Open Latin", "Nakagawa Open Korean"):
+            self.assertNotIn(literal, hle)
 
 
 if __name__ == "__main__":

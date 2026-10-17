@@ -1,17 +1,18 @@
 # PPSSPP replacement fonts
 
-The active public source tree contains only this provenance summary in `font/`.
-Four replacement PGF payloads evaluated for local development were copied
-byte-for-byte from PPSSPP; the payloads and their detailed redistribution-review
-records remain excluded. They were not extracted from a PSP, firmware image, or
-the user's game. The HLE sceFont path treats them as optional data: an invalid or
-missing font root is reported instead of hidden by a synthetic font.
+The active public source tree contains only this provenance summary in `font/`;
+no generated PGF is committed here. The four replacement PGF payloads evaluated
+for local development remain excluded. The runtime build generates the project
+Japanese slot from the pinned open-font input documented below. Other slots
+still use an imported font when available, otherwise their absence is reported.
 
 The public evidence summary below identifies the compared upstream bytes. The
-active public build links the fail-closed PGF boundary and does not assume
-replacement fonts are present. See [NOTICE.md](../NOTICE.md) and the
-[public source profile](../docs/PUBLIC_SOURCE_PROFILE.md) for the enforced
-exclusion.
+active public source profile continues to exclude the compared PGF payloads.
+`make project-japanese-font` builds `nkjpn.pgf` under the configured build
+directory from the pinned M PLUS 1p input; the runtime `compile` target stages
+that file and its OFL text beside the executable. See [NOTICE.md](../NOTICE.md)
+and the [public source profile](../docs/PUBLIC_SOURCE_PROFILE.md) for the
+enforced exclusion of the compared payloads.
 
 ## Byte provenance
 
@@ -69,15 +70,12 @@ licence file). See FONT_ORIGINS.md §7.
 
 ## Chosen route
 
-(2) Generate our own PGF payloads from pinned OFL sources with a
-project-owned, reproducible converter (a planned clean-room item, not yet
-written) — with (3) as the interim: payloads stay excluded until a
-converter-produced payload with pinned inputs, shipped OFL/Ume notices, an
-honest non-RFN name, qualified review, and a path-specific provenance record
-lands. (1) Redistributing the PPSSPP payloads is rejected: notices alone
-cannot cure the false Sony/Fontworks designation, and the exact inputs are
-unrecoverable. OFL/Ume licence texts will be added under
-`THIRD_PARTY_LICENSES/` only when a payload is actually shipped.
+The Japanese slot is generated from the pinned M PLUS 1p input by the
+project-owned deterministic converter. The PGF uses the project-owned name
+`Nakagawa Open Japanese`; its manifest and OFL text are staged beside it in the
+build output. The source TTF, pin and licence are under
+[`fixtures/fonts/mplus1p/`](../fixtures/fonts/mplus1p/). The four compared PGF
+payloads remain excluded, and generated PGFs are not checked in.
 
 ## Runtime lookup
 

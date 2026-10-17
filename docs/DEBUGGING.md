@@ -435,6 +435,13 @@ non-finite relative to), the integer reinterpretations (`vs2i`/`vi2uc`/`vi2c`/`v
 float32), the `lv`/`sv` memory forms (guest data, not a computed result), and the raw per-element
 `v[]` row copies of `VFPUMatrix1` (`vmmov`/`vmscl` rows, which move an existing lane).
 
+With the flight recorder armed and its `fault` class enabled (`SR_FLIGHT=fault,...;N`), each printed
+origin is also one `nan-origin` event (bundle kind 30, issue #320). It records the guest pc, the domain
+(FPU or VFPU), the result (NaN, +Inf or -Inf), the destination register, the lane (the first non-finite
+word of the reported output) and the VBLANK count. It follows the same `SR_NAN_TRAP_LIMIT` budget as the
+printed line and never triggers the recorder, so the run continues. `tools/flight_diff.py` localises the
+first one against a clean run. With the recorder disarmed the report is unchanged and nothing is recorded.
+
 > [!IMPORTANT]
 > **`SR_RTRACE` re-arms only when `SR_GESTAT` is also set.** Its per-window frame budget is reset
 > inside the `SR_GESTAT` 60-frame window block in `ge_set_frame()`. With `SR_RTRACE=1` alone you get
@@ -1089,7 +1096,7 @@ committed.
 
 | Variable | Description |
 | ---------- | ------------- |
-| `SR_FONTLOG=1` | Log font operations |
+| `SR_FONTLOG=1` | Log font operations: each slot's source, and the guest's reads of the generated `/DATA/FONT` registry subtree (the keys it asks for, the categories it opens, and each font index served) |
 | `SR_MPEGLOG=1` | Log mpeg operations. The PSMF media producer also logs one bounded counter line per reporting interval: bytes read, packs, PES packets, per-track PES and access-unit counts, access units that carried no presentation time, resync bytes, both compressed-queue depths, EOF state and failure offset, the disposition census of both tracks (submitted, decoded, delivered, warm-up-held, eos-drained, rejected — plus audio format rejects `arejf` and mono upmixes `aupm`), decoder-error counts, the pipeline presentation clocks (`vpts`/`apts`), the guest-facing presentation points at the getters (`vts`/`ats`), the A/V separation between those comparable points (`avgap`, `vts-ats`), submitted-minus-delivered (`vlead`, the pipeline distance inside the output ring), displaced ring times (`vlost`), the last `displaypts`, and the drain flags — enough to classify every decoded picture and locate the first boundary that stops a movie without attaching a debugger |
 | `SR_DLGLOG=1` | Log dialog operations |
 | `SR_CBLOG=1` | Log callback operations |
@@ -1097,6 +1104,7 @@ committed.
 | `SR_WAKELOG=1` | Log thread wakeup events |
 | `SR_HLE_DIAGNOSTICS=1` | Enable the retained title-scoped HLE diagnostic reads only for a validated `codegen_profile: "hst"` build; generic and public fixture profiles remain inert |
 | `SR_REAL_MODULE_START` | `sceKernelStartModule` entry gate, tri-state. `1` runs a translated/real `module_start` for any module; unset (the default) runs it for `libfont.prx` only, so the guest owns its own readiness while `psmf.prx`, `libpsmfplayer.prx` and unknown paths keep the host bypass; `0` is the environmental kill switch and runs no `module_start` for any module, For libfont, disabled or unavailable startup reports `LIBFONT_STARTUP_UNAVAILABLE`, returns `SCE_KERNEL_ERROR_NOTIMP`, and does not write readiness. Any other value is refused with one diagnostic and the default is used. `sceKernelStopModule`/`sceKernelUnloadModule` still require `1` |
+| `SR_USER_DATA_ROOT=ABSOLUTE_PATH` | The per-user data directory, which is the one font root: the runtime reads the imported font cache at `<this>/fonts/v2` for the `flash0:` font device and the HLE `sceFont` shim. The launcher sets it for the child, overriding any inherited value. Unset uses the platform per-user directory; a runtime root does not move it. A relative or empty value is named once on stderr (`flash0: SR_USER_DATA_ROOT ...`) and skips the user-imported source, so the project font is served; it never falls back to another root. "Unreadable" means the environment read itself failed (the process could not read its own environment); that is named the same way, and skips the source too. Only an absent variable takes the platform directory. |
 | `SR_FONTDIR=ABSOLUTE_PATH` | Override the project font directory (relative values are rejected; unset uses the executable's sibling `font`). The `flash0:` font device and the HLE `sceFont` shim both serve the slot files named in `src/core/nk_font_slots.h`, from the user-imported cache first and then from this directory. A cache file is served only when its manifest vouches for it (listed, size and SHA-256 match, accepted by the reader as that slot); otherwise the slot falls through to this directory with a named `flash0:` refusal. This directory never serves files from an imported cache (a directory holding `manifest.json`, or the cache itself); `SR_FONTLOG=1` names each slot's source |
 | `SR_DATAROOT=ABSOLUTE_PATH` | Override the extracted-XB data root (relative values are rejected; unset uses the executable-anchored HST tree). The executable-anchored root and walked descendants reject reparse points; an explicitly configured root is operator-trusted and may be a junction for a staged long-path fixture. Access-time replacement races inside that trusted root are not a containment boundary. |
 | `SR_FSDIR=PATH` | Legacy flat `fs/` source for one-time read-open import into the unified Memory Stick root; relative paths, including `.`/`..`, are resolved against the current directory. Write/create never creates under this root |
@@ -1112,7 +1120,7 @@ committed.
 | `SR_NO_RELAUNCH=1` | Disable thread relaunch |
 | `SR_NO_THREAD_REUSE=1` | Disable thread reuse |
 | `SR_NOAUDIO=1` | Disable audio output |
-| `SR_AUDIODUMP=PATH` | Debug only, off by default. Write the device mix (every channel's stream after the master gain, as SDL is about to submit it) to a 16-bit PCM WAV at the device's own rate and channel count. The header is patched once per second of audio data and at close, and a stats line (`AUDIODUMP: ... frames= silent_frames= clipped_samples= peak=`) is printed there. The file is closed at a normal exit and at `SR_EXIT_AT_VBLANK`, with or without `SR_AUDIOSTAT`; a runtime that is killed, crashes, or ends on another path that skips `atexit` (`sceKernelExitGame`, the watchdog, a route failure) keeps the last once-a-second patch, so up to a second at the end lies past the header's length. It runs on SDL's audio thread and does file I/O there, so it changes host pacing; never compare timing with it on. Audit the file for silence, clipping, gaps and sample rate |
+| `SR_AUDIODUMP=PATH` | Debug only, off by default. Write the device mix (every channel's stream after the master gain, as SDL is about to submit it) to a 16-bit PCM WAV at the device's own rate and channel count. The header is patched once per second of audio data and at close, and a stats line (`AUDIODUMP: ... frames= silent_frames= clipped_samples= peak= dropped_frames=`) is printed there. `dropped_frames` counts the frames the dump was offered but did not write, whether past its size limit, after a changed device format, or after a failed write; the first refusal prints one line. The file is closed at a normal exit and at `SR_EXIT_AT_VBLANK`, with or without `SR_AUDIOSTAT`; a runtime that is killed, crashes, or ends on another path that skips `atexit` (`sceKernelExitGame`, the watchdog, a route failure) keeps the last once-a-second patch, so up to a second at the end lies past the header's length. It runs on SDL's audio thread and does file I/O there, so it changes host pacing; never compare timing with it on. Audit the file for silence, clipping, gaps and sample rate |
 | `SR_POSTUMD=1` | Post-UMD processing |
 | `SR_HEAP_BASE=HEX` | Override heap base address |
 | `SR_PARTITION_TOP=HEX` | Override partition top |
@@ -1255,7 +1263,8 @@ still applies, and the option never changes vertex data or rendering.
 `SR_FLIGHT=<classes>;<limit>` retains the last `<limit>` (at most 4096) structured events of the
 named classes (`hle`, `unsupported`, `sched`, `prx`, `fault`, `fatal`, `media`, `ge`, `present`)
 and writes a bundle to `SR_FLIGHT_OUTPUT` (default `flight-recorder.json`). The schema is
-`assets/flight_recorder_schema.json`; `tools/flight_diff.py` validates and compares bundles.
+`assets/flight_recorder_schema.json`; `tools/flight_diff.py` validates and compares bundles. A build
+with `NAN_TRAP=1` also records each `SR_NAN_TRAP` origin into the `fault` class (see the NaN section).
 
 `terminal.reason` names what ended the run:
 

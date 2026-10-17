@@ -813,6 +813,27 @@ jobs:
           command -v pwsh
           mingw32-make --no-print-directory CC=gcc VULKAN_SDK=/ucrt64 player-ui-regressions
 
+      # Windows counterpart of the Linux staging smoke (#308): the built player must
+      # stage a TEST00007 disc headlessly and report STAGING_RESULT status=PASS, so a
+      # Windows-only staging regression fails hosted CI. This runner has no PSPDEV, so
+      # the disc wraps the source-owned display guest under the showcase's synthetic
+      # identity (fixtures/showcase/showcase.py stage-iso). Staging reads the disc
+      # identity, the manifest and the executable's bytes, not the guest's code. Every
+      # user-data root is redirected under the runner temp directory, never a profile.
+      - name: Smoke the Windows player staging headlessly
+        if: matrix.part == 'smoke'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          smoke="$(cygpath -m "$RUNNER_TEMP")/windows-stage-smoke"
+          mkdir -p "$smoke/disc" "$smoke/localappdata" "$smoke/appdata" "$smoke/userprofile"
+          python fixtures/showcase/showcase.py stage-iso --out-dir "$smoke/disc"
+          stage_output=$(LOCALAPPDATA="$smoke/localappdata" APPDATA="$smoke/appdata" \
+            USERPROFILE="$smoke/userprofile" SDL_VIDEODRIVER=offscreen timeout 60s \
+            build/nakagawa_player.exe "--iso=$smoke/disc/TEST00007.iso" --stage-only)
+          printf '%s\n' "$stage_output"
+          grep -Fq "STAGING_RESULT status=PASS" <<<"$stage_output"
+
       # Run the same smoke with the executable staged outside its build tree
       # (#294): a launcher/staging path bug must fail in CI, not only in the
       # build-tree spelling. Depends on the production-smoke step above; the

@@ -179,6 +179,7 @@ typedef struct {
     VkImage img; VkDeviceMemory mem; VkImageView view;
     VkImageLayout layout;
     int cpu_dirty;                         /* software fallback changed s_zbuf */
+    int guest_dirty;                        /* Vulkan depth is newer than guest VRAM */
 } DepthEnt;
 
 /* persistent GE render target */
@@ -1136,6 +1137,8 @@ static int submit_pending(void) {
     int ok = cmd_batch_record(SR_PERF_GE_RENDER_BATCH);
     t->gpu_valid = 1;
     t->render_gen++;
+    if (t->dep) t->dep->guest_dirty = 1;
+    sr_vram_mark_renderer_pending();
     s_cnt_submit++;
     if (s_stats) {
         s_cnt_batches += s_nbatch;
@@ -1219,6 +1222,9 @@ static int target_readback(Target *t) {
     vkCmdCopyImageToBuffer(s_cmd, t->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_xfer, 1, &c);
     if (!cmd_submit_wait(SR_PERF_GE_TARGET_READBACK_TRANSITION)) return 0;
     if (!write_guest_fb((const uint32_t *)s_xfer_map, t->fba, t->stride, t->fmt)) return 0;
+    uint32_t bpp = t->fmt == 3u ? 4u : 2u;
+    ge_zbuf_invalidate_guest_span(0x04000000u + t->fba,
+                                  t->stride * FB_H * bpp);
     t->clean_gen = t->render_gen;
     s_cnt_readback++;
     return 1;
@@ -1308,6 +1314,8 @@ static int target_upload(Target *t) {
                 t->fba, t->stride, t->fmt, why ? why : "invalid descriptor");
         return 0;
     }
+    uint32_t base = guest_span.base;
+    if (!sr_guest_span_readable_current(base, guest_span.total_bytes)) return 0;
     /* CPU VRAM is authoritative on this path.  Never let an older asynchronous copy
      * overwrite it after the upload has begun. */
     readback_discard_target(t);
@@ -1316,7 +1324,6 @@ static int target_upload(Target *t) {
     if (!upload_reserve(upload_bytes, &upload)) return 0;
     uint32_t *row = s_pxscratch;               /* one guest row of decode scratch */
     uint32_t *dst = (uint32_t *)upload.map;
-    uint32_t base = guest_span.base;
     uint32_t drow = SCL_W;
     for (uint32_t y = 0; y < FB_H; y++) {
         if (t->fmt == 3) {
@@ -1615,13 +1622,16 @@ static int depth_from_cpu(DepthEnt *d) {
     VkDeviceSize upload_bytes = (VkDeviceSize)SCL_W * SCL_H * 2u;
     UploadReservation upload;
     if (!upload_reserve(upload_bytes, &upload)) return 0;
+    uint32_t source_stride = d->zstride;
     if (s_scale == 1) {
-        memcpy(upload.map, s_zbuf, FB_W * FB_H * 2);
+        uint16_t *dst = (uint16_t *)upload.map;
+        for (uint32_t y = 0; y < FB_H; y++)
+            memcpy(dst + y * FB_W, s_zbuf + y * source_stride, FB_W * 2u);
     } else {
         uint16_t *dst = (uint16_t *)upload.map;
         uint32_t drow = SCL_W;
         for (uint32_t y = 0; y < FB_H; y++) {
-            const uint16_t *src = s_zbuf + y * FB_W;
+            const uint16_t *src = s_zbuf + y * source_stride;
             uint16_t *dl = dst + (uint32_t)(y * s_scale) * drow;
             for (uint32_t x = 0; x < FB_W; x++)
                 for (int i = 0; i < s_scale; i++) dl[x * s_scale + i] = src[x];
@@ -1640,6 +1650,7 @@ static int depth_from_cpu(DepthEnt *d) {
               VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
     if (!upload_finish(&upload, SR_PERF_GE_DEPTH_UPLOAD)) return 0;
     d->cpu_dirty = 0;
+    d->guest_dirty = 0;
     return 1;
 }
 
@@ -1656,15 +1667,67 @@ static int depth_to_cpu(DepthEnt *d) {
     to_layout(s_cmd, d->img, VK_IMAGE_ASPECT_DEPTH_BIT, &d->layout,
               VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
     if (!cmd_submit_wait(SR_PERF_GE_DEPTH_READBACK)) return 0;
-    if (s_scale == 1) {
-        memcpy(s_zbuf, s_xfer_map, FB_W * FB_H * 2);
-    } else {
-        const uint16_t *src = (const uint16_t *)s_xfer_map;
-        for (uint32_t y = 0; y < FB_H; y++)
-            for (uint32_t x = 0; x < FB_W; x++)
-                s_zbuf[y * FB_W + x] = src[(uint32_t)(y * s_scale) * SCL_W + x * s_scale];
-    }
+    const uint16_t *src = (const uint16_t *)s_xfer_map;
+    for (uint32_t y = 0; y < FB_H; y++)
+        for (uint32_t x = 0; x < FB_W; x++)
+            s_zbuf[y * d->zstride + x] =
+                src[(uint32_t)(y * s_scale) * SCL_W + x * s_scale];
     d->cpu_dirty = 1;
+    d->guest_dirty = 0;
+    ge_zbuf_note_external_write();
+    return 1;
+}
+
+static int depth_span_overlaps(const DepthEnt *d, uint32_t addr, uint32_t bytes) {
+    if (!d || !bytes) return 0;
+    uint32_t low, high;
+    if (!ge_zbuf_guest_span_bounds(0x04000000u + d->zba, d->zstride,
+                                   &low, &high)) return 0;
+    uint64_t dirty0 = SR_PHYS(addr);
+    uint64_t dirty1 = dirty0 + bytes;
+    return dirty0 < high && low < dirty1;
+}
+
+static int depth_readback_to_guest(DepthEnt *d) {
+    if (!d || !d->guest_dirty) return 1;
+    if ((d->zba & 0x2040u) != 0u) {
+        fprintf(stderr,
+                "SEMANTIC_BOUNDARY: VRAM_DEPTH_XOR_ORIGIN_UNMEASURED; depth buffers at this placement are not supported yet until the PSP XOR origin is measured.\n");
+        return 0;
+    }
+    uint32_t depth_first, depth_end;
+    if (d->zba >= GEGPU_VRAM_BYTES ||
+        !ge_zbuf_guest_span_bounds(0x04000000u + d->zba, d->zstride,
+                                   &depth_first, &depth_end) ||
+        depth_first < 0x04000000u || depth_end > 0x04200000u)
+        return 0;
+    if (s_nbatch && !submit_pending()) return 0;
+    if (!cmd_begin()) return 0;
+    to_layout(s_cmd, d->img, VK_IMAGE_ASPECT_DEPTH_BIT, &d->layout,
+              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkBufferImageCopy c = {0};
+    c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    c.imageSubresource.layerCount = 1;
+    c.imageExtent.width = SCL_W; c.imageExtent.height = SCL_H; c.imageExtent.depth = 1;
+    vkCmdCopyImageToBuffer(s_cmd, d->img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, s_xfer, 1, &c);
+    to_layout(s_cmd, d->img, VK_IMAGE_ASPECT_DEPTH_BIT, &d->layout,
+              VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    if (!cmd_submit_wait(SR_PERF_GE_DEPTH_READBACK)) return 0;
+
+    const uint16_t *src = (const uint16_t *)s_xfer_map;
+    uint32_t width = d->zstride < FB_W ? d->zstride : FB_W;
+    for (uint32_t y = 0; y < FB_H; y++) {
+        for (uint32_t x = 0; x < width; x++) {
+            uint32_t linear = (y * d->zstride + x) * 2u;
+            uint32_t addr = 0x04000000u + d->zba + (linear ^ 0x2040u);
+            uint16_t value = src[(uint32_t)(y * s_scale) * SCL_W + x * (uint32_t)s_scale];
+            if (!sr_inrange_n(addr, 2u)) return 0;
+            memcpy(SR_HOST_LINEAR(addr), &value, sizeof value);
+        }
+    }
+    d->guest_dirty = 0;
+    ge_zbuf_invalidate_guest_span(depth_first, depth_end - depth_first);
+    if (sr_perf_enabled) sr_perf_vulkan_readback(FB_W * FB_H * 2u);
     return 1;
 }
 
@@ -1700,6 +1763,15 @@ static DepthEnt *depth_acquire(uint32_t zba, uint32_t zstride) {
     if (!make_view(d->img, VK_FORMAT_D16_UNORM, VK_IMAGE_ASPECT_DEPTH_BIT, &d->view)) return NULL;
     d->layout = VK_IMAGE_LAYOUT_UNDEFINED;
     d->zba = zba; d->zstride = zstride; d->used = 1;
+    if (__builtin_expect(g_sr_vram_read_pending, 0)) {
+        uint32_t first, end;
+        if (!ge_zbuf_guest_span_bounds(0x04000000u + zba, zstride,
+                                       &first, &end)) return NULL;
+        sr_ge_vram_read_prepare(first, end - first);
+        if (!ge_zbuf_prepare_current()) return NULL;
+        s_zbuf = ge_zbuf_ptr();
+        if (!s_zbuf) return NULL;
+    }
     /* initialize from the (CPU) software z-buffer once — games clear depth before use,
      * this just avoids garbage on the very first frame */
     if (!depth_from_cpu(d)) return NULL;
@@ -1713,7 +1785,9 @@ static Target *target_acquire(void) {
     uint32_t fmt = s_ge->fbfmt & 3;
     uint32_t zba = vram_off(s_ge->zbp);      /* depth is VRAM-only on the GE */
     uint32_t zstride = s_ge->zbw ? s_ge->zbw : stride;
-    if (zstride > FB_W) zstride = FB_W;
+    if (zstride > 512u || !ge_zbuf_prepare_current()) return NULL;
+    s_zbuf = ge_zbuf_ptr();
+    if (!s_zbuf) return NULL;
 
     Target *t = target_color_acquire(fba, stride, fmt, 1);
     if (!t) return NULL;
@@ -1744,6 +1818,10 @@ static int begin_target(void) {
     uint32_t stride = s_ge->fbw ? s_ge->fbw : 512;
     if (s_cur && s_cur->used && s_cur->fba == fba &&
         s_cur->fmt == (s_ge->fbfmt & 3) && s_cur->stride == stride && s_cur->gpu_valid) {
+        if (!ge_zbuf_prepare_current()) return 0;
+        s_zbuf = ge_zbuf_ptr();
+        if (!s_zbuf || (s_cur->dep && s_cur->dep->cpu_dirty &&
+                        !depth_from_cpu(s_cur->dep))) return 0;
         s_cur->lru = s_lru++;
         if (s_cpu_profile) s_cpu_profile_stats.target_fast_hits++;
         return 1;
@@ -1792,7 +1870,7 @@ static uint32_t tex_source_size(void) {
 }
 
 static const uint8_t *tex_source_ptr(uint32_t addr, uint32_t bytes) {
-    if (!bytes || !sr_guest_span_readable(addr, bytes)) return NULL;
+    if (!bytes || !sr_guest_span_readable_current(addr, bytes)) return NULL;
     /* SR_HOST maps VRAM mirrors, but a direct memcmp/copy may not cross the physical
      * 2 MiB wrap. Fall back to the exact decoder on that rare shape. */
     if (is_vram(addr) && (uint64_t)vram_off(addr) + bytes > 0x200000u) return NULL;
@@ -2475,6 +2553,7 @@ static void state_get(int persp, int sprite, Batch *out) {
 static void append(Batch *b, uint32_t first, uint32_t count) {
     if (s_cpu_profile) s_cpu_profile_stats.append_calls++;
     if (b->sw <= 0 || count == 0) return;
+    sr_vram_mark_renderer_pending();
     if ((((uint32_t)b->pc.cfg[0] >> 8) & F_SHBLEND) && sr_perf_enabled)
         sr_perf_ge_event(SR_PERF_GE_SHBLEND_DRAW, 1);
     if (s_nbatch) {
@@ -2725,10 +2804,14 @@ static void hook_vram_dirty(uint32_t addr, uint32_t bytes) {
      * physical namespace before deciding whether a texture is stale. The
      * target path below still uses vram_off(), because framebuffer targets are
      * indexed by their 2 MiB-local VRAM offset. */
-    uint64_t dirty0 = (uint64_t)SR_PHYS(addr), dirty1 = dirty0 + bytes;
+    uint32_t canonical_addr = sr_vram_cpu_aperture(addr)
+                            ? sr_vram_cpu_address(addr) : SR_PHYS(addr);
+    uint64_t dirty0 = canonical_addr, dirty1 = dirty0 + bytes;
     for (int i = 0; i < s_tex_n; i++) {
         TexEnt *e = &s_tex[i];
-        uint64_t tex0 = (uint64_t)SR_PHYS(e->addr), tex1 = tex0 + e->bytes;
+        uint32_t tex_addr = sr_vram_cpu_aperture(e->addr)
+                          ? sr_vram_cpu_address(e->addr) : SR_PHYS(e->addr);
+        uint64_t tex0 = tex_addr, tex1 = tex0 + e->bytes;
         if (dirty0 < tex1 && tex0 < dirty1) {
             if (e->content_valid) {
                 s_cnt_tex_invalidations++;
@@ -2741,8 +2824,14 @@ static void hook_vram_dirty(uint32_t addr, uint32_t bytes) {
             s_tmpl_ok = 0;
         }
     }
-    if (!is_vram(addr)) return;
-    uint32_t a0 = vram_off(addr);
+    if (!is_vram(canonical_addr)) return;
+    uint32_t a0 = vram_off(canonical_addr);
+    for (int i = 0; i < MAX_DEP; i++) {
+        DepthEnt *d = &s_deps[i];
+        if (!d->used || !depth_span_overlaps(d, addr, bytes)) continue;
+        d->cpu_dirty = 1;
+        d->guest_dirty = 0;
+    }
     for (int i = 0; i < MAX_TGT; i++) {
         Target *t = &s_tgts[i];
         if (!t->used || !t->gpu_valid) continue;
@@ -2759,6 +2848,60 @@ static void hook_vram_dirty(uint32_t addr, uint32_t bytes) {
             s_cnt_dirty++;
         }
     }
+}
+
+static int hook_vram_read(uint32_t addr, uint32_t bytes) {
+    if (!s_ready || !bytes) return 1;
+    uint64_t read0 = SR_PHYS(addr);
+    uint64_t read1 = read0 + bytes;
+    if (s_nbatch) {
+        int queued_overlap = 0;
+        if (s_cur && s_cur->used && s_cur->gpu_valid) {
+            uint32_t bpp = s_cur->fmt == 3u ? 4u : 2u;
+            uint64_t target0 = UINT64_C(0x04000000) + s_cur->fba;
+            uint64_t target1 = target0 + (uint64_t)s_cur->stride * FB_H * bpp;
+            queued_overlap = read0 < target1 && target0 < read1;
+        }
+        if (!queued_overlap && s_cur && s_cur->dep)
+            queued_overlap = depth_span_overlaps(s_cur->dep, addr, bytes);
+        if (queued_overlap && !submit_pending()) return 0;
+    }
+    for (int i = 0; i < MAX_TGT; i++) {
+        Target *t = &s_tgts[i];
+        if (!t->used || !t->gpu_valid || t->clean_gen == t->render_gen) continue;
+        uint32_t bpp = t->fmt == 3u ? 4u : 2u;
+        uint64_t target0 = UINT64_C(0x04000000) + t->fba;
+        uint64_t target1 = target0 + (uint64_t)t->stride * FB_H * bpp;
+        if (read0 < target1 && target0 < read1 && !target_readback(t)) return 0;
+    }
+    for (int i = 0; i < MAX_DEP; i++) {
+        DepthEnt *d = &s_deps[i];
+        if (d->used && d->guest_dirty && depth_span_overlaps(d, addr, bytes) &&
+            !depth_readback_to_guest(d)) return 0;
+    }
+    return 1;
+}
+
+static int hook_vram_write_prepare(uint32_t addr, uint32_t bytes) {
+    if (!s_ready || !is_vram(addr)) return 1;
+    if (s_nbatch && !submit_pending()) return 0;
+    for (int i = 0; i < MAX_DEP; i++) {
+        DepthEnt *d = &s_deps[i];
+        if (d->used && d->guest_dirty && depth_span_overlaps(d, addr, bytes) &&
+            !depth_readback_to_guest(d)) return 0;
+    }
+    return 1;
+}
+
+static int hook_vram_pending(void) {
+    if (s_nbatch) return 1;
+    for (int i = 0; i < MAX_TGT; i++) {
+        const Target *t = &s_tgts[i];
+        if (t->used && t->gpu_valid && t->clean_gen != t->render_gen) return 1;
+    }
+    for (int i = 0; i < MAX_DEP; i++)
+        if (s_deps[i].used && s_deps[i].guest_dirty) return 1;
+    return 0;
 }
 
 /* ---- GE block transfer: GPU-side image blit ------------------------------------------------ */
@@ -2821,6 +2964,7 @@ static int hook_xfer(uint32_t startdata) {
               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     if (!cmd_submit_wait(SR_PERF_GE_TRANSFER_BLIT)) return 0;
     dst->render_gen++;                       /* content changed (snapshot/present tracking) */
+    sr_vram_mark_renderer_pending();
     dst->lru = s_lru++;
     s_cnt_xferblit++;
     return 1;
@@ -2833,7 +2977,7 @@ int gegpu_capture_materialize(void) {
     for (int i = 0; i < MAX_TGT; i++)
         if (s_tgts[i].used && s_tgts[i].gpu_valid && !target_readback(&s_tgts[i])) return 0;
     for (int i = 0; i < MAX_DEP; i++)
-        if (s_deps[i].used && !depth_to_cpu(&s_deps[i])) return 0;
+        if (s_deps[i].used && !depth_readback_to_guest(&s_deps[i])) return 0;
     return 1;
 }
 
@@ -2940,12 +3084,17 @@ int gegpu_present(uint32_t fbaddr, int fmt, uint32_t stride) {
                 (unsigned long long)s_cnt_present_gpu + s_cnt_present_cpu, (void*)t, t ? t->gpu_valid : -1,
                 t ? (int)t->fmt : -1, fmt & 3); n++; }
         s_cnt_present_cpu++; return -1; }
-    if (!target_prepare_present(t)) return -1;
+    /* A GPU-valid target that cannot be prepared may hold the frame's newest pixels, which
+     * then exist only in its image. Report it apart from the earlier -1 declines, where no
+     * target owns a newer frame, so gui_present syncs guest VRAM only for this code (issue #827). */
+    if (!target_prepare_present(t)) return GEGPU_PRESENT_TARGET_FAILED;
     s_cnt_present_gpu++;
     stats_tick();
-    /* Preserve SDL's tri-state result: 0 is a user close request, while -1 is a
-     * recoverable presentation failure that gui_present may route through CPU VRAM. */
     int pr = sdl3vk_present_image_ex((void *)t->img, DRAW_W * s_scale, FB_H * s_scale);
+    /* Only SDL's -1 is remapped: it is a present that failed after the target was prepared, so
+     * the target's newest pixels may exist only in its image. 0 (user close) and 1 (shown)
+     * pass through unchanged. */
+    if (pr == -1) return GEGPU_PRESENT_TARGET_FAILED;
     return pr;
 }
 
@@ -3014,7 +3163,7 @@ int gegpu_sync_guest_fb(const GeGpuFbDescriptor *desc) {
 
 static const GeGpuHooks k_hooks = {
     hook_tri, hook_sprite, hook_line, hook_point, gegpu_flush, hook_vram_dirty, hook_xfer,
-    gegpu_capture_materialize,
+    gegpu_capture_materialize, hook_vram_read, hook_vram_write_prepare, hook_vram_pending,
 };
 
 #ifdef SR_GPU_COHERENCE_SELFTEST
@@ -3074,6 +3223,190 @@ static int coherence_queue_g1_batch(uint32_t base, uint32_t stride, uint32_t fmt
     p1.x = 20.0f;
     p1.y = 20.0f;
     if (!hook_sprite(&p0, &p1, 0) || !s_nbatch) return 0;
+    return 1;
+}
+
+/* A CPU load after a completed GE list must materialize only the GPU-owned
+ * surface it touches. This drives the production GeGpuHooks and recomp.h scalar
+ * accessors; it does not call the explicit snapshot API. */
+static int coherence_run_scalar_vram_read(void) {
+    const uint32_t fba = 0x00100000u;
+    const uint32_t base = 0x04000000u | fba;
+    const uint32_t stride = 512u;
+    const uint32_t color_offset = (10u * stride + 10u) * 4u;
+    const uint32_t depth_base = 0x04080000u;
+    const uint32_t depth_offset = (10u * stride + 10u) * 2u;
+    const uint32_t depth_swizzled = depth_base + (depth_offset ^ 0x2040u);
+    const uint32_t depth_linear_alias = 0x04200000u +
+                                        (depth_base - 0x04000000u) + depth_offset;
+    coherence_reset_targets();
+    g_sr_vram_read_pending = 0;
+    for (int i = 0; i < MAX_DEP; i++) {
+        if (s_deps[i].used) {
+            s_deps[i].guest_dirty = 0;
+            s_deps[i].cpu_dirty = 1;
+        }
+    }
+    memset(SR_HOST(base), 0, stride * FB_H * 4u);
+    memset(SR_HOST(depth_base), 0, 0x44000u + 0x2040u);
+
+    memset(s_ge, 0, sizeof(*s_ge));
+    s_ge->fbp = base;
+    s_ge->fbw = stride;
+    s_ge->fbfmt = 3u;
+    s_ge->zbp = depth_base;
+    s_ge->zbw = stride;
+    s_ge->scis_x2 = (int)FB_W - 1;
+    s_ge->scis_y2 = (int)FB_H - 1;
+    s_ge->maxz = 65535u;
+    s_ge->ztest_enable = 1;
+    s_ge->ztest = 1u;
+    s_ge->zwrite_disable = 0;
+    GeVtx p0 = { 10.0f, 10.0f, (float)0x1111u, 1.0f, 0.0f, 0.0f, 1.0f,
+                 0x40, 0x50, 0x60, 0xff };
+    GeVtx p1 = p0;
+    p1.x = 12.0f;
+    p1.y = 12.0f;
+    if (!hook_sprite(&p0, &p1, 0) || !s_nbatch) {
+        fprintf(stderr, "gpu coherence selftest: failed to queue scalar-read sprite\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    gegpu_flush("listend");
+    uint32_t before = 1u;
+    memcpy(&before, SR_HOST(base + color_offset), sizeof before);
+    if (before != 0u || !g_sr_vram_read_pending) {
+        fprintf(stderr,
+                "gpu coherence selftest: list end materialized color early or missed pending ownership\n");
+        coherence_reset_targets();
+        return 0;
+    }
+
+    uint64_t lazy_color_start = SDL_GetTicksNS();
+    uint32_t color = MEM_R32(base + color_offset);
+    uint64_t lazy_color_ns = SDL_GetTicksNS() - lazy_color_start;
+    if (color != 0x00605040u) {
+        fprintf(stderr,
+                "gpu coherence selftest: scalar framebuffer load returned 0x%08x, expected 0x00605040\n",
+                color);
+        coherence_reset_targets();
+        return 0;
+    }
+    uint64_t lazy_depth_start = SDL_GetTicksNS();
+    uint16_t depth = MEM_R16(depth_swizzled);
+    uint64_t lazy_depth_ns = SDL_GetTicksNS() - lazy_depth_start;
+    uint16_t depth_linear = MEM_R16(depth_linear_alias);
+    if (depth != 0x1111u || depth_linear != 0x1111u) {
+        fprintf(stderr,
+                "gpu coherence selftest: depth scalar loads returned base=%04x mirror=%04x, expected 1111\n",
+                depth, depth_linear);
+        coherence_reset_targets();
+        return 0;
+    }
+
+    enum { ACCESSOR_BENCH_ITERATIONS = 500000u };
+    volatile uint32_t accessor_sink = 0u;
+    uint64_t check_start = SDL_GetTicksNS();
+    for (uint32_t i = 0; i < ACCESSOR_BENCH_ITERATIONS; i++) {
+        sr_guest_vram_read_prepare_bytes(0x08010000u + ((i & 1023u) * 4u), 4u);
+        accessor_sink += i + 1u;
+    }
+    uint64_t check_ns = SDL_GetTicksNS() - check_start;
+    uint64_t loop_start = SDL_GetTicksNS();
+    for (uint32_t i = 0; i < ACCESSOR_BENCH_ITERATIONS; i++) accessor_sink += i + 1u;
+    uint64_t loop_ns = SDL_GetTicksNS() - loop_start;
+    uint64_t scalar_start = SDL_GetTicksNS();
+    for (uint32_t i = 0; i < ACCESSOR_BENCH_ITERATIONS; i++)
+        accessor_sink += MEM_R32(0x08010000u + ((i & 1023u) * 4u));
+    uint64_t scalar_ns = SDL_GetTicksNS() - scalar_start;
+    uint64_t raw_start = SDL_GetTicksNS();
+    for (uint32_t i = 0; i < ACCESSOR_BENCH_ITERATIONS; i++) {
+        uint32_t value;
+        memcpy(&value, SR_HOST_LINEAR(0x08010000u + ((i & 1023u) * 4u)), sizeof value);
+        accessor_sink += value;
+    }
+    uint64_t raw_ns = SDL_GetTicksNS() - raw_start;
+    (void)accessor_sink;
+
+    MEM_W16(depth_swizzled, 0xFFFFu);
+    MEM_W32(base + color_offset, 0xFF112233u);
+    s_ge->ztest = 4u;                    /* less: the CPU depth store must make this pass */
+    s_ge->blend_enable = 1;
+    s_ge->blend_mode = 3u | (10u << 4); /* source alpha zero, destination fixed B */
+    s_ge->blend_fixb = 0x00FFFFFFu;
+    GeVtx q0 = { 10.0f, 10.0f, (float)0x4444u, 1.0f, 0.0f, 0.0f, 1.0f,
+                 0x01, 0x02, 0x03, 0xff };
+    GeVtx q1 = q0;
+    q1.x = 12.0f;
+    q1.y = 12.0f;
+    if (!hook_sprite(&q0, &q1, 0)) {
+        fprintf(stderr, "gpu coherence selftest: CPU-written targets were not drawable\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    uint64_t hybrid_submit_start = SDL_GetTicksNS();
+    if (!submit_pending()) {
+        fprintf(stderr, "gpu coherence selftest: CPU-written target batch did not submit\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    uint64_t hybrid_submit_ns = SDL_GetTicksNS() - hybrid_submit_start;
+    uint64_t hybrid_color_start = SDL_GetTicksNS();
+    uint32_t color_after_cpu_write = MEM_R32(base + color_offset);
+    uint64_t hybrid_color_ns = SDL_GetTicksNS() - hybrid_color_start;
+    uint64_t hybrid_depth_start = SDL_GetTicksNS();
+    uint16_t depth_after_cpu_write = MEM_R16(depth_swizzled);
+    uint64_t hybrid_depth_ns = SDL_GetTicksNS() - hybrid_depth_start;
+    if (color_after_cpu_write != 0xFF112233u || depth_after_cpu_write != 0x4444u) {
+        fprintf(stderr,
+                "gpu coherence selftest: post-store draw returned color=%08x depth=%04x, expected ff112233/4444\n",
+                color_after_cpu_write, depth_after_cpu_write);
+        coherence_reset_targets();
+        return 0;
+    }
+    puts("gpu coherence selftest: PASS cpu_stores_consumed_by_next_gpu_draw");
+
+    s_ge->ztest = 1u;
+    s_ge->blend_enable = 0;
+    GeVtx e0 = { 14.0f, 14.0f, (float)0x5555u, 1.0f, 0.0f, 0.0f, 1.0f,
+                 0x70, 0x60, 0x50, 0xff };
+    GeVtx e1 = e0;
+    e1.x = 16.0f;
+    e1.y = 16.0f;
+    if (!hook_sprite(&e0, &e1, 0)) {
+        fprintf(stderr, "gpu coherence selftest: could not queue eager-sync candidate draw\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    uint64_t eager_submit_start = SDL_GetTicksNS();
+    if (!submit_pending()) {
+        fprintf(stderr, "gpu coherence selftest: eager-sync candidate did not submit\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    uint64_t eager_submit_ns = SDL_GetTicksNS() - eager_submit_start;
+    uint64_t eager_materialize_start = SDL_GetTicksNS();
+    if (!target_readback(s_cur) || !depth_readback_to_guest(s_cur->dep)) {
+        fprintf(stderr, "gpu coherence selftest: eager-sync candidate materialization failed\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    uint64_t eager_materialize_ns = SDL_GetTicksNS() - eager_materialize_start;
+    printf("gpu coherence selftest: VRAM timing ns lazy-first-touch color=%" PRIu64
+           " depth=%" PRIu64 " hybrid-listend-submit=%" PRIu64
+           " hybrid-first-touch color=%" PRIu64 " depth=%" PRIu64
+           " eager-listend-submit=%" PRIu64 " eager-sync-materialize=%" PRIu64
+           " pending-check-extra=%" PRIu64 "/%u calls scalar-load=%" PRIu64
+           " raw-load=%" PRIu64 " scalar-extra=%" PRIu64 "\n",
+           lazy_color_ns, lazy_depth_ns, hybrid_submit_ns,
+           hybrid_color_ns, hybrid_depth_ns, eager_submit_ns,
+           eager_materialize_ns,
+           check_ns > loop_ns ? (check_ns - loop_ns) / ACCESSOR_BENCH_ITERATIONS : 0u,
+           ACCESSOR_BENCH_ITERATIONS, scalar_ns / ACCESSOR_BENCH_ITERATIONS,
+           raw_ns / ACCESSOR_BENCH_ITERATIONS,
+           scalar_ns > raw_ns ? (scalar_ns - raw_ns) / ACCESSOR_BENCH_ITERATIONS : 0u);
+    puts("gpu coherence selftest: PASS scalar_cpu_read color+depth after list-end");
+    coherence_reset_targets();
     return 1;
 }
 
@@ -4572,6 +4905,7 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_upload_sequence()) ok = 0;
     if (!coherence_run_texture_dirty_same_state()) ok = 0;
     if (!coherence_run_blend_parity()) ok = 0;
+    if (!coherence_run_scalar_vram_read()) ok = 0;
     coherence_reset_targets();
     return ok;
 }
@@ -4692,6 +5026,16 @@ int gegpu_snapshot_sync_selftest(void) {
         coherence_reset_targets();
         return 0;
     }
+    /* Declines that involve no GPU-valid target keep -1, so gui_present does not sync guest
+     * VRAM for them. Only a GPU-valid target that fails to prepare or present reports
+     * GEGPU_PRESENT_TARGET_FAILED (issue #827). */
+    if (gegpu_present(0x08010000u, (int)fmt, stride) != -1 ||
+        gegpu_present(base, (int)fmt, FB_W + 64u) != -1) {
+        fprintf(stderr, "gpu snapshot sync selftest: a present decline without a GPU target was not -1\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu snapshot sync selftest: present_declines_without_target_keep_code\n");
 
     if (!coherence_queue_g1_batch(base, stride, fmt) || !submit_pending() ||
         !target_prepare_present(t) || t->clean_gen == t->render_gen) {
@@ -4704,6 +5048,49 @@ int gegpu_snapshot_sync_selftest(void) {
         coherence_reset_targets();
         return 0;
     }
+
+    /* Present-side failure (issue #827): the target is GPU-valid and newer than guest VRAM.
+     * The sdl3vk fault seam (selftest only) makes vkQueuePresentKHR report OUT_OF_DATE, which
+     * present_common resolves as -1 after the target was prepared. gegpu_present() must report
+     * GEGPU_PRESENT_TARGET_FAILED, and the sync gui_present runs before its fall-through must
+     * make guest VRAM current with the newest generation. */
+    coherence_fill_raw(guest, stride * FB_H, 4u, coherence_g0(fmt));
+    if (!coherence_queue_g1_batch(base, stride, fmt) || !submit_pending() ||
+        t->clean_gen == t->render_gen) {
+        fprintf(stderr, "gpu snapshot sync selftest: could not stage a newer GPU target\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    sdl3vk_present_fault_inject(VK_ERROR_OUT_OF_DATE_KHR);
+    int failed_present = gegpu_present(base, (int)fmt, stride);
+    sdl3vk_present_fault_clear();
+    if (failed_present != GEGPU_PRESENT_TARGET_FAILED) {
+        fprintf(stderr, "gpu snapshot sync selftest: failed present of a prepared target returned %d, "
+                        "not GEGPU_PRESENT_TARGET_FAILED\n", failed_present);
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu snapshot sync selftest: present_target_failure_reports_target_failed\n");
+    if (gegpu_sync_guest_fb(&d) != GEGPU_SYNC_OK || t->clean_gen != t->render_gen ||
+        memcmp(guest, &(uint32_t){ coherence_g1(fmt) }, sizeof(uint32_t)) != 0) {
+        fprintf(stderr, "gpu snapshot sync selftest: guest VRAM was not current after a target failure\n");
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu snapshot sync selftest: present_target_failure_synced_guest_vram\n");
+
+    /* Controls: a present that is shown, and one that is shown with an enqueued swapchain
+     * rebuild (VK_SUBOPTIMAL_KHR), both still report 1. Only -1 is remapped. */
+    sdl3vk_present_fault_inject(VK_SUBOPTIMAL_KHR);
+    int rebuilt_present = gegpu_present(base, (int)fmt, stride);
+    sdl3vk_present_fault_clear();
+    if (rebuilt_present != 1 || gegpu_present(base, (int)fmt, stride) != 1) {
+        fprintf(stderr, "gpu snapshot sync selftest: a shown present did not stay 1 (rebuild=%d)\n",
+                rebuilt_present);
+        coherence_reset_targets();
+        return 0;
+    }
+    printf("gpu snapshot sync selftest: present_shown_stays_1\n");
     coherence_reset_targets();
     return 1;
 }

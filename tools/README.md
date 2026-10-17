@@ -174,6 +174,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `ttf2pgf.py` | Deterministic OpenType/TTF to PGF converter for pinned public fixtures; behaviour contract and independence record in `docs/cleanroom/PGF_CONVERTER_SPEC.md` (issue #313). |
 | `evidence_model.py` | Fail-closed evidence grading and revision identity primitives. |
 | `waits_census.py` | Regenerate the interrupt/dispatch waits-matrix registration census. |
+| `recomp_helper_inventory.py` | Regenerate and drift-check the `recomp.c`/`recomp.h` helper inventory (reach and provenance class per helper; #346). |
 | `vblank_ledger.py` | Judge one run's VBLANK delivery against the display source that owed it. |
 | `boot_gate.py` | Summarize machine-readable native boot milestones from a runtime log. |
 | `soak_audit.py` | Judge one soak run from the telemetry the runtime already writes. |
@@ -486,6 +487,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_telemetry_export_security.py` | Telemetry export must not leak private diagnostic data. |
 | `test_visual_oracle.py` | Visual-oracle runner guarantees. |
 | `test_waits_census.py` | Tests for the waits-matrix census generator. |
+| `test_recomp_helper_inventory.py` | Tests for the recomp helper inventory generator and its drift check. |
 | `test_xb_probe.py` | Synthetic, retail-free coverage for the direct archive probe. |
 
 ### Regression tests: publication, provenance and supply chain

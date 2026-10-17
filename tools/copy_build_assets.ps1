@@ -19,7 +19,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$BuildDir,
     [switch]$ExcludeOptionalFonts,
-    [string]$Sdl3DllPath = ''
+    [string]$Sdl3DllPath = '',
+    # The shared generated project-font directory (the Makefile passes $(BUILD_ROOT)/project-font).
+    [string]$ProjectFontDir = ''
 )
 
 New-Item -ItemType Directory -Path $BuildDir -Force | Out-Null
@@ -55,6 +57,30 @@ if (-not $ExcludeOptionalFonts) {
             Remove-Item $fontDst -Recurse -Force
         }
         Copy-Item $fontSrc $fontDst -Recurse -Force
+    }
+}
+
+# The three project PGFs are generated from their pinned sources before compile.
+# Stage them after the optional source-font copy so that replacing the destination
+# directory cannot remove a generated default. They are part of every runtime
+# build, including builds that omit optional source fonts.
+$generatedFontDir = if ($ProjectFontDir) { $ProjectFontDir } else { Join-Path $BuildDir 'project-font' }
+if (-not (Test-Path -LiteralPath $generatedFontDir -PathType Container)) {
+    throw "PROJECT_FONT_OUTPUT_DIR_MISSING: $generatedFontDir was not generated; the compile target builds it (project-fonts)"
+}
+if (Test-Path -LiteralPath $generatedFontDir -PathType Container) {
+    $fontDst = Join-Path $BuildDir 'font'
+    New-Item -ItemType Directory -Path $fontDst -Force | Out-Null
+    foreach ($name in @(
+        'nkjpn.pgf', 'nkjpn.json', 'nkjpn-OFL.txt',
+        'nkltn.pgf', 'nkltn.json', 'nkltn-OFL.txt',
+        'nkkr.pgf', 'nkkr.json', 'nkkr-OFL.txt'
+    )) {
+        $source = Join-Path $generatedFontDir $name
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+            throw "PROJECT_FONT_OUTPUT_INCOMPLETE: expected $name under $generatedFontDir; run the project-fonts target"
+        }
+        Copy-Item -LiteralPath $source -Destination $fontDst -Force
     }
 }
 

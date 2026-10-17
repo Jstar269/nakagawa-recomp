@@ -438,6 +438,86 @@ class XBProbeTests(unittest.TestCase):
             self.assertEqual(main(["nonexistent.xb"]), 2)
         self.assertIn("error:", stderr.getvalue())
 
+    def test_accepts_unpadded_final_entry_and_rejects_actual_truncation(self) -> None:
+        raw = _make_archive([("a.bin", b"x", XBCompression.NONE)])
+        self.assertEqual(len(raw), 36)
+        # Entry starts at offset 32 with 1 byte of payload.
+        # Lengths 33..36 are complete (33 is unpadded, 34..36 have 1..3 zero padding bytes).
+        for complete_len in (33, 34, 35, 36):
+            with self.subTest(complete_len=complete_len):
+                reader = XBArchiveReader.from_bytes(raw[:complete_len])
+                self.assertEqual(reader.read_entry("a.bin"), b"x")
+
+        # An archive shorter than stored payload is genuinely truncated.
+        with self.assertRaises(XBProbeError):
+            XBArchiveReader.from_bytes(raw[:32])
+
+        raw_multi = _make_archive([("a.bin", b"abcdef", XBCompression.NONE)])
+        # Offset 32 + 6 bytes payload = 38 bytes unpadded.
+        reader = XBArchiveReader.from_bytes(raw_multi[:38])
+        self.assertEqual(reader.read_entry("a.bin"), b"abcdef")
+        with self.assertRaises(XBProbeError):
+            XBArchiveReader.from_bytes(raw_multi[:37])
+
+        # Unpadded compressed entry is also valid.
+        raw_lzs = _make_archive([("a.bin", b"x", XBCompression.LZS)])
+        # Offset 32 + 8-byte header + 2-byte LZS body = 42 bytes unpadded.
+        reader = XBArchiveReader.from_bytes(raw_lzs[:42])
+        self.assertEqual(reader.read_entry("a.bin"), b"x")
+        with self.assertRaises(XBProbeError):
+            XBArchiveReader.from_bytes(raw_lzs[:41])
+
+        # Non-zero trailing bytes in padding must still be rejected.
+        corrupt_padding = raw[:34] + b"\x01"
+        with self.assertRaises(XBProbeError):
+            XBArchiveReader.from_bytes(corrupt_padding)
+
+    def test_handles_incremental_file_reads(self) -> None:
+        raw = _make_archive([("a.bin", b"payload", XBCompression.NONE)])
+        import tempfile
+
+        class ShortReadHandle:
+            def __init__(self, data: bytes, real_file):
+                self._data = data
+                self._pos = 0
+                self._real_file = real_file
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                self._real_file.close()
+
+            def fileno(self) -> int:
+                return self._real_file.fileno()
+
+            def read(self, size: int = -1) -> bytes:
+                if self._pos >= len(self._data):
+                    return b""
+                chunk_len = min(5, len(self._data) - self._pos)
+                if size >= 0:
+                    chunk_len = min(chunk_len, size)
+                chunk = self._data[self._pos : self._pos + chunk_len]
+                self._pos += chunk_len
+                return chunk
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sample.xb"
+            path.write_bytes(raw)
+
+            real_open = Path.open
+
+            def custom_open(self_path, *args, **kwargs):
+                if kwargs.get("mode") == "rb" or (args and args[0] == "rb"):
+                    f = real_open(self_path, *args, **kwargs)
+                    return ShortReadHandle(raw, f)
+                return real_open(self_path, *args, **kwargs)
+
+            Path.open = custom_open
+            try:
+                reader = XBArchiveReader(path)
+                self.assertEqual(reader.read_entry("a.bin"), b"payload")
+            finally:
+                Path.open = real_open
+
 
 if __name__ == "__main__":
     unittest.main()

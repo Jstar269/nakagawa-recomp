@@ -67,7 +67,8 @@ export ordered before any substantive job starts. `CI required` still requires t
 hygiene result (`HYGIENE_RESULT`) and the public-export result, so no failure is
 hidden. The trade-off is that a pull request that fails hygiene now also spends
 runner time on the expensive gates that started beside it. `main_smoke` is not
-changed: it runs only on pushes to `main` and is not a substantive gate.
+changed: it runs on pushes to `main` and on manual and merge-queue runs (the full-matrix
+events), never on pull requests, and it is not a substantive gate.
 
 The full-tree pre-commit run retains the publication audit and the Betterleaks
 current-tree scan; the hook runs Betterleaks in directory mode over the files it
@@ -91,6 +92,13 @@ native emission at build time, proving region A reaches the omitted guest addres
 ordinary production `dispatch()` seam. Analyzer-owned executable-span registration permits only
 those guest bytes to enter the fail-closed interpreter; the gate then requires a registered AOT
 region-B handoff, real HLE call, and final `0x00001235` production-driver assertion.
+
+The Windows job also runs a headless staging smoke after it links the player (#308). Because the
+runner has no PSPDEV, `python fixtures/showcase/showcase.py stage-iso` wraps the source-owned
+display guest in the showcase's synthetic TEST00007 identity. The built `nakagawa_player.exe
+--stage-only` must then report `STAGING_RESULT status=PASS` within 60 seconds. LOCALAPPDATA,
+APPDATA and USERPROFILE point under the runner temporary directory. The Linux `native_tools` job
+stages the PSPDEV-built scene instead. Neither run is PSP-hardware or consumer-ISO evidence.
 
 The Windows job also runs `cosim-selftest` and `cosim-mutants`. The first executes the same
 source-owned guest bytes twice — once as generated native code, once through the production

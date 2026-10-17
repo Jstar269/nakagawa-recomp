@@ -77,7 +77,11 @@ try:
         parse_ge_nan_output,
         parse_io_matrix_output,
         parse_mbx_delete_wait_output,
+        parse_font_files_output,
+        parse_registry_font_output,
         parse_registry_readonly_output,
+        parse_umd_io_output,
+        parse_vram_mirror_output,
         validate_hle_edram_restore,
     )
 except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocation
@@ -94,7 +98,11 @@ except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocat
         parse_ge_nan_output,
         parse_io_matrix_output,
         parse_mbx_delete_wait_output,
+        parse_font_files_output,
+        parse_registry_font_output,
         parse_registry_readonly_output,
+        parse_umd_io_output,
+        parse_vram_mirror_output,
         validate_hle_edram_restore,
     )
 
@@ -104,6 +112,7 @@ DEFAULT_RESULTS = ROOT / "oracle" / "hardware-results"
 DEFAULT_GE_CORPUS = ROOT / "fixtures" / "psp_oracle" / "ge_corpus.json"
 DEFAULT_GE_CORPUS_SCHEMA = ROOT / "assets" / "ge_corpus.schema.json"
 TERMINAL_OUTCOMES = frozenset({"HANG", "RESET"})
+RETIRED_CAMPAIGN_CASES = frozenset({"hle-null-out-pointers"})
 _TEST_RECORD_RE = re.compile(
     r"^NAKAGAWA_PSP_TEST\b.*\bstatus=([A-Z]+)\b", re.MULTILINE
 )
@@ -191,9 +200,11 @@ _FIXED_CAMPAIGN_CASES = {
         "PSP-MUTEX-001", [("mutex-priority-inheritance", 7, _PASS)]
     ),
     # Each trial records sceKernelIsCpuIntrEnable() from the VBLANK handler in
-    # out0 and the six mutex returns in out1..out6. By the probe's design a
-    # trial counts (PASS) only when out0 is 0; FAIL marks a trial that does not
-    # count. _check_mutex_interrupt_trial enforces that pairing exactly.
+    # out0 (context only) and the six mutex returns in out1..out6. The verdict is
+    # machinery-only: a trial is PASS with result 1 when the handler completed it.
+    # FAIL is admitted here only so that _check_mutex_interrupt_trial can name it;
+    # that check refuses any trial that is not a completed PASS. The returned
+    # values are observations and are not compared with expected values.
     "mutex-interrupt-context": _fixed_campaign_rows(
         "PSP-MUTEX-001",
         [("mutex-interrupt-context", 3, _PASS)]
@@ -204,17 +215,19 @@ _FIXED_CAMPAIGN_CASES = {
 
 
 def _check_mutex_interrupt_trial(record) -> None:
-    """A trial's status must follow its recorded interrupt state, nothing else."""
+    """A trial counts only when the VBLANK handler completed it (result 1).
+
+    Completion and record order are the contract. The returned values are not
+    compared with any expected value here; the conformance matrix does that.
+    """
 
     if not record.case_id.startswith("mutex-interrupt-context-t"):
         return
     values = dict(record.values)
-    interrupts_enabled = int(values["out0"], 0)
-    expected = "PASS" if interrupts_enabled == 0 else "FAIL"
-    if record.status != expected or int(values["result"], 0) != (expected == "PASS"):
+    if record.status != "PASS" or int(values["result"], 0) != 1:
         raise ProtocolError(
             f"mutex-interrupt-context: {record.case_id} status {record.status} "
-            f"disagrees with its interrupt state out0={values['out0']}"
+            f"result {values['result']} is not a completed trial"
         )
 
 
@@ -234,6 +247,9 @@ CAMPAIGN_QUEUE_CASES = (
     "llsc-link",
     "kernel-misc",
     "vfpu-compare",
+    "fpu-cc",
+    "registry-font",
+    "umd-io",
     "smoke",
     "thread-exit-delete",
     "teardown-test",
@@ -246,6 +262,7 @@ CAMPAIGN_QUEUE_CASES = (
     "cache-alias",
     "audio-query",
     "ge-nan",
+    "vram-mirror",
     "dma-cells",
     "dma-invalid-tail-s0",
     "dma-invalid-tail-memcpy-dst",
@@ -269,6 +286,9 @@ CAMPAIGN_CASE_ESTIMATE_SECONDS = {
     "llsc-link": 90,
     "kernel-misc": 90,
     "vfpu-compare": 90,
+    "fpu-cc": 90,
+    "registry-font": 120,
+    "umd-io": 60,
     "smoke": 60,
     "thread-exit-delete": 180,
     "teardown-test": 60,
@@ -281,6 +301,7 @@ CAMPAIGN_CASE_ESTIMATE_SECONDS = {
     "cache-alias": 90,
     "audio-query": 180,
     "ge-nan": 240,
+    "vram-mirror": 600,
     "dma-cells": 180,
     "dma-invalid-tail-s0": 120,
     "dma-invalid-tail-memcpy-dst": 120,
@@ -907,6 +928,12 @@ def _validate_campaign_contract(text: str, case_id: str) -> None:
         parse_campaign_probe_output(text, case_id, require_complete=True)
     elif case_id == "registry-readonly":
         parse_registry_readonly_output(text, require_complete=True)
+    elif case_id == "registry-font":
+        parse_registry_font_output(text, require_complete=True)
+    elif case_id == "umd-io":
+        parse_umd_io_output(text, require_complete=True)
+    elif case_id == "font-files":
+        parse_font_files_output(text, require_complete=True)
     elif case_id in _FIXED_CAMPAIGN_CASES:
         _parse_fixed_campaign_records(text, case_id)
     elif case_id in _COMPLETE_CAMPAIGN_PARSERS:
@@ -927,6 +954,7 @@ _COMPLETE_CAMPAIGN_PARSERS = {
     "io-matrix": parse_io_matrix_output,
     "mbx-delete-wait": parse_mbx_delete_wait_output,
     "ge-nan": parse_ge_nan_output,
+    "vram-mirror": parse_vram_mirror_output,
     "dma-cells": parse_dmac_cells_output,
     "delay-zero": parse_delay_zero_output,
 }
@@ -1019,7 +1047,9 @@ def _normalise_unbound_identity_fields(text: str) -> str:
 
 
 def _campaign_completeness_contract(case_id: str) -> str:
-    if case_id in CAMPAIGN_PROBE_CASES or case_id == "registry-readonly":
+    if case_id in CAMPAIGN_PROBE_CASES or case_id in {
+        "registry-readonly", "registry-font", "umd-io", "font-files",
+    }:
         return "strict-golden-sequence"
     if case_id in _FIXED_CAMPAIGN_CASES:
         return "strict-fixed-record-sequence"
@@ -1028,7 +1058,8 @@ def _campaign_completeness_contract(case_id: str) -> str:
     ):
         return "strict-dmac-sequence"
     if case_id in {"audio-query", "fpu-vector", "cache-alias", "io-matrix",
-                   "mbx-delete-wait", "ge-nan", "dma-cells", "delay-zero"}:
+                   "mbx-delete-wait", "ge-nan", "vram-mirror", "dma-cells",
+                   "delay-zero"}:
         return "strict-golden-sequence"
     if case_id in DMAC_INVALID_CASES:
         return "strict-dmac-invalid-cell-records"
@@ -4089,6 +4120,8 @@ def main(argv: list[str] | None = None) -> int:
             case_id, separator, raw_path = specification.partition("=")
             if not separator or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", case_id):
                 parser.error("--campaign-case must be CASE_ID=PRX_PATH with a simple case id")
+            if case_id in RETIRED_CAMPAIGN_CASES:
+                parser.error(f"campaign case {case_id} is retired and cannot be scheduled")
             if case_id in seen_case_ids:
                 parser.error(f"duplicate campaign case id: {case_id}")
             seen_case_ids.add(case_id)

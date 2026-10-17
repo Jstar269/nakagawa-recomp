@@ -10,6 +10,9 @@
 
 /* Installed by the scheduler (sched.c) when it owns the guest fibers; see recomp.h. */
 int (*sr_dispatch_host_stack_remaining)(size_t *remaining_out) = NULL;
+int (*sr_dispatch_host_stack_top)(uintptr_t *top_out) = NULL;
+/* The direct-call host-stack window (#855; see SR_HOST_STACK_CHECK in recomp.h). */
+SrHostStackWindow sr_host_stack_window;
 
 /* The TAIL transfer slot and its drain (#855; see recomp.h). They live here because every
  * build that links generated code or the dispatcher links this file. */
@@ -129,6 +132,8 @@ int sr_exec_span_register(uint32_t start, uint32_t end) {
     return 1;
 }
 
+static _Atomic(uint32_t) s_module_bound_count;
+
 /* Authority tier: the PC is 4-byte aligned and one registered span covers its
  * complete fetch slot. This is the predicate sr_lookup() applies before
  * entering a native body; whether the arena can actually supply those bytes
@@ -141,9 +146,17 @@ int sr_exec_span_owns_fetch(uint32_t pc) {
     if ((pc & 3u) != 0u) {
         return 0;
     }
-    int module_authority = sr_module_code_fetch_authority(pc);
-    if (module_authority >= 0) {
-        return module_authority;
+    /* Fast path: bypass runtime module authority query when no modules are bound. */
+    if (atomic_load_explicit(&s_module_bound_count, memory_order_acquire) != 0u) {
+        int module_authority = sr_module_code_fetch_authority(pc);
+        if (module_authority >= 0) {
+            return module_authority;
+        }
+    }
+    /* Fast path: single registered span check (common case for recompiled titles). */
+    if (s_exec_span_count == 1u) {
+        const SrExecSpan *span = &s_exec_spans[0];
+        return (pc >= span->start && pc < span->end && (span->end - pc) >= 4u) ? 1 : 0;
     }
     for (size_t i = 0; i < s_exec_span_count; i++) {
         const SrExecSpan *span = &s_exec_spans[i];
@@ -183,7 +196,6 @@ typedef struct SrModuleBinding {
 
 static SrModuleBinding s_module_bindings[SR_MODULE_CODE_MAX_BOUND];
 static _Atomic(uint32_t) s_module_binding_live[SR_MODULE_CODE_MAX_BOUND];
-static _Atomic(uint32_t) s_module_bound_count;
 
 static int module_name_equal(const char *a, const char *b) {
     for (; *a && *b; a++, b++) {
@@ -271,9 +283,7 @@ static int module_binding_slot(const SrModuleCode *code) {
 }
 
 static uint32_t module_live_word(uint32_t address) {
-    uint32_t word;
-    memcpy(&word, SR_HOST(address), sizeof(word));
-    return word;
+    return sr_r32(address);
 }
 
 SrModuleBindResult sr_module_code_bind(const SrModuleCode *code, uint32_t base,
@@ -293,7 +303,7 @@ SrModuleBindResult sr_module_code_bind(const SrModuleCode *code, uint32_t base,
         detail->address = base;
         return SR_MODULE_BIND_BAD_BASE;
     }
-    if (!sr_guest_span_readable((uint32_t)start, (uint32_t)(end - start))) {
+    if (!sr_guest_span_readable_current((uint32_t)start, (uint32_t)(end - start))) {
         detail->address = (uint32_t)start;
         return SR_MODULE_BIND_IMAGE_UNREADABLE;
     }
@@ -470,7 +480,7 @@ static SrGuestInterpResult fetch_instruction(
         }
         touches_span_boundary = 1;
         if (pc < span->end && span->end - pc >= 4u) {
-            if (!sr_guest_span_readable(pc, 4u)) {
+            if (!sr_inrange_n(pc, 4u)) {
                 set_fault(fault, pc, 0u, pc, 0);
                 return SR_GUEST_INTERP_MEMORY_FAULT;
             }
@@ -605,6 +615,12 @@ static SrGuestInterpResult execute_noncontrol(
         case 0x03u: /* sra */
             write_gpr(s, rd, (uint32_t)(sr_u32_as_s32(read_gpr(s, rt)) >> shift));
             break;
+        case 0x0au: /* movz rd, rs, rt */
+            if (read_gpr(s, rt) == 0u) write_gpr(s, rd, read_gpr(s, rs));
+            break;
+        case 0x0bu: /* movn rd, rs, rt */
+            if (read_gpr(s, rt) != 0u) write_gpr(s, rd, read_gpr(s, rs));
+            break;
         case 0x10u: write_gpr(s, rd, s->hi); break;                      /* mfhi */
         case 0x12u: write_gpr(s, rd, s->lo); break;                      /* mflo */
         case 0x18u: { /* mult */
@@ -634,6 +650,49 @@ static SrGuestInterpResult execute_noncontrol(
             write_gpr(s, rd, read_gpr(s, rs) < read_gpr(s, rt) ? 1u : 0u);
             break;
         default:
+            set_fault(fault, pc, opcode, pc, 1);
+            return SR_GUEST_INTERP_UNSUPPORTED;
+        }
+        s->r[0] = 0u;
+        return SR_GUEST_INTERP_AOT_HANDOFF;
+    }
+
+    if (primary == 0x1fu) { /* SPECIAL3: Allegrex ext/ins/seb/seh */
+        const uint32_t funct = opcode & 0x3fu;
+        if (funct == 0x00u) { /* ext: rd encodes size-1, sa encodes pos */
+            const uint32_t pos = shift;
+            const uint32_t size = rd + 1u;
+            if (pos + size > 32u) {
+                set_fault(fault, pc, opcode, pc, 1);
+                return SR_GUEST_INTERP_UNSUPPORTED;
+            }
+            const uint32_t value_mask = size == 32u
+                ? UINT32_MAX : (UINT32_C(1) << size) - 1u;
+            write_gpr(s, rt, (read_gpr(s, rs) >> pos) & value_mask);
+        } else if (funct == 0x04u) { /* ins: rd encodes msb, sa encodes pos */
+            const uint32_t pos = shift;
+            const uint32_t msb = rd;
+            if (msb < pos) {
+                set_fault(fault, pc, opcode, pc, 1);
+                return SR_GUEST_INTERP_UNSUPPORTED;
+            }
+            const uint32_t size = msb - pos + 1u;
+            const uint32_t value_mask = size == 32u
+                ? UINT32_MAX : (UINT32_C(1) << size) - 1u;
+            const uint32_t field_mask = value_mask << pos;
+            const uint32_t old_value = read_gpr(s, rt);
+            const uint32_t inserted = (read_gpr(s, rs) << pos) & field_mask;
+            write_gpr(s, rt, (old_value & ~field_mask) | inserted);
+        } else if (funct == 0x20u && rs == 0u && (shift == 0x10u || shift == 0x18u)) {
+            const uint32_t value = read_gpr(s, rt);
+            if (shift == 0x10u) { /* seb */
+                const uint32_t byte = value & 0xffu;
+                write_gpr(s, rd, (byte & 0x80u) != 0u ? byte | 0xffffff00u : byte);
+            } else { /* seh */
+                const uint32_t half = value & 0xffffu;
+                write_gpr(s, rd, (half & 0x8000u) != 0u ? half | 0xffff0000u : half);
+            }
+        } else {
             set_fault(fault, pc, opcode, pc, 1);
             return SR_GUEST_INTERP_UNSUPPORTED;
         }
@@ -692,6 +751,11 @@ static SrGuestInterpResult execute_noncontrol(
             write_gpr(s, ft, s->fi[fs]);
         } else if (fmt == 0x04u && move_shape) {  /* mtc1 rt, fs */
             s->fi[fs] = read_gpr(s, ft);
+        } else if (fmt == 0x10u && funct == 0x06u && ft == 0u) { /* mov.s fd,fs */
+            /* MOV.S is a non-arithmetic register copy.  Preserve every bit,
+             * including signaling NaN payloads and denormals, independently
+             * of FCR31.FS and the host floating-point environment. */
+            s->fi[fd] = s->fi[fs];
         } else if (fmt == 0x10u && funct == 0x00u) {   /* add.s */
             SR_NAN_TRAP_STORE_F2(pc, "add.s", fd, fs, ft,
                                  sr_fpu_add_s(s->f[fs], s->f[ft], s->fcr31));
@@ -712,6 +776,13 @@ static SrGuestInterpResult execute_noncontrol(
             }
         } else if (fmt == 0x10u && funct == 0x24u) {   /* cvt.w.s */
             s->fi[fd] = sr_fpu_to_word(s->f[fs], funct, s->fcr31);
+        } else if (fmt == 0x10u && funct >= 0x30u) {   /* c.cond.s */
+            s->fpcond = sr_fpu_condition_s(funct & 0x0fu, s->fi[fs], s->fi[ft]);
+            /* Allegrex exposes FCC0; PSP-FPU-CC-001 measured that condition
+             * code selectors alias this bit for both compare and branch. */
+            s->fcr31 = (s->fcr31 & ~0x00800000u) | (s->fpcond << 23);
+        } else if (fmt == 0x14u && funct == 0x20u) {   /* cvt.s.w */
+            s->f[fd] = sr_fpu_cvt_s_w(sr_u32_as_s32(s->fi[fs]), s->fcr31);
         } else {
             set_fault(fault, pc, opcode, pc, 1);
             return SR_GUEST_INTERP_UNSUPPORTED;
@@ -783,7 +854,7 @@ static SrGuestInterpResult execute_noncontrol(
                 return SR_GUEST_INTERP_MISALIGNED_DATA;
             }
             if (is_store) {
-                if (!sr_guest_span_writable(address, width)) {
+                if (!sr_inrange_n(address, width)) {
                     set_fault(fault, pc, opcode, address, 1);
                     return SR_GUEST_INTERP_MEMORY_FAULT;
                 }
@@ -812,7 +883,7 @@ static SrGuestInterpResult execute_noncontrol(
                 *store_address = address;
                 *store_size = (int)width;
             } else {
-                if (!sr_guest_span_readable(address, width)) {
+                if (!sr_inrange_n(address, width)) {
                     set_fault(fault, pc, opcode, address, 1);
                     return SR_GUEST_INTERP_MEMORY_FAULT;
                 }
@@ -857,8 +928,7 @@ static SrGuestInterpResult execute_noncontrol(
         const uint32_t word_address = address & ~3u;
         const int is_store = primary == 0x2Au || primary == 0x2Eu;
         if (is_store) {
-            if (!sr_guest_span_readable(word_address, 4u) ||
-                !sr_guest_span_writable(word_address, 4u)) {
+            if (!sr_inrange_n(word_address, 4u)) {
                 set_fault(fault, pc, opcode, word_address, 1);
                 return SR_GUEST_INTERP_MEMORY_FAULT;
             }
@@ -870,7 +940,7 @@ static SrGuestInterpResult execute_noncontrol(
             *store_address = word_address;
             *store_size = 4;
         } else {
-            if (!sr_guest_span_readable(word_address, 4u)) {
+            if (!sr_inrange_n(word_address, 4u)) {
                 set_fault(fault, pc, opcode, word_address, 1);
                 return SR_GUEST_INTERP_MEMORY_FAULT;
             }
@@ -977,6 +1047,7 @@ typedef struct SrGuestInterpTransfer {
     uint32_t target;
     int link_register;   /* -1 when the form does not link */
     int taken;
+    int likely;          /* annul the delay slot when not taken */
     unsigned exc_code;   /* valid only for SR_CTL_EXCEPTION */
 } SrGuestInterpTransfer;
 
@@ -1001,6 +1072,7 @@ static SrGuestInterpCtl classify_control(
     out->target = 0u;
     out->link_register = -1;
     out->taken = 0;
+    out->likely = 0;
     out->exc_code = 0u;
 
     if (!is_control_opcode(opcode)) {
@@ -1051,11 +1123,41 @@ static SrGuestInterpCtl classify_control(
         return SR_CTL_TRANSFER;
     }
 
-    if (primary == 0x04u || primary == 0x05u) {  /* beq / bne */
+    if (primary == 0x04u || primary == 0x05u ||
+        primary == 0x14u || primary == 0x15u) {  /* beq/bne and likely forms */
         const uint32_t left = read_gpr(s, rs);
         const uint32_t right = read_gpr(s, rt);
         out->target = pc + 4u + (sign_extend_16(opcode) << 2);
-        out->taken = primary == 0x04u ? (left == right) : (left != right);
+        out->taken = (primary == 0x04u || primary == 0x14u)
+            ? (left == right) : (left != right);
+        out->likely = primary == 0x14u || primary == 0x15u;
+        return SR_CTL_TRANSFER;
+    }
+
+    if (primary == 0x16u || primary == 0x17u) {  /* blezl/bgtzl */
+        if (rt != 0u) return SR_CTL_REJECT;
+        const int32_t value = sr_u32_as_s32(read_gpr(s, rs));
+        out->target = pc + 4u + (sign_extend_16(opcode) << 2);
+        out->taken = primary == 0x16u
+            ? value <= 0 : value > 0;
+        out->likely = 1;
+        return SR_CTL_TRANSFER;
+    }
+
+    if (primary == 0x01u && (rt == 2u || rt == 3u)) { /* bltzl / bgezl */
+        const int32_t value = sr_u32_as_s32(read_gpr(s, rs));
+        out->target = pc + 4u + (sign_extend_16(opcode) << 2);
+        out->taken = rt == 2u ? value < 0 : value >= 0;
+        out->likely = 1;
+        return SR_CTL_TRANSFER;
+    }
+
+    if (primary == 0x11u && rs == 8u) { /* bc1f/t and branch-likely forms */
+        const uint32_t tf = (opcode >> 16) & 1u;
+        const uint32_t condition = s->fpcond != 0u;
+        out->target = pc + 4u + (sign_extend_16(opcode) << 2);
+        out->taken = tf != 0u ? condition : !condition;
+        out->likely = ((opcode >> 17) & 1u) != 0u;
         return SR_CTL_TRANSFER;
     }
 
@@ -1186,6 +1288,18 @@ static SrGuestInterpResult sr_guest_interp_run_internal(
             if (pc > UINT32_MAX - 8u) {
                 set_fault(fault, pc, opcode, pc, 1);
                 return SR_GUEST_INTERP_FETCH_BOUNDARY;
+            }
+
+            if (transfer.likely && !transfer.taken) {
+                /* A not-taken branch-likely nullifies pc+4 completely: do not
+                 * fetch it, trace it, or apply any store/register/FPU effect. */
+                sr_begin(s, pc, opcode);
+                sr_end(s, 0u, 0);
+                instruction_count++;
+                if (sr_perf_enabled) sr_perf_interp_instruction();
+                pc += 8u;
+                s->pc = pc;
+                continue;
             }
 
             uint32_t delay_opcode = 0u;
