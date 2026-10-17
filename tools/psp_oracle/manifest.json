@@ -269,6 +269,35 @@
       "reset": "close descriptors and remove only probe-owned files"
     },
     {
+      "id": "PSP-UMDIO-001",
+      "status": "implemented",
+      "hardware_evidence": "MEASURED",
+      "evidence_ref": "docs/HARDWARE_ORACLE.md#psp-umdio-001-measured-run-2026-10-17",
+      "evidence_cases": [
+        "umd-state-before", "io-open-0000", "io-open-0001", "io-open-0002", "io-open-0003",
+        "io-open-0004", "io-open-0005", "io-open-0006", "io-open-0007", "io-open-0008",
+        "io-open-0009", "io-open-0010", "io-open-0011", "io-open-0012", "io-dopen-0000",
+        "io-dopen-0001", "io-dopen-0002", "io-dopen-0003", "io-dopen-0004", "io-dopen-0005",
+        "umd-state-after", "umdio-done"
+      ],
+      "measurement_note": "Acceptance-eligible on 2026-10-17, PSP-3000 / firmware 6.61 / ARK CFW, public commit e2180970: with a UMD inserted, sceUmdCheckMedium returned 1 and sceUmdGetDriveStat returned 0x32 before and after. The cited open and directory-open results are recorded in docs/HARDWARE_ORACLE.md; successful descriptors were closed with result 0. No raw descriptor was read, written, sought, or controlled.",
+      "group": "io",
+      "source": "fixtures/psp_oracle/probe.c",
+      "prx": "nakagawa_psp_oracle.prx",
+      "apis": ["sceUmdCheckMedium", "sceUmdGetDriveStat", "sceIoOpen", "sceIoClose", "sceIoDopen", "sceIoDclose"],
+      "case_ids": [
+        "umd-state-before", "io-open-0000", "io-open-0001", "io-open-0002", "io-open-0003",
+        "io-open-0004", "io-open-0005", "io-open-0006", "io-open-0007", "io-open-0008",
+        "io-open-0009", "io-open-0010", "io-open-0011", "io-open-0012", "io-dopen-0000",
+        "io-dopen-0001", "io-dopen-0002", "io-dopen-0003", "io-dopen-0004", "io-dopen-0005",
+        "umd-state-after", "umdio-done"
+      ],
+      "invariant": "read-only device and disc opens record the console result; every successful descriptor is closed and raw descriptor I/O is not attempted",
+      "issues": [],
+      "risk": "low; read-only opens and closes only, with no UMD activation or descriptor data operation",
+      "reset": "return to PSPLink after the probe exits"
+    },
+    {
       "id": "PSP-DISPLAY-001",
       "status": "implemented",
       "hardware_evidence": "MEASURED",

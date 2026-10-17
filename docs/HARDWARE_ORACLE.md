@@ -1584,7 +1584,7 @@ not expected PSP values.
 | `fpu-cc` | `PSP-FPU-CC-001` | `MEASURED` (2026-10-15, `e45e667b`) | COP1 condition codes: which FCR31 condition bits exist, which bit `c.eq.s` sets for each condition code 0..7, and whether `bc1t`/`bc1f` with each code are taken under FCC0, no flag, and that code's own flag. Condition code 0 is the control. Only FCC0 exists; every code writes and tests it. |
 | `vfpu-transcendental-corpus` | `PSP-VFPU-TRANSCENDENTAL-001` | `MEASURED` (2026-10-15, `22b027f6`; single launch, not in the campaign queue) | Raw single-lane result words for vsin, vcos, vexp2, vlog2, vrsq, vrcp, vsqrt, vasin, vnrcp, vnsin, and vrexp2. Each operation uses 63 raw-word inputs: 20 special encodings and 43 evenly spaced domain constants. VASIN substitutes three in-domain words for its previously measured edge inputs. Eight-word chunks produce 88 data records plus one completion record (89 result records total); parsing checks format only and asserts no hardware values. |
 | `registry-font` | `PSP-REGISTRY-002` | `NOT_RUN` | Whether the registry handle lists the root, then the `/DATA/FONT` and `/SYSPROFILE/RESOLUTION` subtrees: every key's name, type, size, value and enumeration order, reached only through categories the console listed first. |
-| `umd-io` | `PSP-UMDIO-001` | `NOT_RUN` | `sceIoOpen` (read-only flags) and `sceIoDopen` results for bare UMD devices (`umd0:`, `umd1:`, `umd:`), `disc0:` with and without a path, two raw `umd` opens with the extra `0x000f0000` bits, and `msstor0p1:/`, each descriptor closed, with `sceUmdCheckMedium` and `sceUmdGetDriveStat` before and after. No UMD activation. |
+| `umd-io` | `PSP-UMDIO-001` | `MEASURED` (2026-10-17, PSP-3000 / 6.61 / ARK CFW; `e2180970`) | `sceIoOpen` and `sceIoDopen` results for bare UMD devices, disc paths, the two extra-flag opens, and `msstor0p1:/`; successful descriptors were closed with result 0. The UMD remained inserted and was not activated or changed. |
 | `hle-vtimer-unit` | `PSP-HLE-VTIMER-002` | `MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the campaign queue) | One VTimer: start; a `sceKernelGetVTimerTime` and a system-clock reading either side of a bounded 20 ms delay; the VTimer base and Refer base field while running and after stop; stop; delete. Each 64-bit clock is recorded as its low word then its high word. |
 | `hle-vtimer-errors` | `PSP-HLE-VTIMER-003` | `MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the campaign queue) | Start, stop, and `sceKernelGetVTimerTime` on a deleted UID, then a cleanup delete of that UID after its last use; a live timer created and deleted; up to 64 creates; out1 records whether a refusal occurred; every created timer deleted. The NULL option pointer of `sceKernelCreateVTimer` is the optional argument. |
 | `hle-kernel-pool-bounds` | `PSP-HLE-KERNEL-STATUS-002` | `NOT_RUN` (revised form; single launch, not in the campaign queue; the earlier revision's 2026-10-15 `b5d6fc5b` run was captured only) | FPL creation with block size 0 and with a 0x7fffffff-byte block, each deleted when its create returned a pool; a refused create gives a PASS delete cell with out0 0 and no delete call; VPL allocation: up to 64 allocations; out1 records whether a refusal occurred; every block freed and the VPL deleted. The NULL option pointers of the pool creates are the optional argument. |
@@ -1592,6 +1592,45 @@ not expected PSP values.
 | `hle-null-out-pointers` | `PSP-HLE-NULL-OUT-001` | `CAPTURED` (2026-10-15, `b5d6fc5b`; incomplete, not measured; retired, never to be scheduled) | The existing capture stopped at the first mandatory NULL output, `sceKernelReferSystemStatus(NULL)`, and the console needed a power cycle. The kernel pointer check rejects kernel-space addresses but not address 0, so that call writes through NULL and faults; the VTimer getters also write through their output pointers. No game can rely on these results. |
 | `hle-audio-src` | `PSP-HLE-AUDIO-SRC-001` | `MEASURED` (2026-10-15, `7fc1641e`; the earlier run of `22b027f6` was captured only; single launch, not in the campaign queue) | Unreserved SRC release and silent output; reserve 1024 samples at 44100 Hz stereo; second reserve; one silent blocking output; release after the blocking drain and release again; six invalid reserve shapes, immediately releasing any unexpected success; Output2-then-SRC and SRC-then-Output2 reservation attempts with cleanup. 18 result records. No SRC rest-sample query exists in the public NID corpus. Risk high: two silent blocking SRC calls, at most one block per call; schedule after the other new probes. |
 | `hle-timer-order` | `PSP-HLE-TIMER-ORDER-001` | `MEASURED` (2026-10-15, `22b027f6`; single launch, not in the campaign queue) | Two equal-delay alarms set A then B; long-delay then short-delay alarm; nominally equal VTimer handler and alarm; SetAlarm(0). Each callback stores a shared sequence number and system-time low/high words. Every wait has an elapsed-time deadline; cancel all alarms and stop/delete the VTimer. Ordering only, no absolute-time claim; 18 result records. |
+
+### PSP-UMDIO-001 measured run 2026-10-17
+
+Acceptance-eligible measurement on a PSP-3000 with firmware 6.61 and ARK CFW,
+at public commit `e2180970`. A UMD was inserted; `sceUmdCheckMedium` returned 1
+and `sceUmdGetDriveStat` returned `0x32` both before and after the calls. Every
+successful open or directory open returned descriptor 3 and its matching close
+returned 0. The probe did not activate the UMD or perform any read, write, seek,
+ioctl, devctl, or getstat through a raw descriptor; those semantics remain
+unmeasured.
+
+| Call | Flags | Result |
+| --- | --- | --- |
+| `sceIoOpen("umd0:")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("umd1:")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("umd:")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("umd0:/")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("umd1:/")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("disc0:")` | `PSP_O_RDONLY` | `0x80010016` |
+| `sceIoOpen("disc0:/")` | `PSP_O_RDONLY` | `0x80010002` |
+| `sceIoOpen("disc0:/PSP_GAME")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("disc0:/PSP_GAME/SYSDIR")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("disc0:/UMD_DATA.BIN")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("umd0:")` | `PSP_O_RDONLY \| 0x000f0000` | descriptor `3`; close `0` |
+| `sceIoOpen("umd1:")` | `PSP_O_RDONLY \| 0x000f0000` | descriptor `3`; close `0` |
+| `sceIoOpen("msstor0p1:/")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoDopen("umd0:")` | — | `0x80020325` |
+| `sceIoDopen("umd1:")` | — | `0x80020325` |
+| `sceIoDopen("umd:")` | — | `0x80020325` |
+| `sceIoDopen("disc0:")` | — | `0x80010016` |
+| `sceIoDopen("disc0:/")` | — | descriptor `3`; close `0` |
+| `sceIoDopen("disc0:/PSP_GAME")` | — | descriptor `3`; close `0` |
+
+The recorded cells are `umd-state-before`, `io-open-0000`, `io-open-0001`,
+`io-open-0002`, `io-open-0003`, `io-open-0004`, `io-open-0005`, `io-open-0006`,
+`io-open-0007`, `io-open-0008`, `io-open-0009`, `io-open-0010`, `io-open-0011`,
+`io-open-0012`, `io-dopen-0000`, `io-dopen-0001`, `io-dopen-0002`,
+`io-dopen-0003`, `io-dopen-0004`, `io-dopen-0005`, `umd-state-after`, and
+`umdio-done`.
 
 The registry probe opens the registry and categories in read mode and never
 calls a write, create, remove, or flush API. Values are emitted only for keys

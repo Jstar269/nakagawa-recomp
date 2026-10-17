@@ -2829,7 +2829,8 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-DMAC-001", "PSP-DISPLAY-001", "PSP-EXCEPTION-001", "PSP-KERNEL-002",
                 "PSP-TRANSPORT-001", "PSP-ALARM-001", "PSP-THREAD-003", "PSP-WAIT-001",
                 "PSP-KERNEL-STATUS-001", "PSP-REGISTRY-001", "PSP-KERNEL-MISC-001", "PSP-SMOKE-001",
-                "PSP-THREAD-EXIT-001", "PSP-IO-001", "PSP-DISPLAY-002", "PSP-DISPLAY-003",
+                "PSP-THREAD-EXIT-001", "PSP-IO-001", "PSP-UMDIO-001",
+                "PSP-DISPLAY-002", "PSP-DISPLAY-003",
                 "PSP-DISPLAY-004", "PSP-FPU-001", "PSP-CACHE-001", "PSP-AUDIO-001", "PSP-GE-001",
                 "PSP-MUTEX-001", "PSP-KERNEL-001", "PSP-SYSTEM-001",
                 # The 2026-10-15 single-case runs on e45e667b were acceptance-eligible.
@@ -6775,6 +6776,52 @@ class IoCasesHostTests(unittest.TestCase):
             with self.assertRaises(ProtocolError):
                 parse_umd_io_output(bad)
 
+    def test_measured_device_results_match_the_console_table(self) -> None:
+        tid = parse_golden.UMDIO_TEST_ID
+
+        def record(case_id: str, fields: str) -> str:
+            return (f"NAKAGAWA_PSP_TEST schema=1 test_id={tid} case_id={case_id} "
+                    f"status=PASS {fields}\n")
+
+        records = [record("umd-state-before", "result=0x00000001 out0=0x00000032")]
+        for index, ((path, flags), (result, close_result)) in enumerate(
+                zip(UMDIO_OPENS, parse_golden.UMDIO_MEASURED_OPEN_RESULTS, strict=True)):
+            records.append(record(
+                f"io-open-{index:04d}",
+                f"result=0x{result:08x} out0=0x{flags:08x} "
+                f"out1=0x{close_result:08x} detail={path}",
+            ))
+        for index, (path, (result, close_result)) in enumerate(
+                zip(UMDIO_DOPENS, parse_golden.UMDIO_MEASURED_DOPEN_RESULTS, strict=True)):
+            records.append(record(
+                f"io-dopen-{index:04d}",
+                f"result=0x{result:08x} out0=0x{close_result:08x} detail={path}",
+            ))
+        records.append(record("umd-state-after", "result=0x00000001 out0=0x00000032"))
+        pre_terminal_count = len(records)
+        open_successes = sum(result < 0x80000000
+                             for result, _ in parse_golden.UMDIO_MEASURED_OPEN_RESULTS)
+        dopen_successes = sum(result < 0x80000000
+                              for result, _ in parse_golden.UMDIO_MEASURED_DOPEN_RESULTS)
+        records.append(record(
+            "umdio-done",
+            f"result=0x00000000 out0=0x{len(UMDIO_OPENS):08x} "
+            f"out1=0x{open_successes:08x} out2=0x{len(UMDIO_DOPENS):08x} "
+            f"out3=0x{dopen_successes:08x} out4=0x{pre_terminal_count:08x}",
+        ))
+        stream = META.format(source="psp", model="PSP-3000", firmware="6.61-ARK",
+                             binary=MEASURED_SHA, commit=MEASURED_COMMIT) + "".join(records)
+        report = parse_umd_io_output(stream, require_measured=True)
+        self.assertEqual(report.before, parse_golden.UMDIO_MEASURED_STATE)
+        self.assertEqual(report.after, parse_golden.UMDIO_MEASURED_STATE)
+
+        mismatched = stream.replace(
+            "case_id=io-open-0000 status=PASS result=0x00000003",
+            "case_id=io-open-0000 status=PASS result=0x00000004", 1,
+        )
+        with self.assertRaisesRegex(ProtocolError, "sceIoOpen results differ"):
+            parse_umd_io_output(mismatched, require_measured=True)
+
     def test_sha256_matches_the_standard_vectors(self) -> None:
         run = self._run("fonts", [_entry("abc", 0, 0)])
         empty = hashlib.sha256(b"").hexdigest()
@@ -6832,6 +6879,47 @@ class IoCasesSourceTests(unittest.TestCase):
         line = next(line for line in self.makefile.splitlines()
                     if "--exact-library sceUmdUser=" in line)
         self.assertEqual(line.split("sceUmdUser=", 1)[1], "0x46EBB729,0x6B4A146C")
+
+    def test_runtime_umd_expectations_match_the_measured_parser_table(self) -> None:
+        source = (self.root / "src" / "rt" / "hle_thread_selftest.c").read_text(
+            encoding="utf-8")
+
+        def c_int(value: str) -> int:
+            return int(value.rstrip("uU"), 0)
+
+        open_block = re.search(
+            r"static const UmdOpenCase opens\[\] = \{(.*?)\n    \};", source, re.DOTALL)
+        self.assertIsNotNone(open_block)
+        actual_opens = tuple(
+            (path, c_int(flags), c_int(result))
+            for path, flags, result in re.findall(
+                r'\{"([^"]+)",\s*(0x[0-9a-fA-F]+u?),\s*(0x[0-9a-fA-F]+u?|[0-9]+u?)\}',
+                open_block.group(1),
+            )
+        )
+        expected_opens = tuple(
+            (path, flags, result[0])
+            for (path, flags), result in zip(
+                UMDIO_OPENS, parse_golden.UMDIO_MEASURED_OPEN_RESULTS, strict=True)
+        )
+        self.assertEqual(actual_opens, expected_opens)
+
+        dopen_block = re.search(
+            r"static const UmdDopenCase dopens\[\] = \{(.*?)\n    \};", source, re.DOTALL)
+        self.assertIsNotNone(dopen_block)
+        actual_dopens = tuple(
+            (path, c_int(result))
+            for path, result in re.findall(
+                r'\{"([^"]+)",\s*(0x[0-9a-fA-F]+u?|[0-9]+u?)\}',
+                dopen_block.group(1),
+            )
+        )
+        expected_dopens = tuple(
+            (path, result[0])
+            for path, result in zip(
+                UMDIO_DOPENS, parse_golden.UMDIO_MEASURED_DOPEN_RESULTS, strict=True)
+        )
+        self.assertEqual(actual_dopens, expected_dopens)
 
     def test_cases_are_wired_like_the_others(self) -> None:
         for case, case_id, log in (("font-files", 73, "font_files_log.txt"),
