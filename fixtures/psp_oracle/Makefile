@@ -203,6 +203,8 @@ else ifeq ($(CASE),font-files)
 CASE_ID = 73
 else ifeq ($(CASE),umd-io)
 CASE_ID = 74
+else ifeq ($(CASE),umd-raw-read)
+CASE_ID = 77
 else ifeq ($(CASE),font-list)
 CASE_ID = 75
 else ifeq ($(CASE),vram-mirror)
@@ -416,6 +418,14 @@ endif
 ifeq ($(CASE),umd-io)
 LIBS += -lpspumd
 USER_MODE_IMPORT_GATE_ARGS += --exact-library sceUmdUser=0x46EBB729,0x6B4A146C
+endif
+# Raw UMD reads are read-only on the UMD descriptor. The IoFileMgrForUser pin includes the
+# probe's host0 record writer (open/write/close) plus exactly the seek/read/async/stat calls used
+# by this case; the source test separately forbids write/control calls in the UMD case itself.
+ifeq ($(CASE),umd-raw-read)
+LIBS += -lpspumd
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceUmdUser=0x46EBB729,0x6B4A146C
+USER_MODE_IMPORT_GATE_ARGS += --exact-library IoFileMgrForUser=0x109F50BC,0x27EB27B8,0x3251EA56,0x42EC03AC,0x68963324,0x6A638D83,0x810C4BC3,0xA0B5A7C2,0xACE946E8,0xE23EEC33
 endif
 # The font-list case asks the console's own font library for the system font list. It links
 # the hand-authored sceLibFont stubs (libfont_imports.S) and may import exactly those five

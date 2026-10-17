@@ -298,6 +298,56 @@
       "reset": "return to PSPLink after the probe exits"
     },
     {
+      "id": "PSP-UMDRAW-001",
+      "status": "planned",
+      "hardware_evidence": "NOT_RUN",
+      "evidence_ref": "docs/HARDWARE_ORACLE.md#psp-umdraw-001-raw-umd-read-probe",
+      "evidence_note": "No physical PSP run has been completed; host results are synthetic and do not establish console behavior.",
+      "evidence_cases": [
+        "umd-state-before", "raw-open-extra",
+        "seek-set-0", "seek-set-16", "seek-set-32768", "seek-cur-0", "seek-end-0",
+        "seek-set-1", "seek-set-neg1", "seek32-set-0", "seek32-set-16",
+        "seek32-set-32768", "seek32-end-0", "pos-advance-seek", "pos-advance-first",
+        "pos-advance-second", "pos-advance-cur", "byte-sector16-seek", "byte-sector16-read",
+        "size-1-seek", "size-1-read", "size-512-seek", "size-512-read",
+        "size-2047-seek", "size-2047-read", "size-2048-seek", "size-2048-read",
+        "size-2049-seek", "size-2049-read", "size-4096-seek", "size-4096-read",
+        "size-32768-seek", "size-32768-read", "size-0-seek", "size-0-read",
+        "unaligned-seek", "unaligned-read", "far-seek", "far-read", "async-seek",
+        "async-read", "async-poll", "async-wait", "async-data", "getstat", "raw-close",
+        "readonly-open", "readonly-seek-0", "readonly-seek-16", "readonly-seek-32768",
+        "readonly-close", "umd-state-after", "umdraw-done"
+      ],
+      "measurement_note": "Source-owned bounded read-only raw UMD case; hardware has not been run. Host tests use a synthetic byte-addressed disc and do not assert console behavior.",
+      "group": "io",
+      "source": "fixtures/psp_oracle/probe.c",
+      "prx": "nakagawa_psp_oracle.prx",
+      "apis": [
+        "sceUmdCheckMedium", "sceUmdGetDriveStat", "sceIoOpen", "sceIoClose",
+        "sceIoLseek", "sceIoLseek32", "sceIoRead", "sceIoReadAsync",
+        "sceIoPollAsync", "sceIoWaitAsync", "sceIoGetstat"
+      ],
+      "case_ids": [
+        "umd-state-before", "raw-open-extra",
+        "seek-set-0", "seek-set-16", "seek-set-32768", "seek-cur-0", "seek-end-0",
+        "seek-set-1", "seek-set-neg1", "seek32-set-0", "seek32-set-16",
+        "seek32-set-32768", "seek32-end-0", "pos-advance-seek", "pos-advance-first",
+        "pos-advance-second", "pos-advance-cur", "byte-sector16-seek", "byte-sector16-read",
+        "size-1-seek", "size-1-read", "size-512-seek", "size-512-read",
+        "size-2047-seek", "size-2047-read", "size-2048-seek", "size-2048-read",
+        "size-2049-seek", "size-2049-read", "size-4096-seek", "size-4096-read",
+        "size-32768-seek", "size-32768-read", "size-0-seek", "size-0-read",
+        "unaligned-seek", "unaligned-read", "far-seek", "far-read", "async-seek",
+        "async-read", "async-poll", "async-wait", "async-data", "getstat", "raw-close",
+        "readonly-open", "readonly-seek-0", "readonly-seek-16", "readonly-seek-32768",
+        "readonly-close", "umd-state-after", "umdraw-done"
+      ],
+      "invariant": "Read-only UMD opens only; fixed seeks and reads are scalar-recorded, the first eight bytes of designated sector-16 reads are the only disc bytes emitted, async work is waited before close, and every successful descriptor is closed.",
+      "issues": [],
+      "risk": "medium; bounded read-only device operations may stall, so one incomplete launch ends the hardware session without retry",
+      "reset": "return to PSPLink after the probe exits"
+    },
+    {
       "id": "PSP-DISPLAY-001",
       "status": "implemented",
       "hardware_evidence": "MEASURED",

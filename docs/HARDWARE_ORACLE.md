@@ -1585,6 +1585,7 @@ not expected PSP values.
 | `vfpu-transcendental-corpus` | `PSP-VFPU-TRANSCENDENTAL-001` | `MEASURED` (2026-10-15, `22b027f6`; single launch, not in the campaign queue) | Raw single-lane result words for vsin, vcos, vexp2, vlog2, vrsq, vrcp, vsqrt, vasin, vnrcp, vnsin, and vrexp2. Each operation uses 63 raw-word inputs: 20 special encodings and 43 evenly spaced domain constants. VASIN substitutes three in-domain words for its previously measured edge inputs. Eight-word chunks produce 88 data records plus one completion record (89 result records total); parsing checks format only and asserts no hardware values. |
 | `registry-font` | `PSP-REGISTRY-002` | `NOT_RUN` | Whether the registry handle lists the root, then the `/DATA/FONT` and `/SYSPROFILE/RESOLUTION` subtrees: every key's name, type, size, value and enumeration order, reached only through categories the console listed first. |
 | `umd-io` | `PSP-UMDIO-001` | `MEASURED` (2026-10-17, PSP-3000 / 6.61 / ARK CFW; `e2180970`) | `sceIoOpen` and `sceIoDopen` results for bare UMD devices, disc paths, the two extra-flag opens, and `msstor0p1:/`; successful descriptors were closed with result 0. The UMD remained inserted and was not activated or changed. |
+| `umd-raw-read` | `PSP-UMDRAW-001` | `NOT_RUN` | Read-only umd0: seeks and bounded reads, including size edges, byte-position advancement, async read/poll/wait, and sceIoGetstat. Only scalar results and the first eight bytes of designated sector-16 reads are emitted; the host fixture is synthetic and does not establish console behavior. |
 | `hle-vtimer-unit` | `PSP-HLE-VTIMER-002` | `MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the campaign queue) | One VTimer: start; a `sceKernelGetVTimerTime` and a system-clock reading either side of a bounded 20 ms delay; the VTimer base and Refer base field while running and after stop; stop; delete. Each 64-bit clock is recorded as its low word then its high word. |
 | `hle-vtimer-errors` | `PSP-HLE-VTIMER-003` | `MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the campaign queue) | Start, stop, and `sceKernelGetVTimerTime` on a deleted UID, then a cleanup delete of that UID after its last use; a live timer created and deleted; up to 64 creates; out1 records whether a refusal occurred; every created timer deleted. The NULL option pointer of `sceKernelCreateVTimer` is the optional argument. |
 | `hle-kernel-pool-bounds` | `PSP-HLE-KERNEL-STATUS-002` | `NOT_RUN` (revised form; single launch, not in the campaign queue; the earlier revision's 2026-10-15 `b5d6fc5b` run was captured only) | FPL creation with block size 0 and with a 0x7fffffff-byte block, each deleted when its create returned a pool; a refused create gives a PASS delete cell with out0 0 and no delete call; VPL allocation: up to 64 allocations; out1 records whether a refusal occurred; every block freed and the VPL deleted. The NULL option pointers of the pool creates are the optional argument. |
@@ -1631,6 +1632,25 @@ The recorded cells are `umd-state-before`, `io-open-0000`, `io-open-0001`,
 `io-open-0012`, `io-dopen-0000`, `io-dopen-0001`, `io-dopen-0002`,
 `io-dopen-0003`, `io-dopen-0004`, `io-dopen-0005`, `umd-state-after`, and
 `umdio-done`.
+
+### PSP-UMDRAW-001 raw UMD read probe
+
+Status: NOT_RUN. The source-owned case opens only umd0: with read-only flags.
+It records 64-bit seek results as low then high words, sceIoLseek32 results,
+read counts, the single immediate async poll and its following wait,
+sceIoGetstat, and UMD state before and after. Reads request at most 32,768
+bytes. The only disc bytes emitted are the first eight bytes of designated
+sector-16 reads, plus a whole-buffer-zero flag; no checksum or other payload is
+recorded. The async request is waited before the descriptor closes. The host
+fixture uses a synthetic byte-addressed disc and is not hardware evidence.
+
+The fixed output sequence is umd-state-before, raw-open-extra, seven 64-bit
+seek cells, four 32-bit seek cells, pos-advance-seek plus two consecutive reads
+and pos-advance-cur, byte-sector16-seek and byte-sector16-read, seek/read pairs
+for sizes 1, 512, 2047, 2048, 2049, 4096, 32768 and 0,
+unaligned-seek/unaligned-read, far-seek/far-read, async-seek, async-read,
+async-poll, async-wait, async-data, getstat, raw-close, readonly-open with
+three seeks and readonly-close, umd-state-after, and umdraw-done.
 
 The registry probe opens the registry and categories in read mode and never
 calls a write, create, remove, or flush API. Values are emitted only for keys

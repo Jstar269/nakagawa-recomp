@@ -94,6 +94,13 @@ from psp_oracle.parse_golden import (
     parse_umd_io_output,
     UMDIO_DOPENS,
     UMDIO_OPENS,
+    UMDRAW_CASES,
+    UMDRAW_HEADER_READ_SIZES,
+    UMDRAW_IOFILEMGR_NIDS,
+    UMDRAW_RAW_FLAGS,
+    UMDRAW_READONLY_FLAGS,
+    UMDRAW_READ_SIZES,
+    parse_umd_raw_read_output,
     validate_hle_edram_restore,
 )
 
@@ -2433,12 +2440,12 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 90)
+        self.assertEqual(len(routes), 91)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(range(1, 77)) | set(range(90, 104)), set(ids))
+        self.assertEqual(set(range(1, 78)) | set(range(90, 104)), set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -6776,6 +6783,67 @@ class IoCasesHostTests(unittest.TestCase):
             with self.assertRaises(ProtocolError):
                 parse_umd_io_output(bad)
 
+    def test_raw_device_case_is_bounded_read_only_and_waits_before_close(self) -> None:
+        run = self._run("umdraw", [
+            "umd 0x1 0x32",
+            f"open {_hex('umd0:')} 0x0",
+        ])
+        names = [name for name, _ in run.calls]
+        allowed = {
+            "sceUmdCheckMedium", "sceUmdGetDriveStat", "sceIoOpen", "sceIoClose",
+            "sceIoLseek", "sceIoLseek32", "sceIoRead", "sceIoReadAsync",
+            "sceIoPollAsync", "sceIoWaitAsync", "sceIoGetstat",
+        }
+        self.assertLessEqual(set(names), allowed)
+        opens = [(fields["path"], int(fields["flags"], 16))
+                 for name, fields in run.calls if name == "sceIoOpen"]
+        self.assertEqual(opens, [("umd0:", UMDRAW_RAW_FLAGS),
+                                  ("umd0:", UMDRAW_READONLY_FLAGS)])
+        self.assertEqual(names.count("sceIoClose"), 2)
+        requests = [int(fields["size"], 0) for name, fields in run.calls
+                    if name in {"sceIoRead", "sceIoReadAsync"}]
+        self.assertTrue(requests)
+        self.assertLessEqual(max(requests), 32768)
+        async_index = names.index("sceIoReadAsync")
+        self.assertEqual(names[async_index + 1:async_index + 3],
+                         ["sceIoPollAsync", "sceIoWaitAsync"])
+        self.assertGreater(names.index("sceIoClose"), async_index + 2)
+
+        report = parse_umd_raw_read_output(run.stream)
+        self.assertTrue(report.complete)
+        self.assertEqual(len(report.parsed.results), len(UMDRAW_CASES))
+        records = {record.case_id: dict(record.values) for record in report.parsed.results}
+        self.assertEqual(records["byte-sector16-read"]["out0"], "0x30444301")
+        self.assertEqual(records["byte-sector16-read"]["out1"], "0x00013130")
+        self.assertEqual(int(records["pos-advance-cur"]["result"], 0), 4112)
+        self.assertEqual(records["size-0-read"]["out2"], "0x00000001")
+        self.assertEqual(int(records["far-read"]["result"], 0), 0)
+        self.assertEqual(report.before, (1, 0x32))
+        self.assertEqual(report.after, (1, 0x32))
+
+        payload = run.stream.replace(
+            "case_id=byte-sector16-read status=PASS ",
+            "case_id=byte-sector16-read status=PASS payload=0x12345678 ", 1,
+        )
+        with self.assertRaises(ProtocolError):
+            parse_umd_raw_read_output(payload)
+
+    def test_raw_device_open_failure_does_not_touch_an_invalid_descriptor(self) -> None:
+        run = self._run("umdraw", [
+            "umd 0x1 0x32",
+            f"open {_hex('umd0:')} 0x80010002",
+        ])
+        names = [name for name, _ in run.calls]
+        self.assertEqual(names.count("sceIoOpen"), 1)
+        self.assertEqual(names.count("sceIoClose"), 0)
+        self.assertEqual(names.count("sceIoRead"), 0)
+        self.assertEqual(names.count("sceIoReadAsync"), 0)
+        self.assertEqual(names.count("sceIoLseek"), 0)
+        self.assertEqual(names.count("sceUmdCheckMedium"), 2)
+        self.assertEqual(names.count("sceUmdGetDriveStat"), 2)
+        with self.assertRaises(ProtocolError):
+            parse_umd_raw_read_output(run.stream)
+
     def test_measured_device_results_match_the_console_table(self) -> None:
         tid = parse_golden.UMDIO_TEST_ID
 
@@ -6865,7 +6933,7 @@ class IoCasesSourceTests(unittest.TestCase):
         self.assertNotRegex(code, r"\bmalloc\s*\(|\bcalloc\s*\(|sceIoRemove|sceIoRename")
 
     def test_device_case_reads_state_only_and_its_lists_match_the_parser(self) -> None:
-        code = self._code(self.umd)
+        code = self._code(self.umd[:self.umd.index("#define UMDRAW_TEST_ID")])
         self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", code)),
                          {"sceIoOpen", "sceIoClose", "sceIoDopen", "sceIoDclose",
                           "sceUmdCheckMedium", "sceUmdGetDriveStat"})
@@ -6879,6 +6947,70 @@ class IoCasesSourceTests(unittest.TestCase):
         line = next(line for line in self.makefile.splitlines()
                     if "--exact-library sceUmdUser=" in line)
         self.assertEqual(line.split("sceUmdUser=", 1)[1], "0x46EBB729,0x6B4A146C")
+
+    def test_raw_device_case_is_read_only_and_pins_exact_user_io_imports(self) -> None:
+        raw = self.umd[self.umd.index("#define UMDRAW_TEST_ID"):]
+        code = self._code(raw)
+        calls = set(re.findall(r"\b(sce\w+)\s*\(", code))
+        self.assertEqual(calls, {
+            "sceIoOpen", "sceIoClose", "sceIoLseek", "sceIoLseek32", "sceIoRead",
+            "sceIoReadAsync", "sceIoPollAsync", "sceIoWaitAsync", "sceIoGetstat",
+            "sceUmdCheckMedium", "sceUmdGetDriveStat",
+        })
+        self.assertNotRegex(code, r"\bsceIo(?:Write|Devctl|Ioctl|Chstat)\s*\(")
+        self.assertNotRegex(code, r"\bsceUmd(?:Activate|Deactivate)\s*\(")
+        self.assertIn("#define UMDRAW_BUFFER_BYTES 32768u", raw)
+        opens = re.findall(r"sceIoOpen\(([^;]*?)\);", code, re.DOTALL)
+        self.assertEqual([" ".join(item.split()) for item in opens], [
+            '"umd0:", UMDIO_RAW_FLAGS, 0',
+            '"umd0:", PSP_O_RDONLY, 0',
+        ])
+        body = code[code.index("static void umdraw_run("):]
+        body = body[:body.index("\n}")]
+        self.assertLess(body.index("sceIoReadAsync"), body.index("sceIoPollAsync"))
+        self.assertLess(body.index("sceIoPollAsync"), body.index("sceIoWaitAsync"))
+        self.assertLess(body.index("sceIoWaitAsync"), body.index("sceIoClose"))
+        self.assertEqual(UMDRAW_READ_SIZES, (1, 512, 2047, 2048, 2049, 4096, 32768, 0))
+        self.assertEqual(set(UMDRAW_HEADER_READ_SIZES), {
+            "pos-advance-first", "pos-advance-second", "byte-sector16-read",
+            "size-1-read", "size-512-read", "size-2047-read", "size-2048-read",
+            "size-2049-read", "size-4096-read", "size-32768-read", "size-0-read",
+            "async-data",
+        })
+        pin = next(line for line in self.makefile.splitlines()
+                   if line.startswith("USER_MODE_IMPORT_GATE_ARGS += --exact-library IoFileMgrForUser="))
+        actual_nids = tuple(int(value, 16)
+                            for value in pin.split("IoFileMgrForUser=", 1)[1].split(","))
+        self.assertEqual(actual_nids, UMDRAW_IOFILEMGR_NIDS)
+
+    def test_raw_device_import_pin_rejects_unexpected_io_and_umd_imports(self) -> None:
+        io_pin = "IoFileMgrForUser=" + ",".join(
+            f"0x{nid:08X}" for nid in UMDRAW_IOFILEMGR_NIDS)
+        umd_pin = "sceUmdUser=0x46EBB729,0x6B4A146C"
+        allowed = [
+            ("IoFileMgrForUser", list(UMDRAW_IOFILEMGR_NIDS)),
+            ("sceUmdUser", [0x46EBB729, 0x6B4A146C]),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            module = Path(tmp) / "probe.elf"
+            module.write_bytes(build_import_elf(allowed))
+            with redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()) as err:
+                status = user_mode_imports.main([
+                    "--exact-library", io_pin, "--exact-library", umd_pin, str(module),
+                ])
+            self.assertEqual(status, user_mode_imports.EXIT_OK, out.getvalue() + err.getvalue())
+
+            extra = [
+                ("IoFileMgrForUser", [*UMDRAW_IOFILEMGR_NIDS, 0x12345678]),
+                ("sceUmdUser", [0x46EBB729, 0x6B4A146C]),
+            ]
+            module.write_bytes(build_import_elf(extra))
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
+                status = user_mode_imports.main([
+                    "--exact-library", io_pin, "--exact-library", umd_pin, str(module),
+                ])
+            self.assertEqual(status, user_mode_imports.EXIT_KERNEL_IMPORT)
+            self.assertIn("unexpected 0x12345678", err.getvalue())
 
     def test_runtime_umd_expectations_match_the_measured_parser_table(self) -> None:
         source = (self.root / "src" / "rt" / "hle_thread_selftest.c").read_text(
@@ -6923,20 +7055,34 @@ class IoCasesSourceTests(unittest.TestCase):
 
     def test_cases_are_wired_like_the_others(self) -> None:
         for case, case_id, log in (("font-files", 73, "font_files_log.txt"),
-                                   ("umd-io", 74, "umd_io_log.txt")):
+                                   ("umd-io", 74, "umd_io_log.txt"),
+                                   ("umd-raw-read", 77, "umd_raw_read_log.txt")):
             self.assertRegex(self.makefile,
                              rf"(?m)^else ifeq \(\$\(CASE\),{case}\)\nCASE_ID = {case_id}$")
             self.assertIn(f'#define PROBE_HOST0_LOG "host0:/{log}"', self.probe)
             self.assertEqual(_campaign_host0_log_path(Path("host0"), case).name, log)
             self.assertEqual(_campaign_completeness_contract(case), "strict-golden-sequence")
         self.assertIn("umd-io", CAMPAIGN_QUEUE_CASES)
+        self.assertIn("umd-raw-read", CAMPAIGN_QUEUE_CASES)
         self.assertNotIn("font-files", CAMPAIGN_QUEUE_CASES)
         self.assertIn("$(BUILD_DIR)/probe.o: probe.c registry_walk.h font_files.h umd_io.h",
                       self.makefile)
-        for macro in ("FONT_FILES", "UMD_IO"):
+        for macro in ("FONT_FILES", "UMD_IO", "UMD_RAW_READ"):
             block = self.probe[self.probe.index(f"#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_{macro}\n"):]
             block = block[:block.index("\n#endif")]
             self.assertNotRegex(block, r"\bsce\w+\s*\(")
+
+    def test_raw_device_case_manifest_matches_its_not_run_record_contract(self) -> None:
+        manifest = json.loads((self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
+            encoding="utf-8"))
+        entry = next(item for item in manifest["tests"] if item["id"] == "PSP-UMDRAW-001")
+        self.assertEqual(entry["status"], "planned")
+        self.assertEqual(entry["hardware_evidence"], "NOT_RUN")
+        self.assertEqual(entry["case_ids"], list(UMDRAW_CASES))
+        self.assertEqual(entry["evidence_cases"], list(UMDRAW_CASES))
+        oracle_docs = (self.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
+        self.assertIn("PSP-UMDRAW-001", oracle_docs)
+        self.assertIn("NOT_RUN", oracle_docs)
 
     def test_umd_pin_refuses_an_activation_import(self) -> None:
         pin = ["--exact-library", "sceUmdUser=0x46EBB729,0x6B4A146C"]
