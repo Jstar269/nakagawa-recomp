@@ -13629,7 +13629,7 @@ static IoRawDevicePath io_raw_device_path(const char *path) {
         return IO_RAW_DEVICE_UMD0;
     if (io_path_equals_ci(path, "umd1:") || io_path_equals_ci(path, "umd1:/"))
         return IO_RAW_DEVICE_UMD1;
-    if (io_path_equals_ci(path, "umd:") || io_path_equals_ci(path, "umd:/"))
+    if (io_path_equals_ci(path, "umd:"))
         return IO_RAW_DEVICE_UMD_ALIAS;
     if (io_path_equals_ci(path, "msstor0p1:/"))
         return IO_RAW_DEVICE_MSSTOR0P1;
