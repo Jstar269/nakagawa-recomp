@@ -5,9 +5,26 @@
 #include "nk_launch.h"
 #include "nk_platform.h"
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* The manifest parser test links the PGF object file but not the runtime GE. */
+volatile int g_sr_vram_read_pending;
+void sr_ge_vram_read_prepare(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
+void sr_ge_vram_write_prepare(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
+void sr_ge_vram_write_commit(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
+void sr_oor(uint32_t address, uint32_t value, int store) {
+    (void)address; (void)value; (void)store;
+    abort();
+}
 
 static const char * const CANONICAL_VALID_BASE =
     "{\n"

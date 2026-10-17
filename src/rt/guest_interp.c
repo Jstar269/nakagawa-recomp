@@ -283,9 +283,7 @@ static int module_binding_slot(const SrModuleCode *code) {
 }
 
 static uint32_t module_live_word(uint32_t address) {
-    uint32_t word;
-    memcpy(&word, SR_HOST(address), sizeof(word));
-    return word;
+    return sr_r32(address);
 }
 
 SrModuleBindResult sr_module_code_bind(const SrModuleCode *code, uint32_t base,
@@ -305,7 +303,7 @@ SrModuleBindResult sr_module_code_bind(const SrModuleCode *code, uint32_t base,
         detail->address = base;
         return SR_MODULE_BIND_BAD_BASE;
     }
-    if (!sr_guest_span_readable((uint32_t)start, (uint32_t)(end - start))) {
+    if (!sr_guest_span_readable_current((uint32_t)start, (uint32_t)(end - start))) {
         detail->address = (uint32_t)start;
         return SR_MODULE_BIND_IMAGE_UNREADABLE;
     }
@@ -482,7 +480,7 @@ static SrGuestInterpResult fetch_instruction(
         }
         touches_span_boundary = 1;
         if (pc < span->end && span->end - pc >= 4u) {
-            if (!sr_guest_span_readable(pc, 4u)) {
+            if (!sr_inrange_n(pc, 4u)) {
                 set_fault(fault, pc, 0u, pc, 0);
                 return SR_GUEST_INTERP_MEMORY_FAULT;
             }
@@ -856,7 +854,7 @@ static SrGuestInterpResult execute_noncontrol(
                 return SR_GUEST_INTERP_MISALIGNED_DATA;
             }
             if (is_store) {
-                if (!sr_guest_span_writable(address, width)) {
+                if (!sr_inrange_n(address, width)) {
                     set_fault(fault, pc, opcode, address, 1);
                     return SR_GUEST_INTERP_MEMORY_FAULT;
                 }
@@ -885,7 +883,7 @@ static SrGuestInterpResult execute_noncontrol(
                 *store_address = address;
                 *store_size = (int)width;
             } else {
-                if (!sr_guest_span_readable(address, width)) {
+                if (!sr_inrange_n(address, width)) {
                     set_fault(fault, pc, opcode, address, 1);
                     return SR_GUEST_INTERP_MEMORY_FAULT;
                 }
@@ -930,8 +928,7 @@ static SrGuestInterpResult execute_noncontrol(
         const uint32_t word_address = address & ~3u;
         const int is_store = primary == 0x2Au || primary == 0x2Eu;
         if (is_store) {
-            if (!sr_guest_span_readable(word_address, 4u) ||
-                !sr_guest_span_writable(word_address, 4u)) {
+            if (!sr_inrange_n(word_address, 4u)) {
                 set_fault(fault, pc, opcode, word_address, 1);
                 return SR_GUEST_INTERP_MEMORY_FAULT;
             }
@@ -943,7 +940,7 @@ static SrGuestInterpResult execute_noncontrol(
             *store_address = word_address;
             *store_size = 4;
         } else {
-            if (!sr_guest_span_readable(word_address, 4u)) {
+            if (!sr_inrange_n(word_address, 4u)) {
                 set_fault(fault, pc, opcode, word_address, 1);
                 return SR_GUEST_INTERP_MEMORY_FAULT;
             }

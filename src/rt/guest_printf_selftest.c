@@ -21,6 +21,7 @@ uint8_t *g_mem;
 CpuState *s_cpu;
 int g_sr_heap_watch;
 int g_hle_depth;
+volatile int g_sr_vram_read_pending;
 
 static long g_oor_events;
 
@@ -36,6 +37,15 @@ void sr_heap_note_write(uint32_t addr, uint32_t width, uint32_t value, uint32_t 
 
 uint32_t sched_current_uid(void) { return 0u; }
 uint32_t sr_get_ge_status(void) { return 0u; }
+void sr_ge_vram_read_prepare(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
+void sr_ge_vram_write_prepare(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
+void sr_ge_vram_write_commit(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
 
 #define ARENA_BYTES 0x0c000000u
 #define GUEST_LAST  0x0bffffffu   /* highest addressable guest byte */

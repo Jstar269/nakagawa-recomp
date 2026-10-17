@@ -44,6 +44,12 @@
 #include "vfpu_interp.c"
 #include "vfpu_overlap_diff_cases.h"
 
+/* No GE renderer is linked by this VFPU-only harness. */
+volatile int g_sr_vram_read_pending;
+void sr_ge_vram_read_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
+void sr_ge_vram_write_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
+void sr_ge_vram_write_commit(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
+
 #include <fenv.h>
 #include <stdio.h>
 #include <string.h>

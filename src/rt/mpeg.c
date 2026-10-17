@@ -511,7 +511,7 @@ uint32_t mpeg_ringbuffer_put(CpuState *s, uint32_t ring, uint32_t numPackets, ui
 
         uint32_t gotBytes;
         if (!u32_mul_checked(got, packetSize, &gotBytes) ||
-            !sr_guest_span_readable(dst, gotBytes))
+            !sr_guest_span_readable_current(dst, gotBytes))
             return 0;
 
 #ifdef SR_SDL3VK
@@ -725,10 +725,10 @@ uint32_t mpeg_avc_decode(uint32_t mpegAddr, uint32_t auAddr, uint32_t frameWidth
             MEM_W32(initAddr, 0u);
             return mpeg_contract_error("sceMpegAvcDecode", "stream height is unavailable for a blank frame", SCE_MPEG_ERROR_NO_DATA);
         }
+        sr_guest_vram_write_prepare_bytes(buffer, bytes);
         if (!clear_video_buffer(buffer, width, height, ctx->pixelMode))
             return mpeg_contract_error("sceMpegAvcDecode", "destination changed during validation", SCE_MPEG_ERROR_INVALID_VALUE);
-        extern void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes);
-        sr_gpu_vram_dirty(buffer, bytes);
+        sr_guest_vram_write_commit_bytes(buffer, bytes);
     }
     MEM_W32(initAddr, gotFrame > 0 ? 1u : 0u);
     if (getenv("SR_MPEGLOG")) {
@@ -787,6 +787,7 @@ static void ycbcr_reset_mpeg(uint32_t mpegAddr) {
 }
 
 static uint64_t ycbcr_fingerprint(uint32_t buf, uint32_t size) {
+    if (!sr_guest_span_readable_current(buf, size)) return 0u;
     const uint8_t *p = (const uint8_t *)SR_HOST(buf);
     uint64_t tag = UINT64_C(1469598103934665603);
     for (uint32_t i = 0; i < size; i++) {
@@ -800,7 +801,8 @@ static int ycbcr_state_usable(const YcbcrBuf *b, int require_picture) {
     uint32_t expected;
     if (!b || !b->initialized || !b->rgba || !b->buf ||
         !ycbcr_size_for(b->width, b->height, &expected) || expected != b->size ||
-        !sr_guest_span_readable(b->buf, b->size) || !sr_guest_span_writable(b->buf, b->size) ||
+        !sr_guest_span_readable_current(b->buf, b->size) ||
+        !sr_guest_span_writable(b->buf, b->size) ||
         ycbcr_fingerprint(b->buf, b->size) != b->guest_tag) return 0;
     return !require_picture || b->valid;
 }
@@ -824,7 +826,9 @@ static YcbcrBuf *ycbcr_slot_for_init(uint32_t mpegAddr, uint32_t buf, uint32_t w
     ycbcr_clear_slot(b);
     b->mpeg = mpegAddr; b->buf = buf; b->width = width; b->height = height; b->size = size;
     b->rgba = rgba; b->initialized = 1; b->valid = 0;
+    sr_guest_vram_write_prepare_bytes(buf, size);
     memset(SR_HOST(buf), 0, size);
+    sr_guest_vram_write_commit_bytes(buf, size);
     b->guest_tag = ycbcr_fingerprint(buf, size);
     return b;
 }
@@ -956,7 +960,9 @@ uint32_t mpeg_avc_decode_stop_ycbcr(uint32_t mpegAddr, uint32_t buf, uint32_t st
         return mpeg_contract_error("sceMpegAvcDecodeStopYCbCr", "missing, stale, or modified guest YCbCr state", SCE_MPEG_ERROR_INVALID_VALUE);
     b->valid = 0;
     memset(b->rgba, 0, (size_t)b->width * b->height * 4u);
+    sr_guest_vram_write_prepare_bytes(b->buf, b->size);
     memset(SR_HOST(b->buf), 0, b->size);
+    sr_guest_vram_write_commit_bytes(b->buf, b->size);
     b->guest_tag = ycbcr_fingerprint(b->buf, b->size);
     MEM_W32(statusAddr, 0u);
     return 0;
@@ -981,7 +987,11 @@ uint32_t mpeg_avc_copy_ycbcr(uint32_t mpegAddr, uint32_t dst, uint32_t src) {
     if (dst == src) return 0;
     if (ycbcr_ranges_overlap(dst, src, from->size))
         return mpeg_contract_error("sceMpegAvcCopyYCbCr", "overlapping allocations are not modeled", SCE_MPEG_ERROR_INVALID_VALUE);
+    if (!sr_guest_span_readable_current(src, from->size))
+        return mpeg_contract_error("sceMpegAvcCopyYCbCr", "source span is not readable", SCE_MPEG_ERROR_INVALID_VALUE);
+    sr_guest_vram_write_prepare_bytes(dst, from->size);
     memcpy(SR_HOST(dst), SR_HOST(src), from->size);
+    sr_guest_vram_write_commit_bytes(dst, from->size);
     memcpy(to->rgba, from->rgba, (size_t)from->width * from->height * 4u);
     to->valid = from->valid;
     to->guest_tag = from->guest_tag;
@@ -1029,6 +1039,7 @@ uint32_t mpeg_avc_csc(uint32_t mpegAddr, uint32_t buf, uint32_t rangeAddr, uint3
         const uint8_t *px = b->rgba + ((size_t)((uint32_t)y + row) * b->width + (uint32_t)x) * 4u;
         uint32_t rowAddr = span.first + row * span.row_pitch;
         uint8_t *out = (uint8_t *)SR_HOST(rowAddr);
+        sr_guest_vram_write_prepare_bytes(rowAddr, span.row_bytes);
 #ifdef SR_MPEG_CSC_NO_WRITE_MUTANT
         (void)px;
         (void)out;
@@ -1055,8 +1066,7 @@ uint32_t mpeg_avc_csc(uint32_t mpegAddr, uint32_t buf, uint32_t rangeAddr, uint3
             }
         }
 #endif
-        extern void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes);
-        sr_gpu_vram_dirty(rowAddr, span.row_bytes);
+        sr_guest_vram_write_commit_bytes(rowAddr, span.row_bytes);
     }
     if (getenv("SR_MPEGLOG")) {
         static int n = 0;

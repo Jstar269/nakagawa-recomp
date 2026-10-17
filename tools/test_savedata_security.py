@@ -160,6 +160,12 @@ static void order_reset(void) { }
 
 #include "savedata.c"
 
+/* No GE in this harness: the VRAM coherence hooks the guest accessors call are inert. */
+volatile int g_sr_vram_read_pending;
+void sr_ge_vram_read_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
+void sr_ge_vram_write_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
+void sr_ge_vram_write_commit(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
+
 #define PARAM 0x08800000u
 #define DATA 0x08900000u
 #define SIZE_INFO 0x08a00000u
