@@ -34,6 +34,22 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The parser fuzz binary links the PGF object file but not the GE runtime. */
+volatile int g_sr_vram_read_pending;
+void sr_ge_vram_read_prepare(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
+void sr_ge_vram_write_prepare(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
+void sr_ge_vram_write_commit(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
+void sr_oor(uint32_t address, uint32_t value, int store) {
+    (void)address; (void)value; (void)store;
+    abort();
+}
+
 /* Scratch root for the files this test writes: the checkout's build/ by default, or
  * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
  * touches the checkout. */

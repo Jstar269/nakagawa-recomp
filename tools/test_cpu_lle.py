@@ -565,6 +565,16 @@ int g_sr_store_context_mem_gpr = -1;
 uint32_t g_sr_store_context_mem_offset = 0;
 unsigned g_sr_store_context_mem_words = 0;
 int g_sr_last_writer_enabled = 0;
+volatile int g_sr_vram_read_pending = 0;
+void sr_ge_vram_read_prepare(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
+void sr_ge_vram_write_prepare(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
+void sr_ge_vram_write_commit(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
 void sr_note_mem_write(uint32_t a, uint32_t w, uint32_t v, uint32_t pc) {
     (void)a; (void)w; (void)v; (void)pc;
 }

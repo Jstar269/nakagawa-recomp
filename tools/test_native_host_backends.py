@@ -102,7 +102,10 @@ def _build_and_run(
     link_cmd = ["gcc", "-o", str(out)]
     link_cmd.extend(str(owner._objects[source]) for source in CORE_SOURCES)
     link_cmd.append(str(owner._objects[PLATFORM_SRC]))
-    link_cmd.append(str(owner._objects[ISOLATION_SRC]))
+    if test_source != "tests/native/test_pgf_public.c":
+        # This harness owns its guest-memory and dirty-span stubs. Linking the
+        # shared isolation object would define the same GE-hook seam twice.
+        link_cmd.append(str(owner._objects[ISOLATION_SRC]))
     link_cmd.extend(str(owner._objects[source]) for source in extra_sources)
     if "src/rt/pgf_public.c" not in extra_sources:
         # nk_font.c calls the reader's validator. A caller that supplies the reader itself (the
@@ -177,7 +180,8 @@ class NativeHostBackendTests(unittest.TestCase):
                 cls, source, f"{Path(source).stem}.o"
             )
 
-        # Every native test suite links the shared per-run isolation helper.
+        # Compile the shared per-run isolation helper used by every test except
+        # the PGF reader, whose source-owned stubs collect dirty spans itself.
         cls._objects[ISOLATION_SRC] = _compile_object(
             cls, ISOLATION_SRC, "native_test_isolation.o", ("-Itests/native",)
         )
