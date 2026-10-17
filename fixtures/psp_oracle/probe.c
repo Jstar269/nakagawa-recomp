@@ -46,7 +46,7 @@ _Static_assert(
 #if PSP_ORACLE_CASE == 66 || PSP_ORACLE_CASE == 72
 #include <pspreg.h>
 #endif
-#if PSP_ORACLE_CASE == 74
+#if PSP_ORACLE_CASE == 74 || PSP_ORACLE_CASE == 77
 #include <pspumd.h>
 #endif
 #if PSP_ORACLE_CASE == 67

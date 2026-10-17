@@ -33,6 +33,8 @@
 #define UMDIO_TEST_ID "PSP-UMDIO-001"
 /* The extra open bits a title was seen passing with "umd0:" (flags 0x000f0001). */
 #define UMDIO_RAW_FLAGS (PSP_O_RDONLY | 0x000f0000)
+#if !defined(PSP_ORACLE_CASE_UMD_RAW_READ) || !defined(PSP_ORACLE_CASE) || \
+    PSP_ORACLE_CASE != PSP_ORACLE_CASE_UMD_RAW_READ
 #define UMDIO_LINE_MAX 512u
 #define UMDIO_ERROR 0xffffffffu
 
@@ -155,7 +157,9 @@ static void umdio_run(UmdIo *u) {
         (unsigned int)u->dopened, (unsigned int)u->records);
     umdio_emit(u, used);
 }
+#endif /* UMDIO open-list case or host harness */
 
+#if !defined(PSP_ORACLE_CASE) || PSP_ORACLE_CASE == PSP_ORACLE_CASE_UMD_RAW_READ
 /* Raw, read-only UMD descriptor measurements (PSP-UMDRAW-001).
  *
  * Safety contract: open only "umd0:" with PSP_O_RDONLY or UMDIO_RAW_FLAGS; never write, create,
@@ -468,5 +472,6 @@ static void umdraw_run(UmdRawRead *u) {
         u->records++;
     }
 }
+#endif /* raw UMD case or host harness */
 
 #endif /* NAKAGAWA_UMD_IO_H */
