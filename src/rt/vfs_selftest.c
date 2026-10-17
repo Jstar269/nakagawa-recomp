@@ -222,10 +222,13 @@ int main(void) {
     ASSERT_INT_EQ(sr_vfs_is_dos_device_name("CON", 3), 1);
     ASSERT_INT_EQ(sr_vfs_is_dos_device_name("PRN", 3), 1);
     ASSERT_INT_EQ(sr_vfs_is_dos_device_name("AUX", 3), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("CONIN$", 6), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("conout$", 7), 1);
     ASSERT_INT_EQ(sr_vfs_is_dos_device_name("COM1", 4), 1);
     ASSERT_INT_EQ(sr_vfs_is_dos_device_name("com5", 4), 1);
     ASSERT_INT_EQ(sr_vfs_is_dos_device_name("LPT9", 4), 1);
     ASSERT_INT_EQ(sr_vfs_is_dos_device_name("nul.txt", 7), 1);   /* extension is stripped by Win32 */
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("CONIN$.TXT", 11), 1);
     ASSERT_INT_EQ(sr_vfs_is_dos_device_name("CON.BIN", 7), 1);
     ASSERT_INT_EQ(sr_vfs_is_dos_device_name("NULL", 4), 0);      /* superset: ordinary name */
     ASSERT_INT_EQ(sr_vfs_is_dos_device_name("CONSOLE", 7), 0);
@@ -278,6 +281,8 @@ int main(void) {
     ASSERT_INT_EQ(sr_vfs_is_safe_component("trailing_space ", 15), 0);
     ASSERT_INT_EQ(sr_vfs_is_safe_component("NUL", 3), 0);
     ASSERT_INT_EQ(sr_vfs_is_safe_component("CON", 3), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("CONIN$", 6), 0);
+    ASSERT_INT_EQ(sr_vfs_is_safe_component("CONOUT$", 7), 0);
     ASSERT_INT_EQ(sr_vfs_is_safe_component("NUL.txt", 7), 0);
 
     /* Test 19: dir_path rejection of ADS, devices, wildcards, control bytes. */
