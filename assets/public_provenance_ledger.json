@@ -6009,7 +6009,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a4aaa6ce12fcdfbf6dc960f1c8c9afdaf7490985bf5ca7fcfa28486b92b16f2f"
+      "sha256": "4b00f90dcc856629710f2d57995d67c34435316ac195b76c1571c132ae00f680"
     },
     {
       "path": "src/rt/vfs_selftest.c",
@@ -6021,7 +6021,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9f6b9c7834c21754d376438fbafb43c5a6eaf2d4539d6581bece2ebf06bb134d"
+      "sha256": "71e7ade9b822319af1c9160c2b50e13a176365332058c0c832afdc4f3646c080"
     },
     {
       "path": "src/rt/watchpoints_file.c",
