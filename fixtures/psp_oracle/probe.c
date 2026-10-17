@@ -228,20 +228,31 @@ __attribute__((noinline)) uint32_t nakagawa_psp_oracle_sum_u32(uint32_t count) {
 #endif
 
 static int emulator_present(void) {
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_UMD_RAW_READ
+    /* The raw UMD measurement is PSP-only; do not issue emulator devctls. */
+    return 0;
+#else
     uint32_t flag = 0;
     if (sceIoDevctl("emulator:", EMULATOR_DEVCTL_IS_EMULATOR, NULL, 0, &flag, sizeof(flag)) < 0) {
         return 0;
     }
     return flag == 1;
+#endif
 }
 
 static void emit(int emulated, const char *text) {
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_UMD_RAW_READ
+    /* This case writes durable records to host0 and has no emulator output route. */
+    (void)emulated;
+    (void)text;
+#else
     if (emulated) {
         sceIoDevctl("emulator:", EMULATOR_DEVCTL_SEND_OUTPUT, (void *)text, (int)strlen(text), NULL, 0);
     } else {
         printf("%s", text);
         fflush(stdout);
     }
+#endif
 }
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR

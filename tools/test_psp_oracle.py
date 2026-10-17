@@ -7068,7 +7068,15 @@ class IoCasesSourceTests(unittest.TestCase):
         self.assertIn("$(BUILD_DIR)/probe.o: probe.c registry_walk.h font_files.h umd_io.h",
                       self.makefile)
         for macro in ("FONT_FILES", "UMD_IO", "UMD_RAW_READ"):
-            block = self.probe[self.probe.index(f"#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_{macro}\n"):]
+            if macro == "UMD_RAW_READ":
+                marker = "/* Read-only raw UMD descriptor observations"
+                marker_at = self.probe.index(marker)
+                start = self.probe.rfind(
+                    f"#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_{macro}\n", 0, marker_at
+                )
+            else:
+                start = self.probe.index(f"#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_{macro}\n")
+            block = self.probe[start:]
             block = block[:block.index("\n#endif")]
             self.assertNotRegex(block, r"\bsce\w+\s*\(")
 
