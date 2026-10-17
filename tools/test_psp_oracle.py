@@ -7,12 +7,15 @@ from contextlib import redirect_stderr, redirect_stdout
 import hashlib
 import io
 import json
+import os
 import re
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -2510,6 +2513,123 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         probe = (Path(__file__).resolve().parent.parent / "fixtures" / "psp_oracle"
                  / "probe.c").read_text(encoding="utf-8")
         self.assertIn("#define PSP_ORACLE_CASE_FPU_CC 70", probe)
+
+    def test_every_linked_object_depends_on_the_selected_build_configuration(self) -> None:
+        # Objects are compiled with case-selected flags (-DPSP_ORACLE_CASE and the build
+        # commit among them), so a new CASE must rebuild them; without this dependency
+        # `make CASE=registry-font` then `make CASE=font-list` linked the registry case's
+        # probe.o. The stamp records the case and every flag it selects.
+        self.assertIn(
+            "BUILD_CONFIG = CASE=$(CASE) CFLAGS=$(CFLAGS) LIBS=$(LIBS) SFOFLAGS=$(SFOFLAGS)\n",
+            self.makefile,
+        )
+        self.assertIn("BUILD_CONFIG_STAMP = $(BUILD_DIR)/build-config.stamp\n", self.makefile)
+        self.assertIn("EXTRA_CLEAN += $(BUILD_CONFIG_STAMP)\n", self.makefile)
+        # Rule targets expand where they are read, so the dependency must follow the last
+        # OBJS assignment to name every object the selected case links.
+        dependency = "\n$(OBJS) $(PSP_EBOOT_SFO): $(BUILD_CONFIG_STAMP)\n"
+        self.assertIn(dependency, self.makefile)
+        last_objs = max(
+            match.start()
+            for match in re.finditer(r"^OBJS \+?= ", self.makefile, re.MULTILINE)
+        )
+        self.assertGreater(self.makefile.index(dependency), last_objs)
+        # The stamp is a prerequisite of that one line only: never of the ELF, whose SDK
+        # link rule passes $^ to the linker.
+        self.assertEqual(
+            re.findall(r"^[^#\t\n][^\n]*:[^\n=]*\$\(BUILD_CONFIG_STAMP\)", self.makefile, re.MULTILINE),
+            [dependency.strip()],
+        )
+        # FORCE runs the recipe on every make, but the stamp is replaced (and its time
+        # moved) only when the recorded configuration differs from the stored one.
+        rule = self.makefile.split("$(BUILD_CONFIG_STAMP): FORCE\n", 1)[1].split("\n.PHONY: FORCE\nFORCE:\n", 1)
+        self.assertEqual(len(rule), 2, "the stamp rule must be followed by the phony FORCE target")
+        recipe = rule[0]
+        self.assertIn("'$(subst ','\\'',$(BUILD_CONFIG))' > $@.tmp", recipe)
+        self.assertIn("if cmp -s $@.tmp $@; then rm -f $@.tmp;", recipe)
+        self.assertIn("mv -f $@.tmp $@; fi", recipe)
+        self.assertLess(
+            self.makefile.index("include $(PSPSDK)/lib/build.mak"),
+            self.makefile.index("$(BUILD_CONFIG_STAMP): FORCE"),
+            "SFOFLAGS and the SDK's CFLAGS additions are defined by build.mak",
+        )
+
+    def test_switching_case_without_clean_rebuilds_the_probe_object(self) -> None:
+        # Runs the real Makefile under GNU Make with a stub SDK and a stand-in compiler that
+        # writes the case macro into the object. The throwaway repository holds one commit
+        # so the clean-tree guard passes, and git ignores the host's configuration.
+        if sys.platform == "win32":
+            self.skipTest("the oracle Makefile's recipes need a POSIX shell")
+        make = shutil.which("make")
+        if make is None or shutil.which("git") is None or shutil.which("cmp") is None:
+            self.skipTest("GNU Make, git and cmp are unavailable")
+        with scratch_dir.TemporaryDirectory(prefix="oracle-case-stamp-") as scratch:
+            root = Path(scratch)
+            repo = root / "repo"
+            repo.mkdir()
+            dated = time.time() - 3600
+            # The Makefile and every source and header it may name as a prerequisite.
+            sources = [self.fixture / "Makefile"]
+            sources += sorted(p for p in self.fixture.iterdir() if p.suffix in {".c", ".h", ".S"})
+            for source in sources:
+                shutil.copyfile(source, repo / source.name)
+                os.utime(repo / source.name, (dated, dated))
+            (root / "sdk" / "lib").mkdir(parents=True)
+            (root / "sdk" / "lib" / "build.mak").write_text(
+                "# Stub SDK: the test names the object it builds.\n", encoding="utf-8"
+            )
+            compiler = root / "stand_in_cc.py"
+            compiler.write_text(
+                "import sys\n"
+                "args = sys.argv[1:]\n"
+                "case = [arg for arg in args if arg.startswith('-DPSP_ORACLE_CASE=')]\n"
+                "with open(args[args.index('-o') + 1], 'w') as out:\n"
+                "    out.write(' '.join(case) + '\\n')\n"
+                "with open(sys.argv[0] + '.log', 'a') as log:\n"
+                "    log.write('compiled\\n')\n",
+                encoding="utf-8",
+            )
+            env = {
+                **os.environ,
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_AUTHOR_NAME": "oracle-case-stamp test",
+                "GIT_AUTHOR_EMAIL": "oracle-case-stamp@example.invalid",
+                "GIT_COMMITTER_NAME": "oracle-case-stamp test",
+                "GIT_COMMITTER_EMAIL": "oracle-case-stamp@example.invalid",
+            }
+            for git_args in (("init", "-q"), ("add", "--all"),
+                             ("commit", "-q", "-m", "fixture")):
+                subprocess.run(["git", *git_args], cwd=repo, env=env, check=True,
+                               capture_output=True)
+            probe_object = root / "build" / "probe.o"
+            stamp = root / "build" / "build-config.stamp"
+            log = Path(f"{compiler}.log")
+
+            def build(case: str) -> tuple[str, int]:
+                # Give the object and the stamp one earlier time (still after probe.c), so
+                # the object rebuilds only if this make rewrites the stamp, and a coarse
+                # file clock cannot hide a rewrite by tying the two.
+                for path in (probe_object, stamp):
+                    if path.exists():
+                        os.utime(path, (dated + 60, dated + 60))
+                completed = subprocess.run(
+                    [make, "-C", str(repo), f"CASE={case}", f"PSPSDK={root / 'sdk'}",
+                     f"BUILD_DIR={root / 'build'}",
+                     f"CC={shlex.join([sys.executable, str(compiler)])}", str(probe_object)],
+                    env=env, capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+                return (probe_object.read_text(encoding="utf-8"),
+                        log.read_text(encoding="utf-8").count("compiled\n"))
+
+            self.assertEqual(build("smoke"), ("-DPSP_ORACLE_CASE=0\n", 1))
+            # An unchanged configuration leaves the stamp, and so the object, alone.
+            self.assertEqual(build("smoke"), ("-DPSP_ORACLE_CASE=0\n", 1))
+            # A new case rewrites the stamp and recompiles; before the stamp existed this
+            # make kept the smoke object.
+            self.assertEqual(build("callback-notify-check"), ("-DPSP_ORACLE_CASE=1\n", 2))
+            self.assertEqual(build("smoke"), ("-DPSP_ORACLE_CASE=0\n", 3))
 
 
 class PspDmacProbeTests(unittest.TestCase):
