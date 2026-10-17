@@ -886,8 +886,12 @@ class MpegDirtyNotificationContractTests(unittest.TestCase):
                       "convert_frame must compute full-buffer dirty bytes without signed overflow")
         self.assertIn("if (w == frameWidth && fullBytes <= UINT32_MAX)", h264_src,
                       "convert_frame must emit a single dirty call only for a representable contiguous span")
-        self.assertIn("sr_gpu_vram_dirty(buffer + (uint32_t)y * pitchBytes, rowBytes);", h264_src,
-                      "convert_frame must emit exact per-row dirty calls when w < frameWidth")
+        self.assertIn("sr_guest_vram_write_prepare_bytes(buffer, (uint32_t)totalBytes64);", h264_src,
+                      "convert_frame must preserve renderer-owned depth before direct host writes")
+        self.assertIn("sr_guest_vram_write_commit_bytes(buffer, (uint32_t)fullBytes);", h264_src,
+                      "convert_frame must report one contiguous full-buffer write")
+        self.assertIn("sr_guest_vram_write_commit_bytes(buffer + (uint32_t)y * pitchBytes, rowBytes);", h264_src,
+                      "convert_frame must report exact per-row writes when w < frameWidth")
 
 
 
@@ -1174,7 +1178,7 @@ class EvidenceTierTests(unittest.TestCase):
                 "PSP-KERNEL-002", "PSP-KERNEL-MISC-001", "PSP-KERNEL-STATUS-001", "PSP-LLSC-001",
                 "PSP-MUTEX-001", "PSP-REGISTRY-001", "PSP-SMOKE-001", "PSP-SYSTEM-001",
                 "PSP-THREAD-003", "PSP-THREAD-EXIT-001", "PSP-TRANSPORT-001", "PSP-VFPU-CMP-001",
-                "PSP-VFPU-TRANSCENDENTAL-001", "PSP-WAIT-001",
+                "PSP-VFPU-TRANSCENDENTAL-001", "PSP-VRAM-MIRROR-001", "PSP-WAIT-001",
             ],
         )
         self.assertIn("sceDmacTryMemcpy", promoted)

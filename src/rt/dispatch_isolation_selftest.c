@@ -35,6 +35,12 @@
 #include "sr_coro.h"
 #include "recomp.c"   /* white-box: the real dispatch() and its hook tables */
 
+/* No GE renderer is linked by this dispatch-only harness. */
+volatile int g_sr_vram_read_pending;
+void sr_ge_vram_read_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
+void sr_ge_vram_write_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
+void sr_ge_vram_write_commit(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
+
 #include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32

@@ -29,6 +29,7 @@ from import_fixtures import (
 )
 from psp_import_table import UNATTRIBUTED_LIBRARY
 from psp_oracle import user_mode_imports
+from psp_oracle import parse_golden
 from psp_oracle.protocol import (
     ProtocolError,
     STATUSES,
@@ -106,6 +107,50 @@ MEASURED_SHA = "a" * 64
 MEASURED_COMMIT = "b" * 40
 STAGED_PRX = b"synthetic PSP oracle probe"
 STAGED_SHA = hashlib.sha256(STAGED_PRX).hexdigest()
+
+# PSP-VRAM-MIRROR-001 measured rules, from the PSP-3000 runs on 2026-10-16
+# (commits 24c1472e, fd3efc64, and df41dba2). These are algorithmic constants;
+# tests synthesize their own result words and contain no captured PSP words.
+MEASURED_VRAM_IDENTITY_COLUMNS = (None, None) + tuple(
+    1 << bit for bit in range(2, 21)
+)
+MEASURED_VRAM_ROTATED_COLUMNS = (None, None) + tuple(
+    1 << (bit + 1) if 5 <= bit <= 8 else 1 << 5 if bit == 9 else 1 << bit
+    for bit in range(2, 21)
+)
+MEASURED_VRAM_ALIAS_RULES = {
+    0x04000000: (0x000000, MEASURED_VRAM_IDENTITY_COLUMNS),
+    0x04200000: (0x002040, MEASURED_VRAM_IDENTITY_COLUMNS),
+    0x04400000: (0x000000, MEASURED_VRAM_IDENTITY_COLUMNS),
+    0x04600000: (0x002040, MEASURED_VRAM_ROTATED_COLUMNS),
+    0x44000000: (0x000000, MEASURED_VRAM_IDENTITY_COLUMNS),
+    0x44200000: (0x002040, MEASURED_VRAM_IDENTITY_COLUMNS),
+    0x44400000: (0x000000, MEASURED_VRAM_IDENTITY_COLUMNS),
+    0x44600000: (0x002040, MEASURED_VRAM_ROTATED_COLUMNS),
+}
+MEASURED_VRAM_DEPTH_BYTE_XOR = 0x002040
+# Flat Z and rectangles aligned to eight pixels leave byte XOR phases 0x2..0xE
+# observationally equivalent; preserve the reported mask as a candidate and test
+# that the analyzer exposes the geometry's remaining ambiguity.
+MEASURED_VRAM_DEPTH_XOR_CANDIDATES = tuple(
+    MEASURED_VRAM_DEPTH_BYTE_XOR | low_xor
+    for low_xor in (0x0, 0x2, 0x4, 0x6, 0x8, 0xA, 0xC, 0xE)
+)
+MEASURED_VRAM_DEPTH_PHASE_AMBIGUITY = 0x00000E
+MEASURED_VRAM_DEPTH_ZBP = 0x000CC000
+MEASURED_VRAM_DEPTH_SCOPE_AMBIGUOUS = True
+
+
+def _apply_measured_vram_alias_rule(alias_base: int, offset: int) -> int:
+    constant, columns = MEASURED_VRAM_ALIAS_RULES[alias_base]
+    physical = constant | (offset & 3)
+    for bit in range(2, 21):
+        if offset & (1 << bit):
+            column = columns[bit]
+            if column is None:
+                raise AssertionError(f"missing synthetic column for input bit {bit}")
+            physical ^= column
+    return physical
 
 
 def stream(source: str, result: str = "0x1") -> str:
@@ -2388,12 +2433,12 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 89)
+        self.assertEqual(len(routes), 90)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(range(1, 76)) | set(range(90, 104)), set(ids))
+        self.assertEqual(set(range(1, 77)) | set(range(90, 104)), set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -2801,6 +2846,8 @@ class PspDmacProbeTests(unittest.TestCase):
                 # timer-order case from 22b027f6, the audio SRC case from 7fc1641e.
                 "PSP-VFPU-TRANSCENDENTAL-001", "PSP-HLE-TIMER-ORDER-001",
                 "PSP-HLE-AUDIO-SRC-001",
+                # The 2026-10-16 acceptance-eligible PSP-3000 VMIR3 run.
+                "PSP-VRAM-MIRROR-001",
             },
         )
         self.assertEqual(
@@ -2929,6 +2976,7 @@ class PspDmacProbeTests(unittest.TestCase):
             "PSP-GE-001": (GE_NAN_SPEC, "ge-nan"),
             "PSP-KERNEL-002": (None, "delay-zero"),
             "PSP-DMAC-001": (None, "dma-cells"),
+            "PSP-VRAM-MIRROR-001": (parse_golden.VRAM_MIRROR_SPEC, "vram-mirror"),
         }
         for test_id, (spec, campaign_case) in expected.items():
             with self.subTest(test_id=test_id):
@@ -2940,7 +2988,8 @@ class PspDmacProbeTests(unittest.TestCase):
                     self.assertEqual(entry["status"], "planned")
                     self.assertEqual(entry["hardware_evidence"], "MEASURED")
                     self.assertEqual(entry["evidence_cases"], entry["case_ids"])
-        for case_id in ("audio-query", "ge-nan", "dma-cells", "delay-zero"):
+        for case_id in ("audio-query", "ge-nan", "dma-cells", "delay-zero",
+                        "vram-mirror"):
             self.assertIn(f"else ifeq ($(CASE),{case_id})", self.makefile)
         delay_zero = by_id["PSP-KERNEL-002"]
         self.assertEqual(delay_zero["status"], "implemented")
@@ -5455,6 +5504,557 @@ class HleSingleLaunchProbeTests(unittest.TestCase):
         self.assertNotIn("until refusal", readme)
         self.assertIn("up to 64 creates; out1 records whether a refusal occurred", hardware)
         self.assertIn("up to 64 creates; out1 records whether a refusal occurred", readme)
+
+class VramMirrorParserTests(unittest.TestCase):
+    TEST_ID = "PSP-VRAM-MIRROR-001"
+    BASES = parse_golden.VRAM_MIRROR_BASES
+    WRITE_BASES = parse_golden.VRAM_MIRROR_WRITE_BASES
+
+    def test_vram_mirror_parser_is_registered(self) -> None:
+        self.assertTrue(callable(getattr(parse_golden, "parse_vram_mirror_output", None)))
+
+    def _record(self, case_id: str, outputs: tuple[int, ...] = (), *,
+                status: str = "PASS", result: int = 0) -> str:
+        fields = " ".join(
+            f"out{index}=0x{value:08x}" for index, value in enumerate(outputs)
+        )
+        suffix = f" {fields}" if fields else ""
+        return (
+            f"NAKAGAWA_PSP_TEST schema=1 test_id={self.TEST_ID} "
+            f"case_id={case_id} status={status} result=0x{result:08x}{suffix}\n"
+        )
+
+    def _address_pairs(
+        self, offsets: tuple[int, ...], value: int,
+        aliases: tuple[int, ...] | None = None,
+    ) -> tuple[int, ...]:
+        selected_aliases = self.BASES if aliases is None else aliases
+        return tuple(
+            field
+            for offset in offsets
+            for base in selected_aliases
+            for field in (base + offset, value)
+        )
+
+    def _stream(
+        self,
+        *,
+        observed_word: int = 0xDEADBEEF,
+        skipped: bool = False,
+        measured_rules: bool = False,
+        depth_storage_xor: int | None = None,
+        wrong_write_landing: bool = False,
+    ) -> str:
+        spec = parse_golden.VRAM_MIRROR_SPEC
+        color_frame_bytes = parse_golden.VRAM_MIRROR_FRAME_BYTES
+        display_bytes = color_frame_bytes * (2 if measured_rules else 1)
+        color_offset = display_bytes
+        depth_offset = color_offset + color_frame_bytes
+        if measured_rules and depth_storage_xor is None:
+            depth_storage_xor = MEASURED_VRAM_DEPTH_BYTE_XOR
+        info_values = {
+            "cached_base": self.BASES[0],
+            "uncached_base": self.BASES[4],
+            "display_offset": 0,
+            "display_bytes": display_bytes,
+            "display_stride": 512,
+            "display_format": 3 if measured_rules else 0,
+            "color_offset": color_offset,
+            "color_frame_bytes": parse_golden.VRAM_MIRROR_FRAME_BYTES,
+            "depth_offset": depth_offset,
+            "depth_frame_bytes": parse_golden.VRAM_MIRROR_FRAME_BYTES,
+            "vram_bytes": parse_golden.VRAM_MIRROR_BYTES,
+            "cpu_sample_word_count": parse_golden.VRAM_MIRROR_CPU_SAMPLE_WORD_COUNT,
+            "cpu_dense_offset": parse_golden.VRAM_MIRROR_DENSE_OFFSET,
+            "cpu_dense_rows": parse_golden.VRAM_MIRROR_DENSE_ROWS,
+            "cpu_row_bytes": parse_golden.VRAM_MIRROR_ROW_BYTES,
+            "cpu_pair_region_count": len(parse_golden.VRAM_MIRROR_PAIR_BASES),
+            "cpu_pair_rows": parse_golden.VRAM_MIRROR_PAIR_ROWS,
+            "cpu_sweep_first_bit": parse_golden.VRAM_MIRROR_SWEEP_FIRST_BIT,
+            "cpu_sweep_last_bit": parse_golden.VRAM_MIRROR_SWEEP_LAST_BIT,
+            "write_alias_count": len(self.WRITE_BASES),
+            "write_sample_count": len(parse_golden.VRAM_MIRROR_WRITE_OFFSETS),
+            "write_offset_0": parse_golden.VRAM_MIRROR_WRITE_OFFSETS[0],
+            "write_offset_1": parse_golden.VRAM_MIRROR_WRITE_OFFSETS[1],
+            "write_offset_2": parse_golden.VRAM_MIRROR_WRITE_OFFSETS[2],
+            "write_scan_bytes": parse_golden.VRAM_MIRROR_BYTES,
+            "depth_stride": parse_golden.VRAM_MIRROR_DEPTH_STRIDE,
+            "depth_row_count": len(parse_golden.VRAM_MIRROR_DEPTH_ROWS),
+            **{
+                f"depth_row_y{row}": y
+                for row, y in enumerate(parse_golden.VRAM_MIRROR_DEPTH_ROWS)
+            },
+            "depth_alias_count": len(parse_golden.VRAM_MIRROR_DEPTH_ALIASES),
+            "depth_chunk_pixels": parse_golden.VRAM_MIRROR_DEPTH_CHUNK_PIXELS,
+            "color_row_count": len(parse_golden.VRAM_MIRROR_COLOR_ROWS),
+            **{
+                f"color_row_y{row}": y
+                for row, y in enumerate(parse_golden.VRAM_MIRROR_COLOR_ROWS)
+            },
+            "color_chunk_pixels": parse_golden.VRAM_MIRROR_COLOR_CHUNK_PIXELS,
+            "depth_test_enabled": 1,
+            "depth_function": parse_golden.VRAM_MIRROR_DEPTH_FUNCTION_ALWAYS,
+            "depth_mask": parse_golden.VRAM_MIRROR_DEPTH_MASK_WRITE_ENABLE,
+            "depth_range_near": parse_golden.VRAM_MIRROR_DEPTH_RANGE_NEAR,
+            "depth_range_far": parse_golden.VRAM_MIRROR_DEPTH_RANGE_FAR,
+            "clear_depth": parse_golden.VRAM_MIRROR_CLEAR_DEPTH,
+            "pattern_prefix": parse_golden.VRAM_MIRROR_PATTERN_PREFIX,
+            "marker_prefix": parse_golden.VRAM_MIRROR_MARKER_PREFIX,
+            "cached_alias_count": parse_golden.VRAM_MIRROR_CACHED_ALIAS_COUNT,
+        }
+        info = info_values
+        depth_writes = None
+        if depth_storage_xor is not None:
+            depth_writes = {}
+            for sprite_case in parse_golden.VRAM_MIRROR_GE_SYNC_CASES:
+                if sprite_case[1] == 0:
+                    continue
+                x0, y0, z0, x1, y1, z1 = sprite_case[2:8]
+                if z0 != z1:
+                    raise AssertionError("synthetic sprite Z endpoints must agree")
+                for source_y in range(y0, y1):
+                    for source_x in range(x0, x1):
+                        linear = source_y * 1024 + 2 * source_x
+                        depth_writes[depth_offset + (linear ^ depth_storage_xor)] = z0
+        rows = [META.format(
+            source="psp", model="PSP-3000", firmware="6.61-ARK",
+            binary=MEASURED_SHA, commit=MEASURED_COMMIT,
+        )]
+        for case_id in spec.ordered_cases:
+            if skipped:
+                terminal = case_id == spec.terminal_case
+                rows.append(self._record(
+                    case_id,
+                    (len(spec.semantic_cases),) if terminal else (),
+                    status="SKIP", result=4,
+                ))
+                continue
+            if case_id == "vram-mirror-info":
+                outputs = tuple(info_values[field]
+                                for field in parse_golden.VRAM_MIRROR_INFO_FIELDS)
+            elif match := re.fullmatch(r"vram-cpu-pattern-(\d{3})", case_id):
+                chunk = int(match.group(1))
+                first = chunk * parse_golden.VRAM_MIRROR_SAMPLE_CHUNK_WORDS
+                offsets = parse_golden._vram_mirror_sample_offsets()[
+                    first:first + parse_golden.VRAM_MIRROR_SAMPLE_CHUNK_WORDS
+                ]
+                if measured_rules:
+                    outputs = tuple(
+                        field
+                        for offset in offsets
+                        for alias in self.BASES
+                        for field in (
+                            alias + offset,
+                            parse_golden.VRAM_MIRROR_PATTERN_PREFIX
+                            | _apply_measured_vram_alias_rule(alias, offset),
+                        )
+                    )
+                else:
+                    outputs = self._address_pairs(offsets, observed_word)
+            elif match := re.fullmatch(r"vram-cpu-write-mirror-(\d{2})-(\d{2})", case_id):
+                alias, sample = (int(part) for part in match.groups())
+                offset = parse_golden.VRAM_MIRROR_WRITE_OFFSETS[sample]
+                if measured_rules:
+                    found_offset = _apply_measured_vram_alias_rule(
+                        self.WRITE_BASES[alias], offset
+                    )
+                    if wrong_write_landing and alias == 0 and sample == 0:
+                        found_offset ^= 4
+                    found_count = 1
+                else:
+                    found_offset = (
+                        0xFFFFFFFF if alias == 0 and sample == 0
+                        else 0x12000 + alias * 0x100 + sample * 4
+                    )
+                    found_count = 0 if found_offset == 0xFFFFFFFF else 1
+                outputs = (
+                    self.WRITE_BASES[alias] + offset,
+                    parse_golden.VRAM_MIRROR_MARKER_PREFIX | (alias << 20) | offset,
+                    found_offset,
+                    found_count,
+                )
+            elif case_id in {item[0] for item in parse_golden.VRAM_MIRROR_GE_SYNC_CASES}:
+                sync_case = next(
+                    item for item in parse_golden.VRAM_MIRROR_GE_SYNC_CASES
+                    if item[0] == case_id
+                )
+                outputs = (
+                    0, 0, 4, 123, 1, 0, 1,
+                    parse_golden.VRAM_MIRROR_CACHED_ALIAS_COUNT,
+                    info["depth_offset"], parse_golden.VRAM_MIRROR_DEPTH_STRIDE,
+                    parse_golden.VRAM_MIRROR_DEPTH_RANGE_NEAR,
+                    parse_golden.VRAM_MIRROR_DEPTH_RANGE_FAR,
+                    parse_golden.VRAM_MIRROR_DEPTH_FUNCTION_ALWAYS,
+                    parse_golden.VRAM_MIRROR_DEPTH_MASK_WRITE_ENABLE,
+                    1, parse_golden.VRAM_MIRROR_CLEAR_DEPTH,
+                    *sync_case[1:],
+                )
+            elif match := re.fullmatch(r"vram-ge-depth-row(\d+)-(\d{2})", case_id):
+                row, chunk = (int(part) for part in match.groups())
+                y = parse_golden.VRAM_MIRROR_DEPTH_ROWS[row]
+                offsets = tuple(
+                    info["depth_offset"] + (
+                        y * parse_golden.VRAM_MIRROR_DEPTH_STRIDE
+                        + chunk * parse_golden.VRAM_MIRROR_DEPTH_CHUNK_PIXELS + pixel
+                    ) * 2
+                    for pixel in range(parse_golden.VRAM_MIRROR_DEPTH_CHUNK_PIXELS)
+                )
+                if depth_storage_xor is None:
+                    outputs = self._address_pairs(
+                        offsets, observed_word & 0xFFFF,
+                        aliases=parse_golden.VRAM_MIRROR_DEPTH_ALIASES,
+                    )
+                else:
+                    output_fields = []
+                    for offset in offsets:
+                        for alias in parse_golden.VRAM_MIRROR_DEPTH_ALIASES:
+                            physical = (
+                                _apply_measured_vram_alias_rule(alias, offset)
+                                if measured_rules else offset
+                            )
+                            output_fields.extend((
+                                alias + offset,
+                                depth_writes.get(
+                                    physical, parse_golden.VRAM_MIRROR_CLEAR_DEPTH
+                                ),
+                            ))
+                    outputs = tuple(output_fields)
+            elif match := re.fullmatch(r"vram-ge-color-row(\d+)-(\d{2})", case_id):
+                row, chunk = (int(part) for part in match.groups())
+                y = parse_golden.VRAM_MIRROR_COLOR_ROWS[row]
+                offsets = tuple(
+                    info["color_offset"] + (
+                        y * parse_golden.VRAM_MIRROR_DEPTH_STRIDE
+                        + chunk * parse_golden.VRAM_MIRROR_COLOR_CHUNK_PIXELS + pixel
+                    ) * 2
+                    for pixel in range(parse_golden.VRAM_MIRROR_COLOR_CHUNK_PIXELS)
+                )
+                outputs = self._address_pairs(
+                    offsets, observed_word & 0xFFFF,
+                    aliases=(parse_golden.VRAM_MIRROR_COLOR_ALIAS,),
+                )
+            elif case_id == "vram-restore":
+                outputs = (
+                    0x44000000, 0x200000,
+                    2 * parse_golden.VRAM_MIRROR_CACHED_ALIAS_COUNT, 0, 1,
+                )
+            else:
+                outputs = (len(spec.semantic_cases),)
+            rows.append(self._record(case_id, outputs))
+        return "".join(rows)
+
+    def test_complete_stream_checks_shape_and_keeps_hardware_words_unpinned(self) -> None:
+        parse = parse_golden.parse_vram_mirror_output
+        report = parse(self._stream(), require_complete=True)
+        self.assertTrue(report.complete)
+        self.assertTrue(report.all_passed)
+        changed = parse(self._stream(observed_word=0x13579BDF), require_complete=True)
+        self.assertTrue(changed.all_passed)
+
+    def test_analysis_derives_measured_alias_maps_write_landings_and_depth_xor(self) -> None:
+        parsed = parse_golden.parse_vram_mirror_output(
+            self._stream(measured_rules=True), require_complete=True
+        )
+        analysis = parse_golden.analyze_vram_mirror_run(parsed)
+        transforms = {item.alias_base: item for item in analysis.address_transforms}
+        self.assertEqual(set(transforms), set(MEASURED_VRAM_ALIAS_RULES))
+        for alias_base, (constant, columns) in MEASURED_VRAM_ALIAS_RULES.items():
+            with self.subTest(alias=hex(alias_base)):
+                self.assertEqual(transforms[alias_base].constant, constant)
+                self.assertEqual(transforms[alias_base].column_map, columns)
+        self.assertEqual(len(analysis.write_landings), 18)
+        self.assertTrue(all(
+            item.unique_match_agrees_with_read_transform is True
+            for item in analysis.write_landings
+        ))
+        first_swizzled_write = next(
+            item for item in analysis.write_landings
+            if item.alias_base == 0x04200000 and item.requested_offset == 0x100
+        )
+        self.assertEqual(first_swizzled_write.first_found_offset, 0x2140)
+        self.assertEqual(
+            analysis.depth_storage.relative_xor_candidates,
+            MEASURED_VRAM_DEPTH_XOR_CANDIDATES,
+        )
+        self.assertEqual(
+            analysis.depth_storage.absolute_xor_candidates,
+            MEASURED_VRAM_DEPTH_XOR_CANDIDATES,
+        )
+        self.assertEqual(
+            analysis.depth_storage.relative_xor_common_bits,
+            MEASURED_VRAM_DEPTH_BYTE_XOR,
+        )
+        self.assertEqual(
+            analysis.depth_storage.absolute_xor_common_bits,
+            MEASURED_VRAM_DEPTH_BYTE_XOR,
+        )
+        self.assertEqual(
+            analysis.depth_storage.relative_xor_candidates[0]
+            ^ analysis.depth_storage.relative_xor_candidates[-1],
+            MEASURED_VRAM_DEPTH_PHASE_AMBIGUITY,
+        )
+        self.assertEqual(
+            analysis.depth_storage.absolute_vs_relative_scope_ambiguous,
+            MEASURED_VRAM_DEPTH_SCOPE_AMBIGUOUS,
+        )
+        self.assertGreater(analysis.depth_storage.alias_crosschecked_words, 0)
+
+    def test_analysis_rejects_a_non_affine_alias_sample(self) -> None:
+        lines = self._stream(measured_rules=True).splitlines()
+        sample_index = next(
+            index for index, line in enumerate(lines)
+            if "case_id=vram-cpu-pattern-000 " in line
+        )
+        mapped = _apply_measured_vram_alias_rule(0x04200000, 0x088000)
+        wrong_word = parse_golden.VRAM_MIRROR_PATTERN_PREFIX | (mapped ^ 4)
+        lines[sample_index] = re.sub(
+            r"out3=0x[0-9a-f]+", f"out3=0x{wrong_word:08x}",
+            lines[sample_index], count=1,
+        )
+        parsed = parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
+        with self.assertRaisesRegex(ProtocolError, "not affine over GF\\(2\\)"):
+            parse_golden.analyze_vram_mirror_run(parsed)
+
+    def test_analysis_reports_wrong_write_and_depth_rules_differently(self) -> None:
+        write_run = parse_golden.parse_vram_mirror_output(
+            self._stream(measured_rules=True, wrong_write_landing=True)
+        )
+        write_analysis = parse_golden.analyze_vram_mirror_run(write_run)
+        mismatched_write = next(
+            item for item in write_analysis.write_landings
+            if item.alias_base == 0x04200000 and item.requested_offset == 0x100
+        )
+        self.assertIs(mismatched_write.unique_match_agrees_with_read_transform, False)
+
+        depth_run = parse_golden.parse_vram_mirror_output(
+            self._stream(measured_rules=True, depth_storage_xor=0x40)
+        )
+        depth_analysis = parse_golden.analyze_vram_mirror_run(depth_run)
+        self.assertNotEqual(
+            depth_analysis.depth_storage.relative_xor_candidates,
+            (MEASURED_VRAM_DEPTH_BYTE_XOR,),
+        )
+
+    def test_position_sample_plan_includes_dense_pair_and_bit_sweep_words(self) -> None:
+        offsets = parse_golden._vram_mirror_sample_offsets()
+        self.assertEqual(len(offsets), 4134)
+        self.assertEqual(offsets[0], 0x088000)
+        self.assertEqual(offsets[2047], 0x089FFC)
+        self.assertIn(0x1FFFFC, offsets)
+        for bit in range(2, 21):
+            self.assertIn(0x088000 ^ (1 << bit), offsets)
+            self.assertIn(1 << bit, offsets)
+
+    def test_wrong_addresses_and_truncated_chunks_are_rejected(self) -> None:
+        stream = self._stream()
+        lines = stream.splitlines()
+        sample_index = next(
+            index for index, line in enumerate(lines)
+            if "case_id=vram-cpu-pattern-000 " in line
+        )
+        lines[sample_index] = lines[sample_index].replace(
+            "out0=0x04088000", "out0=0x04088004", 1
+        )
+        with self.assertRaises(ProtocolError):
+            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
+
+        lines = stream.splitlines()
+        sample_index = next(
+            index for index, line in enumerate(lines)
+            if "case_id=vram-cpu-pattern-000 " in line
+        )
+        lines[sample_index] = re.sub(r" out127=0x[0-9a-f]+$", "", lines[sample_index])
+        with self.assertRaises(ProtocolError):
+            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
+
+        lines = self._stream().splitlines()
+        info_index = next(
+            index for index, line in enumerate(lines)
+            if "case_id=vram-mirror-info " in line
+        )
+        lines[info_index] = lines[info_index].replace(
+            "out3=0x00044000", "out3=0x00044100", 1
+        )
+        with self.assertRaises(ProtocolError):
+            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
+
+    def test_write_scan_outcomes_are_not_pinned(self) -> None:
+        lines = self._stream().splitlines()
+        write_index = next(
+            index for index, line in enumerate(lines)
+            if "case_id=vram-cpu-write-mirror-00-00 " in line
+        )
+        lines[write_index] = lines[write_index].replace(
+            "out2=0xffffffff out3=0x00000000",
+            "out2=0x00012340 out3=0x00000002",
+            1,
+        )
+        self.assertTrue(
+            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n").all_passed
+        )
+
+        lines[write_index] = lines[write_index].replace(
+            "out2=0x00012340 out3=0x00000002",
+            "out2=0xffffffff out3=0x00000001",
+            1,
+        )
+        with self.assertRaises(ProtocolError):
+            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
+
+    def test_ge_state_and_depth_row_addresses_are_checked_without_pinning_values(self) -> None:
+        lines = self._stream().splitlines()
+        sync_index = next(
+            index for index, line in enumerate(lines)
+            if "case_id=vram-ge-clear-sync " in line
+        )
+        lines[sync_index] = lines[sync_index].replace(
+            "out12=0x00000001", "out12=0x00000000", 1
+        )
+        with self.assertRaises(ProtocolError):
+            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
+
+        lines = self._stream().splitlines()
+        depth_index = next(
+            index for index, line in enumerate(lines)
+            if "case_id=vram-ge-depth-row0-00 " in line
+        )
+        lines[depth_index] = re.sub(
+            r"out0=0x[0-9a-f]+", "out0=0x44088002", lines[depth_index], count=1
+        )
+        with self.assertRaises(ProtocolError):
+            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
+
+        lines = self._stream().splitlines()
+        color_index = next(
+            index for index, line in enumerate(lines)
+            if "case_id=vram-ge-color-row0-00 " in line
+        )
+        lines[color_index] = re.sub(
+            r"out0=0x[0-9a-f]+", "out0=0x44044002", lines[color_index], count=1
+        )
+        with self.assertRaises(ProtocolError):
+            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
+
+        changed = self._stream(observed_word=0x1BADB002)
+        self.assertTrue(parse_golden.parse_vram_mirror_output(changed).all_passed)
+
+    def test_setup_skip_is_complete_but_never_reports_a_pass(self) -> None:
+        report = parse_golden.parse_vram_mirror_output(
+            self._stream(skipped=True), require_complete=True
+        )
+        self.assertTrue(report.complete)
+        self.assertFalse(report.all_passed)
+
+    def test_probe_case_is_in_the_build_and_runner_registry(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        makefile = (root / "fixtures" / "psp_oracle" / "Makefile").read_text(
+            encoding="utf-8"
+        )
+        probe = (root / "fixtures" / "psp_oracle" / "probe.c").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("else ifeq ($(CASE),vram-mirror)\nCASE_ID = 76\n", makefile)
+        self.assertIn("#define PSP_ORACLE_CASE_VRAM_MIRROR 76", probe)
+        self.assertIn('#define PROBE_HOST0_LOG "host0:/vram_mirror_log.txt"', probe)
+        self.assertIn("vram-mirror", CAMPAIGN_QUEUE_CASES)
+        from psp_oracle.run_psplink import CAMPAIGN_CASE_ESTIMATE_SECONDS
+
+        self.assertIn("vram-mirror", CAMPAIGN_CASE_ESTIMATE_SECONDS)
+        self.assertEqual(_campaign_completeness_contract("vram-mirror"),
+                         "strict-golden-sequence")
+        self.assertEqual(_campaign_host0_log_path(Path("host0"), "vram-mirror").name,
+                         "vram_mirror_log.txt")
+        self.assertTrue(_campaign_stream_complete(self._stream(), "vram-mirror"))
+
+    def test_probe_case_ids_are_registered_in_the_strict_protocol_table(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        probe = (root / "fixtures" / "psp_oracle" / "probe.c").read_text(
+            encoding="utf-8"
+        )
+        self.assertEqual(probe.count('"vram-ge-depth-row%u-%02u"'), 2)
+        self.assertEqual(probe.count('"vram-ge-color-row%u-%02u"'), 2)
+        emitted_case_ids = (
+            ("vram-mirror-info",)
+            + tuple(
+                f"vram-cpu-pattern-{chunk:03d}"
+                for chunk in range(parse_golden.VRAM_MIRROR_CPU_SAMPLE_CHUNK_COUNT)
+            )
+            + tuple(
+                f"vram-cpu-write-mirror-{alias:02d}-{sample:02d}"
+                for alias in range(len(self.WRITE_BASES))
+                for sample in range(len(parse_golden.VRAM_MIRROR_WRITE_OFFSETS))
+            )
+            + tuple(case[0] for case in parse_golden.VRAM_MIRROR_GE_SYNC_CASES)
+            + tuple(
+                f"vram-ge-depth-row{row}-{chunk:02d}"
+                for row in range(len(parse_golden.VRAM_MIRROR_DEPTH_ROWS))
+                for chunk in range(parse_golden.VRAM_MIRROR_DEPTH_ROW_CHUNK_COUNT)
+            )
+            + tuple(
+                f"vram-ge-color-row{row}-{chunk:02d}"
+                for row in range(len(parse_golden.VRAM_MIRROR_COLOR_ROWS))
+                for chunk in range(parse_golden.VRAM_MIRROR_COLOR_ROW_CHUNK_COUNT)
+            )
+            + ("vram-restore", "vram-mirror-done")
+        )
+        self.assertEqual(emitted_case_ids, parse_golden.VRAM_MIRROR_SPEC.ordered_cases)
+        parsed = _parse_campaign_records(self._stream(), "vram-mirror")
+        self.assertEqual(
+            tuple(record.case_id for record in parsed.results), emitted_case_ids
+        )
+
+    def test_manifest_and_docs_record_measured_hardware_result(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        manifest = json.loads(
+            (root / "tools" / "psp_oracle" / "manifest.json").read_text(encoding="utf-8")
+        )
+        row = next(test for test in manifest["tests"]
+                   if test["id"] == self.TEST_ID)
+        self.assertEqual(row["hardware_evidence"], "MEASURED")
+        self.assertEqual(
+            row["evidence_ref"],
+            "docs/HARDWARE_ORACLE.md#psp-vram-mirror-001-measured-run-2026-10-16",
+        )
+        self.assertEqual(row["case_ids"], list(parse_golden.VRAM_MIRROR_SPEC.ordered_cases))
+        self.assertEqual(set(row["evidence_cases"]), set(row["apis"]) | set(row["case_ids"]))
+        self.assertIn("acceptance-eligible", row["evidence_note"])
+        self.assertIn("acceptance-eligible", row["measurement_note"])
+        readme = (root / "fixtures" / "psp_oracle" / "README.md").read_text(
+            encoding="utf-8"
+        )
+        doc = (root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
+        self.assertIn("| `vram-mirror` | `PSP-VRAM-MIRROR-001` |", readme)
+        self.assertIn("**MEASURED** on 2026-10-16", readme)
+        self.assertIn(
+            "| `vram-mirror` | `PSP-VRAM-MIRROR-001` | `MEASURED` (2026-10-16",
+            doc,
+        )
+        self.assertIn("PSP-VRAM-MIRROR-001 measured run 2026-10-16", doc)
+        self.assertIn("had zero mismatches across 4,134 sampled words", doc)
+        self.assertIn("Address bits 0 and 1 are not independently", doc)
+        self.assertIn("(y * 1024 + 2x) ^ 0x2040", doc)
+        self.assertIn("Sub-word address bits were not independently measured", readme)
+
+    def test_probe_snapshots_and_verifies_full_edram_restore(self) -> None:
+        probe = (Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+                 / "probe.c").read_text(encoding="utf-8")
+        self.assertIn("malloc(VRAM_MIRROR_SIZE)", probe)
+        self.assertIn("memcpy((void *)(uintptr_t)0x44000000u, backup, VRAM_MIRROR_SIZE)", probe)
+        self.assertIn("restore_mismatches += restored[byte] != backup[byte]", probe)
+        self.assertIn("VRAM_MIRROR_PATTERN_PREFIX | offset", probe)
+        self.assertIn("sceGuClearDepth(VRAM_MIRROR_CLEAR_DEPTH)", probe)
+        self.assertIn("sceGuClear(GU_DEPTH_BUFFER_BIT)", probe)
+        self.assertIn("sceGuEnable(GU_DEPTH_TEST)", probe)
+        self.assertIn("sceGuDepthFunc(GU_ALWAYS)", probe)
+        self.assertIn("sceGuDepthMask(GU_FALSE)", probe)
+        self.assertIn("GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D", probe)
+        self.assertIn("sceGuDrawArray(GU_SPRITES, vertex_type, 2", probe)
+        self.assertIn("0x1111u, 32u, 16u, 0x1111u", probe)
+        self.assertIn("0x2222u, 96u, 12u, 0x2222u", probe)
+        self.assertIn("0x3333u, 208u, 101u, 0x3333u", probe)
+        self.assertIn("sceGeDrawSync(1)", probe)
+        self.assertIn("base_words[scan_offset / sizeof(uint32_t)] == marker", probe)
+
 
 if __name__ == "__main__":
     unittest.main()

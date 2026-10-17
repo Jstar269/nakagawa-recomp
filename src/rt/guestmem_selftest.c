@@ -57,6 +57,17 @@ static void test_scalar_bounds(void) {
     CHECK(sr_inrange_n(0x0bfffffcu, 4), "aligned 4-byte read ending at arena end is ok");
     CHECK(!sr_inrange_n(0x0bfffffeu, 4), "4-byte read whose tail passes arena end must fail");
     CHECK(!sr_inrange_n(0x0bffffffu, 2), "2-byte read straddling arena end must fail");
+
+    /* A host pointer remains contiguous inside one swizzle block, but cannot span
+     * a 32-byte or 64-byte remapping boundary. */
+    CHECK(sr_guest_span_readable(0x04200100u, 4u),
+          "a bulk span inside one 0x042 swizzle block remains contiguous");
+    CHECK(!sr_guest_span_readable(0x0420003fu, 2u),
+          "a bulk span crossing the 0x042 64-byte swizzle boundary must fail");
+    CHECK(!sr_guest_span_writable(0x0460001fu, 2u),
+          "a bulk span crossing the 0x046 32-byte swizzle boundary must fail");
+    CHECK(!sr_guest_span_readable(0x04201fffu, 2u),
+          "a bulk span crossing the 0x042 8 KiB swizzle boundary must fail");
 }
 
 static void test_overflow_safety(void) {
@@ -191,7 +202,8 @@ static void fuzz_differential(void) {
             int want = ref_span_ok(a, s);
             if (got != want) span_mismatch++;
             int gotr = sr_guest_span_readable(a, s);
-            if (gotr != want) span_mismatch++;
+            int span_want = want && !sr_guest_span_hits_swizzled_vram_mirror(a, s);
+            if (gotr != span_want) span_mismatch++;
         }
 
         uint32_t out = 0;

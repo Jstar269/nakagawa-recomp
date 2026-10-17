@@ -355,7 +355,10 @@ static int convert_frame(Dec *d, const uint8_t *src, uint32_t srcLen,
     uint64_t bpp = pixelMode == 3 ? 4u : 2u;
     uint64_t rowBytes64 = (uint64_t)(uint32_t)w * bpp;
     uint64_t pitchBytes64 = (uint64_t)(uint32_t)frameWidth * bpp;
-    if (rowBytes64 == 0 || rowBytes64 > UINT32_MAX || pitchBytes64 == 0 || pitchBytes64 > UINT32_MAX)
+    uint64_t totalBytes64 = (uint64_t)(uint32_t)(h - 1) * pitchBytes64 + rowBytes64;
+    if (rowBytes64 == 0 || rowBytes64 > UINT32_MAX || pitchBytes64 == 0 ||
+        pitchBytes64 > UINT32_MAX || totalBytes64 > UINT32_MAX ||
+        !sr_guest_span_writable(buffer, (uint32_t)totalBytes64))
         return 0;
     /* Preflight every destination row before taking a host pointer.  A single malformed row
      * must not leave an earlier row partially converted in guest VRAM. */
@@ -365,6 +368,7 @@ static int convert_frame(Dec *d, const uint8_t *src, uint32_t srcLen,
             !sr_guest_span_writable((uint32_t)rowAddr, (uint32_t)rowBytes64)) return 0;
     }
     uint8_t *dst = (uint8_t *)SR_HOST(buffer);
+    sr_guest_vram_write_prepare_bytes(buffer, (uint32_t)totalBytes64);
     const uint8_t *yp = src, *uvp = src + (size_t)yBytes;
     uint32_t rowBytes = (uint32_t)rowBytes64;
     uint32_t pitchBytes = (uint32_t)pitchBytes64;
@@ -399,13 +403,12 @@ static int convert_frame(Dec *d, const uint8_t *src, uint32_t srcLen,
             }
         }
     }
-    extern void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes);
     uint64_t fullBytes = (uint64_t)(uint32_t)h * pitchBytes64;
     if (w == frameWidth && fullBytes <= UINT32_MAX) {
-        sr_gpu_vram_dirty(buffer, (uint32_t)fullBytes);
+        sr_guest_vram_write_commit_bytes(buffer, (uint32_t)fullBytes);
     } else {
         for (int y = 0; y < h; y++) {
-            sr_gpu_vram_dirty(buffer + (uint32_t)y * pitchBytes, rowBytes);
+            sr_guest_vram_write_commit_bytes(buffer + (uint32_t)y * pitchBytes, rowBytes);
         }
     }
     return 1;
