@@ -20,7 +20,7 @@ static int ge(const uint8_t *a, const uint8_t *b)
     for (int i = 0; i < NK_EC_Len; i++) {
         if (a[i] != b[i]) return a[i] > b[i];
     }
-    return 0;
+    return 1;
 }
 
 static int is_zero(const uint8_t *a)
@@ -228,6 +228,7 @@ static void point_add(const NkEcParams *params, const EcPoint *p,
     }
     uint8_t dy[NK_EC_Len], inv[NK_EC_Len], lambda[NK_EC_Len];
     mod_sub(p->y, q->y, params->p, dy);
+    mod_sub(p->x, q->x, params->p, dx);
     mod_inv(dx, params->p, inv);
     mod_mul(dy, inv, params->p, lambda);
 
