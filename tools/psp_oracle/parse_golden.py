@@ -2735,8 +2735,8 @@ def parse_font_list_output(text: str, *, require_complete: bool = True) -> FontL
 #
 # umd-state-before, io-open-NNNN for each fixed open, io-dopen-NNNN for each
 # fixed dopen, umd-state-after, umdio-done. The path lists below mirror the
-# probe source (a test keeps them equal); the parser records results and never
-# decides which answer is correct.
+# probe source (a test keeps them equal). The default parser records results;
+# its explicit measured mode compares the accepted inserted-UMD run below.
 # ---------------------------------------------------------------------------
 
 UMDIO_TEST_ID = "PSP-UMDIO-001"
@@ -2748,6 +2748,21 @@ UMDIO_OPENS = (
     ("umd0:", 0xF0001), ("umd1:", 0xF0001), ("msstor0p1:/", 0x1),
 )
 UMDIO_DOPENS = ("umd0:", "umd1:", "umd:", "disc0:", "disc0:/", "disc0:/PSP_GAME")
+UMDIO_MEASURED_STATE = (0x00000001, 0x00000032)
+UMDIO_MEASURED_OPEN_RESULTS = (
+    (0x00000003, 0x00000000), (0x00000003, 0x00000000),
+    (0x00000003, 0x00000000), (0x00000003, 0x00000000),
+    (0x00000003, 0x00000000), (0x80010016, 0xFFFFFFFF),
+    (0x80010002, 0xFFFFFFFF), (0x00000003, 0x00000000),
+    (0x00000003, 0x00000000), (0x00000003, 0x00000000),
+    (0x00000003, 0x00000000), (0x00000003, 0x00000000),
+    (0x00000003, 0x00000000),
+)
+UMDIO_MEASURED_DOPEN_RESULTS = (
+    (0x80020325, 0xFFFFFFFF), (0x80020325, 0xFFFFFFFF),
+    (0x80020325, 0xFFFFFFFF), (0x80010016, 0xFFFFFFFF),
+    (0x00000003, 0x00000000), (0x00000003, 0x00000000),
+)
 
 
 @dataclass(frozen=True)
@@ -2760,8 +2775,9 @@ class UmdIoReport:
     dopens: tuple[tuple[str, int, int], ...]
 
 
-def parse_umd_io_output(text: str, *, require_complete: bool = True) -> UmdIoReport:
-    """Validate the fixed bare-device open/dopen stream."""
+def parse_umd_io_output(text: str, *, require_complete: bool = True,
+                        require_measured: bool = False) -> UmdIoReport:
+    """Validate the fixed bare-device stream and optionally its measured run."""
 
     tid = UMDIO_TEST_ID
     parsed = parse_output(text)
@@ -2819,7 +2835,17 @@ def parse_umd_io_output(text: str, *, require_complete: bool = True) -> UmdIoRep
             }
             if any(values[field] != value for field, value in counts.items()):
                 raise ProtocolError(f"{tid}: umdio-done counts disagree")
-    return UmdIoReport(parsed, complete, before, after, tuple(opens), tuple(dopens))
+    report = UmdIoReport(parsed, complete, before, after, tuple(opens), tuple(dopens))
+    if require_measured:
+        if not complete:
+            raise ProtocolError(f"{tid}: measured validation requires a complete stream")
+        if before != UMDIO_MEASURED_STATE or after != UMDIO_MEASURED_STATE:
+            raise ProtocolError(f"{tid}: stream is not the measured inserted-UMD state")
+        if tuple((item[2], item[3]) for item in report.opens) != UMDIO_MEASURED_OPEN_RESULTS:
+            raise ProtocolError(f"{tid}: sceIoOpen results differ from the measured PSP table")
+        if tuple((item[1], item[2]) for item in report.dopens) != UMDIO_MEASURED_DOPEN_RESULTS:
+            raise ProtocolError(f"{tid}: sceIoDopen results differ from the measured PSP table")
+    return report
 
 
 # ---------------------------------------------------------------------------
