@@ -673,6 +673,104 @@ int main(void) {{
                 "resume_sp=0x00001000 owner_sp=0x00001000", ran.stdout
             )
 
+    def test_call_boundary_preserves_modified_link_register(self):
+        """Verify $ra modified inside delay slot or callee is preserved on call boundary."""
+        assert CC is not None
+        caller = 0x00001000
+        callee = 0x00001020
+        words = {
+            caller: 0x0C000408,       # jal 0x1020
+            caller + 4: 0x37FF0055,   # delay slot: ori ra, ra, 0x55 (modifies $ra in delay slot)
+            caller + 8: 0x03E00008,   # jr ra (return from caller)
+            caller + 12: 0x00000000,  # nop
+            callee: 0x37FF00AA,       # ori ra, ra, 0xaa (modifies $ra inside callee)
+            callee + 4: 0x03E00008,   # jr ra
+            callee + 8: 0x00000000,   # nop
+        }
+        with scratch_dir.TemporaryDirectory(prefix="call_ra_mod_") as tmp:
+            work = Path(tmp)
+            elf = work / "call_ra_mod.elf"
+            generated = work / "call_ra_mod.c"
+            elf.write_bytes(_synthetic_elf(words, caller))
+            env = dict(os.environ)
+            result = subprocess.run(
+                [sys.executable, str(CODEGEN), str(elf), str(generated), "--profile=hst"],
+                cwd=ROOT, env=env, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+            recomp_h = (
+                "#ifndef TEST_RECOMP_H\n"
+                "#define TEST_RECOMP_H\n"
+                "#include <stdint.h>\n"
+                "#define SR_CPUSTATE_ABI_VERSION 3u\n"
+                "typedef struct CpuState { uint32_t r[32]; uint32_t pc; } CpuState;\n"
+                "uint32_t test_mem_r32(uint32_t addr);\n"
+                "void test_mem_w32(uint32_t addr, uint32_t value);\n"
+                "#define MEM_R32(a) test_mem_r32((uint32_t)(a))\n"
+                "#define MEM_W32(a, v) test_mem_w32((uint32_t)(a), (uint32_t)(v))\n"
+                "#define MEM_W32_PC(a, v, pc) test_mem_w32((uint32_t)(a), (uint32_t)(v))\n"
+                "#define SR_YIELD(s, pc) ((void)0)\n"
+                "#define sr_begin(s, pc, op) ((void)0)\n"
+                "#define sr_end(s, addr, size) ((void)0)\n"
+                "void dispatch(CpuState *s, uint32_t target);\n"
+                "void dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc);\n"
+                "void sr_register(uint32_t addr, void (*fn)(CpuState *));\n"
+                "void sr_exec_span_reset(void);\n"
+                "int sr_exec_span_register(uint32_t start, uint32_t end);\n"
+                "void sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc);\n"
+                "void sr_hle_call(CpuState *s, uint32_t nid);\n"
+                "void sr_syscall(CpuState *s, uint32_t nid);\n"
+                "void sr_unimplemented(uint32_t addr, const char *reason);\n"
+                "#endif\n"
+            )
+            (work / "recomp.h").write_bytes(recomp_h.encode("ascii"))
+
+            harness_c = (
+                "#include <stdint.h>\n"
+                "#include <stdio.h>\n"
+                "#include <stdlib.h>\n"
+                "#include \"call_ra_mod_funcs.h\"\n"
+                "static uint32_t mem[0x2000 / 4];\n"
+                "uint32_t test_mem_r32(uint32_t addr) { return mem[(addr & 0x1fffu) / 4u]; }\n"
+                "void test_mem_w32(uint32_t addr, uint32_t value) { mem[(addr & 0x1fffu) / 4u] = value; }\n"
+                "void sr_register(uint32_t addr, void (*fn)(CpuState *)) { (void)addr; (void)fn; }\n"
+                "void sr_exec_span_reset(void) {}\n"
+                "int sr_exec_span_register(uint32_t start, uint32_t end) { (void)start; (void)end; return 1; }\n"
+                "void sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc) { (void)s; (void)code; (void)pc; }\n"
+                "void sr_hle_call(CpuState *s, uint32_t nid) { (void)s; (void)nid; }\n"
+                "void sr_syscall(CpuState *s, uint32_t nid) { (void)s; (void)nid; }\n"
+                "void sr_unimplemented(uint32_t addr, const char *reason) { (void)addr; (void)reason; abort(); }\n"
+                f"void dispatch(CpuState *s, uint32_t target) {{\n"
+                f"    if (target == 0x{callee:08x}u) {{ f_{callee:08x}(s); return; }}\n"
+                "    abort();\n"
+                "}\n"
+                "void dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc) {\n"
+                "    (void)resume_pc;\n"
+                "    dispatch(s, target);\n"
+                "}\n"
+                "int main(void) {\n"
+                "    CpuState state = {0};\n"
+                "    state.r[31] = 0x99999999u;\n"
+                f"    f_{caller:08x}(&state);\n"
+                "    printf(\"caller_final_ra=0x%08x\\n\", state.r[31]);\n"
+                "    return state.r[31] == 0x000010ffu ? 0 : 1;\n"
+                "}\n"
+            )
+            (work / "harness.c").write_bytes(harness_c.encode("ascii"))
+
+            chunks = sorted(work.glob("call_ra_mod_*.c"))
+            exe = work / "call_ra_mod.exe"
+            compiled = subprocess.run(
+                [CC, "-std=c11", "-O0", "-I", str(work), str(work / "harness.c"),
+                 str(generated), *(str(path) for path in chunks), "-lm", "-o", str(exe)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(compiled.returncode, 0, compiled.stderr + compiled.stdout)
+            ran = subprocess.run([str(exe)], capture_output=True, text=True)
+            self.assertEqual(ran.returncode, 0, ran.stderr + ran.stdout)
+            self.assertIn("caller_final_ra=0x000010ff", ran.stdout)
+
 
 def _minimal_elf_path(words, entry, *, e_type=2, reloc_section=None):
     path = Path(tempfile.mkdtemp(prefix="elf_routing_")) / "input.elf"
