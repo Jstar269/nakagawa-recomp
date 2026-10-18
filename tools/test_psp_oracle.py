@@ -7129,6 +7129,10 @@ class IoCasesSourceTests(unittest.TestCase):
         self.assertIn("900-second host case timeout", entry["measurement_note"])
         self.assertIn("27.2 seconds after launch", entry["measurement_note"])
         self.assertIn("does not establish whether the PSP call hung", entry["measurement_note"])
+        self.assertIn("1800-second host case timeout", entry["measurement_note"])
+        self.assertIn("usbipd listed the PSP as absent at 3m46 after launch", entry["measurement_note"])
+        self.assertIn("L1 reattach found the PSP absent", entry["measurement_note"])
+        self.assertIn("at 3m46, before the 1800-second deadline", oracle_docs)
         self.assertIn("fresh physical power-cycle", oracle_docs)
 
     def test_umd_pin_refuses_an_activation_import(self) -> None:
