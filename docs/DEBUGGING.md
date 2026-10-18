@@ -126,8 +126,8 @@ The public source-owned benchmark matrix is repeatable without private title dat
 mingw32-make BUILD_DIR=build/perf-282 perf-benchmark
 ```
 
-It runs the AOT-gap production smoke, cosimulation, PSMF media, audio, ATRAC bridge, platform-ladder
-AOT-gap, platform-ladder scheduler, and platform-ladder VFS workloads, records per-run status and
+It runs the AOT-gap production smoke, cosimulation, PSMF media, audio, audio resampler (synthetic-input
+microbenchmark), ATRAC bridge, platform-ladder AOT-gap, platform-ladder scheduler, and platform-ladder VFS workloads, records per-run status and
 JSON paths, and
 measures disabled/enabled overhead from alternating direct runs (disabled, enabled, disabled, ...) of
 one public production-smoke build in `build/perf-282/perf-benchmark/benchmark.json`. Measured results
