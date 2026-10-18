@@ -11478,6 +11478,8 @@ typedef enum {
     FD_KIND_UNUSED = 0,
     FD_KIND_STD = 1,
     FD_KIND_FILE = 2,
+    FD_KIND_RAW_DEVICE = 3,
+    FD_KIND_DIRECTORY = 4,
 } FdKind;
 
 typedef struct {
@@ -11497,10 +11499,45 @@ typedef struct {
     char guest_path[256];        /* the path the guest opened it with ("" if too long) */
 } Fd;
 static Fd s_fds[64];
+
+typedef struct {
+    int used;
+    int backend;                 /* 0 = ISO9660, 1 = merged host VFS namespace */
+    uint32_t index;
+    SrVfsDirList list;           /* backend 1: fully materialized at Dopen */
+    char *path;
+} DirFd;
+static DirFd s_dirfds[64];
+
 static int64_t s_closed_res[64];
 static IoAsyncState s_closed_async_state[64];
 static uint64_t s_io_dispatch_epoch;
 static uint64_t s_io_async_sequence;
+static atomic_uint s_io_raw_device_boundary_reported;
+
+typedef enum {
+    IO_RAW_BOUNDARY_OPEN_FLAGS = 0,
+    IO_RAW_BOUNDARY_OPEN_ASYNC,
+    IO_RAW_BOUNDARY_READ,
+    IO_RAW_BOUNDARY_WRITE,
+    IO_RAW_BOUNDARY_LSEEK32,
+    IO_RAW_BOUNDARY_LSEEK64,
+    IO_RAW_BOUNDARY_IOCTL,
+    IO_RAW_BOUNDARY_GETSTAT,
+    IO_RAW_BOUNDARY_DEVCTL,
+    IO_RAW_BOUNDARY_DOPEN,
+    IO_RAW_BOUNDARY_READ_ASYNC,
+    IO_RAW_BOUNDARY_WRITE_ASYNC,
+    IO_RAW_BOUNDARY_LSEEK32_ASYNC,
+    IO_RAW_BOUNDARY_LSEEK64_ASYNC,
+    IO_RAW_BOUNDARY_IOCTL_ASYNC,
+    IO_RAW_BOUNDARY_CLOSE_ASYNC,
+    IO_RAW_BOUNDARY_ASYNC_STATUS,
+    IO_RAW_BOUNDARY_ASYNC_PRIORITY,
+    IO_RAW_BOUNDARY_ASYNC_CALLBACK,
+    IO_RAW_BOUNDARY_DREAD,
+    IO_RAW_BOUNDARY_DCLOSE,
+} IoRawDeviceBoundary;
 
 typedef struct {
     uint32_t thread_uid;
@@ -11574,7 +11611,23 @@ static void hle_fd_release(Fd *f, int preserve_std_kind) {
     }
 }
 
+static void hle_dirfd_clear(DirFd *d) {
+    if (!d) return;
+    sr_vfs_dirlist_destroy(&d->list);
+    free(d->path);
+    memset(d, 0, sizeof(*d));
+}
+
+static void hle_dirfd_release_descriptor(uint32_t fd) {
+    if (fd >= sizeof(s_fds) / sizeof(s_fds[0])) return;
+    hle_dirfd_clear(&s_dirfds[fd]);
+    if (s_fds[fd].used && s_fds[fd].kind == FD_KIND_DIRECTORY)
+        hle_fd_release(&s_fds[fd], 0);
+}
+
 static void hle_fd_init(void) {
+    for (size_t i = 0; i < sizeof(s_dirfds) / sizeof(s_dirfds[0]); i++)
+        hle_dirfd_clear(&s_dirfds[i]);
     for (size_t i = 0; i < sizeof(s_fds) / sizeof(s_fds[0]); i++) {
         if (s_fds[i].used) hle_fd_release(&s_fds[i], 0);
         else memset(&s_fds[i], 0, sizeof(s_fds[i]));
@@ -11584,6 +11637,7 @@ static void hle_fd_init(void) {
     memset(s_io_cwds, 0, sizeof(s_io_cwds));
     s_io_dispatch_epoch = 0;
     s_io_async_sequence = 0;
+    atomic_store_explicit(&s_io_raw_device_boundary_reported, 0u, memory_order_release);
     for (uint8_t stream = 0; stream < 3; stream++) {
         Fd *f = &s_fds[stream];
         f->used = 1;
@@ -11597,18 +11651,56 @@ static int hle_fd_is_file(uint32_t fd) {
            s_fds[fd].used && s_fds[fd].kind == FD_KIND_FILE;
 }
 
+static int hle_fd_is_raw_device(uint32_t fd) {
+    return fd < (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) &&
+           s_fds[fd].used && s_fds[fd].kind == FD_KIND_RAW_DEVICE;
+}
+
+static int hle_fd_is_directory(uint32_t fd) {
+    return fd < (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) &&
+           s_fds[fd].used && s_fds[fd].kind == FD_KIND_DIRECTORY &&
+           s_dirfds[fd].used;
+}
+
 static int hle_fd_is_std(uint32_t fd) {
     return fd < (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) &&
            s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD;
 }
-typedef struct {
-    int used;
-    int backend;                 /* 0 = ISO9660, 1 = merged host VFS namespace */
-    uint32_t index;
-    SrVfsDirList list;           /* backend 1: fully materialized at Dopen */
-    char *path;
-} DirFd;
-static DirFd s_dirfds[32];
+
+static uint32_t hle_io_raw_device_boundary(IoRawDeviceBoundary operation,
+                                           const char *api, const char *path,
+                                           uint32_t fd) {
+    unsigned bit = 1u << (unsigned)operation;
+    unsigned previous = atomic_fetch_or_explicit(&s_io_raw_device_boundary_reported,
+                                                 bit, memory_order_acq_rel);
+    if (!(previous & bit)) {
+        if (path && path[0])
+            fprintf(stderr,
+                    "SEMANTIC_BOUNDARY: IO_RAW_DEVICE_OPERATION: %s on raw device '%s' "
+                    "is not supported yet (0x80010086)\n", api, path);
+        else
+            fprintf(stderr,
+                    "SEMANTIC_BOUNDARY: IO_RAW_DEVICE_OPERATION: %s on raw device "
+                    "descriptor %u is not supported yet (0x80010086)\n", api, fd);
+    }
+    return 0x80010086u;
+}
+
+static uint32_t hle_io_raw_fd_boundary(uint32_t fd, IoRawDeviceBoundary operation,
+                                       const char *api) {
+    if (!hle_fd_is_raw_device(fd)) return 0u;
+    return hle_io_raw_device_boundary(operation, api, s_fds[fd].guest_path, fd);
+}
+
+static int hle_fd_allocate(void) {
+    for (int i = 3; i < (int)(sizeof(s_fds) / sizeof(s_fds[0])); i++) {
+        if (!s_fds[i].used && !s_dirfds[i].used &&
+            s_fds[i].async.state == IO_ASYNC_IDLE &&
+            s_closed_async_state[i] == IO_ASYNC_IDLE)
+            return i;
+    }
+    return -1;
+}
 
 /* ---- Data-root lookup: serve files extracted from XB archives ------------------------
  *
@@ -13514,11 +13606,40 @@ static const SrAssetIndexEntry *host_data_lookup(const char *guest_path) {
  * development host devices (host0: ... host9:), which the extracted-tree route also
  * serves through host_data_lookup. Memory-stick paths (ms0:, fatms0:) are excluded, so
  * save data never resolves to a disc archive member. */
+typedef enum {
+    IO_RAW_DEVICE_NONE = 0,
+    IO_RAW_DEVICE_UMD0,
+    IO_RAW_DEVICE_UMD1,
+    IO_RAW_DEVICE_UMD_ALIAS,
+    IO_RAW_DEVICE_MSSTOR0P1,
+} IoRawDevicePath;
+
+static int io_path_equals_ci(const char *path, const char *expected) {
+    size_t length = strlen(expected);
+    return path && strlen(path) == length && sr_vfs_strnicmp(path, expected, length) == 0;
+}
+
+static int io_path_is_disc_device(const char *path) {
+    return path && (sr_vfs_strnicmp(path, "disc0:", 6) == 0 ||
+                    sr_vfs_strnicmp(path, "umd:", 4) == 0);
+}
+
+static IoRawDevicePath io_raw_device_path(const char *path) {
+    if (io_path_equals_ci(path, "umd0:") || io_path_equals_ci(path, "umd0:/"))
+        return IO_RAW_DEVICE_UMD0;
+    if (io_path_equals_ci(path, "umd1:") || io_path_equals_ci(path, "umd1:/"))
+        return IO_RAW_DEVICE_UMD1;
+    if (io_path_equals_ci(path, "umd:"))
+        return IO_RAW_DEVICE_UMD_ALIAS;
+    if (io_path_equals_ci(path, "msstor0p1:/"))
+        return IO_RAW_DEVICE_MSSTOR0P1;
+    return IO_RAW_DEVICE_NONE;
+}
+
 static int data_archive_guest_path_allowed(const char *guest_path) {
     if (!guest_path || !guest_path[0]) return 0;
     if (!strchr(guest_path, ':')) return 1;
-    return sr_vfs_strnicmp(guest_path, "disc0:", 6) == 0 ||
-           sr_vfs_strnicmp(guest_path, "umd:", 4) == 0 ||
+    return io_path_is_disc_device(guest_path) ||
            (sr_vfs_strnicmp(guest_path, "host", 4) == 0 &&
             guest_path[4] >= '0' && guest_path[4] <= '9' && guest_path[5] == ':');
 }
@@ -13544,23 +13665,29 @@ static uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot
     if (!path) return 0x80010016u;
     if (getenv("SR_IOLOG"))
         fprintf(stderr, "HLE_IoOpen: opening '%s' flags=0x%x\n", path, flags);
+    IoRawDevicePath raw_device = io_raw_device_path(path);
+    if (raw_device != IO_RAW_DEVICE_NONE && flags != 0x00000001u &&
+        flags != 0x000f0001u)
+        return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_OPEN_FLAGS, "sceIoOpen",
+                                          path, UINT32_MAX);
+    if (io_path_equals_ci(path, "disc0:") && flags == 0x00000001u)
+        return 0x80010016u;
     int slot = forced_slot;
-    if (slot < 0) {
-        for (int i = 3; i < (int)(sizeof(s_fds) / sizeof(s_fds[0])); i++)
-            if (!s_fds[i].used && s_fds[i].async.state == IO_ASYNC_IDLE &&
-                s_closed_async_state[i] == IO_ASYNC_IDLE) {
-                slot = i;
-                break;
-            }
-    }
+    if (slot < 0) slot = hle_fd_allocate();
     if (slot < 3 || slot >= (int)(sizeof(s_fds) / sizeof(s_fds[0]))) slot = -1;
     if (slot < 0) return SCE_ERROR_KERNEL_TOO_MANY_OPEN_FILES;  /* too many open files */
     memset(&s_fds[slot], 0, sizeof(s_fds[slot]));
-    s_fds[slot].kind = FD_KIND_FILE;
+    s_fds[slot].kind = raw_device != IO_RAW_DEVICE_NONE ?
+                       FD_KIND_RAW_DEVICE : FD_KIND_FILE;
     if (strlen(path) < sizeof(s_fds[slot].guest_path))
         memcpy(s_fds[slot].guest_path, path, strlen(path) + 1u);
     s_closed_res[slot] = 0;
     s_closed_async_state[slot] = IO_ASYNC_IDLE;
+
+    if (raw_device != IO_RAW_DEVICE_NONE) {
+        s_fds[slot].used = 1;
+        return (uint32_t)slot;
+    }
 
     /* flash0: is the read-only font device. It is decided before the disc, memory-stick and
      * data-root paths, which never see it. A refused open leaves the slot unused. */
@@ -13755,6 +13882,8 @@ static uint32_t h_IoWrite(CpuState *s) {
         }
         return count;
     }
+    uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_WRITE, "sceIoWrite");
+    if (raw_error != 0u) return raw_error;
     if (f->kind != FD_KIND_FILE) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (f->flash0) return sr_flash0_font_refuse_write(f->guest_path, "write through a font descriptor");
     if (!f->host) return 0x80010013;                 /* read-only (ISO) fd: not writable */
@@ -13775,6 +13904,8 @@ static uint32_t h_IoRead(CpuState *s) {
     uint32_t fd = A0, dst = A1, count = A2;
     if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD)
         return 0x80010009; /* baseline behavior preserved for standard streams */
+    uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_READ, "sceIoRead");
+    if (raw_error != 0u) return raw_error;
     if (!hle_fd_is_file(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     Fd *f = &s_fds[fd];
     if (f->async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
@@ -13859,6 +13990,9 @@ static uint32_t h_IoLseek32(CpuState *s) {
     uint32_t fd = A0; int32_t off = (int32_t)A1; uint32_t whence = A2;
     if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD)
         return 0x80010009; /* baseline behavior preserved for standard streams */
+    uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_LSEEK32,
+                                               "sceIoLseek32");
+    if (raw_error != 0u) return raw_error;
     if (!hle_fd_is_file(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (whence >= 3u) return SCE_ERROR_KERNEL_INVALID_ARGUMENT;
     Fd *f = &s_fds[fd];
@@ -13872,13 +14006,16 @@ static uint32_t h_IoLseek(CpuState *s) {
     /* a0=fd, a2/a3=aligned 64-bit offset (a1 is skipped), t0=whence.
      * Returns the 64-bit position in v0:v1. */
     uint32_t fd = A0;
-    int64_t off = (int64_t)(((uint64_t)A3 << 32) | A2);
-    uint32_t whence = stack_arg(s, 0);
     if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD) {
         s->r[3] = 0;
         return 0x80010009; /* baseline behavior preserved for standard streams */
     }
+    uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_LSEEK64,
+                                               "sceIoLseek");
+    if (raw_error != 0u) { s->r[3] = 0xffffffffu; return raw_error; }
     if (!hle_fd_is_file(fd)) { s->r[3] = 0xFFFFFFFF; return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR; }
+    int64_t off = (int64_t)(((uint64_t)A3 << 32) | A2);
+    uint32_t whence = stack_arg(s, 0);
     if (s_fds[fd].async.state == IO_ASYNC_PENDING) {
         s->r[3] = 0xFFFFFFFF;
         return SCE_ERROR_KERNEL_ASYNC_BUSY;
@@ -13905,6 +14042,9 @@ static uint32_t h_io_ioctl_args(uint32_t fd, uint32_t cmd, uint32_t in,
                                 uint32_t inlen, uint32_t out, uint32_t outlen) {
     if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD)
         return 0x80010009; /* baseline behavior preserved for standard streams */
+    uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_IOCTL,
+                                               "sceIoIoctl");
+    if (raw_error != 0u) return raw_error;
     if (!hle_fd_is_file(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     Fd *f = &s_fds[fd];
     if (f->async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
@@ -14045,6 +14185,8 @@ static uint32_t h_IoIoctl(CpuState *s) {
 static uint32_t h_IoClose(CpuState *s) {
     uint32_t fd = A0;
     if (fd >= (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) || !s_fds[fd].used)
+        return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    if (s_fds[fd].kind == FD_KIND_DIRECTORY)
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (s_fds[fd].async.state == IO_ASYNC_PENDING)
         return SCE_ERROR_KERNEL_ASYNC_BUSY;
@@ -14224,14 +14366,30 @@ static uint32_t vfs_overlay_merge_dir(const char *guest_path, SrVfsDirList *list
 static uint32_t h_io_dopen_path(const char *path) {
     if (!path) return 0x80010016u;
     if (getenv("SR_IOLOG")) fprintf(stderr, "HLE_IoDopen: path='%s'\n", path);
-    for (uint32_t i = 0; i < sizeof(s_dirfds) / sizeof(s_dirfds[0]); i++) {
-        if (!s_dirfds[i].used) {
-            DirFd *d = &s_dirfds[i];
-            memset(d, 0, sizeof(*d));
-            d->used = 1; d->index = 0;
-            d->path = sr_asset_index_strdup(path);
-            if (!d->path) { memset(d, 0, sizeof(*d)); return 0x80010014u; }
-            if (sr_flash0_font_is_device_path(path)) {
+    if (io_path_equals_ci(path, "disc0:")) return 0x80010016u;
+    IoRawDevicePath raw_device = io_raw_device_path(path);
+    if (raw_device != IO_RAW_DEVICE_NONE) {
+        if ((raw_device == IO_RAW_DEVICE_UMD0 && io_path_equals_ci(path, "umd0:")) ||
+            (raw_device == IO_RAW_DEVICE_UMD1 && io_path_equals_ci(path, "umd1:")) ||
+            (raw_device == IO_RAW_DEVICE_UMD_ALIAS && io_path_equals_ci(path, "umd:")))
+            return 0x80020325u;
+        return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_DOPEN,
+                                          "sceIoDopen", path, UINT32_MAX);
+    }
+    int fd = hle_fd_allocate();
+    if (fd < 0) return SCE_ERROR_KERNEL_TOO_MANY_OPEN_FILES;
+    uint32_t i = (uint32_t)fd;
+    DirFd *d = &s_dirfds[i];
+    memset(d, 0, sizeof(*d));
+    d->used = 1; d->index = 0;
+    memset(&s_fds[i], 0, sizeof(s_fds[i]));
+    s_fds[i].used = 1;
+    s_fds[i].kind = FD_KIND_DIRECTORY;
+    s_closed_res[i] = 0;
+    s_closed_async_state[i] = IO_ASYNC_IDLE;
+    d->path = sr_asset_index_strdup(path);
+    if (!d->path) { hle_dirfd_release_descriptor(i); return 0x80010014u; }
+    if (sr_flash0_font_is_device_path(path)) {
                 /* flash0: listings are materialized here like the merged namespace (backend 1),
                  * so Dread and Dclose need no device-specific code. */
                 Flash0Sources sources;
@@ -14239,15 +14397,13 @@ static uint32_t h_io_dopen_path(const char *path) {
                 sr_vfs_dirlist_init(&d->list);
                 uint32_t font_dir_rc = sr_flash0_font_list_dir(path, &sources, &d->list);
                 if (font_dir_rc != 0u) {
-                    sr_vfs_dirlist_destroy(&d->list);
-                    free(d->path); memset(d, 0, sizeof(*d));
+                    hle_dirfd_release_descriptor(i);
                     return font_dir_rc;
                 }
                 d->backend = 1;
-                return 0x100u + i;
-            }
-            int device_path = sr_vfs_strnicmp(path, "disc0:", 6) == 0 ||
-                               sr_vfs_strnicmp(path, "umd:", 4) == 0;
+                return i;
+    }
+            int device_path = io_path_is_disc_device(path);
             int iso_first_result = -1;
             IsoDirEntry iso_first = {0};
             if (device_path) {
@@ -14257,7 +14413,7 @@ static uint32_t h_io_dopen_path(const char *path) {
                     /* A file on the ISO must not be shadowed by the extracted
                      * directory index merely because its directory probe failed. */
                     if (iso_lookup(path, &iso_lba, &iso_size) == 0) {
-                        free(d->path); memset(d, 0, sizeof(*d));
+                        hle_dirfd_release_descriptor(i);
                         return 0x80010014u; /* SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND */
                     }
                 }
@@ -14283,21 +14439,18 @@ static uint32_t h_io_dopen_path(const char *path) {
                     }
                     if (iso_result == 0) break;
                     if (iso_result < 0) {
-                        sr_vfs_dirlist_destroy(&d->list);
-                        free(d->path); memset(d, 0, sizeof(*d));
+                        hle_dirfd_release_descriptor(i);
                         return 0x80010005u; /* SCE_KERNEL_ERROR_ERRNO_IO */
                     }
                     if (!sr_vfs_dirlist_merge_lba(
                             &d->list, entry.name, entry.is_dir,
                             entry.is_dir ? 0u : (uint64_t)entry.size,
                             entry.lba)) {
-                        sr_vfs_dirlist_destroy(&d->list);
-                        free(d->path); memset(d, 0, sizeof(*d));
+                        hle_dirfd_release_descriptor(i);
                         return 0x80010008u; /* SCE_KERNEL_ERROR_NO_MEMORY */
                     }
                     if (iso_index == UINT32_MAX) {
-                        sr_vfs_dirlist_destroy(&d->list);
-                        free(d->path); memset(d, 0, sizeof(*d));
+                        hle_dirfd_release_descriptor(i);
                         return 0x80010005u; /* SCE_KERNEL_ERROR_ERRNO_IO */
                     }
                 }
@@ -14306,8 +14459,7 @@ static uint32_t h_io_dopen_path(const char *path) {
             int overlay_found = 0;
             uint32_t overlay_rc = vfs_overlay_merge_dir(path, &d->list, &overlay_found);
             if (overlay_rc != 0) {
-                sr_vfs_dirlist_destroy(&d->list);
-                free(d->path); memset(d, 0, sizeof(*d));
+                hle_dirfd_release_descriptor(i);
                 return overlay_rc;
             }
             if (overlay_found) d->list.exists = 1;
@@ -14319,23 +14471,20 @@ static uint32_t h_io_dopen_path(const char *path) {
                     int loose_found = 0;
                     if (data_loose_merge_dir(norm_key, &d->list, &loose_found) != 0) {
                         free(norm_key);
-                        sr_vfs_dirlist_destroy(&d->list);
-                        free(d->path); memset(d, 0, sizeof(*d));
+                        hle_dirfd_release_descriptor(i);
                         return 0x80010005u;
                     }
                     if (loose_found) d->list.exists = 1;
                     if (sr_asset_index_list_dir(&s_data_index, norm_key,
                                                 wanted_variant, &d->list) < 0) {
                         free(norm_key);
-                        sr_vfs_dirlist_destroy(&d->list);
-                        free(d->path); memset(d, 0, sizeof(*d));
+                        hle_dirfd_release_descriptor(i);
                         return 0x80010008u;
                     }
                     if (sr_archive_vfs_list_dir(&s_archive_vfs, norm_key,
                                                 wanted_variant, &d->list) < 0) {
                         free(norm_key);
-                        sr_vfs_dirlist_destroy(&d->list);
-                        free(d->path); memset(d, 0, sizeof(*d));
+                        hle_dirfd_release_descriptor(i);
                         return 0x80010008u;
                     }
                 } else if (atomic_load_explicit(&s_data_state, memory_order_acquire) ==
@@ -14343,8 +14492,7 @@ static uint32_t h_io_dopen_path(const char *path) {
                     if (sr_asset_index_list_dir(&s_data_index, norm_key,
                                                 wanted_variant, &d->list) < 0) {
                         free(norm_key);
-                        sr_vfs_dirlist_destroy(&d->list);
-                        free(d->path); memset(d, 0, sizeof(*d));
+                        hle_dirfd_release_descriptor(i);
                         return 0x80010008u;
                     }
                 }
@@ -14355,8 +14503,7 @@ static uint32_t h_io_dopen_path(const char *path) {
              * source has is a not-found; a directory that exists with no
              * representable children opens and reads back zero entries. */
             if (!d->list.exists) {
-                sr_vfs_dirlist_destroy(&d->list);
-                free(d->path); memset(d, 0, sizeof(*d));
+                hle_dirfd_release_descriptor(i);
                 return 0x80010014u; /* SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND */
             }
             if (d->list.skipped != 0u) {
@@ -14366,9 +14513,7 @@ static uint32_t h_io_dopen_path(const char *path) {
             }
             sr_vfs_dirlist_sort(&d->list);
             d->backend = 1;
-            return 0x100u + i;
-        }
-    }
+            return i;
     return SCE_ERROR_KERNEL_TOO_MANY_OPEN_FILES;
 }
 
@@ -14380,10 +14525,11 @@ static uint32_t h_IoDopen(CpuState *s) {
 
 static uint32_t h_IoDread(CpuState *s) {
     uint32_t fd = A0, de = A1;
-    if (fd < 0x100u || fd >= 0x100u + sizeof(s_dirfds) / sizeof(s_dirfds[0]))
-        return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
-    DirFd *d = &s_dirfds[fd - 0x100u];
-    if (!d->used) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_DREAD,
+                                                "sceIoDread");
+    if (raw_error != 0u) return raw_error;
+    if (!hle_fd_is_directory(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    DirFd *d = &s_dirfds[fd];
     if (!de) return 0x80010009u; /* preserve baseline behavior for null pointer */
     IsoDirEntry e;
     if (d->backend == 0) {
@@ -14413,12 +14559,12 @@ static uint32_t h_IoDread(CpuState *s) {
 
 static uint32_t h_IoDclose(CpuState *s) {
     uint32_t fd = A0;
-    if (fd < 0x100u || fd >= 0x100u + sizeof(s_dirfds) / sizeof(s_dirfds[0])) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
-    DirFd *d = &s_dirfds[fd - 0x100u];
-    if (!d->used) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
-    if (d->backend == 1) sr_vfs_dirlist_destroy(&d->list);
-    free(d->path);
-    memset(d, 0, sizeof(*d)); return 0;
+    uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_DCLOSE,
+                                                "sceIoDclose");
+    if (raw_error != 0u) return raw_error;
+    if (!hle_fd_is_directory(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    hle_dirfd_release_descriptor(fd);
+    return 0;
 }
 /* PSPSDK's SceDevctlCmd contains a pointer to SceDevInf for SCE_PR_GETDEV
  * (0x02425818); its five words are maxClusters, freeClusters, maxSectors,
@@ -14511,6 +14657,9 @@ static uint32_t h_IoDevctl(CpuState *s) {
     uint32_t outdata = s->r[8], outlen = s->r[9];
     if (!A0 || !guest_cstr(A0, device, (int)sizeof(device)))
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (io_raw_device_path(device) != IO_RAW_DEVICE_NONE)
+        return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_DEVCTL,
+                                          "sceIoDevctl", device, UINT32_MAX);
     int is_memstick = strcmp(device, "ms0:") == 0 || strcmp(device, "fatms0:") == 0;
     if (!is_memstick) {
         hle_note_devctl_refusal(device, A1, IO_DEVCTL_ERROR_UNSUPPORTED);
@@ -14574,6 +14723,31 @@ static uint32_t h_IoDevctl(CpuState *s) {
 static uint32_t io_async_submit(uint32_t fd, IoAsyncOp op, uint32_t a1,
                                 uint32_t a2, uint32_t a3,
                                 uint32_t stack0, uint32_t stack1) {
+    if (hle_fd_is_raw_device(fd)) {
+        switch (op) {
+        case IO_ASYNC_READ:
+            return hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_READ_ASYNC,
+                                          "sceIoReadAsync");
+        case IO_ASYNC_WRITE:
+            return hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_WRITE_ASYNC,
+                                          "sceIoWriteAsync");
+        case IO_ASYNC_LSEEK32:
+            return hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_LSEEK32_ASYNC,
+                                          "sceIoLseek32Async");
+        case IO_ASYNC_LSEEK64:
+            return hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_LSEEK64_ASYNC,
+                                          "sceIoLseekAsync");
+        case IO_ASYNC_IOCTL:
+            return hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_IOCTL_ASYNC,
+                                          "sceIoIoctlAsync");
+        case IO_ASYNC_CLOSE:
+            return hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_CLOSE_ASYNC,
+                                          "sceIoCloseAsync");
+        default:
+            return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_ASYNC_STATUS,
+                                              "asynchronous I/O", NULL, fd);
+        }
+    }
     if (fd >= sizeof(s_fds) / sizeof(s_fds[0]) || !s_fds[fd].used ||
         (s_fds[fd].kind != FD_KIND_FILE &&
          !(s_fds[fd].kind == FD_KIND_STD &&
@@ -14602,6 +14776,12 @@ static uint32_t io_async_submit(uint32_t fd, IoAsyncOp op, uint32_t a1,
 }
 
 static uint32_t h_IoOpenAsync(CpuState *s) {
+    char path[512];
+    uint32_t rc = io_guest_path(A0, path, sizeof(path));
+    if (rc != 0u) return rc;
+    if (io_raw_device_path(path) != IO_RAW_DEVICE_NONE)
+        return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_OPEN_ASYNC,
+                                          "sceIoOpenAsync", path, UINT32_MAX);
     uint32_t fd = h_IoOpen(s);
     if (fd < sizeof(s_fds) / sizeof(s_fds[0])) {
         s_fds[fd].async.state = IO_ASYNC_COMPLETE;
@@ -14619,6 +14799,9 @@ static uint32_t h_IoReadAsync(CpuState *s) {
     if (!s_fds[fd].used)
         return s_fds[fd].async.state == IO_ASYNC_PENDING ?
                SCE_ERROR_KERNEL_ASYNC_BUSY : SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    uint32_t raw_error = hle_io_raw_fd_boundary(
+        fd, IO_RAW_BOUNDARY_READ_ASYNC, "sceIoReadAsync");
+    if (raw_error != 0u) return raw_error;
     if (s_fds[fd].kind == FD_KIND_STD) return 0x80010009u;
     if (A2 != 0u && !sr_guest_span_writable(A1, A2)) return 0x80010016u;
     return io_async_submit(fd, IO_ASYNC_READ, A1, A2, 0u, 0u, 0u);
@@ -14631,6 +14814,9 @@ static uint32_t h_IoWriteAsync(CpuState *s) {
     if (!s_fds[fd].used)
         return s_fds[fd].async.state == IO_ASYNC_PENDING ?
                SCE_ERROR_KERNEL_ASYNC_BUSY : SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    uint32_t raw_error = hle_io_raw_fd_boundary(
+        fd, IO_RAW_BOUNDARY_WRITE_ASYNC, "sceIoWriteAsync");
+    if (raw_error != 0u) return raw_error;
     if (A2 != 0u && !sr_guest_span_readable(A1, A2)) return 0x80010016u;
     return io_async_submit(fd, IO_ASYNC_WRITE, A1, A2, 0u, 0u, 0u);
 }
@@ -14640,6 +14826,9 @@ static uint32_t h_IoLseekAsync(CpuState *s) {
     if (fd >= sizeof(s_fds) / sizeof(s_fds[0]) || !s_fds[fd].used)
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (s_fds[fd].async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
+    uint32_t raw_error = hle_io_raw_fd_boundary(
+        fd, IO_RAW_BOUNDARY_LSEEK64_ASYNC, "sceIoLseekAsync");
+    if (raw_error != 0u) return raw_error;
     return io_async_submit(fd, IO_ASYNC_LSEEK64, A2, A3, 0u, stack_arg(s, 0), 0u);
 }
 
@@ -14652,6 +14841,9 @@ static uint32_t h_IoIoctlAsync(CpuState *s) {
     if (fd >= sizeof(s_fds) / sizeof(s_fds[0]) || !s_fds[fd].used)
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (s_fds[fd].async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
+    uint32_t raw_error = hle_io_raw_fd_boundary(
+        fd, IO_RAW_BOUNDARY_IOCTL_ASYNC, "sceIoIoctlAsync");
+    if (raw_error != 0u) return raw_error;
     uint32_t out = stack_arg(s, 0), outlen = stack_arg(s, 1);
     if (inlen != 0u && !sr_guest_span_readable(in, inlen)) return 0x80010016u;
     if (outlen != 0u && !sr_guest_span_writable(out, outlen)) return 0x80010016u;
@@ -14744,7 +14936,10 @@ static void io_async_dispatch_tick(void) {
     if (selected != UINT32_MAX) (void)io_async_complete_fd(selected);
 }
 
-static uint32_t io_async_query(uint32_t fd, uint32_t result_addr, int wait) {
+static uint32_t io_async_query(uint32_t fd, uint32_t result_addr, int wait,
+                               IoRawDeviceBoundary raw_boundary, const char *api) {
+    uint32_t raw_error = hle_io_raw_fd_boundary(fd, raw_boundary, api);
+    if (raw_error != 0u) return raw_error;
     if (fd >= sizeof(s_fds) / sizeof(s_fds[0]))
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (result_addr != 0u && !sr_guest_span_writable(result_addr, 8u))
@@ -14778,19 +14973,21 @@ static uint32_t io_async_query(uint32_t fd, uint32_t result_addr, int wait) {
 static uint32_t h_IoWaitAsync(CpuState *s) {
     if (hle_log_on())
         fprintf(stderr, "HLE: IoWaitAsync fd=0x%x (from 0x%x)\n", A0, sched_current_uid());
-    return io_async_query(A0, A1, 1);
+    return io_async_query(A0, A1, 1, IO_RAW_BOUNDARY_ASYNC_STATUS, "sceIoWaitAsync");
 }
 
 static uint32_t h_IoPollAsync(CpuState *s) {
-    return io_async_query(A0, A1, 0);
+    return io_async_query(A0, A1, 0, IO_RAW_BOUNDARY_ASYNC_STATUS, "sceIoPollAsync");
 }
 
 static uint32_t h_IoGetAsyncStat(CpuState *s) {
-    return io_async_query(A0, A2, A1 == 0u);
+    return io_async_query(A0, A2, A1 == 0u, IO_RAW_BOUNDARY_ASYNC_STATUS,
+                          "sceIoGetAsyncStat");
 }
 
 static uint32_t h_IoWaitAsyncCB(CpuState *s) {
-    uint32_t rc = io_async_query(A0, A1, 1);
+    uint32_t rc = io_async_query(A0, A1, 1, IO_RAW_BOUNDARY_ASYNC_STATUS,
+                                 "sceIoWaitAsyncCB");
     if (rc == 0u && sr_thread_has_pending_callbacks(sched_current_uid()))
         sr_thread_dispatch_callbacks();
     return rc;
@@ -14800,6 +14997,9 @@ static uint32_t h_IoChangeAsyncPriority(CpuState *s) {
     uint32_t fd = A0;
     if (fd >= sizeof(s_fds) / sizeof(s_fds[0]) || !s_fds[fd].used)
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    uint32_t raw_error = hle_io_raw_fd_boundary(
+        fd, IO_RAW_BOUNDARY_ASYNC_PRIORITY, "sceIoChangeAsyncPriority");
+    if (raw_error != 0u) return raw_error;
     s_fds[fd].async.priority = (int32_t)A1;
     return 0u;
 }
@@ -14808,6 +15008,9 @@ static uint32_t h_IoSetAsyncCallback(CpuState *s) {
     uint32_t fd = A0, callback = A1;
     if (fd >= sizeof(s_fds) / sizeof(s_fds[0]) || !s_fds[fd].used)
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    uint32_t raw_error = hle_io_raw_fd_boundary(
+        fd, IO_RAW_BOUNDARY_ASYNC_CALLBACK, "sceIoSetAsyncCallback");
+    if (raw_error != 0u) return raw_error;
     if (callback != 0u && !sr_callback_is_valid(callback)) return 0x800201a1u;
     s_fds[fd].async.callback_uid = callback;
     s_fds[fd].async.callback_arg = A2;
@@ -15132,7 +15335,7 @@ static uint32_t h_IoChdir(CpuState *s) {
     uint32_t rc = io_guest_path(A0, path, sizeof(path));
     if (rc != 0u) return rc;
     uint32_t dirfd = h_io_dopen_path(path);
-    if (dirfd < 0x100u || dirfd >= 0x100u + sizeof(s_dirfds) / sizeof(s_dirfds[0]))
+    if (!hle_fd_is_directory(dirfd))
         return dirfd;
     CpuState close_cpu;
     memset(&close_cpu, 0, sizeof(close_cpu));
@@ -15188,6 +15391,7 @@ static uint32_t h_IoChstat(CpuState *s) {
 /* The focused native HLE harness exposes the small IoFileMgr slice under its
  * production handlers without widening the ThreadMan-only registry used by
  * that executable.  The wrappers and identity probe are test-build-only. */
+static void hle_register_iofilemgr_handlers(void);
 uint32_t sr_hle_test_io_open(CpuState *s) { return h_IoOpen(s); }
 uint32_t sr_hle_test_io_read(CpuState *s) { return h_IoRead(s); }
 uint32_t sr_hle_test_io_write(CpuState *s) { return h_IoWrite(s); }
@@ -15200,9 +15404,7 @@ uint32_t sr_hle_test_vfs_initial_find_error(unsigned long error, int *found) {
     return vfs_overlay_initial_find_error(error, found);
 }
 uint32_t sr_hle_test_io_ioctl(CpuState *s) { return h_IoIoctl(s); }
-void sr_hle_test_register_io_devctl(void) {
-    sr_hle_register_entry(0x54f5fb11u, "sceIoDevctl", h_IoDevctl, 0u);
-}
+void sr_hle_test_register_iofilemgr(void) { hle_register_iofilemgr_handlers(); }
 uint32_t sr_hle_test_io_devctl_callback_uid(void) {
     return atomic_load_explicit(&s_memstick_insert_eject_callback_uid,
                                 memory_order_acquire);
@@ -15278,6 +15480,9 @@ static uint32_t h_IoGetstat(CpuState *s) {
     char path[256];
     if (io_guest_path(A0, path, sizeof(path)) != 0u)
         return 0x80010016u;
+    if (io_raw_device_path(path) != IO_RAW_DEVICE_NONE)
+        return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_GETSTAT,
+                                          "sceIoGetstat", path, UINT32_MAX);
     if (sr_flash0_font_is_device_path(path)) return h_io_getstat_flash0(path, A1);
     uint32_t lba, size, st = A1;
     if (iso_lookup(path, &lba, &size) != 0) {
@@ -23361,6 +23566,41 @@ static void hle_register_unregistered_import_batch(void) {
     sr_hle_register_unsupported(0x70a703f8u, "sceAudiocodecDecode", 0x80010086u);
 }
 
+static int s_iofilemgr_handlers_registered;
+
+static void hle_register_iofilemgr_handlers(void) {
+    if (s_iofilemgr_handlers_registered) return;
+    s_iofilemgr_handlers_registered = 1;
+    sr_hle_register(0x109f50bc, "sceIoOpen", h_IoOpen);
+    sr_hle_register(0x779103a0, "sceIoRename", h_IoRename);
+    sr_hle_register(0x68963324, "sceIoLseek32", h_IoLseek32);
+    sr_hle_register(0x27eb27b8, "sceIoLseek", h_IoLseek);
+    sr_hle_register(0x63632449, "sceIoIoctl", h_IoIoctl);
+    sr_hle_register(0x810c4bc3, "sceIoClose", h_IoClose);
+    sr_hle_register(0xace946e8, "sceIoGetstat", h_IoGetstat);
+    sr_hle_register(0xb29ddf9c, "sceIoDopen", h_IoDopen);
+    sr_hle_register(0xe3eb004c, "sceIoDread", h_IoDread);
+    sr_hle_register(0xeb092469, "sceIoDclose", h_IoDclose);
+    sr_hle_register(0x89aa9906, "sceIoOpenAsync", h_IoOpenAsync);
+    sr_hle_register(0xa0b5a7c2, "sceIoReadAsync", h_IoReadAsync);
+    sr_hle_register(0x71b19e77, "sceIoLseekAsync", h_IoLseekAsync);
+    sr_hle_register(0x3251ea56, "sceIoPollAsync", h_IoPollAsync);
+    sr_hle_register(0xff5940b6, "sceIoCloseAsync", h_IoCloseAsync);
+    sr_hle_register(0x0facab19, "sceIoWriteAsync", h_IoWriteAsync);
+    sr_hle_register(0x1117c65f, "sceIoRmdir", h_IoRmdir);
+    sr_hle_register(0x55f4717d, "sceIoChdir", h_IoChdir);
+    sr_hle_register(0xb293727f, "sceIoChangeAsyncPriority", h_IoChangeAsyncPriority);
+    sr_hle_register(0x1b385d8f, "sceIoLseek32Async", h_IoLseek32Async);
+    sr_hle_register(0xab96437f, "sceIoSync", h_IoSync);
+    sr_hle_register(0xb8a740f4, "sceIoChstat", h_IoChstat);
+    sr_hle_register(0xe95a012b, "sceIoIoctlAsync", h_IoIoctlAsync);
+    sr_hle_register(0xcb05f8d6, "sceIoGetAsyncStat", h_IoGetAsyncStat);
+    sr_hle_register(0xa12a0514, "sceIoSetAsyncCallback", h_IoSetAsyncCallback);
+    sr_hle_register(0x54f5fb11, "sceIoDevctl", h_IoDevctl);
+    sr_hle_register(0x06a70004, "sceIoMkdir", h_IoMkdir);
+    sr_hle_register(0xf27a9c51, "sceIoRemove", h_IoRemove);
+}
+
 void sr_hle_init(void) {
     int expected = 0;
     if (!atomic_compare_exchange_strong_explicit(&s_hle_init_state, &expected, 1,
@@ -23535,34 +23775,7 @@ void sr_hle_init(void) {
     /* Callback-aware UMD wait consumes callbacks while preserving the drive wait. */
     hle_register_kernel_module_handlers();
     /* IoFileMgrForUser: file IO from the ISO. */
-    sr_hle_register(0x109f50bc, "sceIoOpen", h_IoOpen);
-    sr_hle_register(0x779103a0, "sceIoRename", h_IoRename);
-    sr_hle_register(0x68963324, "sceIoLseek32", h_IoLseek32);
-    sr_hle_register(0x27eb27b8, "sceIoLseek", h_IoLseek);
-    sr_hle_register(0x63632449, "sceIoIoctl", h_IoIoctl);
-    sr_hle_register(0x810c4bc3, "sceIoClose", h_IoClose);
-    sr_hle_register(0xace946e8, "sceIoGetstat", h_IoGetstat);
-    sr_hle_register(0xb29ddf9c, "sceIoDopen", h_IoDopen);
-    sr_hle_register(0xe3eb004c, "sceIoDread", h_IoDread);
-    sr_hle_register(0xeb092469, "sceIoDclose", h_IoDclose);
-    sr_hle_register(0x89aa9906, "sceIoOpenAsync", h_IoOpenAsync);
-    sr_hle_register(0xa0b5a7c2, "sceIoReadAsync", h_IoReadAsync);
-    sr_hle_register(0x71b19e77, "sceIoLseekAsync", h_IoLseekAsync);
-    sr_hle_register(0x3251ea56, "sceIoPollAsync", h_IoPollAsync);
-    sr_hle_register(0xff5940b6, "sceIoCloseAsync", h_IoCloseAsync);
-    sr_hle_register(0x0facab19, "sceIoWriteAsync", h_IoWriteAsync);
-    sr_hle_register(0x1117c65f, "sceIoRmdir", h_IoRmdir);
-    sr_hle_register(0x55f4717d, "sceIoChdir", h_IoChdir);
-    sr_hle_register(0xb293727f, "sceIoChangeAsyncPriority", h_IoChangeAsyncPriority);
-    sr_hle_register(0x1b385d8f, "sceIoLseek32Async", h_IoLseek32Async);
-    sr_hle_register(0xab96437f, "sceIoSync", h_IoSync);
-    sr_hle_register(0xb8a740f4, "sceIoChstat", h_IoChstat);
-    sr_hle_register(0xe95a012b, "sceIoIoctlAsync", h_IoIoctlAsync);
-    sr_hle_register(0xcb05f8d6, "sceIoGetAsyncStat", h_IoGetAsyncStat);
-    sr_hle_register(0xa12a0514, "sceIoSetAsyncCallback", h_IoSetAsyncCallback);
-    sr_hle_register(0x54f5fb11, "sceIoDevctl", h_IoDevctl);
-    sr_hle_register(0x06a70004, "sceIoMkdir", h_IoMkdir);
-    sr_hle_register(0xf27a9c51, "sceIoRemove", h_IoRemove);
+    hle_register_iofilemgr_handlers();
     /* sceAudio regular channels and Output2 share one production mapping with the
      * executable audio contract harness. */
     hle_register_regular_audio_handlers();

@@ -1002,16 +1002,15 @@ def flight_smoke(build_dir: Path) -> int:
             _require_vblank_progress(bundle, label)
 
         kind_counts = Counter((event["class"], event["kind"]) for event in first["events"])
-        present_29 = kind_counts.pop(("present", 29), 0)
         expected = {
             ("ge", 20): 1,   # enqueue
             ("ge", 25): 1,   # bounded PRIM event
             ("ge", 26): 1,   # list completed
             ("ge", 27): 1,   # FINISH command
             ("present", 28): frames,
+            ("present", 29): frames // 2,
         }
-        if kind_counts != expected or abs(present_29 - frames // 2) > 2:
-            kind_counts[("present", 29)] = present_29
+        if kind_counts != expected:
             raise RuntimeError(f"unexpected GE/present event counts: {dict(kind_counts)}")
 
         # Successful host presents are recorded when a VBLANK is serviced, so where
