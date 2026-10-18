@@ -924,6 +924,83 @@ static void test_game_data_root_status(const char *base, char sep) {
     assert(status == NK_LAUNCH_DATA_ROOT_READY);
     assert(launch_path_ends_with(resolved, "fixtures/pspdev_phase5"));
 
+    /* h. Passing NULL output buffers resolves status safely without writing buffers. */
+    make_game(&g, "");
+    snprintf(g.title_id, sizeof(g.title_id), "pspdev-phase5-v1");
+    snprintf(g.disc_id, sizeof(g.disc_id), "TEST00005");
+    status = nk_launch_game_data_root_status(runtime_root, &g, NULL, 0, NULL, 0);
+    assert(status == NK_LAUNCH_DATA_ROOT_READY);
+
+    /* i. NULL or empty runtime_root falls back safely to default root. */
+    make_game(&g, "");
+    snprintf(g.title_id, sizeof(g.title_id), "showcase-scene-v1");
+    snprintf(g.disc_id, sizeof(g.disc_id), "TEST00007");
+    status = nk_launch_game_data_root_status(NULL, &g, resolved, sizeof(resolved),
+                                             reason, sizeof(reason));
+    assert(status == NK_LAUNCH_DATA_ROOT_NOT_REQUIRED);
+    status = nk_launch_game_data_root_status("", &g, resolved, sizeof(resolved),
+                                             reason, sizeof(reason));
+    assert(status == NK_LAUNCH_DATA_ROOT_NOT_REQUIRED);
+
+    /* j. Experimental profile query for missing experimental title returns INVALID. */
+    make_game(&g, "");
+    g.is_experimental = true;
+    snprintf(g.title_id, sizeof(g.title_id), "experimental-nonexistent");
+    snprintf(g.disc_id, sizeof(g.disc_id), "TEST99998");
+    status = nk_launch_game_data_root_status(empty_root, &g, resolved, sizeof(resolved),
+                                             reason, sizeof(reason));
+    assert(status == NK_LAUNCH_DATA_ROOT_INVALID);
+    assert(strlen(reason) > 0);
+
+    /* k. Experimental profile query for existing experimental title returns READY. */
+    char exp_data_dir[NK_MAX_PATH * 4];
+    char exp_prof_file[NK_MAX_PATH * 4];
+    char exp_prof_dir[NK_MAX_PATH * 4];
+    char exp_prof_root[NK_MAX_PATH * 4];
+    char exp_prof_json[2048];
+    const char *exp_hash = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    launch_join_path(exp_data_dir, sizeof(exp_data_dir), runtime_root, sep, "data");
+    assert(nk_platform_mkdir_p(exp_data_dir));
+    launch_join_path(exp_prof_root, sizeof(exp_prof_root), runtime_root, sep, "experimental");
+    launch_join_path(exp_prof_dir, sizeof(exp_prof_dir), exp_prof_root, sep, "TEST99997");
+    assert(nk_platform_mkdir_p(exp_prof_dir));
+    launch_join_path(exp_prof_file, sizeof(exp_prof_file), exp_prof_dir, sep, "profile.json");
+
+    int exp_len = snprintf(exp_prof_json, sizeof(exp_prof_json),
+        "{\"schema_version\":1,\"manifest\":{\"schema_version\":1,"
+        "\"id\":\"experimental-test99997\",\"game_name\":\"experimental-test99997\","
+        "\"display_name\":\"Experimental Test\",\"kind\":\"retail\","
+        "\"disc\":{\"id\":\"TEST99997\",\"region\":\"NA\","
+        "\"revision_policy\":\"exact-disc-id\"},"
+        "\"executable\":{\"base\":0,\"entry\":0,\"bss_metadata_source\":\"none\","
+        "\"extra_executable_spans\":[]},\"modules\":[],"
+        "\"filesystem\":{\"data_root\":\"data\",\"memory_stick_root\":\"savedata\","
+        "\"device_prefixes\":[\"disc0:\",\"ms0:\"]},\"hle_profile\":\"generic\","
+        "\"feature_requirements\":[],\"verification_profile\":\"experimental-unverified\"},"
+        "\"input_identity\":{\"disc_id\":\"TEST99997\","
+        "\"selected_executable\":\"PSP_GAME/SYSDIR/EBOOT.BIN\","
+        "\"executable_sha256\":\"%s\",\"elf_sha256\":\"%s\"}}\n",
+        exp_hash, exp_hash);
+    assert(exp_len > 0 && (size_t)exp_len < sizeof(exp_prof_json));
+    write_file(exp_prof_file, exp_prof_json);
+
+    make_game(&g, "");
+    g.is_experimental = true;
+    snprintf(g.title_id, sizeof(g.title_id), "experimental-test99997");
+    snprintf(g.disc_id, sizeof(g.disc_id), "TEST99997");
+    snprintf(g.selected_executable, sizeof(g.selected_executable), "EBOOT.BIN");
+    status = nk_launch_game_data_root_status(runtime_root, &g, resolved, sizeof(resolved),
+                                             reason, sizeof(reason));
+    assert(status == NK_LAUNCH_DATA_ROOT_READY);
+    assert(launch_path_ends_with(resolved, "data"));
+
+    /* Cleanup experimental profile files before directory tree cleanup. */
+    assert(remove(exp_prof_file) == 0);
+    assert(test_rmdir(exp_prof_dir) == 0);
+    assert(test_rmdir(exp_prof_root) == 0);
+    assert(test_rmdir(exp_data_dir) == 0);
+
     /* Cleanup, deepest first. Each removal asserts the directory was empty. */
     assert(remove(iso_path) == 0);
     launch_remove_data_root_tree(iso_usrdir, sep);

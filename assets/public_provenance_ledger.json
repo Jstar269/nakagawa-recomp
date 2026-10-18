@@ -6177,7 +6177,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "34d62f04cfd651f83530f279b99cd5071ca7bb9ed76be9f528be4a05469f17e6"
+      "sha256": "d436b7d4531176fd8fbc8f0b3fd08bc2bf6d8a526dc8659df5dee8c0585007c5"
     },
     {
       "path": "tests/native/test_manifest_parser.c",
