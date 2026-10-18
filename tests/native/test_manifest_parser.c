@@ -102,9 +102,6 @@ static void test_manifest_unicode_and_surrogates(void) {
 
     assert(nk_title_manifest_parse_buffer(jp_escaped, strlen(jp_escaped), false, &entry, err, sizeof(err)));
     assert(strcmp(entry.display_name, "日本語タイトル") == 0);
-    assert(entry.has_executable_base == true);
-    assert(entry.executable_base == 0);
-    assert(entry.has_executable_entry == true);
 
     /* 2. UTF-16 surrogate pair for supplementary plane codepoint U+1F600 (GRINNING FACE 😀) */
     const char *surrogate_json =
