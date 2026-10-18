@@ -35,6 +35,7 @@ or labelled historical/capture-time. The evidence-tier view
 `tools/hle_manifest.py --evidence-chain` as a separate evidence dimension.
 
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
+
 ### HLE Semantic Status Census
 
 Registered NIDs: **536** (dedicated **488**, fake_success **5**, controlled_unsupported **43**).
@@ -389,6 +390,7 @@ Semantic handler census: **451** handlers across **23** API families, covering *
 
 - **`h_MpegGetPcmAu`** (`sceMpeg`): `sceMpegGetPcmAu` (0x8c1e027d)
 - **`h_SasUnsupportedVoice`** (`sceSas`): `__sceSasSetVoiceATRAC3` (0x4aa9ead6), `__sceSasConcatenateATRAC3` (0x7497ea85), `__sceSasSetTrianglarWave` (0xa232cbe6), `__sceSasSetSteepWave` (0xd5ebbbcd), `__sceSasUnsetATRAC3` (0xf6107f00)
+
 <!-- END GENERATED HLE STATUS CENSUS -->
 
 ```text

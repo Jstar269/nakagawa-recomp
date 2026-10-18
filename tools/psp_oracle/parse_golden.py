@@ -2735,8 +2735,8 @@ def parse_font_list_output(text: str, *, require_complete: bool = True) -> FontL
 #
 # umd-state-before, io-open-NNNN for each fixed open, io-dopen-NNNN for each
 # fixed dopen, umd-state-after, umdio-done. The path lists below mirror the
-# probe source (a test keeps them equal). The default parser records results;
-# its explicit measured mode compares the accepted inserted-UMD run below.
+# probe source (a test keeps them equal); the parser records results and never
+# decides which answer is correct.
 # ---------------------------------------------------------------------------
 
 UMDIO_TEST_ID = "PSP-UMDIO-001"
@@ -2748,21 +2748,6 @@ UMDIO_OPENS = (
     ("umd0:", 0xF0001), ("umd1:", 0xF0001), ("msstor0p1:/", 0x1),
 )
 UMDIO_DOPENS = ("umd0:", "umd1:", "umd:", "disc0:", "disc0:/", "disc0:/PSP_GAME")
-UMDIO_MEASURED_STATE = (0x00000001, 0x00000032)
-UMDIO_MEASURED_OPEN_RESULTS = (
-    (0x00000003, 0x00000000), (0x00000003, 0x00000000),
-    (0x00000003, 0x00000000), (0x00000003, 0x00000000),
-    (0x00000003, 0x00000000), (0x80010016, 0xFFFFFFFF),
-    (0x80010002, 0xFFFFFFFF), (0x00000003, 0x00000000),
-    (0x00000003, 0x00000000), (0x00000003, 0x00000000),
-    (0x00000003, 0x00000000), (0x00000003, 0x00000000),
-    (0x00000003, 0x00000000),
-)
-UMDIO_MEASURED_DOPEN_RESULTS = (
-    (0x80020325, 0xFFFFFFFF), (0x80020325, 0xFFFFFFFF),
-    (0x80020325, 0xFFFFFFFF), (0x80010016, 0xFFFFFFFF),
-    (0x00000003, 0x00000000), (0x00000003, 0x00000000),
-)
 
 
 @dataclass(frozen=True)
@@ -2775,9 +2760,8 @@ class UmdIoReport:
     dopens: tuple[tuple[str, int, int], ...]
 
 
-def parse_umd_io_output(text: str, *, require_complete: bool = True,
-                        require_measured: bool = False) -> UmdIoReport:
-    """Validate the fixed bare-device stream and optionally its measured run."""
+def parse_umd_io_output(text: str, *, require_complete: bool = True) -> UmdIoReport:
+    """Validate the fixed bare-device open/dopen stream."""
 
     tid = UMDIO_TEST_ID
     parsed = parse_output(text)
@@ -2835,136 +2819,7 @@ def parse_umd_io_output(text: str, *, require_complete: bool = True,
             }
             if any(values[field] != value for field, value in counts.items()):
                 raise ProtocolError(f"{tid}: umdio-done counts disagree")
-    report = UmdIoReport(parsed, complete, before, after, tuple(opens), tuple(dopens))
-    if require_measured:
-        if not complete:
-            raise ProtocolError(f"{tid}: measured validation requires a complete stream")
-        if before != UMDIO_MEASURED_STATE or after != UMDIO_MEASURED_STATE:
-            raise ProtocolError(f"{tid}: stream is not the measured inserted-UMD state")
-        if tuple((item[2], item[3]) for item in report.opens) != UMDIO_MEASURED_OPEN_RESULTS:
-            raise ProtocolError(f"{tid}: sceIoOpen results differ from the measured PSP table")
-        if tuple((item[1], item[2]) for item in report.dopens) != UMDIO_MEASURED_DOPEN_RESULTS:
-            raise ProtocolError(f"{tid}: sceIoDopen results differ from the measured PSP table")
-    return report
-
-
-# ---------------------------------------------------------------------------
-# PSP-UMDRAW-001 raw UMD read/seek observations (fixtures/psp_oracle/umd_io.h)
-#
-# The parser accepts only the probe's fixed records and scalar fields. Seek
-# results are low word then high word; sector-16 reads expose only their first
-# eight bytes and an all-zero flag. It never accepts payloads or checksums.
-# ---------------------------------------------------------------------------
-
-UMDRAW_TEST_ID = "PSP-UMDRAW-001"
-UMDRAW_HOST0_LOG = "host0:/umd_raw_read_log.txt"
-UMDRAW_RAW_FLAGS = 0x000F0001
-UMDRAW_READONLY_FLAGS = 0x00000001
-UMDRAW_IOFILEMGR_NIDS = (
-    0x109F50BC, 0x27EB27B8, 0x3251EA56, 0x42EC03AC, 0x55F4717D,
-    0x68963324, 0x6A638D83, 0x810C4BC3, 0xA0B5A7C2, 0xACE946E8,
-    0xB29DDF9C, 0xE23EEC33, 0xE3EB004C, 0xEB092469, 0xF27A9C51,
-)
-UMDRAW_READ_SIZES = (1, 512, 2047, 2048, 2049, 4096, 32768, 0)
-UMDRAW_CASES = (
-    "umd-state-before", "raw-open-extra",
-    "seek-set-0", "seek-set-16", "seek-set-32768", "seek-cur-0", "seek-end-0",
-    "seek-set-1", "seek-set-neg1", "seek32-set-0", "seek32-set-16",
-    "seek32-set-32768", "seek32-end-0", "pos-advance-seek", "pos-advance-first",
-    "pos-advance-second", "pos-advance-cur", "byte-sector16-seek", "byte-sector16-read",
-    "size-1-seek", "size-1-read", "size-512-seek", "size-512-read",
-    "size-2047-seek", "size-2047-read", "size-2048-seek", "size-2048-read",
-    "size-2049-seek", "size-2049-read", "size-4096-seek", "size-4096-read",
-    "size-32768-seek", "size-32768-read", "size-0-seek", "size-0-read",
-    "unaligned-seek", "unaligned-read", "far-seek", "far-read", "async-seek",
-    "async-read", "async-poll", "async-wait", "async-data", "getstat", "raw-close",
-    "readonly-open", "readonly-seek-0", "readonly-seek-16", "readonly-seek-32768",
-    "readonly-close", "umd-state-after", "umdraw-done",
-)
-UMDRAW_SEEK64_CASES = frozenset({
-    "seek-set-0", "seek-set-16", "seek-set-32768", "seek-cur-0", "seek-end-0",
-    "seek-set-1", "seek-set-neg1", "pos-advance-seek", "pos-advance-cur",
-    "byte-sector16-seek", "unaligned-seek", "far-seek", "async-seek",
-    "readonly-seek-0", "readonly-seek-16", "readonly-seek-32768",
-    *(f"size-{size}-seek" for size in UMDRAW_READ_SIZES),
-})
-UMDRAW_SEEK32_CASES = frozenset({
-    "seek32-set-0", "seek32-set-16", "seek32-set-32768", "seek32-end-0",
-})
-UMDRAW_HEADER_READ_SIZES = {
-    "pos-advance-first": 2048,
-    "pos-advance-second": 2048,
-    "byte-sector16-read": 2048,
-    **{f"size-{size}-read": size for size in UMDRAW_READ_SIZES},
-    "async-data": 2048,
-}
-
-
-@dataclass(frozen=True)
-class UmdRawReadReport:
-    parsed: object
-    complete: bool
-    before: tuple[int, int]
-    after: tuple[int, int] | None
-
-
-def parse_umd_raw_read_output(text: str, *, require_complete: bool = True) -> UmdRawReadReport:
-    """Validate the fixed read-only raw-UMD stream without asserting PSP semantics."""
-
-    tid = UMDRAW_TEST_ID
-    parsed = parse_output(text)
-    records = list(parsed.results)
-    if any(record.test_id != tid for record in records):
-        raise ProtocolError(f"{tid}: foreign test_id in umd-raw-read stream")
-    observed = [record.case_id for record in records]
-    if len(observed) > len(UMDRAW_CASES) or observed != list(UMDRAW_CASES[:len(observed)]):
-        raise ProtocolError(f"{tid}: records out of order: {observed}")
-    complete = len(observed) == len(UMDRAW_CASES)
-    if not complete and require_complete:
-        raise ProtocolError(f"{tid}: stream is missing umdraw-done")
-
-    before = after = None
-    for index, record in enumerate(records):
-        case_id = record.case_id
-        if record.status != "PASS":
-            raise ProtocolError(f"{tid}: {case_id} must be PASS (results are observations)")
-        if case_id in {"umd-state-before", "umd-state-after"}:
-            values = _io_fields(tid, record, {"result", "out0"}, set())
-            state = (values["result"], values["out0"])
-            if case_id == "umd-state-before":
-                before = state
-            else:
-                after = state
-        elif case_id in {"raw-open-extra", "readonly-open"}:
-            values = _io_fields(tid, record, {"result", "out0"}, set())
-            expected_flags = UMDRAW_RAW_FLAGS if case_id == "raw-open-extra" else UMDRAW_READONLY_FLAGS
-            if values["out0"] != expected_flags or _s32(values["result"]) < 0:
-                raise ProtocolError(f"{tid}: {case_id} did not open read-only with its pinned flags")
-        elif case_id in UMDRAW_SEEK64_CASES:
-            _io_fields(tid, record, {"result", "out0"}, set())
-        elif case_id in UMDRAW_SEEK32_CASES:
-            _io_fields(tid, record, {"result"}, set())
-        elif case_id in UMDRAW_HEADER_READ_SIZES:
-            values = _io_fields(tid, record, {"result", "out0", "out1", "out2", "out3"}, set())
-            if values["out2"] not in (0, 1):
-                raise ProtocolError(f"{tid}: {case_id} has an invalid whole-buffer-zero flag")
-            if values["out3"] != UMDRAW_HEADER_READ_SIZES[case_id]:
-                raise ProtocolError(f"{tid}: {case_id} requested the wrong byte count")
-        elif case_id in {"unaligned-read", "far-read", "async-read"}:
-            _io_fields(tid, record, {"result"}, set())
-        elif case_id in {"async-poll", "async-wait"}:
-            _io_fields(tid, record, {"result", "out0", "out1"}, set())
-        elif case_id == "getstat":
-            _io_fields(tid, record, {"result", "out0", "out1", "out2"}, set())
-        elif case_id in {"raw-close", "readonly-close"}:
-            values = _io_fields(tid, record, {"result"}, set())
-            if values["result"] != 0:
-                raise ProtocolError(f"{tid}: {case_id} did not close its descriptor")
-        elif case_id == "umdraw-done":
-            values = _io_fields(tid, record, {"result", "out0"}, set())
-            if values["result"] != 0 or values["out0"] != index:
-                raise ProtocolError(f"{tid}: umdraw-done record count disagrees")
-    return UmdRawReadReport(parsed, complete, before, after)
+    return UmdIoReport(parsed, complete, before, after, tuple(opens), tuple(dopens))
 
 
 # ---------------------------------------------------------------------------
