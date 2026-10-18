@@ -464,6 +464,11 @@ static void test_manifest_mutations(void) {
     assert(!nk_title_manifest_parse_buffer(bad_evidence, strlen(bad_evidence), false, &entry, err, sizeof(err)));
     assert(strstr(err, "unsupported evidence class") != NULL);
 
+    /* 22. Leading zero in JSON number -> REJECT (RFC 8259) */
+    const char *leading_zero = "{\"schema_version\": 01, \"id\": \"test\", \"display_name\": \"T\", \"kind\": \"synthetic\", \"executable\": {\"base\": 0, \"entry\": 0, \"bss_metadata_source\": \"none\", \"extra_executable_spans\": []}, \"modules\": [], \"filesystem\": {\"data_root\": \"d\", \"memory_stick_root\": \"m\", \"device_prefixes\": [\"host0:\"]}, \"hle_profile\": \"std\", \"feature_requirements\": [], \"verification_profile\": \"v\"}";
+    assert(!nk_title_manifest_parse_buffer(leading_zero, strlen(leading_zero), false, &entry, err, sizeof(err)));
+    assert(strstr(err, "leading zeros") != NULL || strstr(err, "Invalid number") != NULL);
+
     printf("[MANIFEST_TEST] Schema mutation tests PASSED!\n");
 }
 

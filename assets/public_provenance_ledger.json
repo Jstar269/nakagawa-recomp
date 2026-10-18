@@ -2855,7 +2855,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f4db2cf888bfecc46e98c69254183126f678722d7949f97ceb3d0256897d8eba"
+      "sha256": "dc19fd514de37758b90cb4e290bd8ab43260223ec3906a999b37e16a0be0ab11"
     },
     {
       "path": "src/core/nk_json.h",
@@ -6189,7 +6189,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ef5c24c6fa1483f0185cfc3b89798190c769496d48b70c2c42bbe3772828eb88"
+      "sha256": "b062d68cf26b74747d2a538aa34be67d271184d439af9f91a035d86e26fd177a"
     },
     {
       "path": "tests/native/test_package_builder.c",
@@ -6213,7 +6213,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "217ed09152bc2555b10169d6cf6fc7376fee8a55c7fdc435b652bf1e8240d942"
+      "sha256": "a6f0641cf51158986b7233dcac3b92042a7c72f3dc20196e75fd8fdaed30e984"
     },
     {
       "path": "tests/native/test_pgf_public.c",

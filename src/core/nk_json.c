@@ -503,6 +503,10 @@ static NkJsonNode *parse_value(JsonParser *p, int depth) {
             set_error(p, "Invalid number");
             return NULL;
         }
+        if (p->src[p->pos] == '0' && p->pos + 1 < p->len && isdigit((unsigned char)p->src[p->pos + 1])) {
+            set_error(p, "Invalid number: leading zeros are forbidden");
+            return NULL;
+        }
         while (p->pos < p->len && isdigit((unsigned char)p->src[p->pos])) p->pos++;
         if (p->pos < p->len && p->src[p->pos] == '.') {
             has_frac_or_exp = true;

@@ -323,6 +323,19 @@ static void test_library_json_string_escapes(const char *test_dir) {
     assert(memcmp(value, "\xE2\x84\xA2\xF0\x9F\x8E\xAE", 7) == 0);
     nk_json_free(root);
 
+    /* 5. Numbers with leading zeroes -> REJECT per RFC 8259 */
+    const char *bad_numbers[] = {
+        "{\"k\": 01}",
+        "{\"k\": -01}",
+        "{\"k\": 00}"
+    };
+    for (size_t i = 0; i < sizeof(bad_numbers) / sizeof(bad_numbers[0]); i++) {
+        char err_buf[128] = "";
+        NkJsonNode *n = nk_json_parse(bad_numbers[i], strlen(bad_numbers[i]), err_buf, sizeof(err_buf));
+        assert(n == NULL);
+        assert(strstr(err_buf, "leading zeros") != NULL || strstr(err_buf, "Invalid number") != NULL);
+    }
+
     printf("[HOSTILE_TEST] Library string escape tests PASSED!\n"); fflush(stdout);
 }
 
