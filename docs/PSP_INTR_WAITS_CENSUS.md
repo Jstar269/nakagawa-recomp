@@ -75,7 +75,7 @@ Open-owner counts:
 | `sceKernelFreeTlspl` | implemented | #341 | dedicated | unreviewed | `h_FreeTlspl` | `0x4a719fb2` |
 | `sceKernelGetTlsAddr` | implemented | #341 | dedicated | unreviewed | `h_GetTlsAddr` | `0xfa835cde` |
 | `sceKernelLockLwMutex` | implemented | #341 | dedicated | unreviewed | `h_LockLwMutex` | `0xbea46419` |
-| `sceKernelLockLwMutexCB` | implemented | #341 | dedicated | unreviewed | `h_LockLwMutex` | `0x1fc64e09` |
+| `sceKernelLockLwMutexCB` | implemented | #341 | dedicated | unreviewed | `h_LockLwMutexCB` | `0x1fc64e09` |
 | `sceKernelLockMutex` | implemented | #341 | dedicated | unreviewed | `h_LockMutex` | `0xb011b11f` |
 | `sceKernelLockMutexCB` | implemented | #341 | dedicated | unreviewed | `h_LockMutexCB` | `0x5bf4dd27` |
 | `sceKernelPollMbx` | implemented | - | dedicated | partial | `h_PollMbx` | `0x0d81716a` |
