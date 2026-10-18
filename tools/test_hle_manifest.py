@@ -1395,6 +1395,41 @@ class CensusTests(unittest.TestCase):
             for r in cls.manifest["registrations"]
         ]
 
+    def test_route_a_mixed_handlers_are_split_from_unmeasured_nids(self) -> None:
+        by_nid = {
+            int(row["nid"], 16): row["handler"]
+            for row in self.manifest["registrations"]
+        }
+        groups = (
+            (
+                "LwMutex blocking versus callback locks",
+                (0x7CFF8CF3, 0xBEA46419),
+                (0x31327F19, 0x1FC64E09),
+            ),
+            (
+                "Dcache range operations versus writeback-invalidate and Icache",
+                (0x3EE30821, 0xBFA98062),
+                (0x34B9FA9E, 0xC2DF770E),
+            ),
+            (
+                "Dcache writeback-all versus writeback-invalidate and Icache",
+                (0x79D1C3FA,),
+                (0xB435DEC5, 0x920F104A, 0xD8779AC6),
+            ),
+        )
+        for label, route_a_nids, unmeasured_nids in groups:
+            with self.subTest(group=label):
+                self.assertTrue(
+                    all(nid in by_nid for nid in (*route_a_nids, *unmeasured_nids)),
+                    f"{label}: expected registrations disappeared",
+                )
+                route_a_handlers = {by_nid[nid] for nid in route_a_nids}
+                unmeasured_handlers = {by_nid[nid] for nid in unmeasured_nids}
+                self.assertTrue(
+                    route_a_handlers.isdisjoint(unmeasured_handlers),
+                    f"{label}: a measured route-A handler still owns unmeasured NIDs",
+                )
+
     def test_census_covers_every_dedicated_handler(self) -> None:
         generic = set(meta.GENERIC_SUCCESS_HANDLERS) | {"h_ControlledUnsupported"}
         expected_handlers = {

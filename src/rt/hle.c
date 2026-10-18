@@ -5282,7 +5282,7 @@ static int stale_mem_read(uint32_t addr, uint32_t *word_out, void *ctx) {
     return 1;
 }
 
-static uint32_t h_CacheInvalidateAll(CpuState *s) {
+static uint32_t h_cache_invalidate_all_common(CpuState *s) {
     (void)s;
     if (sr_stale_enabled()) {
         uint32_t bad = 0u, exp = 0u, act = 0u;
@@ -5295,7 +5295,19 @@ static uint32_t h_CacheInvalidateAll(CpuState *s) {
     return 0;
 }
 
-static uint32_t h_CacheInvalidateRange(CpuState *s) {
+/* Keep the HLE ownership boundary aligned with the hardware cells. These
+ * wrappers currently share the same coherent-memory implementation; the
+ * writeback-invalidate and I-cache NIDs remain unreviewed until their own
+ * cells are measured. */
+static uint32_t h_DcacheWritebackAll(CpuState *s) {
+    return h_cache_invalidate_all_common(s);
+}
+
+static uint32_t h_CacheInvalidateAllOther(CpuState *s) {
+    return h_cache_invalidate_all_common(s);
+}
+
+static uint32_t h_cache_invalidate_range_common(CpuState *s) {
     /* PSP range signature: a0 = address, a1 = length. */
     if (sr_stale_enabled()) {
         uint32_t bad = 0u, exp = 0u, act = 0u;
@@ -5306,6 +5318,14 @@ static uint32_t h_CacheInvalidateRange(CpuState *s) {
         }
     }
     return 0;
+}
+
+static uint32_t h_DcacheRangeMaintenance(CpuState *s) {
+    return h_cache_invalidate_range_common(s);
+}
+
+static uint32_t h_CacheInvalidateRangeOther(CpuState *s) {
+    return h_cache_invalidate_range_common(s);
 }
 
 void sr_stale_note_cache_op(uint32_t addr) {
@@ -22084,7 +22104,7 @@ static int lwmutex_acquire_timeout(uint32_t wa, int count, int blocking, uint32_
     }
 }
 
-static uint32_t h_LockLwMutex(CpuState *s) {
+static uint32_t h_lwmutex_lock_common(CpuState *s) {
     /* a0=workarea, a1=lockCount, a2=timeout ptr. */
     uint32_t wa = A0;
     if (!lwmutex_workarea_ok(wa)) return 0x80000103u;
@@ -22099,6 +22119,17 @@ static uint32_t h_LockLwMutex(CpuState *s) {
     case LWMUTEX_TIMEOUT: return 0x800201a8u;
     default: return 0x800201b5u;   /* WAIT_DELETE */
     }
+}
+
+static uint32_t h_LockLwMutex(CpuState *s) {
+    return h_lwmutex_lock_common(s);
+}
+
+/* Callback-variant waits remain unreviewed until the callback wait probe has
+ * measured them. Keep a distinct registered owner so the measured blocking
+ * lock cells cannot implicitly graduate the CB imports. */
+static uint32_t h_LockLwMutexCB(CpuState *s) {
+    return h_lwmutex_lock_common(s);
 }
 
 static uint32_t h_TryLockLwMutex(CpuState *s) {
@@ -23027,7 +23058,7 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0xa66b0120, "sceKernelReferEventFlagStatus", h_ReferEventFlagStatus);
     sr_hle_register(0x60107536, "sceKernelDeleteLwMutex", h_DeleteLwMutex);
     sr_hle_register(0x7cff8cf3, "_sceKernelLockLwMutex", h_LockLwMutex);
-    sr_hle_register(0x31327f19, "_sceKernelLockLwMutexCB", h_LockLwMutex);
+    sr_hle_register(0x31327f19, "_sceKernelLockLwMutexCB", h_LockLwMutexCB);
     sr_hle_register(0xdc692ee3, "sceKernelTryLockLwMutex", h_TryLockLwMutex);
     sr_hle_register(0x37431849, "sceKernelTryLockLwMutex_600", h_TryLockLwMutex600);
     sr_hle_register(0x71040d5c, "_sceKernelTryLockLwMutex", h_TryLockLwMutex);
@@ -23074,7 +23105,7 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0xa9c2cb9a, "sceKernelReferMutexStatus", h_ReferMutexStatus);
     sr_hle_register(0x19cff145, "sceKernelCreateLwMutex", h_CreateLwMutex);
     sr_hle_register(0xbea46419, "sceKernelLockLwMutex", h_LockLwMutex);
-    sr_hle_register(0x1fc64e09, "sceKernelLockLwMutexCB", h_LockLwMutex);
+    sr_hle_register(0x1fc64e09, "sceKernelLockLwMutexCB", h_LockLwMutexCB);
     sr_hle_register(0xc1734599, "sceKernelReferLwMutexStatus", h_ReferLwMutexStatus);
     sr_hle_register(0x4c145944, "sceKernelReferLwMutexStatusByID", h_ReferLwMutexStatusByID);
     sr_hle_register(0x3e0271d3, "sceKernelVolatileMemLock", h_VolatileMemLock);
@@ -23796,24 +23827,24 @@ void sr_hle_init(void) {
     hle_register_devkit_version_handler();
 
     /* cache / misc UtilsForUser: no-ops are fine without a real cache. */
-    sr_hle_register(0x79d1c3fa, "sceKernelDcacheWritebackAll", h_CacheInvalidateAll);
+    sr_hle_register(0x79d1c3fa, "sceKernelDcacheWritebackAll", h_DcacheWritebackAll);
     /* Guest and host share one coherent byte array; cache maintenance has no
      * additional host-side work, but the syscall and success result are real. */
-    sr_hle_register(0xb435dec5, "sceKernelDcacheWritebackInvalidateAll", h_CacheInvalidateAll);
-    sr_hle_register(0x3ee30821, "sceKernelDcacheWritebackRange", h_CacheInvalidateRange);
+    sr_hle_register(0xb435dec5, "sceKernelDcacheWritebackInvalidateAll", h_CacheInvalidateAllOther);
+    sr_hle_register(0x3ee30821, "sceKernelDcacheWritebackRange", h_DcacheRangeMaintenance);
     /* Range invalidates are routine data-cache maintenance around DMA (the guest
      * libpsmfplayer invalidates its read buffer before sceDmacMemcpy), so they are
      * real no-op successes on this coherent memory like the writebacks above. */
-    sr_hle_register(0xbfa98062u, "sceKernelDcacheInvalidateRange", h_CacheInvalidateRange);
-    sr_hle_register(0x34b9fa9eu, "sceKernelDcacheWritebackInvalidateRange", h_CacheInvalidateRange);
+    sr_hle_register(0xbfa98062u, "sceKernelDcacheInvalidateRange", h_DcacheRangeMaintenance);
+    sr_hle_register(0x34b9fa9eu, "sceKernelDcacheWritebackInvalidateRange", h_CacheInvalidateRangeOther);
     /* TD-27 stale-code detector: the Icache NIDs (a code-modification signal)
      * stay UNREGISTERED (fail-closed, as before) unless SR_STALE_DETECT opts
      * in, so default dispatch behavior is unchanged. When enabled they run
      * the same check-and-abort contract as the Dcache handlers above. */
     if (sr_stale_enabled()) {
-        sr_hle_register(0x920f104au, "sceKernelIcacheInvalidateAll", h_CacheInvalidateAll);
-        sr_hle_register(0xd8779ac6u, "sceKernelIcacheClearAll", h_CacheInvalidateAll);
-        sr_hle_register(0xc2df770eu, "sceKernelIcacheInvalidateRange", h_CacheInvalidateRange);
+        sr_hle_register(0x920f104au, "sceKernelIcacheInvalidateAll", h_CacheInvalidateAllOther);
+        sr_hle_register(0xd8779ac6u, "sceKernelIcacheClearAll", h_CacheInvalidateAllOther);
+        sr_hle_register(0xc2df770eu, "sceKernelIcacheInvalidateRange", h_CacheInvalidateRangeOther);
     }
     /* GPO latch / GPI pins: shared with the executable harness through
      * hle_register_gpi_gpo_handlers(). */
