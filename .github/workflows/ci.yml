@@ -726,9 +726,13 @@ jobs:
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
         with:
           msystem: UCRT64
-          # Keep the toolchain dependency install explicit.  Do not cache
-          # compiled runtime objects: Make's content-addressed invalidation and
-          # shader freshness checks must remain authoritative.
+          # Reuse the Windows runner's preinstalled MSYS2 base instead of
+          # extracting it in every matrix part. Keep the action's package cache
+          # explicit; per-part Python and compiler resolution checks follow.
+          release: false
+          cache: true
+          # Do not cache compiled runtime objects: Make's content-addressed
+          # invalidation and shader freshness checks must remain authoritative.
           update: false
           install: >-
             mingw-w64-ucrt-x86_64-gcc

@@ -97,6 +97,36 @@ def _cmake_sources_and_definitions() -> tuple[dict[str, set[str]], dict[str, set
 
 
 class PublicCiWiringTests(unittest.TestCase):
+    def test_windows_msys2_reuses_runner_base_and_keeps_package_cache(self) -> None:
+        """Avoid extracting a fresh base in every matrix part; keep toolchain checks."""
+        windows_runtime = _ci_job_blocks()["windows_runtime"]
+        self.assertIn("runs-on: windows-2022", "\n".join(windows_runtime))
+        setup = _ci_step(windows_runtime, "Set up MSYS2 UCRT64")
+        self.assertIsNotNone(setup, "windows_runtime must set up the UCRT64 environment")
+        assert setup is not None
+        setup_text = "\n".join(setup)
+        self.assertIn("release: false", setup_text)
+        self.assertIn("cache: true", setup_text)
+        for package in (
+            "mingw-w64-ucrt-x86_64-gcc",
+            "mingw-w64-ucrt-x86_64-make",
+            "mingw-w64-ucrt-x86_64-python",
+            "mingw-w64-ucrt-x86_64-sdl3",
+            "mingw-w64-ucrt-x86_64-vulkan-loader",
+        ):
+            with self.subTest(package=package):
+                self.assertIn(package, setup_text)
+
+        compiler_check = _ci_step(
+            windows_runtime, "Verify default and override compiler resolution"
+        )
+        self.assertIsNotNone(compiler_check, "every part must retain the compiler verification")
+        assert compiler_check is not None
+        compiler_text = "\n".join(compiler_check)
+        self.assertIn("gcc --version", compiler_text)
+        self.assertIn("CC=clang compiler-info", compiler_text)
+        self.assertIn("CC_ORIGIN=command line", compiler_text)
+
     def test_showcase_guest_build_uses_pspdev_compiler(self) -> None:
         demo = {"id": "synthetic-test", "folder": "ge_scene", "target": "fixture_app"}
         with tempfile.TemporaryDirectory(prefix="showcase_cc_") as tmp:
