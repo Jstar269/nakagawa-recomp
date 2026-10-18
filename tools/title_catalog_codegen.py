@@ -330,6 +330,8 @@ def generate_header(digest: str, titles: List[Dict[str, Any]]) -> str:
         "    const char * const *compatible_disc_ids; /* NULL-terminated array of alias disc IDs */",
         "    uint32_t executable_base;",
         "    uint32_t executable_entry;",
+        "    bool has_executable_base;",
+        "    bool has_executable_entry;",
         "    uint32_t run_entry;                 /* where a run starts: runtime_bindings.fallback_entry when declared, else executable_entry (title_codegen_plan._resolve_run_entry) */",
         "    const char *bss_metadata_source;",
         "    const char *data_root;",
@@ -780,6 +782,8 @@ def generate_source(digest: str, titles: List[Dict[str, Any]]) -> str:
         lines.append(f"        {compat_ref},")
         lines.append(f"        0x{exe_base:08x}U,")
         lines.append(f"        0x{exe_entry:08x}U,")
+        lines.append("        true,")
+        lines.append("        true,")
         lines.append(f"        0x{run_entry:08x}U,")
         lines.append(f'        "{bss_source}",')
         lines.append(f'        "{data_root}",')

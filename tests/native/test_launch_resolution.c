@@ -1419,6 +1419,40 @@ int main(int argc, char **argv) {
                                                 staged_entry,
                                                 &staged_info, staged_error,
                                                 sizeof(staged_error)) != NK_OK);
+
+    /* A manifest with base 0 must fail closed when the staged ELF load base is non-zero. */
+    NkTitleEntry base0_entry = *staged_entry;
+    base0_entry.executable_base = 0;
+    base0_entry.has_executable_base = true;
+    write_valid_elf(staged_eboot, 0x08810000u, staged_entry->executable_entry);
+    assert(nk_launch_validate_staged_executable(&game,
+                                                &base0_entry,
+                                                &staged_info, staged_error,
+                                                sizeof(staged_error)) != NK_OK);
+    assert(strstr(staged_error, "load base does not match") != NULL);
+
+    /* A manifest with base 0 and entry 0 succeeds when the staged ELF matches. */
+    base0_entry.executable_entry = 0;
+    base0_entry.has_executable_entry = true;
+    write_valid_elf(staged_eboot, 0, 0);
+    assert(nk_launch_validate_staged_executable(&game,
+                                                &base0_entry,
+                                                &staged_info, staged_error,
+                                                sizeof(staged_error)) == NK_OK);
+    assert(staged_info.load_base == 0);
+
+    /* A manifest with entry 0 must fail closed when the staged ELF entry does not match. */
+    NkTitleEntry entry0 = *staged_entry;
+    entry0.executable_entry = 0;
+    entry0.has_executable_entry = true;
+    write_valid_elf(staged_eboot, staged_entry->executable_base, staged_entry->executable_base);
+    assert(nk_launch_validate_staged_executable(&game,
+                                                &entry0,
+                                                &staged_info, staged_error,
+                                                sizeof(staged_error)) != NK_OK);
+    assert(strstr(staged_error, "entry point does not match") != NULL);
+
+
     write_file(staged_eboot, "not-an-executable");
     assert(nk_launch_validate_staged_executable(&game,
                                                 staged_entry,
