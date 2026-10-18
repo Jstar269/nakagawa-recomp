@@ -92,7 +92,7 @@ static inline unsigned int show_bits(GetBitContext *s, int n);
  *
  * GET_CACHE(name, gb)
  *   Will output the contents of the internal cache,
- *   next bit is MSB of 32 or 64 bits (FIXME 64 bits).
+ *   next bit is MSB of 32 or 64 bits.
  *
  * SHOW_UBITS(name, gb, num)
  *   Will return the next num bits.
@@ -130,9 +130,15 @@ static inline unsigned int show_bits(GetBitContext *s, int n);
 
 #if !CACHED_BITSTREAM_READER
 
+#ifdef LONG_BITSTREAM_READER
+#define OPEN_READER_NOSIZE(name, gb)            \
+    unsigned int name ## _index = (gb)->index;  \
+    uintptr_t av_unused name ## _cache
+#else
 #define OPEN_READER_NOSIZE(name, gb)            \
     unsigned int name ## _index = (gb)->index;  \
     unsigned int av_unused name ## _cache
+#endif
 
 #if UNCHECKED_BITSTREAM_READER
 #define OPEN_READER(name, gb) OPEN_READER_NOSIZE(name, gb)
@@ -212,7 +218,11 @@ static inline unsigned int show_bits(GetBitContext *s, int n);
 #   define SHOW_SBITS(name, gb, num) SHOW_SBITS_BE(name, gb, num)
 #endif
 
+#ifdef LONG_BITSTREAM_READER
+#define GET_CACHE(name, gb) ((uintptr_t) name ## _cache)
+#else
 #define GET_CACHE(name, gb) ((uint32_t) name ## _cache)
+#endif
 
 #endif
 

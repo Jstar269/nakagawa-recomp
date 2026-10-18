@@ -3840,7 +3840,7 @@
         "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e3c5067c886a3a8bcabb0a1e0a2289dbb413644fe5e0de0a6cd85bd4741a927f"
+      "sha256": "42ea696c407261191c72c8af8d166a379d50c93f0c5dfbeab4e5ae030356e4e6"
     },
     {
       "path": "src/rt/atrac3p/libavcodec/internal.h",
