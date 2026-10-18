@@ -650,6 +650,24 @@ class FlightRecorderLinkDependencyTests(unittest.TestCase):
             "g_sr_watch_enabled:\n%s" % (number, link.strip()),
         )
 
+    def test_psmf_media_links_do_not_compile_audio_resample_twice(self) -> None:
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        logical = _with_response_file_inputs(_logical_lines(makefile))
+        self.assertIn("src/rt/audio_resample.c", _rt_runtime_sources(makefile))
+        self.assertNotIn("audio_resample.o", _psmf_media_filtered_out(makefile))
+        for executable in (
+            "psmf_media_selftest.exe",
+            "psmf_media_selftest_csc_mutant.exe",
+        ):
+            with self.subTest(executable=executable):
+                links = [
+                    text for _number, text in logical
+                    if executable in text and _is_link_statement(text)
+                ]
+                self.assertEqual(len(links), 1, links)
+                self.assertNotIn("src/rt/audio_resample.c", links[0])
+                self.assertIn("$(PSMF_MEDIA_RUNTIME_OBJS)", links[0])
+
 
 def _psmf_media_filtered_out(makefile: str) -> str:
     """The objects PSMF_MEDIA_RUNTIME_OBJS removes from RT_OBJS (its filter-out list)."""
