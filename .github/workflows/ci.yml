@@ -312,11 +312,38 @@ jobs:
           sudo apt-get install -y build-essential cmake curl gcc-mipsel-linux-gnu \
             git libc6-dev-i386 libvulkan-dev ninja-build pkg-config
 
-      - name: Build pinned SDL3 for headless Linux runtime
-        # Build the pinned SDL release directly so CI uses the documented version.
+      # The pinned SDL3 install is cached under an exact key: the pinned version and
+      # commit, the gcc and cmake that build it, and this workflow file (which holds
+      # the configure flags). Only the SDL3 install is cached, never repository
+      # objects. A hit restores the staged install instead of rebuilding it; the
+      # install and pkg-config checks below run on both paths.
+      - name: Key the pinned SDL3 install
+        id: sdl3-key
         run: |
           SDL3_VERSION=3.4.16
           SDL3_COMMIT=fa2c02bb6e21974a89ea9824bc53c9932abe5f9c
+          {
+            echo "SDL3_VERSION=$SDL3_VERSION"
+            echo "SDL3_COMMIT=$SDL3_COMMIT"
+          } >> "$GITHUB_ENV"
+          workflow_hash="$(sha256sum .github/workflows/ci.yml | cut -c1-16)"
+          gcc_version="$(gcc -dumpfullversion)"
+          cmake_version="$(cmake --version | sed -n 1p | awk '{print $3}')"
+          echo "key=sdl3-$SDL3_VERSION-$SDL3_COMMIT-gcc$gcc_version-cmake$cmake_version-$workflow_hash" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the pinned SDL3 install
+        id: sdl3-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/sdl3-stage
+          key: ${{ steps.sdl3-key.outputs.key }}
+
+      - name: Build pinned SDL3 for headless Linux runtime
+        # Build the pinned SDL release directly so CI uses the documented version.
+        # Runs only on a cache miss. DESTDIR stages the install so the cache holds
+        # exactly the files the install step copies into /usr/local.
+        if: steps.sdl3-cache.outputs.cache-hit != 'true'
+        run: |
           git init "$RUNNER_TEMP/SDL"
           git -C "$RUNNER_TEMP/SDL" remote add origin https://github.com/libsdl-org/SDL.git
           git -C "$RUNNER_TEMP/SDL" fetch --depth 1 origin "$SDL3_COMMIT"
@@ -326,7 +353,16 @@ jobs:
             -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF \
             -DSDL_INSTALL_TESTS=OFF -DSDL_UNIX_CONSOLE_BUILD=ON -DSDL_VULKAN=ON
           cmake --build "$RUNNER_TEMP/SDL/build" --parallel 2
-          sudo cmake --install "$RUNNER_TEMP/SDL/build"
+          rm -rf "$RUNNER_TEMP/sdl3-stage"
+          DESTDIR="$RUNNER_TEMP/sdl3-stage" cmake --install "$RUNNER_TEMP/SDL/build"
+
+      - name: Install the pinned SDL3 into the Linux prefix
+        run: |
+          test -d "$RUNNER_TEMP/sdl3-stage/usr/local" || {
+            echo "pinned SDL3 install is missing from ${RUNNER_TEMP}/sdl3-stage" >&2
+            exit 1
+          }
+          sudo cp -a "$RUNNER_TEMP/sdl3-stage/usr/local/." /usr/local/
           sudo ldconfig
           # A mistyped but valid commit must fail here, not leave the docs claiming the pin.
           test "$(pkg-config --modversion sdl3)" = "$SDL3_VERSION"

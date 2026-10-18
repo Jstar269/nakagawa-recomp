@@ -164,7 +164,7 @@ extern uint32_t sr_hle_test_io_dread(CpuState *s);
 extern uint32_t sr_hle_test_io_dclose(CpuState *s);
 extern uint32_t sr_hle_test_vfs_initial_find_error(unsigned long error, int *found);
 extern uint32_t sr_hle_test_io_ioctl(CpuState *s);
-extern void sr_hle_test_register_io_devctl(void);
+extern void sr_hle_test_register_iofilemgr(void);
 extern uint32_t sr_hle_test_io_devctl_callback_uid(void);
 extern uint32_t sr_hle_test_io_devctl_refusal_log_count(void);
 extern uint32_t sr_hle_test_io_close(CpuState *s);
@@ -649,9 +649,24 @@ void sr_perf_audio_output(uint64_t started_ns, uint32_t frames) {
 static uint8_t s_psmf_synthetic[2048u + 21u];
 static uint32_t s_psmf_synthetic_size;
 static int s_psmf_synthetic_enabled;
+static int s_umd_io_synthetic_enabled;
 static const char *const s_psmf_synthetic_path = "disc0:/media/synthetic.psmf";
 
 int iso_lookup(const char *guest_path, uint32_t *out_lba, uint32_t *out_size) {
+    if (s_umd_io_synthetic_enabled && guest_path) {
+        static const char *const paths[] = {
+            "disc0:/PSP_GAME",
+            "disc0:/PSP_GAME/SYSDIR",
+            "disc0:/UMD_DATA.BIN",
+        };
+        for (uint32_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+            if (strcmp(guest_path, paths[i]) == 0) {
+                if (out_lba) *out_lba = 0x1000u + i;
+                if (out_size) *out_size = 2048u;
+                return 0;
+            }
+        }
+    }
     if (s_psmf_synthetic_enabled && guest_path &&
         strcmp(guest_path, s_psmf_synthetic_path) == 0) {
         if (out_lba) *out_lba = 0u;
@@ -672,6 +687,10 @@ int iso_read(uint32_t lba, uint32_t offset, void *dst, uint32_t bytes) {
     return -1;
 }
 int iso_list(const char *guest_path, uint32_t index, IsoDirEntry *out) {
+    if (s_umd_io_synthetic_enabled && guest_path && index == 0u &&
+        (strcmp(guest_path, "disc0:/") == 0 ||
+         strcmp(guest_path, "disc0:/PSP_GAME") == 0))
+        return 0;
     if (guest_path && strcmp(guest_path, "disc0:/data/menu/text") == 0) {
         if (index > 0u) return 0;
         memset(out, 0, sizeof(*out));
@@ -3005,7 +3024,7 @@ static void test_fd_namespace(void) {
     memset(&cpu, 0, sizeof(cpu));
     fd_set_path(&cpu, path_addr, "disc0:/");
     uint32_t dir_fd = sr_hle_test_io_dopen(&cpu);
-    expect(dir_fd == 0x100u, "dopen on disc0:/ succeeds and returns dir fd 0x100");
+    expect(dir_fd == 4u, "dopen shares the descriptor table and skips the open file fd 3");
     /* Scope-negative non-regression: valid dir fd with null dirent pointer (de == 0) preserves baseline 0x80010009 */
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = dir_fd;
@@ -3024,7 +3043,7 @@ static void test_fd_namespace(void) {
     fd_guest_copy(path_addr, "ms0:/empty", sizeof "ms0:/empty");
     cpu.r[4] = path_addr;
     uint32_t empty_dir_fd = sr_hle_test_io_dopen(&cpu);
-    expect(empty_dir_fd == 0x100u,
+    expect(empty_dir_fd == 4u,
            "dopen on an empty overlay directory succeeds");
     memset(&cpu, 0, sizeof cpu);
     cpu.r[4] = empty_dir_fd;
@@ -3289,6 +3308,234 @@ static void test_fd_namespace(void) {
     if (old_root) _putenv_s("SR_MEMSTICK", old_root);
     else _putenv_s("SR_MEMSTICK", "");
     free(old_root);
+}
+
+static void test_umd_io_console_model(void) {
+    enum { PATH_ADDR = 0x09010000u, DATA_ADDR = 0x09012000u, FD_KIND_RAW_DEVICE = 3 };
+    static const uint32_t nid_io_open = 0x109f50bcu;
+    static const uint32_t nid_io_close = 0x810c4bc3u;
+    static const uint32_t nid_io_read = 0x6a638d83u;
+    static const uint32_t nid_io_write = 0x42ec03acu;
+    static const uint32_t nid_io_lseek32 = 0x68963324u;
+    static const uint32_t nid_io_lseek = 0x27eb27b8u;
+    static const uint32_t nid_io_ioctl = 0x63632449u;
+    static const uint32_t nid_io_getstat = 0xace946e8u;
+    static const uint32_t nid_io_devctl = 0x54f5fb11u;
+    static const uint32_t nid_io_dopen = 0xb29ddf9cu;
+    static const uint32_t nid_io_dread = 0xe3eb004cu;
+    static const uint32_t nid_io_dclose = 0xeb092469u;
+    static const uint32_t nid_io_open_async = 0x89aa9906u;
+    static const uint32_t nid_io_read_async = 0xa0b5a7c2u;
+    static const uint32_t nid_io_write_async = 0x0facab19u;
+    static const uint32_t nid_io_lseek_async = 0x71b19e77u;
+    static const uint32_t nid_io_lseek32_async = 0x1b385d8fu;
+    static const uint32_t nid_io_ioctl_async = 0xe95a012bu;
+    static const uint32_t nid_io_wait_async = 0xe23eec33u;
+    static const uint32_t nid_io_poll_async = 0x3251ea56u;
+    static const uint32_t nid_io_get_async_stat = 0xcb05f8d6u;
+    static const uint32_t nid_io_close_async = 0xff5940b6u;
+    typedef struct {
+        const char *path;
+        uint32_t flags;
+        uint32_t result;
+    } UmdOpenCase;
+    typedef struct {
+        const char *path;
+        uint32_t result;
+    } UmdDopenCase;
+    static const UmdOpenCase opens[] = {
+        {"umd0:", 0x00000001u, 3u},
+        {"umd1:", 0x00000001u, 3u},
+        {"umd:", 0x00000001u, 3u},
+        {"umd0:/", 0x00000001u, 3u},
+        {"umd1:/", 0x00000001u, 3u},
+        {"disc0:", 0x00000001u, 0x80010016u},
+        {"disc0:/", 0x00000001u, 0x80010002u},
+        {"disc0:/PSP_GAME", 0x00000001u, 3u},
+        {"disc0:/PSP_GAME/SYSDIR", 0x00000001u, 3u},
+        {"disc0:/UMD_DATA.BIN", 0x00000001u, 3u},
+        {"umd0:", 0x000f0001u, 3u},
+        {"umd1:", 0x000f0001u, 3u},
+        {"msstor0p1:/", 0x00000001u, 3u},
+    };
+    static const UmdDopenCase dopens[] = {
+        {"umd0:", 0x80020325u},
+        {"umd1:", 0x80020325u},
+        {"umd:", 0x80020325u},
+        {"disc0:", 0x80010016u},
+        {"disc0:/", 3u},
+        {"disc0:/PSP_GAME", 3u},
+    };
+    CpuState cpu;
+    uint32_t held[sizeof(opens) / sizeof(opens[0])];
+    size_t held_count = 0;
+
+    sr_hle_init();
+    sr_hle_test_register_iofilemgr();
+    s_umd_io_synthetic_enabled = 1;
+
+    /* Keep every successful open live once: each result must name a distinct
+     * real slot, and each failed open must leave the table unchanged. */
+    for (size_t i = 0; i < sizeof(opens) / sizeof(opens[0]); i++) {
+        fd_set_path(&cpu, PATH_ADDR, opens[i].path);
+        cpu.r[5] = opens[i].flags;
+        uint32_t result = sr_syscall(&cpu, nid_io_open);
+        if (opens[i].result == 3u) {
+            expect((int32_t)result >= 3 && result < 64u,
+                   "measured sceIoOpen success returns a live normal descriptor");
+            for (size_t j = 0; j < held_count; j++)
+                expect(result != held[j], "simultaneously open UMD and disc descriptors are distinct");
+            if ((int32_t)result >= 3 && result < 64u) held[held_count++] = result;
+        } else {
+            expect(result == opens[i].result, "measured sceIoOpen error matches PSP-UMDIO-001");
+        }
+    }
+    for (size_t i = 0; i < held_count; i++) {
+        memset(&cpu, 0, sizeof(cpu));
+        cpu.r[4] = held[i];
+        expect(sr_syscall(&cpu, nid_io_close) == 0u,
+               "every simultaneously open UMD and disc descriptor closes");
+    }
+
+    /* Replay the exact probe sequence with immediate close. A free slot must be
+     * reusable after every success, including successes after failed opens. */
+    for (size_t i = 0; i < sizeof(opens) / sizeof(opens[0]); i++) {
+        fd_set_path(&cpu, PATH_ADDR, opens[i].path);
+        cpu.r[5] = opens[i].flags;
+        uint32_t result = sr_syscall(&cpu, nid_io_open);
+        expect(result == opens[i].result, "sceIoOpen probe sequence matches measured results");
+        if (opens[i].result == 3u && (int32_t)result >= 0) {
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = result;
+            expect(sr_syscall(&cpu, nid_io_close) == 0u,
+                   "each successful sceIoOpen probe descriptor closes with zero");
+        }
+    }
+
+    for (size_t i = 0; i < sizeof(dopens) / sizeof(dopens[0]); i++) {
+        fd_set_path(&cpu, PATH_ADDR, dopens[i].path);
+        uint32_t result = sr_syscall(&cpu, nid_io_dopen);
+        expect(result == dopens[i].result, "sceIoDopen probe sequence matches measured results");
+        if (dopens[i].result == 3u && (int32_t)result >= 0) {
+            memset(&cpu, 0, sizeof(cpu));
+            cpu.r[4] = result;
+            expect(sr_syscall(&cpu, nid_io_dclose) == 0u,
+                   "each successful sceIoDopen probe descriptor closes with zero");
+        }
+    }
+
+    /* The console measurement only covered close. Every other raw-device
+     * operation must stop at a named semantic boundary with a real error. */
+    fd_set_path(&cpu, PATH_ADDR, "umd0:");
+    cpu.r[5] = 1u;
+    uint32_t raw_fd = sr_syscall(&cpu, nid_io_open);
+    expect(raw_fd == 3u && sr_hle_test_fd_kind(raw_fd) == FD_KIND_RAW_DEVICE,
+           "bare UMD open creates a typed descriptor in the normal table");
+    MEM_W32(DATA_ADDR, 0xaabbccddu);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    cpu.r[5] = DATA_ADDR;
+    cpu.r[6] = 4u;
+    expect(sr_syscall(&cpu, nid_io_read) == 0x80010086u &&
+               MEM_R32(DATA_ADDR) == 0xaabbccddu,
+           "raw UMD sceIoRead fails closed without changing guest memory");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    cpu.r[5] = DATA_ADDR;
+    cpu.r[6] = 4u;
+    expect(sr_syscall(&cpu, nid_io_write) == 0x80010086u,
+           "raw UMD sceIoWrite fails closed");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    expect(sr_syscall(&cpu, nid_io_lseek32) == 0x80010086u,
+           "raw UMD sceIoLseek32 fails closed");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    expect(sr_syscall(&cpu, nid_io_lseek) == 0x80010086u,
+           "raw UMD sceIoLseek fails closed");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    expect(sr_syscall(&cpu, nid_io_ioctl) == 0x80010086u,
+           "raw UMD sceIoIoctl fails closed");
+    fd_set_path(&cpu, PATH_ADDR, "umd0:");
+    cpu.r[5] = DATA_ADDR;
+    expect(sr_syscall(&cpu, nid_io_getstat) == 0x80010086u,
+           "raw UMD sceIoGetstat fails closed");
+    fd_set_path(&cpu, PATH_ADDR, "umd0:");
+    cpu.r[5] = 0x02025806u;
+    expect(sr_syscall(&cpu, nid_io_devctl) == 0x80010086u,
+           "raw UMD sceIoDevctl fails closed");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    cpu.r[5] = DATA_ADDR;
+    cpu.r[6] = 4u;
+    expect(sr_syscall(&cpu, nid_io_read_async) == 0x80010086u,
+           "raw UMD sceIoReadAsync fails closed");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    cpu.r[5] = DATA_ADDR;
+    cpu.r[6] = 4u;
+    expect(sr_syscall(&cpu, nid_io_write_async) == 0x80010086u,
+           "raw UMD sceIoWriteAsync fails closed");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    expect(sr_syscall(&cpu, nid_io_lseek_async) == 0x80010086u,
+           "raw UMD sceIoLseekAsync fails closed");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    expect(sr_syscall(&cpu, nid_io_lseek32_async) == 0x80010086u,
+           "raw UMD sceIoLseek32Async fails closed");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    expect(sr_syscall(&cpu, nid_io_ioctl_async) == 0x80010086u,
+           "raw UMD sceIoIoctlAsync fails closed");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    expect(sr_syscall(&cpu, nid_io_get_async_stat) == 0x80010086u,
+           "raw UMD sceIoGetAsyncStat fails closed");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    expect(sr_syscall(&cpu, nid_io_wait_async) == 0x80010086u,
+           "raw UMD sceIoWaitAsync fails closed");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    expect(sr_syscall(&cpu, nid_io_poll_async) == 0x80010086u,
+           "raw UMD sceIoPollAsync fails closed");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    expect(sr_syscall(&cpu, nid_io_close_async) == 0x80010086u,
+           "raw UMD sceIoCloseAsync fails closed without closing the descriptor");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    cpu.r[5] = DATA_ADDR;
+    expect(sr_syscall(&cpu, nid_io_dread) == 0x80010086u,
+           "raw UMD sceIoDread fails closed");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    expect(sr_syscall(&cpu, nid_io_dclose) == 0x80010086u,
+           "raw UMD sceIoDclose fails closed without closing the descriptor");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    expect(sr_syscall(&cpu, nid_io_close) == 0u,
+           "raw UMD sceIoClose succeeds after rejected operations");
+
+    fd_set_path(&cpu, PATH_ADDR, "umd0:");
+    cpu.r[5] = 1u;
+    expect(sr_syscall(&cpu, nid_io_open_async) == 0x80010086u,
+           "raw UMD sceIoOpenAsync fails closed because its semantics are unmeasured");
+    fd_set_path(&cpu, PATH_ADDR, "msstor0p1:/");
+    cpu.r[5] = 1u;
+    raw_fd = sr_syscall(&cpu, nid_io_open);
+    expect(raw_fd == 3u, "msstor0p1:/ allocates a normal descriptor");
+    fd_set_path(&cpu, PATH_ADDR, "msstor0p1:/");
+    expect(sr_syscall(&cpu, nid_io_dopen) == 0x80010086u,
+           "unmeasured msstor0p1:/ directory open fails closed");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = raw_fd;
+    expect(sr_syscall(&cpu, nid_io_close) == 0u,
+           "msstor0p1:/ raw descriptor closes and releases its slot");
+
+    s_umd_io_synthetic_enabled = 0;
 }
 
 /* Issue #334: ordinary sceIo* and savedata must share one canonical host
@@ -5446,7 +5693,7 @@ static void test_io_devctl_memory_stick(void) {
     fd_guest_copy(device_addr, ms0, sizeof(ms0));
     fd_guest_copy(second_device_addr, fatms0, sizeof(fatms0));
     sr_hle_init();
-    sr_hle_test_register_io_devctl();
+    sr_hle_test_register_iofilemgr();
 
     MEM_W32(indata_addr, info_addr);
     for (uint32_t i = 0; i < 5u; i++) MEM_W32(info_addr + i * 4u, 0xdeadbeefu);
@@ -8212,7 +8459,7 @@ static void test_direct_xb_read_precedence_and_listing(void) {
     const char *dir_path = "disc0:/PSP_GAME/USRDIR/data/menu";
     hle_archive_set_path(&cpu, 0x09105000u, dir_path);
     uint32_t dir_fd = sr_hle_test_io_dopen(&cpu);
-    expect(dir_fd >= 0x100u && dir_fd < 0x120u, "an archive directory opens");
+    expect(dir_fd >= 3u && dir_fd < 64u, "an archive directory opens in the normal descriptor table");
     expect(hle_archive_dir_has(&cpu, dir_fd, "archived.to", "nested"),
            "directory listing exposes an archive member and directory");
     memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = dir_fd;
@@ -8736,7 +8983,7 @@ static uint32_t hle_archive_route_dopen_result(const char *path) {
     CpuState cpu;
     hle_archive_set_path(&cpu, 0x0910b000u, path);
     uint32_t fd = sr_hle_test_io_dopen(&cpu);
-    if (fd >= 0x100u && fd < 0x120u) {
+    if (fd >= 3u && fd < 64u) {
         memset(&cpu, 0, sizeof(cpu));
         cpu.r[4] = fd;
         sr_hle_test_io_dclose(&cpu);
@@ -9117,7 +9364,7 @@ static void test_extracted_data_prepares_before_guest_and_lookup_never_builds(vo
     fd_guest_copy(dir_path_addr, dir_path, sizeof dir_path);
     cpu.r[4] = dir_path_addr;
     uint32_t dir_fd = sr_hle_test_io_dopen(&cpu);
-    expect(dir_fd == 0x100u,
+    expect(dir_fd == 3u,
            "an indexed directory remains discoverable through a full disc0 path");
     memset(&cpu, 0, sizeof cpu);
     cpu.r[4] = dir_fd;
@@ -28742,7 +28989,7 @@ static void test_flash0_font_device(void) {
         fd_guest_copy(F0T_PATH_ADDR, "flash0:/font", strlen("flash0:/font") + 1u);
         cpu.r[4] = F0T_PATH_ADDR;
         uint32_t dir = sr_hle_test_io_dopen(&cpu);
-        expect(dir >= 0x100u, "flash0:/font opens as a directory");
+        expect(dir >= 3u && dir < 64u, "flash0:/font opens as a directory descriptor");
         char names[3][64];
         int count = 0;
         for (;;) {
@@ -29303,6 +29550,7 @@ static int hle_selftest_main(int argc, char **argv) {
 
     test_prx_export_relocation_behavior();
     test_fd_namespace();
+    test_umd_io_console_model();
     test_ms0_unified_namespace();
     test_utility_av_module_state();
     test_controlled_unsupported_registration();
