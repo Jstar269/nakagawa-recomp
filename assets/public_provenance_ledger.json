@@ -340,7 +340,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "a5b2ad502c7cd5da1425a15a69fa2a2222e5205e5aa282cfcca1332f506305c2"
+      "sha256": "c41e06efc3493b0aab0a3b6397a037a8ee74495e00319e65f0c9b12d2f14dc42"
     },
     {
       "path": "NOTICE.md",
@@ -715,7 +715,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "d2f1fc58390130f30d010dd0af7085ae9ac8b1ef0a0d0208874161b5cf29afb2"
+      "sha256": "ef72dc18060da75813bd2d711a584c6dd0a6ff0fa8526ae64d4ab6529aaf01ac"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1132,7 +1132,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9fa0ae5a230f98d919d0873f04b9d96a00b1ed3f0ff1c4ffba8cd9109f6fdfb9"
+      "sha256": "a6bdcdcefaec7db0249a7caa306cf0eb671f77925828ff592db190850e35ecb1"
     },
     {
       "path": "docs/DECOMPME_INTEGRATION.md",
@@ -1643,6 +1643,18 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "0d1385ce557422a8ff090d355246e1f93eb9b75e8b7f94a42299a3359ae991ad"
+    },
+    {
+      "path": "fixtures/audio_resampler_bench/audio_resampler_bench.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "audio-resampler-bench-fixture-pr1051",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "2d95b813c8077a93898ca426a61fe636269cd1eb03db38e3c57e247127e478d9"
     },
     {
       "path": "fixtures/cosim/README.md",
@@ -4407,7 +4419,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "18ad06474d7bb51ded64228744ee060aa6010654fb4827e585b02d2f7b1aac9e"
+      "sha256": "ada002e24ae71bce13dc474397437117cd0797a0e320538578a38524b5338425"
     },
     {
       "path": "src/rt/audio_resample.h",
@@ -7982,7 +7994,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cc24d5d8754bdcd486587af2a7c7c55db5c38ae7421bec13622dea23a8ebeab2"
+      "sha256": "9db90e7a26311beb0541677e333979f184bea1b4ee22d53d35dbe97b15c680d4"
     },
     {
       "path": "tools/scratch_dir.py",
