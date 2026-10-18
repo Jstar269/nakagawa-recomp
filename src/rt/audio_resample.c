@@ -195,25 +195,41 @@ static int16_t sr_audio_resample_channel(const SrAudioResampler *state,
     /* Bolt ⚡: Compute tap bounds [start_tap, end_tap) outside the loop to eliminate
      * 96 loop-invariant subtractions, per-iteration bounds checks, and inside-loop
      * 64-bit integer modulo operations (% state->history_capacity).
-     * Yields ~1.78x speedup for audio resampling. */
+     * Benchmark measured about 1.7x speedup across the tested levels and rates. */
     unsigned start_tap = 0;
     if (input_position < SR_AUDIO_RESAMPLER_TAPS) {
-        unsigned t = (unsigned)(SR_AUDIO_RESAMPLER_TAPS - input_position);
-        if (t > start_tap) start_tap = t;
-    }
-    if (oldest + SR_AUDIO_RESAMPLER_TAPS > input_position) {
-        uint64_t t = oldest + SR_AUDIO_RESAMPLER_TAPS - input_position;
+        const uint64_t first_possible = SR_AUDIO_RESAMPLER_TAPS - input_position;
+        if (oldest >= input_position) {
+            start_tap = SR_AUDIO_RESAMPLER_TAPS;
+        } else {
+            const uint64_t t = oldest + first_possible;
+            start_tap = t > SR_AUDIO_RESAMPLER_TAPS
+                            ? SR_AUDIO_RESAMPLER_TAPS : (unsigned)t;
+        }
+    } else {
+        const uint64_t first_input_index = input_position - SR_AUDIO_RESAMPLER_TAPS;
+        const uint64_t t = oldest > first_input_index
+                               ? oldest - first_input_index : 0u;
         if (t > (uint64_t)start_tap) {
             start_tap = (t > SR_AUDIO_RESAMPLER_TAPS) ? SR_AUDIO_RESAMPLER_TAPS : (unsigned)t;
         }
     }
 
     unsigned end_tap = SR_AUDIO_RESAMPLER_TAPS;
-    if (state->input_frames + SR_AUDIO_RESAMPLER_TAPS > input_position) {
-        uint64_t t = state->input_frames + SR_AUDIO_RESAMPLER_TAPS - input_position;
-        if (t < (uint64_t)end_tap) end_tap = (unsigned)t;
+    if (input_position < SR_AUDIO_RESAMPLER_TAPS) {
+        if (state->input_frames < input_position) {
+            end_tap = (unsigned)(state->input_frames +
+                                 SR_AUDIO_RESAMPLER_TAPS - input_position);
+        }
     } else {
-        end_tap = 0;
+        const uint64_t first_input_index = input_position - SR_AUDIO_RESAMPLER_TAPS;
+        if (first_input_index >= state->input_frames) {
+            end_tap = 0;
+        } else {
+            const uint64_t available = state->input_frames - first_input_index;
+            if (available < SR_AUDIO_RESAMPLER_TAPS)
+                end_tap = (unsigned)available;
+        }
     }
 
     if (start_tap < end_tap) {

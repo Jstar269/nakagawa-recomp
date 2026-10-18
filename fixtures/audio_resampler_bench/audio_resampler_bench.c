@@ -142,6 +142,69 @@ static int bench_dump_samples(FILE *dump, const int16_t *samples, size_t count) 
     return i == count * 2u;
 }
 
+/* Reference the pre-optimization tap predicate at the uint64_t counter edge.
+ * The streaming API's public state makes this deterministic boundary fixture
+ * possible without billions of input frames. */
+#define BENCH_REFERENCE_TAPS 96u
+#define BENCH_REFERENCE_Q30 INT64_C(1073741824)
+
+static int16_t bench_reference_channel(const SrAudioResampler *state,
+                                       uint64_t input_position,
+                                       unsigned phase, unsigned channel) {
+    const int32_t *coefficients = state->coefficients_q30 +
+                                  phase * BENCH_REFERENCE_TAPS;
+    const uint64_t oldest = state->input_frames - state->history_count;
+    int64_t accumulator = 0;
+    for (unsigned tap = 0; tap < BENCH_REFERENCE_TAPS; tap++) {
+        uint64_t input_index;
+        if (input_position < (uint64_t)(BENCH_REFERENCE_TAPS - tap)) continue;
+        input_index = input_position - BENCH_REFERENCE_TAPS + tap;
+        if (input_index < oldest || input_index >= state->input_frames) continue;
+        accumulator += (int64_t)state->history[(input_index % state->history_capacity) * 2u + channel] *
+                       coefficients[tap];
+    }
+    if (accumulator >= 0)
+        accumulator = (accumulator + BENCH_REFERENCE_Q30 / 2) / BENCH_REFERENCE_Q30;
+    else
+        accumulator = -((-accumulator + BENCH_REFERENCE_Q30 / 2) / BENCH_REFERENCE_Q30);
+    if (accumulator > INT16_MAX) accumulator = INT16_MAX;
+    if (accumulator < INT16_MIN) accumulator = INT16_MIN;
+    return (int16_t)accumulator;
+}
+
+static int bench_check_large_counter_bounds(void) {
+    SrAudioResampler state = {0};
+    const uint64_t probe_position = UINT64_MAX - 100u;
+    const int16_t input[2] = {10000, -10000};
+    int16_t output[2];
+    int ok = 0;
+
+    if (!sr_audio_resampler_init(&state, SR_AUDIO_RESAMPLER_OUTPUT_RATE)) return 0;
+    state.input_frames = UINT64_MAX - 50u;
+    state.history_count = (uint32_t)state.history_capacity;
+    state.output_phase = 0;
+    state.next_input_whole = probe_position;
+    state.next_input_remainder = 0;
+    for (size_t i = 0; i < state.history_capacity; i++) {
+        state.history[i * 2u] = input[0];
+        state.history[i * 2u + 1u] = input[1];
+    }
+
+    if (!sr_audio_resampler_push(&state, input, 1u) ||
+        sr_audio_resampler_pull(&state, output, 1u) != 1u) {
+        goto done;
+    }
+    if (output[0] != bench_reference_channel(&state, probe_position, 0u, 0u) ||
+        output[1] != bench_reference_channel(&state, probe_position, 0u, 1u)) {
+        goto done;
+    }
+    ok = 1;
+
+done:
+    sr_audio_resampler_destroy(&state);
+    return ok;
+}
+
 int main(int argc, char **argv) {
     const char *dump_path = argc > 1 ? argv[1] : NULL;
     const size_t case_count = sizeof(bench_rates) / sizeof(bench_rates[0]);
@@ -150,6 +213,11 @@ int main(int argc, char **argv) {
     int failed = 0;
 
     sr_perf_init();
+    if (!bench_check_large_counter_bounds()) {
+        fprintf(stderr, "audio_resampler_bench: uint64 frame-boundary regression\n");
+        return 1;
+    }
+    puts("AUDIO_RESAMPLER_BOUNDARY uint64 tap bounds=PASS");
     input = malloc((size_t)BENCH_INPUT_FRAMES * 2u * sizeof(*input));
     if (!input) return 2;
     bench_make_input(input, BENCH_INPUT_FRAMES);
