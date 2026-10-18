@@ -150,7 +150,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b57c6dc1f98b083c425ee0f7aaad6e70e865ef45da920f0ffa2c5cdc03bc515d"
+      "sha256": "bb7443dc6112796f74407f7e89cc5d1778e703e89d916ea77a82e9aa02960808"
     },
     {
       "path": ".github/workflows/codeql-wake.yml",
@@ -1105,7 +1105,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "02d7debe1cfa73109cbd762bca82596831b15f7e747c9c9357d801f4758f9040"
+      "sha256": "e13a8c007b9f39b4e9b95aff9345c539b4d98e97cedfe3817f35d6940fba5b36"
     },
     {
       "path": "docs/COMPATIBILITY.md",
