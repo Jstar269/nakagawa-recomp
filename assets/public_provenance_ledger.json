@@ -1180,7 +1180,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3d9f7b2badff7aaf45155fabfafedd056743b2828e4648936fe102de194b5e20"
+      "sha256": "560d4e01b10a0a74ce71d6c80ac25fddcc228249fe7b7503aa04aa86916bea85"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
