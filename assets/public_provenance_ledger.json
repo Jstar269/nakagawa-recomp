@@ -2735,7 +2735,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "979ec504a3620abee8330a593446979fcf6aa8809f70018942fb5152193c5460"
+      "sha256": "5560d5f95c8c400bbf9061cbdecd530c333a2f82c914c9e115d96f21460ab9cc"
     },
     {
       "path": "src/core/generated/nk_title_catalog.h",
@@ -2747,7 +2747,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "cc125bbff6dd42816e96db181fed16eae010e67d5150770107c31c17599b8e8a"
+      "sha256": "14ed24b4bddb76175fe0482f9eb9fc77cfc79d792b4813917891fcc77d3aedec"
     },
     {
       "path": "src/core/nk_decrypt_main.c",
@@ -2879,7 +2879,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ef862504ef39974563e24b511bfb758fabc484864dd07d550f0c768f12080982"
+      "sha256": "024400da59507e72f71ffa25f425d76bae29ad24eebe332de7d7152b74832325"
     },
     {
       "path": "src/core/nk_launch.h",
@@ -3225,7 +3225,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "875425c22f8ebd2499c34b4a6db953ef3e5f2c7fef8f986b9e683d7493f95c66"
+      "sha256": "434e2bc4ad8e5cac611cdeb08d86a7608cff83ede1619393bc3f7cade238149a"
     },
     {
       "path": "src/core/nk_title_manifest.h",
@@ -6177,7 +6177,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "57493160c30ab4edbaa46ee34b1e0cd7588cd36f72ca3383202585c709830071"
+      "sha256": "34d62f04cfd651f83530f279b99cd5071ca7bb9ed76be9f528be4a05469f17e6"
     },
     {
       "path": "tests/native/test_manifest_parser.c",
@@ -6189,7 +6189,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "02c61b0d645816f22a6aef8147b560052e69ae053c17328c2de0662cc520d320"
+      "sha256": "ef5c24c6fa1483f0185cfc3b89798190c769496d48b70c2c42bbe3772828eb88"
     },
     {
       "path": "tests/native/test_package_builder.c",
@@ -10589,7 +10589,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f73fa042945de98b23606ab1ed8b6b2da87744956a55dd649c7252e81eb5f6da"
+      "sha256": "876963a6afc759394d02fd76537ec36e6a11c4e051497241a119ea37829ce8d1"
     },
     {
       "path": "tools/title_codegen_plan.py",
