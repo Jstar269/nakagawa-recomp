@@ -7126,6 +7126,10 @@ class IoCasesSourceTests(unittest.TestCase):
         self.assertIn("PSP-UMDRAW-001", oracle_docs)
         self.assertIn("| `umd-raw-read` | `PSP-UMDRAW-001` | `CAPTURED`", oracle_docs)
         self.assertIn("size-32768-read", oracle_docs)
+        self.assertIn("900-second host case timeout", entry["measurement_note"])
+        self.assertIn("27.2 seconds after launch", entry["measurement_note"])
+        self.assertIn("does not establish whether the PSP call hung", entry["measurement_note"])
+        self.assertIn("fresh physical power-cycle", oracle_docs)
 
     def test_umd_pin_refuses_an_activation_import(self) -> None:
         pin = ["--exact-library", "sceUmdUser=0x46EBB729,0x6B4A146C"]

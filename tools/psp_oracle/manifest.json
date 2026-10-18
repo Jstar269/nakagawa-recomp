@@ -313,7 +313,7 @@
         "size-2048-seek", "size-2048-read", "size-2049-seek", "size-2049-read",
         "size-4096-seek", "size-4096-read"
       ],
-      "measurement_note": "An acceptance-ineligible PSP-3000 capture was made on 2026-10-17 from local source commit 6a9a39aa. It emitted 31 complete result records through size-4096-read; the last durable step marker was size-32768-read, but the step precedes that cell's seek/read pair and no result returned before the 360-second timeout. The runner stopped with HOST0_ROUNDTRIP_FAILED and could not verify teardown. No raw UMD behavior is inferred.",
+      "measurement_note": "The 2026-10-18 retry from local source 97ccbf87 followed a completed transport-write preflight. The case produced 31 complete raw result records through size-4096-read, then emitted separate size-32768-seek and size-32768-read markers. The last host0 write was 27.2 seconds after launch; no read result or umdraw-done marker arrived within the 900-second host case timeout. The runner stopped with HOST0_ROUNDTRIP_FAILED; PSPLink was absent during re-attach, post-unload ver retries failed, and module unload was not verified. The earlier 2026-10-17 360-second timeout from source 6a9a39aa is retained. This is an observed host timeout followed by transport loss, not a PSP sceIoRead result; it does not establish whether the PSP call hung or the transport failed. No raw UMD read or seek semantics are inferred.",
       "group": "io",
       "source": "fixtures/psp_oracle/probe.c",
       "prx": "nakagawa_psp_oracle.prx",
