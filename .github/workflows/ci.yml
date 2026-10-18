@@ -431,6 +431,15 @@ jobs:
       - name: Run native core test suite (hostile parsers, catalog, launch resolution, POSIX process)
         run: make CC=gcc native-core-tests
 
+      # Compile ge.c with its optional front-end attribution path enabled. Use a
+      # fresh object directory so the normal unprofiled ge.o cannot satisfy the
+      # target without compiling the requested configuration.
+      - name: Compile GE frontend profiling mode
+        run: |
+          build_dir="$RUNNER_TEMP/ge-frontend-profile"
+          mkdir -p "$build_dir"
+          make --no-print-directory CC=gcc BUILD_DIR="$build_dir" GE_FRONTEND_PROFILE=1 "$build_dir/ge.o"
+
       - name: Run host present pacing selftest (links SDL3)
         run: make CC=gcc gui-present-selftest
 
