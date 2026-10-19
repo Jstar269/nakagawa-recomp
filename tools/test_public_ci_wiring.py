@@ -126,6 +126,27 @@ class PublicCiWiringTests(unittest.TestCase):
         docs = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
         self.assertIn("showcase-linux", docs)
 
+    def test_ge_frontend_profile_variant_is_compiled_in_ci(self) -> None:
+        """The opt-in GE instrumentation build must compile ge.c in isolation."""
+        native_tools = _ci_job_blocks()["native_tools"]
+        step_name = "Compile GE frontend profiling mode"
+        step = _ci_step(native_tools, step_name)
+        self.assertIsNotNone(step, "native_tools must compile the GE profile variant")
+        assert step is not None
+        text = "\n".join(step)
+        self.assertIn('build_dir="$RUNNER_TEMP/ge-frontend-profile"', text)
+        self.assertIn("GE_FRONTEND_PROFILE=1", text)
+        self.assertIn('"$build_dir/ge.o"', text)
+        self.assertLess(
+            _ci_step_index(native_tools, "Install the pinned SDL3 into the Linux prefix"),
+            _ci_step_index(native_tools, step_name),
+        )
+
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("GE_FRONTEND_PROFILE ?= 0", makefile)
+        self.assertIn("$(RT_GE_O): src/rt/ge.c", makefile)
+        self.assertIn("$(CC) $(GE_CFLAGS)", makefile)
+
     def test_failed_linux_showcase_smoke_uploads_its_runtime_log(self) -> None:
         """A failed smoke names runtime.log; the run must keep it to diagnose a flake."""
         native_tools = _ci_job_blocks()["native_tools"]

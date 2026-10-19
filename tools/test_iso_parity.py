@@ -2087,7 +2087,7 @@ int main(int argc, char **argv) {{
         expected_hash = hashlib.sha256(executable_bytes).hexdigest()
         self.assertEqual(manifest["disc"]["id"], "ULUS99998")
         self.assertEqual(manifest["display_name"], "Experimental Fixture")
-        self.assertEqual(manifest["executable"]["base"], 0)
+        self.assertEqual(manifest["executable"]["base"], 0x08800000)
         self.assertEqual(manifest["executable"]["entry"], 0x08800000)
         self.assertEqual(manifest["codegen_profile"], "none")
         self.assertEqual(manifest["modules"], [])
@@ -2136,6 +2136,72 @@ int main(int argc, char **argv) {{
                     executable["load_address_evidence"], "documented-psp-default"
                 )
                 self.assertTrue(profile_path.is_relative_to(user_root))
+
+    def test_experimental_fixed_address_exec_uses_lowest_load_as_image_base(self) -> None:
+        """A fixed-address ET_EXEC already carries its guest address in PT_LOAD."""
+        from title_manifest import validate_manifest
+
+        base = 0x08804000
+        iso_file = self.temp_dir / "fixed-address-main.iso"
+        create_test_iso_with_executables(
+            iso_file,
+            build_plain_mips_elf(e_type=2, vaddr=base, memsz=0x2000, entry=base),
+            disc_id="ULUS99996",
+            title="Synthetic Fixed Address Fixture",
+        )
+        profile_path = write_experimental_profile(
+            iso_file, self.temp_dir / "fixed-address-user-data"
+        )
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        executable = validate_manifest(profile["manifest"])["executable"]
+        self.assertEqual(executable["base"], base)
+        self.assertEqual(executable["entry"], base)
+        self.assertNotIn("load_address", executable)
+        self.assertNotIn("load_address_evidence", executable)
+
+    def test_experimental_fixed_address_exec_outside_user_ram_fails_closed(self) -> None:
+        address = iso_inspect.PSP_CONVENTIONAL_USER_MEMORY_TOP - 4
+        iso_file = self.temp_dir / "fixed-address-outside-user-ram.iso"
+        create_test_iso_with_executables(
+            iso_file,
+            build_plain_mips_elf(e_type=2, vaddr=address, memsz=8, entry=address),
+            disc_id="ULUS99995",
+            title="Synthetic Out of Range Fixture",
+        )
+        user_root = self.temp_dir / "fixed-address-outside-user-ram-data"
+        with self.assertRaises(IsoInspectionError) as caught:
+            write_experimental_profile(iso_file, user_root)
+        self.assertEqual(
+            caught.exception.boundary_code,
+            "FIXED_ADDRESS_EXECUTABLE_OUTSIDE_GUEST_RAM",
+        )
+        self.assertEqual(
+            str(caught.exception),
+            "This fixed-address executable loads outside guest user RAM. "
+            "Building it there is not supported yet.",
+        )
+        self.assertFalse((user_root / "experimental").exists())
+
+    def test_experimental_zero_based_exec_requires_a_load_binding(self) -> None:
+        iso_file = self.temp_dir / "zero-based-exec.iso"
+        create_test_iso_with_executables(
+            iso_file,
+            build_plain_mips_elf(e_type=2, vaddr=0, memsz=4, entry=0),
+            disc_id="ULUS99994",
+            title="Synthetic Unbound Executable Fixture",
+        )
+        with self.assertRaises(IsoInspectionError) as caught:
+            write_experimental_profile(
+                iso_file, self.temp_dir / "zero-based-exec-user-data"
+            )
+        self.assertEqual(
+            caught.exception.boundary_code, "EXECUTABLE_LOAD_BINDING_REQUIRED"
+        )
+        self.assertEqual(
+            str(caught.exception),
+            "This ET_EXEC has no guest RAM load address. Generic rebinding for this "
+            "executable type is not supported yet.",
+        )
 
     def test_guest_modules_are_runtime_placed_and_listed_deterministically(self) -> None:
         main_elf = self.temp_dir / "placement-main.elf"

@@ -46,7 +46,7 @@ _Static_assert(
 #if PSP_ORACLE_CASE == 66 || PSP_ORACLE_CASE == 72
 #include <pspreg.h>
 #endif
-#if PSP_ORACLE_CASE == 74
+#if PSP_ORACLE_CASE == 74 || PSP_ORACLE_CASE == 77
 #include <pspumd.h>
 #endif
 #if PSP_ORACLE_CASE == 67
@@ -127,6 +127,7 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_REGISTRY_FONT 72
 #define PSP_ORACLE_CASE_FONT_FILES 73
 #define PSP_ORACLE_CASE_UMD_IO 74
+#define PSP_ORACLE_CASE_UMD_RAW_READ 77
 #define PSP_ORACLE_CASE_FONT_LIST 75
 #define PSP_ORACLE_CASE_VRAM_MIRROR 76
 
@@ -227,20 +228,31 @@ __attribute__((noinline)) uint32_t nakagawa_psp_oracle_sum_u32(uint32_t count) {
 #endif
 
 static int emulator_present(void) {
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_UMD_RAW_READ
+    /* The raw UMD measurement is PSP-only; do not issue emulator devctls. */
+    return 0;
+#else
     uint32_t flag = 0;
     if (sceIoDevctl("emulator:", EMULATOR_DEVCTL_IS_EMULATOR, NULL, 0, &flag, sizeof(flag)) < 0) {
         return 0;
     }
     return flag == 1;
+#endif
 }
 
 static void emit(int emulated, const char *text) {
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_UMD_RAW_READ
+    /* This case writes durable records to host0 and has no emulator output route. */
+    (void)emulated;
+    (void)text;
+#else
     if (emulated) {
         sceIoDevctl("emulator:", EMULATOR_DEVCTL_SEND_OUTPUT, (void *)text, (int)strlen(text), NULL, 0);
     } else {
         printf("%s", text);
         fflush(stdout);
     }
+#endif
 }
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FPU_VECTOR
@@ -303,6 +315,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/font_files_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_UMD_IO
 #define PROBE_HOST0_LOG "host0:/umd_io_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_UMD_RAW_READ
+#define PROBE_HOST0_LOG "host0:/umd_raw_read_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_LIST
 #define PROBE_HOST0_LOG "host0:/font_list_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_SMOKE
@@ -7968,6 +7982,34 @@ static void run_umd_io(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_UMD_RAW_READ
+/* Read-only raw UMD descriptor observations (PSP-UMDRAW-001), with the fixed cells and record
+ * fields shared with the host fake-file-system harness. */
+#include "umd_io.h"
+
+static int s_umdraw_emulated;
+
+static void umdraw_emit(void *ctx, const char *line, size_t length) {
+    (void)ctx;
+    probe_emit_durable(s_umdraw_emulated, line, length);
+}
+
+static void umdraw_step_callback(void *ctx, const char *step) {
+    (void)ctx;
+    probe_step(s_umdraw_emulated, "umd-raw-read", step);
+}
+
+static UmdRawRead s_umdraw;
+
+static void run_umdraw(int emulated) {
+    s_umdraw_emulated = emulated;
+    memset(&s_umdraw, 0, sizeof(s_umdraw));
+    s_umdraw.emit = umdraw_emit;
+    s_umdraw.step = umdraw_step_callback;
+    umdraw_run(&s_umdraw);
+}
+#endif
+
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_LIST
 /* The system font list as the console's own font library reports it (PSP-FONTLIST-001).
  * The calls, the arena allocator and the record format live in font_list.h, which a host
@@ -8430,6 +8472,8 @@ int main(int argc, char *argv[]) {
     run_font_files(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_UMD_IO
     run_umd_io(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_UMD_RAW_READ
+    run_umdraw(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FONT_LIST
     run_font_list(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR

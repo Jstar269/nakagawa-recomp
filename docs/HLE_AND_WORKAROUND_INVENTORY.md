@@ -35,35 +35,34 @@ or labelled historical/capture-time. The evidence-tier view
 `tools/hle_manifest.py --evidence-chain` as a separate evidence dimension.
 
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
-
 ### HLE Semantic Status Census
 
 Registered NIDs: **536** (dedicated **488**, fake_success **5**, controlled_unsupported **43**).
-Semantic handler census: **451** handlers across **23** API families, covering **494** handler-associated NID registrations.
+Semantic handler census: **454** handlers across **23** API families, covering **494** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
-| `complete` | 10 | 18 |
-| `partial` | 97 | 97 |
+| `complete` | 12 | 20 |
+| `partial` | 149 | 151 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 341 | 372 |
+| `unreviewed` | 290 | 316 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | `newlib` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `other` | 1 | 0 | 0 | 0 | 0 | 1 | 1 |
 | `sceAtrac` | 0 | 0 | 0 | 0 | 24 | 24 | 33 |
-| `sceAudio` | 0 | 3 | 0 | 0 | 13 | 16 | 17 |
+| `sceAudio` | 0 | 11 | 0 | 0 | 5 | 16 | 17 |
 | `sceCtrl` | 0 | 2 | 0 | 0 | 7 | 9 | 9 |
 | `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceFont` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
-| `sceGe` | 0 | 5 | 0 | 0 | 9 | 14 | 14 |
+| `sceGe` | 2 | 6 | 0 | 0 | 6 | 14 | 14 |
 | `sceHprm` | 0 | 0 | 0 | 0 | 3 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 18 | 0 | 0 | 12 | 32 | 32 |
-| `sceKernel` | 2 | 31 | 0 | 0 | 135 | 168 | 192 |
+| `sceKernel` | 2 | 74 | 0 | 0 | 95 | 171 | 192 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `scePower` | 0 | 3 | 0 | 0 | 11 | 14 | 16 |
@@ -74,7 +73,7 @@ Semantic handler census: **451** handlers across **23** API families, covering *
 | `sceUmd` | 0 | 1 | 1 | 0 | 7 | 9 | 9 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 31 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **10** | **97** | **1** | **2** | **341** | **451** | **494** |
+| **Total** | **12** | **149** | **1** | **2** | **290** | **454** | **494** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -86,6 +85,16 @@ Semantic handler census: **451** handlers across **23** API families, covering *
   - Evidence: src/rt/hle_thread_selftest.c:test_display_frame_per_sec_float_return
   - Evidence: tools/test_hle_manifest.py:FindingRuleTests.test_float_return_metadata_is_live_and_dedicated
   - Evidence: hardware oracle / issue #80 display-clock measurement (59.9400599f in $f0)
+- **`h_GeEdramGetAddr`** (`sceGe`): `sceGeEdramGetAddr` (0xe47e40e4)
+  - Evidence: tools/psp_oracle/manifest.json:PSP-HLE-GE-EDRAM-001
+  - Evidence: fixtures/psp_oracle/probe_hle_measure.c:hle_run
+  - Evidence: src/rt/hle.c:h_GeEdramGetAddr
+  - Evidence: PSP-HLE-GE-EDRAM-001 cell: edram-addr = 0x04000000
+- **`h_GeEdramGetSize`** (`sceGe`): `sceGeEdramGetSize` (0x1f6752ad)
+  - Evidence: tools/psp_oracle/manifest.json:PSP-HLE-GE-EDRAM-001
+  - Evidence: fixtures/psp_oracle/probe_hle_measure.c:hle_run
+  - Evidence: src/rt/hle.c:h_GeEdramGetSize
+  - Evidence: PSP-HLE-GE-EDRAM-001 cell: edram-size = 0x00200000
 - **`h_IoMkdir`** (`sceIo`): `sceIoMkdir` (0x06a70004)
   - Evidence: src/rt/hle_thread_selftest.c:test_ms0_unified_namespace
   - Evidence: src/rt/hle.c:h_IoMkdir
@@ -127,6 +136,47 @@ Semantic handler census: **451** handlers across **23** API families, covering *
 
 #### Partial Handlers (Named Limitations)
 
+- **`h_AudioChRelease`** (`sceAudio`): `sceAudioChRelease` (0x6fc46853)
+  - Limitation: the cells release channel 0 after the two valid blocking-output calls and query it after release; unreserved, out-of-range, and other channel-state release results are unmeasured (#341)
+  - Evidence: tools/psp_oracle/manifest.json:PSP-AUDIO-001
+  - Evidence: fixtures/psp_oracle/probe.c:run_audio_query
+  - Evidence: PSP-AUDIO-001 cells: audio-ch-release, audio-ch-query-released
+- **`h_AudioChReserve`** (`sceAudio`): `sceAudioChReserve` (0x5ec81c55)
+  - Limitation: audio-ch-reserve measures a successful reservation of channel 0 for 1024 stereo samples; automatic channel selection, invalid size or format, duplicate reservation, and exhaustion/error precedence are unmeasured (#341)
+  - Evidence: tools/psp_oracle/manifest.json:PSP-AUDIO-001
+  - Evidence: fixtures/psp_oracle/probe.c:run_audio_query
+  - Evidence: PSP-AUDIO-001 cell: audio-ch-reserve
+- **`h_AudioOutput2Blocking`** (`sceAudio`): `sceAudioOutput2OutputBlocking` (0x2d53f36e)
+  - Limitation: audio-out2-output-blocking measures one valid silent 1024-sample block at maximum volume and makes no acoustic claim; not-reserved, volume, buffer-error and audio_output error-propagation behavior are not covered (the handler discards audio_output's return) (#341)
+  - Evidence: tools/psp_oracle/manifest.json:PSP-AUDIO-001
+  - Evidence: fixtures/psp_oracle/probe.c:run_audio_query
+  - Evidence: PSP-AUDIO-001 cell: audio-out2-output-blocking
+- **`h_AudioOutput2Release`** (`sceAudio`): `sceAudioOutput2Release` (0x43196845)
+  - Limitation: audio-out2-release measures success after the queue drains; the documented #311 cell measures 0x80268002 while samples remain queued and preserves the reservation; releasing when not reserved is not measured (#341)
+  - Evidence: tools/psp_oracle/manifest.json:PSP-AUDIO-001
+  - Evidence: fixtures/psp_oracle/probe.c:run_audio_query
+  - Evidence: PSP-AUDIO-001 cell: audio-out2-release
+  - Evidence: docs/HARDWARE_ORACLE.md
+- **`h_AudioOutput2Reserve`** (`sceAudio`): `sceAudioOutput2Reserve` (0x01562ba3)
+  - Limitation: audio-out2-reserve measures a valid 1024-sample reservation; duplicate Output2 reservation behavior and invalid size bounds are unmeasured (#341)
+  - Evidence: tools/psp_oracle/manifest.json:PSP-AUDIO-001
+  - Evidence: fixtures/psp_oracle/probe.c:run_audio_query
+  - Evidence: PSP-AUDIO-001 cell: audio-out2-reserve
+- **`h_AudioOutput2Rest`** (`sceAudio`): `sceAudioOutput2GetRestSample` (0x647cef33)
+  - Limitation: the cells query rest samples on one valid 1024-sample Output2 reservation before and after one blocking output; the not-reserved code and other queue states are unmeasured (#341)
+  - Evidence: tools/psp_oracle/manifest.json:PSP-AUDIO-001
+  - Evidence: fixtures/psp_oracle/probe.c:run_audio_query
+  - Evidence: PSP-AUDIO-001 cells: audio-out2-query-before, audio-out2-query-after
+- **`h_AudioOutputBlocking`** (`sceAudio`): `sceAudioOutputBlocking` (0x136caf51)
+  - Limitation: the cells exercise two maximum-volume outputs with a valid silent stereo buffer and record timing and rest-length values, not audible output; mono, other volumes, invalid buffers/channels, and error precedence are unmeasured (#341)
+  - Evidence: tools/psp_oracle/manifest.json:PSP-AUDIO-001
+  - Evidence: fixtures/psp_oracle/probe.c:run_audio_query
+  - Evidence: PSP-AUDIO-001 cells: audio-ch-output-blocking-0, audio-ch-output-blocking-1
+- **`h_AudioRestLen`** (`sceAudio`): `sceAudioGetChannelRestLength` (0xb011922f)
+  - Limitation: the cells query channel 0 before and after blocking output and just after release; invalid-channel error behavior and other queue states are unmeasured (#341)
+  - Evidence: tools/psp_oracle/manifest.json:PSP-AUDIO-001
+  - Evidence: fixtures/psp_oracle/probe.c:run_audio_query
+  - Evidence: PSP-AUDIO-001 cells: audio-ch-query-before, audio-ch-query-after, audio-ch-query-released
 - **`h_AudioSRCChRelease`** (`sceAudio`): `sceAudioSRCChRelease` (0x5c37c0ae)
   - Limitation: release after a blocking output (0) and release with nothing reserved (0x80260008) are measured (PSP-HLE-AUDIO-SRC-001); whether a release succeeds while samples are still queued, as the Output2 busy rule does, and releasing a reservation made through the other API (refused here as not reserved) are unmeasured (#339)
 - **`h_AudioSRCChReserve`** (`sceAudio`): `sceAudioSRCChReserve` (0x38553111)
@@ -161,6 +211,9 @@ Semantic handler census: **451** handlers across **23** API families, covering *
 - **`h_GeContinue`** (`sceGe`): `sceGeContinue` (0x4c06e472)
   - Limitation: resumes a paused display list using the synchronous GE runner; hardware timing and multi-queue priority ordering remain unmodeled (#341); the 0 result when no list is paused is PSP-measured (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run)
   - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
+- **`h_GeEdramSetAddrTranslation`** (`sceGe`): `sceGeEdramSetAddrTranslation` (0xb77905ea)
+  - Limitation: replacement-width returns and restoration to boot width 1024 are measured; width 0 as an input, unsupported-width error 0x80000107 (a project choice), and applying the setting to actual GE address translation are not measured
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-GE-EDRAM-001: initial width, 512/1024/2048/4096 replacements, restore and final query)
 - **`h_GeListDeQueue`** (`sceGe`): `sceGeListDeQueue` (0x5fb86ab0)
   - Limitation: a stalled list returns BUSY (0x80000021) and stays queued, PSP-measured (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run); paused, completed, cancelled and unknown queue ids are refused as NOT_IMPLEMENTED because no dequeue result is measured for them (#341)
   - Evidence: src/rt/hle_thread_selftest.c:test_ge_break_continue
@@ -225,25 +278,90 @@ Semantic handler census: **451** handlers across **23** API families, covering *
   - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_AllocMemoryBlock`** (`sceKernel`): `sceKernelAllocMemoryBlock` (0xfe707fdf)
   - Limitation: models main-user-partition Low placement with the four-byte options header; valid High, Addr, LowAligned, HighAligned, and extended-options forms are refused, and allocation fragmentation/error precedence are not hardware measured
+- **`h_AllocateFpl`** (`sceKernel`): `sceKernelAllocateFpl` (0xd979e9bf)
+  - Limitation: ordinary allocation, one finite timeout, one-waiter hand-off, delete wake, and measured block/status layout are covered; invalid output pointers, negative timeout handling, and multiple-waiter ordering are not measured
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01 and PSP-B2-01 FPL cells)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001 FPL create, exhaustion, status, free and delete cells)
+- **`h_AllocateVpl`** (`sceKernel`): `sceKernelAllocateVpl` (0xbed27435)
+  - Limitation: ordinary allocation, one finite timeout, measured pool accounting, and one-waiter hand-off are covered; invalid output pointers, invalid sizes, and fragmented-pool behavior beyond the measured cases are not measured
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01 and PSP-B2-01 VPL cells)
 - **`h_CancelAlarm`** (`sceKernel`): `sceKernelCancelAlarm` (0x7e65b999)
   - Limitation: an unknown, cancelled or already-finished alarm UID returns the hardware-measured unknown-alarm code; treating a one-shot that has already fired as unknown (its UID is released when the handler returns 0) is the project's model and is not separately measured
   - Evidence: src/rt/hle_thread_selftest.c:test_alarm_registration_and_error_codes
   - Evidence: src/rt/hle_thread_selftest.c:test_alarm_cancel_before_firing_prevents_the_handler
   - Evidence: src/rt/sched_selftest.c:test_alarm_cancel_and_ordering
+- **`h_CancelEventFlag`** (`sceKernel`): `sceKernelCancelEventFlag` (0xcd203292)
+  - Limitation: the cited cell measures a blocked waiter's WAIT_CANCEL outcome after event cancellation; it does not establish the cancel call's return, pattern assignment, waiter-count output, unknown-ID behavior, pointer errors, or multiple-waiter ordering
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: event-cancel-before-deadline-late-dispatch returns WAIT_CANCEL to the waiter)
 - **`h_CancelReceiveMbx`** (`sceKernel`): `sceKernelCancelReceiveMbx` (0x87d4dd36)
   - Limitation: cancel with zero waiters and invalid numWait-thread pointer error class unmeasured (#339, #341)
+- **`h_CancelSema`** (`sceKernel`): `sceKernelCancelSema` (0x8ffdf9a2)
+  - Limitation: the cited cells establish the -1 reset and a blocked waiter's WAIT_CANCEL outcome; other replacement counts, over-max refusal, optional waiter-count output, unknown IDs, pointer errors, and multiple-waiter ordering are not established by those citations
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-B2-01: CancelSema(-1) restores the create-time initial count)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: sema-cancel-before-deadline-late-dispatch returns WAIT_CANCEL to the waiter)
+- **`h_ClearEventFlag`** (`sceKernel`): `sceKernelClearEventFlag` (0x812346e4)
+  - Limitation: the measured mask behavior matches the normal-object path; an unknown event-flag UID currently returns generic 0x80020000 instead of the measured unknown-event-flag code 0x8002019A, and error precedence is not covered
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01: ClearEventFlag(mask) keeps only the bits in mask)
+- **`h_CreateFpl`** (`sceKernel`): `sceKernelCreateFpl` (0xc07bb470)
+  - Limitation: the cited cells cover valid pool creation and block/status behavior; the handler converts zero block size/count to 16/1, a branch not established by those cited valid-pool cells, and allocation exhaustion plus partition, attribute, and option error precedence need separate evidence
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: fpl-create and valid pool status/allocation cells)
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics: FPL blocks are blockSize apart)
+- **`h_CreateLwMutex`** (`sceKernel`): `sceKernelCreateLwMutex` (0x19cff145)
+  - Limitation: the cells cover recursive and non-recursive initialization, workarea fields, and one waiter hand-off; invalid workareas, unsupported attribute bits, negative counts, option data, and multi-waiter ordering are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01 and PSP-B2-01: LwMutex creation workarea and one-waiter hand-off)
 - **`h_CreateMbx`** (`sceKernel`): `sceKernelCreateMbx` (0x8125221d)
   - Limitation: NULL-name create error and interrupt-context placement unmeasured (#339, #341)
+- **`h_CreateMutex`** (`sceKernel`): `sceKernelCreateMutex` (0xb7d098c6)
+  - Limitation: the measured cell covers ordinary unlocked and initially-held mutex status; name and attribute validation, recursive edge cases, invalid arguments, and allocation exhaustion are not covered
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-refer-unlocked creation and observed status fields)
+- **`h_CreateSema`** (`sceKernel`): `sceKernelCreateSema` (0xd6da4ba1)
+  - Limitation: the cited cells cover the measured count and attribute rules plus initial-count retention; name-pointer behavior, object exhaustion, and invalid-argument precedence remain unmeasured
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01: CreateSema accepts init greater than max and max zero, and rejects invalid attributes)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-B2-01: CancelSema restores the create-time initial count)
 - **`h_CreateVTimer`** (`sceKernel`): `sceKernelCreateVTimer` (0x20fff560)
   - Limitation: NULL option struct only (a non-NULL option is refused, layout unmeasured); 64 creates in a row are measured (PSP-HLE-VTIMER-003), so the table holds 64; the limit above 64 and the no-slot code 0x80020190 are unmeasured; the microsecond unit is consistent with PSP-HLE-VTIMER-002, not a precise rate measurement (#325)
+- **`h_CreateVpl`** (`sceKernel`): `sceKernelCreateVpl` (0x56c039b5)
+  - Limitation: valid pool creation and measured accounting are covered; the handler maps size zero to VPL_EXHAUSTED and ignores the partition argument, but the cited valid-pool cells do not establish those edge results, allocation exhaustion, or option behavior
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01 and PSP-B2-01: valid VPL creation, accounting, allocation, and deletion)
+- **`h_DeleteFpl`** (`sceKernel`): `sceKernelDeleteFpl` (0xed1410e0)
+  - Limitation: valid deletion and the delete-wait outcome are covered; an invalid or already-deleted UID currently returns success in the handler, while the cited delete cells use a valid pool, and multi-waiter teardown ordering is not measured
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: valid fpl-delete and refer-after-delete cells)
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B2-01: deleting an FPL with a waiter)
+- **`h_DeleteLwMutex`** (`sceKernel`): `sceKernelDeleteLwMutex` (0x60107536)
+  - Limitation: the cited cells cover valid deletion and the measured workarea fields; forged workareas, invalid-address precedence, stale UIDs, and multiple-waiter deletion behavior are not fully covered
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01: deleting a held LwMutex updates the workarea fields)
 - **`h_DeleteMbx`** (`sceKernel`): `sceKernelDeleteMbx` (0x86255ada)
   - Limitation: delete-while-waited is mailbox-measured on 2026-10-15 (PSP-3000, 6.61): the waiter returns WAIT_DELETE and its timeout word is rewritten to the remaining time; interrupt-context placement unmeasured (#339, #341)
+- **`h_DeleteSema`** (`sceKernel`): `sceKernelDeleteSema` (0x28b6489c)
+  - Limitation: a valid delete with one waiter and the unknown-semaphore code are covered; no-waiter behavior, multiple-waiter ordering, and interrupt-context precedence are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01 and PSP-B2-01: unknown semaphore ID and deleting a waited-on semaphore)
+- **`h_DeleteThread`** (`sceKernel`): `sceKernelDeleteThread` (0x9fa03cd3)
+  - Limitation: post-exit delete and restart outcomes are covered for four worker exit statuses; deleting a live or waiting thread, unknown IDs, and multi-joiner cleanup are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-THREAD-EXIT-001: ED-D77, ED-D00, ED-DNEG, and ED-DERR post-exit delete/restart cells)
 - **`h_DeleteVTimer`** (`sceKernel`): `sceKernelDeleteVTimer` (0x328f9e52)
   - Limitation: delete of a stopped timer returns 0 (PSP-HLE-VTIMER-002) and a second delete returns 0x800201BE (PSP-HLE-VTIMER-001, -003); interrupt-context placement unmeasured (#325)
+- **`h_DeleteVpl`** (`sceKernel`): `sceKernelDeleteVpl` (0x89b3d48c)
+  - Limitation: valid deletion with allocated blocks is covered; deletion with blocked waiters, unknown IDs, arbitrary fragmentation, and invalid-free precedence are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01: valid VPL deletion while blocks are held)
+- **`h_ExitDeleteThread`** (`sceKernel`): `sceKernelExitDeleteThread` (0x809ce29b)
+  - Limitation: worker ExitDeleteThread status, joiner result, and post-exit UID/delete behavior are covered for four values; main/launcher teardown is not covered by these cells and PSP-TEARDOWN-001 remains captured-only
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-THREAD-EXIT-001: ED-D77, ED-D00, ED-DNEG, and ED-DERR)
+- **`h_ExitThread`** (`sceKernel`): `sceKernelExitThread` (0xaa73c935)
+  - Limitation: worker ExitThread status and WaitThreadEnd/ReferThreadStatus outcomes are covered for four values; main/launcher teardown, callbacks during exit, and other thread roles are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-THREAD-EXIT-001: ED-X77, ED-X00, ED-XNEG, and ED-XERR)
+- **`h_FreeFpl`** (`sceKernel`): `sceKernelFreeFpl` (0xf6414a71)
+  - Limitation: valid block frees and resulting free counts are covered; invalid, unaligned, repeated, or foreign-pool frees and waiter ordering are not established by the cited cells
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: fpl-free-a, fpl-free-b, and status after free)
 - **`h_FreeMemoryBlock`** (`sceKernel`): `sceKernelFreeMemoryBlock` (0x50f61d8a)
   - Limitation: releases UIDs created by the modeled Low allocation path; invalid-UID result is source-tested but not hardware measured
+- **`h_FreeVpl`** (`sceKernel`): `sceKernelFreeVpl` (0xb736e9ff)
+  - Limitation: valid frees under the measured pool accounting are covered; invalid IDs/addresses, misalignment, arbitrary fragmentation/coalescing, and zero-size allocation behavior are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01: VPL pool accounting, allocation placement, and free sequence)
 - **`h_GetMemoryBlockAddr`** (`sceKernel`): `sceKernelGetMemoryBlockAddr` (0xdb83a952)
   - Limitation: resolves UIDs created by the modeled Low allocation path; output-pointer and unknown-UID results are source-tested but not hardware measured
+- **`h_GetSystemTimeWide`** (`sceKernel`): `sceKernelGetSystemTimeWide` (0x82bc5777)
+  - Limitation: the two system-clock reads advanced 220,608 around a bounded 20 ms delay, but host0 logging offset the intervals and the VTimer/system-clock deltas agree only within about 8%; this is consistent with the microsecond unit but does not establish a precise rate or absolute system-time values
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-VTIMER-002: system-clock reads around the bounded delay)
 - **`h_GetVTimerBase`** (`sceKernel`): `sceKernelGetVTimerBase` (0xb3a59970)
   - Limitation: returns the same base as ReferVTimerStatus, measured equal while running and 0 once stopped (PSP-HLE-VTIMER-002); the value, guest time at the most recent Start, is consistent with that run's system-clock reads, not measured exactly; NULL out-pointer returns ILLEGAL_ADDR as a runtime safety choice after PSP-3000 hung on ReferSystemStatus(NULL) (PSP-HLE-NULL-OUT-001), not as a measured VTimer result; deleted-UID code is unmeasured and reused by analogy; no game relies on the NULL output (#325)
 - **`h_GetVTimerTime`** (`sceKernel`): `sceKernelGetVTimerTime` (0x034a921f)
@@ -253,14 +371,35 @@ Semantic handler census: **451** handlers across **23** API families, covering *
   - Evidence: src/rt/hle_thread_selftest.c:test_kernel_devkit_version_measured
   - Evidence: src/rt/sdkver.h:SR_PSP_FIRMWARE_DEVKIT_VERSION
   - Evidence: hardware oracle 2026-10-15 PSP-SYSTEM-001 case model-profile (0x06060110)
+- **`h_LockMutex`** (`sceKernel`): `sceKernelLockMutex` (0xb011b11f)
+  - Limitation: measured cases cover finite timeout, priority inheritance, and the listed interrupt-context refusals; full attribute/recursion ranges, negative counts, multi-waiter priority ordering, and invalid timeout-pointer precedence are not measured
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-timeout-quanta, mutex-priority-inheritance, and accepted interrupt-context cell)
+- **`h_NotifyCallback`** (`sceKernel`): `sceKernelNotifyCallback` (0xc11ba8c4)
+  - Limitation: the cited cell covers notification coalescing in one callback case; callback creation state, invalid UID behavior, dispatch context, and ordering with multiple callbacks are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics: two callback notifications coalesce into one handler call with count 2)
+- **`h_PollEventFlag`** (`sceKernel`): `sceKernelPollEventFlag` (0x30fd48f0)
+  - Limitation: the cited cells cover an unmet poll's outBits and the zero-bit refusal; other wait modes, invalid output pointers, and error precedence are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01: unmet poll output and zero-bit refusal)
 - **`h_PollMbx`** (`sceKernel`): `sceKernelPollMbx` (0x0d81716a)
   - Limitation: invalid-message-pointer error class unmeasured (#339, #341)
 - **`h_ReceiveMbx`** (`sceKernel`): `sceKernelReceiveMbx` (0x18260574)
   - Limitation: delete-while-waited is mailbox-measured on 2026-10-15 (WAIT_DELETE and timeout word rewritten to the remaining time); ILLEGAL_CONTEXT precedence for a blocking receive unmeasured; priority-mailbox circular linking not separately asserted beyond campaign facts (#339, #341)
 - **`h_ReceiveMbxCB`** (`sceKernel`): `sceKernelReceiveMbxCB` (0xf3986382)
   - Limitation: callback-dispatch interleaving during a mailbox wait unmeasured; ILLEGAL_CONTEXT precedence unmeasured (#339, #341)
+- **`h_ReceiveMsgPipe`** (`sceKernel`): `sceKernelReceiveMsgPipe` (0x74829b76)
+  - Limitation: the cited cell covers a blocked receiver served by a sender; empty/short receive result sizes, invalid pointers, timeout precedence, and multiple-receiver ordering are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: blocked receiver is served directly by a sender)
+- **`h_ReferEventFlagStatus`** (`sceKernel`): `sceKernelReferEventFlagStatus` (0xa66b0120)
+  - Limitation: the cited cells establish bytes written and size-word behavior at four buffer sizes; full field values, unknown UID codes, invalid pointers, and error precedence are not established by that size row
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-KERNEL-STATUS-001: event-size-zero, event-size-8, event-size-40, and event-size-full)
+- **`h_ReferFplStatus`** (`sceKernel`): `sceKernelReferFplStatus` (0xd8199e4c)
+  - Limitation: valid pool layout and the cited short/zero-size behavior are covered; tick fields, invalid pointers, unknown IDs beyond the after-delete refer, and error precedence are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: valid FPL layout, short/zero-size writes, free counts, and refer-after-delete)
 - **`h_ReferMbxStatus`** (`sceKernel`): `sceKernelReferMbxStatus` (0xa8e8c846)
   - Limitation: size-field caller contract (whether Refer preserves or overwrites size) unmeasured (#339, #341)
+- **`h_ReferMutexStatus`** (`sceKernel`): `sceKernelReferMutexStatus` (0xa9c2cb9a)
+  - Limitation: the cited cell covers an unlocked mutex and its measured status words; size variants, recursive ownership, invalid pointers, and unknown-UID fields are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-refer-unlocked status fields)
 - **`h_ReferSemaStatus`** (`sceKernel`): `sceKernelReferSemaStatus` (0xbc6febc5)
   - Limitation: reports the modeled count, create-time initCount, maxCount, attr, name and blocked-waiter count; the caller size word is left as written and the full 56-byte span is written, a convention copied from ReferEventFlagStatus that is not hardware measured; unknown-UID and bad-pointer codes are source-selftested only
 - **`h_ReferSystemStatus`** (`sceKernel`): `sceKernelReferSystemStatus` (0x627e6f3a)
@@ -269,6 +408,9 @@ Semantic handler census: **451** handlers across **23** API families, covering *
   - Limitation: run clocks use host scheduler time and preemption/release counters are modeled rather than PSP-measured (#311)
 - **`h_ReferVTimerStatus`** (`sceKernel`): `sceKernelReferVTimerStatus` (0x5f32beaa)
   - Limitation: return 0, the deleted-UID code, and the active, current, schedule, handler and common states are measured (PR #1003); base equals GetVTimerBase while running and reads 0 once stopped (PSP-HLE-VTIMER-002), and its value (guest time at Start) and the microsecond unit are consistent with that run, not measured exactly; NULL pointer returns ILLEGAL_ADDR as a runtime safety choice after PSP-3000 hung on ReferSystemStatus(NULL) (PSP-HLE-NULL-OUT-001), not a measured VTimer result; the caller-size write rule for size 0 is the sema/evf/mbx rule applied without a VTimer cite (#325)
+- **`h_ReleaseWaitThread`** (`sceKernel`): `sceKernelReleaseWaitThread` (0x2c34e053)
+  - Limitation: the cited cell covers releasing one blocked target and the waiter's WAIT_RELEASE result; self/UID-zero targets, already-finished targets, and multiple-waiter ordering are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-B3-01: ReleaseWaitThread wakes a blocked target with WAIT_RELEASE)
 - **`h_ResumeThread`** (`sceKernel`): `sceKernelResumeThread` (0x75156e8f)
   - Limitation: resume clears the scheduler suspension flag and applies strict-priority preemption; the not-suspended and DORMANT codes are hardware measured, while resume of UID 0 (the running caller) answers the not-suspended code without a measurement and interrupt/dispatch-context precedence is unmeasured
   - Evidence: src/rt/hle_thread_selftest.c:test_suspend_resume_errors_and_ready_thread
@@ -280,6 +422,9 @@ Semantic handler census: **451** handlers across **23** API families, covering *
   - Evidence: src/rt/sched_selftest.c:test_rotate_ready_queue_moves_head_behind_peers
 - **`h_SendMbx`** (`sceKernel`): `sceKernelSendMbx` (0xe9b3061e)
   - Limitation: invalid-message-pointer error class unmeasured; interrupt-context placement unmeasured (#339, #341)
+- **`h_SendMsgPipe`** (`sceKernel`): `sceKernelSendMsgPipe` (0x876dbfad)
+  - Limitation: the cited cells cover no-room refusal, oversize refusal, and a receiver served by a sender; result-size pointers, timeout behavior, multi-waiter ordering, and all mode/error-precedence combinations are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: no-room, oversize, and blocked-receiver message-pipe cells)
 - **`h_SetAlarm`** (`sceKernel`): `sceKernelSetAlarm` (0x6652b8ca)
   - Limitation: the handler runs in interrupt context at the next interrupt-service point once the guest-time deadline passes (so it can run later than the deadline, and only while CPU interrupts are enabled) and a non-zero return re-arms the alarm that many microseconds after delivery, which is hardware measured only as 'reschedules'; a NULL handler returns the invalid-address code and a full alarm table the out-of-resources code without a measurement, SetAlarm(0) is accepted without a measurement, the interrupt-context rules for blocking waits made from a handler are the per-API ones (unmeasured for most waits), and the SysClock variants (sceKernelSetSysClockAlarm, sceKernelReferAlarmStatus) are not implemented
   - Evidence: src/rt/hle_thread_selftest.c:test_alarm_one_shot_fires_once_at_its_time_with_its_argument
@@ -288,6 +433,17 @@ Semantic handler census: **451** handlers across **23** API families, covering *
   - Evidence: src/rt/hle_thread_selftest.c:test_alarm_idle_scheduler_advances_to_the_deadline
   - Evidence: src/rt/sched_selftest.c:test_alarm_runs_at_its_deadline_in_interrupt_context
   - Evidence: src/rt/sched_selftest.c:test_alarm_is_a_wake_source_for_the_idle_scheduler
+- **`h_SetEventFlag`** (`sceKernel`): `sceKernelSetEventFlag` (0x1fb15a32)
+  - Limitation: the cited cells cover setting bits that satisfy a waiter and selected wait modes; invalid UIDs, all-bit masks, result precedence, and multiple-waiter ordering are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: event-signal-before-deadline-late-dispatch)
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics: selected event-flag pattern and wait-mode cells)
+- **`h_SignalSema`** (`sceKernel`): `sceKernelSignalSema` (0x3f53e640)
+  - Limitation: the cited cells cover selected count boundaries and waking a waiter; invalid output pointers, negative-count ranges outside the tested values, and multi-waiter ordering are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01: semaphore signal count boundaries)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: sema-signal-before-deadline-late-dispatch)
+- **`h_SleepThread`** (`sceKernel`): `sceKernelSleepThread` (0x9ace131e)
+  - Limitation: the cited cell covers a helper sleeping and resuming after a wakeup; no-current-thread, disabled-dispatch precedence, callbacks during sleep, and other wake races are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: SleepThread and wakeup sequence)
 - **`h_StartVTimer`** (`sceKernel`): `sceKernelStartVTimer` (0xc68d9437)
   - Limitation: deleted-UID code 0x800201BE measured (PSP-HLE-VTIMER-003); already-running return 1 is repo-documented, not measured by PSP-HLE-VTIMER-001, -002 or -003; base = system time at Start and the microsecond unit are consistent with PSP-HLE-VTIMER-002, not measured exactly (#325)
 - **`h_StopVTimer`** (`sceKernel`): `sceKernelStopVTimer` (0xd0aeee87)
@@ -301,10 +457,45 @@ Semantic handler census: **451** handlers across **23** API families, covering *
   - Limitation: uses the runtime's microsecond system-clock representation and splits it into low/high outputs; hardware conversion and error-precedence cells are not measured
 - **`h_SysClock2USecWide`** (`sceKernel`): `sceKernelSysClock2USecWide` (0xe1619d7c)
   - Limitation: takes the 64-bit clock as the $a0/$a1 pair and writes its low/high words through $a2/$a3 on the same microsecond representation as h_SysClock2USec; invalid-output-pointer error code and hardware conversion are not measured
+- **`h_TryAllocateFpl`** (`sceKernel`): `sceKernelTryAllocateFpl` (0x623ae665)
+  - Limitation: two valid allocations, the measured exhaustion code, and pool status are covered; invalid output pointers, invalid UIDs, and other exhaustion/error precedence are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: fpl-try-alloc-a, fpl-try-alloc-b, and fpl-try-alloc-exhausted)
+- **`h_TryAllocateVpl`** (`sceKernel`): `sceKernelTryAllocateVpl` (0xaf36d708)
+  - Limitation: valid allocation placement and measured pool accounting are covered; the handler maps a zero-size request to VPL_EXHAUSTED, whose exact hardware result is unmeasured, and invalid output pointers or fragmented-pool behavior are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01: 1024-byte VPL accounting and high-down allocation placement)
+- **`h_TryLockLwMutex`** (`sceKernel`): `_sceKernelTryLockLwMutex` (0x71040d5c), `sceKernelTryLockLwMutex` (0xdc692ee3)
+  - Limitation: normal acquisition, count-zero refusal, non-recursive self-contention, and another-owner contention are measured; negative counts, invalid-workarea error precedence, interrupt context, and several-waiter ordering are not measured
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01 and PSP-B2-01 LwMutex cells)
+- **`h_TryLockMutex`** (`sceKernel`): `sceKernelTryLockMutex` (0x0ddcd2c9)
+  - Limitation: the accepted interrupt-context cell confirms ILLEGAL_CONTEXT for TryLockMutex; ordinary acquisition, recursive count boundaries, and owner-contention results are not covered by that cell
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: accepted mutex-interrupt-context TryLockMutex result)
+- **`h_TryReceiveMsgPipe`** (`sceKernel`): `sceKernelTryReceiveMsgPipe` (0xdf52098f)
+  - Limitation: the cited message-pipe cells cover selected buffered and empty receives; result-size pointer handling, partial-mode edge cases, invalid pointers, and error precedence are not fully summarized by the public oracle row
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: message-pipe buffered and empty receive cells)
+- **`h_TrySendMsgPipe`** (`sceKernel`): `sceKernelTrySendMsgPipe` (0x884c9f90)
+  - Limitation: the cited cells cover no-room refusal, oversize refusal, and a partial-mode send; result-size pointer handling, invalid pointers, and all mode/error-precedence combinations are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: message-pipe no-room and oversize cells)
 - **`h_USec2SysClock`** (`sceKernel`): `sceKernelUSec2SysClock` (0x110dec9a)
   - Limitation: stores the unsigned microsecond duration as the low word of the runtime's microsecond SceKernelSysClock representation and writes a zero high word; hardware conversion and error-precedence cells are not measured
 - **`h_USec2SysClockWide`** (`sceKernel`): `sceKernelUSec2SysClockWide` (0xc8cd158c)
   - Limitation: returns the unsigned microsecond duration in $v0 with a zero $v1 high word under the runtime's microsecond SceKernelSysClock representation; hardware conversion is not measured
+- **`h_UnlockLwMutex`** (`sceKernel`): `sceKernelUnlockLwMutex` (0x15b6446b), `_sceKernelUnlockLwMutex` (0xbeed3a47)
+  - Limitation: owner release, direct hand-off to one waiter, and non-owner/underflow behavior are measured; invalid workareas, negative or excessive unlock counts, and several-waiter ordering are not measured
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01 and PSP-B2-01 LwMutex cells)
+- **`h_UnlockMutex`** (`sceKernel`): `sceKernelUnlockMutex` (0x6b30100f)
+  - Limitation: the cited cases cover owner release in the priority-inheritance control and interrupt-context refusal; invalid UIDs, bad counts, and multi-waiter priority ordering are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-priority-inheritance owner release and accepted interrupt-context cell)
+- **`h_WaitEventFlag`** (`sceKernel`): `sceKernelWaitEventFlag` (0x402fcf22)
+  - Limitation: the cited cells cover the named signal/cancel outcomes and selected wait modes; an unknown event-flag UID currently returns generic 0x80020000 instead of 0x8002019A, and other mode, pointer, and multi-waiter precedence is not established
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: event signal/cancel before deadline and late dispatch)
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01: event flag poll/wait modes and outputs)
+- **`h_WaitSema`** (`sceKernel`): `sceKernelWaitSema` (0x4e3a1105)
+  - Limitation: the cited cells cover selected count, signal/cancel, and timeout outcomes; invalid timeout pointers, negative counts, general multi-waiter ordering, and all error-precedence cases are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: semaphore signal/cancel before deadline and late dispatch)
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01: semaphore count and wait results)
+- **`h_WakeupThread`** (`sceKernel`): `sceKernelWakeupThread` (0xd59ead2f)
+  - Limitation: the cited cells cover wakeup-count accumulation and a sleeping target; specific invalid-target errors, repeated wakeup order, and interactions with termination are not all established
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: wakeups accumulate while the target is not sleeping)
 - **`h_MpegAvcCopyYCbCr`** (`sceMpeg`): `sceMpegAvcCopyYCbCr` (0x0558b075)
   - Limitation: Copy copies the modeled guest bytes and retained picture state; PSP plane layout and overlap behavior still need an oracle (#302)
 - **`h_MpegAvcCsc`** (`sceMpeg`): `sceMpegAvcCsc` (0x31bd0272)
@@ -390,7 +581,6 @@ Semantic handler census: **451** handlers across **23** API families, covering *
 
 - **`h_MpegGetPcmAu`** (`sceMpeg`): `sceMpegGetPcmAu` (0x8c1e027d)
 - **`h_SasUnsupportedVoice`** (`sceSas`): `__sceSasSetVoiceATRAC3` (0x4aa9ead6), `__sceSasConcatenateATRAC3` (0x7497ea85), `__sceSasSetTrianglarWave` (0xa232cbe6), `__sceSasSetSteepWave` (0xd5ebbbcd), `__sceSasUnsetATRAC3` (0xf6107f00)
-
 <!-- END GENERATED HLE STATUS CENSUS -->
 
 ```text

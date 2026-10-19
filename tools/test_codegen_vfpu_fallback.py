@@ -77,6 +77,27 @@ int main(void) {{ CpuState s = {{0}}; generated(&s); return unsupported == 1 && 
             ran = subprocess.run([str(exe_path)], capture_output=True, text=True)
             self.assertEqual(ran.returncode, 0, ran.stderr)
 
+    def test_vfpu4_public_identity_rows_still_fail_closed(self):
+        cases = (
+            (0x01, 0x00, "vrnds"),
+            (0x01, 0x02, "vrndf1"),
+            (0x02, 0x02, "vbfy1"),
+            (0x02, 0x0A, "vsgn"),
+            (0x02, 0x19, "vt4444"),
+        )
+        for rs, rt, name in cases:
+            word = (0x34 << 26) | (rs << 21) | (rt << 16)
+            with self.subTest(name=name):
+                with self.assertRaises(codegen.Unsupported) as caught:
+                    codegen.vfpu_effect(0x3400, word)
+                self.assertIn(f"VFPU4 identity {name}", str(caught.exception))
+                line = codegen.normal_line(0x3400, word)
+                self.assertIn(f"sr_vfpu_interp(s,0x{word:08x}u)", line)
+                self.assertIn("SR_VFPU_OTHER", line)
+                self.assertIn("VFPU_UNSUPPORTED", line)
+                self.assertIn("issue=326", line)
+                self.assertIn("return;", line)
+
     def test_left_right_quad_ops_always_use_single_step_decoder(self):
         for op in (0x35,0x3d):
             word=(op<<26)|(4<<21)|(7<<16)|2
