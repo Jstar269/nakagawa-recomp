@@ -10896,8 +10896,8 @@
   ],
   "admission": {
     "workflow": "admit-new-reviewed",
-    "trusted_tree": "1f495f4985933639c8446449c2362d99d58610df",
-    "candidate_tree": "375036c87920abfd6205440775c2152158a4a153",
+    "trusted_tree": "7e9fe8b580a4e7b3d57440157d593679c7c21843",
+    "candidate_tree": "37f22dbdcbfd6ec3e9b81c2212d49e74f9ad7661",
     "admitted_paths": [
       ".github/workflows/scorecards.yml"
     ],
