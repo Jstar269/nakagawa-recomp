@@ -581,6 +581,7 @@
     "src/rt/guest_printf_selftest.c",
     "src/rt/guestmem_selftest.c",
     "src/rt/gui.c",
+    "src/rt/h264_ffmpeg.c",
     "src/rt/h264_mf.c",
     "src/rt/h264_null.c",
     "src/rt/heap_selftest.c",
