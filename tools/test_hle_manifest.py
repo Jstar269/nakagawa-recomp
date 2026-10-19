@@ -648,8 +648,10 @@ class LiveManifestTests(unittest.TestCase):
                     all("HARDWARE_ORACLE.md" in item for item in meta.HANDLER_EVIDENCE[handler])
                 )
                 self.assertTrue(meta.HANDLER_LIMITATIONS[handler])
-        self.assertIn("0x8002019A", meta.HANDLER_LIMITATIONS["h_ClearEventFlag"])
-        self.assertIn("returns success", meta.HANDLER_LIMITATIONS["h_DeleteFpl"])
+                if handler == "h_ClearEventFlag":
+                    self.assertIn("0x8002019A", meta.HANDLER_LIMITATIONS[handler])
+                if handler == "h_DeleteFpl":
+                    self.assertIn("returns success", meta.HANDLER_LIMITATIONS[handler])
 
     def test_psmf_getters_are_dedicated_partial(self) -> None:
         # Both getters drive the media producer and a host codec backend now, so
