@@ -273,7 +273,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5ad624303ff98c0dcdc9d571704ea06ae10e67ab4d684bf4e7ae5dececc31b2d"
+      "sha256": "8e4c9085dfa3a91c921612f411f4b86984d00632b6ec80410ac0dc4863b915d1"
     },
     {
       "path": "CLAUDE.md",
@@ -8487,7 +8487,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5117ff65addecbe86f7d9225e89398cd3a64df36326b4c26d38776513597d999"
+      "sha256": "a20f6fe034279d7f8eded9622e55037c1519ec0e95fc814e1fa997303866007f"
     },
     {
       "path": "tools/test_debug.py",
