@@ -48,24 +48,25 @@ only route here.
 
 ## 3. Human-only hard stops
 
-Except for the recorded standing owner authorization for PSPLink and physical-PSP actions
-described below, the following always require explicit maintainer authorization in the
-current turn, even under an otherwise autonomous integration mission:
+The following always require explicit maintainer authorization in the current turn, even
+under an otherwise autonomous integration mission:
 
 - provenance attestation or legal clearance on a maintainer's behalf;
 - inventing a contributor identity, `Signed-off-by:`, DCO attestation, or source lineage;
 - destructive history rewriting, shared-branch force-push, or deleting another agent's work;
 - repository security/settings changes unless the mission names the exact setting;
-- firmware, flash, NAND, or idStorage writes; other hardware actions;
+- firmware, flash, NAND, or idStorage writes, and any other action that can permanently alter or damage a device;
 - disclosing private inputs, routes, saves, captures, traces, keys, paths, or derived bytes.
 
-A standing owner authorization may cover PSPLink and physical-PSP actions for a named
-task/session only when the active `HARDWARE_LOCK.json` records the authorization, holder
-session, allowed actions, and scope limits. The lock must remain `HELD` while those actions
-run and be released with the observed outcome. This exception does not cover firmware,
-flash, NAND, or idStorage writes, credentials, Git tags, GitHub Releases or assets, or
-published-version changes; those continue to require explicit authorization in the current
-turn.
+**Standing hardware authorization.** PSPLink sessions and other non-destructive physical-PSP actions (loading and
+running probe modules, USB attach/reset, soft and PC-triggered resets, reading device state, writing Memory Stick
+files such as plugin configuration after backing them up) do not need per-turn authorization while a standing
+maintainer authorization is recorded in the private workspace and the run follows the hardware-lock protocol
+(one holder at a time, session-bound lock, evidence kept private, lock released at the end). The maintainer can
+revoke it at any time by saying so; agents must then return to per-turn authorization. A standing authorization
+never covers the destructive writes listed above, tags, releases, credentials, or disclosure of private inputs.
+Physical steps that need a person (power cycles, media swaps, cable changes) are requested from the maintainer,
+never simulated or assumed.
 
 Agents must not create, move, push, or delete Git tags; create, edit, delete, publish, or unpublish GitHub Releases; upload release assets; or change a published version without explicit maintainer authorization in the current turn. Generic instructions such as 'finish', 'ship', 'publish', 'integrate', or 'do everything' do not authorize a version/tag/release operation.
 
