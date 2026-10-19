@@ -1118,6 +1118,20 @@ def _runtime_build_environment(*, instruction_trace: bool = False) -> dict[str, 
     return env
 
 
+def _bringup_child_environment(user_root: Path) -> dict[str, str]:
+    """The environment of the bring-up's own runtime launch.
+
+    The child names the per-user root its package was built under as SR_USER_DATA_ROOT, the same
+    root the player names, so an inherited value cannot point its fonts at another root. The
+    launcher-owned data variables are cleared before the stage adds its own.
+    """
+    env = os.environ.copy()
+    env.pop("SR_DATAROOT", None)
+    env.pop("SR_LOOSE_CONTENT_ROOTS", None)
+    env["SR_USER_DATA_ROOT"] = str(user_root)
+    return env
+
+
 def _windows_host() -> bool:
     """True when packages must carry the Windows runtime DLLs (a test seam:
     patching os.name itself would make pathlib build WindowsPath objects)."""
@@ -1188,8 +1202,21 @@ def __getattr__(name: str):
 def _stage_runtime_assets(package_dir: Path) -> None:
     vfpu_source = ROOT / "assets" / "vfpu"
     if vfpu_source.is_dir():
-        shutil.copytree(vfpu_source, package_dir / "assets" / "vfpu", dirs_exist_ok=True)
+        vfpu_target = package_dir / "assets" / "vfpu"
+        if (package_dir / "assets").is_file():
+            raise PackageBuildError(
+                f"VFPU asset staging collision: {package_dir / 'assets'} is a file, expecting a directory."
+            )
+        if vfpu_target.is_file():
+            raise PackageBuildError(
+                f"VFPU asset staging collision: {vfpu_target} is a file, expecting a directory."
+            )
+        shutil.copytree(vfpu_source, vfpu_target, dirs_exist_ok=True)
     if _windows_host() and not (package_dir / "SDL3.dll").is_file():
+        if (package_dir / "SDL3.dll").is_dir():
+            raise PackageBuildError(
+                f"SDL3.dll staging collision: {package_dir / 'SDL3.dll'} is a directory, expecting a file."
+            )
         found = _find_sdl3_runtime_dll()
         if found is None:
             raise PackageBuildError(
@@ -1198,6 +1225,10 @@ def _stage_runtime_assets(package_dir: Path) -> None:
             )
         shutil.copyfile(found, package_dir / "SDL3.dll")
     if _windows_host() and not (package_dir / "libiconv-2.dll").is_file():
+        if (package_dir / "libiconv-2.dll").is_dir():
+            raise PackageBuildError(
+                f"libiconv-2.dll staging collision: {package_dir / 'libiconv-2.dll'} is a directory, expecting a file."
+            )
         found = _find_configured_runtime_dll("libiconv-2.dll")
         if found is None:
             raise PackageBuildError(
@@ -1206,6 +1237,10 @@ def _stage_runtime_assets(package_dir: Path) -> None:
             )
         shutil.copyfile(found, package_dir / "libiconv-2.dll")
     if _windows_host() and not (package_dir / "vulkan-1.dll").is_file():
+        if (package_dir / "vulkan-1.dll").is_dir():
+            raise PackageBuildError(
+                f"vulkan-1.dll staging collision: {package_dir / 'vulkan-1.dll'} is a directory, expecting a file."
+            )
         found = _find_configured_runtime_dll("vulkan-1.dll")
         if found is None:
             raise PackageBuildError(
@@ -1217,10 +1252,13 @@ def _stage_runtime_assets(package_dir: Path) -> None:
         # The SDL3_ttf readable-font closure (#421), through the same mechanical
         # step the Makefile's player target uses. The prerequisite installer
         # (#324) does not provide it yet, so a package without it still builds:
-        # the player then draws with its bitmap fallback and logs why.
+        # the player then draws with its bitmap fallback and logs why. A staging
+        # collision is not that case: a damaged staging target refuses the build.
         stager = _runtime_dll_stager()
         try:
             stager.stage_runtime_dlls(package_dir, roots=("SDL3_ttf.dll",), notices=False)
+        except stager.StagingCollisionError as exc:
+            raise PackageBuildError(str(exc)) from exc
         except stager.StageError as exc:
             print(f"warning: the readable UI font runtime was not staged: {exc}. "
                   "The player will use its bitmap fallback font.", file=sys.stderr)
@@ -1343,28 +1381,31 @@ def _promote_cache_entry(entry_package: Path, target_dir: Path, cache_dir: Path,
     _require_child(user_root, target_dir.parent, "Package destination root")
     staging = Path(tempfile.mkdtemp(prefix=f".{disc_id}.staging-", dir=target_dir.parent))
     shutil.rmtree(staging)
-    shutil.copytree(entry_package, staging)
-    staged_valid, staged_reason = package_cache.validate_package_cache(
-        staging, expected_key=cache_key
-    )
-    if not staged_valid:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise PackageBuildError(
-            f"Copied package cache entry failed validation ({staged_reason}); refusing to promote it."
-        )
-    if target_dir.exists() and target_dir.is_symlink():
-        raise PackageBuildError("Existing package destination is a symlink; refusing to replace it.")
-    backup = cache_dir / f"previous-{time.time_ns()}" if target_dir.exists() else None
-    if backup is not None:
-        os.replace(target_dir, backup)
     try:
-        os.replace(staging, target_dir)
-    except OSError:
-        if backup is not None and not target_dir.exists():
-            os.replace(backup, target_dir)
-        raise
-    if backup is not None:
-        shutil.rmtree(backup, ignore_errors=True)
+        shutil.copytree(entry_package, staging)
+        staged_valid, staged_reason = package_cache.validate_package_cache(
+            staging, expected_key=cache_key
+        )
+        if not staged_valid:
+            raise PackageBuildError(
+                f"Copied package cache entry failed validation ({staged_reason}); refusing to promote it."
+            )
+        if target_dir.exists() and target_dir.is_symlink():
+            raise PackageBuildError("Existing package destination is a symlink; refusing to replace it.")
+        backup = cache_dir / f"previous-{time.time_ns()}" if target_dir.exists() else None
+        if backup is not None:
+            os.replace(target_dir, backup)
+        try:
+            os.replace(staging, target_dir)
+        except OSError:
+            if backup is not None and not target_dir.exists():
+                os.replace(backup, target_dir)
+            raise
+        if backup is not None:
+            shutil.rmtree(backup, ignore_errors=True)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def _report_reused_package_stages(stage_observer) -> None:
@@ -1626,13 +1667,22 @@ def _build_package(args: argparse.Namespace, stage_observer,
                 # the same reviewed generic logic used by bring-up.
                 write_experimental_profile(iso_path, user_root, metadata=metadata)
             except (IsoInspectionError, OSError, ValueError) as exc:
+                boundary_code = getattr(exc, "boundary_code", None)
+                if boundary_code in {
+                    "EXECUTABLE_LOAD_BINDING_REQUIRED",
+                    "FIXED_ADDRESS_EXECUTABLE_OUTSIDE_GUEST_RAM",
+                }:
+                    raise ExperimentalProfileBuildError(
+                        boundary_code, 308, f"{boundary_code}: {exc}",
+                        f"{boundary_code}: {exc}",
+                    ) from exc
                 raise ExperimentalProfileBuildError(
                     "GENERIC_EXPERIMENTAL_PROFILE_UNAVAILABLE",
                     308,
                     "This executable needs a supported generic MIPS ELF layout; "
                     "provide a decrypted ELF with a documented load binding, then "
                     "retry the build.",
-                    str(exc),
+                    f"{boundary_code}: {exc}" if boundary_code else str(exc),
                 ) from exc
             manifest_source, manifest, expected_hash = _load_entry_manifest(
                 user_root, entry, disc_id, manifest_selected, uses_decrypted_eboot
@@ -2007,10 +2057,19 @@ def _build_package(args: argparse.Namespace, stage_observer,
             # by its manifest name. Ship the modules the build compiled against
             # inside the package so a launch needs nothing outside it.
             package_modules = build_dir / "modules"
+            if package_modules.is_file():
+                raise PackageBuildError(
+                    f"Guest module staging collision: {package_modules} is a file, expecting a directory."
+                )
             package_modules.mkdir(parents=True, exist_ok=True)
             for module_file in sorted(module_dir.iterdir()):
                 if module_file.is_file():
-                    shutil.copyfile(module_file, package_modules / module_file.name)
+                    target_module = package_modules / module_file.name
+                    if target_module.is_dir():
+                        raise PackageBuildError(
+                            f"Guest module staging collision: {target_module} is a directory, expecting a file."
+                        )
+                    shutil.copyfile(module_file, target_module)
         backends_mode = "public" if public_safe else "private"
         backend_limits = (
             [
@@ -2045,29 +2104,33 @@ def _build_package(args: argparse.Namespace, stage_observer,
         packages_root = _require_child(user_root, packages_root, "Package destination root")
         staging = Path(tempfile.mkdtemp(prefix=f".{disc_id}.staging-", dir=packages_root))
         shutil.rmtree(staging)
-        shutil.copytree(build_dir, staging)
-        _require_child(user_root, staging, "Package staging directory")
-        valid_staging, staging_reason = package_cache.validate_package_cache(
-            staging,
-            expected_key=cache_key,
-        )
-        if not valid_staging:
-            raise PackageBuildError(f"Package staging verification failed: {staging_reason}")
-        backup = None
-        if target_dir.exists():
-            if target_dir.is_symlink():
-                raise PackageBuildError("Existing package destination is a symlink; refusing to replace it.")
-            backup = cache_dir / f"previous-{time.time_ns()}"
-            os.replace(target_dir, backup)
         try:
-            os.replace(staging, target_dir)
-        except OSError:
-            if backup is not None and not target_dir.exists():
-                os.replace(backup, target_dir)
-            raise
-        package_cache.write_local_title_input_identity(user_root, title_input_identity)
-        if backup is not None:
-            shutil.rmtree(backup, ignore_errors=True)
+            shutil.copytree(build_dir, staging)
+            _require_child(user_root, staging, "Package staging directory")
+            valid_staging, staging_reason = package_cache.validate_package_cache(
+                staging,
+                expected_key=cache_key,
+            )
+            if not valid_staging:
+                raise PackageBuildError(f"Package staging verification failed: {staging_reason}")
+            backup = None
+            if target_dir.exists():
+                if target_dir.is_symlink():
+                    raise PackageBuildError("Existing package destination is a symlink; refusing to replace it.")
+                backup = cache_dir / f"previous-{time.time_ns()}"
+                os.replace(target_dir, backup)
+            try:
+                os.replace(staging, target_dir)
+            except OSError:
+                if backup is not None and not target_dir.exists():
+                    os.replace(backup, target_dir)
+                raise
+            package_cache.write_local_title_input_identity(user_root, title_input_identity)
+            if backup is not None:
+                shutil.rmtree(backup, ignore_errors=True)
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
         _prune_package_cache(cache_dir, entry_root)
         if not reporter.is_json_stdout:
             print(f"PACKAGE: {target_dir}")
@@ -2266,11 +2329,13 @@ def cmd_launch(args: argparse.Namespace) -> int:
     # invoked from another working directory.
     launcher = RuntimeLauncher(repo_root=ROOT)
     try:
+        user_root = _user_data_root(args.user_data_root)
         cmd, env = launcher.build_launch_plan(
             args.game_dir,
             profile=args.profile,
             fps_cap=args.fps_cap,
             software_render=args.software,
+            user_data_root=user_root,
         )
         print("Launch plan prepared:")
         print(f"Executable: {cmd[0]}")
@@ -2278,6 +2343,8 @@ def cmd_launch(args: argparse.Namespace) -> int:
         print(f"DATAROOT:   {env.get('SR_DATAROOT')}")
         print(f"LOOSE_ROOTS: {env.get('SR_LOOSE_CONTENT_ROOTS')}")
         print(f"FPS_CAP:    {env.get('SR_FPS_CAP')}")
+        print(f"SR_USER_DATA_ROOT: {env.get('SR_USER_DATA_ROOT')}")
+        print(f"SR_FONTDIR: {env.get('SR_FONTDIR')}")
         return 0
     except Exception as exc:
         sys.stderr.write(f"Launch planning error: {exc}\n")
@@ -2501,6 +2568,11 @@ def _fail_bringup(
 
 def _bringup_import_failure(exc: Exception, checks: dict) -> tuple[str, list[int], str | None]:
     detail = str(exc)
+    if getattr(exc, "boundary_code", None) in {
+        "EXECUTABLE_LOAD_BINDING_REQUIRED",
+        "FIXED_ADDRESS_EXECUTABLE_OUTSIDE_GUEST_RAM",
+    }:
+        return "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE", [308], detail
     if detail.startswith(("DISC_MODULE_", "DUPLICATE_DISC_MODULE_")):
         return "GUEST_MODULE_DISCOVERY_FAILED", [308], detail
 
@@ -3725,9 +3797,7 @@ def cmd_bringup(args: argparse.Namespace) -> int:
         executable = package_dir / package["executable"]["path"]
         if not executable.is_file():
             raise PackageBuildError("The generated package executable is missing.")
-        env = os.environ.copy()
-        env.pop("SR_DATAROOT", None)
-        env.pop("SR_LOOSE_CONTENT_ROOTS", None)
+        env = _bringup_child_environment(user_root)
         # The package ships the guest modules it was compiled against in
         # <package>/modules; the runtime loads them from SR_MODULE_DIR, as a
         # player launch of the same package does. Without it the runtime falls
@@ -3993,6 +4063,8 @@ def main() -> int:
     p_launch.add_argument("--fps-cap", type=int, default=-1,
                           help="Host presentation cap (-1 uses PSP scanout pacing)")
     p_launch.add_argument("--software", action="store_true", help="Use software GE rasterizer")
+    p_launch.add_argument("--user-data-root", type=Path,
+                          help="Override player per-user data directory (the imported fonts live under it)")
     p_launch.set_defaults(func=cmd_launch)
 
     p_build = subparsers.add_parser(

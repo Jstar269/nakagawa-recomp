@@ -15,8 +15,9 @@
  * these functions; the roots are supplied by the caller.
  *
  * The served names, cache names and cache directory come from nk_font_slots.h, which is shared
- * with the import flow. The slot table in flash0_font.c is pending and fails closed until the
- * console measurement fixes the lookup and the slot order. */
+ * with the import flow. The slot table in flash0_font.c records what a PSP-3000 measurement fixed
+ * (the font list and its order) and what it did not (the registry's own key names and types, and
+ * the path_name string); see the registry view below. */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -69,6 +70,74 @@ int sr_flash0_font_resolve_path(const Flash0Sources *sources, NkFontSlot slot, c
 
 /* The slot's lower-case name for diagnostics ("japanese", "latin", "korean"). */
 const char *sr_flash0_font_slot_label(NkFontSlot slot);
+
+/* ---- Registry view of the font device (FONT_PLAN section 4) ----
+ *
+ * The guest's own font library asks the system registry for the font list before it opens a
+ * font: /DATA/FONT holds path_name (where the fonts are served), num_fonts, and one
+ * PROPERTY/INFO<n> record per font index. This view is what the device knows about each index.
+ *
+ * MEASURED (PSP-3000, firmware 6.6.1, 2026-10-15, the console's own font library asked for the
+ * system font list): there are SR_FONT_REGISTRY_COUNT indices; index 0 is the Japanese font,
+ * indices 1 to 16 are Latin fonts, and index 17 is the Korean font; every index's numeric codes
+ * (family, style, sub-style, language, region, country, weight, attributes and expiry) are the
+ * rows of the table in flash0_font.c.
+ *
+ * NOT MEASURED: the registry's own key names and types, the unit its size values are held in,
+ * and the path_name string. The names follow FONT_PLAN 4.2 and the keys the guest library has
+ * been seen to ask for; the size values hold the served file's own 26.6 header words (the same
+ * unit the PGF header uses); path_name holds the device root. All three are project choices.
+ *
+ * Per-font values come from the served file's header at run time, never from a table: sizes and
+ * resolutions (header 0x24 to 0x30) and the font name (0x35). An index whose slot has no served
+ * font, or whose served header is unusable, is absent, with a named reason; nothing is invented.
+ *
+ * The guest library walks the INFO entries in index order and stops at the first one missing, so
+ * a bold or italic Latin index is listed too. No project font is bold or italic (FONT_PLAN D10),
+ * so such an index is served from the Latin slot's regular face and reports the Regular style
+ * rather than the measured one (served_as_regular says so). Bold is never synthesized. */
+#define SR_FONT_REGISTRY_COUNT 18u
+#define SR_FONT_REGISTRY_NAME_BYTES 64u /* the header's font-name field, with room for the NUL */
+
+typedef enum SrFontRegistryStatus {
+    SR_FONT_REGISTRY_PRESENT = 0,
+    SR_FONT_REGISTRY_NO_SOURCE,         /* the index's slot has no user-imported or project font */
+    SR_FONT_REGISTRY_HEADER_TRUNCATED,  /* the served file is shorter than a PGF header */
+    SR_FONT_REGISTRY_HEADER_SHAPE,      /* header offset, size or magic is not a PGF header */
+    SR_FONT_REGISTRY_HEADER_SIZES,      /* a nominal size or resolution is not positive */
+    SR_FONT_REGISTRY_HEADER_NAME,       /* the font name is empty or not printable ASCII */
+    SR_FONT_REGISTRY_BAD_INDEX
+} SrFontRegistryStatus;
+
+typedef struct {
+    NkFontSlot slot;
+    const char *source;     /* "user-imported" or "project" */
+    const char *file_name;  /* the served name under flash0:/font/ */
+    /* From the served file's header (26.6 fixed point, as stored): */
+    int32_t h_size, v_size, h_resolution, v_resolution;
+    char font_name[SR_FONT_REGISTRY_NAME_BYTES]; /* NUL-terminated, at most 63 characters */
+    /* Measured codes of the index (style is Regular when served_as_regular): */
+    int served_as_regular;  /* the measured style is bold or italic and the Regular face is served */
+    uint32_t weight, family_code, style, sub_style;
+    uint32_t language_code, region_code, country_code;
+    uint32_t extra_attributes, expire_date;
+} SrFontRegistryInfo;
+
+/* The registry's path_name value: the device directory the served names sit in, with no trailing
+ * separator (the guest's library adds one when it joins a file name). */
+const char *sr_flash0_font_registry_path_name(void);
+
+/* Fills *info for font index `index` and returns SR_FONT_REGISTRY_PRESENT, or returns why the
+ * index is absent (info is then left zeroed). Reads the served file's header; opens and closes
+ * the file. */
+SrFontRegistryStatus sr_flash0_font_registry_info(const Flash0Sources *sources, uint32_t index,
+                                                  SrFontRegistryInfo *info);
+
+/* The slot that serves font index `index`: returns 0 for an index past the list. */
+int sr_flash0_font_registry_slot(uint32_t index, NkFontSlot *slot_out);
+
+/* A short sentence for a status, for diagnostics. */
+const char *sr_flash0_font_registry_status_text(SrFontRegistryStatus status);
 
 #ifdef SR_HLE_THREAD_SELFTEST
 /* Test seam: marks a slot measured (non-zero) or pending (zero). Compiled only into the HLE

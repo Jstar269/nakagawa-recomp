@@ -77,6 +77,27 @@ int main(void) {{ CpuState s = {{0}}; generated(&s); return unsupported == 1 && 
             ran = subprocess.run([str(exe_path)], capture_output=True, text=True)
             self.assertEqual(ran.returncode, 0, ran.stderr)
 
+    def test_vfpu4_public_identity_rows_still_fail_closed(self):
+        cases = (
+            (0x01, 0x00, "vrnds"),
+            (0x01, 0x02, "vrndf1"),
+            (0x02, 0x02, "vbfy1"),
+            (0x02, 0x0A, "vsgn"),
+            (0x02, 0x19, "vt4444"),
+        )
+        for rs, rt, name in cases:
+            word = (0x34 << 26) | (rs << 21) | (rt << 16)
+            with self.subTest(name=name):
+                with self.assertRaises(codegen.Unsupported) as caught:
+                    codegen.vfpu_effect(0x3400, word)
+                self.assertIn(f"VFPU4 identity {name}", str(caught.exception))
+                line = codegen.normal_line(0x3400, word)
+                self.assertIn(f"sr_vfpu_interp(s,0x{word:08x}u)", line)
+                self.assertIn("SR_VFPU_OTHER", line)
+                self.assertIn("VFPU_UNSUPPORTED", line)
+                self.assertIn("issue=326", line)
+                self.assertIn("return;", line)
+
     def test_left_right_quad_ops_always_use_single_step_decoder(self):
         for op in (0x35,0x3d):
             word=(op<<26)|(4<<21)|(7<<16)|2
@@ -99,6 +120,19 @@ int main(void) {{ CpuState s = {{0}}; generated(&s); return unsupported == 1 && 
         effect,_,_=codegen.vfpu_effect(0x4000,word)
         self.assertIn("sr_vfpu_cos(_d[0])",effect)
         self.assertRegex(effect,r"vfpuCtrl\[2\]&~0x[0-9a-f]+u")
+
+    def test_vrexp2_is_exp2_of_the_negated_operand_at_every_width(self):
+        # PSP-VFPU-TRANSCENDENTAL-001: a PSP-3000 returned exp2(-x) for vrexp2.s (1.0 for
+        # zero, 2.0 for -1.0). Optype 28 of the VV2 group is that instruction, not a negated
+        # exp2; vexp2 (optype 20) stays the plain exp2.
+        for size in (1, 2, 3, 4):
+            lo, hi = (size - 1) & 1, (size - 1) >> 1
+            for optype, want in ((28, "sr_vfpu_exp2(-_s[_i])"), (20, "sr_vfpu_exp2(_s[_i])")):
+                word = ((0x34 << 26) | (optype << 16) | (0 << 8) | 0x40 | (lo << 7) | (hi << 15))
+                with self.subTest(size=size, optype=optype):
+                    effect, _, _ = codegen.vfpu_effect(0x4200, word)
+                    self.assertIn(want, effect)
+                    self.assertNotIn("-sr_vfpu_exp2(", effect)
 
     def test_vrot_overlap_ignores_inactive_lanes(self):
         # A scalar source register 0 must not match a zero-filled inactive

@@ -54,6 +54,16 @@ int sr_hit_hle = 0;
 int g_sr_metadata_watch = 0;
 int g_hle_depth = 0;
 CpuState *s_cpu = NULL;
+volatile int g_sr_vram_read_pending = 0;
+void sr_ge_vram_read_prepare(uint32_t address, uint32_t bytes) {{
+    (void)address; (void)bytes;
+}}
+void sr_ge_vram_write_prepare(uint32_t address, uint32_t bytes) {{
+    (void)address; (void)bytes;
+}}
+void sr_ge_vram_write_commit(uint32_t address, uint32_t bytes) {{
+    (void)address; (void)bytes;
+}}
 void sr_oor(uint32_t address, uint32_t value, int store) {{
     (void)address; (void)value; (void)store;
 }}
@@ -62,6 +72,11 @@ uint32_t sched_current_uid(void) {{ return 0; }}
 void sr_debug_init_watches(void) {{}}
 void sr_profile_init(void) {{}}
 void sr_register_all(void) {{}}
+/* The #855 TAIL protocol lives in guest_interp.c, which this harness does not link.
+ * driver.c drains through sr_call_body; the harness bodies record no transfer. */
+SrTailTransfer sr_tail_transfer;
+void sr_tail_fatal(const char *what, uint32_t target) {{ (void)what; (void)target; abort(); }}
+void sr_tail_drain(CpuState *s) {{ (void)s; abort(); }}
 static void synthetic_module_start(uint32_t args, uint32_t argp);
 static void dummy_recomp_fn(CpuState *s) {{
     const char *boot_path = getenv("SR_BOOT_PATH");

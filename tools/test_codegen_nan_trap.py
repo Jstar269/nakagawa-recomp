@@ -29,12 +29,18 @@ Three claims are proved here, all against the real code, never a re-implementati
    SR_GE_TRANSITION_TRACE frame that showed its effect. Both tiers (generated C
    and the AOT-gap interpreter) gather the same operand list.
 
+5. Recorder. With the flight recorder linked and its fault class enabled, each
+   reported origin is also one fault-class nan-origin event (issue #320) that
+   tools/flight_diff.py localises against a clean run. The trap never triggers the
+   recorder, and a disabled recorder changes neither the report nor the result.
+
 Every C fixture below is generated into a temporary directory and links the real
 src/rt/debug.c reporter; the only stubs are host symbols those fixtures never
 reach (SDL ticks, GE status, the debug watchpoint file reader) and, for the
 interpreter fixture, the runtime kernels the exercised instruction does not call.
 """
 
+import json
 import os
 import re
 import shutil
@@ -49,6 +55,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import codegen  # noqa: E402
+import flight_diff  # noqa: E402
 
 RT = ROOT / "src" / "rt"
 CC = shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")
@@ -606,7 +613,7 @@ class TrapHarness:
 
     tmp: Path
 
-    def compile(self, name: str, body: str, main: str, extra_sources=()) -> Path:
+    def compile(self, name: str, body: str, main: str, extra_sources=(), flight=False) -> Path:
         tmp = Path(tempfile.mkdtemp(prefix="nan_trap_"))
         self.addCleanup(shutil.rmtree, tmp, True)
         source = tmp / f"{name}.c"
@@ -618,10 +625,16 @@ class TrapHarness:
         stub = tmp / "stub.c"
         stub.write_text(WATCHPOINT_STUB, encoding="ascii")
         exe = tmp / (name + (".exe" if os.name == "nt" else ""))
+        # flight=True links the real recorder as the runtime does, with the reproducible build
+        # identity the Makefile forwards; a bundle without one fails closed in flight_diff.
+        recorder_flags = ["-DSR_FLIGHT_RECORDER_LINKED", "-DSR_SOURCE_DATE_EPOCH=1758742400",
+                          '-DSR_BUILD_ID="0123456789abcdef0123456789abcdef01234567"'] if flight else []
+        recorder_sources = [os.fspath(RT / "flight_recorder.c")] if flight else []
         result = subprocess.run(
-            [CC, "-std=c11", "-O1", "-Isrc/rt", "-Isrc/core", "-DSR_NAN_TRAP",
+            [CC, "-std=c11", "-O1", "-Isrc/rt", "-Isrc/core", "-DSR_NAN_TRAP", *recorder_flags,
              "-o", os.fspath(exe), os.fspath(source), os.fspath(stub),
-             os.fspath(RT / "debug.c"), *[os.fspath(RT / s) for s in extra_sources],
+             os.fspath(RT / "debug.c"), *recorder_sources,
+             *[os.fspath(RT / s) for s in extra_sources],
              "-lm"],
             capture_output=True, text=True, cwd=ROOT)
         if result.returncode != 0:
@@ -816,6 +829,143 @@ int main(void) {{
         self.assertEqual(reports, [])
 
 
+@unittest.skipUnless(CC, "no C compiler on PATH")
+class TestFlightRecorderNanOrigin(TrapHarness, unittest.TestCase):
+    """Issue #320: a reported origin is also one fault-class flight-recorder event.
+
+    The real vdiv.s emission, the real reporter (src/rt/debug.c) and the real recorder
+    (src/rt/flight_recorder.c, SR_FLIGHT_RECORDER_LINKED) are compiled together. Scheduler
+    marks before and after the instruction place the origin in the retained record, so a
+    clean run and an origin run are compared by tools/flight_diff.py exactly as a bundle
+    from a title run would be.
+    """
+
+    PC = 0x0000ABCD
+    SPEC = "fault,sched;8"
+
+    def setUp(self):
+        self.word = vfpu_lane(0x18, 7, 1, 2, 3, 1)          # vdiv.s v3, v2, v1
+        with nan_trap_codegen_state():
+            self.statement = codegen.effect(self.PC, self.word)[0]
+        self.assertIn("SR_NAN_TRAP_V2", self.statement)
+        self.s_index = codegen.vreg_indices(2, 1)[0]
+        self.t_index = codegen.vreg_indices(1, 1)[0]
+        self.d_index = codegen.vreg_indices(3, 1)[0]
+        self.exe = self.compile(
+            "vdiv_s_flight",
+            '#include "flight_recorder.h"\n'
+            f"{VFPU_STUBS}\nstatic void body(CpuState *s) {{ {self.statement} }}",
+            f"""
+int main(void) {{
+    CpuState st; CpuState *s = &st;
+    memset(s, 0, sizeof *s);
+    s->v[{self.s_index}] = sr_bits(getenv("NUM"));
+    s->v[{self.t_index}] = sr_bits(getenv("DEN"));
+    sr_flight_init();
+    sr_flight_record(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_PICK, 1u, 0u, 0u, 0u);
+    body(s);
+    sr_flight_record(SR_FLIGHT_CLASS_SCHED, SR_FLIGHT_KIND_SCHED_PICK, 2u, 0u, 0u, 0u);
+    printf("RESULT=0x%08x\\n", sr_bits_out(&s->v[{self.d_index}]));
+    return 0;
+}}
+""", flight=True)
+        self.output_dir = Path(tempfile.mkdtemp(prefix="nan_flight_"))
+        self.addCleanup(shutil.rmtree, self.output_dir, True)
+
+    def _run(self, num, den, spec):
+        output = self.output_dir / f"bundle_{num}_{den}_{'on' if spec else 'off'}.json"
+        result, reports = self.run_exe(self.exe, {
+            "NUM": num, "DEN": den, "SR_FLIGHT": spec, "SR_FLIGHT_OUTPUT": os.fspath(output)})
+        bundle = None
+        if output.exists():
+            bundle = flight_diff.load_bundle(output)
+        return result, reports, bundle
+
+    def test_origin_is_one_fault_class_event_between_the_scheduler_marks(self):
+        result, reports, bundle = self._run("00000000", "00000000", self.SPEC)
+        self.assertEqual(result.stdout.strip(), "RESULT=0xffc00000", result.stderr)
+        self.assertEqual(len(reports), 1, result.stderr)
+        self.assertIsNotNone(bundle, "the recorder writes its bundle at exit")
+        classes = [(event["class"], event["kind"]) for event in bundle["events"]]
+        self.assertEqual(classes, [("sched", 3), ("fault", 30), ("sched", 3)])
+        origin = bundle["events"][1]
+        self.assertEqual(origin["arg0"], self.PC)
+        # domain VFPU (2), result NaN (1), destination v3 (3); lane 0 of a single-result op.
+        self.assertEqual(origin["arg1"], 2 | (1 << 8) | (3 << 16))
+        self.assertEqual(origin["arg2"], 0)
+        self.assertEqual(origin["arg3"], 4711)
+        self.assertEqual(bundle["terminal"]["reason"], "exit", "the origin does not end the run")
+        self.assertEqual(bundle["recorder"]["triggers"]["fired"], 0)
+
+    def test_clean_run_records_no_origin(self):
+        _result, reports, bundle = self._run("3f800000", "40000000", self.SPEC)
+        self.assertEqual(reports, [])
+        self.assertEqual([event["kind"] for event in bundle["events"]], [3, 3])
+
+    def test_first_origin_is_localised_against_the_clean_run(self):
+        _clean_result, _reports, clean = self._run("3f800000", "40000000", self.SPEC)
+        _origin_result, _reports, origin = self._run("00000000", "00000000", self.SPEC)
+        divergence = flight_diff.diff_bundles(clean, origin, "sequence")
+        self.assertIsNotNone(divergence)
+        self.assertEqual(divergence[0], "sequence 2")
+        self.assertEqual(divergence[2]["kind"], 30)
+        clean_path = self.output_dir / "clean.json"
+        origin_path = self.output_dir / "origin.json"
+        clean_path.write_text(json.dumps(clean), encoding="utf-8")
+        origin_path.write_text(json.dumps(origin), encoding="utf-8")
+        cli = subprocess.run(
+            [sys.executable, os.fspath(ROOT / "tools" / "flight_diff.py"),
+             os.fspath(clean_path), os.fspath(origin_path)],
+            capture_output=True, text=True, check=False)
+        self.assertEqual(cli.returncode, 1, cli.stdout + cli.stderr)
+        self.assertIn("DIVERGENCE: sequence 2", cli.stdout)
+        self.assertIn("kind=nan-origin (30) sequence=2 pc=0x0000abcd domain=vfpu dst=v3 "
+                      "result=nan lane=0 vbl=4711", cli.stdout)
+
+    def test_disabled_recorder_keeps_the_report_and_writes_no_bundle(self):
+        result, reports, bundle = self._run("00000000", "00000000", "")
+        self.assertEqual(len(reports), 1, "the trap report does not depend on the recorder")
+        self.assertIsNone(bundle)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_first_non_finite_word_names_the_lane_and_result_class(self):
+        # vdiv.p v3, v2, v1 (a pair): lane 0 is finite (1/1 = 1), lane 1 is +Inf (1/0). The
+        # recorded lane is the first non-finite word, the position out=[...] shows in the
+        # report, and the result class is +Inf.
+        word = vfpu_lane(0x18, 7, 1, 2, 3, 2)
+        with nan_trap_codegen_state():
+            statement = codegen.effect(self.PC, word)[0]
+        s_index = codegen.vreg_indices(2, 2)
+        t_index = codegen.vreg_indices(1, 2)
+        exe = self.compile(
+            "vdiv_p_flight",
+            '#include "flight_recorder.h"\n'
+            f"{VFPU_STUBS}\nstatic void body(CpuState *s) {{ {statement} }}",
+            f"""
+int main(void) {{
+    CpuState st; CpuState *s = &st;
+    memset(s, 0, sizeof *s);
+    s->v[{s_index[0]}] = sr_bits("3f800000");
+    s->v[{s_index[1]}] = sr_bits("3f800000");
+    s->v[{t_index[0]}] = sr_bits("3f800000");
+    s->v[{t_index[1]}] = sr_bits("00000000");
+    sr_flight_init();
+    body(s);
+    return 0;
+}}
+""", flight=True)
+        output = self.output_dir / "pair.json"
+        result, reports = self.run_exe(exe, {"SR_FLIGHT": self.SPEC,
+                                             "SR_FLIGHT_OUTPUT": os.fspath(output)})
+        self.assertEqual(len(reports), 1, result.stderr)
+        self.assertIn("out=[1,inf]", reports[0])
+        bundle = flight_diff.load_bundle(output)
+        self.assertEqual(len(bundle["events"]), 1)
+        origin = bundle["events"][0]
+        self.assertEqual(origin["arg2"], 1, "lane 1 is the first non-finite word")
+        self.assertEqual(origin["arg1"], 2 | (2 << 8) | (3 << 16), "+Inf result, VFPU, v3")
+
+
 # Host symbols the single-instruction VFPU interpreter reaches that these
 # fixtures never exercise. Their bodies are inert on purpose: a fixture that
 # accidentally reached one would fail loudly rather than quietly disagree.
@@ -824,12 +974,22 @@ uint8_t *g_mem;
 int g_hle_depth;
 int g_sr_heap_watch;
 CpuState *s_cpu;
+volatile int g_sr_vram_read_pending;
 void sr_oor(uint32_t a, uint32_t v, int store) { (void)a; (void)v; (void)store; }
 void sr_heap_note_write(uint32_t a, uint32_t w, uint32_t v, uint32_t pc) {
     (void)a; (void)w; (void)v; (void)pc;
 }
 uint32_t sched_current_uid(void) { return 0; }
 uint32_t sr_get_ge_status(void) { return 0; }
+void sr_ge_vram_read_prepare(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
+void sr_ge_vram_write_prepare(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
+void sr_ge_vram_write_commit(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
 int sr_cpu_lle_enabled(void) { return 0; }
 unsigned sr_cpu_data_access_fault(const CpuState *s, uint32_t addr, unsigned width,
                                   int store) {
@@ -1101,6 +1261,16 @@ class Vfpu3CompareDecodeTests(unittest.TestCase):
     def test_sub5_is_vscmp(self):
         body = self._effect((0x6f1e6040 & ~(7 << 23)) | (5 << 23))
         self.assertIn("(_a[_i]<_b[_i])?-1.0f:((_a[_i]>_b[_i])?1.0f:0.0f)", body)
+
+    def test_vscmp_orders_a_nan_lane_by_sign_and_magnitude(self):
+        # PSP-VFPU-CMP-001: a PSP-3000 writes +1.0 for NaN vs 1.5, -1.0 for 1.5 vs NaN and
+        # -1.0 for -NaN vs 1.5. A lane with a NaN takes the raw-word branch; vsge and vslt
+        # keep the plain compare, which writes 0.0 for a NaN as the console does.
+        body = self._effect((0x6f1e6040 & ~(7 << 23)) | (5 << 23))
+        self.assertIn("if((_ab&0x7fffffffu)>0x7f800000u||(_bb&0x7fffffffu)>0x7f800000u)", body)
+        self.assertIn("_d[_i]=(_ka<_kb)?-1.0f:((_ka>_kb)?1.0f:0.0f);", body)
+        for sub in (6, 7):
+            self.assertNotIn("0x7f800000u", self._effect((0x6f1e6040 & ~(7 << 23)) | (sub << 23)))
 
     def test_vfpu4_vcmov_still_decodes_as_a_conditional_move(self):
         # vcmovt.s S000, S010, CC0: VFPU4 jump 0x15, tf=0, imm3=0, vs=1, vd=0

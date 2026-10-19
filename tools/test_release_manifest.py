@@ -71,6 +71,23 @@ class TestReleaseManifest(unittest.TestCase):
         self.assertEqual(data["name"], "nakagawa-recomp")
         self.assertEqual(data["license"], "GPL-3.0-or-later")
 
+    def test_project_korean_font_source_is_an_approved_pinned_binary(self):
+        data = load_manifest()
+        component = next(
+            item for item in data["components"]
+            if item.get("id") == "fixture-fonts-gowundodum-regular"
+        )
+        pin = json.loads(
+            (ROOT / "fixtures" / "fonts" / "gowundodum" / "PIN.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(component["source_path"], "fixtures/fonts/gowundodum/GowunDodum-Regular.ttf")
+        self.assertEqual(component["upstream_origin"], "https://github.com/google/fonts")
+        self.assertEqual(component["license"], "OFL-1.1")
+        self.assertEqual(component["notice_path"], "fixtures/fonts/gowundodum/OFL.txt")
+        self.assertEqual(component["disposition"], "approved_binary")
+        self.assertEqual(component["hashes"]["sha256"], pin["sha256"])
+        self.assertEqual(component["hashes"]["sha256"], sha256_of(ROOT / component["source_path"]))
+
     def test_generate_spdx23_shape(self):
         data, py_packages = load_sbom_inputs()
         sbom = generate_sbom.generate_spdx23(data, py_packages)

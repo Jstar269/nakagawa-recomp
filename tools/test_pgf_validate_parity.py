@@ -72,6 +72,26 @@ def _patched(image: bytes, offset: int, value: bytes) -> bytes:
     return bytes(out)
 
 
+def _map_past_declared_range(image: bytes) -> bytes:
+    """Add a mapped entry beyond the header's inclusive first/last range."""
+    parser = fonts._Image(image)
+    parser.parse_directory()
+    count = parser.char_map_count
+    bit_offset = count * parser.char_map_bits
+    word_offset = parser.char_map_offset + (bit_offset // 32) * 4
+    shift = bit_offset % 32
+    mask = ((1 << parser.char_map_bits) - 1) << shift
+    word = struct.unpack_from("<I", image, word_offset)[0]
+    if word & mask:
+        raise AssertionError("the writer's packed-map padding must be zero")
+    out = bytearray(image)
+    struct.pack_into("<I", out, 0x10, count + 1)
+    # The zero value selects the first drawable glyph. Increasing this fixture's
+    # count by one leaves its 32-bit-padded map section the same size.
+    struct.pack_into("<I", out, word_offset, word)
+    return bytes(out)
+
+
 def _corpus(rng: random.Random) -> dict:
     """Named images: valid, sparse, slot-coverage variants, and the refusals the task lists."""
     dense = _latin_dense()
@@ -79,6 +99,7 @@ def _corpus(rng: random.Random) -> dict:
     images: dict = {
         "dense_latin": dense,
         "sparse_latin": sparse,
+        "char_map_past_declared_range": _map_past_declared_range(dense),
         "japanese": _japanese(),
         "korean": _korean(),
         "mixed_kana_hangul": _mixed_kana_hangul(),
@@ -226,6 +247,10 @@ class PgfValidatorParityTests(unittest.TestCase):
         sparse_verdict = fonts.pgf_verdict(sparse)
         self.assertTrue(sparse_verdict["ok"])
         self.assertGreater(sparse_verdict["char_map_count"], sparse_verdict["glyph_count"])
+        self.assertEqual(
+            fonts.pgf_verdict(_map_past_declared_range(dense))["refusal"],
+            "COUNTS",
+        )
         self.assertEqual(fonts.pgf_verdict(dense[:100])["refusal"], "TRUNCATED")
         self.assertEqual(fonts.pgf_verdict(_patched(dense, 4, b"BAD0"))["refusal"], "MAGIC")
         self.assertEqual(fonts.pgf_verdict(_patched(dense, 0xB6, struct.pack("<H", 0x5B)))["refusal"], "GLYPH_RANGE")

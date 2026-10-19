@@ -87,11 +87,18 @@ HISTORICAL_EVIDENCE_DOCS = {
 FULL_URL_PAT = re.compile(
     r"https://github\.com/Jstar269/nakagawa-recomp/(issues|pull)/(\d+)\b"
 )
-# External GitHub issue/PR URLs are still authoritative links.  Their numeric
-# labels must not be reinterpreted as shorthand references to this repository's
-# tracker (for example ``[#16946](https://github.com/hrydgard/ppsspp/issues/16946)``).
-ANY_GITHUB_TRACKER_URL_PAT = re.compile(
-    r"https://github\.com/[^\s/]+/[^\s/]+/(?:issues|pull)/(\d+)\b"
+# GitHub answers ``issues/N-suffix`` with a redirect to an unrelated filtered list and
+# ``issues/N/suffix`` with a 404, so those tails are malformed, not references to N.
+# ``pull/N/<path>`` (for example ``/files``) is valid GitHub and stays a PR reference.
+MALFORMED_TRACKER_URL_PAT = re.compile(
+    r"https://github\.com/Jstar269/nakagawa-recomp/"
+    r"(?:issues/(?P<issue>\d+)(?:[A-Za-z_-]|/\w)|pull/(?P<pull>\d+)[A-Za-z_-])[^\s)\]>]*"
+)
+# Any GitHub issue/PR link, Markdown-labelled or bare. Such a link is checked by the URL rules
+# (including its own label), so its numbers are masked before shorthand matching. A bare
+# ``#N`` elsewhere on the same line is still this repository's shorthand and is still checked.
+TRACKER_LINK_PAT = re.compile(
+    r"(?:\[[^\]\n]*\]\()?https://github\.com/[^\s/]+/[^\s/]+/(?:issues|pull)/\d+[^\s)]*\)?"
 )
 # Shorthand references must look like tracker prose, not Markdown headings such as "# 1".
 SHORTHAND_PAT = re.compile(r"(?<![A-Fa-f0-9_#])#(\d+)\b")
@@ -196,15 +203,21 @@ def public_status_label(obj: dict) -> str:
     return "MERGED PR" if obj.get("merged_at") else "CLOSED PR"
 
 
+def _mask_tracker_links(text: str) -> str:
+    """Blank out GitHub issue/PR links (keeping offsets) so only bare shorthand is matched."""
+    return TRACKER_LINK_PAT.sub(lambda match: " " * len(match.group(0)), text)
+
+
+def _canonical_url_matches(line: str) -> list[re.Match[str]]:
+    """Return full-URL matches on ``line``, excluding malformed tails."""
+    malformed = {match.start() for match in MALFORMED_TRACKER_URL_PAT.finditer(line)}
+    return [match for match in FULL_URL_PAT.finditer(line) if match.start() not in malformed]
+
+
 def _tracker_numbers(text: str) -> list[int]:
     """Return this repository's issue/PR numbers cited in ``text``, in order."""
-    numbers = [int(match.group(2)) for match in FULL_URL_PAT.finditer(text)]
-    linked = {int(match.group(1)) for match in ANY_GITHUB_TRACKER_URL_PAT.finditer(text)}
-    numbers += [
-        int(match.group(1))
-        for match in SHORTHAND_PAT.finditer(text)
-        if int(match.group(1)) not in linked
-    ]
+    numbers = [int(match.group(2)) for match in _canonical_url_matches(text)]
+    numbers += [int(match.group(1)) for match in SHORTHAND_PAT.finditer(_mask_tracker_links(text))]
     return numbers
 
 
@@ -322,8 +335,21 @@ def audit_markdown_files(
                 in_tracker_section = rel == "ISSUES.md" and line.strip() == TRACKER_SECTION
                 in_at_a_glance = rel == "ISSUES.md" and line.strip() == AT_A_GLANCE_SECTION
 
-            url_matches = list(FULL_URL_PAT.finditer(line))
-            full_nums = {int(match.group(1)) for match in ANY_GITHUB_TRACKER_URL_PAT.finditer(line)}
+            url_matches = _canonical_url_matches(line)
+            for match in MALFORMED_TRACKER_URL_PAT.finditer(line):
+                number = match.group("issue") or match.group("pull")
+                findings.append(
+                    (
+                        rel,
+                        idx,
+                        match.group(0),
+                        (
+                            f"MALFORMED PUBLIC TRACKER URL: GitHub does not resolve this to #{number}; "
+                            f"cite the canonical issue or PR URL for #{number}"
+                        ),
+                        False,
+                    )
+                )
 
             for match in url_matches:
                 url_type, num_str = match.group(1), match.group(2)
@@ -395,10 +421,8 @@ def audit_markdown_files(
 
             # Shorthand checks apply to current prose, not fenced examples or Markdown headings.
             if is_current_doc and not in_fenced_code and not stripped.startswith("#"):
-                for match in SHORTHAND_PAT.finditer(line):
+                for match in SHORTHAND_PAT.finditer(_mask_tracker_links(line)):
                     num = int(match.group(1))
-                    if num in full_nums:
-                        continue
                     raw = f"#{num}"
                     if num not in issues_map:
                         findings.append(

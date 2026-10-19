@@ -150,6 +150,7 @@ Desktop.ini
 
 # AI tool local/personal state. AGENTS.md is the only tracked agent authority;
 # per-tool caches, settings, and personal instruction files stay local.
+/.jules/
 /.claude/
 /.codex/
 /.codex-remote-attachments/

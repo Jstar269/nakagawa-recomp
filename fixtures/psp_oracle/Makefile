@@ -160,9 +160,11 @@ else ifeq ($(CASE),kernel-misc)
 CASE_ID = 67
 else ifeq ($(CASE),vfpu-compare)
 CASE_ID = 68
-# 90-96: the H-oracle HLE measurement families (probe_hle_measure.c). They are
-# numbered apart from the sequential 1-67 probe.c cases so that new sequential
-# cases cannot collide with them.
+else ifeq ($(CASE),vfpu-transcendental-corpus)
+CASE_ID = 71
+# 90-103: the H-oracle HLE measurement families (probe_hle_measure.c). They are
+# numbered apart from the sequential probe.c cases so that new sequential
+# cases cannot collide with them; 97-103 are single-launch NOT_RUN cases.
 else ifeq ($(CASE),hle-kernel-status)
 CASE_ID = 90
 else ifeq ($(CASE),hle-vtimer)
@@ -177,8 +179,36 @@ else ifeq ($(CASE),hle-sysparam)
 CASE_ID = 95
 else ifeq ($(CASE),hle-ge-edram)
 CASE_ID = 96
+else ifeq ($(CASE),hle-vtimer-unit)
+CASE_ID = 97
+else ifeq ($(CASE),hle-vtimer-errors)
+CASE_ID = 98
+else ifeq ($(CASE),hle-kernel-pool-bounds)
+CASE_ID = 99
+else ifeq ($(CASE),hle-power-float-v0)
+CASE_ID = 100
+else ifeq ($(CASE),hle-null-out-pointers)
+CASE_ID = 101
+else ifeq ($(CASE),hle-audio-src)
+CASE_ID = 102
+else ifeq ($(CASE),hle-timer-order)
+CASE_ID = 103
 else ifeq ($(CASE),llsc-link)
 CASE_ID = 69
+else ifeq ($(CASE),fpu-cc)
+CASE_ID = 70
+else ifeq ($(CASE),registry-font)
+CASE_ID = 72
+else ifeq ($(CASE),font-files)
+CASE_ID = 73
+else ifeq ($(CASE),umd-io)
+CASE_ID = 74
+else ifeq ($(CASE),umd-raw-read)
+CASE_ID = 77
+else ifeq ($(CASE),font-list)
+CASE_ID = 75
+else ifeq ($(CASE),vram-mirror)
+CASE_ID = 76
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -333,6 +363,27 @@ OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o $(
 else ifeq ($(CASE),hle-ge-edram)
 TARGET = $(BUILD_DIR)/hle_ge_edram
 OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/hle_ge_imports.o
+else ifeq ($(CASE),hle-vtimer-unit)
+TARGET = $(BUILD_DIR)/hle_vtimer_unit
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),hle-vtimer-errors)
+TARGET = $(BUILD_DIR)/hle_vtimer_errors
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),hle-kernel-pool-bounds)
+TARGET = $(BUILD_DIR)/hle_kernel_pool_bounds
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),hle-power-float-v0)
+TARGET = $(BUILD_DIR)/hle_power_float_v0
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/hle_power_imports.o
+else ifeq ($(CASE),hle-null-out-pointers)
+TARGET = $(BUILD_DIR)/hle_null_out_pointers
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),hle-audio-src)
+TARGET = $(BUILD_DIR)/hle_audio_src
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
+else ifeq ($(CASE),hle-timer-order)
+TARGET = $(BUILD_DIR)/hle_timer_order
+OBJS = $(BUILD_DIR)/probe_hle_measure.o $(BUILD_DIR)/threadman_user_imports.o
 endif
 CXXFLAGS = $(CFLAGS)
 ASFLAGS = $(CFLAGS)
@@ -349,14 +400,41 @@ endif
 PSP_EBOOT_TITLE = Nakagawa PSP Oracle
 PSP_EBOOT_ICON = NULL
 LIBS = -lpspdmac -lpsppower -lpspge -lpspaudio
-ifeq ($(CASE),ge-nan)
+ifneq ($(filter ge-nan vram-mirror,$(CASE)),)
 LIBS := -lpspgum -lpspgu $(LIBS)
 endif
 ifeq ($(CASE),model-profile)
 LIBS += -lpspkubridge
 endif
-ifeq ($(CASE),registry-readonly)
+# The registry cases may import only the eight read-only sceReg calls, exactly: the gate
+# below fails the build on any other sceReg NID (a set, create, remove or flush call).
+REGISTRY_CASES = registry-readonly registry-font
+ifneq ($(filter $(REGISTRY_CASES),$(CASE)),)
 LIBS += -lpspreg
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceReg=0x92E41280,0xFA8A5739,0x1D8A762E,0x0CAE832B,0x2C0DB9DD,0x2D211135,0xD4475AA8,0x28A8E98A
+endif
+# The UMD case reads the drive state only: exactly sceUmdCheckMedium and sceUmdGetDriveStat,
+# so a build that imported sceUmdActivate (or any other UMD call) fails the gate.
+ifeq ($(CASE),umd-io)
+LIBS += -lpspumd
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceUmdUser=0x46EBB729,0x6B4A146C
+endif
+# Raw UMD reads are read-only on the UMD descriptor. The IoFileMgrForUser pin covers the case's
+# seek/read/async/stat calls, the durable host0 logger and round-trip cleanup, and the four
+# IoFileMgr stubs pulled by PSPSDK libc glue. The source test forbids write/control calls in the
+# raw UMD case itself, and the emulator devctl/stdout route is compiled out for this PSP-only case.
+ifeq ($(CASE),umd-raw-read)
+LIBS += -lpspumd
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceUmdUser=0x46EBB729,0x6B4A146C
+USER_MODE_IMPORT_GATE_ARGS += --exact-library IoFileMgrForUser=0x109F50BC,0x27EB27B8,0x3251EA56,0x42EC03AC,0x55F4717D,0x68963324,0x6A638D83,0x810C4BC3,0xA0B5A7C2,0xACE946E8,0xB29DDF9C,0xE23EEC33,0xE3EB004C,0xEB092469,0xF27A9C51
+endif
+# The font-list case asks the console's own font library for the system font list. It links
+# the hand-authored sceLibFont stubs (libfont_imports.S) and may import exactly those five
+# calls; it may import nothing from sceReg, so the probe itself can neither open nor create a
+# registry category (the only registry reads are the library's own).
+ifeq ($(CASE),font-list)
+OBJS += $(BUILD_DIR)/libfont_imports.o
+USER_MODE_IMPORT_GATE_ARGS += --exact-library sceLibFont=0x67F17ED7,0x574B6FBC,0x27F6E642,0xBC75D85B,0x5333322D --forbid-library sceReg
 endif
 ifeq ($(CASE),kernel-misc)
 OBJS += $(BUILD_DIR)/threadman_user_imports.o $(BUILD_DIR)/display_user_imports.o
@@ -392,13 +470,13 @@ include $(PSPSDK)/lib/build.mak
 # .DELETE_ON_ERROR removes a rejected ELF so a later make cannot package it.
 PYTHON ?= python3
 USER_MODE_IMPORT_GATE = $(FIXTURE_DIR)../../tools/psp_oracle/user_mode_imports.py
-FIXUP = bash -c 'out=$$(psp-fixup-imports "$$1" 2>&1); rc=$$?; test -n "$$out" && echo "$$out"; echo "$$out" | grep -q "stubs out of order" && exit 1; test $$rc -eq 0 || exit $$rc; exec "$(PYTHON)" "$(USER_MODE_IMPORT_GATE)" "$$1"' --
+FIXUP = bash -c 'out=$$(psp-fixup-imports "$$1" 2>&1); rc=$$?; test -n "$$out" && echo "$$out"; echo "$$out" | grep -q "stubs out of order" && exit 1; test $$rc -eq 0 || exit $$rc; exec "$(PYTHON)" "$(USER_MODE_IMPORT_GATE)" $(USER_MODE_IMPORT_GATE_ARGS) "$$1"' --
 .DELETE_ON_ERROR:
 
 # The SDK's generic `%.o: %.c` rule expects source and object to share a
 # directory. Keep the source at the fixture root while placing all generated
 # objects under the ignored build directory.
-$(BUILD_DIR)/probe.o: probe.c
+$(BUILD_DIR)/probe.o: probe.c registry_walk.h font_files.h umd_io.h font_list.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/probe_exports.exp: Makefile
@@ -413,6 +491,9 @@ $(BUILD_DIR)/threadman_user_imports.o: threadman_user_imports.S
 	$(CC) $(ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/display_user_imports.o: display_user_imports.S
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/libfont_imports.o: libfont_imports.S
 	$(CC) $(ASFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/probe_hle_measure.o: probe_hle_measure.c
