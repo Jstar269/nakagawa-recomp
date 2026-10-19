@@ -225,6 +225,18 @@
       "sha256": "6a86cc34726263240725ec231b91e026aaedef4cced86952a67623e494ebb29a"
     },
     {
+      "path": ".github/workflows/scorecards.yml",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "openssf-scorecard-workflow-2026-10-19",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "f3f535e744b2e9ec1696a88e02c138cc9f456613fc2ae1040a509ee7392894cb"
+    },
+    {
       "path": ".gitignore",
       "classification": "reviewed_configuration",
       "evidence": {
@@ -715,7 +727,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "ef72dc18060da75813bd2d711a584c6dd0a6ff0fa8526ae64d4ab6529aaf01ac"
+      "sha256": "7435e3b311df6a123ee12389fd14afcedd2b4b2917295ed141358b6baa114dd8"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1105,7 +1117,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e13a8c007b9f39b4e9b95aff9345c539b4d98e97cedfe3817f35d6940fba5b36"
+      "sha256": "bab4f1b4ff9e18a1bc8abad38a7eb54b10037f52fb731b0d6a66ece5dd2d31f6"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1162,7 +1174,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b624c92f69ddd26f259d6d47b5bcf04fae7ef375eb472d0347f872b238c74c9c"
+      "sha256": "b89d99b83ca6686ec256f4523a5ca71f14cd4e0fb0e8e2adf39b66e3c24d2493"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -1180,7 +1192,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "0b0a20c80f47a39c879615f2cc586697380ec0266e2dcc14bd2d424b006d6cc4"
+      "sha256": "fc0628c80fd96f7a0e094209dc75d67aff31a018cb03c14b81a75cb6430969c6"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -6992,7 +7004,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "daabbd8cdc20a20dcd7f0caa84d2ba86b20fce43c41d8ecb70d4b9cd98df9479"
+      "sha256": "25091310ec19bc4c5781aea5d69c7db7523830d265c070ab80e19bdabfacbb40"
     },
     {
       "path": "tools/host_stubs.py",
@@ -7040,7 +7052,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cfcea3ab2cdb77e96c0cf6d67022e0ff5c48d39148dc799e68e05ca351ad87be"
+      "sha256": "0cafc4c6ac042b19f981135f3c60da0b7134abb4492ed3097d01c5d8c7ca4d17"
     },
     {
       "path": "tools/import_audit_gate.py",
@@ -7706,7 +7718,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e0831d456be31c86e62592b3be3d3f4b432dc1b90fef6fb602f3510296cf1bcf"
+      "sha256": "2ad28eb0efac8ae700d42f032da7e7d16f0dfb78e55d635731c9577d5654dae5"
     },
     {
       "path": "tools/psp_oracle/parse_golden.py",
@@ -8944,7 +8956,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "fe7ce7dc3c522b8883702f93f1c804696d3f0f65e99481662ff682063fb4cb2f"
+      "sha256": "0f2e71d5e96b4ab4d058a3ffa95b85aaf06718c7511aee8f7ce67bb68ae48099"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
