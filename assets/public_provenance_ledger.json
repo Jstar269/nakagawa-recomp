@@ -6569,7 +6569,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0422fd0e87f3c03076cf3b4b1cf08fb48bc76e105ddc45c88f5fb619f6f371a3"
+      "sha256": "5d33f826ee5072f749d2848defd94a0ee099d385eeb52dfaee90af17e2f0fcfd"
     },
     {
       "path": "tools/codegen_gate.py",
@@ -8379,7 +8379,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a951a0649d776a914e37d614c0dfd6bdc65e74b95559d8dfa26fff51e2c019d0"
+      "sha256": "4a50580f4d1e7d27192aa3b0e0fe1bb4cd5013dbf0dd7210e3c01354ab6ab4f1"
     },
     {
       "path": "tools/test_compat_manifest.py",
@@ -10397,7 +10397,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "dabbeaa459eed0eb5f0ddc146e39811760b2df61fd0069f47d2dcb5f7073d0e0"
+      "sha256": "091ccb1d2c50c9d8d577fbf29702f7a18e3123095582485dac67d1f1c15e8430"
     },
     {
       "path": "tools/test_vfpu_domain_boundary.py",
@@ -10794,7 +10794,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b7efa809fd9430cb22c9738f6e30e7286dd11bcc61bc36420aa41a91c7ab5e3d"
+      "sha256": "b7e94f5fbb6b187da8b84ae392d4eeaf94d069a5a5c4d47fe33ffea7e3a13cae"
     },
     {
       "path": "tools/vfpu_fuzz_gen.py",

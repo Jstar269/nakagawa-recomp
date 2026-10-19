@@ -1135,6 +1135,18 @@ def _flit(v):
         s += ".0"
     return s + "f"
 
+# Public VFPU mnemonic identities (PSPDev VFPU docs / PPSSPP's selector table).
+# These rows name still-unimplemented forms only; every one must keep the #326
+# fail-closed interpreter fallback until semantic evidence is admitted.
+_VFPU4_NAMED_UNIMPLEMENTED = {
+    (0x01, 0x00): "vrnds",
+    (0x01, 0x02): "vrndf1",
+    (0x02, 0x02): "vbfy1",
+    (0x02, 0x0A): "vsgn",
+    (0x02, 0x19): "vt4444",
+}
+
+
 def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
     # VFPU memory forms under --lle-cpu use the same sr_cpu_guard_access() call
     # as _lle_access_stmt() (spec 3.3, runs PSP-A3-08..15): lv.s/sv.s width 4,
@@ -1163,9 +1175,15 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             data &= 0xFFF
         return f"s->vfpuCtrl[{regnum}] = 0x{data:x}u;", None, 0
     if op == 0x34:
+        jump = (w >> 21) & 0x1F
+        rt_selector = (w >> 16) & 0x1F
+        public_name = _VFPU4_NAMED_UNIMPLEMENTED.get((jump, rt_selector))
+        if public_name is not None:
+            raise Unsupported(
+                f"VFPU4 identity {public_name} rs={jump} rt=0x{rt_selector:02x} at 0x{addr:08x}"
+            )
         vd, vs = w & 0x7F, (w >> 8) & 0x7F
         n = vec_size(w)
-        jump = (w >> 21) & 0x1F
         di = vreg_indices(vd, n)
         if jump == 0x15: # vcmov
             tf = (w >> 19) & 1
@@ -1724,7 +1742,7 @@ def fpu_effect(addr, w):
         # sensitive FP comparison executing OUTSIDE the scoped window: under
         # hostile ambient DAZ=1 a real subnormal operand compares equal to
         # zero and inf*subnormal would wrongly take the canonical-qNaN path.
-        # Integer bit tests are environment-blind. Exact ±inf * exact ±0
+        # Integer bit tests are environment-blind. Exact Â±inf * exact Â±0
         # still canonicalizes to 0x7fc00000.
         if fn == 0x00:
             stmt = f"{{ float _a={F(fs)},_b={F(ft)}; {F(fdv)} = sr_fpu_add_s(_a,_b,s->fcr31);"
@@ -2420,14 +2438,14 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
         # ARRAY_CAP (0x00100e98) and LISTWALK_CAP (0x0001038c) REMOVED in F3 (second
         # round, 2026-07-09): both still fired on every boot after WALKER_CAP's removal.
         # ARRAY_CAP force-broke a loop inside the 0x100xxx menu-layout/registration code
-        # region after an absolute 20000 same-PC iterations — the same "bounded init
+        # region after an absolute 20000 same-PC iterations â€” the same "bounded init
         # mistaken for a spin" failure mode as WALKER_CAP, and a direct candidate for
         # why dispatch tables (0x3070c0 +0xc/+0x10) remain half-populated. LISTWALK_CAP
         # broke f_0001034c's next-pointer chain walk on the theory the list could be
         # circular/corrupt; the known corruption sources upstream (WALKER_CAP truncation,
         # the LoadLayout runaway) are gone, so the guard's premise is stale. If either
         # loop genuinely spins again, the watchdog thread-dump PC identifies it uniquely
-        # (0x00100e98 vs 0x0001038c) — root-cause that spin; do not re-cap (see
+        # (0x00100e98 vs 0x0001038c) â€” root-cause that spin; do not re-cap (see
         # docs/audit/F3_LOOPCAPS.md and docs/DESIGN_FONT_HLE.md F3 re-scope).
         # TOKENSCAN_DIAG: instrumentation ONLY (not a fix) for the post-1.6 blocker. The
         # worker's PC sampler pins on f_001041f4's character-scan loop (top at L_0010433c):
@@ -2454,7 +2472,7 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
 
 
         # F3G ENTRY PROBE (temporary): dump f_0006e9bc's incoming object (r4) and count (r5)
-        # to resolve the static-vs-runtime disconnect — statically r5 should be 96 and r4 a
+        # to resolve the static-vs-runtime disconnect â€” statically r5 should be 96 and r4 a
         # valid heap object, but at runtime the memset reads garbage. Prints once. Remove after.
         if hst_profile and EMIT_DIAG_PROBES and addr == 0x0006e9bc:
             out.append(
