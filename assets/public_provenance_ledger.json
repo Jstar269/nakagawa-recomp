@@ -10893,14 +10893,5 @@
       },
       "sha256": "7869f7a49433ed9a604bd810fc169003949eac70a600256753afbfab844695ef"
     }
-  ],
-  "admission": {
-    "workflow": "admit-new-reviewed",
-    "trusted_tree": "7e9fe8b580a4e7b3d57440157d593679c7c21843",
-    "candidate_tree": "37f22dbdcbfd6ec3e9b81c2212d49e74f9ad7661",
-    "admitted_paths": [
-      ".github/workflows/scorecards.yml"
-    ],
-    "authority_sha256": "81239a9af6dae3d98ce2e0ca9110a1eaf254277ffb08da27be3363c23620ee9c"
-  }
+  ]
 }
