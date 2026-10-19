@@ -1180,7 +1180,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "18a61bd19c68149ff2d02deb05b6bb97857bc2838c083cbfba6fe707643ccaf3"
+      "sha256": "45afef43764055555b1e81a1ff1aebec3146e3e2f64280fbc89c9962d9e7abca"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -1321,7 +1321,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "850bdfa89b6b63baa4197d734ce8717256d21e38f3d5dde01c3dcdf61408e6a1"
+      "sha256": "26e67ec3db3d8dcf00af8fb18cf1bb53ef90a50782e36cb0cee248c6e6aa103b"
     },
     {
       "path": "docs/PSP_INTR_WAITS_MATRIX.md",
@@ -6992,7 +6992,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "08eac559ed7f2409455c0ab0b98b712552b6ce72864cfb3681263f6c39efc5d5"
+      "sha256": "90056d5aa373e6f4bb07383f08d7a373ebd7ba6b89c0ffb9fce45dc48b02448e"
     },
     {
       "path": "tools/host_stubs.py",
@@ -7040,7 +7040,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d0e82607b88b64af5dd410fcfd9f0aab0549217dfd36ab163d55d641c3da981d"
+      "sha256": "b27060c4ce88fbf37617811dad474633039168da8a7c4caf8c44d39d72560468"
     },
     {
       "path": "tools/import_audit_gate.py",
@@ -8944,7 +8944,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "4615592a0ea99392adaf68d8a080fb7efe1441423517c2f53648ce2a37279396"
+      "sha256": "7dbb28760d9732d93af76d569d9b2987b9096a79ebeb8e64d1ea7ff44e5097a6"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",

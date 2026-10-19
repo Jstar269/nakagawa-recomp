@@ -171,7 +171,7 @@
     "classification": "dedicated",
     "handler": "h_TryLockMutex",
     "name": "sceKernelTryLockMutex",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x0e20f177": {
     "classification": "dedicated",
@@ -943,7 +943,7 @@
     "classification": "dedicated",
     "handler": "h_WaitEventFlag",
     "name": "sceKernelWaitEventFlag",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x40f1469c": {
     "classification": "dedicated",
@@ -1119,7 +1119,7 @@
     "classification": "dedicated",
     "handler": "h_WaitSema",
     "name": "sceKernelWaitSema",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x50a14dfc": {
     "classification": "dedicated",
@@ -1491,7 +1491,7 @@
     "classification": "dedicated",
     "handler": "h_UnlockMutex",
     "name": "sceKernelUnlockMutex",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x6b4a146c": {
     "classification": "dedicated",
@@ -1843,7 +1843,7 @@
     "classification": "dedicated",
     "handler": "h_TrySendMsgPipe",
     "name": "sceKernelTrySendMsgPipe",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x8874dbe0": {
     "classification": "dedicated",
@@ -2030,7 +2030,7 @@
     "classification": "dedicated",
     "handler": "h_SleepThread",
     "name": "sceKernelSleepThread",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x9ae849a7": {
     "classification": "dedicated",
@@ -2695,7 +2695,7 @@
     "classification": "dedicated",
     "handler": "h_WakeupThread",
     "name": "sceKernelWakeupThread",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xd5a229c9": {
     "classification": "dedicated",
@@ -2847,7 +2847,7 @@
     "classification": "dedicated",
     "handler": "h_TryReceiveMsgPipe",
     "name": "sceKernelTryReceiveMsgPipe",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xe0727056": {
     "classification": "dedicated",

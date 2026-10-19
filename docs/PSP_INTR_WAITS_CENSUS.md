@@ -29,7 +29,7 @@ Live join of every exact `sce*` / `__sce*` API named in
 
 Open-owner counts:
 
-- #341: 46
+- #341: 43
 
 ## Census
 
@@ -90,7 +90,7 @@ Open-owner counts:
 | `sceKernelSendMbx` | implemented | - | dedicated | partial | `h_SendMbx` | `0xe9b3061e` |
 | `sceKernelSendMsgPipe` | implemented | - | dedicated | partial | `h_SendMsgPipe` | `0x876dbfad` |
 | `sceKernelSendMsgPipeCB` | implemented | #341 | dedicated | unreviewed | `h_SendMsgPipeCB` | `0x7c41f2c2` |
-| `sceKernelSleepThread` | implemented | #341 | dedicated | unreviewed | `h_SleepThread` | `0x9ace131e` |
+| `sceKernelSleepThread` | implemented | - | dedicated | partial | `h_SleepThread` | `0x9ace131e` |
 | `sceKernelSleepThreadCB` | implemented | #341 | dedicated | unreviewed | `h_SleepThreadCB` | `0x82826f70` |
 | `sceKernelStartModule` | implemented | #341 | dedicated | unreviewed | `h_StartModule` | `0x50f0c1ec` |
 | `sceKernelStopModule` | implemented | #341 | dedicated | unreviewed | `h_StopModule_Trace` | `0xd1ff982a` |
@@ -98,9 +98,9 @@ Open-owner counts:
 | `sceKernelTerminateThread` | implemented | #341 | dedicated | unreviewed | `h_TerminateThread` | `0x616403ba` |
 | `sceKernelTryAllocateFpl` | implemented | - | dedicated | partial | `h_TryAllocateFpl` | `0x623ae665` |
 | `sceKernelVolatileMemLock` | implemented | #341 | dedicated | unreviewed | `h_VolatileMemLock` | `0x3e0271d3` |
-| `sceKernelWaitEventFlag` | implemented | #341 | dedicated | unreviewed | `h_WaitEventFlag` | `0x402fcf22` |
+| `sceKernelWaitEventFlag` | implemented | - | dedicated | partial | `h_WaitEventFlag` | `0x402fcf22` |
 | `sceKernelWaitEventFlagCB` | implemented | #341 | dedicated | unreviewed | `h_WaitEventFlagCB` | `0x328c546a` |
-| `sceKernelWaitSema` | implemented | #341 | dedicated | unreviewed | `h_WaitSema` | `0x4e3a1105` |
+| `sceKernelWaitSema` | implemented | - | dedicated | partial | `h_WaitSema` | `0x4e3a1105` |
 | `sceKernelWaitSemaCB` | implemented | #341 | dedicated | unreviewed | `h_WaitSemaCB` | `0x6d212bac` |
 | `sceKernelWaitThreadEnd` | implemented | #341 | dedicated | unreviewed | `h_WaitThreadEnd` | `0x278c0df5` |
 | `sceKernelWaitThreadEndCB` | implemented | #341 | dedicated | unreviewed | `h_WaitThreadEndCB` | `0x840e8133` |
