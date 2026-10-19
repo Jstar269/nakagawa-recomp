@@ -43,10 +43,10 @@ Semantic handler census: **454** handlers across **23** API families, covering *
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 12 | 20 |
-| `partial` | 110 | 112 |
+| `partial` | 120 | 122 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 329 | 355 |
+| `unreviewed` | 319 | 345 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -62,7 +62,7 @@ Semantic handler census: **454** handlers across **23** API families, covering *
 | `sceHprm` | 0 | 0 | 0 | 0 | 3 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 18 | 0 | 0 | 12 | 32 | 32 |
-| `sceKernel` | 2 | 35 | 0 | 0 | 134 | 171 | 192 |
+| `sceKernel` | 2 | 45 | 0 | 0 | 124 | 171 | 192 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `scePower` | 0 | 3 | 0 | 0 | 11 | 14 | 16 |
@@ -73,7 +73,7 @@ Semantic handler census: **454** handlers across **23** API families, covering *
 | `sceUmd` | 0 | 1 | 1 | 0 | 7 | 9 | 9 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 31 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **12** | **110** | **1** | **2** | **329** | **454** | **494** |
+| **Total** | **12** | **120** | **1** | **2** | **319** | **454** | **494** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -290,12 +290,46 @@ Semantic handler census: **454** handlers across **23** API families, covering *
   - Evidence: src/rt/hle_thread_selftest.c:test_alarm_registration_and_error_codes
   - Evidence: src/rt/hle_thread_selftest.c:test_alarm_cancel_before_firing_prevents_the_handler
   - Evidence: src/rt/sched_selftest.c:test_alarm_cancel_and_ordering
+- **`h_CancelEventFlag`** (`sceKernel`): `sceKernelCancelEventFlag` (0xcd203292)
+  - Limitation: the cited cell measures a blocked waiter's WAIT_CANCEL outcome after event cancellation; it does not establish the cancel call's return, pattern assignment, waiter-count output, unknown-ID behavior, pointer errors, or multiple-waiter ordering
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: event-cancel-before-deadline-late-dispatch returns WAIT_CANCEL to the waiter)
 - **`h_CancelReceiveMbx`** (`sceKernel`): `sceKernelCancelReceiveMbx` (0x87d4dd36)
   - Limitation: cancel with zero waiters and invalid numWait-thread pointer error class unmeasured (#339, #341)
+- **`h_CancelSema`** (`sceKernel`): `sceKernelCancelSema` (0x8ffdf9a2)
+  - Limitation: the cited cells establish the -1 reset and a blocked waiter's WAIT_CANCEL outcome; other replacement counts, over-max refusal, optional waiter-count output, unknown IDs, pointer errors, and multiple-waiter ordering are not established by those citations
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-B2-01: CancelSema(-1) restores the create-time initial count)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: sema-cancel-before-deadline-late-dispatch returns WAIT_CANCEL to the waiter)
+- **`h_ClearEventFlag`** (`sceKernel`): `sceKernelClearEventFlag` (0x812346e4)
+  - Limitation: the measured mask behavior matches the normal-object path; an unknown event-flag UID currently returns generic 0x80020000 instead of the measured unknown-event-flag code 0x8002019A, and error precedence is not covered
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01: ClearEventFlag(mask) keeps only the bits in mask)
+- **`h_CreateFpl`** (`sceKernel`): `sceKernelCreateFpl` (0xc07bb470)
+  - Limitation: the cited cells cover valid pool creation and block/status behavior; the handler converts zero block size/count to 16/1, a branch not established by those cited valid-pool cells, and allocation exhaustion plus partition, attribute, and option error precedence need separate evidence
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: fpl-create and valid pool status/allocation cells)
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics: FPL blocks are blockSize apart)
+- **`h_CreateLwMutex`** (`sceKernel`): `sceKernelCreateLwMutex` (0x19cff145)
+  - Limitation: the cells cover recursive and non-recursive initialization, workarea fields, and one waiter hand-off; invalid workareas, unsupported attribute bits, negative counts, option data, and multi-waiter ordering are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01 and PSP-B2-01: LwMutex creation workarea and one-waiter hand-off)
 - **`h_CreateMbx`** (`sceKernel`): `sceKernelCreateMbx` (0x8125221d)
   - Limitation: NULL-name create error and interrupt-context placement unmeasured (#339, #341)
+- **`h_CreateMutex`** (`sceKernel`): `sceKernelCreateMutex` (0xb7d098c6)
+  - Limitation: the measured cell covers ordinary unlocked and initially-held mutex status; name and attribute validation, recursive edge cases, invalid arguments, and allocation exhaustion are not covered
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-refer-unlocked creation and observed status fields)
+- **`h_CreateSema`** (`sceKernel`): `sceKernelCreateSema` (0xd6da4ba1)
+  - Limitation: the cited cells cover the measured count and attribute rules plus initial-count retention; name-pointer behavior, object exhaustion, and invalid-argument precedence remain unmeasured
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01: CreateSema accepts init greater than max and max zero, and rejects invalid attributes)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-B2-01: CancelSema restores the create-time initial count)
 - **`h_CreateVTimer`** (`sceKernel`): `sceKernelCreateVTimer` (0x20fff560)
   - Limitation: NULL option struct only (a non-NULL option is refused, layout unmeasured); 64 creates in a row are measured (PSP-HLE-VTIMER-003), so the table holds 64; the limit above 64 and the no-slot code 0x80020190 are unmeasured; the microsecond unit is consistent with PSP-HLE-VTIMER-002, not a precise rate measurement (#325)
+- **`h_CreateVpl`** (`sceKernel`): `sceKernelCreateVpl` (0x56c039b5)
+  - Limitation: valid pool creation and measured accounting are covered; the handler maps size zero to VPL_EXHAUSTED and ignores the partition argument, but the cited valid-pool cells do not establish those edge results, allocation exhaustion, or option behavior
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01 and PSP-B2-01: valid VPL creation, accounting, allocation, and deletion)
+- **`h_DeleteFpl`** (`sceKernel`): `sceKernelDeleteFpl` (0xed1410e0)
+  - Limitation: valid deletion and the delete-wait outcome are covered; an invalid or already-deleted UID currently returns success in the handler, while the cited delete cells use a valid pool, and multi-waiter teardown ordering is not measured
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: valid fpl-delete and refer-after-delete cells)
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B2-01: deleting an FPL with a waiter)
+- **`h_DeleteLwMutex`** (`sceKernel`): `sceKernelDeleteLwMutex` (0x60107536)
+  - Limitation: the cited cells cover valid deletion and the measured workarea fields; forged workareas, invalid-address precedence, stale UIDs, and multiple-waiter deletion behavior are not fully covered
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01: deleting a held LwMutex updates the workarea fields)
 - **`h_DeleteMbx`** (`sceKernel`): `sceKernelDeleteMbx` (0x86255ada)
   - Limitation: delete-while-waited is mailbox-measured on 2026-10-15 (PSP-3000, 6.61): the waiter returns WAIT_DELETE and its timeout word is rewritten to the remaining time; interrupt-context placement unmeasured (#339, #341)
 - **`h_DeleteVTimer`** (`sceKernel`): `sceKernelDeleteVTimer` (0x328f9e52)

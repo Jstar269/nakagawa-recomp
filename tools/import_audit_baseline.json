@@ -348,7 +348,7 @@
     "classification": "dedicated",
     "handler": "h_CreateLwMutex",
     "name": "sceKernelCreateLwMutex",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x1b385d8f": {
     "classification": "dedicated",
@@ -1205,7 +1205,7 @@
     "classification": "dedicated",
     "handler": "h_CreateVpl",
     "name": "sceKernelCreateVpl",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x574b6fbc": {
     "classification": "dedicated",
@@ -1315,7 +1315,7 @@
     "classification": "dedicated",
     "handler": "h_DeleteLwMutex",
     "name": "sceKernelDeleteLwMutex",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x606a4649": {
     "classification": "dedicated",
@@ -1753,7 +1753,7 @@
     "classification": "dedicated",
     "handler": "h_ClearEventFlag",
     "name": "sceKernelClearEventFlag",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x8125221d": {
     "classification": "dedicated",
@@ -1910,7 +1910,7 @@
     "classification": "dedicated",
     "handler": "h_CancelSema",
     "name": "sceKernelCancelSema",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x912354a7": {
     "classification": "dedicated",
@@ -2391,7 +2391,7 @@
     "classification": "dedicated",
     "handler": "h_CreateMutex",
     "name": "sceKernelCreateMutex",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xb7e1d8e7": {
     "classification": "dedicated",
@@ -2506,7 +2506,7 @@
     "classification": "dedicated",
     "handler": "h_CreateFpl",
     "name": "sceKernelCreateFpl",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xc11ba8c4": {
     "classification": "dedicated",
@@ -2614,7 +2614,7 @@
     "classification": "dedicated",
     "handler": "h_CancelEventFlag",
     "name": "sceKernelCancelEventFlag",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xceadeb47": {
     "classification": "dedicated",
@@ -2738,7 +2738,7 @@
     "classification": "dedicated",
     "handler": "h_CreateSema",
     "name": "sceKernelCreateSema",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xd7763699": {
     "classification": "dedicated",
@@ -3021,7 +3021,7 @@
     "classification": "dedicated",
     "handler": "h_DeleteFpl",
     "name": "sceKernelDeleteFpl",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xedba5844": {
     "classification": "dedicated",

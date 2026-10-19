@@ -879,6 +879,83 @@ HANDLER_METADATA = {
         ],
         "limitation": "ordinary allocation, one finite timeout, measured pool accounting, and one-waiter hand-off are covered; invalid output pointers, invalid sizes, and fragmented-pool behavior beyond the measured cases are not measured",
     },
+    # Route-A batch 3: each citation was checked against the exact API path in
+    # its hardware cell. These handlers remain partial where the cell does not
+    # cover all branches or where the current implementation has a known gap.
+    "h_CancelEventFlag": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-WAIT-001: event-cancel-before-deadline-late-dispatch returns WAIT_CANCEL to the waiter)",
+        ],
+        "limitation": "the cited cell measures a blocked waiter's WAIT_CANCEL outcome after event cancellation; it does not establish the cancel call's return, pattern assignment, waiter-count output, unknown-ID behavior, pointer errors, or multiple-waiter ordering",
+    },
+    "h_CancelSema": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B2-01: CancelSema(-1) restores the create-time initial count)",
+            "docs/HARDWARE_ORACLE.md (PSP-WAIT-001: sema-cancel-before-deadline-late-dispatch returns WAIT_CANCEL to the waiter)",
+        ],
+        "limitation": "the cited cells establish the -1 reset and a blocked waiter's WAIT_CANCEL outcome; other replacement counts, over-max refusal, optional waiter-count output, unknown IDs, pointer errors, and multiple-waiter ordering are not established by those citations",
+    },
+    "h_ClearEventFlag": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B1-01: ClearEventFlag(mask) keeps only the bits in mask)",
+        ],
+        "limitation": "the measured mask behavior matches the normal-object path; an unknown event-flag UID currently returns generic 0x80020000 instead of the measured unknown-event-flag code 0x8002019A, and error precedence is not covered",
+    },
+    "h_CreateFpl": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: fpl-create and valid pool status/allocation cells)",
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics: FPL blocks are blockSize apart)",
+        ],
+        "limitation": "the cited cells cover valid pool creation and block/status behavior; the handler converts zero block size/count to 16/1, a branch not established by those cited valid-pool cells, and allocation exhaustion plus partition, attribute, and option error precedence need separate evidence",
+    },
+    "h_CreateLwMutex": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B1-01 and PSP-B2-01: LwMutex creation workarea and one-waiter hand-off)",
+        ],
+        "limitation": "the cells cover recursive and non-recursive initialization, workarea fields, and one waiter hand-off; invalid workareas, unsupported attribute bits, negative counts, option data, and multi-waiter ordering are not established",
+    },
+    "h_CreateMutex": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-refer-unlocked creation and observed status fields)",
+        ],
+        "limitation": "the measured cell covers ordinary unlocked and initially-held mutex status; name and attribute validation, recursive edge cases, invalid arguments, and allocation exhaustion are not covered",
+    },
+    "h_CreateSema": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B1-01: CreateSema accepts init greater than max and max zero, and rejects invalid attributes)",
+            "docs/HARDWARE_ORACLE.md (PSP-B2-01: CancelSema restores the create-time initial count)",
+        ],
+        "limitation": "the cited cells cover the measured count and attribute rules plus initial-count retention; name-pointer behavior, object exhaustion, and invalid-argument precedence remain unmeasured",
+    },
+    "h_CreateVpl": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B1-01 and PSP-B2-01: valid VPL creation, accounting, allocation, and deletion)",
+        ],
+        "limitation": "valid pool creation and measured accounting are covered; the handler maps size zero to VPL_EXHAUSTED and ignores the partition argument, but the cited valid-pool cells do not establish those edge results, allocation exhaustion, or option behavior",
+    },
+    "h_DeleteFpl": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: valid fpl-delete and refer-after-delete cells)",
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B2-01: deleting an FPL with a waiter)",
+        ],
+        "limitation": "valid deletion and the delete-wait outcome are covered; an invalid or already-deleted UID currently returns success in the handler, while the cited delete cells use a valid pool, and multi-waiter teardown ordering is not measured",
+    },
+    "h_DeleteLwMutex": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B1-01: deleting a held LwMutex updates the workarea fields)",
+        ],
+        "limitation": "the cited cells cover valid deletion and the measured workarea fields; forged workareas, invalid-address precedence, stale UIDs, and multiple-waiter deletion behavior are not fully covered",
+    },
 }
 
 # handler name -> status mapping. Preserved for direct consumers and gate checks.
