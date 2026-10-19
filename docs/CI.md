@@ -36,6 +36,11 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 
 ### Draft pull requests
 
+The OpenSSF Scorecard workflow (`.github/workflows/scorecards.yml`) runs weekly and on pushes to
+`main`. It uploads SARIF to GitHub code scanning; publishing results to scorecard.dev is disabled.
+Triage findings through the usual issue process. The workflow does not change branch-protection
+settings.
+
 A draft pull request now receives the same path-applicable substantive gates as
 a ready pull request. No `Ready for review` transition or manual
 `workflow_dispatch` is needed to discover whether the exact head passes.
