@@ -3061,7 +3061,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "36821389f1f98ef8b016c2423cb2d9752d512f59d13d1c89c1e8743972bfb51a"
+      "sha256": "71fc825b75422683dfcc63245b0cb458b5e2757b1653fd0e5f6a9483a0e97092"
     },
     {
       "path": "src/core/nk_psp_ec.h",
@@ -6153,7 +6153,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "91cf22f20bed84afc267fb2c968b1b9f11f822ae7bb0ada1277f224ba4e36a02"
+      "sha256": "325551b95164016326b5fa9056376f8d273623a81dc4423b45c528e501187c06"
     },
     {
       "path": "tests/native/test_input_profile.c",
