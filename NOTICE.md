@@ -25,6 +25,19 @@ it is not legal advice or a conclusion that any combined distribution is cleared
   Technologies, Inc. BSD-3-Clause notice. Its verbatim text is in
   `THIRD_PARTY_LICENSES/FFMPEG_MIPS_FFT.txt` and is included in the generated
   native-package third-party notices bundle alongside the FFmpeg LGPL text.
+- **Optional system FFmpeg/libavcodec H.264 backend** — `H264_FFMPEG=1` enables
+  a dynamic dependency on host-provided `libavcodec` and `libavutil`; this route
+  does not vendor their source or bundle their shared libraries. FFmpeg's legal
+  guidance distinguishes LGPL builds from builds using `--enable-gpl` or
+  `--enable-nonfree`; a nonfree build is not redistributable. The project source
+  is GPL-3.0-or-later, and the GNU compatibility matrix permits GPL-2.0-or-later
+  code to be combined under GPL-3. Downstream packages that bundle FFmpeg must
+  retain the notices and corresponding-source materials required by that exact
+  build. The repository's Windows package route does not stage these optional
+  libraries, so an `H264_FFMPEG=1` player build is not a supported packaged
+  runtime. See [FFmpeg licensing guidance](https://www.ffmpeg.org/legal.html),
+  [GNU license compatibility](https://www.gnu.org/licenses/gpl-faq.en.html),
+  and the build notes in `docs/PLATFORM_PORTABILITY.md`.
 - **SDL3** — zlib; used by the optional host renderer/audio integration. The
   first public profile excludes the sal063-derived `src/rt/audio.c` backend and
   links `src/rt/audio_unavailable.c` instead.

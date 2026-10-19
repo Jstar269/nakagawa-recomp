@@ -296,8 +296,9 @@ endif
 LIBS       ?= -lSDL3 $(VULKAN_LIB_NAME) $(WIN_ONLY_LIBS) $(POSIX_RUNTIME_LIBS)
 
 # Optional portable H.264 backend (src/rt/h264_ffmpeg.c): H264_FFMPEG=1 links the system
-# libavcodec/libavutil dynamically (LGPL-2.1-or-later) and makes it the default decoder where
-# no platform decoder exists. Off by default; without it h264_null.c keeps failing closed.
+# libavcodec/libavutil dynamically and makes it the default decoder where no platform decoder
+# exists. FFmpeg's build configuration determines its license obligations; see NOTICE.md and
+# docs/PLATFORM_PORTABILITY.md. Off by default; without it h264_null.c keeps failing closed.
 ifeq ($(H264_FFMPEG),1)
 H264_FFMPEG_CFLAGS := -DSR_H264_FFMPEG $(shell pkg-config --cflags libavcodec libavutil)
 H264_FFMPEG_LIBS   := $(shell pkg-config --libs libavcodec libavutil)

@@ -359,12 +359,17 @@ static int ff_to_guest(const AVFrame *f, const FfPlanes *pl, const SrH264FrameTa
     uint64_t bpp = t->pixel_mode == 3 ? 4u : 2u;
     uint64_t row_bytes = (uint64_t)(uint32_t)w * bpp;
     uint64_t pitch = (uint64_t)(uint32_t)t->frame_width * bpp;
-    if (row_bytes > UINT32_MAX || pitch > UINT32_MAX) return 0;
+    uint64_t total_bytes = (uint64_t)(uint32_t)(h - 1) * pitch + row_bytes;
+    if (row_bytes == 0 || row_bytes > UINT32_MAX || pitch == 0 || pitch > UINT32_MAX ||
+        total_bytes > UINT32_MAX) return 0;
     for (int y = 0; y < h; y++) {
         uint64_t addr = (uint64_t)t->guest_buffer + (uint64_t)(uint32_t)y * pitch;
         if (addr + row_bytes > UINT64_C(0x100000000) ||
             !sr_guest_span_writable((uint32_t)addr, (uint32_t)row_bytes)) return 0;
     }
+    /* Preserve pending GE color/depth data before the CPU writes, then publish the exact
+     * committed span after conversion. sr_gpu_vram_dirty is only the post-write notification. */
+    sr_guest_vram_write_prepare_bytes(t->guest_buffer, (uint32_t)total_bytes);
     uint8_t *base = (uint8_t *)SR_HOST(t->guest_buffer);
     for (int y = 0; y < h; y++) {
         uint8_t *row = base + (size_t)y * (size_t)pitch;
@@ -386,9 +391,15 @@ static int ff_to_guest(const AVFrame *f, const FfPlanes *pl, const SrH264FrameTa
             memcpy(row + (size_t)x * 2u, &px16, sizeof px16);
         }
     }
-    extern void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes);
-    for (int y = 0; y < h; y++)
-        sr_gpu_vram_dirty(t->guest_buffer + (uint32_t)((uint64_t)(uint32_t)y * pitch), (uint32_t)row_bytes);
+    uint64_t full_bytes = (uint64_t)(uint32_t)h * pitch;
+    if (w == t->frame_width && full_bytes <= UINT32_MAX) {
+        sr_guest_vram_write_commit_bytes(t->guest_buffer, (uint32_t)full_bytes);
+    } else {
+        for (int y = 0; y < h; y++)
+            sr_guest_vram_write_commit_bytes(
+                t->guest_buffer + (uint32_t)((uint64_t)(uint32_t)y * pitch),
+                (uint32_t)row_bytes);
+    }
     if (info) {
         info->width = w;
         info->height = h;
