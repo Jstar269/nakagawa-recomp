@@ -756,6 +756,48 @@ class LiveManifestTests(unittest.TestCase):
         self.assertIn("8%", limitation)
         self.assertIn("precise rate", limitation)
 
+    def test_route_a_io_batch_eight_has_measured_cells_and_named_limits(self) -> None:
+        expected = {
+            0xB29DDF9C: (
+                "h_IoDopen",
+                [
+                    "src/rt/hle_thread_selftest.c:test_umd_io_console_model",
+                    "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-dopen-0000..0005)",
+                ],
+            ),
+            0x27EB27B8: (
+                "h_IoLseek",
+                [
+                    "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-lseek and io-append)",
+                ],
+            ),
+            0x109F50BC: (
+                "h_IoOpen",
+                [
+                    "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-open-create, io-write, io-read-verify, io-append, io-errors)",
+                    "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)",
+                    "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+                ],
+            ),
+        }
+        for nid, (handler, evidence) in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+                self.assertEqual(meta.HANDLER_EVIDENCE[handler], evidence)
+                self.assertIn("measur", meta.HANDLER_LIMITATIONS[handler].lower())
+
+        # PSP-IO-001's current source matrix has no Ioctl or Rename call. Keep
+        # these handlers unreviewed until a direct hardware cell covers them.
+        for nid, handler in ((0x63632449, "h_IoIoctl"), (0x779103A0, "h_IoRename")):
+            with self.subTest(nid=f"0x{nid:08x}"):
+                self.assertEqual(self.regs[nid]["handler"], handler)
+                self.assertEqual(self.regs[nid]["classification"], "dedicated")
+                self.assertEqual(self.regs[nid]["status"], "unreviewed")
+                self.assertNotIn(handler, meta.HANDLER_METADATA)
+
     def test_psmf_getters_are_dedicated_partial(self) -> None:
         # Both getters drive the media producer and a host codec backend now, so
         # they are dedicated handlers with an honest `partial` status rather than
