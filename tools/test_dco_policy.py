@@ -140,12 +140,32 @@ class TestGovernanceSurfaces(unittest.TestCase):
             "inventing a contributor identity, `Signed-off-by:`, DCO attestation, or source lineage;",
             "destructive history rewriting, shared-branch force-push, or deleting another agent's work;",
             "repository security/settings changes unless the mission names the exact setting;",
-            "firmware, flash, NAND, idStorage, PSPLink, physical PSP, or other hardware actions;",
+            "firmware, flash, NAND, or idStorage writes, and any other action that can permanently alter or damage a device;",
             "disclosing private inputs, routes, saves, captures, traces, keys, paths, or derived bytes.",
         )
         for rule in hard_stops:
             with self.subTest(hard_stop=rule):
                 self.assertIn(f"- {rule}", lines)
+
+        section_3_start = re.search(r"(?m)^## 3\.", content)
+        section_4_start = re.search(r"(?m)^## 4\.", content)
+        self.assertIsNotNone(section_3_start)
+        self.assertIsNotNone(section_4_start)
+        section_3 = " ".join(content[section_3_start.start() : section_4_start.start()].split())
+        standing_authorization = (
+            "**Standing hardware authorization.** PSPLink sessions and other non-destructive "
+            "physical-PSP actions (loading and running probe modules, USB attach/reset, soft and "
+            "PC-triggered resets, reading device state, writing Memory Stick files such as plugin "
+            "configuration after backing them up) do not need per-turn authorization while a standing "
+            "maintainer authorization is recorded in the private workspace and the run follows the "
+            "hardware-lock protocol (one holder at a time, session-bound lock, evidence kept private, "
+            "lock released at the end). The maintainer can revoke it at any time by saying so; agents "
+            "must then return to per-turn authorization. A standing authorization never covers the "
+            "destructive writes listed above, tags, releases, credentials, or disclosure of private "
+            "inputs. Physical steps that need a person (power cycles, media swaps, cable changes) are "
+            "requested from the maintainer, never simulated or assumed."
+        )
+        self.assertIn(standing_authorization, section_3)
 
         section_7_start = re.search(r"(?m)^## 7\.", content)
         section_8_start = re.search(r"(?m)^## 8\.", content)
