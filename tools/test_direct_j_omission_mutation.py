@@ -10,8 +10,12 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
+
+try:
+    import scratch_dir
+except ModuleNotFoundError:
+    from tools import scratch_dir
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -81,6 +85,11 @@ void sr_raw_syscall(CpuState *s, uint32_t code, uint32_t pc);
 void sr_hle_call(CpuState *s, uint32_t nid);
 void sr_syscall(CpuState *s, uint32_t nid);
 void sr_unimplemented(uint32_t addr, const char *reason);
+typedef void (*TestBodyFn)(CpuState *);
+void sr_tail_record(CpuState *s, uint32_t target, TestBodyFn fn,
+                    uint32_t restore_sp, uint32_t owes_restore);
+void sr_tail_drain(CpuState *s);
+#define SR_TAIL_DRAIN(s) sr_tail_drain(s)
 #endif
 """,
         encoding="ascii",
@@ -114,11 +123,34 @@ void dispatch_call(CpuState *s, uint32_t actual, uint32_t resume_pc) {{
     (void)resume_pc;
     dispatch_target(s, actual);
 }}
+/* Stand-in for the #855 TAIL protocol (src/rt/recomp.h, guest_interp.c). */
+static struct {{ TestBodyFn fn; CpuState *state; uint32_t target, restore_sp; int pending, owes; }} test_tail;
+void sr_tail_record(CpuState *s, uint32_t target, TestBodyFn fn,
+                    uint32_t restore_sp, uint32_t owes_restore) {{
+    if (test_tail.pending) abort();
+    test_tail.fn = fn; test_tail.state = s; test_tail.target = target;
+    test_tail.restore_sp = restore_sp; test_tail.owes = owes_restore != 0u;
+    test_tail.pending = 1;
+}}
+void sr_tail_drain(CpuState *s) {{
+    uint32_t chain_sp = 0u;
+    int restores = 0;
+    while (test_tail.pending) {{
+        TestBodyFn fn = test_tail.fn;
+        uint32_t target = test_tail.target;
+        if (test_tail.state != s) abort();
+        if (test_tail.owes && !restores) {{ chain_sp = test_tail.restore_sp; restores = 1; }}
+        test_tail.pending = 0;
+        if (fn) fn(s); else dispatch(s, target);
+    }}
+    if (restores) s->r[29] = chain_sp;
+}}
 
 int main(void) {{
     CpuState state = {{0}};
     state.r[31] = 0x12345678u;
     f_{owner:08x}(&state);
+    SR_TAIL_DRAIN(&state);
     printf("dispatch_hits=%d v0=0x%08x v1=0x%08x\\n",
            dispatch_hits, state.r[2], state.r[3]);
     return dispatch_hits == 1 && state.r[2] == 0x22u && state.r[3] == 0x55u ? 0 : 1;
@@ -183,7 +215,7 @@ class DirectJOmissionMutationTests(unittest.TestCase):
         mutant = original.replace(anchor, "        owner = resume_owners.get(target_pc)", 1)
         self.assertNotEqual(mutant, original)
 
-        with tempfile.TemporaryDirectory(prefix="direct_j_omission_mut_") as tmp:
+        with scratch_dir.TemporaryDirectory(prefix="direct_j_omission_mut_") as tmp:
             root = Path(tmp)
             pristine_dir = root / "pristine"
             mutant_dir = root / "mutant"

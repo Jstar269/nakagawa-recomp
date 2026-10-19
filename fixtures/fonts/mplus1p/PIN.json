@@ -1,0 +1,22 @@
+{
+  "schema": "font-pin/v1",
+  "family": "M PLUS 1p",
+  "file": "MPLUS1p-Regular.ttf",
+  "sha256": "2f294ad496432b1608f070d310e3aa2adcf1de4af429f4901df97ec4bd361ed1",
+  "size_bytes": 1758688,
+  "license": {
+    "spdx": "OFL-1.1",
+    "copyright": "Copyright 2016 The M+ Project Authors.",
+    "license_text": "OFL.txt",
+    "license_text_sha256": "9606aafb46de3f65c701d2ce5f2377b224b1355d06ada6171951a957e4d48278",
+    "upstream_license_text_sha256": "da15da6b1496d4de18f97e2ad1b722ef8a1c121149c2c93b2cf7eac6ac27b35c",
+    "upstream_license_text_url": "https://raw.githubusercontent.com/google/fonts/d714b17ce2379f06daf6295617f961df605dccb5/ofl/mplus1p/OFL.txt",
+    "reserved_font_names": []
+  },
+  "source": {
+    "url": "https://raw.githubusercontent.com/google/fonts/d714b17ce2379f06daf6295617f961df605dccb5/ofl/mplus1p/MPLUS1p-Regular.ttf",
+    "repository": "https://github.com/google/fonts",
+    "path": "ofl/mplus1p/MPLUS1p-Regular.ttf",
+    "retrieved": "2026-10-15"
+  }
+}

@@ -221,6 +221,19 @@ class VblankLedgerTest(unittest.TestCase):
     def test_source_rate_is_the_rational_one(self) -> None:
         self.assertAlmostEqual(SOURCE_HZ, 59.94005994, places=6)
 
+    def test_consecutive_intervals_pass_rate_and_identity(self) -> None:
+        """Two consecutive 60 Hz one-second intervals pass the rate and identity checks."""
+        perf = perf_rows([60, 60])
+        log = stderr_log(owed=120, coalesced=0, delivered=120, dropped=0, in_flight=0, masked=0)
+        code, out = self.run_tool(perf, log)
+        self.assertEqual(code, 0, out)
+        self.assertIn("VBLANK_CHECK: rate PASS", out)
+        self.assertIn("VBLANK_CHECK: identity PASS", out)
+
+        cadence = vblank_ledger.measure_cadence(vblank_ledger.read_perf(self.dir / "perf.csv"))
+        assert cadence is not None
+        self.assertEqual(cadence.delivered, 120)
+
 
 class LedgerReportShapeTest(unittest.TestCase):
     def test_every_check_line_names_a_status_and_a_number(self) -> None:

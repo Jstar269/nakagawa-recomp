@@ -174,6 +174,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `ttf2pgf.py` | Deterministic OpenType/TTF to PGF converter for pinned public fixtures; behaviour contract and independence record in `docs/cleanroom/PGF_CONVERTER_SPEC.md` (issue #313). |
 | `evidence_model.py` | Fail-closed evidence grading and revision identity primitives. |
 | `waits_census.py` | Regenerate the interrupt/dispatch waits-matrix registration census. |
+| `recomp_helper_inventory.py` | Regenerate and drift-check the `recomp.c`/`recomp.h` helper inventory (reach and provenance class per helper; #346). |
 | `vblank_ledger.py` | Judge one run's VBLANK delivery against the display source that owed it. |
 | `boot_gate.py` | Summarize machine-readable native boot milestones from a runtime log. |
 | `soak_audit.py` | Judge one soak run from the telemetry the runtime already writes. |
@@ -255,6 +256,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `contrib_check.py` | Run only the local gates that apply to the files you changed. |
 | `contrib_refresh.py` | Reproduce the two public provenance controls for the changed paths that already have public entries, from the committed public ledger alone; refuses new, removed, unresolved or policy-changing paths. |
 | `discovery_contract.py` | Inventory and verify the repository's unittest discovery contract. |
+| `scratch_dir.py` | `TemporaryDirectory` for tests that run a program from inside it: cleanup waits out a short-lived Windows file lock for a bounded time, then raises the real error. |
 | `format_portability_check.py` | Compile the portable core against a 32-bit newlib-shaped `stdint.h` shim with `-Werror=format`, so a fixed-width value printed with a plain `%u`/`%x`/`%d` fails on every host. |
 | `ci_paths.py` | Classify a change for the path-gated public CI workflow. |
 | `ci_required.py` | Evaluate the stable aggregate status for the path-gated CI workflow. |
@@ -485,6 +487,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_telemetry_export_security.py` | Telemetry export must not leak private diagnostic data. |
 | `test_visual_oracle.py` | Visual-oracle runner guarantees. |
 | `test_waits_census.py` | Tests for the waits-matrix census generator. |
+| `test_recomp_helper_inventory.py` | Tests for the recomp helper inventory generator and its drift check. |
 | `test_xb_probe.py` | Synthetic, retail-free coverage for the direct archive probe. |
 
 ### Regression tests: publication, provenance and supply chain
@@ -540,6 +543,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_public_ci_wiring.py` | Regression checks for public and clean-checkout CI wiring. |
 | `test_readme_images.py` | Deterministic checks on the published showcase screenshots. |
 | `test_relocated_clone.py` | Contributor quick check in a checkout whose own path contains spaces. |
+| `test_scratch_dir.py` | The scratch directory retries only Windows lock errors, within its bound; on Windows a real held file reproduces the WinError 32 cleanup failure. |
 | `test_text_write_newlines.py` | A tool that emits a tracked text file must pin its line endings. |
 | `test_tree_lint.py` | Offline deterministic tests for `tools/tree_lint.py`. |
 | `test_validate_assets.py` | Synthetic, retail-free hostile coverage for the asset validator. |

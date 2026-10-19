@@ -312,8 +312,15 @@ class SimulatedPsplinkTransport:
         lock_held_checks: int | None = None,
         lock_refusal_status: str = "HARDWARE_LOCK_NOT_HELD",
         unfinished_cases: set[str] | None = None,
+        host0_driver_thread: bool = False,
+        fail_host0_warmup: bool = False,
     ):
         self.unfinished_cases = unfinished_cases or set()
+        # Synthetic model of the PSPLink host0 driver thread: created by the first
+        # host0 I/O after a shell start and kept until `reset`.
+        self.host0_driver_thread = host0_driver_thread
+        self.fail_host0_warmup = fail_host0_warmup
+        self._host0_driver_alive = False
         self.start_error = start_error
         self.lock_held_checks = lock_held_checks
         self.lock_refusal_status = lock_refusal_status
@@ -365,8 +372,14 @@ class SimulatedPsplinkTransport:
             2: ("0x88000000", 53687091, 33554432, 25165824),
         }
 
+    def _touch_host0_driver(self) -> None:
+        if self.host0_driver_thread:
+            self._host0_driver_alive = True
+
     def _snapshot_threads(self) -> str:
         threads = set(self._baseline_threads)
+        if self._host0_driver_alive:
+            threads.add(("0x00000004", "host0-driver"))
         if self._probe_loaded:
             threads.add(self._probe_thread)
         rows = "".join(
@@ -494,11 +507,17 @@ class SimulatedPsplinkTransport:
             return 0, "Version: 6.6.1 (0x06060110)\n", "", "PROCESS_EXITED"
         if command == "exprint":
             return 0, "Synthetic exception query is unqualified\n", "", "PROCESS_EXITED"
+        if command == "ls host0:/":
+            if self.fail_host0_warmup:
+                return None, "", "", "TIMEOUT"
+            self._touch_host0_driver()
+            return 0, "", "", "PROCESS_EXITED"
         if command.startswith("ldstart host0:/"):
             case_id = Path(command).name.removesuffix(".prx")
             self.current_case = case_id
             self.case_started = True
             self._probe_loaded = True
+            self._touch_host0_driver()
             if (
                 self.host0_root is not None
                 and case_id not in self.fail_host0_roundtrip_cases
@@ -593,6 +612,7 @@ class SimulatedPsplinkTransport:
             return None, "", "", "TIMEOUT"
         if command == "reset":
             self._probe_loaded = False
+            self._host0_driver_alive = False
             return self.reset_returncode, "Reset\n", "", "PROCESS_EXITED"
         raise AssertionError(f"unexpected PSPLINK command: {command}")
 
@@ -2194,9 +2214,11 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
                 binary = scratch / f"{case_id}.prx"
                 binary.write_bytes(b"synthetic PRX")
                 cases.append(CampaignCase(case_id, binary, 0.02))
+            # thlist calls per case: S0, baseline re-read, S1, S2. Call 7 is the
+            # model-profile S1 (case 1 uses 1-4, case 2 S0 and re-read use 5-6).
             transport = SimulatedPsplinkTransport(
                 fail_modstun_cases={"model-profile"},
-                fail_snapshot_call={"thlist": 5},
+                fail_snapshot_call={"thlist": 7},
             )
             transport.host0_root = scratch
             report = PsplinkCampaignRunner(
@@ -3072,13 +3094,16 @@ class HardwareRunnerProtocolTests(unittest.TestCase):
         for case_id, (test_id, contract) in _FIXED_CAMPAIGN_CASES.items():
             rows = []
             for row_id, out_count, statuses in contract:
-                status = sorted(statuses)[0]
+                # A complete stream: PASS where the contract allows it, with the
+                # completion result a PASS record carries.
+                status = "PASS" if "PASS" in statuses else sorted(statuses)[0]
+                row_result = "0x00000001" if status == "PASS" else "0x00000000"
                 fields = " ".join(
                     f"out{index}=0x{index + 1:08x}" for index in range(out_count)
                 )
                 rows.append(
                     f"NAKAGAWA_PSP_TEST schema=1 test_id={test_id} "
-                    f"case_id={row_id} status={status} result=0x00000000 {fields}\n"
+                    f"case_id={row_id} status={status} result={row_result} {fields}\n"
                 )
             stream = CAMPAIGN_META + "".join(rows)
             self.assertTrue(
@@ -4567,34 +4592,64 @@ class RealProbeContractTests(unittest.TestCase):
         with self.assertRaises(PspProtocolError):
             _parse_campaign_records("".join(regrouped), "display-wait-late")
 
-    def test_mutex_interrupt_trials_follow_their_recorded_interrupt_state(self):
+    @staticmethod
+    def _restate_superseded_verdicts(text: str) -> str:
+        """The archive's trial verdicts restated as the completion-only probe emits them.
+
+        Only the verdict words change: a completed trial is PASS with result 0x00000001.
+        Every recorded cell is kept as the probe wrote it."""
+        return text.replace(
+            " status=FAIL result=0x00000000 out0=", " status=PASS result=0x00000001 out0=")
+
+    @staticmethod
+    def _with_return_changed(text: str, trial: str, cell: str, value: str) -> str:
+        lines = text.split("\n")
+        for index, line in enumerate(lines):
+            if f"case_id=mutex-interrupt-context-{trial} " in line:
+                lines[index] = line.replace(f" {cell}=0x80020064", f" {cell}={value}", 1)
+        return "\n".join(lines)
+
+    def test_mutex_interrupt_trials_are_completion_only(self):
         text = _console_capture(self.MUTEX)
-        self.assertTrue(run_psplink_module._campaign_stream_complete(text, "mutex-interrupt-context"))
-        parsed = _parse_campaign_records(self._records(text), "mutex-interrupt-context")
+        # The archive was recorded under the superseded value rule: every trial reads FAIL with
+        # result 0 while its six returns are ILLEGAL_CONTEXT. Under the completion-only rule the
+        # same trials are complete, so only the verdict words are restated. Every recorded cell
+        # is kept as the probe wrote it.
+        self.assertEqual(self._records(text).count(" status=FAIL "), 20)
+        restated_text = self._restate_superseded_verdicts(text)
+        self.assertTrue(run_psplink_module._campaign_stream_complete(
+            restated_text, "mutex-interrupt-context"))
+        restated = self._records(restated_text)
+        parsed = _parse_campaign_records(restated, "mutex-interrupt-context")
         trials = [record for record in parsed.results if record.case_id.endswith(tuple(
             f"-t{index:02d}" for index in range(20)))]
         self.assertEqual(len(trials), 20)
         for record in trials:
-            values = dict(record.values)
-            # PSP-3000 / 6.6.1: every VBLANK handler trial saw interrupts enabled,
-            # so by the probe's design none counts; the mutex returns stay recorded.
-            self.assertEqual((record.status, values["out0"]), ("FAIL", "0x00000001"))
-            self.assertEqual(values["out1"], "0x80020064")
+            self.assertEqual(record.status, "PASS")
+        # No value expectations: a completed trial whose returned cells differ is still accepted.
+        _parse_campaign_records(
+            self._with_return_changed(restated, "t03", "out3", "0x800201c5"),
+            "mutex-interrupt-context")
+        # Completion and record order are checked.
         for forged in (
-            # A trial claiming to count while it recorded interrupts enabled.
-            self._records(text).replace(
-                "case_id=mutex-interrupt-context-t07 status=FAIL result=0x00000000",
-                "case_id=mutex-interrupt-context-t07 status=PASS result=0x00000001", 1),
-            # A trial that recorded interrupts disabled but was not counted.
-            self._records(text).replace(
-                "case_id=mutex-interrupt-context-t03 status=FAIL result=0x00000000 out0=0x00000001",
-                "case_id=mutex-interrupt-context-t03 status=FAIL result=0x00000000 out0=0x00000000",
-                1),
+            # A trial that did not complete.
+            restated.replace(
+                "case_id=mutex-interrupt-context-t07 status=PASS result=0x00000001",
+                "case_id=mutex-interrupt-context-t07 status=FAIL result=0x00000000", 1),
+            # A trial marked PASS without its completion result.
+            restated.replace(
+                "case_id=mutex-interrupt-context-t07 status=PASS result=0x00000001",
+                "case_id=mutex-interrupt-context-t07 status=PASS result=0x00000000", 1),
         ):
             with self.assertRaises(PspProtocolError):
                 _parse_campaign_records(forged, "mutex-interrupt-context")
+        # The archive as recorded is refused: its trials are FAIL, not completed PASS trials.
+        self.assertFalse(run_psplink_module._campaign_stream_complete(
+            text, "mutex-interrupt-context"))
+        with self.assertRaises(PspProtocolError):
+            _parse_campaign_records(self._records(text), "mutex-interrupt-context")
 
-    def test_mutex_interrupt_capture_is_qualified_but_not_eligible(self):
+    def test_superseded_mutex_capture_is_refused_by_the_current_checker(self):
         fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
         with tempfile.TemporaryDirectory(prefix="capture-mutex-", dir=fixture_dir) as name:
             runner, _transport, cases = ConsoleCaptureRegressionTests()._campaign(
@@ -4607,13 +4662,17 @@ class RealProbeContractTests(unittest.TestCase):
         envelope = report["envelopes"][1]
         self.assertIsNone(report["terminal_reason"])
         self.assertEqual(envelope["TEARDOWN_CHECK"]["status"], "PASS")
-        self.assertFalse(any(
+        # The archive was recorded under the superseded pass rule. The current checker refuses
+        # its FAIL verdicts, so strict protocol validation is a qualification blocker.
+        self.assertTrue(any(
             "strict protocol validation" in blocker
             for blocker in envelope["QUALIFICATION_BLOCKERS"]
         ))
         self.assertFalse(envelope["ACCEPTANCE_ELIGIBLE"])
-        self.assertIn("one or more scalar result records did not pass",
-                      envelope["ACCEPTANCE_BLOCKERS"])
+        self.assertTrue(any(
+            "is not a completed trial" in blocker
+            for blocker in envelope["ACCEPTANCE_BLOCKERS"]
+        ), envelope["ACCEPTANCE_BLOCKERS"])
 
 
 class Host0RemotePathTests(unittest.TestCase):
@@ -4943,6 +5002,53 @@ class PostUnloadSettleTests(unittest.TestCase):
         self.assertEqual(runner._settle_after_unload(), ("NOT_RUN", 0))
         self.assertEqual(stopped.commands, [])
         self.assertEqual(runner.recovery_events, [])
+
+
+class Host0DriverWarmupTests(unittest.TestCase):
+    """The host0 driver thread belongs to the S0 baseline, not to the teardown diff."""
+
+    def _run_transport_write(self, **transport_options):
+        fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
+        with tempfile.TemporaryDirectory(prefix="runner-host0-warmup-", dir=fixture_dir) as scratch_name:
+            scratch = Path(scratch_name)
+            binary = scratch / "transport-write.prx"
+            binary.write_bytes(b"synthetic PRX")
+            transport = SimulatedPsplinkTransport(**transport_options)
+            transport.host0_root = scratch
+            report = PsplinkCampaignRunner(
+                transport,
+                console_model="PSP-3000-04g",
+                source_commit=SOURCE_COMMIT,
+                model_code=3,
+            ).run([CampaignCase("transport-write", binary, 1.0)])
+        return report, [command for command, _timeout in transport.commands]
+
+    def test_host0_driver_thread_created_by_first_host0_io_is_in_the_baseline(self):
+        report, commands = self._run_transport_write(host0_driver_thread=True)
+        teardown = report["envelopes"][0]["TEARDOWN_CHECK"]
+        self.assertEqual(teardown["issues"], [])
+        self.assertEqual(teardown["status"], "PASS")
+        self.assertEqual(teardown["s0_thread_count"], 3)
+        self.assertEqual(teardown["s2_thread_count"], 3)
+        ldstart = next(index for index, command in enumerate(commands)
+                       if command.startswith("ldstart host0:/"))
+        self.assertLess(commands.index("ls host0:/"), commands.index("thlist"))
+        self.assertLess(commands.index("ls host0:/"), ldstart)
+
+    def test_host0_driver_absent_on_this_device_still_passes(self):
+        report, _commands = self._run_transport_write(host0_driver_thread=False)
+        teardown = report["envelopes"][0]["TEARDOWN_CHECK"]
+        self.assertEqual(teardown["status"], "PASS")
+        self.assertEqual(teardown["s0_thread_count"], 2)
+
+    def test_failed_host0_warmup_blocks_before_any_probe_launch(self):
+        report, commands = self._run_transport_write(fail_host0_warmup=True)
+        envelope = report["envelopes"][0]
+        self.assertEqual(report["terminal_reason"], "TEARDOWN_S0_SNAPSHOT_FAILED")
+        self.assertEqual(envelope["TEARDOWN_CHECK"]["status"], "BLOCKED")
+        self.assertEqual(envelope["TEARDOWN_CHECK"]["stage"], "S0")
+        self.assertIn("ls host0:/", commands)
+        self.assertFalse([command for command in commands if command.startswith("ldstart")])
 
 
 if __name__ == "__main__":

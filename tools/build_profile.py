@@ -103,6 +103,31 @@ def profile_payload(
     return payload
 
 
+def profile_hashes(
+    profiles: list[tuple[str, list[str]]], files: list[str] | None = None
+) -> list[str]:
+    """Hash several profiles while reusing their common compiler and file identities."""
+    compiler_identities: dict[str, dict[str, str]] = {}
+    file_identities: dict[str, dict[str, str]] = {}
+    digests: list[str] = []
+    for compiler, entries in profiles:
+        if compiler not in compiler_identities:
+            compiler_identities[compiler] = compiler_identity(compiler)
+        payload = {
+            "compiler": compiler_identities[compiler],
+            "entries": entries,
+        }
+        if files:
+            identities = []
+            for path in files:
+                if path not in file_identities:
+                    file_identities[path] = file_content_identity(path)
+                identities.append(file_identities[path])
+            payload["files"] = identities
+        digests.append(profile_hash(payload))
+    return digests
+
+
 def profile_hash(payload: dict) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:20]
@@ -358,6 +383,17 @@ def parse_args() -> argparse.Namespace:
                                       "make writes them with $(file ...) so a long BUILD_ROOT "
                                       "cannot push the command past the shell's line limit")
             command.add_argument("--invalidate-glob", action="append", default=[])
+    profiles = subparsers.add_parser(
+        "hash-profiles",
+        help="hash the Makefile's codegen, runtime, and recomp profiles together",
+    )
+    profiles.add_argument("--codegen-compiler", required=True)
+    profiles.add_argument("--codegen-entries-file", type=Path, required=True)
+    profiles.add_argument("--runtime-compiler", required=True)
+    profiles.add_argument("--runtime-entries-file", type=Path, required=True)
+    profiles.add_argument("--recomp-compiler", required=True)
+    profiles.add_argument("--recomp-entry", action="append", required=True)
+    profiles.add_argument("--file", action="append", default=[], metavar="PATH")
     stamp = subparsers.add_parser("stamp")
     stamp.add_argument("--output", type=Path, required=True)
     stamp.add_argument("--stale-glob", required=True)
@@ -393,6 +429,23 @@ def _invalidate_paths(args: argparse.Namespace) -> list[Path]:
 
 def main() -> int:
     args = parse_args()
+    if args.action == "hash-profiles":
+        try:
+            codegen_entries = read_entries_file(args.codegen_entries_file)
+            runtime_entries = read_entries_file(args.runtime_entries_file)
+        except BuildInputError as exc:
+            sys.stderr.write(f"build_profile: {exc}\n")
+            return 2
+        for digest in profile_hashes(
+            [
+                (args.codegen_compiler, codegen_entries),
+                (args.runtime_compiler, runtime_entries),
+                (args.recomp_compiler, args.recomp_entry),
+            ],
+            args.file,
+        ):
+            print(digest)
+        return 0
     if args.action == "stamp-inputs":
         for var in args.optional_env + args.list_env:
             if var not in args.env:

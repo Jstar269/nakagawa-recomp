@@ -120,8 +120,8 @@ proposals. Each claim covers only the exact fixture named:
     destination register is unchanged.
   - Cause bit 28 read as 1 in all three runs, so treat the CE field as
     undefined for non-coprocessor-unusable exceptions.
-- **Non-finite vertex position and lit colour in the GE** (issue #69; no run
-  yet): what the PSP GE rasterizes for a vertex whose clip position, projected
+- **Non-finite vertex position and lit colour in the GE** (issue #69; scalar words
+  measured, rasterization not): what the PSP GE rasterizes for a vertex whose clip position, projected
   screen position or lit colour channel is NaN or infinite is **NOT_MEASURED**.
   No public PSP documentation states a result, and PPSSPP's software GE was not
   usable as an oracle for the cell either (its screen acceptance and its
@@ -137,17 +137,26 @@ proposals. Each claim covers only the exact fixture named:
   `CASE=ge-nan` now emits `PSP-GE-001` raw-word records for qNaN, positive and
   negative infinity, negative zero, and the minimum positive denormal. It also
   hashes the PSP framebuffer after direct screen-coordinate, clip-position,
-  and lit-normal triangles. This probe is `NOT_RUN` pending the physical
-  campaign, does not repeat the already measured VASIN edge words, and has not
-  yet established a hardware rasterization rule; this GE boundary remains in
-  the works under #69. The out-of-domain arc-sine argument that can produce a
+  and lit-normal triangles. It ran on a PSP-3000 on 2026-10-10 (`f6ccfb33`) and
+  again on 2026-10-15 (`f2d6c91a`) with identical records, and the measured
+  index publishes its words. It does not repeat the already measured VASIN
+  edge words, and its framebuffer hashes have not established a hardware
+  rasterization rule; this GE boundary remains in the works under #69. The out-of-domain arc-sine argument that can produce a
   non-finite bone matrix remains a separate cell.
 - **Audio query and blocking-output semantics** (issue #311; `CASE=audio-query`):
-  `NOT_RUN`. The probe captures both channel rest-length spellings, two bounded
-  channel output blocks, one silent Output2 block, rest-sample queries, raw
-  returns, and elapsed microseconds. Each successfully reserved channel is
-  released. No audio timing or return rule is hardware-measured by this build;
-  the remaining #311 audio contract is in the works.
+  MEASURED in the index row above (2026-10-10, PSP-3000, 6.61 / ARK-5.1.0). The
+  probe captures both channel rest-length spellings, two bounded channel output
+  blocks, one silent Output2 block, rest-sample queries, raw returns, and elapsed
+  microseconds, with no acoustic claims. The probe drains Output2 before its
+  release, so that index row does not show the busy return. The Output2 release
+  rule comes from the 2026-10-01 comment on issue #311 (PSP-3001, firmware 6.6.1,
+  PSPLink 3.2.1; raw records private): releasing while samples are queued returns
+  `0x80268002` and leaves Output2 reserved, a following `sceAudioSRCChReserve`
+  also fails with `0x80268002`, draining `sceAudioOutput2GetRestSample` to 0
+  first lets the release succeed, and `sceAudioChRelease` succeeds right after
+  blocking output. `h_AudioOutput2Release` in `src/rt/hle.c` implements the
+  release rule. The `sceAudioSRC*` handlers (`h_AudioSRCChReserve`, `h_AudioSRCChRelease` and
+  `h_AudioSRCOutputBlocking`, #339) share its slot and implement the 2026-10-15 SRC measurements.
 - **DMAC alignment and overlap cells** (issue #303; `CASE=dma-cells`):
   `NOT_RUN`. The source-owned buffer matrix covers both APIs, unaligned source
   and destination residues, paired unaligned addresses, and overlap in both
@@ -546,26 +555,1135 @@ One console is one data point; see §11. Nothing here closes issue #70
   | `PSP-HLE-SYSPARAM-001` | (none) | `int-id-2`, `int-id-3`, `int-id-4`, `int-id-5`, `int-id-6`, `int-id-7`, `int-id-8`, `int-id-9`, `int-unknown-0`, `int-unknown-10`, `int-unknown-64`, `string-id-1-len-0x80`, `string-id-1-len-0x04` | CAPTURED only (single-case run `hle-sysparam`, 2026-10-10; not acceptance-eligible: post-unload shell qualification and host0 round trip failed) |
   | `PSP-HLE-GE-EDRAM-001` | (none) | `edram-size`, `edram-addr`, `edram-width-query-initial`, `edram-width-set-512`, `edram-width-set-1024`, `edram-width-set-2048`, `edram-width-set-4096`, `edram-width-restore`, `edram-width-query-final` | CAPTURED only (single-case run `hle-ge-edram`, 2026-10-10; not acceptance-eligible: post-unload shell qualification and host0 round trip failed) |
 
+- **PSP-3000 CPU-semantics runs on commit `e45e667b` (2026-10-15)**: three campaign runs on
+  the qualified PSP-3000 / 6.61 / PSPLink 3.2.1 route, each the host0 `transport-write`
+  preflight followed by one case (`fpu-cc` at 00:49Z, `vfpu-compare` at 00:59Z, `llsc-link`
+  at 01:17Z), all built from `e45e667b`, the commit that adds the `fpu-cc` probe (it is in
+  this branch's history). Every envelope is acceptance-eligible: evidence class
+  `PSP_HARDWARE`, source commit binding `MATCH` on a clean committed tree, teardown check
+  `PASS`, every record `PASS`. Device identity is `PARTIAL` (an operator-recorded model label,
+  no serial or MAC) and the PRX digest is the host-side `PLACEHOLDER` binding described under
+  "Device build identity" in the [fixture runbook](../fixtures/psp_oracle/README.md). Raw
+  envelopes stay in the private campaign directory. The records hold only probe-defined words,
+  so those words are published here. Each row cites exactly the cells it names.
+
+  | Evidence id | Cells cited | Not cited | Outcome (campaign case) |
+  | --- | --- | --- | --- |
+  | `PSP-TRANSPORT-001` | `host0-write-readback` | (none) | re-run three times as the preflight; same words as the 2026-10-10 citation (`transport-write`) |
+  | `PSP-FPU-CC-001` | `fpu-cc-fcr31-bits`, `fpu-cc0-ceq`, `fpu-cc0-branch`, `fpu-cc1-ceq`, `fpu-cc1-branch`, `fpu-cc2-ceq`, `fpu-cc2-branch`, `fpu-cc3-ceq`, `fpu-cc3-branch`, `fpu-cc4-ceq`, `fpu-cc4-branch`, `fpu-cc5-ceq`, `fpu-cc5-branch`, `fpu-cc6-ceq`, `fpu-cc6-branch`, `fpu-cc7-ceq`, `fpu-cc7-branch`, `fpu-cc-done` | (none) | MEASURED (`fpu-cc`) |
+  | `PSP-VFPU-CMP-001` | `vscmp-lt`, `vscmp-eq`, `vscmp-gt`, `vscmp-zero-pos-neg`, `vscmp-zero-neg-pos`, `vscmp-nan-left-quiet`, `vscmp-nan-right-quiet`, `vscmp-nan-left-signal`, `vscmp-nan-right-signal`, `vscmp-nan-left-negative`, `vscmp-inf-pos-neg`, `vscmp-inf-neg-pos`, `vscmp-inf-pos-pos`, `vscmp-inf-neg-neg`, `vscmp-inf-pos-finite`, `vsge-lt`, `vsge-eq`, `vsge-gt`, `vsge-zero-pos-neg`, `vsge-zero-neg-pos`, `vsge-nan-left-quiet`, `vsge-nan-right-quiet`, `vsge-nan-left-signal`, `vsge-nan-right-signal`, `vsge-nan-left-negative`, `vsge-inf-pos-neg`, `vsge-inf-neg-pos`, `vsge-inf-pos-pos`, `vsge-inf-neg-neg`, `vsge-inf-pos-finite`, `vslt-lt`, `vslt-eq`, `vslt-gt`, `vslt-zero-pos-neg`, `vslt-zero-neg-pos`, `vslt-nan-left-quiet`, `vslt-nan-right-quiet`, `vslt-nan-left-signal`, `vslt-nan-right-signal`, `vslt-nan-left-negative`, `vslt-inf-pos-neg`, `vslt-inf-neg-pos`, `vslt-inf-pos-pos`, `vslt-inf-neg-neg`, `vslt-inf-pos-finite`, `vfpu-compare-done` | (none) | MEASURED (`vfpu-compare`) |
+  | `PSP-LLSC-001` | `llsc-control`, `llsc-second-sc`, `llsc-other-address`, `llsc-link-done` | (none) | MEASURED (`llsc-link`) |
+
+  What the cells establish, for these exact words only:
+  - *COP1 condition codes (`PSP-FPU-CC-001`).* The FPU implements FCC0 only. A `ctc1` of
+    `0xFE800000` (FCC0 to FCC7 under MIPS IV) reads back `0x00800000`, so FCR31 bits 25..31
+    are not stored. For each condition code 0..7, `c.eq.s` on equal operands from FCR31 = 0
+    leaves `0x00800000`, and on unequal operands from `0xFE800000` leaves `0x00000000`. `bc1t`
+    with each code is taken under FCC0 and not taken with no flag, `bc1f` the reverse, and
+    for codes 1..7 `bc1t` is not taken after a `ctc1` of that code's own MIPS IV bit, because
+    the bit was dropped. The probe wrote no other FCR31 bit, so nothing is claimed about bit
+    24 (FS) or the cause, enable and flag fields. The project already translated codes 1..7
+    as FCC0 in `tools/codegen.py` and `src/ref/interp.cpp`; refusing a nonzero code, as
+    discussed for PR #934, would have rejected encodings the console executes. `ctc1` stored
+    the whole guest word, so `cfc1` returned bits 25..31; it now drops them
+    (`SR_FCR31_CTC1_UNWRITABLE` in `src/rt/fp_convert.h`).
+  - *VFPU set-compares (`PSP-VFPU-CMP-001`, issue #326).* Raw result words for
+    `vscmp.s`/`vsge.s`/`vslt.s S002, S000, S001`:
+
+    | Pair (S000, S001) | `vscmp.s` | `vsge.s` | `vslt.s` |
+    | --- | --- | --- | --- |
+    | `lt` (`0x3FC00000`, `0x40200000`) | `0xBF800000` | `0x00000000` | `0x3F800000` |
+    | `eq` (`0x3FC00000`, `0x3FC00000`) | `0x00000000` | `0x3F800000` | `0x00000000` |
+    | `gt` (`0x40200000`, `0x3FC00000`) | `0x3F800000` | `0x3F800000` | `0x00000000` |
+    | `zero-pos-neg` (`0x00000000`, `0x80000000`) | `0x00000000` | `0x3F800000` | `0x00000000` |
+    | `zero-neg-pos` (`0x80000000`, `0x00000000`) | `0x00000000` | `0x3F800000` | `0x00000000` |
+    | `nan-left-quiet` (`0x7FC00000`, `0x3FC00000`) | `0x3F800000` | `0x00000000` | `0x00000000` |
+    | `nan-right-quiet` (`0x3FC00000`, `0x7FC00000`) | `0xBF800000` | `0x00000000` | `0x00000000` |
+    | `nan-left-signal` (`0x7F800001`, `0x3FC00000`) | `0x3F800000` | `0x00000000` | `0x00000000` |
+    | `nan-right-signal` (`0x3FC00000`, `0x7F800001`) | `0xBF800000` | `0x00000000` | `0x00000000` |
+    | `nan-left-negative` (`0xFFC00000`, `0x3FC00000`) | `0xBF800000` | `0x00000000` | `0x00000000` |
+    | `inf-pos-neg` (`0x7F800000`, `0xFF800000`) | `0x3F800000` | `0x3F800000` | `0x00000000` |
+    | `inf-neg-pos` (`0xFF800000`, `0x7F800000`) | `0xBF800000` | `0x00000000` | `0x3F800000` |
+    | `inf-pos-pos` (`0x7F800000`, `0x7F800000`) | `0x00000000` | `0x3F800000` | `0x00000000` |
+    | `inf-neg-neg` (`0xFF800000`, `0xFF800000`) | `0x00000000` | `0x3F800000` | `0x00000000` |
+    | `inf-pos-finite` (`0x7F800000`, `0x3FC00000`) | `0x3F800000` | `0x3F800000` | `0x00000000` |
+
+    Signed zeros compare equal and infinities order normally. `vsge.s` and `vslt.s` treat a
+    NaN as unordered and write 0.0. `vscmp.s` does not: it orders a NaN by sign and magnitude,
+    so a NaN with a clear sign bit is above 1.5 and one with a set sign bit below, quiet or
+    signalling alike. Forty words matched the project's model; the five `vscmp` NaN words were
+    0.0 in both the generated code and `sr_vfpu_interp` and are now the measured words.
+    A pair of NaNs, a NaN against an infinity and a negative NaN on the right are not
+    measured; the runtime extends the same sign-and-magnitude order to them.
+  - *LL/SC link windows (`PSP-LLSC-001`).* With `A = 0x11111111` and `B = 0x44444444`
+    before each window: `ll A; sc A` loads `0x11111111`, reports 1 and stores; `ll A; sc A; sc
+    A` reports 1 for both `sc` and leaves the second value (`0x33333333`) at A, so a
+    successful `sc` does not clear the link; `ll A; sc B` reports 1 and stores
+    `0x55555555` at B with A unchanged, so `sc` does not compare its address with the `ll`
+    address. Interrupts were suspended around each window. All three match the runtime's model
+    (`docs/ARCHITECTURE.md`, "LL/SC link state"); nothing was changed.
+
+- **PSP-3000 single-case runs on public commit `e45e667b` (2026-10-15)**: firmware 6.6.1, PSPLink 3.2.1, operator-declared model PSP-3000. Each case launched one PRX on a fresh boot after the `transport-write` preflight, and the preflight passed on every launch (PSP-TRANSPORT-001 is not re-cited). A row cites only the cells named in it, and cells not named here are not measured by this entry. This entry supersedes the 2026-10-10 single-case HLE captures for the cells it names. Raw envelopes, host0 logs, user-configuration values and console identifiers stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-15) |
+  | --- | --- | --- | --- |
+  | `PSP-SYSTEM-001` | `model-profile`: raw `kuKernelGetModel` ordinal 3, `sceKernelDevkitVersion` word 0x06060110, CPU clock 222 MHz (APIs `kuKernelGetModel`, `sceKernelDevkitVersion`, `scePowerGetCpuClockFrequencyInt`) | The physical model label: operator-declared, and the ordinal's PSP-3000 reading under the PSPSDK ordinal rule is recorded as agreement, not as a device reading (#356) | MEASURED: 1 record, PASS |
+  | `PSP-KERNEL-001` | `mbx-delete-wait`: `DeleteMbx` with one waiter returned 0. The waiter's `ReceiveMbx` returned 0x800201B5 (WAIT_DELETE) with its message pointer unchanged, rewrote its timeout word to the remaining 499950 us of 500000 us, and then reached the dormant state. `ReferMbxStatus` on the deleted UID returned 0x8002019B. `mbx-timeout-control`: `ReceiveMbx` with a 50000 us timeout returned 0x800201A8 with remaining time 0 (APIs `sceKernelCreateMbx`, `sceKernelDeleteMbx`, `sceKernelReceiveMbx`, `sceKernelReferMbxStatus`) | `callback-notify-check`, `wait-cancel`, `thread-lifecycle` (not cited by this entry); the thread-delete follow-up stream | MEASURED: 3 records, PASS. PASS gates the probe's own integrity checks only |
+  | `PSP-HLE-SYSPARAM-001` | `int-id-2`, `int-id-3`, `int-id-4`, `int-id-5`, `int-id-6`, `int-id-7`, `int-id-8`, `int-id-9`, `int-unknown-0`, `int-unknown-10`, `int-unknown-64`, `string-id-1-len-0x80`, `string-id-1-len-0x04`, `hle-sysparam-done` (APIs `sceUtilityGetSystemParamInt`, `sceUtilityGetSystemParamString`). Ids 2 to 10 return 0 and write a value. Ids 0 and 64 return 0x80110103 and leave the output untouched. `string-id-1-len-0x80` returns 0 with a NUL-terminated string inside the span. `string-id-1-len-0x04` returns 0x80110102 and writes nothing | The integer values and the string length and extent fields (user configuration; the nickname bytes stay in a private host0 file) | MEASURED: 14 records, PASS |
+  | `PSP-HLE-CTRL-LATCH-001` | `latch-read-initial`, `latch-peek-initial`, `latch-poll-window`, `latch-read-after-poll`, `latch-peek-after-poll`, `latch-read-clears-peek-keeps`, `hle-ctrl-latch-done` (APIs `sceCtrlReadLatch`, `sceCtrlPeekLatch`). With no input, make, break and press read 0 and release reads 0xFFFFFFFF, and all 200 bounded polls read a non-zero latch | Read-versus-peek clearing semantics: the release field stays saturated, so the semantics record cannot tell clearing from keeping | MEASURED: 7 records, PASS |
+  | `PSP-HLE-KERNEL-STATUS-001` | `sys-status-size-0x1c`, `sys-status-size-0x20`, `sys-status-size-0x08`, `sys-status-size-0x00`, `fpl-create`, `fpl-refer-full-all-free`, `fpl-try-alloc-a`, `fpl-try-alloc-b`, `fpl-try-alloc-exhausted`, `fpl-refer-full-two-held`, `fpl-refer-size-0x08-two-held`, `fpl-refer-size-0x00-two-held`, `fpl-free-a`, `fpl-refer-full-one-free`, `fpl-free-b`, `fpl-delete`, `fpl-refer-full-after-delete`, `hle-kernel-status-done` (APIs `sceKernelReferSystemStatus`, `sceKernelCreateFpl`, `sceKernelTryAllocateFpl`, `sceKernelFreeFpl`, `sceKernelDeleteFpl`, `sceKernelReferFplStatus`). `ReferSystemStatus` returns 0 and writes min(size, 0x1c) bytes. For each non-zero size (0x08, 0x1c and 0x20) the size word reads back 0x1c, and size 0 writes nothing. An FPL refer writes exactly the requested bytes of its 0x38-byte block (block size 0x40, two blocks, free count 2, then 0 with both held and 1 after one free). An exhausted allocate returns 0x80020190, and a refer after delete returns 0x8002019D and writes nothing | Time-dependent status words and tick counters | MEASURED: 18 records, PASS |
+  | `PSP-HLE-POWER-001` | `pll-clock-int`, `pll-clock-float`, `cpu-clock-int`, `cpu-clock-float`, `cpu-clock-alias`, `bus-clock-int`, `bus-clock-float`, `bus-clock-alias`, `cpu-clock-int-repeat`, `hle-power-clock-done` (APIs `scePowerGetPllClockFrequencyInt`, `scePowerGetPllClockFrequencyFloat`, `scePowerGetCpuClockFrequency`, `scePowerGetCpuClockFrequencyInt`, `scePowerGetCpuClockFrequencyFloat`, `scePowerGetBusClockFrequency`, `scePowerGetBusClockFrequencyInt`, `scePowerGetBusClockFrequencyFloat`). PLL 222 MHz, CPU 222 MHz, bus 111 MHz. The Float getters return the float bit patterns 0x435E0000 (222.0) and 0x42DE0000 (111.0) | No `Set` call is made | MEASURED: 10 records, PASS |
+  | `PSP-HLE-HPRM-001` | `hprm-remote-first`, `hprm-headphone-first`, `hprm-microphone-first`, `hprm-remote-second`, `hprm-headphone-second`, `hprm-microphone-second`, `hle-hprm-done` (APIs `sceHprmIsRemoteExist`, `sceHprmIsHeadphoneExist`, `sceHprmIsMicrophoneExist`). Remote 0, headphone 0, microphone 1, each read twice | The accessory state at run time, which the probe does not record | MEASURED: 7 records, PASS |
+  | `PSP-HLE-GE-EDRAM-001` | `edram-size`, `edram-addr`, `edram-width-query-initial`, `edram-width-set-512`, `edram-width-set-1024`, `edram-width-set-2048`, `edram-width-set-4096`, `edram-width-restore`, `edram-width-query-final`, `hle-ge-edram-done` (APIs `sceGeEdramGetSize`, `sceGeEdramGetAddr`, `sceGeEdramSetAddrTranslation`). Size 0x00200000, address 0x04000000, boot width 1024. Each Set returns the width it replaced (0 after the initial query), and the next query returns the width just set. The restore to 1024 is verified | Nothing unrestored: the width is put back and verified before exit | MEASURED: 10 records, PASS |
+  | `PSP-HLE-VTIMER-001` | `vtimer-create`, `vtimer-refer-created`, `vtimer-stop-not-started`, `vtimer-start`, `vtimer-time-running-early`, `vtimer-refer-running-early`, `vtimer-delay-20ms`, `vtimer-time-running-20ms`, `vtimer-stop`, `vtimer-time-stopped`, `vtimer-refer-stopped`, `vtimer-delay-20ms-stopped`, `vtimer-time-stopped-later`, `vtimer-start-restart`, `vtimer-refer-size-0x08`, `vtimer-delete-running`, `vtimer-refer-after-delete`, `vtimer-delete-again`, `hle-vtimer-done` (APIs `sceKernelCreateVTimer`, `sceKernelReferVTimerStatus`, `sceKernelStartVTimer`, `sceKernelStopVTimer`, `sceKernelGetVTimerTime`, `sceKernelDeleteVTimer`). Create returns a valid UID. StopVTimer returns 1 while running and 0 when not started. Start returns 0, also when it restarts a stopped timer. Deleting a running VTimer returns 0. Refer and delete on the deleted UID return 0x800201BE, and that refer writes nothing. Refer returns 0 and fills the 0x48-byte `SceKernelVTimerInfo`: size word 0x48, the create-time name, `active` (offset 0x24) 1 while running and 0 when created or stopped, and `base` (0x28) non-zero while running and 0 when created or stopped. `current` (0x30) is 0 when created, non-zero while running, and holds the accumulated time while stopped: the stopped refer and both stopped `GetVTimerTime` reads, before and after a 20 ms delay, return the same value. `schedule`, `handler` and `common` read 0. A refer with size word 0x08 writes 8 bytes, the size word 0x48 and the first name word, and leaves the rest untouched | Absolute time values and the time unit (the running deltas include the probe's own logging time) | MEASURED: 19 records, PASS |
+
+- **Captured only, not acceptance-eligible (2026-10-15, `e45e667b`)**: these establish nothing about PSP behaviour.
+  - `PSP-GE-CONTROL-001`, case `ge-break-continue`: 9 records PASS and 2 SKIP (`ge-list-sync-cancelled` and `ge-draw-sync-cancelled`). The SKIP records are the probe's own gate: `sceGeListDeQueue` on the stalled list returned 0x80000021 (BUSY), so the envelope is not eligible.
+  - `PSP-MUTEX-001`, case `mutex-interrupt-context`: the header record PASS and 20 of 20 trial records FAIL. In every trial `sceKernelIsCpuIntrEnable` returned 1 where the probe expected 0. All six mutex calls returned 0x80020064 (ILLEGAL_CONTEXT).
+
+- **PSP-3000 re-run of the revised `ge-break-continue` probe (2026-10-15, `c642039a`)**: firmware 6.6.1, PSPLink 3.2.1, operator-declared model PSP-3000. The case launched one PRX on a fresh boot after the `transport-write` preflight, which passed. The case envelope is acceptance-eligible with 0 blockers, so this entry supersedes the captured-only `ge-break-continue` runs above for the cells it names. The row cites only the cells named in it. The raw envelope and host0 log stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-15) |
+  | --- | --- | --- | --- |
+  | `PSP-GE-CONTROL-001` | APIs `sceGeBreak`, `sceGeContinue`, `sceGeListSync`, `sceGeDrawSync`, `sceGeListDeQueue`. `ge-break-no-active-list`: `sceGeBreak(0)` with nothing queued returns 0x80000020 and leaves the parameter buffer untouched. `ge-continue-no-paused-list`: `sceGeContinue` returns 0. `ge-break-invalid-mode`: `sceGeBreak(-1)` returns 0x80000107 and leaves the parameter buffer untouched. `ge-list-sync-paused` and `ge-draw-sync-paused`: a list enqueued with no stall address and broken at once by `sceGeBreak(0)` returns its queue id, then `sceGeListSync(qid, 1)` reads 4 and `sceGeDrawSync(1)` reads 2. `ge-continue-drain`: `sceGeContinue` returns 0 and the list drains. `ge-break-reset-no-dequeue`: `sceGeBreak(1)` with one list stalled at its start address returns 0. `ge-list-sync-cancelled`: `sceGeListSync(qid, 1)` on that list then returns 0x80000100. `ge-draw-sync-cancelled`: `sceGeDrawSync(1)` then reads 0. `ge-list-dequeue-stalled`: `sceGeListDeQueue` on a list stalled at its start returns 0x80000021 (BUSY), and `sceGeListSync(qid, 1)` and `sceGeDrawSync(1)` then read 3 | `ge-quiesce-after-continue`, `ge-quiesce-after-cancel`, `ge-quiesce-after-dequeue` and `ge-break-continue-done` (probe machinery). Not measured: breaking a stalled list, a reset with a paused list, break modes above 1, syncType 0, a dequeue in any other list state, an unknown queue id, and command-boundary timing | MEASURED: 13 records and the done record, PASS |
+
+- **Recorded, not granted (2026-10-15, `e45e667b`)**: `display-mask-duty` (`PSP-DISPLAY-001`). Both records PASS, which is machinery only. Calibrated period 16,683,050 ns. For the 33000 us masks, VCOUNT advanced 65 over 58 masked windows against about 121 periods of wall time. For the 66000 us masks, VCOUNT advanced 34 over 30 windows against about 122 periods. The unmasked gaps account for the remainder, which fits one credit per masked window rather than catch-up. This cell is not granted through `PSP-DISPLAY-001`, because that row cites `docs/ARCHITECTURE.md#clocks`.
+
+- **PSP-3000 re-run of the corrected `mutex-interrupt-context` probe (2026-10-15, `ec5dd563`)**: firmware 6.6.1, PSPLink 3.2.1, operator-declared model PSP-3000. The case launched one PRX on a fresh boot after the `transport-write` preflight, which passed. The case envelope is acceptance-eligible with 0 blockers, so this entry supersedes the captured-only `mutex-interrupt-context` runs above for the cells it names. The corrected pass rule records only that a trial completed; no returned value is compared. The raw envelope and host0 log stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-15) |
+  | --- | --- | --- | --- |
+  | `PSP-MUTEX-001` | `mutex-interrupt-context` (APIs `sceKernelLockMutex`, `sceKernelLockMutexCB`, `sceKernelTryLockMutex`, `sceKernelUnlockMutex`). In 20 of 20 trials run from a VBLANK sub-interrupt handler, `LockMutex` with an unknown UID, `LockMutex` with count 0, `LockMutex`, `LockMutexCB` and `TryLockMutex` on an unlocked mutex, and `UnlockMutex` of a mutex the main thread owns each returned 0x80020064 (ILLEGAL_CONTEXT) | The raw `sceKernelIsCpuIntrEnable` return inside the handler (context only); `UnlockMutex` with an unknown UID or a bad count from interrupt context | MEASURED: the header record and 20 trial records, PASS |
+
+- **PSP-3000 single-case runs on public commit `b5d6fc5b` (2026-10-15)**: firmware 6.6.1, operator-declared model PSP-3000. The commit is the `origin/main` of that day and includes the five initial single-launch `hle-*` cases. Each case was one runner invocation with the `transport-write` preflight, which passed on every launch (PSP-TRANSPORT-001 is not re-cited). The first case ran on a fresh power cycle, and each later one after a PSPLink soft reset and re-qualification. A row cites only the cells named in it, and cells not named here are not measured by this entry. Raw envelopes and host0 logs stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-15) |
+  | --- | --- | --- | --- |
+  | `PSP-HLE-VTIMER-002` | `vtimer-unit-create`, `vtimer-unit-start`, `vtimer-unit-time-a`, `vtimer-unit-systime-a`, `vtimer-unit-delay`, `vtimer-unit-time-b`, `vtimer-unit-systime-b`, `vtimer-unit-base-running`, `vtimer-unit-refer-running`, `vtimer-unit-stop`, `vtimer-unit-base-stopped`, `vtimer-unit-refer-stopped`, `vtimer-unit-delete`, `hle-vtimer-unit-done` (APIs `sceKernelCreateVTimer`, `sceKernelStartVTimer`, `sceKernelGetVTimerTime`, `sceKernelGetSystemTimeWide`, `sceKernelGetVTimerBase`, `sceKernelReferVTimerStatus`, `sceKernelStopVTimer`, `sceKernelDeleteVTimer`). Create returns a UID, Start returns 0, `sceKernelDelayThread(20000)` returns 0, Stop of the running timer returns 1, and Delete of the stopped timer returns 0. While the timer runs, `GetVTimerBase` and `ReferVTimerStatus` return 0 and give the same 64-bit base, which has the system clock's high word. After Stop both return 0 and the base reads 0. `GetVTimerTime` reads 38,316 and 242,695 either side of the 20 ms delay (delta 204,379), while `sceKernelGetSystemTimeWide` advances 220,608 between its two reads. The probe's host0 record writes offset the two intervals, so the deltas agree only within about 8%. That is consistent with the system clock's microsecond unit, and it is not a precise rate measurement. At both reads, the base plus the VTimer time stays below the next system-clock read, which is consistent with time = system time - base and base = system time at Start | Absolute system-clock values; the system time at Start (no reading was taken there); the VTimer rate beyond the 8% agreement | MEASURED: 13 records and the done record, PASS |
+  | `PSP-HLE-VTIMER-003` | `vtimer-err-create-stale`, `vtimer-err-delete-stale`, `vtimer-err-start-deleted`, `vtimer-err-stop-deleted`, `vtimer-err-time-deleted`, `vtimer-err-cleanup-stale`, `vtimer-err-create-live`, `vtimer-err-delete-live`, `vtimer-err-noslot-create`, `vtimer-err-noslot-cleanup`, `hle-vtimer-errors-done` (APIs `sceKernelCreateVTimer`, `sceKernelDeleteVTimer`, `sceKernelStartVTimer`, `sceKernelStopVTimer`, `sceKernelGetVTimerTime`). On a deleted UID, Start, Stop and `GetVTimerTime` with a valid out pointer each return 0x800201BE, and `GetVTimerTime` leaves both 0xA5A5A5A5 sentinel words untouched. A second Delete of that UID returns 0x800201BE. A live timer is created and deleted with 0. Sixty-four creates in a row each return a UID with no refusal (out0 64, out1 0), and the cleanup issues 64 deletes, the first returning 0 | The limit above 64 timers and its refusal code; the UID values | MEASURED: 10 records and the done record, PASS |
+  | `PSP-HLE-POWER-002` | `pll-clock-float-v0`, `cpu-clock-float-v0`, `bus-clock-float-v0`, `hle-power-float-v0-done` (APIs `scePowerGetPllClockFrequencyFloat`, `scePowerGetCpuClockFrequencyFloat`, `scePowerGetBusClockFrequencyFloat`), one call each through a raw `jal` wrapper that presets `$f0` to 0xA5A5A5A5. `$f0` holds 0x435E0000 (222.0) after the PLL and CPU getters and 0x42DE0000 (111.0) after the bus getter. `$v0` holds 0x088043A0, 0x088043E0 and 0x08804420: neither 0 nor the clock, and a different user-memory-range word after each call | Whether a getter writes `$v0` or leaves the caller's value, because the wrapper does not preset `$v0`. The runtime does not model `$v0` for these getters | MEASURED: 3 records and the done record, PASS |
+
+- **Captured only, not acceptance-eligible (2026-10-15, `b5d6fc5b`)**: these establish nothing about PSP behaviour.
+  - `PSP-HLE-KERNEL-STATUS-002`, case `hle-kernel-pool-bounds`: the stream was complete, with 7 records PASS and 2 SKIP (`fpl-delete-size-0x00` and `fpl-delete-size-0x7fffffff`). Both FPL creates were refused, so the probe had no pool to delete and recorded those delete cells SKIP, and a SKIP record makes the envelope ineligible. The probe has since been revised: such a delete cell is now PASS with out0 0 and issues no delete, and the revised form has not run.
+  - `PSP-HLE-NULL-OUT-001`, case `hle-null-out-pointers`: incomplete, not measured. `null-vtimer-create` was recorded PASS. The stream then stopped after the step marker `null-sys-status`, which the probe writes just before its first NULL call (`sceKernelReferSystemStatus(NULL)`), 0.9 s after launch. No record for that cell or any later one arrived, no completion arrived within the 240 s case timeout, the module was not proven unloaded, and the console needed a power cycle. The capture itself does not establish whether that call faulted, hung or returned. Maintainer retirement: the kernel pointer check rejects kernel-space addresses but not address 0, so `ReferSystemStatus(NULL)` writes through NULL and faults; the VTimer getters also write through their out pointers. No game can rely on these results. This case is retired and must never be scheduled.
+
+- **PSP-3000 single-case runs on public commits `22b027f6` and `7fc1641e` (2026-10-15)**: firmware 6.6.1, PSPLink 3.2.1, operator-declared model PSP-3000. `22b027f6` is the pre-merge head of the change that added the `vfpu-transcendental-corpus`, `hle-timer-order` and `hle-audio-src` probes. The first two probes are unchanged in the merged commit `7fc1641e`, which also changed the `hle-audio-src` pass rule: its two final-cleanup cells became PASS records in place of SKIP records. That case was therefore re-run from `7fc1641e`. Each case was one runner invocation with the `transport-write` preflight, which passed on every launch (PSP-TRANSPORT-001 is not re-cited). A row cites only the cells named in it, and cells not named here are not measured by this entry. Raw envelopes and host0 logs stay in the private campaign directory.
+
+  | Evidence id | Cells cited | Not cited | Outcome (2026-10-15) |
+  | --- | --- | --- | --- |
+  | `PSP-VFPU-TRANSCENDENTAL-001` | `vsin-chunk-00`, `vsin-chunk-01`, `vsin-chunk-02`, `vsin-chunk-03`, `vsin-chunk-04`, `vsin-chunk-05`, `vsin-chunk-06`, `vsin-chunk-07`, `vcos-chunk-00`, `vcos-chunk-01`, `vcos-chunk-02`, `vcos-chunk-03`, `vcos-chunk-04`, `vcos-chunk-05`, `vcos-chunk-06`, `vcos-chunk-07`, `vexp2-chunk-00`, `vexp2-chunk-01`, `vexp2-chunk-02`, `vexp2-chunk-03`, `vexp2-chunk-04`, `vexp2-chunk-05`, `vexp2-chunk-06`, `vexp2-chunk-07`, `vlog2-chunk-00`, `vlog2-chunk-01`, `vlog2-chunk-02`, `vlog2-chunk-03`, `vlog2-chunk-04`, `vlog2-chunk-05`, `vlog2-chunk-06`, `vlog2-chunk-07`, `vrsq-chunk-00`, `vrsq-chunk-01`, `vrsq-chunk-02`, `vrsq-chunk-03`, `vrsq-chunk-04`, `vrsq-chunk-05`, `vrsq-chunk-06`, `vrsq-chunk-07`, `vrcp-chunk-00`, `vrcp-chunk-01`, `vrcp-chunk-02`, `vrcp-chunk-03`, `vrcp-chunk-04`, `vrcp-chunk-05`, `vrcp-chunk-06`, `vrcp-chunk-07`, `vsqrt-chunk-00`, `vsqrt-chunk-01`, `vsqrt-chunk-02`, `vsqrt-chunk-03`, `vsqrt-chunk-04`, `vsqrt-chunk-05`, `vsqrt-chunk-06`, `vsqrt-chunk-07`, `vasin-chunk-00`, `vasin-chunk-01`, `vasin-chunk-02`, `vasin-chunk-03`, `vasin-chunk-04`, `vasin-chunk-05`, `vasin-chunk-06`, `vasin-chunk-07`, `vnrcp-chunk-00`, `vnrcp-chunk-01`, `vnrcp-chunk-02`, `vnrcp-chunk-03`, `vnrcp-chunk-04`, `vnrcp-chunk-05`, `vnrcp-chunk-06`, `vnrcp-chunk-07`, `vnsin-chunk-00`, `vnsin-chunk-01`, `vnsin-chunk-02`, `vnsin-chunk-03`, `vnsin-chunk-04`, `vnsin-chunk-05`, `vnsin-chunk-06`, `vnsin-chunk-07`, `vrexp2-chunk-00`, `vrexp2-chunk-01`, `vrexp2-chunk-02`, `vrexp2-chunk-03`, `vrexp2-chunk-04`, `vrexp2-chunk-05`, `vrexp2-chunk-06`, `vrexp2-chunk-07`, `vfpu-transcendental-corpus-done`: the raw single-lane result words of `vsin.s`, `vcos.s`, `vexp2.s`, `vlog2.s`, `vrsq.s`, `vrcp.s`, `vsqrt.s`, `vasin.s`, `vnrcp.s`, `vnsin.s` and `vrexp2.s` over 63 input words each | Anything the words do not show: the probe compares no value, and the PASS status records only that the instruction result was recorded | MEASURED: 88 data records (693 words) and the done record, PASS (`22b027f6`) |
+  | `PSP-HLE-TIMER-ORDER-001` | `alarm-same-delay-set`, `alarm-same-delay-a`, `alarm-same-delay-b`, `alarm-long-then-short-set`, `alarm-long-event`, `alarm-short-event`, `timer-order-vtimer-create`, `timer-order-vtimer-handler`, `timer-order-vtimer-alarm-set`, `timer-order-vtimer-event`, `timer-order-vtimer-alarm-event`, `alarm-zero-set`, `alarm-zero-event`, `alarm-same-delay-cleanup`, `alarm-long-short-cleanup`, `timer-order-vtimer-cleanup`, `alarm-zero-cleanup`, `hle-timer-order-done` (APIs `sceKernelSetAlarm`, `sceKernelCancelAlarm`, `sceKernelCreateVTimer`, `sceKernelSetVTimerHandler`, `sceKernelStartVTimer`, `sceKernelStopVTimer`, `sceKernelDeleteVTimer`) | Absolute delays: no cell compares a due time with a clock; a tie-break at an equal due time (the pairs below were set with a host0 step record between the two calls); the UID values | MEASURED: 17 records and the done record, PASS (`22b027f6`) |
+  | `PSP-HLE-AUDIO-SRC-001` | `src-release-unreserved`, `src-output-unreserved`, `src-reserve-valid`, `src-reserve-already-held`, `src-output-blocking-0`, `src-release-after-output`, `src-release-again`, `src-reserve-invalid-samples-zero`, `src-reserve-invalid-samples-65`, `src-reserve-invalid-samples-4096`, `src-reserve-invalid-frequency`, `src-reserve-invalid-channels-1`, `src-reserve-invalid-channels-4`, `out2-then-src-reserve`, `src-then-out2-reserve`, `src-final-cleanup`, `out2-final-cleanup`, `hle-audio-src-done` (APIs `sceAudioSRCChReserve`, `sceAudioSRCChRelease`, `sceAudioSRCOutputBlocking`, `sceAudioOutput2Reserve`, `sceAudioOutput2Release`) | The upper sample-count bound; frequencies other than 44100 and 48000; channel counts other than 1, 2 and 4; volume validation; releasing one reservation through the other API; the audible output (silence); an SRC rest-sample query (the public NID corpus has none) | MEASURED: 17 records and the done record, PASS (`7fc1641e`) |
+
+  What the cells establish, for these exact words only:
+  - *Alarm and VTimer callback order (`PSP-HLE-TIMER-ORDER-001`).* Each `SetAlarm` returned a UID. The callback sequence numbers and the system-time low words they stored were:
+    - alarms set 50000 us ahead, first A then B: A ran first (sequence 1), B second (sequence 2), 17,125 us later;
+    - a 100000 us alarm set before a 30000 us alarm: the 30000 us alarm ran first (sequence 3), the 100000 us alarm second (sequence 4), 53,561 us later;
+    - a VTimer handler due 60000 us after `StartVTimer` and a 60000 us alarm set after it: the handler ran first (sequence 5), the alarm second (sequence 6), 13,579 us later (`SetVTimerHandler` and `StartVTimer` both returned 0);
+    - `SetAlarm(0)`: a UID was returned and the handler had run (sequence 7) by the end of a 100000 us wait.
+
+    A host0 step record sits between each pair of `SetAlarm` calls (and between `StartVTimer` and the alarm), so the nominally equal delays were not equal due times. The 17,125 us and 13,579 us gaps are of the order of that record's cost, and the 53,561 us gap is the 70,000 us difference of the two delays less about 16,400 us. The cells therefore show delivery in due-time order (the 30000 us alarm ran before the earlier-set 100000 us alarm). In the equal-delay pairs the callback that ran first was also the one set first and due first, so they do not show how two alarms with the same due time are ordered. After their handlers returned 0, `CancelAlarm` on each of the six alarm UIDs returned 0x8002019F, `StopVTimer` of the still-running timer returned 1, and `DeleteVTimer` returned 0.
+
+    Runtime comparison (`src/rt/sched.c`, `src/rt/hle.c`): the alarm cells match. Due alarms run in
+    deadline order, ties in set order (`scheduler_alarm_due_slot`), so the 30000 us alarm precedes
+    the earlier-set 100000 us one and the first-set alarm precedes the second. `SetAlarm(0)` is due at
+    the next interrupt-service point, and a one-shot whose handler returned 0 is released, so
+    `CancelAlarm` on it returns `SCHED_ERROR_UNKNOWN_ALMID` (0x8002019F).
+    `test_alarm_delivery_order_matches_the_timer_order_probe` pins these orders. The VTimer handler
+    cells do not match: `sceKernelSetVTimerHandler` is refused by name with 0x80020002, because the
+    handler family needs the timer interrupt model (issue #325), where the console returned 0 and ran the
+    handler. Nothing in the runtime changed for it.
+  - *Audio SRC channel (`PSP-HLE-AUDIO-SRC-001`, issue #339).* With nothing reserved, `sceAudioSRCChRelease()` and `sceAudioSRCOutputBlocking` (one silent 1024-sample stereo block at the maximum volume) each returned 0x80260008. `sceAudioSRCChReserve(1024, 44100, 2)` returned 0, an identical second reserve returned 0x80268002, and `sceAudioSRCOutputBlocking` then returned 0x400, the sample count. `sceAudioSRCChRelease()` returned 0 and a second release returned 0x80260008. Reserve shapes, with nothing reserved:
+
+    | Shape (samples, Hz, channels) | Return |
+    | --- | --- |
+    | (0, 44100, 2) | 0x80000104 |
+    | (65, 44100, 2) | 0 (accepted; released at once, 0) |
+    | (4096, 44100, 2) | 0 (accepted; released at once, 0) |
+    | (1024, 48000, 2) | 0 (accepted; released at once, 0) |
+    | (1024, 44100, 1) | 0x80000104 |
+    | (1024, 44100, 4) | 0x80000003 |
+
+    `sceAudioOutput2Reserve(512)` then `sceAudioSRCChReserve(1024, 44100, 2)` returned 0 then 0x80268002, and the Output2 release returned 0. `sceAudioSRCChReserve` then `sceAudioOutput2Reserve(512)` returned 0 then 0x80268002, and the SRC release returned 0. The two final-cleanup cells record that nothing was left reserved (0xFFFFFFFF, no call).
+
+    The runtime had no SRC handlers before this entry. `h_AudioSRCChReserve`, `h_AudioSRCChRelease` and
+    `h_AudioSRCOutputBlocking` in `src/rt/hle.c` now return every word above, on the Output2 slot, and
+    `test_audio_src_matches_the_measured_contract` in `src/rt/hle_thread_selftest.c` pins them. A reserve
+    at 48000 Hz is accepted as measured. The host mixer runs at 44100 Hz, so those blocks pass through
+    the band-limited converter in `src/rt/audio_resample.c` and keep their source-rate pacing. The
+    values listed as not cited are unmeasured; the handler metadata names the choices made for them.
+  - *Transcendental words (`PSP-VFPU-TRANSCENDENTAL-001`, issue #347).* The eleven scalar operations returned 693 result words over the probe's fixed inputs: 20 special encodings (signed zeros, the smallest signed denormals, plus and minus one, two and one half, the smallest signed normals, plus and minus 2^127, the infinities, and quiet and signalling NaN encodings) and 43 evenly spaced domain constants per operation. The raw words stay private. Compared with the runtime (the generated code and `sr_vfpu_interp`), ten operations matched on all 63 inputs: `vsin.s`, `vcos.s`, `vexp2.s`, `vlog2.s`, `vrsq.s`, `vrcp.s`, `vsqrt.s`, `vasin.s`, `vnrcp.s` and `vnsin.s`. `vrexp2.s` matched on none: the runtime computed the negated `exp2(x)` (`0xBF800000` for an input of zero) where the console returned `exp2(-x)` (`0x3F800000` for zero, `0x40000000` for -1.0 and `0x3EFFFFFC` for +1.0). Both paths now compute `exp2(-x)`, and the 63 measured words are pinned in `src/rt/vfpu_interp_selftest.c`. The same opcode group still decodes five more negated forms (optypes 25, 27, 29, 30 and 31) as the negation of the positive operation; no probe covers them, so they are unmeasured.
+
+- **Captured only, not acceptance-eligible (2026-10-15, `22b027f6`)**: these establish nothing about PSP behaviour.
+  - `PSP-HLE-AUDIO-SRC-001`, case `hle-audio-src`: the stream was complete, with 16 records PASS and 2 SKIP (`src-final-cleanup` and `out2-final-cleanup`). Both SKIP records were the probe's own gate for "nothing left to release", a pass-rule flaw that `7fc1641e` fixed, and a SKIP record makes the envelope ineligible. The 16 other records carry the same words as the eligible re-run above.
+
+- **PSP-3000 requalification of the 32-case campaign queue on public commit `f2d6c91a` (2026-10-15)**: firmware 6.6.1, PSPLink 3.2.1, operator-declared model PSP-3000. Each case was one runner invocation with the `transport-write` preflight, which was acceptance-eligible on all 32 launches. All 32 cases launched and exited, the teardown check passed on all 32, every envelope binds the source commit (`MATCH`, clean committed tree), and 26 case envelopes are acceptance-eligible. Device identity is `PARTIAL` (an operator-declared model label) and the PRX digest is the host-side `PLACEHOLDER` binding described under "Device build identity" in the [fixture runbook](../fixtures/psp_oracle/README.md). This entry is a newer acceptance citation for the campaign cases below. It cites no new cell, and each row keeps the cells it already names. A record is "identical" when its status and every word match the 2026-10-10 run (`f6ccfb33`); in the cases whose probe did not change, the other records are time-stamped or carry UIDs, and their statuses agree. Raw envelopes and host0 logs stay in the private campaign directory.
+
+  | Campaign case | Evidence id | Outcome (2026-10-15, acceptance-eligible) |
+  | --- | --- | --- |
+  | `audio-query` | `PSP-AUDIO-001` | 14 records PASS; 11 identical to 2026-10-10; the three blocking-output records differ only in the elapsed-microsecond word |
+  | `cache-alias` | `PSP-CACHE-001` | 5 records PASS, all identical |
+  | `display-mask-duty` | `PSP-DISPLAY-001` | 2 records PASS; clock and VBLANK-counter words differ |
+  | `display-vblank-window` | `PSP-DISPLAY-004` | 1 record PASS; clock and VBLANK-counter words differ |
+  | `display-wait-late` | `PSP-DISPLAY-002` | 13 records PASS; clock and VBLANK-counter words differ |
+  | `display-wait-priority` | `PSP-DISPLAY-003` | 3 records PASS; clock and VBLANK-counter words differ |
+  | `dma-cells` | `PSP-DMAC-001` | 93 records PASS, all identical |
+  | `fpu-cc` | `PSP-FPU-CC-001` | first campaign-queue run of this case; not compared |
+  | `fpu-vector` | `PSP-FPU-001` | 16 records PASS, all identical |
+  | `ge-break-continue` | `PSP-GE-CONTROL-001` | 14 records PASS (the revised probe; the 2026-10-10 run was of an earlier revision) |
+  | `ge-nan` | `PSP-GE-001` | 21 records PASS, all identical |
+  | `io-matrix` | `PSP-IO-001` | 7 records PASS, all identical |
+  | `kernel-alarm` | `PSP-ALARM-001` | 9 records PASS; 4 identical, the others differ in UID and clock words |
+  | `kernel-misc` | `PSP-KERNEL-MISC-001` | 8 records PASS; 7 identical, `vtimer-basic` differs in clock words |
+  | `llsc-link` | `PSP-LLSC-001` | first campaign-queue run of this case; not compared |
+  | `mutex-interrupt-context` | `PSP-MUTEX-001` | 21 records PASS (the corrected pass rule; the 2026-10-10 run failed the probe's own assertions) |
+  | `mutex-priority-inheritance` | `PSP-MUTEX-001` | 1 record PASS, identical |
+  | `mutex-refer-unlocked` | `PSP-MUTEX-001` | 1 record PASS; two UID words differ |
+  | `mutex-timeout-quanta` | `PSP-MUTEX-001` | 1 record PASS; timing words differ |
+  | `refer-status-size` | `PSP-KERNEL-STATUS-001` | 13 records PASS, all identical |
+  | `registry-readonly` | `PSP-REGISTRY-001` | 414 records PASS, all identical |
+  | `smoke` | `PSP-SMOKE-001` | 1 record PASS, identical |
+  | `thread-exit-delete` | `PSP-THREAD-EXIT-001` | 12 records PASS, all identical |
+  | `thread-scheduler` | `PSP-THREAD-003` | 7 records PASS, all identical |
+  | `vfpu-compare` | `PSP-VFPU-CMP-001` | first campaign-queue run of this case; not compared |
+  | `wait-outcomes` | `PSP-WAIT-001` | 5 records PASS, all identical |
+
+  Six cases ran to completion but were not acceptance-eligible, so they stay `CAPTURED` only and establish nothing:
+  - `teardown-test` (`PSP-TEARDOWN-001`): `exitdelete-main` is a SKIP record, as on 2026-10-10.
+  - `dma-invalid-tail-s0`, `dma-invalid-tail-memcpy-src`, `dma-invalid-tail-memcpy-dst`, `dma-invalid-tail-try-src` and `dma-invalid-tail-try-dst` (`PSP-DMAC-001`): every record is a SKIP, identical to the 2026-10-10 run.
+
+  What the `ge-nan` cells establish (`PSP-GE-001`, issue #69), for these exact words only. All 21 records were identical in both runs. Each input word was loaded into `S000`, with `S001` set to `0.0` for `vadd.s` and `1.0` for `vmul.s`:
+
+  | Input word | `vadd.s S002, S000, S001` (+0) | `vmul.s S002, S000, S001` (x1) |
+  | --- | --- | --- |
+  | `0x7FC00000` (qNaN) | `0x7F800001` | `0x7F800001` |
+  | `0x7F800000` (+Inf) | `0x7F800000` | `0x7F800000` |
+  | `0xFF800000` (-Inf) | `0xFF800000` | `0xFF800000` |
+  | `0x80000000` (-0) | `0x00000000` | `0x80000000` |
+  | `0x00000001` (minimum positive denormal) | `0x00000000` | `0x00000000` |
+
+  A quiet NaN comes back as `0x7F800001`, and the denormal is flushed to zero. Negative zero plus zero is positive zero, and negative zero times one keeps its sign. Which of the two operands a NaN or a denormal flush applies to is not separable from these cells, and no other VFPU arithmetic form (`vsub`, `vdiv`, the pair, triple and quad widths) was measured.
+
+  The draw cells put the same input word in one vertex of a triangle (the x of a 2D screen-coordinate vertex, the x of a 3D clip-position vertex, and a lit-normal vertex) and record a framebuffer hash, a changed-pixel count and the draw state after `sceGuFinish` and a bounded drain:
+
+  | Input word | `screen2d` hash | `clip3d` hash | `litnormal` hash |
+  | --- | --- | --- | --- |
+  | `0x7FC00000` (qNaN) | `0x2B6647A7` | `0x9DBEB5C5` | `0x9DBEB5C5` |
+  | `0x7F800000` (+Inf) | `0x2B6647A7` | `0x9DBEB5C5` | `0x9DBEB5C5` |
+  | `0xFF800000` (-Inf) | `0xA1F002BD` | `0x9DBEB5C5` | `0x9DBEB5C5` |
+  | `0x80000000` (-0) | `0xA929B835` | `0x9DBEB5C5` | `0x9DBEB5C5` |
+  | `0x00000001` (denormal) | `0xA929B835` | `0x9DBEB5C5` | `0x9DBEB5C5` |
+
+  In all fifteen draw records the changed-pixel count is `0x0001FBFE` (130,046 of the 480 x 272 = 130,560 scanned pixels) and the draw-state word is 0. These are probe observations. A hash is a function of the whole scanned frame: it shows that two draws left the same frame or different frames, and nothing about which pixels differ or why, and with almost every scanned pixel differing from the probe's background word the cells do not isolate the triangle either. No rasterization rule for a non-finite vertex follows from them, and that verdict stays NOT_MEASURED. The runtime's `vadd.s` and `vmul.s` (the generated code and `sr_vfpu_interp` alike) return the host IEEE result: the qNaN input stays `0x7FC00000` and the denormal stays `0x00000001`, where the console wrote `0x7F800001` and `0x00000000`. The other six words match. This entry does not change that.
+
+### PSP-VRAM-MIRROR-001 measured run 2026-10-16
+
+Three source-owned `vram-mirror` probe revisions ran on a PSP-3000 / 6.61 on
+2026-10-16: `24c1472e`, `fd3efc64`, and `df41dba2`. VRAM restoration was verified
+for each; the final `df41dba2` run was acceptance-eligible. The raw host0 logs
+remain private; this entry publishes only derived rules and probe-defined inputs.
+
+The full position-encoded fill had zero mismatches across 4,134 sampled words
+per alias. Cached and uncached aliases agreed:
+
+| Cached alias | Uncached alias | Physical VRAM offset for sampled word-aligned alias offset `o` |
+| --- | --- | --- |
+| `0x04000000` | `0x44000000` | `o` |
+| `0x04200000` | `0x44200000` | `o ^ 0x2040` |
+| `0x04400000` | `0x44400000` | `o` |
+| `0x04600000` | `0x44600000` | bits 5..9 of `o` rotated left one (bit 9 to bit 5), then `^ 0x2040` |
+
+The position samples use 32-bit words, so they establish the transform constant
+and columns for offset bits 2..20. Address bits 0 and 1 are not independently
+decoded by these samples.
+
+Mirror writes landed at the same transformed offset; for example, a write to
+`0x04200100` was found at physical offset `0x002140`.
+
+The GE depth buffer was 16-bit with stride 512 and `zbp=0x0CC000`. After a
+`0x5A5A` clear, the GE drew through-mode sprites with raw Z values: A at x
+0..31/y 0..15 with Z `0x1111`, B at x 64..95/y 8..11 with Z `0x2222`, and C
+at x 200..207/y 100 with Z `0x3333`. The reported depth address rule is
+`(y * 1024 + 2x) ^ 0x2040`; the `0x04200000` view presents depth linearly and
+colour remains linear. The clear leaves physical x 448..479 unwritten and
+writes x 480..511 in each row. It remains unresolved whether the XOR applies
+to the absolute VRAM offset or to the offset within the depth buffer, because
+`zbp=0x0CC000` has bits 6 and 13 clear.
+
+The host analyzer derives each cached/uncached alias's affine constant and
+measured columns from the position samples, decodes the mirror-write scans, and
+reports depth XOR candidates from the raw-Z rows. The flat sprite footprints
+leave byte-phase candidates that the current samples do not distinguish; the
+reported common mask is `0x2040`. The analyzer preserves that ambiguity rather
+than selecting an unobserved value. No raw PSP words are stored in this document.
+
+Probe APIs cited: `sceDisplayGetFrameBuf`, `sceGeEdramGetAddr`, `sceGeDrawSync`, `sceGuDepthBuffer`, `sceGuDrawArray`, `sceGuClearDepth`, `sceGuClear`, `sceGuEnable`, `sceGuDepthFunc`, `sceGuDepthMask`, `sceKernelDcacheWritebackInvalidateRange`, `sceKernelDcacheInvalidateRange`.
+
+Exact strict result IDs (726 ordered records including the terminal record):
+
+```text
+vram-mirror-info
+vram-cpu-pattern-000
+vram-cpu-pattern-001
+vram-cpu-pattern-002
+vram-cpu-pattern-003
+vram-cpu-pattern-004
+vram-cpu-pattern-005
+vram-cpu-pattern-006
+vram-cpu-pattern-007
+vram-cpu-pattern-008
+vram-cpu-pattern-009
+vram-cpu-pattern-010
+vram-cpu-pattern-011
+vram-cpu-pattern-012
+vram-cpu-pattern-013
+vram-cpu-pattern-014
+vram-cpu-pattern-015
+vram-cpu-pattern-016
+vram-cpu-pattern-017
+vram-cpu-pattern-018
+vram-cpu-pattern-019
+vram-cpu-pattern-020
+vram-cpu-pattern-021
+vram-cpu-pattern-022
+vram-cpu-pattern-023
+vram-cpu-pattern-024
+vram-cpu-pattern-025
+vram-cpu-pattern-026
+vram-cpu-pattern-027
+vram-cpu-pattern-028
+vram-cpu-pattern-029
+vram-cpu-pattern-030
+vram-cpu-pattern-031
+vram-cpu-pattern-032
+vram-cpu-pattern-033
+vram-cpu-pattern-034
+vram-cpu-pattern-035
+vram-cpu-pattern-036
+vram-cpu-pattern-037
+vram-cpu-pattern-038
+vram-cpu-pattern-039
+vram-cpu-pattern-040
+vram-cpu-pattern-041
+vram-cpu-pattern-042
+vram-cpu-pattern-043
+vram-cpu-pattern-044
+vram-cpu-pattern-045
+vram-cpu-pattern-046
+vram-cpu-pattern-047
+vram-cpu-pattern-048
+vram-cpu-pattern-049
+vram-cpu-pattern-050
+vram-cpu-pattern-051
+vram-cpu-pattern-052
+vram-cpu-pattern-053
+vram-cpu-pattern-054
+vram-cpu-pattern-055
+vram-cpu-pattern-056
+vram-cpu-pattern-057
+vram-cpu-pattern-058
+vram-cpu-pattern-059
+vram-cpu-pattern-060
+vram-cpu-pattern-061
+vram-cpu-pattern-062
+vram-cpu-pattern-063
+vram-cpu-pattern-064
+vram-cpu-pattern-065
+vram-cpu-pattern-066
+vram-cpu-pattern-067
+vram-cpu-pattern-068
+vram-cpu-pattern-069
+vram-cpu-pattern-070
+vram-cpu-pattern-071
+vram-cpu-pattern-072
+vram-cpu-pattern-073
+vram-cpu-pattern-074
+vram-cpu-pattern-075
+vram-cpu-pattern-076
+vram-cpu-pattern-077
+vram-cpu-pattern-078
+vram-cpu-pattern-079
+vram-cpu-pattern-080
+vram-cpu-pattern-081
+vram-cpu-pattern-082
+vram-cpu-pattern-083
+vram-cpu-pattern-084
+vram-cpu-pattern-085
+vram-cpu-pattern-086
+vram-cpu-pattern-087
+vram-cpu-pattern-088
+vram-cpu-pattern-089
+vram-cpu-pattern-090
+vram-cpu-pattern-091
+vram-cpu-pattern-092
+vram-cpu-pattern-093
+vram-cpu-pattern-094
+vram-cpu-pattern-095
+vram-cpu-pattern-096
+vram-cpu-pattern-097
+vram-cpu-pattern-098
+vram-cpu-pattern-099
+vram-cpu-pattern-100
+vram-cpu-pattern-101
+vram-cpu-pattern-102
+vram-cpu-pattern-103
+vram-cpu-pattern-104
+vram-cpu-pattern-105
+vram-cpu-pattern-106
+vram-cpu-pattern-107
+vram-cpu-pattern-108
+vram-cpu-pattern-109
+vram-cpu-pattern-110
+vram-cpu-pattern-111
+vram-cpu-pattern-112
+vram-cpu-pattern-113
+vram-cpu-pattern-114
+vram-cpu-pattern-115
+vram-cpu-pattern-116
+vram-cpu-pattern-117
+vram-cpu-pattern-118
+vram-cpu-pattern-119
+vram-cpu-pattern-120
+vram-cpu-pattern-121
+vram-cpu-pattern-122
+vram-cpu-pattern-123
+vram-cpu-pattern-124
+vram-cpu-pattern-125
+vram-cpu-pattern-126
+vram-cpu-pattern-127
+vram-cpu-pattern-128
+vram-cpu-pattern-129
+vram-cpu-pattern-130
+vram-cpu-pattern-131
+vram-cpu-pattern-132
+vram-cpu-pattern-133
+vram-cpu-pattern-134
+vram-cpu-pattern-135
+vram-cpu-pattern-136
+vram-cpu-pattern-137
+vram-cpu-pattern-138
+vram-cpu-pattern-139
+vram-cpu-pattern-140
+vram-cpu-pattern-141
+vram-cpu-pattern-142
+vram-cpu-pattern-143
+vram-cpu-pattern-144
+vram-cpu-pattern-145
+vram-cpu-pattern-146
+vram-cpu-pattern-147
+vram-cpu-pattern-148
+vram-cpu-pattern-149
+vram-cpu-pattern-150
+vram-cpu-pattern-151
+vram-cpu-pattern-152
+vram-cpu-pattern-153
+vram-cpu-pattern-154
+vram-cpu-pattern-155
+vram-cpu-pattern-156
+vram-cpu-pattern-157
+vram-cpu-pattern-158
+vram-cpu-pattern-159
+vram-cpu-pattern-160
+vram-cpu-pattern-161
+vram-cpu-pattern-162
+vram-cpu-pattern-163
+vram-cpu-pattern-164
+vram-cpu-pattern-165
+vram-cpu-pattern-166
+vram-cpu-pattern-167
+vram-cpu-pattern-168
+vram-cpu-pattern-169
+vram-cpu-pattern-170
+vram-cpu-pattern-171
+vram-cpu-pattern-172
+vram-cpu-pattern-173
+vram-cpu-pattern-174
+vram-cpu-pattern-175
+vram-cpu-pattern-176
+vram-cpu-pattern-177
+vram-cpu-pattern-178
+vram-cpu-pattern-179
+vram-cpu-pattern-180
+vram-cpu-pattern-181
+vram-cpu-pattern-182
+vram-cpu-pattern-183
+vram-cpu-pattern-184
+vram-cpu-pattern-185
+vram-cpu-pattern-186
+vram-cpu-pattern-187
+vram-cpu-pattern-188
+vram-cpu-pattern-189
+vram-cpu-pattern-190
+vram-cpu-pattern-191
+vram-cpu-pattern-192
+vram-cpu-pattern-193
+vram-cpu-pattern-194
+vram-cpu-pattern-195
+vram-cpu-pattern-196
+vram-cpu-pattern-197
+vram-cpu-pattern-198
+vram-cpu-pattern-199
+vram-cpu-pattern-200
+vram-cpu-pattern-201
+vram-cpu-pattern-202
+vram-cpu-pattern-203
+vram-cpu-pattern-204
+vram-cpu-pattern-205
+vram-cpu-pattern-206
+vram-cpu-pattern-207
+vram-cpu-pattern-208
+vram-cpu-pattern-209
+vram-cpu-pattern-210
+vram-cpu-pattern-211
+vram-cpu-pattern-212
+vram-cpu-pattern-213
+vram-cpu-pattern-214
+vram-cpu-pattern-215
+vram-cpu-pattern-216
+vram-cpu-pattern-217
+vram-cpu-pattern-218
+vram-cpu-pattern-219
+vram-cpu-pattern-220
+vram-cpu-pattern-221
+vram-cpu-pattern-222
+vram-cpu-pattern-223
+vram-cpu-pattern-224
+vram-cpu-pattern-225
+vram-cpu-pattern-226
+vram-cpu-pattern-227
+vram-cpu-pattern-228
+vram-cpu-pattern-229
+vram-cpu-pattern-230
+vram-cpu-pattern-231
+vram-cpu-pattern-232
+vram-cpu-pattern-233
+vram-cpu-pattern-234
+vram-cpu-pattern-235
+vram-cpu-pattern-236
+vram-cpu-pattern-237
+vram-cpu-pattern-238
+vram-cpu-pattern-239
+vram-cpu-pattern-240
+vram-cpu-pattern-241
+vram-cpu-pattern-242
+vram-cpu-pattern-243
+vram-cpu-pattern-244
+vram-cpu-pattern-245
+vram-cpu-pattern-246
+vram-cpu-pattern-247
+vram-cpu-pattern-248
+vram-cpu-pattern-249
+vram-cpu-pattern-250
+vram-cpu-pattern-251
+vram-cpu-pattern-252
+vram-cpu-pattern-253
+vram-cpu-pattern-254
+vram-cpu-pattern-255
+vram-cpu-pattern-256
+vram-cpu-pattern-257
+vram-cpu-pattern-258
+vram-cpu-pattern-259
+vram-cpu-pattern-260
+vram-cpu-pattern-261
+vram-cpu-pattern-262
+vram-cpu-pattern-263
+vram-cpu-pattern-264
+vram-cpu-pattern-265
+vram-cpu-pattern-266
+vram-cpu-pattern-267
+vram-cpu-pattern-268
+vram-cpu-pattern-269
+vram-cpu-pattern-270
+vram-cpu-pattern-271
+vram-cpu-pattern-272
+vram-cpu-pattern-273
+vram-cpu-pattern-274
+vram-cpu-pattern-275
+vram-cpu-pattern-276
+vram-cpu-pattern-277
+vram-cpu-pattern-278
+vram-cpu-pattern-279
+vram-cpu-pattern-280
+vram-cpu-pattern-281
+vram-cpu-pattern-282
+vram-cpu-pattern-283
+vram-cpu-pattern-284
+vram-cpu-pattern-285
+vram-cpu-pattern-286
+vram-cpu-pattern-287
+vram-cpu-pattern-288
+vram-cpu-pattern-289
+vram-cpu-pattern-290
+vram-cpu-pattern-291
+vram-cpu-pattern-292
+vram-cpu-pattern-293
+vram-cpu-pattern-294
+vram-cpu-pattern-295
+vram-cpu-pattern-296
+vram-cpu-pattern-297
+vram-cpu-pattern-298
+vram-cpu-pattern-299
+vram-cpu-pattern-300
+vram-cpu-pattern-301
+vram-cpu-pattern-302
+vram-cpu-pattern-303
+vram-cpu-pattern-304
+vram-cpu-pattern-305
+vram-cpu-pattern-306
+vram-cpu-pattern-307
+vram-cpu-pattern-308
+vram-cpu-pattern-309
+vram-cpu-pattern-310
+vram-cpu-pattern-311
+vram-cpu-pattern-312
+vram-cpu-pattern-313
+vram-cpu-pattern-314
+vram-cpu-pattern-315
+vram-cpu-pattern-316
+vram-cpu-pattern-317
+vram-cpu-pattern-318
+vram-cpu-pattern-319
+vram-cpu-pattern-320
+vram-cpu-pattern-321
+vram-cpu-pattern-322
+vram-cpu-pattern-323
+vram-cpu-pattern-324
+vram-cpu-pattern-325
+vram-cpu-pattern-326
+vram-cpu-pattern-327
+vram-cpu-pattern-328
+vram-cpu-pattern-329
+vram-cpu-pattern-330
+vram-cpu-pattern-331
+vram-cpu-pattern-332
+vram-cpu-pattern-333
+vram-cpu-pattern-334
+vram-cpu-pattern-335
+vram-cpu-pattern-336
+vram-cpu-pattern-337
+vram-cpu-pattern-338
+vram-cpu-pattern-339
+vram-cpu-pattern-340
+vram-cpu-pattern-341
+vram-cpu-pattern-342
+vram-cpu-pattern-343
+vram-cpu-pattern-344
+vram-cpu-pattern-345
+vram-cpu-pattern-346
+vram-cpu-pattern-347
+vram-cpu-pattern-348
+vram-cpu-pattern-349
+vram-cpu-pattern-350
+vram-cpu-pattern-351
+vram-cpu-pattern-352
+vram-cpu-pattern-353
+vram-cpu-pattern-354
+vram-cpu-pattern-355
+vram-cpu-pattern-356
+vram-cpu-pattern-357
+vram-cpu-pattern-358
+vram-cpu-pattern-359
+vram-cpu-pattern-360
+vram-cpu-pattern-361
+vram-cpu-pattern-362
+vram-cpu-pattern-363
+vram-cpu-pattern-364
+vram-cpu-pattern-365
+vram-cpu-pattern-366
+vram-cpu-pattern-367
+vram-cpu-pattern-368
+vram-cpu-pattern-369
+vram-cpu-pattern-370
+vram-cpu-pattern-371
+vram-cpu-pattern-372
+vram-cpu-pattern-373
+vram-cpu-pattern-374
+vram-cpu-pattern-375
+vram-cpu-pattern-376
+vram-cpu-pattern-377
+vram-cpu-pattern-378
+vram-cpu-pattern-379
+vram-cpu-pattern-380
+vram-cpu-pattern-381
+vram-cpu-pattern-382
+vram-cpu-pattern-383
+vram-cpu-pattern-384
+vram-cpu-pattern-385
+vram-cpu-pattern-386
+vram-cpu-pattern-387
+vram-cpu-pattern-388
+vram-cpu-pattern-389
+vram-cpu-pattern-390
+vram-cpu-pattern-391
+vram-cpu-pattern-392
+vram-cpu-pattern-393
+vram-cpu-pattern-394
+vram-cpu-pattern-395
+vram-cpu-pattern-396
+vram-cpu-pattern-397
+vram-cpu-pattern-398
+vram-cpu-pattern-399
+vram-cpu-pattern-400
+vram-cpu-pattern-401
+vram-cpu-pattern-402
+vram-cpu-pattern-403
+vram-cpu-pattern-404
+vram-cpu-pattern-405
+vram-cpu-pattern-406
+vram-cpu-pattern-407
+vram-cpu-pattern-408
+vram-cpu-pattern-409
+vram-cpu-pattern-410
+vram-cpu-pattern-411
+vram-cpu-pattern-412
+vram-cpu-pattern-413
+vram-cpu-pattern-414
+vram-cpu-pattern-415
+vram-cpu-pattern-416
+vram-cpu-pattern-417
+vram-cpu-pattern-418
+vram-cpu-pattern-419
+vram-cpu-pattern-420
+vram-cpu-pattern-421
+vram-cpu-pattern-422
+vram-cpu-pattern-423
+vram-cpu-pattern-424
+vram-cpu-pattern-425
+vram-cpu-pattern-426
+vram-cpu-pattern-427
+vram-cpu-pattern-428
+vram-cpu-pattern-429
+vram-cpu-pattern-430
+vram-cpu-pattern-431
+vram-cpu-pattern-432
+vram-cpu-pattern-433
+vram-cpu-pattern-434
+vram-cpu-pattern-435
+vram-cpu-pattern-436
+vram-cpu-pattern-437
+vram-cpu-pattern-438
+vram-cpu-pattern-439
+vram-cpu-pattern-440
+vram-cpu-pattern-441
+vram-cpu-pattern-442
+vram-cpu-pattern-443
+vram-cpu-pattern-444
+vram-cpu-pattern-445
+vram-cpu-pattern-446
+vram-cpu-pattern-447
+vram-cpu-pattern-448
+vram-cpu-pattern-449
+vram-cpu-pattern-450
+vram-cpu-pattern-451
+vram-cpu-pattern-452
+vram-cpu-pattern-453
+vram-cpu-pattern-454
+vram-cpu-pattern-455
+vram-cpu-pattern-456
+vram-cpu-pattern-457
+vram-cpu-pattern-458
+vram-cpu-pattern-459
+vram-cpu-pattern-460
+vram-cpu-pattern-461
+vram-cpu-pattern-462
+vram-cpu-pattern-463
+vram-cpu-pattern-464
+vram-cpu-pattern-465
+vram-cpu-pattern-466
+vram-cpu-pattern-467
+vram-cpu-pattern-468
+vram-cpu-pattern-469
+vram-cpu-pattern-470
+vram-cpu-pattern-471
+vram-cpu-pattern-472
+vram-cpu-pattern-473
+vram-cpu-pattern-474
+vram-cpu-pattern-475
+vram-cpu-pattern-476
+vram-cpu-pattern-477
+vram-cpu-pattern-478
+vram-cpu-pattern-479
+vram-cpu-pattern-480
+vram-cpu-pattern-481
+vram-cpu-pattern-482
+vram-cpu-pattern-483
+vram-cpu-pattern-484
+vram-cpu-pattern-485
+vram-cpu-pattern-486
+vram-cpu-pattern-487
+vram-cpu-pattern-488
+vram-cpu-pattern-489
+vram-cpu-pattern-490
+vram-cpu-pattern-491
+vram-cpu-pattern-492
+vram-cpu-pattern-493
+vram-cpu-pattern-494
+vram-cpu-pattern-495
+vram-cpu-pattern-496
+vram-cpu-pattern-497
+vram-cpu-pattern-498
+vram-cpu-pattern-499
+vram-cpu-pattern-500
+vram-cpu-pattern-501
+vram-cpu-pattern-502
+vram-cpu-pattern-503
+vram-cpu-pattern-504
+vram-cpu-pattern-505
+vram-cpu-pattern-506
+vram-cpu-pattern-507
+vram-cpu-pattern-508
+vram-cpu-pattern-509
+vram-cpu-pattern-510
+vram-cpu-pattern-511
+vram-cpu-pattern-512
+vram-cpu-pattern-513
+vram-cpu-pattern-514
+vram-cpu-pattern-515
+vram-cpu-pattern-516
+vram-cpu-write-mirror-00-00
+vram-cpu-write-mirror-00-01
+vram-cpu-write-mirror-00-02
+vram-cpu-write-mirror-01-00
+vram-cpu-write-mirror-01-01
+vram-cpu-write-mirror-01-02
+vram-cpu-write-mirror-02-00
+vram-cpu-write-mirror-02-01
+vram-cpu-write-mirror-02-02
+vram-cpu-write-mirror-03-00
+vram-cpu-write-mirror-03-01
+vram-cpu-write-mirror-03-02
+vram-cpu-write-mirror-04-00
+vram-cpu-write-mirror-04-01
+vram-cpu-write-mirror-04-02
+vram-cpu-write-mirror-05-00
+vram-cpu-write-mirror-05-01
+vram-cpu-write-mirror-05-02
+vram-ge-clear-sync
+vram-ge-sprite-a-sync
+vram-ge-sprite-b-sync
+vram-ge-sprite-c-sync
+vram-ge-depth-row0-00
+vram-ge-depth-row0-01
+vram-ge-depth-row0-02
+vram-ge-depth-row0-03
+vram-ge-depth-row0-04
+vram-ge-depth-row0-05
+vram-ge-depth-row0-06
+vram-ge-depth-row0-07
+vram-ge-depth-row0-08
+vram-ge-depth-row0-09
+vram-ge-depth-row0-10
+vram-ge-depth-row0-11
+vram-ge-depth-row0-12
+vram-ge-depth-row0-13
+vram-ge-depth-row0-14
+vram-ge-depth-row0-15
+vram-ge-depth-row1-00
+vram-ge-depth-row1-01
+vram-ge-depth-row1-02
+vram-ge-depth-row1-03
+vram-ge-depth-row1-04
+vram-ge-depth-row1-05
+vram-ge-depth-row1-06
+vram-ge-depth-row1-07
+vram-ge-depth-row1-08
+vram-ge-depth-row1-09
+vram-ge-depth-row1-10
+vram-ge-depth-row1-11
+vram-ge-depth-row1-12
+vram-ge-depth-row1-13
+vram-ge-depth-row1-14
+vram-ge-depth-row1-15
+vram-ge-depth-row2-00
+vram-ge-depth-row2-01
+vram-ge-depth-row2-02
+vram-ge-depth-row2-03
+vram-ge-depth-row2-04
+vram-ge-depth-row2-05
+vram-ge-depth-row2-06
+vram-ge-depth-row2-07
+vram-ge-depth-row2-08
+vram-ge-depth-row2-09
+vram-ge-depth-row2-10
+vram-ge-depth-row2-11
+vram-ge-depth-row2-12
+vram-ge-depth-row2-13
+vram-ge-depth-row2-14
+vram-ge-depth-row2-15
+vram-ge-depth-row3-00
+vram-ge-depth-row3-01
+vram-ge-depth-row3-02
+vram-ge-depth-row3-03
+vram-ge-depth-row3-04
+vram-ge-depth-row3-05
+vram-ge-depth-row3-06
+vram-ge-depth-row3-07
+vram-ge-depth-row3-08
+vram-ge-depth-row3-09
+vram-ge-depth-row3-10
+vram-ge-depth-row3-11
+vram-ge-depth-row3-12
+vram-ge-depth-row3-13
+vram-ge-depth-row3-14
+vram-ge-depth-row3-15
+vram-ge-depth-row4-00
+vram-ge-depth-row4-01
+vram-ge-depth-row4-02
+vram-ge-depth-row4-03
+vram-ge-depth-row4-04
+vram-ge-depth-row4-05
+vram-ge-depth-row4-06
+vram-ge-depth-row4-07
+vram-ge-depth-row4-08
+vram-ge-depth-row4-09
+vram-ge-depth-row4-10
+vram-ge-depth-row4-11
+vram-ge-depth-row4-12
+vram-ge-depth-row4-13
+vram-ge-depth-row4-14
+vram-ge-depth-row4-15
+vram-ge-depth-row5-00
+vram-ge-depth-row5-01
+vram-ge-depth-row5-02
+vram-ge-depth-row5-03
+vram-ge-depth-row5-04
+vram-ge-depth-row5-05
+vram-ge-depth-row5-06
+vram-ge-depth-row5-07
+vram-ge-depth-row5-08
+vram-ge-depth-row5-09
+vram-ge-depth-row5-10
+vram-ge-depth-row5-11
+vram-ge-depth-row5-12
+vram-ge-depth-row5-13
+vram-ge-depth-row5-14
+vram-ge-depth-row5-15
+vram-ge-depth-row6-00
+vram-ge-depth-row6-01
+vram-ge-depth-row6-02
+vram-ge-depth-row6-03
+vram-ge-depth-row6-04
+vram-ge-depth-row6-05
+vram-ge-depth-row6-06
+vram-ge-depth-row6-07
+vram-ge-depth-row6-08
+vram-ge-depth-row6-09
+vram-ge-depth-row6-10
+vram-ge-depth-row6-11
+vram-ge-depth-row6-12
+vram-ge-depth-row6-13
+vram-ge-depth-row6-14
+vram-ge-depth-row6-15
+vram-ge-depth-row7-00
+vram-ge-depth-row7-01
+vram-ge-depth-row7-02
+vram-ge-depth-row7-03
+vram-ge-depth-row7-04
+vram-ge-depth-row7-05
+vram-ge-depth-row7-06
+vram-ge-depth-row7-07
+vram-ge-depth-row7-08
+vram-ge-depth-row7-09
+vram-ge-depth-row7-10
+vram-ge-depth-row7-11
+vram-ge-depth-row7-12
+vram-ge-depth-row7-13
+vram-ge-depth-row7-14
+vram-ge-depth-row7-15
+vram-ge-depth-row8-00
+vram-ge-depth-row8-01
+vram-ge-depth-row8-02
+vram-ge-depth-row8-03
+vram-ge-depth-row8-04
+vram-ge-depth-row8-05
+vram-ge-depth-row8-06
+vram-ge-depth-row8-07
+vram-ge-depth-row8-08
+vram-ge-depth-row8-09
+vram-ge-depth-row8-10
+vram-ge-depth-row8-11
+vram-ge-depth-row8-12
+vram-ge-depth-row8-13
+vram-ge-depth-row8-14
+vram-ge-depth-row8-15
+vram-ge-depth-row9-00
+vram-ge-depth-row9-01
+vram-ge-depth-row9-02
+vram-ge-depth-row9-03
+vram-ge-depth-row9-04
+vram-ge-depth-row9-05
+vram-ge-depth-row9-06
+vram-ge-depth-row9-07
+vram-ge-depth-row9-08
+vram-ge-depth-row9-09
+vram-ge-depth-row9-10
+vram-ge-depth-row9-11
+vram-ge-depth-row9-12
+vram-ge-depth-row9-13
+vram-ge-depth-row9-14
+vram-ge-depth-row9-15
+vram-ge-color-row0-00
+vram-ge-color-row0-01
+vram-ge-color-row0-02
+vram-ge-color-row0-03
+vram-ge-color-row0-04
+vram-ge-color-row0-05
+vram-ge-color-row0-06
+vram-ge-color-row0-07
+vram-ge-color-row1-00
+vram-ge-color-row1-01
+vram-ge-color-row1-02
+vram-ge-color-row1-03
+vram-ge-color-row1-04
+vram-ge-color-row1-05
+vram-ge-color-row1-06
+vram-ge-color-row1-07
+vram-ge-color-row2-00
+vram-ge-color-row2-01
+vram-ge-color-row2-02
+vram-ge-color-row2-03
+vram-ge-color-row2-04
+vram-ge-color-row2-05
+vram-ge-color-row2-06
+vram-ge-color-row2-07
+vram-restore
+vram-mirror-done
+```
+
 ## Pending PSP-3000 measurement campaign
 
-The following source-owned cases are built for a future PSP-3000 / 6.61
-session. Of the nine cases below, six were measured by the 2026-10-10 campaign on `f6ccfb33`
-(index above), `ge-break-continue` was captured but is not acceptance-eligible, and
-`llsc-link` and `vfpu-compare` were added after that campaign and have not run on hardware.
-Their parsers check record order, scalar fields, and completion;
-they do not encode expected PSP return values.
+The following twenty-one source-owned cases are in the PSP-3000 / 6.61 measurement
+registry; the status column distinguishes measured, captured-only and pending evidence.
+Six were measured by the 2026-10-10 campaign on `f6ccfb33`; `ge-break-continue`
+was measured by its acceptance-eligible 2026-10-15 re-run on `c642039a` after two
+captured-only runs; `llsc-link`, `vfpu-compare` and `fpu-cc` were measured on
+2026-10-15 from `e45e667b`. The five initial single-launch HLE cases (97-101)
+ran on 2026-10-15 from `b5d6fc5b`: the two VTimer cases and power-float case
+were measured, the earlier pool-bounds revision was captured only (the revised
+form has not run), and null-out was captured incomplete. The added HLE timer-order
+case (103) and the VFPU transcendental corpus were measured on 2026-10-15 from
+`22b027f6`, and the HLE audio case (102) from `7fc1641e` after a first run from
+`22b027f6` was captured only.
+These eight probes run as single launches outside the campaign queue
+(`CAMPAIGN_QUEUE_CASES`); the manifest distinguishes measured, captured and
+not-run states. Their parsers check record order, scalar fields and completion,
+not expected PSP values.
 
 | Case | Evidence id | Hardware status | Contract being measured |
 | --- | --- | --- | --- |
 | `kernel-alarm` | `PSP-ALARM-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Alarm creation with a null handler and zero clock; alarm-table exhaustion capped at 1024 pending alarms; cancel after one-shot fire, repeat cancel, unknown UID; handler-return re-arm base; interrupt state and a bounded blocking call in an alarm handler. |
 | `thread-scheduler` | `PSP-THREAD-003` | `MEASURED` (2026-10-10, `f6ccfb33`) | Suspend UID 0 and self; resume UID 0; invalid ready-queue priority; ready-thread ordering after rotation; a timed wait expiring while its thread is suspended. |
 | `wait-outcomes` | `PSP-WAIT-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Semaphore and event-flag signal/cancel before the timeout deadline, followed by dispatch after that deadline. |
-| `ge-break-continue` | `PSP-GE-CONTROL-001` | `CAPTURED` (2026-10-10, `f6ccfb33`; not acceptance-eligible) | `sceGeBreak`/`sceGeContinue` return values without active/paused lists, invalid break mode, list/draw sync states for paused/cancelled lists, and a bounded continue drain and queue quiesce (`TIMEOUT` instead of a hang). |
+| `ge-break-continue` | `PSP-GE-CONTROL-001` | `MEASURED` (2026-10-15, `c642039a`; the earlier revision's 2026-10-10 `f6ccfb33` and 2026-10-15 `e45e667b` runs were not acceptance-eligible) | `sceGeBreak`/`sceGeContinue` return values without active/paused lists, invalid break mode, list/draw sync states for paused/cancelled lists, and a bounded continue drain and queue quiesce (`TIMEOUT` instead of a hang). The probe was revised after that capture: the cancelled-list cells are read after a `sceGeBreak(1)` reset, a stalled-list `sceGeListDeQueue` is a PASS cell whatever it returns, and `sceGeBreak(1)` with no prior dequeue is its own cell. |
+| `vram-mirror` | `PSP-VRAM-MIRROR-001` | `MEASURED` (2026-10-16, PSP-3000 / 6.61; revisions `24c1472e`, `fd3efc64`, `df41dba2`) | Full position-encoded EDRAM fill followed by eight-alias reads: 0 mismatches over 4,134 samples per alias. `0x04000000`/`0x04400000` and uncached peers are identity; `0x04200000` and peers map `o ^ 0x2040`; `0x04600000` and peers rotate bits 5..9 left one, then XOR `0x2040`. Mirror write scans find the same transforms. The GE depth rule reported for the 512-pixel, 16-bit buffer is `(y * 1024 + 2x) ^ 0x2040`; `0x04200000` reads depth linearly and colour remains linear. Absolute-VRAM versus buffer-relative XOR is unresolved because zbp `0x0CC000` has bits 6 and 13 clear. Three through-mode raw-Z sprites, ten full depth rows and three color rows were captured; VRAM restore was verified. Raw PSP words remain private. |
 | `refer-status-size` | `PSP-KERNEL-STATUS-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Bytes written and size-word results for `ReferSemaStatus`, `ReferEventFlagStatus`, and `ReferMbxStatus` at size 0, 8, 40, and full size. |
 | `registry-readonly` | `PSP-REGISTRY-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Read-only root/category opening and `/CONFIG` category/key enumeration, metadata, selected modeled settings, error returns, handle exhaustion capped at 256 opens, and the forged-handle call last. |
-| `llsc-link` | `PSP-LLSC-001` | `NOT_RUN` (new probe, not yet run on hardware) | Three ll/sc link windows: a plain ll and sc pair (control), a second sc after a successful sc with no new ll, and an sc to an address other than the one ll linked. Each record is the sc result, the word ll loaded, the words at both addresses, and the project's model words, which are UNMEASURED for the console. |
+| `llsc-link` | `PSP-LLSC-001` | `MEASURED` (2026-10-15, `e45e667b`) | Three ll/sc link windows: a plain ll and sc pair (control), a second sc after a successful sc with no new ll, and an sc to an address other than the one ll linked. Each record is the sc result, the word ll loaded, the words at both addresses, and the project's model words; all three cells match the model. |
 | `kernel-misc` | `PSP-KERNEL-MISC-001` | `MEASURED` (2026-10-10, `f6ccfb33`) | Wide clock conversion, controller default mode, profiler-pointer returns, basic VTimer behavior, display return values, battery-icon status, and UMD-popup returns. |
-| `vfpu-compare` | `PSP-VFPU-CMP-001` | `NOT_RUN` (new probe, not yet run on hardware) | `vscmp.s`, `vsge.s`, and `vslt.s` on 15 operand pairs: less-than, equal, greater, signed zeros in both orders, quiet, signalling, and negative NaN on each side, and infinities. Each record is the raw result word against the project's model, which is UNMEASURED for the console. |
+| `vfpu-compare` | `PSP-VFPU-CMP-001` | `MEASURED` (2026-10-15, `e45e667b`) | `vscmp.s`, `vsge.s`, and `vslt.s` on 15 operand pairs: less-than, equal, greater, signed zeros in both orders, quiet, signalling, and negative NaN on each side, and infinities. Each record is the raw result word against the project's model at the time; the five `vscmp` NaN words differed from it, and the model now returns the measured words. |
+| `fpu-cc` | `PSP-FPU-CC-001` | `MEASURED` (2026-10-15, `e45e667b`) | COP1 condition codes: which FCR31 condition bits exist, which bit `c.eq.s` sets for each condition code 0..7, and whether `bc1t`/`bc1f` with each code are taken under FCC0, no flag, and that code's own flag. Condition code 0 is the control. Only FCC0 exists; every code writes and tests it. |
+| `vfpu-transcendental-corpus` | `PSP-VFPU-TRANSCENDENTAL-001` | `MEASURED` (2026-10-15, `22b027f6`; single launch, not in the campaign queue) | Raw single-lane result words for vsin, vcos, vexp2, vlog2, vrsq, vrcp, vsqrt, vasin, vnrcp, vnsin, and vrexp2. Each operation uses 63 raw-word inputs: 20 special encodings and 43 evenly spaced domain constants. VASIN substitutes three in-domain words for its previously measured edge inputs. Eight-word chunks produce 88 data records plus one completion record (89 result records total); parsing checks format only and asserts no hardware values. |
+| `registry-font` | `PSP-REGISTRY-002` | `NOT_RUN` | Whether the registry handle lists the root, then the `/DATA/FONT` and `/SYSPROFILE/RESOLUTION` subtrees: every key's name, type, size, value and enumeration order, reached only through categories the console listed first. |
+| `umd-io` | `PSP-UMDIO-001` | `MEASURED` (2026-10-17, PSP-3000 / 6.61 / ARK CFW; `e2180970`) | `sceIoOpen` and `sceIoDopen` results for bare UMD devices, disc paths, the two extra-flag opens, and `msstor0p1:/`; successful descriptors were closed with result 0. The UMD remained inserted and was not activated or changed. |
+| `umd-raw-read` | `PSP-UMDRAW-001` | `CAPTURED` (2026-10-17 and 2026-10-18, incomplete; source commits `6a9a39aa`, `97ccbf87`, `61574d37`) | Three attempts used 360 s, 900 s and 1800 s host case timeouts. The two 2026-10-18 runs emitted 31 complete records through `size-4096-read`, then no 32 KiB read result. On the 1800 s run, `usbipd` reported the PSP absent at 3m46, before the 1800-second deadline; L1 reattach and three `ver` retries failed. Teardown/unload remains unverified. This records USB loss before the host timeout but does not distinguish a PSP-side read hang from PSPLink/USB transport failure. No raw UMD read or seek semantics are inferred; a fresh physical power-cycle is required before another launch. |
+| `hle-vtimer-unit` | `PSP-HLE-VTIMER-002` | `MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the campaign queue) | One VTimer: start; a `sceKernelGetVTimerTime` and a system-clock reading either side of a bounded 20 ms delay; the VTimer base and Refer base field while running and after stop; stop; delete. Each 64-bit clock is recorded as its low word then its high word. |
+| `hle-vtimer-errors` | `PSP-HLE-VTIMER-003` | `MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the campaign queue) | Start, stop, and `sceKernelGetVTimerTime` on a deleted UID, then a cleanup delete of that UID after its last use; a live timer created and deleted; up to 64 creates; out1 records whether a refusal occurred; every created timer deleted. The NULL option pointer of `sceKernelCreateVTimer` is the optional argument. |
+| `hle-kernel-pool-bounds` | `PSP-HLE-KERNEL-STATUS-002` | `NOT_RUN` (revised form; single launch, not in the campaign queue; the earlier revision's 2026-10-15 `b5d6fc5b` run was captured only) | FPL creation with block size 0 and with a 0x7fffffff-byte block, each deleted when its create returned a pool; a refused create gives a PASS delete cell with out0 0 and no delete call; VPL allocation: up to 64 allocations; out1 records whether a refusal occurred; every block freed and the VPL deleted. The NULL option pointers of the pool creates are the optional argument. |
+| `hle-power-float-v0` | `PSP-HLE-POWER-002` | `MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the campaign queue) | Raw `$v0` and `$f0` bits of `scePowerGetPllClockFrequencyFloat`, `scePowerGetCpuClockFrequencyFloat`, and `scePowerGetBusClockFrequencyFloat`, one call each, through a short assembly wrapper. |
+| `hle-null-out-pointers` | `PSP-HLE-NULL-OUT-001` | `CAPTURED` (2026-10-15, `b5d6fc5b`; incomplete, not measured; retired, never to be scheduled) | The existing capture stopped at the first mandatory NULL output, `sceKernelReferSystemStatus(NULL)`, and the console needed a power cycle. The kernel pointer check rejects kernel-space addresses but not address 0, so that call writes through NULL and faults; the VTimer getters also write through their output pointers. No game can rely on these results. |
+| `hle-audio-src` | `PSP-HLE-AUDIO-SRC-001` | `MEASURED` (2026-10-15, `7fc1641e`; the earlier run of `22b027f6` was captured only; single launch, not in the campaign queue) | Unreserved SRC release and silent output; reserve 1024 samples at 44100 Hz stereo; second reserve; one silent blocking output; release after the blocking drain and release again; six invalid reserve shapes, immediately releasing any unexpected success; Output2-then-SRC and SRC-then-Output2 reservation attempts with cleanup. 18 result records. No SRC rest-sample query exists in the public NID corpus. Risk high: two silent blocking SRC calls, at most one block per call; schedule after the other new probes. |
+| `hle-timer-order` | `PSP-HLE-TIMER-ORDER-001` | `MEASURED` (2026-10-15, `22b027f6`; single launch, not in the campaign queue) | Two equal-delay alarms set A then B; long-delay then short-delay alarm; nominally equal VTimer handler and alarm; SetAlarm(0). Each callback stores a shared sequence number and system-time low/high words. Every wait has an elapsed-time deadline; cancel all alarms and stop/delete the VTimer. Ordering only, no absolute-time claim; 18 result records. |
+
+### PSP-UMDIO-001 measured run 2026-10-17
+
+Acceptance-eligible measurement on a PSP-3000 with firmware 6.61 and ARK CFW,
+at public commit `e2180970`. A UMD was inserted; `sceUmdCheckMedium` returned 1
+and `sceUmdGetDriveStat` returned `0x32` both before and after the calls. Every
+successful open or directory open returned descriptor 3 and its matching close
+returned 0. The probe did not activate the UMD or perform any read, write, seek,
+ioctl, devctl, or getstat through a raw descriptor; those semantics remain
+unmeasured.
+
+| Call | Flags | Result |
+| --- | --- | --- |
+| `sceIoOpen("umd0:")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("umd1:")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("umd:")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("umd0:/")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("umd1:/")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("disc0:")` | `PSP_O_RDONLY` | `0x80010016` |
+| `sceIoOpen("disc0:/")` | `PSP_O_RDONLY` | `0x80010002` |
+| `sceIoOpen("disc0:/PSP_GAME")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("disc0:/PSP_GAME/SYSDIR")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("disc0:/UMD_DATA.BIN")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("umd0:")` | `PSP_O_RDONLY \| 0x000f0000` | descriptor `3`; close `0` |
+| `sceIoOpen("umd1:")` | `PSP_O_RDONLY \| 0x000f0000` | descriptor `3`; close `0` |
+| `sceIoOpen("msstor0p1:/")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoDopen("umd0:")` | — | `0x80020325` |
+| `sceIoDopen("umd1:")` | — | `0x80020325` |
+| `sceIoDopen("umd:")` | — | `0x80020325` |
+| `sceIoDopen("disc0:")` | — | `0x80010016` |
+| `sceIoDopen("disc0:/")` | — | descriptor `3`; close `0` |
+| `sceIoDopen("disc0:/PSP_GAME")` | — | descriptor `3`; close `0` |
+
+The recorded cells are `umd-state-before`, `io-open-0000`, `io-open-0001`,
+`io-open-0002`, `io-open-0003`, `io-open-0004`, `io-open-0005`, `io-open-0006`,
+`io-open-0007`, `io-open-0008`, `io-open-0009`, `io-open-0010`, `io-open-0011`,
+`io-open-0012`, `io-dopen-0000`, `io-dopen-0001`, `io-dopen-0002`,
+`io-dopen-0003`, `io-dopen-0004`, `io-dopen-0005`, `umd-state-after`, and
+`umdio-done`.
+
+### PSP-UMDRAW-001 raw UMD read probe
+
+Status: CAPTURED, not measured. The source-owned case opens only umd0: with read-only flags.
+It records 64-bit seek results as low then high words, sceIoLseek32 results,
+read counts, the single immediate async poll and its following wait,
+sceIoGetstat, and UMD state before and after. Reads request at most 32,768
+bytes. The only disc bytes emitted are the first eight bytes of designated
+sector-16 reads, plus a whole-buffer-zero flag; no checksum or other payload is
+recorded. The async request is waited before the descriptor closes. The host
+fixture uses a synthetic byte-addressed disc and is not hardware evidence.
+
+Two incomplete hardware captures are now recorded. The first, from local
+source commit 6a9a39aa on 2026-10-17, emitted 31 result records through
+size-4096-read, then stopped at the combined size-32768-read progress marker.
+It reached the 360-second host case timeout without umdraw-done; the runner
+could not verify module unload or the host0 round-trip.
+
+The second, from local source commit 97ccbf87 on 2026-10-18 after an
+owner-confirmed power-cycle, passed the transport-write preflight and recorded
+all raw-read results through 4096 bytes. The updated probe emitted separate
+size-32768-seek and size-32768-read markers. Its last host0 write was 27.2
+seconds after launch; no 32 KiB result or umdraw-done arrived within the
+900-second host case timeout. The runner stopped with HOST0_ROUNDTRIP_FAILED.
+PSPLink was absent from usbipd list during recovery, later ver retries failed,
+and module unload was not verified.
+
+The 900-second event is a host-harness timeout followed by transport loss. It
+does not establish the PSP sceIoRead return semantics or distinguish a PSP call
+hang from a USBHostFS/PSPLink loss. No raw UMD read or seek semantics are
+measured. Do not retry this boot; a fresh physical power-cycle is required
+before any new target launch.
+
+Captured result-record IDs:
+
+```text
+umd-state-before, raw-open-extra, seek-set-0, seek-set-16, seek-set-32768,
+seek-cur-0, seek-end-0, seek-set-1, seek-set-neg1, seek32-set-0,
+seek32-set-16, seek32-set-32768, seek32-end-0, pos-advance-seek,
+pos-advance-first, pos-advance-second, pos-advance-cur, byte-sector16-seek,
+byte-sector16-read, size-1-seek, size-1-read, size-512-seek, size-512-read,
+size-2047-seek, size-2047-read, size-2048-seek, size-2048-read,
+size-2049-seek, size-2049-read, size-4096-seek, size-4096-read
+```
+
+The fixed output sequence is umd-state-before, raw-open-extra, seven 64-bit
+seek cells, four 32-bit seek cells, pos-advance-seek plus two consecutive reads
+and pos-advance-cur, byte-sector16-seek and byte-sector16-read, seek/read pairs
+for sizes 1, 512, 2047, 2048, 2049, 4096, 32768 and 0,
+unaligned-seek/unaligned-read, far-seek/far-read, async-seek, async-read,
+async-poll, async-wait, async-data, getstat, raw-close, readonly-open with
+three seeks and readonly-close, umd-state-after, and umdraw-done.
 
 The registry probe opens the registry and categories in read mode and never
 calls a write, create, remove, or flush API. Values are emitted only for keys
@@ -573,6 +1691,24 @@ the runtime models (`language`, `button_assign`, date/time format, `timezone`,
 `summer_time`, and `adhoc_channel`); other keys emit name, type, and size only.
 The resulting registry and console-specific files remain in the private
 campaign output directory.
+
+The font-registry probe (`registry-font`, `fixtures/psp_oracle/registry_walk.h`)
+opens no category by a literal path. On PSP-3000 6.6.1 opening a missing
+category creates it, so the probe lists the root through the registry handle
+itself and opens a category only after its open parent listed it as a
+directory with a name shorter than the 26-byte stored-name limit. If the
+registry handle does not list the root, or its listing does not show the
+measured `CONFIG` category as a directory, the probe opens nothing below it and
+records that result. It enters only `/DATA`, `/DATA/FONT`, `/SYSPROFILE` and
+`/SYSPROFILE/RESOLUTION` and what lies below the last two, and reads values only
+there. The build pins the probe's `sceReg` imports to the eight read calls.
+
+The `font-files` case (`PSP-FONTFILES-001`, `fixtures/psp_oracle/font_files.h`)
+is not in the campaign queue; it runs only when the maintainer asks for it. It
+lists `flash0:/font`, opens each regular file read-only, and copies it to
+`host0:/fonts/` for the maintainer's private use, verifying each copy with
+SHA-256 over the flash0 read, the host0 read-back and a second flash0 read. The
+copies and digests are private evidence and are never committed.
 
 The campaign queue is ordered in `tools/psp_oracle/run_psplink.py`. It starts
 with the host0 `transport-write` preflight, then the new cases above, followed
@@ -810,7 +1946,20 @@ and round-trip file remain available until the host has captured and checked the
 `tools/psp_oracle/run_psplink.py` compares three PSPLink snapshots around each launch.
 It uses `modlist` for the full loaded-module inventory; `modinfo <uid>` is the
 single-module query used for the unload handshake. S0 records threads,
-per-partition total/largest free bytes, and modules before load.
+per-partition total/largest free bytes, and modules before load. Before S0, the
+runner issues `ls host0:/`, a listing that writes nothing, then re-reads the thread
+list, which must match S0; a failed warm-up or a thread set that still moves blocks
+the case before load. Measured 2026-10-12 (session `psp-session-1012`, PSP-3000,
+PSPLink v3.2.1, commit `5ce131f4`): four `transport-write` runs all classified with
+S0 = S2 = 17 threads, the qualified one as `QUALIFIED_CAPTURE`. On that device the
+listing started no thread `thlist` reports — a freshly reset shell read 17 threads
+before any host0 access and 17 after the listing, byte-identical — and control runs
+with the warm-up disabled, and with the warm-up and the post-unload settle both
+disabled, passed teardown as well. The warm-up is a conditional baseline guard: if
+first host0 I/O starts a service thread on a particular boot, taking S0 afterwards
+includes it in the baseline. These campaigns did not observe a new thread and did
+not establish that a service thread caused the original 17-versus-18 discrepancy,
+which did not reproduce on the measured boot.
 S1 records them after the completion marker and before unload; `modinfo <uid> t`
 must show that the probe's only remaining thread is its main thread. Right after
 the `modstun` stop/unload handshake the runner settles the link before any

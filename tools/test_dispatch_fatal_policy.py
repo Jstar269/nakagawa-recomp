@@ -31,9 +31,13 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 import unittest
 from pathlib import Path
+
+try:
+    import scratch_dir
+except ModuleNotFoundError:
+    from tools import scratch_dir
 
 ROOT = Path(__file__).resolve().parent.parent
 RT = ROOT / "src" / "rt"
@@ -124,10 +128,11 @@ class TestDispatchFatalPolicySource(unittest.TestCase):
             "static int dispatch_try_with_boundary(\n"
             "    CpuState *s,\n"
             "    uint32_t target,\n"
-            "    const SrGuestInterpCallBoundary *call_boundary) {",
+            "    const SrGuestInterpCallBoundary *call_boundary,\n"
+            "    int drain) {",
         )
         self.assertTrue(body, "dispatch_try_with_boundary definition not found")
-        self.assertIn("dispatch_run_interp(s, target, call_boundary)", body)
+        self.assertIn("dispatch_run_interp(s, target, call_boundary, drain)", body)
         self.assertIn("SR_PERF_INTERP_DISPATCH_MISS", body)
 
     def test_no_dispatch_control_environment_variable_exists(self):
@@ -153,7 +158,7 @@ class TestDispatchFatalPolicyBehavioral(unittest.TestCase):
     """Behavioral test verifying that dispatch() on unknown targets exits with code 1."""
 
     def test_dispatch_unmapped_target_exits_code_1(self):
-        with tempfile.TemporaryDirectory(prefix="nk_dispatch_fatal_") as tmp_dir:
+        with scratch_dir.TemporaryDirectory(prefix="nk_dispatch_fatal_") as tmp_dir:
             wrapper_c = Path(tmp_dir) / "wrapper_test.c"
             wrapper_code = """
 #include <stdio.h>

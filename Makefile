@@ -150,35 +150,8 @@ POWERSHELL ?= powershell.exe
 else
 POWERSHELL ?= pwsh
 endif
-# Direct Make callers may provide VULKAN_SDK explicitly (or export it).
-# If unset, discover dynamically via tools/vulkan_sdk.py.
-ifeq ($(VULKAN_SDK),)
-VULKAN_SDK := $(shell "$(PYTHON)" -c "import sys; sys.path.insert(0, 'tools'); from vulkan_sdk import discover_vulkan_sdk, VulkanSdkError; (lambda: exec('try:\n print(discover_vulkan_sdk().as_posix())\nexcept VulkanSdkError:\n pass'))()")
-endif
-# PowerShell commonly exports this with backslashes while nk_manager passes the
-# same directory with slashes. Canonicalize before hashing CFLAGS so direct Make
-# and manager builds do not churn otherwise identical runtime profiles.
-VULKAN_SDK := $(subst \,/,$(VULKAN_SDK))
-# glslc from the Vulkan SDK is used ONLY by the opt-in `shaders` target below.
+# glslc from the Vulkan SDK is used ONLY by the opt-in shaders target.
 GLSLC ?= glslc
-
-# Vulkan include and library search paths. On Windows these come from the resolved SDK
-# (see the VULKAN_SDK block above). On Linux there is no SDK directory by default: the
-# loader is a system library (libvulkan.so) and the headers live under /usr/include, so the
-# standard search paths already find them and no -I/-L is emitted. Forcing -I/Include -I/include
-# on Linux reorders GCC's own header search and breaks #include_next, so the empty SDK is
-# handled explicitly here rather than by leaving a dangling -I$(VULKAN_SDK)/Include.
-#
-# An explicit VULKAN_SDK override on Linux is still honoured: if the caller names a real
-# directory, -L<root>/lib is added and the SDK's own headers are picked up. The default
-# (no override, no discovery) is the system loader.
-ifeq ($(OS),Windows_NT)
-VULKAN_INC_FLAGS := -I"$(VULKAN_SDK)/Include" -I"$(VULKAN_SDK)/include"
-VULKAN_LIB_FLAGS := -L"$(VULKAN_SDK)/Lib" -L"$(VULKAN_SDK)/lib"
-else
-VULKAN_INC_FLAGS := $(if $(strip $(VULKAN_SDK)),-I"$(VULKAN_SDK)/include",)
-VULKAN_LIB_FLAGS := $(if $(strip $(VULKAN_SDK)),-L"$(VULKAN_SDK)/lib",) -lvulkan
-endif
 
 # BUILD AND LOG ROOTS. BUILD_ROOT is the shared build tree: the default per-title
 # BUILD_DIR, the shared fixture trees clean-fixtures removes and the parse-time SDL3
@@ -223,22 +196,52 @@ endif
 # prefixing it with `./` names no file.
 BUILD_ROOT_RUN := $(if $(filter /%,$(BUILD_ROOT))$(findstring :,$(BUILD_ROOT)),$(BUILD_ROOT),./$(BUILD_ROOT))
 
-# SDL3 dependency discovery and isolation (issue #331).
-# An explicit SDL3_DIR overrides discovery; otherwise the supported provider is
-# found (MSYS2 UCRT64 on Windows, pkg-config/system elsewhere). One Python pass
-# writes every SDL3 variable to a fragment, so a parse costs one interpreter
-# start rather than one per variable. Info-only goals skip discovery entirely.
+# SDL3 and Vulkan dependency discovery.
+# Normal build parses resolve both in one Python startup. The fragment carries the
+# same Make variables used by compiler/profile hashing; info-only and clean goals
+# retain their existing lightweight SDL behavior.
 SDL3_DIR ?=
 SDL3_MAKE_FRAGMENT := $(BUILD_ROOT)/.sdl3-discovery.mk
 ifeq ($(strip $(filter clean distclean clean-preview,$(MAKECMDGOALS))$(NK_INFO_ONLY)),)
+ifeq ($(VULKAN_SDK),)
+_BUILD_DEPENDENCY_DISCOVERY := $(shell "$(PYTHON)" -W ignore -c "import sys; sys.path.insert(0, 'tools'); from nk_doctor_checks import write_build_discovery_make_fragment; write_build_discovery_make_fragment(r'$(SDL3_MAKE_FRAGMENT)', r'$(subst \,/,$(SDL3_DIR))', r'$(CC)', r'$(subst \,/,$(VULKAN_SDK))', True)" 2>&1)
+ifneq ($(strip $(_BUILD_DEPENDENCY_DISCOVERY)),)
+$(error SDL3 discovery failed: $(_BUILD_DEPENDENCY_DISCOVERY))
+endif
+else
 _SDL3_DISCOVERY := $(shell "$(PYTHON)" -W ignore -c "import sys; sys.path.insert(0, 'tools'); from nk_doctor_checks import write_sdl3_make_fragment; write_sdl3_make_fragment(r'$(SDL3_MAKE_FRAGMENT)', r'$(subst \,/,$(SDL3_DIR))', r'$(CC)')" 2>&1)
 ifneq ($(strip $(_SDL3_DISCOVERY)),)
 $(error SDL3 discovery failed: $(_SDL3_DISCOVERY))
 endif
+endif
+VULKAN_SDK := $(subst \,/,$(VULKAN_SDK))
 include $(SDL3_MAKE_FRAGMENT)
+
 else
 SDL3_PROVIDER := none
 SDL3_VERSION := none
+ifeq ($(VULKAN_SDK),)
+VULKAN_SDK := $(shell "$(PYTHON)" -c "import sys; sys.path.insert(0, 'tools'); from vulkan_sdk import discover_vulkan_sdk, VulkanSdkError; (lambda: exec('try:\n print(discover_vulkan_sdk().as_posix())\nexcept VulkanSdkError:\n pass'))()")
+endif
+VULKAN_SDK := $(subst \,/,$(VULKAN_SDK))
+endif
+
+# Vulkan include and library search paths. On Windows these come from the resolved SDK
+# (see the VULKAN_SDK block above). On Linux there is no SDK directory by default: the
+# loader is a system library (libvulkan.so) and the headers live under /usr/include, so the
+# standard search paths already find them and no -I/-L is emitted. Forcing -I/Include -I/include
+# on Linux reorders GCC's own header search and breaks #include_next, so the empty SDK is
+# handled explicitly here rather than by leaving a dangling -I$(VULKAN_SDK)/Include.
+#
+# An explicit VULKAN_SDK override on Linux is still honoured: if the caller names a real
+# directory, -L<root>/lib is added and the SDK's own headers are picked up. The default
+# (no override, no discovery) is the system loader.
+ifeq ($(OS),Windows_NT)
+VULKAN_INC_FLAGS := -I"$(VULKAN_SDK)/Include" -I"$(VULKAN_SDK)/include"
+VULKAN_LIB_FLAGS := -L"$(VULKAN_SDK)/Lib" -L"$(VULKAN_SDK)/lib"
+else
+VULKAN_INC_FLAGS := $(if $(strip $(VULKAN_SDK)),-I"$(VULKAN_SDK)/include",)
+VULKAN_LIB_FLAGS := $(if $(strip $(VULKAN_SDK)),-L"$(VULKAN_SDK)/lib",) -lvulkan
 endif
 
 # Native runtime code is host-side C and can be tested independently.
@@ -694,7 +697,7 @@ EXE_EXT             := .exe
 # its own executable-anchored root, so the step is absent rather than emulated
 # by a second copy script. A missing asset is reported by the runtime itself
 # (font_load / data walk), never silently ignored here.
-ASSET_COPY_STEP     = $(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File tools/copy_build_assets.ps1 -BuildDir "$(BUILD_DIR)" -Sdl3DllPath "$(SDL3_DLL)" $(ASSET_COPY_ARGS)
+ASSET_COPY_STEP     = $(POWERSHELL) -NoProfile -ExecutionPolicy Bypass -File tools/copy_build_assets.ps1 -BuildDir "$(BUILD_DIR)" -ProjectFontDir "$(PROJECT_FONT_GENERATED_DIR)" -Sdl3DllPath "$(SDL3_DLL)" $(ASSET_COPY_ARGS)
 else
 PLAYER_PLATFORM_SRC := src/core/nk_platform_posix.c
 PLAYER_PLATFORM_LIBS :=
@@ -725,7 +728,7 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/fbcap.c \
               src/rt/ge_capture.c \
               src/rt/vfpu_interp.c \
-              src/rt/hle.c src/rt/flash0_font.c \
+              src/rt/hle.c src/rt/audio_resample.c src/rt/flash0_font.c \
               src/core/nk_xb.c \
               src/rt/hle_power.c \
               src/rt/prx_loader.c \
@@ -944,6 +947,7 @@ PUBLIC_TARGETS := \
 	asset-index-selftest \
 	fp-convert-selftest \
 	ge-float24-selftest \
+	ge-cpu-profile-validate-selftest \
 	vfpu-tables-selftest \
 	watchpoints-file-selftest \
 	ge-raster-ref-selftest \
@@ -959,6 +963,7 @@ PUBLIC_TARGETS := \
 	psmf-media-selftest \
 	psmf-media-selftest-csc-mutant \
 	audio-selftest \
+	audio-resampler-bench \
 	atrac3p-title-accept \
 	gpu-coherence-selftest \
 	gpu-snapsync-selftest \
@@ -980,7 +985,8 @@ PUBLIC_TARGETS := \
 	gpu-capture-selftest \
 	gpu-selftest-status
 
-INTERNAL_TARGETS := FORCE player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
+PROJECT_FONT_SLOT_TARGETS := project-japanese-font project-latin-font project-korean-font
+INTERNAL_TARGETS := FORCE project-japanese-font project-latin-font project-korean-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
@@ -1067,6 +1073,7 @@ HELP_DESCRIPTION_memory-watch-selftest := run the SR_WATCH store-watch selftest
 HELP_DESCRIPTION_asset-index-selftest := run the asset-index selftest
 HELP_DESCRIPTION_fp-convert-selftest := run the FPU conversion selftest
 HELP_DESCRIPTION_ge-float24-selftest := run the GE float24/row-sum/reciprocal reference selftest
+HELP_DESCRIPTION_ge-cpu-profile-validate-selftest := run the GE CPU-profile validator selftest on the production GE object
 HELP_DESCRIPTION_vfpu-tables-selftest := run the VFPU table-loader selftest
 HELP_DESCRIPTION_watchpoints-file-selftest := run the watchpoints-file selftest
 HELP_DESCRIPTION_ge-raster-ref-selftest := run the GE triangle setup and rasterization reference selftest
@@ -1082,6 +1089,7 @@ HELP_DESCRIPTION_psmf-producer-selftest := run the source-owned bounded PSMF pro
 HELP_DESCRIPTION_psmf-media-selftest := run the source-owned PSMF-to-decoder media selftest
 HELP_DESCRIPTION_psmf-media-selftest-csc-mutant := prove the media selftest kills a Csc that reports success without writing pixels
 HELP_DESCRIPTION_audio-selftest := run the SDL3 host audio output selftest
+HELP_DESCRIPTION_audio-resampler-bench := run the synthetic-input audio resampler microbenchmark (no game data)
 HELP_DESCRIPTION_atrac3p-title-accept := run the optional ATRAC3+ title acceptance route
 HELP_DESCRIPTION_gpu-coherence-selftest := run the GPU coherence selftest
 HELP_DESCRIPTION_gpu-snapsync-selftest := run the GPU snapshot-sync selftest
@@ -1626,6 +1634,43 @@ profile-zero-e2e:
 # it immediately, so a later definition would silently expand to empty.
 CODEGEN_TOOL ?= tools/codegen.py
 
+# Resolve the build-profile inputs before hashing so one Python process can reuse
+# compiler identities and the shared ABI-header digest for all three profiles.
+# Keep these definitions before the profile stamp targets below; their values and
+# order are part of the existing profile identities.
+# ge.c: software comparison rasterizer with PPSSPP-derived behavior. -O2 for speed.
+GE_CFLAGS ?= -O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK
+# Optional sparse front-end attribution is absent from normal GE builds. ge.c is also a
+# portable-core source, so the define reaches both compilations or neither.
+GE_FRONTEND_PROFILE ?= 0
+ifeq ($(GE_FRONTEND_PROFILE),1)
+override GE_CFLAGS += -DSR_GE_FRONTEND_PROFILE
+override PORTABLE_CORE_CFLAGS += -DSR_GE_FRONTEND_PROFILE
+endif
+override GE_CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
+# A trace build compiles the runtime with the trace writer too. This must precede the
+# runtime profile hash so switching TRACE rebuilds the runtime objects.
+TRACE ?= 0
+ifeq ($(TRACE),1)
+override CFLAGS += -DSR_INSTRUCTION_TRACE
+endif
+# Optimization and memory-saving flags for massive machine-generated files.
+# -O0: Conservative default for generic/unqualified titles to prevent compiler OOM / hangs.
+# -O1: Measured and qualified default for HST.
+# -fno-var-tracking: Saves significant memory on huge functions.
+# -ftrack-macro-expansion=0: Reduces memory overhead for macro-heavy code.
+RECOMP_OPT ?= -O0
+RECOMP_FLAGS ?= $(RECOMP_OPT) -w -fno-var-tracking -ftrack-macro-expansion=0 $(NAN_TRAP_CFLAG)
+override RECOMP_FLAGS += $(STACK_CENSUS_CFLAG)
+override RECOMP_FLAGS += -DSR_FLIGHT_RECORDER_LINKED
+ifeq ($(TRACE),1)
+override RECOMP_FLAGS += -DSR_INSTRUCTION_TRACE
+endif
+ifeq ($(PERF_AOT_INSTRUCTIONS),1)
+override RECOMP_FLAGS += -DPERF_AOT_INSTRUCTIONS=1
+endif
+export NK_RUNTIME_PROFILE_ENTRIES := CFLAGS=$(CFLAGS)$(NEWLINE)GE_CFLAGS=$(GE_CFLAGS)$(NEWLINE)TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)$(NEWLINE)SDL3_PROVIDER=$(SDL3_PROVIDER)$(NEWLINE)SDL3_VERSION=$(SDL3_VERSION)$(NEWLINE)SDL3_DIR=$(SDL3_DIR)$(NEWLINE)PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)
+
 # profile_hash(ENTRIES_VAR, COMPILER, ENTRIES_FILE): the parse-time hash of a build
 # profile whose entries are the newline-separated value of the exported ENTRIES_VAR.
 # Recipes read that variable from their environment (--entries-env), but GNU Make
@@ -1646,7 +1691,16 @@ endif
 # overruns the command line a shell will accept. The entries and their order are the
 # ones the --entry form used, so the hash is unchanged.
 export NK_CODEGEN_PROFILE_ENTRIES := GAME_NAME=$(GAME_NAME)$(NEWLINE)GAME_BASE=$(GAME_BASE)$(NEWLINE)CODEGEN_PROFILE_ARG=$(CODEGEN_PROFILE_ARG)$(NEWLINE)EXTRA_ELF_ARGS=$(EXTRA_ELF_ARGS)$(NEWLINE)EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)$(NEWLINE)FUNCS_PER_CHUNK=$(FUNCS_PER_CHUNK)$(NEWLINE)CODEGEN_USER_ARGS=$(CODEGEN_USER_ARGS)$(NEWLINE)CODEGEN_TOOL=$(CODEGEN_TOOL)$(CHUNK_TARGET_PROFILE_LINE)
+ifdef NK_BUILD_DIR_READY
+$(file >$(BUILD_DIR)/.codegen-profile-entries,$(NK_CODEGEN_PROFILE_ENTRIES))
+$(file >$(BUILD_DIR)/.runtime-profile-entries,$(NK_RUNTIME_PROFILE_ENTRIES))
+_PROFILE_HASHES := $(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash-profiles --codegen-compiler "$(PYTHON)" --codegen-entries-file "$(BUILD_DIR)/.codegen-profile-entries" --runtime-compiler "$(CC)" --runtime-entries-file "$(BUILD_DIR)/.runtime-profile-entries" --recomp-compiler "$(CC)" --recomp-entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --recomp-entry "TRACE=$(TRACE)" --recomp-entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)")
+CODEGEN_PROFILE_HASH := $(word 1,$(_PROFILE_HASHES))
+RUNTIME_PROFILE_HASH := $(word 2,$(_PROFILE_HASHES))
+RECOMP_PROFILE_HASH := $(word 3,$(_PROFILE_HASHES))
+else
 CODEGEN_PROFILE_HASH := $(call profile_hash,NK_CODEGEN_PROFILE_ENTRIES,$(PYTHON),$(BUILD_DIR)/.codegen-profile-entries)
+endif
 CODEGEN_PROFILE_STAMP := $(BUILD_DIR)/.codegen-profile-$(CODEGEN_PROFILE_HASH)
 
 $(CODEGEN_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
@@ -1676,25 +1730,9 @@ endif
 $(BUILD_DIR)/$(GAME_NAME)_imports.toml: $(GAME_INPUT_PREREQ) tools/imports.py tools/analyze.py tools/prxload.py
 	$(PYTHON) tools/imports.py --env-elf $(GAME_BASE) --toml=$@
 
-# ge.c: software comparison rasterizer with PPSSPP-derived behavior. -O2 for speed.
-GE_CFLAGS ?= -O2 -fno-math-errno -Wall -Wextra -Isrc/rt -DSR_SDL3VK
-# Optional sparse front-end attribution is absent from normal GE builds. ge.c is also a
-# portable-core source, so the define reaches both compilations or neither.
-GE_FRONTEND_PROFILE ?= 0
-ifeq ($(GE_FRONTEND_PROFILE),1)
-override GE_CFLAGS += -DSR_GE_FRONTEND_PROFILE
-override PORTABLE_CORE_CFLAGS += -DSR_GE_FRONTEND_PROFILE
-endif
-# ge.c is the vblank hook for the recorder's trace window and store watch; without this
-# define those calls compile to flight_recorder.h's inert inline stubs.
-override GE_CFLAGS += -DSR_FLIGHT_RECORDER_LINKED
-# A trace build compiles the runtime with the trace writer too. This must precede the
-# runtime profile hash so switching TRACE rebuilds the runtime objects.
-ifeq ($(TRACE),1)
-override CFLAGS += -DSR_INSTRUCTION_TRACE
-endif
-export NK_RUNTIME_PROFILE_ENTRIES := CFLAGS=$(CFLAGS)$(NEWLINE)GE_CFLAGS=$(GE_CFLAGS)$(NEWLINE)TITLE_CONFIG_DIGEST=$(TITLE_CONFIG_DIGEST)$(NEWLINE)SDL3_PROVIDER=$(SDL3_PROVIDER)$(NEWLINE)SDL3_VERSION=$(SDL3_VERSION)$(NEWLINE)SDL3_DIR=$(SDL3_DIR)$(NEWLINE)PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)
+ifndef NK_BUILD_DIR_READY
 RUNTIME_PROFILE_HASH := $(call profile_hash,NK_RUNTIME_PROFILE_ENTRIES,$(CC),$(BUILD_DIR)/.runtime-profile-entries)
+endif
 RUNTIME_PROFILE_STAMP := $(BUILD_DIR)/.runtime-profile-$(RUNTIME_PROFILE_HASH)
 # The objects the runtime profile invalidates go in a list file that make writes (see the record
 # below): one --invalidate per object repeats the whole BUILD_DIR prefix, and under a long
@@ -1708,23 +1746,6 @@ $(RUNTIME_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
 $(RT_GE_O): src/rt/ge.c src/rt/recomp.h $(RUNTIME_PROFILE_STAMP)
 	$(CC) $(GE_CFLAGS) $(DEPFLAGS) -c src/rt/ge.c -o $@
 
-# Optimization and memory-saving flags for massive machine-generated files.
-# -O0: Conservative default for generic/unqualified titles to prevent compiler OOM / hangs.
-# -O1: Measured and qualified default for HST.
-# -fno-var-tracking: Saves significant memory on huge functions.
-# -ftrack-macro-expansion=0: Reduces memory overhead for macro-heavy code.
-RECOMP_OPT ?= -O0
-RECOMP_FLAGS ?= $(RECOMP_OPT) -w -fno-var-tracking -ftrack-macro-expansion=0 $(NAN_TRAP_CFLAG)
-override RECOMP_FLAGS += $(STACK_CENSUS_CFLAG)
-override RECOMP_FLAGS += -DSR_FLIGHT_RECORDER_LINKED
-TRACE ?= 0
-ifeq ($(TRACE),1)
-override RECOMP_FLAGS += -DSR_INSTRUCTION_TRACE
-endif
-ifeq ($(PERF_AOT_INSTRUCTIONS),1)
-override RECOMP_FLAGS += -DPERF_AOT_INSTRUCTIONS=1
-endif
-
 # Make the object flavour explicit. Switching TRACE forces only the generated
 # chunks to rebuild, avoiding a stale trace-enabled object in a release binary
 # (or a trace-disabled object in an oracle run).
@@ -1732,7 +1753,9 @@ TRACE_STAMP := $(BUILD_DIR)/.recomp-trace-$(TRACE)
 $(TRACE_STAMP):
 	$(PYTHON) $(BUILD_PROFILE_TOOL) stamp --output "$@" --stale-glob ".recomp-trace-*" --value "$(TRACE)"
 
+ifndef NK_BUILD_DIR_READY
 RECOMP_PROFILE_HASH := $(shell "$(PYTHON)" $(BUILD_PROFILE_TOOL) hash --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)")
+endif
 RECOMP_PROFILE_STAMP := $(BUILD_DIR)/.recomp-profile-$(RECOMP_PROFILE_HASH)
 $(RECOMP_PROFILE_STAMP): $(BUILD_PROFILE_TOOL)
 	$(PYTHON) $(BUILD_PROFILE_TOOL) record --output "$(RECOMP_PROFILE_MANIFEST)" --section generated --compiler "$(CC)" --entry "RECOMP_FLAGS=$(RECOMP_FLAGS)" --entry "TRACE=$(TRACE)" --entry "PERF_AOT_INSTRUCTIONS=$(PERF_AOT_INSTRUCTIONS)" --file "$(CPU_STATE_ABI_HEADER)" --stamp "$@" --stale-glob ".recomp-profile-*" --invalidate-glob "$(BUILD_DIR)/$(GAME_NAME)_recomp*.o"
@@ -1766,7 +1789,7 @@ $(PORTABLE_CORE_DIR)/title_config.o: src/rt/title_config.c src/rt/title_config.h
 
 $(BUILD_DIR)/hle_power.o: src/rt/hle_power.c src/rt/hle_power.h
 
-$(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/osk_overlay.h src/rt/osk_text_entry.h src/rt/flash0_font.h src/rt/asset_index.h src/rt/archive_vfs.h src/rt/pgf_api.h src/rt/atrac3p_bridge.h src/rt/gpu_sdl3vk/ge_gpu.h src/rt/hle_power.h src/rt/scripted_input.h
+$(BUILD_DIR)/hle.o: src/rt/hle.c src/rt/audio_resample.h src/rt/osk_overlay.h src/rt/osk_text_entry.h src/rt/flash0_font.h src/rt/asset_index.h src/rt/archive_vfs.h src/rt/pgf_api.h src/rt/atrac3p_bridge.h src/rt/gpu_sdl3vk/ge_gpu.h src/rt/hle_power.h src/rt/scripted_input.h
 	$(CC) $(CFLAGS) $(HLE_INCLUDES) $(DEPFLAGS) -c $< -o $@
 $(BUILD_DIR)/pgf.o: src/rt/pgf.c src/rt/pgf_api.h src/rt/pgf.h
 $(BUILD_DIR)/pgf_public.o: src/rt/pgf_public.c src/rt/pgf_api.h src/rt/recomp.h src/rt/ge_shared.h
@@ -1952,6 +1975,37 @@ endif
 endif
 -include $(DEP_FILES)
 
+# The project PGFs depend only on their pinned sources and the converter, not on the title
+# or build configuration, so every BUILD_DIR under one BUILD_ROOT shares one generated set
+# (the platform ladder's rungs and each title build would otherwise regenerate them).
+PROJECT_FONT_GENERATED_DIR := $(BUILD_ROOT)/project-font
+PROJECT_FONT_GENERATED_DIR_PY := $(subst \,/,$(PROJECT_FONT_GENERATED_DIR))
+
+# Keep every internal target visible to the static target inventory.
+project-japanese-font:
+project-latin-font:
+project-korean-font:
+
+# All three project slots use this rule family. Each source pin, repertoire, and
+# project-owned PGF name is data; output staging is handled once by tools/copy_build_assets.ps1.
+define PROJECT_FONT_RULE
+project-$(1)-font: $(PROJECT_FONT_GENERATED_DIR)/$(2)
+
+$(PROJECT_FONT_GENERATED_DIR)/$(2): $(3) $(4) $(5) tools/ttf2pgf.py tools/pgf_writer.py docs/cleanroom/PGF_CONVERTER_SPEC.md
+	@$(PYTHON) -c "from pathlib import Path; Path('$(PROJECT_FONT_GENERATED_DIR_PY)').mkdir(parents=True, exist_ok=True)"
+	$(PYTHON) tools/ttf2pgf.py "$$@" "$(3)" --pin "$(4)" $(6) --ppem 12 --font-name "$(7)" --font-type "Regular" --manifest "$(PROJECT_FONT_GENERATED_DIR_PY)/$(basename $(2)).json"
+	$(PYTHON) -c "import shutil; shutil.copyfile('$(5)', '$(PROJECT_FONT_GENERATED_DIR_PY)/$(basename $(2))-OFL.txt')"
+endef
+
+$(eval $(call PROJECT_FONT_RULE,japanese,nkjpn.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--jis-x-0208-japanese,Nakagawa Open Japanese))
+$(eval $(call PROJECT_FONT_RULE,latin,nkltn.pgf,fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf,fixtures/fonts/mplus1p/PIN.json,fixtures/fonts/mplus1p/OFL.txt,--latin-1-text,Nakagawa Open Latin))
+$(eval $(call PROJECT_FONT_RULE,korean,nkkr.pgf,fixtures/fonts/gowundodum/GowunDodum-Regular.ttf,fixtures/fonts/gowundodum/PIN.json,fixtures/fonts/gowundodum/OFL.txt,--ks-x-1001-korean,Nakagawa Open Korean))
+
+project-fonts: $(PROJECT_FONT_SLOT_TARGETS)
+
+# Project PGFs are generated before compile but are not link inputs, so keep the
+# dependency order-only and preserve the link set below.
+compile: | project-fonts
 compile: shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(BUILD_DIR)/$(GAME_NAME)_recomp.o | sdl3-check
 	$(file >$(LINK_OBJECTS_RSP),$(subst \,/,$(LINK_OBJECTS)))
 	$(CC) $(CFLAGS) $(LDFLAGS) $(LINK_MAP_ARG) $(REPRODUCIBLE_LINK_FLAG) -o $(BUILD_DIR)/$(GAME_NAME)$(EXE_EXT) \
@@ -2213,6 +2267,24 @@ ge-float24-selftest:
 
 native-core-tests: ge-float24-selftest
 
+# ge-cpu-profile-validate-selftest — ge_cpu_profile_validate() (issue #282) against the
+# counters the production GE object produces for source-owned display lists: every
+# primitive type in both modes, indexed draws, clipped and rejected triangles, rejected
+# points and sprite corners, patches, block transfer and CLUT load, the GPU hook seam, and
+# each profile switch; then faults injected into copies of those blocks, each of which
+# must fail exactly the checks it breaks.  Run twice because ge.c latches the strip-cache
+# switch per process.  No game input.
+GE_CPU_PROFILE_VALIDATE_SELFTEST := $(BUILD_DIR)/ge_cpu_profile_validate_selftest$(EXE_EXT)
+
+ge-cpu-profile-validate-selftest: $(RT_GE_O)
+	$(CC) $(CFLAGS) -Werror $(LDFLAGS) -o $(GE_CPU_PROFILE_VALIDATE_SELFTEST) \
+		src/rt/ge_cpu_profile_validate_selftest.c $(RT_GE_O) src/rt/ge_capture.c \
+		src/rt/flight_recorder.c src/rt/perf.c -lm
+	$(GE_CPU_PROFILE_VALIDATE_SELFTEST)
+	$(GE_CPU_PROFILE_VALIDATE_SELFTEST) --strip-cache-disabled
+
+native-core-tests: ge-cpu-profile-validate-selftest
+
 # Production-backend regression for the historical repeated-adoption RAM runaway.
 # This intentionally does not link HLE or define SR_CORO_LIFECYCLE_TEST: it proves
 # the ordinary coroutine implementation itself keeps one stable main identity.
@@ -2330,13 +2402,21 @@ audio-selftest:
 		-o $(BUILD_DIR)/audio_selftest$(EXE_EXT)
 	$(BUILD_DIR)/audio_selftest$(EXE_EXT)
 
-hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nested_frames.c src/rt/nested_frames.h src/rt/stale_code.c src/rt/stale_code.h src/rt/guest_interp.c src/rt/cpu_lle.c
+# audio-resampler-bench -- fixed-seed, synthetic-input timing and bit-exact hash of the
+# sr_audio_resampler_* streaming converter. Uses $(CFLAGS) so RUNTIME_OPT (default -O0)
+# selects the optimisation level for both sides of a comparison.
+audio-resampler-bench:
+	$(CC) $(CFLAGS) -Isrc/rt -o $(BUILD_DIR)/audio_resampler_bench$(EXE_EXT) \
+		fixtures/audio_resampler_bench/audio_resampler_bench.c src/rt/audio_resample.c src/rt/perf.c -lm
+	$(BUILD_DIR)/audio_resampler_bench$(EXE_EXT)
+
+hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nested_frames.c src/rt/nested_frames.h src/rt/stale_code.c src/rt/stale_code.h src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/audio_resample.c src/rt/audio_resample.h
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST -DSR_SCHED_LIVENESS_TEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(BUILD_DIR)/hle_thread_selftest.exe \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
@@ -2364,13 +2444,13 @@ hle-title-selftest:
 	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=fixture-a HLE_TITLE_MANIFEST=assets/titles/pspdev-phase5.json
 	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=fixture-b HLE_TITLE_MANIFEST=assets/titles/synthetic.json
 
-hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC)
+hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/audio_resample.c src/rt/audio_resample.h src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC)
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(HLE_TITLE_SELFTEST_CONFIG_ARG) --output $(HLE_TITLE_SELFTEST_HEADER)
 	$(CC) $(CFLAGS) -I$(HLE_TITLE_SELFTEST_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(HLE_TITLE_SELFTEST_EXE) \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
@@ -2396,12 +2476,21 @@ $(PSP_ORACLE_SMOKE_STAMP): $(PSP_ORACLE_SMOKE_ELF) tools/psp_oracle/build_nakaga
 
 $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER): $(PSP_ORACLE_SMOKE_STAMP)
 
-$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
+# Smoke compile warnings (issue #735 item 9): no blanket -w.  The -Wno-<warning> flags on
+# the compile line below are the only suppressions; each one has its reason here.
+#   -Wno-unused-function: hle.c static helpers unused in this configuration (77 sites), as in the sibling selftest recipes.
+#   -Wno-format-truncation: hle_thread_selftest.c test-path snprintf calls into 256/260-byte buffers; gcc cannot bound the %s arguments (13 sites).
+#   -Wno-missing-field-initializers: intr_conformance.h IcProbe rows omit the trailing skip field on purpose.
+#   -Wno-infinite-recursion: a generated guest loop in smoke_recomp_0.c ends in a dead tail call after an unconditional branch.
+#   -Wno-sign-compare -Wno-unused-parameter -Wno-parentheses -Wno-pointer-sign: vendored FFmpeg n4.4 ATRAC3+ sources in src/rt/atrac3p, kept upstream-identical.
+$(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/audio_resample.c src/rt/audio_resample.h src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) -DSR_PSP_ORACLE_SMOKE \
 		-ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables -fno-unwind-tables \
-		-Wno-unused-function -w -I"$(PSP_ORACLE_SMOKE_DIR)" $(LDFLAGS) \
+		-Wno-unused-function -Wno-format-truncation -Wno-missing-field-initializers \
+		-Wno-infinite-recursion -Wno-sign-compare -Wno-unused-parameter -Wno-parentheses -Wno-pointer-sign \
+		-I"$(PSP_ORACLE_SMOKE_DIR)" $(LDFLAGS) \
 		-Wl,--gc-sections -Wl,--no-insert-timestamp -o "$(PSP_ORACLE_SMOKE_EXE)" \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c $(PGD_BACKEND_SRC) \
+		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c \

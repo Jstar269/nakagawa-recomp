@@ -180,7 +180,7 @@ HANDLER_METADATA = {
     },
     "h_DisplayWaitVblankStartMulti": {
         "status": "partial",
-        "limitation": "waits the requested positive count of scheduler VBLANK periods; zero-count behavior fails closed as not implemented, while callback/context precedence and hardware timing are not measured",
+        "limitation": "waits the requested positive count of scheduler VBLANK periods; zero count returns SCE_KERNEL_ERROR_INVALID_VALUE (0x800001fe) before the wait-context check, following the historical waits-matrix transcription; callback behavior and hardware timing are not measured",
     },
     # sceDisplayGetFramePerSec: writes the measured 60000/1001 float refresh
     # rate (59.9400599f) into $f0 under the unified display clock. The API has
@@ -193,6 +193,53 @@ HANDLER_METADATA = {
             "hardware oracle / issue #80 display-clock measurement (59.9400599f in $f0)",
         ],
         "description": "Writes measured 60000/1001 float refresh rate (59.9400599f) into $f0 under unified display clock.",
+    },
+    # scePower clock getters, the devkit version word and sceCtrlPeekLatch, measured on the PSP-3000
+    # 6.61 oracle 2026-10-15. Defaults are measured; values after a Set call and the non-clearing peek
+    # are modelled and say so in their limitations.
+    "h_PowerGetPllClockFrequencyFloat": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_power_identity_getters_measured",
+            "hardware oracle 2026-10-15 PSP-HLE-POWER-001 case pll-clock-float (0x435E0000 = 222.0)",
+            "hardware oracle 2026-10-15 PSP-HLE-POWER-002 case pll-clock-float-v0 ($f0 0x435E0000; $v0 not modelled)",
+        ],
+        "limitation": "returns the float of the retained PLL clock in $f0: the 222.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001, PSP-HLE-POWER-002), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured; $v0 is 0, a runtime choice: PSP-HLE-POWER-002 read a different word in $v0 after each call, neither 0 nor the clock, which is not modelled",
+    },
+    "h_PowerGetCpuClockFrequencyFloat": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_power_identity_getters_measured",
+            "hardware oracle 2026-10-15 PSP-HLE-POWER-001 case cpu-clock-float (0x435E0000 = 222.0)",
+            "hardware oracle 2026-10-15 PSP-HLE-POWER-002 case cpu-clock-float-v0 ($f0 0x435E0000; $v0 not modelled)",
+        ],
+        "limitation": "returns the float of the retained CPU clock in $f0: the 222.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001, PSP-HLE-POWER-002), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured; $v0 is 0, a runtime choice: PSP-HLE-POWER-002 read a different word in $v0 after each call, neither 0 nor the clock, which is not modelled",
+    },
+    "h_PowerGetBusClockFrequencyFloat": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_power_identity_getters_measured",
+            "hardware oracle 2026-10-15 PSP-HLE-POWER-001 case bus-clock-float (0x42DE0000 = 111.0)",
+            "hardware oracle 2026-10-15 PSP-HLE-POWER-002 case bus-clock-float-v0 ($f0 0x42DE0000; $v0 not modelled)",
+        ],
+        "limitation": "returns the float of the retained bus clock in $f0: the 111.0 default is measured on PSP-3000 6.61 (PSP-HLE-POWER-001, PSP-HLE-POWER-002), while values after scePowerSetClockFrequency follow the modelled request and are not hardware measured; $v0 is 0, a runtime choice: PSP-HLE-POWER-002 read a different word in $v0 after each call, neither 0 nor the clock, which is not modelled",
+    },
+    "h_KernelDevkitVersion": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_kernel_devkit_version_measured",
+            "src/rt/sdkver.h:SR_PSP_FIRMWARE_DEVKIT_VERSION",
+            "hardware oracle 2026-10-15 PSP-SYSTEM-001 case model-profile (0x06060110)",
+        ],
+        "limitation": "returns the 6.61 devkit word for every firmware: only the measured firmware is modelled, and other firmware devkit words are not",
+    },
+    "h_CtrlPeekLatch": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ctrl_peek_latch_keeps_the_latch",
+            "hardware oracle 2026-10-15 PSP-HLE-CTRL-LATCH-001 cases latch-peek-initial and latch-peek-after-poll (no input gives make break press 0 and release 0xFFFFFFFF)",
+        ],
+        "limitation": "the transition and return words are the sceCtrlReadLatch model, source-tested; the non-clearing peek is the project's model and is not hardware measured, because PSP-HLE-CTRL-LATCH-001 cannot tell clearing from keeping (its release field stays saturated with no input)",
     },
     # These two handlers are reached by the source-owned display-smoke route.
     # Its fixed 8888 framebuffer flip and ordinary guest-thread vblank wait
@@ -237,14 +284,21 @@ HANDLER_METADATA = {
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_ge_break_continue",
         ],
-        "limitation": "models synchronous display list pause (mode 0) and queue cancellation (mode 1); argument and parameter buffer inspection are K1/read checked only, asynchronous hardware command boundary timing remains unmodeled (#341); the 0x80000025 result when no list is active and the paused (2) and cancelled (4) sync statuses are not hardware-measured",
+        "limitation": "models synchronous display list pause (mode 0) and queue reset (mode 1); argument and parameter buffer inspection are K1/read checked only, asynchronous hardware command boundary timing remains unmodeled (#341); PSP-measured in the eligible PSP-GE-CONTROL-001 2026-10-15 re-run: the 0x80000020 no-active-list result, the invalid-mode result 0x80000107 (mode -1 only), the mode 0 queue id and the paused sync statuses (4, 2) for a list broken mid-draw, the mode 1 result 0 with one list stalled at its start, and the 0x80000100 sync result for a list the reset removed; a list enqueued with no stall address completes inside sceGeListEnQueue, so the runtime cannot reproduce the mid-draw break and returns 0x80000020 with sync peeks of 0 on that sequence; breaking a stalled list, a mode 1 reset of a paused list and modes above 1 are unmeasured and follow the same codes",
     },
     "h_GeContinue": {
         "status": "partial",
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_ge_break_continue",
         ],
-        "limitation": "resumes a paused display list using the synchronous GE runner; hardware timing and multi-queue priority ordering remain unmodeled (#341); the 0x80000025 result when no list is paused is not hardware-measured",
+        "limitation": "resumes a paused display list using the synchronous GE runner; hardware timing and multi-queue priority ordering remain unmodeled (#341); the 0 result when no list is paused is PSP-measured (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run)",
+    },
+    "h_GeListDeQueue": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_ge_break_continue",
+        ],
+        "limitation": "a stalled list returns BUSY (0x80000021) and stays queued, PSP-measured (PSP-GE-CONTROL-001, eligible 2026-10-15 re-run); paused, completed, cancelled and unknown queue ids are refused as NOT_IMPLEMENTED because no dequeue result is measured for them (#341)",
     },
     # scePsmfPlayerGetVideoData / GetAudioData. Both drive the project-authored
     # PSMF producer and a host codec backend, and return 0 only for output a
@@ -479,7 +533,7 @@ HANDLER_METADATA = {
     },
     "h_DeleteMbx": {
         "status": "partial",
-        "limitation": "delete-while-waited is corroborated by campaign psp-hw-20260917 but not mailbox-measured; interrupt-context placement unmeasured (#339, #341)",
+        "limitation": "delete-while-waited is mailbox-measured on 2026-10-15 (PSP-3000, 6.61): the waiter returns WAIT_DELETE and its timeout word is rewritten to the remaining time; interrupt-context placement unmeasured (#339, #341)",
     },
     "h_SendMbx": {
         "status": "partial",
@@ -487,7 +541,7 @@ HANDLER_METADATA = {
     },
     "h_ReceiveMbx": {
         "status": "partial",
-        "limitation": "ILLEGAL_CONTEXT precedence for a blocking receive unmeasured; priority-mailbox circular linking not separately asserted beyond campaign facts (#339, #341)",
+        "limitation": "delete-while-waited is mailbox-measured on 2026-10-15 (WAIT_DELETE and timeout word rewritten to the remaining time); ILLEGAL_CONTEXT precedence for a blocking receive unmeasured; priority-mailbox circular linking not separately asserted beyond campaign facts (#339, #341)",
     },
     "h_ReceiveMbxCB": {
         "status": "partial",
@@ -504,6 +558,161 @@ HANDLER_METADATA = {
     "h_ReferMbxStatus": {
         "status": "partial",
         "limitation": "size-field caller contract (whether Refer preserves or overwrites size) unmeasured (#339, #341)",
+    },
+    # sceKernelReferSystemStatus: bytes written = min(size, 0x1c), return 0, and the size word reads back
+    # 0x1c, all PSP-measured (PR #1003 head 3072bd7d, 2026-10-15).
+    "h_ReferSystemStatus": {
+        "status": "partial",
+        "limitation": "idle-clock, comes-out-of-idle and thread-switch counters: written as zero; hardware reports non-zero, time-dependent values (not cited). VFPU-switch counter: written as zero, not cited. Status word 1: written as zero; hardware read 0 in all three records, uncited. NULL pointer: runtime returns ILLEGAL_ADDR as a safety choice after PSP-3000 hung on ReferSystemStatus(NULL) (PSP-HLE-NULL-OUT-001); no game relies on the output. Other unwritable non-NULL pointers are unmeasured.",
+    },
+    # VTimer lifecycle and query surface (PSP-HLE-VTIMER-001, 2026-10-15, PR #1003 record). Measured:
+    # Create returns a valid UID; Start returns 0, also on a restart, and 1 while running (per
+    # docs/HARDWARE_ORACLE.md); Stop returns 1 while running and 0 when not started; Delete of a
+    # running timer returns 0; Refer and Delete on the deleted UID return 0x800201BE. Refer fills
+    # active, base (non-zero while running), current, and reads schedule, handler and common as 0.
+    # PSP-HLE-VTIMER-002 and -003 (2026-10-15, build b5d6fc5b) add: Start, Stop and GetVTimerTime
+    # on a deleted UID return 0x800201BE and that GetVTimerTime writes nothing; Delete of a stopped
+    # timer returns 0; 64 creates in a row succeed; GetVTimerBase equals Refer's base while running
+    # and both read 0 once stopped. The microsecond unit and base = system time at Start are
+    # consistent with that run (deltas agree within about 8%), not measured exactly. Interrupt-driven
+    # behaviour and handlers depend on issue #325.
+    "h_CreateVTimer": {
+        "status": "partial",
+        "limitation": "NULL option struct only (a non-NULL option is refused, layout unmeasured); 64 creates in a row are measured (PSP-HLE-VTIMER-003), so the table holds 64; the limit above 64 and the no-slot code 0x80020190 are unmeasured; the microsecond unit is consistent with PSP-HLE-VTIMER-002, not a precise rate measurement (#325)",
+    },
+    "h_StartVTimer": {
+        "status": "partial",
+        "limitation": "deleted-UID code 0x800201BE measured (PSP-HLE-VTIMER-003); already-running return 1 is repo-documented, not measured by PSP-HLE-VTIMER-001, -002 or -003; base = system time at Start and the microsecond unit are consistent with PSP-HLE-VTIMER-002, not measured exactly (#325)",
+    },
+    "h_StopVTimer": {
+        "status": "partial",
+        "limitation": "deleted-UID code 0x800201BE measured (PSP-HLE-VTIMER-003); the microsecond unit of the held time is consistent with PSP-HLE-VTIMER-002, not a precise rate measurement (#325)",
+    },
+    "h_DeleteVTimer": {
+        "status": "partial",
+        "limitation": "delete of a stopped timer returns 0 (PSP-HLE-VTIMER-002) and a second delete returns 0x800201BE (PSP-HLE-VTIMER-001, -003); interrupt-context placement unmeasured (#325)",
+    },
+    "h_GetVTimerTime": {
+        "status": "partial",
+        "limitation": "deleted-UID code 0x800201BE with the output untouched measured (PSP-HLE-VTIMER-003); time = system time - base and the microsecond unit are consistent with PSP-HLE-VTIMER-002 (deltas within about 8%), not a precise rate measurement; NULL out-pointer returns ILLEGAL_ADDR as a runtime safety choice after PSP-3000 hung on ReferSystemStatus(NULL) (PSP-HLE-NULL-OUT-001), not as a measured VTimer result; no game relies on the output (#325)",
+    },
+    "h_GetVTimerBase": {
+        "status": "partial",
+        "limitation": "returns the same base as ReferVTimerStatus, measured equal while running and 0 once stopped (PSP-HLE-VTIMER-002); the value, guest time at the most recent Start, is consistent with that run's system-clock reads, not measured exactly; NULL out-pointer returns ILLEGAL_ADDR as a runtime safety choice after PSP-3000 hung on ReferSystemStatus(NULL) (PSP-HLE-NULL-OUT-001), not as a measured VTimer result; deleted-UID code is unmeasured and reused by analogy; no game relies on the NULL output (#325)",
+    },
+    "h_ReferVTimerStatus": {
+        "status": "partial",
+        "limitation": "return 0, the deleted-UID code, and the active, current, schedule, handler and common states are measured (PR #1003); base equals GetVTimerBase while running and reads 0 once stopped (PSP-HLE-VTIMER-002), and its value (guest time at Start) and the microsecond unit are consistent with that run, not measured exactly; NULL pointer returns ILLEGAL_ADDR as a runtime safety choice after PSP-3000 hung on ReferSystemStatus(NULL) (PSP-HLE-NULL-OUT-001), not a measured VTimer result; the caller-size write rule for size 0 is the sema/evf/mbx rule applied without a VTimer cite (#325)",
+    },
+    # sceAudioSRC* (issue #339). Measured on PSP-3000 firmware 6.6.1, 2026-10-15
+    # (PSP-HLE-AUDIO-SRC-001): the unreserved, reserve, second-reserve, release and
+    # Output2-exclusion returns, the sample count returned by OutputBlocking, and the
+    # accepted and refused reserve shapes listed in docs/HARDWARE_ORACLE.md.
+    "h_AudioSRCChReserve": {
+        "status": "partial",
+        "limitation": "the returns for an unreserved slot, a held slot (0x80268002, including Output2 holding it), sample counts 0 (0x80000104), 65 and 4096 (accepted), 48000 Hz (accepted) and channel counts 1 (0x80000104) and 4 (0x80000003) are measured (PSP-HLE-AUDIO-SRC-001); the upper sample-count bound reuses the Output2 range 17..4111, channel counts other than 1, 2 and 4 take the code measured for 4, and rates other than 44100 and 48000 are refused with that same code and a message, all unmeasured (#339)",
+    },
+    "h_AudioSRCChRelease": {
+        "status": "partial",
+        "limitation": "release after a blocking output (0) and release with nothing reserved (0x80260008) are measured (PSP-HLE-AUDIO-SRC-001); whether a release succeeds while samples are still queued, as the Output2 busy rule does, and releasing a reservation made through the other API (refused here as not reserved) are unmeasured (#339)",
+    },
+    "h_AudioSRCOutputBlocking": {
+        "status": "partial",
+        "limitation": "returns 0x80260008 with nothing reserved and the reserved sample count after a reserve (0x400), both measured (PSP-HLE-AUDIO-SRC-001); the volume bound reuses the Output2 bound and the NULL or unreadable buffer result follows the regular output, both unmeasured; the host mixer runs at 44100 Hz, so a 48000 Hz block passes through a band-limited converter and keeps its source-rate pacing (#339)",
+    },
+    # Route-A graduation batch 1 (#341, 2026-10-19). Each status is bounded to
+    # the named accepted hardware cells; audio's unmeasured argument/error paths
+    # remain partial instead of being promoted as universal firmware behavior.
+    "h_AudioChRelease": {
+        "status": "partial",
+        "evidence": [
+            "tools/psp_oracle/manifest.json:PSP-AUDIO-001",
+            "fixtures/psp_oracle/probe.c:run_audio_query",
+            "PSP-AUDIO-001 cells: audio-ch-release, audio-ch-query-released",
+        ],
+        "limitation": "the cells release channel 0 after the two valid blocking-output calls and query it after release; unreserved, out-of-range, and other channel-state release results are unmeasured (#341)",
+    },
+    "h_AudioChReserve": {
+        "status": "partial",
+        "evidence": [
+            "tools/psp_oracle/manifest.json:PSP-AUDIO-001",
+            "fixtures/psp_oracle/probe.c:run_audio_query",
+            "PSP-AUDIO-001 cell: audio-ch-reserve",
+        ],
+        "limitation": "audio-ch-reserve measures a successful reservation of channel 0 for 1024 stereo samples; automatic channel selection, invalid size or format, duplicate reservation, and exhaustion/error precedence are unmeasured (#341)",
+    },
+    "h_AudioRestLen": {
+        "status": "partial",
+        "evidence": [
+            "tools/psp_oracle/manifest.json:PSP-AUDIO-001",
+            "fixtures/psp_oracle/probe.c:run_audio_query",
+            "PSP-AUDIO-001 cells: audio-ch-query-before, audio-ch-query-after, audio-ch-query-released",
+        ],
+        "limitation": "the cells query channel 0 before and after blocking output and just after release; invalid-channel error behavior and other queue states are unmeasured (#341)",
+    },
+    "h_AudioOutput2Rest": {
+        "status": "partial",
+        "evidence": [
+            "tools/psp_oracle/manifest.json:PSP-AUDIO-001",
+            "fixtures/psp_oracle/probe.c:run_audio_query",
+            "PSP-AUDIO-001 cells: audio-out2-query-before, audio-out2-query-after",
+        ],
+        "limitation": "the cells query rest samples on one valid 1024-sample Output2 reservation before and after one blocking output; the not-reserved code and other queue states are unmeasured (#341)",
+    },
+    "h_AudioOutput2Blocking": {
+        "status": "partial",
+        "evidence": [
+            "tools/psp_oracle/manifest.json:PSP-AUDIO-001",
+            "fixtures/psp_oracle/probe.c:run_audio_query",
+            "PSP-AUDIO-001 cell: audio-out2-output-blocking",
+        ],
+        "limitation": "audio-out2-output-blocking measures one valid silent 1024-sample block at maximum volume and makes no acoustic claim; not-reserved, volume, buffer-error and audio_output error-propagation behavior are not covered (the handler discards audio_output's return) (#341)",
+    },
+    "h_AudioOutput2Release": {
+        "status": "partial",
+        "evidence": [
+            "tools/psp_oracle/manifest.json:PSP-AUDIO-001",
+            "fixtures/psp_oracle/probe.c:run_audio_query",
+            "PSP-AUDIO-001 cell: audio-out2-release",
+            "docs/HARDWARE_ORACLE.md",
+        ],
+        "limitation": "audio-out2-release measures success after the queue drains; the documented #311 cell measures 0x80268002 while samples remain queued and preserves the reservation; releasing when not reserved is not measured (#341)",
+    },
+    "h_AudioOutput2Reserve": {
+        "status": "partial",
+        "evidence": [
+            "tools/psp_oracle/manifest.json:PSP-AUDIO-001",
+            "fixtures/psp_oracle/probe.c:run_audio_query",
+            "PSP-AUDIO-001 cell: audio-out2-reserve",
+        ],
+        "limitation": "audio-out2-reserve measures a valid 1024-sample reservation; duplicate Output2 reservation behavior and invalid size bounds are unmeasured (#341)",
+    },
+    "h_AudioOutputBlocking": {
+        "status": "partial",
+        "evidence": [
+            "tools/psp_oracle/manifest.json:PSP-AUDIO-001",
+            "fixtures/psp_oracle/probe.c:run_audio_query",
+            "PSP-AUDIO-001 cells: audio-ch-output-blocking-0, audio-ch-output-blocking-1",
+        ],
+        "limitation": "the cells exercise two maximum-volume outputs with a valid silent stereo buffer and record timing and rest-length values, not audible output; mono, other volumes, invalid buffers/channels, and error precedence are unmeasured (#341)",
+    },
+    "h_GeEdramGetAddr": {
+        "status": "complete",
+        "evidence": [
+            "tools/psp_oracle/manifest.json:PSP-HLE-GE-EDRAM-001",
+            "fixtures/psp_oracle/probe_hle_measure.c:hle_run",
+            "src/rt/hle.c:h_GeEdramGetAddr",
+            "PSP-HLE-GE-EDRAM-001 cell: edram-addr = 0x04000000",
+        ],
+    },
+    "h_GeEdramGetSize": {
+        "status": "complete",
+        "evidence": [
+            "tools/psp_oracle/manifest.json:PSP-HLE-GE-EDRAM-001",
+            "fixtures/psp_oracle/probe_hle_measure.c:hle_run",
+            "src/rt/hle.c:h_GeEdramGetSize",
+            "PSP-HLE-GE-EDRAM-001 cell: edram-size = 0x00200000",
+        ],
     },
     # sceRtc family (issue #341). Contract sources: the public PSPSDK header
     # psprtc.h (declarations, 0-on-success/<0-on-error, pspRtcCheckValidErrors
@@ -632,6 +841,335 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "writes the first num entry names as NUL-padded 27-byte slots in the console's order for the measured tree (measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration) and creation order after it; truncation below the entry count is a project choice",
     },
+    # Reviewed Route-A handlers: hardware evidence covers named cells, while
+    # the remaining branches stay explicit instead of being promoted complete.
+    "h_GeEdramSetAddrTranslation": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-GE-EDRAM-001: initial width, 512/1024/2048/4096 replacements, restore and final query)",
+        ],
+        "limitation": "replacement-width returns and restoration to boot width 1024 are measured; width 0 as an input, unsupported-width error 0x80000107 (a project choice), and applying the setting to actual GE address translation are not measured",
+    },
+    "h_TryLockLwMutex": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01 and PSP-B2-01 LwMutex cells)",
+        ],
+        "limitation": "normal acquisition, count-zero refusal, non-recursive self-contention, and another-owner contention are measured; negative counts, invalid-workarea error precedence, interrupt context, and several-waiter ordering are not measured",
+    },
+    "h_UnlockLwMutex": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01 and PSP-B2-01 LwMutex cells)",
+        ],
+        "limitation": "owner release, direct hand-off to one waiter, and non-owner/underflow behavior are measured; invalid workareas, negative or excessive unlock counts, and several-waiter ordering are not measured",
+    },
+    "h_AllocateFpl": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01 and PSP-B2-01 FPL cells)",
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001 FPL create, exhaustion, status, free and delete cells)",
+        ],
+        "limitation": "ordinary allocation, one finite timeout, one-waiter hand-off, delete wake, and measured block/status layout are covered; invalid output pointers, negative timeout handling, and multiple-waiter ordering are not measured",
+    },
+    "h_AllocateVpl": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01 and PSP-B2-01 VPL cells)",
+        ],
+        "limitation": "ordinary allocation, one finite timeout, measured pool accounting, and one-waiter hand-off are covered; invalid output pointers, invalid sizes, and fragmented-pool behavior beyond the measured cases are not measured",
+    },
+    # Route-A batch 3: each citation was checked against the exact API path in
+    # its hardware cell. These handlers remain partial where the cell does not
+    # cover all branches or where the current implementation has a known gap.
+    "h_CancelEventFlag": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-WAIT-001: event-cancel-before-deadline-late-dispatch returns WAIT_CANCEL to the waiter)",
+        ],
+        "limitation": "the cited cell measures a blocked waiter's WAIT_CANCEL outcome after event cancellation; it does not establish the cancel call's return, pattern assignment, waiter-count output, unknown-ID behavior, pointer errors, or multiple-waiter ordering",
+    },
+    "h_CancelSema": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B2-01: CancelSema(-1) restores the create-time initial count)",
+            "docs/HARDWARE_ORACLE.md (PSP-WAIT-001: sema-cancel-before-deadline-late-dispatch returns WAIT_CANCEL to the waiter)",
+        ],
+        "limitation": "the cited cells establish the -1 reset and a blocked waiter's WAIT_CANCEL outcome; other replacement counts, over-max refusal, optional waiter-count output, unknown IDs, pointer errors, and multiple-waiter ordering are not established by those citations",
+    },
+    "h_ClearEventFlag": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B1-01: ClearEventFlag(mask) keeps only the bits in mask)",
+        ],
+        "limitation": "the measured mask behavior matches the normal-object path; an unknown event-flag UID currently returns generic 0x80020000 instead of the measured unknown-event-flag code 0x8002019A, and error precedence is not covered",
+    },
+    "h_CreateFpl": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: fpl-create and valid pool status/allocation cells)",
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics: FPL blocks are blockSize apart)",
+        ],
+        "limitation": "the cited cells cover valid pool creation and block/status behavior; the handler converts zero block size/count to 16/1, a branch not established by those cited valid-pool cells, and allocation exhaustion plus partition, attribute, and option error precedence need separate evidence",
+    },
+    "h_CreateLwMutex": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B1-01 and PSP-B2-01: LwMutex creation workarea and one-waiter hand-off)",
+        ],
+        "limitation": "the cells cover recursive and non-recursive initialization, workarea fields, and one waiter hand-off; invalid workareas, unsupported attribute bits, negative counts, option data, and multi-waiter ordering are not established",
+    },
+    "h_CreateMutex": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-refer-unlocked creation and observed status fields)",
+        ],
+        "limitation": "the measured cell covers ordinary unlocked and initially-held mutex status; name and attribute validation, recursive edge cases, invalid arguments, and allocation exhaustion are not covered",
+    },
+    "h_CreateSema": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B1-01: CreateSema accepts init greater than max and max zero, and rejects invalid attributes)",
+            "docs/HARDWARE_ORACLE.md (PSP-B2-01: CancelSema restores the create-time initial count)",
+        ],
+        "limitation": "the cited cells cover the measured count and attribute rules plus initial-count retention; name-pointer behavior, object exhaustion, and invalid-argument precedence remain unmeasured",
+    },
+    "h_CreateVpl": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B1-01 and PSP-B2-01: valid VPL creation, accounting, allocation, and deletion)",
+        ],
+        "limitation": "valid pool creation and measured accounting are covered; the handler maps size zero to VPL_EXHAUSTED and ignores the partition argument, but the cited valid-pool cells do not establish those edge results, allocation exhaustion, or option behavior",
+    },
+    "h_DeleteFpl": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: valid fpl-delete and refer-after-delete cells)",
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B2-01: deleting an FPL with a waiter)",
+        ],
+        "limitation": "valid deletion and the delete-wait outcome are covered; an invalid or already-deleted UID currently returns success in the handler, while the cited delete cells use a valid pool, and multi-waiter teardown ordering is not measured",
+    },
+    "h_DeleteLwMutex": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B1-01: deleting a held LwMutex updates the workarea fields)",
+        ],
+        "limitation": "the cited cells cover valid deletion and the measured workarea fields; forged workareas, invalid-address precedence, stale UIDs, and multiple-waiter deletion behavior are not fully covered",
+    },
+    # Route-A batch 4: the cited cells cover concrete lifecycle/allocation
+    # paths. The worker-only cells do not establish main-thread teardown.
+    "h_DeleteSema": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B1-01 and PSP-B2-01: unknown semaphore ID and deleting a waited-on semaphore)",
+        ],
+        "limitation": "a valid delete with one waiter and the unknown-semaphore code are covered; no-waiter behavior, multiple-waiter ordering, and interrupt-context precedence are not established",
+    },
+    "h_DeleteThread": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-THREAD-EXIT-001: ED-D77, ED-D00, ED-DNEG, and ED-DERR post-exit delete/restart cells)",
+        ],
+        "limitation": "post-exit delete and restart outcomes are covered for four worker exit statuses; deleting a live or waiting thread, unknown IDs, and multi-joiner cleanup are not established",
+    },
+    "h_DeleteVpl": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B1-01: valid VPL deletion while blocks are held)",
+        ],
+        "limitation": "valid deletion with allocated blocks is covered; deletion with blocked waiters, unknown IDs, arbitrary fragmentation, and invalid-free precedence are not established",
+    },
+    "h_ExitDeleteThread": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-THREAD-EXIT-001: ED-D77, ED-D00, ED-DNEG, and ED-DERR)",
+        ],
+        "limitation": "worker ExitDeleteThread status, joiner result, and post-exit UID/delete behavior are covered for four values; main/launcher teardown is not covered by these cells and PSP-TEARDOWN-001 remains captured-only",
+    },
+    "h_ExitThread": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-THREAD-EXIT-001: ED-X77, ED-X00, ED-XNEG, and ED-XERR)",
+        ],
+        "limitation": "worker ExitThread status and WaitThreadEnd/ReferThreadStatus outcomes are covered for four values; main/launcher teardown, callbacks during exit, and other thread roles are not established",
+    },
+    "h_FreeFpl": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: fpl-free-a, fpl-free-b, and status after free)",
+        ],
+        "limitation": "valid block frees and resulting free counts are covered; invalid, unaligned, repeated, or foreign-pool frees and waiter ordering are not established by the cited cells",
+    },
+    "h_FreeVpl": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B1-01: VPL pool accounting, allocation placement, and free sequence)",
+        ],
+        "limitation": "valid frees under the measured pool accounting are covered; invalid IDs/addresses, misalignment, arbitrary fragmentation/coalescing, and zero-size allocation behavior are not established",
+    },
+    "h_ReleaseWaitThread": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B3-01: ReleaseWaitThread wakes a blocked target with WAIT_RELEASE)",
+        ],
+        "limitation": "the cited cell covers releasing one blocked target and the waiter's WAIT_RELEASE result; self/UID-zero targets, already-finished targets, and multiple-waiter ordering are not established",
+    },
+    "h_TryAllocateFpl": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: fpl-try-alloc-a, fpl-try-alloc-b, and fpl-try-alloc-exhausted)",
+        ],
+        "limitation": "two valid allocations, the measured exhaustion code, and pool status are covered; invalid output pointers, invalid UIDs, and other exhaustion/error precedence are not established",
+    },
+    "h_TryAllocateVpl": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B1-01: 1024-byte VPL accounting and high-down allocation placement)",
+        ],
+        "limitation": "valid allocation placement and measured pool accounting are covered; the handler maps a zero-size request to VPL_EXHAUSTED, whose exact hardware result is unmeasured, and invalid output pointers or fragmented-pool behavior are not established",
+    },
+    # Route-A batch 5: retain only the behaviors named by the existing cells.
+    "h_LockMutex": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-timeout-quanta, mutex-priority-inheritance, and accepted interrupt-context cell)",
+        ],
+        "limitation": "measured cases cover finite timeout, priority inheritance, and the listed interrupt-context refusals; full attribute/recursion ranges, negative counts, multi-waiter priority ordering, and invalid timeout-pointer precedence are not measured",
+    },
+    "h_NotifyCallback": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics: two callback notifications coalesce into one handler call with count 2)",
+        ],
+        "limitation": "the cited cell covers notification coalescing in one callback case; callback creation state, invalid UID behavior, dispatch context, and ordering with multiple callbacks are not established",
+    },
+    "h_PollEventFlag": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01: unmet poll output and zero-bit refusal)",
+        ],
+        "limitation": "the cited cells cover an unmet poll's outBits and the zero-bit refusal; other wait modes, invalid output pointers, and error precedence are not established",
+    },
+    "h_ReceiveMsgPipe": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: blocked receiver is served directly by a sender)",
+        ],
+        "limitation": "the cited cell covers a blocked receiver served by a sender; empty/short receive result sizes, invalid pointers, timeout precedence, and multiple-receiver ordering are not established",
+    },
+    "h_ReferEventFlagStatus": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-KERNEL-STATUS-001: event-size-zero, event-size-8, event-size-40, and event-size-full)",
+        ],
+        "limitation": "the cited cells establish bytes written and size-word behavior at four buffer sizes; full field values, unknown UID codes, invalid pointers, and error precedence are not established by that size row",
+    },
+    "h_ReferFplStatus": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: valid FPL layout, short/zero-size writes, free counts, and refer-after-delete)",
+        ],
+        "limitation": "valid pool layout and the cited short/zero-size behavior are covered; tick fields, invalid pointers, unknown IDs beyond the after-delete refer, and error precedence are not established",
+    },
+    "h_ReferMutexStatus": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-refer-unlocked status fields)",
+        ],
+        "limitation": "the cited cell covers an unlocked mutex and its measured status words; size variants, recursive ownership, invalid pointers, and unknown-UID fields are not established",
+    },
+    "h_SendMsgPipe": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: no-room, oversize, and blocked-receiver message-pipe cells)",
+        ],
+        "limitation": "the cited cells cover no-room refusal, oversize refusal, and a receiver served by a sender; result-size pointers, timeout behavior, multi-waiter ordering, and all mode/error-precedence combinations are not established",
+    },
+    "h_SetEventFlag": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-WAIT-001: event-signal-before-deadline-late-dispatch)",
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics: selected event-flag pattern and wait-mode cells)",
+        ],
+        "limitation": "the cited cells cover setting bits that satisfy a waiter and selected wait modes; invalid UIDs, all-bit masks, result precedence, and multiple-waiter ordering are not established",
+    },
+    "h_SignalSema": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B1-01: semaphore signal count boundaries)",
+            "docs/HARDWARE_ORACLE.md (PSP-WAIT-001: sema-signal-before-deadline-late-dispatch)",
+        ],
+        "limitation": "the cited cells cover selected count boundaries and waking a waiter; invalid output pointers, negative-count ranges outside the tested values, and multi-waiter ordering are not established",
+    },
+    # Route-A batch 6: these remaining kernel wait/transfer rows have direct
+    # cells, but their unmeasured argument and ordering branches stay partial.
+    "h_SleepThread": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: SleepThread and wakeup sequence)",
+        ],
+        "limitation": "the cited cell covers a helper sleeping and resuming after a wakeup; no-current-thread, disabled-dispatch precedence, callbacks during sleep, and other wake races are not established",
+    },
+    "h_TryLockMutex": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: accepted mutex-interrupt-context TryLockMutex result)",
+        ],
+        "limitation": "the accepted interrupt-context cell confirms ILLEGAL_CONTEXT for TryLockMutex; ordinary acquisition, recursive count boundaries, and owner-contention results are not covered by that cell",
+    },
+    "h_TryReceiveMsgPipe": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: message-pipe buffered and empty receive cells)",
+        ],
+        "limitation": "the cited message-pipe cells cover selected buffered and empty receives; result-size pointer handling, partial-mode edge cases, invalid pointers, and error precedence are not fully summarized by the public oracle row",
+    },
+    "h_TrySendMsgPipe": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: message-pipe no-room and oversize cells)",
+        ],
+        "limitation": "the cited cells cover no-room refusal, oversize refusal, and a partial-mode send; result-size pointer handling, invalid pointers, and all mode/error-precedence combinations are not established",
+    },
+    "h_UnlockMutex": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-priority-inheritance owner release and accepted interrupt-context cell)",
+        ],
+        "limitation": "the cited cases cover owner release in the priority-inheritance control and interrupt-context refusal; invalid UIDs, bad counts, and multi-waiter priority ordering are not established",
+    },
+    "h_WaitEventFlag": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-WAIT-001: event signal/cancel before deadline and late dispatch)",
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01: event flag poll/wait modes and outputs)",
+        ],
+        "limitation": "the cited cells cover the named signal/cancel outcomes and selected wait modes; an unknown event-flag UID currently returns generic 0x80020000 instead of 0x8002019A, and other mode, pointer, and multi-waiter precedence is not established",
+    },
+    "h_WaitSema": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-WAIT-001: semaphore signal/cancel before deadline and late dispatch)",
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01: semaphore count and wait results)",
+        ],
+        "limitation": "the cited cells cover selected count, signal/cancel, and timeout outcomes; invalid timeout pointers, negative counts, general multi-waiter ordering, and all error-precedence cases are not established",
+    },
+    "h_WakeupThread": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: wakeups accumulate while the target is not sleeping)",
+        ],
+        "limitation": "the cited cells cover wakeup-count accumulation and a sleeping target; specific invalid-target errors, repeated wakeup order, and interactions with termination are not all established",
+    },
+    # Route-A batch 7: the measured system-clock delta supports a partial status,
+    # while the probe's offset intervals do not establish a precise clock rate.
+    "h_GetSystemTimeWide": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-VTIMER-002: system-clock reads around the bounded delay)",
+        ],
+        "limitation": "the two system-clock reads advanced 220,608 around a bounded 20 ms delay, but host0 logging offset the intervals and the VTimer/system-clock deltas agree only within about 8%; this is consistent with the microsecond unit but does not establish a precise rate or absolute system-time values",
+    },
 }
 
 # handler name -> status mapping. Preserved for direct consumers and gate checks.
@@ -713,6 +1251,20 @@ FLOAT_RETURN_NIDS = {
         "name": "sceDisplayGetFramePerSec",
         "issue": "https://github.com/Jstar269/nakagawa-recomp/issues/80",
     },
+    # scePower Float getters: the default clock values are measured on the PSP-3000 6.61 oracle
+    # 2026-10-15 (PSP-HLE-POWER-001); the float-return shaping is tracked by #86.
+    0xEA382A27: {
+        "name": "scePowerGetPllClockFrequencyFloat",
+        "issue": "https://github.com/Jstar269/nakagawa-recomp/issues/86",
+    },
+    0xB1A52C83: {
+        "name": "scePowerGetCpuClockFrequencyFloat",
+        "issue": "https://github.com/Jstar269/nakagawa-recomp/issues/86",
+    },
+    0x9BADB3EB: {
+        "name": "scePowerGetBusClockFrequencyFloat",
+        "issue": "https://github.com/Jstar269/nakagawa-recomp/issues/86",
+    },
 }
 
 # Handlers proven to write the float return into $f0 before returning.  A
@@ -720,6 +1272,9 @@ FLOAT_RETURN_NIDS = {
 # generic integer-return h_ok) is a float_return_handler_mismatch finding.
 FLOAT_RETURN_HANDLERS = {
     "h_DisplayGetFramePerSec",
+    "h_PowerGetPllClockFrequencyFloat",
+    "h_PowerGetCpuClockFrequencyFloat",
+    "h_PowerGetBusClockFrequencyFloat",
 }
 
 # Tracking issue for each canonical NID above, so a `mislabeled_nid` finding in

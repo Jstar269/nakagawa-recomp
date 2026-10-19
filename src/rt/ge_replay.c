@@ -238,6 +238,13 @@ int main(int argc, char **argv) {
     GeCpuProfileStats ge_cpu_stats;
     memset(&ge_cpu_stats, 0, sizeof(ge_cpu_stats));
     ge_cpu_profile_get(&ge_cpu_stats);
+    /* An enabled GE CPU profile is checked against the relations its producers establish.
+     * A violation is printed with the numbers and fails the run (exit 4), and
+     * tools/ge_replay_metrics.py refuses to parse a profile reported as FAIL. */
+    int ge_cpu_validated = ge_cpu_stats.enabled || ge_cpu_stats.primitive_profile_enabled;
+    char ge_cpu_detail[256] = "";
+    uint32_t ge_cpu_failed = ge_cpu_validated
+        ? ge_cpu_profile_validate(&ge_cpu_stats, ge_cpu_detail, sizeof ge_cpu_detail) : 0u;
     static const char *boundary_names[GEGPU_BOUNDARY_COUNT] = {
         "render_snapshot", "texture_upload", "target_upload", "depth_upload",
         "readback", "present", "lifetime", "other",
@@ -320,6 +327,17 @@ int main(int argc, char **argv) {
         printf("GE_REPLAY_HOOK_COUNTS calls=%llu submit_ns=%llu wait_ns=%llu\n",
                cpu_stats.hook_calls, cpu_stats.hook_submit_ns, cpu_stats.hook_wait_ns);
         fflush(stdout);
+    }
+    if (ge_cpu_validated) {
+        printf("GE_REPLAY_GE_CPU_VALIDATION status=%s failed=", ge_cpu_failed ? "FAIL" : "PASS");
+        if (!ge_cpu_failed) fputs("none", stdout);
+        for (unsigned i = 0, n = 0; i < GE_PROFILE_CHECK_COUNT; i++)
+            if (ge_cpu_failed & GE_PROFILE_CHECK_MASK(i))
+                printf("%s%s", n++ ? "," : "", ge_profile_check_name((GeProfileCheck)i));
+        putchar('\n');
+        fflush(stdout);
+        if (ge_cpu_failed)
+            fprintf(stderr, "ge_replay: GE CPU profile failed validation: %s\n", ge_cpu_detail);
     }
     if (ge_cpu_stats.enabled) {
         static const char *phase_names[GE_CPU_PHASE_COUNT] = {
@@ -521,5 +539,5 @@ int main(int argc, char **argv) {
     if (vulkan) { gegpu_shutdown(); sdl3vk_shutdown(); }
     ge_capture_free(&fixture);
     free(arena);
-    return 0;
+    return ge_cpu_failed ? 4 : 0;
 }

@@ -444,6 +444,24 @@ static inline int sr_cd_rel_is_acceptable(const char *rel) {
     return 1;
 }
 
+/* A DOS device component (the join's rule, sr_vfs_is_dos_device_name) is refused by
+ * the guest-facing ms0 grammar on every host. This is the one definition: the relpath
+ * refusal below and sceIoOpen's refusal code (hle.c) both call it on the guest path.
+ * The host layers keep their own grammar: POSIX Layer C still accepts these names for
+ * the seam's direct callers. Components split on '/' and '\\', as the relpath does. */
+static inline int sr_cd_ms0_guest_has_dos_device(const char *guest) {
+    const char *tail = NULL;
+    if (!guest || sr_ms0_classify(guest, &tail) != SR_MS0_OWNED || !tail) return 0;
+    const char *p = tail;
+    while (*p) {
+        while (*p == '/' || *p == '\\') p++;
+        const char *start = p;
+        while (*p && *p != '/' && *p != '\\') p++;
+        if (p > start && sr_vfs_is_dos_device_name(start, (size_t)(p - start))) return 1;
+    }
+    return 0;
+}
+
 /* Convert a PSP Memory Stick guest path into the seam's canonical relative
  * grammar. Device-less callers are legacy root-relative paths; ms0:/ and
  * fatms0:/ are the named root forms. Host-absolute, foreign-device, repeated
@@ -466,6 +484,7 @@ static inline sr_cd_status sr_cd_ms0_guest_relpath(const char *guest,
     for (size_t i = 0; i < len; i++)
         rel[i] = tail[i] == '\\' ? '/' : tail[i];
     rel[len] = '\0';
+    if (sr_cd_ms0_guest_has_dos_device(guest)) return SR_CD_INVALID_PATH;
     return sr_cd_rel_is_acceptable(rel) ? SR_CD_OK : SR_CD_INVALID_PATH;
 }
 

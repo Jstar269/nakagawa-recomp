@@ -374,6 +374,322 @@ void ge_cpu_profile_get(GeCpuProfileStats *out) {
     if (out) *out = s_cpu_profile_stats;
 }
 
+/* ---- Profile consistency (ge_cpu_profile_validate) ----
+ * Every relation below is one the producers in this file establish by construction; the
+ * comment above each check names them.  Sums carry an `exceeds` flag instead of wrapping:
+ * parts that add up past UINT64_MAX can never equal or stay within a counter, while a bound
+ * that exceeds UINT64_MAX holds for every counter. */
+typedef struct GeProfileSum { uint64_t value; int exceeds; } GeProfileSum;
+
+static void ge_profile_sum_add(GeProfileSum *sum, uint64_t value) {
+    if (sum->exceeds || value > UINT64_MAX - sum->value) sum->exceeds = 1;
+    else sum->value += value;
+}
+
+static GeProfileSum ge_profile_sum2(uint64_t a, uint64_t b) {
+    GeProfileSum sum = { 0, 0 };
+    ge_profile_sum_add(&sum, a);
+    ge_profile_sum_add(&sum, b);
+    return sum;
+}
+
+static int ge_profile_sum_eq(GeProfileSum sum, uint64_t value) {
+    return !sum.exceeds && sum.value == value;
+}
+
+static int ge_profile_sum_le(GeProfileSum sum, uint64_t value) {
+    return !sum.exceeds && sum.value <= value;
+}
+
+/* Two sums past UINT64_MAX cannot be shown equal, so that also fails. */
+static int ge_profile_sums_equal(GeProfileSum a, GeProfileSum b) {
+    return !a.exceeds && !b.exceeds && a.value == b.value;
+}
+
+static int ge_profile_within(uint64_t value, GeProfileSum bound) {
+    return bound.exceeds || value <= bound.value;
+}
+
+typedef struct GeProfileVerdict {
+    uint32_t failed;
+    char *detail;
+    size_t detail_size;
+} GeProfileVerdict;
+
+/* Checks run in GeProfileCheck order, so the first failure is the lowest-numbered one.
+ * Returns 1 when the caller should describe this failure in the detail buffer. */
+static int ge_profile_fail(GeProfileVerdict *v, GeProfileCheck check) {
+    int first = v->failed == 0;
+    v->failed |= GE_PROFILE_CHECK_MASK(check);
+    return first && v->detail && v->detail_size;
+}
+
+static const char *const s_ge_profile_check_names[] = {
+    "phase_nesting", "phase_calls", "command_bound", "primitive_types", "profile_agreement",
+    "submitted_split", "triangle_mode_split", "reference_split", "use_split",
+    "references_cover_uses", "reject_bound", "decode_split", "decode_coverage",
+    "triangle_decisions", "sample_bound", "calibration_bound",
+};
+_Static_assert(sizeof(s_ge_profile_check_names) / sizeof(s_ge_profile_check_names[0]) ==
+               GE_PROFILE_CHECK_COUNT, "one name per GeProfileCheck");
+/* < 32 so GE_PROFILE_CHECK_MASK(GE_PROFILE_CHECK_COUNT) - 1 (every bit) is defined. */
+_Static_assert(GE_PROFILE_CHECK_COUNT < 32, "GeProfileCheck must fit the uint32_t mask");
+
+const char *ge_profile_check_name(GeProfileCheck check) {
+    return (unsigned)check < GE_PROFILE_CHECK_COUNT ? s_ge_profile_check_names[check] : "unknown";
+}
+
+uint32_t ge_cpu_profile_validate(const GeCpuProfileStats *s, char *detail, size_t detail_size) {
+    GeProfileVerdict v = { 0, detail, detail_size };
+    if (detail && detail_size) detail[0] = '\0';
+    if (!s) {
+        if (detail && detail_size) snprintf(detail, detail_size, "no profile snapshot");
+        return GE_PROFILE_CHECK_MASK(GE_PROFILE_CHECK_COUNT) - 1u;
+    }
+    const int coarse = s->enabled != 0;
+    const int sparse = s->primitive_profile_enabled != 0;
+
+    if (coarse) {
+        const GeCpuPhaseStats *p = s->phase;
+        /* ge_run_list adds total - nested to command_dispatch, where nested is the
+         * primitive/block/clut/flush time timed inside that list (a nested list run can only
+         * leave slack).  gpu_hook is timed only in raster_tri, draw_line_vtx, draw_point_vtx
+         * and fill_sprite, which run only inside a GE_PRIM or patch primitive interval. */
+        GeProfileSum nested = { 0, 0 };
+        ge_profile_sum_add(&nested, p[GE_CPU_COMMAND_DISPATCH].ns);
+        ge_profile_sum_add(&nested, p[GE_CPU_PRIMITIVE].ns);
+        ge_profile_sum_add(&nested, p[GE_CPU_BLOCK_TRANSFER].ns);
+        ge_profile_sum_add(&nested, p[GE_CPU_CLUT_LOAD].ns);
+        ge_profile_sum_add(&nested, p[GE_CPU_FLUSH].ns);
+        if (!ge_profile_sum_le(nested, p[GE_CPU_LIST_TOTAL].ns) &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_PHASE_NESTING))
+            snprintf(detail, detail_size, "phase_nesting: command_dispatch+primitive+block_transfer"
+                     "+clut_load+flush ns exceed list_total ns=%" PRIu64, p[GE_CPU_LIST_TOTAL].ns);
+        if (p[GE_CPU_GPU_HOOK].ns > p[GE_CPU_PRIMITIVE].ns &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_PHASE_NESTING))
+            snprintf(detail, detail_size, "phase_nesting: gpu_hook ns=%" PRIu64 " > primitive ns=%"
+                     PRIu64, p[GE_CPU_GPU_HOOK].ns, p[GE_CPU_PRIMITIVE].ns);
+
+        /* Each list run ends list_total and command_dispatch together; each GE_PRIM, patch,
+         * TRANSFERSTART and listend flush ends its phase once and counts its event under the
+         * same gate; an invalid LOADCLUT span ends clut_load without counting a load. */
+        if ((p[GE_CPU_LIST_TOTAL].calls != p[GE_CPU_COMMAND_DISPATCH].calls ||
+             p[GE_CPU_PRIMITIVE].calls != s->primitive_commands ||
+             p[GE_CPU_BLOCK_TRANSFER].calls != s->block_transfers ||
+             p[GE_CPU_FLUSH].calls != s->flushes ||
+             p[GE_CPU_CLUT_LOAD].calls < s->clut_loads) &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_PHASE_CALLS))
+            snprintf(detail, detail_size, "phase_calls: list=%" PRIu64 " command_dispatch=%" PRIu64
+                     " primitive=%" PRIu64 "/%" PRIu64 " block_transfer=%" PRIu64 "/%" PRIu64
+                     " clut_load=%" PRIu64 "/%" PRIu64 " flush=%" PRIu64 "/%" PRIu64
+                     " (calls/events)",
+                     p[GE_CPU_LIST_TOTAL].calls, p[GE_CPU_COMMAND_DISPATCH].calls,
+                     p[GE_CPU_PRIMITIVE].calls, s->primitive_commands,
+                     p[GE_CPU_BLOCK_TRANSFER].calls, s->block_transfers,
+                     p[GE_CPU_CLUT_LOAD].calls, s->clut_loads, p[GE_CPU_FLUSH].calls, s->flushes);
+
+        /* The walker counts every command word once and at most one of these kinds per word. */
+        GeProfileSum kinds = ge_profile_sum2(s->primitive_commands, s->block_transfers);
+        ge_profile_sum_add(&kinds, s->clut_loads);
+        ge_profile_sum_add(&kinds, s->flushes);
+        if (!ge_profile_sum_le(kinds, s->commands) &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_COMMAND_BOUND))
+            snprintf(detail, detail_size, "command_bound: primitive=%" PRIu64 " block_transfer=%"
+                     PRIu64 " clut_load=%" PRIu64 " flush=%" PRIu64 " exceed commands=%" PRIu64,
+                     s->primitive_commands, s->block_transfers, s->clut_loads, s->flushes,
+                     s->commands);
+
+        /* draw_prim counts primitive_type[]; the GE_PRIM and patch cases count
+         * primitive_commands.  A patch has no type slot, and the sparse profile counts
+         * patches, so with both profiles on the relation is exact. */
+        GeProfileSum types = { 0, 0 };
+        for (unsigned i = 0; i < 8; i++) ge_profile_sum_add(&types, s->primitive_type[i]);
+        if (sparse) ge_profile_sum_add(&types, s->primitive_profile_patch_commands);
+        if (!(sparse ? ge_profile_sum_eq(types, s->primitive_commands)
+                     : ge_profile_sum_le(types, s->primitive_commands)) &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_PRIMITIVE_TYPES))
+            snprintf(detail, detail_size, "primitive_types: primitive_type[]%s %s primitive_commands=%"
+                     PRIu64, sparse ? "+patch_commands" : "", sparse ? "!=" : "exceed",
+                     s->primitive_commands);
+    }
+
+    if (coarse && sparse) {
+        /* draw_prim's coarse block and primitive_profile_note_draw count the same draw with
+         * the same type and the same per-type decode-use formula, strip cache included. */
+        int agree = s->vertex_decode_uses == s->primitive_profile_vertices &&
+                    s->strip_vertices_reused == s->primitive_profile_strip_cache_hits;
+        for (unsigned i = 0; i < 8; i++)
+            if (s->primitive_type[i] != s->primitive_profile_commands[i]) agree = 0;
+        if (!agree && ge_profile_fail(&v, GE_PROFILE_CHECK_PROFILE_AGREEMENT))
+            snprintf(detail, detail_size, "profile_agreement: vertex_decode_uses=%" PRIu64
+                     " vs vertices=%" PRIu64 ", strip_vertices_reused=%" PRIu64
+                     " vs strip_cache_hits=%" PRIu64 ", or a per-type draw count differs",
+                     s->vertex_decode_uses, s->primitive_profile_vertices,
+                     s->strip_vertices_reused, s->primitive_profile_strip_cache_hits);
+    }
+
+    if (sparse) {
+        /* primitive_profile_note_draw counts every draw's pre-clip primitives in submitted[]
+         * and the same number in exactly one of non-triangle primitives (types 0-2, 6) or
+         * triangle candidates (types 3-5); type 7 submits nothing. */
+        GeProfileSum submitted = { 0, 0 };
+        for (unsigned i = 0; i < 8; i++)
+            ge_profile_sum_add(&submitted, s->primitive_profile_submitted[i]);
+        if (!ge_profile_sums_equal(submitted,
+                                   ge_profile_sum2(s->primitive_profile_non_triangle_primitives,
+                                                   s->primitive_profile_triangle_candidates)) &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_SUBMITTED_SPLIT))
+            snprintf(detail, detail_size, "submitted_split: submitted[] != non_triangle_primitives=%"
+                     PRIu64 " + triangle_candidates=%" PRIu64,
+                     s->primitive_profile_non_triangle_primitives,
+                     s->primitive_profile_triangle_candidates);
+
+        /* note_draw adds a draw's triangles to exactly one of the through or transform
+         * candidates (by vf->through); neither population bounds the other. */
+        if (!ge_profile_sum_eq(ge_profile_sum2(s->primitive_profile_through_triangle_candidates,
+                                               s->primitive_profile_transform_triangle_candidates),
+                               s->primitive_profile_triangle_candidates) &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_TRIANGLE_MODE_SPLIT))
+            snprintf(detail, detail_size, "triangle_mode_split: through=%" PRIu64 " + transform=%"
+                     PRIu64 " != triangle_candidates=%" PRIu64,
+                     s->primitive_profile_through_triangle_candidates,
+                     s->primitive_profile_transform_triangle_candidates,
+                     s->primitive_profile_triangle_candidates);
+
+        /* note_draw adds a draw's references to the total and to exactly one split. */
+        if (!ge_profile_sum_eq(ge_profile_sum2(s->primitive_profile_triangle_vertex_references,
+                                               s->primitive_profile_non_triangle_vertex_references),
+                               s->primitive_profile_vertex_references) &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_REFERENCE_SPLIT))
+            snprintf(detail, detail_size, "reference_split: triangle=%" PRIu64 " + non_triangle=%"
+                     PRIu64 " != vertex_references=%" PRIu64,
+                     s->primitive_profile_triangle_vertex_references,
+                     s->primitive_profile_non_triangle_vertex_references,
+                     s->primitive_profile_vertex_references);
+
+        /* note_draw adds a draw's decoder uses to primitive_profile_vertices, to exactly one
+         * of the triangle/non-triangle and through/transform splits, and, for a transform
+         * draw, to transform_vertices as well. */
+        if ((!ge_profile_sum_eq(ge_profile_sum2(s->primitive_profile_triangle_vertex_uses,
+                                                s->primitive_profile_non_triangle_vertex_uses),
+                                s->primitive_profile_vertices) ||
+             !ge_profile_sum_eq(ge_profile_sum2(s->primitive_profile_through_vertex_uses,
+                                                s->primitive_profile_transform_vertex_uses),
+                                s->primitive_profile_vertices) ||
+             s->primitive_profile_transform_vertices != s->primitive_profile_transform_vertex_uses) &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_USE_SPLIT))
+            snprintf(detail, detail_size, "use_split: vertices=%" PRIu64 " triangle=%" PRIu64
+                     " non_triangle=%" PRIu64 " through=%" PRIu64 " transform=%" PRIu64
+                     " transform_vertices=%" PRIu64, s->primitive_profile_vertices,
+                     s->primitive_profile_triangle_vertex_uses,
+                     s->primitive_profile_non_triangle_vertex_uses,
+                     s->primitive_profile_through_vertex_uses,
+                     s->primitive_profile_transform_vertex_uses,
+                     s->primitive_profile_transform_vertices);
+
+        /* primitive_profile_vertices is note_draw's decoder-use total (the replay prints it as
+         * vertex_uses), not the decoded count.  Uses equal references for every type except
+         * a cached strip (count >= 3), where count uses cover 3 * (count - 2) references. */
+        if (s->primitive_profile_vertices > s->primitive_profile_vertex_references &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_REFERENCES_COVER_USES))
+            snprintf(detail, detail_size, "references_cover_uses: vertices=%" PRIu64
+                     " > vertex_references=%" PRIu64, s->primitive_profile_vertices,
+                     s->primitive_profile_vertex_references);
+
+        /* transform_vtx_3d counts a reject per dropped vertex; only transform-mode points and
+         * sprite corners (non-triangle references) reach it. */
+        if (s->primitive_profile_vertex_rejects > s->primitive_profile_non_triangle_vertex_references &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_REJECT_BOUND))
+            snprintf(detail, detail_size, "reject_bound: vertex_rejects=%" PRIu64
+                     " > non_triangle_vertex_references=%" PRIu64,
+                     s->primitive_profile_vertex_rejects,
+                     s->primitive_profile_non_triangle_vertex_references);
+
+        /* load_vtx and transform_vtx_clip each count a decode with its mode counter. */
+        if (!ge_profile_sum_eq(ge_profile_sum2(s->primitive_profile_actual_through_vertices,
+                                               s->primitive_profile_actual_transformed_vertices),
+                               s->primitive_profile_actual_decoded_vertices) &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_DECODE_SPLIT))
+            snprintf(detail, detail_size, "decode_split: through=%" PRIu64 " + transformed=%" PRIu64
+                     " != decoded=%" PRIu64, s->primitive_profile_actual_through_vertices,
+                     s->primitive_profile_actual_transformed_vertices,
+                     s->primitive_profile_actual_decoded_vertices);
+
+        /* draw_prim decodes every through-mode use exactly once.  In transform mode it skips
+         * only the second corner of a sprite whose first corner transform_vtx_3d rejected, so
+         * each missing decode has its own reject. */
+        {
+            uint64_t through_uses = s->primitive_profile_through_vertex_uses;
+            uint64_t transform_uses = s->primitive_profile_transform_vertex_uses;
+            uint64_t transformed = s->primitive_profile_actual_transformed_vertices;
+            if ((s->primitive_profile_actual_through_vertices != through_uses ||
+                 transformed > transform_uses ||
+                 transform_uses - transformed > s->primitive_profile_vertex_rejects) &&
+                ge_profile_fail(&v, GE_PROFILE_CHECK_DECODE_COVERAGE))
+                snprintf(detail, detail_size, "decode_coverage: through decoded=%" PRIu64
+                         " uses=%" PRIu64 ", transform decoded=%" PRIu64 " uses=%" PRIu64
+                         " rejects=%" PRIu64, s->primitive_profile_actual_through_vertices,
+                         through_uses, transformed, transform_uses,
+                         s->primitive_profile_vertex_rejects);
+        }
+
+        /* draw_prim's transform triangle loop records one acceptance verdict per candidate
+         * note_draw counted; through-mode triangles get no verdict. */
+        {
+            GeProfileSum decided = ge_profile_sum2(s->primitive_profile_transform_triangles_drawn,
+                                                   s->primitive_profile_transform_triangles_clipped);
+            ge_profile_sum_add(&decided, s->primitive_profile_transform_triangles_rejected);
+            if (!ge_profile_sum_eq(decided, s->primitive_profile_transform_triangle_candidates) &&
+                ge_profile_fail(&v, GE_PROFILE_CHECK_TRIANGLE_DECISIONS))
+                snprintf(detail, detail_size, "triangle_decisions: drawn=%" PRIu64 " + clipped=%"
+                         PRIu64 " + rejected=%" PRIu64 " != transform_triangle_candidates=%" PRIu64,
+                         s->primitive_profile_transform_triangles_drawn,
+                         s->primitive_profile_transform_triangles_clipped,
+                         s->primitive_profile_transform_triangles_rejected,
+                         s->primitive_profile_transform_triangle_candidates);
+        }
+
+        /* A sparse sample is claimed per decode or triangle candidate and timed in at most
+         * one phase, which note_draw counted as eligible for that draw (lighting only when
+         * the draw had lighting enabled); draw setup samples one draw per stride. */
+        {
+            int over = s->primitive_profile_draw_setup.calls > s->primitive_profile_draw_setup_eligible;
+            unsigned bad = GE_PRIM_PROFILE_PHASE_COUNT;
+            for (unsigned i = 0; i < GE_PRIM_PROFILE_PHASE_COUNT; i++)
+                if (s->primitive_profile_phase[i].calls > s->primitive_profile_eligible[i]) {
+                    over = 1;
+                    if (bad == GE_PRIM_PROFILE_PHASE_COUNT) bad = i;
+                }
+            if (over && ge_profile_fail(&v, GE_PROFILE_CHECK_SAMPLE_BOUND)) {
+                if (bad < GE_PRIM_PROFILE_PHASE_COUNT)
+                    snprintf(detail, detail_size, "sample_bound: phase %u calls=%" PRIu64
+                             " > eligible=%" PRIu64, bad, s->primitive_profile_phase[bad].calls,
+                             s->primitive_profile_eligible[bad]);
+                else
+                    snprintf(detail, detail_size, "sample_bound: draw_setup calls=%" PRIu64
+                             " > eligible=%" PRIu64, s->primitive_profile_draw_setup.calls,
+                             s->primitive_profile_draw_setup_eligible);
+            }
+        }
+
+        /* With calibration, a sampled triangle claim ends one empty-control interval and may
+         * start one sampled-total interval; a sampled vertex claim ends one control interval.
+         * Claims happen once per decode and once per triangle candidate. */
+        if ((s->primitive_profile_sampled_total.calls > s->primitive_profile_triangle_candidates ||
+             !ge_profile_within(s->primitive_profile_empty_control.calls,
+                                ge_profile_sum2(s->primitive_profile_actual_decoded_vertices,
+                                                s->primitive_profile_triangle_candidates))) &&
+            ge_profile_fail(&v, GE_PROFILE_CHECK_CALIBRATION_BOUND))
+            snprintf(detail, detail_size, "calibration_bound: sampled_total calls=%" PRIu64
+                     " empty_control calls=%" PRIu64 " for decoded=%" PRIu64
+                     " triangle_candidates=%" PRIu64, s->primitive_profile_sampled_total.calls,
+                     s->primitive_profile_empty_control.calls,
+                     s->primitive_profile_actual_decoded_vertices,
+                     s->primitive_profile_triangle_candidates);
+    }
+    return v.failed;
+}
+
 uint32_t g_ge_stall_addr = 0;
 static uint32_t s_stack_pc[32], s_stack_offset[32];
 static int s_sp = 0;
@@ -381,7 +697,15 @@ static int s_sp = 0;
 /* Optional GPU rasterizer hooks (ge_shared.h). NULL = pure software (the GDI build
  * never registers any; the SDL3 build registers them only under SR_GPU_GE=1). */
 static const GeGpuHooks *s_gpu = NULL;
-void ge_set_gpu_hooks(const GeGpuHooks *h) { s_gpu = h; }
+volatile int g_sr_vram_read_pending;
+
+void sr_vram_mark_renderer_pending(void) {
+    g_sr_vram_read_pending = 1;
+}
+
+void ge_set_gpu_hooks(const GeGpuHooks *h) {
+    s_gpu = h;
+}
 GeState *ge_state_ptr(void) { return &ge; }
 void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes) {
     if (s_gpu && s_gpu->vram_dirty) s_gpu->vram_dirty(addr, bytes);
@@ -415,16 +739,222 @@ uint32_t ge_get_cmd(uint32_t cmd) {
  * Software 16-bit depth buffer, one entry per pixel, max stride 512.
  * Only active when ge.ztest_enable is set. */
 static uint16_t s_zbuf[272 * 512];
+static uint32_t s_zbuf_guest_base;
+static uint32_t s_zbuf_guest_stride;
+static int s_zbuf_guest_valid;
+static int s_zbuf_guest_dirty;
+static int s_zbuf_boundary_reported;
 
 static uint32_t zbuf_stride(void) { return ge.zbw ? ge.zbw : (ge.fbw ? ge.fbw : 512); }
 
-uint16_t *ge_zbuf_ptr(void) { return s_zbuf; }
+static uint32_t ge_depth_xor_extreme(uint32_t max_index, uint32_t mask,
+                                     int maximize) {
+    uint32_t input = 0u;
+    int prefix_equal = 1;
+    for (int bit = 31; bit >= 0; bit--) {
+        uint32_t limit = (max_index >> (unsigned)bit) & 1u;
+        uint32_t mask_bit = (mask >> (unsigned)bit) & 1u;
+        uint32_t candidate = maximize ? (mask_bit ^ 1u) : mask_bit;
+        if (prefix_equal && candidate > limit) candidate = limit;
+        if (prefix_equal && candidate < limit) prefix_equal = 0;
+        if (candidate) input |= 1u << (unsigned)bit;
+    }
+    return input ^ mask;
+}
+
+int ge_zbuf_guest_span_bounds(uint32_t base, uint32_t stride,
+                              uint32_t *first, uint32_t *end) {
+    if (stride == 0u || stride > 512u || !first || !end) return 0;
+    uint32_t pixels = stride * 272u;
+    if (pixels == 0u) return 0;
+    uint32_t max_index = pixels - 1u;
+    uint32_t min_offset = ge_depth_xor_extreme(max_index, 0x1020u, 0) * 2u;
+    uint32_t max_offset = ge_depth_xor_extreme(max_index, 0x1020u, 1) * 2u;
+    uint64_t first64 = (uint64_t)base + min_offset;
+    uint64_t end64 = (uint64_t)base + max_offset + 2u;
+    if (first64 > UINT32_MAX || end64 > UINT32_MAX) return 0;
+    *first = (uint32_t)first64;
+    *end = (uint32_t)end64;
+    return *first < *end;
+}
+
+static void ge_zbuf_boundary(const char *code, const char *sentence) {
+    if (s_zbuf_boundary_reported) return;
+    s_zbuf_boundary_reported = 1;
+    fprintf(stderr, "SEMANTIC_BOUNDARY: %s; %s\n", code, sentence);
+}
+
+static int ge_zbuf_layout_valid(uint32_t base, uint32_t stride) {
+    if (stride == 0u || stride > 512u) {
+        ge_zbuf_boundary("VRAM_DEPTH_STRIDE_UNSUPPORTED",
+                         "depth strides above 512 pixels are not supported yet.");
+        return 0;
+    }
+    if ((base & 0x2040u) != 0u) {
+        ge_zbuf_boundary("VRAM_DEPTH_XOR_ORIGIN_UNMEASURED",
+                         "depth buffers at this placement are not supported yet until the PSP XOR origin is measured.");
+        return 0;
+    }
+    uint32_t first, end;
+    if (!ge_zbuf_guest_span_bounds(base, stride, &first, &end) ||
+        first < SR_VRAM_CPU_BASE || end > SR_VRAM_CPU_END) {
+        ge_zbuf_boundary("VRAM_DEPTH_SPAN_UNSUPPORTED",
+                         "depth buffers that cross the end of VRAM are not supported yet.");
+        return 0;
+    }
+    return 1;
+}
+
+static uint32_t ge_zbuf_guest_address(uint32_t x, uint32_t y,
+                                      uint32_t base, uint32_t stride) {
+    uint32_t linear = (y * stride + x) * 2u;
+    return base + (linear ^ 0x2040u);
+}
+
+static int ge_zbuf_range_overlaps(uint32_t addr, uint32_t width) {
+    if (!s_zbuf_guest_valid || width == 0u) return 0;
+    uint32_t surface_first, surface_end;
+    if (!ge_zbuf_guest_span_bounds(s_zbuf_guest_base, s_zbuf_guest_stride,
+                                   &surface_first, &surface_end)) return 0;
+    uint64_t access_end = (uint64_t)addr + width;
+    return (uint64_t)addr < surface_end && surface_first < access_end;
+}
+
+int ge_zbuf_materialize_current(void) {
+    if (!s_zbuf_guest_valid || !s_zbuf_guest_dirty) return 1;
+    for (uint32_t y = 0; y < 272u; y++) {
+        uint32_t row = y * s_zbuf_guest_stride;
+        for (uint32_t x = 0; x < s_zbuf_guest_stride; x++) {
+            uint32_t addr = ge_zbuf_guest_address(x, y,
+                                                   s_zbuf_guest_base,
+                                                   s_zbuf_guest_stride);
+            if (!sr_inrange_n(addr, 2u)) return 0;
+            memcpy(SR_HOST_LINEAR(addr), &s_zbuf[row + x], sizeof s_zbuf[row + x]);
+        }
+    }
+    s_zbuf_guest_dirty = 0;
+    return 1;
+}
+
+int ge_zbuf_prepare_current(void) {
+    uint32_t base = ge.zbp ? SR_PHYS(ge.zbp) : SR_VRAM_CPU_BASE;
+    if (base < 0x00200000u) base += SR_VRAM_CPU_BASE;
+    uint32_t stride = zbuf_stride();
+    if (!ge_zbuf_layout_valid(base, stride)) return 0;
+
+    if (!s_zbuf_guest_valid || s_zbuf_guest_base != base ||
+        s_zbuf_guest_stride != stride) {
+        if (!ge_zbuf_materialize_current()) {
+            ge_zbuf_boundary("VRAM_DEPTH_WRITEBACK_FAILED",
+                             "the previous depth surface could not be written to guest VRAM yet.");
+            return 0;
+        }
+        for (uint32_t y = 0; y < 272u; y++) {
+            uint32_t row = y * stride;
+            for (uint32_t x = 0; x < stride; x++) {
+                uint32_t addr = ge_zbuf_guest_address(x, y, base, stride);
+                if (!sr_inrange_n(addr, 2u)) return 0;
+                memcpy(&s_zbuf[row + x], SR_HOST_LINEAR(addr), sizeof s_zbuf[row + x]);
+            }
+            if (stride < 512u)
+                memset(s_zbuf + row + stride, 0,
+                       (size_t)(512u - stride) * sizeof s_zbuf[0]);
+        }
+        s_zbuf_guest_base = base;
+        s_zbuf_guest_stride = stride;
+        s_zbuf_guest_valid = 1;
+        s_zbuf_guest_dirty = 0;
+    }
+    return 1;
+}
+
+static void ge_zbuf_note_write(void) {
+    if (!s_zbuf_guest_valid) return;
+    s_zbuf_guest_dirty = 1;
+    g_sr_vram_read_pending = 1;
+}
+
+void ge_zbuf_note_external_write(void) {
+    uint32_t base = ge.zbp ? SR_PHYS(ge.zbp) : SR_VRAM_CPU_BASE;
+    if (base < 0x00200000u) base += SR_VRAM_CPU_BASE;
+    uint32_t stride = zbuf_stride();
+    if (!ge_zbuf_layout_valid(base, stride)) return;
+    s_zbuf_guest_base = base;
+    s_zbuf_guest_stride = stride;
+    s_zbuf_guest_valid = 1;
+    ge_zbuf_note_write();
+}
+
+void ge_zbuf_invalidate_guest_range(uint32_t addr) {
+    ge_zbuf_invalidate_guest_span(addr, 1u);
+}
+
+void ge_zbuf_invalidate_guest_span(uint32_t addr, uint32_t bytes) {
+    if (!s_zbuf_guest_valid ||
+        !ge_zbuf_range_overlaps(SR_PHYS(addr), bytes)) return;
+    s_zbuf_guest_valid = 0;
+    s_zbuf_guest_dirty = 0;
+}
+
+static void ge_vram_coherence_failure(const char *code, const char *sentence) {
+    fprintf(stderr, "SEMANTIC_BOUNDARY: %s; %s\n", code, sentence);
+    fflush(stderr);
+    exit(EXIT_FAILURE);
+}
+
+void sr_ge_vram_read_prepare(uint32_t physical_addr, uint32_t width) {
+    if (s_zbuf_guest_dirty && ge_zbuf_range_overlaps(physical_addr, width) &&
+        !ge_zbuf_materialize_current())
+        ge_vram_coherence_failure("VRAM_DEPTH_WRITEBACK_FAILED",
+                                  "the GE depth surface could not be materialized for a CPU read yet.");
+    if (s_gpu && s_gpu->vram_read && !s_gpu->vram_read(physical_addr, width))
+        ge_vram_coherence_failure("VRAM_RENDERER_READBACK_FAILED",
+                                  "renderer-owned VRAM could not be materialized for a CPU read yet.");
+
+    g_sr_vram_read_pending = s_zbuf_guest_dirty ||
+        (s_gpu && s_gpu->vram_pending && s_gpu->vram_pending());
+}
+
+void sr_ge_vram_write_prepare(uint32_t physical_addr, uint32_t width) {
+    uint32_t canonical = sr_vram_cpu_aperture(physical_addr)
+                       ? sr_vram_cpu_address(physical_addr) : SR_PHYS(physical_addr);
+    if (s_zbuf_guest_dirty && ge_zbuf_range_overlaps(canonical, width) &&
+        !ge_zbuf_materialize_current())
+        ge_vram_coherence_failure("VRAM_DEPTH_WRITEBACK_FAILED",
+                                  "the GE depth surface could not be preserved before a CPU store yet.");
+    if (s_gpu && s_gpu->vram_write_prepare &&
+        !s_gpu->vram_write_prepare(canonical, width))
+        ge_vram_coherence_failure("VRAM_DEPTH_WRITEBACK_FAILED",
+                                  "the Vulkan depth surface could not be preserved before a CPU store yet.");
+}
+
+void sr_ge_vram_write_commit(uint32_t physical_addr, uint32_t width) {
+    uint32_t canonical = sr_vram_cpu_aperture(physical_addr)
+                       ? sr_vram_cpu_address(physical_addr) : SR_PHYS(physical_addr);
+    if (s_zbuf_guest_valid && ge_zbuf_range_overlaps(canonical, width)) {
+        s_zbuf_guest_valid = 0;
+        s_zbuf_guest_dirty = 0;
+    }
+    sr_gpu_vram_dirty(physical_addr, width);
+    g_sr_vram_read_pending = s_zbuf_guest_dirty ||
+        (s_gpu && s_gpu->vram_pending && s_gpu->vram_pending());
+}
+
+uint16_t *ge_zbuf_ptr(void) {
+    return ge_zbuf_prepare_current() ? s_zbuf : NULL;
+}
 uint32_t  ge_zbuf_stride(void) { return zbuf_stride(); }
 
 void ge_replay_restore(const GeState *state, const uint16_t *zbuf) {
     if (!state || !zbuf) return;
     ge = *state;
     memcpy(s_zbuf, zbuf, sizeof(s_zbuf));
+    s_zbuf_guest_base = state->zbp ? SR_PHYS(state->zbp) : SR_VRAM_CPU_BASE;
+    if (s_zbuf_guest_base < 0x00200000u) s_zbuf_guest_base += SR_VRAM_CPU_BASE;
+    s_zbuf_guest_stride = state->zbw ? state->zbw : (state->fbw ? state->fbw : 512u);
+    s_zbuf_guest_valid = s_zbuf_guest_stride <= 512u;
+    s_zbuf_guest_dirty = s_zbuf_guest_valid;
+    if (s_zbuf_guest_dirty) g_sr_vram_read_pending = 1;
     if (s_tr_enabled > 0) ge_transition_trace_sync_written();
     s_ge_inited = 1;
     s_sp = 0;
@@ -432,20 +962,24 @@ void ge_replay_restore(const GeState *state, const uint16_t *zbuf) {
 }
 
 static void zbuf_fill_rect(int x0, int y0, int x1, int y1, uint16_t z) {
+    if (!ge_zbuf_prepare_current()) return;
     uint32_t stride = zbuf_stride();
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
+    int wrote = 0;
     for (int y = y0; y <= y1; y++) {
         uint32_t base = (uint32_t)y * stride;
         for (int x = x0; x <= x1; x++) {
             uint32_t idx = base + (uint32_t)x;
-            if (idx < 272u * 512u) s_zbuf[idx] = z;
+            if (idx < 272u * 512u) { s_zbuf[idx] = z; wrote = 1; }
         }
     }
+    if (wrote) ge_zbuf_note_write();
 }
 
 static void stat_zfail(void);
 static int ztest_compare_px(int x, int y, uint16_t z) {
+    if (!ge_zbuf_prepare_current()) return 0;
     uint32_t idx = (uint32_t)(y * (int)zbuf_stride() + x);
     if (idx >= 272u * 512u) return 0;
     uint16_t cur = s_zbuf[idx];
@@ -899,7 +1433,7 @@ static unsigned long s_tr_watch_dropped = 0;
 static uint32_t index_value(uint32_t ibase, int idxfmt, int i);   /* defined with the vertex fetch */
 
 static uint32_t ge_tr_hash_span(uint32_t h, uint32_t lo, uint32_t hi) {
-    if (hi <= lo || !sr_guest_span_readable(lo, hi - lo)) return h;
+    if (hi <= lo || !sr_guest_span_readable_current(lo, hi - lo)) return h;
     const uint8_t *p = (const uint8_t *)SR_HOST(lo);
     for (uint32_t i = 0; i < hi - lo; i++) { h ^= p[i]; h *= 16777619u; }
     return h;
@@ -1421,7 +1955,8 @@ void ge_decode_tex_rgba(uint32_t *out) {
         if (ge.tex_w <= 0 || ge.tex_h <= 0 ||
             !sr_guest_rect_readable(ge.tex_addr, 0u, 0u, stride,
                                     (uint32_t)ge.tex_w, (uint32_t)ge.tex_h,
-                                    bpp, &source)) {
+                                    bpp, &source) ||
+            !sr_guest_span_readable_current(source.first, source.total_bytes)) {
             if (ge.tex_w > 0 && ge.tex_h > 0)
                 memset(out, 0, (size_t)ge.tex_w * (size_t)ge.tex_h * 4u);
             return;
@@ -1691,7 +2226,7 @@ static void put_px_rgba_tested(int x, int y, uint16_t pz, int use_z,
     }
     if (use_z && !ge.zwrite_disable) {
         uint32_t zi=(uint32_t)(y*(int)zbuf_stride()+x);
-        if (zi<272u*512u) s_zbuf[zi]=pz;
+        if (zi<272u*512u) { s_zbuf[zi]=pz; ge_zbuf_note_write(); }
     }
     if (ge.stencil_enable)
         stencil=apply_stencil_op((int)((ge.stencil_op>>16)&7),stencil);
@@ -1910,6 +2445,8 @@ static int vtx_nonfinite(const Vtx *a, const Vtx *b, const Vtx *c) {
 
 static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
     if (vtx_nonfinite(A, B, C)) return;
+    if ((ge.ztest_enable || (ge.clear && (ge.clear_mode & 0x400u))) &&
+        !ge_zbuf_prepare_current()) return;
     /* GPU capture seam: a registered backend takes the triangle (and reproduces culling,
      * depth, shading, blending on the GPU); if it declines it has already flushed, so the
      * software path below stays correctly ordered against prior GPU work. */
@@ -2009,7 +2546,10 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
             if (ge.clear) {
                 if (ge.clear_mode & 0x400) {
                     uint32_t zi = (uint32_t)(y * (int)zbuf_stride() + x);
-                    if (zi < 272u*512u) s_zbuf[zi] = clamp_z(iz);
+                    if (zi < 272u*512u) {
+                        s_zbuf[zi] = clamp_z(iz);
+                        ge_zbuf_note_write();
+                    }
                 }
                 who_init();
                 if (x == s_who_x && y == s_who_y && s_pixwho_n < 400) {
@@ -2687,6 +3227,8 @@ static void fill_rect_clear_fast(int xa, int ya, int xb, int yb, int r, int g, i
  * persp=1 recovers UV from the over-w storage and depth-tests with the second vertex's z. */
 static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
     if (vtx_nonfinite(p0, p1, NULL)) return;
+    if ((ge.ztest_enable || (ge.clear && (ge.clear_mode & 0x400u))) &&
+        !ge_zbuf_prepare_current()) return;
     if (s_gpu && s_gpu->sprite) {
         uint64_t profile_started = ge_cpu_profile_begin();
         int handled = s_gpu->sprite(p0, p1, persp);
@@ -3807,11 +4349,13 @@ static void ge_block_transfer(uint32_t startdata) {
     for (uint32_t y = 0; y < h; y++) {
         uint32_t so = src.first + y * src.row_pitch;
         uint32_t dofs = dst.first + y * dst.row_pitch;
+        if (!sr_guest_span_readable_current(so, src.row_bytes)) return;
         ge_capture_note_memory(so, src.row_bytes);
         ge_capture_note_memory(dofs, dst.row_bytes);
         if (g_sr_heap_watch) sr_heap_note_bulk_write(dofs, dst.row_bytes, 0u);
+        sr_guest_vram_write_prepare_bytes(dofs, dst.row_bytes);
         memmove(SR_HOST(dofs), SR_HOST(so), src.row_bytes);
-        sr_gpu_vram_dirty(dofs, dst.row_bytes);
+        sr_guest_vram_write_commit_bytes(dofs, dst.row_bytes);
     }
 }
 
@@ -3848,7 +4392,11 @@ static uint32_t ge_run_list_inner(uint32_t addr, int resume) {
     int pending_signal=0;
     uint32_t pending_signal_op=0;
     for (int guard=0; guard<(1<<20); guard++) {
-        if (g_ge_stall_addr && addr == g_ge_stall_addr) {
+        /* Compare 28-bit addresses. The list pointer and sceGeListUpdateStallAddr value may use
+         * the uncached mirror (0x4xxxxxxx), while CALL/JUMP/RET targets are masked to 28 bits,
+         * so one guest word can arrive under either spelling. A zero stall address still means
+         * no fence. */
+        if (g_ge_stall_addr && (addr & 0x0FFFFFFFu) == (g_ge_stall_addr & 0x0FFFFFFFu)) {
             static int s_gelog_stall = -1;
             if (s_gelog_stall < 0) s_gelog_stall = getenv("SR_GELOG") ? 1 : 0;
             if (s_gelog_stall) {
@@ -4295,7 +4843,7 @@ int ge_vramdump_write(const char *directory, uint32_t vblank,
         fprintf(stderr, "VRAMDUMP vblank=%" PRIu32 " FAIL (GPU readback boundary unavailable)\n", vblank);
         return 0;
     }
-    if (!sr_guest_span_readable(GE_CAPTURE_VRAM_BASE, GE_CAPTURE_VRAM_SIZE)) {
+    if (!sr_guest_span_readable_current(GE_CAPTURE_VRAM_BASE, GE_CAPTURE_VRAM_SIZE)) {
         fprintf(stderr, "VRAMDUMP vblank=%" PRIu32 " FAIL (guest VRAM span unavailable)\n", vblank);
         return 0;
     }

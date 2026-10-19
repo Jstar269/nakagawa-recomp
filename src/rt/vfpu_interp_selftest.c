@@ -25,6 +25,8 @@
 //     an active source lane still triggers the cosine-recompute quirk;
 //   * the shared VASIN helper matches the real-PSP measured domain words,
 //     including signed invalid-NaN payloads just outside +/-1;
+//   * vscmp.s/vsge.s/vslt.s return the 45 words a PSP-3000 measured
+//     (PSP-VFPU-CMP-001), in the generated code and the interpreter alike;
 //   * valid aligned quad round-trips still work.
 //
 // The final check count is printed by the executable. No game inputs or private
@@ -41,6 +43,12 @@
 #include "vfpu_tables.c"
 #include "vfpu_interp.c"
 #include "vfpu_overlap_diff_cases.h"
+
+/* No GE renderer is linked by this VFPU-only harness. */
+volatile int g_sr_vram_read_pending;
+void sr_ge_vram_read_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
+void sr_ge_vram_write_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
+void sr_ge_vram_write_commit(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
 
 #include <fenv.h>
 #include <stdio.h>
@@ -545,6 +553,110 @@ static int check_vhdp_signed_zero_corpus(void) {
     return codegen.vi[32] != interp.vi[32] || interp.vi[32] != 0x00000000u;
 }
 
+static float vfpu3_compare_expect(unsigned sub, float a, float b) {
+    /* The stated result (issue #69 / #326) for non-NaN operands: vscmp -1/0/1, vsge and vslt
+     * 1/0. Used only as the spec check, next to the lane-for-lane comparison. A NaN lane
+     * follows the measured words that check_vfpu_compare_measured_words() pins. */
+    if (sub == 5u) return (a < b) ? -1.0f : ((a > b) ? 1.0f : 0.0f);
+    if (sub == 6u) return (a >= b) ? 1.0f : 0.0f;
+    return (a < b) ? 1.0f : 0.0f;
+}
+
+static int check_vfpu3_compare_parity(void) {
+    /* AOT codegen vs sr_vfpu_interp for the VFPU3 compare family (issue #326). Each vscmp,
+     * vsge and vslt width (single, pair, triple, quad) runs through the generated body and
+     * the production interpreter on identical state. The operand corpus holds ordinary values,
+     * equal pairs, signed zeros and infinities; it holds no NaN. The console measured NaN only
+     * for the five single-width NaN pairs of PSP-VFPU-CMP-001 (15 cells), which
+     * check_vfpu_compare_measured_words() pins; other NaN pairs (NaN against NaN or an
+     * infinity) stay unmeasured. Pass 0 gives every lane the same pair; pass 1 staggers the pairs
+     * across lanes. Both lanes must leave every v[] lane and vfpuCtrl[] identical, and the
+     * destination lanes must hold the stated result. */
+    static const float corpus[] = {
+        1.0f, -1.0f, 2.5f, -2.5f, 0.5f,   /* ordinary values */
+        0.0f, -0.0f,                      /* signed zeros: equal under < and >= */
+        INFINITY, -INFINITY,
+    };
+    enum { NC = (int)(sizeof(corpus) / sizeof(corpus[0])) };
+    const int first = OVERLAP_DIFF_CMP_FIRST;
+    const int count = OVERLAP_DIFF_CMP_COUNT;
+    int bad = 0;
+
+    for (int c = first; c < first + count; c++) {
+        const uint32_t w = overlap_diff_cases[c].w;
+        const char *name = overlap_diff_cases[c].name;
+        const unsigned sub = (w >> 23) & 7u;
+        const int n = vsize(w);
+        uint8_t si[4], ti[4], di[4];
+        vreg_idx((int)((w >> 8) & 0x7fu), n, si);
+        vreg_idx((int)((w >> 16) & 0x7fu), n, ti);
+        vreg_idx((int)(w & 0x7fu), n, di);
+
+        for (int pass = 0; pass < 2; pass++) {
+            int combo_bad = 0;
+            for (int p = 0; p < NC * NC && !combo_bad; p++) {
+                CpuState s0, s1, s2;
+                float a[4], b[4];
+                const int ai = p / NC, bi = p % NC;
+
+                setup_identity_compute(&s0);
+                /* Destination prefix active: saturate every lane to [-1,1]. That keeps -1/0/1 and
+                 * 0/1 unchanged, and makes the consume back to identity visible in vfpuCtrl[].
+                 * The S/T prefixes stay identity: no identity-valued non-0xe4 source prefix exists
+                 * within the 20 prefix bits (any abs, constant or negate bit changes the value). */
+                s0.vfpuCtrl[2] = 0xffu;
+                for (int i = 0; i < 128; i++) s0.vi[i] = 0xa5a5a5a5u;
+                for (int i = 0; i < n; i++) {
+                    a[i] = pass == 0 ? corpus[ai] : corpus[(ai + i) % NC];
+                    b[i] = pass == 0 ? corpus[bi] : corpus[(bi + 2 * i + 1) % NC];
+                    s0.v[si[i]] = a[i];
+                    s0.v[ti[i]] = b[i];
+                }
+                s1 = s0;
+                s2 = s0;
+                overlap_diff_run_codegen(&s1, c);
+                if (sr_vfpu_interp(&s2, w) != SR_VFPU_COMPUTE) {
+                    fprintf(stderr, "VFPU3 compare parity: %s op=0x%08x interpreter did not compute\n",
+                            name, w);
+                    combo_bad = 1;
+                    break;
+                }
+                for (int i = 0; i < 128 && !combo_bad; i++) {
+                    if (s1.vi[i] != s2.vi[i]) {
+                        fprintf(stderr,
+                                "MISMATCH vfpu3 compare parity case=%s op=0x%08x pass=%d pair=(%g,%g): "
+                                "v%d codegen=0x%08x interp=0x%08x\n",
+                                name, w, pass, a[0], b[0], i, s1.vi[i], s2.vi[i]);
+                        combo_bad = 1;
+                    }
+                }
+                for (int i = 0; i < 4 && !combo_bad; i++) {
+                    if (s1.vfpuCtrl[i] != s2.vfpuCtrl[i]) {
+                        fprintf(stderr,
+                                "MISMATCH vfpu3 compare parity case=%s op=0x%08x pass=%d: "
+                                "vfpuCtrl[%d] codegen=0x%08x interp=0x%08x\n",
+                                name, w, pass, i, s1.vfpuCtrl[i], s2.vfpuCtrl[i]);
+                        combo_bad = 1;
+                    }
+                }
+                for (int i = 0; i < n && !combo_bad; i++) {
+                    const float want = vfpu3_compare_expect(sub, a[i], b[i]);
+                    if (s1.v[di[i]] != want || s2.v[di[i]] != want) {
+                        fprintf(stderr,
+                                "MISMATCH vfpu3 compare spec case=%s op=0x%08x pass=%d lane=%d "
+                                "pair=(%g,%g): want %g codegen=%g interp=%g\n",
+                                name, w, pass, i, a[i], b[i], want, s1.v[di[i]], s2.v[di[i]]);
+                        combo_bad = 1;
+                    }
+                }
+            }
+            CHECK(!combo_bad, "VFPU3 compare: AOT codegen and sr_vfpu_interp agree on every width and operand pair");
+            if (combo_bad) bad = 1;
+        }
+    }
+    return bad;
+}
+
 static uint32_t vf2i(unsigned mode, unsigned scale) {
     /* Scalar vf2in/vf2iz/vf2iu/vf2id, vs=0 (physical v[0]), vd=1
      * (physical v[4]). Width bits 7/15 remain clear. */
@@ -633,9 +745,10 @@ static uint32_t vfpu3_single(unsigned sub, unsigned vt, unsigned vs, unsigned vd
 static int check_vfpu3_compare_forms(void) {
     /* Major 0x1b sub-ops 5, 6 and 7 are vscmp, vsge and vslt (issue #69 root cause: they
      * were decoded as vcmovt/vcmovf before 2026-10-10). Each compares S against T per lane
-     * and writes a float: vscmp -1/0/1, vsge and vslt 1/0. A NaN operand compares false and
-     * yields 0.0 (project semantics after PPSSPP; the console's NaN result is UNMEASURED).
-     * vs=0 is physical v[0], vt=2 is v[8], vd=1 is v[4]. */
+     * and writes a float: vscmp -1/0/1, vsge and vslt 1/0. The NaN rows use the operands a
+     * PSP-3000 measured (PSP-VFPU-CMP-001): vsge and vslt write 0.0, and vscmp orders a
+     * NaN by sign and magnitude, so +NaN against 1.5 writes +1.0 and 1.5 against +NaN
+     * writes -1.0. vs=0 is physical v[0], vt=2 is v[8], vd=1 is v[4]. */
     static const struct {
         unsigned sub;
         uint32_t a, b, expect;
@@ -644,15 +757,16 @@ static int check_vfpu3_compare_forms(void) {
         {6u, 0x3f800000u, 0x00000000u, 0x3f800000u, "vsge.s 1 >= 0 writes 1.0"},
         {6u, 0x00000000u, 0x00000000u, 0x3f800000u, "vsge.s 0 >= 0 writes 1.0"},
         {6u, 0xbf800000u, 0x00000000u, 0x00000000u, "vsge.s -1 >= 0 writes 0.0"},
-        {6u, 0x7fc00000u, 0x00000000u, 0x00000000u, "vsge.s NaN >= 0 writes 0.0 (UNMEASURED)"},
+        {6u, 0x7fc00000u, 0x3fc00000u, 0x00000000u, "vsge.s NaN >= 1.5 writes 0.0 (PSP-VFPU-CMP-001)"},
         {7u, 0xbf800000u, 0x00000000u, 0x3f800000u, "vslt.s -1 < 0 writes 1.0"},
         {7u, 0x00000000u, 0x00000000u, 0x00000000u, "vslt.s 0 < 0 writes 0.0"},
         {7u, 0x3f800000u, 0x00000000u, 0x00000000u, "vslt.s 1 < 0 writes 0.0"},
-        {7u, 0x00000000u, 0x7fc00000u, 0x00000000u, "vslt.s 0 < NaN writes 0.0 (UNMEASURED)"},
+        {7u, 0x3fc00000u, 0x7fc00000u, 0x00000000u, "vslt.s 1.5 < NaN writes 0.0 (PSP-VFPU-CMP-001)"},
         {5u, 0xc0000000u, 0x00000000u, 0xbf800000u, "vscmp.s -2 vs 0 writes -1.0"},
         {5u, 0x00000000u, 0x00000000u, 0x00000000u, "vscmp.s 0 vs 0 writes 0.0"},
         {5u, 0x40400000u, 0x00000000u, 0x3f800000u, "vscmp.s 3 vs 0 writes 1.0"},
-        {5u, 0x7fc00000u, 0x00000000u, 0x00000000u, "vscmp.s NaN vs 0 writes 0.0 (UNMEASURED)"},
+        {5u, 0x7fc00000u, 0x3fc00000u, 0x3f800000u, "vscmp.s NaN vs 1.5 writes 1.0 (PSP-VFPU-CMP-001)"},
+        {5u, 0x3fc00000u, 0x7fc00000u, 0xbf800000u, "vscmp.s 1.5 vs NaN writes -1.0 (PSP-VFPU-CMP-001)"},
     };
     CpuState s;
     int bad = 0;
@@ -741,18 +855,158 @@ static int check_vasin_measured_domain_words(void) {
     return bad;
 }
 
+static int find_overlap_diff_case(const char *name) {
+    for (int c = 0; c < OVERLAP_DIFF_NCASES; c++) {
+        if (strcmp(overlap_diff_cases[c].name, name) == 0) return c;
+    }
+    return -1;
+}
+
+static int check_vfpu_compare_measured_words(void) {
+    /* PSP-VFPU-CMP-001: the 45 result words a PSP-3000 (6.61, 2026-10-15, probe build
+     * e45e667b) returned for vscmp.s, vsge.s and vslt.s S002, S000, S001 on 15 operand
+     * pairs; docs/HARDWARE_ORACLE.md indexes the run. Both execution lanes run the probe's
+     * own words: the AOT body tools/codegen.py emits (via the overlap-diff header) and the
+     * production interpreter. vsge/vslt write 0.0 for every NaN pair; vscmp orders a NaN
+     * by sign and magnitude (+NaN above, -NaN below), which the interpreter wrote as 0.0
+     * before this measurement. */
+    static const char *const op_case[3] = {
+        "vscmp-s-measured", "vsge-s-measured", "vslt-s-measured",
+    };
+    static const struct {
+        const char *name;
+        uint32_t a, b;
+        uint32_t psp[3]; /* measured word per op: vscmp.s, vsge.s, vslt.s */
+    } pairs[] = {
+        {"lt", 0x3fc00000u, 0x40200000u, {0xbf800000u, 0x00000000u, 0x3f800000u}},
+        {"eq", 0x3fc00000u, 0x3fc00000u, {0x00000000u, 0x3f800000u, 0x00000000u}},
+        {"gt", 0x40200000u, 0x3fc00000u, {0x3f800000u, 0x3f800000u, 0x00000000u}},
+        {"zero-pos-neg", 0x00000000u, 0x80000000u, {0x00000000u, 0x3f800000u, 0x00000000u}},
+        {"zero-neg-pos", 0x80000000u, 0x00000000u, {0x00000000u, 0x3f800000u, 0x00000000u}},
+        {"nan-left-quiet", 0x7fc00000u, 0x3fc00000u, {0x3f800000u, 0x00000000u, 0x00000000u}},
+        {"nan-right-quiet", 0x3fc00000u, 0x7fc00000u, {0xbf800000u, 0x00000000u, 0x00000000u}},
+        {"nan-left-signal", 0x7f800001u, 0x3fc00000u, {0x3f800000u, 0x00000000u, 0x00000000u}},
+        {"nan-right-signal", 0x3fc00000u, 0x7f800001u, {0xbf800000u, 0x00000000u, 0x00000000u}},
+        {"nan-left-negative", 0xffc00000u, 0x3fc00000u, {0xbf800000u, 0x00000000u, 0x00000000u}},
+        {"inf-pos-neg", 0x7f800000u, 0xff800000u, {0x3f800000u, 0x3f800000u, 0x00000000u}},
+        {"inf-neg-pos", 0xff800000u, 0x7f800000u, {0xbf800000u, 0x00000000u, 0x3f800000u}},
+        {"inf-pos-pos", 0x7f800000u, 0x7f800000u, {0x00000000u, 0x3f800000u, 0x00000000u}},
+        {"inf-neg-neg", 0xff800000u, 0xff800000u, {0x00000000u, 0x3f800000u, 0x00000000u}},
+        {"inf-pos-finite", 0x7f800000u, 0x3fc00000u, {0x3f800000u, 0x3f800000u, 0x00000000u}},
+    };
+    int bad = 0;
+    for (int op = 0; op < 3; op++) {
+        const int c = find_overlap_diff_case(op_case[op]);
+        CHECK(c >= 0, "measured VFPU compare word is in the overlap-diff header");
+        if (c < 0) { bad = 1; continue; }
+        const uint32_t w = overlap_diff_cases[c].w;
+        uint8_t si[4], ti[4], di[4];
+        vreg_idx((int)((w >> 8) & 0x7fu), 1, si);
+        vreg_idx((int)((w >> 16) & 0x7fu), 1, ti);
+        vreg_idx((int)(w & 0x7fu), 1, di);
+        for (size_t p = 0; p < sizeof(pairs) / sizeof(pairs[0]); p++) {
+            CpuState aot, interp;
+            setup_identity_compute(&aot);
+            aot.vi[si[0]] = pairs[p].a;
+            aot.vi[ti[0]] = pairs[p].b;
+            aot.vi[di[0]] = 0x7a5a5a5au; /* the probe's sentinel */
+            interp = aot;
+            overlap_diff_run_codegen(&aot, c);
+            const int kind = sr_vfpu_interp(&interp, w);
+            const uint32_t want = pairs[p].psp[op];
+            g_checks++;
+            if (kind != SR_VFPU_COMPUTE || aot.vi[di[0]] != want || interp.vi[di[0]] != want ||
+                memcmp(aot.vi, interp.vi, sizeof(aot.vi)) != 0 ||
+                memcmp(aot.vfpuCtrl, interp.vfpuCtrl, sizeof(aot.vfpuCtrl)) != 0) {
+                g_failures++;
+                bad = 1;
+                fprintf(stderr,
+                        "FAIL: PSP-VFPU-CMP-001 %s-%s a=0x%08x b=0x%08x psp=0x%08x "
+                        "aot=0x%08x interp=0x%08x kind=%d\n",
+                        op_case[op], pairs[p].name, pairs[p].a, pairs[p].b, want,
+                        aot.vi[di[0]], interp.vi[di[0]], kind);
+            }
+        }
+    }
+    return bad;
+}
+
+static int check_vrexp2_measured_words(void) {
+    /* PSP-VFPU-TRANSCENDENTAL-001: the 63 words a PSP-3000 (6.61, 2026-10-15, probe build
+     * 22b027f6) returned for vrexp2.s S002, S000, as {input, result} pairs: 20 special
+     * encodings followed by 43 evenly spaced exponents; docs/HARDWARE_ORACLE.md indexes the
+     * run. VREXP2 is exp2(-x): 1.0 for zero, 2.0 for -1.0 and 0.5 (0x3efffffc) for +1.0. Both
+     * execution lanes run the probe's own words: the AOT body tools/codegen.py emits (via the
+     * overlap-diff header) and the production interpreter. Both computed -exp2(x) before this
+     * measurement, negative for every finite input. */
+    static const uint32_t pairs[63][2] = {
+        {0x00000000u, 0x3f800000u}, {0x80000000u, 0x3f800000u}, {0x00000001u, 0x3f800000u},
+        {0x80000001u, 0x3f800000u}, {0x3f800000u, 0x3efffffcu}, {0xbf800000u, 0x40000000u},
+        {0x3f000000u, 0x3f3504f0u}, {0xbf000000u, 0x3fb504f0u}, {0x40000000u, 0x3e7ffffcu},
+        {0xc0000000u, 0x40800000u}, {0x00800000u, 0x3f7ffffcu}, {0x80800000u, 0x3f800000u},
+        {0x7f000000u, 0x00000000u}, {0xff000000u, 0x7f800000u}, {0x7f800000u, 0x00000000u},
+        {0xff800000u, 0x7f800000u}, {0x7fc00000u, 0x7f800001u}, {0xffc00000u, 0x7f800001u},
+        {0x7f800001u, 0x7f800001u}, {0xff800001u, 0x7f800001u}, {0xc1760000u, 0x4725fed4u},
+        {0xc16a0000u, 0x46c56728u}, {0xc15e0000u, 0x466ac0c4u}, {0xc1520000u, 0x460b95c0u},
+        {0xc1460000u, 0x45a5fed4u}, {0xc13a0000u, 0x45456728u}, {0xc12e0000u, 0x44eac0c4u},
+        {0xc1220000u, 0x448b95c0u}, {0xc1160000u, 0x4425fed4u}, {0xc10a0000u, 0x43c56728u},
+        {0xc0fc0000u, 0x436ac0c4u}, {0xc0e40000u, 0x430b95c0u}, {0xc0cc0000u, 0x42a5fed4u},
+        {0xc0b40000u, 0x42456728u}, {0xc09c0000u, 0x41eac0c4u}, {0xc0840000u, 0x418b95c0u},
+        {0xc0580000u, 0x4125fed4u}, {0xc0280000u, 0x40c56728u}, {0xbff00000u, 0x406ac0c4u},
+        {0xbf900000u, 0x400b95c0u}, {0xbec00000u, 0x3fa5fed4u}, {0x3ec00000u, 0x3f456728u},
+        {0x3f900000u, 0x3eeac0c4u}, {0x3ff00000u, 0x3e8b95c0u}, {0x40280000u, 0x3e25fed4u},
+        {0x40580000u, 0x3dc56728u}, {0x40840000u, 0x3d6ac0c4u}, {0x409c0000u, 0x3d0b95c0u},
+        {0x40b40000u, 0x3ca5fed4u}, {0x40cc0000u, 0x3c456728u}, {0x40e40000u, 0x3beac0c4u},
+        {0x40fc0000u, 0x3b8b95c0u}, {0x410a0000u, 0x3b25fed4u}, {0x41160000u, 0x3ac56728u},
+        {0x41220000u, 0x3a6ac0c4u}, {0x412e0000u, 0x3a0b95c0u}, {0x413a0000u, 0x39a5fed4u},
+        {0x41460000u, 0x39456728u}, {0x41520000u, 0x38eac0c4u}, {0x415e0000u, 0x388b95c0u},
+        {0x416a0000u, 0x3825fed4u}, {0x41760000u, 0x37c56728u}, {0x41810000u, 0x376ac0c4u},
+    };
+    const int c = find_overlap_diff_case("vrexp2-s-measured");
+    CHECK(c >= 0, "measured vrexp2 word is in the overlap-diff header");
+    if (c < 0) return 1;
+    const uint32_t w = overlap_diff_cases[c].w;
+    uint8_t si[4], di[4];
+    vreg_idx((int)((w >> 8) & 0x7fu), 1, si);
+    vreg_idx((int)(w & 0x7fu), 1, di);
+    int bad = 0;
+    for (unsigned p = 0; p < sizeof(pairs) / sizeof(pairs[0]); p++) {
+        CpuState aot, interp;
+        setup_identity_compute(&aot);
+        aot.vi[si[0]] = pairs[p][0];
+        aot.vi[di[0]] = 0x7a5a5a5au; /* the probe's sentinel */
+        interp = aot;
+        overlap_diff_run_codegen(&aot, c);
+        const int kind = sr_vfpu_interp(&interp, w);
+        g_checks++;
+        if (kind != SR_VFPU_COMPUTE || aot.vi[di[0]] != pairs[p][1] ||
+            interp.vi[di[0]] != pairs[p][1]) {
+            g_failures++;
+            bad = 1;
+            fprintf(stderr,
+                    "FAIL: PSP-VFPU-TRANSCENDENTAL-001 vrexp2 in=0x%08x psp=0x%08x "
+                    "aot=0x%08x interp=0x%08x kind=%d\n",
+                    pairs[p][0], pairs[p][1], aot.vi[di[0]], interp.vi[di[0]], kind);
+        }
+    }
+    return bad;
+}
+
 int main(void) {
     int bad = 0;
     bad |= check_cop2_control_transfers();
     bad |= check_quad_memops();
     bad |= check_vcrs_widths();
     bad |= check_vasin_measured_domain_words();
+    bad |= check_vfpu_compare_measured_words();
+    bad |= check_vrexp2_measured_words();
     bad |= check_reserved_cmov_form();
     bad |= check_vfpu3_compare_forms();
     bad |= check_mfvc_zero_is_noop();
     bad |= check_vrot_overlap();
     bad |= check_vhdp_vmscl_overlap();
     bad |= check_overlap_diff();
+    bad |= check_vfpu3_compare_parity();
     bad |= check_vhdp_signed_zero_corpus();
     bad |= check_vf2i_conversions();
     bad |= g_failures != 0;

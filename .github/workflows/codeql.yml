@@ -1,0 +1,567 @@
+name: Trusted CodeQL
+
+on:
+  # The "CodeQL wake" workflow (codeql-wake.yml) is a signal only. Its pull_request and
+  # merge_group runs are candidate-controlled and carry no evidence. This workflow_run
+  # definition comes from the trusted default branch for both kinds of wake, reads the exact
+  # pull request or merge-queue group from GitHub's API, and analyses the current tree
+  # independently. CI is not a trigger, so the analysis no longer waits for the slowest CI job.
+  workflow_run:
+    workflows: ["CodeQL wake"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: Open pull request number to scan from the trusted default branch
+        required: true
+        type: number
+  push:
+    branches: [main]
+  schedule:
+    - cron: "37 3 * * 1"
+
+permissions: {}
+
+concurrency:
+  # The wake run starts an analysis at every push. Without cancellation, a superseded head
+  # would run the full analysis to a refused upload, which CI's own cancellation used to
+  # prevent. Group by head repository and branch, so a newer head of a branch cancels the
+  # older analysis. Distinct repositories (forks) never share a group, so one author cannot
+  # cancel another author's analysis. workflow_run payloads do not reliably include
+  # pull_requests for fork PRs, so the PR number is not used.
+  group: codeql-${{ github.event.workflow_run.head_repository.full_name || github.repository }}/${{ github.event.workflow_run.head_branch || github.event.inputs.pull_request_number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    name: Prepare trusted CodeQL source
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request' || github.event.workflow_run.event == 'merge_group' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      target_kind: ${{ steps.target.outputs.kind }}
+      target_ref: ${{ steps.target.outputs.ref }}
+      target_sha: ${{ steps.target.outputs.sha }}
+      pr_number: ${{ steps.target.outputs.pr_number }}
+      base_sha: ${{ steps.target.outputs.base_sha }}
+      head_sha: ${{ steps.target.outputs.head_sha }}
+      tree_sha: ${{ steps.materialize.outputs.tree_sha }}
+    steps:
+      - name: Check out trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Resolve exact PR or default-branch target
+        id: target
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const defaultBranch = context.payload.repository.default_branch;
+            // A merge-queue group, reached through the CodeQL wake's merge_group run. The wake
+            // is only a signal: this definition is the default branch's copy. The queue ref is
+            // a GitHub-created ref in this repository, so the head repository must be this
+            // one, and the ref must name exactly the commit the wake ran on, before analysis.
+            if (context.eventName === "workflow_run" && context.payload.workflow_run?.event === "merge_group") {
+              const run = context.payload.workflow_run;
+              const queueBranch = run.head_branch;
+              const headRepository = run.head_repository;
+              if (typeof queueBranch !== "string" ||
+                  !/^gh-readonly-queue\/[A-Za-z0-9._\/-]+$/.test(queueBranch) ||
+                  headRepository?.full_name?.toLowerCase() !== `${context.repo.owner}/${context.repo.repo}`.toLowerCase() ||
+                  !/^[0-9a-f]{40}$/.test(run.head_sha || "")) {
+                core.setFailed("merge group wake did not identify this repository's queue branch and an exact head SHA");
+                return;
+              }
+              // {+ref} keeps the slashes of the queue name; a plain {ref} would encode them.
+              // The queue deletes its ref when the entry resolves, so a missing or moved ref
+              // refuses the analysis.
+              const { data: queued } = await github.request("GET /repos/{owner}/{repo}/git/ref/{+ref}", {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `heads/${queueBranch}`,
+              });
+              if (queued.object.sha !== run.head_sha) {
+                core.setFailed("merge group ref does not name the commit the wake ran on; refusing a stale target");
+                return;
+              }
+              core.setOutput("kind", "merge-group");
+              core.setOutput("ref", `refs/heads/${queueBranch}`);
+              core.setOutput("sha", run.head_sha);
+              core.setOutput("pr_number", "");
+              core.setOutput("base_sha", "");
+              core.setOutput("head_sha", run.head_sha);
+              return;
+            }
+
+            if (context.eventName === "workflow_run") {
+              const run = context.payload.workflow_run;
+              if (!run || run.event !== "pull_request") {
+                core.setFailed("workflow_run did not originate from a pull_request event");
+                return;
+              }
+              const headRepository = run.head_repository;
+              const headOwner = headRepository?.owner?.login;
+              const headName = headRepository?.name;
+              if (!headOwner || !/^[A-Za-z0-9-]+$/.test(headOwner) ||
+                  !headName || !/^[A-Za-z0-9_.-]+$/.test(headName) ||
+                  headRepository.full_name?.toLowerCase() !== `${headOwner}/${headName}`.toLowerCase() ||
+                  typeof run.head_branch !== "string" ||
+                  !/^[0-9a-f]{40}$/.test(run.head_sha || "")) {
+                core.setFailed("The trigger run did not identify an exact source repository, branch, and head SHA");
+                return;
+              }
+              const { data: matches } = await github.rest.pulls.list({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: "open",
+                base: defaultBranch,
+                head: `${headOwner}:${run.head_branch}`,
+                per_page: 100,
+              });
+              const exactMatches = matches.filter((pr) =>
+                pr.head.repo?.full_name?.toLowerCase() === headRepository.full_name.toLowerCase() &&
+                pr.head.ref === run.head_branch && pr.head.sha === run.head_sha);
+              if (exactMatches.length !== 1) {
+                core.setFailed("The trigger run does not map to exactly one open PR at its exact head SHA");
+                return;
+              }
+              await resolvePullRequest(exactMatches[0].number, run.head_sha);
+              return;
+            }
+
+            if (context.eventName === "workflow_dispatch") {
+              const number = String(context.payload.inputs?.pull_request_number ?? "");
+              if (!/^[0-9]{1,8}$/.test(number)) {
+                core.setFailed("workflow_dispatch requires a numeric pull_request_number");
+                return;
+              }
+              await resolvePullRequest(Number(number));
+              return;
+            }
+
+            if (context.eventName === "push" || context.eventName === "schedule") {
+              core.setOutput("kind", "default-branch");
+              core.setOutput("ref", `refs/heads/${defaultBranch}`);
+              core.setOutput("sha", context.sha);
+              core.setOutput("pr_number", "");
+              core.setOutput("base_sha", "");
+              core.setOutput("head_sha", "");
+              return;
+            }
+
+            core.setFailed(`unsupported event: ${context.eventName}`);
+
+            async function resolvePullRequest(number, expectedHeadSha) {
+              const { data: pr } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: number,
+              });
+              if (pr.state !== "open") {
+                core.setFailed(`pull request ${number} is not open`);
+                return;
+              }
+              if (expectedHeadSha && pr.head.sha !== expectedHeadSha) {
+                core.setFailed(`pull request ${number} head changed after the trigger run completed`);
+                return;
+              }
+              if (pr.base.ref !== defaultBranch ||
+                  pr.base.repo?.full_name?.toLowerCase() !== `${context.repo.owner}/${context.repo.repo}`.toLowerCase()) {
+                core.setFailed(`pull request ${number} does not target this repository's default branch`);
+                return;
+              }
+              if (!/^[0-9a-f]{40}$/.test(pr.head.sha) ||
+                  !/^[0-9a-f]{40}$/.test(pr.base.sha) ||
+                  !/^[0-9a-f]{40}$/.test(pr.merge_commit_sha || "")) {
+                core.setFailed(`pull request ${number} does not have an exact merge commit to scan`);
+                return;
+              }
+              core.setOutput("kind", "pull-request");
+              core.setOutput("ref", `refs/pull/${number}/merge`);
+              core.setOutput("sha", pr.merge_commit_sha);
+              core.setOutput("pr_number", String(number));
+              core.setOutput("base_sha", pr.base.sha);
+              core.setOutput("head_sha", pr.head.sha);
+            }
+
+      # The PR or merge group commit is fetched into Git's object database and read as raw blobs. No
+      # candidate file is checked out, executed, imported, built, or used as an
+      # action. The existing reader rejects symlinks, gitlinks, unsafe paths,
+      # oversized blobs, and oversized trees before materialization.
+      - name: Fetch and validate the exact source tree
+        id: materialize
+        env:
+          TARGET_KIND: ${{ steps.target.outputs.kind }}
+          TARGET_REF: ${{ steps.target.outputs.ref }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+          PR_NUMBER: ${{ steps.target.outputs.pr_number }}
+          BASE_SHA: ${{ steps.target.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.target.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          case "${TARGET_SHA}" in
+            [0-9a-f]*) [ "${#TARGET_SHA}" -eq 40 ] || { echo "target SHA malformed" >&2; exit 1; } ;;
+            *) echo "target SHA malformed" >&2; exit 1 ;;
+          esac
+
+          if [ "${TARGET_KIND}" = "pull-request" ]; then
+            case "${PR_NUMBER}" in
+              ''|*[!0-9]*) echo "pull request number is not numeric" >&2; exit 1 ;;
+            esac
+            git fetch --no-tags --no-recurse-submodules --quiet origin \
+              "+refs/pull/${PR_NUMBER}/merge:refs/candidate/merge"
+            fetched="$(git rev-parse refs/candidate/merge)"
+            if [ "${fetched}" != "${TARGET_SHA}" ]; then
+              echo "pull request merge ref changed during target resolution" >&2
+              exit 1
+            fi
+            parents="$(git rev-list --parents -n 1 "${fetched}")"
+            if [ "${parents}" != "${TARGET_SHA} ${BASE_SHA} ${HEAD_SHA}" ]; then
+              echo "merge commit parents do not match the exact PR base and head" >&2
+              exit 1
+            fi
+          elif [ "${TARGET_KIND}" = "merge-group" ]; then
+            case "${TARGET_REF}" in
+              refs/heads/gh-readonly-queue/*) ;;
+              *) echo "merge group ref is not a queue ref" >&2; exit 1 ;;
+            esac
+            git fetch --no-tags --no-recurse-submodules --quiet origin \
+              "+${TARGET_REF}:refs/candidate/merge"
+            fetched="$(git rev-parse refs/candidate/merge)"
+            if [ "${fetched}" != "${TARGET_SHA}" ]; then
+              echo "merge group ref changed during target resolution" >&2
+              exit 1
+            fi
+          else
+            git cat-file -e "${TARGET_SHA}^{commit}"
+          fi
+
+          tree_sha="$(git rev-parse "${TARGET_SHA}^{tree}")"
+          case "${tree_sha}" in
+            [0-9a-f]*) [ "${#tree_sha}" -eq 40 ] || { echo "tree SHA malformed" >&2; exit 1; } ;;
+            *) echo "tree SHA malformed" >&2; exit 1 ;;
+          esac
+          echo "tree_sha=${tree_sha}" >> "${GITHUB_OUTPUT}"
+          export TREE_SHA="${tree_sha}"
+
+          python - <<'PY'
+          import os
+          import sys
+          from pathlib import Path, PurePosixPath
+
+          repo = Path.cwd().resolve()
+          sys.path.insert(0, str(repo / "tools"))
+          import provenance_attest_verify as verifier
+
+          destination = repo / "codeql-source"
+          if destination.exists() or destination.is_symlink():
+              raise SystemExit("refusing to reuse an existing CodeQL source directory")
+          destination.mkdir()
+          blobs = verifier.read_tree(repo, os.environ["TREE_SHA"])
+          for relative_path, content in sorted(blobs.items()):
+              relative = PurePosixPath(relative_path)
+              if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+                  raise SystemExit(f"unsafe source path: {relative_path!r}")
+              target = destination.joinpath(*relative.parts)
+              target.parent.mkdir(parents=True, exist_ok=True)
+              if not target.resolve().is_relative_to(destination.resolve()):
+                  raise SystemExit(f"source path escaped materialization root: {relative_path!r}")
+              with target.open("xb") as output:
+                  output.write(content)
+          print(f"materialized {len(blobs)} regular files from tree {os.environ['TREE_SHA']}")
+          PY
+
+      - name: Retain source data for isolated CodeQL jobs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codeql-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: codeql-source
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    needs: prepare
+    if: ${{ needs.prepare.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+          - language: c-cpp
+          - language: python
+    steps:
+      - name: Check out trusted default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Download materialized source data
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: codeql-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: codeql-source
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          source-root: codeql-source
+          # A restored TRAP cache has produced an empty C/C++ database: every source
+          # file skipped, no results. Runs in the default branch's context never read
+          # the cache (they only write it), so it buys nothing; analyze from source.
+          trap-caching: false
+          # Do not read query configuration from the candidate tree. Keep the
+          # CodeQL default query suite used by the repository's current setup.
+          config: |
+            disable-default-queries: false
+
+      - name: Analyze source data without uploading partial results
+        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          output: ${{ runner.temp }}/codeql-sarif
+          upload: never
+          upload-database: false
+          category: "/language:${{ matrix.language }}/"
+
+      - name: Require one complete SARIF result for this language
+        env:
+          SARIF_DIR: ${{ runner.temp }}/codeql-sarif
+          LANGUAGE: ${{ matrix.language }}
+        run: |
+          set -euo pipefail
+          mkdir -p codeql-sarif
+          python - <<'PY'
+          import json
+          import os
+          import shutil
+          from pathlib import Path
+
+          sarif_dir = Path(os.environ["SARIF_DIR"])
+          results = sorted(sarif_dir.rglob("*.sarif"))
+          if len(results) != 1:
+              raise SystemExit(f"expected one SARIF result, found {len(results)}")
+          language = os.environ["LANGUAGE"]
+          destination = Path("codeql-sarif") / f"{language}.sarif"
+          shutil.copyfile(results[0], destination)
+
+          # Guarantee explicit stable category in automationDetails for this run
+          with destination.open("r", encoding="utf-8") as handle:
+              document = json.load(handle)
+          category = f"/language:{language}/"
+          for run in document.get("runs", []):
+              run.setdefault("automationDetails", {})["id"] = category
+          with destination.open("w", encoding="utf-8") as handle:
+              json.dump(document, handle, indent=2)
+          PY
+
+      - name: Retain this language result for one atomic upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codeql-sarif-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.language }}
+          path: codeql-sarif/${{ matrix.language }}.sarif
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  upload:
+    name: Upload complete CodeQL analysis
+    needs: [prepare, analyze]
+    if: ${{ needs.prepare.result == 'success' && needs.analyze.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+      security-events: write
+    steps:
+      - name: Download all three completed language results
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: codeql-sarif-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: codeql-sarif
+          merge-multiple: true
+
+      # One upload happens only after all three language analyses succeeded.
+      # The SARIF API binds the result to the exact PR merge ref/commit; the
+      # CodeQL Action's upload-sarif input intentionally ignores ref overrides
+      # for fork PRs, so it is not used for this trusted workflow_run route.
+      - name: Upload exact-head CodeQL results
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          TARGET_KIND: ${{ needs.prepare.outputs.target_kind }}
+          TARGET_REF: ${{ needs.prepare.outputs.target_ref }}
+          TARGET_SHA: ${{ needs.prepare.outputs.target_sha }}
+          PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
+          BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
+          HEAD_SHA: ${{ needs.prepare.outputs.head_sha }}
+        with:
+          script: |
+            const fs = require("fs");
+            const path = require("path");
+            const zlib = require("zlib");
+            const expected = ["actions", "c-cpp", "python"];
+            const dir = "codeql-sarif";
+            const files = fs.readdirSync(dir).filter((name) => name.endsWith(".sarif")).sort();
+            const expectedFiles = expected.map((language) => `${language}.sarif`).sort();
+            if (JSON.stringify(files) !== JSON.stringify(expectedFiles)) {
+              core.setFailed(`expected SARIF for ${expected.join(", ")}; found ${files.join(", ")}`);
+              return;
+            }
+
+            let schema;
+            const runs = [];
+            const categories = new Set();
+            for (const file of files) {
+              const document = JSON.parse(fs.readFileSync(path.join(dir, file), "utf8"));
+              if (document.version !== "2.1.0" || !Array.isArray(document.runs) || document.runs.length === 0) {
+                core.setFailed(`${file} is not a complete SARIF 2.1.0 result`);
+                return;
+              }
+              schema ||= document.$schema;
+              const language = file.replace(/\.sarif$/, "");
+              for (const run of document.runs) {
+                if (run.tool?.driver?.name !== "CodeQL") {
+                  core.setFailed(`${file} contains a result from an unexpected analysis tool`);
+                  return;
+                }
+                const category = run.automationDetails?.id || `/language:${language}/`;
+                run.automationDetails = {
+                  ...(run.automationDetails || {}),
+                  id: category,
+                };
+                // Code scanning stores a run under the part of automationDetails.id
+                // before its last "/", so "/language:x" would land in the empty
+                // category and every language would share it.
+                const cut = category.lastIndexOf("/");
+                const stored = cut > 0 ? category.slice(0, cut) : "";
+                if (stored !== `/language:${language}`) {
+                  core.setFailed(`${file} would be stored under SARIF category "${stored}", expected "/language:${language}"`);
+                  return;
+                }
+                if (categories.has(stored)) {
+                  core.setFailed(`duplicate SARIF analysis category: ${stored}`);
+                  return;
+                }
+                categories.add(stored);
+                runs.push(run);
+              }
+            }
+
+            if (categories.size !== expected.length) {
+              core.setFailed(`expected ${expected.length} distinct categories, found ${categories.size}`);
+              return;
+            }
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const kind = process.env.TARGET_KIND;
+            const targetSha = process.env.TARGET_SHA;
+            const targetRef = process.env.TARGET_REF;
+            if (!/^[0-9a-f]{40}$/.test(targetSha || "") || !targetRef) {
+              core.setFailed("target ref or commit SHA is malformed");
+              return;
+            }
+
+            if (kind === "pull-request") {
+              if (!/^[0-9]+$/.test(process.env.PR_NUMBER || "")) {
+                core.setFailed("pull request number is not numeric");
+                return;
+              }
+              const { data: pr } = await github.rest.pulls.get({
+                owner, repo, pull_number: Number(process.env.PR_NUMBER),
+              });
+              if (pr.state !== "open" || pr.base.sha !== process.env.BASE_SHA ||
+                  pr.head.sha !== process.env.HEAD_SHA || pr.merge_commit_sha !== targetSha) {
+                core.setFailed("PR base, head, or merge ref changed during CodeQL analysis; refusing a stale upload");
+                return;
+              }
+            } else if (kind === "merge-group") {
+              // The queue deletes its ref when the entry resolves: a missing or moved
+              // ref means this group is no longer the commit that was analysed.
+              const { data: queued } = await github.request("GET /repos/{owner}/{repo}/git/ref/{+ref}", {
+                owner, repo, ref: targetRef.slice("refs/".length),
+              });
+              if (queued.object.sha !== targetSha) {
+                core.setFailed("merge group ref moved during CodeQL analysis; refusing a stale upload");
+                return;
+              }
+            } else {
+              const defaultBranch = context.payload.repository.default_branch;
+              const { data: ref } = await github.rest.git.getRef({
+                owner, repo, ref: `heads/${defaultBranch}`,
+              });
+              if (ref.object.sha !== targetSha) {
+                core.setFailed("default branch moved during CodeQL analysis; refusing a stale upload");
+                return;
+              }
+            }
+
+            const sarif = {
+              $schema: schema,
+              version: "2.1.0",
+              runs,
+            };
+            const compressed = zlib.gzipSync(Buffer.from(JSON.stringify(sarif))).toString("base64");
+            const { data: uploaded } = await github.rest.codeScanning.uploadSarif({
+              owner,
+              repo,
+              commit_sha: targetSha,
+              ref: targetRef,
+              sarif: compressed,
+            });
+            if (!uploaded.id) {
+              core.setFailed("Code Scanning did not return a SARIF upload id");
+              return;
+            }
+
+            let processingStatus = "pending";
+            let lastStatusData = null;
+            for (let attempt = 0; attempt < 90; attempt += 1) {
+              const { data } = await github.rest.codeScanning.getSarif({
+                owner, repo, sarif_id: uploaded.id,
+              });
+              lastStatusData = data;
+              processingStatus = data.processing_status;
+              if (processingStatus === "complete") break;
+              if (processingStatus === "failed") {
+                const errors = data.errors ? JSON.stringify(data.errors) : "unknown error";
+                core.setFailed(`GitHub failed to process the CodeQL SARIF upload (${uploaded.id}): ${errors}`);
+                return;
+              }
+              await new Promise((resolve) => setTimeout(resolve, 2000));
+            }
+            if (processingStatus !== "complete") {
+              const errors = lastStatusData?.errors ? JSON.stringify(lastStatusData.errors) : "";
+              core.setFailed(`CodeQL SARIF processing did not complete (${uploaded.id}): ${processingStatus} ${errors}`);
+              return;
+            }
+
+            await core.summary
+              .addHeading("Trusted CodeQL analysis uploaded")
+              .addTable([
+                [{ data: "Languages", header: true }, { data: "Target", header: true }],
+                [expected.join(", "), `${targetRef} @ ${targetSha}`],
+              ])
+              .write();

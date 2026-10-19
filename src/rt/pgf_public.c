@@ -428,6 +428,10 @@ static int pgf_parse_directory(PGF *p, PgfRefusal *refusal) {
         *refusal = PGF_REFUSE_GLYPH_RANGE;
         return 0;
     }
+    if ((uint64_t)p->char_map_count > (uint64_t)last - (uint64_t)first + 1u) {
+        *refusal = PGF_REFUSE_COUNTS;
+        return 0;
+    }
     if (char_map_bits == 0u || char_map_bits > 32u ||
         pointer_bits == 0u || pointer_bits > 32u ||
         p->char_map_count > PGF_MAX_COUNT || pointer_count > PGF_MAX_COUNT ||
@@ -709,12 +713,22 @@ static int pgf_guest_span(uint32_t address, size_t size, int write_access) {
     uint64_t end = (uint64_t)address + size;
     if (size > UINT32_MAX || end > 0x100000000ULL || g_mem == NULL) return 0;
     if (write_access) return sr_guest_span_writable(address, (uint32_t)size);
+#ifdef SR_SDL3VK
+    return sr_guest_span_readable_current(address, (uint32_t)size);
+#else
     return sr_guest_span_readable(address, (uint32_t)size);
+#endif
 }
 
 static int pgf_guest_write(uint32_t address, const void *bytes, size_t size) {
     if (!pgf_guest_span(address, size, 1)) return 0;
+#ifdef SR_SDL3VK
+    sr_guest_vram_write_prepare_bytes(address, (uint32_t)size);
+#endif
     if (size != 0u) memcpy(SR_HOST(address), bytes, size);
+#ifdef SR_SDL3VK
+    sr_guest_vram_write_commit_bytes(address, (uint32_t)size);
+#endif
     return 1;
 }
 
@@ -1020,18 +1034,30 @@ static void pgf_store_pixel(uint32_t address, uint32_t x, uint32_t format,
     if (format == 0u || format == 1u) {
         uint8_t shift = (uint8_t)(((x & 1u) ^ (format == 1u ? 1u : 0u)) * 4u);
         uint8_t mask = (uint8_t)(0x0fu << shift);
+#ifdef SR_SDL3VK
+        old = sr_r8(address);
+#else
         old = *destination;
+#endif
         if (combine && (uint8_t)((old >> shift) & 0x0fu) > (uint8_t)(sample & 0x0fu)) {
             sample = (uint8_t)((old >> shift) & 0x0fu);
         }
         *destination = (uint8_t)((old & (uint8_t)~mask) |
                                  ((uint8_t)(sample & 0x0fu) << shift));
     } else if (format == 2u) {
+#ifdef SR_SDL3VK
+        old = sr_r8(address);
+#else
         old = *destination;
+#endif
         if (combine && old > sample) sample = old;
         *destination = sample;
     } else {
+#ifdef SR_SDL3VK
+        old = sr_r8(address);
+#else
         old = destination[0];
+#endif
         if (combine && old > sample) sample = old;
         destination[0] = sample;
         destination[1] = sample;
@@ -1193,6 +1219,12 @@ static void pgf_blit_component(const PGF *p, const PgfTarget *target,
     uint8_t samples[PGF_MAX_GLYPH_EDGE * PGF_MAX_GLYPH_EDGE];
     uint32_t row;
 
+    for (row = 0; row < plan->dirty_count; ++row) {
+#ifdef SR_SDL3VK
+        sr_guest_vram_write_prepare_bytes(plan->dirty[row].address,
+                                          plan->dirty[row].size);
+#endif
+    }
     pgf_decode_bitmap(p, glyph, samples);
     for (row = 0; row < plan->row_count; ++row) {
         int64_t y = target->base_y + (int64_t)(plan->first_row + row);
@@ -1211,7 +1243,12 @@ static void pgf_blit_component(const PGF *p, const PgfTarget *target,
         }
     }
     for (row = 0; row < plan->dirty_count; ++row) {
+#ifdef SR_SDL3VK
+        sr_guest_vram_write_commit_bytes(plan->dirty[row].address,
+                                         plan->dirty[row].size);
+#else
         sr_gpu_vram_dirty(plan->dirty[row].address, plan->dirty[row].size);
+#endif
     }
 }
 

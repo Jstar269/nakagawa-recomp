@@ -33,13 +33,11 @@ policy into a public-safe PGF fixture:
   shaping; authentic firmware-font provisioning (route #300, which remains
   preferable when fidelity to the PSP system fonts is required); claiming any
   pixel identity with a firmware font (non-goal of issue #313).
-- **CJK.** Issue #313 permits a CJK source only when legally and technically
-  suitable. No CJK source is pinned by this change: the OFL CJK candidates are
-  multi-megabyte payloads whose admission needs the qualified review that
-  `FONT_ORIGINS.md` route (2) requires before any such fixture enters the
-  tree. The converter itself is codepoint-driven and has no Latin-only
-  assumption, so a future CJK pin needs a pin file and a coverage range, not a
-  converter change.
+- **Japanese project font.** The project pins M PLUS 1p Regular under SIL OFL
+  1.1 and converts the Japanese repertoire described below. The converter is
+  codepoint-driven; any additional font pin still needs its own pin file and
+  coverage set. The output is not claimed to be pixel-identical to a firmware
+  font (`FONT_ORIGINS.md` records the source and conversion).
 
 ## 2. Input contract
 
@@ -62,8 +60,8 @@ records first, then Microsoft full-repertoire, Microsoft BMP, Microsoft
 symbol, then legacy records - and the first subtable in a supported format
 (0, 4, 6, or 12) parses successfully wins. Ties keep directory order. A
 mapping to glyph 0 (`.notdef`) counts as absent. Every code in the requested
-range must resolve, or the conversion is refused with `missing-code-point`
-naming the first gap in ascending order.
+range or set must resolve, or the conversion is refused with
+`missing-code-point` naming the first gap in ascending order.
 
 ### 2.3 Outlines
 
@@ -95,11 +93,12 @@ scaling.
 | `bad-codepoint-list` | A `--codepoints` file is unreadable, not ASCII, holds a line that is not a code point, or leaves 16 bits. |
 | `codepoints-unsorted` | A `--codepoints` file repeats a code or is not in ascending order. |
 | `empty-codepoint-set` | A `--codepoints` file lists no code point. |
+| `japanese-codec-unavailable` / `japanese-mapping-invalid` | A built-in ASCII/EUC-JP codec or its pinned Japanese mapping is unavailable or has changed. |
 | `ppem-out-of-range` | Size outside 1..128. |
 | `glyph-too-large` | A raster exceeds the writer's 7-bit record fields (127 px). |
 | `composite-too-deep` / `composite-too-many-components` | Composite expansion bounds. |
 | `metric-targets-invalid` / `metric-target-unreachable` | Policy document is malformed / no size satisfies it. |
-| `conflicting-parameters` | `--ppem` together with `--metric-targets`. (`--codes` and `--codepoints` are mutually exclusive at the CLI.) |
+| `conflicting-parameters` | `--ppem` together with `--metric-targets`. (`--codes`, `--codepoints`, `--jis-x-0208-japanese`, `--latin-1-text`, and `--ks-x-1001-korean` are mutually exclusive at the CLI.) |
 | `pin-invalid` / `pin-digest-mismatch` / `pin-size-mismatch` / `pin-license-mismatch` | Source pin does not bind the exact input and licence bytes. |
 | `reserved-font-name` / `camouflage-font-name` | Output name policy violation (section 6). |
 | writer reasons (`font-field-invalid`, `nominal-size-out-of-range`, `metric-table-overflow`, ...) | Re-raised unchanged from `pgf_writer.py`. |
@@ -111,6 +110,33 @@ listed code needs a glyph (`missing-code-point` otherwise). The file's SHA-256
 and leaf name go into the manifest. The writer then emits a sparse character map
 over the span from the smallest to the largest code, and codes outside the set
 are misses.
+
+`--jis-x-0208-japanese` uses Python's built-in codecs for JIS X 0201 Roman
+U+0020-U+007E (95 code points) and half-width katakana U+FF61-U+FF9F (63),
+plus the EUC-JP mapping for assigned JIS X 0208 cells in rows 1..8 and 16..47:
+524 non-kanji code points and all 2,965 level-1 kanji, respectively. The
+sorted set contains 3,647 unique Unicode points and has the pinned SHA-256
+`abc5302681a3c700179f29ac22a7c8082ed087a07b4cf8c3de4de5f73e7e0889` in the
+converter. An unavailable or changed built-in mapping is refused by name. It
+is a sparse map just like `--codepoints`, and its built-in mapping id and
+digest are recorded in the manifest.
+
+`--latin-1-text` combines ASCII U+0020-U+007E (95 code points), Latin-1
+Supplement U+00A0-U+00FF (96), Latin Extended-A U+0100-U+017F (128), and the
+assigned punctuation and symbols U+2010-U+2027, U+2030, U+2039-U+203A, U+20AC,
+and U+2122 (29). The set contains 348 unique points with canonical SHA-256
+`7fbcaac92248acdb1c2704c3fef2181e7bc49f2b0e9d0f970cd029fb58057340`.
+
+`--ks-x-1001-korean` decodes assigned cells in KS X 1001 rows 1-4 and 6-9
+through Python's standard `euc_kr` codec, adds ASCII, and includes every modern
+precomposed Hangul syllable U+AC00-U+D7A3. The 2,350 Hangul syllables in KS X
+1001 rows 16-40 are contained in that modern range. The Korean text repertoire
+has 11,951 unique points and canonical SHA-256
+`50596a7f6e0e5158561147eae40a38edc12c28b1a4be3efff6d717c74b638bc4`. Its
+sparse PGF map spans U+0020-U+FFE6 (65,479 map entries) and has 11,951 glyph
+pointers; both counts are below the reader and writer's 1,048,576 ceiling.
+Hanja is outside this repertoire. Rows 5 and 10-12 (Roman numerals, Japanese
+kana, Greek, and Cyrillic) are outside the Korean text scope.
 
 A refusal means no byte is written: the CLI builds the complete image and
 manifest in memory first and writes only after every stage succeeds.

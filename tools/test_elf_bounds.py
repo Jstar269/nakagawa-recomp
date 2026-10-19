@@ -40,7 +40,7 @@ def elf32(*, file_size: int = 16, mem_size: int | None = None) -> bytearray:
     return blob
 
 
-def make_elf(loads, *, entry=0):
+def make_elf(loads, *, entry=0, e_type=2):
     """Build a tiny little-endian ET_EXEC with only program headers."""
     phoff = 52
     payload_offset = phoff + 32 * len(loads)
@@ -52,7 +52,7 @@ def make_elf(loads, *, entry=0):
     blob = bytearray(cursor)
     struct.pack_into(
         "<HHIIIIIHHHHHH", blob, 16,
-        2, 8, 1, entry, phoff, 0, 0, 52, 32, len(loads), 0, 0, 0,
+        e_type, 8, 1, entry, phoff, 0, 0, 52, 32, len(loads), 0, 0, 0,
     )
     for index, ((vaddr, words, memsz, flags, align), offset) in enumerate(zip(loads, offsets, strict=True)):
         struct.pack_into(
@@ -93,6 +93,53 @@ def make_relocation_elf(*, info=0, section_type=0x700000A0):
 
 
 class TestElfBounds(unittest.TestCase):
+    def test_fixed_address_exec_image_uses_lowest_segment_as_image_origin(self) -> None:
+        base = 0x08804000
+        blob = make_elf([
+            (base, [0x11223344], 8, 5, 4),
+            (base + 0x1000, [0x55667788], 8, 6, 4),
+        ], entry=base)
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "fixed-address.elf"
+            path.write_bytes(blob)
+            old_limit = prxload.MAX_ELF_IMAGE_BYTES
+            prxload.MAX_ELF_IMAGE_BYTES = 0x2000
+            try:
+                image = prxload.load_program_image(path, base=base)
+                legacy = prxload.Prx(str(path), base)
+            finally:
+                prxload.MAX_ELF_IMAGE_BYTES = old_limit
+
+        expected = bytearray(0x1008)
+        struct.pack_into("<I", expected, 0, 0x11223344)
+        struct.pack_into("<I", expected, 0x1000, 0x55667788)
+        self.assertEqual(image.image_start, base)
+        self.assertEqual(image.image_end, base + len(expected))
+        self.assertEqual(image.entry_point, base)
+        self.assertEqual(image.flat_bytes, bytes(expected))
+        self.assertEqual(legacy.lo, base)
+        self.assertEqual(legacy.entry, base)
+        self.assertEqual(legacy.mem, expected)
+
+    def test_relocatable_image_types_keep_the_requested_rebase_base(self) -> None:
+        base = 0x08804000
+        expected = struct.pack("<I", 0x03E00008) + bytes(4)
+        for e_type in (3, 0xFFA0):
+            with self.subTest(e_type=e_type), tempfile.TemporaryDirectory() as td:
+                path = Path(td) / f"relocatable-{e_type:04x}.elf"
+                path.write_bytes(make_elf(
+                    [(0, [0x03E00008], 8, 5, 4)], e_type=e_type
+                ))
+                image = prxload.load_program_image(path, base=base)
+                legacy = prxload.Prx(str(path), base)
+
+            self.assertEqual(image.load_base, base)
+            self.assertEqual(image.image_start, base)
+            self.assertEqual(image.image_end, base + len(expected))
+            self.assertEqual(image.entry_point, base)
+            self.assertEqual(image.flat_bytes, expected)
+            self.assertEqual(legacy.mem, expected)
+
     def test_valid_minimal_elf_is_still_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "valid.elf"
@@ -676,6 +723,79 @@ def jr(register):
     return (register << 21) | 8
 
 
+def interior_chain_report(function_count, start_address=0x3000):
+    """Build a CFG report whose functions branch and fall into the next entry.
+
+    Each function has two delay slots and enters the next callable entry by a
+    branch and by fallthrough, so both delay-slot projections and interior
+    entries grow with the image.
+    """
+    words = {}
+    entries = []
+    for index in range(function_count):
+        start = start_address + index * 20
+        following = start_address + ((index + 1) % function_count) * 20
+        entries.append(start)
+        words.update({
+            start: branch(5, 4, 0, start, following),  # bne $a0, $zero, next entry
+            start + 4: 0,                              # delay slot
+            start + 8: jal(following),                 # call next entry
+            start + 12: 0,                             # delay slot
+            start + 16: 0x24840001,                    # addiu; falls into next entry
+        })
+    end = start_address + function_count * 20
+    words.update({end: jr(31), end + 4: 0})
+    return analyze.canonical_cfg_report(
+        FakeCodeImage(words), ranges=[(start_address, end + 8)], entries=entries
+    )
+
+
+def cfg_node(report, address):
+    return next(node for node in report["instructions"] if node["address"] == address)
+
+
+def cfg_edge(report, source, kind):
+    return next(edge for edge in cfg_node(report, source)["edges"] if edge["kind"] == kind)
+
+
+def cfg_interior(report, address, source):
+    return next(
+        row for row in report["interior_entries"]
+        if row["address"] == address and row["source"] == source
+    )
+
+
+def cfg_finding(code, value):
+    return {"code": code, "message": repr(value)}
+
+
+def traced_line_events(function, *args):
+    """Count the analyzer source lines executed while ``function`` runs.
+
+    Unlike wall time, the count is deterministic for one interpreter. Line
+    events come from ``sys.settrace``, a CPython implementation detail.
+    """
+    filename = analyze.verify_canonical_cfg_report.__code__.co_filename
+    count = 0
+
+    def local(_frame, event, _arg):
+        nonlocal count
+        if event == "line":
+            count += 1
+        return local
+
+    def dispatch(frame, _event, _arg):
+        return local if frame.f_code.co_filename == filename else None
+
+    previous = sys.gettrace()
+    sys.settrace(dispatch)
+    try:
+        function(*args)
+    finally:
+        sys.settrace(previous)
+    return count
+
+
 class CanonicalCfgTests(unittest.TestCase):
     def test_cfg_requires_a_mapped_image_reader(self):
         with self.assertRaisesRegex(ValueError, "read_at_vaddr"):
@@ -816,6 +936,153 @@ class CanonicalCfgTests(unittest.TestCase):
             "call_edges-projection-mismatch",
             {finding["code"] for finding in analyze.verify_canonical_cfg_report(clean)},
         )
+
+
+class CanonicalCfgVerifierTests(unittest.TestCase):
+    """Pin verifier findings so its indexing changes cannot alter a decision.
+
+    The expected findings below are exactly what the verifier returned while
+    it still scanned the delay-slot and edge lists once per node.
+    """
+
+    def tampered(self, mutate):
+        report = interior_chain_report(4)
+        mutate(report)
+        # Edge rows are shared by every edge projection; successor rows are
+        # separate, so re-derive them and keep only the intended inconsistency.
+        report["successor_classifications"] = analyze._cfg_successor_classifications(report)
+        return report
+
+    def assert_findings(self, report, expected):
+        self.assertEqual(
+            analyze.verify_canonical_cfg_report(report),
+            sorted(expected, key=lambda item: (item["code"], item["message"])),
+        )
+
+    def test_interior_chain_fixture_is_valid_and_exercises_both_indexes(self):
+        report = interior_chain_report(4)
+        self.assertEqual(
+            sorted((row["reason"], row["address"]) for row in report["interior_entries"]),
+            [
+                ("branch", 0x3000), ("branch", 0x3014), ("branch", 0x3028), ("branch", 0x303C),
+                ("fallthrough", 0x3014), ("fallthrough", 0x3028), ("fallthrough", 0x303C),
+            ],
+        )
+        self.assertEqual(sum(edge["kind"] == "delay-slot" for edge in report["edges"]), 9)
+        self.assert_findings(report, [])
+
+    def test_delay_slot_without_its_owner_is_reported_from_both_sides(self):
+        report = self.tampered(lambda r: cfg_node(r, 0x3004).update(delay_slot_of=None))
+        self.assert_findings(report, [
+            cfg_finding("delay-slot-projection-mismatch", cfg_node(report, 0x3004)),
+            cfg_finding("delay-slot-projection-mismatch", {"source": 0x3000, "target": 0x3004}),
+        ])
+
+    def test_delay_edge_into_a_non_delay_word_is_reported(self):
+        report = self.tampered(
+            lambda r: cfg_edge(r, 0x3000, "delay-slot").update(target=0x3010)
+        )
+        self.assert_findings(report, [
+            cfg_finding("delay-slot-projection-mismatch", cfg_node(report, 0x3004)),
+            cfg_finding("delay-slot-projection-mismatch", cfg_node(report, 0x3010)),
+            cfg_finding("delay-slot-projection-mismatch", {"source": 0x3000, "target": 0x3010}),
+        ])
+
+    def test_interior_entry_without_a_matching_edge_is_reported(self):
+        cases = {
+            "reason": lambda r: cfg_interior(r, 0x3014, 0x3000).update(reason="direct-jump"),
+            "source": lambda r: cfg_interior(r, 0x3014, 0x3000).update(source=0x3008),
+            "edge target": lambda r: cfg_edge(r, 0x3000, "branch").update(target=0x3010),
+        }
+        for label, mutate in cases.items():
+            with self.subTest(label):
+                report = self.tampered(mutate)
+                row = next(
+                    row for row in report["interior_entries"]
+                    if row["address"] == 0x3014 and row["reason"] != "fallthrough"
+                )
+                self.assert_findings(report, [cfg_finding("interior-entry-edge-missing", row)])
+
+    def test_non_list_node_owners_with_an_ownership_map_is_a_finding(self):
+        report = interior_chain_report(2)
+        cfg_node(report, 0x3000)["owners"] = 5
+        # Building the expected ownership projection used to raise TypeError.
+        codes = {finding["code"] for finding in analyze.verify_canonical_cfg_report(report)}
+        self.assertIn("node-owners-invalid", codes)
+        self.assertIn("ownership-map-projection-mismatch", codes)
+
+    def test_unhashable_or_scalar_report_values_are_findings(self):
+        # Each of these raised TypeError instead of producing its finding.
+        def set_field(name, value):
+            return lambda r: r.__setitem__(name, value)
+
+        cases = {
+            "node owners null": (
+                lambda r: cfg_node(r, 0x3000).update(owners=None), "node-owners-invalid"
+            ),
+            "node classification array": (
+                lambda r: cfg_node(r, 0x3000).update(classification=[]), "node-unclassified"
+            ),
+            "edge kind array": (
+                lambda r: cfg_edge(r, 0x3000, "delay-slot").update(kind=[]), "edge-kind-invalid"
+            ),
+            "byte classification array": (
+                lambda r: r["byte_classification"][0].update(classification=[]),
+                "byte-classification-invalid",
+            ),
+            "successor classification array": (
+                lambda r: r["successor_classifications"][0].update(classification=[]),
+                "successor-classification-invalid",
+            ),
+            "ownership-map classification array": (
+                lambda r: r["ownership_map"][0].update(classification=[]),
+                "ownership-map-classification-invalid",
+            ),
+            "duplicate ownership-map row of another type": (
+                lambda r: r["ownership_map"].append(dict(r["ownership_map"][0], classification=None)),
+                "ownership-map-duplicate",
+            ),
+            "conflict addresses of mixed types": (
+                lambda r: r["ownership_conflicts"].extend([
+                    {"address": None, "owners": [1, 2]},
+                    {"address": 0x3000, "owners": [1, 2]},
+                ]),
+                "conflict-projection-mismatch",
+            ),
+            "conflict address array": (
+                lambda r: r["ownership_conflicts"].append({"address": [0x3000], "owners": [1, 2]}),
+                "conflict-node-missing",
+            ),
+            "instructions scalar": (set_field("instructions", 5), "instructions-type"),
+            "entries scalar": (set_field("entries", 5), "entries-type"),
+            "edges scalar": (set_field("edges", 5), "edges-type"),
+            "interior entries scalar": (set_field("interior_entries", 5), "interior_entries-type"),
+            "ownership_map scalar": (set_field("ownership_map", 5), "ownership-map-type"),
+        }
+        for label, (mutate, code) in cases.items():
+            with self.subTest(label):
+                report = interior_chain_report(2)
+                mutate(report)
+                findings = analyze.verify_canonical_cfg_report(report)
+                self.assertIn(code, {finding["code"] for finding in findings})
+
+    @unittest.skipUnless(
+        sys.implementation.name == "cpython",
+        "line-event counting relies on CPython's sys.settrace",
+    )
+    def test_verifier_work_grows_linearly_with_the_report(self):
+        small = interior_chain_report(40)
+        large = interior_chain_report(400)
+        self.assertGreaterEqual(len(large["interior_entries"]), 799)
+        self.assertGreaterEqual(sum(edge["kind"] == "delay-slot" for edge in large["edges"]), 801)
+        self.assertEqual(analyze.verify_canonical_cfg_report(small), [])
+        self.assertEqual(analyze.verify_canonical_cfg_report(large), [])
+
+        small_lines = traced_line_events(analyze.verify_canonical_cfg_report, small)
+        large_lines = traced_line_events(analyze.verify_canonical_cfg_report, large)
+        # Ten times the functions should cost about ten times the work; a
+        # per-node scan of the delay-slot or edge list grows ~30-45x here.
+        self.assertLess(large_lines, 15 * small_lines, (small_lines, large_lines))
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@
 """Behavioral and wiring checks for the private GE fixture format."""
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -13,15 +14,15 @@ from pathlib import Path
 
 try:
     from tools.ge_replay_metrics import (
-        CPU_PHASES, GE_CPU_PHASES, GE_PRIM_PROFILE_PHASES, HIERARCHY_FIELDS, WALL_PHASES,
-        parse_cpu_profile, parse_ge_cpu_profile, parse_hierarchy,
-        parse_hook_cpu_profile, parse_primitive_profile, parse_wall_profile,
+        CPU_PHASES, GE_CPU_PHASES, GE_PRIM_PROFILE_PHASES, GE_PROFILE_CHECKS, HIERARCHY_FIELDS,
+        WALL_PHASES, parse_cpu_profile, parse_ge_cpu_profile, parse_ge_cpu_validation,
+        parse_hierarchy, parse_hook_cpu_profile, parse_primitive_profile, parse_wall_profile,
     )
 except ModuleNotFoundError:  # direct execution from tools/
     from ge_replay_metrics import (
-        CPU_PHASES, GE_CPU_PHASES, GE_PRIM_PROFILE_PHASES, HIERARCHY_FIELDS, WALL_PHASES,
-        parse_cpu_profile, parse_ge_cpu_profile, parse_hierarchy,
-        parse_hook_cpu_profile, parse_primitive_profile, parse_wall_profile,
+        CPU_PHASES, GE_CPU_PHASES, GE_PRIM_PROFILE_PHASES, GE_PROFILE_CHECKS, HIERARCHY_FIELDS,
+        WALL_PHASES, parse_cpu_profile, parse_ge_cpu_profile, parse_ge_cpu_validation,
+        parse_hierarchy, parse_hook_cpu_profile, parse_primitive_profile, parse_wall_profile,
     )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -334,6 +335,52 @@ class TestGeCaptureWiring(unittest.TestCase):
         bad = line.replace("list_ns=100", "list_ns=101")
         with self.assertRaisesRegex(ValueError, "does not reconcile"):
             parse_hierarchy(bad)
+
+    def test_ge_cpu_validation_verdict_gates_the_profile_parsers(self):
+        profile = [f"GE_REPLAY_GE_CPU phase={phase} calls=2 ns=30 ms=0.000030"
+                   for phase in GE_CPU_PHASES]
+        profile.append("GE_REPLAY_GE_CPU_COUNTS commands=7 primitive_commands=1")
+        self.assertIsNone(parse_ge_cpu_validation("\n".join(profile)))
+        passed = ["GE_REPLAY_GE_CPU_VALIDATION status=PASS failed=none"] + profile
+        self.assertEqual(parse_ge_cpu_validation("\n".join(passed)),
+                         {"status": "PASS", "failed": []})
+        self.assertEqual(tuple(parse_ge_cpu_profile("\n".join(passed))[0]), GE_CPU_PHASES)
+        failed = ["GE_REPLAY_GE_CPU_VALIDATION status=FAIL "
+                  "failed=phase_nesting,triangle_decisions"] + profile
+        self.assertEqual(parse_ge_cpu_validation("\n".join(failed))["failed"],
+                         ["phase_nesting", "triangle_decisions"])
+        for parser in (parse_ge_cpu_profile, parse_primitive_profile, parse_hierarchy):
+            with self.assertRaisesRegex(ValueError,
+                                        "inconsistent GE CPU profile: phase_nesting,triangle_decisions"):
+                parser("\n".join(failed))
+        for bad in ("status=PASS failed=phase_nesting", "status=FAIL failed=none",
+                    "status=FAIL failed=no_such_check", "status=FAIL failed=use_split,use_split",
+                    "status=MAYBE failed=none", "status=PASS"):
+            with self.assertRaisesRegex(ValueError, "GE CPU profile validation"):
+                parse_ge_cpu_validation("GE_REPLAY_GE_CPU_VALIDATION " + bad)
+        with self.assertRaisesRegex(ValueError, "duplicate GE CPU profile validation"):
+            parse_ge_cpu_validation("\n".join([passed[0], passed[0]]))
+
+    def test_validation_check_names_match_the_runtime(self):
+        ge = (RT / "ge.c").read_text(encoding="utf-8")
+        table = ge.split("s_ge_profile_check_names[] = {", 1)[1].split("};", 1)[0]
+        self.assertEqual(tuple(re.findall(r'"([a-z_]+)"', table)), GE_PROFILE_CHECKS)
+        shared = (RT / "ge_shared.h").read_text(encoding="utf-8")
+        enum = shared.split("typedef enum GeProfileCheck {", 1)[1].split("} GeProfileCheck;", 1)[0]
+        names = re.findall(r"GE_PROFILE_CHECK_([A-Z_]+)", enum)
+        self.assertEqual(names[-1], "COUNT")
+        self.assertEqual(tuple(name.lower() for name in names[:-1]), GE_PROFILE_CHECKS)
+
+    def test_profile_validate_selftest_runs_the_production_object(self):
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        rule = makefile.split("\nge-cpu-profile-validate-selftest:", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("$(RT_GE_O)", rule)
+        self.assertNotIn("src/rt/ge.c", rule)
+        self.assertIn("$(GE_CPU_PROFILE_VALIDATE_SELFTEST) --strip-cache-disabled", rule)
+        self.assertIn("native-core-tests: ge-cpu-profile-validate-selftest", makefile)
+        replay = (RT / "ge_replay.c").read_text(encoding="utf-8")
+        self.assertIn("ge_cpu_profile_validate(&ge_cpu_stats", replay)
+        self.assertIn("return ge_cpu_failed ? 4 : 0;", replay)
 
 
 if __name__ == "__main__":

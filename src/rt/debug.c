@@ -343,6 +343,7 @@ void sr_debug_init_watches(void) {
 /* Only for the SR_NAN_TRAP_DEFAULT_LIMIT contract and the two prototypes: the
  * trap reporter is diagnostics, and debug.c stays the diagnostics home. */
 #include "recomp.h"
+#include "flight_recorder.h"   /* SR_FLIGHT_KIND_NAN_ORIGIN: the origin as a recorder event */
 
 static int s_nan_trap_armed = -1;
 static int s_nan_trap_limit = -1;
@@ -425,6 +426,25 @@ static void sr_nan_trap_context(void) {
     if (s_nan_trap_ctx && sr_nan_trap_context_hook) sr_nan_trap_context_hook();
 }
 
+/* The origin as a flight-recorder event (issue #320), for the origins the reporter prints:
+ * it runs after the same budget check, so SR_NAN_TRAP_LIMIT bounds both. With the fault
+ * class disabled, or the recorder absent, it returns before reading the VBLANK counter.
+ * The lane is the index of the first non-finite word of the reported output, the position
+ * its out=[...] field shows; a scalar result is lane 0. */
+static void sr_nan_trap_flight(uint32_t pc, uint32_t domain, uint32_t dst,
+                               const float *out, int nout) {
+    if (!sr_flight_class_enabled(SR_FLIGHT_CLASS_FAULT)) return;
+    uint32_t lane = 0u;
+    while (lane < (uint32_t)nout && !sr_nan_trap_nonfinite(out[lane])) lane++;
+    if (lane == (uint32_t)nout) return;   /* no non-finite word: no origin to record */
+    uint32_t bits;
+    memcpy(&bits, &out[lane], sizeof(bits));
+    uint32_t result = SR_FLIGHT_NAN_RESULT_NAN;
+    if ((bits & 0x7FFFFFFFu) == 0x7F800000u)
+        result = (bits & 0x80000000u) ? SR_FLIGHT_NAN_RESULT_NEG_INF : SR_FLIGHT_NAN_RESULT_POS_INF;
+    sr_flight_nan_origin(pc, domain, dst, result, lane, sr_audio_vbl());
+}
+
 void sr_nan_trap_note(uint32_t pc, const char *op, uint32_t fd,
                       float out, const float *in, int nin) {
     if (!sr_nan_trap_nonfinite(out)) return;
@@ -438,6 +458,7 @@ void sr_nan_trap_note(uint32_t pc, const char *op, uint32_t fd,
     fputs("] out=[", stderr);
     sr_nan_trap_print(stderr, out1, 1);
     fputs("]\n", stderr);
+    sr_nan_trap_flight(pc, SR_FLIGHT_NAN_DOMAIN_FPU, fd, out1, 1);
     sr_nan_trap_context();
 }
 
@@ -461,6 +482,7 @@ void sr_nan_trap_note_v(uint32_t pc, const char *op, uint32_t vd,
     fputs("] out=[", stderr);
     sr_nan_trap_print(stderr, out, nout);
     fputs("]\n", stderr);
+    sr_nan_trap_flight(pc, SR_FLIGHT_NAN_DOMAIN_VFPU, vd, out, nout);
     sr_nan_trap_context();
 }
 #endif /* SR_NAN_TRAP */

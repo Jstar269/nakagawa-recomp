@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
-"""Import-stub census: every import-table stub of a synthetic image reaches the HLE.
+"""Import-stub census: every import-table stub of a synthetic image has an entry and a body,
+and its NID reaches an HLE handler or the named unknown-NID trap.
 
 The census (tools/import_stub_census.py) lists each import-table slot and checks that
 the analyzer owns it as an entry and that codegen emits a body for it. These tests run

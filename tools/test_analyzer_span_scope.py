@@ -33,6 +33,7 @@ sys.path.insert(0, str(TOOLS))
 
 import analyze  # noqa: E402
 import codegen  # noqa: E402
+import scratch_dir  # noqa: E402
 from nk_core import package_cache  # noqa: E402
 
 # A wholly synthetic span standing in for "some other title's configuration". It is
@@ -327,7 +328,7 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         self._saved_environ = os.environ.copy()
         for name in ("TITLE_EXTRA_SPANS", "HST_EXTRA_SPANS", "GAME_BASE"):
             os.environ.pop(name, None)
-        self.temp = tempfile.TemporaryDirectory(prefix="nakagawa-span-scope-")
+        self.temp = scratch_dir.TemporaryDirectory(prefix="nakagawa-span-scope-")
         self.addCleanup(self.temp.cleanup)
         self.addCleanup(self._restore_environ)
         self.root = Path(self.temp.name)
@@ -715,6 +716,83 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         self.assertIn("ownership-gap", {finding["code"] for finding in findings})
         self.assertTrue(any("0x00001010" in finding["message"] for finding in findings))
 
+    # --- #968: a linking branch to a callable is a call in discovery too -----------
+
+    #: Issue #968's program: the entry calls 0x1010, whose `bal` targets 0x1030, a leaf
+    #: placed after the caller's return, inside the caller's span.
+    ISSUE_968_WORDS = (
+        0x0C000404, 0x00000000, 0x03E00008, 0x03A01821,  # 0x1000 jal 0x1010; jr ra; addu v1, sp
+        0x27BDFFF0, 0xAFBF0000,                          # 0x1010 addiu sp, -16; sw ra, 0(sp)
+        0x04110005, 0x00000000,                          # 0x1018 bal 0x1030; nop
+        0x2442000A, 0x8FBF0000, 0x03E00008, 0x27BD0010,  # 0x1020 the continuation, return
+        0x24420001, 0x03E00008, 0x00000000,              # 0x1030 the callee
+    )
+    #: The entry calls a frameless body (0x1018) that only reads its PC with
+    #: `bal .+8` (0x101c -> 0x1024), and a framed one (0x1034) whose `bal`
+    #: (0x103c -> 0x1048) jumps over an inline data word into its own
+    #: frame-releasing tail. Neither branch is a call.
+    NOT_A_CALL_WORDS = (
+        0x0C000406, 0x00000000, 0x0C00040D, 0x00000000,  # 0x1000 jal 0x1018; jal 0x1034
+        0x03E00008, 0x00000000,                          # 0x1010 jr ra
+        0x03E04021,                                      # 0x1018 addu t0, ra, zero
+        0x04110001,                                      # 0x101c bal .+8 (0x1024)
+        0x24420064,                                      # 0x1020 addiu v0, v0, 100
+        0x03E02021,                                      # 0x1024 addu a0, ra, zero
+        0x0100F821, 0x03E00008, 0x2442000A,              # 0x1028 addu ra, t0; jr ra; slot
+        0x27BDFFF0, 0xAFBF0000,                          # 0x1034 addiu sp, -16; sw ra, 0(sp)
+        0x04110002,                                      # 0x103c bal 0x1048
+        0x24420064,                                      # 0x1040 addiu v0, v0, 100
+        0x24424000,                                      # 0x1044 inline data, never run
+        0x03E02021,                                      # 0x1048 addu a0, ra, zero
+        0x8FBF0000, 0x03E00008, 0x27BD0010,              # 0x104c lw ra; jr ra; addiu sp, 16
+    )
+
+    def _analyze_words(self, name: str, words) -> tuple[analyze.Elf, set, list]:
+        elf_path = self.root / f"{name}.elf"
+        write_elf(elf_path, words=words)
+        image = analyze.Elf(str(elf_path), base=0)
+        functions, ranges = analyze.analyze(image)
+        return image, set(functions), ranges
+
+    def test_in_body_linked_call_target_is_an_entry_not_the_callers_interior(self) -> None:
+        # Before: the caller's trace absorbed 0x1030 and nothing made it an entry.
+        image, functions, ranges = self._analyze_words("issue-968", self.ISSUE_968_WORDS)
+        self.assertIn(0x1030, functions, "the callee must be an analyzer-owned entry")
+        covered, calls = set(), set()
+        analyze.trace_function(image, 0x1010, ranges, covered, calls, set())
+        self.assertNotIn(0x1030, covered, "the callee is not the caller's interior")
+        self.assertIn(0x1030, calls)
+        self.assertTrue({0x1020, 0x1024, 0x1028, 0x102C} <= covered, "the link continues")
+
+    def test_read_the_pc_and_a_continuation_target_stay_interior(self) -> None:
+        image, functions, ranges = self._analyze_words("not-a-call", self.NOT_A_CALL_WORDS)
+        self.assertTrue({0x1018, 0x1034} <= functions, sorted(map(hex, functions)))
+        for caller, target in ((0x1018, 0x1024), (0x1034, 0x1048)):
+            with self.subTest(target=hex(target)):
+                self.assertNotIn(target, functions)
+                covered, calls = set(), set()
+                analyze.trace_function(image, caller, ranges, covered, calls, set())
+                self.assertIn(target, covered)
+                self.assertNotIn(target, calls)
+
+    def test_cfg_gate_owns_the_in_body_linked_call_target(self) -> None:
+        # The canonical CFG already models the link as a call edge; with the callee
+        # discovered as an entry, the opt-in gate owns it. Before: ownership-gap.
+        image, functions, ranges = self._analyze_words("issue-968-cfg", self.ISSUE_968_WORDS)
+        report = analyze.canonical_cfg_report(image, ranges=ranges, entries=sorted(functions))
+        self.assertEqual(analyze.canonical_cfg_gate(report), [])
+        elf_path = self.root / "issue-968-cfg.elf"
+        proc = subprocess.run(
+            [
+                sys.executable, str(TOOLS / "codegen.py"), str(elf_path),
+                str(self.root / "issue-968-cfg.c"),
+                "--base=0", "--profile=none", "--funcs-per-chunk=2000", "--cfg-gate",
+            ],
+            cwd=ROOT, env=self._clean_env(), capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("CFG_GATE PASS", proc.stdout)
+
     def test_codegen_gate_kills_analyzer_mutation_before_emission(self) -> None:
         # Force the production codegen seam to lose the direct-call root. The
         # independent CFG walk still sees the in-image call edge and must stop
@@ -837,6 +915,52 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         by_address = {row["address"]: row for row in report["instructions"]}
         self.assertEqual(by_address[PRIMARY_BASE + 12]["owners"], [])
         self.assertEqual(by_address[PRIMARY_BASE + 12]["classification"], "unowned-executable")
+
+    def test_branch_target_outside_authorized_code_fails_closed(self) -> None:
+        # A branch or jump target resolving outside authorized code fails closed.
+        # The target is never converted into a callable entry point, and the edge is
+        # classified as an out-of-range dispatch transfer.
+        out_of_range_target = 0x00800000
+        near_oor_target = PRIMARY_BASE + 0x1000
+        branch_offset = (near_oor_target - (PRIMARY_BASE + 0x14)) // 4
+        words = [
+            0x08000000 | ((out_of_range_target >> 2) & 0x03FFFFFF),  # j 0x00800000
+            0x00000000,
+            0x0C000000 | ((out_of_range_target >> 2) & 0x03FFFFFF),  # jal 0x00800000
+            0x00000000,
+            (0x04 << 26) | (branch_offset & 0xFFFF),                 # beq $0, $0, target 0x00002000
+            0x00000000,
+            0x03E00008,                                             # jr $ra
+            0x00000000,
+        ]
+        elf_path = self.root / "oor-branch-target.elf"
+        write_elf(elf_path, words=words)
+        image = analyze.Elf(str(elf_path), base=0)
+
+        starts, ranges = analyze.analyze(image)
+
+        self.assertNotIn(out_of_range_target, starts)
+        self.assertNotIn(near_oor_target, starts)
+
+        report = analyze.canonical_cfg_report(image, ranges=ranges, entries=starts)
+        self.assertEqual(analyze.canonical_cfg_gate(report), [])
+
+        classifications = {
+            (row["source"], row["target"], row["kind"]): row["classification"]
+            for row in report["successor_classifications"]
+        }
+        self.assertEqual(
+            classifications[(PRIMARY_BASE, out_of_range_target, "direct-jump")],
+            "inter-function-handoff-dispatch",
+        )
+        self.assertEqual(
+            classifications[(PRIMARY_BASE + 8, out_of_range_target, "call")],
+            "inter-function-handoff-dispatch",
+        )
+        self.assertEqual(
+            classifications[(PRIMARY_BASE + 16, near_oor_target, "direct-branch")],
+            "inter-function-handoff-dispatch",
+        )
 
     @unittest.skipUnless(CC, "gcc is required for the analyzer semantic mutation proof")
     def test_cfg_gate_kills_generated_direct_call_root_mutation(self) -> None:
@@ -1520,19 +1644,35 @@ class MakefileSpanBindingTests(unittest.TestCase):
 
     def test_span_participates_in_the_codegen_profile_hash(self) -> None:
         # Changing the span must invalidate previously generated code. The codegen
-        # profile's entries are NK_CODEGEN_PROFILE_ENTRIES; the span is one of them,
-        # the parse-time hash reads them through profile_hash and the record recipe
-        # from its environment.
+        # profile's entries are NK_CODEGEN_PROFILE_ENTRIES; the span is one of them.
+        # Normal build parses hash the exported entries in a batch, with the
+        # individual profile_hash path retained for parses before the build directory
+        # is ready. The record recipe reads the same entries from its environment.
         export_line = next(
             line for line in self.makefile.splitlines()
             if line.startswith("export NK_CODEGEN_PROFILE_ENTRIES :=")
         )
         self.assertIn("EXTRA_SPAN_ARG=$(EXTRA_SPAN_ARG)", export_line)
-        hash_line = next(
+        hash_lines = [
             line for line in self.makefile.splitlines()
             if line.startswith("CODEGEN_PROFILE_HASH :=")
+        ]
+        self.assertIn(
+            "CODEGEN_PROFILE_HASH := $(word 1,$(_PROFILE_HASHES))", hash_lines
         )
-        self.assertIn("$(call profile_hash,NK_CODEGEN_PROFILE_ENTRIES,", hash_line)
+        self.assertTrue(any(
+            "$(call profile_hash,NK_CODEGEN_PROFILE_ENTRIES," in line
+            for line in hash_lines
+        ))
+        self.assertIn(
+            "$(file >$(BUILD_DIR)/.codegen-profile-entries,$(NK_CODEGEN_PROFILE_ENTRIES))",
+            self.makefile,
+        )
+        self.assertTrue(any(
+            "hash-profiles" in line
+            and '--codegen-entries-file "$(BUILD_DIR)/.codegen-profile-entries"' in line
+            for line in self.makefile.splitlines()
+        ))
         record_line = next(
             line for line in self.makefile.splitlines() if "--section codegen" in line
         )

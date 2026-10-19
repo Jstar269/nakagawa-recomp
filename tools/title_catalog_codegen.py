@@ -252,6 +252,33 @@ def collect_public_manifests(
 
     # Sort deterministically by ID
     results.sort(key=lambda item: item["id"])
+
+    seen_ids: set[str] = set()
+    seen_disc_ids: set[str] = set()
+    for item in results:
+        t_id = item["id"]
+        if t_id in seen_ids:
+            raise ValueError(f"catalog contains duplicate title identity {t_id!r}")
+        seen_ids.add(t_id)
+
+        kind = item["kind"]
+        if kind == "retail":
+            disc_info = item.get("disc", {})
+            disc_ids = [disc_info["id"]] + disc_info.get("compatible_revisions", [])
+        elif kind == "synthetic":
+            assigned = synthetic_disc_ids.SYNTHETIC_DISC_IDS.get(t_id)
+            disc_ids = [assigned] if assigned else []
+        else:
+            disc_ids = []
+
+        for disc_id in disc_ids:
+            norm = "".join(c for c in disc_id if c not in "-_ ").upper()
+            if norm in seen_disc_ids:
+                raise ValueError(
+                    f"catalog contains duplicate disc identity {disc_id!r} for title {t_id!r}"
+                )
+            seen_disc_ids.add(norm)
+
     return public_files, results
 
 
@@ -303,6 +330,8 @@ def generate_header(digest: str, titles: List[Dict[str, Any]]) -> str:
         "    const char * const *compatible_disc_ids; /* NULL-terminated array of alias disc IDs */",
         "    uint32_t executable_base;",
         "    uint32_t executable_entry;",
+        "    bool has_executable_base;",
+        "    bool has_executable_entry;",
         "    uint32_t run_entry;                 /* where a run starts: runtime_bindings.fallback_entry when declared, else executable_entry (title_codegen_plan._resolve_run_entry) */",
         "    const char *bss_metadata_source;",
         "    const char *data_root;",
@@ -753,6 +782,8 @@ def generate_source(digest: str, titles: List[Dict[str, Any]]) -> str:
         lines.append(f"        {compat_ref},")
         lines.append(f"        0x{exe_base:08x}U,")
         lines.append(f"        0x{exe_entry:08x}U,")
+        lines.append("        true,")
+        lines.append("        true,")
         lines.append(f"        0x{run_entry:08x}U,")
         lines.append(f'        "{bss_source}",')
         lines.append(f'        "{data_root}",')

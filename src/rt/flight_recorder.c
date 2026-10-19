@@ -552,6 +552,17 @@ void sr_flight_host_fault(uint32_t guest_pc, uint32_t exception_code, uint32_t g
     sr_flight_fault(SR_FLIGHT_KIND_FAULT_EXCEPTION, guest_pc, exception_code, guest_fault_addr);
 }
 
+/* SR_NAN_TRAP origin (#320). Unlike sr_flight_fault this never arms the first-exception
+ * trigger: the trap reports many origins in one run and the recorder must keep going past
+ * them. The only record is the fault-class event, packed as the kind documents. */
+void sr_flight_nan_origin(uint32_t guest_pc, uint32_t domain, uint32_t dst, uint32_t result,
+                          uint32_t lane, uint32_t vbl) {
+    if (!sr_flight_class_enabled(SR_FLIGHT_CLASS_FAULT)) return;
+    (void)record_locked(SR_FLIGHT_CLASS_FAULT, SR_FLIGHT_KIND_NAN_ORIGIN, guest_pc,
+                        (domain & 0xffu) | ((result & 0xffu) << 8) | ((dst & 0xffu) << 16),
+                        lane, vbl);
+}
+
 static uint32_t retained_count(void) {
     if (s_flight_recorded < s_flight_limit) return (uint32_t)s_flight_recorded;
     return s_flight_limit;

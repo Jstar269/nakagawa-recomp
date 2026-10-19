@@ -80,6 +80,7 @@ static void init(void) {
                 "handler": "h_ControlledUnsupported",
                 "origin": "static_unsupported",
                 "refusal_error": 0x80010086,
+                "owner_file": None,
             }],
         )
 
@@ -233,6 +234,110 @@ static void more(void) {
         origins = {r["origin"] for r in regs}
         self.assertIn("static", origins)
         self.assertIn("static_unsupported", origins)
+
+
+class PowerRegistrationOwnershipTests(unittest.TestCase):
+    """scePower and sceKernelPower NIDs are registered from src/rt/hle_power.c (issue #307).
+
+    Their handlers already live in hle_power.c, so the registrations must too: one
+    obvious owner per NID, with hle.c left as composition glue. The NID set is pinned
+    here rather than derived from hle.c, so the test cannot pass by reading the old
+    location. scePower_469989ad stays in hle.c: its refusal uses hle.c's private
+    sr_hle_register_unsupported(), which hle_power.c cannot call.
+    """
+
+    POWER_NIDS = frozenset({
+        0x34F9C463, 0xFDB5BFE9, 0x478FE6F5, 0x737486F2, 0xEBD177D6, 0xD3075926,  # clock and low battery
+        0xEADB1BD7, 0x3AEE7261, 0x090CCB3F,                                      # sceKernelPower Lock/Unlock/Tick
+        0x04B7766E,                                                              # scePowerRegisterCallback
+        0x2085D15D, 0x1E490401, 0x0AFD0D8B, 0x87440F5E,                          # battery and power online
+        0xFEE03A2F, 0xBD681969, 0xEA382A27, 0xB1A52C83, 0x9BADB3EB,              # measured clock alias, Int and Float getters (PSP-3000 6.61 oracle 2026-10-15, PSP-HLE-POWER-001)
+    })
+
+    def test_power_registrations_are_owned_by_hle_power_c(self) -> None:
+        """The live manifest's owner_file puts exactly the power NIDs in hle_power.c."""
+        owned = {
+            r["nid"] for r in build_manifest()["registrations"] if r["owner_file"] == "src/rt/hle_power.c"
+        }
+        self.assertEqual(owned, {f"0x{n:08x}" for n in self.POWER_NIDS})
+
+    def test_hle_c_registers_no_power_nid(self) -> None:
+        active = hle_manifest.active_source(hle_manifest.HLE_C.read_text(encoding="utf-8"))
+        registered = {
+            int(m.group(1), 16)
+            for m in re.finditer(
+                r"sr_hle_register(?:_unsupported)?\s*\(\s*0x([0-9a-fA-F]{1,8})[uU]?\s*,", active
+            )
+        }
+        self.assertEqual(registered & self.POWER_NIDS, set())
+
+
+class RegistrationOwnerFileTests(unittest.TestCase):
+    """Every registration has exactly one owner file; none is registered outside the manifest.
+
+    A NID registered from two runtime units is rejected by extract_registrations'
+    duplicate check, pinned here per file. A registration call in a production file
+    the manifest does not read is a NID with no owner at all, so the live tree must
+    have none.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.manifest = build_manifest()
+
+    def test_every_registration_has_a_composed_owner_file(self) -> None:
+        composed = {path for path, _ in hle_manifest.runtime_hle_sources()}
+        for r in self.manifest["registrations"]:
+            self.assertIn(r["owner_file"], composed, f"{r['nid']} {r['name']} has no owner file")
+
+    def test_live_production_tree_registers_only_from_composed_sources(self) -> None:
+        composed = [path for path, _ in hle_manifest.runtime_hle_sources()]
+        files = {
+            p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8")
+            for p in sorted((ROOT / "src").rglob("*.c"))
+        }
+        self.assertEqual(hle_manifest.registration_calls_outside(files, composed), [])
+
+    def test_nid_registered_from_two_runtime_units_is_rejected(self) -> None:
+        a = (
+            "static uint32_t h_A(CpuState *s) { (void)s; return 0; }\n"
+            'static void init_a(void) { sr_hle_register(0x00000010u, "synthA", h_A); }\n'
+        )
+        b = (
+            "static uint32_t h_B(CpuState *s) { (void)s; return 0; }\n"
+            'static void init_b(void) { sr_hle_register(0x00000010u, "synthB", h_B); }\n'
+        )
+        sources = [("src/rt/hle.c", a), ("src/rt/hle_power.c", b)]
+        with self.assertRaises(ManifestError) as ctx:
+            extract_registrations("\n".join(text for _, text in sources), sources)
+        self.assertIn("duplicate NID", str(ctx.exception))
+        self.assertIn("0x00000010", str(ctx.exception))
+
+    def test_registration_call_outside_the_composed_sources_is_reported(self) -> None:
+        files = {
+            "src/rt/hle.c": SYNTH_SOURCE,
+            "src/rt/hle_fs.c": 'static void init_fs(void) {\n    sr_hle_register(0x00000070u, "synthFs", h_Fs);\n}\n',
+        }
+        self.assertEqual(hle_manifest.registration_calls_outside(files, ["src/rt/hle.c"]), ["src/rt/hle_fs.c:2"])
+
+    def test_owner_file_follows_the_unit_each_call_sits_in(self) -> None:
+        a = (
+            "static uint32_t h_A(CpuState *s) { (void)s; return 0; }\n"
+            'static void init_a(void) { sr_hle_register(0x00000010u, "synthA", h_A); }\n'
+        )
+        b = (
+            "static uint32_t h_B(CpuState *s) { (void)s; return 0; }\n"
+            'static void init_b(void) { sr_hle_register(0x00000020u, "synthB", h_B); }\n'
+        )
+        sources = [("src/rt/a.c", a), ("src/rt/b.c", b)]
+        regs = extract_registrations("\n".join(text for _, text in sources), sources)
+        self.assertEqual(
+            [(r["nid"], r["owner_file"]) for r in regs], [(0x10, "src/rt/a.c"), (0x20, "src/rt/b.c")]
+        )
+
+    def test_sources_must_be_the_text_that_is_extracted(self) -> None:
+        with self.assertRaises(ValueError):
+            extract_registrations(SYNTH_SOURCE, [("src/rt/hle.c", "static void other(void) {}\n")])
 
 
 class LiveManifestTests(unittest.TestCase):
@@ -440,7 +545,7 @@ class LiveManifestTests(unittest.TestCase):
             0xBA6B92E2: ("sceKernelSysClock2USec", "h_SysClock2USec", "dedicated"),
             0x110DEC9A: ("sceKernelUSec2SysClock", "h_USec2SysClock", "dedicated"),
             0x7E65B999: ("sceKernelCancelAlarm", "h_CancelAlarm", "dedicated"),
-            0x034A921F: ("sceKernelGetVTimerTime", "h_ControlledUnsupported", "controlled_unsupported"),
+            0x034A921F: ("sceKernelGetVTimerTime", "h_GetVTimerTime", "dedicated"),
             0x50F61D8A: ("sceKernelFreeMemoryBlock", "h_FreeMemoryBlock", "dedicated"),
             0xDB83A952: ("sceKernelGetMemoryBlockAddr", "h_GetMemoryBlockAddr", "dedicated"),
             0xFE707FDF: ("sceKernelAllocMemoryBlock", "h_AllocMemoryBlock", "dedicated"),
@@ -498,6 +603,158 @@ class LiveManifestTests(unittest.TestCase):
         for handler, status in meta.HANDLER_STATUS.items():
             self.assertIn(status, meta.HANDLER_STATUSES)
             self.assertIn(handler, handlers)
+
+    def test_route_a_kernel_ge_batch_has_evidence_and_named_limits(self) -> None:
+        expected = {
+            0xB77905EA: "h_GeEdramSetAddrTranslation",
+            0x71040D5C: "h_TryLockLwMutex",
+            0x15B6446B: "h_UnlockLwMutex",
+            0xD979E9BF: "h_AllocateFpl",
+            0xBED27435: "h_AllocateVpl",
+        }
+        for nid, handler in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+                self.assertTrue(meta.HANDLER_EVIDENCE[handler])
+                self.assertTrue(
+                    all("HARDWARE_ORACLE.md" in item for item in meta.HANDLER_EVIDENCE[handler])
+                )
+                self.assertTrue(meta.HANDLER_LIMITATIONS[handler])
+
+    def test_route_a_kernel_object_batch_three_has_evidence_and_named_limits(self) -> None:
+        expected = {
+            0xCD203292: "h_CancelEventFlag",
+            0x8FFDF9A2: "h_CancelSema",
+            0x812346E4: "h_ClearEventFlag",
+            0xC07BB470: "h_CreateFpl",
+            0x19CFF145: "h_CreateLwMutex",
+            0xB7D098C6: "h_CreateMutex",
+            0xD6DA4BA1: "h_CreateSema",
+            0x56C039B5: "h_CreateVpl",
+            0xED1410E0: "h_DeleteFpl",
+            0x60107536: "h_DeleteLwMutex",
+        }
+        for nid, handler in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+                self.assertTrue(meta.HANDLER_EVIDENCE[handler])
+                self.assertTrue(
+                    all("HARDWARE_ORACLE.md" in item for item in meta.HANDLER_EVIDENCE[handler])
+                )
+                self.assertTrue(meta.HANDLER_LIMITATIONS[handler])
+                if handler == "h_ClearEventFlag":
+                    self.assertIn("0x8002019A", meta.HANDLER_LIMITATIONS[handler])
+                if handler == "h_DeleteFpl":
+                    self.assertIn("returns success", meta.HANDLER_LIMITATIONS[handler])
+
+    def test_route_a_kernel_lifecycle_batch_four_has_evidence_and_named_limits(self) -> None:
+        expected = {
+            0x28B6489C: "h_DeleteSema",
+            0x9FA03CD3: "h_DeleteThread",
+            0x89B3D48C: "h_DeleteVpl",
+            0x809CE29B: "h_ExitDeleteThread",
+            0xAA73C935: "h_ExitThread",
+            0xF6414A71: "h_FreeFpl",
+            0xB736E9FF: "h_FreeVpl",
+            0x2C34E053: "h_ReleaseWaitThread",
+            0x623AE665: "h_TryAllocateFpl",
+            0xAF36D708: "h_TryAllocateVpl",
+        }
+        for nid, handler in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+                self.assertTrue(meta.HANDLER_EVIDENCE[handler])
+                self.assertTrue(
+                    all("HARDWARE_ORACLE.md" in item for item in meta.HANDLER_EVIDENCE[handler])
+                )
+                self.assertTrue(meta.HANDLER_LIMITATIONS[handler])
+                if handler == "h_ExitDeleteThread":
+                    self.assertIn("PSP-TEARDOWN-001", meta.HANDLER_LIMITATIONS[handler])
+                if handler == "h_TryAllocateVpl":
+                    self.assertIn("unmeasured", meta.HANDLER_LIMITATIONS[handler])
+        for nid, handler in {
+            0x446D8DE6: "h_CreateThread",
+            0xF475845D: "h_StartThread",
+        }.items():
+            with self.subTest(nid=f"0x{nid:08x}", excluded_handler=handler):
+                self.assertEqual(self.regs[nid]["handler"], handler)
+                self.assertEqual(self.regs[nid]["status"], "unreviewed")
+
+    def test_route_a_kernel_sync_batch_five_has_evidence_and_named_limits(self) -> None:
+        expected = {
+            0xB011B11F: "h_LockMutex",
+            0xC11BA8C4: "h_NotifyCallback",
+            0x30FD48F0: "h_PollEventFlag",
+            0x74829B76: "h_ReceiveMsgPipe",
+            0xA66B0120: "h_ReferEventFlagStatus",
+            0xD8199E4C: "h_ReferFplStatus",
+            0xA9C2CB9A: "h_ReferMutexStatus",
+            0x876DBFAD: "h_SendMsgPipe",
+            0x1FB15A32: "h_SetEventFlag",
+            0x3F53E640: "h_SignalSema",
+        }
+        for nid, handler in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+                self.assertTrue(meta.HANDLER_EVIDENCE[handler])
+                self.assertTrue(
+                    all("HARDWARE_ORACLE.md" in item for item in meta.HANDLER_EVIDENCE[handler])
+                )
+                self.assertTrue(meta.HANDLER_LIMITATIONS[handler])
+
+    def test_route_a_kernel_wait_batch_six_has_evidence_and_named_limits(self) -> None:
+        expected = {
+            0x9ACE131E: "h_SleepThread",
+            0x0DDCD2C9: "h_TryLockMutex",
+            0xDF52098F: "h_TryReceiveMsgPipe",
+            0x884C9F90: "h_TrySendMsgPipe",
+            0x6B30100F: "h_UnlockMutex",
+            0x402FCF22: "h_WaitEventFlag",
+            0x4E3A1105: "h_WaitSema",
+            0xD59EAD2F: "h_WakeupThread",
+        }
+        for nid, handler in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+                self.assertTrue(meta.HANDLER_EVIDENCE[handler])
+                self.assertTrue(
+                    all("HARDWARE_ORACLE.md" in item for item in meta.HANDLER_EVIDENCE[handler])
+                )
+                self.assertTrue(meta.HANDLER_LIMITATIONS[handler])
+                if handler == "h_WaitEventFlag":
+                    self.assertIn("0x8002019A", meta.HANDLER_LIMITATIONS[handler])
+
+    def test_route_a_system_time_wide_has_measured_delta_and_named_limits(self) -> None:
+        registration = self.regs[0x82BC5777]
+        self.assertEqual(registration["handler"], "h_GetSystemTimeWide")
+        self.assertEqual(registration["classification"], "dedicated")
+        self.assertEqual(registration["status"], "partial")
+        self.assertEqual(
+            meta.HANDLER_EVIDENCE["h_GetSystemTimeWide"],
+            [
+                "docs/HARDWARE_ORACLE.md (PSP-HLE-VTIMER-002: system-clock reads around "
+                "the bounded delay)"
+            ],
+        )
+        limitation = meta.HANDLER_LIMITATIONS["h_GetSystemTimeWide"]
+        self.assertIn("220,608", limitation)
+        self.assertIn("8%", limitation)
+        self.assertIn("precise rate", limitation)
 
     def test_psmf_getters_are_dedicated_partial(self) -> None:
         # Both getters drive the media producer and a host codec backend now, so
@@ -674,18 +931,15 @@ static uint32_t h_SynthReal(CpuState *s) {
             unsupported,
             {
                 "0x0282a3bd": ("sceHttpGetContentLength", "0x80010086"),
-                "0x034a921f": ("sceKernelGetVTimerTime", "0x80020002"),
                 "0x03d9526f": ("sceHttpSetResolveRetry", "0x80010086"),
                 "0x0bf0a3ae": ("sceNetGetLocalEtherAddr", "0x80010086"),
                 "0x0c116e1b": ("sceAtracLowLevelDecode", "0x80630004"),
                 "0x1575d64b": ("sceAtracLowLevelInitDecoder", "0x80630004"),
                 "0x1579a159": ("sceUtilityLoadNetModule", "0x80110001"),
                 "0x1f0fc3e3": ("sceHttpSetRecvTimeOut", "0x80010086"),
-                "0x20fff560": ("sceKernelCreateVTimer", "0x80020002"),
                 "0x2255551e": ("sceHttpGetNetworkPspError", "0x80010086"),
                 "0x231fc6b7": ("_sceAtracGetContextAddress", "0x80630003"),
                 "0x29681260": ("sceAudiocodecReleaseEDRAM", "0x80010086"),
-                "0x328f9e52": ("sceKernelDeleteVTimer", "0x80020002"),
                 "0x011f03c1": ("sceRtcGetAccumulativeTime", "0x80020002"),
                 "0x191cdeff": ("sceSslEnd", "0x80010086"),
                 "0x5963991b": ("sceNetApctlDelHandler", "0x80010086"),
@@ -693,9 +947,11 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0xf9d8eb63": ("sceHttpsEnd", "0x80010086"),
                 "0x3a20a200": ("sceAudiocodecGetEDRAM", "0x80010086"),
                 "0x469989ad": ("scePower_469989ad", "0x80020002"),
-                "0x627e6f3a": ("sceKernelReferSystemStatus", "0x80020002"),
                 "0x3eaba285": ("sceHttpAddExtraHeader", "0x80010086"),
                 "0x542ad630": ("sceKernelSetVTimerTime", "0x80020002"),
+                "0x53b00e9a": ("sceKernelSetVTimerHandlerWide", "0x80020002"),
+                "0xd2d615ef": ("sceKernelCancelVTimerHandler", "0x80020002"),
+                "0xd8b299ae": ("sceKernelSetVTimerHandler", "0x80020002"),
                 "0x5b37eb1d": ("sceAudiocodecInit", "0x80010086"),
                 "0x438a385a": ("sceGeSaveContext", "0x80020002"),
                 "0x0bf608fb": ("sceGeRestoreContext", "0x80020002"),
@@ -708,7 +964,6 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x8c943191": ("sceImposeGetBatteryIconStatus", "0x80010086"),
                 "0xab1abe07": ("sceHttpInit", "0x80010086"),
                 "0xbd2f1094": ("sceKernelLoadExec", "0x80020002"),
-                "0xc68d9437": ("sceKernelStartVTimer", "0x80020002"),
                 "0xd1c8945e": ("sceHttpEnd", "0x80010086"),
                 "0xd1f59fdb": ("sceAtracStartEntry", "0x80630004"),
                 "0xd675ebb8": ("sceKernelSelfStopUnloadModule", "0x80020002"),
@@ -783,8 +1038,12 @@ class MpegDirtyNotificationContractTests(unittest.TestCase):
                       "convert_frame must compute full-buffer dirty bytes without signed overflow")
         self.assertIn("if (w == frameWidth && fullBytes <= UINT32_MAX)", h264_src,
                       "convert_frame must emit a single dirty call only for a representable contiguous span")
-        self.assertIn("sr_gpu_vram_dirty(buffer + (uint32_t)y * pitchBytes, rowBytes);", h264_src,
-                      "convert_frame must emit exact per-row dirty calls when w < frameWidth")
+        self.assertIn("sr_guest_vram_write_prepare_bytes(buffer, (uint32_t)totalBytes64);", h264_src,
+                      "convert_frame must preserve renderer-owned depth before direct host writes")
+        self.assertIn("sr_guest_vram_write_commit_bytes(buffer, (uint32_t)fullBytes);", h264_src,
+                      "convert_frame must report one contiguous full-buffer write")
+        self.assertIn("sr_guest_vram_write_commit_bytes(buffer + (uint32_t)y * pitchBytes, rowBytes);", h264_src,
+                      "convert_frame must report exact per-row writes when w < frameWidth")
 
 
 
@@ -1062,10 +1321,17 @@ class EvidenceTierTests(unittest.TestCase):
             [
                 "PSP-ALARM-001", "PSP-AUDIO-001", "PSP-CACHE-001", "PSP-DISPLAY-001",
                 "PSP-DISPLAY-002", "PSP-DISPLAY-003", "PSP-DISPLAY-004", "PSP-DMAC-001",
-                "PSP-EXCEPTION-001", "PSP-FPU-001", "PSP-GE-001", "PSP-IO-001",
-                "PSP-KERNEL-002", "PSP-KERNEL-MISC-001", "PSP-KERNEL-STATUS-001", "PSP-MUTEX-001",
-                "PSP-REGISTRY-001", "PSP-SMOKE-001", "PSP-THREAD-003", "PSP-THREAD-EXIT-001",
-                "PSP-TRANSPORT-001", "PSP-WAIT-001",
+                "PSP-EXCEPTION-001", "PSP-FPU-001", "PSP-FPU-CC-001", "PSP-GE-001",
+                "PSP-GE-CONTROL-001", "PSP-HLE-AUDIO-SRC-001", "PSP-HLE-CTRL-LATCH-001",
+                "PSP-HLE-GE-EDRAM-001", "PSP-HLE-HPRM-001", "PSP-HLE-KERNEL-STATUS-001",
+                "PSP-HLE-POWER-001", "PSP-HLE-POWER-002", "PSP-HLE-SYSPARAM-001",
+                "PSP-HLE-TIMER-ORDER-001", "PSP-HLE-VTIMER-001", "PSP-HLE-VTIMER-002",
+                "PSP-HLE-VTIMER-003", "PSP-IO-001", "PSP-KERNEL-001",
+                "PSP-KERNEL-002", "PSP-KERNEL-MISC-001", "PSP-KERNEL-STATUS-001", "PSP-LLSC-001",
+                "PSP-MUTEX-001", "PSP-REGISTRY-001", "PSP-SMOKE-001", "PSP-SYSTEM-001",
+                "PSP-THREAD-003", "PSP-THREAD-EXIT-001", "PSP-TRANSPORT-001",
+                "PSP-UMDIO-001", "PSP-VFPU-CMP-001",
+                "PSP-VFPU-TRANSCENDENTAL-001", "PSP-VRAM-MIRROR-001", "PSP-WAIT-001",
             ],
         )
         self.assertIn("sceDmacTryMemcpy", promoted)
@@ -1281,6 +1547,41 @@ class CensusTests(unittest.TestCase):
             for r in cls.manifest["registrations"]
         ]
 
+    def test_route_a_mixed_handlers_are_split_from_unmeasured_nids(self) -> None:
+        by_nid = {
+            int(row["nid"], 16): row["handler"]
+            for row in self.manifest["registrations"]
+        }
+        groups = (
+            (
+                "LwMutex blocking versus callback locks",
+                (0x7CFF8CF3, 0xBEA46419),
+                (0x31327F19, 0x1FC64E09),
+            ),
+            (
+                "Dcache range operations versus writeback-invalidate and Icache",
+                (0x3EE30821, 0xBFA98062),
+                (0x34B9FA9E, 0xC2DF770E),
+            ),
+            (
+                "Dcache writeback-all versus writeback-invalidate and Icache",
+                (0x79D1C3FA,),
+                (0xB435DEC5, 0x920F104A, 0xD8779AC6),
+            ),
+        )
+        for label, route_a_nids, unmeasured_nids in groups:
+            with self.subTest(group=label):
+                self.assertTrue(
+                    all(nid in by_nid for nid in (*route_a_nids, *unmeasured_nids)),
+                    f"{label}: expected registrations disappeared",
+                )
+                route_a_handlers = {by_nid[nid] for nid in route_a_nids}
+                unmeasured_handlers = {by_nid[nid] for nid in unmeasured_nids}
+                self.assertTrue(
+                    route_a_handlers.isdisjoint(unmeasured_handlers),
+                    f"{label}: a measured route-A handler still owns unmeasured NIDs",
+                )
+
     def test_census_covers_every_dedicated_handler(self) -> None:
         generic = set(meta.GENERIC_SUCCESS_HANDLERS) | {"h_ControlledUnsupported"}
         expected_handlers = {
@@ -1314,6 +1615,30 @@ class CensusTests(unittest.TestCase):
             with self.subTest(handler=handler):
                 self.assertTrue(by_handler[handler]["evidence"])
                 self.assertTrue(by_handler[handler]["limitation"])
+
+    def test_issue_341_route_a_batch_1_is_tied_to_cited_cells(self) -> None:
+        expected = {
+            "h_AudioChRelease": ("partial", "PSP-AUDIO-001", "audio-ch-release"),
+            "h_AudioChReserve": ("partial", "PSP-AUDIO-001", "audio-ch-reserve"),
+            "h_AudioRestLen": ("partial", "PSP-AUDIO-001", "audio-ch-query-before"),
+            "h_AudioOutput2Rest": ("partial", "PSP-AUDIO-001", "audio-out2-query-before"),
+            "h_AudioOutput2Blocking": ("partial", "PSP-AUDIO-001", "audio-out2-output-blocking"),
+            "h_AudioOutput2Release": ("partial", "PSP-AUDIO-001", "audio-out2-release"),
+            "h_AudioOutput2Reserve": ("partial", "PSP-AUDIO-001", "audio-out2-reserve"),
+            "h_AudioOutputBlocking": ("partial", "PSP-AUDIO-001", "audio-ch-output-blocking-0"),
+            "h_GeEdramGetAddr": ("complete", "PSP-HLE-GE-EDRAM-001", "edram-addr"),
+            "h_GeEdramGetSize": ("complete", "PSP-HLE-GE-EDRAM-001", "edram-size"),
+        }
+        by_handler = {entry["handler"]: entry for entry in self.census["handlers"]}
+        for handler, (status, evidence_id, cell) in expected.items():
+            with self.subTest(handler=handler):
+                entry = by_handler[handler]
+                self.assertEqual(entry["status"], status)
+                evidence = "\n".join(entry.get("evidence", []))
+                self.assertIn(evidence_id, evidence)
+                self.assertIn(cell, evidence)
+                if status == "partial":
+                    self.assertTrue(entry.get("limitation"))
 
     @staticmethod
     def _fixture_constant(path: Path, name: str) -> int | tuple[int, ...]:
@@ -1424,6 +1749,15 @@ class CensusTests(unittest.TestCase):
             with self.assertRaises(ManifestError) as ctx:
                 hle_manifest.validate_meta(self.raw_regs)
             self.assertIn("has no evidence metadata", str(ctx.exception))
+
+    def test_complete_without_executable_evidence_is_rejected(self) -> None:
+        with mock.patch.dict(
+            meta.HANDLER_EVIDENCE,
+            {"h_DisplayGetFramePerSec": ["public ABI contract (sceDisplayGetFramePerSec)"]},
+        ):
+            with self.assertRaises(ManifestError) as ctx:
+                hle_manifest.validate_meta(self.raw_regs)
+            self.assertIn("has no named executable evidence", str(ctx.exception))
 
     def test_complete_with_nonexistent_evidence_file_is_rejected(self) -> None:
         with mock.patch.dict(
