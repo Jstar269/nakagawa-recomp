@@ -225,6 +225,13 @@ int main(void) {
     ASSERT_INT_EQ(sr_vfs_is_dos_device_name("COM1", 4), 1);
     ASSERT_INT_EQ(sr_vfs_is_dos_device_name("com5", 4), 1);
     ASSERT_INT_EQ(sr_vfs_is_dos_device_name("LPT9", 4), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("CONIN$", 6), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("conin$", 6), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("CONIN$.txt", 10), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("CONIN$ ", 7), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("CONOUT$", 7), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("conout$.bin", 11), 1);
+    ASSERT_INT_EQ(sr_vfs_is_dos_device_name("CONOUT$  ", 9), 1);
     ASSERT_INT_EQ(sr_vfs_is_dos_device_name("nul.txt", 7), 1);   /* extension is stripped by Win32 */
     ASSERT_INT_EQ(sr_vfs_is_dos_device_name("CON.BIN", 7), 1);
     ASSERT_INT_EQ(sr_vfs_is_dos_device_name("NULL", 4), 0);      /* superset: ordinary name */

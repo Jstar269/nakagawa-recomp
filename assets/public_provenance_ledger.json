@@ -225,6 +225,18 @@
       "sha256": "6a86cc34726263240725ec231b91e026aaedef4cced86952a67623e494ebb29a"
     },
     {
+      "path": ".github/workflows/scorecards.yml",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "openssf-scorecard-workflow-2026-10-19",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "f3f535e744b2e9ec1696a88e02c138cc9f456613fc2ae1040a509ee7392894cb"
+    },
+    {
       "path": ".gitignore",
       "classification": "reviewed_configuration",
       "evidence": {
@@ -715,7 +727,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "ef72dc18060da75813bd2d711a584c6dd0a6ff0fa8526ae64d4ab6529aaf01ac"
+      "sha256": "7435e3b311df6a123ee12389fd14afcedd2b4b2917295ed141358b6baa114dd8"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1105,7 +1117,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e13a8c007b9f39b4e9b95aff9345c539b4d98e97cedfe3817f35d6940fba5b36"
+      "sha256": "bab4f1b4ff9e18a1bc8abad38a7eb54b10037f52fb731b0d6a66ece5dd2d31f6"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -3061,7 +3073,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "36821389f1f98ef8b016c2423cb2d9752d512f59d13d1c89c1e8743972bfb51a"
+      "sha256": "71fc825b75422683dfcc63245b0cb458b5e2757b1653fd0e5f6a9483a0e97092"
     },
     {
       "path": "src/core/nk_psp_ec.h",
@@ -6021,7 +6033,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a4aaa6ce12fcdfbf6dc960f1c8c9afdaf7490985bf5ca7fcfa28486b92b16f2f"
+      "sha256": "c3d6cbb924163a58d9cd4b5e3014afc5cbabf80c8822b5d67b50f26ab506dcf3"
     },
     {
       "path": "src/rt/vfs_selftest.c",
@@ -6033,7 +6045,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9f6b9c7834c21754d376438fbafb43c5a6eaf2d4539d6581bece2ebf06bb134d"
+      "sha256": "a6f8dfbfa68acf21a050809034aafd4675e3e373c1812f88542b13f169e890b9"
     },
     {
       "path": "src/rt/watchpoints_file.c",
@@ -6153,7 +6165,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "91cf22f20bed84afc267fb2c968b1b9f11f822ae7bb0ada1277f224ba4e36a02"
+      "sha256": "325551b95164016326b5fa9056376f8d273623a81dc4423b45c528e501187c06"
     },
     {
       "path": "tests/native/test_input_profile.c",
