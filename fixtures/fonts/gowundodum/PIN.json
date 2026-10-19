@@ -1,0 +1,22 @@
+{
+  "schema": "font-pin/v1",
+  "family": "Gowun Dodum",
+  "file": "GowunDodum-Regular.ttf",
+  "sha256": "a6e457933227483a11758fd0947bc74422a106d46f0bf057fdaa5af94a30067d",
+  "size_bytes": 7229088,
+  "license": {
+    "spdx": "OFL-1.1",
+    "copyright": "Copyright 2021 The Gowun Dodum Project Authors (https://github.com/yangheeryu/Gowun-Dodum)",
+    "license_text": "OFL.txt",
+    "license_text_sha256": "3e5acd28c1f57250f9486bd280b9f268c563687543f25a186c632a56400bbc25",
+    "upstream_license_text_sha256": "a7c73f9521cd646bbdfb6684c99a62311bbd7bce11898dc11ef0b3c69eda1aca",
+    "upstream_license_text_url": "https://raw.githubusercontent.com/google/fonts/c1eda9233c33ad7775b27efd794f931095cf6133/ofl/gowundodum/OFL.txt",
+    "reserved_font_names": []
+  },
+  "source": {
+    "url": "https://raw.githubusercontent.com/google/fonts/c1eda9233c33ad7775b27efd794f931095cf6133/ofl/gowundodum/GowunDodum-Regular.ttf",
+    "repository": "https://github.com/google/fonts",
+    "path": "ofl/gowundodum/GowunDodum-Regular.ttf",
+    "retrieved": "2026-10-15"
+  }
+}

@@ -34,6 +34,22 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The parser fuzz binary links the PGF object file but not the GE runtime. */
+volatile int g_sr_vram_read_pending;
+void sr_ge_vram_read_prepare(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
+void sr_ge_vram_write_prepare(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
+void sr_ge_vram_write_commit(uint32_t address, uint32_t bytes) {
+    (void)address; (void)bytes;
+}
+void sr_oor(uint32_t address, uint32_t value, int store) {
+    (void)address; (void)value; (void)store;
+    abort();
+}
+
 /* Scratch root for the files this test writes: the checkout's build/ by default, or
  * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
  * touches the checkout. */
@@ -1806,6 +1822,56 @@ static size_t build_zlib(uint8_t *out, size_t cap, const uint8_t *deflated,
     return at + 4u;
 }
 
+static size_t build_gzip_full(uint8_t *out, size_t cap, const uint8_t *deflated,
+                              size_t deflated_len, const uint8_t *plain,
+                              size_t plain_len, uint8_t flags,
+                              const uint8_t *extra, size_t extra_len,
+                              const char *name, const char *comment,
+                              int corrupt_fhcrc) {
+    assert(cap >= deflated_len + 256u);
+    out[0] = 0x1Fu; out[1] = 0x8Bu; out[2] = 8u; out[3] = flags;
+    memset(out + 4, 0, 6); /* MTIME, XFL, OS */
+    size_t pos = 10u;
+
+    if (flags & 0x04u) { /* FEXTRA */
+        out[pos++] = (uint8_t)(extra_len & 0xFFu);
+        out[pos++] = (uint8_t)((extra_len >> 8) & 0xFFu);
+        if (extra_len > 0u && extra != NULL) {
+            memcpy(out + pos, extra, extra_len);
+            pos += extra_len;
+        }
+    }
+    if (flags & 0x08u) { /* FNAME */
+        if (name != NULL) {
+            size_t nlen = strlen(name) + 1u;
+            memcpy(out + pos, name, nlen);
+            pos += nlen;
+        }
+    }
+    if (flags & 0x10u) { /* FCOMMENT */
+        if (comment != NULL) {
+            size_t clen = strlen(comment) + 1u;
+            memcpy(out + pos, comment, clen);
+            pos += clen;
+        }
+    }
+    if (flags & 0x02u) { /* FHCRC */
+        uint32_t hcrc = fuzz_crc32(out, pos) & 0xFFFFu;
+        if (corrupt_fhcrc) {
+            hcrc ^= 0xFFFFu;
+        }
+        out[pos++] = (uint8_t)(hcrc & 0xFFu);
+        out[pos++] = (uint8_t)((hcrc >> 8) & 0xFFu);
+    }
+
+    memcpy(out + pos, deflated, deflated_len);
+    pos += deflated_len;
+
+    put32le(out + pos, fuzz_crc32(plain, plain_len));
+    put32le(out + pos + 4u, (uint32_t)plain_len);
+    return pos + 8u;
+}
+
 /* ---- synthetic type-2 ~PSP sealer (mirrors tools/test_psp_decrypt.py) --- */
 
 #define FUZZ_KLE_SIZE 0x1000u
@@ -1977,6 +2043,54 @@ static void test_fuzz_decrypt_boundary(unsigned iters) {
         free(out);
     }
 
+    /* Declared-extent checks in validate_psp: the probe must refuse each
+     * malformed segment table before any decrypt work. The aggregate case
+     * passes the per-segment cap but overflows the 256 MiB total. */
+    {
+        static const struct {
+            uint8_t nseg;
+            uint32_t seg0;
+            uint32_t seg1;
+            const char *want;
+        } cases[] = {
+            {2u, 0x0C000000u, 0x0C000000u, "overflow aggregate extent"},
+            {2u, 0xFFFFFFFFu, 0x100u, "declares an impossible size"},
+            {0u, 0x100u, 0x100u, "impossible segment count"},
+        };
+        for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+            uint8_t *bad = (uint8_t *)malloc(sealed_len);
+            NkPspCtx ctx;
+            NkContainerInfo info;
+            assert(bad != NULL);
+            memcpy(bad, sealed, sealed_len);
+            bad[0x27] = cases[c].nseg;
+            put32le(bad + 0x54, cases[c].seg0);
+            put32le(bad + 0x58, cases[c].seg1);
+            nk_psp_ctx_init(&ctx, ks);
+            assert(nk_container_probe(&ctx, bad, sealed_len, &info) == NK_PSP_ERR_FORMAT);
+            assert(info.kind == NK_CTR_UNKNOWN);
+            assert(strstr(ctx.message, cases[c].want) != NULL);
+            free(bad);
+        }
+    }
+
+    /* A zero-size trailing segment is a valid layout: a ~PSP module may declare
+     * segment 1 as 0x0 after a non-empty segment 0. Only the segment count,
+     * the per-segment cap and the aggregate extent may refuse a table. */
+    {
+        uint8_t *zero_tail = (uint8_t *)malloc(sealed_len);
+        NkPspCtx ctx;
+        NkContainerInfo info;
+        assert(zero_tail != NULL);
+        memcpy(zero_tail, sealed, sealed_len);
+        put32le(zero_tail + 0x58, 0u);
+        nk_psp_ctx_init(&ctx, ks);
+        assert(nk_container_probe(&ctx, zero_tail, sealed_len, &info) == NK_PSP_OK);
+        assert(info.kind == NK_CTR_PSP);
+        assert(info.tag == FUZZ_PSP_TAG);
+        free(zero_tail);
+    }
+
     uint8_t wrapped[1200];
     uint8_t *mutated;
     unsigned accepted = 0;
@@ -2108,7 +2222,238 @@ static void test_fuzz_keystore(unsigned iters) {
 
 /* ---- inflate (raw DEFLATE / zlib / gzip) ------------------------------ */
 
+
+static void test_nk_psp_inflate_unit(void) {
+    printf("[UNIT] Testing nk_psp_inflate error paths and spec conformance...\n");
+    fflush(stdout);
+
+    uint8_t plain[16];
+    for (size_t i = 0; i < sizeof(plain); i++) plain[i] = (uint8_t)(i * 7u + 3u);
+
+    uint8_t deflated[512];
+    size_t deflated_len = build_deflate_fixed(deflated, sizeof(deflated), plain,
+                                             sizeof(plain), 0u);
+    uint8_t stored[128];
+    size_t stored_len = build_deflate_stored(stored, sizeof(stored), plain,
+                                            sizeof(plain));
+    uint8_t zlibbed[512];
+    size_t zlibbed_len = build_zlib(zlibbed, sizeof(zlibbed), deflated,
+                                    deflated_len, plain, sizeof(plain));
+    uint8_t gzipped[512];
+    size_t gzipped_len = build_gzip(gzipped, sizeof(gzipped), deflated,
+                                    deflated_len, plain, sizeof(plain));
+
+    uint8_t *out = NULL;
+    size_t out_len = 0;
+    char err[128];
+
+    /* 1. Invalid Arguments & Null Handling */
+    assert(nk_psp_inflate(NULL, 10, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+    assert(nk_psp_inflate(deflated, 10, NULL, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+    assert(nk_psp_inflate(deflated, 10, &out, NULL, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+    assert(nk_psp_inflate(deflated, 0, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+    assert(out == NULL && out_len == 0u);
+    /* Safely handles NULL err buffer or 0 err_len */
+    assert(nk_psp_inflate(NULL, 10, &out, &out_len, 0, FUZZ_INFLATE_CAP, NULL, 0) == NK_INFLATE_ERR_FORMAT);
+
+    /* 2. Raw DEFLATE & Stored Blocks */
+    /* Happy path: raw DEFLATE fixed */
+    assert(nk_psp_inflate(deflated, deflated_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+    assert(out != NULL && out_len == sizeof(plain) && memcmp(out, plain, sizeof(plain)) == 0);
+    free(out); out = NULL; out_len = 0;
+
+    /* Happy path: raw DEFLATE stored block */
+    assert(nk_psp_inflate(stored, stored_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+    assert(out != NULL && out_len == sizeof(plain) && memcmp(out, plain, sizeof(plain)) == 0);
+    free(out); out = NULL; out_len = 0;
+
+    /* Stored block with invalid length complement */
+    {
+        uint8_t bad_stored[128];
+        memcpy(bad_stored, stored, stored_len);
+        bad_stored[3] ^= 0xFFu;
+        assert(nk_psp_inflate(bad_stored, stored_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+        assert(out == NULL && strstr(err, "stored block length mismatch") != NULL);
+    }
+
+    /* Truncated stored block header & payload */
+    assert(nk_psp_inflate(stored, 3, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_TRUNCATED);
+    assert(nk_psp_inflate(stored, 8, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_TRUNCATED);
+
+    /* Invalid DEFLATE block type (btype = 3) */
+    {
+        uint8_t bad_btype[1] = { 0x06u }; /* final bit = 0, btype = 11b (3) */
+        assert(nk_psp_inflate(bad_btype, sizeof(bad_btype), &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+        assert(out == NULL && strstr(err, "invalid deflate block type") != NULL);
+    }
+
+    /* Distance code too far back (referencing data before start of output) */
+    {
+        FuzzBits w;
+        uint8_t bad_dist[64];
+        w.buf = bad_dist; w.cap = sizeof(bad_dist); w.len = 0; w.acc = 0u; w.have = 0; w.overflow = 0;
+        fuzz_put_bits(&w, 1u, 1);    /* final block */
+        fuzz_put_bits(&w, 1u, 2);    /* fixed Huffman */
+        fuzz_put_code(&w, 0xC5u, 8); /* length symbol 285 -> 258 bytes */
+        fuzz_put_code(&w, 0u, 5);    /* distance symbol 0 -> distance 1, but output length is 0! */
+        fuzz_put_code(&w, 0u, 7);    /* EOB */
+        fuzz_finish_bits(&w);
+        assert(nk_psp_inflate(bad_dist, w.len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+        assert(out == NULL && strstr(err, "distance too far back") != NULL);
+    }
+
+    /* 3. Zlib Wrapper & Fallback */
+    /* Happy path: zlib */
+    assert(nk_psp_inflate(zlibbed, zlibbed_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+    assert(out != NULL && out_len == sizeof(plain) && memcmp(out, plain, sizeof(plain)) == 0);
+    free(out); out = NULL; out_len = 0;
+
+    /* Preset dictionary unsupported */
+    {
+        uint8_t bad_zlib[512];
+        memcpy(bad_zlib, zlibbed, zlibbed_len);
+        bad_zlib[1] = 0x7Du; /* FDICT set (0x787D % 31 == 0, FDICT bit 5 set) */
+        assert(nk_psp_inflate(bad_zlib, zlibbed_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+        assert(out == NULL && strstr(err, "zlib preset dictionary is not supported") != NULL);
+    }
+
+    /* Adler32 checksum mismatch */
+    {
+        uint8_t bad_adler[512];
+        memcpy(bad_adler, zlibbed, zlibbed_len);
+        bad_adler[zlibbed_len - 1] ^= 0xFFu;
+        assert(nk_psp_inflate(bad_adler, zlibbed_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_CHECKSUM);
+        assert(out == NULL && strstr(err, "zlib adler32 mismatch") != NULL);
+    }
+
+
+    /* Zlib header-like stream that fails zlib decode, but falls back to raw DEFLATE */
+    {
+        uint8_t zlib_like_raw[256];
+        memset(zlib_like_raw, 0, sizeof(zlib_like_raw));
+        zlib_like_raw[0] = 0x78u; /* non-final stored block: BFINAL=0, BTYPE=00 */
+        zlib_like_raw[1] = 0x9Cu; /* len16 low = 156 */
+        zlib_like_raw[2] = 0x00u; /* len16 high = 0 */
+        zlib_like_raw[3] = 0x63u; /* nlen16 low = ~156 */
+        zlib_like_raw[4] = 0xFFu; /* nlen16 high = ~0 */
+        /* 156 bytes payload */
+        for (size_t i = 0; i < 156; i++) zlib_like_raw[5 + i] = (uint8_t)(i & 0xFF);
+        /* final stored block */
+        zlib_like_raw[161] = 0x01u; /* BFINAL=1, BTYPE=00 */
+        zlib_like_raw[162] = 0x01u; /* len16 = 1 */
+        zlib_like_raw[163] = 0x00u;
+        zlib_like_raw[164] = 0xFEu; /* nlen16 = ~1 */
+        zlib_like_raw[165] = 0xFFu;
+        zlib_like_raw[166] = 0x42u;
+
+        assert(nk_psp_inflate(zlib_like_raw, 167, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+        assert(out != NULL && out_len == 157u && out[156] == 0x42u);
+        free(out); out = NULL; out_len = 0;
+    }
+
+    /* Raw DEFLATE beginning 08 3C: the zlib header test passes and the FDICT
+     * bit (byte 1, bit 5) is set, but the bytes are valid raw DEFLATE: a
+     * non-final stored block of 60 bytes, then an empty final stored block.
+     * It must decode and must not be refused as a preset-dictionary stream. */
+    {
+        uint8_t raw_08_3c[70];
+        memset(raw_08_3c, 0, sizeof(raw_08_3c));
+        raw_08_3c[0] = 0x08u; /* stored block, BFINAL = 0 */
+        raw_08_3c[1] = 0x3Cu; /* LEN low; also zlib FLG with FDICT set */
+        raw_08_3c[2] = 0x00u; /* LEN high: LEN = 60 */
+        raw_08_3c[3] = 0xC3u; /* NLEN low */
+        raw_08_3c[4] = 0xFFu; /* NLEN high: ~60 */
+        for (size_t i = 0; i < 60; i++) raw_08_3c[5 + i] = (uint8_t)('A' + (i % 26));
+        raw_08_3c[65] = 0x01u; /* final stored block, BFINAL = 1 */
+        raw_08_3c[66] = 0x00u; /* LEN = 0 */
+        raw_08_3c[67] = 0x00u;
+        raw_08_3c[68] = 0xFFu; /* NLEN = ~0 */
+        raw_08_3c[69] = 0xFFu;
+
+        assert(nk_psp_inflate(raw_08_3c, sizeof(raw_08_3c), &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+        assert(out != NULL && out_len == 60u && out[0] == 'A' && out[59] == (uint8_t)('A' + (59 % 26)));
+        free(out); out = NULL; out_len = 0;
+    }
+
+    /* 4. Gzip Wrapper & Optional Header Flags */
+    /* Unsupported compression method */
+    {
+        uint8_t bad_gz[512];
+        memcpy(bad_gz, gzipped, gzipped_len);
+        bad_gz[2] = 9u;
+        assert(nk_psp_inflate(bad_gz, gzipped_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+        assert(out == NULL && strstr(err, "unsupported gzip compression method") != NULL);
+    }
+
+    /* Reserved gzip header bits set */
+    {
+        uint8_t bad_gz[512];
+        memcpy(bad_gz, gzipped, gzipped_len);
+        bad_gz[3] = 0xE0u;
+        assert(nk_psp_inflate(bad_gz, gzipped_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_FORMAT);
+        assert(out == NULL && strstr(err, "gzip header reserved bits set") != NULL);
+    }
+
+    /* Trailer CRC32 mismatch */
+    {
+        uint8_t bad_gz[512];
+        memcpy(bad_gz, gzipped, gzipped_len);
+        bad_gz[gzipped_len - 8] ^= 0xFFu;
+        assert(nk_psp_inflate(bad_gz, gzipped_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_CHECKSUM);
+        assert(out == NULL && strstr(err, "gzip crc or size mismatch") != NULL);
+    }
+
+    /* Trailer ISIZE mismatch */
+    {
+        uint8_t bad_gz[512];
+        memcpy(bad_gz, gzipped, gzipped_len);
+        bad_gz[gzipped_len - 1] ^= 0xFFu;
+        assert(nk_psp_inflate(bad_gz, gzipped_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_CHECKSUM);
+        assert(out == NULL && strstr(err, "gzip crc or size mismatch") != NULL);
+    }
+
+    /* Gzip optional fields: FEXTRA, FNAME, FCOMMENT, FHCRC */
+    {
+        uint8_t extra_data[4] = { 0xDE, 0xAD, 0xBE, 0xEF };
+        uint8_t gz_full[1024];
+        /* Flags: FHCRC (0x02) | FEXTRA (0x04) | FNAME (0x08) | FCOMMENT (0x10) = 0x1E */
+        size_t gz_full_len = build_gzip_full(gz_full, sizeof(gz_full), deflated, deflated_len,
+                                             plain, sizeof(plain), 0x1Eu, extra_data, 4u,
+                                             "hello.txt", "a test comment", 0);
+        assert(nk_psp_inflate(gz_full, gz_full_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+        assert(out != NULL && out_len == sizeof(plain) && memcmp(out, plain, sizeof(plain)) == 0);
+        free(out); out = NULL; out_len = 0;
+
+        /* Test FHCRC mismatch */
+        size_t gz_bad_hcrc_len = build_gzip_full(gz_full, sizeof(gz_full), deflated, deflated_len,
+                                                  plain, sizeof(plain), 0x1Eu, extra_data, 4u,
+                                                  "hello.txt", "a test comment", 1);
+        assert(nk_psp_inflate(gz_full, gz_bad_hcrc_len, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_CHECKSUM);
+        assert(out == NULL && strstr(err, "gzip header crc mismatch") != NULL);
+
+        /* Test truncated FNAME/FCOMMENT string */
+        uint8_t gz_trunc_str[1024];
+        memcpy(gz_trunc_str, gz_full, gz_full_len);
+        assert(nk_psp_inflate(gz_trunc_str, 20, &out, &out_len, 0, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_ERR_TRUNCATED);
+    }
+
+    /* 5. Capacity Limit & Expectations */
+    /* Capacity lower than uncompressed output length */
+    assert(nk_psp_inflate(gzipped, gzipped_len, &out, &out_len, 0, 8u, err, sizeof(err)) == NK_INFLATE_ERR_OVERFLOW);
+    assert(out == NULL && strstr(err, "output exceeds limit") != NULL);
+
+    /* Custom expectation hints */
+    assert(nk_psp_inflate(gzipped, gzipped_len, &out, &out_len, 4u, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+    assert(out != NULL && out_len == sizeof(plain) && memcmp(out, plain, sizeof(plain)) == 0);
+    free(out); out = NULL; out_len = 0;
+
+    assert(nk_psp_inflate(gzipped, gzipped_len, &out, &out_len, 1024u, FUZZ_INFLATE_CAP, err, sizeof(err)) == NK_INFLATE_OK);
+    assert(out != NULL && out_len == sizeof(plain) && memcmp(out, plain, sizeof(plain)) == 0);
+    free(out); out = NULL; out_len = 0;
+}
+
 static void test_fuzz_inflate(unsigned iters) {
+    test_nk_psp_inflate_unit();
     printf("[FUZZ] Testing inflate: raw DEFLATE, zlib and gzip (%u iterations)...\n",
            iters);
     fflush(stdout);

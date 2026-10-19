@@ -78,6 +78,7 @@ typedef struct {
     uint64_t frames;         /* sample frames written */
     uint64_t silent_frames;  /* frames where every channel was exactly zero */
     uint64_t clipped;        /* samples beyond full scale, before the 16-bit clamp */
+    uint64_t dropped_frames; /* frames offered and not written: size limit, format change, failed write */
     uint32_t peak;           /* largest magnitude written, after the clamp */
 } SrAudioDumpStats;
 
@@ -132,6 +133,16 @@ static void sr_audio_dump_write_failed(const char *what) {
             what, s_dump_path, strerror(errno));
 }
 
+/* A block refused whole, past the size limit or in a format the header does not describe, is
+ * counted in dropped_frames. The first refusal prints one line; the close line has the total. */
+static void sr_audio_dump_refuse(uint64_t frames, const char *why) {
+    if (!s_dump_stats.dropped_frames && frames) {
+        fprintf(stderr, "AUDIODUMP: %s %s; device blocks from here on are dropped and counted\n",
+                s_dump_path, why);
+    }
+    s_dump_stats.dropped_frames += frames;
+}
+
 static void sr_audio_dump_patch_header(void) {
     uint8_t hdr[44];
     sr_audio_wav_header(hdr, s_dump_rate, s_dump_channels, (uint32_t)s_dump_data_bytes);
@@ -181,13 +192,26 @@ static size_t sr_audio_dump_block(const float *in, size_t samples) {
 static void sr_audio_dump_postmix(void *userdata, const SDL_AudioSpec *spec, float *buffer, int buflen) {
     (void)userdata;
     if (!s_dump_file || !buffer || !spec || buflen < (int)sizeof(float)) return;
-    /* A device whose format changed mid-run keeps the header it was opened with. */
-    if ((uint32_t)spec->channels != s_dump_channels || (uint32_t)spec->freq != s_dump_rate) return;
     size_t samples = (size_t)buflen / sizeof(float);
+    /* A device whose format changed mid-run keeps the header it was opened with. */
+    if ((uint32_t)spec->channels != s_dump_channels || (uint32_t)spec->freq != s_dump_rate) {
+        if (spec->channels > 0) sr_audio_dump_refuse(samples / (size_t)spec->channels, "changed format");
+        return;
+    }
     samples -= samples % s_dump_channels;
-    if (!samples || s_dump_write_failed) return;
-    if (s_dump_data_bytes + samples * 2u > SR_AUDIO_DUMP_MAX_DATA) return;
-    s_dump_data_bytes += sr_audio_dump_block(buffer, samples) * 2u;
+    if (!samples) return;
+    if (s_dump_write_failed) {
+        s_dump_stats.dropped_frames += samples / s_dump_channels;
+        return;
+    }
+    if (s_dump_data_bytes + samples * 2u > SR_AUDIO_DUMP_MAX_DATA) {
+        sr_audio_dump_refuse(samples / s_dump_channels, "reached its size limit");
+        return;
+    }
+    /* A failed write stops inside the block: the frames it did not reach are dropped with the rest. */
+    size_t written = sr_audio_dump_block(buffer, samples);
+    s_dump_data_bytes += written * 2u;
+    s_dump_stats.dropped_frames += (samples - written) / s_dump_channels;
     if (s_dump_write_failed) return;
     if (s_dump_data_bytes - s_dump_last_patch >= (uint64_t)s_dump_rate * s_dump_channels * 2u)
         sr_audio_dump_patch_header();
@@ -236,11 +260,11 @@ static void sr_audio_dump_stop(SDL_AudioDeviceID dev) {
     fclose(s_dump_file);
     s_dump_file = NULL;
     fprintf(stderr, "AUDIODUMP: %s rate=%u channels=%u frames=%llu seconds=%.3f silent_frames=%llu "
-                    "clipped_samples=%llu peak=%u\n",
+                    "clipped_samples=%llu peak=%u dropped_frames=%llu\n",
             s_dump_path, s_dump_rate, s_dump_channels, (unsigned long long)s_dump_stats.frames,
             s_dump_rate ? (double)s_dump_stats.frames / (double)s_dump_rate : 0.0,
             (unsigned long long)s_dump_stats.silent_frames, (unsigned long long)s_dump_stats.clipped,
-            (unsigned)s_dump_stats.peak);
+            (unsigned)s_dump_stats.peak, (unsigned long long)s_dump_stats.dropped_frames);
     if (s_dump_write_failed) {
         fprintf(stderr, "AUDIODUMP: the dump ended early on a failed write; the header covers %llu data bytes\n",
                 (unsigned long long)s_dump_last_patch);
@@ -874,6 +898,74 @@ static void test_dump_finish_without_stats(void) {
     printf("test_dump_finish_without_stats: PASS\n");
 }
 
+/* A block the dump refuses is counted in dropped_frames and never written: past the size limit,
+ * in a format the header does not describe, and after a failed write. The writer is driven
+ * directly through the postmix callback SDL calls, with no device, so the counts are exact. */
+static void test_dump_counts_refused_blocks(void) {
+    const char *dir = getenv("TEMP");
+    if (!dir || !*dir) dir = getenv("TMPDIR");
+    if (!dir || !*dir) dir = ".";
+    char path[512];
+    snprintf(path, sizeof(path), "%s/sr_audio_dump_drop_selftest.wav", dir);
+    remove(path);
+    test_reset();
+    snprintf(s_dump_path, sizeof(s_dump_path), "%s", path);
+    s_dump_file = fopen(path, "wb");
+    assert(s_dump_file != NULL);
+    s_dump_rate = 44100;
+    s_dump_channels = 2;
+    s_dump_data_bytes = s_dump_last_patch = 0;
+    s_dump_write_failed = 0;
+    memset(&s_dump_stats, 0, sizeof(s_dump_stats));
+    sr_audio_dump_patch_header();
+
+    SDL_AudioSpec spec;
+    memset(&spec, 0, sizeof(spec));
+    spec.format = SDL_AUDIO_F32;
+    spec.channels = 2;
+    spec.freq = 44100;
+    float block[512 * 2];   /* 512 stereo frames: 2048 bytes once written as s16 */
+    for (int i = 0; i < 512 * 2; i++) block[i] = 0.25f;
+    const int blen = (int)sizeof(block);
+
+    sr_audio_dump_postmix(NULL, &spec, block, blen);
+    assert(s_dump_stats.frames == 512);
+    assert(s_dump_stats.dropped_frames == 0);
+
+    /* The data is at the limit, so the next block would pass it: each whole block is refused. */
+    s_dump_data_bytes = SR_AUDIO_DUMP_MAX_DATA - 1024u;
+    sr_audio_dump_postmix(NULL, &spec, block, blen);
+    sr_audio_dump_postmix(NULL, &spec, block, blen);
+    assert(s_dump_stats.dropped_frames == 1024);
+    assert(s_dump_data_bytes == SR_AUDIO_DUMP_MAX_DATA - 1024u);
+    assert(s_dump_stats.frames == 512);
+
+    /* A device that changed format is refused too: 1024 mono frames in this buffer. */
+    spec.channels = 1;
+    sr_audio_dump_postmix(NULL, &spec, block, blen);
+    assert(s_dump_stats.dropped_frames == 2048);
+    spec.channels = 2;
+
+    /* Reopen read-only so the next write fails for real: that block and every later one is
+     * counted, with no per-block message. */
+    fclose(s_dump_file);
+    s_dump_file = fopen(path, "rb");
+    assert(s_dump_file != NULL);
+    s_dump_data_bytes = 2048u;
+    sr_audio_dump_postmix(NULL, &spec, block, blen);
+    assert(s_dump_write_failed == 1);
+    assert(s_dump_stats.dropped_frames == 2560);
+    sr_audio_dump_postmix(NULL, &spec, block, blen);
+    assert(s_dump_stats.dropped_frames == 3072);
+    assert(s_dump_stats.frames == 512);
+
+    sr_audio_dump_finish();
+    assert(s_dump_file == NULL);
+    assert(s_dump_stats.dropped_frames == 3072);
+    remove(path);
+    printf("test_dump_counts_refused_blocks: PASS\n");
+}
+
 int main(int argc, char **argv) {
     sr_perf_init();
     (void)argc;
@@ -888,6 +980,7 @@ int main(int argc, char **argv) {
     test_dump_off_by_default();
     test_dump_writes_wav();
     test_dump_finish_without_stats();
+    test_dump_counts_refused_blocks();
     test_reset();
     printf("ALL AUDIO HOST TESTS PASSED\n");
     return 0;

@@ -114,6 +114,36 @@ class VfpuCoverageCensusTests(unittest.TestCase):
             self.assertEqual(census.compatibility_disposition(record), "aot-direct")
             self.assertEqual(census.agreement_status(record), "agree-supported-direct")
 
+    def test_named_vfpu4_identity_rows_are_unimplemented_and_fail_closed(self):
+        cases = (
+            (0x01, 0x00, "vrnds"),
+            (0x01, 0x02, "vrndf1"),
+            (0x02, 0x02, "vbfy1"),
+            (0x02, 0x0A, "vsgn"),
+            (0x02, 0x19, "vt4444"),
+        )
+        words = tuple((0x34 << 26) | (rs << 21) | (rt << 16)
+                      for rs, rt, _ in cases)
+        records = census.classify_words(words)
+        self.assertEqual(census.validate_agreement(records)["agree-unsupported"], len(cases))
+        by_word = {record["word"]: record for record in records}
+        rows = census._make_rows(records)
+        self.assertEqual(len(rows), len(cases))
+        for (_rs, _rt, name), word in zip(cases, words, strict=True):
+            with self.subTest(name=name):
+                record = by_word[word]
+                self.assertFalse(record["interpreter_supported"])
+                self.assertEqual(
+                    census.compatibility_disposition(record),
+                    "supported-opcode-form-unmodeled",
+                )
+                self.assertIn(f"VFPU4 identity {name}", record["aot_reason"])
+                self.assertIn("issue=326", record["aot_emitted"])
+                row = next(row for row in rows if name in " ".join(row["aot_reason"]))
+                self.assertEqual(row["boundary_issue"], 326)
+                self.assertEqual(row["compatibility_disposition"], "supported-opcode-form-unmodeled")
+                self.assertEqual(row["agreement"], "agree-unsupported")
+
     def test_reserved_vcmov_form_is_unmodeled_and_fail_closed(self):
         # vcmov lives in VFPU4 (jump 21); imm3 7 is the reserved selector.
         words = ((0x34 << 26) | (21 << 21) | (7 << 16),)
@@ -182,10 +212,16 @@ class VfpuCoverageCensusTests(unittest.TestCase):
         source = (ROOT / "src" / "rt" / "vfpu_fuzz.c").read_text(encoding="utf-8")
         self.assertIn("if (trials <= 0)", source)
         self.assertIn("if (FUZZ_NCASES <= 0)", source)
+        # A shard passes only when every case it admits is tested. For the default 0/1 shard
+        # "admitted" is FUZZ_NCASES, so the gate is unchanged; test_public_ci_wiring proves
+        # that the shards together admit every case exactly once.
         self.assertIn(
-            "return (bad_cases || skipped || tested != FUZZ_NCASES) ? 1 : 0;",
+            "return (bad_cases || skipped || tested != admitted) ? 1 : 0;",
             source,
         )
+        self.assertIn('#define FUZZ_SHARD_ENV "FUZZ_CASE_SHARD"', source)
+        self.assertIn("if ((unsigned)c % shard_n != shard_k) continue;", source)
+        self.assertIn("admits no case", source)
 
     def test_hardware_ids_are_row_level_not_inherited(self):
         memory_rows = [

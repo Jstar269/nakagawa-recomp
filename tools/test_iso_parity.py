@@ -889,6 +889,42 @@ int main(int argc, char **argv) {{
         return 0;
     }}
 
+    if (strcmp(mode, "lookup") == 0) {{
+        if (argc < 4) return 1;
+        NkIsoReader *reader = nk_iso_reader_open(argv[2]);
+        if (!reader) {{
+            printf("READER:OPEN_FAILED\\n");
+            return 0;
+        }}
+        uint32_t lba = 0, sz = 0;
+        bool is_dir = false;
+        int rc = nk_iso_reader_lookup(reader, argv[3], &lba, &sz, &is_dir);
+        printf("LOOKUP:%d:%u:%u:%d\\n", rc, (unsigned)lba, (unsigned)sz, is_dir ? 1 : 0);
+        nk_iso_reader_close(reader);
+        return 0;
+    }}
+
+    if (strcmp(mode, "entries") == 0) {{
+        if (argc < 4) return 1;
+        NkIsoReader *reader = nk_iso_reader_open(argv[2]);
+        if (!reader) {{
+            printf("READER:OPEN_FAILED\\n");
+            return 0;
+        }}
+        for (uint32_t index = 0;; index++) {{
+            NkIsoDirEntry de;
+            int rc = nk_iso_reader_list(reader, argv[3], index, &de);
+            if (rc != 1) {{
+                printf("END:%d\\n", rc);
+                break;
+            }}
+            printf("ENTRY:%s:%u:%u:%d\\n", de.name, (unsigned)de.lba, (unsigned)de.size,
+                   de.is_directory ? 1 : 0);
+        }}
+        nk_iso_reader_close(reader);
+        return 0;
+    }}
+
     return 2;
 }}
 """
@@ -1445,6 +1481,23 @@ int main(int argc, char **argv) {{
         iso_file = self.temp_dir / "bad-max-length.iso"
         malformed = bytearray(build_param_sfo("TEST00001", "Bad Max Length"))
         struct.pack_into("<I", malformed, 20 + 8, 4)
+        create_test_iso(
+            iso_file,
+            volume_id="TEST00001",
+            sfo_bytes=bytes(malformed),
+        )
+
+        with self.assertRaises(IsoInspectionError):
+            inspect_iso(iso_file)
+        native = self._run_native_inspect(iso_file)
+        self.assertTrue(native.get("RESULT", "").startswith("ERROR"))
+
+    def test_sfo_key_offset_outside_key_table_parity(self) -> None:
+        from nk_core.iso_inspect import IsoInspectionError
+
+        iso_file = self.temp_dir / "bad-key-offset.iso"
+        malformed = bytearray(build_param_sfo("TEST00001", "Bad Key Offset"))
+        struct.pack_into("<H", malformed, 20, 0xFFFF)
         create_test_iso(
             iso_file,
             volume_id="TEST00001",
@@ -2034,7 +2087,7 @@ int main(int argc, char **argv) {{
         expected_hash = hashlib.sha256(executable_bytes).hexdigest()
         self.assertEqual(manifest["disc"]["id"], "ULUS99998")
         self.assertEqual(manifest["display_name"], "Experimental Fixture")
-        self.assertEqual(manifest["executable"]["base"], 0)
+        self.assertEqual(manifest["executable"]["base"], 0x08800000)
         self.assertEqual(manifest["executable"]["entry"], 0x08800000)
         self.assertEqual(manifest["codegen_profile"], "none")
         self.assertEqual(manifest["modules"], [])
@@ -2083,6 +2136,72 @@ int main(int argc, char **argv) {{
                     executable["load_address_evidence"], "documented-psp-default"
                 )
                 self.assertTrue(profile_path.is_relative_to(user_root))
+
+    def test_experimental_fixed_address_exec_uses_lowest_load_as_image_base(self) -> None:
+        """A fixed-address ET_EXEC already carries its guest address in PT_LOAD."""
+        from title_manifest import validate_manifest
+
+        base = 0x08804000
+        iso_file = self.temp_dir / "fixed-address-main.iso"
+        create_test_iso_with_executables(
+            iso_file,
+            build_plain_mips_elf(e_type=2, vaddr=base, memsz=0x2000, entry=base),
+            disc_id="ULUS99996",
+            title="Synthetic Fixed Address Fixture",
+        )
+        profile_path = write_experimental_profile(
+            iso_file, self.temp_dir / "fixed-address-user-data"
+        )
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        executable = validate_manifest(profile["manifest"])["executable"]
+        self.assertEqual(executable["base"], base)
+        self.assertEqual(executable["entry"], base)
+        self.assertNotIn("load_address", executable)
+        self.assertNotIn("load_address_evidence", executable)
+
+    def test_experimental_fixed_address_exec_outside_user_ram_fails_closed(self) -> None:
+        address = iso_inspect.PSP_CONVENTIONAL_USER_MEMORY_TOP - 4
+        iso_file = self.temp_dir / "fixed-address-outside-user-ram.iso"
+        create_test_iso_with_executables(
+            iso_file,
+            build_plain_mips_elf(e_type=2, vaddr=address, memsz=8, entry=address),
+            disc_id="ULUS99995",
+            title="Synthetic Out of Range Fixture",
+        )
+        user_root = self.temp_dir / "fixed-address-outside-user-ram-data"
+        with self.assertRaises(IsoInspectionError) as caught:
+            write_experimental_profile(iso_file, user_root)
+        self.assertEqual(
+            caught.exception.boundary_code,
+            "FIXED_ADDRESS_EXECUTABLE_OUTSIDE_GUEST_RAM",
+        )
+        self.assertEqual(
+            str(caught.exception),
+            "This fixed-address executable loads outside guest user RAM. "
+            "Building it there is not supported yet.",
+        )
+        self.assertFalse((user_root / "experimental").exists())
+
+    def test_experimental_zero_based_exec_requires_a_load_binding(self) -> None:
+        iso_file = self.temp_dir / "zero-based-exec.iso"
+        create_test_iso_with_executables(
+            iso_file,
+            build_plain_mips_elf(e_type=2, vaddr=0, memsz=4, entry=0),
+            disc_id="ULUS99994",
+            title="Synthetic Unbound Executable Fixture",
+        )
+        with self.assertRaises(IsoInspectionError) as caught:
+            write_experimental_profile(
+                iso_file, self.temp_dir / "zero-based-exec-user-data"
+            )
+        self.assertEqual(
+            caught.exception.boundary_code, "EXECUTABLE_LOAD_BINDING_REQUIRED"
+        )
+        self.assertEqual(
+            str(caught.exception),
+            "This ET_EXEC has no guest RAM load address. Generic rebinding for this "
+            "executable type is not supported yet.",
+        )
 
     def test_guest_modules_are_runtime_placed_and_listed_deterministically(self) -> None:
         main_elf = self.temp_dir / "placement-main.elf"
@@ -2931,6 +3050,49 @@ int main(int argc, char **argv) {{
         self.assertEqual(lines.get("LIST_ROOT_1"), "0")
         self.assertGreater(int(lines.get("READ_SFO", "0")), 0)
         self.assertEqual(lines.get("READ_EOF"), "0")
+
+    def test_semicolon_member_names_resolve_the_same_in_python_and_c(self) -> None:
+        # A ';' inside a member name is part of the name. Only a trailing ';' and digits is a
+        # version, so "A;1.BIN" and "A;2.BIN" are two files in both implementations.
+        iso_path = self.temp_dir / "semicolon_members.iso"
+        create_test_iso_with_module_tree(iso_path, {
+            "PSP_GAME/USRDIR/DATA/A;1.BIN": b"first-bytes",
+            "PSP_GAME/USRDIR/DATA/A;2.BIN": b"second-bytes",
+            "PSP_GAME/USRDIR/DATA/FOO.BIN": b"plain",
+        })
+        py_entries = iso_inspect.list_iso_directory(iso_path, ("PSP_GAME", "USRDIR", "DATA"))
+        self.assertIsNotNone(py_entries)
+        py_by_name = {entry.name: entry for entry in py_entries}
+        self.assertEqual(sorted(py_by_name), ["A;1.BIN", "A;2.BIN", "FOO.BIN"])
+
+        listing = subprocess.run(
+            [str(self.exe_path), "entries", str(iso_path), "PSP_GAME/USRDIR/DATA"],
+            capture_output=True, text=True, encoding="utf-8", errors="strict",
+        )
+        self.assertEqual(listing.returncode, 0, listing.stderr)
+        native_names = []
+        for line in listing.stdout.splitlines():
+            if line.startswith("ENTRY:"):
+                name, lba, size, _is_dir = line[len("ENTRY:"):].rsplit(":", 3)
+                native_names.append(name)
+                self.assertEqual((int(lba), int(size)),
+                                 (py_by_name[name].lba, py_by_name[name].size), name)
+        self.assertEqual(sorted(native_names), sorted(py_by_name))
+
+        for name in ("A;1.BIN", "A;2.BIN", "FOO.BIN", "A;3.BIN"):
+            res = subprocess.run(
+                [str(self.exe_path), "lookup", str(iso_path), "PSP_GAME/USRDIR/DATA/" + name],
+                capture_output=True, text=True, encoding="utf-8", errors="strict",
+            )
+            self.assertEqual(res.returncode, 0, res.stderr)
+            fields = next(
+                line for line in res.stdout.splitlines() if line.startswith("LOOKUP:")
+            ).split(":")
+            if name in py_by_name:
+                entry = py_by_name[name]
+                self.assertEqual(fields[1:], ["0", str(entry.lba), str(entry.size), "0"], name)
+            else:
+                self.assertEqual(fields[1], "-1", name)
 
     def test_reader_invalid_iso_fails_open(self) -> None:
         bad_iso = self.temp_dir / "bad.iso"

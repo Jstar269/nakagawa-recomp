@@ -143,7 +143,9 @@ def _ensure_workload(
         cwd=str(ROOT),
         capture_output=True,
         text=True,
-        timeout=300,
+        # A cold compile also converts the complete project Korean font; this is
+        # CPU-bound across 11,951 glyphs, so leave room for slower CI hosts.
+        timeout=600,
     )
     if not check_fn():
         if proc.returncode != 0:

@@ -270,8 +270,13 @@ class RuntimeLauncher:
         gpu_ge: bool = True,
         software_render: bool = False,
         no_gui: bool = False,
+        user_data_root: Optional[Path] = None,
     ) -> Tuple[List[str], Dict[str, str]]:
-        """Construct deterministic argv and env dictionary for runtime execution."""
+        """Construct deterministic argv and env dictionary for runtime execution.
+
+        ``user_data_root`` is the per-user data directory the imported fonts live under
+        (``--user-data-root``); it defaults to the platform's per-user directory.
+        """
         g_dir = Path(game_dir).resolve()
         manifest_file = g_dir / "manifest.json"
         if not manifest_file.is_file():
@@ -372,11 +377,21 @@ class RuntimeLauncher:
             )
         except (OSError, ValueError) as exc:
             raise RuntimeLaunchError(str(exc)) from exc
-        from .fonts import resolve_font_directory
+        from .prereq_fetcher import default_data_root
 
-        resolved_font_dir = resolve_font_directory(fallback_root=self.repo_root)
-        if resolved_font_dir:
-            env["SR_FONTDIR"] = str(resolved_font_dir)
+        # One font root: the per-user data directory the import writes. It travels as
+        # SR_USER_DATA_ROOT, set here so an inherited value cannot point the child elsewhere. The
+        # import under it is read through that variable; SR_FONTDIR names only the project fonts,
+        # because naming the cache there would make the runtime refuse the project source.
+        font_user_root = (
+            Path(user_data_root) if user_data_root is not None else default_data_root()
+        )
+        font_user_root = font_user_root.expanduser().resolve(strict=False)
+        env["SR_USER_DATA_ROOT"] = str(font_user_root)
+        env.pop("SR_FONTDIR", None)
+        project_font_dir = self.repo_root / "font"
+        if project_font_dir.is_dir():
+            env["SR_FONTDIR"] = str(project_font_dir)
 
         if profile == "Performance":
             env["SR_DEBUG"] = "0"
