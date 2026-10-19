@@ -48,15 +48,24 @@ only route here.
 
 ## 3. Human-only hard stops
 
-The following always require explicit maintainer authorization in the current turn, even
-under an otherwise autonomous integration mission:
+Except for the recorded standing owner authorization for PSPLink and physical-PSP actions
+described below, the following always require explicit maintainer authorization in the
+current turn, even under an otherwise autonomous integration mission:
 
 - provenance attestation or legal clearance on a maintainer's behalf;
 - inventing a contributor identity, `Signed-off-by:`, DCO attestation, or source lineage;
 - destructive history rewriting, shared-branch force-push, or deleting another agent's work;
 - repository security/settings changes unless the mission names the exact setting;
-- firmware, flash, NAND, idStorage, PSPLink, physical PSP, or other hardware actions;
+- firmware, flash, NAND, or idStorage writes; other hardware actions;
 - disclosing private inputs, routes, saves, captures, traces, keys, paths, or derived bytes.
+
+A standing owner authorization may cover PSPLink and physical-PSP actions for a named
+task/session only when the active `HARDWARE_LOCK.json` records the authorization, holder
+session, allowed actions, and scope limits. The lock must remain `HELD` while those actions
+run and be released with the observed outcome. This exception does not cover firmware,
+flash, NAND, or idStorage writes, credentials, Git tags, GitHub Releases or assets, or
+published-version changes; those continue to require explicit authorization in the current
+turn.
 
 Agents must not create, move, push, or delete Git tags; create, edit, delete, publish, or unpublish GitHub Releases; upload release assets; or change a published version without explicit maintainer authorization in the current turn. Generic instructions such as 'finish', 'ship', 'publish', 'integrate', or 'do everything' do not authorize a version/tag/release operation.
 
