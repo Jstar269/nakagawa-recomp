@@ -43,10 +43,10 @@ Semantic handler census: **454** handlers across **23** API families, covering *
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
 | `complete` | 12 | 20 |
-| `partial` | 130 | 132 |
+| `partial` | 140 | 142 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 309 | 335 |
+| `unreviewed` | 299 | 325 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -62,7 +62,7 @@ Semantic handler census: **454** handlers across **23** API families, covering *
 | `sceHprm` | 0 | 0 | 0 | 0 | 3 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 18 | 0 | 0 | 12 | 32 | 32 |
-| `sceKernel` | 2 | 55 | 0 | 0 | 114 | 171 | 192 |
+| `sceKernel` | 2 | 65 | 0 | 0 | 104 | 171 | 192 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `scePower` | 0 | 3 | 0 | 0 | 11 | 14 | 16 |
@@ -73,7 +73,7 @@ Semantic handler census: **454** handlers across **23** API families, covering *
 | `sceUmd` | 0 | 1 | 1 | 0 | 7 | 9 | 9 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 31 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **12** | **130** | **1** | **2** | **309** | **454** | **494** |
+| **Total** | **12** | **140** | **1** | **2** | **299** | **454** | **494** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -368,14 +368,35 @@ Semantic handler census: **454** handlers across **23** API families, covering *
   - Evidence: src/rt/hle_thread_selftest.c:test_kernel_devkit_version_measured
   - Evidence: src/rt/sdkver.h:SR_PSP_FIRMWARE_DEVKIT_VERSION
   - Evidence: hardware oracle 2026-10-15 PSP-SYSTEM-001 case model-profile (0x06060110)
+- **`h_LockMutex`** (`sceKernel`): `sceKernelLockMutex` (0xb011b11f)
+  - Limitation: measured cases cover finite timeout, priority inheritance, and the listed interrupt-context refusals; full attribute/recursion ranges, negative counts, multi-waiter priority ordering, and invalid timeout-pointer precedence are not measured
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-timeout-quanta, mutex-priority-inheritance, and accepted interrupt-context cell)
+- **`h_NotifyCallback`** (`sceKernel`): `sceKernelNotifyCallback` (0xc11ba8c4)
+  - Limitation: the cited cell covers notification coalescing in one callback case; callback creation state, invalid UID behavior, dispatch context, and ordering with multiple callbacks are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics: two callback notifications coalesce into one handler call with count 2)
+- **`h_PollEventFlag`** (`sceKernel`): `sceKernelPollEventFlag` (0x30fd48f0)
+  - Limitation: the cited cells cover an unmet poll's outBits and the zero-bit refusal; other wait modes, invalid output pointers, and error precedence are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01: unmet poll output and zero-bit refusal)
 - **`h_PollMbx`** (`sceKernel`): `sceKernelPollMbx` (0x0d81716a)
   - Limitation: invalid-message-pointer error class unmeasured (#339, #341)
 - **`h_ReceiveMbx`** (`sceKernel`): `sceKernelReceiveMbx` (0x18260574)
   - Limitation: delete-while-waited is mailbox-measured on 2026-10-15 (WAIT_DELETE and timeout word rewritten to the remaining time); ILLEGAL_CONTEXT precedence for a blocking receive unmeasured; priority-mailbox circular linking not separately asserted beyond campaign facts (#339, #341)
 - **`h_ReceiveMbxCB`** (`sceKernel`): `sceKernelReceiveMbxCB` (0xf3986382)
   - Limitation: callback-dispatch interleaving during a mailbox wait unmeasured; ILLEGAL_CONTEXT precedence unmeasured (#339, #341)
+- **`h_ReceiveMsgPipe`** (`sceKernel`): `sceKernelReceiveMsgPipe` (0x74829b76)
+  - Limitation: the cited cell covers a blocked receiver served by a sender; empty/short receive result sizes, invalid pointers, timeout precedence, and multiple-receiver ordering are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: blocked receiver is served directly by a sender)
+- **`h_ReferEventFlagStatus`** (`sceKernel`): `sceKernelReferEventFlagStatus` (0xa66b0120)
+  - Limitation: the cited cells establish bytes written and size-word behavior at four buffer sizes; full field values, unknown UID codes, invalid pointers, and error precedence are not established by that size row
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-KERNEL-STATUS-001: event-size-zero, event-size-8, event-size-40, and event-size-full)
+- **`h_ReferFplStatus`** (`sceKernel`): `sceKernelReferFplStatus` (0xd8199e4c)
+  - Limitation: valid pool layout and the cited short/zero-size behavior are covered; tick fields, invalid pointers, unknown IDs beyond the after-delete refer, and error precedence are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: valid FPL layout, short/zero-size writes, free counts, and refer-after-delete)
 - **`h_ReferMbxStatus`** (`sceKernel`): `sceKernelReferMbxStatus` (0xa8e8c846)
   - Limitation: size-field caller contract (whether Refer preserves or overwrites size) unmeasured (#339, #341)
+- **`h_ReferMutexStatus`** (`sceKernel`): `sceKernelReferMutexStatus` (0xa9c2cb9a)
+  - Limitation: the cited cell covers an unlocked mutex and its measured status words; size variants, recursive ownership, invalid pointers, and unknown-UID fields are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-refer-unlocked status fields)
 - **`h_ReferSemaStatus`** (`sceKernel`): `sceKernelReferSemaStatus` (0xbc6febc5)
   - Limitation: reports the modeled count, create-time initCount, maxCount, attr, name and blocked-waiter count; the caller size word is left as written and the full 56-byte span is written, a convention copied from ReferEventFlagStatus that is not hardware measured; unknown-UID and bad-pointer codes are source-selftested only
 - **`h_ReferSystemStatus`** (`sceKernel`): `sceKernelReferSystemStatus` (0x627e6f3a)
@@ -398,6 +419,9 @@ Semantic handler census: **454** handlers across **23** API families, covering *
   - Evidence: src/rt/sched_selftest.c:test_rotate_ready_queue_moves_head_behind_peers
 - **`h_SendMbx`** (`sceKernel`): `sceKernelSendMbx` (0xe9b3061e)
   - Limitation: invalid-message-pointer error class unmeasured; interrupt-context placement unmeasured (#339, #341)
+- **`h_SendMsgPipe`** (`sceKernel`): `sceKernelSendMsgPipe` (0x876dbfad)
+  - Limitation: the cited cells cover no-room refusal, oversize refusal, and a receiver served by a sender; result-size pointers, timeout behavior, multi-waiter ordering, and all mode/error-precedence combinations are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: no-room, oversize, and blocked-receiver message-pipe cells)
 - **`h_SetAlarm`** (`sceKernel`): `sceKernelSetAlarm` (0x6652b8ca)
   - Limitation: the handler runs in interrupt context at the next interrupt-service point once the guest-time deadline passes (so it can run later than the deadline, and only while CPU interrupts are enabled) and a non-zero return re-arms the alarm that many microseconds after delivery, which is hardware measured only as 'reschedules'; a NULL handler returns the invalid-address code and a full alarm table the out-of-resources code without a measurement, SetAlarm(0) is accepted without a measurement, the interrupt-context rules for blocking waits made from a handler are the per-API ones (unmeasured for most waits), and the SysClock variants (sceKernelSetSysClockAlarm, sceKernelReferAlarmStatus) are not implemented
   - Evidence: src/rt/hle_thread_selftest.c:test_alarm_one_shot_fires_once_at_its_time_with_its_argument
@@ -406,6 +430,14 @@ Semantic handler census: **454** handlers across **23** API families, covering *
   - Evidence: src/rt/hle_thread_selftest.c:test_alarm_idle_scheduler_advances_to_the_deadline
   - Evidence: src/rt/sched_selftest.c:test_alarm_runs_at_its_deadline_in_interrupt_context
   - Evidence: src/rt/sched_selftest.c:test_alarm_is_a_wake_source_for_the_idle_scheduler
+- **`h_SetEventFlag`** (`sceKernel`): `sceKernelSetEventFlag` (0x1fb15a32)
+  - Limitation: the cited cells cover setting bits that satisfy a waiter and selected wait modes; invalid UIDs, all-bit masks, result precedence, and multiple-waiter ordering are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: event-signal-before-deadline-late-dispatch)
+  - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics: selected event-flag pattern and wait-mode cells)
+- **`h_SignalSema`** (`sceKernel`): `sceKernelSignalSema` (0x3f53e640)
+  - Limitation: the cited cells cover selected count boundaries and waking a waiter; invalid output pointers, negative-count ranges outside the tested values, and multi-waiter ordering are not established
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01: semaphore signal count boundaries)
+  - Evidence: docs/HARDWARE_ORACLE.md (PSP-WAIT-001: sema-signal-before-deadline-late-dispatch)
 - **`h_StartVTimer`** (`sceKernel`): `sceKernelStartVTimer` (0xc68d9437)
   - Limitation: deleted-UID code 0x800201BE measured (PSP-HLE-VTIMER-003); already-running return 1 is repo-documented, not measured by PSP-HLE-VTIMER-001, -002 or -003; base = system time at Start and the microsecond unit are consistent with PSP-HLE-VTIMER-002, not measured exactly (#325)
 - **`h_StopVTimer`** (`sceKernel`): `sceKernelStopVTimer` (0xd0aeee87)

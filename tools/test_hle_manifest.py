@@ -689,6 +689,31 @@ class LiveManifestTests(unittest.TestCase):
                 self.assertEqual(self.regs[nid]["handler"], handler)
                 self.assertEqual(self.regs[nid]["status"], "unreviewed")
 
+    def test_route_a_kernel_sync_batch_five_has_evidence_and_named_limits(self) -> None:
+        expected = {
+            0xB011B11F: "h_LockMutex",
+            0xC11BA8C4: "h_NotifyCallback",
+            0x30FD48F0: "h_PollEventFlag",
+            0x74829B76: "h_ReceiveMsgPipe",
+            0xA66B0120: "h_ReferEventFlagStatus",
+            0xD8199E4C: "h_ReferFplStatus",
+            0xA9C2CB9A: "h_ReferMutexStatus",
+            0x876DBFAD: "h_SendMsgPipe",
+            0x1FB15A32: "h_SetEventFlag",
+            0x3F53E640: "h_SignalSema",
+        }
+        for nid, handler in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+                self.assertTrue(meta.HANDLER_EVIDENCE[handler])
+                self.assertTrue(
+                    all("HARDWARE_ORACLE.md" in item for item in meta.HANDLER_EVIDENCE[handler])
+                )
+                self.assertTrue(meta.HANDLER_LIMITATIONS[handler])
+
     def test_psmf_getters_are_dedicated_partial(self) -> None:
         # Both getters drive the media producer and a host codec backend now, so
         # they are dedicated handlers with an honest `partial` status rather than

@@ -415,7 +415,7 @@
     "classification": "dedicated",
     "handler": "h_SetEventFlag",
     "name": "sceKernelSetEventFlag",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x1fc64e09": {
     "classification": "dedicated",
@@ -658,7 +658,7 @@
     "classification": "dedicated",
     "handler": "h_PollEventFlag",
     "name": "sceKernelPollEventFlag",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x31327f19": {
     "classification": "dedicated",
@@ -919,7 +919,7 @@
     "classification": "dedicated",
     "handler": "h_SignalSema",
     "name": "sceKernelSignalSema",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x3f6e26b5": {
     "classification": "dedicated",
@@ -1589,7 +1589,7 @@
     "classification": "dedicated",
     "handler": "h_ReceiveMsgPipe",
     "name": "sceKernelReceiveMsgPipe",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x7497ea85": {
     "classification": "controlled_unsupported",
@@ -1825,7 +1825,7 @@
     "classification": "dedicated",
     "handler": "h_SendMsgPipe",
     "name": "sceKernelSendMsgPipe",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x87d4dd36": {
     "classification": "dedicated",
@@ -2186,7 +2186,7 @@
     "classification": "dedicated",
     "handler": "h_ReferEventFlagStatus",
     "name": "sceKernelReferEventFlagStatus",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xa6bab2e9": {
     "classification": "dedicated",
@@ -2222,7 +2222,7 @@
     "classification": "dedicated",
     "handler": "h_ReferMutexStatus",
     "name": "sceKernelReferMutexStatus",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xaa73c935": {
     "classification": "dedicated",
@@ -2283,7 +2283,7 @@
     "classification": "dedicated",
     "handler": "h_LockMutex",
     "name": "sceKernelLockMutex",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xb1a52c83": {
     "classification": "dedicated",
@@ -2512,7 +2512,7 @@
     "classification": "dedicated",
     "handler": "h_NotifyCallback",
     "name": "sceKernelNotifyCallback",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xc132e22f": {
     "classification": "dedicated",
@@ -2756,7 +2756,7 @@
     "classification": "dedicated",
     "handler": "h_ReferFplStatus",
     "name": "sceKernelReferFplStatus",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xd8779ac6": {
     "classification": "dedicated",

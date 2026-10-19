@@ -1028,6 +1028,79 @@ HANDLER_METADATA = {
         ],
         "limitation": "valid allocation placement and measured pool accounting are covered; the handler maps a zero-size request to VPL_EXHAUSTED, whose exact hardware result is unmeasured, and invalid output pointers or fragmented-pool behavior are not established",
     },
+    # Route-A batch 5: retain only the behaviors named by the existing cells.
+    "h_LockMutex": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-timeout-quanta, mutex-priority-inheritance, and accepted interrupt-context cell)",
+        ],
+        "limitation": "measured cases cover finite timeout, priority inheritance, and the listed interrupt-context refusals; full attribute/recursion ranges, negative counts, multi-waiter priority ordering, and invalid timeout-pointer precedence are not measured",
+    },
+    "h_NotifyCallback": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics: two callback notifications coalesce into one handler call with count 2)",
+        ],
+        "limitation": "the cited cell covers notification coalescing in one callback case; callback creation state, invalid UID behavior, dispatch context, and ordering with multiple callbacks are not established",
+    },
+    "h_PollEventFlag": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01: unmet poll output and zero-bit refusal)",
+        ],
+        "limitation": "the cited cells cover an unmet poll's outBits and the zero-bit refusal; other wait modes, invalid output pointers, and error precedence are not established",
+    },
+    "h_ReceiveMsgPipe": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: blocked receiver is served directly by a sender)",
+        ],
+        "limitation": "the cited cell covers a blocked receiver served by a sender; empty/short receive result sizes, invalid pointers, timeout precedence, and multiple-receiver ordering are not established",
+    },
+    "h_ReferEventFlagStatus": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-KERNEL-STATUS-001: event-size-zero, event-size-8, event-size-40, and event-size-full)",
+        ],
+        "limitation": "the cited cells establish bytes written and size-word behavior at four buffer sizes; full field values, unknown UID codes, invalid pointers, and error precedence are not established by that size row",
+    },
+    "h_ReferFplStatus": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: valid FPL layout, short/zero-size writes, free counts, and refer-after-delete)",
+        ],
+        "limitation": "valid pool layout and the cited short/zero-size behavior are covered; tick fields, invalid pointers, unknown IDs beyond the after-delete refer, and error precedence are not established",
+    },
+    "h_ReferMutexStatus": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-refer-unlocked status fields)",
+        ],
+        "limitation": "the cited cell covers an unlocked mutex and its measured status words; size variants, recursive ownership, invalid pointers, and unknown-UID fields are not established",
+    },
+    "h_SendMsgPipe": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B3-01: no-room, oversize, and blocked-receiver message-pipe cells)",
+        ],
+        "limitation": "the cited cells cover no-room refusal, oversize refusal, and a receiver served by a sender; result-size pointers, timeout behavior, multi-waiter ordering, and all mode/error-precedence combinations are not established",
+    },
+    "h_SetEventFlag": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-WAIT-001: event-signal-before-deadline-late-dispatch)",
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics: selected event-flag pattern and wait-mode cells)",
+        ],
+        "limitation": "the cited cells cover setting bits that satisfy a waiter and selected wait modes; invalid UIDs, all-bit masks, result precedence, and multiple-waiter ordering are not established",
+    },
+    "h_SignalSema": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B1-01: semaphore signal count boundaries)",
+            "docs/HARDWARE_ORACLE.md (PSP-WAIT-001: sema-signal-before-deadline-late-dispatch)",
+        ],
+        "limitation": "the cited cells cover selected count boundaries and waking a waiter; invalid output pointers, negative-count ranges outside the tested values, and multi-waiter ordering are not established",
+    },
 }
 
 # handler name -> status mapping. Preserved for direct consumers and gate checks.
