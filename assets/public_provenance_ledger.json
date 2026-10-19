@@ -1735,7 +1735,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c923482f5d17d684174ce54527610cb137b05e7759e7c3d505a3b36ae702c79d"
+      "sha256": "2a7886754dd74506d574be741dbf090556297cd6720a5a9122bae459832cd992"
     },
     {
       "path": "fixtures/fonts/README.md",
@@ -9544,7 +9544,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "921cb86a62975f7aa64ead9569c93d09d08eefeef0ca7b97bfa72df42b2ae61d"
+      "sha256": "2a877368fc001d56abf429eace88ed03195612f67cf66ca70c0316affd1002cd"
     },
     {
       "path": "tools/test_profile_zero_e2e.py",
