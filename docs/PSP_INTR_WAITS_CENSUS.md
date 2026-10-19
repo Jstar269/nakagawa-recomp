@@ -29,13 +29,13 @@ Live join of every exact `sce*` / `__sce*` API named in
 
 Open-owner counts:
 
-- #341: 53
+- #341: 52
 
 ## Census
 
 | API | disposition | owner | classification | status | handler | nid |
 | --- | --- | --- | --- | --- | --- | --- |
-| `sceAudioOutputBlocking` | implemented | #341 | dedicated | unreviewed | `h_AudioOutputBlocking` | `0x136caf51` |
+| `sceAudioOutputBlocking` | implemented | - | dedicated | partial | `h_AudioOutputBlocking` | `0x136caf51` |
 | `sceAudioSRCChRelease` | implemented | - | dedicated | partial | `h_AudioSRCChRelease` | `0x5c37c0ae` |
 | `sceAudioSRCChReserve` | implemented | - | dedicated | partial | `h_AudioSRCChReserve` | `0x38553111` |
 | `sceAudioSRCOutputBlocking` | implemented | - | dedicated | partial | `h_AudioSRCOutputBlocking` | `0xe0727056` |
