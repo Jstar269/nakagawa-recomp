@@ -528,6 +528,7 @@ publishes their words.
 | `vfpu-transcendental-corpus` | `PSP-VFPU-TRANSCENDENTAL-001` | Raw result words for vsin, vcos, vexp2, vlog2, vrsq, vrcp, vsqrt, vasin, vnrcp, vnsin, and vrexp2 over 63 deterministic input words per operation. The VASIN special table substitutes three in-domain words for its already measured edge inputs. Records use 8-word chunks (7 words in each final chunk): 88 data records plus one completion record; the parser checks format only. `MEASURED` on 2026-10-15 (`22b027f6`). |
 | `registry-font` | `PSP-REGISTRY-002` | Read-only walk of `/DATA/FONT` (with `PROPERTY/INFO<n>`) and `/SYSPROFILE/RESOLUTION`: whether the registry handle lists the root (`font-category-0000`), then every key's name, type, size, value and enumeration order (`font-category-*`, `font-key-*`), and `font-registry-done` with the record, open and refusal counts. |
 | `umd-io` | `PSP-UMDIO-001` | Fixed lists of `sceIoOpen` (`PSP_O_RDONLY`, or `PSP_O_RDONLY` with the `0x000f0000` bits a title passes for `umd0:`) and `sceIoDopen` paths: `umd0:`, `umd1:`, `umd:`, `umd0:/`, `umd1:/`, `disc0:` with and without a path, and `msstor0p1:/` (`io-open-*`, `io-dopen-*`, each with its close result), with `sceUmdCheckMedium`/`sceUmdGetDriveStat` before and after (`umd-state-*`). |
+| `umd-raw-read` | `PSP-UMDRAW-001` | Read-only raw UMD seeks and reads: 64-bit and 32-bit offsets, position advance, byte/sector-16 comparison, fixed read sizes through 32,768 bytes, unaligned and far-past-end reads, one async read/poll/wait, and getstat. The first eight bytes of designated sector-16 reads are the only disc bytes recorded; wait completes before close. Hardware capture is incomplete at the 32,768-byte cell; no console semantics are measured. |
 | `hle-vtimer-unit` | `PSP-HLE-VTIMER-002` | One VTimer: start; a `sceKernelGetVTimerTime` and a system-clock reading either side of a bounded 20 ms delay; the VTimer base and Refer base field while running and after stop; stop; delete. Each 64-bit clock is recorded as its low word then its high word. |
 | `hle-vtimer-errors` | `PSP-HLE-VTIMER-003` | Start, stop, and `sceKernelGetVTimerTime` on a deleted UID, then a cleanup delete of that UID after its last use; a live timer created and deleted; up to 64 creates; out1 records whether a refusal occurred; every created timer deleted. The NULL option pointer of `sceKernelCreateVTimer` is the optional argument. |
 | `hle-kernel-pool-bounds` | `PSP-HLE-KERNEL-STATUS-002` | FPL creation with block size 0 and with a 0x7fffffff-byte block, each deleted when its create returned a pool; a refused create gives a PASS delete cell with out0 0 and no delete call; VPL allocation: up to 64 allocations; out1 records whether a refusal occurred; every block freed and the VPL deleted. The NULL option pointers of the pool creates are the optional argument. |
@@ -590,11 +591,20 @@ replays its call log against these rules. The Makefile passes
 registry cases, so a build fails unless the probe imports exactly the eight
 read calls; the gate also refuses any other `sceReg` NID in every probe.
 
-The UMD case (`umd-io`, `umd_io.h`) never activates, deactivates or reads the
+The open-list case (`umd-io`, `umd_io.h`) never activates, deactivates or reads the
 UMD: the Makefile pins its `sceUmdUser` imports to `sceUmdCheckMedium` and
-`sceUmdGetDriveStat`. It opens with read-only flags only, reads and writes
-nothing through a descriptor, closes every descriptor, and behaves the same with
-or without a UMD inserted.
+`sceUmdGetDriveStat`. It opens with read-only flags only, performs no descriptor data
+operations, closes every descriptor, and behaves the same with or without a UMD inserted.
+
+The raw-read case (`umd-raw-read`, also in `umd_io.h`) opens only `umd0:` with
+read-only flags. It reads at most 32,768 bytes per call and records only return values, seek
+words, byte counts, and the first eight bytes of designated sector-16 reads with a zero flag.
+It polls an async read once and waits once before closing. It never writes through or changes
+the UMD descriptor; the host harness uses a synthetic disc and makes no claim about console
+semantics. The 2026-10-17 capture stopped before the 32,768-byte cell returned; behavior remains
+unmeasured. The last marker precedes that cell's seek/read pair, so it does not identify which
+call stopped returning. The current source marks each seek and read separately; it has not been
+rerun. Another launch requires a fresh physical power-cycle.
 
 The font-file case (`font-files`, `PSP-FONTFILES-001`, `font_files.h`) is not in
 the campaign queue; it runs only on the maintainer's request. It lists
