@@ -1464,6 +1464,30 @@ class CensusTests(unittest.TestCase):
                 self.assertTrue(by_handler[handler]["evidence"])
                 self.assertTrue(by_handler[handler]["limitation"])
 
+    def test_issue_341_route_a_batch_1_is_tied_to_cited_cells(self) -> None:
+        expected = {
+            "h_AudioChRelease": ("partial", "PSP-AUDIO-001", "audio-ch-release"),
+            "h_AudioChReserve": ("partial", "PSP-AUDIO-001", "audio-ch-reserve"),
+            "h_AudioRestLen": ("partial", "PSP-AUDIO-001", "audio-ch-query-before"),
+            "h_AudioOutput2Rest": ("partial", "PSP-AUDIO-001", "audio-out2-query-before"),
+            "h_AudioOutput2Blocking": ("partial", "PSP-AUDIO-001", "audio-out2-output-blocking"),
+            "h_AudioOutput2Release": ("partial", "PSP-AUDIO-001", "audio-out2-release"),
+            "h_AudioOutput2Reserve": ("partial", "PSP-AUDIO-001", "audio-out2-reserve"),
+            "h_AudioOutputBlocking": ("partial", "PSP-AUDIO-001", "audio-ch-output-blocking-0"),
+            "h_GeEdramGetAddr": ("complete", "PSP-HLE-GE-EDRAM-001", "edram-addr"),
+            "h_GeEdramGetSize": ("complete", "PSP-HLE-GE-EDRAM-001", "edram-size"),
+        }
+        by_handler = {entry["handler"]: entry for entry in self.census["handlers"]}
+        for handler, (status, evidence_id, cell) in expected.items():
+            with self.subTest(handler=handler):
+                entry = by_handler[handler]
+                self.assertEqual(entry["status"], status)
+                evidence = "\n".join(entry.get("evidence", []))
+                self.assertIn(evidence_id, evidence)
+                self.assertIn(cell, evidence)
+                if status == "partial":
+                    self.assertTrue(entry.get("limitation"))
+
     @staticmethod
     def _fixture_constant(path: Path, name: str) -> int | tuple[int, ...]:
         tree = ast.parse(path.read_text(encoding="utf-8"))

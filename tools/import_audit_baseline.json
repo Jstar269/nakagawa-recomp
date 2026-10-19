@@ -16,7 +16,7 @@
     "classification": "dedicated",
     "handler": "h_AudioOutput2Reserve",
     "name": "sceAudioOutput2Reserve",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x019b25eb": {
     "classification": "dedicated",
@@ -261,7 +261,7 @@
     "classification": "dedicated",
     "handler": "h_AudioOutputBlocking",
     "name": "sceAudioOutputBlocking",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x13a5abef": {
     "classification": "dedicated",
@@ -403,7 +403,7 @@
     "classification": "dedicated",
     "handler": "h_GeEdramGetSize",
     "name": "sceGeEdramGetSize",
-    "status": "unreviewed"
+    "status": "complete"
   },
   "0x1f803938": {
     "classification": "dedicated",
@@ -634,7 +634,7 @@
     "classification": "dedicated",
     "handler": "h_AudioOutput2Blocking",
     "name": "sceAudioOutput2OutputBlocking",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x2dd3e298": {
     "classification": "dedicated",
@@ -973,7 +973,7 @@
     "classification": "dedicated",
     "handler": "h_AudioOutput2Release",
     "name": "sceAudioOutput2Release",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x438a385a": {
     "classification": "controlled_unsupported",
@@ -1285,7 +1285,7 @@
     "classification": "dedicated",
     "handler": "h_AudioChReserve",
     "name": "sceAudioChReserve",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x5f10d406": {
     "classification": "dedicated",
@@ -1387,7 +1387,7 @@
     "classification": "dedicated",
     "handler": "h_AudioOutput2Rest",
     "name": "sceAudioOutput2GetRestSample",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x64d4540e": {
     "classification": "fake_success",
@@ -1509,7 +1509,7 @@
     "classification": "dedicated",
     "handler": "h_AudioChRelease",
     "name": "sceAudioChRelease",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x6ff40acc": {
     "classification": "dedicated",
@@ -2277,7 +2277,7 @@
     "classification": "dedicated",
     "handler": "h_AudioRestLen",
     "name": "sceAudioGetChannelRestLength",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xb011b11f": {
     "classification": "dedicated",
@@ -2913,7 +2913,7 @@
     "classification": "dedicated",
     "handler": "h_GeEdramGetAddr",
     "name": "sceGeEdramGetAddr",
-    "status": "unreviewed"
+    "status": "complete"
   },
   "0xe49bfe92": {
     "classification": "dedicated",

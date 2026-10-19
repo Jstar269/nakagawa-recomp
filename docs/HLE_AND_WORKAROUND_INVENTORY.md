@@ -42,23 +42,23 @@ Semantic handler census: **454** handlers across **23** API families, covering *
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
-| `complete` | 10 | 18 |
-| `partial` | 97 | 97 |
+| `complete` | 12 | 20 |
+| `partial` | 105 | 105 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 344 | 372 |
+| `unreviewed` | 334 | 362 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | `newlib` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `other` | 1 | 0 | 0 | 0 | 0 | 1 | 1 |
 | `sceAtrac` | 0 | 0 | 0 | 0 | 24 | 24 | 33 |
-| `sceAudio` | 0 | 3 | 0 | 0 | 13 | 16 | 17 |
+| `sceAudio` | 0 | 11 | 0 | 0 | 5 | 16 | 17 |
 | `sceCtrl` | 0 | 2 | 0 | 0 | 7 | 9 | 9 |
 | `sceDisplay` | 1 | 3 | 0 | 0 | 10 | 14 | 14 |
 | `sceDmac` | 0 | 2 | 0 | 0 | 0 | 2 | 2 |
 | `sceFont` | 0 | 0 | 0 | 0 | 9 | 9 | 9 |
-| `sceGe` | 0 | 5 | 0 | 0 | 9 | 14 | 14 |
+| `sceGe` | 2 | 5 | 0 | 0 | 7 | 14 | 14 |
 | `sceHprm` | 0 | 0 | 0 | 0 | 3 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 18 | 0 | 0 | 12 | 32 | 32 |
@@ -73,7 +73,7 @@ Semantic handler census: **454** handlers across **23** API families, covering *
 | `sceUmd` | 0 | 1 | 1 | 0 | 7 | 9 | 9 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 31 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **10** | **97** | **1** | **2** | **344** | **454** | **494** |
+| **Total** | **12** | **105** | **1** | **2** | **334** | **454** | **494** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -85,6 +85,16 @@ Semantic handler census: **454** handlers across **23** API families, covering *
   - Evidence: src/rt/hle_thread_selftest.c:test_display_frame_per_sec_float_return
   - Evidence: tools/test_hle_manifest.py:FindingRuleTests.test_float_return_metadata_is_live_and_dedicated
   - Evidence: hardware oracle / issue #80 display-clock measurement (59.9400599f in $f0)
+- **`h_GeEdramGetAddr`** (`sceGe`): `sceGeEdramGetAddr` (0xe47e40e4)
+  - Evidence: tools/psp_oracle/manifest.json:PSP-HLE-GE-EDRAM-001
+  - Evidence: fixtures/psp_oracle/probe_hle_measure.c:hle_run
+  - Evidence: src/rt/hle.c:h_GeEdramGetAddr
+  - Evidence: PSP-HLE-GE-EDRAM-001 cell: edram-addr = 0x04000000
+- **`h_GeEdramGetSize`** (`sceGe`): `sceGeEdramGetSize` (0x1f6752ad)
+  - Evidence: tools/psp_oracle/manifest.json:PSP-HLE-GE-EDRAM-001
+  - Evidence: fixtures/psp_oracle/probe_hle_measure.c:hle_run
+  - Evidence: src/rt/hle.c:h_GeEdramGetSize
+  - Evidence: PSP-HLE-GE-EDRAM-001 cell: edram-size = 0x00200000
 - **`h_IoMkdir`** (`sceIo`): `sceIoMkdir` (0x06a70004)
   - Evidence: src/rt/hle_thread_selftest.c:test_ms0_unified_namespace
   - Evidence: src/rt/hle.c:h_IoMkdir
@@ -126,6 +136,47 @@ Semantic handler census: **454** handlers across **23** API families, covering *
 
 #### Partial Handlers (Named Limitations)
 
+- **`h_AudioChRelease`** (`sceAudio`): `sceAudioChRelease` (0x6fc46853)
+  - Limitation: the cells release channel 0 after the two valid blocking-output calls and query it after release; unreserved, out-of-range, and other channel-state release results are unmeasured (#341)
+  - Evidence: tools/psp_oracle/manifest.json:PSP-AUDIO-001
+  - Evidence: fixtures/psp_oracle/probe.c:run_audio_query
+  - Evidence: PSP-AUDIO-001 cells: audio-ch-release, audio-ch-query-released
+- **`h_AudioChReserve`** (`sceAudio`): `sceAudioChReserve` (0x5ec81c55)
+  - Limitation: audio-ch-reserve measures a successful reservation of channel 0 for 1024 stereo samples; automatic channel selection, invalid size or format, duplicate reservation, and exhaustion/error precedence are unmeasured (#341)
+  - Evidence: tools/psp_oracle/manifest.json:PSP-AUDIO-001
+  - Evidence: fixtures/psp_oracle/probe.c:run_audio_query
+  - Evidence: PSP-AUDIO-001 cell: audio-ch-reserve
+- **`h_AudioOutput2Blocking`** (`sceAudio`): `sceAudioOutput2OutputBlocking` (0x2d53f36e)
+  - Limitation: audio-out2-output-blocking measures one valid silent 1024-sample block at maximum volume and makes no acoustic claim; not-reserved, volume, buffer-error and audio_output error-propagation behavior are not covered (the handler discards audio_output's return) (#341)
+  - Evidence: tools/psp_oracle/manifest.json:PSP-AUDIO-001
+  - Evidence: fixtures/psp_oracle/probe.c:run_audio_query
+  - Evidence: PSP-AUDIO-001 cell: audio-out2-output-blocking
+- **`h_AudioOutput2Release`** (`sceAudio`): `sceAudioOutput2Release` (0x43196845)
+  - Limitation: audio-out2-release measures success after the queue drains; the documented #311 cell measures 0x80268002 while samples remain queued and preserves the reservation; releasing when not reserved is not measured (#341)
+  - Evidence: tools/psp_oracle/manifest.json:PSP-AUDIO-001
+  - Evidence: fixtures/psp_oracle/probe.c:run_audio_query
+  - Evidence: PSP-AUDIO-001 cell: audio-out2-release
+  - Evidence: docs/HARDWARE_ORACLE.md
+- **`h_AudioOutput2Reserve`** (`sceAudio`): `sceAudioOutput2Reserve` (0x01562ba3)
+  - Limitation: audio-out2-reserve measures a valid 1024-sample reservation; duplicate Output2 reservation behavior and invalid size bounds are unmeasured (#341)
+  - Evidence: tools/psp_oracle/manifest.json:PSP-AUDIO-001
+  - Evidence: fixtures/psp_oracle/probe.c:run_audio_query
+  - Evidence: PSP-AUDIO-001 cell: audio-out2-reserve
+- **`h_AudioOutput2Rest`** (`sceAudio`): `sceAudioOutput2GetRestSample` (0x647cef33)
+  - Limitation: the cells query rest samples on one valid 1024-sample Output2 reservation before and after one blocking output; the not-reserved code and other queue states are unmeasured (#341)
+  - Evidence: tools/psp_oracle/manifest.json:PSP-AUDIO-001
+  - Evidence: fixtures/psp_oracle/probe.c:run_audio_query
+  - Evidence: PSP-AUDIO-001 cells: audio-out2-query-before, audio-out2-query-after
+- **`h_AudioOutputBlocking`** (`sceAudio`): `sceAudioOutputBlocking` (0x136caf51)
+  - Limitation: the cells exercise two maximum-volume outputs with a valid silent stereo buffer and record timing and rest-length values, not audible output; mono, other volumes, invalid buffers/channels, and error precedence are unmeasured (#341)
+  - Evidence: tools/psp_oracle/manifest.json:PSP-AUDIO-001
+  - Evidence: fixtures/psp_oracle/probe.c:run_audio_query
+  - Evidence: PSP-AUDIO-001 cells: audio-ch-output-blocking-0, audio-ch-output-blocking-1
+- **`h_AudioRestLen`** (`sceAudio`): `sceAudioGetChannelRestLength` (0xb011922f)
+  - Limitation: the cells query channel 0 before and after blocking output and just after release; invalid-channel error behavior and other queue states are unmeasured (#341)
+  - Evidence: tools/psp_oracle/manifest.json:PSP-AUDIO-001
+  - Evidence: fixtures/psp_oracle/probe.c:run_audio_query
+  - Evidence: PSP-AUDIO-001 cells: audio-ch-query-before, audio-ch-query-after, audio-ch-query-released
 - **`h_AudioSRCChRelease`** (`sceAudio`): `sceAudioSRCChRelease` (0x5c37c0ae)
   - Limitation: release after a blocking output (0) and release with nothing reserved (0x80260008) are measured (PSP-HLE-AUDIO-SRC-001); whether a release succeeds while samples are still queued, as the Output2 busy rule does, and releasing a reservation made through the other API (refused here as not reserved) are unmeasured (#339)
 - **`h_AudioSRCChReserve`** (`sceAudio`): `sceAudioSRCChReserve` (0x38553111)

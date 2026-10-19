@@ -620,6 +620,100 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "returns 0x80260008 with nothing reserved and the reserved sample count after a reserve (0x400), both measured (PSP-HLE-AUDIO-SRC-001); the volume bound reuses the Output2 bound and the NULL or unreadable buffer result follows the regular output, both unmeasured; the host mixer runs at 44100 Hz, so a 48000 Hz block passes through a band-limited converter and keeps its source-rate pacing (#339)",
     },
+    # Route-A graduation batch 1 (#341, 2026-10-19). Each status is bounded to
+    # the named accepted hardware cells; audio's unmeasured argument/error paths
+    # remain partial instead of being promoted as universal firmware behavior.
+    "h_AudioChRelease": {
+        "status": "partial",
+        "evidence": [
+            "tools/psp_oracle/manifest.json:PSP-AUDIO-001",
+            "fixtures/psp_oracle/probe.c:run_audio_query",
+            "PSP-AUDIO-001 cells: audio-ch-release, audio-ch-query-released",
+        ],
+        "limitation": "the cells release channel 0 after the two valid blocking-output calls and query it after release; unreserved, out-of-range, and other channel-state release results are unmeasured (#341)",
+    },
+    "h_AudioChReserve": {
+        "status": "partial",
+        "evidence": [
+            "tools/psp_oracle/manifest.json:PSP-AUDIO-001",
+            "fixtures/psp_oracle/probe.c:run_audio_query",
+            "PSP-AUDIO-001 cell: audio-ch-reserve",
+        ],
+        "limitation": "audio-ch-reserve measures a successful reservation of channel 0 for 1024 stereo samples; automatic channel selection, invalid size or format, duplicate reservation, and exhaustion/error precedence are unmeasured (#341)",
+    },
+    "h_AudioRestLen": {
+        "status": "partial",
+        "evidence": [
+            "tools/psp_oracle/manifest.json:PSP-AUDIO-001",
+            "fixtures/psp_oracle/probe.c:run_audio_query",
+            "PSP-AUDIO-001 cells: audio-ch-query-before, audio-ch-query-after, audio-ch-query-released",
+        ],
+        "limitation": "the cells query channel 0 before and after blocking output and just after release; invalid-channel error behavior and other queue states are unmeasured (#341)",
+    },
+    "h_AudioOutput2Rest": {
+        "status": "partial",
+        "evidence": [
+            "tools/psp_oracle/manifest.json:PSP-AUDIO-001",
+            "fixtures/psp_oracle/probe.c:run_audio_query",
+            "PSP-AUDIO-001 cells: audio-out2-query-before, audio-out2-query-after",
+        ],
+        "limitation": "the cells query rest samples on one valid 1024-sample Output2 reservation before and after one blocking output; the not-reserved code and other queue states are unmeasured (#341)",
+    },
+    "h_AudioOutput2Blocking": {
+        "status": "partial",
+        "evidence": [
+            "tools/psp_oracle/manifest.json:PSP-AUDIO-001",
+            "fixtures/psp_oracle/probe.c:run_audio_query",
+            "PSP-AUDIO-001 cell: audio-out2-output-blocking",
+        ],
+        "limitation": "audio-out2-output-blocking measures one valid silent 1024-sample block at maximum volume and makes no acoustic claim; not-reserved, volume, buffer-error and audio_output error-propagation behavior are not covered (the handler discards audio_output's return) (#341)",
+    },
+    "h_AudioOutput2Release": {
+        "status": "partial",
+        "evidence": [
+            "tools/psp_oracle/manifest.json:PSP-AUDIO-001",
+            "fixtures/psp_oracle/probe.c:run_audio_query",
+            "PSP-AUDIO-001 cell: audio-out2-release",
+            "docs/HARDWARE_ORACLE.md",
+        ],
+        "limitation": "audio-out2-release measures success after the queue drains; the documented #311 cell measures 0x80268002 while samples remain queued and preserves the reservation; releasing when not reserved is not measured (#341)",
+    },
+    "h_AudioOutput2Reserve": {
+        "status": "partial",
+        "evidence": [
+            "tools/psp_oracle/manifest.json:PSP-AUDIO-001",
+            "fixtures/psp_oracle/probe.c:run_audio_query",
+            "PSP-AUDIO-001 cell: audio-out2-reserve",
+        ],
+        "limitation": "audio-out2-reserve measures a valid 1024-sample reservation; duplicate Output2 reservation behavior and invalid size bounds are unmeasured (#341)",
+    },
+    "h_AudioOutputBlocking": {
+        "status": "partial",
+        "evidence": [
+            "tools/psp_oracle/manifest.json:PSP-AUDIO-001",
+            "fixtures/psp_oracle/probe.c:run_audio_query",
+            "PSP-AUDIO-001 cells: audio-ch-output-blocking-0, audio-ch-output-blocking-1",
+        ],
+        "limitation": "the cells exercise two maximum-volume outputs with a valid silent stereo buffer and record timing and rest-length values, not audible output; mono, other volumes, invalid buffers/channels, and error precedence are unmeasured (#341)",
+    },
+    "h_GeEdramGetAddr": {
+        "status": "complete",
+        "evidence": [
+            "tools/psp_oracle/manifest.json:PSP-HLE-GE-EDRAM-001",
+            "fixtures/psp_oracle/probe_hle_measure.c:hle_run",
+            "src/rt/hle.c:h_GeEdramGetAddr",
+            "PSP-HLE-GE-EDRAM-001 cell: edram-addr = 0x04000000",
+        ],
+    },
+    "h_GeEdramGetSize": {
+        "status": "complete",
+        "evidence": [
+            "tools/psp_oracle/manifest.json:PSP-HLE-GE-EDRAM-001",
+            "fixtures/psp_oracle/probe_hle_measure.c:hle_run",
+            "src/rt/hle.c:h_GeEdramGetSize",
+            "PSP-HLE-GE-EDRAM-001 cell: edram-size = 0x00200000",
+        ],
+    },
     # sceRtc family (issue #341). Contract sources: the public PSPSDK header
     # psprtc.h (declarations, 0-on-success/<0-on-error, pspRtcCheckValidErrors
     # component ranges) and the firmware-measured PSPAutotests tests/rtc corpus
