@@ -963,6 +963,7 @@ PUBLIC_TARGETS := \
 	psmf-media-selftest \
 	psmf-media-selftest-csc-mutant \
 	audio-selftest \
+	audio-resampler-bench \
 	atrac3p-title-accept \
 	gpu-coherence-selftest \
 	gpu-snapsync-selftest \
@@ -1088,6 +1089,7 @@ HELP_DESCRIPTION_psmf-producer-selftest := run the source-owned bounded PSMF pro
 HELP_DESCRIPTION_psmf-media-selftest := run the source-owned PSMF-to-decoder media selftest
 HELP_DESCRIPTION_psmf-media-selftest-csc-mutant := prove the media selftest kills a Csc that reports success without writing pixels
 HELP_DESCRIPTION_audio-selftest := run the SDL3 host audio output selftest
+HELP_DESCRIPTION_audio-resampler-bench := run the synthetic-input audio resampler microbenchmark (no game data)
 HELP_DESCRIPTION_atrac3p-title-accept := run the optional ATRAC3+ title acceptance route
 HELP_DESCRIPTION_gpu-coherence-selftest := run the GPU coherence selftest
 HELP_DESCRIPTION_gpu-snapsync-selftest := run the GPU snapshot-sync selftest
@@ -2373,7 +2375,7 @@ psmf-media-selftest: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_TITLE_CONFI
 	$(file >$(BUILD_DIR)/psmf_media_selftest.rsp,$(BUILD_DIR)/psmf_producer_media_selftest.o $(BUILD_DIR)/psmf_media_selftest.o $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) $(HLE_INCLUDES) -DSR_MPEG_MEDIA_SELFTEST -Isrc/rt -std=c11 -Wno-unused-function -ffunction-sections -fdata-sections \
 		-o $(BUILD_DIR)/psmf_media_selftest.exe \
-		src/rt/hle.c src/rt/audio_resample.c @$(BUILD_DIR)/psmf_media_selftest.rsp \
+		src/rt/hle.c @$(BUILD_DIR)/psmf_media_selftest.rsp \
 		$(PSMF_MEDIA_LIBS) $(LDFLAGS) $(LIBS) -Wl,--gc-sections
 	$(BUILD_DIR)/psmf_media_selftest.exe $(if $(MEDIA_FUZZ_ITERS),--fuzz-iters $(MEDIA_FUZZ_ITERS),)
 
@@ -2385,7 +2387,7 @@ psmf-media-selftest-csc-mutant: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) $(HLE_INCLUDES) -DSR_MPEG_MEDIA_SELFTEST -Isrc/rt -std=c11 -Wno-unused-function -ffunction-sections -fdata-sections \
 		-o $(BUILD_DIR)/psmf_media_selftest_csc_mutant.exe \
 		$(BUILD_DIR)/psmf_producer_media_selftest_csc_mutant.o $(BUILD_DIR)/psmf_media_selftest_csc_mutant.o \
-		src/rt/hle.c src/rt/audio_resample.c $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o \
+		src/rt/hle.c $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o \
 		$(PSMF_MEDIA_LIBS) $(LDFLAGS) $(LIBS) -Wl,--gc-sections
 	@$(BUILD_DIR)/psmf_media_selftest_csc_mutant.exe > $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log 2>&1; result=$$?; \
 		if test $$result -eq 0; then cat $(BUILD_DIR)/psmf_media_selftest_csc_mutant.log; echo "Csc no-write mutant unexpectedly passed" >&2; exit 1; fi; \
@@ -2399,6 +2401,14 @@ audio-selftest:
 		src/rt/audio_unavailable.c src/rt/perf.c -lSDL3 -lm \
 		-o $(BUILD_DIR)/audio_selftest$(EXE_EXT)
 	$(BUILD_DIR)/audio_selftest$(EXE_EXT)
+
+# audio-resampler-bench -- fixed-seed, synthetic-input timing and bit-exact hash of the
+# sr_audio_resampler_* streaming converter. Uses $(CFLAGS) so RUNTIME_OPT (default -O0)
+# selects the optimisation level for both sides of a comparison.
+audio-resampler-bench:
+	$(CC) $(CFLAGS) -Isrc/rt -o $(BUILD_DIR)/audio_resampler_bench$(EXE_EXT) \
+		fixtures/audio_resampler_bench/audio_resampler_bench.c src/rt/audio_resample.c src/rt/perf.c -lm
+	$(BUILD_DIR)/audio_resampler_bench$(EXE_EXT)
 
 hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nested_frames.c src/rt/nested_frames.h src/rt/stale_code.c src/rt/stale_code.h src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/audio_resample.c src/rt/audio_resample.h
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST -DSR_SCHED_LIVENESS_TEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \

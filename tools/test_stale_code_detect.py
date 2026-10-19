@@ -258,9 +258,25 @@ class TestStaleCodeWiring(unittest.TestCase):
                                f"query must touch {table} only behind the gate")
 
     def test_dcache_handlers_preserve_success_results(self):
-        self.assertIn('sr_hle_register(0x79d1c3fa, "sceKernelDcacheWritebackAll", h_CacheInvalidateAll)', HLE_C)
-        self.assertIn('sr_hle_register(0xb435dec5, "sceKernelDcacheWritebackInvalidateAll", h_CacheInvalidateAll)', HLE_C)
-        self.assertIn('sr_hle_register(0x3ee30821, "sceKernelDcacheWritebackRange", h_CacheInvalidateRange)', HLE_C)
+        registrations = (
+            'sr_hle_register(0x79d1c3fa, "sceKernelDcacheWritebackAll", h_DcacheWritebackAll)',
+            'sr_hle_register(0xb435dec5, "sceKernelDcacheWritebackInvalidateAll", h_CacheInvalidateAllOther)',
+            'sr_hle_register(0x3ee30821, "sceKernelDcacheWritebackRange", h_DcacheRangeMaintenance)',
+            'sr_hle_register(0x34b9fa9eu, "sceKernelDcacheWritebackInvalidateRange", h_CacheInvalidateRangeOther)',
+        )
+        for registration in registrations:
+            with self.subTest(registration=registration):
+                self.assertIn(registration, HLE_C)
+
+        for handler, helper in (
+            ("h_DcacheWritebackAll", "h_cache_invalidate_all_common"),
+            ("h_CacheInvalidateAllOther", "h_cache_invalidate_all_common"),
+            ("h_DcacheRangeMaintenance", "h_cache_invalidate_range_common"),
+            ("h_CacheInvalidateRangeOther", "h_cache_invalidate_range_common"),
+        ):
+            body = HLE_C.split(f"static uint32_t {handler}(CpuState *s) {{", 1)[1].split("\n}\n", 1)[0]
+            with self.subTest(handler=handler):
+                self.assertIn(f"return {helper}(s);", body)
 
     def test_icache_nids_register_only_when_opted_in(self):
         low = HLE_C.lower()

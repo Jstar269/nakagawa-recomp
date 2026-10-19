@@ -394,6 +394,8 @@ def _reason_template(exc: Exception) -> str:
 
 
 def _reason_kind(reason: str) -> str:
+    if reason.startswith("VFPU4 identity "):
+        return "public-instruction-form"
     if reason.startswith("vcrs size") or reason.startswith("vqmul size") or "vcmov imm3" in reason:
         return "operand-size-selector"
     if reason.startswith("cop2 sub"):

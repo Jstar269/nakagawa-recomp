@@ -77,6 +77,8 @@ typedef struct {
     const char *compat_id_ptrs[MAX_COMPAT_DISC_IDS + 1];
     uint32_t executable_base;
     uint32_t executable_entry;
+    bool has_executable_base;
+    bool has_executable_entry;
     uint32_t run_entry;
     char bss_metadata_source[16];
     char data_root[257];
@@ -128,6 +130,8 @@ static void overlay_slot_anchor(OverlayStorageSlot *dest) {
     dest->entry.compatible_disc_ids = dest->compat_id_ptrs[0] ? dest->compat_id_ptrs : NULL;
     dest->entry.executable_base = dest->executable_base;
     dest->entry.executable_entry = dest->executable_entry;
+    dest->entry.has_executable_base = dest->has_executable_base;
+    dest->entry.has_executable_entry = dest->has_executable_entry;
     dest->entry.run_entry = dest->run_entry;
     dest->entry.bss_metadata_source = dest->bss_metadata_source;
     dest->entry.data_root = dest->data_root;
@@ -1495,6 +1499,8 @@ static bool nk_manifest_parse_locked(
 
     temp.executable_base = exe_base;
     temp.executable_entry = exe_entry; /* Canonical projection: represents executable.entry */
+    temp.has_executable_base = true;
+    temp.has_executable_entry = true;
     /* Where a run starts: a declared fallback entry wins, as in the Python planner. */
     temp.run_entry = fallback_entry ? fallback_entry : exe_entry;
     snprintf(temp.bss_metadata_source, sizeof(temp.bss_metadata_source), "%s", bss_src);
@@ -1560,6 +1566,8 @@ static bool nk_manifest_parse_locked(
     temp.entry.compatible_disc_ids = temp.compat_id_ptrs[0] ? temp.compat_id_ptrs : NULL;
     temp.entry.executable_base = temp.executable_base;
     temp.entry.executable_entry = temp.executable_entry;
+    temp.entry.has_executable_base = temp.has_executable_base;
+    temp.entry.has_executable_entry = temp.has_executable_entry;
     temp.entry.run_entry = temp.run_entry;
     temp.entry.bss_metadata_source = temp.bss_metadata_source;
     temp.entry.data_root = temp.data_root;
