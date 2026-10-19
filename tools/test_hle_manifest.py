@@ -739,6 +739,23 @@ class LiveManifestTests(unittest.TestCase):
                 if handler == "h_WaitEventFlag":
                     self.assertIn("0x8002019A", meta.HANDLER_LIMITATIONS[handler])
 
+    def test_route_a_system_time_wide_has_measured_delta_and_named_limits(self) -> None:
+        registration = self.regs[0x82BC5777]
+        self.assertEqual(registration["handler"], "h_GetSystemTimeWide")
+        self.assertEqual(registration["classification"], "dedicated")
+        self.assertEqual(registration["status"], "partial")
+        self.assertEqual(
+            meta.HANDLER_EVIDENCE["h_GetSystemTimeWide"],
+            [
+                "docs/HARDWARE_ORACLE.md (PSP-HLE-VTIMER-002: system-clock reads around "
+                "the bounded delay)"
+            ],
+        )
+        limitation = meta.HANDLER_LIMITATIONS["h_GetSystemTimeWide"]
+        self.assertIn("220,608", limitation)
+        self.assertIn("8%", limitation)
+        self.assertIn("precise rate", limitation)
+
     def test_psmf_getters_are_dedicated_partial(self) -> None:
         # Both getters drive the media producer and a host codec backend now, so
         # they are dedicated handlers with an honest `partial` status rather than

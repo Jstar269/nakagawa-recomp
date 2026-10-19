@@ -1777,7 +1777,7 @@
     "classification": "dedicated",
     "handler": "h_GetSystemTimeWide",
     "name": "sceKernelGetSystemTimeWide",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x83bf7afd": {
     "classification": "dedicated",

@@ -1161,6 +1161,15 @@ HANDLER_METADATA = {
         ],
         "limitation": "the cited cells cover wakeup-count accumulation and a sleeping target; specific invalid-target errors, repeated wakeup order, and interactions with termination are not all established",
     },
+    # Route-A batch 7: the measured system-clock delta supports a partial status,
+    # while the probe's offset intervals do not establish a precise clock rate.
+    "h_GetSystemTimeWide": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-VTIMER-002: system-clock reads around the bounded delay)",
+        ],
+        "limitation": "the two system-clock reads advanced 220,608 around a bounded 20 ms delay, but host0 logging offset the intervals and the VTimer/system-clock deltas agree only within about 8%; this is consistent with the microsecond unit but does not establish a precise rate or absolute system-time values",
+    },
 }
 
 # handler name -> status mapping. Preserved for direct consumers and gate checks.
