@@ -956,6 +956,78 @@ HANDLER_METADATA = {
         ],
         "limitation": "the cited cells cover valid deletion and the measured workarea fields; forged workareas, invalid-address precedence, stale UIDs, and multiple-waiter deletion behavior are not fully covered",
     },
+    # Route-A batch 4: the cited cells cover concrete lifecycle/allocation
+    # paths. The worker-only cells do not establish main-thread teardown.
+    "h_DeleteSema": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B1-01 and PSP-B2-01: unknown semaphore ID and deleting a waited-on semaphore)",
+        ],
+        "limitation": "a valid delete with one waiter and the unknown-semaphore code are covered; no-waiter behavior, multiple-waiter ordering, and interrupt-context precedence are not established",
+    },
+    "h_DeleteThread": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-THREAD-EXIT-001: ED-D77, ED-D00, ED-DNEG, and ED-DERR post-exit delete/restart cells)",
+        ],
+        "limitation": "post-exit delete and restart outcomes are covered for four worker exit statuses; deleting a live or waiting thread, unknown IDs, and multi-joiner cleanup are not established",
+    },
+    "h_DeleteVpl": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B1-01: valid VPL deletion while blocks are held)",
+        ],
+        "limitation": "valid deletion with allocated blocks is covered; deletion with blocked waiters, unknown IDs, arbitrary fragmentation, and invalid-free precedence are not established",
+    },
+    "h_ExitDeleteThread": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-THREAD-EXIT-001: ED-D77, ED-D00, ED-DNEG, and ED-DERR)",
+        ],
+        "limitation": "worker ExitDeleteThread status, joiner result, and post-exit UID/delete behavior are covered for four values; main/launcher teardown is not covered by these cells and PSP-TEARDOWN-001 remains captured-only",
+    },
+    "h_ExitThread": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-THREAD-EXIT-001: ED-X77, ED-X00, ED-XNEG, and ED-XERR)",
+        ],
+        "limitation": "worker ExitThread status and WaitThreadEnd/ReferThreadStatus outcomes are covered for four values; main/launcher teardown, callbacks during exit, and other thread roles are not established",
+    },
+    "h_FreeFpl": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: fpl-free-a, fpl-free-b, and status after free)",
+        ],
+        "limitation": "valid block frees and resulting free counts are covered; invalid, unaligned, repeated, or foreign-pool frees and waiter ordering are not established by the cited cells",
+    },
+    "h_FreeVpl": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B1-01: VPL pool accounting, allocation placement, and free sequence)",
+        ],
+        "limitation": "valid frees under the measured pool accounting are covered; invalid IDs/addresses, misalignment, arbitrary fragmentation/coalescing, and zero-size allocation behavior are not established",
+    },
+    "h_ReleaseWaitThread": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B3-01: ReleaseWaitThread wakes a blocked target with WAIT_RELEASE)",
+        ],
+        "limitation": "the cited cell covers releasing one blocked target and the waiter's WAIT_RELEASE result; self/UID-zero targets, already-finished targets, and multiple-waiter ordering are not established",
+    },
+    "h_TryAllocateFpl": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001: fpl-try-alloc-a, fpl-try-alloc-b, and fpl-try-alloc-exhausted)",
+        ],
+        "limitation": "two valid allocations, the measured exhaustion code, and pool status are covered; invalid output pointers, invalid UIDs, and other exhaustion/error precedence are not established",
+    },
+    "h_TryAllocateVpl": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-B1-01: 1024-byte VPL accounting and high-down allocation placement)",
+        ],
+        "limitation": "valid allocation placement and measured pool accounting are covered; the handler maps a zero-size request to VPL_EXHAUSTED, whose exact hardware result is unmeasured, and invalid output pointers or fragmented-pool behavior are not established",
+    },
 }
 
 # handler name -> status mapping. Preserved for direct consumers and gate checks.

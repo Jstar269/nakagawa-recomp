@@ -653,6 +653,42 @@ class LiveManifestTests(unittest.TestCase):
                 if handler == "h_DeleteFpl":
                     self.assertIn("returns success", meta.HANDLER_LIMITATIONS[handler])
 
+    def test_route_a_kernel_lifecycle_batch_four_has_evidence_and_named_limits(self) -> None:
+        expected = {
+            0x28B6489C: "h_DeleteSema",
+            0x9FA03CD3: "h_DeleteThread",
+            0x89B3D48C: "h_DeleteVpl",
+            0x809CE29B: "h_ExitDeleteThread",
+            0xAA73C935: "h_ExitThread",
+            0xF6414A71: "h_FreeFpl",
+            0xB736E9FF: "h_FreeVpl",
+            0x2C34E053: "h_ReleaseWaitThread",
+            0x623AE665: "h_TryAllocateFpl",
+            0xAF36D708: "h_TryAllocateVpl",
+        }
+        for nid, handler in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+                self.assertTrue(meta.HANDLER_EVIDENCE[handler])
+                self.assertTrue(
+                    all("HARDWARE_ORACLE.md" in item for item in meta.HANDLER_EVIDENCE[handler])
+                )
+                self.assertTrue(meta.HANDLER_LIMITATIONS[handler])
+                if handler == "h_ExitDeleteThread":
+                    self.assertIn("PSP-TEARDOWN-001", meta.HANDLER_LIMITATIONS[handler])
+                if handler == "h_TryAllocateVpl":
+                    self.assertIn("unmeasured", meta.HANDLER_LIMITATIONS[handler])
+        for nid, handler in {
+            0x446D8DE6: "h_CreateThread",
+            0xF475845D: "h_StartThread",
+        }.items():
+            with self.subTest(nid=f"0x{nid:08x}", excluded_handler=handler):
+                self.assertEqual(self.regs[nid]["handler"], handler)
+                self.assertEqual(self.regs[nid]["status"], "unreviewed")
+
     def test_psmf_getters_are_dedicated_partial(self) -> None:
         # Both getters drive the media producer and a host codec backend now, so
         # they are dedicated handlers with an honest `partial` status rather than

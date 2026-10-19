@@ -555,7 +555,7 @@
     "classification": "dedicated",
     "handler": "h_DeleteSema",
     "name": "sceKernelDeleteSema",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x293b45b8": {
     "classification": "dedicated",
@@ -610,7 +610,7 @@
     "classification": "dedicated",
     "handler": "h_ReleaseWaitThread",
     "name": "sceKernelReleaseWaitThread",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x2c8e6ab3": {
     "classification": "dedicated",
@@ -1351,7 +1351,7 @@
     "classification": "dedicated",
     "handler": "h_TryAllocateFpl",
     "name": "sceKernelTryAllocateFpl",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x627e6f3a": {
     "classification": "dedicated",
@@ -1741,7 +1741,7 @@
     "classification": "dedicated",
     "handler": "h_ExitDeleteThread",
     "name": "sceKernelExitDeleteThread",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x810c4bc3": {
     "classification": "dedicated",
@@ -1861,7 +1861,7 @@
     "classification": "dedicated",
     "handler": "h_DeleteVpl",
     "name": "sceKernelDeleteVpl",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x8a389411": {
     "classification": "dedicated",
@@ -2090,7 +2090,7 @@
     "classification": "dedicated",
     "handler": "h_DeleteThread",
     "name": "sceKernelDeleteThread",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xa089eca4": {
     "classification": "dedicated",
@@ -2228,7 +2228,7 @@
     "classification": "dedicated",
     "handler": "h_ExitThread",
     "name": "sceKernelExitThread",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xab1abe07": {
     "classification": "controlled_unsupported",
@@ -2271,7 +2271,7 @@
     "classification": "dedicated",
     "handler": "h_TryAllocateVpl",
     "name": "sceKernelTryAllocateVpl",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xb011922f": {
     "classification": "dedicated",
@@ -2373,7 +2373,7 @@
     "classification": "dedicated",
     "handler": "h_FreeVpl",
     "name": "sceKernelFreeVpl",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xb7660a23": {
     "classification": "dedicated",
@@ -3111,7 +3111,7 @@
     "classification": "dedicated",
     "handler": "h_FreeFpl",
     "name": "sceKernelFreeFpl",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xf6837a1a": {
     "classification": "dedicated",

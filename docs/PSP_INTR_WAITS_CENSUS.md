@@ -29,7 +29,7 @@ Live join of every exact `sce*` / `__sce*` API named in
 
 Open-owner counts:
 
-- #341: 50
+- #341: 49
 
 ## Census
 
@@ -96,7 +96,7 @@ Open-owner counts:
 | `sceKernelStopModule` | implemented | #341 | dedicated | unreviewed | `h_StopModule_Trace` | `0xd1ff982a` |
 | `sceKernelSuspendDispatchThread` | implemented | #341 | dedicated | unreviewed | `h_SuspendDispatchThread` | `0x3ad58b8c` |
 | `sceKernelTerminateThread` | implemented | #341 | dedicated | unreviewed | `h_TerminateThread` | `0x616403ba` |
-| `sceKernelTryAllocateFpl` | implemented | #341 | dedicated | unreviewed | `h_TryAllocateFpl` | `0x623ae665` |
+| `sceKernelTryAllocateFpl` | implemented | - | dedicated | partial | `h_TryAllocateFpl` | `0x623ae665` |
 | `sceKernelVolatileMemLock` | implemented | #341 | dedicated | unreviewed | `h_VolatileMemLock` | `0x3e0271d3` |
 | `sceKernelWaitEventFlag` | implemented | #341 | dedicated | unreviewed | `h_WaitEventFlag` | `0x402fcf22` |
 | `sceKernelWaitEventFlagCB` | implemented | #341 | dedicated | unreviewed | `h_WaitEventFlagCB` | `0x328c546a` |
