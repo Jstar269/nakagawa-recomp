@@ -226,13 +226,10 @@
     },
     {
       "path": ".github/workflows/scorecards.yml",
-      "classification": "project_authored_attested",
+      "classification": "reviewed_configuration",
       "evidence": {
-        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
-        "record_id": "openssf-scorecard-workflow-2026-10-19",
-        "evidence_tier": "S",
-        "authorship": "independent implementation record",
-        "upstream_attribution": null
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
       },
       "sha256": "f3f535e744b2e9ec1696a88e02c138cc9f456613fc2ae1040a509ee7392894cb"
     },
