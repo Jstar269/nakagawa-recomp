@@ -29,7 +29,7 @@ Live join of every exact `sce*` / `__sce*` API named in
 
 Open-owner counts:
 
-- #341: 52
+- #341: 50
 
 ## Census
 
@@ -56,9 +56,9 @@ Open-owner counts:
 | `sceIoWaitAsync` | implemented | - | dedicated | partial | `h_IoWaitAsync` | `0xe23eec33` |
 | `sceIoWaitAsyncCB` | implemented | - | dedicated | partial | `h_IoWaitAsyncCB` | `0x35dbd746` |
 | `sceIoWrite` | implemented | #341 | dedicated | unreviewed | `h_IoWrite` | `0x42ec03ac` |
-| `sceKernelAllocateFpl` | implemented | #341 | dedicated | unreviewed | `h_AllocateFpl` | `0xd979e9bf` |
+| `sceKernelAllocateFpl` | implemented | - | dedicated | partial | `h_AllocateFpl` | `0xd979e9bf` |
 | `sceKernelAllocateFplCB` | implemented | #341 | dedicated | unreviewed | `h_AllocateFplCB` | `0xe7282cb6` |
-| `sceKernelAllocateVpl` | implemented | #341 | dedicated | unreviewed | `h_AllocateVpl` | `0xbed27435` |
+| `sceKernelAllocateVpl` | implemented | - | dedicated | partial | `h_AllocateVpl` | `0xbed27435` |
 | `sceKernelAllocateVplCB` | implemented | #341 | dedicated | unreviewed | `h_AllocateVplCB` | `0xec0a693f` |
 | `sceKernelCancelReceiveMbx` | implemented | - | dedicated | partial | `h_CancelReceiveMbx` | `0x87d4dd36` |
 | `sceKernelCpuResumeIntr` | implemented | #341 | dedicated | unreviewed | `h_CpuResumeIntr` | `0x5f10d406` |
