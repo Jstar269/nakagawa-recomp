@@ -5,9 +5,6 @@ adapter for the existing scalar-probe route. The adapter starts the configured
 USBHostFS process, drives PSPSH commands, bounds each case, unloads each module,
 and records an evidence envelope. It follows the L0-L4 recovery contract tested
 in [`tools/test_hardware_runner_protocol.py`](../tools/test_hardware_runner_protocol.py).
-Dynamic `usbipd` discovery/attach and the bounded L0-L2 host recovery path are
-already implemented for this scalar adapter. Boot-time PSPLink autostart,
-standalone L3 relaunch, and the resident framed runner are not yet qualified.
 Campaigns require the source-owned `transport-write` case first. Its host0
 round-trip passed in simulation but failed in the W1-psplink3 live run; that
 run captured an envelope but accepted none.
@@ -246,7 +243,7 @@ Remaining human actions, classified:
 | --- | --- | --- |
 | USB_CABLE | physical | none; external powered-hub automation could remove replug needs but is out of scope |
 | POWER_SWITCH | physical | hard wedges need power cycling; honest answer: requires external actuation or human. Not solvable in software from PSPLink alone once USB is dead |
-| XMB_APP_LAUNCH | software-feasible, unverified | ARK-4 supports VSH plugins through `PLUGINS.TXT` and starts a plugin with its path as the module arguments. The PSPLINK entry point parses that path and uses its directory as the sidecar-module path, so a complete PSPLink file set in one Memory Stick folder is a plausible autostart route. The standard PSPDEV setup guide documents the EBOOT route; VSH startup still needs a boot-to-qualified hardware check. Back up the active Memory Stick plugin configuration before editing it; keep the change on `ms0:` and make rollback possible. ([ARK plugin loader](https://github.com/PSP-Archive/ARK-4/blob/main/core/systemctrl/src/plugin.c), [PSPLINK entry point](https://github.com/pspdev/psplinkusb/blob/master/psplink/main.c), [PSPDEV setup guide](https://pspdev.github.io/debugging.html)) |
+| XMB_APP_LAUNCH | software-feasible | ARK autostart of a dedicated source-owned runner plugin designed to coexist with (not collide into) the standalone stack — design only; installation requires explicit maintainer authorization |
 | PLUGIN_ENABLE/DISABLE | human-gated | same as above |
 | PSPLINK_RELAUNCH | partially automatable | L3 covers the proven relaunch shape where it can be initiated host-side |
 | HARD_WEDGE_POWER_CYCLE | physical | L4 + external actuation would be required for literal 100% |
@@ -260,34 +257,20 @@ physical power intervention. The system says so plainly instead of looping.
 1. Conformance suite (landed): `tools/test_hardware_runner_protocol.py`
    implements the reference state machine, codec, fake transport, and every
    mandated fault scenario. Future implementations must pass it unchanged.
-2. PSPLink boot autostart: stage the complete, compatible PSPLink PRX set in one
-   dedicated Memory Stick folder. ARK passes the plugin path to the PRX, and
-   PSPLINK uses that path to locate its sidecars; add a VSH entry to the active
-   ARK `PLUGINS.TXT` only after backing up that file. Keep the change on `ms0:`.
-   Reboot once and qualify `ver`, `usbstat`, `pwd`, and host0 before calling
-   autostart successful. The PSPDEV setup guide documents the EBOOT launch route,
-   so VSH startup remains a hardware acceptance item despite the compatible
-   source-level path handling.
-3. Host reconnect: keep the existing dynamic `usbipd list` lookup, attach only
-   when the unique PSPLink device is `Shared`, and requalify after `Connected to
-   device`. The adapter already exercises this path; expand it only if the
-   boot-to-qualified run exposes a missing recovery transition.
-4. Software reset ladder: the host implements one bounded L0 cleanup, L1 host
-   transport restart/reattach, and qualified L2 `reset`/reattach. Verify the
-   full sequence after autostart is installed. Standalone L3 PSPLink relaunch
-   remains absent; exhaustion stops at L4 and requires physical intervention.
-5. Resident runner PRX: new implementation path; require a trusted
-   detailed-ledger record before commit (`PROVENANCE_UNRESOLVED` otherwise).
-   The resident framed protocol and per-case fault containment are still absent.
+2. Resident runner PRX: new implementation path; require a trusted
+   detailed-ledger record before commit (`PROVENANCE_UNRESOLVED` otherwise),
+   plus maintainer authorization before any persistent plugin/autostart change
+   touches the device. The scalar-probe host adapter is implemented in the
+   existing `run_psplink.py` path; the resident framed protocol is still absent.
    Campaigns use repeated `--campaign-case CASE_ID=PRX_PATH` arguments, put
    `transport-write` first, and set one bounded `--timeout` shared by each case.
    An optional `--out` must be inside the host0 scratch directory. Like
    `--command`, this mode requires `--session-id` and passes the hardware-lock
    gate before the transport starts and again before every reset and launch.
-6. REQ_002 prerequisite: an import/startup fixture that resolves ThreadManForUser
+3. REQ_002 prerequisite: an import/startup fixture that resolves ThreadManForUser
    mutex NIDs, starts clean, emits one marker, asserts nothing — validated on
    host/toolchain first so PSP sessions debug semantics, not linker plumbing.
-7. Additional model-source discriminator (bounded): compare plain syscall
+4. Additional model-source discriminator (bounded): compare plain syscall
    paths and other identity sources with `kuKernelGetModel`. The PSPSDK ordinal
    mapping already interprets raw value 3 as PSP-3000 generation 04g under
    `PSPSDK_PMODEL_ORDINAL_V1`; remaining cross-API distinctions are still in

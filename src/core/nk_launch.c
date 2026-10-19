@@ -770,14 +770,12 @@ NkResult nk_launch_validate_staged_executable(const NkGameEntry *game,
             }
         }
     }
-    if ((manifest->has_executable_base || manifest->executable_base != 0) &&
-        load_base != manifest->executable_base) {
+    if (manifest->executable_base != 0 && load_base != manifest->executable_base) {
         launch_error(error_message, error_message_size,
                      "staged ELF load base does not match the title manifest");
         goto staged_elf_cleanup;
     }
-    if ((manifest->has_executable_entry || manifest->executable_entry != 0) &&
-        entry_point != manifest->executable_entry) {
+    if (manifest->executable_entry != 0 && entry_point != manifest->executable_entry) {
         launch_error(error_message, error_message_size,
                      "staged ELF entry point does not match the title manifest");
         goto staged_elf_cleanup;

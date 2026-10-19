@@ -1,17 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 the Nakagawa Recomp authors
 
-/* Host harness for font_files.h (case font-files), umd_io.h (cases umd-io and umd-raw-read) and
- * font_list.h (case font-list): runs the probe's code against a fake file system and a fake font
- * library and logs every call, so tools/test_psp_oracle.py can check safety rules without a PSP.
+/* Host harness for font_files.h (case font-files), umd_io.h (case umd-io) and font_list.h (case
+ * font-list): runs the probe's code against a fake file system and a fake font library and logs
+ * every call, so tools/test_psp_oracle.py can check the cases' safety rules without a PSP.
  *
- * usage: io_cases_host fonts|umd|umdraw|fontlist < scenario
+ * usage: io_cases_host fonts|umd|fontlist < scenario
  *
- * The raw UMD mode adds only read, seek, async and stat calls to read-only opens and closes.
- * Unknown calls fail compilation under -Werror. Available calls are sceIoDopen, sceIoDread,
- * sceIoDclose, sceIoOpen, sceIoRead, sceIoWrite, sceIoClose, sceIoLseek, sceIoLseek32,
- * sceIoReadAsync, sceIoPollAsync, sceIoWaitAsync, sceIoGetstat, sceIoMkdir,
- * sceUmdCheckMedium, and sceUmdGetDriveStat.
+ * Only the calls the two cases may make exist here (sceIoDopen, sceIoDread, sceIoDclose,
+ * sceIoOpen, sceIoRead, sceIoWrite, sceIoClose, sceIoMkdir, sceUmdCheckMedium,
+ * sceUmdGetDriveStat); a case calling anything else would not compile under -Werror.
  *
  * Scenario lines:
  *   fontdir <rc> <rc_slash>          sceIoDopen("flash0:/font") / ("flash0:/font/") result;
@@ -30,7 +28,6 @@
  *   open <path-hex> <rc>             sceIoOpen of a device path returns <rc> (>= 0 opens)
  *   dopen <path-hex> <rc>            sceIoDopen of a device path returns <rc> (>= 0 opens)
  *   umd <medium> <drive-stat>        sceUmdCheckMedium / sceUmdGetDriveStat results
- *   umdraw uses a synthetic byte-addressed 128-sector UMD with a public ISO header at LBA 16
  *   fontlib <handle> <err|-> <allocs> <bytes>
  *                                    sceFontNewLib: the handle it returns, the error word it
  *                                    writes (- leaves it untouched), and how many blocks of
@@ -79,12 +76,6 @@ SceUID sceIoOpen(const char *file, int flags, SceMode mode);
 int sceIoRead(SceUID fd, void *data, SceSize size);
 int sceIoWrite(SceUID fd, const void *data, SceSize size);
 int sceIoClose(SceUID fd);
-SceOff sceIoLseek(SceUID fd, SceOff offset, int whence);
-int sceIoLseek32(SceUID fd, int offset, int whence);
-int sceIoReadAsync(SceUID fd, void *data, SceSize size);
-int sceIoPollAsync(SceUID fd, SceOff *result);
-int sceIoWaitAsync(SceUID fd, SceOff *result);
-int sceIoGetstat(const char *file, SceIoStat *stat);
 int sceIoMkdir(const char *dir, SceMode mode);
 int sceUmdCheckMedium(void);
 int sceUmdGetDriveStat(void);
@@ -128,10 +119,7 @@ typedef struct FakeDevice {
     int dir;
 } FakeDevice;
 
-enum {
-    FD_FREE = 0, FD_FLASH0, FD_HOST_WRITE, FD_HOST_READ, FD_LISTING, FD_DEVICE, FD_DEVDIR,
-    FD_UMD_RAW,
-};
+enum { FD_FREE = 0, FD_FLASH0, FD_HOST_WRITE, FD_HOST_READ, FD_LISTING, FD_DEVICE, FD_DEVDIR };
 
 typedef struct FakeFd {
     int kind;
@@ -156,13 +144,6 @@ static int s_dread_count;
 static int s_umd_medium;
 static int s_umd_drive;
 static int s_listing_cursor;
-static int s_umdraw_mode;
-static int s_umdraw_async_pending;
-static int s_umdraw_async_fd = -1;
-static SceOff s_umdraw_async_result;
-
-#define FAKE_UMD_SIZE (128u * 2048u)
-#define FAKE_UMD_SECTOR16_OFFSET (16u * 2048u)
 
 /* ---- fake sceLibFont (mode fontlist) ------------------------------------------------------
  * Serves scenario-defined 168-byte style records, allocates through the case's own callbacks
@@ -289,53 +270,6 @@ static FakeFd *fake_fd(SceUID fd) {
     return f->kind == FD_FREE ? NULL : f;
 }
 
-static uint8_t fake_umd_byte(uint32_t offset) {
-    static const uint8_t iso_descriptor[8] = {0x01u, 0x43u, 0x44u, 0x30u,
-                                               0x30u, 0x31u, 0x01u, 0x00u};
-    if (offset >= FAKE_UMD_SECTOR16_OFFSET &&
-        offset < FAKE_UMD_SECTOR16_OFFSET + sizeof(iso_descriptor)) {
-        return iso_descriptor[offset - FAKE_UMD_SECTOR16_OFFSET];
-    }
-    return (uint8_t)(((offset * 31u) + 7u) ^ (offset >> 7));
-}
-
-static SceOff fake_umd_seek(SceUID fd, SceOff offset, int whence) {
-    FakeFd *f = fake_fd(fd);
-    if (f == NULL || f->kind != FD_UMD_RAW) return (SceOff)-1;
-    SceOff base;
-    if (whence == SEEK_SET) {
-        base = 0;
-    } else if (whence == SEEK_CUR) {
-        base = (SceOff)f->position;
-    } else if (whence == SEEK_END) {
-        base = (SceOff)FAKE_UMD_SIZE;
-    } else {
-        return (SceOff)-1;
-    }
-    if ((offset > 0 && base > INT64_MAX - offset) ||
-        (offset < 0 && base < INT64_MIN - offset)) {
-        return (SceOff)-1;
-    }
-    const SceOff position = base + offset;
-    if (position < 0 || (uint64_t)position > UINT32_MAX) return (SceOff)-1;
-    f->position = (uint32_t)position;
-    return position;
-}
-
-static int fake_umd_read(SceUID fd, void *data, SceSize size) {
-    FakeFd *f = fake_fd(fd);
-    if (f == NULL || f->kind != FD_UMD_RAW || size > UMDRAW_BUFFER_BYTES) {
-        return FAKE_BAD_FD;
-    }
-    const uint32_t left = f->position < FAKE_UMD_SIZE ? FAKE_UMD_SIZE - f->position : 0u;
-    const uint32_t take = size < left ? size : left;
-    for (uint32_t i = 0u; i < take; i++) {
-        ((uint8_t *)data)[i] = fake_umd_byte(f->position + i);
-    }
-    f->position += take;
-    return (int)take;
-}
-
 static const FakeDevice *fake_device(const char *path, int dir) {
     for (int i = 0; i < s_device_count; i++) {
         if (s_devices[i].dir == dir && strcmp(s_devices[i].path, path) == 0) return &s_devices[i];
@@ -436,10 +370,6 @@ SceUID sceIoOpen(const char *file, int flags, SceMode mode) {
         } else if (flags == PSP_O_RDONLY && e->host_written) {
             rc = fake_fd_new(FD_HOST_READ, entry, 0);
         }
-    } else if (s_umdraw_mode && strcmp(file, "umd0:") == 0 &&
-               (flags == PSP_O_RDONLY || flags == UMDIO_RAW_FLAGS)) {
-        rc = device == NULL ? FAKE_NOT_FOUND
-            : device->rc >= 0 ? fake_fd_new(FD_UMD_RAW, -1, 0) : device->rc;
     } else if (device != NULL) {
         rc = device->rc >= 0 ? fake_fd_new(FD_DEVICE, -1, 0) : device->rc;
     }
@@ -471,85 +401,8 @@ int sceIoRead(SceUID fd, void *data, SceSize size) {
         memcpy(data, e->host + f->position, take);
         f->position += take;
         rc = (int)take;
-    } else if (f != NULL && f->kind == FD_UMD_RAW) {
-        rc = fake_umd_read(fd, data, size);
     }
     printf("CALL sceIoRead fd=0x%x size=%u rc=0x%08x\n", (unsigned int)fd, size, (unsigned int)rc);
-    return rc;
-}
-
-SceOff sceIoLseek(SceUID fd, SceOff offset, int whence) {
-    const SceOff rc = fake_umd_seek(fd, offset, whence);
-    const uint64_t bits = (uint64_t)rc;
-    printf("CALL sceIoLseek fd=0x%x offset=%lld whence=%d rc=0x%08x%08x\n",
-           (unsigned int)fd, (long long)offset, whence,
-           (unsigned int)(uint32_t)(bits >> 32), (unsigned int)(uint32_t)bits);
-    return rc;
-}
-
-int sceIoLseek32(SceUID fd, int offset, int whence) {
-    const SceOff result = fake_umd_seek(fd, (SceOff)offset, whence);
-    const int rc = result < 0 ? (int)result : (int)result;
-    printf("CALL sceIoLseek32 fd=0x%x offset=%d whence=%d rc=0x%08x\n",
-           (unsigned int)fd, offset, whence, (unsigned int)rc);
-    return rc;
-}
-
-int sceIoReadAsync(SceUID fd, void *data, SceSize size) {
-    const int read_result = fake_umd_read(fd, data, size);
-    int rc = FAKE_BAD_FD;
-    if (read_result >= 0) {
-        s_umdraw_async_fd = fd;
-        s_umdraw_async_result = (SceOff)read_result;
-        s_umdraw_async_pending = 1;
-        rc = 0;
-    }
-    printf("CALL sceIoReadAsync fd=0x%x size=%u rc=0x%08x\n",
-           (unsigned int)fd, size, (unsigned int)rc);
-    return rc;
-}
-
-int sceIoPollAsync(SceUID fd, SceOff *result) {
-    int rc = FAKE_BAD_FD;
-    if (s_umdraw_async_pending && fd == s_umdraw_async_fd) {
-        *result = s_umdraw_async_result;
-        rc = 0;
-    } else if (result != NULL) {
-        *result = (SceOff)-1;
-    }
-    const uint64_t bits = (uint64_t)(result != NULL ? *result : 0);
-    printf("CALL sceIoPollAsync fd=0x%x rc=0x%08x result=0x%08x%08x\n",
-           (unsigned int)fd, (unsigned int)rc,
-           (unsigned int)(uint32_t)(bits >> 32), (unsigned int)(uint32_t)bits);
-    return rc;
-}
-
-int sceIoWaitAsync(SceUID fd, SceOff *result) {
-    int rc = FAKE_BAD_FD;
-    if (s_umdraw_async_pending && fd == s_umdraw_async_fd) {
-        *result = s_umdraw_async_result;
-        s_umdraw_async_pending = 0;
-        s_umdraw_async_fd = -1;
-        rc = 0;
-    } else if (result != NULL) {
-        *result = (SceOff)-1;
-    }
-    const uint64_t bits = (uint64_t)(result != NULL ? *result : 0);
-    printf("CALL sceIoWaitAsync fd=0x%x rc=0x%08x result=0x%08x%08x\n",
-           (unsigned int)fd, (unsigned int)rc,
-           (unsigned int)(uint32_t)(bits >> 32), (unsigned int)(uint32_t)bits);
-    return rc;
-}
-
-int sceIoGetstat(const char *file, SceIoStat *stat) {
-    int rc = FAKE_NOT_FOUND;
-    if (s_umdraw_mode && strcmp(file, "umd0:") == 0) {
-        stat->st_mode = 0x21ff;
-        stat->st_attr = 0u;
-        stat->st_size = (SceOff)FAKE_UMD_SIZE;
-        rc = 0;
-    }
-    printf("CALL sceIoGetstat path=%s rc=0x%08x\n", file, (unsigned int)rc);
     return rc;
 }
 
@@ -585,8 +438,7 @@ int sceIoClose(SceUID fd) {
     FakeFd *f = fake_fd(fd);
     int rc = FAKE_BAD_FD;
     if (f != NULL && (f->kind == FD_FLASH0 || f->kind == FD_HOST_WRITE ||
-                      f->kind == FD_HOST_READ || f->kind == FD_DEVICE ||
-                      f->kind == FD_UMD_RAW)) {
+                      f->kind == FD_HOST_READ || f->kind == FD_DEVICE)) {
         f->kind = FD_FREE;
         rc = 0;
     }
@@ -742,12 +594,11 @@ static int load_scenario(FILE *input) {
 int main(int argc, char **argv) {
     if (argc != 2 ||
         (strcmp(argv[1], "fonts") != 0 && strcmp(argv[1], "umd") != 0 &&
-         strcmp(argv[1], "umdraw") != 0 && strcmp(argv[1], "fontlist") != 0) ||
+         strcmp(argv[1], "fontlist") != 0) ||
         !load_scenario(stdin)) {
-        fprintf(stderr, "io_cases_host: usage: io_cases_host fonts|umd|umdraw|fontlist < scenario\n");
+        fprintf(stderr, "io_cases_host: usage: io_cases_host fonts|umd|fontlist < scenario\n");
         return 2;
     }
-    s_umdraw_mode = strcmp(argv[1], "umdraw") == 0;
     if (strcmp(argv[1], "fonts") == 0) {
         static FontFiles fonts;
         memset(&fonts, 0, sizeof(fonts));
@@ -760,12 +611,6 @@ int main(int argc, char **argv) {
         umd.emit = harness_emit;
         umd.step = harness_step;
         umdio_run(&umd);
-    } else if (strcmp(argv[1], "umdraw") == 0) {
-        static UmdRawRead raw;
-        memset(&raw, 0, sizeof(raw));
-        raw.emit = harness_emit;
-        raw.step = harness_step;
-        umdraw_run(&raw);
     } else {
         static FontList fontlist;
         memset(&fontlist, 0, sizeof(fontlist));

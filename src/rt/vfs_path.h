@@ -51,9 +51,11 @@ static inline int sr_vfs_is_dos_device_name(const char *name, size_t len) {
      * which is at most len, so a component made only of spaces and dots reduces to
      * base_len 0 and returns 0 without reading past the component. */
     while (base_len > 0 && name[base_len - 1] == ' ') base_len--;
-    /* Fast-path direct length checks to avoid 22 strlen() calls in a loop.
+    /* Fast-path direct length checks to avoid 22+ strlen() calls in a loop.
      * Length 3 devices: CON, PRN, AUX, NUL.
-     * Length 4 devices: COM1-COM9, LPT1-LPT9. */
+     * Length 4 devices: COM1-COM9, LPT1-LPT9.
+     * Length 6 device:  CONIN$
+     * Length 7 device:  CONOUT$ */
     if (base_len == 3) {
         return (sr_vfs_strnicmp(name, "CON", 3) == 0 ||
                 sr_vfs_strnicmp(name, "PRN", 3) == 0 ||
@@ -64,6 +66,12 @@ static inline int sr_vfs_is_dos_device_name(const char *name, size_t len) {
         return ((sr_vfs_strnicmp(name, "COM", 3) == 0 ||
                  sr_vfs_strnicmp(name, "LPT", 3) == 0) &&
                 (name[3] >= '1' && name[3] <= '9'));
+    }
+    if (base_len == 6) {
+        return (sr_vfs_strnicmp(name, "CONIN$", 6) == 0);
+    }
+    if (base_len == 7) {
+        return (sr_vfs_strnicmp(name, "CONOUT$", 7) == 0);
     }
     return 0;
 }
