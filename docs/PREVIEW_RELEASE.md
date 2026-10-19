@@ -83,20 +83,90 @@ mingw32-make --no-print-directory display-smoke
 
 ## Recreate the package
 
-Run the following after the native smoke and player build, from a clean candidate checkout on the exact integrated release commit. The public-safe export command filters the source with `assets/public_source_profile.json`; it must pass the maintainer-controlled publication inputs before the result can be called a release asset. The package retains the source tree under `source/`, so the player can resolve its BUILD PACKAGE CLI from the installed layout.
+Complete the exact candidate's local release gates and hosted CI before packaging. The binary bundle must come from the [Trusted provenance attestation workflow](../.github/workflows/provenance-attestation.yml), which runs on `main` only after a maintainer freezes the exact candidate SHA. It checks that the required `candidate_sha` equals the workflow's checked-out commit, builds `nakagawa_player.exe` and `production_smoke.exe`, stages their runtime files and `toolchain.json`, creates SLSA Build L2 attestations for every file under `dist/`, and uploads a workflow artifact. This workflow does not create a tag, release, or release asset.
 
-The toolchain observation records the full source commit, whether the checkout was clean, the release-manifest version and SHA-256, and hashes for the compiler, Make, Python, SDL3 link/runtime files, and optional `glslc` when present. `glslc` is not a standard release-build input because checked-in shader embeddings are used; its absence is acceptable only when the checked-in shader verification passes and no shader regeneration is required. This observation binds an environment snapshot to a candidate; it does not by itself prove a reproducible build or hosted/private acceptance.
+The public-safe export command filters the source with `assets/public_source_profile.json` and needs the maintainer-controlled publication inputs before the output can be called a release asset. The package retains the source tree under `source/` so the player can resolve its BUILD PACKAGE CLI from the installed layout.
+
+The attested `toolchain.json` records the full source commit, clean-tree status, release-manifest version and SHA-256, and hashes for the compiler, Make, Python, SDL3 link/runtime files, and optional `glslc`. `glslc` is not a standard release-build input because checked-in shader embeddings are used; its absence is acceptable only when checked-in shader verification passes and no shader regeneration is required. This record binds an environment snapshot to the candidate; it does not by itself prove reproducible builds or hosted/private acceptance.
+
+The separate SLSA Build L3 isolated-builder follow-up is linked to [issue #373](https://github.com/Jstar269/nakagawa-recomp/issues/373); it is not part of this Build L2 procedure.
+
+### Download and verify the Build L2 bundle
+
+After the maintainer freezes the approved 40-character `main` SHA and the workflow run succeeds, download that run's `nakagawa-windows-x64-binaries-<SHA>` artifact. Set `$CandidateSha` to the approved full SHA and `$RunId` to the successful workflow run ID:
+
+```powershell
+$CandidateSha = '<approved-40-character-main-SHA>'
+$RunId = '<successful-workflow-run-id>'
+$AttestedBundle = Join-Path $env:TEMP "nakagawa-attested-$CandidateSha"
+$ArtifactName = "nakagawa-windows-x64-binaries-$CandidateSha"
+
+if ($CandidateSha -notmatch '^[0-9a-f]{40}$') {
+    throw 'Use the maintainer-approved full 40-character candidate SHA.'
+}
+if (Test-Path -LiteralPath $AttestedBundle) {
+    throw "Attested bundle directory already exists: $AttestedBundle"
+}
+New-Item -ItemType Directory -Path $AttestedBundle | Out-Null
+gh run download $RunId --repo Jstar269/nakagawa-recomp --name $ArtifactName --dir $AttestedBundle
+if ($LASTEXITCODE -ne 0) { throw 'Could not download the selected workflow artifact.' }
+
+$SignerWorkflow = 'Jstar269/nakagawa-recomp/.github/workflows/provenance-attestation.yml'
+$AttestedFiles = Get-ChildItem -LiteralPath $AttestedBundle -Recurse -File
+if ($AttestedFiles.Count -eq 0) { throw 'The workflow artifact is empty.' }
+foreach ($File in $AttestedFiles) {
+    gh attestation verify $File.FullName --repo Jstar269/nakagawa-recomp --signer-workflow $SignerWorkflow --source-ref refs/heads/main --source-digest $CandidateSha
+    if ($LASTEXITCODE -ne 0) { throw "Attestation verification failed for $($File.Name)." }
+}
+
+$ToolchainIdentity = Join-Path $AttestedBundle 'toolchain.json'
+$Toolchain = Get-Content -LiteralPath $ToolchainIdentity -Raw | ConvertFrom-Json
+if ($Toolchain.candidate.commit -ne $CandidateSha -or -not $Toolchain.candidate.working_tree_clean) {
+    throw 'The attested toolchain record does not identify this clean candidate.'
+}
+$env:NAKAGAWA_ATTESTED_BUNDLE = $AttestedBundle
+$env:NAKAGAWA_CANDIDATE_SHA = $CandidateSha
+```
+
+`gh attestation verify <file> -R Jstar269/nakagawa-recomp` is the basic user command. The fuller loop above also checks the signer workflow, `main` source ref, and exact source commit. Run it for the downloaded executable, runtime DLLs, and toolchain record. See the [GitHub CLI verification reference](https://cli.github.com/manual/gh_attestation_verify).
+
+The packaged player binaries and runtime closure are copied byte-for-byte from the verified bundle. The package script below repeats the attestation checks and confirms the bundle's `toolchain.json` matches the frozen source SHA; it does not rebuild or restage those binaries locally. The resulting ZIP is a packaging container, not a subject of this Build L2 workflow: after extracting it, verify each executable and runtime DLL individually with gh attestation verify.
+
 
 At candidate freeze, the maintainer-selected trust anchor is the detailed `IMPLEMENTATION_PROVENANCE.json` from the external authority repository, never a candidate-committed public ledger. Verify the frozen main commit's admissions, commit and push truthful authority changes, then copy the ledger from that exact authority commit to an external immutable file. Record the full candidate SHA, authority commit SHA, and copied ledger SHA-256 together in #278. Set `NAKAGAWA_TRUSTED_PUBLIC_LEDGER` to that detailed copy and do not edit or regenerate it. Different source bytes require a fresh freeze and binding. The export audit consumes a public `entries` projection; the commands below independently generate and verify that projection from the selected detailed authority instead of trusting the candidate's copy.
 
 ```powershell
 $Version = '0.0.1'
+$CandidateSha = $env:NAKAGAWA_CANDIDATE_SHA
 $FrozenCandidateSha = (git rev-parse HEAD).Trim()
-$CandidateSha = (git rev-parse --short=12 HEAD).Trim()
-$ArtifactRoot = Join-Path $env:TEMP "nakagawa-recomp-$Version-$CandidateSha"
+if ($CandidateSha -notmatch '^[0-9a-f]{40}$' -or $FrozenCandidateSha -ne $CandidateSha) {
+    throw 'The clean source checkout must be the same full SHA as the attested bundle.'
+}
+$AttestedBundle = $env:NAKAGAWA_ATTESTED_BUNDLE
+if (-not $AttestedBundle -or -not (Test-Path -LiteralPath $AttestedBundle -PathType Container)) {
+    throw 'Set NAKAGAWA_ATTESTED_BUNDLE to the verified Build L2 artifact directory.'
+}
+$AttestedBin = Join-Path $AttestedBundle 'bin'
+$ToolchainIdentity = Join-Path $AttestedBundle 'toolchain.json'
+if (-not (Test-Path -LiteralPath $AttestedBin -PathType Container) -or
+    -not (Test-Path -LiteralPath $ToolchainIdentity -PathType Leaf)) {
+    throw 'The verified artifact must contain bin/ and toolchain.json.'
+}
+$Toolchain = Get-Content -LiteralPath $ToolchainIdentity -Raw | ConvertFrom-Json
+if ($Toolchain.candidate.commit -ne $CandidateSha -or -not $Toolchain.candidate.working_tree_clean) {
+    throw 'The toolchain record does not identify this clean candidate.'
+}
+$SignerWorkflow = 'Jstar269/nakagawa-recomp/.github/workflows/provenance-attestation.yml'
+$AttestedFiles = Get-ChildItem -LiteralPath $AttestedBundle -Recurse -File
+if ($AttestedFiles.Count -eq 0) { throw 'The verified bundle is empty.' }
+foreach ($File in $AttestedFiles) {
+    gh attestation verify $File.FullName --repo Jstar269/nakagawa-recomp --signer-workflow $SignerWorkflow --source-ref refs/heads/main --source-digest $CandidateSha
+    if ($LASTEXITCODE -ne 0) { throw "Attestation verification failed for $($File.Name)." }
+}
+$CandidateShort = $CandidateSha.Substring(0, 12)
+$ArtifactRoot = Join-Path $env:TEMP "nakagawa-recomp-$Version-$CandidateShort"
 $DetailedLedger = $env:NAKAGAWA_TRUSTED_PUBLIC_LEDGER
 $Stage = Join-Path $ArtifactRoot "nakagawa-recomp-$Version-windows-x64"
-$ToolchainIdentity = Join-Path $ArtifactRoot 'toolchain.json'
 $Bin = Join-Path $Stage 'bin'
 $Source = Join-Path $Stage 'source'
 $PackageDocs = Join-Path $Stage 'docs'
@@ -121,15 +191,19 @@ python tools/provenance_attest_verify.py --repo . --base $FrozenCandidateSha `
 if ($LASTEXITCODE -ne 0) { throw 'Frozen candidate trusted attestation failed.' }
 $TrustedLedger = Join-Path $TrustControls 'public_provenance_ledger.json'
 New-Item -ItemType Directory -Path $ArtifactRoot, $Source -Force | Out-Null
-python tools/record_toolchain.py --require-clean-tree --output $ToolchainIdentity
 python tools/build_public_export.py --public-safe-profile --export-dir $Source --trusted-ledger $TrustedLedger
 
 New-Item -ItemType Directory -Path $Bin, $PackageDocs -Force | Out-Null
-Copy-Item build\nakagawa_player.exe, build\production-smoke\production_smoke.exe $Bin
-& .\tools\copy_build_assets.ps1 -BuildDir $Bin -ExcludeOptionalFonts
-if ($LASTEXITCODE -ne 0) { throw "tools\copy_build_assets.ps1 failed with exit code $LASTEXITCODE" }
-python tools/stage_runtime_dlls.py --target $Bin
-if ($LASTEXITCODE -ne 0) { throw "stage_runtime_dlls.py failed with exit code $LASTEXITCODE" }
+Get-ChildItem -LiteralPath $AttestedBin -Force | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination $Bin -Recurse -Force
+}
+foreach ($Required in @('nakagawa_player.exe', 'production_smoke.exe', 'SDL3.dll', 'SDL3_ttf.dll')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $Bin $Required) -PathType Leaf)) {
+        throw "The verified binary bundle is missing $Required."
+    }
+}
+# Use the exact toolchain record shipped and attested with the binary bundle.
+Copy-Item -LiteralPath $ToolchainIdentity -Destination (Join-Path $Stage 'toolchain.json')
 Copy-Item LICENSE, NOTICE.md (Join-Path $Stage '.')
 Copy-Item README.md (Join-Path $Stage '.')
 Copy-Item docs\PREVIEW_RELEASE.md, docs\SETUP.md, docs\SMOKE_TEST.md, docs\RELEASE_NOTES_v0.0.1.md $PackageDocs
