@@ -3073,7 +3073,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "36821389f1f98ef8b016c2423cb2d9752d512f59d13d1c89c1e8743972bfb51a"
+      "sha256": "71fc825b75422683dfcc63245b0cb458b5e2757b1653fd0e5f6a9483a0e97092"
     },
     {
       "path": "src/core/nk_psp_ec.h",
@@ -6033,7 +6033,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a4aaa6ce12fcdfbf6dc960f1c8c9afdaf7490985bf5ca7fcfa28486b92b16f2f"
+      "sha256": "c3d6cbb924163a58d9cd4b5e3014afc5cbabf80c8822b5d67b50f26ab506dcf3"
     },
     {
       "path": "src/rt/vfs_selftest.c",
@@ -6045,7 +6045,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9f6b9c7834c21754d376438fbafb43c5a6eaf2d4539d6581bece2ebf06bb134d"
+      "sha256": "a6f8dfbfa68acf21a050809034aafd4675e3e373c1812f88542b13f169e890b9"
     },
     {
       "path": "src/rt/watchpoints_file.c",
@@ -6165,7 +6165,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "91cf22f20bed84afc267fb2c968b1b9f11f822ae7bb0ada1277f224ba4e36a02"
+      "sha256": "325551b95164016326b5fa9056376f8d273623a81dc4423b45c528e501187c06"
     },
     {
       "path": "tests/native/test_input_profile.c",

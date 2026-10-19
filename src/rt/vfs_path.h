@@ -43,11 +43,6 @@
  * does not treat devices specially, so this rejection matters where classic paths are
  * used (savedata, ms0 host join). */
 static inline int sr_vfs_is_dos_device_name(const char *name, size_t len) {
-    static const char *const devices[] = {
-        "CON", "PRN", "AUX", "NUL",
-        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
-    };
     if (!name) return 0;
     size_t base_len = 0;
     while (base_len < len && name[base_len] != '.') base_len++;
@@ -56,12 +51,27 @@ static inline int sr_vfs_is_dos_device_name(const char *name, size_t len) {
      * which is at most len, so a component made only of spaces and dots reduces to
      * base_len 0 and returns 0 without reading past the component. */
     while (base_len > 0 && name[base_len - 1] == ' ') base_len--;
-    if (base_len < 3 || base_len > 4) return 0;
-    for (size_t i = 0; i < sizeof(devices)/sizeof(devices[0]); i++) {
-        size_t dlen = strlen(devices[i]);
-        if (dlen == base_len && sr_vfs_strnicmp(name, devices[i], base_len) == 0) {
-            return 1;
-        }
+    /* Fast-path direct length checks to avoid 22+ strlen() calls in a loop.
+     * Length 3 devices: CON, PRN, AUX, NUL.
+     * Length 4 devices: COM1-COM9, LPT1-LPT9.
+     * Length 6 device:  CONIN$
+     * Length 7 device:  CONOUT$ */
+    if (base_len == 3) {
+        return (sr_vfs_strnicmp(name, "CON", 3) == 0 ||
+                sr_vfs_strnicmp(name, "PRN", 3) == 0 ||
+                sr_vfs_strnicmp(name, "AUX", 3) == 0 ||
+                sr_vfs_strnicmp(name, "NUL", 3) == 0);
+    }
+    if (base_len == 4) {
+        return ((sr_vfs_strnicmp(name, "COM", 3) == 0 ||
+                 sr_vfs_strnicmp(name, "LPT", 3) == 0) &&
+                (name[3] >= '1' && name[3] <= '9'));
+    }
+    if (base_len == 6) {
+        return (sr_vfs_strnicmp(name, "CONIN$", 6) == 0);
+    }
+    if (base_len == 7) {
+        return (sr_vfs_strnicmp(name, "CONOUT$", 7) == 0);
     }
     return 0;
 }
