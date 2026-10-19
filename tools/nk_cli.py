@@ -1667,22 +1667,13 @@ def _build_package(args: argparse.Namespace, stage_observer,
                 # the same reviewed generic logic used by bring-up.
                 write_experimental_profile(iso_path, user_root, metadata=metadata)
             except (IsoInspectionError, OSError, ValueError) as exc:
-                boundary_code = getattr(exc, "boundary_code", None)
-                if boundary_code in {
-                    "EXECUTABLE_LOAD_BINDING_REQUIRED",
-                    "FIXED_ADDRESS_EXECUTABLE_OUTSIDE_GUEST_RAM",
-                }:
-                    raise ExperimentalProfileBuildError(
-                        boundary_code, 308, f"{boundary_code}: {exc}",
-                        f"{boundary_code}: {exc}",
-                    ) from exc
                 raise ExperimentalProfileBuildError(
                     "GENERIC_EXPERIMENTAL_PROFILE_UNAVAILABLE",
                     308,
                     "This executable needs a supported generic MIPS ELF layout; "
                     "provide a decrypted ELF with a documented load binding, then "
                     "retry the build.",
-                    f"{boundary_code}: {exc}" if boundary_code else str(exc),
+                    str(exc),
                 ) from exc
             manifest_source, manifest, expected_hash = _load_entry_manifest(
                 user_root, entry, disc_id, manifest_selected, uses_decrypted_eboot
@@ -2568,11 +2559,6 @@ def _fail_bringup(
 
 def _bringup_import_failure(exc: Exception, checks: dict) -> tuple[str, list[int], str | None]:
     detail = str(exc)
-    if getattr(exc, "boundary_code", None) in {
-        "EXECUTABLE_LOAD_BINDING_REQUIRED",
-        "FIXED_ADDRESS_EXECUTABLE_OUTSIDE_GUEST_RAM",
-    }:
-        return "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE", [308], detail
     if detail.startswith(("DISC_MODULE_", "DUPLICATE_DISC_MODULE_")):
         return "GUEST_MODULE_DISCOVERY_FAILED", [308], detail
 

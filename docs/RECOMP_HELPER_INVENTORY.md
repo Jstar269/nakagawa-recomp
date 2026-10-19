@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **289** (declared in `recomp.h`: 232)
-- reach class: emitter-reached 56, production-runtime-only 209, selftest-only 13, address-only 3, none 8
-- provenance class of the home definition: declared-only 1, project_authored_attested 23, upstream_derived 265
+- helpers: **275** (declared in `recomp.h`: 218)
+- reach class: emitter-reached 55, production-runtime-only 196, selftest-only 13, address-only 3, none 8
+- provenance class of the home definition: declared-only 1, project_authored_attested 23, upstream_derived 251
 
 ## Helpers
 
@@ -184,24 +184,14 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_exec_span_reset` | `rt/guest_interp.c` | yes | emitter-reached (direct) | `rt/guest_interp.c`: project_authored_attested |
 | `sr_exp2_approx` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_exp2_fixed` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
-| `sr_ge_vram_read_prepare` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
-| `sr_ge_vram_write_commit` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
-| `sr_ge_vram_write_prepare` | `rt/ge.c` | yes | production-runtime-only | `rt/ge.c`: upstream_derived |
 | `sr_guest_format_host` | `rt/guest_printf.c` | yes | production-runtime-only | `rt/guest_printf.c`: project_authored_attested |
 | `sr_guest_rect_geometry` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_guest_rect_readable` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_guest_rect_writable` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
-| `sr_guest_span_hits_swizzled_vram_mirror` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_guest_span_prefix` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_guest_span_readable` | `rt/recomp.h` | yes | emitter-reached (direct) | `rt/recomp.h`: upstream_derived |
-| `sr_guest_span_readable_current` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
-| `sr_guest_span_report_vram_mirror_boundary` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_guest_span_writable` | `rt/recomp.h` | yes | emitter-reached (direct) | `rt/recomp.h`: upstream_derived |
 | `sr_guest_sprintf` | `rt/guest_printf.c` | yes | emitter-reached (direct) | `rt/guest_printf.c`: project_authored_attested |
-| `sr_guest_vram_mapped_span` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
-| `sr_guest_vram_read_prepare_bytes` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
-| `sr_guest_vram_write_commit_bytes` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
-| `sr_guest_vram_write_prepare_bytes` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_gui_request_launcher_foreground_once` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_heap_allocation_size` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
 | `sr_heap_dump_failure` | `rt/recomp.c` | no | production-runtime-only | `rt/recomp.c`: upstream_derived |
@@ -227,7 +217,6 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_hle_register_late_import` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
 | `sr_hle_release_thread_resources` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
 | `sr_hle_resolve_late_import` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
-| `sr_host_address` | `rt/recomp.h` | yes | emitter-reached (via `SR_HOST`) | `rt/recomp.h`: upstream_derived |
 | `sr_host_data_entry_count` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
 | `sr_host_data_prepare` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
 | `sr_host_stack_entry_slow` | `rt/recomp.c` | yes | emitter-reached (via `SR_HOST_STACK_CHECK`) | `rt/recomp.c`: upstream_derived |
@@ -321,9 +310,6 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_vfpu_rsqrt` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_vfpu_sin` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_vfpu_sqrt` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
-| `sr_vram_cpu_address` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
-| `sr_vram_cpu_aperture` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
-| `sr_vram_cpu_span_touches` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_vread` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_vwrite` | `rt/recomp.c` | yes | emitter-reached (direct) | `rt/recomp.c`: upstream_derived |
 | `sr_w16` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |

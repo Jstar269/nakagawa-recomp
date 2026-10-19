@@ -230,14 +230,7 @@ SFO_HARNESS = r"""
 uint8_t *g_mem;
 CpuState *s_cpu;
 int g_sr_heap_watch, g_hle_depth;
-volatile int g_sr_vram_read_pending;
 void sr_oor(uint32_t a, uint32_t v, int s) { (void)a; (void)v; (void)s; }
-void sr_ge_vram_read_prepare(uint32_t address, uint32_t bytes)
-    { (void)address; (void)bytes; }
-void sr_ge_vram_write_prepare(uint32_t address, uint32_t bytes)
-    { (void)address; (void)bytes; }
-void sr_ge_vram_write_commit(uint32_t address, uint32_t bytes)
-    { (void)address; (void)bytes; }
 void sr_heap_note_write(uint32_t a, uint32_t w, uint32_t v, uint32_t p)
     { (void)a; (void)w; (void)v; (void)p; }
 void sr_heap_note_bulk_write(uint32_t a, uint32_t w, uint32_t p)

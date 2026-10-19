@@ -81,8 +81,6 @@ try:
         parse_registry_font_output,
         parse_registry_readonly_output,
         parse_umd_io_output,
-        parse_umd_raw_read_output,
-        parse_vram_mirror_output,
         validate_hle_edram_restore,
     )
 except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocation
@@ -103,8 +101,6 @@ except ImportError:  # direct ``python tools/psp_oracle/run_psplink.py`` invocat
         parse_registry_font_output,
         parse_registry_readonly_output,
         parse_umd_io_output,
-        parse_umd_raw_read_output,
-        parse_vram_mirror_output,
         validate_hle_edram_restore,
     )
 
@@ -252,7 +248,6 @@ CAMPAIGN_QUEUE_CASES = (
     "fpu-cc",
     "registry-font",
     "umd-io",
-    "umd-raw-read",
     "smoke",
     "thread-exit-delete",
     "teardown-test",
@@ -265,7 +260,6 @@ CAMPAIGN_QUEUE_CASES = (
     "cache-alias",
     "audio-query",
     "ge-nan",
-    "vram-mirror",
     "dma-cells",
     "dma-invalid-tail-s0",
     "dma-invalid-tail-memcpy-dst",
@@ -292,7 +286,6 @@ CAMPAIGN_CASE_ESTIMATE_SECONDS = {
     "fpu-cc": 90,
     "registry-font": 120,
     "umd-io": 60,
-    "umd-raw-read": 180,
     "smoke": 60,
     "thread-exit-delete": 180,
     "teardown-test": 60,
@@ -305,7 +298,6 @@ CAMPAIGN_CASE_ESTIMATE_SECONDS = {
     "cache-alias": 90,
     "audio-query": 180,
     "ge-nan": 240,
-    "vram-mirror": 600,
     "dma-cells": 180,
     "dma-invalid-tail-s0": 120,
     "dma-invalid-tail-memcpy-dst": 120,
@@ -936,8 +928,6 @@ def _validate_campaign_contract(text: str, case_id: str) -> None:
         parse_registry_font_output(text, require_complete=True)
     elif case_id == "umd-io":
         parse_umd_io_output(text, require_complete=True)
-    elif case_id == "umd-raw-read":
-        parse_umd_raw_read_output(text, require_complete=True)
     elif case_id == "font-files":
         parse_font_files_output(text, require_complete=True)
     elif case_id in _FIXED_CAMPAIGN_CASES:
@@ -960,7 +950,6 @@ _COMPLETE_CAMPAIGN_PARSERS = {
     "io-matrix": parse_io_matrix_output,
     "mbx-delete-wait": parse_mbx_delete_wait_output,
     "ge-nan": parse_ge_nan_output,
-    "vram-mirror": parse_vram_mirror_output,
     "dma-cells": parse_dmac_cells_output,
     "delay-zero": parse_delay_zero_output,
 }
@@ -1054,7 +1043,7 @@ def _normalise_unbound_identity_fields(text: str) -> str:
 
 def _campaign_completeness_contract(case_id: str) -> str:
     if case_id in CAMPAIGN_PROBE_CASES or case_id in {
-        "registry-readonly", "registry-font", "umd-io", "umd-raw-read", "font-files",
+        "registry-readonly", "registry-font", "umd-io", "font-files",
     }:
         return "strict-golden-sequence"
     if case_id in _FIXED_CAMPAIGN_CASES:
@@ -1064,8 +1053,7 @@ def _campaign_completeness_contract(case_id: str) -> str:
     ):
         return "strict-dmac-sequence"
     if case_id in {"audio-query", "fpu-vector", "cache-alias", "io-matrix",
-                   "mbx-delete-wait", "ge-nan", "vram-mirror", "dma-cells",
-                   "delay-zero"}:
+                   "mbx-delete-wait", "ge-nan", "dma-cells", "delay-zero"}:
         return "strict-golden-sequence"
     if case_id in DMAC_INVALID_CASES:
         return "strict-dmac-invalid-cell-records"

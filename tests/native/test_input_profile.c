@@ -3,25 +3,8 @@
 
 #include <assert.h>
 #include <stdio.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* This profile-only native test links the PGF core object without the GE runtime. */
-volatile int g_sr_vram_read_pending;
-void sr_ge_vram_read_prepare(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
-void sr_ge_vram_write_prepare(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
-void sr_ge_vram_write_commit(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
-void sr_oor(uint32_t address, uint32_t value, int store) {
-    (void)address; (void)value; (void)store;
-    abort();
-}
 
 #include "nk_input_profile.h"
 #include "nk_platform.h"

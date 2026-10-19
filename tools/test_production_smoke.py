@@ -1388,77 +1388,6 @@ class TestFlightSmokeProjection(unittest.TestCase):
         return {"events": events, "recorder": {"recorded": len(events), "dropped": 0},
                 "terminal": {"sequence": len(events)}}
 
-    @staticmethod
-    def _count_bundle(frames, host_presents):
-        events = [
-            {"class": "ge", "kind": kind}
-            for kind in (20, 25, 26, 27)
-        ]
-        events.extend(
-            {"class": "present", "kind": 28,
-             "arg0": 0x04000000, "arg1": 3, "arg2": 512, "arg3": frame}
-            for frame in range(frames)
-        )
-        events.extend(
-            {"class": "present", "kind": 29}
-            for _ in range(host_presents)
-        )
-        return {"events": events}
-
-    def test_host_present_count_allows_measured_windows_timing_range(self):
-        for count in (30, 31, 60):
-            with self.subTest(count=count):
-                self.assertEqual(
-                    display_generator._require_flight_event_counts(
-                        self._count_bundle(60, count), 60, "measured"
-                    ),
-                    count,
-                )
-        for count in (29, 61):
-            with self.subTest(count=count), self.assertRaisesRegex(
-                RuntimeError, "outside measured range 30..60"
-            ):
-                display_generator._require_flight_event_counts(
-                    self._count_bundle(60, count), 60, "out-of-range"
-                )
-
-    def test_guest_event_counts_and_set_framebuf_arguments_stay_exact(self):
-        bundle = self._count_bundle(60, 31)
-        set_framebuf = next(
-            event for event in bundle["events"]
-            if event["class"] == "present" and event["kind"] == 28
-        )
-        set_framebuf["arg2"] = 480
-        with self.assertRaisesRegex(RuntimeError, "SetFrameBuf arguments"):
-            display_generator._require_flight_event_counts(bundle, 60, "wrong-stride")
-
-        bundle = self._count_bundle(59, 31)
-        with self.assertRaisesRegex(RuntimeError, "deterministic GE/SetFrameBuf counts"):
-            display_generator._require_flight_event_counts(bundle, 60, "missing-setfb")
-
-    def test_full_present_ppm_checks_every_pixel_and_rejects_one_changed_channel(self):
-        frame = 7
-        pixels = display_generator._expected_present_pixels(frame)
-        self.assertEqual(len(pixels), 480 * 272 * 3)
-        self.assertEqual(pixels[:16 * 3], bytes((7, 248, 14)) * 16)
-        self.assertEqual(pixels[16 * 3:32 * 3], bytes((8, 247, 16)) * 16)
-        self.assertEqual(pixels[480 * 3:480 * 3 + 3], bytes((39, 216, 78)))
-
-        header = b"P6" + bytes((10,)) + b"480 272" + bytes((10,)) + b"255" + bytes((10,))
-        with tempfile.TemporaryDirectory(prefix="display-smoke-pixels-") as temp_dir:
-            path = Path(temp_dir) / "frame.ppm"
-            path.write_bytes(header + pixels)
-            self.assertEqual(
-                display_generator._require_exact_present_pixels(path, 60, "known"),
-                frame,
-            )
-
-            changed = bytearray(pixels)
-            changed[(1 * 480 + 17) * 3 + 1] ^= 1
-            path.write_bytes(header + changed)
-            with self.assertRaisesRegex(RuntimeError, r"pixel \(17,1\) G mismatch"):
-                display_generator._require_exact_present_pixels(path, 60, "mutated")
-
     def test_set_framebuf_vblank_count_is_not_compared(self):
         """The VBLANK count at SetFrameBuf follows host pacing; two identical runs differ in it."""
         first = display_generator._without_host_present_events(
@@ -1500,19 +1429,12 @@ class TestFlightSmokeProjection(unittest.TestCase):
         """Both runs are gated before the host-paced count is zeroed for the comparison."""
         source = DISPLAY_GENERATOR_PATH.read_text(encoding="utf-8")
         body = source[source.index("def flight_smoke("):source.index("def run_player(")]
-        loop = body.index('for label, bundle, run_dir in (')
+        loop = body.index('for label, bundle in (("first", first), ("second", second)):')
         gate = body.index("_require_vblank_progress(bundle, label)")
-        counts = body.index("_require_flight_event_counts(bundle, frames, label)")
-        pixels = body.index(
-            '_require_exact_present_pixels(run_dir / "frame_first.ppm", frames, label)'
-        )
         self.assertLess(loop, gate)
         # The gate is inside the loop over both runs: nothing but loop body lies between.
         self.assertNotIn("\n        kind_counts", body[loop:gate])
-        projection = body.index("_without_host_present_events(source)")
-        self.assertLess(gate, counts)
-        self.assertLess(counts, pixels)
-        self.assertLess(pixels, projection)
+        self.assertLess(gate, body.index("_without_host_present_events(source)"))
 
 
 class TestPresenterContract(unittest.TestCase):
@@ -1629,8 +1551,6 @@ class TestPresenterContract(unittest.TestCase):
             "SDL_AUDIO_DRIVER": "wasapi",
             "SDL_AUDIODRIVER": "wasapi",
         }
-        ambient = dict(inherited)
-        ambient["SR_NOVBPACE"] = "1"
         expected = f"0x{display_generator.final_frame_first_pixel(1):08x}"
         combined = (
             "BOOT_EVENT phase=init public_safe=1\n"
@@ -1645,7 +1565,6 @@ class TestPresenterContract(unittest.TestCase):
 
         def fake_run(command, **kwargs):
             captured["env"] = dict(kwargs["env"])
-            captured["cwd"] = kwargs["cwd"]
             return subprocess.CompletedProcess(command, 0, combined, "")
 
         with tempfile.TemporaryDirectory(prefix="display-smoke-env-") as temp_dir:
@@ -1656,25 +1575,17 @@ class TestPresenterContract(unittest.TestCase):
             suffix = ".exe" if os.name == "nt" else ""
             (build_dir / f"{display_generator.ARTIFACT_STEM}{suffix}").write_bytes(b"runtime")
             (build_dir / f"{display_generator.ARTIFACT_STEM}_image.bin").write_bytes(b"image")
-            with mock.patch.dict(os.environ, ambient):
+            with mock.patch.dict(os.environ, inherited):
                 with mock.patch.object(
                     display_generator.subprocess, "run", side_effect=fake_run
                 ):
-                    flight_dir = build_dir / "flight"
-                    flight_output = flight_dir / "flight.json"
-                    status = display_generator.run(
-                        build_dir, gui=True, offscreen=True, flight_output=flight_output
-                    )
+                    status = display_generator.run(build_dir, gui=True, offscreen=True)
 
         self.assertEqual(status, 0)
         for selector in inherited:
             self.assertEqual(captured["env"][selector], "dummy")
         self.assertEqual(captured["env"]["SR_VIDEO"], "offscreen")
         self.assertEqual(captured["env"]["SR_PRESENT_TRACE"], "1")
-        self.assertEqual(captured["env"]["SR_FIRST_FRAME_DUMP"], "1")
-        self.assertEqual(captured["env"]["SR_FPS_CAP"], "30")
-        self.assertEqual(captured["env"]["SR_NOVBPACE"], "0")
-        self.assertEqual(Path(captured["cwd"]), flight_dir)
 
     def test_display_smoke_routes_keep_separate_logs(self):
         expected = f"0x{display_generator.final_frame_first_pixel(1):08x}"
@@ -1740,8 +1651,7 @@ class TestSanitizedBringup(unittest.TestCase):
         self.root = Path(self.temporary.name)
         executable, _stub = build_synthetic_import_prx(b"sceSynthetic", 0)
         executable = bytearray(executable)
-        # Keep the import fixture as its source PRX. A zero-address ET_EXEC is
-        # an unbound executable and is covered by a separate fail-closed case.
+        struct.pack_into("<H", executable, 16, 2)
         phoff = struct.unpack_from("<I", executable, 28)[0]
         struct.pack_into("<I", executable, phoff + 28, 0x100)
         self.iso = self.root / "synthetic.iso"
@@ -2767,10 +2677,7 @@ class TestSanitizedBringup(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(report["reached_stage"], "prepare_import")
         self.assertEqual(report["failure_class"], "GUEST_MODULE_LOAD_ADDRESS_LAYOUT_UNAVAILABLE")
-        self.assertIsNone(
-            report["counts"]["modules"],
-            "the fixed main image is refused before disc-module discovery",
-        )
+        self.assertEqual(report["counts"]["modules"], 1)
         self.assertEqual(report["stages"]["analyze"]["status"], "NOT_RUN")
         self.assertIn(308, report["issue_numbers"])
         nk_cli.validate_bringup_report(report)

@@ -40,8 +40,8 @@ Guest program
 
 ``colour(v)`` packs ``v`` into an ABGR8888 word. The index is the linear pixel
 number, so the output is horizontal striping that shifts by one band per frame.
-The flight gate checks every displayed RGB pixel against the stripe pattern
-for the first frame accepted by the host presenter.
+The gate proves frame progression through the final framebuffer word; it does
+not claim a particular spatial arrangement.
 """
 
 from __future__ import annotations
@@ -112,9 +112,7 @@ FRAMEBUFFER = 0x04000000
 GE_LIST = 0x08900000
 STRIDE = 512
 PIXEL_FORMAT = 3  # PSP_DISPLAY_PIXEL_FORMAT_8888
-DISPLAY_WIDTH = 480
-DISPLAY_HEIGHT = 272
-PIXELS = STRIDE * DISPLAY_HEIGHT
+PIXELS = STRIDE * 272
 DEFAULT_FRAMES = 240
 
 _HOST_PRESENT_SUBMITTED_RE = re.compile(
@@ -185,57 +183,6 @@ def expected_colour(value: int) -> int:
 def final_frame_first_pixel(frames: int) -> int:
     """Framebuffer word at 0x04000000 once the last frame has been drawn."""
     return expected_colour(frames - 1)
-
-
-def _expected_present_pixels(frame: int) -> bytes:
-    """Build expected RGB bytes from one frame of the guest stripe pattern."""
-    frame &= 0xFF
-    pixels = bytearray(DISPLAY_WIDTH * DISPLAY_HEIGHT * 3)
-    cursor = 0
-    for y in range(DISPLAY_HEIGHT):
-        for x in range(DISPLAY_WIDTH):
-            word = expected_colour(((y * STRIDE + x) >> 4) + frame)
-            pixels[cursor] = word & 0xFF
-            pixels[cursor + 1] = (word >> 8) & 0xFF
-            pixels[cursor + 2] = (word >> 16) & 0xFF
-            cursor += 3
-    return bytes(pixels)
-
-
-def _require_exact_present_pixels(path: Path, frames: int, label: str) -> int:
-    """Require every captured pixel to match one complete guest frame."""
-    try:
-        data = path.read_bytes()
-    except OSError as exc:
-        raise RuntimeError(f"{label} has no readable first-frame PPM at {path}") from exc
-
-    header = f"P6\n{DISPLAY_WIDTH} {DISPLAY_HEIGHT}\n255\n".encode("ascii")
-    if not data.startswith(header):
-        raise RuntimeError(f"{label} first-frame PPM has an unexpected header")
-    actual = data[len(header):]
-    expected_length = DISPLAY_WIDTH * DISPLAY_HEIGHT * 3
-    if len(actual) != expected_length:
-        raise RuntimeError(
-            f"{label} first-frame PPM has {len(actual)} pixel bytes; expected {expected_length}"
-        )
-
-    frame = actual[0]
-    if frames <= 256 and frame >= frames:
-        raise RuntimeError(
-            f"{label} first-frame PPM encodes frame {frame}, outside the {frames}-frame guest run"
-        )
-    expected = _expected_present_pixels(frame)
-    for byte_index, (got, want) in enumerate(zip(actual, expected, strict=True)):
-        if got != want:
-            pixel_index = byte_index // 3
-            x = pixel_index % DISPLAY_WIDTH
-            y = pixel_index // DISPLAY_WIDTH
-            component = "RGB"[byte_index % 3]
-            raise RuntimeError(
-                f"{label} presented pixel ({x},{y}) {component} mismatch in frame {frame}: "
-                f"got=0x{got:02x} expected=0x{want:02x}"
-            )
-    return frame
 
 
 def _entry_words(frames: int) -> list[int]:
@@ -745,22 +692,17 @@ def run(
             "SR_VIDEO": "offscreen",
             "SR_PRESENT_TRACE": "1",
         })
-    run_cwd = ROOT
     if flight_output is not None:
-        run_cwd = flight_output.resolve().parent
-        run_cwd.mkdir(parents=True, exist_ok=True)
-        # Keep the 59.94 Hz guest VBLANK clock paced even if the caller inherited turbo mode.
         env.update({
             "SR_FLIGHT": "ge,present;4096",
-            "SR_NOVBPACE": "0",
             "SR_FLIGHT_OUTPUT": str(flight_output.resolve()),
-            "SR_FIRST_FRAME_DUMP": "1",
-            # The flight smoke uses a 30 Hz host output cap. Its accepted count is paced by
-            # the host clock, so the gate bounds that count while keeping guest evidence exact.
+            # The present-event count below is frames // 2, i.e. a 30 Hz host cap over a
+            # 60 Hz guest. Pin it: the unset default is the PSP scanout rate, which would
+            # present nearly every frame and make the count depend on host timing.
             "SR_FPS_CAP": "30",
         })
     completed = subprocess.run(
-        command, cwd=run_cwd, env=env, capture_output=True, text=True
+        command, cwd=ROOT, env=env, capture_output=True, text=True
     )
     mode = "gui-offscreen" if offscreen else "gui" if gui else "headless"
     # Each route keeps its own logs so a later route cannot erase an earlier one's evidence.
@@ -1035,72 +977,22 @@ def _require_vblank_progress(bundle: dict, label: str) -> None:
         raise RuntimeError(f"{label} flight bundle: VBLANK count never advanced ({counts[0]} throughout)")
 
 
-def _require_flight_event_counts(bundle: dict, frames: int, label: str) -> int:
-    """Enforce exact guest counts and bound wall-clock host output."""
-    counts = Counter((event["class"], event["kind"]) for event in bundle["events"])
-    expected_guest = {
-        ("ge", 20): 1,   # enqueue
-        ("ge", 25): 1,   # bounded PRIM event
-        ("ge", 26): 1,   # list completed
-        ("ge", 27): 1,   # FINISH command
-        ("present", FLIGHT_KIND_PRESENT_SET_FRAMEBUF): frames,
-    }
-    actual_guest = {
-        key: count for key, count in counts.items()
-        if key != ("present", FLIGHT_KIND_PRESENT_FRAME)
-    }
-    if actual_guest != expected_guest:
-        raise RuntimeError(
-            f"{label} has unexpected deterministic GE/SetFrameBuf counts: {actual_guest}"
-        )
-
-    for event in bundle["events"]:
-        if event["class"] != "present" or event["kind"] != FLIGHT_KIND_PRESENT_SET_FRAMEBUF:
-            continue
-        actual = (event["arg0"], event["arg1"], event["arg2"])
-        expected = (FRAMEBUFFER, PIXEL_FORMAT, STRIDE)
-        if actual != expected:
-            raise RuntimeError(
-                f"{label} SetFrameBuf arguments {actual} differ from {expected}"
-            )
-
-    # The 30 Hz host output cap does not wait for a missed slot. Hosted Windows CI
-    # observed 31 presents on #1058 and 60 then 31 across #1076's two launches;
-    # local runs observed 30. Keep the guest event stream and pixels exact while
-    # accepting the measured wall-clock range of 30 through one per guest frame.
-    host_presents = counts.get(("present", FLIGHT_KIND_PRESENT_FRAME), 0)
-    minimum = frames // 2
-    if not minimum <= host_presents <= frames:
-        raise RuntimeError(
-            f"{label} host present count {host_presents} outside measured range {minimum}..{frames}"
-        )
-    return host_presents
-
-
 def flight_smoke(build_dir: Path) -> int:
-    """Record exact guest/pixel evidence and bounded host-paced presents."""
+    """Record and compare repeatable GE/present evidence from the public guest."""
     build_dir = build_dir.resolve()
     manifest = _read_manifest(build_dir / "fixture")
     frames = int(manifest["frames"])
     with tempfile.TemporaryDirectory(prefix="display-smoke-flight-") as temp_dir:
         temp = Path(temp_dir)
-        first_dir = temp / "first"
-        second_dir = temp / "second"
-        first_dir.mkdir()
-        second_dir.mkdir()
-        first_path = first_dir / "flight.json"
-        second_path = second_dir / "flight.json"
+        first_path = temp / "first.json"
+        second_path = temp / "second.json"
         mutated_path = temp / "mutated.json"
         run(build_dir, gui=True, offscreen=True, flight_output=first_path)
         run(build_dir, gui=True, offscreen=True, flight_output=second_path)
 
         first = json.loads(first_path.read_text(encoding="utf-8"))
         second = json.loads(second_path.read_text(encoding="utf-8"))
-        host_present_counts = []
-        pixel_frames = []
-        for label, bundle, run_dir in (
-            ("first", first, first_dir), ("second", second, second_dir)
-        ):
+        for label, bundle in (("first", first), ("second", second)):
             if bundle["schema_version"] != 5:
                 raise RuntimeError(f"{label} flight bundle is not schema v5")
             if bundle["recorder"]["enabled_classes"] != ["ge", "present"]:
@@ -1108,14 +1000,24 @@ def flight_smoke(build_dir: Path) -> int:
             if bundle["recorder"]["dropped"] != 0:
                 raise RuntimeError(f"{label} flight bundle dropped events")
             _require_vblank_progress(bundle, label)
-            host_present_counts.append(_require_flight_event_counts(bundle, frames, label))
-            pixel_frames.append(
-                _require_exact_present_pixels(run_dir / "frame_first.ppm", frames, label)
-            )
 
-        # Successful host presents follow wall-clock pacing, so their positions vary
-        # between runs. Compare every deterministic GE event and SetFrameBuf argument
-        # after projecting out host presents and the host-paced VBLANK field.
+        kind_counts = Counter((event["class"], event["kind"]) for event in first["events"])
+        expected = {
+            ("ge", 20): 1,   # enqueue
+            ("ge", 25): 1,   # bounded PRIM event
+            ("ge", 26): 1,   # list completed
+            ("ge", 27): 1,   # FINISH command
+            ("present", 28): frames,
+            ("present", 29): frames // 2,
+        }
+        if kind_counts != expected:
+            raise RuntimeError(f"unexpected GE/present event counts: {dict(kind_counts)}")
+
+        # Successful host presents are recorded when a VBLANK is serviced, so where
+        # they fall among the guest's SetFrameBuf calls follows wall-clock pacing and
+        # reordered between two identical runs on a loaded runner. They are counted
+        # above; the repeatability comparison covers the guest-determined events (the
+        # GE stream and every SetFrameBuf) with the present events projected out.
         for source, target in ((first, first_path), (second, second_path)):
             target.write_text(
                 json.dumps(_without_host_present_events(source), sort_keys=True),
@@ -1147,9 +1049,7 @@ def flight_smoke(build_dir: Path) -> int:
 
     print(
         f"DISPLAY_FLIGHT_SMOKE status=PASS ge=4 set_framebuf={frames} "
-        f"host_present={host_present_counts[0]},{host_present_counts[1]} "
-        f"bounds={frames // 2}..{frames} pixel_frames={pixel_frames[0]},{pixel_frames[1]} "
-        "pixels=EXACT identical=MATCH mutation=FIRST_GE_DRAW_COUNT"
+        f"present={frames // 2} identical=MATCH mutation=FIRST_GE_DRAW_COUNT"
     )
     return 0
 

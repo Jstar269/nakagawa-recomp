@@ -29,7 +29,6 @@ from import_fixtures import (
 )
 from psp_import_table import UNATTRIBUTED_LIBRARY
 from psp_oracle import user_mode_imports
-from psp_oracle import parse_golden
 from psp_oracle.protocol import (
     ProtocolError,
     STATUSES,
@@ -94,13 +93,6 @@ from psp_oracle.parse_golden import (
     parse_umd_io_output,
     UMDIO_DOPENS,
     UMDIO_OPENS,
-    UMDRAW_CASES,
-    UMDRAW_HEADER_READ_SIZES,
-    UMDRAW_IOFILEMGR_NIDS,
-    UMDRAW_RAW_FLAGS,
-    UMDRAW_READONLY_FLAGS,
-    UMDRAW_READ_SIZES,
-    parse_umd_raw_read_output,
     validate_hle_edram_restore,
 )
 
@@ -114,50 +106,6 @@ MEASURED_SHA = "a" * 64
 MEASURED_COMMIT = "b" * 40
 STAGED_PRX = b"synthetic PSP oracle probe"
 STAGED_SHA = hashlib.sha256(STAGED_PRX).hexdigest()
-
-# PSP-VRAM-MIRROR-001 measured rules, from the PSP-3000 runs on 2026-10-16
-# (commits 24c1472e, fd3efc64, and df41dba2). These are algorithmic constants;
-# tests synthesize their own result words and contain no captured PSP words.
-MEASURED_VRAM_IDENTITY_COLUMNS = (None, None) + tuple(
-    1 << bit for bit in range(2, 21)
-)
-MEASURED_VRAM_ROTATED_COLUMNS = (None, None) + tuple(
-    1 << (bit + 1) if 5 <= bit <= 8 else 1 << 5 if bit == 9 else 1 << bit
-    for bit in range(2, 21)
-)
-MEASURED_VRAM_ALIAS_RULES = {
-    0x04000000: (0x000000, MEASURED_VRAM_IDENTITY_COLUMNS),
-    0x04200000: (0x002040, MEASURED_VRAM_IDENTITY_COLUMNS),
-    0x04400000: (0x000000, MEASURED_VRAM_IDENTITY_COLUMNS),
-    0x04600000: (0x002040, MEASURED_VRAM_ROTATED_COLUMNS),
-    0x44000000: (0x000000, MEASURED_VRAM_IDENTITY_COLUMNS),
-    0x44200000: (0x002040, MEASURED_VRAM_IDENTITY_COLUMNS),
-    0x44400000: (0x000000, MEASURED_VRAM_IDENTITY_COLUMNS),
-    0x44600000: (0x002040, MEASURED_VRAM_ROTATED_COLUMNS),
-}
-MEASURED_VRAM_DEPTH_BYTE_XOR = 0x002040
-# Flat Z and rectangles aligned to eight pixels leave byte XOR phases 0x2..0xE
-# observationally equivalent; preserve the reported mask as a candidate and test
-# that the analyzer exposes the geometry's remaining ambiguity.
-MEASURED_VRAM_DEPTH_XOR_CANDIDATES = tuple(
-    MEASURED_VRAM_DEPTH_BYTE_XOR | low_xor
-    for low_xor in (0x0, 0x2, 0x4, 0x6, 0x8, 0xA, 0xC, 0xE)
-)
-MEASURED_VRAM_DEPTH_PHASE_AMBIGUITY = 0x00000E
-MEASURED_VRAM_DEPTH_ZBP = 0x000CC000
-MEASURED_VRAM_DEPTH_SCOPE_AMBIGUOUS = True
-
-
-def _apply_measured_vram_alias_rule(alias_base: int, offset: int) -> int:
-    constant, columns = MEASURED_VRAM_ALIAS_RULES[alias_base]
-    physical = constant | (offset & 3)
-    for bit in range(2, 21):
-        if offset & (1 << bit):
-            column = columns[bit]
-            if column is None:
-                raise AssertionError(f"missing synthetic column for input bit {bit}")
-            physical ^= column
-    return physical
 
 
 def stream(source: str, result: str = "0x1") -> str:
@@ -2440,12 +2388,12 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 91)
+        self.assertEqual(len(routes), 89)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(range(1, 78)) | set(range(90, 104)), set(ids))
+        self.assertEqual(set(range(1, 76)) | set(range(90, 104)), set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -2836,8 +2784,7 @@ class PspDmacProbeTests(unittest.TestCase):
                 "PSP-DMAC-001", "PSP-DISPLAY-001", "PSP-EXCEPTION-001", "PSP-KERNEL-002",
                 "PSP-TRANSPORT-001", "PSP-ALARM-001", "PSP-THREAD-003", "PSP-WAIT-001",
                 "PSP-KERNEL-STATUS-001", "PSP-REGISTRY-001", "PSP-KERNEL-MISC-001", "PSP-SMOKE-001",
-                "PSP-THREAD-EXIT-001", "PSP-IO-001", "PSP-UMDIO-001",
-                "PSP-DISPLAY-002", "PSP-DISPLAY-003",
+                "PSP-THREAD-EXIT-001", "PSP-IO-001", "PSP-DISPLAY-002", "PSP-DISPLAY-003",
                 "PSP-DISPLAY-004", "PSP-FPU-001", "PSP-CACHE-001", "PSP-AUDIO-001", "PSP-GE-001",
                 "PSP-MUTEX-001", "PSP-KERNEL-001", "PSP-SYSTEM-001",
                 # The 2026-10-15 single-case runs on e45e667b were acceptance-eligible.
@@ -2854,8 +2801,6 @@ class PspDmacProbeTests(unittest.TestCase):
                 # timer-order case from 22b027f6, the audio SRC case from 7fc1641e.
                 "PSP-VFPU-TRANSCENDENTAL-001", "PSP-HLE-TIMER-ORDER-001",
                 "PSP-HLE-AUDIO-SRC-001",
-                # The 2026-10-16 acceptance-eligible PSP-3000 VMIR3 run.
-                "PSP-VRAM-MIRROR-001",
             },
         )
         self.assertEqual(
@@ -2866,8 +2811,6 @@ class PspDmacProbeTests(unittest.TestCase):
                 # b5d6fc5b, 2026-10-15: an incomplete NULL-pointer stream. (The pool-bounds
                 # capture of the same day belongs to a revision since replaced; NOT_RUN.)
                 "PSP-HLE-NULL-OUT-001",
-                # 2026-10-17: raw UMD capture stopped before the 32768-byte seek/read result.
-                "PSP-UMDRAW-001",
             },
         )
 
@@ -2986,7 +2929,6 @@ class PspDmacProbeTests(unittest.TestCase):
             "PSP-GE-001": (GE_NAN_SPEC, "ge-nan"),
             "PSP-KERNEL-002": (None, "delay-zero"),
             "PSP-DMAC-001": (None, "dma-cells"),
-            "PSP-VRAM-MIRROR-001": (parse_golden.VRAM_MIRROR_SPEC, "vram-mirror"),
         }
         for test_id, (spec, campaign_case) in expected.items():
             with self.subTest(test_id=test_id):
@@ -2998,8 +2940,7 @@ class PspDmacProbeTests(unittest.TestCase):
                     self.assertEqual(entry["status"], "planned")
                     self.assertEqual(entry["hardware_evidence"], "MEASURED")
                     self.assertEqual(entry["evidence_cases"], entry["case_ids"])
-        for case_id in ("audio-query", "ge-nan", "dma-cells", "delay-zero",
-                        "vram-mirror"):
+        for case_id in ("audio-query", "ge-nan", "dma-cells", "delay-zero"):
             self.assertIn(f"else ifeq ($(CASE),{case_id})", self.makefile)
         delay_zero = by_id["PSP-KERNEL-002"]
         self.assertEqual(delay_zero["status"], "implemented")
@@ -5515,557 +5456,6 @@ class HleSingleLaunchProbeTests(unittest.TestCase):
         self.assertIn("up to 64 creates; out1 records whether a refusal occurred", hardware)
         self.assertIn("up to 64 creates; out1 records whether a refusal occurred", readme)
 
-class VramMirrorParserTests(unittest.TestCase):
-    TEST_ID = "PSP-VRAM-MIRROR-001"
-    BASES = parse_golden.VRAM_MIRROR_BASES
-    WRITE_BASES = parse_golden.VRAM_MIRROR_WRITE_BASES
-
-    def test_vram_mirror_parser_is_registered(self) -> None:
-        self.assertTrue(callable(getattr(parse_golden, "parse_vram_mirror_output", None)))
-
-    def _record(self, case_id: str, outputs: tuple[int, ...] = (), *,
-                status: str = "PASS", result: int = 0) -> str:
-        fields = " ".join(
-            f"out{index}=0x{value:08x}" for index, value in enumerate(outputs)
-        )
-        suffix = f" {fields}" if fields else ""
-        return (
-            f"NAKAGAWA_PSP_TEST schema=1 test_id={self.TEST_ID} "
-            f"case_id={case_id} status={status} result=0x{result:08x}{suffix}\n"
-        )
-
-    def _address_pairs(
-        self, offsets: tuple[int, ...], value: int,
-        aliases: tuple[int, ...] | None = None,
-    ) -> tuple[int, ...]:
-        selected_aliases = self.BASES if aliases is None else aliases
-        return tuple(
-            field
-            for offset in offsets
-            for base in selected_aliases
-            for field in (base + offset, value)
-        )
-
-    def _stream(
-        self,
-        *,
-        observed_word: int = 0xDEADBEEF,
-        skipped: bool = False,
-        measured_rules: bool = False,
-        depth_storage_xor: int | None = None,
-        wrong_write_landing: bool = False,
-    ) -> str:
-        spec = parse_golden.VRAM_MIRROR_SPEC
-        color_frame_bytes = parse_golden.VRAM_MIRROR_FRAME_BYTES
-        display_bytes = color_frame_bytes * (2 if measured_rules else 1)
-        color_offset = display_bytes
-        depth_offset = color_offset + color_frame_bytes
-        if measured_rules and depth_storage_xor is None:
-            depth_storage_xor = MEASURED_VRAM_DEPTH_BYTE_XOR
-        info_values = {
-            "cached_base": self.BASES[0],
-            "uncached_base": self.BASES[4],
-            "display_offset": 0,
-            "display_bytes": display_bytes,
-            "display_stride": 512,
-            "display_format": 3 if measured_rules else 0,
-            "color_offset": color_offset,
-            "color_frame_bytes": parse_golden.VRAM_MIRROR_FRAME_BYTES,
-            "depth_offset": depth_offset,
-            "depth_frame_bytes": parse_golden.VRAM_MIRROR_FRAME_BYTES,
-            "vram_bytes": parse_golden.VRAM_MIRROR_BYTES,
-            "cpu_sample_word_count": parse_golden.VRAM_MIRROR_CPU_SAMPLE_WORD_COUNT,
-            "cpu_dense_offset": parse_golden.VRAM_MIRROR_DENSE_OFFSET,
-            "cpu_dense_rows": parse_golden.VRAM_MIRROR_DENSE_ROWS,
-            "cpu_row_bytes": parse_golden.VRAM_MIRROR_ROW_BYTES,
-            "cpu_pair_region_count": len(parse_golden.VRAM_MIRROR_PAIR_BASES),
-            "cpu_pair_rows": parse_golden.VRAM_MIRROR_PAIR_ROWS,
-            "cpu_sweep_first_bit": parse_golden.VRAM_MIRROR_SWEEP_FIRST_BIT,
-            "cpu_sweep_last_bit": parse_golden.VRAM_MIRROR_SWEEP_LAST_BIT,
-            "write_alias_count": len(self.WRITE_BASES),
-            "write_sample_count": len(parse_golden.VRAM_MIRROR_WRITE_OFFSETS),
-            "write_offset_0": parse_golden.VRAM_MIRROR_WRITE_OFFSETS[0],
-            "write_offset_1": parse_golden.VRAM_MIRROR_WRITE_OFFSETS[1],
-            "write_offset_2": parse_golden.VRAM_MIRROR_WRITE_OFFSETS[2],
-            "write_scan_bytes": parse_golden.VRAM_MIRROR_BYTES,
-            "depth_stride": parse_golden.VRAM_MIRROR_DEPTH_STRIDE,
-            "depth_row_count": len(parse_golden.VRAM_MIRROR_DEPTH_ROWS),
-            **{
-                f"depth_row_y{row}": y
-                for row, y in enumerate(parse_golden.VRAM_MIRROR_DEPTH_ROWS)
-            },
-            "depth_alias_count": len(parse_golden.VRAM_MIRROR_DEPTH_ALIASES),
-            "depth_chunk_pixels": parse_golden.VRAM_MIRROR_DEPTH_CHUNK_PIXELS,
-            "color_row_count": len(parse_golden.VRAM_MIRROR_COLOR_ROWS),
-            **{
-                f"color_row_y{row}": y
-                for row, y in enumerate(parse_golden.VRAM_MIRROR_COLOR_ROWS)
-            },
-            "color_chunk_pixels": parse_golden.VRAM_MIRROR_COLOR_CHUNK_PIXELS,
-            "depth_test_enabled": 1,
-            "depth_function": parse_golden.VRAM_MIRROR_DEPTH_FUNCTION_ALWAYS,
-            "depth_mask": parse_golden.VRAM_MIRROR_DEPTH_MASK_WRITE_ENABLE,
-            "depth_range_near": parse_golden.VRAM_MIRROR_DEPTH_RANGE_NEAR,
-            "depth_range_far": parse_golden.VRAM_MIRROR_DEPTH_RANGE_FAR,
-            "clear_depth": parse_golden.VRAM_MIRROR_CLEAR_DEPTH,
-            "pattern_prefix": parse_golden.VRAM_MIRROR_PATTERN_PREFIX,
-            "marker_prefix": parse_golden.VRAM_MIRROR_MARKER_PREFIX,
-            "cached_alias_count": parse_golden.VRAM_MIRROR_CACHED_ALIAS_COUNT,
-        }
-        info = info_values
-        depth_writes = None
-        if depth_storage_xor is not None:
-            depth_writes = {}
-            for sprite_case in parse_golden.VRAM_MIRROR_GE_SYNC_CASES:
-                if sprite_case[1] == 0:
-                    continue
-                x0, y0, z0, x1, y1, z1 = sprite_case[2:8]
-                if z0 != z1:
-                    raise AssertionError("synthetic sprite Z endpoints must agree")
-                for source_y in range(y0, y1):
-                    for source_x in range(x0, x1):
-                        linear = source_y * 1024 + 2 * source_x
-                        depth_writes[depth_offset + (linear ^ depth_storage_xor)] = z0
-        rows = [META.format(
-            source="psp", model="PSP-3000", firmware="6.61-ARK",
-            binary=MEASURED_SHA, commit=MEASURED_COMMIT,
-        )]
-        for case_id in spec.ordered_cases:
-            if skipped:
-                terminal = case_id == spec.terminal_case
-                rows.append(self._record(
-                    case_id,
-                    (len(spec.semantic_cases),) if terminal else (),
-                    status="SKIP", result=4,
-                ))
-                continue
-            if case_id == "vram-mirror-info":
-                outputs = tuple(info_values[field]
-                                for field in parse_golden.VRAM_MIRROR_INFO_FIELDS)
-            elif match := re.fullmatch(r"vram-cpu-pattern-(\d{3})", case_id):
-                chunk = int(match.group(1))
-                first = chunk * parse_golden.VRAM_MIRROR_SAMPLE_CHUNK_WORDS
-                offsets = parse_golden._vram_mirror_sample_offsets()[
-                    first:first + parse_golden.VRAM_MIRROR_SAMPLE_CHUNK_WORDS
-                ]
-                if measured_rules:
-                    outputs = tuple(
-                        field
-                        for offset in offsets
-                        for alias in self.BASES
-                        for field in (
-                            alias + offset,
-                            parse_golden.VRAM_MIRROR_PATTERN_PREFIX
-                            | _apply_measured_vram_alias_rule(alias, offset),
-                        )
-                    )
-                else:
-                    outputs = self._address_pairs(offsets, observed_word)
-            elif match := re.fullmatch(r"vram-cpu-write-mirror-(\d{2})-(\d{2})", case_id):
-                alias, sample = (int(part) for part in match.groups())
-                offset = parse_golden.VRAM_MIRROR_WRITE_OFFSETS[sample]
-                if measured_rules:
-                    found_offset = _apply_measured_vram_alias_rule(
-                        self.WRITE_BASES[alias], offset
-                    )
-                    if wrong_write_landing and alias == 0 and sample == 0:
-                        found_offset ^= 4
-                    found_count = 1
-                else:
-                    found_offset = (
-                        0xFFFFFFFF if alias == 0 and sample == 0
-                        else 0x12000 + alias * 0x100 + sample * 4
-                    )
-                    found_count = 0 if found_offset == 0xFFFFFFFF else 1
-                outputs = (
-                    self.WRITE_BASES[alias] + offset,
-                    parse_golden.VRAM_MIRROR_MARKER_PREFIX | (alias << 20) | offset,
-                    found_offset,
-                    found_count,
-                )
-            elif case_id in {item[0] for item in parse_golden.VRAM_MIRROR_GE_SYNC_CASES}:
-                sync_case = next(
-                    item for item in parse_golden.VRAM_MIRROR_GE_SYNC_CASES
-                    if item[0] == case_id
-                )
-                outputs = (
-                    0, 0, 4, 123, 1, 0, 1,
-                    parse_golden.VRAM_MIRROR_CACHED_ALIAS_COUNT,
-                    info["depth_offset"], parse_golden.VRAM_MIRROR_DEPTH_STRIDE,
-                    parse_golden.VRAM_MIRROR_DEPTH_RANGE_NEAR,
-                    parse_golden.VRAM_MIRROR_DEPTH_RANGE_FAR,
-                    parse_golden.VRAM_MIRROR_DEPTH_FUNCTION_ALWAYS,
-                    parse_golden.VRAM_MIRROR_DEPTH_MASK_WRITE_ENABLE,
-                    1, parse_golden.VRAM_MIRROR_CLEAR_DEPTH,
-                    *sync_case[1:],
-                )
-            elif match := re.fullmatch(r"vram-ge-depth-row(\d+)-(\d{2})", case_id):
-                row, chunk = (int(part) for part in match.groups())
-                y = parse_golden.VRAM_MIRROR_DEPTH_ROWS[row]
-                offsets = tuple(
-                    info["depth_offset"] + (
-                        y * parse_golden.VRAM_MIRROR_DEPTH_STRIDE
-                        + chunk * parse_golden.VRAM_MIRROR_DEPTH_CHUNK_PIXELS + pixel
-                    ) * 2
-                    for pixel in range(parse_golden.VRAM_MIRROR_DEPTH_CHUNK_PIXELS)
-                )
-                if depth_storage_xor is None:
-                    outputs = self._address_pairs(
-                        offsets, observed_word & 0xFFFF,
-                        aliases=parse_golden.VRAM_MIRROR_DEPTH_ALIASES,
-                    )
-                else:
-                    output_fields = []
-                    for offset in offsets:
-                        for alias in parse_golden.VRAM_MIRROR_DEPTH_ALIASES:
-                            physical = (
-                                _apply_measured_vram_alias_rule(alias, offset)
-                                if measured_rules else offset
-                            )
-                            output_fields.extend((
-                                alias + offset,
-                                depth_writes.get(
-                                    physical, parse_golden.VRAM_MIRROR_CLEAR_DEPTH
-                                ),
-                            ))
-                    outputs = tuple(output_fields)
-            elif match := re.fullmatch(r"vram-ge-color-row(\d+)-(\d{2})", case_id):
-                row, chunk = (int(part) for part in match.groups())
-                y = parse_golden.VRAM_MIRROR_COLOR_ROWS[row]
-                offsets = tuple(
-                    info["color_offset"] + (
-                        y * parse_golden.VRAM_MIRROR_DEPTH_STRIDE
-                        + chunk * parse_golden.VRAM_MIRROR_COLOR_CHUNK_PIXELS + pixel
-                    ) * 2
-                    for pixel in range(parse_golden.VRAM_MIRROR_COLOR_CHUNK_PIXELS)
-                )
-                outputs = self._address_pairs(
-                    offsets, observed_word & 0xFFFF,
-                    aliases=(parse_golden.VRAM_MIRROR_COLOR_ALIAS,),
-                )
-            elif case_id == "vram-restore":
-                outputs = (
-                    0x44000000, 0x200000,
-                    2 * parse_golden.VRAM_MIRROR_CACHED_ALIAS_COUNT, 0, 1,
-                )
-            else:
-                outputs = (len(spec.semantic_cases),)
-            rows.append(self._record(case_id, outputs))
-        return "".join(rows)
-
-    def test_complete_stream_checks_shape_and_keeps_hardware_words_unpinned(self) -> None:
-        parse = parse_golden.parse_vram_mirror_output
-        report = parse(self._stream(), require_complete=True)
-        self.assertTrue(report.complete)
-        self.assertTrue(report.all_passed)
-        changed = parse(self._stream(observed_word=0x13579BDF), require_complete=True)
-        self.assertTrue(changed.all_passed)
-
-    def test_analysis_derives_measured_alias_maps_write_landings_and_depth_xor(self) -> None:
-        parsed = parse_golden.parse_vram_mirror_output(
-            self._stream(measured_rules=True), require_complete=True
-        )
-        analysis = parse_golden.analyze_vram_mirror_run(parsed)
-        transforms = {item.alias_base: item for item in analysis.address_transforms}
-        self.assertEqual(set(transforms), set(MEASURED_VRAM_ALIAS_RULES))
-        for alias_base, (constant, columns) in MEASURED_VRAM_ALIAS_RULES.items():
-            with self.subTest(alias=hex(alias_base)):
-                self.assertEqual(transforms[alias_base].constant, constant)
-                self.assertEqual(transforms[alias_base].column_map, columns)
-        self.assertEqual(len(analysis.write_landings), 18)
-        self.assertTrue(all(
-            item.unique_match_agrees_with_read_transform is True
-            for item in analysis.write_landings
-        ))
-        first_swizzled_write = next(
-            item for item in analysis.write_landings
-            if item.alias_base == 0x04200000 and item.requested_offset == 0x100
-        )
-        self.assertEqual(first_swizzled_write.first_found_offset, 0x2140)
-        self.assertEqual(
-            analysis.depth_storage.relative_xor_candidates,
-            MEASURED_VRAM_DEPTH_XOR_CANDIDATES,
-        )
-        self.assertEqual(
-            analysis.depth_storage.absolute_xor_candidates,
-            MEASURED_VRAM_DEPTH_XOR_CANDIDATES,
-        )
-        self.assertEqual(
-            analysis.depth_storage.relative_xor_common_bits,
-            MEASURED_VRAM_DEPTH_BYTE_XOR,
-        )
-        self.assertEqual(
-            analysis.depth_storage.absolute_xor_common_bits,
-            MEASURED_VRAM_DEPTH_BYTE_XOR,
-        )
-        self.assertEqual(
-            analysis.depth_storage.relative_xor_candidates[0]
-            ^ analysis.depth_storage.relative_xor_candidates[-1],
-            MEASURED_VRAM_DEPTH_PHASE_AMBIGUITY,
-        )
-        self.assertEqual(
-            analysis.depth_storage.absolute_vs_relative_scope_ambiguous,
-            MEASURED_VRAM_DEPTH_SCOPE_AMBIGUOUS,
-        )
-        self.assertGreater(analysis.depth_storage.alias_crosschecked_words, 0)
-
-    def test_analysis_rejects_a_non_affine_alias_sample(self) -> None:
-        lines = self._stream(measured_rules=True).splitlines()
-        sample_index = next(
-            index for index, line in enumerate(lines)
-            if "case_id=vram-cpu-pattern-000 " in line
-        )
-        mapped = _apply_measured_vram_alias_rule(0x04200000, 0x088000)
-        wrong_word = parse_golden.VRAM_MIRROR_PATTERN_PREFIX | (mapped ^ 4)
-        lines[sample_index] = re.sub(
-            r"out3=0x[0-9a-f]+", f"out3=0x{wrong_word:08x}",
-            lines[sample_index], count=1,
-        )
-        parsed = parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
-        with self.assertRaisesRegex(ProtocolError, "not affine over GF\\(2\\)"):
-            parse_golden.analyze_vram_mirror_run(parsed)
-
-    def test_analysis_reports_wrong_write_and_depth_rules_differently(self) -> None:
-        write_run = parse_golden.parse_vram_mirror_output(
-            self._stream(measured_rules=True, wrong_write_landing=True)
-        )
-        write_analysis = parse_golden.analyze_vram_mirror_run(write_run)
-        mismatched_write = next(
-            item for item in write_analysis.write_landings
-            if item.alias_base == 0x04200000 and item.requested_offset == 0x100
-        )
-        self.assertIs(mismatched_write.unique_match_agrees_with_read_transform, False)
-
-        depth_run = parse_golden.parse_vram_mirror_output(
-            self._stream(measured_rules=True, depth_storage_xor=0x40)
-        )
-        depth_analysis = parse_golden.analyze_vram_mirror_run(depth_run)
-        self.assertNotEqual(
-            depth_analysis.depth_storage.relative_xor_candidates,
-            (MEASURED_VRAM_DEPTH_BYTE_XOR,),
-        )
-
-    def test_position_sample_plan_includes_dense_pair_and_bit_sweep_words(self) -> None:
-        offsets = parse_golden._vram_mirror_sample_offsets()
-        self.assertEqual(len(offsets), 4134)
-        self.assertEqual(offsets[0], 0x088000)
-        self.assertEqual(offsets[2047], 0x089FFC)
-        self.assertIn(0x1FFFFC, offsets)
-        for bit in range(2, 21):
-            self.assertIn(0x088000 ^ (1 << bit), offsets)
-            self.assertIn(1 << bit, offsets)
-
-    def test_wrong_addresses_and_truncated_chunks_are_rejected(self) -> None:
-        stream = self._stream()
-        lines = stream.splitlines()
-        sample_index = next(
-            index for index, line in enumerate(lines)
-            if "case_id=vram-cpu-pattern-000 " in line
-        )
-        lines[sample_index] = lines[sample_index].replace(
-            "out0=0x04088000", "out0=0x04088004", 1
-        )
-        with self.assertRaises(ProtocolError):
-            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
-
-        lines = stream.splitlines()
-        sample_index = next(
-            index for index, line in enumerate(lines)
-            if "case_id=vram-cpu-pattern-000 " in line
-        )
-        lines[sample_index] = re.sub(r" out127=0x[0-9a-f]+$", "", lines[sample_index])
-        with self.assertRaises(ProtocolError):
-            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
-
-        lines = self._stream().splitlines()
-        info_index = next(
-            index for index, line in enumerate(lines)
-            if "case_id=vram-mirror-info " in line
-        )
-        lines[info_index] = lines[info_index].replace(
-            "out3=0x00044000", "out3=0x00044100", 1
-        )
-        with self.assertRaises(ProtocolError):
-            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
-
-    def test_write_scan_outcomes_are_not_pinned(self) -> None:
-        lines = self._stream().splitlines()
-        write_index = next(
-            index for index, line in enumerate(lines)
-            if "case_id=vram-cpu-write-mirror-00-00 " in line
-        )
-        lines[write_index] = lines[write_index].replace(
-            "out2=0xffffffff out3=0x00000000",
-            "out2=0x00012340 out3=0x00000002",
-            1,
-        )
-        self.assertTrue(
-            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n").all_passed
-        )
-
-        lines[write_index] = lines[write_index].replace(
-            "out2=0x00012340 out3=0x00000002",
-            "out2=0xffffffff out3=0x00000001",
-            1,
-        )
-        with self.assertRaises(ProtocolError):
-            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
-
-    def test_ge_state_and_depth_row_addresses_are_checked_without_pinning_values(self) -> None:
-        lines = self._stream().splitlines()
-        sync_index = next(
-            index for index, line in enumerate(lines)
-            if "case_id=vram-ge-clear-sync " in line
-        )
-        lines[sync_index] = lines[sync_index].replace(
-            "out12=0x00000001", "out12=0x00000000", 1
-        )
-        with self.assertRaises(ProtocolError):
-            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
-
-        lines = self._stream().splitlines()
-        depth_index = next(
-            index for index, line in enumerate(lines)
-            if "case_id=vram-ge-depth-row0-00 " in line
-        )
-        lines[depth_index] = re.sub(
-            r"out0=0x[0-9a-f]+", "out0=0x44088002", lines[depth_index], count=1
-        )
-        with self.assertRaises(ProtocolError):
-            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
-
-        lines = self._stream().splitlines()
-        color_index = next(
-            index for index, line in enumerate(lines)
-            if "case_id=vram-ge-color-row0-00 " in line
-        )
-        lines[color_index] = re.sub(
-            r"out0=0x[0-9a-f]+", "out0=0x44044002", lines[color_index], count=1
-        )
-        with self.assertRaises(ProtocolError):
-            parse_golden.parse_vram_mirror_output("\n".join(lines) + "\n")
-
-        changed = self._stream(observed_word=0x1BADB002)
-        self.assertTrue(parse_golden.parse_vram_mirror_output(changed).all_passed)
-
-    def test_setup_skip_is_complete_but_never_reports_a_pass(self) -> None:
-        report = parse_golden.parse_vram_mirror_output(
-            self._stream(skipped=True), require_complete=True
-        )
-        self.assertTrue(report.complete)
-        self.assertFalse(report.all_passed)
-
-    def test_probe_case_is_in_the_build_and_runner_registry(self) -> None:
-        root = Path(__file__).resolve().parents[1]
-        makefile = (root / "fixtures" / "psp_oracle" / "Makefile").read_text(
-            encoding="utf-8"
-        )
-        probe = (root / "fixtures" / "psp_oracle" / "probe.c").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("else ifeq ($(CASE),vram-mirror)\nCASE_ID = 76\n", makefile)
-        self.assertIn("#define PSP_ORACLE_CASE_VRAM_MIRROR 76", probe)
-        self.assertIn('#define PROBE_HOST0_LOG "host0:/vram_mirror_log.txt"', probe)
-        self.assertIn("vram-mirror", CAMPAIGN_QUEUE_CASES)
-        from psp_oracle.run_psplink import CAMPAIGN_CASE_ESTIMATE_SECONDS
-
-        self.assertIn("vram-mirror", CAMPAIGN_CASE_ESTIMATE_SECONDS)
-        self.assertEqual(_campaign_completeness_contract("vram-mirror"),
-                         "strict-golden-sequence")
-        self.assertEqual(_campaign_host0_log_path(Path("host0"), "vram-mirror").name,
-                         "vram_mirror_log.txt")
-        self.assertTrue(_campaign_stream_complete(self._stream(), "vram-mirror"))
-
-    def test_probe_case_ids_are_registered_in_the_strict_protocol_table(self) -> None:
-        root = Path(__file__).resolve().parents[1]
-        probe = (root / "fixtures" / "psp_oracle" / "probe.c").read_text(
-            encoding="utf-8"
-        )
-        self.assertEqual(probe.count('"vram-ge-depth-row%u-%02u"'), 2)
-        self.assertEqual(probe.count('"vram-ge-color-row%u-%02u"'), 2)
-        emitted_case_ids = (
-            ("vram-mirror-info",)
-            + tuple(
-                f"vram-cpu-pattern-{chunk:03d}"
-                for chunk in range(parse_golden.VRAM_MIRROR_CPU_SAMPLE_CHUNK_COUNT)
-            )
-            + tuple(
-                f"vram-cpu-write-mirror-{alias:02d}-{sample:02d}"
-                for alias in range(len(self.WRITE_BASES))
-                for sample in range(len(parse_golden.VRAM_MIRROR_WRITE_OFFSETS))
-            )
-            + tuple(case[0] for case in parse_golden.VRAM_MIRROR_GE_SYNC_CASES)
-            + tuple(
-                f"vram-ge-depth-row{row}-{chunk:02d}"
-                for row in range(len(parse_golden.VRAM_MIRROR_DEPTH_ROWS))
-                for chunk in range(parse_golden.VRAM_MIRROR_DEPTH_ROW_CHUNK_COUNT)
-            )
-            + tuple(
-                f"vram-ge-color-row{row}-{chunk:02d}"
-                for row in range(len(parse_golden.VRAM_MIRROR_COLOR_ROWS))
-                for chunk in range(parse_golden.VRAM_MIRROR_COLOR_ROW_CHUNK_COUNT)
-            )
-            + ("vram-restore", "vram-mirror-done")
-        )
-        self.assertEqual(emitted_case_ids, parse_golden.VRAM_MIRROR_SPEC.ordered_cases)
-        parsed = _parse_campaign_records(self._stream(), "vram-mirror")
-        self.assertEqual(
-            tuple(record.case_id for record in parsed.results), emitted_case_ids
-        )
-
-    def test_manifest_and_docs_record_measured_hardware_result(self) -> None:
-        root = Path(__file__).resolve().parents[1]
-        manifest = json.loads(
-            (root / "tools" / "psp_oracle" / "manifest.json").read_text(encoding="utf-8")
-        )
-        row = next(test for test in manifest["tests"]
-                   if test["id"] == self.TEST_ID)
-        self.assertEqual(row["hardware_evidence"], "MEASURED")
-        self.assertEqual(
-            row["evidence_ref"],
-            "docs/HARDWARE_ORACLE.md#psp-vram-mirror-001-measured-run-2026-10-16",
-        )
-        self.assertEqual(row["case_ids"], list(parse_golden.VRAM_MIRROR_SPEC.ordered_cases))
-        self.assertEqual(set(row["evidence_cases"]), set(row["apis"]) | set(row["case_ids"]))
-        self.assertIn("acceptance-eligible", row["evidence_note"])
-        self.assertIn("acceptance-eligible", row["measurement_note"])
-        readme = (root / "fixtures" / "psp_oracle" / "README.md").read_text(
-            encoding="utf-8"
-        )
-        doc = (root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
-        self.assertIn("| `vram-mirror` | `PSP-VRAM-MIRROR-001` |", readme)
-        self.assertIn("**MEASURED** on 2026-10-16", readme)
-        self.assertIn(
-            "| `vram-mirror` | `PSP-VRAM-MIRROR-001` | `MEASURED` (2026-10-16",
-            doc,
-        )
-        self.assertIn("PSP-VRAM-MIRROR-001 measured run 2026-10-16", doc)
-        self.assertIn("had zero mismatches across 4,134 sampled words", doc)
-        self.assertIn("Address bits 0 and 1 are not independently", doc)
-        self.assertIn("(y * 1024 + 2x) ^ 0x2040", doc)
-        self.assertIn("Sub-word address bits were not independently measured", readme)
-
-    def test_probe_snapshots_and_verifies_full_edram_restore(self) -> None:
-        probe = (Path(__file__).resolve().parents[1] / "fixtures" / "psp_oracle"
-                 / "probe.c").read_text(encoding="utf-8")
-        self.assertIn("malloc(VRAM_MIRROR_SIZE)", probe)
-        self.assertIn("memcpy((void *)(uintptr_t)0x44000000u, backup, VRAM_MIRROR_SIZE)", probe)
-        self.assertIn("restore_mismatches += restored[byte] != backup[byte]", probe)
-        self.assertIn("VRAM_MIRROR_PATTERN_PREFIX | offset", probe)
-        self.assertIn("sceGuClearDepth(VRAM_MIRROR_CLEAR_DEPTH)", probe)
-        self.assertIn("sceGuClear(GU_DEPTH_BUFFER_BIT)", probe)
-        self.assertIn("sceGuEnable(GU_DEPTH_TEST)", probe)
-        self.assertIn("sceGuDepthFunc(GU_ALWAYS)", probe)
-        self.assertIn("sceGuDepthMask(GU_FALSE)", probe)
-        self.assertIn("GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D", probe)
-        self.assertIn("sceGuDrawArray(GU_SPRITES, vertex_type, 2", probe)
-        self.assertIn("0x1111u, 32u, 16u, 0x1111u", probe)
-        self.assertIn("0x2222u, 96u, 12u, 0x2222u", probe)
-        self.assertIn("0x3333u, 208u, 101u, 0x3333u", probe)
-        self.assertIn("sceGeDrawSync(1)", probe)
-        self.assertIn("base_words[scan_offset / sizeof(uint32_t)] == marker", probe)
-
-
 if __name__ == "__main__":
     unittest.main()
 
@@ -6785,113 +6175,6 @@ class IoCasesHostTests(unittest.TestCase):
             with self.assertRaises(ProtocolError):
                 parse_umd_io_output(bad)
 
-    def test_raw_device_case_is_bounded_read_only_and_waits_before_close(self) -> None:
-        run = self._run("umdraw", [
-            "umd 0x1 0x32",
-            f"open {_hex('umd0:')} 0x0",
-        ])
-        names = [name for name, _ in run.calls]
-        allowed = {
-            "sceUmdCheckMedium", "sceUmdGetDriveStat", "sceIoOpen", "sceIoClose",
-            "sceIoLseek", "sceIoLseek32", "sceIoRead", "sceIoReadAsync",
-            "sceIoPollAsync", "sceIoWaitAsync", "sceIoGetstat",
-        }
-        self.assertLessEqual(set(names), allowed)
-        opens = [(fields["path"], int(fields["flags"], 16))
-                 for name, fields in run.calls if name == "sceIoOpen"]
-        self.assertEqual(opens, [("umd0:", UMDRAW_RAW_FLAGS),
-                                  ("umd0:", UMDRAW_READONLY_FLAGS)])
-        self.assertEqual(names.count("sceIoClose"), 2)
-        requests = [int(fields["size"], 0) for name, fields in run.calls
-                    if name in {"sceIoRead", "sceIoReadAsync"}]
-        self.assertTrue(requests)
-        self.assertLessEqual(max(requests), 32768)
-        async_index = names.index("sceIoReadAsync")
-        self.assertEqual(names[async_index + 1:async_index + 3],
-                         ["sceIoPollAsync", "sceIoWaitAsync"])
-        self.assertGreater(names.index("sceIoClose"), async_index + 2)
-
-        report = parse_umd_raw_read_output(run.stream)
-        self.assertTrue(report.complete)
-        self.assertEqual(len(report.parsed.results), len(UMDRAW_CASES))
-        records = {record.case_id: dict(record.values) for record in report.parsed.results}
-        self.assertEqual(records["byte-sector16-read"]["out0"], "0x30444301")
-        self.assertEqual(records["byte-sector16-read"]["out1"], "0x00013130")
-        self.assertEqual(int(records["pos-advance-cur"]["result"], 0), 4112)
-        self.assertEqual(records["size-0-read"]["out2"], "0x00000001")
-        self.assertEqual(int(records["far-read"]["result"], 0), 0)
-        self.assertEqual(report.before, (1, 0x32))
-        self.assertEqual(report.after, (1, 0x32))
-
-        payload = run.stream.replace(
-            "case_id=byte-sector16-read status=PASS ",
-            "case_id=byte-sector16-read status=PASS payload=0x12345678 ", 1,
-        )
-        with self.assertRaises(ProtocolError):
-            parse_umd_raw_read_output(payload)
-
-    def test_raw_device_open_failure_does_not_touch_an_invalid_descriptor(self) -> None:
-        run = self._run("umdraw", [
-            "umd 0x1 0x32",
-            f"open {_hex('umd0:')} 0x80010002",
-        ])
-        names = [name for name, _ in run.calls]
-        self.assertEqual(names.count("sceIoOpen"), 1)
-        self.assertEqual(names.count("sceIoClose"), 0)
-        self.assertEqual(names.count("sceIoRead"), 0)
-        self.assertEqual(names.count("sceIoReadAsync"), 0)
-        self.assertEqual(names.count("sceIoLseek"), 0)
-        self.assertEqual(names.count("sceUmdCheckMedium"), 2)
-        self.assertEqual(names.count("sceUmdGetDriveStat"), 2)
-        with self.assertRaises(ProtocolError):
-            parse_umd_raw_read_output(run.stream)
-
-    def test_measured_device_results_match_the_console_table(self) -> None:
-        tid = parse_golden.UMDIO_TEST_ID
-
-        def record(case_id: str, fields: str) -> str:
-            return (f"NAKAGAWA_PSP_TEST schema=1 test_id={tid} case_id={case_id} "
-                    f"status=PASS {fields}\n")
-
-        records = [record("umd-state-before", "result=0x00000001 out0=0x00000032")]
-        for index, ((path, flags), (result, close_result)) in enumerate(
-                zip(UMDIO_OPENS, parse_golden.UMDIO_MEASURED_OPEN_RESULTS, strict=True)):
-            records.append(record(
-                f"io-open-{index:04d}",
-                f"result=0x{result:08x} out0=0x{flags:08x} "
-                f"out1=0x{close_result:08x} detail={path}",
-            ))
-        for index, (path, (result, close_result)) in enumerate(
-                zip(UMDIO_DOPENS, parse_golden.UMDIO_MEASURED_DOPEN_RESULTS, strict=True)):
-            records.append(record(
-                f"io-dopen-{index:04d}",
-                f"result=0x{result:08x} out0=0x{close_result:08x} detail={path}",
-            ))
-        records.append(record("umd-state-after", "result=0x00000001 out0=0x00000032"))
-        pre_terminal_count = len(records)
-        open_successes = sum(result < 0x80000000
-                             for result, _ in parse_golden.UMDIO_MEASURED_OPEN_RESULTS)
-        dopen_successes = sum(result < 0x80000000
-                              for result, _ in parse_golden.UMDIO_MEASURED_DOPEN_RESULTS)
-        records.append(record(
-            "umdio-done",
-            f"result=0x00000000 out0=0x{len(UMDIO_OPENS):08x} "
-            f"out1=0x{open_successes:08x} out2=0x{len(UMDIO_DOPENS):08x} "
-            f"out3=0x{dopen_successes:08x} out4=0x{pre_terminal_count:08x}",
-        ))
-        stream = META.format(source="psp", model="PSP-3000", firmware="6.61-ARK",
-                             binary=MEASURED_SHA, commit=MEASURED_COMMIT) + "".join(records)
-        report = parse_umd_io_output(stream, require_measured=True)
-        self.assertEqual(report.before, parse_golden.UMDIO_MEASURED_STATE)
-        self.assertEqual(report.after, parse_golden.UMDIO_MEASURED_STATE)
-
-        mismatched = stream.replace(
-            "case_id=io-open-0000 status=PASS result=0x00000003",
-            "case_id=io-open-0000 status=PASS result=0x00000004", 1,
-        )
-        with self.assertRaisesRegex(ProtocolError, "sceIoOpen results differ"):
-            parse_umd_io_output(mismatched, require_measured=True)
-
     def test_sha256_matches_the_standard_vectors(self) -> None:
         run = self._run("fonts", [_entry("abc", 0, 0)])
         empty = hashlib.sha256(b"").hexdigest()
@@ -6935,7 +6218,7 @@ class IoCasesSourceTests(unittest.TestCase):
         self.assertNotRegex(code, r"\bmalloc\s*\(|\bcalloc\s*\(|sceIoRemove|sceIoRename")
 
     def test_device_case_reads_state_only_and_its_lists_match_the_parser(self) -> None:
-        code = self._code(self.umd[:self.umd.index("#define UMDRAW_TEST_ID")])
+        code = self._code(self.umd)
         self.assertEqual(set(re.findall(r"\b(sce\w+)\s*\(", code)),
                          {"sceIoOpen", "sceIoClose", "sceIoDopen", "sceIoDclose",
                           "sceUmdCheckMedium", "sceUmdGetDriveStat"})
@@ -6950,190 +6233,22 @@ class IoCasesSourceTests(unittest.TestCase):
                     if "--exact-library sceUmdUser=" in line)
         self.assertEqual(line.split("sceUmdUser=", 1)[1], "0x46EBB729,0x6B4A146C")
 
-    def test_raw_device_case_is_read_only_and_pins_exact_user_io_imports(self) -> None:
-        raw = self.umd[self.umd.index("#define UMDRAW_TEST_ID"):]
-        code = self._code(raw)
-        calls = set(re.findall(r"\b(sce\w+)\s*\(", code))
-        self.assertEqual(calls, {
-            "sceIoOpen", "sceIoClose", "sceIoLseek", "sceIoLseek32", "sceIoRead",
-            "sceIoReadAsync", "sceIoPollAsync", "sceIoWaitAsync", "sceIoGetstat",
-            "sceUmdCheckMedium", "sceUmdGetDriveStat",
-        })
-        self.assertNotRegex(code, r"\bsceIo(?:Write|Devctl|Ioctl|Chstat)\s*\(")
-        self.assertNotRegex(code, r"\bsceUmd(?:Activate|Deactivate)\s*\(")
-        self.assertIn("#define UMDRAW_BUFFER_BYTES 32768u", raw)
-        opens = re.findall(r"sceIoOpen\(([^;]*?)\);", code, re.DOTALL)
-        self.assertEqual([" ".join(item.split()) for item in opens], [
-            '"umd0:", UMDIO_RAW_FLAGS, 0',
-            '"umd0:", PSP_O_RDONLY, 0',
-        ])
-        body = code[code.index("static void umdraw_run("):]
-        body = body[:body.index("\n}")]
-        self.assertLess(body.index("sceIoReadAsync"), body.index("sceIoPollAsync"))
-        self.assertLess(body.index("sceIoPollAsync"), body.index("sceIoWaitAsync"))
-        self.assertLess(body.index("sceIoWaitAsync"), body.index("sceIoClose"))
-        self.assertEqual(UMDRAW_READ_SIZES, (1, 512, 2047, 2048, 2049, 4096, 32768, 0))
-        self.assertEqual(set(UMDRAW_HEADER_READ_SIZES), {
-            "pos-advance-first", "pos-advance-second", "byte-sector16-read",
-            "size-1-read", "size-512-read", "size-2047-read", "size-2048-read",
-            "size-2049-read", "size-4096-read", "size-32768-read", "size-0-read",
-            "async-data",
-        })
-        pin = next(line for line in self.makefile.splitlines()
-                   if line.startswith("USER_MODE_IMPORT_GATE_ARGS += --exact-library IoFileMgrForUser="))
-        actual_nids = tuple(int(value, 16)
-                            for value in pin.split("IoFileMgrForUser=", 1)[1].split(","))
-        self.assertEqual(actual_nids, UMDRAW_IOFILEMGR_NIDS)
-
-    def test_raw_read_cells_mark_seek_and_read_separately(self) -> None:
-        raw = self._code(self.umd[self.umd.index("#define UMDRAW_TEST_ID"):])
-        read_at = raw[raw.index("static void umdraw_read_at("):]
-        read_at = read_at[:read_at.index("\nstatic void umdraw_skip_primary")]
-        self.assertLess(read_at.index("umdraw_step(u, seek_case);"),
-                        read_at.index("sceIoLseek("))
-        self.assertLess(read_at.index("umdraw_step(u, read_case);"),
-                        read_at.index("sceIoRead("))
-
-        run = raw[raw.index("static void umdraw_run("):]
-        run = run[:run.index("\n}")]
-        self.assertIn('umdraw_step(u, "pos-advance-seek");', run)
-        self.assertIn('umdraw_step(u, "pos-advance-read-pair");', run)
-        self.assertIn('umdraw_step(u, "pos-advance-cur");', run)
-        read_async = run.index("sceIoReadAsync(")
-        poll_async = run.index("sceIoPollAsync(")
-        wait_async = run.index("sceIoWaitAsync(")
-        self.assertLess(read_async, poll_async)
-        self.assertNotIn("umdraw_step(", run[read_async:poll_async])
-        self.assertLess(run.index('umdraw_step(u, "async-wait");'), wait_async)
-
-    def test_raw_device_import_pin_rejects_unexpected_io_and_umd_imports(self) -> None:
-        io_pin = "IoFileMgrForUser=" + ",".join(
-            f"0x{nid:08X}" for nid in UMDRAW_IOFILEMGR_NIDS)
-        umd_pin = "sceUmdUser=0x46EBB729,0x6B4A146C"
-        allowed = [
-            ("IoFileMgrForUser", list(UMDRAW_IOFILEMGR_NIDS)),
-            ("sceUmdUser", [0x46EBB729, 0x6B4A146C]),
-        ]
-        with tempfile.TemporaryDirectory() as tmp:
-            module = Path(tmp) / "probe.elf"
-            module.write_bytes(build_import_elf(allowed))
-            with redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()) as err:
-                status = user_mode_imports.main([
-                    "--exact-library", io_pin, "--exact-library", umd_pin, str(module),
-                ])
-            self.assertEqual(status, user_mode_imports.EXIT_OK, out.getvalue() + err.getvalue())
-
-            extra = [
-                ("IoFileMgrForUser", [*UMDRAW_IOFILEMGR_NIDS, 0x12345678]),
-                ("sceUmdUser", [0x46EBB729, 0x6B4A146C]),
-            ]
-            module.write_bytes(build_import_elf(extra))
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
-                status = user_mode_imports.main([
-                    "--exact-library", io_pin, "--exact-library", umd_pin, str(module),
-                ])
-            self.assertEqual(status, user_mode_imports.EXIT_KERNEL_IMPORT)
-            self.assertIn("unexpected 0x12345678", err.getvalue())
-
-    def test_runtime_umd_expectations_match_the_measured_parser_table(self) -> None:
-        source = (self.root / "src" / "rt" / "hle_thread_selftest.c").read_text(
-            encoding="utf-8")
-
-        def c_int(value: str) -> int:
-            return int(value.rstrip("uU"), 0)
-
-        open_block = re.search(
-            r"static const UmdOpenCase opens\[\] = \{(.*?)\n    \};", source, re.DOTALL)
-        self.assertIsNotNone(open_block)
-        actual_opens = tuple(
-            (path, c_int(flags), c_int(result))
-            for path, flags, result in re.findall(
-                r'\{"([^"]+)",\s*(0x[0-9a-fA-F]+u?),\s*(0x[0-9a-fA-F]+u?|[0-9]+u?)\}',
-                open_block.group(1),
-            )
-        )
-        expected_opens = tuple(
-            (path, flags, result[0])
-            for (path, flags), result in zip(
-                UMDIO_OPENS, parse_golden.UMDIO_MEASURED_OPEN_RESULTS, strict=True)
-        )
-        self.assertEqual(actual_opens, expected_opens)
-
-        dopen_block = re.search(
-            r"static const UmdDopenCase dopens\[\] = \{(.*?)\n    \};", source, re.DOTALL)
-        self.assertIsNotNone(dopen_block)
-        actual_dopens = tuple(
-            (path, c_int(result))
-            for path, result in re.findall(
-                r'\{"([^"]+)",\s*(0x[0-9a-fA-F]+u?|[0-9]+u?)\}',
-                dopen_block.group(1),
-            )
-        )
-        expected_dopens = tuple(
-            (path, result[0])
-            for path, result in zip(
-                UMDIO_DOPENS, parse_golden.UMDIO_MEASURED_DOPEN_RESULTS, strict=True)
-        )
-        self.assertEqual(actual_dopens, expected_dopens)
-
     def test_cases_are_wired_like_the_others(self) -> None:
         for case, case_id, log in (("font-files", 73, "font_files_log.txt"),
-                                   ("umd-io", 74, "umd_io_log.txt"),
-                                   ("umd-raw-read", 77, "umd_raw_read_log.txt")):
+                                   ("umd-io", 74, "umd_io_log.txt")):
             self.assertRegex(self.makefile,
                              rf"(?m)^else ifeq \(\$\(CASE\),{case}\)\nCASE_ID = {case_id}$")
             self.assertIn(f'#define PROBE_HOST0_LOG "host0:/{log}"', self.probe)
             self.assertEqual(_campaign_host0_log_path(Path("host0"), case).name, log)
             self.assertEqual(_campaign_completeness_contract(case), "strict-golden-sequence")
         self.assertIn("umd-io", CAMPAIGN_QUEUE_CASES)
-        self.assertIn("umd-raw-read", CAMPAIGN_QUEUE_CASES)
         self.assertNotIn("font-files", CAMPAIGN_QUEUE_CASES)
         self.assertIn("$(BUILD_DIR)/probe.o: probe.c registry_walk.h font_files.h umd_io.h",
                       self.makefile)
-        for macro in ("FONT_FILES", "UMD_IO", "UMD_RAW_READ"):
-            if macro == "UMD_RAW_READ":
-                marker = "/* Read-only raw UMD descriptor observations"
-                marker_at = self.probe.index(marker)
-                start = self.probe.rfind(
-                    f"#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_{macro}\n", 0, marker_at
-                )
-            else:
-                start = self.probe.index(f"#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_{macro}\n")
-            block = self.probe[start:]
+        for macro in ("FONT_FILES", "UMD_IO"):
+            block = self.probe[self.probe.index(f"#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_{macro}\n"):]
             block = block[:block.index("\n#endif")]
             self.assertNotRegex(block, r"\bsce\w+\s*\(")
-
-    def test_raw_device_case_manifest_matches_its_captured_record_contract(self) -> None:
-        manifest = json.loads((self.root / "tools" / "psp_oracle" / "manifest.json").read_text(
-            encoding="utf-8"))
-        entry = next(item for item in manifest["tests"] if item["id"] == "PSP-UMDRAW-001")
-        self.assertEqual(entry["status"], "implemented")
-        self.assertEqual(entry["hardware_evidence"], "CAPTURED")
-        self.assertEqual(entry["case_ids"], list(UMDRAW_CASES))
-        captured = (
-            "umd-state-before", "raw-open-extra", "seek-set-0", "seek-set-16",
-            "seek-set-32768", "seek-cur-0", "seek-end-0", "seek-set-1",
-            "seek-set-neg1", "seek32-set-0", "seek32-set-16", "seek32-set-32768",
-            "seek32-end-0", "pos-advance-seek", "pos-advance-first",
-            "pos-advance-second", "pos-advance-cur", "byte-sector16-seek",
-            "byte-sector16-read", "size-1-seek", "size-1-read", "size-512-seek",
-            "size-512-read", "size-2047-seek", "size-2047-read", "size-2048-seek",
-            "size-2048-read", "size-2049-seek", "size-2049-read", "size-4096-seek",
-            "size-4096-read",
-        )
-        self.assertEqual(entry["evidence_cases"], list(captured))
-        oracle_docs = (self.root / "docs" / "HARDWARE_ORACLE.md").read_text(encoding="utf-8")
-        self.assertIn("PSP-UMDRAW-001", oracle_docs)
-        self.assertIn("| `umd-raw-read` | `PSP-UMDRAW-001` | `CAPTURED`", oracle_docs)
-        self.assertIn("size-32768-read", oracle_docs)
-        self.assertIn("900-second host case timeout", entry["measurement_note"])
-        self.assertIn("27.2 seconds after launch", entry["measurement_note"])
-        self.assertIn("does not establish whether the PSP call hung", entry["measurement_note"])
-        self.assertIn("1800-second host case timeout", entry["measurement_note"])
-        self.assertIn("usbipd listed the PSP as absent at 3m46 after launch", entry["measurement_note"])
-        self.assertIn("L1 reattach found the PSP absent", entry["measurement_note"])
-        self.assertIn("at 3m46, before the 1800-second deadline", oracle_docs)
-        self.assertIn("fresh physical power-cycle", oracle_docs)
 
     def test_umd_pin_refuses_an_activation_import(self) -> None:
         pin = ["--exact-library", "sceUmdUser=0x46EBB729,0x6B4A146C"]

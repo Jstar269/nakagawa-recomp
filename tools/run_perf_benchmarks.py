@@ -21,7 +21,6 @@ WORKLOADS = (
     ("cosim", ("cosim-selftest",)),
     ("psmf-media", ("psmf-media-selftest",)),
     ("audio", ("audio-selftest",)),
-    ("audio-resampler", ("audio-resampler-bench",)),
     ("atrac3p", ("atrac3p-bridge-selftest",)),
     ("platform-ladder-gap", ("platform-ladder-gap",)),
     ("platform-ladder-sched", ("platform-ladder-sched",)),

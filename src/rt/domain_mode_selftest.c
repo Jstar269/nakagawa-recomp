@@ -31,12 +31,6 @@
 #include "cpu_lle.c"      /* flow enum + helpers the linked interp needs */
 #include "domain_mode.c"  /* mode table and seam under test (same TU) */
 
-/* No GE renderer is linked by this domain-mode-only harness. */
-volatile int g_sr_vram_read_pending;
-void sr_ge_vram_read_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
-void sr_ge_vram_write_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
-void sr_ge_vram_write_commit(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
-
 #include <stdlib.h>
 #include <string.h>
 

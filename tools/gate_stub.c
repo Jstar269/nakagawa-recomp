@@ -60,16 +60,6 @@ static uint32_t mem_r32(uint32_t a) {
 typedef struct CpuState CpuState;
 
 CpuState *s_cpu = NULL;
-volatile int g_sr_vram_read_pending = 0;
-void sr_ge_vram_read_prepare(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
-void sr_ge_vram_write_prepare(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
-void sr_ge_vram_write_commit(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
 
 /* --- Scheduler stubs (sched.c / sr_coro.c) --- */
 int     sr_sched_on = 0;

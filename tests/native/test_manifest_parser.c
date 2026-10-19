@@ -5,26 +5,9 @@
 #include "nk_launch.h"
 #include "nk_platform.h"
 #include <assert.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* The manifest parser test links the PGF object file but not the runtime GE. */
-volatile int g_sr_vram_read_pending;
-void sr_ge_vram_read_prepare(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
-void sr_ge_vram_write_prepare(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
-void sr_ge_vram_write_commit(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
-void sr_oor(uint32_t address, uint32_t value, int store) {
-    (void)address; (void)value; (void)store;
-    abort();
-}
 
 static const char * const CANONICAL_VALID_BASE =
     "{\n"
@@ -102,9 +85,6 @@ static void test_manifest_unicode_and_surrogates(void) {
 
     assert(nk_title_manifest_parse_buffer(jp_escaped, strlen(jp_escaped), false, &entry, err, sizeof(err)));
     assert(strcmp(entry.display_name, "日本語タイトル") == 0);
-    assert(entry.has_executable_base == true);
-    assert(entry.executable_base == 0);
-    assert(entry.has_executable_entry == true);
 
     /* 2. UTF-16 surrogate pair for supplementary plane codepoint U+1F600 (GRINNING FACE 😀) */
     const char *surrogate_json =

@@ -974,22 +974,12 @@ uint8_t *g_mem;
 int g_hle_depth;
 int g_sr_heap_watch;
 CpuState *s_cpu;
-volatile int g_sr_vram_read_pending;
 void sr_oor(uint32_t a, uint32_t v, int store) { (void)a; (void)v; (void)store; }
 void sr_heap_note_write(uint32_t a, uint32_t w, uint32_t v, uint32_t pc) {
     (void)a; (void)w; (void)v; (void)pc;
 }
 uint32_t sched_current_uid(void) { return 0; }
 uint32_t sr_get_ge_status(void) { return 0; }
-void sr_ge_vram_read_prepare(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
-void sr_ge_vram_write_prepare(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
-void sr_ge_vram_write_commit(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
 int sr_cpu_lle_enabled(void) { return 0; }
 unsigned sr_cpu_data_access_fault(const CpuState *s, uint32_t addr, unsigned width,
                                   int store) {

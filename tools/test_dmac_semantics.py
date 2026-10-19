@@ -63,7 +63,7 @@ class TestDmacValidationOrder(unittest.TestCase):
         policy = region.index("n - src_prefix != 1u")
         effective = region.index("uint32_t effective = src_prefix < dst_prefix ? src_prefix : dst_prefix;")
         copy = region.index("memmove(SR_HOST(dst), SR_HOST(src), effective)")
-        dirty = region.index("sr_guest_vram_write_commit_bytes(dst, effective)")
+        dirty = region.index("sr_gpu_vram_dirty(dst, effective)")
 
         self.assertLess(size_check, null_check)
         self.assertLess(null_check, prefix)
@@ -71,7 +71,7 @@ class TestDmacValidationOrder(unittest.TestCase):
         self.assertLess(effective, policy)
         self.assertLess(effective, copy, "the effective length must be selected before copying")
         self.assertLess(copy, dirty, "the GPU is notified only after a real transfer")
-        self.assertIn("sr_guest_span_readable_current(src, effective)", region)
+        self.assertIn("sr_guest_span_readable(src, effective)", region)
         self.assertIn("sr_guest_span_writable(dst, effective)", region)
 
     def test_overlap_safe_primitive(self) -> None:
@@ -103,7 +103,7 @@ class TestDmacMeasuredBoundary(unittest.TestCase):
     def test_only_effective_prefix_has_side_effects(self) -> None:
         region = _dmac_region()
         self.assertIn("memmove(SR_HOST(dst), SR_HOST(src), effective)", region)
-        self.assertIn("sr_guest_vram_write_commit_bytes(dst, effective)", region)
+        self.assertIn("sr_gpu_vram_dirty(dst, effective)", region)
         self.assertIn("sr_heap_note_bulk_write(dst, effective, 0u)", region)
 
     def test_no_fabricated_busy_result(self) -> None:
@@ -248,9 +248,9 @@ class TestDmacGpuAliasBoundary(unittest.TestCase):
         )
         start = text.index("static void hook_vram_dirty")
         region = text[start : text.index("/* ---- GE block transfer", start)]
-        self.assertIn("sr_vram_cpu_address(addr)", region)
-        self.assertIn("sr_vram_cpu_address(e->addr)", region)
-        self.assertIn("vram_off(canonical_addr)", region)
+        self.assertIn("SR_PHYS(addr)", region)
+        self.assertIn("SR_PHYS(e->addr)", region)
+        self.assertIn("vram_off(addr)", region)
         self.assertIn('"alias-vram"', text)
         self.assertIn("if (tc->dirty_alias)", text)
 

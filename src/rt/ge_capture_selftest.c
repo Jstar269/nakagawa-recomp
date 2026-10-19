@@ -10,16 +10,6 @@
 #include <string.h>
 
 uint8_t *g_mem;
-volatile int g_sr_vram_read_pending;
-void sr_ge_vram_read_prepare(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
-void sr_ge_vram_write_prepare(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
-void sr_ge_vram_write_commit(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
 
 int main(int argc, char **argv) {
     assert(argc == 2);

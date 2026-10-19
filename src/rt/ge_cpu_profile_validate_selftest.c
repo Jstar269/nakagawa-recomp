@@ -45,20 +45,10 @@ extern uint32_t ge_run_list(uint32_t addr, int resume);
 
 uint8_t *g_mem;
 CpuState *s_cpu;
-uint32_t g_sr_debug;
 int g_sr_heap_watch;
-int g_sr_metadata_watch;
 int g_sr_last_writer_enabled;
 int g_sr_mem_watch_count;
 SrMemWatch g_sr_mem_watches[SR_MAX_MEM_WATCHES];
-uint32_t g_sr_store_context_pc;
-unsigned g_sr_store_context_count;
-unsigned g_sr_store_context_limit;
-uint32_t g_sr_mem_watch_context_pc;
-unsigned g_sr_mem_watch_context_limit;
-unsigned g_sr_mem_watch_context_count;
-int g_sr_mem_watch_context_fpr = -1;
-uint32_t g_sr_mem_watch_context_fpr_value;
 int g_sr_store_context_mem_gpr = -1;
 uint32_t g_sr_store_context_mem_offset;
 unsigned g_sr_store_context_mem_words;
@@ -123,13 +113,9 @@ static void env_set(const char *name, const char *value) {
 #define LIST_SUB      0x08108000u
 #define LIST_EMPTY    0x0810C000u
 #define LIST_BAD_CLUT 0x0810E000u
-#define LIST_VRAM_DEPTH 0x08110000u
-#define LIST_VRAM_CPU_WRITE 0x08112000u
-#define LIST_VRAM_AMBIGUOUS 0x08114000u
 #define VERTS         0x08200000u
 #define INDICES       0x08280000u
 #define CLUT_SRC      0x08290000u
-#define VRAM_TEST_VERTS 0x08300000u
 
 /* col 8888, float normal, float position: 4 + 12 + 12 = 28 bytes per vertex. */
 #define VT_TRANSFORM ((7u << 2) | (3u << 5) | (3u << 7))
@@ -144,7 +130,6 @@ static void env_set(const char *name, const char *value) {
 
 static uint32_t s_pc;
 static uint32_t s_vtx = VERTS;
-static void expect(int ok, const char *scenario, const char *what);
 
 static void W(uint32_t cmd, uint32_t data) {
     uint32_t word = (cmd << 24) | (data & 0xFFFFFFu);
@@ -342,161 +327,6 @@ static void build_lists(void) {
     W(0xB1, 0x0B0000);                                   /* 0x0BFFFFE0 */
     W(0xC4, 0x3F);
     W(0x0C, 0);
-}
-
-static uint32_t depth_test_vertex(uint32_t address, uint16_t x, uint16_t y,
-                                  uint16_t z, uint32_t color) {
-    MEM_W32(address, color);
-    MEM_W16(address + 4u, x);
-    MEM_W16(address + 6u, y);
-    MEM_W16(address + 8u, z);
-    return address + 12u;                 /* 4-byte color alignment pads the vertex stride */
-}
-
-static void build_vram_depth_list(void) {
-    static const uint32_t through16 = (7u << 2) | (2u << 7) | (1u << 23);
-    uint32_t vertex = VRAM_TEST_VERTS;
-    uint32_t clear_sprite = vertex;
-    vertex = depth_test_vertex(vertex, 0u, 0u, 0u, 0xFF646464u);
-    vertex = depth_test_vertex(vertex, 480u, 272u, 0u, 0xFF646464u);
-    uint32_t sprite_a = vertex;
-    vertex = depth_test_vertex(vertex, 0u, 0u, 0x1111u, 0xFF101010u);
-    vertex = depth_test_vertex(vertex, 32u, 16u, 0x1111u, 0xFF101010u);
-    uint32_t sprite_b = vertex;
-    vertex = depth_test_vertex(vertex, 64u, 8u, 0x2222u, 0xFF202020u);
-    vertex = depth_test_vertex(vertex, 96u, 12u, 0x2222u, 0xFF202020u);
-    uint32_t sprite_c = vertex;
-    vertex = depth_test_vertex(vertex, 200u, 100u, 0x3333u, 0xFF303030u);
-    (void)depth_test_vertex(vertex, 208u, 101u, 0x3333u, 0xFF303030u);
-
-    s_pc = LIST_VRAM_DEPTH;
-    W(0x10, 0x080000);
-    W(0x9C, 0x00100000u);                /* colour base: 0x04100000 */
-    W(0x9D, 512u);
-    W(0xD2, 3u);                         /* 8888 */
-    W(0x9E, 0x0CC000u);                  /* depth base */
-    W(0x9F, 512u);
-    W(0xD4, 0u);
-    W(0xD5, (271u << 10) | 479u);
-    W(0x23, 1u);                         /* depth test enabled */
-    W(0xDE, 1u);                         /* always pass */
-    W(0x12, through16);
-    W(0xD3, 1u | 0x100u | 0x200u | 0x400u); /* clear colour, alpha, depth */
-    prim(6u, 2u, clear_sprite);
-    W(0xD3, 0u);
-    prim(6u, 2u, sprite_a);
-    prim(6u, 2u, sprite_b);
-    prim(6u, 2u, sprite_c);
-    W(0x0C, 0u);
-}
-
-static void build_vram_cpu_write_list(void) {
-    static const uint32_t through16 = (7u << 2) | (2u << 7) | (1u << 23);
-    uint32_t vertex = VRAM_TEST_VERTS + 0x100u;
-    uint32_t depth_sprite = vertex;
-    vertex = depth_test_vertex(vertex, 0u, 0u, 0x4444u, 0xFF010203u);
-    vertex = depth_test_vertex(vertex, 1u, 1u, 0x4444u, 0xFF010203u);
-    uint32_t color_sprite = vertex;
-    (void)depth_test_vertex(vertex, 2u, 2u, 0u, 0xFF010203u);
-    (void)depth_test_vertex(vertex + 12u, 3u, 3u, 0u, 0xFF010203u);
-
-    s_pc = LIST_VRAM_CPU_WRITE;
-    W(0x10, 0x080000u);
-    W(0x9C, 0x00100000u);
-    W(0x9D, 512u);
-    W(0xD2, 3u);
-    W(0x9E, 0x0CC000u);
-    W(0x9F, 512u);
-    W(0xD4, 0u);
-    W(0xD5, (271u << 10) | 479u);
-    W(0x12, through16);
-    W(0x23, 1u);
-    W(0xDE, 4u);                         /* less */
-    prim(6u, 2u, depth_sprite);
-    W(0x23, 0u);
-    W(0x28, 1u);                         /* logic op enabled */
-    W(0xE6, 6u);                         /* XOR */
-    prim(6u, 2u, color_sprite);
-    W(0x0C, 0u);
-}
-
-static void build_vram_ambiguous_depth_list(uint32_t zbp, uint32_t vertex) {
-    static const uint32_t through16 = (7u << 2) | (2u << 7) | (1u << 23);
-    (void)depth_test_vertex(vertex, 20u, 20u, 0x1111u, 0xFF010203u);
-    (void)depth_test_vertex(vertex + 12u, 21u, 21u, 0x1111u, 0xFF010203u);
-    s_pc = LIST_VRAM_AMBIGUOUS;
-    W(0x10, 0x080000u);
-    W(0x9C, 0x00100000u);
-    W(0x9D, 512u);
-    W(0xD2, 3u);
-    W(0x9E, zbp);
-    W(0x9F, 512u);
-    W(0xD4, 0u);
-    W(0xD5, (271u << 10) | 479u);
-    W(0x23, 1u);
-    W(0xDE, 1u);
-    W(0x21, 0u);
-    W(0x28, 0u);
-    W(0xD3, 0u);
-    W(0x12, through16);
-    prim(6u, 2u, vertex);
-    W(0x0C, 0u);
-}
-
-static void test_ge_vram_cpu_visibility(void) {
-    build_vram_depth_list();
-    expect(ge_run_list(LIST_VRAM_DEPTH, 0) == 0, "vram_depth", "depth list did not reach END");
-
-    static const struct {
-        unsigned x, y;
-        uint16_t z;
-    } points[] = {
-        { 0u, 0u, 0x1111u },
-        { 64u, 8u, 0x2222u },
-        { 200u, 100u, 0x3333u },
-    };
-    const uint32_t zbase = 0x040CC000u;
-    for (size_t i = 0; i < sizeof points / sizeof points[0]; i++) {
-        uint32_t linear = (points[i].y * 512u + points[i].x) * 2u;
-        uint32_t stored = zbase + (linear ^ 0x2040u);
-        uint32_t alias_linear = 0x04200000u + (zbase - 0x04000000u) + linear;
-        char detail[112];
-        snprintf(detail, sizeof detail, "swizzled depth at x=%u y=%u",
-                 points[i].x, points[i].y);
-        expect(MEM_R16(stored) == points[i].z, "vram_depth", detail);
-        snprintf(detail, sizeof detail, "linear mirror depth at x=%u y=%u",
-                 points[i].x, points[i].y);
-        expect(MEM_R16(alias_linear) == points[i].z, "vram_depth", detail);
-    }
-    uint32_t clear_linear = (200u * 512u + 300u) * 2u;
-    expect(MEM_R16(zbase + (clear_linear ^ 0x2040u)) == 0u &&
-           MEM_R16(0x04200000u + (zbase - 0x04000000u) + clear_linear) == 0u,
-           "vram_depth", "GE depth clear is visible in the base and linear mirror views");
-    expect(MEM_R32(0x04100000u + (200u * 512u + 300u) * 4u) == 0xFF646464u,
-           "vram_color", "CPU load after the software GE clear sees the linear colour row");
-
-    MEM_W16(zbase + 0x2040u, 0xFFFFu);
-    uint32_t color_addr = 0x04100000u + (2u * 512u + 2u) * 4u;
-    MEM_W32(color_addr, 0xFF112233u);
-    build_vram_cpu_write_list();
-    expect(ge_run_list(LIST_VRAM_CPU_WRITE, 0) == 0,
-           "vram_cpu_write", "post-store GE list did not reach END");
-    expect(MEM_R16(zbase + 0x2040u) == 0x4444u,
-           "vram_cpu_write", "next GE depth test observes the CPU-written depth value");
-    expect(MEM_R32(color_addr) == 0xFF102030u,
-           "vram_cpu_write", "next GE logic-op draw observes the CPU-written color value");
-
-    static const uint32_t ambiguous_zbp[] = { 0x0CC040u, 0x0CE000u };
-    for (size_t i = 0; i < sizeof ambiguous_zbp / sizeof ambiguous_zbp[0]; i++) {
-        uint32_t color_pixel = 0x04100000u + (20u * 512u + 20u) * 4u;
-        MEM_W32(color_pixel, 0xFFABCDEFu);
-        build_vram_ambiguous_depth_list(ambiguous_zbp[i],
-                                        VRAM_TEST_VERTS + 0x300u + (uint32_t)i * 32u);
-        expect(ge_run_list(LIST_VRAM_AMBIGUOUS, 0) == 0,
-               "vram_depth_boundary", "ambiguous depth list did not reach END");
-        expect(MEM_R32(color_pixel) == 0xFFABCDEFu,
-               "vram_depth_boundary", "ambiguous depth placement rejects the whole depth-tested primitive");
-    }
 }
 
 /* ---- GPU backend stand-in (the hook contract src/rt/gpu_sdl3vk/ge_gpu.c fills) ---- */
@@ -976,68 +806,6 @@ static void expect_api_contract(void) {
                           ge_profile_check_name((GeProfileCheck)j)) != 0, "api", "duplicate name");
 }
 
-static uint32_t vram_expected_cpu_address(uint32_t address) {
-    uint32_t phys = SR_PHYS(address);
-    uint32_t region = (phys >> 21) & 3u;
-    uint32_t offset = phys & 0x001FFFFFu;
-    if (region == 1u) {
-        offset ^= 0x2040u;
-    } else if (region == 3u) {
-        uint32_t bank = (offset >> 5) & 0x1Fu;
-        bank = ((bank << 1) | (bank >> 4)) & 0x1Fu;
-        offset = (offset & ~0x3E0u) | (bank << 5);
-        offset ^= 0x2040u;
-    }
-    return 0x04000000u + offset;
-}
-
-static void test_vram_mirror_cpu_stores(void) {
-    static const uint32_t mirrors[] = {
-        0x04000000u, 0x04200000u, 0x04400000u, 0x04600000u,
-        0x44000000u, 0x44200000u, 0x44400000u, 0x44600000u,
-    };
-    const uint32_t offset = 0x00010100u;
-    const uint32_t value = 0x78563412u;
-    for (size_t mirror = 0; mirror < sizeof mirrors / sizeof mirrors[0]; mirror++) {
-        uint32_t address = mirrors[mirror] + offset;
-        MEM_W32(address, value);
-        for (unsigned byte = 0; byte < 4u; byte++) {
-            uint32_t source = address + byte;
-            uint32_t physical = vram_expected_cpu_address(source);
-            uint8_t actual = MEM_R8(physical);
-            uint8_t expected = (uint8_t)(value >> (byte * 8u));
-            char detail[128];
-            snprintf(detail, sizeof detail,
-                     "mirror %08" PRIx32 " byte %u maps to %08" PRIx32,
-                     mirrors[mirror], byte, physical);
-            expect(actual == expected, "vram_mirror_store", detail);
-        }
-        MEM_W32(0x04000000u + offset, value);
-        expect(MEM_R32(address) == value, "vram_mirror_read",
-               "CPU load through each cached and uncached mirror returns the physical bytes");
-    }
-    static const uint32_t boundaries[] = { 0x1Fu, 0x3Fu, 0x1FFFu };
-    static const size_t swizzled_mirrors[] = { 1u, 3u, 5u, 7u };
-    for (size_t m = 0; m < sizeof swizzled_mirrors / sizeof swizzled_mirrors[0]; m++) {
-        for (size_t b = 0; b < sizeof boundaries / sizeof boundaries[0]; b++) {
-            uint32_t address = mirrors[swizzled_mirrors[m]] + boundaries[b];
-            MEM_W32(address, value);
-            for (unsigned byte = 0; byte < 4u; byte++) {
-                uint32_t physical = vram_expected_cpu_address(address + byte);
-                expect(MEM_R8(physical) == (uint8_t)(value >> (byte * 8u)),
-                       "vram_mirror_boundary",
-                       "scalar word stores translate every byte across 32-byte, 64-byte, and 8 KiB boundaries");
-            }
-        }
-    }
-    expect(!sr_guest_span_readable(0x0420003Fu, 2u) &&
-           !sr_guest_span_writable(0x0460001Fu, 2u),
-           "vram_mirror_bulk", "swizzled mirrors reject non-contiguous bulk spans");
-    expect(sr_guest_span_readable(0x04200100u, 4u) &&
-           sr_guest_span_readable(0x04400100u, 4u),
-           "vram_mirror_bulk", "contiguous swizzled blocks and the linear mirror stay accessible");
-}
-
 int main(int argc, char **argv) {
     int strip_cache = 1;
     if (argc == 2 && strcmp(argv[1], "--strip-cache-disabled") == 0) strip_cache = 0;
@@ -1053,7 +821,6 @@ int main(int argc, char **argv) {
         return 2;
     }
     g_mem = arena + 0x08000000u;
-    test_vram_mirror_cpu_stores();
     build_lists();
     expect_api_contract();
 
@@ -1169,8 +936,6 @@ int main(int argc, char **argv) {
     static const Fault sparse_fault = {
         "through_candidate_overcount", m_through_candidate_overcount, BIT(TRIANGLE_MODE_SPLIT) };
     expect_fault("sparse_only", &sparse_only, &sparse_fault);
-
-    test_ge_vram_cpu_visibility();
 
     printf("ge_cpu_profile_validate_selftest: strip_cache=%s scenarios=%u faults=%u failures=%d\n",
            strip_cache ? "on" : "off", s_scenarios, s_faults, s_failures);

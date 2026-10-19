@@ -49,12 +49,6 @@ void sr_register_all(void);   /* generated: executable spans + every native body
 
 /* ---- stubs for runtime symbols recomp.c references ------------------------------- */
 
-/* No GE in this harness: the VRAM coherence hooks the guest accessors call are inert. */
-volatile int g_sr_vram_read_pending;
-void sr_ge_vram_read_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
-void sr_ge_vram_write_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
-void sr_ge_vram_write_commit(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
-
 uint32_t g_sr_debug = 0;
 SrMemWatch g_sr_mem_watches[SR_MAX_MEM_WATCHES];
 int g_sr_mem_watch_count = 0;

@@ -20,12 +20,6 @@
 #include "recomp.c"   /* arena, dispatch table, MEM_* backing */
 #include "cpu_lle.c"  /* helpers under test (white-box, same TU) */
 
-/* No GE renderer is linked by this CPU/LLE-only harness. */
-volatile int g_sr_vram_read_pending;
-void sr_ge_vram_read_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
-void sr_ge_vram_write_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
-void sr_ge_vram_write_commit(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
-
 #include <stdlib.h>
 #include <string.h>
 

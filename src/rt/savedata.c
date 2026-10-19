@@ -574,7 +574,7 @@ static void load_sfo_param(uint32_t param, const char *dir) {
 static int validate_filedata_readable(uint32_t fd) {
     if (!fd) return 1;
     uint32_t buf = MEM_R32(fd + 0), sz = MEM_R32(fd + 8);
-    return sr_guest_span_readable_current(buf, sz);
+    return sr_guest_span_readable(buf, sz);
 }
 
 static int validate_filedata_writable(uint32_t fd) {
@@ -586,7 +586,7 @@ static int validate_filedata_writable(uint32_t fd) {
 static void write_filedata(const char *dir, const char *name, uint32_t fd) {
     uint32_t buf = MEM_R32(fd + 0), sz = MEM_R32(fd + 8);
     if (!buf || !sz) return;
-    if (!sr_guest_span_readable_current(buf, sz)) return;
+    if (!sr_guest_span_readable(buf, sz)) return;
     s_storage.write(dir, name, (const uint8_t *)SR_HOST(buf), sz);
 }
 
@@ -600,8 +600,7 @@ static uint32_t do_save(uint32_t param, const char *game, const char *save) {
      * before any host directory creation or file write. */
     if (fileName[0] && !path_sanitize(fileName)) return 0x80110381u;
     if (fileName[0] && dataSize) {
-        if (!dataBuf || dataSize >= 0x04000000u ||
-            !sr_guest_span_readable_current(dataBuf, dataSize))
+        if (!dataBuf || dataSize >= 0x04000000u || !sr_guest_span_readable(dataBuf, dataSize))
             return 0x80110381u;
     }
     if (!validate_filedata_readable(param + SDP_icon0) ||
@@ -662,12 +661,7 @@ static void load_filedata(const char *dir, const char *name, uint32_t fd) {
     if (!buf || !cap) return;
     if (!sr_guest_span_writable(buf, cap)) return;
     uint32_t rd = 0;
-    sr_guest_vram_write_prepare_bytes(buf, cap);
-    int loaded = s_storage.read(dir, name, (uint8_t *)SR_HOST(buf), cap, &rd);
-    sr_guest_vram_write_commit_bytes(buf, rd);
-    if (loaded) {
-        MEM_W32(fd + 8, rd);
-    }
+    if (s_storage.read(dir, name, (uint8_t *)SR_HOST(buf), cap, &rd)) MEM_W32(fd + 8, rd);
 }
 
 static uint32_t do_load(uint32_t param, const char *game, const char *save) {
@@ -712,11 +706,7 @@ static uint32_t do_load(uint32_t param, const char *game, const char *save) {
         }
         uint32_t rd = 0;
         if (dataBuf && to_read > 0) {
-            sr_guest_vram_write_prepare_bytes(dataBuf, (uint32_t)to_read);
-            int loaded = s_storage.read(dir, fileName, (uint8_t *)SR_HOST(dataBuf),
-                                        (uint32_t)to_read, &rd);
-            sr_guest_vram_write_commit_bytes(dataBuf, rd);
-            if (!loaded) {
+            if (!s_storage.read(dir, fileName, (uint8_t *)SR_HOST(dataBuf), (uint32_t)to_read, &rd)) {
                 if (sdlog()) fprintf(stderr, "savedata: LOAD %s -> file not found\n", dir);
                 return ERR_LOAD_NOT_FOUND;
             }

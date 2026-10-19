@@ -59,28 +59,6 @@ _TYPE_A_RECOGNIZED_TYPES = (
 )
 
 
-def _image_address_bias(elf_type: int, image_base: int, loads: list[dict]) -> int:
-    """Return the address offset applied to PT_LOAD virtual addresses.
-
-    A manifest base equal to the lowest PT_LOAD address of a fixed-address
-    ET_EXEC names the flat image origin. Its segment addresses already are
-    guest addresses and must not be rebased a second time. Other ELF classes
-    retain the existing base-as-rebase-offset behavior.
-    """
-    if (elf_type == 2 and image_base != 0 and loads and
-            min(segment["vaddr"] for segment in loads) == image_base):
-        return 0
-    return image_base
-
-
-def _image_segment_extent(
-    image_origin: int, address_bias: int, vaddr: int, memsz: int, label: str,
-) -> tuple[int, int]:
-    """Return a segment range bounded relative to its flat-image origin."""
-    start = address_bias + vaddr
-    return image_extent(image_origin, start - image_origin, memsz, label)
-
-
 @dataclass(frozen=True)
 class ProgramImageSpan:
     """An immutable half-open guest or file span."""
@@ -978,15 +956,11 @@ def load_program_image(path, base=0, psp_header=None):
                 "PSP segment declarations do not cover the declared BSS extent",
             ))
 
-    address_bias = _image_address_bias(
-        envelope["e_type"], effective_base, load_specs
-    )
     loads = []
     for spec in load_specs:
         try:
-            start, end = _image_segment_extent(
-                effective_base, address_bias, spec["vaddr"], spec["memsz"],
-                f"PT_LOAD {spec['idx']}",
+            start, end = image_extent(
+                effective_base, spec["vaddr"], spec["memsz"], f"PT_LOAD {spec['idx']}"
             )
         except ValueError as exc:
             findings.append(ProgramImageFinding(
@@ -1040,7 +1014,7 @@ def load_program_image(path, base=0, psp_header=None):
             name = _program_image_section_name(data, envelope, raw_section)
             address = (
                 0 if raw_section["idx"] == 0
-                else _program_image_ptr(raw_section["addr"], address_bias, loads)
+                else _program_image_ptr(raw_section["addr"], effective_base, loads)
             )
             if address is None:
                 findings.append(ProgramImageFinding(
@@ -1061,7 +1035,7 @@ def load_program_image(path, base=0, psp_header=None):
             sections.append(section)
             section_by_name[name] = section
 
-    entry_point = _program_image_ptr(envelope["entry"], address_bias, loads)
+    entry_point = _program_image_ptr(envelope["entry"], effective_base, loads)
     if entry_point is None:
         findings.append(ProgramImageFinding(
             "entry-point-oob", "error", "e_entry",
@@ -1113,12 +1087,12 @@ def load_program_image(path, base=0, psp_header=None):
                 module_name = name_bytes[:nul].decode("ascii", "backslashreplace")
 
             ent_start, ent_end = _program_image_rebased_range(
-                ent_start_raw, ent_end_raw, address_bias, "module.exports", findings, loads
+                ent_start_raw, ent_end_raw, effective_base, "module.exports", findings, loads
             )
             stub_start, stub_end = _program_image_rebased_range(
-                stub_start_raw, stub_end_raw, address_bias, "module.imports", findings, loads
+                stub_start_raw, stub_end_raw, effective_base, "module.imports", findings, loads
             )
-            module_gp = _program_image_ptr(gp, address_bias, loads) if gp else 0
+            module_gp = _program_image_ptr(gp, effective_base, loads) if gp else 0
             if module_gp is None or (
                 module_gp and _program_image_raw_read(data, loads, module_gp, 1) is None
             ):
@@ -1132,10 +1106,10 @@ def load_program_image(path, base=0, psp_header=None):
                 ent_start, ent_end, stub_start, stub_end,
             )
             export_entries = _program_image_table(
-                data, loads, ent_start, ent_end, "module.exports", findings, address_bias, "export"
+                data, loads, ent_start, ent_end, "module.exports", findings, effective_base, "export"
             )
             import_entries = _program_image_table(
-                data, loads, stub_start, stub_end, "module.imports", findings, address_bias, "import"
+                data, loads, stub_start, stub_end, "module.imports", findings, effective_base, "import"
             )
             for position, libname, _version, _flags, num_vars, num_funcs, table_a, table_b in export_entries:
                 function_values = _program_image_u32_table(
@@ -1147,10 +1121,10 @@ def load_program_image(path, base=0, psp_header=None):
                 exports.append(ProgramImageExport(
                     libname, position, num_funcs, num_vars, table_a, table_b,
                     _program_image_rebased_values(
-                        function_values, address_bias, "export.functions", findings, loads, data
+                        function_values, effective_base, "export.functions", findings, loads, data
                     ),
                     _program_image_rebased_values(
-                        variable_values, address_bias, "export.variables", findings, loads, data
+                        variable_values, effective_base, "export.variables", findings, loads, data
                     ),
                 ))
             for position, libname, _version, _flags, _num_vars, num_funcs, table_a, table_b in import_entries:
@@ -1161,7 +1135,7 @@ def load_program_image(path, base=0, psp_header=None):
                     libname, position, num_funcs, table_a, table_b, tuple(nids)
                 ))
 
-    relocations = _program_image_validate_relocations(data, envelope, loads, address_bias, findings)
+    relocations = _program_image_validate_relocations(data, envelope, loads, effective_base, findings)
     errors = tuple(item for item in findings if item.severity == "error")
     if errors:
         raise ProgramImageValidationError(tuple(findings))
@@ -1302,7 +1276,6 @@ class Prx:
         loads = [s for s in self.segments if s["type"] == 1]
         if not loads:
             raise ValueError(f"{path}: ELF has no PT_LOAD segments")
-        self.address_bias = _image_address_bias(envelope["e_type"], base, loads)
 
         self.psp_bss_size = 0
         self.psp_segment_sizes = None
@@ -1327,16 +1300,13 @@ class Prx:
             self.psp_segment_sizes = segment_sizes
         # segVAddr[i] = where program-header segment i is loaded. PSP relocs index program
         # segments; only PT_LOAD segments carry an image, indexed in header order.
-        self.seg_vaddr = [self.address_bias + s["vaddr"] for s in loads]
+        self.seg_vaddr = [base + s["vaddr"] for s in loads]
 
         # Flat image covering all loaded segments.  The extent check happens
         # before bytearray allocation so forged BSS cannot request unbounded
         # host memory or wrap the image offset.
         extents = [
-            _image_segment_extent(
-                base, self.address_bias, s["vaddr"], s["memsz"],
-                f"{path}: PT_LOAD {s['idx']}",
-            )
+            image_extent(base, s["vaddr"], s["memsz"], f"{path}: PT_LOAD {s['idx']}")
             for s in loads
         ]
         end = max(end for _, end in extents)
@@ -1346,7 +1316,7 @@ class Prx:
             raise ValueError(f"{path}: flat image exceeds the 256 MiB bound")
         self.mem = bytearray(image_size)
         for s in loads:
-            dst = (self.address_bias + s["vaddr"]) - self.lo
+            dst = (base + s["vaddr"]) - self.lo
             checked_span(len(d), s["off"], s["filesz"], f"{path}: PT_LOAD data")
             payload = d[s["off"] : s["off"] + s["filesz"]]
             if len(payload) != s["filesz"]:
@@ -1679,7 +1649,7 @@ def main(argv):
         f" psp_bss=0x{prx.psp_bss_size:x}" if prx.psp_segment_sizes is not None else ""
     )
     print(
-        f"loaded base=0x{base:08x} entry=0x{prx.address_bias + prx.entry:08x} "
+        f"loaded base=0x{base:08x} entry=0x{base + prx.entry:08x} "
         f"image_size=0x{len(prx.mem):x}{bss_note} relocations applied={n}"
     )
     rc = 0

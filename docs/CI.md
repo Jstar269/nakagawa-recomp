@@ -111,9 +111,7 @@ counted as a kill. Both are source-owned and need no game input. See
 limits of the evidence.
 
 The Linux `native_tools` job builds SDL3 from its pinned 3.4.16 release commit and installs
-Vulkan development headers. The staged SDL3 install is cached under a key naming the pinned
-version and commit, the gcc and cmake versions, and the workflow file hash; a cache hit skips
-the build, and the pkg-config version check still runs. It configures and builds the CMake player with `BUILD_PLAYER=ON`,
+Vulkan development headers. It configures and builds the CMake player with `BUILD_PLAYER=ON`,
 runs CTest, and requires the `nakagawa_player --help` usage marker. It also downloads the PSPDEV
 archive identified by [`pspdev.lock.json`](../assets/upstream/pspdev.lock.json), checking its
 SHA-256 before use. The job runs `make CC=gcc showcase-linux` to build and boot the two

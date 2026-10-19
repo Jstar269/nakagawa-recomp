@@ -127,81 +127,9 @@ _Static_assert(sizeof(CpuState) == 1000u, "CpuState size drift");
 extern uint8_t *g_mem;
 #define SR_RAM_BASE 0x08000000u
 #define SR_PHYS(a)  ((a) & 0x1FFFFFFFu)
-#define SR_VRAM_CPU_BASE 0x04000000u
-#define SR_VRAM_CPU_END  0x04800000u
-#define SR_VRAM_CPU_MASK 0xFF800000u
-
-/* CPU addresses in the 2 MiB VRAM mirror window share the same physical eDRAM.
- * The 0x042 and 0x046 views are swizzled; scalar accesses can translate each byte,
- * while a C host pointer cannot represent spans that cross a swizzle boundary. */
-static inline int sr_vram_cpu_aperture(uint32_t address) {
-    return (SR_PHYS(address) & SR_VRAM_CPU_MASK) == SR_VRAM_CPU_BASE;
-}
-
-static inline int sr_vram_cpu_span_touches(uint32_t address, uint32_t width) {
-    if (width == 0u) return 0;
-    uint32_t first = SR_PHYS(address);
-    uint32_t last = SR_PHYS(address + width - 1u);
-    return first < SR_VRAM_CPU_END && last >= SR_VRAM_CPU_BASE;
-}
-
-static inline uint32_t sr_vram_cpu_address(uint32_t address) {
-    uint32_t phys = SR_PHYS(address);
-    if (!sr_vram_cpu_aperture(address)) return phys;
-
-    uint32_t mirror = (phys >> 21) & 3u;
-    uint32_t offset = phys & 0x001FFFFFu;
-    if (mirror == 1u) {
-        offset ^= 0x2040u;
-    } else if (mirror == 3u) {
-        uint32_t bank = (offset >> 5) & 0x1Fu;
-        bank = ((bank << 1) | (bank >> 4)) & 0x1Fu;
-        offset = (offset & ~0x3E0u) | (bank << 5);
-        offset ^= 0x2040u;
-    }
-    return SR_VRAM_CPU_BASE + offset;
-}
-
-static inline int sr_guest_span_hits_swizzled_vram_mirror(uint32_t address,
-                                                           uint32_t size) {
-    if (size == 0u) return 0;
-    uint64_t first = SR_PHYS(address);
-    uint64_t end = first + (uint64_t)size;
-    int intersects = (first < 0x04400000ull && end > 0x04200000ull) ||
-                     (first < 0x04800000ull && end > 0x04600000ull);
-    if (!intersects) return 0;
-    uint64_t last = end - 1u;
-    if (first < 0x04200000ull || last >= 0x04800000ull ||
-        ((first >> 21) & 3u) != ((last >> 21) & 3u)) return 1;
-    uint32_t region = (uint32_t)((first >> 21) & 3u);
-    uint32_t first_offset = (uint32_t)first & 0x001FFFFFu;
-    uint32_t last_offset = (uint32_t)last & 0x001FFFFFu;
-    if (region == 1u)
-        return (first_offset >> 6) != (last_offset >> 6) ||
-               (first_offset >> 13) != (last_offset >> 13);
-    if (region == 3u) return (first_offset >> 5) != (last_offset >> 5);
-    return 1;
-}
-
-static inline void sr_guest_span_report_vram_mirror_boundary(void) {
-    static int reported;
-    if (!reported) {
-        reported = 1;
-        fprintf(stderr,
-                "SEMANTIC_BOUNDARY: VRAM_MIRROR_BULK_UNSUPPORTED; bulk access through "
-                "a swizzled VRAM mirror is not supported yet.\n");
-    }
-}
-
 /* Signed offset so addresses below SR_RAM_BASE map below g_mem.
  * With SR_RAM_BASE=0x08000000, RAM starts at g_mem and VRAM/eDRAM at 0x04000000 is at g_mem - 0x04000000. */
-static inline uint8_t *sr_host_address(uint32_t address) {
-    return g_mem + (int32_t)(sr_vram_cpu_address(address) - SR_RAM_BASE);
-}
-#define SR_HOST(a)  sr_host_address((uint32_t)(a))
-/* Scalar accessors use this only after proving a normal-RAM/non-mirror span, keeping
- * the common path to one VRAM-range test rather than repeating alias translation. */
-#define SR_HOST_LINEAR(a) (g_mem + (int32_t)(SR_PHYS(a) - SR_RAM_BASE))
+#define SR_HOST(a)  (g_mem + (int32_t)(SR_PHYS(a) - SR_RAM_BASE))
 
 /* The arena covers guest physical [0, 0x0c000000). */
 static inline int sr_inrange(uint32_t a) {
@@ -216,11 +144,6 @@ static inline int sr_inrange_n(uint32_t a, uint32_t width) {
     uint32_t phys = (uint32_t)SR_PHYS(a);
     return phys < 0x0c000000u && (0x0c000000u - phys) >= width;
 }
-extern volatile int g_sr_vram_read_pending;
-void sr_ge_vram_read_prepare(uint32_t physical_addr, uint32_t width);
-void sr_ge_vram_write_prepare(uint32_t physical_addr, uint32_t width);
-void sr_ge_vram_write_commit(uint32_t physical_addr, uint32_t width);
-static inline void sr_guest_vram_read_prepare_bytes(uint32_t addr, uint32_t width);
 
 /* --- Guest-memory span validation (issue #15) --------------------------------
  * Overflow-safe bounds checks for BULK / string / parser accesses, where a whole
@@ -236,30 +159,11 @@ static inline void sr_guest_vram_read_prepare_bytes(uint32_t addr, uint32_t widt
  * and a future read-only region only changes one of them. */
 static inline int sr_guest_span_readable(uint32_t addr, uint32_t size) {
     if (size == 0u) return 1;
-    if (!sr_inrange_n(addr, size)) return 0;
-    if (sr_guest_span_hits_swizzled_vram_mirror(addr, size)) {
-        sr_guest_span_report_vram_mirror_boundary();
-        return 0;
-    }
-    return 1;
+    return sr_inrange_n(addr, size);
 }
 static inline int sr_guest_span_writable(uint32_t addr, uint32_t size) {
     if (size == 0u) return 1;
-    if (!sr_inrange_n(addr, size)) return 0;
-    if (sr_guest_span_hits_swizzled_vram_mirror(addr, size)) {
-        sr_guest_span_report_vram_mirror_boundary();
-        return 0;
-    }
-    return 1;
-}
-
-/* Bulk readers call this immediately before forming their host pointer. */
-static inline int sr_guest_span_readable_current(uint32_t addr, uint32_t size) {
-    if (!sr_guest_span_readable(addr, size)) return 0;
-    if (__builtin_expect(g_sr_vram_read_pending, 0) &&
-        sr_vram_cpu_span_touches(addr, size))
-        sr_ge_vram_read_prepare(sr_vram_cpu_address(addr), size);
-    return 1;
+    return sr_inrange_n(addr, size);
 }
 
 /* Return the largest prefix of [addr, addr + size) that remains inside the
@@ -436,13 +340,7 @@ static inline void sr_log_store_context(uint32_t addr, uint32_t value,
             uint32_t word_addr = base + i * 4u;
             uint32_t word = 0;
             if (sr_inrange_n(word_addr, 4u)) {
-                sr_guest_vram_read_prepare_bytes(word_addr, 4u);
-                if (sr_vram_cpu_aperture(word_addr) || sr_vram_cpu_aperture(word_addr + 3u)) {
-                    for (uint32_t j = 0; j < 4u; j++)
-                        word |= (uint32_t)SR_HOST(word_addr + j)[0] << (j * 8u);
-                } else {
-                    memcpy(&word, SR_HOST(word_addr), sizeof word);
-                }
+                memcpy(&word, SR_HOST(word_addr), sizeof word);
                 fprintf(stderr, " w%u=0x%08" PRIx32, i, word);
             } else {
                 fprintf(stderr, " w%u=<oor>", i);
@@ -456,86 +354,16 @@ static inline void sr_log_store_context(uint32_t addr, uint32_t value,
 void sr_heap_note_write(uint32_t addr, uint32_t width, uint32_t value, uint32_t pc);
 void sr_heap_note_bulk_write(uint32_t addr, uint32_t width, uint32_t pc);
 
-static inline int sr_guest_vram_mapped_span(uint32_t addr, uint32_t width,
-                                            uint32_t *physical_addr) {
-    if (width == 0u || !sr_vram_cpu_aperture(addr) ||
-        !sr_vram_cpu_aperture(addr + width - 1u) ||
-        ((SR_PHYS(addr) >> 21) & 3u) !=
-            ((SR_PHYS(addr + width - 1u) >> 21) & 3u) ||
-        sr_guest_span_hits_swizzled_vram_mirror(addr, width)) return 0;
-    if (physical_addr) *physical_addr = sr_vram_cpu_address(addr);
-    return 1;
-}
-
-static inline void sr_guest_vram_read_prepare_bytes(uint32_t addr, uint32_t width) {
-    if (!__builtin_expect(g_sr_vram_read_pending, 0)) return;
-    if (!sr_vram_cpu_span_touches(addr, width)) return;
-    uint32_t physical_addr;
-    if (sr_guest_vram_mapped_span(addr, width, &physical_addr)) {
-        sr_ge_vram_read_prepare(physical_addr, width);
-        return;
-    }
-    for (uint32_t i = 0; i < width; i++) {
-        uint32_t byte_addr = addr + i;
-        if (sr_vram_cpu_aperture(byte_addr))
-            sr_ge_vram_read_prepare(sr_vram_cpu_address(byte_addr), 1u);
-    }
-}
-
-static inline void sr_guest_vram_write_prepare_bytes(uint32_t addr, uint32_t width) {
-    if (!__builtin_expect(g_sr_vram_read_pending, 0)) return;
-    if (!sr_vram_cpu_span_touches(addr, width)) return;
-    if (sr_guest_vram_mapped_span(addr, width, NULL)) {
-        sr_ge_vram_write_prepare(addr, width);
-        return;
-    }
-    for (uint32_t i = 0; i < width; i++) {
-        uint32_t byte_addr = addr + i;
-        if (sr_vram_cpu_aperture(byte_addr))
-            sr_ge_vram_write_prepare(byte_addr, 1u);
-    }
-}
-
-static inline void sr_guest_vram_write_commit_bytes(uint32_t addr, uint32_t width) {
-    if (width == 0u) return;
-    if (sr_guest_vram_mapped_span(addr, width, NULL)) {
-        sr_ge_vram_write_commit(addr, width);
-        return;
-    }
-    if (!sr_vram_cpu_span_touches(addr, width)) {
-        sr_ge_vram_write_commit(addr, width);
-        return;
-    }
-    for (uint32_t i = 0; i < width; i++) {
-        uint32_t byte_addr = addr + i;
-        if (sr_vram_cpu_aperture(byte_addr))
-            sr_ge_vram_write_commit(byte_addr, 1u);
-    }
-}
-
 static inline uint8_t  sr_r8 (uint32_t a) {
     if (sr_inrange(a)) {
-        uint8_t v;
-        if (sr_vram_cpu_aperture(a)) {
-            if (__builtin_expect(g_sr_vram_read_pending, 0))
-                sr_ge_vram_read_prepare(sr_vram_cpu_address(a), 1u);
-            v = *(uint8_t *)SR_HOST(a);
-        } else {
-            v = *(uint8_t *)SR_HOST_LINEAR(a);
-        }
+        uint8_t v = *(uint8_t  *)SR_HOST(a);
         return v;
     }
     sr_oor(a,0,0); return 0u;
 }
 static inline uint16_t sr_r16(uint32_t a) {
     if (sr_inrange_n(a, 2)) {
-        if (sr_vram_cpu_span_touches(a, 2u)) {
-            sr_guest_vram_read_prepare_bytes(a, 2u);
-            uint16_t v = (uint16_t)SR_HOST(a)[0] |
-                         (uint16_t)((uint16_t)SR_HOST(a + 1u)[0] << 8);
-            return v;
-        }
-        uint16_t v; memcpy(&v, SR_HOST_LINEAR(a), sizeof v);
+        uint16_t v; memcpy(&v, SR_HOST(a), sizeof v);
         return v;
     }
     sr_oor(a,0,0); return 0u;
@@ -546,14 +374,7 @@ static inline uint32_t sr_r32(uint32_t a) {
         return sr_get_ge_status();
     }
     if (sr_inrange_n(a, 4)) {
-        if (sr_vram_cpu_span_touches(a, 4u)) {
-            sr_guest_vram_read_prepare_bytes(a, 4u);
-            uint32_t v = 0u;
-            for (uint32_t i = 0; i < 4u; i++)
-                v |= (uint32_t)SR_HOST(a + i)[0] << (i * 8u);
-            return v;
-        }
-        uint32_t v; memcpy(&v, SR_HOST_LINEAR(a), sizeof v);
+        uint32_t v; memcpy(&v, SR_HOST(a), sizeof v);
         return v;
     }
     sr_oor(a,0,0); return 0u;
@@ -564,14 +385,7 @@ static inline void sr_w8_pc(uint32_t a, uint8_t v, uint32_t pc) {
     if (sr_check_mem_watch(a, v, 1, pc)) sr_log_mem_watch_context(pc);
     if (__builtin_expect(g_sr_heap_watch, 0)) sr_heap_note_write(a, 1u, v, pc);
     if (sr_inrange(a)) {
-        if (sr_vram_cpu_aperture(a)) {
-            if (__builtin_expect(g_sr_vram_read_pending, 0))
-                sr_guest_vram_write_prepare_bytes(a, 1u);
-            *(uint8_t *)SR_HOST(a) = v;
-            sr_guest_vram_write_commit_bytes(a, 1u);
-        } else {
-            *(uint8_t *)SR_HOST_LINEAR(a) = v;
-        }
+        *(uint8_t *)SR_HOST(a) = v;
         SR_WATCH_STORE_IF_ARMED(pc, a, v, 1u);
     } else sr_oor(a, v, 1);
 }
@@ -581,15 +395,7 @@ static inline void sr_w16_pc(uint32_t a, uint16_t v, uint32_t pc) {
     if (sr_check_mem_watch(a, v, 1, pc)) sr_log_mem_watch_context(pc);
     if (__builtin_expect(g_sr_heap_watch, 0)) sr_heap_note_write(a, 2u, v, pc);
     if (sr_inrange_n(a, 2)) {
-        if (sr_vram_cpu_span_touches(a, 2u)) {
-            if (__builtin_expect(g_sr_vram_read_pending, 0))
-                sr_guest_vram_write_prepare_bytes(a, 2u);
-            for (uint32_t i = 0; i < 2u; i++)
-                SR_HOST(a + i)[0] = (uint8_t)(v >> (i * 8u));
-            sr_guest_vram_write_commit_bytes(a, 2u);
-        } else {
-            memcpy(SR_HOST_LINEAR(a), &v, sizeof v);
-        }
+        memcpy(SR_HOST(a), &v, sizeof v);
         SR_WATCH_STORE_IF_ARMED(pc, a, v, 2u);
     } else sr_oor(a, v, 1);
 }
@@ -599,15 +405,7 @@ static inline void sr_w32_pc(uint32_t a, uint32_t v, uint32_t pc) {
     if (sr_check_mem_watch(a, v, 1, pc)) sr_log_mem_watch_context(pc);
     if (__builtin_expect(g_sr_heap_watch, 0)) sr_heap_note_write(a, 4u, v, pc);
     if (sr_inrange_n(a, 4)) {
-        if (sr_vram_cpu_span_touches(a, 4u)) {
-            if (__builtin_expect(g_sr_vram_read_pending, 0))
-                sr_guest_vram_write_prepare_bytes(a, 4u);
-            for (uint32_t i = 0; i < 4u; i++)
-                SR_HOST(a + i)[0] = (uint8_t)(v >> (i * 8u));
-            sr_guest_vram_write_commit_bytes(a, 4u);
-        } else {
-            memcpy(SR_HOST_LINEAR(a), &v, sizeof v);
-        }
+        memcpy(SR_HOST(a), &v, sizeof v);
         SR_WATCH_STORE_IF_ARMED(pc, a, v, 4u);
     } else sr_oor(a, v, 1);
 }

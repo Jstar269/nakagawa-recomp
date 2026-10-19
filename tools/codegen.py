@@ -1135,18 +1135,6 @@ def _flit(v):
         s += ".0"
     return s + "f"
 
-# Public VFPU mnemonic identities (PSPDev VFPU docs / PPSSPP's selector table).
-# These rows name still-unimplemented forms only; every one must keep the #326
-# fail-closed interpreter fallback until semantic evidence is admitted.
-_VFPU4_NAMED_UNIMPLEMENTED = {
-    (0x01, 0x00): "vrnds",
-    (0x01, 0x02): "vrndf1",
-    (0x02, 0x02): "vbfy1",
-    (0x02, 0x0A): "vsgn",
-    (0x02, 0x19): "vt4444",
-}
-
-
 def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
     # VFPU memory forms under --lle-cpu use the same sr_cpu_guard_access() call
     # as _lle_access_stmt() (spec 3.3, runs PSP-A3-08..15): lv.s/sv.s width 4,
@@ -1175,15 +1163,9 @@ def vfpu_effect(addr, w, lle_cpu=False, delay_branch_pc=None):
             data &= 0xFFF
         return f"s->vfpuCtrl[{regnum}] = 0x{data:x}u;", None, 0
     if op == 0x34:
-        jump = (w >> 21) & 0x1F
-        rt_selector = (w >> 16) & 0x1F
-        public_name = _VFPU4_NAMED_UNIMPLEMENTED.get((jump, rt_selector))
-        if public_name is not None:
-            raise Unsupported(
-                f"VFPU4 identity {public_name} rs={jump} rt=0x{rt_selector:02x} at 0x{addr:08x}"
-            )
         vd, vs = w & 0x7F, (w >> 8) & 0x7F
         n = vec_size(w)
+        jump = (w >> 21) & 0x1F
         di = vreg_indices(vd, n)
         if jump == 0x15: # vcmov
             tf = (w >> 19) & 1

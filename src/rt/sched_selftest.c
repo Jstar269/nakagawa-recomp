@@ -40,10 +40,6 @@
 
 uint8_t *g_mem;
 static uint8_t *g_mem_base;
-volatile int g_sr_vram_read_pending;
-void sr_ge_vram_read_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
-void sr_ge_vram_write_prepare(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
-void sr_ge_vram_write_commit(uint32_t addr, uint32_t width) { (void)addr; (void)width; }
 
 uint32_t g_sr_debug = 0;
 SrMemWatch g_sr_mem_watches[SR_MAX_MEM_WATCHES];

@@ -261,12 +261,6 @@ typedef struct GeGpuHooks {
     /* Diagnostic capture boundary: materialize persistent color/depth images into the
      * CPU mirrors before a standalone fixture snapshots its exact initial state. */
     int  (*capture_boundary)(void);
-    /* CPU loads materialize only renderer-owned bytes that overlap the address. The
-     * write-prepare hook preserves a pending depth image before a CPU store replaces
-     * bytes; post-write notifications continue through vram_dirty(). */
-    int  (*vram_read)(uint32_t addr, uint32_t bytes);
-    int  (*vram_write_prepare)(uint32_t addr, uint32_t bytes);
-    int  (*vram_pending)(void);
 } GeGpuHooks;
 
 /* Implemented in ge.c. */
@@ -274,14 +268,6 @@ void      ge_set_gpu_hooks(const GeGpuHooks *h);
 /* Post-write notification for CPU-side writes that may alias GPU-cached framebuffers
  * (movie decode, DMA memcpy). No-op when no GPU backend is registered. */
 void      sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes);
-void      sr_vram_mark_renderer_pending(void);
-int       ge_zbuf_prepare_current(void);
-int       ge_zbuf_materialize_current(void);
-int       ge_zbuf_guest_span_bounds(uint32_t base, uint32_t stride,
-                                     uint32_t *first, uint32_t *end);
-void      ge_zbuf_invalidate_guest_span(uint32_t addr, uint32_t bytes);
-void      ge_zbuf_note_external_write(void);
-void      ge_zbuf_invalidate_guest_range(uint32_t addr);
 GeState  *ge_state_ptr(void);
 uint16_t *ge_zbuf_ptr(void);        /* 272*512 entries, row stride = ge_zbuf_stride() */
 uint32_t  ge_zbuf_stride(void);

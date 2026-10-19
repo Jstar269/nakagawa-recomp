@@ -64,22 +64,6 @@ static bool g_real_disc_profile_existed_before = false;
 static int64_t g_real_disc_profile_size = -1;
 static uint64_t g_real_disc_profile_mtime = 0;
 
-/* These host-only catalog tests can link the PGF object file without a GE runtime. */
-volatile int g_sr_vram_read_pending;
-void sr_oor(uint32_t address, uint32_t value, int store) {
-    (void)address; (void)value; (void)store;
-    abort();
-}
-void sr_ge_vram_read_prepare(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
-void sr_ge_vram_write_prepare(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
-void sr_ge_vram_write_commit(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
-
 void native_test_set_env(const char *name, const char *value) {
     bool is_clear = (value == NULL || value[0] == '\0');
 #if defined(_WIN32) || defined(_WIN64)

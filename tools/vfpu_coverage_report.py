@@ -154,7 +154,6 @@ def _probe_support_source() -> str:
 #include <stdlib.h>
 
 uint8_t *g_mem;
-volatile int g_sr_vram_read_pending;
 uint32_t g_sr_debug = 0;
 int g_sr_metadata_watch = 0;
 SrMemWatch g_sr_mem_watches[SR_MAX_MEM_WATCHES];
@@ -191,15 +190,6 @@ void sr_heap_note_write(uint32_t address, uint32_t width, uint32_t value, uint32
 
 uint32_t sched_current_uid(void) { return 0u; }
 uint32_t sr_get_ge_status(void) { return 0u; }
-void sr_ge_vram_read_prepare(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
-void sr_ge_vram_write_prepare(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
-void sr_ge_vram_write_commit(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
 
 int census_probe_memory_init(void) {
     /* Whole 32 MiB user-RAM window: SR_HOST() maps guest addresses without bounds checks, so
@@ -394,8 +384,6 @@ def _reason_template(exc: Exception) -> str:
 
 
 def _reason_kind(reason: str) -> str:
-    if reason.startswith("VFPU4 identity "):
-        return "public-instruction-form"
     if reason.startswith("vcrs size") or reason.startswith("vqmul size") or "vcmov imm3" in reason:
         return "operand-size-selector"
     if reason.startswith("cop2 sub"):

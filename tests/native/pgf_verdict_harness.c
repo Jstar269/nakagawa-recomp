@@ -16,22 +16,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The validator harness links the public PGF object without a GE runtime. */
-volatile int g_sr_vram_read_pending;
-void sr_ge_vram_read_prepare(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
-void sr_ge_vram_write_prepare(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
-void sr_ge_vram_write_commit(uint32_t address, uint32_t bytes) {
-    (void)address; (void)bytes;
-}
-void sr_oor(uint32_t address, uint32_t value, int store) {
-    (void)address; (void)value; (void)store;
-    abort();
-}
-
 int main(void) {
     char line[4096];
     while (fgets(line, sizeof(line), stdin) != NULL) {

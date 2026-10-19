@@ -248,49 +248,59 @@ class IsoDirectoryEntry:
     multi_extent: bool
 
 
-def _elf32_load_span_from_reader(read, file_size: int) -> tuple[int, int, int]:
+def _elf32_load_span(path: Path | str) -> tuple[int, int, int]:
     """Return (ELF type, lowest PT_LOAD address, highest PT_LOAD end)."""
-    header = read(0, 52)
-    if len(header) < 52:
-        if header[:4] in (b"~PSP", b"~SCE"):
-            raise IsoInspectionError(
-                "Guest module is an encrypted container (~PSP/~SCE) requiring decryption",
-                boundary_code="GUEST_MODULE_DECRYPTION_REQUIRED",
-            )
+    try:
+        image_path = Path(path)
+        file_size = image_path.stat().st_size
+        with image_path.open("rb") as stream:
+            header = stream.read(52)
+            if len(header) < 52:
+                if header[:4] in (b"~PSP", b"~SCE"):
+                    raise IsoInspectionError(
+                        "Guest module is an encrypted container (~PSP/~SCE) requiring decryption",
+                        boundary_code="GUEST_MODULE_DECRYPTION_REQUIRED",
+                    )
+                raise IsoInspectionError(
+                    "ELF32 image is truncated",
+                    boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+                )
+            if header[:7] != b"\x7fELF\x01\x01\x01":
+                if header[:4] in (b"~PSP", b"~SCE"):
+                    raise IsoInspectionError(
+                        "Guest module is an encrypted container (~PSP/~SCE) requiring decryption",
+                        boundary_code="GUEST_MODULE_DECRYPTION_REQUIRED",
+                    )
+                raise IsoInspectionError(
+                    "ELF32 load binding needs a little-endian ELF32 image",
+                    boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+                )
+            e_type, machine, version = struct.unpack_from("<HHI", header, 16)
+            _entry, phoff = struct.unpack_from("<II", header, 24)
+            ehsize, phentsize, phnum = struct.unpack_from("<HHH", header, 40)
+            if machine != 8 or version != 1 or ehsize != 52 or phentsize != 32:
+                raise IsoInspectionError(
+                    "ELF32 load binding needs a supported MIPS program-header table",
+                    boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+                )
+            if not 1 <= phnum <= 128 or phoff < ehsize:
+                raise IsoInspectionError(
+                    "ELF32 load binding has an unsupported program-header count",
+                    boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+                )
+            ph_end = phoff + phentsize * phnum
+            if ph_end < phoff or ph_end > file_size:
+                raise IsoInspectionError(
+                    "ELF32 program headers exceed the input image",
+                    boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
+                )
+            stream.seek(phoff)
+            table = stream.read(phentsize * phnum)
+    except OSError as exc:
         raise IsoInspectionError(
-            "ELF32 image is truncated",
+            "ELF32 image could not be read for guest-module placement",
             boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
-        )
-    if header[:7] != b"\x7fELF\x01\x01\x01":
-        if header[:4] in (b"~PSP", b"~SCE"):
-            raise IsoInspectionError(
-                "Guest module is an encrypted container (~PSP/~SCE) requiring decryption",
-                boundary_code="GUEST_MODULE_DECRYPTION_REQUIRED",
-            )
-        raise IsoInspectionError(
-            "ELF32 load binding needs a little-endian ELF32 image",
-            boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
-        )
-    e_type, machine, version = struct.unpack_from("<HHI", header, 16)
-    _entry, phoff = struct.unpack_from("<II", header, 24)
-    ehsize, phentsize, phnum = struct.unpack_from("<HHH", header, 40)
-    if machine != 8 or version != 1 or ehsize != 52 or phentsize != 32:
-        raise IsoInspectionError(
-            "ELF32 load binding needs a supported MIPS program-header table",
-            boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
-        )
-    if not 1 <= phnum <= 128 or phoff < ehsize:
-        raise IsoInspectionError(
-            "ELF32 load binding has an unsupported program-header count",
-            boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
-        )
-    ph_end = phoff + phentsize * phnum
-    if ph_end < phoff or ph_end > file_size:
-        raise IsoInspectionError(
-            "ELF32 program headers exceed the input image",
-            boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
-        )
-    table = read(phoff, phentsize * phnum)
+        ) from exc
     if len(table) != phentsize * phnum:
         raise IsoInspectionError(
             "ELF32 program headers are truncated",
@@ -332,24 +342,6 @@ def _elf32_load_span_from_reader(read, file_size: int) -> tuple[int, int, int]:
                 boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
             )
     return e_type, low, high
-
-
-def _elf32_load_span(path: Path | str) -> tuple[int, int, int]:
-    """Read a filesystem ELF and return its PT_LOAD span."""
-    try:
-        image_path = Path(path)
-        file_size = image_path.stat().st_size
-        with image_path.open("rb") as stream:
-            def read(offset: int, count: int) -> bytes:
-                stream.seek(offset)
-                return stream.read(count)
-
-            return _elf32_load_span_from_reader(read, file_size)
-    except OSError as exc:
-        raise IsoInspectionError(
-            "ELF32 image could not be read for guest-module placement",
-            boundary_code="GUEST_MODULE_FORMAT_UNSUPPORTED",
-        ) from exc
 
 
 def plan_guest_module_bindings(
@@ -888,8 +880,6 @@ def write_experimental_profile(
     elf_sha256: str | None = None
     executable_entry = 0
     executable_load_address: int | None = None
-    executable_entry_rebase = 0
-    executable_load_evidence: str | None = None
     if selected is not None:
         uses_decrypted_eboot = selected == "EBOOT.elf"
         selected_path = (
@@ -938,36 +928,6 @@ def write_experimental_profile(
             executable_entry = struct.unpack_from("<I", header, 24)[0]
             if e_type in (3, 0xFFA0):
                 executable_load_address = PSP_DEFAULT_MAIN_LOAD_ADDRESS
-                executable_entry_rebase = PSP_DEFAULT_MAIN_LOAD_ADDRESS
-                executable_load_evidence = "documented-psp-default"
-            elif e_type == 2:
-                def read_executable(offset: int, count: int) -> bytes:
-                    if uses_decrypted_eboot:
-                        stream.seek(offset)
-                        return stream.read(count)
-                    return _read_iso_extent(
-                        stream, file_size, lba, size, offset, count
-                    )
-
-                _elf_type, load_start, load_end = _elf32_load_span_from_reader(
-                    read_executable, size
-                )
-                if load_start == 0:
-                    # Unlike ET_REL/PRX, this format has no generic default
-                    # rebasing rule for a zero-address main image.
-                    raise IsoInspectionError(
-                        "This ET_EXEC has no guest RAM load address. Generic rebinding "
-                        "for this executable type is not supported yet.",
-                        boundary_code="EXECUTABLE_LOAD_BINDING_REQUIRED",
-                    )
-                if (load_start < title_manifest.GUEST_MODULE_RAM_LO or
-                        load_end > PSP_CONVENTIONAL_USER_MEMORY_TOP):
-                    raise IsoInspectionError(
-                            "This fixed-address executable loads outside guest user RAM. "
-                            "Building it there is not supported yet.",
-                        boundary_code="FIXED_ADDRESS_EXECUTABLE_OUTSIDE_GUEST_RAM",
-                    )
-                executable_load_address = load_start
             offset = 0
             while offset < size:
                 count = min(64 * 1024, size - offset)
@@ -982,18 +942,17 @@ def write_experimental_profile(
                 offset += count
         executable_sha256 = digest.hexdigest()
         elf_sha256 = executable_sha256
-    if executable_entry_rebase:
-        if executable_entry > 0xFFFFFFFF - executable_entry_rebase:
+    if executable_load_address is not None:
+        if executable_entry > 0xFFFFFFFF - executable_load_address:
             raise IsoInspectionError("relocatable executable entry exceeds the guest address space")
-        executable_entry += executable_entry_rebase
+        executable_entry += executable_load_address
     manifest["executable"]["entry"] = executable_entry
     if executable_load_address is not None:
-        manifest["executable"]["base"] = executable_load_address
-        if executable_load_evidence is not None:
-            manifest["executable"].update({
-                "load_address": executable_load_address,
-                "load_address_evidence": executable_load_evidence,
-            })
+        manifest["executable"].update({
+            "base": executable_load_address,
+            "load_address": executable_load_address,
+            "load_address_evidence": "documented-psp-default",
+        })
     manifest = title_manifest.validate_manifest(manifest)
 
     profile = {

@@ -697,15 +697,7 @@ static int s_sp = 0;
 /* Optional GPU rasterizer hooks (ge_shared.h). NULL = pure software (the GDI build
  * never registers any; the SDL3 build registers them only under SR_GPU_GE=1). */
 static const GeGpuHooks *s_gpu = NULL;
-volatile int g_sr_vram_read_pending;
-
-void sr_vram_mark_renderer_pending(void) {
-    g_sr_vram_read_pending = 1;
-}
-
-void ge_set_gpu_hooks(const GeGpuHooks *h) {
-    s_gpu = h;
-}
+void ge_set_gpu_hooks(const GeGpuHooks *h) { s_gpu = h; }
 GeState *ge_state_ptr(void) { return &ge; }
 void sr_gpu_vram_dirty(uint32_t addr, uint32_t bytes) {
     if (s_gpu && s_gpu->vram_dirty) s_gpu->vram_dirty(addr, bytes);
@@ -739,222 +731,16 @@ uint32_t ge_get_cmd(uint32_t cmd) {
  * Software 16-bit depth buffer, one entry per pixel, max stride 512.
  * Only active when ge.ztest_enable is set. */
 static uint16_t s_zbuf[272 * 512];
-static uint32_t s_zbuf_guest_base;
-static uint32_t s_zbuf_guest_stride;
-static int s_zbuf_guest_valid;
-static int s_zbuf_guest_dirty;
-static int s_zbuf_boundary_reported;
 
 static uint32_t zbuf_stride(void) { return ge.zbw ? ge.zbw : (ge.fbw ? ge.fbw : 512); }
 
-static uint32_t ge_depth_xor_extreme(uint32_t max_index, uint32_t mask,
-                                     int maximize) {
-    uint32_t input = 0u;
-    int prefix_equal = 1;
-    for (int bit = 31; bit >= 0; bit--) {
-        uint32_t limit = (max_index >> (unsigned)bit) & 1u;
-        uint32_t mask_bit = (mask >> (unsigned)bit) & 1u;
-        uint32_t candidate = maximize ? (mask_bit ^ 1u) : mask_bit;
-        if (prefix_equal && candidate > limit) candidate = limit;
-        if (prefix_equal && candidate < limit) prefix_equal = 0;
-        if (candidate) input |= 1u << (unsigned)bit;
-    }
-    return input ^ mask;
-}
-
-int ge_zbuf_guest_span_bounds(uint32_t base, uint32_t stride,
-                              uint32_t *first, uint32_t *end) {
-    if (stride == 0u || stride > 512u || !first || !end) return 0;
-    uint32_t pixels = stride * 272u;
-    if (pixels == 0u) return 0;
-    uint32_t max_index = pixels - 1u;
-    uint32_t min_offset = ge_depth_xor_extreme(max_index, 0x1020u, 0) * 2u;
-    uint32_t max_offset = ge_depth_xor_extreme(max_index, 0x1020u, 1) * 2u;
-    uint64_t first64 = (uint64_t)base + min_offset;
-    uint64_t end64 = (uint64_t)base + max_offset + 2u;
-    if (first64 > UINT32_MAX || end64 > UINT32_MAX) return 0;
-    *first = (uint32_t)first64;
-    *end = (uint32_t)end64;
-    return *first < *end;
-}
-
-static void ge_zbuf_boundary(const char *code, const char *sentence) {
-    if (s_zbuf_boundary_reported) return;
-    s_zbuf_boundary_reported = 1;
-    fprintf(stderr, "SEMANTIC_BOUNDARY: %s; %s\n", code, sentence);
-}
-
-static int ge_zbuf_layout_valid(uint32_t base, uint32_t stride) {
-    if (stride == 0u || stride > 512u) {
-        ge_zbuf_boundary("VRAM_DEPTH_STRIDE_UNSUPPORTED",
-                         "depth strides above 512 pixels are not supported yet.");
-        return 0;
-    }
-    if ((base & 0x2040u) != 0u) {
-        ge_zbuf_boundary("VRAM_DEPTH_XOR_ORIGIN_UNMEASURED",
-                         "depth buffers at this placement are not supported yet until the PSP XOR origin is measured.");
-        return 0;
-    }
-    uint32_t first, end;
-    if (!ge_zbuf_guest_span_bounds(base, stride, &first, &end) ||
-        first < SR_VRAM_CPU_BASE || end > SR_VRAM_CPU_END) {
-        ge_zbuf_boundary("VRAM_DEPTH_SPAN_UNSUPPORTED",
-                         "depth buffers that cross the end of VRAM are not supported yet.");
-        return 0;
-    }
-    return 1;
-}
-
-static uint32_t ge_zbuf_guest_address(uint32_t x, uint32_t y,
-                                      uint32_t base, uint32_t stride) {
-    uint32_t linear = (y * stride + x) * 2u;
-    return base + (linear ^ 0x2040u);
-}
-
-static int ge_zbuf_range_overlaps(uint32_t addr, uint32_t width) {
-    if (!s_zbuf_guest_valid || width == 0u) return 0;
-    uint32_t surface_first, surface_end;
-    if (!ge_zbuf_guest_span_bounds(s_zbuf_guest_base, s_zbuf_guest_stride,
-                                   &surface_first, &surface_end)) return 0;
-    uint64_t access_end = (uint64_t)addr + width;
-    return (uint64_t)addr < surface_end && surface_first < access_end;
-}
-
-int ge_zbuf_materialize_current(void) {
-    if (!s_zbuf_guest_valid || !s_zbuf_guest_dirty) return 1;
-    for (uint32_t y = 0; y < 272u; y++) {
-        uint32_t row = y * s_zbuf_guest_stride;
-        for (uint32_t x = 0; x < s_zbuf_guest_stride; x++) {
-            uint32_t addr = ge_zbuf_guest_address(x, y,
-                                                   s_zbuf_guest_base,
-                                                   s_zbuf_guest_stride);
-            if (!sr_inrange_n(addr, 2u)) return 0;
-            memcpy(SR_HOST_LINEAR(addr), &s_zbuf[row + x], sizeof s_zbuf[row + x]);
-        }
-    }
-    s_zbuf_guest_dirty = 0;
-    return 1;
-}
-
-int ge_zbuf_prepare_current(void) {
-    uint32_t base = ge.zbp ? SR_PHYS(ge.zbp) : SR_VRAM_CPU_BASE;
-    if (base < 0x00200000u) base += SR_VRAM_CPU_BASE;
-    uint32_t stride = zbuf_stride();
-    if (!ge_zbuf_layout_valid(base, stride)) return 0;
-
-    if (!s_zbuf_guest_valid || s_zbuf_guest_base != base ||
-        s_zbuf_guest_stride != stride) {
-        if (!ge_zbuf_materialize_current()) {
-            ge_zbuf_boundary("VRAM_DEPTH_WRITEBACK_FAILED",
-                             "the previous depth surface could not be written to guest VRAM yet.");
-            return 0;
-        }
-        for (uint32_t y = 0; y < 272u; y++) {
-            uint32_t row = y * stride;
-            for (uint32_t x = 0; x < stride; x++) {
-                uint32_t addr = ge_zbuf_guest_address(x, y, base, stride);
-                if (!sr_inrange_n(addr, 2u)) return 0;
-                memcpy(&s_zbuf[row + x], SR_HOST_LINEAR(addr), sizeof s_zbuf[row + x]);
-            }
-            if (stride < 512u)
-                memset(s_zbuf + row + stride, 0,
-                       (size_t)(512u - stride) * sizeof s_zbuf[0]);
-        }
-        s_zbuf_guest_base = base;
-        s_zbuf_guest_stride = stride;
-        s_zbuf_guest_valid = 1;
-        s_zbuf_guest_dirty = 0;
-    }
-    return 1;
-}
-
-static void ge_zbuf_note_write(void) {
-    if (!s_zbuf_guest_valid) return;
-    s_zbuf_guest_dirty = 1;
-    g_sr_vram_read_pending = 1;
-}
-
-void ge_zbuf_note_external_write(void) {
-    uint32_t base = ge.zbp ? SR_PHYS(ge.zbp) : SR_VRAM_CPU_BASE;
-    if (base < 0x00200000u) base += SR_VRAM_CPU_BASE;
-    uint32_t stride = zbuf_stride();
-    if (!ge_zbuf_layout_valid(base, stride)) return;
-    s_zbuf_guest_base = base;
-    s_zbuf_guest_stride = stride;
-    s_zbuf_guest_valid = 1;
-    ge_zbuf_note_write();
-}
-
-void ge_zbuf_invalidate_guest_range(uint32_t addr) {
-    ge_zbuf_invalidate_guest_span(addr, 1u);
-}
-
-void ge_zbuf_invalidate_guest_span(uint32_t addr, uint32_t bytes) {
-    if (!s_zbuf_guest_valid ||
-        !ge_zbuf_range_overlaps(SR_PHYS(addr), bytes)) return;
-    s_zbuf_guest_valid = 0;
-    s_zbuf_guest_dirty = 0;
-}
-
-static void ge_vram_coherence_failure(const char *code, const char *sentence) {
-    fprintf(stderr, "SEMANTIC_BOUNDARY: %s; %s\n", code, sentence);
-    fflush(stderr);
-    exit(EXIT_FAILURE);
-}
-
-void sr_ge_vram_read_prepare(uint32_t physical_addr, uint32_t width) {
-    if (s_zbuf_guest_dirty && ge_zbuf_range_overlaps(physical_addr, width) &&
-        !ge_zbuf_materialize_current())
-        ge_vram_coherence_failure("VRAM_DEPTH_WRITEBACK_FAILED",
-                                  "the GE depth surface could not be materialized for a CPU read yet.");
-    if (s_gpu && s_gpu->vram_read && !s_gpu->vram_read(physical_addr, width))
-        ge_vram_coherence_failure("VRAM_RENDERER_READBACK_FAILED",
-                                  "renderer-owned VRAM could not be materialized for a CPU read yet.");
-
-    g_sr_vram_read_pending = s_zbuf_guest_dirty ||
-        (s_gpu && s_gpu->vram_pending && s_gpu->vram_pending());
-}
-
-void sr_ge_vram_write_prepare(uint32_t physical_addr, uint32_t width) {
-    uint32_t canonical = sr_vram_cpu_aperture(physical_addr)
-                       ? sr_vram_cpu_address(physical_addr) : SR_PHYS(physical_addr);
-    if (s_zbuf_guest_dirty && ge_zbuf_range_overlaps(canonical, width) &&
-        !ge_zbuf_materialize_current())
-        ge_vram_coherence_failure("VRAM_DEPTH_WRITEBACK_FAILED",
-                                  "the GE depth surface could not be preserved before a CPU store yet.");
-    if (s_gpu && s_gpu->vram_write_prepare &&
-        !s_gpu->vram_write_prepare(canonical, width))
-        ge_vram_coherence_failure("VRAM_DEPTH_WRITEBACK_FAILED",
-                                  "the Vulkan depth surface could not be preserved before a CPU store yet.");
-}
-
-void sr_ge_vram_write_commit(uint32_t physical_addr, uint32_t width) {
-    uint32_t canonical = sr_vram_cpu_aperture(physical_addr)
-                       ? sr_vram_cpu_address(physical_addr) : SR_PHYS(physical_addr);
-    if (s_zbuf_guest_valid && ge_zbuf_range_overlaps(canonical, width)) {
-        s_zbuf_guest_valid = 0;
-        s_zbuf_guest_dirty = 0;
-    }
-    sr_gpu_vram_dirty(physical_addr, width);
-    g_sr_vram_read_pending = s_zbuf_guest_dirty ||
-        (s_gpu && s_gpu->vram_pending && s_gpu->vram_pending());
-}
-
-uint16_t *ge_zbuf_ptr(void) {
-    return ge_zbuf_prepare_current() ? s_zbuf : NULL;
-}
+uint16_t *ge_zbuf_ptr(void) { return s_zbuf; }
 uint32_t  ge_zbuf_stride(void) { return zbuf_stride(); }
 
 void ge_replay_restore(const GeState *state, const uint16_t *zbuf) {
     if (!state || !zbuf) return;
     ge = *state;
     memcpy(s_zbuf, zbuf, sizeof(s_zbuf));
-    s_zbuf_guest_base = state->zbp ? SR_PHYS(state->zbp) : SR_VRAM_CPU_BASE;
-    if (s_zbuf_guest_base < 0x00200000u) s_zbuf_guest_base += SR_VRAM_CPU_BASE;
-    s_zbuf_guest_stride = state->zbw ? state->zbw : (state->fbw ? state->fbw : 512u);
-    s_zbuf_guest_valid = s_zbuf_guest_stride <= 512u;
-    s_zbuf_guest_dirty = s_zbuf_guest_valid;
-    if (s_zbuf_guest_dirty) g_sr_vram_read_pending = 1;
     if (s_tr_enabled > 0) ge_transition_trace_sync_written();
     s_ge_inited = 1;
     s_sp = 0;
@@ -962,24 +748,20 @@ void ge_replay_restore(const GeState *state, const uint16_t *zbuf) {
 }
 
 static void zbuf_fill_rect(int x0, int y0, int x1, int y1, uint16_t z) {
-    if (!ge_zbuf_prepare_current()) return;
     uint32_t stride = zbuf_stride();
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
-    int wrote = 0;
     for (int y = y0; y <= y1; y++) {
         uint32_t base = (uint32_t)y * stride;
         for (int x = x0; x <= x1; x++) {
             uint32_t idx = base + (uint32_t)x;
-            if (idx < 272u * 512u) { s_zbuf[idx] = z; wrote = 1; }
+            if (idx < 272u * 512u) s_zbuf[idx] = z;
         }
     }
-    if (wrote) ge_zbuf_note_write();
 }
 
 static void stat_zfail(void);
 static int ztest_compare_px(int x, int y, uint16_t z) {
-    if (!ge_zbuf_prepare_current()) return 0;
     uint32_t idx = (uint32_t)(y * (int)zbuf_stride() + x);
     if (idx >= 272u * 512u) return 0;
     uint16_t cur = s_zbuf[idx];
@@ -1433,7 +1215,7 @@ static unsigned long s_tr_watch_dropped = 0;
 static uint32_t index_value(uint32_t ibase, int idxfmt, int i);   /* defined with the vertex fetch */
 
 static uint32_t ge_tr_hash_span(uint32_t h, uint32_t lo, uint32_t hi) {
-    if (hi <= lo || !sr_guest_span_readable_current(lo, hi - lo)) return h;
+    if (hi <= lo || !sr_guest_span_readable(lo, hi - lo)) return h;
     const uint8_t *p = (const uint8_t *)SR_HOST(lo);
     for (uint32_t i = 0; i < hi - lo; i++) { h ^= p[i]; h *= 16777619u; }
     return h;
@@ -1955,8 +1737,7 @@ void ge_decode_tex_rgba(uint32_t *out) {
         if (ge.tex_w <= 0 || ge.tex_h <= 0 ||
             !sr_guest_rect_readable(ge.tex_addr, 0u, 0u, stride,
                                     (uint32_t)ge.tex_w, (uint32_t)ge.tex_h,
-                                    bpp, &source) ||
-            !sr_guest_span_readable_current(source.first, source.total_bytes)) {
+                                    bpp, &source)) {
             if (ge.tex_w > 0 && ge.tex_h > 0)
                 memset(out, 0, (size_t)ge.tex_w * (size_t)ge.tex_h * 4u);
             return;
@@ -2226,7 +2007,7 @@ static void put_px_rgba_tested(int x, int y, uint16_t pz, int use_z,
     }
     if (use_z && !ge.zwrite_disable) {
         uint32_t zi=(uint32_t)(y*(int)zbuf_stride()+x);
-        if (zi<272u*512u) { s_zbuf[zi]=pz; ge_zbuf_note_write(); }
+        if (zi<272u*512u) s_zbuf[zi]=pz;
     }
     if (ge.stencil_enable)
         stencil=apply_stencil_op((int)((ge.stencil_op>>16)&7),stencil);
@@ -2445,8 +2226,6 @@ static int vtx_nonfinite(const Vtx *a, const Vtx *b, const Vtx *c) {
 
 static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
     if (vtx_nonfinite(A, B, C)) return;
-    if ((ge.ztest_enable || (ge.clear && (ge.clear_mode & 0x400u))) &&
-        !ge_zbuf_prepare_current()) return;
     /* GPU capture seam: a registered backend takes the triangle (and reproduces culling,
      * depth, shading, blending on the GPU); if it declines it has already flushed, so the
      * software path below stays correctly ordered against prior GPU work. */
@@ -2546,10 +2325,7 @@ static void raster_tri(const Vtx *A, const Vtx *B, const Vtx *C, int persp) {
             if (ge.clear) {
                 if (ge.clear_mode & 0x400) {
                     uint32_t zi = (uint32_t)(y * (int)zbuf_stride() + x);
-                    if (zi < 272u*512u) {
-                        s_zbuf[zi] = clamp_z(iz);
-                        ge_zbuf_note_write();
-                    }
+                    if (zi < 272u*512u) s_zbuf[zi] = clamp_z(iz);
                 }
                 who_init();
                 if (x == s_who_x && y == s_who_y && s_pixwho_n < 400) {
@@ -3227,8 +3003,6 @@ static void fill_rect_clear_fast(int xa, int ya, int xb, int yb, int r, int g, i
  * persp=1 recovers UV from the over-w storage and depth-tests with the second vertex's z. */
 static void fill_sprite(const Vtx *p0, const Vtx *p1, int persp) {
     if (vtx_nonfinite(p0, p1, NULL)) return;
-    if ((ge.ztest_enable || (ge.clear && (ge.clear_mode & 0x400u))) &&
-        !ge_zbuf_prepare_current()) return;
     if (s_gpu && s_gpu->sprite) {
         uint64_t profile_started = ge_cpu_profile_begin();
         int handled = s_gpu->sprite(p0, p1, persp);
@@ -4349,13 +4123,11 @@ static void ge_block_transfer(uint32_t startdata) {
     for (uint32_t y = 0; y < h; y++) {
         uint32_t so = src.first + y * src.row_pitch;
         uint32_t dofs = dst.first + y * dst.row_pitch;
-        if (!sr_guest_span_readable_current(so, src.row_bytes)) return;
         ge_capture_note_memory(so, src.row_bytes);
         ge_capture_note_memory(dofs, dst.row_bytes);
         if (g_sr_heap_watch) sr_heap_note_bulk_write(dofs, dst.row_bytes, 0u);
-        sr_guest_vram_write_prepare_bytes(dofs, dst.row_bytes);
         memmove(SR_HOST(dofs), SR_HOST(so), src.row_bytes);
-        sr_guest_vram_write_commit_bytes(dofs, dst.row_bytes);
+        sr_gpu_vram_dirty(dofs, dst.row_bytes);
     }
 }
 
@@ -4843,7 +4615,7 @@ int ge_vramdump_write(const char *directory, uint32_t vblank,
         fprintf(stderr, "VRAMDUMP vblank=%" PRIu32 " FAIL (GPU readback boundary unavailable)\n", vblank);
         return 0;
     }
-    if (!sr_guest_span_readable_current(GE_CAPTURE_VRAM_BASE, GE_CAPTURE_VRAM_SIZE)) {
+    if (!sr_guest_span_readable(GE_CAPTURE_VRAM_BASE, GE_CAPTURE_VRAM_SIZE)) {
         fprintf(stderr, "VRAMDUMP vblank=%" PRIu32 " FAIL (guest VRAM span unavailable)\n", vblank);
         return 0;
     }
