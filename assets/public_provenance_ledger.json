@@ -1294,7 +1294,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "60754d71f9cd032c75c9ae2817e06859685e693e8331a6dadecb0cb1a9e29d90"
+      "sha256": "b55182cc418a23ff8ead4c0380092fb0949a2f8c25c51f4deee03c6ed1b11786"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
