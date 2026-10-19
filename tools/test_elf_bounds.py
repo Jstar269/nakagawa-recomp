@@ -40,7 +40,7 @@ def elf32(*, file_size: int = 16, mem_size: int | None = None) -> bytearray:
     return blob
 
 
-def make_elf(loads, *, entry=0):
+def make_elf(loads, *, entry=0, e_type=2):
     """Build a tiny little-endian ET_EXEC with only program headers."""
     phoff = 52
     payload_offset = phoff + 32 * len(loads)
@@ -52,7 +52,7 @@ def make_elf(loads, *, entry=0):
     blob = bytearray(cursor)
     struct.pack_into(
         "<HHIIIIIHHHHHH", blob, 16,
-        2, 8, 1, entry, phoff, 0, 0, 52, 32, len(loads), 0, 0, 0,
+        e_type, 8, 1, entry, phoff, 0, 0, 52, 32, len(loads), 0, 0, 0,
     )
     for index, ((vaddr, words, memsz, flags, align), offset) in enumerate(zip(loads, offsets, strict=True)):
         struct.pack_into(
@@ -93,6 +93,53 @@ def make_relocation_elf(*, info=0, section_type=0x700000A0):
 
 
 class TestElfBounds(unittest.TestCase):
+    def test_fixed_address_exec_image_uses_lowest_segment_as_image_origin(self) -> None:
+        base = 0x08804000
+        blob = make_elf([
+            (base, [0x11223344], 8, 5, 4),
+            (base + 0x1000, [0x55667788], 8, 6, 4),
+        ], entry=base)
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "fixed-address.elf"
+            path.write_bytes(blob)
+            old_limit = prxload.MAX_ELF_IMAGE_BYTES
+            prxload.MAX_ELF_IMAGE_BYTES = 0x2000
+            try:
+                image = prxload.load_program_image(path, base=base)
+                legacy = prxload.Prx(str(path), base)
+            finally:
+                prxload.MAX_ELF_IMAGE_BYTES = old_limit
+
+        expected = bytearray(0x1008)
+        struct.pack_into("<I", expected, 0, 0x11223344)
+        struct.pack_into("<I", expected, 0x1000, 0x55667788)
+        self.assertEqual(image.image_start, base)
+        self.assertEqual(image.image_end, base + len(expected))
+        self.assertEqual(image.entry_point, base)
+        self.assertEqual(image.flat_bytes, bytes(expected))
+        self.assertEqual(legacy.lo, base)
+        self.assertEqual(legacy.entry, base)
+        self.assertEqual(legacy.mem, expected)
+
+    def test_relocatable_image_types_keep_the_requested_rebase_base(self) -> None:
+        base = 0x08804000
+        expected = struct.pack("<I", 0x03E00008) + bytes(4)
+        for e_type in (3, 0xFFA0):
+            with self.subTest(e_type=e_type), tempfile.TemporaryDirectory() as td:
+                path = Path(td) / f"relocatable-{e_type:04x}.elf"
+                path.write_bytes(make_elf(
+                    [(0, [0x03E00008], 8, 5, 4)], e_type=e_type
+                ))
+                image = prxload.load_program_image(path, base=base)
+                legacy = prxload.Prx(str(path), base)
+
+            self.assertEqual(image.load_base, base)
+            self.assertEqual(image.image_start, base)
+            self.assertEqual(image.image_end, base + len(expected))
+            self.assertEqual(image.entry_point, base)
+            self.assertEqual(image.flat_bytes, expected)
+            self.assertEqual(legacy.mem, expected)
+
     def test_valid_minimal_elf_is_still_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "valid.elf"

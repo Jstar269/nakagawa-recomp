@@ -269,6 +269,80 @@
       "reset": "close descriptors and remove only probe-owned files"
     },
     {
+      "id": "PSP-UMDIO-001",
+      "status": "implemented",
+      "hardware_evidence": "MEASURED",
+      "evidence_ref": "docs/HARDWARE_ORACLE.md#psp-umdio-001-measured-run-2026-10-17",
+      "evidence_cases": [
+        "umd-state-before", "io-open-0000", "io-open-0001", "io-open-0002", "io-open-0003",
+        "io-open-0004", "io-open-0005", "io-open-0006", "io-open-0007", "io-open-0008",
+        "io-open-0009", "io-open-0010", "io-open-0011", "io-open-0012", "io-dopen-0000",
+        "io-dopen-0001", "io-dopen-0002", "io-dopen-0003", "io-dopen-0004", "io-dopen-0005",
+        "umd-state-after", "umdio-done"
+      ],
+      "measurement_note": "Acceptance-eligible on 2026-10-17, PSP-3000 / firmware 6.61 / ARK CFW, public commit e2180970: with a UMD inserted, sceUmdCheckMedium returned 1 and sceUmdGetDriveStat returned 0x32 before and after. The cited open and directory-open results are recorded in docs/HARDWARE_ORACLE.md; successful descriptors were closed with result 0. No raw descriptor was read, written, sought, or controlled.",
+      "group": "io",
+      "source": "fixtures/psp_oracle/probe.c",
+      "prx": "nakagawa_psp_oracle.prx",
+      "apis": ["sceUmdCheckMedium", "sceUmdGetDriveStat", "sceIoOpen", "sceIoClose", "sceIoDopen", "sceIoDclose"],
+      "case_ids": [
+        "umd-state-before", "io-open-0000", "io-open-0001", "io-open-0002", "io-open-0003",
+        "io-open-0004", "io-open-0005", "io-open-0006", "io-open-0007", "io-open-0008",
+        "io-open-0009", "io-open-0010", "io-open-0011", "io-open-0012", "io-dopen-0000",
+        "io-dopen-0001", "io-dopen-0002", "io-dopen-0003", "io-dopen-0004", "io-dopen-0005",
+        "umd-state-after", "umdio-done"
+      ],
+      "invariant": "read-only device and disc opens record the console result; every successful descriptor is closed and raw descriptor I/O is not attempted",
+      "issues": [],
+      "risk": "low; read-only opens and closes only, with no UMD activation or descriptor data operation",
+      "reset": "return to PSPLink after the probe exits"
+    },
+    {
+      "id": "PSP-UMDRAW-001",
+      "status": "implemented",
+      "hardware_evidence": "CAPTURED",
+      "evidence_ref": "docs/HARDWARE_ORACLE.md#psp-umdraw-001-raw-umd-read-probe",
+      "evidence_note": "An incomplete capture exists; the bounded run did not complete the 32768-byte cell or emit its terminal record, so it establishes no raw UMD read semantics.",
+      "evidence_cases": [
+        "umd-state-before", "raw-open-extra", "seek-set-0", "seek-set-16",
+        "seek-set-32768", "seek-cur-0", "seek-end-0", "seek-set-1", "seek-set-neg1",
+        "seek32-set-0", "seek32-set-16", "seek32-set-32768", "seek32-end-0",
+        "pos-advance-seek", "pos-advance-first", "pos-advance-second", "pos-advance-cur",
+        "byte-sector16-seek", "byte-sector16-read", "size-1-seek", "size-1-read",
+        "size-512-seek", "size-512-read", "size-2047-seek", "size-2047-read",
+        "size-2048-seek", "size-2048-read", "size-2049-seek", "size-2049-read",
+        "size-4096-seek", "size-4096-read"
+      ],
+      "measurement_note": "The first 2026-10-17 attempt from source 6a9a39aa used a 360-second host case timeout. The 2026-10-18 retry from local source 97ccbf87 followed a completed transport-write preflight and used a 900-second host case timeout. It produced 31 complete raw result records through size-4096-read, then emitted separate size-32768-seek and size-32768-read markers; the last host0 write was 27.2 seconds after launch, and no read result or umdraw-done marker arrived within the timeout. The expanded 2026-10-18 rerun from source 61574d37 also followed a completed transport-write preflight and used an 1800-second host case timeout. It produced 31 complete records through size-4096-read and emitted size-32768-seek/read markers, but no 32 KiB read result. usbipd listed the PSP as absent at 3m46 after launch, before the 1800-second deadline. The runner stopped with HOST0_ROUNDTRIP_FAILED; L1 reattach found the PSP absent, three post-unload ver attempts failed, L2 reset was not attempted, and module unload/teardown was not verified. The 1800-second run records USB loss before the host timeout, not a PSP sceIoRead result; it does not establish whether the PSP call hung or the transport failed. No raw UMD read or seek semantics are inferred.",
+      "group": "io",
+      "source": "fixtures/psp_oracle/probe.c",
+      "prx": "nakagawa_psp_oracle.prx",
+      "apis": [
+        "sceUmdCheckMedium", "sceUmdGetDriveStat", "sceIoOpen", "sceIoClose",
+        "sceIoLseek", "sceIoLseek32", "sceIoRead", "sceIoReadAsync",
+        "sceIoPollAsync", "sceIoWaitAsync", "sceIoGetstat"
+      ],
+      "case_ids": [
+        "umd-state-before", "raw-open-extra",
+        "seek-set-0", "seek-set-16", "seek-set-32768", "seek-cur-0", "seek-end-0",
+        "seek-set-1", "seek-set-neg1", "seek32-set-0", "seek32-set-16",
+        "seek32-set-32768", "seek32-end-0", "pos-advance-seek", "pos-advance-first",
+        "pos-advance-second", "pos-advance-cur", "byte-sector16-seek", "byte-sector16-read",
+        "size-1-seek", "size-1-read", "size-512-seek", "size-512-read",
+        "size-2047-seek", "size-2047-read", "size-2048-seek", "size-2048-read",
+        "size-2049-seek", "size-2049-read", "size-4096-seek", "size-4096-read",
+        "size-32768-seek", "size-32768-read", "size-0-seek", "size-0-read",
+        "unaligned-seek", "unaligned-read", "far-seek", "far-read", "async-seek",
+        "async-read", "async-poll", "async-wait", "async-data", "getstat", "raw-close",
+        "readonly-open", "readonly-seek-0", "readonly-seek-16", "readonly-seek-32768",
+        "readonly-close", "umd-state-after", "umdraw-done"
+      ],
+      "invariant": "Read-only UMD opens only; fixed seeks and reads are scalar-recorded, the first eight bytes of designated sector-16 reads are the only disc bytes emitted, async work is waited before close, and every successful descriptor is closed.",
+      "issues": [],
+      "risk": "medium; the 32768-byte cell did not complete in the captured run",
+      "reset": "physical power-cycle required before any further launch; do not retry on the current boot"
+    },
+    {
       "id": "PSP-DISPLAY-001",
       "status": "implemented",
       "hardware_evidence": "MEASURED",
