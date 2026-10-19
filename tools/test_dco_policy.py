@@ -140,12 +140,30 @@ class TestGovernanceSurfaces(unittest.TestCase):
             "inventing a contributor identity, `Signed-off-by:`, DCO attestation, or source lineage;",
             "destructive history rewriting, shared-branch force-push, or deleting another agent's work;",
             "repository security/settings changes unless the mission names the exact setting;",
-            "firmware, flash, NAND, idStorage, PSPLink, physical PSP, or other hardware actions;",
+            "firmware, flash, NAND, or idStorage writes; other hardware actions;",
             "disclosing private inputs, routes, saves, captures, traces, keys, paths, or derived bytes.",
         )
         for rule in hard_stops:
             with self.subTest(hard_stop=rule):
                 self.assertIn(f"- {rule}", lines)
+
+        section_3_start = re.search(r"(?m)^## 3\.", content)
+        section_4_start = re.search(r"(?m)^## 4\.", content)
+        self.assertIsNotNone(section_3_start)
+        self.assertIsNotNone(section_4_start)
+        section_3 = " ".join(content[section_3_start.start() : section_4_start.start()].split())
+        self.assertIn(
+            "A standing owner authorization may cover PSPLink and physical-PSP actions for a named "
+            "task/session only when the active `HARDWARE_LOCK.json` records the authorization, holder "
+            "session, allowed actions, and scope limits.",
+            section_3,
+        )
+        self.assertIn(
+            "This exception does not cover firmware, flash, NAND, or idStorage writes, credentials, "
+            "Git tags, GitHub Releases or assets, or published-version changes; those continue to "
+            "require explicit authorization in the current turn.",
+            section_3,
+        )
 
         section_7_start = re.search(r"(?m)^## 7\.", content)
         section_8_start = re.search(r"(?m)^## 8\.", content)
