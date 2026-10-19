@@ -299,7 +299,7 @@
     "classification": "dedicated",
     "handler": "h_UnlockLwMutex",
     "name": "sceKernelUnlockLwMutex",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x167afd9e": {
     "classification": "dedicated",
@@ -1534,7 +1534,7 @@
     "classification": "dedicated",
     "handler": "h_TryLockLwMutex",
     "name": "_sceKernelTryLockLwMutex",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x71b19e77": {
     "classification": "dedicated",
@@ -2385,7 +2385,7 @@
     "classification": "dedicated",
     "handler": "h_GeEdramSetAddrTranslation",
     "name": "sceGeEdramSetAddrTranslation",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xb7d098c6": {
     "classification": "dedicated",
@@ -2482,13 +2482,13 @@
     "classification": "dedicated",
     "handler": "h_AllocateVpl",
     "name": "sceKernelAllocateVpl",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xbeed3a47": {
     "classification": "dedicated",
     "handler": "h_UnlockLwMutex",
     "name": "_sceKernelUnlockLwMutex",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xbfa98062": {
     "classification": "dedicated",
@@ -2787,7 +2787,7 @@
     "classification": "dedicated",
     "handler": "h_AllocateFpl",
     "name": "sceKernelAllocateFpl",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xd97f94d8": {
     "classification": "dedicated",
@@ -2823,7 +2823,7 @@
     "classification": "dedicated",
     "handler": "h_TryLockLwMutex",
     "name": "sceKernelTryLockLwMutex",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xdc93cfef": {
     "classification": "dedicated",

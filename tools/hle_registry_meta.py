@@ -841,6 +841,44 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "writes the first num entry names as NUL-padded 27-byte slots in the console's order for the measured tree (measured on PSP-3000 6.6.1, 2026-10-09, read-only enumeration) and creation order after it; truncation below the entry count is a project choice",
     },
+    # Reviewed Route-A handlers: hardware evidence covers named cells, while
+    # the remaining branches stay explicit instead of being promoted complete.
+    "h_GeEdramSetAddrTranslation": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-GE-EDRAM-001: initial width, 512/1024/2048/4096 replacements, restore and final query)",
+        ],
+        "limitation": "replacement-width returns and restoration to boot width 1024 are measured; width 0 as an input, unsupported-width error 0x80000107 (a project choice), and applying the setting to actual GE address translation are not measured",
+    },
+    "h_TryLockLwMutex": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01 and PSP-B2-01 LwMutex cells)",
+        ],
+        "limitation": "normal acquisition, count-zero refusal, non-recursive self-contention, and another-owner contention are measured; negative counts, invalid-workarea error precedence, interrupt context, and several-waiter ordering are not measured",
+    },
+    "h_UnlockLwMutex": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01 and PSP-B2-01 LwMutex cells)",
+        ],
+        "limitation": "owner release, direct hand-off to one waiter, and non-owner/underflow behavior are measured; invalid workareas, negative or excessive unlock counts, and several-waiter ordering are not measured",
+    },
+    "h_AllocateFpl": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01 and PSP-B2-01 FPL cells)",
+            "docs/HARDWARE_ORACLE.md (PSP-HLE-KERNEL-STATUS-001 FPL create, exhaustion, status, free and delete cells)",
+        ],
+        "limitation": "ordinary allocation, one finite timeout, one-waiter hand-off, delete wake, and measured block/status layout are covered; invalid output pointers, negative timeout handling, and multiple-waiter ordering are not measured",
+    },
+    "h_AllocateVpl": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (Kernel-object semantics, PSP-B1-01 and PSP-B2-01 VPL cells)",
+        ],
+        "limitation": "ordinary allocation, one finite timeout, measured pool accounting, and one-waiter hand-off are covered; invalid output pointers, invalid sizes, and fragmented-pool behavior beyond the measured cases are not measured",
+    },
 }
 
 # handler name -> status mapping. Preserved for direct consumers and gate checks.

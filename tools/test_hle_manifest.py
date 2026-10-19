@@ -604,6 +604,26 @@ class LiveManifestTests(unittest.TestCase):
             self.assertIn(status, meta.HANDLER_STATUSES)
             self.assertIn(handler, handlers)
 
+    def test_route_a_kernel_ge_batch_has_evidence_and_named_limits(self) -> None:
+        expected = {
+            0xB77905EA: "h_GeEdramSetAddrTranslation",
+            0x71040D5C: "h_TryLockLwMutex",
+            0x15B6446B: "h_UnlockLwMutex",
+            0xD979E9BF: "h_AllocateFpl",
+            0xBED27435: "h_AllocateVpl",
+        }
+        for nid, handler in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+                self.assertTrue(meta.HANDLER_EVIDENCE[handler])
+                self.assertTrue(
+                    all("HARDWARE_ORACLE.md" in item for item in meta.HANDLER_EVIDENCE[handler])
+                )
+                self.assertTrue(meta.HANDLER_LIMITATIONS[handler])
+
     def test_psmf_getters_are_dedicated_partial(self) -> None:
         # Both getters drive the media producer and a host codec backend now, so
         # they are dedicated handlers with an honest `partial` status rather than
