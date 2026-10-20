@@ -626,7 +626,8 @@ jobs:
         run: |
           set -euo pipefail
           ATRAC3P_SRCS="src/rt/atrac3p/atrac3p_api.c \
-            src/rt/atrac3p/libavcodec/atrac.c src/rt/atrac3p/libavcodec/atrac3plus.c \
+            src/rt/atrac3p/libavcodec/atrac.c src/rt/atrac3p/libavcodec/atrac3.c \
+            src/rt/atrac3p/libavcodec/atrac3plus.c \
             src/rt/atrac3p/libavcodec/atrac3plusdec.c src/rt/atrac3p/libavcodec/atrac3plusdsp.c \
             src/rt/atrac3p/libavcodec/bitstream.c src/rt/atrac3p/libavcodec/fft_float.c \
             src/rt/atrac3p/libavcodec/fft_init_table.c src/rt/atrac3p/libavcodec/mdct_float.c \
