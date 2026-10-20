@@ -737,14 +737,14 @@ class PublicExportJobTests(unittest.TestCase):
         })
         self.assertEqual(lock.count("--hash=sha256:"), len(package_versions))
 
-    def test_no_deps_checkout_install_is_documented_as_local(self) -> None:
+    def test_python_tools_step_installs_only_the_hashed_lock(self) -> None:
         step = _ci_step(self.blocks["python_tools"], "Install Python tooling dependencies")
         self.assertIsNotNone(step)
-        text = "\n".join(step or []).lower()
-        self.assertIn("--no-deps .", text)
-        self.assertIn("local checkout", text)
-        self.assertIn("resolving it as", text)
-        self.assertIn("an external package", text)
+        installs = [line for line in step or [] if "pip install" in line]
+        self.assertEqual(len(installs), 1)
+        self.assertIn("--require-hashes -r tools/requirements-lock.txt", installs[0])
+        # Building the checkout would pull an unhashed setuptools through build isolation.
+        self.assertNotIn("--no-deps .", "\n".join(step or []))
 
     def test_export_step_moved_out_of_hygiene_into_its_own_job(self) -> None:
         self.assertNotIn(self.EXPORT_STEP, self._step_names(self.blocks["hygiene"]))
