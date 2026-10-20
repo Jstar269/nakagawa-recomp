@@ -42,6 +42,42 @@
       "sha256": "4a82a2ea9f3fb0a2d137420397d881f4076b420d8d4e3058f43dc995c10d737b"
     },
     {
+      "path": ".clusterfuzzlite/Dockerfile",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "clusterfuzzlite-nk-json-2026-10-20",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "db96c36b90eac3fe2c22fddd448d99f4f4693e1a8732498d9aa5e1ed981ee67f"
+    },
+    {
+      "path": ".clusterfuzzlite/build.sh",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "clusterfuzzlite-nk-json-2026-10-20",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "9f6977482e0d0fe0cf29b6e79332ad88d4dc01d744ad9a5777413eaa15cf5a9f"
+    },
+    {
+      "path": ".clusterfuzzlite/project.yaml",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "clusterfuzzlite-nk-json-2026-10-20",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "5e62a25572db1b2c42e598f513257d6fe4ede3f941428677582babd9c8e0e33c"
+    },
+    {
       "path": ".editorconfig",
       "classification": "reviewed_configuration",
       "evidence": {
@@ -151,6 +187,18 @@
         "upstream_attribution": null
       },
       "sha256": "73cad7c1378398677e4892de4f4728655e2db48945ac2778ce17a3a75a6629c2"
+    },
+    {
+      "path": ".github/workflows/clusterfuzzlite.yml",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "clusterfuzzlite-nk-json-2026-10-20",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "25d46fae268bd1cabefd2fb0a4389570472290229231c40111716cf17245e97b"
     },
     {
       "path": ".github/workflows/codeql-wake.yml",
@@ -727,7 +775,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "7435e3b311df6a123ee12389fd14afcedd2b4b2917295ed141358b6baa114dd8"
+      "sha256": "ab714f370d3c4172e64faa64563a23e4e677f402632a549af15bf51e0d6f673c"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -6084,6 +6132,18 @@
       "sha256": "5a1c56c01ca0c2a6ec5a35f541176386c6a9c3cd414d962ed414d8dad7ef6fc6"
     },
     {
+      "path": "tests/fuzzers/test_nk_json_fuzzer.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "clusterfuzzlite-nk-json-2026-10-20",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "20050c308f623e7e6ee34b63b21549d8af3c2437199b0733fd4793866add2d73"
+    },
+    {
       "path": "tests/native/argv_echo_helper.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -10893,5 +10953,18 @@
       },
       "sha256": "7869f7a49433ed9a604bd810fc169003949eac70a600256753afbfab844695ef"
     }
-  ]
+  ],
+  "admission": {
+    "workflow": "admit-new-reviewed",
+    "trusted_tree": "0983f901ee123e50b9b406cec541694581a14dfa",
+    "candidate_tree": "97d94f14731848bb350114c7aea9697fda44d526",
+    "admitted_paths": [
+      ".clusterfuzzlite/Dockerfile",
+      ".clusterfuzzlite/build.sh",
+      ".clusterfuzzlite/project.yaml",
+      ".github/workflows/clusterfuzzlite.yml",
+      "tests/fuzzers/test_nk_json_fuzzer.c"
+    ],
+    "authority_sha256": "93625260bb4b9a611c6ae1c016d7d8b794492f1c2c2e1f49e4e7fc024bb39563"
+  }
 }
