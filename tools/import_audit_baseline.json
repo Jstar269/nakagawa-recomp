@@ -967,7 +967,7 @@
     "classification": "dedicated",
     "handler": "h_IoWrite",
     "name": "sceIoWrite",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x43196845": {
     "classification": "dedicated",
@@ -1466,7 +1466,7 @@
     "classification": "dedicated",
     "handler": "h_IoRead",
     "name": "sceIoRead",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x6a8c3cd5": {
     "classification": "dedicated",
@@ -1747,7 +1747,7 @@
     "classification": "dedicated",
     "handler": "h_IoClose",
     "name": "sceIoClose",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x812346e4": {
     "classification": "dedicated",
@@ -2991,7 +2991,7 @@
     "classification": "dedicated",
     "handler": "h_IoDclose",
     "name": "sceIoDclose",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xebd177d6": {
     "classification": "dedicated",

@@ -2514,6 +2514,10 @@ static void test_io_async_and_path_imports(void) {
     cpu.r[6] = (uint32_t)(sizeof(new_bytes) - 1u);
     expect(sr_hle_test_io_write_async(&cpu) == SCE_KERNEL_ERROR_ASYNC_BUSY,
            "a second asynchronous request on the same fd reports ASYNC_BUSY");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    expect(sr_hle_test_io_close(&cpu) == SCE_KERNEL_ERROR_ASYNC_BUSY,
+           "sceIoClose on a descriptor with a pending asynchronous request reports ASYNC_BUSY");
 
     MEM_W32(RESULT_ADDR, 0xfeedfaceu);
     MEM_W32(RESULT_ADDR + 4u, 0xdeadbeefu);
