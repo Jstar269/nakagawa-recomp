@@ -842,16 +842,24 @@ class LiveManifestTests(unittest.TestCase):
                 self._assert_cited_oracle_cells_exist(evidence)
 
     def _assert_cited_oracle_cells_exist(self, evidence: list[str]) -> None:
-        """Every `(PSP-X-NNN: cells)` citation must name cells the oracle manifest lists."""
+        """Check batch 9's `(PSP-IO-001|PSP-UMDIO-001: io-... cells)` citations.
+
+Scoped to the four IoFileMgr handlers of batch 9 on purpose: the grammar is
+`(<oracle id>: <io- cell names or io-x-NNNN..NNNN ranges>)`, and the ids come
+from `tools/psp_oracle/manifest.json`. Any citation naming a PSP id that does
+not parse in that shape fails instead of being skipped. Other handlers' older
+citations (PSP-B1-01, no-colon forms) need their own check.
+"""
         document = json.loads(hle_manifest.PSP_ORACLE_MANIFEST.read_text(encoding="utf-8"))
         cells_by_id = {
             row["id"]: set(row.get("evidence_cases", [])) | set(row.get("case_ids", []))
             for row in document["tests"]
         }
         for citation in evidence:
+            if "PSP-" not in citation:
+                continue  # a selftest citation, not a hardware cell
             match = re.search(r"\((PSP-[A-Z0-9-]+): ([^)]*)\)", citation)
-            if not match:
-                continue
+            self.assertIsNotNone(match, f"unparsed hardware citation: {citation}")
             oracle_id, cells_text = match.groups()
             self.assertIn(oracle_id, cells_by_id, citation)
             cited: set[str] = set()
