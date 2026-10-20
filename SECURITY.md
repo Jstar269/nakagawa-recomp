@@ -19,6 +19,8 @@ When the first formal experimental platform release (`v0.0.1`) ships:
 
 - The `main` branch remains the primary supported development line.
 - `v0.0.1` is an experimental prerelease milestone, not an LTS or patch-supported line: fixes for security issues identified in `v0.0.1` land on `main` and flow into subsequent releases rather than receiving backported security point releases.
+- A release stops receiving security updates as soon as the next release is published; move to the newest
+  release or to `main` to keep receiving fixes.
 - Release qualification authority [issue #278](https://github.com/Jstar269/nakagawa-recomp/issues/278) owns updating this policy and marking `v0.0.1` active atomically at release publication time. No release has been published.
 
 ## Report a vulnerability
@@ -45,6 +47,26 @@ data removed, and any proposed mitigation.
 
 This is a volunteer project, so remediation time depends on severity and complexity; the reporter is kept informed
 in the advisory thread throughout.
+
+## Published vulnerability data
+
+Fixed vulnerabilities are published as GitHub security advisories at
+<https://github.com/Jstar269/nakagawa-recomp/security/advisories>, with affected and fixed revisions. When a
+known vulnerability in a dependency does not affect this project, the dismissal records why (an OpenVEX-style
+`not_affected` justification such as "vulnerable code not present" or "not reachable"), and the advisory or
+dependency alert links it, so users can audit the decision.
+
+## Secrets and credentials
+
+- **Where they live.** Credentials the project uses exist only as encrypted GitHub Actions secrets or in the
+  maintainer's local credential store, never in the repository. Secret scanning with push protection and the
+  publication audit block a committed secret.
+- **What exists.** Workflows use the per-run `GITHUB_TOKEN` (read-only by default; jobs request only the extra
+  scopes they need) and `PROVENANCE_AUTHORITY_TOKEN`, a fine-grained token scoped to the private provenance
+  repository and used only by the provenance attestation workflows, which never run pull-request code.
+- **Who can access them.** Only the maintainer (see [Governance and roles](CONTRIBUTING.md#governance-and-roles)).
+- **Rotation.** Tokens are created with an expiry of at most one year and rotated before it, and immediately
+  when exposure is suspected or a person with access leaves.
 
 ## Scope
 

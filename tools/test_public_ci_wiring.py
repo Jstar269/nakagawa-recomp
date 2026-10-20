@@ -412,6 +412,7 @@ _WINDOWS_SERIAL_GATES = {
     "Stage and run production smoke outside its build directory": "VULKAN_SDK=/ucrt64 production-smoke-staged",
     "Build and run the full platform ladder": "VULKAN_SDK=/ucrt64 platform-ladder",
     "Build and run profile-zero production routes": "VULKAN_SDK=/ucrt64 profile-zero-e2e",
+    "Fetch the profile-zero fixture built from source": "name: profile-zero-fixture",
     "Build and run display presentation smoke": "VULKAN_SDK=/ucrt64 display-smoke-run",
     "Build and run AOT/interpreter cosimulation gate": "VULKAN_SDK=/ucrt64 cosim-selftest",
     "Prove the cosimulation comparator is load-bearing": "VULKAN_SDK=/ucrt64 cosim-mutants",
@@ -778,12 +779,27 @@ class PublicExportJobTests(unittest.TestCase):
         for job in ("python_tools", "native_tools", "windows_runtime"):
             with self.subTest(job=job):
                 block = "\n".join(self.blocks[job])
-                self.assertIn("needs: [classify, public_export]", block)
+                self.assertRegex(
+                    block, r"(?m)^    needs: \[classify, public_export(, profile_zero_fixture)?\]$"
+                )
                 needs_line = re.search(r"(?m)^    needs: (.+)$", block)
                 self.assertIsNotNone(needs_line, f"{job} declares no needs line")
                 self.assertNotIn("hygiene", needs_line.group(1))
                 self.assertNotIn("needs.hygiene.result", block)
                 self.assertIn("needs.public_export.result == 'success'", block)
+
+    def test_profile_zero_fixture_is_built_from_source_for_its_consumers(self) -> None:
+        """#1100: the fixture is built and digest-checked in CI, never committed."""
+        fixture = "\n".join(self.blocks["profile_zero_fixture"])
+        self.assertIn("sha256sum --check --strict SHA256SUMS", fixture)
+        self.assertIn("name: profile-zero-fixture", fixture)
+        self.assertIn("if-no-files-found: error", fixture)
+        for job in ("python_tools", "windows_runtime"):
+            with self.subTest(job=job):
+                block = "\n".join(self.blocks[job])
+                self.assertIn("needs.profile_zero_fixture.result == 'success'", block)
+                self.assertIn("name: profile-zero-fixture", block)
+                self.assertIn("path: fixtures/profile_zero/prebuilt", block)
 
     def test_ci_required_still_requires_hygiene_and_export(self) -> None:
         required = "\n".join(self.blocks["ci_required"])
