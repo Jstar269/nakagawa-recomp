@@ -66,6 +66,20 @@ class TitleCodegenPlanTests(unittest.TestCase):
             ["make", "--no-print-directory", "-j2", "compile"],
         )
 
+    def test_unconfigured_data_root_has_no_invalid_local_asset_record(self) -> None:
+        manifest = copy.deepcopy(self.synthetic)
+        manifest["filesystem"]["data_root"] = ""
+        manifest["runtime_contract"]["resources"] = {
+            "mode": "none", "locators": [],
+        }
+
+        assets = title_codegen_plan._required_local_assets(
+            manifest, set(), {}, Path("build/synthetic"),
+        )
+        kinds = [asset["kind"] for asset in assets]
+        self.assertNotIn("title-data-root", kinds)
+        self.assertNotIn("runtime-resource-locator", kinds)
+
     def test_hst_plan_matches_current_makefile_contract(self) -> None:
         if self.hst is None:
             self.skipTest("private HST title manifest is unavailable in the sanitized public tree")

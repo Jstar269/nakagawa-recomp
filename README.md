@@ -15,11 +15,13 @@
 
 </div>
 
-| ![Nakagawa 3D Showcase demo: a smooth-shaded, textured cube on a dark background, recompiled and rendered by Nakagawa Recomp](docs/images/showcase-ge-scene-v120.png) | ![Nakagawa Breakout Showcase demo: a brick field, score row, paddle and ball, recompiled and rendered by Nakagawa Recomp](docs/images/showcase-breakout-v180.png) |
+| ![Nakagawa 3D Showcase: a brightly textured cube rotating against a dark background in the recompiled demo](docs/images/showcase-ge-scene.gif) | ![Nakagawa Breakout Showcase: the ball moving through a colored brick field above the paddle and score](docs/images/showcase-breakout.gif) |
 | :---: | :---: |
 | **3D Showcase** | **Breakout Showcase** |
 
 <div align="center"><sub>Two project-written PSP programs, recompiled and running at the PSP's native 480×272. No commercial game is shown or included.</sub></div>
+
+The Graphics Interchange Format and its service mark are owned by CompuServe Incorporated.
 
 ## Why it's different
 

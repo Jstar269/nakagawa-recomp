@@ -255,14 +255,14 @@
       "name": "SDL3 Runtime",
       "type": "library",
       "relationship": "DEPENDS_ON",
-      "presence": "optional_local_or_external",
+      "presence": "required",
       "source_path": "SDL3.dll",
       "upstream_origin": "https://github.com/libsdl-org/SDL",
       "license": "Zlib",
       "notice_path": "NOTICE.md",
       "disposition": "included",
       "public_scope_included": true,
-      "optional": true,
+      "optional": false,
       "comment": "External/optional local runtime library. Reference SDL >= 3.0.0. Staged dist package lock remains unasserted."
     },
     {
@@ -671,13 +671,13 @@
       "name": "README animation: 3D scene showcase",
       "type": "asset",
       "relationship": "CONTAINS",
-      "presence": "optional_local_or_external",
+      "presence": "required",
       "source_path": "docs/images/showcase-ge-scene.gif",
       "license": "GPL-3.0-or-later",
       "notice_path": "NOTICE.md",
       "disposition": "approved_binary",
       "public_scope_included": true,
-      "optional": true,
+      "optional": false,
       "hashes": {
         "sha256": "61e2ccdc10b2f0578b858961446fb228ea301bf5ae1ad3433c3b6c181ec47657"
       },

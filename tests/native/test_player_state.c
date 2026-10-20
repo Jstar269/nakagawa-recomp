@@ -982,7 +982,8 @@ static void write_runtime_package_fixture_with_options(
     const char *user_root, const char *disc_id, const char *title_id,
     uint32_t abi_version, const char *executable_relative_path,
     const char *input_executable_sha256, const char *seed_executable_path,
-    const char *source_media_json, size_t report_target_size) {
+    const char *source_media_json, size_t report_target_size,
+    bool synthetic_title_identity) {
     char packages[768], package_dir[896], executable[1100], image[1100];
     char package_json[16384], report_json[8192], cache_json[4096], cache_key_json[3072];
     char aot_components_json[2048], native_components_json[2048], identity_json[2048];
@@ -1012,15 +1013,23 @@ static void write_runtime_package_fixture_with_options(
     fixture_sha_file(executable, executable_hash);
 
     const char *region = strncmp(disc_id, "UL", 2) == 0 ? "NA" : "TEST";
+    char disc_identity_json[256];
+    if (synthetic_title_identity) {
+        snprintf(disc_identity_json, sizeof(disc_identity_json),
+                 "{\"disc_version\":null,\"id\":null,\"region\":null}");
+    } else {
+        snprintf(disc_identity_json, sizeof(disc_identity_json),
+                 "{\"disc_version\":null,\"id\":\"%s\",\"region\":\"%s\"}",
+                 disc_id, region);
+    }
     if (!source_media_json) source_media_json = "null";
     int identity_length = snprintf(identity_json, sizeof(identity_json),
-        "{\"container\":null,\"disc\":{\"disc_version\":null,\"id\":\"%s\","
-        "\"region\":\"%s\"},\"format\":\"nakagawa-title-input-identity\","
+        "{\"container\":null,\"disc\":%s,\"format\":\"nakagawa-title-input-identity\","
         "\"main_executable\":{\"name\":\"EBOOT.BIN\",\"sha256\":\"%s\"},"
         "\"manifest\":{\"id\":\"%s\",\"schema_version\":1},"
         "\"modules\":[],\"param_sfo\":null,\"psp_header\":null,\"schema_version\":2,"
         "\"source_media\":%s}",
-        disc_id, region, input_executable_sha256, title_id, source_media_json);
+        disc_identity_json, input_executable_sha256, title_id, source_media_json);
     assert(identity_length > 0 && (size_t)identity_length < sizeof(identity_json));
     int identity_hash_length = snprintf(identity_hash_input,
         sizeof(identity_hash_input), "%s\n", identity_json);
@@ -1151,7 +1160,7 @@ static void write_runtime_package_fixture(const char *user_root,
                                           const char *seed_executable_path) {
     write_runtime_package_fixture_with_options(
         user_root, disc_id, title_id, abi_version, executable_relative_path,
-        input_executable_sha256, seed_executable_path, NULL, 0);
+        input_executable_sha256, seed_executable_path, NULL, 0, false);
 }
 
 static void write_runtime_package_fixture_with_source_media(
@@ -1161,7 +1170,7 @@ static void write_runtime_package_fixture_with_source_media(
     const char *source_media_json) {
     write_runtime_package_fixture_with_options(
         user_root, disc_id, title_id, abi_version, executable_relative_path,
-        input_executable_sha256, seed_executable_path, source_media_json, 0);
+        input_executable_sha256, seed_executable_path, source_media_json, 0, false);
 }
 
 static void write_runtime_package_fixture_with_report_size(
@@ -1171,7 +1180,17 @@ static void write_runtime_package_fixture_with_report_size(
     size_t report_target_size) {
     write_runtime_package_fixture_with_options(
         user_root, disc_id, title_id, abi_version, executable_relative_path,
-        input_executable_sha256, seed_executable_path, NULL, report_target_size);
+        input_executable_sha256, seed_executable_path, NULL, report_target_size,
+        false);
+}
+
+static void write_runtime_package_fixture_with_synthetic_title_identity(
+    const char *user_root, const char *disc_id, const char *title_id,
+    uint32_t abi_version, const char *executable_relative_path,
+    const char *input_executable_sha256, const char *seed_executable_path) {
+    write_runtime_package_fixture_with_options(
+        user_root, disc_id, title_id, abi_version, executable_relative_path,
+        input_executable_sha256, seed_executable_path, NULL, 0, true);
 }
 
 /* Remove exactly what write_runtime_package_fixture() writes under *user_root*
@@ -4182,6 +4201,67 @@ int main(int argc, char **argv) {
         snprintf(game.disc_id, sizeof(game.disc_id), "%s", cached_disc_id);
         snprintf(game.title_id, sizeof(game.title_id), "synthetic-allegrex-v1");
         snprintf(game.selected_executable, sizeof(game.selected_executable), "EBOOT.BIN");
+
+        /* A catalog-discovered showcase sample may have a companion synthetic
+         * ISO, but its package identity is bound to the project-built inputs.
+         * Other samples and ordinary library entries still need live-media
+         * identity when an ISO path is present. */
+        char sample_root[640];
+        char sample_iso[512];
+        char sample_identity[1100];
+        snprintf(sample_root, sizeof(sample_root), "%s%cpr670_sample_validation_probe",
+                 cache_root, nk_platform_path_separator());
+        remove_runtime_package_fixture(sample_root, cached_disc_id,
+                                       "synthetic-allegrex-v1");
+        write_runtime_package_fixture_with_synthetic_title_identity(
+            sample_root, cached_disc_id, "synthetic-allegrex-v1",
+            SR_CPUSTATE_ABI_VERSION, "synthetic-allegrex-v1.exe",
+            FIXTURE_SHA256, NULL);
+        int sample_iso_written = snprintf(sample_iso, sizeof(sample_iso),
+                                          "%s%cshowcase.iso", sample_root,
+                                          nk_platform_path_separator());
+        assert(sample_iso_written > 0 && (size_t)sample_iso_written < sizeof(sample_iso));
+        write_file(sample_iso);
+        snprintf(sample_identity, sizeof(sample_identity),
+                 "%s%ctitle-input-identities%c%s%ctitle-input-identity.json",
+                 sample_root, nk_platform_path_separator(), nk_platform_path_separator(),
+                 cached_disc_id, nk_platform_path_separator());
+        assert(remove(sample_identity) == 0);
+
+        NkGameEntry sample_game = game;
+        sample_game.is_sample = true;
+        sample_game.is_showcase_package = true;
+        snprintf(sample_game.iso_path, sizeof(sample_game.iso_path), "%s", sample_iso);
+        NkRuntimePackageInfo sample_info;
+        char sample_reason[1024] = "";
+        NkRuntimePackageStatus sample_status = nk_launch_validate_runtime_package(
+            sample_root, &sample_game, &sample_info, sample_reason,
+            sizeof(sample_reason));
+        if (sample_status != NK_RUNTIME_PACKAGE_OK) {
+            fprintf(stderr, "showcase package validation failed: status=%d reason=%s\n",
+                    (int)sample_status, sample_reason);
+        }
+        assert(sample_status == NK_RUNTIME_PACKAGE_OK);
+        char sample_cache_identity[65];
+        assert(nk_launch_runtime_package_cache_identity(
+            sample_root, &sample_game, sample_cache_identity));
+        NkGameEntry library_game = sample_game;
+        library_game.is_sample = false;
+        library_game.is_showcase_package = false;
+        NkRuntimePackageInfo library_info;
+        assert(nk_launch_validate_runtime_package(
+                   sample_root, &library_game, &library_info, sample_reason,
+                   sizeof(sample_reason)) == NK_RUNTIME_PACKAGE_STALE);
+        assert(strstr(sample_reason,
+                      "Title input identity record is missing or unreadable") != NULL);
+        char library_cache_identity[65];
+        assert(nk_launch_runtime_package_cache_identity(
+            sample_root, &library_game, library_cache_identity));
+        assert(strcmp(sample_cache_identity, library_cache_identity) != 0);
+        assert(remove(sample_iso) == 0);
+        remove_runtime_package_fixture(sample_root, cached_disc_id,
+                                       "synthetic-allegrex-v1");
+        printf("[PLAYER_STATE_TEST] showcase package skips live source-media identity; library does not PASS\n");
 
         NkRuntimePackageInfo first_info;
         NkRuntimePackageInfo cached_info;
