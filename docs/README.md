@@ -15,6 +15,7 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
 | --- | --- |
 | Get the project building at all | [`README.md`](../README.md), [`SETUP.md`](SETUP.md), [`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md) |
 | Play a game you own in the native player | [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md) |
+| Script the player from a terminal | [`CLI.md`](CLI.md) |
 | Run the source-owned showcase demos right now | [`SHOWCASE.md`](SHOWCASE.md) |
 | Check title and subsystem compatibility | [`COMPATIBILITY.md`](COMPATIBILITY.md) |
 | Audit user-supplied parser limits and hostile-input evidence | [`PARSER_SAFETY_INVENTORY.json`](PARSER_SAFETY_INVENTORY.json) — per-boundary evidence for #319; an inventory is not issue completion |
@@ -36,6 +37,7 @@ Rows are what you are about to do, not topics. Read the row you are in, not the 
   two-phase build structure.
 - [`SETUP.md`](SETUP.md) — supported toolchain and documented external inputs.
 - [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md) — what the player needs to play a game you own.
+- [`CLI.md`](CLI.md) — the `nk_cli` commands: what each reads, writes and returns.
 - [`COMPATIBILITY.md`](COMPATIBILITY.md) — per-title and subsystem compatibility
   states, semantic boundaries, and tracking issues.
 - [`SMOKE_TEST.md`](SMOKE_TEST.md) — numbered pass/fail release smoke test for the
@@ -181,6 +183,7 @@ Every substantial document carries one status.
 | `ARCHIVE_VFS.md` | CURRENT | Read-only archive-backed VFS: XB mounts, member lookup and loose-content routes (#298) |
 | `SETUP.md` | CURRENT | Supported toolchain; declared authority for setup claims, including the optional local symbol reference (`FindSymbol`) |
 | `YOUR_OWN_GAMES.md` | CURRENT | User guide: own-game input, unencrypted files, ownership and in-the-works boundaries |
+| `CLI.md` | CURRENT | Command-line reference: nk_cli commands, inputs, outputs and exit status |
 | `COMPATIBILITY.md` | CURRENT | Per-title and subsystem compatibility states and semantic boundaries |
 | `SMOKE_TEST.md` | CURRENT | Numbered pass/fail release smoke test for the native player |
 | `TITLE_TESTING.md` | CURRENT | Public title qualification: manifest and input-profile validation, sandboxed native-player smoke, bring-up-schema report and sweep vocabulary (#699) |
