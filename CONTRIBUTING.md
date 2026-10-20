@@ -231,6 +231,41 @@ a pass.
 
 To ensure clear contribution rights, all contributions to this project must be certified under the **Developer Certificate of Origin (DCO 1.1)** via a `Signed-off-by:` line on each commit (`git commit -s`). The complete text of DCO 1.1, author obligations, maintainer standing waiver details, bot submission rules, and sign-off correction procedures are maintained in [`docs/DCO_POLICY.md`](docs/DCO_POLICY.md).
 
+## Governance and roles
+
+Nakagawa Recomp is a maintainer-led project.
+
+- **Maintainer** ([@Jstar269](https://github.com/Jstar269)): sets direction, reviews and merges pull requests, owns
+  releases, handles security reports ([SECURITY.md](SECURITY.md)) and enforces the
+  [code of conduct](CODE_OF_CONDUCT.md). Decisions are made in public issues and pull requests whenever they are not
+  security-sensitive.
+- **Contributors**: anyone who opens an issue or pull request under this guide and the DCO.
+- **AI agents**: used by the maintainer as assistants under [`AGENTS.md`](AGENTS.md); their commits say so with an
+  `Assisted-by:` trailer, and a human maintainer remains accountable for everything merged.
+- **Automated reviewers and CI**: required checks gate every merge, but they advise; they do not decide.
+
+**Access to sensitive resources.** Only the maintainer, [@Jstar269](https://github.com/Jstar269), has admin
+access to this repository: settings, rulesets, Actions secrets, security advisories, releases, and the private
+provenance repository. Dependabot and the review bots can open pull requests or comments but cannot merge or
+change settings, and the branch ruleset has no bypass for anyone.
+
+**Granting elevated access.** Before anyone receives write, admin or secret access, the maintainer reviews
+their record of sustained, reviewed contributions, requires two-factor authentication on their account,
+grants the lowest role that does the job, and records the change in a public issue. Access is removed when it
+is no longer used.
+
+## Dependencies
+
+- **Selecting.** A new dependency must be maintained, under a licence compatible with GPL-3.0-or-later, and
+  worth more than writing the code; prefer the standard library and existing dependencies. Upstream code is
+  vendored only under [`AGENTS.md`](AGENTS.md) section 4 (pinned revision, `PROVENANCE.md`, licence kept).
+- **Obtaining.** Python packages come from the hash-pinned
+  [`tools/requirements-lock.txt`](tools/requirements-lock.txt) (`pip install --require-hashes`); the PSP
+  toolchain from the release and SHA-256 pinned in
+  [`assets/upstream/pspdev.lock.json`](assets/upstream/pspdev.lock.json); GitHub Actions by full commit SHA.
+- **Tracking.** Dependabot, GitHub dependency review and OSV-Scanner flag outdated or vulnerable
+  dependencies on every change, and `tools/generate_sbom.py` produces the software bill of materials.
+
 ## Pull requests
 
 Use a descriptive branch and commit message with DCO sign-off (`git commit -s`). The repository PR template prompts for the required

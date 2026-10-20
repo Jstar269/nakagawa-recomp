@@ -19,6 +19,8 @@ When the first formal experimental platform release (`v0.0.1`) ships:
 
 - The `main` branch remains the primary supported development line.
 - `v0.0.1` is an experimental prerelease milestone, not an LTS or patch-supported line: fixes for security issues identified in `v0.0.1` land on `main` and flow into subsequent releases rather than receiving backported security point releases.
+- A release stops receiving security updates as soon as the next release is published; move to the newest
+  release or to `main` to keep receiving fixes.
 - Release qualification authority [issue #278](https://github.com/Jstar269/nakagawa-recomp/issues/278) owns updating this policy and marking `v0.0.1` active atomically at release publication time. No release has been published.
 
 ## Report a vulnerability
@@ -32,8 +34,39 @@ unavailable, contact the repository owner through the private contact method on 
 and ask for a secure channel before sending details.
 
 Include the affected revision, impact, reproduction conditions, relevant logs with personal and game
-data removed, and any proposed mitigation. Reports are handled on a best-effort basis; no fixed
-response or remediation time is promised before the project has a formal release team.
+data removed, and any proposed mitigation.
+
+## How reports are handled
+
+1. **Acknowledge** the report within 14 days, in the private advisory thread.
+2. **Triage**: reproduce it, decide whether it is in scope (below) and rate its severity.
+3. **Fix** in a private fork of the advisory, with a regression test that fails before the fix.
+4. **Disclose**: merge the fix, then publish the GitHub security advisory (requesting a CVE when the issue warrants
+   one) and note it in the release notes of the next release.
+5. **Credit**: reporters are named in the advisory and release notes unless they ask to stay anonymous.
+
+This is a volunteer project, so remediation time depends on severity and complexity; the reporter is kept informed
+in the advisory thread throughout.
+
+## Published vulnerability data
+
+Fixed vulnerabilities are published as GitHub security advisories at
+<https://github.com/Jstar269/nakagawa-recomp/security/advisories>, with affected and fixed revisions. When a
+known vulnerability in a dependency does not affect this project, the dismissal records why (an OpenVEX-style
+`not_affected` justification such as "vulnerable code not present" or "not reachable"), and the advisory or
+dependency alert links it, so users can audit the decision.
+
+## Secrets and credentials
+
+- **Where they live.** Credentials the project uses exist only as encrypted GitHub Actions secrets or in the
+  maintainer's local credential store, never in the repository. Secret scanning with push protection and the
+  publication audit block a committed secret.
+- **What exists.** Workflows use the per-run `GITHUB_TOKEN` (read-only by default; jobs request only the extra
+  scopes they need) and `PROVENANCE_AUTHORITY_TOKEN`, a fine-grained token scoped to the private provenance
+  repository and used only by the provenance attestation workflows, which never run pull-request code.
+- **Who can access them.** Only the maintainer (see [Governance and roles](CONTRIBUTING.md#governance-and-roles)).
+- **Rotation.** Tokens are created with an expiry of at most one year and rotated before it, and immediately
+  when exposure is suspected or a person with access leaves.
 
 ## Scope
 
@@ -59,3 +92,40 @@ Out of scope:
 
 This research software processes untrusted binary formats and is not sandboxed. Run it only on files
 you are authorized to use.
+
+## Legacy PSP cryptography
+
+To read the PSP's own encrypted executables and modules, the decryption code in `src/core/` (`nk_psp_kirk.c`,
+`nk_psp_aes.c`, `nk_psp_sha1.c`, `nk_psp_ec.c`) implements the algorithms those formats require: AES-128, SHA-1 and
+ECDSA on a 160-bit curve. These are below current recommendations, and no stronger alternative exists, because the
+formats are fixed by existing PSP software.
+
+- **Risk.** A crafted file could pass these format checks. They are compatibility checks, not a security boundary,
+  so passing them grants nothing.
+- **Mitigations.** No protection the project offers depends on these algorithms; its own integrity checks (packages,
+  fonts, provenance) use SHA-256. Every file is treated as untrusted input by the bounds-checked, fuzzed parsers listed
+  in [`docs/PARSER_SAFETY_INVENTORY.json`](docs/PARSER_SAFETY_INVENTORY.json), whatever these checks report. Keys are
+  read only from your own local key file and never leave your machine.
+
+## Assurance case
+
+Why the project's security requirements are met, in brief:
+
+- **Threat model.** The attacker controls the files a user feeds in (ISO, ELF/PRX, archives, saves, fonts) or tries
+  to slip a change into the repository or its supply chain. The project holds no user accounts, network services or
+  secrets of its own; a user's key file and game files stay on their machine.
+- **Trust boundaries.** (1) User files → the parsers in `src/core/`, `src/player/`, `src/rt/` and `tools/`.
+  (2) Guest code → host memory, crossed only through HLE handlers that validate every guest pointer and size.
+  (3) Contributions → `main`, crossed only through reviewed pull requests with required CI.
+  (4) Private inputs → the public tree, crossed only through the publication and provenance gates.
+- **Secure design principles applied.** Fail closed: unsupported behaviour stops with a named reason instead of
+  guessing. Complete mediation: every guest-to-host access is checked against the guest span. Least privilege:
+  workflows default to read-only tokens and pin every action by commit. Economy of mechanism: one runtime,
+  one dispatch path, no permissive switches. Defence in depth: checks still apply when a format check passes (see
+  [Legacy PSP cryptography](#legacy-psp-cryptography)).
+- **Common weaknesses countered.** Memory errors (CWE-119/787/125): bounds-checked parsers with hostile-input tests
+  ([`docs/PARSER_SAFETY_INVENTORY.json`](docs/PARSER_SAFETY_INVENTORY.json)), ASan/UBSan fuzzing (ClusterFuzzLite)
+  and CodeQL on every change. Path traversal (CWE-22): the VFS and extraction tools refuse paths outside their roots.
+  Integer overflow (CWE-190): checked size arithmetic before forming host pointers. Supply chain: hash-pinned Python
+  dependencies, pinned toolchain downloads verified by SHA-256, Dependabot, dependency review, OSV-Scanner and
+  OpenSSF Scorecard. Leaked secrets: secret scanning and a publication audit on every push.

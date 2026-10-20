@@ -627,12 +627,12 @@ developer runs locally, without private inputs:
   through the headless production runtime, and checks all seven named
   guest-service cases for each manifest. It runs in the `routes` part of the
   25-minute `windows_runtime` job and took about 123 seconds locally for both package
-  builds and runtime launches. The guest bytes are the committed
-  `fixtures/profile_zero/prebuilt` fixture, built by PSPDEV/PSPSDK from the
-  fixture's own `main.c` and `Makefile` (see `fixtures/profile_zero/README.md`),
-  so hosted runners with no PSPDEV execute the whole route instead of
-  reporting a toolchain `SKIP`; where PSPDEV is installed, the gate rebuilds
-  the fixture first and fails if any byte differs from `SHA256SUMS`. Public
+  builds and runtime launches. The guest bytes are built from the fixture's own
+  `main.c` and `Makefile` by the `profile_zero_fixture` job (pinned PSPDEV, checked
+  against the committed `fixtures/profile_zero/prebuilt/SHA256SUMS`) and downloaded
+  as an artifact, so the repository stores no generated executable (#1100) and the
+  Windows runner still executes the whole route; where PSPDEV is installed, the
+  gate rebuilds the fixture itself and fails if any byte differs from `SHA256SUMS`. Public
   runtime link dependencies remain external; when they are unavailable, the
   test reports an explicit `SKIP` with the printed missing-dependency reason.
   The job also runs the production smoke with its executable staged into a fresh

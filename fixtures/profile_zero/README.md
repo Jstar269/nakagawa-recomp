@@ -5,22 +5,25 @@
 
 `main.c` and `Makefile` are the project-authored PSPSDK guest behind the two
 profile-zero manifests (`assets/titles/synthetic.json` and
-`assets/titles/synthetic-title2.json`). The `prebuilt/` directory commits the
-PSPDEV build output so `mingw32-make profile-zero-e2e` can run the whole
-manifest -> ProgramImage -> AOT package -> production-runtime route on hosts
-without PSPDEV/PSPSDK, including hosted Windows CI.
+`assets/titles/synthetic-title2.json`). The repository commits only the digests
+of the PSPDEV build output (`prebuilt/SHA256SUMS`), not the generated executables
+themselves (#1100). Hosted CI builds them from this source in the
+`profile_zero_fixture` job, checks them against the digests and hands them to the
+jobs that run `mingw32-make profile-zero-e2e`, the whole manifest -> ProgramImage
+-> AOT package -> production-runtime route; a host with PSPDEV rebuilds them
+itself.
 
 ## Contents
 
-- `prebuilt/EBOOT.PBP` — the packed PSP boot file named by the manifests'
-  build target (`profile_zero.build.target`).
-- `prebuilt/profile_zero_guest.prx` — the relocatable guest module the route
+- `prebuilt/EBOOT.PBP` (generated, gitignored) — the packed PSP boot file named
+  by the manifests' build target (`profile_zero.build.target`).
+- `prebuilt/profile_zero_guest.prx` (generated, gitignored) — the relocatable guest module the route
   loads as a `ProgramImage`. Each manifest rebuilds these same bytes under its
   own `game_name` (`synthetic.prx`, `synthetic_title2.prx`); the gate fails
   closed if any rebuilt byte differs from the committed digests.
-- `prebuilt/SHA256SUMS` — the committed digests.
+- `prebuilt/SHA256SUMS` — the committed digests, the only file stored here.
 
-These files are project-authored output of the project-authored source in this
+The generated files are project-authored output of the project-authored source in this
 directory. They contain no retail or private bytes.
 
 ## Reproduce (requires PSPDEV/PSPSDK)
@@ -47,9 +50,10 @@ absolute (as shown). Both digests must equal the entries in `prebuilt/SHA256SUMS
 (`cd fixtures/profile_zero/prebuilt && sha256sum -c SHA256SUMS`).
 
 `profile-zero-e2e` runs exactly this rebuild-and-compare whenever PSPDEV is
-present and fails on byte drift; on hosts without PSPDEV (such as hosted CI)
-it consumes the committed bytes and runs the same seven-case route without a
-toolchain SKIP.
+present and fails on byte drift; on hosts without PSPDEV it runs the same
+seven-case route on bytes already staged in `prebuilt/` (in hosted CI, the
+`profile_zero_fixture` artifact), checked against the digests, and reports
+`NOT_RUN` when no bytes are staged.
 
 The rebuild-and-compare is authoritative only for the pinned distribution
 (#708). The gate first verifies that the installed PSPDEV tool binaries match
