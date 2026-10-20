@@ -5571,7 +5571,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "96a1dfaf26d114505a8bb8af0adabbd6bc98a99a0441cd237f43ab70348dcd56"
+      "sha256": "91d5882b815a52fc2d026651700670842cc79d1ea8d29e9d2ed7e4d86a212c37"
     },
     {
       "path": "src/rt/perf.h",
@@ -9496,7 +9496,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "05c9722c5bedc845b655f71442fe5ea66637e135d9a8e84dbf6b98b04e60e0c8"
+      "sha256": "7920cd531d977f8c10d7ceec7a1e7973209ab75a23a5a3bf8019fba5136eec71"
     },
     {
       "path": "tools/test_pgf_validate_parity.py",
