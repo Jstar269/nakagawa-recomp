@@ -667,6 +667,40 @@
       "comment": "Runtime framebuffer snapshot (SR_FBSNAP) of the source-owned showcase demo, rendered by this repository's own runtime; no retail bytes."
     },
     {
+      "id": "readme-showcase-ge-scene-animation",
+      "name": "README animation: 3D scene showcase",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "optional_local_or_external",
+      "source_path": "docs/images/showcase-ge-scene.gif",
+      "license": "GPL-3.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": true,
+      "hashes": {
+        "sha256": "61e2ccdc10b2f0578b858961446fb228ea301bf5ae1ad3433c3b6c181ec47657"
+      },
+      "comment": "41-frame present-truthful capture from the normal player route for the source-owned TEST00007 3D showcase; no retail bytes."
+    },
+    {
+      "id": "readme-showcase-breakout-animation",
+      "name": "README animation: Breakout showcase",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "optional_local_or_external",
+      "source_path": "docs/images/showcase-breakout.gif",
+      "license": "GPL-3.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": true,
+      "hashes": {
+        "sha256": "1d40d4cf155465577c4903adbd82c2ad944ccff197cf031b0c88331d14122e61"
+      },
+      "comment": "41-frame present-truthful capture from the normal player route for the source-owned TEST00008 Breakout showcase; no retail bytes."
+    },
+    {
       "id": "fixture-fonts-gowundodum-regular",
       "name": "Pinned permissively redistributable Korean font source: GowunDodum-Regular.ttf",
       "source_path": "fixtures/fonts/gowundodum/GowunDodum-Regular.ttf",
