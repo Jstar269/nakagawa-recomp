@@ -51,7 +51,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "db96c36b90eac3fe2c22fddd448d99f4f4693e1a8732498d9aa5e1ed981ee67f"
+      "sha256": "5d107cf43751b60542a7b3a03dbf622f474a4258d27cce4b653f98cfd531a984"
     },
     {
       "path": ".clusterfuzzlite/build.sh",
