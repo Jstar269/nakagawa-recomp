@@ -32,8 +32,19 @@ unavailable, contact the repository owner through the private contact method on 
 and ask for a secure channel before sending details.
 
 Include the affected revision, impact, reproduction conditions, relevant logs with personal and game
-data removed, and any proposed mitigation. Reports are handled on a best-effort basis; no fixed
-response or remediation time is promised before the project has a formal release team.
+data removed, and any proposed mitigation.
+
+## How reports are handled
+
+1. **Acknowledge** the report within 14 days, in the private advisory thread.
+2. **Triage**: reproduce it, decide whether it is in scope (below) and rate its severity.
+3. **Fix** in a private fork of the advisory, with a regression test that fails before the fix.
+4. **Disclose**: merge the fix, then publish the GitHub security advisory (requesting a CVE when the issue warrants
+   one) and note it in the release notes of the next release.
+5. **Credit**: reporters are named in the advisory and release notes unless they ask to stay anonymous.
+
+This is a volunteer project, so remediation time depends on severity and complexity; the reporter is kept informed
+in the advisory thread throughout.
 
 ## Scope
 
@@ -73,3 +84,26 @@ formats are fixed by existing PSP software.
   fonts, provenance) use SHA-256. Every file is treated as untrusted input by the bounds-checked, fuzzed parsers listed
   in [`docs/PARSER_SAFETY_INVENTORY.json`](docs/PARSER_SAFETY_INVENTORY.json), whatever these checks report. Keys are
   read only from your own local key file and never leave your machine.
+
+## Assurance case
+
+Why the project's security requirements are met, in brief:
+
+- **Threat model.** The attacker controls the files a user feeds in (ISO, ELF/PRX, archives, saves, fonts) or tries
+  to slip a change into the repository or its supply chain. The project holds no user accounts, network services or
+  secrets of its own; a user's key file and game files stay on their machine.
+- **Trust boundaries.** (1) User files → the parsers in `src/core/`, `src/player/`, `src/rt/` and `tools/`.
+  (2) Guest code → host memory, crossed only through HLE handlers that validate every guest pointer and size.
+  (3) Contributions → `main`, crossed only through reviewed pull requests with required CI.
+  (4) Private inputs → the public tree, crossed only through the publication and provenance gates.
+- **Secure design principles applied.** Fail closed: unsupported behaviour stops with a named reason instead of
+  guessing. Complete mediation: every guest-to-host access is checked against the guest span. Least privilege:
+  workflows default to read-only tokens and pin every action by commit. Economy of mechanism: one runtime,
+  one dispatch path, no permissive switches. Defence in depth: checks still apply when a format check passes (see
+  [Legacy PSP cryptography](#legacy-psp-cryptography)).
+- **Common weaknesses countered.** Memory errors (CWE-119/787/125): bounds-checked parsers with hostile-input tests
+  ([`docs/PARSER_SAFETY_INVENTORY.json`](docs/PARSER_SAFETY_INVENTORY.json)), ASan/UBSan fuzzing (ClusterFuzzLite)
+  and CodeQL on every change. Path traversal (CWE-22): the VFS and extraction tools refuse paths outside their roots.
+  Integer overflow (CWE-190): checked size arithmetic before forming host pointers. Supply chain: hash-pinned Python
+  dependencies, pinned toolchain downloads verified by SHA-256, Dependabot, dependency review, OSV-Scanner and
+  OpenSSF Scorecard. Leaked secrets: secret scanning and a publication audit on every push.

@@ -7,6 +7,7 @@
 
 [![CI](https://github.com/Jstar269/nakagawa-recomp/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Jstar269/nakagawa-recomp/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/Jstar269/nakagawa-recomp/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/Jstar269/nakagawa-recomp/actions/workflows/codeql.yml)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15701/badge)](https://www.bestpractices.dev/projects/15701)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Jstar269/nakagawa-recomp/badge)](https://scorecard.dev/viewer/?uri=github.com/Jstar269/nakagawa-recomp)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![Platform: Windows 11 x64](https://img.shields.io/badge/platform-Windows%2011%20x64-0078D6.svg)](docs/SETUP.md)
@@ -25,7 +26,7 @@
   program. A native runtime supplies the PSP's system services, audio and an SDL3 + Vulkan renderer.
 - **Honest by design.** When something isn't supported yet, it stops at a named boundary with a plain message. It
   never fakes success.
-- **Bring your own game.** No games, firmware, keys or fonts ship here, and no game data is ever downloaded.
+- **Bring your own game.** No games, firmware, keys or Sony fonts ship here, and no game data is ever downloaded.
 
 ## Quick start
 
@@ -37,8 +38,9 @@
    ([#548](https://github.com/Jstar269/nakagawa-recomp/pull/548), [#550](https://github.com/Jstar269/nakagawa-recomp/pull/550));
    [`docs/YOUR_OWN_GAMES.md`](docs/YOUR_OWN_GAMES.md) shows what goes where.
 4. **Press BUILD PACKAGE, then Play.** On a clean PATH, consent once and the player fetches its pinned build tools.
-5. **Optional:** import the system fonts from your own PSP with `python tools/nk_cli.py fonts import <folder>` (an
-   open-font converter is in the works, [#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)).
+5. **Optional:** text uses the project's own open fonts ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313));
+   for the PSP's original typography, import the fonts from your own PSP with
+   `python tools/nk_cli.py fonts import <folder>`.
 
 No game at hand? `mingw32-make player showcase` builds the two demos above, and the player finds them on its own.
 

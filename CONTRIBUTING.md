@@ -231,6 +231,19 @@ a pass.
 
 To ensure clear contribution rights, all contributions to this project must be certified under the **Developer Certificate of Origin (DCO 1.1)** via a `Signed-off-by:` line on each commit (`git commit -s`). The complete text of DCO 1.1, author obligations, maintainer standing waiver details, bot submission rules, and sign-off correction procedures are maintained in [`docs/DCO_POLICY.md`](docs/DCO_POLICY.md).
 
+## Governance and roles
+
+Nakagawa Recomp is a maintainer-led project.
+
+- **Maintainer** ([@Jstar269](https://github.com/Jstar269)): sets direction, reviews and merges pull requests, owns
+  releases, handles security reports ([SECURITY.md](SECURITY.md)) and enforces the
+  [code of conduct](CODE_OF_CONDUCT.md). Decisions are made in public issues and pull requests whenever they are not
+  security-sensitive.
+- **Contributors**: anyone who opens an issue or pull request under this guide and the DCO.
+- **AI agents**: used by the maintainer as assistants under [`AGENTS.md`](AGENTS.md); their commits say so with an
+  `Assisted-by:` trailer, and a human maintainer remains accountable for everything merged.
+- **Automated reviewers and CI**: required checks gate every merge, but they advise; they do not decide.
+
 ## Pull requests
 
 Use a descriptive branch and commit message with DCO sign-off (`git commit -s`). The repository PR template prompts for the required
