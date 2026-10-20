@@ -4210,6 +4210,19 @@ static void test_sysreg_virtual_registry(void) {
     expect(sysreg_get_by_name(cat, "button_assign", 3u) == SYSREG_E_INVAL,
            "sceRegGetKeyValueByName refuses a buffer smaller than the value with EINVAL");
 
+    {
+        /* The guest's font library reads these; measured on a PSP-3000 (PSP-REGISTRY-002). */
+        uint32_t res = sysreg_open_category(reg, "/SYSPROFILE/RESOLUTION", 1u, &r);
+        expect(r == 0u && res != 0u && sysreg_keys_num(res) == 2u,
+               "/SYSPROFILE/RESOLUTION opens and lists its two measured keys");
+        r = sysreg_key_info(res, "horizontal");
+        expect(r == 0u && MEM_R32(SYSREG_TYPE) == 2u && MEM_R32(SYSREG_SIZE) == 4u,
+               "sceRegGetKeyInfo reports horizontal as an INT of 4 bytes, not the unknown-key error");
+        expect(sysreg_get_int(res, "horizontal") == 0x2012u && sysreg_get_int(res, "vertical") == 0x2012u,
+               "horizontal and vertical hold the measured raw 0x2012");
+        expect(sysreg_call(NID_SCE_REG_CLOSE_CATEGORY, res, 0u, 0u, 0u, 0u) == 0u,
+               "sceRegCloseCategory closes /SYSPROFILE/RESOLUTION");
+    }
     cat2 = sysreg_open_category(reg, "/CONFIG/DATE", 1u, &r);
     expect(r == 0u && cat2 != 0u && cat2 != cat && sysreg_keys_num(cat2) == 5u,
            "/CONFIG/DATE opens in its own slot with its five measured keys");

@@ -51,7 +51,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "db96c36b90eac3fe2c22fddd448d99f4f4693e1a8732498d9aa5e1ed981ee67f"
+      "sha256": "5d107cf43751b60542a7b3a03dbf622f474a4258d27cce4b653f98cfd531a984"
     },
     {
       "path": ".clusterfuzzlite/build.sh",
@@ -5314,7 +5314,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "5ce6eba071cef31c70b5dc6461456accd5e9c78577cceeaa65d9fa4b4da02aed"
+      "sha256": "3bf6a0a4f643543902871cc0f8dd5710a5c1349e9948855e2250724aaa5ff1e9"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5352,7 +5352,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0f72bdc5f71c88669369eb9009ed60c4930c61dd6168d4cbd5c96a20c708de5c"
+      "sha256": "198605a3146a7668114683761955ec18efe9f830e60340a2a0e13019d4759b1e"
     },
     {
       "path": "src/rt/intr_conformance.h",
