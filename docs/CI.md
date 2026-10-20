@@ -346,6 +346,47 @@ and record its wall-clock seconds; `python tools/ci_test_shards.py --check` reje
 weights for modules that no longer exist, and `--plan` prints the resulting
 partition with per-shard estimates.
 
+## Coverage
+
+Two coverage reports are measured whenever their jobs run, and neither can change
+a gate's result.
+
+- **Python tooling (`python_tools`).** Each shard runs the module list it always
+  ran, through `python -m coverage run --parallel-mode --source=tools -m unittest
+  -v ...`, then combines its own data and writes `coverage-python.xml`. The
+  measured surface is the tooling, not the tests: `--source=tools` and
+  `omit = ["tools/test_*.py"]` in `[tool.coverage.run]` (`pyproject.toml`) keep
+  the test modules themselves out of the number. Coverage records the run and
+  exits with unittest's own status, so a failing shard still fails the job.
+- **C runtime (`native_tools`).** One additional step builds and runs the same
+  `native-core-tests` target in its own `$RUNNER_TEMP/native-core-coverage`
+  `BUILD_DIR`, with `--coverage` appended to the Makefile's own `CFLAGS` (read
+  back through `compiler-info`, so the measured build uses the default
+  configuration) and to `LDFLAGS`, then writes `coverage-c.xml` with
+  `python -m gcovr --xml coverage-c.xml --root . --filter src/`. The unprofiled
+  `make CC=gcc native-core-tests` gate still runs first and is unchanged. The
+  `CFLAGS`/`LDFLAGS` route instruments the targets that compile through those
+  variables; a target that hard-codes its own compile flags is not measured, so
+  the C number is a lower bound for `src/` rather than a complete statement about
+  it.
+
+Both reports are uploaded with `codecov/codecov-action` (pinned by commit SHA)
+under `flags: python` and `flags: c`, authenticated with the job's OIDC identity
+(`use_oidc: true`, which is why those two jobs -- and only those two -- declare
+`id-token: write` beside `contents: read`). `fail_ci_if_error: false` keeps an
+upload or Codecov outage from failing the job.
+
+**The numbers are informational.** [`codecov.yml`](../codecov.yml) marks the
+project and patch status checks `informational: true`, so neither can block a
+merge, and sets `carryforward: true` for both flags, so a run that measures only
+one surface keeps the other flag's last report. The OpenSSF Best Practices
+Silver criterion "statement coverage >= 80%" is the target these numbers are
+watched against; it is not a gate, and promoting either status to a required
+check is a separate maintainer decision. `coverage` and `gcovr` are installed
+from `tools/requirements-lock.txt` with `--require-hashes`, like every other
+Python tool in these jobs. A change to `codecov.yml` matches no classifier
+predicate, so it fails closed to the full matrix like any other unknown path.
+
 ## Classifier invariants
 
 `tools/ci_paths.py` decides which gates run. The only failure that matters is a

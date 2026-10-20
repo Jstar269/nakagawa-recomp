@@ -35,6 +35,15 @@ select = [
 "tools/codegen.py" = ["F541", "B023"]
 "fixtures/**" = ["F401", "F841", "B007"]
 
+[tool.coverage.run]
+# Coverage describes the Python tooling, not its tests: a test module is what
+# exercises the measured code, so including it would only ever inflate the number.
+# The measured surface is the shard's own module list under --source=tools
+# (.github/workflows/ci.yml, python_tools); test modules stay outside the report.
+omit = [
+    "tools/test_*.py",
+]
+
 [tool.mypy]
 python_version = "3.14"
 warn_return_any = true
