@@ -96,6 +96,14 @@ subject to Section 2.
 - Write implementation from specifications, public architecture references, and
   project-owned measurements. Never copy or line-by-line translate emulator or other
   upstream source (PPSSPP, JPCSP, sal063, or similar) into a new path.
+- Exception, maintainer-approved 2026-10-20: FFmpeg codec subsets (the `src/rt/atrac3p/`
+  pattern) and uofw (github.com/uofw/uofw, MIT) may be vendored or adapted when they work
+  better than a rewrite. Each file must be pinned to an exact upstream revision, listed in a
+  `PROVENANCE.md` manifest as byte-identical or LOCAL DELTA, keep its licence notice, and get
+  a trusted record and admission like any new path. Behaviour claims still need tests, and
+  PSP evidence where hardware semantics are claimed. Emulator source stays excluded.
+- Do not rewrite working inherited code only to make it original: replace it when evidence shows
+  it is wrong or an LLE path makes it unnecessary (`docs/INDEPENDENCE_CAMPAIGN.md`, re-scope).
 - Do not call code "clean-room" or "independent" unless its trusted record supports that
   label (see `docs/provenance/INDEPENDENCE_MODEL.md`); prefer "project-authored".
 - Adding or removing a public path changes `assets/public_source_profile.json`; hosted

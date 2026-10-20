@@ -304,7 +304,7 @@
       "evidence": {
         "source": "trusted detailed implementation ledger"
       },
-      "sha256": "8e4c9085dfa3a91c921612f411f4b86984d00632b6ec80410ac0dc4863b915d1"
+      "sha256": "23ad1d04aabe806edbe898d0f2860a235d893f7af3cf61cb5d4206e9c8e8ee8c"
     },
     {
       "path": "CLAUDE.md",
@@ -1192,7 +1192,7 @@
       "evidence": {
         "source": "trusted detailed implementation ledger"
       },
-      "sha256": "b5fc6784b0c29139601d5b9a4f23d4a2967224d979d8a6255715013434ee79ec"
+      "sha256": "91641228560ea53bcac6d298762a70025c2152f7ac449729834e95e124518015"
     },
     {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",
