@@ -186,7 +186,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "73cad7c1378398677e4892de4f4728655e2db48945ac2778ce17a3a75a6629c2"
+      "sha256": "4e39e582c61650d1af4cedece2688640f6ae5d40197700fed18be0e11ce13e5e"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -9916,7 +9916,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8d3da21d96538af1e60a8e77746603d7b1cfa950d7b721fc1ac18ac8ab72337f"
+      "sha256": "24cbb7cabc2361dae7ad6073951f60d8390c0ce569999ef86b7f868a5f15754c"
     },
     {
       "path": "tools/test_public_export.py",
@@ -10061,7 +10061,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d7d1124f0c4f72f3e2a054971dc480545a037183f551cc58c612fca505d40e9c"
+      "sha256": "ba0c113f355f453bb0b86f9eb02d7b216b3010df7ed2b215bc9b5a4f91687f48"
     },
     {
       "path": "tools/test_sbom_binding.py",
