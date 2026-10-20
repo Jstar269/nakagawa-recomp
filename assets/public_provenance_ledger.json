@@ -3652,7 +3652,7 @@
         "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "f02463179eaba5359a52bc0cc84c6dbbae095ddd4d5754f3532c11e78a1b2273"
+      "sha256": "88111a7a5ecefe8419284f6afad4f56a49fb363316d339f81b9eeb628c7dbcfc"
     },
     {
       "path": "src/rt/atrac3p/atrac3p_api.c",
@@ -3665,7 +3665,7 @@
         "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2e1c5266486e7cc4f07153ca5881d11d6888d43bbd37370f959616c8eff79f62"
+      "sha256": "de5ceb47ce8d1382241046610fb0b6332a5ac8dfe4d0e9e5b9cbfe902a8a1036"
     },
     {
       "path": "src/rt/atrac3p/atrac3p_api.h",
@@ -5379,7 +5379,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "add1cb3850de3ab659ea5a35e1a5dd960402d1f21d572c0e41727aba97df30fe"
+      "sha256": "003c6f6cd21f268420ae36952ef0589eec8a957330b054bfa9894d20c03c65fa"
     },
     {
       "path": "src/rt/intr_conformance.h",
