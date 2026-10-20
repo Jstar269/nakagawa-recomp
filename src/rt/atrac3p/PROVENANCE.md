@@ -248,7 +248,8 @@ contract:
 - 2026-10-20 AT3 import verification: all 50 imported manifest blob SHAs
   match the n4.4 tree; the 46 byte-identical rows match their local Git blob
   hashes, and all four `LOCAL DELTA` rows differ from their upstream blobs as
-  documented. This includes `atrac3.c`, `atrac3data.h`, and `bytestream.h`.
+  documented. Of the AT3 additions, `atrac3.c` is a `LOCAL DELTA` row and
+  `atrac3data.h` and `bytestream.h` are byte-identical rows.
 - The subset (16 translation units: `atrac3p_api.c` + 15 imported `.c`
   files) compiles with MinGW-w64 gcc `-std=c11 -O1 -Wall -Wextra` and the
   smoke driver passes create/garbage/decode/reset/flush/destroy checks.
