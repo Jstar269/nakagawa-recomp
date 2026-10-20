@@ -367,6 +367,52 @@ class PerfSummaryDiffTests(unittest.TestCase):
             for row in rows[1:]:
                 self.assertEqual(len(header), len(row))
 
+    def test_gpu_replay_baseline_is_seeded_when_the_source_registers_after_init(self):
+        compiler = shutil.which("gcc")
+        if compiler is None:
+            self.skipTest("gcc is not available")
+        with scratch_dir.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "gpu_replay_late_harness.c"
+            executable = root / ("gpu_replay_late_harness.exe" if os.name == "nt" else "gpu_replay_late_harness")
+            # The CSV is opened by init, but the backend registers its reader afterwards (as
+            # gegpu_init does). The 100 queued before registration must not show up as this
+            # run's submits: registration seeds the baseline, so only the 7 after it count.
+            source.write_text(
+                "#include \"perf.h\"\n"
+                "static uint64_t counts[SR_PERF_GPU_REPLAY_COUNT];\n"
+                "static void snapshot(uint64_t out[SR_PERF_GPU_REPLAY_COUNT]) {\n"
+                "    for (unsigned i = 0; i < SR_PERF_GPU_REPLAY_COUNT; i++) out[i] = counts[i];\n"
+                "}\n"
+                "int main(void) {\n"
+                "    counts[SR_PERF_GPU_QUEUE_SUBMITS] = 100;\n"
+                "    sr_perf_init();\n"
+                "    sr_perf_set_gpu_replay_source(snapshot);\n"
+                "    counts[SR_PERF_GPU_QUEUE_SUBMITS] = 107;\n"
+                "    sr_perf_shutdown();\n"
+                "    return 0;\n"
+                "}\n",
+                encoding="ascii",
+            )
+            compile_result = subprocess.run(
+                [compiler, "-std=c11", "-I", str(ROOT / "src" / "rt"),
+                 str(source), str(ROOT / "src" / "rt" / "perf.c"), "-o", str(executable)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+            out_csv = root / "late.csv"
+            env = os.environ.copy()
+            env.update({"SR_PERF": "1", "SR_PERF_CSV": str(out_csv)})
+            run = subprocess.run([str(executable)], env=env, capture_output=True, text=True,
+                                 check=False)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            with out_csv.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.reader(handle))
+            column = rows[0].index("gpu_replay_queue_submits")
+            self.assertEqual(int(rows[-1][column]), 7)
+
 
 if __name__ == "__main__":
     unittest.main()
