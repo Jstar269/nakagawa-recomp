@@ -177,6 +177,7 @@ Sizes at base.
 | G13 | Host shell `src/rt/driver.c` (558) + `funcdiff.c` (157) + `gui.c` (349) + `osk_win.c` (96); its project-authored in-window replacement `src/rt/osk_overlay.c`, `src/rt/osk_overlay.h`, `src/rt/osk_overlay_paint.c`, `src/rt/osk_overlay_paint.h`, and their selftests `src/rt/osk_overlay_selftest.c`, `src/rt/osk_overlay_paint_selftest.c` (added 2026-10-09; not inherited); VFPU fuzz harness `src/rt/vfpu_fuzz.c` (350) | sal063 | 1,510 | Final link of every title executable; verification flows (funcdiff, fuzz) | `test_native_driver_hardening.py`, `test_ref_run_elf_hardening.py`, production-smoke (real driver + registration table), fuzz harness runs | Low: host glue with no PSP semantics; ideal parallel clean-room filler |
 | G14 | PGD/amctrl (excluded `src/rt/pgd.c`/`.h`, `tools/pgd_decrypt.py` + pgd tests) | excluded pending qualified provenance/distribution review | UNKNOWN in public tree | `pgd_api.h` seam (`pgd_unavailable.c` linked) | Excluded tests only (`test_pgd_*`, harness — all excluded) | None today: stays excluded; see §4 disposition (c) |
 | G15 | Behaviour-hardening (no rewrite): `evf.h` (64), `fp_convert.h` (360), `guest_interp.c`/`.h` (704) | project-authored expression, PPSSPP-consulted (tiers R/R/S) | 1,128 | `hle.c` event-flag + float paths; AOT-gap execution floor; cosim lane | `evf_selftest` + `test_evf_c.py`, `fp-convert-selftest` + `test_fp_scalar_mutations.py`, cosim suite + `test_cosim_fixture.py` | Medium: `fp_convert` is nearest to independent (PSPAutotests pin + MIPS32 rationale already in its header); `guest_interp` blocked on the maintainer attestation item (§1.3) |
+| G16 | Plain AT3 decoder subset `src/rt/atrac3p/libavcodec/atrac3.c` + `src/rt/atrac3p/libavcodec/atrac3data.h` + `src/rt/atrac3p/libavcodec/bytestream.h` | FFmpeg n4.4, LGPL-2.1-or-later (exact pin and file deltas in `src/rt/atrac3p/PROVENANCE.md`) | 1,360 | `hle.c` sceAtrac codecType `0x1001` bridge | `atrac3p-bridge-selftest`, `hle-thread-selftest` (synthetic RIFF/header and decode bookkeeping) | Low: host decoder at the explicit sceAtrac boundary; first-frame `fact` delay remains `NOT_MEASURED` pending a PSP measurement |
 
 ## 3. Third-party dependencies — keep, with reasons
 
@@ -297,6 +298,11 @@ replacement by an LLE path that makes the component unnecessary ·
   permits the use and recording hardware corroboration where Loop A/B
   covers it. `guest_interp`: maintainer-only attestation promotion (§1.3);
   engineering work is already project-authored.
+- **G16 plain AT3 decoder → evidence, not rewrite.** The FFmpeg n4.4 LGPL
+  subset is used under the 2026-10-20 import decision; keep the HLE and bridge
+  adapters project-authored. Continue validating codec setup and decode
+  bookkeeping with synthetic tests. The first-frame `fact` delay remains
+  `NOT_MEASURED`; claim hardware-equivalent trimming only after a PSP result.
 
 ## 5. Clean-room protocol for AI-agent work
 
