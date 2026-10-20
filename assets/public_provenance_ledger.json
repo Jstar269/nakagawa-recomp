@@ -1531,7 +1531,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "340bbfaea3de6f173ced4ebf3ac522123d94c970966c7827bd5b1571330d8cdb"
+      "sha256": "9b27ca2bf055ecee76d3efc69fd37d0f28886e3959af8369a8f5a1cba7dbf07d"
     },
     {
       "path": "docs/archive/IMPORT_AUDIT.md",
@@ -6523,7 +6523,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "72fc86a497de786713af76308e8a859806b68d707318d2ddb00005295905d50b"
+      "sha256": "fbb518995b69852ae08c273146621e7f38ad8043adedacd2dc0e7143cd7d81ee"
     },
     {
       "path": "tools/betterleaks_canary.py",
@@ -8213,7 +8213,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f2538f6b5dd239331de903d8b23972cd43290cee8bfcb6cd50d1b4b031529a8c"
+      "sha256": "ec82045c7b2ad43aee12e206ee70ee640c995d0f9fc972a34aaa40b93c3a37a0"
     },
     {
       "path": "tools/test_boot_gate.py",
