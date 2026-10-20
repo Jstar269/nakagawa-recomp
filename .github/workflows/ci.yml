@@ -104,10 +104,41 @@ jobs:
         with:
           python-version: "3.14"
           cache: pip
-          cache-dependency-path: .pre-commit-config.yaml
+          cache-dependency-path: |
+            .pre-commit-config.yaml
+            .github/workflows/ci.yml
 
       - name: Install pre-commit
-        run: python -m pip install --disable-pip-version-check pre-commit==4.6.2
+        shell: bash
+        run: |
+          # Exact CPython 3.14 / Ubuntu 24.04 x86_64 bootstrap closure. The
+          # platform-specific PyYAML wheel hash fails closed if this runner changes.
+          cat > "$RUNNER_TEMP/pre-commit-requirements.txt" <<'LOCK'
+          cfgv==3.5.0 \
+              --hash=sha256:a8dc6b26ad22ff227d2634a65cb388215ce6cc96bbcc5cfde7641ae87e8dacc0
+          distlib==0.4.4 \
+              --hash=sha256:cf09d55b1e85a89576b036aeb71550bfd68320f3f21761ca329eadadad918638
+          filelock==4.2.4 \
+              --hash=sha256:301241438c57936ef93f4243a94f2559022268bfcf9b375a9a72eb0f8db8358e
+          identify==2.6.20 \
+              --hash=sha256:6a16b69b93187244e0548cbfd25b3e4a6f9a7a2ad784625c3bec2b8d27b81aaa
+          nodeenv==1.11.0 \
+              --hash=sha256:edaa16e6c14d7cf395d75d4bbd5a26390f4dc06501a33b4e76282b02cc688a25
+          packaging==26.3 \
+              --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+          platformdirs==4.13.5 \
+              --hash=sha256:53d3ec4280b815c1e0b02edad7f9ee8fda1ba9c0865dd9c2e6e63849ce82fc1e
+          pre-commit==4.6.2 \
+              --hash=sha256:e2dde9a75d3bce11bd3831c26d134df00a2803c1d818be6a0383c3dcda25dc4e
+          PyYAML==6.0.3 \
+              --hash=sha256:c458b6d084f9b935061bc36216e8a69a7e293a2f1e68bf956dcd9e6cbcd143f5
+          python-discovery==1.6.4 \
+              --hash=sha256:530179cc51a1816d512b15635b3dc931295ae12efb183783ad31190a5d425d2b
+          virtualenv==21.14.11 \
+              --hash=sha256:b319f8590a84e5de5f8f2c803ecd2237e9bc0ffa7c1e875e3169c107cecb7454
+          LOCK
+          python -m pip install --disable-pip-version-check --require-hashes \
+            -r "$RUNNER_TEMP/pre-commit-requirements.txt"
 
       - name: Run shared all-files checks
         run: pre-commit run --all-files --show-diff-on-failure
@@ -260,6 +291,8 @@ jobs:
         # versions equal.
         run: |
           python -m pip install --disable-pip-version-check --require-hashes -r tools/requirements-lock.txt
+          # Install the local checkout; --no-deps prevents pip from resolving it as
+          # an external package. Third-party tooling dependencies are in the lock above.
           python -m pip install --disable-pip-version-check --no-deps .
 
       - name: >-

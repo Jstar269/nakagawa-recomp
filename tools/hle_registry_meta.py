@@ -399,12 +399,36 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "Memory Stick devctl callback events unmodeled (#341)",
     },
+    "h_IoDopen": {
+        "status": "partial",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_umd_io_console_model",
+            "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-dopen-0000..0005)",
+        ],
+        "limitation": "the measured cells establish results and close outcomes for six fixed UMD/disc path calls only; directory contents/order, MS0 paths and general error precedence remain unmeasured (#341)",
+    },
+    "h_IoLseek": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-lseek and io-append)",
+        ],
+        "limitation": "PSP-IO-001 measures 64-bit SEEK_SET 32, SEEK_CUR -16, SEEK_END 0 and the end position after a 32-byte append on one host0 file; large offsets, out-of-range clamping, invalid whence, raw devices and error precedence remain unmeasured (#341)",
+    },
     "h_IoMkdir": {
         "status": "complete",
         "evidence": [
             "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
             "src/rt/hle.c:h_IoMkdir",
         ],
+    },
+    "h_IoOpen": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-open-create, io-write, io-read-verify, io-append, io-errors)",
+            "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)",
+            "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+        ],
+        "limitation": "measured coverage is one host0 file's create/write/read/append/missing-file path plus PSP-UMDIO-001's fixed open paths and flags; other flag combinations, general error precedence and raw UMD data operations remain unmeasured (#341)",
     },
     "h_IoRemove": {
         "status": "complete",

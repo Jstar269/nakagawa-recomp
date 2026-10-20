@@ -219,7 +219,7 @@
     "classification": "dedicated",
     "handler": "h_IoOpen",
     "name": "sceIoOpen",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x10f3bb61": {
     "classification": "dedicated",
@@ -537,7 +537,7 @@
     "classification": "dedicated",
     "handler": "h_IoLseek",
     "name": "sceIoLseek",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x289d82fe": {
     "classification": "dedicated",
@@ -2319,7 +2319,7 @@
     "classification": "dedicated",
     "handler": "h_IoDopen",
     "name": "sceIoDopen",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xb3a59970": {
     "classification": "dedicated",

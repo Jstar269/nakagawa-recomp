@@ -536,7 +536,7 @@ One console is one data point; see §11. Nothing here closes issue #70
   | `PSP-SMOKE-001` | apis `module_start`, `sceKernelExitGame` | (none) | MEASURED (`smoke`) |
   | `PSP-THREAD-EXIT-001` | `ED-R77`, `ED-R00`, `ED-RNEG`, `ED-RERR`, `ED-X77`, `ED-X00`, `ED-XNEG`, `ED-XERR`, `ED-D77`, `ED-D00`, `ED-DNEG`, `ED-DERR` | (none) | MEASURED (`thread-exit-delete`) |
   | `PSP-TEARDOWN-001` | (none) | `exitdelete-main` | CAPTURED only (not acceptance-eligible: `teardown-test`) |
-  | `PSP-IO-001` | apis `open`, `seek`, `async I/O`, `devctl`, `filesystem mutation` | (none) | MEASURED (`io-matrix`) |
+  | `PSP-IO-001` | cells `io-open-create`, `io-write`, `io-read-verify`, `io-lseek`, `io-append`, `io-errors`, `io-done`; APIs `sceIoOpen`, `sceIoWrite`, `sceIoRead`, `sceIoLseek`, `sceIoClose`, `sceIoRemove` | (none) | MEASURED (`io-matrix`; 7 records PASS). It does not measure `sceIoIoctl`, `sceIoRename`, async I/O, or devctl semantics. |
   | `PSP-DISPLAY-001` | row unchanged: cited from `docs/ARCHITECTURE.md#clocks` | `display-mask-duty` (still uncited) | re-run by campaign case `display-mask-duty`: records `display-mask-duty-33000us`, `display-mask-duty-66000us` PASS |
   | `PSP-DISPLAY-002` | `late-waitvblankstart-{2,6,10,14,20}eighths`, `late-waitvblank-{2,6,10,14,20}eighths`, `invblank-waitvblankstart`, `invblank-waitvblank`, `calibration` | (none) | MEASURED (`display-wait-late`) |
   | `PSP-DISPLAY-003` | `calibration`, `priority-control`, `priority-experiment` | (none) | MEASURED (`display-wait-priority`) |

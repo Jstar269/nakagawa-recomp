@@ -36,6 +36,11 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 
 ### Draft pull requests
 
+The OpenSSF Scorecard workflow (`.github/workflows/scorecards.yml`) runs weekly and on pushes to
+`main`. It uploads SARIF to GitHub code scanning; publishing results to scorecard.dev is disabled.
+Triage findings through the usual issue process. The workflow does not change branch-protection
+settings.
+
 A draft pull request now receives the same path-applicable substantive gates as
 a ready pull request. No `Ready for review` transition or manual
 `workflow_dispatch` is needed to discover whether the exact head passes.
@@ -53,6 +58,18 @@ protection. It runs with `always()`, accepts an intentionally skipped irrelevant
 job, and fails when a classifier-applicable job fails, is cancelled, or is
 otherwise incomplete. A failed hygiene/security job or public-export job is never
 hidden by the aggregate.
+
+### ClusterFuzzLite C fuzzing
+
+Pull requests run the pinned ClusterFuzzLite workflow in
+`.github/workflows/clusterfuzzlite.yml`. Its C target
+`tests/fuzzers/test_nk_json_fuzzer.c` calls the public `nk_json_parse` API
+with bounded synthetic bytes and exercises nesting at the `NK_JSON_MAX_DEPTH`
+boundary. The project configuration is `.clusterfuzzlite/project.yaml`; the
+Clang/libFuzzer build is defined by `.clusterfuzzlite/Dockerfile` and
+`.clusterfuzzlite/build.sh`. AddressSanitizer code-change fuzzing is capped
+at 60 seconds with a 4 KiB maximum input. The target does not use title files,
+retail inputs, or hardware.
 
 ### Hygiene beside the substantive gates
 

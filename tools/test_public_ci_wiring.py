@@ -727,6 +727,45 @@ class PublicExportJobTests(unittest.TestCase):
         self.assertIn("pre-commit run --all-files --show-diff-on-failure",
                       "\n".join(self.blocks["hygiene"]))
 
+    def test_pre_commit_bootstrap_uses_a_hash_locked_closure(self) -> None:
+        step = _ci_step(self.blocks["hygiene"], "Install pre-commit")
+        self.assertIsNotNone(step)
+        text = "\n".join(step or [])
+        self.assertIn('--require-hashes', text)
+        self.assertIn('pre-commit-requirements.txt', text)
+        match = re.search(r"<<'LOCK'\n(?P<lock>.*?)\n\s*LOCK", text, re.DOTALL)
+        self.assertIsNotNone(match)
+        lock = match.group("lock") if match is not None else ""
+        requirements = [line.strip().rstrip("\\").strip()
+                        for line in lock.splitlines() if "==" in line]
+        package_versions = {
+            line.split("==", 1)[0].lower(): line.split("==", 1)[1]
+            for line in requirements
+        }
+        self.assertEqual(package_versions, {
+            "cfgv": "3.5.0",
+            "distlib": "0.4.4",
+            "filelock": "4.2.4",
+            "identify": "2.6.20",
+            "nodeenv": "1.11.0",
+            "packaging": "26.3",
+            "platformdirs": "4.13.5",
+            "pre-commit": "4.6.2",
+            "pyyaml": "6.0.3",
+            "python-discovery": "1.6.4",
+            "virtualenv": "21.14.11",
+        })
+        self.assertEqual(lock.count("--hash=sha256:"), len(package_versions))
+
+    def test_no_deps_checkout_install_is_documented_as_local(self) -> None:
+        step = _ci_step(self.blocks["python_tools"], "Install Python tooling dependencies")
+        self.assertIsNotNone(step)
+        text = "\n".join(step or []).lower()
+        self.assertIn("--no-deps .", text)
+        self.assertIn("local checkout", text)
+        self.assertIn("resolving it as", text)
+        self.assertIn("an external package", text)
+
     def test_export_step_moved_out_of_hygiene_into_its_own_job(self) -> None:
         self.assertNotIn(self.EXPORT_STEP, self._step_names(self.blocks["hygiene"]))
         self.assertIn(self.EXPORT_STEP, self._step_names(self.blocks["public_export"]))
