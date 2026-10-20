@@ -377,7 +377,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "db94efe9267e2545b02ffe1b1894fc9b334f7d89c3b529d1e453f58860051752"
+      "sha256": "3c4cfe07d7d701b34e5d932d5cac15e7437bed8c8afde78498d0bebab373ffbd"
     },
     {
       "path": "NOTICE.md",
@@ -385,7 +385,7 @@
       "evidence": {
         "source": "trusted detailed implementation ledger"
       },
-      "sha256": "dbaaebeac2fb18cf3437242887d89f37828fc31c412620c6146343d241e33134"
+      "sha256": "cabdd56779a168258d11671cf623d26543689d608f2551deff1b0a704db97a82"
     },
     {
       "path": "PUBLIC_EXPORT.json",
@@ -1192,7 +1192,7 @@
       "evidence": {
         "source": "trusted detailed implementation ledger"
       },
-      "sha256": "91641228560ea53bcac6d298762a70025c2152f7ac449729834e95e124518015"
+      "sha256": "74c79220b015927268211aea7dd9e14f07b02c193d2a0e628ed21cbf4381b90e"
     },
     {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",
@@ -3534,7 +3534,7 @@
         "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "072e5d11fbb60a1c7d5929f171d6b35cd4836cb87ab3b20c5d1d966ad3b84186"
+      "sha256": "e36954f9512fe11d9c91a2d0a3657692c75d4d2fbda269f749857a626dbb2b76"
     },
     {
       "path": "src/rt/atrac3p/atrac3p_api.c",
@@ -3547,7 +3547,7 @@
         "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "4a450999df43f19c8b9e897f6b19f199374895b0d2961d180d611f30452c2198"
+      "sha256": "2e1c5266486e7cc4f07153ca5881d11d6888d43bbd37370f959616c8eff79f62"
     },
     {
       "path": "src/rt/atrac3p/atrac3p_api.h",
@@ -3560,7 +3560,7 @@
         "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0b6bf8175f4cf050ed0508768c05a252cb0ef3c5d67965a2f01e41eb41206cbe"
+      "sha256": "6c6db460b9cc8f65223b4bb9c8b5e511a7b0e7a863dd0f181d33496bd5ee5450"
     },
     {
       "path": "src/rt/atrac3p/libavcodec/atrac.c",
@@ -3690,7 +3690,7 @@
         "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "6d989bddcc7e167867cc80999aff6ee065c98c758646a16b915de0d511546982"
+      "sha256": "17a449c0dc3aa92436d0aeb9fb00e846ac2bd4536eb5b36970970a72b5b08341"
     },
     {
       "path": "src/rt/atrac3p/libavcodec/avfft.h",
@@ -4339,7 +4339,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2efd626dff5283aba10fac6d8382e231757da04d98138dec89fed028559a450f"
+      "sha256": "5da9790a53f7780123a86f08a69edb808352af201005492c1ff191aeb35bd32f"
     },
     {
       "path": "src/rt/atrac3p_bridge.h",
@@ -4351,7 +4351,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5c6b28fae047032b627731975e9ad1dcd3d6c623030ad431a634c06db6dec699"
+      "sha256": "51c3eefcb8f92d866b743bbe8c9466d22e4452cde7fe67da5c0bfc75b6dfafaa"
     },
     {
       "path": "src/rt/atrac3p_bridge_selftest.c",
@@ -5223,7 +5223,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "3bf6a0a4f643543902871cc0f8dd5710a5c1349e9948855e2250724aaa5ff1e9"
+      "sha256": "403e0c85dfa024fff6182fcd86c8c1fb6435acdb1e538be5bcce4584da08dfb8"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5261,7 +5261,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "198605a3146a7668114683761955ec18efe9f830e60340a2a0e13019d4759b1e"
+      "sha256": "aa46dec8dc4f9e0fcd99b85250e21516ad3ccae6b1eda1770ffafba8b17c0457"
     },
     {
       "path": "src/rt/intr_conformance.h",
@@ -10875,15 +10875,23 @@
       "sha256": "7869f7a49433ed9a604bd810fc169003949eac70a600256753afbfab844695ef"
     }
   ],
-  "admission": {
-    "workflow": "admit-new-reviewed",
-    "trusted_tree": "ecf5ed9d8d668d3140f5210ccb153ae900106d59",
-    "candidate_tree": "b13a896e07df27e246d756d1b0598aa5f64b62b2",
-    "admitted_paths": [
-      "src/rt/atrac3p/libavcodec/atrac3.c",
-      "src/rt/atrac3p/libavcodec/atrac3data.h",
-      "src/rt/atrac3p/libavcodec/bytestream.h"
-    ],
-    "authority_sha256": "2f15b610e37dc035397a80e288fddb784fe94f8087f32574a945f81450ccc779"
+  "refresh": {
+    "workflow": "refresh-reviewed",
+    "trusted_tree": "0d455d3629218a96ca744e816d1aef074f425b87",
+    "candidate_tree": "5133d0085a8de943a7ad57a06e80557162987ba0",
+    "refreshed_paths": [
+      "AGENTS.md",
+      "Makefile",
+      "NOTICE.md",
+      "docs/INDEPENDENCE_CAMPAIGN.md",
+      "src/rt/atrac3p/PROVENANCE.md",
+      "src/rt/atrac3p/atrac3p_api.c",
+      "src/rt/atrac3p/atrac3p_api.h",
+      "src/rt/atrac3p/libavcodec/avcodec.h",
+      "src/rt/atrac3p_bridge.c",
+      "src/rt/atrac3p_bridge.h",
+      "src/rt/hle.c",
+      "src/rt/hle_thread_selftest.c"
+    ]
   }
 }
