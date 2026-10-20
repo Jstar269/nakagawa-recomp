@@ -59,3 +59,17 @@ Out of scope:
 
 This research software processes untrusted binary formats and is not sandboxed. Run it only on files
 you are authorized to use.
+
+## Legacy PSP cryptography
+
+To read the PSP's own encrypted executables and modules, the decryption code in `src/core/` (`nk_psp_kirk.c`,
+`nk_psp_aes.c`, `nk_psp_sha1.c`, `nk_psp_ec.c`) implements the algorithms those formats require: AES-128, SHA-1 and
+ECDSA on a 160-bit curve. These are below current recommendations, and no stronger alternative exists, because the
+formats are fixed by existing PSP software.
+
+- **Risk.** A crafted file could pass these format checks. They are compatibility checks, not a security boundary,
+  so passing them grants nothing.
+- **Mitigations.** No protection the project offers depends on these algorithms; its own integrity checks (packages,
+  fonts, provenance) use SHA-256. Every file is treated as untrusted input by the bounds-checked, fuzzed parsers listed
+  in [`docs/PARSER_SAFETY_INVENTORY.json`](docs/PARSER_SAFETY_INVENTORY.json), whatever these checks report. Keys are
+  read only from your own local key file and never leave your machine.
