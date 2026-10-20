@@ -300,7 +300,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "bdf2397aea7a588e475187226581de4a447446c6d2ded485c9d966cfc06e7339"
+      "sha256": "83e9bf1f20ca05fb1430283bd2efea43277b0e913bbfce0b6377cd4b1c13f70c"
     },
     {
       "path": ".pre-commit-config.yaml",
@@ -426,7 +426,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b0a76a14095e499e0cefcac530732ab424fd52606b88dd2959b0f8caea779142"
+      "sha256": "e04e9e3c04d199d1691303da9ca609cb1b9a1ec09fd09c25f49d88836d07cde4"
     },
     {
       "path": "REVIEW.md",
@@ -9976,7 +9976,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4169bb28c9ebe3a8b657faf72b8e35f339125aea2ead56ed92663897fa23aa64"
+      "sha256": "e89edafe75facafd1c4d9ee1dc8594ad45accece8e7c86eeac2a9f4a919a2a19"
     },
     {
       "path": "tools/test_recomp_helper_inventory.py",
