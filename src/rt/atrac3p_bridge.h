@@ -2,12 +2,11 @@
 // Copyright (C) 2026 the Nakagawa Recomp authors
 
 /*
- * atrac3p_bridge.h — Nakagawa-authored PSP ATRAC3+ decode bridge (PR-B).
+ * atrac3p_bridge.h — Nakagawa-authored PSP ATRAC3+ and plain-AT3 bridges.
  *
- * Owns one standalone ATRAC3+ decoder instance (src/rt/atrac3p/, PR-A) and
- * exposes the host-side decode contract the HLE ring model (src/rt/hle.c,
- * #283) feeds: one blockAlign-sized frame in, interleaved s16 PCM out with
- * the nb_samples=2048 PSP frame contract.
+ * Owns distinct standalone decoder instances for ATRAC3+ and plain AT3
+ * (src/rt/atrac3p/, FFmpeg n4.4), and exposes each codec's frame contract to
+ * the HLE ring model: blockAlign-sized input and interleaved s16 output.
  *
  * This file is Nakagawa-authored and is not a PPSSPP code translation.
  * It is the thin integration layer over the project's own FFmpeg n4.4
@@ -15,10 +14,9 @@
  * for the #286 decision record. The decoder itself is byte-exact FFmpeg
  * n4.4 (LGPL-2.1-or-later, see src/rt/atrac3p/PROVENANCE.md).
  *
- * Failure contract (no fake PCM): every decode either succeeds and reports
- * ATRAC3P_FRAME_SAMPLES samples, or returns a negative AVERROR_* code with
- * *samples_out left at 0. A caller can never mistake a failed frame for a
- * complete one, and no silent-success path exists.
+ * Failure contract (no fake PCM): every decode either succeeds with its
+ * codec-specific sample count, or returns a negative AVERROR_* code with
+ * *samples_out left at 0.
  *
  * Thread-safety: distinct instances are independent; a single instance is
  * single-threaded by contract (same as the PR-A API).
@@ -72,5 +70,15 @@ int atrac3p_bridge_reset(Atrac3pBridge *b);
  * Release the instance. Safe to call with NULL.
  */
 void atrac3p_bridge_destroy(Atrac3pBridge *b);
+
+/* Plain ATRAC3 has its own RIFF fmt extension and 1024-sample frame contract;
+ * it must not be routed through the ATRAC3+ decoder above. */
+typedef struct Atrac3Bridge Atrac3Bridge;
+int atrac3_bridge_create(int channels, int block_align,
+                         const uint8_t *fmt_extradata, Atrac3Bridge **out);
+int atrac3_bridge_decode(Atrac3Bridge *b, const uint8_t *frame, int frame_size,
+                         int16_t *pcm_out, int *samples_out);
+int atrac3_bridge_reset(Atrac3Bridge *b);
+void atrac3_bridge_destroy(Atrac3Bridge *b);
 
 #endif /* SR_ATRAC3P_BRIDGE_H */

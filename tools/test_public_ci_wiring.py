@@ -412,6 +412,7 @@ _WINDOWS_SERIAL_GATES = {
     "Stage and run production smoke outside its build directory": "VULKAN_SDK=/ucrt64 production-smoke-staged",
     "Build and run the full platform ladder": "VULKAN_SDK=/ucrt64 platform-ladder",
     "Build and run profile-zero production routes": "VULKAN_SDK=/ucrt64 profile-zero-e2e",
+    "Fetch the profile-zero fixture built from source": "name: profile-zero-fixture",
     "Build and run display presentation smoke": "VULKAN_SDK=/ucrt64 display-smoke-run",
     "Build and run AOT/interpreter cosimulation gate": "VULKAN_SDK=/ucrt64 cosim-selftest",
     "Prove the cosimulation comparator is load-bearing": "VULKAN_SDK=/ucrt64 cosim-mutants",
@@ -707,6 +708,45 @@ class PublicExportJobTests(unittest.TestCase):
         self.assertIn("pre-commit run --all-files --show-diff-on-failure",
                       "\n".join(self.blocks["hygiene"]))
 
+    def test_pre_commit_bootstrap_uses_a_hash_locked_closure(self) -> None:
+        step = _ci_step(self.blocks["hygiene"], "Install pre-commit")
+        self.assertIsNotNone(step)
+        text = "\n".join(step or [])
+        self.assertIn('--require-hashes', text)
+        self.assertIn('pre-commit-requirements.txt', text)
+        match = re.search(r"<<'LOCK'\n(?P<lock>.*?)\n\s*LOCK", text, re.DOTALL)
+        self.assertIsNotNone(match)
+        lock = match.group("lock") if match is not None else ""
+        requirements = [line.strip().rstrip("\\").strip()
+                        for line in lock.splitlines() if "==" in line]
+        package_versions = {
+            line.split("==", 1)[0].lower(): line.split("==", 1)[1]
+            for line in requirements
+        }
+        self.assertEqual(package_versions, {
+            "cfgv": "3.5.0",
+            "distlib": "0.4.4",
+            "filelock": "4.2.4",
+            "identify": "2.6.20",
+            "nodeenv": "1.11.0",
+            "packaging": "26.3",
+            "platformdirs": "4.13.5",
+            "pre-commit": "4.6.2",
+            "pyyaml": "6.0.3",
+            "python-discovery": "1.6.4",
+            "virtualenv": "21.14.11",
+        })
+        self.assertEqual(lock.count("--hash=sha256:"), len(package_versions))
+
+    def test_python_tools_step_installs_only_the_hashed_lock(self) -> None:
+        step = _ci_step(self.blocks["python_tools"], "Install Python tooling dependencies")
+        self.assertIsNotNone(step)
+        installs = [line for line in step or [] if "pip install" in line]
+        self.assertEqual(len(installs), 1)
+        self.assertIn("--require-hashes -r tools/requirements-lock.txt", installs[0])
+        # Building the checkout would pull an unhashed setuptools through build isolation.
+        self.assertNotIn("--no-deps .", "\n".join(step or []))
+
     def test_export_step_moved_out_of_hygiene_into_its_own_job(self) -> None:
         self.assertNotIn(self.EXPORT_STEP, self._step_names(self.blocks["hygiene"]))
         self.assertIn(self.EXPORT_STEP, self._step_names(self.blocks["public_export"]))
@@ -739,12 +779,27 @@ class PublicExportJobTests(unittest.TestCase):
         for job in ("python_tools", "native_tools", "windows_runtime"):
             with self.subTest(job=job):
                 block = "\n".join(self.blocks[job])
-                self.assertIn("needs: [classify, public_export]", block)
+                self.assertRegex(
+                    block, r"(?m)^    needs: \[classify, public_export(, profile_zero_fixture)?\]$"
+                )
                 needs_line = re.search(r"(?m)^    needs: (.+)$", block)
                 self.assertIsNotNone(needs_line, f"{job} declares no needs line")
                 self.assertNotIn("hygiene", needs_line.group(1))
                 self.assertNotIn("needs.hygiene.result", block)
                 self.assertIn("needs.public_export.result == 'success'", block)
+
+    def test_profile_zero_fixture_is_built_from_source_for_its_consumers(self) -> None:
+        """#1100: the fixture is built and digest-checked in CI, never committed."""
+        fixture = "\n".join(self.blocks["profile_zero_fixture"])
+        self.assertIn("sha256sum --check --strict SHA256SUMS", fixture)
+        self.assertIn("name: profile-zero-fixture", fixture)
+        self.assertIn("if-no-files-found: error", fixture)
+        for job in ("python_tools", "windows_runtime"):
+            with self.subTest(job=job):
+                block = "\n".join(self.blocks[job])
+                self.assertIn("needs.profile_zero_fixture.result == 'success'", block)
+                self.assertIn("name: profile-zero-fixture", block)
+                self.assertIn("path: fixtures/profile_zero/prebuilt", block)
 
     def test_ci_required_still_requires_hygiene_and_export(self) -> None:
         required = "\n".join(self.blocks["ci_required"])

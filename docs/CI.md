@@ -36,6 +36,11 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 
 ### Draft pull requests
 
+The OpenSSF Scorecard workflow (`.github/workflows/scorecards.yml`) runs weekly and on pushes to
+`main`. It uploads SARIF to GitHub code scanning; publishing results to scorecard.dev is disabled.
+Triage findings through the usual issue process. The workflow does not change branch-protection
+settings.
+
 A draft pull request now receives the same path-applicable substantive gates as
 a ready pull request. No `Ready for review` transition or manual
 `workflow_dispatch` is needed to discover whether the exact head passes.
@@ -53,6 +58,18 @@ protection. It runs with `always()`, accepts an intentionally skipped irrelevant
 job, and fails when a classifier-applicable job fails, is cancelled, or is
 otherwise incomplete. A failed hygiene/security job or public-export job is never
 hidden by the aggregate.
+
+### ClusterFuzzLite C fuzzing
+
+Pull requests run the pinned ClusterFuzzLite workflow in
+`.github/workflows/clusterfuzzlite.yml`. Its C target
+`tests/fuzzers/test_nk_json_fuzzer.c` calls the public `nk_json_parse` API
+with bounded synthetic bytes and exercises nesting at the `NK_JSON_MAX_DEPTH`
+boundary. The project configuration is `.clusterfuzzlite/project.yaml`; the
+Clang/libFuzzer build is defined by `.clusterfuzzlite/Dockerfile` and
+`.clusterfuzzlite/build.sh`. AddressSanitizer code-change fuzzing is capped
+at 60 seconds with a 4 KiB maximum input. The target does not use title files,
+retail inputs, or hardware.
 
 ### Hygiene beside the substantive gates
 
@@ -610,12 +627,12 @@ developer runs locally, without private inputs:
   through the headless production runtime, and checks all seven named
   guest-service cases for each manifest. It runs in the `routes` part of the
   25-minute `windows_runtime` job and took about 123 seconds locally for both package
-  builds and runtime launches. The guest bytes are the committed
-  `fixtures/profile_zero/prebuilt` fixture, built by PSPDEV/PSPSDK from the
-  fixture's own `main.c` and `Makefile` (see `fixtures/profile_zero/README.md`),
-  so hosted runners with no PSPDEV execute the whole route instead of
-  reporting a toolchain `SKIP`; where PSPDEV is installed, the gate rebuilds
-  the fixture first and fails if any byte differs from `SHA256SUMS`. Public
+  builds and runtime launches. The guest bytes are built from the fixture's own
+  `main.c` and `Makefile` by the `profile_zero_fixture` job (pinned PSPDEV, checked
+  against the committed `fixtures/profile_zero/prebuilt/SHA256SUMS`) and downloaded
+  as an artifact, so the repository stores no generated executable (#1100) and the
+  Windows runner still executes the whole route; where PSPDEV is installed, the
+  gate rebuilds the fixture itself and fails if any byte differs from `SHA256SUMS`. Public
   runtime link dependencies remain external; when they are unavailable, the
   test reports an explicit `SKIP` with the printed missing-dependency reason.
   The job also runs the production smoke with its executable staged into a fresh

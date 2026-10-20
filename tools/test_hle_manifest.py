@@ -756,6 +756,120 @@ class LiveManifestTests(unittest.TestCase):
         self.assertIn("8%", limitation)
         self.assertIn("precise rate", limitation)
 
+    def test_route_a_io_batch_eight_has_measured_cells_and_named_limits(self) -> None:
+        expected = {
+            0xB29DDF9C: (
+                "h_IoDopen",
+                [
+                    "src/rt/hle_thread_selftest.c:test_umd_io_console_model",
+                    "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-dopen-0000..0005)",
+                ],
+            ),
+            0x27EB27B8: (
+                "h_IoLseek",
+                [
+                    "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-lseek and io-append)",
+                ],
+            ),
+            0x109F50BC: (
+                "h_IoOpen",
+                [
+                    "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-open-create, io-write, io-read-verify, io-append, io-errors)",
+                    "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)",
+                    "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+                ],
+            ),
+        }
+        for nid, (handler, evidence) in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+                self.assertEqual(meta.HANDLER_EVIDENCE[handler], evidence)
+                self.assertIn("measur", meta.HANDLER_LIMITATIONS[handler].lower())
+
+        # PSP-IO-001's current source matrix has no Ioctl or Rename call. Keep
+        # these handlers unreviewed until a direct hardware cell covers them.
+        for nid, handler in ((0x63632449, "h_IoIoctl"), (0x779103A0, "h_IoRename")):
+            with self.subTest(nid=f"0x{nid:08x}"):
+                self.assertEqual(self.regs[nid]["handler"], handler)
+                self.assertEqual(self.regs[nid]["classification"], "dedicated")
+                self.assertEqual(self.regs[nid]["status"], "unreviewed")
+                self.assertNotIn(handler, meta.HANDLER_METADATA)
+
+    def test_route_a_io_batch_nine_has_measured_cells_and_named_limits(self) -> None:
+        expected = {
+            0x810C4BC3: (
+                "h_IoClose",
+                [
+                    "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-write)",
+                    "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)",
+                    "src/rt/hle_thread_selftest.c:test_umd_io_console_model",
+                    "src/rt/hle_thread_selftest.c:test_io_async_and_path_imports",
+                ],
+            ),
+            0xEB092469: (
+                "h_IoDclose",
+                [
+                    "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-dopen-0004 and io-dopen-0005 close results)",
+                    "src/rt/hle_thread_selftest.c:test_umd_io_console_model",
+                ],
+            ),
+            0x6A638D83: (
+                "h_IoRead",
+                [
+                    "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-read-verify and io-errors)",
+                    "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+                ],
+            ),
+            0x42EC03AC: (
+                "h_IoWrite",
+                [
+                    "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-write and io-append)",
+                    "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+                ],
+            ),
+        }
+        for nid, (handler, evidence) in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+                self.assertEqual(meta.HANDLER_EVIDENCE[handler], evidence)
+                self.assertIn("measur", meta.HANDLER_LIMITATIONS[handler].lower())
+                self._assert_cited_oracle_cells_exist(evidence)
+
+    def _assert_cited_oracle_cells_exist(self, evidence: list[str]) -> None:
+        """Check batch 9's `(PSP-IO-001|PSP-UMDIO-001: io-... cells)` citations.
+
+Scoped to the four IoFileMgr handlers of batch 9 on purpose: the grammar is
+`(<oracle id>: <io- cell names or io-x-NNNN..NNNN ranges>)`, and the ids come
+from `tools/psp_oracle/manifest.json`. Any citation naming a PSP id that does
+not parse in that shape fails instead of being skipped. Other handlers' older
+citations (PSP-B1-01, no-colon forms) need their own check.
+"""
+        document = json.loads(hle_manifest.PSP_ORACLE_MANIFEST.read_text(encoding="utf-8"))
+        cells_by_id = {
+            row["id"]: set(row.get("evidence_cases", [])) | set(row.get("case_ids", []))
+            for row in document["tests"]
+        }
+        for citation in evidence:
+            if "PSP-" not in citation:
+                continue  # a selftest citation, not a hardware cell
+            match = re.search(r"\((PSP-[A-Z0-9-]+): ([^)]*)\)", citation)
+            self.assertIsNotNone(match, f"unparsed hardware citation: {citation}")
+            oracle_id, cells_text = match.groups()
+            self.assertIn(oracle_id, cells_by_id, citation)
+            cited: set[str] = set()
+            for prefix, first, last in re.findall(r"(io-[a-z]+-)(\d{4})\.\.(\d{4})", cells_text):
+                cited.update(f"{prefix}{n:04d}" for n in range(int(first), int(last) + 1))
+            cells_text = re.sub(r"io-[a-z]+-\d{4}\.\.\d{4}", "", cells_text)
+            cited.update(re.findall(r"io-[a-z0-9]+(?:-[a-z0-9]+)*", cells_text))
+            self.assertTrue(cited, citation)
+            self.assertLessEqual(cited, cells_by_id[oracle_id], citation)
+
     def test_psmf_getters_are_dedicated_partial(self) -> None:
         # Both getters drive the media producer and a host codec backend now, so
         # they are dedicated handlers with an honest `partial` status rather than

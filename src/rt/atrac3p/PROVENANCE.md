@@ -1,8 +1,8 @@
 # PROVENANCE.md — `src/rt/atrac3p/`
 
-Standalone ATRAC3+ (ATRAC3plus) audio decoder subset for the Nakagawa recomp
-runtime (Hot Shots Tennis: Get a Grip, PSP). The decoder core is imported from
-FFmpeg; a thin C API layer written for this project wraps it.
+Standalone ATRAC3+ (ATRAC3plus) and plain ATRAC3 (AT3) audio decoder subset for
+the Nakagawa recomp runtime (Hot Shots Tennis: Get a Grip, PSP). Both decoder
+cores are imported from FFmpeg; thin C APIs written for this project wrap them.
 
 ## Upstream source
 
@@ -44,6 +44,8 @@ Legend:
 | `atrac3p_api.h` | AUTHORED stand-in | n/a |
 | `libavcodec/atrac.c` | imported byte-identical | `bf9878be453d86823bff1c98694ab38365972600` |
 | `libavcodec/atrac.h` | imported byte-identical | `05208bbee69aaafa4d9dadb736dd93f14176b3ce` |
+| `libavcodec/atrac3.c` | imported + LOCAL DELTA | `37ccbcc946cbc394cbb426a09cc6776f8db107bf` |
+| `libavcodec/atrac3data.h` | imported byte-identical | `d050c0f3806a95d79fec38d1482fdea07c06110b` |
 | `libavcodec/atrac3plus.c` | imported + LOCAL DELTA | `3a0a0d5f360827d8bc1daf6bc3d4d84cd5557ace` |
 | `libavcodec/atrac3plus.h` | imported byte-identical | `a588436e2adb86fb32e27b22ec7f96d9fca09038` |
 | `libavcodec/atrac3plus_data.h` | imported byte-identical | `05ae2b78a9ba8736583a5cac078c5d7538afd23d` |
@@ -52,6 +54,7 @@ Legend:
 | `libavcodec/avcodec.h` | AUTHORED stand-in (upstream name exists) | `8a71c042308e37a89dbf357d8f9b276dd4ebcbf9` |
 | `libavcodec/avfft.h` | imported byte-identical | `0c0f9b8d8dae13c14a8cd91a1c4234b07821e916` |
 | `libavcodec/bitstream.c` | imported byte-identical | `e425ffdc96473034c78c4844ba8be3234189f93c` |
+| `libavcodec/bytestream.h` | imported byte-identical | `d0033f14f3690d6cedf1320b82d42f4d59124770` |
 | `libavcodec/config.h` | AUTHORED stand-in (configure output) | n/a |
 | `libavcodec/fft.h` | imported byte-identical | `e03ca01abfde80e4d36d591028d94dbddcff490d` |
 | `libavcodec/fft_float.c` | imported byte-identical | `73cc98d0d4b1b137662240cbfb8c1b4b72460ba3` |
@@ -100,6 +103,20 @@ Legend:
 | `libavutil/version.h` | imported byte-identical | `f888dbb2dc12e3f7180fe4ec639b453d924272e0` |
 
 ## LOCAL DELTAs (imported files with local modification)
+
+### `libavcodec/atrac3.c`
+
+- Added `#include "../atrac3p_api.h"` (marked `LOCAL DELTA`).
+- Replaced the framework-only `AVFrame`/`AVPacket` entry point with a
+  standalone plane-output entry point that calls FFmpeg's existing
+  `decode_frame()` and reports 1024 samples only on success. The frame decode
+  algorithm and tables remain upstream n4.4.
+- Exported `atrac3_context_size()`, `atrac3_init()`, and `atrac3_close()` so the
+  project API can manage the opaque upstream `ATRAC3Context` without exposing
+  its layout.
+- The unused FFmpeg `AVFrame`/`AVPacket` decode wrappers and decoder registry
+  entries are disabled, matching the standalone subset pattern in
+  `atrac3plusdec.c`.
 
 ### `libavcodec/atrac3plus.c`
 
@@ -168,8 +185,9 @@ contract:
   only `config.h`).
 - `libavcodec/avcodec.h` — minimal `AVCodecContext` subset
   (`priv_data`, `channels`, `channel_layout`, `block_align`, `flags`,
-  `sample_fmt`, `codec_id`, `frame_number`), `AV_INPUT_BUFFER_PADDING_SIZE`,
-  `AV_SAMPLE_FMT_FLTP`, `AV_CODEC_ID_ATRAC3P`. `AV_CODEC_FLAG_BITEXACT` is
+  `sample_fmt`, `codec_id`, `frame_number`, `extradata`, `extradata_size`),
+  `AV_INPUT_BUFFER_PADDING_SIZE`, `AV_SAMPLE_FMT_FLTP`, and the ATRAC3/ATRAC3+
+  codec IDs. `AV_CODEC_FLAG_BITEXACT` is
   intentionally a subset-local flag bit, not the upstream enum position.
 - `libavcodec/internal.h` — static-inline `avpriv_report_missing_feature()`,
   `avpriv_request_sample()`, and DEBUG-gated `ff_dlog()`.
@@ -197,6 +215,22 @@ contract:
   Every public entry validates all arguments (including a NULL handle on
   `decode`, which previously dereferenced `h` before the check) before any
   dereference, so hostile callers get a clean `AVERROR(EINVAL)`.
+- The same API files now also expose a separate plain-AT3 handle. Its
+  project-authored configuration check (`atrac3_config_valid`) enforces exactly
+  these conditions, each with its source:
+  - RIFF format tag `0x0270`: public WAVE format registry (`WAVE_FORMAT_SONY_SCX`).
+  - 1 or 2 channels, a 14-byte fmt extension, a non-zero frame factor (word
+    [10-11]), joint stereo (non-zero word [6-7]) only with 2 channels, and
+    `block_align` equal to 96, 152 or 192 × channels × frame factor: the pinned
+    FFmpeg n4.4 `atrac3_decode_init` rules for the 14-byte WAV extension.
+  - `block_align` ≤ 4096: a project-authored bound on the scratch frame copy.
+  The extension words [0-1], [2-5], [8-9] and [12-13] are not gates, matching
+  upstream, because their PSP-visible values are `NOT_MEASURED`. It converts FFmpeg's 1024 planar float samples
+  per channel to interleaved s16; it never routes AT3 data through the ATRAC3+
+  context.
+- HLE's first-frame trimming from the RIFF `fact` delay remains
+  `NOT_MEASURED`; the full decoder frame is retained and the HLE emits one
+  diagnostic until a physical-PSP measurement establishes that behavior.
 
 ## Licensing notes
 
@@ -218,6 +252,11 @@ contract:
   `dc91b913b6260e85e1304c74ff7bb3c22a8c9fb1`). 47/47 imported blobs verified
   byte-identical on 2026-08-06; 44/44 byte-identical blobs re-verified against
   the committed tree after LF normalization on the same date.
-- The subset (15 translation units: `atrac3p_api.c` + 14 imported `.c`
+- 2026-10-20 AT3 import verification: all 50 imported manifest blob SHAs
+  match the n4.4 tree; the 46 byte-identical rows match their local Git blob
+  hashes, and all four `LOCAL DELTA` rows differ from their upstream blobs as
+  documented. Of the AT3 additions, `atrac3.c` is a `LOCAL DELTA` row and
+  `atrac3data.h` and `bytestream.h` are byte-identical rows.
+- The subset (16 translation units: `atrac3p_api.c` + 15 imported `.c`
   files) compiles with MinGW-w64 gcc `-std=c11 -O1 -Wall -Wextra` and the
   smoke driver passes create/garbage/decode/reset/flush/destroy checks.
