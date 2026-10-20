@@ -10953,18 +10953,5 @@
       },
       "sha256": "7869f7a49433ed9a604bd810fc169003949eac70a600256753afbfab844695ef"
     }
-  ],
-  "admission": {
-    "workflow": "admit-new-reviewed",
-    "trusted_tree": "0983f901ee123e50b9b406cec541694581a14dfa",
-    "candidate_tree": "97d94f14731848bb350114c7aea9697fda44d526",
-    "admitted_paths": [
-      ".clusterfuzzlite/Dockerfile",
-      ".clusterfuzzlite/build.sh",
-      ".clusterfuzzlite/project.yaml",
-      ".github/workflows/clusterfuzzlite.yml",
-      "tests/fuzzers/test_nk_json_fuzzer.c"
-    ],
-    "authority_sha256": "93625260bb4b9a611c6ae1c016d7d8b794492f1c2c2e1f49e4e7fc024bb39563"
-  }
+  ]
 }
