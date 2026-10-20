@@ -306,6 +306,113 @@ class PerfSummaryDiffTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("expected 'nakagawa-perf-v1'", result.stderr)
 
+    def test_runtime_csv_exports_gpu_replay_counter_deltas(self):
+        compiler = shutil.which("gcc")
+        if compiler is None:
+            self.skipTest("gcc is not available")
+        names = ["queue_submits", "batches", "draws", "snapshot_requests", "snapshot_copies",
+                 "upload_ring_reservations", "upload_ring_bytes", "upload_ring_wraps",
+                 "upload_ring_fallbacks"]
+        with scratch_dir.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "gpu_replay_harness.c"
+            executable = root / ("gpu_replay_harness.exe" if os.name == "nt" else "gpu_replay_harness")
+            # The reader stands in for the GPU backend's snapshot. The 100 queued before
+            # sr_perf_init is the baseline, so the CSV must report only what moved after it.
+            source.write_text(
+                "#include \"perf.h\"\n"
+                "static uint64_t counts[SR_PERF_GPU_REPLAY_COUNT];\n"
+                "static void snapshot(uint64_t out[SR_PERF_GPU_REPLAY_COUNT]) {\n"
+                "    for (unsigned i = 0; i < SR_PERF_GPU_REPLAY_COUNT; i++) out[i] = counts[i];\n"
+                "}\n"
+                "int main(void) {\n"
+                "    counts[SR_PERF_GPU_QUEUE_SUBMITS] = 100;\n"
+                "    sr_perf_set_gpu_replay_source(snapshot);\n"
+                "    sr_perf_init();\n"
+                "    counts[SR_PERF_GPU_QUEUE_SUBMITS] = 107;\n"
+                "    counts[SR_PERF_GPU_DRAWS] = 3;\n"
+                "    counts[SR_PERF_GPU_UPLOAD_RING_FALLBACKS] = 2;\n"
+                "    sr_perf_shutdown();\n"
+                "    return 0;\n"
+                "}\n",
+                encoding="ascii",
+            )
+            compile_result = subprocess.run(
+                [compiler, "-std=c11", "-I", str(ROOT / "src" / "rt"),
+                 str(source), str(ROOT / "src" / "rt" / "perf.c"), "-o", str(executable)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+            out_csv = root / "gpu.csv"
+            env = os.environ.copy()
+            env.update({"SR_PERF": "1", "SR_PERF_CSV": str(out_csv)})
+            run = subprocess.run([str(executable)], env=env, capture_output=True, text=True,
+                                 check=False)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            with out_csv.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.reader(handle))
+            header = rows[0]
+            self.assertGreaterEqual(len(rows), 2)
+            expected = {"queue_submits": 7, "batches": 0, "draws": 3, "snapshot_requests": 0,
+                        "snapshot_copies": 0, "upload_ring_reservations": 0,
+                        "upload_ring_bytes": 0, "upload_ring_wraps": 0,
+                        "upload_ring_fallbacks": 2}
+            for name in names:
+                column = f"gpu_replay_{name}"
+                self.assertIn(column, header)
+                # The shutdown row carries the interval counts; every row has the same width.
+                self.assertEqual(int(rows[-1][header.index(column)]), expected[name], column)
+            for row in rows[1:]:
+                self.assertEqual(len(header), len(row))
+
+    def test_gpu_replay_baseline_is_seeded_when_the_source_registers_after_init(self):
+        compiler = shutil.which("gcc")
+        if compiler is None:
+            self.skipTest("gcc is not available")
+        with scratch_dir.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "gpu_replay_late_harness.c"
+            executable = root / ("gpu_replay_late_harness.exe" if os.name == "nt" else "gpu_replay_late_harness")
+            # The CSV is opened by init, but the backend registers its reader afterwards (as
+            # gegpu_init does). The 100 queued before registration must not show up as this
+            # run's submits: registration seeds the baseline, so only the 7 after it count.
+            source.write_text(
+                "#include \"perf.h\"\n"
+                "static uint64_t counts[SR_PERF_GPU_REPLAY_COUNT];\n"
+                "static void snapshot(uint64_t out[SR_PERF_GPU_REPLAY_COUNT]) {\n"
+                "    for (unsigned i = 0; i < SR_PERF_GPU_REPLAY_COUNT; i++) out[i] = counts[i];\n"
+                "}\n"
+                "int main(void) {\n"
+                "    counts[SR_PERF_GPU_QUEUE_SUBMITS] = 100;\n"
+                "    sr_perf_init();\n"
+                "    sr_perf_set_gpu_replay_source(snapshot);\n"
+                "    counts[SR_PERF_GPU_QUEUE_SUBMITS] = 107;\n"
+                "    sr_perf_shutdown();\n"
+                "    return 0;\n"
+                "}\n",
+                encoding="ascii",
+            )
+            compile_result = subprocess.run(
+                [compiler, "-std=c11", "-I", str(ROOT / "src" / "rt"),
+                 str(source), str(ROOT / "src" / "rt" / "perf.c"), "-o", str(executable)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(compile_result.returncode, 0, compile_result.stderr)
+            out_csv = root / "late.csv"
+            env = os.environ.copy()
+            env.update({"SR_PERF": "1", "SR_PERF_CSV": str(out_csv)})
+            run = subprocess.run([str(executable)], env=env, capture_output=True, text=True,
+                                 check=False)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            with out_csv.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.reader(handle))
+            column = rows[0].index("gpu_replay_queue_submits")
+            self.assertEqual(int(rows[-1][column]), 7)
+
 
 if __name__ == "__main__":
     unittest.main()
