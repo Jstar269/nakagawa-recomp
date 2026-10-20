@@ -1059,8 +1059,8 @@ static uint32_t h_GetSystemParamInt(CpuState *s) {
  *    empty file name, so an absent index hides the indices after it from that library). The index
  *    count and the numeric codes of each index are measured on a PSP-3000 (2026-10-15,
  *    flash0_font.c); the key names and types, the path_name string and the unit of the size values
- *    are not. The library also asks for /SYSPROFILE/RESOLUTION/horizontal, which stays unserved
- *    (unmeasured, fails closed; the library carries on without it). The subtree is read-only
+ *    are not. The library also asks for /SYSPROFILE/RESOLUTION/horizontal, served from the
+ *    2026-10-20 measurement (s_sreg_tree, s_sreg_measured_ints). The subtree is read-only
  *    (SREG_NODE_READONLY): a write is EACCES, an open does not create entries in it, it is never
  *    persisted, and an overlay that names it is refused whole.
  *  - Project bounds, not console limits: 512 registry handles (the console served at least 257)
@@ -1397,6 +1397,12 @@ static const struct {
     { "/CONFIG/GAME/hibernation_ow_guide", SREG_TYPE_INT, 4u },
     { "/CONFIG/GAME/hibernation_op_guide", SREG_TYPE_INT, 4u },
     { "/CONFIG/GAME/subs_expiration_guide", SREG_TYPE_INT, 4u },
+    /* PSP-3000 6.6.1, 2026-10-20 (PSP-REGISTRY-002): /SYSPROFILE lists two entries, one of them
+     * RESOLUTION (DIR), which lists horizontal and vertical (INT, 4 bytes). The other entry's name
+     * and RESOLUTION's position in the list were not measured, so only RESOLUTION is served. */
+    { "/SYSPROFILE/RESOLUTION", SREG_TYPE_DIR, 0u },
+    { "/SYSPROFILE/RESOLUTION/horizontal", SREG_TYPE_INT, 4u },
+    { "/SYSPROFILE/RESOLUTION/vertical", SREG_TYPE_INT, 4u },
 };
 
 /* The integer keys sceUtilityGetSystemParamInt shares, with their PSP_SYSTEMPARAM_ID_INT_* id. */
@@ -1413,12 +1419,15 @@ static const struct {
     { "/CONFIG/NETWORK/ADHOC/channel",    2u },
 };
 
-/* Measured values of keys with no system-param id (PSP-3000 6.6.1, 2026-10-09). */
+/* Measured values of keys with no system-param id (PSP-3000 6.6.1; PREMO 2026-10-09, RESOLUTION
+ * 2026-10-20). The RESOLUTION values are raw registry integers; their meaning is not inferred. */
 static const struct {
     const char *path;
     uint32_t value;
 } s_sreg_measured_ints[] = {
     { "/CONFIG/PREMO/button_assign", 0u },
+    { "/SYSPROFILE/RESOLUTION/horizontal", 0x2012u },
+    { "/SYSPROFILE/RESOLUTION/vertical", 0x2012u },
 };
 
 static SregNode s_sreg_nodes[SREG_MAX_NODES];
@@ -1757,6 +1766,7 @@ static void sreg_build_font_registry(void) {
 static void sreg_build_defaults(void) {
     uint32_t err = 0;
     (void)sreg_walk("/CONFIG", 1, SREG_NODE_DEFAULT, &err, NULL);
+    (void)sreg_walk("/SYSPROFILE", 1, SREG_NODE_DEFAULT, &err, NULL);
     for (uint32_t i = 0; i < sizeof(s_sreg_tree) / sizeof(s_sreg_tree[0]); i++) {
         const char *path = s_sreg_tree[i].path;
         const char *slash = strrchr(path, '/');
