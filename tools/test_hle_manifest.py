@@ -806,6 +806,7 @@ class LiveManifestTests(unittest.TestCase):
                     "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-write)",
                     "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)",
                     "src/rt/hle_thread_selftest.c:test_umd_io_console_model",
+                    "src/rt/hle_thread_selftest.c:test_io_async_and_path_imports",
                 ],
             ),
             0xEB092469: (
@@ -838,6 +839,28 @@ class LiveManifestTests(unittest.TestCase):
                 self.assertEqual(registration["status"], "partial")
                 self.assertEqual(meta.HANDLER_EVIDENCE[handler], evidence)
                 self.assertIn("measur", meta.HANDLER_LIMITATIONS[handler].lower())
+                self._assert_cited_oracle_cells_exist(evidence)
+
+    def _assert_cited_oracle_cells_exist(self, evidence: list[str]) -> None:
+        """Every `(PSP-X-NNN: cells)` citation must name cells the oracle manifest lists."""
+        document = json.loads(hle_manifest.PSP_ORACLE_MANIFEST.read_text(encoding="utf-8"))
+        cells_by_id = {
+            row["id"]: set(row.get("evidence_cases", [])) | set(row.get("case_ids", []))
+            for row in document["tests"]
+        }
+        for citation in evidence:
+            match = re.search(r"\((PSP-[A-Z0-9-]+): ([^)]*)\)", citation)
+            if not match:
+                continue
+            oracle_id, cells_text = match.groups()
+            self.assertIn(oracle_id, cells_by_id, citation)
+            cited: set[str] = set()
+            for prefix, first, last in re.findall(r"(io-[a-z]+-)(\d{4})\.\.(\d{4})", cells_text):
+                cited.update(f"{prefix}{n:04d}" for n in range(int(first), int(last) + 1))
+            cells_text = re.sub(r"io-[a-z]+-\d{4}\.\.\d{4}", "", cells_text)
+            cited.update(re.findall(r"io-[a-z0-9]+(?:-[a-z0-9]+)*", cells_text))
+            self.assertTrue(cited, citation)
+            self.assertLessEqual(cited, cells_by_id[oracle_id], citation)
 
     def test_psmf_getters_are_dedicated_partial(self) -> None:
         # Both getters drive the media producer and a host codec backend now, so

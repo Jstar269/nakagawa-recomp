@@ -234,10 +234,11 @@ Semantic handler census: **454** handlers across **23** API families, covering *
   - Limitation: only the mode field is supported; attribute, size, and timestamp fields fail closed with IO_CHSTAT_NON_MODE_FIELDS
   - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoClose`** (`sceIo`): `sceIoClose` (0x810c4bc3)
-  - Limitation: the measured cells establish close result 0 for one freshly written host0 file and for the eleven successful fixed UMD/disc/msstor0p1 opens; double close, close during pending async I/O, directory descriptors, standard descriptors and unmeasured error precedence remain host-selftested only (#341)
+  - Limitation: the measured cells establish close result 0 for one freshly written host0 file and for the eleven successful fixed UMD/disc/msstor0p1 opens; double close, directory descriptors, standard descriptors and error precedence are not hardware measured, and the refusal while an asynchronous request is pending (ASYNC_BUSY) is covered by the host selftest only (#341)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-IO-001: io-write)
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)
   - Evidence: src/rt/hle_thread_selftest.c:test_umd_io_console_model
+  - Evidence: src/rt/hle_thread_selftest.c:test_io_async_and_path_imports
 - **`h_IoCloseAsync`** (`sceIo`): `sceIoCloseAsync` (0xff5940b6)
   - Limitation: request completion uses a deterministic synthetic import-boundary scheduler; close callback timing remains unmeasured
   - Evidence: src/rt/hle_thread_selftest.c:test_fd_namespace
