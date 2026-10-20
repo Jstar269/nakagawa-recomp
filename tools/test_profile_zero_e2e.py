@@ -45,11 +45,12 @@ CASE_EVIDENCE = {
 }
 SAVE_BYTES = b"PROFILE_ZERO_SAVE_V1\n"
 VBLANK_SCRIPT = "12 4000 4\n240 0008 4\n"
-# Committed PSPDEV build output of fixtures/profile_zero/{main.c,Makefile}.
-# The route consumes these bytes on hosts without PSPDEV/PSPSDK (hosted CI);
-# where the toolchain exists, the same build is reproduced and compared.
-# The bytes are reproducible only with the distribution pinned by
-# assets/upstream/pspdev.lock.json (#708).
+# PSPDEV build output of fixtures/profile_zero/{main.c,Makefile}. Only the digests
+# (SHA256SUMS) are committed: the repository stores no generated executable (#1100,
+# OpenSSF OSPS-QA-05.01). Hosted CI builds the bytes from source in the
+# profile_zero_fixture job and hands them to the route jobs; a host with PSPDEV
+# rebuilds them itself. Either way they must match the pinned digests, and they are
+# reproducible only with the distribution pinned by assets/upstream/pspdev.lock.json (#708).
 PREBUILT_DIR = ROOT / "fixtures" / "profile_zero" / "prebuilt"
 PREBUILT_SUMS = PREBUILT_DIR / "SHA256SUMS"
 PREBUILT_EBOOT = PREBUILT_DIR / "EBOOT.PBP"
@@ -196,8 +197,8 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _verify_committed_fixture() -> dict[str, str]:
-    """Fail closed unless the committed fixture matches its own digest list."""
+def _pinned_fixture_digests() -> dict[str, str]:
+    """Read the committed digest list; fail closed when it is missing or malformed."""
     if not PREBUILT_SUMS.is_file():
         raise AssertionError(
             f"committed profile-zero fixture digest list is missing: {PREBUILT_SUMS} "
@@ -214,6 +215,26 @@ def _verify_committed_fixture() -> dict[str, str]:
     for required in (PREBUILT_EBOOT.name, PREBUILT_GUEST.name):
         if required not in digests:
             raise AssertionError(f"{PREBUILT_SUMS} does not cover {required}")
+    return digests
+
+
+def _fixture_bytes_present() -> bool:
+    return PREBUILT_EBOOT.is_file() and PREBUILT_GUEST.is_file()
+
+
+def _verify_committed_fixture() -> dict[str, str]:
+    """Fail closed unless the staged fixture bytes match the pinned digest list.
+
+    The bytes are not committed. Without them (no CI artifact and no PSPDEV rebuild)
+    the caller SKIPs with the reason instead of passing silently.
+    """
+    digests = _pinned_fixture_digests()
+    if not _fixture_bytes_present():
+        raise unittest.SkipTest(
+            "NOT_RUN: the profile-zero fixture bytes are absent. Hosted CI builds them in "
+            "the profile_zero_fixture job; locally, install the pinned PSPDEV (see "
+            "fixtures/profile_zero/README.md)."
+        )
     present = {
         path.name
         for path in PREBUILT_DIR.iterdir()
@@ -250,8 +271,8 @@ def _materialize_committed_fixture(manifest: dict, output_dir: Path) -> Path:
 
 
 def _verify_rebuild_matches_committed(manifest: dict, output_dir: Path, guest: Path) -> None:
-    """Fail closed when a PSPDEV rebuild differs from the committed fixture."""
-    digests = _verify_committed_fixture()
+    """Fail closed when a PSPDEV rebuild differs from the pinned digests."""
+    digests = _pinned_fixture_digests()
     build = manifest["profile_zero"]["build"]
     for path, expected in (
         (output_dir / str(build["target"]), digests[PREBUILT_EBOOT.name]),
@@ -676,6 +697,16 @@ class ProfileZeroManifestTests(unittest.TestCase):
         self.assertIn("profile-zero-e2e:", makefile)
         self.assertIn("profile-zero-e2e", workflow)
 
+    def test_repository_stores_only_the_fixture_digests(self) -> None:
+        """No generated executable is committed (#1100, OpenSSF OSPS-QA-05.01)."""
+        if not (ROOT / ".git").exists():
+            self.skipTest("NOT_RUN: not a git checkout")
+        tracked = subprocess.run(
+            ["git", "ls-files", "--", "fixtures/profile_zero/prebuilt"],
+            cwd=ROOT, capture_output=True, text=True, check=True,
+        ).stdout.split()
+        self.assertEqual(tracked, ["fixtures/profile_zero/prebuilt/SHA256SUMS"])
+
     def test_committed_fixture_matches_its_digests_and_manifest_entries(self) -> None:
         digests = _verify_committed_fixture()
         self.assertIn(PREBUILT_EBOOT.name, digests)
@@ -716,7 +747,8 @@ class ProfileZeroManifestTests(unittest.TestCase):
         if backend is None:
             print(
                 "profile-zero-e2e: PSPDEV/PSPSDK is absent; the route runs on the "
-                "committed fixture in fixtures/profile_zero/prebuilt (no toolchain SKIP)",
+                "fixture bytes staged in fixtures/profile_zero/prebuilt (the CI artifact "
+                "built from source), checked against the pinned digests",
                 file=sys.stderr,
                 flush=True,
             )
@@ -725,7 +757,7 @@ class ProfileZeroManifestTests(unittest.TestCase):
                 "profile-zero-e2e: PSPDEV/PSPSDK is present; verifying it matches the "
                 "distribution pinned by assets/upstream/pspdev.lock.json, then "
                 "rebuilding the fixture and checking it byte-for-byte against the "
-                "committed fixture",
+                "pinned digests",
                 file=sys.stderr,
                 flush=True,
             )
@@ -740,6 +772,11 @@ class ProfileZeroManifestTests(unittest.TestCase):
                         rebuild_dir = root / manifest["id"] / "psp-rebuild"
                         rebuilt_guest = _build_guest(manifest, rebuild_dir, backend)
                         _verify_rebuild_matches_committed(manifest, rebuild_dir, rebuilt_guest)
+                        if not _fixture_bytes_present():
+                            # Stage the verified rebuild (gitignored) for the route below.
+                            target = rebuild_dir / str(manifest["profile_zero"]["build"]["target"])
+                            shutil.copyfile(target, PREBUILT_EBOOT)
+                            shutil.copyfile(rebuilt_guest, PREBUILT_GUEST)
                     guest = _materialize_committed_fixture(
                         manifest,
                         root / manifest["id"] / "psp-build",

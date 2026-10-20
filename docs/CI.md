@@ -348,8 +348,8 @@ partition with per-shard estimates.
 
 ## Coverage
 
-Two coverage reports are measured whenever their jobs run, and neither can change
-a gate's result.
+Python coverage is reported as XML and C coverage is collected from raw gcov data
+whenever their jobs run; neither can change a gate's result.
 
 - **Python tooling (`python_tools`).** Each shard runs the module list it always
   ran, through `python -m coverage run --parallel-mode --source=tools -m unittest
@@ -362,8 +362,8 @@ a gate's result.
   `native-core-tests` target in its own `$RUNNER_TEMP/native-core-coverage`
   `BUILD_DIR`, with `--coverage` appended to the Makefile's own `CFLAGS` (read
   back through `compiler-info`, so the measured build uses the default
-  configuration) and to `LDFLAGS`, then writes `coverage-c.xml` with
-  `python -m gcovr --xml coverage-c.xml --root . --filter src/`. The unprofiled
+  configuration) and to `LDFLAGS`. Codecov Action's `gcov` plugin reads the raw
+  `.gcno`/`.gcda` files from that directory and includes `src/`. The unprofiled
   `make CC=gcc native-core-tests` gate still runs first and is unchanged. The
   `CFLAGS`/`LDFLAGS` route instruments the targets that compile through those
   variables; a target that hard-codes its own compile flags is not measured, so
@@ -382,9 +382,9 @@ merge, and sets `carryforward: true` for both flags, so a run that measures only
 one surface keeps the other flag's last report. The OpenSSF Best Practices
 Silver criterion "statement coverage >= 80%" is the target these numbers are
 watched against; it is not a gate, and promoting either status to a required
-check is a separate maintainer decision. `coverage` and `gcovr` are installed
-from `tools/requirements-lock.txt` with `--require-hashes`, like every other
-Python tool in these jobs. A change to `codecov.yml` matches no classifier
+check is a separate maintainer decision. Python's `coverage` package is installed
+from `tools/requirements-lock.txt` with `--require-hashes`; the C upload uses the
+action's gcov support and adds no Python dependency. A change to `codecov.yml` matches no classifier
 predicate, so it fails closed to the full matrix like any other unknown path.
 
 ## Classifier invariants
@@ -668,12 +668,12 @@ developer runs locally, without private inputs:
   through the headless production runtime, and checks all seven named
   guest-service cases for each manifest. It runs in the `routes` part of the
   25-minute `windows_runtime` job and took about 123 seconds locally for both package
-  builds and runtime launches. The guest bytes are the committed
-  `fixtures/profile_zero/prebuilt` fixture, built by PSPDEV/PSPSDK from the
-  fixture's own `main.c` and `Makefile` (see `fixtures/profile_zero/README.md`),
-  so hosted runners with no PSPDEV execute the whole route instead of
-  reporting a toolchain `SKIP`; where PSPDEV is installed, the gate rebuilds
-  the fixture first and fails if any byte differs from `SHA256SUMS`. Public
+  builds and runtime launches. The guest bytes are built from the fixture's own
+  `main.c` and `Makefile` by the `profile_zero_fixture` job (pinned PSPDEV, checked
+  against the committed `fixtures/profile_zero/prebuilt/SHA256SUMS`) and downloaded
+  as an artifact, so the repository stores no generated executable (#1100) and the
+  Windows runner still executes the whole route; where PSPDEV is installed, the
+  gate rebuilds the fixture itself and fails if any byte differs from `SHA256SUMS`. Public
   runtime link dependencies remain external; when they are unavailable, the
   test reports an explicit `SKIP` with the printed missing-dependency reason.
   The job also runs the production smoke with its executable staged into a fresh

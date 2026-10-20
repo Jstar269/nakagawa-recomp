@@ -179,7 +179,7 @@ class TestSingleSnapshotNoTOCTOU(BindingFixture):
             parsed["lock_evidence"]["python"]["sha256"],
             hashlib.sha256(PY_LOCK.read_bytes()).hexdigest(),
         )
-        self.assertEqual(len(parsed["py_packages"]), 12)
+        self.assertEqual(len(parsed["py_packages"]), 5)
 
     def test_verification_uses_one_snapshot_for_inventory_and_checksum(self):
         document = self.generate()

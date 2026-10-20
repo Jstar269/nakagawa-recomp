@@ -412,6 +412,7 @@ _WINDOWS_SERIAL_GATES = {
     "Stage and run production smoke outside its build directory": "VULKAN_SDK=/ucrt64 production-smoke-staged",
     "Build and run the full platform ladder": "VULKAN_SDK=/ucrt64 platform-ladder",
     "Build and run profile-zero production routes": "VULKAN_SDK=/ucrt64 profile-zero-e2e",
+    "Fetch the profile-zero fixture built from source": "name: profile-zero-fixture",
     "Build and run display presentation smoke": "VULKAN_SDK=/ucrt64 display-smoke-run",
     "Build and run AOT/interpreter cosimulation gate": "VULKAN_SDK=/ucrt64 cosim-selftest",
     "Prove the cosimulation comparator is load-bearing": "VULKAN_SDK=/ucrt64 cosim-mutants",
@@ -778,12 +779,27 @@ class PublicExportJobTests(unittest.TestCase):
         for job in ("python_tools", "native_tools", "windows_runtime"):
             with self.subTest(job=job):
                 block = "\n".join(self.blocks[job])
-                self.assertIn("needs: [classify, public_export]", block)
+                self.assertRegex(
+                    block, r"(?m)^    needs: \[classify, public_export(, profile_zero_fixture)?\]$"
+                )
                 needs_line = re.search(r"(?m)^    needs: (.+)$", block)
                 self.assertIsNotNone(needs_line, f"{job} declares no needs line")
                 self.assertNotIn("hygiene", needs_line.group(1))
                 self.assertNotIn("needs.hygiene.result", block)
                 self.assertIn("needs.public_export.result == 'success'", block)
+
+    def test_profile_zero_fixture_is_built_from_source_for_its_consumers(self) -> None:
+        """#1100: the fixture is built and digest-checked in CI, never committed."""
+        fixture = "\n".join(self.blocks["profile_zero_fixture"])
+        self.assertIn("sha256sum --check --strict SHA256SUMS", fixture)
+        self.assertIn("name: profile-zero-fixture", fixture)
+        self.assertIn("if-no-files-found: error", fixture)
+        for job in ("python_tools", "windows_runtime"):
+            with self.subTest(job=job):
+                block = "\n".join(self.blocks[job])
+                self.assertIn("needs.profile_zero_fixture.result == 'success'", block)
+                self.assertIn("name: profile-zero-fixture", block)
+                self.assertIn("path: fixtures/profile_zero/prebuilt", block)
 
     def test_ci_required_still_requires_hygiene_and_export(self) -> None:
         required = "\n".join(self.blocks["ci_required"])
@@ -835,7 +851,7 @@ class CoverageWiringTests(unittest.TestCase):
     C_GATE_STEP = "Run native core test suite (hostile parsers, catalog, launch resolution, POSIX process)"
     UPLOADS = {
         "python_tools": ("Upload Python coverage to Codecov", "python", "coverage-python.xml"),
-        "native_tools": ("Upload C coverage to Codecov", "c", "coverage-c.xml"),
+        "native_tools": ("Upload C coverage to Codecov", "c", None),
     }
 
     def setUp(self) -> None:
@@ -881,9 +897,7 @@ class CoverageWiringTests(unittest.TestCase):
         self.assertIn('CFLAGS="$base_cflags --coverage"', text)
         self.assertIn('LDFLAGS="--coverage"', text)
         self.assertIn("native-core-tests", text)
-        self.assertIn(
-            "python -m gcovr --xml coverage-c.xml --root . --filter src/", text
-        )
+        self.assertNotIn("gcovr", text)
 
     def test_both_uploads_use_the_pinned_action_oidc_and_the_declared_flags(self) -> None:
         for job, (name, flag, report) in self.UPLOADS.items():
@@ -896,7 +910,12 @@ class CoverageWiringTests(unittest.TestCase):
                     r"uses: codecov/codecov-action@[0-9a-f]{40} # v\d+\.\d+\.\d+",
                 )
                 self.assertIn("use_oidc: true", text)
-                self.assertIn(f"files: {report}", text)
+                if report is None:
+                    self.assertIn("directory: ${{ runner.temp }}/native-core-coverage", text)
+                    self.assertIn("plugins: gcov", text)
+                    self.assertIn("gcov_include: src/", text)
+                else:
+                    self.assertIn(f"files: {report}", text)
                 self.assertIn(f"flags: {flag}", text)
                 self.assertIn("fail_ci_if_error: false", text)
         # Informational means informational: no step may be allowed to fail quietly.
@@ -950,8 +969,8 @@ class CoverageWiringTests(unittest.TestCase):
     def test_docs_describe_what_is_measured_and_that_it_is_informational(self) -> None:
         docs = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
         self.assertIn("## Coverage", docs)
-        for fragment in ("coverage-python.xml", "coverage-c.xml", "codecov.yml",
-                         "informational", "native-core-tests"):
+        for fragment in ("coverage-python.xml", "codecov.yml", "informational",
+                         "native-core-tests"):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, docs)
 

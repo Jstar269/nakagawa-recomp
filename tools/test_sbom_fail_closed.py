@@ -49,10 +49,7 @@ class TestPythonLockfileHostileInputs(unittest.TestCase):
             [(p["name"], p["version"], len(p["declared_sha256"])) for p in packages],
             [("compiledb", "0.10.7", 2), ("ruff", "0.16.9", 18),
              ("click", "8.5.0", 2), ("bashlex", "0.18", 2),
-             ("colorama", "0.4.6", 2), ("colorlog", "6.12.0", 2),
-             ("coverage", "7.16.2", 121), ("gcovr", "8.7", 2),
-             ("jinja2", "3.1.6", 2), ("lxml", "6.1.3", 176),
-             ("markupsafe", "3.0.4", 151), ("pygments", "2.21.0", 2)],
+             ("coverage", "7.16.2", 121)],
         )
 
     def test_valid_intentionally_empty_lockfile_parses_to_empty_inventory(self):
@@ -117,7 +114,7 @@ class TestPythonLockfileHostileInputs(unittest.TestCase):
 class TestRepositoryLockfileStaysValid(unittest.TestCase):
     def test_repository_python_lockfile_parses(self):
         packages = generate_sbom.parse_python_lockfile(PY_LOCK)
-        self.assertEqual(len(packages), 12)
+        self.assertEqual(len(packages), 5)
         self.assertTrue(all(package["name"] and package["version"] for package in packages))
 
 

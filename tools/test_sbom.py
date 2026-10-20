@@ -54,7 +54,7 @@ class TestSBOMTooling(unittest.TestCase):
     def test_parse_python_lockfile(self):
         packages = generate_sbom.parse_python_lockfile(
             generate_sbom.ROOT / "tools" / "requirements-lock.txt")
-        self.assertEqual(len(packages), 12)
+        self.assertEqual(len(packages), 5)
         self.assertEqual(packages[0]["name"], "compiledb")
         self.assertEqual(packages[0]["version"], "0.10.7")
         self.assertEqual(
@@ -68,8 +68,6 @@ class TestSBOMTooling(unittest.TestCase):
         # do: every published wheel and the sdist, for the exact release.
         self.assertEqual(by_name["coverage"]["version"], "7.16.2")
         self.assertEqual(len(by_name["coverage"]["declared_sha256"]), 121)
-        self.assertEqual(by_name["gcovr"]["version"], "8.7")
-        self.assertEqual(len(by_name["gcovr"]["declared_sha256"]), 2)
         # License resolution reads installed dist metadata for the exact pins
         # (generate_sbom._resolve_python_package_license).  CI installs
         # tools/requirements-lock.txt into the test interpreter; a different
@@ -297,15 +295,8 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
             [
                 "https://pypi.org/pypi/bashlex/0.18/json",
                 "https://pypi.org/pypi/click/8.5.0/json",
-                "https://pypi.org/pypi/colorama/0.4.6/json",
-                "https://pypi.org/pypi/colorlog/6.12.0/json",
                 "https://pypi.org/pypi/compiledb/0.10.7/json",
                 "https://pypi.org/pypi/coverage/7.16.2/json",
-                "https://pypi.org/pypi/gcovr/8.7/json",
-                "https://pypi.org/pypi/Jinja2/3.1.6/json",
-                "https://pypi.org/pypi/lxml/6.1.3/json",
-                "https://pypi.org/pypi/MarkupSafe/3.0.4/json",
-                "https://pypi.org/pypi/Pygments/2.21.0/json",
                 "https://pypi.org/pypi/ruff/0.16.9/json",
             ],
         )
@@ -315,7 +306,7 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
             generate_sbom._normalize_python_name(source["name"]): source
             for source in metadata["sources"]
         }
-        self.assertEqual(sum(len(source["artifacts"]) for source in sources.values()), 482)
+        self.assertEqual(sum(len(source["artifacts"]) for source in sources.values()), 145)
         self.assertEqual(
             [package["name"] for package in packages],
             [
@@ -323,14 +314,7 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
                 "ruff",
                 "click",
                 "bashlex",
-                "colorama",
-                "colorlog",
                 "coverage",
-                "gcovr",
-                "jinja2",
-                "lxml",
-                "markupsafe",
-                "pygments",
             ],
         )
         for package in packages:

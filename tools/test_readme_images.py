@@ -39,7 +39,7 @@ BADGE_URL_RES = (
     re.compile(r"https://github\.com/Jstar269/nakagawa-recomp/actions/workflows/[\w.-]+\.ya?ml/badge\.svg(\?[\w=&%.-]*)?"),
     re.compile(r"https://img\.shields\.io/[\w./%+-]+(\?[\w=&%.:/-]*)?"),
     re.compile(r"https://api\.scorecard\.dev/projects/github\.com/Jstar269/nakagawa-recomp/badge"),
-    re.compile(r"https://www\.bestpractices\.dev/projects/\d+/badge"),
+    re.compile(r"https://www\.bestpractices\.dev/projects/\d+/(badge|baseline)"),
     re.compile(r"https://api\.reuse\.software/badge/github\.com/Jstar269/[\w.-]+"),
 )
 
