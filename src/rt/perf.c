@@ -119,6 +119,7 @@ typedef struct SrPerfMetrics {
     uint64_t audio_output_ns;
     uint64_t audio_output_calls;
     uint64_t audio_output_frames;
+    uint64_t gpu_replay[SR_PERF_GPU_REPLAY_COUNT];
 } SrPerfMetrics;
 
 typedef struct SrPerfTransitionEntry {
@@ -155,15 +156,22 @@ typedef struct SrPerfState {
     SrPerfSchedState sched_state;
     uint32_t sched_uid;
     uint64_t sched_start_ns;
+    uint64_t gpu_replay_last[SR_PERF_GPU_REPLAY_COUNT];   /* last cumulative snapshot */
     SrPerfTransitionEntry transitions[2][SR_PERF_TOP_N];
 } SrPerfState;
 
 static SrPerfState s_perf;
+/* Registered by the GPU backend; deliberately outside s_perf so init's memset keeps it. */
+static SrPerfGpuReplaySource s_gpu_replay_source;
 int sr_perf_aot_active;
 int sr_perf_enabled;
 static const char *const s_ge_frontend_stage_names[SR_PERF_GE_FRONTEND_STAGE_COUNT] = {
     "command_dispatch", "draw_setup", "vertex_fetch_decode", "transform", "lighting",
     "clipping_acceptance", "assembly", "triangle_total", "empty_control",
+};
+static const char *const s_gpu_replay_names[SR_PERF_GPU_REPLAY_COUNT] = {
+    "queue_submits", "batches", "draws", "snapshot_requests", "snapshot_copies",
+    "upload_ring_reservations", "upload_ring_bytes", "upload_ring_wraps", "upload_ring_fallbacks",
 };
 /* SR_PERF prints 1 Hz telemetry; SR_HUD or the F1 overlay only collect counters for
  * the in-game HUD, so the stderr lines are gated separately. */
@@ -375,6 +383,8 @@ static void csv_header(FILE *csv) {
                      "ge_frontend_%s_samples,ge_frontend_%s_eligible",
                 s_ge_frontend_stage_names[i], s_ge_frontend_stage_names[i],
                 s_ge_frontend_stage_names[i], s_ge_frontend_stage_names[i]);
+    for (unsigned i = 0; i < SR_PERF_GPU_REPLAY_COUNT; i++)
+        fprintf(csv, ",gpu_replay_%s", s_gpu_replay_names[i]);
     fputc('\n', csv);
 }
 
@@ -460,6 +470,8 @@ static void csv_row(FILE *csv, const SrPerfMetrics *m, uint64_t total_vblanks,
                 (unsigned long long)m->ge_frontend_sample_ns[i],
                 (unsigned long long)m->ge_frontend_samples[i],
                 (unsigned long long)m->ge_frontend_eligible[i]);
+    for (unsigned i = 0; i < SR_PERF_GPU_REPLAY_COUNT; i++)
+        fprintf(csv, ",%llu", (unsigned long long)m->gpu_replay[i]);
     fputc('\n', csv);
 }
 
@@ -663,6 +675,18 @@ static void perf_emit_ge_frontend(const SrPerfMetrics *m) {
     perf_emit_line(line, used);
 }
 
+/* Adds the GPU replay counters that moved since the last snapshot to this interval. */
+static void sample_gpu_replay(void) {
+    if (!s_gpu_replay_source) return;
+    uint64_t counts[SR_PERF_GPU_REPLAY_COUNT];
+    s_gpu_replay_source(counts);
+    for (unsigned i = 0; i < SR_PERF_GPU_REPLAY_COUNT; i++) {
+        uint64_t last = s_perf.gpu_replay_last[i];
+        ADD_ARRAY(gpu_replay, i, counts[i] >= last ? counts[i] - last : counts[i]);
+        s_perf.gpu_replay_last[i] = counts[i];
+    }
+}
+
 static void report_if_due(uint64_t now) {
     if (!s_perf.enabled || s_perf.shutdown) return;
     if (!s_perf.interval_start_ns) {
@@ -672,6 +696,7 @@ static void report_if_due(uint64_t now) {
     if (now <= s_perf.interval_start_ns || now - s_perf.interval_start_ns < 1000000000ull)
         return;
     checkpoint_timers(now);
+    sample_gpu_replay();
     uint64_t wall_ns = now - s_perf.interval_start_ns;
     SrPerfMetrics m = s_perf.interval;
     uint64_t scheduler_ns = wall_ns > m.guest_ns ? wall_ns - m.guest_ns : 0;
@@ -766,6 +791,7 @@ void sr_perf_shutdown(void) {
     if (s_perf.csv) {
         uint64_t final_wall_ns = s_perf.interval_start_ns && now > s_perf.interval_start_ns
                                      ? now - s_perf.interval_start_ns : 0;
+        sample_gpu_replay();
         if (final_wall_ns)
             csv_row(s_perf.csv, &s_perf.interval, s_perf.total_vblanks, final_wall_ns);
         fflush(s_perf.csv);
@@ -789,6 +815,7 @@ void sr_perf_init(void) {
     if (!s_perf.enabled) return;
     s_perf.run_start_ns = raw_now_ns();
     s_perf.interval_start_ns = s_perf.run_start_ns;
+    if (s_gpu_replay_source) s_gpu_replay_source(s_perf.gpu_replay_last);
     const char *csv_path = getenv("SR_PERF_CSV");
     if (csv_path && csv_path[0]) {
         snprintf(s_perf.csv_path, sizeof(s_perf.csv_path), "%s", csv_path);
@@ -808,6 +835,10 @@ void sr_perf_init(void) {
     fprintf(stderr, "PERF enabled: 1 Hz aggregate telemetry%s%s\n",
             s_perf.csv ? " + CSV" : "",
             s_perf.json_path[0] ? " + JSON summary" : "");
+}
+
+void sr_perf_set_gpu_replay_source(SrPerfGpuReplaySource source) {
+    s_gpu_replay_source = source;
 }
 
 uint64_t sr_perf_now_ns_impl(void) {
