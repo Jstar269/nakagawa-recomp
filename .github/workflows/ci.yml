@@ -291,9 +291,8 @@ jobs:
         # versions equal.
         run: |
           python -m pip install --disable-pip-version-check --require-hashes -r tools/requirements-lock.txt
-          # Install the local checkout; --no-deps prevents pip from resolving it as
-          # an external package. Third-party tooling dependencies are in the lock above.
-          python -m pip install --disable-pip-version-check --no-deps .
+          # The checkout itself is not installed: the tests import from tools/, and
+          # building it would fetch an unhashed setuptools (Scorecard PinnedDependencies).
 
       - name: >-
           Run Python unit tests (shard ${{ matrix.shard }} of
