@@ -339,7 +339,11 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
             "--require-hashes -r tools/requirements-lock.txt",
             workflow,
         )
-        self.assertIn("--no-deps .", workflow)
+        # Every pip install in CI is hash-pinned; the checkout itself is not built.
+        installs = [line for line in workflow.splitlines() if "pip install" in line]
+        self.assertTrue(installs)
+        for line in installs:
+            self.assertIn("--require-hashes", line)
 
     def test_verifier_uses_supplied_offline_metadata(self):
         metadata = self._metadata()
