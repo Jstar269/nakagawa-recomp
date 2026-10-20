@@ -360,7 +360,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "434fb0b36fb17db9ac11d00a939ebcf387053257081de03d3b0bf67fb914a5b1"
+      "sha256": "ab973748dbbd00a6e17323cdee5077eb9be929c6c22e0dd1f78ea8ca1b1f5e55"
     },
     {
       "path": "CREDITS.md",
@@ -426,7 +426,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1509cb90f5c9f11fcad4cd14756083225455d9e8876a3cc78c6dd13a3e03d935"
+      "sha256": "6cd9b0e5d048a72343177ad74fecfe740a3501782ffce43d840ddf4a3d67f5a6"
     },
     {
       "path": "REVIEW.md",
@@ -444,7 +444,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "902c860dfecb71a2954c286e058c68d13334914696a9ab167385ed173b8638bb"
+      "sha256": "9e4bae8a7c35cc149e16952fcb71a46cd3fe1568638465e86e014bf8072ab2d6"
     },
     {
       "path": "THIRD_PARTY_LICENSES/Brotli.txt",
@@ -1351,7 +1351,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4096a5b37f3dc61c62f7cce3aa4978995dbaa84837237cfa1a83f1ad2b6ab641"
+      "sha256": "3dbf19921a502f6cfe89a6c251f0ab6ff98439f7dd7f408e5594260eb7c4d3dc"
     },
     {
       "path": "docs/PROVENANCE_MERGE_GATE.md",
