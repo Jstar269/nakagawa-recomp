@@ -216,9 +216,16 @@ contract:
   `decode`, which previously dereferenced `h` before the check) before any
   dereference, so hostile callers get a clean `AVERROR(EINVAL)`.
 - The same API files now also expose a separate plain-AT3 handle. Its
-  project-authored configuration check requires RIFF tag `0x0270`, a 14-byte
-  fmt extension, matching independent/joint-stereo mode words, factor 1, and a
-  supported block alignment. It converts FFmpeg's 1024 planar float samples
+  project-authored configuration check (`atrac3_config_valid`) enforces exactly
+  these conditions, each with its source:
+  - RIFF format tag `0x0270`: public WAVE format registry (`WAVE_FORMAT_SONY_SCX`).
+  - 1 or 2 channels, a 14-byte fmt extension, a non-zero frame factor (word
+    [10-11]), joint stereo (non-zero word [6-7]) only with 2 channels, and
+    `block_align` equal to 96, 152 or 192 × channels × frame factor: the pinned
+    FFmpeg n4.4 `atrac3_decode_init` rules for the 14-byte WAV extension.
+  - `block_align` ≤ 4096: a project-authored bound on the scratch frame copy.
+  The extension words [0-1], [2-5], [8-9] and [12-13] are not gates, matching
+  upstream, because their PSP-visible values are `NOT_MEASURED`. It converts FFmpeg's 1024 planar float samples
   per channel to interleaved s16; it never routes AT3 data through the ATRAC3+
   context.
 - HLE's first-frame trimming from the RIFF `fact` delay remains

@@ -238,31 +238,22 @@ static unsigned atrac3_le16(const uint8_t *p)
     return (unsigned)p[0] | (unsigned)p[1] << 8;
 }
 
-static uint32_t atrac3_le32(const uint8_t *p)
-{
-    return (uint32_t)p[0] | (uint32_t)p[1] << 8 |
-           (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
-}
-
 int atrac3_config_valid(int format_tag, int channels, int block_align,
                         const uint8_t *extradata, int extradata_size)
 {
-    unsigned samples_per_frame, joint0, joint1, frame_factor;
+    unsigned coding_mode, frame_factor;
 
+    /* Accept the 14-byte WAV extension exactly as the pinned FFmpeg n4.4
+     * atrac3_decode_init does: words [0-1], [2-5] (samples per channel),
+     * [8-9] and [12-13] are not validated there, and no PSP measurement
+     * pins them, so they are not gates here either. */
     if (format_tag != 0x0270 || (channels != 1 && channels != 2) ||
         !extradata || extradata_size != 14 || block_align <= 0 ||
         block_align > 4096)
         return 0;
-    if (atrac3_le16(extradata) != 1u)
-        return 0;
-    samples_per_frame = atrac3_le32(extradata + 2);
-    if (samples_per_frame != (unsigned)channels * ATRAC3_FRAME_SAMPLES * 2u)
-        return 0;
-    joint0 = atrac3_le16(extradata + 6);
-    joint1 = atrac3_le16(extradata + 8);
+    coding_mode = atrac3_le16(extradata + 6);
     frame_factor = atrac3_le16(extradata + 10);
-    if (joint0 > 1u || joint1 != joint0 || frame_factor != 1u ||
-        atrac3_le16(extradata + 12) != 0u || (joint0 && (channels & 1)))
+    if (frame_factor == 0u || (coding_mode && channels != 2))
         return 0;
     return block_align == 96 * channels * (int)frame_factor ||
            block_align == 152 * channels * (int)frame_factor ||

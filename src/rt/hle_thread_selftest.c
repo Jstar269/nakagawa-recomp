@@ -18128,6 +18128,20 @@ static void test_at3_synthetic_decode_bookkeeping(void) {
                ATRAC_ERROR_UNKNOWN_FORMAT,
            "AT3 SetData rejects a fmt extension whose cbSize is not 14");
 
+    {
+        /* The fmt extension's [2-5] word is unmeasured on the PSP; the pinned
+         * FFmpeg reads it as samples per channel and does not gate on it. */
+        uint32_t id2 = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3,
+                                       0u, 0u, 0u);
+        td1096_build_at3_track(TRACK, 0x0270u);
+        td24c_wr32(TRACK + 40u, 1024u);
+        expect(id2 < 8u &&
+                   td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, id2, TRACK, 380u, 0u) == 0u,
+               "AT3 SetData accepts the upstream samples-per-channel reading of word [2-5]");
+        if (id2 < 8u)
+            (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id2, 0u, 0u, 0u);
+    }
+
     td1096_build_at3_track(TRACK, 0x0270u);
     expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, id, TRACK, 380u, 0u) == 0u,
            "AT3 SetData accepts RIFF tag 0x0270 with cbSize 14 and stereo flags");
