@@ -399,6 +399,23 @@ HANDLER_METADATA = {
         "status": "partial",
         "limitation": "Memory Stick devctl callback events unmodeled (#341)",
     },
+    "h_IoClose": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-write)",
+            "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)",
+            "src/rt/hle_thread_selftest.c:test_umd_io_console_model",
+        ],
+        "limitation": "the measured cells establish close result 0 for one freshly written host0 file and for the eleven successful fixed UMD/disc/msstor0p1 opens; double close, close during pending async I/O, directory descriptors, standard descriptors and unmeasured error precedence remain host-selftested only (#341)",
+    },
+    "h_IoDclose": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-dopen-0004 and io-dopen-0005 close results)",
+            "src/rt/hle_thread_selftest.c:test_umd_io_console_model",
+        ],
+        "limitation": "the measured cells establish close result 0 for the two successful disc0:/ and disc0:/PSP_GAME directory descriptors only; closing a file, stale or out-of-range descriptor, and listings that were read before the close remain host-selftested only (#341)",
+    },
     "h_IoDopen": {
         "status": "partial",
         "evidence": [
@@ -429,6 +446,22 @@ HANDLER_METADATA = {
             "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
         ],
         "limitation": "measured coverage is one host0 file's create/write/read/append/missing-file path plus PSP-UMDIO-001's fixed open paths and flags; other flag combinations, general error precedence and raw UMD data operations remain unmeasured (#341)",
+    },
+    "h_IoRead": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-read-verify and io-errors)",
+            "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+        ],
+        "limitation": "PSP-IO-001 measures one 64-byte host0 read that returns 64 matching bytes, and that reading descriptor -1 returns a negative result (the exact code is not recorded in public evidence); short reads at end of file, zero-length reads, partial-read position advance, unreadable buffers, write-only descriptors, raw UMD data and standard-stream reads remain unmeasured (#341)",
+    },
+    "h_IoWrite": {
+        "status": "partial",
+        "evidence": [
+            "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-write and io-append)",
+            "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+        ],
+        "limitation": "PSP-IO-001 measures a 64-byte write that returns 64 on a created host0 file and a 32-byte write through an append-mode descriptor that returns 32; read-only descriptors, short writes, zero-length writes, unreadable source buffers, raw devices and standard-stream writes remain unmeasured (#341)",
     },
     "h_IoRemove": {
         "status": "complete",

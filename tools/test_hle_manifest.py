@@ -798,6 +798,47 @@ class LiveManifestTests(unittest.TestCase):
                 self.assertEqual(self.regs[nid]["status"], "unreviewed")
                 self.assertNotIn(handler, meta.HANDLER_METADATA)
 
+    def test_route_a_io_batch_nine_has_measured_cells_and_named_limits(self) -> None:
+        expected = {
+            0x810C4BC3: (
+                "h_IoClose",
+                [
+                    "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-write)",
+                    "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)",
+                    "src/rt/hle_thread_selftest.c:test_umd_io_console_model",
+                ],
+            ),
+            0xEB092469: (
+                "h_IoDclose",
+                [
+                    "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-dopen-0004 and io-dopen-0005 close results)",
+                    "src/rt/hle_thread_selftest.c:test_umd_io_console_model",
+                ],
+            ),
+            0x6A638D83: (
+                "h_IoRead",
+                [
+                    "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-read-verify and io-errors)",
+                    "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+                ],
+            ),
+            0x42EC03AC: (
+                "h_IoWrite",
+                [
+                    "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-write and io-append)",
+                    "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+                ],
+            ),
+        }
+        for nid, (handler, evidence) in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+                self.assertEqual(meta.HANDLER_EVIDENCE[handler], evidence)
+                self.assertIn("measur", meta.HANDLER_LIMITATIONS[handler].lower())
+
     def test_psmf_getters_are_dedicated_partial(self) -> None:
         # Both getters drive the media producer and a host codec backend now, so
         # they are dedicated handlers with an honest `partial` status rather than
