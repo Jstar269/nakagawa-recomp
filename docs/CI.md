@@ -59,6 +59,18 @@ job, and fails when a classifier-applicable job fails, is cancelled, or is
 otherwise incomplete. A failed hygiene/security job or public-export job is never
 hidden by the aggregate.
 
+### ClusterFuzzLite C fuzzing
+
+Pull requests run the pinned ClusterFuzzLite workflow in
+`.github/workflows/clusterfuzzlite.yml`. Its C target
+`tests/fuzzers/test_nk_json_fuzzer.c` calls the public `nk_json_parse` API
+with bounded synthetic bytes and exercises nesting at the `NK_JSON_MAX_DEPTH`
+boundary. The project configuration is `.clusterfuzzlite/project.yaml`; the
+Clang/libFuzzer build is defined by `.clusterfuzzlite/Dockerfile` and
+`.clusterfuzzlite/build.sh`. AddressSanitizer code-change fuzzing is capped
+at 60 seconds with a 4 KiB maximum input. The target does not use title files,
+retail inputs, or hardware.
+
 ### Hygiene beside the substantive gates
 
 The Python, native and Windows jobs wait only for `classify` and the
