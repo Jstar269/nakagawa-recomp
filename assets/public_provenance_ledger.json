@@ -282,7 +282,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f3f535e744b2e9ec1696a88e02c138cc9f456613fc2ae1040a509ee7392894cb"
+      "sha256": "08e81aa3513c8acb8b8cd13206d08e3cb43fdb61523ab1bde1574b5596e49008"
     },
     {
       "path": ".gitignore",
@@ -1417,7 +1417,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4f6b53721f4a5e944cfeae2b495446151ca545a06f307a7be406e950f4ff0af2"
+      "sha256": "e7f7367de3448683a8bfcb65fd0a15766191725bd89b5c778d15f8c18d90cdbe"
     },
     {
       "path": "docs/RECOMP_HELPER_INVENTORY.md",
