@@ -345,11 +345,22 @@ jobs:
               throw "candidate_sha does not match this workflow's checked out commit ($env:GITHUB_SHA)."
           }
 
-      - name: Check out the exact candidate
+      # workflow_dispatch is main-only and its immutable event SHA is checked
+      # against candidate_sha above and after checkout. Leave ref unset here:
+      # the trusted PR job above is the workflow's sole explicit checkout ref.
+      - name: Check out the dispatch commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
           persist-credentials: false
+
+      - name: Confirm checkout matches the frozen candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $checkedOutSha = (git rev-parse HEAD).Trim()
+          if ($checkedOutSha -ne $env:GITHUB_SHA) {
+              throw "Checked-out commit $checkedOutSha does not match the dispatched commit $env:GITHUB_SHA."
+          }
 
       - name: Set up MSYS2 UCRT64
         uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0

@@ -368,6 +368,9 @@ class TestReleaseDocumentation(unittest.TestCase):
     def test_release_docs_match_current_player_boundaries(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         preview = (ROOT / "docs" / "PREVIEW_RELEASE.md").read_text(encoding="utf-8")
+        workflow = (
+            ROOT / ".github" / "workflows" / "provenance-attestation.yml"
+        ).read_text(encoding="utf-8")
         smoke = (ROOT / "docs" / "SMOKE_TEST.md").read_text(encoding="utf-8")
         release_notes = (ROOT / "docs" / "RELEASE_NOTES_v0.0.1.md").read_text(encoding="utf-8")
 
@@ -392,8 +395,10 @@ class TestReleaseDocumentation(unittest.TestCase):
         self.assertIn("#547", preview)
         self.assertNotIn("automatic prerequisite installation is in the works", preview.lower())
         self.assertIn("-ExcludeOptionalFonts", preview)
-        self.assertIn("tools/stage_runtime_dlls.py --target $Bin", preview)
-        self.assertIn("stage_runtime_dlls.py failed with exit code", preview)
+        self.assertIn("python tools/stage_runtime_dlls.py --target dist/bin", workflow)
+        self.assertIn("set -euo pipefail", workflow)
+        self.assertIn("a nonzero exit aborts the job before artifact upload", preview)
+        self.assertIn("does not run the stager again", preview)
         self.assertIn("SDL3.dll", release_notes)
         self.assertIn("SDL3_ttf", release_notes)
         self.assertIn("#556", release_notes)
