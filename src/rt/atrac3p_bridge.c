@@ -2,8 +2,8 @@
 // Copyright (C) 2026 the Nakagawa Recomp authors
 
 /*
- * atrac3p_bridge.c — thin Nakagawa-authored decode bridge over the PR-A
- * ATRAC3+ decoder. No PPSSPP code. All checks are source-owned and
+ * atrac3p_bridge.c — thin Nakagawa-authored decode bridges over the PR-A
+ * ATRAC3+ and FFmpeg n4.4 plain-AT3 decoders. No PPSSPP code. All checks are source-owned and
  * regression-tested in src/rt/atrac3p_bridge_selftest.c.
  *
  * The bridge owns the decoder instance lifetime and the exact frame contract
@@ -92,5 +92,61 @@ int atrac3p_bridge_reset(Atrac3pBridge *b) {
 void atrac3p_bridge_destroy(Atrac3pBridge *b) {
     if (!b) return;
     atrac3p_destroy(b->dec);
+    free(b);
+}
+
+struct Atrac3Bridge {
+    Atrac3Handle *dec;
+    int channels;
+    int block_align;
+    int decode_error;
+};
+
+int atrac3_bridge_create(int channels, int block_align,
+                         const uint8_t *fmt_extradata, Atrac3Bridge **out) {
+    if (!out) return AVERROR(EINVAL);
+    *out = NULL;
+    Atrac3Bridge *b = (Atrac3Bridge *)calloc(1, sizeof(*b));
+    if (!b) return AVERROR(ENOMEM);
+    int ret = atrac3_create(channels, block_align, fmt_extradata, &b->dec);
+    if (ret < 0) {
+        free(b);
+        return ret;
+    }
+    b->channels = channels;
+    b->block_align = block_align;
+    *out = b;
+    return 0;
+}
+
+int atrac3_bridge_decode(Atrac3Bridge *b, const uint8_t *frame, int frame_size,
+                         int16_t *pcm_out, int *samples_out) {
+    if (!b || !frame || !pcm_out || !samples_out) return AVERROR(EINVAL);
+    *samples_out = 0;
+    if (frame_size != b->block_align) return AVERROR(EINVAL);
+    if (b->decode_error < 0) return b->decode_error;
+    uint64_t perf_started = sr_perf_now_ns();
+    int ret = atrac3_decode(b->dec, frame, frame_size, pcm_out, samples_out);
+    if (ret < 0 || *samples_out != ATRAC3_FRAME_SAMPLES) {
+        if (ret >= 0) ret = AVERROR(EINVAL);
+        *samples_out = 0;
+        b->decode_error = ret;
+        if (perf_started) sr_perf_atrac(perf_started, ret);
+        return ret;
+    }
+    if (perf_started) sr_perf_atrac(perf_started, ret);
+    return 0;
+}
+
+int atrac3_bridge_reset(Atrac3Bridge *b) {
+    if (!b) return AVERROR(EINVAL);
+    int ret = atrac3_reset(b->dec);
+    if (ret >= 0) b->decode_error = 0;
+    return ret;
+}
+
+void atrac3_bridge_destroy(Atrac3Bridge *b) {
+    if (!b) return;
+    atrac3_destroy(b->dec);
     free(b);
 }

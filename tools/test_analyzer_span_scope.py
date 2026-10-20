@@ -1152,6 +1152,95 @@ class AnalyzerSpanScopeTests(unittest.TestCase):
         )
         self.assertEqual(analyze.canonical_cfg_gate(report), [])
 
+    def test_codegen_cfg_gate_does_not_false_positive_on_direct_tail_call(self) -> None:
+        # Exercise the production CLI gate with a statically known tail transfer.
+        # The following unreachable word remains visible, while the transfer to
+        # the callable target must not be reported as an ownership gap.
+        words = (
+            0x08000404, 0x00000000,       # 0x1000 j 0x1010; delay slot
+            0x03E00008, 0x00000000,       # 0x1008 return anchor
+            0x24020007, 0x03E00008, 0x00000000,  # 0x1010 tail target
+        )
+        elf_path = self.root / "cfg-tail-call-cli.elf"
+        out_c = self.root / "cfg-tail-call-cli.c"
+        report_path = self.root / "cfg-tail-call-cli.json"
+        write_elf(elf_path, words=words)
+
+        result = subprocess.run(
+            [
+                sys.executable, str(TOOLS / "codegen.py"), str(elf_path), str(out_c),
+                "--base=0", "--profile=none", "--funcs-per-chunk=2000", "--cfg-gate",
+                f"--cfg-report={report_path}",
+            ],
+            cwd=ROOT,
+            env=self._clean_env(),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("CFG_GATE PASS", result.stdout)
+        self.assertTrue(out_c.is_file(), result.stdout + result.stderr)
+        report = package_cache.read_bounded_json(report_path)
+        tail = next(
+            row for row in report["successor_classifications"]
+            if row["source"] == PRIMARY_BASE
+            and row["target"] == PRIMARY_BASE + 16
+            and row["kind"] == "tail-call"
+        )
+        self.assertEqual(tail["classification"], "inter-function-handoff-dispatch")
+
+        # Failing-before proof: a temporary gate mutant that flags this known
+        # tail-call as an ownership gap must fail through the same production
+        # CLI before C emission. The tracked analyzer and controls stay untouched.
+        mutant_tools = self.root / "tail_false_positive_mutant_tools"
+        mutant_tools.mkdir()
+        analyzer_source = (TOOLS / "analyze.py").read_text(encoding="utf-8")
+        mutation_anchor = (
+            '    for conflict in report.get("ownership_conflicts", ()):\n'
+        )
+        self.assertEqual(analyzer_source.count(mutation_anchor), 1)
+        mutant_analyzer = analyzer_source.replace(
+            mutation_anchor,
+            '    if any(\n'
+            '        isinstance(edge, dict) and edge.get("kind") == "tail-call"\n'
+            '        for edge in report.get("edges", ())\n'
+            '    ):\n'
+            '        findings.append({"code": "ownership-gap", "message": "false-positive tail-call mutant"})\n'
+            '    for conflict in report.get("ownership_conflicts", ()):\n',
+            1,
+        )
+        (mutant_tools / "analyze.py").write_text(
+            mutant_analyzer,
+            encoding="utf-8",
+            newline="\n",
+        )
+        (mutant_tools / "codegen.py").write_text(
+            (TOOLS / "codegen.py").read_text(encoding="utf-8"),
+            encoding="utf-8",
+            newline="\n",
+        )
+        mutant_out = self.root / "cfg-tail-call-mutant.c"
+        mutant_report = self.root / "cfg-tail-call-mutant.json"
+        env = self._clean_env(
+            PYTHONPATH=os.pathsep.join((str(mutant_tools), str(TOOLS)))
+        )
+        mutated = subprocess.run(
+            [
+                sys.executable, str(mutant_tools / "codegen.py"), str(elf_path), str(mutant_out),
+                "--base=0", "--profile=none", "--funcs-per-chunk=2000", "--cfg-gate",
+                f"--cfg-report={mutant_report}",
+            ],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(mutated.returncode, 1, mutated.stdout + mutated.stderr)
+        self.assertIn("CFG_GATE ownership-gap", mutated.stderr)
+        self.assertFalse(mutant_out.exists(), "the false-positive mutant must fail before C emission")
+
     def test_codegen_cfg_gate_keeps_unreached_word_visible(self) -> None:
         elf_path = self.root / "cfg-gap-cli.elf"
         out_c = self.root / "cfg-gap-cli.c"

@@ -29,7 +29,7 @@ Live join of every exact `sce*` / `__sce*` API named in
 
 Open-owner counts:
 
-- #341: 43
+- #341: 41
 
 ## Census
 
@@ -51,11 +51,11 @@ Open-owner counts:
 | `sceGeListDeQueue` | implemented | - | dedicated | partial | `h_GeListDeQueue` | `0x5fb86ab0` |
 | `sceGeListSync` | implemented | #341 | dedicated | unreviewed | `h_GeListSync` | `0x03444eb4` |
 | `sceIoGetAsyncStat` | implemented | - | dedicated | partial | `h_IoGetAsyncStat` | `0xcb05f8d6` |
-| `sceIoRead` | implemented | #341 | dedicated | unreviewed | `h_IoRead` | `0x6a638d83` |
+| `sceIoRead` | implemented | - | dedicated | partial | `h_IoRead` | `0x6a638d83` |
 | `sceIoRemove` | implemented | - | dedicated | complete | `h_IoRemove` | `0xf27a9c51` |
 | `sceIoWaitAsync` | implemented | - | dedicated | partial | `h_IoWaitAsync` | `0xe23eec33` |
 | `sceIoWaitAsyncCB` | implemented | - | dedicated | partial | `h_IoWaitAsyncCB` | `0x35dbd746` |
-| `sceIoWrite` | implemented | #341 | dedicated | unreviewed | `h_IoWrite` | `0x42ec03ac` |
+| `sceIoWrite` | implemented | - | dedicated | partial | `h_IoWrite` | `0x42ec03ac` |
 | `sceKernelAllocateFpl` | implemented | - | dedicated | partial | `h_AllocateFpl` | `0xd979e9bf` |
 | `sceKernelAllocateFplCB` | implemented | #341 | dedicated | unreviewed | `h_AllocateFplCB` | `0xe7282cb6` |
 | `sceKernelAllocateVpl` | implemented | - | dedicated | partial | `h_AllocateVpl` | `0xbed27435` |

@@ -81,6 +81,22 @@ While initial development began by adapting upstream open-source toolkits, the a
 
 See [`LLE_FIDELITY_ARCHITECTURE.md`](LLE_FIDELITY_ARCHITECTURE.md) for the fidelity doctrine and [`HLE_AND_WORKAROUND_INVENTORY.md`](HLE_AND_WORKAROUND_INVENTORY.md) for the HLE budget that drives title-specific overrides to zero.
 
+## Roadmap (next 12 months)
+
+The project intends to:
+
+- publish the first Windows release, v0.0.1, with signed build provenance
+  ([#278](https://github.com/Jstar269/nakagawa-recomp/issues/278));
+- broaden title support through generic fixes rather than per-title patches
+  ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308));
+- move more of the runtime from high-level emulation to low-level emulation, measured against a physical PSP;
+- bring the player to Linux, macOS and Android ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306),
+  [#329](https://github.com/Jstar269/nakagawa-recomp/issues/329),
+  [#360](https://github.com/Jstar269/nakagawa-recomp/issues/360)).
+
+It does not intend to bundle games, firmware, keys or fonts, to download game data, or to help users obtain
+games they do not own. Live priorities are the open [GitHub issues](https://github.com/Jstar269/nakagawa-recomp/issues).
+
 ## Dependency direction
 
 The desired direction is:
