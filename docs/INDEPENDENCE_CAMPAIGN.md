@@ -2,6 +2,16 @@
 
 Status: plan — nothing below is implemented unless marked.
 
+**Re-scope (maintainer decision, 2026-10-20).** Inherited code that is already GPL-3.0-compatible
+(sal063 under GPLv3 with credits, PPSSPP lineage under GPL-2.0-or-later) is no longer rewritten
+only to make it original. A G-item is replaced only when (1) hardware or test evidence shows it
+is wrong, or (2) an LLE path makes it unnecessary (as planned for G9 and G12). Where a replacement
+is needed, vendoring or adapting FFmpeg codec subsets or uofw (MIT) is preferred over a fresh
+rewrite, under the `AGENTS.md` section 4 import rules. New code still never comes from PPSSPP,
+JPCSP or other emulator source, and G14 (PGD/amctrl) stays excluded. The group analysis below is
+kept as the inventory and evidence plan; read its "(a) clean-room rewrite" verdicts as
+"replace only under (1) or (2)".
+
 This is the public-safe engineering plan for reaching the owner goal: a
 definitive PSP static-recompilation platform built from exclusively original
 code wherever possible, with as much low-level emulation (LLE) as makes
