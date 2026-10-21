@@ -27376,7 +27376,7 @@ static void test_late_prx_duplicate_base_last_reference(void) {
 #define PSMF_SELFTEST_CONFIG   0x09011000u
 #define PSMF_SELFTEST_VIDEO    0x09012000u
 #define PSMF_SELFTEST_CREATE   0x09013000u
-#define PSMF_SELFTEST_ARGS     0x09014000u   /* Start()'s seventh argument, per the o32 ABI */
+#define PSMF_SELFTEST_ARGS     0x09014000u   /* the calls' stack pointer; Start() takes no stack argument */
 #define PSMF_SELFTEST_DISPLAY  0x09020000u
 
 /* The runtime's stderr is the surface a consumer actually reads, so the always-on media
@@ -27462,7 +27462,6 @@ static void test_psmf_rejected_stream_names_the_boundary(void) {
     MEM_W32(PSMF_SELFTEST_CONFIG + 12, 0u);
     MEM_W32(PSMF_SELFTEST_CONFIG + 16, 0u);             /* play mode */
     MEM_W32(PSMF_SELFTEST_CONFIG + 20, 0u);             /* play speed */
-    MEM_W32(PSMF_SELFTEST_ARGS, 0u);                    /* Start()'s pts argument */
     title_hle_write_cstr(PSMF_SELFTEST_PATH, s_psmf_synthetic_path);
     MEM_W32(PSMF_SELFTEST_VIDEO + 0, 0u);               /* buffer width 0: let the player choose */
     MEM_W32(PSMF_SELFTEST_VIDEO + 4, PSMF_SELFTEST_DISPLAY);
@@ -27518,6 +27517,62 @@ static void test_psmf_rejected_stream_names_the_boundary(void) {
                flight_event.arg0 == 2048u,
            "psmf: the flight event carries the media class and the refused offset");
     sr_flight_test_disable();
+}
+
+/* ---- scePsmfPlayerStart(player, data, initPts): initPts is the third argument ---------- */
+
+#define PSMF_ERR_PARAM                   0x80616008u
+
+/* initPts arrives in a2. t0 is the fifth EABI argument, which this three-argument call
+ * never sets, so whatever a caller last left there must not reach the player. */
+static uint32_t psmf_start_call(CpuState *cpu, uint32_t init_pts, uint32_t t0_leftover) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = PSMF_SELFTEST_PLAYER;
+    cpu->r[5] = PSMF_SELFTEST_CONFIG;
+    cpu->r[6] = init_pts;
+    cpu->r[8] = t0_leftover;
+    cpu->r[29] = PSMF_SELFTEST_ARGS;
+    return sr_syscall(cpu, NID_SCE_PSMF_PLAYER_START);
+}
+
+/* A version-1 stream (a zero bound in its video stream entry) accepts only initPts 0. The
+ * handler used to read initPts from t0, so a title calling Start(player, data, 0) with a
+ * nonzero value left in t0 got a parameter error and its movie never started, while a
+ * nonzero initPts was accepted whenever t0 happened to be 0. */
+static void test_psmf_start_reads_init_pts_from_the_third_argument(void) {
+    CpuState cpu;
+
+    sr_hle_init();
+    psmf_synthetic_build();
+    memset(s_psmf_synthetic + 0x82 + 4, 0, 4);          /* version-1 stream */
+    s_psmf_synthetic_enabled = 1;
+
+    MEM_W32(PSMF_SELFTEST_CREATE + 0, PSMF_SELFTEST_BUFFER);
+    MEM_W32(PSMF_SELFTEST_CREATE + 4, 0x00285800u);
+    MEM_W32(PSMF_SELFTEST_CREATE + 8, 0x30u);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 0, 0x0eu);           /* H.264 video */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 4, 0u);              /* video stream 0 */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 8, 0u);              /* no audio codec in this stream */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 12, 0u);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 16, 0u);             /* play mode */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 20, 0u);             /* play speed */
+    title_hle_write_cstr(PSMF_SELFTEST_PATH, s_psmf_synthetic_path);
+
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_CREATE, PSMF_SELFTEST_PLAYER,
+                     PSMF_SELFTEST_CREATE) == 0u, "psmf start: the player is created");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_SET_PSMF_CB, PSMF_SELFTEST_PLAYER,
+                     PSMF_SELFTEST_PATH) == 0u, "psmf start: the version-1 stream is opened");
+    expect(psmf_start_call(&cpu, 0u, 0x0001d4c0u) == 0u,
+           "psmf start: initPts 0 in a2 starts a version-1 stream whatever t0 holds");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_GET_STATUS, PSMF_SELFTEST_PLAYER, 0u) ==
+               PSMF_STATUS_PLAYING, "psmf start: the guest sees a playing player");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_STOP, PSMF_SELFTEST_PLAYER, 0u) == 0u,
+           "psmf start: the player stops");
+    expect(psmf_start_call(&cpu, 0x0001d4c0u, 0u) == PSMF_ERR_PARAM,
+           "psmf start: a nonzero initPts in a2 is refused for a version-1 stream even when t0 is 0");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_DELETE, PSMF_SELFTEST_PLAYER, 0u) == 0u,
+           "psmf start: the player is deleted");
+    s_psmf_synthetic_enabled = 0;
 }
 
 static void test_flight_recorder_trace(void) {
@@ -29882,6 +29937,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_host_skipped_start_stop_unload_reload();
     test_late_prx_duplicate_base_last_reference();
     test_psmf_rejected_stream_names_the_boundary();
+    test_psmf_start_reads_init_pts_from_the_third_argument();
     test_flight_recorder_trace();
     test_flight_recorder_fault_trigger();
     test_flight_recorder_host_fault();

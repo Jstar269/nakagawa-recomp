@@ -899,6 +899,22 @@ class CoverageWiringTests(unittest.TestCase):
         self.assertIn("native-core-tests", text)
         self.assertNotIn("gcovr", text)
 
+    def test_native_gcov_reports_are_generated_from_the_repository_root(self) -> None:
+        text = _folded_run(_ci_step(self.blocks["native_tools"], self.C_MEASURE_STEP) or [])
+        # gcov runs in the step's working directory, the repository root, where the
+        # objects' recorded src/... paths resolve. A cd into the build directory would
+        # bring back the header-only reports Codecov rejected.
+        self.assertNotIn('cd "$coverage_build"', text)
+        # One gcov run per object: several objects in one run append duplicate line
+        # records for a shared source into the same report.
+        self.assertIn('for gcno in "$coverage_build"/*.gcno; do', text)
+        self.assertIn('gcov -p -b -r "$gcno"', text)
+        self.assertIn('gcov_dir="$RUNNER_TEMP/native-core-gcov"', text)
+        # The selftests' own sources stay out of the number, and an empty set of
+        # reports fails the step instead of uploading nothing.
+        self.assertIn("_selftest\\.c$", text)
+        self.assertIn('test "${#reports[@]}" -gt 0', text)
+
     def test_both_uploads_use_the_pinned_action_oidc_and_the_declared_flags(self) -> None:
         for job, (name, flag, report) in self.UPLOADS.items():
             with self.subTest(job=job):
@@ -911,9 +927,12 @@ class CoverageWiringTests(unittest.TestCase):
                 )
                 self.assertIn("use_oidc: true", text)
                 if report is None:
-                    self.assertIn("directory: ${{ runner.temp }}/native-core-coverage", text)
-                    self.assertIn("plugins: gcov", text)
-                    self.assertIn("gcov_include: src/", text)
+                    # The reports are generated in the measuring step; the action only
+                    # uploads them. Its gcov plugin runs gcov from the build directory,
+                    # where the objects' repository-relative sources cannot be opened.
+                    self.assertIn("directory: ${{ runner.temp }}/native-core-gcov", text)
+                    self.assertIn("plugins: noop", text)
+                    self.assertNotIn("plugins: gcov", text)
                 else:
                     self.assertIn(f"files: {report}", text)
                 self.assertIn(f"flags: {flag}", text)

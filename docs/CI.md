@@ -362,8 +362,15 @@ whenever their jobs run; neither can change a gate's result.
   `native-core-tests` target in its own `$RUNNER_TEMP/native-core-coverage`
   `BUILD_DIR`, with `--coverage` appended to the Makefile's own `CFLAGS` (read
   back through `compiler-info`, so the measured build uses the default
-  configuration) and to `LDFLAGS`. Codecov Action's `gcov` plugin reads the raw
-  `.gcno`/`.gcda` files from that directory and includes `src/`. The unprofiled
+  configuration) and to `LDFLAGS`. The same step then runs `gcov -p -b -r` once per
+  object from the repository root, where the objects' recorded `src/...` source
+  paths resolve, and collects the reports in `$RUNNER_TEMP/native-core-gcov`. The
+  action's own `gcov` plugin is not used (`plugins: noop`): it runs gcov from the
+  build directory, cannot open any source there, and uploads header-only reports
+  that Codecov rejects. One run per object keeps a source shared by several
+  selftests from getting duplicate line records, `-r` keeps system headers and
+  generated fixtures out, and reports for the selftests' own `*_selftest.c` sources
+  are dropped, as `tools/test_*.py` is for Python. The unprofiled
   `make CC=gcc native-core-tests` gate still runs first and is unchanged. The
   `CFLAGS`/`LDFLAGS` route instruments the targets that compile through those
   variables; a target that hard-codes its own compile flags is not measured, so
@@ -383,8 +390,8 @@ one surface keeps the other flag's last report. The OpenSSF Best Practices
 Silver criterion "statement coverage >= 80%" is the target these numbers are
 watched against; it is not a gate, and promoting either status to a required
 check is a separate maintainer decision. Python's `coverage` package is installed
-from `tools/requirements-lock.txt` with `--require-hashes`; the C upload uses the
-action's gcov support and adds no Python dependency. A change to `codecov.yml` matches no classifier
+from `tools/requirements-lock.txt` with `--require-hashes`; the C reports come
+from the runner's own `gcov` and add no Python dependency. A change to `codecov.yml` matches no classifier
 predicate, so it fails closed to the full matrix like any other unknown path.
 
 ## Classifier invariants
