@@ -409,7 +409,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a1311cff26948252b6e6b11d7c6c38918417aa8a0ee5d11359adc7039571348f"
+      "sha256": "29d58c6db8bd4943a0742a659327b177170bf36314bfe3b7908061b87f756337"
     },
     {
       "path": "PUBLIC_EXPORT.json",
@@ -426,7 +426,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "23af17c95d3c6670bc88e52c680961a9f594f8c74cfe46633d60d18e69a7b323"
+      "sha256": "3ce37e54a839ee4d2f68b63ba4ac6e30860d70f61ee1841acf5e1b7bb2588631"
     },
     {
       "path": "REVIEW.md",
@@ -775,7 +775,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "0ae93126176f2291486cf33410401acc935ba885d417164d7d24adcd44be4247"
+      "sha256": "47d271e42bae916113a339fe08fef3974fc769a450118589fd3fa74d7a7d5278"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -796,7 +796,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "d6d0ce8ce8a6ceeadebcd27e5a8b5b7251963fc211f41f0f453aa102d3045f7a"
+      "sha256": "b22dd6c4b29c3be0681e873f434754e05ad8a3cdf86467f442d9927b21d589ac"
     },
     {
       "path": "assets/third_party_components.json",
@@ -1183,7 +1183,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "574fb0c36df9ca6a923d480ed936ba1be6370980b3e4d9b13093297ca5bd40a4"
+      "sha256": "72fe93d87f5442ed958075a270393201ee8a76891b0801c4788fae728d8ee1c9"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1447,7 +1447,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7a0d48627ed865c0b19a731c92bde675cce286c4c916ec1c53115c7f0d08d915"
+      "sha256": "fe5021b86dbe922f628e0760de48c99ad2797cd63849daf68645c8a6602dfb12"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1622,6 +1622,24 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "d4c67a45957bd6af0a1f3d427bb7d2f6e16ae471afc88eb92a934a5eabcd5575"
+    },
+    {
+      "path": "docs/images/brand/nakagawa-mark-dark.svg",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "6e927f9a71161e4e4b69efc5e04555c31ee7951a01f34fdaf6a1d44e0ed21b06"
+    },
+    {
+      "path": "docs/images/brand/nakagawa-mark-light.svg",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "a26fe65e0347ee10be3bcbe97f8ed54c1de6d875363e59fbf2755cf95f0fab34"
     },
     {
       "path": "docs/images/showcase-breakout-v180.png",
@@ -10051,7 +10069,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5accb356043ac5728b1c49c3de43d017c2f5a3202a36037911cd6c5e771bd96b"
+      "sha256": "003e2c8ee2ed183e57f9bd148673e5dfa289c9123120074f8c65cf8320e8eae0"
     },
     {
       "path": "tools/test_recomp_helper_inventory.py",
