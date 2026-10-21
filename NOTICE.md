@@ -18,8 +18,8 @@ it is not legal advice or a conclusion that any combined distribution is cleared
 - **PSPSDK / PSPDEV** — permissive per-component declarations and BSD-family
   notices for public ABI definitions and source-owned fixtures. The applicable
   notices are in `THIRD_PARTY_LICENSES/PSPSDK.txt` and `assets/upstream/`.
-- **FFmpeg n4.4 ATRAC3+ subset** — LGPL-2.1-or-later. The imported decoder and
-  its license/provenance file are under `src/rt/atrac3p/`; the project wrapper
+- **FFmpeg n4.4 ATRAC3 and ATRAC3+ subsets** — LGPL-2.1-or-later. The imported
+  decoders and their license/provenance file are under `src/rt/atrac3p/`; the project wrapper
   remains separately identified in the ledger. Two byte-identical imports,
   `libavcodec/fft_init_table.c` and `libavcodec/fft_table.h`, also carry a MIPS
   Technologies, Inc. BSD-3-Clause notice. Its verbatim text is in
@@ -131,7 +131,7 @@ License choices and combination notes:
 - The **MinGW runtime** licenses (`gcc-libs`, `winpthreads`) were already
   covered by the existing records; no new text was needed for them.
 
-The FFmpeg ATRAC3+ subset (LGPL-2.1-or-later) is statically linked. The whole
+The FFmpeg ATRAC3 and ATRAC3+ subsets (LGPL-2.1-or-later) are statically linked. The whole
 program is distributed under the GNU GPL version 3 (the project's own files are
 GPL-3.0-or-later; the player and `nk_decrypt` also link the GPL-3.0-only files
 listed above) with its complete corresponding source, and `SOURCE.txt` names the exact repository commit or tag of each

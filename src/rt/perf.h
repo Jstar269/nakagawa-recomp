@@ -134,6 +134,28 @@ void     sr_perf_guest_begin(void);
 void     sr_perf_guest_end(void);
 void     sr_perf_guest_idle_wait(uint64_t started_ns);
 void     sr_perf_vblank(void);
+
+/* GPU replay-boundary counters (SR_GPU_STATS).  perf.c is linked into builds with no GPU
+ * backend, so the backend registers a cumulative snapshot reader instead of perf calling
+ * it.  Each telemetry interval records the difference from the previous snapshot; a
+ * counter that moved backwards (the backend's stats were reset) counts from zero.  The
+ * reader fills every slot; high-water marks and per-boundary splits are not exported
+ * here because they are not per-interval counts. */
+typedef enum SrPerfGpuReplayCounter {
+    SR_PERF_GPU_QUEUE_SUBMITS = 0,
+    SR_PERF_GPU_BATCHES,
+    SR_PERF_GPU_DRAWS,
+    SR_PERF_GPU_SNAPSHOT_REQUESTS,
+    SR_PERF_GPU_SNAPSHOT_COPIES,
+    SR_PERF_GPU_UPLOAD_RING_RESERVATIONS,
+    SR_PERF_GPU_UPLOAD_RING_BYTES,
+    SR_PERF_GPU_UPLOAD_RING_WRAPS,
+    SR_PERF_GPU_UPLOAD_RING_FALLBACKS,
+    SR_PERF_GPU_REPLAY_COUNT,
+} SrPerfGpuReplayCounter;
+
+typedef void (*SrPerfGpuReplaySource)(uint64_t out[SR_PERF_GPU_REPLAY_COUNT]);
+void     sr_perf_set_gpu_replay_source(SrPerfGpuReplaySource source);
 /* One latch of the display source: `gap_us` is host-time microseconds since the
  * previous latch, `periods` how many source periods elapsed, `masked` non-zero
  * when those periods elapsed with the CPU interrupt bit CLEAR (a gap the guest

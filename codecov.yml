@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2025-2026 the psp-recomp authors
+#
+# Codecov configuration for the coverage the CI workflow publishes.
+#
+# Coverage is reported for information only. Neither status may block a merge
+# yet: the OpenSSF Best Practices Silver criterion "statement coverage >= 80%"
+# is a target this project is working toward, not a gate it already satisfies,
+# and a coverage regression must never be able to freeze an unrelated fix.
+# Promotion to a required status is a separate maintainer decision once the
+# numbers have been watched long enough to trust them.
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
+
+# The two measured surfaces upload independently and at different times: the
+# python flag from the Python tooling shards, the c flag from the native core
+# measurement. carryforward keeps each flag's last report current for a commit
+# where only the other surface ran, so neither report silently disappears.
+flag_management:
+  individual_flags:
+    - name: python
+      carryforward: true
+    - name: c
+      carryforward: true

@@ -369,6 +369,7 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 #define NID_SCE_ATRAC_SET_DATA 0x0e2a73abu
 #define NID_SCE_ATRAC_SET_DATA_AND_GET_ID 0x7a20e7afu
 #define NID_SCE_ATRAC_GET_ID 0x780f88d1u
+#define NID_SCE_ATRAC_DECODE_DATA 0x6a8c3cd5u
 #define NID_SCE_ATRAC_GET_SOUND_SAMPLE 0xa2bba8beu
 #define NID_SCE_ATRAC_GET_STREAM_DATA_INFO 0x5d268707u
 #define NID_SCE_ATRAC_GET_REMAIN_FRAME 0x9ae849a7u
@@ -380,10 +381,12 @@ extern void sr_hle_test_reset_rtc_epoch(void);
 
 #define ATRAC_CODEC_AT3PLUS 0x1000u
 #define ATRAC_CODEC_AT3 0x1001u
+#define ATRAC3_FRAME_SAMPLES 1024u
 #define ATRAC_ERROR_NO_ATRACID 0x80630003u
 #define ATRAC_ERROR_INVALID_CODECTYPE 0x80630004u
 #define ATRAC_ERROR_BAD_ATRACID 0x80630005u
 #define ATRAC_ERROR_UNKNOWN_FORMAT 0x80630006u
+#define ATRAC_ERROR_DECODE_DATA_AFTER_END 0x80630024u
 #define ATRAC_ERROR_SIZE_TOO_SMALL 0x80630011u
 #define NID_SCE_UTILITY_LOAD_MODULE 0x2a2b3de0u
 #define NID_SCE_UTILITY_UNLOAD_MODULE 0xe49bfe92u
@@ -2511,6 +2514,10 @@ static void test_io_async_and_path_imports(void) {
     cpu.r[6] = (uint32_t)(sizeof(new_bytes) - 1u);
     expect(sr_hle_test_io_write_async(&cpu) == SCE_KERNEL_ERROR_ASYNC_BUSY,
            "a second asynchronous request on the same fd reports ASYNC_BUSY");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = fd;
+    expect(sr_hle_test_io_close(&cpu) == SCE_KERNEL_ERROR_ASYNC_BUSY,
+           "sceIoClose on a descriptor with a pending asynchronous request reports ASYNC_BUSY");
 
     MEM_W32(RESULT_ADDR, 0xfeedfaceu);
     MEM_W32(RESULT_ADDR + 4u, 0xdeadbeefu);
@@ -18058,6 +18065,125 @@ static void td24c_build_track(uint32_t base, uint32_t fileSize, uint32_t avgByte
     td24c_wr32(base + 52u, fileSize - 56u);
 }
 
+/* One-frame, all-zero AT3 data is a synthetic silent frame. It exercises the
+ * real FFmpeg decoder and HLE bookkeeping without title/game bytes. */
+static void td1096_build_at3_track(uint32_t base, uint16_t formatTag) {
+    enum { FILE_SIZE = 380u, FRAME_SIZE = 304u };
+    for (uint32_t i = 0; i < FILE_SIZE; i++)
+        g_mem[base - 0x08000000u + i] = 0;
+    td24c_wr32(base + 0u, 0x46464952u);           /* RIFF */
+    td24c_wr32(base + 4u, FILE_SIZE - 8u);
+    td24c_wr32(base + 8u, 0x45564157u);           /* WAVE */
+    td24c_wr32(base + 12u, 0x20746d66u);          /* fmt  */
+    td24c_wr32(base + 16u, 32u);
+    td24c_wr16(base + 20u, formatTag);            /* 0x0270 for AT3 */
+    td24c_wr16(base + 22u, 2u);
+    td24c_wr32(base + 24u, 44100u);
+    td24c_wr32(base + 28u, 13230u);
+    td24c_wr16(base + 32u, FRAME_SIZE);
+    td24c_wr16(base + 34u, 0u);
+    td24c_wr16(base + 36u, 14u);                  /* cbSize */
+    td24c_wr16(base + 38u, 1u);                   /* AT3 extension version */
+    td24c_wr32(base + 40u, 4096u);                /* 2 ch * 1024 * s16 */
+    td24c_wr16(base + 44u, 1u);                   /* joint stereo */
+    td24c_wr16(base + 46u, 1u);                   /* duplicate mode word */
+    td24c_wr16(base + 48u, 1u);                   /* frame factor */
+    td24c_wr16(base + 50u, 0u);                   /* reserved */
+    td24c_wr32(base + 52u, 0x74636166u);          /* fact */
+    td24c_wr32(base + 56u, 8u);
+    td24c_wr32(base + 60u, ATRAC3_FRAME_SAMPLES);
+    td24c_wr32(base + 64u, 0u);                   /* synthetic, NOT_MEASURED */
+    td24c_wr32(base + 68u, 0x61746164u);          /* data */
+    td24c_wr32(base + 72u, FRAME_SIZE);
+    /* Valid silent joint-stereo sound-unit headers: channel 1 starts with
+     * 0x28; reverse-ordered channel 2 carries id 3 at the end of the frame. */
+    g_mem[base - 0x08000000u + 76u] = 0xa0u;
+    g_mem[base - 0x08000000u + 76u + FRAME_SIZE - 2u] = 0x0cu;
+}
+
+static void test_at3_synthetic_decode_bookkeeping(void) {
+    enum {
+        TRACK = 0x08002000u,
+        PCM_OUT = 0x08003000u,
+        OUT_N = 0x08004100u,
+        OUT_END = 0x08004104u,
+        OUT_REMAIN = 0x08004108u,
+    };
+    reset_fixture();
+    sr_hle_init();
+
+    uint32_t id = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3,
+                                  0u, 0u, 0u);
+    expect(id < 8u, "AT3 fixture allocates codec type 0x1001");
+    if (id >= 8u) return;
+
+    td1096_build_at3_track(TRACK, 0x1001u);
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, id, TRACK, 380u, 0u) ==
+               ATRAC_ERROR_UNKNOWN_FORMAT,
+           "AT3 SetData rejects internal codec ID 0x1001 as a RIFF fmt tag");
+
+    td1096_build_at3_track(TRACK, 0x0270u);
+    td24c_wr16(TRACK + 36u, 12u);
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, id, TRACK, 380u, 0u) ==
+               ATRAC_ERROR_UNKNOWN_FORMAT,
+           "AT3 SetData rejects a fmt extension whose cbSize is not 14");
+
+    {
+        /* The fmt extension's [2-5] word is unmeasured on the PSP; the pinned
+         * FFmpeg reads it as samples per channel and does not gate on it. */
+        uint32_t id2 = td24b_dispatch4(NID_SCE_ATRAC_GET_ID, ATRAC_CODEC_AT3,
+                                       0u, 0u, 0u);
+        td1096_build_at3_track(TRACK, 0x0270u);
+        td24c_wr32(TRACK + 40u, 1024u);
+        expect(id2 < 8u &&
+                   td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, id2, TRACK, 380u, 0u) == 0u,
+               "AT3 SetData accepts the upstream samples-per-channel reading of word [2-5]");
+        if (id2 < 8u)
+            (void)td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id2, 0u, 0u, 0u);
+    }
+
+    td1096_build_at3_track(TRACK, 0x0270u);
+    expect(td24b_dispatch4(NID_SCE_ATRAC_SET_DATA, id, TRACK, 380u, 0u) == 0u,
+           "AT3 SetData accepts RIFF tag 0x0270 with cbSize 14 and stereo flags");
+    MEM_W32(OUT_N, 0xdeadbeefu);
+    expect(td24b_dispatch4(NID_SCE_ATRAC_GET_MAX_SAMPLE, id, OUT_N, 0u, 0u) == 0u &&
+               MEM_R32(OUT_N) == ATRAC3_FRAME_SAMPLES,
+           "sceAtracGetMaxSample reports 1024 for plain AT3");
+
+    CpuState cpu;
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = id;
+    cpu.r[5] = PCM_OUT;
+    cpu.r[6] = OUT_N;
+    cpu.r[7] = OUT_END;
+    cpu.r[8] = OUT_REMAIN;
+    MEM_W32(OUT_N, 0xdeadbeefu);
+    MEM_W32(OUT_END, 0xdeadbeefu);
+    MEM_W32(OUT_REMAIN, 0xdeadbeefu);
+    uint32_t decode_ret = sr_syscall(&cpu, NID_SCE_ATRAC_DECODE_DATA);
+    expect(decode_ret == 0u &&
+               MEM_R32(OUT_N) == ATRAC3_FRAME_SAMPLES &&
+               MEM_R32(OUT_END) == 1u &&
+               MEM_R32(OUT_REMAIN) == 0xffffffffu,
+           "AT3 DecodeData returns 1024 samples, final-frame flag, and all-data remain=-1");
+
+    cpu.r[4] = id;
+    cpu.r[5] = PCM_OUT;
+    cpu.r[6] = OUT_N;
+    cpu.r[7] = OUT_END;
+    cpu.r[8] = OUT_REMAIN;
+    MEM_W32(OUT_N, 0xdeadbeefu);
+    MEM_W32(OUT_END, 0xdeadbeefu);
+    MEM_W32(OUT_REMAIN, 0xdeadbeefu);
+    uint32_t end_ret = sr_syscall(&cpu, NID_SCE_ATRAC_DECODE_DATA);
+    expect(end_ret == ATRAC_ERROR_DECODE_DATA_AFTER_END &&
+               MEM_R32(OUT_N) == 0u && MEM_R32(OUT_END) == 0u &&
+               MEM_R32(OUT_REMAIN) == 0xffffffffu,
+           "AT3 DecodeData after the final frame returns 0x80630024 with outN=0");
+    expect(td24b_dispatch4(NID_SCE_ATRAC_RELEASE_ID, id, 0u, 0u, 0u) == 0u,
+           "AT3 fixture releases its decoder context");
+}
+
 static void test_td24c_atrac_info_batch(void) {
     enum {
         TD24C_BASE = 0x08002000u,
@@ -27250,7 +27376,7 @@ static void test_late_prx_duplicate_base_last_reference(void) {
 #define PSMF_SELFTEST_CONFIG   0x09011000u
 #define PSMF_SELFTEST_VIDEO    0x09012000u
 #define PSMF_SELFTEST_CREATE   0x09013000u
-#define PSMF_SELFTEST_ARGS     0x09014000u   /* Start()'s seventh argument, per the o32 ABI */
+#define PSMF_SELFTEST_ARGS     0x09014000u   /* the calls' stack pointer; Start() takes no stack argument */
 #define PSMF_SELFTEST_DISPLAY  0x09020000u
 
 /* The runtime's stderr is the surface a consumer actually reads, so the always-on media
@@ -27336,7 +27462,6 @@ static void test_psmf_rejected_stream_names_the_boundary(void) {
     MEM_W32(PSMF_SELFTEST_CONFIG + 12, 0u);
     MEM_W32(PSMF_SELFTEST_CONFIG + 16, 0u);             /* play mode */
     MEM_W32(PSMF_SELFTEST_CONFIG + 20, 0u);             /* play speed */
-    MEM_W32(PSMF_SELFTEST_ARGS, 0u);                    /* Start()'s pts argument */
     title_hle_write_cstr(PSMF_SELFTEST_PATH, s_psmf_synthetic_path);
     MEM_W32(PSMF_SELFTEST_VIDEO + 0, 0u);               /* buffer width 0: let the player choose */
     MEM_W32(PSMF_SELFTEST_VIDEO + 4, PSMF_SELFTEST_DISPLAY);
@@ -27392,6 +27517,62 @@ static void test_psmf_rejected_stream_names_the_boundary(void) {
                flight_event.arg0 == 2048u,
            "psmf: the flight event carries the media class and the refused offset");
     sr_flight_test_disable();
+}
+
+/* ---- scePsmfPlayerStart(player, data, initPts): initPts is the third argument ---------- */
+
+#define PSMF_ERR_PARAM                   0x80616008u
+
+/* initPts arrives in a2. t0 is the fifth EABI argument, which this three-argument call
+ * never sets, so whatever a caller last left there must not reach the player. */
+static uint32_t psmf_start_call(CpuState *cpu, uint32_t init_pts, uint32_t t0_leftover) {
+    memset(cpu, 0, sizeof(*cpu));
+    cpu->r[4] = PSMF_SELFTEST_PLAYER;
+    cpu->r[5] = PSMF_SELFTEST_CONFIG;
+    cpu->r[6] = init_pts;
+    cpu->r[8] = t0_leftover;
+    cpu->r[29] = PSMF_SELFTEST_ARGS;
+    return sr_syscall(cpu, NID_SCE_PSMF_PLAYER_START);
+}
+
+/* A version-1 stream (a zero bound in its video stream entry) accepts only initPts 0. The
+ * handler used to read initPts from t0, so a title calling Start(player, data, 0) with a
+ * nonzero value left in t0 got a parameter error and its movie never started, while a
+ * nonzero initPts was accepted whenever t0 happened to be 0. */
+static void test_psmf_start_reads_init_pts_from_the_third_argument(void) {
+    CpuState cpu;
+
+    sr_hle_init();
+    psmf_synthetic_build();
+    memset(s_psmf_synthetic + 0x82 + 4, 0, 4);          /* version-1 stream */
+    s_psmf_synthetic_enabled = 1;
+
+    MEM_W32(PSMF_SELFTEST_CREATE + 0, PSMF_SELFTEST_BUFFER);
+    MEM_W32(PSMF_SELFTEST_CREATE + 4, 0x00285800u);
+    MEM_W32(PSMF_SELFTEST_CREATE + 8, 0x30u);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 0, 0x0eu);           /* H.264 video */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 4, 0u);              /* video stream 0 */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 8, 0u);              /* no audio codec in this stream */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 12, 0u);
+    MEM_W32(PSMF_SELFTEST_CONFIG + 16, 0u);             /* play mode */
+    MEM_W32(PSMF_SELFTEST_CONFIG + 20, 0u);             /* play speed */
+    title_hle_write_cstr(PSMF_SELFTEST_PATH, s_psmf_synthetic_path);
+
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_CREATE, PSMF_SELFTEST_PLAYER,
+                     PSMF_SELFTEST_CREATE) == 0u, "psmf start: the player is created");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_SET_PSMF_CB, PSMF_SELFTEST_PLAYER,
+                     PSMF_SELFTEST_PATH) == 0u, "psmf start: the version-1 stream is opened");
+    expect(psmf_start_call(&cpu, 0u, 0x0001d4c0u) == 0u,
+           "psmf start: initPts 0 in a2 starts a version-1 stream whatever t0 holds");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_GET_STATUS, PSMF_SELFTEST_PLAYER, 0u) ==
+               PSMF_STATUS_PLAYING, "psmf start: the guest sees a playing player");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_STOP, PSMF_SELFTEST_PLAYER, 0u) == 0u,
+           "psmf start: the player stops");
+    expect(psmf_start_call(&cpu, 0x0001d4c0u, 0u) == PSMF_ERR_PARAM,
+           "psmf start: a nonzero initPts in a2 is refused for a version-1 stream even when t0 is 0");
+    expect(psmf_call(&cpu, NID_SCE_PSMF_PLAYER_DELETE, PSMF_SELFTEST_PLAYER, 0u) == 0u,
+           "psmf start: the player is deleted");
+    s_psmf_synthetic_enabled = 0;
 }
 
 static void test_flight_recorder_trace(void) {
@@ -29717,6 +29898,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_power_identity_getters_measured();
     test_atrac_stream_ring_wrap();
     test_td24c_atrac_info_batch();
+    test_at3_synthetic_decode_bookkeeping();
     test_td24d_hle_batch();
     test_impose_language_mode_pair();
     test_sas_core_mix_preserves_caller_pcm();
@@ -29755,6 +29937,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_host_skipped_start_stop_unload_reload();
     test_late_prx_duplicate_base_last_reference();
     test_psmf_rejected_stream_names_the_boundary();
+    test_psmf_start_reads_init_pts_from_the_third_argument();
     test_flight_recorder_trace();
     test_flight_recorder_fault_trigger();
     test_flight_recorder_host_fault();

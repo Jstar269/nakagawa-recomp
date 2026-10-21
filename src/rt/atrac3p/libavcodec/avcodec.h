@@ -8,8 +8,9 @@
  * Only the declarations the imported decoder subset actually references are
  * kept. This is NOT the FFmpeg public API header; it is a closed standalone
  * subset. The AVCodecContext below carries exactly the fields the imported
- * atrac3plus decoder code touches (priv_data, channels, channel_layout,
- * block_align, flags, sample_fmt, codec_id, frame_number). See
+ * atrac3plus and atrac3 decoder code touches (priv_data, channels,
+ * channel_layout, block_align, flags, sample_fmt, codec_id, frame_number,
+ * extradata, extradata_size). See
  * src/rt/atrac3p/PROVENANCE.md.
  */
 
@@ -45,6 +46,8 @@
  * (avctx->codec_id == AV_CODEC_ID_ATRAC3P). The numeric value is not
  * meaningful in this subset; the wrapper sets the same constant. */
 #define AV_CODEC_ID_ATRAC3P 0x17008
+#define AV_CODEC_ID_ATRAC3  0x17003
+#define AV_CODEC_ID_ATRAC3AL 0x17004
 
 /* Minimal codec context carrying only the fields the imported decoder subset
  * uses. The wrapper allocates one per decoder instance and treats it as the
@@ -58,6 +61,8 @@ typedef struct AVCodecContext {
     int sample_fmt;
     int codec_id;
     int frame_number;     /* read by one imported av_log call site */
+    const uint8_t *extradata;
+    int extradata_size;
 } AVCodecContext;
 
 #endif /* AT3P_LIBAVCODEC_AVCODEC_H */

@@ -3012,6 +3012,22 @@ void gegpu_replay_stats_get(GeGpuReplayStats *out) {
     if (out) *out = s_replay_stats;
 }
 
+/* Cumulative SR_GPU_STATS replay counters for the perf CSV (perf.c samples this once per
+ * interval).  Only the per-interval counts are exported; see SrPerfGpuReplayCounter. */
+static void gpu_replay_snapshot(uint64_t out[SR_PERF_GPU_REPLAY_COUNT]) {
+    GeGpuReplayStats s;
+    gegpu_replay_stats_get(&s);
+    out[SR_PERF_GPU_QUEUE_SUBMITS] = s.queue_submits;
+    out[SR_PERF_GPU_BATCHES] = s.batches;
+    out[SR_PERF_GPU_DRAWS] = s.draws;
+    out[SR_PERF_GPU_SNAPSHOT_REQUESTS] = s.snapshot_requests;
+    out[SR_PERF_GPU_SNAPSHOT_COPIES] = s.snapshot_copies;
+    out[SR_PERF_GPU_UPLOAD_RING_RESERVATIONS] = s.upload_ring_reservations;
+    out[SR_PERF_GPU_UPLOAD_RING_BYTES] = s.upload_ring_bytes;
+    out[SR_PERF_GPU_UPLOAD_RING_WRAPS] = s.upload_ring_wraps;
+    out[SR_PERF_GPU_UPLOAD_RING_FALLBACKS] = s.upload_ring_fallbacks;
+}
+
 void gegpu_cpu_profile_stats_get(GeGpuCpuProfileStats *out) {
     if (out) *out = s_cpu_profile_stats;
 }
@@ -5098,6 +5114,7 @@ int gegpu_snapshot_sync_selftest(void) {
 
 int gegpu_init(void) {
     Sdl3VkInfo vi;
+    sr_perf_set_gpu_replay_source(gpu_replay_snapshot);
     if (!sdl3vk_get_vk(&vi)) { fprintf(stderr, "gegpu: sdl3vk not initialized\n"); return 0; }
     s_pdev  = (VkPhysicalDevice)vi.physical;
     s_dev   = (VkDevice)vi.device;

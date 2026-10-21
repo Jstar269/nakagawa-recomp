@@ -54,7 +54,7 @@ class TestSBOMTooling(unittest.TestCase):
     def test_parse_python_lockfile(self):
         packages = generate_sbom.parse_python_lockfile(
             generate_sbom.ROOT / "tools" / "requirements-lock.txt")
-        self.assertEqual(len(packages), 4)
+        self.assertEqual(len(packages), 5)
         self.assertEqual(packages[0]["name"], "compiledb")
         self.assertEqual(packages[0]["version"], "0.10.7")
         self.assertEqual(
@@ -63,6 +63,11 @@ class TestSBOMTooling(unittest.TestCase):
         )
         self.assertEqual(len(packages[0]["declared_sha256"]), 2)
         self.assertEqual(len(packages[1]["declared_sha256"]), 18)
+        by_name = {package["name"]: package for package in packages}
+        # The coverage measurement pins its own closure the same way the other tools
+        # do: every published wheel and the sdist, for the exact release.
+        self.assertEqual(by_name["coverage"]["version"], "7.16.2")
+        self.assertEqual(len(by_name["coverage"]["declared_sha256"]), 121)
         # License resolution reads installed dist metadata for the exact pins
         # (generate_sbom._resolve_python_package_license).  CI installs
         # tools/requirements-lock.txt into the test interpreter; a different
@@ -282,25 +287,40 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
         self.assertEqual(metadata["retrieved_utc"], "2026-09-25")
         ruff_source = next(s for s in metadata["sources"] if s["name"] == "ruff")
         self.assertEqual(ruff_source["retrieved_utc"], "2026-09-30")
+        # A source added after the document snapshot records its own retrieval date.
+        coverage_source = next(s for s in metadata["sources"] if s["name"] == "coverage")
+        self.assertEqual(coverage_source["retrieved_utc"], "2026-10-21")
         self.assertEqual(
             [source["url"] for source in metadata["sources"]],
             [
-                "https://pypi.org/pypi/compiledb/0.10.7/json",
-                "https://pypi.org/pypi/ruff/0.16.9/json",
-                "https://pypi.org/pypi/click/8.5.0/json",
                 "https://pypi.org/pypi/bashlex/0.18/json",
+                "https://pypi.org/pypi/click/8.5.0/json",
+                "https://pypi.org/pypi/compiledb/0.10.7/json",
+                "https://pypi.org/pypi/coverage/7.16.2/json",
+                "https://pypi.org/pypi/ruff/0.16.9/json",
             ],
         )
-        sources = {source["name"]: source for source in metadata["sources"]}
-        self.assertEqual(sum(len(source["artifacts"]) for source in sources.values()), 24)
+        # PyPI's canonical names differ in case from the lock's (Jinja2, MarkupSafe,
+        # Pygments); the lock and the metadata are matched by the normalized name.
+        sources = {
+            generate_sbom._normalize_python_name(source["name"]): source
+            for source in metadata["sources"]
+        }
+        self.assertEqual(sum(len(source["artifacts"]) for source in sources.values()), 145)
         self.assertEqual(
             [package["name"] for package in packages],
-            ["compiledb", "ruff", "click", "bashlex"],
+            [
+                "compiledb",
+                "ruff",
+                "click",
+                "bashlex",
+                "coverage",
+            ],
         )
         for package in packages:
             expected = {
                 artifact["sha256"]
-                for artifact in sources[package["name"]]["artifacts"]
+                for artifact in sources[generate_sbom._normalize_python_name(package["name"])]["artifacts"]
             }
             self.assertEqual(set(package["declared_sha256"]), expected)
             self.assertEqual(set(package["verified_sha256"]), expected)
@@ -339,7 +359,11 @@ class TestPythonArtifactHashVerification(unittest.TestCase):
             "--require-hashes -r tools/requirements-lock.txt",
             workflow,
         )
-        self.assertIn("--no-deps .", workflow)
+        # Every pip install in CI is hash-pinned; the checkout itself is not built.
+        installs = [line for line in workflow.splitlines() if "pip install" in line]
+        self.assertTrue(installs)
+        for line in installs:
+            self.assertIn("--require-hashes", line)
 
     def test_verifier_uses_supplied_offline_metadata(self):
         metadata = self._metadata()

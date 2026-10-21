@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (C) 2026 the Nakagawa Recomp authors
 //
- ** Nakagawa-authored thin C wrapper for the standalone ATRAC3+ decoder
- * (PR-A).
+ ** Nakagawa-authored thin C wrappers for the standalone ATRAC3+ and plain
+ * ATRAC3 decoders (PR-A).
  *
  * This file is NOT imported FFmpeg code. It provides:
  *  - av_log()/av_vlog(): the only libavutil symbols the imported subset
@@ -213,6 +213,155 @@ void atrac3p_destroy(Atrac3pHandle *h)
     if (h->avctx.priv_data)
         atrac3p_close(&h->avctx);
 
+    av_freep(&h->avctx.priv_data);
+    av_freep(&h->pcm);
+    av_freep(&h->scratch);
+    av_freep(&h);
+}
+
+/* ------------------------------------------------------------------ */
+/* Plain ATRAC3 (AT3) API                                              */
+/* ------------------------------------------------------------------ */
+
+struct Atrac3Handle {
+    AVCodecContext avctx;
+    float *pcm;
+    float *planes[ATRAC3_MAX_CHANNELS];
+    uint8_t *scratch;
+    uint8_t extradata[14];
+    int frame_size;
+    int decode_error;
+};
+
+static unsigned atrac3_le16(const uint8_t *p)
+{
+    return (unsigned)p[0] | (unsigned)p[1] << 8;
+}
+
+int atrac3_config_valid(int format_tag, int channels, int block_align,
+                        const uint8_t *extradata, int extradata_size)
+{
+    unsigned coding_mode, frame_factor;
+
+    /* Accept the 14-byte WAV extension exactly as the pinned FFmpeg n4.4
+     * atrac3_decode_init does: words [0-1], [2-5] (samples per channel),
+     * [8-9] and [12-13] are not validated there, and no PSP measurement
+     * pins them, so they are not gates here either. */
+    if (format_tag != 0x0270 || (channels != 1 && channels != 2) ||
+        !extradata || extradata_size != 14 || block_align <= 0 ||
+        block_align > 4096)
+        return 0;
+    coding_mode = atrac3_le16(extradata + 6);
+    frame_factor = atrac3_le16(extradata + 10);
+    if (frame_factor == 0u || (coding_mode && channels != 2))
+        return 0;
+    return block_align == 96 * channels * (int)frame_factor ||
+           block_align == 152 * channels * (int)frame_factor ||
+           block_align == 192 * channels * (int)frame_factor;
+}
+
+int atrac3_create(int channels, int block_align, const uint8_t *extradata,
+                  Atrac3Handle **out)
+{
+    Atrac3Handle *h;
+    int ch, ret;
+
+    if (!out)
+        return AVERROR(EINVAL);
+    *out = NULL;
+    if (!atrac3_config_valid(0x0270, channels, block_align, extradata, 14))
+        return AVERROR(EINVAL);
+
+    h = av_mallocz(sizeof(*h));
+    if (!h)
+        return AVERROR(ENOMEM);
+    h->pcm = av_mallocz((size_t)channels * ATRAC3_FRAME_SAMPLES * sizeof(float));
+    h->scratch = av_mallocz((size_t)block_align + ATRAC3P_PADDING_SIZE);
+    h->avctx.priv_data = av_mallocz(atrac3_context_size());
+    if (!h->pcm || !h->scratch || !h->avctx.priv_data) {
+        ret = AVERROR(ENOMEM);
+        goto fail;
+    }
+
+    for (ch = 0; ch < channels; ch++)
+        h->planes[ch] = h->pcm + (size_t)ch * ATRAC3_FRAME_SAMPLES;
+    memcpy(h->extradata, extradata, sizeof(h->extradata));
+    h->frame_size = block_align;
+    h->avctx.channels = channels;
+    h->avctx.block_align = block_align;
+    h->avctx.flags = AV_CODEC_FLAG_BITEXACT;
+    h->avctx.codec_id = AV_CODEC_ID_ATRAC3;
+    h->avctx.extradata = h->extradata;
+    h->avctx.extradata_size = (int)sizeof(h->extradata);
+
+    ret = atrac3_init(&h->avctx);
+    if (ret < 0)
+        goto fail;
+    *out = h;
+    return 0;
+
+fail:
+    atrac3_destroy(h);
+    return ret;
+}
+
+int atrac3_decode(Atrac3Handle *h, const uint8_t *frame, int frame_size,
+                  int16_t *pcm_out, int *samples_out)
+{
+    int ret, samples, ch, i;
+
+    if (!h || !frame || !pcm_out || !samples_out)
+        return AVERROR(EINVAL);
+    *samples_out = 0;
+    if (frame_size != h->frame_size)
+        return AVERROR(EINVAL);
+    if (h->decode_error < 0)
+        return h->decode_error;
+
+    memset(h->scratch, 0, (size_t)h->frame_size + ATRAC3P_PADDING_SIZE);
+    memcpy(h->scratch, frame, (size_t)frame_size);
+    ret = atrac3_decode_frame(&h->avctx, h->planes, &samples,
+                              h->scratch, frame_size);
+    if (ret < 0) {
+        h->decode_error = ret;
+        return ret;
+    }
+    if (samples != ATRAC3_FRAME_SAMPLES) {
+        h->decode_error = AVERROR_INVALIDDATA;
+        return h->decode_error;
+    }
+
+    for (ch = 0; ch < h->avctx.channels; ch++) {
+        const float *p = h->planes[ch];
+        for (i = 0; i < ATRAC3_FRAME_SAMPLES; i++)
+            pcm_out[(size_t)i * h->avctx.channels + ch] =
+                av_clip_int16(lrintf(p[i] * 32768.0f));
+    }
+    *samples_out = samples;
+    return ret;
+}
+
+int atrac3_reset(Atrac3Handle *h)
+{
+    int ret;
+    if (!h)
+        return AVERROR(EINVAL);
+    atrac3_close(&h->avctx);
+    memset(h->avctx.priv_data, 0, atrac3_context_size());
+    ret = atrac3_init(&h->avctx);
+    if (ret >= 0)
+        h->decode_error = 0;
+    else
+        h->decode_error = ret;
+    return ret;
+}
+
+void atrac3_destroy(Atrac3Handle *h)
+{
+    if (!h)
+        return;
+    if (h->avctx.priv_data)
+        atrac3_close(&h->avctx);
     av_freep(&h->avctx.priv_data);
     av_freep(&h->pcm);
     av_freep(&h->scratch);

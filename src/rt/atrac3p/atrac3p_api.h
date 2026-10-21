@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (C) 2026 the Nakagawa Recomp authors
 //
- ** Nakagawa-authored standalone ATRAC3+ decoder API (PR-A).
+ ** Nakagawa-authored standalone ATRAC3+/AT3 decoder APIs (PR-A).
  *
  * This is the thin C entry-point surface over the imported FFmpeg n4.4
- * decoder subset (libavcodec/atrac3plus*.c). There is no FFmpeg codec
- * framework here: the caller owns an AVCodecContext, fills the minimal
- * config fields, and drives init/decode/flush/close directly.
+ * decoder subset. There is no FFmpeg codec framework here: the caller owns
+ * an AVCodecContext, fills the minimal config fields, and drives init/decode/
+ * flush/close directly.
  *
  * Every decode returns either a success length (the number of frame bytes
  * consumed: min(block_align, buf_size)) or a negative AVERROR_* code. On
@@ -41,6 +41,10 @@
 /* Number of bytes to reserve after each frame buffer for bitreader
  * over-reads (upstream AV_INPUT_BUFFER_PADDING_SIZE). */
 #define ATRAC3P_PADDING_SIZE AV_INPUT_BUFFER_PADDING_SIZE
+
+/* Plain ATRAC3 (AT3) has a separate 1024-sample frame contract. */
+#define ATRAC3_FRAME_SAMPLES 1024
+#define ATRAC3_MAX_CHANNELS 8
 
 /* Opaque decoder instance created by atrac3p_create() and destroyed by
  * atrac3p_destroy(). */
@@ -134,5 +138,24 @@ int atrac3p_decode_frame(AVCodecContext *avctx, float *out[ATRAC3P_MAX_CHANNELS]
  * avctx->priv_data itself (caller-owned) remains.
  */
 void atrac3p_close(AVCodecContext *avctx);
+
+/* Standalone plain-AT3 entry points exported by the n4.4 atrac3.c LOCAL
+ * DELTA. They keep FFmpeg's private ATRAC3Context layout inside that file. */
+size_t atrac3_context_size(void);
+int atrac3_init(AVCodecContext *avctx);
+int atrac3_decode_frame(AVCodecContext *avctx,
+                        float *out[ATRAC3_MAX_CHANNELS],
+                        int *nb_samples, const uint8_t *buf, int buf_size);
+void atrac3_close(AVCodecContext *avctx);
+
+typedef struct Atrac3Handle Atrac3Handle;
+int atrac3_config_valid(int format_tag, int channels, int block_align,
+                        const uint8_t *extradata, int extradata_size);
+int atrac3_create(int channels, int block_align, const uint8_t *extradata,
+                  Atrac3Handle **out);
+int atrac3_decode(Atrac3Handle *h, const uint8_t *frame, int frame_size,
+                  int16_t *pcm_out, int *samples_out);
+int atrac3_reset(Atrac3Handle *h);
+void atrac3_destroy(Atrac3Handle *h);
 
 #endif /* AT3P_API_H */

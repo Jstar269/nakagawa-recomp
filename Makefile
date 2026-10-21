@@ -287,7 +287,7 @@ WIN_ONLY_LIBS   :=
 REPRODUCIBLE_LINK_FLAG :=
 # MinGW resolves the maths routines from the C runtime it always links, so the
 # Windows link line never names libm. A GNU/ELF link must name it: the runtime's
-# transcendental maths (GE rasterizer, VFPU, ATRAC3+ DSP) references libm
+# transcendental maths (GE rasterizer, VFPU, ATRAC DSP) references libm
 # symbols and ld refuses an implicit dependency ("DSO missing from command
 # line"). Listed here, after the project libraries, exactly as -lm is on any
 # other GNU link line.
@@ -641,10 +641,11 @@ VERIFY_WORKDIR   ?= $(BUILD_DIR)/verify
 
 CXX        ?= g++
 
-# ATRAC3+ decoder import sources (PR-A). Shared by the runtime link (PR-B
-# h_AtracDecodeData integration) and the standalone selftest targets.
+# ATRAC3/ATRAC3+ decoder import sources. Shared by the runtime link and the
+# standalone selftest targets; both codec paths use the n4.4 ATRAC common code.
 ATRAC3P_SRCS := src/rt/atrac3p/atrac3p_api.c \
 	src/rt/atrac3p/libavcodec/atrac.c \
+	src/rt/atrac3p/libavcodec/atrac3.c \
 	src/rt/atrac3p/libavcodec/atrac3plus.c \
 	src/rt/atrac3p/libavcodec/atrac3plusdec.c \
 	src/rt/atrac3p/libavcodec/atrac3plusdsp.c \
@@ -659,8 +660,8 @@ ATRAC3P_SRCS := src/rt/atrac3p/atrac3p_api.c \
 	src/rt/atrac3p/libavutil/mem.c \
 	src/rt/atrac3p/libavutil/reverse.c
 
-# PR-B: real ATRAC3+ decode in the HLE (h_AtracDecodeData). The decoder
-# bridge (src/rt/atrac3p_bridge.c) and the imported FFmpeg n4.4 decoder TUs
+# HLE ATRAC decode (h_AtracDecodeData). The codec-specific decoder bridges
+# and imported FFmpeg n4.4 decoder TUs
 # join the runtime link; the include paths are relative to src/rt/atrac3p/.
 # Objects are prefixed so nested import paths cannot collide with flat
 # runtime object names.
@@ -770,7 +771,7 @@ RT_SRCS    := src/rt/recomp.c \
 RT_OBJS    := $(addprefix $(BUILD_DIR)/,$(notdir $(RT_SRCS:.c=.o)))
 
 # Everything needed to COMPILE src/rt/hle.c, in one place. hle.c reaches into
-# the PR-B ATRAC3+ decode bridge, so every target that compiles it needs these
+# the ATRAC decode bridges, so every target that compiles it needs these
 # include paths -- not just the $(BUILD_DIR)/hle.o rule. Keeping them in a
 # variable is the point: hand-copied flag lists are how hle-thread-selftest
 # silently stopped building when #315 landed, which in turn hid #326 breaking
@@ -1017,7 +1018,7 @@ HELP_DESCRIPTION_compiler-info := print the effective compiler and build setting
 HELP_DESCRIPTION_runtime-objects := build runtime and decoder objects
 HELP_DESCRIPTION_portable-core-objects := build host-neutral runtime objects
 HELP_DESCRIPTION_format-portability-check := compile the portable core against a 32-bit newlib-shaped stdint shim with -Werror=format
-HELP_DESCRIPTION_atrac3p-objects := build ATRAC3+ decoder objects
+HELP_DESCRIPTION_atrac3p-objects := build ATRAC decoder objects
 HELP_DESCRIPTION_player := build the native player
 HELP_DESCRIPTION_player-ui-tests := build and run native player UI tests (needs SDL3)
 HELP_DESCRIPTION_player-ui-regressions := run scripted native player UI event and recovery flows (needs SDL3)
@@ -2380,6 +2381,7 @@ PSMF_MEDIA_RUNTIME_OBJS := $(filter-out $(BUILD_DIR)/iso_public.o $(BUILD_DIR)/i
 # command longer than about 8191 bytes, and an absolute BUILD_ROOT puts 55 object paths on the
 # link line (about 10.6 KB under a long scratch root, cut inside the last object name). make
 # writes the list itself, so the link command carries one @file argument whatever the root length.
+# -Wno-unused-function: unused static helpers, mostly src/rt/hle.c; 103 warnings without it (#735 item 9).
 psmf-media-selftest: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o
 	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -c src/rt/psmf_producer.c -o $(BUILD_DIR)/psmf_producer_media_selftest.o
 	$(CC) $(CFLAGS) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -ffunction-sections -fdata-sections -c src/rt/psmf_media_selftest.c -o $(BUILD_DIR)/psmf_media_selftest.o
@@ -2392,6 +2394,7 @@ psmf-media-selftest: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_TITLE_CONFI
 
 # Prove the guest pixel assertion detects a Csc implementation that returns success but writes
 # nothing. The mutation is compiled only into this synthetic fixture translation unit.
+# -Wno-unused-function: unused static helpers, mostly src/rt/hle.c; 103 warnings without it (#735 item 9).
 psmf-media-selftest-csc-mutant: $(PSMF_MEDIA_RUNTIME_OBJS) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o
 	$(CC) $(CFLAGS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -c src/rt/psmf_producer.c -o $(BUILD_DIR)/psmf_producer_media_selftest_csc_mutant.o
 	$(CC) $(CFLAGS) $(FLIGHT_IDENTITY_DEFS) $(FUZZ_SAN_FLAGS) -Isrc/rt -std=c11 -Werror -ffunction-sections -fdata-sections -DSR_MPEG_CSC_NO_WRITE_MUTANT -c src/rt/psmf_media_selftest.c -o $(BUILD_DIR)/psmf_media_selftest_csc_mutant.o
@@ -2421,6 +2424,7 @@ audio-resampler-bench:
 		fixtures/audio_resampler_bench/audio_resampler_bench.c src/rt/audio_resample.c src/rt/perf.c -lm
 	$(BUILD_DIR)/audio_resampler_bench$(EXE_EXT)
 
+# -Wno-unused-function: unused static helpers, mostly src/rt/hle.c; 75 warnings without it (#735 item 9).
 hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nested_frames.c src/rt/nested_frames.h src/rt/stale_code.c src/rt/stale_code.h src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/audio_resample.c src/rt/audio_resample.h
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST -DSR_SCHED_LIVENESS_TEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(HLE_INCLUDES) \
@@ -2455,6 +2459,7 @@ hle-title-selftest:
 	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=fixture-a HLE_TITLE_MANIFEST=assets/titles/pspdev-phase5.json
 	$(MAKE) --no-print-directory hle-title-selftest-one HLE_TITLE_CONFIG=fixture-b HLE_TITLE_MANIFEST=assets/titles/synthetic.json
 
+# -Wno-unused-function: unused static helpers, mostly src/rt/hle.c; 225 warnings without it across the three hle-title-selftest configs (#735 item 9).
 hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/audio_resample.c src/rt/audio_resample.h src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC)
 	$(PYTHON) $(TITLE_CONFIG_TOOL) $(HLE_TITLE_SELFTEST_CONFIG_ARG) --output $(HLE_TITLE_SELFTEST_HEADER)
 	$(CC) $(CFLAGS) -I$(HLE_TITLE_SELFTEST_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) \
@@ -2493,7 +2498,7 @@ $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER)
 #   -Wno-format-truncation: hle_thread_selftest.c test-path snprintf calls into 256/260-byte buffers; gcc cannot bound the %s arguments (13 sites).
 #   -Wno-missing-field-initializers: intr_conformance.h IcProbe rows omit the trailing skip field on purpose.
 #   -Wno-infinite-recursion: a generated guest loop in smoke_recomp_0.c ends in a dead tail call after an unconditional branch.
-#   -Wno-sign-compare -Wno-unused-parameter -Wno-parentheses -Wno-pointer-sign: vendored FFmpeg n4.4 ATRAC3+ sources in src/rt/atrac3p, kept upstream-identical.
+#   -Wno-sign-compare -Wno-unused-parameter -Wno-parentheses -Wno-pointer-sign: FFmpeg n4.4 ATRAC3/ATRAC3+ subset sources in src/rt/atrac3p; import deltas are documented there.
 $(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(PSP_ORACLE_SMOKE_CHUNK) $(PSP_ORACLE_SMOKE_ADAPTER) src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/audio_resample.c src/rt/audio_resample.h src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/rt/hle_power.c src/rt/prx_loader.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c $(PGD_BACKEND_SRC) $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER)
 	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) $(HLE_SELFTEST_DEFINES) $(HLE_INCLUDES) -DSR_PSP_ORACLE_SMOKE \
 		-ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables -fno-unwind-tables \
@@ -2745,7 +2750,7 @@ vfpu_fuzz:
 	$(MAKE) vfpu_fuzz_build
 endif
 
-# RT_OBJS carries hle.o, which calls into the PR-B ATRAC3+ decode bridge, so
+# RT_OBJS carries hle.o, which calls into the ATRAC decode bridges, so
 # every target that links RT_OBJS must also link the bridge and the imported
 # decoder TUs -- exactly as `compile` and `runtime-objects` do. Omitting them
 # here is an undefined-reference link failure, not a smaller binary.
