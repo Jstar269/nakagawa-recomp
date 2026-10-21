@@ -1438,7 +1438,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "09e8538cccd388ca8cc3b877c1986976467bda5c76307e705bd6bc7c0b15cf08"
+      "sha256": "ba53e3cd75c40d5862fc0e435f86f46bbb9b453b39cc9c83c551bbd46a11c361"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -8396,7 +8396,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2d1144fd59993e5a2d11ba20ebd6fef608880b2dbd6f9db231caa886d257a85e"
+      "sha256": "1adef141111b1ab503de304be0172bf632e80f8d924df2dda29ca3ed5926c649"
     },
     {
       "path": "tools/test_codegen_gate_b_encoding.py",
@@ -8649,7 +8649,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "55f77219d4176918e95ea4dd8ed1c58c398d6822b31eb46b748e928921c64dc8"
+      "sha256": "8bce837fd04402b52928cece45aa6c02d9b5c42a02f6ff8327387b8e6fbef36d"
     },
     {
       "path": "tools/test_discovery_contract.py",
@@ -9406,7 +9406,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b6ad2c4d47b33dd6523e6b76a9fad7b23f2099990beab28199b61ae77591ff1b"
+      "sha256": "a62d661c91ce9de2fbfe6f7a1d109adcff0ab5065b798f5de0f9185d1396d14a"
     },
     {
       "path": "tools/test_native_gate_stub_link.py",
