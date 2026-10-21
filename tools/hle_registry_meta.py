@@ -1228,6 +1228,31 @@ HANDLER_METADATA = {
         ],
         "limitation": "the two system-clock reads advanced 220,608 around a bounded 20 ms delay, but host0 logging offset the intervals and the VTimer/system-clock deltas agree only within about 8%; this is consistent with the microsecond unit but does not establish a precise rate or absolute system-time values",
     },
+    # Interrupt-enable predicate: returns 1 when the CPU interrupt state is enabled. The selftest
+    # reads it before and after SuspendIntr/ResumeIntr in the production scheduler path.
+    "h_CpuIsIntrEnable": {
+        "status": "complete",
+        "evidence": [
+            "src/rt/hle_thread_selftest.c:test_interrupt_nid_semantics",
+        ],
+    },
+    # System time: writes the 64-bit microsecond clock to the caller's SceKernelSysClock and returns 0.
+    # The illegal-address code is the runtime's own; no PSP measurement names it.
+    "h_GetSystemTime": {
+        "status": "partial",
+        "limitation": "writes the 64-bit modeled microsecond clock and returns 0; the illegal-address result is the runtime's own code (RTC_ILLEGAL_ADDR), not a PSP measurement, and the clock origin is not compared with hardware",
+    },
+    # System time, low word: returns the low 32 bits of the modeled microsecond clock.
+    "h_GetSystemTimeLow": {
+        "status": "partial",
+        "limitation": "returns the low 32 bits of the modeled microsecond clock, which wraps; the clock origin and wrap timing are not compared with hardware",
+    },
+    # Guest memcpy: copies n bytes and returns dst. Overlapping spans use memmove semantics; the PSP's
+    # overlap behaviour is unmeasured, and bad spans are refused through the runtime's out-of-range path.
+    "h_Memcpy": {
+        "status": "partial",
+        "limitation": "copies with memmove semantics for overlapping spans, which the PSP's memcpy does not promise and whose overlap behaviour is unmeasured; bad guest spans are refused through the runtime's out-of-range path, not a PSP error code",
+    },
 }
 
 # handler name -> status mapping. Preserved for direct consumers and gate checks.
