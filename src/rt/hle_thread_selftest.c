@@ -722,6 +722,23 @@ uint32_t iso_physical_lba(uint32_t lba_or_token) {
  * both the stack arena floor (0x05000000) and the default partition top
  * (0x0A000000). Returning 0 is not an option -- user_partition_init() correctly
  * fail-closes on it rather than placing the partition over the image. */
+/* This harness's guest bodies are synthetic and it does not link recomp.c. The
+ * inline sr_call_body boundary hooks are therefore no-ops here; generated AOT
+ * return-boundary behavior is exercised by the cosim fixture instead. */
+int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
+                                 uint32_t call_pc, uint32_t has_resume_pc) {
+    (void)s;
+    (void)resume_pc;
+    (void)call_pc;
+    (void)has_resume_pc;
+    return 0;
+}
+
+int sr_aot_return_boundary_end(CpuState *s) {
+    (void)s;
+    return 0;
+}
+
 uint32_t sr_loaded_end(void) { return 0x00400000u; }
 
 int g_hle_depth;
