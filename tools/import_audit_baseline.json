@@ -86,6 +86,13 @@
     "name": "__sceSasGetAllEnvelopeHeights",
     "status": "unreviewed"
   },
+  "0x08d98894": {
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
+    "name": "sceNpDrmEdataSetupKey",
+    "refusal_error": "0x80020002",
+    "status": "controlled_unsupported"
+  },
   "0x090ccb3f": {
     "classification": "dedicated",
     "handler": "h_PowerTick",
@@ -2849,6 +2856,12 @@
     "name": "sceKernelTryReceiveMsgPipe",
     "status": "partial"
   },
+  "0xdfa8baf8": {
+    "classification": "dedicated",
+    "handler": "h_PowerUnregisterCallback",
+    "name": "scePowerUnregisterCallback",
+    "status": "unreviewed"
+  },
   "0xe0727056": {
     "classification": "dedicated",
     "handler": "h_AudioSRCOutputBlocking",
@@ -3166,6 +3179,13 @@
     "handler": "h_TotalFreeMemSize",
     "name": "sceKernelTotalFreeMemSize",
     "status": "unreviewed"
+  },
+  "0xf9275d98": {
+    "classification": "controlled_unsupported",
+    "handler": "h_ControlledUnsupported",
+    "name": "sceKernelLoadModuleBufferUsbWlan",
+    "refusal_error": "0x80020002",
+    "status": "controlled_unsupported"
   },
   "0xf983b186": {
     "classification": "dedicated",

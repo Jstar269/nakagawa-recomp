@@ -23550,6 +23550,11 @@ static void hle_register_utility_module_handlers(void) {
 }
 
 static void hle_register_kernel_module_handlers(void) {
+    /* No NP DRM key material is part of this project, so the edata key setup is refused. The
+     * module-from-buffer loader is not implemented, so its USB/WLAN variant is refused too. Both use
+     * SCE_KERNEL_ERROR_NOTIMP, the runtime's controlled refusal for kernel functions it does not provide. */
+    sr_hle_register_unsupported(0x08d98894u, "sceNpDrmEdataSetupKey", 0x80020002u);
+    sr_hle_register_unsupported(0xf9275d98u, "sceKernelLoadModuleBufferUsbWlan", 0x80020002u);
     sr_hle_register(0x977de386, "sceKernelLoadModule", h_LoadModule);
     sr_hle_register(0xb7f46618, "sceKernelLoadModuleByID", h_LoadModuleByID);
     sr_hle_register(0x50f0c1ec, "sceKernelStartModule", h_StartModule);
@@ -23897,6 +23902,7 @@ void sr_hle_init(void) {
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
     sr_hle_power_register_clock();
+    sr_hle_power_register_callback();
     hle_register_devkit_version_handler();
     /* TD-24 batch 4 families: shared with production through the helpers, so
      * the executable harness dispatches the exact production mapping. */

@@ -3900,6 +3900,8 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
         {NID_SCE_GE_RESTORE_CONTEXT, 0x80020002u, "sceGeRestoreContext"},
         {NID_SCE_KERNEL_LOAD_EXEC, 0x80020002u, "sceKernelLoadExec"},
         {NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE, 0x80020002u, "sceKernelSelfStopUnloadModule"},
+        {0x08d98894u, 0x80020002u, "sceNpDrmEdataSetupKey"},
+        {0xf9275d98u, 0x80020002u, "sceKernelLoadModuleBufferUsbWlan"},
     };
     reset_fixture();
     sr_hle_init();
@@ -27616,6 +27618,51 @@ static void test_late_prx_unload_keeps_module_owned_objects(void) {
     sr_hle_test_module_reset();
 }
 
+/* ---- scePowerUnregisterCallback: release a slot scePowerRegisterCallback filled ----
+ *
+ * The slot range checks mirror scePowerRegisterCallback. An empty slot is refused with
+ * SCE_KERNEL_ERROR_NOTIMP, because its PSP error code has not been measured. */
+#define NID_POWER_REGISTER_CALLBACK   0x04b7766eu
+#define NID_POWER_UNREGISTER_CALLBACK 0xdfa8baf8u
+
+static void test_power_unregister_callback_slots(void) {
+    CpuState cpu;
+    uint32_t cb;
+    reset_fixture();
+    sr_hle_init();
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = WSV_NAMEBUF;
+    cb = sr_syscall(&cpu, NID_WSV_CREATE_CALLBACK);
+    expect(cb != 0u && sr_callback_is_valid(cb), "power unregister: a callback exists to register");
+
+    /* Earlier tests may leave slots occupied, so start from slots 3 and 5 empty. */
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 3u; (void)sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 5u; (void)sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK);
+
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 3u; cpu.r[5] = cb;
+    expect(sr_syscall(&cpu, NID_POWER_REGISTER_CALLBACK) == 0u,
+           "power unregister: the callback registers in slot 3");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 3u;
+    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0u,
+           "power unregister: a registered slot releases with 0");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 3u;
+    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80020002u,
+           "power unregister: an empty slot is refused with SCE_KERNEL_ERROR_NOTIMP");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 3u; cpu.r[5] = cb;
+    expect(sr_syscall(&cpu, NID_POWER_REGISTER_CALLBACK) == 0u,
+           "power unregister: a released slot registers the callback again");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 3u;
+    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0u,
+           "power unregister: slot 3 is released again before the range checks");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 40u;
+    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80000102u,
+           "power unregister: a slot outside 0..31 mirrors the register range check");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 20u;
+    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80000023u,
+           "power unregister: a slot in 16..31 mirrors the register range check");
+}
+
 static void test_psmf_rejected_stream_names_the_boundary(void) {
     CpuState cpu;
     char captured[8192];
@@ -30111,6 +30158,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_host_skipped_start_stop_unload_reload();
     test_late_prx_duplicate_base_last_reference();
     test_late_prx_unload_keeps_module_owned_objects();
+    test_power_unregister_callback_slots();
     test_psmf_rejected_stream_names_the_boundary();
     test_psmf_start_reads_init_pts_from_the_third_argument();
     test_flight_recorder_trace();
