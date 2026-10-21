@@ -101,6 +101,10 @@ The project intends to:
   public-safe summary is published;
 - deliver one-click play from a PSP ISO the user owns, without the developer toolchain
   ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)), within the lawful-input and fail-closed rules;
+- make the native player sharp at any window size, including fullscreen: draw the player UI at the window's real
+  pixel size, and present game frames with integer or sharp-bilinear scaling instead of plain bilinear filtering
+  at fractional sizes, keeping native 480×272 rendering as the verified default
+  ([#1129](https://github.com/Jstar269/nakagawa-recomp/issues/1129));
 - move more of the runtime from high-level emulation to low-level emulation, measured against a physical PSP;
 - bring the player to Linux, macOS and Android ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306),
   [#329](https://github.com/Jstar269/nakagawa-recomp/issues/329),
