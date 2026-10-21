@@ -5,12 +5,12 @@
 
 /* Read-only flash0: device for the font directory (FONT_PLAN section 5).
  *
- * Only flash0:/font/<served name> is served, one file per font slot. A slot's file comes
- * from the per-user cache first, then the project's fonts, and otherwise the open is refused
- * by name. A cache file is served only when the cache manifest vouches for it (listed, size and
- * SHA-256 match, accepted by the reader as that slot); a refused cache file falls through to the
- * project font with a named refusal, and the project source never serves an imported cache.
- * There is no cross-slot substitution and no synthetic font. Every write, create,
+ * Only flash0:/font/<served name> is served. Japanese and Korean keep their existing slot
+ * resolution. Each Latin registry index maps to ltn0.pgf..ltn15.pgf and resolves to its exact
+ * imported file, the nearest imported file in the same nominal-size group, the project Latin PGF,
+ * or a legacy unindexed import only when the project PGF is absent. Indexed cache files are served
+ * only when the manifest vouches for their size, SHA-256 and reader verdict. Every Latin fallback
+ * is named in the user status and one startup log line per index. Every write, create,
  * remove, rename and attribute change is refused with EACCES. The HLE hooks in hle.c call
  * these functions; the roots are supplied by the caller.
  *
@@ -67,6 +67,13 @@ uint32_t sr_flash0_font_refuse_write(const char *guest_path, const char *operati
  * loads its fonts through this, so both font paths agree on which file a slot is. */
 int sr_flash0_font_resolve_path(const Flash0Sources *sources, NkFontSlot slot, char *path_out,
                                 size_t capacity, const char **source_out);
+
+/* Resolves one Latin registry file and returns the host path and source. served_index_out is
+ * 0..15 for an indexed cache file, -1 for the project font, or -2 for a legacy unindexed cache
+ * file. Returns 0 when no source can serve the requested Latin index. */
+int sr_flash0_font_resolve_latin_index_path(const Flash0Sources *sources, int index,
+                                           char *path_out, size_t capacity,
+                                           const char **source_out, int *served_index_out);
 
 /* The slot's lower-case name for diagnostics ("japanese", "latin", "korean"). */
 const char *sr_flash0_font_slot_label(NkFontSlot slot);

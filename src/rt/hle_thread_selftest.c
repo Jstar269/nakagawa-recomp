@@ -62,6 +62,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include "osk_text_entry.h"     /* the keyboard's text-entry seam, stubbed below */
 #include "osk_overlay.h"        /* the in-window keyboard the integration test drives */
 #include "flash0_font.h"        /* flash0: font device: slot binding seam */
+#include "../core/nk_font.h"    /* owner font import/cache path */
 #include "nk_platform.h"        /* per-user data directory override for the font cache */
 #include "audio_resample.h"
 
@@ -29023,16 +29024,16 @@ static void test_flash0_font_registry_headers(const char *root) {
     Flash0Sources sources;
     SrFontRegistryInfo info;
     snprintf(dir, sizeof(dir), "%s/registry-headers", root);
-    snprintf(file, sizeof(file), "%s/%s", dir, F0T_LATIN_NAME);
+    snprintf(file, sizeof(file), "%s/%s", dir, F0T_JAPANESE_NAME);
     expect(nk_platform_mkdir_p(dir), "the registry header scratch directory can be created");
     memset(&sources, 0, sizeof(sources));
     snprintf(sources.project_dir, sizeof(sources.project_dir), "%s", dir);
 
-    expect(sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_NO_SOURCE,
-           "a Latin index with no file in either source is absent: no source");
-    expect(sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_NO_SOURCE &&
+    expect(sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_NO_SOURCE,
+           "the Japanese index is absent before its test file exists");
+    expect(sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_NO_SOURCE &&
                sr_flash0_font_registry_info(&sources, 17u, &info) == SR_FONT_REGISTRY_NO_SOURCE,
-           "the Japanese and Korean indices have no file here, so they are absent too");
+           "Latin and Korean indices have no file here, so they are absent");
     expect(sr_flash0_font_registry_info(&sources, SR_FONT_REGISTRY_COUNT, &info) ==
                SR_FONT_REGISTRY_BAD_INDEX,
            "an index past the measured list does not exist");
@@ -29049,67 +29050,120 @@ static void test_flash0_font_registry_headers(const char *root) {
 
     f0t_fill_header(h, sizeof(h), 392u, 448, 448, 8192, 8192, "Fixture Font", 12u);
     expect(f0t_write_bytes(file, h, 100u) &&
-               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_TRUNCATED,
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_HEADER_TRUNCATED,
            "a file shorter than a PGF header is refused as truncated");
     f0t_fill_header(h, sizeof(h), 412u, 448, 448, 8192, 8192, "Fixture Font", 12u);
     expect(f0t_write_bytes(file, h, 392u) &&
-               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_TRUNCATED,
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_HEADER_TRUNCATED,
            "a header that declares 412 bytes in a 392-byte file is refused as truncated");
     memset(h, 0, sizeof(h));
     expect(f0t_write_bytes(file, h, 392u) &&
-               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_SHAPE,
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_HEADER_SHAPE,
            "a file with no PGF magic is refused as not a PGF header");
     f0t_fill_header(h, sizeof(h), 392u, 448, 448, 8192, 8192, "Fixture Font", 12u);
     h[0] = 1u;
     expect(f0t_write_bytes(file, h, 392u) &&
-               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_SHAPE,
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_HEADER_SHAPE,
            "a nonzero header offset is refused as not a PGF header");
     f0t_fill_header(h, sizeof(h), 400u, 448, 448, 8192, 8192, "Fixture Font", 12u);
     expect(f0t_write_bytes(file, h, 412u) &&
-               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_SHAPE,
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_HEADER_SHAPE,
            "a declared header size other than 392 or 412 is refused as not a PGF header");
 
     f0t_fill_header(h, sizeof(h), 392u, 0, 448, 8192, 8192, "Fixture Font", 12u);
     expect(f0t_write_bytes(file, h, 392u) &&
-               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_SIZES,
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_HEADER_SIZES,
            "a zero nominal horizontal size is refused, not defaulted");
     f0t_fill_header(h, sizeof(h), 392u, 448, 448, 8192, -64, "Fixture Font", 12u);
     expect(f0t_write_bytes(file, h, 392u) &&
-               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_SIZES,
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_HEADER_SIZES,
            "a negative vertical resolution is refused, not defaulted");
     f0t_fill_header(h, sizeof(h), 392u, 448, 448, 8192, 8192, "", 0u);
     expect(f0t_write_bytes(file, h, 392u) &&
-               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_NAME,
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_HEADER_NAME,
            "an empty font name is refused, not defaulted");
     f0t_fill_header(h, sizeof(h), 392u, 448, 448, 8192, 8192, "Bad\tName", 8u);
     expect(f0t_write_bytes(file, h, 392u) &&
-               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_NAME,
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_HEADER_NAME,
            "a font name with a control character is refused");
     expect(info.source == NULL && info.h_size == 0 && info.font_name[0] == '\0',
            "a refused index leaves the info zeroed");
 
     f0t_fill_header(h, sizeof(h), 392u, 448, 456, 8192, 9216, "Fixture Font", 12u);
     expect(f0t_write_bytes(file, h, 392u) &&
-               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_PRESENT &&
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_PRESENT &&
                info.h_size == 448 && info.v_size == 456 && info.h_resolution == 8192 &&
                info.v_resolution == 9216 && strcmp(info.font_name, "Fixture Font") == 0 &&
-               strcmp(info.source, "project") == 0 && strcmp(info.file_name, F0T_LATIN_NAME) == 0 &&
-               info.slot == NK_FONT_SLOT_LATIN,
-           "a 392-byte header yields its own sizes and name, and the served name of the Latin slot");
+               strcmp(info.source, "project") == 0 && strcmp(info.file_name, F0T_JAPANESE_NAME) == 0 &&
+               info.slot == NK_FONT_SLOT_JAPANESE,
+           "a 392-byte header yields its own sizes and name, and the served name of the Japanese slot");
     f0t_fill_header(h, sizeof(h), 412u, 448, 448, 8192, 8192, "Fixture Font", 12u);
     expect(f0t_write_bytes(file, h, 412u) &&
-               sr_flash0_font_registry_info(&sources, 9u, &info) == SR_FONT_REGISTRY_PRESENT,
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_PRESENT,
            "a 412-byte header is accepted too");
     {
         char long_name[70];
         memset(long_name, 'A', sizeof(long_name));
         f0t_fill_header(h, sizeof(h), 392u, 448, 448, 8192, 8192, long_name, sizeof(long_name));
         expect(f0t_write_bytes(file, h, 392u) &&
-                   sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_PRESENT &&
+                   sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_PRESENT &&
                    strlen(info.font_name) == 63u,
                "a name with no NUL in its 64-byte field is cut to 63 characters");
     }
     (void)remove(file);
+}
+
+/* A production-path regression for the Latin index-to-file binding. The Python fixture writes
+ * two synthetic, validated PGFs with distinct nominal strikes to the owner cache and records
+ * both in its manifest, alongside the legacy single Latin cache file. Before indexed serving,
+ * registry indices 1 and 9 both read that one file. */
+static void test_flash0_latin_index_resolution(void) {
+    const char *root = getenv("SR_FLASH0_TEST_ROOT");
+    char user_root[SR_FLASH0_PATH_MAX];
+    char project_dir[SR_FLASH0_PATH_MAX];
+    char import_user_root[SR_FLASH0_PATH_MAX];
+    char import_source_dir[SR_FLASH0_PATH_MAX];
+    Flash0Sources sources;
+    SrFontRegistryInfo first, ninth;
+    expect(root != NULL && root[0] != '\0', "the Latin-index test receives its synthetic root");
+    if (!root || !root[0]) return;
+    memset(&sources, 0, sizeof(sources));
+    snprintf(user_root, sizeof(user_root), "%s/data", root);
+    snprintf(project_dir, sizeof(project_dir), "%s/project", root);
+    snprintf(sources.user_data_dir, sizeof(sources.user_data_dir), "%s", user_root);
+    snprintf(sources.project_dir, sizeof(sources.project_dir), "%s", project_dir);
+    expect(sr_flash0_font_registry_info(&sources, 1u, &first) == SR_FONT_REGISTRY_PRESENT,
+           "Latin registry index 1 resolves a validated synthetic strike");
+    expect(sr_flash0_font_registry_info(&sources, 9u, &ninth) == SR_FONT_REGISTRY_PRESENT,
+           "Latin registry index 9 resolves a validated synthetic strike");
+    expect(first.source && ninth.source && strcmp(first.source, "user-imported") == 0 &&
+               strcmp(ninth.source, "user-imported") == 0,
+           "both exact Latin index files come from the user cache");
+    expect(first.file_name && ninth.file_name && strcmp(first.file_name, "ltn0.pgf") == 0 &&
+               strcmp(ninth.file_name, "ltn8.pgf") == 0 && first.h_size != ninth.h_size &&
+               strcmp(first.font_name, ninth.font_name) != 0,
+           "Latin indices 1 and 9 resolve to their distinct files and strike sizes");
+
+    snprintf(import_user_root, sizeof(import_user_root), "%s/imported-data", root);
+    snprintf(import_source_dir, sizeof(import_source_dir), "%s/index-source", root);
+    NkFontImportResult imported;
+    char import_error[NK_FONT_DETAIL_MAX] = "";
+    int import_ok = nk_font_import_folder(import_user_root, import_source_dir, NULL,
+                                          &imported, import_error, sizeof(import_error));
+    expect(import_ok && imported.imported_count == 2,
+           "the native font importer caches every named synthetic Latin index independently");
+    Flash0Sources imported_sources;
+    memset(&imported_sources, 0, sizeof(imported_sources));
+    snprintf(imported_sources.user_data_dir, sizeof(imported_sources.user_data_dir), "%s",
+             import_user_root);
+    snprintf(imported_sources.project_dir, sizeof(imported_sources.project_dir), "%s", project_dir);
+    expect(sr_flash0_font_registry_info(&imported_sources, 1u, &first) == SR_FONT_REGISTRY_PRESENT &&
+               sr_flash0_font_registry_info(&imported_sources, 9u, &ninth) == SR_FONT_REGISTRY_PRESENT &&
+               first.source && ninth.source && strcmp(first.source, "user-imported") == 0 &&
+               strcmp(ninth.source, "user-imported") == 0 &&
+               strcmp(first.file_name, "ltn0.pgf") == 0 && strcmp(ninth.file_name, "ltn8.pgf") == 0 &&
+               first.h_size != ninth.h_size && strcmp(first.font_name, ninth.font_name) != 0,
+           "native import output serves its own file and strike through registry indices 1 and 9");
 }
 
 /* The guest-visible /DATA/FONT subtree over the synthetic roots the device test set up. Latin and
@@ -29171,7 +29225,9 @@ static void test_flash0_font_registry(const char *root, const char *served_latin
         int ok = 1, regular_ok = 1;
         for (int i = 1; i <= 16; i++) {
             char path[64];
-            e = (F0tExpectInfo){ served_latin, F0T_LATIN_NAME, 0u, (uint32_t)(((i - 1) % 2) + 1), 1u, 0u,
+            char file_name[16];
+            snprintf(file_name, sizeof(file_name), "ltn%d.pgf", i - 1);
+            e = (F0tExpectInfo){ served_latin, file_name, 0u, (uint32_t)(((i - 1) % 2) + 1), 1u, 0u,
                                  2u, 0u, 1u };
             snprintf(path, sizeof(path), "/DATA/FONT/PROPERTY/INFO%d", i);
             info = sysreg_open_category(reg, path, 1u, &r);
@@ -29201,7 +29257,7 @@ static void test_flash0_font_registry(const char *root, const char *served_latin
     rw = sysreg_open_registry(2u, &r);
     rw_info = sysreg_open_category(rw, "/DATA/FONT/PROPERTY/INFO9", 2u, &r);
     expect(r == 0u && rw_info != 0u, "a mode-2 open of an INFO category succeeds (the write is what is refused)");
-    e = (F0tExpectInfo){ served_latin, F0T_LATIN_NAME, 0u, 1u, 1u, 0u, 2u, 0u, 1u };
+    e = (F0tExpectInfo){ served_latin, "ltn8.pgf", 0u, 1u, 1u, 0u, 2u, 0u, 1u };
     expect(sysreg_set_int(rw_info, "h_size", 4242u) == SYSREG_E_ACCES,
            "sceRegSetKeyValue on an INT key of /DATA/FONT is refused with EACCES");
     expect(sysreg_set(rw_info, "font_name", "x", 2u) == SYSREG_E_ACCES,
@@ -29483,7 +29539,12 @@ static void test_flash0_font_device(void) {
         cpu.r[4] = F0T_PATH_ADDR;
         uint32_t dir = sr_hle_test_io_dopen(&cpu);
         expect(dir >= 3u && dir < 64u, "flash0:/font opens as a directory descriptor");
-        char names[3][64];
+        static const char *const expected_names[18] = {
+            "ltn0.pgf", "ltn1.pgf", "ltn10.pgf", "ltn11.pgf", "ltn12.pgf", "ltn13.pgf",
+            "ltn14.pgf", "ltn15.pgf", "ltn2.pgf", "ltn3.pgf", "ltn4.pgf", "ltn5.pgf",
+            "ltn6.pgf", "ltn7.pgf", "ltn8.pgf", "ltn9.pgf", F0T_JAPANESE_NAME, F0T_LATIN_NAME,
+        };
+        char names[18][64];
         int count = 0;
         for (;;) {
             CpuState rd;
@@ -29491,7 +29552,7 @@ static void test_flash0_font_device(void) {
             rd.r[4] = dir;
             rd.r[5] = F0T_DIRENT_ADDR;
             uint32_t got = sr_hle_test_io_dread(&rd);
-            if (got == 0u || count >= 3) break;
+            if (got == 0u || count >= 18) break;
             size_t n = 0;
             while (n + 1u < sizeof(names[count]) &&
                    MEM_R8(F0T_DIRENT_ADDR + 0x58u + (uint32_t)n) != 0u) {
@@ -29501,9 +29562,10 @@ static void test_flash0_font_device(void) {
             names[count][n] = '\0';
             count++;
         }
-        expect(count == 2 && strcmp(names[0], F0T_JAPANESE_NAME) == 0 &&
-                   strcmp(names[1], F0T_LATIN_NAME) == 0,
-               "the listing has the two served slots in name order (pending and sourceless slots omitted)");
+        int list_ok = count == 18;
+        for (int i = 0; list_ok && i < 18; i++) list_ok = strcmp(names[i], expected_names[i]) == 0;
+        expect(list_ok,
+               "the listing includes all served Latin indices and the existing Japanese and Latin aliases in name order");
         CpuState cl;
         memset(&cl, 0, sizeof(cl));
         cl.r[4] = dir;
@@ -29520,8 +29582,12 @@ static void test_flash0_font_device(void) {
 
     /* The registry view: the guest's own font library reads the font list from /DATA/FONT. Latin and
      * Japanese are served here and Korean has no source. */
-    test_flash0_font_registry(root, served_latin_bytes,
-                              user_refused ? user_bytes : project_latin_bytes, project_japanese_bytes);
+    const char *registry_latin_bytes =
+        (strcmp(test_case, "missing-manifest") == 0 || strcmp(test_case, "malformed-manifest") == 0 ||
+         strcmp(test_case, "unlisted") == 0) ? project_latin_bytes : user_bytes;
+    test_flash0_font_registry(root, registry_latin_bytes,
+                              registry_latin_bytes == user_bytes ? project_latin_bytes : user_bytes,
+                              project_japanese_bytes);
 
     /* SR_USER_DATA_ROOT names the per-user data directory the launcher resolved; the device reads the
      * user-imported cache from there, not from NK_PATH_DATA. Here the process's per-user directory is
@@ -30001,6 +30067,13 @@ static int hle_selftest_main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--flash0-font") == 0) {
         test_flash0_font_device();
         fprintf(stderr, "flash0-font: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
+    if (argc > 1 && strcmp(argv[1], "--flash0-font-index") == 0) {
+        test_flash0_latin_index_resolution();
+        fprintf(stderr, "flash0-font-index: %d checks, %d failures\n", s_checks, s_failures);
         free(g_mem_base);
         return s_failures ? 1 : 0;
     }

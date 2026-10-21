@@ -26,8 +26,10 @@ from nk_core.fonts import (  # noqa: E402
     get_font_cache_dir,
     import_fonts,
     inspect_font_cache,
+    latin_index_states,
     remove_imports,
     resolve_font_directory,
+    resolve_latin_index,
     slot_states,
     validate_pgf_data,
     validate_pgf_file,
@@ -43,6 +45,11 @@ def _glyph(code: int) -> Glyph:
 
 def latin_pgf() -> bytes:
     return build_pgf([_glyph(0x41), _glyph(0x61)], font_name="Nakagawa Test Latin")
+
+
+def latin_strike_pgf(name: str, nominal_em_26_6: int) -> bytes:
+    return build_pgf([_glyph(0x41), _glyph(0x61)], font_name=name,
+                     nominal_em_26_6=nominal_em_26_6)
 
 
 def japanese_pgf() -> bytes:
@@ -202,6 +209,84 @@ class FontProvisioningTests(unittest.TestCase):
         result = import_fonts(source, user_data_root=user_data, choose={"latin": "second.pgf"})
         self.assertEqual(result["imported_count"], 1)
         self.assertEqual(result["slots"], {"latin": "nkltn.pgf"})
+
+    def test_named_latin_files_import_to_distinct_indices_and_preserve_strike_metrics(self) -> None:
+        source = self._folder("named_latin", {
+            "ltn0.pgf": latin_strike_pgf("Nakagawa Latin Small", 7 * 64),
+            "ltn8.pgf": latin_strike_pgf("Nakagawa Latin Large", 17 * 64),
+        })
+        user_data = self.temp_path / "ud"
+        result = import_fonts(source, user_data_root=user_data)
+        self.assertEqual(result["imported_count"], 2)
+        self.assertEqual(result["latin_indices"], {"0": "ltn0.pgf", "8": "ltn8.pgf"})
+        cache = get_font_cache_dir(user_data)
+        self.assertTrue((cache / "ltn0.pgf").is_file())
+        self.assertTrue((cache / "ltn8.pgf").is_file())
+        manifest = json.loads((cache / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["files"], {})
+        self.assertEqual(sorted(manifest["latin_indices"]), ["ltn0.pgf", "ltn8.pgf"])
+        self.assertEqual(inspect_font_cache(user_data_root=user_data)[0], "OK")
+
+        self.assertEqual(resolve_latin_index(user_data, None, 0),
+                         {"source": "user", "served_index": 0})
+        self.assertEqual(resolve_latin_index(user_data, None, 8),
+                         {"source": "user", "served_index": 8})
+        small = (cache / "ltn0.pgf").read_bytes()
+        large = (cache / "ltn8.pgf").read_bytes()
+        self.assertNotEqual(struct.unpack_from("<i", small, 0x24)[0],
+                            struct.unpack_from("<i", large, 0x24)[0])
+        self.assertNotEqual(small[0x35:0x75].split(b"\0", 1)[0],
+                            large[0x35:0x75].split(b"\0", 1)[0])
+
+    def test_latin_index_fallback_stays_in_its_size_group_then_uses_project(self) -> None:
+        source = self._folder("named_latin", {
+            "legacy.pgf": latin_pgf(),
+            "ltn0.pgf": latin_strike_pgf("Nakagawa Latin Small", 7 * 64),
+        })
+        user_data = self.temp_path / "ud"
+        project = self.temp_path / "project"
+        (project / "font").mkdir(parents=True)
+        (project / "font" / "nkltn.pgf").write_bytes(
+            latin_strike_pgf("Nakagawa Project Latin", 12 * 64)
+        )
+        import_fonts(source, user_data_root=user_data)
+
+        self.assertEqual(resolve_latin_index(user_data, project / "font", 1),
+                         {"source": "user", "served_index": 0})
+        # Index 9 belongs to the second eight-entry group and cannot borrow ltn0.
+        self.assertEqual(resolve_latin_index(user_data, project / "font", 8),
+                         {"source": "project", "served_index": -1})
+        states = latin_index_states(user_data, project_root=project)
+        self.assertIn("missing; fallback ltn0.pgf", states[1]["detail"])
+        self.assertIn("missing; project nkltn.pgf", states[8]["detail"])
+
+        # The legacy one-file import is used only after the project font is unavailable.
+        (project / "font" / "nkltn.pgf").unlink()
+        self.assertEqual(resolve_latin_index(user_data, project / "font", 8),
+                         {"source": "user", "served_index": -2})
+
+    def test_latin_index_nearest_tie_prefers_the_lower_same_group_index(self) -> None:
+        source = self._folder("latin_tie", {
+            "ltn0.pgf": latin_strike_pgf("Nakagawa Latin Lower", 7 * 64),
+            "ltn2.pgf": latin_strike_pgf("Nakagawa Latin Upper", 9 * 64),
+        })
+        user_data = self.temp_path / "ud"
+        import_fonts(source, user_data_root=user_data)
+        self.assertEqual(resolve_latin_index(user_data, None, 1),
+                         {"source": "user", "served_index": 0})
+
+    def test_remove_latin_removes_legacy_and_all_indexed_imports(self) -> None:
+        source = self._folder("named_latin", {
+            "legacy.pgf": latin_pgf(),
+            "ltn0.pgf": latin_strike_pgf("Nakagawa Latin Small", 7 * 64),
+            "ltn8.pgf": latin_strike_pgf("Nakagawa Latin Large", 17 * 64),
+        })
+        user_data = self.temp_path / "ud"
+        import_fonts(source, user_data_root=user_data)
+        cache = get_font_cache_dir(user_data)
+        self.assertEqual(remove_imports(user_data_root=user_data, slots=["latin"]), 3)
+        for name in ("nkltn.pgf", "ltn0.pgf", "ltn8.pgf"):
+            self.assertFalse((cache / name).exists())
 
     def test_incremental_import_keeps_other_slots(self) -> None:
         user_data = self.temp_path / "ud"

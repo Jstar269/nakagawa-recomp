@@ -2179,7 +2179,7 @@ def inspect_compatibility_preflight(
                     "issues": [308],
                 }
 
-    from .fonts import SLOTS, inspect_font_cache, slot_states
+    from .fonts import inspect_font_cache, latin_index_states, slot_states
 
     font_status, font_message = inspect_font_cache(user_data_root=root)
     if font_status == "INVALID":
@@ -2190,8 +2190,15 @@ def inspect_compatibility_preflight(
     else:
         # Per slot, as the player's preflight: an imported font, else the project font, else missing.
         states = slot_states(user_data_root=root, project_root=root)
-        slot_message = " ".join(states[slot]["detail"] for slot in SLOTS)
-        if all(states[slot]["source"] != "none" for slot in SLOTS):
+        latin_states = latin_index_states(user_data_root=root, project_root=root)
+        slot_message = " ".join(
+            [states["japanese"]["detail"]]
+            + [state["detail"] for state in latin_states]
+            + [states["korean"]["detail"]]
+        )
+        if (states["japanese"]["source"] != "none" and
+                states["korean"]["source"] != "none" and
+                all(state["source"] != "none" for state in latin_states)):
             fonts_check = {
                 "code": "SYSTEM_FONTS", "status": "OK",
                 "message": slot_message, "issues": [],

@@ -185,11 +185,59 @@ def write_fixture(root: Path) -> dict[Path, bytes]:
     source = root / "source"
     source.mkdir(parents=True, exist_ok=True)
     (source / latin).write_bytes(cache_latin)
+    for index in range(16):
+        (source / f"ltn{index}.pgf").write_bytes(cache_latin)
     result = fonts.import_fonts(source, user_data_root=root / "data")
     if result["status"] != "OK":
         raise AssertionError(f"the fixture import did not write a cache: {result['outcomes']}")
     files[cache_dir(root) / latin] = cache_latin
+    for index in range(16):
+        files[cache_dir(root) / f"ltn{index}.pgf"] = cache_latin
     return files
+
+
+def write_latin_index_fixture(root: Path) -> dict[str, bytes]:
+    """Write two indexed synthetic strikes plus the old shared Latin cache entry.
+
+    Keeping the legacy entry lets origin/main run through its real resolver: its registry
+    indices 1 and 9 both read nkltn.pgf, while the indexed manifest records distinct ltn0/ltn8
+    fixtures for the fixed production path.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    cache = cache_dir(root)
+    project = root / "project"
+    cache.mkdir(parents=True, exist_ok=True)
+    project.mkdir(parents=True, exist_ok=True)
+    legacy = synthetic_pgf(LATIN_PROJECT_CODES, "Nakagawa Shared Latin", 9 * 64)
+    first = synthetic_pgf(LATIN_PROJECT_CODES, "Nakagawa Latin Small", 7 * 64)
+    ninth = synthetic_pgf(LATIN_PROJECT_CODES, "Nakagawa Latin Large", 17 * 64)
+    payloads = {"nkltn.pgf": legacy, "ltn0.pgf": first, "ltn8.pgf": ninth}
+    for name, data in payloads.items():
+        (cache / name).write_bytes(data)
+    manifest = {
+        "schema_version": fonts.MANIFEST_SCHEMA_VERSION,
+        "import_time": "2026-10-21T00:00:00Z",
+        "files": {
+            "nkltn.pgf": {
+                "slot": "latin", "size": len(legacy), "sha256": hashlib.sha256(legacy).hexdigest(),
+                "source": "user", "reader_version": fonts.READER_VERSION,
+            }
+        },
+        "latin_indices": {
+            name: {
+                "slot": "latin", "index": index, "size": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(), "source": "user",
+                "reader_version": fonts.READER_VERSION,
+            }
+            for index, name, data in ((0, "ltn0.pgf", first), (8, "ltn8.pgf", ninth))
+        },
+    }
+    (cache / fonts.MANIFEST_NAME).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    source = root / "index-source"
+    source.mkdir(parents=True, exist_ok=True)
+    (source / "ltn0.pgf").write_bytes(first)
+    (source / "ltn8.pgf").write_bytes(ninth)
+    return payloads
 
 
 def tampered_cache_bytes(original: bytes) -> bytes:
@@ -482,6 +530,39 @@ NkFontSlotCheck nk_font_check_cache_slot_file(const char *user_data_root, NkFont
     return NK_FONT_SLOT_CHECK_FILE_INVALID;
 }
 
+const char *nk_font_latin_index_filename(int index) {
+    static const char *const names[NK_FONT_LATIN_INDEX_COUNT] = {
+        "ltn0.pgf", "ltn1.pgf", "ltn2.pgf", "ltn3.pgf", "ltn4.pgf", "ltn5.pgf", "ltn6.pgf", "ltn7.pgf",
+        "ltn8.pgf", "ltn9.pgf", "ltn10.pgf", "ltn11.pgf", "ltn12.pgf", "ltn13.pgf", "ltn14.pgf", "ltn15.pgf",
+    };
+    return (unsigned)index < NK_FONT_LATIN_INDEX_COUNT ? names[index] : NULL;
+}
+
+int nk_font_latin_index_from_filename(const char *name) {
+    (void)name;
+    return -1;
+}
+
+bool nk_font_resolve_latin_index(const char *user_data_root, const char *project_font_dir,
+                                 int index, NkFontLatinResolution *out) {
+    (void)user_data_root;
+    (void)project_font_dir;
+    (void)index;
+    (void)out;
+    return false;
+}
+
+NkFontSlotCheck nk_font_check_cache_latin_index_file(const char *user_data_root, int index,
+                                                      FILE *cache_file, char *reason,
+                                                      size_t reason_len) {
+    (void)user_data_root;
+    (void)index;
+    (void)cache_file;
+    (void)reason;
+    (void)reason_len;
+    return NK_FONT_SLOT_CHECK_FILE_INVALID;
+}
+
 int main(int argc, char **argv) {
     Flash0Sources sources = {0};
     const NkFontSlot slots[] = {NK_FONT_SLOT_LATIN, NK_FONT_SLOT_KOREAN};
@@ -730,6 +811,48 @@ class Flash0FontDeviceTests(unittest.TestCase):
                     named = refusal_lines(run.stderr, USER_ROOT_PREFIX)
                     self.assertEqual(len(named), 1, "expected one SR_USER_DATA_ROOT refusal, got: " + repr(named))
                     self.assertIn("is configured but is not a valid absolute path", named[0])
+
+    def test_latin_indices_resolve_distinct_synthetic_strikes(self) -> None:
+        if sys.platform != "win32" and unguarded_windows_include(
+            SELFTEST_SOURCE.read_text(encoding="utf-8")
+        ):
+            raise unittest.SkipTest(
+                f"{SELFTEST_SOURCE.name} includes <windows.h> without a _WIN32 guard, so the "
+                f"selftest does not build on {sys.platform} yet "
+                "(docs/LINUX_DEVELOPMENT.md, 'What doesn't yet')"
+            )
+        make_tool = "mingw32-make" if sys.platform == "win32" else "make"
+        make = shutil.which(make_tool)
+        if not make:
+            raise unittest.SkipTest(f"{make_tool} is not available")
+        with scratch_dir.TemporaryDirectory(prefix="flash0-font-index-") as tmp:
+            tmp_root = Path(tmp)
+            build_root = tmp_root / "build"
+            build_dir = build_root / "flash0-font-index"
+            build = subprocess.run(
+                [make, "--no-print-directory", f"BUILD_ROOT={build_root.as_posix()}",
+                 f"BUILD_DIR={build_dir.as_posix()}", "hle-thread-selftest-build"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(build.returncode, 0, build.stderr[-4000:] or build.stdout[-4000:])
+            root = tmp_root / "indexed"
+            write_latin_index_fixture(root)
+            env = dict(os.environ)
+            env["SR_FLASH0_TEST_ROOT"] = str(root)
+            run = subprocess.run(
+                [str(build_dir / "hle_thread_selftest.exe"), "--flash0-font-index"],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=300,
+            )
+            self.assertIn("flash0-font-index:", run.stderr)
+            self.assertEqual(run.returncode, 0, run.stderr[-6000:])
 
 
 if __name__ == "__main__":

@@ -42,6 +42,16 @@ SLOT_FILES: Dict[str, str] = {
     "latin": "nkltn.pgf",
     "korean": "nkkr.pgf",
 }
+LATIN_INDEX_FILES: Tuple[str, ...] = tuple(f"ltn{index}.pgf" for index in range(16))
+LATIN_SIZE_GROUP_COUNT = 8
+
+
+def latin_index_from_filename(name: str) -> Optional[int]:
+    """Return a firmware Latin file ordinal for ltn0.pgf..ltn15.pgf, case-insensitively."""
+    try:
+        return LATIN_INDEX_FILES.index(name.casefold())
+    except ValueError:
+        return None
 
 # --- Reader constants, mirrored from src/rt/pgf_public.c and docs/cleanroom/PGF_SPEC.md ----
 BASE_HEADER_SIZE = 392
@@ -554,7 +564,7 @@ def _load_manifest(cache_dir: Path) -> Tuple[str, str, Dict[str, Dict[str, Any]]
     if type(schema) is not int or schema != MANIFEST_SCHEMA_VERSION:
         return "INVALID", "PSP font manifest schema is not version 2; run fonts import <folder>.", {}
     files = manifest.get("files")
-    if not isinstance(files, dict) or not files:
+    if not isinstance(files, dict):
         return "INVALID", "PSP font manifest lists no files; run fonts import <folder>.", {}
     entries: Dict[str, Dict[str, Any]] = {}
     for name, entry in files.items():
@@ -578,6 +588,35 @@ def _load_manifest(cache_dir: Path) -> Tuple[str, str, Dict[str, Dict[str, Any]]
                 "PSP font manifest has an entry this build does not accept; run fonts import <folder>."
             ), {}
         entries[slot] = {"size": size, "sha256": sha}
+    latin_indices = manifest.get("latin_indices", {})
+    if not isinstance(latin_indices, dict):
+        return "INVALID", "PSP font manifest has invalid Latin index entries; run fonts import <folder>.", {}
+    for name, entry in latin_indices.items():
+        index = latin_index_from_filename(name)
+        size = entry.get("size") if isinstance(entry, dict) else None
+        sha = entry.get("sha256") if isinstance(entry, dict) else None
+        ok = (
+            index is not None
+            and name == LATIN_INDEX_FILES[index]
+            and f"latin_index_{index}" not in entries
+            and isinstance(entry, dict)
+            and entry.get("slot") == "latin"
+            and type(entry.get("index")) is int
+            and entry.get("index") == index
+            and isinstance(size, int)
+            and not isinstance(size, bool)
+            and size > 0
+            and isinstance(sha, str)
+            and len(sha) == 64
+            and entry.get("source") == MANIFEST_SOURCE_USER
+        )
+        if not ok:
+            return "INVALID", (
+                "PSP font manifest has a Latin index entry this build does not accept; run fonts import <folder>."
+            ), {}
+        entries[f"latin_index_{index}"] = {"index": index, "size": size, "sha256": sha}
+    if not entries:
+        return "INVALID", "PSP font manifest lists no files; run fonts import <folder>.", {}
     return "OK", "Imported PSP fonts are listed in the manifest.", entries
 
 
@@ -595,6 +634,25 @@ def _check_slot_file(cache_dir: Path, slot: str, entry: Dict[str, Any]) -> Tuple
         return False, f"the reader refused it: {info['refusal']}"
     if info["slot"] != slot:
         return False, f"it does not name the {SLOT_ROLES[slot]} slot"
+    if info["size"] != entry["size"] or info["sha256"] != entry["sha256"]:
+        return False, "its size or SHA-256 differs from the manifest"
+    return True, ""
+
+
+def _check_latin_index_file(cache_dir: Path, index: int, entry: Dict[str, Any]) -> Tuple[bool, str]:
+    """Check one indexed Latin cache file against its manifest and the PGF reader."""
+    path = cache_dir / LATIN_INDEX_FILES[index]
+    if not path.is_file():
+        return False, "its file is missing"
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        return False, f"its file cannot be read ({exc.strerror or exc})"
+    info = _inspect(data)
+    if not info["accepted"]:
+        return False, f"the reader refused it: {info['refusal']}"
+    if info["slot"] != "latin":
+        return False, "it does not name the Latin slot"
     if info["size"] != entry["size"] or info["sha256"] != entry["sha256"]:
         return False, "its size or SHA-256 differs from the manifest"
     return True, ""
@@ -621,6 +679,15 @@ def inspect_font_cache(
         if not ok:
             return "INVALID", (
                 f"Imported {SLOT_ROLES[slot]} font is invalid: {reason}; run fonts import <folder>."
+            )
+    for index in range(len(LATIN_INDEX_FILES)):
+        key = f"latin_index_{index}"
+        if key not in entries:
+            continue
+        ok, reason = _check_latin_index_file(cdir, index, entries[key])
+        if not ok:
+            return "INVALID", (
+                f"Imported Latin index {index + 1} font is invalid: {reason}; run fonts import <folder>."
             )
     return "OK", "Imported PSP fonts are listed in the manifest."
 
@@ -659,6 +726,69 @@ def slot_states(
         else:
             detail = f"{role}: missing. Import a font from your PSP or install the project font."
         states[slot] = {"source": "none", "detail": detail}
+    return states
+
+
+def resolve_latin_index(
+    user_data_root: Optional[Path], project_font_dir: Optional[Path], index: int
+) -> Dict[str, Any]:
+    """Resolve a Latin registry index by exact file, same-size-group file, project, then legacy.
+
+    ``served_index`` is 0..15 for an indexed user file, -1 for the project font, and -2 for a
+    legacy unindexed user import. A legacy import is used only when the project font is absent.
+    """
+    if index < 0 or index >= len(LATIN_INDEX_FILES):
+        raise ValueError(f"Latin index must be between 0 and {len(LATIN_INDEX_FILES) - 1}.")
+    cdir = get_font_cache_dir(user_data_root)
+    status, _, entries = _load_manifest(cdir)
+    if status == "OK":
+        exact_key = f"latin_index_{index}"
+        if exact_key in entries and _check_latin_index_file(cdir, index, entries[exact_key])[0]:
+            return {"source": "user", "served_index": index}
+        group_start = (index // LATIN_SIZE_GROUP_COUNT) * LATIN_SIZE_GROUP_COUNT
+        group_end = group_start + LATIN_SIZE_GROUP_COUNT
+        for distance in range(1, LATIN_SIZE_GROUP_COUNT):
+            for candidate in (index - distance, index + distance):
+                key = f"latin_index_{candidate}"
+                if group_start <= candidate < group_end and key in entries and \
+                        _check_latin_index_file(cdir, candidate, entries[key])[0]:
+                    return {"source": "user", "served_index": candidate}
+
+    if project_font_dir is not None:
+        project_path = Path(project_font_dir) / SLOT_FILES["latin"]
+        try:
+            info = _inspect(project_path.read_bytes()) if project_path.is_file() else {"accepted": False}
+        except OSError:
+            info = {"accepted": False}
+        if info.get("accepted") and info.get("slot") == "latin":
+            return {"source": "project", "served_index": -1}
+
+    if status == "OK" and "latin" in entries and _check_slot_file(cdir, "latin", entries["latin"])[0]:
+        return {"source": "user", "served_index": -2}
+    return {"source": "none", "served_index": -3}
+
+
+def latin_index_states(
+    user_data_root: Optional[Path] = None,
+    project_root: Optional[Path] = None,
+) -> List[Dict[str, str]]:
+    """Describe every Latin registry index and identify any exact-file fallback."""
+    project_font_dir = Path(project_root) / PROJECT_SUBDIR if project_root is not None else None
+    states: List[Dict[str, str]] = []
+    for index, requested in enumerate(LATIN_INDEX_FILES):
+        resolution = resolve_latin_index(user_data_root, project_font_dir, index)
+        served_index = resolution["served_index"]
+        if served_index == index:
+            detail = f"L{index + 1} exact {requested}"
+        elif served_index >= 0:
+            detail = f"L{index + 1} missing; fallback {LATIN_INDEX_FILES[served_index]}"
+        elif served_index == -1:
+            detail = f"L{index + 1} missing; project nkltn.pgf"
+        elif served_index == -2:
+            detail = f"L{index + 1} missing; legacy nkltn.pgf"
+        else:
+            detail = f"L{index + 1} missing {requested}"
+        states.append({"source": resolution["source"], "detail": detail})
     return states
 
 
@@ -711,7 +841,25 @@ def _write_manifest(cache_dir: Path, entries: Dict[str, Dict[str, Any]]) -> None
             "source": MANIFEST_SOURCE_USER,
             "reader_version": READER_VERSION,
         }
-    manifest = {"schema_version": MANIFEST_SCHEMA_VERSION, "import_time": now, "files": files}
+    latin_indices = {}
+    for index, name in enumerate(LATIN_INDEX_FILES):
+        entry = entries.get(f"latin_index_{index}")
+        if entry is None:
+            continue
+        latin_indices[name] = {
+            "slot": "latin",
+            "index": index,
+            "size": entry["size"],
+            "sha256": entry["sha256"],
+            "source": MANIFEST_SOURCE_USER,
+            "reader_version": READER_VERSION,
+        }
+    manifest = {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "import_time": now,
+        "files": files,
+        "latin_indices": latin_indices,
+    }
     target = cache_dir / MANIFEST_NAME
     staged = cache_dir / (MANIFEST_NAME + ".tmp")
     staged.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -723,7 +871,7 @@ def import_fonts(
     user_data_root: Optional[Path] = None,
     choose: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
-    """Import user fonts from one folder: check each .pgf, name its slot, copy, and write manifest v2.
+    """Import user fonts from one folder and write manifest v2.
 
     Each file is read once and checked by the reader. A file the reader refuses, or that
     names no slot, is reported and skipped. A slot that several files name is imported only
@@ -744,7 +892,7 @@ def import_fonts(
     files: List[Dict[str, Any]] = []
     checked: Dict[str, Dict[str, Any]] = {}
     candidates: Dict[str, List[int]] = {slot: [] for slot in SLOTS}
-    data_by_index: Dict[int, bytes] = {}
+    latin_candidates: Dict[int, List[int]] = {index: [] for index in range(len(LATIN_INDEX_FILES))}
     for path in paths:
         outcome: Dict[str, Any] = {"name": path.name, "slot": None, "imported": False, "detail": ""}
         try:
@@ -766,10 +914,20 @@ def import_fonts(
         elif info["slot"] is None:
             outcome["detail"] = f"refused: {info['slot_reason']}"
         else:
-            outcome["slot"] = info["slot"]
-            outcome["detail"] = f"names the {SLOT_ROLES[info['slot']]} slot"
-            candidates[info["slot"]].append(index)
-            data_by_index[index] = data
+            latin_index = latin_index_from_filename(path.name)
+            if latin_index is not None:
+                if info["slot"] != "latin":
+                    outcome["detail"] = f"refused: {path.name} does not name a Latin font"
+                else:
+                    outcome["slot"] = "latin"
+                    outcome["latin_index"] = latin_index
+                    outcome["detail"] = f"names Latin index {latin_index + 1}"
+                    latin_candidates[latin_index].append(index)
+            else:
+                outcome["slot"] = info["slot"]
+                outcome["latin_index"] = None
+                outcome["detail"] = f"names the {SLOT_ROLES[info['slot']]} slot"
+                candidates[info["slot"]].append(index)
         files.append(outcome)
 
     selected: Dict[str, int] = {}
@@ -792,6 +950,14 @@ def import_fonts(
             if slot in selected and i != selected[slot]:
                 files[i]["detail"] = f"not chosen for the {SLOT_ROLES[slot]} slot"
 
+    selected_latin: Dict[int, int] = {}
+    for latin_index, options in latin_candidates.items():
+        if len(options) == 1:
+            selected_latin[latin_index] = options[0]
+        elif len(options) > 1:
+            for i in options:
+                files[i]["detail"] = f"not imported: multiple files name Latin index {latin_index + 1}"
+
     cache_dir = get_font_cache_dir(user_data_root)
     cache_dir.mkdir(parents=True, exist_ok=True)
     _, _, previous = _load_manifest(cache_dir)
@@ -808,6 +974,19 @@ def import_fonts(
                 )
             target = cache_dir / SLOT_FILES[slot]
             tmp = cache_dir / (SLOT_FILES[slot] + ".tmp")
+            tmp.write_bytes(data)
+            staged.append((tmp, target))
+        for latin_index, index in selected_latin.items():
+            source_path = source_folder / files[index]["name"]
+            data = source_path.read_bytes()
+            info = _inspect(data)
+            if (not info["accepted"] or info["slot"] != "latin" or
+                    info["sha256"] != checked[files[index]["name"]]["sha256"]):
+                raise FontImportError(
+                    f"The Latin index {latin_index + 1} file changed or failed its check; try again."
+                )
+            target = cache_dir / LATIN_INDEX_FILES[latin_index]
+            tmp = cache_dir / (LATIN_INDEX_FILES[latin_index] + ".tmp")
             tmp.write_bytes(data)
             staged.append((tmp, target))
     except OSError as exc:
@@ -828,18 +1007,32 @@ def import_fonts(
             entries[slot] = {"size": info["size"], "sha256": info["sha256"]}
             files[index]["imported"] = True
             files[index]["detail"] = f"imported as the {SLOT_ROLES[slot]} font"
-        if selected:
+        for latin_index, index in selected_latin.items():
+            info = checked[files[index]["name"]]
+            entries[f"latin_index_{latin_index}"] = {
+                "index": latin_index, "size": info["size"], "sha256": info["sha256"]
+            }
+            files[index]["imported"] = True
+            files[index]["detail"] = f"imported as Latin index {latin_index + 1}"
+        if selected or selected_latin:
             _write_manifest(cache_dir, entries)
     except OSError as exc:
         raise FontImportError(f"Failed to stage imported fonts into cache: {exc}") from exc
 
     return {
-        "status": "OK" if selected else "NONE",
+        "status": "OK" if selected or selected_latin else "NONE",
         "cache_dir": str(cache_dir),
-        "imported_count": len(selected),
+        "imported_count": len(selected) + len(selected_latin),
         "slots": {slot: SLOT_FILES[slot] for slot in selected},
-        "files": {SLOT_FILES[slot]: {"size": entries[slot]["size"], "sha256": entries[slot]["sha256"]}
-                  for slot in entries},
+        "latin_indices": {str(index): LATIN_INDEX_FILES[index] for index in selected_latin},
+        "files": {
+            **{SLOT_FILES[slot]: {"size": entries[slot]["size"], "sha256": entries[slot]["sha256"]}
+               for slot in SLOTS if slot in entries},
+            **{LATIN_INDEX_FILES[index]: {
+                "size": entries[f"latin_index_{index}"]["size"],
+                "sha256": entries[f"latin_index_{index}"]["sha256"],
+            } for index in range(len(LATIN_INDEX_FILES)) if f"latin_index_{index}" in entries},
+        },
         "outcomes": files,
     }
 
@@ -869,6 +1062,7 @@ def remove_imports(user_data_root: Optional[Path] = None, slots: Optional[Iterab
     failures: List[str] = []
     for slot in wanted:
         path = cache_dir / SLOT_FILES[slot]
+        base_delete_failed = False
         try:
             path.unlink()
             removed += 1
@@ -882,9 +1076,26 @@ def remove_imports(user_data_root: Optional[Path] = None, slots: Optional[Iterab
                 f"The {SLOT_ROLES[slot]} font file {SLOT_FILES[slot]} could not be removed "
                 f"({exc.strerror or exc}){kept}."
             )
-            continue
-        if entries.pop(slot, None) is not None:
+            base_delete_failed = True
+        if not base_delete_failed and entries.pop(slot, None) is not None:
             dropped = True
+        if slot == "latin":
+            for index, name in enumerate(LATIN_INDEX_FILES):
+                path = cache_dir / name
+                try:
+                    path.unlink()
+                    removed += 1
+                except (FileNotFoundError, NotADirectoryError):
+                    pass
+                except OSError as exc:
+                    kept = "; its manifest entry is kept" if f"latin_index_{index}" in entries else ""
+                    failures.append(
+                        f"The Latin index {index + 1} font file {name} could not be removed "
+                        f"({exc.strerror or exc}){kept}."
+                    )
+                    continue
+                if entries.pop(f"latin_index_{index}", None) is not None:
+                    dropped = True
     manifest_path = cache_dir / MANIFEST_NAME
     if status != "OK":
         if not failures and manifest_path.is_file():

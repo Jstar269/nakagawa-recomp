@@ -4449,7 +4449,7 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
             if (app->wizard.font_slot_detail[0][0] == '\0') player_app_refresh_font_status(app);
 
             float spec_y = content_y + 36.0f;
-            float spec_h = 170.0f;
+            float spec_h = 244.0f;
             draw_rounded_fill(ren, card_x + 32.0f, spec_y, card_w - 64.0f, spec_h, 8.0f, (SDL_Color){ 16, 21, 26, 255 });
             draw_rounded_outline(ren, card_x + 32.0f, spec_y, card_w - 64.0f, spec_h, 8.0f, COLOR_CARD_BORDER);
 
@@ -4465,17 +4465,27 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
             draw_text(ren, card_x + 48.0f, spec_y + 38.0f, ctrl_txt, 1.0f, COLOR_LIME);
 
             draw_text(ren, card_x + 48.0f, spec_y + 66.0f,
-                      "Font source for each PSP slot (your PSP font, the project font, or missing):",
+                      "Japanese/Korean slots and all Latin indices (fallbacks are shown):",
                       1.0f, COLOR_TEXT_DIM);
-            for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
-                draw_text(ren, card_x + 48.0f, spec_y + 88.0f + 20.0f * (float)slot,
-                          app->wizard.font_slot_detail[slot], 1.0f, COLOR_TEXT_MUTED);
+            float font_column_w = (card_w - 96.0f) / 3.0f;
+            for (int item = 0; item < NK_FONT_LATIN_INDEX_COUNT + 2; item++) {
+                int column = item / 6;
+                int row = item % 6;
+                float x = card_x + 48.0f + font_column_w * (float)column;
+                float y = spec_y + 88.0f + 20.0f * (float)row;
+                const char *detail = item == 0
+                    ? app->wizard.font_slot_detail[NK_FONT_SLOT_JAPANESE]
+                    : item == NK_FONT_LATIN_INDEX_COUNT + 1
+                        ? app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN]
+                        : app->wizard.font_latin_index_detail[item - 1];
+                draw_text_ellipsized(ren, x, y, detail, 0.9f, font_column_w - 12.0f,
+                                     COLOR_TEXT_MUTED);
             }
-            draw_text(ren, card_x + 48.0f, spec_y + 148.0f,
+            draw_text_ellipsized(ren, card_x + 48.0f, spec_y + 216.0f,
                       app->wizard.font_message[0]
                           ? app->wizard.font_message
                           : "Import reads .pgf files from a folder you choose. Nothing is uploaded.",
-                      0.9f, COLOR_AMBER);
+                      0.9f, card_w - 96.0f, COLOR_AMBER);
 
             bool accept_foc = (app->focus_index == focus++);
             if (draw_button_focused(ren, card_x + 32.0f, btn_y, 200.0f, 44.0f, "ACCEPT & CONTINUE", true, in, accept_foc)) {
