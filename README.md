@@ -16,7 +16,7 @@
 
 </div>
 
-| ![Nakagawa 3D Showcase demo: a smooth-shaded, textured cube on a dark background, recompiled and rendered by Nakagawa Recomp](docs/images/showcase-ge-scene-v120.png) | ![Nakagawa Breakout Showcase demo: a brick field, score row, paddle and ball, recompiled and rendered by Nakagawa Recomp](docs/images/showcase-breakout-v180.png) |
+| ![Nakagawa 3D Showcase: a brightly textured cube rotating against a dark background in the recompiled demo](docs/images/showcase-ge-scene.gif) | ![Nakagawa Breakout Showcase: the ball moving through a colored brick field above the paddle and score](docs/images/showcase-breakout.gif) |
 | :---: | :---: |
 | **3D Showcase** | **Breakout Showcase** |
 
@@ -57,7 +57,7 @@ No game at hand? `mingw32-make player showcase` builds the two demos above, and 
 
 ## Learn more
 
-[How it works](docs/ARCHITECTURE.md) · [All documentation](docs/README.md) · [Open issues](https://github.com/Jstar269/nakagawa-recomp/issues) ·
+[How it works](docs/ARCHITECTURE.md#pipeline) · [All documentation](docs/README.md) · [Open issues](https://github.com/Jstar269/nakagawa-recomp/issues) ·
 [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Code of conduct](CODE_OF_CONDUCT.md)
 
 ## License and lineage

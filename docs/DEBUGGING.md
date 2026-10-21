@@ -1392,6 +1392,18 @@ The Vulkan runtime (`src/rt/gpu_sdl3vk/`) includes an opt-in in-game performance
   - When enabled, host-side drawing renders text onto an SDL3 surface after the guest frame is composed and copies it directly into the swapchain staging buffer, guaranteeing zero impact on guest-visible timing or emulation clocks.
   - Snapshot captures (`SR_FBSNAP` / visual evidence capture) capture the pristine guest framebuffer before the presentation blit, keeping automated tests and snapshots free of HUD artifacts.
 
+## Quick recipes
+
+- **Find an HLE handler.** `git grep -n "sr_hle_register(0x<nid>" src/rt/` names the handler for a NID
+  (`src/rt/nid_names.h` maps NIDs to names). Check its argument reads against the function's public signature
+  (`AGENTS.md` section 7).
+- **Run one native self-test the way CI does.** `mingw32-make GAME_NAME=ci BUILD_DIR=build/windows-runtime CC=gcc
+  hle-thread-selftest` (likewise `psmf-media-selftest`). Each prints a `<name>: N checks, M failures` summary; there is
+  no per-test filter, so run the whole target.
+- **Capture frames unattended.** Set `SR_NOINPUT=1` so the automatic START pulse does not reach the game, bound the run
+  with `SR_EXIT_AT_VBLANK` ([where it stops](#where-sr_exit_at_vblank-actually-stops)), and capture with
+  `SR_FBSNAP_WINDOWS` ([both ends of a transition](#capturing-both-ends-of-a-transition--snapwindows)).
+
 ## Troubleshooting
 
 ### Black screen
