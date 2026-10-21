@@ -218,10 +218,21 @@ class LiveRepositoryPlanTests(unittest.TestCase):
             with self.subTest(label), tempfile.TemporaryDirectory() as scratch:
                 stub = Path(scratch) / "python"
                 ran = Path(scratch) / "unittest-args"
+                # The step runs the planner first and then the shard's tests under the
+                # coverage wrapper. The stub answers the planner, records the module
+                # arguments of the unittest invocation wherever it appears, and returns
+                # success for the coverage combine/xml calls that follow it.
                 stub.write_text(
                     "#!/bin/sh\n"
-                    'if [ "$1" = "-m" ]; then shift 3; echo "$@" > "' + _bash_path(ran) + '"; exit 0; fi\n'
-                    + planner + "\n",
+                    + planner + "\n"
+                    'all="$*"\n'
+                    'case " $all " in\n'
+                    '  *" -m unittest -v "*)\n'
+                    '    modules="${all##*-m unittest -v }"\n'
+                    '    printf \'%s\\n\' "$modules" > "' + _bash_path(ran) + '"\n'
+                    "    ;;\n"
+                    "esac\n"
+                    "exit 0\n",
                     encoding="utf-8",
                 )
                 stub.chmod(0o755)

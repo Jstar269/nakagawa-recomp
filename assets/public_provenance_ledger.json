@@ -186,7 +186,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f81bb116f159ee6b894e48ce4dc3db535b9434de7219f488119425181af98a79"
+      "sha256": "c89a34f18fed80f6dac5f31581a382c1137ee69e403b848017a9378d80393df5"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -775,7 +775,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "95b4a4a072bd7501154c3b4060bd77a39c17c530eb093d28c21847bc6b543206"
+      "sha256": "c5784a8cc128149813080f0c1fe1aff26adcb52d8ab7a73cf5c7607c1a69e93f"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -787,7 +787,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bb3795caae0972d5bac6c253398f8505db86ba44b1924558ffd2e8f95b8414e1"
+      "sha256": "646d752ea598bd73347ff93032f0384dce441f5c5bd2f1a862bf1a5fc000d0d3"
     },
     {
       "path": "assets/release_manifest.json",
@@ -808,7 +808,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7e40a3c05e7e085e563788ff42b2ff5b9b70c5efcb597d8e0d2df3361e172b5c"
+      "sha256": "19ebe663bd0111c8a55533a6aa314a8e4adb3b36f6a2c958dc22c7859f5fa48e"
     },
     {
       "path": "assets/third_party_components.schema.json",
@@ -1123,6 +1123,15 @@
       "sha256": "634e81488992fc2a0bfe5eaa3982f8895f7cdbb59595cb1dc6934bddafde86a6"
     },
     {
+      "path": "codecov.yml",
+      "classification": "reviewed_configuration",
+      "evidence": {
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
+      },
+      "sha256": "1d36b0167ce01e8212f03cd7672b60319c29a196447acfbb3eb69b488e783391"
+    },
+    {
       "path": "docs/AI_USAGE.md",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -1165,7 +1174,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "19f9494182b5c225f72de22dcf3d5b617c6faa7da1a46a652720feeafd9afbcc"
+      "sha256": "986ada0b7a51bd9aec90b2871da0f43d991edb940fd54068180119f8ea01fc19"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -2771,7 +2780,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "9f86cdd8844a3b22e99883a80d0d2424a9fc6f63e3107d428902108005fc2227"
+      "sha256": "4443c1a5c59a4c241e5a1783f060f223af94740472019a0efd3e3671c7b5539d"
     },
     {
       "path": "src/core/generated/nk_title_catalog.c",
@@ -8069,7 +8078,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4552ce66861aa53281986849b8fa76821f6fa50be7e67f637e3a1d281cf45445"
+      "sha256": "90087d82f78173de0ee1f650ef71e4d6b74d39093655ec897bb0fcffd3f407d6"
     },
     {
       "path": "tools/run_perf_benchmarks.py",
@@ -8309,7 +8318,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cd1f1d70a3fcb44bdf89d1fb45b34f980dfab9bcd31883a612bc6365fa65ce73"
+      "sha256": "b5c189a9608174ad871a2cf74176dd5e6e7d0ba7622ba4e6c086d047ebad2e54"
     },
     {
       "path": "tools/test_codegen_continuations.py",
@@ -9931,7 +9940,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "887ddeee3720464566dba7e580aa45fa34a1ad2a57b267e021a5b2637295b5aa"
+      "sha256": "4f55ead094435ec5321227dc5c627c0d0ad583db3dd764c1240a50ee9db033b9"
     },
     {
       "path": "tools/test_public_export.py",
@@ -10076,7 +10085,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ba0c113f355f453bb0b86f9eb02d7b216b3010df7ed2b215bc9b5a4f91687f48"
+      "sha256": "31a6f916dfcd9b240b6a8faf3ffc8290d150fb50f8f7fa6ee3884cdc14e4491d"
     },
     {
       "path": "tools/test_sbom_binding.py",
@@ -10088,7 +10097,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "62011ca1dcdcbeab6fc158ea8d0cf8df9abb42124e6d9b61a86206fdd5248819"
+      "sha256": "f23026be30fdc47f04bce54352a4a93de9e6760bf69e1126e983cf87bdfeeb37"
     },
     {
       "path": "tools/test_sbom_fail_closed.py",
@@ -10100,7 +10109,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "056681c7da3989d0dfc74684897c035b0e7790c006b94f1075c2a7010c05ee70"
+      "sha256": "5ec86ac3255e71d012faa91fdb575779d9d08221ec172658d557b1011caa5814"
     },
     {
       "path": "tools/test_sched_invariants.py",
