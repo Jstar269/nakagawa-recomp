@@ -130,6 +130,10 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_UMD_RAW_READ 77
 #define PSP_ORACLE_CASE_FONT_LIST 75
 #define PSP_ORACLE_CASE_VRAM_MIRROR 76
+/* #1106: a late-loaded PRX that owns a semaphore-blocked waiter, an event flag and a callback. Its
+   module_stop returns 0 without deleting, waking or otherwise touching them. PSPLink's modstop and
+   modunld then measure what survives. Never returns from main, so the probe teardown never runs. */
+#define PSP_ORACLE_CASE_LATE_PRX_TARGET 110
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -6611,9 +6615,59 @@ static void probe_park_until_stop(void) {
     sceKernelExitThread(0);
 }
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_LATE_PRX_TARGET
+/* #1106 late-PRX target. Every object below belongs to this module. The waiter blocks on the
+   semaphore for the whole measurement window (600 s bound), so it never runs module code on its own. */
+#define LATE_PRX_WAIT_US (600u * 1000u * 1000u)
+static volatile SceUID s_late_sema = -1;
+static volatile SceUID s_late_flag = -1;
+static volatile SceUID s_late_cb = -1;
+static volatile SceUID s_late_waiter = -1;
+
+static int late_prx_callback(int arg1, int arg2, void *common) {
+    (void)arg1;
+    (void)arg2;
+    (void)common;
+    return 0;
+}
+
+static int late_prx_waiter(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    SceUInt timeout = LATE_PRX_WAIT_US;
+    (void)sceKernelWaitSema(s_late_sema, 1, &timeout);
+    for (;;) sceKernelSleepThread();
+    return 0;
+}
+
+static void run_late_prx_target(int emulated) {
+    s_late_sema = sceKernelCreateSema("nk_late_sema", 0, 0, 1, NULL);
+    s_late_flag = sceKernelCreateEventFlag("nk_late_flag", 0, 0, NULL);
+    s_late_cb = sceKernelCreateCallback("nk_late_cb", late_prx_callback, NULL);
+    s_late_waiter = sceKernelCreateThread("nk_late_waiter", late_prx_waiter, 0x20, 0x1000,
+                                          PSP_THREAD_ATTR_USER, NULL);
+    if (s_late_waiter >= 0) (void)sceKernelStartThread(s_late_waiter, 0, NULL);
+    /* Let the waiter reach its semaphore wait before the UIDs are published. */
+    sceKernelDelayThread(500 * 1000);
+    char line[320];
+    snprintf(line, sizeof(line),
+             "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-LATE-PRX-001 case_id=late-prx-published "
+             "status=PASS sema=0x%08x flag=0x%08x cb=0x%08x waiter=0x%08x main=0x%08x\n",
+             (unsigned int)s_late_sema, (unsigned int)s_late_flag, (unsigned int)s_late_cb,
+             (unsigned int)s_late_waiter, (unsigned int)s_probe_main_thread);
+    emit(emulated, line);
+    /* Park the main thread. Returning would end main and drop PSPLink to the XMB. */
+    for (;;) sceKernelSleepThread();
+}
+#endif
+
 int module_stop(SceSize args, void *argp) {
     (void)args;
     (void)argp;
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_LATE_PRX_TARGET
+    /* Leave every owned object in place: the host measures the post-stop state. */
+    return 0;
+#endif
     const SceUID main_thread = s_probe_main_thread;
     if (main_thread < 0) return 1;
     s_probe_stop_requested = 1;
@@ -8478,6 +8532,8 @@ int main(int argc, char *argv[]) {
     run_font_list(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
     run_vram_mirror(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_LATE_PRX_TARGET
+    run_late_prx_target(emulated); /* parks; never returns */
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

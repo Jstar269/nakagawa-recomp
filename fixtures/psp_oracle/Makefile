@@ -209,6 +209,8 @@ else ifeq ($(CASE),font-list)
 CASE_ID = 75
 else ifeq ($(CASE),vram-mirror)
 CASE_ID = 76
+else ifeq ($(CASE),late-prx-target)
+CASE_ID = 110
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
