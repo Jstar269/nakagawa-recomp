@@ -78,6 +78,8 @@ class ReadmeImageTests(unittest.TestCase):
             "http://img.shields.io/badge/x-y-blue.svg",
             "https://example.com/pixel.png",
             "https://github.com/someone-else/repo/actions/workflows/ci.yml/badge.svg",
+            "https://codecov.io/gh/someone-else/repo/graph/badge.svg",
+            "https://codecov.io/gh/Jstar269/nakagawa-recomp/graph/badge.svg?token=deadbeef",
         )
         self.assertTrue(any(p.fullmatch(allowed) for p in BADGE_URL_RES))
         for url in refused:
