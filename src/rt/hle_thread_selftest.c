@@ -27520,6 +27520,180 @@ static void test_volatile_mem_unlock_states(void) {
     sr_hle_test_volatile_mem_reset();
 }
 
+/* ---- #1106: a late PRX's module-owned objects outlive its stop and unload ----
+ *
+ * PSP-3000 measurement (firmware 6.6.1, 2026-10-21, PSPLink probe CASE=late-prx-target):
+ * after sceKernelStopModule returned 0 and sceKernelUnloadModule removed the module, the
+ * worker thread stayed WAITING on the semaphore it created, the semaphore still counted
+ * that waiter, the event flag and the callback still resolved, and the callback still
+ * named its owner thread. Nothing in the PSP's stop or unload tore them down.
+ *
+ * This test drives the production start, stop and unload handlers over a synthetic PRX.
+ * The four objects are created while the module runs, a worker blocks on the semaphore,
+ * and each object is checked after the unload. Its waiter stays blocked on a 600 s bound,
+ * so nothing wakes or runs module code during the check. The runtime does not record
+ * per-module ownership, so the objects are simply left alone by unload. */
+#define LATE_OBJ_BASE            0x09300000u
+#define LATE_OBJ_EXPORT          0x7a0000c1u
+#define LATE_OBJ_WAIT_TMO_PTR    0x00250e00u
+#define LATE_OBJ_WAIT_US         600000000u
+#define LATE_OBJ_INFO_THREAD     0x00250e40u
+#define LATE_OBJ_INFO_SEMA       0x00250e80u
+#define LATE_OBJ_INFO_FLAG       0x00250ec0u
+#define LATE_OBJ_INFO_CB         0x00250f00u
+#define LATE_OBJ_NAME            0x00250f40u
+#define LATE_OBJ_START_NID       0x50f0c1ecu
+#define LATE_OBJ_STOP_NID        0xd1ff982au
+#define LATE_OBJ_UNLOAD_NID      0x2e0911aau
+#define LATE_OBJ_CREATE_EVFLAG   0x55c20a00u
+#define LATE_OBJ_REFER_EVFLAG    0xa66b0120u
+#define LATE_OBJ_DELETE_EVFLAG   0xef9e4c70u
+#define LATE_OBJ_CREATE_CB       0xe81caf8fu
+#define LATE_OBJ_DELETE_CB       0xedba5844u
+#define LATE_OBJ_REFER_THREAD    0x17c1684eu
+#define LATE_OBJ_REFER_SEMA      0xbc6febc5u
+
+static uint32_t s_late_obj_sema;
+static uint32_t s_late_obj_ret;
+static int      s_late_obj_returned;
+
+static void late_obj_waiter_body(void *arg) {
+    (void)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = s_late_obj_sema; cpu.r[5] = 1u; cpu.r[6] = LATE_OBJ_WAIT_TMO_PTR;
+    s_late_obj_ret = sr_syscall(&cpu, NID_CNW_WAIT_SEMA);
+    s_late_obj_returned = 1;
+    selftest_park_on_scheduler();
+}
+
+static uint32_t late_obj_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = a0; cpu.r[5] = a1; cpu.r[6] = a2;
+    return sr_syscall(&cpu, nid);
+}
+
+static void test_late_prx_unload_keeps_module_owned_objects(void) {
+    const char *path = HLE_BUILD_ROOT "/hle_late_objects.prx";
+    TCB *owner, *waiter;
+    uint32_t sema, flag, cb, pre_status, pre_waitid, pre_numwait;
+    uint32_t stop_rc, unload_rc;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_hle_test_module_reset();
+    _putenv("SR_REAL_MODULE_START=1");
+
+    expect(write_lifecycle_prx(path, 0x1106aaaau), "late-objects: synthetic module image written");
+    uint32_t uid = sr_hle_test_load_prx_image(path, LATE_OBJ_BASE, LATE_OBJ_EXPORT,
+                                              LIFECYCLE_PATCH_OFF_A_1);
+    expect(uid != 0, "late-objects: module image loads at its declared base");
+    if (uid == 0) {
+        remove(path);
+        _putenv("SR_REAL_MODULE_START=0");
+        sr_test_guest_fn_reset();
+        sr_hle_test_module_reset();
+        return;
+    }
+    sr_test_register_guest_fn(LATE_OBJ_BASE + LIFECYCLE_START_OFF, lifecycle_start_fn);
+    sr_test_register_guest_fn(LATE_OBJ_BASE + LIFECYCLE_STOP_OFF, lifecycle_stop_fn);
+    sr_test_register_guest_fn(LATE_OBJ_BASE + LIFECYCLE_PATCH_OFF_A_1, lifecycle_export_a1_fn);
+    expect(late_obj_call(LATE_OBJ_START_NID, uid, 0u, 0u) == 0u, "late-objects: the module starts");
+
+    /* The module's own thread creates the objects, so it is the owner of the callback. */
+    owner = fixture_thread(0x6b0u, TH_RUNNING, 40);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    sema = wsv_create(0, 1);
+    expect((int32_t)sema > 0, "late-objects: semaphore created while the module runs");
+    flag = late_obj_call(LATE_OBJ_CREATE_EVFLAG, LATE_OBJ_NAME, 0u, 0u);
+    expect((int32_t)flag > 0, "late-objects: event flag created while the module runs");
+    cb = late_obj_call(LATE_OBJ_CREATE_CB, LATE_OBJ_NAME, LATE_OBJ_BASE + LIFECYCLE_PATCH_OFF_A_1, 0u);
+    expect((int32_t)cb > 0, "late-objects: callback created while the module runs");
+
+    /* A worker thread blocks on the semaphore for the rest of the test. */
+    waiter = fixture_thread(0x6b1u, TH_READY, 16);
+    waiter->started = 1;
+    s_late_obj_sema = sema;
+    s_late_obj_returned = 0;
+    s_late_obj_ret = 0xFFFFFFFFu;
+    MEM_W32(LATE_OBJ_WAIT_TMO_PTR, LATE_OBJ_WAIT_US);
+    waiter->coro = sr_coro_create(late_obj_waiter_body, NULL, (size_t)4 << 20);
+    expect(waiter->coro != NULL, "late-objects: worker coroutine created");
+    if (!waiter->coro) {
+        remove(path);
+        _putenv("SR_REAL_MODULE_START=0");
+        sr_test_guest_fn_reset();
+        sr_hle_test_module_reset();
+        s_cur = -1;
+        return;
+    }
+    s_cur = (int)(waiter - s_tcb);
+    waiter->state = TH_RUNNING;
+    sr_coro_switch(waiter->coro);
+    expect(waiter->state == TH_WAIT_OBJ, "late-objects: the worker blocks on the semaphore");
+    expect(s_late_obj_returned == 0, "late-objects: the worker has not returned from its wait");
+    s_cur = (int)(owner - s_tcb);
+    owner->state = TH_RUNNING;
+
+    /* Before the stop: each object is observable through its refer call. */
+    expect(late_obj_call(LATE_OBJ_REFER_THREAD, waiter->uid, LATE_OBJ_INFO_THREAD, 0u) == 0u,
+           "late-objects: the worker resolves before the stop");
+    pre_status = MEM_R32(LATE_OBJ_INFO_THREAD + 0x28u);
+    pre_waitid = MEM_R32(LATE_OBJ_INFO_THREAD + 0x48u);
+    expect(pre_waitid == sema, "late-objects: the worker waits on the semaphore it created");
+    MEM_W32(LATE_OBJ_INFO_SEMA, 56u);
+    expect(late_obj_call(LATE_OBJ_REFER_SEMA, sema, LATE_OBJ_INFO_SEMA, 0u) == 0u,
+           "late-objects: the semaphore resolves before the stop");
+    pre_numwait = MEM_R32(LATE_OBJ_INFO_SEMA + 52u);
+    expect(pre_numwait == 1u, "late-objects: the semaphore counts its one waiter");
+    expect(late_obj_call(LATE_OBJ_REFER_EVFLAG, flag, LATE_OBJ_INFO_FLAG, 0u) == 0u,
+           "late-objects: the event flag resolves before the stop");
+    expect(sr_callback_is_valid(cb), "late-objects: the callback resolves before the stop");
+
+    /* Stop and unload the module. The PSP measurement shows both succeed and neither
+     * removes the objects above. */
+    stop_rc = late_obj_call(LATE_OBJ_STOP_NID, uid, 0u, 0u);
+    expect(stop_rc == 0u, "late-objects: stopping the module returns 0");
+    unload_rc = late_obj_call(LATE_OBJ_UNLOAD_NID, uid, 0u, 0u);
+    expect(unload_rc == 0u, "late-objects: unloading the stopped module returns 0");
+
+    /* After the unload every object still resolves, with the same state as before. */
+    expect(late_obj_call(LATE_OBJ_REFER_THREAD, waiter->uid, LATE_OBJ_INFO_THREAD, 0u) == 0u,
+           "late-objects: the worker still resolves after the unload");
+    expect(MEM_R32(LATE_OBJ_INFO_THREAD + 0x28u) == pre_status &&
+               MEM_R32(LATE_OBJ_INFO_THREAD + 0x48u) == pre_waitid,
+           "late-objects: the worker keeps its status and the semaphore it waits on");
+    expect(waiter->state == TH_WAIT_OBJ,
+           "late-objects: the worker stays blocked after the unload");
+    expect(s_late_obj_returned == 0, "late-objects: the unload does not wake the worker");
+    MEM_W32(LATE_OBJ_INFO_SEMA, 56u);
+    expect(late_obj_call(LATE_OBJ_REFER_SEMA, sema, LATE_OBJ_INFO_SEMA, 0u) == 0u,
+           "late-objects: the semaphore still resolves after the unload");
+    expect(MEM_R32(LATE_OBJ_INFO_SEMA + 52u) == pre_numwait,
+           "late-objects: the semaphore still counts its waiter after the unload");
+    expect(late_obj_call(LATE_OBJ_REFER_EVFLAG, flag, LATE_OBJ_INFO_FLAG, 0u) == 0u,
+           "late-objects: the event flag still resolves after the unload");
+    expect(sr_callback_is_valid(cb), "late-objects: the callback still resolves after the unload");
+
+    /* Cleanup: terminate the worker (no code runs), then delete the objects. */
+    expect(srt_call(NID_SCE_KERNEL_TERMINATE_DELETE_THREAD, waiter->uid) == 0u,
+           "late-objects: the orphaned worker can be terminated and deleted");
+    if (waiter->coro) { sr_coro_destroy(waiter->coro); waiter->coro = NULL; }
+    wsv_delete(sema);
+    expect(late_obj_call(LATE_OBJ_DELETE_EVFLAG, flag, 0u, 0u) == 0u,
+           "late-objects: the event flag deletes after the unload");
+    expect(late_obj_call(LATE_OBJ_DELETE_CB, cb, 0u, 0u) == 0u,
+           "late-objects: the callback deletes after the unload");
+    s_cur = -1;
+    remove(path);
+    _putenv("SR_REAL_MODULE_START=0");
+    sr_test_guest_fn_reset();
+    sr_hle_test_module_reset();
+}
+
 static void test_psmf_rejected_stream_names_the_boundary(void) {
     CpuState cpu;
     char captured[8192];
@@ -30016,6 +30190,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_host_skipped_start_stop_unload_reload();
     test_late_prx_duplicate_base_last_reference();
     test_volatile_mem_unlock_states();
+    test_late_prx_unload_keeps_module_owned_objects();
     test_psmf_rejected_stream_names_the_boundary();
     test_psmf_start_reads_init_pts_from_the_third_argument();
     test_flight_recorder_trace();
