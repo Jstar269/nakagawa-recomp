@@ -89,6 +89,20 @@ The native player uses the existing SDL3 and Vulkan runtime to render its in-win
 2. **Future Outside/Inside Presence**: A shared UI system is intended to drive the launcher outside the game and an eventual in-game settings pause overlay (`F1` / Gamepad `Guide`). In-game overlay parity is not implemented in the current native slice.
 3. **No Web / Server Overhead**: Eliminates Node.js, localhost HTTP listeners, port collisions, browser sandbox restrictions, and security boundary headaches.
 
+### Layout library and language decision (2026-10-21)
+
+The owner decided on 2026-10-21 that the native player's UI is written in C on SDL3 and Vulkan, and that its layout uses **Clay**, a single-header, MIT-licensed C layout library ([github.com/nicbarker/clay](https://github.com/nicbarker/clay)). The decision has three parts:
+
+1. **One UI system (target)**: the launcher, the in-game overlay and the settings screens are planned to share one UI system. It is drawn at the window's real pixel size (the UI half of [#1129](https://github.com/Jstar269/nakagawa-recomp/issues/1129)) and is controller-first.
+2. **Rust is not adopted for the UI**: Rust may be used later, behind a C ABI, only for isolated parsers of untrusted input (ISO, SFO, PGF), and only if fuzzing justifies it.
+3. **Reasons**: one interface serves both the overlay and the launcher; SDL3 already supports Android, a platform the roadmap names; and a Rust UI framework would add hundreds of crates to track under the project's provenance rules, while Clay is one C header.
+
+Not done yet:
+
+- **Clay is not vendored or admitted.** No Clay code is in the tree. It needs a third-party provenance record and admission under the provenance rules in `AGENTS.md` (section 4) before any code lands.
+- **No UI implementation has started.** Implementation begins only after the owner reviews the interface design.
+- The launcher, overlay and settings UI described above is a target. The current native slice does not use Clay.
+
 ---
 
 ## 3. Architecture & Separation of Concerns
@@ -264,7 +278,7 @@ Selecting the right open-source fonts for nakagawa-recomp depends on whether you
 - [Nunito](https://fonts.google.com/specimen/Nunito) (SIL OFL): A clean, rounded display sans that provides high legibility on lower rendering resolutions and handheld screens.
 - [Teko](https://fonts.google.com/specimen/Teko) or [Bebas Neue](https://fonts.google.com/specimen/Bebas+Neue) (SIL OFL): Condensed, high-impact athletic display fonts suited for scoreboards, serve speed readouts, and game-point banners.
 
-### Launcher & Settings UI (Dear ImGui / SDL3 Dialogs)
+### Launcher, Overlay & Settings UI (Clay on SDL3, planned)
 
 - [Inter](https://fonts.google.com/specimen/Inter) (SIL OFL): Optimized for screen interfaces and high pixel density. Remains sharp at small sizes (10px–14px) in configuration dialogs, graphics toggles, and controller binding menus.
 - [Roboto Flex](https://fonts.google.com/specimen/Roboto+Flex) (SIL OFL): Flexible variable font that allows granular control over weight, width, and optical size across windowed or full-screen modes.
