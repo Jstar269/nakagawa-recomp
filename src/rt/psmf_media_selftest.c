@@ -842,7 +842,8 @@ static void test_real_decode_into_guest_buffer(void) {
             }
             sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
                                          SR_PSMF_MEDIA_SUBMITTED);
-            int submit_rc = sr_h264_submit_au(dec, au.data, au.size);
+            int submit_rc = sr_h264_submit_au_timed(dec, au.data, au.size,
+                                                    au.pts, au.has_pts);
             CHECK(submit_rc == 0, "a complete picture is accepted by the decoder");
             sr_psmf_au_release(&au);
             aus++;
