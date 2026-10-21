@@ -182,3 +182,11 @@ reachable-object/content audit before publication.
 The active public repository deliberately begins with the sanitized restoration
 lineage. Former private/pre-sanitization development history is not ordinary
 `main` ancestry and must not be reconnected to it.
+
+## Presentation screenshots of Hot Shots Tennis
+
+The four PNG files in docs/media/ are presentation captures of Hot Shots Tennis: Get a Grip running in
+Nakagawa Recomp on Windows. The game belongs to its publisher, and it is not licensed under this
+repository's GPL-3.0-or-later declaration. The captures contain no game data files, and users need their
+own copy of the game. The screenshots were admitted under the maintainer authorization of 2026-10-21
+and are listed with the SHA-256 of their exact bytes in assets/release_manifest.json.
