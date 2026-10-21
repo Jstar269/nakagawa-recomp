@@ -147,7 +147,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e52619bce4caaf126a7b994007c8f7e1c9f396935b5a3d927bb00e201ce8a281"
+      "sha256": "1dc91828782fd64a92c371626f635978542185f57059b0e4acdde79cc58e76c8"
     },
     {
       "path": ".github/copilot-instructions.md",
@@ -321,7 +321,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "1cc502fa972fda411e945554791f5d30df3d209ebd2e9c91037ddeef9b7c954d"
+      "sha256": "ee5990b540a9a5f6e965d6c64fb20dd09b069d3972baa10643d8a11e11f7f547"
     },
     {
       "path": "CLAUDE.md",
