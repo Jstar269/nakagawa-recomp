@@ -445,6 +445,29 @@ class TestAuditPublicIssueLinks(unittest.TestCase):
         self.assertEqual(len(issues_map), 101)
         self.assertIn(101, issues_map)
 
+    def test_fetch_follows_the_link_header_cursor(self) -> None:
+        # GitHub answers page=11 and beyond with HTTP 422 for unauthenticated requests, so the
+        # fetch must follow the rel="next" cursor instead of counting pages.
+        cursor = "https://api.github.com/repositories/1/issues?state=all&per_page=100&after=CUR"
+        first = MagicMock()
+        first.read.return_value = json.dumps(
+            [{"number": n, "title": f"Issue {n}", "state": "open", "html_url": f"https://x/{n}"}
+             for n in range(1, 101)]
+        ).encode("utf-8")
+        first.headers = {"Link": f'<{cursor}>; rel="next", <https://api.github.com/x?page=1>; rel="first"'}
+        first.__enter__.return_value = first
+        last = MagicMock()
+        last.read.return_value = json.dumps(
+            [{"number": 101, "title": "Issue 101", "state": "closed", "html_url": "https://x/101"}]
+        ).encode("utf-8")
+        last.headers = {}
+        last.__enter__.return_value = last
+
+        with patch("urllib.request.urlopen", side_effect=[first, last]) as opener:
+            issues_map = fetch_public_issues_map()
+        self.assertEqual(len(issues_map), 101)
+        self.assertEqual(opener.call_args_list[1].args[0].full_url, cursor)
+
     def test_recursive_fallback_includes_markdown_outside_docs(self) -> None:
         nested = self.repo_path / "interface" / "README.md"
         nested.parent.mkdir()

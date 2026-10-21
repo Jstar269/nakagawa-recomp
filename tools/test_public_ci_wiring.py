@@ -808,6 +808,192 @@ class PublicExportJobTests(unittest.TestCase):
         self.assertIn("PUBLIC_EXPORT_RESULT: ${{ needs.public_export.result }}", required)
 
 
+def _ci_step_with(block: list[str], needle: str) -> list[str] | None:
+    """The lines of the first step containing ``needle`` anywhere in its body.
+
+    Unlike :func:`_ci_step` this also finds a step whose ``- name:`` is a folded
+    scalar (``- name: >-`` followed by continuation lines), which the sharded
+    Python test step uses.
+    """
+    for index, line in enumerate(block):
+        if not line.strip().startswith("- name: "):
+            continue
+        indent = len(line) - len(line.lstrip())
+        end = index + 1
+        while end < len(block):
+            candidate = block[end]
+            if candidate.strip().startswith("- ") and len(candidate) - len(candidate.lstrip()) == indent:
+                break
+            end += 1
+        step = block[index:end]
+        if any(needle in step_line for step_line in step):
+            return step
+    return None
+
+
+def _folded_run(step: list[str]) -> str:
+    """A step's shell text with line continuations folded into single spaces."""
+    folded = re.sub(r"\\\s*\n\s*", " ", "\n".join(step))
+    return re.sub(r"\s+", " ", folded)
+
+
+class CoverageWiringTests(unittest.TestCase):
+    """Coverage is measured inside the existing gates and published informationally.
+
+    The measurement may not weaken a gate: the Python shards run the exact module
+    list they always ran under unittest, the unprofiled native core gate keeps its
+    command, and both uploads are informational (``codecov.yml``,
+    ``fail_ci_if_error: false``), so a Codecov outage cannot fail a required job.
+    """
+
+    PYTHON_TEST_NEEDLE = "Run Python unit tests"
+    C_MEASURE_STEP = "Measure native core C statement coverage"
+    C_GATE_STEP = "Run native core test suite (hostile parsers, catalog, launch resolution, POSIX process)"
+    UPLOADS = {
+        "python_tools": ("Upload Python coverage to Codecov", "python", "coverage-python.xml"),
+        "native_tools": ("Upload C coverage to Codecov", "c", None),
+    }
+
+    def setUp(self) -> None:
+        self.blocks = _ci_job_blocks()
+        self.ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    def test_python_shards_run_their_unchanged_module_list_under_coverage(self) -> None:
+        step = _ci_step_with(self.blocks["python_tools"], "coverage run")
+        self.assertIsNotNone(step, "python_tools no longer measures its shards")
+        text = _folded_run(step or [])
+        # The measured run is the same planner output, the same sys.path and the
+        # same unittest invocation; only the measurement wrapper is added.
+        self.assertIn("python tools/ci_test_shards.py --shard", text)
+        self.assertIn("shard $SHARD received no test modules", text)
+        self.assertIn(
+            'PYTHONPATH=tools python -m coverage run --parallel-mode --source=tools -m unittest -v "${mods[@]}"',
+            text,
+        )
+        self.assertEqual(text.count("-m unittest -v"), 1, "a shard must run unittest exactly once")
+        self.assertIn("python -m coverage combine", text)
+        self.assertIn("python -m coverage xml -o coverage-python.xml", text)
+
+    def test_native_coverage_is_a_separate_instrumented_build_beside_the_gate(self) -> None:
+        native = self.blocks["native_tools"]
+        gate = _ci_step(native, self.C_GATE_STEP)
+        self.assertIsNotNone(gate, "the unprofiled native core gate was removed")
+        self.assertIn("make CC=gcc native-core-tests", "\n".join(gate or []))
+        measured = _ci_step(native, self.C_MEASURE_STEP)
+        self.assertIsNotNone(measured, "native_tools no longer measures C coverage")
+        self.assertLess(
+            _ci_step_index(native, self.C_GATE_STEP),
+            _ci_step_index(native, self.C_MEASURE_STEP),
+            "the measured build runs after the gate it must not disturb",
+        )
+        text = _folded_run(measured or [])
+        # Its own build directory, under the runner temp tree, so the gate's tree
+        # and objects are never reused or overwritten.
+        self.assertIn('coverage_build="$RUNNER_TEMP/native-core-coverage"', text)
+        self.assertIn('BUILD_DIR="$coverage_build"', text)
+        # The instrumentation is appended to the Makefile's own flags, so the
+        # measured build keeps the default configuration.
+        self.assertIn("compiler-info", text)
+        self.assertIn('CFLAGS="$base_cflags --coverage"', text)
+        self.assertIn('LDFLAGS="--coverage"', text)
+        self.assertIn("native-core-tests", text)
+        self.assertNotIn("gcovr", text)
+
+    def test_native_gcov_reports_are_generated_from_the_repository_root(self) -> None:
+        text = _folded_run(_ci_step(self.blocks["native_tools"], self.C_MEASURE_STEP) or [])
+        # gcov runs in the step's working directory, the repository root, where the
+        # objects' recorded src/... paths resolve. A cd into the build directory would
+        # bring back the header-only reports Codecov rejected.
+        self.assertNotIn('cd "$coverage_build"', text)
+        # One gcov run per object: several objects in one run append duplicate line
+        # records for a shared source into the same report.
+        self.assertIn('for gcno in "$coverage_build"/*.gcno; do', text)
+        self.assertIn('gcov -p -b -r "$gcno"', text)
+        self.assertIn('gcov_dir="$RUNNER_TEMP/native-core-gcov"', text)
+        # The selftests' own sources stay out of the number, and an empty set of
+        # reports fails the step instead of uploading nothing.
+        self.assertIn("_selftest\\.c$", text)
+        self.assertIn('test "${#reports[@]}" -gt 0', text)
+
+    def test_both_uploads_use_the_pinned_action_oidc_and_the_declared_flags(self) -> None:
+        for job, (name, flag, report) in self.UPLOADS.items():
+            with self.subTest(job=job):
+                step = _ci_step(self.blocks[job], name)
+                self.assertIsNotNone(step, f"{job} no longer uploads {report}")
+                text = "\n".join(step or [])
+                self.assertRegex(
+                    text,
+                    r"uses: codecov/codecov-action@[0-9a-f]{40} # v\d+\.\d+\.\d+",
+                )
+                self.assertIn("use_oidc: true", text)
+                if report is None:
+                    # The reports are generated in the measuring step; the action only
+                    # uploads them. Its gcov plugin runs gcov from the build directory,
+                    # where the objects' repository-relative sources cannot be opened.
+                    self.assertIn("directory: ${{ runner.temp }}/native-core-gcov", text)
+                    self.assertIn("plugins: noop", text)
+                    self.assertNotIn("plugins: gcov", text)
+                else:
+                    self.assertIn(f"files: {report}", text)
+                self.assertIn(f"flags: {flag}", text)
+                self.assertIn("fail_ci_if_error: false", text)
+        # Informational means informational: no step may be allowed to fail quietly.
+        self.assertNotIn("continue-on-error", self.ci)
+
+    def test_only_the_uploading_jobs_gain_id_token_write(self) -> None:
+        expected = "    permissions:\n      contents: read\n      id-token: write\n"
+        for job in self.UPLOADS:
+            with self.subTest(job=job):
+                self.assertIn(expected, "\n".join(self.blocks[job]) + "\n")
+        for job, block in self.blocks.items():
+            if job in self.UPLOADS:
+                continue
+            with self.subTest(job=job):
+                self.assertNotIn("id-token", "\n".join(block))
+        # The workflow itself stays read-only and still names no write permission.
+        self.assertIn("permissions:\n  contents: read\n", self.ci)
+        self.assertNotIn("contents: write", self.ci)
+
+    def test_every_action_use_in_ci_is_pinned_by_commit_sha_with_its_release(self) -> None:
+        uses = [line.strip() for line in self.ci.splitlines() if line.strip().startswith("uses: ")]
+        self.assertTrue(uses, "ci.yml declares no actions")
+        for line in uses:
+            with self.subTest(use=line):
+                self.assertRegex(line, r"^uses: [\w.-]+/[\w.-]+@[0-9a-f]{40} # v\d+(?:\.\d+)*$")
+        self.assertEqual(
+            sum("codecov/codecov-action@" in line for line in uses), 2,
+            "exactly the two coverage uploads use the Codecov action",
+        )
+
+    def test_coverage_configuration_omits_tests_and_stays_informational(self) -> None:
+        import tomllib
+
+        project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        self.assertEqual(project["tool"]["coverage"]["run"]["omit"], ["tools/test_*.py"])
+
+        codecov = (ROOT / "codecov.yml").read_text(encoding="utf-8")
+        # Project and patch status may inform but never block a merge.
+        self.assertRegex(
+            codecov,
+            r"(?m)^coverage:\n  status:\n    project:\n      default:\n        informational: true\n"
+            r"    patch:\n      default:\n        informational: true\n",
+        )
+        self.assertNotIn("informational: false", codecov)
+        for flag in ("python", "c"):
+            with self.subTest(flag=flag):
+                self.assertRegex(
+                    codecov, rf"(?m)^    - name: {flag}\n      carryforward: true$"
+                )
+
+    def test_docs_describe_what_is_measured_and_that_it_is_informational(self) -> None:
+        docs = (ROOT / "docs" / "CI.md").read_text(encoding="utf-8")
+        self.assertIn("## Coverage", docs)
+        for fragment in ("coverage-python.xml", "codecov.yml", "informational",
+                         "native-core-tests"):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, docs)
+
+
 def _workflow_text(name: str) -> str:
     return (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
 

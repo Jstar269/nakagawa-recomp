@@ -27,8 +27,11 @@ a mechanically translated distribution of its implementation.
 **Purpose:** a complete (100%) decompilation of the title: source code for every function that
 compiles back to machine code identical to the retail executable, with each function marked
 matched only after a byte-for-byte comparison (see [DECOMPME_INTEGRATION.md](DECOMPME_INTEGRATION.md)).
-The reconstruction is private and evidence-driven, and it exists to understand and maintain the
-title.
+It is evidence-driven and exists to understand and maintain the title. It lives in its own
+repository, [Jstar269/hst-decomp](https://github.com/Jstar269/hst-decomp), public since 2026-10-17 by maintainer
+decision: that repository's publish filter keeps out Sony SDK reconstructions, game data, keys and compilers, and
+its matching sources carry their own licensing there. Its sources are never copied or translated into this
+repository; only the interoperability facts and independently implemented fixes described below cross over.
 
 Product 2 may consume private analysis aids such as function maps, decompiler output, local symbols,
 and comparison notes, but those materials are not automatically suitable for the Product 1 public
