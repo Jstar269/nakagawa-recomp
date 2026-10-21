@@ -835,8 +835,9 @@ static void test_real_decode_into_guest_buffer(void) {
     CHECK(aus == FIX_PICTURES, "every picture reached the decoder");
     CHECK(frames_before_eos >= 1, "a real decoder produced a picture before end of stream");
 
-    /* Drain: the last picture has no following delimiter to close it, so only end-of-stream
-     * can release it.  Before that release existed this loop produced nothing. */
+    /* Drain pictures the codec buffered. A low-delay backend may already have delivered the
+     * final picture before EOS, so the assertions below check conservation and reject duplicates
+     * without requiring a particular buffering choice. */
     for (int i = 0; i < 16; i++) {
         int r = sr_h264_drain(dec, &target, &info);
         CHECK(r >= 0, "end-of-stream drain never fails");
@@ -855,8 +856,6 @@ static void test_real_decode_into_guest_buffer(void) {
     }
     CHECK(frames_before_eos + frames_after_eos == FIX_PICTURES,
           "the stream yields exactly one picture per authored picture (final picture released at EOS)");
-    CHECK(frames_after_eos >= 1, "the trailing picture is released by the end-of-stream drain");
-
     /* Repeated end-of-stream must not duplicate output. */
     int extra = 0;
     for (int i = 0; i < 8; i++) if (sr_h264_drain(dec, &target, &info) > 0) extra++;
