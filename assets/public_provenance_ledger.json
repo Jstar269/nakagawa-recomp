@@ -186,7 +186,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "06d6bbbe8c80d264d627931311e0e3a4fa9301f0ff4f50a3a0b2a6441ea1e204"
+      "sha256": "92f501bb8414033be2a94e01490da16afed79f1ca6a63792c43cf4cef0f83bd0"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -400,7 +400,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "3c4cfe07d7d701b34e5d932d5cac15e7437bed8c8afde78498d0bebab373ffbd"
+      "sha256": "0730a4640a5a048d207ba5aafea2d1377faf2b02adbe894dce8d1af3c77ed3b0"
     },
     {
       "path": "NOTICE.md",
@@ -409,7 +409,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "cabdd56779a168258d11671cf623d26543689d608f2551deff1b0a704db97a82"
+      "sha256": "96100af2b033787e8971c0e04b9c6312dfdc22a6a56f1a7a2ba7112aba7af76e"
     },
     {
       "path": "PUBLIC_EXPORT.json",
@@ -1333,7 +1333,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b99ff833900c16704993466f0631a3800dea50afb22ea75b732f868b6bc490dd"
+      "sha256": "da70d7f68a151952657f825b804f16dc8ed3f92ee2cf64b43f92a55607406075"
     },
     {
       "path": "docs/PORTING.md",
@@ -5331,7 +5331,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5e26a24d792025c37324fefa7db6cfb16c3e3f822de95296d9d7f4246e981e47"
+      "sha256": "59afb38f9a4b7554cb9192eb51777b99d501d5d2b2d05409a03ea6f564ab1e27"
     },
     {
       "path": "src/rt/heap_selftest.c",
@@ -5733,7 +5733,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e9d59419329678e5e9892db568c11c4a6eca8aaff65129e94429de910fceaede"
+      "sha256": "cc07efe671f0d6ab8d8789995ac16c5d01e09adc7ba460e4ed0443f898fa4c49"
     },
     {
       "path": "src/rt/psmf_producer.c",
@@ -5917,7 +5917,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "17259e8bdf64c899ecf20091ceb709e3ef52ecaf97b571e7700fa893255c5b85"
+      "sha256": "3d815ef8a2416c69d50fdbc1475c3e70958307171465c50a3da5cb4704cbdd54"
     },
     {
       "path": "src/rt/stale_code.c",
@@ -9982,7 +9982,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4fb7e8cd2d4a9a5e7fdbc95867cb0e4b1673a2262a4b76dc0b1a30cd08a1bb28"
+      "sha256": "38094acc35f64e990877bbbb01fdf3f92ec3b3b1d240892abc8b6a9491b24e16"
     },
     {
       "path": "tools/test_public_export.py",
@@ -11019,14 +11019,5 @@
       },
       "sha256": "7869f7a49433ed9a604bd810fc169003949eac70a600256753afbfab844695ef"
     }
-  ],
-  "admission": {
-    "workflow": "admit-new-reviewed",
-    "trusted_tree": "de10a579fc8c24250198be59fad34dc4a2abf84b",
-    "candidate_tree": "8fb00f0b5c9dd76c2994b42f3d258f7812305b8a",
-    "admitted_paths": [
-      "src/rt/h264_ffmpeg.c"
-    ],
-    "authority_sha256": "a280e3c92fa8200287e6d72490750413c1d9fa3648177bcb1b13a01b6b70d483"
-  }
+  ]
 }
