@@ -105,6 +105,8 @@ The project intends to:
   pixel size, and present game frames with integer or sharp-bilinear scaling instead of plain bilinear filtering
   at fractional sizes, keeping native 480×272 rendering as the verified default
   ([#1129](https://github.com/Jstar269/nakagawa-recomp/issues/1129));
+- rebuild the player interface (launcher, in-game overlay and settings) as one controller-first UI on SDL3, with the
+  Clay layout library, after the owner reviews its design and Clay is admitted under the provenance rules;
 - move more of the runtime from high-level emulation to low-level emulation, measured against a physical PSP;
 - bring the player to Linux, macOS and Android ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306),
   [#329](https://github.com/Jstar269/nakagawa-recomp/issues/329),
