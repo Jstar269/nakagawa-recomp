@@ -1022,7 +1022,8 @@ static uint32_t h_SynthReal(CpuState *s) {
         self.assertEqual(
             fake,
             {
-                "0xa569e425": "sceKernelVolatileMemUnlock",
+                # sceKernelVolatileMemUnlock left this list once its PSP-measured states were
+                # implemented (#1135); sceUtilityOskUpdate stays for its unmeasured VISIBLE state.
                 "0x4b85c861": "sceUtilityOskUpdate",
                 "0xb3b5d042": "sceAtracGetOutputChannel",
                 # Profiler refers return NULL because no profiler is modeled, which is what
@@ -1032,7 +1033,7 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x64d4540e": "sceKernelReferThreadProfiler",
                 "0x8218b4dd": "sceKernelReferGlobalProfiler",
             },
-            "only named exceptions may remain fake-success: three route compatibility results and two profiler NULL results",
+            "only named exceptions may remain fake-success: two route compatibility results and two profiler NULL results",
         )
 
         unsupported = {
