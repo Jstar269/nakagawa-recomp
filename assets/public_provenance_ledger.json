@@ -2060,7 +2060,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9cc17423c0dea44b9317f858703db467dcb3253e4add371d4e6253b2703763e2"
+      "sha256": "dbc8882a16bac52ccc705fa730b515274ee8f777947a067778f81645045edd5d"
     },
     {
       "path": "fixtures/psp_oracle/README.md",
@@ -2219,7 +2219,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9df4754bbcc40f122ebb0e53b4e618ecb15c7776267f23c838be02942b854e26"
+      "sha256": "e190d661caec3ae0f42bdc95da5fd9b6b33ecf0accaa8bdb9ece1168f650ceb9"
     },
     {
       "path": "fixtures/psp_oracle/probe_exception_a1.c",
@@ -9886,7 +9886,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "bca6b6bb1b7975654817ae97e68c7635c532f97f474579b3ac53576ea3e9f170"
+      "sha256": "edd9168af37d0c74eb591f8da4e48a81347f948eaccbaa5044012d427e582086"
     },
     {
       "path": "tools/test_psp_parsers.py",
