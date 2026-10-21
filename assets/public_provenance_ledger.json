@@ -11019,14 +11019,5 @@
       },
       "sha256": "7869f7a49433ed9a604bd810fc169003949eac70a600256753afbfab844695ef"
     }
-  ],
-  "admission": {
-    "workflow": "admit-new-reviewed",
-    "trusted_tree": "e0b6bcaab1a21e6a067747b20cc2c124d2ae2ff9",
-    "candidate_tree": "d5c621960088c6a8895907a19e6452e90511e0c2",
-    "admitted_paths": [
-      "src/rt/h264_ffmpeg.c"
-    ],
-    "authority_sha256": "a280e3c92fa8200287e6d72490750413c1d9fa3648177bcb1b13a01b6b70d483"
-  }
+  ]
 }
