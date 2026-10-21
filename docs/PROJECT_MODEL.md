@@ -27,8 +27,11 @@ a mechanically translated distribution of its implementation.
 **Purpose:** a complete (100%) decompilation of the title: source code for every function that
 compiles back to machine code identical to the retail executable, with each function marked
 matched only after a byte-for-byte comparison (see [DECOMPME_INTEGRATION.md](DECOMPME_INTEGRATION.md)).
-The reconstruction is private and evidence-driven, and it exists to understand and maintain the
-title.
+It is evidence-driven and exists to understand and maintain the title. It lives in its own
+repository, [Jstar269/hst-decomp](https://github.com/Jstar269/hst-decomp), public since 2026-10-17 by maintainer
+decision: that repository's publish filter keeps out Sony SDK reconstructions, game data, keys and compilers, and
+its matching sources carry their own licensing there. Its sources are never copied or translated into this
+repository; only the interoperability facts and independently implemented fixes described below cross over.
 
 Product 2 may consume private analysis aids such as function maps, decompiler output, local symbols,
 and comparison notes, but those materials are not automatically suitable for the Product 1 public
@@ -88,7 +91,20 @@ The project intends to:
 - publish the first Windows release, v0.0.1, with signed build provenance
   ([#278](https://github.com/Jstar269/nakagawa-recomp/issues/278));
 - broaden title support through generic fixes rather than per-title patches
-  ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308));
+  ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). PAC-MAN Championship Edition already reaches
+  its menu and plays a stage with no title-specific branch; the next milestone takes one such title through a
+  documented gameplay scenario that saves, closes and resumes in the native player, with no title-specific branch
+  or HLE override ([#1126](https://github.com/Jstar269/nakagawa-recomp/issues/1126));
+- extend the [title qualification route](TITLE_TESTING.md) past boot, so menus, gameplay, saving, loading, movies,
+  rendering and recovery are each reported, and a stage that was not proven reads `NOT_RUN`, `BLOCKED` or `SKIP`.
+  Retail titles stay local-only: a run on a user's own game is recorded outside the public tree, and only a
+  public-safe summary is published;
+- deliver one-click play from a PSP ISO the user owns, without the developer toolchain
+  ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)), within the lawful-input and fail-closed rules;
+- make the native player sharp at any window size, including fullscreen: draw the player UI at the window's real
+  pixel size, and present game frames with integer or sharp-bilinear scaling instead of plain bilinear filtering
+  at fractional sizes, keeping native 480×272 rendering as the verified default
+  ([#1129](https://github.com/Jstar269/nakagawa-recomp/issues/1129));
 - move more of the runtime from high-level emulation to low-level emulation, measured against a physical PSP;
 - bring the player to Linux, macOS and Android ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306),
   [#329](https://github.com/Jstar269/nakagawa-recomp/issues/329),

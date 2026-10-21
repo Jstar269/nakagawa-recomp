@@ -77,6 +77,9 @@ typedef struct {
     /* A bundled demo or UI fixture, shown as SAMPLE. It exists only in memory:
        nk_library_save never writes it, so it cannot reach the user's library.json. */
     bool is_sample;
+    /* A catalog-discovered showcase package owns its compiled inputs and does
+       not bind package validity to the companion synthetic ISO identity. */
+    bool is_showcase_package;
 } NkGameEntry;
 
 #ifdef __cplusplus

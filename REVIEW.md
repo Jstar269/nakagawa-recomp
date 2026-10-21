@@ -71,6 +71,25 @@ runtime, an interpreter floor, and HLE, moving toward low-level emulation.
   paths, flags, and Make targets.
 - Report skipped or blocked gates as such. Never imply an unrun gate passed.
 
+## Findings to pre-empt
+
+Authors, human or agent, check these before requesting review; reviewers flag them.
+
+- **Repository terms.** Use the words the tree already defines: the *native player*; `NOT_RUN`, `BLOCKED` and `SKIP`
+  for unproven results; *no title-specific branch* and *title-specific HLE override*. Name exact commands and files
+  (`python tools/import_audit_gate.py`, not "the import audit").
+- **Tracking.** Every new claim, roadmap item or milestone links its tracking issue.
+- **Boundaries.** Widening an allow-list or match pattern adds refused cases that pin its edge.
+- **Indexes.** A new module under `tools/` gets its row in `tools/README.md` (`tools/tree_lint.py --check`,
+  `tools.test_lint_docs`).
+- **Citations.** Every cited path, line, flag, section and Make target exists: check with `git grep` before citing,
+  and point at the section that actually states a rule.
+- **CI claims.** State the platform and the routing condition; for example, hosted `python_tools` runs on Linux and
+  only when a change routes Python.
+- **New public paths.** The private admission and policy delta are on the private authority repository's `main`
+  before the hosted attestation runs
+  ([step by step](docs/PUBLICATION_READINESS.md#step-by-step-a-pull-request-that-adds-a-public-path)).
+
 ## Review style
 
 Lead with the concrete failure scenario: inputs first, then the wrong result. Cite

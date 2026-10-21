@@ -95,6 +95,7 @@ typedef struct {
     uint32_t entry_point;
     bool package_launch;
     bool experimental_package;
+    bool showcase_package;
     bool staged_executable_checked;
     NkLaunchExecutableInfo staged_executable_info;
 

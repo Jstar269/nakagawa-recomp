@@ -23,9 +23,9 @@ in the works.
 - **PSP system fonts (optional but recommended for text).** Authentic in-game
   typography requires Sony firmware font files (`jpn0.pgf`, `ltn0.pgf`) dumped
   from a real PSP console. The project does not include or distribute these
-  files; you provide them from your own PSP (see the import step below);
-  a clean-room open-font converter is in the works
-  ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)).
+  files; you provide them from your own PSP (see the import step below). The
+  project-authored open-font converter (`tools/ttf2pgf.py`,
+  [#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)) builds open replacement fonts.
 
 Expectation: adding an ISO identifies the disc and shows a compatibility
 checklist of what will and will not work. **BUILD PACKAGE** recompiles the
@@ -171,8 +171,8 @@ crashes.
   unchanged. Manifests that still set `libfont_ready_flag_addr` fail with
   `LIBFONT_READY_FLAG_RETIRED`; remove the field and use translated guest startup.
   Real-title validation of startup dependencies remains in the works
-  ([#299](https://github.com/Jstar269/nakagawa-recomp/issues/299)), as is the
-  clean-room open-font converter
+  ([#299](https://github.com/Jstar269/nakagawa-recomp/issues/299)). The
+  project-authored open-font converter is complete
   ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)).
 
 [`COMPATIBILITY.md`](COMPATIBILITY.md) carries the full per-title and
@@ -184,7 +184,7 @@ subsystem breakdown with tracking issues.
 | --- | --- | --- |
 | Encrypted executables and PRX modules | The built-in boundary handles supported containers with a user-supplied local key file; plain `BOOT.BIN`/`EBOOT.elf` and decrypted modules remain alternatives. PGD/amctrl is unsupported. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
 | Commercial-game packages in public builds | Packages build with the public runtime, and public builds render imported PGF fonts through the project-authored reader for supported inputs (PR [#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)). Composite glyphs and the supported revision and shadow-map variants render too ([#521](https://github.com/Jstar269/nakagawa-recomp/issues/521)); a revision-3 font's compressed character-map subtables and any other shadow-map width are still refused by name. | [PGF_SPEC.md §4](cleanroom/PGF_SPEC.md#4-non-requirements-and-named-boundaries) |
-| In-game system fonts | Import fonts from your own PSP with `python tools/nk_cli.py fonts import <folder>`; a clean-room open-font converter is in the works. | [#313](https://github.com/Jstar269/nakagawa-recomp/issues/313) |
+| In-game system fonts | Import fonts from your own PSP with `python tools/nk_cli.py fonts import <folder>`; the project-authored open-font converter (`tools/ttf2pgf.py`, [#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)) builds open replacements. | Done |
 | Games beyond the verified title | Other games import as Experimental; bring-up of further titles is ongoing. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
 
 See [`SETUP.md`](SETUP.md) for developer setup and the command-line tools.

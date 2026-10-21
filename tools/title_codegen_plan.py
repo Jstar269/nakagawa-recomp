@@ -894,12 +894,14 @@ def _required_local_assets(
     output_dir: Path,
 ) -> list[dict[str, Any]]:
     filesystem = manifest["filesystem"]
-    assets: list[dict[str, Any]] = [{
-        "kind": "title-data-root",
-        "path": filesystem["data_root"],
-        "required": True,
-        "provisioning": "local title data supplied by the user",
-    }]
+    assets: list[dict[str, Any]] = []
+    if filesystem["data_root"]:
+        assets.append({
+            "kind": "title-data-root",
+            "path": filesystem["data_root"],
+            "required": True,
+            "provisioning": "local title data supplied by the user",
+        })
     contract = manifest.get("runtime_contract")
     if contract and contract["resources"]["mode"] == "manifest-filesystem":
         for locator in contract["resources"]["locators"]:

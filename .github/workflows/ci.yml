@@ -324,6 +324,12 @@ jobs:
   python_tools:
     name: Python tooling gates
     runs-on: ubuntu-24.04
+    # id-token: write lets the coverage upload authenticate to Codecov with the
+    # job's OIDC identity (use_oidc: true) instead of a stored repository token.
+    # It is not a publication permission: contents stays read.
+    permissions:
+      contents: read
+      id-token: write
     # Waits for classify and the public-export audit, not hygiene: hygiene runs beside it
     # and ci_required still requires its result (docs/CI.md, "Hygiene beside the substantive gates").
     needs: [classify, public_export, profile_zero_fixture]
@@ -391,6 +397,13 @@ jobs:
         # The list is captured before use so a failing planner stops the step: a
         # process substitution would hide its exit status, and unittest given no
         # module names falls back to discovery from the repository root.
+        #
+        # The same modules run under coverage, so the gate is unchanged: coverage
+        # records what ran and exits with unittest's own status. `--parallel-mode`
+        # keeps a shard's data separate until the combine below, and `--source`
+        # plus the pyproject.toml omit list keep test modules out of the report.
+        # A shard's number still has to be a non-zero exit: coverage never turns a
+        # failing test into a passing step.
         run: |
           set -euo pipefail
           listing="$(python tools/ci_test_shards.py --shard "$SHARD" --num-shards "$NUM_SHARDS" --select "$PYTHON_SCOPE")"
@@ -400,11 +413,32 @@ jobs:
             exit 1
           fi
           echo "shard $SHARD: ${#mods[@]} test files"
-          PYTHONPATH=tools python -m unittest -v "${mods[@]}"
+          PYTHONPATH=tools python -m coverage run --parallel-mode --source=tools \
+            -m unittest -v "${mods[@]}"
+          python -m coverage combine
+          python -m coverage xml -o coverage-python.xml
+
+      # Informational only: `fail_ci_if_error: false` and the Codecov status checks
+      # are non-blocking (codecov.yml), so an upload or Codecov outage never fails
+      # the Python gate. Each shard uploads its own partial report under the same
+      # `python` flag, which Codecov merges for the commit.
+      - name: Upload Python coverage to Codecov
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          files: coverage-python.xml
+          flags: python
+          name: python-shard-${{ matrix.shard }}
+          fail_ci_if_error: false
 
   native_tools:
     name: Native and translation gates
     runs-on: ubuntu-24.04
+    # id-token: write exists only for the Codecov OIDC upload below; contents
+    # stays read, as everywhere else in this workflow.
+    permissions:
+      contents: read
+      id-token: write
     # Not gated on hygiene (docs/CI.md, "Hygiene beside the substantive gates").
     needs: [classify, public_export]
     if: >-
@@ -428,7 +462,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake curl gcc-mipsel-linux-gnu \
-            git libc6-dev-i386 libvulkan-dev ninja-build pkg-config
+            git libavcodec-dev libavutil-dev libc6-dev-i386 libvulkan-dev ninja-build pkg-config
 
       # The pinned SDL3 install is cached under an exact key: the pinned version and
       # commit, the gcc and cmake that build it, and this workflow file (which holds
@@ -484,6 +518,12 @@ jobs:
           sudo ldconfig
           # A mistyped but valid commit must fail here, not leave the docs claiming the pin.
           test "$(pkg-config --modversion sdl3)" = "$SDL3_VERSION"
+
+      - name: Build and run the opt-in FFmpeg H.264 media selftest
+        # Exercise the real libavcodec route, including guest-VRAM coherence, explicit backend
+        # selection, native-format reporting, and the source-authored final-AU fixture. Use an
+        # isolated build root so non-FFmpeg objects from earlier steps cannot be reused.
+        run: make CC=gcc H264_FFMPEG=1 BUILD_ROOT="$RUNNER_TEMP/ffmpeg-h264-build" psmf-media-selftest
 
       - name: Install PSPDEV from the checked-in lock
         run: |
@@ -548,6 +588,66 @@ jobs:
 
       - name: Run native core test suite (hostile parsers, catalog, launch resolution, POSIX process)
         run: make CC=gcc native-core-tests
+
+      # Coverage measurement (informational). A second, isolated build of the same
+      # suite with gcov instrumentation: the gate above keeps running unprofiled,
+      # and nothing here can make it pass or fail. The base flags come from the
+      # Makefile's own compiler-info, so the measured build uses exactly the
+      # default build configuration with only `--coverage` appended to CFLAGS and
+      # LDFLAGS (its targets that compile through those variables are measured;
+      # see docs/CI.md, "Coverage").
+      - name: Measure native core C statement coverage
+        run: |
+          set -euo pipefail
+          coverage_build="$RUNNER_TEMP/native-core-coverage"
+          # compiler-info prints the resolved CFLAGS, so the measured build keeps the
+          # default configuration. Its -DSR_BUILD_DIR is dropped because the Makefile
+          # re-derives that define from BUILD_DIR itself: passing it too redefines the
+          # macro, which the -Werror selftests reject.
+          base_cflags="$(make --no-print-directory CC=gcc GAME_NAME=ci \
+            BUILD_DIR="$coverage_build" compiler-info \
+            | sed -n 's/^CFLAGS=//p' \
+            | sed 's/-DSR_BUILD_DIR="[^"]*"//')"
+          test -n "$base_cflags"
+          make --no-print-directory CC=gcc GAME_NAME=ci BUILD_DIR="$coverage_build" \
+            CFLAGS="$base_cflags --coverage" LDFLAGS="--coverage" native-core-tests
+
+          # gcov opens each object's recorded source path (src/rt/...) relative to its
+          # working directory, so it runs here at the repository root. Run from the build
+          # directory, as the action's gcov plugin does, it cannot open any source and
+          # writes header-only reports that Codecov rejects as unusable. One gcov run per
+          # object keeps each report whole: given several objects that share a source,
+          # gcov 13 appends their line records into one file. -r keeps repository-relative
+          # sources only (no system headers or generated fixtures), and the selftests' own
+          # sources are dropped so the number describes the runtime they exercise.
+          shopt -s nullglob
+          gcov_dir="$RUNNER_TEMP/native-core-gcov"
+          mkdir -p "$gcov_dir"
+          for gcno in "$coverage_build"/*.gcno; do
+            obj="$(basename "$gcno" .gcno)"
+            gcov -p -b -r "$gcno" > /dev/null
+            for report in *.gcov; do
+              mv -- "$report" "$gcov_dir/$obj##$report"
+            done
+          done
+          { grep -l -m1 -E '^ +-: +0:Source:.*_selftest\.c$' "$gcov_dir"/*.gcov || true; } \
+            | xargs -r rm -f --
+          reports=("$gcov_dir"/*.gcov)
+          test "${#reports[@]}" -gt 0
+          echo "C coverage: ${#reports[@]} gcov reports"
+
+      # Informational only: the C number never gates a merge (codecov.yml). The reports
+      # are already generated above, so the action only uploads them (plugins: noop).
+      - name: Upload C coverage to Codecov
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          directory: ${{ runner.temp }}/native-core-gcov
+          root_dir: ${{ github.workspace }}
+          plugins: noop
+          flags: c
+          name: c-native-core
+          fail_ci_if_error: false
 
       # Compile ge.c with its optional front-end attribution path enabled. Use a
       # fresh object directory so the normal unprofiled ge.o cannot satisfy the

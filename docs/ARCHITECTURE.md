@@ -6,34 +6,34 @@ overview and implementation disagree.
 
 ## Pipeline
 
-```text
-Private decrypted PSP ELF/PRXs
-            │
-            ▼
-     ┌─────────────┐
-     │  prxload.py │  rebase/relocate, build flat guest image
-     └──────┬──────┘
-            │
-            ├───────────────┐
-            ▼               ▼
-     ┌─────────────┐  ┌─────────────┐
-     │ imports.py  │  │ analyze.py  │
-     │ NID mapping │  │ functions   │
-     └──────┬──────┘  └──────┬──────┘
-            │                │
-            └───────┬────────┘
-                    ▼
-             ┌─────────────┐
-             │ codegen.py  │  MIPS → generated C
-             └──────┬──────┘
-                    ▼
-             ┌─────────────┐
-             │ GNU Make    │  generated C + native runtime
-             └──────┬──────┘
-                    ▼
-             ┌─────────────┐
-             │ <game>.exe  │
-             └─────────────┘
+```mermaid
+flowchart LR
+    INTAKE["ISO and EBOOT intake<br/>tools/nk_cli.py<br/>tools/nk_core/iso_inspect.py"]
+    DECRYPT["Decryption boundary<br/>tools/nk_core/decrypt_boundary.py<br/>src/core/nk_psp_container.c<br/>src/core/nk_psp_prx.c<br/>optional local user key file"]
+    LOAD["ISO / PRX loading and import mapping<br/>src/core/nk_iso.c<br/>src/player/iso_reader.c<br/>tools/prxload.py<br/>tools/imports.py"]
+    ANALYZE["Function-boundary analysis<br/>tools/analyze.py"]
+    CODEGEN["AOT code generation to C<br/>tools/codegen.py"]
+    BUILD["Compile generated C with the native runtime<br/>Makefile<br/>src/rt/"]
+    PLAYER["Player launches the native program<br/>src/player/"]
+
+    subgraph RUNTIME["Runtime subsystems · src/rt/"]
+        AOT["AOT dispatch<br/>src/rt/recomp.c"]
+        FLOOR["Fail-closed interpreter floor<br/>src/rt/guest_interp.c<br/>analyzer-owned spans; unsupported forms stop"]
+        SCHED["Scheduler<br/>src/rt/sched.c"]
+        HLE["HLE services<br/>src/rt/hle.c"]
+        GE["GE rendering<br/>src/rt/ge.c<br/>src/rt/gpu_sdl3vk/ge_gpu.c"]
+        VK["Vulkan presenter<br/>src/rt/gpu_sdl3vk/sdl3vk.c"]
+        AUDIO["Audio output<br/>src/rt/hle.c<br/>src/rt/audio_unavailable.c"]
+    end
+
+    INTAKE -->|"encrypted input; matching local key when needed"| DECRYPT
+    INTAKE -->|"already decrypted EBOOT / PRX"| LOAD
+    DECRYPT --> LOAD --> ANALYZE --> CODEGEN --> BUILD --> PLAYER --> AOT
+    AOT -->|"analyzer-owned AOT gap"| FLOOR
+    AOT --> SCHED
+    AOT --> HLE
+    AOT --> GE --> VK
+    AOT --> AUDIO
 ```
 
 The repository does not contain the retail game executable, ISO, decrypted game PRXs, or private
