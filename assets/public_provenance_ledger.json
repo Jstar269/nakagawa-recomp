@@ -426,7 +426,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ac21258c93bcb49863285e158e6095e03658930ee8824268f612ff4307fd2ef5"
+      "sha256": "b92d7407aa7966bba3b688ec1d1623ddc7b9c1a76e48a1fd3f15aa8737aa1ad7"
     },
     {
       "path": "REVIEW.md",
@@ -1147,7 +1147,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2fc267f28173423666d1dd4eb2aa5e866d7295eb583ddd24fb78b32a10b00e61"
+      "sha256": "947bbbcabb7e7f3aa73a13fabe5d5908a8e88f08c9c44ba5775c618208ba2ff1"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",

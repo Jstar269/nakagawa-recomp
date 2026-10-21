@@ -56,7 +56,7 @@ No game at hand? `mingw32-make player showcase` builds the two demos above, and 
 
 ## Learn more
 
-[How it works](docs/ARCHITECTURE.md) · [All documentation](docs/README.md) · [Open issues](https://github.com/Jstar269/nakagawa-recomp/issues) ·
+[Architecture pipeline](docs/ARCHITECTURE.md#pipeline) · [All documentation](docs/README.md) · [Open issues](https://github.com/Jstar269/nakagawa-recomp/issues) ·
 [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Code of conduct](CODE_OF_CONDUCT.md)
 
 ## License and lineage
