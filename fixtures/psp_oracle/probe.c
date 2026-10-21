@@ -6661,12 +6661,18 @@ static void run_late_prx_target(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_LATE_PRX_TARGET
+/* Leave every owned object in place: the host measures the post-stop state. */
+static int late_prx_module_stop(void) {
+    return 0;
+}
+#endif
+
 int module_stop(SceSize args, void *argp) {
     (void)args;
     (void)argp;
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_LATE_PRX_TARGET
-    /* Leave every owned object in place: the host measures the post-stop state. */
-    return 0;
+    return late_prx_module_stop();
 #endif
     const SceUID main_thread = s_probe_main_thread;
     if (main_thread < 0) return 1;
