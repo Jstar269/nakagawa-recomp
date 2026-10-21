@@ -2881,6 +2881,20 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
                                  0.8f, inner_r - col1_x, COLOR_TEXT_DIM);
             y += 72.0f;
         }
+        /* Close in flow: always visible, never overlapping. Grow the card
+         * downward to hold it when the window allows. Only the extension
+         * is painted: repainting the whole card here would cover the
+         * sections drawn above. It is painted before the controller and
+         * manage buttons, which may sit in it, so it never covers them. */
+        float close_y = y + 100.0f;
+        float want_bottom = close_y + 46.0f + 16.0f;
+        if (want_bottom > card_y + card_h && want_bottom <= h - 8.0f) {
+            float old_bottom = card_y + card_h;
+            draw_filled_rect(ren, card_x, old_bottom - 2.0f, card_w, want_bottom - old_bottom + 2.0f, COLOR_CARD_BG);
+            draw_rect_outline(ren, card_x, old_bottom - 1.0f, card_w, want_bottom - old_bottom + 1.0f, COLOR_CARD_BORDER);
+            draw_filled_rect(ren, card_x + 1.0f, old_bottom - 1.0f, card_w - 2.0f, 1.0f, COLOR_CARD_BG);
+            card_h = want_bottom - card_y;
+        }
         bool ctrl_focused = (app->focus_index == focus);
         if (draw_button_focused(ren, card_x + 32.0f, y + 8.0f, 220.0f, 36.0f, "CONTROLLER SETTINGS", false, in, ctrl_focused)) {
             player_app_set_view(app, VIEW_CONTROLLER_SETTINGS);
@@ -2901,19 +2915,6 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         }
         focus++;
 
-        /* Close in flow: always visible, never overlapping. Grow the card
-         * downward to hold it when the window allows. Only the extension
-         * is painted: repainting the whole card here would cover the
-         * sections drawn above. */
-        float close_y = y + 100.0f;
-        float want_bottom = close_y + 46.0f + 16.0f;
-        if (want_bottom > card_y + card_h && want_bottom <= h - 8.0f) {
-            float old_bottom = card_y + card_h;
-            draw_filled_rect(ren, card_x, old_bottom - 2.0f, card_w, want_bottom - old_bottom + 2.0f, COLOR_CARD_BG);
-            draw_rect_outline(ren, card_x, old_bottom - 1.0f, card_w, want_bottom - old_bottom + 1.0f, COLOR_CARD_BORDER);
-            draw_filled_rect(ren, card_x + 1.0f, old_bottom - 1.0f, card_w - 2.0f, 1.0f, COLOR_CARD_BG);
-            card_h = want_bottom - card_y;
-        }
         bool close_focused = (app->focus_index == focus);
         if (draw_button_focused(ren, card_x + 32.0f, close_y, 200.0f, 46.0f, "SAVE & CLOSE", true, in, close_focused)) {
             player_app_save_settings(app, NULL);
