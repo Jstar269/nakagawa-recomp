@@ -775,7 +775,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "24243f51d7ee02287f2cd8ba4eeb060c57c05fcd026423ff4785fc3ade7913ee"
+      "sha256": "cb1d96e9c120563a1cd583acf8f8220de07d044daab33790e6e11ec9370f2861"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1667,6 +1667,42 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "61e2ccdc10b2f0578b858961446fb228ea301bf5ae1ad3433c3b6c181ec47657"
+    },
+    {
+      "path": "docs/media/hst-launcher-library.png",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "aa7de6595783b497f8a6e98230715864d39dfed8baea07b7b251eb359ca05979"
+    },
+    {
+      "path": "docs/media/hst-sharp-scaling-bilinear.png",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "d750dfda96a5dfb8dba63d782d5d42314a625193ab3ca9c8bce931480f95da43"
+    },
+    {
+      "path": "docs/media/hst-sharp-scaling-sharp.png",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "1ed5d0a0c345a79fd96539576f8d36a1fa1778997a25ebd6699144e837ec67ef"
+    },
+    {
+      "path": "docs/media/hst-title-screen.png",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "18f1317bc35cb5403fdcff6efefe8e125dfa6ca1e4b316500140b9e353a8e58f"
     },
     {
       "path": "docs/provenance/FONT_ORIGINS.md",
@@ -11019,5 +11055,17 @@
       },
       "sha256": "7869f7a49433ed9a604bd810fc169003949eac70a600256753afbfab844695ef"
     }
-  ]
+  ],
+  "admission": {
+    "workflow": "admit-new-reviewed",
+    "trusted_tree": "98e167c0568acdf631ca992c22108ebc1031711e",
+    "candidate_tree": "61e4eff89fd82bc67ee72c6d925c3d01f318146e",
+    "admitted_paths": [
+      "docs/media/hst-launcher-library.png",
+      "docs/media/hst-sharp-scaling-bilinear.png",
+      "docs/media/hst-sharp-scaling-sharp.png",
+      "docs/media/hst-title-screen.png"
+    ],
+    "authority_sha256": "51c0807aba8cb13f2edf47b6d6780b1f07ddb821fb410b11dfcf0c88412978fb"
+  }
 }
