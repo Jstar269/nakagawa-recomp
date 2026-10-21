@@ -42,6 +42,7 @@ BADGE_URL_RES = (
     re.compile(r"https://api\.scorecard\.dev/projects/github\.com/Jstar269/nakagawa-recomp/badge"),
     re.compile(r"https://www\.bestpractices\.dev/projects/\d+/(badge|baseline)"),
     re.compile(r"https://api\.reuse\.software/badge/github\.com/Jstar269/[\w.-]+"),
+    re.compile(r"https://codecov\.io/gh/Jstar269/nakagawa-recomp/graph/badge\.svg(\?branch=main)?"),
 )
 
 
@@ -143,6 +144,8 @@ class ReadmeImageTests(unittest.TestCase):
             "http://img.shields.io/badge/x-y-blue.svg",
             "https://example.com/pixel.png",
             "https://github.com/someone-else/repo/actions/workflows/ci.yml/badge.svg",
+            "https://codecov.io/gh/someone-else/repo/graph/badge.svg",
+            "https://codecov.io/gh/Jstar269/nakagawa-recomp/graph/badge.svg?token=deadbeef",
         )
         self.assertTrue(any(p.fullmatch(allowed) for p in BADGE_URL_RES))
         for url in refused:

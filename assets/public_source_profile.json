@@ -231,6 +231,7 @@
     "assets/vfpu/vfpu_sin_lut_exceptions.dat",
     "assets/vfpu/vfpu_sin_lut_interval_delta.dat",
     "assets/vfpu/vfpu_sqrt_lut.dat",
+    "codecov.yml",
     "docs/AI_USAGE.md",
     "docs/AOT_PRODUCTIZATION_ARCHITECTURE.md",
     "docs/ARCHITECTURE.md",
