@@ -37,8 +37,8 @@ or labelled historical/capture-time. The evidence-tier view
 <!-- BEGIN GENERATED HLE STATUS CENSUS -->
 ### HLE Semantic Status Census
 
-Registered NIDs: **536** (dedicated **488**, fake_success **5**, controlled_unsupported **43**).
-Semantic handler census: **454** handlers across **23** API families, covering **494** handler-associated NID registrations.
+Registered NIDs: **539** (dedicated **490**, fake_success **4**, controlled_unsupported **45**).
+Semantic handler census: **456** handlers across **23** API families, covering **496** handler-associated NID registrations.
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
@@ -46,7 +46,7 @@ Semantic handler census: **454** handlers across **23** API families, covering *
 | `partial` | 156 | 158 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 283 | 309 |
+| `unreviewed` | 285 | 311 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -62,10 +62,10 @@ Semantic handler census: **454** handlers across **23** API families, covering *
 | `sceHprm` | 0 | 0 | 0 | 0 | 3 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 25 | 0 | 0 | 5 | 32 | 32 |
-| `sceKernel` | 2 | 74 | 0 | 0 | 95 | 171 | 192 |
+| `sceKernel` | 2 | 74 | 0 | 0 | 96 | 172 | 193 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
-| `scePower` | 0 | 3 | 0 | 0 | 11 | 14 | 16 |
+| `scePower` | 0 | 3 | 0 | 0 | 12 | 15 | 17 |
 | `scePsmf` | 0 | 2 | 0 | 0 | 12 | 14 | 14 |
 | `sceReg` | 0 | 15 | 0 | 0 | 0 | 15 | 15 |
 | `sceRtc` | 4 | 4 | 0 | 0 | 0 | 8 | 8 |
@@ -73,7 +73,7 @@ Semantic handler census: **454** handlers across **23** API families, covering *
 | `sceUmd` | 0 | 1 | 1 | 0 | 7 | 9 | 9 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 31 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **12** | **156** | **1** | **2** | **283** | **454** | **494** |
+| **Total** | **12** | **156** | **1** | **2** | **285** | **456** | **496** |
 
 #### Complete Handlers (Evidence-Backed)
 

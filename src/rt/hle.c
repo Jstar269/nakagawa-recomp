@@ -186,11 +186,13 @@ static HleDevctlRefusal *s_hle_devctl_refusals;
 static atomic_uint s_hle_devctl_refusal_log_count;
 #endif
 
+/* Success-result exceptions named in the end-of-run summary. sceKernelVolatileMemUnlock is absent:
+ * it returns the PSP-measured states now. sceUtilityOskUpdate stays listed because only its VISIBLE
+ * and after-use states still return the unmeasured 0 (its INIT and no-keyboard states are measured). */
 static const char *hle_success_exception_issue(uint32_t nid) {
     switch (nid) {
     case 0xb3b5d042u: return "#363, #286"; /* sceAtracGetOutputChannel */
-    case 0xa569e425u: return "#363";       /* sceKernelVolatileMemUnlock */
-    case 0x4b85c861u: return "#363";       /* sceUtilityOskUpdate */
+    case 0x4b85c861u: return "#363";       /* sceUtilityOskUpdate: VISIBLE and after-use only */
     default: return NULL;
     }
 }
@@ -10271,11 +10273,32 @@ static uint32_t h_OskGetStatus(CpuState *s) {
     else if (s_osk_status == OSK_FINISHED) { s_osk_status = OSK_NONE; s_osk_param = 0; }
     return (uint32_t)ret;                                  /* QUIT stands until ShutdownStart */
 }
+/* sceUtilityOskShutdownStart from INIT is refused and leaves the keyboard in INIT. Measured on
+ * PSP-3000 6.6.1 (2026-10-21, probe CASE=fake-success): 0x80110001 (SCE_ERROR_UTILITY_INVALID_STATUS). */
 static uint32_t h_OskShutdown(CpuState *s) {
     (void)s;
+    if (s_osk_status == OSK_INIT) return 0x80110001u;
     osk_abandon_request();                                 /* shut down before it was answered */
     if (s_osk_status) s_osk_status = OSK_FINISHED;         /* then NONE on the next poll */
     return 0;
+}
+/* sceUtilityOskUpdate refreshes the keyboard on screen. Measured on PSP-3000 6.6.1 (2026-10-21, probe
+ * CASE=fake-success): with no keyboard it returns 0x80110005 (SCE_ERROR_UTILITY_WRONG_TYPE), and in INIT
+ * it returns 0x80110001 (SCE_ERROR_UTILITY_INVALID_STATUS). The VISIBLE and after-use states are not
+ * measured yet, so they keep the refresh success they had before. */
+static uint32_t h_OskUpdate(CpuState *s) {
+    (void)s;
+    if (!s_osk_current) return 0x80110005u;
+    if (s_osk_status == OSK_INIT) return 0x80110001u;
+    return 0;
+}
+/* Test-only: forget the keyboard slot, abandoning any answer still pending. */
+void sr_hle_test_osk_slot_reset(void) {
+    osk_abandon_request();
+    s_osk_current = 0;
+    s_osk_status = OSK_NONE;
+    s_osk_param = 0;
+    s_osk_field = 0;
 }
 
 /* Single definition, called by both registry branches, so the executable HLE harness
@@ -10312,6 +10335,8 @@ static uint32_t h_OpenPSIDGetOpenPSID(CpuState *s) {
     return 0;
 }
 
+/* The lock sceKernelVolatileMemLock and TryLock take. See h_VolatileMemUnlock. */
+static int s_volatile_locked = 0;
 static uint32_t h_VolatileMemLock(CpuState *s) {
     /* Keep the established 4 MiB success route and NULL-output tolerance. Check
      * both complete non-NULL output spans before writing either one. */
@@ -10320,8 +10345,21 @@ static uint32_t h_VolatileMemLock(CpuState *s) {
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     if (A1) MEM_W32(A1, 0x08400000u);
     if (A2) MEM_W32(A2, 0x00400000u);
+    s_volatile_locked = 1;
     return 0;
 }
+/* The lock sceKernelVolatileMemLock and TryLock take and sceKernelVolatileMemUnlock releases.
+ * Measured on PSP-3000 6.6.1 (2026-10-21, probe CASE=fake-success): Unlock with nothing locked
+ * returns 0x800201ae (the raw value; the PSPSDK names it SCE_KERNEL_ERROR_SEMA_OVF); Unlock while
+ * the lock is held returns 0 and releases it. */
+static uint32_t h_VolatileMemUnlock(CpuState *s) {
+    (void)s;
+    if (!s_volatile_locked) return 0x800201aeu;
+    s_volatile_locked = 0;
+    return 0;
+}
+/* Test-only: forget the lock. */
+void sr_hle_test_volatile_mem_reset(void) { s_volatile_locked = 0; }
 /* Registered entry for sceUmdRegisterUMDCallBack. When UMD becomes ready the kernel fires
  * this callback (a0=unknown, a1=drive_stat), which in this game calls sceKernelWakeupThread
  * on the launcher (0x111) to unstick it from sceKernelSleepThread. */
@@ -23332,6 +23370,7 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0x4c145944, "sceKernelReferLwMutexStatusByID", h_ReferLwMutexStatusByID);
     sr_hle_register(0x3e0271d3, "sceKernelVolatileMemLock", h_VolatileMemLock);
     sr_hle_register(0xa14f40b2, "sceKernelVolatileMemTryLock", h_VolatileMemLock);
+    sr_hle_register(0xa569e425, "sceKernelVolatileMemUnlock", h_VolatileMemUnlock);
     sr_hle_register(0x8ef08fce, "sceUmdWaitDriveStat", h_UmdWaitDriveStat);
     sr_hle_register(0x56202973, "sceUmdWaitDriveStatWithTimer", h_UmdWaitDriveStatWithTimer);
     sr_hle_register(0x4a9e5e29, "sceUmdWaitDriveStatCB", h_UmdWaitDriveStatCB);
@@ -23546,10 +23585,15 @@ static void hle_register_utility_module_handlers(void) {
     sr_hle_register(0xe49bfe92, "sceUtilityUnloadModule", h_UtilityUnloadModule);
     sr_hle_register_unsupported(0x1579a159, "sceUtilityLoadNetModule", 0x80110001u); /* SCE_ERROR_UTILITY_INVALID_STATUS */
     sr_hle_register_unsupported(0x64d50c56, "sceUtilityUnloadNetModule", 0x80110001u); /* SCE_ERROR_UTILITY_INVALID_STATUS */
-    sr_hle_register(0x4b85c861, "sceUtilityOskUpdate", h_ok);
+    sr_hle_register(0x4b85c861, "sceUtilityOskUpdate", h_OskUpdate);
 }
 
 static void hle_register_kernel_module_handlers(void) {
+    /* No NP DRM key material is part of this project, so the edata key setup is refused. The
+     * module-from-buffer loader is not implemented, so its USB/WLAN variant is refused too. Both use
+     * SCE_KERNEL_ERROR_NOTIMP, the runtime's controlled refusal for kernel functions it does not provide. */
+    sr_hle_register_unsupported(0x08d98894u, "sceNpDrmEdataSetupKey", 0x80020002u);
+    sr_hle_register_unsupported(0xf9275d98u, "sceKernelLoadModuleBufferUsbWlan", 0x80020002u);
     sr_hle_register(0x977de386, "sceKernelLoadModule", h_LoadModule);
     sr_hle_register(0xb7f46618, "sceKernelLoadModuleByID", h_LoadModuleByID);
     sr_hle_register(0x50f0c1ec, "sceKernelStartModule", h_StartModule);
@@ -23897,6 +23941,7 @@ void sr_hle_init(void) {
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
     sr_hle_power_register_clock();
+    sr_hle_power_register_callback();
     hle_register_devkit_version_handler();
     /* TD-24 batch 4 families: shared with production through the helpers, so
      * the executable harness dispatches the exact production mapping. */
@@ -24085,7 +24130,6 @@ void sr_hle_init(void) {
      * out-params through leftover a1/a2 register garbage sprayed two wild 4-byte writes
      * per asset-load unlock (this zeroed the resource registry's model-slot counter,
      * which silently killed every .PMD model lookup, e.g. the hangar aircraft). */
-    sr_hle_register(0xa569e425, "sceKernelVolatileMemUnlock", h_ok);
     hle_register_exit_game_handler();
     /* InterruptManager Disable/Release pair: shared with the executable harness
      * through hle_register_wait_conformance_handlers(), next to Register/Enable. */

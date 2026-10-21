@@ -115,6 +115,18 @@ uint32_t h_PowerRegisterCallback(CpuState *s) {
     return (uint32_t)result;
 }
 
+/* scePowerUnregisterCallback(slot): release the slot scePowerRegisterCallback filled. The slot
+ * range checks mirror the register side. An empty or unknown slot is refused with
+ * SCE_KERNEL_ERROR_NOTIMP rather than given a PSP error code that has not been measured. */
+uint32_t h_PowerUnregisterCallback(CpuState *s) {
+    int32_t slot = (int32_t)A0;
+    if (slot < 0 || slot >= 32) return 0x80000102u;
+    if (slot >= 16) return 0x80000023u;
+    if (s_power_cb_slots[slot] == 0) return 0x80020002u;
+    s_power_cb_slots[slot] = 0;
+    return 0;
+}
+
 /* sceKernelPowerLock(lockType) / sceKernelPowerUnlock(lockType) / sceKernelPowerTick(flag)
  * (TD-24 batch 4). Public behaviour reference: PSPSDK psppower.h and PPSSPP
  * Core/HLE/scePower.cpp. sceKernelPowerLock and sceKernelPowerUnlock validate
@@ -186,9 +198,10 @@ void sr_hle_power_register_lock(void) {
     sr_hle_register(0x090ccb3f, "sceKernelPowerTick", h_PowerTick);
 }
 
-/* scePowerRegisterCallback. sr_hle_init() registers it in its production branch only. */
+/* scePowerRegisterCallback and scePowerUnregisterCallback. Both sr_hle_init() branches call this. */
 void sr_hle_power_register_callback(void) {
     sr_hle_register(0x04b7766e, "scePowerRegisterCallback", h_PowerRegisterCallback);
+    sr_hle_register(0xdfa8baf8, "scePowerUnregisterCallback", h_PowerUnregisterCallback);
 }
 
 /* Battery getters. Issue #86: the previous numeric NIDs were bogus (absent from the PPSSPP-derived
