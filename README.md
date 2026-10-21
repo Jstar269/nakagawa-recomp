@@ -28,15 +28,7 @@
 | :---: |
 | **Title screen** |
 
-| ![Launcher card for Hot Shots Tennis: Get a Grip in the Nakagawa Recomp library](docs/media/hst-launcher-library.png) |
-| :---: |
-| **Launcher and library** |
-
-| ![Title screen at 1440×810 with bilinear scaling, the before state](docs/media/hst-sharp-scaling-bilinear.png) | ![Title screen at 1440×810 with sharp scaling, the default since PR #1131](docs/media/hst-sharp-scaling-sharp.png) |
-| :---: | :---: |
-| **Before: bilinear scaling** | **After: sharp scaling (default)** |
-
-<div align="center"><sub>Hot Shots Tennis: Get a Grip belongs to its publisher. This repository contains no game data: you need your own copy of the game, and nothing here downloads one. The scaling pair comes from two separate runs, and the title background animates, so the two scenes differ.</sub></div>
+<div align="center"><sub>Hot Shots Tennis: Get a Grip belongs to its publisher. This repository contains no game data: you need your own copy of the game, and nothing here downloads one.</sub></div>
 
 ## Why it's different
 

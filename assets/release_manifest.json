@@ -770,57 +770,6 @@
         "sha256": "18f1317bc35cb5403fdcff6efefe8e125dfa6ca1e4b316500140b9e353a8e58f"
       },
       "comment": "Presentation capture of Hot Shots Tennis: Get a Grip running in Nakagawa Recomp. The game belongs to its publisher; not licensed under this repository. Admitted under the maintainer authorization of 2026-10-21."
-    },
-    {
-      "id": "readme-hst-launcher-library",
-      "name": "README presentation screenshot: launcher card for Hot Shots Tennis",
-      "type": "asset",
-      "relationship": "CONTAINS",
-      "presence": "required",
-      "source_path": "docs/media/hst-launcher-library.png",
-      "license": "NOASSERTION",
-      "notice_path": "NOTICE.md",
-      "disposition": "approved_binary",
-      "public_scope_included": true,
-      "optional": false,
-      "hashes": {
-        "sha256": "aa7de6595783b497f8a6e98230715864d39dfed8baea07b7b251eb359ca05979"
-      },
-      "comment": "Presentation capture of Hot Shots Tennis: Get a Grip running in Nakagawa Recomp. The game belongs to its publisher; not licensed under this repository. Admitted under the maintainer authorization of 2026-10-21."
-    },
-    {
-      "id": "readme-hst-sharp-scaling-bilinear",
-      "name": "README presentation screenshot: title screen with bilinear scaling",
-      "type": "asset",
-      "relationship": "CONTAINS",
-      "presence": "required",
-      "source_path": "docs/media/hst-sharp-scaling-bilinear.png",
-      "license": "NOASSERTION",
-      "notice_path": "NOTICE.md",
-      "disposition": "approved_binary",
-      "public_scope_included": true,
-      "optional": false,
-      "hashes": {
-        "sha256": "d750dfda96a5dfb8dba63d782d5d42314a625193ab3ca9c8bce931480f95da43"
-      },
-      "comment": "Presentation capture of Hot Shots Tennis: Get a Grip running in Nakagawa Recomp. The game belongs to its publisher; not licensed under this repository. Admitted under the maintainer authorization of 2026-10-21."
-    },
-    {
-      "id": "readme-hst-sharp-scaling-sharp",
-      "name": "README presentation screenshot: title screen with sharp scaling",
-      "type": "asset",
-      "relationship": "CONTAINS",
-      "presence": "required",
-      "source_path": "docs/media/hst-sharp-scaling-sharp.png",
-      "license": "NOASSERTION",
-      "notice_path": "NOTICE.md",
-      "disposition": "approved_binary",
-      "public_scope_included": true,
-      "optional": false,
-      "hashes": {
-        "sha256": "1ed5d0a0c345a79fd96539576f8d36a1fa1778997a25ebd6699144e837ec67ef"
-      },
-      "comment": "Presentation capture of Hot Shots Tennis: Get a Grip running in Nakagawa Recomp. The game belongs to its publisher; not licensed under this repository. Admitted under the maintainer authorization of 2026-10-21."
     }
   ]
 }

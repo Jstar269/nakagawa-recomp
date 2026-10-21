@@ -185,8 +185,8 @@ lineage. Former private/pre-sanitization development history is not ordinary
 
 ## Presentation screenshots of Hot Shots Tennis
 
-The four PNG files in docs/media/ are presentation captures of Hot Shots Tennis: Get a Grip running in
-Nakagawa Recomp on Windows. The game belongs to its publisher, and it is not licensed under this
-repository's GPL-3.0-or-later declaration. The captures contain no game data files, and users need their
-own copy of the game. The screenshots were admitted under the maintainer authorization of 2026-10-21
-and are listed with the SHA-256 of their exact bytes in assets/release_manifest.json.
+The PNG file docs/media/hst-title-screen.png is a presentation capture of Hot Shots Tennis: Get a Grip
+running in Nakagawa Recomp on Windows. The game belongs to its publisher, and it is not licensed under
+this repository's GPL-3.0-or-later declaration. The capture contains no game data files, and users need
+their own copy of the game. The screenshot was admitted under the maintainer authorization of 2026-10-21
+and is listed with the SHA-256 of its exact bytes in assets/release_manifest.json.
