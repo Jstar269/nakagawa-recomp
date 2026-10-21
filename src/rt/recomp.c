@@ -1818,12 +1818,125 @@ static int dispatch_run_interp(
     return (int)interp_result;
 }
 
+SrAotReturnBoundary *sr_aot_return_boundary_top;
+static SrAotReturnBoundary *sr_aot_return_boundaries;
+static size_t sr_aot_return_boundary_depth;
+static size_t sr_aot_return_boundary_capacity;
+
+void sr_aot_return_boundaries_reset(void) {
+    sr_aot_return_boundary_depth = 0u;
+    sr_aot_return_boundary_top = NULL;
+}
+
+static int sr_aot_return_boundary_grow(CpuState *s, uint32_t call_pc,
+                                       uint32_t resume_pc) {
+    size_t next_capacity = sr_aot_return_boundary_capacity
+        ? sr_aot_return_boundary_capacity * 2u : 64u;
+    if (next_capacity < sr_aot_return_boundary_capacity ||
+        next_capacity > SIZE_MAX / sizeof *sr_aot_return_boundaries) {
+        goto failed;
+    }
+    SrAotReturnBoundary *grown = realloc(
+        sr_aot_return_boundaries, next_capacity * sizeof *sr_aot_return_boundaries);
+    if (grown == NULL) goto failed;
+
+    sr_aot_return_boundaries = grown;
+    sr_aot_return_boundary_capacity = next_capacity;
+    sr_aot_return_boundary_top = sr_aot_return_boundary_depth
+        ? &sr_aot_return_boundaries[sr_aot_return_boundary_depth - 1u] : NULL;
+    return 0;
+
+failed:
+    fprintf(stderr,
+            "SEMANTIC_BOUNDARY: AOT_RETURN_TRACKING_UNAVAILABLE: cannot grow the "
+            "linked-call boundary stack at 0x%08" PRIx32 "\n",
+            call_pc);
+    sr_aot_return_boundaries_reset();
+    s->flow_kind = SR_FLOW_FATAL;
+    s->flow_target = call_pc;
+    sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, call_pc, 0u, resume_pc);
+    return 1;
+}
+
+int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
+                                 uint32_t call_pc, uint32_t has_resume_pc) {
+    if (sr_aot_return_boundary_depth == sr_aot_return_boundary_capacity &&
+        sr_aot_return_boundary_grow(s, call_pc, resume_pc)) {
+        return 1;
+    }
+    SrAotReturnBoundary *boundary =
+        &sr_aot_return_boundaries[sr_aot_return_boundary_depth++];
+    boundary->state = s;
+    boundary->resume_pc = resume_pc;
+    boundary->has_resume_pc = has_resume_pc != 0u;
+    boundary->observed_target = 0u;
+    sr_aot_return_boundary_top = boundary;
+    return 0;
+}
+
+int sr_aot_return_boundary_end(CpuState *s) {
+    SrAotReturnBoundary *boundary = sr_aot_return_boundary_top;
+    if (boundary == NULL || sr_aot_return_boundary_depth == 0u ||
+        boundary != &sr_aot_return_boundaries[sr_aot_return_boundary_depth - 1u] ||
+        boundary->state != s) {
+        const uint32_t call_pc = s->pc;
+        fprintf(stderr,
+                "SEMANTIC_BOUNDARY: AOT_RETURN_TRACKING_CORRUPT: call at 0x%08" PRIx32
+                " lost its host return boundary\n",
+                call_pc);
+        sr_aot_return_boundaries_reset();
+        s->flow_kind = SR_FLOW_FATAL;
+        s->flow_target = call_pc;
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, call_pc, 0u, 0u);
+        return 1;
+    }
+    sr_aot_return_boundary_depth--;
+    sr_aot_return_boundary_top = sr_aot_return_boundary_depth
+        ? &sr_aot_return_boundaries[sr_aot_return_boundary_depth - 1u] : NULL;
+
+    /* A fatal mismatch found in a nested direct call must return through every
+     * generated caller without executing its guest continuation. */
+    if (s->flow_kind == SR_FLOW_FATAL) return 1;
+    if (!boundary->has_resume_pc || s->flow_kind != SR_FLOW_NONE ||
+        boundary->observed_target == 0u) {
+        return 0;
+    }
+
+    const uint32_t actual_target = (uint32_t)boundary->observed_target;
+    if (actual_target == boundary->resume_pc) return 0;
+
+    fprintf(stderr,
+            "SEMANTIC_BOUNDARY: AOT_RETURN_TARGET_MISMATCH: linked call at 0x%08" PRIx32
+            " resumed at 0x%08" PRIx32 " but its guest jr $ra target was 0x%08" PRIx32
+            "; stopping before the AOT continuation\n",
+            boundary->resume_pc - 8u, boundary->resume_pc, actual_target);
+    s->flow_kind = SR_FLOW_FATAL;
+    s->flow_target = actual_target;
+    sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, boundary->resume_pc - 8u,
+                    actual_target, boundary->resume_pc);
+    return 1;
+}
+
 static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
-                             int has_returning_call_boundary, int drain) {
+                             const SrGuestInterpCallBoundary *call_boundary,
+                             int drain) {
+    const int owns_return_boundary = call_boundary != NULL ||
+        !(drain == SR_DRAIN_SEGMENT && sr_aot_return_boundary_top != NULL &&
+          sr_aot_return_boundary_top->state == s);
+    if (owns_return_boundary) {
+        const uint32_t call_pc = call_boundary != NULL
+            ? call_boundary->resume_pc - 8u : s->pc;
+        if (sr_aot_return_boundary_begin(
+            s,
+            call_boundary != NULL ? call_boundary->resume_pc : 0u,
+            call_pc, call_boundary != NULL ? 1u : 0u)) {
+            return;
+        }
+    }
     uint32_t callee_saved[9];
     /* Only a title configuration that declares the #363 debt restores callee-saved
      * registers; every other title keeps the callee's architectural writes. */
-    has_returning_call_boundary = has_returning_call_boundary &&
+    const int has_returning_call_boundary = call_boundary != NULL &&
                                   sr_title_config_preserve_callee_saved_at_calls();
     if (has_returning_call_boundary) {
         for (unsigned reg = 16u; reg <= 23u; reg++)
@@ -1841,6 +1954,7 @@ static void dispatch_call_aot(RecompFn fn, CpuState *s, uint32_t target,
         if (drain == SR_DRAIN_CHAIN) sr_tail_drain(s);
         else sr_tail_drain_segment(s);
     }
+    if (owns_return_boundary) (void)sr_aot_return_boundary_end(s);
     /* Exception/ERET transfers are not returns and keep their architectural
      * register changes. Tail dispatch has no return edge. */
     if (has_returning_call_boundary && s->flow_kind == SR_FLOW_NONE) {
@@ -2009,7 +2123,7 @@ static int dispatch_try_with_boundary(
         if (sr_title_config_dispatch_alias(target, &alias_target)) {
             RecompFn aliased = sr_lookup(alias_target);
             if (aliased) {
-                dispatch_call_aot(aliased, s, alias_target, call_boundary != NULL, drain);
+                dispatch_call_aot(aliased, s, alias_target, call_boundary, drain);
                 return dispatch_after_aot(s, call_boundary, drain);
             }
         }
@@ -2129,7 +2243,7 @@ static int dispatch_try_with_boundary(
                     (void*)fn, target, s->r[29],
                     atomic_load_explicit(&sr_timeslice, memory_order_relaxed));
         }
-        dispatch_call_aot(fn, s, target, call_boundary != NULL, drain);
+        dispatch_call_aot(fn, s, target, call_boundary, drain);
 
         if (g_prof_enabled && prof_entry) {
             prof_entry->duration_ns += (SDL_GetTicksNS() - start_ns);

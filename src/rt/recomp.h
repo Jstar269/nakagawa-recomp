@@ -942,6 +942,32 @@ void     dispatch(CpuState *s, uint32_t target);  /* TAIL/no native resume bound
 int      dispatch_call_try(CpuState *s, uint32_t target, uint32_t resume_pc);
 void     dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc);
 
+/* AOT `jr $ra` returns are structural host returns, so a linked call needs a
+ * small host-side boundary to compare the guest target latched at `jr` with the
+ * caller's explicit resume PC. This state is separate from CpuState: it is not
+ * guest architecture and does not change the generated CpuState ABI. */
+typedef struct SrAotReturnBoundary {
+    CpuState *state;
+    uint32_t resume_pc;
+    uint32_t has_resume_pc;
+    uint64_t observed_target;  /* bit 32 marks a captured target, including target 0 */
+} SrAotReturnBoundary;
+
+extern SrAotReturnBoundary *sr_aot_return_boundary_top;
+int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
+                                 uint32_t call_pc, uint32_t has_resume_pc);
+int sr_aot_return_boundary_end(CpuState *s);
+void sr_aot_return_boundaries_reset(void);
+
+/* Generated `jr $ra` captures before its delay slot. Keep the hot transfer path
+ * inline: one target store per return, with the linked-call comparison at the
+ * boundary after the native body returns. */
+#define SR_AOT_RETURN_CAPTURE(s, target) do { \
+    SrAotReturnBoundary *sr_aot_boundary_ = sr_aot_return_boundary_top; \
+    if (sr_aot_boundary_ != NULL && sr_aot_boundary_->state == (s)) \
+        sr_aot_boundary_->observed_target = UINT64_C(0x100000000) | (uint32_t)(target); \
+} while (0)
+
 /* TAIL transfer protocol (#855).
  *
  * A guest TAIL transfer -- `j`, `jr rs`, `jalr $zero` or a branch to another body, or a
@@ -997,8 +1023,10 @@ static inline void sr_tail_record(CpuState *s, uint32_t target, RecompFn fn,
 } while (0)
 /* Invoke a native body and complete its tail chain (runtime direct calls). */
 static inline void sr_call_body(RecompFn fn, CpuState *s) {
+    if (sr_aot_return_boundary_begin(s, 0u, s->pc, 0u)) return;
     fn(s);
     if (sr_tail_transfer.pending) sr_tail_drain(s);
+    if (sr_aot_return_boundary_end(s)) return;
 }
 /* A recorded transfer must never survive to a yield, syscall or new dispatch. */
 static inline void sr_tail_assert_empty(const char *where) {
