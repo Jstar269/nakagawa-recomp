@@ -342,7 +342,7 @@
     "classification": "dedicated",
     "handler": "h_Memcpy",
     "name": "sceKernelMemcpy",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x191cdeff": {
     "classification": "controlled_unsupported",
@@ -779,7 +779,7 @@
     "classification": "dedicated",
     "handler": "h_GetSystemTimeLow",
     "name": "sceKernelGetSystemTimeLow",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0x36aa6e91": {
     "classification": "dedicated",
@@ -2356,7 +2356,7 @@
     "classification": "dedicated",
     "handler": "h_CpuIsIntrEnable",
     "name": "sceKernelIsCpuIntrEnable",
-    "status": "unreviewed"
+    "status": "complete"
   },
   "0xb57e95d9": {
     "classification": "dedicated",
@@ -2812,7 +2812,7 @@
     "classification": "dedicated",
     "handler": "h_GetSystemTime",
     "name": "sceKernelGetSystemTime",
-    "status": "unreviewed"
+    "status": "partial"
   },
   "0xdb83a952": {
     "classification": "dedicated",

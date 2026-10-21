@@ -353,7 +353,7 @@ static uint32_t depth_test_vertex(uint32_t address, uint16_t x, uint16_t y,
     return address + 12u;                 /* 4-byte color alignment pads the vertex stride */
 }
 
-static void build_vram_depth_list(void) {
+static void build_vram_depth_list_at(uint32_t zbp) {
     static const uint32_t through16 = (7u << 2) | (2u << 7) | (1u << 23);
     uint32_t vertex = VRAM_TEST_VERTS;
     uint32_t clear_sprite = vertex;
@@ -374,7 +374,7 @@ static void build_vram_depth_list(void) {
     W(0x9C, 0x00100000u);                /* colour base: 0x04100000 */
     W(0x9D, 512u);
     W(0xD2, 3u);                         /* 8888 */
-    W(0x9E, 0x0CC000u);                  /* depth base */
+    W(0x9E, zbp);                        /* depth base */
     W(0x9F, 512u);
     W(0xD4, 0u);
     W(0xD5, (271u << 10) | 479u);
@@ -443,8 +443,37 @@ static void build_vram_ambiguous_depth_list(uint32_t zbp, uint32_t vertex) {
     W(0x0C, 0u);
 }
 
+/* zbp 0x0ce000 (bit 13 set). The PSP XORs bits 6 and 13 of the absolute address (measured 2026-10-21):
+ * pixel (x, y) depth is at (zbp + linear) ^ 0x2040, not zbp + (linear ^ 0x2040). The mirror at
+ * 0x04200000 then reads it back linearly. */
+static void test_ge_vram_depth_bit13_absolute_xor(void) {
+    const uint32_t zbp = 0x0CE000u;
+    const uint32_t zbase = 0x04000000u + zbp;
+    build_vram_depth_list_at(zbp);
+    expect(ge_run_list(LIST_VRAM_DEPTH, 0) == 0, "vram_depth_bit13",
+           "bit-13 depth list did not reach END");
+    static const struct {
+        unsigned x, y;
+        uint16_t z;
+    } points[] = {
+        { 0u, 0u, 0x1111u },
+        { 64u, 8u, 0x2222u },
+        { 200u, 100u, 0x3333u },
+    };
+    for (size_t i = 0; i < sizeof points / sizeof points[0]; i++) {
+        uint32_t linear = (points[i].y * 512u + points[i].x) * 2u;
+        uint32_t stored = (zbase + linear) ^ 0x2040u;
+        uint32_t alias_linear = 0x04200000u + zbp + linear;
+        char detail[128];
+        snprintf(detail, sizeof detail, "absolute-XOR depth at x=%u y=%u", points[i].x, points[i].y);
+        expect(MEM_R16(stored) == points[i].z, "vram_depth_bit13", detail);
+        snprintf(detail, sizeof detail, "linear mirror depth at x=%u y=%u", points[i].x, points[i].y);
+        expect(MEM_R16(alias_linear) == points[i].z, "vram_depth_bit13", detail);
+    }
+}
+
 static void test_ge_vram_cpu_visibility(void) {
-    build_vram_depth_list();
+    build_vram_depth_list_at(0x0CC000u);
     expect(ge_run_list(LIST_VRAM_DEPTH, 0) == 0, "vram_depth", "depth list did not reach END");
 
     static const struct {
@@ -486,6 +515,8 @@ static void test_ge_vram_cpu_visibility(void) {
     expect(MEM_R32(color_addr) == 0xFF102030u,
            "vram_cpu_write", "next GE logic-op draw observes the CPU-written color value");
 
+    /* zbp 0x0cc040 (bit 6 set) is still refused: the PSP wrote no depth there (2026-10-21). zbp 0x0ce000
+     * (bit 13 set) is measured and accepted, so the depth-tested draw runs. */
     static const uint32_t ambiguous_zbp[] = { 0x0CC040u, 0x0CE000u };
     for (size_t i = 0; i < sizeof ambiguous_zbp / sizeof ambiguous_zbp[0]; i++) {
         uint32_t color_pixel = 0x04100000u + (20u * 512u + 20u) * 4u;
@@ -494,8 +525,12 @@ static void test_ge_vram_cpu_visibility(void) {
                                         VRAM_TEST_VERTS + 0x300u + (uint32_t)i * 32u);
         expect(ge_run_list(LIST_VRAM_AMBIGUOUS, 0) == 0,
                "vram_depth_boundary", "ambiguous depth list did not reach END");
-        expect(MEM_R32(color_pixel) == 0xFFABCDEFu,
-               "vram_depth_boundary", "ambiguous depth placement rejects the whole depth-tested primitive");
+        if (ambiguous_zbp[i] == 0x0CC040u)
+            expect(MEM_R32(color_pixel) == 0xFFABCDEFu,
+                   "vram_depth_boundary", "bit-6 depth placement rejects the whole depth-tested primitive");
+        else
+            expect(MEM_R32(color_pixel) == 0xFF010203u,
+                   "vram_depth_boundary", "bit-13 depth placement runs the depth-tested primitive (PSP-measured)");
     }
 }
 
@@ -1171,6 +1206,7 @@ int main(int argc, char **argv) {
     expect_fault("sparse_only", &sparse_only, &sparse_fault);
 
     test_ge_vram_cpu_visibility();
+    test_ge_vram_depth_bit13_absolute_xor();
 
     printf("ge_cpu_profile_validate_selftest: strip_cache=%s scenarios=%u faults=%u failures=%d\n",
            strip_cache ? "on" : "off", s_scenarios, s_faults, s_failures);

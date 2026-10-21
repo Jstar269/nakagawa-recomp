@@ -42,11 +42,11 @@ Semantic handler census: **456** handlers across **23** API families, covering *
 
 | Semantic Status | Handlers | NID Registrations |
 | :--- | :---: | :---: |
-| `complete` | 12 | 20 |
-| `partial` | 156 | 158 |
+| `complete` | 13 | 21 |
+| `partial` | 159 | 161 |
 | `compatibility` | 1 | 1 |
 | `controlled_unsupported` | 2 | 6 |
-| `unreviewed` | 285 | 311 |
+| `unreviewed` | 281 | 307 |
 
 | API Family | Complete | Partial | Compatibility | Controlled Unsupported | Unreviewed | Total Handlers | NID Registrations |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
@@ -62,7 +62,7 @@ Semantic handler census: **456** handlers across **23** API families, covering *
 | `sceHprm` | 0 | 0 | 0 | 0 | 3 | 3 | 3 |
 | `sceImpose` | 0 | 0 | 0 | 0 | 2 | 2 | 2 |
 | `sceIo` | 2 | 25 | 0 | 0 | 5 | 32 | 32 |
-| `sceKernel` | 2 | 74 | 0 | 0 | 96 | 172 | 193 |
+| `sceKernel` | 3 | 77 | 0 | 0 | 92 | 172 | 193 |
 | `sceMpeg` | 0 | 8 | 0 | 1 | 27 | 36 | 36 |
 | `sceOpen` | 0 | 0 | 0 | 0 | 1 | 1 | 1 |
 | `scePower` | 0 | 3 | 0 | 0 | 12 | 15 | 17 |
@@ -73,7 +73,7 @@ Semantic handler census: **456** handlers across **23** API families, covering *
 | `sceUmd` | 0 | 1 | 1 | 0 | 7 | 9 | 9 |
 | `sceUtility` | 0 | 0 | 0 | 0 | 29 | 29 | 31 |
 | `sceWlan` | 0 | 0 | 0 | 0 | 2 | 2 | 3 |
-| **Total** | **12** | **156** | **1** | **2** | **285** | **456** | **496** |
+| **Total** | **13** | **159** | **1** | **2** | **281** | **456** | **496** |
 
 #### Complete Handlers (Evidence-Backed)
 
@@ -101,6 +101,8 @@ Semantic handler census: **456** handlers across **23** API families, covering *
 - **`h_IoRemove`** (`sceIo`): `sceIoRemove` (0xf27a9c51)
   - Evidence: src/rt/hle_thread_selftest.c:test_ms0_unified_namespace
   - Evidence: src/rt/hle.c:h_IoRemove
+- **`h_CpuIsIntrEnable`** (`sceKernel`): `sceKernelIsCpuIntrEnable` (0xb55249d2)
+  - Evidence: src/rt/hle_thread_selftest.c:test_interrupt_nid_semantics
 - **`h_Memset`** (`sceKernel`): `memset` (0x10f3bb61), `sceKernelMemset` (0xa089eca4)
   - Evidence: src/rt/hle_thread_selftest.c:test_sysclib_memory_imports
   - Evidence: src/rt/hle.c:h_Memset
@@ -389,6 +391,10 @@ Semantic handler census: **456** handlers across **23** API families, covering *
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-B1-01: VPL pool accounting, allocation placement, and free sequence)
 - **`h_GetMemoryBlockAddr`** (`sceKernel`): `sceKernelGetMemoryBlockAddr` (0xdb83a952)
   - Limitation: resolves UIDs created by the modeled Low allocation path; output-pointer and unknown-UID results are source-tested but not hardware measured
+- **`h_GetSystemTime`** (`sceKernel`): `sceKernelGetSystemTime` (0xdb738f35)
+  - Limitation: writes the 64-bit modeled microsecond clock and returns 0; the illegal-address result is the runtime's own code (RTC_ILLEGAL_ADDR), not a PSP measurement, and the clock origin is not compared with hardware
+- **`h_GetSystemTimeLow`** (`sceKernel`): `sceKernelGetSystemTimeLow` (0x369ed59d)
+  - Limitation: returns the low 32 bits of the modeled microsecond clock, which wraps; the clock origin and wrap timing are not compared with hardware
 - **`h_GetSystemTimeWide`** (`sceKernel`): `sceKernelGetSystemTimeWide` (0x82bc5777)
   - Limitation: the two system-clock reads advanced 220,608 around a bounded 20 ms delay, but host0 logging offset the intervals and the VTimer/system-clock deltas agree only within about 8%; this is consistent with the microsecond unit but does not establish a precise rate or absolute system-time values
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-HLE-VTIMER-002: system-clock reads around the bounded delay)
@@ -404,6 +410,8 @@ Semantic handler census: **456** handlers across **23** API families, covering *
 - **`h_LockMutex`** (`sceKernel`): `sceKernelLockMutex` (0xb011b11f)
   - Limitation: measured cases cover finite timeout, priority inheritance, and the listed interrupt-context refusals; full attribute/recursion ranges, negative counts, multi-waiter priority ordering, and invalid timeout-pointer precedence are not measured
   - Evidence: docs/HARDWARE_ORACLE.md (PSP-MUTEX-001: mutex-timeout-quanta, mutex-priority-inheritance, and accepted interrupt-context cell)
+- **`h_Memcpy`** (`sceKernel`): `sceKernelMemcpy` (0x1839852a)
+  - Limitation: copies with memmove semantics for overlapping spans, which the PSP's memcpy does not promise and whose overlap behaviour is unmeasured; bad guest spans are refused through the runtime's out-of-range path, not a PSP error code
 - **`h_NotifyCallback`** (`sceKernel`): `sceKernelNotifyCallback` (0xc11ba8c4)
   - Limitation: the cited cell covers notification coalescing in one callback case; callback creation state, invalid UID behavior, dispatch context, and ordering with multiple callbacks are not established
   - Evidence: docs/HARDWARE_ORACLE.md (Kernel-object semantics: two callback notifications coalesce into one handler call with count 2)
