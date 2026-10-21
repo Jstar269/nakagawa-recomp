@@ -136,6 +136,9 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_LATE_PRX_TARGET 110
 /* #1096: one bounded AT3 decode of a host0-staged stream. The bytes come from host0, never from the source. */
 #define PSP_ORACLE_CASE_AT3_DECODE 111
+/* Runtime handlers that answered success unconditionally: sceKernelVolatileMemUnlock and
+   sceUtilityOskUpdate. Non-blocking and dialog-free; see run_fake_success. */
+#define PSP_ORACLE_CASE_FAKE_SUCCESS 112
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -355,6 +358,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/vram_mirror_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_AT3_DECODE
 #define PROBE_HOST0_LOG "host0:/at3_decode_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FAKE_SUCCESS
+#define PROBE_HOST0_LOG "host0:/fake_success_log.txt"
 #endif
 
 /* Durable line writer: every record, step marker and the metadata line goes
@@ -8522,6 +8527,117 @@ static void run_at3_decode(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FAKE_SUCCESS
+#include <pspsuspend.h>
+#include <psputility.h>
+#include <psputility_osk.h>
+/* The runtime answers sceKernelVolatileMemUnlock and sceUtilityOskUpdate with success in every state.
+   This probe records the PSP's return for each state. Every call is non-blocking and dialog-free: Lock
+   runs only while unlocked, and the keyboard is shut down from INIT before anything can poll it to
+   VISIBLE. The GetStatus poll is bounded. */
+static uint16_t s_fake_desc[1];
+static uint16_t s_fake_intext[1];
+static uint16_t s_fake_outtext[16];
+static SceUtilityOskData s_fake_data;
+static SceUtilityOskParams s_fake_params;
+
+static void fake_record(int emulated, const char *step, uint32_t rc) {
+    char line[200];
+    const int used = snprintf(line, sizeof(line),
+                              "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-FAKE-001 case_id=fake-%s "
+                              "status=RC result=0x%08x\n",
+                              step, (unsigned int)rc);
+    if (used > 0 && (size_t)used < sizeof(line)) {
+        probe_emit_durable(emulated, line, (size_t)used);
+    }
+}
+
+static void run_fake_success(int emulated) {
+    void *ptr = NULL;
+    int size = 0;
+    char line[240];
+
+    probe_step(emulated, "fake-success", "unlock-unlocked");
+    fake_record(emulated, "unlock-unlocked", (uint32_t)sceKernelVolatileMemUnlock(0));
+
+    probe_step(emulated, "fake-success", "lock");
+    const int lock_rc = sceKernelVolatileMemLock(0, &ptr, &size);
+    fake_record(emulated, "lock", (uint32_t)lock_rc);
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-FAKE-001 case_id=fake-lock-out "
+                   "status=RC result=0x%08x ptr=0x%08x size=%d\n",
+                   (unsigned int)lock_rc, (unsigned int)(uintptr_t)ptr, size);
+    probe_emit_durable(emulated, line, strlen(line));
+
+    probe_step(emulated, "fake-success", "unlock-locked");
+    fake_record(emulated, "unlock-locked", (uint32_t)sceKernelVolatileMemUnlock(0));
+    probe_step(emulated, "fake-success", "unlock-unlocked-again");
+    fake_record(emulated, "unlock-unlocked-again", (uint32_t)sceKernelVolatileMemUnlock(0));
+
+    probe_step(emulated, "fake-success", "trylock");
+    ptr = NULL;
+    size = 0;
+    const int try_rc = sceKernelVolatileMemTryLock(0, &ptr, &size);
+    fake_record(emulated, "trylock", (uint32_t)try_rc);
+    if (try_rc == 0) {
+        probe_step(emulated, "fake-success", "unlock-after-trylock");
+        fake_record(emulated, "unlock-after-trylock", (uint32_t)sceKernelVolatileMemUnlock(0));
+    }
+
+    probe_step(emulated, "fake-success", "osk-update-idle");
+    fake_record(emulated, "osk-update-idle", (uint32_t)sceUtilityOskUpdate(0));
+
+    memset(&s_fake_params, 0, sizeof(s_fake_params));
+    memset(&s_fake_data, 0, sizeof(s_fake_data));
+    s_fake_params.base.size = sizeof(s_fake_params);
+    s_fake_params.base.graphicsThread = 0x11;
+    s_fake_params.base.accessThread = 0x13;
+    s_fake_params.base.fontThread = 0x12;
+    s_fake_params.base.soundThread = 0x10;
+    s_fake_params.datacount = 1;
+    s_fake_params.data = &s_fake_data;
+    s_fake_data.lines = 1;
+    s_fake_data.desc = s_fake_desc;
+    s_fake_data.intext = s_fake_intext;
+    s_fake_data.outtext = s_fake_outtext;
+    s_fake_data.outtextlength = 16;
+    s_fake_data.outtextlimit = 16;
+
+    probe_step(emulated, "fake-success", "osk-initstart");
+    fake_record(emulated, "osk-initstart", (uint32_t)sceUtilityOskInitStart(&s_fake_params));
+    probe_step(emulated, "fake-success", "osk-update-init");
+    fake_record(emulated, "osk-update-init", (uint32_t)sceUtilityOskUpdate(0));
+    probe_step(emulated, "fake-success", "osk-shutdown");
+    fake_record(emulated, "osk-shutdown", (uint32_t)sceUtilityOskShutdownStart());
+
+    /* A keyboard that reaches VISIBLE must be closed before this probe returns: a visible keyboard left
+       open wedged the PSP in the first run. ShutdownStart from VISIBLE, then poll to NONE (bounded). */
+    probe_step(emulated, "fake-success", "osk-status-poll");
+    uint32_t last = 0xffffffffu;
+    int polls = 0;
+    int close_tries = 0;
+    for (polls = 0; polls < 400; polls++) {
+        last = (uint32_t)sceUtilityOskGetStatus();
+        if (last == 0u) break;
+        if (last == 2u && close_tries < 5) {
+            probe_step(emulated, "fake-success", "osk-close-visible");
+            close_tries++;
+            fake_record(emulated, "osk-shutdown-visible", (uint32_t)sceUtilityOskShutdownStart());
+        }
+        sceKernelDelayThread(16000);
+    }
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-FAKE-001 case_id=fake-osk-status-final "
+                   "status=RC result=0x%08x polls=%d\n",
+                   (unsigned int)last, polls);
+    probe_emit_durable(emulated, line, strlen(line));
+
+    probe_step(emulated, "fake-success", "park");
+    /* Park the main thread. Returning would end main and drop PSPLink to the XMB. */
+    for (;;) sceKernelSleepThread();
+}
+#endif
+
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
@@ -8731,6 +8847,8 @@ int main(int argc, char *argv[]) {
     run_late_prx_target(emulated); /* parks; never returns */
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_AT3_DECODE
     run_at3_decode(emulated); /* parks; never returns */
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FAKE_SUCCESS
+    run_fake_success(emulated); /* parks; never returns */
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

@@ -3884,10 +3884,6 @@ static void test_controlled_unsupported_registration(void) {
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, 0xb3b5d042u) == 0u,
            "sceAtracGetOutputChannel retains its named compatibility result under #281/#286");
-
-    memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, 0x4b85c861u) == 0u,
-           "sceUtilityOskUpdate retains its named no-dialog compatibility result under #281");
 }
 
 static void test_kernel_import_sweep_explicit_refusals(void) {
@@ -5229,6 +5225,45 @@ static int osk_write_script(const char *const *lines, int count) {
     for (int i = 0; i < count; i++) fprintf(f, "%s\n", lines[i]);
     fclose(f);
     return 1;
+}
+
+/* ---- sceUtilityOskUpdate and sceUtilityOskShutdownStart before a keyboard is up, and from INIT ----
+ *
+ * PSP-3000 measurement (firmware 6.6.1, 2026-10-21, probe CASE=fake-success, evidence in the
+ * private workspace): with no keyboard, Update returns 0x80110005 (SCE_ERROR_UTILITY_WRONG_TYPE);
+ * after InitStart, Update returns 0x80110001 (SCE_ERROR_UTILITY_INVALID_STATUS), and ShutdownStart
+ * returns 0x80110001 and leaves the keyboard in INIT. The VISIBLE and after-use states are not
+ * measured by this test. */
+#define NID_OSK_UPDATE 0x4b85c861u
+extern void sr_hle_test_osk_slot_reset(void);
+
+static void test_osk_update_and_shutdown_init_states(void) {
+    CpuState cpu;
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+    osk_person_reset();
+    osk_env("SR_OSK_SCRIPT", NULL);
+    osk_env("SR_OSK_TEXT", NULL);
+
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_OSK_UPDATE) == 0x80110005u,
+           "sceUtilityOskUpdate with no keyboard returns 0x80110005 (PSP-measured)");
+
+    osk_guest_build(1, 16u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "sceUtilityOskInitStart accepts the parameter block");
+
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_OSK_UPDATE) == 0x80110001u,
+           "sceUtilityOskUpdate in INIT returns 0x80110001 (PSP-measured)");
+
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0x80110001u,
+           "sceUtilityOskShutdownStart in INIT returns 0x80110001 (PSP-measured)");
+
+    sr_hle_test_osk_slot_reset();
+    osk_person_reset();
 }
 
 static void test_osk_scripted_answer(void) {
@@ -27444,6 +27479,49 @@ static uint32_t psmf_call(CpuState *cpu, uint32_t nid, uint32_t a0, uint32_t a1)
     return sr_syscall(cpu, nid);
 }
 
+/* ---- sceKernelVolatileMemUnlock and the lock state it releases ----
+ *
+ * PSP-3000 measurement (firmware 6.6.1, 2026-10-21, probe CASE=fake-success, evidence in the
+ * private workspace): Unlock with nothing locked returns 0x800201ae; Lock returns 0 and writes
+ * ptr 0x08400000 and size 4 MiB; Unlock while locked returns 0 and releases the lock; a second
+ * Unlock returns 0x800201ae again; TryLock while unlocked returns 0, and Unlock after it returns 0. */
+#define NID_VM_UNLOCK  0xa569e425u
+#define NID_VM_LOCK    0x3e0271d3u
+#define NID_VM_TRYLOCK 0xa14f40b2u
+#define VM_PTR_OUT     0x00250e00u
+#define VM_SIZE_OUT    0x00250e04u
+extern void sr_hle_test_volatile_mem_reset(void);
+
+static void test_volatile_mem_unlock_states(void) {
+    CpuState cpu;
+    sr_hle_test_volatile_mem_reset();
+
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_VM_UNLOCK) == 0x800201aeu,
+           "VolatileMemUnlock with nothing locked returns 0x800201ae (PSP-measured)");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
+    MEM_W32(VM_PTR_OUT, 0u); MEM_W32(VM_SIZE_OUT, 0u);
+    expect(sr_syscall(&cpu, NID_VM_LOCK) == 0u, "VolatileMemLock returns 0 (PSP-measured)");
+    expect(MEM_R32(VM_PTR_OUT) == 0x08400000u && MEM_R32(VM_SIZE_OUT) == 0x00400000u,
+           "VolatileMemLock writes ptr 0x08400000 and size 4 MiB (PSP-measured)");
+
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_VM_UNLOCK) == 0u, "VolatileMemUnlock while locked returns 0");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_VM_UNLOCK) == 0x800201aeu,
+           "a second VolatileMemUnlock with nothing locked returns 0x800201ae");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
+    expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0u, "VolatileMemTryLock while unlocked returns 0");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_VM_UNLOCK) == 0u, "VolatileMemUnlock after TryLock returns 0");
+
+    sr_hle_test_volatile_mem_reset();
+}
+
 /* ---- #1106: a late PRX's module-owned objects outlive its stop and unload ----
  *
  * PSP-3000 measurement (firmware 6.6.1, 2026-10-21, PSPLink probe CASE=late-prx-target):
@@ -29986,6 +30064,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_kernel_import_sweep_ge_head();
     test_ge_break_continue();
     test_volatile_mem_output_preflight();
+    test_osk_update_and_shutdown_init_states();
     test_osk_scripted_answer();
     test_osk_overlay_through_hle_scripted_pad();
     test_osk_overlay_closing_press_stays_with_keyboard();
@@ -30157,6 +30236,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_late_prx_unload_reload_lifecycle();
     test_host_skipped_start_stop_unload_reload();
     test_late_prx_duplicate_base_last_reference();
+    test_volatile_mem_unlock_states();
     test_late_prx_unload_keeps_module_owned_objects();
     test_power_unregister_callback_slots();
     test_psmf_rejected_stream_names_the_boundary();

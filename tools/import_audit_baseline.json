@@ -1082,7 +1082,7 @@
   },
   "0x4b85c861": {
     "classification": "fake_success",
-    "handler": "h_ok",
+    "handler": "h_OskUpdate",
     "name": "sceUtilityOskUpdate",
     "status": "stub"
   },
@@ -2178,10 +2178,10 @@
     "status": "unreviewed"
   },
   "0xa569e425": {
-    "classification": "fake_success",
-    "handler": "h_ok",
+    "classification": "dedicated",
+    "handler": "h_VolatileMemUnlock",
     "name": "sceKernelVolatileMemUnlock",
-    "status": "stub"
+    "status": "unreviewed"
   },
   "0xa5da2406": {
     "classification": "dedicated",
