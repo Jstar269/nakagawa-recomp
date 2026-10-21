@@ -7,18 +7,10 @@
  * the system libavcodec/libavutil (LGPL-2.1-or-later). Without the define this file compiles to
  * nothing and h264_null.c keeps failing closed.
  *
- * Contract, shared with the Media Foundation backend:
- *   feed()      appends MPEG program-stream bytes and demuxes them: video PES payloads
- *               (stream id 0xE0-0xEF) become an H.264 annex-B elementary stream, cut into one
- *               unit per picture at access-unit-delimiter NALs (type 9). The last unit stays
- *               open until the next delimiter or end of stream. The PTS of the first audio PES
- *               (private stream 1, 0xBD) is recorded for first_audio_pts().
- *   submit_au() appends one whole access unit that the caller already formed (scePsmfPlayer).
- *   au_take()   releases the next closed unit for decoding and reports how many program-stream
- *               bytes it accounts for and its PES PTS.
- *   frame()     decodes until one picture comes out and converts it into the target: a guest
- *               video buffer in a PSP pixel format, or a host RGBA8888 buffer. eos != 0 closes
- *               and releases the last unit, then drains the decoder.
+ * The backend receives complete access units from the common PSMF producer. submit_au() queues
+ * one validated Annex-B unit with its normalized timestamp; frame() decodes until one picture
+ * comes out and converts it into the target: a guest video buffer in a PSP pixel format, or a
+ * host RGBA8888 buffer. eos != 0 drains the decoder after all submitted units.
  * A picture that was decoded but could not be written is reported as -1 without poisoning the
  * decoder; only decoder-level failures mark the instance failed.
  */
@@ -31,6 +23,7 @@
 #include <libavutil/frame.h>
 #include <libavutil/log.h>
 #include <libavutil/pixfmt.h>
+#include <libavutil/rational.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -38,16 +31,15 @@
 #include <string.h>
 
 #define FF_MAX_DECODERS   4
-#define FF_MAX_PS_BYTES   (16u * 1024u * 1024u)
 #define FF_MAX_ES_BYTES   (64u * 1024u * 1024u)
 #define FF_MAX_UNITS      (1u << 20)
 #define FF_MOVIE_ROWS     272   /* PSP movie buffers are 272 rows tall */
 
 typedef struct {
     uint32_t off;        /* byte offset of the unit in es[] */
-    uint32_t len;        /* byte length (grows while the unit is open) */
-    int64_t pts;         /* 90 kHz PES PTS of the packet that opened the unit, -1 if none */
-    uint64_t ps_start;   /* absolute program-stream offset of that PES packet */
+    uint32_t len;        /* byte length of one complete access unit */
+    int64_t pts;         /* normalized 90 kHz presentation time, if present */
+    int has_pts;
 } FfUnit;
 
 typedef struct {
@@ -57,20 +49,12 @@ typedef struct {
     AVCodecContext *ctx;
     AVFrame *pic;
     AVPacket *pkt;
-    /* program-stream input not yet parsed */
-    uint8_t *ps;
-    uint32_t ps_len, ps_cap, ps_pos;
-    uint64_t ps_base;    /* program-stream bytes already discarded in front of ps[0] */
-    /* demuxed elementary stream and its picture units */
+    /* The common PSMF producer supplies complete access units to the backend. */
     uint8_t *es;
     uint32_t es_len, es_cap;
     FfUnit *unit;
     uint32_t n_unit, cap_unit;
     uint32_t next_send;  /* first unit not yet given to the decoder */
-    uint32_t next_take;  /* units [0, next_take) are released for decoding */
-    int unit_open;       /* the last unit may still grow */
-    int64_t first_audio_pts;
-    int64_t synthetic_pts;
 } FfDec;
 
 static FfDec s_ff[FF_MAX_DECODERS];
@@ -101,7 +85,11 @@ static int ff_grow(uint8_t **buf, uint32_t *cap, uint32_t need, uint32_t limit) 
     return 1;
 }
 
-static int ff_unit_open(FfDec *d, uint32_t off, int64_t pts, uint64_t ps_start) {
+static int ff_append_au(FfDec *d, const SrH264AccessUnit *au) {
+    if (!d || !au || !au->data || !au->size ||
+        (au->has_pts != 0 && au->has_pts != 1) ||
+        d->n_unit >= FF_MAX_UNITS || au->size > FF_MAX_ES_BYTES - d->es_len ||
+        !ff_grow(&d->es, &d->es_cap, d->es_len + au->size, FF_MAX_ES_BYTES)) return 0;
     if (d->n_unit == d->cap_unit) {
         if (d->cap_unit >= FF_MAX_UNITS) return 0;
         uint32_t cap = d->cap_unit ? d->cap_unit * 2u : 256u;
@@ -111,47 +99,20 @@ static int ff_unit_open(FfDec *d, uint32_t off, int64_t pts, uint64_t ps_start) 
         d->unit = u;
         d->cap_unit = cap;
     }
-    FfUnit *u = &d->unit[d->n_unit++];
-    u->off = off;
-    u->len = 0;
-    u->pts = pts;
-    u->ps_start = ps_start;
-    return 1;
-}
-
-static int ff_is_aud(const uint8_t *p) {
-    return p[0] == 0 && p[1] == 0 && p[2] == 1 && (p[3] & 0x1F) == 9;
-}
-
-/* Append elementary-stream bytes and split them into picture units at access-unit delimiters.
- * A delimiter written with a four-byte start code (00 00 00 01) starts its unit at the extra
- * leading zero, so every unit begins with a complete start code. */
-static int ff_es_append(FfDec *d, const uint8_t *src, uint32_t n, int64_t pts, uint64_t ps_start) {
-    if (n > FF_MAX_ES_BYTES - d->es_len) return 0;
-    if (!ff_grow(&d->es, &d->es_cap, d->es_len + n, FF_MAX_ES_BYTES)) return 0;
     uint32_t start = d->es_len;
-    memcpy(d->es + start, src, n);
-    d->es_len += n;
-    if (!d->unit_open) {
-        if (!ff_unit_open(d, start, pts, ps_start)) return 0;
-        d->unit_open = 1;
-    }
-    /* Re-examine the last three old bytes too: a start code may straddle two payloads. */
-    for (uint32_t k = start >= 3u ? start - 3u : 0u; k + 3u < d->es_len; k++) {
-        FfUnit *cur = &d->unit[d->n_unit - 1];
-        if (k <= cur->off || !ff_is_aud(d->es + k)) continue;
-        uint32_t cut = (k > cur->off + 1u && d->es[k - 1] == 0) ? k - 1u : k;
-        cur->len = cut - cur->off;
-        if (!ff_unit_open(d, cut, -1, ps_start)) return 0;
-    }
-    FfUnit *last = &d->unit[d->n_unit - 1];
-    last->len = d->es_len - last->off;
+    memcpy(d->es + start, au->data, au->size);
+    d->es_len += au->size;
+    FfUnit *u = &d->unit[d->n_unit++];
+    u->off = start;
+    u->len = au->size;
+    u->pts = au->pts;
+    u->has_pts = au->has_pts;
     return 1;
 }
 
 /* Drop decoded units from the front once they are the larger part of a big buffer. */
 static void ff_es_compact(FfDec *d) {
-    uint32_t done = d->next_send < d->next_take ? d->next_send : d->next_take;
+    uint32_t done = d->next_send;
     if (done == 0 || done >= d->n_unit || done < d->n_unit / 2u || d->es_len < (1u << 20)) return;
     uint32_t shift = d->unit[done].off;
     if (shift > d->es_len) return;
@@ -162,60 +123,6 @@ static void ff_es_compact(FfDec *d) {
     for (uint32_t i = 0; i < keep; i++) d->unit[i].off -= shift;
     d->n_unit = keep;
     d->next_send -= done;
-    d->next_take -= done;
-}
-
-/* ---- MPEG program-stream demux ---------------------------------------------------------- */
-
-static int64_t ff_pes_pts(const uint8_t *p) {
-    /* p points at the five PTS bytes: '001x' marker nibble, 33-bit value split 3/15/15. */
-    return ((int64_t)((p[0] >> 1) & 7) << 30) | ((int64_t)p[1] << 22) |
-           ((int64_t)(p[2] >> 1) << 15) | ((int64_t)p[3] << 7) | (int64_t)(p[4] >> 1);
-}
-
-/* Consume one syntactic element at ps_pos. 1 = consumed something, 0 = need more input. */
-static int ff_ps_step(FfDec *d) {
-    if (d->ps_pos > d->ps_len) { d->failed = 1; return 0; }
-    const uint8_t *p = d->ps + d->ps_pos;
-    uint32_t avail = d->ps_len - d->ps_pos;
-    if (avail < 4) return 0;
-    if (!(p[0] == 0 && p[1] == 0 && p[2] == 1)) {        /* resynchronise on a start code */
-        uint32_t i = 1;
-        while (i + 3u <= avail && !(p[i] == 0 && p[i + 1] == 0 && p[i + 2] == 1)) i++;
-        d->ps_pos += i;
-        return d->ps_len - d->ps_pos >= 4;
-    }
-    uint8_t id = p[3];
-    if (id == 0xBA) {                                     /* MPEG-2 pack header */
-        if (avail < 14) return 0;
-        uint32_t size = 14u + (p[13] & 7u);
-        if (avail < size) return 0;
-        d->ps_pos += size;
-        return 1;
-    }
-    if (id < 0xBB) {                                      /* program end code or stray code */
-        d->ps_pos += 4;
-        return 1;
-    }
-    if (avail < 6) return 0;
-    uint32_t pes_len = ((uint32_t)p[4] << 8) | p[5];
-    uint32_t total = 6u + pes_len;
-    if (avail < total) return 0;
-    int mpeg2_header = pes_len >= 3 && (p[6] & 0xC0) == 0x80;
-    int has_pts = mpeg2_header && (p[7] & 0x80) && p[8] >= 5 && pes_len >= 8;
-    if (id == 0xBD && d->first_audio_pts < 0 && has_pts)
-        d->first_audio_pts = ff_pes_pts(p + 9);
-    if (id >= 0xE0 && id <= 0xEF && mpeg2_header) {
-        uint32_t header = 9u + p[8];
-        if (total > header &&
-            !ff_es_append(d, p + header, total - header, has_pts ? ff_pes_pts(p + 9) : -1,
-                          d->ps_base + d->ps_pos)) {
-            d->failed = 1;
-            return 0;
-        }
-    }
-    d->ps_pos += total;
-    return 1;
 }
 
 /* ---- libavcodec ------------------------------------------------------------------------- */
@@ -224,7 +131,6 @@ static void ff_close(FfDec *d) {
     avcodec_free_context(&d->ctx);
     av_frame_free(&d->pic);
     av_packet_free(&d->pkt);
-    free(d->ps);
     free(d->es);
     free(d->unit);
     memset(d, 0, sizeof(*d));
@@ -247,15 +153,15 @@ static int ff_open(FfDec *d) {
     if (!d->ctx || !d->pic || !d->pkt) return 0;
     d->ctx->thread_count = 1;                 /* deterministic, low memory, no frame delay */
     d->ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
+    d->ctx->pkt_timebase = (AVRational){1, 90000};
     if (avcodec_open2(d->ctx, codec, NULL) < 0) {
         fprintf(stderr, "h264-ffmpeg: avcodec_open2 failed\n");
         return 0;
     }
-    d->first_audio_pts = -1;
     return 1;
 }
 
-/* Give the next released unit to the decoder. 1 = sent, 0 = decoder full (receive first),
+/* Give the next submitted access unit to the decoder. 1 = sent, 0 = decoder full (receive first),
  * -1 = decoder failure. A unit the decoder rejects as invalid data is consumed and logged: the
  * stream continues, as on hardware, but nothing is reported as decoded for it. */
 static int ff_send_next(FfDec *d) {
@@ -264,8 +170,7 @@ static int ff_send_next(FfDec *d) {
     av_packet_unref(d->pkt);
     if (av_new_packet(d->pkt, (int)u->len) < 0) return -1;   /* zeroed input padding included */
     memcpy(d->pkt->data, d->es + u->off, u->len);
-    d->pkt->pts = u->pts >= 0 ? u->pts : d->synthetic_pts;
-    d->synthetic_pts = d->pkt->pts + 1;
+    d->pkt->pts = u->has_pts ? u->pts : AV_NOPTS_VALUE;
     int r = avcodec_send_packet(d->ctx, d->pkt);
     if (r == AVERROR(EAGAIN)) return 0;
     if (r < 0 && r != AVERROR_INVALIDDATA) return -1;
@@ -439,7 +344,8 @@ static int ff_deliver(FfDec *d, const SrH264FrameTarget *t, SrH264FrameInfo *inf
                                             : ff_to_guest(d->pic, &pl, t, info);
         if (ok && info) {
             info->native_format = pl.native;
-            info->pts = -1;
+            info->has_pts = d->pic->pts != AV_NOPTS_VALUE;
+            info->pts = info->has_pts ? d->pic->pts : -1;
         }
     } else if (ff_log()) {
         fprintf(stderr, "h264-ffmpeg: unsupported decoded format %d (%dx%d)\n",
@@ -456,17 +362,10 @@ static int ff_pull(FfDec *d, int eos, const SrH264FrameTarget *t, SrH264FrameInf
         if (r == 0) return ff_deliver(d, t, info) == 1 ? 1 : -1;
         if (r != AVERROR(EAGAIN) && r != AVERROR_EOF) { d->failed = 1; return -1; }
         if (r == AVERROR_EOF) return 0;                /* fully drained */
-        uint32_t ready = d->n_unit - (d->unit_open ? 1u : 0u);
-        if (ready > d->next_take) ready = d->next_take;
-        if (d->next_send < ready) {
+        if (d->next_send < d->n_unit) {
             int s = ff_send_next(d);
             if (s < 0) { d->failed = 1; return -1; }
             if (s == 0) return 0;                      /* full and nothing to receive */
-        } else if (eos && d->unit_open) {
-            /* End of stream closes the last picture and releases it, so whole-AU callers
-             * (which have no following AU to close it with) still get it decoded. */
-            d->unit_open = 0;
-            if (d->next_take < d->n_unit) d->next_take = d->n_unit;
         } else if (eos && !d->drain_sent) {
             d->drain_sent = 1;
             if (avcodec_send_packet(d->ctx, NULL) < 0) { d->failed = 1; return -1; }
@@ -507,36 +406,15 @@ static int ff_reset(int id) {
     return 0;
 }
 
-static int ff_feed(int id, const uint8_t *data, uint32_t len) {
+static int ff_submit_au(int id, const SrH264AccessUnit *au) {
     FfDec *d = ff_get(id);
-    if (!d || !data || !len || d->failed) return -1;
-    if (len > FF_MAX_PS_BYTES - d->ps_len ||
-        !ff_grow(&d->ps, &d->ps_cap, d->ps_len + len, FF_MAX_PS_BYTES)) {
-        d->failed = 1;
-        return -1;
-    }
-    memcpy(d->ps + d->ps_len, data, len);
-    d->ps_len += len;
-    while (ff_ps_step(d)) {}
-    if (d->failed) return -1;
-    if (d->ps_pos > (1u << 20)) {                      /* discard parsed input */
-        memmove(d->ps, d->ps + d->ps_pos, d->ps_len - d->ps_pos);
-        d->ps_base += d->ps_pos;
-        d->ps_len -= d->ps_pos;
-        d->ps_pos = 0;
-    }
-    return 0;
-}
-
-static int ff_submit_au(int id, const uint8_t *au, uint32_t len) {
-    FfDec *d = ff_get(id);
-    if (!d || !au || !len) return -1;
-    int start_code = (len >= 3 && au[0] == 0 && au[1] == 0 && au[2] == 1) ||
-                     (len >= 4 && au[0] == 0 && au[1] == 0 && au[2] == 0 && au[3] == 1);
+    if (!d || !au || !au->data || !au->size ||
+        (au->has_pts != 0 && au->has_pts != 1) || d->failed || d->drain_sent) return -1;
+    int start_code = (au->size >= 3 && au->data[0] == 0 && au->data[1] == 0 && au->data[2] == 1) ||
+                     (au->size >= 4 && au->data[0] == 0 && au->data[1] == 0 &&
+                      au->data[2] == 0 && au->data[3] == 1);
     if (!start_code) { d->failed = 1; return -1; }
-    if (d->failed) return -1;
-    if (!ff_es_append(d, au, len, -1, (uint64_t)d->es_len)) { d->failed = 1; return -1; }
-    d->next_take = d->n_unit - (d->unit_open ? 1u : 0u);
+    if (!ff_append_au(d, au)) { d->failed = 1; return -1; }
     return 0;
 }
 
@@ -557,36 +435,13 @@ static int ff_frame(int id, int eos, const SrH264FrameTarget *t, SrH264FrameInfo
     return ff_pull(d, eos, t, info);
 }
 
-static int ff_au_take(int id, int eos, uint64_t *ps_consumed, int64_t *pts) {
-    FfDec *d = ff_get(id);
-    if (!d || d->failed) return -1;
-    if (eos) d->unit_open = 0;
-    uint32_t closed = d->n_unit - (d->unit_open ? 1u : 0u);
-    if (d->next_take >= closed) return 0;
-    uint32_t i = d->next_take++;
-    /* A picture accounts for everything up to the PES packet that opens the next one; the
-     * last picture accounts for all input fed so far. */
-    if (ps_consumed)
-        *ps_consumed = i + 1u < d->n_unit ? d->unit[i + 1u].ps_start : d->ps_base + d->ps_len;
-    if (pts) *pts = d->unit[i].pts;
-    return 1;
-}
-
-static int64_t ff_first_audio_pts(int id) {
-    FfDec *d = ff_get(id);
-    return d ? d->first_audio_pts : -1;
-}
-
 const SrH264Backend sr_h264_ffmpeg_backend = {
     "ffmpeg",
     ff_create,
     ff_destroy,
     ff_reset,
-    ff_feed,
     ff_submit_au,
-    ff_frame,
-    ff_au_take,
-    ff_first_audio_pts
+    ff_frame
 };
 
 #endif /* SR_H264_FFMPEG */
