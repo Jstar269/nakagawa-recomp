@@ -775,7 +775,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "8f1915b7bbaec837db15b224d0461de11506f633dc1bdecfe572a6cafc3dba6c"
+      "sha256": "24243f51d7ee02287f2cd8ba4eeb060c57c05fcd026423ff4785fc3ade7913ee"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -5295,6 +5295,18 @@
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "e92c34fe8f45e9eb5c2e6a8af2709b32cf7111fb0f00601df1c749a06c193843"
+    },
+    {
+      "path": "src/rt/h264_ffmpeg.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "media-decode-h264-ffmpeg-888",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "f1efcc62c35d213adba3dc586a863339f3acc889550a482117c1c53ab80e9867"
     },
     {
       "path": "src/rt/h264_mf.c",
@@ -11007,5 +11019,14 @@
       },
       "sha256": "7869f7a49433ed9a604bd810fc169003949eac70a600256753afbfab844695ef"
     }
-  ]
+  ],
+  "admission": {
+    "workflow": "admit-new-reviewed",
+    "trusted_tree": "de10a579fc8c24250198be59fad34dc4a2abf84b",
+    "candidate_tree": "8fb00f0b5c9dd76c2994b42f3d258f7812305b8a",
+    "admitted_paths": [
+      "src/rt/h264_ffmpeg.c"
+    ],
+    "authority_sha256": "a280e3c92fa8200287e6d72490750413c1d9fa3648177bcb1b13a01b6b70d483"
+  }
 }
