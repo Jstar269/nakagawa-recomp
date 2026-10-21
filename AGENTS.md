@@ -199,7 +199,7 @@ are not hosted-CI evidence; report each as `PASS`, `FAIL`, `SKIP`, `BLOCKED`, or
 
 | Changed surface | Focused first gate |
 | --- | --- |
-| `tools/codegen.py`, analysis, or imports | Python suite; relevant `tools/test_codegen_*.py` and import audit |
+| `tools/codegen.py`, analysis, or imports | relevant `tools/test_codegen_*.py` and `python tools/import_audit_gate.py` |
 | `guest_interp`, `recomp`, or dispatch | `tools/test_dispatch_c.py`, `tools/test_dispatch_call_boundary.py`, cosim tests, then native selftests |
 | scheduler/HLE lifecycle | `tools/test_sched_invariants.py` and `mingw32-make --no-print-directory sched-selftest` |
 | FPU/VFPU conversion | relevant `tools/test_*fpu*.py` plus `fp-convert-selftest`/`vfpu-interp-selftest` |
@@ -211,13 +211,27 @@ are not hosted-CI evidence; report each as `PASS`, `FAIL`, `SKIP`, `BLOCKED`, or
 `native-core-tests` also runs on hosted Linux, so native selftests must build and link
 there without Windows-only libraries. Check with a Linux shell such as WSL before pushing.
 
-At minimum, when applicable, run:
+Hosted CI runs the Python suite on Linux (`python_tools`) when `tools/ci_paths.py` routes Python: the full suite
+for `python_scope` `all`, and only the Makefile-coupled modules when a recipe-only `Makefile` change is the only
+Python-routing change in the diff (`python_scope` `makefile`), which is the evidence that change needs. An exact head whose required hosted CI is green, including
+`python_tools` when the change routes Python, meets the Python-suite requirement for readiness (Section 2); a change
+that routes no Python needs no local full run. Locally, run the focused gates above for the files you changed, then
+these whenever they apply:
 
 ```powershell
-python -m unittest discover -s tools -p "test_*.py" -v
+python tools/tree_lint.py --check
+python tools/lint_docs.py
 python tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
 python -m pre_commit run --all-files
 ```
+
+No hosted job runs the Windows-only cases in `tools/test_asset_index_c.py`, `tools/test_scratch_dir.py`,
+`tools/test_player_package_route.py`, `tools/test_manager_safety.py`, `tools/test_visual_oracle.py` and
+`tools/test_library_sweep.py`. A change under `tools/`, `src/core/`, `src/player/`, the `Makefile` or any `.ps1` file
+(including the root `nk_manager.ps1`) runs those six modules locally on Windows. Run the full
+`python -m unittest discover -s tools -p "test_*.py" -v` locally only when hosted CI cannot run for the change as a
+whole: on Windows it also builds the native fixtures and takes over an hour. Make-based tests need a POSIX `sh` on
+`PATH` (MSYS2 `usr/bin` or Git for Windows `bin`). The PR template's checklist is satisfied the same way.
 
 `workflow_dispatch` has no narrowing inputs. `tools/ci_paths.py` forces the full matrix
 for a manual run and sets `allow_substantive=true`; draft status does not suppress

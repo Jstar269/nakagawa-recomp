@@ -147,7 +147,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e52619bce4caaf126a7b994007c8f7e1c9f396935b5a3d927bb00e201ce8a281"
+      "sha256": "9a741f6e87d35f44d02f5b1d0605e8240cec9341a9e709ff1aa4dd462753ceea"
     },
     {
       "path": ".github/copilot-instructions.md",
@@ -321,7 +321,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "23ad1d04aabe806edbe898d0f2860a235d893f7af3cf61cb5d4206e9c8e8ee8c"
+      "sha256": "1ff89b98f4dd73a83365100dee3ec70dfeb6c7ffd8f986e7cd0bd123870edd25"
     },
     {
       "path": "CLAUDE.md",
@@ -426,7 +426,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9388ec476cc33290be0ff00b934007c056fe50c13ef4bc3f1be0148b20f34d1e"
+      "sha256": "e1fab63113ec47ca94bde1b33dd6dbd616eb643daa2c493959f58d814989fe75"
     },
     {
       "path": "REVIEW.md",
@@ -1156,7 +1156,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "2fc267f28173423666d1dd4eb2aa5e866d7295eb583ddd24fb78b32a10b00e61"
+      "sha256": "947bbbcabb7e7f3aa73a13fabe5d5908a8e88f08c9c44ba5775c618208ba2ff1"
     },
     {
       "path": "docs/ARCHIVE_VFS.md",
