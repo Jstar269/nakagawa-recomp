@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 the Nakagawa Recomp authors
 
-"""Deterministic checks on the README's published showcase screenshots.
+"""Deterministic checks on the README's published screenshots and brand marks.
 
 The README embeds committed framebuffer snapshots. A missing file, a wrong
 pixel format, an oversized capture or a path the publication policy does not
@@ -36,6 +36,11 @@ MAX_GIF_BYTES = 1_000_000
 MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)\)")
 HTML_IMAGE_RE = re.compile(r"<img[^>]*src=\"([^\"]+)\"", re.IGNORECASE)
 # Remote images the README may show: status badges from these services only.
+HTML_SOURCE_RE = re.compile(r'<source[^>]*srcset="([^"]+)"', re.IGNORECASE)
+BRAND_MARKS = {
+    "docs/images/brand/nakagawa-mark-dark.svg",
+    "docs/images/brand/nakagawa-mark-light.svg",
+}
 BADGE_URL_RES = (
     re.compile(r"https://github\.com/Jstar269/nakagawa-recomp/actions/workflows/[\w.-]+\.ya?ml/badge\.svg(\?[\w=&%.-]*)?"),
     re.compile(r"https://img\.shields\.io/[\w./%+-]+(\?[\w=&%.:/-]*)?"),
@@ -122,7 +127,11 @@ def read_gif_metadata(data: bytes) -> tuple[int, int, int, bool]:
 class ReadmeImageTests(unittest.TestCase):
     def test_every_referenced_image_exists(self) -> None:
         text = README.read_text(encoding="utf-8")
-        references = MARKDOWN_IMAGE_RE.findall(text) + HTML_IMAGE_RE.findall(text)
+        references = (
+            MARKDOWN_IMAGE_RE.findall(text)
+            + HTML_IMAGE_RE.findall(text)
+            + HTML_SOURCE_RE.findall(text)
+        )
         self.assertTrue(references, "README embeds no images")
         for reference in references:
             with self.subTest(image=reference):
@@ -195,10 +204,11 @@ class ReadmeImageTests(unittest.TestCase):
             for pattern in ("*.png", "*.gif")
             for path in IMAGES.glob(pattern)
         }
+        published.update(BRAND_MARKS)
         self.assertEqual(
             sorted(path for path in include_paths if path.startswith("docs/images/")),
             sorted(published),
-            "docs/images and the public source profile disagree about the published screenshots",
+            "docs/images and the public source profile disagree about the published images",
         )
 
 
