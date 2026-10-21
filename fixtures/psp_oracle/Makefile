@@ -409,6 +409,9 @@ endif
 VRAM_MIRROR_DEPTH_BIAS ?= 0x00000000
 ifeq ($(CASE),vram-mirror)
 CFLAGS += -DVRAM_MIRROR_DEPTH_BIAS=$(VRAM_MIRROR_DEPTH_BIAS)
+ifeq ($(VRAM_MIRROR_FULL_SCAN),1)
+CFLAGS += -DVRAM_MIRROR_FULL_SCAN
+endif
 endif
 ifeq ($(CASE),model-profile)
 LIBS += -lpspkubridge

@@ -5117,6 +5117,49 @@ static void run_vram_mirror(int emulated) {
     vram_mirror_defer_depth_rows(depth_offset, ge_idle, ge_sequence_complete);
     vram_mirror_defer_color_rows(color_offset, ge_idle, ge_sequence_complete);
 
+#ifdef VRAM_MIRROR_FULL_SCAN
+    /* #1049 caveat: where do the depth clear and the sprite Z values land? Count the four probe values in
+       every 128 KiB block of VRAM through the uncached base alias, and record the first halfword offset of each.
+       Emitted directly (not deferred) because the deferred record table is sized to the semantic records. */
+    {
+        static const uint16_t scan_values[4] = {0x1111u, 0x2222u, 0x3333u, 0x5a5au};
+        uint32_t scan_counts[4][16];
+        uint32_t scan_first[4];
+        memset(scan_counts, 0, sizeof(scan_counts));
+        memset(scan_first, 0, sizeof(scan_first));
+        const volatile uint16_t *vram16 = (const volatile uint16_t *)(uintptr_t)0x44000000u;
+        for (uint32_t i = 0; i < VRAM_MIRROR_SIZE / 2u; i++) {
+            const uint16_t value = vram16[i];
+            for (uint32_t k = 0; k < 4u; k++) {
+                if (value == scan_values[k]) {
+                    scan_counts[k][(i * 2u) >> 17] += 1u;
+                    if (scan_first[k] == 0u) scan_first[k] = i * 2u + 1u;
+                }
+            }
+        }
+        char scan_line[2048];
+        int used = snprintf(scan_line, sizeof(scan_line),
+                            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-VRAM-MIRROR-001 "
+                            "case_id=vram-full-scan status=PASS result=0x00000000");
+        for (uint32_t k = 0; k < 4u; k++) {
+            for (uint32_t block = 0; block < 16u && used > 0 &&
+                                    (size_t)used < sizeof(scan_line); block++) {
+                used += snprintf(scan_line + used, sizeof(scan_line) - (size_t)used,
+                                 " v%u_b%02u=0x%x", (unsigned int)k, (unsigned int)block,
+                                 (unsigned int)scan_counts[k][block]);
+            }
+            if (used > 0 && (size_t)used < sizeof(scan_line)) {
+                used += snprintf(scan_line + used, sizeof(scan_line) - (size_t)used,
+                                 " v%u_first=0x%x", (unsigned int)k, (unsigned int)scan_first[k]);
+            }
+        }
+        if (used > 0 && (size_t)used + 2u < sizeof(scan_line)) {
+            used += snprintf(scan_line + used, sizeof(scan_line) - (size_t)used, "\n");
+            probe_emit_durable(emulated, scan_line, (size_t)used);
+        }
+    }
+#endif
+
     probe_step(emulated, "vram-mirror", "restore-vram");
     vram_mirror_cache_range(0u, VRAM_MIRROR_SIZE, 1);
     memcpy((void *)(uintptr_t)0x44000000u, backup, VRAM_MIRROR_SIZE);
