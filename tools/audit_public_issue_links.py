@@ -154,15 +154,18 @@ def fetch_public_issues_map() -> dict[int, dict] | None:
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    while True:
-        url = (
-            "https://api.github.com/repos/Jstar269/nakagawa-recomp/issues"
-            f"?state=all&per_page=100&page={page}"
-        )
+    # Past 1,000 items GitHub rejects page-number pagination for unauthenticated requests
+    # (HTTP 422), so follow the cursor URL each response names in its Link header.
+    url = (
+        "https://api.github.com/repos/Jstar269/nakagawa-recomp/issues"
+        f"?state=all&per_page=100&page={page}"
+    )
+    while url:
         req = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
+                next_url = _next_link(getattr(resp, "headers", None))
         except Exception as err:
             print(f"Network query to GitHub API failed: {err}", file=sys.stderr)
             return None
@@ -187,11 +190,32 @@ def fetch_public_issues_map() -> dict[int, dict] | None:
                 "url": item["html_url"],
             }
 
-        if len(data) < 100:
+        if next_url:
+            url = next_url
+        elif len(data) < 100:
             break
-        page += 1
+        else:
+            page += 1
+            url = (
+                "https://api.github.com/repos/Jstar269/nakagawa-recomp/issues"
+                f"?state=all&per_page=100&page={page}"
+            )
 
     return issues_map
+
+
+def _next_link(headers) -> str | None:
+    """Return the rel="next" URL from a GitHub Link header, if there is one."""
+    link = headers.get("Link") if headers is not None else None
+    if not isinstance(link, str):
+        return None
+    for part in link.split(","):
+        section = part.split(";")
+        if len(section) >= 2 and section[1].strip() == 'rel="next"':
+            target = section[0].strip()
+            if target.startswith("<") and target.endswith(">"):
+                return target[1:-1]
+    return None
 
 
 def public_status_label(obj: dict) -> str:
