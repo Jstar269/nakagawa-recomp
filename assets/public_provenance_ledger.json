@@ -1183,7 +1183,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "574fb0c36df9ca6a923d480ed936ba1be6370980b3e4d9b13093297ca5bd40a4"
+      "sha256": "72fe93d87f5442ed958075a270393201ee8a76891b0801c4788fae728d8ee1c9"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1447,7 +1447,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7a0d48627ed865c0b19a731c92bde675cce286c4c916ec1c53115c7f0d08d915"
+      "sha256": "8e6dee3d377255f36a28c7536a495009ea937be75471d41dc39552faf8259fbd"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
