@@ -640,6 +640,7 @@ bool player_app_discover_showcase(PlayerApp *app, const char *executable_directo
         GameRecord game;
         memset(&game, 0, sizeof(game));
         game.is_sample = true;
+        game.is_showcase_package = true;
         snprintf(game.disc_id, sizeof(game.disc_id), "%s", title->primary_disc_id);
         snprintf(game.title_name, sizeof(game.title_name), "%s", title->display_name);
         snprintf(game.title_id, sizeof(game.title_id), "%s", title->id);
