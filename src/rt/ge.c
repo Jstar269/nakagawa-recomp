@@ -747,33 +747,45 @@ static int s_zbuf_boundary_reported;
 
 static uint32_t zbuf_stride(void) { return ge.zbw ? ge.zbw : (ge.fbw ? ge.fbw : 512); }
 
-static uint32_t ge_depth_xor_extreme(uint32_t max_index, uint32_t mask,
-                                     int maximize) {
-    uint32_t input = 0u;
-    int prefix_equal = 1;
-    for (int bit = 31; bit >= 0; bit--) {
-        uint32_t limit = (max_index >> (unsigned)bit) & 1u;
-        uint32_t mask_bit = (mask >> (unsigned)bit) & 1u;
-        uint32_t candidate = maximize ? (mask_bit ^ 1u) : mask_bit;
-        if (prefix_equal && candidate > limit) candidate = limit;
-        if (prefix_equal && candidate < limit) prefix_equal = 0;
-        if (candidate) input |= 1u << (unsigned)bit;
+/* Extremes of (v ^ mask) over every integer v in [lo, hi]. The range is covered by aligned
+ * power-of-two blocks: inside one block the XOR only permutes the low bits, so each block maps onto
+ * one aligned interval. The result is exact for the even addresses a 16-bit surface uses and may
+ * include an odd neighbour at each end, which only widens the bound. */
+static void ge_xor_range_extremes(uint64_t lo, uint64_t hi, uint64_t mask,
+                                  uint64_t *min_out, uint64_t *max_out) {
+    uint64_t mn = UINT64_MAX, mx = 0u;
+    uint64_t v = lo;
+    while (v <= hi) {
+        unsigned k = 0u;
+        while (k < 40u && (v & ((1ull << (k + 1u)) - 1u)) == 0u &&
+               v + ((1ull << (k + 1u)) - 1u) <= hi)
+            k++;
+        uint64_t low_mask = (1ull << k) - 1u;
+        uint64_t image = v ^ mask;
+        uint64_t block_lo = image & ~low_mask;
+        uint64_t block_hi = image | low_mask;
+        if (block_lo < mn) mn = block_lo;
+        if (block_hi > mx) mx = block_hi;
+        v += low_mask + 1u;
     }
-    return input ^ mask;
+    *min_out = mn;
+    *max_out = mx;
 }
 
+/* The GE XORs bits 6 and 13 of the absolute address of each depth pixel (PSP-3000 6.6.1, measured
+ * 2026-10-21 with zbp 0x0ce000). The span is therefore the XOR image of the surface's absolute range. */
 int ge_zbuf_guest_span_bounds(uint32_t base, uint32_t stride,
                               uint32_t *first, uint32_t *end) {
     if (stride == 0u || stride > 512u || !first || !end) return 0;
     uint32_t pixels = stride * 272u;
     if (pixels == 0u) return 0;
-    uint32_t max_index = pixels - 1u;
-    uint32_t min_offset = ge_depth_xor_extreme(max_index, 0x1020u, 0) * 2u;
-    uint32_t max_offset = ge_depth_xor_extreme(max_index, 0x1020u, 1) * 2u;
-    uint64_t first64 = (uint64_t)base + min_offset;
-    uint64_t end64 = (uint64_t)base + max_offset + 2u;
-    if (first64 > UINT32_MAX || end64 > UINT32_MAX) return 0;
-    *first = (uint32_t)first64;
+    uint64_t lo = base;
+    uint64_t hi = (uint64_t)base + 2u * ((uint64_t)pixels - 1u);
+    uint64_t min_addr, max_addr;
+    ge_xor_range_extremes(lo, hi, 0x2040u, &min_addr, &max_addr);
+    uint64_t end64 = max_addr + 2u;
+    if (min_addr > UINT32_MAX || end64 > UINT32_MAX) return 0;
+    *first = (uint32_t)min_addr;
     *end = (uint32_t)end64;
     return *first < *end;
 }
@@ -790,9 +802,9 @@ static int ge_zbuf_layout_valid(uint32_t base, uint32_t stride) {
                          "depth strides above 512 pixels are not supported yet.");
         return 0;
     }
-    if ((base & 0x2040u) != 0u) {
-        ge_zbuf_boundary("VRAM_DEPTH_XOR_ORIGIN_UNMEASURED",
-                         "depth buffers at this placement are not supported yet until the PSP XOR origin is measured.");
+    if ((base & 0x40u) != 0u) {
+        ge_zbuf_boundary("VRAM_DEPTH_BIT6_UNRESOLVED",
+                         "depth buffers with bit 6 set are not supported yet: the PSP wrote no depth for zbp 0x0cc040 (2026-10-21), so that placement is unresolved.");
         return 0;
     }
     uint32_t first, end;
@@ -808,7 +820,8 @@ static int ge_zbuf_layout_valid(uint32_t base, uint32_t stride) {
 static uint32_t ge_zbuf_guest_address(uint32_t x, uint32_t y,
                                       uint32_t base, uint32_t stride) {
     uint32_t linear = (y * stride + x) * 2u;
-    return base + (linear ^ 0x2040u);
+    /* XOR of the absolute address, not of the offset within the buffer (see ge_zbuf_guest_span_bounds). */
+    return (base + linear) ^ 0x2040u;
 }
 
 static int ge_zbuf_range_overlaps(uint32_t addr, uint32_t width) {

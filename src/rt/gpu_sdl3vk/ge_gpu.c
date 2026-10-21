@@ -1690,9 +1690,9 @@ static int depth_span_overlaps(const DepthEnt *d, uint32_t addr, uint32_t bytes)
 
 static int depth_readback_to_guest(DepthEnt *d) {
     if (!d || !d->guest_dirty) return 1;
-    if ((d->zba & 0x2040u) != 0u) {
+    if ((d->zba & 0x40u) != 0u) {
         fprintf(stderr,
-                "SEMANTIC_BOUNDARY: VRAM_DEPTH_XOR_ORIGIN_UNMEASURED; depth buffers at this placement are not supported yet until the PSP XOR origin is measured.\n");
+                "SEMANTIC_BOUNDARY: VRAM_DEPTH_BIT6_UNRESOLVED; depth buffers with bit 6 set are not supported yet: the PSP wrote no depth for zbp 0x0cc040 (2026-10-21).\n");
         return 0;
     }
     uint32_t depth_first, depth_end;
@@ -1719,7 +1719,7 @@ static int depth_readback_to_guest(DepthEnt *d) {
     for (uint32_t y = 0; y < FB_H; y++) {
         for (uint32_t x = 0; x < width; x++) {
             uint32_t linear = (y * d->zstride + x) * 2u;
-            uint32_t addr = 0x04000000u + d->zba + (linear ^ 0x2040u);
+            uint32_t addr = 0x04000000u + ((d->zba + linear) ^ 0x2040u);
             uint16_t value = src[(uint32_t)(y * s_scale) * SCL_W + x * (uint32_t)s_scale];
             if (!sr_inrange_n(addr, 2u)) return 0;
             memcpy(SR_HOST_LINEAR(addr), &value, sizeof value);
@@ -3245,14 +3245,14 @@ static int coherence_queue_g1_batch(uint32_t base, uint32_t stride, uint32_t fmt
 /* A CPU load after a completed GE list must materialize only the GPU-owned
  * surface it touches. This drives the production GeGpuHooks and recomp.h scalar
  * accessors; it does not call the explicit snapshot API. */
-static int coherence_run_scalar_vram_read(void) {
+static int coherence_run_scalar_vram_read(uint32_t depth_base) {
     const uint32_t fba = 0x00100000u;
     const uint32_t base = 0x04000000u | fba;
     const uint32_t stride = 512u;
     const uint32_t color_offset = (10u * stride + 10u) * 4u;
-    const uint32_t depth_base = 0x04080000u;
     const uint32_t depth_offset = (10u * stride + 10u) * 2u;
-    const uint32_t depth_swizzled = depth_base + (depth_offset ^ 0x2040u);
+    /* The GE XORs bits 6 and 13 of the absolute address (PSP-measured absolute form). */
+    const uint32_t depth_swizzled = (depth_base + depth_offset) ^ 0x2040u;
     const uint32_t depth_linear_alias = 0x04200000u +
                                         (depth_base - 0x04000000u) + depth_offset;
     coherence_reset_targets();
@@ -3303,8 +3303,8 @@ static int coherence_run_scalar_vram_read(void) {
     uint64_t lazy_color_ns = SDL_GetTicksNS() - lazy_color_start;
     if (color != 0x00605040u) {
         fprintf(stderr,
-                "gpu coherence selftest: scalar framebuffer load returned 0x%08x, expected 0x00605040\n",
-                color);
+                "gpu coherence selftest: scalar framebuffer load (depth base 0x%08x) returned 0x%08x, expected 0x00605040\n",
+                depth_base, color);
         coherence_reset_targets();
         return 0;
     }
@@ -4921,7 +4921,11 @@ int gegpu_coherence_selftest(void) {
     if (!coherence_run_upload_sequence()) ok = 0;
     if (!coherence_run_texture_dirty_same_state()) ok = 0;
     if (!coherence_run_blend_parity()) ok = 0;
-    if (!coherence_run_scalar_vram_read()) ok = 0;
+    if (!coherence_run_scalar_vram_read(0x04080000u)) ok = 0;
+    /* zbp 0x0a2000: bit 13 set, so the absolute XOR differs from the within-buffer form (0x0a6854 vs
+     * 0x0a2854 for pixel 10,10). The 0x0ce000 placement used by the software selftest would overlap the
+     * colour surface at 0x100000 here. */
+    if (!coherence_run_scalar_vram_read(0x040A2000u)) ok = 0;
     coherence_reset_targets();
     return ok;
 }
