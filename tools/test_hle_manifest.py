@@ -250,6 +250,7 @@ class PowerRegistrationOwnershipTests(unittest.TestCase):
         0x34F9C463, 0xFDB5BFE9, 0x478FE6F5, 0x737486F2, 0xEBD177D6, 0xD3075926,  # clock and low battery
         0xEADB1BD7, 0x3AEE7261, 0x090CCB3F,                                      # sceKernelPower Lock/Unlock/Tick
         0x04B7766E,                                                              # scePowerRegisterCallback
+        0xDFA8BAF8,                                                              # scePowerUnregisterCallback
         0x2085D15D, 0x1E490401, 0x0AFD0D8B, 0x87440F5E,                          # battery and power online
         0xFEE03A2F, 0xBD681969, 0xEA382A27, 0xB1A52C83, 0x9BADB3EB,              # measured clock alias, Int and Float getters (PSP-3000 6.61 oracle 2026-10-15, PSP-HLE-POWER-001)
     })
@@ -1071,6 +1072,8 @@ static uint32_t h_SynthReal(CpuState *s) {
                 "0x438a385a": ("sceGeSaveContext", "0x80020002"),
                 "0x0bf608fb": ("sceGeRestoreContext", "0x80020002"),
                 "0x64d50c56": ("sceUtilityUnloadNetModule", "0x80110001"),
+                "0x08d98894": ("sceNpDrmEdataSetupKey", "0x80020002"),
+                "0xf9275d98": ("sceKernelLoadModuleBufferUsbWlan", "0x80020002"),
                 "0x6af9b50a": ("sceUmdCancelWaitDriveStat", "0x80010086"),
                 "0x70a703f8": ("sceAudiocodecDecode", "0x80010086"),
                 "0x72189c48": ("sceImposeSetUMDPopup", "0x80010086"),
