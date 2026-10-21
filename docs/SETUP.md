@@ -768,7 +768,7 @@ outside the published repository.
 | --- | --- | --- |
 | A Make recipe fails with a shell error, or runs words such as `status` as commands | `mingw32-make` found no POSIX `sh` and fell back to `cmd.exe` | Put `C:\msys64\usr\bin` (or Git for Windows `bin`) on `PATH` |
 | `cannot find -lvulkan` with `VULKAN_SDK=/ucrt64` | That is the CI's MSYS2 layout; a local MSYS2 may lack the import library | Leave `VULKAN_SDK` unset so the Makefile finds the installed Vulkan SDK |
-| A Make-driven step fails on a `C:\...` path | Backslashes in a Make variable are read as escapes | Pass Make paths with forward slashes (`C:/...`) |
+| A Make-driven step fails on a `C:\path\to\dir` path | Backslashes in a Make variable are read as escapes | Pass Make paths with forward slashes (`C:/path/to/dir`) |
 | The player refuses to build a package | Package outputs must live outside the repository | Point `BUILD_ROOT` and the user-data root outside the checkout |
 | `git show origin/main:<path>` fails in Git Bash with a mangled `origin\main;...` argument | MSYS converts the argument as a path | Prefix the command with `MSYS_NO_PATHCONV=1` |
 | `bash -lc` under MSYS2 runs in the home directory | A login shell resets the working directory | `cd` to the checkout inside the command |
