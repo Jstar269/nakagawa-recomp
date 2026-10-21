@@ -5436,7 +5436,7 @@ typedef struct {
     int h264;                                  /* sr_h264 instance, -1 when unavailable */
     int h264Unavailable;                       /* decoder creation already failed once */
     int64_t videoClock; int videoClockValid;   /* running presentation time per picture */
-    int64_t auPts[PSMF_OUT_PTS_RING];          /* one entry per submitted picture */
+    int64_t auPts[PSMF_OUT_PTS_CAPACITY];     /* one entry per submitted picture */
     int auPtsHead, auPtsCount; uint64_t auPtsLost;
     int64_t displayPts;                        /* last displaypts handed to the guest */
     int displayPtsValid;                       /* a picture has actually reached the guest */
@@ -5505,8 +5505,10 @@ static int psmf_log_on(void) { static int v = -1; if (v < 0) v = getenv("SR_MPEG
  * the last line it printed here and counts them, so a test can tell a fresh line from a
  * stale one.  Test-only; the production build carries neither the buffer nor the count. */
 #define PSMF_SUMMARY_LINE_CAPACITY 4096u
+#define PSMF_REJECTION_LINE_CAPACITY 512u
 static char s_psmf_last_summary[PSMF_SUMMARY_LINE_CAPACITY];
 static uint32_t s_psmf_summary_count;
+static char s_psmf_last_rejection[PSMF_REJECTION_LINE_CAPACITY];
 const char *sr_hle_test_psmf_last_summary(void) { return s_psmf_last_summary; }
 uint32_t sr_hle_test_psmf_summary_count(void) { return s_psmf_summary_count; }
 #else
@@ -5648,10 +5650,24 @@ static void psmf_name_rejection(SrPsmfPlayer *p) {
     p->rejectNamed = 1;
     const char *reason = sr_psmf_producer_fail_reason(p->producer);
     SrPsmfProducerStats st; sr_psmf_producer_stats(p->producer, &st);
+#ifdef SR_MPEG_MEDIA_SELFTEST
+    int formatted = snprintf(s_psmf_last_rejection, sizeof(s_psmf_last_rejection),
+            "PSMF_CONTRACT: scePsmfPlayer: stream rejected by the demuxer: %s "
+            "at source offset %llu; no further access unit is decoded and the player keeps "
+            "its current status; in the works (#286)\n",
+            reason ? reason : "unspecified", (unsigned long long)st.fail_offset);
+    if (formatted >= 0 && (size_t)formatted < sizeof(s_psmf_last_rejection))
+        fputs(s_psmf_last_rejection, stderr);
+    else {
+        s_psmf_last_rejection[0] = '\0';
+        fprintf(stderr, "PSMF_CONTRACT: scePsmfPlayer: stream rejected by the demuxer\n");
+    }
+#else
     fprintf(stderr, "PSMF_CONTRACT: scePsmfPlayer: stream rejected by the demuxer: %s "
             "at source offset %llu; no further access unit is decoded and the player keeps "
             "its current status; in the works (#286)\n",
             reason ? reason : "unspecified", (unsigned long long)st.fail_offset);
+#endif
     SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_MEDIA, SR_FLIGHT_KIND_MEDIA_STREAM_REJECTED,
                            (uint32_t)st.fail_offset,
                            (uint32_t)(st.fail_offset >> 32), 0u, 0u);
@@ -5682,6 +5698,59 @@ static void psmf_produce(SrPsmfPlayer *p) {
     }
     psmf_log_tick(p);
 }
+
+#ifdef SR_MPEG_MEDIA_SELFTEST
+/* Drive the production PSMF producer-to-player queue boundary without a decoder or retail
+ * media.  A zero expected_reason means valid input; otherwise the failed parser reason and
+ * the exact named PSMF_CONTRACT refusal must both be observed. */
+int sr_hle_test_psmf_stream_contract(const uint8_t *data, uint32_t size,
+                                     uint32_t fragment_bytes,
+                                     const char *expected_reason,
+                                     uint32_t minimum_video_aus) {
+    if ((!data && size) || !fragment_bytes) return 0;
+    SrPsmfPlayer player;
+    memset(&player, 0, sizeof(player));
+    player.h264 = -1;
+    player.producer = sr_psmf_producer_open_stream(0);
+    if (!player.producer) return 0;
+    s_psmf_last_rejection[0] = '\0';
+
+    int feed_ok = 1;
+    for (uint32_t at = 0; at < size;) {
+        uint32_t amount = size - at;
+        if (amount > fragment_bytes) amount = fragment_bytes;
+        if (sr_psmf_producer_feed_stream(player.producer, data + at, amount, 0) != 0) {
+            feed_ok = 0;
+            break;
+        }
+        at += amount;
+        psmf_produce(&player);
+    }
+    if (feed_ok && !sr_psmf_producer_failed(player.producer) &&
+        sr_psmf_producer_feed_stream(player.producer, NULL, 0, 1) != 0)
+        feed_ok = 0;
+    if (feed_ok) psmf_produce(&player);
+
+    int failed = sr_psmf_producer_failed(player.producer);
+    int eof = sr_psmf_producer_eof(player.producer);
+    const char *reason = sr_psmf_producer_fail_reason(player.producer);
+    uint32_t video_aus = player.q[PSMF_TRACK_VIDEO][PSMF_Q_AU].count;
+    int passed;
+    if (expected_reason) {
+        passed = feed_ok && failed && !eof && player.rejectNamed && video_aus == 0 && reason &&
+                 strcmp(reason, expected_reason) == 0 &&
+                 strncmp(s_psmf_last_rejection, "PSMF_CONTRACT:",
+                         sizeof("PSMF_CONTRACT:") - 1u) == 0 &&
+                 strstr(s_psmf_last_rejection, expected_reason) != NULL;
+    } else {
+        passed = feed_ok && !failed && eof && !player.rejectNamed &&
+                 video_aus >= minimum_video_aus && s_psmf_last_rejection[0] == '\0';
+    }
+    psmf_flush(&player);
+    sr_psmf_producer_close(player.producer);
+    return passed;
+}
+#endif
 
 /* ---- decoder integration ------------------------------------------------------------ */
 
@@ -5721,14 +5790,18 @@ static void psmf_media_reset(SrPsmfPlayer *p) {
 static void psmf_video_clock_push(SrPsmfPlayer *p, int has_pts, int64_t pts) {
     int64_t value = sr_psmf_pts_advance(&p->videoClock, &p->videoClockValid,
                                         has_pts, pts, PSMF_VIDEO_PTS_STEP);
-    if (p->auPtsCount < PSMF_OUT_PTS_RING) {
-        p->auPts[(p->auPtsHead + p->auPtsCount) % PSMF_OUT_PTS_RING] = value;
+    if ((uint32_t)p->auPtsCount < PSMF_OUT_PTS_CAPACITY) {
+        p->auPts[(p->auPtsHead + p->auPtsCount) % PSMF_OUT_PTS_CAPACITY] = value;
         p->auPtsCount++;
     } else {
         p->auPts[p->auPtsHead] = value;
-        p->auPtsHead = (p->auPtsHead + 1) % PSMF_OUT_PTS_RING;
+        p->auPtsHead = (p->auPtsHead + 1) % PSMF_OUT_PTS_CAPACITY;
         p->auPtsLost++;
     }
+}
+
+static uint32_t psmf_video_submit_limit(int producer_eof) {
+    return producer_eof ? PSMF_OUT_PTS_CAPACITY : PSMF_OUT_PTS_RING;
 }
 
 /* Feed queued compressed video access units into the H.264 backend, bounded by the
@@ -5737,13 +5810,16 @@ static void psmf_video_clock_push(SrPsmfPlayer *p, int has_pts, int64_t pts) {
  * per getter call) outruns the getter (one picture per call), the oldest pending entries
  * are overwritten, and the displaypts handed to the guest skips ahead of the picture
  * actually displayed -- a vpts/vts divergence with no stream-side explanation (#279).
- * With it, submitted-minus-delivered is bounded by PSMF_OUT_PTS_RING, every submitted
- * picture's time survives to its own getter call, and a guest that stops pulling
- * throttles the demux instead of buffering the rest of the stream. */
+ * With it, normal submitted-minus-delivered lead is bounded by PSMF_OUT_PTS_RING. At EOF,
+ * the bounded producer/player tail may use the extra PSMF_OUT_PTS_EOS_TAIL entries so all
+ * compressed input reaches the backend before EOS closes it. Every submitted picture's time
+ * survives to its own getter call, and a guest that stops pulling throttles normal demux. */
 static void psmf_video_pump(SrPsmfPlayer *p) {
     if (!p) return;
     SrPsmfQueue *q = &p->q[PSMF_TRACK_VIDEO][PSMF_Q_AU];
-    while (q->count && p->auPtsCount < PSMF_OUT_PTS_RING) {
+    uint32_t submit_limit = psmf_video_submit_limit(
+        p->producer && sr_psmf_producer_eof(p->producer));
+    while (q->count && (uint32_t)p->auPtsCount < submit_limit) {
         SrPsmfQueueSlot *slot = &q->slot[q->head];
         if (p->h264 < 0 && !p->h264Unavailable) {
             p->h264 = sr_h264_create();
@@ -5756,8 +5832,9 @@ static void psmf_video_pump(SrPsmfPlayer *p) {
             if (slot->hostData && slot->bytes) {
                 sr_psmf_producer_media_stage(p->producer, SR_PSMF_AU_VIDEO,
                                              SR_PSMF_MEDIA_SUBMITTED);
-                if (sr_h264_submit_au(p->h264, (const uint8_t *)slot->hostData,
-                                      slot->bytes) < 0) {
+                if (sr_h264_submit_au_timed(p->h264, (const uint8_t *)slot->hostData,
+                                            slot->bytes, slot->pts,
+                                            (slot->flags & 1u) != 0) < 0) {
                     p->videoErrors++;
                 } else {
                     psmf_video_clock_push(p, (slot->flags & 1u) != 0, slot->pts);
@@ -5773,12 +5850,42 @@ static void psmf_video_pump(SrPsmfPlayer *p) {
     }
 }
 
+/* Parser EOF can precede submission of producer-owned or player-owned tail AUs.  A backend's
+ * first EOS call closes the decoder input; allow it only after both queues and the producer's
+ * trailing video bytes have been handed to the backend. */
+static int psmf_video_eos_gate(int producer_eof, uint32_t player_queue_count,
+                               uint32_t producer_queue_depth, uint32_t producer_buffered) {
+    return producer_eof && player_queue_count == 0u &&
+           producer_queue_depth == 0u && producer_buffered == 0u;
+}
+
+static int psmf_video_eos_ready(SrPsmfPlayer *p) {
+    if (!p || !p->producer) return 0;
+    SrPsmfProducerStats st;
+    sr_psmf_producer_stats(p->producer, &st);
+    return psmf_video_eos_gate(sr_psmf_producer_eof(p->producer),
+                               p->q[PSMF_TRACK_VIDEO][PSMF_Q_AU].count,
+                               st.video_depth, st.video_buffered);
+}
+
+#ifdef SR_MPEG_MEDIA_SELFTEST
+int sr_hle_test_psmf_video_eos_gate(int producer_eof, uint32_t player_queue_count,
+                                    uint32_t producer_queue_depth,
+                                    uint32_t producer_buffered) {
+    return psmf_video_eos_gate(producer_eof, player_queue_count,
+                               producer_queue_depth, producer_buffered);
+}
+uint32_t sr_hle_test_psmf_video_submit_limit(int producer_eof) {
+    return psmf_video_submit_limit(producer_eof);
+}
+#endif
+
 /* One decoded picture straight into the guest display buffer.  1 = written, 0 = nothing
  * ready yet, -1 = decoder failure. */
 static int psmf_video_take(SrPsmfPlayer *p, uint32_t displaybuf, int bufw,
                            int pixelMode, int64_t *pts_out) {
     if (!p || p->h264 < 0) return 0;
-    int eos = p->producer && sr_psmf_producer_eof(p->producer);
+    int eos = psmf_video_eos_ready(p);
     SrH264FrameTarget target;
     SrH264FrameInfo info;
     memset(&target, 0, sizeof(target));
@@ -5803,7 +5910,7 @@ static int psmf_video_take(SrPsmfPlayer *p, uint32_t displaybuf, int bufw,
     int64_t value = -1;
     if (p->auPtsCount) {
         value = p->auPts[p->auPtsHead];
-        p->auPtsHead = (p->auPtsHead + 1) % PSMF_OUT_PTS_RING;
+        p->auPtsHead = (p->auPtsHead + 1) % PSMF_OUT_PTS_CAPACITY;
         p->auPtsCount--;
     }
     if (value < 0) value = p->displayPts + PSMF_VIDEO_PTS_STEP;
@@ -5910,7 +6017,10 @@ static int psmf_audio_fill(SrPsmfPlayer *p) {
 /* The stream has given everything it has and nothing decoded is left pending. */
 static int psmf_reached_end(SrPsmfPlayer *p) {
     if (!p || !p->producer || !sr_psmf_producer_eof(p->producer)) return 0;
-    if (p->q[PSMF_TRACK_VIDEO][PSMF_Q_AU].count || p->q[PSMF_TRACK_AUDIO][PSMF_Q_AU].count) return 0;
+    if (!psmf_video_eos_ready(p) || p->q[PSMF_TRACK_AUDIO][PSMF_Q_AU].count) return 0;
+    SrPsmfProducerStats st;
+    sr_psmf_producer_stats(p->producer, &st);
+    if (st.audio_depth) return 0;
     if (p->audioPcmValid) return 0;
     /* Without a video backend the picture can never drain, so end is reported as soon as the
      * stream is consumed -- the same policy the sceMpeg path uses with a blank video output. */

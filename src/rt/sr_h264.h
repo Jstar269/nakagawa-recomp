@@ -40,21 +40,31 @@ typedef struct {
     int stride;
     SrH264PixelFormat native_format;
     SrH264PixelFormat delivered_format;
+    /* Optional backend-reported output-frame PTS in normalized 90 kHz units. This describes
+     * decoded-frame timing, not proof that the source access unit carried a PTS; consumers that
+     * need source provenance must retain the producer's AU metadata. */
     int64_t pts;
     int has_pts;
 } SrH264FrameInfo;
+
+typedef struct {
+    /* One complete H.264 access unit in Annex-B form, beginning with a 3- or 4-byte start code. */
+    const uint8_t *data;
+    uint32_t size;
+    int64_t pts;       /* optional source PTS normalized by the host-neutral producer to 90 kHz */
+    int has_pts;       /* exactly 0 or 1; zero means the AU's presentation time is unknown */
+} SrH264AccessUnit;
 
 typedef struct SrH264Backend {
     const char *name;
     int (*create)(void);
     void (*destroy)(int id);
     int (*reset)(int id);
-    int (*feed)(int id, const uint8_t *data, uint32_t len);
-    int (*submit_au)(int id, const uint8_t *au, uint32_t len);
+    int (*submit_au)(int id, const SrH264AccessUnit *au);
+    /* eos != 0 closes backend input; the caller must submit every AU before the first EOS call.
+     * After EOS, submit_au rejects further input until reset. */
     int (*frame)(int id, int eos, const SrH264FrameTarget *target,
                  SrH264FrameInfo *info);
-    int (*au_take)(int id, int eos, uint64_t *ps_consumed, int64_t *pts);
-    int64_t (*first_audio_pts)(int id);
 } SrH264Backend;
 
 int sr_h264_select_backend(const char *name);
@@ -65,8 +75,11 @@ const char *sr_h264_backend_unavailable_reason(void);
 int sr_h264_create(void);
 void sr_h264_destroy(int id);
 int sr_h264_reset(int id);
+/* Legacy sceMpeg PS input stays in the common project-authored demux layer. */
 int sr_h264_feed(int id, const uint8_t *data, uint32_t len);
 int sr_h264_submit_au(int id, const uint8_t *au, uint32_t len);
+int sr_h264_submit_au_timed(int id, const uint8_t *au, uint32_t len,
+                            int64_t pts, int has_pts);
 int sr_h264_frame_ex(int id, int eos, const SrH264FrameTarget *target,
                      SrH264FrameInfo *info);
 int sr_h264_drain(int id, const SrH264FrameTarget *target,

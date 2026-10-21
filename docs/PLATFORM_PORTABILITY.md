@@ -11,7 +11,7 @@ but a successful object compile is not the same as a linked, running port.
 | Thread coroutines | Win32 fibers on Windows; `ucontext` plus `mmap` on POSIX | Suitable for an initial glibc Linux port. Android and consoles need a supported platform backend behind `sr_coro`. |
 | Window, input, and presentation | SDL3/Vulkan path exists, but public `gui_*` functions are inside Windows-only `gui.c`; GDI is the fallback | Move the SDL path into platform-neutral code and keep GDI in a Windows backend. |
 | Audio | SDL3 audio stream | Portable in principle; validate device lifecycle, latency, and suspend/resume on each platform. |
-| Video decode | Windows Media Foundation; non-Windows builds use a timing-preserving null backend | Add a real non-Windows decoder behind `sr_h264` before movie playback can work. |
+| Video decode | The common project-authored PSMF producer owns stream demux and AU boundaries; Windows uses Media Foundation, while non-Windows H.264 decoding fails closed pending a portable dependency and license decision | Select and validate a portable decoder behind `sr_h264` after its licensing and redistribution model is approved. |
 | HLE host services | `hle.c` directly uses Win32 time, directory, file, sleep, and string APIs | Extract filesystem, clock/timezone, sleep, and process-exit services into a host-platform layer. |
 | On-screen keyboard | Win32 dialog and a `wchar_t` interface | Change the seam to explicit UTF-16 code units and provide SDL/mobile/platform UI backends. |
 | Savedata and ISO access | Already contain Windows/POSIX branches | Consolidate them into the same host filesystem layer and test path/case semantics. |
@@ -55,7 +55,8 @@ material in this repository.
 
 ## H.264 backend decision record
 
-**Status: awaiting maintainer decision.** No portable decoder dependency is added by this change.
+**Status: awaiting maintainer decision.** The shared stream path uses the project-authored PSMF
+producer for program-stream parsing and AU boundaries; no portable decoder dependency is added.
 The existing Windows backend remains the only real decoder. A build without a usable backend
 returns `H.264 backend unavailable; in the works (#283)` and does not produce a placeholder frame.
 

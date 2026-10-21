@@ -664,7 +664,7 @@ class TestParserSafetyInventory(unittest.TestCase):
             "prx-relocation-b-c", "title-manifest-c", "runtime-package-json-c",
             "private-package-cache-json", "xb-provider-c", "library-json-c",
             "psmf-header-c", "mpeg-ps-pes-c", "h264-au-framing-c",
-            "windows-mf-demux", "atrac-frame-framing-c", "pgf-public-reader-c",
+            "windows-mf-h264-backend", "atrac-frame-framing-c", "pgf-public-reader-c",
             "python-iso-sfo-inspector", "python-elf-prx-import",
             "python-title-manifest", "python-xb-archive-extractor",
             "python-gim-image", "python-library-json",

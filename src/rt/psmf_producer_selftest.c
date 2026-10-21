@@ -503,6 +503,234 @@ static void test_access_unit_formation(void) {
     free(bytes);
 }
 
+static void test_streaming_program_demux_matches_file_mode(void) {
+    uint32_t size = 0;
+    uint8_t *bytes = fixture(&size, 0);
+    if (!bytes) { CHECK(0, "streaming fixture allocated"); return; }
+    MemSource mem = {bytes, size, 11, 0};
+    SrPsmfSource source = {mem_read, &mem, size};
+    SrPsmfProducer *file = sr_psmf_producer_open(&source, 90000);
+    CHECK(file != NULL, "file-mode reference producer opens");
+    if (!file) { free(bytes); return; }
+    for (int guard = 0; guard < 64 && !sr_psmf_producer_eof(file); guard++)
+        sr_psmf_producer_pump(file, 64);
+    SrPsmfAu expected[SR_PSMF_QUEUE_DEPTH];
+    memset(expected, 0, sizeof(expected));
+    uint32_t expected_count = 0;
+    SrPsmfAu au;
+    while (expected_count < SR_PSMF_QUEUE_DEPTH &&
+           sr_psmf_producer_pop(file, SR_PSMF_AU_VIDEO, &au))
+        expected[expected_count++] = au;
+    CHECK(sr_psmf_producer_eof(file), "file-mode reference reaches EOS");
+    CHECK(expected_count == 4, "reference fixture has four video access units");
+
+    SrPsmfProducer *stream = sr_psmf_producer_open_stream(90000);
+    CHECK(stream != NULL, "raw program-stream producer opens");
+    if (!stream) {
+        for (uint32_t i = 0; i < expected_count; i++) sr_psmf_au_release(&expected[i]);
+        sr_psmf_producer_close(file); free(bytes); return;
+    }
+    uint32_t stream_len = size - 2048u;
+    uint32_t fed = 0, actual_count = 0;
+    SrPsmfAu actual[SR_PSMF_QUEUE_DEPTH];
+    memset(actual, 0, sizeof(actual));
+    while (fed < stream_len) {
+        /* Split the first MPEG packet byte-by-byte, then continue on exact packet
+         * boundaries. This exercises both extreme header fragmentation and the
+         * caller's natural 2048-byte ringbuffer chunking. */
+        uint32_t chunk = fed < 2048u ? 1u : 2048u;
+        if (chunk > stream_len - fed) chunk = stream_len - fed;
+        CHECK(sr_psmf_producer_feed_stream(stream, bytes + 2048u + fed, chunk, 0) == 0,
+              "fragmented PS input is accepted");
+        fed += chunk;
+        sr_psmf_producer_pump(stream, 64);
+        while (actual_count < SR_PSMF_QUEUE_DEPTH &&
+               sr_psmf_producer_pop(stream, SR_PSMF_AU_VIDEO, &au))
+            actual[actual_count++] = au;
+        CHECK(!sr_psmf_producer_failed(stream), "partial PS syntax waits for more input");
+    }
+    CHECK(!sr_psmf_producer_eof(stream), "input end is not EOS until the caller signals it");
+    CHECK(sr_psmf_producer_feed_stream(stream, NULL, 0, 1) == 0,
+          "EOS closes the streaming source");
+    sr_psmf_producer_pump(stream, 64);
+    while (actual_count < SR_PSMF_QUEUE_DEPTH &&
+           sr_psmf_producer_pop(stream, SR_PSMF_AU_VIDEO, &au))
+        actual[actual_count++] = au;
+    CHECK(sr_psmf_producer_eof(stream) && !sr_psmf_producer_failed(stream),
+          "well-formed stream drains cleanly at EOS");
+    CHECK(actual_count == expected_count, "stream and file modes emit the same AU count");
+    CHECK(sr_psmf_producer_stream_bytes(stream) == stream_len,
+          "stream offset counts only the fed MPEG program stream");
+    CHECK(sr_psmf_producer_first_audio_pts(stream) == 85069,
+          "stream demux retains the first validated audio PES PTS");
+    uint32_t compare_count = actual_count < expected_count ? actual_count : expected_count;
+    for (uint32_t i = 0; i < compare_count; i++) {
+        CHECK(actual[i].size == expected[i].size &&
+              memcmp(actual[i].data, expected[i].data, actual[i].size) == 0,
+              "stream mode forms the same exact AU bytes as file mode");
+        CHECK(actual[i].has_pts == expected[i].has_pts && actual[i].pts == expected[i].pts,
+              "stream mode preserves normalized PTS presence and values");
+        CHECK(actual[i].ps_offset + 2048u == expected[i].ps_offset,
+              "stream mode reports PS offsets independent of the PSMF header");
+        if (i) CHECK(actual[i - 1u].ps_offset <= actual[i].ps_offset,
+                     "stream AU PS offsets remain ordered");
+    }
+
+    sr_psmf_producer_reset(stream);
+    CHECK(sr_psmf_producer_stream_bytes(stream) == 0 &&
+          sr_psmf_producer_stream_cursor(stream) == 0 &&
+          !sr_psmf_producer_failed(stream) && !sr_psmf_producer_eof(stream),
+          "stream reset clears offsets and terminal state for reuse");
+    uint32_t replay_fed = 0, replay_count = 0;
+    while (replay_fed < stream_len) {
+        uint32_t chunk = stream_len - replay_fed;
+        if (chunk > 2048u) chunk = 2048u;
+        int eos = replay_fed + chunk == stream_len;
+        CHECK(sr_psmf_producer_feed_stream(stream, bytes + 2048u + replay_fed,
+                                           chunk, eos) == 0,
+              "reset producer accepts a packet-sized replay");
+        replay_fed += chunk;
+        sr_psmf_producer_pump(stream, 64u);
+        while (sr_psmf_producer_pop(stream, SR_PSMF_AU_VIDEO, &au)) {
+            if (replay_count < expected_count) {
+                CHECK(au.size == expected[replay_count].size &&
+                      memcmp(au.data, expected[replay_count].data, au.size) == 0,
+                      "reset replay preserves the file-mode AU sequence");
+            }
+            replay_count++;
+            sr_psmf_au_release(&au);
+        }
+    }
+    CHECK(sr_psmf_producer_eof(stream) && !sr_psmf_producer_failed(stream),
+          "reset producer reaches clean EOS on reuse");
+    CHECK(replay_count == expected_count,
+          "reset producer emits the complete AU sequence again");
+    CHECK(sr_psmf_producer_stream_bytes(stream) == stream_len,
+          "reset replay restarts byte offsets from zero");
+
+    for (uint32_t i = 0; i < expected_count; i++) sr_psmf_au_release(&expected[i]);
+    for (uint32_t i = 0; i < actual_count; i++) sr_psmf_au_release(&actual[i]);
+    sr_psmf_producer_close(stream);
+    sr_psmf_producer_close(file);
+    free(bytes);
+}
+
+static void test_streaming_demux_rejects_truncated_eos(void) {
+    static const uint8_t partial_start_code[] = {0x00, 0x00, 0x01};
+    SrPsmfProducer *stream = sr_psmf_producer_open_stream(0);
+    CHECK(stream != NULL, "truncated-stream producer opens");
+    if (!stream) return;
+    CHECK(sr_psmf_producer_feed_stream(stream, partial_start_code,
+                                       sizeof(partial_start_code), 0) == 0,
+          "partial start code is accepted while more input may arrive");
+    CHECK(sr_psmf_producer_pump(stream, 1u) == 0 &&
+          !sr_psmf_producer_failed(stream),
+          "incomplete stream syntax waits without a false rejection");
+    CHECK(sr_psmf_producer_feed_stream(stream, NULL, 0, 1) == 0,
+          "truncated stream accepts the EOS signal");
+    CHECK(sr_psmf_producer_pump(stream, 1u) == 0 &&
+          sr_psmf_producer_failed(stream),
+          "EOS makes the incomplete start code a terminal parse failure");
+    CHECK(strcmp(sr_psmf_producer_fail_reason(stream), "start-code-truncated") == 0,
+          "truncated EOS names the exact rejected syntax");
+    SrPsmfProducerStats stats;
+    sr_psmf_producer_stats(stream, &stats);
+    CHECK(stats.fail_offset == 0 && stats.parser_failures == 1,
+          "truncated EOS records its source offset and one failure");
+    sr_psmf_producer_close(stream);
+}
+
+static void test_streaming_demux_rejects_incomplete_pes_at_eos(void) {
+    static const uint8_t pes_prefix_and_partial_payload[] = {
+        0x00, 0x00, 0x01, 0xE0, 0x00, 0x20, 0x80, 0x00, 0x00,
+        0x11, 0x22, 0x33
+    };
+    SrPsmfProducer *stream = sr_psmf_producer_open_stream(0);
+    CHECK(stream != NULL, "incomplete-PES producer opens");
+    if (!stream) return;
+    CHECK(sr_psmf_producer_feed_stream(stream, pes_prefix_and_partial_payload, 9u, 0) == 0,
+          "a complete PES header with a partial payload is accepted before EOS");
+    CHECK(sr_psmf_producer_pump(stream, 1u) == 0 && !sr_psmf_producer_failed(stream),
+          "a declared PES payload waits for more bytes");
+    CHECK(sr_psmf_producer_feed_stream(stream, pes_prefix_and_partial_payload + 9u, 3u, 0) == 0,
+          "additional partial PES payload bytes are accepted");
+    CHECK(sr_psmf_producer_pump(stream, 1u) == 0 && !sr_psmf_producer_failed(stream),
+          "a still-incomplete PES remains pending until EOS");
+    CHECK(sr_psmf_producer_feed_stream(stream, NULL, 0, 1) == 0,
+          "incomplete PES stream accepts the EOS signal");
+    CHECK(sr_psmf_producer_pump(stream, 1u) == 0 && sr_psmf_producer_failed(stream),
+          "EOS turns the incomplete PES into a terminal parse failure");
+    CHECK(strcmp(sr_psmf_producer_fail_reason(stream), "pes-length-inconsistent") == 0,
+          "incomplete PES reports its rejected declared length");
+    SrPsmfProducerStats stats;
+    sr_psmf_producer_stats(stream, &stats);
+    CHECK(stats.fail_offset == 0 && stats.parser_failures == 1,
+          "incomplete PES rejection records the source offset once");
+    sr_psmf_producer_close(stream);
+}
+
+static void test_streaming_demux_input_window_limit(void) {
+    const uint32_t chunk_size = 65536u;
+    uint8_t *chunk = (uint8_t *)calloc(chunk_size, 1u);
+    CHECK(chunk != NULL, "bounded stream-limit input buffer allocates");
+    if (!chunk) return;
+    SrPsmfProducer *stream = sr_psmf_producer_open_stream(0);
+    CHECK(stream != NULL, "stream-limit producer opens");
+    if (!stream) { free(chunk); return; }
+
+    uint32_t fed = 0;
+    while (fed < SR_PSMF_MAX_PS_BUFFER_BYTES) {
+        uint32_t amount = SR_PSMF_MAX_PS_BUFFER_BYTES - fed;
+        if (amount > chunk_size) amount = chunk_size;
+        if (sr_psmf_producer_feed_stream(stream, chunk, amount, 0) != 0) break;
+        fed += amount;
+    }
+    CHECK(fed == SR_PSMF_MAX_PS_BUFFER_BYTES,
+          "streaming producer accepts input up to its configured window cap");
+    CHECK(sr_psmf_producer_feed_stream(stream, chunk, 1u, 0) < 0 &&
+          sr_psmf_producer_failed(stream),
+          "streaming producer rejects input beyond the configured window cap");
+    CHECK(strcmp(sr_psmf_producer_fail_reason(stream), "program-stream-buffer-limit") == 0,
+          "stream-window rejection names the configured cap");
+    CHECK(sr_psmf_producer_stream_bytes(stream) == SR_PSMF_MAX_PS_BUFFER_BYTES,
+          "rejected bytes do not advance the stream offset");
+    SrPsmfProducerStats stats;
+    sr_psmf_producer_stats(stream, &stats);
+    CHECK(stats.parser_failures == 1,
+          "stream-window rejection records one parser failure");
+    sr_psmf_producer_close(stream);
+    free(chunk);
+}
+
+static void test_streaming_demux_cursor_progress_without_access_units(void) {
+    enum { PACKET_BYTES = 6, PACKET_COUNT = 4097 };
+    static const uint8_t padding_packet[PACKET_BYTES] = {
+        0x00, 0x00, 0x01, 0xBE, 0x00, 0x00
+    };
+    uint8_t *bytes = (uint8_t *)malloc(PACKET_BYTES * PACKET_COUNT);
+    CHECK(bytes != NULL, "padding-only program stream allocates");
+    if (!bytes) return;
+    for (uint32_t i = 0; i < PACKET_COUNT; i++)
+        memcpy(bytes + i * PACKET_BYTES, padding_packet, PACKET_BYTES);
+    SrPsmfProducer *stream = sr_psmf_producer_open_stream(0);
+    CHECK(stream != NULL, "padding-only stream producer opens");
+    if (!stream) { free(bytes); return; }
+    uint32_t byte_count = PACKET_BYTES * PACKET_COUNT;
+    CHECK(sr_psmf_producer_feed_stream(stream, bytes, byte_count, 1) == 0,
+          "padding-only stream feed succeeds");
+    CHECK(sr_psmf_producer_pump(stream, 4096u) == 0,
+          "parsing padding packets produces no access units");
+    CHECK(sr_psmf_producer_stream_cursor(stream) == (uint64_t)PACKET_BYTES * 4096u,
+          "parser cursor reports progress even when no access unit was formed");
+    CHECK(sr_psmf_producer_pump(stream, 4096u) == 0,
+          "the final padding packet remains a no-access-unit parse");
+    CHECK(sr_psmf_producer_pump(stream, 1u) == 0 && sr_psmf_producer_eof(stream),
+          "a follow-up pump observes EOS after the final syntactic packet");
+    CHECK(!sr_psmf_producer_failed(stream), "padding-only stream remains valid");
+    sr_psmf_producer_close(stream);
+    free(bytes);
+}
+
 static void test_backpressure_keeps_order(void) {
     uint32_t size = 0; uint8_t *bytes = fixture(&size, 4);
     MemSource mem = {bytes, size, 0, 0};
@@ -1613,6 +1841,11 @@ int main(int argc, char **argv) {
         }
     }
     test_access_unit_formation();
+    test_streaming_program_demux_matches_file_mode();
+    test_streaming_demux_rejects_truncated_eos();
+    test_streaming_demux_rejects_incomplete_pes_at_eos();
+    test_streaming_demux_input_window_limit();
+    test_streaming_demux_cursor_progress_without_access_units();
     test_backpressure_keeps_order();
     test_no_aud_scan_work_bound();
     test_aud_split_across_pes();

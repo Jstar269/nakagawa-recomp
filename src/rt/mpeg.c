@@ -134,6 +134,7 @@ typedef struct {
     int64_t firstTimestamp, lastTimestamp;
     int avcRegistered, atracRegistered;
     int isAnalyzed;
+    int h264DemuxFailed, h264DemuxErrorReported;
     int64_t videoPts, audioPts;  /* media-engine timestamp model */
     int videoEnd, audioEnd;
     uint32_t totalPackets;       /* streamSize/packetSize: whole-movie packet count */
@@ -263,6 +264,16 @@ static void au_write_pts(uint32_t auAddr, int off, int64_t v) {
     uint32_t lo = (uint32_t)v, hi = (uint32_t)((uint64_t)v >> 32);
     MEM_W32(auAddr + (uint32_t)off, hi);          /* swapped: high word first */
     MEM_W32(auAddr + (uint32_t)off + 4, lo);
+}
+
+static uint32_t h264_demux_error(Mpeg *ctx, uint32_t auAddr) {
+    if (ctx && !ctx->h264DemuxErrorReported) {
+        ctx->h264DemuxErrorReported = 1;
+        fprintf(stderr, "H264_CONTRACT: sceMpegGetAvcAu: program-stream demux rejected input\n");
+    }
+    au_write_pts(auAddr, 0, -1);
+    au_write_pts(auAddr, 8, -1);
+    return SCE_MPEG_ERROR_NO_DATA;
 }
 
 /* ================= exported handlers (called from hle.c) ================= */
@@ -514,11 +525,12 @@ uint32_t mpeg_ringbuffer_put(CpuState *s, uint32_t ring, uint32_t numPackets, ui
             !sr_guest_span_readable_current(dst, gotBytes))
             return 0;
 
-#ifdef SR_SDL3VK
+#if defined(SR_SDL3VK) || defined(SR_MPEG_MEDIA_SELFTEST)
         if (ctx && got) {
             if (!ctx->h264Init) { ctx->h264Init = 1; ctx->h264 = sr_h264_create(); }
-            if (ctx->h264 >= 0)
-                sr_h264_feed(ctx->h264, (const uint8_t *)SR_HOST(dst), gotBytes);
+            if (ctx->h264 >= 0 &&
+                sr_h264_feed(ctx->h264, (const uint8_t *)SR_HOST(dst), gotBytes) < 0)
+                ctx->h264DemuxFailed = 1;
         }
 #endif
 
@@ -560,6 +572,7 @@ uint32_t mpeg_get_avc_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint3
     if (!ctx) return (uint32_t)-1;
     uint32_t ring = ctx->ringAddr;
     if (!ring) return (uint32_t)-1;
+    if (ctx->h264DemuxFailed) return h264_demux_error(ctx, auAddr);
     /* Real end-of-stream: the game has fed the whole movie (fedPackets >= totalPackets) and the
      * ring has drained. This mirrors PPSSPP's mediaengine->IsVideoEnd() without ffmpeg -- the movie
      * runs for the full file then ends, instead of stopping at the (segment-only) header timestamp. */
@@ -573,7 +586,7 @@ uint32_t mpeg_get_avc_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint3
     int needsReset = 0, num = 0;
     au_stream(mpegAddr, sid, &needsReset, &num);
     uint32_t release = 1;   /* timestamp model: one packet per access unit */
-#ifdef SR_SDL3VK
+#if defined(SR_SDL3VK) || defined(SR_MPEG_MEDIA_SELFTEST)
     /* With a decoder, an access unit is one real picture of the demuxed stream: hand it out only
      * once it has been fed completely, and release exactly the ring packets it consumed. */
     if (ctx->h264Init && ctx->h264 >= 0) {
@@ -586,6 +599,10 @@ uint32_t mpeg_get_avc_au(uint32_t mpegAddr, uint32_t sid, uint32_t auAddr, uint3
             g_mpeg_nodata++;
             au_write_pts(auAddr, 0, -1); au_write_pts(auAddr, 8, -1);
             return SCE_MPEG_ERROR_NO_DATA;
+        }
+        if (r < 0) {
+            ctx->h264DemuxFailed = 1;
+            return h264_demux_error(ctx, auAddr);
         }
         if (r > 0) {
             uint64_t done = psConsumed / MPEG_PACKET_SIZE;

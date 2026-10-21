@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2025-2026 the psp-recomp authors
 
-"""Static contracts and small independent arithmetic fixtures for issues #170 and #302.
+"""Static contracts and small independent arithmetic fixtures for issues #170, #283, and #302.
 
-The MPEG ring code is part of the native runtime and the Media Foundation backend is Windows-
-only.  These tests therefore keep the production source shape fail-closed and exercise the
-overflow model independently; native compilation and the private HST route remain separate
-evidence labels.
+The common PS demux is portable and the Media Foundation decoder backend is Windows-only.
+These tests pin both production boundaries and exercise overflow arithmetic independently;
+native compilation and private title acceptance remain separate evidence labels.
 """
 
 from pathlib import Path
@@ -19,6 +18,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 MPEG = (ROOT / "src" / "rt" / "mpeg.c").read_text(encoding="utf-8")
 H264 = (ROOT / "src" / "rt" / "h264_mf.c").read_text(encoding="utf-8")
 PSMF_MEDIA = (ROOT / "src" / "rt" / "psmf_media_selftest.c").read_text(encoding="utf-8")
+PSMF_PRODUCER = (ROOT / "src" / "rt" / "psmf_producer.c").read_text(encoding="utf-8")
 
 
 def checked_mul_u32(a: int, b: int) -> int | None:
@@ -58,13 +58,18 @@ class TestMpegH264Bounds(unittest.TestCase):
         self.assertIn("requiredBytes > size", construct)
         self.assertNotIn("data + numPackets * 2048u", construct)
 
-    def test_h264_accumulators_have_caps_and_checked_growth(self) -> None:
-        for cap in ("H264_MAX_PS_BYTES", "H264_MAX_ES_BYTES", "H264_MAX_ES_CHUNKS", "H264_MAX_OUTPUT_BYTES"):
+    def test_common_demux_and_decoder_accumulators_have_caps_and_checked_growth(self) -> None:
+        for cap in ("H264_MAX_ES_BYTES", "H264_MAX_ES_CHUNKS", "H264_MAX_OUTPUT_BYTES"):
             self.assertIn(cap, H264)
-        self.assertIn("d->failed = 1", H264)
-        self.assertIn("n > H264_MAX_ES_BYTES - d->esLen", H264)
-        self.assertIn("len > H264_MAX_PS_BYTES - d->psLen", H264)
+        self.assertIn("SR_PSMF_MAX_PS_BUFFER_BYTES", PSMF_PRODUCER)
+        self.assertIn("p->failed = 1", PSMF_PRODUCER)
+        self.assertIn("au->size > H264_MAX_ES_BYTES - d->esLen", H264)
+        self.assertIn("len > SR_PSMF_MAX_PS_BUFFER_BYTES - p->ps_input_len", PSMF_PRODUCER)
         self.assertIn("c->off > d->esLen || c->len > d->esLen - c->off", H264)
+
+    def test_decoder_timestamp_presence_is_not_inferred_from_pts_value(self) -> None:
+        self.assertIn("int has_pts;", H264)
+        self.assertIn("c->has_pts ? (LONGLONG)c->pts * 1000 / 9 : d->fakeTime", H264)
 
     def test_atrac_au_uses_the_psmf_presentation_origin(self) -> None:
         """The public sceMpeg clock is not the raw private-PES diagnostic clock.
