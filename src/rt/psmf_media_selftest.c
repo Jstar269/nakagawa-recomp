@@ -24,10 +24,9 @@
  *   - timestamp normalization against the PSMF presentation base, including an AU whose PES
  *     carried no PTS (reported as "unknown", never invented);
  *   - a real decoded picture in the guest display buffer, checked pixel by pixel;
- *   - the end-of-stream contract: the last picture of the stream is released and decoded
- *     (regression: before sr_h264_frame() closed the trailing chunk at EOS the final picture
- *     of every stream was silently dropped), exactly once, and a fresh decoder instance never
- *     exposes a previous stream's trailing picture;
+ *   - the end-of-stream contract: every authored picture is decoded exactly once whether the
+ *     backend emits it before or during EOS drain, and a fresh decoder instance never exposes a
+ *     previous stream's trailing picture;
  *   - the legacy mpeg.c consumption path (sr_h264_feed + sr_h264_au_take + sr_h264_frame) is
  *     unchanged by that EOS release.
  */
@@ -60,6 +59,10 @@ int sr_hle_test_psmf_stream_contract(const uint8_t *data, uint32_t size,
                                     uint32_t fragment_bytes,
                                     const char *expected_reason,
                                     uint32_t minimum_video_aus);
+int sr_hle_test_psmf_video_eos_gate(int producer_eof, uint32_t player_queue_count,
+                                    uint32_t producer_queue_depth,
+                                    uint32_t producer_buffered);
+uint32_t sr_hle_test_psmf_video_submit_limit(int producer_eof);
 
 static void check_media_conservation(const char *track, uint64_t decoded,
                                     uint64_t delivered, uint64_t held,
@@ -762,6 +765,42 @@ static int native_decoder_format(SrH264PixelFormat f) {
     return f == SR_H264_PIXEL_NATIVE_NV12 || f == SR_H264_PIXEL_NATIVE_YUV420P;
 }
 
+#if defined(SR_H264_FFMPEG)
+static void check_ffmpeg_output_pts(const SrH264FrameInfo *info,
+                                    int *known_count, int *unknown_count) {
+    CHECK(info->has_pts == 0 || info->has_pts == 1,
+          "FFmpeg frame timestamp presence is a strict boolean");
+    if (info->has_pts) {
+        CHECK(info->pts == 0 || info->pts == FIX_PTS_STEP,
+              "FFmpeg reports only submitted, normalized access-unit PTS values");
+        (*known_count)++;
+    } else {
+        CHECK(info->pts == -1,
+              "an FFmpeg frame without a source PTS remains explicitly unknown");
+        (*unknown_count)++;
+    }
+}
+#endif
+
+static void test_video_eos_waits_for_all_access_units(void) {
+    CHECK(!sr_hle_test_psmf_video_eos_gate(0, 0, 0, 0),
+          "decoder EOS stays closed before parser EOF");
+    CHECK(!sr_hle_test_psmf_video_eos_gate(1, 1, 0, 0),
+          "decoder EOS waits for the player video queue");
+    CHECK(!sr_hle_test_psmf_video_eos_gate(1, 0, 1, 0),
+          "decoder EOS waits for producer-owned video access units");
+    CHECK(!sr_hle_test_psmf_video_eos_gate(1, 0, 0, 1),
+          "decoder EOS waits for the producer's trailing video bytes");
+    CHECK(sr_hle_test_psmf_video_eos_gate(1, 0, 0, 0),
+          "decoder EOS opens after every video input queue is empty");
+    CHECK(sr_hle_test_psmf_video_submit_limit(0) == PSMF_OUT_PTS_RING,
+          "normal decode keeps the measured presentation lead bound");
+    CHECK(sr_hle_test_psmf_video_submit_limit(1) == PSMF_OUT_PTS_CAPACITY &&
+              PSMF_OUT_PTS_CAPACITY == PSMF_OUT_PTS_RING +
+                  PSMF_Q_DEPTH + SR_PSMF_QUEUE_DEPTH + 1u,
+          "EOS can submit the bounded producer/player tail without overwriting PTS entries");
+}
+
 static void test_real_decode_into_guest_buffer(void) {
     uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES];
     uint32_t size = 0;
@@ -782,6 +821,9 @@ static void test_real_decode_into_guest_buffer(void) {
     /* Feed exactly like the guest player: every produced access unit goes to the decoder, and
      * frames are pulled while the stream is still being fed (eos = 0). */
     int frames_before_eos = 0, frames_after_eos = 0, aus = 0;
+#if defined(SR_H264_FFMPEG)
+    int ffmpeg_known_pts = 0, ffmpeg_unknown_pts = 0;
+#endif
     int64_t last_pts = -1;
     SrH264FrameTarget target;
     SrH264FrameInfo info;
@@ -808,6 +850,9 @@ static void test_real_decode_into_guest_buffer(void) {
         int r = sr_h264_frame_ex(dec, 0, &target, &info);
         CHECK(r >= 0, "decoding a fed access unit never fails");
         if (r > 0) {
+#if defined(SR_H264_FFMPEG)
+            check_ffmpeg_output_pts(&info, &ffmpeg_known_pts, &ffmpeg_unknown_pts);
+#endif
             sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
                                          SR_PSMF_MEDIA_DECODED);
             int valid = info.width == 64 && info.height == 64 &&
@@ -842,6 +887,9 @@ static void test_real_decode_into_guest_buffer(void) {
         int r = sr_h264_drain(dec, &target, &info);
         CHECK(r >= 0, "end-of-stream drain never fails");
         if (r <= 0) break;
+#if defined(SR_H264_FFMPEG)
+        check_ffmpeg_output_pts(&info, &ffmpeg_known_pts, &ffmpeg_unknown_pts);
+#endif
         sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
                                      SR_PSMF_MEDIA_DECODED);
         int valid = info.width == 64 && info.height == 64 &&
@@ -855,11 +903,21 @@ static void test_real_decode_into_guest_buffer(void) {
         frames_after_eos++;
     }
     CHECK(frames_before_eos + frames_after_eos == FIX_PICTURES,
-          "the stream yields exactly one picture per authored picture (final picture released at EOS)");
+          "the stream yields exactly one picture per authored picture across EOS drain");
+#if defined(SR_H264_FFMPEG)
+    CHECK(ffmpeg_known_pts == 2 && ffmpeg_unknown_pts == 1,
+          "FFmpeg preserves two known PTS values and one unknown picture time");
+#endif
     /* Repeated end-of-stream must not duplicate output. */
     int extra = 0;
     for (int i = 0; i < 8; i++) if (sr_h264_drain(dec, &target, &info) > 0) extra++;
     CHECK(extra == 0, "a drained decoder produces no further pictures");
+    static const uint8_t post_eos_au[] = {0, 0, 1, 0x09, 0x10};
+    CHECK(sr_h264_submit_au(dec, post_eos_au, sizeof(post_eos_au)) < 0,
+          "a drained decoder refuses new input until reset");
+    CHECK(sr_h264_reset(dec) == 0, "reset reopens a drained decoder for a new stream");
+    CHECK(sr_h264_submit_au(dec, post_eos_au, sizeof(post_eos_au)) == 0,
+          "a reset decoder accepts a new access unit");
     SrPsmfProducerStats st;
     sr_psmf_producer_stats(p, &st);
     check_media_conservation("real H.264 video", st.video_decoded,
@@ -2163,8 +2221,10 @@ static void av_sample_summaries(void) {
     if (frames > 0) {
         CHECK(vts == av_video_pts((int)frames - 1),
               "published displaypts equals the authored picture time at the getter");
-        CHECK(vlead >= 0 && vlead <= (long long)PSMF_OUT_PTS_RING * PSMF_VIDEO_PTS_STEP,
-              "submitted-minus-delivered stays inside the presentation ring: pipeline distance");
+        long long lead_limit = (long long)(eof ? PSMF_OUT_PTS_CAPACITY :
+                                                PSMF_OUT_PTS_RING) * PSMF_VIDEO_PTS_STEP;
+        CHECK(vlead >= 0 && vlead <= lead_limit,
+              "submitted-minus-delivered stays inside its normal or bounded EOS-tail capacity");
     }
     if (aout > 0 && ats >= 0) {
         CHECK(llabs(ats - av_audio_pts((int)aout - 1)) <= AV_AUDIO_PTS_DRIFT_TICKS,
@@ -2487,6 +2547,7 @@ int main(int argc, char **argv) {
     test_backend_registry_fail_closed();
     test_backend_reset_and_restart();
     test_backend_malformed_input();
+    test_video_eos_waits_for_all_access_units();
     test_mpeg_ps_demux_error_fails_closed();
     test_mpeg_ycbcr_fail_closed_paths();
     test_mpeg_ycbcr_guest_contract();

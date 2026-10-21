@@ -344,6 +344,8 @@ static int ff_deliver(FfDec *d, const SrH264FrameTarget *t, SrH264FrameInfo *inf
                                             : ff_to_guest(d->pic, &pl, t, info);
         if (ok && info) {
             info->native_format = pl.native;
+            /* pkt_timebase is 1/90000 and ff_send_next supplies AV_NOPTS_VALUE for an AU
+             * without a source PTS. Report the decoded frame PTS, never best_effort_timestamp. */
             info->has_pts = d->pic->pts != AV_NOPTS_VALUE;
             info->pts = info->has_pts ? d->pic->pts : -1;
         }

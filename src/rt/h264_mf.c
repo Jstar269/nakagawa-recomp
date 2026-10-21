@@ -496,7 +496,8 @@ int sr_h264_mf_submit_au(int id, const SrH264AccessUnit *au) {
     if (id < 0 || id >= MAX_DEC || !s_dec[id].used || !au || !au->data || !au->size ||
         (au->has_pts != 0 && au->has_pts != 1)) return -1;
     Dec *d = &s_dec[id];
-    if (d->failed || !((au->size >= 3u && au->data[0] == 0u && au->data[1] == 0u && au->data[2] == 1u) ||
+    if (d->failed || d->drained ||
+        !((au->size >= 3u && au->data[0] == 0u && au->data[1] == 0u && au->data[2] == 1u) ||
                        (au->size >= 4u && au->data[0] == 0u && au->data[1] == 0u &&
                         au->data[2] == 0u && au->data[3] == 1u))) {
         d->failed = 1;

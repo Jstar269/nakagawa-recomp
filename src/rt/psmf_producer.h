@@ -34,10 +34,12 @@
 #define PSMF_AUDIO_MAX_CHANNELS 8u
 #define PSMF_Q_DEPTH 4u
 
-/* How many submitted pictures' presentation times the player (src/rt/hle.c) can hold ahead * of the getter.  Published here because it is the bound that makes the measured pipeline
- * lead meaningful: submitted-minus-delivered can never exceed it, so a vpts-vts separation
- * inside this bound is queue distance by construction, not synchronization error. */
+/* Normal streaming lead bound for submitted picture times. At parser EOF the player may stage
+ * the bounded producer/player tail before closing decoder input; the extra capacity is exactly
+ * the producer queue, player queue, and one final AU emitted by the producer's EOS drain. */
 #define PSMF_OUT_PTS_RING 8
+#define PSMF_OUT_PTS_EOS_TAIL (PSMF_Q_DEPTH + SR_PSMF_QUEUE_DEPTH + 1u)
+#define PSMF_OUT_PTS_CAPACITY (PSMF_OUT_PTS_RING + PSMF_OUT_PTS_EOS_TAIL)
 
 typedef int (*SrPsmfReadFn)(void *opaque, uint64_t offset, void *dst,
                             uint32_t capacity, uint32_t *got);
