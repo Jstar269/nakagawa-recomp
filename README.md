@@ -20,7 +20,15 @@
 | :---: | :---: |
 | **3D Showcase** | **Breakout Showcase** |
 
-<div align="center"><sub>Two project-written PSP programs, recompiled and running at the PSP's native 480×272. No commercial game is shown or included.</sub></div>
+<div align="center"><sub>Two project-written PSP programs, recompiled and running at the PSP's native 480×272. No commercial game is shown in these two demos, and none is included.</sub></div>
+
+## Screenshots
+
+| ![Title screen of Hot Shots Tennis: Get a Grip running natively in Nakagawa Recomp](docs/media/hst-title-screen.png) |
+| :---: |
+| **Title screen** |
+
+<div align="center"><sub>Hot Shots Tennis: Get a Grip belongs to its publisher. This repository contains no game data: you need your own copy of the game, and nothing here downloads one.</sub></div>
 
 ## Why it's different
 
