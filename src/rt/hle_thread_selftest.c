@@ -523,6 +523,7 @@ static uint32_t s_test_gui_last_addr, s_test_gui_last_stride;
 static int s_test_gui_last_fmt;
 int gui_on(void) { return s_test_gui_on; }
 void gui_pump(void) {}
+int gui_headless_acceptance_complete(void) { return 0; }
 /* The live pad: the keyboard tests hold a button on it for one frame; zero elsewhere. */
 static uint32_t s_test_gui_buttons;
 uint32_t gui_buttons(void) { return s_test_gui_buttons; }

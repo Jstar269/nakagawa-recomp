@@ -1884,6 +1884,10 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     /* Apply user settings via typed runtime configuration */
     player_app_apply_settings_to_session(&app->settings, &app->launch_session.config);
     player_app_apply_input_profile_to_session(app, game);
+    app->launch_session.config.headless_accept_presented_frames =
+        app->headless_accept_presented_frames;
+    app->launch_session.config.gui_mode = !app->launch_headless ||
+        app->headless_accept_presented_frames > 0u;
     if (app->boot_event_file_path[0]) {
         snprintf(app->launch_session.boot_event_file_path,
                  sizeof(app->launch_session.boot_event_file_path), "%s",

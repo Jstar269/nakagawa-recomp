@@ -302,11 +302,11 @@ typedef struct {
     int showcase_count;
     bool is_game_running;
     uint64_t launch_time_ms;
-    /* Launch the child without a window. PLAY NOW always requests the window;
-       this is the launcher's own headless default, reached only when a caller
-       asks for it explicitly, so a host with no display can still prove the
-       launch path end to end. */
+    /* Keep the launcher UI headless. An explicit presented-frame acceptance
+       request may still open a window in the child runtime. */
     bool launch_headless;
+    uint32_t headless_accept_presented_frames;
+    uint32_t headless_launch_timeout_ms;
 
     /* Set by the renderer when a control asks for the host file dialog. The
        renderer has no SDL_Window and must stay free of platform dialog calls,

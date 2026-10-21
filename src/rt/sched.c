@@ -3918,6 +3918,9 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
     int idle_no_progress = 0;
     if (sr_perf_enabled) sr_perf_sched_state(SR_PERF_SCHED_IDLE, 0u);
     for (;;) {
+        /* An opt-in player acceptance run stops after its requested number of
+         * successful window presentations. The guest is not resumed again. */
+        if (gui_headless_acceptance_complete()) break;
         if (getenv("SCHED_DUMP") && (++iters % 400000) == 0) {
             fprintf(stderr, "--- sched dump (tick=%llu) ---\n", (unsigned long long)s_tick);
             for (int i = 0; i < s_ntcb; i++)
