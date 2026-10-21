@@ -8610,12 +8610,20 @@ static void run_fake_success(int emulated) {
     probe_step(emulated, "fake-success", "osk-shutdown");
     fake_record(emulated, "osk-shutdown", (uint32_t)sceUtilityOskShutdownStart());
 
+    /* A keyboard that reaches VISIBLE must be closed before this probe returns: a visible keyboard left
+       open wedged the PSP in the first run. ShutdownStart from VISIBLE, then poll to NONE (bounded). */
     probe_step(emulated, "fake-success", "osk-status-poll");
     uint32_t last = 0xffffffffu;
     int polls = 0;
+    int close_tries = 0;
     for (polls = 0; polls < 400; polls++) {
         last = (uint32_t)sceUtilityOskGetStatus();
         if (last == 0u) break;
+        if (last == 2u && close_tries < 5) {
+            probe_step(emulated, "fake-success", "osk-close-visible");
+            close_tries++;
+            fake_record(emulated, "osk-shutdown-visible", (uint32_t)sceUtilityOskShutdownStart());
+        }
         sceKernelDelayThread(16000);
     }
     (void)snprintf(line, sizeof(line),
