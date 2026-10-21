@@ -40,7 +40,8 @@ mingw32-make contrib-check   # Windows
 ```
 
 - [ ] `make contrib-check` — or the equivalent, with the result pasted below
-- [ ] `python -m unittest discover -s tools -p "test_*.py" -v` (for a change to shared tooling)
+- [ ] `python -m unittest discover -s tools -p "test_*.py" -v` (for a change to shared tooling; an agent meets this
+  with green hosted `python_tools` on the exact head plus the Windows-only modules in `AGENTS.md` section 9)
 - [ ] `python tools/publish_audit.py --tracked-only --worktree --provenance-self-consistency`
 - [ ] `pre-commit run --all-files` (when available in the environment)
 - [ ] Relevant native/runtime test or build gate for the changed area
