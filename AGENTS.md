@@ -212,8 +212,8 @@ are not hosted-CI evidence; report each as `PASS`, `FAIL`, `SKIP`, `BLOCKED`, or
 there without Windows-only libraries. Check with a Linux shell such as WSL before pushing.
 
 Hosted CI runs the Python suite on Linux (`python_tools`) when `tools/ci_paths.py` routes Python: the full suite
-for `python_scope` `all`, and only the Makefile-coupled modules for a recipe-only `Makefile` change (`python_scope`
-`makefile`), which is the evidence that change needs. An exact head whose required hosted CI is green, including
+for `python_scope` `all`, and only the Makefile-coupled modules when a recipe-only `Makefile` change is the only
+Python-routing change in the diff (`python_scope` `makefile`), which is the evidence that change needs. An exact head whose required hosted CI is green, including
 `python_tools` when the change routes Python, meets the Python-suite requirement for readiness (Section 2); a change
 that routes no Python needs no local full run. Locally, run the focused gates above for the files you changed, then
 these whenever they apply:
