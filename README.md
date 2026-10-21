@@ -21,8 +21,6 @@
 
 <div align="center"><sub>Two project-written PSP programs, recompiled and running at the PSP's native 480×272. No commercial game is shown or included.</sub></div>
 
-The Graphics Interchange Format and its service mark are owned by CompuServe Incorporated.
-
 ## Why it's different
 
 - **Native, not emulated.** The game's MIPS code is translated ahead of time into C and compiled into a real Windows
