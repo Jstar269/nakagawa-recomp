@@ -5306,7 +5306,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "aaf53801762a26a82d31d3741cc7e8e7bd0ae377e502a8bc2288b0143e7c968e"
+      "sha256": "5d82919a7b8f6860afdafe3f11fc3b874fd55b0ea833530fdea267113a64abef"
     },
     {
       "path": "src/rt/h264_mf.c",
@@ -5319,7 +5319,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0380c2850c4c89c947e0d43d6f35b249c991961adf736bd8a5240f6ee5fd4873"
+      "sha256": "df5aa79fd2263fc245e77e8e03a0246ca29b4e719500f19d79b40b211662f93a"
     },
     {
       "path": "src/rt/h264_null.c",
@@ -5356,7 +5356,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "6701d0d7ed026622c37a8ceae85a01287fb703d72f74087971cb01647e3a1219"
+      "sha256": "d85fb17e483b0702a70b2d7eec3c38f98a9c3f345800c755b62ba21991922519"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5733,7 +5733,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f0f17092fa132d3e9e15ca7b0b6df5b0a05b92a020e1c92693840d013c76a513"
+      "sha256": "b1532b7ae89779106a9e200b65708ee4d2982699e972115492fd9693e59aa23b"
     },
     {
       "path": "src/rt/psmf_producer.c",
@@ -5757,7 +5757,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "651f8f9f1793729a16083c64f73b146a2897b0eeabe632841317aa9518d38f85"
+      "sha256": "639e71f6be63da59ba42960e9f93ad9850fe2fd4e07475964ee35f09cb65de0a"
     },
     {
       "path": "src/rt/psmf_producer_selftest.c",
@@ -5917,7 +5917,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "70c2b5d9e4232f0df8f181fa4670c9952970e5c15f485b8735a846657ca2fc17"
+      "sha256": "d2ccd0b907fde64d3a32bf0bc21efcb25f5b8d2785595f03bc3f38b125755290"
     },
     {
       "path": "src/rt/stale_code.c",
