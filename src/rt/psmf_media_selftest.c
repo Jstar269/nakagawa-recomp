@@ -56,6 +56,10 @@ uint32_t sr_hle_test_psmf_summary_count(void);
 int sr_hle_test_psmf_summary_rejects_truncation(void);
 void sr_hle_test_psmf_log_tick(uint32_t guest);
 void sr_hle_test_psmf_log_release(uint32_t guest);
+int sr_hle_test_psmf_stream_contract(const uint8_t *data, uint32_t size,
+                                    uint32_t fragment_bytes,
+                                    const char *expected_reason,
+                                    uint32_t minimum_video_aus);
 
 static void check_media_conservation(const char *track, uint64_t decoded,
                                     uint64_t delivered, uint64_t held,
@@ -1687,6 +1691,24 @@ static void test_mpeg_ps_demux_error_fails_closed(void) {
     CHECK(mpeg_delete(ERR_DESC) == 0u, "malformed-PS fixture deletes its MPEG context");
 }
 
+static void test_psmf_contract_fragmentation_and_malformed_rejection(void) {
+    uint32_t size = 0;
+    uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES];
+    uint8_t *bytes = build_psmf(&size, au_off, au_len);
+    CHECK(bytes != NULL && size > 2048u, "PSMF contract fixture is available");
+    if (bytes && size > 2048u) {
+        CHECK(sr_hle_test_psmf_stream_contract(bytes + 2048u, size - 2048u, 1u,
+                                               NULL, FIX_PICTURES),
+              "a valid PSMF stream split byte-by-byte reaches its video AUs through the player demux");
+    }
+    free(bytes);
+
+    static const uint8_t malformed_ps[] = {0x00u, 0x00u, 0x01u, 0x01u};
+    CHECK(sr_hle_test_psmf_stream_contract(malformed_ps, sizeof(malformed_ps), 1u,
+                                           "unknown-start-code", 0u),
+          "malformed PSMF input yields a named PSMF_CONTRACT refusal and no AU");
+}
+
 /* Decoder-independent fail-closed paths of the #302 YCbCr contract. These run on every host,
  * including ones without an H.264 backend, so the refusals and the hidden-state guard keep
  * runtime coverage when the guest-picture probe below SKIPs. */
@@ -2472,6 +2494,7 @@ int main(int argc, char **argv) {
     test_psmf_log_tick_instance_isolation();
     test_psmf_av_timing_first_principles();
     test_player_av_presentation_timing();
+    test_psmf_contract_fragmentation_and_malformed_rejection();
     if (fuzz_iterations) test_legacy_demux_mutations(fuzz_iterations);
 
     if (failures) {

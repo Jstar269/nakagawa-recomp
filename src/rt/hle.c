@@ -5505,8 +5505,10 @@ static int psmf_log_on(void) { static int v = -1; if (v < 0) v = getenv("SR_MPEG
  * the last line it printed here and counts them, so a test can tell a fresh line from a
  * stale one.  Test-only; the production build carries neither the buffer nor the count. */
 #define PSMF_SUMMARY_LINE_CAPACITY 4096u
+#define PSMF_REJECTION_LINE_CAPACITY 512u
 static char s_psmf_last_summary[PSMF_SUMMARY_LINE_CAPACITY];
 static uint32_t s_psmf_summary_count;
+static char s_psmf_last_rejection[PSMF_REJECTION_LINE_CAPACITY];
 const char *sr_hle_test_psmf_last_summary(void) { return s_psmf_last_summary; }
 uint32_t sr_hle_test_psmf_summary_count(void) { return s_psmf_summary_count; }
 #else
@@ -5648,10 +5650,24 @@ static void psmf_name_rejection(SrPsmfPlayer *p) {
     p->rejectNamed = 1;
     const char *reason = sr_psmf_producer_fail_reason(p->producer);
     SrPsmfProducerStats st; sr_psmf_producer_stats(p->producer, &st);
+#ifdef SR_MPEG_MEDIA_SELFTEST
+    int formatted = snprintf(s_psmf_last_rejection, sizeof(s_psmf_last_rejection),
+            "PSMF_CONTRACT: scePsmfPlayer: stream rejected by the demuxer: %s "
+            "at source offset %llu; no further access unit is decoded and the player keeps "
+            "its current status; in the works (#286)\n",
+            reason ? reason : "unspecified", (unsigned long long)st.fail_offset);
+    if (formatted >= 0 && (size_t)formatted < sizeof(s_psmf_last_rejection))
+        fputs(s_psmf_last_rejection, stderr);
+    else {
+        s_psmf_last_rejection[0] = '\0';
+        fprintf(stderr, "PSMF_CONTRACT: scePsmfPlayer: stream rejected by the demuxer\n");
+    }
+#else
     fprintf(stderr, "PSMF_CONTRACT: scePsmfPlayer: stream rejected by the demuxer: %s "
             "at source offset %llu; no further access unit is decoded and the player keeps "
             "its current status; in the works (#286)\n",
             reason ? reason : "unspecified", (unsigned long long)st.fail_offset);
+#endif
     SR_FLIGHT_RECORD_CLASS(SR_FLIGHT_CLASS_MEDIA, SR_FLIGHT_KIND_MEDIA_STREAM_REJECTED,
                            (uint32_t)st.fail_offset,
                            (uint32_t)(st.fail_offset >> 32), 0u, 0u);
@@ -5682,6 +5698,59 @@ static void psmf_produce(SrPsmfPlayer *p) {
     }
     psmf_log_tick(p);
 }
+
+#ifdef SR_MPEG_MEDIA_SELFTEST
+/* Drive the production PSMF producer-to-player queue boundary without a decoder or retail
+ * media.  A zero expected_reason means valid input; otherwise the failed parser reason and
+ * the exact named PSMF_CONTRACT refusal must both be observed. */
+int sr_hle_test_psmf_stream_contract(const uint8_t *data, uint32_t size,
+                                     uint32_t fragment_bytes,
+                                     const char *expected_reason,
+                                     uint32_t minimum_video_aus) {
+    if ((!data && size) || !fragment_bytes) return 0;
+    SrPsmfPlayer player;
+    memset(&player, 0, sizeof(player));
+    player.h264 = -1;
+    player.producer = sr_psmf_producer_open_stream(0);
+    if (!player.producer) return 0;
+    s_psmf_last_rejection[0] = '\0';
+
+    int feed_ok = 1;
+    for (uint32_t at = 0; at < size;) {
+        uint32_t amount = size - at;
+        if (amount > fragment_bytes) amount = fragment_bytes;
+        if (sr_psmf_producer_feed_stream(player.producer, data + at, amount, 0) != 0) {
+            feed_ok = 0;
+            break;
+        }
+        at += amount;
+        psmf_produce(&player);
+    }
+    if (feed_ok && !sr_psmf_producer_failed(player.producer) &&
+        sr_psmf_producer_feed_stream(player.producer, NULL, 0, 1) != 0)
+        feed_ok = 0;
+    if (feed_ok) psmf_produce(&player);
+
+    int failed = sr_psmf_producer_failed(player.producer);
+    int eof = sr_psmf_producer_eof(player.producer);
+    const char *reason = sr_psmf_producer_fail_reason(player.producer);
+    uint32_t video_aus = player.q[PSMF_TRACK_VIDEO][PSMF_Q_AU].count;
+    int passed;
+    if (expected_reason) {
+        passed = feed_ok && failed && !eof && player.rejectNamed && video_aus == 0 && reason &&
+                 strcmp(reason, expected_reason) == 0 &&
+                 strncmp(s_psmf_last_rejection, "PSMF_CONTRACT:",
+                         sizeof("PSMF_CONTRACT:") - 1u) == 0 &&
+                 strstr(s_psmf_last_rejection, expected_reason) != NULL;
+    } else {
+        passed = feed_ok && !failed && eof && !player.rejectNamed &&
+                 video_aus >= minimum_video_aus && s_psmf_last_rejection[0] == '\0';
+    }
+    psmf_flush(&player);
+    sr_psmf_producer_close(player.producer);
+    return passed;
+}
+#endif
 
 /* ---- decoder integration ------------------------------------------------------------ */
 
