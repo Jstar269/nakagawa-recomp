@@ -49,7 +49,8 @@ Part of the Nakagawa family, with [hst-decomp](https://github.com/Jstar269/hst-d
 
 New to this? The [prerequisites](docs/SETUP.md#prerequisites) are one list in [`docs/SETUP.md`](docs/SETUP.md).
 
-1. **Build the player** from a checkout: `mingw32-make player`.
+1. **Build the player** from a checkout: `mingw32-make player` (Windows 11 x64 with a Vulkan GPU, PowerShell 7.4+ and
+   MSYS2 UCRT64).
 2. **Add a game you own.** Start `build\nakagawa_player.exe`, then drag its `.iso` into the player window, or choose
    **START SETUP WIZARD** (later **ADD ANOTHER ISO**).
 3. **Unlock it with your own key file.** Supported encrypted executables are decrypted locally
