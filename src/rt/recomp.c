@@ -1822,10 +1822,98 @@ SrAotReturnBoundary *sr_aot_return_boundary_top;
 static SrAotReturnBoundary *sr_aot_return_boundaries;
 static size_t sr_aot_return_boundary_depth;
 static size_t sr_aot_return_boundary_capacity;
+static size_t sr_aot_return_boundary_floor;
 
 void sr_aot_return_boundaries_reset(void) {
     sr_aot_return_boundary_depth = 0u;
     sr_aot_return_boundary_top = NULL;
+    sr_aot_return_boundary_floor = 0u;
+}
+
+void sr_aot_return_boundary_stack_swap(SrAotReturnBoundaryStack *other) {
+    if (!other) return;
+    SrAotReturnBoundaryStack active = {
+        sr_aot_return_boundaries,
+        sr_aot_return_boundary_depth,
+        sr_aot_return_boundary_capacity,
+        sr_aot_return_boundary_floor,
+        sr_aot_return_boundary_top,
+    };
+    sr_aot_return_boundaries = other->boundaries;
+    sr_aot_return_boundary_depth = other->depth;
+    sr_aot_return_boundary_capacity = other->capacity;
+    sr_aot_return_boundary_floor = other->floor;
+    sr_aot_return_boundary_top = other->top;
+    *other = active;
+}
+
+void sr_aot_return_boundary_stack_destroy(SrAotReturnBoundaryStack *stack) {
+    if (!stack) return;
+    if (stack->boundaries && stack->boundaries == sr_aot_return_boundaries) {
+        fprintf(stderr,
+                "SEMANTIC_BOUNDARY: AOT_RETURN_STACK_LIFETIME: refused to free the active boundary stack\n");
+        return;
+    }
+    free(stack->boundaries);
+    memset(stack, 0, sizeof(*stack));
+}
+
+void sr_aot_return_boundary_scope_begin(SrAotReturnBoundaryScope *scope) {
+    if (!scope) return;
+    scope->depth = sr_aot_return_boundary_depth;
+    scope->previous_floor = sr_aot_return_boundary_floor;
+    sr_aot_return_boundary_floor = sr_aot_return_boundary_depth;
+}
+
+int sr_aot_return_boundary_scope_end(CpuState *s,
+                                     const SrAotReturnBoundaryScope *scope,
+                                     const char *owner) {
+    if (!scope) return 0;
+    const int corrupt = sr_aot_return_boundary_depth != scope->depth ||
+                        sr_aot_return_boundary_floor != scope->depth;
+    if (corrupt) {
+        const uint32_t call_pc = s ? s->pc : 0u;
+        fprintf(stderr,
+                "SEMANTIC_BOUNDARY: AOT_RETURN_SCOPE_CORRUPT: %s changed the interrupted "
+                "return-boundary depth (expected %zu, got %zu)\n",
+                owner && owner[0] ? owner : "guest callback/interrupt",
+                scope->depth, sr_aot_return_boundary_depth);
+        if (s) {
+            s->flow_kind = SR_FLOW_FATAL;
+            s->flow_target = call_pc;
+            sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, call_pc, 0u, 0u);
+        }
+    }
+    if (scope->depth <= sr_aot_return_boundary_capacity) {
+        sr_aot_return_boundary_depth = scope->depth;
+        sr_aot_return_boundary_top = scope->depth
+            ? &sr_aot_return_boundaries[scope->depth - 1u] : NULL;
+        sr_aot_return_boundary_floor = scope->previous_floor;
+    } else {
+        sr_aot_return_boundary_depth = 0u;
+        sr_aot_return_boundary_top = NULL;
+        sr_aot_return_boundary_floor = 0u;
+        if (s) {
+            const uint32_t call_pc = s->pc;
+            s->flow_kind = SR_FLOW_FATAL;
+            s->flow_target = call_pc;
+            sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, call_pc, 0u, 0u);
+        }
+        return 1;
+    }
+    return corrupt;
+}
+
+static void sr_aot_return_boundary_discard_to_floor(void) {
+    if (sr_aot_return_boundary_floor <= sr_aot_return_boundary_capacity) {
+        sr_aot_return_boundary_depth = sr_aot_return_boundary_floor;
+        sr_aot_return_boundary_top = sr_aot_return_boundary_depth
+            ? &sr_aot_return_boundaries[sr_aot_return_boundary_depth - 1u] : NULL;
+    } else {
+        sr_aot_return_boundary_depth = 0u;
+        sr_aot_return_boundary_top = NULL;
+        sr_aot_return_boundary_floor = 0u;
+    }
 }
 
 static int sr_aot_return_boundary_grow(CpuState *s, uint32_t call_pc,
@@ -1851,7 +1939,7 @@ failed:
             "SEMANTIC_BOUNDARY: AOT_RETURN_TRACKING_UNAVAILABLE: cannot grow the "
             "linked-call boundary stack at 0x%08" PRIx32 "\n",
             call_pc);
-    sr_aot_return_boundaries_reset();
+    sr_aot_return_boundary_discard_to_floor();
     s->flow_kind = SR_FLOW_FATAL;
     s->flow_target = call_pc;
     sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, call_pc, 0u, resume_pc);
@@ -1875,8 +1963,26 @@ int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
 }
 
 int sr_aot_return_boundary_end(CpuState *s) {
+    if (sr_aot_return_boundary_depth <= sr_aot_return_boundary_floor) {
+        const uint32_t call_pc = s->pc;
+        if (sr_aot_return_boundary_floor != 0u) {
+            fprintf(stderr,
+                    "SEMANTIC_BOUNDARY: AOT_RETURN_SCOPE_POP: guest callback/interrupt "
+                    "attempted to pop an interrupted return boundary\n");
+        } else {
+            fprintf(stderr,
+                    "SEMANTIC_BOUNDARY: AOT_RETURN_TRACKING_CORRUPT: call at 0x%08" PRIx32
+                    " lost its host return boundary\n",
+                    call_pc);
+        }
+        sr_aot_return_boundary_discard_to_floor();
+        s->flow_kind = SR_FLOW_FATAL;
+        s->flow_target = call_pc;
+        sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, call_pc, 0u, 0u);
+        return 1;
+    }
     SrAotReturnBoundary *boundary = sr_aot_return_boundary_top;
-    if (boundary == NULL || sr_aot_return_boundary_depth == 0u ||
+    if (boundary == NULL ||
         boundary != &sr_aot_return_boundaries[sr_aot_return_boundary_depth - 1u] ||
         boundary->state != s) {
         const uint32_t call_pc = s->pc;
@@ -1884,7 +1990,7 @@ int sr_aot_return_boundary_end(CpuState *s) {
                 "SEMANTIC_BOUNDARY: AOT_RETURN_TRACKING_CORRUPT: call at 0x%08" PRIx32
                 " lost its host return boundary\n",
                 call_pc);
-        sr_aot_return_boundaries_reset();
+        sr_aot_return_boundary_discard_to_floor();
         s->flow_kind = SR_FLOW_FATAL;
         s->flow_target = call_pc;
         sr_flight_fatal(SR_FLIGHT_KIND_FATAL_DISPATCH, call_pc, 0u, 0u);

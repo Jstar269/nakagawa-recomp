@@ -299,11 +299,13 @@ model and is recorded as the next expansion rather than faked.
 ## Proving the comparator is load-bearing
 
 `mutate.py` applies one semantic defect at a time to a *copy* of the
-interpreter, `src/rt/fp_convert.h`, or `tools/codegen.py` under the ignored build
-tree, rebuilds the harness through the corresponding Make override, and requires
-the gate to fail. A mutant that only breaks the build is reported `INVALID` and
-fails the campaign: a compile error proves the compiler noticed, not the
-comparator.
+interpreter, `src/rt/fp_convert.h`, `tools/codegen.py`, or `src/rt/sched.c` under
+the ignored build tree. The scheduler mutant removes both per-thread AOT boundary
+swaps and runs the HLE-thread regression with the real scheduler, recomp.c, and
+blocking `sceKernelWaitSema`; it must fail with `AOT_RETURN_TARGET_MISMATCH`. The
+other mutants rebuild the cosim harness through the corresponding Make override.
+A mutant that only breaks the build is reported `INVALID` and fails the campaign:
+a compile error proves the compiler noticed, not the comparator.
 
 Mutating both sides matters. A differential proven against one lane is half
 proven, so one mutant restores the **generator** to its pre-fix

@@ -953,11 +953,36 @@ typedef struct SrAotReturnBoundary {
     uint64_t observed_target;  /* bit 32 marks a captured target, including target 0 */
 } SrAotReturnBoundary;
 
+/* The active AOT return stack follows the running guest fiber. Each TCB owns
+ * one descriptor; sched_run swaps it with the active descriptor around every
+ * guest-fiber switch. Storage grows only when a new high-water depth is reached,
+ * never once per generated call. */
+typedef struct {
+    SrAotReturnBoundary *boundaries;
+    size_t depth;
+    size_t capacity;
+    size_t floor;
+    SrAotReturnBoundary *top;
+} SrAotReturnBoundaryStack;
+
+/* A same-fiber callback or interrupt may run while caller frames are suspended.
+ * Its floor prevents the nested return path from popping those frames. */
+typedef struct {
+    size_t depth;
+    size_t previous_floor;
+} SrAotReturnBoundaryScope;
+
 extern SrAotReturnBoundary *sr_aot_return_boundary_top;
 int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
                                  uint32_t call_pc, uint32_t has_resume_pc);
 int sr_aot_return_boundary_end(CpuState *s);
 void sr_aot_return_boundaries_reset(void);
+void sr_aot_return_boundary_stack_swap(SrAotReturnBoundaryStack *other);
+void sr_aot_return_boundary_stack_destroy(SrAotReturnBoundaryStack *stack);
+void sr_aot_return_boundary_scope_begin(SrAotReturnBoundaryScope *scope);
+int sr_aot_return_boundary_scope_end(CpuState *s,
+                                     const SrAotReturnBoundaryScope *scope,
+                                     const char *owner);
 
 /* Generated `jr $ra` captures before its delay slot. Keep the hot transfer path
  * inline: one target store per return, with the linked-call comparison at the
@@ -1456,6 +1481,8 @@ static inline uint32_t sr_callback_dispatch_one(CpuState *cpu, uint32_t entry, i
                                                 uint32_t notify_arg, uint32_t common_arg,
                                                 void (*dispatch_fn)(CpuState *, uint32_t)) {
     CpuState save = *cpu;
+    SrAotReturnBoundaryScope boundary_scope;
+    sr_aot_return_boundary_scope_begin(&boundary_scope);
     sr_callback_pack_args(cpu, notify_count, notify_arg, common_arg);
     /* PSP callbacks are nested calls on the interrupted thread. In particular, $gp
      * is inherited from that live context; the kernel does not install a
@@ -1464,7 +1491,15 @@ static inline uint32_t sr_callback_dispatch_one(CpuState *cpu, uint32_t entry, i
     cpu->pc = entry;
     dispatch_fn(cpu, entry);
     uint32_t ret = cpu->r[2];
+    int boundary_scope_failed = sr_aot_return_boundary_scope_end(
+        cpu, &boundary_scope, "PSP callback");
+    uint32_t callback_flow_kind = cpu->flow_kind;
+    uint32_t callback_flow_target = cpu->flow_target;
     *cpu = save;
+    if (boundary_scope_failed || callback_flow_kind == SR_FLOW_FATAL) {
+        cpu->flow_kind = SR_FLOW_FATAL;
+        cpu->flow_target = callback_flow_target;
+    }
     /* The interrupted thread resumes as after an exception return: its ll..sc
      * window, if any, is over (MIPS32 LLbit is cleared by eret). */
     sr_cpu_link_clear(cpu);
