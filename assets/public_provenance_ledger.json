@@ -1360,7 +1360,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fdf74ebcae1064d57355337b13d7ac236302aefea3a347232fc6a113498024ef"
+      "sha256": "caba3d39047641f0e31c86b7275d0ce5d3c768cf8d7272092827b7f923025e39"
     },
     {
       "path": "docs/PROVENANCE_MERGE_GATE.md",
