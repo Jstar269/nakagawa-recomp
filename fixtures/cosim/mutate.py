@@ -255,6 +255,23 @@ MUTANTS: tuple[Mutant, ...] = (
         )],
     ),
     Mutant(
+        "aot-ra-return-boundary-ignored",
+        "AOT accepts a linked callee that rewrites $ra",
+        [
+            (
+                '        f"if (sr_aot_return_boundary_begin(s, {G(resume_pc)}, {G(call_pc)}, 1u)) return; "',
+                '        ""',
+                1,
+            ),
+            (
+                '        "if (sr_aot_return_boundary_end(s)) return;"',
+                '        ""',
+                1,
+            ),
+        ],
+        "generator",
+    ),
+    Mutant(
         "drop-mfhi",
         "fail to materialize one architectural register",
         [(
@@ -508,19 +525,29 @@ def _terminate_process_tree(process: subprocess.Popen) -> None:
 
 
 def run_gate(source: Path, target: str = "interpreter",
-             timeout_s: int | None = None) -> tuple[str, str]:
+             timeout_s: int | None = None,
+             skip_ra_return_cases: bool = False,
+             accepted_boundary: str | None = None) -> tuple[str, str]:
     """Run the cosim gate against one mutated source.
 
     Returns (verdict, detail). verdict is one of:
       "ok"           the gate exited zero and reported cosim: OK;
-      "fail"         the gate exited nonzero, reported cosim: FAIL AND located a
-                      divergence record/cell -- the only shape that is a kill;
+      "fail"         the gate exited nonzero and either reported cosim: FAIL with
+                      a located divergence, or emitted the caller-authorized named
+                      semantic boundary;
       "timeout"      the gate exceeded its runtime budget (never a kill);
       "inconsistent" the marker and the process outcome contradict each other;
       "no-run"       the harness never reported an outcome (build failure, crash,
                       or a failure with no located divergence).
     """
     env = dict(os.environ)
+    env.pop("SR_COSIM_SKIP_AOT_RETURN_CASES", None)
+    if skip_ra_return_cases:
+        # These three unrelated transfer mutants intentionally alter the exact
+        # control-flow/link premise the rewritten-$ra fixture relies on. Their
+        # own existing cells remain active; the dedicated AOT-return mutant below
+        # runs the new regression without this isolation.
+        env["SR_COSIM_SKIP_AOT_RETURN_CASES"] = "1"
     if target == "generator":
         # A mutated copy of codegen.py still has to import its siblings
         # (analyze, host_stubs, build_profile), and running it from the ignored
@@ -561,6 +588,11 @@ def run_gate(source: Path, target: str = "interpreter",
     reported_ok = "cosim: OK" in output
     reported_fail = "cosim: FAIL" in output
     code = process.returncode
+
+    if code != 0 and accepted_boundary:
+        for line in output.splitlines():
+            if line.startswith("SEMANTIC_BOUNDARY:") and accepted_boundary in line:
+                return "fail", line.strip()
 
     if code == 0:
         if reported_ok:
@@ -627,7 +659,17 @@ def main(argv: list[str] | None = None) -> int:
                 newline="\n",
             )
 
-        verdict, detail = run_gate(target, mutant.target)
+        skip_ra_return_cases = mutant.name in {
+            "wrong-call-resume", "wrong-jump-target", "alter-link-value"
+        }
+        accepted_boundary = "AOT_RETURN_TARGET_MISMATCH" if mutant.name in {
+            "wrong-call-resume", "alter-link-value"
+        } else None
+        verdict, detail = run_gate(
+            target, mutant.target,
+            skip_ra_return_cases=skip_ra_return_cases,
+            accepted_boundary=accepted_boundary,
+        )
         if verdict == "fail":
             killed += 1
             print(

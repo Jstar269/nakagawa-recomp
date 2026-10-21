@@ -1762,7 +1762,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6c1e6aa1ebf7b6ed86106469bf23d7b643f45eb8ccbb30a255dc630e5e9f6294"
+      "sha256": "239cd2df5dfa5169fca9c2b19d21784095485c1fd377a23e3a81a20ff9871803"
     },
     {
       "path": "fixtures/cosim/fpu_reference.c",
@@ -1798,7 +1798,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c8a4b0e5ba80557bb6e1c9af31e45eefe19af1fc2616d2174908ab4f71bcdf7c"
+      "sha256": "53461922ad55e34b6a9063faf6479aa240e2025275b9078a9af327943a18f7bd"
     },
     {
       "path": "fixtures/cosim/mutate.py",
@@ -1810,7 +1810,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cd730f156eccf2080864534f6c146507a9d33ae835286cd2e169fce9f47171e1"
+      "sha256": "e5a8e0f5cb993764ba9d6808b0322a6c1333c0ad4c3926af2ec15ff71dcd54e0"
     },
     {
       "path": "fixtures/display_smoke/generate.py",

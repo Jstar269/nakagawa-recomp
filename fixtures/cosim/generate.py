@@ -568,7 +568,7 @@ def _cell_rarewrite() -> list[int]:
         _i(0x0D, A1, A1, 0),                # caller resume PC low half (patched)
         _j(0x03, 0),                         # jal rarewrite_callee (patched)
         NOP,                                  # delay slot
-        _r(V0, ZERO, V1, 0, 0x21),           # continuation: addu v1, v0, zero
+        _r(V1, V0, V1, 0, 0x21),             # continuation: addu v1, v1, v0
         _i(0x0F, ZERO, RA, 0),               # lui ra, %hi(COSIM_RETURN) (patched)
         _i(0x0D, RA, RA, 0),                 # ori ra, ra, %lo(COSIM_RETURN)
         JR_RA,
@@ -1256,9 +1256,9 @@ def build_text_segment() -> bytes:
         "<I", text, layout["rarewrite"][0] + 4,
         _i(0x0D, A1, A1, rewrite_resume & 0xFFFF),
     )
+    call_site = layout["rarewrite"][0] + 8
     struct.pack_into(
-        "<I", text, layout["rarewrite"][0] + 8,
-        _j(0x03, layout["rarewrite_callee"][0]),
+        "<I", text, call_site, _j(0x03, layout["rarewrite_callee"][0])
     )
     rewrite_target = BASE + layout["rarewrite_target"][0]
     struct.pack_into(
