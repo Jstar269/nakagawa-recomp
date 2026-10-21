@@ -536,7 +536,7 @@ One console is one data point; see §11. Nothing here closes issue #70
   | `PSP-SMOKE-001` | apis `module_start`, `sceKernelExitGame` | (none) | MEASURED (`smoke`) |
   | `PSP-THREAD-EXIT-001` | `ED-R77`, `ED-R00`, `ED-RNEG`, `ED-RERR`, `ED-X77`, `ED-X00`, `ED-XNEG`, `ED-XERR`, `ED-D77`, `ED-D00`, `ED-DNEG`, `ED-DERR` | (none) | MEASURED (`thread-exit-delete`) |
   | `PSP-TEARDOWN-001` | (none) | `exitdelete-main` | CAPTURED only (not acceptance-eligible: `teardown-test`) |
-  | `PSP-IO-001` | apis `open`, `seek`, `async I/O`, `devctl`, `filesystem mutation` | (none) | MEASURED (`io-matrix`) |
+  | `PSP-IO-001` | cells `io-open-create`, `io-write`, `io-read-verify`, `io-lseek`, `io-append`, `io-errors`, `io-done`; APIs `sceIoOpen`, `sceIoWrite`, `sceIoRead`, `sceIoLseek`, `sceIoClose`, `sceIoRemove` | (none) | MEASURED (`io-matrix`; 7 records PASS). It does not measure `sceIoIoctl`, `sceIoRename`, async I/O, or devctl semantics. |
   | `PSP-DISPLAY-001` | row unchanged: cited from `docs/ARCHITECTURE.md#clocks` | `display-mask-duty` (still uncited) | re-run by campaign case `display-mask-duty`: records `display-mask-duty-33000us`, `display-mask-duty-66000us` PASS |
   | `PSP-DISPLAY-002` | `late-waitvblankstart-{2,6,10,14,20}eighths`, `late-waitvblank-{2,6,10,14,20}eighths`, `invblank-waitvblankstart`, `invblank-waitvblank`, `calibration` | (none) | MEASURED (`display-wait-late`) |
   | `PSP-DISPLAY-003` | `calibration`, `priority-control`, `priority-experiment` | (none) | MEASURED (`display-wait-priority`) |
@@ -1584,7 +1584,8 @@ not expected PSP values.
 | `fpu-cc` | `PSP-FPU-CC-001` | `MEASURED` (2026-10-15, `e45e667b`) | COP1 condition codes: which FCR31 condition bits exist, which bit `c.eq.s` sets for each condition code 0..7, and whether `bc1t`/`bc1f` with each code are taken under FCC0, no flag, and that code's own flag. Condition code 0 is the control. Only FCC0 exists; every code writes and tests it. |
 | `vfpu-transcendental-corpus` | `PSP-VFPU-TRANSCENDENTAL-001` | `MEASURED` (2026-10-15, `22b027f6`; single launch, not in the campaign queue) | Raw single-lane result words for vsin, vcos, vexp2, vlog2, vrsq, vrcp, vsqrt, vasin, vnrcp, vnsin, and vrexp2. Each operation uses 63 raw-word inputs: 20 special encodings and 43 evenly spaced domain constants. VASIN substitutes three in-domain words for its previously measured edge inputs. Eight-word chunks produce 88 data records plus one completion record (89 result records total); parsing checks format only and asserts no hardware values. |
 | `registry-font` | `PSP-REGISTRY-002` | `NOT_RUN` | Whether the registry handle lists the root, then the `/DATA/FONT` and `/SYSPROFILE/RESOLUTION` subtrees: every key's name, type, size, value and enumeration order, reached only through categories the console listed first. |
-| `umd-io` | `PSP-UMDIO-001` | `NOT_RUN` | `sceIoOpen` (read-only flags) and `sceIoDopen` results for bare UMD devices (`umd0:`, `umd1:`, `umd:`), `disc0:` with and without a path, two raw `umd` opens with the extra `0x000f0000` bits, and `msstor0p1:/`, each descriptor closed, with `sceUmdCheckMedium` and `sceUmdGetDriveStat` before and after. No UMD activation. |
+| `umd-io` | `PSP-UMDIO-001` | `MEASURED` (2026-10-17, PSP-3000 / 6.61 / ARK CFW; `e2180970`) | `sceIoOpen` and `sceIoDopen` results for bare UMD devices, disc paths, the two extra-flag opens, and `msstor0p1:/`; successful descriptors were closed with result 0. The UMD remained inserted and was not activated or changed. |
+| `umd-raw-read` | `PSP-UMDRAW-001` | `CAPTURED` (2026-10-17 and 2026-10-18, incomplete; source commits `6a9a39aa`, `97ccbf87`, `61574d37`) | Three attempts used 360 s, 900 s and 1800 s host case timeouts. The two 2026-10-18 runs emitted 31 complete records through `size-4096-read`, then no 32 KiB read result. On the 1800 s run, `usbipd` reported the PSP absent at 3m46, before the 1800-second deadline; L1 reattach and three `ver` retries failed. Teardown/unload remains unverified. This records USB loss before the host timeout but does not distinguish a PSP-side read hang from PSPLink/USB transport failure. No raw UMD read or seek semantics are inferred; a fresh physical power-cycle is required before another launch. |
 | `hle-vtimer-unit` | `PSP-HLE-VTIMER-002` | `MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the campaign queue) | One VTimer: start; a `sceKernelGetVTimerTime` and a system-clock reading either side of a bounded 20 ms delay; the VTimer base and Refer base field while running and after stop; stop; delete. Each 64-bit clock is recorded as its low word then its high word. |
 | `hle-vtimer-errors` | `PSP-HLE-VTIMER-003` | `MEASURED` (2026-10-15, `b5d6fc5b`; single launch, not in the campaign queue) | Start, stop, and `sceKernelGetVTimerTime` on a deleted UID, then a cleanup delete of that UID after its last use; a live timer created and deleted; up to 64 creates; out1 records whether a refusal occurred; every created timer deleted. The NULL option pointer of `sceKernelCreateVTimer` is the optional argument. |
 | `hle-kernel-pool-bounds` | `PSP-HLE-KERNEL-STATUS-002` | `NOT_RUN` (revised form; single launch, not in the campaign queue; the earlier revision's 2026-10-15 `b5d6fc5b` run was captured only) | FPL creation with block size 0 and with a 0x7fffffff-byte block, each deleted when its create returned a pool; a refused create gives a PASS delete cell with out0 0 and no delete call; VPL allocation: up to 64 allocations; out1 records whether a refusal occurred; every block freed and the VPL deleted. The NULL option pointers of the pool creates are the optional argument. |
@@ -1592,6 +1593,97 @@ not expected PSP values.
 | `hle-null-out-pointers` | `PSP-HLE-NULL-OUT-001` | `CAPTURED` (2026-10-15, `b5d6fc5b`; incomplete, not measured; retired, never to be scheduled) | The existing capture stopped at the first mandatory NULL output, `sceKernelReferSystemStatus(NULL)`, and the console needed a power cycle. The kernel pointer check rejects kernel-space addresses but not address 0, so that call writes through NULL and faults; the VTimer getters also write through their output pointers. No game can rely on these results. |
 | `hle-audio-src` | `PSP-HLE-AUDIO-SRC-001` | `MEASURED` (2026-10-15, `7fc1641e`; the earlier run of `22b027f6` was captured only; single launch, not in the campaign queue) | Unreserved SRC release and silent output; reserve 1024 samples at 44100 Hz stereo; second reserve; one silent blocking output; release after the blocking drain and release again; six invalid reserve shapes, immediately releasing any unexpected success; Output2-then-SRC and SRC-then-Output2 reservation attempts with cleanup. 18 result records. No SRC rest-sample query exists in the public NID corpus. Risk high: two silent blocking SRC calls, at most one block per call; schedule after the other new probes. |
 | `hle-timer-order` | `PSP-HLE-TIMER-ORDER-001` | `MEASURED` (2026-10-15, `22b027f6`; single launch, not in the campaign queue) | Two equal-delay alarms set A then B; long-delay then short-delay alarm; nominally equal VTimer handler and alarm; SetAlarm(0). Each callback stores a shared sequence number and system-time low/high words. Every wait has an elapsed-time deadline; cancel all alarms and stop/delete the VTimer. Ordering only, no absolute-time claim; 18 result records. |
+
+### PSP-UMDIO-001 measured run 2026-10-17
+
+Acceptance-eligible measurement on a PSP-3000 with firmware 6.61 and ARK CFW,
+at public commit `e2180970`. A UMD was inserted; `sceUmdCheckMedium` returned 1
+and `sceUmdGetDriveStat` returned `0x32` both before and after the calls. Every
+successful open or directory open returned descriptor 3 and its matching close
+returned 0. The probe did not activate the UMD or perform any read, write, seek,
+ioctl, devctl, or getstat through a raw descriptor; those semantics remain
+unmeasured.
+
+| Call | Flags | Result |
+| --- | --- | --- |
+| `sceIoOpen("umd0:")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("umd1:")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("umd:")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("umd0:/")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("umd1:/")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("disc0:")` | `PSP_O_RDONLY` | `0x80010016` |
+| `sceIoOpen("disc0:/")` | `PSP_O_RDONLY` | `0x80010002` |
+| `sceIoOpen("disc0:/PSP_GAME")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("disc0:/PSP_GAME/SYSDIR")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("disc0:/UMD_DATA.BIN")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoOpen("umd0:")` | `PSP_O_RDONLY \| 0x000f0000` | descriptor `3`; close `0` |
+| `sceIoOpen("umd1:")` | `PSP_O_RDONLY \| 0x000f0000` | descriptor `3`; close `0` |
+| `sceIoOpen("msstor0p1:/")` | `PSP_O_RDONLY` | descriptor `3`; close `0` |
+| `sceIoDopen("umd0:")` | — | `0x80020325` |
+| `sceIoDopen("umd1:")` | — | `0x80020325` |
+| `sceIoDopen("umd:")` | — | `0x80020325` |
+| `sceIoDopen("disc0:")` | — | `0x80010016` |
+| `sceIoDopen("disc0:/")` | — | descriptor `3`; close `0` |
+| `sceIoDopen("disc0:/PSP_GAME")` | — | descriptor `3`; close `0` |
+
+The recorded cells are `umd-state-before`, `io-open-0000`, `io-open-0001`,
+`io-open-0002`, `io-open-0003`, `io-open-0004`, `io-open-0005`, `io-open-0006`,
+`io-open-0007`, `io-open-0008`, `io-open-0009`, `io-open-0010`, `io-open-0011`,
+`io-open-0012`, `io-dopen-0000`, `io-dopen-0001`, `io-dopen-0002`,
+`io-dopen-0003`, `io-dopen-0004`, `io-dopen-0005`, `umd-state-after`, and
+`umdio-done`.
+
+### PSP-UMDRAW-001 raw UMD read probe
+
+Status: CAPTURED, not measured. The source-owned case opens only umd0: with read-only flags.
+It records 64-bit seek results as low then high words, sceIoLseek32 results,
+read counts, the single immediate async poll and its following wait,
+sceIoGetstat, and UMD state before and after. Reads request at most 32,768
+bytes. The only disc bytes emitted are the first eight bytes of designated
+sector-16 reads, plus a whole-buffer-zero flag; no checksum or other payload is
+recorded. The async request is waited before the descriptor closes. The host
+fixture uses a synthetic byte-addressed disc and is not hardware evidence.
+
+Two incomplete hardware captures are now recorded. The first, from local
+source commit 6a9a39aa on 2026-10-17, emitted 31 result records through
+size-4096-read, then stopped at the combined size-32768-read progress marker.
+It reached the 360-second host case timeout without umdraw-done; the runner
+could not verify module unload or the host0 round-trip.
+
+The second, from local source commit 97ccbf87 on 2026-10-18 after an
+owner-confirmed power-cycle, passed the transport-write preflight and recorded
+all raw-read results through 4096 bytes. The updated probe emitted separate
+size-32768-seek and size-32768-read markers. Its last host0 write was 27.2
+seconds after launch; no 32 KiB result or umdraw-done arrived within the
+900-second host case timeout. The runner stopped with HOST0_ROUNDTRIP_FAILED.
+PSPLink was absent from usbipd list during recovery, later ver retries failed,
+and module unload was not verified.
+
+The 900-second event is a host-harness timeout followed by transport loss. It
+does not establish the PSP sceIoRead return semantics or distinguish a PSP call
+hang from a USBHostFS/PSPLink loss. No raw UMD read or seek semantics are
+measured. Do not retry this boot; a fresh physical power-cycle is required
+before any new target launch.
+
+Captured result-record IDs:
+
+```text
+umd-state-before, raw-open-extra, seek-set-0, seek-set-16, seek-set-32768,
+seek-cur-0, seek-end-0, seek-set-1, seek-set-neg1, seek32-set-0,
+seek32-set-16, seek32-set-32768, seek32-end-0, pos-advance-seek,
+pos-advance-first, pos-advance-second, pos-advance-cur, byte-sector16-seek,
+byte-sector16-read, size-1-seek, size-1-read, size-512-seek, size-512-read,
+size-2047-seek, size-2047-read, size-2048-seek, size-2048-read,
+size-2049-seek, size-2049-read, size-4096-seek, size-4096-read
+```
+
+The fixed output sequence is umd-state-before, raw-open-extra, seven 64-bit
+seek cells, four 32-bit seek cells, pos-advance-seek plus two consecutive reads
+and pos-advance-cur, byte-sector16-seek and byte-sector16-read, seek/read pairs
+for sizes 1, 512, 2047, 2048, 2049, 4096, 32768 and 0,
+unaligned-seek/unaligned-read, far-seek/far-read, async-seek, async-read,
+async-poll, async-wait, async-data, getstat, raw-close, readonly-open with
+three seeks and readonly-close, umd-state-after, and umdraw-done.
 
 The registry probe opens the registry and categories in read mode and never
 calls a write, create, remove, or flush API. Values are emitted only for keys

@@ -23,9 +23,9 @@ in the works.
 - **PSP system fonts (optional but recommended for text).** Authentic in-game
   typography requires Sony firmware font files (`jpn0.pgf`, `ltn0.pgf`) dumped
   from a real PSP console. The project does not include or distribute these
-  files; you provide them from your own PSP (see the import step below);
-  a clean-room open-font converter is in the works
-  ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)).
+  files; you provide them from your own PSP (see the import step below). The
+  project-authored open-font converter (`tools/ttf2pgf.py`,
+  [#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)) builds open replacement fonts.
 
 Expectation: adding an ISO identifies the disc and shows a compatibility
 checklist of what will and will not work. **BUILD PACKAGE** recompiles the
@@ -171,8 +171,8 @@ crashes.
   unchanged. Manifests that still set `libfont_ready_flag_addr` fail with
   `LIBFONT_READY_FLAG_RETIRED`; remove the field and use translated guest startup.
   Real-title validation of startup dependencies remains in the works
-  ([#299](https://github.com/Jstar269/nakagawa-recomp/issues/299)), as is the
-  clean-room open-font converter
+  ([#299](https://github.com/Jstar269/nakagawa-recomp/issues/299)). The
+  project-authored open-font converter is complete
   ([#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)).
 
 [`COMPATIBILITY.md`](COMPATIBILITY.md) carries the full per-title and
@@ -184,7 +184,44 @@ subsystem breakdown with tracking issues.
 | --- | --- | --- |
 | Encrypted executables and PRX modules | The built-in boundary handles supported containers with a user-supplied local key file; plain `BOOT.BIN`/`EBOOT.elf` and decrypted modules remain alternatives. PGD/amctrl is unsupported. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
 | Commercial-game packages in public builds | Packages build with the public runtime, and public builds render imported PGF fonts through the project-authored reader for supported inputs (PR [#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)). Composite glyphs and the supported revision and shadow-map variants render too ([#521](https://github.com/Jstar269/nakagawa-recomp/issues/521)); a revision-3 font's compressed character-map subtables and any other shadow-map width are still refused by name. | [PGF_SPEC.md §4](cleanroom/PGF_SPEC.md#4-non-requirements-and-named-boundaries) |
-| In-game system fonts | Import fonts from your own PSP with `python tools/nk_cli.py fonts import <folder>`; a clean-room open-font converter is in the works. | [#313](https://github.com/Jstar269/nakagawa-recomp/issues/313) |
+| In-game system fonts | Import fonts from your own PSP with `python tools/nk_cli.py fonts import <folder>`; the project-authored open-font converter (`tools/ttf2pgf.py`, [#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)) builds open replacements. | Done |
 | Games beyond the verified title | Other games import as Experimental; bring-up of further titles is ongoing. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
 
 See [`SETUP.md`](SETUP.md) for developer setup and the command-line tools.
+
+## Command-line reference (`nk_cli`)
+
+`python tools/nk_cli.py` is the headless interface to everything the player does, plus a few diagnostic tools. Run any
+command with `--help` for its exact options; this section describes what each command reads, what it writes and how
+it reports the result. The runtime's environment switches are in [`DEBUGGING.md`](DEBUGGING.md).
+
+### Common conventions
+
+- **Player data directory.** Commands that touch the library, packages or fonts use the player's per-user data
+  directory. Override it with `--user-data-root <dir>` (named `--root` on `inspect`).
+- **Machine-readable output.** `--json` (or `--progress-json` on `build-package`) prints JSON instead of text, so
+  scripts never parse prose.
+- **Exit status.** `0` means success. `1` means the command ran and refused or failed, with the reason on stderr.
+  `2` means the arguments were invalid (argparse usage errors, or a disc ID that is not nine characters).
+- **Fail closed.** A step that cannot be done correctly stops with a named reason; nothing reports success it did
+  not achieve.
+
+### Commands
+
+| Command | Reads | Writes / prints |
+| --- | --- | --- |
+| `inspect <iso> [--json] [--root DIR]` | A PSP `.iso` and its `PSP_GAME/PARAM.SFO` | Title, disc ID, executable kind and whether packages, fonts and decrypted inputs are present |
+| `prepare <iso> [--dest DIR] [--user-data-root DIR] [--player EXE]` | A PSP `.iso` | Adds the disc to the library (raw discs may go to `--dest`); archive discs are set up through the player executable |
+| `build-package <disc_id> [--module-dir DIR] [--psp-header HDR] [--progress-json [FILE]] [--log-file FILE]` | The library entry for `disc_id`, your decrypted executable and modules | Recompiles the title into `<player data>/packages/<DISC_ID>/`; progress as one JSON object per line with `--progress-json` |
+| `launch <game_dir> [--profile NAME] [--fps-cap N] [--software]` | A prepared package directory with its `manifest.json` | Plans and starts the run; `--profile` is `Standard`, `Performance`, `Benchmark` or `Diagnostics`; `--software` uses the software GE rasterizer |
+| `fonts import <folder> [--choose SLOT=FILE] [--json]` | `.pgf` font files you dumped from your own PSP | Copies them into the player data for the `japanese`, `latin` and `korean` slots |
+| `fonts status [--project-root DIR] [--json]` | The player data and project `font/` folder | The source of each font slot |
+| `fonts remove (--slot SLOT \| --all)` | The player data | Removes fonts this tool imported |
+| `bringup <iso> --work-dir DIR --report FILE [--launch-timeout S] [--instruction-trace]` | A PSP `.iso` | Runs a bounded bring-up in a private work directory and writes a public-safe JSON report |
+| `vram <image> --addr A --width W --height H --format F [...] --output PNG` | A 2 MiB raw VRAM capture | Decodes one surface to PNG; `--from-sidecar FILE --out-dir DIR` exports every surface a runtime capture describes |
+
+### Privacy boundary
+
+Game files, keys, decrypted modules and work directories stay on your machine. The only outputs meant for sharing are
+the public-safe `bringup` report and VRAM PNGs you choose to export; the private inputs behind them are never copied
+into the repository.

@@ -12,7 +12,7 @@
 #define NK_TITLE_CATALOG_SCHEMA_VERSION 1
 #define NK_TITLE_MAX_LOOSE_CONTENT_ROOTS 16
 #define NK_TITLE_MAX_LOOSE_CONTENT_EXCLUDES 2
-#define NK_TITLE_CATALOG_DIGEST "64df02369e9bfa84"
+#define NK_TITLE_CATALOG_DIGEST "35ec644e0c8a2ef9"
 
 typedef enum {
     NK_TITLE_KIND_RETAIL = 0,
@@ -44,6 +44,8 @@ typedef struct {
     const char * const *compatible_disc_ids; /* NULL-terminated array of alias disc IDs */
     uint32_t executable_base;
     uint32_t executable_entry;
+    bool has_executable_base;
+    bool has_executable_entry;
     uint32_t run_entry;                 /* where a run starts: runtime_bindings.fallback_entry when declared, else executable_entry (title_codegen_plan._resolve_run_entry) */
     const char *bss_metadata_source;
     const char *data_root;

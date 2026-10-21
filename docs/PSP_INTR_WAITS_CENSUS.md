@@ -29,13 +29,13 @@ Live join of every exact `sce*` / `__sce*` API named in
 
 Open-owner counts:
 
-- #341: 53
+- #341: 41
 
 ## Census
 
 | API | disposition | owner | classification | status | handler | nid |
 | --- | --- | --- | --- | --- | --- | --- |
-| `sceAudioOutputBlocking` | implemented | #341 | dedicated | unreviewed | `h_AudioOutputBlocking` | `0x136caf51` |
+| `sceAudioOutputBlocking` | implemented | - | dedicated | partial | `h_AudioOutputBlocking` | `0x136caf51` |
 | `sceAudioSRCChRelease` | implemented | - | dedicated | partial | `h_AudioSRCChRelease` | `0x5c37c0ae` |
 | `sceAudioSRCChReserve` | implemented | - | dedicated | partial | `h_AudioSRCChReserve` | `0x38553111` |
 | `sceAudioSRCOutputBlocking` | implemented | - | dedicated | partial | `h_AudioSRCOutputBlocking` | `0xe0727056` |
@@ -51,14 +51,14 @@ Open-owner counts:
 | `sceGeListDeQueue` | implemented | - | dedicated | partial | `h_GeListDeQueue` | `0x5fb86ab0` |
 | `sceGeListSync` | implemented | #341 | dedicated | unreviewed | `h_GeListSync` | `0x03444eb4` |
 | `sceIoGetAsyncStat` | implemented | - | dedicated | partial | `h_IoGetAsyncStat` | `0xcb05f8d6` |
-| `sceIoRead` | implemented | #341 | dedicated | unreviewed | `h_IoRead` | `0x6a638d83` |
+| `sceIoRead` | implemented | - | dedicated | partial | `h_IoRead` | `0x6a638d83` |
 | `sceIoRemove` | implemented | - | dedicated | complete | `h_IoRemove` | `0xf27a9c51` |
 | `sceIoWaitAsync` | implemented | - | dedicated | partial | `h_IoWaitAsync` | `0xe23eec33` |
 | `sceIoWaitAsyncCB` | implemented | - | dedicated | partial | `h_IoWaitAsyncCB` | `0x35dbd746` |
-| `sceIoWrite` | implemented | #341 | dedicated | unreviewed | `h_IoWrite` | `0x42ec03ac` |
-| `sceKernelAllocateFpl` | implemented | #341 | dedicated | unreviewed | `h_AllocateFpl` | `0xd979e9bf` |
+| `sceIoWrite` | implemented | - | dedicated | partial | `h_IoWrite` | `0x42ec03ac` |
+| `sceKernelAllocateFpl` | implemented | - | dedicated | partial | `h_AllocateFpl` | `0xd979e9bf` |
 | `sceKernelAllocateFplCB` | implemented | #341 | dedicated | unreviewed | `h_AllocateFplCB` | `0xe7282cb6` |
-| `sceKernelAllocateVpl` | implemented | #341 | dedicated | unreviewed | `h_AllocateVpl` | `0xbed27435` |
+| `sceKernelAllocateVpl` | implemented | - | dedicated | partial | `h_AllocateVpl` | `0xbed27435` |
 | `sceKernelAllocateVplCB` | implemented | #341 | dedicated | unreviewed | `h_AllocateVplCB` | `0xec0a693f` |
 | `sceKernelCancelReceiveMbx` | implemented | - | dedicated | partial | `h_CancelReceiveMbx` | `0x87d4dd36` |
 | `sceKernelCpuResumeIntr` | implemented | #341 | dedicated | unreviewed | `h_CpuResumeIntr` | `0x5f10d406` |
@@ -75,32 +75,32 @@ Open-owner counts:
 | `sceKernelFreeTlspl` | implemented | #341 | dedicated | unreviewed | `h_FreeTlspl` | `0x4a719fb2` |
 | `sceKernelGetTlsAddr` | implemented | #341 | dedicated | unreviewed | `h_GetTlsAddr` | `0xfa835cde` |
 | `sceKernelLockLwMutex` | implemented | #341 | dedicated | unreviewed | `h_LockLwMutex` | `0xbea46419` |
-| `sceKernelLockLwMutexCB` | implemented | #341 | dedicated | unreviewed | `h_LockLwMutex` | `0x1fc64e09` |
-| `sceKernelLockMutex` | implemented | #341 | dedicated | unreviewed | `h_LockMutex` | `0xb011b11f` |
+| `sceKernelLockLwMutexCB` | implemented | #341 | dedicated | unreviewed | `h_LockLwMutexCB` | `0x1fc64e09` |
+| `sceKernelLockMutex` | implemented | - | dedicated | partial | `h_LockMutex` | `0xb011b11f` |
 | `sceKernelLockMutexCB` | implemented | #341 | dedicated | unreviewed | `h_LockMutexCB` | `0x5bf4dd27` |
 | `sceKernelPollMbx` | implemented | - | dedicated | partial | `h_PollMbx` | `0x0d81716a` |
 | `sceKernelReceiveMbx` | implemented | - | dedicated | partial | `h_ReceiveMbx` | `0x18260574` |
 | `sceKernelReceiveMbxCB` | implemented | - | dedicated | partial | `h_ReceiveMbxCB` | `0xf3986382` |
-| `sceKernelReceiveMsgPipe` | implemented | #341 | dedicated | unreviewed | `h_ReceiveMsgPipe` | `0x74829b76` |
+| `sceKernelReceiveMsgPipe` | implemented | - | dedicated | partial | `h_ReceiveMsgPipe` | `0x74829b76` |
 | `sceKernelReceiveMsgPipeCB` | implemented | #341 | dedicated | unreviewed | `h_ReceiveMsgPipeCB` | `0xfbfa697d` |
 | `sceKernelReferMbxStatus` | implemented | - | dedicated | partial | `h_ReferMbxStatus` | `0xa8e8c846` |
 | `sceKernelReferTlsplStatus` | implemented | #341 | dedicated | unreviewed | `h_ReferTlsplStatus` | `0x721067f3` |
 | `sceKernelRegisterSubIntrHandler` | implemented | #341 | dedicated | unreviewed | `h_RegisterSubIntr` | `0xca04a2b9` |
 | `sceKernelResumeDispatchThread` | implemented | #341 | dedicated | unreviewed | `h_ResumeDispatchThread` | `0x27e22ec2` |
 | `sceKernelSendMbx` | implemented | - | dedicated | partial | `h_SendMbx` | `0xe9b3061e` |
-| `sceKernelSendMsgPipe` | implemented | #341 | dedicated | unreviewed | `h_SendMsgPipe` | `0x876dbfad` |
+| `sceKernelSendMsgPipe` | implemented | - | dedicated | partial | `h_SendMsgPipe` | `0x876dbfad` |
 | `sceKernelSendMsgPipeCB` | implemented | #341 | dedicated | unreviewed | `h_SendMsgPipeCB` | `0x7c41f2c2` |
-| `sceKernelSleepThread` | implemented | #341 | dedicated | unreviewed | `h_SleepThread` | `0x9ace131e` |
+| `sceKernelSleepThread` | implemented | - | dedicated | partial | `h_SleepThread` | `0x9ace131e` |
 | `sceKernelSleepThreadCB` | implemented | #341 | dedicated | unreviewed | `h_SleepThreadCB` | `0x82826f70` |
 | `sceKernelStartModule` | implemented | #341 | dedicated | unreviewed | `h_StartModule` | `0x50f0c1ec` |
 | `sceKernelStopModule` | implemented | #341 | dedicated | unreviewed | `h_StopModule_Trace` | `0xd1ff982a` |
 | `sceKernelSuspendDispatchThread` | implemented | #341 | dedicated | unreviewed | `h_SuspendDispatchThread` | `0x3ad58b8c` |
 | `sceKernelTerminateThread` | implemented | #341 | dedicated | unreviewed | `h_TerminateThread` | `0x616403ba` |
-| `sceKernelTryAllocateFpl` | implemented | #341 | dedicated | unreviewed | `h_TryAllocateFpl` | `0x623ae665` |
+| `sceKernelTryAllocateFpl` | implemented | - | dedicated | partial | `h_TryAllocateFpl` | `0x623ae665` |
 | `sceKernelVolatileMemLock` | implemented | #341 | dedicated | unreviewed | `h_VolatileMemLock` | `0x3e0271d3` |
-| `sceKernelWaitEventFlag` | implemented | #341 | dedicated | unreviewed | `h_WaitEventFlag` | `0x402fcf22` |
+| `sceKernelWaitEventFlag` | implemented | - | dedicated | partial | `h_WaitEventFlag` | `0x402fcf22` |
 | `sceKernelWaitEventFlagCB` | implemented | #341 | dedicated | unreviewed | `h_WaitEventFlagCB` | `0x328c546a` |
-| `sceKernelWaitSema` | implemented | #341 | dedicated | unreviewed | `h_WaitSema` | `0x4e3a1105` |
+| `sceKernelWaitSema` | implemented | - | dedicated | partial | `h_WaitSema` | `0x4e3a1105` |
 | `sceKernelWaitSemaCB` | implemented | #341 | dedicated | unreviewed | `h_WaitSemaCB` | `0x6d212bac` |
 | `sceKernelWaitThreadEnd` | implemented | #341 | dedicated | unreviewed | `h_WaitThreadEnd` | `0x278c0df5` |
 | `sceKernelWaitThreadEndCB` | implemented | #341 | dedicated | unreviewed | `h_WaitThreadEndCB` | `0x840e8133` |

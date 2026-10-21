@@ -19,6 +19,10 @@
   ],
   "config": {
     "default": true,
-    "MD013": false
+    "MD013": false,
+    // GitHub-rendered pages may centre a header and caption; nothing else needs raw HTML.
+    "MD033": {
+      "allowed_elements": ["div", "sub", "picture", "source", "img"]
+    }
   }
 }

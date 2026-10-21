@@ -255,14 +255,14 @@
       "name": "SDL3 Runtime",
       "type": "library",
       "relationship": "DEPENDS_ON",
-      "presence": "optional_local_or_external",
+      "presence": "required",
       "source_path": "SDL3.dll",
       "upstream_origin": "https://github.com/libsdl-org/SDL",
       "license": "Zlib",
       "notice_path": "NOTICE.md",
       "disposition": "included",
       "public_scope_included": true,
-      "optional": true,
+      "optional": false,
       "comment": "External/optional local runtime library. Reference SDL >= 3.0.0. Staged dist package lock remains unasserted."
     },
     {
@@ -667,38 +667,38 @@
       "comment": "Runtime framebuffer snapshot (SR_FBSNAP) of the source-owned showcase demo, rendered by this repository's own runtime; no retail bytes."
     },
     {
-      "id": "fixture-profile-zero-eboot",
-      "name": "Profile-zero fixture: PSPDEV build of the project-authored guest (EBOOT.PBP)",
-      "source_path": "fixtures/profile_zero/prebuilt/EBOOT.PBP",
+      "id": "readme-showcase-ge-scene-animation",
+      "name": "README animation: 3D scene showcase",
       "type": "asset",
       "relationship": "CONTAINS",
       "presence": "required",
+      "source_path": "docs/images/showcase-ge-scene.gif",
       "license": "GPL-3.0-or-later",
       "notice_path": "NOTICE.md",
       "disposition": "approved_binary",
       "public_scope_included": true,
       "optional": false,
       "hashes": {
-        "sha256": "1ebe269479f8cc226c20ccffb06e3c9326cc8296456b7187f97193860db1f500"
+        "sha256": "61e2ccdc10b2f0578b858961446fb228ea301bf5ae1ad3433c3b6c181ec47657"
       },
-      "comment": "Built with PSPDEV/PSPSDK from fixtures/profile_zero/{main.c,Makefile} (project-authored); links the permissively licensed PSPSDK/newlib startup (THIRD_PARTY_LICENSES/PSPSDK.txt). No retail bytes. Reproduce: fixtures/profile_zero/README.md (#557)."
+      "comment": "41-frame present-truthful capture from the normal player route for the source-owned TEST00007 3D showcase; no retail bytes."
     },
     {
-      "id": "fixture-profile-zero-prx",
-      "name": "Profile-zero fixture: PSPDEV build of the project-authored guest module (PRX)",
-      "source_path": "fixtures/profile_zero/prebuilt/profile_zero_guest.prx",
+      "id": "readme-showcase-breakout-animation",
+      "name": "README animation: Breakout showcase",
       "type": "asset",
       "relationship": "CONTAINS",
-      "presence": "required",
+      "presence": "optional_local_or_external",
+      "source_path": "docs/images/showcase-breakout.gif",
       "license": "GPL-3.0-or-later",
       "notice_path": "NOTICE.md",
       "disposition": "approved_binary",
       "public_scope_included": true,
-      "optional": false,
+      "optional": true,
       "hashes": {
-        "sha256": "aa6df0f9e6ac3356a44ba1d840e7289b67a1e9f798cec99b331452ef7773c863"
+        "sha256": "1d40d4cf155465577c4903adbd82c2ad944ccff197cf031b0c88331d14122e61"
       },
-      "comment": "Built with PSPDEV/PSPSDK from fixtures/profile_zero/{main.c,Makefile} (project-authored); links the permissively licensed PSPSDK/newlib startup (THIRD_PARTY_LICENSES/PSPSDK.txt). No retail bytes. Reproduce: fixtures/profile_zero/README.md (#557)."
+      "comment": "41-frame present-truthful capture from the normal player route for the source-owned TEST00008 Breakout showcase; no retail bytes."
     },
     {
       "id": "fixture-fonts-gowundodum-regular",

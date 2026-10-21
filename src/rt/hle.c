@@ -55,7 +55,7 @@
 #include "sdkver.h"      /* retained compiled-SDK-version state (issue #71) */
 #include "vfs_path.h"    /* host-neutral VFS path join helper (issue #19) */
 #include "nid_names.h"   /* sr_nid_name(): names unknown NIDs in the trap below */
-#include "atrac3p_bridge.h" /* PR-B: real ATRAC3+ decode in sceAtracDecodeData */
+#include "atrac3p_bridge.h" /* HLE bridges for separate ATRAC3+ and AT3 decoding */
 #include "fbcap_policy.h"   /* frame-capture slot policy for the present path (issue #57) */
 #include "fbcap.h"           /* presenter-neutral frame capture service (issue #57) */
 #include "audio_resample.h"  /* deterministic SRC-to-host-rate conversion */
@@ -1059,8 +1059,8 @@ static uint32_t h_GetSystemParamInt(CpuState *s) {
  *    empty file name, so an absent index hides the indices after it from that library). The index
  *    count and the numeric codes of each index are measured on a PSP-3000 (2026-10-15,
  *    flash0_font.c); the key names and types, the path_name string and the unit of the size values
- *    are not. The library also asks for /SYSPROFILE/RESOLUTION/horizontal, which stays unserved
- *    (unmeasured, fails closed; the library carries on without it). The subtree is read-only
+ *    are not. The library also asks for /SYSPROFILE/RESOLUTION/horizontal, served from the
+ *    2026-10-20 measurement (s_sreg_tree, s_sreg_measured_ints). The subtree is read-only
  *    (SREG_NODE_READONLY): a write is EACCES, an open does not create entries in it, it is never
  *    persisted, and an overlay that names it is refused whole.
  *  - Project bounds, not console limits: 512 registry handles (the console served at least 257)
@@ -1397,6 +1397,12 @@ static const struct {
     { "/CONFIG/GAME/hibernation_ow_guide", SREG_TYPE_INT, 4u },
     { "/CONFIG/GAME/hibernation_op_guide", SREG_TYPE_INT, 4u },
     { "/CONFIG/GAME/subs_expiration_guide", SREG_TYPE_INT, 4u },
+    /* PSP-3000 6.6.1, 2026-10-20 (PSP-REGISTRY-002): /SYSPROFILE lists two entries, one of them
+     * RESOLUTION (DIR), which lists horizontal and vertical (INT, 4 bytes). The other entry's name
+     * and RESOLUTION's position in the list were not measured, so only RESOLUTION is served. */
+    { "/SYSPROFILE/RESOLUTION", SREG_TYPE_DIR, 0u },
+    { "/SYSPROFILE/RESOLUTION/horizontal", SREG_TYPE_INT, 4u },
+    { "/SYSPROFILE/RESOLUTION/vertical", SREG_TYPE_INT, 4u },
 };
 
 /* The integer keys sceUtilityGetSystemParamInt shares, with their PSP_SYSTEMPARAM_ID_INT_* id. */
@@ -1413,12 +1419,15 @@ static const struct {
     { "/CONFIG/NETWORK/ADHOC/channel",    2u },
 };
 
-/* Measured values of keys with no system-param id (PSP-3000 6.6.1, 2026-10-09). */
+/* Measured values of keys with no system-param id (PSP-3000 6.6.1; PREMO 2026-10-09, RESOLUTION
+ * 2026-10-20). The RESOLUTION values are raw registry integers; their meaning is not inferred. */
 static const struct {
     const char *path;
     uint32_t value;
 } s_sreg_measured_ints[] = {
     { "/CONFIG/PREMO/button_assign", 0u },
+    { "/SYSPROFILE/RESOLUTION/horizontal", 0x2012u },
+    { "/SYSPROFILE/RESOLUTION/vertical", 0x2012u },
 };
 
 static SregNode s_sreg_nodes[SREG_MAX_NODES];
@@ -1757,6 +1766,7 @@ static void sreg_build_font_registry(void) {
 static void sreg_build_defaults(void) {
     uint32_t err = 0;
     (void)sreg_walk("/CONFIG", 1, SREG_NODE_DEFAULT, &err, NULL);
+    (void)sreg_walk("/SYSPROFILE", 1, SREG_NODE_DEFAULT, &err, NULL);
     for (uint32_t i = 0; i < sizeof(s_sreg_tree) / sizeof(s_sreg_tree[0]); i++) {
         const char *path = s_sreg_tree[i].path;
         const char *slash = strrchr(path, '/');
@@ -5282,7 +5292,7 @@ static int stale_mem_read(uint32_t addr, uint32_t *word_out, void *ctx) {
     return 1;
 }
 
-static uint32_t h_CacheInvalidateAll(CpuState *s) {
+static uint32_t h_cache_invalidate_all_common(CpuState *s) {
     (void)s;
     if (sr_stale_enabled()) {
         uint32_t bad = 0u, exp = 0u, act = 0u;
@@ -5295,7 +5305,19 @@ static uint32_t h_CacheInvalidateAll(CpuState *s) {
     return 0;
 }
 
-static uint32_t h_CacheInvalidateRange(CpuState *s) {
+/* Keep the HLE ownership boundary aligned with the hardware cells. These
+ * wrappers currently share the same coherent-memory implementation; the
+ * writeback-invalidate and I-cache NIDs remain unreviewed until their own
+ * cells are measured. */
+static uint32_t h_DcacheWritebackAll(CpuState *s) {
+    return h_cache_invalidate_all_common(s);
+}
+
+static uint32_t h_CacheInvalidateAllOther(CpuState *s) {
+    return h_cache_invalidate_all_common(s);
+}
+
+static uint32_t h_cache_invalidate_range_common(CpuState *s) {
     /* PSP range signature: a0 = address, a1 = length. */
     if (sr_stale_enabled()) {
         uint32_t bad = 0u, exp = 0u, act = 0u;
@@ -5306,6 +5328,14 @@ static uint32_t h_CacheInvalidateRange(CpuState *s) {
         }
     }
     return 0;
+}
+
+static uint32_t h_DcacheRangeMaintenance(CpuState *s) {
+    return h_cache_invalidate_range_common(s);
+}
+
+static uint32_t h_CacheInvalidateRangeOther(CpuState *s) {
+    return h_cache_invalidate_range_common(s);
 }
 
 void sr_stale_note_cache_op(uint32_t addr) {
@@ -5936,7 +5966,9 @@ static uint32_t h_PsmfDelete(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)r
 static uint32_t h_PsmfSetTempBuf(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status!=PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1||A2<0x10000u)return PSMF_ERR_PARAM;p->tempBuf=A1;p->tempSize=A2;return 0;}
 static uint32_t h_PsmfSetPsmfCB(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status!=PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1)return PSMF_ERR_PARAM;char path[512];if(!guest_cstr(A1,path,sizeof(path)))return PSMF_ERR_PARAM;uint32_t lba=0,sz=0;uint8_t h[2048];if(iso_lookup(path,&lba,&sz)!=0||sz<sizeof(h)||iso_read(lba,0,h,sizeof(h))!=(int)sizeof(h)||!psmf_parse_header(p,h,sizeof(h)))return PSMF_ERR_PARAM;if(p->producer)sr_psmf_producer_close(p->producer);p->producer=NULL;p->source.lba=lba;p->source.size=sz;SrPsmfSource source={psmf_iso_read,p,sz};p->producer=sr_psmf_producer_open(&source,p->presentationBase);if(!p->producer)return PSMF_ERR_PARAM;strncpy(p->path,path,sizeof(p->path)-1);p->fileLba=lba;p->fileSize=sz;p->readOffset=p->streamOffset;p->status=PSMF_STATUS_STANDBY;psmf_flush(p);psmf_media_reset(p);sched_delay_current(3100);return 0;}
 static uint32_t h_PsmfConfig(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;if(A1==0){if(A2>1)return PSMF_ERR_PARAM;p->loopStatus=A2;return 0;}if(A1==1){if((int32_t)A2<-1||A2>3)return PSMF_ERR_PARAM;p->pixelMode=(A2==(uint32_t)-1)?3:A2;return 0;}return PSMF_ERR_CONFIG;}
-static uint32_t h_PsmfStart(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status==PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1||!sr_guest_span_readable(A1,24u))return PSMF_ERR_PARAM;uint32_t d=A1,vc=MEM_R32(d),vs=MEM_R32(d+4),ac=MEM_R32(d+8),as=MEM_R32(d+12);int32_t mode=(int32_t)MEM_R32(d+16),speed=(int32_t)MEM_R32(d+20),pts=(int32_t)stack_arg(s,0);if(mode<0||mode>5||vs>=p->videoStreams||(p->audioStreams?(as>=p->audioStreams):(as>0&&as!=(uint32_t)-1)))return PSMF_ERR_CONFIG;if(vc&&vc!=0xe)return PSMF_ERR_STREAM;if(p->audioStreams&&ac!=1&&ac!=0xf)return PSMF_ERR_STREAM;if(!p->audioStreams&&ac!=0)return PSMF_ERR_STREAM;if(p->playerVersion==1&&pts!=0)return PSMF_ERR_PARAM;p->videoCodec=vc;p->videoStreamNum=vs;p->audioCodec=ac;p->audioStreamNum=as;p->playMode=(uint32_t)mode;p->playSpeed=(uint32_t)speed;    p->currentPts=pts;p->warmup=0;p->breakRequested=0;psmf_select_streams(p,vs,as);psmf_flush(p);if(p->producer){if(!sr_psmf_producer_select_streams(p->producer,vs,p->audioStreams?as:SR_PSMF_STREAM_NONE))return PSMF_ERR_CONFIG;}psmf_media_reset(p);p->status=PSMF_STATUS_PLAYING;return 0;}
+/* scePsmfPlayerStart(player, PsmfPlayerData *data, int initPts): initPts is the third
+ * argument (a2). t0 is the fifth EABI argument, which this call never sets. */
+static uint32_t h_PsmfStart(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status==PSMF_STATUS_INIT)return PSMF_ERR_STATUS;if(!A1||!sr_guest_span_readable(A1,24u))return PSMF_ERR_PARAM;uint32_t d=A1,vc=MEM_R32(d),vs=MEM_R32(d+4),ac=MEM_R32(d+8),as=MEM_R32(d+12);int32_t mode=(int32_t)MEM_R32(d+16),speed=(int32_t)MEM_R32(d+20),pts=(int32_t)A2;if(mode<0||mode>5||vs>=p->videoStreams||(p->audioStreams?(as>=p->audioStreams):(as>0&&as!=(uint32_t)-1)))return PSMF_ERR_CONFIG;if(vc&&vc!=0xe)return PSMF_ERR_STREAM;if(p->audioStreams&&ac!=1&&ac!=0xf)return PSMF_ERR_STREAM;if(!p->audioStreams&&ac!=0)return PSMF_ERR_STREAM;if(p->playerVersion==1&&pts!=0)return PSMF_ERR_PARAM;p->videoCodec=vc;p->videoStreamNum=vs;p->audioCodec=ac;p->audioStreamNum=as;p->playMode=(uint32_t)mode;p->playSpeed=(uint32_t)speed;    p->currentPts=pts;p->warmup=0;p->breakRequested=0;psmf_select_streams(p,vs,as);psmf_flush(p);if(p->producer){if(!sr_psmf_producer_select_streams(p->producer,vs,p->audioStreams?as:SR_PSMF_STREAM_NONE))return PSMF_ERR_CONFIG;}psmf_media_reset(p);p->status=PSMF_STATUS_PLAYING;return 0;}
 static uint32_t h_PsmfStop(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_PLAYING)return PSMF_ERR_STATUS;p->status=PSMF_STATUS_STANDBY;p->breakRequested=0;psmf_flush(p);if(p->producer)sr_psmf_producer_reset(p->producer);psmf_media_reset(p);sched_delay_current(3000);return 0;}
 static uint32_t h_PsmfBreak(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p)return PSMF_ERR_STATUS;p->breakRequested=1;psmf_flush(p);return 0;}
 static uint32_t h_PsmfRelease(CpuState *s){SrPsmfPlayer*p=psmf_find(A0,0);if(!p||p->status<PSMF_STATUS_STANDBY)return PSMF_ERR_STATUS;p->status=PSMF_STATUS_INIT;p->fileLba=p->fileSize=p->streamOffset=p->streamSize=0;psmf_flush(p);if(p->producer){sr_psmf_producer_close(p->producer);p->producer=NULL;}psmf_media_reset(p);return 0;}
@@ -8577,17 +8609,18 @@ static uint32_t h_MpegAvcDecodeFlush(CpuState *s) {
 /* sceAtrac3plus: control-flow model with the real streaming contract. The game feeds a track in
  * chunks: SetData installs the first chunk (buffer + size), then the audio thread polls
  * sceAtracGetStreamDataInfo for the ring write pointer/free bytes, reads the next file chunk into
- * it, and calls sceAtracAddStreamData. DecodeData consumes one frame (2048 samples, bytesPerFrame
- * bytes) per call from the fed data and only advances while data is available. GetRemainFrame and
+ * it, and calls sceAtracAddStreamData. DecodeData consumes one codec-specific frame (2048 samples
+ * for ATRAC3+, 1024 for plain AT3; bytesPerFrame bytes) per call and only advances while data is
+ * available. GetRemainFrame and
  * GetStreamDataInfo report the honest ring state so the feed loop can advance. The earlier model
  * prevented the guest from streaming most of the track: it claimed ALLDATA_IS_ON_MEMORY with zero
  * writable bytes, so the guest starved at ~8% of the track. The streaming contract is now modeled
  * sufficiently for the guest to feed the complete ATRAC stream (the title BGM feeds end-to-end and
- * reaches DecodeData repeatedly). ATRAC3+ frames are decoded for real through the imported
- * decoder bridge (src/rt/atrac3p_bridge.h, #286); ATRAC3 (0x1001) has no decoder in this tree and
- * DecodeData reports the failure instead of fabricating PCM. Ported semantics from PPSSPP
+ * reaches DecodeData repeatedly). ATRAC3+ and plain AT3 (0x1001) use separate FFmpeg n4.4 decoder
+ * paths through src/rt/atrac3p_bridge.h. Ported semantics from PPSSPP
  * Core/HLE/sceAtrac.cpp + AtracCtx.cpp (stream bookkeeping), minus the media engine. */
 #define ATRAC_SAMPLES_PER_FRAME 2048
+#define ATRAC3_SAMPLES_PER_FRAME 1024
 #define ATRAC_CODEC_AT3PLUS 0x1000u
 #define ATRAC_CODEC_AT3 0x1001u
 #define ATRAC_ERROR_NO_ATRACID 0x80630003u
@@ -8600,6 +8633,7 @@ static uint32_t h_MpegAvcDecodeFlush(CpuState *s) {
 #define ATRAC_ERROR_ADD_DATA_IS_TOO_BIG 0x80630018u
 #define ATRAC_ERROR_NO_LOOP_INFORMATION 0x80630021u
 #define ATRAC_ERROR_ALLDATA_DECODED 0x80630022u
+#define ATRAC_ERROR_DECODE_DATA_AFTER_END 0x80630024u
 #define ATRAC_PSP_ALLDATA_IS_ON_MEMORY 0xFFFFFFFFu
 #define ATRAC_PSP_NONLOOP_STREAM_IS_ON_MEMORY 0xFFFFFFFEu
 #define ATRAC_PSP_LOOP_STREAM_IS_ON_MEMORY 0xFFFFFFFDu
@@ -8622,6 +8656,10 @@ typedef struct {
     uint32_t dataByteOffset;      /* file offset where audio frames start */
     uint32_t bytesPerFrame;       /* frame size (RIFF fmt blockAlign) */
     uint32_t avgBytesPerSec;      /* RIFF fmt nAvgBytesPerSec (bitrate source) */
+    uint16_t formatTag;           /* RIFF fmt wFormatTag */
+    uint8_t at3Extradata[14];     /* validated AT3 WAVEFORMATEX extension */
+    int at3FactDelayPresent;      /* RIFF fact delay exists; trim is NOT_MEASURED */
+    int at3FirstFrameDelayNotMeasured;
     int endSample, posSample, loopNum;
     int loopStartSample, loopEndSample;   /* 'smpl' loop points; -1 when absent */
     uint32_t bufferPos;           /* ring offset of the next frame to consume */
@@ -8637,10 +8675,12 @@ typedef struct {
     uint32_t streamWindowRead;
     uint32_t streamWindowWrite;
     uint32_t streamWindowQueued;
-    /* PR-B: real ATRAC3+ decode through the imported decoder. dec is NULL
-     * until a track with a known codec/channels/blockAlign is configured;
-     * host_frame/host_pcm are per-slot staging owned by this context. */
+    /* Separate decoder instances preserve the distinct AT3 and ATRAC3+
+     * frame/config contracts. host_frame/host_pcm are per-slot staging. */
     Atrac3pBridge *dec;           /* owned decoder bridge, or NULL */
+    Atrac3Bridge *dec_at3;        /* owned plain-AT3 bridge, or NULL */
+    uint32_t dec_codec_type;
+    uint8_t dec_at3_extradata[14];
     int channels;                 /* RIFF fmt channels (1..8) */
     int dec_channels;             /* bridge config (channels) at create time */
     int dec_align;                /* bridge config (bytesPerFrame) at create time */
@@ -8653,6 +8693,11 @@ static Atrac s_atrac[8];
 static int atrac_streamed_state(const Atrac *a);
 static uint32_t atrac_stream_buffer_end(const Atrac *a);
 static uint32_t atrac_remaining_frames(const Atrac *a);
+static int atrac_reset_decoder(Atrac *a);
+static int atrac_samples_per_frame(const Atrac *a) {
+    return a->codecType == ATRAC_CODEC_AT3 ? ATRAC3_SAMPLES_PER_FRAME
+                                           : ATRAC_SAMPLES_PER_FRAME;
+}
 
 static void atrac_stream_window_free(Atrac *a) {
     free(a->streamWindow);
@@ -8748,6 +8793,10 @@ static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size) {
     uint32_t bytesPerFrame = 0;
     uint32_t avgBytesPerSec = 0;
     int channels = 0;
+    uint16_t formatTag = 0;
+    uint8_t at3Extradata[14] = {0};
+    int hasFmt = 0;
+    int at3FactDelayPresent = 0;
     int endSample = 0;
     int loopStartSample = -1, loopEndSample = -1;
     for (uint32_t off = 12u; off <= scan_end - 8u;) {
@@ -8764,16 +8813,33 @@ static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size) {
         uint32_t avail = scan_end - (off + 8u);
         if (id == 0x74636166u /* 'fact' */) {
             if (sz < 4u || sz > avail) return 0;
+            if (a->codecType == ATRAC_CODEC_AT3) {
+                if (sz != 8u && sz != 12u) return 0;
+                at3FactDelayPresent = 1;
+            }
             uint32_t samples = MEM_R32(p + 8u);
             if (samples == 0u || samples > 0x7fffffffu) return 0;
             endSample = (int)samples;
         } else if (id == 0x20746d66u /* 'fmt ' */) {
             if (sz < 16u || sz > avail) return 0;
+            if (hasFmt && a->codecType == ATRAC_CODEC_AT3) return 0;
+            hasFmt = 1;
+            formatTag = MEM_R16(p + 8u);
             uint32_t ch = MEM_R16(p + 10u);      /* channels */
             uint32_t align = MEM_R16(p + 20u);   /* blockAlign = bytes per frame */
             uint32_t rate = MEM_R32(p + 16u);    /* nAvgBytesPerSec = declared byte rate */
             if (ch < 1u || ch > 8u) return 0;
             if (align < 1u || align > 0x10000u) return 0;
+            if (a->codecType == ATRAC_CODEC_AT3) {
+                if (sz < 18u || MEM_R16(p + 24u) != sizeof(at3Extradata) ||
+                    sz < 18u + sizeof(at3Extradata))
+                    return 0;
+                for (uint32_t i = 0; i < sizeof(at3Extradata); i++)
+                    at3Extradata[i] = (uint8_t)MEM_R8(p + 26u + i);
+                if (!atrac3_config_valid(formatTag, (int)ch, (int)align,
+                                         at3Extradata, (int)sizeof(at3Extradata)))
+                    return 0;
+            }
             channels = (int)ch;
             bytesPerFrame = align;
             avgBytesPerSec = rate;
@@ -8808,11 +8874,15 @@ static int atrac_parse_track(Atrac *a, uint32_t buf, uint32_t size) {
         off = next;
     }
     if (endSample <= 0) return 0;
+    if (a->codecType == ATRAC_CODEC_AT3 && !hasFmt) return 0;
     a->fileSize = fileSize;
     a->dataByteOffset = dataByteOffset;
     a->bytesPerFrame = bytesPerFrame;
     a->avgBytesPerSec = avgBytesPerSec;
     a->channels = channels;
+    a->formatTag = formatTag;
+    memcpy(a->at3Extradata, at3Extradata, sizeof(a->at3Extradata));
+    a->at3FactDelayPresent = at3FactDelayPresent;
     a->endSample = endSample;
     a->loopStartSample = loopStartSample;
     a->loopEndSample = loopEndSample;
@@ -8851,7 +8921,7 @@ static uint32_t atrac_file_offset_by_sample(const Atrac *a, int sample) {
     /* Frame*bytesPerFrame can exceed 32 bits for hostile RIFF metadata
      * (huge 'fact' sample count combined with a large blockAlign); clamp
      * so callers see an offset beyond any real file instead of a wrap. */
-    uint64_t frame = (uint32_t)sample / ATRAC_SAMPLES_PER_FRAME;
+    uint64_t frame = (uint32_t)sample / (uint32_t)atrac_samples_per_frame(a);
     uint64_t byteOff = (uint64_t)a->dataByteOffset + frame * a->bytesPerFrame;
     return byteOff > 0xffffffffu ? 0xffffffffu : (uint32_t)byteOff;
 }
@@ -8883,7 +8953,7 @@ static void atrac_calculate_stream_info(const Atrac *a, uint32_t *outOffset,
                 readOffset = 0; offset = 0; writable = 0;
             } else {
                 /* Loop from end: re-read from just before the loop point. */
-                int loopOff = a->loopStartSample - ATRAC_SAMPLES_PER_FRAME * 2;
+                int loopOff = a->loopStartSample - atrac_samples_per_frame(a) * 2;
                 readOffset = atrac_file_offset_by_sample(a, loopOff);
             }
         }
@@ -8925,7 +8995,7 @@ static uint32_t atrac_remaining_frames(const Atrac *a) {
     if (a->bufferState == ATRAC_STATE_ALL_DATA_LOADED)
         return ATRAC_PSP_ALLDATA_IS_ON_MEMORY;
     uint32_t currentFileOffset =
-        atrac_file_offset_by_sample(a, a->posSample - ATRAC_SAMPLES_PER_FRAME);
+        atrac_file_offset_by_sample(a, a->posSample - atrac_samples_per_frame(a));
     if (a->size >= a->fileSize) {
         if (a->bufferState == ATRAC_STATE_STREAMED_NO_LOOP)
             return ATRAC_PSP_NONLOOP_STREAM_IS_ON_MEMORY;
@@ -8978,8 +9048,9 @@ static int atrac_set_track(Atrac *a, uint32_t buf, uint32_t size) {
         a->streamWindowQueued = oldStreamWindowQueued;
         return 0;
     }
-    if (a->dec) (void)atrac3p_bridge_reset(a->dec);
+    (void)atrac_reset_decoder(a);
     a->decodeFailureReported = 0;
+    a->at3FirstFrameDelayNotMeasured = 0;
     if (oldStreamWindow) free(oldStreamWindow);
     a->streamWindow = NULL;
     a->streamWindowSize = 0;
@@ -9014,9 +9085,9 @@ static int atrac_log_on(void);   /* defined below; used by decoder lifecycle */
 static void atrac_report_decode_failure(Atrac *a) {
     if (a->decodeFailureReported) return;
     a->decodeFailureReported = 1;
-    fprintf(stderr,
-            "ATRAC_DECODE_REFUSED: ATRAC_ERROR_UNKNOWN_FORMAT: "
-            "The ATRAC3+ frame was malformed; decoding of this stream stopped.\n");
+    fprintf(stderr, "ATRAC_DECODE_REFUSED: ATRAC_ERROR_UNKNOWN_FORMAT: "
+            "%s decoder did not produce PCM; decoding of this stream stopped.\n",
+            a->codecType == ATRAC_CODEC_AT3 ? "ATRAC3" : "ATRAC3+");
 }
 static int audio_stat_on(void);  /* SR_AUDIOSTAT gate; defined with the SAS aggregates */
 /* SR_AUDIOSTAT aggregate counters (investigation telemetry). Declared here because
@@ -9044,42 +9115,72 @@ static void audio_note_atrac_out(uint32_t buf) {
     if (g_atrac_out_nbufs < 4) g_atrac_out_bufs[g_atrac_out_nbufs++] = buf;
 }
 
-/* PR-B: decoder lifecycle. Only the imported ATRAC3+ codec (0x1000) has a
- * decoder in this tree; AT3 (0x1001) and unknown configs keep the gap visible
- * (DecodeData returns a codec error instead of fabricating PCM). */
+/* Decoder lifecycle. Plain ATRAC3 (0x1001) and ATRAC3+ (0x1000) have separate
+ * FFmpeg n4.4 instances and separate format/frame contracts. */
 static void atrac_release_decoder(Atrac *a) {
     atrac3p_bridge_destroy(a->dec);
     a->dec = NULL;
+    atrac3_bridge_destroy(a->dec_at3);
+    a->dec_at3 = NULL;
+    a->dec_codec_type = 0;
+    a->dec_channels = 0;
+    a->dec_align = 0;
+    memset(a->dec_at3_extradata, 0, sizeof(a->dec_at3_extradata));
     free(a->host_frame);
     a->host_frame = NULL;
     a->host_frame_cap = 0;
     free(a->host_pcm);
     a->host_pcm = NULL;
 }
+static int atrac_reset_decoder(Atrac *a) {
+    int ret = 0;
+    if (a->dec)
+        ret = atrac3p_bridge_reset(a->dec);
+    else if (a->dec_at3)
+        ret = atrac3_bridge_reset(a->dec_at3);
+    if (ret >= 0)
+        a->decodeFailureReported = 0;
+    return ret;
+}
 static void atrac_ensure_decoder(Atrac *a) {
-    if (a->dec) {
+    if (a->dec || a->dec_at3) {
         /* A reused slot (h_AtracSetData on an existing id) may carry a decoder
          * created for a previous track config; recreate when the RIFF changed. */
-        if (a->dec_channels == a->channels && a->dec_align == (int)a->bytesPerFrame)
+        int same = a->dec_codec_type == a->codecType &&
+                   a->dec_channels == a->channels &&
+                   a->dec_align == (int)a->bytesPerFrame;
+        if (same && a->codecType == ATRAC_CODEC_AT3)
+            same = memcmp(a->dec_at3_extradata, a->at3Extradata,
+                          sizeof(a->at3Extradata)) == 0;
+        if (same)
             return;
         atrac_release_decoder(a);
-        /* Release already reset these; keep them consistent with a->dec == NULL. */
-        a->dec_channels = 0;
-        a->dec_align = 0;
     }
-    if (a->codecType != ATRAC_CODEC_AT3PLUS) return;
-    if (a->channels < 1 || a->channels > ATRAC3P_MAX_CHANNELS) return;
     if (a->bytesPerFrame == 0u) return;
-    int ret = atrac3p_bridge_create(a->channels, (int)a->bytesPerFrame, &a->dec);
-    if (ret < 0) {
-        a->dec = NULL;
-        if (atrac_log_on())
-            fprintf(stderr, "ATRAC_DECODER: create failed ch=%d align=%u ret=%d\n",
-                    a->channels, a->bytesPerFrame, ret);
+    int ret;
+    if (a->codecType == ATRAC_CODEC_AT3PLUS) {
+        if (a->channels > ATRAC3P_MAX_CHANNELS) return;
+        ret = atrac3p_bridge_create(a->channels, (int)a->bytesPerFrame, &a->dec);
+    } else if (a->codecType == ATRAC_CODEC_AT3) {
+        ret = atrac3_bridge_create(a->channels, (int)a->bytesPerFrame,
+                                   a->at3Extradata, &a->dec_at3);
+    } else {
         return;
     }
+    if (ret < 0) {
+        a->dec = NULL;
+        a->dec_at3 = NULL;
+        if (atrac_log_on())
+            fprintf(stderr, "ATRAC_DECODER: create failed codec=0x%04x ch=%d align=%u ret=%d\n",
+                    a->codecType, a->channels, a->bytesPerFrame, ret);
+        return;
+    }
+    a->dec_codec_type = a->codecType;
     a->dec_channels = a->channels;
     a->dec_align = (int)a->bytesPerFrame;
+    if (a->codecType == ATRAC_CODEC_AT3)
+        memcpy(a->dec_at3_extradata, a->at3Extradata,
+               sizeof(a->dec_at3_extradata));
     a->host_frame_cap = (int)a->bytesPerFrame;
     a->host_frame = malloc((size_t)a->bytesPerFrame + ATRAC3P_PADDING_SIZE);
     a->host_pcm = malloc((size_t)a->channels * ATRAC_SAMPLES_PER_FRAME * sizeof(int16_t));
@@ -9088,8 +9189,8 @@ static void atrac_ensure_decoder(Atrac *a) {
         return;
     }
     if (atrac_log_on())
-        fprintf(stderr, "ATRAC_DECODER: id=%d ch=%d align=%u ready\n",
-                (int)(a - s_atrac), a->channels, a->bytesPerFrame);
+        fprintf(stderr, "ATRAC_DECODER: id=%d codec=0x%04x ch=%d align=%u ready\n",
+                (int)(a - s_atrac), a->codecType, a->channels, a->bytesPerFrame);
 }
 
 static int atrac_log_on(void) {
@@ -9145,6 +9246,8 @@ static uint32_t h_AtracSetData(CpuState *s) {
     if (!atrac_set_track(a, A1, A2))
         return ATRAC_ERROR_UNKNOWN_FORMAT;
     atrac_ensure_decoder(a);
+    if (a->codecType == ATRAC_CODEC_AT3 && !a->dec_at3)
+        return ATRAC_ERROR_UNKNOWN_FORMAT;
     if (atrac_log_on())
         fprintf(stderr, "ATRAC_SETDATA_EXISTING: id=%u buf=0x%08x size=%u fileSize=%u frame=%u dataOff=%u endSample=%d state=%d\n",
                 A0, a->buf, a->size, a->fileSize, a->bytesPerFrame, a->dataByteOffset, a->endSample, a->bufferState);
@@ -9185,15 +9288,16 @@ int sr_hle_test_atrac_second_buffer(uint32_t id, uint32_t *addr, uint32_t *size)
     return 1;
 }
 #endif
-/* PR-B: decode the next frame through the bridge into guest `out`. Returns
- *   1  frame decoded and written (channels*ATRAC_SAMPLES_PER_FRAME interleaved s16),
+/* Decode the next frame through its codec-specific bridge into guest `out`. Returns
+ *   1  frame decoded and written (channels*samplesPerFrame interleaved s16),
  *   0  no frame available right now (streamed ring empty or frame not yet fed),
  *  -1  permanent failure (no decoder, or the frame failed to decode).
  * A -1 is a visible gap: the caller returns an error code instead of
  * fabricating PCM (no fake audio). */
-static int atrac_decode_frame(Atrac *a, uint32_t out) {
+static int atrac_decode_frame(Atrac *a, uint32_t out, int *samples_out) {
     uint32_t src;
     int streamed = atrac_streamed_state(a);
+    if (samples_out) *samples_out = 0;
     if (a->bytesPerFrame == 0u) return 0;   /* ring not sized yet (streaming refill) */
     if (streamed) {
         if (a->bufferValidBytes < a->bytesPerFrame) return 0;
@@ -9207,7 +9311,7 @@ static int atrac_decode_frame(Atrac *a, uint32_t out) {
             return 0;   /* fed bytes do not reach this frame yet */
         src = a->buf + off;
     }
-    if (!a->dec || !a->host_frame || !a->host_pcm) return -1;
+    if ((!a->dec && !a->dec_at3) || !a->host_frame || !a->host_pcm) return -1;
     if (a->bytesPerFrame > (uint32_t)a->host_frame_cap) return -1;
     if (streamed) {
         if (!atrac_stream_window_peek(a, a->host_frame, a->bytesPerFrame))
@@ -9218,9 +9322,14 @@ static int atrac_decode_frame(Atrac *a, uint32_t out) {
             a->host_frame[i] = (uint8_t)MEM_R8(src + i);
     }
     int n = 0;
-    int ret = atrac3p_bridge_decode(a->dec, a->host_frame, (int)a->bytesPerFrame,
-                                    a->host_pcm, &n);
-    if (ret < 0 || n <= 0) {
+    int ret;
+    if (a->codecType == ATRAC_CODEC_AT3)
+        ret = atrac3_bridge_decode(a->dec_at3, a->host_frame,
+                                   (int)a->bytesPerFrame, a->host_pcm, &n);
+    else
+        ret = atrac3p_bridge_decode(a->dec, a->host_frame,
+                                    (int)a->bytesPerFrame, a->host_pcm, &n);
+    if (ret < 0 || n != atrac_samples_per_frame(a)) {
         /* Keep the offset with the codec error: a streamed-ring frame can be
          * pointed at incorrectly and a frame decoder genuinely cannot handle
          * may produce the same error; only the offset distinguishes them (#32). */
@@ -9252,14 +9361,42 @@ static int atrac_decode_frame(Atrac *a, uint32_t out) {
         if (pk > g_atrac_peak) g_atrac_peak = pk;
         audio_note_atrac_out(out);
     }
+    if (samples_out) *samples_out = n;
     return 1;
 }
+
+/* NOT_MEASURED: the PSP's trimming of the first decoded frame using the RIFF
+ * fact-chunk delay has not been measured. Keep the complete decoder frame and
+ * report this boundary once; do not infer or apply a delay value. */
+static int atrac3_first_frame_delay_trim_samples(Atrac *a) {
+    static int reported;
+    if (a->codecType != ATRAC_CODEC_AT3 || !a->at3FactDelayPresent ||
+        a->at3FirstFrameDelayNotMeasured)
+        return 0;
+    a->at3FirstFrameDelayNotMeasured = 1;
+    if (!reported) {
+        fprintf(stderr,
+                "ATRAC3_NOT_MEASURED: first-frame RIFF fact-delay trimming is not applied pending PSP measurement.\n");
+        reported = 1;
+    }
+    return 0;
+}
+
 static uint32_t h_AtracDecodeData(CpuState *s) {
-    /* a0=id, a1=outSamples, a2=*decodedSamples, a3=*finishFlag, sp+16=*remainFrames. */
+    /* a0=id, a1=outSamples, a2=*decodedSamples, a3=*finishFlag, t0=*remainFrames. */
     Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
     uint32_t out = A1, decAddr = A2, finAddr = A3, remAddr = stack_arg(s, 0);
     int n = 0, finished = 0;
-    int st = atrac_decode_frame(a, out);
+    if (a->codecType == ATRAC_CODEC_AT3 &&
+        a->posSample >= a->endSample && a->loopNum == 0) {
+        if (decAddr) MEM_W32(decAddr, 0u);
+        if (finAddr) MEM_W32(finAddr, 0u);
+        if (remAddr) MEM_W32(remAddr, atrac_remaining_frames(a));
+        return ATRAC_ERROR_DECODE_DATA_AFTER_END;
+    }
+    (void)atrac3_first_frame_delay_trim_samples(a);
+    int decoded_samples = 0;
+    int st = atrac_decode_frame(a, out, &decoded_samples);
     if (st < 0) {
         /* Honest gap: this track cannot produce PCM in this build (unsupported
          * codec, decoder allocation failure, or a frame that failed to decode).
@@ -9271,19 +9408,19 @@ static uint32_t h_AtracDecodeData(CpuState *s) {
         return ATRAC_ERROR_UNKNOWN_FORMAT;
     }
     if (st > 0) {
-        n = ATRAC_SAMPLES_PER_FRAME;
+        n = decoded_samples;
         if (atrac_streamed_state(a)) atrac_consume_frame(a);
         a->posSample += n;
         if (atrac_streamed_state(a) && a->loopEndSample > 0 && a->posSample > a->loopEndSample) {
             a->posSample = a->loopStartSample >= 0 ? a->loopStartSample : 0;
             if (a->loopNum > 0) a->loopNum--;
-            if (a->dec) atrac3p_bridge_reset(a->dec);   /* loop rewind: no cross-frame leak */
+            (void)atrac_reset_decoder(a);   /* loop rewind: no cross-frame leak */
         } else if (a->posSample >= a->endSample) {
             if (a->loopNum == 0) finished = 1;
             else {
                 a->posSample = a->loopStartSample >= 0 ? a->loopStartSample : 0;
                 if (a->loopNum > 0) a->loopNum--;
-                if (a->dec) atrac3p_bridge_reset(a->dec);
+                (void)atrac_reset_decoder(a);
             }
         }
     }
@@ -9307,21 +9444,16 @@ static uint32_t h_AtracDecodeData(CpuState *s) {
  * was already there and got a truthful-looking answer by accident or not at
  * all. This is the most frequently called stub on the boot route (4049 calls).
  *
- * No new state is needed: h_AtracDecodeData advances posSample by
- * ATRAC_SAMPLES_PER_FRAME only when a frame is actually consumed and stops at
+ * No new state is needed: h_AtracDecodeData advances posSample by the
+ * codec-specific samples-per-frame value only when a frame is consumed and stops at
  * endSample, so the honest answer is exactly what that path will do next.
  * Reporting anything else here would contradict the decoder's own bookkeeping. */
-/* sceAtracGetMaxSample(id, *outMax): maximum samples per decode frame.
- * Public behaviour reference: the PSPSDK ATRAC3+ interface and PPSSPP
- * Core/HLE/sceAtrac.cpp. This runtime decodes ATRAC_SAMPLES_PER_FRAME samples
- * per consumed frame (see h_AtracDecodeData), so the honest answer is exactly
- * that constant -- reporting anything else would contradict the decoder's own
- * bookkeeping. Codec-dependent variation (AT3 1024 vs AT3+ 2048) is UNMEASURED
- * here. Errors reuse the neighbouring Atrac codes. */
+/* sceAtracGetMaxSample(id, *outMax): codec-specific samples per decode frame.
+ * Plain AT3 is 1024 samples/channel; ATRAC3+ is 2048. */
 static uint32_t h_AtracGetMaxSample(CpuState *s) {
     Atrac *a = atrac_of(A0); if (!a) return ATRAC_ERROR_BAD_ATRACID;
     if (!A1 || !sr_guest_span_writable(A1, 4u)) return 0x80000103u;   /* ILLEGAL_ADDR */
-    MEM_W32(A1, ATRAC_SAMPLES_PER_FRAME);
+    MEM_W32(A1, (uint32_t)atrac_samples_per_frame(a));
     return 0;
 }
 /* sceAtracGetChannel(id, *outChannels): active audio channel count (1 = mono,
@@ -9409,7 +9541,7 @@ static uint32_t h_AtracGetNextSample(CpuState *s) {
     if (!A1 || !sr_guest_span_writable(A1, 4u)) return 0x80000103u;   /* ILLEGAL_ADDR */
     int remain = a->endSample - a->posSample;
     if (remain < 0) remain = 0;
-    if (remain > ATRAC_SAMPLES_PER_FRAME) remain = ATRAC_SAMPLES_PER_FRAME;
+    if (remain > atrac_samples_per_frame(a)) remain = atrac_samples_per_frame(a);
     MEM_W32(A1, (uint32_t)remain);
     return 0;
 }
@@ -9491,8 +9623,7 @@ static uint32_t h_AtracResetPlayPosition(CpuState *s) {
     Atrac *a = atrac_of(A0);
     if (!a) return 0;
     a->posSample = (int)A1;
-    if (a->dec && atrac3p_bridge_reset(a->dec) == 0)
-        a->decodeFailureReported = 0;
+    (void)atrac_reset_decoder(a);
     return 0;
 }
 
@@ -9513,7 +9644,7 @@ static uint32_t h_AtracGetSecondBufferInfo(CpuState *s) {
         return 0x80630022u; /* SECOND_BUFFER_NOT_NEEDED */
     }
     uint32_t fileOffset = (a->loopEndSample > 0 && a->bytesPerFrame > 0)
-        ? (a->dataByteOffset + (uint32_t)a->loopEndSample / ATRAC_SAMPLES_PER_FRAME * a->bytesPerFrame)
+        ? (a->dataByteOffset + (uint32_t)a->loopEndSample / (uint32_t)atrac_samples_per_frame(a) * a->bytesPerFrame)
         : 0u;
     uint32_t desiredSize = (a->fileSize > fileOffset) ? (a->fileSize - fileOffset) : 0u;
     MEM_W32(A1, fileOffset);
@@ -9549,14 +9680,15 @@ static uint32_t h_AtracGetBufferInfoForResetting(CpuState *s) {
         writable1 = (a->fileSize > a->size) ? (a->fileSize - a->size) : 0u;
         uint32_t needed = a->dataByteOffset;
         if (a->bytesPerFrame > 0)
-            needed += (A1 / ATRAC_SAMPLES_PER_FRAME) * a->bytesPerFrame;
+            needed += (A1 / (uint32_t)atrac_samples_per_frame(a)) * a->bytesPerFrame;
         minWrite1 = (needed > a->size) ? (needed - a->size) : 0u;
         filePos1 = a->size;
     } else {
         /* Streamed mode */
         uint32_t sampleFileOffset = a->dataByteOffset;
-        if (a->bytesPerFrame > 0 && A1 >= ATRAC_SAMPLES_PER_FRAME) {
-            sampleFileOffset += ((A1 - ATRAC_SAMPLES_PER_FRAME) / ATRAC_SAMPLES_PER_FRAME) * a->bytesPerFrame;
+        uint32_t samplesPerFrame = (uint32_t)atrac_samples_per_frame(a);
+        if (a->bytesPerFrame > 0 && A1 >= samplesPerFrame) {
+            sampleFileOffset += ((A1 - samplesPerFrame) / samplesPerFrame) * a->bytesPerFrame;
         }
         uint32_t bSize = a->bytesPerFrame > 0 ? (a->bufferMaxSize / a->bytesPerFrame * a->bytesPerFrame) : a->bufferMaxSize;
         writePos1 = a->buf;
@@ -11478,6 +11610,8 @@ typedef enum {
     FD_KIND_UNUSED = 0,
     FD_KIND_STD = 1,
     FD_KIND_FILE = 2,
+    FD_KIND_RAW_DEVICE = 3,
+    FD_KIND_DIRECTORY = 4,
 } FdKind;
 
 typedef struct {
@@ -11497,10 +11631,45 @@ typedef struct {
     char guest_path[256];        /* the path the guest opened it with ("" if too long) */
 } Fd;
 static Fd s_fds[64];
+
+typedef struct {
+    int used;
+    int backend;                 /* 0 = ISO9660, 1 = merged host VFS namespace */
+    uint32_t index;
+    SrVfsDirList list;           /* backend 1: fully materialized at Dopen */
+    char *path;
+} DirFd;
+static DirFd s_dirfds[64];
+
 static int64_t s_closed_res[64];
 static IoAsyncState s_closed_async_state[64];
 static uint64_t s_io_dispatch_epoch;
 static uint64_t s_io_async_sequence;
+static atomic_uint s_io_raw_device_boundary_reported;
+
+typedef enum {
+    IO_RAW_BOUNDARY_OPEN_FLAGS = 0,
+    IO_RAW_BOUNDARY_OPEN_ASYNC,
+    IO_RAW_BOUNDARY_READ,
+    IO_RAW_BOUNDARY_WRITE,
+    IO_RAW_BOUNDARY_LSEEK32,
+    IO_RAW_BOUNDARY_LSEEK64,
+    IO_RAW_BOUNDARY_IOCTL,
+    IO_RAW_BOUNDARY_GETSTAT,
+    IO_RAW_BOUNDARY_DEVCTL,
+    IO_RAW_BOUNDARY_DOPEN,
+    IO_RAW_BOUNDARY_READ_ASYNC,
+    IO_RAW_BOUNDARY_WRITE_ASYNC,
+    IO_RAW_BOUNDARY_LSEEK32_ASYNC,
+    IO_RAW_BOUNDARY_LSEEK64_ASYNC,
+    IO_RAW_BOUNDARY_IOCTL_ASYNC,
+    IO_RAW_BOUNDARY_CLOSE_ASYNC,
+    IO_RAW_BOUNDARY_ASYNC_STATUS,
+    IO_RAW_BOUNDARY_ASYNC_PRIORITY,
+    IO_RAW_BOUNDARY_ASYNC_CALLBACK,
+    IO_RAW_BOUNDARY_DREAD,
+    IO_RAW_BOUNDARY_DCLOSE,
+} IoRawDeviceBoundary;
 
 typedef struct {
     uint32_t thread_uid;
@@ -11574,7 +11743,23 @@ static void hle_fd_release(Fd *f, int preserve_std_kind) {
     }
 }
 
+static void hle_dirfd_clear(DirFd *d) {
+    if (!d) return;
+    sr_vfs_dirlist_destroy(&d->list);
+    free(d->path);
+    memset(d, 0, sizeof(*d));
+}
+
+static void hle_dirfd_release_descriptor(uint32_t fd) {
+    if (fd >= sizeof(s_fds) / sizeof(s_fds[0])) return;
+    hle_dirfd_clear(&s_dirfds[fd]);
+    if (s_fds[fd].used && s_fds[fd].kind == FD_KIND_DIRECTORY)
+        hle_fd_release(&s_fds[fd], 0);
+}
+
 static void hle_fd_init(void) {
+    for (size_t i = 0; i < sizeof(s_dirfds) / sizeof(s_dirfds[0]); i++)
+        hle_dirfd_clear(&s_dirfds[i]);
     for (size_t i = 0; i < sizeof(s_fds) / sizeof(s_fds[0]); i++) {
         if (s_fds[i].used) hle_fd_release(&s_fds[i], 0);
         else memset(&s_fds[i], 0, sizeof(s_fds[i]));
@@ -11584,6 +11769,7 @@ static void hle_fd_init(void) {
     memset(s_io_cwds, 0, sizeof(s_io_cwds));
     s_io_dispatch_epoch = 0;
     s_io_async_sequence = 0;
+    atomic_store_explicit(&s_io_raw_device_boundary_reported, 0u, memory_order_release);
     for (uint8_t stream = 0; stream < 3; stream++) {
         Fd *f = &s_fds[stream];
         f->used = 1;
@@ -11597,18 +11783,56 @@ static int hle_fd_is_file(uint32_t fd) {
            s_fds[fd].used && s_fds[fd].kind == FD_KIND_FILE;
 }
 
+static int hle_fd_is_raw_device(uint32_t fd) {
+    return fd < (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) &&
+           s_fds[fd].used && s_fds[fd].kind == FD_KIND_RAW_DEVICE;
+}
+
+static int hle_fd_is_directory(uint32_t fd) {
+    return fd < (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) &&
+           s_fds[fd].used && s_fds[fd].kind == FD_KIND_DIRECTORY &&
+           s_dirfds[fd].used;
+}
+
 static int hle_fd_is_std(uint32_t fd) {
     return fd < (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) &&
            s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD;
 }
-typedef struct {
-    int used;
-    int backend;                 /* 0 = ISO9660, 1 = merged host VFS namespace */
-    uint32_t index;
-    SrVfsDirList list;           /* backend 1: fully materialized at Dopen */
-    char *path;
-} DirFd;
-static DirFd s_dirfds[32];
+
+static uint32_t hle_io_raw_device_boundary(IoRawDeviceBoundary operation,
+                                           const char *api, const char *path,
+                                           uint32_t fd) {
+    unsigned bit = 1u << (unsigned)operation;
+    unsigned previous = atomic_fetch_or_explicit(&s_io_raw_device_boundary_reported,
+                                                 bit, memory_order_acq_rel);
+    if (!(previous & bit)) {
+        if (path && path[0])
+            fprintf(stderr,
+                    "SEMANTIC_BOUNDARY: IO_RAW_DEVICE_OPERATION: %s on raw device '%s' "
+                    "is not supported yet (0x80010086)\n", api, path);
+        else
+            fprintf(stderr,
+                    "SEMANTIC_BOUNDARY: IO_RAW_DEVICE_OPERATION: %s on raw device "
+                    "descriptor %u is not supported yet (0x80010086)\n", api, fd);
+    }
+    return 0x80010086u;
+}
+
+static uint32_t hle_io_raw_fd_boundary(uint32_t fd, IoRawDeviceBoundary operation,
+                                       const char *api) {
+    if (!hle_fd_is_raw_device(fd)) return 0u;
+    return hle_io_raw_device_boundary(operation, api, s_fds[fd].guest_path, fd);
+}
+
+static int hle_fd_allocate(void) {
+    for (int i = 3; i < (int)(sizeof(s_fds) / sizeof(s_fds[0])); i++) {
+        if (!s_fds[i].used && !s_dirfds[i].used &&
+            s_fds[i].async.state == IO_ASYNC_IDLE &&
+            s_closed_async_state[i] == IO_ASYNC_IDLE)
+            return i;
+    }
+    return -1;
+}
 
 /* ---- Data-root lookup: serve files extracted from XB archives ------------------------
  *
@@ -13514,11 +13738,40 @@ static const SrAssetIndexEntry *host_data_lookup(const char *guest_path) {
  * development host devices (host0: ... host9:), which the extracted-tree route also
  * serves through host_data_lookup. Memory-stick paths (ms0:, fatms0:) are excluded, so
  * save data never resolves to a disc archive member. */
+typedef enum {
+    IO_RAW_DEVICE_NONE = 0,
+    IO_RAW_DEVICE_UMD0,
+    IO_RAW_DEVICE_UMD1,
+    IO_RAW_DEVICE_UMD_ALIAS,
+    IO_RAW_DEVICE_MSSTOR0P1,
+} IoRawDevicePath;
+
+static int io_path_equals_ci(const char *path, const char *expected) {
+    size_t length = strlen(expected);
+    return path && strlen(path) == length && sr_vfs_strnicmp(path, expected, length) == 0;
+}
+
+static int io_path_is_disc_device(const char *path) {
+    return path && (sr_vfs_strnicmp(path, "disc0:", 6) == 0 ||
+                    sr_vfs_strnicmp(path, "umd:", 4) == 0);
+}
+
+static IoRawDevicePath io_raw_device_path(const char *path) {
+    if (io_path_equals_ci(path, "umd0:") || io_path_equals_ci(path, "umd0:/"))
+        return IO_RAW_DEVICE_UMD0;
+    if (io_path_equals_ci(path, "umd1:") || io_path_equals_ci(path, "umd1:/"))
+        return IO_RAW_DEVICE_UMD1;
+    if (io_path_equals_ci(path, "umd:"))
+        return IO_RAW_DEVICE_UMD_ALIAS;
+    if (io_path_equals_ci(path, "msstor0p1:/"))
+        return IO_RAW_DEVICE_MSSTOR0P1;
+    return IO_RAW_DEVICE_NONE;
+}
+
 static int data_archive_guest_path_allowed(const char *guest_path) {
     if (!guest_path || !guest_path[0]) return 0;
     if (!strchr(guest_path, ':')) return 1;
-    return sr_vfs_strnicmp(guest_path, "disc0:", 6) == 0 ||
-           sr_vfs_strnicmp(guest_path, "umd:", 4) == 0 ||
+    return io_path_is_disc_device(guest_path) ||
            (sr_vfs_strnicmp(guest_path, "host", 4) == 0 &&
             guest_path[4] >= '0' && guest_path[4] <= '9' && guest_path[5] == ':');
 }
@@ -13544,23 +13797,29 @@ static uint32_t h_io_open_path(const char *path, uint32_t flags, int forced_slot
     if (!path) return 0x80010016u;
     if (getenv("SR_IOLOG"))
         fprintf(stderr, "HLE_IoOpen: opening '%s' flags=0x%x\n", path, flags);
+    IoRawDevicePath raw_device = io_raw_device_path(path);
+    if (raw_device != IO_RAW_DEVICE_NONE && flags != 0x00000001u &&
+        flags != 0x000f0001u)
+        return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_OPEN_FLAGS, "sceIoOpen",
+                                          path, UINT32_MAX);
+    if (io_path_equals_ci(path, "disc0:") && flags == 0x00000001u)
+        return 0x80010016u;
     int slot = forced_slot;
-    if (slot < 0) {
-        for (int i = 3; i < (int)(sizeof(s_fds) / sizeof(s_fds[0])); i++)
-            if (!s_fds[i].used && s_fds[i].async.state == IO_ASYNC_IDLE &&
-                s_closed_async_state[i] == IO_ASYNC_IDLE) {
-                slot = i;
-                break;
-            }
-    }
+    if (slot < 0) slot = hle_fd_allocate();
     if (slot < 3 || slot >= (int)(sizeof(s_fds) / sizeof(s_fds[0]))) slot = -1;
     if (slot < 0) return SCE_ERROR_KERNEL_TOO_MANY_OPEN_FILES;  /* too many open files */
     memset(&s_fds[slot], 0, sizeof(s_fds[slot]));
-    s_fds[slot].kind = FD_KIND_FILE;
+    s_fds[slot].kind = raw_device != IO_RAW_DEVICE_NONE ?
+                       FD_KIND_RAW_DEVICE : FD_KIND_FILE;
     if (strlen(path) < sizeof(s_fds[slot].guest_path))
         memcpy(s_fds[slot].guest_path, path, strlen(path) + 1u);
     s_closed_res[slot] = 0;
     s_closed_async_state[slot] = IO_ASYNC_IDLE;
+
+    if (raw_device != IO_RAW_DEVICE_NONE) {
+        s_fds[slot].used = 1;
+        return (uint32_t)slot;
+    }
 
     /* flash0: is the read-only font device. It is decided before the disc, memory-stick and
      * data-root paths, which never see it. A refused open leaves the slot unused. */
@@ -13755,6 +14014,8 @@ static uint32_t h_IoWrite(CpuState *s) {
         }
         return count;
     }
+    uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_WRITE, "sceIoWrite");
+    if (raw_error != 0u) return raw_error;
     if (f->kind != FD_KIND_FILE) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (f->flash0) return sr_flash0_font_refuse_write(f->guest_path, "write through a font descriptor");
     if (!f->host) return 0x80010013;                 /* read-only (ISO) fd: not writable */
@@ -13775,6 +14036,8 @@ static uint32_t h_IoRead(CpuState *s) {
     uint32_t fd = A0, dst = A1, count = A2;
     if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD)
         return 0x80010009; /* baseline behavior preserved for standard streams */
+    uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_READ, "sceIoRead");
+    if (raw_error != 0u) return raw_error;
     if (!hle_fd_is_file(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     Fd *f = &s_fds[fd];
     if (f->async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
@@ -13859,6 +14122,9 @@ static uint32_t h_IoLseek32(CpuState *s) {
     uint32_t fd = A0; int32_t off = (int32_t)A1; uint32_t whence = A2;
     if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD)
         return 0x80010009; /* baseline behavior preserved for standard streams */
+    uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_LSEEK32,
+                                               "sceIoLseek32");
+    if (raw_error != 0u) return raw_error;
     if (!hle_fd_is_file(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (whence >= 3u) return SCE_ERROR_KERNEL_INVALID_ARGUMENT;
     Fd *f = &s_fds[fd];
@@ -13872,13 +14138,16 @@ static uint32_t h_IoLseek(CpuState *s) {
     /* a0=fd, a2/a3=aligned 64-bit offset (a1 is skipped), t0=whence.
      * Returns the 64-bit position in v0:v1. */
     uint32_t fd = A0;
-    int64_t off = (int64_t)(((uint64_t)A3 << 32) | A2);
-    uint32_t whence = stack_arg(s, 0);
     if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD) {
         s->r[3] = 0;
         return 0x80010009; /* baseline behavior preserved for standard streams */
     }
+    uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_LSEEK64,
+                                               "sceIoLseek");
+    if (raw_error != 0u) { s->r[3] = 0xffffffffu; return raw_error; }
     if (!hle_fd_is_file(fd)) { s->r[3] = 0xFFFFFFFF; return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR; }
+    int64_t off = (int64_t)(((uint64_t)A3 << 32) | A2);
+    uint32_t whence = stack_arg(s, 0);
     if (s_fds[fd].async.state == IO_ASYNC_PENDING) {
         s->r[3] = 0xFFFFFFFF;
         return SCE_ERROR_KERNEL_ASYNC_BUSY;
@@ -13905,6 +14174,9 @@ static uint32_t h_io_ioctl_args(uint32_t fd, uint32_t cmd, uint32_t in,
                                 uint32_t inlen, uint32_t out, uint32_t outlen) {
     if (fd < 3 && s_fds[fd].used && s_fds[fd].kind == FD_KIND_STD)
         return 0x80010009; /* baseline behavior preserved for standard streams */
+    uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_IOCTL,
+                                               "sceIoIoctl");
+    if (raw_error != 0u) return raw_error;
     if (!hle_fd_is_file(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     Fd *f = &s_fds[fd];
     if (f->async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
@@ -14045,6 +14317,8 @@ static uint32_t h_IoIoctl(CpuState *s) {
 static uint32_t h_IoClose(CpuState *s) {
     uint32_t fd = A0;
     if (fd >= (uint32_t)(sizeof(s_fds) / sizeof(s_fds[0])) || !s_fds[fd].used)
+        return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    if (s_fds[fd].kind == FD_KIND_DIRECTORY)
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (s_fds[fd].async.state == IO_ASYNC_PENDING)
         return SCE_ERROR_KERNEL_ASYNC_BUSY;
@@ -14224,14 +14498,30 @@ static uint32_t vfs_overlay_merge_dir(const char *guest_path, SrVfsDirList *list
 static uint32_t h_io_dopen_path(const char *path) {
     if (!path) return 0x80010016u;
     if (getenv("SR_IOLOG")) fprintf(stderr, "HLE_IoDopen: path='%s'\n", path);
-    for (uint32_t i = 0; i < sizeof(s_dirfds) / sizeof(s_dirfds[0]); i++) {
-        if (!s_dirfds[i].used) {
-            DirFd *d = &s_dirfds[i];
-            memset(d, 0, sizeof(*d));
-            d->used = 1; d->index = 0;
-            d->path = sr_asset_index_strdup(path);
-            if (!d->path) { memset(d, 0, sizeof(*d)); return 0x80010014u; }
-            if (sr_flash0_font_is_device_path(path)) {
+    if (io_path_equals_ci(path, "disc0:")) return 0x80010016u;
+    IoRawDevicePath raw_device = io_raw_device_path(path);
+    if (raw_device != IO_RAW_DEVICE_NONE) {
+        if ((raw_device == IO_RAW_DEVICE_UMD0 && io_path_equals_ci(path, "umd0:")) ||
+            (raw_device == IO_RAW_DEVICE_UMD1 && io_path_equals_ci(path, "umd1:")) ||
+            (raw_device == IO_RAW_DEVICE_UMD_ALIAS && io_path_equals_ci(path, "umd:")))
+            return 0x80020325u;
+        return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_DOPEN,
+                                          "sceIoDopen", path, UINT32_MAX);
+    }
+    int fd = hle_fd_allocate();
+    if (fd < 0) return SCE_ERROR_KERNEL_TOO_MANY_OPEN_FILES;
+    uint32_t i = (uint32_t)fd;
+    DirFd *d = &s_dirfds[i];
+    memset(d, 0, sizeof(*d));
+    d->used = 1; d->index = 0;
+    memset(&s_fds[i], 0, sizeof(s_fds[i]));
+    s_fds[i].used = 1;
+    s_fds[i].kind = FD_KIND_DIRECTORY;
+    s_closed_res[i] = 0;
+    s_closed_async_state[i] = IO_ASYNC_IDLE;
+    d->path = sr_asset_index_strdup(path);
+    if (!d->path) { hle_dirfd_release_descriptor(i); return 0x80010014u; }
+    if (sr_flash0_font_is_device_path(path)) {
                 /* flash0: listings are materialized here like the merged namespace (backend 1),
                  * so Dread and Dclose need no device-specific code. */
                 Flash0Sources sources;
@@ -14239,15 +14529,13 @@ static uint32_t h_io_dopen_path(const char *path) {
                 sr_vfs_dirlist_init(&d->list);
                 uint32_t font_dir_rc = sr_flash0_font_list_dir(path, &sources, &d->list);
                 if (font_dir_rc != 0u) {
-                    sr_vfs_dirlist_destroy(&d->list);
-                    free(d->path); memset(d, 0, sizeof(*d));
+                    hle_dirfd_release_descriptor(i);
                     return font_dir_rc;
                 }
                 d->backend = 1;
-                return 0x100u + i;
-            }
-            int device_path = sr_vfs_strnicmp(path, "disc0:", 6) == 0 ||
-                               sr_vfs_strnicmp(path, "umd:", 4) == 0;
+                return i;
+    }
+            int device_path = io_path_is_disc_device(path);
             int iso_first_result = -1;
             IsoDirEntry iso_first = {0};
             if (device_path) {
@@ -14257,7 +14545,7 @@ static uint32_t h_io_dopen_path(const char *path) {
                     /* A file on the ISO must not be shadowed by the extracted
                      * directory index merely because its directory probe failed. */
                     if (iso_lookup(path, &iso_lba, &iso_size) == 0) {
-                        free(d->path); memset(d, 0, sizeof(*d));
+                        hle_dirfd_release_descriptor(i);
                         return 0x80010014u; /* SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND */
                     }
                 }
@@ -14283,21 +14571,18 @@ static uint32_t h_io_dopen_path(const char *path) {
                     }
                     if (iso_result == 0) break;
                     if (iso_result < 0) {
-                        sr_vfs_dirlist_destroy(&d->list);
-                        free(d->path); memset(d, 0, sizeof(*d));
+                        hle_dirfd_release_descriptor(i);
                         return 0x80010005u; /* SCE_KERNEL_ERROR_ERRNO_IO */
                     }
                     if (!sr_vfs_dirlist_merge_lba(
                             &d->list, entry.name, entry.is_dir,
                             entry.is_dir ? 0u : (uint64_t)entry.size,
                             entry.lba)) {
-                        sr_vfs_dirlist_destroy(&d->list);
-                        free(d->path); memset(d, 0, sizeof(*d));
+                        hle_dirfd_release_descriptor(i);
                         return 0x80010008u; /* SCE_KERNEL_ERROR_NO_MEMORY */
                     }
                     if (iso_index == UINT32_MAX) {
-                        sr_vfs_dirlist_destroy(&d->list);
-                        free(d->path); memset(d, 0, sizeof(*d));
+                        hle_dirfd_release_descriptor(i);
                         return 0x80010005u; /* SCE_KERNEL_ERROR_ERRNO_IO */
                     }
                 }
@@ -14306,8 +14591,7 @@ static uint32_t h_io_dopen_path(const char *path) {
             int overlay_found = 0;
             uint32_t overlay_rc = vfs_overlay_merge_dir(path, &d->list, &overlay_found);
             if (overlay_rc != 0) {
-                sr_vfs_dirlist_destroy(&d->list);
-                free(d->path); memset(d, 0, sizeof(*d));
+                hle_dirfd_release_descriptor(i);
                 return overlay_rc;
             }
             if (overlay_found) d->list.exists = 1;
@@ -14319,23 +14603,20 @@ static uint32_t h_io_dopen_path(const char *path) {
                     int loose_found = 0;
                     if (data_loose_merge_dir(norm_key, &d->list, &loose_found) != 0) {
                         free(norm_key);
-                        sr_vfs_dirlist_destroy(&d->list);
-                        free(d->path); memset(d, 0, sizeof(*d));
+                        hle_dirfd_release_descriptor(i);
                         return 0x80010005u;
                     }
                     if (loose_found) d->list.exists = 1;
                     if (sr_asset_index_list_dir(&s_data_index, norm_key,
                                                 wanted_variant, &d->list) < 0) {
                         free(norm_key);
-                        sr_vfs_dirlist_destroy(&d->list);
-                        free(d->path); memset(d, 0, sizeof(*d));
+                        hle_dirfd_release_descriptor(i);
                         return 0x80010008u;
                     }
                     if (sr_archive_vfs_list_dir(&s_archive_vfs, norm_key,
                                                 wanted_variant, &d->list) < 0) {
                         free(norm_key);
-                        sr_vfs_dirlist_destroy(&d->list);
-                        free(d->path); memset(d, 0, sizeof(*d));
+                        hle_dirfd_release_descriptor(i);
                         return 0x80010008u;
                     }
                 } else if (atomic_load_explicit(&s_data_state, memory_order_acquire) ==
@@ -14343,8 +14624,7 @@ static uint32_t h_io_dopen_path(const char *path) {
                     if (sr_asset_index_list_dir(&s_data_index, norm_key,
                                                 wanted_variant, &d->list) < 0) {
                         free(norm_key);
-                        sr_vfs_dirlist_destroy(&d->list);
-                        free(d->path); memset(d, 0, sizeof(*d));
+                        hle_dirfd_release_descriptor(i);
                         return 0x80010008u;
                     }
                 }
@@ -14355,8 +14635,7 @@ static uint32_t h_io_dopen_path(const char *path) {
              * source has is a not-found; a directory that exists with no
              * representable children opens and reads back zero entries. */
             if (!d->list.exists) {
-                sr_vfs_dirlist_destroy(&d->list);
-                free(d->path); memset(d, 0, sizeof(*d));
+                hle_dirfd_release_descriptor(i);
                 return 0x80010014u; /* SCE_KERNEL_ERROR_ERRNO_FILE_NOT_FOUND */
             }
             if (d->list.skipped != 0u) {
@@ -14366,9 +14645,7 @@ static uint32_t h_io_dopen_path(const char *path) {
             }
             sr_vfs_dirlist_sort(&d->list);
             d->backend = 1;
-            return 0x100u + i;
-        }
-    }
+            return i;
     return SCE_ERROR_KERNEL_TOO_MANY_OPEN_FILES;
 }
 
@@ -14380,10 +14657,11 @@ static uint32_t h_IoDopen(CpuState *s) {
 
 static uint32_t h_IoDread(CpuState *s) {
     uint32_t fd = A0, de = A1;
-    if (fd < 0x100u || fd >= 0x100u + sizeof(s_dirfds) / sizeof(s_dirfds[0]))
-        return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
-    DirFd *d = &s_dirfds[fd - 0x100u];
-    if (!d->used) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_DREAD,
+                                                "sceIoDread");
+    if (raw_error != 0u) return raw_error;
+    if (!hle_fd_is_directory(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    DirFd *d = &s_dirfds[fd];
     if (!de) return 0x80010009u; /* preserve baseline behavior for null pointer */
     IsoDirEntry e;
     if (d->backend == 0) {
@@ -14413,12 +14691,12 @@ static uint32_t h_IoDread(CpuState *s) {
 
 static uint32_t h_IoDclose(CpuState *s) {
     uint32_t fd = A0;
-    if (fd < 0x100u || fd >= 0x100u + sizeof(s_dirfds) / sizeof(s_dirfds[0])) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
-    DirFd *d = &s_dirfds[fd - 0x100u];
-    if (!d->used) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
-    if (d->backend == 1) sr_vfs_dirlist_destroy(&d->list);
-    free(d->path);
-    memset(d, 0, sizeof(*d)); return 0;
+    uint32_t raw_error = hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_DCLOSE,
+                                                "sceIoDclose");
+    if (raw_error != 0u) return raw_error;
+    if (!hle_fd_is_directory(fd)) return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    hle_dirfd_release_descriptor(fd);
+    return 0;
 }
 /* PSPSDK's SceDevctlCmd contains a pointer to SceDevInf for SCE_PR_GETDEV
  * (0x02425818); its five words are maxClusters, freeClusters, maxSectors,
@@ -14511,6 +14789,9 @@ static uint32_t h_IoDevctl(CpuState *s) {
     uint32_t outdata = s->r[8], outlen = s->r[9];
     if (!A0 || !guest_cstr(A0, device, (int)sizeof(device)))
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
+    if (io_raw_device_path(device) != IO_RAW_DEVICE_NONE)
+        return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_DEVCTL,
+                                          "sceIoDevctl", device, UINT32_MAX);
     int is_memstick = strcmp(device, "ms0:") == 0 || strcmp(device, "fatms0:") == 0;
     if (!is_memstick) {
         hle_note_devctl_refusal(device, A1, IO_DEVCTL_ERROR_UNSUPPORTED);
@@ -14574,6 +14855,31 @@ static uint32_t h_IoDevctl(CpuState *s) {
 static uint32_t io_async_submit(uint32_t fd, IoAsyncOp op, uint32_t a1,
                                 uint32_t a2, uint32_t a3,
                                 uint32_t stack0, uint32_t stack1) {
+    if (hle_fd_is_raw_device(fd)) {
+        switch (op) {
+        case IO_ASYNC_READ:
+            return hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_READ_ASYNC,
+                                          "sceIoReadAsync");
+        case IO_ASYNC_WRITE:
+            return hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_WRITE_ASYNC,
+                                          "sceIoWriteAsync");
+        case IO_ASYNC_LSEEK32:
+            return hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_LSEEK32_ASYNC,
+                                          "sceIoLseek32Async");
+        case IO_ASYNC_LSEEK64:
+            return hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_LSEEK64_ASYNC,
+                                          "sceIoLseekAsync");
+        case IO_ASYNC_IOCTL:
+            return hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_IOCTL_ASYNC,
+                                          "sceIoIoctlAsync");
+        case IO_ASYNC_CLOSE:
+            return hle_io_raw_fd_boundary(fd, IO_RAW_BOUNDARY_CLOSE_ASYNC,
+                                          "sceIoCloseAsync");
+        default:
+            return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_ASYNC_STATUS,
+                                              "asynchronous I/O", NULL, fd);
+        }
+    }
     if (fd >= sizeof(s_fds) / sizeof(s_fds[0]) || !s_fds[fd].used ||
         (s_fds[fd].kind != FD_KIND_FILE &&
          !(s_fds[fd].kind == FD_KIND_STD &&
@@ -14602,6 +14908,12 @@ static uint32_t io_async_submit(uint32_t fd, IoAsyncOp op, uint32_t a1,
 }
 
 static uint32_t h_IoOpenAsync(CpuState *s) {
+    char path[512];
+    uint32_t rc = io_guest_path(A0, path, sizeof(path));
+    if (rc != 0u) return rc;
+    if (io_raw_device_path(path) != IO_RAW_DEVICE_NONE)
+        return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_OPEN_ASYNC,
+                                          "sceIoOpenAsync", path, UINT32_MAX);
     uint32_t fd = h_IoOpen(s);
     if (fd < sizeof(s_fds) / sizeof(s_fds[0])) {
         s_fds[fd].async.state = IO_ASYNC_COMPLETE;
@@ -14619,6 +14931,9 @@ static uint32_t h_IoReadAsync(CpuState *s) {
     if (!s_fds[fd].used)
         return s_fds[fd].async.state == IO_ASYNC_PENDING ?
                SCE_ERROR_KERNEL_ASYNC_BUSY : SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    uint32_t raw_error = hle_io_raw_fd_boundary(
+        fd, IO_RAW_BOUNDARY_READ_ASYNC, "sceIoReadAsync");
+    if (raw_error != 0u) return raw_error;
     if (s_fds[fd].kind == FD_KIND_STD) return 0x80010009u;
     if (A2 != 0u && !sr_guest_span_writable(A1, A2)) return 0x80010016u;
     return io_async_submit(fd, IO_ASYNC_READ, A1, A2, 0u, 0u, 0u);
@@ -14631,6 +14946,9 @@ static uint32_t h_IoWriteAsync(CpuState *s) {
     if (!s_fds[fd].used)
         return s_fds[fd].async.state == IO_ASYNC_PENDING ?
                SCE_ERROR_KERNEL_ASYNC_BUSY : SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    uint32_t raw_error = hle_io_raw_fd_boundary(
+        fd, IO_RAW_BOUNDARY_WRITE_ASYNC, "sceIoWriteAsync");
+    if (raw_error != 0u) return raw_error;
     if (A2 != 0u && !sr_guest_span_readable(A1, A2)) return 0x80010016u;
     return io_async_submit(fd, IO_ASYNC_WRITE, A1, A2, 0u, 0u, 0u);
 }
@@ -14640,6 +14958,9 @@ static uint32_t h_IoLseekAsync(CpuState *s) {
     if (fd >= sizeof(s_fds) / sizeof(s_fds[0]) || !s_fds[fd].used)
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (s_fds[fd].async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
+    uint32_t raw_error = hle_io_raw_fd_boundary(
+        fd, IO_RAW_BOUNDARY_LSEEK64_ASYNC, "sceIoLseekAsync");
+    if (raw_error != 0u) return raw_error;
     return io_async_submit(fd, IO_ASYNC_LSEEK64, A2, A3, 0u, stack_arg(s, 0), 0u);
 }
 
@@ -14652,6 +14973,9 @@ static uint32_t h_IoIoctlAsync(CpuState *s) {
     if (fd >= sizeof(s_fds) / sizeof(s_fds[0]) || !s_fds[fd].used)
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (s_fds[fd].async.state == IO_ASYNC_PENDING) return SCE_ERROR_KERNEL_ASYNC_BUSY;
+    uint32_t raw_error = hle_io_raw_fd_boundary(
+        fd, IO_RAW_BOUNDARY_IOCTL_ASYNC, "sceIoIoctlAsync");
+    if (raw_error != 0u) return raw_error;
     uint32_t out = stack_arg(s, 0), outlen = stack_arg(s, 1);
     if (inlen != 0u && !sr_guest_span_readable(in, inlen)) return 0x80010016u;
     if (outlen != 0u && !sr_guest_span_writable(out, outlen)) return 0x80010016u;
@@ -14744,7 +15068,10 @@ static void io_async_dispatch_tick(void) {
     if (selected != UINT32_MAX) (void)io_async_complete_fd(selected);
 }
 
-static uint32_t io_async_query(uint32_t fd, uint32_t result_addr, int wait) {
+static uint32_t io_async_query(uint32_t fd, uint32_t result_addr, int wait,
+                               IoRawDeviceBoundary raw_boundary, const char *api) {
+    uint32_t raw_error = hle_io_raw_fd_boundary(fd, raw_boundary, api);
+    if (raw_error != 0u) return raw_error;
     if (fd >= sizeof(s_fds) / sizeof(s_fds[0]))
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
     if (result_addr != 0u && !sr_guest_span_writable(result_addr, 8u))
@@ -14778,19 +15105,21 @@ static uint32_t io_async_query(uint32_t fd, uint32_t result_addr, int wait) {
 static uint32_t h_IoWaitAsync(CpuState *s) {
     if (hle_log_on())
         fprintf(stderr, "HLE: IoWaitAsync fd=0x%x (from 0x%x)\n", A0, sched_current_uid());
-    return io_async_query(A0, A1, 1);
+    return io_async_query(A0, A1, 1, IO_RAW_BOUNDARY_ASYNC_STATUS, "sceIoWaitAsync");
 }
 
 static uint32_t h_IoPollAsync(CpuState *s) {
-    return io_async_query(A0, A1, 0);
+    return io_async_query(A0, A1, 0, IO_RAW_BOUNDARY_ASYNC_STATUS, "sceIoPollAsync");
 }
 
 static uint32_t h_IoGetAsyncStat(CpuState *s) {
-    return io_async_query(A0, A2, A1 == 0u);
+    return io_async_query(A0, A2, A1 == 0u, IO_RAW_BOUNDARY_ASYNC_STATUS,
+                          "sceIoGetAsyncStat");
 }
 
 static uint32_t h_IoWaitAsyncCB(CpuState *s) {
-    uint32_t rc = io_async_query(A0, A1, 1);
+    uint32_t rc = io_async_query(A0, A1, 1, IO_RAW_BOUNDARY_ASYNC_STATUS,
+                                 "sceIoWaitAsyncCB");
     if (rc == 0u && sr_thread_has_pending_callbacks(sched_current_uid()))
         sr_thread_dispatch_callbacks();
     return rc;
@@ -14800,6 +15129,9 @@ static uint32_t h_IoChangeAsyncPriority(CpuState *s) {
     uint32_t fd = A0;
     if (fd >= sizeof(s_fds) / sizeof(s_fds[0]) || !s_fds[fd].used)
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    uint32_t raw_error = hle_io_raw_fd_boundary(
+        fd, IO_RAW_BOUNDARY_ASYNC_PRIORITY, "sceIoChangeAsyncPriority");
+    if (raw_error != 0u) return raw_error;
     s_fds[fd].async.priority = (int32_t)A1;
     return 0u;
 }
@@ -14808,6 +15140,9 @@ static uint32_t h_IoSetAsyncCallback(CpuState *s) {
     uint32_t fd = A0, callback = A1;
     if (fd >= sizeof(s_fds) / sizeof(s_fds[0]) || !s_fds[fd].used)
         return SCE_ERROR_KERNEL_BAD_FILE_DESCRIPTOR;
+    uint32_t raw_error = hle_io_raw_fd_boundary(
+        fd, IO_RAW_BOUNDARY_ASYNC_CALLBACK, "sceIoSetAsyncCallback");
+    if (raw_error != 0u) return raw_error;
     if (callback != 0u && !sr_callback_is_valid(callback)) return 0x800201a1u;
     s_fds[fd].async.callback_uid = callback;
     s_fds[fd].async.callback_arg = A2;
@@ -15132,7 +15467,7 @@ static uint32_t h_IoChdir(CpuState *s) {
     uint32_t rc = io_guest_path(A0, path, sizeof(path));
     if (rc != 0u) return rc;
     uint32_t dirfd = h_io_dopen_path(path);
-    if (dirfd < 0x100u || dirfd >= 0x100u + sizeof(s_dirfds) / sizeof(s_dirfds[0]))
+    if (!hle_fd_is_directory(dirfd))
         return dirfd;
     CpuState close_cpu;
     memset(&close_cpu, 0, sizeof(close_cpu));
@@ -15188,6 +15523,7 @@ static uint32_t h_IoChstat(CpuState *s) {
 /* The focused native HLE harness exposes the small IoFileMgr slice under its
  * production handlers without widening the ThreadMan-only registry used by
  * that executable.  The wrappers and identity probe are test-build-only. */
+static void hle_register_iofilemgr_handlers(void);
 uint32_t sr_hle_test_io_open(CpuState *s) { return h_IoOpen(s); }
 uint32_t sr_hle_test_io_read(CpuState *s) { return h_IoRead(s); }
 uint32_t sr_hle_test_io_write(CpuState *s) { return h_IoWrite(s); }
@@ -15200,9 +15536,7 @@ uint32_t sr_hle_test_vfs_initial_find_error(unsigned long error, int *found) {
     return vfs_overlay_initial_find_error(error, found);
 }
 uint32_t sr_hle_test_io_ioctl(CpuState *s) { return h_IoIoctl(s); }
-void sr_hle_test_register_io_devctl(void) {
-    sr_hle_register_entry(0x54f5fb11u, "sceIoDevctl", h_IoDevctl, 0u);
-}
+void sr_hle_test_register_iofilemgr(void) { hle_register_iofilemgr_handlers(); }
 uint32_t sr_hle_test_io_devctl_callback_uid(void) {
     return atomic_load_explicit(&s_memstick_insert_eject_callback_uid,
                                 memory_order_acquire);
@@ -15278,6 +15612,9 @@ static uint32_t h_IoGetstat(CpuState *s) {
     char path[256];
     if (io_guest_path(A0, path, sizeof(path)) != 0u)
         return 0x80010016u;
+    if (io_raw_device_path(path) != IO_RAW_DEVICE_NONE)
+        return hle_io_raw_device_boundary(IO_RAW_BOUNDARY_GETSTAT,
+                                          "sceIoGetstat", path, UINT32_MAX);
     if (sr_flash0_font_is_device_path(path)) return h_io_getstat_flash0(path, A1);
     uint32_t lba, size, st = A1;
     if (iso_lookup(path, &lba, &size) != 0) {
@@ -21879,7 +22216,7 @@ static int lwmutex_acquire_timeout(uint32_t wa, int count, int blocking, uint32_
     }
 }
 
-static uint32_t h_LockLwMutex(CpuState *s) {
+static uint32_t h_lwmutex_lock_common(CpuState *s) {
     /* a0=workarea, a1=lockCount, a2=timeout ptr. */
     uint32_t wa = A0;
     if (!lwmutex_workarea_ok(wa)) return 0x80000103u;
@@ -21894,6 +22231,17 @@ static uint32_t h_LockLwMutex(CpuState *s) {
     case LWMUTEX_TIMEOUT: return 0x800201a8u;
     default: return 0x800201b5u;   /* WAIT_DELETE */
     }
+}
+
+static uint32_t h_LockLwMutex(CpuState *s) {
+    return h_lwmutex_lock_common(s);
+}
+
+/* Callback-variant waits remain unreviewed until the callback wait probe has
+ * measured them. Keep a distinct registered owner so the measured blocking
+ * lock cells cannot implicitly graduate the CB imports. */
+static uint32_t h_LockLwMutexCB(CpuState *s) {
+    return h_lwmutex_lock_common(s);
 }
 
 static uint32_t h_TryLockLwMutex(CpuState *s) {
@@ -22822,7 +23170,7 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0xa66b0120, "sceKernelReferEventFlagStatus", h_ReferEventFlagStatus);
     sr_hle_register(0x60107536, "sceKernelDeleteLwMutex", h_DeleteLwMutex);
     sr_hle_register(0x7cff8cf3, "_sceKernelLockLwMutex", h_LockLwMutex);
-    sr_hle_register(0x31327f19, "_sceKernelLockLwMutexCB", h_LockLwMutex);
+    sr_hle_register(0x31327f19, "_sceKernelLockLwMutexCB", h_LockLwMutexCB);
     sr_hle_register(0xdc692ee3, "sceKernelTryLockLwMutex", h_TryLockLwMutex);
     sr_hle_register(0x37431849, "sceKernelTryLockLwMutex_600", h_TryLockLwMutex600);
     sr_hle_register(0x71040d5c, "_sceKernelTryLockLwMutex", h_TryLockLwMutex);
@@ -22869,7 +23217,7 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0xa9c2cb9a, "sceKernelReferMutexStatus", h_ReferMutexStatus);
     sr_hle_register(0x19cff145, "sceKernelCreateLwMutex", h_CreateLwMutex);
     sr_hle_register(0xbea46419, "sceKernelLockLwMutex", h_LockLwMutex);
-    sr_hle_register(0x1fc64e09, "sceKernelLockLwMutexCB", h_LockLwMutex);
+    sr_hle_register(0x1fc64e09, "sceKernelLockLwMutexCB", h_LockLwMutexCB);
     sr_hle_register(0xc1734599, "sceKernelReferLwMutexStatus", h_ReferLwMutexStatus);
     sr_hle_register(0x4c145944, "sceKernelReferLwMutexStatusByID", h_ReferLwMutexStatusByID);
     sr_hle_register(0x3e0271d3, "sceKernelVolatileMemLock", h_VolatileMemLock);
@@ -23361,6 +23709,41 @@ static void hle_register_unregistered_import_batch(void) {
     sr_hle_register_unsupported(0x70a703f8u, "sceAudiocodecDecode", 0x80010086u);
 }
 
+static int s_iofilemgr_handlers_registered;
+
+static void hle_register_iofilemgr_handlers(void) {
+    if (s_iofilemgr_handlers_registered) return;
+    s_iofilemgr_handlers_registered = 1;
+    sr_hle_register(0x109f50bc, "sceIoOpen", h_IoOpen);
+    sr_hle_register(0x779103a0, "sceIoRename", h_IoRename);
+    sr_hle_register(0x68963324, "sceIoLseek32", h_IoLseek32);
+    sr_hle_register(0x27eb27b8, "sceIoLseek", h_IoLseek);
+    sr_hle_register(0x63632449, "sceIoIoctl", h_IoIoctl);
+    sr_hle_register(0x810c4bc3, "sceIoClose", h_IoClose);
+    sr_hle_register(0xace946e8, "sceIoGetstat", h_IoGetstat);
+    sr_hle_register(0xb29ddf9c, "sceIoDopen", h_IoDopen);
+    sr_hle_register(0xe3eb004c, "sceIoDread", h_IoDread);
+    sr_hle_register(0xeb092469, "sceIoDclose", h_IoDclose);
+    sr_hle_register(0x89aa9906, "sceIoOpenAsync", h_IoOpenAsync);
+    sr_hle_register(0xa0b5a7c2, "sceIoReadAsync", h_IoReadAsync);
+    sr_hle_register(0x71b19e77, "sceIoLseekAsync", h_IoLseekAsync);
+    sr_hle_register(0x3251ea56, "sceIoPollAsync", h_IoPollAsync);
+    sr_hle_register(0xff5940b6, "sceIoCloseAsync", h_IoCloseAsync);
+    sr_hle_register(0x0facab19, "sceIoWriteAsync", h_IoWriteAsync);
+    sr_hle_register(0x1117c65f, "sceIoRmdir", h_IoRmdir);
+    sr_hle_register(0x55f4717d, "sceIoChdir", h_IoChdir);
+    sr_hle_register(0xb293727f, "sceIoChangeAsyncPriority", h_IoChangeAsyncPriority);
+    sr_hle_register(0x1b385d8f, "sceIoLseek32Async", h_IoLseek32Async);
+    sr_hle_register(0xab96437f, "sceIoSync", h_IoSync);
+    sr_hle_register(0xb8a740f4, "sceIoChstat", h_IoChstat);
+    sr_hle_register(0xe95a012b, "sceIoIoctlAsync", h_IoIoctlAsync);
+    sr_hle_register(0xcb05f8d6, "sceIoGetAsyncStat", h_IoGetAsyncStat);
+    sr_hle_register(0xa12a0514, "sceIoSetAsyncCallback", h_IoSetAsyncCallback);
+    sr_hle_register(0x54f5fb11, "sceIoDevctl", h_IoDevctl);
+    sr_hle_register(0x06a70004, "sceIoMkdir", h_IoMkdir);
+    sr_hle_register(0xf27a9c51, "sceIoRemove", h_IoRemove);
+}
+
 void sr_hle_init(void) {
     int expected = 0;
     if (!atomic_compare_exchange_strong_explicit(&s_hle_init_state, &expected, 1,
@@ -23535,34 +23918,7 @@ void sr_hle_init(void) {
     /* Callback-aware UMD wait consumes callbacks while preserving the drive wait. */
     hle_register_kernel_module_handlers();
     /* IoFileMgrForUser: file IO from the ISO. */
-    sr_hle_register(0x109f50bc, "sceIoOpen", h_IoOpen);
-    sr_hle_register(0x779103a0, "sceIoRename", h_IoRename);
-    sr_hle_register(0x68963324, "sceIoLseek32", h_IoLseek32);
-    sr_hle_register(0x27eb27b8, "sceIoLseek", h_IoLseek);
-    sr_hle_register(0x63632449, "sceIoIoctl", h_IoIoctl);
-    sr_hle_register(0x810c4bc3, "sceIoClose", h_IoClose);
-    sr_hle_register(0xace946e8, "sceIoGetstat", h_IoGetstat);
-    sr_hle_register(0xb29ddf9c, "sceIoDopen", h_IoDopen);
-    sr_hle_register(0xe3eb004c, "sceIoDread", h_IoDread);
-    sr_hle_register(0xeb092469, "sceIoDclose", h_IoDclose);
-    sr_hle_register(0x89aa9906, "sceIoOpenAsync", h_IoOpenAsync);
-    sr_hle_register(0xa0b5a7c2, "sceIoReadAsync", h_IoReadAsync);
-    sr_hle_register(0x71b19e77, "sceIoLseekAsync", h_IoLseekAsync);
-    sr_hle_register(0x3251ea56, "sceIoPollAsync", h_IoPollAsync);
-    sr_hle_register(0xff5940b6, "sceIoCloseAsync", h_IoCloseAsync);
-    sr_hle_register(0x0facab19, "sceIoWriteAsync", h_IoWriteAsync);
-    sr_hle_register(0x1117c65f, "sceIoRmdir", h_IoRmdir);
-    sr_hle_register(0x55f4717d, "sceIoChdir", h_IoChdir);
-    sr_hle_register(0xb293727f, "sceIoChangeAsyncPriority", h_IoChangeAsyncPriority);
-    sr_hle_register(0x1b385d8f, "sceIoLseek32Async", h_IoLseek32Async);
-    sr_hle_register(0xab96437f, "sceIoSync", h_IoSync);
-    sr_hle_register(0xb8a740f4, "sceIoChstat", h_IoChstat);
-    sr_hle_register(0xe95a012b, "sceIoIoctlAsync", h_IoIoctlAsync);
-    sr_hle_register(0xcb05f8d6, "sceIoGetAsyncStat", h_IoGetAsyncStat);
-    sr_hle_register(0xa12a0514, "sceIoSetAsyncCallback", h_IoSetAsyncCallback);
-    sr_hle_register(0x54f5fb11, "sceIoDevctl", h_IoDevctl);
-    sr_hle_register(0x06a70004, "sceIoMkdir", h_IoMkdir);
-    sr_hle_register(0xf27a9c51, "sceIoRemove", h_IoRemove);
+    hle_register_iofilemgr_handlers();
     /* sceAudio regular channels and Output2 share one production mapping with the
      * executable audio contract harness. */
     hle_register_regular_audio_handlers();
@@ -23583,24 +23939,24 @@ void sr_hle_init(void) {
     hle_register_devkit_version_handler();
 
     /* cache / misc UtilsForUser: no-ops are fine without a real cache. */
-    sr_hle_register(0x79d1c3fa, "sceKernelDcacheWritebackAll", h_CacheInvalidateAll);
+    sr_hle_register(0x79d1c3fa, "sceKernelDcacheWritebackAll", h_DcacheWritebackAll);
     /* Guest and host share one coherent byte array; cache maintenance has no
      * additional host-side work, but the syscall and success result are real. */
-    sr_hle_register(0xb435dec5, "sceKernelDcacheWritebackInvalidateAll", h_CacheInvalidateAll);
-    sr_hle_register(0x3ee30821, "sceKernelDcacheWritebackRange", h_CacheInvalidateRange);
+    sr_hle_register(0xb435dec5, "sceKernelDcacheWritebackInvalidateAll", h_CacheInvalidateAllOther);
+    sr_hle_register(0x3ee30821, "sceKernelDcacheWritebackRange", h_DcacheRangeMaintenance);
     /* Range invalidates are routine data-cache maintenance around DMA (the guest
      * libpsmfplayer invalidates its read buffer before sceDmacMemcpy), so they are
      * real no-op successes on this coherent memory like the writebacks above. */
-    sr_hle_register(0xbfa98062u, "sceKernelDcacheInvalidateRange", h_CacheInvalidateRange);
-    sr_hle_register(0x34b9fa9eu, "sceKernelDcacheWritebackInvalidateRange", h_CacheInvalidateRange);
+    sr_hle_register(0xbfa98062u, "sceKernelDcacheInvalidateRange", h_DcacheRangeMaintenance);
+    sr_hle_register(0x34b9fa9eu, "sceKernelDcacheWritebackInvalidateRange", h_CacheInvalidateRangeOther);
     /* TD-27 stale-code detector: the Icache NIDs (a code-modification signal)
      * stay UNREGISTERED (fail-closed, as before) unless SR_STALE_DETECT opts
      * in, so default dispatch behavior is unchanged. When enabled they run
      * the same check-and-abort contract as the Dcache handlers above. */
     if (sr_stale_enabled()) {
-        sr_hle_register(0x920f104au, "sceKernelIcacheInvalidateAll", h_CacheInvalidateAll);
-        sr_hle_register(0xd8779ac6u, "sceKernelIcacheClearAll", h_CacheInvalidateAll);
-        sr_hle_register(0xc2df770eu, "sceKernelIcacheInvalidateRange", h_CacheInvalidateRange);
+        sr_hle_register(0x920f104au, "sceKernelIcacheInvalidateAll", h_CacheInvalidateAllOther);
+        sr_hle_register(0xd8779ac6u, "sceKernelIcacheClearAll", h_CacheInvalidateAllOther);
+        sr_hle_register(0xc2df770eu, "sceKernelIcacheInvalidateRange", h_CacheInvalidateRangeOther);
     }
     /* GPO latch / GPI pins: shared with the executable harness through
      * hle_register_gpi_gpo_handlers(). */

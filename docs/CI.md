@@ -36,6 +36,11 @@ case-insensitive `true` or `false`; missing or malformed control state is red.
 
 ### Draft pull requests
 
+The OpenSSF Scorecard workflow (`.github/workflows/scorecards.yml`) runs weekly and on pushes to
+`main`. It uploads SARIF to GitHub code scanning; publishing results to scorecard.dev is disabled.
+Triage findings through the usual issue process. The workflow does not change branch-protection
+settings.
+
 A draft pull request now receives the same path-applicable substantive gates as
 a ready pull request. No `Ready for review` transition or manual
 `workflow_dispatch` is needed to discover whether the exact head passes.
@@ -53,6 +58,18 @@ protection. It runs with `always()`, accepts an intentionally skipped irrelevant
 job, and fails when a classifier-applicable job fails, is cancelled, or is
 otherwise incomplete. A failed hygiene/security job or public-export job is never
 hidden by the aggregate.
+
+### ClusterFuzzLite C fuzzing
+
+Pull requests run the pinned ClusterFuzzLite workflow in
+`.github/workflows/clusterfuzzlite.yml`. Its C target
+`tests/fuzzers/test_nk_json_fuzzer.c` calls the public `nk_json_parse` API
+with bounded synthetic bytes and exercises nesting at the `NK_JSON_MAX_DEPTH`
+boundary. The project configuration is `.clusterfuzzlite/project.yaml`; the
+Clang/libFuzzer build is defined by `.clusterfuzzlite/Dockerfile` and
+`.clusterfuzzlite/build.sh`. AddressSanitizer code-change fuzzing is capped
+at 60 seconds with a 4 KiB maximum input. The target does not use title files,
+retail inputs, or hardware.
 
 ### Hygiene beside the substantive gates
 
@@ -111,7 +128,9 @@ counted as a kill. Both are source-owned and need no game input. See
 limits of the evidence.
 
 The Linux `native_tools` job builds SDL3 from its pinned 3.4.16 release commit and installs
-Vulkan development headers. It configures and builds the CMake player with `BUILD_PLAYER=ON`,
+Vulkan development headers. The staged SDL3 install is cached under a key naming the pinned
+version and commit, the gcc and cmake versions, and the workflow file hash; a cache hit skips
+the build, and the pkg-config version check still runs. It configures and builds the CMake player with `BUILD_PLAYER=ON`,
 runs CTest, and requires the `nakagawa_player --help` usage marker. It also downloads the PSPDEV
 archive identified by [`pspdev.lock.json`](../assets/upstream/pspdev.lock.json), checking its
 SHA-256 before use. The job runs `make CC=gcc showcase-linux` to build and boot the two
@@ -326,6 +345,54 @@ weights when the suite's cost moves materially: run each module once, serially,
 and record its wall-clock seconds; `python tools/ci_test_shards.py --check` rejects
 weights for modules that no longer exist, and `--plan` prints the resulting
 partition with per-shard estimates.
+
+## Coverage
+
+Python coverage is reported as XML and C coverage is collected from raw gcov data
+whenever their jobs run; neither can change a gate's result.
+
+- **Python tooling (`python_tools`).** Each shard runs the module list it always
+  ran, through `python -m coverage run --parallel-mode --source=tools -m unittest
+  -v ...`, then combines its own data and writes `coverage-python.xml`. The
+  measured surface is the tooling, not the tests: `--source=tools` and
+  `omit = ["tools/test_*.py"]` in `[tool.coverage.run]` (`pyproject.toml`) keep
+  the test modules themselves out of the number. Coverage records the run and
+  exits with unittest's own status, so a failing shard still fails the job.
+- **C runtime (`native_tools`).** One additional step builds and runs the same
+  `native-core-tests` target in its own `$RUNNER_TEMP/native-core-coverage`
+  `BUILD_DIR`, with `--coverage` appended to the Makefile's own `CFLAGS` (read
+  back through `compiler-info`, so the measured build uses the default
+  configuration) and to `LDFLAGS`. The same step then runs `gcov -p -b -r` once per
+  object from the repository root, where the objects' recorded `src/...` source
+  paths resolve, and collects the reports in `$RUNNER_TEMP/native-core-gcov`. The
+  action's own `gcov` plugin is not used (`plugins: noop`): it runs gcov from the
+  build directory, cannot open any source there, and uploads header-only reports
+  that Codecov rejects. One run per object keeps a source shared by several
+  selftests from getting duplicate line records, `-r` keeps system headers and
+  generated fixtures out, and reports for the selftests' own `*_selftest.c` sources
+  are dropped, as `tools/test_*.py` is for Python. The unprofiled
+  `make CC=gcc native-core-tests` gate still runs first and is unchanged. The
+  `CFLAGS`/`LDFLAGS` route instruments the targets that compile through those
+  variables; a target that hard-codes its own compile flags is not measured, so
+  the C number is a lower bound for `src/` rather than a complete statement about
+  it.
+
+Both reports are uploaded with `codecov/codecov-action` (pinned by commit SHA)
+under `flags: python` and `flags: c`, authenticated with the job's OIDC identity
+(`use_oidc: true`, which is why those two jobs -- and only those two -- declare
+`id-token: write` beside `contents: read`). `fail_ci_if_error: false` keeps an
+upload or Codecov outage from failing the job.
+
+**The numbers are informational.** [`codecov.yml`](../codecov.yml) marks the
+project and patch status checks `informational: true`, so neither can block a
+merge, and sets `carryforward: true` for both flags, so a run that measures only
+one surface keeps the other flag's last report. The OpenSSF Best Practices
+Silver criterion "statement coverage >= 80%" is the target these numbers are
+watched against; it is not a gate, and promoting either status to a required
+check is a separate maintainer decision. Python's `coverage` package is installed
+from `tools/requirements-lock.txt` with `--require-hashes`; the C reports come
+from the runner's own `gcov` and add no Python dependency. A change to `codecov.yml` matches no classifier
+predicate, so it fails closed to the full matrix like any other unknown path.
 
 ## Classifier invariants
 
@@ -608,12 +675,12 @@ developer runs locally, without private inputs:
   through the headless production runtime, and checks all seven named
   guest-service cases for each manifest. It runs in the `routes` part of the
   25-minute `windows_runtime` job and took about 123 seconds locally for both package
-  builds and runtime launches. The guest bytes are the committed
-  `fixtures/profile_zero/prebuilt` fixture, built by PSPDEV/PSPSDK from the
-  fixture's own `main.c` and `Makefile` (see `fixtures/profile_zero/README.md`),
-  so hosted runners with no PSPDEV execute the whole route instead of
-  reporting a toolchain `SKIP`; where PSPDEV is installed, the gate rebuilds
-  the fixture first and fails if any byte differs from `SHA256SUMS`. Public
+  builds and runtime launches. The guest bytes are built from the fixture's own
+  `main.c` and `Makefile` by the `profile_zero_fixture` job (pinned PSPDEV, checked
+  against the committed `fixtures/profile_zero/prebuilt/SHA256SUMS`) and downloaded
+  as an artifact, so the repository stores no generated executable (#1100) and the
+  Windows runner still executes the whole route; where PSPDEV is installed, the
+  gate rebuilds the fixture itself and fails if any byte differs from `SHA256SUMS`. Public
   runtime link dependencies remain external; when they are unavailable, the
   test reports an explicit `SKIP` with the printed missing-dependency reason.
   The job also runs the production smoke with its executable staged into a fresh

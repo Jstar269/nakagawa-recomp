@@ -2860,6 +2860,100 @@ static void test_fuzz_kle(unsigned iters) {
 }
 
 
+static void test_ec_verify(void) {
+    printf("[EC] Testing ECDSA verification nk_ec_verify...\n");
+    fflush(stdout);
+
+    static const NkEcParams params = {
+        .p  = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xec, 0x3f},
+        .a  = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+        .b  = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07},
+        .n  = {0x00, 0x00, 0x00, 0x02, 0xdd, 0xda, 0x86, 0xe6, 0x06, 0x34, 0x61, 0x23, 0x57, 0xb2, 0x70, 0xf2, 0x39, 0xc7, 0xaa, 0x0d},
+        .gx = {0x35, 0x31, 0x75, 0xc3, 0x7a, 0x8e, 0xb7, 0x50, 0x18, 0xde, 0x71, 0x39, 0x46, 0xa3, 0xb5, 0x14, 0x86, 0x5e, 0x6d, 0x06},
+        .gy = {0xd0, 0x5f, 0x61, 0xeb, 0x24, 0x09, 0xd5, 0x02, 0xc6, 0x7e, 0xbe, 0xca, 0xa9, 0xf6, 0xe8, 0x3b, 0x2b, 0x51, 0x70, 0x46}
+    };
+
+    static const uint8_t qx[20] = {0x4c, 0x89, 0x5d, 0x17, 0x81, 0x3d, 0x5a, 0xd0, 0xe4, 0xcb, 0xc9, 0x98, 0x2c, 0xce, 0x7d, 0x4e, 0xe6, 0x7c, 0x43, 0x45};
+    static const uint8_t qy[20] = {0xaf, 0x33, 0x45, 0x4c, 0x21, 0x7a, 0x87, 0x99, 0xcb, 0x6c, 0x61, 0x1b, 0x23, 0x13, 0xed, 0xbe, 0x4c, 0xb9, 0xff, 0x46};
+    static const uint8_t hash[20] = {0x00, 0x00, 0x00, 0x00, 0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0};
+    static const uint8_t r[20] = {0x00, 0x00, 0x00, 0x00, 0x7b, 0xd8, 0xa2, 0xa2, 0x41, 0x0e, 0x04, 0x10, 0x34, 0x51, 0xc7, 0x80, 0x77, 0x43, 0x49, 0x4b};
+    static const uint8_t s[20] = {0x00, 0x00, 0x00, 0x01, 0x46, 0x76, 0x4d, 0xf3, 0xd4, 0x65, 0xa3, 0x95, 0xc8, 0x19, 0x3c, 0xc3, 0xfb, 0x28, 0xdd, 0x3d};
+
+    /* 1. KAT happy path: valid signature must verify (returns 0) */
+    assert(nk_ec_verify(&params, qx, qy, hash, r, s) == 0);
+
+    /* 2. Null argument checks (returns -1) */
+    assert(nk_ec_verify(NULL, qx, qy, hash, r, s) == -1);
+    assert(nk_ec_verify(&params, NULL, qy, hash, r, s) == -1);
+    assert(nk_ec_verify(&params, qx, NULL, hash, r, s) == -1);
+    assert(nk_ec_verify(&params, qx, qy, NULL, r, s) == -1);
+    assert(nk_ec_verify(&params, qx, qy, hash, NULL, s) == -1);
+    assert(nk_ec_verify(&params, qx, qy, hash, r, NULL) == -1);
+
+    /* 3. Range checks on r and s */
+    uint8_t zero_val[20] = {0};
+    assert(nk_ec_verify(&params, qx, qy, hash, zero_val, s) == -1); /* r == 0 */
+    assert(nk_ec_verify(&params, qx, qy, hash, r, zero_val) == -1); /* s == 0 */
+
+    uint8_t invalid_r[20], invalid_s[20];
+    memcpy(invalid_r, params.n, 20); /* r == n */
+    assert(nk_ec_verify(&params, qx, qy, hash, invalid_r, s) == -1);
+
+    memcpy(invalid_s, params.n, 20);
+    invalid_s[19]++; /* s > n */
+    assert(nk_ec_verify(&params, qx, qy, hash, r, invalid_s) == -1);
+
+    /* 4. Off-curve Public Key Q rejection */
+    uint8_t bad_qx[20];
+    memcpy(bad_qx, qx, 20);
+    bad_qx[19] ^= 1;
+    assert(nk_ec_verify(&params, bad_qx, qy, hash, r, s) == -1);
+
+    /* 5. Off-curve Generator G rejection */
+    NkEcParams bad_params = params;
+    bad_params.gx[19] ^= 1;
+    assert(nk_ec_verify(&bad_params, qx, qy, hash, r, s) == -1);
+
+    /* 6. Signature / Message hash corruption rejections */
+    uint8_t bad_hash[20], bad_r[20], bad_s[20];
+
+    memcpy(bad_hash, hash, 20);
+    bad_hash[10] ^= 0x55;
+    assert(nk_ec_verify(&params, qx, qy, bad_hash, r, s) == -1);
+
+    memcpy(bad_r, r, 20);
+    bad_r[15] ^= 0xAA;
+    assert(nk_ec_verify(&params, qx, qy, hash, bad_r, s) == -1);
+
+    memcpy(bad_s, s, 20);
+    bad_s[15] ^= 0xFF;
+    assert(nk_ec_verify(&params, qx, qy, hash, r, bad_s) == -1);
+
+    /* 7. Point sum resulting in point at infinity:
+     * If Q = -G = (gx, p - gy), and hash = 1, r = 1, s = 1 (so u1 = 1, u2 = 1),
+     * u1 * G + u2 * Q = 1*G + 1*(-G) = infinity point -> return -1.
+     */
+    {
+        NkEcParams p_inf = params;
+        uint8_t gy_neg[20];
+        int borrow = 0;
+        for (int i = 19; i >= 0; i--) {
+            int diff = (int)params.p[i] - (int)params.gy[i] - borrow;
+            if (diff < 0) { diff += 256; borrow = 1; } else { borrow = 0; }
+            gy_neg[i] = (uint8_t)diff;
+        }
+
+        uint8_t one[20] = {0};
+        one[19] = 1;
+
+        assert(nk_ec_verify(&p_inf, params.gx, gy_neg, one, one, one) == -1);
+    }
+
+    printf("[EC] ECDSA verification nk_ec_verify tests PASSED!\n");
+    fflush(stdout);
+}
+
+
 int main(int argc, char **argv) {
     unsigned iters = 100;
 
@@ -2895,6 +2989,7 @@ int main(int argc, char **argv) {
     test_fuzz_kle(iters > 2000 ? 2000 : iters);
     test_kirk_ecdsa_curve_names();
     test_ec_mod_n_is_bounded(iters > 2000 ? 2000 : iters);
+    test_ec_verify();
 
     printf("=================================================================\n");
     printf("ALL DETERMINISTIC PARSER FUZZ HARNESSES PASSED SUCCESSFULLY!\n");

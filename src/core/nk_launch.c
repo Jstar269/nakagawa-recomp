@@ -770,12 +770,14 @@ NkResult nk_launch_validate_staged_executable(const NkGameEntry *game,
             }
         }
     }
-    if (manifest->executable_base != 0 && load_base != manifest->executable_base) {
+    if ((manifest->has_executable_base || manifest->executable_base != 0) &&
+        load_base != manifest->executable_base) {
         launch_error(error_message, error_message_size,
                      "staged ELF load base does not match the title manifest");
         goto staged_elf_cleanup;
     }
-    if (manifest->executable_entry != 0 && entry_point != manifest->executable_entry) {
+    if ((manifest->has_executable_entry || manifest->executable_entry != 0) &&
+        entry_point != manifest->executable_entry) {
         launch_error(error_message, error_message_size,
                      "staged ELF entry point does not match the title manifest");
         goto staged_elf_cleanup;
@@ -929,9 +931,14 @@ NkRuntimePackageStatus nk_launch_validate_runtime_package(
         if (reason && reason_size) snprintf(reason, reason_size, "Library entry is missing.");
         return NK_RUNTIME_PACKAGE_INCOMPATIBLE;
     }
+    /* Catalog-discovered showcase packages validate against their compiled
+       inputs. Their companion ISO is generated with the package and does not
+       need a per-user source-media identity. Other samples and library entries
+       retain the live-media identity check. */
+    const char *source_iso_path = game->is_showcase_package ? NULL : game->iso_path;
     return nk_title_manifest_validate_aot_package(
         user_data_root, game->disc_id, game->title_id, game->is_experimental,
-        game->selected_executable, game->disc_version, game->iso_path,
+        game->selected_executable, game->disc_version, source_iso_path,
         SR_CPUSTATE_ABI_VERSION, out_info,
         reason, reason_size);
 }
@@ -945,9 +952,10 @@ bool nk_launch_runtime_package_cache_identity(
         if (out_identity) out_identity[0] = '\0';
         return false;
     }
+    const char *source_iso_path = game->is_showcase_package ? NULL : game->iso_path;
     return nk_title_manifest_aot_package_cache_identity(
         user_data_root, game->disc_id, game->title_id, game->is_experimental,
-        game->selected_executable, game->disc_version, game->iso_path,
+        game->selected_executable, game->disc_version, source_iso_path,
         SR_CPUSTATE_ABI_VERSION, out_identity);
 }
 
@@ -1025,6 +1033,7 @@ NkResult nk_launch_prepare_session(
     if (package_valid) {
         session->package_launch = true;
         session->experimental_package = game->is_experimental;
+        session->showcase_package = game->is_showcase_package;
         snprintf(session->working_directory, sizeof(session->working_directory), "%s",
                  package_info.package_root);
         snprintf(session->executable_path, sizeof(session->executable_path), "%s",
@@ -1288,6 +1297,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
         snprintf(identity.iso_path, sizeof(identity.iso_path), "%s",
                  session->iso_path);
         identity.is_experimental = session->experimental_package;
+        identity.is_showcase_package = session->showcase_package;
         NkRuntimePackageStatus status = nk_launch_validate_runtime_package(
             session->package_root, &identity, &current, gate_error,
             sizeof(gate_error));

@@ -604,6 +604,272 @@ class LiveManifestTests(unittest.TestCase):
             self.assertIn(status, meta.HANDLER_STATUSES)
             self.assertIn(handler, handlers)
 
+    def test_route_a_kernel_ge_batch_has_evidence_and_named_limits(self) -> None:
+        expected = {
+            0xB77905EA: "h_GeEdramSetAddrTranslation",
+            0x71040D5C: "h_TryLockLwMutex",
+            0x15B6446B: "h_UnlockLwMutex",
+            0xD979E9BF: "h_AllocateFpl",
+            0xBED27435: "h_AllocateVpl",
+        }
+        for nid, handler in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+                self.assertTrue(meta.HANDLER_EVIDENCE[handler])
+                self.assertTrue(
+                    all("HARDWARE_ORACLE.md" in item for item in meta.HANDLER_EVIDENCE[handler])
+                )
+                self.assertTrue(meta.HANDLER_LIMITATIONS[handler])
+
+    def test_route_a_kernel_object_batch_three_has_evidence_and_named_limits(self) -> None:
+        expected = {
+            0xCD203292: "h_CancelEventFlag",
+            0x8FFDF9A2: "h_CancelSema",
+            0x812346E4: "h_ClearEventFlag",
+            0xC07BB470: "h_CreateFpl",
+            0x19CFF145: "h_CreateLwMutex",
+            0xB7D098C6: "h_CreateMutex",
+            0xD6DA4BA1: "h_CreateSema",
+            0x56C039B5: "h_CreateVpl",
+            0xED1410E0: "h_DeleteFpl",
+            0x60107536: "h_DeleteLwMutex",
+        }
+        for nid, handler in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+                self.assertTrue(meta.HANDLER_EVIDENCE[handler])
+                self.assertTrue(
+                    all("HARDWARE_ORACLE.md" in item for item in meta.HANDLER_EVIDENCE[handler])
+                )
+                self.assertTrue(meta.HANDLER_LIMITATIONS[handler])
+                if handler == "h_ClearEventFlag":
+                    self.assertIn("0x8002019A", meta.HANDLER_LIMITATIONS[handler])
+                if handler == "h_DeleteFpl":
+                    self.assertIn("returns success", meta.HANDLER_LIMITATIONS[handler])
+
+    def test_route_a_kernel_lifecycle_batch_four_has_evidence_and_named_limits(self) -> None:
+        expected = {
+            0x28B6489C: "h_DeleteSema",
+            0x9FA03CD3: "h_DeleteThread",
+            0x89B3D48C: "h_DeleteVpl",
+            0x809CE29B: "h_ExitDeleteThread",
+            0xAA73C935: "h_ExitThread",
+            0xF6414A71: "h_FreeFpl",
+            0xB736E9FF: "h_FreeVpl",
+            0x2C34E053: "h_ReleaseWaitThread",
+            0x623AE665: "h_TryAllocateFpl",
+            0xAF36D708: "h_TryAllocateVpl",
+        }
+        for nid, handler in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+                self.assertTrue(meta.HANDLER_EVIDENCE[handler])
+                self.assertTrue(
+                    all("HARDWARE_ORACLE.md" in item for item in meta.HANDLER_EVIDENCE[handler])
+                )
+                self.assertTrue(meta.HANDLER_LIMITATIONS[handler])
+                if handler == "h_ExitDeleteThread":
+                    self.assertIn("PSP-TEARDOWN-001", meta.HANDLER_LIMITATIONS[handler])
+                if handler == "h_TryAllocateVpl":
+                    self.assertIn("unmeasured", meta.HANDLER_LIMITATIONS[handler])
+        for nid, handler in {
+            0x446D8DE6: "h_CreateThread",
+            0xF475845D: "h_StartThread",
+        }.items():
+            with self.subTest(nid=f"0x{nid:08x}", excluded_handler=handler):
+                self.assertEqual(self.regs[nid]["handler"], handler)
+                self.assertEqual(self.regs[nid]["status"], "unreviewed")
+
+    def test_route_a_kernel_sync_batch_five_has_evidence_and_named_limits(self) -> None:
+        expected = {
+            0xB011B11F: "h_LockMutex",
+            0xC11BA8C4: "h_NotifyCallback",
+            0x30FD48F0: "h_PollEventFlag",
+            0x74829B76: "h_ReceiveMsgPipe",
+            0xA66B0120: "h_ReferEventFlagStatus",
+            0xD8199E4C: "h_ReferFplStatus",
+            0xA9C2CB9A: "h_ReferMutexStatus",
+            0x876DBFAD: "h_SendMsgPipe",
+            0x1FB15A32: "h_SetEventFlag",
+            0x3F53E640: "h_SignalSema",
+        }
+        for nid, handler in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+                self.assertTrue(meta.HANDLER_EVIDENCE[handler])
+                self.assertTrue(
+                    all("HARDWARE_ORACLE.md" in item for item in meta.HANDLER_EVIDENCE[handler])
+                )
+                self.assertTrue(meta.HANDLER_LIMITATIONS[handler])
+
+    def test_route_a_kernel_wait_batch_six_has_evidence_and_named_limits(self) -> None:
+        expected = {
+            0x9ACE131E: "h_SleepThread",
+            0x0DDCD2C9: "h_TryLockMutex",
+            0xDF52098F: "h_TryReceiveMsgPipe",
+            0x884C9F90: "h_TrySendMsgPipe",
+            0x6B30100F: "h_UnlockMutex",
+            0x402FCF22: "h_WaitEventFlag",
+            0x4E3A1105: "h_WaitSema",
+            0xD59EAD2F: "h_WakeupThread",
+        }
+        for nid, handler in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+                self.assertTrue(meta.HANDLER_EVIDENCE[handler])
+                self.assertTrue(
+                    all("HARDWARE_ORACLE.md" in item for item in meta.HANDLER_EVIDENCE[handler])
+                )
+                self.assertTrue(meta.HANDLER_LIMITATIONS[handler])
+                if handler == "h_WaitEventFlag":
+                    self.assertIn("0x8002019A", meta.HANDLER_LIMITATIONS[handler])
+
+    def test_route_a_system_time_wide_has_measured_delta_and_named_limits(self) -> None:
+        registration = self.regs[0x82BC5777]
+        self.assertEqual(registration["handler"], "h_GetSystemTimeWide")
+        self.assertEqual(registration["classification"], "dedicated")
+        self.assertEqual(registration["status"], "partial")
+        self.assertEqual(
+            meta.HANDLER_EVIDENCE["h_GetSystemTimeWide"],
+            [
+                "docs/HARDWARE_ORACLE.md (PSP-HLE-VTIMER-002: system-clock reads around "
+                "the bounded delay)"
+            ],
+        )
+        limitation = meta.HANDLER_LIMITATIONS["h_GetSystemTimeWide"]
+        self.assertIn("220,608", limitation)
+        self.assertIn("8%", limitation)
+        self.assertIn("precise rate", limitation)
+
+    def test_route_a_io_batch_eight_has_measured_cells_and_named_limits(self) -> None:
+        expected = {
+            0xB29DDF9C: (
+                "h_IoDopen",
+                [
+                    "src/rt/hle_thread_selftest.c:test_umd_io_console_model",
+                    "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-dopen-0000..0005)",
+                ],
+            ),
+            0x27EB27B8: (
+                "h_IoLseek",
+                [
+                    "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-lseek and io-append)",
+                ],
+            ),
+            0x109F50BC: (
+                "h_IoOpen",
+                [
+                    "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-open-create, io-write, io-read-verify, io-append, io-errors)",
+                    "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)",
+                    "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+                ],
+            ),
+        }
+        for nid, (handler, evidence) in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+                self.assertEqual(meta.HANDLER_EVIDENCE[handler], evidence)
+                self.assertIn("measur", meta.HANDLER_LIMITATIONS[handler].lower())
+
+        # PSP-IO-001's current source matrix has no Ioctl or Rename call. Keep
+        # these handlers unreviewed until a direct hardware cell covers them.
+        for nid, handler in ((0x63632449, "h_IoIoctl"), (0x779103A0, "h_IoRename")):
+            with self.subTest(nid=f"0x{nid:08x}"):
+                self.assertEqual(self.regs[nid]["handler"], handler)
+                self.assertEqual(self.regs[nid]["classification"], "dedicated")
+                self.assertEqual(self.regs[nid]["status"], "unreviewed")
+                self.assertNotIn(handler, meta.HANDLER_METADATA)
+
+    def test_route_a_io_batch_nine_has_measured_cells_and_named_limits(self) -> None:
+        expected = {
+            0x810C4BC3: (
+                "h_IoClose",
+                [
+                    "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-write)",
+                    "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-open-0000..0012)",
+                    "src/rt/hle_thread_selftest.c:test_umd_io_console_model",
+                    "src/rt/hle_thread_selftest.c:test_io_async_and_path_imports",
+                ],
+            ),
+            0xEB092469: (
+                "h_IoDclose",
+                [
+                    "docs/HARDWARE_ORACLE.md (PSP-UMDIO-001: io-dopen-0004 and io-dopen-0005 close results)",
+                    "src/rt/hle_thread_selftest.c:test_umd_io_console_model",
+                ],
+            ),
+            0x6A638D83: (
+                "h_IoRead",
+                [
+                    "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-read-verify and io-errors)",
+                    "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+                ],
+            ),
+            0x42EC03AC: (
+                "h_IoWrite",
+                [
+                    "docs/HARDWARE_ORACLE.md (PSP-IO-001: io-write and io-append)",
+                    "src/rt/hle_thread_selftest.c:test_ms0_unified_namespace",
+                ],
+            ),
+        }
+        for nid, (handler, evidence) in expected.items():
+            with self.subTest(nid=f"0x{nid:08x}"):
+                registration = self.regs[nid]
+                self.assertEqual(registration["handler"], handler)
+                self.assertEqual(registration["classification"], "dedicated")
+                self.assertEqual(registration["status"], "partial")
+                self.assertEqual(meta.HANDLER_EVIDENCE[handler], evidence)
+                self.assertIn("measur", meta.HANDLER_LIMITATIONS[handler].lower())
+                self._assert_cited_oracle_cells_exist(evidence)
+
+    def _assert_cited_oracle_cells_exist(self, evidence: list[str]) -> None:
+        """Check batch 9's `(PSP-IO-001|PSP-UMDIO-001: io-... cells)` citations.
+
+Scoped to the four IoFileMgr handlers of batch 9 on purpose: the grammar is
+`(<oracle id>: <io- cell names or io-x-NNNN..NNNN ranges>)`, and the ids come
+from `tools/psp_oracle/manifest.json`. Any citation naming a PSP id that does
+not parse in that shape fails instead of being skipped. Other handlers' older
+citations (PSP-B1-01, no-colon forms) need their own check.
+"""
+        document = json.loads(hle_manifest.PSP_ORACLE_MANIFEST.read_text(encoding="utf-8"))
+        cells_by_id = {
+            row["id"]: set(row.get("evidence_cases", [])) | set(row.get("case_ids", []))
+            for row in document["tests"]
+        }
+        for citation in evidence:
+            if "PSP-" not in citation:
+                continue  # a selftest citation, not a hardware cell
+            match = re.search(r"\((PSP-[A-Z0-9-]+): ([^)]*)\)", citation)
+            self.assertIsNotNone(match, f"unparsed hardware citation: {citation}")
+            oracle_id, cells_text = match.groups()
+            self.assertIn(oracle_id, cells_by_id, citation)
+            cited: set[str] = set()
+            for prefix, first, last in re.findall(r"(io-[a-z]+-)(\d{4})\.\.(\d{4})", cells_text):
+                cited.update(f"{prefix}{n:04d}" for n in range(int(first), int(last) + 1))
+            cells_text = re.sub(r"io-[a-z]+-\d{4}\.\.\d{4}", "", cells_text)
+            cited.update(re.findall(r"io-[a-z0-9]+(?:-[a-z0-9]+)*", cells_text))
+            self.assertTrue(cited, citation)
+            self.assertLessEqual(cited, cells_by_id[oracle_id], citation)
+
     def test_psmf_getters_are_dedicated_partial(self) -> None:
         # Both getters drive the media producer and a host codec backend now, so
         # they are dedicated handlers with an honest `partial` status rather than
@@ -1177,7 +1443,8 @@ class EvidenceTierTests(unittest.TestCase):
                 "PSP-HLE-VTIMER-003", "PSP-IO-001", "PSP-KERNEL-001",
                 "PSP-KERNEL-002", "PSP-KERNEL-MISC-001", "PSP-KERNEL-STATUS-001", "PSP-LLSC-001",
                 "PSP-MUTEX-001", "PSP-REGISTRY-001", "PSP-SMOKE-001", "PSP-SYSTEM-001",
-                "PSP-THREAD-003", "PSP-THREAD-EXIT-001", "PSP-TRANSPORT-001", "PSP-VFPU-CMP-001",
+                "PSP-THREAD-003", "PSP-THREAD-EXIT-001", "PSP-TRANSPORT-001",
+                "PSP-UMDIO-001", "PSP-VFPU-CMP-001",
                 "PSP-VFPU-TRANSCENDENTAL-001", "PSP-VRAM-MIRROR-001", "PSP-WAIT-001",
             ],
         )
@@ -1394,6 +1661,41 @@ class CensusTests(unittest.TestCase):
             for r in cls.manifest["registrations"]
         ]
 
+    def test_route_a_mixed_handlers_are_split_from_unmeasured_nids(self) -> None:
+        by_nid = {
+            int(row["nid"], 16): row["handler"]
+            for row in self.manifest["registrations"]
+        }
+        groups = (
+            (
+                "LwMutex blocking versus callback locks",
+                (0x7CFF8CF3, 0xBEA46419),
+                (0x31327F19, 0x1FC64E09),
+            ),
+            (
+                "Dcache range operations versus writeback-invalidate and Icache",
+                (0x3EE30821, 0xBFA98062),
+                (0x34B9FA9E, 0xC2DF770E),
+            ),
+            (
+                "Dcache writeback-all versus writeback-invalidate and Icache",
+                (0x79D1C3FA,),
+                (0xB435DEC5, 0x920F104A, 0xD8779AC6),
+            ),
+        )
+        for label, route_a_nids, unmeasured_nids in groups:
+            with self.subTest(group=label):
+                self.assertTrue(
+                    all(nid in by_nid for nid in (*route_a_nids, *unmeasured_nids)),
+                    f"{label}: expected registrations disappeared",
+                )
+                route_a_handlers = {by_nid[nid] for nid in route_a_nids}
+                unmeasured_handlers = {by_nid[nid] for nid in unmeasured_nids}
+                self.assertTrue(
+                    route_a_handlers.isdisjoint(unmeasured_handlers),
+                    f"{label}: a measured route-A handler still owns unmeasured NIDs",
+                )
+
     def test_census_covers_every_dedicated_handler(self) -> None:
         generic = set(meta.GENERIC_SUCCESS_HANDLERS) | {"h_ControlledUnsupported"}
         expected_handlers = {
@@ -1427,6 +1729,30 @@ class CensusTests(unittest.TestCase):
             with self.subTest(handler=handler):
                 self.assertTrue(by_handler[handler]["evidence"])
                 self.assertTrue(by_handler[handler]["limitation"])
+
+    def test_issue_341_route_a_batch_1_is_tied_to_cited_cells(self) -> None:
+        expected = {
+            "h_AudioChRelease": ("partial", "PSP-AUDIO-001", "audio-ch-release"),
+            "h_AudioChReserve": ("partial", "PSP-AUDIO-001", "audio-ch-reserve"),
+            "h_AudioRestLen": ("partial", "PSP-AUDIO-001", "audio-ch-query-before"),
+            "h_AudioOutput2Rest": ("partial", "PSP-AUDIO-001", "audio-out2-query-before"),
+            "h_AudioOutput2Blocking": ("partial", "PSP-AUDIO-001", "audio-out2-output-blocking"),
+            "h_AudioOutput2Release": ("partial", "PSP-AUDIO-001", "audio-out2-release"),
+            "h_AudioOutput2Reserve": ("partial", "PSP-AUDIO-001", "audio-out2-reserve"),
+            "h_AudioOutputBlocking": ("partial", "PSP-AUDIO-001", "audio-ch-output-blocking-0"),
+            "h_GeEdramGetAddr": ("complete", "PSP-HLE-GE-EDRAM-001", "edram-addr"),
+            "h_GeEdramGetSize": ("complete", "PSP-HLE-GE-EDRAM-001", "edram-size"),
+        }
+        by_handler = {entry["handler"]: entry for entry in self.census["handlers"]}
+        for handler, (status, evidence_id, cell) in expected.items():
+            with self.subTest(handler=handler):
+                entry = by_handler[handler]
+                self.assertEqual(entry["status"], status)
+                evidence = "\n".join(entry.get("evidence", []))
+                self.assertIn(evidence_id, evidence)
+                self.assertIn(cell, evidence)
+                if status == "partial":
+                    self.assertTrue(entry.get("limitation"))
 
     @staticmethod
     def _fixture_constant(path: Path, name: str) -> int | tuple[int, ...]:

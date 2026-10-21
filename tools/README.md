@@ -272,6 +272,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `compiler_compare.py` | Compare GCC against Clang on the public corpus, with the semantic veto ahead of every timing. |
 | `generate_benchmarks.py` | Generate the public benchmark matrix. |
 | `capture_native_screenshots.py` | Capture showcase screenshots from a built native player. |
+| `make_showcase_animation.py` | Turn source-owned showcase framebuffer captures into deterministic animated GIFs. |
 | `ppmdiff.py` | Diff two PPM framebuffer directories, optionally watching for changes. |
 | `ppm2png.py` | Convert framebuffer snapshots written by the runtime into PNG. |
 | `pngcmp.py` | Compare two framebuffer PNGs written by `ppm2png.py`. |
