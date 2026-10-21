@@ -606,15 +606,39 @@ jobs:
           make --no-print-directory CC=gcc GAME_NAME=ci BUILD_DIR="$coverage_build" \
             CFLAGS="$base_cflags --coverage" LDFLAGS="--coverage" native-core-tests
 
-      # Informational only: the C number never gates a merge (codecov.yml).
+          # gcov opens each object's recorded source path (src/rt/...) relative to its
+          # working directory, so it runs here at the repository root. Run from the build
+          # directory, as the action's gcov plugin does, it cannot open any source and
+          # writes header-only reports that Codecov rejects as unusable. One gcov run per
+          # object keeps each report whole: given several objects that share a source,
+          # gcov 13 appends their line records into one file. -r keeps repository-relative
+          # sources only (no system headers or generated fixtures), and the selftests' own
+          # sources are dropped so the number describes the runtime they exercise.
+          shopt -s nullglob
+          gcov_dir="$RUNNER_TEMP/native-core-gcov"
+          mkdir -p "$gcov_dir"
+          for gcno in "$coverage_build"/*.gcno; do
+            obj="$(basename "$gcno" .gcno)"
+            gcov -p -b -r "$gcno" > /dev/null
+            for report in *.gcov; do
+              mv -- "$report" "$gcov_dir/$obj##$report"
+            done
+          done
+          { grep -l -m1 -E '^ +-: +0:Source:.*_selftest\.c$' "$gcov_dir"/*.gcov || true; } \
+            | xargs -r rm -f --
+          reports=("$gcov_dir"/*.gcov)
+          test "${#reports[@]}" -gt 0
+          echo "C coverage: ${#reports[@]} gcov reports"
+
+      # Informational only: the C number never gates a merge (codecov.yml). The reports
+      # are already generated above, so the action only uploads them (plugins: noop).
       - name: Upload C coverage to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           use_oidc: true
-          directory: ${{ runner.temp }}/native-core-coverage
+          directory: ${{ runner.temp }}/native-core-gcov
           root_dir: ${{ github.workspace }}
-          plugins: gcov
-          gcov_include: src/
+          plugins: noop
           flags: c
           name: c-native-core
           fail_ci_if_error: false
