@@ -111,6 +111,8 @@ subject to Section 2.
   authority repository, plus an exact trusted record for a new implementation path.
   `provenance-refresh` and `tools/contrib_refresh.py` refuse added or removed paths and only
   re-key admitted ones. Commit regenerated controls. Never hand-edit generated controls.
+- Step by step for a pull request that adds a public path, with the failure each skipped step produces:
+  [`docs/PUBLICATION_READINESS.md`](docs/PUBLICATION_READINESS.md#step-by-step-a-pull-request-that-adds-a-public-path).
 
 ## 5. Private and public boundaries
 
@@ -168,6 +170,10 @@ the PR numbers are navigation, not substitutes for source evidence:
   `CpuState` (COP0, transfer metadata, the LL/SC link bit) is versioned by
   `SR_CPUSTATE_ABI_VERSION` in `src/rt/recomp.h`. Values without hardware measurements stay
   behind fail-closed paths and are labelled synthetic until measured on a physical PSP.
+- **HLE arguments:** a handler reads arguments 1-4 from `A0`-`A3`. PSP userland is MIPS EABI, so
+  arguments 5-8 arrive in `t0`-`t3` (`stack_arg(s, 0..3)`) and only 9+ come from the stack. Check every
+  argument read against the function's public signature: a read past the real arguments returns whatever
+  the caller left in that register (#1124).
 
 ## 8. Workspace, branch, and worktree lifecycle
 
@@ -233,6 +239,11 @@ No hosted job runs the Windows-only cases in `tools/test_asset_index_c.py`, `too
 whole: on Windows it also builds the native fixtures and takes over an hour. Make-based tests need a POSIX `sh` on
 `PATH` (MSYS2 `usr/bin` or Git for Windows `bin`). The PR template's checklist is satisfied the same way.
 
+Windows host pitfalls: [`docs/SETUP.md`](docs/SETUP.md#windows-host-pitfalls). Quick recipes (find an HLE
+handler, run one native self-test, capture frames unattended):
+[`docs/DEBUGGING.md`](docs/DEBUGGING.md#quick-recipes). The findings reviewers raise most often:
+[`REVIEW.md`](REVIEW.md#findings-to-pre-empt).
+
 `workflow_dispatch` has no narrowing inputs. `tools/ci_paths.py` forces the full matrix
 for a manual run and sets `allow_substantive=true`; draft status does not suppress
 substantive gates. Verify these facts against the live workflow before documenting them.
@@ -250,6 +261,9 @@ substantive gates. Verify these facts against the live workflow before documenti
 - Never merge, enable auto-merge, close other PRs, or bypass required checks without the
   authority in Section 2. A substantive correction after Ready returns the PR to Draft
   and requires fresh exact-head validation.
+- Land pull requests that add or remove public paths one at a time: each changes the publication profile, so
+  the next one needs a new policy delta (Section 4). Never hold a ready pull request for an unrelated one;
+  merge `main` into the waiting branch after the other lands.
 
 ## 11. Reporting and cleanup
 
