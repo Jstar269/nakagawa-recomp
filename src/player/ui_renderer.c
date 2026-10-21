@@ -2780,16 +2780,29 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             }
             focus++;
             bx += 150.0f;
-            if (bx + 310.0f > inner_r + 1.0f) {
+            if (bx + 200.0f > inner_r + 1.0f) {
                 bx = col1_x;
                 by += 42.0f;
             }
             focused = (app->focus_index == focus);
-            if (draw_button_focused(ren, bx, by, 310.0f, 36.0f, fs_label, app->settings.fullscreen, in, focused)) {
+            if (draw_button_focused(ren, bx, by, 200.0f, 36.0f, fs_label, app->settings.fullscreen, in, focused)) {
                 player_app_toggle_fullscreen(app);
             }
             focus++;
-            bx += 320.0f;
+            bx += 210.0f;
+            if (bx + 160.0f > inner_r + 1.0f) {
+                bx = col1_x;
+                by += 42.0f;
+            }
+            char scaling_label[32];
+            snprintf(scaling_label, sizeof(scaling_label), "Scaling: %s",
+                     player_present_scaling_label(app->settings.present_scaling));
+            focused = (app->focus_index == focus);
+            if (draw_button_focused(ren, bx, by, 160.0f, 36.0f, scaling_label, false, in, focused)) {
+                player_app_cycle_present_scaling(app, 1);
+            }
+            focus++;
+            bx += 170.0f;
             if (bx + 200.0f > inner_r + 1.0f) {
                 bx = col1_x;
                 by += 42.0f;
@@ -2968,8 +2981,16 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         char fs_label[64];
         snprintf(fs_label, sizeof(fs_label), "Game fullscreen: %s", app->settings.fullscreen ? "ON" : "OFF");
         focused = (app->focus_index == focus);
-        if (draw_button_focused(ren, col1_x + 140.0f, tog_y + 24.0f, 310.0f, 36.0f, fs_label, app->settings.fullscreen, in, focused)) {
+        if (draw_button_focused(ren, col1_x + 140.0f, tog_y + 24.0f, 200.0f, 36.0f, fs_label, app->settings.fullscreen, in, focused)) {
             player_app_toggle_fullscreen(app);
+        }
+        focus++;
+        char scaling_label[32];
+        snprintf(scaling_label, sizeof(scaling_label), "Scaling: %s",
+                 player_present_scaling_label(app->settings.present_scaling));
+        focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, col1_x + 350.0f, tog_y + 24.0f, 180.0f, 36.0f, scaling_label, false, in, focused)) {
+            player_app_cycle_present_scaling(app, 1);
         }
         focus++;
         char rm_label[40];

@@ -1018,6 +1018,7 @@ NkResult nk_launch_prepare_session(
     snprintf(session->prepared_root, sizeof(session->prepared_root), "%s", game->prepared_root);
 
     session->config.resolution_scale = 1;
+    session->config.present_scaling = NK_PRESENT_SCALING_SHARP;
     session->config.fps_cap = -1;
     session->config.fullscreen = false;
     session->config.vsync = true;
@@ -1351,6 +1352,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_ge[32];
     char env_debug[32];
     char env_scale[32];
+    char env_present_scaling[48];
     char env_vsync[32];
     char env_dataroot[NK_MAX_PATH + 16];
     char env_loose_content_roots[NK_LAUNCH_LOOSE_ROOTS_ENV_CAPACITY + 32];
@@ -1373,6 +1375,9 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     }
     snprintf(env_ge, sizeof(env_ge), "SR_GPU_GE=1");
     snprintf(env_scale, sizeof(env_scale), "SR_RESOLUTION_SCALE=%d", session->config.resolution_scale);
+    snprintf(env_present_scaling, sizeof(env_present_scaling), "SR_PRESENT_SCALING=%s",
+             session->config.present_scaling == NK_PRESENT_SCALING_INTEGER ? "integer" :
+             session->config.present_scaling == NK_PRESENT_SCALING_BILINEAR ? "bilinear" : "sharp");
     snprintf(env_vsync, sizeof(env_vsync), "SR_VSYNC=%d", session->config.vsync ? 1 : 0);
     snprintf(env_fullscreen, sizeof(env_fullscreen), "SR_FULLSCREEN=%d",
              session->config.fullscreen ? 1 : 0);
@@ -1402,6 +1407,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     envp[env_count++] = env_fps;
     envp[env_count++] = env_ge;
     envp[env_count++] = env_scale;
+    envp[env_count++] = env_present_scaling;
     envp[env_count++] = env_vsync;
     envp[env_count++] = env_fs;
     envp[env_count++] = env_fullscreen;

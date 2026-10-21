@@ -18,9 +18,17 @@
 extern "C" {
 #endif
 
+/* How the child scales game frames into its window (SR_PRESENT_SCALING, issue #1129). */
+enum {
+    NK_PRESENT_SCALING_SHARP = 0,    /* nearest to the next integer multiple, then linear */
+    NK_PRESENT_SCALING_INTEGER = 1,  /* largest integer multiple, letterboxed */
+    NK_PRESENT_SCALING_BILINEAR = 2, /* linear fit, as before issue #1129 */
+};
+
 /* Typed runtime provider configuration */
 typedef struct {
     int resolution_scale;
+    int present_scaling;  /* NK_PRESENT_SCALING_*; prepare_session defaults to SHARP */
     int fps_cap; /* -1 = PSP scanout pacing, 0 = uncapped host presentation */
     bool fullscreen;
     bool vsync;

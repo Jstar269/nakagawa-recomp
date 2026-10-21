@@ -2067,6 +2067,26 @@ int main(int argc, char **argv) {
     player_app_set_resolution_scale(settings, 8);
     assert(settings->settings.resolution_scale == 2);
 
+    /* Game-frame scaling (#1129): three modes, cycled in both directions; an unknown value is refused. */
+    settings->settings.present_scaling = NK_PRESENT_SCALING_SHARP;
+    player_app_cycle_present_scaling(settings, 1);
+    assert(settings->settings.present_scaling == NK_PRESENT_SCALING_INTEGER);
+    player_app_cycle_present_scaling(settings, 1);
+    assert(settings->settings.present_scaling == NK_PRESENT_SCALING_BILINEAR);
+    player_app_cycle_present_scaling(settings, 1);
+    assert(settings->settings.present_scaling == NK_PRESENT_SCALING_SHARP);
+    player_app_cycle_present_scaling(settings, -1);
+    assert(settings->settings.present_scaling == NK_PRESENT_SCALING_BILINEAR);
+    player_app_set_present_scaling(settings, NK_PRESENT_SCALING_INTEGER);
+    assert(settings->settings.present_scaling == NK_PRESENT_SCALING_INTEGER);
+    player_app_set_present_scaling(settings, 3);
+    assert(settings->settings.present_scaling == NK_PRESENT_SCALING_INTEGER);
+    player_app_set_present_scaling(settings, -1);
+    assert(settings->settings.present_scaling == NK_PRESENT_SCALING_INTEGER);
+    assert(strcmp(player_present_scaling_label(NK_PRESENT_SCALING_SHARP), "Sharp") == 0);
+    assert(strcmp(player_present_scaling_label(NK_PRESENT_SCALING_INTEGER), "Integer") == 0);
+    assert(strcmp(player_present_scaling_label(NK_PRESENT_SCALING_BILINEAR), "Bilinear") == 0);
+
     player_app_set_fps_cap(settings, 0);
     assert(settings->settings.fps_cap == 0);
     player_app_set_fps_cap(settings, 999);
@@ -2109,6 +2129,7 @@ int main(int argc, char **argv) {
         memset(&applied, 0, sizeof(applied));
         player_app_settings_init_default(&applied);
         applied.resolution_scale = 2;
+        applied.present_scaling = NK_PRESENT_SCALING_INTEGER;
         applied.fps_cap = -1;
         applied.vsync = false;
         applied.fullscreen = true;
@@ -2120,6 +2141,7 @@ int main(int argc, char **argv) {
         cfg.gui_mode = true;
         player_app_apply_settings_to_session(&applied, &cfg);
         assert(cfg.resolution_scale == 2);
+        assert(cfg.present_scaling == NK_PRESENT_SCALING_INTEGER);
         assert(cfg.fps_cap == -1);
         assert(cfg.vsync == false);
         assert(cfg.fullscreen == true);
@@ -2335,7 +2357,7 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_PREPARING;
         assert(player_app_focus_count(stops) == 1);
         stops->active_view = VIEW_SETTINGS;
-        assert(player_app_focus_count(stops) == 15); /* two pacing modes; launcher fullscreen */
+        assert(player_app_focus_count(stops) == 16); /* two pacing modes; scaling; launcher fullscreen */
         stops->active_view = VIEW_PREREQ_CONSENT;
         assert(player_app_focus_count(stops) == 2);
         stops->active_view = VIEW_PREREQ_PROGRESS;
@@ -3654,6 +3676,7 @@ int main(int argc, char **argv) {
         assert(s_app != NULL);
         player_app_settings_init_default(&s_app->settings);
         assert(s_app->settings.resolution_scale == 1);
+        assert(s_app->settings.present_scaling == NK_PRESENT_SCALING_SHARP);
         assert(s_app->settings.fps_cap == -1);
         assert(s_app->settings.vsync == true);
         assert(s_app->settings.fullscreen == false);
@@ -3666,6 +3689,7 @@ int main(int argc, char **argv) {
 
         /* Mutate all settings and round-trip */
         s_app->settings.resolution_scale = 2;
+        s_app->settings.present_scaling = NK_PRESENT_SCALING_BILINEAR;
         s_app->settings.fps_cap = 0;
         s_app->settings.vsync = false;
         s_app->settings.fullscreen = true;
@@ -3685,6 +3709,7 @@ int main(int argc, char **argv) {
         assert(s_app2 != NULL);
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
         assert(s_app2->settings.resolution_scale == 2);
+        assert(s_app2->settings.present_scaling == NK_PRESENT_SCALING_BILINEAR);
         assert(s_app2->settings.fps_cap == 0);
         assert(s_app2->settings.vsync == false);
         assert(s_app2->settings.fullscreen == true);
@@ -3956,6 +3981,21 @@ int main(int argc, char **argv) {
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
         assert(s_app2->settings.resolution_scale == 1);
         assert(s_app2->settings_notice[0] == '\0');
+
+        /* Scaling is read by name; a file without it, a number or an unknown name keeps sharp. */
+        assert(s_app2->settings.present_scaling == NK_PRESENT_SCALING_SHARP);
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 1, \"present_scaling\": \"integer\"}");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.present_scaling == NK_PRESENT_SCALING_INTEGER);
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 1, \"present_scaling\": 1}");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.present_scaling == NK_PRESENT_SCALING_SHARP);
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 1, \"present_scaling\": \"blurry\"}");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.present_scaling == NK_PRESENT_SCALING_SHARP);
 
         remove(test_settings_path);
         free(s_app);

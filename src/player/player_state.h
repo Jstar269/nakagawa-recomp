@@ -135,6 +135,7 @@ typedef struct {
 
 typedef struct {
     int resolution_scale; /* 1 = Native 480x272, 2 = 2x Vita, 3 = 3x 720p, 4 = 4x 1080p */
+    int present_scaling;  /* NK_PRESENT_SCALING_*: how the game window scales its frames */
     bool fullscreen;
     bool launcher_fullscreen;
     bool vsync;
@@ -494,6 +495,10 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path);
 
 void player_app_set_resolution_scale(PlayerApp *app, int scale);
 void player_app_cycle_resolution_scale(PlayerApp *app, int direction);
+void player_app_set_present_scaling(PlayerApp *app, int scaling);
+void player_app_cycle_present_scaling(PlayerApp *app, int direction);
+/* "Sharp", "Integer" or "Bilinear" for a NK_PRESENT_SCALING_* value. */
+const char *player_present_scaling_label(int scaling);
 void player_app_set_fps_cap(PlayerApp *app, int cap);
 void player_app_cycle_fps_cap(PlayerApp *app, int direction);
 void player_app_toggle_fullscreen(PlayerApp *app);

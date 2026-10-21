@@ -54,6 +54,68 @@ int main(void) {
         assert(sdl3vk_pick_surface_format(RES_SUCCESS, 2, NULL) == -1);
         assert(sdl3vk_pick_surface_format(RES_OUT_OF_HOST_MEMORY, 4, two_bgra) == -1);
     }
+    /* Present scaling (issue #1129): destination rectangle, prescale factor and final filter
+     * for each mode. An exact integer fit is one nearest blit in every mode. */
+    {
+#define PLAN_IS(p, X, Y, W, H, PRE, NEAR) \
+    ((p).x == (X) && (p).y == (Y) && (p).w == (W) && (p).h == (H) && \
+     (p).prescale == (PRE) && (p).nearest == (NEAR))
+        enum { SHARP = SDL3VK_SCALING_SHARP, INTEGER = SDL3VK_SCALING_INTEGER,
+               BILINEAR = SDL3VK_SCALING_BILINEAR };
+        assert(sdl3vk_parse_present_scaling(NULL) == SHARP);
+        assert(sdl3vk_parse_present_scaling("") == SHARP);
+        assert(sdl3vk_parse_present_scaling("sharp") == SHARP);
+        assert(sdl3vk_parse_present_scaling("integer") == INTEGER);
+        assert(sdl3vk_parse_present_scaling("bilinear") == BILINEAR);
+        assert(sdl3vk_parse_present_scaling("Sharp") == -1);
+        assert(sdl3vk_parse_present_scaling("linear") == -1);
+        static const int modes[] = { SHARP, INTEGER, BILINEAR };
+        for (int m = 0; m < 3; m++) {
+            Sdl3VkPresentPlan p;
+            p = sdl3vk_present_plan(modes[m], 480, 272, 480, 272, 4096);   /* 1x: unchanged */
+            assert(PLAN_IS(p, 0, 0, 480, 272, 1, 1));
+            p = sdl3vk_present_plan(modes[m], 480, 272, 960, 544, 4096);   /* 2x */
+            assert(PLAN_IS(p, 0, 0, 960, 544, 1, 1));
+            p = sdl3vk_present_plan(modes[m], 480, 272, 1440, 816, 4096);  /* 3x */
+            assert(PLAN_IS(p, 0, 0, 1440, 816, 1, 1));
+            p = sdl3vk_present_plan(modes[m], 480, 272, 1920, 1088, 4096); /* 4x */
+            assert(PLAN_IS(p, 0, 0, 1920, 1088, 1, 1));
+            p = sdl3vk_present_plan(modes[m], 0, 0, 960, 544, 4096);       /* nothing to draw */
+            assert(p.w == 0 && p.h == 0 && p.prescale == 1);
+            p = sdl3vk_present_plan(modes[m], 480, 272, 0, 544, 4096);
+            assert(p.w == 0 && p.h == 0 && p.prescale == 1);
+        }
+        Sdl3VkPresentPlan p;
+        /* 1080p fullscreen: 3.97x fits 1905x1080. Sharp enlarges to 4x (1920x1088) with nearest,
+         * then shrinks linearly; integer letterboxes 3x; bilinear is one linear blit. */
+        p = sdl3vk_present_plan(SHARP, 480, 272, 1920, 1080, 4096);
+        assert(PLAN_IS(p, 7, 0, 1905, 1080, 4, 0));
+        p = sdl3vk_present_plan(INTEGER, 480, 272, 1920, 1080, 4096);
+        assert(PLAN_IS(p, 240, 132, 1440, 816, 1, 1));
+        p = sdl3vk_present_plan(BILINEAR, 480, 272, 1920, 1080, 4096);
+        assert(PLAN_IS(p, 7, 0, 1905, 1080, 1, 0));
+        /* A fractional window. */
+        p = sdl3vk_present_plan(SHARP, 480, 272, 1000, 600, 4096);
+        assert(PLAN_IS(p, 0, 17, 1000, 566, 3, 0));
+        p = sdl3vk_present_plan(INTEGER, 480, 272, 1000, 600, 4096);
+        assert(PLAN_IS(p, 20, 28, 960, 544, 1, 1));
+        /* Smaller than the source: every mode shrinks with one linear blit. */
+        for (int m = 0; m < 3; m++) {
+            p = sdl3vk_present_plan(modes[m], 480, 272, 400, 300, 4096);
+            assert(PLAN_IS(p, 0, 37, 400, 226, 1, 0));
+        }
+        /* A 2x render-scaled source: integer multiples are of the source pixels. */
+        p = sdl3vk_present_plan(SHARP, 960, 544, 1920, 1080, 4096);
+        assert(PLAN_IS(p, 7, 0, 1905, 1080, 2, 0));
+        p = sdl3vk_present_plan(INTEGER, 960, 544, 1920, 1080, 4096);
+        assert(PLAN_IS(p, 480, 268, 960, 544, 1, 1));
+        /* 4K: the 8x prescale needs 3840 pixels; a device limit below that falls back to linear. */
+        p = sdl3vk_present_plan(SHARP, 480, 272, 3840, 2160, 4096);
+        assert(PLAN_IS(p, 14, 0, 3811, 2160, 8, 0));
+        p = sdl3vk_present_plan(SHARP, 480, 272, 3840, 2160, 2048);
+        assert(PLAN_IS(p, 14, 0, 3811, 2160, 1, 0));
+#undef PLAN_IS
+    }
     assert(sr_parse_render_scale(NULL, NULL, 4) == 1);
     assert(sr_parse_render_scale(NULL, "1", 4) == 1);
     assert(sr_parse_render_scale(NULL, "3", 4) == 3);

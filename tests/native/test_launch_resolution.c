@@ -147,6 +147,7 @@ static int write_launch_environment_probe(void) {
     const char *fps = getenv("SR_FPS_CAP");
     const char *vsync = getenv("SR_VSYNC");
     const char *scale = getenv("SR_RESOLUTION_SCALE");
+    const char *present_scaling = getenv("SR_PRESENT_SCALING");
     const char *fullscreen = getenv("SR_FULLSCREEN");
     const char *volume = getenv("SR_MASTER_VOLUME");
     const char *input_profile = getenv("NK_INPUT_PROFILE");
@@ -159,6 +160,7 @@ static int write_launch_environment_probe(void) {
                      "SR_FPS_CAP=%s\n"
                      "SR_VSYNC=%s\n"
                      "SR_RESOLUTION_SCALE=%s\n"
+                     "SR_PRESENT_SCALING=%s\n"
                      "SR_FULLSCREEN=%s\n"
                      "SR_MASTER_VOLUME=%s\n"
                      "NK_INPUT_PROFILE=%s\n"
@@ -170,6 +172,7 @@ static int write_launch_environment_probe(void) {
                      fps ? fps : "<unset>",
                      vsync ? vsync : "<unset>",
                      scale ? scale : "<unset>",
+                     present_scaling ? present_scaling : "<unset>",
                      fullscreen ? fullscreen : "<unset>",
                      volume ? volume : "<unset>",
                      input_profile ? input_profile : "<unset>",
@@ -328,6 +331,7 @@ static void test_no_iso_child_environment(const char *test_executable,
     /* Apply settings the way the player does (apply_settings_to_session)
        before spawning, so every setting reaches the child environment. */
     session.config.resolution_scale = 2;
+    session.config.present_scaling = NK_PRESENT_SCALING_INTEGER;
     session.config.fps_cap = 30;
     session.config.vsync = false;
     session.config.fullscreen = true;
@@ -382,10 +386,11 @@ static void test_no_iso_child_environment(const char *test_executable,
     assert(strstr(observed,
                   "NK_LAUNCH_TEST_UNRELATED=preserve-me\n") != NULL);
     /* Every wired Settings value must reach the spawned child (#settings):
-       frame cap, vsync, render scale, fullscreen and master volume. */
+       frame cap, vsync, render scale, frame scaling, fullscreen and master volume. */
     assert(strstr(observed, "SR_FPS_CAP=30\n") != NULL);
     assert(strstr(observed, "SR_VSYNC=0\n") != NULL);
     assert(strstr(observed, "SR_RESOLUTION_SCALE=2\n") != NULL);
+    assert(strstr(observed, "SR_PRESENT_SCALING=integer\n") != NULL);
     assert(strstr(observed, "SR_FULLSCREEN=1\n") != NULL);
     assert(strstr(observed, "SR_MASTER_VOLUME=55\n") != NULL);
     /* The per-title mapping the player resolved reaches the child as
