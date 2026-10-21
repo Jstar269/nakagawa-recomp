@@ -34,7 +34,8 @@ acceptance matrix.
 ## Build and package
 
 `mingw32-make showcase` requires the installed PSPDEV toolchain in WSL at
-`/usr/local/pspdev`; it does not download or install a toolchain. It builds each
+`/usr/local/pspdev`; it does not download or install a toolchain. On Windows, the steps to install
+it in WSL 2 are in [SETUP](SETUP.md#showcase-demos-on-windows-wsl-2-and-pspdev). It builds each
 PSP PRX ELF from its fixture sources, emits the ISO, then calls
 `tools/title_codegen_plan.py --package --public-safe` with the matching public
 title manifest. Each package is validated before it is copied into

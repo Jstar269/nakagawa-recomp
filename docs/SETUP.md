@@ -6,6 +6,78 @@ headless showcase route for the runtime. For an ISO/player workflow, start with
 [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) and
 [`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md). The native player is the repository's only user interface.
 
+## Prerequisites
+
+Everything a new Windows machine needs, in one list. The versions are floors; the
+[supported baseline](#supported-development-baseline) says what is tested.
+
+1. **Windows 11 x64** with a Vulkan-capable GPU and its current graphics driver. The player loads the
+   driver's `vulkan-1.dll`.
+2. **PowerShell 7.4+** (`pwsh`). Windows PowerShell 5.1 is not supported.
+3. **MSYS2 UCRT64** with the packages in [section 1](#1-install-the-core-toolchain): GCC, GNU Make,
+   SDL3, SDL3_ttf, and the Vulkan headers and loader.
+4. **CPython 3.14.x** on `PATH`. Read [PATH order](#path-order) before you install the Python tooling.
+5. **The Vulkan SDK**, a current release, from [LunarG](https://vulkan.lunarg.com/sdk/home).
+6. **Git for Windows**, to clone the repository and fetch optional third-party source.
+7. **Your own copy of the game** as an `.iso`, and your own key file if its executable is encrypted.
+   Nothing in this repository ships or downloads a game; see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md).
+
+For the two showcase demos only, add **WSL 2** with Ubuntu and **PSPDEV v20260601**; see
+[Showcase demos on Windows](#showcase-demos-on-windows-wsl-2-and-pspdev).
+
+The player's **BUILD PACKAGE** can download pinned build tools on first use. A consent card lists each
+download first ([details](#player-build-package-prerequisites)).
+
+## Showcase demos on Windows: WSL 2 and PSPDEV
+
+The two showcase demos are project-written PSP programs. Their build uses PSPDEV, the PSP toolchain,
+which needs a POSIX system, so on Windows it runs inside WSL 2. Skip this section if you only want the
+player and your own game.
+
+1. In an administrator PowerShell, install WSL 2 with Ubuntu, and reboot if Windows asks:
+
+   ```powershell
+   wsl --install
+   ```
+
+   Open Ubuntu once and create your Linux user. Make Ubuntu the default distribution, because the build
+   runs `wsl -e` without naming one: `wsl --set-default Ubuntu`. `wsl -l -v` marks the default with `*`.
+
+2. In Ubuntu, download `pspdev-ubuntu-latest-x86_64.tar.gz` from the `v20260601` release at
+   <https://github.com/pspdev/pspdev/releases>. The asset name, release and archive hash are recorded in
+   [`assets/upstream/pspdev.lock.json`](../assets/upstream/pspdev.lock.json).
+
+3. Check the archive. Its SHA-256 must equal `distribution.archive_sha256` in the lock file:
+
+   ```bash
+   sha256sum pspdev-ubuntu-latest-x86_64.tar.gz
+   ```
+
+4. Unpack it into `/usr/local`. The archive's top folder is `pspdev/`, so this creates `/usr/local/pspdev`:
+
+   ```bash
+   sudo tar -xzf pspdev-ubuntu-latest-x86_64.tar.gz -C /usr/local
+   ```
+
+5. Check the install. The `psp-gcc` hash must equal its `sha256=` value under `local_verification.tool_versions`
+   in the lock file:
+
+   ```bash
+   test -x /usr/local/pspdev/bin/psp-gcc && test -d /usr/local/pspdev/psp/sdk && echo "PSPDEV found"
+   sha256sum /usr/local/pspdev/bin/psp-gcc
+   ```
+
+6. From the repository root, in a PowerShell window where `$env:Path` starts with `C:\msys64\ucrt64\bin`
+   (see [section 3](#3-build)):
+
+   ```powershell
+   mingw32-make player showcase     # PSPDEV runs in WSL 2 (steps 1-5)
+   mingw32-make showcase-smoke      # the demos need WSL 2 and PSPDEV too
+   ```
+
+   The demo build takes several minutes. `showcase-smoke` runs both demos headlessly and prints
+   `SHOWCASE_SMOKE: PASS` for each one.
+
 ## Linux headless showcase
 
 Linux can build and run the two source-owned showcase packages through the runtime.
@@ -17,7 +89,7 @@ and PSPDEV v20260601 installed at `/usr/local/pspdev`. CI builds SDL3 from its p
 Run the showcase from the repository root:
 
 ```bash
-make CC=gcc showcase-linux
+make CC=gcc showcase-linux   # needs PSPDEV at /usr/local/pspdev, as above
 ```
 
 The smoke selects SDL's dummy video and audio drivers and runs without a desktop or
@@ -79,9 +151,23 @@ From the repository root, install the declared Python tooling dependencies once:
 python -m pip install .
 ```
 
-This installs the declared tooling dependencies, including `compiledb`.
+This installs the declared tooling dependencies, including `compiledb`. Run it before you add the MSYS2
+line to `PATH`; see [PATH order](#path-order).
 
 `glslc` from the Vulkan SDK is only needed when regenerating the checked-in shader headers. LLD, Clang, CMake, Ninja, and Node.js are not required for the Windows core build (a staged CMake target for portability work is tracked separately in [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md)).
+
+### PATH order
+
+Some folders hold a second copy of a tool that the build also calls, so the order of `PATH` matters.
+
+- **MSYS2's Python.** `C:\msys64\ucrt64\bin` contains a `python.exe` that MSYS2 installs as a GLib
+  dependency. It has no pip, so `python -m pip install .` fails with `No module named pip` when that
+  folder comes before your CPython. Run the pip step from a PowerShell window that has not yet added the
+  MSYS2 line, and check that `python -c "import sys; print(sys.executable)"` prints your CPython. A UCRT64
+  terminal puts MSYS2 first, so do not run the pip step there.
+- **POSIX shell.** If a Make recipe needs `sh`, put Git for Windows' `usr\bin` (`C:\Program Files\Git\usr\bin`)
+  ahead of MSYS2's `usr\bin` (`C:\msys64\usr\bin`), as the [Windows host pitfalls](#windows-host-pitfalls)
+  table describes.
 
 ### Deliberate path conventions
 
@@ -505,7 +591,7 @@ mingw32-make player                      # build/nakagawa_player.exe, the native
 mingw32-make production-smoke            # complete two-phase pipeline smoke test
 mingw32-make platform-ladder             # relocations, scheduler, scalar FPU, filesystem
 mingw32-make cosim-selftest              # differential AOT vs. interpreter cosimulation
-mingw32-make showcase showcase-smoke     # build the showcase demos, then run both headlessly
+mingw32-make showcase showcase-smoke     # build the showcase demos (WSL 2 + PSPDEV on Windows), then run both headlessly
 ```
 
 - The **differential cosimulation harness** verifies semantic parity between
@@ -766,7 +852,7 @@ outside the published repository.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| A Make recipe fails with a shell error, or runs words such as `status` as commands | `mingw32-make` found no POSIX `sh` and fell back to `cmd.exe` | Put `C:\msys64\usr\bin` (or Git for Windows `bin`) on `PATH` |
+| A Make recipe fails with a shell error, or runs words such as `status` as commands | `mingw32-make` found no POSIX `sh` and fell back to `cmd.exe` | Put Git for Windows' `usr\bin` ahead of `C:\msys64\usr\bin` on `PATH` (see [PATH order](#path-order)) |
 | `cannot find -lvulkan` with `VULKAN_SDK=/ucrt64` | That is the CI's MSYS2 layout; a local MSYS2 may lack the import library | Leave `VULKAN_SDK` unset so the Makefile finds the installed Vulkan SDK |
 | A Make-driven step fails on a `C:\path\to\dir` path | Backslashes in a Make variable are read as escapes | Pass Make paths with forward slashes (`C:/path/to/dir`) |
 | The player refuses to build a package | Package outputs must live outside the repository | Point `BUILD_ROOT` and the user-data root outside the checkout |

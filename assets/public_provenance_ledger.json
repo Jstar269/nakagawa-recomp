@@ -426,7 +426,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3ce37e54a839ee4d2f68b63ba4ac6e30860d70f61ee1841acf5e1b7bb2588631"
+      "sha256": "05ef76c98d630cdd9e256303eef8fd58d9c710cf319a332b972a866aee3ae579"
     },
     {
       "path": "REVIEW.md",
@@ -1465,7 +1465,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e8e004ea9ec6441416e7be7e3a74a0f20bb03fea605b7a64bef0814c589c2560"
+      "sha256": "be5f5bdb3dbafb67de952bf2aa7f70a6b0871ca951447bdc96df7542bd759084"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -1474,7 +1474,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "11629f65542e11b77e2cbc151f12657c8039357af7d0cff3873363aff5e6475d"
+      "sha256": "e9fcbe00145ac176ff9440ecd2e724fdc1a90d8a11e37dbaebc51ccb71d23783"
     },
     {
       "path": "docs/SMOKE_TEST.md",
@@ -2687,7 +2687,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "671c027c56853ee2c73540e4eea669e6d0c507982186f63e1904512b317ee837"
+      "sha256": "cbd5f93ae794eb9daeaa412fd4434348d27a424f952932ef3216ae438b9ccd4d"
     },
     {
       "path": "fixtures/vfpu_addressing/hardware_vfpu_addr_001.json",

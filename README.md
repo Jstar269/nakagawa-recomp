@@ -47,10 +47,11 @@ Part of the Nakagawa family, with [hst-decomp](https://github.com/Jstar269/hst-d
 
 ## Quick start
 
-1. **Build the player** from a checkout: `mingw32-make player` (Windows 11 x64 with a Vulkan GPU, PowerShell 7.4+ and
-   MSYS2 UCRT64; see [`docs/SETUP.md`](docs/SETUP.md)).
-2. **Add a game you own.** Drop its `.iso` on `build/nakagawa_player.exe`, or choose **START SETUP WIZARD** (later
-   **ADD ANOTHER ISO**).
+New to this? The [prerequisites](docs/SETUP.md#prerequisites) are one list in [`docs/SETUP.md`](docs/SETUP.md).
+
+1. **Build the player** from a checkout: `mingw32-make player`.
+2. **Add a game you own.** Start `build\nakagawa_player.exe`, then drag its `.iso` into the player window, or choose
+   **START SETUP WIZARD** (later **ADD ANOTHER ISO**).
 3. **Unlock it with your own key file.** Supported encrypted executables are decrypted locally
    ([#548](https://github.com/Jstar269/nakagawa-recomp/pull/548), [#550](https://github.com/Jstar269/nakagawa-recomp/pull/550));
    [`docs/YOUR_OWN_GAMES.md`](docs/YOUR_OWN_GAMES.md) shows what goes where.
@@ -59,7 +60,7 @@ Part of the Nakagawa family, with [hst-decomp](https://github.com/Jstar269/hst-d
    for the PSP's original typography, import the fonts from your own PSP with
    `python tools/nk_cli.py fonts import <folder>`.
 
-No game at hand? `mingw32-make player showcase` builds the two demos above, and the player finds them on its own.
+No game at hand? `mingw32-make player showcase` (on Windows it needs WSL 2 and PSPDEV: [steps](docs/SETUP.md#showcase-demos-on-windows-wsl-2-and-pspdev)) builds the two demos above, and the player finds them on its own.
 
 ## Status
 
