@@ -91,14 +91,16 @@ The project intends to:
 - publish the first Windows release, v0.0.1, with signed build provenance
   ([#278](https://github.com/Jstar269/nakagawa-recomp/issues/278));
 - broaden title support through generic fixes rather than per-title patches
-  ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). The next milestone is a second PSP title
-  that can be imported, recompiled, played through a documented gameplay scenario, saved, closed and resumed
-  in the public player, using generic runtime features and no title-specific semantic fixes;
-- qualify gameplay, not just boot: booting, menus, gameplay, saving, loading, movies, rendering and recovery are
-  recorded as separate results, untested areas are listed as untested, project-written fixtures stay the public
-  baseline, and runs on a user's own retail game are a separate evidence tier;
-- make the path from a user's own disc image to a playable native build as simple as a launcher, without weakening
-  the lawful-input and fail-closed rules;
+  ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). PAC-MAN Championship Edition already reaches
+  its menu and plays a stage with no title-specific branch; the next milestone takes one such title through a
+  documented gameplay scenario that saves, closes and resumes in the native player, with no title-specific branch
+  or HLE override ([#1126](https://github.com/Jstar269/nakagawa-recomp/issues/1126));
+- extend the [title qualification route](TITLE_TESTING.md) past boot, so menus, gameplay, saving, loading, movies,
+  rendering and recovery are each reported, and a stage that was not proven reads `NOT_RUN`, `BLOCKED` or `SKIP`.
+  Retail titles stay local-only: a run on a user's own game is recorded outside the public tree, and only a
+  public-safe summary is published;
+- deliver one-click play from a PSP ISO the user owns, without the developer toolchain
+  ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)), within the lawful-input and fail-closed rules;
 - move more of the runtime from high-level emulation to low-level emulation, measured against a physical PSP;
 - bring the player to Linux, macOS and Android ([#306](https://github.com/Jstar269/nakagawa-recomp/issues/306),
   [#329](https://github.com/Jstar269/nakagawa-recomp/issues/329),
