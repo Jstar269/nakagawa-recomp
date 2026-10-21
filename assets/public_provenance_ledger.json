@@ -1294,7 +1294,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "bd5c82eee5e3873a5656ecb1481256d0786890482126071083f868e6a3f58324"
+      "sha256": "aca06d9085121df72ce089d927584c0d4e94cab4d148b40d2bba21c331b517a6"
     },
     {
       "path": "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
@@ -1360,7 +1360,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "592131f279d85b0ce7a53c7bff19bdba2ad53fce9106defe05126c13cd959c67"
+      "sha256": "373526d83a481fd889ea82a5b8179b975e4aba051f3980f1ce5a7904a867f9e4"
     },
     {
       "path": "docs/PROVENANCE_MERGE_GATE.md",
