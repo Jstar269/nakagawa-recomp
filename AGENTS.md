@@ -199,7 +199,7 @@ are not hosted-CI evidence; report each as `PASS`, `FAIL`, `SKIP`, `BLOCKED`, or
 
 | Changed surface | Focused first gate |
 | --- | --- |
-| `tools/codegen.py`, analysis, or imports | Python suite; relevant `tools/test_codegen_*.py` and import audit |
+| `tools/codegen.py`, analysis, or imports | relevant `tools/test_codegen_*.py` and the import audit |
 | `guest_interp`, `recomp`, or dispatch | `tools/test_dispatch_c.py`, `tools/test_dispatch_call_boundary.py`, cosim tests, then native selftests |
 | scheduler/HLE lifecycle | `tools/test_sched_invariants.py` and `mingw32-make --no-print-directory sched-selftest` |
 | FPU/VFPU conversion | relevant `tools/test_*fpu*.py` plus `fp-convert-selftest`/`vfpu-interp-selftest` |
@@ -211,13 +211,21 @@ are not hosted-CI evidence; report each as `PASS`, `FAIL`, `SKIP`, `BLOCKED`, or
 `native-core-tests` also runs on hosted Linux, so native selftests must build and link
 there without Windows-only libraries. Check with a Linux shell such as WSL before pushing.
 
-At minimum, when applicable, run:
+The full Python suite runs in hosted CI, sharded across the `python_tools` jobs. Locally, run the
+focused gates above for the files you changed, then these whenever they apply:
 
 ```powershell
-python -m unittest discover -s tools -p "test_*.py" -v
+python tools/tree_lint.py --check
+python tools/lint_docs.py
 python tools/publish_audit.py --tracked-only --worktree --public-scope --provenance-self-consistency
 python -m pre_commit run --all-files
 ```
+
+Run the full `python -m unittest discover -s tools -p "test_*.py" -v` locally only when hosted CI
+is unavailable or a change reaches most tool modules: on Windows it also builds the native
+fixtures and takes over an hour. An exact head that passes hosted CI meets the full-suite
+requirement for readiness (Section 10). Make-based tests need a POSIX `sh` on `PATH` (MSYS2
+`usr/bin` or Git for Windows `bin`).
 
 `workflow_dispatch` has no narrowing inputs. `tools/ci_paths.py` forces the full matrix
 for a manual run and sets `allow_substantive=true`; draft status does not suppress
