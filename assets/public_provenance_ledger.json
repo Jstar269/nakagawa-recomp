@@ -1849,7 +1849,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2a7886754dd74506d574be741dbf090556297cd6720a5a9122bae459832cd992"
+      "sha256": "3395983e6ee6e95c13a40a29d1dc30701a7d6f13e7b943def235d38f8cca1845"
     },
     {
       "path": "fixtures/fonts/README.md",
@@ -6426,7 +6426,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ee4b39fb522f6797f402d1916614505accdf6f0faf4613187cf7e6f3343782e1"
+      "sha256": "06b15d1cbcbdf4581a6cbe863619bef9d703fa0273adc9b1c671b74ebf7aecb8"
     },
     {
       "path": "tests/native/test_posix_process.c",
