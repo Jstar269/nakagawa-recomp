@@ -321,7 +321,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "23ad1d04aabe806edbe898d0f2860a235d893f7af3cf61cb5d4206e9c8e8ee8c"
+      "sha256": "1cc502fa972fda411e945554791f5d30df3d209ebd2e9c91037ddeef9b7c954d"
     },
     {
       "path": "CLAUDE.md",
