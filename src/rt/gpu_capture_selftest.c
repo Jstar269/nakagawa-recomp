@@ -97,6 +97,9 @@ int main(void) {
         /* A fractional window. */
         p = sdl3vk_present_plan(SHARP, 480, 272, 1000, 600, 4096);
         assert(PLAN_IS(p, 0, 17, 1000, 566, 3, 0));
+        /* One pixel past 2x on one axis: prescale 2x (960x544) and stretch one pixel, not 3x. */
+        p = sdl3vk_present_plan(SHARP, 480, 272, 961, 545, 4096);
+        assert(PLAN_IS(p, 0, 0, 961, 544, 2, 0));
         p = sdl3vk_present_plan(INTEGER, 480, 272, 1000, 600, 4096);
         assert(PLAN_IS(p, 20, 28, 960, 544, 1, 1));
         /* Smaller than the source: every mode shrinks with one linear blit. */

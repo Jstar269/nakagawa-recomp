@@ -51,8 +51,9 @@ int sdl3vk_pick_surface_format(int query, int count, const int *formats);
 
 /* How a game frame is scaled into the window (issue #1129), chosen by SR_PRESENT_SCALING:
  *   sharp    (default) fit the window keeping the 480:272 aspect; at a fractional scale the frame
- *            is first enlarged with nearest filtering to the next integer multiple, then that
- *            image is filtered linearly to the fitted size (sharp bilinear);
+ *            is first enlarged with nearest filtering to the next integer multiple (the smaller
+ *            one when the axes round apart), then that image is filtered linearly to the fitted
+ *            size (sharp bilinear);
  *   integer  the largest integer multiple of the source that fits, letterboxed, nearest filtering
  *            (a window smaller than the source falls back to a linear fit);
  *   bilinear fit the window with linear filtering (the behaviour before issue #1129).

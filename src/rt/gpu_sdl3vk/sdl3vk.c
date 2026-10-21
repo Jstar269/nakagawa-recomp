@@ -1150,9 +1150,11 @@ Sdl3VkPresentPlan sdl3vk_present_plan(int mode, int srcw, int srch, int dw, int 
     } else if (sdl3vk_present_filter(srcw, srch, vw, vh) == VK_FILTER_NEAREST) {
         p.nearest = 1;
     } else if (mode == SDL3VK_SCALING_SHARP && vw > srcw && vh > srch) {
-        /* The next integer multiple at or above the fit, so the linear pass only shrinks. */
+        /* The next integer multiple at or above the fit, so the linear pass shrinks. The fit
+         * rounds each axis on its own, so when one axis is just past a multiple (961x544) the
+         * smaller multiple wins: a stretch of under two pixels beats shrinking the other axis 1.5x. */
         int k = (vw + srcw - 1) / srcw, ky = (vh + srch - 1) / srch;
-        if (ky > k) k = ky;
+        if (ky < k) k = ky;
         if ((long long)k * srcw <= max_dim && (long long)k * srch <= max_dim) p.prescale = k;
     }
     p.x = (dw - vw) / 2; p.y = (dh - vh) / 2; p.w = vw; p.h = vh;
