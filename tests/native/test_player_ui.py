@@ -835,11 +835,11 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertNotEqual(frames[0]["pixels"], frames[2]["pixels"])
 
     def test_settings_presentation_choice_saves_with_native_default_schema(self) -> None:
-        events = ("KEY_TAB",) * 4 + ("KEY_RETURN",) + ("KEY_TAB",) * 10 + ("KEY_RETURN",)
+        events = ("KEY_TAB",) * 4 + ("KEY_RETURN",) + ("KEY_TAB",) * 11 + ("KEY_RETURN",)
         run = self.run_player("settings", events)
         frames = run["frames"]
         assert isinstance(frames, list)
-        self.assertEqual(frames[0]["focus_count"], "15")
+        self.assertEqual(frames[0]["focus_count"], "16")
         self.assertEqual(frames[4]["focus"], "4")
         self.assertEqual(frames[5]["focus"], "4")
         self.assertNotEqual(frames[4]["pixels"], frames[5]["pixels"])
@@ -857,21 +857,35 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertNotIn("30 FPS CAP", renderer_source)
         self.assertNotIn("60 FPS CAP", renderer_source)
 
-    def test_settings_about_opens_the_pinned_license_list(self) -> None:
-        run = self.run_player("settings", ("KEY_TAB",) * 12 + ("KEY_RETURN",))
+    def test_settings_scaling_choice_cycles_and_saves_by_name(self) -> None:
+        """Game-frame scaling (#1129) is the eighth stop and is saved as its name."""
+        events = ("KEY_TAB",) * 7 + ("KEY_RETURN",) + ("KEY_TAB",) * 8 + ("KEY_RETURN",)
+        run = self.run_player("settings", events)
         frames = run["frames"]
         assert isinstance(frames, list)
-        self.assertEqual(frames[0]["focus_count"], "15")
-        self.assertEqual(frames[12]["focus"], "12")
+        self.assertEqual(frames[7]["focus"], "7")
+        self.assertEqual(frames[8]["focus"], "7")
+        self.assertNotEqual(frames[7]["pixels"], frames[8]["pixels"])
+        self.assertEqual(frames[-1]["view"], "library")
+        settings = run["settings"]
+        assert isinstance(settings, dict)
+        self.assertEqual(settings.get("present_scaling"), "integer")
+
+    def test_settings_about_opens_the_pinned_license_list(self) -> None:
+        run = self.run_player("settings", ("KEY_TAB",) * 13 + ("KEY_RETURN",))
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["focus_count"], "16")
+        self.assertEqual(frames[13]["focus"], "13")
         self.assertEqual(frames[-1]["view"], "prereq_about")
 
     def test_settings_removal_requires_confirmation_and_keeps_other_app_data(self) -> None:
-        events = ("KEY_TAB",) * 13 + ("KEY_RETURN", "KEY_RETURN")
+        events = ("KEY_TAB",) * 14 + ("KEY_RETURN", "KEY_RETURN")
         run = self.run_player("settings", events, downloaded_tool_payload=True)
         frames = run["frames"]
         assert isinstance(frames, list)
-        self.assertEqual(frames[13]["focus"], "13")
-        self.assertEqual(frames[14]["view"], "confirm_remove_tools")
+        self.assertEqual(frames[14]["focus"], "14")
+        self.assertEqual(frames[15]["view"], "confirm_remove_tools")
         self.assertEqual(frames[-1]["view"], "settings")
         self.assertFalse(run["downloaded_tool_marker_exists"])
 
