@@ -1447,7 +1447,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "8e6dee3d377255f36a28c7536a495009ea937be75471d41dc39552faf8259fbd"
+      "sha256": "fe5021b86dbe922f628e0760de48c99ad2797cd63849daf68645c8a6602dfb12"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
