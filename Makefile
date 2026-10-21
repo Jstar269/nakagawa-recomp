@@ -295,6 +295,17 @@ POSIX_RUNTIME_LIBS := -lm
 endif
 LIBS       ?= -lSDL3 $(VULKAN_LIB_NAME) $(WIN_ONLY_LIBS) $(POSIX_RUNTIME_LIBS)
 
+# Optional portable H.264 backend (src/rt/h264_ffmpeg.c): H264_FFMPEG=1 links the system
+# libavcodec/libavutil dynamically and makes it the default decoder where no platform decoder
+# exists. FFmpeg's build configuration determines its license obligations; see NOTICE.md and
+# docs/PLATFORM_PORTABILITY.md. Off by default; without it h264_null.c keeps failing closed.
+ifeq ($(H264_FFMPEG),1)
+H264_FFMPEG_CFLAGS := -DSR_H264_FFMPEG $(shell pkg-config --cflags libavcodec libavutil)
+H264_FFMPEG_LIBS   := $(shell pkg-config --libs libavcodec libavutil)
+override CFLAGS += $(H264_FFMPEG_CFLAGS)
+override LIBS += $(H264_FFMPEG_LIBS)
+endif
+
 BUILD_DIR  ?= $(BUILD_ROOT)/$(GAME_NAME)
 # An overridden BUILD_DIR gets the BUILD_ROOT scope refusal. `make clean` deletes it and
 # every build writes its outputs into it, so `BUILD_DIR=.` or `BUILD_DIR=src` must stop
@@ -743,7 +754,7 @@ RT_SRCS    := src/rt/recomp.c \
               src/rt/gui.c \
               $(AUDIO_BACKEND_SRC) \
               src/rt/h264_mf.c \
-              src/rt/h264_null.c \
+              src/rt/h264_null.c src/rt/h264_ffmpeg.c \
               src/rt/savedata.c \
               src/rt/osk_win.c \
               src/rt/osk_text_entry.c \
@@ -2422,7 +2433,7 @@ hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nest
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(BUILD_DIR)/hle_thread_selftest.exe \
 		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
-		src/rt/h264_mf.c src/rt/h264_null.c \
+		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 
 hle-thread-selftest: hle-thread-selftest-build
@@ -2457,7 +2468,7 @@ hle-title-selftest-one: $(RT_GE_O) $(TITLE_CONFIG_TOOL) tools/title_manifest.py 
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(HLE_TITLE_SELFTEST_EXE) \
 		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
-		src/rt/h264_mf.c src/rt/h264_null.c \
+		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 	$(HLE_TITLE_SELFTEST_EXE) --title-config
 
@@ -2497,7 +2508,7 @@ $(PSP_ORACLE_SMOKE_EXE): $(PSP_ORACLE_SMOKE_STAMP) $(PSP_ORACLE_SMOKE_HEADER) $(
 		-Wl,--gc-sections -Wl,--no-insert-timestamp -o "$(PSP_ORACLE_SMOKE_EXE)" \
 		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
-		src/rt/h264_mf.c src/rt/h264_null.c \
+		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c \
 		"$(PSP_ORACLE_SMOKE_DIR)/smoke_entry.c" "$(PSP_ORACLE_SMOKE_DIR)/smoke_recomp_0.c" $(LIBS)
 

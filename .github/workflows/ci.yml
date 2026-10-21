@@ -462,7 +462,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake curl gcc-mipsel-linux-gnu \
-            git libc6-dev-i386 libvulkan-dev ninja-build pkg-config
+            git libavcodec-dev libavutil-dev libc6-dev-i386 libvulkan-dev ninja-build pkg-config
 
       # The pinned SDL3 install is cached under an exact key: the pinned version and
       # commit, the gcc and cmake that build it, and this workflow file (which holds
@@ -518,6 +518,12 @@ jobs:
           sudo ldconfig
           # A mistyped but valid commit must fail here, not leave the docs claiming the pin.
           test "$(pkg-config --modversion sdl3)" = "$SDL3_VERSION"
+
+      - name: Build and run the opt-in FFmpeg H.264 media selftest
+        # Exercise the real libavcodec route, including guest-VRAM coherence, explicit backend
+        # selection, native-format reporting, and the source-authored final-AU fixture. Use an
+        # isolated build root so non-FFmpeg objects from earlier steps cannot be reused.
+        run: make CC=gcc H264_FFMPEG=1 BUILD_ROOT="$RUNNER_TEMP/ffmpeg-h264-build" psmf-media-selftest
 
       - name: Install PSPDEV from the checked-in lock
         run: |

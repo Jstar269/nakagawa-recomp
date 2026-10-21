@@ -34,6 +34,8 @@
 
 #include "psmf_producer.h"
 #include "sr_h264.h"
+#include "ge_shared.h"
+#include "recomp.h"
 #include "flight_recorder.h"
 #include "perf.h"
 #include "iso.h"
@@ -112,8 +114,42 @@ static int guest_rgba_matches(uint32_t addr, uint32_t width, uint32_t height,
     return 1;
 }
 
+#define FIX_PICTURES 3
 #define ARENA_BYTES (8u * 1024u * 1024u)
 #define GUEST_BUF   (0x08000000u + 0x00400000u)   /* 4 MiB into guest RAM */
+#define GUEST_VRAM_BUF (SR_VRAM_CPU_BASE + 0x00040000u)
+#define GUEST_VRAM_PREFIX_BYTES 0x04000000u
+
+typedef struct {
+    int kind;
+    uint32_t addr;
+    uint32_t bytes;
+} MediaVramEvent;
+
+static MediaVramEvent media_vram_events[FIX_PICTURES * 2u];
+static unsigned media_vram_event_count;
+
+static void media_vram_record(int kind, uint32_t addr, uint32_t bytes) {
+    if (media_vram_event_count < sizeof(media_vram_events) / sizeof(media_vram_events[0])) {
+        MediaVramEvent *event = &media_vram_events[media_vram_event_count++];
+        event->kind = kind;
+        event->addr = addr;
+        event->bytes = bytes;
+    }
+}
+
+static void media_vram_dirty(uint32_t addr, uint32_t bytes) {
+    media_vram_record(2, addr, bytes);
+}
+
+static int media_vram_write_prepare(uint32_t addr, uint32_t bytes) {
+    media_vram_record(1, addr, bytes);
+    return 1;
+}
+
+static int media_vram_pending(void) {
+    return 1;
+}
 
 /* ---- source-authored H.264 elementary stream -------------------------------------------- */
 
@@ -175,7 +211,6 @@ static void emit_nal(ByteOut *o, uint8_t hdr, const BitW *rbsp) {
 
 #define FIX_W_MBS 4
 #define FIX_H_MBS 4
-#define FIX_PICTURES 3
 
 static void write_sps_ex(BitW *w, uint32_t w_mbs, uint32_t h_mbs) {
     bw_u(w, 66u, 8);          /* profile_idc: baseline */
@@ -717,6 +752,12 @@ static void test_media_disposition_conservation(void) {
 }
 
 /* One decoder, the producer's own access units, the guest display buffer. */
+/* A backend reports the decoder's own output layout, never a converted format: NV12 for Media
+ * Foundation, planar YUV420P for libavcodec. Both are explicit native 4:2:0 formats. */
+static int native_decoder_format(SrH264PixelFormat f) {
+    return f == SR_H264_PIXEL_NATIVE_NV12 || f == SR_H264_PIXEL_NATIVE_YUV420P;
+}
+
 static void test_real_decode_into_guest_buffer(void) {
     uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES];
     uint32_t size = 0;
@@ -766,12 +807,12 @@ static void test_real_decode_into_guest_buffer(void) {
             sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
                                          SR_PSMF_MEDIA_DECODED);
             int valid = info.width == 64 && info.height == 64 &&
-                        info.native_format == SR_H264_PIXEL_NATIVE_NV12 &&
+                        native_decoder_format(info.native_format) &&
                         info.delivered_format == SR_H264_PIXEL_8888 &&
                         info.stride == 64 * 4;
             CHECK(info.width == 64 && info.height == 64,
                   "decoded frame reports the fixture dimensions");
-            CHECK(info.native_format == SR_H264_PIXEL_NATIVE_NV12,
+            CHECK(native_decoder_format(info.native_format),
                   "decoder-native format remains explicit");
             CHECK(info.delivered_format == SR_H264_PIXEL_8888,
                   "guest delivery format remains explicit");
@@ -799,7 +840,7 @@ static void test_real_decode_into_guest_buffer(void) {
         sr_psmf_producer_media_stage(p, SR_PSMF_AU_VIDEO,
                                      SR_PSMF_MEDIA_DECODED);
         int valid = info.width == 64 && info.height == 64 &&
-                    info.native_format == SR_H264_PIXEL_NATIVE_NV12 &&
+                    native_decoder_format(info.native_format) &&
                     info.delivered_format == SR_H264_PIXEL_8888 &&
                     info.stride == 64 * 4;
         CHECK(valid, "EOS-drained frame satisfies the fixture contract");
@@ -876,7 +917,7 @@ static void test_decoded_pixels(void) {
             if (r < 0) { CHECK(0, "host decode failed"); break; }
             if (r == 0) break;
             CHECK(info.width == 64 && info.height == 64, "host frame reports the fixture dimensions");
-            CHECK(info.native_format == SR_H264_PIXEL_NATIVE_NV12,
+            CHECK(native_decoder_format(info.native_format),
                   "host delivery preserves the native format distinction");
             CHECK(info.delivered_format == SR_H264_PIXEL_RGBA8888,
                   "host delivery reports RGBA8888 explicitly");
@@ -1045,6 +1086,90 @@ static const SrH264ConformanceBackend conformance_backend = {
     sr_h264_drain
 };
 
+static void test_guest_vram_write_coherence(void) {
+    static const uint8_t expected_rgb[FIX_PICTURES][3] = {
+        { 255u, 203u, 138u },
+        { 130u, 130u, 130u },
+        {  79u, 144u, 195u },
+    };
+    uint32_t au_off[FIX_PICTURES], au_len[FIX_PICTURES];
+    uint8_t es[65536];
+    uint32_t es_len = 0;
+    CHECK(build_stream(es, sizeof(es), au_off, au_len, &es_len),
+          "VRAM coherence fixture stream builds");
+    if (!es_len) return;
+
+    GeGpuHooks hooks;
+    memset(&hooks, 0, sizeof(hooks));
+    hooks.vram_dirty = media_vram_dirty;
+    hooks.vram_write_prepare = media_vram_write_prepare;
+    hooks.vram_pending = media_vram_pending;
+    media_vram_event_count = 0;
+    memset(media_vram_events, 0, sizeof(media_vram_events));
+    g_sr_vram_read_pending = 0;
+    ge_set_gpu_hooks(&hooks);
+    sr_vram_mark_renderer_pending();
+
+    int decoder = conformance_backend.create();
+    if (decoder < 0) {
+#if defined(SR_H264_FFMPEG)
+        CHECK(0, "the explicitly enabled FFmpeg backend creates a decoder for VRAM coherence");
+#else
+        fprintf(stderr, "SKIP: guest-VRAM coherence needs a real H.264 backend\n");
+#endif
+        ge_set_gpu_hooks(NULL);
+        g_sr_vram_read_pending = 0;
+        return;
+    }
+
+    for (int i = 0; i < FIX_PICTURES; i++)
+        CHECK(conformance_backend.submit_au(decoder, es + au_off[i], au_len[i]) == 0,
+              "the VRAM coherence fixture submits each complete picture");
+
+    SrH264FrameTarget target;
+    SrH264FrameInfo info;
+    memset(&target, 0, sizeof(target));
+    target.kind = SR_H264_TARGET_GUEST;
+    target.guest_buffer = GUEST_VRAM_BUF;
+    target.frame_width = 64;
+    target.pixel_mode = 3;
+
+    int frames = 0;
+    for (int guard = 0; guard < FIX_PICTURES + 4; guard++) {
+        int result = conformance_backend.frame_ex(decoder, 1, &target, &info);
+        if (result < 0) {
+            CHECK(0, "a decoded picture targeting guest VRAM is accepted");
+            break;
+        }
+        if (result == 0) break;
+        CHECK(info.width == 64 && info.height == 64 && info.stride == 64 * 4,
+              "the VRAM-targeted picture reports exact fixture geometry");
+        if (frames < FIX_PICTURES) {
+            uint8_t expected[4] = {
+                expected_rgb[frames][0], expected_rgb[frames][1], expected_rgb[frames][2], 0xFFu,
+            };
+            CHECK(guest_rgba_matches(GUEST_VRAM_BUF, 64, 64, expected),
+                  "the VRAM-targeted picture writes its exact guest pixels");
+        }
+        frames++;
+    }
+    CHECK(frames == FIX_PICTURES, "the VRAM-targeted stream releases every authored picture");
+    CHECK(media_vram_event_count == (unsigned)frames * 2u,
+          "each VRAM picture has one prepare and one post-write commit event");
+    for (int i = 0; i < frames && (unsigned)(i * 2 + 1) < media_vram_event_count; i++) {
+        const MediaVramEvent *prepare = &media_vram_events[i * 2];
+        const MediaVramEvent *commit = &media_vram_events[i * 2 + 1];
+        CHECK(prepare->kind == 1 && commit->kind == 2 && prepare->addr == GUEST_VRAM_BUF &&
+                  commit->addr == GUEST_VRAM_BUF && prepare->bytes == 64u * 64u * 4u &&
+                  commit->bytes == 64u * 64u * 4u,
+              "each CPU VRAM write prepares the exact span before its post-write commit");
+    }
+
+    conformance_backend.destroy(decoder);
+    ge_set_gpu_hooks(NULL);
+    g_sr_vram_read_pending = 0;
+}
+
 static void test_backend_registry_fail_closed(void) {
     CHECK(sr_h264_select_backend("not-a-backend") == 0,
           "an unknown backend selection is refused");
@@ -1066,6 +1191,10 @@ static void test_backend_registry_fail_closed(void) {
     CHECK(sr_h264_frame_ex(-1, 1, &target, &info) < 0,
           "an unavailable backend cannot fabricate a frame");
     CHECK(sr_h264_select_backend("auto"), "automatic backend selection can be restored");
+#if defined(SR_H264_FFMPEG)
+    CHECK(sr_h264_select_backend("ffmpeg"),
+          "the explicitly enabled FFmpeg backend can be restored after the fail-closed checks");
+#endif
 }
 
 static void test_backend_reset_and_restart(void) {
@@ -2311,9 +2440,18 @@ int main(int argc, char **argv) {
             }
         }
     }
-    static uint8_t arena[ARENA_BYTES];
-    g_mem = arena;
+    static uint8_t arena[GUEST_VRAM_PREFIX_BYTES + ARENA_BYTES];
+    /* SR_HOST maps VRAM at g_mem - 0x04000000, so reserve that prefix in the fixture arena. */
+    g_mem = arena + GUEST_VRAM_PREFIX_BYTES;
     memset(arena, 0, sizeof(arena));
+
+#if defined(SR_H264_FFMPEG)
+    CHECK(sr_h264_select_backend("ffmpeg"),
+          "H264_FFMPEG=1 selects the FFmpeg backend explicitly");
+    CHECK(strcmp(sr_h264_selected_backend(), "ffmpeg") == 0,
+          "the media fixture reports the FFmpeg backend selection");
+    CHECK(sr_h264_backend_available(), "the explicitly selected FFmpeg backend is available");
+#endif
 
     test_demux_and_au_contract();
     test_media_disposition_conservation();
@@ -2321,6 +2459,7 @@ int main(int argc, char **argv) {
     test_track_independence();
     test_real_decode_into_guest_buffer();
     test_decoded_pixels();
+    test_guest_vram_write_coherence();
     test_instance_isolation();
     test_destination_refusal();
     test_legacy_feed_take_path();

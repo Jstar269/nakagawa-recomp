@@ -84,11 +84,27 @@ must not silently weaken this contract.
 | Candidate | Licence position | Packaging and decision still required |
 | --- | --- | --- |
 | Cisco OpenH264 | BSD-2-Clause is generally compatible with GPL-3.0-or-later, subject to the exact binary's notices and any codec/patent terms. | Prefer a pinned shared library or source-built package per host. Verify redistribution terms, notice retention, architecture coverage, and decoder error behavior. **Awaiting maintainer decision.** |
-| FFmpeg/libavcodec H.264 decoder | An LGPL-2.1-or-later build is generally compatible with GPL-3.0-or-later; a GPL-configured FFmpeg would change the distribution obligations. | Pin codec/build options, retain LGPL notices, choose shared-library versus static-link obligations, and validate the cross-platform ABI and patent/distribution position. **Awaiting maintainer decision.** |
+| FFmpeg/libavcodec H.264 decoder | Optional `H264_FFMPEG=1` builds dynamically link host `libavcodec`/`libavutil`. FFmpeg's LGPL build is distinct from a GPL-enabled build; GPL-2.0-or-later can be combined under the project's GPL-3.0-or-later terms. FFmpeg marks `--enable-nonfree` builds non-redistributable. | CI builds and runs `psmf-media-selftest` with the real backend. The repository does not bundle these shared libraries, and the Windows package route does not stage them, so `H264_FFMPEG=1` is not a supported packaged runtime. A downstream package that bundles FFmpeg must retain notices and corresponding-source materials for its exact build. See [FFmpeg licensing](https://www.ffmpeg.org/legal.html) and [GNU compatibility](https://www.gnu.org/licenses/gpl-faq.en.html). |
 | dav1d | Not a candidate: it decodes AV1, not H.264. | No H.264 backend may be represented by dav1d. |
 
-Until one candidate is selected, the null backend is an explicit controlled boundary, not a
-portable decoder implementation.
+The null backend remains the default when `H264_FFMPEG` is unset and on hosts without another
+platform backend. The opt-in FFmpeg build is exercised by CI and remains dynamically linked to
+the system libraries; this repository does not package those runtime binaries.
+
+### FFmpeg H.264 selftest
+
+On Ubuntu or WSL already configured with the SDL3 and Vulkan development prerequisites in
+`docs/SETUP.md`, install the FFmpeg development headers and run the same source-authored fixture
+used in CI:
+
+```bash
+sudo apt-get install -y pkg-config libavcodec-dev libavutil-dev
+make CC=gcc H264_FFMPEG=1 BUILD_ROOT=build/ffmpeg-h264 psmf-media-selftest
+```
+
+The test explicitly selects the FFmpeg backend, decodes the synthetic I_PCM pictures through
+libavcodec, checks the guest-visible pixels and final-AU/EOS behavior, and asserts guest-VRAM
+prepare/commit order. A build without `H264_FFMPEG=1` keeps the null backend fail-closed.
 
 ## Completed Milestones (ux-investigation)
 
