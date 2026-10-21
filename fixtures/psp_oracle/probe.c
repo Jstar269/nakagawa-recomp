@@ -812,6 +812,12 @@ static void emit_record_extended(int emulated, const char *test_id,
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
 #define DEFERRED_MAX_OUT 128
 #define VRAM_MIRROR_SIZE 0x00200000u
+/* #1049 caveat: extra depth-buffer offset past the display-derived layout. The default 0 keeps the
+   measured zbp 0x0cc000 (bits 6 and 13 clear). A bias with bit 6 or bit 13 set separates the
+   XOR-on-absolute-offset hypothesis from the XOR-within-the-depth-buffer hypothesis. */
+#ifndef VRAM_MIRROR_DEPTH_BIAS
+#define VRAM_MIRROR_DEPTH_BIAS 0x00000000u
+#endif
 #define VRAM_MIRROR_ROW_BYTES 0x400u
 #define VRAM_MIRROR_ROW_WORDS (VRAM_MIRROR_ROW_BYTES / 4u)
 #define VRAM_MIRROR_CPU_DENSE_OFFSET 0x00088000u
@@ -5012,8 +5018,9 @@ static void run_vram_mirror(int emulated) {
             color_offset = (display_offset + display_bytes +
                             VRAM_MIRROR_ROW_BYTES - 1u) &
                 ~(VRAM_MIRROR_ROW_BYTES - 1u);
-            depth_offset = color_offset + VRAM_MIRROR_FRAME_BYTES;
-            if (color_offset + 2u * VRAM_MIRROR_FRAME_BYTES > VRAM_MIRROR_SIZE) {
+            depth_offset = color_offset + VRAM_MIRROR_FRAME_BYTES +
+                           (uint32_t)VRAM_MIRROR_DEPTH_BIAS;
+            if (depth_offset + VRAM_MIRROR_FRAME_BYTES > VRAM_MIRROR_SIZE) {
                 skip_reason = 4u;
             }
         }

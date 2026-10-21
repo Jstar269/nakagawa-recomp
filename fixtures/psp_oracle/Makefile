@@ -405,6 +405,11 @@ LIBS = -lpspdmac -lpsppower -lpspge -lpspaudio
 ifneq ($(filter ge-nan vram-mirror,$(CASE)),)
 LIBS := -lpspgum -lpspgu $(LIBS)
 endif
+# #1049 caveat: an extra depth-buffer offset for CASE=vram-mirror (default 0 = the measured zbp 0x0cc000).
+VRAM_MIRROR_DEPTH_BIAS ?= 0x00000000
+ifeq ($(CASE),vram-mirror)
+CFLAGS += -DVRAM_MIRROR_DEPTH_BIAS=$(VRAM_MIRROR_DEPTH_BIAS)
+endif
 ifeq ($(CASE),model-profile)
 LIBS += -lpspkubridge
 endif
