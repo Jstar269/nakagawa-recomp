@@ -41,6 +41,7 @@ BADGE_URL_RES = (
     re.compile(r"https://api\.scorecard\.dev/projects/github\.com/Jstar269/nakagawa-recomp/badge"),
     re.compile(r"https://www\.bestpractices\.dev/projects/\d+/(badge|baseline)"),
     re.compile(r"https://api\.reuse\.software/badge/github\.com/Jstar269/[\w.-]+"),
+    re.compile(r"https://codecov\.io/gh/Jstar269/nakagawa-recomp/graph/badge\.svg(\?branch=main)?"),
 )
 
 
