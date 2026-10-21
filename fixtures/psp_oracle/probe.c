@@ -130,6 +130,12 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_UMD_RAW_READ 77
 #define PSP_ORACLE_CASE_FONT_LIST 75
 #define PSP_ORACLE_CASE_VRAM_MIRROR 76
+/* #1106: a late-loaded PRX that owns a semaphore-blocked waiter, an event flag and a callback. Its
+   module_stop returns 0 without deleting, waking or otherwise touching them. PSPLink's modstop and
+   modunld then measure what survives. Never returns from main, so the probe teardown never runs. */
+#define PSP_ORACLE_CASE_LATE_PRX_TARGET 110
+/* #1096: one bounded AT3 decode of a host0-staged stream. The bytes come from host0, never from the source. */
+#define PSP_ORACLE_CASE_AT3_DECODE 111
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -347,6 +353,8 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/fpu_cc_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
 #define PROBE_HOST0_LOG "host0:/vram_mirror_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_AT3_DECODE
+#define PROBE_HOST0_LOG "host0:/at3_decode_log.txt"
 #endif
 
 /* Durable line writer: every record, step marker and the metadata line goes
@@ -808,6 +816,12 @@ static void emit_record_extended(int emulated, const char *test_id,
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
 #define DEFERRED_MAX_OUT 128
 #define VRAM_MIRROR_SIZE 0x00200000u
+/* #1049 caveat: extra depth-buffer offset past the display-derived layout. The default 0 keeps the
+   measured zbp 0x0cc000 (bits 6 and 13 clear). A bias with bit 6 or bit 13 set separates the
+   XOR-on-absolute-offset hypothesis from the XOR-within-the-depth-buffer hypothesis. */
+#ifndef VRAM_MIRROR_DEPTH_BIAS
+#define VRAM_MIRROR_DEPTH_BIAS 0x00000000u
+#endif
 #define VRAM_MIRROR_ROW_BYTES 0x400u
 #define VRAM_MIRROR_ROW_WORDS (VRAM_MIRROR_ROW_BYTES / 4u)
 #define VRAM_MIRROR_CPU_DENSE_OFFSET 0x00088000u
@@ -5008,8 +5022,9 @@ static void run_vram_mirror(int emulated) {
             color_offset = (display_offset + display_bytes +
                             VRAM_MIRROR_ROW_BYTES - 1u) &
                 ~(VRAM_MIRROR_ROW_BYTES - 1u);
-            depth_offset = color_offset + VRAM_MIRROR_FRAME_BYTES;
-            if (color_offset + 2u * VRAM_MIRROR_FRAME_BYTES > VRAM_MIRROR_SIZE) {
+            depth_offset = color_offset + VRAM_MIRROR_FRAME_BYTES +
+                           (uint32_t)VRAM_MIRROR_DEPTH_BIAS;
+            if (depth_offset + VRAM_MIRROR_FRAME_BYTES > VRAM_MIRROR_SIZE) {
                 skip_reason = 4u;
             }
         }
@@ -5105,6 +5120,49 @@ static void run_vram_mirror(int emulated) {
     vram_mirror_cache_range(depth_offset, VRAM_MIRROR_FRAME_BYTES, 0);
     vram_mirror_defer_depth_rows(depth_offset, ge_idle, ge_sequence_complete);
     vram_mirror_defer_color_rows(color_offset, ge_idle, ge_sequence_complete);
+
+#ifdef VRAM_MIRROR_FULL_SCAN
+    /* #1049 caveat: where do the depth clear and the sprite Z values land? Count the four probe values in
+       every 128 KiB block of VRAM through the uncached base alias, and record the first halfword offset of each.
+       Emitted directly (not deferred) because the deferred record table is sized to the semantic records. */
+    {
+        static const uint16_t scan_values[4] = {0x1111u, 0x2222u, 0x3333u, 0x5a5au};
+        uint32_t scan_counts[4][16];
+        uint32_t scan_first[4];
+        memset(scan_counts, 0, sizeof(scan_counts));
+        memset(scan_first, 0, sizeof(scan_first));
+        const volatile uint16_t *vram16 = (const volatile uint16_t *)(uintptr_t)0x44000000u;
+        for (uint32_t i = 0; i < VRAM_MIRROR_SIZE / 2u; i++) {
+            const uint16_t value = vram16[i];
+            for (uint32_t k = 0; k < 4u; k++) {
+                if (value == scan_values[k]) {
+                    scan_counts[k][(i * 2u) >> 17] += 1u;
+                    if (scan_first[k] == 0u) scan_first[k] = i * 2u + 1u;
+                }
+            }
+        }
+        char scan_line[2048];
+        int used = snprintf(scan_line, sizeof(scan_line),
+                            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-VRAM-MIRROR-001 "
+                            "case_id=vram-full-scan status=PASS result=0x00000000");
+        for (uint32_t k = 0; k < 4u; k++) {
+            for (uint32_t block = 0; block < 16u && used > 0 &&
+                                    (size_t)used < sizeof(scan_line); block++) {
+                used += snprintf(scan_line + used, sizeof(scan_line) - (size_t)used,
+                                 " v%u_b%02u=0x%x", (unsigned int)k, (unsigned int)block,
+                                 (unsigned int)scan_counts[k][block]);
+            }
+            if (used > 0 && (size_t)used < sizeof(scan_line)) {
+                used += snprintf(scan_line + used, sizeof(scan_line) - (size_t)used,
+                                 " v%u_first=0x%x", (unsigned int)k, (unsigned int)scan_first[k]);
+            }
+        }
+        if (used > 0 && (size_t)used + 2u < sizeof(scan_line)) {
+            used += snprintf(scan_line + used, sizeof(scan_line) - (size_t)used, "\n");
+            probe_emit_durable(emulated, scan_line, (size_t)used);
+        }
+    }
+#endif
 
     probe_step(emulated, "vram-mirror", "restore-vram");
     vram_mirror_cache_range(0u, VRAM_MIRROR_SIZE, 1);
@@ -6611,9 +6669,65 @@ static void probe_park_until_stop(void) {
     sceKernelExitThread(0);
 }
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_LATE_PRX_TARGET
+/* #1106 late-PRX target. Every object below belongs to this module. The waiter blocks on the
+   semaphore for the whole measurement window (600 s bound), so it never runs module code on its own. */
+#define LATE_PRX_WAIT_US (600u * 1000u * 1000u)
+static volatile SceUID s_late_sema = -1;
+static volatile SceUID s_late_flag = -1;
+static volatile SceUID s_late_cb = -1;
+static volatile SceUID s_late_waiter = -1;
+
+static int late_prx_callback(int arg1, int arg2, void *common) {
+    (void)arg1;
+    (void)arg2;
+    (void)common;
+    return 0;
+}
+
+static int late_prx_waiter(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    SceUInt timeout = LATE_PRX_WAIT_US;
+    (void)sceKernelWaitSema(s_late_sema, 1, &timeout);
+    for (;;) sceKernelSleepThread();
+    return 0;
+}
+
+static void run_late_prx_target(int emulated) {
+    s_late_sema = sceKernelCreateSema("nk_late_sema", 0, 0, 1, NULL);
+    s_late_flag = sceKernelCreateEventFlag("nk_late_flag", 0, 0, NULL);
+    s_late_cb = sceKernelCreateCallback("nk_late_cb", late_prx_callback, NULL);
+    s_late_waiter = sceKernelCreateThread("nk_late_waiter", late_prx_waiter, 0x20, 0x1000,
+                                          PSP_THREAD_ATTR_USER, NULL);
+    if (s_late_waiter >= 0) (void)sceKernelStartThread(s_late_waiter, 0, NULL);
+    /* Let the waiter reach its semaphore wait before the UIDs are published. */
+    sceKernelDelayThread(500 * 1000);
+    char line[320];
+    snprintf(line, sizeof(line),
+             "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-LATE-PRX-001 case_id=late-prx-published "
+             "status=PASS sema=0x%08x flag=0x%08x cb=0x%08x waiter=0x%08x main=0x%08x\n",
+             (unsigned int)s_late_sema, (unsigned int)s_late_flag, (unsigned int)s_late_cb,
+             (unsigned int)s_late_waiter, (unsigned int)s_probe_main_thread);
+    emit(emulated, line);
+    /* Park the main thread. Returning would end main and drop PSPLink to the XMB. */
+    for (;;) sceKernelSleepThread();
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_LATE_PRX_TARGET
+/* Leave every owned object in place: the host measures the post-stop state. */
+static int late_prx_module_stop(void) {
+    return 0;
+}
+#endif
+
 int module_stop(SceSize args, void *argp) {
     (void)args;
     (void)argp;
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_LATE_PRX_TARGET
+    return late_prx_module_stop();
+#endif
     const SceUID main_thread = s_probe_main_thread;
     if (main_thread < 0) return 1;
     s_probe_stop_requested = 1;
@@ -8273,6 +8387,141 @@ static void run_kernel_misc(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_AT3_DECODE
+#include <pspatrac3.h>
+#include <psputility_avmodules.h>
+/* #1096: one bounded AT3 decode of the 8192-byte host0:/at3-input-buffer.bin stream. Every risky call is
+   preceded by a durable step marker and its return code is written as soon as it is known, so a launch that
+   hangs names its last step. Codec type PSP_ATRAC_AT3 (0x1001 in the issue). The probe never returns from
+   main, so PSPLink stays up. */
+#define AT3_DECODE_INPUT_PATH "host0:/at3-input-buffer.bin"
+#define AT3_DECODE_BYTES 8192u
+#define AT3_DECODE_PCM_SAMPLES 4096u
+
+static unsigned char s_at3_input[AT3_DECODE_BYTES] __attribute__((aligned(64)));
+static unsigned short s_at3_pcm[AT3_DECODE_PCM_SAMPLES] __attribute__((aligned(64)));
+
+static uint32_t at3_le16(const unsigned char *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8);
+}
+
+static uint32_t at3_le32(const unsigned char *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
+static void at3_result(int emulated, const char *step, int rc) {
+    char line[200];
+    const int used = snprintf(line, sizeof(line),
+                              "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3-%s "
+                              "status=RC result=0x%08x\n",
+                              step, (unsigned int)rc);
+    if (used > 0 && (size_t)used < sizeof(line)) {
+        probe_emit_durable(emulated, line, (size_t)used);
+    }
+}
+
+static void run_at3_decode(int emulated) {
+    int input_rc = -1;
+    int input_read = 0;
+    probe_step(emulated, "at3-decode", "read-input");
+    SceUID fd = sceIoOpen(AT3_DECODE_INPUT_PATH, PSP_O_RDONLY, 0);
+    if (fd >= 0) {
+        uint32_t total = 0;
+        while (total < AT3_DECODE_BYTES) {
+            const int n = sceIoRead(fd, s_at3_input + total, AT3_DECODE_BYTES - total);
+            if (n <= 0) break;
+            total += (uint32_t)n;
+        }
+        input_read = (int)total;
+        input_rc = total == AT3_DECODE_BYTES ? 0 : -2;
+        (void)sceIoClose(fd);
+    } else {
+        input_rc = fd;
+    }
+    at3_result(emulated, "input", input_rc);
+
+    if (input_rc == 0) {
+        char header[256];
+        (void)snprintf(header, sizeof(header),
+                       "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3-header status=RC "
+                       "result=0x00000000 fmt=0x%04x channels=%u rate=%u block_align=%u "
+                       "fact_bytes=%u fact_samples=%u fact_delay=%u input_read=%d\n",
+                       (unsigned int)at3_le16(s_at3_input + 20), (unsigned int)at3_le16(s_at3_input + 22),
+                       (unsigned int)at3_le32(s_at3_input + 24), (unsigned int)at3_le16(s_at3_input + 32),
+                       (unsigned int)at3_le32(s_at3_input + 56), (unsigned int)at3_le32(s_at3_input + 60),
+                       (unsigned int)at3_le32(s_at3_input + 64), input_read);
+        probe_emit_durable(emulated, header, strlen(header));
+    }
+
+    int avcodec_rc = -1;
+    int atrac_rc = -1;
+    int atrac_id = -1;
+    int setdata_rc = -1;
+    int decode_rc = -1;
+    int samples = -1;
+    int end_flag = -1;
+    int remain_frames = -1;
+    int release_rc = -1;
+    int atrac_unload_rc = -1;
+    int avcodec_unload_rc = -1;
+    int atrac_loaded = 0;
+    int avcodec_loaded = 0;
+
+    if (input_rc == 0) {
+        probe_step(emulated, "at3-decode", "load-avcodec");
+        avcodec_rc = sceUtilityLoadAvModule(PSP_AV_MODULE_AVCODEC);
+        at3_result(emulated, "load-avcodec", avcodec_rc);
+        if (avcodec_rc == 0) {
+            avcodec_loaded = 1;
+            probe_step(emulated, "at3-decode", "load-atrac3plus");
+            atrac_rc = sceUtilityLoadAvModule(PSP_AV_MODULE_ATRAC3PLUS);
+            at3_result(emulated, "load-atrac3plus", atrac_rc);
+            if (atrac_rc == 0) {
+                atrac_loaded = 1;
+                probe_step(emulated, "at3-decode", "get-atracid");
+                atrac_id = sceAtracGetAtracID(PSP_ATRAC_AT3);
+                at3_result(emulated, "get-atracid", atrac_id);
+                if (atrac_id >= 0) {
+                    probe_step(emulated, "at3-decode", "set-data");
+                    setdata_rc = sceAtracSetData(atrac_id, s_at3_input, AT3_DECODE_BYTES);
+                    at3_result(emulated, "set-data", setdata_rc);
+                    probe_step(emulated, "at3-decode", "decode-data");
+                    decode_rc = sceAtracDecodeData(atrac_id, s_at3_pcm, &samples, &end_flag,
+                                                   &remain_frames);
+                    at3_result(emulated, "decode-data", decode_rc);
+                    char decoded[200];
+                    (void)snprintf(decoded, sizeof(decoded),
+                                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3-decoded "
+                                   "status=RC result=0x%08x samples=%d end=%d remain=%d\n",
+                                   (unsigned int)decode_rc, samples, end_flag, remain_frames);
+                    probe_emit_durable(emulated, decoded, strlen(decoded));
+                    probe_step(emulated, "at3-decode", "release-atracid");
+                    release_rc = sceAtracReleaseAtracID(atrac_id);
+                    at3_result(emulated, "release-atracid", release_rc);
+                }
+                probe_step(emulated, "at3-decode", "unload-atrac3plus");
+                atrac_unload_rc = sceUtilityUnloadAvModule(PSP_AV_MODULE_ATRAC3PLUS);
+                at3_result(emulated, "unload-atrac3plus", atrac_unload_rc);
+            }
+            probe_step(emulated, "at3-decode", "unload-avcodec");
+            avcodec_unload_rc = sceUtilityUnloadAvModule(PSP_AV_MODULE_AVCODEC);
+            at3_result(emulated, "unload-avcodec", avcodec_unload_rc);
+        }
+    }
+    (void)atrac_loaded;
+    (void)avcodec_loaded;
+    (void)setdata_rc;
+    (void)decode_rc;
+    (void)release_rc;
+    (void)atrac_unload_rc;
+    (void)avcodec_unload_rc;
+    probe_step(emulated, "at3-decode", "park");
+    /* Park the main thread. Returning would end main and drop PSPLink to the XMB. */
+    for (;;) sceKernelSleepThread();
+}
+#endif
+
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
@@ -8478,6 +8727,10 @@ int main(int argc, char *argv[]) {
     run_font_list(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
     run_vram_mirror(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_LATE_PRX_TARGET
+    run_late_prx_target(emulated); /* parks; never returns */
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_AT3_DECODE
+    run_at3_decode(emulated); /* parks; never returns */
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

@@ -2060,7 +2060,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d126e585c6a9f23fc2f59e24aca2981264d063b76cdfe30562b9c4c3a99d2c63"
+      "sha256": "dbc8882a16bac52ccc705fa730b515274ee8f777947a067778f81645045edd5d"
     },
     {
       "path": "fixtures/psp_oracle/README.md",
@@ -2069,7 +2069,7 @@
         "source": "path-reviewed fixture/test census",
         "statement": "fixture or test data is synthetic and contains no retail bytes"
       },
-      "sha256": "cd8c48dd62e548b33ae9430b67ee0317f028ad2599694694c97319af79d20491"
+      "sha256": "a5947d9cf660cd9f62d33249dccb999d9e003f9d61d56e512065f501fa039c1d"
     },
     {
       "path": "fixtures/psp_oracle/display_user_imports.S",
@@ -2219,7 +2219,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "7e14806b3ab21c373306d76a9076c3e6280c2aa7c9820fa047f8cb2e89f701a7"
+      "sha256": "e190d661caec3ae0f42bdc95da5fd9b6b33ecf0accaa8bdb9ece1168f650ceb9"
     },
     {
       "path": "fixtures/psp_oracle/probe_exception_a1.c",
@@ -9886,7 +9886,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9b6f6b87ecb2f428a8371194689ee906ac095a1d76ff8cf5d2ba955cc790c538"
+      "sha256": "edd9168af37d0c74eb591f8da4e48a81347f948eaccbaa5044012d427e582086"
     },
     {
       "path": "tools/test_psp_parsers.py",
