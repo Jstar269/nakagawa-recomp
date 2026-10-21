@@ -165,7 +165,7 @@ Some folders hold a second copy of a tool that the build also calls, so the orde
   folder comes before your CPython. Run the pip step from a PowerShell window that has not yet added the
   MSYS2 line, and check that `python -c "import sys; print(sys.executable)"` prints your CPython. A UCRT64
   terminal puts MSYS2 first, so do not run the pip step there.
-- **POSIX shell.** If a Make recipe needs `sh`, put Git for Windows' `usr\bin` (`C:\Program Files\Git\usr\bin`)
+- **POSIX shell.** If a Make recipe needs `sh`, put Git for Windows' `usr\bin` (`%ProgramFiles%\Git\usr\bin`)
   ahead of MSYS2's `usr\bin` (`C:\msys64\usr\bin`), as the [Windows host pitfalls](#windows-host-pitfalls)
   table describes.
 
