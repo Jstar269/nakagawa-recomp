@@ -1249,7 +1249,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ec337694e1062c79b20a71ca584c6cf45e89e37fe2275a2c143679936f179363"
+      "sha256": "1fa07b1d8c72193cffb3fbdc3ed3bd87bbe1b3b4d35b1667a9a5934082d98a69"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -9082,7 +9082,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "840572ae3f0d4bcf9c24e627a37ab1cc28d7eb3f3b9f109f8c72145acdecd80e"
+      "sha256": "903489270f673d8393ee2abc0fea958a6808b6e43903066854cbbf47b077c467"
     },
     {
       "path": "tools/test_hle_title_config_behavior.py",
