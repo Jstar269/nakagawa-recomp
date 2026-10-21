@@ -594,3 +594,40 @@ awaiting admission; this page only defines the route.
 The repository or export is not cleared merely because these commands are
 available. Record the exact commit/tree, outputs, and remaining human/hosted
 gates.
+
+## Step by step: a pull request that adds a public path
+
+The sections above define each command. This is the order that works for an ordinary pull request that adds or
+removes a public file, with the failure each skipped step produces.
+
+1. **Commit the files with their publication entries.** `python tools/policy_sync.py --apply --regen-export` adds the
+   paths to `assets/public_source_profile.json` and regenerates `PUBLIC_EXPORT.json`; commit both with the files. The
+   candidate policy hash is the SHA-256 of that committed profile.
+2. **Record the authority in the private authority repository**, on its own branch:
+   * an admission authority document under `docs/provenance/admissions/` binding each new path to the SHA-256 of its
+     exact bytes and its classification;
+   * for an implementation path, its exact record in `docs/provenance/IMPLEMENTATION_PROVENANCE.json`;
+   * `docs/provenance/policy-deltas/<candidate policy sha256>/candidate-policy.json` (the candidate profile bytes) and
+     `policy-delta-authority.json` (baseline and candidate digests and the exact `allowed_delta`).
+3. **Merge that branch into the private repository's `main`.** The hosted "Trusted provenance attestation" check
+   reads the authority from `main`; records on a pushed branch alone fail with HTTP 404.
+4. **Admit the new paths** with `provenance_ledger.py admit-new-reviewed`, from a clean candidate commit whose only
+   change from the base is the new paths and their profile entries. Commit the generated controls and merge that
+   commit into the task branch.
+5. **Refresh the changed existing paths** with `python tools/provenance_refresh.py --trusted-ledger <private
+   IMPLEMENTATION_PROVENANCE.json>`; when the profile changed, add `--trusted-candidate-policy` and
+   `--policy-delta-authority` with the files from step 2. Always pass the trusted ledger.
+6. **Stage the generated controls with the change.** The pre-commit publication audit reads the index, so an unstaged
+   ledger reports the old hashes.
+
+| Failure | Cause | Fix |
+| --- | --- | --- |
+| `REFRESH_NEW_PATH_REQUIRES_ADMISSION` | The refresh saw an added or removed path | Run step 4 first |
+| `POLICY_DELTA_AUTHORITY_REQUIRED` | The profile changed without its delta authority | Pass the step 2 files |
+| Hosted check: HTTP 404 fetching the policy delta | The private records are not on the private `main` | Step 3 |
+| `TRUSTED_BASELINE_INVALID` | The local private authority checkout is behind its `main` | Fast-forward it and rerun |
+
+**Landing order.** Each pull request that adds or removes a public path changes the publication profile. Once one
+lands, merging `main` into another such pull request changes its candidate policy hash, so it needs steps 2-5 again
+for the new hash. Land these pull requests one at a time, and do not hold an unrelated ready pull request for them:
+merge `main` into the waiting branch after the other lands.
