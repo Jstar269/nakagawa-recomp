@@ -426,7 +426,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "ac21258c93bcb49863285e158e6095e03658930ee8824268f612ff4307fd2ef5"
+      "sha256": "eee3f110dc15c00d64b8ece566a92fc377a2eeccb83478c2c98019fb3088865b"
     },
     {
       "path": "REVIEW.md",
@@ -9991,7 +9991,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8a1f21c4d269d3bc9702852fb5cc99a23d113de733929d0a2979fb325cbc0c27"
+      "sha256": "bbb874dec52a5e884bb9e40bfdf37ae6c0fce185c885a845b4ab8e43166625d9"
     },
     {
       "path": "tools/test_recomp_helper_inventory.py",
