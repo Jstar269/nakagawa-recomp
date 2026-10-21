@@ -8529,6 +8529,7 @@ static void run_at3_decode(int emulated) {
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FAKE_SUCCESS
 #include <pspsuspend.h>
+#include <psputility.h>
 #include <psputility_osk.h>
 /* The runtime answers sceKernelVolatileMemUnlock and sceUtilityOskUpdate with success in every state.
    This probe records the PSP's return for each state. Every call is non-blocking and dialog-free: Lock
