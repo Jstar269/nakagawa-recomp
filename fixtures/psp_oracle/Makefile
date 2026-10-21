@@ -209,6 +209,10 @@ else ifeq ($(CASE),font-list)
 CASE_ID = 75
 else ifeq ($(CASE),vram-mirror)
 CASE_ID = 76
+else ifeq ($(CASE),late-prx-target)
+CASE_ID = 110
+else ifeq ($(CASE),at3-decode)
+CASE_ID = 111
 else
 $(error unsupported CASE=$(CASE); see fixtures/psp_oracle/README.md for the supported case names)
 endif
@@ -402,6 +406,18 @@ PSP_EBOOT_ICON = NULL
 LIBS = -lpspdmac -lpsppower -lpspge -lpspaudio
 ifneq ($(filter ge-nan vram-mirror,$(CASE)),)
 LIBS := -lpspgum -lpspgu $(LIBS)
+endif
+# #1096: the AT3 decode probe links the user-mode ATRAC and utility stubs it calls.
+ifeq ($(CASE),at3-decode)
+LIBS += -lpspatrac3 -lpsputility
+endif
+# #1049 caveat: an extra depth-buffer offset for CASE=vram-mirror (default 0 = the measured zbp 0x0cc000).
+VRAM_MIRROR_DEPTH_BIAS ?= 0x00000000
+ifeq ($(CASE),vram-mirror)
+CFLAGS += -DVRAM_MIRROR_DEPTH_BIAS=$(VRAM_MIRROR_DEPTH_BIAS)
+ifeq ($(VRAM_MIRROR_FULL_SCAN),1)
+CFLAGS += -DVRAM_MIRROR_FULL_SCAN
+endif
 endif
 ifeq ($(CASE),model-profile)
 LIBS += -lpspkubridge
