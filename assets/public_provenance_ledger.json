@@ -1249,7 +1249,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "4f6f366fd00f2647e6a5d97a713df86263791cd97fe613fab60ce68e2ceee1ae"
+      "sha256": "7b43d3ad9ecf655a831d5435abb9d19b119f82eec4119642b4d662bfd0f7010b"
     },
     {
       "path": "docs/INDEPENDENCE_CAMPAIGN.md",
@@ -7118,7 +7118,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ad1a3fdfd29d2d7e4afb6032cb0f5aa0e4c338ae4f5dc9a5325722498c548fc9"
+      "sha256": "629a0958d8d0aeb08c0285b0b1c9dbc6a542a7f0d6a50bc8a0e5589ad3a139d0"
     },
     {
       "path": "tools/host_stubs.py",
@@ -7166,7 +7166,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c0fc8d1086ec54e4b2c633fe57b1888d03fa0588938ed91161611bf6c8014451"
+      "sha256": "56bb727e3709f129d50584e03891c874c59a9e2b12e6932c17ad19c4d9438351"
     },
     {
       "path": "tools/import_audit_gate.py",
