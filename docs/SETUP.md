@@ -761,3 +761,15 @@ outside the published repository.
   `WATCHDOG_PSMF` activity -- rather than from the threshold alone. If a title
   waits for a profile/save or cannot open a title-specific cache, inspect the
   local diagnostic log. Do not copy that input or its path into Git.
+
+### Windows host pitfalls
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| A Make recipe fails with a shell error, or runs words such as `status` as commands | `mingw32-make` found no POSIX `sh` and fell back to `cmd.exe` | Put `C:\msys64\usr\bin` (or Git for Windows `bin`) on `PATH` |
+| `cannot find -lvulkan` with `VULKAN_SDK=/ucrt64` | That is the CI's MSYS2 layout; a local MSYS2 may lack the import library | Leave `VULKAN_SDK` unset so the Makefile finds the installed Vulkan SDK |
+| A Make-driven step fails on a `C:\...` path | Backslashes in a Make variable are read as escapes | Pass Make paths with forward slashes (`C:/...`) |
+| The player refuses to build a package | Package outputs must live outside the repository | Point `BUILD_ROOT` and the user-data root outside the checkout |
+| `git show origin/main:<path>` fails in Git Bash with a mangled `origin\main;...` argument | MSYS converts the argument as a path | Prefix the command with `MSYS_NO_PATHCONV=1` |
+| `bash -lc` under MSYS2 runs in the home directory | A login shell resets the working directory | `cd` to the checkout inside the command |
+| Files under WSL `/tmp` vanish between commands | WSL shuts its VM down when idle and clears `/tmp` | Keep WSL scratch work under `$HOME` |
