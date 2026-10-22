@@ -315,6 +315,15 @@
       "sha256": "4330c3c2ca39aeea6a9b5bc517dbd370d63a496c8c9b76daeb151c7cdc71c66f"
     },
     {
+      "path": ".recomp.json",
+      "classification": "reviewed_configuration",
+      "evidence": {
+        "source": "configuration review",
+        "statement": "configuration or dependency metadata reviewed for public release"
+      },
+      "sha256": "e596775c4c77d3b4c04ec4b9df599ff3eea0059f570ebdca5ccd27e2bbb8ec81"
+    },
+    {
       "path": "AGENTS.md",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -775,7 +784,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "47d271e42bae916113a339fe08fef3974fc769a450118589fd3fa74d7a7d5278"
+      "sha256": "427ea6ad58dfc629110c7aa3652dee5a167043f3d5b8b29850962c9e596ee6c7"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -10863,7 +10872,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "cee26dd59452d4e9a7d17a67a1f6d6ffbb35d6f7b5e0c95503b45aa2e9d3814e"
+      "sha256": "fd4d6649a31b82c0ee1dd2a0548beddf3e9d33c49b2a6d311a8325624a35434c"
     },
     {
       "path": "tools/ttf2pgf.py",
