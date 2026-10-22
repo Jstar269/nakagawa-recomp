@@ -321,7 +321,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fa609eb48804f17a56c154f9d83942a394f95c5ace965af197e223c836573adb"
+      "sha256": "c7a5c0ab5608834a51f0e994998b9d26df6acd9a847c8fbd71f384d99f7c7bcf"
     },
     {
       "path": "CLAUDE.md",
@@ -409,7 +409,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "96100af2b033787e8971c0e04b9c6312dfdc22a6a56f1a7a2ba7112aba7af76e"
+      "sha256": "29d58c6db8bd4943a0742a659327b177170bf36314bfe3b7908061b87f756337"
     },
     {
       "path": "PUBLIC_EXPORT.json",
@@ -426,7 +426,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e1fab63113ec47ca94bde1b33dd6dbd616eb643daa2c493959f58d814989fe75"
+      "sha256": "93fec42c71461aefe08d20f1fb5cb2d287f278f013e415b6c38592a73c8500ac"
     },
     {
       "path": "REVIEW.md",
@@ -775,7 +775,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "24243f51d7ee02287f2cd8ba4eeb060c57c05fcd026423ff4785fc3ade7913ee"
+      "sha256": "47d271e42bae916113a339fe08fef3974fc769a450118589fd3fa74d7a7d5278"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -796,7 +796,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "286a6b08c398be83f02a0b45388476a21b426183e5a41da89e511ae68e148f4d"
+      "sha256": "b22dd6c4b29c3be0681e873f434754e05ad8a3cdf86467f442d9927b21d589ac"
     },
     {
       "path": "assets/third_party_components.json",
@@ -1183,7 +1183,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "574fb0c36df9ca6a923d480ed936ba1be6370980b3e4d9b13093297ca5bd40a4"
+      "sha256": "72fe93d87f5442ed958075a270393201ee8a76891b0801c4788fae728d8ee1c9"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1447,7 +1447,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "7a0d48627ed865c0b19a731c92bde675cce286c4c916ec1c53115c7f0d08d915"
+      "sha256": "fe5021b86dbe922f628e0760de48c99ad2797cd63849daf68645c8a6602dfb12"
     },
     {
       "path": "docs/RUNTIME_PACKAGING_ARCHITECTURE.md",
@@ -1465,7 +1465,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "e8e004ea9ec6441416e7be7e3a74a0f20bb03fea605b7a64bef0814c589c2560"
+      "sha256": "ee0aa89e34635911f11e63f3a6cdfb4d2b6b5cbeb95ea2e61f303347278e9a0d"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -1474,7 +1474,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "11629f65542e11b77e2cbc151f12657c8039357af7d0cff3873363aff5e6475d"
+      "sha256": "e9fcbe00145ac176ff9440ecd2e724fdc1a90d8a11e37dbaebc51ccb71d23783"
     },
     {
       "path": "docs/SMOKE_TEST.md",
@@ -1624,6 +1624,24 @@
       "sha256": "d4c67a45957bd6af0a1f3d427bb7d2f6e16ae471afc88eb92a934a5eabcd5575"
     },
     {
+      "path": "docs/images/brand/nakagawa-mark-dark.svg",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "6e927f9a71161e4e4b69efc5e04555c31ee7951a01f34fdaf6a1d44e0ed21b06"
+    },
+    {
+      "path": "docs/images/brand/nakagawa-mark-light.svg",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "a26fe65e0347ee10be3bcbe97f8ed54c1de6d875363e59fbf2755cf95f0fab34"
+    },
+    {
       "path": "docs/images/showcase-breakout-v180.png",
       "classification": "reviewed_documentation",
       "evidence": {
@@ -1667,6 +1685,15 @@
         "statement": "generic/public documentation; no private operational evidence"
       },
       "sha256": "61e2ccdc10b2f0578b858961446fb228ea301bf5ae1ad3433c3b6c181ec47657"
+    },
+    {
+      "path": "docs/media/hst-title-screen.png",
+      "classification": "reviewed_documentation",
+      "evidence": {
+        "source": "public documentation review",
+        "statement": "generic/public documentation; no private operational evidence"
+      },
+      "sha256": "18f1317bc35cb5403fdcff6efefe8e125dfa6ca1e4b316500140b9e353a8e58f"
     },
     {
       "path": "docs/provenance/FONT_ORIGINS.md",
@@ -2660,7 +2687,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "671c027c56853ee2c73540e4eea669e6d0c507982186f63e1904512b317ee837"
+      "sha256": "cbd5f93ae794eb9daeaa412fd4434348d27a424f952932ef3216ae438b9ccd4d"
     },
     {
       "path": "fixtures/vfpu_addressing/hardware_vfpu_addr_001.json",
@@ -8613,7 +8640,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a20f6fe034279d7f8eded9622e55037c1519ec0e95fc814e1fa997303866007f"
+      "sha256": "aee158a82b0f90b2bab830de1c525197d9919e2d6ae1f4c347fe70f83be41d87"
     },
     {
       "path": "tools/test_debug.py",
@@ -10042,7 +10069,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5accb356043ac5728b1c49c3de43d017c2f5a3202a36037911cd6c5e771bd96b"
+      "sha256": "003e2c8ee2ed183e57f9bd148673e5dfa289c9123120074f8c65cf8320e8eae0"
     },
     {
       "path": "tools/test_recomp_helper_inventory.py",
