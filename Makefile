@@ -2931,7 +2931,7 @@ package-builder-test-bin: native-core-objects-player
 .PHONY: clay-layout-selftest
 clay-layout-selftest:
 	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_DIR)').mkdir(parents=True, exist_ok=True)"
-	$(CC) -std=c99 -Wall -Wextra -Ithird_party/clay \
+	$(CC) -std=c99 -Wall -Wextra -Ithird_party/clay -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		-o $(BUILD_DIR)/clay_layout_selftest$(EXE_EXT) tests/native/test_clay_layout.c
 	$(BUILD_DIR)/clay_layout_selftest$(EXE_EXT)
 
