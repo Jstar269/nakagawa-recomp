@@ -376,6 +376,15 @@ class TestCandidateImmutability293(unittest.TestCase):
             ]
             self.assertEqual(leftovers, [])
 
+    def test_public_safe_export_includes_pinned_clay_source_files(self):
+        for rel in (
+            "third_party/clay/LICENSE.md",
+            "third_party/clay/PROVENANCE.md",
+            "third_party/clay/clay.h",
+        ):
+            with self.subTest(path=rel):
+                self.assertTrue((self.export_a / rel).is_file(), rel)
+
     def test_recorded_identity_matches_materialized_bytes_and_source_is_untouched(self):
         # Property: PUBLIC_EXPORT.json and the ledger/manifest shas it records
         # describe the exact materialized candidate bytes; generating the

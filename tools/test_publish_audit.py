@@ -749,10 +749,10 @@ class TestPublishAudit(unittest.TestCase):
             self.assertTrue(any(f.code == "MANIFEST_ORPHAN_PATH" for f in findings))
 
     def test_spdx_required_skips_byte_exact_import_trees(self):
-        # Byte-exact third-party imports (FFmpeg n4.4 under src/rt/atrac3p/) must
-        # not be forced to gain SPDX headers: editing them breaks the recorded
-        # upstream blob identity (see PROVENANCE.md). The project-authored
-        # wrapper and the rest of src/ still require SPDX.
+        # Byte-exact FFmpeg n4.4 imports under src/rt/atrac3p/ must not be
+        # forced to gain SPDX headers: editing them breaks the recorded
+        # upstream blob identity (see PROVENANCE.md). Project-authored wrappers
+        # and the rest of src/ still require SPDX.
         self.assertFalse(publish_audit._spdx_required("src/rt/atrac3p/libavcodec/atrac.c"))
         self.assertFalse(publish_audit._spdx_required("src/rt/atrac3p/libavutil/mem.c"))
         self.assertFalse(publish_audit._spdx_required("src/rt/atrac3p/libavcodec/vlc.h"))
@@ -845,6 +845,21 @@ class TestPublishAudit(unittest.TestCase):
             source_path, removed, "upstream_derived", "LGPL-2.1-or-later"
         )
         self.assertTrue(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in findings), findings)
+
+    def test_provenance_audit_preserves_clay_header_byte_identity(self):
+        upstream_header = b"// VERSION: 0.14\n\n/* upstream header without an SPDX identifier */\n"
+        findings = self._spdx_provenance_findings(
+            "third_party/clay/clay.h", upstream_header, "upstream_derived", "Zlib"
+        )
+        self.assertFalse(any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in findings), findings)
+
+        sibling_findings = self._spdx_provenance_findings(
+            "third_party/clay/other.h", upstream_header, "upstream_derived", "Zlib"
+        )
+        self.assertTrue(
+            any(f.code == "SPDX_UPSTREAM_LINEAGE" for f in sibling_findings),
+            sibling_findings,
+        )
 
     def _lineage_provenance_findings(
         self,
@@ -1862,6 +1877,16 @@ class TextHygieneTests(unittest.TestCase):
 
     def test_missing_final_newline_is_reported(self):
         self.assertEqual(self._codes(b"one" + LF + b"two"), ["TEXT_FINAL_NEWLINE"])
+
+    def test_exact_clay_upstream_license_keeps_its_byte_identity(self):
+        path = "third_party/clay/LICENSE.md"
+        data = (publish_audit.ROOT / path).read_bytes()
+        self.assertEqual(
+            hashlib.sha256(data).hexdigest(),
+            "5dd30f9f52093076b7574458f5efb8242fe6cbbd4669d4a2914e7616810d0df8",
+        )
+        self.assertNotIn("TEXT_FINAL_NEWLINE", self._codes(data, path=path))
+        self.assertIn("TEXT_FINAL_NEWLINE", self._codes(data + b" ", path=path))
 
     def test_binary_content_is_never_reported(self):
         # NUL-bearing data is binary; CRLF inside it is not a line-ending defect.
