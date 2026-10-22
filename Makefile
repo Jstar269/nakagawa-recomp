@@ -1000,7 +1000,7 @@ PUBLIC_TARGETS := \
 	gpu-selftest-status
 
 PROJECT_FONT_SLOT_TARGETS := project-japanese-font project-latin-font project-korean-font
-INTERNAL_TARGETS := FORCE project-japanese-font project-latin-font project-korean-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
+INTERNAL_TARGETS := FORCE project-japanese-font project-latin-font project-korean-font project-fonts player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check ui-font-selftest vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
@@ -2912,9 +2912,36 @@ osk-overlay-paint-selftest:
 		src/rt/osk_overlay_paint_selftest.c src/rt/osk_overlay.c src/rt/osk_overlay_paint.c $(LDFLAGS) $(LIBS)
 	$(BUILD_DIR)/osk_overlay_paint_selftest$(EXE_EXT) $(BUILD_DIR)/osk_overlay_paint_selftest.bmp
 
+# Resolve the already-supported SDL3_ttf dependency for the font selftest. Linux
+# CI installs sdl3-ttf in the SDL3_ttf job; Windows uses the discovered UCRT64 SDK.
+ifeq ($(OS),Windows_NT)
+SDL3_TTF_AVAILABLE := $(shell "$(PYTHON)" -c "from pathlib import Path; import sys; root=Path(r'$(SDL3_DIR)'); sys.exit(0 if (root/'include/SDL3_ttf/SDL_ttf.h').is_file() and (root/'lib/libSDL3_ttf.dll.a').is_file() and (root/'bin/SDL3_ttf.dll').is_file() else 1)" && echo yes)
+SDL3_TTF_CFLAGS := $(SDL3_INC_FLAGS)
+SDL3_TTF_LIBS := $(SDL3_LDFLAGS) -lSDL3_ttf -lSDL3
+else
+SDL3_TTF_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists sdl3-ttf && echo yes)
+SDL3_TTF_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags sdl3-ttf)
+SDL3_TTF_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs sdl3-ttf)
+endif
+
+.PHONY: ui-font-selftest
+ifeq ($(SDL3_TTF_AVAILABLE),yes)
+ui-font-selftest:
+	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	$(CC) -std=c11 -Wall -Wextra -Werror $(SDL3_TTF_CFLAGS) tests/native/test_ui_font_assets.c \
+		-o $(BUILD_ROOT)/test_ui_font_assets$(EXE_EXT) $(SDL3_TTF_LIBS)
+	$(BUILD_ROOT_RUN)/test_ui_font_assets$(EXE_EXT) \
+		assets/fonts/ui/noto-sans-jp/NotoSansJP-Regular.ttf \
+		assets/fonts/ui/chakra-petch/ChakraPetch-SemiBold.ttf
+else
+ui-font-selftest:
+	@echo "SKIP: UI font native selftest requires the SDL3_ttf development package (sdl3-ttf on Linux or the MSYS2 SDL3_ttf import library on Windows)."
+endif
+
 # Player UI tests link SDL3 (software renderer, no window), so they run where the
-# player itself builds rather than in the SDL-free native-core-tests set.
-player-ui-tests: osk-overlay-paint-selftest
+# player itself builds rather than in the SDL-free native-core-tests set. The
+# optional UI font selftest reports a named skip when SDL3_ttf is unavailable.
+player-ui-tests: osk-overlay-paint-selftest ui-font-selftest
 	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra $(PLAYER_INCLUDES) $(LDFLAGS) tests/native/test_ui_clip.c -lSDL3 \
 		-o $(BUILD_ROOT)/test_ui_clip$(EXE_EXT)
