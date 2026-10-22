@@ -8578,8 +8578,9 @@ static void run_at3_decode(int emulated) {
     (void)atrac_unload_rc;
     (void)avcodec_unload_rc;
     probe_step(emulated, "at3-decode", "park");
-    /* Park the main thread. Returning would end main and drop PSPLink to the XMB. */
-    for (;;) sceKernelSleepThread();
+    /* Normal teardown: parks until PSPLink modstop, which ends main cleanly. Returning from main would
+       drop PSPLink to the XMB. */
+    probe_teardown(emulated);
 }
 #endif
 
@@ -8829,7 +8830,7 @@ static void fake_osk_cycle(int emulated) {
             fake_record(emulated, "osk-shutdown-quit", (uint32_t)sceUtilityOskShutdownStart());
             break;
         }
-        if (status == 0u && visible_seen) break;
+        if ((status == 0u || status == 0x80110005u) && visible_seen) break;
         sceKernelDelayThread(16000);
     }
     char line[200];
@@ -8838,13 +8839,15 @@ static void fake_osk_cycle(int emulated) {
                    "status=RC result=0x%08x polls=%d visible=%d quit=%d\n",
                    (unsigned int)status, polls, visible_seen, quit_seen);
     probe_emit_durable(emulated, line, strlen(line));
-    for (int i = 0; i < 200 && (uint32_t)sceUtilityOskGetStatus() != 0u; i++) {
+    for (int i = 0; i < 200; i++) {
+        const uint32_t now = (uint32_t)sceUtilityOskGetStatus();
+        if (now == 0u || now == 0x80110005u) break;
         (void)sceUtilityOskUpdate(1);
         sceKernelDelayThread(16000);
     }
     const uint32_t final_status = (uint32_t)sceUtilityOskGetStatus();
     fake_record(emulated, "osk-final-status", final_status);
-    if (final_status == 0u) {
+    if (final_status == 0u || final_status == 0x80110005u) {
         fake_record(emulated, "osk-update-none-after-use", (uint32_t)sceUtilityOskUpdate(0));
         fake_record(emulated, "osk-shutdown-none-after-use", (uint32_t)sceUtilityOskShutdownStart());
     }
@@ -9083,7 +9086,7 @@ int main(int argc, char *argv[]) {
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_LATE_PRX_TARGET
     run_late_prx_target(emulated); /* parks; never returns */
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_AT3_DECODE
-    run_at3_decode(emulated); /* parks; never returns */
+    run_at3_decode(emulated); /* ends in probe_teardown, which parks until modstop */
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FAKE_SUCCESS
     run_fake_success(emulated); /* ends in probe_teardown, which parks until modstop */
 #else
