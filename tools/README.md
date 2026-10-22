@@ -236,6 +236,7 @@ set, so a new subpackage cannot ship undiscoverable either:
 | `sync_drift_check.py` | Fail-closed reconciliation between a public-safe export and the public repository. |
 | `provenance_ledger.py` | Build and validate the explicit public provenance ledger. |
 | `provenance_refresh.py` | Generate the public provenance controls with the hosted attestation logic. |
+| `admit_paths.py` | Admit new public paths in one command: derive each class, write the private admission and policy-delta records, build the clean candidate and run `admit-new-reviewed`, then print the push, merge and refresh still to run. |
 | `provenance_attest_verify.py` | Verify a candidate tree's public provenance against external authority. |
 | `provenance_record_gap.py` | Inventory the tracked paths that have no exact trusted provenance record (`--check-records` gates on it); `--check` is the separate upstream-derived disposition ratchet; the two flags are mutually exclusive (exit 2), so run them as two invocations. |
 | `modified_file_notice_audit.py` | Check the explicit notices recorded in the inherited-file manifest. |
@@ -506,6 +507,7 @@ harness changes no compiler default. Findings belong in issue #317.
 | `test_provenance_control_merge.py` | The committed provenance controls must not conflict across independent changes. |
 | `test_provenance_ledger.py` | Structural gate for the public implementation provenance ledger. |
 | `test_provenance_record_gap.py` | The record-gap inventory must agree with the gate that produces the finding. |
+| `test_admit_paths.py` | One-command admission end to end on synthetic repositories, plus the byte-identical `.recomp.json` replay (needs `NK_PRIVATE_AUTHORITY`). |
 | `test_provenance_wildcard_regression.py` | Test paths must classify through the canonical policy, not a wildcard. |
 | `test_public_candidate.py` | Candidate materialization excludes disputed implementations and all fonts. |
 | `test_public_export.py` | Public export generation and its gate. |

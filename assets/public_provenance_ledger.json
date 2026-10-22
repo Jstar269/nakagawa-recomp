@@ -784,7 +784,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "427ea6ad58dfc629110c7aa3652dee5a167043f3d5b8b29850962c9e596ee6c7"
+      "sha256": "689fa23a18b25cd2ebb08b01ed6e5f1668cc6cec0c338f499e7ef05c7ba61369"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -1417,7 +1417,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "69189f514f5479b60e7418466d9499539cefed5d551bbc92466ad4ba1561e76e"
+      "sha256": "28c0dd069ddfe5c45bdb629acd51ef72e7ddb912bccb7ea3a73924b8d52dbea0"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -6423,7 +6423,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6815160be3303fca70daf70985da8d19cf239db8a6c69a6a1f766f188aafd4ed"
+      "sha256": "90ead6aa72e3f36f5754c51ea6751435acfb372afe3474aeb2c53847a2e7fdf7"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -6560,7 +6560,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "86f4484c851407e8adcd5ca9f614cef003a716cdf20b3cafb46dbd6b752f7bcc"
+      "sha256": "72ce75b41c10e715d2a662ac2a73beb832a587dbe8402fdf72c5c6775921da33"
     },
     {
       "path": "tools/TRACE_FORMAT.md",
@@ -6574,6 +6574,18 @@
         "modification_status": "modified_or_translated; see trusted record"
       },
       "sha256": "6326940f71dc1176cffdc877d991bba9c6cc398b9ddf25b2595429f69b681eb1"
+    },
+    {
+      "path": "tools/admit_paths.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "admit-paths-tool-20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "a1e8ae1baaf77e61e2e0c6cca82809bdc7d1dda926c3a0a099360be058193ac7"
     },
     {
       "path": "tools/analyze.py",
@@ -8229,6 +8241,18 @@
         "upstream_attribution": null
       },
       "sha256": "cc925461cae0b2441689858562631fc8cf96f5e4e07bb57905b14a240045813d"
+    },
+    {
+      "path": "tools/test_admit_paths.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "admit-paths-tests-20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "b7252f766df1b21942f27b21b9fc337a15f0521e4001cf4399554e087d81274f"
     },
     {
       "path": "tools/test_analyze_import_stub_entries.py",
