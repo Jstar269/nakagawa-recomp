@@ -1183,7 +1183,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "a26e42238b100640036165cc948945c62afee94c72ffc854bd0f326d3ef96386"
+      "sha256": "3548774717172be06b63326c68c5a88324b2e5a3bd327b4e142ff174c942fd95"
     },
     {
       "path": "docs/COMPATIBILITY.md",
