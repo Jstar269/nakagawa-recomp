@@ -680,6 +680,12 @@ void player_app_refresh_font_status(PlayerApp *app);
 
 /* Package build actions */
 bool player_app_start_package_build(PlayerApp *app, int game_index);
+/* Rebuild an existing package only when validation marks it incompatible.
+   Uses the same prerequisite consent and package-builder transaction as a new build. */
+bool player_app_rebuild_package(PlayerApp *app, int game_index);
+/* Poll the active package builder once per player-loop iteration, independent
+   of which view is currently visible. */
+void player_app_poll_package_build(PlayerApp *app, uint64_t current_time_ms);
 void player_app_cancel_package_build(PlayerApp *app);
 /* Per-build consent and progress state. Consent is never persisted. */
 bool player_app_prereq_begin(PlayerApp *app, int game_index,

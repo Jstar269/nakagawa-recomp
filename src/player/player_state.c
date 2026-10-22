@@ -2234,7 +2234,15 @@ bool player_app_monitor_game_session(PlayerApp *app, uint64_t now_ms) {
 }
 
 bool player_app_start_package_build(PlayerApp *app, int game_index) {
-    if (!app || game_index < 0 || game_index >= app->game_count) return false;
+    if (!app) return false;
+    if (app->build_session.is_building) {
+        player_app_set_error(
+            app, "PACKAGE_BUILD_IN_PROGRESS", "Package Build Already Running",
+            "A package build is already running. Wait for it to finish before starting another.",
+            "Return to Build", VIEW_BUILDING_PACKAGE);
+        return false;
+    }
+    if (game_index < 0 || game_index >= app->game_count) return false;
     const GameRecord *game = &app->games[game_index];
 
     package_builder_init_session(&app->build_session, game->disc_id, game->title_name);
@@ -2312,6 +2320,13 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
 
     NkResult res = package_builder_start(&app->build_session, python_path, cli_path, user_data_root, log_dir);
     if (res != NK_OK) {
+        if (res == NK_ERROR_ALREADY_EXISTS) {
+            player_app_set_error(
+                app, "PACKAGE_BUILD_IN_PROGRESS", "Package Build Already Running",
+                "A package build is already running. Wait for it to finish before starting another.",
+                "Return to Build", VIEW_BUILDING_PACKAGE);
+            return false;
+        }
         player_app_set_error(app, "SPAWN_FAILED", "Failed to Start Package Builder",
                              "Failed to spawn the package builder child process.",
                              "Return to Library", VIEW_LIBRARY);
@@ -2320,6 +2335,32 @@ bool player_app_start_package_build(PlayerApp *app, int game_index) {
 
     player_app_set_view(app, VIEW_BUILDING_PACKAGE);
     return true;
+}
+
+bool player_app_rebuild_package(PlayerApp *app, int game_index) {
+    if (!app) return false;
+    if (app->build_session.is_building) {
+        return player_app_start_package_build(app, game_index);
+    }
+    if (game_index < 0 || game_index >= app->game_count) return false;
+
+    char reason[2048] = "";
+    NkRuntimePackageStatus status = player_app_validate_runtime_package(
+        app, &app->games[game_index], NULL, reason, sizeof(reason));
+    if (status != NK_RUNTIME_PACKAGE_INCOMPATIBLE) {
+        player_app_set_error(
+            app, "PACKAGE_REBUILD_NOT_INCOMPATIBLE", "Package Cannot Be Rebuilt",
+            reason[0] ? reason : "Rebuild is available only when the package is incompatible.",
+            "Return to Library", VIEW_LIBRARY);
+        return false;
+    }
+
+    return player_app_start_package_build(app, game_index);
+}
+
+void player_app_poll_package_build(PlayerApp *app, uint64_t current_time_ms) {
+    if (!app) return;
+    package_builder_poll(&app->build_session, current_time_ms);
 }
 
 void player_app_cancel_package_build(PlayerApp *app) {
