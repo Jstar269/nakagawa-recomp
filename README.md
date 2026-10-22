@@ -44,6 +44,8 @@ Part of the Nakagawa family, with [hst-decomp](https://github.com/Jstar269/hst-d
 - **Honest by design.** When something isn't supported yet, it stops at a named boundary with a plain message. It
   never fakes success.
 - **Bring your own game.** No games, firmware, keys or Sony fonts ship here, and no game data is ever downloaded.
+- **Offline by default.** Nakagawa connects to the internet only when you agree, and today only to fetch build
+  tools ([network use](docs/SETUP.md#network-use)).
 
 ## Quick start
 

@@ -1755,9 +1755,13 @@ NkResult package_builder_start(
     const char *user_data_root,
     const char *log_dir
 ) {
-    if (!session || !python_path || !cli_path || !session->disc_id[0]) {
+    if (!session) {
         return NK_ERROR_GENERIC;
     }
+    /* A running session owns its process handle and progress files. Refuse
+       before reset_run_state or path setup can replace that live state. */
+    if (session->is_building) return NK_ERROR_ALREADY_EXISTS;
+    if (!python_path || !cli_path || !session->disc_id[0]) return NK_ERROR_GENERIC;
 
     /* Reset before anything can fail, so a reused session never reports the
      * previous build's elapsed time or outcome. */

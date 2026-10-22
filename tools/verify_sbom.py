@@ -23,6 +23,7 @@ EXPECTED_PROVENANCE_FAMILIES = frozenset({
     "ppsspp",
     "pspsdk",
     "ffmpeg-atrac3p",
+    "clay-layout",
     "sdl3",
     "vulkan",
     "vfpu",

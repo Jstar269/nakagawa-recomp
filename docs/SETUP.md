@@ -672,6 +672,21 @@ The player's UI typography loads `SDL3_ttf.dll` from beside the executable first
 then from `PATH`; without it the built-in readable debug font is used. Placing
 `SDL3_ttf.dll` next to `nakagawa_player.exe` is enough — no rebuild required.
 
+### Network use
+
+Nakagawa works offline. The player and the runtime make no network connection unless you
+agree to one, and the game itself never reaches the network. Today there is exactly one
+connection, listed below; any future online feature will be opt-in and added here first.
+
+| What | Host | When | Controlled by |
+| --- | --- | --- | --- |
+| Build-tool download | `www.python.org`, `repo.msys2.org` (HTTPS) | Only after you select **DOWNLOAD** on the BUILD PACKAGE consent card | That consent card, per build |
+
+There is no update check, telemetry or crash upload. The `network_mode` entry in
+`settings.json` is reserved and always reads `"offline"`; a build treats any other value as
+offline. `tools/test_prereq_fetcher.py` fails if shipped code outside the two
+prerequisite downloaders uses a network API.
+
 ### Build lifecycle and cleanup targets
 
 The build system provides scoped and explicit cleanup targets:
