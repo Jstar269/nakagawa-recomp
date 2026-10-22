@@ -2205,14 +2205,20 @@ def cmd_fonts_import(args: argparse.Namespace) -> int:
 
 
 def cmd_fonts_status(args: argparse.Namespace) -> int:
-    from nk_core.fonts import SLOTS, slot_states
+    from nk_core.fonts import SLOTS, latin_index_states, slot_states
 
     states = slot_states(user_data_root=args.user_data_root, project_root=args.project_root)
+    latin = latin_index_states(user_data_root=args.user_data_root, project_root=args.project_root)
     if args.json:
-        print(json.dumps({slot: states[slot] for slot in SLOTS}, indent=2))
+        result = {slot: states[slot] for slot in SLOTS if slot != "latin"}
+        result["latin_indices"] = {str(index + 1): latin[index] for index in range(len(latin))}
+        print(json.dumps(result, indent=2))
     else:
-        for slot in SLOTS:
+        for slot in ("japanese",):
             print(states[slot]["detail"])
+        for state in latin:
+            print(state["detail"])
+        print(states["korean"]["detail"])
     return 0
 
 

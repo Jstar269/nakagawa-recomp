@@ -3432,8 +3432,10 @@ static void player_font_append(char *out, size_t out_len, const char *text) {
 
 void player_app_refresh_font_status(PlayerApp *app) {
     NkFontSlotState states[NK_FONT_SLOT_COUNT];
+    NkFontLatinIndexState latin_states[NK_FONT_LATIN_INDEX_COUNT];
     char root[NK_MAX_PATH];
     char project_root[NK_MAX_PATH];
+    char project_font_dir[NK_MAX_PATH * 2];
     if (!app) return;
     /* The user's imports come from the per-user font root, the same root the import, the removal
        and the preflight use; empty when none resolves, and the nk_font calls then report that the
@@ -3444,9 +3446,17 @@ void player_app_refresh_font_status(PlayerApp *app) {
         snprintf(project_root, sizeof(project_root), "%s", ".");
     }
     nk_font_slot_states(root, project_root, states);
+    snprintf(project_font_dir, sizeof(project_font_dir), "%s%c%s", project_root,
+             nk_platform_path_separator(), NK_FONT_PROJECT_SUBDIR);
+    nk_font_latin_index_states(root, project_font_dir, latin_states);
     for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
         snprintf(app->wizard.font_slot_detail[slot], sizeof(app->wizard.font_slot_detail[slot]),
                  "%s", states[slot].detail);
+    }
+    for (int index = 0; index < NK_FONT_LATIN_INDEX_COUNT; index++) {
+        snprintf(app->wizard.font_latin_index_detail[index],
+                 sizeof(app->wizard.font_latin_index_detail[index]), "%s",
+                 latin_states[index].detail);
     }
 }
 
@@ -3482,7 +3492,7 @@ bool player_app_fonts_import_folder(PlayerApp *app, const char *folder) {
                  "No font was imported: %.400s.", reason);
     } else {
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
-                 "Imported %d PSP font slot(s) into the player's font cache.", result.imported_count);
+                 "Imported %d PSP font file(s) into the player's font cache.", result.imported_count);
     }
     player_app_refresh_font_status(app);
     return result.imported_count > 0;
@@ -3688,14 +3698,24 @@ void player_app_build_compatibility_preflight(
                              font_issues, 1);
     } else {
         NkFontSlotState states[NK_FONT_SLOT_COUNT];
+        NkFontLatinIndexState latin_states[NK_FONT_LATIN_INDEX_COUNT];
         char summary[2048] = "";
-        bool every_slot = true;
+        char project_font_dir[NK_MAX_PATH * 2];
+        bool every_slot;
         nk_font_slot_states(font_root, runtime_root, states);
-        for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
-            if (states[slot].source == NK_FONT_SOURCE_NONE) every_slot = false;
-            player_font_append(summary, sizeof(summary), states[slot].detail);
+        snprintf(project_font_dir, sizeof(project_font_dir), "%s%c%s", runtime_root,
+                 nk_platform_path_separator(), NK_FONT_PROJECT_SUBDIR);
+        nk_font_latin_index_states(font_root, project_font_dir, latin_states);
+        every_slot = states[NK_FONT_SLOT_JAPANESE].source != NK_FONT_SOURCE_NONE &&
+                     states[NK_FONT_SLOT_KOREAN].source != NK_FONT_SOURCE_NONE;
+        player_font_append(summary, sizeof(summary), states[NK_FONT_SLOT_JAPANESE].detail);
+        player_font_append(summary, sizeof(summary), " ");
+        for (int index = 0; index < NK_FONT_LATIN_INDEX_COUNT; index++) {
+            if (latin_states[index].source == NK_FONT_SOURCE_NONE) every_slot = false;
+            player_font_append(summary, sizeof(summary), latin_states[index].detail);
             player_font_append(summary, sizeof(summary), " ");
         }
+        player_font_append(summary, sizeof(summary), states[NK_FONT_SLOT_KOREAN].detail);
         player_preflight_add(preflight, "SYSTEM_FONTS",
                              every_slot ? PREFLIGHT_OK : PREFLIGHT_MISSING,
                              summary, font_issues, every_slot ? 0 : 1);

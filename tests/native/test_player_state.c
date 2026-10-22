@@ -3291,7 +3291,7 @@ int main(int argc, char **argv) {
         snprintf(path, sizeof(path), "%s%cdump_three.pgf", source_dir, sep);
         write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
         assert(player_app_fonts_import_folder(font_app, source_dir));
-        assert(strstr(font_app->wizard.font_message, "Imported 3 PSP font slot(s)") != NULL);
+        assert(strstr(font_app->wizard.font_message, "Imported 3 PSP font file(s)") != NULL);
         assert(strstr(font_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN], "imported from your PSP") != NULL);
 
         /* Korean removed on its own: preflight is MISSING and names the slot. */
@@ -3493,7 +3493,7 @@ int main(int argc, char **argv) {
         player_app_set_runtime_root(runtime_app, runtime_only);
 
         assert(player_app_fonts_import_folder(runtime_app, source));
-        assert(strstr(runtime_app->wizard.font_message, "Imported 1 PSP font slot(s)") != NULL);
+        assert(strstr(runtime_app->wizard.font_message, "Imported 1 PSP font file(s)") != NULL);
         snprintf(path, sizeof(path), "%s%cfonts%cv2%cmanifest.json", per_user, sep, sep, sep);
         assert(nk_platform_file_exists(path));
         snprintf(path, sizeof(path), "%s%cfonts", runtime_only, sep);
@@ -3533,14 +3533,14 @@ int main(int argc, char **argv) {
             snprintf(project_exec.selected_path, sizeof(project_exec.selected_path), "BOOT.BIN");
 
             player_app_refresh_font_status(project_app);
-            assert(strstr(project_app->wizard.font_slot_detail[NK_FONT_SLOT_LATIN],
-                          "Latin: project font.") != NULL);
+            assert(strstr(project_app->wizard.font_latin_index_detail[0],
+                          "L1 missing; project nkltn.pgf") != NULL);
             player_app_build_compatibility_preflight(project_app, true, true, &project_exec);
             {
                 const PlayerPreflightCheck *fcheck =
                     find_preflight_check(&project_app->wizard.preflight, "SYSTEM_FONTS");
                 assert(fcheck != NULL);
-                assert(strstr(fcheck->message, "Latin: project font.") != NULL);
+                assert(strstr(fcheck->message, "L1 missing; project nkltn.pgf") != NULL);
             }
             free(project_app);
             assert(test_remove_tree(project_font_dir));
@@ -3622,7 +3622,7 @@ int main(int argc, char **argv) {
 
         /* 2. The import writes the cache under app-data, and the preflight reads it there. */
         assert(player_app_fonts_import_folder(fallback_app, source_dir));
-        assert(strstr(fallback_app->wizard.font_message, "Imported 3 PSP font slot(s)") != NULL);
+        assert(strstr(fallback_app->wizard.font_message, "Imported 3 PSP font file(s)") != NULL);
         assert(nk_platform_file_exists(manifest_path));
         assert(strstr(fallback_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN],
                       "Korean: imported from your PSP.") != NULL);
@@ -5189,7 +5189,11 @@ int main(int argc, char **argv) {
         nk_ps_copy_env("PATH", prior_path, sizeof(prior_path));
         nk_ps_copy_env("PYTHON", prior_python, sizeof(prior_python));
 #if defined(_WIN32) || defined(_WIN64)
-        nk_ps_set_env("PYTHON", "C:/Windows/notepad.exe");
+        /* A real program that is not Python: the version probe must reject it.
+           A console tool that exits at once on an unknown argument; a GUI
+           program (notepad.exe, used before) opened a window on the
+           developer's desktop and held the probe until it was closed. */
+        nk_ps_set_env("PYTHON", "C:/Windows/System32/where.exe");
 #else
         nk_ps_set_env("PYTHON", "/bin/sh");
 #endif

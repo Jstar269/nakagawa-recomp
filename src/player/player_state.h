@@ -255,6 +255,8 @@ typedef struct {
     /* The Fonts & System step's status: one line per PSP font slot (imported, project, or
        missing), refreshed from the cache, and the outcome of the last import or removal. */
     char font_slot_detail[NK_FONT_SLOT_COUNT][NK_FONT_TEXT_MAX];
+    /* One explicit line per Latin registry index, including the exact file or fallback. */
+    char font_latin_index_detail[NK_FONT_LATIN_INDEX_COUNT][160];
     char font_message[NK_FONT_TEXT_MAX];
 } SetupWizardState;
 

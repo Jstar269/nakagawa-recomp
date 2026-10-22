@@ -66,6 +66,90 @@ def _digits_only() -> bytes:
     return build_pgf([_glyph(0x30 + index) for index in range(10)], font_name="Nakagawa Test Digits")
 
 
+def _metric_missing_sentinel() -> bytes:
+    """Add a zero-based missing-metric sentinel to a max-sized synthetic table."""
+    image = bytearray(build_pgf([_glyph(0x41), _glyph(0x61)], font_name="Nakagawa Test Latin"))
+    old_count = image[0x102]
+    if old_count >= 255:
+        raise AssertionError("the base fixture must leave room in its dimension table")
+    insertion = fonts.BASE_HEADER_SIZE + old_count * 8
+    image[insertion:insertion] = bytes((255 - old_count) * 8)
+    image[0x102] = 255
+
+    parser = fonts._Image(bytes(image))
+    parser.parse_directory()
+    glyph_id = parser.map_entry(0x41)
+    if glyph_id is None:
+        raise AssertionError("the base fixture must map uppercase A")
+    record = parser.glyph_data_offset + parser.pointer_entry(glyph_id)
+    flags = fonts._get_bits(image, record, len(image) - record, 45, 3)
+    if flags is None or not flags & 1:
+        raise AssertionError("the base fixture must index its dimension metric")
+    image[record + 8] = 255
+    return bytes(image)
+
+
+def _metric_255_with_short_table() -> bytes:
+    """Use index 255 while the declared dimension table still has only one entry."""
+    image = bytearray(build_pgf([_glyph(0x41), _glyph(0x61)], font_name="Nakagawa Test Latin"))
+    if image[0x102] >= 255:
+        raise AssertionError("the base fixture must declare fewer than 255 dimension metrics")
+    parser = fonts._Image(bytes(image))
+    parser.parse_directory()
+    glyph_id = parser.map_entry(0x41)
+    if glyph_id is None:
+        raise AssertionError("the base fixture must map uppercase A")
+    record = parser.glyph_data_offset + parser.pointer_entry(glyph_id)
+    image[record + 8] = 255
+    return bytes(image)
+
+
+def _shadow_prefix_at_eof() -> bytes:
+    """Give lowercase a a mapped shadow whose optional prefix begins exactly at EOF."""
+    image = bytearray(build_pgf([_glyph(0x41), _glyph(0x61)], font_name="Nakagawa Test Latin"))
+    metric_end = fonts.BASE_HEADER_SIZE + sum(image[0x102:0x106]) * 8
+    image[metric_end:metric_end] = b"\x61\x00\x00\x00"
+    struct.pack_into("<I", image, 0x16C, 1)
+    struct.pack_into("<I", image, 0x170, 16)
+
+    parser = fonts._Image(bytes(image))
+    parser.parse_directory()
+    glyph_id = parser.map_entry(0x61)
+    if glyph_id is None:
+        raise AssertionError("the base fixture must map lowercase a")
+    record = parser.glyph_data_offset + parser.pointer_entry(glyph_id)
+    glyph = parser.primary_glyph(glyph_id)
+    if glyph is None:
+        raise AssertionError("the base fixture must have a complete primary record")
+    shadow_offset = len(image) - record
+    if shadow_offset < glyph["record_size"] or shadow_offset >= (1 << 14):
+        raise AssertionError("the synthetic shadow target must be representable at EOF")
+    word = int.from_bytes(image[record:record + 8], "little")
+    word = (word & ~((1 << 14) - 1)) | shadow_offset
+    word = (word & ~(((1 << 9) - 1) << 55)) | (1 << 55)
+    image[record:record + 8] = word.to_bytes(8, "little")
+    struct.pack_into("<H", image, metric_end, 0x61)
+    return bytes(image)
+
+
+def _short_shadow_prefix() -> bytes:
+    """Move the shadow target five bytes before EOF; its partial prefix stays invalid."""
+    image = bytearray(_shadow_prefix_at_eof())
+    parser = fonts._Image(bytes(image))
+    parser.parse_directory()
+    glyph_id = parser.map_entry(0x61)
+    if glyph_id is None:
+        raise AssertionError("the base fixture must map lowercase a")
+    record = parser.glyph_data_offset + parser.pointer_entry(glyph_id)
+    word = int.from_bytes(image[record:record + 8], "little")
+    shadow_offset = word & ((1 << 14) - 1)
+    if shadow_offset < 5:
+        raise AssertionError("the synthetic shadow offset must leave room for a short prefix")
+    word = (word & ~((1 << 14) - 1)) | (shadow_offset - 5)
+    image[record:record + 8] = word.to_bytes(8, "little")
+    return bytes(image)
+
+
 def _patched(image: bytes, offset: int, value: bytes) -> bytes:
     out = bytearray(image)
     out[offset:offset + len(value)] = value
@@ -257,6 +341,40 @@ class PgfValidatorParityTests(unittest.TestCase):
         self.assertEqual(fonts.pgf_verdict(_patched(dense, 8, struct.pack("<i", 4)))["refusal"], "REVISION")
         self.assertEqual(fonts.pgf_verdict(_patched(dense, 2, struct.pack("<H", 412)))["refusal"], "HEADER_SIZE")
         self.assertEqual(fonts.pgf_verdict(bytes(16 * 1024 * 1024 + 1))["refusal"], "TOO_LARGE")
+
+    def test_firmware_compatible_records_import_and_match_native_reader(self) -> None:
+        """A missing metric and an absent EOF shadow stay bounded and import as Latin PGFs."""
+        folder = Path(self.tmp.name) / "firmware_compatible"
+        folder.mkdir()
+        fixtures = {
+            "ltn3.pgf": _metric_missing_sentinel(),
+            "ltn8.pgf": _shadow_prefix_at_eof(),
+            "short_metric_table.pgf": _metric_255_with_short_table(),
+            "short_shadow.pgf": _short_shadow_prefix(),
+        }
+        paths = []
+        for name, data in fixtures.items():
+            path = folder / name
+            path.write_bytes(data)
+            paths.append(path)
+
+        native = _native_verdicts(self.exe, paths)
+        for path, line in zip(paths, native, strict=True):
+            tokens = line.split()
+            expected = ("10", "0") if path.name in (
+                "short_metric_table.pgf", "short_shadow.pgf"
+            ) else ("0", "1")
+            self.assertEqual((tokens[0], tokens[1]), expected, path.name)
+            verdict = fonts.pgf_verdict(fixtures[path.name])
+            self.assertEqual(verdict["ok"], expected[1] == "1", path.name)
+            if expected[1] == "0":
+                self.assertEqual(verdict["refusal"], "GLYPH", path.name)
+
+        result = fonts.import_fonts(folder, user_data_root=folder / "user")
+        self.assertEqual(result["imported_count"], 2)
+        self.assertEqual(result["latin_indices"], {"3": "ltn3.pgf", "8": "ltn8.pgf"})
+        details = {outcome["name"]: outcome["detail"] for outcome in result["outcomes"]}
+        self.assertTrue(details["short_shadow.pgf"].startswith("refused:"))
 
     def test_slot_layout_constants_match_the_c_headers(self) -> None:
         """The Python layout constants are the values in nk_font_slots.h, and the refusal order is pgf_api.h's."""
