@@ -71,6 +71,21 @@ class TestReleaseManifest(unittest.TestCase):
         self.assertEqual(data["name"], "nakagawa-recomp")
         self.assertEqual(data["license"], "GPL-3.0-or-later")
 
+    def test_clay_layout_family_is_pinned_and_not_claimed_as_runtime_linked(self):
+        family = next(
+            item for item in load_manifest()["provenance_families"]
+            if item.get("id") == "clay-layout"
+        )
+        self.assertEqual(family["license"], "Zlib")
+        self.assertEqual(family["origin"], "https://github.com/nicbarker/clay")
+        self.assertEqual(
+            family["revision"],
+            "v0.14 / b25a31c1a152915cd7dd6796e6592273e5a10aac",
+        )
+        self.assertEqual(family["notice_path"], "third_party/clay/LICENSE.md")
+        self.assertEqual(family["evidence_path"], "third_party/clay/PROVENANCE.md")
+        self.assertIn("not linked into player runtime", family["disposition"])
+
     def test_project_korean_font_source_is_an_approved_pinned_binary(self):
         data = load_manifest()
         component = next(

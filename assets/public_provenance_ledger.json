@@ -400,7 +400,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "7970cd7294cd96aac21e4df8932996d100d8e791f7d6009516b87ad00029f403"
+      "sha256": "50895c656115069d0897bf4b4bfbb3be79e7313eaf9ab96907372a5fa006b74b"
     },
     {
       "path": "NOTICE.md",
@@ -409,7 +409,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "29d58c6db8bd4943a0742a659327b177170bf36314bfe3b7908061b87f756337"
+      "sha256": "2144575170e35bf0f9f3cc079ec27878a044a25d6d8429483e8670659ed273ee"
     },
     {
       "path": "PUBLIC_EXPORT.json",
@@ -796,7 +796,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "b22dd6c4b29c3be0681e873f434754e05ad8a3cdf86467f442d9927b21d589ac"
+      "sha256": "0870802e5cf50df975053723aab9dd106a44b9a00d01bb7f61b6e8adce69e56c"
     },
     {
       "path": "assets/third_party_components.json",
@@ -1294,7 +1294,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "aca06d9085121df72ce089d927584c0d4e94cab4d148b40d2bba21c331b517a6"
+      "sha256": "5d4e03565065261e239a366606765b80af9906cdc4490beb1459adaed271c1f3"
     },
     {
       "path": "docs/NATIVE_PLAYER_IMPLEMENTATION_PROGRESS.md",
@@ -9471,7 +9471,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4c0ae232d97cd8ba5dd61ac19715dd03f0b49d07b6f54622adb2173bc268a7fd"
+      "sha256": "313c0d5466a4f79aa2e7b5a45c8031d7bfab64567aaa89202931ade12da79a8d"
     },
     {
       "path": "tools/test_native_driver_hardening.py",
@@ -10155,7 +10155,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e33f6bb0a7a7c5bc9da77ef9b4cd6a40f1cac714d6d8b69c439e9a64557c04eb"
+      "sha256": "772d6683ed57e956bc28a84a9fd283d867f752c74ceedac4d030c50b3a1290d1"
     },
     {
       "path": "tools/test_relocated_clone.py",
@@ -10985,7 +10985,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "129d428a4606f968f7a20536cee2ac620dca5bc6edfded4d09e9201a3040e99d"
+      "sha256": "ab2b126d68775112c3bf55d0a1a808c88fc60af6a14805de3c01083fec226207"
     },
     {
       "path": "tools/verify_vfpu_provenance.py",
@@ -11096,17 +11096,5 @@
       },
       "sha256": "7869f7a49433ed9a604bd810fc169003949eac70a600256753afbfab844695ef"
     }
-  ],
-  "admission": {
-    "workflow": "admit-new-reviewed",
-    "trusted_tree": "c4d1081c32d394ed5982e3cf8b37164ada42f17c",
-    "candidate_tree": "144a21822451a4be10c8dc4d2e8e64f627555f55",
-    "admitted_paths": [
-      "tests/native/test_clay_layout.c",
-      "third_party/clay/LICENSE.md",
-      "third_party/clay/PROVENANCE.md",
-      "third_party/clay/clay.h"
-    ],
-    "authority_sha256": "1ee7d6d1032bfd80e3f0546bee07edbb804741339761f201b2ef22dfbc14973f"
-  }
+  ]
 }

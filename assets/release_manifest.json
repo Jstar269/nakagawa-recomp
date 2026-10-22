@@ -69,6 +69,16 @@
       "disposition": "included_vendored_subset"
     },
     {
+      "id": "clay-layout",
+      "name": "Clay v0.14 layout library",
+      "license": "Zlib",
+      "origin": "https://github.com/nicbarker/clay",
+      "revision": "v0.14 / b25a31c1a152915cd7dd6796e6592273e5a10aac",
+      "notice_path": "third_party/clay/LICENSE.md",
+      "evidence_path": "third_party/clay/PROVENANCE.md",
+      "disposition": "vendored_source_only; not linked into player runtime yet"
+    },
+    {
       "id": "sdl3",
       "name": "SDL3",
       "license": "Zlib",
