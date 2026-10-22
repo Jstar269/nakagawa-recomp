@@ -10688,6 +10688,25 @@ int sr_thread_dispatch_callbacks(void) {
     return total_dispatched;
 }
 
+/* Run guest callback code on the current fiber with a private AOT return base.
+ * The interrupted call frames remain below the scope floor and cannot be
+ * inspected or popped by callback returns. */
+static int hle_dispatch_guest_scoped(CpuState *s, uint32_t fn,
+                                     const char *owner, uint32_t *fatal_target) {
+    SrAotReturnBoundaryScope scope;
+    sr_aot_return_boundary_scope_begin(&scope);
+    dispatch(s, fn);
+    const uint32_t flow_kind = s->flow_kind;
+    const uint32_t flow_target = s->flow_target;
+    const int scope_failed = sr_aot_return_boundary_scope_end(s, &scope, owner);
+    if (scope_failed || flow_kind == SR_FLOW_FATAL || s->flow_kind == SR_FLOW_FATAL) {
+        if (fatal_target)
+            *fatal_target = s->flow_kind == SR_FLOW_FATAL ? s->flow_target : flow_target;
+        return 1;
+    }
+    return 0;
+}
+
 /* Returns 1 if any registered entry was dispatched (used as a one-shot for engine latches).
  *
  * The scheduler calls this once per delivered vblank after the sub-interrupt handler.
@@ -19354,10 +19373,16 @@ static void ge_call_guest(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, ui
     s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
     s->pc = fn;
     atomic_store_explicit(&sr_timeslice, 20000, memory_order_relaxed);
-    dispatch(s, fn);
+    uint32_t callback_fatal_target = 0u;
+    int callback_fatal = hle_dispatch_guest_scoped(
+        s, fn, "GE guest callback", &callback_fatal_target);
     if (ge_log_on())
         fprintf(stderr, "GE_CALL_GUEST: fn=0x%08x returned, v0=0x%08x\n", fn, s->r[2]);
     memcpy(s, &save, sizeof(CpuState));
+    if (callback_fatal) {
+        s->flow_kind = SR_FLOW_FATAL;
+        s->flow_target = callback_fatal_target;
+    }
     /* Returning to the interrupted context ends any ll..sc window it had open. */
     sr_cpu_link_clear(s);
     atomic_store_explicit(&sr_timeslice, save_slice, memory_order_relaxed);
@@ -19401,11 +19426,17 @@ static uint32_t ge_call_guest_gp_rv(CpuState *s, uint32_t fn, uint32_t gp,
     s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
     s->pc = fn;
     atomic_store_explicit(&sr_timeslice, 20000, memory_order_relaxed);
-    dispatch(s, fn);
+    uint32_t callback_fatal_target = 0u;
+    int callback_fatal = hle_dispatch_guest_scoped(
+        s, fn, "GE guest callback with return value", &callback_fatal_target);
     uint32_t rv = s->r[2];
     if (ge_log_on())
         fprintf(stderr, "GE_CALL_GUEST_RV: fn=0x%08x returned, v0=0x%08x\n", fn, rv);
     memcpy(s, &save, sizeof(CpuState));
+    if (callback_fatal) {
+        s->flow_kind = SR_FLOW_FATAL;
+        s->flow_target = callback_fatal_target;
+    }
     /* Returning to the interrupted context ends any ll..sc window it had open. */
     sr_cpu_link_clear(s);
     atomic_store_explicit(&sr_timeslice, save_slice, memory_order_relaxed);

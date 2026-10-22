@@ -9,6 +9,7 @@
 
 #include "package_builder.h"
 #include "nk_json.h"
+#include "nk_platform.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -1417,26 +1418,105 @@ static bool scan_path_for_names(const char *const *names, size_t name_count,
     return false;
 }
 
+#define PYTHON_VERSION_PROBE_TIMEOUT_MS 10000
+
+/* A PATH entry is only a usable Python if it can execute the same version
+ * probe used by the package builder. Launch it directly (never through a
+ * shell), and bound the wait so Store aliases or broken wrappers cannot hang
+ * package discovery. The bound is generous because a real interpreter's first
+ * start on a cold machine can spend seconds in antivirus scanning, and a false
+ * rejection sends the user to an unneeded download; the Store alias fails at
+ * once, so the bound only matters for a hung wrapper. */
+static bool python_candidate_runs_required_version(const char *executable_path) {
+    static const char *probe =
+        "import sys; sys.exit(sys.implementation.name != 'cpython' or "
+        "sys.version_info[:2] != (3, 14))";
+    NkProcessHandle process;
+    const char *argv[] = { executable_path, "-c", probe, NULL };
+    if (!executable_path || !executable_path[0] ||
+        !nk_platform_spawn_process(executable_path, argv, NULL, NULL, &process)) {
+        return false;
+    }
+
+    int exit_code = nk_platform_wait_process(&process,
+                                             PYTHON_VERSION_PROBE_TIMEOUT_MS);
+    if (exit_code < 0 && process.is_active) {
+        nk_platform_terminate_process(&process);
+    }
+    nk_platform_close_process(&process);
+    return exit_code == 0;
+}
+
+static bool accept_python_candidate(const char *candidate,
+                                    char *out_path, size_t out_size) {
+    char resolved[NK_MAX_PATH * 2];
+    if (!candidate || !candidate[0] || !out_path || out_size == 0 ||
+        !nk_platform_file_exists(candidate)) {
+        return false;
+    }
+    if (!nk_platform_absolute_path(candidate, resolved, sizeof(resolved))) {
+        size_t candidate_len = strlen(candidate);
+        if (candidate_len >= sizeof(resolved)) return false;
+        memcpy(resolved, candidate, candidate_len + 1);
+    }
+    if (!python_candidate_runs_required_version(resolved)) return false;
+    size_t resolved_len = strlen(resolved);
+    if (resolved_len >= out_size) return false;
+    memcpy(out_path, resolved, resolved_len + 1);
+    return true;
+}
+
+/* Unlike the shared file-existence scan above, Python discovery must keep
+ * walking PATH after an unusable entry (including the Windows Store alias). */
+static bool scan_path_for_python(char *out_path, size_t out_size) {
+    const char *path_env = getenv("PATH");
+    if (!path_env || !path_env[0]) return false;
+
+    char path_copy[32768];
+    safe_str_copy(path_copy, sizeof(path_copy), path_env);
+#if defined(_WIN32) || defined(_WIN64)
+    const char sep = ';';
+    static const char *kPathNames[] = { "python3.exe", "python.exe" };
+#else
+    const char sep = ':';
+    static const char *kPathNames[] = { "python3", "python" };
+#endif
+    char *dir = path_copy;
+    while (dir) {
+        char *next = strchr(dir, sep);
+        if (next) *next++ = '\0';
+        if (dir[0] && strlen(dir) < NK_MAX_PATH) {
+            for (size_t i = 0; i < sizeof(kPathNames) / sizeof(kPathNames[0]); i++) {
+                char candidate[NK_MAX_PATH * 2];
+                int written = snprintf(candidate, sizeof(candidate), "%.*s%c%s",
+                                       NK_MAX_PATH - 1, dir,
+                                       nk_platform_path_separator(), kPathNames[i]);
+                if (written > 0 && (size_t)written < sizeof(candidate) &&
+                    accept_python_candidate(candidate, out_path, out_size)) {
+                    return true;
+                }
+            }
+        }
+        dir = next;
+    }
+    return false;
+}
+
 bool package_builder_find_python(char *out_path, size_t out_size) {
     if (!out_path || out_size == 0) return false;
     out_path[0] = '\0';
 
     bool ignore_external_python = false;
 #ifdef NK_PLAYER_UI_REGRESSION_TEST
-    /* Let the UI lane model a clean user account on a tool-equipped host. */
+    /* Let player regression tests model a clean account on a tool-equipped host. */
     const char *isolate_python = getenv("NAKAGAWA_PLAYER_UI_TEST_NO_HOST_PYTHON");
     ignore_external_python = isolate_python && strcmp(isolate_python, "1") == 0;
 #endif
 
     /* 1. Check PYTHON environment variable */
     const char *env_py = ignore_external_python ? NULL : getenv("PYTHON");
-    if (env_py && env_py[0] && nk_platform_file_exists(env_py)) {
-        if (nk_platform_absolute_path(env_py, out_path, out_size)) {
-            return true;
-        }
-        safe_str_copy(out_path, out_size, env_py);
-        return true;
-    }
+    if (env_py && env_py[0] &&
+        accept_python_candidate(env_py, out_path, out_size)) return true;
 
 #if defined(_WIN32) || defined(_WIN64)
     /* 2. Check standard MSYS2 UCRT64 toolchain locations */
@@ -1448,23 +1528,12 @@ bool package_builder_find_python(char *out_path, size_t out_size) {
     };
     for (size_t i = 0; !ignore_external_python &&
                         i < sizeof(kWinCandidates) / sizeof(kWinCandidates[0]); i++) {
-        if (nk_platform_file_exists(kWinCandidates[i])) {
-            safe_str_copy(out_path, out_size, kWinCandidates[i]);
-            return true;
-        }
+        if (accept_python_candidate(kWinCandidates[i], out_path, out_size)) return true;
     }
 #endif
 
     /* 3. Scan PATH for python3 / python */
-#if defined(_WIN32) || defined(_WIN64)
-    static const char *kPathNames[] = { "python3.exe", "python.exe" };
-#else
-    static const char *kPathNames[] = { "python3", "python" };
-#endif
-    if (scan_path_for_names(kPathNames, sizeof(kPathNames) / sizeof(kPathNames[0]),
-                            out_path, out_size)) {
-        return true;
-    }
+    if (scan_path_for_python(out_path, out_size)) return true;
 
 #if !defined(_WIN32) && !defined(_WIN64)
     static const char *kPosixCandidates[] = {
@@ -1472,9 +1541,9 @@ bool package_builder_find_python(char *out_path, size_t out_size) {
         "/usr/local/bin/python3",
         "/usr/bin/python"
     };
-    for (size_t i = 0; i < sizeof(kPosixCandidates) / sizeof(kPosixCandidates[0]); i++) {
-        if (nk_platform_file_exists(kPosixCandidates[i])) {
-            safe_str_copy(out_path, out_size, kPosixCandidates[i]);
+    for (size_t i = 0; !ignore_external_python &&
+                        i < sizeof(kPosixCandidates) / sizeof(kPosixCandidates[0]); i++) {
+        if (accept_python_candidate(kPosixCandidates[i], out_path, out_size)) {
             return true;
         }
     }
@@ -1491,9 +1560,8 @@ bool package_builder_find_python_in_root(const char *data_root,
         int n = snprintf(candidate, sizeof(candidate), "%s%cprerequisites%cpython%cpython.exe",
                          data_root, nk_platform_path_separator(),
                          nk_platform_path_separator(), nk_platform_path_separator());
-        if (n > 0 && (size_t)n < sizeof(candidate) && nk_platform_file_exists(candidate)) {
-            if (nk_platform_absolute_path(candidate, out_path, out_size)) return true;
-            safe_str_copy(out_path, out_size, candidate);
+        if (n > 0 && (size_t)n < sizeof(candidate) &&
+            accept_python_candidate(candidate, out_path, out_size)) {
             return true;
         }
     }

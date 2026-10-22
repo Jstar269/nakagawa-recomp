@@ -46,6 +46,10 @@ typedef struct CpuState {
     union { float v[128]; uint32_t vi[128]; };
     uint32_t vfpuCtrl[16];
 } CpuState;
+int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
+                                 uint32_t call_pc, uint32_t has_resume_pc);
+int sr_aot_return_boundary_end(CpuState *s);
+#define SR_AOT_RETURN_CAPTURE(s, target) ((void)(s), (void)(target))
 #define SR_YIELD(s, pc) ((void)0)
 #define sr_begin(s, pc, op) ((void)0)
 #define sr_end(s, addr, size) ((void)0)
@@ -73,6 +77,11 @@ ISOLATED_STUBS_C = """\
 #include <string.h>
 #include "recomp.h"
 
+int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
+                                 uint32_t call_pc, uint32_t has_resume_pc) {
+    (void)s; (void)resume_pc; (void)call_pc; (void)has_resume_pc; return 0;
+}
+int sr_aot_return_boundary_end(CpuState *s) { (void)s; return 0; }
 void sr_register(uint32_t addr, void (*fn)(CpuState *)) { (void)addr; (void)fn; }
 void sr_exec_span_reset(void) {}
 int sr_exec_span_register(uint32_t start, uint32_t end) { (void)start; (void)end; return 1; }
