@@ -560,7 +560,7 @@ class BatchAdmitPathsTest(unittest.TestCase):
                 prs = [fixture.worktree(slug) for slug in slugs]
                 for index in range(2):
                     fixture.add_pr_path(prs[index], paths[index], f"# {slugs[index]}\n")
-                result = admit_paths.admit_batch(
+                admit_paths.admit_batch(
                     batch=[self.entry(prs[i], paths[i], slugs[i]) for i in range(2)],
                     private_repo=fixture.authority, base=fixture.base, date=self.DATE,
                     scratch_root=fixture.tmp,
@@ -881,7 +881,6 @@ class BatchAdmissionTest(unittest.TestCase):
         )
         first_root, first_branch, _first_path = prs[first]
         waiting_root, _waiting_branch, waiting_path = prs[1 - first]
-        waiting_entry = result["entries"][1 - first]
 
         git(first_root, "checkout", "-q", "main")
         git(first_root, "merge", "-q", "--ff-only", first_branch)

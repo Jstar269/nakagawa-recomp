@@ -647,13 +647,13 @@ For path-adding pull requests approved together, use `--batch <file.json>` with 
 ```json
 [
   {
-    "pr_worktree": "C:/nk/worktrees/docs-a",
+    "pr_worktree": "../docs-a",
     "paths": ["docs/a.md"],
     "slug": "docs-a",
     "approval_basis": "Owner decision recorded for this PR."
   },
   {
-    "pr_worktree": "C:/nk/worktrees/docs-b",
+    "pr_worktree": "../docs-b",
     "paths": ["docs/b.md"],
     "slug": "docs-b",
     "approval_basis": "Owner decision recorded for this PR."
