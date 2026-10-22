@@ -50,6 +50,10 @@ FRAME_SIZE = 0x70
 # where the production check has nothing to bound either.
 _TAIL_PROTOCOL_HEADER = """\
 typedef void (*TestBodyFn)(CpuState *);
+int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
+                                 uint32_t call_pc, uint32_t has_resume_pc);
+int sr_aot_return_boundary_end(CpuState *s);
+#define SR_AOT_RETURN_CAPTURE(s, target) ((void)(s), (void)(target))
 void sr_tail_record(CpuState *s, uint32_t target, TestBodyFn fn,
                     uint32_t restore_sp, uint32_t owes_restore);
 void sr_tail_drain(CpuState *s);
@@ -57,6 +61,13 @@ void sr_tail_drain(CpuState *s);
 #define SR_HOST_STACK_CHECK(entry) ((void)(entry))
 """
 _TAIL_PROTOCOL_IMPL = """\
+int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
+                                 uint32_t call_pc, uint32_t has_resume_pc) {
+    (void)s; (void)resume_pc; (void)call_pc; (void)has_resume_pc; return 0;
+}
+int sr_aot_return_boundary_end(CpuState *s) {
+    (void)s; return 0;
+}
 static struct {
     TestBodyFn fn; CpuState *state; uint32_t target, restore_sp; int pending, owes;
 } test_tail;

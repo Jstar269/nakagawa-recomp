@@ -263,7 +263,8 @@ static void vector_build(CosimVector *vector, const CpuState *s) {
 typedef enum {
     COSIM_TERM_AOT_HOST_RETURN = 0,   /* generated body returned to its host caller */
     COSIM_TERM_INTERP_HANDOFF  = 1,   /* interpreter reached a registered AOT target */
-    COSIM_TERM_REJECT          = 2,   /* the dispatch core refused to execute */
+    COSIM_TERM_CALL_RETURN     = 2,   /* interpreter reached an explicit CALL boundary */
+    COSIM_TERM_REJECT          = 3,   /* the dispatch core refused to execute */
 } CosimTermination;
 
 typedef struct {
@@ -465,6 +466,12 @@ static void run_lane(CosimLane *lane, const CosimCase *test, int mode,
     memset(&lane->writes, 0, sizeof lane->writes);
     g_trampoline_hits = 0;
     seed_state(&lane->state, test);
+    const int dispatcher_boundary = strcmp(test->name, "rarewrite-dispatch") == 0;
+    if (dispatcher_boundary) {
+        lane->state.pc = COSIM_RA_REWRITE_RESUME - 8u;
+        lane->state.r[31] = COSIM_RA_REWRITE_RESUME;
+        lane->state.r[5] = COSIM_RA_REWRITE_RESUME;
+    }
     s_cpu = &lane->state;
 
     if (sr_trace_open(trace_path, "cosim", test->address) != 0) {
@@ -474,7 +481,10 @@ static void run_lane(CosimLane *lane, const CosimCase *test, int mode,
     g_active_write_log = &lane->writes;
     g_sr_last_writer_enabled = 1;
 
-    lane->dispatch_result = dispatch_try(&lane->state, test->address);
+    lane->dispatch_result = dispatcher_boundary
+        ? dispatch_call_try(&lane->state, COSIM_RA_REWRITE_CALLEE,
+                            COSIM_RA_REWRITE_RESUME)
+        : dispatch_try(&lane->state, test->address);
 
     g_sr_last_writer_enabled = 0;
     g_active_write_log = NULL;
@@ -485,6 +495,10 @@ static void run_lane(CosimLane *lane, const CosimCase *test, int mode,
     if (lane->dispatch_result < 0) {
         lane->termination = COSIM_TERM_REJECT;
         lane->handoff_target = 0u;
+    } else if (dispatcher_boundary &&
+               lane->dispatch_result == SR_GUEST_INTERP_CALL_RETURN) {
+        lane->termination = COSIM_TERM_CALL_RETURN;
+        lane->handoff_target = lane->state.pc;
     } else if (lane->trampoline_entered) {
         /* The interpreter owns and advances the architectural PC, and leaves the
          * handoff destination there. */
@@ -539,6 +553,7 @@ static const char *termination_name(CosimTermination termination) {
     switch (termination) {
     case COSIM_TERM_AOT_HOST_RETURN: return "aot-host-return";
     case COSIM_TERM_INTERP_HANDOFF: return "interpreter-aot-handoff";
+    case COSIM_TERM_CALL_RETURN: return "interpreter-call-return";
     default: return "dispatch-reject";
     }
 }
@@ -899,6 +914,57 @@ static int check_pc_contract(const CosimCase *test, const CosimLane *aot,
     return failed;
 }
 
+static int check_ra_rewrite_contract(const CosimCase *test, const CosimLane *aot,
+                                     const CosimLane *interp, uint32_t resume_pc,
+                                     int dispatcher_boundary) {
+    int failed = 0;
+    if (aot->termination != COSIM_TERM_REJECT) {
+        report_fail(test,
+                    "AOT accepted a linked callee whose live $ra differs from the call resume PC");
+        failed = 1;
+    }
+    if (aot->dispatch_result != SR_GUEST_INTERP_FLOW_FATAL) {
+        char detail[192];
+        snprintf(detail, sizeof detail,
+                 "AOT dispatch result=%d, expected fail-closed flow result=%d",
+                 aot->dispatch_result, SR_GUEST_INTERP_FLOW_FATAL);
+        report_fail(test, detail);
+        failed = 1;
+    }
+    expect_lane_word(test, aot, "fatal flow kind", aot->state.flow_kind,
+                     SR_FLOW_FATAL, &failed);
+    expect_lane_word(test, aot, "rejected guest target", aot->state.flow_target,
+                     COSIM_RA_REWRITE_TARGET, &failed);
+    expect_lane_word(test, aot, "caller continuation not executed", aot->state.r[3],
+                     0xa5a50003u, &failed);
+
+    const CosimTermination expected_termination = dispatcher_boundary
+        ? COSIM_TERM_CALL_RETURN : COSIM_TERM_INTERP_HANDOFF;
+    if (interp->termination != expected_termination) {
+        report_fail(test,
+                    "interpreter did not follow the rewritten $ra to its call boundary");
+        failed = 1;
+    }
+    const uint32_t interpreter_resume = dispatcher_boundary ? resume_pc : COSIM_RETURN;
+    expect_lane_word(test, interp, "interpreter return target", interp->handoff_target,
+                     interpreter_resume, &failed);
+    if (dispatcher_boundary) {
+        expect_lane_word(test, interp, "interpreter call-boundary PC", interp->state.pc,
+                         resume_pc, &failed);
+    }
+    expect_lane_word(test, interp, "rewritten target marker", interp->state.r[2],
+                     0xa034u, &failed);
+    expect_lane_word(test, interp, "caller continuation marker", interp->state.r[3],
+                     dispatcher_boundary ? 0xa5a50003u : 0xa5a5a037u, &failed);
+    if (!failed) {
+        fprintf(stderr,
+                "  cosim: AOT rejected rewritten $ra at resume 0x%08x; interpreter followed 0x%08x\n",
+                resume_pc,
+                (uint32_t)COSIM_RA_REWRITE_TARGET);
+    }
+    return failed;
+}
+
 /* ---- cases ---------------------------------------------------------------------- */
 
 #define COSIM_CASE_ROW(name_, address_, words_, description_, omit_) \
@@ -1009,6 +1075,23 @@ static int run_case(const CosimCase *test, const char *trace_dir) {
              path_b);
 
     const int before = g_failures;
+    if (strcmp(test->name, "rarewrite") == 0 ||
+        strcmp(test->name, "rarewrite-dispatch") == 0) {
+        const int dispatcher_boundary =
+            strcmp(test->name, "rarewrite-dispatch") == 0;
+        const int failed = check_ra_rewrite_contract(
+            test, &aot, &interp, (uint32_t)COSIM_RA_REWRITE_RESUME,
+            dispatcher_boundary);
+        if (g_failures != before) {
+            dump_termination(&aot);
+            dump_termination(&interp);
+            dump_write_log(&aot);
+            dump_write_log(&interp);
+            dump_cell_program(test);
+            fprintf(stderr, "  traces: %s\n          %s\n", path_a, path_b);
+        }
+        return failed;
+    }
     /* Ordered from most localizing to least: a traced instruction names the exact
      * guest PC, a write names the storing PC, a field names what ended up wrong. */
     int failed = 0;
@@ -2052,8 +2135,17 @@ int main(int argc, char **argv) {
     load_guest_image(argv[1]);
     qualify_cases();
 
+    const int skip_ra_return_cases =
+        getenv("SR_COSIM_SKIP_AOT_RETURN_CASES") != NULL;
+    if (skip_ra_return_cases) {
+        fprintf(stderr,
+                "cosim: mutation isolation skips the dedicated AOT return-boundary cells\n");
+    }
     unsigned executed = 0;
     for (unsigned i = 0; i < g_case_count; i++) {
+        if (skip_ra_return_cases && strcmp(g_cases[i].name, "rarewrite") == 0) {
+            continue;
+        }
         run_case(&g_cases[i], argv[3]);
         executed++;
     }
@@ -2069,6 +2161,15 @@ int main(int argc, char **argv) {
         }
     }
 
+    if (!skip_ra_return_cases) {
+        CosimCase dispatch_boundary_case = {
+            "rarewrite-dispatch", (uint32_t)COSIM_RA_REWRITE_CALLEE, 4u,
+            "rewritten $ra through dispatch_call_try", 0u, 0u, NULL
+        };
+        run_case(&dispatch_boundary_case, argv[3]);
+        executed++;
+    }
+
     if (executed == 0u) {
         fprintf(stderr, "cosim: no comparison cases ran" NEWLINE);
         return 1;
@@ -2078,6 +2179,7 @@ int main(int argc, char **argv) {
     g_failures += run_negative_corpus();
 #if defined(SR_STACK_CENSUS_ENABLED)
     SrStackCensusSummary stack_census;
+    const uint64_t expected_excluded = skip_ra_return_cases ? 0u : 1u;
     sr_stack_census_snapshot(&stack_census);
     const CosimCase *stack_leak_control = NULL;
     for (unsigned i = 0; i < g_case_count; i++) {
@@ -2092,7 +2194,7 @@ int main(int argc, char **argv) {
         || stack_census.entries == 0u
         || stack_census.entries != stack_census.returns
         || !stack_census.unobserved_known
-        || stack_census.excluded != 0u
+        || stack_census.excluded != expected_excluded
         || stack_census.unexpected != 0u
         || !stack_census.has_mismatch
         || stack_census.first_mismatch_entry != stack_leak_control->address
@@ -2100,19 +2202,28 @@ int main(int argc, char **argv) {
             < stack_census.first_mismatch_actual_sp
         || stack_census.first_mismatch_expected_sp
             - stack_census.first_mismatch_actual_sp != 32u) {
-        /* A failed control is a gate failure like any divergence: count it so the
-         * run still ends with the summary and its FAIL marker, which is what lets
-         * a mutant that also unbalances an observed frame be classified. */
         sr_stack_census_report();
-        fprintf(stderr,
-                "cosim: stack census positive control failed or expected-entry coverage was unknown\n");
-        g_failures++;
+        char detail[384];
+        snprintf(detail, sizeof detail,
+                 "stack census did not match its controls: status=%u entries=%" PRIu64
+                 " returns=%" PRIu64 " excluded=%" PRIu64 " expected_excluded=%" PRIu64
+                 " unexpected=%" PRIu64 " mismatches=%" PRIu64,
+                 (unsigned)stack_census.status, stack_census.entries,
+                 stack_census.returns, stack_census.excluded, expected_excluded,
+                 stack_census.unexpected, stack_census.mismatches);
+        CosimCase census_failure = {
+            "stack-census", stack_leak_control ? stack_leak_control->address : 0u,
+            0u, "generated host return accounting", 0u, 0u, NULL
+        };
+        report_fail(&census_failure, detail);
     } else {
         sr_stack_census_report();
         fprintf(stderr,
                 "cosim: stack census caught the declared spleak control at 0x%08x; "
-                "unobserved=%u, all other observed entries balanced\n",
-                stack_leak_control->address, stack_census.unobserved);
+                "unobserved=%u, excluded=%" PRIu64 " (expected %" PRIu64 "), "
+                "all other observed entries balanced\n",
+                stack_leak_control->address, stack_census.unobserved,
+                stack_census.excluded, expected_excluded);
     }
 #endif
     fprintf(stderr, "\ncosim: %u comparison cases, %d divergence report(s)\n",
