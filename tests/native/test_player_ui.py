@@ -4,11 +4,13 @@
 
 from __future__ import annotations
 
+import atexit
 import os
 import hashlib
 import json
 from pathlib import Path
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -27,6 +29,27 @@ PLAYER_EXE = Path(
 )
 if not PLAYER_EXE.is_absolute():
     PLAYER_EXE = ROOT / PLAYER_EXE
+
+# The UI tests must not discover showcase packages from ``build/demos``.  Keep
+# the test executable in a short-lived sibling directory with its runtime DLLs,
+# so its executable directory has no demos folder even after ``make showcase``.
+_PLAYER_EXE_BUILD_PATH = PLAYER_EXE
+_PLAYER_EXE_SANDBOX = None
+if _PLAYER_EXE_BUILD_PATH.is_file():
+    _PLAYER_EXE_SANDBOX = tempfile.TemporaryDirectory(
+        prefix=".player-ui-regressions-", dir=_PLAYER_EXE_BUILD_PATH.parent,
+        ignore_cleanup_errors=True,
+    )
+    # Remove the sandbox copy when the test process exits; a player still holding
+    # the executable open on Windows must not turn cleanup into a test failure.
+    atexit.register(_PLAYER_EXE_SANDBOX.cleanup)
+    PLAYER_EXE = Path(_PLAYER_EXE_SANDBOX.name) / _PLAYER_EXE_BUILD_PATH.name
+    shutil.copy2(_PLAYER_EXE_BUILD_PATH, PLAYER_EXE)
+    for runtime_dll in _PLAYER_EXE_BUILD_PATH.parent.glob("*.dll"):
+        shutil.copy2(runtime_dll, PLAYER_EXE.parent / runtime_dll.name)
+    if (PLAYER_EXE.parent / "demos").exists():
+        raise RuntimeError("player UI regression executable sandbox contains demos/")
+
 # The player accepts a package only for the CpuState ABI it was compiled with, so a
 # synthetic ready package must name that same version (src/rt/recomp.h).
 CPU_STATE_ABI_VERSION = int(

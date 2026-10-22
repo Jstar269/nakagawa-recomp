@@ -5,6 +5,26 @@ and runtime subsystems in Nakagawa Recomp. It names every semantic boundary and
 tracking issue, following the project's fail-closed policy: unsupported behavior
 fails cleanly at a named boundary and is never faked.
 
+## Status words
+
+Every state in the tables below uses one of these words. A row's status is only
+what its recorded evidence supports, and no later document raises it.
+
+| Status | Meaning |
+| :--- | :--- |
+| Works | The maintainer verified the behaviour on a documented route; the row says what that route covers. |
+| Partially works | Some named parts are verified; the row names what is missing or refused. |
+| Boots to a named boundary | On the documented route the title or fixture starts, then stops at a named, fail-closed boundary. |
+| Not started | No implementation yet. |
+| Experimental | A retail title that has been seen to boot or run, with no maintainer qualification. |
+| Untested | A retail title with no record at all. |
+
+Retail titles follow one rule. A title the maintainer has tested on a documented
+route keeps exactly the status its recorded evidence supports. Any other retail
+disc is **Experimental** or **Untested** under the definitions above. The
+**EXPERIMENTAL** badge the player shows on an imported disc only says that
+compatibility is unknown; it does not set a status here.
+
 ## Library sweep scoreboard
 
 `tools/library_sweep.py` can write a title-free machine aggregate while a library run is
@@ -81,10 +101,11 @@ correctness; those claims require their own qualified evidence.
 
 ## Title compatibility
 
-The table below lists source-owned fixtures, showcase demos, the verified flagship,
-and uncatalogued retail discs. Nakagawa Recomp makes no claim of retail title
-playability out of the box from an ISO alone ([`ISSUES.md`](../ISSUES.md)).
-Uncatalogued discs import as **Experimental** with fail-closed checklists.
+The table below lists source-owned fixtures, showcase demos, the maintainer-tested
+flagship, and a row for every other retail disc. Nakagawa Recomp makes no claim of
+retail title playability out of the box from an ISO alone ([`ISSUES.md`](../ISSUES.md)).
+Uncatalogued discs import with a fail-closed checklist; their status is **Untested**
+unless someone has seen them boot (see [Status words](#status-words)).
 
 | Title | State | What you see | Tracking issue |
 | :--- | :--- | :--- | :--- |
@@ -95,7 +116,7 @@ Uncatalogued discs import as **Experimental** with fail-closed checklists.
 | Nakagawa Showcase Demos (`showcase-scene-v1` / TEST00007, `showcase-breakout-v1` / TEST00008) | Partially works | Two project-authored PSP demos (a lit, rotating, textured `sceGu` cube with analog and button input plus `sceAudio` tones, and a Breakout game with score, collision sound effects and a `sceUtilitySavedata` high score) build deterministically with PSPDEV/PSPSDK (`mingw32-make showcase`) and traverse analyzer -> generated AOT -> production runtime -> guest services without private inputs. `mingw32-make showcase-smoke` runs both headlessly and asserts the first-frame checkpoint, the scripted Cross sample, audio-submission telemetry, a non-empty framebuffer, and 3D geometry counters (scene) or a written savedata file (Breakout); the player lists both as bundled library entries as **Showcase demo** cards (PR [#477](https://github.com/Jstar269/nakagawa-recomp/pull/477)). Profile-zero acceptance is still declared `runnable: false` / `scaffold` in `assets/titles/showcase-scene.json` and `assets/titles/showcase-breakout.json`, so runnable profile-zero proof is still open. | [#309](https://github.com/Jstar269/nakagawa-recomp/issues/309) |
 | *Hot Shots Tennis: Get a Grip* (UCUS-98701) | Boots to a named boundary | In the public player, the disc is identified from `PSP_GAME/PARAM.SFO`; the built-in boundary decrypts supported `EBOOT.BIN` and encrypted modules when the user supplies a matching local key file ([#548](https://github.com/Jstar269/nakagawa-recomp/pull/548), [#550](https://github.com/Jstar269/nakagawa-recomp/pull/550)). Unsupported PGD-protected data fails closed under the broader ISO-to-Play work ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). With those user-supplied inputs and a local title manifest, a public checkout builds the package with the public backends and plays the title in the player (PRs [#473](https://github.com/Jstar269/nakagawa-recomp/pull/473), [#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)); authentic in-game typography uses user-supplied firmware PGF fonts imported with `python tools/nk_cli.py fonts import <folder>`, which public builds render through the project-authored reader `src/rt/pgf_public.c` (PR [#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)). Automated compile-and-launch straight from a raw ISO, with no local title manifest and no developer toolchain, is in the works ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). The private full-build developer route (`nk_manager.ps1 -TitleManifest`) reaches in-game 3D match gameplay with sound. A one-frame corruption of skinned character geometry at the title-to-main-menu transition was fixed in [#822](https://github.com/Jstar269/nakagawa-recomp/pull/822) and no longer appears on the GPU presenter ([#69](https://github.com/Jstar269/nakagawa-recomp/issues/69), closed 2026-10-20). | [#69](https://github.com/Jstar269/nakagawa-recomp/issues/69), [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
 | *PAC-MAN Championship Edition* | Partially works | Reaches its title screen and menu on the interactive player path, and plays a stage on the maintainer's own copy in the host runtime, through generic fixes with no title-specific branch ([#552](https://github.com/Jstar269/nakagawa-recomp/pull/552), [#556](https://github.com/Jstar269/nakagawa-recomp/pull/556)). That evidence comes from the private route. It is not physical PSP acceptance and not full-game compatibility. The next milestone is a documented save, close and resume scenario ([#1126](https://github.com/Jstar269/nakagawa-recomp/issues/1126)). | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308), [#1126](https://github.com/Jstar269/nakagawa-recomp/issues/1126) |
-| Any other commercial game (Experimental) | Boots to a named boundary | Uncatalogued valid PSP disc images import as **Experimental**. The player parses `PSP_GAME/PARAM.SFO` directly to display title and Disc ID for UMD and PS Store images (PR [#426](https://github.com/Jstar269/nakagawa-recomp/pull/426)), never an update SFO or volume ID; the game card notes that compatibility is unknown, offers the built-in supported decryption boundary when the user supplies a matching key file ([#548](https://github.com/Jstar269/nakagawa-recomp/pull/548), [#550](https://github.com/Jstar269/nakagawa-recomp/pull/550)), and names unsupported PGD-protected content under the broader ISO-to-Play work ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). **BUILD PACKAGE** builds a package for a commercial disc with the public backends and names the remaining limits in the build report (PR [#473](https://github.com/Jstar269/nakagawa-recomp/pull/473)); Play stays disabled until a valid package exists, because an experimental title never launches from a developer runtime (PR [#483](https://github.com/Jstar269/nakagawa-recomp/pull/483)). Generic title intake beyond catalogued titles is in the works under [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308). Non-PSP images are refused. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
+| Any other commercial game (not listed above) | Untested | Uncatalogued valid PSP disc images import with the **EXPERIMENTAL** badge, which says only that compatibility is unknown. The player parses `PSP_GAME/PARAM.SFO` directly to display title and Disc ID for UMD and PS Store images (PR [#426](https://github.com/Jstar269/nakagawa-recomp/pull/426)), never an update SFO or volume ID; the game card notes that compatibility is unknown, offers the built-in supported decryption boundary when the user supplies a matching key file ([#548](https://github.com/Jstar269/nakagawa-recomp/pull/548), [#550](https://github.com/Jstar269/nakagawa-recomp/pull/550)), and names unsupported PGD-protected content under the broader ISO-to-Play work ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)). **BUILD PACKAGE** builds a package for a commercial disc with the public backends and names the remaining limits in the build report (PR [#473](https://github.com/Jstar269/nakagawa-recomp/pull/473)); Play stays disabled until a valid package exists, because an experimental title never launches from a developer runtime (PR [#483](https://github.com/Jstar269/nakagawa-recomp/pull/483)). Generic title intake beyond catalogued titles is in the works under [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308). Non-PSP images are refused. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
 
 ## Subsystem compatibility
 

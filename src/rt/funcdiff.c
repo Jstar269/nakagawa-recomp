@@ -141,6 +141,9 @@ int main(int argc, char **argv) {
     if (setjmp(g_hle_jmp) == 0) {
         sr_call_body(fn, &s);
     } else {
+        /* An unimplemented import longjmps out of every nested native body, so
+         * discard the parallel AOT return-boundary stack with the C frames. */
+        sr_aot_return_boundaries_reset();
         /* A recorded tail transfer is consumed before guest code runs, so none can be
          * live when guest code longjmps out (#855). */
         sr_tail_assert_empty("tail-transfer-live-at-unwind");

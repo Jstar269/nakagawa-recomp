@@ -147,8 +147,10 @@ const char *package_builder_get_output_line(
     int index
 );
 
-/* Locate Python 3 interpreter: checks PYTHON env, UCRT64 toolchain, and PATH. */
+/* Locate runnable CPython 3.14.x from PYTHON, UCRT64, or PATH. Candidates must
+ * pass a bounded version probe before their paths are returned. */
 bool package_builder_find_python(char *out_path, size_t out_size);
+/* Prefer the installed pinned prerequisite under data_root, then use host search. */
 bool package_builder_find_python_in_root(const char *data_root,
                                         char *out_path, size_t out_size);
 

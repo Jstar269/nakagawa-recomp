@@ -6,6 +6,8 @@ from a source checkout or `bin/nakagawa_player.exe` from the v0.0.1 package).
 Every release candidate must pass this test on a clean Windows 11 system before
 qualification.
 
+This test covers the player and source-owned fixtures only. It does not set or change the status of any retail title; retail status is set only by [`COMPATIBILITY.md`](COMPATIBILITY.md) (see the status rule in [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md#status-of-retail-games)). Button and label names below are the player's own labels.
+
 Results may be submitted using the [Smoke Test Report issue template](https://github.com/Jstar269/nakagawa-recomp/issues/new?template=smoke_test_report.yml).
 
 ## Prerequisites
@@ -50,8 +52,8 @@ moved or deleted by the player.
 
 ### Step 4: Settings persist across a restart
 
-1. Open Settings by clicking the **Settings** gear button or pressing `S`.
-2. Change a configuration setting (for example, change **Resolution Scale** to `2x (960x544)`, set **FPS Cap** to `60 FPS`, or toggle **Reduce Motion**).
+1. Open settings by clicking **SETTINGS** or pressing `S`.
+2. Change a configuration setting (for example, choose **2x Scale** under **INTERNAL RENDER RESOLUTION (MAX 4X)**, pick another option under **PRESENTATION PACING (NEXT LAUNCH)**, or toggle **Reduce motion (UI only)**).
 3. Close the Settings modal.
 4. Exit the player (press `Esc` or close the window).
 5. Relaunch `build/nakagawa_player.exe` and reopen Settings.
@@ -60,7 +62,7 @@ moved or deleted by the player.
 
 ### Step 5: Controller settings open
 
-1. In the Settings view, click **Controller Settings** (or navigate to `VIEW_CONTROLLER_SETTINGS`).
+1. In the Settings view, click **CONTROLLER SETTINGS** (or navigate to `VIEW_CONTROLLER_SETTINGS`).
 2. Verify the layout of the controller configuration screen.
 
 **Expected result:** Pass if the Controller Settings screen opens displaying connected gamepad status, the 14-button digital PSP mapping diagram plus analog stick, deadzone and trigger threshold calibration controls, and the live input monitor.
@@ -92,7 +94,7 @@ moved or deleted by the player.
 
 ### Step 9: Play the generated package
 
-1. From the showcase title card, click **PLAY** after the package validates.
+1. From the showcase title card, click **PLAY NOW** after the package validates.
 2. Observe the Nakagawa game window and verify the source-owned guest reaches its expected screen and responds to its documented controls.
 
 **Expected result:** Pass if the player launches the validated per-user runtime package, the guest presents frames, and unsupported features stop at named boundaries rather than hanging or reporting false success. This proves the synthetic route only; it does not qualify a commercial title ([#309](https://github.com/Jstar269/nakagawa-recomp/issues/309)).
@@ -102,7 +104,7 @@ moved or deleted by the player.
 1. Select an invalid or corrupted file (e.g. a non-ISO file renamed to `.iso`), or trigger an error state.
 2. Observe the error dialog (`VIEW_ERROR`).
 
-**Expected result:** Pass if the error dialog displays a red badge with the specific error code (e.g. `ISO_CORRUPT`), a clear human-readable title, the fail-closed boundary description naming what is missing and any tracking issue, the log file location (`LOG FILE: ...`), and a focused recovery button (e.g. "Try Another File" or "Return to Library") that restores navigation.
+**Expected result:** Pass if the error dialog displays a red badge with the specific error code (e.g. `ISO_CORRUPT`), a clear human-readable title, the fail-closed boundary description naming what is missing and any tracking issue, the log file location (`LOG FILE: ...`), and a focused recovery button (**Return to Library**) that restores navigation.
 
 ### Step 11: F1 overlay in a running package
 
