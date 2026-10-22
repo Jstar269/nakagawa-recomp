@@ -784,7 +784,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "427ea6ad58dfc629110c7aa3652dee5a167043f3d5b8b29850962c9e596ee6c7"
+      "sha256": "7ae23aa6b09dabfe2dea3550cab8314585aac6017771d2cdc25c216e83f0e3b9"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -8147,6 +8147,18 @@
       "sha256": "b5053fc62876fa727928741f73f0994e1c6eaad3e4001ab133b7e96cb38cebb5"
     },
     {
+      "path": "tools/regen_all.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "regen-all-tool-20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "3cf69814b7adf8b7e42ad79e42234cfa58848b641e0267c7f756d75711ac2aa2"
+    },
+    {
       "path": "tools/requirements-lock.txt",
       "classification": "project_authored_attested",
       "evidence": {
@@ -10105,6 +10117,18 @@
       "sha256": "2f25e9ce3f71e9550168c67bedbd290e4c90e11f55b5b278d3f9c79f955afd47"
     },
     {
+      "path": "tools/test_regen_all.py",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "regen-all-tests-20261022",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "db9b6549f87fa56c0c338cbd36bf68fa0398af66105a13df9147c66b90627ce0"
+    },
+    {
       "path": "tools/test_release_manifest.py",
       "classification": "project_authored_attested",
       "evidence": {
@@ -11055,5 +11079,15 @@
       },
       "sha256": "7869f7a49433ed9a604bd810fc169003949eac70a600256753afbfab844695ef"
     }
-  ]
+  ],
+  "admission": {
+    "workflow": "admit-new-reviewed",
+    "trusted_tree": "f4bb7b01aaff0b82c561fcd85b1a625c142cbdaa",
+    "candidate_tree": "1f0627b37d40097f4cd49c1099be835ce848be96",
+    "admitted_paths": [
+      "tools/regen_all.py",
+      "tools/test_regen_all.py"
+    ],
+    "authority_sha256": "d9d0434c5691d15cc93d40cc20a79a0e8e3a992f903c5f2e431fb9031ff3046e"
+  }
 }
