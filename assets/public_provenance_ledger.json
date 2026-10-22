@@ -784,7 +784,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "427ea6ad58dfc629110c7aa3652dee5a167043f3d5b8b29850962c9e596ee6c7"
+      "sha256": "18d533d7edfc6028a0cb058513208de17065d13a889a2bfdb2b56b17ab1a5049"
     },
     {
       "path": "assets/pypi_tool_metadata_2026-09-25.json",
@@ -6294,6 +6294,18 @@
       "sha256": "b904e63401f962d2a3ef3ef1b0c29446bd609fde6e80bde97c936328b5d3230c"
     },
     {
+      "path": "tests/native/test_clay_layout.c",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "clay-v014-layout-selftest",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "e9066ddb988812ed85c96f8a4a804a11c0defd2f93e4e40557d76e7a51d260d3"
+    },
+    {
       "path": "tests/native/test_core_catalog.c",
       "classification": "project_authored_attested",
       "evidence": {
@@ -6484,6 +6496,44 @@
         "upstream_attribution": null
       },
       "sha256": "bb0034d9e2e053a45977bcabf92bd17bb5a074b2b2e78e73d33aeb69711db9da"
+    },
+    {
+      "path": "third_party/clay/LICENSE.md",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "clay-v014-upstream-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "Zlib (upstream calls it the zlib/libpng license)",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "5dd30f9f52093076b7574458f5efb8242fe6cbbd4669d4a2914e7616810d0df8"
+    },
+    {
+      "path": "third_party/clay/PROVENANCE.md",
+      "classification": "project_authored_attested",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "clay-v014-provenance-manifest",
+        "evidence_tier": "S",
+        "authorship": "independent implementation record",
+        "upstream_attribution": null
+      },
+      "sha256": "dc5b9148aa9509c86b19c40b31df0edad41447b19c25b1d34e6188d93e4b9bf4"
+    },
+    {
+      "path": "third_party/clay/clay.h",
+      "classification": "upstream_derived",
+      "evidence": {
+        "source": "docs/provenance/IMPLEMENTATION_PROVENANCE.json",
+        "record_id": "clay-v014-upstream-import",
+        "evidence_tier": "S",
+        "upstream": "documented upstream family",
+        "license": "Zlib (upstream calls it the zlib/libpng license)",
+        "modification_status": "modified_or_translated; see trusted record"
+      },
+      "sha256": "c97241cc423af3fa11267978adce9cbb46274a2ad0709a5d4b2b1092dc27599d"
     },
     {
       "path": "third_party/licenses/gcc-libs/COPYING.RUNTIME.txt",
@@ -11055,5 +11105,17 @@
       },
       "sha256": "7869f7a49433ed9a604bd810fc169003949eac70a600256753afbfab844695ef"
     }
-  ]
+  ],
+  "admission": {
+    "workflow": "admit-new-reviewed",
+    "trusted_tree": "f4bb7b01aaff0b82c561fcd85b1a625c142cbdaa",
+    "candidate_tree": "61455b1aacf9d3de11cd3bf008fc751cbd6a9ac5",
+    "admitted_paths": [
+      "tests/native/test_clay_layout.c",
+      "third_party/clay/LICENSE.md",
+      "third_party/clay/PROVENANCE.md",
+      "third_party/clay/clay.h"
+    ],
+    "authority_sha256": "1ee7d6d1032bfd80e3f0546bee07edbb804741339761f201b2ef22dfbc14973f"
+  }
 }
