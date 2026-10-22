@@ -183,13 +183,18 @@ def classify(
 
 
 def find_admission(authority_root: Path, statements: list[dict], digests: dict[str, str]) -> Path:
-    """The one existing admission that already decided exactly these paths, bytes and classes.
+    """The one existing admission that already decided exactly these paths and bytes.
 
     Re-keying reuses that decision for a new base; it never makes a new one, so
-    a path set, digest or class that no admission names is refused.
+    a path set or digest that no admission names is refused. The recorded
+    classes are the decision and are reused as recorded: a reviewer may have
+    admitted a path under a stricter class than the path rule derives today
+    (for example an upstream licence file recorded as upstream_derived with its
+    import record), and that must not block a re-key (2026-10-22, the Clay
+    admission).
     """
     def key(statement: dict) -> tuple:
-        return (statement["path"], statement["sha256"], statement["classification"], statement.get("record_id"))
+        return (statement["path"], statement["sha256"])
 
     wanted = sorted(key({**statement, "sha256": digests[statement["path"]]}) for statement in statements)
     matches = []
