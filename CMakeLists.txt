@@ -207,6 +207,38 @@ endif()
 add_test(NAME nk_ui_core_test COMMAND test_nk_ui_core)
 set_tests_properties(nk_ui_core_test PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
+# The SDL_Renderer backend and SDL3_ttf text engine (lane C3b). With SDL3 and
+# SDL3_ttf headers found the test is built for real; without them it is the SKIP
+# variant, and ctest reports exit 77 as skipped. SDL3_ttf itself is loaded at run
+# time, so only its headers matter to the build.
+find_package(SDL3 CONFIG QUIET)
+find_package(SDL3_ttf CONFIG QUIET)
+add_executable(test_nk_ui_sdlr
+    tests/native/test_nk_ui_sdlr.c
+    ${NK_UI_CORE_SOURCES}
+    src/ui/nk_ui_ttf.c
+    src/ui/backend/nk_ui_sdlr.c
+)
+target_include_directories(test_nk_ui_sdlr PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/clay
+)
+target_compile_definitions(test_nk_ui_sdlr PRIVATE
+    SR_SELFTEST_BUILD_ROOT="${CMAKE_CURRENT_BINARY_DIR}/build"
+)
+if(TARGET SDL3::SDL3 AND TARGET SDL3_ttf::SDL3_ttf)
+    target_compile_definitions(test_nk_ui_sdlr PRIVATE NK_UI_WITH_SDL NK_UI_WITH_SDL_TTF)
+    target_link_libraries(test_nk_ui_sdlr PRIVATE SDL3::SDL3 SDL3_ttf::SDL3_ttf)
+endif()
+if(NOT WIN32)
+    target_link_libraries(test_nk_ui_sdlr PRIVATE m)
+endif()
+add_test(NAME nk_ui_sdlr_test COMMAND test_nk_ui_sdlr)
+set_tests_properties(nk_ui_sdlr_test PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    SKIP_RETURN_CODE 77)
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/build")
+
 add_executable(test_package_builder
     tests/native/test_package_builder.c
     tests/native/native_test_isolation.c
