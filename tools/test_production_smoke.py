@@ -3389,9 +3389,16 @@ class TestProductStatusCopy(unittest.TestCase):
     def _source(self, relative: str) -> str:
         return (ROOT / relative).read_text(encoding="utf-8")
 
+    def test_about_screen_carries_the_licence_and_no_endorsement_notice(self):
+        ui = self._source("src/player/ui_renderer.c")
+        start = ui.index("static void render_prerequisite_about(")
+        about = ui[start:ui.index("\n}\n", start)]
+        self.assertIn("GPL-3.0-or-later; see LICENSE and NOTICE.md", about)
+        self.assertIn("Not affiliated with or endorsed by Sony Interactive Entertainment", about)
+
     def test_wizard_names_the_package_builder_and_the_open_boundaries(self):
         ui = self._source("src/player/ui_renderer.c")
-        self.assertIn("Nakagawa does not decrypt games; it uses decrypted files you make from "
+        self.assertIn("Nakagawa does not decrypt games; it uses decrypted files from "
                       "your own copy. ", ui)
         self.assertIn("It builds runtime packages from the library.", ui)
         self.assertNotIn("key file", ui)

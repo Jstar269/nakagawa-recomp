@@ -3923,6 +3923,12 @@ static void render_prerequisite_about(SDL_Renderer *ren, PlayerApp *app,
                   1.0f, COLOR_TEXT_MUTED);
     }
     float buttons_y = card_y + card_h - 62.0f;
+    /* The project's own licence and the no-endorsement notice (NOTICE.md). */
+    draw_text_wrapped(ren, card_x + 30.0f, buttons_y - 58.0f, card_w - 60.0f,
+                      "Nakagawa Recomp is free software (GPL-3.0-or-later; see LICENSE and NOTICE.md). "
+                      "Not affiliated with or endorsed by Sony Interactive Entertainment; "
+                      "PlayStation and PSP are its trademarks.",
+                      0.78f, COLOR_TEXT_DIM, 3);
     bool open_focused = app->focus_index == 0;
     if (shown > 0 && draw_button_focused(ren, card_x + 30.0f, buttons_y,
             230.0f, 42.0f, "OPEN LICENSE TEXTS", false, in, open_focused)) {
@@ -4191,7 +4197,7 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
                               " • A PSP game ISO you own\n"
                               " • Windows PC with a supported graphics driver\n"
                               " • Keyboard and mouse; a gamepad is optional\n\n"
-                              "Nakagawa does not decrypt games; it uses decrypted files you make from your own copy. "
+                              "Nakagawa does not decrypt games; it uses decrypted files from your own copy. "
                               "It builds runtime packages from the library. Verify also lists font and audio status.",
                               1.1f, COLOR_TEXT_MUTED, 8);
 

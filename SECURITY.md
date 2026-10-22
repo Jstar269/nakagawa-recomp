@@ -36,6 +36,9 @@ and ask for a secure channel before sending details.
 Include the affected revision, impact, reproduction conditions, relevant logs with personal and game
 data removed, and any proposed mitigation.
 
+Rights holders with a concern about any file in this repository can use the same private channel; see
+[NOTICE.md](NOTICE.md#legal-and-contact).
+
 ## How reports are handled
 
 1. **Acknowledge** the report within 14 days, in the private advisory thread.
@@ -62,8 +65,8 @@ dependency alert links it, so users can audit the decision.
   maintainer's local credential store, never in the repository. Secret scanning with push protection and the
   publication audit block a committed secret.
 - **What exists.** Workflows use the per-run `GITHUB_TOKEN` (read-only by default; jobs request only the extra
-  scopes they need) and `PROVENANCE_AUTHORITY_TOKEN`, a fine-grained token scoped to the private provenance
-  repository and used only by the provenance attestation workflows, which never run pull-request code.
+  scopes they need) and one fine-grained token used only by the provenance workflows, which never run
+  pull-request code.
 - **Who can access them.** Only the maintainer (see [Governance and roles](CONTRIBUTING.md#governance-and-roles)).
 - **Rotation.** Tokens are created with an expiry of at most one year and rotated before it, and immediately
   when exposure is suspected or a person with access leaves.
@@ -95,7 +98,7 @@ you are authorized to use.
 
 ## Encrypted PSP files
 
-Nakagawa does not decrypt games; it uses decrypted files you make from your own copy. Built-in decryption was removed
+Nakagawa does not decrypt games; it uses decrypted files from your own copy. Built-in decryption was removed
 (temporarily), so the project carries no PSP cryptography and never reads a key file. An encrypted executable or module
 is refused by name. Every file is treated as untrusted input by the bounds-checked, fuzzed parsers listed in
 [`docs/PARSER_SAFETY_INVENTORY.json`](docs/PARSER_SAFETY_INVENTORY.json).

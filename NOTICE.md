@@ -1,9 +1,24 @@
 # Notices, provenance, and disclosures
 
-The repository-level project declaration is GPL-3.0-or-later; the canonical text
-is in [LICENSE](LICENSE). Individual files retain their own SPDX identifiers and
-upstream terms. This notice records engineering provenance and required notices;
-it is not legal advice or a conclusion that any combined distribution is cleared.
+The project is GPL-3.0-or-later; the full text is in [LICENSE](LICENSE).
+Individual files keep their own SPDX identifiers and upstream terms. This file
+lists where code came from and the notices that go with it. It is not legal advice.
+
+## Legal and contact
+
+Nakagawa Recomp is an independent project. It is not affiliated with or endorsed by
+Sony Interactive Entertainment, Clap Hanz, or any game publisher. PlayStation and
+PSP are trademarks of Sony Interactive Entertainment Inc., and game titles are
+trademarks of their owners; they are named only to say what the project works
+with. The repository contains no game files, keys, firmware or system fonts, and
+Nakagawa does not decrypt games: users must supply any external inputs from their
+own copy.
+
+Rights holders with a concern about anything in this repository can contact the
+maintainer privately through
+[GitHub private reporting](https://github.com/Jstar269/nakagawa-recomp/security/advisories/new)
+or the contact listed on the [maintainer's GitHub profile](https://github.com/Jstar269).
+We aim to respond promptly and will remove material where appropriate.
 
 ## Upstream families
 
@@ -11,9 +26,11 @@ it is not legal advice or a conclusion that any combined distribution is cleared
   `da17b0e1db209206a407d097d132201e516e3855`. Nakagawa began from this toolkit
   and retains substantial modified runtime and pipeline code. See the
   path-hashed [public provenance ledger](assets/public_provenance_ledger.json).
-- **PPSSPP** — GPL-2.0-or-later, with its own third-party notices. Several HLE,
-  GE, VFPU and recompiler structures are translated or adapted through the
-  sal063 lineage. PPSSPP-origin data is retained only where the profile records
+- **PPSSPP** — Copyright (c) 2012- PPSSPP Project and contributors,
+  GPL-2.0-or-later, with its own third-party notices. Several HLE, GE, VFPU and
+  recompiler structures are translated or adapted through the sal063 lineage;
+  the files that say so in their headers are `src/rt/hle.c`, `hle_power.c/.h`,
+  `ge.c`, `mpeg.c`, `recomp.c/.h`, `savedata.c`, `vfpu_interp.c` and `evf.h`. PPSSPP-origin data is retained only where the profile records
   its exact path, revision and notice.
 - **PSPSDK / PSPDEV** — permissive per-component declarations and BSD-family
   notices for public ABI definitions and source-owned fixtures. The applicable
@@ -29,21 +46,13 @@ it is not legal advice or a conclusion that any combined distribution is cleared
   the "zlib/libpng license"). The header (upstream plus one documented LOCAL DELTA),
   complete license, pinned source manifest, and SHA-256 values are recorded under
   `third_party/clay/`.
-  Clay is compiled by the native layout selftest only; it is not linked into
-  the player runtime yet.
-- **Optional system FFmpeg/libavcodec H.264 backend** — `H264_FFMPEG=1` enables
-  a dynamic dependency on host-provided `libavcodec` and `libavutil`; this route
-  does not vendor their source or bundle their shared libraries. FFmpeg's legal
-  guidance distinguishes LGPL builds from builds using `--enable-gpl` or
-  `--enable-nonfree`; a nonfree build is not redistributable. The project source
-  is GPL-3.0-or-later, and the GNU compatibility matrix permits GPL-2.0-or-later
-  code to be combined under GPL-3. Downstream packages that bundle FFmpeg must
-  retain the notices and corresponding-source materials required by that exact
-  build. The repository's Windows package route does not stage these optional
-  libraries, so an `H264_FFMPEG=1` player build is not a supported packaged
-  runtime. See [FFmpeg licensing guidance](https://www.ffmpeg.org/legal.html),
-  [GNU license compatibility](https://www.gnu.org/licenses/gpl-faq.en.html),
-  and the build notes in `docs/PLATFORM_PORTABILITY.md`.
+  Clay is compiled into the native layout selftest and the `nk_ui` core library
+  tests only; it is not linked into the player yet.
+- **Optional system FFmpeg/libavcodec H.264 backend** — `H264_FFMPEG=1` links
+  host-provided `libavcodec` and `libavutil` dynamically. Their source is not
+  vendored and the Windows package does not bundle them; anyone who bundles them
+  must keep the notices that build requires ([FFmpeg licensing](https://www.ffmpeg.org/legal.html);
+  build notes in `docs/PLATFORM_PORTABILITY.md`).
 - **SDL3** — zlib; used by the optional host renderer/audio integration. The
   first public profile excludes the sal063-derived `src/rt/audio.c` backend and
   links `src/rt/audio_unavailable.c` instead.
@@ -59,6 +68,10 @@ it is not legal advice or a conclusion that any combined distribution is cleared
   deterministic converter `tools/ttf2pgf.py` for test fixtures only. The font
   is not packaged, generated PGFs stay in temporary or `build/` paths, and the
   output name is project-owned so the Reserved Font Name is never claimed.
+- **Gowun Dodum and M+ 1p font fixtures** — SIL Open Font License 1.1,
+  Copyright 2021 The Gowun Dodum Project Authors and Copyright 2016 The M+
+  Project Authors. Pinned with their licence texts in `fixtures/fonts/gowundodum/`
+  and `fixtures/fonts/mplus1p/`, for test fixtures only, on the same terms as Gudea.
 
 ## Generated third-party notices
 
@@ -129,8 +142,9 @@ package, which is what lets a user modify and relink it (issue #421).
 
 ## Public-safe exclusions
 
-The public source profile excludes the PGF parser/font payloads and PGD/amctrl
-implementation/tooling pending qualified review. It also excludes the sal063-
+The public source profile excludes the legacy PGF parser, all firmware font data
+and any PGD implementation; the project-authored PGF reader `src/rt/pgf_public.c`
+is public and reads only fonts the user supplies. It also excludes the sal063-
 derived ISO/VFS and SDL audio implementations until their separate public review
 is complete. These exclusions are enforced by
 `assets/public_source_profile.json`, not by a disclaimer. The unavailable seams
@@ -154,32 +168,24 @@ New project-authored source files use `SPDX-License-Identifier: GPL-3.0-or-later
 Files classified as upstream-derived retain the SPDX identifier and notices
 for their recorded source lineage.
 
-## Trademark and compatibility
+## Upstream authors
 
-Product and game names are used only to identify compatibility and research scope.
-Nakagawa Recomp is not affiliated with or endorsed by Sony Interactive
-Entertainment, Clap Hanz, PPSSPP, sal063, FFmpeg, SDL, Khronos, or any other
-upstream author.
+Nakagawa Recomp is not endorsed by PPSSPP, sal063, FFmpeg, SDL, Khronos, or any
+other upstream author.
 
 ## Private inputs and history
 
 Users must supply any external inputs locally. Private inputs, keys, saves,
-captures, extracted assets, generated output and private repository history must
-not be committed, attached to issues, or included in a release. A clean current
-tree is not historical clearance: the exact proposed history must pass the
-reachable-object/content audit before publication.
-
-The active public repository deliberately begins with the sanitized restoration
-lineage. Former private/pre-sanitization development history is not ordinary
-`main` ancestry and must not be reconnected to it.
+captures, extracted assets and generated output must not be committed, attached
+to issues, or included in a release.
 
 ## Presentation screenshots of Hot Shots Tennis
 
 The PNG file docs/media/hst-title-screen.png is a presentation capture of Hot Shots Tennis: Get a Grip
-running in Nakagawa Recomp on Windows. The game belongs to its publisher, and it is not licensed under
-this repository's GPL-3.0-or-later declaration. The capture contains no game data files, and users need
-their own copy of the game. The screenshot was admitted under the maintainer authorization of 2026-10-21
-and is listed with the SHA-256 of its exact bytes in assets/release_manifest.json.
+running in Nakagawa Recomp on Windows. The game, its logo, artwork and on-screen text belong to their
+owners and are not licensed under this repository's GPL-3.0-or-later declaration; the image is shown
+only to identify the game. The repository contains no game data files, and users need their own copy of
+the game. The file is listed with the SHA-256 of its exact bytes in assets/release_manifest.json.
 
 ## Project-authored Nakagawa brand artwork
 
