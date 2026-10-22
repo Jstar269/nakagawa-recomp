@@ -158,6 +158,7 @@
     ".gitignore",
     ".markdownlint-cli2.jsonc",
     ".pre-commit-config.yaml",
+    ".recomp.json",
     "AGENTS.md",
     "CLAUDE.md",
     "CMakeLists.txt",
