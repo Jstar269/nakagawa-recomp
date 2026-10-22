@@ -87,5 +87,8 @@ Details: [NOTICE.md](NOTICE.md) and [CREDITS.md](CREDITS.md).
 
 ## Dedication
 
-Dedicated to Blitzen, my German Shepherd and companion for 13½ years, who passed away in 2026, shortly after this
-project began. The best dog you could ever have.
+Dedicated to Blitzen: One of the greatest pets you could ever have. A companion from beginning to end.
+
+An absolute sweetheart.
+
+2012-2026
