@@ -6585,7 +6585,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a1e8ae1baaf77e61e2e0c6cca82809bdc7d1dda926c3a0a099360be058193ac7"
+      "sha256": "09547cb7c26d5a7b63625f5d86d789f9ea475313420fc82e62bc0ff643d5205e"
     },
     {
       "path": "tools/analyze.py",
@@ -8252,7 +8252,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b7252f766df1b21942f27b21b9fc337a15f0521e4001cf4399554e087d81274f"
+      "sha256": "03f4fde4e2d1494f25cba722894a12c5b70787b6d438514e431a0abb310a3a46"
     },
     {
       "path": "tools/test_analyze_import_stub_entries.py",
