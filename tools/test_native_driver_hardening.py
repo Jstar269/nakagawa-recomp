@@ -54,6 +54,13 @@ int sr_hit_hle = 0;
 int g_sr_metadata_watch = 0;
 int g_hle_depth = 0;
 CpuState *s_cpu = NULL;
+SrAotReturnBoundary *sr_aot_return_boundary_top = NULL;
+int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
+                                 uint32_t call_pc, uint32_t has_resume_pc) {{
+    (void)s; (void)resume_pc; (void)call_pc; (void)has_resume_pc; return 0;
+}}
+int sr_aot_return_boundary_end(CpuState *s) {{ (void)s; return 0; }}
+void sr_aot_return_boundaries_reset(void) {{ sr_aot_return_boundary_top = NULL; }}
 volatile int g_sr_vram_read_pending = 0;
 void sr_ge_vram_read_prepare(uint32_t address, uint32_t bytes) {{
     (void)address; (void)bytes;

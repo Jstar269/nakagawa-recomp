@@ -119,6 +119,11 @@ class ContinuationFlowTests(unittest.TestCase):
     def _between_slot_and_continuation(lines):
         slot = next(i for i, line in enumerate(lines) if "sr_begin(s, 0x00001004u" in line)
         resume = next(i for i, line in enumerate(lines) if "sr_begin(s, 0x00001008u" in line)
+        if resume > slot + 1 and "SR_AOT_RETURN_CAPTURE" in lines[resume - 1]:
+            # A `jr $ra` continuation latches its target immediately before its
+            # own trace/slot lines; that return block is after the caller's
+            # continuation boundary, not part of the linked-call statement.
+            resume -= 2
         return " ".join(line.strip() for line in lines[slot + 1:resume])
 
     def test_linked_branch_out_of_the_body_is_the_same_call_as_jal(self):
@@ -143,7 +148,12 @@ class ContinuationFlowTests(unittest.TestCase):
         unknown = "\n".join(self._linked_site(regimm(0x11, 0, 0x1000, 0x2000), {0x1000}))
         self.assertIn("if (_c) { dispatch_call(s, 0x00002000u, 0x00001008u); } }", unknown)
         known = "\n".join(self._linked_site(regimm(0x11, 0, 0x1000, 0x2000), {0x1000, 0x2000}))
-        self.assertIn("if (_c) { f_00002000(s); SR_TAIL_DRAIN(s); } }", known)
+        self.assertIn(
+            "if (_c) { if (sr_aot_return_boundary_begin(s, 0x00001008u, "
+            "0x00001000u, 1u)) return; f_00002000(s); SR_TAIL_DRAIN(s); "
+            "if (sr_aot_return_boundary_end(s)) return; } }",
+            known,
+        )
 
     def test_linked_branch_out_of_the_body_links_and_runs_its_slot_once(self):
         # MIPS writes the link on both paths, before the slot; the slot runs once on
@@ -237,7 +247,12 @@ class ContinuationFlowTests(unittest.TestCase):
         )
         text = "\n".join(lines)
         self.assertIn("if (_c) { goto L_00001018; } }", text)
-        self.assertIn("if (_c) { f_00001018(s); SR_TAIL_DRAIN(s); } }", text)
+        self.assertIn(
+            "if (_c) { if (sr_aot_return_boundary_begin(s, 0x00001010u, "
+            "0x00001008u, 1u)) return; f_00001018(s); SR_TAIL_DRAIN(s); "
+            "if (sr_aot_return_boundary_end(s)) return; } }",
+            text,
+        )
         self.assertEqual(text.count("goto L_00001018;"), 1)
 
     def test_linked_call_whose_link_is_an_entry_continues_there(self):

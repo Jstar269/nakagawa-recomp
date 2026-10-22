@@ -166,6 +166,7 @@ typedef struct {
     jmp_buf  unwind_jmp;         /* unwind point for clean fiber exit */
     int      has_unwind_jmp;     /* 1 when jump buffer is valid */
     int      hle_depth;          /* HLE execution depth when suspended */
+    SrAotReturnBoundaryStack aot_return_boundary_stack; /* native return frames owned by this fiber */
     int      rt_phase;           /* runtime phase (perf.h) when suspended: attribution
                                   * must follow the RUNNING context, not the last one
                                   * to touch the global, or a blocking syscall's tag
@@ -196,6 +197,15 @@ typedef struct {
 } TCB;
 
 static TCB      s_tcb[MAXTHREADS];
+
+static void sched_destroy_thread_coro(TCB *t) {
+    if (!t) return;
+    if (t->coro) {
+        sr_coro_destroy(t->coro);
+        t->coro = NULL;
+    }
+    sr_aot_return_boundary_stack_destroy(&t->aot_return_boundary_stack);
+}
 
 /* Heap-owned semantic records survive nonlocal C-frame abandonment. TCB slots
  * cannot be reused until owner teardown drains these records; numeric handles
@@ -595,6 +605,9 @@ static uint32_t sr_rt_current_uid(void);
 
 void sched_init(CpuState *cpu) {
     sr_flight_init();
+    sr_aot_return_boundaries_reset();
+    for (int i = 0; i < MAXTHREADS; i++)
+        sr_aot_return_boundary_stack_destroy(&s_tcb[i].aot_return_boundary_stack);
     s_cpu = cpu;
     sr_rt_pc_fn = sr_rt_current_pc;
     sr_rt_uid_fn = sr_rt_current_uid;
@@ -1462,6 +1475,26 @@ static uint64_t vblank_due_us(void) {
     return (s_vbl_next_ns - now) / 1000u;
 }
 
+/* Interrupt handlers run guest code on the fiber that was interrupted. Give
+ * that nested entry its own return-boundary floor so it cannot consume the
+ * interrupted thread's direct-call frames. */
+static int sched_dispatch_interrupt_guest(CpuState *cpu, uint32_t entry,
+                                          const char *owner,
+                                          uint32_t *fatal_target) {
+    SrAotReturnBoundaryScope scope;
+    sr_aot_return_boundary_scope_begin(&scope);
+    dispatch(cpu, entry);
+    const uint32_t flow_kind = cpu->flow_kind;
+    const uint32_t flow_target = cpu->flow_target;
+    const int scope_failed = sr_aot_return_boundary_scope_end(cpu, &scope, owner);
+    if (scope_failed || flow_kind == SR_FLOW_FATAL || cpu->flow_kind == SR_FLOW_FATAL) {
+        if (fatal_target)
+            *fatal_target = cpu->flow_kind == SR_FLOW_FATAL ? cpu->flow_target : flow_target;
+        return 1;
+    }
+    return 0;
+}
+
 static void deliver_vblank(void) {
     /* Reset the host-clock quantum so the OOB source check in sr_yield won't double-fire. */
     vblank_pace_quantum_init();
@@ -1534,7 +1567,11 @@ static void deliver_vblank(void) {
                 MEM_R32(h), MEM_R32(h + 4), MEM_R32(h + 8));
         fflush(stderr);
     }
-    if (h) dispatch(s_cpu, h);
+    uint32_t interrupt_fatal_target = 0u;
+    int interrupt_fatal = h
+        ? sched_dispatch_interrupt_guest(s_cpu, h, "VBLANK sub-interrupt",
+                                         &interrupt_fatal_target)
+        : 0;
     if (h && getenv("SR_CBSNAP")) {
         fprintf(stderr, "CBSNAP: legacy-post entry=0x%08x v0=0x%08x a0=0x%08x sp=0x%08x ra=0x%08x\n",
                 h, s_cpu->r[2], s_cpu->r[4], s_cpu->r[29], s_cpu->r[31]);
@@ -1544,10 +1581,22 @@ static void deliver_vblank(void) {
     /* Deliver every active callback slot in stable slot/registration order.  A callback
      * may delete itself or another slot; the HLE walker snapshots each slot immediately
      * before dispatch, so later slots observe that change on this same VBLANK. */
+    SrAotReturnBoundaryScope callback_scope;
+    sr_aot_return_boundary_scope_begin(&callback_scope);
     sr_vblank_dispatch_registered();
+    int callback_scope_failed = sr_aot_return_boundary_scope_end(
+        s_cpu, &callback_scope, "VBLANK callback pump");
+    if (callback_scope_failed || s_cpu->flow_kind == SR_FLOW_FATAL) {
+        interrupt_fatal = 1;
+        interrupt_fatal_target = s_cpu->flow_target;
+    }
 
     s_cur = save_cur;
     memcpy(s_cpu, &save, sizeof(CpuState));
+    if (interrupt_fatal) {
+        s_cpu->flow_kind = SR_FLOW_FATAL;
+        s_cpu->flow_target = interrupt_fatal_target;
+    }
     /* Interrupt return: the interrupted ll..sc window, if any, is over. */
     sr_cpu_link_clear(s_cpu);
     extern void sr_vblank_tick(void);
@@ -1737,10 +1786,16 @@ static void scheduler_alarm_deliver(int slot) {
     s_cpu->vfpuCtrl[0] = 0xe4; s_cpu->vfpuCtrl[1] = 0xe4;
     s_cpu->pc = handler;
     int save_cur = s_cur; s_cur = -1;     /* interrupt context: SR_YIELD must not switch */
-    dispatch(s_cpu, handler);
+    uint32_t interrupt_fatal_target = 0u;
+    int interrupt_fatal = sched_dispatch_interrupt_guest(
+        s_cpu, handler, "scheduler alarm handler", &interrupt_fatal_target);
     const uint32_t period = s_cpu->r[2];
     s_cur = save_cur;
     memcpy(s_cpu, &save, sizeof(CpuState));
+    if (interrupt_fatal) {
+        s_cpu->flow_kind = SR_FLOW_FATAL;
+        s_cpu->flow_target = interrupt_fatal_target;
+    }
     /* Interrupt return: the interrupted ll..sc window, if any, is over. */
     sr_cpu_link_clear(s_cpu);
 
@@ -1907,6 +1962,10 @@ static void coro_body(void *param) {
             /* A recorded tail transfer is consumed before guest code runs, so none can
              * be live when guest code unwinds the thread (#855). */
             sr_tail_assert_empty("tail-transfer-live-at-unwind");
+            /* setjmp discarded the native frames that owned these guest return
+             * boundaries. Drop this fiber's abandoned stack before it exits or
+             * the thread is restarted. */
+            sr_aot_return_boundaries_reset();
             if (sched_uid_is_worker(t->uid)) fprintf(stderr, "FIBER_UNWIND: uid=0x%x cleanly unwound\n", t->uid);
             if (reclaimed)
                 fprintf(stderr,
@@ -2231,7 +2290,7 @@ uint32_t sched_create_thread_ex(uint32_t entry, int priority, uint32_t stack_siz
         /* Free the stale coroutine (defensive: a test fixture may have left it attached).
          * We re-seed the whole TCB below, so this is the only side effect that has to survive
          * the memset. */
-        if (s_tcb[reused].coro) { sr_coro_destroy(s_tcb[reused].coro); s_tcb[reused].coro = NULL; }
+        sched_destroy_thread_coro(&s_tcb[reused]);
         TCB *t = &s_tcb[reused];
         memset(t, 0, sizeof(*t));
         t->uid = sr_alloc_uid();
@@ -2420,7 +2479,7 @@ uint32_t sched_start_thread(uint32_t uid, uint32_t arglen, uint32_t argp) {
      * and with it the mission scene-switch fade). Throw the old fiber away and re-seed the
      * register file so the scheduler re-enters the body fresh. */
     if (t->started && t->state == TH_DORMANT) {
-        if (t->coro) { sr_coro_destroy(t->coro); t->coro = NULL; }
+        sched_destroy_thread_coro(t);
         t->started = 0;
         t->wakeups = 0; t->sleeping = 0; t->wait_obj = 0; t->wake = 0;
         memset(&t->saved, 0, sizeof(t->saved));
@@ -3736,7 +3795,7 @@ uint32_t sched_terminate_thread(uint32_t uid) {
     /* A target stopped by another thread is no longer running, so its host
      * coroutine can be destroyed immediately. The guest stack remains owned by
      * the dormant object until the corresponding DeleteThread operation. */
-    if (t->coro) { sr_coro_destroy(t->coro); t->coro = NULL; }
+    sched_destroy_thread_coro(t);
     t->state = TH_DORMANT;
     t->suspended = 0; t->rot_head = 0;   /* termination ends a suspension */
     t->exit_status = (int32_t)SCE_KERNEL_ERROR_THREAD_TERMINATED;
@@ -3765,7 +3824,7 @@ uint32_t sched_delete_thread(uint32_t uid) {
      * same result and leaves those waiters' latched value untouched. */
     sched_wake_thread_joiners(uid, SCE_KERNEL_ERROR_THREAD_TERMINATED);
     sched_release_thread_resources(t);
-    if (t->coro) { sr_coro_destroy(t->coro); t->coro = NULL; }
+    sched_destroy_thread_coro(t);
     sched_release_thread_stack(t);
     t->started = 0;
     t->entry = 0;
@@ -4058,7 +4117,9 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
             sr_perf_sched_switch(previous_uid, t->uid);
             sr_perf_guest_begin();
         }
+        sr_aot_return_boundary_stack_swap(&t->aot_return_boundary_stack);
         sr_coro_switch(t->coro);           /* run until it yields/blocks/exits */
+        sr_aot_return_boundary_stack_swap(&t->aot_return_boundary_stack);
         if (sr_perf_enabled) sr_perf_guest_end();
         t->hle_depth = g_hle_depth;
         t->rt_phase = sr_rt_phase;
@@ -4066,10 +4127,8 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         /* A coroutine cannot destroy itself from inside sched_exit_current;
          * reap it as soon as control is back on the scheduler coroutine. This
          * covers both ordinary ExitThread and ExitDeleteThread. */
-        if (t->state == TH_DORMANT && t->coro) {
-            sr_coro_destroy(t->coro);
-            t->coro = NULL;
-        }
+        if (t->state == TH_DORMANT && t->coro)
+            sched_destroy_thread_coro(t);
         s_cur = -1;
         s_tick++;
         sr_rt_phase = SR_RT_PHASE_SCHED;

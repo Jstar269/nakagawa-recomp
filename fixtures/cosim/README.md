@@ -85,7 +85,7 @@ weaken it.
 | next instruction | `next_pc` unmaintained | `next_pc` unmaintained |
 | branch owner | the branch owns its delay slot: condition and transfer target are read at the branch, the link register is written before the slot, and the AOT tier is not reconsulted at `pc+4` | same ordering, emitted statement by statement |
 | delay slot | `in_delay_slot` unmaintained | `in_delay_slot` unmaintained |
-| AOT handoff | — | `jr $ra` **is** the host return; no `pc` write, and the architectural destination is `$ra` |
+| AOT handoff | — | `jr $ra` is the host return after its target is latched; a linked call resumes only when that target matches its explicit resume PC, otherwise AOT stops at a named fail-closed boundary |
 | interpreter handoff | writes `pc = destination` before dispatching into the registered native body | — |
 | exception future | asserted to leave `next_pc` and `in_delay_slot` at their seeded values | same, so a future COP0 BD/EPC model can define them without colliding with an existing consumer |
 
@@ -270,7 +270,10 @@ oracle. None of those cases is guessed or counted as a pass.
 ### A constraint the fixture had to obey
 
 Generated code models `jal`/`jalr` as a host **call**: the callee runs as a
-nested C frame and its `jr $ra` is a host return. A computed transfer whose
+nested C frame and its `jr $ra` is a host return after the latched guest target
+is checked against the call's explicit resume PC. A mismatch stops before the
+native caller continuation; it is not translated into an arbitrary cross-frame
+host jump. A computed transfer whose
 target is *not* a registered function entry therefore returns into the middle of
 an already-executing native body and double-executes it. Every computed transfer
 in this fixture consequently targets a leaf that ends in `jr $ra`. A `jalr`
@@ -296,11 +299,13 @@ model and is recorded as the next expansion rather than faked.
 ## Proving the comparator is load-bearing
 
 `mutate.py` applies one semantic defect at a time to a *copy* of the
-interpreter, `src/rt/fp_convert.h`, or `tools/codegen.py` under the ignored build
-tree, rebuilds the harness through the corresponding Make override, and requires
-the gate to fail. A mutant that only breaks the build is reported `INVALID` and
-fails the campaign: a compile error proves the compiler noticed, not the
-comparator.
+interpreter, `src/rt/fp_convert.h`, `tools/codegen.py`, or `src/rt/sched.c` under
+the ignored build tree. The scheduler mutant removes both per-thread AOT boundary
+swaps and runs the HLE-thread regression with the real scheduler, recomp.c, and
+blocking `sceKernelWaitSema`; it must fail with `AOT_RETURN_TARGET_MISMATCH`. The
+other mutants rebuild the cosim harness through the corresponding Make override.
+A mutant that only breaks the build is reported `INVALID` and fails the campaign:
+a compile error proves the compiler noticed, not the comparator.
 
 Mutating both sides matters. A differential proven against one lane is half
 proven, so one mutant restores the **generator** to its pre-fix

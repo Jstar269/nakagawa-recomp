@@ -288,7 +288,8 @@ def _check_pspdev() -> None:
         where = "WSL" if os.name == "nt" else "this host"
         raise ShowcaseError(
             f"PSPDEV/PSPSDK was not found in {where} at /usr/local/pspdev. "
-            "Install PSPDEV locally, then rerun the showcase target."
+            "Install PSPDEV v20260601 there with the steps in docs/SETUP.md (Showcase demos on Windows, "
+            "or Linux headless showcase), then rerun the showcase target."
         )
 
 

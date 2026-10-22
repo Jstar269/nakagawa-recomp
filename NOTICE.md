@@ -190,3 +190,11 @@ running in Nakagawa Recomp on Windows. The game belongs to its publisher, and it
 this repository's GPL-3.0-or-later declaration. The capture contains no game data files, and users need
 their own copy of the game. The screenshot was admitted under the maintainer authorization of 2026-10-21
 and is listed with the SHA-256 of its exact bytes in assets/release_manifest.json.
+
+## Project-authored Nakagawa brand artwork
+
+The files docs/images/brand/nakagawa-mark-light.svg and
+docs/images/brand/nakagawa-mark-dark.svg are the project-authored N1 Block & Branch
+mark, rendered in dark ink for light page themes and light ink for dark page themes.
+The artwork is distributed under GPL-3.0-or-later and listed with the SHA-256 of
+each file's exact bytes in assets/release_manifest.json.

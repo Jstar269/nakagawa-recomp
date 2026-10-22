@@ -616,6 +616,40 @@
       "comment": "Font provenance and redistribution terms remain unresolved; the evidence packet is kept private with the optional binaries."
     },
     {
+      "id": "readme-nakagawa-mark-light",
+      "name": "README brand mark: dark ink for light themes",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "docs/images/brand/nakagawa-mark-light.svg",
+      "license": "GPL-3.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "a26fe65e0347ee10be3bcbe97f8ed54c1de6d875363e59fbf2755cf95f0fab34"
+      },
+      "comment": "Project-authored N1 Block & Branch artwork for light page themes."
+    },
+    {
+      "id": "readme-nakagawa-mark-dark",
+      "name": "README brand mark: light ink for dark themes",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "docs/images/brand/nakagawa-mark-dark.svg",
+      "license": "GPL-3.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "6e927f9a71161e4e4b69efc5e04555c31ee7951a01f34fdaf6a1d44e0ed21b06"
+      },
+      "comment": "Project-authored N1 Block & Branch artwork for dark page themes."
+    },
+    {
       "id": "readme-showcase-ge-scene-v120",
       "name": "README screenshot: GE scene demo at vblank 120",
       "type": "asset",
