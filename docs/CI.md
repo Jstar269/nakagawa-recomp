@@ -135,8 +135,8 @@ pin where applicable, the gcc and cmake versions, and the workflow file hash. A 
 the build while the pkg-config and runtime feature checks still run. The SDL3_ttf build asserts
 that CMake selected vendored FreeType and HarfBuzz; a runtime probe prints their versions and
 fails if either backend is unavailable. The job installs Mesa's Vulkan drivers, Vulkan tools,
-the Khronos validation layer, Xvfb, and the X11 development libraries needed by the pinned SDL3
-build. `vulkaninfo --summary` selects the lavapipe ICD and must list llvmpipe. The
+the Khronos validation layer, Xvfb, and the X11/XTest development libraries needed by the pinned
+SDL3 build. `vulkaninfo --summary` selects the lavapipe ICD and must list llvmpipe. The
 `gpu-capture-selftest` runs through Xvfb with SDL's X11 driver and the validation layer, so an
 exit 77 skip fails the gate. The Linux job also runs `make CC=gcc player-ui-tests` with SDL's
 dummy video and software render drivers. It configures and builds the CMake player with

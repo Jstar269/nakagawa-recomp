@@ -186,7 +186,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d7c6cb78c598dced80e8c170e17ce7aa98fd26ce9742b4e7f7d1f1120289f849"
+      "sha256": "1e10ff0486061a6c82f0fcf6a86bd05ecfd0c9a1e5b67fc720bf490f66dd38e5"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -1183,7 +1183,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "084bf9319a9db3d84e540aae9df76e7700c4cddda05c06af0b3fb8e712596e44"
+      "sha256": "75125a179e2a4e54cd86059f2466ee37878a8b3c6884768a70779337373d766a"
     },
     {
       "path": "docs/COMPATIBILITY.md",
