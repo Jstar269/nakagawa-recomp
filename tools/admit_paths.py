@@ -386,8 +386,10 @@ def admit(
         raise AdmitError("AUTHORITY_NOT_MAIN", "the authority checkout must have main checked out")
     if _text(authority_root, "status", "--porcelain=v1", "--untracked-files=all", "--", "docs/provenance"):
         raise AdmitError("AUTHORITY_DIRTY", "docs/provenance in the authority checkout has uncommitted changes")
-    trusted_ledger = _git(authority_root, "cat-file", "blob", f"HEAD:{TRUSTED_LEDGER}")
-    records = provenance_ledger._detailed_records(json.loads(trusted_ledger.decode("utf-8")))
+    # docs/provenance is clean, so the checkout's ledger is the committed one: it is
+    # read in place and never copied.
+    authority_ledger = authority_root / TRUSTED_LEDGER
+    records = provenance_ledger._detailed_records(json.loads(authority_ledger.read_text(encoding="utf-8")))
     statements = classify(paths, records, origins or {}, require_origin=not rekey)
     admission_path = authority_root / ADMISSIONS / f"admission-{slug}-{date}.json"
     admit_branch = f"admit/{slug}-{date}"
@@ -431,18 +433,16 @@ def admit(
         _git(candidate, "checkout-index", "-f", "--", *paths, POLICY, EXPORT)
         candidate_commit = _commit(candidate, f"candidate: admit {slug}", assisted_by)
 
-        trusted_inputs = scratch / "trusted"
-        trusted_inputs.mkdir()
-        (trusted_inputs / "IMPLEMENTATION_PROVENANCE.json").write_bytes(trusted_ledger)
-        (trusted_inputs / "trusted-policy.json").write_bytes(base_policy)
+        base_policy_path = scratch / "base-policy.json"
+        base_policy_path.write_bytes(base_policy)
         try:
             provenance_ledger.admit_new_reviewed(
-                trusted_ledger=trusted_inputs / "IMPLEMENTATION_PROVENANCE.json",
+                trusted_ledger=authority_ledger,
                 admission_authority=admission_path,
                 candidate_tree=str(candidate),
                 trusted_tree=base,
                 paths=paths,
-                trusted_policy=trusted_inputs / "trusted-policy.json",
+                trusted_policy=base_policy_path,
             )
         except RefreshError as error:
             raise AdmitError(error.code, str(error)) from error
