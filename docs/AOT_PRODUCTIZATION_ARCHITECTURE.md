@@ -57,7 +57,7 @@ In this model, Nakagawa maintainers/packagers compile the verified title executa
 * **Why It Wins:**
   * Zero compilation latency for the user.
   * Zero compiler required on user machine.
-  * 100% reproducible optimization (`-O2` runtime, `-O1` recomp chunks).
+  * Fixed, reproducible optimization settings (`-O2` runtime, `-O1` recomp chunks).
   * Avoids distributing proprietary game bytes; user-supplied inputs remain required.
 
 ### Option A: Bundled Embedded Host Compiler (The "Compile-on-Import" Route)

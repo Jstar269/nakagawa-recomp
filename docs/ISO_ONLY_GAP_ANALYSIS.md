@@ -28,7 +28,7 @@
 
 The matrix is a decision and gap record. In the current public source, ISO/PARAM.SFO
 inspection, bounded file extraction, and the read-only archive-backed VFS exist.
-Nakagawa does not decrypt games; it uses decrypted files you make from your own copy.
+Nakagawa does not decrypt games; it uses decrypted files from your own copy.
 Guest middleware and title acceptance remain partial or open.
 
 | Preparation Surface | Current Manual Requirement | Technical Root Cause | True Low-Level (LLE) Resolution Path | Status |
@@ -49,7 +49,7 @@ are not evidence that the paths have landed in the current player.
 
 ### 3.1 Retail EBOOT and PRX Cryptography
 
-* **Input boundary:** `tools/codegen.py` consumes supported MIPS ELF inputs and fails closed on encrypted headers. The player and CLI refuse an encrypted executable or module by name and accept decrypted files you make from your own copy ([`docs/SETUP.md`](SETUP.md#encrypted-executables)).
+* **Input boundary:** `tools/codegen.py` consumes supported MIPS ELF inputs and fails closed on encrypted headers. The player and CLI refuse an encrypted executable or module by name and accept decrypted files from your own copy ([`docs/SETUP.md`](SETUP.md#encrypted-executables)).
 * **Status:** Nakagawa does not decrypt games; built-in decryption was removed (temporarily) ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)). PGD-protected game data, guest middleware startup, and any specific title's compatibility remain separate boundaries.
 
 ---

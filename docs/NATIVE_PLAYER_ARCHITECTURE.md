@@ -154,7 +154,7 @@ The flow below is the complete productization target, not a description of the c
 executable. Today the player opens a native SDL file picker, inspects a selected ISO, runs
 bounded ISO/XB staging for supported inputs, builds a runtime package from the library with
 live stage progress, and launches a validated package ([#487](https://github.com/Jstar269/nakagawa-recomp/pull/487)). The player and CLI use decrypted
-files you make from your own copy and do not decrypt games ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); retail-disc hash validation
+files from your own copy and do not decrypt games ([#295](https://github.com/Jstar269/nakagawa-recomp/issues/295)); retail-disc hash validation
 and one-click play from an arbitrary ISO without the developer toolchain remain unbuilt
 ([#308](https://github.com/Jstar269/nakagawa-recomp/issues/308)).
 
@@ -271,9 +271,9 @@ The native player provides a dedicated Controller Settings screen (`VIEW_CONTROL
 
 Selecting the right open-source fonts for nakagawa-recomp depends on whether you are styling the in-game arcade HUD, the native launcher/config menus, debug overlays, or Japanese text.
 
-### In-Game UI & Arcade HUD (Clap Hanz / Sports Aesthetic)
+### In-Game UI & Arcade HUD (Rounded Sports Style)
 
-- [M PLUS Rounded 1c](https://fonts.google.com/specimen/M+PLUS+Rounded+1c) (SIL OFL): The closest stylistic match to the Hot Shots Tennis / Minna no Tennis aesthetic. Features rounded terminals, 7 weights, and full Japanese (Kanji/Kana) and Latin character sets.
+- [M PLUS Rounded 1c](https://fonts.google.com/specimen/M+PLUS+Rounded+1c) (SIL OFL): A rounded, friendly sports-style face for the project's own UI. Features rounded terminals, 7 weights, and full Japanese (Kanji/Kana) and Latin character sets.
 - [Rubik](https://fonts.google.com/specimen/Rubik) (SIL OFL): A stout, slightly rounded sans-serif with subtle geometric corners. Great for match results, power gauges, and character selection cards.
 - [Nunito](https://fonts.google.com/specimen/Nunito) (SIL OFL): A clean, rounded display sans that provides high legibility on lower rendering resolutions and handheld screens.
 - [Teko](https://fonts.google.com/specimen/Teko) or [Bebas Neue](https://fonts.google.com/specimen/Bebas+Neue) (SIL OFL): Condensed, high-impact athletic display fonts suited for scoreboards, serve speed readouts, and game-point banners.

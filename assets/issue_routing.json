@@ -20,7 +20,7 @@
     {"issue": 292, "primary_state": "future_work", "depends_on": [282], "note": "SIMD fast paths wait for measured VFPU materiality from #282."},
     {"issue": 293, "primary_state": "implementation", "note": "The public export must be immutable and provenance-clean."},
     {"issue": 294, "primary_state": "implementation", "depends_on": [293], "note": "Hosted launcher, ladder, and export coverage follows export integrity work."},
-    {"issue": 295, "primary_state": "legal", "note": "Built-in decryption was removed (temporarily); the player accepts only decrypted files users make from their own copy."},
+    {"issue": 295, "primary_state": "legal", "note": "Built-in decryption was removed (temporarily); the player accepts only decrypted files from the user's own copy."},
     {"issue": 296, "primary_state": "implementation", "depends_on": [295], "note": "The AOT package route follows the lawful input boundary."},
     {"issue": 297, "primary_state": "implementation", "depends_on": [295, 296], "note": "Player provisioning follows generated AOT and lawful input routes."},
     {"issue": 298, "primary_state": "implementation", "note": "Archive-backed VFS is public work coordinated with layout isolation."},

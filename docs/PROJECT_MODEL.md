@@ -169,7 +169,7 @@ A public source candidate should include only material that has passed all appli
 The repository ships source code, documentation and the notices listed in
 [`NOTICE.md`](../NOTICE.md). It does not ship game executables, game assets,
 firmware files, decryption keys or private traces. The user supplies the game
-files. Nakagawa does not decrypt games; it uses decrypted files you make from your own copy. This section is not
+files. Nakagawa does not decrypt games; it uses decrypted files from your own copy. This section is not
 legal advice. Check the rules where you live.
 
 The project's operational rules are:

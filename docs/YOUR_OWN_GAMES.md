@@ -29,18 +29,16 @@ Importing a disc does not change its status. The **EXPERIMENTAL** badge on the g
   Nakagawa recompiles the game's own program code into a native program on your
   computer, so it has to be able to read that code. Most retail PSP executables
   (`EBOOT.BIN` and some `.prx` modules) are encrypted. Nakagawa does not
-  decrypt games; it uses decrypted files you make from your own copy, placed in
+  decrypt games; it uses decrypted files from your own copy, placed in
   the per-title folder (see [Supplying unencrypted files](#supplying-unencrypted-files)).
 - **PSP system fonts (optional, recommended for text).** In-game typography
-  uses Sony firmware font files (`.pgf`) dumped from your own PSP's
+  uses Sony firmware font files (`.pgf`) copied from your own PSP's
   `flash0:/font/`. The project does not include or distribute them. Copy them
   to a folder and run `python tools/nk_cli.py fonts import <folder>`. If two
   files cover the same slot, pick one with `--choose <slot>=<file>` (slots:
   `japanese`, `latin`, `korean`). Check the result with `python tools/nk_cli.py
-  fonts status`. Until [#1142](https://github.com/Jstar269/nakagawa-recomp/issues/1142)
-  (serving each Latin font index from its own file) lands, text may clip or
-  show placeholder glyphs, and a title's own font library may draw project
-  fonts as dashes ([#1055](https://github.com/Jstar269/nakagawa-recomp/issues/1055)).
+  fonts status`. A title's own font library may still draw project fonts as
+  dashes ([#1055](https://github.com/Jstar269/nakagawa-recomp/issues/1055)).
   The project-authored open-font converter (`tools/ttf2pgf.py`,
   [#313](https://github.com/Jstar269/nakagawa-recomp/issues/313)) builds open
   replacement fonts.
@@ -91,7 +89,7 @@ an ISO with no local toolchain is in the works
 
 ## Supplying unencrypted files
 
-Nakagawa does not decrypt games; it uses decrypted files you make from your own
+Nakagawa does not decrypt games; it uses decrypted files from your own
 copy. It contains no decryption keys and never looks for a key file.
 
 This is not legal advice. Laws on decrypting and copying games differ by
@@ -214,9 +212,9 @@ subsystem breakdown with tracking issues.
 
 | Area | Today | Tracking |
 | --- | --- | --- |
-| Encrypted executables and PRX modules | Built-in decryption was removed (temporarily). Plain `BOOT.BIN`, or `EBOOT.elf` and decrypted modules you make from your own copy, are used. PGD/amctrl is unsupported. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
+| Encrypted executables and PRX modules | Built-in decryption was removed (temporarily). Plain `BOOT.BIN`, or `EBOOT.elf` and decrypted modules from your own copy, are used. PGD/amctrl is unsupported. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
 | Commercial-game packages in public builds | Packages build with the public runtime, and public builds render imported PGF fonts through the project-authored reader for supported inputs (PR [#474](https://github.com/Jstar269/nakagawa-recomp/pull/474)). Composite glyphs and the supported revision and shadow-map variants render too ([#521](https://github.com/Jstar269/nakagawa-recomp/issues/521)); a revision-3 font's compressed character-map subtables and any other shadow-map width are still refused by name. | [PGF_SPEC.md §4](cleanroom/PGF_SPEC.md#4-non-requirements-and-named-boundaries) |
-| Per-index Latin font serving and title font libraries | Text may clip or show placeholder glyphs; see [What you need](#what-you-need). | [#1142](https://github.com/Jstar269/nakagawa-recomp/issues/1142), [#1055](https://github.com/Jstar269/nakagawa-recomp/issues/1055) |
+| Title font libraries | A title's own font library may draw project fonts as dashes; see [What you need](#what-you-need). | [#1055](https://github.com/Jstar269/nakagawa-recomp/issues/1055) |
 | Games other than the maintainer-tested titles | Other games import with the **EXPERIMENTAL** badge and stay Untested unless someone has seen them boot; bring-up of further titles is ongoing. | [#308](https://github.com/Jstar269/nakagawa-recomp/issues/308) |
 
 See [`SETUP.md`](SETUP.md) for developer setup and the command-line tools.

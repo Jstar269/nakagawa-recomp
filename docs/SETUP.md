@@ -20,7 +20,7 @@ Everything a new Windows machine needs, in one list. The versions are floors; th
 5. **The Vulkan SDK**, a current release, from [LunarG](https://vulkan.lunarg.com/sdk/home).
 6. **Git for Windows**, to clone the repository and fetch optional third-party source.
 7. **Your own copy of the game** as an `.iso`. If its executable is encrypted, you also need the
-   decrypted files you make from your own copy; see [Encrypted executables](#encrypted-executables).
+   decrypted files from your own copy; see [Encrypted executables](#encrypted-executables).
    Nothing in this repository ships or downloads a game; see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md).
 
 For the two showcase demos only, add **WSL 2** with Ubuntu and **PSPDEV v20260601**; see
@@ -305,7 +305,7 @@ are retained as historical evidence in
 ### Plain module inputs
 
 Some titles load additional modules at runtime. The runtime accepts only plain (unencrypted)
-ELF/PRX files. Nakagawa does not decrypt games; it uses decrypted files you make from your own copy (see [Encrypted executables](#encrypted-executables)). For what the player needs
+ELF/PRX files. Nakagawa does not decrypt games; it uses decrypted files from your own copy (see [Encrypted executables](#encrypted-executables)). For what the player needs
 and where your own unencrypted files go, see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md). When you already have plain modules from your own
 copy of the game, place them at the paths the local manifest expects, for example:
 
@@ -336,7 +336,7 @@ Decrypted guest modules in `<user data>/titles/<DISC_ID>/decrypted/` may be name
 
 ### Encrypted executables
 
-Nakagawa does not decrypt games; it uses decrypted files you make from your own copy. Built-in decryption was removed (temporarily), so the player and `nk_cli` never look for or read a key file.
+Nakagawa does not decrypt games; it uses decrypted files from your own copy. Built-in decryption was removed (temporarily), so the player and `nk_cli` never look for or read a key file.
 
 An encrypted `EBOOT.BIN` (`~PSP`, `~SCE` or PBP) without a valid `EBOOT.elf` in the per-title folder above stops with a named message:
 
