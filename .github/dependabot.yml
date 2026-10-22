@@ -14,7 +14,7 @@ version: 2
 # channel: they remain enabled, ungrouped, and are not subject to
 # open-pull-requests-limit.
 #
-# `time`/`timezone` stagger the four ecosystems so a monthly refresh does not
+# `time`/`timezone` stagger the three ecosystems so a monthly refresh does not
 # arrive as one simultaneous burst. `day` is deliberately absent: it applies to
 # weekly intervals only and would be inert here.
 #
