@@ -62,6 +62,7 @@ instrumentation is this test's protection against the historical RAM runaway."
 #include "osk_text_entry.h"     /* the keyboard's text-entry seam, stubbed below */
 #include "osk_overlay.h"        /* the in-window keyboard the integration test drives */
 #include "flash0_font.h"        /* flash0: font device: slot binding seam */
+#include "../core/nk_font.h"    /* owner font import/cache path */
 #include "nk_platform.h"        /* per-user data directory override for the font cache */
 #include "audio_resample.h"
 
@@ -523,6 +524,7 @@ static uint32_t s_test_gui_last_addr, s_test_gui_last_stride;
 static int s_test_gui_last_fmt;
 int gui_on(void) { return s_test_gui_on; }
 void gui_pump(void) {}
+int gui_headless_acceptance_complete(void) { return 0; }
 /* The live pad: the keyboard tests hold a button on it for one frame; zero elsewhere. */
 static uint32_t s_test_gui_buttons;
 uint32_t gui_buttons(void) { return s_test_gui_buttons; }
@@ -722,6 +724,31 @@ uint32_t iso_physical_lba(uint32_t lba_or_token) {
  * both the stack arena floor (0x05000000) and the default partition top
  * (0x0A000000). Returning 0 is not an option -- user_partition_init() correctly
  * fail-closes on it rather than placing the partition over the image. */
+#ifndef SR_HLE_AOT_BOUNDARY_TEST
+/* The broad HLE suite keeps its existing test-only dispatch adapter. The
+ * focused AOT boundary variant below is the one that links real recomp.c. */
+int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
+                                 uint32_t call_pc, uint32_t has_resume_pc) {
+    (void)s; (void)resume_pc; (void)call_pc; (void)has_resume_pc;
+    return 0;
+}
+int sr_aot_return_boundary_end(CpuState *s) { (void)s; return 0; }
+void sr_aot_return_boundaries_reset(void) {}
+void sr_aot_return_boundary_stack_swap(SrAotReturnBoundaryStack *stack) { (void)stack; }
+void sr_aot_return_boundary_stack_destroy(SrAotReturnBoundaryStack *stack) {
+    if (stack) memset(stack, 0, sizeof(*stack));
+}
+void sr_aot_return_boundary_scope_begin(SrAotReturnBoundaryScope *scope) {
+    if (scope) memset(scope, 0, sizeof(*scope));
+}
+int sr_aot_return_boundary_scope_end(CpuState *s,
+                                     const SrAotReturnBoundaryScope *scope,
+                                     const char *owner) {
+    (void)s; (void)scope; (void)owner;
+    return 0;
+}
+#endif
+
 uint32_t sr_loaded_end(void) { return 0x00400000u; }
 
 int g_hle_depth;
@@ -3884,10 +3911,6 @@ static void test_controlled_unsupported_registration(void) {
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, 0xb3b5d042u) == 0u,
            "sceAtracGetOutputChannel retains its named compatibility result under #281/#286");
-
-    memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, 0x4b85c861u) == 0u,
-           "sceUtilityOskUpdate retains its named no-dialog compatibility result under #281");
 }
 
 static void test_kernel_import_sweep_explicit_refusals(void) {
@@ -3900,6 +3923,8 @@ static void test_kernel_import_sweep_explicit_refusals(void) {
         {NID_SCE_GE_RESTORE_CONTEXT, 0x80020002u, "sceGeRestoreContext"},
         {NID_SCE_KERNEL_LOAD_EXEC, 0x80020002u, "sceKernelLoadExec"},
         {NID_SCE_KERNEL_SELF_STOP_UNLOAD_MODULE, 0x80020002u, "sceKernelSelfStopUnloadModule"},
+        {0x08d98894u, 0x80020002u, "sceNpDrmEdataSetupKey"},
+        {0xf9275d98u, 0x80020002u, "sceKernelLoadModuleBufferUsbWlan"},
     };
     reset_fixture();
     sr_hle_init();
@@ -5229,6 +5254,45 @@ static int osk_write_script(const char *const *lines, int count) {
     return 1;
 }
 
+/* ---- sceUtilityOskUpdate and sceUtilityOskShutdownStart before a keyboard is up, and from INIT ----
+ *
+ * PSP-3000 measurement (firmware 6.6.1, 2026-10-21, probe CASE=fake-success, evidence in the
+ * private workspace): with no keyboard, Update returns 0x80110005 (SCE_ERROR_UTILITY_WRONG_TYPE);
+ * after InitStart, Update returns 0x80110001 (SCE_ERROR_UTILITY_INVALID_STATUS), and ShutdownStart
+ * returns 0x80110001 and leaves the keyboard in INIT. The VISIBLE and after-use states are not
+ * measured by this test. */
+#define NID_OSK_UPDATE 0x4b85c861u
+extern void sr_hle_test_osk_slot_reset(void);
+
+static void test_osk_update_and_shutdown_init_states(void) {
+    CpuState cpu;
+    sr_hle_init();
+    sr_hle_test_osk_slot_reset();
+    osk_person_reset();
+    osk_env("SR_OSK_SCRIPT", NULL);
+    osk_env("SR_OSK_TEXT", NULL);
+
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_OSK_UPDATE) == 0x80110005u,
+           "sceUtilityOskUpdate with no keyboard returns 0x80110005 (PSP-measured)");
+
+    osk_guest_build(1, 16u, 0u);
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = OSK_PARAM_ADDR;
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "sceUtilityOskInitStart accepts the parameter block");
+
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_OSK_UPDATE) == 0x80110001u,
+           "sceUtilityOskUpdate in INIT returns 0x80110001 (PSP-measured)");
+
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0x80110001u,
+           "sceUtilityOskShutdownStart in INIT returns 0x80110001 (PSP-measured)");
+
+    sr_hle_test_osk_slot_reset();
+    osk_person_reset();
+}
+
 static void test_osk_scripted_answer(void) {
     CpuState cpu;
     const uint32_t k_init = NID_OSK_INIT, k_down = NID_OSK_SHUTDOWN;
@@ -5829,6 +5893,7 @@ static void reset_fixture(void) {
     s_ntcb = 0;
     s_cur = -1;
     s_last_pick = -1;
+    sr_aot_return_boundaries_reset();
 #ifdef SR_SCHED_LIVENESS_TEST
     sched_liveness_reset();
 #endif
@@ -27442,6 +27507,268 @@ static uint32_t psmf_call(CpuState *cpu, uint32_t nid, uint32_t a0, uint32_t a1)
     return sr_syscall(cpu, nid);
 }
 
+/* ---- sceKernelVolatileMemUnlock and the lock state it releases ----
+ *
+ * PSP-3000 measurement (firmware 6.6.1, 2026-10-21, probe CASE=fake-success, evidence in the
+ * private workspace): Unlock with nothing locked returns 0x800201ae; Lock returns 0 and writes
+ * ptr 0x08400000 and size 4 MiB; Unlock while locked returns 0 and releases the lock; a second
+ * Unlock returns 0x800201ae again; TryLock while unlocked returns 0, and Unlock after it returns 0. */
+#define NID_VM_UNLOCK  0xa569e425u
+#define NID_VM_LOCK    0x3e0271d3u
+#define NID_VM_TRYLOCK 0xa14f40b2u
+#define VM_PTR_OUT     0x00250e00u
+#define VM_SIZE_OUT    0x00250e04u
+extern void sr_hle_test_volatile_mem_reset(void);
+
+static void test_volatile_mem_unlock_states(void) {
+    CpuState cpu;
+    sr_hle_test_volatile_mem_reset();
+
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_VM_UNLOCK) == 0x800201aeu,
+           "VolatileMemUnlock with nothing locked returns 0x800201ae (PSP-measured)");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
+    MEM_W32(VM_PTR_OUT, 0u); MEM_W32(VM_SIZE_OUT, 0u);
+    expect(sr_syscall(&cpu, NID_VM_LOCK) == 0u, "VolatileMemLock returns 0 (PSP-measured)");
+    expect(MEM_R32(VM_PTR_OUT) == 0x08400000u && MEM_R32(VM_SIZE_OUT) == 0x00400000u,
+           "VolatileMemLock writes ptr 0x08400000 and size 4 MiB (PSP-measured)");
+
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_VM_UNLOCK) == 0u, "VolatileMemUnlock while locked returns 0");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_VM_UNLOCK) == 0x800201aeu,
+           "a second VolatileMemUnlock with nothing locked returns 0x800201ae");
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
+    expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0u, "VolatileMemTryLock while unlocked returns 0");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_VM_UNLOCK) == 0u, "VolatileMemUnlock after TryLock returns 0");
+
+    sr_hle_test_volatile_mem_reset();
+}
+
+/* ---- #1106: a late PRX's module-owned objects outlive its stop and unload ----
+ *
+ * PSP-3000 measurement (firmware 6.6.1, 2026-10-21, PSPLink probe CASE=late-prx-target):
+ * after sceKernelStopModule returned 0 and sceKernelUnloadModule removed the module, the
+ * worker thread stayed WAITING on the semaphore it created, the semaphore still counted
+ * that waiter, the event flag and the callback still resolved, and the callback still
+ * named its owner thread. Nothing in the PSP's stop or unload tore them down.
+ *
+ * This test drives the production start, stop and unload handlers over a synthetic PRX.
+ * The four objects are created while the module runs, a worker blocks on the semaphore,
+ * and each object is checked after the unload. Its waiter stays blocked on a 600 s bound,
+ * so nothing wakes or runs module code during the check. The runtime does not record
+ * per-module ownership, so the objects are simply left alone by unload. */
+#define LATE_OBJ_BASE            0x09300000u
+#define LATE_OBJ_EXPORT          0x7a0000c1u
+#define LATE_OBJ_WAIT_TMO_PTR    0x00250e00u
+#define LATE_OBJ_WAIT_US         600000000u
+#define LATE_OBJ_INFO_THREAD     0x00250e40u
+#define LATE_OBJ_INFO_SEMA       0x00250e80u
+#define LATE_OBJ_INFO_FLAG       0x00250ec0u
+#define LATE_OBJ_INFO_CB         0x00250f00u
+#define LATE_OBJ_NAME            0x00250f40u
+#define LATE_OBJ_START_NID       0x50f0c1ecu
+#define LATE_OBJ_STOP_NID        0xd1ff982au
+#define LATE_OBJ_UNLOAD_NID      0x2e0911aau
+#define LATE_OBJ_CREATE_EVFLAG   0x55c20a00u
+#define LATE_OBJ_REFER_EVFLAG    0xa66b0120u
+#define LATE_OBJ_DELETE_EVFLAG   0xef9e4c70u
+#define LATE_OBJ_CREATE_CB       0xe81caf8fu
+#define LATE_OBJ_DELETE_CB       0xedba5844u
+#define LATE_OBJ_REFER_THREAD    0x17c1684eu
+#define LATE_OBJ_REFER_SEMA      0xbc6febc5u
+
+static uint32_t s_late_obj_sema;
+static uint32_t s_late_obj_ret;
+static int      s_late_obj_returned;
+
+static void late_obj_waiter_body(void *arg) {
+    (void)arg;
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = s_late_obj_sema; cpu.r[5] = 1u; cpu.r[6] = LATE_OBJ_WAIT_TMO_PTR;
+    s_late_obj_ret = sr_syscall(&cpu, NID_CNW_WAIT_SEMA);
+    s_late_obj_returned = 1;
+    selftest_park_on_scheduler();
+}
+
+static uint32_t late_obj_call(uint32_t nid, uint32_t a0, uint32_t a1, uint32_t a2) {
+    CpuState cpu;
+    memset(&cpu, 0, sizeof cpu);
+    cpu.r[4] = a0; cpu.r[5] = a1; cpu.r[6] = a2;
+    return sr_syscall(&cpu, nid);
+}
+
+static void test_late_prx_unload_keeps_module_owned_objects(void) {
+    const char *path = HLE_BUILD_ROOT "/hle_late_objects.prx";
+    TCB *owner, *waiter;
+    uint32_t sema, flag, cb, pre_status, pre_waitid, pre_numwait;
+    uint32_t stop_rc, unload_rc;
+
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    sr_hle_test_module_reset();
+    _putenv("SR_REAL_MODULE_START=1");
+
+    expect(write_lifecycle_prx(path, 0x1106aaaau), "late-objects: synthetic module image written");
+    uint32_t uid = sr_hle_test_load_prx_image(path, LATE_OBJ_BASE, LATE_OBJ_EXPORT,
+                                              LIFECYCLE_PATCH_OFF_A_1);
+    expect(uid != 0, "late-objects: module image loads at its declared base");
+    if (uid == 0) {
+        remove(path);
+        _putenv("SR_REAL_MODULE_START=0");
+        sr_test_guest_fn_reset();
+        sr_hle_test_module_reset();
+        return;
+    }
+    sr_test_register_guest_fn(LATE_OBJ_BASE + LIFECYCLE_START_OFF, lifecycle_start_fn);
+    sr_test_register_guest_fn(LATE_OBJ_BASE + LIFECYCLE_STOP_OFF, lifecycle_stop_fn);
+    sr_test_register_guest_fn(LATE_OBJ_BASE + LIFECYCLE_PATCH_OFF_A_1, lifecycle_export_a1_fn);
+    expect(late_obj_call(LATE_OBJ_START_NID, uid, 0u, 0u) == 0u, "late-objects: the module starts");
+
+    /* The module's own thread creates the objects, so it is the owner of the callback. */
+    owner = fixture_thread(0x6b0u, TH_RUNNING, 40);
+    owner->started = 1;
+    s_cur = (int)(owner - s_tcb);
+    sema = wsv_create(0, 1);
+    expect((int32_t)sema > 0, "late-objects: semaphore created while the module runs");
+    flag = late_obj_call(LATE_OBJ_CREATE_EVFLAG, LATE_OBJ_NAME, 0u, 0u);
+    expect((int32_t)flag > 0, "late-objects: event flag created while the module runs");
+    cb = late_obj_call(LATE_OBJ_CREATE_CB, LATE_OBJ_NAME, LATE_OBJ_BASE + LIFECYCLE_PATCH_OFF_A_1, 0u);
+    expect((int32_t)cb > 0, "late-objects: callback created while the module runs");
+
+    /* A worker thread blocks on the semaphore for the rest of the test. */
+    waiter = fixture_thread(0x6b1u, TH_READY, 16);
+    waiter->started = 1;
+    s_late_obj_sema = sema;
+    s_late_obj_returned = 0;
+    s_late_obj_ret = 0xFFFFFFFFu;
+    MEM_W32(LATE_OBJ_WAIT_TMO_PTR, LATE_OBJ_WAIT_US);
+    waiter->coro = sr_coro_create(late_obj_waiter_body, NULL, (size_t)4 << 20);
+    expect(waiter->coro != NULL, "late-objects: worker coroutine created");
+    if (!waiter->coro) {
+        remove(path);
+        _putenv("SR_REAL_MODULE_START=0");
+        sr_test_guest_fn_reset();
+        sr_hle_test_module_reset();
+        s_cur = -1;
+        return;
+    }
+    s_cur = (int)(waiter - s_tcb);
+    waiter->state = TH_RUNNING;
+    sr_coro_switch(waiter->coro);
+    expect(waiter->state == TH_WAIT_OBJ, "late-objects: the worker blocks on the semaphore");
+    expect(s_late_obj_returned == 0, "late-objects: the worker has not returned from its wait");
+    s_cur = (int)(owner - s_tcb);
+    owner->state = TH_RUNNING;
+
+    /* Before the stop: each object is observable through its refer call. */
+    expect(late_obj_call(LATE_OBJ_REFER_THREAD, waiter->uid, LATE_OBJ_INFO_THREAD, 0u) == 0u,
+           "late-objects: the worker resolves before the stop");
+    pre_status = MEM_R32(LATE_OBJ_INFO_THREAD + 0x28u);
+    pre_waitid = MEM_R32(LATE_OBJ_INFO_THREAD + 0x48u);
+    expect(pre_waitid == sema, "late-objects: the worker waits on the semaphore it created");
+    MEM_W32(LATE_OBJ_INFO_SEMA, 56u);
+    expect(late_obj_call(LATE_OBJ_REFER_SEMA, sema, LATE_OBJ_INFO_SEMA, 0u) == 0u,
+           "late-objects: the semaphore resolves before the stop");
+    pre_numwait = MEM_R32(LATE_OBJ_INFO_SEMA + 52u);
+    expect(pre_numwait == 1u, "late-objects: the semaphore counts its one waiter");
+    expect(late_obj_call(LATE_OBJ_REFER_EVFLAG, flag, LATE_OBJ_INFO_FLAG, 0u) == 0u,
+           "late-objects: the event flag resolves before the stop");
+    expect(sr_callback_is_valid(cb), "late-objects: the callback resolves before the stop");
+
+    /* Stop and unload the module. The PSP measurement shows both succeed and neither
+     * removes the objects above. */
+    stop_rc = late_obj_call(LATE_OBJ_STOP_NID, uid, 0u, 0u);
+    expect(stop_rc == 0u, "late-objects: stopping the module returns 0");
+    unload_rc = late_obj_call(LATE_OBJ_UNLOAD_NID, uid, 0u, 0u);
+    expect(unload_rc == 0u, "late-objects: unloading the stopped module returns 0");
+
+    /* After the unload every object still resolves, with the same state as before. */
+    expect(late_obj_call(LATE_OBJ_REFER_THREAD, waiter->uid, LATE_OBJ_INFO_THREAD, 0u) == 0u,
+           "late-objects: the worker still resolves after the unload");
+    expect(MEM_R32(LATE_OBJ_INFO_THREAD + 0x28u) == pre_status &&
+               MEM_R32(LATE_OBJ_INFO_THREAD + 0x48u) == pre_waitid,
+           "late-objects: the worker keeps its status and the semaphore it waits on");
+    expect(waiter->state == TH_WAIT_OBJ,
+           "late-objects: the worker stays blocked after the unload");
+    expect(s_late_obj_returned == 0, "late-objects: the unload does not wake the worker");
+    MEM_W32(LATE_OBJ_INFO_SEMA, 56u);
+    expect(late_obj_call(LATE_OBJ_REFER_SEMA, sema, LATE_OBJ_INFO_SEMA, 0u) == 0u,
+           "late-objects: the semaphore still resolves after the unload");
+    expect(MEM_R32(LATE_OBJ_INFO_SEMA + 52u) == pre_numwait,
+           "late-objects: the semaphore still counts its waiter after the unload");
+    expect(late_obj_call(LATE_OBJ_REFER_EVFLAG, flag, LATE_OBJ_INFO_FLAG, 0u) == 0u,
+           "late-objects: the event flag still resolves after the unload");
+    expect(sr_callback_is_valid(cb), "late-objects: the callback still resolves after the unload");
+
+    /* Cleanup: terminate the worker (no code runs), then delete the objects. */
+    expect(srt_call(NID_SCE_KERNEL_TERMINATE_DELETE_THREAD, waiter->uid) == 0u,
+           "late-objects: the orphaned worker can be terminated and deleted");
+    if (waiter->coro) { sr_coro_destroy(waiter->coro); waiter->coro = NULL; }
+    wsv_delete(sema);
+    expect(late_obj_call(LATE_OBJ_DELETE_EVFLAG, flag, 0u, 0u) == 0u,
+           "late-objects: the event flag deletes after the unload");
+    expect(late_obj_call(LATE_OBJ_DELETE_CB, cb, 0u, 0u) == 0u,
+           "late-objects: the callback deletes after the unload");
+    s_cur = -1;
+    remove(path);
+    _putenv("SR_REAL_MODULE_START=0");
+    sr_test_guest_fn_reset();
+    sr_hle_test_module_reset();
+}
+
+/* ---- scePowerUnregisterCallback: release a slot scePowerRegisterCallback filled ----
+ *
+ * The slot range checks mirror scePowerRegisterCallback. An empty slot is refused with
+ * SCE_KERNEL_ERROR_NOTIMP, because its PSP error code has not been measured. */
+#define NID_POWER_REGISTER_CALLBACK   0x04b7766eu
+#define NID_POWER_UNREGISTER_CALLBACK 0xdfa8baf8u
+
+static void test_power_unregister_callback_slots(void) {
+    CpuState cpu;
+    uint32_t cb;
+    reset_fixture();
+    sr_hle_init();
+
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = WSV_NAMEBUF;
+    cb = sr_syscall(&cpu, NID_WSV_CREATE_CALLBACK);
+    expect(cb != 0u && sr_callback_is_valid(cb), "power unregister: a callback exists to register");
+
+    /* Earlier tests may leave slots occupied, so start from slots 3 and 5 empty. */
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 3u; (void)sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK);
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 5u; (void)sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK);
+
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 3u; cpu.r[5] = cb;
+    expect(sr_syscall(&cpu, NID_POWER_REGISTER_CALLBACK) == 0u,
+           "power unregister: the callback registers in slot 3");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 3u;
+    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0u,
+           "power unregister: a registered slot releases with 0");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 3u;
+    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80020002u,
+           "power unregister: an empty slot is refused with SCE_KERNEL_ERROR_NOTIMP");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 3u; cpu.r[5] = cb;
+    expect(sr_syscall(&cpu, NID_POWER_REGISTER_CALLBACK) == 0u,
+           "power unregister: a released slot registers the callback again");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 3u;
+    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0u,
+           "power unregister: slot 3 is released again before the range checks");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 40u;
+    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80000102u,
+           "power unregister: a slot outside 0..31 mirrors the register range check");
+    memset(&cpu, 0, sizeof(cpu)); cpu.r[4] = 20u;
+    expect(sr_syscall(&cpu, NID_POWER_UNREGISTER_CALLBACK) == 0x80000023u,
+           "power unregister: a slot in 16..31 mirrors the register range check");
+}
+
 static void test_psmf_rejected_stream_names_the_boundary(void) {
     CpuState cpu;
     char captured[8192];
@@ -28724,16 +29051,16 @@ static void test_flash0_font_registry_headers(const char *root) {
     Flash0Sources sources;
     SrFontRegistryInfo info;
     snprintf(dir, sizeof(dir), "%s/registry-headers", root);
-    snprintf(file, sizeof(file), "%s/%s", dir, F0T_LATIN_NAME);
+    snprintf(file, sizeof(file), "%s/%s", dir, F0T_JAPANESE_NAME);
     expect(nk_platform_mkdir_p(dir), "the registry header scratch directory can be created");
     memset(&sources, 0, sizeof(sources));
     snprintf(sources.project_dir, sizeof(sources.project_dir), "%s", dir);
 
-    expect(sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_NO_SOURCE,
-           "a Latin index with no file in either source is absent: no source");
-    expect(sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_NO_SOURCE &&
+    expect(sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_NO_SOURCE,
+           "the Japanese index is absent before its test file exists");
+    expect(sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_NO_SOURCE &&
                sr_flash0_font_registry_info(&sources, 17u, &info) == SR_FONT_REGISTRY_NO_SOURCE,
-           "the Japanese and Korean indices have no file here, so they are absent too");
+           "Latin and Korean indices have no file here, so they are absent");
     expect(sr_flash0_font_registry_info(&sources, SR_FONT_REGISTRY_COUNT, &info) ==
                SR_FONT_REGISTRY_BAD_INDEX,
            "an index past the measured list does not exist");
@@ -28750,74 +29077,167 @@ static void test_flash0_font_registry_headers(const char *root) {
 
     f0t_fill_header(h, sizeof(h), 392u, 448, 448, 8192, 8192, "Fixture Font", 12u);
     expect(f0t_write_bytes(file, h, 100u) &&
-               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_TRUNCATED,
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_HEADER_TRUNCATED,
            "a file shorter than a PGF header is refused as truncated");
     f0t_fill_header(h, sizeof(h), 412u, 448, 448, 8192, 8192, "Fixture Font", 12u);
     expect(f0t_write_bytes(file, h, 392u) &&
-               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_TRUNCATED,
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_HEADER_TRUNCATED,
            "a header that declares 412 bytes in a 392-byte file is refused as truncated");
     memset(h, 0, sizeof(h));
     expect(f0t_write_bytes(file, h, 392u) &&
-               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_SHAPE,
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_HEADER_SHAPE,
            "a file with no PGF magic is refused as not a PGF header");
     f0t_fill_header(h, sizeof(h), 392u, 448, 448, 8192, 8192, "Fixture Font", 12u);
     h[0] = 1u;
     expect(f0t_write_bytes(file, h, 392u) &&
-               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_SHAPE,
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_HEADER_SHAPE,
            "a nonzero header offset is refused as not a PGF header");
     f0t_fill_header(h, sizeof(h), 400u, 448, 448, 8192, 8192, "Fixture Font", 12u);
     expect(f0t_write_bytes(file, h, 412u) &&
-               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_SHAPE,
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_HEADER_SHAPE,
            "a declared header size other than 392 or 412 is refused as not a PGF header");
 
     f0t_fill_header(h, sizeof(h), 392u, 0, 448, 8192, 8192, "Fixture Font", 12u);
     expect(f0t_write_bytes(file, h, 392u) &&
-               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_SIZES,
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_HEADER_SIZES,
            "a zero nominal horizontal size is refused, not defaulted");
     f0t_fill_header(h, sizeof(h), 392u, 448, 448, 8192, -64, "Fixture Font", 12u);
     expect(f0t_write_bytes(file, h, 392u) &&
-               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_SIZES,
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_HEADER_SIZES,
            "a negative vertical resolution is refused, not defaulted");
     f0t_fill_header(h, sizeof(h), 392u, 448, 448, 8192, 8192, "", 0u);
     expect(f0t_write_bytes(file, h, 392u) &&
-               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_NAME,
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_HEADER_NAME,
            "an empty font name is refused, not defaulted");
     f0t_fill_header(h, sizeof(h), 392u, 448, 448, 8192, 8192, "Bad\tName", 8u);
     expect(f0t_write_bytes(file, h, 392u) &&
-               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_HEADER_NAME,
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_HEADER_NAME,
            "a font name with a control character is refused");
     expect(info.source == NULL && info.h_size == 0 && info.font_name[0] == '\0',
            "a refused index leaves the info zeroed");
 
     f0t_fill_header(h, sizeof(h), 392u, 448, 456, 8192, 9216, "Fixture Font", 12u);
     expect(f0t_write_bytes(file, h, 392u) &&
-               sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_PRESENT &&
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_PRESENT &&
                info.h_size == 448 && info.v_size == 456 && info.h_resolution == 8192 &&
                info.v_resolution == 9216 && strcmp(info.font_name, "Fixture Font") == 0 &&
-               strcmp(info.source, "project") == 0 && strcmp(info.file_name, F0T_LATIN_NAME) == 0 &&
-               info.slot == NK_FONT_SLOT_LATIN,
-           "a 392-byte header yields its own sizes and name, and the served name of the Latin slot");
+               strcmp(info.source, "project") == 0 && strcmp(info.file_name, F0T_JAPANESE_NAME) == 0 &&
+               info.slot == NK_FONT_SLOT_JAPANESE,
+           "a 392-byte header yields its own sizes and name, and the served name of the Japanese slot");
     f0t_fill_header(h, sizeof(h), 412u, 448, 448, 8192, 8192, "Fixture Font", 12u);
     expect(f0t_write_bytes(file, h, 412u) &&
-               sr_flash0_font_registry_info(&sources, 9u, &info) == SR_FONT_REGISTRY_PRESENT,
+               sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_PRESENT,
            "a 412-byte header is accepted too");
     {
         char long_name[70];
         memset(long_name, 'A', sizeof(long_name));
         f0t_fill_header(h, sizeof(h), 392u, 448, 448, 8192, 8192, long_name, sizeof(long_name));
         expect(f0t_write_bytes(file, h, 392u) &&
-                   sr_flash0_font_registry_info(&sources, 1u, &info) == SR_FONT_REGISTRY_PRESENT &&
+                   sr_flash0_font_registry_info(&sources, 0u, &info) == SR_FONT_REGISTRY_PRESENT &&
                    strlen(info.font_name) == 63u,
                "a name with no NUL in its 64-byte field is cut to 63 characters");
     }
     (void)remove(file);
 }
 
+/* A production-path regression for the Latin index-to-file binding. The Python fixture writes
+ * two synthetic, validated PGFs with distinct nominal strikes to the owner cache and records
+ * both in its manifest, alongside the legacy single Latin cache file. Before indexed serving,
+ * registry indices 1 and 9 both read that one file. */
+static void test_flash0_latin_index_resolution(void) {
+    const char *root = getenv("SR_FLASH0_TEST_ROOT");
+    char user_root[SR_FLASH0_PATH_MAX];
+    char project_dir[SR_FLASH0_PATH_MAX];
+    char import_user_root[SR_FLASH0_PATH_MAX];
+    char import_source_dir[SR_FLASH0_PATH_MAX];
+    Flash0Sources sources;
+    SrFontRegistryInfo first, ninth;
+    expect(root != NULL && root[0] != '\0', "the Latin-index test receives its synthetic root");
+    if (!root || !root[0]) return;
+    memset(&sources, 0, sizeof(sources));
+    snprintf(user_root, sizeof(user_root), "%s/data", root);
+    snprintf(project_dir, sizeof(project_dir), "%s/project", root);
+    snprintf(sources.user_data_dir, sizeof(sources.user_data_dir), "%s", user_root);
+    snprintf(sources.project_dir, sizeof(sources.project_dir), "%s", project_dir);
+    expect(sr_flash0_font_registry_info(&sources, 1u, &first) == SR_FONT_REGISTRY_PRESENT,
+           "Latin registry index 1 resolves a validated synthetic strike");
+    expect(sr_flash0_font_registry_info(&sources, 9u, &ninth) == SR_FONT_REGISTRY_PRESENT,
+           "Latin registry index 9 resolves a validated synthetic strike");
+    expect(first.source && ninth.source && strcmp(first.source, "user-imported") == 0 &&
+               strcmp(ninth.source, "user-imported") == 0,
+           "both exact Latin index files come from the user cache");
+    expect(first.file_name && ninth.file_name && strcmp(first.file_name, "ltn0.pgf") == 0 &&
+               strcmp(ninth.file_name, "ltn8.pgf") == 0 && first.h_size != ninth.h_size &&
+               strcmp(first.font_name, ninth.font_name) != 0,
+           "Latin indices 1 and 9 resolve to their distinct files and strike sizes");
+
+    snprintf(import_user_root, sizeof(import_user_root), "%s/imported-data", root);
+    snprintf(import_source_dir, sizeof(import_source_dir), "%s/index-source", root);
+    NkFontImportResult imported;
+    char import_error[NK_FONT_DETAIL_MAX] = "";
+    int import_ok = nk_font_import_folder(import_user_root, import_source_dir, NULL,
+                                          &imported, import_error, sizeof(import_error));
+    expect(import_ok && imported.imported_count == 3,
+           "the native font importer caches every named synthetic Latin index independently");
+    Flash0Sources imported_sources;
+    memset(&imported_sources, 0, sizeof(imported_sources));
+    snprintf(imported_sources.user_data_dir, sizeof(imported_sources.user_data_dir), "%s",
+             import_user_root);
+    snprintf(imported_sources.project_dir, sizeof(imported_sources.project_dir), "%s", project_dir);
+    expect(sr_flash0_font_registry_info(&imported_sources, 1u, &first) == SR_FONT_REGISTRY_PRESENT &&
+               sr_flash0_font_registry_info(&imported_sources, 9u, &ninth) == SR_FONT_REGISTRY_PRESENT &&
+               first.source && ninth.source && strcmp(first.source, "user-imported") == 0 &&
+               strcmp(ninth.source, "user-imported") == 0 &&
+               strcmp(first.file_name, "ltn0.pgf") == 0 && strcmp(ninth.file_name, "ltn8.pgf") == 0 &&
+               first.h_size != ninth.h_size && strcmp(first.font_name, ninth.font_name) != 0,
+           "native import output serves its own file and strike through registry indices 1 and 9");
+
+    SrFontRegistryInfo bold, fallback;
+    expect(sr_flash0_font_registry_info(&imported_sources, 5u, &bold) == SR_FONT_REGISTRY_PRESENT &&
+               bold.source && strcmp(bold.source, "user-imported") == 0 && bold.style == 5u &&
+               !bold.served_as_regular,
+           "an exact bold Latin index reports the measured Bold style of its served file");
+    expect(sr_flash0_font_registry_info(&imported_sources, 3u, &fallback) == SR_FONT_REGISTRY_PRESENT &&
+               fallback.source && strcmp(fallback.source, "user-imported") == 0 &&
+               fallback.style == 1u && fallback.served_as_regular,
+           "a same-group fallback reports the served Regular face when it differs from requested Italic");
+
+    char legacy_user_root[SR_FLASH0_PATH_MAX];
+    char legacy_source_dir[SR_FLASH0_PATH_MAX];
+    Flash0Sources legacy_sources;
+    snprintf(legacy_user_root, sizeof(legacy_user_root), "%s/legacy-data", root);
+    snprintf(legacy_source_dir, sizeof(legacy_source_dir), "%s/legacy-source", root);
+    NkFontImportResult legacy_imported;
+    import_error[0] = '\0';
+    expect(nk_font_import_folder(legacy_user_root, legacy_source_dir, NULL,
+                                 &legacy_imported, import_error, sizeof(import_error)) &&
+               legacy_imported.imported_count == 1,
+           "a pre-index single-file Latin import remains loadable from its legacy cache");
+    memset(&legacy_sources, 0, sizeof(legacy_sources));
+    snprintf(legacy_sources.user_data_dir, sizeof(legacy_sources.user_data_dir), "%s", legacy_user_root);
+    snprintf(legacy_sources.project_dir, sizeof(legacy_sources.project_dir), "%s", project_dir);
+    expect(sr_flash0_font_registry_info(&legacy_sources, 5u, &bold) == SR_FONT_REGISTRY_PRESENT &&
+               bold.source && strcmp(bold.source, "user-imported") == 0 &&
+               strcmp(bold.font_name, "Nakagawa Shared Latin") == 0 && bold.style == 1u &&
+               bold.served_as_regular,
+           "a legacy-only cache keeps serving its old Regular Latin face before the project font");
+    snprintf(legacy_sources.project_dir, sizeof(legacy_sources.project_dir), "%s/fonts/v2", legacy_user_root);
+    char legacy_path[SR_FLASH0_PATH_MAX + 64];
+    const char *legacy_source = NULL;
+    int legacy_served_index = -3;
+    expect(sr_flash0_font_resolve_latin_index_path(&legacy_sources, 4, legacy_path,
+                                                   sizeof(legacy_path), &legacy_source,
+                                                   &legacy_served_index) &&
+               legacy_source && strcmp(legacy_source, "user-imported") == 0 &&
+               legacy_served_index == -2 && strstr(legacy_path, "nkltn.pgf") != NULL,
+           "SR_FONTDIR at a legacy-only import cache still resolves all Latin indices");
+}
+
 /* The guest-visible /DATA/FONT subtree over the synthetic roots the device test set up. Latin and
  * Japanese are served (the Latin file is the user's cache or the project's, by the case), Korean has
  * no source. */
 static void test_flash0_font_registry(const char *root, const char *served_latin, const char *other_latin,
-                                      const char *japanese) {
+                                      const char *japanese, const char *test_case) {
     static const char *const info_keys[15] = {
         "h_size", "v_size", "h_resolution", "v_resolution", "weight", "family_code", "style",
         "sub_style", "language_code", "region_code", "country_code", "font_name", "file_name",
@@ -28866,26 +29286,34 @@ static void test_flash0_font_registry(const char *root, const char *served_latin
            "INFO0 is the Japanese font: measured codes, and sizes and name from the served header");
     expect(f0t_reg_keys_are(info, info_keys, 15u), "INFO0 lists its 15 keys in order");
 
-    /* Every Latin index reads the served Latin file's header. A bold or italic index serves the regular
-     * face and says Regular; the family alternates sans (1) and serif (2) as measured. */
+    /* Every Latin index reads the served file's header. Exact indexed imports report the measured
+     * style for that index; a project fallback reports Regular. The family alternates sans (1) and
+     * serif (2) as measured. */
     {
-        int ok = 1, regular_ok = 1;
+        static const uint32_t latin_styles[16] = {
+            1u, 1u, 2u, 2u, 5u, 5u, 6u, 6u, 1u, 1u, 2u, 2u, 5u, 5u, 6u, 6u,
+        };
+        int indexed_files = strcmp(test_case, "valid") == 0 || strcmp(test_case, "tampered") == 0;
+        int ok = 1, style_ok = 1;
         for (int i = 1; i <= 16; i++) {
             char path[64];
-            e = (F0tExpectInfo){ served_latin, F0T_LATIN_NAME, 0u, (uint32_t)(((i - 1) % 2) + 1), 1u, 0u,
-                                 2u, 0u, 1u };
+            char file_name[16];
+            uint32_t expected_style = indexed_files ? latin_styles[i - 1] : 1u;
+            snprintf(file_name, sizeof(file_name), "ltn%d.pgf", i - 1);
+            e = (F0tExpectInfo){ served_latin, file_name, 0u, (uint32_t)(((i - 1) % 2) + 1),
+                                 expected_style, 0u, 2u, 0u, 1u };
             snprintf(path, sizeof(path), "/DATA/FONT/PROPERTY/INFO%d", i);
             info = sysreg_open_category(reg, path, 1u, &r);
             ok &= r == 0u && info != 0u && f0t_reg_info_is(info, &e);
-            /* Indices 3 to 8 and 11 to 16 are the measured bold and italic styles. */
-            if (((i >= 3 && i <= 8) || (i >= 11 && i <= 16)))
-                regular_ok &= f0t_reg_int_is(info, "style", 1u);
+            style_ok &= r == 0u && info != 0u && f0t_reg_int_is(info, "style", expected_style);
         }
         snprintf(msg, sizeof(msg),
                  "INFO1 to INFO16 are the Latin indices, with sizes and name from the %s file's header",
                  "served");
         expect(ok, msg);
-        expect(regular_ok, "the bold and italic Latin indices report the Regular style of the face served");
+        expect(style_ok, indexed_files
+                           ? "exact Latin imports report each measured Regular, Italic, Bold, or Bold Italic style"
+                           : "project Latin fallbacks report Regular for every Latin index");
     }
 
     /* Unknown keys stay named refusals, and an absent index finds nothing and is not created. */
@@ -28902,7 +29330,7 @@ static void test_flash0_font_registry(const char *root, const char *served_latin
     rw = sysreg_open_registry(2u, &r);
     rw_info = sysreg_open_category(rw, "/DATA/FONT/PROPERTY/INFO9", 2u, &r);
     expect(r == 0u && rw_info != 0u, "a mode-2 open of an INFO category succeeds (the write is what is refused)");
-    e = (F0tExpectInfo){ served_latin, F0T_LATIN_NAME, 0u, 1u, 1u, 0u, 2u, 0u, 1u };
+    e = (F0tExpectInfo){ served_latin, "ltn8.pgf", 0u, 1u, 1u, 0u, 2u, 0u, 1u };
     expect(sysreg_set_int(rw_info, "h_size", 4242u) == SYSREG_E_ACCES,
            "sceRegSetKeyValue on an INT key of /DATA/FONT is refused with EACCES");
     expect(sysreg_set(rw_info, "font_name", "x", 2u) == SYSREG_E_ACCES,
@@ -29184,7 +29612,12 @@ static void test_flash0_font_device(void) {
         cpu.r[4] = F0T_PATH_ADDR;
         uint32_t dir = sr_hle_test_io_dopen(&cpu);
         expect(dir >= 3u && dir < 64u, "flash0:/font opens as a directory descriptor");
-        char names[3][64];
+        static const char *const expected_names[18] = {
+            "ltn0.pgf", "ltn1.pgf", "ltn10.pgf", "ltn11.pgf", "ltn12.pgf", "ltn13.pgf",
+            "ltn14.pgf", "ltn15.pgf", "ltn2.pgf", "ltn3.pgf", "ltn4.pgf", "ltn5.pgf",
+            "ltn6.pgf", "ltn7.pgf", "ltn8.pgf", "ltn9.pgf", F0T_JAPANESE_NAME, F0T_LATIN_NAME,
+        };
+        char names[18][64];
         int count = 0;
         for (;;) {
             CpuState rd;
@@ -29192,7 +29625,7 @@ static void test_flash0_font_device(void) {
             rd.r[4] = dir;
             rd.r[5] = F0T_DIRENT_ADDR;
             uint32_t got = sr_hle_test_io_dread(&rd);
-            if (got == 0u || count >= 3) break;
+            if (got == 0u || count >= 18) break;
             size_t n = 0;
             while (n + 1u < sizeof(names[count]) &&
                    MEM_R8(F0T_DIRENT_ADDR + 0x58u + (uint32_t)n) != 0u) {
@@ -29202,9 +29635,10 @@ static void test_flash0_font_device(void) {
             names[count][n] = '\0';
             count++;
         }
-        expect(count == 2 && strcmp(names[0], F0T_JAPANESE_NAME) == 0 &&
-                   strcmp(names[1], F0T_LATIN_NAME) == 0,
-               "the listing has the two served slots in name order (pending and sourceless slots omitted)");
+        int list_ok = count == 18;
+        for (int i = 0; list_ok && i < 18; i++) list_ok = strcmp(names[i], expected_names[i]) == 0;
+        expect(list_ok,
+               "the listing includes all served Latin indices and the existing Japanese and Latin aliases in name order");
         CpuState cl;
         memset(&cl, 0, sizeof(cl));
         cl.r[4] = dir;
@@ -29221,8 +29655,12 @@ static void test_flash0_font_device(void) {
 
     /* The registry view: the guest's own font library reads the font list from /DATA/FONT. Latin and
      * Japanese are served here and Korean has no source. */
-    test_flash0_font_registry(root, served_latin_bytes,
-                              user_refused ? user_bytes : project_latin_bytes, project_japanese_bytes);
+    const char *registry_latin_bytes =
+        (strcmp(test_case, "missing-manifest") == 0 || strcmp(test_case, "malformed-manifest") == 0 ||
+         strcmp(test_case, "unlisted") == 0) ? project_latin_bytes : user_bytes;
+    test_flash0_font_registry(root, registry_latin_bytes,
+                              registry_latin_bytes == user_bytes ? project_latin_bytes : user_bytes,
+                              project_japanese_bytes, test_case);
 
     /* SR_USER_DATA_ROOT names the per-user data directory the launcher resolved; the device reads the
      * user-imported cache from there, not from NK_PATH_DATA. Here the process's per-user directory is
@@ -29631,6 +30069,235 @@ static void test_vtimer_refusals_are_named(void) {
            "CancelVTimerHandler returns the named refusal");
 }
 
+#ifdef SR_HLE_AOT_BOUNDARY_TEST
+/* This is the same wrapper emitted by emit_checked_body_call: set the linked
+ * resume address, establish its explicit return boundary, call the native body,
+ * drain any direct tail, and stop before the caller continuation on a mismatch. */
+#define AOT_THREAD_TEST_CHECKED_CALL(s, body, call_pc) do { \
+    const uint32_t aot_call_pc_ = (call_pc); \
+    const uint32_t aot_resume_pc_ = aot_call_pc_ + 8u; \
+    (s)->pc = aot_call_pc_; \
+    (s)->r[31] = aot_resume_pc_; \
+    if (sr_aot_return_boundary_begin((s), aot_resume_pc_, aot_call_pc_, 1u)) return; \
+    (body)((s)); \
+    if (sr_tail_transfer.pending) sr_tail_drain((s)); \
+    if (sr_aot_return_boundary_end((s))) return; \
+} while (0)
+
+enum {
+    AOT_THREAD_TEST_ENTRY_LAUNCHER = 0x088a0000u,
+    AOT_THREAD_TEST_ENTRY_A = 0x088a0100u,
+    AOT_THREAD_TEST_ENTRY_B = 0x088a0200u,
+    AOT_THREAD_TEST_SEMA_A_NAME = 0x00250b00u,
+    AOT_THREAD_TEST_SEMA_B_NAME = 0x00250b40u,
+    AOT_THREAD_TEST_ID_A = 0xaaaau,
+    AOT_THREAD_TEST_ID_B = 0xbbbbu,
+};
+
+static uint32_t s_aot_thread_test_sema[2];
+static uint32_t s_aot_thread_test_uid[2];
+static unsigned s_aot_thread_test_threads_created;
+static unsigned s_aot_thread_test_entry_count;
+static unsigned s_aot_thread_test_resume_count;
+static unsigned s_aot_thread_test_completed[2];
+static unsigned s_aot_thread_test_fatal[2];
+static int s_aot_thread_test_entry_order[2];
+static int s_aot_thread_test_resume_order[2];
+static uint32_t s_aot_thread_test_wait_result[2];
+
+static unsigned aot_thread_test_index(const CpuState *s) {
+    return s->r[16] == AOT_THREAD_TEST_ID_B ? 1u : 0u;
+}
+
+static void aot_thread_test_leaf(CpuState *s) {
+    const unsigned index = aot_thread_test_index(s);
+    if (s_aot_thread_test_entry_count < 2u)
+        s_aot_thread_test_entry_order[s_aot_thread_test_entry_count++] = (int)index;
+
+    s->r[4] = s_aot_thread_test_sema[index];
+    s->r[5] = 1u;
+    s->r[6] = 0u;
+    s_aot_thread_test_wait_result[index] = sr_syscall(s, NID_CNW_WAIT_SEMA);
+    if (s_aot_thread_test_resume_count < 2u)
+        s_aot_thread_test_resume_order[s_aot_thread_test_resume_count++] = (int)index;
+
+    /* Generated jr $ra capture. On the buggy shared stack, A writes this into
+     * B's still-live inner boundary before A's emit_checked_body_call returns. */
+    SR_AOT_RETURN_CAPTURE(s, s->r[31]);
+}
+
+static void aot_thread_test_a_inner(CpuState *s) {
+    const uint32_t caller_ra = s->r[31];
+    AOT_THREAD_TEST_CHECKED_CALL(s, aot_thread_test_leaf, 0x088a1200u);
+    s->r[31] = caller_ra; /* generated guest save/restore of the outer $ra */
+    SR_AOT_RETURN_CAPTURE(s, s->r[31]);
+}
+
+static void aot_thread_test_b_inner(CpuState *s) {
+    const uint32_t caller_ra = s->r[31];
+    AOT_THREAD_TEST_CHECKED_CALL(s, aot_thread_test_leaf, 0x088a2200u);
+    s->r[31] = caller_ra; /* generated guest save/restore of the outer $ra */
+    SR_AOT_RETURN_CAPTURE(s, s->r[31]);
+}
+
+static void aot_thread_test_a(CpuState *s) {
+    const uint32_t caller_ra = s->r[31];
+    s->r[16] = AOT_THREAD_TEST_ID_A;
+    AOT_THREAD_TEST_CHECKED_CALL(s, aot_thread_test_a_inner, 0x088a1100u);
+    s->r[31] = caller_ra;
+    SR_AOT_RETURN_CAPTURE(s, s->r[31]);
+    s_aot_thread_test_fatal[0] = s->flow_kind == SR_FLOW_FATAL;
+    s_aot_thread_test_completed[0]++;
+}
+
+static void aot_thread_test_b(CpuState *s) {
+    const uint32_t caller_ra = s->r[31];
+    s->r[16] = AOT_THREAD_TEST_ID_B;
+    AOT_THREAD_TEST_CHECKED_CALL(s, aot_thread_test_b_inner, 0x088a2100u);
+    s->r[31] = caller_ra;
+    SR_AOT_RETURN_CAPTURE(s, s->r[31]);
+    s_aot_thread_test_fatal[1] = s->flow_kind == SR_FLOW_FATAL;
+    s_aot_thread_test_completed[1]++;
+}
+
+static void aot_thread_test_launcher(CpuState *s) {
+    (void)s;
+    if (s_aot_thread_test_threads_created) return;
+    s_aot_thread_test_uid[0] = sched_create_thread(AOT_THREAD_TEST_ENTRY_A, 40, 0x4000u);
+    s_aot_thread_test_uid[1] = sched_create_thread(AOT_THREAD_TEST_ENTRY_B, 41, 0x4000u);
+    if (s_aot_thread_test_uid[0] && s_aot_thread_test_uid[1] &&
+        sched_start_thread(s_aot_thread_test_uid[0], 0u, 0u) == 0u &&
+        sched_start_thread(s_aot_thread_test_uid[1], 0u, 0u) == 0u)
+        s_aot_thread_test_threads_created = 1u;
+}
+
+static uint32_t aot_thread_test_create_sema(CpuState *s, uint32_t name_addr,
+                                             const char *name) {
+    title_hle_write_cstr(name_addr, name);
+    s->r[4] = name_addr;
+    s->r[5] = 0u;
+    s->r[6] = 0u;
+    s->r[7] = 1u;
+    return sr_syscall(s, NID_CNW_CREATE_SEMA);
+}
+
+static void aot_thread_test_scope_pop_body(CpuState *s) {
+    /* The first end consumes this synthetic callback's own sr_call_body
+     * boundary. The second must stop at the scope floor before touching the
+     * interrupted caller's boundary. */
+    (void)sr_aot_return_boundary_end(s);
+    (void)sr_aot_return_boundary_end(s);
+}
+
+static void test_aot_return_boundary_callback_and_interrupt_scopes(void) {
+    enum { ENTRY = 0x08afe000u };
+    CpuState cpu = {0};
+    uint32_t fatal_target = 0u;
+    sr_aot_return_boundaries_reset();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(ENTRY, aot_thread_test_scope_pop_body);
+
+    expect(sr_aot_return_boundary_begin(&cpu, 0u, 0x088ac000u, 0u) == 0,
+           "AOT boundary scopes: interrupted callback caller boundary begins");
+    SrAotReturnBoundary *parent = sr_aot_return_boundary_top;
+    (void)sr_callback_dispatch_one(&cpu, ENTRY, 1, 0x11u, 0x22u, dispatch);
+    expect(sr_aot_return_boundary_top == parent && cpu.flow_kind == SR_FLOW_FATAL,
+           "AOT boundary scopes: PSP callback cannot pop the interrupted caller frame");
+    (void)sr_aot_return_boundary_end(&cpu);
+
+    sr_aot_return_boundaries_reset();
+    memset(&cpu, 0, sizeof cpu);
+    expect(sr_aot_return_boundary_begin(&cpu, 0u, 0x088ac100u, 0u) == 0,
+           "AOT boundary scopes: interrupted interrupt caller boundary begins");
+    parent = sr_aot_return_boundary_top;
+    int interrupt_failed = sched_dispatch_interrupt_guest(
+        &cpu, ENTRY, "AOT boundary scope test interrupt", &fatal_target);
+    expect(interrupt_failed && fatal_target == cpu.flow_target &&
+               sr_aot_return_boundary_top == parent && cpu.flow_kind == SR_FLOW_FATAL,
+           "AOT boundary scopes: interrupt handler cannot pop the interrupted caller frame");
+    (void)sr_aot_return_boundary_end(&cpu);
+    sr_aot_return_boundaries_reset();
+    sr_test_guest_fn_reset();
+}
+
+static void test_aot_return_boundary_thread_isolation(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    s_aot_thread_test_sema[0] = 0u;
+    s_aot_thread_test_sema[1] = 0u;
+    s_aot_thread_test_uid[0] = 0u;
+    s_aot_thread_test_uid[1] = 0u;
+    s_aot_thread_test_threads_created = 0u;
+    s_aot_thread_test_entry_count = 0u;
+    s_aot_thread_test_resume_count = 0u;
+    memset(s_aot_thread_test_completed, 0, sizeof s_aot_thread_test_completed);
+    memset(s_aot_thread_test_fatal, 0, sizeof s_aot_thread_test_fatal);
+    memset(s_aot_thread_test_wait_result, 0xff, sizeof s_aot_thread_test_wait_result);
+    s_aot_thread_test_entry_order[0] = s_aot_thread_test_entry_order[1] = -1;
+    s_aot_thread_test_resume_order[0] = s_aot_thread_test_resume_order[1] = -1;
+
+    s_aot_thread_test_sema[0] = aot_thread_test_create_sema(
+        s_cpu, AOT_THREAD_TEST_SEMA_A_NAME, "aot-boundary-a");
+    s_aot_thread_test_sema[1] = aot_thread_test_create_sema(
+        s_cpu, AOT_THREAD_TEST_SEMA_B_NAME, "aot-boundary-b");
+    expect(s_aot_thread_test_sema[0] != 0u && s_aot_thread_test_sema[1] != 0u,
+           "AOT boundary isolation: both real ThreadMan semaphores are created");
+    if (!s_aot_thread_test_sema[0] || !s_aot_thread_test_sema[1]) return;
+
+    sr_test_register_guest_fn(AOT_THREAD_TEST_ENTRY_LAUNCHER, aot_thread_test_launcher);
+    sr_test_register_guest_fn(AOT_THREAD_TEST_ENTRY_A, aot_thread_test_a);
+    sr_test_register_guest_fn(AOT_THREAD_TEST_ENTRY_B, aot_thread_test_b);
+
+    /* Real sched_run fibers enter sr_call_body, and each worker reaches the
+     * production sceKernelWaitSema handler through sr_syscall. Both block before
+     * the scheduler returns to this test. */
+    s_cpu->r[4] = 0u;
+    s_cpu->r[5] = 0u;
+    sched_run(AOT_THREAD_TEST_ENTRY_LAUNCHER, 0u, 0u);
+    TCB *a = tcb_by_uid(s_aot_thread_test_uid[0]);
+    TCB *b = tcb_by_uid(s_aot_thread_test_uid[1]);
+    expect(s_aot_thread_test_threads_created && s_aot_thread_test_entry_count == 2u &&
+               s_aot_thread_test_entry_order[0] == 0 && s_aot_thread_test_entry_order[1] == 1,
+           "AOT boundary isolation: thread A then B both entered the real blocking wait");
+    expect(a && b && a->state == TH_WAIT_OBJ && b->state == TH_WAIT_OBJ &&
+               a->wait_obj == s_aot_thread_test_sema[0] &&
+               b->wait_obj == s_aot_thread_test_sema[1],
+           "AOT boundary isolation: both guest fibers parked on their own HLE semaphore");
+
+    s_cpu->r[4] = s_aot_thread_test_sema[0];
+    s_cpu->r[5] = 1u;
+    expect(sr_syscall(s_cpu, NID_WSV_SIGNAL_SEMA) == 0u,
+           "AOT boundary isolation: the scheduler signals A's production semaphore");
+    s_cpu->r[4] = s_aot_thread_test_sema[1];
+    s_cpu->r[5] = 1u;
+    expect(sr_syscall(s_cpu, NID_WSV_SIGNAL_SEMA) == 0u,
+           "AOT boundary isolation: the scheduler signals B's production semaphore");
+
+    /* The second real scheduler pass resumes A before B while B's newer nested
+     * frames are still suspended. Distinct direct-call PCs make a cross-thread
+     * capture fail with AOT_RETURN_TARGET_MISMATCH on the old global stack. */
+    s_cpu->r[4] = 0u;
+    s_cpu->r[5] = 0u;
+    sched_run(AOT_THREAD_TEST_ENTRY_LAUNCHER, 0u, 0u);
+    expect(s_aot_thread_test_resume_count == 2u &&
+               s_aot_thread_test_resume_order[0] == 0 && s_aot_thread_test_resume_order[1] == 1,
+           "AOT boundary isolation: A resumes before B, opposite the live frame-stack order");
+    expect(s_aot_thread_test_wait_result[0] == 0u && s_aot_thread_test_wait_result[1] == 0u,
+           "AOT boundary isolation: both real HLE waits return successfully");
+    expect(s_aot_thread_test_completed[0] == 1u && s_aot_thread_test_completed[1] == 1u &&
+               !s_aot_thread_test_fatal[0] && !s_aot_thread_test_fatal[1],
+           "AOT boundary isolation: both nested AOT call chains return without fatal flow");
+    expect(sr_aot_return_boundary_top == NULL,
+           "AOT boundary isolation: scheduler returns with its own boundary base restored");
+    sr_aot_return_boundaries_reset();
+    sr_test_guest_fn_reset();
+    test_aot_return_boundary_callback_and_interrupt_scopes();
+}
+
+#undef AOT_THREAD_TEST_CHECKED_CALL
+#endif /* SR_HLE_AOT_BOUNDARY_TEST */
+
 int main(int argc, char **argv) {
     if (argc > 1 && (strcmp(argv[1], "--psp-oracle") == 0 ||
                      strcmp(argv[1], "--exit-game-poisoned") == 0))
@@ -29699,9 +30366,26 @@ static int hle_selftest_main(int argc, char **argv) {
         return s_failures ? 1 : 0;
     }
 
+#ifdef SR_HLE_AOT_BOUNDARY_TEST
+    if (argc > 1 && strcmp(argv[1], "--aot-return-boundary") == 0) {
+        test_aot_return_boundary_thread_isolation();
+        fprintf(stderr, "aot-return-boundary-selftest: %d checks, %d failures\n",
+                s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+#endif
+
     if (argc > 1 && strcmp(argv[1], "--flash0-font") == 0) {
         test_flash0_font_device();
         fprintf(stderr, "flash0-font: %d checks, %d failures\n", s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+
+    if (argc > 1 && strcmp(argv[1], "--flash0-font-index") == 0) {
+        test_flash0_latin_index_resolution();
+        fprintf(stderr, "flash0-font-index: %d checks, %d failures\n", s_checks, s_failures);
         free(g_mem_base);
         return s_failures ? 1 : 0;
     }
@@ -29742,6 +30426,9 @@ static int hle_selftest_main(int argc, char **argv) {
         return s_failures ? 1 : 0;
     }
 
+#ifdef SR_HLE_AOT_BOUNDARY_TEST
+    test_aot_return_boundary_thread_isolation();
+#endif
     test_prx_export_relocation_behavior();
     test_fd_namespace();
     test_umd_io_console_model();
@@ -29765,6 +30452,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_kernel_import_sweep_ge_head();
     test_ge_break_continue();
     test_volatile_mem_output_preflight();
+    test_osk_update_and_shutdown_init_states();
     test_osk_scripted_answer();
     test_osk_overlay_through_hle_scripted_pad();
     test_osk_overlay_closing_press_stays_with_keyboard();
@@ -29936,6 +30624,9 @@ static int hle_selftest_main(int argc, char **argv) {
     test_late_prx_unload_reload_lifecycle();
     test_host_skipped_start_stop_unload_reload();
     test_late_prx_duplicate_base_last_reference();
+    test_volatile_mem_unlock_states();
+    test_late_prx_unload_keeps_module_owned_objects();
+    test_power_unregister_callback_slots();
     test_psmf_rejected_stream_names_the_boundary();
     test_psmf_start_reads_init_pts_from_the_third_argument();
     test_flight_recorder_trace();
@@ -29978,3 +30669,51 @@ static int hle_selftest_main(int argc, char **argv) {
     free(g_mem_base);
     return s_failures ? 1 : 0;
 }
+
+#ifdef SR_HLE_AOT_BOUNDARY_TEST
+/* Link the production AOT return-boundary implementation into this scheduler +
+ * production-HLE harness. The harness intentionally keeps its synthetic lookup
+ * and dispatch adapters for the rest of the HLE suite; rename recomp.c's unused
+ * dispatcher exports here while leaving sr_aot_return_boundary_* unmodified. */
+void sr_recomp_test_unused_dispatch_tail_step(CpuState *s, uint32_t target);
+void sr_recomp_test_unused_profile_dump(void);
+void sr_recomp_test_unused_profile_block(uint32_t target_pc);
+void sr_recomp_test_unused_oor(uint32_t addr, uint32_t value, int store);
+void sr_recomp_test_unused_heap_note_write(uint32_t addr, uint32_t width,
+                                           uint32_t value, uint32_t pc);
+void sr_recomp_test_unused_heap_note_bulk_write(uint32_t addr, uint32_t width,
+                                                uint32_t pc);
+uint32_t sr_recomp_test_unused_newlib_malloc(uint32_t size, uint32_t guest_ra);
+void sr_recomp_test_unused_trace_close(void);
+#define sr_lookup sr_recomp_test_unused_lookup
+#define dispatch sr_recomp_test_unused_dispatch
+#define dispatch_call sr_recomp_test_unused_dispatch_call
+#define dispatch_call_try sr_recomp_test_unused_dispatch_call_try
+#define dispatch_tail_step sr_recomp_test_unused_dispatch_tail_step
+#define sr_profile_dump sr_recomp_test_unused_profile_dump
+#define sr_profile_block sr_recomp_test_unused_profile_block
+#define sr_oor sr_recomp_test_unused_oor
+#define sr_heap_note_write sr_recomp_test_unused_heap_note_write
+#define sr_heap_note_bulk_write sr_recomp_test_unused_heap_note_bulk_write
+#define sr_newlib_malloc sr_recomp_test_unused_newlib_malloc
+#define sr_loaded_end sr_recomp_test_unused_loaded_end
+#define g_hle_depth sr_recomp_test_unused_hle_depth
+#define g_hle_jmp sr_recomp_test_unused_hle_jmp
+#define sr_trace_close sr_recomp_test_unused_trace_close
+#include "recomp.c"
+#undef sr_trace_close
+#undef g_hle_jmp
+#undef g_hle_depth
+#undef sr_loaded_end
+#undef sr_newlib_malloc
+#undef sr_heap_note_bulk_write
+#undef sr_heap_note_write
+#undef sr_oor
+#undef sr_profile_block
+#undef sr_profile_dump
+#undef dispatch_tail_step
+#undef dispatch_call_try
+#undef dispatch_call
+#undef dispatch
+#undef sr_lookup
+#endif /* SR_HLE_AOT_BOUNDARY_TEST */

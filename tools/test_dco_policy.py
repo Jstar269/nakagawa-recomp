@@ -141,7 +141,8 @@ class TestGovernanceSurfaces(unittest.TestCase):
             "destructive history rewriting, shared-branch force-push, or deleting another agent's work;",
             "repository security/settings changes unless the mission names the exact setting;",
             "firmware, flash, NAND, or idStorage writes, and any other action that can permanently alter or damage a device;",
-            "disclosing private inputs, routes, saves, captures, traces, keys, paths, or derived bytes.",
+            "disclosing private inputs, routes, saves, captures, traces, keys, paths, or derived bytes, "
+            "except the presentation screenshots Section 5 allows.",
         )
         for rule in hard_stops:
             with self.subTest(hard_stop=rule):

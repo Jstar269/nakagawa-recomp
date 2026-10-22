@@ -616,6 +616,40 @@
       "comment": "Font provenance and redistribution terms remain unresolved; the evidence packet is kept private with the optional binaries."
     },
     {
+      "id": "readme-nakagawa-mark-light",
+      "name": "README brand mark: dark ink for light themes",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "docs/images/brand/nakagawa-mark-light.svg",
+      "license": "GPL-3.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "44f7f854397240fb266d50248fca6d7b6e7892a606cc6723838adb1d3267d59a"
+      },
+      "comment": "Project-authored N1 Block & Branch artwork for light page themes."
+    },
+    {
+      "id": "readme-nakagawa-mark-dark",
+      "name": "README brand mark: light ink for dark themes",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "docs/images/brand/nakagawa-mark-dark.svg",
+      "license": "GPL-3.0-or-later",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "bf3222761674dda813fb9fe3044159f7bc70050175168932ff4548e9b1391f36"
+      },
+      "comment": "Project-authored N1 Block & Branch artwork for dark page themes."
+    },
+    {
       "id": "readme-showcase-ge-scene-v120",
       "name": "README screenshot: GE scene demo at vblank 120",
       "type": "asset",
@@ -753,6 +787,23 @@
         "sha256": "2f294ad496432b1608f070d310e3aa2adcf1de4af429f4901df97ec4bd361ed1"
       },
       "comment": "Retrieved from google/fonts ofl/mplus1p/MPLUS1p-Regular.ttf at d714b17ce2379f06daf6295617f961df605dccb5; byte-identical pinned source for the build-time project Japanese PGF at font index 0. Shipped beside its OFL license text."
+    },
+    {
+      "id": "readme-hst-title-screen",
+      "name": "README presentation screenshot: Hot Shots Tennis title screen",
+      "type": "asset",
+      "relationship": "CONTAINS",
+      "presence": "required",
+      "source_path": "docs/media/hst-title-screen.png",
+      "license": "NOASSERTION",
+      "notice_path": "NOTICE.md",
+      "disposition": "approved_binary",
+      "public_scope_included": true,
+      "optional": false,
+      "hashes": {
+        "sha256": "18f1317bc35cb5403fdcff6efefe8e125dfa6ca1e4b316500140b9e353a8e58f"
+      },
+      "comment": "Presentation capture of Hot Shots Tennis: Get a Grip running in Nakagawa Recomp. The game belongs to its publisher; not licensed under this repository. Admitted under the maintainer authorization of 2026-10-21."
     }
   ]
 }

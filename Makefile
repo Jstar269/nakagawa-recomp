@@ -946,6 +946,7 @@ PUBLIC_TARGETS := \
 	gui-present-selftest \
 	coro-selftest \
 	hle-thread-selftest \
+	aot-return-boundary-thread-selftest \
 	hle-thread-selftest-build \
 	hle-title-selftest \
 	hle-title-selftest-one \
@@ -1072,6 +1073,7 @@ HELP_DESCRIPTION_profiler-selftest := run the profiler selftest
 HELP_DESCRIPTION_gui-present-selftest := run the host present pacing selftest
 HELP_DESCRIPTION_coro-selftest := run the coroutine selftest
 HELP_DESCRIPTION_hle-thread-selftest := build and run the HLE thread selftest
+HELP_DESCRIPTION_aot-return-boundary-thread-selftest := run the real recomp/scheduler thread-boundary regression
 HELP_DESCRIPTION_hle-thread-selftest-build := build the HLE thread selftest only
 HELP_DESCRIPTION_hle-title-selftest := run title-configured HLE selftests
 HELP_DESCRIPTION_hle-title-selftest-one := run one title-configured HLE selftest
@@ -2339,6 +2341,9 @@ native-core-tests: ge-raster-ref-selftest
 # The selftest's scratch tree is the caller's BUILD_ROOT (src/rt/hle_thread_selftest.c,
 # SR_SELFTEST_BUILD_ROOT), so a run from a scratch root never writes the checkout's build/.
 HLE_SELFTEST_DEFINES := -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST -DSR_SCHED_LIVENESS_TEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\"
+HLE_AOT_BOUNDARY_SELFTEST ?= 0
+HLE_AOT_BOUNDARY_DEFINE := $(if $(filter 1,$(HLE_AOT_BOUNDARY_SELFTEST)),-DSR_HLE_AOT_BOUNDARY_TEST,)
+HLE_THREAD_SELFTEST_SOURCE ?= src/rt/hle_thread_selftest.c
 # hle.c includes atrac3p_bridge.h and calls into the PR-B decode bridge, so any
 # target that compiles it needs the same include paths and bridge/decoder
 # sources the $(BUILD_DIR)/hle.o rule and `compile` already use. Without the
@@ -2426,18 +2431,22 @@ audio-resampler-bench:
 
 # -Wno-unused-function: unused static helpers, mostly src/rt/hle.c; 75 warnings without it (#735 item 9).
 hle-thread-selftest-build: $(RT_GE_O) $(GENERIC_TITLE_CONFIG_HEADER) src/rt/nested_frames.c src/rt/nested_frames.h src/rt/stale_code.c src/rt/stale_code.h src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/audio_resample.c src/rt/audio_resample.h
-	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST -DSR_SCHED_LIVENESS_TEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+	$(CC) $(CFLAGS) -I$(GENERIC_TITLE_CONFIG_DIR) -DSR_HLE_THREAD_SELFTEST -DSR_CORO_LIFECYCLE_TEST -DSR_SCHED_LIVENESS_TEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(HLE_AOT_BOUNDARY_DEFINE) \
 		$(HLE_INCLUDES) \
 		-ffunction-sections -fdata-sections \
 		-fno-asynchronous-unwind-tables -fno-unwind-tables -Wno-unused-function \
 		$(LDFLAGS) -Wl,--gc-sections -Wl,--no-insert-timestamp -o $(BUILD_DIR)/hle_thread_selftest.exe \
-		src/rt/hle_thread_selftest.c src/rt/hle.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
+		$(HLE_THREAD_SELFTEST_SOURCE) src/rt/hle.c src/rt/audio_resample.c src/rt/osk_overlay.c src/rt/flash0_font.c src/rt/pgf_public.c src/rt/guest_printf.c src/rt/archive_vfs.c src/core/nk_xb.c src/core/nk_json.c src/core/nk_font.c $(PLAYER_PLAT_SOURCES) src/rt/hle_power.c src/rt/prx_loader.c src/rt/flight_recorder.c src/rt/nested_frames.c src/rt/stale_code.c src/rt/guest_interp.c src/rt/cpu_lle.c src/rt/sr_coro.c src/rt/title_config.c src/rt/psmf_producer.c src/rt/savedata.c $(PGD_BACKEND_SRC) \
 		src/rt/atrac3p_bridge.c $(ATRAC3P_SRCS) src/rt/vfpu_tables.c \
 		src/rt/h264_mf.c src/rt/h264_null.c src/rt/h264_ffmpeg.c \
 		src/rt/fbcap_policy.c $(RT_GE_O) src/rt/ge_capture.c $(LIBS)
 
 hle-thread-selftest: hle-thread-selftest-build
 	$(BUILD_DIR)/hle_thread_selftest.exe
+
+aot-return-boundary-thread-selftest:
+	$(MAKE) --no-print-directory hle-thread-selftest-build HLE_AOT_BOUNDARY_SELFTEST=1
+	$(BUILD_DIR)/hle_thread_selftest.exe --aot-return-boundary
 
 # hle-title-selftest — run the same production-HLE executable against the generic
 # profile and both public fixture profiles. The optional configured profile is
@@ -2883,7 +2892,7 @@ $(CC) $(NC_CFLAGS_PLAYER) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_P
 endef
 
 define PACKAGE_BUILDER_TEST_BIN_CMD
-$(CC) $(NC_CFLAGS_PLAYER) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_PLAYER) src/player/package_builder.c \
+$(CC) $(NC_CFLAGS_PLAYER) -DNK_PLAYER_UI_REGRESSION_TEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_PLAYER) src/player/package_builder.c \
 	tests/native/native_test_isolation.c tests/native/test_package_builder.c $(PLAYER_EXTRA_LIBS) -o $(BUILD_ROOT)/test_package_builder$(EXE_EXT)
 endef
 

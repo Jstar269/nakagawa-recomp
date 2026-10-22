@@ -922,11 +922,11 @@ int player_app_focus_count(const PlayerApp *app) {
         case VIEW_PREPARING:
             return 1;
         case VIEW_SETTINGS:
-            /* Resolution (3) + presentation pacing (2) + game display toggles (3: vsync,
-             * fullscreen, reduce-motion) + launcher fullscreen (1) + volume stepper (2) +
+            /* Resolution (3) + presentation pacing (2) + game display toggles (4: vsync,
+             * fullscreen, scaling, reduce-motion) + launcher fullscreen (1) + volume stepper (2) +
              * controller settings (1) + notices and remove-tools controls (2) + close (1),
              * in draw order. The 8x preset is not offered (GPU scale caps at 4x). */
-            return 15;
+            return 16;
         case VIEW_CONTROLLER_SETTINGS:
             if (input_settings_is_calibrating(&app->input_settings)) {
                 switch (input_settings_get_calibration_stage(&app->input_settings)) {
@@ -991,6 +991,7 @@ void player_app_move_focus(PlayerApp *app, int delta, int focus_count) {
 void player_app_settings_init_default(PlayerSettings *settings) {
     if (!settings) return;
     settings->resolution_scale = 1; /* native 480x272: the verified path; upscaling is opt-in */
+    settings->present_scaling = NK_PRESENT_SCALING_SHARP;
     settings->fullscreen = false;
     settings->launcher_fullscreen = false;
     settings->vsync = true;
@@ -1016,6 +1017,14 @@ static bool resolution_scale_valid(int scale) {
 
 static bool fps_cap_valid(int cap) {
     return cap == -1 || cap == 0;
+}
+
+/* Persisted by name, so the file reads plainly and a renumbering cannot change a choice. */
+static const char *const kPresentScalingNames[] = { "sharp", "integer", "bilinear" };
+
+static bool present_scaling_valid(int scaling) {
+    return scaling == NK_PRESENT_SCALING_SHARP || scaling == NK_PRESENT_SCALING_INTEGER ||
+           scaling == NK_PRESENT_SCALING_BILINEAR;
 }
 
 NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
@@ -1116,6 +1125,12 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
     int64_t scale_val = 0;
     if (scale_node && nk_json_get_int64(scale_node, &scale_val) && resolution_scale_valid((int)scale_val)) {
         app->settings.resolution_scale = (int)scale_val;
+    }
+
+    NkJsonNode *scaling_node = nk_json_obj_get(root, "present_scaling");
+    const char *scaling_name = scaling_node ? nk_json_get_string(scaling_node) : NULL;
+    for (int i = 0; scaling_name && i < 3; i++) {
+        if (strcmp(scaling_name, kPresentScalingNames[i]) == 0) app->settings.present_scaling = i;
     }
 
     NkJsonNode *fps_node = nk_json_obj_get(root, "fps_cap");
@@ -1251,6 +1266,9 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "{\n");
     fprintf(f, "  \"schema_version\": %d,\n", NK_PLAYER_SETTINGS_SCHEMA_VERSION);
     fprintf(f, "  \"resolution_scale\": %d,\n", app->settings.resolution_scale);
+    fprintf(f, "  \"present_scaling\": \"%s\",\n",
+            kPresentScalingNames[present_scaling_valid(app->settings.present_scaling)
+                                 ? app->settings.present_scaling : NK_PRESENT_SCALING_SHARP]);
     fprintf(f, "  \"fps_cap\": %d,\n", app->settings.fps_cap);
     fprintf(f, "  \"vsync\": %s,\n", app->settings.vsync ? "true" : "false");
     fprintf(f, "  \"fullscreen\": %s,\n", app->settings.fullscreen ? "true" : "false");
@@ -1343,6 +1361,28 @@ void player_app_cycle_resolution_scale(PlayerApp *app, int direction) {
     }
     app->settings.resolution_scale = kOrder[at];
     maybe_persist_settings(app);
+}
+
+void player_app_set_present_scaling(PlayerApp *app, int scaling) {
+    if (!app || !present_scaling_valid(scaling)) return;
+    app->settings.present_scaling = scaling;
+    maybe_persist_settings(app);
+}
+
+void player_app_cycle_present_scaling(PlayerApp *app, int direction) {
+    if (!app) return;
+    int current = present_scaling_valid(app->settings.present_scaling)
+        ? app->settings.present_scaling : NK_PRESENT_SCALING_SHARP;
+    app->settings.present_scaling = (current + (direction < 0 ? 2 : 1)) % 3;
+    maybe_persist_settings(app);
+}
+
+const char *player_present_scaling_label(int scaling) {
+    switch (scaling) {
+        case NK_PRESENT_SCALING_INTEGER: return "Integer";
+        case NK_PRESENT_SCALING_BILINEAR: return "Bilinear";
+        default: return "Sharp";
+    }
 }
 
 void player_app_set_fps_cap(PlayerApp *app, int cap) {
@@ -1844,6 +1884,10 @@ bool player_app_launch_game(PlayerApp *app, int game_index) {
     /* Apply user settings via typed runtime configuration */
     player_app_apply_settings_to_session(&app->settings, &app->launch_session.config);
     player_app_apply_input_profile_to_session(app, game);
+    app->launch_session.config.headless_accept_presented_frames =
+        app->headless_accept_presented_frames;
+    app->launch_session.config.gui_mode = !app->launch_headless ||
+        app->headless_accept_presented_frames > 0u;
     if (app->boot_event_file_path[0]) {
         snprintf(app->launch_session.boot_event_file_path,
                  sizeof(app->launch_session.boot_event_file_path), "%s",
@@ -2031,6 +2075,7 @@ void player_app_apply_settings_to_session(const PlayerSettings *settings,
                                           NkRuntimeConfig *config) {
     if (!settings || !config) return;
     config->resolution_scale = settings->resolution_scale;
+    config->present_scaling = settings->present_scaling;
     config->fps_cap = settings->fps_cap;
     config->vsync = settings->vsync;
     config->fullscreen = settings->fullscreen;
@@ -3387,8 +3432,10 @@ static void player_font_append(char *out, size_t out_len, const char *text) {
 
 void player_app_refresh_font_status(PlayerApp *app) {
     NkFontSlotState states[NK_FONT_SLOT_COUNT];
+    NkFontLatinIndexState latin_states[NK_FONT_LATIN_INDEX_COUNT];
     char root[NK_MAX_PATH];
     char project_root[NK_MAX_PATH];
+    char project_font_dir[NK_MAX_PATH * 2];
     if (!app) return;
     /* The user's imports come from the per-user font root, the same root the import, the removal
        and the preflight use; empty when none resolves, and the nk_font calls then report that the
@@ -3399,9 +3446,17 @@ void player_app_refresh_font_status(PlayerApp *app) {
         snprintf(project_root, sizeof(project_root), "%s", ".");
     }
     nk_font_slot_states(root, project_root, states);
+    snprintf(project_font_dir, sizeof(project_font_dir), "%s%c%s", project_root,
+             nk_platform_path_separator(), NK_FONT_PROJECT_SUBDIR);
+    nk_font_latin_index_states(root, project_font_dir, latin_states);
     for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
         snprintf(app->wizard.font_slot_detail[slot], sizeof(app->wizard.font_slot_detail[slot]),
                  "%s", states[slot].detail);
+    }
+    for (int index = 0; index < NK_FONT_LATIN_INDEX_COUNT; index++) {
+        snprintf(app->wizard.font_latin_index_detail[index],
+                 sizeof(app->wizard.font_latin_index_detail[index]), "%s",
+                 latin_states[index].detail);
     }
 }
 
@@ -3437,7 +3492,7 @@ bool player_app_fonts_import_folder(PlayerApp *app, const char *folder) {
                  "No font was imported: %.400s.", reason);
     } else {
         snprintf(app->wizard.font_message, sizeof(app->wizard.font_message),
-                 "Imported %d PSP font slot(s) into the player's font cache.", result.imported_count);
+                 "Imported %d PSP font file(s) into the player's font cache.", result.imported_count);
     }
     player_app_refresh_font_status(app);
     return result.imported_count > 0;
@@ -3643,14 +3698,24 @@ void player_app_build_compatibility_preflight(
                              font_issues, 1);
     } else {
         NkFontSlotState states[NK_FONT_SLOT_COUNT];
+        NkFontLatinIndexState latin_states[NK_FONT_LATIN_INDEX_COUNT];
         char summary[2048] = "";
-        bool every_slot = true;
+        char project_font_dir[NK_MAX_PATH * 2];
+        bool every_slot;
         nk_font_slot_states(font_root, runtime_root, states);
-        for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
-            if (states[slot].source == NK_FONT_SOURCE_NONE) every_slot = false;
-            player_font_append(summary, sizeof(summary), states[slot].detail);
+        snprintf(project_font_dir, sizeof(project_font_dir), "%s%c%s", runtime_root,
+                 nk_platform_path_separator(), NK_FONT_PROJECT_SUBDIR);
+        nk_font_latin_index_states(font_root, project_font_dir, latin_states);
+        every_slot = states[NK_FONT_SLOT_JAPANESE].source != NK_FONT_SOURCE_NONE &&
+                     states[NK_FONT_SLOT_KOREAN].source != NK_FONT_SOURCE_NONE;
+        player_font_append(summary, sizeof(summary), states[NK_FONT_SLOT_JAPANESE].detail);
+        player_font_append(summary, sizeof(summary), " ");
+        for (int index = 0; index < NK_FONT_LATIN_INDEX_COUNT; index++) {
+            if (latin_states[index].source == NK_FONT_SOURCE_NONE) every_slot = false;
+            player_font_append(summary, sizeof(summary), latin_states[index].detail);
             player_font_append(summary, sizeof(summary), " ");
         }
+        player_font_append(summary, sizeof(summary), states[NK_FONT_SLOT_KOREAN].detail);
         player_preflight_add(preflight, "SYSTEM_FONTS",
                              every_slot ? PREFLIGHT_OK : PREFLIGHT_MISSING,
                              summary, font_issues, every_slot ? 0 : 1);

@@ -7,6 +7,16 @@ are authoritative for actionable work. Private operational, title-run and legal
 review documents are intentionally outside the public source tree; explicitly
 labelled historical evidence stays in the tree for provenance.
 
+## For players
+
+Links for playing and trying the project, rather than changing it:
+
+- [`../README.md`](../README.md) — what the project is, and the quick start.
+- [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md) — playing a game you own.
+- [`SHOWCASE.md`](SHOWCASE.md) — the two demo programs.
+- [`COMPATIBILITY.md`](COMPATIBILITY.md) — which games work.
+- [`SETUP.md`](SETUP.md#windows-host-pitfalls) — troubleshooting: Windows host pitfalls.
+
 ## Start here
 
 Rows are what you are about to do, not topics. Read the row you are in, not the table.

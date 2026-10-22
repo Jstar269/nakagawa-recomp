@@ -6,6 +6,78 @@ headless showcase route for the runtime. For an ISO/player workflow, start with
 [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md) and
 [`LINUX_DEVELOPMENT.md`](LINUX_DEVELOPMENT.md). The native player is the repository's only user interface.
 
+## Prerequisites
+
+Everything a new Windows machine needs, in one list. The versions are floors; the
+[supported baseline](#supported-development-baseline) says what is tested.
+
+1. **Windows 11 x64** with a Vulkan-capable GPU and its current graphics driver. The player loads the
+   driver's `vulkan-1.dll`.
+2. **PowerShell 7.4+** (`pwsh`). Windows PowerShell 5.1 is not supported.
+3. **MSYS2 UCRT64** with the packages in [section 1](#1-install-the-core-toolchain): GCC, GNU Make,
+   SDL3, SDL3_ttf, and the Vulkan headers and loader.
+4. **CPython 3.14.x** on `PATH`. Read [PATH order](#path-order) before you install the Python tooling.
+5. **The Vulkan SDK**, a current release, from [LunarG](https://vulkan.lunarg.com/sdk/home).
+6. **Git for Windows**, to clone the repository and fetch optional third-party source.
+7. **Your own copy of the game** as an `.iso`, and your own key file if its executable is encrypted.
+   Nothing in this repository ships or downloads a game; see [`YOUR_OWN_GAMES.md`](YOUR_OWN_GAMES.md).
+
+For the two showcase demos only, add **WSL 2** with Ubuntu and **PSPDEV v20260601**; see
+[Showcase demos on Windows](#showcase-demos-on-windows-wsl-2-and-pspdev).
+
+The player's **BUILD PACKAGE** can download pinned build tools on first use. A consent card lists each
+download first ([details](#player-build-package-prerequisites)).
+
+## Showcase demos on Windows: WSL 2 and PSPDEV
+
+The two showcase demos are project-written PSP programs. Their build uses PSPDEV, the PSP toolchain,
+which needs a POSIX system, so on Windows it runs inside WSL 2. Skip this section if you only want the
+player and your own game.
+
+1. In an administrator PowerShell, install WSL 2 with Ubuntu, and reboot if Windows asks:
+
+   ```powershell
+   wsl --install
+   ```
+
+   Open Ubuntu once and create your Linux user. Make Ubuntu the default distribution, because the build
+   runs `wsl -e` without naming one: `wsl --set-default Ubuntu`. `wsl -l -v` marks the default with `*`.
+
+2. In Ubuntu, download `pspdev-ubuntu-latest-x86_64.tar.gz` from the `v20260601` release at
+   <https://github.com/pspdev/pspdev/releases>. The asset name, release and archive hash are recorded in
+   [`assets/upstream/pspdev.lock.json`](../assets/upstream/pspdev.lock.json).
+
+3. Check the archive. Its SHA-256 must equal `distribution.archive_sha256` in the lock file:
+
+   ```bash
+   sha256sum pspdev-ubuntu-latest-x86_64.tar.gz
+   ```
+
+4. Unpack it into `/usr/local`. The archive's top folder is `pspdev/`, so this creates `/usr/local/pspdev`:
+
+   ```bash
+   sudo tar -xzf pspdev-ubuntu-latest-x86_64.tar.gz -C /usr/local
+   ```
+
+5. Check the install. The `psp-gcc` hash must equal its `sha256=` value under `local_verification.tool_versions`
+   in the lock file:
+
+   ```bash
+   test -x /usr/local/pspdev/bin/psp-gcc && test -d /usr/local/pspdev/psp/sdk && echo "PSPDEV found"
+   sha256sum /usr/local/pspdev/bin/psp-gcc
+   ```
+
+6. From the repository root, in a PowerShell window where `$env:Path` starts with `C:\msys64\ucrt64\bin`
+   (see [section 3](#3-build)):
+
+   ```powershell
+   mingw32-make player showcase     # PSPDEV runs in WSL 2 (steps 1-5)
+   mingw32-make showcase-smoke      # the demos need WSL 2 and PSPDEV too
+   ```
+
+   The demo build takes several minutes. `showcase-smoke` runs both demos headlessly and prints
+   `SHOWCASE_SMOKE: PASS` for each one.
+
 ## Linux headless showcase
 
 Linux can build and run the two source-owned showcase packages through the runtime.
@@ -17,7 +89,7 @@ and PSPDEV v20260601 installed at `/usr/local/pspdev`. CI builds SDL3 from its p
 Run the showcase from the repository root:
 
 ```bash
-make CC=gcc showcase-linux
+make CC=gcc showcase-linux   # needs PSPDEV at /usr/local/pspdev, as above
 ```
 
 The smoke selects SDL's dummy video and audio drivers and runs without a desktop or
@@ -79,9 +151,23 @@ From the repository root, install the declared Python tooling dependencies once:
 python -m pip install .
 ```
 
-This installs the declared tooling dependencies, including `compiledb`.
+This installs the declared tooling dependencies, including `compiledb`. Run it before you add the MSYS2
+line to `PATH`; see [PATH order](#path-order).
 
 `glslc` from the Vulkan SDK is only needed when regenerating the checked-in shader headers. LLD, Clang, CMake, Ninja, and Node.js are not required for the Windows core build (a staged CMake target for portability work is tracked separately in [`PLATFORM_PORTABILITY.md`](PLATFORM_PORTABILITY.md)).
+
+### PATH order
+
+Some folders hold a second copy of a tool that the build also calls, so the order of `PATH` matters.
+
+- **MSYS2's Python.** `C:\msys64\ucrt64\bin` contains a `python.exe` that MSYS2 installs as a GLib
+  dependency. It has no pip, so `python -m pip install .` fails with `No module named pip` when that
+  folder comes before your CPython. Run the pip step from a PowerShell window that has not yet added the
+  MSYS2 line, and check that `python -c "import sys; print(sys.executable)"` prints your CPython. A UCRT64
+  terminal puts MSYS2 first, so do not run the pip step there.
+- **POSIX shell.** If a Make recipe needs `sh`, put Git for Windows' `usr\bin` (`%ProgramFiles%\Git\usr\bin`)
+  ahead of MSYS2's `usr\bin` (`C:\msys64\usr\bin`), as the [Windows host pitfalls](#windows-host-pitfalls)
+  table describes.
 
 ### Deliberate path conventions
 
@@ -289,13 +375,13 @@ Authentic in-game typography requires PSP system fonts in Sony's PlayStation Gly
 
 #### What the user supplies
 
-From your own PSP, copy its PGF font files to a folder on a USB drive, a memory stick, or your PC. The import reads every `.pgf` file directly in the folder you choose, whatever its name, and checks each one with the same native reader the player uses. Each accepted file is used for the slot its glyphs cover:
+From your own PSP, copy its PGF font files to a folder on a USB drive, a memory stick, or your PC. The import reads every `.pgf` file directly in the folder you choose and checks each one with the same native reader the player uses. It keeps the source filename long enough to identify firmware Latin files:
 
 - Japanese: covers kana (U+3042 or U+30A2).
 - Korean: covers Hangul (U+AC00 or U+D55C).
-- Latin: covers the Latin letters (U+0041 and U+0061) and neither of the above.
+- Latin: covers the Latin letters (U+0041 and U+0061) and neither of the above. Files named `ltn0.pgf` through `ltn15.pgf` are imported under their matching registry indices; all supplied files in that range are imported independently.
 
-A file that covers both kana and Hangul, or neither, names no slot and is skipped. Files over 16 MiB are refused. If two files name the same slot, the import imports neither until you choose one with `--choose <slot>=<file>`; the player asks you to keep one file per slot.
+A file that covers both kana and Hangul, or neither, names no slot and is skipped. Files over 16 MiB are refused. Other Latin filenames retain the single legacy Latin import; if several such files name the same slot, none is imported until you choose one with `--choose latin=<file>`. Duplicate case variants of the same `ltnN.pgf` index are left unimported as ambiguous.
 
 Fonts must come only from your own device. The project provides no download links or third-party repositories. The import makes no network request, uses no key, and does no decryption, and it never uploads anything.
 
@@ -309,34 +395,37 @@ python tools/nk_cli.py fonts remove --all
 
 Available options:
 
-- `--choose <slot>=<file>`: Pick the file for a slot that several files name (`japanese`, `latin`, or `korean`).
+- `--choose <slot>=<file>`: Pick a file for a generic slot that several files name (`japanese`, `latin`, or `korean`). Named `ltn0.pgf` through `ltn15.pgf` files select their own Latin indices and need no choice.
 - `--user-data-root <path>`: Override the target per-user data directory (default: `%LOCALAPPDATA%`, then `%APPDATA%`, under `Nakagawa\data` on Windows; `~/Library/Application Support/NakagawaRecomp/data` on macOS; `$XDG_DATA_HOME/nakagawa-recomp` or `~/.local/share/nakagawa-recomp` on other POSIX systems).
 - `--json`: Emit a machine-readable report of the outcome for each file, and of each slot's status.
 
-The import copies each chosen file into the per-user cache as that slot's file, and writes `manifest.json` with `schema_version: 2`, an ISO 8601 UTC `import_time`, and for each slot its `slot`, `size`, `sha256`, `source: "user"`, and `reader_version`. The originals are not touched. Re-importing is idempotent, and a slot the new run does not change keeps its entry:
+The import copies each accepted file into the per-user cache and writes `manifest.json` with `schema_version: 2` and an ISO 8601 UTC `import_time`. Generic files remain in `files`; indexed Latin files are listed in `latin_indices` with their index, size, SHA-256, user source, and reader version. The originals are not touched. Re-importing is idempotent, and entries not changed by the new run are retained:
 
 ```text
 <user data>/fonts/v2/
 ├── manifest.json
 ├── nkjpn.pgf   (Japanese slot)
-├── nkltn.pgf   (Latin slot)
+├── nkltn.pgf   (legacy unindexed Latin slot, if imported)
+├── ltn0.pgf    (Latin registry index 1)
+├── ...
+├── ltn15.pgf   (Latin registry index 16)
 └── nkkr.pgf    (Korean slot)
 ```
 
-A slot is served from the first source that checks: your imported font, then the project font at `<project>/font/<slot file>`, then a named refusal, which the game sees as a missing slot. There is no substitution between slots. `fonts remove` deletes only these slot files and their manifest entries. An import from an earlier cache version is not read; run the import again.
+Japanese and Korean keep their existing imported-file-then-project-file resolution. Each Latin index uses its exact imported `ltnN.pgf` first. If it is absent or invalid, the runtime uses the nearest valid indexed import in that index's eight-file size group (the lower index wins an equal-distance tie). A cache containing only the older single-file Latin import continues to serve that file for all indices, preserving pre-index behavior. Other caches fall back to project `nkltn.pgf`, then to the legacy import only when the project Latin font is unavailable. The player status and one startup log line per index identify every fallback, including an absent exact file. `fonts remove --slot latin` removes the generic Latin import and all sixteen indexed files; the other slot removals are unchanged.
 
 The per-user data directory is the one font root. The import, the status and the preflight in the player, the launcher, and the runtime all read `<user data>/fonts/v2`; the launcher hands that root to the runtime as `SR_USER_DATA_ROOT`. A runtime root (`--runtime-root`) does not hold fonts, so an import written under `<runtime root>/fonts/v2` by an earlier build is no longer read. The launcher's old lookup under a showcase demo's `<demos>/fonts/v2` is removed for the same reason: the demos read the per-user directory too, so an import placed there is no longer read. To use it again, run `python tools/nk_cli.py fonts import <folder>` on the original `.pgf` folder (with the same `--user-data-root` you use for the player), or copy that `fonts/v2` folder unchanged to `<user data>/fonts/v2`. The manifest's size and SHA-256 are checked on use, so a copy that does not match is refused rather than served.
 
 > [!NOTE]
-> The in-game font path serves the slot files in two ways. The HLE `sceFont` shim reads them directly (#825): a title that uses the HLE font API gets your imported font from the per-user cache first, then the project font, then a named refusal. The read-only `flash0:/font/` device serves the same files to guest file I/O for titles that load their own font library. Such a library also reads the system font list from the registry (`/DATA/FONT`), which the runtime builds from the files it serves: each font index reports the size and name in that file's own header, so the title sees your imported font, or else the project font, in each slot. An index whose slot has no font is left out of the list, and nothing is substituted. The bold and italic indices of the Latin slot serve its regular face and report it as regular. The import, the status command and the player's preflight (#300) list the font as present in both cases.
+> The in-game font path serves the slot files in two ways. The HLE `sceFont` shim and the read-only `flash0:/font/` device share the same index resolver. Japanese and Korean keep their current source order. Each Latin registry entry reports its requested `ltnN.pgf` name and reads the exact indexed file, a same-size-group indexed fallback, the legacy single-file import when it is the only Latin import, or the project Latin PGF. Sizes and names come from the bytes actually served. Exact and same-group indexed files report the served index's measured style; project and legacy files report Regular. Missing exact files remain visible in the setup prompt and startup log.
 
 #### Verification and player status
 
 To verify that system fonts are in place:
 
-1. **CLI:** `python tools/nk_cli.py fonts status` prints one line per slot, such as `Japanese: imported from your PSP.`, `Latin: project font.`, or `Korean: missing. Import a font from your PSP or install the project font.`
-2. **Player preflight:** the `SYSTEM_FONTS` check is `OK` when every slot is covered by an imported or a project font. It is `MISSING` when a slot is uncovered, and its message names the slots. It is `INVALID` (issue #313) when the manifest is malformed or a listed file fails its check.
-3. **Player setup wizard:** the **Fonts & System** step shows the source of each slot and has **IMPORT FONTS FOLDER** and **REMOVE IMPORTED FONTS** buttons. Import and removal report their outcome on that step.
+1. **CLI:** `python tools/nk_cli.py fonts status` prints Japanese and Korean status plus one line for each of the 16 Latin indices. A line names an exact import, same-size fallback, project fallback, legacy fallback, or missing file.
+2. **Player preflight (#300):** the `SYSTEM_FONTS` check is `OK` when every Japanese, Korean, and Latin registry index resolves to an imported or project font. It is `MISSING` when an index has no source, and its message includes the exact file or fallback for every Latin index. It is `INVALID` (issue #313) when the manifest is malformed or a listed file fails its check.
+3. **Player setup wizard:** the **Fonts & System** step shows Japanese and Korean status and all 16 Latin indices, including each fallback, and has **IMPORT FONTS FOLDER** and **REMOVE IMPORTED FONTS** buttons. Import and removal report their outcome on that step.
 
 ## 3. Build
 
@@ -505,7 +594,7 @@ mingw32-make player                      # build/nakagawa_player.exe, the native
 mingw32-make production-smoke            # complete two-phase pipeline smoke test
 mingw32-make platform-ladder             # relocations, scheduler, scalar FPU, filesystem
 mingw32-make cosim-selftest              # differential AOT vs. interpreter cosimulation
-mingw32-make showcase showcase-smoke     # build the showcase demos, then run both headlessly
+mingw32-make showcase showcase-smoke     # build the showcase demos (WSL 2 + PSPDEV on Windows), then run both headlessly
 ```
 
 - The **differential cosimulation harness** verifies semantic parity between
@@ -766,7 +855,7 @@ outside the published repository.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| A Make recipe fails with a shell error, or runs words such as `status` as commands | `mingw32-make` found no POSIX `sh` and fell back to `cmd.exe` | Put `C:\msys64\usr\bin` (or Git for Windows `bin`) on `PATH` |
+| A Make recipe fails with a shell error, or runs words such as `status` as commands | `mingw32-make` found no POSIX `sh` and fell back to `cmd.exe` | Put Git for Windows' `usr\bin` ahead of `C:\msys64\usr\bin` on `PATH` (see [PATH order](#path-order)) |
 | `cannot find -lvulkan` with `VULKAN_SDK=/ucrt64` | That is the CI's MSYS2 layout; a local MSYS2 may lack the import library | Leave `VULKAN_SDK` unset so the Makefile finds the installed Vulkan SDK |
 | A Make-driven step fails on a `C:\path\to\dir` path | Backslashes in a Make variable are read as escapes | Pass Make paths with forward slashes (`C:/path/to/dir`) |
 | The player refuses to build a package | Package outputs must live outside the repository | Point `BUILD_ROOT` and the user-data root outside the checkout |

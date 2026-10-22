@@ -2780,16 +2780,29 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             }
             focus++;
             bx += 150.0f;
-            if (bx + 310.0f > inner_r + 1.0f) {
+            if (bx + 200.0f > inner_r + 1.0f) {
                 bx = col1_x;
                 by += 42.0f;
             }
             focused = (app->focus_index == focus);
-            if (draw_button_focused(ren, bx, by, 310.0f, 36.0f, fs_label, app->settings.fullscreen, in, focused)) {
+            if (draw_button_focused(ren, bx, by, 200.0f, 36.0f, fs_label, app->settings.fullscreen, in, focused)) {
                 player_app_toggle_fullscreen(app);
             }
             focus++;
-            bx += 320.0f;
+            bx += 210.0f;
+            if (bx + 160.0f > inner_r + 1.0f) {
+                bx = col1_x;
+                by += 42.0f;
+            }
+            char scaling_label[32];
+            snprintf(scaling_label, sizeof(scaling_label), "Scaling: %s",
+                     player_present_scaling_label(app->settings.present_scaling));
+            focused = (app->focus_index == focus);
+            if (draw_button_focused(ren, bx, by, 160.0f, 36.0f, scaling_label, false, in, focused)) {
+                player_app_cycle_present_scaling(app, 1);
+            }
+            focus++;
+            bx += 170.0f;
             if (bx + 200.0f > inner_r + 1.0f) {
                 bx = col1_x;
                 by += 42.0f;
@@ -2868,6 +2881,20 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
                                  0.8f, inner_r - col1_x, COLOR_TEXT_DIM);
             y += 72.0f;
         }
+        /* Close in flow: always visible, never overlapping. Grow the card
+         * downward to hold it when the window allows. Only the extension
+         * is painted: repainting the whole card here would cover the
+         * sections drawn above. It is painted before the controller and
+         * manage buttons, which may sit in it, so it never covers them. */
+        float close_y = y + 100.0f;
+        float want_bottom = close_y + 46.0f + 16.0f;
+        if (want_bottom > card_y + card_h && want_bottom <= h - 8.0f) {
+            float old_bottom = card_y + card_h;
+            draw_filled_rect(ren, card_x, old_bottom - 2.0f, card_w, want_bottom - old_bottom + 2.0f, COLOR_CARD_BG);
+            draw_rect_outline(ren, card_x, old_bottom - 1.0f, card_w, want_bottom - old_bottom + 1.0f, COLOR_CARD_BORDER);
+            draw_filled_rect(ren, card_x + 1.0f, old_bottom - 1.0f, card_w - 2.0f, 1.0f, COLOR_CARD_BG);
+            card_h = want_bottom - card_y;
+        }
         bool ctrl_focused = (app->focus_index == focus);
         if (draw_button_focused(ren, card_x + 32.0f, y + 8.0f, 220.0f, 36.0f, "CONTROLLER SETTINGS", false, in, ctrl_focused)) {
             player_app_set_view(app, VIEW_CONTROLLER_SETTINGS);
@@ -2888,19 +2915,6 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         }
         focus++;
 
-        /* Close in flow: always visible, never overlapping. Grow the card
-         * downward to hold it when the window allows. Only the extension
-         * is painted: repainting the whole card here would cover the
-         * sections drawn above. */
-        float close_y = y + 100.0f;
-        float want_bottom = close_y + 46.0f + 16.0f;
-        if (want_bottom > card_y + card_h && want_bottom <= h - 8.0f) {
-            float old_bottom = card_y + card_h;
-            draw_filled_rect(ren, card_x, old_bottom - 2.0f, card_w, want_bottom - old_bottom + 2.0f, COLOR_CARD_BG);
-            draw_rect_outline(ren, card_x, old_bottom - 1.0f, card_w, want_bottom - old_bottom + 1.0f, COLOR_CARD_BORDER);
-            draw_filled_rect(ren, card_x + 1.0f, old_bottom - 1.0f, card_w - 2.0f, 1.0f, COLOR_CARD_BG);
-            card_h = want_bottom - card_y;
-        }
         bool close_focused = (app->focus_index == focus);
         if (draw_button_focused(ren, card_x + 32.0f, close_y, 200.0f, 46.0f, "SAVE & CLOSE", true, in, close_focused)) {
             player_app_save_settings(app, NULL);
@@ -2968,8 +2982,16 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         char fs_label[64];
         snprintf(fs_label, sizeof(fs_label), "Game fullscreen: %s", app->settings.fullscreen ? "ON" : "OFF");
         focused = (app->focus_index == focus);
-        if (draw_button_focused(ren, col1_x + 140.0f, tog_y + 24.0f, 310.0f, 36.0f, fs_label, app->settings.fullscreen, in, focused)) {
+        if (draw_button_focused(ren, col1_x + 140.0f, tog_y + 24.0f, 200.0f, 36.0f, fs_label, app->settings.fullscreen, in, focused)) {
             player_app_toggle_fullscreen(app);
+        }
+        focus++;
+        char scaling_label[32];
+        snprintf(scaling_label, sizeof(scaling_label), "Scaling: %s",
+                 player_present_scaling_label(app->settings.present_scaling));
+        focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, col1_x + 350.0f, tog_y + 24.0f, 180.0f, 36.0f, scaling_label, false, in, focused)) {
+            player_app_cycle_present_scaling(app, 1);
         }
         focus++;
         char rm_label[40];
@@ -4427,7 +4449,7 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
             if (app->wizard.font_slot_detail[0][0] == '\0') player_app_refresh_font_status(app);
 
             float spec_y = content_y + 36.0f;
-            float spec_h = 170.0f;
+            float spec_h = 244.0f;
             draw_rounded_fill(ren, card_x + 32.0f, spec_y, card_w - 64.0f, spec_h, 8.0f, (SDL_Color){ 16, 21, 26, 255 });
             draw_rounded_outline(ren, card_x + 32.0f, spec_y, card_w - 64.0f, spec_h, 8.0f, COLOR_CARD_BORDER);
 
@@ -4443,17 +4465,27 @@ static void render_setup_wizard(SDL_Renderer *ren, PlayerApp *app, const UiInput
             draw_text(ren, card_x + 48.0f, spec_y + 38.0f, ctrl_txt, 1.0f, COLOR_LIME);
 
             draw_text(ren, card_x + 48.0f, spec_y + 66.0f,
-                      "Font source for each PSP slot (your PSP font, the project font, or missing):",
+                      "Japanese/Korean slots and all Latin indices (fallbacks are shown):",
                       1.0f, COLOR_TEXT_DIM);
-            for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
-                draw_text(ren, card_x + 48.0f, spec_y + 88.0f + 20.0f * (float)slot,
-                          app->wizard.font_slot_detail[slot], 1.0f, COLOR_TEXT_MUTED);
+            float font_column_w = (card_w - 96.0f) / 3.0f;
+            for (int item = 0; item < NK_FONT_LATIN_INDEX_COUNT + 2; item++) {
+                int column = item / 6;
+                int row = item % 6;
+                float x = card_x + 48.0f + font_column_w * (float)column;
+                float y = spec_y + 88.0f + 20.0f * (float)row;
+                const char *detail = item == 0
+                    ? app->wizard.font_slot_detail[NK_FONT_SLOT_JAPANESE]
+                    : item == NK_FONT_LATIN_INDEX_COUNT + 1
+                        ? app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN]
+                        : app->wizard.font_latin_index_detail[item - 1];
+                draw_text_ellipsized(ren, x, y, detail, 0.9f, font_column_w - 12.0f,
+                                     COLOR_TEXT_MUTED);
             }
-            draw_text(ren, card_x + 48.0f, spec_y + 148.0f,
+            draw_text_ellipsized(ren, card_x + 48.0f, spec_y + 216.0f,
                       app->wizard.font_message[0]
                           ? app->wizard.font_message
                           : "Import reads .pgf files from a folder you choose. Nothing is uploaded.",
-                      0.9f, COLOR_AMBER);
+                      0.9f, card_w - 96.0f, COLOR_AMBER);
 
             bool accept_foc = (app->focus_index == focus++);
             if (draw_button_focused(ren, card_x + 32.0f, btn_y, 200.0f, 44.0f, "ACCEPT & CONTINUE", true, in, accept_foc)) {

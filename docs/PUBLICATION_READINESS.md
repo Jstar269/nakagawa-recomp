@@ -627,7 +627,24 @@ removes a public file, with the failure each skipped step produces.
 | Hosted check: HTTP 404 fetching the policy delta | The private records are not on the private `main` | Step 3 |
 | `TRUSTED_BASELINE_INVALID` | The local private authority checkout is behind its `main` | Fast-forward it and rerun |
 
+**One command for steps 2 and 4.** After step 1, a maintainer can run:
+
+```text
+python tools/admit_paths.py <pr-worktree> <path> [<path> ...] --approval-basis "<the human decision>" \
+  --private-repo <authority checkout on main>
+```
+
+It reads each path's committed bytes, derives its class with the gate's classifier (an implementation path needs
+an exact record already in `IMPLEMENTATION_PROVENANCE.json`; the command never writes one), writes and locally
+commits the admission and policy-delta records under `docs/provenance/`, builds the clean candidate, runs
+`admit-new-reviewed`, and leaves the result on a local `admit/<slug>-<date>` branch. It then prints the commands
+still to run: the private push (step 3, skipped with `--push`), the merge of that branch, and the step 5 refresh.
+`tools/test_admit_paths.py` replays the 2026-10-22 `.recomp.json` admission and requires byte-identical records.
+When another path-adding pull request lands first, merge `main` and rerun with `--rekey` instead of
+`--approval-basis`: it re-issues the delta for the new base from the admission already recorded for exactly those
+paths and bytes, and makes no new decision.
+
 **Landing order.** Each pull request that adds or removes a public path changes the publication profile. Once one
 lands, merging `main` into another such pull request changes its candidate policy hash, so it needs steps 2-5 again
-for the new hash. Land these pull requests one at a time, and do not hold an unrelated ready pull request for them:
+for the new hash (`tools/admit_paths.py --rekey` re-issues them). Land these pull requests one at a time, and do not hold an unrelated ready pull request for them:
 merge `main` into the waiting branch after the other lands.

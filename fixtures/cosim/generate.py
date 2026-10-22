@@ -556,6 +556,46 @@ def _cell_link() -> list[int]:
     ]
 
 
+def _cell_rarewrite() -> list[int]:
+    """A linked callee rewrites $ra and returns through the new guest target.
+
+    The interpreter must execute the target before resuming this caller. AOT's
+    structural host return cannot do that, so the production call boundary must
+    reject the mismatch before this caller's continuation runs.
+    """
+    return [
+        _i(0x0F, ZERO, A1, 0),               # caller resume PC high half (patched)
+        _i(0x0D, A1, A1, 0),                # caller resume PC low half (patched)
+        _j(0x03, 0),                         # jal rarewrite_callee (patched)
+        NOP,                                  # delay slot
+        _r(V1, V0, V1, 0, 0x21),             # continuation: addu v1, v1, v0
+        _i(0x0F, ZERO, RA, 0),               # lui ra, %hi(COSIM_RETURN) (patched)
+        _i(0x0D, RA, RA, 0),                 # ori ra, ra, %lo(COSIM_RETURN)
+        JR_RA,
+        NOP,
+    ]
+
+
+def _cell_rarewrite_callee() -> list[int]:
+    """Set $ra to an alternate executable target before the structural return."""
+    return [
+        _i(0x0F, ZERO, RA, 0),               # lui ra, %hi(rarewrite_target) (patched)
+        _i(0x0D, RA, RA, 0),                 # ori ra, ra, %lo(rarewrite_target)
+        JR_RA,
+        NOP,
+    ]
+
+
+def _cell_rarewrite_target() -> list[int]:
+    """Observe the rewritten return, then return to the callee's call boundary."""
+    return [
+        _i(0x0D, ZERO, V0, 0xA034),           # marker reached only through rewritten $ra
+        _r(A1, ZERO, RA, 0, 0x21),            # addu ra, a1, zero (resume belongs to caller)
+        JR_RA,
+        NOP,
+    ]
+
+
 def _cell_linkr() -> list[int]:
     """`jalr` form: the transfer target comes from a register, not the encoding."""
     return [
@@ -1026,6 +1066,9 @@ CELLS: tuple[tuple[str, str, object], ...] = (
     ("link_leaf", "leaf A: the correct call destination", _cell_link_leaf),
     ("link_leaf_b", "leaf B: a late-resolved call destination", _cell_link_leaf_b),
     ("link", "jal link semantics", _cell_link),
+    ("rarewrite", "rewritten $ra at an AOT linked-call boundary", _cell_rarewrite),
+    ("rarewrite_callee", "callee that rewrites its live $ra", _cell_rarewrite_callee),
+    ("rarewrite_target", "guest destination of the rewritten $ra", _cell_rarewrite_target),
     ("linkr", "jalr link semantics", _cell_linkr),
     ("jrslot", "computed-transfer target vs its delay slot", _cell_jrslot),
     ("jrtail", "computed tail call vs its delay slot", _cell_jrtail),
@@ -1057,7 +1100,7 @@ CELLS: tuple[tuple[str, str, object], ...] = (
 # under test; the AOT/reference oracle enters its generated body directly.
 NON_ENTRY_CELLS = frozenset(
     {"link_leaf", "link_leaf_b", "ret", "negpad", "xstore", "xtailmid", "xread", "fpu_aot",
-     "xnestmid", "xnestleaf"}
+     "xnestmid", "xnestleaf", "rarewrite_callee", "rarewrite_target"}
 )
 
 # Discovered so codegen emits a native body, but entered only by the independent
@@ -1203,6 +1246,37 @@ def build_text_segment() -> bytes:
     )
     struct.pack_into(
         "<I", text, layout["jthunk"][0], _j(0x02, layout["jtarget"][0])
+    )
+    rewrite_resume = BASE + layout["rarewrite"][0] + 16
+    struct.pack_into(
+        "<I", text, layout["rarewrite"][0],
+        _i(0x0F, ZERO, A1, _hi16_for_ori(rewrite_resume)),
+    )
+    struct.pack_into(
+        "<I", text, layout["rarewrite"][0] + 4,
+        _i(0x0D, A1, A1, rewrite_resume & 0xFFFF),
+    )
+    call_site = layout["rarewrite"][0] + 8
+    struct.pack_into(
+        "<I", text, call_site, _j(0x03, layout["rarewrite_callee"][0])
+    )
+    rewrite_target = BASE + layout["rarewrite_target"][0]
+    struct.pack_into(
+        "<I", text, layout["rarewrite_callee"][0],
+        _i(0x0F, ZERO, RA, _hi16_for_ori(rewrite_target)),
+    )
+    struct.pack_into(
+        "<I", text, layout["rarewrite_callee"][0] + 4,
+        _i(0x0D, RA, RA, rewrite_target & 0xFFFF),
+    )
+    return_pc = BASE + layout["ret"][0]
+    struct.pack_into(
+        "<I", text, layout["rarewrite"][0] + 20,
+        _i(0x0F, ZERO, RA, _hi16_for_ori(return_pc)),
+    )
+    struct.pack_into(
+        "<I", text, layout["rarewrite"][0] + 24,
+        _i(0x0D, RA, RA, return_pc & 0xFFFF),
     )
     struct.pack_into(
         "<I", text, layout["xtailmid"][0] + 0x08, _j(0x02, layout["xread"][0])
@@ -1467,6 +1541,9 @@ def manifest_header() -> bytes:
         f"#define COSIM_FPU_ORACLE_FN f_{BASE + layout['fpu_aot'][0]:08x}",
         f"#define COSIM_LEAF_A        0x{BASE + layout['link_leaf'][0]:08x}u",
         f"#define COSIM_LEAF_B        0x{BASE + layout['link_leaf_b'][0]:08x}u",
+        f"#define COSIM_RA_REWRITE_TARGET 0x{BASE + layout['rarewrite_target'][0]:08x}u",
+        f"#define COSIM_RA_REWRITE_RESUME 0x{BASE + layout['rarewrite'][0] + 16:08x}u",
+        f"#define COSIM_RA_REWRITE_CALLEE 0x{BASE + layout['rarewrite_callee'][0]:08x}u",
         f"#define COSIM_XSTORE        0x{BASE + layout['xstore'][0]:08x}u",
         f"#define COSIM_XTAILMID      0x{BASE + layout['xtailmid'][0]:08x}u",
         f"#define COSIM_XREAD         0x{BASE + layout['xread'][0]:08x}u",

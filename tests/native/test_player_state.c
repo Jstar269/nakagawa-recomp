@@ -2067,6 +2067,26 @@ int main(int argc, char **argv) {
     player_app_set_resolution_scale(settings, 8);
     assert(settings->settings.resolution_scale == 2);
 
+    /* Game-frame scaling (#1129): three modes, cycled in both directions; an unknown value is refused. */
+    settings->settings.present_scaling = NK_PRESENT_SCALING_SHARP;
+    player_app_cycle_present_scaling(settings, 1);
+    assert(settings->settings.present_scaling == NK_PRESENT_SCALING_INTEGER);
+    player_app_cycle_present_scaling(settings, 1);
+    assert(settings->settings.present_scaling == NK_PRESENT_SCALING_BILINEAR);
+    player_app_cycle_present_scaling(settings, 1);
+    assert(settings->settings.present_scaling == NK_PRESENT_SCALING_SHARP);
+    player_app_cycle_present_scaling(settings, -1);
+    assert(settings->settings.present_scaling == NK_PRESENT_SCALING_BILINEAR);
+    player_app_set_present_scaling(settings, NK_PRESENT_SCALING_INTEGER);
+    assert(settings->settings.present_scaling == NK_PRESENT_SCALING_INTEGER);
+    player_app_set_present_scaling(settings, 3);
+    assert(settings->settings.present_scaling == NK_PRESENT_SCALING_INTEGER);
+    player_app_set_present_scaling(settings, -1);
+    assert(settings->settings.present_scaling == NK_PRESENT_SCALING_INTEGER);
+    assert(strcmp(player_present_scaling_label(NK_PRESENT_SCALING_SHARP), "Sharp") == 0);
+    assert(strcmp(player_present_scaling_label(NK_PRESENT_SCALING_INTEGER), "Integer") == 0);
+    assert(strcmp(player_present_scaling_label(NK_PRESENT_SCALING_BILINEAR), "Bilinear") == 0);
+
     player_app_set_fps_cap(settings, 0);
     assert(settings->settings.fps_cap == 0);
     player_app_set_fps_cap(settings, 999);
@@ -2109,6 +2129,7 @@ int main(int argc, char **argv) {
         memset(&applied, 0, sizeof(applied));
         player_app_settings_init_default(&applied);
         applied.resolution_scale = 2;
+        applied.present_scaling = NK_PRESENT_SCALING_INTEGER;
         applied.fps_cap = -1;
         applied.vsync = false;
         applied.fullscreen = true;
@@ -2120,6 +2141,7 @@ int main(int argc, char **argv) {
         cfg.gui_mode = true;
         player_app_apply_settings_to_session(&applied, &cfg);
         assert(cfg.resolution_scale == 2);
+        assert(cfg.present_scaling == NK_PRESENT_SCALING_INTEGER);
         assert(cfg.fps_cap == -1);
         assert(cfg.vsync == false);
         assert(cfg.fullscreen == true);
@@ -2335,7 +2357,7 @@ int main(int argc, char **argv) {
         stops->active_view = VIEW_PREPARING;
         assert(player_app_focus_count(stops) == 1);
         stops->active_view = VIEW_SETTINGS;
-        assert(player_app_focus_count(stops) == 15); /* two pacing modes; launcher fullscreen */
+        assert(player_app_focus_count(stops) == 16); /* two pacing modes; scaling; launcher fullscreen */
         stops->active_view = VIEW_PREREQ_CONSENT;
         assert(player_app_focus_count(stops) == 2);
         stops->active_view = VIEW_PREREQ_PROGRESS;
@@ -3269,7 +3291,7 @@ int main(int argc, char **argv) {
         snprintf(path, sizeof(path), "%s%cdump_three.pgf", source_dir, sep);
         write_binary_file(path, kGoldenKoreanPgf, sizeof(kGoldenKoreanPgf));
         assert(player_app_fonts_import_folder(font_app, source_dir));
-        assert(strstr(font_app->wizard.font_message, "Imported 3 PSP font slot(s)") != NULL);
+        assert(strstr(font_app->wizard.font_message, "Imported 3 PSP font file(s)") != NULL);
         assert(strstr(font_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN], "imported from your PSP") != NULL);
 
         /* Korean removed on its own: preflight is MISSING and names the slot. */
@@ -3471,7 +3493,7 @@ int main(int argc, char **argv) {
         player_app_set_runtime_root(runtime_app, runtime_only);
 
         assert(player_app_fonts_import_folder(runtime_app, source));
-        assert(strstr(runtime_app->wizard.font_message, "Imported 1 PSP font slot(s)") != NULL);
+        assert(strstr(runtime_app->wizard.font_message, "Imported 1 PSP font file(s)") != NULL);
         snprintf(path, sizeof(path), "%s%cfonts%cv2%cmanifest.json", per_user, sep, sep, sep);
         assert(nk_platform_file_exists(path));
         snprintf(path, sizeof(path), "%s%cfonts", runtime_only, sep);
@@ -3511,14 +3533,14 @@ int main(int argc, char **argv) {
             snprintf(project_exec.selected_path, sizeof(project_exec.selected_path), "BOOT.BIN");
 
             player_app_refresh_font_status(project_app);
-            assert(strstr(project_app->wizard.font_slot_detail[NK_FONT_SLOT_LATIN],
-                          "Latin: project font.") != NULL);
+            assert(strstr(project_app->wizard.font_latin_index_detail[0],
+                          "L1 missing; project nkltn.pgf") != NULL);
             player_app_build_compatibility_preflight(project_app, true, true, &project_exec);
             {
                 const PlayerPreflightCheck *fcheck =
                     find_preflight_check(&project_app->wizard.preflight, "SYSTEM_FONTS");
                 assert(fcheck != NULL);
-                assert(strstr(fcheck->message, "Latin: project font.") != NULL);
+                assert(strstr(fcheck->message, "L1 missing; project nkltn.pgf") != NULL);
             }
             free(project_app);
             assert(test_remove_tree(project_font_dir));
@@ -3600,7 +3622,7 @@ int main(int argc, char **argv) {
 
         /* 2. The import writes the cache under app-data, and the preflight reads it there. */
         assert(player_app_fonts_import_folder(fallback_app, source_dir));
-        assert(strstr(fallback_app->wizard.font_message, "Imported 3 PSP font slot(s)") != NULL);
+        assert(strstr(fallback_app->wizard.font_message, "Imported 3 PSP font file(s)") != NULL);
         assert(nk_platform_file_exists(manifest_path));
         assert(strstr(fallback_app->wizard.font_slot_detail[NK_FONT_SLOT_KOREAN],
                       "Korean: imported from your PSP.") != NULL);
@@ -3654,6 +3676,7 @@ int main(int argc, char **argv) {
         assert(s_app != NULL);
         player_app_settings_init_default(&s_app->settings);
         assert(s_app->settings.resolution_scale == 1);
+        assert(s_app->settings.present_scaling == NK_PRESENT_SCALING_SHARP);
         assert(s_app->settings.fps_cap == -1);
         assert(s_app->settings.vsync == true);
         assert(s_app->settings.fullscreen == false);
@@ -3666,6 +3689,7 @@ int main(int argc, char **argv) {
 
         /* Mutate all settings and round-trip */
         s_app->settings.resolution_scale = 2;
+        s_app->settings.present_scaling = NK_PRESENT_SCALING_BILINEAR;
         s_app->settings.fps_cap = 0;
         s_app->settings.vsync = false;
         s_app->settings.fullscreen = true;
@@ -3685,6 +3709,7 @@ int main(int argc, char **argv) {
         assert(s_app2 != NULL);
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
         assert(s_app2->settings.resolution_scale == 2);
+        assert(s_app2->settings.present_scaling == NK_PRESENT_SCALING_BILINEAR);
         assert(s_app2->settings.fps_cap == 0);
         assert(s_app2->settings.vsync == false);
         assert(s_app2->settings.fullscreen == true);
@@ -3956,6 +3981,21 @@ int main(int argc, char **argv) {
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
         assert(s_app2->settings.resolution_scale == 1);
         assert(s_app2->settings_notice[0] == '\0');
+
+        /* Scaling is read by name; a file without it, a number or an unknown name keeps sharp. */
+        assert(s_app2->settings.present_scaling == NK_PRESENT_SCALING_SHARP);
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 1, \"present_scaling\": \"integer\"}");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.present_scaling == NK_PRESENT_SCALING_INTEGER);
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 1, \"present_scaling\": 1}");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.present_scaling == NK_PRESENT_SCALING_SHARP);
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 1, \"present_scaling\": \"blurry\"}");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.present_scaling == NK_PRESENT_SCALING_SHARP);
 
         remove(test_settings_path);
         free(s_app);
@@ -5149,7 +5189,11 @@ int main(int argc, char **argv) {
         nk_ps_copy_env("PATH", prior_path, sizeof(prior_path));
         nk_ps_copy_env("PYTHON", prior_python, sizeof(prior_python));
 #if defined(_WIN32) || defined(_WIN64)
-        nk_ps_set_env("PYTHON", "C:/Windows/notepad.exe");
+        /* A real program that is not Python: the version probe must reject it.
+           A console tool that exits at once on an unknown argument; a GUI
+           program (notepad.exe, used before) opened a window on the
+           developer's desktop and held the probe until it was closed. */
+        nk_ps_set_env("PYTHON", "C:/Windows/System32/where.exe");
 #else
         nk_ps_set_env("PYTHON", "/bin/sh");
 #endif

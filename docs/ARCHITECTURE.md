@@ -697,6 +697,7 @@ the maintained references for exact behavior.
 | `SR_GPU_GE` | `0` / `1` | Software vs Vulkan GE path |
 | `SR_GPU_LOG` | present/unset | GPU diagnostics where implemented |
 | `SR_VIDEO` | e.g. `gdi` | Select host fallback video path |
+| `SR_PRESENT_SCALING` | `sharp` (default) / `integer` / `bilinear` | How the Vulkan presenter scales game frames into the window: sharp bilinear (nearest to the next integer multiple, then linear), the largest integer multiple letterboxed, or plain linear; an exact integer fit is a nearest blit in every mode ([#1129](https://github.com/Jstar269/nakagawa-recomp/issues/1129)). The player's Settings set it |
 | `SR_FBSNAP` | positive integer | Rotating PPM snapshot interval |
 | `SR_HLELOG` | present/unset | HLE dispatch diagnostics |
 | `SR_HLE_DIAGNOSTICS` | present/unset | Retained title-scoped HLE diagnostic reads; requires the validated HST code-generation profile |

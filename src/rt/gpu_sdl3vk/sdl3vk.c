@@ -79,6 +79,8 @@ static VkCommandBuffer  s_cmd;              /* diagnostic capture only */
 static VkFence          s_fence;
 static PresentFrame     s_frame[PRESENT_FRAMES];
 static uint32_t         s_frame_cursor;
+static int              s_scaling = SDL3VK_SCALING_SHARP;  /* SR_PRESENT_SCALING (issue #1129) */
+static uint32_t         s_max_image_dim = 4096;  /* Vulkan's guaranteed minimum until init reads it */
 
 static VkSwapchainKHR s_swap;
 static VkFormat       s_swap_fmt;
@@ -448,6 +450,16 @@ int sdl3vk_init(const char *title) {
         VkPhysicalDeviceProperties pp;
         vkGetPhysicalDeviceProperties(s_pdev, &pp);
         fprintf(stderr, "sdl3vk: using %s\n", pp.deviceName);
+        s_max_image_dim = pp.limits.maxImageDimension2D;
+    }
+    {
+        const char *scaling = getenv("SR_PRESENT_SCALING");
+        s_scaling = sdl3vk_parse_present_scaling(scaling);
+        if (s_scaling < 0) {
+            fprintf(stderr, "sdl3vk: unknown SR_PRESENT_SCALING '%s' (sharp, integer or bilinear); "
+                            "using sharp\n", scaling);
+            s_scaling = SDL3VK_SCALING_SHARP;
+        }
     }
 
     float prio = 1.0f;
@@ -1119,6 +1131,94 @@ static VkFilter sdl3vk_present_filter(int srcw, int srch, int vw, int vh) {
     return VK_FILTER_LINEAR;
 }
 
+int sdl3vk_parse_present_scaling(const char *value) {
+    if (!value || !value[0] || strcmp(value, "sharp") == 0) return SDL3VK_SCALING_SHARP;
+    if (strcmp(value, "integer") == 0) return SDL3VK_SCALING_INTEGER;
+    if (strcmp(value, "bilinear") == 0) return SDL3VK_SCALING_BILINEAR;
+    return -1;
+}
+
+Sdl3VkPresentPlan sdl3vk_present_plan(int mode, int srcw, int srch, int dw, int dh, int max_dim) {
+    Sdl3VkPresentPlan p = { 0, 0, 0, 0, 1, 0 };
+    if (srcw <= 0 || srch <= 0 || dw <= 0 || dh <= 0) return p;
+    /* Aspect-correct fit of the PSP picture, letterboxed. */
+    int vw = dw, vh = dw * PSP_H / PSP_W;
+    if (vh > dh) { vh = dh; vw = dh * PSP_W / PSP_H; }
+    if (mode == SDL3VK_SCALING_INTEGER) {
+        int k = dw / srcw < dh / srch ? dw / srcw : dh / srch;
+        if (k >= 1) { vw = k * srcw; vh = k * srch; p.nearest = 1; }
+    } else if (sdl3vk_present_filter(srcw, srch, vw, vh) == VK_FILTER_NEAREST) {
+        p.nearest = 1;
+    } else if (mode == SDL3VK_SCALING_SHARP && vw > srcw && vh > srch) {
+        /* The next integer multiple at or above the fit, so the linear pass shrinks. The fit
+         * rounds each axis on its own, so when one axis is just past a multiple (961x544) the
+         * smaller multiple wins: a stretch of under two pixels beats shrinking the other axis 1.5x. */
+        int k = (vw + srcw - 1) / srcw, ky = (vh + srch - 1) / srch;
+        if (ky < k) k = ky;
+        if ((long long)k * srcw <= max_dim && (long long)k * srch <= max_dim) p.prescale = k;
+    }
+    p.x = (dw - vw) / 2; p.y = (dh - vh) / 2; p.w = vw; p.h = vh;
+    return p;
+}
+
+/* The sharp-scaling intermediate image, shared by the frame ring: each use transitions it from
+ * UNDEFINED behind a transfer-stage barrier, which also orders the write after the previous
+ * frame's read on this queue. */
+static VkImage        s_prescale_img;
+static VkDeviceMemory s_prescale_mem;
+static int            s_prescale_w, s_prescale_h;
+
+static void prescale_free(void) {
+    if (s_prescale_img) vkDestroyImage(s_dev, s_prescale_img, NULL);
+    if (s_prescale_mem) vkFreeMemory(s_dev, s_prescale_mem, NULL);
+    s_prescale_img = VK_NULL_HANDLE;
+    s_prescale_mem = VK_NULL_HANDLE;
+    s_prescale_w = s_prescale_h = 0;
+}
+
+/* A w x h prescale image, recreated only when the size changes (a window resize). Returns 0
+ * when it cannot be made; the caller then presents with one linear blit. */
+static int prescale_ensure(int w, int h) {
+    static int failed_w, failed_h;
+    if (s_prescale_img && s_prescale_w == w && s_prescale_h == h) return 1;
+    if (failed_w == w && failed_h == h) return 0;
+    failed_w = w; failed_h = h;  /* cleared below on success */
+    if (s_prescale_img) {
+        if (!wait_all_present_frames()) return 0;  /* an in-flight frame may still read it */
+        prescale_free();
+    }
+    VkImageCreateInfo imi = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+    imi.imageType = VK_IMAGE_TYPE_2D;
+    imi.format = VK_FORMAT_R8G8B8A8_UNORM;
+    imi.extent.width = (uint32_t)w; imi.extent.height = (uint32_t)h; imi.extent.depth = 1;
+    imi.mipLevels = 1; imi.arrayLayers = 1; imi.samples = VK_SAMPLE_COUNT_1_BIT;
+    imi.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imi.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    imi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (vkCreateImage(s_dev, &imi, NULL, &s_prescale_img) != VK_SUCCESS) {
+        s_prescale_img = VK_NULL_HANDLE;
+        fprintf(stderr, "sdl3vk: no %dx%d sharp-scaling image; presenting with linear filtering\n", w, h);
+        return 0;
+    }
+    VkMemoryRequirements mr;
+    vkGetImageMemoryRequirements(s_dev, s_prescale_img, &mr);
+    VkMemoryAllocateInfo mai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    mai.allocationSize = mr.size;
+    mai.memoryTypeIndex = find_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (mai.memoryTypeIndex == UINT32_MAX ||
+        vkAllocateMemory(s_dev, &mai, NULL, &s_prescale_mem) != VK_SUCCESS ||
+        vkBindImageMemory(s_dev, s_prescale_img, s_prescale_mem, 0) != VK_SUCCESS) {
+        prescale_free();
+        fprintf(stderr, "sdl3vk: no memory for the %dx%d sharp-scaling image; presenting with linear "
+                        "filtering\n", w, h);
+        return 0;
+    }
+    s_prescale_w = w;
+    s_prescale_h = h;
+    failed_w = failed_h = 0;
+    return 1;
+}
+
 static void draw_hud_overlay(VkCommandBuffer cmd, PresentFrame *f, VkImage dst_img, int swap_w, int swap_h) {
     if (!f || !f->hud_staging_map || swap_w < HUD_W || swap_h < HUD_H) return;
 
@@ -1264,21 +1364,42 @@ static int present_common(VkImage src, int srcw, int srch, const uint32_t *uploa
                 VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
         int dw = (int)s_swap_ext.width, dh = (int)s_swap_ext.height;
-        int vw = dw, vh = dw * PSP_H / PSP_W;
-        if (vh > dh) { vh = dh; vw = dh * PSP_W / PSP_H; }
-        int x0 = (dw - vw) / 2, y0 = (dh - vh) / 2;
+        Sdl3VkPresentPlan plan = sdl3vk_present_plan(s_scaling, srcw, srch, dw, dh,
+                                                     (int)s_max_image_dim);
+        VkImage blit_src = src;
+        int bw = srcw, bh = srch;
         VkImageBlit blt = {0};
         blt.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         blt.srcSubresource.layerCount = 1;
-        blt.srcOffsets[1].x = srcw; blt.srcOffsets[1].y = srch; blt.srcOffsets[1].z = 1;
         blt.dstSubresource = blt.srcSubresource;
-        blt.dstOffsets[0].x = x0;      blt.dstOffsets[0].y = y0;
-        blt.dstOffsets[1].x = x0 + vw; blt.dstOffsets[1].y = y0 + vh; blt.dstOffsets[1].z = 1;
-        blt.dstOffsets[0].z = 0;
-        VkFilter filter = sdl3vk_present_filter(srcw, srch, vw, vh);
-        vkCmdBlitImage(cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                       s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                       1, &blt, filter);
+        blt.srcOffsets[1].z = 1;
+        blt.dstOffsets[1].z = 1;
+        if (plan.prescale > 1 && prescale_ensure(plan.prescale * srcw, plan.prescale * srch)) {
+            /* Sharp scaling, pass 1: nearest enlargement to the integer multiple. */
+            barrier(cmd, s_prescale_img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+            blt.srcOffsets[1].x = srcw;          blt.srcOffsets[1].y = srch;
+            blt.dstOffsets[1].x = s_prescale_w;  blt.dstOffsets[1].y = s_prescale_h;
+            vkCmdBlitImage(cmd, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           s_prescale_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           1, &blt, VK_FILTER_NEAREST);
+            barrier(cmd, s_prescale_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+            blit_src = s_prescale_img;
+            bw = s_prescale_w;
+            bh = s_prescale_h;
+        }
+        if (plan.w > 0 && plan.h > 0) {
+            blt.srcOffsets[1].x = bw;              blt.srcOffsets[1].y = bh;
+            blt.dstOffsets[0].x = plan.x;          blt.dstOffsets[0].y = plan.y;
+            blt.dstOffsets[1].x = plan.x + plan.w; blt.dstOffsets[1].y = plan.y + plan.h;
+            vkCmdBlitImage(cmd, blit_src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           s_swap_img[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           1, &blt, plan.nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+        }
 
         if (s_hud_enabled && f->hud_staging_map) {
             draw_hud_overlay(cmd, f, s_swap_img[idx], dw, dh);
@@ -2440,6 +2561,7 @@ void sdl3vk_shutdown(void) {
     s_hud_fmt = VK_FORMAT_UNDEFINED;
     if (s_fence)       vkDestroyFence(s_dev, s_fence, NULL);
     cap_free_buffer();
+    prescale_free();
     if (s_pool)        vkDestroyCommandPool(s_dev, s_pool, NULL);
     if (s_dev)         vkDestroyDevice(s_dev, NULL);
     if (s_surf)        vkDestroySurfaceKHR(s_inst, s_surf, NULL);

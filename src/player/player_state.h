@@ -135,6 +135,7 @@ typedef struct {
 
 typedef struct {
     int resolution_scale; /* 1 = Native 480x272, 2 = 2x Vita, 3 = 3x 720p, 4 = 4x 1080p */
+    int present_scaling;  /* NK_PRESENT_SCALING_*: how the game window scales its frames */
     bool fullscreen;
     bool launcher_fullscreen;
     bool vsync;
@@ -254,6 +255,8 @@ typedef struct {
     /* The Fonts & System step's status: one line per PSP font slot (imported, project, or
        missing), refreshed from the cache, and the outcome of the last import or removal. */
     char font_slot_detail[NK_FONT_SLOT_COUNT][NK_FONT_TEXT_MAX];
+    /* One explicit line per Latin registry index, including the exact file or fallback. */
+    char font_latin_index_detail[NK_FONT_LATIN_INDEX_COUNT][160];
     char font_message[NK_FONT_TEXT_MAX];
 } SetupWizardState;
 
@@ -301,11 +304,11 @@ typedef struct {
     int showcase_count;
     bool is_game_running;
     uint64_t launch_time_ms;
-    /* Launch the child without a window. PLAY NOW always requests the window;
-       this is the launcher's own headless default, reached only when a caller
-       asks for it explicitly, so a host with no display can still prove the
-       launch path end to end. */
+    /* Keep the launcher UI headless. An explicit presented-frame acceptance
+       request may still open a window in the child runtime. */
     bool launch_headless;
+    uint32_t headless_accept_presented_frames;
+    uint32_t headless_launch_timeout_ms;
 
     /* Set by the renderer when a control asks for the host file dialog. The
        renderer has no SDL_Window and must stay free of platform dialog calls,
@@ -494,6 +497,10 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path);
 
 void player_app_set_resolution_scale(PlayerApp *app, int scale);
 void player_app_cycle_resolution_scale(PlayerApp *app, int direction);
+void player_app_set_present_scaling(PlayerApp *app, int scaling);
+void player_app_cycle_present_scaling(PlayerApp *app, int direction);
+/* "Sharp", "Integer" or "Bilinear" for a NK_PRESENT_SCALING_* value. */
+const char *player_present_scaling_label(int scaling);
 void player_app_set_fps_cap(PlayerApp *app, int cap);
 void player_app_cycle_fps_cap(PlayerApp *app, int direction);
 void player_app_toggle_fullscreen(PlayerApp *app);

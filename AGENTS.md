@@ -56,7 +56,7 @@ under an otherwise autonomous integration mission:
 - destructive history rewriting, shared-branch force-push, or deleting another agent's work;
 - repository security/settings changes unless the mission names the exact setting;
 - firmware, flash, NAND, or idStorage writes, and any other action that can permanently alter or damage a device;
-- disclosing private inputs, routes, saves, captures, traces, keys, paths, or derived bytes.
+- disclosing private inputs, routes, saves, captures, traces, keys, paths, or derived bytes, except the presentation screenshots Section 5 allows.
 
 **Standing hardware authorization.** PSPLink sessions and other non-destructive physical-PSP actions (loading and
 running probe modules, USB attach/reset, soft and PC-triggered resets, reading device state, writing Memory Stick
@@ -118,7 +118,13 @@ subject to Section 2.
 
 - Never commit or publish retail executables/ISOs/assets, decrypted modules, generated
   retail C, saves, keys, game-byte Ghidra databases, private traces/captures, or private
-  paths.
+  paths, except as the presentation-screenshot bullet below allows.
+- Presentation screenshots are the exception (maintainer policy delta, 2026-10-21, following established recomp
+  practice in Zelda64Recomp, Unleashed Recompiled and Ship of Harkinian): curated PNGs of a title running in Nakagawa,
+  including the launcher or library with it loaded, may be published when each is checked for personal data and carries
+  a notice that the game belongs to its publisher, that no game data is in the repository, and that users need their
+  own copy. Raw evidence captures, frame dumps, traces and any extracted game asset file (icons, PIC/ICON, textures,
+  audio, fonts) stay private.
 - Treat `place_game_here/`, `logs/`, `memstick/`, `keys/`, `oracle/`, `fs/`, `build/`, and
   local third-party material as sensitive. Never run `git clean -fdx` where inputs exist.
 - Public-safe CI and private title routes are different evidence classes. Missing private

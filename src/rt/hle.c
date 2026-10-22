@@ -72,6 +72,7 @@
 #include "osk_text_entry.h" /* keyboard text collected without stopping guest time */
 #include "osk_overlay.h"    /* the in-window keyboard the presenter draws and the pad drives */
 #include "flash0_font.h"    /* read-only flash0: font device (FONT_PLAN section 5) */
+#include "../core/nk_font.h" /* shared Latin index filenames and cache validation */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -186,11 +187,13 @@ static HleDevctlRefusal *s_hle_devctl_refusals;
 static atomic_uint s_hle_devctl_refusal_log_count;
 #endif
 
+/* Success-result exceptions named in the end-of-run summary. sceKernelVolatileMemUnlock is absent:
+ * it returns the PSP-measured states now. sceUtilityOskUpdate stays listed because only its VISIBLE
+ * and after-use states still return the unmeasured 0 (its INIT and no-keyboard states are measured). */
 static const char *hle_success_exception_issue(uint32_t nid) {
     switch (nid) {
     case 0xb3b5d042u: return "#363, #286"; /* sceAtracGetOutputChannel */
-    case 0xa569e425u: return "#363";       /* sceKernelVolatileMemUnlock */
-    case 0x4b85c861u: return "#363";       /* sceUtilityOskUpdate */
+    case 0x4b85c861u: return "#363";       /* sceUtilityOskUpdate: VISIBLE and after-use only */
     default: return NULL;
     }
 }
@@ -7803,6 +7806,9 @@ static int ms0_try_legacy_flat_import(const char *guest_path, const char *host_p
 static PGF *s_pgf_slot[NK_FONT_SLOT_COUNT];
 /* Where each slot's font came from: "user-imported", "project", "unreadable" or "none". */
 static const char *s_pgf_slot_source[NK_FONT_SLOT_COUNT];
+/* A Latin registry index owns its own opened PGF handle even when it falls back to another
+ * same-size index or the project font. This keeps sceFontOpen and flash0: on one resolver. */
+static PGF *s_pgf_latin_index[NK_FONT_LATIN_INDEX_COUNT];
 static Flash0Sources s_pgf_sources;
 /* Defined with the flash0: device roots below. */
 static void flash0_copy_root(char *dst, size_t capacity, const char *src);
@@ -7863,10 +7869,9 @@ static void font_load(void) {
     free(root_utf8);
     free(root);
     s_pgf_sources = sources;
-    /* Each slot (nk_font_slots.h) resolves the way the flash0: device serves it: the
-     * user-imported cache under the per-user data directory first, then the project font
-     * directory. Legacy aliases absent from both sources made every font go missing after an
-     * import. There is no cross-slot substitution: an absent slot stays absent and is named here. */
+    /* Japanese, the legacy unindexed Latin alias, and Korean keep the slot resolver. The
+     * registry's sixteen Latin files resolve separately below, through the same indexed route
+     * the flash0: device uses. */
     for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
         char path[SR_FLASH0_PATH_MAX + 64];
         const char *from = "none";
@@ -7882,8 +7887,25 @@ static void font_load(void) {
         s_pgf_slot[slot] = pgf;
         s_pgf_slot_source[slot] = from;
     }
+    for (int index = 0; index < NK_FONT_LATIN_INDEX_COUNT; index++) {
+        char path[SR_FLASH0_PATH_MAX + 64];
+        char label[64];
+        const char *from = "none";
+        int served_index = -3;
+        PGF *pgf = NULL;
+        snprintf(label, sizeof(label), "Latin registry index %d", index + 1);
+        if (sr_flash0_font_resolve_latin_index_path(&s_pgf_sources, index, path, sizeof(path),
+                                                    &from, &served_index)) {
+            pgf = font_open_host_path(path, label, from);
+            if (!pgf) from = "unreadable";
+        } else {
+            fprintf(stderr, "font_load: no source for Latin registry index %d (%s)\n",
+                    index + 1, nk_font_latin_index_filename(index));
+        }
+        s_pgf_latin_index[index] = pgf;
+    }
     if (getenv("SR_FONTLOG"))
-        fprintf(stderr, "font_load: japanese=%s latin=%s korean=%s\n",
+        fprintf(stderr, "font_load: japanese=%s legacy-latin=%s korean=%s\n",
                 s_pgf_slot_source[NK_FONT_SLOT_JAPANESE], s_pgf_slot_source[NK_FONT_SLOT_LATIN],
                 s_pgf_slot_source[NK_FONT_SLOT_KOREAN]);
     atomic_store_explicit(&s_pgf_state, 2, memory_order_release);
@@ -7896,6 +7918,10 @@ void sr_font_test_reset(void) {
         if (s_pgf_slot[slot]) pgf_close(s_pgf_slot[slot]);
         s_pgf_slot[slot] = NULL;
         s_pgf_slot_source[slot] = NULL;
+    }
+    for (int index = 0; index < NK_FONT_LATIN_INDEX_COUNT; index++) {
+        if (s_pgf_latin_index[index]) pgf_close(s_pgf_latin_index[index]);
+        s_pgf_latin_index[index] = NULL;
     }
     memset(&s_pgf_sources, 0, sizeof(s_pgf_sources));
     atomic_store_explicit(&s_pgf_state, 0, memory_order_release);
@@ -8120,6 +8146,10 @@ static const PGF *font_pgf_for_index(uint32_t index) {
     font_load();
     if (!sr_flash0_font_registry_slot(index, &slot) || (unsigned)slot >= NK_FONT_SLOT_COUNT)
         return NULL;
+    if (slot == NK_FONT_SLOT_LATIN) {
+        if (index == 0u || index > NK_FONT_LATIN_INDEX_COUNT) return NULL;
+        return s_pgf_latin_index[index - 1u];
+    }
     return s_pgf_slot[slot];
 }
 
@@ -10271,11 +10301,32 @@ static uint32_t h_OskGetStatus(CpuState *s) {
     else if (s_osk_status == OSK_FINISHED) { s_osk_status = OSK_NONE; s_osk_param = 0; }
     return (uint32_t)ret;                                  /* QUIT stands until ShutdownStart */
 }
+/* sceUtilityOskShutdownStart from INIT is refused and leaves the keyboard in INIT. Measured on
+ * PSP-3000 6.6.1 (2026-10-21, probe CASE=fake-success): 0x80110001 (SCE_ERROR_UTILITY_INVALID_STATUS). */
 static uint32_t h_OskShutdown(CpuState *s) {
     (void)s;
+    if (s_osk_status == OSK_INIT) return 0x80110001u;
     osk_abandon_request();                                 /* shut down before it was answered */
     if (s_osk_status) s_osk_status = OSK_FINISHED;         /* then NONE on the next poll */
     return 0;
+}
+/* sceUtilityOskUpdate refreshes the keyboard on screen. Measured on PSP-3000 6.6.1 (2026-10-21, probe
+ * CASE=fake-success): with no keyboard it returns 0x80110005 (SCE_ERROR_UTILITY_WRONG_TYPE), and in INIT
+ * it returns 0x80110001 (SCE_ERROR_UTILITY_INVALID_STATUS). The VISIBLE and after-use states are not
+ * measured yet, so they keep the refresh success they had before. */
+static uint32_t h_OskUpdate(CpuState *s) {
+    (void)s;
+    if (!s_osk_current) return 0x80110005u;
+    if (s_osk_status == OSK_INIT) return 0x80110001u;
+    return 0;
+}
+/* Test-only: forget the keyboard slot, abandoning any answer still pending. */
+void sr_hle_test_osk_slot_reset(void) {
+    osk_abandon_request();
+    s_osk_current = 0;
+    s_osk_status = OSK_NONE;
+    s_osk_param = 0;
+    s_osk_field = 0;
 }
 
 /* Single definition, called by both registry branches, so the executable HLE harness
@@ -10312,6 +10363,8 @@ static uint32_t h_OpenPSIDGetOpenPSID(CpuState *s) {
     return 0;
 }
 
+/* The lock sceKernelVolatileMemLock and TryLock take. See h_VolatileMemUnlock. */
+static int s_volatile_locked = 0;
 static uint32_t h_VolatileMemLock(CpuState *s) {
     /* Keep the established 4 MiB success route and NULL-output tolerance. Check
      * both complete non-NULL output spans before writing either one. */
@@ -10320,8 +10373,21 @@ static uint32_t h_VolatileMemLock(CpuState *s) {
         return SCE_KERNEL_ERROR_ILLEGAL_ADDR;
     if (A1) MEM_W32(A1, 0x08400000u);
     if (A2) MEM_W32(A2, 0x00400000u);
+    s_volatile_locked = 1;
     return 0;
 }
+/* The lock sceKernelVolatileMemLock and TryLock take and sceKernelVolatileMemUnlock releases.
+ * Measured on PSP-3000 6.6.1 (2026-10-21, probe CASE=fake-success): Unlock with nothing locked
+ * returns 0x800201ae (the raw value; the PSPSDK names it SCE_KERNEL_ERROR_SEMA_OVF); Unlock while
+ * the lock is held returns 0 and releases it. */
+static uint32_t h_VolatileMemUnlock(CpuState *s) {
+    (void)s;
+    if (!s_volatile_locked) return 0x800201aeu;
+    s_volatile_locked = 0;
+    return 0;
+}
+/* Test-only: forget the lock. */
+void sr_hle_test_volatile_mem_reset(void) { s_volatile_locked = 0; }
 /* Registered entry for sceUmdRegisterUMDCallBack. When UMD becomes ready the kernel fires
  * this callback (a0=unknown, a1=drive_stat), which in this game calls sceKernelWakeupThread
  * on the launcher (0x111) to unstick it from sceKernelSleepThread. */
@@ -10648,6 +10714,25 @@ int sr_thread_dispatch_callbacks(void) {
             total_dispatched++;
     }
     return total_dispatched;
+}
+
+/* Run guest callback code on the current fiber with a private AOT return base.
+ * The interrupted call frames remain below the scope floor and cannot be
+ * inspected or popped by callback returns. */
+static int hle_dispatch_guest_scoped(CpuState *s, uint32_t fn,
+                                     const char *owner, uint32_t *fatal_target) {
+    SrAotReturnBoundaryScope scope;
+    sr_aot_return_boundary_scope_begin(&scope);
+    dispatch(s, fn);
+    const uint32_t flow_kind = s->flow_kind;
+    const uint32_t flow_target = s->flow_target;
+    const int scope_failed = sr_aot_return_boundary_scope_end(s, &scope, owner);
+    if (scope_failed || flow_kind == SR_FLOW_FATAL || s->flow_kind == SR_FLOW_FATAL) {
+        if (fatal_target)
+            *fatal_target = s->flow_kind == SR_FLOW_FATAL ? s->flow_target : flow_target;
+        return 1;
+    }
+    return 0;
 }
 
 /* Returns 1 if any registered entry was dispatched (used as a one-shot for engine latches).
@@ -19316,10 +19401,16 @@ static void ge_call_guest(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, ui
     s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
     s->pc = fn;
     atomic_store_explicit(&sr_timeslice, 20000, memory_order_relaxed);
-    dispatch(s, fn);
+    uint32_t callback_fatal_target = 0u;
+    int callback_fatal = hle_dispatch_guest_scoped(
+        s, fn, "GE guest callback", &callback_fatal_target);
     if (ge_log_on())
         fprintf(stderr, "GE_CALL_GUEST: fn=0x%08x returned, v0=0x%08x\n", fn, s->r[2]);
     memcpy(s, &save, sizeof(CpuState));
+    if (callback_fatal) {
+        s->flow_kind = SR_FLOW_FATAL;
+        s->flow_target = callback_fatal_target;
+    }
     /* Returning to the interrupted context ends any ll..sc window it had open. */
     sr_cpu_link_clear(s);
     atomic_store_explicit(&sr_timeslice, save_slice, memory_order_relaxed);
@@ -19363,11 +19454,17 @@ static uint32_t ge_call_guest_gp_rv(CpuState *s, uint32_t fn, uint32_t gp,
     s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
     s->pc = fn;
     atomic_store_explicit(&sr_timeslice, 20000, memory_order_relaxed);
-    dispatch(s, fn);
+    uint32_t callback_fatal_target = 0u;
+    int callback_fatal = hle_dispatch_guest_scoped(
+        s, fn, "GE guest callback with return value", &callback_fatal_target);
     uint32_t rv = s->r[2];
     if (ge_log_on())
         fprintf(stderr, "GE_CALL_GUEST_RV: fn=0x%08x returned, v0=0x%08x\n", fn, rv);
     memcpy(s, &save, sizeof(CpuState));
+    if (callback_fatal) {
+        s->flow_kind = SR_FLOW_FATAL;
+        s->flow_target = callback_fatal_target;
+    }
     /* Returning to the interrupted context ends any ll..sc window it had open. */
     sr_cpu_link_clear(s);
     atomic_store_explicit(&sr_timeslice, save_slice, memory_order_relaxed);
@@ -23332,6 +23429,7 @@ static void hle_register_wait_conformance_handlers(void) {
     sr_hle_register(0x4c145944, "sceKernelReferLwMutexStatusByID", h_ReferLwMutexStatusByID);
     sr_hle_register(0x3e0271d3, "sceKernelVolatileMemLock", h_VolatileMemLock);
     sr_hle_register(0xa14f40b2, "sceKernelVolatileMemTryLock", h_VolatileMemLock);
+    sr_hle_register(0xa569e425, "sceKernelVolatileMemUnlock", h_VolatileMemUnlock);
     sr_hle_register(0x8ef08fce, "sceUmdWaitDriveStat", h_UmdWaitDriveStat);
     sr_hle_register(0x56202973, "sceUmdWaitDriveStatWithTimer", h_UmdWaitDriveStatWithTimer);
     sr_hle_register(0x4a9e5e29, "sceUmdWaitDriveStatCB", h_UmdWaitDriveStatCB);
@@ -23546,10 +23644,15 @@ static void hle_register_utility_module_handlers(void) {
     sr_hle_register(0xe49bfe92, "sceUtilityUnloadModule", h_UtilityUnloadModule);
     sr_hle_register_unsupported(0x1579a159, "sceUtilityLoadNetModule", 0x80110001u); /* SCE_ERROR_UTILITY_INVALID_STATUS */
     sr_hle_register_unsupported(0x64d50c56, "sceUtilityUnloadNetModule", 0x80110001u); /* SCE_ERROR_UTILITY_INVALID_STATUS */
-    sr_hle_register(0x4b85c861, "sceUtilityOskUpdate", h_ok);
+    sr_hle_register(0x4b85c861, "sceUtilityOskUpdate", h_OskUpdate);
 }
 
 static void hle_register_kernel_module_handlers(void) {
+    /* No NP DRM key material is part of this project, so the edata key setup is refused. The
+     * module-from-buffer loader is not implemented, so its USB/WLAN variant is refused too. Both use
+     * SCE_KERNEL_ERROR_NOTIMP, the runtime's controlled refusal for kernel functions it does not provide. */
+    sr_hle_register_unsupported(0x08d98894u, "sceNpDrmEdataSetupKey", 0x80020002u);
+    sr_hle_register_unsupported(0xf9275d98u, "sceKernelLoadModuleBufferUsbWlan", 0x80020002u);
     sr_hle_register(0x977de386, "sceKernelLoadModule", h_LoadModule);
     sr_hle_register(0xb7f46618, "sceKernelLoadModuleByID", h_LoadModuleByID);
     sr_hle_register(0x50f0c1ec, "sceKernelStartModule", h_StartModule);
@@ -23897,6 +24000,7 @@ void sr_hle_init(void) {
     hle_register_exit_game_handler();
     hle_register_ge_handlers();
     sr_hle_power_register_clock();
+    sr_hle_power_register_callback();
     hle_register_devkit_version_handler();
     /* TD-24 batch 4 families: shared with production through the helpers, so
      * the executable harness dispatches the exact production mapping. */
@@ -24085,7 +24189,6 @@ void sr_hle_init(void) {
      * out-params through leftover a1/a2 register garbage sprayed two wild 4-byte writes
      * per asset-load unlock (this zeroed the resource registry's model-slot counter,
      * which silently killed every .PMD model lookup, e.g. the hangar aircraft). */
-    sr_hle_register(0xa569e425, "sceKernelVolatileMemUnlock", h_ok);
     hle_register_exit_game_handler();
     /* InterruptManager Disable/Release pair: shared with the executable harness
      * through hle_register_wait_conformance_handlers(), next to Register/Enable. */

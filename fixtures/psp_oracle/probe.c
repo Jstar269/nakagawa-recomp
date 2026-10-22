@@ -130,6 +130,15 @@ PSP_MODULE_INFO("NAKAGAWA_PSP_ORACLE", 0, 1, 0);
 #define PSP_ORACLE_CASE_UMD_RAW_READ 77
 #define PSP_ORACLE_CASE_FONT_LIST 75
 #define PSP_ORACLE_CASE_VRAM_MIRROR 76
+/* #1106: a late-loaded PRX that owns a semaphore-blocked waiter, an event flag and a callback. Its
+   module_stop returns 0 without deleting, waking or otherwise touching them. PSPLink's modstop and
+   modunld then measure what survives. Never returns from main, so the probe teardown never runs. */
+#define PSP_ORACLE_CASE_LATE_PRX_TARGET 110
+/* #1096: one bounded AT3 decode of a host0-staged stream. The bytes come from host0, never from the source. */
+#define PSP_ORACLE_CASE_AT3_DECODE 111
+/* Runtime handlers that answered success unconditionally: sceKernelVolatileMemUnlock and
+   sceUtilityOskUpdate. Non-blocking and dialog-free; see run_fake_success. */
+#define PSP_ORACLE_CASE_FAKE_SUCCESS 112
 
 #if PSP_ORACLE_CASE == PSP_ORACLE_CASE_MODEL_PROFILE
 #include <kubridge.h>
@@ -347,6 +356,10 @@ static void emit(int emulated, const char *text) {
 #define PROBE_HOST0_LOG "host0:/fpu_cc_log.txt"
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
 #define PROBE_HOST0_LOG "host0:/vram_mirror_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_AT3_DECODE
+#define PROBE_HOST0_LOG "host0:/at3_decode_log.txt"
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FAKE_SUCCESS
+#define PROBE_HOST0_LOG "host0:/fake_success_log.txt"
 #endif
 
 /* Durable line writer: every record, step marker and the metadata line goes
@@ -808,6 +821,12 @@ static void emit_record_extended(int emulated, const char *test_id,
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
 #define DEFERRED_MAX_OUT 128
 #define VRAM_MIRROR_SIZE 0x00200000u
+/* #1049 caveat: extra depth-buffer offset past the display-derived layout. The default 0 keeps the
+   measured zbp 0x0cc000 (bits 6 and 13 clear). A bias with bit 6 or bit 13 set separates the
+   XOR-on-absolute-offset hypothesis from the XOR-within-the-depth-buffer hypothesis. */
+#ifndef VRAM_MIRROR_DEPTH_BIAS
+#define VRAM_MIRROR_DEPTH_BIAS 0x00000000u
+#endif
 #define VRAM_MIRROR_ROW_BYTES 0x400u
 #define VRAM_MIRROR_ROW_WORDS (VRAM_MIRROR_ROW_BYTES / 4u)
 #define VRAM_MIRROR_CPU_DENSE_OFFSET 0x00088000u
@@ -5008,8 +5027,9 @@ static void run_vram_mirror(int emulated) {
             color_offset = (display_offset + display_bytes +
                             VRAM_MIRROR_ROW_BYTES - 1u) &
                 ~(VRAM_MIRROR_ROW_BYTES - 1u);
-            depth_offset = color_offset + VRAM_MIRROR_FRAME_BYTES;
-            if (color_offset + 2u * VRAM_MIRROR_FRAME_BYTES > VRAM_MIRROR_SIZE) {
+            depth_offset = color_offset + VRAM_MIRROR_FRAME_BYTES +
+                           (uint32_t)VRAM_MIRROR_DEPTH_BIAS;
+            if (depth_offset + VRAM_MIRROR_FRAME_BYTES > VRAM_MIRROR_SIZE) {
                 skip_reason = 4u;
             }
         }
@@ -5105,6 +5125,49 @@ static void run_vram_mirror(int emulated) {
     vram_mirror_cache_range(depth_offset, VRAM_MIRROR_FRAME_BYTES, 0);
     vram_mirror_defer_depth_rows(depth_offset, ge_idle, ge_sequence_complete);
     vram_mirror_defer_color_rows(color_offset, ge_idle, ge_sequence_complete);
+
+#ifdef VRAM_MIRROR_FULL_SCAN
+    /* #1049 caveat: where do the depth clear and the sprite Z values land? Count the four probe values in
+       every 128 KiB block of VRAM through the uncached base alias, and record the first halfword offset of each.
+       Emitted directly (not deferred) because the deferred record table is sized to the semantic records. */
+    {
+        static const uint16_t scan_values[4] = {0x1111u, 0x2222u, 0x3333u, 0x5a5au};
+        uint32_t scan_counts[4][16];
+        uint32_t scan_first[4];
+        memset(scan_counts, 0, sizeof(scan_counts));
+        memset(scan_first, 0, sizeof(scan_first));
+        const volatile uint16_t *vram16 = (const volatile uint16_t *)(uintptr_t)0x44000000u;
+        for (uint32_t i = 0; i < VRAM_MIRROR_SIZE / 2u; i++) {
+            const uint16_t value = vram16[i];
+            for (uint32_t k = 0; k < 4u; k++) {
+                if (value == scan_values[k]) {
+                    scan_counts[k][(i * 2u) >> 17] += 1u;
+                    if (scan_first[k] == 0u) scan_first[k] = i * 2u + 1u;
+                }
+            }
+        }
+        char scan_line[2048];
+        int used = snprintf(scan_line, sizeof(scan_line),
+                            "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-VRAM-MIRROR-001 "
+                            "case_id=vram-full-scan status=PASS result=0x00000000");
+        for (uint32_t k = 0; k < 4u; k++) {
+            for (uint32_t block = 0; block < 16u && used > 0 &&
+                                    (size_t)used < sizeof(scan_line); block++) {
+                used += snprintf(scan_line + used, sizeof(scan_line) - (size_t)used,
+                                 " v%u_b%02u=0x%x", (unsigned int)k, (unsigned int)block,
+                                 (unsigned int)scan_counts[k][block]);
+            }
+            if (used > 0 && (size_t)used < sizeof(scan_line)) {
+                used += snprintf(scan_line + used, sizeof(scan_line) - (size_t)used,
+                                 " v%u_first=0x%x", (unsigned int)k, (unsigned int)scan_first[k]);
+            }
+        }
+        if (used > 0 && (size_t)used + 2u < sizeof(scan_line)) {
+            used += snprintf(scan_line + used, sizeof(scan_line) - (size_t)used, "\n");
+            probe_emit_durable(emulated, scan_line, (size_t)used);
+        }
+    }
+#endif
 
     probe_step(emulated, "vram-mirror", "restore-vram");
     vram_mirror_cache_range(0u, VRAM_MIRROR_SIZE, 1);
@@ -6611,9 +6674,65 @@ static void probe_park_until_stop(void) {
     sceKernelExitThread(0);
 }
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_LATE_PRX_TARGET
+/* #1106 late-PRX target. Every object below belongs to this module. The waiter blocks on the
+   semaphore for the whole measurement window (600 s bound), so it never runs module code on its own. */
+#define LATE_PRX_WAIT_US (600u * 1000u * 1000u)
+static volatile SceUID s_late_sema = -1;
+static volatile SceUID s_late_flag = -1;
+static volatile SceUID s_late_cb = -1;
+static volatile SceUID s_late_waiter = -1;
+
+static int late_prx_callback(int arg1, int arg2, void *common) {
+    (void)arg1;
+    (void)arg2;
+    (void)common;
+    return 0;
+}
+
+static int late_prx_waiter(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    SceUInt timeout = LATE_PRX_WAIT_US;
+    (void)sceKernelWaitSema(s_late_sema, 1, &timeout);
+    for (;;) sceKernelSleepThread();
+    return 0;
+}
+
+static void run_late_prx_target(int emulated) {
+    s_late_sema = sceKernelCreateSema("nk_late_sema", 0, 0, 1, NULL);
+    s_late_flag = sceKernelCreateEventFlag("nk_late_flag", 0, 0, NULL);
+    s_late_cb = sceKernelCreateCallback("nk_late_cb", late_prx_callback, NULL);
+    s_late_waiter = sceKernelCreateThread("nk_late_waiter", late_prx_waiter, 0x20, 0x1000,
+                                          PSP_THREAD_ATTR_USER, NULL);
+    if (s_late_waiter >= 0) (void)sceKernelStartThread(s_late_waiter, 0, NULL);
+    /* Let the waiter reach its semaphore wait before the UIDs are published. */
+    sceKernelDelayThread(500 * 1000);
+    char line[320];
+    snprintf(line, sizeof(line),
+             "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-LATE-PRX-001 case_id=late-prx-published "
+             "status=PASS sema=0x%08x flag=0x%08x cb=0x%08x waiter=0x%08x main=0x%08x\n",
+             (unsigned int)s_late_sema, (unsigned int)s_late_flag, (unsigned int)s_late_cb,
+             (unsigned int)s_late_waiter, (unsigned int)s_probe_main_thread);
+    emit(emulated, line);
+    /* Park the main thread. Returning would end main and drop PSPLink to the XMB. */
+    for (;;) sceKernelSleepThread();
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_LATE_PRX_TARGET
+/* Leave every owned object in place: the host measures the post-stop state. */
+static int late_prx_module_stop(void) {
+    return 0;
+}
+#endif
+
 int module_stop(SceSize args, void *argp) {
     (void)args;
     (void)argp;
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_LATE_PRX_TARGET
+    return late_prx_module_stop();
+#endif
     const SceUID main_thread = s_probe_main_thread;
     if (main_thread < 0) return 1;
     s_probe_stop_requested = 1;
@@ -8273,6 +8392,492 @@ static void run_kernel_misc(int emulated) {
 }
 #endif
 
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_AT3_DECODE
+#include <pspatrac3.h>
+#include <psputility_avmodules.h>
+/* #1096: one bounded AT3 decode of the 8192-byte host0:/at3-input-buffer.bin stream. Every risky call is
+   preceded by a durable step marker and its return code is written as soon as it is known, so a launch that
+   hangs names its last step. Codec type PSP_ATRAC_AT3 (0x1001 in the issue). The probe never returns from
+   main, so PSPLink stays up. */
+#define AT3_DECODE_INPUT_PATH "host0:/at3-input-buffer.bin"
+#define AT3_DECODE_BYTES 8192u
+#define AT3_DECODE_PCM_SAMPLES 4096u
+
+static unsigned char s_at3_input[AT3_DECODE_BYTES] __attribute__((aligned(64)));
+static unsigned short s_at3_pcm[AT3_DECODE_PCM_SAMPLES] __attribute__((aligned(64)));
+
+static uint32_t at3_le16(const unsigned char *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8);
+}
+
+static uint32_t at3_le32(const unsigned char *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
+static void at3_result(int emulated, const char *step, int rc) {
+    char line[200];
+    const int used = snprintf(line, sizeof(line),
+                              "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3-%s "
+                              "status=RC result=0x%08x\n",
+                              step, (unsigned int)rc);
+    if (used > 0 && (size_t)used < sizeof(line)) {
+        probe_emit_durable(emulated, line, (size_t)used);
+    }
+}
+
+/* More decodes than the 24 frames an 8192-byte prefix holds, so the call that runs out of data is seen too. */
+#define AT3_DECODE_EXTRA_CALLS 30
+
+static void at3_pcm_record(int emulated, const char *step, int rc, int samples, int end_flag, int remain) {
+    uint32_t hash = 2166136261u;
+    uint32_t peak = 0;
+    const int count = samples > 0 && samples <= 1024 ? samples * 2 : 0;
+    for (int i = 0; i < count; i++) {
+        const uint16_t v = s_at3_pcm[i];
+        hash = (hash ^ (v & 0xffu)) * 16777619u;
+        hash = (hash ^ (v >> 8)) * 16777619u;
+        const uint32_t mag = (v & 0x8000u) ? (uint32_t)(0x10000u - v) : v;
+        if (mag > peak) peak = mag;
+    }
+    char line[320];
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3-pcm-%s status=RC "
+                   "result=0x%08x samples=%d end=%d remain=%d fnv=0x%08x peak=%u "
+                   "s0=0x%04x s1=0x%04x s2=0x%04x s3=0x%04x s256=0x%04x s2000=0x%04x\n",
+                   step, (unsigned int)rc, samples, end_flag, remain, (unsigned int)hash,
+                   (unsigned int)peak, s_at3_pcm[0], s_at3_pcm[1], s_at3_pcm[2], s_at3_pcm[3],
+                   s_at3_pcm[256], s_at3_pcm[2000]);
+    probe_emit_durable(emulated, line, strlen(line));
+}
+
+static void at3_stream_queries(int emulated, int atrac_id) {
+    int next = -1, loop_start = -1, loop_end = -1, remain = -1, end_sample = -1;
+    const int rc_next = sceAtracGetNextSample(atrac_id, &next);
+    const int rc_remain = sceAtracGetRemainFrame(atrac_id, &remain);
+    const int rc_sound = sceAtracGetSoundSample(atrac_id, &end_sample, &loop_start, &loop_end);
+    char line[320];
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3-queries status=RC "
+                   "result=0x00000000 rc_next=0x%08x next=%d rc_remain=0x%08x remain=%d "
+                   "rc_sound=0x%08x end_sample=%d loop_start=%d loop_end=%d\n",
+                   (unsigned int)rc_next, next, (unsigned int)rc_remain, remain, (unsigned int)rc_sound,
+                   end_sample, loop_start, loop_end);
+    probe_emit_durable(emulated, line, strlen(line));
+}
+
+static void run_at3_decode(int emulated) {
+    int input_rc = -1;
+    int input_read = 0;
+    probe_step(emulated, "at3-decode", "read-input");
+    SceUID fd = sceIoOpen(AT3_DECODE_INPUT_PATH, PSP_O_RDONLY, 0);
+    if (fd >= 0) {
+        uint32_t total = 0;
+        while (total < AT3_DECODE_BYTES) {
+            const int n = sceIoRead(fd, s_at3_input + total, AT3_DECODE_BYTES - total);
+            if (n <= 0) break;
+            total += (uint32_t)n;
+        }
+        input_read = (int)total;
+        input_rc = total == AT3_DECODE_BYTES ? 0 : -2;
+        (void)sceIoClose(fd);
+    } else {
+        input_rc = fd;
+    }
+    at3_result(emulated, "input", input_rc);
+
+    if (input_rc == 0) {
+        char header[256];
+        (void)snprintf(header, sizeof(header),
+                       "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3-header status=RC "
+                       "result=0x00000000 fmt=0x%04x channels=%u rate=%u block_align=%u "
+                       "fact_bytes=%u fact_samples=%u fact_delay=%u input_read=%d\n",
+                       (unsigned int)at3_le16(s_at3_input + 20), (unsigned int)at3_le16(s_at3_input + 22),
+                       (unsigned int)at3_le32(s_at3_input + 24), (unsigned int)at3_le16(s_at3_input + 32),
+                       (unsigned int)at3_le32(s_at3_input + 56), (unsigned int)at3_le32(s_at3_input + 60),
+                       (unsigned int)at3_le32(s_at3_input + 64), input_read);
+        probe_emit_durable(emulated, header, strlen(header));
+    }
+
+    int avcodec_rc = -1;
+    int atrac_rc = -1;
+    int atrac_id = -1;
+    int setdata_rc = -1;
+    int decode_rc = -1;
+    int samples = -1;
+    int end_flag = -1;
+    int remain_frames = -1;
+    int release_rc = -1;
+    int atrac_unload_rc = -1;
+    int avcodec_unload_rc = -1;
+    int atrac_loaded = 0;
+    int avcodec_loaded = 0;
+
+    if (input_rc == 0) {
+        probe_step(emulated, "at3-decode", "load-avcodec");
+        avcodec_rc = sceUtilityLoadAvModule(PSP_AV_MODULE_AVCODEC);
+        at3_result(emulated, "load-avcodec", avcodec_rc);
+        if (avcodec_rc == 0) {
+            avcodec_loaded = 1;
+            probe_step(emulated, "at3-decode", "load-atrac3plus");
+            atrac_rc = sceUtilityLoadAvModule(PSP_AV_MODULE_ATRAC3PLUS);
+            at3_result(emulated, "load-atrac3plus", atrac_rc);
+            if (atrac_rc == 0) {
+                atrac_loaded = 1;
+                probe_step(emulated, "at3-decode", "get-atracid");
+                atrac_id = sceAtracGetAtracID(PSP_ATRAC_AT3);
+                at3_result(emulated, "get-atracid", atrac_id);
+                if (atrac_id >= 0) {
+                    probe_step(emulated, "at3-decode", "set-data");
+                    setdata_rc = sceAtracSetData(atrac_id, s_at3_input, AT3_DECODE_BYTES);
+                    at3_result(emulated, "set-data", setdata_rc);
+                    probe_step(emulated, "at3-decode", "decode-data");
+                    decode_rc = sceAtracDecodeData(atrac_id, s_at3_pcm, &samples, &end_flag,
+                                                   &remain_frames);
+                    at3_result(emulated, "decode-data", decode_rc);
+                    char decoded[200];
+                    (void)snprintf(decoded, sizeof(decoded),
+                                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3-decoded "
+                                   "status=RC result=0x%08x samples=%d end=%d remain=%d\n",
+                                   (unsigned int)decode_rc, samples, end_flag, remain_frames);
+                    probe_emit_durable(emulated, decoded, strlen(decoded));
+                    /* #1096 follow-up: later frames, PCM fingerprints and the stream-position queries. The PCM
+                       bytes stay in the private host0 log as a hash plus a few leading samples. */
+                    at3_pcm_record(emulated, "decode0", decode_rc, samples, end_flag, remain_frames);
+                    at3_stream_queries(emulated, atrac_id);
+                    for (int more = 1; more <= AT3_DECODE_EXTRA_CALLS && decode_rc == 0 && end_flag == 0;
+                         more++) {
+                        char step[24];
+                        int s2 = -1, e2 = -1, r2 = -1;
+                        (void)snprintf(step, sizeof(step), "decode%d", more);
+                        probe_step(emulated, "at3-decode", step);
+                        memset(s_at3_pcm, 0, sizeof(s_at3_pcm));
+                        decode_rc = sceAtracDecodeData(atrac_id, s_at3_pcm, &s2, &e2, &r2);
+                        at3_pcm_record(emulated, step, decode_rc, s2, e2, r2);
+                        end_flag = e2;
+                    }
+                    at3_stream_queries(emulated, atrac_id);
+                    probe_step(emulated, "at3-decode", "release-atracid");
+                    release_rc = sceAtracReleaseAtracID(atrac_id);
+                    at3_result(emulated, "release-atracid", release_rc);
+                }
+                probe_step(emulated, "at3-decode", "unload-atrac3plus");
+                atrac_unload_rc = sceUtilityUnloadAvModule(PSP_AV_MODULE_ATRAC3PLUS);
+                at3_result(emulated, "unload-atrac3plus", atrac_unload_rc);
+            }
+            probe_step(emulated, "at3-decode", "unload-avcodec");
+            avcodec_unload_rc = sceUtilityUnloadAvModule(PSP_AV_MODULE_AVCODEC);
+            at3_result(emulated, "unload-avcodec", avcodec_unload_rc);
+        }
+    }
+    (void)atrac_loaded;
+    (void)avcodec_loaded;
+    (void)setdata_rc;
+    (void)decode_rc;
+    (void)release_rc;
+    (void)atrac_unload_rc;
+    (void)avcodec_unload_rc;
+    probe_step(emulated, "at3-decode", "park");
+    /* Normal teardown: parks until PSPLink modstop, which ends main cleanly. Returning from main would
+       drop PSPLink to the XMB. */
+    probe_teardown(emulated);
+}
+#endif
+
+#if PSP_ORACLE_CASE == PSP_ORACLE_CASE_FAKE_SUCCESS
+#include <pspsuspend.h>
+#include <psputility.h>
+#include <psputility_osk.h>
+/* The runtime answers sceKernelVolatileMemUnlock/Lock/TryLock, sceUtilityOskUpdate/ShutdownStart and
+   scePowerUnregisterCallback without a measured PSP result in some states. This probe records the PSP's
+   return for each state. Default launch (no dialog ever opens):
+     1. VolatileMem: Lock, TryLock while held, a second thread's Lock and TryLock while held, a double Lock
+        from one thread, and the unlock that follows. Every blocking call runs on a helper thread so main
+        never blocks; the lock is left released.
+     2. scePower: Register/Unregister matrix. Unregister is only ever called on a slot this probe registered
+        a moment before, or on an out-of-range slot, so no other module's callback can be dropped.
+     3. sceUtilityOsk with no keyboard ever opened: GetStatus, Update, ShutdownStart.
+   The keyboard part (an OSK dialog that needs a person to finish it) is compiled in only with
+   FAKE_SUCCESS_OSK_CYCLE=1 and must be run attended. */
+#ifdef FAKE_SUCCESS_OSK_CYCLE
+static uint16_t s_fake_desc[1];
+static uint16_t s_fake_intext[1];
+static uint16_t s_fake_outtext[16];
+static SceUtilityOskData s_fake_data;
+static SceUtilityOskParams s_fake_params;
+#endif
+
+static void fake_record(int emulated, const char *step, uint32_t rc) {
+    char line[200];
+    const int used = snprintf(line, sizeof(line),
+                              "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-FAKE-001 case_id=fake-%s "
+                              "status=RC result=0x%08x\n",
+                              step, (unsigned int)rc);
+    if (used > 0 && (size_t)used < sizeof(line)) {
+        probe_emit_durable(emulated, line, (size_t)used);
+    }
+}
+
+/* Helper-thread plumbing shared by the VolatileMem cells. */
+static volatile int s_fake_h_mode;      /* 1: Lock once, 2: TryLock once, 3: Lock twice */
+static volatile int s_fake_h_stage;     /* 0 not started, 1 first call issued, 2 first returned, 3 second issued, 4 second returned */
+static volatile int s_fake_h_rc1;
+static volatile int s_fake_h_rc2;
+static volatile uint32_t s_fake_h_ptr;
+
+static int fake_helper(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    void *ptr = NULL;
+    int size = 0;
+    const int mode = s_fake_h_mode;
+    s_fake_h_stage = 1;
+    if (mode == 2) {
+        s_fake_h_rc1 = sceKernelVolatileMemTryLock(0, &ptr, &size);
+    } else {
+        s_fake_h_rc1 = sceKernelVolatileMemLock(0, &ptr, &size);
+    }
+    s_fake_h_ptr = (uint32_t)(uintptr_t)ptr;
+    s_fake_h_stage = 2;
+    if (mode == 3) {
+        s_fake_h_stage = 3;
+        s_fake_h_rc2 = sceKernelVolatileMemLock(0, &ptr, &size);
+        s_fake_h_stage = 4;
+    }
+    for (;;) sceKernelSleepThread();
+    return 0;
+}
+
+static SceUID fake_start_helper(int mode) {
+    s_fake_h_mode = mode;
+    s_fake_h_stage = 0;
+    s_fake_h_rc1 = 0x7ffffff0;
+    s_fake_h_rc2 = 0x7ffffff0;
+    s_fake_h_ptr = 0;
+    const SceUID helper = sceKernelCreateThread("nk_fake_helper", fake_helper, 0x20, 0x2000,
+                                                PSP_THREAD_ATTR_USER, NULL);
+    if (helper >= 0) (void)sceKernelStartThread(helper, 0, NULL);
+    return helper;
+}
+
+static void fake_helper_state(int emulated, const char *step) {
+    char line[240];
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-FAKE-001 case_id=fake-%s "
+                   "status=RC result=0x%08x stage=%d rc1=0x%08x rc2=0x%08x ptr=0x%08x\n",
+                   step, 0u, s_fake_h_stage, (unsigned int)s_fake_h_rc1,
+                   (unsigned int)s_fake_h_rc2, (unsigned int)s_fake_h_ptr);
+    probe_emit_durable(emulated, line, strlen(line));
+}
+
+static void fake_stop_helper(SceUID helper) {
+    if (helper >= 0) (void)sceKernelTerminateDeleteThread(helper);
+}
+
+static void fake_volatile_cells(int emulated) {
+    void *ptr = NULL;
+    int size = 0;
+
+    /* A. Lock, then TryLock from the owner while held. */
+    probe_step(emulated, "fake-success", "vol-lock");
+    fake_record(emulated, "vol-lock", (uint32_t)sceKernelVolatileMemLock(0, &ptr, &size));
+    probe_step(emulated, "fake-success", "vol-trylock-held-same-thread");
+    ptr = NULL;
+    size = 0;
+    fake_record(emulated, "vol-trylock-held-same-thread",
+                (uint32_t)sceKernelVolatileMemTryLock(0, &ptr, &size));
+
+    /* B. Another thread's TryLock while main holds the lock. */
+    probe_step(emulated, "fake-success", "vol-trylock-held-other-thread");
+    SceUID h = fake_start_helper(2);
+    sceKernelDelayThread(300 * 1000);
+    fake_helper_state(emulated, "vol-trylock-held-other-thread");
+    fake_stop_helper(h);
+
+    /* C. Another thread's blocking Lock while main holds the lock, then main unlocks. */
+    probe_step(emulated, "fake-success", "vol-lock-held-other-thread");
+    h = fake_start_helper(1);
+    sceKernelDelayThread(300 * 1000);
+    fake_helper_state(emulated, "vol-lock-held-other-thread-while-held");
+    probe_step(emulated, "fake-success", "vol-unlock-owner");
+    fake_record(emulated, "vol-unlock-owner", (uint32_t)sceKernelVolatileMemUnlock(0));
+    sceKernelDelayThread(300 * 1000);
+    fake_helper_state(emulated, "vol-lock-held-other-thread-after-unlock");
+    /* The helper (if it got the lock) still owns it; release from main and record the result. */
+    probe_step(emulated, "fake-success", "vol-unlock-after-helper");
+    fake_record(emulated, "vol-unlock-after-helper", (uint32_t)sceKernelVolatileMemUnlock(0));
+    fake_stop_helper(h);
+    probe_step(emulated, "fake-success", "vol-unlock-clean-check");
+    fake_record(emulated, "vol-unlock-clean-check", (uint32_t)sceKernelVolatileMemUnlock(0));
+
+    /* D. One thread locks twice (the second Lock may refuse or block); main unlocks to release it. */
+    probe_step(emulated, "fake-success", "vol-lock-twice-same-thread");
+    h = fake_start_helper(3);
+    sceKernelDelayThread(300 * 1000);
+    fake_helper_state(emulated, "vol-lock-twice-same-thread-while-held");
+    fake_record(emulated, "vol-lock-twice-unlock-1", (uint32_t)sceKernelVolatileMemUnlock(0));
+    sceKernelDelayThread(300 * 1000);
+    fake_helper_state(emulated, "vol-lock-twice-same-thread-after-unlock-1");
+    fake_record(emulated, "vol-lock-twice-unlock-2", (uint32_t)sceKernelVolatileMemUnlock(0));
+    fake_stop_helper(h);
+    /* Leave the lock released whatever happened: an unlock that reports 0x800201ae means it is. */
+    probe_step(emulated, "fake-success", "vol-final-clean-check");
+    fake_record(emulated, "vol-final-clean-check", (uint32_t)sceKernelVolatileMemUnlock(0));
+    fake_record(emulated, "vol-final-clean-check-2", (uint32_t)sceKernelVolatileMemUnlock(0));
+}
+
+static int fake_power_callback(int arg1, int arg2, void *common) {
+    (void)arg1;
+    (void)arg2;
+    (void)common;
+    return 0;
+}
+
+static void fake_power_cells(int emulated) {
+    const SceUID cb = sceKernelCreateCallback("nk_fake_power_cb", fake_power_callback, NULL);
+    fake_record(emulated, "pw-create-callback", (uint32_t)cb);
+    if (cb < 0) return;
+    int own[16];
+    char step[48];
+
+    /* Auto slot (-1): register, unregister, unregister again (the slot is now empty). */
+    probe_step(emulated, "fake-success", "pw-auto");
+    const int auto_slot = scePowerRegisterCallback(-1, cb);
+    fake_record(emulated, "pw-register-auto", (uint32_t)auto_slot);
+    if (auto_slot >= 0 && auto_slot < 16) {
+        fake_record(emulated, "pw-unregister-owned", (uint32_t)scePowerUnregisterCallback(auto_slot));
+        fake_record(emulated, "pw-unregister-empty-after-own", (uint32_t)scePowerUnregisterCallback(auto_slot));
+    }
+
+    /* Explicit slots 0..15: registration shows which are free; only slots registered here are unregistered. */
+    probe_step(emulated, "fake-success", "pw-slots");
+    for (int slot = 0; slot < 16; slot++) {
+        (void)snprintf(step, sizeof(step), "pw-register-slot%d", slot);
+        const int rc = scePowerRegisterCallback(slot, cb);
+        fake_record(emulated, step, (uint32_t)rc);
+        own[slot] = rc >= 0;
+    }
+    for (int slot = 0; slot < 16; slot++) {
+        if (!own[slot]) continue;
+        (void)snprintf(step, sizeof(step), "pw-unregister-owned-slot%d", slot);
+        fake_record(emulated, step, (uint32_t)scePowerUnregisterCallback(slot));
+        (void)snprintf(step, sizeof(step), "pw-unregister-empty-slot%d", slot);
+        fake_record(emulated, step, (uint32_t)scePowerUnregisterCallback(slot));
+    }
+
+    /* Range cells. Register side first; Unregister is called on an out-of-range slot only when the
+       Register at that slot was refused (so this probe does not own it). */
+    probe_step(emulated, "fake-success", "pw-range");
+    const int reg16 = scePowerRegisterCallback(16, cb);
+    fake_record(emulated, "pw-register-slot16", (uint32_t)reg16);
+    const int reg32 = scePowerRegisterCallback(32, cb);
+    fake_record(emulated, "pw-register-slot32", (uint32_t)reg32);
+    const int regm2 = scePowerRegisterCallback(-2, cb);
+    fake_record(emulated, "pw-register-slotm2", (uint32_t)regm2);
+    if (reg16 >= 0) fake_record(emulated, "pw-unregister-owned-slot16", (uint32_t)scePowerUnregisterCallback(16));
+    if (reg32 >= 0) fake_record(emulated, "pw-unregister-owned-slot32", (uint32_t)scePowerUnregisterCallback(32));
+    if (regm2 >= 0) fake_record(emulated, "pw-unregister-owned-slotm2", (uint32_t)scePowerUnregisterCallback(-2));
+    if (reg16 < 0) fake_record(emulated, "pw-unregister-slot16", (uint32_t)scePowerUnregisterCallback(16));
+    if (reg32 < 0) fake_record(emulated, "pw-unregister-slot32", (uint32_t)scePowerUnregisterCallback(32));
+    if (regm2 < 0) fake_record(emulated, "pw-unregister-slotm2", (uint32_t)scePowerUnregisterCallback(-2));
+    fake_record(emulated, "pw-unregister-slotm1", (uint32_t)scePowerUnregisterCallback(-1));
+    fake_record(emulated, "pw-unregister-slot1000", (uint32_t)scePowerUnregisterCallback(1000));
+    (void)sceKernelDeleteCallback(cb);
+}
+
+#ifdef FAKE_SUCCESS_OSK_CYCLE
+/* Attended only. The dialog needs a person: press the cancel or confirm control on the PSP. The wait is
+   bounded; if the dialog is still open at the end the probe records that, and the caller must NOT soft
+   reset the device (a visible keyboard before a soft reset wedged PSPLink on 2026-10-21). */
+#define FAKE_OSK_WAIT_POLLS 3750 /* 60 s at 16 ms */
+static void fake_osk_cycle(int emulated) {
+    memset(&s_fake_params, 0, sizeof(s_fake_params));
+    memset(&s_fake_data, 0, sizeof(s_fake_data));
+    s_fake_params.base.size = sizeof(s_fake_params);
+    s_fake_params.base.graphicsThread = 0x11;
+    s_fake_params.base.accessThread = 0x13;
+    s_fake_params.base.fontThread = 0x12;
+    s_fake_params.base.soundThread = 0x10;
+    s_fake_params.datacount = 1;
+    s_fake_params.data = &s_fake_data;
+    s_fake_data.lines = 1;
+    s_fake_data.desc = s_fake_desc;
+    s_fake_data.intext = s_fake_intext;
+    s_fake_data.outtext = s_fake_outtext;
+    s_fake_data.outtextlength = 16;
+    s_fake_data.outtextlimit = 16;
+
+    probe_step(emulated, "fake-success", "osk-initstart");
+    const int init_rc = sceUtilityOskInitStart(&s_fake_params);
+    fake_record(emulated, "osk-initstart", (uint32_t)init_rc);
+    if (init_rc != 0) return;
+    uint32_t status = 0xffffffffu;
+    int visible_seen = 0;
+    int quit_seen = 0;
+    int polls = 0;
+    for (polls = 0; polls < FAKE_OSK_WAIT_POLLS; polls++) {
+        status = (uint32_t)sceUtilityOskGetStatus();
+        if (status == 2u && !visible_seen) {
+            visible_seen = 1;
+            fake_record(emulated, "osk-update-visible-speed0", (uint32_t)sceUtilityOskUpdate(0));
+            fake_record(emulated, "osk-update-visible-speed1", (uint32_t)sceUtilityOskUpdate(1));
+            fake_record(emulated, "osk-shutdown-visible", (uint32_t)sceUtilityOskShutdownStart());
+        }
+        if (status == 2u) (void)sceUtilityOskUpdate(1);
+        if (status == 3u) {
+            quit_seen = 1;
+            fake_record(emulated, "osk-update-quit", (uint32_t)sceUtilityOskUpdate(1));
+            fake_record(emulated, "osk-shutdown-quit", (uint32_t)sceUtilityOskShutdownStart());
+            break;
+        }
+        if ((status == 0u || status == 0x80110005u) && visible_seen) break;
+        sceKernelDelayThread(16000);
+    }
+    char line[200];
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-FAKE-001 case_id=fake-osk-status-end "
+                   "status=RC result=0x%08x polls=%d visible=%d quit=%d\n",
+                   (unsigned int)status, polls, visible_seen, quit_seen);
+    probe_emit_durable(emulated, line, strlen(line));
+    for (int i = 0; i < 200; i++) {
+        const uint32_t now = (uint32_t)sceUtilityOskGetStatus();
+        if (now == 0u || now == 0x80110005u) break;
+        (void)sceUtilityOskUpdate(1);
+        sceKernelDelayThread(16000);
+    }
+    const uint32_t final_status = (uint32_t)sceUtilityOskGetStatus();
+    fake_record(emulated, "osk-final-status", final_status);
+    if (final_status == 0u || final_status == 0x80110005u) {
+        fake_record(emulated, "osk-update-none-after-use", (uint32_t)sceUtilityOskUpdate(0));
+        fake_record(emulated, "osk-shutdown-none-after-use", (uint32_t)sceUtilityOskShutdownStart());
+    }
+}
+#endif
+
+static void run_fake_success(int emulated) {
+    probe_step(emulated, "fake-success", "volatile-cells");
+    fake_volatile_cells(emulated);
+    probe_step(emulated, "fake-success", "power-cells");
+    fake_power_cells(emulated);
+
+    /* No keyboard has ever been opened by this launch: these cells never create a dialog. */
+    probe_step(emulated, "fake-success", "osk-none-cells");
+    fake_record(emulated, "osk-status-none", (uint32_t)sceUtilityOskGetStatus());
+    fake_record(emulated, "osk-update-none-speed0", (uint32_t)sceUtilityOskUpdate(0));
+    fake_record(emulated, "osk-update-none-speed1", (uint32_t)sceUtilityOskUpdate(1));
+    fake_record(emulated, "osk-shutdown-none", (uint32_t)sceUtilityOskShutdownStart());
+    fake_record(emulated, "osk-status-none-after", (uint32_t)sceUtilityOskGetStatus());
+#ifdef FAKE_SUCCESS_OSK_CYCLE
+    probe_step(emulated, "fake-success", "osk-cycle");
+    fake_osk_cycle(emulated);
+#endif
+    probe_step(emulated, "fake-success", "done");
+    fake_record(emulated, "done", 0);
+    /* Normal teardown: parks until PSPLink modstop, which ends main cleanly. */
+    probe_teardown(emulated);
+}
+#endif
+
 int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
@@ -8478,6 +9083,12 @@ int main(int argc, char *argv[]) {
     run_font_list(emulated);
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_VRAM_MIRROR
     run_vram_mirror(emulated);
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_LATE_PRX_TARGET
+    run_late_prx_target(emulated); /* parks; never returns */
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_AT3_DECODE
+    run_at3_decode(emulated); /* ends in probe_teardown, which parks until modstop */
+#elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FAKE_SUCCESS
+    run_fake_success(emulated); /* ends in probe_teardown, which parks until modstop */
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

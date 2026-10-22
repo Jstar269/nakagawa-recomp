@@ -569,8 +569,22 @@ have_image:;
             data_state, sr_host_data_entry_count());
 
     int use_sched = 0;
+    int gui_requested = 0;
     for (int i = 1; i < argc; i++) if (strcmp(argv[i], "--sched") == 0) use_sched = 1;
-    for (int i = 1; i < argc; i++) if (strcmp(argv[i], "--gui") == 0) { gui_init(SR_APP_TITLE); use_sched = 1; }
+    for (int i = 1; i < argc; i++) if (strcmp(argv[i], "--gui") == 0) {
+        gui_init(SR_APP_TITLE);
+        gui_requested = 1;
+        use_sched = 1;
+    }
+
+    if (gui_headless_acceptance_requested() &&
+        (!gui_requested || !gui_headless_acceptance_ready())) {
+        sr_driver_boot_event("BOOT_EVENT phase=headless_acceptance status=FAIL reason=window_presenter_unavailable");
+        return SR_HEADLESS_ACCEPTANCE_EXIT_PRESENTER_UNAVAILABLE;
+    }
+    /* An acceptance launch ends the scheduler once its requested frames were presented. */
+    if (gui_headless_acceptance_requested())
+        sr_sched_stop_requested = gui_headless_acceptance_complete;
 
     if (use_sched) {
         /* Run with the cooperative scheduler so the game's threads interleave (the boot busy-
@@ -634,6 +648,18 @@ have_image:;
         if (!matches) any_failure = 1;
     }
     if (any_failure) return 3;
+
+    if (gui_headless_acceptance_requested()) {
+        if (gui_headless_acceptance_complete()) {
+            uint32_t presented = gui_headless_acceptance_presented_frames();
+            sr_driver_boot_event("BOOT_EVENT phase=headless_acceptance status=PASS presented_frames=%u",
+                                 presented);
+            return SR_HEADLESS_ACCEPTANCE_EXIT_REACHED;
+        }
+        sr_driver_boot_event("BOOT_EVENT phase=headless_acceptance status=FAIL reason=checkpoint_not_reached presented_frames=%u",
+                             gui_headless_acceptance_presented_frames());
+        return SR_HEADLESS_ACCEPTANCE_EXIT_NOT_REACHED;
+    }
 
     return 0;
 }

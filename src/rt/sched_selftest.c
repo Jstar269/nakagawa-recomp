@@ -87,8 +87,34 @@ void sr_oor(uint32_t a, uint32_t v, int store) { (void)a; (void)v; (void)store; 
 uint32_t sr_get_ge_status(void) { return 0; }
 uint32_t g_frame_prims = 0;
 
+/* This scheduler-only harness does not link recomp.c or execute generated
+ * return capture; the production-path boundary regression lives in the HLE
+ * thread harness built with real recomp.c. */
+SrAotReturnBoundary *sr_aot_return_boundary_top;
+int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
+                                 uint32_t call_pc, uint32_t has_resume_pc) {
+    (void)s; (void)resume_pc; (void)call_pc; (void)has_resume_pc;
+    return 0;
+}
+int sr_aot_return_boundary_end(CpuState *s) { (void)s; return 0; }
+void sr_aot_return_boundaries_reset(void) { sr_aot_return_boundary_top = NULL; }
+void sr_aot_return_boundary_stack_swap(SrAotReturnBoundaryStack *stack) { (void)stack; }
+void sr_aot_return_boundary_stack_destroy(SrAotReturnBoundaryStack *stack) {
+    if (stack) memset(stack, 0, sizeof(*stack));
+}
+void sr_aot_return_boundary_scope_begin(SrAotReturnBoundaryScope *scope) {
+    if (scope) memset(scope, 0, sizeof(*scope));
+}
+int sr_aot_return_boundary_scope_end(CpuState *s,
+                                     const SrAotReturnBoundaryScope *scope,
+                                     const char *owner) {
+    (void)s; (void)scope; (void)owner;
+    return 0;
+}
+
 int gui_on(void) { return 0; }
 void gui_pump(void) {}
+int gui_headless_acceptance_complete(void) { return 0; }
 static uint32_t g_test_vblank_handler;
 static unsigned g_test_handler_calls;
 static int g_test_handler_raise_ge;

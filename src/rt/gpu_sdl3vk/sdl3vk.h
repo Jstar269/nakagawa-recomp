@@ -49,6 +49,36 @@ int sdl3vk_pick_present_mode(int vsync, const int *available, int count);
 #define SDL3VK_SURFACE_FORMAT_CAP 32
 int sdl3vk_pick_surface_format(int query, int count, const int *formats);
 
+/* How a game frame is scaled into the window (issue #1129), chosen by SR_PRESENT_SCALING:
+ *   sharp    (default) fit the window keeping the 480:272 aspect; at a fractional scale the frame
+ *            is first enlarged with nearest filtering to the next integer multiple (the smaller
+ *            one when the axes round apart), then that image is filtered linearly to the fitted
+ *            size (sharp bilinear);
+ *   integer  the largest integer multiple of the source that fits, letterboxed, nearest filtering
+ *            (a window smaller than the source falls back to a linear fit);
+ *   bilinear fit the window with linear filtering (the behaviour before issue #1129).
+ * Every mode uses one nearest blit at an exact integer fit, so a 1x, 2x or 3x window is unchanged. */
+enum {
+    SDL3VK_SCALING_SHARP = 0,
+    SDL3VK_SCALING_INTEGER = 1,
+    SDL3VK_SCALING_BILINEAR = 2,
+};
+
+/* The mode for an SR_PRESENT_SCALING value: NULL or empty is SDL3VK_SCALING_SHARP, an unknown
+ * value -1. */
+int sdl3vk_parse_present_scaling(const char *value);
+
+typedef struct {
+    int x, y, w, h;  /* destination rectangle in the swapchain image; w == 0 means draw nothing */
+    int prescale;    /* > 1: nearest blit into a (prescale*srcw x prescale*srch) image first */
+    int nearest;     /* filter of the blit that writes the destination: 1 nearest, 0 linear */
+} Sdl3VkPresentPlan;
+
+/* Destination and filtering for a srcw x srch frame in a dw x dh swapchain image (pure, no
+ * device needed). max_dim bounds the prescale image (maxImageDimension2D); a sharp prescale
+ * beyond it falls back to one linear blit. */
+Sdl3VkPresentPlan sdl3vk_present_plan(int mode, int srcw, int srch, int dw, int dh, int max_dim);
+
 /* In-game performance HUD control (F1 / SR_HUD=1) */
 int  sdl3vk_hud_is_enabled(void);
 void sdl3vk_hud_set_enabled(int enabled);
