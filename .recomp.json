@@ -1,0 +1,47 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "Hot Shots Tennis: Get a Grip",
+  "wikidata": "Q5417674",
+  "system": "PSP",
+  "type": "recomp",
+  "original": {
+    "region": "USA",
+    "serial": "UCUS98701"
+  },
+  "project": "Nakagawa Recomp",
+  "status": "in-progress",
+  "targets": [
+    "Windows"
+  ],
+  "toolchain": "Nakagawa",
+  "approach": "General PSP static recompiler: game code translated ahead of time to C, linked with a native runtime and a Vulkan player. This is its first maintainer-tested title.",
+  "maintainers": [
+    {
+      "name": "Jstar269",
+      "link": "https://github.com/Jstar269"
+    }
+  ],
+  "links": [
+    {
+      "label": "Compatibility",
+      "url": "https://github.com/Jstar269/nakagawa-recomp/blob/main/docs/COMPATIBILITY.md"
+    },
+    {
+      "label": "Decomp (hst-decomp)",
+      "url": "https://github.com/Jstar269/hst-decomp"
+    }
+  ],
+  "help": [
+    "Clay-based player UI",
+    "Linux, macOS and Android ports",
+    "PSP hardware measurements",
+    "Testing more PSP titles"
+  ],
+  "tags": [
+    "psp",
+    "static-recompilation",
+    "vulkan",
+    "sdl3"
+  ],
+  "notes": "Part of the Nakagawa family. Bring your own copy of the game: nothing is downloaded, and no game data, keys or firmware are included. Other PSP titles are Experimental or Untested until the maintainer tests them. Contributions welcome."
+}
