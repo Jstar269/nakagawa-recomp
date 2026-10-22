@@ -351,7 +351,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8953b51bd642e33ac37ba3f83be7fc9c92bbadad1baa69143f27489931d213bf"
+      "sha256": "d3e7942d7ccb74ac89ef4c1d65cdc315faeae5a84f13b0974900c0fe8ff61cb7"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -409,7 +409,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "8e928dd48b61a8cc661087eb2a3f19d7e0a201a03527f03bb0d083dd9ae4581f"
+      "sha256": "795d8bd07ff6209743026e6d59b3e21c0c80daa1b9837411cebb6e86b24d83db"
     },
     {
       "path": "NOTICE.md",
@@ -6252,7 +6252,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b11a85ee470decb89c38759874d5d1e79783d34d086fb326d1ac6e2ddfbb106c"
+      "sha256": "61e6bbc105240cdb658196db22bd1734fa177a2ce0caf4709e9eec241860c546"
     },
     {
       "path": "src/ui/backend/nk_ui_sdlr.h",
@@ -6264,7 +6264,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c2a1d5c46041d756e74a41beb857349fe93f80395644845a3d816c34b809e718"
+      "sha256": "b1e4aa1657bd4ff0bd2e5e34be1b5c6fd94e51a8eafdd4c132ba7070eaddcf07"
     },
     {
       "path": "src/ui/backend/nk_ui_vk.c",
@@ -6492,7 +6492,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d7ca3237a75656a346ab514fe3cd3e8a1f0974c769d47a3526015e222ee7fa17"
+      "sha256": "9cacaae266480c073adac628fc0b8ffe7d13a5e464daacf9ca963e2d50bcbda7"
     },
     {
       "path": "src/ui/nk_ui_waves.c",
@@ -6792,7 +6792,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "afdda6c6d1fafa5852e8172ac7eec879d90466656412c7e7287bec11985fb9d7"
+      "sha256": "8adfe2c458b461be9556d326a5606b9289c1b557235f4f43c6c20043447aecea"
     },
     {
       "path": "tests/native/test_nk_ui_focus.c",
@@ -6816,7 +6816,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "82131aaa8501627a24462630d84dee8a05d7e33cfa83cf7f36c30d619171207c"
+      "sha256": "3073f72df9eba602685841f1fc8b3bf282aa4092fa97874a3fb866bb7e4620eb"
     },
     {
       "path": "tests/native/test_nk_ui_vk.c",

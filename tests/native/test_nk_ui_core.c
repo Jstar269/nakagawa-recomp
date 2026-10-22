@@ -43,9 +43,8 @@ static const char *const g_ui_core_files[] = {
     "src/ui/nk_ui_input.c",
     "src/ui/nk_ui_prompts.c",
     "src/ui/nk_ui_sdl_input.c",
-    "src/ui/nk_ui_ttf.c",
-    "src/ui/backend/nk_ui_sdlr.h",
-    "src/ui/backend/nk_ui_sdlr.c",
+    /* nk_ui_ttf.c and backend/nk_ui_sdlr.* are the SDL edge since lane C3b: they
+       include SDL headers behind NK_UI_WITH_SDL and are covered by test_nk_ui_sdlr.c. */
     "src/ui/backend/nk_ui_vk.h",
     "src/ui/backend/nk_ui_vk.c"
 };
