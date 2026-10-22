@@ -946,6 +946,7 @@ PUBLIC_TARGETS := \
 	profiler-selftest \
 	gui-present-selftest \
 	clay-layout-selftest \
+	nk-ui-core-selftest \
 	coro-selftest \
 	hle-thread-selftest \
 	aot-return-boundary-thread-selftest \
@@ -1074,6 +1075,7 @@ HELP_DESCRIPTION_heap-selftest := run the heap and allocator selftest
 HELP_DESCRIPTION_profiler-selftest := run the profiler selftest
 HELP_DESCRIPTION_gui-present-selftest := run the host present pacing selftest
 HELP_DESCRIPTION_clay-layout-selftest := build and run the vendored Clay layout selftest
+HELP_DESCRIPTION_nk-ui-core-selftest := build and run the nk_ui core selftest (synthetic layout, focus and scale)
 HELP_DESCRIPTION_coro-selftest := run the coroutine selftest
 HELP_DESCRIPTION_hle-thread-selftest := build and run the HLE thread selftest
 HELP_DESCRIPTION_aot-return-boundary-thread-selftest := run the real recomp/scheduler thread-boundary regression
