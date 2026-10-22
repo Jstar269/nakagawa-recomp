@@ -30,7 +30,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "0fc00c65e2fbe6bec4d60787330a16f37731fc223a7433d131e0f0792bb640c1"
+      "sha256": "aae9fa239a902436ce3376d937f94e99660c3f7503223d906f6faaef8d929da4"
     },
     {
       "path": ".clangd",
@@ -84,7 +84,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "55071f73c1de1c82665190e37afed0e55171d1e7126dd084e7f98c067bb72c38"
+      "sha256": "229aa008b1f0fccbec62f72ce3398f087d3dd7dd4e1cbce1e6cc3986f95806f7"
     },
     {
       "path": ".gitattributes",
@@ -93,7 +93,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "838391b96a32ede2d00784c341f94de44c7ecb69061510dfbda11a795c6bc5d0"
+      "sha256": "55db75c069b3034f57be8ca6cb544f221e8205924e7279cd0d2689a84a55cc9b"
     },
     {
       "path": ".github/CODEOWNERS",
@@ -165,7 +165,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "2c1cace0923515c4e1f740dde95d5602e3e447ac18f0761873e287544ce47c2b"
+      "sha256": "61fc409d5c37ddef2aef565d818903034eb2646c7a78f502b5de23eaa2823265"
     },
     {
       "path": ".github/instructions/c-generated.instructions.md",
@@ -291,7 +291,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "7774c873e6da36f8636400dcf0021f7eb5e3e62e0198daebb54824607126413e"
+      "sha256": "d7bac8de52393cc64ca54d5e1f2ad7610ad92d8414709b01a42777e4b59c16a6"
     },
     {
       "path": ".markdownlint-cli2.jsonc",
@@ -300,7 +300,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "83e9bf1f20ca05fb1430283bd2efea43277b0e913bbfce0b6377cd4b1c13f70c"
+      "sha256": "cc7454b4e96422aecea59934982d6c075b0c4bc448ea3830e07858c024422e96"
     },
     {
       "path": ".pre-commit-config.yaml",

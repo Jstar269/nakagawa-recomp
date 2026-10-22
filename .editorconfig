@@ -12,11 +12,11 @@ indent_size = 4
 [*.py]
 max_line_length = 120
 
-[*.{ts,tsx,js,jsx,json,yml,yaml,css,scss,html}]
+[*.{json,jsonc,yml,yaml}]
 indent_style = space
 indent_size = 2
 
-[Makefile]
+[{Makefile,*.mk}]
 indent_style = tab
 
 [build/**]
