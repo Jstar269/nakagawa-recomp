@@ -111,7 +111,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "1feb481ae2e8267c1501ac9f3ce9399cc7fa76fd502477e918ce6cfae6ea7d26"
+      "sha256": "ad0db549576ce08c7633b49885d03c3e597d4d98faa669156ce728450149360f"
     },
     {
       "path": ".github/ISSUE_TEMPLATE/config.yml",
@@ -129,7 +129,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "3466968777a6a5b0735dbb608c53ea27eb6e17e63ffe43c3744263f81567e166"
+      "sha256": "f979064c5092aa7ae2e58c4f2e11da742af59ef2880c8b5fdbc77cf560661899"
     },
     {
       "path": ".github/ISSUE_TEMPLATE/smoke_test_report.yml",
@@ -147,7 +147,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9a741f6e87d35f44d02f5b1d0605e8240cec9341a9e709ff1aa4dd462753ceea"
+      "sha256": "b2a8cff842fdc1291b21d8e469c1a311868bf63a76fbad1a8b4edce8228b393b"
     },
     {
       "path": ".github/copilot-instructions.md",
@@ -360,7 +360,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b7e6c1406124d60bb57989f8161c1422029a49d1357bf1789c03bacc0f79d209"
+      "sha256": "26abcae915686363677a377e47420833aac413b6ca5a1b549d62c3d71aefc130"
     },
     {
       "path": "CREDITS.md",
