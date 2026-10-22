@@ -265,6 +265,26 @@ class FontProvisioningTests(unittest.TestCase):
         self.assertEqual(resolve_latin_index(user_data, project / "font", 8),
                          {"source": "user", "served_index": -2})
 
+    def test_legacy_only_latin_import_stays_in_use_with_project_and_cache_font_dirs(self) -> None:
+        source = self._folder("legacy_only_latin", {"nkltn.pgf": latin_pgf()})
+        user_data = self.temp_path / "legacy-user-data"
+        project = self.temp_path / "legacy-project" / "font"
+        project.mkdir(parents=True)
+        (project / "nkltn.pgf").write_bytes(latin_strike_pgf("Nakagawa Project Latin", 12 * 64))
+        import_fonts(source, user_data_root=user_data)
+
+        self.assertEqual(resolve_latin_index(user_data, project, 0),
+                         {"source": "user", "served_index": -2})
+        self.assertEqual(resolve_latin_index(user_data, project, 15),
+                         {"source": "user", "served_index": -2})
+        self.assertEqual(resolve_latin_index(user_data, get_font_cache_dir(user_data), 8),
+                         {"source": "user", "served_index": -2})
+        states = latin_index_states(user_data, project_root=project.parent)
+        self.assertEqual(len(states), 16)
+        self.assertTrue(
+            all(state["source"] == "user" and "legacy nkltn.pgf" in state["detail"] for state in states)
+        )
+
     def test_latin_index_nearest_tie_prefers_the_lower_same_group_index(self) -> None:
         source = self._folder("latin_tie", {
             "ltn0.pgf": latin_strike_pgf("Nakagawa Latin Lower", 7 * 64),

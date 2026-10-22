@@ -204,7 +204,8 @@ static int pgf_table_pair(const PGF *p, unsigned table, uint32_t index,
     size_t entry;
     if (table >= PGF_TABLE_COUNT) return 0;
     if (index == UINT8_MAX && p->metric_counts[table] == UINT8_MAX) {
-        /* The maximal index/count pair marks a missing metric, not a table entry. */
+        /* Project decision, unmeasured on PSP: return a zero pair without forming a table read.
+         * The count has no entry for index 255, so accepting it keeps this reader bounded. */
         *first = 0;
         *second = 0;
         return 1;
@@ -350,7 +351,8 @@ static int pgf_checked_glyph(const PGF *p, uint32_t glyph_id, PgfGlyph *glyph,
         target = (uint64_t)glyph->record_offset + glyph->shadow_offset;
         if (target < glyph->record_offset || target > p->size) return 0;
         if (target == p->size) {
-            /* An absent optional shadow prefix at EOF has no bytes to read. */
+            /* Project decision, unmeasured on PSP: treat an EOF target as an absent optional
+             * prefix and keep the read bounded. */
             glyph->shadow_row_order = 0u;
         } else {
             if (p->size - (size_t)target < 6u) return 0;

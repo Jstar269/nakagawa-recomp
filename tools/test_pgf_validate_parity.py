@@ -89,6 +89,21 @@ def _metric_missing_sentinel() -> bytes:
     return bytes(image)
 
 
+def _metric_255_with_short_table() -> bytes:
+    """Use index 255 while the declared dimension table still has only one entry."""
+    image = bytearray(build_pgf([_glyph(0x41), _glyph(0x61)], font_name="Nakagawa Test Latin"))
+    if image[0x102] >= 255:
+        raise AssertionError("the base fixture must declare fewer than 255 dimension metrics")
+    parser = fonts._Image(bytes(image))
+    parser.parse_directory()
+    glyph_id = parser.map_entry(0x41)
+    if glyph_id is None:
+        raise AssertionError("the base fixture must map uppercase A")
+    record = parser.glyph_data_offset + parser.pointer_entry(glyph_id)
+    image[record + 8] = 255
+    return bytes(image)
+
+
 def _shadow_prefix_at_eof() -> bytes:
     """Give lowercase a a mapped shadow whose optional prefix begins exactly at EOF."""
     image = bytearray(build_pgf([_glyph(0x41), _glyph(0x61)], font_name="Nakagawa Test Latin"))
@@ -334,6 +349,7 @@ class PgfValidatorParityTests(unittest.TestCase):
         fixtures = {
             "ltn3.pgf": _metric_missing_sentinel(),
             "ltn8.pgf": _shadow_prefix_at_eof(),
+            "short_metric_table.pgf": _metric_255_with_short_table(),
             "short_shadow.pgf": _short_shadow_prefix(),
         }
         paths = []
@@ -345,7 +361,9 @@ class PgfValidatorParityTests(unittest.TestCase):
         native = _native_verdicts(self.exe, paths)
         for path, line in zip(paths, native, strict=True):
             tokens = line.split()
-            expected = ("10", "0") if path.name == "short_shadow.pgf" else ("0", "1")
+            expected = ("10", "0") if path.name in (
+                "short_metric_table.pgf", "short_shadow.pgf"
+            ) else ("0", "1")
             self.assertEqual((tokens[0], tokens[1]), expected, path.name)
             verdict = fonts.pgf_verdict(fixtures[path.name])
             self.assertEqual(verdict["ok"], expected[1] == "1", path.name)

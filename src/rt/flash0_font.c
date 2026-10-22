@@ -686,10 +686,11 @@ SrFontRegistryStatus sr_flash0_font_registry_info(const Flash0Sources *sources, 
     FILE *fp = NULL;
     uint32_t size = 0;
     Flash0Source source;
+    NkFontLatinResolution resolution;
     if (row->latin_index >= 0) {
         char path[SR_FLASH0_PATH_MAX + 64];
         source = flash0_resolve_latin_index(sources, row->latin_index, path, sizeof(path),
-                                            &fp, &size, NULL);
+                                            &fp, &size, &resolution);
     } else {
         source = flash0_resolve(sources, slot, &fp, &size);
     }
@@ -705,11 +706,26 @@ SrFontRegistryStatus sr_flash0_font_registry_info(const Flash0Sources *sources, 
     info->file_name = row->latin_index >= 0
         ? nk_font_latin_index_filename(row->latin_index) : s_flash0_slots[slot].served_name;
     info->family_code = row->family;
-    /* No project font is bold or italic (FONT_PLAN D10): such an index serves the slot's regular
-     * face and says so, instead of reporting a style the face does not have. */
-    info->served_as_regular = row->style == FLASH0_STYLE_ITALIC || row->style == FLASH0_STYLE_BOLD ||
-                              row->style == FLASH0_STYLE_BOLD_ITALIC;
-    info->style = info->served_as_regular ? FLASH0_STYLE_REGULAR : row->style;
+    if (row->latin_index >= 0) {
+        const Flash0RegistryRow *served_row = NULL;
+        if (resolution.served_index >= 0) {
+            for (uint32_t i = 0; i < SR_FONT_REGISTRY_COUNT; i++) {
+                if (s_flash0_registry_rows[i].latin_index == resolution.served_index) {
+                    served_row = &s_flash0_registry_rows[i];
+                    break;
+                }
+            }
+        }
+        /* Indexed files carry the style of their own registry row. Project and old unindexed
+         * Latin files are the regular face. Mark a substitution only when its style differs
+         * from the requested row. */
+        info->style = served_row ? served_row->style : FLASH0_STYLE_REGULAR;
+        info->served_as_regular = resolution.served_index == row->latin_index ? 0 :
+                                  info->style != row->style;
+    } else {
+        info->served_as_regular = 0;
+        info->style = row->style;
+    }
     info->sub_style = row->sub_style;
     info->language_code = row->language;
     info->region_code = row->region;

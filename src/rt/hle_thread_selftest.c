@@ -29176,7 +29176,7 @@ static void test_flash0_latin_index_resolution(void) {
     char import_error[NK_FONT_DETAIL_MAX] = "";
     int import_ok = nk_font_import_folder(import_user_root, import_source_dir, NULL,
                                           &imported, import_error, sizeof(import_error));
-    expect(import_ok && imported.imported_count == 2,
+    expect(import_ok && imported.imported_count == 3,
            "the native font importer caches every named synthetic Latin index independently");
     Flash0Sources imported_sources;
     memset(&imported_sources, 0, sizeof(imported_sources));
@@ -29190,13 +29190,53 @@ static void test_flash0_latin_index_resolution(void) {
                strcmp(first.file_name, "ltn0.pgf") == 0 && strcmp(ninth.file_name, "ltn8.pgf") == 0 &&
                first.h_size != ninth.h_size && strcmp(first.font_name, ninth.font_name) != 0,
            "native import output serves its own file and strike through registry indices 1 and 9");
+
+    SrFontRegistryInfo bold, fallback;
+    expect(sr_flash0_font_registry_info(&imported_sources, 5u, &bold) == SR_FONT_REGISTRY_PRESENT &&
+               bold.source && strcmp(bold.source, "user-imported") == 0 && bold.style == 5u &&
+               !bold.served_as_regular,
+           "an exact bold Latin index reports the measured Bold style of its served file");
+    expect(sr_flash0_font_registry_info(&imported_sources, 3u, &fallback) == SR_FONT_REGISTRY_PRESENT &&
+               fallback.source && strcmp(fallback.source, "user-imported") == 0 &&
+               fallback.style == 1u && fallback.served_as_regular,
+           "a same-group fallback reports the served Regular face when it differs from requested Italic");
+
+    char legacy_user_root[SR_FLASH0_PATH_MAX];
+    char legacy_source_dir[SR_FLASH0_PATH_MAX];
+    Flash0Sources legacy_sources;
+    snprintf(legacy_user_root, sizeof(legacy_user_root), "%s/legacy-data", root);
+    snprintf(legacy_source_dir, sizeof(legacy_source_dir), "%s/legacy-source", root);
+    NkFontImportResult legacy_imported;
+    import_error[0] = '\0';
+    expect(nk_font_import_folder(legacy_user_root, legacy_source_dir, NULL,
+                                 &legacy_imported, import_error, sizeof(import_error)) &&
+               legacy_imported.imported_count == 1,
+           "a pre-index single-file Latin import remains loadable from its legacy cache");
+    memset(&legacy_sources, 0, sizeof(legacy_sources));
+    snprintf(legacy_sources.user_data_dir, sizeof(legacy_sources.user_data_dir), "%s", legacy_user_root);
+    snprintf(legacy_sources.project_dir, sizeof(legacy_sources.project_dir), "%s", project_dir);
+    expect(sr_flash0_font_registry_info(&legacy_sources, 5u, &bold) == SR_FONT_REGISTRY_PRESENT &&
+               bold.source && strcmp(bold.source, "user-imported") == 0 &&
+               strcmp(bold.font_name, "Nakagawa Shared Latin") == 0 && bold.style == 1u &&
+               bold.served_as_regular,
+           "a legacy-only cache keeps serving its old Regular Latin face before the project font");
+    snprintf(legacy_sources.project_dir, sizeof(legacy_sources.project_dir), "%s/fonts/v2", legacy_user_root);
+    char legacy_path[SR_FLASH0_PATH_MAX + 64];
+    const char *legacy_source = NULL;
+    int legacy_served_index = -3;
+    expect(sr_flash0_font_resolve_latin_index_path(&legacy_sources, 4, legacy_path,
+                                                   sizeof(legacy_path), &legacy_source,
+                                                   &legacy_served_index) &&
+               legacy_source && strcmp(legacy_source, "user-imported") == 0 &&
+               legacy_served_index == -2 && strstr(legacy_path, "nkltn.pgf") != NULL,
+           "SR_FONTDIR at a legacy-only import cache still resolves all Latin indices");
 }
 
 /* The guest-visible /DATA/FONT subtree over the synthetic roots the device test set up. Latin and
  * Japanese are served (the Latin file is the user's cache or the project's, by the case), Korean has
  * no source. */
 static void test_flash0_font_registry(const char *root, const char *served_latin, const char *other_latin,
-                                      const char *japanese) {
+                                      const char *japanese, const char *test_case) {
     static const char *const info_keys[15] = {
         "h_size", "v_size", "h_resolution", "v_resolution", "weight", "family_code", "style",
         "sub_style", "language_code", "region_code", "country_code", "font_name", "file_name",
@@ -29245,28 +29285,34 @@ static void test_flash0_font_registry(const char *root, const char *served_latin
            "INFO0 is the Japanese font: measured codes, and sizes and name from the served header");
     expect(f0t_reg_keys_are(info, info_keys, 15u), "INFO0 lists its 15 keys in order");
 
-    /* Every Latin index reads the served Latin file's header. A bold or italic index serves the regular
-     * face and says Regular; the family alternates sans (1) and serif (2) as measured. */
+    /* Every Latin index reads the served file's header. Exact indexed imports report the measured
+     * style for that index; a project fallback reports Regular. The family alternates sans (1) and
+     * serif (2) as measured. */
     {
-        int ok = 1, regular_ok = 1;
+        static const uint32_t latin_styles[16] = {
+            1u, 1u, 2u, 2u, 5u, 5u, 6u, 6u, 1u, 1u, 2u, 2u, 5u, 5u, 6u, 6u,
+        };
+        int indexed_files = strcmp(test_case, "valid") == 0 || strcmp(test_case, "tampered") == 0;
+        int ok = 1, style_ok = 1;
         for (int i = 1; i <= 16; i++) {
             char path[64];
             char file_name[16];
+            uint32_t expected_style = indexed_files ? latin_styles[i - 1] : 1u;
             snprintf(file_name, sizeof(file_name), "ltn%d.pgf", i - 1);
-            e = (F0tExpectInfo){ served_latin, file_name, 0u, (uint32_t)(((i - 1) % 2) + 1), 1u, 0u,
-                                 2u, 0u, 1u };
+            e = (F0tExpectInfo){ served_latin, file_name, 0u, (uint32_t)(((i - 1) % 2) + 1),
+                                 expected_style, 0u, 2u, 0u, 1u };
             snprintf(path, sizeof(path), "/DATA/FONT/PROPERTY/INFO%d", i);
             info = sysreg_open_category(reg, path, 1u, &r);
             ok &= r == 0u && info != 0u && f0t_reg_info_is(info, &e);
-            /* Indices 3 to 8 and 11 to 16 are the measured bold and italic styles. */
-            if (((i >= 3 && i <= 8) || (i >= 11 && i <= 16)))
-                regular_ok &= f0t_reg_int_is(info, "style", 1u);
+            style_ok &= r == 0u && info != 0u && f0t_reg_int_is(info, "style", expected_style);
         }
         snprintf(msg, sizeof(msg),
                  "INFO1 to INFO16 are the Latin indices, with sizes and name from the %s file's header",
                  "served");
         expect(ok, msg);
-        expect(regular_ok, "the bold and italic Latin indices report the Regular style of the face served");
+        expect(style_ok, indexed_files
+                           ? "exact Latin imports report each measured Regular, Italic, Bold, or Bold Italic style"
+                           : "project Latin fallbacks report Regular for every Latin index");
     }
 
     /* Unknown keys stay named refusals, and an absent index finds nothing and is not created. */
@@ -29613,7 +29659,7 @@ static void test_flash0_font_device(void) {
          strcmp(test_case, "unlisted") == 0) ? project_latin_bytes : user_bytes;
     test_flash0_font_registry(root, registry_latin_bytes,
                               registry_latin_bytes == user_bytes ? project_latin_bytes : user_bytes,
-                              project_japanese_bytes);
+                              project_japanese_bytes, test_case);
 
     /* SR_USER_DATA_ROOT names the per-user data directory the launcher resolved; the device reads the
      * user-imported cache from there, not from NK_PATH_DATA. Here the process's per-user directory is

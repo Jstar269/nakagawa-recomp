@@ -758,6 +758,7 @@ bool nk_font_resolve_latin_index(const char *user_data_root, const char *project
                                              sizeof(manifest_message));
     if (manifest_status == NK_FONT_STATUS_OK) {
         char reason[NK_FONT_TEXT_MAX] = "";
+        int has_latin_indices = 0;
         if (manifest.latin_index_present[index] &&
             font_check_latin_index_file(cache_dir, index, &manifest, reason, sizeof(reason))) {
             out->source = NK_FONT_SOURCE_USER;
@@ -780,6 +781,17 @@ bool nk_font_resolve_latin_index(const char *user_data_root, const char *project
                 return true;
             }
         }
+        for (int candidate = 0; candidate < NK_FONT_LATIN_INDEX_COUNT; candidate++)
+            has_latin_indices |= manifest.latin_index_present[candidate];
+        /* A cache created before per-index imports contains only nkltn.pgf. Keep serving that
+         * face for all indices even when the project font is now available. */
+        if (!has_latin_indices && manifest.present[NK_FONT_SLOT_LATIN] &&
+            font_check_slot_file(cache_dir, NK_FONT_SLOT_LATIN, &manifest,
+                                 reason, sizeof(reason))) {
+            out->source = NK_FONT_SOURCE_USER;
+            out->served_index = -2;
+            return true;
+        }
     }
 
     if (project_font_dir && *project_font_dir) {
@@ -796,8 +808,8 @@ bool nk_font_resolve_latin_index(const char *user_data_root, const char *project
         }
     }
 
-    /* Keep old one-file Latin imports readable when no project Latin PGF is available. Their
-     * lack of an index is explicit in the returned resolution and in the player status. */
+    /* Keep a legacy Latin import as the last fallback for mixed/newer caches when the project
+     * Latin PGF is unavailable. Its lack of an index is explicit in the resolution and status. */
     if (manifest_status == NK_FONT_STATUS_OK && manifest.present[NK_FONT_SLOT_LATIN]) {
         char reason[NK_FONT_TEXT_MAX] = "";
         if (font_check_slot_file(cache_dir, NK_FONT_SLOT_LATIN, &manifest,

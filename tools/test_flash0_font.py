@@ -197,11 +197,12 @@ def write_fixture(root: Path) -> dict[Path, bytes]:
 
 
 def write_latin_index_fixture(root: Path) -> dict[str, bytes]:
-    """Write two indexed synthetic strikes plus the old shared Latin cache entry.
+    """Write indexed synthetic strikes, an old shared import, and a project Latin font.
 
     Keeping the legacy entry lets origin/main run through its real resolver: its registry
-    indices 1 and 9 both read nkltn.pgf, while the indexed manifest records distinct ltn0/ltn8
-    fixtures for the fixed production path.
+    indices 1 and 9 both read nkltn.pgf, while the indexed manifest records distinct ltn0/ltn4/ltn8
+    fixtures for the fixed production path. The ltn4 bold face and legacy-only cache exercise
+    served-style reporting and compatibility with pre-index imports.
     """
     root.mkdir(parents=True, exist_ok=True)
     cache = cache_dir(root)
@@ -210,8 +211,11 @@ def write_latin_index_fixture(root: Path) -> dict[str, bytes]:
     project.mkdir(parents=True, exist_ok=True)
     legacy = synthetic_pgf(LATIN_PROJECT_CODES, "Nakagawa Shared Latin", 9 * 64)
     first = synthetic_pgf(LATIN_PROJECT_CODES, "Nakagawa Latin Small", 7 * 64)
+    bold = synthetic_pgf(LATIN_PROJECT_CODES, "Nakagawa Latin Bold", 15 * 64)
     ninth = synthetic_pgf(LATIN_PROJECT_CODES, "Nakagawa Latin Large", 17 * 64)
-    payloads = {"nkltn.pgf": legacy, "ltn0.pgf": first, "ltn8.pgf": ninth}
+    project_latin = synthetic_pgf(LATIN_PROJECT_CODES, "Nakagawa Project Latin", 5 * 64)
+    (project / "nkltn.pgf").write_bytes(project_latin)
+    payloads = {"nkltn.pgf": legacy, "ltn0.pgf": first, "ltn4.pgf": bold, "ltn8.pgf": ninth}
     for name, data in payloads.items():
         (cache / name).write_bytes(data)
     manifest = {
@@ -229,14 +233,24 @@ def write_latin_index_fixture(root: Path) -> dict[str, bytes]:
                 "sha256": hashlib.sha256(data).hexdigest(), "source": "user",
                 "reader_version": fonts.READER_VERSION,
             }
-            for index, name, data in ((0, "ltn0.pgf", first), (8, "ltn8.pgf", ninth))
+            for index, name, data in (
+                (0, "ltn0.pgf", first), (4, "ltn4.pgf", bold), (8, "ltn8.pgf", ninth)
+            )
         },
     }
     (cache / fonts.MANIFEST_NAME).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     source = root / "index-source"
     source.mkdir(parents=True, exist_ok=True)
     (source / "ltn0.pgf").write_bytes(first)
+    (source / "ltn4.pgf").write_bytes(bold)
     (source / "ltn8.pgf").write_bytes(ninth)
+
+    legacy_source = root / "legacy-source"
+    legacy_source.mkdir(parents=True, exist_ok=True)
+    (legacy_source / "nkltn.pgf").write_bytes(legacy)
+    legacy_result = fonts.import_fonts(legacy_source, user_data_root=root / "legacy-data")
+    if legacy_result["status"] != "OK":
+        raise AssertionError(f"the legacy-only fixture import failed: {legacy_result['outcomes']}")
     return payloads
 
 

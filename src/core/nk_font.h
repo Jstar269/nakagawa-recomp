@@ -41,9 +41,10 @@ typedef struct {
 } NkFontSlotState;
 
 /* A registry Latin index resolves to its exact imported PGF, the nearest imported PGF in
- * the same nominal-size group, the project PGF, or (only when the project PGF is absent) the
- * legacy unindexed user Latin import. served_index is 0..15 for an indexed cache file, -1 for
- * the project PGF, -2 for the legacy unindexed cache entry, and -3 when no source exists. */
+ * the same nominal-size group, a legacy file when it is the cache's only Latin import, the
+ * project PGF, or a legacy file as a last fallback when the project PGF is absent. served_index
+ * is 0..15 for an indexed cache file, -1 for the project PGF, -2 for the legacy unindexed cache
+ * entry, and -3 when no source exists. */
 typedef struct {
     NkFontSource source;
     int served_index;
@@ -119,9 +120,10 @@ NkFontSlotCheck nk_font_check_cache_latin_index_file(const char *user_data_root,
                                                       FILE *cache_file, char *reason,
                                                       size_t reason_len);
 
-/* Resolve one registry Latin index in the required order: exact imported file, nearest
- * imported file in its eight-index size group (lower index wins a tie), project Latin PGF,
- * then a legacy unindexed import only when the project PGF is unavailable. */
+/* Resolve one registry Latin index in this order: exact imported file, nearest imported file in
+ * its eight-index size group (lower index wins a tie), an old single-file import when it is the
+ * cache's only Latin import, project Latin PGF, then a legacy unindexed import as a last fallback
+ * when the project PGF is unavailable. */
 bool nk_font_resolve_latin_index(const char *user_data_root, const char *project_font_dir,
                                  int index, NkFontLatinResolution *out);
 void nk_font_latin_index_states(const char *user_data_root, const char *project_font_dir,

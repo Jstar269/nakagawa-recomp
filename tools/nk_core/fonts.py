@@ -287,8 +287,8 @@ class _Image:
         if table >= TABLE_COUNT:
             return None
         if index == METRIC_MISSING_INDEX and self.metric_counts[table] == METRIC_MISSING_INDEX:
-            # The byte's maximum value is the firmware missing-metric marker when the
-            # one-byte table count is also maximal. It has no backing table entry.
+            # Project decision, unmeasured on PSP: accept 255/255 as a zero pair without
+            # forming a table read; the count has no entry for index 255.
             return (0, 0)
         if index >= self.metric_counts[table]:
             return None
@@ -385,8 +385,8 @@ class _Image:
             if target > self.size:
                 return None
             if target == self.size:
-                # Some fonts omit the optional shadow prefix at the end of the image.
-                # Keep the primary glyph usable and never read past the image.
+                # Project decision, unmeasured on PSP: treat an EOF target as an absent optional
+                # prefix so the primary glyph stays usable without reading past the image.
                 shadow_row = 0
             else:
                 if self.size - target < 6:
@@ -746,10 +746,12 @@ def slot_states(
 def resolve_latin_index(
     user_data_root: Optional[Path], project_font_dir: Optional[Path], index: int
 ) -> Dict[str, Any]:
-    """Resolve a Latin registry index by exact file, same-size-group file, project, then legacy.
+    """Resolve a Latin registry index by exact file, same-group file, legacy-only cache, project,
+    then legacy as a last fallback.
 
     ``served_index`` is 0..15 for an indexed user file, -1 for the project font, and -2 for a
-    legacy unindexed user import. A legacy import is used only when the project font is absent.
+    legacy unindexed user import. An old cache containing no indexed files keeps serving its
+    legacy file for every index; mixed/newer caches use it only when the project font is absent.
     """
     if index < 0 or index >= len(LATIN_INDEX_FILES):
         raise ValueError(f"Latin index must be between 0 and {len(LATIN_INDEX_FILES) - 1}.")
@@ -767,6 +769,12 @@ def resolve_latin_index(
                 if group_start <= candidate < group_end and key in entries and \
                         _check_latin_index_file(cdir, candidate, entries[key])[0]:
                     return {"source": "user", "served_index": candidate}
+        has_latin_indices = any(
+            f"latin_index_{candidate}" in entries for candidate in range(len(LATIN_INDEX_FILES))
+        )
+        if not has_latin_indices and "latin" in entries and \
+                _check_slot_file(cdir, "latin", entries["latin"])[0]:
+            return {"source": "user", "served_index": -2}
 
     if project_font_dir is not None:
         project_path = Path(project_font_dir) / SLOT_FILES["latin"]

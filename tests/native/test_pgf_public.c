@@ -31,7 +31,7 @@
 #define TEST_FONT_CAP 32768u
 #define TEST_MAX_GLYPHS 4u
 #define TEST_MAX_MAP 32u
-#define TEST_MAX_TABLE 4u
+#define TEST_MAX_TABLE 255u
 
 typedef struct TestGlyph {
     uint8_t flags;
@@ -297,8 +297,7 @@ static int test_build_font(TestFont *font, const TestConfig *config) {
     cursor = font->size;
     for (table = 0; table < 4u; ++table) {
         unsigned entry;
-        if (config->metric_counts[table] > TEST_MAX_TABLE ||
-            !test_reserve(font, (size_t)config->metric_counts[table] * 8u,
+        if (!test_reserve(font, (size_t)config->metric_counts[table] * 8u,
                           &table_offset[table])) {
             return 0;
         }
@@ -815,6 +814,38 @@ static void test_maps_pointers_and_metrics(void) {
     CHECK(test_u32(test_guest(TEST_INFO_ADDR) + 0x10u) == 700u);
     CHECK(test_u32(test_guest(TEST_INFO_ADDR) + 0x14u) == 900u);
     pgf_close(pgf);
+
+    for (unsigned table = 0; table < 4u; ++table) {
+        test_default_config(&config);
+        config.glyphs[0].flags = table < 3u ? (uint8_t)(1u << table) : 0u;
+        config.glyphs[0].indexes[table] = UINT8_MAX;
+        config.metric_counts[table] = UINT8_MAX;
+        CHECK(test_build_font(&font, &config));
+        pgf = test_open(&font);
+        CHECK(pgf != NULL);
+        CHECK(pgf_get_char_info(pgf, 65, 0, TEST_INFO_ADDR));
+        if (table == 0u) {
+            CHECK(test_u32(test_guest(TEST_INFO_ADDR) + 0x10u) == 0u);
+            CHECK(test_u32(test_guest(TEST_INFO_ADDR) + 0x14u) == 0u);
+        } else if (table == 1u) {
+            CHECK(test_u32(test_guest(TEST_INFO_ADDR) + 0x20u) == 0u);
+            CHECK(test_u32(test_guest(TEST_INFO_ADDR) + 0x28u) == 0u);
+        } else if (table == 2u) {
+            CHECK(test_u32(test_guest(TEST_INFO_ADDR) + 0x18u) == 0u);
+            CHECK(test_u32(test_guest(TEST_INFO_ADDR) + 0x2cu) == 0u);
+        } else {
+            CHECK(test_u32(test_guest(TEST_INFO_ADDR) + 0x30u) == 0u);
+            CHECK(test_u32(test_guest(TEST_INFO_ADDR) + 0x34u) == 0u);
+        }
+        pgf_close(pgf);
+    }
+
+    test_default_config(&config);
+    config.glyphs[0].flags = 1u;
+    config.glyphs[0].indexes[0] = UINT8_MAX;
+    config.metric_counts[0] = UINT8_MAX - 1u;
+    CHECK(test_build_font(&font, &config));
+    CHECK(test_open(&font) == NULL);
 
     test_default_config(&config);
     CHECK(test_build_font(&font, &config));
