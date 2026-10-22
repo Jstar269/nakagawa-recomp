@@ -2428,26 +2428,7 @@ static int sdl3vk_capture_selftest_body(void) {
             fprintf(stderr, "present fault SURFLOST: enqueued present must NOT recreate semaphore\n"); ok = 0;
         }
 
-        /* Test 5: VK_ERROR_DEVICE_LOST (terminal error, no normal recovery) */
-        sem0 = sdl3vk_frame_semaphore_generation();
-        /* Reset terminal state and recreate swapchain so next acquire succeeds */
-        s_renderer_terminal = 0;
-        create_swapchain();
-        if (!sr_capture_arm("selftest_devlost.ppm")) {
-            fprintf(stderr, "present fault DEVLOST: arm failed\n"); ok = 0;
-        }
-        sdl3vk_present_fault_inject(VK_ERROR_DEVICE_LOST);
-        if (sdl3vk_present_rgba(px) != -1) {
-            fprintf(stderr, "present fault DEVLOST: expected present failure (-1)\n"); ok = 0;
-        }
-        if (!sdl3vk_renderer_terminal()) {
-            fprintf(stderr, "present fault DEVLOST: expected renderer terminal state\n"); ok = 0;
-        }
-        if (sdl3vk_frame_semaphore_generation() != sem0) {
-            fprintf(stderr, "present fault DEVLOST: lost device must NOT recreate semaphore\n"); ok = 0;
-        }
-
-        /* Test 6: VK_ERROR_UNKNOWN / unclassified error (unknown enqueue state -> terminal fail-closed) */
+        /* Test 5: VK_ERROR_UNKNOWN / unclassified error (unknown enqueue state -> terminal fail-closed) */
         sem0 = sdl3vk_frame_semaphore_generation();
         s_renderer_terminal = 0;
         create_swapchain();
@@ -2475,7 +2456,7 @@ static int sdl3vk_capture_selftest_body(void) {
         }
     }
 
-    /* Test 7: a quit consumed by a present is not lost. The present path drains the
+    /* Test 6: a quit consumed by a present is not lost. The present path drains the
      * event queue every frame, so a window close almost always lands there; the
      * process-exit decision is made later by sdl3vk_poll(). */
     {
@@ -2493,6 +2474,26 @@ static int sdl3vk_capture_selftest_body(void) {
             ok = 0;
         }
         s_quit_requested = 0;
+    }
+
+    /* Test 7: VK_ERROR_DEVICE_LOST (terminal error, no normal recovery). Keep this last:
+     * once the presenter observes device loss, the runtime must not clear the terminal
+     * state and submit more work to that device. */
+    {
+        uint64_t sem0 = sdl3vk_frame_semaphore_generation();
+        if (!sr_capture_arm("selftest_devlost.ppm")) {
+            fprintf(stderr, "present fault DEVLOST: arm failed\n"); ok = 0;
+        }
+        sdl3vk_present_fault_inject(VK_ERROR_DEVICE_LOST);
+        if (sdl3vk_present_rgba(px) != -1) {
+            fprintf(stderr, "present fault DEVLOST: expected present failure (-1)\n"); ok = 0;
+        }
+        if (!sdl3vk_renderer_terminal()) {
+            fprintf(stderr, "present fault DEVLOST: expected renderer terminal state\n"); ok = 0;
+        }
+        if (sdl3vk_frame_semaphore_generation() != sem0) {
+            fprintf(stderr, "present fault DEVLOST: lost device must NOT recreate semaphore\n"); ok = 0;
+        }
     }
 
     int errors = sdl3vk_validation_error_count();
