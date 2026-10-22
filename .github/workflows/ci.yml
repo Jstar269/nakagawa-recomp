@@ -462,7 +462,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake curl gcc-mipsel-linux-gnu \
-            git libavcodec-dev libavutil-dev libc6-dev-i386 libvulkan-dev ninja-build pkg-config
+            git libavcodec-dev libavutil-dev libc6-dev-i386 libvulkan-dev \
+            libxcursor-dev libxext-dev libxfixes-dev libxi-dev libxinerama-dev \
+            libxkbcommon-dev libx11-dev libxrandr-dev libxss-dev \
+            mesa-vulkan-drivers ninja-build pkg-config vulkan-tools \
+            vulkan-validationlayers xauth xvfb
 
       # The pinned SDL3 install is cached under an exact key: the pinned version and
       # commit, the gcc and cmake that build it, and this workflow file (which holds
@@ -503,7 +507,8 @@ jobs:
           cmake -S "$RUNNER_TEMP/SDL" -B "$RUNNER_TEMP/SDL/build" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local \
             -DSDL_TEST_LIBRARY=OFF -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF \
-            -DSDL_INSTALL_TESTS=OFF -DSDL_UNIX_CONSOLE_BUILD=ON -DSDL_VULKAN=ON
+            -DSDL_INSTALL_TESTS=OFF -DSDL_UNIX_CONSOLE_BUILD=ON \
+            -DSDL_VULKAN=ON -DSDL_X11=ON
           cmake --build "$RUNNER_TEMP/SDL/build" --parallel 2
           rm -rf "$RUNNER_TEMP/sdl3-stage"
           DESTDIR="$RUNNER_TEMP/sdl3-stage" cmake --install "$RUNNER_TEMP/SDL/build"
@@ -518,6 +523,95 @@ jobs:
           sudo ldconfig
           # A mistyped but valid commit must fail here, not leave the docs claiming the pin.
           test "$(pkg-config --modversion sdl3)" = "$SDL3_VERSION"
+
+      # SDL3_ttf has its own staged install cache. The exact SDL3_ttf and SDL3
+      # commits, toolchain versions, and workflow hash key the cache; only the
+      # installed files are cached, and the version and shaping backend are
+      # checked after installation on both cache paths.
+      - name: Key the pinned SDL3_ttf install
+        id: sdl3-ttf-key
+        run: |
+          SDL3_TTF_VERSION=3.2.2
+          SDL3_TTF_COMMIT=a1ce3670aec736ecbf0936c43f2f0cc53aa61e5b
+          {
+            echo "SDL3_TTF_VERSION=$SDL3_TTF_VERSION"
+            echo "SDL3_TTF_COMMIT=$SDL3_TTF_COMMIT"
+          } >> "$GITHUB_ENV"
+          workflow_hash="$(sha256sum .github/workflows/ci.yml | cut -c1-16)"
+          gcc_version="$(gcc -dumpfullversion)"
+          cmake_version="$(cmake --version | sed -n 1p | awk '{print $3}')"
+          echo "key=sdl3-ttf-$SDL3_TTF_VERSION-$SDL3_TTF_COMMIT-sdl3-$SDL3_VERSION-$SDL3_COMMIT-gcc$gcc_version-cmake$cmake_version-$workflow_hash" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the pinned SDL3_ttf install
+        id: sdl3-ttf-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/sdl3-ttf-stage
+          key: ${{ steps.sdl3-ttf-key.outputs.key }}
+
+      - name: Build pinned SDL3_ttf with vendored FreeType and HarfBuzz
+        if: steps.sdl3-ttf-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          git init "$RUNNER_TEMP/SDL_ttf"
+          git -C "$RUNNER_TEMP/SDL_ttf" remote add origin https://github.com/libsdl-org/SDL_ttf.git
+          git -C "$RUNNER_TEMP/SDL_ttf" fetch --depth 1 origin "$SDL3_TTF_COMMIT"
+          git -C "$RUNNER_TEMP/SDL_ttf" checkout --detach FETCH_HEAD
+          git -C "$RUNNER_TEMP/SDL_ttf" submodule update --init --depth 1
+          cmake -S "$RUNNER_TEMP/SDL_ttf" -B "$RUNNER_TEMP/SDL_ttf/build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DCMAKE_PREFIX_PATH=/usr/local -DBUILD_SHARED_LIBS=ON \
+            -DSDLTTF_INSTALL=ON -DSDLTTF_SAMPLES=OFF -DSDLTTF_STRICT=ON \
+            -DSDLTTF_VENDORED=ON -DSDLTTF_HARFBUZZ=ON \
+            2>&1 | tee "$RUNNER_TEMP/sdl3-ttf-configure.log"
+          grep -Fq 'Using vendored freetype library' "$RUNNER_TEMP/sdl3-ttf-configure.log"
+          grep -Fq 'Using vendored harfbuzz library' "$RUNNER_TEMP/sdl3-ttf-configure.log"
+          cmake --build "$RUNNER_TEMP/SDL_ttf/build" --parallel 2
+          rm -rf "$RUNNER_TEMP/sdl3-ttf-stage"
+          DESTDIR="$RUNNER_TEMP/sdl3-ttf-stage" cmake --install "$RUNNER_TEMP/SDL_ttf/build"
+
+      - name: Install and verify pinned SDL3_ttf and shaping libraries
+        run: |
+          set -euo pipefail
+          test -d "$RUNNER_TEMP/sdl3-ttf-stage/usr/local" || {
+            echo "pinned SDL3_ttf install is missing from ${RUNNER_TEMP}/sdl3-ttf-stage" >&2
+            exit 1
+          }
+          sudo cp -a "$RUNNER_TEMP/sdl3-ttf-stage/usr/local/." /usr/local/
+          sudo ldconfig
+          ttf_version="$(pkg-config --modversion sdl3-ttf)"
+          test "$ttf_version" = "$SDL3_TTF_VERSION"
+          cat > "$RUNNER_TEMP/sdl3-ttf-features.c" <<'EOF'
+          #include <SDL3/SDL.h>
+          #include <SDL3_ttf/SDL_ttf.h>
+          #include <stdio.h>
+
+          int main(void)
+          {
+              int ft_major = 0, ft_minor = 0, ft_patch = 0;
+              int hb_major = 0, hb_minor = 0, hb_patch = 0;
+              if (!SDL_Init(0)) {
+                  fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
+                  return 2;
+              }
+              if (!TTF_Init()) {
+                  fprintf(stderr, "TTF_Init failed: %s\n", SDL_GetError());
+                  SDL_Quit();
+                  return 2;
+              }
+              TTF_GetFreeTypeVersion(&ft_major, &ft_minor, &ft_patch);
+              TTF_GetHarfBuzzVersion(&hb_major, &hb_minor, &hb_patch);
+              printf("FreeType %d.%d.%d; HarfBuzz %d.%d.%d (enabled)\n",
+                     ft_major, ft_minor, ft_patch, hb_major, hb_minor, hb_patch);
+              TTF_Quit();
+              SDL_Quit();
+              return ft_major > 0 && hb_major > 0 ? 0 : 1;
+          }
+          EOF
+          cc $(pkg-config --cflags sdl3-ttf) "$RUNNER_TEMP/sdl3-ttf-features.c" \
+            -o "$RUNNER_TEMP/sdl3-ttf-features" $(pkg-config --libs sdl3-ttf)
+          printf 'SDL3_ttf %s; ' "$ttf_version"
+          "$RUNNER_TEMP/sdl3-ttf-features"
 
       - name: Build and run the opt-in FFmpeg H.264 media selftest
         # Exercise the real libavcodec route, including guest-VRAM coherence, explicit backend
@@ -665,6 +759,23 @@ jobs:
       # render drivers for every player it spawns, so no step env is needed.
       - name: Run native player UI regressions headlessly
         run: make CC=gcc player-ui-regressions
+
+      - name: Run Linux native player UI tests headlessly
+        run: SDL_VIDEODRIVER=dummy SDL_RENDER_DRIVER=software make CC=gcc player-ui-tests
+
+      - name: Verify lavapipe and run GPU capture selftest
+        run: |
+          set -euo pipefail
+          lvp_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name 'lvp_icd*.json' -print -quit)"
+          test -n "$lvp_icd" || {
+            echo "mesa-vulkan-drivers did not install a lavapipe ICD" >&2
+            exit 1
+          }
+          export VK_ICD_FILENAMES="$lvp_icd"
+          vulkaninfo --summary | tee "$RUNNER_TEMP/vulkan-summary.txt"
+          grep -qi llvmpipe "$RUNNER_TEMP/vulkan-summary.txt"
+          xvfb-run -a -s "-screen 0 1280x800x24" env SDL_VIDEODRIVER=x11 \
+            make CC=gcc gpu-capture-selftest
 
       - name: Configure, build, and test CMake Linux player
         run: |
