@@ -21,9 +21,19 @@ is the only project build target that compiles the header.
 
 | File | Kind | Upstream v0.14 blob SHA | SHA-256 |
 | --- | --- | --- | --- |
-| `clay.h` | imported byte-identical | `8ee7f5044d73ce8b7444fa4a7a6355730511dd7f` | `c97241cc423af3fa11267978adce9cbb46274a2ad0709a5d4b2b1092dc27599d` |
+| `clay.h` | imported + LOCAL DELTA | `8ee7f5044d73ce8b7444fa4a7a6355730511dd7f` | `3e6a361313e3263203dd6417751b8e90abfd3a2aa09fa9a187e71457b867f56f` |
 | `LICENSE.md` | imported byte-identical | `2968c61bcdc6ecbef470e02edd45b47aba1d8c44` | `5dd30f9f52093076b7574458f5efb8242fe6cbbd4669d4a2914e7616810d0df8` |
 | `PROVENANCE.md` | project-authored manifest | n/a | n/a |
 
-The release tag resolves directly to the pinned commit. No branch-head source,
-local patch, or generated Clay file is included.
+The release tag resolves directly to the pinned commit. No branch-head source
+or generated Clay file is included.
+
+## Local deltas
+
+- `clay.h`, `Clay__Array_Allocate_Arena`: `capacity * itemSize` is computed as
+  `(size_t)capacity * itemSize`, so the product is formed in `size_t` instead of
+  32 bits before the arena bounds check (CodeQL "multiplication result
+  converted to larger type"). Every in-range result is unchanged. The change is
+  marked `LOCAL DELTA` in the file. The upstream bytes have SHA-256
+  `c97241cc423af3fa11267978adce9cbb46274a2ad0709a5d4b2b1092dc27599d`; re-applying
+  this one change to the upstream file gives the SHA-256 in the table above.
