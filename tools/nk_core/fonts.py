@@ -59,6 +59,7 @@ REV3_HEADER_SIZE = 412
 MAX_COUNT = 1 << 20
 TABLE_COUNT = 4
 COMPOSITE_PARTS = 3
+METRIC_MISSING_INDEX = 0xFF
 PROBE_LATIN = (0x41, 0x61)
 PROBE_KANA = (0x3042, 0x30A2)
 PROBE_HANGUL = (0xAC00, 0xD55C)
@@ -283,7 +284,13 @@ class _Image:
         return units * 4
 
     def table_pair(self, table: int, index: int) -> Optional[Tuple[int, int]]:
-        if table >= TABLE_COUNT or index >= self.metric_counts[table]:
+        if table >= TABLE_COUNT:
+            return None
+        if index == METRIC_MISSING_INDEX and self.metric_counts[table] == METRIC_MISSING_INDEX:
+            # The byte's maximum value is the firmware missing-metric marker when the
+            # one-byte table count is also maximal. It has no backing table entry.
+            return (0, 0)
+        if index >= self.metric_counts[table]:
             return None
         entry = self.metric_offsets[table] + index * 8
         return _i32(self.data, entry), _i32(self.data, entry + 4)
@@ -375,11 +382,18 @@ class _Image:
             if glyph["shadow_offset"] < glyph["record_size"]:
                 return None
             target = glyph["record_offset"] + glyph["shadow_offset"]
-            if target > self.size or self.size - target < 6:
+            if target > self.size:
                 return None
-            shadow_row = _get_bits(self.data, target, self.size - target, 42, 2)
-            if shadow_row is None:
-                return None
+            if target == self.size:
+                # Some fonts omit the optional shadow prefix at the end of the image.
+                # Keep the primary glyph usable and never read past the image.
+                shadow_row = 0
+            else:
+                if self.size - target < 6:
+                    return None
+                shadow_row = _get_bits(self.data, target, self.size - target, 42, 2)
+                if shadow_row is None:
+                    return None
             glyph["shadow_row_order"] = shadow_row
         if glyph["row_order"] != 3:
             return glyph

@@ -202,7 +202,14 @@ static int32_t pgf_sign7(uint32_t value) {
 static int pgf_table_pair(const PGF *p, unsigned table, uint32_t index,
                           int32_t *first, int32_t *second) {
     size_t entry;
-    if (table >= PGF_TABLE_COUNT || index >= p->metric_counts[table]) return 0;
+    if (table >= PGF_TABLE_COUNT) return 0;
+    if (index == UINT8_MAX && p->metric_counts[table] == UINT8_MAX) {
+        /* The maximal index/count pair marks a missing metric, not a table entry. */
+        *first = 0;
+        *second = 0;
+        return 1;
+    }
+    if (index >= p->metric_counts[table]) return 0;
     entry = p->metric_offsets[table] + (size_t)index * 8u;
     *first = pgf_i32(p->image + entry);
     *second = pgf_i32(p->image + entry + 4u);
@@ -341,14 +348,17 @@ static int pgf_checked_glyph(const PGF *p, uint32_t glyph_id, PgfGlyph *glyph,
 
         if (glyph->shadow_offset < glyph->record_size) return 0;
         target = (uint64_t)glyph->record_offset + glyph->shadow_offset;
-        if (target < glyph->record_offset || target > p->size ||
-            p->size - (size_t)target < 6u) {
-            return 0;
+        if (target < glyph->record_offset || target > p->size) return 0;
+        if (target == p->size) {
+            /* An absent optional shadow prefix at EOF has no bytes to read. */
+            glyph->shadow_row_order = 0u;
+        } else {
+            if (p->size - (size_t)target < 6u) return 0;
+            glyph->shadow_row_order = pgf_get_bits(p->image + (size_t)target,
+                                                    p->size - (size_t)target,
+                                                    42, 2, &valid);
+            if (!valid) return 0;
         }
-        glyph->shadow_row_order = pgf_get_bits(p->image + (size_t)target,
-                                                p->size - (size_t)target,
-                                                42, 2, &valid);
-        if (!valid) return 0;
     }
     if (glyph->row_order != 3u) return 1;
     /* A composite component is always a leaf raster record, so a self-reference,

@@ -897,6 +897,17 @@ static void test_shadow_and_character_info(void) {
                    font.size - font.glyph_record_offsets[0], 0u, 14u,
                    (uint32_t)(font.size - font.glyph_record_offsets[0] - 5u));
     CHECK(test_open(&font) == NULL);
+    test_set_field(font.bytes + font.glyph_record_offsets[0],
+                   font.size - font.glyph_record_offsets[0], 0u, 14u,
+                   (uint32_t)(font.size - font.glyph_record_offsets[0]));
+    pgf = test_open(&font);
+    CHECK(pgf != NULL && pgf_has_char(pgf, 65));
+    if (pgf != NULL) {
+        CHECK(pgf_get_char_info(pgf, 65, 0, TEST_INFO_ADDR));
+        CHECK(test_u16(test_guest(TEST_INFO_ADDR) + 0x38u) == 0u);
+        CHECK(test_u16(test_guest(TEST_INFO_ADDR) + 0x3au) == 1u);
+        pgf_close(pgf);
+    }
 
     test_default_config(&config);
     config.shadow_count = 1u;

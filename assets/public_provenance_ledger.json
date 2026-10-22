@@ -1603,7 +1603,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "79d97397e5c5813e6b29954249685780f79119f54339062410fcb09726b887b6"
+      "sha256": "8930ce2c82dd670631609ab42814145b5a921ce9dba37e89af617416d459224f"
     },
     {
       "path": "docs/cleanroom/PRX_LOADER_SPEC.md",
@@ -5694,7 +5694,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8e2bf33613829defa4008c8f79b4579c02e05ffee56af9eeae77a90f800ce49f"
+      "sha256": "48f439b1ea647ed8186f6c9442751f0b5f89820a9ba65277736bd0609d4714d1"
     },
     {
       "path": "src/rt/profiler_selftest.c",
@@ -6372,7 +6372,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "5ffeb866ae647d4b57f3f36c6398af5db1bdbfdcc1aba721d6095b43cbdc0455"
+      "sha256": "4613bfb3be8651e7265203eb7608707f656589d5217373cc35c484080ed6e5c1"
     },
     {
       "path": "tests/native/test_pgf_writer_roundtrip.c",
@@ -7418,7 +7418,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8f790a1347e8668a02d72b15d6af77afc1bef3ad2ac81b4aa13efc74bba21a5e"
+      "sha256": "850666fb326574ba018f482ca62f42ca21100a7db77e820a17d6da68d88f8a6f"
     },
     {
       "path": "tools/nk_core/git_isolation.py",
@@ -9583,7 +9583,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a84ec695f9d10f58b155becc72c05dbe1e18b2550f698cac2532c330fef22757"
+      "sha256": "96fc2c7116c234a42a87b5adcda5ff8806691b26545b66229d61ea2c7abedc77"
     },
     {
       "path": "tools/test_pgf_writer.py",
