@@ -2942,6 +2942,7 @@ clay-layout-selftest:
 nk-ui-core-selftest:
 	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
 	$(CC) -std=c99 -Wall -Wextra -Wpedantic -Werror -Isrc/ui -Ithird_party/clay \
+		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
 		$(NK_UI_NATIVE_CORE_SRCS) tests/native/test_nk_ui_core.c -lm \
 		-o $(BUILD_ROOT)/test_nk_ui_core$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_nk_ui_core$(EXE_EXT)
