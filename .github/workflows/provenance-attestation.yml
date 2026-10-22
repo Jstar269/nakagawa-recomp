@@ -164,9 +164,10 @@ jobs:
           # to provide both the independently blessed bytes and a document
           # binding the exact semantic delta. The verifier repeats every
           # digest and semantic check; these outputs only select its external
-          # inputs. The path is keyed by the candidate policy digest so an
-          # authority document cannot be reused accidentally for another
-          # policy.
+          # inputs. New deltas are keyed by both candidate and base policy
+          # digests, so each exact transition has its own authority. Prefer
+          # that nested layout and retain the old flat layout as a fallback;
+          # the verifier repeats every digest and semantic check.
           base_policy_sha="$(git show "${BASE_SHA}:assets/public_source_profile.json" | sha256sum | cut -d' ' -f1)"
           candidate_policy_sha="$(git show "${HEAD_SHA}:assets/public_source_profile.json" | sha256sum | cut -d' ' -f1)"
           for value in "${base_policy_sha}" "${candidate_policy_sha}"; do
@@ -178,18 +179,33 @@ jobs:
           echo "base policy sha256 ${base_policy_sha}"
           echo "candidate policy sha256 ${candidate_policy_sha}"
           if [ "${base_policy_sha}" != "${candidate_policy_sha}" ]; then
-            policy_dir="docs/provenance/policy-deltas/${candidate_policy_sha}"
-            gh api \
+            nested_policy_dir="docs/provenance/policy-deltas/${candidate_policy_sha}/${base_policy_sha}"
+            flat_policy_dir="docs/provenance/policy-deltas/${candidate_policy_sha}"
+            if gh api \
               -H "Accept: application/vnd.github.raw" \
-              "repos/${TRUSTED_REPO}/contents/${policy_dir}/candidate-policy.json?ref=${authority_sha}" \
-              > "${RUNNER_TEMP}/trusted/candidate-policy.json"
-            gh api \
-              -H "Accept: application/vnd.github.raw" \
-              "repos/${TRUSTED_REPO}/contents/${policy_dir}/policy-delta-authority.json?ref=${authority_sha}" \
-              > "${RUNNER_TEMP}/trusted/policy-delta-authority.json"
+              "repos/${TRUSTED_REPO}/contents/${nested_policy_dir}/candidate-policy.json?ref=${authority_sha}" \
+              > "${RUNNER_TEMP}/trusted/candidate-policy.json" && \
+              gh api \
+                -H "Accept: application/vnd.github.raw" \
+                "repos/${TRUSTED_REPO}/contents/${nested_policy_dir}/policy-delta-authority.json?ref=${authority_sha}" \
+                > "${RUNNER_TEMP}/trusted/policy-delta-authority.json" && \
+              test -s "${RUNNER_TEMP}/trusted/candidate-policy.json" && \
+              test -s "${RUNNER_TEMP}/trusted/policy-delta-authority.json"; then
+              policy_dir="${nested_policy_dir}"
+            else
+              policy_dir="${flat_policy_dir}"
+              gh api \
+                -H "Accept: application/vnd.github.raw" \
+                "repos/${TRUSTED_REPO}/contents/${policy_dir}/candidate-policy.json?ref=${authority_sha}" \
+                > "${RUNNER_TEMP}/trusted/candidate-policy.json"
+              gh api \
+                -H "Accept: application/vnd.github.raw" \
+                "repos/${TRUSTED_REPO}/contents/${policy_dir}/policy-delta-authority.json?ref=${authority_sha}" \
+                > "${RUNNER_TEMP}/trusted/policy-delta-authority.json"
+            fi
             test -s "${RUNNER_TEMP}/trusted/candidate-policy.json"
             test -s "${RUNNER_TEMP}/trusted/policy-delta-authority.json"
-            echo "policy delta authority materialized for candidate policy ${candidate_policy_sha}"
+            echo "policy delta authority materialized from ${policy_dir}"
             echo "trusted_candidate_policy=${RUNNER_TEMP}/trusted/candidate-policy.json" >> "${GITHUB_OUTPUT}"
             echo "policy_delta_authority=${RUNNER_TEMP}/trusted/policy-delta-authority.json" >> "${GITHUB_OUTPUT}"
           else
