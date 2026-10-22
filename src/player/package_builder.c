@@ -1418,12 +1418,15 @@ static bool scan_path_for_names(const char *const *names, size_t name_count,
     return false;
 }
 
-#define PYTHON_VERSION_PROBE_TIMEOUT_MS 2000
+#define PYTHON_VERSION_PROBE_TIMEOUT_MS 10000
 
 /* A PATH entry is only a usable Python if it can execute the same version
  * probe used by the package builder. Launch it directly (never through a
  * shell), and bound the wait so Store aliases or broken wrappers cannot hang
- * package discovery. */
+ * package discovery. The bound is generous because a real interpreter's first
+ * start on a cold machine can spend seconds in antivirus scanning, and a false
+ * rejection sends the user to an unneeded download; the Store alias fails at
+ * once, so the bound only matters for a hung wrapper. */
 static bool python_candidate_runs_required_version(const char *executable_path) {
     static const char *probe =
         "import sys; sys.exit(sys.implementation.name != 'cpython' or "
