@@ -83,6 +83,21 @@ class RenderTests(unittest.TestCase):
             regen_all._refuse_baseline_downgrades(fresh)
 
 
+class AdmissionBlockTests(unittest.TestCase):
+    def test_only_the_admission_block_is_ignored(self) -> None:
+        ledger = {"schema_version": 1, "entries": [{"path": "a", "sha256": "0" * 64}]}
+        with_admission = dict(ledger, admission={"workflow": "admit-new-reviewed"})
+        self.assertEqual(
+            regen_all._without_admission(json.dumps(with_admission).encode()),
+            regen_all._without_admission(json.dumps(ledger).encode()),
+        )
+        rehashed = {"schema_version": 1, "entries": [{"path": "a", "sha256": "1" * 64}]}
+        self.assertNotEqual(
+            regen_all._without_admission(json.dumps(with_admission).encode()),
+            regen_all._without_admission(json.dumps(rehashed).encode()),
+        )
+
+
 class CheckModeTests(unittest.TestCase):
     def _run_check(self, steps, provenance=("OK", [], "")) -> tuple[int, str]:
         out = io.StringIO()

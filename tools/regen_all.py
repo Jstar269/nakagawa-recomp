@@ -242,6 +242,17 @@ def _git(*args: str) -> subprocess.CompletedProcess:
     )
 
 
+def _without_admission(ledger: bytes | None) -> dict | None:
+    if ledger is None:
+        return None
+    try:
+        document = json.loads(ledger)
+    except ValueError:
+        return None
+    document.pop("admission", None)
+    return document
+
+
 def _provenance(check: bool, base: str | None) -> tuple[str, list[str], str]:
     """Return (status, stale or changed paths, detail) for the provenance controls."""
     sys.path.insert(0, str(TOOLS))
@@ -269,8 +280,15 @@ def _provenance(check: bool, base: str | None) -> tuple[str, list[str], str]:
         for path, expected in ((contrib_refresh.LEDGER, ledger_bytes), (contrib_refresh.EXPORT, export_bytes))
         if _current(path) != expected
     ]
+    note = ""
+    if stale == [contrib_refresh.LEDGER] and _without_admission(_current(contrib_refresh.LEDGER)) == _without_admission(
+        ledger_bytes
+    ):
+        # Right after an admission merge the base ledger carries an `admission` audit block. The
+        # trusted refresh drops it and contrib_refresh keeps it; the per-path entries agree.
+        stale, note = [], "differs only by the base ledger's admission block, which the trusted refresh drops"
     if check or not stale:
-        return ("STALE" if stale else "OK"), stale, ""
+        return ("STALE" if stale else "OK"), stale, note
     args = [str(TOOLS / "contrib_refresh.py")]
     if base is not None:
         args += ["--base", base]
