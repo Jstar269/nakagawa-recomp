@@ -375,13 +375,13 @@ Authentic in-game typography requires PSP system fonts in Sony's PlayStation Gly
 
 #### What the user supplies
 
-From your own PSP, copy its PGF font files to a folder on a USB drive, a memory stick, or your PC. The import reads every `.pgf` file directly in the folder you choose, whatever its name, and checks each one with the same native reader the player uses. Each accepted file is used for the slot its glyphs cover:
+From your own PSP, copy its PGF font files to a folder on a USB drive, a memory stick, or your PC. The import reads every `.pgf` file directly in the folder you choose and checks each one with the same native reader the player uses. It keeps the source filename long enough to identify firmware Latin files:
 
 - Japanese: covers kana (U+3042 or U+30A2).
 - Korean: covers Hangul (U+AC00 or U+D55C).
-- Latin: covers the Latin letters (U+0041 and U+0061) and neither of the above.
+- Latin: covers the Latin letters (U+0041 and U+0061) and neither of the above. Files named `ltn0.pgf` through `ltn15.pgf` are imported under their matching registry indices; all supplied files in that range are imported independently.
 
-A file that covers both kana and Hangul, or neither, names no slot and is skipped. Files over 16 MiB are refused. If two files name the same slot, the import imports neither until you choose one with `--choose <slot>=<file>`; the player asks you to keep one file per slot.
+A file that covers both kana and Hangul, or neither, names no slot and is skipped. Files over 16 MiB are refused. Other Latin filenames retain the single legacy Latin import; if several such files name the same slot, none is imported until you choose one with `--choose latin=<file>`. Duplicate case variants of the same `ltnN.pgf` index are left unimported as ambiguous.
 
 Fonts must come only from your own device. The project provides no download links or third-party repositories. The import makes no network request, uses no key, and does no decryption, and it never uploads anything.
 
@@ -395,34 +395,37 @@ python tools/nk_cli.py fonts remove --all
 
 Available options:
 
-- `--choose <slot>=<file>`: Pick the file for a slot that several files name (`japanese`, `latin`, or `korean`).
+- `--choose <slot>=<file>`: Pick a file for a generic slot that several files name (`japanese`, `latin`, or `korean`). Named `ltn0.pgf` through `ltn15.pgf` files select their own Latin indices and need no choice.
 - `--user-data-root <path>`: Override the target per-user data directory (default: `%LOCALAPPDATA%`, then `%APPDATA%`, under `Nakagawa\data` on Windows; `~/Library/Application Support/NakagawaRecomp/data` on macOS; `$XDG_DATA_HOME/nakagawa-recomp` or `~/.local/share/nakagawa-recomp` on other POSIX systems).
 - `--json`: Emit a machine-readable report of the outcome for each file, and of each slot's status.
 
-The import copies each chosen file into the per-user cache as that slot's file, and writes `manifest.json` with `schema_version: 2`, an ISO 8601 UTC `import_time`, and for each slot its `slot`, `size`, `sha256`, `source: "user"`, and `reader_version`. The originals are not touched. Re-importing is idempotent, and a slot the new run does not change keeps its entry:
+The import copies each accepted file into the per-user cache and writes `manifest.json` with `schema_version: 2` and an ISO 8601 UTC `import_time`. Generic files remain in `files`; indexed Latin files are listed in `latin_indices` with their index, size, SHA-256, user source, and reader version. The originals are not touched. Re-importing is idempotent, and entries not changed by the new run are retained:
 
 ```text
 <user data>/fonts/v2/
 ├── manifest.json
 ├── nkjpn.pgf   (Japanese slot)
-├── nkltn.pgf   (Latin slot)
+├── nkltn.pgf   (legacy unindexed Latin slot, if imported)
+├── ltn0.pgf    (Latin registry index 1)
+├── ...
+├── ltn15.pgf   (Latin registry index 16)
 └── nkkr.pgf    (Korean slot)
 ```
 
-A slot is served from the first source that checks: your imported font, then the project font at `<project>/font/<slot file>`, then a named refusal, which the game sees as a missing slot. There is no substitution between slots. `fonts remove` deletes only these slot files and their manifest entries. An import from an earlier cache version is not read; run the import again.
+Japanese and Korean keep their existing imported-file-then-project-file resolution. Each Latin index uses its exact imported `ltnN.pgf` first. If it is absent or invalid, the runtime uses the nearest valid indexed import in that index's eight-file size group (the lower index wins an equal-distance tie). A cache containing only the older single-file Latin import continues to serve that file for all indices, preserving pre-index behavior. Other caches fall back to project `nkltn.pgf`, then to the legacy import only when the project Latin font is unavailable. The player status and one startup log line per index identify every fallback, including an absent exact file. `fonts remove --slot latin` removes the generic Latin import and all sixteen indexed files; the other slot removals are unchanged.
 
 The per-user data directory is the one font root. The import, the status and the preflight in the player, the launcher, and the runtime all read `<user data>/fonts/v2`; the launcher hands that root to the runtime as `SR_USER_DATA_ROOT`. A runtime root (`--runtime-root`) does not hold fonts, so an import written under `<runtime root>/fonts/v2` by an earlier build is no longer read. The launcher's old lookup under a showcase demo's `<demos>/fonts/v2` is removed for the same reason: the demos read the per-user directory too, so an import placed there is no longer read. To use it again, run `python tools/nk_cli.py fonts import <folder>` on the original `.pgf` folder (with the same `--user-data-root` you use for the player), or copy that `fonts/v2` folder unchanged to `<user data>/fonts/v2`. The manifest's size and SHA-256 are checked on use, so a copy that does not match is refused rather than served.
 
 > [!NOTE]
-> The in-game font path serves the slot files in two ways. The HLE `sceFont` shim reads them directly (#825): a title that uses the HLE font API gets your imported font from the per-user cache first, then the project font, then a named refusal. The read-only `flash0:/font/` device serves the same files to guest file I/O for titles that load their own font library. Such a library also reads the system font list from the registry (`/DATA/FONT`), which the runtime builds from the files it serves: each font index reports the size and name in that file's own header, so the title sees your imported font, or else the project font, in each slot. An index whose slot has no font is left out of the list, and nothing is substituted. The bold and italic indices of the Latin slot serve its regular face and report it as regular. The import, the status command and the player's preflight (#300) list the font as present in both cases.
+> The in-game font path serves the slot files in two ways. The HLE `sceFont` shim and the read-only `flash0:/font/` device share the same index resolver. Japanese and Korean keep their current source order. Each Latin registry entry reports its requested `ltnN.pgf` name and reads the exact indexed file, a same-size-group indexed fallback, the legacy single-file import when it is the only Latin import, or the project Latin PGF. Sizes and names come from the bytes actually served. Exact and same-group indexed files report the served index's measured style; project and legacy files report Regular. Missing exact files remain visible in the setup prompt and startup log.
 
 #### Verification and player status
 
 To verify that system fonts are in place:
 
-1. **CLI:** `python tools/nk_cli.py fonts status` prints one line per slot, such as `Japanese: imported from your PSP.`, `Latin: project font.`, or `Korean: missing. Import a font from your PSP or install the project font.`
-2. **Player preflight:** the `SYSTEM_FONTS` check is `OK` when every slot is covered by an imported or a project font. It is `MISSING` when a slot is uncovered, and its message names the slots. It is `INVALID` (issue #313) when the manifest is malformed or a listed file fails its check.
-3. **Player setup wizard:** the **Fonts & System** step shows the source of each slot and has **IMPORT FONTS FOLDER** and **REMOVE IMPORTED FONTS** buttons. Import and removal report their outcome on that step.
+1. **CLI:** `python tools/nk_cli.py fonts status` prints Japanese and Korean status plus one line for each of the 16 Latin indices. A line names an exact import, same-size fallback, project fallback, legacy fallback, or missing file.
+2. **Player preflight (#300):** the `SYSTEM_FONTS` check is `OK` when every Japanese, Korean, and Latin registry index resolves to an imported or project font. It is `MISSING` when an index has no source, and its message includes the exact file or fallback for every Latin index. It is `INVALID` (issue #313) when the manifest is malformed or a listed file fails its check.
+3. **Player setup wizard:** the **Fonts & System** step shows Japanese and Korean status and all 16 Latin indices, including each fallback, and has **IMPORT FONTS FOLDER** and **REMOVE IMPORTED FONTS** buttons. Import and removal report their outcome on that step.
 
 ## 3. Build
 

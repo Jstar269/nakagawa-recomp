@@ -633,9 +633,18 @@ class TestPlayerPackageRoute(unittest.TestCase):
                 spans.append((p_vaddr, p_vaddr + p_memsz))
         return min(start for start, _end in spans), max(end for _start, end in spans)
 
-    def run_launch(self, perf_csv: Path) -> subprocess.CompletedProcess:
+    def run_launch(
+        self, perf_csv: Path, *, accept_presented_frames: int | None = None,
+        headless_timeout_ms: int | None = None,
+    ) -> subprocess.CompletedProcess:
         environment = os.environ.copy()
         environment["LOCALAPPDATA"] = str(self.local_appdata)
+        # The acceptance route must exercise a real host presenter. A caller's
+        # offscreen SDL selection would make the test prove only framebuffer
+        # conversion, so clear those overrides for this windowed child.
+        environment.pop("SR_VIDEO", None)
+        environment.pop("SDL_VIDEODRIVER", None)
+        environment.pop("SDL_VIDEO_DRIVER", None)
         # The opt-in child evidence channels. SR_PERF_CSV is how a launcher
         # proves the guest consumed vblanks without reading the child's stderr,
         # which is not a stable API of either process backend.
@@ -644,9 +653,18 @@ class TestPlayerPackageRoute(unittest.TestCase):
         ucrt_bin = Path("C:/msys64/ucrt64/bin")
         if os.name == "nt" and ucrt_bin.is_dir():
             environment["PATH"] = str(ucrt_bin) + os.pathsep + environment.get("PATH", "")
+        arguments = [
+            str(self.player), "--empty", "--launch-index=0", "--headless-launch",
+            f"--runtime-root={self.user_root}",
+        ]
+        if accept_presented_frames is not None:
+            arguments.append(
+                f"--headless-accept-presented-frames={accept_presented_frames}"
+            )
+        if headless_timeout_ms is not None:
+            arguments.append(f"--headless-timeout-ms={headless_timeout_ms}")
         return subprocess.run(
-            [str(self.player), "--empty", "--launch-index=0", "--headless-launch",
-             f"--runtime-root={self.user_root}"],
+            arguments,
             cwd=ROOT, env=environment, capture_output=True, text=True,
             timeout=LAUNCH_TIMEOUT_MS / 1000,  # subprocess.run takes seconds
         )
@@ -1186,12 +1204,14 @@ class TestPlayerPackageRoute(unittest.TestCase):
         #    reads its library from its own per-user data directory, so the
         #    entry the build half consumed is the entry the launch half sees.
         perf_csv = self.sandbox / "perf.csv"
-        launched = self.run_launch(perf_csv)
+        launched = self.run_launch(perf_csv, accept_presented_frames=FRAMES)
         self.assertEqual(launched.returncode, 0,
                          launched.stdout[-4000:] + launched.stderr[-4000:])
         self.assertIn("[PLAYER] Launch index 0: PLAY NOW available", launched.stdout)
-        self.assertIn("[PLAYER] Launch argv contains --gui: no", launched.stdout)
-        self.assertIn("[PLAYER] Headless launch child exited with code 0", launched.stdout)
+        self.assertIn("HEADLESS_ACCEPTANCE status=PASS", launched.stdout)
+        self.assertIn(f"presented_frames={FRAMES}", launched.stdout)
+        self.assertIn("child_exit=42", launched.stdout)
+        self.assertIn("[PLAYER] Launch argv contains --gui: yes", launched.stdout)
 
         # 4. Guest-visible startup state, from the player-owned child event file.
         boot_logs = self.player_boot_event_files()
@@ -1204,8 +1224,11 @@ class TestPlayerPackageRoute(unittest.TestCase):
             "BOOT_EVENT phase=runtime_registered",
             "BOOT_EVENT phase=index_prepare_end",
             "BOOT_EVENT phase=guest_start mode=scheduler",
+            f"BOOT_EVENT phase=headless_acceptance status=PASS presented_frames={FRAMES}",
         ):
             self.assertIn(milestone, events)
+        self.assertIn("BOOT_EVENT phase=window_ready backend=", events)
+        self.assertNotIn("backend=offscreen", events)
         for forbidden in ("UNKNOWN NID", "NONPLT_MISS", "INTERP_REJECT", "DRIVER_EXPECT_U32"):
             self.assertNotIn(forbidden, events)
 
@@ -1221,6 +1244,32 @@ class TestPlayerPackageRoute(unittest.TestCase):
         self.assertGreaterEqual(vblank_total, FRAMES)
 
         # 6. Nothing this route did reached a repository-tracked file.
+        self.assertEqual(tracked_status(), before)
+
+        # The same finite source-owned fixture exits after FRAMES presents.
+        # Asking for one more must fail as an early guest exit, never become a
+        # success merely because the child happened to return code zero.
+        short = self.run_launch(
+            self.sandbox / "short-acceptance-perf.csv",
+            accept_presented_frames=FRAMES + 1,
+        )
+        short_output = short.stdout + short.stderr
+        self.assertEqual(short.returncode, 8,
+                         short_output[-4000:])
+        self.assertIn("HEADLESS_ACCEPTANCE status=FAIL", short_output)
+        self.assertIn("reason=checkpoint_not_reached", short_output)
+        self.assertNotIn("HEADLESS_ACCEPTANCE status=PASS", short_output)
+        self.assertEqual(tracked_status(), before)
+
+        # A separate bounded run exercises the distinct timeout failure result.
+        timed_out = self.run_launch(
+            self.sandbox / "acceptance-timeout-perf.csv",
+            accept_presented_frames=FRAMES,
+            headless_timeout_ms=250,
+        )
+        timeout_output = timed_out.stdout + timed_out.stderr
+        self.assertEqual(timed_out.returncode, 7, timeout_output[-4000:])
+        self.assertIn("HEADLESS_ACCEPTANCE status=FAIL reason=timeout", timeout_output)
         self.assertEqual(tracked_status(), before)
 
         # 7. Negative control. A tampered package must fail closed at the

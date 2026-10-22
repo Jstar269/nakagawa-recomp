@@ -1830,7 +1830,8 @@ class GenericLauncherReintroductionGateTests(unittest.TestCase):
             if line.startswith("#define NK_LAUNCH_NAME_SOURCE"):
                 self.assertIn(
                     line, header,
-                    "committed generated header drifted from NAME_SOURCES projection",
+                    "committed generated header drifted from NAME_SOURCES projection; "
+                    "run python tools/regen_all.py",
                 )
 
     TITLE2 = "pspdev-phase5-v1"

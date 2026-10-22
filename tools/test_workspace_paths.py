@@ -403,12 +403,24 @@ class TrackedMachinePathTests(unittest.TestCase):
         )
 
     def test_platform_conventions_are_documented_in_setup(self) -> None:
+        # Single-sourced from ALLOWED_DRIVE_PREFIXES: every prefix whose reason names
+        # docs/SETUP.md must appear there as a drive-rooted path, in either slash form
+        # and any case, so the allowlist and the setup guide cannot drift apart.
         setup = (ROOT / "docs" / "SETUP.md").read_text(encoding="utf-8")
-        for literal in ("C:\\msys64\\ucrt64\\bin", "C:\\VulkanSDK", "C:\\Windows"):
-            self.assertIn(
-                literal,
-                setup,
-                f"docs/SETUP.md must document the {literal!r} platform convention "
+        documented = {
+            self._collapse_backslashes(token).lower().replace("\\", "/")
+            for token in self.DRIVE_TOKEN.findall(setup)
+        }
+        conventions = sorted({
+            prefix.replace("\\", "/")
+            for prefix, reason in self.ALLOWED_DRIVE_PREFIXES.items()
+            if "docs/SETUP.md" in reason
+        })
+        self.assertTrue(conventions, "ALLOWED_DRIVE_PREFIXES names no docs/SETUP.md convention")
+        for prefix in conventions:
+            self.assertTrue(
+                any(token == prefix or token.startswith(prefix + "/") for token in documented),
+                f"docs/SETUP.md must document the {prefix!r} platform convention "
                 "that ALLOWED_DRIVE_PREFIXES defers to (#368)",
             )
 

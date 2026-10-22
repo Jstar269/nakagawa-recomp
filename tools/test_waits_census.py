@@ -260,7 +260,7 @@ class CommittedDocTests(unittest.TestCase):
         self.assertEqual(
             waits_census.main(["--check"]),
             0,
-            "docs/PSP_INTR_WAITS_CENSUS.md is stale; run python tools/waits_census.py",
+            "docs/PSP_INTR_WAITS_CENSUS.md is stale; run python tools/regen_all.py",
         )
 
 

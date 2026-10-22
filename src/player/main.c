@@ -2039,6 +2039,21 @@ static int player_stage_for_launch_now(PlayerApp *app) {
 /* Bound on one headless --launch-index run. A guest that reaches its own exit
    ends the run sooner; this only caps a run that would otherwise wait forever. */
 #define NK_HEADLESS_LAUNCH_TIMEOUT_MS 120000
+#define NK_HEADLESS_ACCEPTANCE_TIMEOUT_MS 900000
+#define NK_HEADLESS_ACCEPTANCE_MAX_PRESENTED_FRAMES 1000000u
+#define NK_HEADLESS_ACCEPTANCE_MAX_TIMEOUT_MS 3600000u
+
+static bool player_parse_positive_u32(const char *text, uint32_t maximum,
+                                      uint32_t *out_value) {
+    if (!text || !text[0] || !out_value) return false;
+    char *end = NULL;
+    unsigned long value = strtoul(text, &end, 10);
+    if (end == text || !end || *end || value == 0ul || value > maximum) {
+        return false;
+    }
+    *out_value = (uint32_t)value;
+    return true;
+}
 
 /* PLAY for one library entry from the command line, shared by --launch-index
  * and `--launch-now --headless-launch`: the launcher's own player_app_launch_game,
@@ -2059,6 +2074,34 @@ static int player_run_command_line_launch(PlayerApp *app, int game_index,
         /* A windowed launch that lost its --gui request is a failure. */
         player_app_stop_game(app);
         return 5;
+    }
+    if (app->headless_accept_presented_frames > 0u) {
+        uint32_t timeout_ms = app->headless_launch_timeout_ms > 0u
+            ? app->headless_launch_timeout_ms : NK_HEADLESS_ACCEPTANCE_TIMEOUT_MS;
+        int child_code = nk_launch_wait(&app->launch_session, (int)timeout_ms);
+        app->is_game_running = false;
+        if (child_code < 0) {
+            fprintf(stderr,
+                    "[PLAYER] HEADLESS_ACCEPTANCE status=FAIL reason=timeout timeout_ms=%u\n",
+                    timeout_ms);
+            player_app_stop_game(app);
+            return 7;
+        }
+        if (child_code == NK_LAUNCH_EXIT_ACCEPTANCE_REACHED) {
+            printf("[PLAYER] HEADLESS_ACCEPTANCE status=PASS presented_frames=%u child_exit=%d\n",
+                   app->headless_accept_presented_frames, child_code);
+            return 0;
+        }
+        if (child_code == NK_LAUNCH_EXIT_ACCEPTANCE_PRESENTER_UNAVAILABLE) {
+            fprintf(stderr,
+                    "[PLAYER] HEADLESS_ACCEPTANCE status=FAIL reason=presenter_unavailable child_exit=%d\n",
+                    child_code);
+            return 8;
+        }
+        fprintf(stderr,
+                "[PLAYER] HEADLESS_ACCEPTANCE status=FAIL reason=checkpoint_not_reached child_exit=%d presented_frames=%u\n",
+                child_code, app->headless_accept_presented_frames);
+        return 8;
     }
     if (!app->launch_session.argv_has_gui) {
         /* Headless launch: the same player-owned session, spawned without a
@@ -2375,7 +2418,9 @@ int main(int argc, char *argv[]) {
             printf("Usage: nakagawa_player [--user-data-root=<folder>] "
                    "[--iso=<path> [--stage|--stage-only|--launch-now]] "
                    "[--runtime-root=<path>] [--view=<name>] [--screenshot=<bmp>] "
-                   "[--launch-index=N] [--headless-launch]\n");
+                   "[--launch-index=N] [--headless-launch] "
+                   "[--headless-accept-presented-frames=N] "
+                   "[--headless-timeout-ms=N]\n");
             return 0;
         } else if (strncmp(argv[i], "--screenshot=", 13) == 0) {
             screenshot_path = argv[i] + 13;
@@ -2444,12 +2489,37 @@ int main(int argc, char *argv[]) {
             populate_sample = true;
         } else if (strcmp(argv[i], "--headless-launch") == 0) {
             app.launch_headless = true;
+        } else if (strncmp(argv[i], "--headless-accept-presented-frames=", 35) == 0) {
+            if (!player_parse_positive_u32(
+                    argv[i] + 35, NK_HEADLESS_ACCEPTANCE_MAX_PRESENTED_FRAMES,
+                    &app.headless_accept_presented_frames)) {
+                fprintf(stderr,
+                        "[PLAYER] Invalid --headless-accept-presented-frames value.\n");
+                return 2;
+            }
+        } else if (strncmp(argv[i], "--headless-timeout-ms=", 22) == 0) {
+            if (!player_parse_positive_u32(argv[i] + 22,
+                                           NK_HEADLESS_ACCEPTANCE_MAX_TIMEOUT_MS,
+                                           &app.headless_launch_timeout_ms)) {
+                fprintf(stderr, "[PLAYER] Invalid --headless-timeout-ms value.\n");
+                return 2;
+            }
         } else if (strcmp(argv[i], "--empty") == 0) {
             force_empty = true;
         } else if (strcmp(argv[i], "--wizard") == 0) {
             force_empty = true;
             test_view = "wizard";
         }
+    }
+
+    if ((app.headless_accept_presented_frames > 0u &&
+         (!app.launch_headless || (!launch_index_requested && !launch_now))) ||
+        (app.headless_launch_timeout_ms > 0u &&
+         app.headless_accept_presented_frames == 0u)) {
+        fprintf(stderr,
+                "[PLAYER] Headless acceptance requires --headless-launch and a launch route; "
+                "--headless-timeout-ms requires an acceptance frame count.\n");
+        return 2;
     }
 
 #ifdef NK_PLAYER_UI_REGRESSION_TEST

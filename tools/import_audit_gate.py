@@ -121,7 +121,7 @@ def check_findings_vs_waivers(findings: list[dict]) -> None:
 
 def check_baseline(manifest: dict) -> None:
     if not DEFAULT_BASELINE.exists():
-        fail(f"missing committed baseline {DEFAULT_BASELINE}; run tools/hle_manifest.py --write-baseline")
+        fail(f"missing committed baseline {DEFAULT_BASELINE}; run python tools/regen_all.py")
     baseline = json.loads(DEFAULT_BASELINE.read_text(encoding="ascii"))
     current = manifest_to_baseline(manifest)
 
@@ -143,7 +143,8 @@ def check_baseline(manifest: dict) -> None:
         )
         fail(
             f"manifest drifted from committed baseline ({len(changed)} NIDs, e.g. {changed[:5]}); "
-            "review the change and refresh with `python tools/hle_manifest.py --write-baseline`"
+            "review the change and refresh with `python tools/regen_all.py` "
+            "(or `python tools/hle_manifest.py --write-baseline` alone)"
         )
 
 

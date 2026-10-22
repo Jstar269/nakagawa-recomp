@@ -36,6 +36,7 @@
 #include <SDL3/SDL_timer.h>
 #include <SDL3/SDL_video.h>
 #include <stdint.h>
+#include <errno.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -68,6 +69,13 @@ static bool     s_foreground_request_issued;
 #endif
 static int      s_offscreen = 0;        /* explicit host-memory presenter for headless bring-up */
 static uint64_t s_offscreen_frames;
+static int      s_headless_accept_parsed;
+static int      s_headless_accept_requested;
+static int      s_headless_accept_invalid;
+static int      s_headless_accept_ready;
+static int      s_headless_accept_complete;
+static uint32_t s_headless_accept_target;
+static uint32_t s_headless_accept_presented;
 #ifdef _WIN32
 static HWND     s_hwnd;
 static BITMAPINFO s_bmi;
@@ -112,6 +120,52 @@ static void sr_gui_boot_event(const char *format, ...) {
         fputc('\n', file);
     }
     fclose(file);
+}
+
+static void gui_headless_acceptance_parse(void) {
+    if (s_headless_accept_parsed) return;
+    s_headless_accept_parsed = 1;
+    const char *value = getenv("SR_HEADLESS_ACCEPT_PRESENTED_FRAMES");
+    if (!value || !value[0]) return;
+    s_headless_accept_requested = 1;
+    errno = 0;
+    char *end = NULL;
+    unsigned long long parsed = strtoull(value, &end, 10);
+    if (errno || end == value || !end || *end || parsed == 0u ||
+        parsed > UINT32_MAX) {
+        s_headless_accept_invalid = 1;
+        return;
+    }
+    s_headless_accept_target = (uint32_t)parsed;
+}
+
+int gui_headless_acceptance_requested(void) {
+    gui_headless_acceptance_parse();
+    return s_headless_accept_requested;
+}
+
+int gui_headless_acceptance_ready(void) {
+    gui_headless_acceptance_parse();
+    return s_headless_accept_requested && !s_headless_accept_invalid &&
+        s_headless_accept_ready;
+}
+
+int gui_headless_acceptance_complete(void) {
+    return s_headless_accept_complete;
+}
+
+uint32_t gui_headless_acceptance_presented_frames(void) {
+    return s_headless_accept_presented;
+}
+
+static void gui_headless_acceptance_record_present(int accepted) {
+    if (!accepted || !s_headless_accept_requested ||
+        !s_headless_accept_ready || s_offscreen ||
+        s_headless_accept_complete) return;
+    s_headless_accept_presented++;
+    if (s_headless_accept_presented >= s_headless_accept_target) {
+        s_headless_accept_complete = 1;
+    }
 }
 #endif /* !SR_GUI_PRESENT_SELFTEST */
 
@@ -261,7 +315,25 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
 void gui_init(const char *title) {
     (void)title;
+    gui_headless_acceptance_parse();
+    if (s_headless_accept_requested && s_headless_accept_invalid) {
+        sr_gui_boot_event("BOOT_EVENT phase=headless_acceptance status=FAIL reason=invalid_frame_target");
+        return;
+    }
     const char *video = getenv("SR_VIDEO");
+    if (s_headless_accept_requested && video &&
+        strcmp(video, "offscreen") == 0) {
+        sr_gui_boot_event("BOOT_EVENT phase=headless_acceptance status=FAIL reason=offscreen_presenter");
+        return;
+    }
+    const char *sdl_video_driver = getenv("SDL_VIDEODRIVER");
+    const char *sdl_video_driver_alias = getenv("SDL_VIDEO_DRIVER");
+    if (s_headless_accept_requested &&
+        ((sdl_video_driver && strcmp(sdl_video_driver, "offscreen") == 0) ||
+         (sdl_video_driver_alias && strcmp(sdl_video_driver_alias, "offscreen") == 0))) {
+        sr_gui_boot_event("BOOT_EVENT phase=headless_acceptance status=FAIL reason=offscreen_sdl_driver");
+        return;
+    }
     if (video && strcmp(video, "offscreen") == 0) {
         /* The offscreen presenter is an explicit host-memory sink. It does not
          * initialize SDL video, create a window, or claim Vulkan presentation;
@@ -300,6 +372,7 @@ void gui_init(const char *title) {
                 s_px = (uint32_t *)malloc(PSP_W * PSP_H * 4);
                 s_last_ns = SDL_GetTicksNS();
                 s_on = 1;
+                if (s_headless_accept_requested) s_headless_accept_ready = 1;
                 /* The window draws the on-screen keyboard, so no native box is needed; a
                  * presenter that cannot draw keeps the box as the fallback (osk_text_entry.c). */
                 sr_osk_overlay_set_host(osk_overlay_paint_available());
@@ -348,6 +421,7 @@ void gui_init(const char *title) {
     s_bmi.bmiHeader.biCompression = BI_RGB;
     s_last_ns = SDL_GetTicksNS();
     s_on = 1;
+    if (s_headless_accept_requested && s_hwnd) s_headless_accept_ready = 1;
     sr_gui_request_launcher_foreground(
         s_hwnd && IsWindowVisible(s_hwnd), s_hwnd,
         sr_gui_raise_gdi_window, "gdi");
@@ -651,6 +725,7 @@ int gui_present(uint32_t fbaddr, int fmt, uint32_t stride) {
 #ifdef SR_SDL3VK
 pace:
 #endif
+    gui_headless_acceptance_record_present(accepted);
     /* Pace to ~60 Hz so the intro/menus play at a watchable speed. Skipped when the scheduler
      * already paces vblanks to real time (the default): pacing twice on unaligned grids makes
      * frames miss their vblank and costs a whole extra period (30/20 fps quantization). */

@@ -114,6 +114,7 @@ int sr_aot_return_boundary_scope_end(CpuState *s,
 
 int gui_on(void) { return 0; }
 void gui_pump(void) {}
+int gui_headless_acceptance_complete(void) { return 0; }
 static uint32_t g_test_vblank_handler;
 static unsigned g_test_handler_calls;
 static int g_test_handler_raise_ge;

@@ -188,3 +188,31 @@ claim it.
   [#309](https://github.com/Jstar269/nakagawa-recomp/issues/309).
 - **Hardware.** Nothing here runs on a PSP. Hardware claims need the oracle route
   in [`HARDWARE_ORACLE.md`](HARDWARE_ORACLE.md).
+
+## Local presented-frame acceptance
+
+For a locally authorized title run using an already prepared library entry, the
+packaged player can stop at a real-window presentation checkpoint:
+
+```powershell
+$UserDataRoot = Join-Path $env:TEMP 'nakagawa-title-acceptance'
+# Seed this isolated root with the prepared library entry and package first.
+& .\nakagawa_player.exe "--user-data-root=$UserDataRoot" `
+    --launch-index=0 --headless-launch `
+    --headless-accept-presented-frames=600 --headless-timeout-ms=900000
+```
+
+`--headless-launch` keeps the launcher itself out of the way. The acceptance option
+opens the child runtime's window, and the child returns after the requested number
+of window frames have been accepted by its presenter. The player reports
+`HEADLESS_ACCEPTANCE status=PASS` and exits 0 only for that checkpoint. An early
+child exit or unavailable window presenter reports FAIL and exits 8; the default
+acceptance deadline is 900 seconds, and a timeout reports FAIL and exits 7. Set
+`--headless-timeout-ms=N` to use a different positive deadline.
+
+This mode rejects `SR_VIDEO=offscreen` and clears inherited SDL video-driver
+overrides for the child. It does not claim that the title screen or any game
+behavior is correct. Choose the frame count for the checkpoint being reviewed,
+then inspect the corresponding private snapshot or window evidence separately.
+Keep title inputs, captures, logs, and detailed measurements outside the public
+repository; report only a verdict, timings, and counts.

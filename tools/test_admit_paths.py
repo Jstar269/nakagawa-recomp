@@ -345,6 +345,37 @@ class AdmitPathsTest(unittest.TestCase):
             fixture.admit("docs/c.md", rekey=True, approval_basis=None)
         self.assertEqual(caught.exception.code, "REKEY_ADMISSION_MISSING")
 
+    def test_rekey_reuses_a_recorded_class_stricter_than_the_derived_one(self) -> None:
+        """A reviewer's recorded class and record id are the decision; a re-key matches on paths and bytes only."""
+        record = {"id": "b-upstream-import", "classification": "upstream-third-party", "evidence_tier": "H",
+                  "paths": ["docs/b.md"], "upstream": "a synthetic upstream"}
+        fixture = _Fixture(self, records=[record])
+        fixture.add("docs/b.md", "# B\n")
+        first = fixture.admit("docs/b.md")
+        admission = fixture.authority / first["records"][0]
+        document = json.loads(admission.read_text(encoding="utf-8"))
+        document["reviewed_new_paths"][0].update(
+            classification="upstream_derived", record_id="b-upstream-import", origin_kind="third_party",
+            origin="Byte-identical page from a synthetic upstream.", license="MIT")
+        admission.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        git(fixture.authority, "commit", "-qam", "reviewer: stricter class for docs/b.md")
+
+        git(fixture.pr, "checkout", "-q", "-b", "docs/a-page-20261022", fixture.base)
+        fixture.add("docs/a.md", "# A\n")
+        landed = fixture.admit("docs/a.md", approval_basis="Owner request: page A.")
+        git(fixture.pr, "checkout", "-q", "main")
+        git(fixture.pr, "merge", "-q", "--ff-only", landed["admit_branch"])
+        new_main = git(fixture.pr, "rev-parse", "HEAD")
+        git(fixture.pr, "update-ref", "refs/remotes/origin/main", new_main)
+        git(fixture.pr, "checkout", "-q", "docs/new-pages-20261022")
+        git(fixture.pr, "merge", "-q", "--no-edit", "main")
+
+        result = fixture.admit("docs/b.md", rekey=True, approval_basis=None)
+
+        self.assertEqual(result["records"][0], first["records"][0], "the recorded decision is reused")
+        self.assertEqual(json.loads(admission.read_text(encoding="utf-8")), document, "and left as recorded")
+        self.assertEqual(result["base"], new_main)
+
     def test_cli_prints_the_remaining_steps(self) -> None:
         fixture = _Fixture(self)
         fixture.add("docs/new-page.md", "# New page\n")

@@ -72,6 +72,7 @@
 #include "osk_text_entry.h" /* keyboard text collected without stopping guest time */
 #include "osk_overlay.h"    /* the in-window keyboard the presenter draws and the pad drives */
 #include "flash0_font.h"    /* read-only flash0: font device (FONT_PLAN section 5) */
+#include "../core/nk_font.h" /* shared Latin index filenames and cache validation */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -7805,6 +7806,9 @@ static int ms0_try_legacy_flat_import(const char *guest_path, const char *host_p
 static PGF *s_pgf_slot[NK_FONT_SLOT_COUNT];
 /* Where each slot's font came from: "user-imported", "project", "unreadable" or "none". */
 static const char *s_pgf_slot_source[NK_FONT_SLOT_COUNT];
+/* A Latin registry index owns its own opened PGF handle even when it falls back to another
+ * same-size index or the project font. This keeps sceFontOpen and flash0: on one resolver. */
+static PGF *s_pgf_latin_index[NK_FONT_LATIN_INDEX_COUNT];
 static Flash0Sources s_pgf_sources;
 /* Defined with the flash0: device roots below. */
 static void flash0_copy_root(char *dst, size_t capacity, const char *src);
@@ -7865,10 +7869,9 @@ static void font_load(void) {
     free(root_utf8);
     free(root);
     s_pgf_sources = sources;
-    /* Each slot (nk_font_slots.h) resolves the way the flash0: device serves it: the
-     * user-imported cache under the per-user data directory first, then the project font
-     * directory. Legacy aliases absent from both sources made every font go missing after an
-     * import. There is no cross-slot substitution: an absent slot stays absent and is named here. */
+    /* Japanese, the legacy unindexed Latin alias, and Korean keep the slot resolver. The
+     * registry's sixteen Latin files resolve separately below, through the same indexed route
+     * the flash0: device uses. */
     for (int slot = 0; slot < NK_FONT_SLOT_COUNT; slot++) {
         char path[SR_FLASH0_PATH_MAX + 64];
         const char *from = "none";
@@ -7884,8 +7887,25 @@ static void font_load(void) {
         s_pgf_slot[slot] = pgf;
         s_pgf_slot_source[slot] = from;
     }
+    for (int index = 0; index < NK_FONT_LATIN_INDEX_COUNT; index++) {
+        char path[SR_FLASH0_PATH_MAX + 64];
+        char label[64];
+        const char *from = "none";
+        int served_index = -3;
+        PGF *pgf = NULL;
+        snprintf(label, sizeof(label), "Latin registry index %d", index + 1);
+        if (sr_flash0_font_resolve_latin_index_path(&s_pgf_sources, index, path, sizeof(path),
+                                                    &from, &served_index)) {
+            pgf = font_open_host_path(path, label, from);
+            if (!pgf) from = "unreadable";
+        } else {
+            fprintf(stderr, "font_load: no source for Latin registry index %d (%s)\n",
+                    index + 1, nk_font_latin_index_filename(index));
+        }
+        s_pgf_latin_index[index] = pgf;
+    }
     if (getenv("SR_FONTLOG"))
-        fprintf(stderr, "font_load: japanese=%s latin=%s korean=%s\n",
+        fprintf(stderr, "font_load: japanese=%s legacy-latin=%s korean=%s\n",
                 s_pgf_slot_source[NK_FONT_SLOT_JAPANESE], s_pgf_slot_source[NK_FONT_SLOT_LATIN],
                 s_pgf_slot_source[NK_FONT_SLOT_KOREAN]);
     atomic_store_explicit(&s_pgf_state, 2, memory_order_release);
@@ -7898,6 +7918,10 @@ void sr_font_test_reset(void) {
         if (s_pgf_slot[slot]) pgf_close(s_pgf_slot[slot]);
         s_pgf_slot[slot] = NULL;
         s_pgf_slot_source[slot] = NULL;
+    }
+    for (int index = 0; index < NK_FONT_LATIN_INDEX_COUNT; index++) {
+        if (s_pgf_latin_index[index]) pgf_close(s_pgf_latin_index[index]);
+        s_pgf_latin_index[index] = NULL;
     }
     memset(&s_pgf_sources, 0, sizeof(s_pgf_sources));
     atomic_store_explicit(&s_pgf_state, 0, memory_order_release);
@@ -8122,6 +8146,10 @@ static const PGF *font_pgf_for_index(uint32_t index) {
     font_load();
     if (!sr_flash0_font_registry_slot(index, &slot) || (unsigned)slot >= NK_FONT_SLOT_COUNT)
         return NULL;
+    if (slot == NK_FONT_SLOT_LATIN) {
+        if (index == 0u || index > NK_FONT_LATIN_INDEX_COUNT) return NULL;
+        return s_pgf_latin_index[index - 1u];
+    }
     return s_pgf_slot[slot];
 }
 

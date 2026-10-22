@@ -120,6 +120,7 @@ int     sched_take_current_join_result(uint32_t uid, uint32_t *result_out) { (vo
 int     sched_current_priority(void) { return 32; }
 int     sched_is_dormant(uint32_t uid) { (void)uid; return 1; }
 void    sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) { (void)entry; (void)arglen; (void)argp; }
+int (*sr_sched_stop_requested)(void) = NULL;
 CpuState *sr_cpu_for_callbacks(void) { return NULL; }
 int     sr_vblank_quantum_due(void) { return 0; }
 void    sr_hle_advance_time(uint32_t us) { (void)us; }
@@ -190,6 +191,11 @@ void     gui_consume_button_pulses(void) {}
 void     gui_analog(uint8_t *lx, uint8_t *ly) { if (lx) *lx = 128; if (ly) *ly = 128; }
 int      gui_pad_present(void) { return 0; }
 int      gui_present(uint32_t fbaddr, int fmt, uint32_t stride) { (void)fbaddr; (void)fmt; (void)stride; return 1; }
+/* The gate never runs a headless acceptance launch. */
+int      gui_headless_acceptance_requested(void) { return 0; }
+int      gui_headless_acceptance_ready(void) { return 0; }
+int      gui_headless_acceptance_complete(void) { return 0; }
+uint32_t gui_headless_acceptance_presented_frames(void) { return 0u; }
 
 /* --- Extracted-data preparation stub (hle.c seam; the gate never scans) --- */
 int sr_host_data_prepare(void) { return 4; /* SR_DATA_STATE_DISABLED */ }

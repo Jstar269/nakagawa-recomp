@@ -38,6 +38,11 @@ typedef enum NkFontSlot {
 #define NK_FONT_SLOT_LATIN_FILE "nkltn.pgf"
 #define NK_FONT_SLOT_KOREAN_FILE "nkkr.pgf"
 
+/* Firmware exposes sixteen separately named Latin PGFs. The first and second groups each
+ * contain the same eight family/style combinations at a different nominal size. */
+#define NK_FONT_LATIN_INDEX_COUNT 16
+#define NK_FONT_LATIN_SIZE_GROUP_COUNT 8
+
 /* Slot classification, from the reader's coverage probes (pgf_api.h, PgfVerdict): a file
  * that covers Hangul names the Korean slot, one that covers kana names the Japanese slot,
  * and one that covers Latin letters alone names the Latin slot. A file that covers both
