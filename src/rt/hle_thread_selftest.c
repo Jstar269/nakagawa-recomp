@@ -722,6 +722,31 @@ uint32_t iso_physical_lba(uint32_t lba_or_token) {
  * both the stack arena floor (0x05000000) and the default partition top
  * (0x0A000000). Returning 0 is not an option -- user_partition_init() correctly
  * fail-closes on it rather than placing the partition over the image. */
+#ifndef SR_HLE_AOT_BOUNDARY_TEST
+/* The broad HLE suite keeps its existing test-only dispatch adapter. The
+ * focused AOT boundary variant below is the one that links real recomp.c. */
+int sr_aot_return_boundary_begin(CpuState *s, uint32_t resume_pc,
+                                 uint32_t call_pc, uint32_t has_resume_pc) {
+    (void)s; (void)resume_pc; (void)call_pc; (void)has_resume_pc;
+    return 0;
+}
+int sr_aot_return_boundary_end(CpuState *s) { (void)s; return 0; }
+void sr_aot_return_boundaries_reset(void) {}
+void sr_aot_return_boundary_stack_swap(SrAotReturnBoundaryStack *stack) { (void)stack; }
+void sr_aot_return_boundary_stack_destroy(SrAotReturnBoundaryStack *stack) {
+    if (stack) memset(stack, 0, sizeof(*stack));
+}
+void sr_aot_return_boundary_scope_begin(SrAotReturnBoundaryScope *scope) {
+    if (scope) memset(scope, 0, sizeof(*scope));
+}
+int sr_aot_return_boundary_scope_end(CpuState *s,
+                                     const SrAotReturnBoundaryScope *scope,
+                                     const char *owner) {
+    (void)s; (void)scope; (void)owner;
+    return 0;
+}
+#endif
+
 uint32_t sr_loaded_end(void) { return 0x00400000u; }
 
 int g_hle_depth;
@@ -5866,6 +5891,7 @@ static void reset_fixture(void) {
     s_ntcb = 0;
     s_cur = -1;
     s_last_pick = -1;
+    sr_aot_return_boundaries_reset();
 #ifdef SR_SCHED_LIVENESS_TEST
     sched_liveness_reset();
 #endif
@@ -29930,6 +29956,235 @@ static void test_vtimer_refusals_are_named(void) {
            "CancelVTimerHandler returns the named refusal");
 }
 
+#ifdef SR_HLE_AOT_BOUNDARY_TEST
+/* This is the same wrapper emitted by emit_checked_body_call: set the linked
+ * resume address, establish its explicit return boundary, call the native body,
+ * drain any direct tail, and stop before the caller continuation on a mismatch. */
+#define AOT_THREAD_TEST_CHECKED_CALL(s, body, call_pc) do { \
+    const uint32_t aot_call_pc_ = (call_pc); \
+    const uint32_t aot_resume_pc_ = aot_call_pc_ + 8u; \
+    (s)->pc = aot_call_pc_; \
+    (s)->r[31] = aot_resume_pc_; \
+    if (sr_aot_return_boundary_begin((s), aot_resume_pc_, aot_call_pc_, 1u)) return; \
+    (body)((s)); \
+    if (sr_tail_transfer.pending) sr_tail_drain((s)); \
+    if (sr_aot_return_boundary_end((s))) return; \
+} while (0)
+
+enum {
+    AOT_THREAD_TEST_ENTRY_LAUNCHER = 0x088a0000u,
+    AOT_THREAD_TEST_ENTRY_A = 0x088a0100u,
+    AOT_THREAD_TEST_ENTRY_B = 0x088a0200u,
+    AOT_THREAD_TEST_SEMA_A_NAME = 0x00250b00u,
+    AOT_THREAD_TEST_SEMA_B_NAME = 0x00250b40u,
+    AOT_THREAD_TEST_ID_A = 0xaaaau,
+    AOT_THREAD_TEST_ID_B = 0xbbbbu,
+};
+
+static uint32_t s_aot_thread_test_sema[2];
+static uint32_t s_aot_thread_test_uid[2];
+static unsigned s_aot_thread_test_threads_created;
+static unsigned s_aot_thread_test_entry_count;
+static unsigned s_aot_thread_test_resume_count;
+static unsigned s_aot_thread_test_completed[2];
+static unsigned s_aot_thread_test_fatal[2];
+static int s_aot_thread_test_entry_order[2];
+static int s_aot_thread_test_resume_order[2];
+static uint32_t s_aot_thread_test_wait_result[2];
+
+static unsigned aot_thread_test_index(const CpuState *s) {
+    return s->r[16] == AOT_THREAD_TEST_ID_B ? 1u : 0u;
+}
+
+static void aot_thread_test_leaf(CpuState *s) {
+    const unsigned index = aot_thread_test_index(s);
+    if (s_aot_thread_test_entry_count < 2u)
+        s_aot_thread_test_entry_order[s_aot_thread_test_entry_count++] = (int)index;
+
+    s->r[4] = s_aot_thread_test_sema[index];
+    s->r[5] = 1u;
+    s->r[6] = 0u;
+    s_aot_thread_test_wait_result[index] = sr_syscall(s, NID_CNW_WAIT_SEMA);
+    if (s_aot_thread_test_resume_count < 2u)
+        s_aot_thread_test_resume_order[s_aot_thread_test_resume_count++] = (int)index;
+
+    /* Generated jr $ra capture. On the buggy shared stack, A writes this into
+     * B's still-live inner boundary before A's emit_checked_body_call returns. */
+    SR_AOT_RETURN_CAPTURE(s, s->r[31]);
+}
+
+static void aot_thread_test_a_inner(CpuState *s) {
+    const uint32_t caller_ra = s->r[31];
+    AOT_THREAD_TEST_CHECKED_CALL(s, aot_thread_test_leaf, 0x088a1200u);
+    s->r[31] = caller_ra; /* generated guest save/restore of the outer $ra */
+    SR_AOT_RETURN_CAPTURE(s, s->r[31]);
+}
+
+static void aot_thread_test_b_inner(CpuState *s) {
+    const uint32_t caller_ra = s->r[31];
+    AOT_THREAD_TEST_CHECKED_CALL(s, aot_thread_test_leaf, 0x088a2200u);
+    s->r[31] = caller_ra; /* generated guest save/restore of the outer $ra */
+    SR_AOT_RETURN_CAPTURE(s, s->r[31]);
+}
+
+static void aot_thread_test_a(CpuState *s) {
+    const uint32_t caller_ra = s->r[31];
+    s->r[16] = AOT_THREAD_TEST_ID_A;
+    AOT_THREAD_TEST_CHECKED_CALL(s, aot_thread_test_a_inner, 0x088a1100u);
+    s->r[31] = caller_ra;
+    SR_AOT_RETURN_CAPTURE(s, s->r[31]);
+    s_aot_thread_test_fatal[0] = s->flow_kind == SR_FLOW_FATAL;
+    s_aot_thread_test_completed[0]++;
+}
+
+static void aot_thread_test_b(CpuState *s) {
+    const uint32_t caller_ra = s->r[31];
+    s->r[16] = AOT_THREAD_TEST_ID_B;
+    AOT_THREAD_TEST_CHECKED_CALL(s, aot_thread_test_b_inner, 0x088a2100u);
+    s->r[31] = caller_ra;
+    SR_AOT_RETURN_CAPTURE(s, s->r[31]);
+    s_aot_thread_test_fatal[1] = s->flow_kind == SR_FLOW_FATAL;
+    s_aot_thread_test_completed[1]++;
+}
+
+static void aot_thread_test_launcher(CpuState *s) {
+    (void)s;
+    if (s_aot_thread_test_threads_created) return;
+    s_aot_thread_test_uid[0] = sched_create_thread(AOT_THREAD_TEST_ENTRY_A, 40, 0x4000u);
+    s_aot_thread_test_uid[1] = sched_create_thread(AOT_THREAD_TEST_ENTRY_B, 41, 0x4000u);
+    if (s_aot_thread_test_uid[0] && s_aot_thread_test_uid[1] &&
+        sched_start_thread(s_aot_thread_test_uid[0], 0u, 0u) == 0u &&
+        sched_start_thread(s_aot_thread_test_uid[1], 0u, 0u) == 0u)
+        s_aot_thread_test_threads_created = 1u;
+}
+
+static uint32_t aot_thread_test_create_sema(CpuState *s, uint32_t name_addr,
+                                             const char *name) {
+    title_hle_write_cstr(name_addr, name);
+    s->r[4] = name_addr;
+    s->r[5] = 0u;
+    s->r[6] = 0u;
+    s->r[7] = 1u;
+    return sr_syscall(s, NID_CNW_CREATE_SEMA);
+}
+
+static void aot_thread_test_scope_pop_body(CpuState *s) {
+    /* The first end consumes this synthetic callback's own sr_call_body
+     * boundary. The second must stop at the scope floor before touching the
+     * interrupted caller's boundary. */
+    (void)sr_aot_return_boundary_end(s);
+    (void)sr_aot_return_boundary_end(s);
+}
+
+static void test_aot_return_boundary_callback_and_interrupt_scopes(void) {
+    enum { ENTRY = 0x08afe000u };
+    CpuState cpu = {0};
+    uint32_t fatal_target = 0u;
+    sr_aot_return_boundaries_reset();
+    sr_test_guest_fn_reset();
+    sr_test_register_guest_fn(ENTRY, aot_thread_test_scope_pop_body);
+
+    expect(sr_aot_return_boundary_begin(&cpu, 0u, 0x088ac000u, 0u) == 0,
+           "AOT boundary scopes: interrupted callback caller boundary begins");
+    SrAotReturnBoundary *parent = sr_aot_return_boundary_top;
+    (void)sr_callback_dispatch_one(&cpu, ENTRY, 1, 0x11u, 0x22u, dispatch);
+    expect(sr_aot_return_boundary_top == parent && cpu.flow_kind == SR_FLOW_FATAL,
+           "AOT boundary scopes: PSP callback cannot pop the interrupted caller frame");
+    (void)sr_aot_return_boundary_end(&cpu);
+
+    sr_aot_return_boundaries_reset();
+    memset(&cpu, 0, sizeof cpu);
+    expect(sr_aot_return_boundary_begin(&cpu, 0u, 0x088ac100u, 0u) == 0,
+           "AOT boundary scopes: interrupted interrupt caller boundary begins");
+    parent = sr_aot_return_boundary_top;
+    int interrupt_failed = sched_dispatch_interrupt_guest(
+        &cpu, ENTRY, "AOT boundary scope test interrupt", &fatal_target);
+    expect(interrupt_failed && fatal_target == cpu.flow_target &&
+               sr_aot_return_boundary_top == parent && cpu.flow_kind == SR_FLOW_FATAL,
+           "AOT boundary scopes: interrupt handler cannot pop the interrupted caller frame");
+    (void)sr_aot_return_boundary_end(&cpu);
+    sr_aot_return_boundaries_reset();
+    sr_test_guest_fn_reset();
+}
+
+static void test_aot_return_boundary_thread_isolation(void) {
+    reset_fixture();
+    sr_hle_init();
+    sr_test_guest_fn_reset();
+    s_aot_thread_test_sema[0] = 0u;
+    s_aot_thread_test_sema[1] = 0u;
+    s_aot_thread_test_uid[0] = 0u;
+    s_aot_thread_test_uid[1] = 0u;
+    s_aot_thread_test_threads_created = 0u;
+    s_aot_thread_test_entry_count = 0u;
+    s_aot_thread_test_resume_count = 0u;
+    memset(s_aot_thread_test_completed, 0, sizeof s_aot_thread_test_completed);
+    memset(s_aot_thread_test_fatal, 0, sizeof s_aot_thread_test_fatal);
+    memset(s_aot_thread_test_wait_result, 0xff, sizeof s_aot_thread_test_wait_result);
+    s_aot_thread_test_entry_order[0] = s_aot_thread_test_entry_order[1] = -1;
+    s_aot_thread_test_resume_order[0] = s_aot_thread_test_resume_order[1] = -1;
+
+    s_aot_thread_test_sema[0] = aot_thread_test_create_sema(
+        s_cpu, AOT_THREAD_TEST_SEMA_A_NAME, "aot-boundary-a");
+    s_aot_thread_test_sema[1] = aot_thread_test_create_sema(
+        s_cpu, AOT_THREAD_TEST_SEMA_B_NAME, "aot-boundary-b");
+    expect(s_aot_thread_test_sema[0] != 0u && s_aot_thread_test_sema[1] != 0u,
+           "AOT boundary isolation: both real ThreadMan semaphores are created");
+    if (!s_aot_thread_test_sema[0] || !s_aot_thread_test_sema[1]) return;
+
+    sr_test_register_guest_fn(AOT_THREAD_TEST_ENTRY_LAUNCHER, aot_thread_test_launcher);
+    sr_test_register_guest_fn(AOT_THREAD_TEST_ENTRY_A, aot_thread_test_a);
+    sr_test_register_guest_fn(AOT_THREAD_TEST_ENTRY_B, aot_thread_test_b);
+
+    /* Real sched_run fibers enter sr_call_body, and each worker reaches the
+     * production sceKernelWaitSema handler through sr_syscall. Both block before
+     * the scheduler returns to this test. */
+    s_cpu->r[4] = 0u;
+    s_cpu->r[5] = 0u;
+    sched_run(AOT_THREAD_TEST_ENTRY_LAUNCHER, 0u, 0u);
+    TCB *a = tcb_by_uid(s_aot_thread_test_uid[0]);
+    TCB *b = tcb_by_uid(s_aot_thread_test_uid[1]);
+    expect(s_aot_thread_test_threads_created && s_aot_thread_test_entry_count == 2u &&
+               s_aot_thread_test_entry_order[0] == 0 && s_aot_thread_test_entry_order[1] == 1,
+           "AOT boundary isolation: thread A then B both entered the real blocking wait");
+    expect(a && b && a->state == TH_WAIT_OBJ && b->state == TH_WAIT_OBJ &&
+               a->wait_obj == s_aot_thread_test_sema[0] &&
+               b->wait_obj == s_aot_thread_test_sema[1],
+           "AOT boundary isolation: both guest fibers parked on their own HLE semaphore");
+
+    s_cpu->r[4] = s_aot_thread_test_sema[0];
+    s_cpu->r[5] = 1u;
+    expect(sr_syscall(s_cpu, NID_WSV_SIGNAL_SEMA) == 0u,
+           "AOT boundary isolation: the scheduler signals A's production semaphore");
+    s_cpu->r[4] = s_aot_thread_test_sema[1];
+    s_cpu->r[5] = 1u;
+    expect(sr_syscall(s_cpu, NID_WSV_SIGNAL_SEMA) == 0u,
+           "AOT boundary isolation: the scheduler signals B's production semaphore");
+
+    /* The second real scheduler pass resumes A before B while B's newer nested
+     * frames are still suspended. Distinct direct-call PCs make a cross-thread
+     * capture fail with AOT_RETURN_TARGET_MISMATCH on the old global stack. */
+    s_cpu->r[4] = 0u;
+    s_cpu->r[5] = 0u;
+    sched_run(AOT_THREAD_TEST_ENTRY_LAUNCHER, 0u, 0u);
+    expect(s_aot_thread_test_resume_count == 2u &&
+               s_aot_thread_test_resume_order[0] == 0 && s_aot_thread_test_resume_order[1] == 1,
+           "AOT boundary isolation: A resumes before B, opposite the live frame-stack order");
+    expect(s_aot_thread_test_wait_result[0] == 0u && s_aot_thread_test_wait_result[1] == 0u,
+           "AOT boundary isolation: both real HLE waits return successfully");
+    expect(s_aot_thread_test_completed[0] == 1u && s_aot_thread_test_completed[1] == 1u &&
+               !s_aot_thread_test_fatal[0] && !s_aot_thread_test_fatal[1],
+           "AOT boundary isolation: both nested AOT call chains return without fatal flow");
+    expect(sr_aot_return_boundary_top == NULL,
+           "AOT boundary isolation: scheduler returns with its own boundary base restored");
+    sr_aot_return_boundaries_reset();
+    sr_test_guest_fn_reset();
+    test_aot_return_boundary_callback_and_interrupt_scopes();
+}
+
+#undef AOT_THREAD_TEST_CHECKED_CALL
+#endif /* SR_HLE_AOT_BOUNDARY_TEST */
+
 int main(int argc, char **argv) {
     if (argc > 1 && (strcmp(argv[1], "--psp-oracle") == 0 ||
                      strcmp(argv[1], "--exit-game-poisoned") == 0))
@@ -29998,6 +30253,16 @@ static int hle_selftest_main(int argc, char **argv) {
         return s_failures ? 1 : 0;
     }
 
+#ifdef SR_HLE_AOT_BOUNDARY_TEST
+    if (argc > 1 && strcmp(argv[1], "--aot-return-boundary") == 0) {
+        test_aot_return_boundary_thread_isolation();
+        fprintf(stderr, "aot-return-boundary-selftest: %d checks, %d failures\n",
+                s_checks, s_failures);
+        free(g_mem_base);
+        return s_failures ? 1 : 0;
+    }
+#endif
+
     if (argc > 1 && strcmp(argv[1], "--flash0-font") == 0) {
         test_flash0_font_device();
         fprintf(stderr, "flash0-font: %d checks, %d failures\n", s_checks, s_failures);
@@ -30041,6 +30306,9 @@ static int hle_selftest_main(int argc, char **argv) {
         return s_failures ? 1 : 0;
     }
 
+#ifdef SR_HLE_AOT_BOUNDARY_TEST
+    test_aot_return_boundary_thread_isolation();
+#endif
     test_prx_export_relocation_behavior();
     test_fd_namespace();
     test_umd_io_console_model();
@@ -30281,3 +30549,51 @@ static int hle_selftest_main(int argc, char **argv) {
     free(g_mem_base);
     return s_failures ? 1 : 0;
 }
+
+#ifdef SR_HLE_AOT_BOUNDARY_TEST
+/* Link the production AOT return-boundary implementation into this scheduler +
+ * production-HLE harness. The harness intentionally keeps its synthetic lookup
+ * and dispatch adapters for the rest of the HLE suite; rename recomp.c's unused
+ * dispatcher exports here while leaving sr_aot_return_boundary_* unmodified. */
+void sr_recomp_test_unused_dispatch_tail_step(CpuState *s, uint32_t target);
+void sr_recomp_test_unused_profile_dump(void);
+void sr_recomp_test_unused_profile_block(uint32_t target_pc);
+void sr_recomp_test_unused_oor(uint32_t addr, uint32_t value, int store);
+void sr_recomp_test_unused_heap_note_write(uint32_t addr, uint32_t width,
+                                           uint32_t value, uint32_t pc);
+void sr_recomp_test_unused_heap_note_bulk_write(uint32_t addr, uint32_t width,
+                                                uint32_t pc);
+uint32_t sr_recomp_test_unused_newlib_malloc(uint32_t size, uint32_t guest_ra);
+void sr_recomp_test_unused_trace_close(void);
+#define sr_lookup sr_recomp_test_unused_lookup
+#define dispatch sr_recomp_test_unused_dispatch
+#define dispatch_call sr_recomp_test_unused_dispatch_call
+#define dispatch_call_try sr_recomp_test_unused_dispatch_call_try
+#define dispatch_tail_step sr_recomp_test_unused_dispatch_tail_step
+#define sr_profile_dump sr_recomp_test_unused_profile_dump
+#define sr_profile_block sr_recomp_test_unused_profile_block
+#define sr_oor sr_recomp_test_unused_oor
+#define sr_heap_note_write sr_recomp_test_unused_heap_note_write
+#define sr_heap_note_bulk_write sr_recomp_test_unused_heap_note_bulk_write
+#define sr_newlib_malloc sr_recomp_test_unused_newlib_malloc
+#define sr_loaded_end sr_recomp_test_unused_loaded_end
+#define g_hle_depth sr_recomp_test_unused_hle_depth
+#define g_hle_jmp sr_recomp_test_unused_hle_jmp
+#define sr_trace_close sr_recomp_test_unused_trace_close
+#include "recomp.c"
+#undef sr_trace_close
+#undef g_hle_jmp
+#undef g_hle_depth
+#undef sr_loaded_end
+#undef sr_newlib_malloc
+#undef sr_heap_note_bulk_write
+#undef sr_heap_note_write
+#undef sr_oor
+#undef sr_profile_block
+#undef sr_profile_dump
+#undef dispatch_tail_step
+#undef dispatch_call_try
+#undef dispatch_call
+#undef dispatch
+#undef sr_lookup
+#endif /* SR_HLE_AOT_BOUNDARY_TEST */

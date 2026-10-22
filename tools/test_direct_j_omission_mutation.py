@@ -76,6 +76,7 @@ void test_mem_w32(uint32_t addr, uint32_t value);
 #define SR_YIELD(s, pc) ((void)0)
 #define sr_begin(s, pc, op) ((void)0)
 #define sr_end(s, addr, size) ((void)0)
+#define SR_AOT_RETURN_CAPTURE(s, target) ((void)(s), (void)(target))
 void dispatch(CpuState *s, uint32_t target);
 void dispatch_call(CpuState *s, uint32_t target, uint32_t resume_pc);
 void sr_register(uint32_t addr, void (*fn)(CpuState *));
