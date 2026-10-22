@@ -7872,8 +7872,9 @@ class Record20261015Tests(unittest.TestCase):
         for phrase in ("`test_audio_src_matches_the_measured_contract`",
                        "`test_alarm_delivery_order_matches_the_timer_order_probe`",
                        "The runtime had no SRC handlers before this entry",
-                       "The VTimer handler\n    cells do not match"):
-            self.assertIn(phrase, self.doc)
+                       "The VTimer handler cells do not match"):
+            # Collapse whitespace so a reflowed paragraph keeps passing.
+            self.assertIn(phrase, " ".join(self.doc.split()))
         selftest = (self.root / "src" / "rt" / "hle_thread_selftest.c").read_text(
             encoding="utf-8")
         for name in ("test_audio_src_matches_the_measured_contract",

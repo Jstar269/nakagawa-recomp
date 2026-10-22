@@ -947,7 +947,7 @@ def main() -> int:
         curr_h = out_h.read_text(encoding="utf-8")
         curr_c = out_c.read_text(encoding="utf-8")
         if curr_h != header_content or curr_c != source_content:
-            print("ERROR: Native public title catalog is out of date. Run tools/title_catalog_codegen.py.", file=sys.stderr)
+            print("ERROR: Native public title catalog is out of date. Run python tools/regen_all.py.", file=sys.stderr)
             return 1
         print(f"OK: Native public title catalog is up to date (digest {digest}, {len(titles)} public titles).")
         return 0

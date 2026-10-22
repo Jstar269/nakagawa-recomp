@@ -224,12 +224,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.check:
         if not args.out.is_file():
-            print(f"waits_census: missing {args.out}; run tools/waits_census.py", file=sys.stderr)
+            print(f"waits_census: missing {args.out}; run python tools/regen_all.py", file=sys.stderr)
             return 1
         current = args.out.read_text(encoding="utf-8")
         if current != text:
             print(
-                f"waits_census: {args.out} is stale; run python tools/waits_census.py",
+                f"waits_census: {args.out} is stale; run python tools/regen_all.py",
                 file=sys.stderr,
             )
             return 1

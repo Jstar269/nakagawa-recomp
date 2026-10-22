@@ -869,7 +869,8 @@ class EnvironmentContractTests(unittest.TestCase):
         self.assertEqual(_CHECKS_MODULE.MINIMUM_POWERSHELL, (7, 4))
         floor = _CHECKS_MODULE.MINIMUM_POWERSHELL_TEXT
         for doc in (ROOT / "docs" / "SETUP.md", ROOT / "README.md"):
-            text = doc.read_text(encoding="utf-8")
+            # Collapse whitespace: the floor is the rule, so a line wrap inside it must not fail.
+            text = " ".join(doc.read_text(encoding="utf-8").split())
             self.assertIn(
                 f"PowerShell {floor}+",
                 text,

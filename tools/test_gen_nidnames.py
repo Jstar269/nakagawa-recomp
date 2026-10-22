@@ -121,7 +121,7 @@ class TrackedCorpusTest(unittest.TestCase):
         self.assertEqual(
             gen.render(self.corpus),
             gen.HEADER.read_text(encoding="utf-8"),
-            "src/rt/nid_names.h is stale; rerun tools/gen_nidnames.py",
+            "src/rt/nid_names.h is stale; run python tools/regen_all.py",
         )
 
     def test_derivable_entries_store_no_nid(self) -> None:

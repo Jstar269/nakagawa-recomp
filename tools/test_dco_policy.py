@@ -118,111 +118,119 @@ class TestDCOPolicy(unittest.TestCase):
         self.assertFalse(pattern.search(msg_invalid))
 
 
+def _section(content: str, number: int) -> str:
+    """Return AGENTS.md section ``number`` (heading to the next ``## `` heading)."""
+    start = re.search(rf"(?m)^## {number}\.\s", content)
+    if start is None:
+        raise AssertionError(f"AGENTS.md has no section {number}")
+    end = re.search(r"(?m)^## ", content[start.end():])
+    return content[start.start(): start.end() + end.start()] if end else content[start.start():]
+
+
+def _blocks(section: str) -> list[str]:
+    """Split a section into bullets and paragraphs, each with its wrapping collapsed.
+
+    The checks below look for a rule's key terms inside one block, so rewording,
+    reflowing or reordering a rule never fails them; dropping a term does.
+    """
+    blocks: list[str] = []
+    for line in section.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            blocks.append("")
+        elif stripped.startswith(("- ", "* ", "|", "```", "#")) or not blocks or not blocks[-1]:
+            blocks.append(stripped)
+        else:
+            blocks[-1] += " " + stripped
+    return [block for block in blocks if block]
+
+
 class TestGovernanceSurfaces(unittest.TestCase):
-    """Small fail-closed checks for the public agent/configuration contract."""
+    """Small fail-closed checks for the public agent/configuration contract.
+
+    These pin the rules AGENTS.md must state, as the key terms each rule needs,
+    not its sentences: a maintainer can reword or reflow the contract, and the
+    test fails only when a rule loses a term that carries its meaning.
+    """
+
+    def assertRuleStated(self, blocks, terms, rule):
+        matches = [block for block in blocks if all(term.lower() in block.lower() for term in terms)]
+        self.assertTrue(matches, f"AGENTS.md no longer states {rule}: no bullet or paragraph has all of {terms}")
 
     def test_agents_contract_pins_required_content(self):
         content = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-        lines = content.splitlines()
-        self.assertIn("## Where to start", lines)
+        self.assertRegex(content, r"(?m)^## Where to start\s*$")
         for section in range(1, 12):
             with self.subTest(section=section):
                 self.assertRegex(content, rf"(?m)^## {section}\.\s")
 
-        self.assertIn(
-            "- End agent commits with `Assisted-by: <tool> (<model>)`, never "
-            "`Co-Authored-By:` ([form and tools](docs/AI_USAGE.md#disclosing-ai-help-in-commits)).",
-            lines,
+        self.assertRuleStated(
+            _blocks(_section(content, 4)),
+            ("Assisted-by:", "never", "Co-Authored-By:", "docs/AI_USAGE.md"),
+            "the agent commit trailer rule",
         )
 
-        hard_stops = (
-            "provenance attestation or legal clearance on a maintainer's behalf;",
-            "inventing a contributor identity, `Signed-off-by:`, DCO attestation, or source lineage;",
-            "destructive history rewriting, shared-branch force-push, or deleting another agent's work;",
-            "repository security/settings changes unless the mission names the exact setting;",
-            "firmware, flash, NAND, or idStorage writes, and any other action that can permanently alter or damage a device;",
-            "disclosing private inputs, routes, saves, captures, traces, keys, paths, or derived bytes, "
-            "except the presentation screenshots Section 5 allows.",
+        section_3 = _section(content, 3)
+        section_3_blocks = _blocks(section_3)
+        self.assertRuleStated(
+            section_3_blocks,
+            ("explicit maintainer authorization", "current turn"),
+            "that the hard stops need explicit maintainer authorization in the current turn",
         )
-        for rule in hard_stops:
+        hard_stop_bullets = [block for block in section_3_blocks if block.startswith("- ")]
+        hard_stops = {
+            "attestation on a maintainer's behalf": ("provenance attestation", "legal clearance", "behalf"),
+            "no invented sign-off or lineage": ("contributor identity", "Signed-off-by:", "DCO", "source lineage"),
+            "no history rewriting": ("history rewriting", "force-push", "another agent's work"),
+            "no settings changes": ("security", "settings", "exact setting"),
+            "no device writes": ("firmware", "flash", "NAND", "idStorage", "damage"),
+            "no private disclosure": ("disclosing private inputs", "keys", "derived bytes", "Section 5"),
+        }
+        for rule, terms in hard_stops.items():
             with self.subTest(hard_stop=rule):
-                self.assertIn(f"- {rule}", lines)
+                self.assertRuleStated(hard_stop_bullets, terms, f"the hard stop: {rule}")
 
-        section_3_start = re.search(r"(?m)^## 3\.", content)
-        section_4_start = re.search(r"(?m)^## 4\.", content)
-        self.assertIsNotNone(section_3_start)
-        self.assertIsNotNone(section_4_start)
-        section_3 = " ".join(content[section_3_start.start() : section_4_start.start()].split())
-        standing_authorization = (
-            "**Standing hardware authorization.** PSPLink sessions and other non-destructive "
-            "physical-PSP actions (loading and running probe modules, USB attach/reset, soft and "
-            "PC-triggered resets, reading device state, writing Memory Stick files such as plugin "
-            "configuration after backing them up) do not need per-turn authorization while a standing "
-            "maintainer authorization is recorded in the private workspace and the run follows the "
-            "hardware-lock protocol (one holder at a time, session-bound lock, evidence kept private, "
-            "lock released at the end). The maintainer can revoke it at any time by saying so; agents "
-            "must then return to per-turn authorization. A standing authorization never covers the "
-            "destructive writes listed above, tags, releases, credentials, or disclosure of private "
-            "inputs. Physical steps that need a person (power cycles, media swaps, cable changes) are "
-            "requested from the maintainer, never simulated or assumed."
-        )
-        self.assertIn(standing_authorization, section_3)
+        standing = [block for block in section_3_blocks if block.startswith("**Standing hardware authorization.**")]
+        self.assertEqual(len(standing), 1, "section 3 needs one standing hardware authorization paragraph")
+        for terms in (
+            ("non-destructive", "per-turn authorization", "hardware-lock protocol", "one holder at a time"),
+            ("revoke", "return to per-turn authorization"),
+            ("never covers", "destructive writes", "tags", "releases", "credentials", "disclosure of private inputs"),
+            ("requested from the maintainer", "never simulated"),
+        ):
+            with self.subTest(standing_authorization=terms):
+                self.assertRuleStated(standing, terms, "the bounds of the standing hardware authorization")
 
-        section_7_start = re.search(r"(?m)^## 7\.", content)
-        section_8_start = re.search(r"(?m)^## 8\.", content)
-        self.assertIsNotNone(section_7_start)
-        self.assertIsNotNone(section_8_start)
-        section_7 = content[section_7_start.start() : section_8_start.start()]
-        normalized_section_7 = " ".join(section_7.split())
         execution_contracts = (
-            "the production interpreter is a fail-closed AOT-gap correctness floor. "
-            "Only analyzer-owned executable spans have executable authority; unsupported interpreter "
-            "forms fail closed. It is not an all-Allegrex interpreter.",
-            "a computed `jr`/`jalr` target is latched at transfer before link writes "
-            "and the delay slot, so later register mutation cannot redirect it.",
-            "linked calls carry explicit `target` and `resume_pc` through `dispatch_call`; "
-            "CALL and TAIL crossings differ, and live `$ra` is not a resume descriptor.",
-            "source-owned cosimulation compares AOT/interpreter traces, writes, memory, "
-            "and architectural state, including cross-tier CALL/TAIL cells. Its negative corpus fails "
-            "closed; a build-only mutant is not a valid semantic kill.",
+            (118, ("fail-closed", "analyzer-owned", "fail closed", "not an all-Allegrex interpreter")),
+            (126, ("`jr`/`jalr`", "latched at transfer", "before link writes", "delay slot")),
+            (127, ("`target`", "`resume_pc`", "`dispatch_call`", "CALL and TAIL", "not a resume descriptor")),
+            (128, ("cosimulation", "CALL/TAIL", "negative corpus", "build-only mutant", "not a valid semantic kill")),
         )
-        last_contract_position = -1
-        for contract in execution_contracts:
-            with self.subTest(contract=contract):
-                match = re.search(rf"- \*\*PR #\d+:\*\* {re.escape(contract)}", normalized_section_7)
-                self.assertIsNotNone(match)
-                self.assertGreater(match.start(), last_contract_position)
-                last_contract_position = match.start()
+        section_7_blocks = _blocks(_section(content, 7))
+        last_position = -1
+        for pr, terms in execution_contracts:
+            with self.subTest(contract=pr):
+                bullets = [i for i, block in enumerate(section_7_blocks) if block.startswith(f"- **PR #{pr}:**")]
+                self.assertEqual(len(bullets), 1, f"section 7 needs one PR #{pr} contract bullet")
+                self.assertRuleStated([section_7_blocks[bullets[0]]], terms, f"the PR #{pr} execution contract")
+                self.assertGreater(bullets[0], last_position, "the execution contracts stay in PR order")
+                last_position = bullets[0]
 
-        report_block = """```text
-LANE:
-MISSION:
-BASE_SHA:
-HEAD_SHA:
-PR:
-STATUS: DRAFT / BLOCKED / READY-QUALITY
-RESULT:
-ROOT_CAUSE:
-CHANGED_FILES:
-NEW_PATH_PROVENANCE:
-FAILING_BEFORE:
-TESTS:
-PRIVATE_ACCEPTANCE:
-HARDWARE:
-UNRESOLVED:
-DISCOVERED_FOLLOWUPS:
-READY_QUALITY: YES/NO
-```"""
-        self.assertIn(report_block, content)
+        report = re.search(r"```text\n(.*?)```", _section(content, 11), re.S)
+        self.assertIsNotNone(report, "section 11 needs its report template block")
+        fields = [line.split(":", 1)[0] for line in report.group(1).splitlines() if line.strip()]
+        self.assertEqual(
+            fields,
+            [
+                "LANE", "MISSION", "BASE_SHA", "HEAD_SHA", "PR", "STATUS", "RESULT", "ROOT_CAUSE",
+                "CHANGED_FILES", "NEW_PATH_PROVENANCE", "FAILING_BEFORE", "TESTS", "PRIVATE_ACCEPTANCE",
+                "HARDWARE", "UNRESOLVED", "DISCOVERED_FOLLOWUPS", "READY_QUALITY",
+            ],
+            "the section 11 report template must keep its fields",
+        )
 
     def test_release_safety_rule_is_present_and_not_contradicted(self):
-        required = (
-            "Agents must not create, move, push, or delete Git tags; create, edit, delete, "
-            "publish, or unpublish GitHub Releases; upload release assets; or change a published "
-            "version without explicit maintainer authorization in the current turn. Generic "
-            "instructions such as 'finish', 'ship', 'publish', 'integrate', or 'do everything' "
-            "do not authorize a version/tag/release operation."
-        )
         policy_text = "\n".join(
             (ROOT / rel).read_text(encoding="utf-8")
             for rel in (
@@ -232,8 +240,14 @@ READY_QUALITY: YES/NO
                 ".github/PULL_REQUEST_TEMPLATE.md",
             )
         )
-        self.assertIn(required, policy_text)
-        self.assertIn(required, (ROOT / "AGENTS.md").read_text(encoding="utf-8").splitlines())
+        self.assertRuleStated(
+            _blocks(_section((ROOT / "AGENTS.md").read_text(encoding="utf-8"), 3)),
+            (
+                "must not", "Git tags", "GitHub Releases", "release assets", "published version",
+                "explicit maintainer authorization in the current turn", "do not authorize",
+            ),
+            "the tag and release rule",
+        )
         self.assertNotRegex(
             policy_text,
             r"(?im)^[ \t-]*agents?\s+(?:may|can)\s+(?:create|edit|publish|delete).*\b(?:tag|release)",

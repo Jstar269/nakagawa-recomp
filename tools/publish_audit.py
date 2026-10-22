@@ -1595,6 +1595,17 @@ def _debt_budget_findings(repo_root: Path = ROOT, paths: list[str] | None = None
     return findings
 
 
+#: Findings that a stale generated control file produces, and the one command that
+#: regenerates every control. A new or removed public path is not stale output: the
+#: refresh refuses it and names the maintainer route instead.
+STALE_CONTROL_CODES = frozenset({"PROVENANCE_CONTENT_MISMATCH", "POLICY_EXPORT_STALE"})
+STALE_CONTROL_FIX = (
+    "fix stale generated controls with: python tools/regen_all.py "
+    "(stage your changes first; a new or removed public path follows "
+    "docs/PUBLICATION_READINESS.md instead)"
+)
+
+
 #: Text bytes the repository governs as UTF-8 without BOM, LF, final newline.
 #: `.gitattributes` normalises on commit, so the index is clean by construction
 #: and these findings fire almost entirely in worktree audits -- which is the
@@ -3174,6 +3185,8 @@ def main(argv: list[str] | None = None) -> int:
             f"{scope} files, {content_source} content)",
             file=sys.stderr,
         )
+        if any(finding.code in STALE_CONTROL_CODES for finding in findings):
+            print(STALE_CONTROL_FIX, file=sys.stderr)
         return 1
 
     print(f"publication audit: OK ({len(entries)} {scope} files, {content_source} content)")
