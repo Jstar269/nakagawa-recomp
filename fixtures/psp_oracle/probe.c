@@ -8444,8 +8444,7 @@ static void at3_pcm_record(int emulated, const char *step, int rc, int samples, 
     (void)snprintf(line, sizeof(line),
                    "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3-pcm-%s status=RC "
                    "result=0x%08x samples=%d end=%d remain=%d fnv=0x%08x peak=%u "
-                   "s0=0x%04x s1=0x%04x s2=0x%04x s3=0x%04x s256=0x%04x s2000=0x%04x
-",
+                   "s0=0x%04x s1=0x%04x s2=0x%04x s3=0x%04x s256=0x%04x s2000=0x%04x\n",
                    step, (unsigned int)rc, samples, end_flag, remain, (unsigned int)hash,
                    (unsigned int)peak, s_at3_pcm[0], s_at3_pcm[1], s_at3_pcm[2], s_at3_pcm[3],
                    s_at3_pcm[256], s_at3_pcm[2000]);
@@ -8461,8 +8460,7 @@ static void at3_stream_queries(int emulated, int atrac_id) {
     (void)snprintf(line, sizeof(line),
                    "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3-queries status=RC "
                    "result=0x00000000 rc_next=0x%08x next=%d rc_remain=0x%08x remain=%d "
-                   "rc_sound=0x%08x end_sample=%d loop_start=%d loop_end=%d
-",
+                   "rc_sound=0x%08x end_sample=%d loop_start=%d loop_end=%d\n",
                    (unsigned int)rc_next, next, (unsigned int)rc_remain, remain, (unsigned int)rc_sound,
                    end_sample, loop_start, loop_end);
     probe_emit_durable(emulated, line, strlen(line));
@@ -8600,11 +8598,13 @@ static void run_at3_decode(int emulated) {
      3. sceUtilityOsk with no keyboard ever opened: GetStatus, Update, ShutdownStart.
    The keyboard part (an OSK dialog that needs a person to finish it) is compiled in only with
    FAKE_SUCCESS_OSK_CYCLE=1 and must be run attended. */
+#ifdef FAKE_SUCCESS_OSK_CYCLE
 static uint16_t s_fake_desc[1];
 static uint16_t s_fake_intext[1];
 static uint16_t s_fake_outtext[16];
 static SceUtilityOskData s_fake_data;
 static SceUtilityOskParams s_fake_params;
+#endif
 
 static void fake_record(int emulated, const char *step, uint32_t rc) {
     char line[200];
