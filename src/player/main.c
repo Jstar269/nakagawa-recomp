@@ -1627,9 +1627,10 @@ static void player_package_status_finish(PlayerApp *app,
 #endif
     if (handles_build) {
         *build_check_pending = false;
-        *build_check_session_generation = 0;
         *build_check_cache_generation = 0;
-        build_check_disc_id[0] = '\0';
+        /* Keep the completed session identity as a one-shot latch. The build
+           state remains complete after its view changes, and the main loop
+           must not queue the same post-build validation again. */
         if (job->status == NK_RUNTIME_PACKAGE_OK && job->runtime_available) {
             app->games[current_index].is_prepared = true;
             app->games[current_index].status = NK_STATUS_PREPARED;
@@ -3741,39 +3742,51 @@ int main(int argc, char *argv[]) {
             build_check_session_generation = 0;
             build_check_cache_generation = 0;
         }
+        bool build_check_session_already_handled =
+            build_check_session_generation != 0 &&
+            build_check_session_generation ==
+                app.build_session.session_generation &&
+            build_check_disc_id[0] && app.build_session.disc_id[0] &&
+            strcmp(build_check_disc_id, app.build_session.disc_id) == 0;
 
-        /* Monitor background package build session */
-        if (app.active_view == VIEW_BUILDING_PACKAGE) {
-            package_builder_poll(&app.build_session, SDL_GetTicks());
-            if (app.build_session.is_complete && !build_check_pending) {
-                if (app.selected_game_index >= 0 &&
-                    app.selected_game_index < app.game_count) {
-                    snprintf(build_check_disc_id, sizeof(build_check_disc_id),
-                             "%s",
-                             app.games[app.selected_game_index].disc_id);
-                    build_check_session_generation =
-                        app.build_session.session_generation;
-                    build_check_cache_generation =
-                        app.runtime_package_cache_generation;
-                    build_check_pending = true;
-                    player_package_status_queue_game(
-                        &app, app.selected_game_index, true,
-                        package_status_requested,
-                        package_status_force_requested);
-                } else {
-                    player_app_set_build_error(
-                        &app, "package",
-                        "Package completed without a selected library title.",
-                        app.build_session.log_file_path);
-                }
-            } else if (app.build_session.is_failed) {
-                player_app_set_build_error(&app,
-                                           app.build_session.current_stage_name[0] ? app.build_session.current_stage_name : "build",
-                                           app.build_session.failure_boundary[0] ? app.build_session.failure_boundary : "Package build failed.",
-                                           app.build_session.log_file_path);
-            } else if (app.build_session.is_cancelled) {
-                player_app_set_view(&app, VIEW_LIBRARY);
+        /* Poll every loop so the child keeps progressing when another view is
+           visible. Completion is keyed to the build session's disc, not the
+           current library selection. */
+        player_app_poll_package_build(&app, SDL_GetTicks());
+        if (app.build_session.is_complete && !build_check_pending &&
+            !build_check_session_already_handled) {
+            int build_game_index = player_app_find_game_by_disc_id(
+                &app, app.build_session.disc_id);
+            if (build_game_index >= 0 && build_game_index < app.game_count) {
+                snprintf(build_check_disc_id, sizeof(build_check_disc_id),
+                         "%s", app.build_session.disc_id);
+                build_check_session_generation =
+                    app.build_session.session_generation;
+                build_check_cache_generation =
+                    app.runtime_package_cache_generation;
+                build_check_pending = true;
+                player_package_status_queue_game(
+                    &app, build_game_index, true,
+                    package_status_requested,
+                    package_status_force_requested);
+            } else {
+                snprintf(build_check_disc_id, sizeof(build_check_disc_id),
+                         "%s", app.build_session.disc_id);
+                build_check_session_generation =
+                    app.build_session.session_generation;
+                build_check_cache_generation = 0;
+                player_app_set_build_error(
+                    &app, "package",
+                    "Package completed without its library title.",
+                    app.build_session.log_file_path);
             }
+        } else if (app.build_session.is_failed) {
+            player_app_set_build_error(&app,
+                                       app.build_session.current_stage_name[0] ? app.build_session.current_stage_name : "build",
+                                       app.build_session.failure_boundary[0] ? app.build_session.failure_boundary : "Package build failed.",
+                                       app.build_session.log_file_path);
+        } else if (app.build_session.is_cancelled) {
+            player_app_set_view(&app, VIEW_LIBRARY);
         }
 
         (void)player_package_status_start_next(

@@ -91,7 +91,7 @@ The native player uses the existing SDL3 and Vulkan runtime to render its in-win
 
 ### Layout library and language decision (2026-10-21)
 
-The owner decided on 2026-10-21 that the native player's UI is written in C on SDL3 and Vulkan, and that its layout uses **Clay**, a single-header, MIT-licensed C layout library ([github.com/nicbarker/clay](https://github.com/nicbarker/clay)). The decision has three parts:
+The owner decided on 2026-10-21 that the native player's UI is written in C on SDL3 and Vulkan, and that its layout uses **Clay**, a single-header C layout library ([github.com/nicbarker/clay](https://github.com/nicbarker/clay)). Upstream v0.14's `LICENSE.md` identifies the license as zlib/libpng (`Zlib`); the pinned header, license, and provenance are recorded under `third_party/clay/`. The decision has three parts:
 
 1. **One UI system (target)**: the launcher, the in-game overlay and the settings screens are planned to share one UI system. It is drawn at the window's real pixel size (the UI half of [#1129](https://github.com/Jstar269/nakagawa-recomp/issues/1129)) and is controller-first.
 2. **Rust is not adopted for the UI**: Rust may be used later, behind a C ABI, only for isolated parsers of untrusted input (ISO, SFO, PGF), and only if fuzzing justifies it.
@@ -99,7 +99,7 @@ The owner decided on 2026-10-21 that the native player's UI is written in C on S
 
 Not done yet:
 
-- **Clay is not vendored or admitted.** No Clay code is in the tree. It needs a third-party provenance record and admission under the provenance rules in `AGENTS.md` (section 4) before any code lands.
+- **Clay is vendored at v0.14 and its new paths have trusted provenance admission.** The native layout selftest is the only current build target that compiles it; no player UI call sites exist yet.
 - **No UI implementation has started.** Implementation begins only after the owner reviews the interface design.
 - The launcher, overlay and settings UI described above is a target. The current native slice does not use Clay.
 

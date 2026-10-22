@@ -32,6 +32,7 @@ _SCRATCH = Path(_SCRATCH_ROOT.name).as_posix()
 _RUNS_BEFORE_PROCESS_TEST = (
     "build/mygame/cpu_lle_selftest",
     "build/mygame/domain_mode_selftest",
+    "build/mygame/clay_layout_selftest",
     "build/mygame/ge_texture_ref_selftest",
     "build/mygame/fbcap_selftest build/mygame/fbcap_selftest",
     "build/mygame/osk_text_entry_selftest",
