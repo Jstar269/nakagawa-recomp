@@ -100,6 +100,12 @@ RecompFn sr_lookup(uint32_t addr) {{
 int sr_trace_open(const char *path, const char *title, uint32_t entry) {{ (void)path; (void)title; (void)entry; return 0; }}
 void sr_trace_close(void) {{}}
 void gui_init(const char *title) {{ (void)title; }}
+/* Headless title-acceptance seam (gui.c, sched.c): this harness never requests an acceptance launch. */
+int gui_headless_acceptance_requested(void) {{ return 0; }}
+int gui_headless_acceptance_ready(void) {{ return 0; }}
+int gui_headless_acceptance_complete(void) {{ return 0; }}
+uint32_t gui_headless_acceptance_presented_frames(void) {{ return 0u; }}
+int (*sr_sched_stop_requested)(void) = NULL;
 uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra) {{
     (void)guest_ra;
     if (size > sizeof(g_module_start_arg)) return 0;

@@ -5,12 +5,12 @@
 
 /* Read-only flash0: device for the font directory (FONT_PLAN section 5).
  *
- * Only flash0:/font/<served name> is served, one file per font slot. A slot's file comes
- * from the per-user cache first, then the project's fonts, and otherwise the open is refused
- * by name. A cache file is served only when the cache manifest vouches for it (listed, size and
- * SHA-256 match, accepted by the reader as that slot); a refused cache file falls through to the
- * project font with a named refusal, and the project source never serves an imported cache.
- * There is no cross-slot substitution and no synthetic font. Every write, create,
+ * Only flash0:/font/<served name> is served. Japanese and Korean keep their existing slot
+ * resolution. Each Latin registry index maps to ltn0.pgf..ltn15.pgf and resolves to its exact
+ * imported file, the nearest imported file in the same nominal-size group, the project Latin PGF,
+ * or a legacy unindexed import only when the project PGF is absent. Indexed cache files are served
+ * only when the manifest vouches for their size, SHA-256 and reader verdict. Every Latin fallback
+ * is named in the user status and one startup log line per index. Every write, create,
  * remove, rename and attribute change is refused with EACCES. The HLE hooks in hle.c call
  * these functions; the roots are supplied by the caller.
  *
@@ -68,6 +68,13 @@ uint32_t sr_flash0_font_refuse_write(const char *guest_path, const char *operati
 int sr_flash0_font_resolve_path(const Flash0Sources *sources, NkFontSlot slot, char *path_out,
                                 size_t capacity, const char **source_out);
 
+/* Resolves one Latin registry file and returns the host path and source. served_index_out is
+ * 0..15 for an indexed cache file, -1 for the project font, or -2 for a legacy unindexed cache
+ * file. Returns 0 when no source can serve the requested Latin index. */
+int sr_flash0_font_resolve_latin_index_path(const Flash0Sources *sources, int index,
+                                           char *path_out, size_t capacity,
+                                           const char **source_out, int *served_index_out);
+
 /* The slot's lower-case name for diagnostics ("japanese", "latin", "korean"). */
 const char *sr_flash0_font_slot_label(NkFontSlot slot);
 
@@ -94,8 +101,9 @@ const char *sr_flash0_font_slot_label(NkFontSlot slot);
  *
  * The guest library walks the INFO entries in index order and stops at the first one missing, so
  * a bold or italic Latin index is listed too. No project font is bold or italic (FONT_PLAN D10),
- * so such an index is served from the Latin slot's regular face and reports the Regular style
- * rather than the measured one (served_as_regular says so). Bold is never synthesized. */
+ * so a project or legacy Latin fallback reports Regular. An indexed exact or same-group fallback
+ * reports the served index's measured style; served_as_regular is set when that style differs
+ * from the requested index. Bold is never synthesized. */
 #define SR_FONT_REGISTRY_COUNT 18u
 #define SR_FONT_REGISTRY_NAME_BYTES 64u /* the header's font-name field, with room for the NUL */
 
@@ -116,8 +124,8 @@ typedef struct {
     /* From the served file's header (26.6 fixed point, as stored): */
     int32_t h_size, v_size, h_resolution, v_resolution;
     char font_name[SR_FONT_REGISTRY_NAME_BYTES]; /* NUL-terminated, at most 63 characters */
-    /* Measured codes of the index (style is Regular when served_as_regular): */
-    int served_as_regular;  /* the measured style is bold or italic and the Regular face is served */
+    /* Measured codes of the requested index, except style follows the file actually served: */
+    int served_as_regular;  /* the served style differs from the requested index's measured style */
     uint32_t weight, family_code, style, sub_style;
     uint32_t language_code, region_code, country_code;
     uint32_t extra_attributes, expire_date;

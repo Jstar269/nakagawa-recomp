@@ -279,12 +279,16 @@ is then resolved through the ordinary character map in §3.2. The resulting
 shadow glyph's 14-bit byte offset locates its shadow metric prefix relative to
 the start of the primary glyph record; that prefix is bounds-checked at open
 (project decision: the 14-bit range and documented record adjacency make a
-glyph-local offset representable without a font-sized absolute offset). The
-shadow bitmap remains packed because the current seam has no shadow-image draw
-call. A nonzero shadow identifier that is out of range, resolves to
-an absent character, or names an invalid shadow record causes open failure. The
-resulting shadow's row-order bits and the one-based raw identifier populate the
-shadow fields in §3.9; this public seam does not expose a separate shadow-draw
+glyph-local offset representable without a font-sized absolute offset). If a
+target is exactly at image end, this reader treats the optional shadow prefix
+as absent, supplies row order zero, and performs no read (project decision,
+unmeasured on PSP). A target beyond image end, or an
+in-image target with fewer than six prefix bytes, is refused. The shadow bitmap
+remains packed because the current seam has no shadow-image draw call. A nonzero
+shadow identifier that is out of range, resolves to an absent character, or
+names an invalid in-image shadow record causes open failure. The resulting
+shadow's row-order bits and the one-based raw identifier populate the shadow
+fields in §3.9; this public seam does not expose a separate shadow-draw
 operation.
 
 A 412-byte header's counts describe two consecutive arrays of 4-byte records,
@@ -363,11 +367,13 @@ bits are the vertical/centre-or-top value:
 | Y adjustment | baseline and top-aligned vertical adjustment in 26.6 points | same |
 | advance | horizontal and vertical advance from the advance table in 26.6 points | no inline form |
 
-The advance group is always the 8-bit index; a value at or above the declared
-advance-table count causes open failure. An index for any other group at or
-above its declared table count also causes open failure (project decision: a
-missing metric is a structural font error, not a zero-filled measurement). The
-record is 96 bits
+The advance group is always the 8-bit index; a value below the declared
+advance-table count selects that pair. The same rule applies to the first three
+groups. **Project decision, unmeasured on PSP:** when the index and its one-byte
+table count are both 255, the reader accepts the record and supplies a zero pair
+without forming or reading a table entry. The count declares no entry at index
+255, so this choice keeps the reader bounded; the PSP result has not been
+measured. Every other index at or above its table count causes open failure. The record is 96 bits
 when all three groups are indexed, then 56 bits larger for each inline group;
 all four possible lengths are whole bytes. The primary bitmap starts at the
 immediately following byte. A referenced shadow record has the same 48-bit
@@ -384,9 +390,12 @@ bit 44 the role bit meaning “0: shadow, 1: character” [C3], which is consist
 with this reader's reachability rule: a
 record reached through the main pointer table is primary and a record reached
 through a nonzero primary shadow offset is shadow. A shadow offset that is
-zero, points before the end of the primary record, wraps, or leaves fewer than
-six bytes for its prefix causes open failure when a nonzero shadow identifier
-names it. Character information remains available for mapped records with row
+zero, points before the end of the primary record, wraps, or points inside the
+image with fewer than six bytes for its prefix causes open failure when a
+nonzero shadow identifier names it. If a target is exactly at image end, the
+reader treats the optional prefix as absent and supplies row order zero (project
+decision, unmeasured on PSP). Character information
+remains available for mapped records with row
 order 0 or 3, but the current draw seam cannot rasterize row order 0 and does
 not silently change it to rows 1 or 2 (§3.6, §3.11).
 
@@ -488,7 +497,8 @@ Validation proceeds in this order:
 4. Decode the direct character map according to §3.2. Values outside the
    glyph range remain lookup misses, not allocation-sizing inputs.
 5. For every glyph identifier, decode its pointer and the complete primary
-   record according to §§3.4–3.5. Every indexed metric must exist. Resolve and
+   record according to §§3.4–3.5. Every indexed metric must exist or use the
+   255/255 zero-pair rule described in §3.5. Resolve and
    validate every nonzero shadow identifier and its shadow-record prefix
    according to §3.3. For every row-order-3 record, validate the six-byte
    composite payload and resolve its three raster components according to §3.6.
@@ -498,8 +508,9 @@ A bitmap tail may be incomplete because the primary record itself is complete;
 it follows the deterministic zero-tail rule in §3.6 when drawn. Row order 0 and
 a zero width or height do not by themselves prevent open: they produce
 the query and draw results in §§3.9 and 3.11. Conversely, a bad pointer, a
-record that crosses glyph-data end, a missing metric-table index, an invalid
-shadow reference, or an invalid composite payload or component prevents open
+record that crosses glyph-data end, a missing metric-table index other than the
+255/255 zero-pair rule in §3.5, an invalid shadow reference, or an invalid composite payload or
+component prevents open
 even if no currently mapped character would
 have used that glyph (project decision: eager validation keeps a valid-looking
 lookup from becoming a later memory fault).
@@ -955,8 +966,11 @@ evidence and what remains open:
    decision, because the description gives that map a plain two-bytes-per-entry
    size with no padding rule and no font may be read to settle it.
 6. **O-6 — invalid metric indices.** Must a missing table entry reject open,
-   or may firmware render a zero/default metric? This spec requires open
-   failure; §8 pins the decision until hardware evidence supersedes it.
+   or may firmware render a zero/default metric? **Project decision, unmeasured
+   on PSP:** accept the maximum one-byte index/count pair and return a zero pair
+   without reading outside the declared table, keeping this reader bounded. PSP
+   behavior remains open. Other indices outside their table remain an open
+   failure; whether any other encoding exists remains open.
 7. **O-7 — file-name field.** Should a memory-open expose an empty file name,
    and should a path-open expose only its final component, as specified? Probe
    both through the public `sceFont` information route.
@@ -1099,7 +1113,9 @@ and no shadow; mutations then vary one fact at a time.
    19, 26, and 33 bytes. Each following byte begins the bitmap, proving the
    variable length.
 2. Put known pairs in the dimension, X-adjustment, Y-adjustment, and advance
-   tables. An index equal to each table count causes open failure; one below succeeds.
+   tables. An index equal to each table count causes open failure except for the
+   255/255 zero-pair rule in §3.5, which returns zero without a table read. An
+   index one below the count succeeds and returns the stored pair.
 3. Sweep the 7-bit horizontal and vertical adjustments through −64, −1, 0, 1,
    and 63 and compare the exact signed results. Sweep width and height through
    0, 1, 126, and 127.
@@ -1123,7 +1139,9 @@ and no shadow; mutations then vary one fact at a time.
    separately select a code whose glyph is out of range. Both cause open failure.
 3. Point valid and invalid primary records at a complete six-byte shadow
    prefix. Zero, a target before the primary record's end, a wrapped target,
-   and a target with fewer than six bytes fail; a valid target succeeds.
+   and an in-image target with fewer than six bytes fail; a valid target
+   succeeds. A target exactly at image end succeeds with shadow row order zero
+   and performs no read (project decision, unmeasured on PSP).
 4. Give valid and invalid shadow records row orders 1, 2, 3, and 0. The
    identifier and row bits in `SceFontCharInfo` follow §3.9 even though no
    shadow draw call exists.

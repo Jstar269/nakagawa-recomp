@@ -198,6 +198,8 @@ typedef struct {
 
 static TCB      s_tcb[MAXTHREADS];
 
+int (*sr_sched_stop_requested)(void) = NULL;
+
 static void sched_destroy_thread_coro(TCB *t) {
     if (!t) return;
     if (t->coro) {
@@ -3977,6 +3979,9 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
     int idle_no_progress = 0;
     if (sr_perf_enabled) sr_perf_sched_state(SR_PERF_SCHED_IDLE, 0u);
     for (;;) {
+        /* An opt-in player acceptance run stops after its requested number of
+         * successful window presentations. The guest is not resumed again. */
+        if (sr_sched_stop_requested && sr_sched_stop_requested()) break;
         if (getenv("SCHED_DUMP") && (++iters % 400000) == 0) {
             fprintf(stderr, "--- sched dump (tick=%llu) ---\n", (unsigned long long)s_tick);
             for (int i = 0; i < s_ntcb; i++)

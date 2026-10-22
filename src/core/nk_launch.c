@@ -1366,6 +1366,7 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     char env_fullscreen[32];
     char env_volume[32];
     char env_input_profile[NK_MAX_PATH + 32];
+    char env_headless_accept_frames[64];
     char sep = nk_platform_path_separator();
 
     if (session->config.fps_cap == -1) {
@@ -1412,6 +1413,17 @@ NkResult nk_launch_start(NkLaunchSession *session) {
     envp[env_count++] = env_fs;
     envp[env_count++] = env_fullscreen;
     envp[env_count++] = env_volume;
+    if (session->config.headless_accept_presented_frames > 0u) {
+        snprintf(env_headless_accept_frames, sizeof(env_headless_accept_frames),
+                 "SR_HEADLESS_ACCEPT_PRESENTED_FRAMES=%u",
+                 session->config.headless_accept_presented_frames);
+        envp[env_count++] = env_headless_accept_frames;
+        /* This route requires a real presenter. Clear inherited offscreen
+           selections so the runtime chooses the host window backend. */
+        envp[env_count++] = "SR_VIDEO=";
+        envp[env_count++] = "SDL_VIDEODRIVER=";
+        envp[env_count++] = "SDL_VIDEO_DRIVER=";
+    }
     /* A session assembled by hand rather than by nk_launch_prepare_session may
        carry no resolved root; leaving SR_MEMSTICK unset lets the runtime apply
        its own default instead of being pointed at an empty path. */

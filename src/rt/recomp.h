@@ -1159,6 +1159,18 @@ void     gui_analog(uint8_t *lx, uint8_t *ly);   /* live left-stick (0..255, 128
 int      gui_pad_present(void);                  /* 1 when a game controller is connected */
 /* Returns 1 only when the selected presenter accepted the validated frame. */
 int      gui_present(uint32_t fbaddr, int fmt, uint32_t stride);
+int      gui_headless_acceptance_requested(void);
+int      gui_headless_acceptance_ready(void);
+int      gui_headless_acceptance_complete(void);
+uint32_t gui_headless_acceptance_presented_frames(void);
+/* Runtime exit codes for a headless acceptance launch. The launcher reads them as
+ * NK_LAUNCH_EXIT_ACCEPTANCE_* in src/core/nk_launch.h; the two sets must stay equal. */
+#define SR_HEADLESS_ACCEPTANCE_EXIT_REACHED 42
+#define SR_HEADLESS_ACCEPTANCE_EXIT_PRESENTER_UNAVAILABLE 43
+#define SR_HEADLESS_ACCEPTANCE_EXIT_NOT_REACHED 44
+/* Optional stop request polled by sched_run after each guest slice. The driver points it at
+ * gui_headless_acceptance_complete for an acceptance launch; NULL (the default) never stops. */
+extern int (*sr_sched_stop_requested)(void);
 
 typedef uint32_t (*HleFn)(CpuState *s);
 void     sr_hle_register(uint32_t nid, const char *name, HleFn fn);

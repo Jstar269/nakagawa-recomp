@@ -40,6 +40,21 @@ typedef struct {
     char detail[NK_FONT_TEXT_MAX];
 } NkFontSlotState;
 
+/* A registry Latin index resolves to its exact imported PGF, the nearest imported PGF in
+ * the same nominal-size group, a legacy file when it is the cache's only Latin import, the
+ * project PGF, or a legacy file as a last fallback when the project PGF is absent. served_index
+ * is 0..15 for an indexed cache file, -1 for the project PGF, -2 for the legacy unindexed cache
+ * entry, and -3 when no source exists. */
+typedef struct {
+    NkFontSource source;
+    int served_index;
+} NkFontLatinResolution;
+
+typedef struct {
+    NkFontSource source;
+    char detail[160];
+} NkFontLatinIndexState;
+
 /* One PGF file read and checked: the reader's verdict, the file's size and SHA-256, and the
  * slot it names (or -1 with the reason in slot_reason). */
 typedef struct {
@@ -96,6 +111,24 @@ typedef enum {
 NkFontSlotCheck nk_font_check_cache_slot_file(const char *user_data_root, NkFontSlot slot,
                                               FILE *cache_file, char *reason, size_t reason_len);
 
+/* Firmware Latin files are named ltn0.pgf through ltn15.pgf. The filename helper accepts
+ * ASCII case variants and returns the file ordinal 0..15, or -1 when the name is not one of
+ * those sixteen files. */
+const char *nk_font_latin_index_filename(int index);
+int nk_font_latin_index_from_filename(const char *name);
+NkFontSlotCheck nk_font_check_cache_latin_index_file(const char *user_data_root, int index,
+                                                      FILE *cache_file, char *reason,
+                                                      size_t reason_len);
+
+/* Resolve one registry Latin index in this order: exact imported file, nearest imported file in
+ * its eight-index size group (lower index wins a tie), an old single-file import when it is the
+ * cache's only Latin import, project Latin PGF, then a legacy unindexed import as a last fallback
+ * when the project PGF is unavailable. */
+bool nk_font_resolve_latin_index(const char *user_data_root, const char *project_font_dir,
+                                 int index, NkFontLatinResolution *out);
+void nk_font_latin_index_states(const char *user_data_root, const char *project_font_dir,
+                                NkFontLatinIndexState states[NK_FONT_LATIN_INDEX_COUNT]);
+
 /* Per-slot preflight: the user's imported font when it validates, else the project font
  * at <project_root>/font/<slot file> when it validates, else NONE with the reason. */
 void nk_font_slot_states(const char *user_data_root, const char *project_root,
@@ -110,6 +143,7 @@ int nk_font_classify_verdict(const PgfVerdict *verdict, char *reason, size_t rea
 typedef struct {
     char name[256];
     int slot;
+    int latin_index; /* 0..15 for a named ltnN.pgf, or -1 for a generic file */
     bool imported;
     char detail[NK_FONT_TEXT_MAX];
 } NkFontFileOutcome;
@@ -118,15 +152,16 @@ typedef struct {
     int file_count;
     NkFontFileOutcome files[NK_FONT_IMPORT_MAX_FILES];
     bool slot_imported[NK_FONT_SLOT_COUNT];
+    bool latin_index_imported[NK_FONT_LATIN_INDEX_COUNT];
     int imported_count;
 } NkFontImportResult;
 
-/* Import the .pgf files directly inside folder (not subfolders), whatever their names. Each
- * file is read once, checked by the native reader, and named to a slot by its coverage.
- * choose[slot], when not NULL, names the file to use for a slot that several files name.
- * A slot named by several files with no choice is not imported. Chosen files are copied
- * into the cache as the slot's file and the manifest is rewritten; originals are not
- * touched. Returns false with out_error when the folder cannot be read or holds no .pgf. */
+/* Import the .pgf files directly inside folder (not subfolders). Each file is read and checked
+ * by the native reader. ltn0.pgf..ltn15.pgf select their exact Latin indices; other files use
+ * coverage classification and choose[slot] for generic slots. A generic slot named by several
+ * files with no choice is not imported. Selected files are copied into the cache and the
+ * manifest is rewritten; originals are not touched. Returns false with out_error when the
+ * folder cannot be read or holds no .pgf. */
 bool nk_font_import_folder(const char *user_data_root, const char *folder,
                            const char *const choose[NK_FONT_SLOT_COUNT],
                            NkFontImportResult *result, char *out_error, size_t error_len);

@@ -189,6 +189,11 @@ and Korean slots from pinned OFL sources with the project-owned converter
 (`src/rt/pgf_public.c`). Each generated file is a project conversion, not a
 claim that it is an authentic firmware font.
 
+The project builds one open Latin fallback (`nkltn.pgf`). It does not bundle
+firmware Latin files: `ltn0.pgf` through `ltn15.pgf` stay in the user's local
+font cache when imported. The runtime's per-index source and fallback order is
+documented in [`SETUP.md`](../SETUP.md#system-fonts).
+
 ### 6.1 Japanese and Latin source selection and coverage
 
 Sawarabi Gothic was evaluated first from Google Fonts commit
