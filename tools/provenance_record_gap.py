@@ -287,22 +287,6 @@ def record_gaps(
 _KNOWN_DISPOSITION_GAP_GROUPS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "#355",
-        "decryption primitives (AES, Kirk, KLE, PRX, SHA-1) have no independence campaign group yet",
-        (
-            "src/core/nk_psp_aes.c",
-            "src/core/nk_psp_aes.h",
-            "src/core/nk_psp_kirk.c",
-            "src/core/nk_psp_kirk.h",
-            "src/core/nk_psp_kle.c",
-            "src/core/nk_psp_kle.h",
-            "src/core/nk_psp_prx.c",
-            "src/core/nk_psp_prx.h",
-            "src/core/nk_psp_sha1.c",
-            "src/core/nk_psp_sha1.h",
-        ),
-    ),
-    (
-        "#355",
         "vendored LGPL ATRAC3+ decoder and its selftest have no independence campaign group yet",
         (
             "src/rt/atrac3p/atrac3p_api.c",

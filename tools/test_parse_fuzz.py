@@ -659,7 +659,7 @@ class TestParserSafetyInventory(unittest.TestCase):
         ids = [surface["id"] for surface in surfaces]
         self.assertEqual(len(ids), len(set(ids)))
         required = {
-            "iso9660-pvd-directory-c", "param-sfo-c", "encrypted-psp-kirk",
+            "iso9660-pvd-directory-c", "param-sfo-c",
             "elf32-mips-classifier-c", "prx-loader-c", "prx-relocation-a-c",
             "prx-relocation-b-c", "title-manifest-c", "runtime-package-json-c",
             "private-package-cache-json", "xb-provider-c", "library-json-c",

@@ -20,8 +20,7 @@ void native_test_create_root(const char *tag);
 
 /* Points per-user environment variables (LOCALAPPDATA/APPDATA on Windows,
  * XDG variables and HOME on POSIX) into the temporary root created by
- * native_test_create_root, and clears the NAKAGAWA_PSP_KEY_FILE override so
- * the PSP key file also resolves inside that root. */
+ * native_test_create_root. */
 void native_test_isolate_user_data_roots(void);
 
 /* Guard: fails when the per-user cache root resolves outside the temporary

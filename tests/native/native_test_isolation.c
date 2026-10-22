@@ -313,9 +313,6 @@ void native_test_create_root(const char *tag) {
 
 void native_test_isolate_user_data_roots(void) {
     assert(g_test_root_owned);
-    /* The PSP key file resolves from this override before the user-data root,
-     * so a developer's setting would hand the real key file to the test. */
-    native_test_set_env("NAKAGAWA_PSP_KEY_FILE", NULL);
 #if defined(_WIN32) || defined(_WIN64)
     native_test_set_env("LOCALAPPDATA", g_test_root);
     native_test_set_env("APPDATA", g_test_root);

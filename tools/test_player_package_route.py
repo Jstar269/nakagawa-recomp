@@ -1306,9 +1306,10 @@ class TestPlayerPackageRoute(unittest.TestCase):
         encrypted = self.run_build_action(encrypted_root)
         self.assertNotEqual(encrypted.returncode, 0)
         self.assertIn("PACKAGE_BUILD_ROUTE status=FAIL", encrypted.stdout)
-        self.assertIn("[preflight] FAIL: Encrypted executable", encrypted.stdout)
-        self.assertIn("supply decrypted modules at", encrypted.stdout)
-        self.assertIn("local key file", encrypted.stdout)
+        self.assertIn("[preflight] FAIL: ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. "
+                      "Nakagawa does not decrypt games. Place a decrypted EBOOT.elf from "
+                      "your own copy in ", encrypted.stdout)
+        self.assertNotIn("key file", encrypted.stdout)
         self.assertNotRegex(encrypted.stdout, r"#[0-9]+")
         self.assertNotIn("automatic decryption is in the works", encrypted.stdout.lower())
         self.assertFalse((encrypted_root / "packages" / DISC_ID).exists())
