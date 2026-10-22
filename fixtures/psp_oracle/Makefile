@@ -416,6 +416,10 @@ endif
 # Fake-success audit: the OSK calls live in libpsputility; the volatile-memory calls are in SuspendForUser.
 ifeq ($(CASE),fake-success)
 LIBS += -lpsputility
+# FAKE_SUCCESS_OSK_CYCLE=1 adds the attended on-screen-keyboard cycle (a person must finish the dialog).
+ifeq ($(FAKE_SUCCESS_OSK_CYCLE),1)
+CFLAGS += -DFAKE_SUCCESS_OSK_CYCLE
+endif
 endif
 # #1049 caveat: an extra depth-buffer offset for CASE=vram-mirror (default 0 = the measured zbp 0x0cc000).
 VRAM_MIRROR_DEPTH_BIAS ?= 0x00000000

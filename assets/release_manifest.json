@@ -628,7 +628,7 @@
       "public_scope_included": true,
       "optional": false,
       "hashes": {
-        "sha256": "a26fe65e0347ee10be3bcbe97f8ed54c1de6d875363e59fbf2755cf95f0fab34"
+        "sha256": "44f7f854397240fb266d50248fca6d7b6e7892a606cc6723838adb1d3267d59a"
       },
       "comment": "Project-authored N1 Block & Branch artwork for light page themes."
     },
@@ -645,7 +645,7 @@
       "public_scope_included": true,
       "optional": false,
       "hashes": {
-        "sha256": "6e927f9a71161e4e4b69efc5e04555c31ee7951a01f34fdaf6a1d44e0ed21b06"
+        "sha256": "bf3222761674dda813fb9fe3044159f7bc70050175168932ff4548e9b1391f36"
       },
       "comment": "Project-authored N1 Block & Branch artwork for dark page themes."
     },

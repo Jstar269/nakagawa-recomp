@@ -191,9 +191,19 @@ static uint32_t call_guest3(CpuState *s, uint32_t fn, uint32_t a0, uint32_t a1, 
     s->vfpuCtrl[0] = 0xe4; s->vfpuCtrl[1] = 0xe4;
     s->pc = fn;   /* dispatch() treats pc == 0 as a lost thread and halts it */
     atomic_store_explicit(&sr_timeslice, 20000, memory_order_relaxed);
+    SrAotReturnBoundaryScope boundary_scope;
+    sr_aot_return_boundary_scope_begin(&boundary_scope);
     dispatch(s, fn);
     uint32_t ret = s->r[2];
+    int boundary_scope_failed = sr_aot_return_boundary_scope_end(
+        s, &boundary_scope, "MPEG guest callback");
+    uint32_t callback_flow_kind = s->flow_kind;
+    uint32_t callback_flow_target = s->flow_target;
     memcpy(s, &save, sizeof(CpuState));
+    if (boundary_scope_failed || callback_flow_kind == SR_FLOW_FATAL) {
+        s->flow_kind = SR_FLOW_FATAL;
+        s->flow_target = callback_flow_target;
+    }
     /* Returning to the interrupted context ends any ll..sc window it had open. */
     sr_cpu_link_clear(s);
     atomic_store_explicit(&sr_timeslice, save_slice, memory_order_relaxed);

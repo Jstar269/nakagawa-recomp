@@ -8426,6 +8426,46 @@ static void at3_result(int emulated, const char *step, int rc) {
     }
 }
 
+/* More decodes than the 24 frames an 8192-byte prefix holds, so the call that runs out of data is seen too. */
+#define AT3_DECODE_EXTRA_CALLS 30
+
+static void at3_pcm_record(int emulated, const char *step, int rc, int samples, int end_flag, int remain) {
+    uint32_t hash = 2166136261u;
+    uint32_t peak = 0;
+    const int count = samples > 0 && samples <= 1024 ? samples * 2 : 0;
+    for (int i = 0; i < count; i++) {
+        const uint16_t v = s_at3_pcm[i];
+        hash = (hash ^ (v & 0xffu)) * 16777619u;
+        hash = (hash ^ (v >> 8)) * 16777619u;
+        const uint32_t mag = (v & 0x8000u) ? (uint32_t)(0x10000u - v) : v;
+        if (mag > peak) peak = mag;
+    }
+    char line[320];
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3-pcm-%s status=RC "
+                   "result=0x%08x samples=%d end=%d remain=%d fnv=0x%08x peak=%u "
+                   "s0=0x%04x s1=0x%04x s2=0x%04x s3=0x%04x s256=0x%04x s2000=0x%04x\n",
+                   step, (unsigned int)rc, samples, end_flag, remain, (unsigned int)hash,
+                   (unsigned int)peak, s_at3_pcm[0], s_at3_pcm[1], s_at3_pcm[2], s_at3_pcm[3],
+                   s_at3_pcm[256], s_at3_pcm[2000]);
+    probe_emit_durable(emulated, line, strlen(line));
+}
+
+static void at3_stream_queries(int emulated, int atrac_id) {
+    int next = -1, loop_start = -1, loop_end = -1, remain = -1, end_sample = -1;
+    const int rc_next = sceAtracGetNextSample(atrac_id, &next);
+    const int rc_remain = sceAtracGetRemainFrame(atrac_id, &remain);
+    const int rc_sound = sceAtracGetSoundSample(atrac_id, &end_sample, &loop_start, &loop_end);
+    char line[320];
+    (void)snprintf(line, sizeof(line),
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-AT3-001 case_id=at3-queries status=RC "
+                   "result=0x00000000 rc_next=0x%08x next=%d rc_remain=0x%08x remain=%d "
+                   "rc_sound=0x%08x end_sample=%d loop_start=%d loop_end=%d\n",
+                   (unsigned int)rc_next, next, (unsigned int)rc_remain, remain, (unsigned int)rc_sound,
+                   end_sample, loop_start, loop_end);
+    probe_emit_durable(emulated, line, strlen(line));
+}
+
 static void run_at3_decode(int emulated) {
     int input_rc = -1;
     int input_read = 0;
@@ -8501,6 +8541,22 @@ static void run_at3_decode(int emulated) {
                                    "status=RC result=0x%08x samples=%d end=%d remain=%d\n",
                                    (unsigned int)decode_rc, samples, end_flag, remain_frames);
                     probe_emit_durable(emulated, decoded, strlen(decoded));
+                    /* #1096 follow-up: later frames, PCM fingerprints and the stream-position queries. The PCM
+                       bytes stay in the private host0 log as a hash plus a few leading samples. */
+                    at3_pcm_record(emulated, "decode0", decode_rc, samples, end_flag, remain_frames);
+                    at3_stream_queries(emulated, atrac_id);
+                    for (int more = 1; more <= AT3_DECODE_EXTRA_CALLS && decode_rc == 0 && end_flag == 0;
+                         more++) {
+                        char step[24];
+                        int s2 = -1, e2 = -1, r2 = -1;
+                        (void)snprintf(step, sizeof(step), "decode%d", more);
+                        probe_step(emulated, "at3-decode", step);
+                        memset(s_at3_pcm, 0, sizeof(s_at3_pcm));
+                        decode_rc = sceAtracDecodeData(atrac_id, s_at3_pcm, &s2, &e2, &r2);
+                        at3_pcm_record(emulated, step, decode_rc, s2, e2, r2);
+                        end_flag = e2;
+                    }
+                    at3_stream_queries(emulated, atrac_id);
                     probe_step(emulated, "at3-decode", "release-atracid");
                     release_rc = sceAtracReleaseAtracID(atrac_id);
                     at3_result(emulated, "release-atracid", release_rc);
@@ -8522,8 +8578,9 @@ static void run_at3_decode(int emulated) {
     (void)atrac_unload_rc;
     (void)avcodec_unload_rc;
     probe_step(emulated, "at3-decode", "park");
-    /* Park the main thread. Returning would end main and drop PSPLink to the XMB. */
-    for (;;) sceKernelSleepThread();
+    /* Normal teardown: parks until PSPLink modstop, which ends main cleanly. Returning from main would
+       drop PSPLink to the XMB. */
+    probe_teardown(emulated);
 }
 #endif
 
@@ -8531,15 +8588,24 @@ static void run_at3_decode(int emulated) {
 #include <pspsuspend.h>
 #include <psputility.h>
 #include <psputility_osk.h>
-/* The runtime answers sceKernelVolatileMemUnlock and sceUtilityOskUpdate with success in every state.
-   This probe records the PSP's return for each state. Every call is non-blocking and dialog-free: Lock
-   runs only while unlocked, and the keyboard is shut down from INIT before anything can poll it to
-   VISIBLE. The GetStatus poll is bounded. */
+/* The runtime answers sceKernelVolatileMemUnlock/Lock/TryLock, sceUtilityOskUpdate/ShutdownStart and
+   scePowerUnregisterCallback without a measured PSP result in some states. This probe records the PSP's
+   return for each state. Default launch (no dialog ever opens):
+     1. VolatileMem: Lock, TryLock while held, a second thread's Lock and TryLock while held, a double Lock
+        from one thread, and the unlock that follows. Every blocking call runs on a helper thread so main
+        never blocks; the lock is left released.
+     2. scePower: Register/Unregister matrix. Unregister is only ever called on a slot this probe registered
+        a moment before, or on an out-of-range slot, so no other module's callback can be dropped.
+     3. sceUtilityOsk with no keyboard ever opened: GetStatus, Update, ShutdownStart.
+   The keyboard part (an OSK dialog that needs a person to finish it) is compiled in only with
+   FAKE_SUCCESS_OSK_CYCLE=1 and must be run attended. */
+#ifdef FAKE_SUCCESS_OSK_CYCLE
 static uint16_t s_fake_desc[1];
 static uint16_t s_fake_intext[1];
 static uint16_t s_fake_outtext[16];
 static SceUtilityOskData s_fake_data;
 static SceUtilityOskParams s_fake_params;
+#endif
 
 static void fake_record(int emulated, const char *step, uint32_t rc) {
     char line[200];
@@ -8552,41 +8618,179 @@ static void fake_record(int emulated, const char *step, uint32_t rc) {
     }
 }
 
-static void run_fake_success(int emulated) {
+/* Helper-thread plumbing shared by the VolatileMem cells. */
+static volatile int s_fake_h_mode;      /* 1: Lock once, 2: TryLock once, 3: Lock twice */
+static volatile int s_fake_h_stage;     /* 0 not started, 1 first call issued, 2 first returned, 3 second issued, 4 second returned */
+static volatile int s_fake_h_rc1;
+static volatile int s_fake_h_rc2;
+static volatile uint32_t s_fake_h_ptr;
+
+static int fake_helper(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
     void *ptr = NULL;
     int size = 0;
+    const int mode = s_fake_h_mode;
+    s_fake_h_stage = 1;
+    if (mode == 2) {
+        s_fake_h_rc1 = sceKernelVolatileMemTryLock(0, &ptr, &size);
+    } else {
+        s_fake_h_rc1 = sceKernelVolatileMemLock(0, &ptr, &size);
+    }
+    s_fake_h_ptr = (uint32_t)(uintptr_t)ptr;
+    s_fake_h_stage = 2;
+    if (mode == 3) {
+        s_fake_h_stage = 3;
+        s_fake_h_rc2 = sceKernelVolatileMemLock(0, &ptr, &size);
+        s_fake_h_stage = 4;
+    }
+    for (;;) sceKernelSleepThread();
+    return 0;
+}
+
+static SceUID fake_start_helper(int mode) {
+    s_fake_h_mode = mode;
+    s_fake_h_stage = 0;
+    s_fake_h_rc1 = 0x7ffffff0;
+    s_fake_h_rc2 = 0x7ffffff0;
+    s_fake_h_ptr = 0;
+    const SceUID helper = sceKernelCreateThread("nk_fake_helper", fake_helper, 0x20, 0x2000,
+                                                PSP_THREAD_ATTR_USER, NULL);
+    if (helper >= 0) (void)sceKernelStartThread(helper, 0, NULL);
+    return helper;
+}
+
+static void fake_helper_state(int emulated, const char *step) {
     char line[240];
-
-    probe_step(emulated, "fake-success", "unlock-unlocked");
-    fake_record(emulated, "unlock-unlocked", (uint32_t)sceKernelVolatileMemUnlock(0));
-
-    probe_step(emulated, "fake-success", "lock");
-    const int lock_rc = sceKernelVolatileMemLock(0, &ptr, &size);
-    fake_record(emulated, "lock", (uint32_t)lock_rc);
     (void)snprintf(line, sizeof(line),
-                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-FAKE-001 case_id=fake-lock-out "
-                   "status=RC result=0x%08x ptr=0x%08x size=%d\n",
-                   (unsigned int)lock_rc, (unsigned int)(uintptr_t)ptr, size);
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-FAKE-001 case_id=fake-%s "
+                   "status=RC result=0x%08x stage=%d rc1=0x%08x rc2=0x%08x ptr=0x%08x\n",
+                   step, 0u, s_fake_h_stage, (unsigned int)s_fake_h_rc1,
+                   (unsigned int)s_fake_h_rc2, (unsigned int)s_fake_h_ptr);
     probe_emit_durable(emulated, line, strlen(line));
+}
 
-    probe_step(emulated, "fake-success", "unlock-locked");
-    fake_record(emulated, "unlock-locked", (uint32_t)sceKernelVolatileMemUnlock(0));
-    probe_step(emulated, "fake-success", "unlock-unlocked-again");
-    fake_record(emulated, "unlock-unlocked-again", (uint32_t)sceKernelVolatileMemUnlock(0));
+static void fake_stop_helper(SceUID helper) {
+    if (helper >= 0) (void)sceKernelTerminateDeleteThread(helper);
+}
 
-    probe_step(emulated, "fake-success", "trylock");
+static void fake_volatile_cells(int emulated) {
+    void *ptr = NULL;
+    int size = 0;
+
+    /* A. Lock, then TryLock from the owner while held. */
+    probe_step(emulated, "fake-success", "vol-lock");
+    fake_record(emulated, "vol-lock", (uint32_t)sceKernelVolatileMemLock(0, &ptr, &size));
+    probe_step(emulated, "fake-success", "vol-trylock-held-same-thread");
     ptr = NULL;
     size = 0;
-    const int try_rc = sceKernelVolatileMemTryLock(0, &ptr, &size);
-    fake_record(emulated, "trylock", (uint32_t)try_rc);
-    if (try_rc == 0) {
-        probe_step(emulated, "fake-success", "unlock-after-trylock");
-        fake_record(emulated, "unlock-after-trylock", (uint32_t)sceKernelVolatileMemUnlock(0));
+    fake_record(emulated, "vol-trylock-held-same-thread",
+                (uint32_t)sceKernelVolatileMemTryLock(0, &ptr, &size));
+
+    /* B. Another thread's TryLock while main holds the lock. */
+    probe_step(emulated, "fake-success", "vol-trylock-held-other-thread");
+    SceUID h = fake_start_helper(2);
+    sceKernelDelayThread(300 * 1000);
+    fake_helper_state(emulated, "vol-trylock-held-other-thread");
+    fake_stop_helper(h);
+
+    /* C. Another thread's blocking Lock while main holds the lock, then main unlocks. */
+    probe_step(emulated, "fake-success", "vol-lock-held-other-thread");
+    h = fake_start_helper(1);
+    sceKernelDelayThread(300 * 1000);
+    fake_helper_state(emulated, "vol-lock-held-other-thread-while-held");
+    probe_step(emulated, "fake-success", "vol-unlock-owner");
+    fake_record(emulated, "vol-unlock-owner", (uint32_t)sceKernelVolatileMemUnlock(0));
+    sceKernelDelayThread(300 * 1000);
+    fake_helper_state(emulated, "vol-lock-held-other-thread-after-unlock");
+    /* The helper (if it got the lock) still owns it; release from main and record the result. */
+    probe_step(emulated, "fake-success", "vol-unlock-after-helper");
+    fake_record(emulated, "vol-unlock-after-helper", (uint32_t)sceKernelVolatileMemUnlock(0));
+    fake_stop_helper(h);
+    probe_step(emulated, "fake-success", "vol-unlock-clean-check");
+    fake_record(emulated, "vol-unlock-clean-check", (uint32_t)sceKernelVolatileMemUnlock(0));
+
+    /* D. One thread locks twice (the second Lock may refuse or block); main unlocks to release it. */
+    probe_step(emulated, "fake-success", "vol-lock-twice-same-thread");
+    h = fake_start_helper(3);
+    sceKernelDelayThread(300 * 1000);
+    fake_helper_state(emulated, "vol-lock-twice-same-thread-while-held");
+    fake_record(emulated, "vol-lock-twice-unlock-1", (uint32_t)sceKernelVolatileMemUnlock(0));
+    sceKernelDelayThread(300 * 1000);
+    fake_helper_state(emulated, "vol-lock-twice-same-thread-after-unlock-1");
+    fake_record(emulated, "vol-lock-twice-unlock-2", (uint32_t)sceKernelVolatileMemUnlock(0));
+    fake_stop_helper(h);
+    /* Leave the lock released whatever happened: an unlock that reports 0x800201ae means it is. */
+    probe_step(emulated, "fake-success", "vol-final-clean-check");
+    fake_record(emulated, "vol-final-clean-check", (uint32_t)sceKernelVolatileMemUnlock(0));
+    fake_record(emulated, "vol-final-clean-check-2", (uint32_t)sceKernelVolatileMemUnlock(0));
+}
+
+static int fake_power_callback(int arg1, int arg2, void *common) {
+    (void)arg1;
+    (void)arg2;
+    (void)common;
+    return 0;
+}
+
+static void fake_power_cells(int emulated) {
+    const SceUID cb = sceKernelCreateCallback("nk_fake_power_cb", fake_power_callback, NULL);
+    fake_record(emulated, "pw-create-callback", (uint32_t)cb);
+    if (cb < 0) return;
+    int own[16];
+    char step[48];
+
+    /* Auto slot (-1): register, unregister, unregister again (the slot is now empty). */
+    probe_step(emulated, "fake-success", "pw-auto");
+    const int auto_slot = scePowerRegisterCallback(-1, cb);
+    fake_record(emulated, "pw-register-auto", (uint32_t)auto_slot);
+    if (auto_slot >= 0 && auto_slot < 16) {
+        fake_record(emulated, "pw-unregister-owned", (uint32_t)scePowerUnregisterCallback(auto_slot));
+        fake_record(emulated, "pw-unregister-empty-after-own", (uint32_t)scePowerUnregisterCallback(auto_slot));
     }
 
-    probe_step(emulated, "fake-success", "osk-update-idle");
-    fake_record(emulated, "osk-update-idle", (uint32_t)sceUtilityOskUpdate(0));
+    /* Explicit slots 0..15: registration shows which are free; only slots registered here are unregistered. */
+    probe_step(emulated, "fake-success", "pw-slots");
+    for (int slot = 0; slot < 16; slot++) {
+        (void)snprintf(step, sizeof(step), "pw-register-slot%d", slot);
+        const int rc = scePowerRegisterCallback(slot, cb);
+        fake_record(emulated, step, (uint32_t)rc);
+        own[slot] = rc >= 0;
+    }
+    for (int slot = 0; slot < 16; slot++) {
+        if (!own[slot]) continue;
+        (void)snprintf(step, sizeof(step), "pw-unregister-owned-slot%d", slot);
+        fake_record(emulated, step, (uint32_t)scePowerUnregisterCallback(slot));
+        (void)snprintf(step, sizeof(step), "pw-unregister-empty-slot%d", slot);
+        fake_record(emulated, step, (uint32_t)scePowerUnregisterCallback(slot));
+    }
 
+    /* Range cells. Register side first; Unregister is called on an out-of-range slot only when the
+       Register at that slot was refused (so this probe does not own it). */
+    probe_step(emulated, "fake-success", "pw-range");
+    const int reg16 = scePowerRegisterCallback(16, cb);
+    fake_record(emulated, "pw-register-slot16", (uint32_t)reg16);
+    const int reg32 = scePowerRegisterCallback(32, cb);
+    fake_record(emulated, "pw-register-slot32", (uint32_t)reg32);
+    const int regm2 = scePowerRegisterCallback(-2, cb);
+    fake_record(emulated, "pw-register-slotm2", (uint32_t)regm2);
+    if (reg16 >= 0) fake_record(emulated, "pw-unregister-owned-slot16", (uint32_t)scePowerUnregisterCallback(16));
+    if (reg32 >= 0) fake_record(emulated, "pw-unregister-owned-slot32", (uint32_t)scePowerUnregisterCallback(32));
+    if (regm2 >= 0) fake_record(emulated, "pw-unregister-owned-slotm2", (uint32_t)scePowerUnregisterCallback(-2));
+    if (reg16 < 0) fake_record(emulated, "pw-unregister-slot16", (uint32_t)scePowerUnregisterCallback(16));
+    if (reg32 < 0) fake_record(emulated, "pw-unregister-slot32", (uint32_t)scePowerUnregisterCallback(32));
+    if (regm2 < 0) fake_record(emulated, "pw-unregister-slotm2", (uint32_t)scePowerUnregisterCallback(-2));
+    fake_record(emulated, "pw-unregister-slotm1", (uint32_t)scePowerUnregisterCallback(-1));
+    fake_record(emulated, "pw-unregister-slot1000", (uint32_t)scePowerUnregisterCallback(1000));
+    (void)sceKernelDeleteCallback(cb);
+}
+
+#ifdef FAKE_SUCCESS_OSK_CYCLE
+/* Attended only. The dialog needs a person: press the cancel or confirm control on the PSP. The wait is
+   bounded; if the dialog is still open at the end the probe records that, and the caller must NOT soft
+   reset the device (a visible keyboard before a soft reset wedged PSPLink on 2026-10-21). */
+#define FAKE_OSK_WAIT_POLLS 3750 /* 60 s at 16 ms */
+static void fake_osk_cycle(int emulated) {
     memset(&s_fake_params, 0, sizeof(s_fake_params));
     memset(&s_fake_data, 0, sizeof(s_fake_data));
     s_fake_params.base.size = sizeof(s_fake_params);
@@ -8604,37 +8808,73 @@ static void run_fake_success(int emulated) {
     s_fake_data.outtextlimit = 16;
 
     probe_step(emulated, "fake-success", "osk-initstart");
-    fake_record(emulated, "osk-initstart", (uint32_t)sceUtilityOskInitStart(&s_fake_params));
-    probe_step(emulated, "fake-success", "osk-update-init");
-    fake_record(emulated, "osk-update-init", (uint32_t)sceUtilityOskUpdate(0));
-    probe_step(emulated, "fake-success", "osk-shutdown");
-    fake_record(emulated, "osk-shutdown", (uint32_t)sceUtilityOskShutdownStart());
-
-    /* A keyboard that reaches VISIBLE must be closed before this probe returns: a visible keyboard left
-       open wedged the PSP in the first run. ShutdownStart from VISIBLE, then poll to NONE (bounded). */
-    probe_step(emulated, "fake-success", "osk-status-poll");
-    uint32_t last = 0xffffffffu;
+    const int init_rc = sceUtilityOskInitStart(&s_fake_params);
+    fake_record(emulated, "osk-initstart", (uint32_t)init_rc);
+    if (init_rc != 0) return;
+    uint32_t status = 0xffffffffu;
+    int visible_seen = 0;
+    int quit_seen = 0;
     int polls = 0;
-    int close_tries = 0;
-    for (polls = 0; polls < 400; polls++) {
-        last = (uint32_t)sceUtilityOskGetStatus();
-        if (last == 0u) break;
-        if (last == 2u && close_tries < 5) {
-            probe_step(emulated, "fake-success", "osk-close-visible");
-            close_tries++;
+    for (polls = 0; polls < FAKE_OSK_WAIT_POLLS; polls++) {
+        status = (uint32_t)sceUtilityOskGetStatus();
+        if (status == 2u && !visible_seen) {
+            visible_seen = 1;
+            fake_record(emulated, "osk-update-visible-speed0", (uint32_t)sceUtilityOskUpdate(0));
+            fake_record(emulated, "osk-update-visible-speed1", (uint32_t)sceUtilityOskUpdate(1));
             fake_record(emulated, "osk-shutdown-visible", (uint32_t)sceUtilityOskShutdownStart());
         }
+        if (status == 2u) (void)sceUtilityOskUpdate(1);
+        if (status == 3u) {
+            quit_seen = 1;
+            fake_record(emulated, "osk-update-quit", (uint32_t)sceUtilityOskUpdate(1));
+            fake_record(emulated, "osk-shutdown-quit", (uint32_t)sceUtilityOskShutdownStart());
+            break;
+        }
+        if ((status == 0u || status == 0x80110005u) && visible_seen) break;
         sceKernelDelayThread(16000);
     }
+    char line[200];
     (void)snprintf(line, sizeof(line),
-                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-FAKE-001 case_id=fake-osk-status-final "
-                   "status=RC result=0x%08x polls=%d\n",
-                   (unsigned int)last, polls);
+                   "NAKAGAWA_PSP_TEST schema=1 test_id=PSP-FAKE-001 case_id=fake-osk-status-end "
+                   "status=RC result=0x%08x polls=%d visible=%d quit=%d\n",
+                   (unsigned int)status, polls, visible_seen, quit_seen);
     probe_emit_durable(emulated, line, strlen(line));
+    for (int i = 0; i < 200; i++) {
+        const uint32_t now = (uint32_t)sceUtilityOskGetStatus();
+        if (now == 0u || now == 0x80110005u) break;
+        (void)sceUtilityOskUpdate(1);
+        sceKernelDelayThread(16000);
+    }
+    const uint32_t final_status = (uint32_t)sceUtilityOskGetStatus();
+    fake_record(emulated, "osk-final-status", final_status);
+    if (final_status == 0u || final_status == 0x80110005u) {
+        fake_record(emulated, "osk-update-none-after-use", (uint32_t)sceUtilityOskUpdate(0));
+        fake_record(emulated, "osk-shutdown-none-after-use", (uint32_t)sceUtilityOskShutdownStart());
+    }
+}
+#endif
 
-    probe_step(emulated, "fake-success", "park");
-    /* Park the main thread. Returning would end main and drop PSPLink to the XMB. */
-    for (;;) sceKernelSleepThread();
+static void run_fake_success(int emulated) {
+    probe_step(emulated, "fake-success", "volatile-cells");
+    fake_volatile_cells(emulated);
+    probe_step(emulated, "fake-success", "power-cells");
+    fake_power_cells(emulated);
+
+    /* No keyboard has ever been opened by this launch: these cells never create a dialog. */
+    probe_step(emulated, "fake-success", "osk-none-cells");
+    fake_record(emulated, "osk-status-none", (uint32_t)sceUtilityOskGetStatus());
+    fake_record(emulated, "osk-update-none-speed0", (uint32_t)sceUtilityOskUpdate(0));
+    fake_record(emulated, "osk-update-none-speed1", (uint32_t)sceUtilityOskUpdate(1));
+    fake_record(emulated, "osk-shutdown-none", (uint32_t)sceUtilityOskShutdownStart());
+    fake_record(emulated, "osk-status-none-after", (uint32_t)sceUtilityOskGetStatus());
+#ifdef FAKE_SUCCESS_OSK_CYCLE
+    probe_step(emulated, "fake-success", "osk-cycle");
+    fake_osk_cycle(emulated);
+#endif
+    probe_step(emulated, "fake-success", "done");
+    fake_record(emulated, "done", 0);
+    /* Normal teardown: parks until PSPLink modstop, which ends main cleanly. */
+    probe_teardown(emulated);
 }
 #endif
 
@@ -8846,9 +9086,9 @@ int main(int argc, char *argv[]) {
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_LATE_PRX_TARGET
     run_late_prx_target(emulated); /* parks; never returns */
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_AT3_DECODE
-    run_at3_decode(emulated); /* parks; never returns */
+    run_at3_decode(emulated); /* ends in probe_teardown, which parks until modstop */
 #elif PSP_ORACLE_CASE == PSP_ORACLE_CASE_FAKE_SUCCESS
-    run_fake_success(emulated); /* parks; never returns */
+    run_fake_success(emulated); /* ends in probe_teardown, which parks until modstop */
 #else
     const uint32_t sum = nakagawa_psp_oracle_sum_u32(100);
     snprintf(line, sizeof(line),

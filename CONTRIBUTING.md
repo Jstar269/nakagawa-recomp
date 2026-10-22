@@ -1,24 +1,50 @@
 # Contributing
 
-Thanks for helping with Nakagawa Recomp. The repository-level project declaration is
+Thanks for helping with Nakagawa Recomp. This page is the short path to a first contribution.
+The rules it links to decide whether a change can land, so read them once.
+
+## Start here
+
+1. **Set up.** Follow [docs/SETUP.md](docs/SETUP.md), the authoritative development baseline. Build
+   the player once with those steps before you change anything, so you know your setup works.
+2. **Find work.** Look for issues labelled
+   [`good first issue`](https://github.com/Jstar269/nakagawa-recomp/labels/good%20first%20issue) (small,
+   self-contained, no PSP or retail game needed) or
+   [`help wanted`](https://github.com/Jstar269/nakagawa-recomp/labels/help%20wanted) (a contributor can take
+   it). Issues labelled `needs-psp-hardware` need a physical PSP run, and `needs-owner-decision` waits on a
+   maintainer. Search existing issues before you open a new one.
+3. **Agree the approach.** For anything bigger than a small fix, comment on the issue first.
+4. **Make one focused change.** Fork the repository, create a branch, and change one thing. Leave
+   **Allow edits by maintainers** enabled on the pull request.
+5. **Check it.** Run `make contrib-check` (Linux) or `mingw32-make contrib-check` (Windows, MSYS2 UCRT64 on
+   `PATH`). It runs the gates that apply to the files you changed. Add a test for any behaviour you changed,
+   and paste the exact commands and results into the pull request.
+6. **Refresh provenance controls.** If you changed files that already have public entries, run
+   `python tools/contrib_refresh.py` (or `make contrib-refresh`) and commit what it stages. Never hand-edit
+   `PUBLIC_EXPORT.json` or `assets/public_provenance_ledger.json`. Adding or removing a file is a new public
+   path: the tool refuses it, so say so in the pull request and a maintainer admits it. The table below lists
+   each refusal.
+7. **Disclose AI help.** If an AI tool helped, follow [docs/AI_USAGE.md](docs/AI_USAGE.md). Add one
+   `Assisted-by: <tool> (<model>)` trailer per tool to each commit it helped produce (not `Co-Authored-By:`),
+   and say so in the pull request.
+8. **Sign off as the human author.** Sign off every commit with `git commit -s`, which adds
+   `Signed-off-by: Your Name <you@example.com>`. Only the person who wrote the change may sign it off.
+   See [docs/DCO_POLICY.md](docs/DCO_POLICY.md).
+9. **Open the pull request.** Use a draft if it is not finished, fill in the template, and say what is left.
+   Ask questions by opening an issue, or by commenting on the issue you are working on.
+
+## Licensing
+
+The repository-level project declaration is
 GPL-3.0-or-later. New project-authored source files use `SPDX-License-Identifier: GPL-3.0-or-later`.
 Inherited and third-party files retain the exact SPDX identifier and notices recorded for their source
 lineage; do not relabel upstream-derived code as project-authored or replace its license identifier.
 Specific inherited licensing/provenance questions remain under qualified review; do not introduce
 third-party-derived code without resolving its actual source/license chain.
 
-## Your first contribution
+## Provenance controls
 
-1. Pick an issue labelled
-   [`good first issue`](https://github.com/Jstar269/nakagawa-recomp/labels/good%20first%20issue) or
-   [`help wanted`](https://github.com/Jstar269/nakagawa-recomp/labels/help%20wanted). For anything
-   larger, comment on the issue first so the approach can be agreed.
-2. Fork, create a branch, make one focused change, and sign off each commit (`git commit -s`).
-3. Run the checks for the area you touched (see [Verify](#verify)), then open the pull request and
-   fill in the template.
-4. Leave **Allow edits by maintainers** enabled on the pull request.
-
-**Provenance controls: run `make contrib-refresh`, or leave them to a maintainer.** Two files,
+Run `make contrib-refresh`, or leave this to a maintainer. Two files,
 `PUBLIC_EXPORT.json` and `assets/public_provenance_ledger.json`, are generated from a private
 trusted ledger that contributors don't have. Never edit them by hand; they are not hand-written
 files. The ledger records, for each published path, the classification and evidence the public
