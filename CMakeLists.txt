@@ -153,6 +153,70 @@ set_tests_properties(player_state_test PROPERTIES
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     ENVIRONMENT "NK_TEST_SCRATCH_DIR=${CMAKE_CURRENT_BINARY_DIR}/build")
 
+# The nk_ui core and its C3a reserved stubs stay SDL and Vulkan free. Keep this
+# explicit source inventory in sync with mk/nk_ui.mk.
+set(NK_UI_CORE_SOURCES
+    src/ui/nk_ui.c
+    src/ui/nk_ui_clay.c
+    src/ui/nk_ui_theme.c
+    src/ui/nk_ui_draw.c
+    src/ui/nk_ui_text.c
+    src/ui/nk_ui_widgets.c
+    src/ui/nk_ui_waves.c
+    src/ui/nk_ui_dump.c
+    src/ui/nk_ui_focus.c
+    src/ui/nk_ui_input.c
+    src/ui/nk_ui_prompts.c
+)
+set(NK_UI_EDGE_SOURCES
+    src/ui/nk_ui_sdl_input.c
+    src/ui/nk_ui_ttf.c
+)
+set(NK_UI_BACKEND_SOURCES
+    src/ui/backend/nk_ui_sdlr.c
+    src/ui/backend/nk_ui_vk.c
+)
+set(NK_UI_RESERVED_STUB_SOURCES ${NK_UI_EDGE_SOURCES} ${NK_UI_BACKEND_SOURCES})
+set(NK_UI_PLAYER_SCREEN_SOURCES
+    src/player/ui/player_ui_nk.c
+    src/player/ui/ui_router.c
+    src/player/ui/scr_library.c
+    src/player/ui/scr_title.c
+    src/player/ui/scr_settings.c
+    src/player/ui/scr_first_run.c
+    src/player/ui/scr_dialogs.c
+)
+set(NK_UI_OVERLAY_SOURCES
+    src/rt/overlay/nk_overlay.c
+    src/rt/overlay/overlay_pause.c
+    src/rt/overlay/overlay_quick.c
+    src/rt/overlay/overlay_hud.c
+    src/rt/overlay/overlay_toast.c
+    src/rt/overlay/overlay_dialogs.c
+)
+set(NK_UI_TEST_SOURCES
+    tests/native/test_nk_ui_core.c
+    tests/native/test_nk_ui_focus.c
+    tests/native/test_nk_ui_sdlr.c
+    tests/native/test_nk_ui_vk.c
+    tests/native/test_player_screens.c
+    tests/native/test_overlay_screens.c
+)
+add_executable(test_nk_ui_core
+    tests/native/test_nk_ui_core.c
+    ${NK_UI_CORE_SOURCES}
+    ${NK_UI_RESERVED_STUB_SOURCES}
+)
+target_include_directories(test_nk_ui_core PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/clay
+)
+if(NOT WIN32)
+    target_link_libraries(test_nk_ui_core PRIVATE m)
+endif()
+add_test(NAME nk_ui_core_test COMMAND test_nk_ui_core)
+set_tests_properties(nk_ui_core_test PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
 add_executable(test_package_builder
     tests/native/test_package_builder.c
     tests/native/native_test_isolation.c

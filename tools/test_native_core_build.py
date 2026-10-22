@@ -33,6 +33,7 @@ _RUNS_BEFORE_PROCESS_TEST = (
     "build/mygame/cpu_lle_selftest",
     "build/mygame/domain_mode_selftest",
     "build/mygame/clay_layout_selftest",
+    "build/test_nk_ui_core",
     "build/mygame/ge_texture_ref_selftest",
     "build/mygame/fbcap_selftest build/mygame/fbcap_selftest",
     "build/mygame/osk_text_entry_selftest",
@@ -128,6 +129,16 @@ class NativeCoreTestsContractTests(unittest.TestCase):
 
     def test_runs_the_same_test_binaries_in_the_same_order(self) -> None:
         self.assertEqual(_test_runs(self.commands), list(EXPECTED_RUNS))
+
+    def test_nk_ui_core_is_compiled_and_run_by_native_core_tests(self) -> None:
+        compile_commands = [command for command in self.commands
+                            if command.startswith("gcc") and "-o build/test_nk_ui_core" in command]
+        self.assertEqual(len(compile_commands), 1, "nk_ui core test compile command")
+        self.assertIn("-Isrc/ui", compile_commands[0])
+        self.assertIn("-Ithird_party/clay", compile_commands[0])
+        self.assertIn("tests/native/test_nk_ui_core.c", compile_commands[0])
+        self.assertIn("src/ui/nk_ui_clay.c", compile_commands[0])
+        self.assertIn("build/test_nk_ui_core", _test_runs(self.commands))
 
     def test_core_sources_compile_once_per_flag_set(self) -> None:
         # Two shared object sets: the core flags, and the core flags plus -Isrc/player.
