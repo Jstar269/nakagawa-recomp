@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import atexit
 import os
 import hashlib
 import json
@@ -36,8 +37,12 @@ _PLAYER_EXE_BUILD_PATH = PLAYER_EXE
 _PLAYER_EXE_SANDBOX = None
 if _PLAYER_EXE_BUILD_PATH.is_file():
     _PLAYER_EXE_SANDBOX = tempfile.TemporaryDirectory(
-        prefix=".player-ui-regressions-", dir=_PLAYER_EXE_BUILD_PATH.parent
+        prefix=".player-ui-regressions-", dir=_PLAYER_EXE_BUILD_PATH.parent,
+        ignore_cleanup_errors=True,
     )
+    # Remove the sandbox copy when the test process exits; a player still holding
+    # the executable open on Windows must not turn cleanup into a test failure.
+    atexit.register(_PLAYER_EXE_SANDBOX.cleanup)
     PLAYER_EXE = Path(_PLAYER_EXE_SANDBOX.name) / _PLAYER_EXE_BUILD_PATH.name
     shutil.copy2(_PLAYER_EXE_BUILD_PATH, PLAYER_EXE)
     for runtime_dll in _PLAYER_EXE_BUILD_PATH.parent.glob("*.dll"):
