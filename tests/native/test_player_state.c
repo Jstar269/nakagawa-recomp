@@ -3997,6 +3997,30 @@ int main(int argc, char **argv) {
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
         assert(s_app2->settings.present_scaling == NK_PRESENT_SCALING_SHARP);
 
+        /* network_mode is reserved: offline is the only accepted value, it is
+           written on save, and any stored value (a later "online", or junk) loads
+           as offline rather than as something more permissive. */
+        assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
+        assert(player_app_save_settings(s_app2, test_settings_path) == NK_OK);
+        {
+            FILE *nf = fopen(test_settings_path, "rb");
+            char saved[4096] = {0};
+            assert(nf != NULL);
+            size_t n = fread(saved, 1, sizeof(saved) - 1, nf);
+            fclose(nf);
+            saved[n] = '\0';
+            assert(strstr(saved, "\"network_mode\": \"offline\"") != NULL);
+        }
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 2, \"network_mode\": \"online\"}");
+        s_app2->settings.network_mode = (NkNetworkMode)7;
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 2, \"network_mode\": 3}");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
+
         remove(test_settings_path);
         free(s_app);
         free(s_app2);

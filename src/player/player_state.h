@@ -133,6 +133,13 @@ typedef struct {
     bool cancellable;
 } PreparationState;
 
+/* The player and runtime are offline by default (AGENTS.md section 5). Later
+ * opt-in modes ("lan", "online") get their own values; a value this build does
+ * not know always reads back as offline, never as something more permissive. */
+typedef enum {
+    NK_NETWORK_MODE_OFFLINE = 0
+} NkNetworkMode;
+
 typedef struct {
     int resolution_scale; /* 1 = Native 480x272, 2 = 2x Vita, 3 = 3x 720p, 4 = 4x 1080p */
     int present_scaling;  /* NK_PRESENT_SCALING_*: how the game window scales its frames */
@@ -150,6 +157,7 @@ typedef struct {
     int launcher_window_height;
     char controller_name[64];
     bool controller_connected;
+    NkNetworkMode network_mode; /* reserved master switch; offline is the only mode today */
     /* Save locations are not a setting: nk_launch_prepare_session resolves a
        writable per-disc Memory Stick root at launch (SR_MEMSTICK). The settings
        screen shows that real root instead of a configurable dead field. */

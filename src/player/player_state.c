@@ -1006,6 +1006,7 @@ void player_app_settings_init_default(PlayerSettings *settings) {
     settings->launcher_window_height = 720;
     settings->controller_name[0] = '\0';
     settings->controller_connected = false;
+    settings->network_mode = NK_NETWORK_MODE_OFFLINE;
 }
 
 static bool resolution_scale_valid(int scale) {
@@ -1200,6 +1201,9 @@ NkResult player_app_load_settings(PlayerApp *app, const char *file_path) {
         app->settings.launcher_window_height = (int)window_h;
     }
 
+    /* network_mode is not read: "offline" is the only mode this build accepts, so
+       any stored value, known or not, stays at the offline default. */
+
     NkJsonNode *rm_node = nk_json_obj_get(root, "reduce_motion");
     bool rm_val = false;
     if (rm_node && nk_json_get_bool(rm_node, &rm_val)) {
@@ -1282,6 +1286,7 @@ NkResult player_app_save_settings(const PlayerApp *app, const char *file_path) {
     fprintf(f, "  \"launcher_window_y\": %d,\n", app->settings.launcher_window_y);
     fprintf(f, "  \"launcher_window_width\": %d,\n", app->settings.launcher_window_width);
     fprintf(f, "  \"launcher_window_height\": %d,\n", app->settings.launcher_window_height);
+    fprintf(f, "  \"network_mode\": \"offline\",\n");
     fprintf(f, "  \"reduce_motion\": %s,\n", app->settings.reduce_motion ? "true" : "false");
     fprintf(f, "  \"master_volume\": %d\n", app->settings.master_volume);
     fprintf(f, "}\n");
