@@ -1,108 +1,53 @@
-## Problem / evidence
+## Problem
 
-<!-- Link the GitHub issue(s), failing test, trace, upstream reference, or other concrete evidence that motivates this change. -->
+<!-- Link the issue this closes or tracks, for example "Tracks #123". Say what was wrong or missing. -->
 
-Closes/Tracks #
+Tracks #
 
 ## Change
 
-<!-- Describe the smallest behaviorally meaningful change and why this approach was chosen. -->
+<!-- The smallest change that does the job, and why this approach. -->
 
-## New files and where they came from
+## How I checked it
 
-<!-- Required when this pull request adds a file; delete this section if it adds none. -->
+<!-- Paste the exact commands you ran and their results. "CI is green" is not a result.
+     Start with `make contrib-check` (Linux) or `mingw32-make contrib-check` (Windows). -->
 
-Every new file needs an answer, because the project cannot accept a file of unknown origin:
-
-- [ ] Every new file is written by me, or derived from a named upstream at a named revision under a
-      named license.
-- [ ] Each new source file carries `SPDX-License-Identifier: GPL-3.0-or-later` and the project
-      copyright line (Markdown and YAML use a comment form where the repository already does).
-- [ ] Each new third-party or AI-assisted file is detailed under **Third-party and AI provenance**
-      below.
-
-| Path | Written by / derived from | Revision | License | Why it is needed |
-| --- | --- | --- | --- | --- |
-| | | | | |
-
-A maintainer admits each new path into the publication scope and the protected provenance ledger.
-That is expected and is not something you can do yourself.
-
-## Verification
-
-<!-- List the exact commands/routes run and their results. Do not replace evidence with "CI green". -->
-
-Start with the fast path, which runs only the gates your changed files select:
-
-```bash
-make contrib-check          # Linux
-mingw32-make contrib-check   # Windows
-```
-
-- [ ] `make contrib-check` — or the equivalent, with the result pasted below
-- [ ] `python -m unittest discover -s tools -p "test_*.py" -v` (for a change to shared tooling; an agent satisfies the
-  applicable Python scope per `AGENTS.md` section 9)
-- [ ] `python tools/publish_audit.py --tracked-only --worktree --provenance-self-consistency`
-- [ ] `pre-commit run --all-files` (when available in the environment)
-- [ ] Relevant native/runtime test or build gate for the changed area
+- [ ] I ran the checks that apply and pasted the commands and results below.
+- [ ] I did not hand-edit `PUBLIC_EXPORT.json` or `assets/public_provenance_ledger.json`. If I changed existing files, I ran `python tools/contrib_refresh.py`.
+- [ ] No game files, decrypted data, traces, private paths or proprietary assets are in this change.
+- [ ] I did not create tags, GitHub Releases or release assets.
 
 ### Results
 
-<!-- Record exact results, including anything blocked or unavailable. -->
+<!-- Exact commands and results, including anything you could not run and why. -->
 
-## Generated controls
+## New files
 
-<!-- These two files are maintained by a maintainer from a private trusted ledger. -->
+<!-- Delete this section if the pull request adds no file. A new file is a new public path, and a maintainer admits it. -->
 
-- [ ] This pull request does not hand-edit `PUBLIC_EXPORT.json` or
-      `assets/public_provenance_ledger.json`.
-- [ ] For edits to existing paths, `python tools/contrib_refresh.py` may be used locally to refresh both public controls before pushing.
-- [ ] If **Trusted provenance attestation** reported only "a maintainer will admit these N new
-      files", that is the expected result for a pull request that adds files; it is not a defect in
-      this change.
+| Path | Written by, or derived from (project and revision) | License | Why it is needed |
+| --- | --- | --- | --- |
+| | | | |
 
-## Integration and release safety
-
-- [ ] Exact `BASE_SHA` and `HEAD_SHA`, applicable hosted-CI status, review state, and remaining
-      uncertainty are recorded below.
-- [ ] No tag, GitHub Release, release asset, or published-version operation was performed. Those
-      operations require explicit maintainer authorization in the current turn.
-- [ ] No private-input, hardware, legal-clearance, provenance-attestation, or human DCO action is
-      being represented as completed by this PR.
-
-## Correctness / compatibility scope
-
-- [ ] No unrelated compatibility workaround or fake-success path was introduced.
-- [ ] Any new address-specific/game-specific override is narrowly scoped, documented, and linked to evidence/tests.
-- [ ] Generated `build/` output is not committed.
-- [ ] Private game inputs, decrypted modules, traces, local paths, and proprietary assets are not committed.
-
-## Contributor Rights Attestation (DCO 1.1)
-
-- [ ] All commits include a `Signed-off-by:` certification under Developer Certificate of Origin (DCO 1.1); see [docs/DCO_POLICY.md](../docs/DCO_POLICY.md).
-- [ ] Or: these are maintainer / maintainer-directed commits covered by the standing waiver in [docs/DCO_POLICY.md §5.1](../docs/DCO_POLICY.md); a missing trailer is expected and is not a merge blocker.
-
-<!-- Exactly one of the two boxes above applies. The waiver is personal to the maintainer: outside contributions always need the first. Agents must never add a Signed-off-by trailer on anyone's behalf. -->
-
-Third-party and AI disclosure below is required either way — the waiver covers rights attestation only.
+- [ ] Each new source file has `SPDX-License-Identifier: GPL-3.0-or-later`, or keeps the notice of its upstream source.
 
 ## Third-party and AI provenance
 
-- [ ] No new third-party source/data was introduced.
-- [ ] Or: new third-party material is identified below with exact source/revision/license and applicable notices preserved.
-- [ ] No material AI-assisted translation/reimplementation was used.
-- [ ] Or: material AI assistance is disclosed below with the source/provenance needed for review.
+- [ ] No new third-party source or data is included.
+- [ ] Or: new third-party material is identified below, with its exact source, revision and license, and its notices are kept.
+- [ ] No material AI-assisted translation or reimplementation is included.
+- [ ] Or: material AI assistance is disclosed below, with the source needed for review.
+
+<!-- Fill in the provenance notes below if either "Or" box applies. -->
 
 ### Provenance notes
 
-<!-- Required when either third-party material or material AI-assisted translation/reimplementation is introduced. -->
+## Contributor Rights Attestation (DCO 1.1)
 
-## Documentation / tracking
-
-- [ ] Maintained documentation was updated when behavior, setup, architecture, or verification changed.
-- [ ] The relevant GitHub issue/status tracking was updated when a blocker or acceptance criterion changed.
-- [ ] Historical investigation documents were not rewritten as current-state documentation.
+- [ ] Every commit has a `Signed-off-by:` line from the human author, added with `git commit -s`. See [Developer Certificate of Origin (DCO 1.1)](../docs/DCO_POLICY.md).
+- [ ] Or: these are maintainer commits covered by the standing waiver in [docs/DCO_POLICY.md §5.1](../docs/DCO_POLICY.md). Outside contributions always need the first box.
 
 ## Reviewer notes
 
-<!-- Call out residual uncertainty, legal/provenance questions, private-input validation still required, or intentionally deferred work. -->
+<!-- Residual uncertainty, questions, or work you deliberately left for later. -->

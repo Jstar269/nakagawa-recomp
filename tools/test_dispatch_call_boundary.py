@@ -1531,7 +1531,12 @@ class GeneratedCallDepthTests(unittest.TestCase):
         # returned for the caller and the continuation never ran (v0 = 1).
         generated, (rc, output, fields) = self._run_one(_issue_968_fixture())
         self.assertIn("void f_00001030(CpuState *s) {", generated)
-        self.assertIn("if (_c) { f_00001030(s); SR_TAIL_DRAIN(s); } }", generated)
+        self.assertRegex(
+            generated,
+            r"if \(_c\) \{ if \(sr_aot_return_boundary_begin\(s, 0x[0-9a-f]+u, "
+            r"0x[0-9a-f]+u, 1u\)\) return; f_00001030\(s\); SR_TAIL_DRAIN\(s\); "
+            r"if \(sr_aot_return_boundary_end\(s\)\) return; \} \}",
+        )
         self.assertNotIn("L_00001030", generated, "the callee must not be a label of the caller")
         self.assertEqual(rc, 0, output)
         self.assertEqual(fields.get("v0"), 11, f"linked branch lost its continuation\n{output}")
@@ -1557,7 +1562,12 @@ class GeneratedCallDepthTests(unittest.TestCase):
         # ordinary continuation boundary: the call returns to the link, the caller
         # unwinds and tail-enters the same code. Before: v0 = 101.
         generated, (rc, output, fields) = self._run_one(_linked_callee_also_fallen_into())
-        self.assertIn("if (_c) { f_0000102c(s); SR_TAIL_DRAIN(s); } }", generated)
+        self.assertRegex(
+            generated,
+            r"if \(_c\) \{ if \(sr_aot_return_boundary_begin\(s, 0x[0-9a-f]+u, "
+            r"0x[0-9a-f]+u, 1u\)\) return; f_0000102c\(s\); SR_TAIL_DRAIN\(s\); "
+            r"if \(sr_aot_return_boundary_end\(s\)\) return; \} \}",
+        )
         self.assertIn("_sr_cont_0000102c", generated)
         self.assertEqual(rc, 0, output)
         self.assertEqual(fields.get("v0"), 112, output)
@@ -1567,7 +1577,12 @@ class GeneratedCallDepthTests(unittest.TestCase):
         # `bne` keeps the leaf a label of the caller; the `bal` to the same leaf still
         # calls it. Before: the `bal` reused the label (v0 = 101 for a0 = 0).
         generated, results = self._probe(_linked_callee_also_branched_to(), (0, 1))
-        self.assertIn("if (_c) { f_00001038(s); SR_TAIL_DRAIN(s); } }", generated)
+        self.assertRegex(
+            generated,
+            r"if \(_c\) \{ if \(sr_aot_return_boundary_begin\(s, 0x[0-9a-f]+u, "
+            r"0x[0-9a-f]+u, 1u\)\) return; f_00001038\(s\); SR_TAIL_DRAIN\(s\); "
+            r"if \(sr_aot_return_boundary_end\(s\)\) return; \} \}",
+        )
         self.assertIn("goto L_00001038;", generated, "the ordinary branch keeps its label")
         for (rc, output, fields), expected in zip(results, (111, 1), strict=True):
             self.assertEqual(rc, 0, output)
@@ -1624,14 +1639,20 @@ class GeneratedCallDepthTests(unittest.TestCase):
                 "return linked_target_role(elf, target, ranges, limit) != CONTINUATION",
                 "return True",
             )},
-            lambda r: r[0][0] == 0 and r[0][2].get("v0") == 100 + 0x4000,
+            lambda r: (
+                (r[0][0] == 0 and r[0][2].get("v0") == 100 + 0x4000)
+                or "AOT_RETURN_TARGET_MISMATCH" in r[0][1]
+            ),
         )
         # L4: `bal .+8` is called: the PC read runs once as a call and again at the link,
         # the second time with the restored return address (v0 = 120, a0 = 0x1008).
         self._assert_mutant_fails(
             "L4-read-the-pc-is-called", _read_the_pc(), (0,),
             {"analyze.py": ("if target == (source + 8) & 0xFFFFFFFF:", "if False:")},
-            lambda r: r[0][0] == 0 and r[0][2].get("v0") == 120 and r[0][2].get("a0") == 0x1008,
+            lambda r: (
+                (r[0][0] == 0 and r[0][2].get("v0") == 120 and r[0][2].get("a0") == 0x1008)
+                or "AOT_RETURN_TARGET_MISMATCH" in r[0][1]
+            ),
         )
 
 

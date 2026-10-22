@@ -18,7 +18,7 @@ body:
     id: problem
     attributes:
       label: Problem
-      description: What user or developer problem should this solve?
+      description: What is hard or missing today, and who is affected?
     validations:
       required: true
 
@@ -26,7 +26,7 @@ body:
     id: proposal
     attributes:
       label: Proposed outcome
-      description: Describe the desired behavior without prescribing a band-aid.
+      description: Describe the result you want. You do not need to design the fix.
     validations:
       required: true
 

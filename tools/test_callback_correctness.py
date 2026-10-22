@@ -224,6 +224,19 @@ class CallbackDispatchBehaviourTests(unittest.TestCase):
 #include <string.h>
 #include "recomp.h"
 
+/* This helper-only ABI probe intentionally does not link recomp.c; it tests
+ * argument and register marshalling. Boundary-floor behavior is exercised by
+ * aot-return-boundary-thread-selftest, which links the real implementation. */
+void sr_aot_return_boundary_scope_begin(SrAotReturnBoundaryScope *scope) {
+    (void)scope;
+}
+int sr_aot_return_boundary_scope_end(CpuState *cpu,
+                                     const SrAotReturnBoundaryScope *scope,
+                                     const char *owner) {
+    (void)cpu; (void)scope; (void)owner;
+    return 0;
+}
+
 static void guest_callback(CpuState *cpu) {
     printf("cb a0=%08x a1=%08x a2=%08x gp=%08x ra=%08x\n",
            cpu->r[4], cpu->r[5], cpu->r[6], cpu->r[28], cpu->r[31]);

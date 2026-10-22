@@ -4,9 +4,10 @@
 """Prove the AOT/interpreter and FPU-reference gates are load-bearing.
 
 A comparator that cannot fail proves nothing. This driver applies one semantic
-defect at a time to a copy of the production interpreter, FPU helper header or
-code generator under the ignored build tree, rebuilds the cosim harness against
-that copy and requires the gate to FAIL.
+defect at a time to a copy of the production interpreter, FPU helper header,
+code generator or scheduler under the ignored build tree. Interpreter/generator
+mutants rebuild the cosim harness; the scheduler mutant builds a copied HLE
+thread harness with the real scheduler, recomp.c and blocking HLE wait.
 
 Two rules make the campaign meaningful rather than decorative:
 
@@ -22,8 +23,9 @@ Two rules make the campaign meaningful rather than decorative:
   "cosim: FAIL" with no located divergence is not a kill, and a gate that exceeds
   its budget is a TIMEOUT -- never a pass and never a kill.
 
-The source tree is never modified. Mutants are selected through the Makefile's
-COSIM_INTERP_SRC, COSIM_FP_CONVERT_PRELUDE or CODEGEN_TOOL override.
+The source tree is never modified. Mutants are selected through Makefile
+overrides; the scheduler mutant copies sched.c beside the copied HLE-thread
+harness so its quoted include resolves only to the mutated file.
 """
 
 from __future__ import annotations
@@ -43,6 +45,8 @@ FP_CONVERT = ROOT / "src" / "rt" / "fp_convert.h"
 FPU_REFERENCE = ROOT / "fixtures" / "cosim" / "fpu_reference.c"
 FPU_REFERENCE_HEADER = ROOT / "fixtures" / "cosim" / "fpu_reference.h"
 GENERATOR = ROOT / "tools" / "codegen.py"
+SCHEDULER = ROOT / "src" / "rt" / "sched.c"
+HLE_THREAD_SELFTEST = ROOT / "src" / "rt" / "hle_thread_selftest.c"
 
 
 class Mutant:
@@ -255,6 +259,33 @@ MUTANTS: tuple[Mutant, ...] = (
         )],
     ),
     Mutant(
+        "aot-ra-return-boundary-ignored",
+        "AOT accepts a linked callee that rewrites $ra",
+        [
+            (
+                '        f"if (sr_aot_return_boundary_begin(s, {G(resume_pc)}, {G(call_pc)}, 1u)) return; "',
+                '        ""',
+                1,
+            ),
+            (
+                '        "if (sr_aot_return_boundary_end(s)) return;"',
+                '        ""',
+                1,
+            ),
+        ],
+        "generator",
+    ),
+    Mutant(
+        "drop-aot-thread-boundary-swap",
+        "scheduler fails to restore a guest thread's AOT return-boundary stack",
+        [(
+            "        sr_aot_return_boundary_stack_swap(&t->aot_return_boundary_stack);\n",
+            "        /* mutant: omitted per-thread return-boundary swap */\n",
+            2,
+        )],
+        "scheduler",
+    ),
+    Mutant(
         "drop-mfhi",
         "fail to materialize one architectural register",
         [(
@@ -455,7 +486,8 @@ def resolve_make() -> str:
     raise RuntimeError("no make program found (set MAKE or put make on PATH)")
 
 
-def make_command(source: Path, target: str) -> list[str]:
+def make_command(source: Path, target: str,
+                 harness_source: Path | None = None) -> list[str]:
     if target == "interpreter":
         override = f"COSIM_INTERP_SRC={source.as_posix()}"
     elif target == "fp-convert":
@@ -464,6 +496,12 @@ def make_command(source: Path, target: str) -> list[str]:
         override = f"COSIM_FPU_REFERENCE_SRC={source.as_posix()}"
     elif target == "generator":
         override = f"CODEGEN_TOOL={source.as_posix()}"
+    elif target == "scheduler":
+        command = [resolve_make(), "--no-print-directory",
+                   "aot-return-boundary-thread-selftest"]
+        if harness_source is not None:
+            command.append(f"HLE_THREAD_SELFTEST_SOURCE={harness_source.as_posix()}")
+        return command
     else:
         raise ValueError(f"unknown mutation target: {target}")
     return [resolve_make(), "--no-print-directory", "cosim-selftest", override]
@@ -508,26 +546,38 @@ def _terminate_process_tree(process: subprocess.Popen) -> None:
 
 
 def run_gate(source: Path, target: str = "interpreter",
-             timeout_s: int | None = None) -> tuple[str, str]:
+             timeout_s: int | None = None,
+             skip_ra_return_cases: bool = False,
+             accepted_boundary: str | None = None,
+             harness_source: Path | None = None) -> tuple[str, str]:
     """Run the cosim gate against one mutated source.
 
     Returns (verdict, detail). verdict is one of:
       "ok"           the gate exited zero and reported cosim: OK;
-      "fail"         the gate exited nonzero, reported cosim: FAIL AND located a
-                      divergence record/cell -- the only shape that is a kill;
+      "fail"         the gate exited nonzero and either reported cosim: FAIL with
+                      a located divergence, or emitted the caller-authorized named
+                      semantic boundary;
       "timeout"      the gate exceeded its runtime budget (never a kill);
       "inconsistent" the marker and the process outcome contradict each other;
       "no-run"       the harness never reported an outcome (build failure, crash,
                       or a failure with no located divergence).
     """
     env = dict(os.environ)
+    env.pop("SR_COSIM_SKIP_AOT_RETURN_CASES", None)
+    if skip_ra_return_cases:
+        # These three unrelated transfer mutants intentionally alter the exact
+        # control-flow/link premise the rewritten-$ra fixture relies on. Their
+        # own existing cells remain active; the dedicated AOT-return mutant below
+        # runs the new regression without this isolation.
+        env["SR_COSIM_SKIP_AOT_RETURN_CASES"] = "1"
     if target == "generator":
         # A mutated copy of codegen.py still has to import its siblings
         # (analyze, host_stubs, build_profile), and running it from the ignored
         # build tree puts the wrong directory first on sys.path.
         env["PYTHONPATH"] = str(ROOT / "tools") + os.pathsep + env.get("PYTHONPATH", "")
     budget = GATE_TIMEOUT_S if timeout_s is None else timeout_s
-    command = make_command(source, target)
+    command = (make_command(source, target) if harness_source is None else
+               make_command(source, target, harness_source))
     try:
         process = subprocess.Popen(
             command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -562,6 +612,25 @@ def run_gate(source: Path, target: str = "interpreter",
     reported_fail = "cosim: FAIL" in output
     code = process.returncode
 
+    if target == "scheduler":
+        result_marker = "aot-return-boundary-selftest:"
+        if code == 0 and result_marker in output and "0 failures" in output:
+            return "ok", "aot-return-boundary-selftest passed"
+        if (code != 0 and accepted_boundary and accepted_boundary in output and
+                result_marker in output and "FAIL: AOT boundary isolation:" in output and
+                "1 failures" in output):
+            for line in output.splitlines():
+                if line.startswith("SEMANTIC_BOUNDARY:") and accepted_boundary in line:
+                    return "fail", line.strip()
+        if code == 0:
+            return "inconsistent", f"scheduler test exited 0 without a passing marker\n{tail}"
+        return "no-run", tail
+
+    if code != 0 and accepted_boundary:
+        for line in output.splitlines():
+            if line.startswith("SEMANTIC_BOUNDARY:") and accepted_boundary in line:
+                return "fail", line.strip()
+
     if code == 0:
         if reported_ok:
             return "ok", detail
@@ -590,12 +659,14 @@ def main(argv: list[str] | None = None) -> int:
         "fp-convert": FP_CONVERT.read_text(encoding="utf-8"),
         "fpu-reference": FPU_REFERENCE.read_text(encoding="utf-8"),
         "generator": GENERATOR.read_text(encoding="utf-8"),
+        "scheduler": SCHEDULER.read_text(encoding="utf-8"),
     }
     filenames = {
         "interpreter": "guest_interp.c",
         "fp-convert": "fp_convert.h",
         "fpu-reference": "fpu_reference.c",
         "generator": "codegen.py",
+        "scheduler": "sched.c",
     }
     mutant_root = args.build_dir / "mutants"
     if mutant_root.exists():
@@ -609,6 +680,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print("COSIM_MUTATION baseline=OK")
 
+    verdict, detail = run_gate(SCHEDULER, "scheduler")
+    if verdict != "ok":
+        print(f"COSIM_MUTATION AOT boundary baseline verdict={verdict}\n{detail}",
+              file=sys.stderr)
+        return 1
+    print("COSIM_MUTATION AOT boundary baseline=OK")
+
     killed = 0
     survived: list[str] = []
     invalid: list[str] = []
@@ -620,6 +698,10 @@ def main(argv: list[str] | None = None) -> int:
         target.write_text(
             mutant.apply(sources[mutant.target]), encoding="utf-8", newline="\n"
         )
+        harness_source = None
+        if mutant.target == "scheduler":
+            harness_source = directory / "hle_thread_selftest.c"
+            shutil.copyfile(HLE_THREAD_SELFTEST, harness_source)
         if mutant.target == "fpu-reference":
             (directory / "fpu_reference.h").write_text(
                 FPU_REFERENCE_HEADER.read_text(encoding="utf-8"),
@@ -627,7 +709,20 @@ def main(argv: list[str] | None = None) -> int:
                 newline="\n",
             )
 
-        verdict, detail = run_gate(target, mutant.target)
+        skip_ra_return_cases = mutant.name in {
+            "wrong-call-resume", "wrong-jump-target", "alter-link-value"
+        }
+        accepted_boundary = "AOT_RETURN_TARGET_MISMATCH" if mutant.name in {
+            "wrong-call-resume", "alter-link-value"
+        } else None
+        if mutant.target == "scheduler":
+            accepted_boundary = "AOT_RETURN_TARGET_MISMATCH"
+        verdict, detail = run_gate(
+            target, mutant.target,
+            skip_ra_return_cases=skip_ra_return_cases,
+            accepted_boundary=accepted_boundary,
+            harness_source=harness_source,
+        )
         if verdict == "fail":
             killed += 1
             print(
@@ -656,6 +751,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"COSIM_MUTATION FAIL: restored baseline verdict={verdict}\n{detail}",
               file=sys.stderr)
         return 1
+
+    verdict, detail = run_gate(SCHEDULER, "scheduler")
+    if verdict != "ok":
+        print(f"COSIM_MUTATION restored AOT boundary baseline verdict={verdict}\n{detail}",
+              file=sys.stderr)
+        return 1
+    print("COSIM_MUTATION restored AOT boundary baseline=OK")
 
     by_target: dict[str, int] = {}
     for mutant in MUTANTS:

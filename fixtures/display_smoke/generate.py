@@ -48,15 +48,18 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import ctypes
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import struct
 import subprocess
 import sys
 import tempfile
+import time
 import zlib
 
 
@@ -70,6 +73,8 @@ ENTRY = BASE
 # DISPLAY_SMOKE_NAME and to the "id" in assets/titles/display-smoke.json.
 ARTIFACT_STEM = "display-smoke-v1"
 TITLE_ID = ARTIFACT_STEM
+DISPLAY_DISC_ID = "TEST00006"
+DISPLAY_TITLE = "Nakagawa Display Smoke Fixture"
 
 # Guest text layout. The entry body occupies [0, TEXT_SECTION_SIZE); three
 # import stubs form the .sceStub.text section at STUB_OFFSET.
@@ -570,6 +575,133 @@ def evidence_failure(
     if present:
         return "contains: " + ", ".join(present)
     return None
+
+
+def _iso_dir_record(identifier: bytes, lba: int, size: int,
+                    is_directory: bool) -> bytes:
+    """Build one bounded ISO-9660 record for the synthetic launch disc."""
+    record_size = 33 + len(identifier)
+    if record_size & 1:
+        record_size += 1
+    record = bytearray(record_size)
+    record[0] = record_size
+    record[2:10] = struct.pack("<I", lba) + struct.pack(">I", lba)
+    record[10:18] = struct.pack("<I", size) + struct.pack(">I", size)
+    record[25] = 2 if is_directory else 0
+    record[28] = 1
+    record[31] = 1
+    record[32] = len(identifier)
+    record[33 : 33 + len(identifier)] = identifier
+    return bytes(record)
+
+
+def _display_smoke_param_sfo() -> bytes:
+    entries = [
+        ("DISC_ID", DISPLAY_DISC_ID.encode("ascii") + b"\0"),
+        ("DISC_VERSION", b"1.00\0"),
+        ("TITLE", DISPLAY_TITLE.encode("ascii") + b"\0"),
+    ]
+    entries.sort(key=lambda item: item[0])
+    key_table = bytearray()
+    data_table = bytearray()
+    entry_table = bytearray()
+    for key, value in entries:
+        key_offset = len(key_table)
+        key_table.extend(key.encode("ascii") + b"\0")
+        data_offset = len(data_table)
+        data_table.extend(value)
+        while len(data_table) % 4:
+            data_table.append(0)
+        entry_table.extend(
+            struct.pack("<HHIII", key_offset, 0x0204,
+                        len(value), len(value), data_offset)
+        )
+
+    key_table_start = 20 + len(entry_table)
+    data_table_start = key_table_start + len(key_table)
+    while data_table_start % 4:
+        key_table.append(0)
+        data_table_start += 1
+    header = struct.pack(
+        "<4s4sIII", b"\x00PSF", b"\x01\x01\x00\x00",
+        key_table_start, data_table_start, len(entries)
+    )
+    return header + bytes(entry_table) + bytes(key_table) + bytes(data_table)
+
+
+def _write_display_smoke_iso(path: Path) -> None:
+    """Write a synthetic PARAM.SFO disc so PLAY NOW resolves TEST00006 by ID."""
+    sector_size = 2048
+    root_lba, game_lba, sfo_lba = 17, 18, 19
+    sfo = _display_smoke_param_sfo()
+    image = bytearray(1024 * sector_size)
+    pvd_offset = 16 * sector_size
+    image[pvd_offset] = 1
+    image[pvd_offset + 1 : pvd_offset + 6] = b"CD001"
+    image[pvd_offset + 6] = 1
+    image[pvd_offset + 40 : pvd_offset + 40 + len(DISPLAY_DISC_ID)] = \
+        DISPLAY_DISC_ID.encode("ascii")
+
+    root_entries = (
+        _iso_dir_record(b"\x00", root_lba, sector_size, True)
+        + _iso_dir_record(b"\x01", root_lba, sector_size, True)
+        + _iso_dir_record(b"PSP_GAME", game_lba, sector_size, True)
+    )
+    game_entries = (
+        _iso_dir_record(b"\x00", game_lba, sector_size, True)
+        + _iso_dir_record(b"\x01", root_lba, sector_size, True)
+        + _iso_dir_record(b"PARAM.SFO;1", sfo_lba, len(sfo), False)
+    )
+    image[root_lba * sector_size : root_lba * sector_size + len(root_entries)] = \
+        root_entries
+    image[game_lba * sector_size : game_lba * sector_size + len(game_entries)] = \
+        game_entries
+    image[sfo_lba * sector_size : sfo_lba * sector_size + len(sfo)] = sfo
+    image[pvd_offset + 156 : pvd_offset + 190] = \
+        _iso_dir_record(b"\x00", root_lba, sector_size, True)
+    path.write_bytes(image)
+
+
+def _request_player_window_close(process: subprocess.Popen) -> None:
+    """Close the player after the fixture guest has exited naturally."""
+    if process.poll() is not None:
+        return
+    if os.name != "nt":
+        process.terminate()
+        return
+
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    windows = []
+    callback_type = ctypes.WINFUNCTYPE(
+        wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+    )
+    user32.GetWindowThreadProcessId.argtypes = [
+        wintypes.HWND, ctypes.POINTER(wintypes.DWORD)
+    ]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+
+    @callback_type
+    def collect_process_window(hwnd, _lparam):
+        window_pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(window_pid))
+        if window_pid.value == process.pid:
+            windows.append(hwnd)
+        return True
+
+    user32.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
+    user32.EnumWindows.restype = wintypes.BOOL
+    if not user32.EnumWindows(collect_process_window, 0):
+        raise OSError(ctypes.get_last_error(), "EnumWindows failed")
+    if not windows:
+        raise RuntimeError("native player window was not found for cleanup")
+    user32.PostMessageW.argtypes = [
+        wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
+    ]
+    user32.PostMessageW.restype = wintypes.BOOL
+    if not user32.PostMessageW(windows[0], 0x0010, 0, 0):  # WM_CLOSE
+        raise OSError(ctypes.get_last_error(), "PostMessage(WM_CLOSE) failed")
 
 
 def manifest_bytes(prx: bytes, psp_header: bytes, frames: int) -> bytes:
@@ -1157,47 +1289,113 @@ def flight_smoke(build_dir: Path) -> int:
 def run_player(build_dir: Path) -> int:
     """Drive PLAY NOW through the native player without human input.
 
-    The player one-shot mode still populates the ordinary demo library, selects
-    its launchable display-smoke entry, and calls ``player_app_launch_game``.
-    ``SR_BOOT_EVENT_FILE`` is an opt-in child-runtime evidence channel: it lets
-    this test assert the real window and first-frame milestones even when the
-    platform process backend does not inherit the parent's stderr pipe.
+    A small source-owned ISO exposes the display fixture's stable disc ID to
+    the same ``--iso --launch-now`` route used by the UI. The player's child
+    boot log is read from its sandboxed Local AppData cache while the guest runs.
     """
     suffix = ".exe" if os.name == "nt" else ""
-    player = ROOT / "build" / f"nakagawa_player{suffix}"
-    if not player.is_file():
-        raise RuntimeError(f"native player not found: {player}")
+    player_build = ROOT / "build" / f"nakagawa_player{suffix}"
+    if not player_build.is_file():
+        raise RuntimeError(f"native player not found: {player_build}")
 
     with tempfile.TemporaryDirectory(prefix="display-smoke-player-", dir=build_dir) as temp:
-        sandbox = Path(temp)
-        boot_log = sandbox / "boot-events.log"
+        sandbox = Path(temp).resolve()
+        player_dir = sandbox / "player"
+        player_dir.mkdir()
+        player = player_dir / player_build.name
+        shutil.copy2(player_build, player)
+        for runtime_dll in player_build.parent.glob("*.dll"):
+            shutil.copy2(runtime_dll, player_dir / runtime_dll.name)
+
+        local_app_data = sandbox / "localappdata"
+        iso_path = sandbox / "display-smoke.iso"
+        _write_display_smoke_iso(iso_path)
         env = os.environ.copy()
-        env["LOCALAPPDATA"] = str(sandbox / "localappdata")
-        env["SR_BOOT_EVENT_FILE"] = str(boot_log)
+        env["LOCALAPPDATA"] = str(local_app_data)
+        if os.name == "nt":
+            cache_dir = local_app_data / "Nakagawa" / "cache"
+        else:
+            xdg_cache = sandbox / "xdg-cache"
+            env["XDG_CACHE_HOME"] = str(xdg_cache)
+            cache_dir = xdg_cache / "nakagawa-recomp"
+
         command = [
             str(player),
-            "--demo",
+            f"--iso={iso_path}",
+            "--launch-now",
             f"--runtime-root={ROOT}",
-            "--launch-index=1",
-            f"--screenshot={sandbox / 'player.bmp'}",
         ]
-        completed = subprocess.run(
-            command, cwd=ROOT, env=env, capture_output=True, text=True, timeout=120
-        )
-        combined = completed.stdout + completed.stderr
-        if completed.returncode != 0:
-            sys.stderr.write(combined)
-            raise RuntimeError(f"native player launch driver exited {completed.returncode}")
+        stdout_path = sandbox / "nakagawa_player.stdout.capture"
+        stderr_path = sandbox / "nakagawa_player.stderr.capture"
+        with stdout_path.open("w", encoding="utf-8") as stdout_file, \
+                stderr_path.open("w", encoding="utf-8") as stderr_file:
+            process = subprocess.Popen(
+                command, cwd=ROOT, env=env, stdout=stdout_file, stderr=stderr_file,
+                text=True,
+            )
+            boot_log = cache_dir / f"player-boot-{process.pid}-1.events"
+            deadline = time.monotonic() + 120
+            saw_boot_file = False
+            events = ""
+            try:
+                while process.poll() is None and time.monotonic() < deadline:
+                    if boot_log.is_file():
+                        saw_boot_file = True
+                        try:
+                            events = boot_log.read_text(
+                                encoding="utf-8", errors="replace"
+                            )
+                        except OSError:
+                            pass
+                    elif saw_boot_file:
+                        break
+                    time.sleep(0.02)
 
-        if not boot_log.is_file():
-            raise RuntimeError("native player launch produced no child boot evidence")
-        events = boot_log.read_text(encoding="utf-8", errors="replace")
+                timed_out = process.poll() is None and time.monotonic() >= deadline
+                if process.poll() is None:
+                    _request_player_window_close(process)
+                    try:
+                        process.wait(timeout=15)
+                    except subprocess.TimeoutExpired as error:
+                        raise RuntimeError(
+                            "native player did not close after the fixture guest exited"
+                        ) from error
+
+                if boot_log.is_file():
+                    try:
+                        events = boot_log.read_text(
+                            encoding="utf-8", errors="replace"
+                        )
+                    except OSError:
+                        pass
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
+
+        player_stdout = stdout_path.read_text(encoding="utf-8", errors="replace")
+        player_stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
+        combined = player_stdout + player_stderr
+        if timed_out:
+            sys.stderr.write(combined)
+            raise RuntimeError("native player launch timed out before the child boot log was removed")
+        if process.returncode != 0:
+            sys.stderr.write(combined)
+            raise RuntimeError(f"native player exited {process.returncode}")
+        if not saw_boot_file:
+            sys.stderr.write(combined)
+            raise RuntimeError("native player launch produced no child boot evidence in its cache")
 
         required_parent = (
-            "[PLAYER] Launch index 1: PLAY NOW available",
-            "[PLAYER] Launch argv contains --gui: yes",
+            f"-> Disc ID: {DISPLAY_DISC_ID},",
+            f"[PLAYER] Launching {DISPLAY_DISC_ID} now...",
         )
         if failure := evidence_failure(combined, required_parent, ()):
+            sys.stderr.write(combined)
             raise RuntimeError(f"player evidence {failure}")
 
         required_events = (
@@ -1209,6 +1407,8 @@ def run_player(build_dir: Path) -> int:
             "BOOT_EVENT phase=first_frame",
         )
         if failure := evidence_failure(events, required_events, ()):
+            sys.stderr.write(combined)
+            sys.stderr.write(events)
             raise RuntimeError(f"child boot evidence {failure}")
 
         forbidden = (
@@ -1221,11 +1421,14 @@ def run_player(build_dir: Path) -> int:
         if failure := evidence_failure(combined + events, (), forbidden):
             raise RuntimeError(f"native player launch evidence {failure}")
 
-        write_if_changed(build_dir / "nakagawa_player.stdout.log", completed.stdout.encode("utf-8"))
-        write_if_changed(build_dir / "nakagawa_player.stderr.log", completed.stderr.encode("utf-8"))
+        write_if_changed(build_dir / "nakagawa_player.stdout.log", player_stdout.encode("utf-8"))
+        write_if_changed(build_dir / "nakagawa_player.stderr.log", player_stderr.encode("utf-8"))
         write_if_changed(build_dir / "nakagawa_player.boot-events.log", events.encode("utf-8"))
 
-    print("DISPLAY_SMOKE_PLAYER status=PASS play_now=1 argv_gui=1 window_ready=1 first_frame=1")
+    print(
+        f"DISPLAY_SMOKE_RUN-PLAYER status=PASS play_now=1 disc_id={DISPLAY_DISC_ID} "
+        "window_ready=1 first_frame=1"
+    )
     return 0
 
 

@@ -7,9 +7,10 @@ body:
   - type: markdown
     attributes:
       value: |
-        Search existing issues first. Keep reports minimal and sanitized. Do not attach game
-        files, decrypted modules, extracted assets, full traces, raw memory/framebuffer dumps,
-        credentials, or logs containing private paths.
+        Thanks for reporting a bug. Search existing issues first, then keep the report short.
+        Do not attach game files, decrypted modules, extracted assets, full traces, raw
+        memory or framebuffer dumps, credentials, or logs that contain private paths.
+        Not sure about a field? Say so; a maintainer can help.
 
   - type: checkboxes
     id: prerequisites
@@ -27,7 +28,7 @@ body:
     id: revision
     attributes:
       label: Revision
-      description: Commit SHA or other exact source revision, if available.
+      description: Commit SHA (run `git rev-parse HEAD` in the checkout), or another exact revision.
       placeholder: e.g. abc1234 or local snapshot date
     validations:
       required: true
@@ -58,7 +59,7 @@ body:
     id: reproduction
     attributes:
       label: Minimal reproduction
-      description: List the shortest ordinary build or gameplay sequence that reproduces it.
+      description: The shortest set of steps that reproduces it, starting from a fresh clone if you can.
       placeholder: |
         1. Build with ...
         2. Start ...

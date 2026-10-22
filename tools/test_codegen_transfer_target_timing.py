@@ -158,14 +158,26 @@ class TransferTargetTimingTests(unittest.TestCase):
     def test_jr_ra_still_returns_to_the_host_without_a_dispatch(self):
         """`jr $ra` IS the host return; it must not become a dispatch.
 
-        This is the boundary the fix must not cross: the AOT frame model turns a
-        `jr $ra` into a C return, and rewriting it as a computed dispatch would
-        double-execute the caller's continuation.
+        This is the structural boundary: the AOT frame model still turns a
+        `jr $ra` into a C return, while the caller checks the target against its
+        explicit resume PC.
         """
         text = self._emit({0x1000: JR_RA, 0x1004: NOP})
         self.assertNotIn("dispatch(s, _t);", text)
         self.assertNotIn("sr_tail_record(", text)
         self.assertIn("s->r[29] = _sp_entry; return;", text)
+        self.assertIn("SR_AOT_RETURN_CAPTURE(s, _sr_return_target);", text)
+
+    def test_jr_ra_latches_live_target_before_its_delay_slot(self):
+        text = self._emit({
+            0x1000: JR_RA,
+            0x1004: addu(31, 8, 0),  # slot rewrites live $ra after the transfer
+        })
+        capture = text.index("uint32_t _sr_return_target = s->r[31];")
+        record = text.index("SR_AOT_RETURN_CAPTURE(s, _sr_return_target);")
+        slot = text.index("s->r[31] = (s->r[8] + 0u);")
+        self.assertLess(capture, record)
+        self.assertLess(record, slot, "jr $ra target recorded after its delay slot")
 
     def test_transfer_instruction_is_reported_before_its_delay_slot(self):
         """Trace order stays branch-then-slot, matching src/rt/guest_interp.c.
