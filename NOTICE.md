@@ -25,6 +25,12 @@ it is not legal advice or a conclusion that any combined distribution is cleared
   Technologies, Inc. BSD-3-Clause notice. Its verbatim text is in
   `THIRD_PARTY_LICENSES/FFMPEG_MIPS_FFT.txt` and is included in the generated
   native-package third-party notices bundle alongside the FFmpeg LGPL text.
+- **Clay v0.14 layout library** — `Zlib` (the upstream `LICENSE.md` calls it
+  the "zlib/libpng license"). The header (upstream plus one documented LOCAL DELTA),
+  complete license, pinned source manifest, and SHA-256 values are recorded under
+  `third_party/clay/`.
+  Clay is compiled by the native layout selftest only; it is not linked into
+  the player runtime yet.
 - **Optional system FFmpeg/libavcodec H.264 backend** — `H264_FFMPEG=1` enables
   a dynamic dependency on host-provided `libavcodec` and `libavutil`; this route
   does not vendor their source or bundle their shared libraries. FFmpeg's legal
