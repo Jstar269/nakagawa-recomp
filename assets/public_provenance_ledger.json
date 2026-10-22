@@ -400,7 +400,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "0730a4640a5a048d207ba5aafea2d1377faf2b02adbe894dce8d1af3c77ed3b0"
+      "sha256": "95d4fa5bdd2596493ca017d4aa1de934230df6e55222400ce2af1a4f2d45e007"
     },
     {
       "path": "NOTICE.md",
@@ -3447,7 +3447,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "0c90c9683d44c27f42b4dff48af0725247f87289221d87c3eb33ff58e655ef65"
+      "sha256": "e41f6f20fe18706991a6b134a2ac53b2b1047bc86607ad4c228cf94fa88cb6b6"
     },
     {
       "path": "src/player/package_builder.h",
@@ -3459,7 +3459,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d5c6956ea40887f1c908035eea01b34d62f10d823617d2fd96d95a0bcc2dc840"
+      "sha256": "87f66f93abc304c3e3bb2c6887dfafe9a6b013ffa7abb1f6951f520a11114611"
     },
     {
       "path": "src/player/player_state.c",
@@ -6366,7 +6366,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4c36523356529e145bd9c267d3ff3daba26c293d7f0ff7ae5b0d1f0df26ca54a"
+      "sha256": "68cd94c00ff9193bf3b009e25bb01e531c2726f77ae6dd7be1ed081a48a184d2"
     },
     {
       "path": "tests/native/test_parsers_hostile.c",
