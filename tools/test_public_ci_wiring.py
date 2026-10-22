@@ -1257,6 +1257,47 @@ def _backticked(fragment: str) -> set[str]:
     return set(re.findall(r"`([^`]+)`", fragment))
 
 
+class PolicyDeltaLookupWiringTests(unittest.TestCase):
+    """Both trusted attestation routes prefer exact nested deltas and retain flat fallback."""
+
+    WORKFLOWS = (
+        "provenance-attestation.yml",
+        "provenance-attestation-merge-group.yml",
+    )
+
+    def test_nested_lookup_precedes_legacy_flat_fallback(self) -> None:
+        for name in self.WORKFLOWS:
+            with self.subTest(workflow=name):
+                text = _workflow_text(name)
+                nested_assignment = text.index(
+                    'nested_policy_dir="docs/provenance/policy-deltas/${candidate_policy_sha}/${base_policy_sha}"'
+                )
+                nested_candidate = text.index('${nested_policy_dir}/candidate-policy.json?ref=${authority_sha}')
+                nested_authority = text.index('${nested_policy_dir}/policy-delta-authority.json?ref=${authority_sha}')
+                nested_candidate_nonempty = text.index(
+                    'test -s "${RUNNER_TEMP}/trusted/candidate-policy.json"', nested_authority,
+                )
+                nested_authority_nonempty = text.index(
+                    'test -s "${RUNNER_TEMP}/trusted/policy-delta-authority.json"', nested_authority,
+                )
+                fallback_assignment = text.index('policy_dir="${flat_policy_dir}"')
+                flat_candidate = text.index('${policy_dir}/candidate-policy.json?ref=${authority_sha}',
+                                            fallback_assignment)
+                flat_authority = text.index('${policy_dir}/policy-delta-authority.json?ref=${authority_sha}',
+                                            fallback_assignment)
+                self.assertLess(nested_assignment, nested_candidate)
+                self.assertLess(nested_candidate, nested_authority)
+                self.assertLess(nested_authority, nested_candidate_nonempty)
+                self.assertLess(nested_candidate_nonempty, nested_authority_nonempty)
+                self.assertLess(nested_authority_nonempty, fallback_assignment)
+                self.assertLess(fallback_assignment, flat_candidate)
+                self.assertLess(flat_candidate, flat_authority)
+                self.assertIn('policy_dir="${nested_policy_dir}"', text)
+                self.assertIn('policy_dir="${flat_policy_dir}"', text)
+                self.assertIn('test -s "${RUNNER_TEMP}/trusted/candidate-policy.json"', text)
+                self.assertIn('test -s "${RUNNER_TEMP}/trusted/policy-delta-authority.json"', text)
+
+
 class MainRulesetClaimsTests(unittest.TestCase):
     """The written claims about main's required checks, and the aggregate behind them, must match the snapshot."""
 

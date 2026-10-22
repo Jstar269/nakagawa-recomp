@@ -603,14 +603,15 @@ removes a public file, with the failure each skipped step produces.
 1. **Commit the files with their publication entries.** `python tools/policy_sync.py --apply --regen-export` adds the
    paths to `assets/public_source_profile.json` and regenerates `PUBLIC_EXPORT.json`; commit both with the files. The
    candidate policy hash is the SHA-256 of that committed profile.
-2. **Record the authority in the private authority repository**, on its own branch:
+2. **Record the authority in the private authority checkout on `main`:**
    * an admission authority document under `docs/provenance/admissions/` binding each new path to the SHA-256 of its
      exact bytes and its classification;
    * for an implementation path, its exact record in `docs/provenance/IMPLEMENTATION_PROVENANCE.json`;
-   * `docs/provenance/policy-deltas/<candidate policy sha256>/candidate-policy.json` (the candidate profile bytes) and
-     `policy-delta-authority.json` (baseline and candidate digests and the exact `allowed_delta`).
-3. **Merge that branch into the private repository's `main`.** The hosted "Trusted provenance attestation" check
-   reads the authority from `main`; records on a pushed branch alone fail with HTTP 404.
+   * `docs/provenance/policy-deltas/<candidate policy sha256>/<baseline policy sha256>/candidate-policy.json` (the
+     candidate profile bytes) and `policy-delta-authority.json` (baseline and candidate digests and the exact
+     `allowed_delta`). Older flat deltas remain readable.
+3. **Push the private `main` commit.** The hosted "Trusted provenance attestation" check reads the authority from
+   `main`; local-only records fail with HTTP 404.
 4. **Admit the new paths** with `provenance_ledger.py admit-new-reviewed`, from a clean candidate commit whose only
    change from the base is the new paths and their profile entries. Commit the generated controls and merge that
    commit into the task branch.
@@ -636,15 +637,47 @@ python tools/admit_paths.py <pr-worktree> <path> [<path> ...] --approval-basis "
 
 It reads each path's committed bytes, derives its class with the gate's classifier (an implementation path needs
 an exact record already in `IMPLEMENTATION_PROVENANCE.json`; the command never writes one), writes and locally
-commits the admission and policy-delta records under `docs/provenance/`, builds the clean candidate, runs
+commits the admission and nested policy-delta records under `docs/provenance/`, builds the clean candidate, runs
 `admit-new-reviewed`, and leaves the result on a local `admit/<slug>-<date>` branch. It then prints the commands
 still to run: the private push (step 3, skipped with `--push`), the merge of that branch, and the step 5 refresh.
 `tools/test_admit_paths.py` replays the 2026-10-22 `.recomp.json` admission and requires byte-identical records.
-When another path-adding pull request lands first, merge `main` and rerun with `--rekey` instead of
-`--approval-basis`: it re-issues the delta for the new base from the admission already recorded for exactly those
-paths and bytes, and makes no new decision.
 
-**Landing order.** Each pull request that adds or removes a public path changes the publication profile. Once one
-lands, merging `main` into another such pull request changes its candidate policy hash, so it needs steps 2-5 again
-for the new hash (`tools/admit_paths.py --rekey` re-issues them). Land these pull requests one at a time, and do not hold an unrelated ready pull request for them:
-merge `main` into the waiting branch after the other lands.
+For path-adding pull requests approved together, use `--batch <file.json>` with entries shaped like:
+
+```json
+[
+  {
+    "pr_worktree": "C:/nk/worktrees/docs-a",
+    "paths": ["docs/a.md"],
+    "slug": "docs-a",
+    "approval_basis": "Owner decision recorded for this PR."
+  },
+  {
+    "pr_worktree": "C:/nk/worktrees/docs-b",
+    "paths": ["docs/b.md"],
+    "slug": "docs-b",
+    "approval_basis": "Owner decision recorded for this PR."
+  }
+]
+```
+
+Each entry has its own admission and `admit/<slug>-<date>` controls branch. All use one shared `--base`; the tool
+commits their records in one local private commit and refuses overlapping paths. Up to six entries, it writes a
+delta for every subset and next PR, so any landing order is covered. Above six, there is no batch-size cap; it writes
+only the chain for the listed order. `--any-order-limit` changes the threshold. `--push`, when used, pushes only
+private `main`.
+
+**Landing order.** PRs admitted together with `--batch` may land in any order when they are within
+`--any-order-limit`, because the private authority has a distinct delta for every next PR and baseline profile.
+Larger batches must land in their listed order. After some entries land, make a JSON list of the remaining entries,
+merge the new `main` into their PR worktrees, then run:
+
+```text
+python tools/admit_paths.py --batch-resume <file.json> --base <new-base> --private-repo <authority checkout>
+```
+
+This reissues a chain from the existing admission documents and records no new decision. If Git conflicts on, or reorders,
+`assets/public_source_profile.json` during a merge, run `python tools/admit_paths.py --merge-profile <worktree>` and
+then `git add assets/public_source_profile.json`; the command unions `include_paths` and `exclude_paths` and refuses
+if another profile field differs. A path-adding PR outside a batch still needs `--rekey` after another path-adding
+PR lands, so the next delta binds the updated baseline. Keep unrelated ready PRs moving.

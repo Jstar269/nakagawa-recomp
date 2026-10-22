@@ -273,9 +273,8 @@ substantive gates. Verify these facts against the live workflow before documenti
 - Never merge, enable auto-merge, close other PRs, or bypass required checks without the
   authority in Section 2. A substantive correction after Ready returns the PR to Draft
   and requires fresh exact-head validation.
-- Land pull requests that add or remove public paths one at a time: each changes the publication profile, so
-  the next one needs a new policy delta (Section 4). Never hold a ready pull request for an unrelated one;
-  merge `main` into the waiting branch after the other lands.
+- PRs admitted together with `admit_paths.py --batch` may land in any order; a path-adding PR outside a batch still
+  needs `--rekey` after another lands. Never hold a ready pull request for an unrelated one.
 
 ## 11. Reporting and cleanup
 

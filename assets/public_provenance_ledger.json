@@ -258,7 +258,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6702b465c77e9e8a247dee84b8500052585be95e548366bc1f3af6cf9b74e4bb"
+      "sha256": "d634651cb3babe29932b0605650f389c27e9469e0bf02ddd2f5eaa9d9b3d6595"
     },
     {
       "path": ".github/workflows/provenance-attestation.yml",
@@ -270,7 +270,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6a86cc34726263240725ec231b91e026aaedef4cced86952a67623e494ebb29a"
+      "sha256": "d01dce39117fe24ff1b304220814abf430e3d8a528af244b665bef4cc9b67453"
     },
     {
       "path": ".github/workflows/scorecards.yml",
@@ -330,7 +330,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "b35d5489599be57ecb18dc93aa2a7307321f64878d56690869381535a5c026c3"
+      "sha256": "babcbf85f870d425933844221c4b4fc08739005f678fc136d74f4efeddf519e5"
     },
     {
       "path": "CLAUDE.md",
@@ -1417,7 +1417,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "28c0dd069ddfe5c45bdb629acd51ef72e7ddb912bccb7ea3a73924b8d52dbea0"
+      "sha256": "3fa91a41aa49ae8642ad11ccb1a416967df86d08a4beca777494433baf88d61c"
     },
     {
       "path": "docs/PUBLIC_SOURCE_PROFILE.md",
@@ -6585,7 +6585,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "09547cb7c26d5a7b63625f5d86d789f9ea475313420fc82e62bc0ff643d5205e"
+      "sha256": "b338000f45589d4d1e24265cda8281bf22b630bcbb587443fac8c92730a3eb64"
     },
     {
       "path": "tools/analyze.py",
@@ -7783,7 +7783,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9960b76f2cb5d84926e5166a7b2e7163a67e25e03ff96caa99b3b01fe1f9faf1"
+      "sha256": "069723c9ca4a2a1d2e1ea99dff6b36bfe161e3c5b579b737cd8920b48f654f3a"
     },
     {
       "path": "tools/provenance_record_gap.py",
@@ -8264,7 +8264,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "03f4fde4e2d1494f25cba722894a12c5b70787b6d438514e431a0abb310a3a46"
+      "sha256": "106c52c5f8bb94db43dc4209ae615f22543d7b393096e5b5d54c48f429fa1b9f"
     },
     {
       "path": "tools/test_analyze_import_stub_entries.py",
@@ -10054,7 +10054,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "38094acc35f64e990877bbbb01fdf3f92ec3b3b1d240892abc8b6a9491b24e16"
+      "sha256": "c076a5e31d48bfb42cb08df1ff3c69695b088d7384f848d2bc3b304653021d78"
     },
     {
       "path": "tools/test_public_export.py",
