@@ -875,7 +875,7 @@ class BatchAdmissionTest(unittest.TestCase):
     def _landing_fixture(self, first: int) -> None:
         fixture = _Fixture(self)
         batch, prs = self._entries(fixture, 2)
-        result = admit_paths.admit_batch(
+        admit_paths.admit_batch(
             batch=batch, private_repo=fixture.authority, base=fixture.base,
             date="2026-10-22", scratch_root=fixture.tmp,
         )
