@@ -94,14 +94,20 @@ subject to Section 2.
   acceptance, physical PSP correctness, visual evidence, and release readiness as
   separate claims.
 - Write implementation from specifications, public architecture references, and
-  project-owned measurements. Never copy or line-by-line translate emulator or other
-  upstream source (PPSSPP, JPCSP, sal063, or similar) into a new path.
-- Exception, maintainer-approved 2026-10-20: FFmpeg codec subsets (the `src/rt/atrac3p/`
-  pattern) and uofw (github.com/uofw/uofw, MIT) may be vendored or adapted when they work
-  better than a rewrite. Each file must be pinned to an exact upstream revision, listed in a
-  `PROVENANCE.md` manifest as byte-identical or LOCAL DELTA, keep its licence notice, and get
-  a trusted record and admission like any new path. Behaviour claims still need tests, and
-  PSP evidence where hardware semantics are claimed. Emulator source stays excluded.
+  project-owned measurements by default. Never copy or line-by-line translate upstream
+  source into a new path except under the import rules below.
+- Import rules, maintainer-approved 2026-10-20 and extended 2026-10-22: FFmpeg codec subsets
+  (the `src/rt/atrac3p/` pattern), uofw (github.com/uofw/uofw, MIT), and GPL-compatible
+  emulator source (PPSSPP, GPL-2.0-or-later; JPCSP, GPL-3.0) may be vendored or adapted when
+  they work better or land faster than a rewrite. Each file must be pinned to an exact
+  upstream revision, listed in a `PROVENANCE.md` manifest as byte-identical or LOCAL DELTA,
+  keep its licence and copyright notices, be credited in `CREDITS.md`, and get a trusted
+  record and admission like any new path. An adapted file keeps the upstream copyright
+  header and adds a one-line note that it was modified, as the GPL requires; no special path
+  or naming is needed beyond that. Emulator-derived units are labelled
+  `derived-translated` (`docs/provenance/INDEPENDENCE_MODEL.md`), never "independent".
+  Behaviour claims still need tests, and PSP evidence where hardware semantics are claimed.
+  Source under a licence incompatible with GPL-3.0-or-later stays excluded.
 - Do not rewrite working inherited code only to make it original: replace it when evidence shows
   it is wrong or an LLE path makes it unnecessary (`docs/INDEPENDENCE_CAMPAIGN.md`, re-scope).
 - Do not call code "clean-room" or "independent" unless its trusted record supports that

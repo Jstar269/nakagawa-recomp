@@ -330,7 +330,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "c7a5c0ab5608834a51f0e994998b9d26df6acd9a847c8fbd71f384d99f7c7bcf"
+      "sha256": "b35d5489599be57ecb18dc93aa2a7307321f64878d56690869381535a5c026c3"
     },
     {
       "path": "CLAUDE.md",
@@ -1267,7 +1267,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "74c79220b015927268211aea7dd9e14f07b02c193d2a0e628ed21cbf4381b90e"
+      "sha256": "4f635736a3f88c66c07c8f3cf0d42b00e979900ebc915c38a09eed234bac520a"
     },
     {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",
