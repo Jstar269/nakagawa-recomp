@@ -2087,7 +2087,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "517ccbf2d9b49626bb5df9a723104ab746d911bed54e1e9378b3a375f6b41093"
+      "sha256": "49baab625c604431b3dec3c45319dcaef01dbb51f29781a7eaba50cca819cb10"
     },
     {
       "path": "fixtures/psp_oracle/README.md",
@@ -2246,7 +2246,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ab045fb634ed61427ff7c6b151c4015d7b52ecf6d6a1ac5465dfeb1eb72bba39"
+      "sha256": "715e82bd14a086922bd0d8fa83ba67f343950031911cfc8080f87ba85ce526b0"
     },
     {
       "path": "fixtures/psp_oracle/probe_exception_a1.c",
