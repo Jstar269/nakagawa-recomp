@@ -137,8 +137,9 @@ that CMake selected vendored FreeType and HarfBuzz; a runtime probe prints their
 fails if either backend is unavailable. The job installs Mesa's Vulkan drivers, Vulkan tools,
 the Khronos validation layer, Xvfb, and the X11/XTest development libraries needed by the pinned
 SDL3 build. `vulkaninfo --summary` selects the lavapipe ICD and must list llvmpipe. The
-`gpu-capture-selftest` runs through Xvfb with SDL's X11 driver and the validation layer, so an
-exit 77 skip fails the gate. The Linux job also runs `make CC=gcc player-ui-tests` with SDL's
+`gpu-capture-selftest` runs through Xvfb with SDL's X11 driver and the validation layer. Its
+terminal present-fault cases each get a fresh process, because the renderer must not reuse a
+device after a terminal failure; an exit 77 skip fails the gate. The Linux job also runs `make CC=gcc player-ui-tests` with SDL's
 dummy video and software render drivers. It configures and builds the CMake player with
 `BUILD_PLAYER=ON`, runs CTest, and requires the `nakagawa_player --help` usage marker. It also
 downloads the PSPDEV archive identified by [`pspdev.lock.json`](../assets/upstream/pspdev.lock.json), checking its

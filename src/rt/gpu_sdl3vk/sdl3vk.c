@@ -2136,6 +2136,59 @@ static int sdl3vk_capture_selftest_body(void) {
     /* ---- CPU framebuffer path (B8G8R8A8 fbimg) -------------------------------------- */
     static uint32_t px[PSP_W * PSP_H];
     cap_test_fill_cpu(px, PSP_W, PSP_H);
+    const char *terminal_fault = getenv("SR_GPU_CAPTURE_TERMINAL_CASE");
+    if (terminal_fault && terminal_fault[0]) {
+        VkResult fault_result;
+        if (strcmp(terminal_fault, "surface-lost") == 0) {
+            fault_result = VK_ERROR_SURFACE_LOST_KHR;
+        } else if (strcmp(terminal_fault, "unclassified") == 0) {
+            fault_result = (VkResult)-9999;
+        } else if (strcmp(terminal_fault, "device-lost") == 0) {
+            fault_result = VK_ERROR_DEVICE_LOST;
+        } else {
+            fprintf(stderr, "gpu capture selftest: unknown terminal fault case '%s'\n",
+                    terminal_fault);
+            ok = 0;
+            fault_result = VK_SUCCESS;
+        }
+        if (ok) {
+            uint64_t sem0 = sdl3vk_frame_semaphore_generation();
+            if (!sr_capture_arm("selftest_terminal.ppm")) {
+                fprintf(stderr, "terminal fault %s: capture arm failed\n", terminal_fault);
+                ok = 0;
+            } else {
+                sdl3vk_present_fault_inject((int)fault_result);
+                if (sdl3vk_present_rgba(px) != -1 || sr_capture_result() != -1) {
+                    fprintf(stderr, "terminal fault %s: expected failed present and capture\n",
+                            terminal_fault);
+                    ok = 0;
+                }
+                if (!sdl3vk_renderer_terminal()) {
+                    fprintf(stderr, "terminal fault %s: renderer did not enter terminal state\n",
+                            terminal_fault);
+                    ok = 0;
+                }
+                if (sdl3vk_frame_semaphore_generation() != sem0) {
+                    fprintf(stderr, "terminal fault %s: semaphore generation changed\n",
+                            terminal_fault);
+                    ok = 0;
+                }
+            }
+        }
+        if (sdl3vk_validation_error_count() != 0) {
+            fprintf(stderr, "terminal fault %s: validation reported errors\n", terminal_fault);
+            ok = 0;
+        }
+        sdl3vk_shutdown();
+        if (sdl3vk_validation_error_count() != 0) {
+            fprintf(stderr, "terminal fault %s: validation reported teardown errors\n",
+                    terminal_fault);
+            ok = 0;
+        }
+        if (!ok) return 1;
+        printf("gpu capture selftest: terminal fault %s OK\n", terminal_fault);
+        return 0;
+    }
     if (!sr_capture_arm("selftest_cpu.ppm")) {
         fprintf(stderr, "cpu: capture arm refused\n"); ok = 0;
     }
@@ -2409,54 +2462,9 @@ static int sdl3vk_capture_selftest_body(void) {
             fprintf(stderr, "present recovery: post-OOM normal present failed\n"); ok = 0;
         }
 
-        /* Test 4: VK_ERROR_SURFACE_LOST_KHR (enqueued present / surface lost terminal state) */
-        sem0 = sdl3vk_frame_semaphore_generation();
-        if (!sr_capture_arm("selftest_surflost.ppm")) {
-            fprintf(stderr, "present fault SURFLOST: arm failed\n"); ok = 0;
-        }
-        sdl3vk_present_fault_inject(VK_ERROR_SURFACE_LOST_KHR);
-        if (sdl3vk_present_rgba(px) != -1) {
-            fprintf(stderr, "present fault SURFLOST: expected present failure (-1)\n"); ok = 0;
-        }
-        if (sr_capture_result() != -1) {
-            fprintf(stderr, "present fault SURFLOST: capture result must fail (-1)\n"); ok = 0;
-        }
-        if (!sdl3vk_renderer_terminal()) {
-            fprintf(stderr, "present fault SURFLOST: expected renderer terminal state\n"); ok = 0;
-        }
-        if (sdl3vk_frame_semaphore_generation() != sem0) {
-            fprintf(stderr, "present fault SURFLOST: enqueued present must NOT recreate semaphore\n"); ok = 0;
-        }
-
-        /* Test 5: VK_ERROR_UNKNOWN / unclassified error (unknown enqueue state -> terminal fail-closed) */
-        sem0 = sdl3vk_frame_semaphore_generation();
-        s_renderer_terminal = 0;
-        create_swapchain();
-        if (!sr_capture_arm("selftest_unknown.ppm")) {
-            fprintf(stderr, "present fault UNKNOWN: arm failed\n"); ok = 0;
-        }
-        sdl3vk_present_fault_inject((VkResult)-9999);
-        if (sdl3vk_present_rgba(px) != -1) {
-            fprintf(stderr, "present fault UNKNOWN: expected present failure (-1)\n"); ok = 0;
-        }
-        if (!sdl3vk_renderer_terminal()) {
-            fprintf(stderr, "present fault UNKNOWN: expected renderer terminal state\n"); ok = 0;
-        }
-        if (sdl3vk_frame_semaphore_generation() != sem0) {
-            fprintf(stderr, "present fault UNKNOWN: unclassified error must NOT recreate semaphore\n"); ok = 0;
-        }
-        /* Arming is presenter-neutral and accepted; the terminal renderer then refuses the
-         * present, which must resolve the armed capture as failed rather than leave it
-         * pending for a later frame to publish. */
-        if (!sr_capture_arm("selftest_terminal_refused.ppm")) {
-            fprintf(stderr, "terminal state: capture arm must be accepted\n"); ok = 0;
-        } else if (sdl3vk_present_rgba(px) != -1 || sr_capture_result() != -1) {
-            fprintf(stderr, "terminal state: armed capture result %d (expected -1)\n",
-                    sr_capture_result()); ok = 0;
-        }
     }
 
-    /* Test 6: a quit consumed by a present is not lost. The present path drains the
+    /* Test 4: a quit consumed by a present is not lost. The present path drains the
      * event queue every frame, so a window close almost always lands there; the
      * process-exit decision is made later by sdl3vk_poll(). */
     {
@@ -2476,32 +2484,17 @@ static int sdl3vk_capture_selftest_body(void) {
         s_quit_requested = 0;
     }
 
-    /* Test 7: VK_ERROR_DEVICE_LOST (terminal error, no normal recovery). Keep this last:
-     * once the presenter observes device loss, the runtime must not clear the terminal
-     * state and submit more work to that device. */
-    {
-        uint64_t sem0 = sdl3vk_frame_semaphore_generation();
-        if (!sr_capture_arm("selftest_devlost.ppm")) {
-            fprintf(stderr, "present fault DEVLOST: arm failed\n"); ok = 0;
-        }
-        sdl3vk_present_fault_inject(VK_ERROR_DEVICE_LOST);
-        if (sdl3vk_present_rgba(px) != -1) {
-            fprintf(stderr, "present fault DEVLOST: expected present failure (-1)\n"); ok = 0;
-        }
-        if (!sdl3vk_renderer_terminal()) {
-            fprintf(stderr, "present fault DEVLOST: expected renderer terminal state\n"); ok = 0;
-        }
-        if (sdl3vk_frame_semaphore_generation() != sem0) {
-            fprintf(stderr, "present fault DEVLOST: lost device must NOT recreate semaphore\n"); ok = 0;
-        }
-    }
-
     int errors = sdl3vk_validation_error_count();
     if (errors != 0) {
         fprintf(stderr, "validation: %d ERROR-severity messages; expected 0\n", errors);
         ok = 0;
     }
     sdl3vk_shutdown();
+    errors = sdl3vk_validation_error_count();
+    if (errors != 0) {
+        fprintf(stderr, "validation: %d ERROR-severity teardown messages; expected 0\n", errors);
+        ok = 0;
+    }
     if (!ok) return 1;
     puts("gpu capture selftest: OK");
     return 0;
@@ -2566,7 +2559,15 @@ void sdl3vk_shutdown(void) {
     if (s_pool)        vkDestroyCommandPool(s_dev, s_pool, NULL);
     if (s_dev)         vkDestroyDevice(s_dev, NULL);
     if (s_surf)        vkDestroySurfaceKHR(s_inst, s_surf, NULL);
-    if (s_inst)        vkDestroyInstance(s_inst, NULL);
+    if (s_validation_msgr && s_validation_destroy) {
+        s_validation_destroy(s_inst, s_validation_msgr, NULL);
+        s_validation_msgr = VK_NULL_HANDLE;
+    }
+    s_validation_destroy = NULL;
+    if (s_inst) {
+        vkDestroyInstance(s_inst, NULL);
+        s_inst = VK_NULL_HANDLE;
+    }
     if (s_pad)         SDL_CloseGamepad(s_pad);
     if (s_win)         SDL_DestroyWindow(s_win);
     sdl3vk_reset_input_profile();

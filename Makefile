@@ -2668,6 +2668,9 @@ $(GPU_CAPTURE_BIN): shader-verify
 
 gpu-capture-selftest: $(GPU_CAPTURE_BIN)
 	$(GPU_CAPTURE_BIN)
+	SR_GPU_CAPTURE_TERMINAL_CASE=surface-lost $(GPU_CAPTURE_BIN)
+	SR_GPU_CAPTURE_TERMINAL_CASE=unclassified $(GPU_CAPTURE_BIN)
+	SR_GPU_CAPTURE_TERMINAL_CASE=device-lost $(GPU_CAPTURE_BIN)
 
 # gpu-selftest-status — outcome-preserving status seam for the GPU selftest binaries.
 # A failing recipe always leaves Make with its own generic status, so a child SKIP

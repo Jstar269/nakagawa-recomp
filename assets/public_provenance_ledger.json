@@ -409,7 +409,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "7970cd7294cd96aac21e4df8932996d100d8e791f7d6009516b87ad00029f403"
+      "sha256": "352a2b91cfa4bea59b8ac010bb2a0b0307775ac9aaeb4db78a99d1073238d057"
     },
     {
       "path": "NOTICE.md",
@@ -1183,7 +1183,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "75125a179e2a4e54cd86059f2466ee37878a8b3c6884768a70779337373d766a"
+      "sha256": "2e9cf07943c637663880c2bc1bdded82cf7eb82b2b67de9f58c87549577b7551"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -5205,7 +5205,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "15c11007cabe568025a9feaebe5731f9947d89c0cee5a7885051b80fe690d0da"
+      "sha256": "ea400f8b8cc7a0178a451211f343c87e783ab7abe8a8e0483a26f9b8da4e7377"
     },
     {
       "path": "src/rt/gpu_sdl3vk/sdl3vk.h",
