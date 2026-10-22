@@ -287,11 +287,11 @@ and run `python tools/hle_manifest.py --write-baseline` yourself.
 
 Some generators are listed but not run, and `--list` says why:
 
-* embedded shaders (`make shaders GLSLC=...`): regenerating needs `glslc`, whose
+- embedded shaders (`make shaders GLSLC=...`): regenerating needs `glslc`, whose
   version the manifest records; `make shader-verify` checks the committed files;
-* profile-zero prebuilt digests: rebuilding needs the pinned PSPDEV toolchain;
+- profile-zero prebuilt digests: rebuilding needs the pinned PSPDEV toolchain;
   CI checks `SHA256SUMS`;
-* the import-stub census and the benchmark report: both need private inputs
+- the import-stub census and the benchmark report: both need private inputs
   (decrypted title images, the local telemetry database), and neither output is
   committed.
 
