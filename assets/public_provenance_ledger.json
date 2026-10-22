@@ -1183,7 +1183,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "72fe93d87f5442ed958075a270393201ee8a76891b0801c4788fae728d8ee1c9"
+      "sha256": "cf8bc719e594d8c87f54a8b2be2298910bdb4ab157470c5f36990ce3fdbc67d5"
     },
     {
       "path": "docs/DCO_POLICY.md",
@@ -1483,7 +1483,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5aa567b8fd76b74052c0668b89978adf9e259fc458708efb0c06864fe29fb41d"
+      "sha256": "0d875895b6eab514dde116722d3f1205632c930a85751c93505f342b0f53cda4"
     },
     {
       "path": "docs/STATIC_VERIFY.md",
@@ -1540,7 +1540,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9b27ca2bf055ecee76d3efc69fd37d0f28886e3959af8369a8f5a1cba7dbf07d"
+      "sha256": "cb42bd86eff9796643e113353979665c581a27bb6594f624f63e70fcd8e641c1"
     },
     {
       "path": "docs/archive/IMPORT_AUDIT.md",
