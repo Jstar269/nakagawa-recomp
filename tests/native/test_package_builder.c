@@ -260,9 +260,13 @@ static void test_python_and_cli_discovery(void) {
     printf("[PACKAGE_BUILDER_TEST] Subtest 4: toolchain discovery\n");
     char python_path[NK_MAX_PATH];
     bool found_py = package_builder_find_python(python_path, sizeof(python_path));
-    assert(found_py);
-    assert(strlen(python_path) > 0);
-    printf("   Found python at: %s\n", python_path);
+    if (found_py) {
+        assert(strlen(python_path) > 0);
+        printf("   Found compatible Python at: %s\n", python_path);
+    } else {
+        assert(python_path[0] == '\0');
+        printf("   No runnable CPython 3.14.x found on this host.\n");
+    }
 
     char cli_path[NK_MAX_PATH];
     bool found_cli = package_builder_find_cli(".", cli_path, sizeof(cli_path));
@@ -381,6 +385,134 @@ static int run_build_package_route(const char *install_root,
  * with no terminal flag, so the screen read "Building package..." forever. The
  * child is this test binary run with --child-exit-zero. */
 static const char *s_self_executable;
+
+static char *copy_env_value(const char *name) {
+    const char *value = getenv(name);
+    if (!value) return NULL;
+    size_t length = strlen(value) + 1;
+    char *copy = (char *)malloc(length);
+    assert(copy != NULL);
+    memcpy(copy, value, length);
+    return copy;
+}
+
+static void restore_env_value(const char *name, const char *value) {
+#if defined(_WIN32) || defined(_WIN64)
+    assert(_putenv_s(name, value ? value : "") == 0);
+#else
+    native_test_set_env(name, value);
+#endif
+}
+
+static void copy_self_executable(const char *destination) {
+    char source[NK_MAX_PATH];
+    assert(s_self_executable && s_self_executable[0]);
+    assert(nk_platform_absolute_path(s_self_executable, source, sizeof(source)));
+    FILE *input = nk_fopen_utf8(source, "rb");
+    FILE *output = nk_fopen_utf8(destination, "wb");
+    assert(input != NULL);
+    assert(output != NULL);
+    unsigned char buffer[16384];
+    for (;;) {
+        size_t count = fread(buffer, 1, sizeof(buffer), input);
+        if (count) assert(fwrite(buffer, 1, count, output) == count);
+        if (count < sizeof(buffer)) {
+            assert(feof(input));
+            break;
+        }
+    }
+    assert(fclose(input) == 0);
+    assert(fclose(output) == 0);
+#if !defined(_WIN32) && !defined(_WIN64)
+    assert(chmod(destination, S_IRUSR | S_IWUSR | S_IXUSR) == 0);
+#endif
+}
+
+static void assert_python_probe_case(const char *case_name, const char *stub_mode,
+                                     bool expected_found) {
+    char directory[NATIVE_TEST_PATH_MAX];
+    char candidate[NATIVE_TEST_PATH_MAX];
+    char resolved_candidate[NATIVE_TEST_PATH_MAX];
+#if defined(_WIN32) || defined(_WIN64)
+    const char *candidate_name = "python.exe";
+#else
+    const char *candidate_name = "python3";
+#endif
+    int written = snprintf(directory, sizeof(directory), "%s%c%s",
+                           native_test_get_root(), nk_platform_path_separator(), case_name);
+    assert(written > 0 && (size_t)written < sizeof(directory));
+    assert(nk_platform_mkdir_p(directory));
+    written = snprintf(candidate, sizeof(candidate), "%s%c%s",
+                       directory, nk_platform_path_separator(), candidate_name);
+    assert(written > 0 && (size_t)written < sizeof(candidate));
+    copy_self_executable(candidate);
+
+    native_test_set_env("PATH", directory);
+    native_test_set_env("PYTHON", NULL);
+    native_test_set_env("NAKAGAWA_PLAYER_UI_TEST_NO_HOST_PYTHON", "1");
+    native_test_set_env("NAKAGAWA_TEST_PYTHON_STUB_MODE", stub_mode);
+
+    char found_path[NK_MAX_PATH];
+    bool found = package_builder_find_python(found_path, sizeof(found_path));
+    printf("[PACKAGE_BUILDER_PYTHON_PROBE] case=%s expected=%s found=%s\n",
+           case_name, expected_found ? "true" : "false", found ? "true" : "false");
+    fflush(stdout);
+    assert(found == expected_found);
+    if (expected_found) {
+        assert(nk_platform_absolute_path(candidate, resolved_candidate,
+                                         sizeof(resolved_candidate)));
+        assert(strcmp(found_path, resolved_candidate) == 0);
+    } else {
+        assert(found_path[0] == '\0');
+    }
+}
+
+static void test_python_candidate_validation(void) {
+    printf("[PACKAGE_BUILDER_TEST] Subtest: Python candidates must run CPython 3.14\n");
+    char *saved_path = copy_env_value("PATH");
+    char *saved_python = copy_env_value("PYTHON");
+    char *saved_isolation = copy_env_value("NAKAGAWA_PLAYER_UI_TEST_NO_HOST_PYTHON");
+    char *saved_mode = copy_env_value("NAKAGAWA_TEST_PYTHON_STUB_MODE");
+
+    assert_python_probe_case("python-probe-store-stub", "store-stub", false);
+    assert_python_probe_case("python-probe-wrong-version", "wrong-version", false);
+    assert_python_probe_case("python-probe-cpython-314", "cpython-314", true);
+    assert_python_probe_case("python-probe-timeout", "timeout", false);
+
+    restore_env_value("PATH", saved_path);
+    restore_env_value("PYTHON", saved_python);
+    restore_env_value("NAKAGAWA_PLAYER_UI_TEST_NO_HOST_PYTHON", saved_isolation);
+    restore_env_value("NAKAGAWA_TEST_PYTHON_STUB_MODE", saved_mode);
+    free(saved_path);
+    free(saved_python);
+    free(saved_isolation);
+    free(saved_mode);
+}
+
+static int run_python_probe_stub(int argc, char *argv[]) {
+    static const char *probe =
+        "import sys; sys.exit(sys.implementation.name != 'cpython' or "
+        "sys.version_info[:2] != (3, 14))";
+    if (argc != 3 || strcmp(argv[1], "-c") != 0 || strcmp(argv[2], probe) != 0) {
+        return 97;
+    }
+    const char *mode = getenv("NAKAGAWA_TEST_PYTHON_STUB_MODE");
+    if (!mode) return 98;
+    if (strcmp(mode, "store-stub") == 0) return 9009;
+    if (strcmp(mode, "wrong-version") == 0) return 1;
+    if (strcmp(mode, "cpython-314") == 0) return 0;
+    if (strcmp(mode, "timeout") == 0) {
+        for (;;) {
+#if defined(_WIN32) || defined(_WIN64)
+            Sleep(1000);
+#else
+            struct timespec delay = { 1, 0 };
+            nanosleep(&delay, NULL);
+#endif
+        }
+    }
+    return 99;
+}
 
 static void test_clean_exit_without_completion_is_a_failure(void) {
     printf("[PACKAGE_BUILDER_TEST] Subtest: clean exit without a package event\n");
@@ -725,6 +857,7 @@ static void test_remove_downloaded_tools_preserves_other_app_data(void) {
 
 int main(int argc, char *argv[]) {
     if (argc == 2 && strcmp(argv[1], "--child-exit-zero") == 0) return 0;
+    if (argc == 3 && strcmp(argv[1], "-c") == 0) return run_python_probe_stub(argc, argv);
     s_self_executable = argv[0];
     if (argc == 3 && strcmp(argv[1], "--find-cli") == 0) {
         char cli_path[NK_MAX_PATH];
@@ -752,6 +885,7 @@ int main(int argc, char *argv[]) {
     test_state_machine_transitions();
     test_clean_exit_without_completion_is_a_failure();
     test_output_line_circular_buffer();
+    test_python_candidate_validation();
     test_python_and_cli_discovery();
     test_session_cancellation();
     test_cli_search_order_and_guidance();
