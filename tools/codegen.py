@@ -581,6 +581,16 @@ def emit_body_call(symbol):
     return f"{symbol}(s); {BODY_CALL_DRAIN}"
 
 
+def emit_checked_body_call(symbol, call_pc):
+    """Wrap a direct guest CALL with its explicit return-boundary check."""
+    resume_pc = (call_pc + 8) & 0xFFFFFFFF
+    return (
+        f"if (sr_aot_return_boundary_begin(s, {G(resume_pc)}, {G(call_pc)}, 1u)) return; "
+        f"{emit_body_call(symbol)} "
+        "if (sr_aot_return_boundary_end(s)) return;"
+    )
+
+
 def emit_host_stack_check(entry_expr):
     """The entry statement of a body that makes a direct CALL (#855): bound its host stack."""
     return f"    SR_HOST_STACK_CHECK({entry_expr});"
@@ -2650,7 +2660,9 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); s->r[31] = {G((addr + 8) & 0xFFFFFFFF)}; sr_end(s, 0u, 0);")
             out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
             if target in known or target in resume_owners:
-                out.append(f"    {emit_body_call(ADDRESS_SPACE.symbol(target, resume_owners))}")
+                out.append(
+                    f"    {emit_checked_body_call(ADDRESS_SPACE.symbol(target, resume_owners), addr)}"
+                )
                 if lle_cpu:
                     out.append(f"    {_flow_return(resumable)}")
             else:
@@ -2689,7 +2701,29 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             continue
         if op == 0 and fn == 0x08:  # jr rs
             a = rs(w)
-            if ds_is_syscall and dsw is not None and not lle_cpu:
+            if a == 31:
+                # Capture the architectural target at transfer, before a delay
+                # slot (or syscall bridge) can rewrite the live register.
+                out.append(f"    {{ uint32_t _sr_return_target = {R(a)};")
+                out.append(f"      SR_AOT_RETURN_CAPTURE(s, _sr_return_target);")
+                if ds_is_syscall and dsw is not None and not lle_cpu:
+                    out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
+                    # JR with syscall in delay slot. Route it through the raw
+                    # syscall mechanism after latching the guest return target.
+                    out.append(f"      sr_raw_syscall(s, 0x{(dsw >> 6) & 0xFFFFF:x}u, {G(ds)});")
+                elif ds_is_syscall and dsw is not None:
+                    # LLE: the delay-slot syscall raises with BD set (spec 3.4).
+                    out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
+                    out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile,
+                                                lle_cpu=lle_cpu, resumable=resumable,
+                                                indent="      "))
+                else:
+                    out.append(f"      sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
+                    out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile,
+                                                lle_cpu=lle_cpu, resumable=resumable,
+                                                indent="      "))
+                out.append(f"      {emit_host_return(resumable, stack_census=stack_census)} }}")
+            elif ds_is_syscall and dsw is not None and not lle_cpu:
                 out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
                 # JR with syscall in delay slot. This is not reachable for current eboot stubs (handled by is_stub),
                 # but if reached in general code, route it via the correct raw-syscall mechanism with PC.
@@ -2698,17 +2732,6 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
                 # LLE: the delay-slot syscall raises with BD set (spec 3.4).
                 out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
                 out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
-                if a == 31:
-                    out.append(f"    {emit_host_return(resumable, stack_census=stack_census)}")
-                else:
-                    out.append(f"    {{ uint32_t _t = {R(a)};")
-                    out.append(f"      {emit_tail_transfer('_t', None, resumable, stack_census)} }}")
-            elif a == 31:
-                # `jr $ra` IS the host return; $ra is read at the transfer by
-                # construction, so a slot that rewrites it cannot redirect this.
-                out.append(f"    sr_begin(s, {G(addr)}, 0x{w:08x}u); sr_end(s, 0u, 0);")
-                out.extend(delay_slot_lines(ds, dsw, addr, hst_profile=hst_profile, lle_cpu=lle_cpu, resumable=resumable))
-                out.append(f"    {emit_host_return(resumable, stack_census=stack_census)}")
             else:
                 # Computed return/tail-call: same contract as jalr above -- the
                 # target register is read at the transfer, not after the slot.
@@ -2766,7 +2789,9 @@ def emit_function(elf, start, ranges, known, resume_owners=None, resumable=False
             # the delay slot above run once on either path; cond_expr refuses the
             # branch-likely linked forms, so no annulled slot reaches this point.
             if target in known or target in resume_owners:
-                call = emit_body_call(ADDRESS_SPACE.symbol(target, resume_owners))
+                call = emit_checked_body_call(
+                    ADDRESS_SPACE.symbol(target, resume_owners), addr
+                )
                 if lle_cpu:
                     call += f" {_flow_return(resumable)}"
             else:
