@@ -330,7 +330,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "592f91352effc09f78e8b1c6b4d33f4e033aa773a67205f1a9d1596ca6f14bff"
+      "sha256": "b35d5489599be57ecb18dc93aa2a7307321f64878d56690869381535a5c026c3"
     },
     {
       "path": "CLAUDE.md",
@@ -435,7 +435,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6a59238fdee1dc97ca305adfdf7cff2d7c509d0e6100f3937c262cdf60da5748"
+      "sha256": "d511e5b511a709dba1d87ea552b06614c6296bc5cde8b38c3ce31294740ec753"
     },
     {
       "path": "REVIEW.md",
@@ -1267,7 +1267,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "74c79220b015927268211aea7dd9e14f07b02c193d2a0e628ed21cbf4381b90e"
+      "sha256": "4f635736a3f88c66c07c8f3cf0d42b00e979900ebc915c38a09eed234bac520a"
     },
     {
       "path": "docs/ISO_ONLY_GAP_ANALYSIS.md",
@@ -1474,7 +1474,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "9b3050d2f836fe0fa47975225c9060ce10e41db8f0da71383a1789af67533cd2"
+      "sha256": "72c738d17435c23dae67ecc5991b0f1716a3805582c3e5fd7b3105a50b0cee33"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -3480,7 +3480,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2b58ef971639d1563a6715847197d2012be9d8978c23c395ebd47a61d34413df"
+      "sha256": "7e714dad5a27d26e7680ebf592b80186b1d3a0a92a5f79470a65e645719c018b"
     },
     {
       "path": "src/player/player_state.h",
@@ -3492,7 +3492,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6779b35b13f21404c8a4da69f6a8c8d4649a1db2559b9bad3d560be2d139949d"
+      "sha256": "581ff35be6731d4d4b293c62caa811c713d9316fd8988e821beccc546a9f71e6"
     },
     {
       "path": "src/player/setup_staging.c",
@@ -6423,7 +6423,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2809802dac22fbfe72f94274848b0af79ea89ea9606576eecf82dac486776141"
+      "sha256": "abc9485f240314259175a7d91e627b216ecb865a53af09c82bfdc6fe69aa1190"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -9742,7 +9742,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "06402df32da0631bce3987460d36e1630855c4d6c629f5e413d875812944685b"
+      "sha256": "4a96424c068490ccdfe9fbf12f23a0fc0c8a972027520f9e0050484c4ee31a95"
     },
     {
       "path": "tools/test_production_smoke.py",
