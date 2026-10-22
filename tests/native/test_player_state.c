@@ -5189,7 +5189,11 @@ int main(int argc, char **argv) {
         nk_ps_copy_env("PATH", prior_path, sizeof(prior_path));
         nk_ps_copy_env("PYTHON", prior_python, sizeof(prior_python));
 #if defined(_WIN32) || defined(_WIN64)
-        nk_ps_set_env("PYTHON", "C:/Windows/notepad.exe");
+        /* A real program that is not Python: the version probe must reject it.
+           A console tool that exits at once on an unknown argument; a GUI
+           program (notepad.exe, used before) opened a window on the
+           developer's desktop and held the probe until it was closed. */
+        nk_ps_set_env("PYTHON", "C:/Windows/System32/where.exe");
 #else
         nk_ps_set_env("PYTHON", "/bin/sh");
 #endif
