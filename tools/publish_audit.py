@@ -1215,17 +1215,20 @@ def private_key_assignment_lines(text: str, filename: str = "") -> list[int]:
     return _json_key_assignment_lines(text)
 
 
-# Byte-exact third-party import trees under src/. Their files are copied
-# verbatim from an upstream pin and must stay byte-identical to preserve the
-# recorded blob SHAs (see src/rt/atrac3p/PROVENANCE.md); they carry the
-# upstream's own license headers, which predate SPDX identifiers. The audit
-# classifies them via their ledger record instead of requiring a header edit
-# that would break the byte-identity claim. The project-authored wrapper and
-# selftest outside these subdirectories still require SPDX.
+# Byte-exact third-party imports are copied verbatim from an upstream pin and
+# must stay byte-identical to preserve the recorded blob SHAs (see each
+# directory's PROVENANCE.md); they may carry upstream license headers that
+# predate SPDX identifiers. The audit classifies them via their ledger record
+# instead of requiring a header edit that would break the byte-identity claim.
+# The project-authored wrappers and selftests remain subject to SPDX checks.
 SPDX_BYTE_EXACT_IMPORT_TREES = (
     "src/rt/atrac3p/libavcodec/",
     "src/rt/atrac3p/libavutil/",
 )
+
+SPDX_BYTE_EXACT_IMPORT_PATHS = frozenset({
+    "third_party/clay/clay.h",
+})
 
 # A small set of byte-exact FFmpeg headers already carry an SPDX identifier.
 # Keep those existing lineage declarations without requiring new SPDX headers
@@ -1250,7 +1253,7 @@ def _spdx_required(path: str) -> bool:
     pure = PurePosixPath(path)
     if pure.suffix.lower() not in SOURCE_EXTENSIONS:
         return False
-    if path.startswith(SPDX_BYTE_EXACT_IMPORT_TREES):
+    if path.startswith(SPDX_BYTE_EXACT_IMPORT_TREES) or path in SPDX_BYTE_EXACT_IMPORT_PATHS:
         return False
     if path.startswith(("src/", "tools/")):
         return True
@@ -1302,7 +1305,10 @@ def _spdx_provenance_findings(path: str, record: dict, raw_bytes: bytes) -> list
                 f"project-authored source must declare {PROJECT_SPDX_IDENTIFIER}; found {actual}",
             )]
     elif classification == "upstream_derived":
-        byte_exact_import = path.startswith(SPDX_BYTE_EXACT_IMPORT_TREES)
+        byte_exact_import = (
+            path.startswith(SPDX_BYTE_EXACT_IMPORT_TREES)
+            or path in SPDX_BYTE_EXACT_IMPORT_PATHS
+        )
         if not identifiers and byte_exact_import and path not in SPDX_BYTE_EXACT_IMPORT_HEADER_PATHS:
             return []
         evidence = record.get("evidence") if isinstance(record.get("evidence"), dict) else {}
@@ -1618,6 +1624,13 @@ TEXT_HYGIENE_EXEMPT_SUFFIXES = frozenset({".dat", ".bin", ".png", ".jpg", ".jpeg
                                           ".otf", ".woff", ".woff2", ".spv", ".wav",
                                           ".prx", ".pbp", ".elf"})
 
+# Upstream byte-identical text can have source formatting that the repository
+# does not control. This exact hash exception preserves Clay's untouched
+# upstream LICENSE.md bytes while keeping the general final-newline check.
+TEXT_HYGIENE_FINAL_NEWLINE_EXCEPTIONS = {
+    "third_party/clay/LICENSE.md": "5dd30f9f52093076b7574458f5efb8242fe6cbbd4669d4a2914e7616810d0df8",
+}
+
 
 def _text_hygiene_is_text_suffix(path: str) -> bool:
     """Return whether a path is governed text rather than an explicitly binary suffix."""
@@ -1665,7 +1678,12 @@ def check_text_hygiene(content_map: dict[str, tuple[bytes | None, str | None]]) 
                 "TEXT_LINE_ENDING_CRLF", path,
                 "file contains CRLF; repository text is LF (.gitattributes eol=lf). "
                 "A writer used a host default instead of an explicit LF newline"))
-        if not data.endswith(b"\n"):
+        expected_hash = TEXT_HYGIENE_FINAL_NEWLINE_EXCEPTIONS.get(path)
+        byte_exact_exception = (
+            expected_hash is not None
+            and hashlib.sha256(data).hexdigest() == expected_hash
+        )
+        if not data.endswith(b"\n") and not byte_exact_exception:
             findings.append(Finding(
                 "TEXT_FINAL_NEWLINE", path,
                 "text file does not end with a newline"))

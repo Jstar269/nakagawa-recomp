@@ -6,9 +6,10 @@ Status: plan — nothing below is implemented unless marked.
 (sal063 under GPLv3 with credits, PPSSPP lineage under GPL-2.0-or-later) is no longer rewritten
 only to make it original. A G-item is replaced only when (1) hardware or test evidence shows it
 is wrong, or (2) an LLE path makes it unnecessary (as planned for G9 and G12). Where a replacement
-is needed, vendoring or adapting FFmpeg codec subsets or uofw (MIT) is preferred over a fresh
-rewrite, under the `AGENTS.md` section 4 import rules. New code still never comes from PPSSPP,
-JPCSP or other emulator source, and G14 (PGD/amctrl) stays excluded. The group analysis below is
+is needed, vendoring or adapting FFmpeg codec subsets, uofw (MIT), or GPL-compatible emulator
+source (PPSSPP, JPCSP) is preferred over a fresh rewrite, under the `AGENTS.md` section 4 import
+rules (2026-10-22 extension). Emulator-derived units stay labelled `derived-translated`, so this
+campaign's independence claims never cover them, and G14 (PGD/amctrl) stays excluded. The group analysis below is
 kept as the inventory and evidence plan; read its "(a) clean-room rewrite" verdicts as
 "replace only under (1) or (2)".
 
