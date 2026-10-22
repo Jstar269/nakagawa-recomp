@@ -351,7 +351,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d59b63928d51c2449beb8662ab958ac356d414da6a1d01fe9c98f337d53ed7bc"
+      "sha256": "8953b51bd642e33ac37ba3f83be7fc9c92bbadad1baa69143f27489931d213bf"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -409,7 +409,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "b388b14c28244046001db9e554140ff8bf7eb6d054053370bfa2f95248c7d479"
+      "sha256": "8e928dd48b61a8cc661087eb2a3f19d7e0a201a03527f03bb0d083dd9ae4581f"
     },
     {
       "path": "NOTICE.md",
@@ -6312,7 +6312,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "20af063deb2281519349234f146f35a238264a5f92347433aeac6dce1d047a1e"
+      "sha256": "ac579c2415f8d92a51f101f41c2d8d20dd7a16138a13420d03b84d2c14b05b5c"
     },
     {
       "path": "src/ui/nk_ui_clay.c",
@@ -6372,7 +6372,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8db91b8a9c9416ec9d2525b221ad4b54a298528b4e70bcc90061d322eb78b4c8"
+      "sha256": "895837ae555a572f4362edb2c25c09c5f140326c6445de70dca6baae42196963"
     },
     {
       "path": "src/ui/nk_ui_focus.h",
@@ -6384,7 +6384,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "13331c00db1a0db02436ae35285d31f8c80a6f6b5468355bb0f657a853235319"
+      "sha256": "0dd2e14906402a13cf8428d04986f20b0d476b2127100c4604c62c9027f63e2e"
     },
     {
       "path": "src/ui/nk_ui_input.c",
@@ -6396,7 +6396,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e8cfb50b47dec54318ee92fc41117693353603be8b599978752520a9f5f9c5f0"
+      "sha256": "da23472db8731fc247f0ea305325e8f6f83d80f201c07d039443dc73e74c6c74"
     },
     {
       "path": "src/ui/nk_ui_input.h",
@@ -6408,7 +6408,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ab8e3110d89be3fa389bd66854cea668c9302ccd127d7379624f4da8578c3e3f"
+      "sha256": "9ffa419cea2927a82c8293159d466914a3aa56f3e03391addd65b10f18b88ef5"
     },
     {
       "path": "src/ui/nk_ui_prompts.c",
@@ -6420,7 +6420,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ee4f62521fcaf421eb367cbdade00758e9aaa039e84c85051cb56ffd77dca863"
+      "sha256": "3483d14b20cff30c9b78f62083acf2bce3ba31a55bfd2440a3be56ec9eaf24c0"
     },
     {
       "path": "src/ui/nk_ui_sdl_input.c",
@@ -6432,7 +6432,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "15786d019b413f0736d3344595b3c78748750c6e656be77e86e55f973f7ab3ec"
+      "sha256": "7b22263ef2bd3db5604808558503eb70c16fa9ff3774181ad14a142f234fe528"
     },
     {
       "path": "src/ui/nk_ui_text.c",
@@ -6792,7 +6792,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "9f8cf45f69194482995933a1d8ef73b748b46fbc5f69b4c21dd3852dc9ad54ca"
+      "sha256": "afdda6c6d1fafa5852e8172ac7eec879d90466656412c7e7287bec11985fb9d7"
     },
     {
       "path": "tests/native/test_nk_ui_focus.c",
@@ -6804,7 +6804,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "74dac0d15b636bf6ffe348e1553f4398429af485db97e8c4fef0d80c1445b12c"
+      "sha256": "b0a1630a36203373ee806e6ff3a10da24bb638bef8a2d52d4e0d8f3b4efc6cda"
     },
     {
       "path": "tests/native/test_nk_ui_sdlr.c",
@@ -9969,7 +9969,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8ad87f58e4fcc24a6f0ae63a8254b8d12cc10670c8949afea7b0d635d3d4c175"
+      "sha256": "944dc647dac15347f4aa7e5df4827f7512b86801bb613b2b6afbe502812004ca"
     },
     {
       "path": "tools/test_native_driver_hardening.py",

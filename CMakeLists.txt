@@ -217,6 +217,23 @@ endif()
 add_test(NAME nk_ui_core_test COMMAND test_nk_ui_core)
 set_tests_properties(nk_ui_core_test PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
+# Focus graph, input model and prompt glyphs: SDL-free. The SDL_Event translation leg is
+# registered after SDL3 is resolved below, and reports SKIP (exit 77) without it.
+add_executable(test_nk_ui_focus
+    tests/native/test_nk_ui_focus.c
+    ${NK_UI_CORE_SOURCES}
+    src/ui/nk_ui_sdl_input.c
+)
+target_include_directories(test_nk_ui_focus PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/clay
+)
+if(NOT WIN32)
+    target_link_libraries(test_nk_ui_focus PRIVATE m)
+endif()
+add_test(NAME nk_ui_focus_test COMMAND test_nk_ui_focus)
+set_tests_properties(nk_ui_focus_test PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
 add_executable(test_package_builder
     tests/native/test_package_builder.c
     tests/native/native_test_isolation.c
@@ -310,8 +327,10 @@ if(BUILD_PLAYER)
 
     if(TARGET SDL3::SDL3)
         target_link_libraries(nakagawa_player PRIVATE SDL3::SDL3)
+        set(NK_UI_SDL3_LINK SDL3::SDL3)
     elseif(TARGET SDL3::SDL3-shared)
         target_link_libraries(nakagawa_player PRIVATE SDL3::SDL3-shared)
+        set(NK_UI_SDL3_LINK SDL3::SDL3-shared)
     elseif(SDL3_LIBRARIES)
         target_link_libraries(nakagawa_player PRIVATE ${SDL3_LIBRARIES})
         if(SDL3_INCLUDE_DIRS)
@@ -342,3 +361,26 @@ if(BUILD_PLAYER)
         endif()
     endif()
 endif()
+
+# SDL_Event translation leg of the nk_ui input tests (exit 77 is a SKIP, never a pass).
+if(NK_UI_SDL3_LINK)
+    add_executable(test_nk_ui_focus_sdl
+        tests/native/test_nk_ui_focus.c
+        ${NK_UI_CORE_SOURCES}
+        src/ui/nk_ui_sdl_input.c
+    )
+    target_compile_definitions(test_nk_ui_focus_sdl PRIVATE NK_UI_WITH_SDL3)
+    target_include_directories(test_nk_ui_focus_sdl PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/clay
+    )
+    target_link_libraries(test_nk_ui_focus_sdl PRIVATE ${NK_UI_SDL3_LINK})
+    if(NOT WIN32)
+        target_link_libraries(test_nk_ui_focus_sdl PRIVATE m)
+    endif()
+    add_test(NAME nk_ui_sdl_input_test COMMAND test_nk_ui_focus_sdl --sdl-input)
+else()
+    add_test(NAME nk_ui_sdl_input_test COMMAND test_nk_ui_focus --sdl-input)
+endif()
+set_tests_properties(nk_ui_sdl_input_test PROPERTIES SKIP_RETURN_CODE 77
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})

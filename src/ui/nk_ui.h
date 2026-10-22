@@ -188,7 +188,8 @@ typedef enum {
     NK_UI_EV_POINTER,
     NK_UI_EV_WHEEL,
     NK_UI_EV_TEXT,
-    NK_UI_EV_DEVICE
+    NK_UI_EV_DEVICE,
+    NK_UI_EV_CYCLE  /* Tab / Shift+Tab: dir RIGHT = next, LEFT = previous in declaration order. */
 } NkUiEventType;
 
 /* The x and y of NK_UI_EV_POINTER and NK_UI_EV_WHEEL events are LOGICAL UI pixels,
