@@ -1438,7 +1438,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "09e8538cccd388ca8cc3b877c1986976467bda5c76307e705bd6bc7c0b15cf08"
+      "sha256": "3e56ec249a5137ec8715f07db60b4969a581666311293c8632dd9e60041d0f42"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -4729,7 +4729,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "85cb7d22c36abd024e2f89766de71e7d3648616aedc1a8e5ce30429e21bc2851"
+      "sha256": "39b4991921b36a18dccc090e68cacc3f6cb29fb31da6979eb2ddd3d3884afcde"
     },
     {
       "path": "src/rt/evf.h",
@@ -5822,7 +5822,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "e280ce66b6f9039f73ecfac85bbf8267e41a26bb84fdf4bafaecd9ccca81daa3"
+      "sha256": "05acaa54e67c5a05657163d53bcd96dea3dfc8603eff1d6d4a56a9ac78e5ad10"
     },
     {
       "path": "src/rt/savedata.c",
@@ -5848,7 +5848,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "09760b7f02eeeb166923d3e092dd0f44d194f90e5c9047f683c86049097ffef3"
+      "sha256": "299cfe34de361d0516656c70ff9c399b57722488ddc0edba18423776923ed333"
     },
     {
       "path": "src/rt/sched_selftest.c",

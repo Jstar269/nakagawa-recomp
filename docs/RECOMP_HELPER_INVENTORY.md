@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **289** (declared in `recomp.h`: 232)
-- reach class: emitter-reached 56, production-runtime-only 209, selftest-only 13, address-only 3, none 8
-- provenance class of the home definition: declared-only 1, project_authored_attested 23, upstream_derived 265
+- helpers: **293** (declared in `recomp.h`: 236)
+- reach class: emitter-reached 56, production-runtime-only 213, selftest-only 13, address-only 3, none 8
+- provenance class of the home definition: declared-only 1, project_authored_attested 23, upstream_derived 269
 
 ## Helpers
 
@@ -70,6 +70,10 @@ does not make this file stale. `--details` prints them to stdout.
 | `gui_analog` | `rt/gui.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived |
 | `gui_buttons` | `rt/gui.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived |
 | `gui_consume_button_pulses` | `rt/gui.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived |
+| `gui_headless_acceptance_complete` | `rt/gui.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived |
+| `gui_headless_acceptance_presented_frames` | `rt/gui.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived |
+| `gui_headless_acceptance_ready` | `rt/gui.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived |
+| `gui_headless_acceptance_requested` | `rt/gui.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived |
 | `gui_init` | `rt/gui.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived |
 | `gui_on` | `rt/gui.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived |
 | `gui_pad_present` | `rt/gui.c` | yes | production-runtime-only | `rt/gui.c`: upstream_derived |

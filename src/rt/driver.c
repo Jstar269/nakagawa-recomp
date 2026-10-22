@@ -16,7 +16,6 @@
 
 #define _CRT_SECURE_NO_WARNINGS
 #include "recomp.h"
-#include "nk_launch.h"
 #include "debug.h"
 #include "title_config.h"
 #include "flight_recorder.h"
@@ -581,8 +580,11 @@ have_image:;
     if (gui_headless_acceptance_requested() &&
         (!gui_requested || !gui_headless_acceptance_ready())) {
         sr_driver_boot_event("BOOT_EVENT phase=headless_acceptance status=FAIL reason=window_presenter_unavailable");
-        return NK_LAUNCH_EXIT_ACCEPTANCE_PRESENTER_UNAVAILABLE;
+        return SR_HEADLESS_ACCEPTANCE_EXIT_PRESENTER_UNAVAILABLE;
     }
+    /* An acceptance launch ends the scheduler once its requested frames were presented. */
+    if (gui_headless_acceptance_requested())
+        sr_sched_stop_requested = gui_headless_acceptance_complete;
 
     if (use_sched) {
         /* Run with the cooperative scheduler so the game's threads interleave (the boot busy-
@@ -652,11 +654,11 @@ have_image:;
             uint32_t presented = gui_headless_acceptance_presented_frames();
             sr_driver_boot_event("BOOT_EVENT phase=headless_acceptance status=PASS presented_frames=%u",
                                  presented);
-            return NK_LAUNCH_EXIT_ACCEPTANCE_REACHED;
+            return SR_HEADLESS_ACCEPTANCE_EXIT_REACHED;
         }
         sr_driver_boot_event("BOOT_EVENT phase=headless_acceptance status=FAIL reason=checkpoint_not_reached presented_frames=%u",
                              gui_headless_acceptance_presented_frames());
-        return NK_LAUNCH_EXIT_ACCEPTANCE_NOT_REACHED;
+        return SR_HEADLESS_ACCEPTANCE_EXIT_NOT_REACHED;
     }
 
     return 0;

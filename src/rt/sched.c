@@ -197,6 +197,8 @@ typedef struct {
 
 static TCB      s_tcb[MAXTHREADS];
 
+int (*sr_sched_stop_requested)(void) = NULL;
+
 /* Heap-owned semantic records survive nonlocal C-frame abandonment. TCB slots
  * cannot be reused until owner teardown drains these records; numeric handles
  * never recycle, including across thread restarts and fixture resets. */
@@ -3920,7 +3922,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
     for (;;) {
         /* An opt-in player acceptance run stops after its requested number of
          * successful window presentations. The guest is not resumed again. */
-        if (gui_headless_acceptance_complete()) break;
+        if (sr_sched_stop_requested && sr_sched_stop_requested()) break;
         if (getenv("SCHED_DUMP") && (++iters % 400000) == 0) {
             fprintf(stderr, "--- sched dump (tick=%llu) ---\n", (unsigned long long)s_tick);
             for (int i = 0; i < s_ntcb; i++)
