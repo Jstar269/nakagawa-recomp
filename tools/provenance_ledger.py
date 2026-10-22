@@ -1767,6 +1767,7 @@ def _extended_policy_bytes(trusted_policy: Path, admitted_paths: set[str]) -> tu
     """
     document = _read_json_file(trusted_policy, code="TRUSTED_POLICY_INVALID")
     document["include_paths"] = sorted(set(document["include_paths"]) | set(admitted_paths))
+    document["exclude_paths"] = sorted(set(document["exclude_paths"]))
     return _canonical_json_bytes(document), document
 
 
