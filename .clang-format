@@ -20,8 +20,8 @@ ColumnLimit: 120
 BreakBeforeBraces: Attach
 
 # Pointers & references (match existing `int *p` convention)
-PointerAlignment: Left
-ReferenceAlignment: Left
+PointerAlignment: Right
+ReferenceAlignment: Right
 
 # Spacing
 SpaceAfterCStyleCast: false
