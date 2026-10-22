@@ -2892,7 +2892,7 @@ $(CC) $(NC_CFLAGS_PLAYER) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_P
 endef
 
 define PACKAGE_BUILDER_TEST_BIN_CMD
-$(CC) $(NC_CFLAGS_PLAYER) -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_PLAYER) src/player/package_builder.c \
+$(CC) $(NC_CFLAGS_PLAYER) -DNK_PLAYER_UI_REGRESSION_TEST -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" $(NC_OBJS_PLAYER) src/player/package_builder.c \
 	tests/native/native_test_isolation.c tests/native/test_package_builder.c $(PLAYER_EXTRA_LIBS) -o $(BUILD_ROOT)/test_package_builder$(EXE_EXT)
 endef
 
