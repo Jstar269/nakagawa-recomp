@@ -7,10 +7,6 @@
       "reason": "GitHub resolves review ownership by this exact filename; no tracked file is allowed to name it."
     },
     {
-      "path": ".recomp.json",
-      "reason": "The recomp.fyi board reads this exact filename at the repository root every day (https://recomp.fyi/add); no tracked file needs to name it."
-    },
-    {
       "path": ".github/ISSUE_TEMPLATE/*.yml",
       "reason": "GitHub populates its issue-template chooser from this directory by convention, so neither the directory nor the filenames are written anywhere in the tree."
     },
