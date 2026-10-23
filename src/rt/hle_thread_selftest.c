@@ -17405,6 +17405,85 @@ static uint32_t ge_clut_enqueue(uint32_t src, uint32_t blocks) {
     return sr_syscall(&cpu, NID_SCE_GE_LIST_ENQUEUE);
 }
 
+/* Data-cache maintenance is the guest's coherence point for RAM the GE reads next.
+ * Guest code stores to RAM without any per-store renderer notification (only VRAM
+ * stores carry one), so a title that draws glyphs into a RAM texture and then writes
+ * the range back relies on the writeback to make the new texels visible. Before the
+ * fix these NIDs only served the stale-code detector, the renderer kept a texture whose
+ * sparse content hash missed the new glyph, and those glyphs never appeared. */
+static void test_dcache_maintenance_notifies_renderer(void) {
+    static const struct { uint32_t nid; const char *name; } range_ops[] = {
+        { 0x3ee30821u, "sceKernelDcacheWritebackRange" },
+        { 0x34b9fa9eu, "sceKernelDcacheWritebackInvalidateRange" },
+        { 0xbfa98062u, "sceKernelDcacheInvalidateRange" },
+    };
+    static const struct { uint32_t nid; const char *name; } all_ops[] = {
+        { 0x79d1c3fau, "sceKernelDcacheWritebackAll" },
+        { 0xb435dec5u, "sceKernelDcacheWritebackInvalidateAll" },
+    };
+    char msg[160];
+    reset_fixture();
+    sr_hle_init();
+    for (size_t i = 0; i < sizeof(range_ops) / sizeof(range_ops[0]); i++) {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        gpu_dirty_reset();
+        cpu.r[4] = 0x08abc000u;
+        cpu.r[5] = 0x2000u;
+        uint32_t rv = sr_syscall(&cpu, range_ops[i].nid);
+        snprintf(msg, sizeof(msg), "%s over RAM tells the renderer the range changed",
+                 range_ops[i].name);
+        expect(rv == 0u && s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == 0x08abc000u &&
+                   s_gpu_dirty_bytes == 0x2000u, msg);
+
+        memset(&cpu, 0, sizeof(cpu));
+        gpu_dirty_reset();
+        cpu.r[4] = 0x48abc000u;   /* uncached RAM alias */
+        cpu.r[5] = 0x40u;
+        (void)sr_syscall(&cpu, range_ops[i].nid);
+        snprintf(msg, sizeof(msg), "%s over an uncached RAM alias notifies that alias", range_ops[i].name);
+        expect(s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == 0x48abc000u &&
+                   s_gpu_dirty_bytes == 0x40u, msg);
+
+        memset(&cpu, 0, sizeof(cpu));
+        gpu_dirty_reset();
+        cpu.r[4] = 0x08abc000u;
+        cpu.r[5] = 0u;
+        (void)sr_syscall(&cpu, range_ops[i].nid);
+        cpu.r[4] = 0u;
+        cpu.r[5] = 0x40u;
+        (void)sr_syscall(&cpu, range_ops[i].nid);
+        cpu.r[4] = 0x08abc000u;
+        cpu.r[5] = 0x80000000u;   /* negative size */
+        (void)sr_syscall(&cpu, range_ops[i].nid);
+        cpu.r[4] = 0xfffff000u;
+        cpu.r[5] = 0x2000u;       /* wraps the address space */
+        (void)sr_syscall(&cpu, range_ops[i].nid);
+        snprintf(msg, sizeof(msg), "%s with an empty, null, negative or wrapping range notifies nothing",
+                 range_ops[i].name);
+        expect(s_gpu_dirty_calls == 0u, msg);
+
+        memset(&cpu, 0, sizeof(cpu));
+        gpu_dirty_reset();
+        cpu.r[4] = 0x04100000u;   /* VRAM: guest stores there already notify per store */
+        cpu.r[5] = 0x1000u;
+        (void)sr_syscall(&cpu, range_ops[i].nid);
+        snprintf(msg, sizeof(msg), "%s over VRAM leaves render targets to the per-store path",
+                 range_ops[i].name);
+        expect(s_gpu_dirty_calls == 0u, msg);
+    }
+    for (size_t i = 0; i < sizeof(all_ops) / sizeof(all_ops[0]); i++) {
+        CpuState cpu;
+        memset(&cpu, 0, sizeof(cpu));
+        gpu_dirty_reset();
+        uint32_t rv = sr_syscall(&cpu, all_ops[i].nid);
+        snprintf(msg, sizeof(msg), "%s tells the renderer all of main RAM changed", all_ops[i].name);
+        expect(rv == 0u && s_gpu_dirty_calls == 1u && s_gpu_dirty_addr == 0x08000000u &&
+                   s_gpu_dirty_bytes == 0x04000000u, msg);
+    }
+    ge_set_gpu_hooks(NULL);
+}
+
 /* Host-memory safety for the production GE block-transfer command path.  The
  * temporary arena deliberately commits one complete maximum-transfer window after
  * the modeled 192 MiB guest arena.  That makes the historical later-row write
@@ -30565,6 +30644,7 @@ static int hle_selftest_main(int argc, char **argv) {
     test_ge_stall_alias_linear_from_uncached_list();
     test_ge_linear_filter_stays_inside_region();
     test_ge_block_transfer_span_atomicity();
+    test_dcache_maintenance_notifies_renderer();
     test_exit_game_ignores_argument_registers(argc > 0 ? argv[0] : NULL);
     test_bulk_guest_span_atomicity();
     test_sysclib_memory_imports();
