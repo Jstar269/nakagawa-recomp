@@ -330,7 +330,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "131d6fbe2107bd66eb70c6bf528ec09e7bda07a663704a47a6b3842967a46c72"
+      "sha256": "61bf3d3d78f028c32fa470fdcc57694913403ab233c4877140e4460e15d45fe0"
     },
     {
       "path": "CLAUDE.md",
@@ -1507,7 +1507,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "6d8218fd9efb00eff076009d95bc15aea7bab5c512e8714523a8d1bb9e91b602"
+      "sha256": "98e6c69101938d66130073c665802282276331d00bf595c1ed2aaeda6a3ad330"
     },
     {
       "path": "docs/PLAYER_UI_DESIGN.md",
@@ -1639,7 +1639,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "bf15a1a72ab467822528373b75fa05cbe0991df9adc2636d166246856885735b"
+      "sha256": "bfc244d904f72c6e9146e66931262d4e0a2cc8b7311a07803d2f950f2bd056b7"
     },
     {
       "path": "docs/SETUP.md",
