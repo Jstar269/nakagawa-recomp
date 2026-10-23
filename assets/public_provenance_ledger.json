@@ -4165,7 +4165,7 @@
         "license": "LGPL-2.1-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2627c3903b04c29ade0d9d015edced178cb05e22e04b38aed6fc74aa58229d57"
+      "sha256": "91d6c427c9d708186755ab03c6ee02d85b66b467171d6e416d8d1f0d1f5465b8"
     },
     {
       "path": "src/rt/atrac3p/libavutil/mem_internal.h",
@@ -4279,7 +4279,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "af7751b6859c976106f3ca49100b2f1fd5b4e090221e89024a02786f1473b295"
+      "sha256": "50533b715a658095683e624408af5605cc733090da6ad47fa7e4c18d4d231c8c"
     },
     {
       "path": "src/rt/atrac3p_selftest.c",

@@ -48,6 +48,7 @@
 #define SR_FILENO fileno
 #endif
 
+#include "libavutil/mem.h"
 #include "atrac3p_bridge.h"
 #include "libavutil/common.h"
 #include "libavutil/error.h"
@@ -343,6 +344,32 @@ static void test_invalid_gain_frame_refuses_once(void)
     atrac3p_bridge_destroy(bridge);
 }
 
+
+static void test_av_size_mult(void)
+{
+    size_t res = 0;
+
+    /* Normal multiplication */
+    CHECK(av_size_mult(5, 10, &res) == 0 && res == 50, "av_size_mult standard multiplication");
+    CHECK(av_size_mult(1, 100, &res) == 0 && res == 100, "av_size_mult multiply by 1");
+
+    /* Zero multiplication */
+    CHECK(av_size_mult(0, 12345, &res) == 0 && res == 0, "av_size_mult multiply by zero (a=0)");
+    CHECK(av_size_mult(12345, 0, &res) == 0 && res == 0, "av_size_mult multiply by zero (b=0)");
+    CHECK(av_size_mult(0, 0, &res) == 0 && res == 0, "av_size_mult multiply zero by zero");
+
+    /* Boundary non-overflow cases */
+    CHECK(av_size_mult(1, SIZE_MAX, &res) == 0 && res == SIZE_MAX, "av_size_mult 1 * SIZE_MAX");
+    CHECK(av_size_mult(SIZE_MAX, 1, &res) == 0 && res == SIZE_MAX, "av_size_mult SIZE_MAX * 1");
+    CHECK(av_size_mult(SIZE_MAX / 2, 2, &res) == 0 && res == (SIZE_MAX / 2) * 2, "av_size_mult (SIZE_MAX/2) * 2");
+
+    /* Overflow cases */
+    CHECK(av_size_mult(SIZE_MAX, 2, &res) == AVERROR(EINVAL), "av_size_mult SIZE_MAX * 2 overflows");
+    CHECK(av_size_mult(2, SIZE_MAX, &res) == AVERROR(EINVAL), "av_size_mult 2 * SIZE_MAX overflows");
+    CHECK(av_size_mult(SIZE_MAX, SIZE_MAX, &res) == AVERROR(EINVAL), "av_size_mult SIZE_MAX * SIZE_MAX overflows");
+    CHECK(av_size_mult((SIZE_MAX / 2) + 1, 2, &res) == AVERROR(EINVAL), "av_size_mult ((SIZE_MAX/2)+1) * 2 overflows");
+}
+
 int main(void)
 {
     sr_perf_init();
@@ -351,6 +378,7 @@ int main(void)
     test_terminator_decode();
     test_imdct_path_decode();
     test_invalid_gain_frame_refuses_once();
+    test_av_size_mult();
 
     atrac3p_bridge_destroy(NULL);   /* no-op */
 
