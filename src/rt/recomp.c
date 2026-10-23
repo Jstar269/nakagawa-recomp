@@ -1608,22 +1608,6 @@ void sr_stack_census_report(void) {
 }
 #endif
 
-/* Recover the guest address of the call instruction that reached dispatch().
- *
- * s->pc is NOT it.  Generated code only assigns s->pc inside SR_YIELD, and SR_YIELD
- * only stores when the timeslice actually expires (recomp.h), so s->pc is the last
- * *preemption point*, which can be an arbitrary distance from the live instruction
- * and typically names some enclosing/earlier function.  Reading it as the faulting
- * site sends an investigation to the wrong function entirely.
- *
- * $ra is live and exact: MIPS jal/jalr set it to (call address + 8), and codegen
- * assigns it immediately before the dispatch, so the call site is $ra - 8.  Only
- * valid for the call forms that write $ra -- a `jr` tail-call carries the caller's
- * return address instead, so this is reported as approximate. */
-__attribute__((unused))  /* documented diagnostic helper; no caller yet */
-static uint32_t sr_dispatch_call_site(const CpuState *s) {
-    return s->r[31] >= 8u ? s->r[31] - 8u : 0u;
-}
 
 #define MISS_HASH_SIZE 128
 typedef struct { uint32_t target; uint32_t pc; uint32_t ra; } DispatchMissEntry;

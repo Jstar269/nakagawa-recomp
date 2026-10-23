@@ -1447,7 +1447,7 @@
         "generator": "documented public-source data path",
         "source_family": "public source data"
       },
-      "sha256": "73da5760a920c3c55ff358dac66b917006aabc3a07d3defeb40c0d8ecd5cdd96"
+      "sha256": "9a340193c8d516a34beac2ffd2e4e199940e58512524ee55dd993afae4fa7c79"
     },
     {
       "path": "docs/RELEASE_NOTES_v0.0.1.md",
@@ -5577,7 +5577,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "2a937583b14a99b70666dceab1a5b8b400537f0c61307d6099f5fb6322fa2c42"
+      "sha256": "a31d6542d788a4c8d70e49ae63fbd2f1dec72df0a3446f70c212a8d1c7beeb44"
     },
     {
       "path": "src/rt/recomp.h",
