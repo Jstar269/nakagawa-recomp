@@ -1,7 +1,7 @@
 # Online mode and developer mode (design)
 
-Status: PLANNED. Nothing in this page is built yet; the player is offline today
-([`SETUP.md`](SETUP.md#network-use)). This page is the contract the implementation follows. Maintainer
+Status: step 1 of the implementation order is built (the switches, the wizard step and the developer log panel);
+no online feature is. The player is offline today ([`SETUP.md`](SETUP.md#network-use)). This page is the contract the implementation follows. Maintainer
 decisions of 2026-10-23: the launcher gets an update check, a reporting system and a news feed, all behind an
 **online mode** that the setup wizard asks about, and a **developer mode** that shows a developer log for
 diagnosing new issues.
@@ -86,7 +86,18 @@ switchable alone. The step is skippable; skipping keeps both off.
 
 ## Implementation order
 
-1. Settings fields, the wizard step and the developer log panel (no network).
+1. Settings fields, the wizard step and the developer log panel (no network). **Built.**
+   - `settings.json` keeps `"network_mode": "offline"`: `AGENTS.md` section 5 still accepts only that value, so the
+     user's choice is stored beside it as `online_mode`, with `online_updates`, `online_news`, `online_reports` and
+     `developer_mode`. Step 2 moves `network_mode` to `"online"` together with the section 5 change.
+   - The switches live on Settings > ONLINE & DEVELOPER and on the wizard step "Online and developer options",
+     both saying that this version has no online features yet. CONTINUE is the step's first focus, so Enter never
+     flips a switch; SKIP turns both off.
+   - The developer log (F12, or Select + R on a controller, with developer mode on) holds the player's errors,
+     launches, setting changes, the game's exit code and the runtime's boot events (phases, the named stop boundary,
+     missing imports), redacted as they are added. COPY puts it on the clipboard; SAVE writes `developer-log.txt` in
+     the logs folder. Tests: `tests/native/test_player_state.c` (redaction, the ring, the panel, the step) and
+     `tests/native/test_player_ui.py`.
 2. A small HTTPS client behind one host allowlist (WinHTTP on Windows, which the build-tool download already uses;
    a portable backend on Linux), with the stub-server tests.
 3. Update check with signature verification.

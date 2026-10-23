@@ -836,11 +836,62 @@ class NativePlayerUiTests(unittest.TestCase):
         self.assertEqual(frames[3]["picker"], "1")
         self.assertNotEqual(frames[0]["pixels"], frames[1]["pixels"])
 
-        fonts = self.run_player("wizard4", ("KEY_RETURN",))
+        fonts = self.run_player("wizard4", ("KEY_RETURN", "KEY_RETURN"))
         font_frames = fonts["frames"]
         assert isinstance(font_frames, list)
-        self.assertEqual(font_frames[1]["wizard_step"], "ready_launch")
+        self.assertEqual(font_frames[1]["wizard_step"], "online_options")
         self.assertEqual(font_frames[1]["font_confirmed"], "1")
+        # CONTINUE is the options step's first focus: Enter moves on with both off.
+        self.assertEqual(font_frames[2]["wizard_step"], "ready_launch")
+        self.assertEqual(font_frames[2]["online_mode"], "0")
+        self.assertEqual(font_frames[2]["developer_mode"], "0")
+
+    def test_wizard_options_step_sets_the_switches_and_skip_clears_them(self) -> None:
+        # Focus order on the step: CONTINUE, SKIP, BACK, then the two switches.
+        run = self.run_player(
+            "wizard-options",
+            ("KEY_TAB", "KEY_TAB", "KEY_TAB", "KEY_RETURN", "KEY_TAB", "KEY_RETURN"),
+            ui_mode="legacy",
+        )
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["wizard_step"], "online_options")
+        self.assertEqual(frames[4]["online_mode"], "1")
+        self.assertEqual(frames[6]["developer_mode"], "1")
+        skipped = self.run_player(
+            "wizard-options",
+            ("KEY_TAB", "KEY_TAB", "KEY_TAB", "KEY_RETURN", "KEY_UP", "KEY_UP", "KEY_RETURN"),
+            ui_mode="legacy",
+        )
+        frames = skipped["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[4]["online_mode"], "1")
+        self.assertEqual(frames[-1]["wizard_step"], "ready_launch")
+        self.assertEqual(frames[-1]["online_mode"], "0", "SKIP turns online mode back off")
+        self.assertEqual(frames[-1]["developer_mode"], "0")
+
+    def test_developer_log_panel_needs_developer_mode(self) -> None:
+        panel = self.run_player("developer-log", ("KEY_F12",), ui_mode="legacy")
+        frames = panel["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["view"], "developer_log")
+        self.assertNotEqual(frames[0]["dev_log_lines"], "0")
+        self.assertEqual(frames[1]["view"], "library", "F12 closes the panel")
+        closed = self.run_player("developer-log", ("KEY_ESCAPE",), ui_mode="legacy")
+        frames = closed["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[1]["view"], "library", "Esc closes the panel")
+        off = self.run_player("library", ("KEY_F12",), ui_mode="legacy")
+        frames = off["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[-1]["view"], "library", "without developer mode F12 does nothing")
+
+    def test_online_settings_open_from_settings_and_back(self) -> None:
+        run = self.run_player("online-settings", ("KEY_ESCAPE",), ui_mode="legacy")
+        frames = run["frames"]
+        assert isinstance(frames, list)
+        self.assertEqual(frames[0]["view"], "online_settings")
+        self.assertEqual(frames[1]["view"], "settings")
 
     def test_next_ui_is_opt_in_by_flag_and_environment(self) -> None:
         default_ui = self.run_player("empty")
@@ -873,7 +924,7 @@ class NativePlayerUiTests(unittest.TestCase):
         run = self.run_player("settings", events)
         frames = run["frames"]
         assert isinstance(frames, list)
-        self.assertEqual(frames[0]["focus_count"], "16")
+        self.assertEqual(frames[0]["focus_count"], "17")
         self.assertEqual(frames[4]["focus"], "4")
         self.assertEqual(frames[5]["focus"], "4")
         self.assertNotEqual(frames[4]["pixels"], frames[5]["pixels"])
@@ -909,7 +960,7 @@ class NativePlayerUiTests(unittest.TestCase):
         run = self.run_player("settings", ("KEY_TAB",) * 13 + ("KEY_RETURN",))
         frames = run["frames"]
         assert isinstance(frames, list)
-        self.assertEqual(frames[0]["focus_count"], "16")
+        self.assertEqual(frames[0]["focus_count"], "17")
         self.assertEqual(frames[13]["focus"], "13")
         self.assertEqual(frames[-1]["view"], "prereq_about")
 

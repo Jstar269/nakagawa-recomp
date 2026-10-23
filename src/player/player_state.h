@@ -42,7 +42,9 @@ typedef enum {
     VIEW_PREREQ_CONSENT,
     VIEW_PREREQ_PROGRESS,
     VIEW_PREREQ_ABOUT,
-    VIEW_CONFIRM_REMOVE_TOOLS
+    VIEW_CONFIRM_REMOVE_TOOLS,
+    VIEW_ONLINE_SETTINGS,   /* Settings > Online and developer options */
+    VIEW_DEVELOPER_LOG      /* the developer log panel (developer mode, F12) */
 } PlayerView;
 
 typedef enum {
@@ -158,6 +160,14 @@ typedef struct {
     char controller_name[64];
     bool controller_connected;
     NkNetworkMode network_mode; /* reserved master switch; offline is the only mode today */
+    /* Online and developer options (docs/ONLINE_FEATURES.md). These are the
+       user's choices only: this build has no network feature, so online_mode
+       changes nothing yet and network_mode stays offline whatever it says. */
+    bool online_mode;      /* off by default; asked by the setup wizard */
+    bool online_updates;   /* the update check, when online mode ships */
+    bool online_news;      /* the news strip, when online mode ships */
+    bool online_reports;   /* user-sent reports, when online mode ships */
+    bool developer_mode;   /* shows the developer log panel (F12, Select + R) */
     /* Save locations are not a setting: nk_launch_prepare_session resolves a
        writable per-disc Memory Stick root at launch (SR_MEMSTICK). The settings
        screen shows that real root instead of a configurable dead field. */
@@ -211,6 +221,7 @@ typedef enum {
     WIZARD_STEP_SELECT_GAME,
     WIZARD_STEP_INSPECT_VERIFY,
     WIZARD_STEP_SYSTEM_FONTS,
+    WIZARD_STEP_ONLINE_OPTIONS, /* online mode and developer mode, both off unless chosen */
     WIZARD_STEP_READY_LAUNCH
 } WizardStep;
 
@@ -241,6 +252,17 @@ typedef struct {
     PlayerPreflightCheck checks[PLAYER_PREFLIGHT_MAX_CHECKS];
     size_t count;
 } PlayerCompatibilityPreflight;
+
+#define PLAYER_DEV_LOG_LINES 256
+#define PLAYER_DEV_LOG_LINE_MAX 240
+
+typedef struct {
+    char lines[PLAYER_DEV_LOG_LINES][PLAYER_DEV_LOG_LINE_MAX];
+    size_t head;            /* index of the oldest line */
+    size_t count;
+    char notice[256];       /* the last copy or save result, redacted */
+    PlayerView return_view; /* where closing the panel goes */
+} PlayerDevLog;
 
 typedef struct {
     WizardStep step;
@@ -362,6 +384,11 @@ typedef struct PlayerApp {
     bool close_confirmation_pending;
     char boot_event_file_path[MAX_PATH_LEN];
     bool should_quit;
+
+    /* The developer log: the player's own events, kept in memory on this PC
+       and shown only with developer mode on. Lines are redacted (profile path
+       and user name replaced) when they are added. */
+    PlayerDevLog dev_log;
 } PlayerApp;
 
 /* State management API */
@@ -719,5 +746,37 @@ void player_app_set_build_error(
     const char *boundary_text,
     const char *log_file_path
 );
+
+
+/* Online and developer options. None of these opens a connection: they record
+   the user's choice for the online features docs/ONLINE_FEATURES.md plans. */
+void player_app_set_online_mode(PlayerApp *app, bool on);
+void player_app_toggle_online_feature(PlayerApp *app, int feature); /* 0 updates, 1 news, 2 reports */
+void player_app_set_developer_mode(PlayerApp *app, bool on);
+/* The wizard's options step: skipping keeps both switches off. */
+void player_app_wizard_skip_options(PlayerApp *app);
+
+/* Developer log. Adding is cheap and always on; the panel shows it only with
+   developer mode. */
+void player_dev_log_add(PlayerApp *app, const char *source, const char *fmt, ...)
+#if defined(__GNUC__)
+    __attribute__((format(printf, 3, 4)))
+#endif
+    ;
+size_t player_dev_log_count(const PlayerApp *app);
+const char *player_dev_log_line(const PlayerApp *app, size_t index); /* 0 = oldest */
+/* Replaces the profile path (both slash styles, case-insensitive) with
+   %USERPROFILE% and the user name, as a whole word, with <user>. profile or
+   user may be NULL or empty. Returns false when out was too small (out is
+   still terminated). */
+bool player_dev_log_redact(const char *in, const char *profile, const char *user,
+                           char *out, size_t out_size);
+/* The whole log as text, oldest first, one line per entry. */
+size_t player_dev_log_text(const PlayerApp *app, char *out, size_t out_size);
+/* Writes the log to developer-log.txt in the logs folder; notice says where,
+   redacted. */
+bool player_dev_log_save(PlayerApp *app);
+bool player_app_open_developer_log(PlayerApp *app);  /* false without developer mode */
+void player_app_close_developer_log(PlayerApp *app);
 
 #endif /* NAKAGAWA_PLAYER_STATE_H */
