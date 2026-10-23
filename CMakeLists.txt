@@ -389,6 +389,8 @@ if(BUILD_PLAYER)
     )
     if(WIN32)
         target_link_libraries(nakagawa_player PRIVATE winhttp bcrypt)
+    else()
+        target_link_libraries(nakagawa_player PRIVATE m)
     endif()
 
     if(TARGET SDL3::SDL3)
