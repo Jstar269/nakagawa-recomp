@@ -218,6 +218,7 @@ class LiveRepositoryPlanTests(unittest.TestCase):
             with self.subTest(label), tempfile.TemporaryDirectory() as scratch:
                 stub = Path(scratch) / "python"
                 ran = Path(scratch) / "unittest-args"
+                step_summary = Path(scratch) / "step-summary.md"
                 # The step runs the planner first and then the shard's tests under the
                 # coverage wrapper. The stub answers the planner, records the module
                 # arguments of the unittest invocation wherever it appears, and returns
@@ -237,7 +238,8 @@ class LiveRepositoryPlanTests(unittest.TestCase):
                 )
                 stub.chmod(0o755)
                 env = {"PATH": f"{_bash_path(scratch)}:/usr/bin:/bin", "SHARD": "0", "NUM_SHARDS": "4",
-                       "PYTHON_SCOPE": "all"}
+                       "PYTHON_SCOPE": "all", "RUNNER_TEMP": _bash_path(scratch),
+                       "GITHUB_STEP_SUMMARY": _bash_path(step_summary)}
                 result = subprocess.run([bash, "-c", script], env=env, capture_output=True,
                                         text=True, check=False)
                 self.assertEqual(result.returncode == 0, expect_rc, result.stdout + result.stderr)
