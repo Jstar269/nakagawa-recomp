@@ -1,16 +1,11 @@
 # PGF replacement-font origins (engineering provenance)
 
-This is engineering evidence for qualified review, not legal advice or legal
-clearance. Every origin claim below carries a URL + commit/hash, or is marked
-UNKNOWN. No opaque PGF replacement payload, upstream PGF source file, or
-retail-derived data is added by sections 1–8: the four payloads remain excluded
-by `assets/public_source_profile.json` (`font/*.pgf`). Public builds read PGF
-fonts through the project-authored reader (`src/rt/pgf_public.c`, #349).
-Section 9 records separate project UI TTF assets under the SIL Open Font
-License; they are not PGF replacements or game data.
-
-Analyst note: I am an engineering-provenance analyst, not a lawyer. Section 6
-lists the questions that genuinely need counsel.
+This is an engineering record, not legal advice. Every origin claim below carries a URL + commit/hash, or is marked
+UNKNOWN. No PGF payload, upstream PGF source file, or retail-derived data is
+added by this record: the four payloads remain excluded by
+`assets/public_source_profile.json` (`font/*.pgf`). Public builds read fonts
+through the project-authored reader (`src/rt/pgf_public.c`, #349). Section 8 records the separate project UI fonts (TTF, SIL Open Font
+License); they are not PGF replacements or game data.
 
 ## 1. Subject
 
@@ -117,7 +112,7 @@ specified in `docs/cleanroom/PGF_CONVERTER_SPEC.md` and implemented in
 specification, not from any emulator or tool source. `ttf2pgfj.exe`
 provenance/licence: UNKNOWN (flagged, not used).
 
-## 5. Licence analysis (licence texts verified, conclusions need counsel)
+## 5. Licence terms
 
 ### 5.1 Source Han Sans (jpn0, kr0) — SIL Open Font License 1.1
 
@@ -136,16 +131,13 @@ Operative conditions for a converted/redistributed PGF:
 3. **Reserved Font Name 'Source'** (OFL §3): no Modified Version may use the
    RFN as its *primary font name as presented to users* without Adobe's
    written permission. The Nov–Dec 2020 payloads named "Source Han Sans" as
-   their PGF `fontName` while being admitted Modified Versions (manual kanji
-   rework) — that combination is exactly what §3 restricts. The Jan 2021
-   camouflage removed the RFN exposure but replaced it with §5.2's problem.
+   their PGF `fontName` while being Modified Versions (manual kanji rework).
 4. **No promotion by holder names** (OFL §4); **stay under OFL** (OFL §5): the
    font, modified or not, in part or whole, must be distributed entirely under
    OFL and no other licence. A GPL notice must therefore never be applied to
    the font payloads themselves; the project GPL covers the surrounding work,
    and the OFL payloads would sit alongside as a separately-licenced
-   aggregate element with their own texts. Whether that aggregation reading
-   holds for a PGF the HLE loads at runtime is a counsel question (§6).
+   aggregate element with their own texts.
 5. Source Han Sans input version, variant file (Super OTC vs JP/KR subset)
    and weight file: UNKNOWN. nassau-tk never named the input file and no byte
    or glyph comparison has been made, so conversion dates do not narrow the
@@ -172,16 +164,6 @@ Operative conditions for a converted/redistributed PGF:
 - Redistribution of an Ume-derived PGF therefore requires preserving the Ume
   copyright notice and licence conditions — again, texts this tree does not
   ship today (payloads excluded), and PPSSPP does not ship either.
-
-### 5.3 Trademark / misdescription (Sony / Fontworks names)
-
-`FTT-NewRodin Pro DB`, `FTT-NewRodin Pro Latin`, and `AsiaKNHH-SONY-uni` are
-product names of Fontworks Inc. and Sony. The pinned payloads contain Adobe
-and Ume outlines under those names by admitted "camouflage". Redistributing
-them byte-identical would publish false designation of origin; renaming the
-header to an honest project-owned name is a further modification that must
-then satisfy OFL §3 (avoid 'Source') and Ume attribution simultaneously.
-Either direction needs counsel before any redistribution (§6).
 
 ## 6. Project font slots
 
@@ -354,25 +336,7 @@ payload is admitted to the public source tree.
    intermediate, recorded for completeness; JPCSP fonts were replaced in Oct
    2020 and no Sazanami bytes survive in the pinned blobs.
 
-## 8. Questions that genuinely need a lawyer
-
-1. May OFL §5 ("distributed entirely under this license") payloads be loaded
-   at runtime by a GPL-3.0-or-later program without the combination becoming a
-   derivative work of either, and does the answer change if the payloads ship
-   in the same archive?
-2. Does a PGF converted from Source Han Sans with 2,946 hand-reworked kanji
-   still "use the Reserved Font Name" if its `fontName` field reads
-   "Source Han Sans", and does renaming it to a project-owned name fully
-   resolve OFL §3 without Adobe's written permission?
-3. Does reproducing the official PGF header metrics (ascender 9.0, descender
-   −2.0, glyph dimensions) and the official font-list names in a
-   reimplementation risk circumvention or trademark exposure even with
-   original outlines?
-4. Is PPSSPP's "camouflage" rename itself an actionable false designation if
-   mirrored, i.e. is byte-identical redistribution with Sony/Fontworks names
-   categorically excluded even with full OFL/Ume notices?
-
-## 9. Project UI fonts
+## 8. Project UI fonts
 
 The UI font assets are pinned to one `google/fonts` revision:
 [`45e3d5269e4a17d823f6d84470bc084dc5ae46f6`](https://github.com/google/fonts/tree/45e3d5269e4a17d823f6d84470bc084dc5ae46f6).

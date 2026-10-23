@@ -26,7 +26,7 @@ from import_fixtures import BASE_VADDR, SYSLIB_EXPORT, build_module_elf
 from nk_core import iso_inspect
 from nk_core.iso_inspect import (
     _classify_decrypted_elf_file,
-    decrypt_needed_modules,
+    check_needed_modules,
     decrypted_module_dir,
     IsoInspectionError,
     inspect_compatibility_preflight,
@@ -1686,8 +1686,11 @@ int main(int argc, char **argv) {{
         executable = next(check for check in report["checks"]
                           if check["code"] == "EXECUTABLE")
         self.assertEqual(executable["status"], "UNSUPPORTED")
-        self.assertIn(f"supply decrypted modules at {decrypted_dir}".lower(),
-                      executable["message"].lower())
+        self.assertEqual(
+            executable["message"],
+            "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt "
+            f"games. Place a decrypted EBOOT.elf from your own copy in {decrypted_dir}.",
+        )
         self.assertNotRegex(executable["message"], r"#[0-9]+")
         cli = subprocess.run(
             [sys.executable, str(ROOT / "tools" / "nk_cli.py"), "inspect",
@@ -1699,7 +1702,8 @@ int main(int argc, char **argv) {{
         cli_executable = next(check for check in cli_checks
                               if check["code"] == "EXECUTABLE")
         self.assertIn(str(decrypted_dir), cli_executable["message"])
-        self.assertIn("matching local key file", cli_executable["message"])
+        self.assertIn("ENCRYPTED_EXECUTABLE:", cli_executable["message"])
+        self.assertNotIn("key file", cli_executable["message"])
         self.assertNotIn("automatic decryption is in the works", cli_executable["message"].lower())
         self.assertNotRegex(cli_executable["message"], r"#[0-9]+")
 
@@ -3309,6 +3313,162 @@ class GuestModuleElfRuleTests(unittest.TestCase):
         )
         self.assertEqual(_classify_decrypted_elf_file(main_prx), "UNKNOWN")
 
+    def test_encrypted_disc_fails_closed_and_never_reads_a_key_file(self) -> None:
+        """Nakagawa does not decrypt games: key files are ignored, nothing is written.
+
+        A key file at the old default location and the old override pointing at
+        another existing file are both present. The encrypted executable and the
+        encrypted module fail closed by name, no file is touched or written, and
+        neither the override nor either key file is ever looked up.
+        """
+        import builtins
+
+        iso = self.temp_dir / "encrypted-modules.iso"
+        create_test_iso_with_modules(
+            iso, build_psp_container(),
+            sysdir_modules={"alpha.prx": build_psp_container()},
+            usrdir_modules={},
+            disc_id="TEST00001", title="Synthetic Encrypted Disc",
+        )
+        user_root = self.temp_dir / "encrypted-user"
+        default_key = user_root / "keys" / "psp-keyfile.json"
+        default_key.parent.mkdir(parents=True)
+        default_key.write_text("synthetic test marker", encoding="utf-8")
+        override_key = self.temp_dir / "override-keys" / "psp-keyfile.json"
+        override_key.parent.mkdir()
+        override_key.write_text("synthetic test marker", encoding="utf-8")
+        key_paths = {str(default_key.resolve()), str(override_key.resolve())}
+        touched: list[str] = []
+        env_reads: list[str] = []
+
+        def note(path) -> None:
+            try:
+                resolved = str(Path(path).resolve())
+            except (OSError, TypeError, ValueError):
+                return
+            if resolved in key_paths or "keys" in Path(resolved).parts[-2:-1]:
+                touched.append(resolved)
+
+        real_open = builtins.open
+        real_path_open = Path.open
+        real_stat = Path.stat
+
+        def recording_open(file, *args, **kwargs):
+            if isinstance(file, (str, os.PathLike)):
+                note(file)
+            return real_open(file, *args, **kwargs)
+
+        def recording_path_open(self_path, *args, **kwargs):
+            note(self_path)
+            return real_path_open(self_path, *args, **kwargs)
+
+        def recording_stat(self_path, *args, **kwargs):
+            note(self_path)
+            return real_stat(self_path, *args, **kwargs)
+
+        def recording_os_path(real):
+            def wrapper(path, *args, **kwargs):
+                note(path)
+                return real(path, *args, **kwargs)
+            return wrapper
+
+        class RecordingEnviron(dict):
+            def get(self, key, default=None):
+                env_reads.append(key)
+                return super().get(key, default)
+
+            def __getitem__(self, key):
+                env_reads.append(key)
+                return super().__getitem__(key)
+
+            def __contains__(self, key):
+                env_reads.append(key)
+                return super().__contains__(key)
+
+        environ = RecordingEnviron(os.environ)
+        environ["NAKAGAWA_PSP_KEY_FILE"] = str(override_key)
+        metadata = inspect_iso(iso)
+        with patch.object(os, "environ", environ), \
+                patch.object(builtins, "open", recording_open), \
+                patch.object(Path, "open", recording_path_open), \
+                patch.object(Path, "stat", recording_stat), \
+                patch.object(os, "stat", recording_os_path(os.stat)), \
+                patch.object(os.path, "isfile", recording_os_path(os.path.isfile)), \
+                patch.object(os.path, "exists", recording_os_path(os.path.exists)):
+            report = inspect_compatibility_preflight(
+                iso, metadata=metadata, runtime_root=user_root
+            )
+        self.assertEqual(touched, [], "a key file was looked up")
+        self.assertNotIn("NAKAGAWA_PSP_KEY_FILE", env_reads)
+
+        decrypted_dir = user_root / "titles" / "TEST00001" / "decrypted"
+        checks = {check["code"]: check for check in report["checks"]}
+        self.assertEqual(checks["EXECUTABLE"]["status"], "UNSUPPORTED")
+        self.assertEqual(
+            checks["EXECUTABLE"]["message"],
+            "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt "
+            f"games. Place a decrypted EBOOT.elf from your own copy in {decrypted_dir}.",
+        )
+        self.assertEqual(checks["GUEST_MODULES"]["status"], "MISSING")
+        self.assertEqual(
+            checks["GUEST_MODULES"]["message"],
+            "Guest modules: 0 of 1 ready; ENCRYPTED_MODULE: alpha.prx is encrypted. "
+            "Nakagawa does not decrypt games. Place a decrypted alpha.prx from your "
+            f"own copy in {decrypted_dir}.",
+        )
+        results = report["module_decryption"]["results"]
+        self.assertEqual([(r["name"], r["status"], r["reason"]) for r in results],
+                         [("alpha.prx", "failed", "encrypted")])
+        self.assertIsNone(report["selected_executable"])
+        self.assertNotIn("key_file", report)
+        self.assertNotIn("built_in_boundary", report)
+        for check in report["checks"]:
+            self.assertNotIn("key file", check["message"])
+        # Nothing decrypted, staged or rewritten.
+        self.assertFalse(decrypted_dir.exists())
+        self.assertFalse((user_root / "cache").exists())
+        self.assertEqual(default_key.read_text(encoding="utf-8"), "synthetic test marker")
+        self.assertEqual(override_key.read_text(encoding="utf-8"), "synthetic test marker")
+
+        # The build route names both spellings and the same folder.
+        manifest = {"modules": [{
+            "name": "sceAlpha_library.prx", "role": "guest-prx", "required": True,
+            "guest_path": "disc0:/PSP_GAME/SYSDIR/alpha.prx",
+        }]}
+        with patch.dict(os.environ, {"NAKAGAWA_PSP_KEY_FILE": str(override_key)}):
+            with self.assertRaises(nk_cli.PackageBuildError) as raised:
+                nk_cli._copy_optional_modules(
+                    iso, manifest, self.temp_dir / "encrypted-cache", None,
+                    decrypted_module_dir(user_root, "TEST00001"),
+                )
+        self.assertEqual(
+            str(raised.exception),
+            "ENCRYPTED_MODULE: Required guest PRX alpha.prx (sceAlpha_library.prx) is "
+            "encrypted. Nakagawa does not decrypt games. Place a decrypted alpha.prx "
+            "(or sceAlpha_library.prx) from your own copy in "
+            f"{decrypted_module_dir(user_root, 'TEST00001')}.",
+        )
+        self.assertFalse(
+            (self.temp_dir / "encrypted-cache" / "modules" / "sceAlpha_library.prx").exists()
+        )
+
+        # A plain copy the user supplies under the disc name makes it ready.
+        decrypted_dir.mkdir(parents=True)
+        plain = build_plain_mips_elf(0xFFA0, vaddr=0, entry=0xFFFFFFFF)
+        (decrypted_dir / "alpha.prx").write_bytes(plain)
+        (decrypted_dir / "EBOOT.elf").write_bytes(build_plain_mips_elf())
+        ready = inspect_compatibility_preflight(iso, metadata=metadata, runtime_root=user_root)
+        ready_checks = {check["code"]: check for check in ready["checks"]}
+        self.assertEqual(ready_checks["EXECUTABLE"]["status"], "OK")
+        self.assertEqual(ready["selected_executable"], "EBOOT.elf")
+        self.assertEqual(ready_checks["GUEST_MODULES"]["status"], "OK")
+        self.assertIn("1 of 1 ready", ready_checks["GUEST_MODULES"]["message"])
+        output = nk_cli._copy_optional_modules(
+            iso, manifest, self.temp_dir / "plain-cache", None,
+            decrypted_module_dir(user_root, "TEST00001"),
+        )
+        self.assertEqual((output / "sceAlpha_library.prx").read_bytes(), plain)
+
     def test_checklist_and_extraction_agree_on_prx_modules(self) -> None:
         prx = build_plain_mips_elf(0xFFA0, vaddr=0, entry=0xFFFFFFFF)
         truncated = prx[:60]
@@ -3324,7 +3484,7 @@ class GuestModuleElfRuleTests(unittest.TestCase):
             return {"names": [name], "members": [("PSP_GAME", "SYSDIR", name)]}
 
         # Checklist, disc copies: the valid PRX is ready, the truncated one is not.
-        checklist = decrypt_needed_modules(
+        checklist = check_needed_modules(
             iso, user_data_root=user_root, disc_id="TEST00001",
             modules=[spec("libfont.prx"), spec("truncated.prx")],
         )
@@ -3352,7 +3512,7 @@ class GuestModuleElfRuleTests(unittest.TestCase):
                                       ("truncated.prx", truncated, False)):
             with self.subTest(source="user", module=name):
                 (decrypted / name).write_bytes(data)
-                checklist = decrypt_needed_modules(
+                checklist = check_needed_modules(
                     iso, user_data_root=user_root, disc_id="TEST00001",
                     modules=[spec(name)],
                 )

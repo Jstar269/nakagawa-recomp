@@ -4,6 +4,7 @@
 // Modified by Nakagawa Recomp contributors, 2026-08-11.
 // See NOTICE.md for upstream lineage and modification provenance.
 // Derived from PPSSPP (https://github.com/hrydgard/ppsspp), GPL-2.0-or-later
+// Copyright (c) 2012- PPSSPP Project and contributors
 
 #include "hle_power.h"
 
@@ -115,14 +116,18 @@ uint32_t h_PowerRegisterCallback(CpuState *s) {
     return (uint32_t)result;
 }
 
-/* scePowerUnregisterCallback(slot): release the slot scePowerRegisterCallback filled. The slot
- * range checks mirror the register side. An empty or unknown slot is refused with
- * SCE_KERNEL_ERROR_NOTIMP rather than given a PSP error code that has not been measured. */
+/* scePowerUnregisterCallback(slot): release the slot scePowerRegisterCallback filled.
+ * Measured on PSP-3000, firmware 6.6.1, 2026-10-22 (merged PR #1153):
+ *   - an empty slot (0..15, nothing registered) returns 0x80000025;
+ *   - an owned slot returns 0;
+ *   - slot 16 returns 0x80000023;
+ *   - slots 32, -1, -2 and 1000 return 0x80000102.
+ * The slot range checks mirror the register side. */
 uint32_t h_PowerUnregisterCallback(CpuState *s) {
     int32_t slot = (int32_t)A0;
     if (slot < 0 || slot >= 32) return 0x80000102u;
     if (slot >= 16) return 0x80000023u;
-    if (s_power_cb_slots[slot] == 0) return 0x80020002u;
+    if (s_power_cb_slots[slot] == 0) return 0x80000025u;
     s_power_cb_slots[slot] = 0;
     return 0;
 }
