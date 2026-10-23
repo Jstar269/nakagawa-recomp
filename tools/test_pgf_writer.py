@@ -153,6 +153,10 @@ class PgfWriterStructureTests(unittest.TestCase):
         char_map_bits = struct.unpack_from("<I", self.image, 0x18)[0]
         map_size = ((char_map_count * char_map_bits + 31) // 32) * 4
         self.assertEqual(map_size % self.image[0x20], 0)
+        # The header u16 at 0x100 is the character-pointer factor; 0 made every glyph resolve to the
+        # start of glyph data (the 0x100 = 0 control drew nothing on the PSP, 4 drew the glyphs).
+        self.assertEqual(struct.unpack_from("<H", self.image, 0x100)[0], pgf_writer.POINTER_UNIT_BYTES)
+        self.assertEqual(pgf_writer.POINTER_UNIT_BYTES, 4)
 
     def test_metric_tables_are_deduplicated(self):
         metrics = [_metrics(glyph) for glyph in GLYPHS]
@@ -203,6 +207,12 @@ class PgfWriterStructureTests(unittest.TestCase):
             self.assertEqual(_bits(image, record, 42, 2), glyph.row_order)
             self.assertEqual(_bits(image, record, 55, 9), 0, "this writer emits no shadow")
             bitmap = encode_bitmap(tuple(glyph.samples))
+            # Measured on a PSP-3000 / 6.61 (#1055): the console library allocates the first
+            # 14-bit field less 8 per glyph lookup (0 failed with 0x80460001), and a record whose
+            # role bit (44) is 0 decodes its metrics as garbage. Console records carry their own
+            # length (prefix + indexes + bitmap) in the field and the role bit set.
+            self.assertEqual(_bits(image, record, 0, 14), 12 + len(bitmap))
+            self.assertEqual(_bits(image, record, 44, 1), 1)
             self.assertEqual(image[record + 12 : record + 12 + len(bitmap)], bitmap)
 
     def test_identical_input_produces_identical_bytes(self):
