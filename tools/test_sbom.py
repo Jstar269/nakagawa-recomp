@@ -735,7 +735,7 @@ class TestToolchainPolicyVerification(unittest.TestCase):
             "make": "4.4.1",
             "python": "3.14.7",
             "sdl3": "3.4.12",
-            "vulkan_sdk": "1.4.357.0",
+            "vulkan_sdk": "1.4.363.0",
         }
 
         # Mutation 1: Compiler outside policy (< 13.0.0)
@@ -783,7 +783,7 @@ class TestToolchainPolicyVerification(unittest.TestCase):
             "make": "4.4.1",
             "python": "3.14.7",
             "sdl3": "3.4.12",
-            "vulkan_sdk": "1.4.357.0",
+            "vulkan_sdk": "1.4.363.0",
         }
         errors = verify_sbom.verify_release_locks(self.MANIFEST_PATH, observed_toolchain=valid_observed)
         self.assertEqual(errors, [])
@@ -801,7 +801,7 @@ class TestToolchainPolicyVerification(unittest.TestCase):
             "make": "4.4.1",
             "python": "3.14.7",
             "sdl3": "3.4.12",
-            "vulkan_sdk": "1.4.357.0",
+            "vulkan_sdk": "1.4.363.0",
         }
         errors = verify_sbom.verify_release_locks(self.MANIFEST_PATH, observed_toolchain=incomplete)
         self.assertTrue(
@@ -826,7 +826,7 @@ class TestToolchainPolicyVerification(unittest.TestCase):
                 "make": "4.4.1",
                 "python": "3.14.7",
                 "sdl3": "3.4.12",
-                "vulkan_sdk": "1.4.357.0",
+                "vulkan_sdk": "1.4.363.0",
             }, tmp)
             obs_path = Path(tmp.name)
         try:

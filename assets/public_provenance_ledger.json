@@ -186,7 +186,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "93fe1a1eb3253b76cbbed89465b10ba910d6557451e5ad877cc3ac36f8f18fc1"
+      "sha256": "b4398bfa8022b5278ce69cf969ccb439f3877ab90997983f7be03dd2d8b2f84f"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -351,7 +351,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c5395162695967aa08cbbfd58fe54af922d1d9eca90dfc5b44fa5c70ca8dc0d6"
+      "sha256": "e6becced0204de03c72dbdf110b7b4be356306a534f2a84815b103b7115edb83"
     },
     {
       "path": "CODE_OF_CONDUCT.md",
@@ -767,7 +767,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "4d345c3c2d8db7bafd879673a2dfeec288d7c889b4f2bef4f369fd1dc73413ac"
+      "sha256": "abd4584fcc2d6282b90e04eae9eb843e7e3c36bdbc9927fb6510880ba35b3c42"
     },
     {
       "path": "assets/public_provenance_ledger.json",
@@ -805,7 +805,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "63a784f411c5c3b3db50deb62b0495d9d2027fb4b8207d3779fd7dda009a18b1"
+      "sha256": "1534212a1fca938907135e8a99e19f85e4d0c4610e72bd9f238465f09a3a3deb"
     },
     {
       "path": "assets/third_party_components.json",
@@ -1183,7 +1183,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "3548774717172be06b63326c68c5a88324b2e5a3bd327b4e142ff174c942fd95"
+      "sha256": "d7d49c724aa704e517ab24dd897b91ddc718164afbfa7c164de008f787599c4f"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -1285,7 +1285,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "160d85cc12e6a12e65e41d22fd035ff1cef067cfd921cfaa5546276a2d39afd9"
+      "sha256": "aef15592c318b5d799a428717ca777bd1de67cb973e132efc7f2d9c37ceddd32"
     },
     {
       "path": "docs/LLE_FIDELITY_ARCHITECTURE.md",
@@ -1474,7 +1474,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "552629a70785751b0cf1ff687b7d9e2b2dbba49b808b1a2b76af05db8145f591"
+      "sha256": "d1e7abae1883efadc33accb57c40f536d29e83a40ac17bfe404c9e894ed774bd"
     },
     {
       "path": "docs/SHOWCASE.md",
@@ -6578,7 +6578,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "620055da657f5eebdd3de17e24e7844dc76123cc5862e7a7d5ffae40d6360634"
+      "sha256": "d43c7515d6c733aba509eac6dfd08fd71dda7d48f1e4f25578d0c4f5f0b8477d"
     },
     {
       "path": "tests/native/test_parsers_hostile.c",
@@ -6626,7 +6626,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "1a0d9e385d39582ef7590c8d93c5bdb219bb4e573075eb772d6624f54d2cd9fa"
+      "sha256": "8bdad37fb50c53cd33671dcd68253dacd6999e2a23e80768e5e6f47d0f45ea35"
     },
     {
       "path": "tests/native/test_player_ui.py",
@@ -8601,7 +8601,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "8cfbf23b0425f8593820eae337e5490d420eb916d1c4aad6dd592fdc97ebc16b"
+      "sha256": "d32e93f5efae54b9799d2dc99084b8406df3717699a963396c04b14ada2eec7e"
     },
     {
       "path": "tools/test_callback_correctness.py",
@@ -10259,7 +10259,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "c076a5e31d48bfb42cb08df1ff3c69695b088d7384f848d2bc3b304653021d78"
+      "sha256": "96cc397d1c616fc39cd6f2994a916d62eb1ec40aa73e07a73c8c7c4bdf3abc5b"
     },
     {
       "path": "tools/test_public_export.py",
@@ -10416,7 +10416,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "31a6f916dfcd9b240b6a8faf3ffc8290d150fb50f8f7fa6ee3884cdc14e4491d"
+      "sha256": "3ffc04f0ee07ef37cae6b3e646a78e38aeadc49b0fcc68e6d49f5e62393621fb"
     },
     {
       "path": "tools/test_sbom_binding.py",

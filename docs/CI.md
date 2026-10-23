@@ -127,7 +127,7 @@ counted as a kill. Both are source-owned and need no game input. See
 [`fixtures/cosim/README.md`](../fixtures/cosim/README.md) for the comparison contract and the
 limits of the evidence.
 
-The Linux `native_tools` job builds SDL3 from its pinned 3.4.16 release commit and installs
+The Linux `native_tools` job builds SDL3 from its pinned 3.4.18 release commit and installs
 Vulkan development headers. The staged SDL3 install is cached under a key naming the pinned
 version and commit, the gcc and cmake versions, and the workflow file hash; a cache hit skips
 the build, and the pkg-config version check still runs. It configures and builds the CMake player with `BUILD_PLAYER=ON`,

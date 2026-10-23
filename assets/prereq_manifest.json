@@ -2,9 +2,9 @@
   "SPDX-License-Identifier: GPL-3.0-or-later": true,
   "Copyright (C) 2026 the Nakagawa Recomp authors": true,
   "schema_version": 1,
-  "source_snapshot_date": "2026-09-30",
+  "source_snapshot_date": "2026-10-21",
   "platform": "Windows x64, UCRT64",
-  "total_download_bytes": 100665604,
+  "total_download_bytes": 100720582,
   "artifacts": [
     {
       "id": "cpython-embed-amd64",
@@ -630,14 +630,14 @@
     {
       "id": "mingw-w64-ucrt-x86_64-sdl3",
       "name": "mingw-w64-ucrt-x86_64-sdl3",
-      "version": "3.4.16-1",
-      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-sdl3-3.4.16-1-any.pkg.tar.zst",
+      "version": "3.4.18-1",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-sdl3-3.4.18-1-any.pkg.tar.zst",
       "allowed_hosts": [
         "repo.msys2.org"
       ],
-      "filename": "mingw-w64-ucrt-x86_64-sdl3-3.4.16-1-any.pkg.tar.zst",
-      "size_bytes": 2492894,
-      "sha256": "0f15a64df89c2aee04890be0992d76d4a1df0e96cbfc90c1370528041771c51f",
+      "filename": "mingw-w64-ucrt-x86_64-sdl3-3.4.18-1-any.pkg.tar.zst",
+      "size_bytes": 2497713,
+      "sha256": "f9f8e2fe9858868e7653b24c973bcc8c19dea1096afc8c905bf1cd1a87960442",
       "sha256_source": {
         "url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db",
         "signature_url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db.sig",
@@ -702,14 +702,14 @@
     {
       "id": "mingw-w64-ucrt-x86_64-vulkan-headers",
       "name": "mingw-w64-ucrt-x86_64-vulkan-headers",
-      "version": "1~1.4.357.0-1",
-      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-vulkan-headers-1~1.4.357.0-1-any.pkg.tar.zst",
+      "version": "1~1.4.363.0-1",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-vulkan-headers-1~1.4.363.0-1-any.pkg.tar.zst",
       "allowed_hosts": [
         "repo.msys2.org"
       ],
-      "filename": "mingw-w64-ucrt-x86_64-vulkan-headers-1~1.4.357.0-1-any.pkg.tar.zst",
-      "size_bytes": 1769549,
-      "sha256": "96749e9c3c10bd7dd6624530006b4ed5c165c0f1bc37125522e046c63aed649c",
+      "filename": "mingw-w64-ucrt-x86_64-vulkan-headers-1~1.4.363.0-1-any.pkg.tar.zst",
+      "size_bytes": 1799185,
+      "sha256": "be602b2657cace531316e78b1eda4087e8f7f84ebb877f08fba198a2db06406a",
       "sha256_source": {
         "url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db",
         "signature_url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db.sig",
@@ -726,14 +726,14 @@
     {
       "id": "mingw-w64-ucrt-x86_64-vulkan-loader",
       "name": "mingw-w64-ucrt-x86_64-vulkan-loader",
-      "version": "1~1.4.357.0-1",
-      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-vulkan-loader-1~1.4.357.0-1-any.pkg.tar.zst",
+      "version": "1~1.4.363.0-1",
+      "url": "https://repo.msys2.org/mingw/ucrt64/mingw-w64-ucrt-x86_64-vulkan-loader-1~1.4.363.0-1-any.pkg.tar.zst",
       "allowed_hosts": [
         "repo.msys2.org"
       ],
-      "filename": "mingw-w64-ucrt-x86_64-vulkan-loader-1~1.4.357.0-1-any.pkg.tar.zst",
-      "size_bytes": 202334,
-      "sha256": "4d34983aea34116582700b285279df21cd0ee8519025330e7ac0650bb02f138f",
+      "filename": "mingw-w64-ucrt-x86_64-vulkan-loader-1~1.4.363.0-1-any.pkg.tar.zst",
+      "size_bytes": 222857,
+      "sha256": "065076fe13d39ab97eea4740596426d5ae741b5044e48e1c9495d04835c92dbe",
       "sha256_source": {
         "url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db",
         "signature_url": "https://repo.msys2.org/mingw/ucrt64/ucrt64.db.sig",

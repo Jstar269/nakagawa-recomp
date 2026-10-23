@@ -9,9 +9,9 @@
     "compiler": "GCC >= 13.0.0 (MSYS2 UCRT64)",
     "make": "GNU Make >= 4.4",
     "python": "Python 3.14.x",
-    "vulkan_sdk": "Vulkan SDK 1.3.x",
+    "vulkan_sdk": "Vulkan SDK 1.4.363.0",
     "glslc": "glslc from Vulkan SDK",
-    "sdl": "SDL3 >= 3.0.0"
+    "sdl": "SDL3 3.4.18"
   },
   "lockfiles": {
     "python": "tools/requirements-lock.txt"
@@ -83,7 +83,7 @@
       "name": "SDL3",
       "license": "Zlib",
       "origin": "https://github.com/libsdl-org/SDL",
-      "revision": "reference_environment sdl3-3.2.0",
+      "revision": "reference_environment sdl3-3.4.18",
       "notice_path": "NOTICE.md",
       "evidence_path": "assets/release_manifest.json",
       "disposition": "external_optional_dependency; audio_backend_excluded"
@@ -93,7 +93,7 @@
       "name": "Vulkan loader and headers",
       "license": "Apache-2.0",
       "origin": "https://github.com/KhronosGroup/Vulkan-Loader",
-      "revision": "reference_environment vulkan-sdk-1.3.296.0",
+      "revision": "reference_environment vulkan-sdk-1.4.363.0",
       "notice_path": "NOTICE.md",
       "evidence_path": "assets/release_manifest.json",
       "disposition": "external_system_dependency"

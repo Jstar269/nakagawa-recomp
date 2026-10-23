@@ -113,7 +113,7 @@ class PublicCiWiringTests(unittest.TestCase):
         lock = json.loads((ROOT / "assets" / "upstream" / "pspdev.lock.json").read_text())
         evidence = json.loads((ROOT / "assets" / "upstream" / "pspdev.evidence.json").read_text())
         self.assertIn("Build pinned SDL3 for headless Linux runtime", ci)
-        self.assertIn("fa2c02bb6e21974a89ea9824bc53c9932abe5f9c", ci)
+        self.assertIn("829a65d769d935c4852f8159e964312c0957260a", ci)
         self.assertIn("libvulkan-dev", ci)
         self.assertIn("SDL_UNIX_CONSOLE_BUILD=ON", ci)
         self.assertIn("pspdev.lock.json", ci)
@@ -226,8 +226,8 @@ class PublicCiWiringTests(unittest.TestCase):
             'XDG_STATE_HOME="$RUNNER_TEMP/player-smoke-state"',
         ):
             self.assertIn(assignment, invocation)
-        self.assertIn("SDL3_VERSION=3.4.16", native_tools)
-        self.assertIn("SDL3_COMMIT=fa2c02bb6e21974a89ea9824bc53c9932abe5f9c", native_tools)
+        self.assertIn("SDL3_VERSION=3.4.18", native_tools)
+        self.assertIn("SDL3_COMMIT=829a65d769d935c4852f8159e964312c0957260a", native_tools)
 
         required_start = ci.index("  ci_required:\n")
         required_job = ci[required_start:]
