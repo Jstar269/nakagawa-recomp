@@ -2443,12 +2443,12 @@ class PspOracleBuildRouteTests(unittest.TestCase):
         )
         # Sequential probe.c and HLE cases use distinct numbered ranges. The count and
         # the id set are exact: a probe PR bumps both, and an accidental removal fails here.
-        self.assertEqual(len(routes), 94)
+        self.assertEqual(len(routes), 95)
         names = [name for name, _ in routes]
         ids = [int(case_id) for _, case_id in routes]
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {110, 111, 112}, set(ids))
+        self.assertEqual(set(range(1, 78)) | set(range(90, 104)) | {110, 111, 112, 113}, set(ids))
         self.assertNotIn("psp_b1_imports.S", self.makefile)
         self.assertNotIn("psp_b2_imports.S", self.makefile)
         self.assertNotIn("psp_b3_imports.S", self.makefile)
@@ -7489,12 +7489,34 @@ class FontListImportGateTests(unittest.TestCase):
         self.assertIn("--forbid-library sceReg", block)
         self.assertIn("else ifeq ($(CASE),font-list)\nCASE_ID = 75\n", makefile)
         stubs = (fixture / "libfont_imports.S").read_text(encoding="utf-8")
-        declared = [int(nid, 16) for nid in re.findall(r'IMPORT_FUNC\s+"sceLibFont",\s*(0x[0-9A-Fa-f]{8})', stubs)]
+        # The font-userpgf case (#1055) adds eight imports under #ifdef LIBFONT_USERPGF; the
+        # font-list build never defines it, so the font-list block is the unconditional part.
+        unconditional = stubs.split("#ifdef LIBFONT_USERPGF", 1)[0]
+        declared = [int(nid, 16) for nid in re.findall(r'IMPORT_FUNC\s+"sceLibFont",\s*(0x[0-9A-Fa-f]{8})', unconditional)]
         self.assertEqual(declared, FONT_LIST_NIDS)
         self.assertEqual(stubs.count("IMPORT_START"), 1)
         probe = (fixture / "probe.c").read_text(encoding="utf-8")
         self.assertIn("#define PSP_ORACLE_CASE_FONT_LIST 75", probe)
         self.assertIn('#define PROBE_HOST0_LOG "host0:/font_list_log.txt"', probe)
+
+    def test_makefile_pins_the_font_userpgf_imports_to_thirteen_calls(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        fixture = root / "fixtures" / "psp_oracle"
+        makefile = (fixture / "Makefile").read_text(encoding="utf-8")
+        block = makefile.split("\nifeq ($(CASE),font-userpgf)\n", 1)[1].split("endif", 1)[0]
+        self.assertIn("OBJS += $(BUILD_DIR)/libfont_imports.o", block)
+        self.assertIn("LIBFONT_ASFLAGS = -DLIBFONT_USERPGF", block)
+        self.assertIn("--forbid-library sceReg", block)
+        stubs = (fixture / "libfont_imports.S").read_text(encoding="utf-8")
+        conditional = stubs.split("#ifdef LIBFONT_USERPGF", 1)[1].split("#endif", 1)[0]
+        extra = [int(nid, 16) for nid in re.findall(r'IMPORT_FUNC\s+"sceLibFont",\s*(0x[0-9A-Fa-f]{8})', conditional)]
+        self.assertEqual(len(extra), 8)
+        self.assertIn("--exact-library sceLibFont=" + ",".join(f"0x{nid:08X}" for nid in FONT_LIST_NIDS + extra),
+                      block)
+        self.assertIn("else ifeq ($(CASE),font-userpgf)\nCASE_ID = 113\n", makefile)
+        probe = (fixture / "probe.c").read_text(encoding="utf-8")
+        self.assertIn("#define PSP_ORACLE_CASE_FONT_USERPGF 113", probe)
+        self.assertIn('#define PROBE_HOST0_LOG "host0:/font_userpgf_log.txt"', probe)
 
     def test_font_list_header_makes_no_registry_or_file_call(self) -> None:
         root = Path(__file__).resolve().parents[1]

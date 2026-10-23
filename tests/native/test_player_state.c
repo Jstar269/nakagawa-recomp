@@ -193,6 +193,10 @@ static void write_binary_file(const char *path, const unsigned char *bytes, size
     assert(fclose(file) == 0);
 }
 
+/* The old key-file override, left set to an existing file for the whole run
+ * so the preflight checks can prove it is ignored. */
+static char g_decoy_key_path[NATIVE_TEST_PATH_MAX + 32];
+
 static void write_text_file(const char *path, const char *text) {
     FILE *file = fopen(path, "wb");
     assert(file != NULL);
@@ -2047,21 +2051,21 @@ int main(int argc, char **argv) {
         snprintf(self_executable, sizeof(self_executable), "%s", argv[0]);
     }
     {
-        /* A developer machine may point NAKAGAWA_PSP_KEY_FILE at the real key
-         * file. Plant a decoy override that names an existing file: unless the
-         * isolation clears it, the no-key-file preflight check below consults
-         * the decoy instead of the isolated user-data root and fails. */
-        char decoy_key[NATIVE_TEST_PATH_MAX + 32];
-        int written = snprintf(decoy_key, sizeof(decoy_key), "%s%cdeveloper-keyfile.json",
+        /* Nakagawa does not decrypt games and reads no key file. Leave the old
+         * key-file override pointing at an existing file for the whole run:
+         * the encrypted-executable and encrypted-module checks below must
+         * ignore it, decrypt nothing and never name it. */
+        int written = snprintf(g_decoy_key_path, sizeof(g_decoy_key_path),
+                               "%s%cdeveloper-keyfile.json",
                                native_test_get_root(), nk_platform_path_separator());
-        assert(written > 0 && (size_t)written < sizeof(decoy_key));
-        write_text_file(decoy_key, "{\"format\":\"nakagawa-psp-keystore-1\",\"entries\":{}}");
-        native_test_set_env("NAKAGAWA_PSP_KEY_FILE", decoy_key);
+        assert(written > 0 && (size_t)written < sizeof(g_decoy_key_path));
+        write_text_file(g_decoy_key_path, "{\"format\":\"nakagawa-psp-keystore-1\",\"entries\":{}}");
+        native_test_set_env("NAKAGAWA_PSP_KEY_FILE", g_decoy_key_path);
     }
     native_test_isolate_user_data_roots();
     {
         const char *key_override = getenv("NAKAGAWA_PSP_KEY_FILE");
-        assert(key_override == NULL || key_override[0] == '\0');
+        assert(key_override != NULL && strcmp(key_override, g_decoy_key_path) == 0);
     }
     native_test_assert_cache_root_isolated();
     native_test_assert_config_root_isolated();
@@ -3013,12 +3017,38 @@ int main(int argc, char **argv) {
             decrypted_dir, nk_platform_path_separator());
         assert(elf_written > 0 && (size_t)elf_written < sizeof(decrypted_elf));
         remove(decrypted_elf);
+        /* A key file at the old default location is ignored as well. */
+        char old_key_dir[700], old_key_file[760], staging_dir[700];
+        int key_written = snprintf(old_key_dir, sizeof(old_key_dir), "%s%ckeys",
+                                   preflight_root, nk_platform_path_separator());
+        assert(key_written > 0 && (size_t)key_written < sizeof(old_key_dir));
+        assert(nk_platform_mkdir_p(old_key_dir));
+        key_written = snprintf(old_key_file, sizeof(old_key_file), "%s%cpsp-keyfile.json",
+                               old_key_dir, nk_platform_path_separator());
+        assert(key_written > 0 && (size_t)key_written < sizeof(old_key_file));
+        write_text_file(old_key_file, "{\"format\":\"nakagawa-psp-keystore-1\",\"entries\":{}}");
+        key_written = snprintf(staging_dir, sizeof(staging_dir), "%s%ccache%cdecrypted",
+                               preflight_root, nk_platform_path_separator(),
+                               nk_platform_path_separator());
+        assert(key_written > 0 && (size_t)key_written < sizeof(staging_dir));
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
         assert(check && check->status == PREFLIGHT_UNSUPPORTED);
-        assert(strstr(check->message, "Encrypted executable: supply decrypted modules at ") != NULL);
+        assert(strstr(check->message, "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. "
+                                      "Nakagawa does not decrypt games. Place a decrypted "
+                                      "EBOOT.elf from your own copy in ") != NULL);
         assert(strstr(check->message, decrypted_dir) != NULL);
+        assert(strstr(check->message, "key file") == NULL && strstr(check->message, "keyfile") == NULL);
+        assert(strstr(check->message, g_decoy_key_path) == NULL);
         assert(check->issue_count == 1 && check->issue_numbers[0] == 308);
+        /* Nothing was decrypted or staged. */
+        {
+            FILE *produced = fopen(decrypted_elf, "rb");
+            assert(produced == NULL);
+        }
+        assert(!nk_platform_dir_exists(staging_dir));
+        assert(remove(old_key_file) == 0);
+        assert(test_rmdir(old_key_dir) == 0);
 
         write_synthetic_mips_elf(decrypted_elf);
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
@@ -3107,6 +3137,46 @@ int main(int argc, char **argv) {
                 module_check = find_preflight_check(&wiz->wizard.preflight, "GUEST_MODULES");
                 assert(module_check && module_check->status == PREFLIGHT_OK);
                 assert(strstr(module_check->message, "Guest modules: 1 of 1 ready.") != NULL);
+                write_guest_module_iso(module_iso_path, "libfont.prx", prx_bytes,
+                                       sizeof(prx_bytes));
+            }
+
+            /* An encrypted disc module with no plain copy is not ready: Nakagawa
+               does not decrypt games and ignores the key-file override, so the
+               check names the module and the folder, and writes nothing. */
+            {
+                unsigned char encrypted_prx[0x100];
+                memset(encrypted_prx, 0, sizeof(encrypted_prx));
+                memcpy(encrypted_prx, "~PSP", 4);
+                encrypted_prx[0x27] = 1;    /* one segment */
+                encrypted_prx[0x55] = 0x10; /* segment size 0x1000 */
+                write_guest_module_iso(module_iso_path, "libfont.prx", encrypted_prx,
+                                       sizeof(encrypted_prx));
+                remove(module_copy);
+                player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+                module_check = find_preflight_check(&wiz->wizard.preflight, "GUEST_MODULES");
+                assert(module_check && module_check->status == PREFLIGHT_MISSING);
+                assert(strstr(module_check->message, "Guest modules: 0 of 1 ready; "
+                                                     "ENCRYPTED_MODULE: libfont.prx is "
+                                                     "encrypted. Nakagawa does not decrypt "
+                                                     "games. Place a decrypted libfont.prx "
+                                                     "from your own copy in ") != NULL);
+                assert(strstr(module_check->message, module_dir) != NULL);
+                assert(strstr(module_check->message, "key file") == NULL &&
+                       strstr(module_check->message, "keyfile") == NULL);
+                assert(strstr(module_check->message, g_decoy_key_path) == NULL);
+                {
+                    FILE *produced = fopen(module_copy, "rb");
+                    assert(produced == NULL);
+                }
+
+                /* The user's plain copy makes the encrypted disc module ready. */
+                write_synthetic_guest_prx(module_copy, sizeof(prx_bytes));
+                player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+                module_check = find_preflight_check(&wiz->wizard.preflight, "GUEST_MODULES");
+                assert(module_check && module_check->status == PREFLIGHT_OK);
+                assert(strstr(module_check->message, "Guest modules: 1 of 1 ready.") != NULL);
+                assert(remove(module_copy) == 0);
                 write_guest_module_iso(module_iso_path, "libfont.prx", prx_bytes,
                                        sizeof(prx_bytes));
             }
@@ -4404,12 +4474,12 @@ int main(int argc, char **argv) {
 
         /* Set build error with stage, boundary text, and log path */
         player_app_set_build_error(bapp, "preflight",
-                                   "Encrypted executable: supply decrypted modules.",
+                                   "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games.",
                                    "C:/logs/build_TEST80001.log");
         assert(bapp->active_view == VIEW_ERROR);
         assert(strcmp(bapp->last_error.error_code, "PACKAGE_BUILD_FAILED") == 0);
         assert(strcmp(bapp->last_error.failed_stage, "preflight") == 0);
-        assert(strstr(bapp->last_error.boundary_text, "supply decrypted modules") != NULL);
+        assert(strstr(bapp->last_error.boundary_text, "ENCRYPTED_EXECUTABLE") != NULL);
         assert(strcmp(bapp->last_error.log_file_path, "C:/logs/build_TEST80001.log") == 0);
 
         /* Cancellation transitions session */

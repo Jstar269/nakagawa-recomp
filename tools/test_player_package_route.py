@@ -382,8 +382,10 @@ class TestReleaseDocumentation(unittest.TestCase):
         self.assertNotIn("No second verified title.", readme)
         self.assertIn("consent once", readme.lower())
         self.assertNotIn("automatic decryption is in the works", readme.lower())
-        self.assertIn("#548", readme)
-        self.assertIn("#550", readme)
+        # Built-in decryption was removed (temporarily): the README says so and
+        # never asks for a key file.
+        self.assertIn("does not decrypt games", readme)
+        self.assertNotIn("key file", readme.lower())
         self.assertIn("#308", release_notes)
         self.assertNotIn("#285", release_notes)
         self.assertIn("PGD-protected content is unsupported", release_notes)
@@ -1306,9 +1308,10 @@ class TestPlayerPackageRoute(unittest.TestCase):
         encrypted = self.run_build_action(encrypted_root)
         self.assertNotEqual(encrypted.returncode, 0)
         self.assertIn("PACKAGE_BUILD_ROUTE status=FAIL", encrypted.stdout)
-        self.assertIn("[preflight] FAIL: Encrypted executable", encrypted.stdout)
-        self.assertIn("supply decrypted modules at", encrypted.stdout)
-        self.assertIn("local key file", encrypted.stdout)
+        self.assertIn("[preflight] FAIL: ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. "
+                      "Nakagawa does not decrypt games. Place a decrypted EBOOT.elf from "
+                      "your own copy in ", encrypted.stdout)
+        self.assertNotIn("key file", encrypted.stdout)
         self.assertNotRegex(encrypted.stdout, r"#[0-9]+")
         self.assertNotIn("automatic decryption is in the works", encrypted.stdout.lower())
         self.assertFalse((encrypted_root / "packages" / DISC_ID).exists())

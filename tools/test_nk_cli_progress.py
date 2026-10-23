@@ -283,7 +283,10 @@ class NkCliProgressTests(unittest.TestCase):
             events = [json.loads(line) for line in lines]
             fail_event = events[-1]
             self.assertEqual(fail_event["status"], "FAIL")
-            self.assertIn("in the works", fail_event["message"])
+            # Built-in decryption was removed: an encrypted executable fails closed with a named,
+            # plain instruction to supply a decrypted copy, never a decryption attempt.
+            self.assertIn("ENCRYPTED_EXECUTABLE", fail_event["message"])
+            self.assertIn("does not decrypt games", fail_event["message"])
             self.assertNotRegex(fail_event["message"], r"#[0-9]+")
 
 

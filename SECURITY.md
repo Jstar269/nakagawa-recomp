@@ -36,6 +36,9 @@ and ask for a secure channel before sending details.
 Include the affected revision, impact, reproduction conditions, relevant logs with personal and game
 data removed, and any proposed mitigation.
 
+Rights holders with a concern about any file in this repository can use the same private channel; see
+[NOTICE.md](NOTICE.md#legal-and-contact).
+
 ## How reports are handled
 
 1. **Acknowledge** the report within 14 days, in the private advisory thread.
@@ -62,8 +65,8 @@ dependency alert links it, so users can audit the decision.
   maintainer's local credential store, never in the repository. Secret scanning with push protection and the
   publication audit block a committed secret.
 - **What exists.** Workflows use the per-run `GITHUB_TOKEN` (read-only by default; jobs request only the extra
-  scopes they need) and `PROVENANCE_AUTHORITY_TOKEN`, a fine-grained token scoped to the private provenance
-  repository and used only by the provenance attestation workflows, which never run pull-request code.
+  scopes they need) and one fine-grained token used only by the provenance workflows, which never run
+  pull-request code.
 - **Who can access them.** Only the maintainer (see [Governance and roles](CONTRIBUTING.md#governance-and-roles)).
 - **Rotation.** Tokens are created with an expiry of at most one year and rotated before it, and immediately
   when exposure is suspected or a person with access leaves.
@@ -93,19 +96,12 @@ Out of scope:
 This research software processes untrusted binary formats and is not sandboxed. Run it only on files
 you are authorized to use.
 
-## Legacy PSP cryptography
+## Encrypted PSP files
 
-To read the PSP's own encrypted executables and modules, the decryption code in `src/core/` (`nk_psp_kirk.c`,
-`nk_psp_aes.c`, `nk_psp_sha1.c`, `nk_psp_ec.c`) implements the algorithms those formats require: AES-128, SHA-1 and
-ECDSA on a 160-bit curve. These are below current recommendations, and no stronger alternative exists, because the
-formats are fixed by existing PSP software.
-
-- **Risk.** A crafted file could pass these format checks. They are compatibility checks, not a security boundary,
-  so passing them grants nothing.
-- **Mitigations.** No protection the project offers depends on these algorithms; its own integrity checks (packages,
-  fonts, provenance) use SHA-256. Every file is treated as untrusted input by the bounds-checked, fuzzed parsers listed
-  in [`docs/PARSER_SAFETY_INVENTORY.json`](docs/PARSER_SAFETY_INVENTORY.json), whatever these checks report. Keys are
-  read only from your own local key file and never leave your machine.
+Nakagawa does not decrypt games; it uses decrypted files from your own copy. Built-in decryption was removed
+(temporarily), so the project carries no PSP cryptography and never reads a key file. An encrypted executable or module
+is refused by name. Every file is treated as untrusted input by the bounds-checked, fuzzed parsers listed in
+[`docs/PARSER_SAFETY_INVENTORY.json`](docs/PARSER_SAFETY_INVENTORY.json).
 
 ## Assurance case
 
@@ -113,7 +109,7 @@ Why the project's security requirements are met, in brief:
 
 - **Threat model.** The attacker controls the files a user feeds in (ISO, ELF/PRX, archives, saves, fonts) or tries
   to slip a change into the repository or its supply chain. The project holds no user accounts, network services or
-  secrets of its own; a user's key file and game files stay on their machine.
+  secrets of its own; a user's game files stay on their machine.
 - **Trust boundaries.** (1) User files → the parsers in `src/core/`, `src/player/`, `src/rt/` and `tools/`.
   (2) Guest code → host memory, crossed only through HLE handlers that validate every guest pointer and size.
   (3) Contributions → `main`, crossed only through reviewed pull requests with required CI.
@@ -121,8 +117,8 @@ Why the project's security requirements are met, in brief:
 - **Secure design principles applied.** Fail closed: unsupported behaviour stops with a named reason instead of
   guessing. Complete mediation: every guest-to-host access is checked against the guest span. Least privilege:
   workflows default to read-only tokens and pin every action by commit. Economy of mechanism: one runtime,
-  one dispatch path, no permissive switches. Defence in depth: checks still apply when a format check passes (see
-  [Legacy PSP cryptography](#legacy-psp-cryptography)).
+  one dispatch path, no permissive switches. Defence in depth: a file that passes one check is still
+  bounds-checked by every later parser.
 - **Common weaknesses countered.** Memory errors (CWE-119/787/125): bounds-checked parsers with hostile-input tests
   ([`docs/PARSER_SAFETY_INVENTORY.json`](docs/PARSER_SAFETY_INVENTORY.json)), ASan/UBSan fuzzing (ClusterFuzzLite)
   and CodeQL on every change. Path traversal (CWE-22): the VFS and extraction tools refuse paths outside their roots.
