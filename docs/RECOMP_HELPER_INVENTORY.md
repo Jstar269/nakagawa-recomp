@@ -36,9 +36,9 @@ does not make this file stale. `--details` prints them to stdout.
 
 ## Summary
 
-- helpers: **301** (declared in `recomp.h`: 243)
-- reach class: emitter-reached 58, production-runtime-only 220, selftest-only 13, address-only 3, none 7
-- provenance class of the home definition: declared-only 1, project_authored_attested 23, upstream_derived 277
+- helpers: **306** (declared in `recomp.h`: 248)
+- reach class: emitter-reached 58, production-runtime-only 223, selftest-only 14, address-only 3, none 8
+- provenance class of the home definition: declared-only 1, project_authored_attested 23, upstream_derived 282
 
 ## Helpers
 
@@ -110,6 +110,10 @@ does not make this file stale. `--details` prints them to stdout.
 | `sched_is_dormant` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_is_intr_context` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_launcher_uid` | `rt/sched.c` | yes | selftest-only | `rt/sched.c`: upstream_derived |
+| `sched_pause_active` | `rt/sched.c` | yes | none | `rt/sched.c`: upstream_derived |
+| `sched_pause_pending` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
+| `sched_pause_request` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
+| `sched_pause_total_ns` | `rt/sched.c` | yes | selftest-only | `rt/sched.c`: upstream_derived |
 | `sched_pending_interrupts` | `rt/sched.c` | yes | selftest-only | `rt/sched.c`: upstream_derived |
 | `sched_preempt` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
 | `sched_raise_interrupt` | `rt/sched.c` | yes | production-runtime-only | `rt/sched.c`: upstream_derived |
@@ -190,6 +194,7 @@ does not make this file stale. `--details` prints them to stdout.
 | `sr_cp0_status_ptr` | `rt/recomp.h` | yes | none | `rt/recomp.h`: upstream_derived |
 | `sr_cpu_link_clear` | `rt/recomp.h` | yes | production-runtime-only | `rt/recomp.h`: upstream_derived |
 | `sr_display_advance_vcount` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
+| `sr_display_vcount` | `rt/hle.c` | yes | production-runtime-only | `rt/hle.c`: upstream_derived |
 | `sr_end_impl` | `rt/recomp.c` | yes | emitter-reached (via `sr_end`) | `rt/recomp.c`: upstream_derived |
 | `sr_exec_span_owns_fetch` | `rt/guest_interp.c` | yes | production-runtime-only | `rt/guest_interp.c`: project_authored_attested |
 | `sr_exec_span_register` | `rt/guest_interp.c` | yes | emitter-reached (direct) | `rt/guest_interp.c`: project_authored_attested |

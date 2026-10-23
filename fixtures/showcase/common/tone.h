@@ -7,7 +7,12 @@
 #include <pspaudio.h>
 #include <stdint.h>
 
+/* Keep the synthetic note queued across the scheduler boundary exercised by
+ * issue #1171's pause smoke; the production runtime still uses its guest sample
+ * count and never extends a real title's audio. */
+#ifndef SHOWCASE_AUDIO_FRAMES
 #define SHOWCASE_AUDIO_FRAMES 512
+#endif
 
 static int showcase_audio_channel = -1;
 static int16_t showcase_audio_buffer[SHOWCASE_AUDIO_FRAMES * 2];

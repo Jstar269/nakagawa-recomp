@@ -53,7 +53,10 @@ FATAL_PATTERNS = (
 
 AUDIOSTAT_HOST = re.compile(
     r"AUDIOSTAT_HOST:\s+state=(\S+)\s+driver=(\S+)\s+pushed=(\d+)\s+underruns=(\d+)\s+"
-    r"overruns=(\d+)\s+backpressure=(\d+)\s+peak_q=(\d+)"
+    r"overruns=(\d+)\s+backpressure=(\d+)"
+    # Pause counters (C9a) sit between backpressure and peak_q; older builds omit them.
+    r"(?:\s+pause_enters=\d+\s+pause_held_frames=\d+\s+pause_stash_failures=\d+)?"
+    r"\s+peak_q=(\d+)"
     r"(?:\s+queued=(-?\d+)\s+lead_ms=(-?\d+))?"
 )
 AUDIOSTAT_PUSH = re.compile(

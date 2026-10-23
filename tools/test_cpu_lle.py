@@ -537,6 +537,15 @@ static inline void SDL_DelayPrecise(uint64_t ns) {
 #endif
 """
 
+# sched.c asks SDL which video driver is active before offering the pause presenter;
+# with no SDL there is no driver, which the scheduler reads as "no presenter".
+SDL_VIDEO_SHIM = """\
+#ifndef NK_TEST_SDL_VIDEO_SHIM_H
+#define NK_TEST_SDL_VIDEO_SHIM_H
+static inline const char *SDL_GetCurrentVideoDriver(void) { return 0; }
+#endif
+"""
+
 
 # Host stubs for fixtures that link the production dispatcher, scheduler and LLE core.
 _INTEGRATION_STUBS = r'''#include "recomp.h"
@@ -549,6 +558,11 @@ _INTEGRATION_STUBS = r'''#include "recomp.h"
 
 uint64_t SDL_GetTicksNS(void) { return 0u; }
 void SDL_DelayPrecise(uint64_t ns) { (void)ns; }
+const char *SDL_GetCurrentVideoDriver(void) { return NULL; }
+/* The scheduler's pause path calls into hle.c, which these fixtures do not link; they never pause. */
+uint32_t sr_display_vcount(void) { return 0u; }
+int sr_pause_script_input_pending(uint32_t target_vcount) { (void)target_vcount; return 0; }
+int sr_savedata_pause_busy(void) { return 0; }
 uint32_t g_sr_debug = 0;
 SrMemWatch g_sr_mem_watches[SR_MAX_MEM_WATCHES];
 int g_sr_mem_watch_count = 0;
@@ -733,6 +747,8 @@ class LleSchedulerIntegrationTests(unittest.TestCase):
                 (shim_dir / "SDL3").mkdir(parents=True)
                 (shim_dir / "SDL3" / "SDL_timer.h").write_text(
                     SDL_TIMER_SHIM, encoding="ascii", newline="\n")
+                (shim_dir / "SDL3" / "SDL_video.h").write_text(
+                    SDL_VIDEO_SHIM, encoding="ascii", newline="\n")
                 include_flags.extend((f"-I{shim_dir}", "-D_POSIX_C_SOURCE=200809L"))
             common = [
                 "-std=c11", "-O0", "-g", "-fno-strict-aliasing",
