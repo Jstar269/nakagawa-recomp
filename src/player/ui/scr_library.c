@@ -173,8 +173,9 @@ static PlayerUiAction library_empty(NkUi *ui) {
                                  NK_UI_BUTTON_PRIMARY | NK_UI_BUTTON_LARGE)) {
                     result = action(PLAYER_UI_ACTION_START_WIZARD, 0u);
                 }
+                /* Not a default: START SETUP WIZARD is the one default action. */
                 if (nk_ui_button(ui, PLAYER_UI_ID_LIBRARY_EMPTY_ADD, "Choose a disc image",
-                                 NK_UI_BUTTON_LARGE)) {
+                                 NK_UI_BUTTON_LARGE | NK_UI_BUTTON_NOT_DEFAULT)) {
                     result = action(PLAYER_UI_ACTION_ADD_DISC, 0u);
                 }
                 nk_ui_end_container(ui);
