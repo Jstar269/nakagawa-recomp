@@ -486,25 +486,52 @@ jobs:
         with:
           python-version: "3.15.1"
 
+      # The runner's Ubuntu mirror is sometimes very slow rather than stalled (2026-10-23: 43.6 kB/s,
+      # 39 minutes for 103 MB; then one package per ~7 minutes), so timeouts alone do not help. The
+      # downloaded .deb files are cached between runs (packages only, never repository objects), and
+      # a failed or slow attempt moves to the primary Ubuntu archive before retrying.
+      - name: Restore the native apt package cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/apt-archives
+          key: apt-native-ubuntu-24.04-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: |
+            apt-native-ubuntu-24.04-
+
       - name: Install native test dependencies
-        # The runner's Ubuntu mirror sometimes stalls on single packages (2026-10-23: 39 min at
-        # 43.6 kB/s, and a 45-minute job timeout). Time out a stalled connection and retry it
-        # instead of waiting for it, and retry the whole install twice before giving up.
-        timeout-minutes: 20
+        timeout-minutes: 30
         run: |
+          archives="$RUNNER_TEMP/apt-archives"
+          mkdir -p "$archives/partial"
           printf '%s\n' 'Acquire::Retries "5";' 'Acquire::http::Timeout "30";' \
-            'Acquire::https::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/80-ci-network >/dev/null
+            'Acquire::https::Timeout "30";' "Dir::Cache::Archives \"$archives\";" \
+            'APT::Keep-Downloaded-Packages "true";' | sudo tee /etc/apt/apt.conf.d/80-ci-network >/dev/null
           for attempt in 1 2 3; do
-            if sudo apt-get update && sudo apt-get install -y build-essential cmake curl gcc-mipsel-linux-gnu \
+            if [ "$attempt" -gt 1 ]; then
+              echo "apt install attempt $((attempt - 1)) failed; switching to the primary Ubuntu archive" >&2
+              # The hosted image's sources read mirror+file:/etc/apt/apt-mirrors.txt; put the primary
+              # archive first in that list (and in any plain URI), keeping Azure as a fallback.
+              if [ -f /etc/apt/apt-mirrors.txt ]; then
+                printf '%s\n' 'http://archive.ubuntu.com/ubuntu/' 'http://azure.archive.ubuntu.com/ubuntu/' \
+                  | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+              fi
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' \
+                /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
+            fi
+            # Both halves are capped per attempt so a slow mirror cannot spend the whole step budget
+            # before the fallback runs: 3 minutes for the index update, 8 for the install.
+            if sudo timeout 180 apt-get update && sudo timeout 480 apt-get install -y build-essential cmake curl gcc-mipsel-linux-gnu \
                 git libavcodec-dev libavutil-dev libc6-dev-i386 libvulkan-dev \
                 libxcursor-dev libxext-dev libxfixes-dev libxi-dev libxinerama-dev \
                 libxkbcommon-dev libx11-dev libxrandr-dev libxss-dev libxtst-dev \
                 mesa-vulkan-drivers ninja-build pkg-config vulkan-tools \
                 vulkan-validationlayers xauth xvfb; then
+              # The cache action runs as the runner user; make the root-owned .deb files readable.
+              sudo rm -rf "$archives/partial" "$archives/lock"
+              sudo chmod -R a+rX "$archives"
               exit 0
             fi
-            echo "apt install attempt $attempt failed; retrying" >&2
-            sleep 15
+            sleep 10
           done
           exit 1
 

@@ -186,7 +186,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "43ff832ad03b3768cb90c35daed87d4d9dbee72932a12dc47a19de755414f2c5"
+      "sha256": "0c9a732d36ccd7dbe68004dab9b241ba1a34a0e53285c67a3e46634061ce64bb"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -5316,7 +5316,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "415c8fe3797e06a6fe753e6a2d6275ccb89cffa7380142aed60a72260381e43d"
+      "sha256": "163e0c405d3d7ede6bc8ed619a3f3b42a27349412e7ae541d0dfe3f789360da7"
     },
     {
       "path": "src/rt/hle_power.c",
@@ -5354,7 +5354,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "ec0d577ff7f4fa53a9bacebf4e53bfa184dda616b01b25235c9368ba53595e28"
+      "sha256": "b406ccd46d8eba40b4b202c0f32f2cc27e403f9117d1572cd5cc749ee4ef847e"
     },
     {
       "path": "src/rt/intr_conformance.h",
