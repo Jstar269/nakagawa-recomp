@@ -45,6 +45,11 @@ HEADER_SIZE = 392
 REVISION = 2
 VERSION = 0
 SOURCE_BITS_PER_PIXEL = 4
+#: Header bytes 0x20 and 0x21: the rounding units, in bytes, of the packed character-map and
+#: character-pointer sections. The console font library divides by them (a zero is a
+#: division-by-zero trap inside sceFontOpenUserMemory/sceFontOpenUserFile); every console font
+#: carries 4, which is also the whole-word rounding this writer applies (PGF_SPEC.md 3.1, 3.3).
+SECTION_ROUNDING_BYTES = 4
 DEFAULT_RESOLUTION = 1920
 DEFAULT_FONT_NAME = "Nakagawa Synthetic"
 DEFAULT_FONT_TYPE = "SYNTHETIC-FIXTURE"
@@ -513,6 +518,8 @@ def build_pgf(
     struct.pack_into("<I", header, 0x14, glyph_count)
     struct.pack_into("<I", header, 0x18, char_map_bits)
     struct.pack_into("<I", header, 0x1C, pointer_bits)
+    header[0x20] = SECTION_ROUNDING_BYTES
+    header[0x21] = SECTION_ROUNDING_BYTES
     header[0x22] = SOURCE_BITS_PER_PIXEL
     header[0x35 : 0x35 + len(name_bytes)] = name_bytes
     header[0x75 : 0x75 + len(type_bytes)] = type_bytes

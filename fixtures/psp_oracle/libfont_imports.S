@@ -16,7 +16,12 @@
    export name: the derivation rule of tools/nid_corpus.json, where all five
    names are hash-verified entries. All five match src/rt/nid_names.h. The
    0x40010000 version/attribute word is the one the PSPSDK uses for its
-   user-library imports (libpspdisplay.a and display_user_imports.S). */
+   user-library imports (libpspdisplay.a and display_user_imports.S).
+
+   The font-userpgf case (#1055) additionally opens fonts and draws glyphs, so the Makefile
+   assembles this file with -DLIBFONT_USERPGF for that case only and pins the larger set of
+   thirteen NIDs (the five above plus the eight below, hash-verified against
+   src/rt/nid_names.h the same way). Every other case still links exactly the five. */
 
 #include "pspimport.s"
 
@@ -26,3 +31,13 @@
     IMPORT_FUNC  "sceLibFont", 0x27F6E642, sceFontGetNumFontList
     IMPORT_FUNC  "sceLibFont", 0xBC75D85B, sceFontGetFontList
     IMPORT_FUNC  "sceLibFont", 0x5333322D, sceFontGetFontInfoByIndexNumber
+#ifdef LIBFONT_USERPGF
+    IMPORT_FUNC  "sceLibFont", 0xA834319D, sceFontOpen
+    IMPORT_FUNC  "sceLibFont", 0x57FCB733, sceFontOpenUserFile
+    IMPORT_FUNC  "sceLibFont", 0xBB8E7FE6, sceFontOpenUserMemory
+    IMPORT_FUNC  "sceLibFont", 0x3AEA8CB6, sceFontClose
+    IMPORT_FUNC  "sceLibFont", 0x0DA7535E, sceFontGetFontInfo
+    IMPORT_FUNC  "sceLibFont", 0xDCC80C2F, sceFontGetCharInfo
+    IMPORT_FUNC  "sceLibFont", 0x980F4895, sceFontGetCharGlyphImage
+    IMPORT_FUNC  "sceLibFont", 0xAA3DE7B5, sceFontGetShadowInfo
+#endif

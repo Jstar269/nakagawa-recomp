@@ -23,7 +23,7 @@ class HstTitleManifestTests(unittest.TestCase):
         # private fixture.
         if not test_public_title_isolation.private_title_tests_enabled("assets/titles/hst-ucus98701.json"):
             raise unittest.SkipTest(
-                "private HST title manifest is unavailable (set NK_PRIVATE_TITLE_TESTS=1 to "
+                "PRIVATE_INPUT: private HST title manifest is unavailable (set NK_PRIVATE_TITLE_TESTS=1 to "
                 "opt in with a local ignored manifest)"
             )
 

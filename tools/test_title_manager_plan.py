@@ -65,7 +65,7 @@ class TitleManagerPlanTests(unittest.TestCase):
 
     def test_hst_plan_is_bounded_and_contains_only_manager_fields(self) -> None:
         if self.hst is None:
-            self.skipTest("private HST title manifest is unavailable in the sanitized public tree")
+            self.skipTest("PRIVATE_INPUT: private HST title manifest is unavailable in the sanitized public tree")
         plan = self.hst_plan()
         self.assertEqual(plan["plan_version"], 1)
         self.assertEqual(plan["plan_kind"], "title-manager-build")
