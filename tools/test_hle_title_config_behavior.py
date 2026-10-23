@@ -201,7 +201,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
     def test_configured_bindings_reach_production_hle(self):
         make = shutil.which("mingw32-make")
         if not make:
-            raise unittest.SkipTest("mingw32-make is not available")
+            raise unittest.SkipTest("WINDOWS_ONLY: mingw32-make is not available")
         with scratch_dir.TemporaryDirectory(prefix="nakagawa_hle_") as tmp:
             tmp_path = Path(tmp)
             manifest = tmp_path / "synthetic-positive.json"
@@ -260,7 +260,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
     def test_libfont_guest_startup_routes_exports_without_ready_binding(self):
         make = shutil.which("mingw32-make")
         if not make:
-            raise unittest.SkipTest("mingw32-make is not available")
+            raise unittest.SkipTest("WINDOWS_ONLY: mingw32-make is not available")
         with scratch_dir.TemporaryDirectory(prefix="nakagawa_libfont_startup_") as tmp:
             tmp_path = Path(tmp)
             manifest_path = libfont_selftest_manifest(tmp_path)
@@ -297,7 +297,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         entry. The mutant restores the pre-#652 gate, where "0" did not cover libfont."""
         make = shutil.which("mingw32-make")
         if not make:
-            raise unittest.SkipTest("mingw32-make is not available")
+            raise unittest.SkipTest("WINDOWS_ONLY: mingw32-make is not available")
         with scratch_dir.TemporaryDirectory(prefix="nakagawa_libfont_gate_") as tmp:
             tmp_path = Path(tmp)
             manifest_path = libfont_selftest_manifest(tmp_path)
@@ -328,7 +328,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
     def test_manifest_module_load_honours_address_and_refuses_collision(self):
         make = shutil.which("mingw32-make")
         if not make:
-            raise unittest.SkipTest("mingw32-make is not available")
+            raise unittest.SkipTest("WINDOWS_ONLY: mingw32-make is not available")
         with scratch_dir.TemporaryDirectory(prefix="nakagawa_hle_module_") as tmp:
             tmp_path = Path(tmp)
             module_root = tmp_path / "modules"
@@ -398,7 +398,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
         module's own $gp, unload and reuse, LoadModuleByID, and every named refusal."""
         make = shutil.which("mingw32-make")
         if not make:
-            raise unittest.SkipTest("mingw32-make is not available")
+            raise unittest.SkipTest("WINDOWS_ONLY: mingw32-make is not available")
         with scratch_dir.TemporaryDirectory(prefix="nakagawa_hle_runtime_module_") as tmp:
             tmp_path = Path(tmp)
             module_root = tmp_path / "modules"
@@ -460,7 +460,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
     def test_generic_profile_rejects_diagnostics_even_when_requested(self):
         make = shutil.which("mingw32-make")
         if not make:
-            raise unittest.SkipTest("mingw32-make is not available")
+            raise unittest.SkipTest("WINDOWS_ONLY: mingw32-make is not available")
         with scratch_dir.TemporaryDirectory(prefix="nakagawa_hle_generic_") as tmp:
             tmp_path = Path(tmp)
             header = tmp_path / "sr_title_config.h"
@@ -497,7 +497,7 @@ class HleTitleConfigBehaviorTests(unittest.TestCase):
     def test_hst_profile_requires_explicit_diagnostics_opt_in(self):
         make = shutil.which("mingw32-make")
         if not make:
-            raise unittest.SkipTest("mingw32-make is not available")
+            raise unittest.SkipTest("WINDOWS_ONLY: mingw32-make is not available")
         with scratch_dir.TemporaryDirectory(prefix="nakagawa_hle_hst_nooptin_") as tmp:
             tmp_path = Path(tmp)
             manifest = tmp_path / "synthetic-hst-nooptin.json"

@@ -775,7 +775,7 @@ class TestProductionSmokePackage(unittest.TestCase):
     def test_package_builds_to_spaced_destination_via_nk_build_root(self):
         required = ("mingw32-make", "gcc", "pwsh")
         if not all(shutil.which(name) for name in required):
-            self.skipTest("the production package route requires mingw32-make, gcc, and pwsh")
+            self.skipTest("WINDOWS_ONLY: the production package route requires mingw32-make, gcc, and pwsh")
         self.skip_if_sdl3_toolchain_unavailable()
         safe_build_root = self.root / "safe_build_root"
         safe_build_root.mkdir(parents=True)
@@ -804,7 +804,7 @@ class TestProductionSmokePackage(unittest.TestCase):
     def test_package_builds_to_spaced_destination_via_short_path_provider(self):
         required = ("mingw32-make", "gcc", "pwsh")
         if not all(shutil.which(name) for name in required):
-            self.skipTest("the production package route requires mingw32-make, gcc, and pwsh")
+            self.skipTest("WINDOWS_ONLY: the production package route requires mingw32-make, gcc, and pwsh")
         self.skip_if_sdl3_toolchain_unavailable()
         safe_short_root = self.root / "SHORTP~1"
         safe_short_root.mkdir(parents=True)
@@ -836,7 +836,7 @@ class TestProductionSmokePackage(unittest.TestCase):
         # Unmocked: the real 8.3 alias must survive (Path.resolve() would expand it back).
         required = ("mingw32-make", "gcc", "pwsh")
         if os.name != "nt" or not all(shutil.which(name) for name in required):
-            self.skipTest("real 8.3 short-path route needs Windows and the native toolchain")
+            self.skipTest("WINDOWS_ONLY: real 8.3 short-path route needs Windows and the native toolchain")
         self.skip_if_sdl3_toolchain_unavailable()
         spaced_parent = self.root / "Real Spaced Parent"
         spaced_parent.mkdir(parents=True)
@@ -896,7 +896,7 @@ class TestProductionSmokePackage(unittest.TestCase):
     def test_package_builds_from_inputs_under_a_path_with_spaces(self):
         required = ("mingw32-make", "gcc", "pwsh")
         if not all(shutil.which(name) for name in required):
-            self.skipTest("the production package route requires mingw32-make, gcc, and pwsh")
+            self.skipTest("WINDOWS_ONLY: the production package route requires mingw32-make, gcc, and pwsh")
         spaced = self.root / "User Name" / "Downloads"
         spaced.mkdir(parents=True)
         executable = spaced / "guest.prx"
@@ -917,7 +917,7 @@ class TestProductionSmokePackage(unittest.TestCase):
     def test_package_action_runs_production_smoke_and_emits_deterministic_contract(self):
         required = ("mingw32-make", "gcc", "pwsh")
         if not all(shutil.which(name) for name in required):
-            self.skipTest("the production package route requires mingw32-make, gcc, and pwsh")
+            self.skipTest("WINDOWS_ONLY: the production package route requires mingw32-make, gcc, and pwsh")
 
         env = os.environ.copy()
         selected_executable = self.root / "EBOOT.BIN"
@@ -1065,7 +1065,7 @@ class TestProductionSmokePackage(unittest.TestCase):
     def test_library_cli_extracts_plaintext_elf_before_named_build_boundary(self):
         required = ("mingw32-make", "gcc", "pwsh")
         if not all(shutil.which(name) for name in required):
-            self.skipTest("the production package route requires mingw32-make, gcc, and pwsh")
+            self.skipTest("WINDOWS_ONLY: the production package route requires mingw32-make, gcc, and pwsh")
         if os.name == "nt" and not Path("C:/msys64/ucrt64/bin/SDL3.dll").is_file():
             self.skipTest("the player package route requires the SDL3 runtime DLL")
 
@@ -1173,7 +1173,8 @@ class TestCodegenStageReuse(unittest.TestCase):
     def require_make(self):
         required = ("mingw32-make", "gcc", "pwsh") if os.name == "nt" else ("make", "gcc")
         if not all(shutil.which(name) for name in required):
-            self.skipTest("the package route requires " + ", ".join(required))
+            prefix = "WINDOWS_ONLY: " if "mingw32-make" in required else ""
+            self.skipTest(prefix + "the package route requires " + ", ".join(required))
 
     def build(self, output_dir: Path, sink=None, **options):
         stdout = sink if sink is not None else io.StringIO()

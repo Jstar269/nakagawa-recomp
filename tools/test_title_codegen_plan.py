@@ -82,7 +82,7 @@ class TitleCodegenPlanTests(unittest.TestCase):
 
     def test_hst_plan_matches_current_makefile_contract(self) -> None:
         if self.hst is None:
-            self.skipTest("private HST title manifest is unavailable in the sanitized public tree")
+            self.skipTest("PRIVATE_INPUT: private HST title manifest is unavailable in the sanitized public tree")
         plan = self.plan(
             self.hst,
             game_name="hst",

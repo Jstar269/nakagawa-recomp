@@ -56,7 +56,7 @@ class TestHardTerminator(unittest.TestCase):
 
 @unittest.skipUnless(
     os.environ.get("NK_PRIVATE_TITLE_TESTS") == "1" and os.path.isfile(ELF),
-    "set NK_PRIVATE_TITLE_TESTS=1 and provide decrypted EBOOT.elf",
+    "PRIVATE_INPUT: set NK_PRIVATE_TITLE_TESTS=1 and provide decrypted EBOOT.elf",
 )
 class TestTailcallPromotionOnEboot(unittest.TestCase):
     @classmethod

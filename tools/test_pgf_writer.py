@@ -142,6 +142,18 @@ class PgfWriterStructureTests(unittest.TestCase):
         self.assertEqual(self.image[0x35 : 0x35 + len(FONT_NAME)], FONT_NAME.encode("ascii"))
         self.assertEqual(self.image[0x35 + len(FONT_NAME)], 0)
 
+    def test_header_carries_the_measured_section_rounding_bytes(self):
+        # Measured on a PSP-3000 / 6.61 (issue #1055): the console font library divides by header
+        # bytes 0x20 (character map) and 0x21 (character pointers). Console fonts carry 04 04 04 00
+        # in bytes 0x20..0x23; a zero traps inside sceFontOpen*, and 4 opens the font. The packed
+        # sections this writer emits are rounded to whole 32-bit words, which is the same unit.
+        self.assertEqual(pgf_writer.SECTION_ROUNDING_BYTES, 4)
+        self.assertEqual(bytes(self.image[0x20:0x24]), bytes([4, 4, pgf_writer.SOURCE_BITS_PER_PIXEL, 0]))
+        char_map_count = struct.unpack_from("<I", self.image, 0x10)[0]
+        char_map_bits = struct.unpack_from("<I", self.image, 0x18)[0]
+        map_size = ((char_map_count * char_map_bits + 31) // 32) * 4
+        self.assertEqual(map_size % self.image[0x20], 0)
+
     def test_metric_tables_are_deduplicated(self):
         metrics = [_metrics(glyph) for glyph in GLYPHS]
         expected = [

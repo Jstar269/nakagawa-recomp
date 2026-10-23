@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import history_audit
 from nk_core.git_isolation import run_git
+from ci_test_shards import nightly_tier
 
 
 class TestHistoryAudit(unittest.TestCase):
@@ -38,6 +39,7 @@ class TestHistoryAudit(unittest.TestCase):
         self.assertIn("[REDACTED_HEX_KEY]", d["detail"])
         self.assertIn("[REDACTED_API_TOKEN]", d["detail"])
 
+    @nightly_tier
     def test_full_history_audit_report_generation(self):
         report = history_audit.generate_full_history_audit_report(history_audit.ROOT)
         self.assertIn("status", report)

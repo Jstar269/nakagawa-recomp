@@ -607,20 +607,21 @@ def _parse_changed_paths(output: str) -> list[str]:
 
 
 #: Events that always run the complete matrix, whatever the changed paths. A manual
-#: dispatch asks for the complete contract. A merge-queue group is a candidate for
-#: ``main``, so it is never path-gated: every required check runs on the group commit.
-FULL_MATRIX_EVENTS = frozenset({"workflow_dispatch", "merge_group"})
+#: dispatch and the nightly schedule ask for the complete contract. A merge-queue group
+#: is a candidate for ``main``, so every required check runs on the group commit.
+FULL_MATRIX_EVENTS = frozenset({"workflow_dispatch", "merge_group", "schedule"})
 
 
 def _diff_endpoints(event_name: str, event: Mapping[str, object]) -> tuple[str, str] | None:
     """Return the ``(left, right)`` revisions this event's change spans, or None.
 
-    None means there is no left revision to diff against: a manual dispatch, or a
-    push whose ``before`` is absent or all zeros (a new ref). A merge group names
-    both ends of its range in the payload, so it never uses the push fallback.
+    None means there is no left revision to diff against: a manual dispatch or
+    scheduled run, or a push whose ``before`` is absent or all zeros (a new ref).
+    A merge group names both ends of its range in the payload, so it never uses
+    the push fallback.
     """
 
-    if event_name == "workflow_dispatch":
+    if event_name in {"workflow_dispatch", "schedule"}:
         return None
     sha = os.environ.get("GITHUB_SHA", "HEAD")
     if event_name == "pull_request":
@@ -643,7 +644,7 @@ def _diff_endpoints(event_name: str, event: Mapping[str, object]) -> tuple[str, 
 
 
 def _changed_files_from_git(event_name: str, event: Mapping[str, object]) -> list[str]:
-    if event_name == "workflow_dispatch":
+    if event_name in {"workflow_dispatch", "schedule"}:
         return []
 
     endpoints = _diff_endpoints(event_name, event)

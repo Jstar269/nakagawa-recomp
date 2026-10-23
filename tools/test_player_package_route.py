@@ -574,7 +574,7 @@ class TestPlayerPackageRoute(unittest.TestCase):
         missing = [name for name in required if not shutil.which(name)]
         if missing:
             self.skipTest(
-                "the player package route requires " + ", ".join(missing) + " on PATH"
+                "WINDOWS_ONLY: the player package route requires " + ", ".join(missing) + " on PATH"
             )
         # The package route links SDL3; a host without the supported toolchain
         # is a SKIP carrying the Makefile's own remedy, not a failed route.
