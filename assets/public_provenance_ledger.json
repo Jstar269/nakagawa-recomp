@@ -970,7 +970,7 @@
         "source": "configuration review",
         "statement": "configuration or dependency metadata reviewed for public release"
       },
-      "sha256": "63a784f411c5c3b3db50deb62b0495d9d2027fb4b8207d3779fd7dda009a18b1"
+      "sha256": "96182e74805b13d0cff9f06fdfadc86cbbfea33ef1758d9657510af0f6d49aad"
     },
     {
       "path": "assets/third_party_components.json",
