@@ -369,7 +369,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "fc85b238871825aacdcbd847285f10ca1ba6794910ec9c32d236b50f741a443d"
+      "sha256": "c873ad6f146d6f957577373d50023cfe37a8c2e5d4623d98d0eeb6ab463475f6"
     },
     {
       "path": "CREDITS.md",
