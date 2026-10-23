@@ -270,7 +270,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "d01dce39117fe24ff1b304220814abf430e3d8a528af244b665bef4cc9b67453"
+      "sha256": "ea424c73623ca1ee4f36e74ce863c9d59cfced0e09ee06a023f4777b38c598bf"
     },
     {
       "path": ".github/workflows/scorecards.yml",
@@ -1360,7 +1360,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "5b19cc3f5e9e06aed3af06175b56514d069473ce1ebea4bd615ceec0abe2749b"
+      "sha256": "7999e13ef3cbf2766e3ea4b5553278a9636dbbfab7ed288773dcb5754a71cbb5"
     },
     {
       "path": "docs/PROJECT_MODEL.md",
@@ -10197,7 +10197,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "f4132b8cde2b556f0570481a73cdff685ffad7c8175c9f6a9772c05747322146"
+      "sha256": "5a4d897519a027e25572e2666adbf21fe64618e0bae2091ba97ce96c24f94ae2"
     },
     {
       "path": "tools/test_portability_inventory.py",
@@ -10305,7 +10305,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "e4bb1f0bf596257b20e9713c65d73e9df0452c2292295886b21c6ac9193fa60e"
+      "sha256": "674cf300279b2801e1d0c29b9e0d381e86188ec03aeb5253458c170e2553b1e4"
     },
     {
       "path": "tools/test_provenance_attestation_gate.py",
