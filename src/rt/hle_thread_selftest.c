@@ -5258,13 +5258,9 @@ static int osk_write_script(const char *const *lines, int count) {
     return 1;
 }
 
-/* ---- sceUtilityOskUpdate and sceUtilityOskShutdownStart before a keyboard is up, and from INIT ----
- *
- * PSP-3000 measurement (firmware 6.6.1, 2026-10-21, probe CASE=fake-success, evidence in the
- * private workspace): with no keyboard, Update returns 0x80110005 (SCE_ERROR_UTILITY_WRONG_TYPE);
- * after InitStart, Update returns 0x80110001 (SCE_ERROR_UTILITY_INVALID_STATUS), and ShutdownStart
- * returns 0x80110001 and leaves the keyboard in INIT. The VISIBLE and after-use states are not
- * measured by this test. */
+/* PSP-3000 return-code measurements: issue #363, comments 6330742629 and 6331070692.
+ * Drive the keyboard through its syscall lifecycle, distinguishing never opened from NONE
+ * after use, and retain the earlier INIT refusal coverage. */
 #define NID_OSK_UPDATE 0x4b85c861u
 extern void sr_hle_test_osk_slot_reset(void);
 
@@ -5277,8 +5273,16 @@ static void test_osk_update_and_shutdown_init_states(void) {
     osk_env("SR_OSK_TEXT", NULL);
 
     memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
     expect(sr_syscall(&cpu, NID_OSK_UPDATE) == 0x80110005u,
-           "sceUtilityOskUpdate with no keyboard returns 0x80110005 (PSP-measured)");
+           "sceUtilityOskUpdate(0) never opened returns 0x80110005 (PSP-measured)");
+    cpu.r[4] = 1u;
+    expect(sr_syscall(&cpu, NID_OSK_UPDATE) == 0x80110005u,
+           "sceUtilityOskUpdate(1) never opened returns 0x80110005 (PSP-measured)");
+    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0x80110005u,
+           "sceUtilityOskShutdownStart never opened returns 0x80110005 (PSP-measured)");
+    expect(osk_poll(&cpu) == 0x80110005u,
+           "sceUtilityOskGetStatus never opened returns 0x80110005 (PSP-measured)");
 
     osk_guest_build(1, 16u, 0u);
     memset(&cpu, 0, sizeof(cpu));
@@ -5286,12 +5290,43 @@ static void test_osk_update_and_shutdown_init_states(void) {
     expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "sceUtilityOskInitStart accepts the parameter block");
 
     memset(&cpu, 0, sizeof(cpu));
+    cpu.r[4] = 0u;
     expect(sr_syscall(&cpu, NID_OSK_UPDATE) == 0x80110001u,
            "sceUtilityOskUpdate in INIT returns 0x80110001 (PSP-measured)");
 
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0x80110001u,
            "sceUtilityOskShutdownStart in INIT returns 0x80110001 (PSP-measured)");
+
+    s_osk_person_typing = 1;
+    expect(osk_poll(&cpu) == 1u && osk_poll(&cpu) == 2u,
+           "INIT refusals leave the keyboard to enter VISIBLE through GetStatus");
+    cpu.r[4] = 0u;
+    expect(sr_syscall(&cpu, NID_OSK_UPDATE) == 0u,
+           "sceUtilityOskUpdate(0) in VISIBLE returns 0 (PSP-measured)");
+    cpu.r[4] = 1u;
+    expect(sr_syscall(&cpu, NID_OSK_UPDATE) == 0u,
+           "sceUtilityOskUpdate(1) in VISIBLE returns 0 (PSP-measured)");
+    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0x80110001u,
+           "sceUtilityOskShutdownStart in VISIBLE returns 0x80110001 (PSP-measured)");
+    expect(osk_poll(&cpu) == 2u && s_osk_request_open,
+           "a refused ShutdownStart leaves the unanswered keyboard VISIBLE");
+
+    s_osk_person_typing = 0;
+    expect(osk_poll_past_visible(&cpu) == 3u && MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 2u,
+           "confirming the field reaches QUIT through GetStatus");
+    cpu.r[4] = 0u;
+    expect(sr_syscall(&cpu, NID_OSK_UPDATE) == 0x80110001u,
+           "sceUtilityOskUpdate in QUIT returns 0x80110001 (PSP-measured)");
+    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u,
+           "sceUtilityOskShutdownStart in QUIT returns 0 (PSP-measured)");
+    expect(osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
+           "accepted ShutdownStart reaches NONE after use through GetStatus");
+    cpu.r[4] = 0u;
+    expect(sr_syscall(&cpu, NID_OSK_UPDATE) == 0x80110001u,
+           "sceUtilityOskUpdate in NONE after use returns 0x80110001 (PSP-measured)");
+    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0x80110001u,
+           "sceUtilityOskShutdownStart in NONE after use returns 0x80110001 (PSP-measured)");
 
     sr_hle_test_osk_slot_reset();
     osk_person_reset();
@@ -5673,23 +5708,26 @@ static void test_osk_keyboard_keeps_guest_time_running(void) {
     expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u && osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
            "the answered keyboard winds down through FINISHED to NONE");
 
-    /* The title shuts the keyboard down before the person answered. */
+    /* ShutdownStart is refused while the person is still answering. */
     osk_person_reset();
     s_osk_person_typing = 1;
     osk_guest_build(1, 16u, 0u);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = OSK_PARAM_ADDR;
-    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard the title will close starts");
+    expect(sr_syscall(&cpu, NID_OSK_INIT) == 0u, "a keyboard for a premature shutdown starts");
     (void)osk_poll(&cpu);
     (void)osk_poll(&cpu);
     expect(osk_poll(&cpu) == 2u && s_osk_request_open, "the person's request is open");
     memset(&cpu, 0, sizeof(cpu));
-    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u && s_osk_abandons == 1 && !s_osk_request_open,
-           "ShutdownStart drops the person's unanswered request");
-    expect(osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
-           "a keyboard closed before it was answered still winds down through FINISHED to NONE");
+    expect(sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0x80110001u && s_osk_abandons == 0 && s_osk_request_open,
+           "ShutdownStart in VISIBLE refuses and preserves the person's unanswered request");
+    expect(osk_poll(&cpu) == 2u, "the refused keyboard stays VISIBLE");
     expect(MEM_R32(OSK_FIELDS_ADDR + 0x2cu) == 0u && MEM_R16(osk_out_addr(0)) == 0,
-           "a dropped request writes nothing into the field");
+           "the pending request writes nothing into the field");
+    s_osk_person_typing = 0;
+    expect(osk_poll_past_visible(&cpu) == 3u && sr_syscall(&cpu, NID_OSK_SHUTDOWN) == 0u &&
+               osk_poll(&cpu) == 4u && osk_poll(&cpu) == 0u,
+           "after the answer the keyboard accepts shutdown and reaches NONE");
 
     /* A new keyboard replaces one whose request is still open. */
     osk_person_reset();
