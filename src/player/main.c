@@ -3472,6 +3472,8 @@ int main(int argc, char *argv[]) {
                 snprintf(app.settings.controller_name, sizeof(app.settings.controller_name),
                          "%s", pad_name ? pad_name : "Controller");
                 app.settings.controller_connected = true;
+                /* A pad present at start switches the prompt glyphs to it. */
+                player_ui_nk_note_gamepad(next_ui, ids[0], true);
             }
         }
         SDL_free(ids);
@@ -3809,8 +3811,12 @@ int main(int argc, char *argv[]) {
                                 printf("[PLAYER] Gamepad connected: %s\n", app.settings.controller_name);
                             }
                         }
+                        if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
+                            player_ui_nk_note_gamepad(next_ui, event.gdevice.which, true);
+                        }
                         break;
                     case SDL_EVENT_GAMEPAD_REMOVED:
+                        player_ui_nk_note_gamepad(next_ui, event.gdevice.which, false);
                         if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
                             SDL_CloseGamepad(gamepad);
                             gamepad = NULL;

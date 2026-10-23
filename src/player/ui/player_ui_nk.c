@@ -233,6 +233,15 @@ bool player_ui_nk_handle_event(PlayerUiNk *player, const SDL_Event *event) {
     return true;
 }
 
+void player_ui_nk_note_gamepad(PlayerUiNk *player, uint32_t which, bool connected) {
+    SDL_Event event;
+    if (player == NULL || !player->ready) return;
+    memset(&event, 0, sizeof(event));
+    event.type = connected ? SDL_EVENT_GAMEPAD_ADDED : SDL_EVENT_GAMEPAD_REMOVED;
+    event.gdevice.which = (SDL_JoystickID)which;
+    (void)player_ui_nk_handle_event(player, &event);
+}
+
 static const char *player_ui_compatibility_word(const GameRecord *game,
                                                const char **detail) {
     if (detail != NULL) *detail = "";
@@ -358,7 +367,7 @@ static PlayerUiPrimaryAction player_ui_fill_title(PlayerUiNk *player,
         out->primary_action_enabled = true;
         primary = PLAYER_UI_PRIMARY_STOP_GAME;
     } else if (package_ready) {
-        out->primary_action_label = "PLAY NOW";
+        out->primary_action_label = "PLAY";
         out->primary_action_enabled = true;
         primary = PLAYER_UI_PRIMARY_PLAY;
     } else if (checking || package_status == NK_RUNTIME_PACKAGE_UNKNOWN) {
@@ -443,8 +452,7 @@ bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
         /* Prompts follow the last input device ("Match input"). */
         NkUiPrefs prefs;
         memset(&prefs, 0, sizeof(prefs));
-        prefs.prompt_style = nk_ui_prompt_style_for_family(
-            nk_ui_input_last_family(&player->input.input));
+        prefs.prompt_style = nk_ui_input_prompt_style(&player->input.input);
         nk_ui_set_prefs(player->ui, &prefs);
     }
     point_to_pixel = window_w > 0 ? (float)pixel_w / (float)window_w

@@ -73,6 +73,10 @@ float nk_ui_prompt_width(NkUiPromptStyle style, NkUiPromptAction action, float h
     if (!isfinite(height) || height <= 0.0f) {
         return 0.0f;
     }
+    if (action == NK_UI_PROMPT_ACT_MOVE) {
+        /* The arrow keys sit as an inverted T, three keys wide. */
+        return style == NK_UI_PROMPT_KEYCAPS ? height * 1.5f : height;
+    }
     if (style == NK_UI_PROMPT_KEYCAPS && action != NK_UI_PROMPT_ACT_MOVE) {
         size_t n;
         text = nk_ui_prompt_text(style, action);
@@ -143,8 +147,17 @@ static bool nk_ui_prompt_dots(const NkUiPromptPx *p) {
     static const int dy[4] = {-1, 0, 1, 0};
     int active;
     int i;
+    int plate = nk_ui_prompt_even(p->side);
     if (r < 1) {
         r = 1;
+    }
+    /* The dots sit on a round plate with an edge, one button cluster. */
+    if (!nk_ui_prompt_rect(p, p->cx - plate / 2, p->cy - plate / 2, p->cx + plate / 2,
+                           p->cy + plate / 2, plate / 2, p->spec->dim_rgba) ||
+        !nk_ui_prompt_rect(p, p->cx - plate / 2 + 1, p->cy - plate / 2 + 1,
+                           p->cx + plate / 2 - 1, p->cy + plate / 2 - 1, plate / 2 - 1,
+                           p->spec->face_rgba)) {
+        return false;
     }
     switch (p->spec->action) {
     case NK_UI_PROMPT_ACT_CONFIRM: active = 2; break;   /* south */
@@ -219,13 +232,85 @@ static bool nk_ui_prompt_menu(const NkUiPromptPx *p) {
     return true;
 }
 
-static bool nk_ui_prompt_cross(const NkUiPromptPx *p) {
-    int arm = nk_ui_prompt_even(p->side * 9 / 10);
-    int thick = nk_ui_prompt_even(p->side * 3 / 10);
-    return nk_ui_prompt_rect(p, p->cx - arm / 2, p->cy - thick / 2, p->cx + arm / 2,
-                             p->cy + thick / 2, thick / 4, p->spec->fg_rgba) &&
-           nk_ui_prompt_rect(p, p->cx - thick / 2, p->cy - arm / 2, p->cx + thick / 2,
-                             p->cy + arm / 2, thick / 4, p->spec->fg_rgba);
+/* A small filled triangle pointing up, right, down or left (0..3), centred on
+   (cx, cy) with half-size r, in device pixels. */
+static bool nk_ui_prompt_arrow(const NkUiPromptPx *p, float cx, float cy, float r, int dir) {
+    float xy[6];
+    switch (dir) {
+    case 0: xy[0] = cx; xy[1] = cy - r; xy[2] = cx + r; xy[3] = cy + r * 0.6f;
+        xy[4] = cx - r; xy[5] = cy + r * 0.6f; break;
+    case 1: xy[0] = cx + r; xy[1] = cy; xy[2] = cx - r * 0.6f; xy[3] = cy + r;
+        xy[4] = cx - r * 0.6f; xy[5] = cy - r; break;
+    case 2: xy[0] = cx; xy[1] = cy + r; xy[2] = cx - r; xy[3] = cy - r * 0.6f;
+        xy[4] = cx + r; xy[5] = cy - r * 0.6f; break;
+    default: xy[0] = cx - r; xy[1] = cy; xy[2] = cx + r * 0.6f; xy[3] = cy - r;
+        xy[4] = cx + r * 0.6f; xy[5] = cy + r; break;
+    }
+    return nk_ui_draw_add_convex(p->buffer, xy, 3u, p->spec->fg_rgba, p->id);
+}
+
+/* MOVE on a controller: a D-pad, a raised cross with an edge and an arrow at
+   the end of each arm, so it reads as the pad and never as a key. */
+static bool nk_ui_prompt_dpad(const NkUiPromptPx *p) {
+    int arm = nk_ui_prompt_even(p->side);
+    int thick = nk_ui_prompt_even(p->side * 38 / 100);
+    int edge = (int)floorf(p->density + 0.5f);
+    float reach = (float)arm * 0.5f - (float)thick * 0.42f;
+    float r = (float)thick * 0.3f;
+    int dir;
+    if (edge < 1) edge = 1;
+    if (!nk_ui_prompt_rect(p, p->cx - arm / 2, p->cy - thick / 2, p->cx + arm / 2,
+                           p->cy + thick / 2, thick / 4, p->spec->dim_rgba) ||
+        !nk_ui_prompt_rect(p, p->cx - thick / 2, p->cy - arm / 2, p->cx + thick / 2,
+                           p->cy + arm / 2, thick / 4, p->spec->dim_rgba) ||
+        !nk_ui_prompt_rect(p, p->cx - arm / 2 + edge, p->cy - thick / 2 + edge,
+                           p->cx + arm / 2 - edge, p->cy + thick / 2 - edge, thick / 4,
+                           p->spec->face_rgba) ||
+        !nk_ui_prompt_rect(p, p->cx - thick / 2 + edge, p->cy - arm / 2 + edge,
+                           p->cx + thick / 2 - edge, p->cy + arm / 2 - edge, thick / 4,
+                           p->spec->face_rgba)) {
+        return false;
+    }
+    for (dir = 0; dir < 4; ++dir) {
+        float dx = dir == 1 ? reach : dir == 3 ? -reach : 0.0f;
+        float dy = dir == 2 ? reach : dir == 0 ? -reach : 0.0f;
+        if (!nk_ui_prompt_arrow(p, (float)p->cx + dx, (float)p->cy + dy, r, dir)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* MOVE on a keyboard: the four arrow keys as an inverted T of small keycaps,
+   each with its arrow. */
+static bool nk_ui_prompt_arrow_keys(const NkUiPromptPx *p) {
+    int gap = p->h / 12 > 1 ? p->h / 12 : 1;
+    int key = (p->h - gap) / 2 < (p->w - gap * 2) / 3 ? (p->h - gap) / 2 : (p->w - gap * 2) / 3;
+    int edge = key / 6 > 1 ? key / 6 : 1;
+    int total = key * 3 + gap * 2;
+    int x0 = p->x0 + (p->w - total) / 2;
+    int y0 = p->y0 + (p->h - (key * 2 + gap)) / 2;
+    int radius = key / 4;
+    int k;
+    /* up, then left, down, right */
+    const int kx[4] = {x0 + key + gap, x0, x0 + key + gap, x0 + (key + gap) * 2};
+    const int ky[4] = {y0, y0 + key + gap, y0 + key + gap, y0 + key + gap};
+    const int dirs[4] = {0, 3, 2, 1};
+    if (key < 2) {
+        return true;
+    }
+    for (k = 0; k < 4; ++k) {
+        float cx = (float)kx[k] + (float)key * 0.5f;
+        float cy = (float)ky[k] + (float)(key - edge) * 0.5f;
+        if (!nk_ui_prompt_rect(p, kx[k], ky[k], kx[k] + key, ky[k] + key, radius,
+                               p->spec->dim_rgba) ||
+            !nk_ui_prompt_rect(p, kx[k], ky[k], kx[k] + key, ky[k] + key - edge, radius,
+                               p->spec->face_rgba) ||
+            !nk_ui_prompt_arrow(p, cx, cy, (float)key * 0.2f, dirs[k])) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool nk_ui_prompt_draw(NkUiDrawBuffer *buffer, const NkUiPromptSpec *spec,
@@ -264,7 +349,7 @@ bool nk_ui_prompt_draw(NkUiDrawBuffer *buffer, const NkUiPromptSpec *spec,
     style = spec->style;
     switch (spec->action) {
     case NK_UI_PROMPT_ACT_MOVE:
-        return nk_ui_prompt_cross(&p);
+        return style == NK_UI_PROMPT_KEYCAPS ? nk_ui_prompt_arrow_keys(&p) : nk_ui_prompt_dpad(&p);
     case NK_UI_PROMPT_ACT_MENU:
         return style == NK_UI_PROMPT_KEYCAPS ? nk_ui_prompt_keycap(&p) : nk_ui_prompt_menu(&p);
     case NK_UI_PROMPT_ACT_TAB_PREV:

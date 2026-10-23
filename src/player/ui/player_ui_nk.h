@@ -140,6 +140,10 @@ bool player_ui_nk_view_active(const PlayerUiNk *player, const PlayerApp *app);
 bool player_ui_nk_at_library_root(const PlayerUiNk *player);
 bool player_ui_nk_handle_event(PlayerUiNk *player,
                                const union SDL_Event *event);
+/* A pad was opened (connected) or went away: the prompt glyphs and the top
+   bar's input chip follow it. `which` is the SDL joystick id. NULL player is a
+   no-op. */
+void player_ui_nk_note_gamepad(PlayerUiNk *player, uint32_t which, bool connected);
 bool player_ui_nk_render(PlayerUiNk *player, PlayerApp *app,
                          struct SDL_Renderer *renderer,
                          struct SDL_Window *window,
