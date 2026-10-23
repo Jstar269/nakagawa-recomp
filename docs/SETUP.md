@@ -13,7 +13,8 @@ Everything a new Windows machine needs, in one list. The versions are floors; th
 
 1. **Windows 11 x64** with a Vulkan-capable GPU and its current graphics driver. The player loads the
    driver's `vulkan-1.dll`.
-2. **PowerShell 7.4+** (`pwsh`). Windows PowerShell 5.1 is not supported.
+2. **PowerShell 7.4+** (`pwsh`), the shell you type commands into. Windows PowerShell 5.1 is not
+   supported for that.
 3. **MSYS2 UCRT64** with the packages in [section 1](#1-install-the-core-toolchain): GCC, GNU Make,
    SDL3, SDL3_ttf, and the Vulkan headers and loader.
 4. **CPython 3.14.x** on `PATH`. Read [PATH order](#path-order) before you install the Python tooling.
@@ -28,6 +29,11 @@ For the two showcase demos only, add **WSL 2** with Ubuntu and **PSPDEV v2026060
 
 The player's **BUILD PACKAGE** can download pinned build tools on first use. A consent card lists each
 download first ([details](#player-build-package-prerequisites)).
+
+**Which PowerShell.** Type the PowerShell commands in this guide into PowerShell 7.4+ (`pwsh`). The
+build itself still calls the built-in Windows PowerShell 5.1 (`powershell.exe`) for one step,
+copying the build assets (`tools/copy_build_assets.ps1`, through `POWERSHELL` in the
+`Makefile`). That script supports 5.1, so you do not need to change or install anything for it.
 
 ## Showcase demos on Windows: WSL 2 and PSPDEV
 
@@ -103,7 +109,7 @@ consumer ISO compatibility and interactive Linux presentation remain in the work
 The supported and tested core development environment is:
 
 - Windows 11 x64. Older or unsupported Windows versions may work, but receive no compatibility guarantee.
-- PowerShell 7.4+ (`pwsh`). Windows PowerShell 5.1 is not supported.
+- PowerShell 7.4+ (`pwsh`) as the shell you type into. Windows PowerShell 5.1 is not supported for that.
 - CPython 3.14.x (`>=3.14,<3.15`), with `python` resolving to that feature line.
 - Current MSYS2 UCRT64 GCC/G++, GNU Make, SDL3, and Vulkan loader packages. The release
   manifest's `toolchain_policy` records only the floors the code actually needs: a C11 compiler
