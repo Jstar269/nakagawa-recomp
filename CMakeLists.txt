@@ -379,6 +379,22 @@ if(BUILD_PLAYER)
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/clay
     )
     target_compile_definitions(nakagawa_player PRIVATE NK_UI_WITH_SDL NK_UI_WITH_SDL3)
+    # The About page's build date: SOURCE_DATE_EPOCH when set, else the source
+    # commit's time (the Makefile does the same; see NK_PLAYER_BUILD_EPOCH).
+    set(NK_PLAYER_BUILD_EPOCH "$ENV{SOURCE_DATE_EPOCH}")
+    if(NOT NK_PLAYER_BUILD_EPOCH)
+        find_package(Git QUIET)
+        if(GIT_FOUND)
+            execute_process(COMMAND "${GIT_EXECUTABLE}" log -1 --format=%ct
+                WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                OUTPUT_VARIABLE NK_PLAYER_BUILD_EPOCH
+                OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        endif()
+    endif()
+    if(NK_PLAYER_BUILD_EPOCH MATCHES "^[0-9]+$")
+        target_compile_definitions(nakagawa_player PRIVATE
+            NK_PLAYER_BUILD_EPOCH=${NK_PLAYER_BUILD_EPOCH}LL)
+    endif()
     target_link_libraries(nakagawa_player PRIVATE nakagawa_core)
     add_custom_command(TARGET nakagawa_player POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
