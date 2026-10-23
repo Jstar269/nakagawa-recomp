@@ -18,6 +18,7 @@ import json
 from pathlib import Path
 import re
 import unittest
+from tools.ci_test_shards import nightly_tier
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -281,6 +282,7 @@ class MatrixReportGenerationTests(unittest.TestCase):
     ever regresses to an empty or mislabelled evidence matrix.
     """
 
+    @nightly_tier
     def test_build_report_matches_the_documented_shape(self) -> None:
         report = build_report()
         self.assertEqual(report["schema"], 1)

@@ -316,36 +316,35 @@ int main(void) {{
 
 
 class TestAllegrexEncodingsDocumented(unittest.TestCase):
-    """Verify the documented PSP Allegrex encoding matrix matches codegen behavior."""
+    """Table-drive PSP SPECIAL encodings through the real decoder.
 
-    def _check(self, funct_val, expected_name):
-        word = encode_special(4, 5, 0, funct_val)
-        stmt, _, _ = codegen.effect(0, word)
-        self.assertNotIn("Unsupported", stmt, msg=f"{expected_name} (funct 0x{funct_val:02x}) should be supported")
+    The two fixed words from the Gate B encoder suite remain independent inputs
+    alongside the register-generated words for MADD and CLZ.
+    """
 
-    def test_clz_funct16(self):
-        self._check(0x16, "clz")
+    CASES = (
+        ("clz", 0x16, (encode_special(4, 5, 0, 0x16), 0x01005016)),
+        ("clo", 0x17, (encode_special(4, 5, 0, 0x17),)),
+        ("madd", 0x1C, (encode_special(4, 5, 0, 0x1C), 0x0109001C)),
+        ("maddu", 0x1D, (encode_special(4, 5, 0, 0x1D),)),
+        ("max", 0x2C, (encode_special(4, 5, 0, 0x2C),)),
+        ("min", 0x2D, (encode_special(4, 5, 0, 0x2D),)),
+        ("msub", 0x2E, (encode_special(4, 5, 0, 0x2E),)),
+        ("msubu", 0x2F, (encode_special(4, 5, 0, 0x2F),)),
+    )
 
-    def test_clo_funct17(self):
-        self._check(0x17, "clo")
-
-    def test_madd_funct1C(self):
-        self._check(0x1C, "madd")
-
-    def test_maddu_funct1D(self):
-        self._check(0x1D, "maddu")
-
-    def test_max_funct2C(self):
-        self._check(0x2C, "max")
-
-    def test_min_funct2D(self):
-        self._check(0x2D, "min")
-
-    def test_msub_funct2E(self):
-        self._check(0x2E, "msub")
-
-    def test_msubu_funct2F(self):
-        self._check(0x2F, "msubu")
+    def test_each_psp_special_word_decodes_for_its_function(self):
+        for name, funct, words in self.CASES:
+            for word in words:
+                with self.subTest(name=name, word=f"0x{word:08x}"):
+                    self.assertEqual((word >> 26) & 0x3F, 0x00)
+                    self.assertEqual(word & 0x3F, funct)
+                    stmt, _, _ = codegen.effect(0, word)
+                    self.assertNotIn(
+                        "Unsupported",
+                        stmt,
+                        msg=f"{name} (funct 0x{funct:02x}) should be supported",
+                    )
 
     def test_private_elf_madd_words_are_translated(self):
         """The private HST ELF contains madd at these addresses.

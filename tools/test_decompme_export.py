@@ -367,7 +367,7 @@ class TestFunctionCfg(unittest.TestCase):
 
 @unittest.skipUnless(
     os.environ.get("NK_PRIVATE_TITLE_TESTS") == "1" and EBOOT.is_file(),
-    "set NK_PRIVATE_TITLE_TESTS=1 and provide private place_game_here/EBOOT.elf",
+    "PRIVATE_INPUT: set NK_PRIVATE_TITLE_TESTS=1 and provide private place_game_here/EBOOT.elf",
 )
 class TestExportAgainstRealEboot(unittest.TestCase):
     """Structure-only end-to-end check on the real game input. Never prints bytes."""

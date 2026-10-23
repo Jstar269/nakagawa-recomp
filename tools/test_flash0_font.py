@@ -775,14 +775,15 @@ class Flash0FontDeviceTests(unittest.TestCase):
             SELFTEST_SOURCE.read_text(encoding="utf-8")
         ):
             raise unittest.SkipTest(
-                f"{SELFTEST_SOURCE.name} includes <windows.h> without a _WIN32 guard, so the "
+                f"WINDOWS_ONLY: {SELFTEST_SOURCE.name} includes <windows.h> without a _WIN32 guard, so the "
                 f"selftest does not build on {sys.platform} yet "
                 "(docs/LINUX_DEVELOPMENT.md, 'What doesn't yet')"
             )
         make_tool = "mingw32-make" if sys.platform == "win32" else "make"
         make = shutil.which(make_tool)
         if not make:
-            raise unittest.SkipTest(f"{make_tool} is not available")
+            prefix = "WINDOWS_ONLY: " if make_tool == "mingw32-make" else ""
+            raise unittest.SkipTest(f"{prefix}{make_tool} is not available")
         with scratch_dir.TemporaryDirectory(prefix="flash0-font-") as tmp:
             tmp_root = Path(tmp)
             # Build beneath the scratch tree, never the checkout's build/.
@@ -831,14 +832,15 @@ class Flash0FontDeviceTests(unittest.TestCase):
             SELFTEST_SOURCE.read_text(encoding="utf-8")
         ):
             raise unittest.SkipTest(
-                f"{SELFTEST_SOURCE.name} includes <windows.h> without a _WIN32 guard, so the "
+                f"WINDOWS_ONLY: {SELFTEST_SOURCE.name} includes <windows.h> without a _WIN32 guard, so the "
                 f"selftest does not build on {sys.platform} yet "
                 "(docs/LINUX_DEVELOPMENT.md, 'What doesn't yet')"
             )
         make_tool = "mingw32-make" if sys.platform == "win32" else "make"
         make = shutil.which(make_tool)
         if not make:
-            raise unittest.SkipTest(f"{make_tool} is not available")
+            prefix = "WINDOWS_ONLY: " if make_tool == "mingw32-make" else ""
+            raise unittest.SkipTest(f"{prefix}{make_tool} is not available")
         with scratch_dir.TemporaryDirectory(prefix="flash0-font-index-") as tmp:
             tmp_root = Path(tmp)
             build_root = tmp_root / "build"

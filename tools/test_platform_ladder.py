@@ -40,6 +40,7 @@ if SPEC is None or SPEC.loader is None:
 generator = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(generator)
 from test_build_truth import _make_safe_temp_dir  # noqa: E402
+from ci_test_shards import nightly_tier  # noqa: E402
 
 
 EXPECTED_PRX_SHA256 = {
@@ -133,7 +134,8 @@ def _ensure_workload(
 
     make = _find_make()
     if not make:
-        test.skipTest(f"cannot build {target}: GNU Make (mingw32-make or make) is not installed")
+        prefix = "WINDOWS_ONLY: " if sys.platform == "win32" else ""
+        test.skipTest(f"{prefix}cannot build {target}: GNU Make (mingw32-make or make) is not installed")
     cc = _find_cc()
     if not cc:
         test.skipTest(f"cannot build {target}: C compiler (gcc, cc, or clang) is not installed")
@@ -343,6 +345,7 @@ class HostileEnvironmentTests(unittest.TestCase):
             env.update(extra)
         return env
 
+    @nightly_tier
     def test_zero_runs_with_empty_dataroot_and_wrong_cwd(self):
         workloads_dir = WORKLOADS / "ladder-zero"
         exe = workloads_dir / "pl_zero.exe"
@@ -367,6 +370,7 @@ class HostileEnvironmentTests(unittest.TestCase):
         for forbidden in ("xbdata", "place_game_here", "hst_image", "UNKNOWN NID"):
             self.assertNotIn(forbidden, combined)
 
+    @nightly_tier
     def test_generator_ignores_ambient_runtime_output_controls(self):
         workloads_dir = WORKLOADS / "ladder-zero"
         exe = workloads_dir / "pl_zero.exe"
@@ -560,6 +564,7 @@ class MutationKillTests(unittest.TestCase):
     def _exe_ready(self, name: str) -> bool:
         return (self.workloads / name / f"{name.split('/')[-1]}.exe").is_file()
 
+    @nightly_tier
     def test_m9_flipping_expected_result_kills_fpu_word_gate(self):
         """M9-adjacent: ignoring guest RM would change words 2/6/7; prove the
         gate detects ANY single-word drift by flipping one expectation."""
@@ -590,6 +595,7 @@ class MutationKillTests(unittest.TestCase):
         # swapped table cannot satisfy the pin.
         self.assertEqual(len(set(nids)), len(nids))
 
+    @nightly_tier
     def test_m3_generic_workload_does_not_require_dataroot(self):
         """M3/M2: unset SR_DATAROOT entirely; ladder-zero still passes."""
         exe = self.workloads / "ladder-zero" / "pl_zero.exe"
