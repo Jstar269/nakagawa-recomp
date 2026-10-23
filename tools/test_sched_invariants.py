@@ -562,5 +562,49 @@ class SpecSeamCoverageTests(unittest.TestCase):
                                 "the reading rule needs a [Cn] citation or a project decision")
 
 
+class HostThreadCreatorAuditTests(unittest.TestCase):
+    """Only the documented OSK worker may create a native host thread."""
+
+    def test_native_thread_creators_are_allowlisted(self):
+        pattern = (
+            r"(^|[^[:alnum:]_])(SDL_CreateThread|CreateThread|_beginthread(ex)?|"
+            r"pthread_create|thrd_create|std::jthread|std::thread)[[:space:]]*\("
+        )
+        result = subprocess.run(
+            ["git", "grep", "-n", "-I", "-E", pattern, "--", "src/rt", "src/core"],
+            cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        self.assertIn(result.returncode, (0, 1), result.stderr)
+        creators = []
+        for line in result.stdout.splitlines():
+            path, _line_number, _source = line.split(":", 2)
+            if "selftest" not in Path(path).name.lower():
+                creators.append(path)
+        self.assertEqual(
+            creators, ["src/rt/osk_text_entry.c"],
+            "native thread creation needs a documented owner and guest-state quiescence rule",
+        )
+
+
+class PauseRuntimeAssertionTests(unittest.TestCase):
+    def test_time_refresh_aborts_inside_the_pause_loop(self):
+        candidates = (
+            ROOT / "build" / "hst" / "sched_selftest_generic.exe",
+            ROOT / "build" / "hst" / "sched_selftest_generic",
+        )
+        binary = next((path for path in candidates if path.is_file()), None)
+        if binary is None:
+            self.skipTest("sched-selftest binary has not been built")
+        result = subprocess.run(
+            [str(binary), "--pause-forbidden-vtime"], cwd=ROOT, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10, check=False,
+        )
+        self.assertNotEqual(result.returncode, 0, "vtime_refresh unexpectedly ran while paused")
+        self.assertIn(
+            "sched pause invariant: vtime_refresh ran while the guest was paused",
+            result.stdout,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

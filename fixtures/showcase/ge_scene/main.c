@@ -8,6 +8,10 @@
 #include <pspctrl.h>
 #include <string.h>
 
+/* Keep the synthetic note queued across the host scheduler boundary exercised
+ * by the real-pause showcase check. The title-neutral runtime still consumes
+ * exactly the number of frames the guest submits. */
+#define SHOWCASE_AUDIO_FRAMES 8192
 #include "../common/tone.h"
 
 PSP_MODULE_INFO("NAKAGAWA_SHOWCASE_3D", PSP_MODULE_USER, 1, 0);

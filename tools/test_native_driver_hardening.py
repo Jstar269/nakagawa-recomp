@@ -106,6 +106,10 @@ int gui_headless_acceptance_ready(void) {{ return 0; }}
 int gui_headless_acceptance_complete(void) {{ return 0; }}
 uint32_t gui_headless_acceptance_presented_frames(void) {{ return 0u; }}
 int (*sr_sched_stop_requested)(void) = NULL;
+const SrPauseHost *sr_sched_pause_host = NULL;
+void sr_audio_pause_enter(void) {{}}
+void sr_audio_pause_leave(void) {{}}
+int sr_audio_pause_script_ready(void) {{ return 1; }}
 uint32_t sr_newlib_malloc(uint32_t size, uint32_t guest_ra) {{
     (void)guest_ra;
     if (size > sizeof(g_module_start_arg)) return 0;

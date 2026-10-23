@@ -45,16 +45,47 @@ typedef struct {
     uint64_t underrun_events;
     uint64_t overrun_events;
     uint64_t backpressure_events;
+    uint64_t pause_enters;
+    uint64_t pause_held_frames;
+    uint64_t pause_stash_failures;
     uint32_t peak_queued_frames[SR_AUDIO_CHANNELS];
 } AudioStats;
+
+typedef struct {
+    int16_t *samples;
+    int frames;
+} AudioPauseStash;
+
+typedef struct {
+    int16_t *samples;
+    uint32_t capacity_frames;
+    uint32_t head_frame;
+    uint32_t frames;
+    int valid;
+} AudioShadowQueue;
+
+#define SR_AUDIO_PAUSE_FADE_FRAMES 256
 
 static AudioBackendState s_audio_state = AUDIO_STATE_UNINITIALIZED;
 static SDL_AudioDeviceID s_device_id = 0;
 static SDL_AudioStream *s_streams[SR_AUDIO_CHANNELS] = {NULL};
 static AudioStats s_stats;
+static AudioPauseStash s_pause_stash[SR_AUDIO_CHANNELS];
+static AudioShadowQueue s_shadow_queues[SR_AUDIO_CHANNELS];
+static int16_t s_pause_fade[SR_AUDIO_CHANNELS][SR_AUDIO_PAUSE_FADE_FRAMES * 2];
+static int s_pause_active;
+static int s_pause_device_fallback;
+static int s_pause_device_was_paused;
+static int s_pause_failure_reported;
+static int s_master_volume_percent = 100;
 static int s_reported_unavailable = 0;
 static int s_reported_init = 0;
 static int s_cleanup_registered = 0;
+
+#ifdef SR_AUDIO_SELFTEST
+static int s_test_fail_pause_stash_alloc;
+static int s_test_pause_failure_messages;
+#endif
 
 /* SR_AUDIOSTAT gate, matching the other backend: the queue/drift fields are diagnostics and
  * must not change the default output of a public build. */
@@ -294,6 +325,16 @@ static void sr_audio_cleanup(void) {
         }
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
     }
+    for (int i = 0; i < SR_AUDIO_CHANNELS; i++) {
+        free(s_pause_stash[i].samples);
+        s_pause_stash[i].samples = NULL;
+        s_pause_stash[i].frames = 0;
+        free(s_shadow_queues[i].samples);
+        memset(&s_shadow_queues[i], 0, sizeof(s_shadow_queues[i]));
+    }
+    s_pause_active = 0;
+    s_pause_device_fallback = 0;
+    s_pause_device_was_paused = 0;
     s_audio_state = AUDIO_STATE_UNINITIALIZED;
 }
 
@@ -304,6 +345,93 @@ static float sr_audio_master_gain(int percent) {
     if (percent <= 0) return 0.0f;
     if (percent >= 100) return 1.0f;
     return (float)percent / 100.0f;
+}
+
+static int sr_audio_apply_master_volume(int channel_volume) {
+    if (s_master_volume_percent >= 100) return channel_volume;
+    if (s_master_volume_percent <= 0) return 0;
+    return (int)(((int64_t)channel_volume * s_master_volume_percent) / 100);
+}
+
+static int sr_audio_shadow_reserve(AudioShadowQueue *queue, uint32_t needed_frames) {
+    if (!queue || !queue->valid || needed_frames > SR_AUDIO_MAX_QUEUED_FRAMES) return 0;
+    if (needed_frames <= queue->capacity_frames) return 1;
+    uint32_t capacity = queue->capacity_frames ? queue->capacity_frames : 1024u;
+    while (capacity < needed_frames) {
+        if (capacity > SR_AUDIO_MAX_QUEUED_FRAMES / 2u) {
+            capacity = SR_AUDIO_MAX_QUEUED_FRAMES;
+            break;
+        }
+        capacity *= 2u;
+    }
+    int16_t *samples = (int16_t *)malloc((size_t)capacity * 4u);
+    if (!samples) return 0;
+    for (uint32_t i = 0; i < queue->frames; i++) {
+        const uint32_t src = (queue->head_frame + i) % queue->capacity_frames;
+        samples[i * 2u] = queue->samples[src * 2u];
+        samples[i * 2u + 1u] = queue->samples[src * 2u + 1u];
+    }
+    free(queue->samples);
+    queue->samples = samples;
+    queue->capacity_frames = capacity;
+    queue->head_frame = 0;
+    return 1;
+}
+
+static void sr_audio_shadow_sync(int ch, uint32_t queued_frames) {
+    if (ch < 0 || ch >= SR_AUDIO_CHANNELS || s_pause_active) return;
+    AudioShadowQueue *queue = &s_shadow_queues[ch];
+    if (!queued_frames) {
+        queue->head_frame = 0;
+        queue->frames = 0;
+        queue->valid = 1;
+        return;
+    }
+    if (!queue->valid || queued_frames > SR_AUDIO_MAX_QUEUED_FRAMES) {
+        queue->valid = 0;
+        return;
+    }
+    if (queue->frames < queued_frames) {
+        queue->valid = 0;
+        return;
+    }
+    const uint32_t consumed = queue->frames - queued_frames;
+    if (consumed && queue->capacity_frames)
+        queue->head_frame = (queue->head_frame + consumed) % queue->capacity_frames;
+    queue->frames = queued_frames;
+}
+
+static int sr_audio_shadow_append(int ch, const int16_t *samples, int frames) {
+    if (ch < 0 || ch >= SR_AUDIO_CHANNELS || !samples || frames < 0) return 0;
+    AudioShadowQueue *queue = &s_shadow_queues[ch];
+    if (!queue->valid) return 0;
+    if ((uint32_t)frames > SR_AUDIO_MAX_QUEUED_FRAMES - queue->frames ||
+        !sr_audio_shadow_reserve(queue, queue->frames + (uint32_t)frames)) {
+        queue->valid = 0;
+        return 0;
+    }
+    if (!frames) return 1;
+    const uint32_t tail = (queue->head_frame + queue->frames) % queue->capacity_frames;
+    uint32_t first = queue->capacity_frames - tail;
+    if (first > (uint32_t)frames) first = (uint32_t)frames;
+    memcpy(queue->samples + tail * 2u, samples, (size_t)first * 4u);
+    if ((uint32_t)frames > first)
+        memcpy(queue->samples, samples + first * 2u, (size_t)((uint32_t)frames - first) * 4u);
+    queue->frames += (uint32_t)frames;
+    return 1;
+}
+
+static int sr_audio_shadow_copy(int ch, int16_t *out, uint32_t frames) {
+    if (ch < 0 || ch >= SR_AUDIO_CHANNELS || !out) return 0;
+    const AudioShadowQueue *queue = &s_shadow_queues[ch];
+    if (!queue->valid || queue->frames != frames) return 0;
+    if (!frames) return 1;
+    uint32_t first = queue->capacity_frames - queue->head_frame;
+    if (first > frames) first = frames;
+    memcpy(out, queue->samples + queue->head_frame * 2u, (size_t)first * 4u);
+    if (frames > first)
+        memcpy(out + first * 2u, queue->samples, (size_t)(frames - first) * 4u);
+    return 1;
 }
 
 int sr_audio_init(void) {
@@ -372,19 +500,17 @@ int sr_audio_init(void) {
             sr_audio_cleanup();
             return -1;
         }
+        s_shadow_queues[i].valid = 1;
     }
 
+    /* Apply master volume in the integer push path. SDL3 applies stream gain
+     * when data leaves a stream, which would also scale the temporary pause
+     * stash when it is read back. The stream gain remains at its default 1.0. */
     {
-        /* Apply the player's master volume once at backend init; the setting
-         * is fixed for the child's lifetime (settings apply at next launch). */
         const char *mv = getenv("SR_MASTER_VOLUME");
-        float gain = sr_audio_master_gain((mv && mv[0]) ? atoi(mv) : 100);
-        for (int i = 0; i < SR_AUDIO_CHANNELS; i++) {
-            if (!SDL_SetAudioStreamGain(s_streams[i], gain)) {
-                fprintf(stderr, "audio: could not apply master volume: %s\n",
-                        SDL_GetError());
-            }
-        }
+        const int requested = (mv && mv[0]) ? atoi(mv) : 100;
+        const float gain = sr_audio_master_gain(requested);
+        s_master_volume_percent = (int)(gain * 100.0f + 0.5f);
     }
 
     s_audio_state = AUDIO_STATE_ACTIVE;
@@ -416,11 +542,15 @@ void sr_audio_push(int ch, const int16_t *lr, int nframes, int volL, int volR) {
         return;
     }
 
+    volL = sr_audio_apply_master_volume(volL);
+    volR = sr_audio_apply_master_volume(volR);
+
     int queued_bytes = SDL_GetAudioStreamQueued(s_streams[ch]);
     if (queued_bytes < 0) {
         return;
     }
     int cur_queued_frames = queued_bytes / 4;
+    sr_audio_shadow_sync(ch, (uint32_t)cur_queued_frames);
 
     /* Instrumentation: underrun detection (queue had completely dried up after previous activity) */
     if (cur_queued_frames == 0 && s_stats.channel_pushed_frames[ch] > 0) {
@@ -438,9 +568,11 @@ void sr_audio_push(int ch, const int16_t *lr, int nframes, int volL, int volR) {
         return;
     }
 
+    const int16_t *submitted = lr;
+    int push_ok;
     /* Volume scaling and submission */
     if (volL == 0x8000 && volR == 0x8000) {
-        SDL_PutAudioStreamData(s_streams[ch], lr, nframes * 4);
+        push_ok = SDL_PutAudioStreamData(s_streams[ch], lr, nframes * 4);
     } else {
         int16_t stack_buf[1024 * 2];
         int16_t *buf = stack_buf;
@@ -454,18 +586,267 @@ void sr_audio_push(int ch, const int16_t *lr, int nframes, int volL, int volR) {
             buf[i * 2]     = (int16_t)(l < -32768 ? -32768 : (l > 32767 ? 32767 : l));
             buf[i * 2 + 1] = (int16_t)(r < -32768 ? -32768 : (r > 32767 ? 32767 : r));
         }
-        SDL_PutAudioStreamData(s_streams[ch], buf, nframes * 4);
+        submitted = buf;
+        push_ok = SDL_PutAudioStreamData(s_streams[ch], buf, nframes * 4);
+        if (push_ok) (void)sr_audio_shadow_append(ch, submitted, nframes);
         if (buf != stack_buf) {
             free(buf);
         }
     }
+    if (!push_ok) {
+        fprintf(stderr, "audio: SDL_PutAudioStreamData failed: %s\n", SDL_GetError());
+        return;
+    }
+    if (volL == 0x8000 && volR == 0x8000)
+        (void)sr_audio_shadow_append(ch, submitted, nframes);
     s_stats.total_pushed_frames += (uint64_t)nframes;
     s_stats.channel_pushed_frames[ch] += (uint64_t)nframes;
 
-    int new_q = SDL_GetAudioStreamQueued(s_streams[ch]) / 4;
-    if (new_q > (int)s_stats.peak_queued_frames[ch]) {
-        s_stats.peak_queued_frames[ch] = (uint32_t)new_q;
+    const int new_queue_bytes = SDL_GetAudioStreamQueued(s_streams[ch]);
+    if (new_queue_bytes >= 0) {
+        const int new_q = new_queue_bytes / 4;
+        sr_audio_shadow_sync(ch, (uint32_t)new_q);
+        if (new_q > (int)s_stats.peak_queued_frames[ch])
+            s_stats.peak_queued_frames[ch] = (uint32_t)new_q;
     }
+}
+
+static void sr_audio_pause_unlock(const int locked[SR_AUDIO_CHANNELS]) {
+    for (int i = SR_AUDIO_CHANNELS - 1; i >= 0; i--)
+        if (locked[i]) SDL_UnlockAudioStream(s_streams[i]);
+}
+
+static void sr_audio_pause_free_stashes(void) {
+    for (int i = 0; i < SR_AUDIO_CHANNELS; i++) {
+        free(s_pause_stash[i].samples);
+        s_pause_stash[i].samples = NULL;
+        s_pause_stash[i].frames = 0;
+    }
+}
+
+static void *sr_audio_pause_alloc(size_t bytes) {
+#ifdef SR_AUDIO_SELFTEST
+    if (s_test_fail_pause_stash_alloc) {
+        s_test_fail_pause_stash_alloc = 0;
+        return NULL;
+    }
+#endif
+    return malloc(bytes);
+}
+
+static void sr_audio_pause_failure_message(int failure_kind) {
+    if (failure_kind == 1) {
+        if (s_pause_failure_reported) return;
+        s_pause_failure_reported = 1;
+        const int written = fprintf(stderr,
+            "AUDIO_PAUSE: stash allocation failed; device paused without fade\n");
+#ifdef SR_AUDIO_SELFTEST
+        if (written > 0) s_test_pause_failure_messages++;
+#else
+        (void)written;
+#endif
+    } else if (failure_kind == 2) {
+        fprintf(stderr, "AUDIO_PAUSE: queued audio mirror unavailable; device paused without fade\n");
+    } else {
+        fprintf(stderr, "AUDIO_PAUSE: stream operation failed; device paused without fade (%s)\n",
+                SDL_GetError());
+    }
+    fflush(stderr);
+}
+
+static void sr_audio_pause_fallback(uint64_t queued_frames, int failure_kind) {
+    s_stats.pause_stash_failures++;
+    s_stats.pause_held_frames += queued_frames;
+    sr_audio_pause_failure_message(failure_kind);
+    s_pause_device_was_paused = SDL_AudioDevicePaused(s_device_id);
+    if (!s_pause_device_was_paused && !SDL_PauseAudioDevice(s_device_id)) {
+        fprintf(stderr, "AUDIO_PAUSE: could not pause the device for fallback (%s)\n", SDL_GetError());
+        fflush(stderr);
+    }
+    s_pause_device_fallback = 1;
+    s_pause_active = 1;
+    s_stats.pause_enters++;
+}
+
+static void sr_audio_pause_restore_unfaded(const int locked[SR_AUDIO_CHANNELS]) {
+    for (int i = 0; i < SR_AUDIO_CHANNELS; i++) {
+        if (!locked[i] || !s_pause_stash[i].frames) continue;
+        SDL_ClearAudioStream(s_streams[i]);
+        if (!SDL_PutAudioStreamData(s_streams[i], s_pause_stash[i].samples,
+                                    s_pause_stash[i].frames * 4)) {
+            fprintf(stderr, "AUDIO_PAUSE: could not restore channel %d after stream failure (%s)\n",
+                    i, SDL_GetError());
+            fflush(stderr);
+        }
+    }
+}
+
+static void sr_audio_pause_scale_prefix(const int16_t *source, int16_t *destination,
+                                        int frames, int fade_in) {
+    for (int frame = 0; frame < frames; frame++) {
+        int numerator, denominator;
+        if (frames <= 1) {
+            numerator = fade_in ? 1 : 0;
+            denominator = 1;
+        } else {
+            denominator = frames - 1;
+            numerator = fade_in ? frame : (frames - 1 - frame);
+        }
+        for (int channel = 0; channel < 2; channel++) {
+            destination[frame * 2 + channel] = (int16_t)(
+                ((int32_t)source[frame * 2 + channel] * numerator) / denominator);
+        }
+    }
+}
+
+void sr_audio_pause_enter(void) {
+    if (s_audio_state != AUDIO_STATE_ACTIVE || s_pause_active) return;
+
+    int locked[SR_AUDIO_CHANNELS] = {0};
+    int queued[SR_AUDIO_CHANNELS] = {0};
+    uint64_t queued_frames = 0;
+    int failure = 0;
+    int failure_kind = 0;
+
+    /* Lock every stream before reading any depth, so SDL's device thread cannot
+     * consume a later channel while an earlier channel is being stashed. */
+    for (int i = 0; i < SR_AUDIO_CHANNELS; i++) {
+        if (!s_streams[i] || !SDL_LockAudioStream(s_streams[i])) {
+            failure = 1;
+            break;
+        }
+        locked[i] = 1;
+    }
+    if (failure) {
+        sr_audio_pause_unlock(locked);
+        sr_audio_pause_fallback(0, 3);
+        return;
+    }
+
+    for (int i = 0; i < SR_AUDIO_CHANNELS; i++) {
+        const int bytes = SDL_GetAudioStreamQueued(s_streams[i]);
+        if (bytes < 0 || (bytes & 3) != 0) {
+            failure = 1;
+            break;
+        }
+        queued[i] = bytes / 4;
+        queued_frames += (uint64_t)queued[i];
+        sr_audio_shadow_sync(i, (uint32_t)queued[i]);
+        if (!s_shadow_queues[i].valid || s_shadow_queues[i].frames != (uint32_t)queued[i]) {
+            failure = 1;
+            failure_kind = 2;
+            break;
+        }
+        if (queued[i] > 0) {
+            s_pause_stash[i].samples = (int16_t *)sr_audio_pause_alloc((size_t)bytes);
+            s_pause_stash[i].frames = queued[i];
+            if (!s_pause_stash[i].samples) {
+                failure = 1;
+                failure_kind = 1;
+                break;
+            }
+            if (!sr_audio_shadow_copy(i, s_pause_stash[i].samples, (uint32_t)queued[i])) {
+                failure = 1;
+                failure_kind = 2;
+                break;
+            }
+        }
+    }
+    if (failure) {
+        sr_audio_pause_free_stashes();
+        sr_audio_pause_unlock(locked);
+        sr_audio_pause_fallback(queued_frames, failure_kind);
+        return;
+    }
+
+    for (int i = 0; i < SR_AUDIO_CHANNELS; i++) {
+        if (!SDL_ClearAudioStream(s_streams[i])) { failure = 1; break; }
+    }
+    if (!failure) {
+        for (int i = 0; i < SR_AUDIO_CHANNELS; i++) {
+            const int frames = queued[i] < SR_AUDIO_PAUSE_FADE_FRAMES
+                ? queued[i] : SR_AUDIO_PAUSE_FADE_FRAMES;
+            if (!frames) continue;
+            sr_audio_pause_scale_prefix(s_pause_stash[i].samples, s_pause_fade[i], frames, 0);
+            if (!SDL_PutAudioStreamData(s_streams[i], s_pause_fade[i], frames * 4)) {
+                failure = 1;
+                break;
+            }
+        }
+    }
+
+    if (failure) sr_audio_pause_restore_unfaded(locked);
+    sr_audio_pause_unlock(locked);
+    if (failure) {
+        sr_audio_pause_free_stashes();
+        sr_audio_pause_fallback(queued_frames, 3);
+        return;
+    }
+
+    s_pause_active = 1;
+    s_pause_device_fallback = 0;
+    s_stats.pause_enters++;
+    s_stats.pause_held_frames += queued_frames;
+}
+
+void sr_audio_pause_leave(void) {
+    if (s_audio_state != AUDIO_STATE_ACTIVE || !s_pause_active) return;
+    if (s_pause_device_fallback) {
+        if (!s_pause_device_was_paused && !SDL_ResumeAudioDevice(s_device_id)) {
+            fprintf(stderr, "AUDIO_PAUSE: could not resume fallback device (%s)\n", SDL_GetError());
+            fflush(stderr);
+        }
+        s_pause_device_fallback = 0;
+        s_pause_active = 0;
+        return;
+    }
+
+    int locked[SR_AUDIO_CHANNELS] = {0};
+    int failure = 0;
+    for (int i = 0; i < SR_AUDIO_CHANNELS; i++) {
+        if (!s_streams[i] || !SDL_LockAudioStream(s_streams[i])) {
+            failure = 1;
+            break;
+        }
+        locked[i] = 1;
+    }
+    if (failure) {
+        sr_audio_pause_unlock(locked);
+        fprintf(stderr, "AUDIO_PAUSE: could not lock streams while restoring audio (%s)\n", SDL_GetError());
+        fflush(stderr);
+        sr_audio_pause_free_stashes();
+        s_pause_active = 0;
+        return;
+    }
+
+    for (int i = 0; i < SR_AUDIO_CHANNELS; i++) {
+        const int frames = s_pause_stash[i].frames;
+        const int fade_frames = frames < SR_AUDIO_PAUSE_FADE_FRAMES
+            ? frames : SR_AUDIO_PAUSE_FADE_FRAMES;
+        if (!SDL_ClearAudioStream(s_streams[i])) {
+            failure = 1;
+            break;
+        }
+        if (!frames) continue;
+        sr_audio_pause_scale_prefix(s_pause_stash[i].samples, s_pause_fade[i], fade_frames, 1);
+        if (!SDL_PutAudioStreamData(s_streams[i], s_pause_fade[i], fade_frames * 4) ||
+            (frames > fade_frames && !SDL_PutAudioStreamData(s_streams[i],
+                s_pause_stash[i].samples + fade_frames * 2, (frames - fade_frames) * 4))) {
+            failure = 1;
+            SDL_ClearAudioStream(s_streams[i]);
+            if (!SDL_PutAudioStreamData(s_streams[i], s_pause_stash[i].samples, frames * 4))
+                fprintf(stderr, "AUDIO_PAUSE: could not restore channel %d after fade failure (%s)\n",
+                        i, SDL_GetError());
+            break;
+        }
+    }
+    sr_audio_pause_unlock(locked);
+    if (failure) {
+        fprintf(stderr, "AUDIO_PAUSE: fade-in restore failed (%s)\n", SDL_GetError());
+        fflush(stderr);
+    }
+    sr_audio_pause_free_stashes();
+    s_pause_active = 0;
 }
 
 int sr_audio_queued(int ch) {
@@ -483,7 +864,9 @@ int sr_audio_queued(int ch) {
     if (bytes < 0) {
         return -1;
     }
-    return bytes / 4;
+    const int frames = bytes / 4;
+    sr_audio_shadow_sync(ch, (uint32_t)frames);
+    return frames;
 }
 
 /* SR_AUDIOSTAT: the value the blocking output paces against, and the drift it is accumulating.
@@ -536,13 +919,17 @@ void sr_audio_dump_stats(void) {
     int worst = -1;
     if (audio_stat_on()) audio_lead(&worst, &lead_ms);
     fprintf(stderr, "AUDIOSTAT_HOST: state=%s driver=%s pushed=%llu underruns=%llu overruns=%llu "
-                    "backpressure=%llu peak_q=%u queued=%d lead_ms=%ld\n",
+                    "backpressure=%llu pause_enters=%llu pause_held_frames=%llu pause_stash_failures=%llu "
+                    "peak_q=%u queued=%d lead_ms=%ld\n",
             state_str,
             driver ? driver : "none",
             (unsigned long long)s_stats.total_pushed_frames,
             (unsigned long long)s_stats.underrun_events,
             (unsigned long long)s_stats.overrun_events,
             (unsigned long long)s_stats.backpressure_events,
+            (unsigned long long)s_stats.pause_enters,
+            (unsigned long long)s_stats.pause_held_frames,
+            (unsigned long long)s_stats.pause_stash_failures,
             (unsigned)peak, worst, lead_ms);
     fflush(stderr);
     /* The dump is closed after the stats line, so the WAV header is finalised. The hle.c _Exit path
@@ -555,16 +942,36 @@ int sr_audio_is_active(void) {
     return s_audio_state == AUDIO_STATE_ACTIVE;
 }
 
+int sr_audio_pause_script_ready(void) {
+    if (s_audio_state == AUDIO_STATE_UNINITIALIZED) return 0;
+    if (s_audio_state != AUDIO_STATE_ACTIVE) return 1;
+    for (int i = 0; i < SR_AUDIO_CHANNELS; i++) {
+        const int queued = SDL_GetAudioStreamQueued(s_streams[i]);
+        if (queued > 0) return 1;
+    }
+    return 0;
+}
+
 #ifdef SR_AUDIO_SELFTEST
 #include <assert.h>
 #include <math.h>
+
+static void set_test_env(const char *key, const char *value);
 
 static void test_reset(void) {
     sr_audio_cleanup();
     s_audio_state = AUDIO_STATE_UNINITIALIZED;
     s_reported_unavailable = 0;
     s_reported_init = 0;
+    s_pause_failure_reported = 0;
+    s_pause_device_fallback = 0;
+    s_pause_device_was_paused = 0;
+    s_pause_active = 0;
+    s_master_volume_percent = 100;
+    s_test_fail_pause_stash_alloc = 0;
+    s_test_pause_failure_messages = 0;
     memset(&s_stats, 0, sizeof(s_stats));
+    set_test_env("SR_MASTER_VOLUME", "");
 }
 
 static void test_dummy_mixer_handoff(void) {
@@ -671,6 +1078,9 @@ static void test_no_device_path(void) {
     int16_t dummy[128 * 2] = {0};
     sr_audio_push(0, dummy, 128, 0x8000, 0x8000);
     assert(sr_audio_queued(0) == -1);
+    sr_audio_pause_enter();
+    sr_audio_pause_leave();
+    assert(!s_pause_active);
 
     sr_audio_dump_stats();
     printf("test_no_device_path: PASS\n");
@@ -688,6 +1098,9 @@ static void test_null_backend_env(void) {
     assert(rc == -1);
     assert(s_audio_state == AUDIO_STATE_NULL);
     assert(sr_audio_queued(0) == -1);
+    sr_audio_pause_enter();
+    sr_audio_pause_leave();
+    assert(!s_pause_active);
 
 #if defined(_WIN32) || defined(_WIN64)
     _putenv("SR_AUDIO_BACKEND=");
@@ -966,6 +1379,185 @@ static void test_dump_counts_refused_blocks(void) {
     printf("test_dump_counts_refused_blocks: PASS\n");
 }
 
+static void test_pause_stream_readback(const int16_t *input, int frames, int16_t *output) {
+    SDL_AudioSpec spec;
+    memset(&spec, 0, sizeof(spec));
+    spec.format = SDL_AUDIO_S16LE;
+    spec.channels = 2;
+    spec.freq = SR_AUDIO_SAMPLE_RATE;
+    SDL_AudioStream *stream = SDL_CreateAudioStream(&spec, &spec);
+    assert(stream != NULL);
+    assert(SDL_SetAudioStreamGain(stream, s_streams[0]
+        ? SDL_GetAudioStreamGain(s_streams[0]) : 1.0f));
+    assert(SDL_PutAudioStreamData(stream, input, frames * 4));
+    assert(SDL_GetAudioStreamData(stream, output, frames * 4) == frames * 4);
+    SDL_DestroyAudioStream(stream);
+}
+
+static void test_pause_queue_hold_and_fades(void) {
+    test_reset();
+    SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "dummy", SDL_HINT_OVERRIDE);
+    assert(sr_audio_init() == 0 && s_audio_state == AUDIO_STATE_ACTIVE);
+    assert(SDL_PauseAudioDevice(s_device_id));
+
+    int16_t dc0[4096 * 2];
+    int16_t dc8[300 * 2];
+    for (int i = 0; i < 4096 * 2; i++) dc0[i] = 16000;
+    for (int i = 0; i < 300 * 2; i++) dc8[i] = 16000;
+    sr_audio_push(0, dc0, 4096, 0x8000, 0x8000);
+    sr_audio_push(8, dc8, 300, 0x8000, 0x8000);
+    assert(sr_audio_queued(0) == 4096 && sr_audio_queued(8) == 300);
+
+    sr_audio_pause_enter();
+    assert(s_pause_active && !s_pause_device_fallback);
+    const int held0 = sr_audio_queued(0);
+    const int held8 = sr_audio_queued(8);
+    if (held0 != SR_AUDIO_PAUSE_FADE_FRAMES || held8 != SR_AUDIO_PAUSE_FADE_FRAMES)
+        fprintf(stderr, "AUDIO_PAUSE_TEST: held queue depths ch0=%d ch8=%d\n", held0, held8);
+    assert(held0 == SR_AUDIO_PAUSE_FADE_FRAMES);
+    assert(held8 == SR_AUDIO_PAUSE_FADE_FRAMES);
+    assert(s_stats.pause_enters == 1 && s_stats.pause_held_frames == 4396);
+
+    int16_t fade_out[SR_AUDIO_PAUSE_FADE_FRAMES * 2];
+    test_pause_stream_readback(s_pause_fade[0], SR_AUDIO_PAUSE_FADE_FRAMES, fade_out);
+    for (int i = 1; i < SR_AUDIO_PAUSE_FADE_FRAMES; i++) {
+        assert(fade_out[i * 2] <= fade_out[(i - 1) * 2]);
+        assert(fade_out[i * 2 + 1] <= fade_out[(i - 1) * 2 + 1]);
+    }
+    assert(fade_out[(SR_AUDIO_PAUSE_FADE_FRAMES - 1) * 2] <= 63);
+    assert(fade_out[(SR_AUDIO_PAUSE_FADE_FRAMES - 1) * 2 + 1] <= 63);
+
+    sr_audio_pause_leave();
+    assert(!s_pause_active);
+    assert(sr_audio_queued(0) == 4096 && sr_audio_queued(8) == 300);
+    int16_t restored0[SR_AUDIO_PAUSE_FADE_FRAMES * 2];
+    int16_t restored8[SR_AUDIO_PAUSE_FADE_FRAMES * 2];
+    test_pause_stream_readback(s_pause_fade[0], SR_AUDIO_PAUSE_FADE_FRAMES, restored0);
+    test_pause_stream_readback(s_pause_fade[8], SR_AUDIO_PAUSE_FADE_FRAMES, restored8);
+    assert(restored0[0] <= 63 && restored0[1] <= 63);
+    for (int i = 1; i < SR_AUDIO_PAUSE_FADE_FRAMES; i++) {
+        assert(restored0[i * 2] >= restored0[(i - 1) * 2]);
+        assert(restored0[i * 2 + 1] >= restored0[(i - 1) * 2 + 1]);
+    }
+    assert(restored0[(SR_AUDIO_PAUSE_FADE_FRAMES - 1) * 2] == 16000);
+    assert(restored0[(SR_AUDIO_PAUSE_FADE_FRAMES - 1) * 2 + 1] == 16000);
+    for (int i = SR_AUDIO_PAUSE_FADE_FRAMES; i < 4096; i++) {
+        const uint32_t pos = (s_shadow_queues[0].head_frame + (uint32_t)i) % s_shadow_queues[0].capacity_frames;
+        assert(s_shadow_queues[0].samples[pos * 2u] == 16000 &&
+               s_shadow_queues[0].samples[pos * 2u + 1u] == 16000);
+    }
+    assert(restored8[(SR_AUDIO_PAUSE_FADE_FRAMES - 1) * 2] == 16000);
+    assert(restored8[(SR_AUDIO_PAUSE_FADE_FRAMES - 1) * 2 + 1] == 16000);
+    test_reset();
+    printf("test_pause_queue_hold_and_fades: PASS\n");
+}
+
+static void test_pause_master_gain_applied_once(void) {
+    test_reset();
+    set_test_env("SR_MASTER_VOLUME", "50");
+    SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "dummy", SDL_HINT_OVERRIDE);
+    assert(sr_audio_init() == 0 && s_audio_state == AUDIO_STATE_ACTIVE);
+    assert(SDL_PauseAudioDevice(s_device_id));
+    int16_t dc[4096 * 2];
+    int16_t sample[2];
+    for (int i = 0; i < 4096 * 2; i++) dc[i] = 16000;
+    sr_audio_push(0, dc, 4096, 0x8000, 0x8000);
+    assert(s_shadow_queues[0].samples[0] == 8000 && s_shadow_queues[0].samples[1] == 8000);
+    /* Read a copy through the production stream's gain setting. SDL applies
+     * stream gain during reads, so an accidental second master gain changes
+     * these 8000 samples to 4000. */
+    test_pause_stream_readback(s_shadow_queues[0].samples, 4096, (int16_t *)dc);
+    sample[0] = dc[0]; sample[1] = dc[1];
+    assert(sample[0] == 8000 && sample[1] == 8000);
+
+    sr_audio_pause_enter();
+    assert(s_pause_stash[0].samples[0] == 8000 && s_pause_stash[0].samples[1] == 8000);
+    sr_audio_pause_leave();
+    int16_t restored[SR_AUDIO_PAUSE_FADE_FRAMES * 2];
+    test_pause_stream_readback(s_pause_fade[0], SR_AUDIO_PAUSE_FADE_FRAMES, restored);
+    assert(restored[(SR_AUDIO_PAUSE_FADE_FRAMES - 1) * 2] == 8000);
+    assert(restored[(SR_AUDIO_PAUSE_FADE_FRAMES - 1) * 2 + 1] == 8000);
+    assert(s_shadow_queues[0].samples[0] == 8000 && s_shadow_queues[0].samples[1] == 8000);
+    test_reset();
+    printf("test_pause_master_gain_applied_once: PASS\n");
+}
+
+static void test_pause_fade_has_no_dumped_click(void) {
+    const char *dir = getenv("TEMP");
+    if (!dir || !*dir) dir = getenv("TMPDIR");
+    if (!dir || !*dir) dir = ".";
+    char path[512];
+    snprintf(path, sizeof(path), "%s/sr_audio_pause_selftest.wav", dir);
+    remove(path);
+
+    test_reset();
+    SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "dummy", SDL_HINT_OVERRIDE);
+    assert(sr_audio_init() == 0 && s_audio_state == AUDIO_STATE_ACTIVE);
+    int16_t *dc = (int16_t *)malloc(44100u * 2u * sizeof(int16_t));
+    assert(dc != NULL);
+    for (int i = 0; i < 44100 * 2; i++) dc[i] = 16000;
+    sr_audio_push(0, dc, 44100, 0x8000, 0x8000);
+    free(dc);
+    SDL_Delay(100);  /* establish a steady DC output before starting the captured window */
+    set_test_env("SR_AUDIODUMP", path);
+    sr_audio_dump_start(s_device_id);
+    sr_audio_pause_enter();
+    SDL_Delay(200);
+    sr_audio_pause_leave();
+    SDL_Delay(200);  /* stop on the restored steady signal, before the queue drains */
+    sr_audio_dump_stop(s_device_id);
+    test_reset();
+    set_test_env("SR_AUDIODUMP", "");
+
+    FILE *f = fopen(path, "rb");
+    assert(f != NULL);
+    uint8_t header[44];
+    assert(fread(header, 1, sizeof(header), f) == sizeof(header));
+    assert(memcmp(header, "RIFF", 4) == 0 && memcmp(header + 36, "data", 4) == 0);
+    int16_t previous = 0, sample = 0;
+    int have_previous = 0;
+    unsigned samples = 0;
+    unsigned max_step = 0;
+    while (fread(&sample, sizeof(sample), 1, f) == 1) {
+        if (have_previous) {
+            unsigned step = (unsigned)abs((int)sample - (int)previous);
+            if (step > max_step) max_step = step;
+        }
+        previous = sample;
+        have_previous = 1;
+        samples++;
+    }
+    fclose(f);
+    remove(path);
+    assert(samples > SR_AUDIO_PAUSE_FADE_FRAMES * 4u);
+    assert(max_step <= 64u);
+    printf("test_pause_fade_has_no_dumped_click: PASS (max_step=%u)\n", max_step);
+}
+
+static void test_pause_stash_failure_is_visible(void) {
+    test_reset();
+    SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "dummy", SDL_HINT_OVERRIDE);
+    assert(sr_audio_init() == 0 && s_audio_state == AUDIO_STATE_ACTIVE);
+    int16_t dc[512 * 2];
+    for (int i = 0; i < 512 * 2; i++) dc[i] = 8000;
+
+    for (int failure = 1; failure <= 2; failure++) {
+        assert(SDL_PauseAudioDevice(s_device_id));
+        sr_audio_push(0, dc, 512, 0x8000, 0x8000);
+        assert(SDL_ResumeAudioDevice(s_device_id));
+        s_test_fail_pause_stash_alloc = 1;
+        sr_audio_pause_enter();
+        assert(s_pause_active && s_pause_device_fallback);
+        assert(SDL_AudioDevicePaused(s_device_id));
+        assert(s_stats.pause_stash_failures == (uint64_t)failure);
+        assert(s_test_pause_failure_messages == 1);
+        sr_audio_pause_leave();
+        assert(!s_pause_active && !SDL_AudioDevicePaused(s_device_id));
+    }
+    test_reset();
+    printf("test_pause_stash_failure_is_visible: PASS\n");
+}
+
 int main(int argc, char **argv) {
     sr_perf_init();
     (void)argc;
@@ -973,8 +1565,12 @@ int main(int argc, char **argv) {
     printf("--- Running audio selftest ---\n");
     test_master_volume_gain();
     test_dummy_mixer_handoff();
+    test_pause_queue_hold_and_fades();
+    test_pause_master_gain_applied_once();
+    test_pause_fade_has_no_dumped_click();
     test_no_device_path();
     test_null_backend_env();
+    test_pause_stash_failure_is_visible();
     test_dump_conversion();
     test_dump_wav_header();
     test_dump_off_by_default();

@@ -263,7 +263,7 @@ The native player provides a dedicated Controller Settings screen (`VIEW_CONTROL
   2. *Extremes state*: interactive live sampling where the user presses each trigger fully and rotates analog sticks in circles to capture maximum physical excursions.
   3. *Review & Accept*: visual summary of captured resting and extreme values with Accept or Cancel actions.
   Values are stored in the unified `input_profile.json` (schema 2, schema 1 files still load) and applied during analog and trigger transform evaluations. Keyboard Escape or gamepad East button safely cancels at any point.
-- **In the Works**: In-game pause overlay controller configuration remains in the works (pause menu requires guest-clock semantics; out of scope for this milestone).
+- **In the Works**: In-game pause overlay controller configuration remains in the works. Its guest-clock contract is tracked by [issue #1171](https://github.com/Jstar269/nakagawa-recomp/issues/1171) and the [Clocks section](ARCHITECTURE.md#clocks); the scheduler/audio half lands before the presenter and input-claim half. Focus loss and window minimization do not auto-pause in v0.0.1.
 
 ---
 

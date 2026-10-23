@@ -75,6 +75,7 @@ void sched_liveness_set_starvation_limit(unsigned limit);
 #endif
 
 #include <SDL3/SDL_timer.h>
+#include <SDL3/SDL_video.h>
 #include <stdio.h>
 #include <string.h>
 #include <setjmp.h>
@@ -199,6 +200,63 @@ typedef struct {
 static TCB      s_tcb[MAXTHREADS];
 
 int (*sr_sched_stop_requested)(void) = NULL;
+const SrPauseHost *sr_sched_pause_host = NULL;
+
+typedef struct {
+    uint32_t vcount;
+    uint64_t host_ms;
+    SrPauseSource source;
+} SrPauseScriptStep;
+
+static int s_pause_requested;
+static int s_pause_active;
+static SrPauseSource s_pause_source;
+static uint64_t s_pause_request_ns;
+static uint64_t s_pause_requested_duration_ms;
+static uint64_t s_pause_total_ns;
+static uint64_t s_pause_count;
+static int s_pause_exit_reason;
+static int s_pause_refusal_reported[SR_PAUSE_REFUSED_STOPPING + 1];
+static int s_pause_clock_regression_reported;
+static SrPauseScriptStep *s_pause_script_steps;
+static size_t s_pause_script_count;
+static size_t s_pause_script_index;
+static int s_pause_script_loaded;
+static int s_pause_script_deferred;
+static SrPauseSource s_pause_script_deferred_source;
+static uint32_t s_pause_script_deferred_vcount;
+static uint32_t s_pause_script_deferred_target_vcount;
+static uint64_t s_pause_script_deferred_ns;
+static uint64_t s_pause_script_deferred_duration_ms;
+static int s_pause_script_deferred_audio_required;
+static int s_pause_script_audio_wait_started;
+static uint64_t s_pause_script_audio_wait_ns;
+static int s_pause_switch_from_yield;
+
+enum {
+    SR_PAUSE_EXIT_NONE = 0,
+    SR_PAUSE_EXIT_RESUME,
+    SR_PAUSE_EXIT_STOP
+};
+
+static void sched_pause_script_maybe_request(void);
+static void sched_pause_script_load(void);
+static void sched_pause_script_dispatch_pending(void);
+extern int sr_pause_script_input_pending(uint32_t target_vcount);
+static int sched_pause_assert_no_guest(const char *function);
+
+static int sched_pause_assert_no_guest(const char *function) {
+#ifdef SR_SCHED_LIVENESS_TEST
+    if (s_pause_active) {
+        fprintf(stderr, "sched pause invariant: %s ran while the guest was paused\n", function);
+        fflush(stderr);
+        abort();
+    }
+#else
+    (void)function;
+#endif
+    return 0;
+}
 
 static void sched_destroy_thread_coro(TCB *t) {
     if (!t) return;
@@ -632,6 +690,16 @@ void sched_init(CpuState *cpu) {
     s_last_pick = -1;
     s_root_seen = 0;
     s_tick = 0;
+    s_pause_requested = 0;
+    s_pause_active = 0;
+    s_pause_source = SR_PAUSE_SRC_USER;
+    s_pause_request_ns = 0;
+    s_pause_requested_duration_ms = 0;
+    s_pause_total_ns = 0;
+    s_pause_count = 0;
+    s_pause_exit_reason = SR_PAUSE_EXIT_NONE;
+    memset(s_pause_refusal_reported, 0, sizeof(s_pause_refusal_reported));
+    s_pause_clock_regression_reported = 0;
 #ifdef SR_SCHED_LIVENESS_TEST
     sched_liveness_reset();
 #endif
@@ -1184,6 +1252,7 @@ static uint64_t host_us(void) {
 /* Observe host time without manufacturing guest time in deterministic mode.  All
  * turbo-mode advancement happens at explicit scheduler/event boundaries below. */
 static void vtime_refresh(void) {
+    sched_pause_assert_no_guest("vtime_refresh");
     pace_setup();
     if (s_pace_on) {
         uint64_t t = host_us();
@@ -1209,6 +1278,7 @@ static void scheduler_progress_time(void) {
 }
 
 static void scheduler_add_time(uint64_t delta) {
+    sched_pause_assert_no_guest("scheduler_add_time");
     if (delta > UINT64_MAX - s_vtime_us) s_vtime_us = UINT64_MAX;
     else s_vtime_us += delta;
 }
@@ -1498,6 +1568,7 @@ static int sched_dispatch_interrupt_guest(CpuState *cpu, uint32_t entry,
 }
 
 static void deliver_vblank(void) {
+    sched_pause_assert_no_guest("deliver_vblank");
     /* Reset the host-clock quantum so the OOB source check in sr_yield won't double-fire. */
     vblank_pace_quantum_init();
     vblank_clock_reset();
@@ -1601,8 +1672,12 @@ static void deliver_vblank(void) {
     }
     /* Interrupt return: the interrupted ll..sc window, if any, is over. */
     sr_cpu_link_clear(s_cpu);
+    /* HLE advances the scripted input segment before it latches this VBLANK's
+     * pad sample. Check the pause script after that work so a same-VBLANK press
+     * can be deferred until the guest reads it and queues its audio stimulus. */
     extern void sr_vblank_tick(void);
     sr_vblank_tick();
+    sched_pause_script_maybe_request();
 
     /* Worker relaunch trampoline: if the worker thread went DORMANT (e.g. after
      * the game loop returned), restart it on the next vblank so it re-enters
@@ -2693,6 +2768,7 @@ static void sched_load_thread_context(TCB *t) {
 /* Save the running thread's registers, return to the scheduler, which selects and resumes the
  * next thread. Called from a thread fiber. */
 static void switch_to_scheduler(void) {
+    if (!s_pause_switch_from_yield) sched_pause_script_dispatch_pending();
 #ifdef SR_SCHED_LIVENESS_TEST
     if (s_cur >= 0 && s_cur < s_ntcb)
         SCHED_LIVENESS_OWNER(s_tcb[s_cur].uid);
@@ -2753,6 +2829,7 @@ void sr_yield(CpuState *s) {
     if (s->r[28] != 0u) {
         s_gp = s->r[28];
     }
+    sched_pause_script_dispatch_pending();
     /* Time and source latches advance at every scheduler boundary, even when
      * the CPU's interrupt-enable bit currently suppresses delivery. */
     scheduler_progress_time();
@@ -2847,6 +2924,10 @@ void sr_yield(CpuState *s) {
         if (i != s_cur && !s_tcb[i].suspended && (s_tcb[i].state == TH_READY ||
             ((s_tcb[i].state == TH_WAIT_DELAY || s_tcb[i].state == TH_WAIT_OBJ) &&
              s_vtime_us >= s_tcb[i].wake))) { other = 1; break; }
+    /* A pending player pause is a scheduler rendezvous even when this is the only
+     * runnable guest. It uses the same legal switch path as an ordinary peer; the
+     * interrupt, handler-context and dispatch-suspended gates above still defer it. */
+    if (s_pause_requested) other = 1;
     /* If no other thread is runnable AND nothing is sleeping on a small timer, TURBO mode
      * advances virtual time so PSP timers (UMD-Ready, callback-drive, etc.) fire. uid 0x115
      * spinning in critically-fast SuspendIntr/ResumeIntr would otherwise burn CPU without
@@ -2951,7 +3032,9 @@ void sr_yield(CpuState *s) {
     if (!s_dispatch_enabled) return;
     memcpy(&t->saved, s, sizeof(CpuState));
     if (t->state == TH_RUNNING) t->state = TH_READY;
+    s_pause_switch_from_yield = 1;
     switch_to_scheduler();
+    s_pause_switch_from_yield = 0;
     /* resumed later: our registers were restored into *s by the scheduler before SwitchToFiber */
 }
 
@@ -3953,9 +4036,378 @@ int sched_is_dormant(uint32_t uid) {
     return t && t->state == TH_DORMANT;
 }
 
+static int sched_pause_env_present(const char *name) {
+    return getenv(name) != NULL;
+}
+
+static int sched_pause_env_nonzero(const char *name) {
+    const char *value = getenv(name);
+    return value && value[0] && strcmp(value, "0") != 0;
+}
+
+static const char *sched_pause_source_name(SrPauseSource source) {
+    switch (source) {
+        case SR_PAUSE_SRC_USER: return "user";
+        case SR_PAUSE_SRC_PAD_LOST: return "pad_lost";
+        case SR_PAUSE_SRC_SCRIPT: return "script";
+        default: return "unknown";
+    }
+}
+
+static const char *sched_pause_reason_name(SrPauseVerdict verdict) {
+    switch (verdict) {
+        case SR_PAUSE_REFUSED_NO_PRESENTER: return "no_presenter";
+        case SR_PAUSE_REFUSED_AUTOMATION: return "automation";
+        case SR_PAUSE_REFUSED_KEYBOARD: return "keyboard";
+        case SR_PAUSE_REFUSED_STOPPING: return "stopping";
+        case SR_PAUSE_ALREADY: return "already";
+        default: return "none";
+    }
+}
+
+static int sched_pause_stopping(void) {
+    if (sr_sched_stop_requested && sr_sched_stop_requested()) return 1;
+    if (s_cpu && s_cpu->flow_kind == SR_FLOW_FATAL) return 1;
+    if (sr_sched_pause_host && sr_sched_pause_host->busy_reason &&
+        sr_sched_pause_host->busy_reason() == SR_PAUSE_REFUSED_STOPPING) return 1;
+    return 0;
+}
+
+static int sched_pause_automation_on(void) {
+    return sched_pause_env_present("SR_PADSCRIPT") ||
+           sched_pause_env_present("SR_EXIT_AT_VBLANK") ||
+           sched_pause_env_present("SR_HEADLESS_ACCEPT_PRESENTED_FRAMES") ||
+           sched_pause_env_present("SR_PAUSE_SCRIPT");
+}
+
+static int sched_pause_presenter_available(void) {
+    const char *video = getenv("SR_VIDEO");
+    const char *driver;
+    if (!sr_sched_pause_host || !sr_sched_pause_host->frame || !gui_on()) return 0;
+    if (sched_pause_env_nonzero("SR_HEADLESS")) return 0;
+    if (video && (!strcmp(video, "offscreen") || !strcmp(video, "gdi"))) return 0;
+    driver = SDL_GetCurrentVideoDriver();
+    if (driver && (!strcmp(driver, "dummy") || !strcmp(driver, "offscreen"))) return 0;
+    return 1;
+}
+
+static SrPauseVerdict sched_pause_check(SrPauseSource source) {
+    if (sched_pause_stopping()) return SR_PAUSE_REFUSED_STOPPING;
+    if (source != SR_PAUSE_SRC_SCRIPT && sched_pause_automation_on())
+        return SR_PAUSE_REFUSED_AUTOMATION;
+    if (sr_sched_pause_host && sr_sched_pause_host->busy_reason) {
+        int reason = sr_sched_pause_host->busy_reason();
+        if (reason == SR_PAUSE_REFUSED_KEYBOARD) return SR_PAUSE_REFUSED_KEYBOARD;
+        if (reason == SR_PAUSE_REFUSED_STOPPING) return SR_PAUSE_REFUSED_STOPPING;
+        if (reason != 0) return SR_PAUSE_REFUSED_STOPPING;
+    }
+    if (source != SR_PAUSE_SRC_SCRIPT && !sched_pause_presenter_available())
+        return SR_PAUSE_REFUSED_NO_PRESENTER;
+    return SR_PAUSE_ACCEPTED;
+}
+
+static void sched_pause_log_refusal(SrPauseSource source, SrPauseVerdict verdict) {
+    if (verdict <= SR_PAUSE_ACCEPTED || verdict > SR_PAUSE_REFUSED_STOPPING ||
+        s_pause_refusal_reported[verdict]) return;
+    s_pause_refusal_reported[verdict] = 1;
+    fprintf(stderr, "SR_PAUSE: refused reason=%s source=%s vcount=%u\n",
+            sched_pause_reason_name(verdict), sched_pause_source_name(source),
+            (unsigned)sr_display_vcount());
+    fflush(stderr);
+}
+
+static SrPauseVerdict sched_pause_latch_request(SrPauseSource source,
+                                                uint64_t request_ns,
+                                                uint32_t request_vcount,
+                                                int log_request) {
+    if (s_pause_requested || s_pause_active) return SR_PAUSE_ALREADY;
+    if (source != SR_PAUSE_SRC_USER && source != SR_PAUSE_SRC_PAD_LOST &&
+        source != SR_PAUSE_SRC_SCRIPT) {
+        sched_pause_log_refusal(source, SR_PAUSE_REFUSED_STOPPING);
+        return SR_PAUSE_REFUSED_STOPPING;
+    }
+    SrPauseVerdict verdict = sched_pause_check(source);
+    if (verdict != SR_PAUSE_ACCEPTED) {
+        sched_pause_log_refusal(source, verdict);
+        return verdict;
+    }
+    s_pause_source = source;
+    s_pause_request_ns = request_ns;
+    s_pause_requested = 1;
+    atomic_store_explicit(&sr_timeslice, 1, memory_order_relaxed);
+    if (log_request) {
+        fprintf(stderr, "SR_PAUSE: requested source=%s vcount=%u\n",
+                sched_pause_source_name(source), (unsigned)request_vcount);
+        fflush(stderr);
+    }
+    return SR_PAUSE_ACCEPTED;
+}
+
+SrPauseVerdict sched_pause_request(SrPauseSource source) {
+    return sched_pause_latch_request(source, host_now_ns(), sr_display_vcount(), 1);
+}
+
+int sched_pause_active(void) { return s_pause_active; }
+int sched_pause_pending(void) { return s_pause_requested || s_pause_active; }
+uint64_t sched_pause_total_ns(void) { return s_pause_total_ns; }
+
+static int sched_pause_parse_decimal(const char *begin, const char *end,
+                                     uint64_t maximum, uint64_t *value_out) {
+    uint64_t value = 0;
+    if (!begin || begin == end || !value_out) return 0;
+    for (const char *p = begin; p < end; p++) {
+        if (*p < '0' || *p > '9') return 0;
+        const uint64_t digit = (uint64_t)(*p - '0');
+        if (value > (maximum - digit) / 10u) return 0;
+        value = value * 10u + digit;
+    }
+    *value_out = value;
+    return 1;
+}
+
+static int sched_pause_script_parse(const char *text) {
+    if (!text || !text[0]) return 0;
+    size_t count = 1;
+    for (const char *p = text; *p; p++) if (*p == ',') count++;
+    if (count > SIZE_MAX / sizeof(*s_pause_script_steps)) return 0;
+    SrPauseScriptStep *steps = (SrPauseScriptStep *)calloc(count, sizeof(*steps));
+    if (!steps) return 0;
+    const char *segment = text;
+    for (size_t i = 0; i < count; i++) {
+        const char *comma = strchr(segment, ',');
+        const char *end = comma ? comma : segment + strlen(segment);
+        const char *colon1 = (const char *)memchr(segment, ':', (size_t)(end - segment));
+        const char *colon2 = colon1
+            ? (const char *)memchr(colon1 + 1, ':', (size_t)(end - colon1 - 1)) : NULL;
+        uint64_t vcount, host_ms;
+        const char *host_end = colon2 ? colon2 : end;
+        if (!colon1 ||
+            !sched_pause_parse_decimal(segment, colon1, UINT32_MAX, &vcount) ||
+            !sched_pause_parse_decimal(colon1 + 1, host_end, UINT64_MAX / 1000000u, &host_ms) ||
+            (colon2 && ((size_t)(end - colon2 - 1) != 4u ||
+                        memcmp(colon2 + 1, "user", 4u) != 0)) ||
+            (i && vcount < steps[i - 1].vcount)) {
+            free(steps);
+            return 0;
+        }
+        steps[i].vcount = (uint32_t)vcount;
+        steps[i].host_ms = host_ms;
+        steps[i].source = colon2 ? SR_PAUSE_SRC_USER : SR_PAUSE_SRC_SCRIPT;
+        if (comma) {
+            if (i + 1 == count || comma[1] == '\0') {
+                free(steps);
+                return 0;
+            }
+            segment = comma + 1;
+        } else if (i + 1 != count) {
+            free(steps);
+            return 0;
+        }
+    }
+    free(s_pause_script_steps);
+    s_pause_script_steps = steps;
+    s_pause_script_count = count;
+    s_pause_script_index = 0;
+    return 1;
+}
+
+static void sched_pause_script_load(void) {
+    if (s_pause_script_loaded) return;
+    s_pause_script_loaded = 1;
+    const char *text = getenv("SR_PAUSE_SCRIPT");
+    if (text && !sched_pause_script_parse(text)) {
+        fprintf(stderr, "SR_PAUSE_SCRIPT: invalid value; expected <vcount>:<host_ms>[:user][,...]\n");
+        fflush(stderr);
+        exit(1);
+    }
+}
+
+static void sched_pause_script_maybe_request(void) {
+    if (!s_pause_script_loaded || s_pause_requested || s_pause_active || s_pause_script_deferred ||
+        s_pause_script_index >= s_pause_script_count) return;
+    SrPauseScriptStep *step = &s_pause_script_steps[s_pause_script_index];
+    if (sr_display_vcount() < step->vcount) return;
+    s_pause_script_index++;
+    const int input_pending = sr_pause_script_input_pending(step->vcount);
+    /* A vblank can be delivered on the idle scheduler with s_cur == -1. Defer
+     * only a pending Cross press (the audio fixture's trigger) until the guest
+     * consumes it and queues its tone; other scripted inputs need no audio wait. */
+    if (step->source == SR_PAUSE_SRC_SCRIPT && input_pending == 2) {
+        const SrPauseVerdict verdict = sched_pause_check(step->source);
+        if (verdict != SR_PAUSE_ACCEPTED) {
+            sched_pause_log_refusal(step->source, verdict);
+            return;
+        }
+        s_pause_script_deferred = 1;
+        s_pause_script_deferred_source = step->source;
+        s_pause_script_deferred_vcount = sr_display_vcount();
+        s_pause_script_deferred_target_vcount = step->vcount;
+        s_pause_script_deferred_ns = host_now_ns();
+        s_pause_script_deferred_duration_ms = step->host_ms;
+        s_pause_script_deferred_audio_required = input_pending == 2;
+        s_pause_script_audio_wait_started = 0;
+        s_pause_script_audio_wait_ns = 0;
+        fprintf(stderr, "SR_PAUSE: requested source=%s vcount=%u\n",
+                sched_pause_source_name(step->source), (unsigned)s_pause_script_deferred_vcount);
+        fflush(stderr);
+        return;
+    }
+    s_pause_requested_duration_ms = step->host_ms;
+    const SrPauseVerdict verdict = sched_pause_request(step->source);
+    if (verdict != SR_PAUSE_ACCEPTED) s_pause_requested_duration_ms = 0;
+}
+
+static void sched_pause_script_dispatch_pending(void) {
+    if (!s_pause_script_deferred || s_pause_requested || s_pause_active) return;
+    if (s_pause_script_deferred_source == SR_PAUSE_SRC_SCRIPT &&
+        sr_pause_script_input_pending(s_pause_script_deferred_target_vcount)) return;
+    if (s_pause_script_deferred_audio_required && sr_sched_pause_host &&
+        sr_sched_pause_host->script_ready && !sr_sched_pause_host->script_ready()) {
+        const uint64_t now = host_now_ns();
+        if (!s_pause_script_audio_wait_started) {
+            s_pause_script_audio_wait_started = 1;
+            s_pause_script_audio_wait_ns = now;
+            return;
+        }
+        if (now < s_pause_script_audio_wait_ns ||
+            now - s_pause_script_audio_wait_ns < 33366666u) return;
+    }
+    const SrPauseSource source = s_pause_script_deferred_source;
+    const uint64_t request_ns = s_pause_script_deferred_ns;
+    const uint32_t request_vcount = s_pause_script_deferred_vcount;
+    const uint64_t duration_ms = s_pause_script_deferred_duration_ms;
+    s_pause_script_deferred = 0;
+    s_pause_script_deferred_ns = 0;
+    s_pause_script_deferred_vcount = 0;
+    s_pause_script_deferred_duration_ms = 0;
+    s_pause_script_deferred_audio_required = 0;
+    s_pause_script_audio_wait_started = 0;
+    s_pause_script_audio_wait_ns = 0;
+    s_pause_requested_duration_ms = duration_ms;
+    if (sched_pause_latch_request(source, request_ns, request_vcount, 0) != SR_PAUSE_ACCEPTED)
+        s_pause_requested_duration_ms = 0;
+}
+
+extern int sr_savedata_pause_busy(void);
+
+static uint64_t sched_pause_begin(void) {
+    pace_setup();
+    const uint64_t t0 = host_now_ns();
+    const uint64_t latency_us = t0 >= s_pause_request_ns
+        ? (t0 - s_pause_request_ns) / 1000u : 0u;
+    s_pause_active = 1;
+    s_pause_exit_reason = SR_PAUSE_EXIT_NONE;
+    sr_rt_phase = SR_RT_PHASE_HOST_WAIT;
+    if (sr_sched_pause_host && sr_sched_pause_host->audio_enter)
+        sr_sched_pause_host->audio_enter();
+    if (sr_sched_pause_host && sr_sched_pause_host->enter)
+        sr_sched_pause_host->enter();
+    const int saving = sr_savedata_pause_busy();
+    fprintf(stderr, "SR_PAUSE: entered source=%s vcount=%u vbl=%llu vtime_us=%llu latency_us=%llu quit_allowed=%d reason=%s\n",
+            sched_pause_source_name(s_pause_source), (unsigned)sr_display_vcount(),
+            (unsigned long long)s_vbl_count, (unsigned long long)s_vtime_us,
+            (unsigned long long)latency_us, saving ? 0 : 1, saving ? "savedata" : "none");
+    fflush(stderr);
+    return t0;
+}
+
+static void sched_pause_shift_anchor(uint64_t *anchor, uint64_t delta_ns,
+                                     int initialized) {
+    if (!initialized || !delta_ns) return;
+    if (delta_ns > UINT64_MAX - *anchor) {
+        fprintf(stderr, "SR_PAUSE: host-clock anchor overflow; refusing to corrupt the guest timeline\n");
+        fflush(stderr);
+        abort();
+    }
+    *anchor += delta_ns;
+}
+
+static void sched_pause_end(uint64_t t0, int reason) {
+    if (sr_sched_pause_host && sr_sched_pause_host->leave)
+        sr_sched_pause_host->leave();
+    if (sr_sched_pause_host && sr_sched_pause_host->audio_leave)
+        sr_sched_pause_host->audio_leave();
+    const uint64_t t1 = host_now_ns();
+    uint64_t delta_ns = 0;
+    if (t1 >= t0) {
+        delta_ns = t1 - t0;
+    } else if (!s_pause_clock_regression_reported) {
+        fprintf(stderr, "SR_PAUSE: monotonic clock regressed; treating the paused interval as zero\n");
+        fflush(stderr);
+        s_pause_clock_regression_reported = 1;
+    }
+    /* pace_setup initializes the first two anchors even when the monotonic
+     * source's valid origin is exactly zero. The delivery/latch stamps retain
+     * their zero-as-uninitialized sentinel. */
+    sched_pause_shift_anchor(&s_clock_epoch_ns, delta_ns, s_pace_on >= 0);
+    sched_pause_shift_anchor(&s_vbl_next_ns, delta_ns, s_pace_on >= 0);
+    sched_pause_shift_anchor(&s_last_vblank_ns, delta_ns, s_last_vblank_ns != 0);
+    sched_pause_shift_anchor(&s_vbl_latch_ns, delta_ns, s_vbl_latch_ns != 0);
+    if (delta_ns > UINT64_MAX - s_pause_total_ns || s_pause_count == UINT64_MAX) {
+        fprintf(stderr, "SR_PAUSE: pause diagnostics overflow\n");
+        fflush(stderr);
+        abort();
+    }
+    s_pause_total_ns += delta_ns;
+    s_pause_count++;
+    s_pause_exit_reason = reason;
+    s_pause_active = 0;
+    s_pause_requested = 0;
+    s_pause_requested_duration_ms = 0;
+    atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
+    sr_rt_phase = SR_RT_PHASE_SCHED;
+    const int saving = sr_savedata_pause_busy();
+    fprintf(stderr, "SR_PAUSE: resumed vcount=%u vbl=%llu vtime_us=%llu paused_ms=%llu count=%llu quit_allowed=%d reason=%s\n",
+            (unsigned)sr_display_vcount(), (unsigned long long)s_vbl_count,
+            (unsigned long long)s_vtime_us, (unsigned long long)(delta_ns / 1000000u),
+            (unsigned long long)s_pause_count, saving ? 0 : 1, saving ? "savedata" : "none");
+    fflush(stderr);
+}
+
+static SrPauseFrame sched_pause_script_frame(uint64_t deadline_ns) {
+    const uint64_t now = host_now_ns();
+    if (now >= deadline_ns) return SR_PAUSE_FRAME_RESUME;
+    uint64_t delay_ns = deadline_ns - now;
+    if (delay_ns > 16683333u) delay_ns = 16683333u;
+    SDL_DelayPrecise(delay_ns);
+    return host_now_ns() >= deadline_ns ? SR_PAUSE_FRAME_RESUME : SR_PAUSE_FRAME_CONTINUE;
+}
+
+static int sched_pause_run(void) {
+    if (!s_pause_requested) return SR_PAUSE_EXIT_NONE;
+    const SrPauseVerdict verdict = sched_pause_check(s_pause_source);
+    if (verdict != SR_PAUSE_ACCEPTED) {
+        sched_pause_log_refusal(s_pause_source, verdict);
+        s_pause_requested = 0;
+        s_pause_requested_duration_ms = 0;
+        atomic_store_explicit(&sr_timeslice, TIMESLICE, memory_order_relaxed);
+        s_pause_exit_reason = verdict == SR_PAUSE_REFUSED_STOPPING
+            ? SR_PAUSE_EXIT_STOP : SR_PAUSE_EXIT_NONE;
+        return s_pause_exit_reason;
+    }
+
+    const uint64_t t0 = sched_pause_begin();
+    const uint64_t duration_ns = s_pause_requested_duration_ms * 1000000u;
+    const uint64_t deadline_ns = duration_ns > UINT64_MAX - t0 ? UINT64_MAX : t0 + duration_ns;
+    int reason = SR_PAUSE_EXIT_RESUME;
+    for (;;) {
+        if (sr_sched_stop_requested && sr_sched_stop_requested()) {
+            reason = SR_PAUSE_EXIT_STOP;
+            break;
+        }
+        SrPauseFrame frame = (sr_sched_pause_host && sr_sched_pause_host->frame)
+            ? sr_sched_pause_host->frame()
+            : sched_pause_script_frame(deadline_ns);
+        if (frame == SR_PAUSE_FRAME_RESUME) break;
+    }
+    sched_pause_end(t0, reason);
+    return reason;
+}
+
 /* The scheduler loop. Runs on the main (converted) fiber. Creates the entry thread, then keeps
  * resuming the highest-priority ready thread until none remain runnable. */
 void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
+    sched_pause_script_load();
     uint32_t uid = sched_create_thread(entry, 32, 0);
     TCB *t0 = tcb_by_uid(uid);
     /* The entry (module_start) keeps the driver-seeded state -- real sp, gp, and module args
@@ -3982,6 +4434,7 @@ void sched_run(uint32_t entry, uint32_t arglen, uint32_t argp) {
         /* An opt-in player acceptance run stops after its requested number of
          * successful window presentations. The guest is not resumed again. */
         if (sr_sched_stop_requested && sr_sched_stop_requested()) break;
+        if (s_pause_requested && sched_pause_run() == SR_PAUSE_EXIT_STOP) break;
         if (getenv("SCHED_DUMP") && (++iters % 400000) == 0) {
             fprintf(stderr, "--- sched dump (tick=%llu) ---\n", (unsigned long long)s_tick);
             for (int i = 0; i < s_ntcb; i++)

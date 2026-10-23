@@ -5941,6 +5941,7 @@ static void reset_fixture(void) {
     s_test_gui_last_addr = 0;
     s_test_gui_last_fmt = 0;
     s_test_gui_last_stride = 0;
+    sr_sched_pause_host = NULL;
     s_pace_on = 0;
     s_host_ns_fn = NULL;   /* deterministic timeline: no host clock in this fixture */
     sr_nested_frame_reset();

@@ -9905,6 +9905,12 @@ static void dialog_unlock(void) {
 static int s_dlg_status = 0, s_dlg_tick = 0;
 static uint32_t s_dlg_param = 0, s_dlg_result = 0, s_dlg_generation = 0;
 static unsigned s_dlg_work_started, s_dlg_work_done;
+int sr_savedata_pause_busy(void) {
+    dialog_lock();
+    const int busy = s_dlg_status >= 1 && s_dlg_status <= 3;
+    dialog_unlock();
+    return busy;
+}
 static int s_osk_current_clear(void);   /* fwd: savedata/msg dialogs take the slot from the OSK */
 static uint32_t h_SavedataInitStart(CpuState *s) {
     if (!A0 || !sr_guest_span_readable(A0, 0x600u) || !sr_guest_span_writable(A0, 0x600u)) return 0x80110004u;
@@ -17857,7 +17863,17 @@ static uint32_t h_CtrlButtons(void) {
  * positive mask there makes the game see almost every button held and run wild (it jumped through
  * an uninitialised menu handler). */
 /* Latch one controller sample per frame into the ring (called from sr_vblank_tick). */
+int sr_pause_script_input_pending(uint32_t target_vcount) {
+    if (!s_input.current || s_input.seg.mask == 0u ||
+        s_input.seg.not_before > target_vcount || sr_input_was_read(&s_input)) return 0;
+    return (s_input.seg.mask & 0x4000u) ? 2 : 1;
+}
+
 void sr_ctrl_sample(void) {
+    /* The pause request is already a scheduler rendezvous. Do not commit a pad
+     * sample at the request boundary; the first post-resume sample owns that
+     * guest-time input transition. */
+    if (sched_pause_pending()) return;
     uint8_t lx = 128, ly = 128;
     if (gui_on()) gui_analog(&lx, &ly);
     uint32_t buttons = h_CtrlButtons();
@@ -19156,6 +19172,7 @@ void sr_display_advance_vcount(uint32_t elapsed_periods) {
     s_vcount += elapsed_periods;
     s_vcount_fwd = s_vcount;
 }
+uint32_t sr_display_vcount(void) { return s_vcount; }
 void sr_vblank_tick(void) {
     if (s_display_latched_pending) {
         s_display_active = s_display_latched;

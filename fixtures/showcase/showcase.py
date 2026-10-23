@@ -23,6 +23,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import time
 import zlib
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -62,6 +63,15 @@ SMOKE_TIMEOUT_SECONDS = 15
 CROSS_PRESS = (12, 0x4000, 4)
 START_PRESS = (240, 0x0008, 4)
 SAVE_START_PRESS = (120, 0x0008, 4)
+PAUSE_CROSS_PRESS = (121, 0x4000, 4)
+AUDIO_PAUSE_CROSS_PRESS = (12, 0x4000, 4)
+AUDIO_PAUSE_TRIGGER_VCOUNT = 12
+HEADLESS_PAUSE_SCRIPT = "30:500"
+
+
+def _pause_timeout_seconds(host_ms: int) -> int:
+    """Leave the ordinary smoke cap intact and budget only the requested pause."""
+    return SMOKE_TIMEOUT_SECONDS + (host_ms + 999) // 1000 + 2
 
 DEMOS = (
     {
@@ -436,7 +446,8 @@ def build_all() -> None:
         _build_one(demo, license_notice)
 
 
-def _runtime_command(demo: dict[str, object], padscript: Path) -> tuple[list[str], dict[str, str], Path]:
+def _runtime_command(demo: dict[str, object], padscript: Path,
+                     pause_script: str | None = None) -> tuple[list[str], dict[str, str], Path]:
     disc_id = str(demo["disc_id"])
     package_dir = DEMO_ROOT / "packages" / disc_id
     meta = json.loads((package_dir / "package.json").read_text(encoding="utf-8"))
@@ -447,6 +458,7 @@ def _runtime_command(demo: dict[str, object], padscript: Path) -> tuple[list[str
     command = [str(exe), "--image", str(image), f"0x{base:08x}",
                meta["runtime"]["run_entry"], "none", "none", "--sched"]
     env = os.environ.copy()
+    env.pop("SR_PAUSE_SCRIPT", None)
     env.update({
         "SR_AUDIOSTAT": "1",
         "SR_AUDIO_BACKEND": "sdl",
@@ -460,11 +472,13 @@ def _runtime_command(demo: dict[str, object], padscript: Path) -> tuple[list[str
         "SDL_AUDIODRIVER": "dummy",
         "SR_MEMSTICK": str(BUILD_ROOT / "smoke" / disc_id / "memstick"),
     })
+    if pause_script is not None:
+        env["SR_PAUSE_SCRIPT"] = pause_script
     return command, env, package_dir
 
 
 def _headless_capture_command(
-    demo: dict[str, object], padscript: Path
+    demo: dict[str, object], padscript: Path, pause_script: str | None = None
 ) -> tuple[list[str], dict[str, str], Path]:
     """The scripted run on the explicit headless presenter with one capture switch.
 
@@ -489,6 +503,8 @@ def _headless_capture_command(
         "SR_PRESENT_TRACE": "1",
         "SR_EXIT_AT_VBLANK": str(last + 20),
     })
+    if pause_script is not None:
+        env["SR_PAUSE_SCRIPT"] = pause_script
     return command, env, package_dir
 
 
@@ -578,8 +594,128 @@ def _named_failure(output: str) -> str:
     return f" ({match.group(1).strip()})" if match else ""
 
 
+def parse_pause_lines(output: str) -> dict[str, list[dict[str, str]]]:
+    """Parse the scheduler's stable SR_PAUSE key/value lines from a runtime log."""
+    parsed: dict[str, list[dict[str, str]]] = {
+        "requested": [], "entered": [], "resumed": [], "refused": []
+    }
+    for line in output.splitlines():
+        match = re.match(r"^SR_PAUSE: (requested|entered|resumed|refused)\b(.*)$", line)
+        if not match:
+            continue
+        fields = dict(re.findall(r"([a-z_]+)=([^\s]+)", match.group(2)))
+        parsed[match.group(1)].append(fields)
+    return parsed
+
+
+def _pause_window(output: str, label: str) -> tuple[dict[str, str], dict[str, str], int, int]:
+    records = parse_pause_lines(output)
+    if len(records["entered"]) != 1 or len(records["resumed"]) != 1:
+        raise ShowcaseError(
+            f"{label} expected one SR_PAUSE entered/resumed pair, got "
+            f"{len(records['entered'])}/{len(records['resumed'])}; "
+            f"requested={records['requested']} refused={records['refused']}"
+        )
+    lines = output.splitlines()
+    entry_index = next(i for i, line in enumerate(lines) if line.startswith("SR_PAUSE: entered "))
+    resume_index = next(i for i, line in enumerate(lines) if line.startswith("SR_PAUSE: resumed "))
+    if resume_index <= entry_index:
+        raise ShowcaseError(f"{label} resumed before its pause entry")
+    return records["entered"][0], records["resumed"][0], entry_index, resume_index
+
+
+def _pause_pair_frozen(output: str, label: str) -> tuple[dict[str, str], dict[str, str]]:
+    entered, resumed, entry_index, resume_index = _pause_window(output, label)
+    for field in ("vcount", "vbl"):
+        if entered.get(field) != resumed.get(field):
+            raise ShowcaseError(
+                f"{label} {field} changed while paused "
+                f"({entered.get(field)} -> {resumed.get(field)})"
+            )
+    inside = "\n".join(output.splitlines()[entry_index + 1:resume_index])
+    if re.search(r"^(?:ctrl_latch:|GESTAT\b)", inside, re.MULTILINE):
+        raise ShowcaseError(f"{label} latched guest input or closed a GE window while paused")
+    return entered, resumed
+
+
+def _audio_stats(output: str, label: str) -> dict[str, str]:
+    lines = re.findall(r"^AUDIOSTAT_HOST: ([^\n]+)$", output, re.MULTILINE)
+    if not lines:
+        raise ShowcaseError(f"{label} has no AUDIOSTAT_HOST telemetry")
+    return dict(re.findall(r"([a-z_]+)=([^\s]+)", lines[-1]))
+
+
+def _exit_at_vblank(output: str, label: str) -> int:
+    match = re.search(
+        r"^BOOT_EVENT phase=exit_at_vblank vblanks=(\d+) \(SR_EXIT_AT_VBLANK=(\d+)\)",
+        output, re.MULTILINE,
+    )
+    if not match:
+        raise ShowcaseError(f"{label} did not report its SR_EXIT_AT_VBLANK completion")
+    actual, target = (int(value) for value in match.groups())
+    if actual != target:
+        raise ShowcaseError(f"{label} exited at VCOUNT {actual}, not its target {target}")
+    return actual
+
+
+def _check_pause_input(output: str, press: tuple[int, int, int], label: str) -> None:
+    entered, resumed, _entry_index, resume_index = _pause_window(output, label)
+    target = int(entered["vcount"])
+    mask = press[1]
+    lines = output.splitlines()
+    suffix = lines[resume_index + 1:]
+    latch = next((line for line in suffix if line.startswith("ctrl_latch:")), None)
+    if latch is None:
+        raise ShowcaseError(f"{label} has no controller latch after resume")
+    match = re.search(r"vcount=(\d+) buttons 0x[0-9a-fA-F]{4} -> 0x([0-9a-fA-F]{4})", latch)
+    if not match:
+        raise ShowcaseError(f"{label} has a malformed post-resume controller latch")
+    first_latch_vcount = int(match.group(1))
+    if (first_latch_vcount < press[0] or first_latch_vcount > target + 2 or
+            int(match.group(2), 16) != mask):
+        raise ShowcaseError(f"{label} did not latch the scheduled press immediately after resume")
+    read_pattern = re.compile(
+        rf"^ctrl_read: vcount=(\d+) guest read scripted 0x{mask:04x} "
+        r"\(latched (\d+) samples since vblank (\d+)\)$"
+    )
+    read = None
+    for line in suffix:
+        if line.startswith("ctrl_read:"):
+            read = read_pattern.search(line)
+            if read:
+                break
+    release_vblank = None
+    for line in suffix:
+        release = re.search(
+            r"^ctrl_latch: vcount=(\d+) buttons 0x[0-9a-fA-F]{4} -> 0x0000\b", line)
+        if release and int(release.group(1)) >= press[0]:
+            release_vblank = int(release.group(1))
+            break
+    if (not read or int(read.group(1)) != first_latch_vcount or
+            int(read.group(2)) < 1 or int(read.group(3)) != press[0] or
+            release_vblank != first_latch_vcount + press[2]):
+        read_values = read.groups() if read else None
+        raise ShowcaseError(
+            f"{label} did not preserve the scripted press width/read after resume "
+            f"(first_latch={first_latch_vcount}, read={read_values}, "
+            f"release_vblank={release_vblank}, width={press[2]})"
+        )
+
+
+def _check_scripted_pause_refusal(output: str, label: str) -> None:
+    records = parse_pause_lines(output)
+    if records["entered"] or records["resumed"]:
+        raise ShowcaseError(f"{label} unexpectedly entered an interactive pause")
+    if len(records["refused"]) != 1:
+        raise ShowcaseError(f"{label} expected exactly one logged pause refusal")
+    refusal = records["refused"][0]
+    if refusal.get("source") != "user" or refusal.get("reason") not in {"no_presenter", "automation"}:
+        raise ShowcaseError(f"{label} logged the wrong user-pause refusal: {refusal}")
+
+
 def _run_runtime(command: list[str], env: dict[str, str], cwd: Path,
-                 log_path: Path, label: str) -> str:
+                 log_path: Path, label: str,
+                 timeout_seconds: int = SMOKE_TIMEOUT_SECONDS) -> str:
     """Run one bounded runtime smoke and keep its complete log, then return the output.
 
     The log is written whether the runtime passes, fails, or overruns the host timeout,
@@ -591,14 +727,14 @@ def _run_runtime(command: list[str], env: dict[str, str], cwd: Path,
     try:
         result = subprocess.run(command, cwd=cwd, env=env, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                timeout=SMOKE_TIMEOUT_SECONDS, check=False)
+                                timeout=timeout_seconds, check=False)
     except subprocess.TimeoutExpired as exc:
         partial = exc.stdout or ""
         if isinstance(partial, bytes):
             partial = partial.decode("utf-8", errors="replace")
         log_path.write_text(partial + "\nSHOWCASE_SMOKE_TIMEOUT\n", encoding="utf-8", errors="replace")
         raise ShowcaseError(
-            f"{label} exceeded the {SMOKE_TIMEOUT_SECONDS} second smoke window; see {log_path}"
+            f"{label} exceeded the {timeout_seconds} second smoke window; see {log_path}"
         ) from exc
     log_path.write_text(result.stdout, encoding="utf-8", errors="replace")
     if result.returncode != 0:
@@ -612,24 +748,32 @@ def _window_vblanks(pattern: str, output: str) -> set[int]:
     return {int(v) for v in re.findall(pattern, output, re.MULTILINE) if first <= int(v) <= last}
 
 
-def _smoke_headless_capture(demo: dict[str, object], padscript: Path, smoke_dir: Path) -> list[Path]:
+def _smoke_headless_capture(demo: dict[str, object], padscript: Path, smoke_dir: Path,
+                            pause_script: str | None = None) -> list[Path]:
     """Run the demo headless and prove every frame it presented inside the capture window
     was published as a real 480x272 frame, and nothing else was."""
     disc_id = str(demo["disc_id"])
-    command, env, package_dir = _headless_capture_command(demo, padscript)
+    command, env, package_dir = _headless_capture_command(demo, padscript, pause_script)
     for stale in package_dir.glob("frame_v*.ppm"):
         stale.unlink()
     try:
+        timeout_seconds = 15 + ((500 + 999) // 1000 + 2 if pause_script else 0)
         result = subprocess.run(command, cwd=package_dir, env=env, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                timeout=15, check=False)
+                                timeout=timeout_seconds, check=False)
     except subprocess.TimeoutExpired as exc:
-        raise ShowcaseError(f"{disc_id} headless capture run exceeded the 15 second window") from exc
+        raise ShowcaseError(
+            f"{disc_id} headless capture run exceeded the {timeout_seconds} second window"
+        ) from exc
     output = result.stdout
     log_path = smoke_dir / "runtime-headless-capture.log"
     log_path.write_text(output, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise ShowcaseError(f"{disc_id} headless capture run exited {result.returncode}; see {log_path}")
+    if pause_script is not None:
+        entered, resumed = _pause_pair_frozen(output, f"{disc_id} headless-capture pause")
+        if entered.get("vtime_us") != resumed.get("vtime_us"):
+            raise ShowcaseError(f"{disc_id} turbo capture pause advanced guest time; see {log_path}")
     if "BOOT_EVENT phase=window_ready backend=offscreen" not in output:
         raise ShowcaseError(f"{disc_id} did not select the offscreen presenter; see {log_path}")
     presented = _window_vblanks(r"^HOST_PRESENT_SUBMITTED f=(\d+) ", output)
@@ -660,6 +804,98 @@ def _smoke_headless_capture(demo: dict[str, object], padscript: Path, smoke_dir:
     return captures
 
 
+def _run_pause_scenario(demo: dict[str, object], padscript: Path, smoke_dir: Path,
+                        pause_script: str, label: str) -> tuple[str, float, Path]:
+    command, env, package_dir = _runtime_command(demo, padscript, pause_script)
+    log_path = smoke_dir / f"{label}.log"
+    host_ms = int(pause_script.split(":", 2)[1])
+    started = time.monotonic()
+    output = _run_runtime(command, env, package_dir, log_path, f"{demo['disc_id']} {label}",
+                          timeout_seconds=_pause_timeout_seconds(host_ms))
+    return output, time.monotonic() - started, log_path
+
+
+def _check_pause_timing_and_vblank(output: str, label: str,
+                                   baseline_output: str | None = None,
+                                   baseline_seconds: float | None = None,
+                                   elapsed_seconds: float | None = None) -> tuple[dict[str, str], dict[str, str]]:
+    entered, resumed = _pause_pair_frozen(output, label)
+    if entered.get("vtime_us") != resumed.get("vtime_us"):
+        raise ShowcaseError(f"{label} advanced guest time while paused")
+    if int(entered.get("latency_us", "-1")) > 2 * 16683:
+        raise ShowcaseError(f"{label} request-to-entry latency exceeded two display periods")
+    if baseline_output is not None:
+        if baseline_seconds is None or elapsed_seconds is None or \
+                elapsed_seconds < baseline_seconds + 1.4:
+            raise ShowcaseError(
+                f"{label} host runtime did not include the requested pause interval "
+                f"(baseline={baseline_seconds}, paused={elapsed_seconds})"
+            )
+        baseline_exit = _exit_at_vblank(baseline_output, f"{label} unpaused baseline")
+        paused_exit = _exit_at_vblank(output, label)
+        if paused_exit != baseline_exit:
+            raise ShowcaseError(
+                f"{label} exited at VCOUNT {paused_exit}, baseline ended at {baseline_exit}"
+            )
+    return entered, resumed
+
+
+def _check_pause_smoke(output: str, baseline_output: str, baseline_seconds: float,
+                       elapsed_seconds: float, label: str) -> None:
+    entered, _resumed = _check_pause_timing_and_vblank(
+        output, label, baseline_output, baseline_seconds, elapsed_seconds)
+    _check_pause_input(output, PAUSE_CROSS_PRESS, label)
+    if int(entered["vcount"]) != 120:
+        raise ShowcaseError(f"{label} entered at vcount {entered['vcount']}, expected 120")
+
+
+def _check_audio_pause_smoke(output: str, baseline_output: str, label: str,
+                             request_vcount: int) -> None:
+    entered, resumed = _pause_pair_frozen(output, label)
+    if entered.get("vtime_us") != resumed.get("vtime_us"):
+        raise ShowcaseError(f"{label} advanced guest time while paused")
+    baseline = _audio_stats(baseline_output, f"{label} unpaused baseline")
+    paused = _audio_stats(output, label)
+    if paused.get("underruns") != baseline.get("underruns"):
+        raise ShowcaseError(
+            f"{label} changed underruns ({baseline.get('underruns')} -> {paused.get('underruns')})"
+        )
+    if paused.get("pause_enters") != "1" or int(paused.get("pause_held_frames", "0")) <= 0 or \
+            paused.get("pause_stash_failures") != "0":
+        raise ShowcaseError(f"{label} has incomplete audio pause telemetry: {paused}")
+    requested = parse_pause_lines(output)["requested"]
+    observed_request = int(requested[0].get("vcount", "-1")) if requested else -1
+    if observed_request < request_vcount:
+        raise ShowcaseError(
+            f"{label} request was observed at VCOUNT {observed_request}, "
+            f"before its target {request_vcount}"
+        )
+    read = re.search(
+        r"^ctrl_read: vcount=(\d+) guest read scripted 0x4000 ", output, re.MULTILINE)
+    entry_line = next(line for line in output.splitlines() if line.startswith("SR_PAUSE: entered "))
+    read_line = next((line for line in output.splitlines()
+                      if line.startswith("ctrl_read:") and "guest read scripted 0x4000" in line), None)
+    if not read or not read_line or output.splitlines().index(read_line) > \
+            output.splitlines().index(entry_line):
+        raise ShowcaseError(f"{label} entered before the guest consumed Cross and queued its tone")
+    if int(entered.get("vcount", "0")) < observed_request or \
+            resumed.get("vcount") != entered.get("vcount"):
+        raise ShowcaseError(f"{label} did not hold VCOUNT after its queued-tone request")
+
+
+def _check_savedata_pause_smoke(output: str, label: str) -> None:
+    entered, resumed = _check_pause_timing_and_vblank(output, label)
+    if (entered.get("quit_allowed"), entered.get("reason")) != ("0", "savedata") or \
+            (resumed.get("quit_allowed"), resumed.get("reason")) != ("0", "savedata"):
+        raise ShowcaseError(f"{label} did not report savedata as blocking Quit")
+    if "BOOT_EVENT phase=exit_at_vblank" in output:
+        raise ShowcaseError(f"{label} ended by the vblank budget instead of the guest's own exit")
+
+
+def _check_interactive_pause_refusal(output: str, label: str) -> None:
+    _check_scripted_pause_refusal(output, label)
+
+
 def smoke_all() -> None:
     SCREENSHOT_ROOT.mkdir(parents=True, exist_ok=True)
     padscript_root = BUILD_ROOT / "smoke"
@@ -669,14 +905,17 @@ def smoke_all() -> None:
         disc_id = str(demo["disc_id"])
         smoke_dir = padscript_root / disc_id
         smoke_dir.mkdir(parents=True, exist_ok=True)
-        (smoke_dir / "padscript.txt").write_text(_padscript(CROSS_PRESS, START_PRESS),
+        main_cross_press = PAUSE_CROSS_PRESS if disc_id == "TEST00008" else CROSS_PRESS
+        (smoke_dir / "padscript.txt").write_text(_padscript(main_cross_press, START_PRESS),
                                                  encoding="ascii")
         command, env, package_dir = _runtime_command(demo, smoke_dir / "padscript.txt")
         log_path = smoke_dir / "runtime.log"
+        started = time.monotonic()
         output = _run_runtime(command, env, package_dir, log_path, f"{disc_id} runtime")
+        baseline_seconds = time.monotonic() - started
         checkpoint, ppm = first_frame_checkpoint(demo, output, package_dir, log_path)
-        press_note = scripted_press_note(output, CROSS_PRESS)
-        if f"-> 0x{CROSS_PRESS[1]:04x}" not in output:
+        press_note = scripted_press_note(output, main_cross_press)
+        if f"-> 0x{main_cross_press[1]:04x}" not in output:
             raise ShowcaseError(
                 f"{disc_id} missed the scripted Cross input sample{press_note}; see {log_path}")
         if "AUDIOSTAT_HOST:" not in output or "pushed=0" in output:
@@ -695,24 +934,77 @@ def smoke_all() -> None:
                                    cwd=ROOT, text=True, capture_output=True, check=False)
         if converted.returncode:
             raise ShowcaseError(f"could not convert {ppm} to PNG: {converted.stderr.strip()}")
+
+        if disc_id == "TEST00007":
+            pause_padscript = smoke_dir / "padscript-pause-audio.txt"
+            pause_padscript.write_text(_padscript(AUDIO_PAUSE_CROSS_PRESS, START_PRESS),
+                                       encoding="ascii")
+            audio_output, _audio_seconds, audio_log = _run_pause_scenario(
+                demo, pause_padscript, smoke_dir,
+                f"{AUDIO_PAUSE_TRIGGER_VCOUNT}:800", "runtime-pause-audio")
+            try:
+                _check_audio_pause_smoke(audio_output, output, f"{disc_id} audio pause",
+                                         AUDIO_PAUSE_TRIGGER_VCOUNT)
+            except ShowcaseError as exc:
+                raise ShowcaseError(f"{exc}; see {audio_log}") from exc
+
         if disc_id == "TEST00008":
+            pause_padscript = smoke_dir / "padscript-pause.txt"
+            pause_padscript.write_text(_padscript(PAUSE_CROSS_PRESS, START_PRESS), encoding="ascii")
+            pause_base_command, pause_base_env, pause_base_package = _runtime_command(
+                demo, pause_padscript)
+            pause_base_log = smoke_dir / "runtime-pause-baseline.log"
+            pause_base_started = time.monotonic()
+            pause_base_output = _run_runtime(
+                pause_base_command, pause_base_env, pause_base_package, pause_base_log,
+                f"{disc_id} unpaused pause-route baseline")
+            pause_base_seconds = time.monotonic() - pause_base_started
+            pause_output, pause_seconds, pause_log = _run_pause_scenario(
+                demo, pause_padscript, smoke_dir, "120:1500", "runtime-pause")
+            try:
+                _check_pause_smoke(pause_output, pause_base_output,
+                                   pause_base_seconds, pause_seconds,
+                                   f"{disc_id} scheduler pause")
+            except ShowcaseError as exc:
+                raise ShowcaseError(f"{exc}; see {pause_log}") from exc
+
             save_padscript = smoke_dir / "padscript-save.txt"
             save_padscript.write_text(_padscript(CROSS_PRESS, SAVE_START_PRESS), encoding="ascii")
-            save_command, save_env, save_package_dir = _runtime_command(demo, save_padscript)
+            save_command, save_env, save_package_dir = _runtime_command(
+                demo, save_padscript, "122:1000")
             save_env.pop("SR_EXIT_AT_VBLANK", None)
             save_log_path = smoke_dir / "runtime-save.log"
             try:
-                _run_runtime(save_command, save_env, save_package_dir, save_log_path,
-                             f"{disc_id} savedata smoke")
+                save_output = _run_runtime(
+                    save_command, save_env, save_package_dir, save_log_path,
+                    f"{disc_id} savedata pause smoke", timeout_seconds=_pause_timeout_seconds(1000))
             except ShowcaseError as exc:
                 # The savedata run ends only when the guest acts on its scripted Start.
                 save_log = save_log_path.read_text(encoding="utf-8", errors="replace")
                 raise ShowcaseError(f"{exc}{scripted_press_note(save_log, SAVE_START_PRESS)}") from exc
+            try:
+                _check_savedata_pause_smoke(save_output, f"{disc_id} savedata pause")
+            except ShowcaseError as exc:
+                raise ShowcaseError(f"{exc}; see {save_log_path}") from exc
             save_root = Path(env["SR_MEMSTICK"])
             if not save_root.exists() or not any(path.is_file() for path in save_root.rglob("*")):
                 raise ShowcaseError(f"Breakout did not create savedata under {save_root}")
-        captures = _smoke_headless_capture(demo, smoke_dir / "padscript.txt", smoke_dir)
-        print(f"SHOWCASE_SMOKE: PASS {disc_id} frame/input/audio/headless-capture; "
+            refusal_command, refusal_env, refusal_package = _runtime_command(
+                demo, pause_padscript, "60:1:user")
+            refusal_log = smoke_dir / "runtime-pause-refusal.log"
+            refusal_output = _run_runtime(
+                refusal_command, refusal_env, refusal_package, refusal_log,
+                f"{disc_id} interactive pause refusal", timeout_seconds=_pause_timeout_seconds(1))
+            try:
+                _check_interactive_pause_refusal(refusal_output, f"{disc_id} pause refusal")
+            except ShowcaseError as exc:
+                raise ShowcaseError(f"{exc}; see {refusal_log}") from exc
+
+        capture_padscript = smoke_dir / "padscript-capture.txt"
+        capture_padscript.write_text("", encoding="ascii")
+        captures = _smoke_headless_capture(
+            demo, capture_padscript, smoke_dir, HEADLESS_PAUSE_SCRIPT)
+        print(f"SHOWCASE_SMOKE: PASS {disc_id} frame/input/audio/pause/headless-capture; "
               f"first frame checkpoint=vblank {checkpoint.frame}; screenshot={screenshot} "
               f"captures={len(captures)} first={captures[0]}")
 

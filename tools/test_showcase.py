@@ -37,6 +37,55 @@ BREAKOUT = next(demo for demo in showcase.DEMOS if demo["disc_id"] == "TEST00008
 CAPTURE = b"P6\n1 1\n255\n\0\0\0"
 
 
+class ShowcasePauseLogTests(unittest.TestCase):
+    def test_pause_input_uses_script_start_not_latch_vblank(self) -> None:
+        output = (
+            "SR_PAUSE: entered source=script vcount=120 vbl=120 vtime_us=200000 "
+            "latency_us=10 quit_allowed=1 reason=none\n"
+            "SR_PAUSE: resumed vcount=120 vbl=120 vtime_us=200000 paused_ms=1500 "
+            "count=1 quit_allowed=1 reason=none\n"
+            "ctrl_latch: vcount=122 buttons 0x0000 -> 0x4000 lx=128 ly=128\n"
+            "ctrl_read: vcount=122 guest read scripted 0x4000 "
+            "(latched 1 samples since vblank 121)\n"
+            "ctrl_latch: vcount=126 buttons 0x4000 -> 0x0000 lx=128 ly=128\n"
+        )
+        showcase._check_pause_input(output, (121, 0x4000, 4), "synthetic")
+
+    def test_pause_log_key_values_parse_for_scheduler_and_audio_checks(self) -> None:
+        log = (
+            "SR_PAUSE: requested source=script vcount=120\n"
+            "SR_PAUSE: entered source=script vcount=120 vbl=120 vtime_us=200000 "
+            "latency_us=12000 quit_allowed=0 reason=savedata\n"
+            "SR_PAUSE: resumed vcount=120 vbl=120 vtime_us=200000 paused_ms=1500 "
+            "count=1 quit_allowed=0 reason=savedata\n"
+        )
+        parsed = showcase.parse_pause_lines(log)
+        self.assertEqual(parsed["requested"], [{"source": "script", "vcount": "120"}])
+        entered, resumed = parsed["entered"][0], parsed["resumed"][0]
+        self.assertEqual((entered["vcount"], entered["vbl"], entered["vtime_us"]),
+                         (resumed["vcount"], resumed["vbl"], resumed["vtime_us"]))
+        self.assertEqual((entered["quit_allowed"], entered["reason"]), ("0", "savedata"))
+        self.assertEqual(resumed["paused_ms"], "1500")
+
+    def test_pause_boundary_rejects_guest_input_or_ge_work_inside_window(self) -> None:
+        output = (
+            "SR_PAUSE: entered source=script vcount=120 vbl=120 vtime_us=200000 "
+            "latency_us=10 quit_allowed=1 reason=none\n"
+            "ctrl_latch: vcount=120 buttons 0x0000 -> 0x0000 lx=128 ly=128\n"
+            "SR_PAUSE: resumed vcount=120 vbl=120 vtime_us=200000 paused_ms=1500 "
+            "count=1 quit_allowed=1 reason=none\n"
+        )
+        with self.assertRaisesRegex(showcase.ShowcaseError, "latched guest input"):
+            showcase._pause_pair_frozen(output, "synthetic")
+
+    def test_user_pause_refusal_parses_without_an_entry(self) -> None:
+        output = "SR_PAUSE: refused reason=automation source=user vcount=60\n"
+        showcase._check_scripted_pause_refusal(output, "synthetic")
+        with self.assertRaisesRegex(showcase.ShowcaseError, "expected exactly one"):
+            showcase._check_scripted_pause_refusal(
+                "SR_PAUSE: requested source=user vcount=60\n", "synthetic")
+
+
 def scene_log(*windows: tuple[int, int]) -> str:
     """A runtime log whose SR_GESTAT windows close at (vblank, tri3d) pairs."""
     return "".join(
@@ -238,6 +287,26 @@ class ShowcaseImageTests(unittest.TestCase):
         self.assertEqual(env["SR_FPS_CAP"], "0")
         self.assertNotIn("SR_FBSNAP", env)
         self.assertNotIn("SR_FBDUMP", env)
+
+    def test_headless_capture_pause_keeps_the_turbo_capture_route(self) -> None:
+        demo = showcase.DEMOS[0]
+        with tempfile.TemporaryDirectory() as temp:
+            package = Path(temp) / "packages" / str(demo["disc_id"])
+            package.mkdir(parents=True)
+            (package / "package.json").write_text(
+                '{"executable": {"path": "game.exe"}, "runtime": {"run_entry": "0x08804000"}}',
+                encoding="utf-8",
+            )
+            with mock.patch.object(showcase, "DEMO_ROOT", Path(temp)), \
+                    mock.patch.dict("os.environ", {"SR_FBSNAP": "4", "SR_FBDUMP": "9"}):
+                command, env, _ = showcase._headless_capture_command(
+                    demo, Path(temp) / "pad.txt", showcase.HEADLESS_PAUSE_SCRIPT)
+        self.assertEqual(command[-1], "--gui")
+        self.assertEqual(env["SR_NOVBPACE"], "1")
+        self.assertEqual(env["SR_PAUSE_SCRIPT"], "30:500")
+        self.assertEqual(env["SR_FBSNAP_WINDOWS"],
+                         f"{showcase.HEADLESS_CAPTURE_WINDOW[0]}-"
+                         f"{showcase.HEADLESS_CAPTURE_WINDOW[1]}")
 
     def test_icon_png_is_deterministic_144_by_80_rgba(self) -> None:
         palette = ((20, 40, 60), (80, 160, 200))
