@@ -5038,6 +5038,7 @@ static void test_unregistered_batch_refusals(void) {
  * write and preserves the existing no-op behavior for NULL output pointers. */
 static void test_volatile_mem_output_preflight(void) {
     const uint32_t paddr_out = 0x08a10000u;
+    extern void sr_hle_test_volatile_mem_reset(void);
     const uint32_t size_out = 0x08a10004u;
     const uint32_t sentinel = 0xa5c35a3cu;
     CpuState cpu;
@@ -5078,6 +5079,7 @@ static void test_volatile_mem_output_preflight(void) {
     expect(MEM_R32(paddr_out) == 0x08400000u && MEM_R32(size_out) == 0x00400000u,
            "volatile-memory Lock preserves the existing 4 MiB scratch-buffer route");
 
+    sr_hle_test_volatile_mem_reset();
     MEM_W32(paddr_out, sentinel);
     MEM_W32(size_out, sentinel);
     memset(&cpu, 0, sizeof(cpu));
@@ -5099,6 +5101,7 @@ static void test_volatile_mem_output_preflight(void) {
     expect(MEM_R32(size_out) == 0x00400000u,
            "volatile-memory Lock still writes the non-NULL size output");
 
+    sr_hle_test_volatile_mem_reset();
     MEM_W32(paddr_out, sentinel);
     memset(&cpu, 0, sizeof(cpu));
     cpu.r[4] = 0u;
@@ -27547,6 +27550,22 @@ static void test_volatile_mem_unlock_states(void) {
     memset(&cpu, 0, sizeof(cpu));
     expect(sr_syscall(&cpu, NID_VM_UNLOCK) == 0u, "VolatileMemUnlock after TryLock returns 0");
 
+    /* TryLock while already held returns 0x802b0200 and writes neither output. */
+    sr_hle_test_volatile_mem_reset();
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
+    MEM_W32(VM_PTR_OUT, 0xdeadbeefu); MEM_W32(VM_SIZE_OUT, 0xcafebabeu);
+    expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0u, "VolatileMemTryLock while unlocked returns 0");
+    MEM_W32(VM_PTR_OUT, 0x11111111u); MEM_W32(VM_SIZE_OUT, 0x22222222u);
+    cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
+    expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0x802b0200u, "VolatileMemTryLock while held returns 0x802b0200");
+    expect(MEM_R32(VM_PTR_OUT) == 0x11111111u && MEM_R32(VM_SIZE_OUT) == 0x22222222u,
+           "VolatileMemTryLock while held leaves outputs unchanged");
+    memset(&cpu, 0, sizeof(cpu));
+    expect(sr_syscall(&cpu, NID_VM_UNLOCK) == 0u, "VolatileMemUnlock after held TryLock returns 0");
+    memset(&cpu, 0, sizeof(cpu));
+    cpu.r[5] = VM_PTR_OUT; cpu.r[6] = VM_SIZE_OUT;
+    expect(sr_syscall(&cpu, NID_VM_TRYLOCK) == 0u, "VolatileMemTryLock succeeds again after Unlock");
     sr_hle_test_volatile_mem_reset();
 }
 
