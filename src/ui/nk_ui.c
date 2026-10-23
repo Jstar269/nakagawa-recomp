@@ -433,6 +433,25 @@ bool nk_ui_take_activation(NkUi *ui, NkUiId id) {
     return false;
 }
 
+bool nk_ui_take_event(NkUi *ui, NkUiEventType type, NkUiNavDir *dir) {
+    size_t i;
+    if (ui == NULL) {
+        return false;
+    }
+    for (i = 0; i < ui->event_count; ++i) {
+        NkUiEvent *event = &ui->events[i];
+        if (event->type == type && event->down && !event->repeat) {
+            if (dir != NULL) {
+                *dir = event->dir;
+            }
+            memmove(event, event + 1, (ui->event_count - i - 1u) * sizeof(*event));
+            --ui->event_count;
+            return true;
+        }
+    }
+    return false;
+}
+
 void nk_ui_label(NkUi *ui, NkUiId id, const char *text, int font, int size_px) {
     size_t length;
     if (ui == NULL || !ui->frame_open || text == NULL || size_px <= 0) {

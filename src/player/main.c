@@ -702,6 +702,11 @@ static void player_ui_nk_apply_action(PlayerApp *app,
         app->request_file_picker = true;
         return;
     }
+    if (action->kind == PLAYER_UI_ACTION_OPEN_NOTICES) {
+        /* The third-party notices are the existing licences screen. */
+        player_app_set_view(app, VIEW_PREREQ_ABOUT);
+        return;
+    }
     if (action->title_index >= (size_t)app->game_count) return;
     index = (int)action->title_index;
     app->selected_game_index = index;
@@ -3416,6 +3421,8 @@ int main(int argc, char *argv[]) {
                 snprintf(app.settings.controller_name, sizeof(app.settings.controller_name),
                          "%s", pad_name ? pad_name : "Controller");
                 app.settings.controller_connected = true;
+                /* A pad present at start switches the prompt glyphs to it. */
+                player_ui_nk_note_gamepad(next_ui, ids[0], true);
             }
         }
         SDL_free(ids);
@@ -3753,8 +3760,12 @@ int main(int argc, char *argv[]) {
                                 printf("[PLAYER] Gamepad connected: %s\n", app.settings.controller_name);
                             }
                         }
+                        if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
+                            player_ui_nk_note_gamepad(next_ui, event.gdevice.which, true);
+                        }
                         break;
                     case SDL_EVENT_GAMEPAD_REMOVED:
+                        player_ui_nk_note_gamepad(next_ui, event.gdevice.which, false);
                         if (gamepad && event.gdevice.which == SDL_GetGamepadID(gamepad)) {
                             SDL_CloseGamepad(gamepad);
                             gamepad = NULL;

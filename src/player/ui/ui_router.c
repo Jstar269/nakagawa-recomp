@@ -2,7 +2,9 @@
 /* Copyright (C) 2026 the Nakagawa Recomp authors */
 
 #include "player_ui_nk.h"
+#include "nk_ui_widgets.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 
 #define PLAYER_UI_ROUTE_DEPTH_MAX 16u
@@ -102,4 +104,69 @@ NkUiId nk_ui_router_take_focus_restore(NkUiRouter *router) {
     router->focus_restore = 0u;
     router->focus_restore_pending = false;
     return id;
+}
+
+/* Days since 1970-01-01 to a proleptic Gregorian date (civil_from_days, after
+   Howard Hinnant's public-domain date algorithms), so the date never depends on
+   the host's gmtime or time zone. */
+bool player_ui_build_date(long long epoch, char *out, size_t cap) {
+    long long z;
+    long long era;
+    long long doe;
+    long long yoe;
+    long long doy;
+    long long mp;
+    long long day;
+    long long month;
+    long long year;
+    int written;
+    if (epoch < 0 || out == NULL || cap < 11u) {
+        return false;
+    }
+    z = epoch / 86400 + 719468;
+    era = z / 146097;
+    doe = z - era * 146097;
+    yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    mp = (5 * doy + 2) / 153;
+    day = doy - (153 * mp + 2) / 5 + 1;
+    month = mp < 10 ? mp + 3 : mp - 9;
+    year = yoe + era * 400 + (month <= 2 ? 1 : 0);
+    if (year < 1 || year > 9999) {
+        return false;
+    }
+    written = snprintf(out, cap, "%02lld-%02lld-%04lld", month, day, year);
+    return written == 10;
+}
+
+void player_ui_version_line(const char *version, long long epoch, char *out, size_t cap) {
+    char date[16];
+    if (out == NULL || cap == 0u) {
+        return;
+    }
+    if (version == NULL || version[0] == '\0') {
+        version = NK_PLAYER_VERSION;
+    }
+    if (player_ui_build_date(epoch, date, sizeof(date))) {
+        (void)snprintf(out, cap, "v%s (%s)", version, date);
+    } else {
+        (void)snprintf(out, cap, "v%s (dev build)", version);
+    }
+}
+
+PlayerUiActionKind player_ui_top_bar(NkUi *ui, NkUiId id, PlayerUiRoute active) {
+    NkUiSection sections[2];
+    int chosen;
+    sections[0].label = "Library";
+    sections[0].active = active != PLAYER_UI_ROUTE_ABOUT;
+    sections[0].id = PLAYER_UI_ID_TAB_LIBRARY;
+    sections[1].label = "About";
+    sections[1].active = active == PLAYER_UI_ROUTE_ABOUT;
+    sections[1].id = PLAYER_UI_ID_TAB_ABOUT;
+    chosen = nk_ui_top_bar(ui, id, sections, 2u,
+                           nk_ui_input_label(nk_ui_prompt_style(ui)),
+                           nk_ui_prompt_style(ui) != NK_UI_PROMPT_KEYCAPS);
+    if (chosen == 0 && !sections[0].active) return PLAYER_UI_ACTION_OPEN_LIBRARY;
+    if (chosen == 1 && !sections[1].active) return PLAYER_UI_ACTION_OPEN_ABOUT;
+    return PLAYER_UI_ACTION_NONE;
 }
