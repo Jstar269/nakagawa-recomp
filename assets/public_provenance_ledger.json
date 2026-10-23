@@ -186,7 +186,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "a7abc52e399964b93833f0cb1657f454e1bee17439621d2059b2653dfd6f76dd"
+      "sha256": "8f25c4651c049bad745c06d7367ba6923b67f069b02a714a52e44a3f56d1c908"
     },
     {
       "path": ".github/workflows/clusterfuzzlite.yml",
@@ -409,7 +409,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "256d275834faa265c1282596560347cc8bc973804c53085c9610fe0a0f40ee7d"
+      "sha256": "5067fb02162ac98bb36a837de33e6ba0841eb9b5f28c314811fd90038bec833b"
     },
     {
       "path": "NOTICE.md",
@@ -1183,7 +1183,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "51b1d274043f635498697a7893964a376f2244e18de8438c4a93d8968b97f23c"
+      "sha256": "2d9c501b05510ad873264537df56267782a92d523af5c0adeb8dff015fa2c259"
     },
     {
       "path": "docs/COMPATIBILITY.md",
@@ -4964,7 +4964,7 @@
         "license": "GPL-2.0-or-later",
         "modification_status": "modified_or_translated; see trusted record"
       },
-      "sha256": "04ab501a97ab0270fee8ac8ae6e7bf8219b2359c0333d34657d1090cca7bb4c8"
+      "sha256": "ea400f8b8cc7a0178a451211f343c87e783ab7abe8a8e0483a26f9b8da4e7377"
     },
     {
       "path": "src/rt/gpu_sdl3vk/sdl3vk.h",
