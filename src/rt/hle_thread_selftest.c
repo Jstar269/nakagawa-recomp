@@ -27726,7 +27726,7 @@ static void test_late_prx_unload_keeps_module_owned_objects(void) {
 
 /* ---- scePowerUnregisterCallback: release a slot scePowerRegisterCallback filled ----
  *
- * Measured on PSP-3000 6.6.1, firmware 6.6.1, 2026-10-22 (merged PR #1153):
+ * Measured on PSP-3000, firmware 6.6.1, 2026-10-22 (merged PR #1153):
  *   - an empty slot (0..15, nothing registered) returns 0x80000025;
  *   - an owned slot returns 0;
  *   - slot 16 returns 0x80000023;
